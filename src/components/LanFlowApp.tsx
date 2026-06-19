@@ -37,7 +37,7 @@ import type { IncomeExpense, Location, PaymentResponsibility, Profile, RubberBil
 type Tab = "dashboard" | "rubber" | "cash" | "admin" | "sync";
 type RubberWeighItem = NonNullable<RubberBill["weighItems"]>[number];
 type RubberAcidItem = NonNullable<RubberBill["acidItems"]>[number];
-type RubberDebtItem = NonNullable<RubberBill["debtItem"]>;
+type RubberDebtItem = NonNullable<RubberBill["debtItems"]>[number];
 type LanFlowApiData = {
   locations: Location[];
   profile: Profile;
@@ -843,6 +843,7 @@ function RubberBillModal({
   onSave: (bill: RubberBill) => void;
 }) {
   const initialLocalBillNo = bill?.localBillNo ?? makeLocalBillNo(selectedLocation.code, "R", nextLocalSequence);
+  const initialPaymentResponsibility = bill?.customerType ?? "สาขานี้จ่าย";
   const [weighItems, setWeighItems] = useState<RubberWeighItem[]>(() => {
     if (bill?.weighItems?.length) return bill.weighItems;
     return [
@@ -857,19 +858,34 @@ function RubberBillModal({
     ];
   });
   const [acidItems, setAcidItems] = useState<RubberAcidItem[]>(() => bill?.acidItems ?? []);
-  const [debtItem, setDebtItem] = useState<RubberDebtItem | null>(() => bill?.debtItem ?? null);
+  const [debtItems, setDebtItems] = useState<RubberDebtItem[]>(() => bill?.debtItems ?? (bill?.debtItem ? [bill.debtItem] : []));
+  const [paymentResponsibility, setPaymentResponsibility] = useState<PaymentResponsibility>(initialPaymentResponsibility);
   const [weightDeduct, setWeightDeduct] = useState(0);
-  const [weightDeductValue, setWeightDeductValue] = useState(0);
   const totalWeight = weighItems.reduce((sum, item) => sum + item.netWeight, 0);
-  const gross = weighItems.reduce((sum, item) => sum + item.netWeight * item.price, 0);
+  const gross = weighItems.reduce((sum, item) => sum + Math.floor(item.netWeight * item.price), 0);
   const averagePrice = totalWeight > 0 ? gross / totalWeight : 0;
   const acidDeduction = acidItems.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
-  const debtDeduction = debtItem?.amount ?? 0;
+  const debtDeduction = debtItems.reduce((sum, item) => sum + item.amount, 0);
+  const weightDeductValue = weightDeduct * averagePrice;
   const deduct = acidDeduction + debtDeduction + weightDeductValue;
   const net = Math.max(gross - deduct, 0);
+  const branchPayment = paymentResponsibility === "สาขานี้จ่าย" ? net : 0;
+  const headOfficePayment = paymentResponsibility === "สาขาใหญ่จ่าย" ? net : 0;
 
   function updateWeighItem(id: string, patch: Partial<Omit<RubberWeighItem, "id">>) {
-    setWeighItems((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+    setWeighItems((current) =>
+      current.map((item) => {
+        if (item.id !== id) return item;
+        const nextItem = { ...item, ...patch };
+        if (!("inWeight" in patch) && !("outWeight" in patch)) {
+          return nextItem;
+        }
+        return {
+          ...nextItem,
+          netWeight: Math.max(nextItem.inWeight - nextItem.outWeight, 0)
+        };
+      })
+    );
   }
 
   function addWeighItem() {
@@ -915,8 +931,19 @@ function RubberBillModal({
     setAcidItems((current) => current.filter((item) => item.id !== id));
   }
 
+  function updateDebtItem(id: string, patch: Partial<Omit<RubberDebtItem, "id">>) {
+    setDebtItems((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+  }
+
   function addDebtItem() {
-    setDebtItem((current) => current ?? { id: makeClientTempId("debt"), title: "หักชำระหนี้", amount: 0 });
+    setDebtItems((current) => [
+      ...current,
+      { id: makeClientTempId("debt"), title: `หักชำระหนี้ ${current.length + 1}`, amount: 0 }
+    ]);
+  }
+
+  function removeDebtItem(id: string) {
+    setDebtItems((current) => current.filter((item) => item.id !== id));
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -936,18 +963,19 @@ function RubberBillModal({
       billNo: bill?.serverBillNo ?? localBillNo,
       billDate: String(form.get("billDate") || todayInputValue()),
       customerName: String(form.get("customerName") || ""),
-      customerType: String(form.get("customerType")) as PaymentResponsibility,
+      customerType: paymentResponsibility,
       billType: String(form.get("billType") || "บิลเครื่องชั่งเล็ก"),
       weight: totalWeight,
       price: averagePrice,
       deductionTotal: deduct,
       netTotal: net,
-      cashPayment: Number(form.get("cashPayment") || net),
-      transferPayment: Number(form.get("transferPayment") || 0),
+      cashPayment: branchPayment,
+      transferPayment: headOfficePayment,
       acidPackCount: acidItems.reduce((sum, item) => sum + item.quantity, 0),
       weighItems,
       acidItems,
-      debtItem: debtItem ?? undefined,
+      debtItem: debtItems[0],
+      debtItems,
       createdByName: bill?.createdByName ?? profile.name,
       createdByPhone: bill?.createdByPhone ?? profile.phone,
       clientCreatedAt: bill?.clientCreatedAt ?? clientRecordedAt,
@@ -994,8 +1022,20 @@ function RubberBillModal({
             <div className="text-center md:col-span-2">
               <p className="mb-2 text-sm font-bold text-ink">ผู้รับผิดชอบการจ่าย</p>
               <div className="flex justify-center gap-4 text-sm font-semibold">
-                <InlineRadio name="customerType" value="สาขานี้จ่าย" label="สาขานี้จ่าย" defaultChecked={bill?.customerType !== "สาขาใหญ่จ่าย"} />
-                <InlineRadio name="customerType" value="สาขาใหญ่จ่าย" label="สาขาใหญ่จ่าย" defaultChecked={bill?.customerType === "สาขาใหญ่จ่าย"} />
+                <InlineRadio
+                  name="customerType"
+                  value="สาขานี้จ่าย"
+                  label="สาขานี้จ่าย"
+                  checked={paymentResponsibility === "สาขานี้จ่าย"}
+                  onChange={() => setPaymentResponsibility("สาขานี้จ่าย")}
+                />
+                <InlineRadio
+                  name="customerType"
+                  value="สาขาใหญ่จ่าย"
+                  label="สาขาใหญ่จ่าย"
+                  checked={paymentResponsibility === "สาขาใหญ่จ่าย"}
+                  onChange={() => setPaymentResponsibility("สาขาใหญ่จ่าย")}
+                />
               </div>
             </div>
             <input type="hidden" name="billType" value="บิลเครื่องชั่งเล็ก" />
@@ -1029,9 +1069,15 @@ function RubberBillModal({
                     </td>
                     <td><InlineNumber value={item.inWeight} onChange={(value) => updateWeighItem(item.id, { inWeight: value })} /></td>
                     <td><InlineNumber value={item.outWeight} onChange={(value) => updateWeighItem(item.id, { outWeight: value })} /></td>
-                    <td><InlineNumber value={item.netWeight} onChange={(value) => updateWeighItem(item.id, { netWeight: value })} /></td>
-                    <td><InlineNumber value={item.price} onChange={(value) => updateWeighItem(item.id, { price: value })} /></td>
-                    <td><InlineNumber value={item.netWeight * item.price} readOnly /></td>
+                    <td><InlineNumber value={item.netWeight} readOnly /></td>
+                    <td>
+                      <InlineNumber
+                        value={item.price}
+                        onChange={(value) => updateWeighItem(item.id, { price: value })}
+                        decimalOnBlur
+                      />
+                    </td>
+                    <td><InlineNumber value={Math.floor(item.netWeight * item.price)} readOnly /></td>
                     <td>
                       <button
                         type="button"
@@ -1055,7 +1101,7 @@ function RubberBillModal({
               <NumberField label="หักน้ำหนักยาง (กก.)" value={weightDeduct} onChange={setWeightDeduct} />
             </div>
             <div className="w-36">
-              <NumberField label="มูลค่าหักน้ำหนัก (บาท)" value={weightDeductValue} onChange={setWeightDeductValue} />
+              <NumberField label="มูลค่าหักน้ำหนัก (บาท)" value={weightDeductValue} readOnly />
             </div>
           </div>
         </section>
@@ -1128,45 +1174,46 @@ function RubberBillModal({
                 </tr>
               </thead>
               <tbody>
-                {debtItem && (
-                  <tr className="border-b border-black/10">
+                {debtItems.map((item) => (
+                  <tr key={item.id} className="border-b border-black/10">
                     <td className="py-2">
                       <input
-                        value={debtItem.title}
-                        onChange={(event) => setDebtItem({ ...debtItem, title: event.target.value })}
+                        value={item.title}
+                        onChange={(event) => updateDebtItem(item.id, { title: event.target.value })}
                         className="focus-ring h-10 w-full rounded-md border border-black/10 bg-white px-3"
                       />
                     </td>
                     <td className="text-center">—</td>
                     <td className="text-center">—</td>
-                    <td><InlineNumber value={debtItem.amount} onChange={(value) => setDebtItem({ ...debtItem, amount: value })} /></td>
+                    <td><InlineNumber value={item.amount} onChange={(value) => updateDebtItem(item.id, { amount: value })} /></td>
                     <td>
-                      <button type="button" onClick={() => setDebtItem(null)} className="rounded bg-rose-500 px-3 py-2 text-sm font-bold text-white">
+                      <button type="button" onClick={() => removeDebtItem(item.id)} className="rounded bg-rose-500 px-3 py-2 text-sm font-bold text-white">
                         ลบ
                       </button>
                     </td>
                   </tr>
-                )}
+                ))}
               </tbody>
             </table>
           </div>
           <button
             type="button"
             onClick={addDebtItem}
-            disabled={Boolean(debtItem)}
-            className="mt-3 rounded-md bg-slate-500 px-4 py-2 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+            className="mt-3 rounded-md bg-slate-500 px-4 py-2 text-sm font-bold text-white"
           >
             หักหนี้
           </button>
         </section>
 
         <section className="grid gap-3 p-3 sm:w-48 sm:p-4">
-          <NumberField label="ราคาเฉลี่ยยาง (บาท/กก.)" value={averagePrice} onChange={() => undefined} />
-          <NumberField label="รวมมูลค่ายาง (บาท)" value={gross} onChange={() => undefined} />
-          <NumberField label="ยอดรวมที่ถูกหัก (บาท)" value={deduct} onChange={() => undefined} />
-          <NumberField label="ยอดสุทธิที่ต้องจ่ายลูกค้า (บาท)" value={net} onChange={() => undefined} />
-          <input type="hidden" name="cashPayment" value={net} />
-          <input type="hidden" name="transferPayment" value={bill?.transferPayment ?? 0} />
+          <NumberField label="ราคาเฉลี่ยยาง (บาท/กก.)" value={averagePrice} readOnly />
+          <NumberField label="รวมมูลค่ายาง (บาท)" value={gross} readOnly />
+          <NumberField label="ยอดรวมที่ถูกหัก (บาท)" value={deduct} readOnly />
+          <NumberField label="ยอดสุทธิที่ต้องจ่ายลูกค้า (บาท)" value={net} readOnly />
+          <NumberField label="สาขานี้จ่าย" value={branchPayment} readOnly />
+          <NumberField label="สาขาใหญ่จ่าย" value={headOfficePayment} readOnly />
+          <input type="hidden" name="cashPayment" value={branchPayment} />
+          <input type="hidden" name="transferPayment" value={headOfficePayment} />
         </section>
 
         <div className="flex justify-center border-t border-black/10 p-4">
@@ -1584,6 +1631,51 @@ function IconButton({
   );
 }
 
+function clearIfZero(event: React.FocusEvent<HTMLInputElement>) {
+  if (parseFloat(event.currentTarget.value) === 0) {
+    event.currentTarget.value = "";
+  }
+}
+
+function restoreZeroIfBlank(event: React.FocusEvent<HTMLInputElement>) {
+  if (event.currentTarget.value.trim() === "") {
+    event.currentTarget.value = "0";
+  }
+}
+
+function enforceDecimalInput(
+  event: React.FocusEvent<HTMLInputElement>,
+  onChange?: (value: number) => void
+) {
+  const inputElement = event.currentTarget;
+  const value = inputElement.value.trim();
+
+  if (value === "" || parseFloat(value) === 0) {
+    inputElement.value = "0.00";
+    onChange?.(0);
+    return;
+  }
+
+  if (value.includes(".")) {
+    const formattedValue = parseFloat(value).toFixed(2);
+    inputElement.value = formattedValue;
+    onChange?.(Number(formattedValue));
+    return;
+  }
+
+  const isThreeOrMoreDigits = /^\d{3,}$/.test(value);
+  if (isThreeOrMoreDigits) {
+    window.alert("กรุณาระบุ ราคา ให้มีจุดทศนิยม");
+    inputElement.focus();
+    inputElement.select();
+    return;
+  }
+
+  const formattedValue = parseFloat(value).toFixed(2);
+  inputElement.value = formattedValue;
+  onChange?.(Number(formattedValue));
+}
+
 function RadioCard({
   name,
   value,
@@ -1607,16 +1699,28 @@ function InlineRadio({
   name,
   value,
   label,
-  defaultChecked
+  defaultChecked,
+  checked,
+  onChange
 }: {
   name: string;
   value: string;
   label: string;
   defaultChecked?: boolean;
+  checked?: boolean;
+  onChange?: () => void;
 }) {
+  const checkedProps = checked === undefined ? { defaultChecked } : { checked, onChange };
+
   return (
     <label className="inline-flex cursor-pointer items-center gap-1">
-      <input type="radio" name={name} value={value} defaultChecked={defaultChecked} className="h-4 w-4 accent-blue-600" />
+      <input
+        type="radio"
+        name={name}
+        value={value}
+        className="h-4 w-4 accent-blue-600"
+        {...checkedProps}
+      />
       <span>{label}</span>
     </label>
   );
@@ -1625,17 +1729,33 @@ function InlineRadio({
 function InlineNumber({
   value,
   onChange,
-  readOnly = false
+  readOnly = false,
+  decimalOnBlur = false
 }: {
   value: number;
   onChange?: (value: number) => void;
   readOnly?: boolean;
+  decimalOnBlur?: boolean;
 }) {
+  const isReadOnly = readOnly || !onChange;
+
   return (
     <input
       type="number"
       value={Number.isFinite(value) ? value : 0}
-      readOnly={readOnly || !onChange}
+      readOnly={isReadOnly}
+      onFocus={(event) => {
+        if (!isReadOnly) clearIfZero(event);
+      }}
+      onBlur={(event) => {
+        if (isReadOnly) return;
+        if (decimalOnBlur) {
+          enforceDecimalInput(event, onChange);
+          return;
+        }
+        restoreZeroIfBlank(event);
+        onChange?.(Number(event.currentTarget.value || 0));
+      }}
       onChange={(event) => onChange?.(Number(event.target.value || 0))}
       className="focus-ring h-10 w-full rounded-md border border-black/10 bg-white px-2 read-only:bg-slate-100 read-only:text-ink/70"
     />
@@ -1925,10 +2045,16 @@ function Field({
       <input
         name={name}
         type={type}
-        defaultValue={defaultValue}
+        defaultValue={type === "number" ? defaultValue ?? "0" : defaultValue}
         required={required}
         readOnly={readOnly}
         placeholder={placeholder}
+        onFocus={(event) => {
+          if (type === "number" && !readOnly) clearIfZero(event);
+        }}
+        onBlur={(event) => {
+          if (type === "number" && !readOnly) restoreZeroIfBlank(event);
+        }}
         className="focus-ring h-11 w-full rounded-md border border-black/10 bg-white px-3 read-only:bg-slate-100 read-only:text-ink/75"
       />
     </label>
@@ -1938,20 +2064,33 @@ function Field({
 function NumberField({
   label,
   value,
-  onChange
+  onChange,
+  readOnly = false
 }: {
   label: string;
   value: number;
-  onChange: (value: number) => void;
+  onChange?: (value: number) => void;
+  readOnly?: boolean;
 }) {
+  const isReadOnly = readOnly || !onChange;
+
   return (
     <label className="block">
       <span className="mb-1 block text-sm font-semibold text-ink/70">{label}</span>
       <input
         type="number"
-        value={value || ""}
-        onChange={(event) => onChange(Number(event.target.value || 0))}
-        className="focus-ring h-11 w-full rounded-md border border-black/10 bg-white px-3"
+        value={Number.isFinite(value) ? value : 0}
+        readOnly={isReadOnly}
+        onFocus={(event) => {
+          if (!isReadOnly) clearIfZero(event);
+        }}
+        onBlur={(event) => {
+          if (isReadOnly) return;
+          restoreZeroIfBlank(event);
+          onChange?.(Number(event.currentTarget.value || 0));
+        }}
+        onChange={(event) => onChange?.(Number(event.target.value || 0))}
+        className="focus-ring h-11 w-full rounded-md border border-black/10 bg-white px-3 read-only:bg-slate-100 read-only:text-ink/70"
       />
     </label>
   );

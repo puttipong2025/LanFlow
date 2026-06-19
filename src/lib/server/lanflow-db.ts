@@ -191,7 +191,7 @@ export async function saveRubberBill(bill: RubberBill) {
       weight_out: item.outWeight,
       net_weight: item.netWeight,
       price: item.price,
-      total: item.netWeight * item.price
+      total: Math.floor(item.netWeight * item.price)
     })),
     ...(bill.acidItems ?? []).map((item) => ({
       bill_id: billId,
@@ -202,12 +202,12 @@ export async function saveRubberBill(bill: RubberBill) {
       price: item.unitPrice,
       total: item.quantity * item.unitPrice
     })),
-    ...(bill.debtItem ? [{
+    ...((bill.debtItems ?? (bill.debtItem ? [bill.debtItem] : [])).map((item) => ({
       bill_id: billId,
       item_type: "debt",
-      description: bill.debtItem.title,
-      total: bill.debtItem.amount
-    }] : [])
+      description: item.title,
+      total: item.amount
+    })))
   ];
 
   if (items.length > 0) {
@@ -343,7 +343,13 @@ function rowToRubberBill(row: any, items: any[]): RubberBill {
       unit: item.unit ?? "แพ็ค",
       unitPrice: Number(item.price ?? 0)
     }));
-  const debtRow = items.find((item) => item.item_type === "debt");
+  const debtItems = items
+    .filter((item) => item.item_type === "debt")
+    .map((item) => ({
+      id: item.id,
+      title: item.description ?? "หักชำระหนี้",
+      amount: Number(item.total ?? 0)
+    }));
 
   return {
     id: row.id,
@@ -367,11 +373,8 @@ function rowToRubberBill(row: any, items: any[]): RubberBill {
     acidPackCount: Number(row.acid_pack_count ?? 0),
     weighItems,
     acidItems,
-    debtItem: debtRow ? {
-      id: debtRow.id,
-      title: debtRow.description ?? "หักชำระหนี้",
-      amount: Number(debtRow.total ?? 0)
-    } : undefined,
+    debtItem: debtItems[0],
+    debtItems,
     createdByName: row.created_by_name,
     createdByPhone: row.created_by_phone,
     clientCreatedAt: row.client_created_at ?? row.created_at,

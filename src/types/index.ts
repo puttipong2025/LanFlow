@@ -59,6 +59,11 @@ export type RubberBill = {
     title: string;
     amount: number;
   };
+  debtItems?: Array<{
+    id: string;
+    title: string;
+    amount: number;
+  }>;
   createdByName: string;
   createdByPhone: string;
   clientCreatedAt: string;
