@@ -1,0 +1,19 @@
+{
+  "name": "LanFlow",
+  "short_name": "LanFlow",
+  "description": "Multi-branch rubber yard bills, income, expenses, and operations.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#eef4ef",
+  "theme_color": "#2f6b4f",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
