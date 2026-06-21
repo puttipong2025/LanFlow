@@ -110,11 +110,55 @@ export type IncomeExpense = {
 export type QueueItem = {
   clientTempId: string;
   idempotencyKey: string;
-  entityType: "rubber_bill" | "income_expense";
+  entityType: "rubber_bill" | "income_expense" | "customer";
   operationType: QueueOperation;
-  payload: RubberBill | IncomeExpense;
+  payload: RubberBill | IncomeExpense | Customer;
   status: SyncStatus;
   createdAt: string;
   serverReceivedAt?: string;
   errorMessage?: string;
+};
+
+export type CustomerContact = {
+  id: string;
+  phone: string;
+};
+
+export type CustomerBankAccount = {
+  id: string;
+  bankName: string;
+  accountNumber: string;
+  accountName: string;
+  isPrimary: boolean;
+};
+
+export type CustomerFarm = {
+  id: string;
+  ownerName: string;
+  address: string;
+  cardNumber: string;
+};
+
+export type Customer = {
+  id: string;
+  clientTempId?: string;
+  legacyRecId?: string;
+  legacyMemberId?: string;
+  class: PaymentResponsibility;
+  mainName: string;
+  fscStatus?: string;
+  startingPointsDate?: string;
+  defaultLocationId?: string;
+  createdByUserId?: string;
+  createdByName?: string;
+  createdByPhone?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  syncStatus?: SyncStatus;
+  idempotencyKey?: string;
+  revisionNo?: number;
+  recordStatus?: RecordStatus;
+  contacts?: CustomerContact[];
+  bankAccounts?: CustomerBankAccount[];
+  farms?: CustomerFarm[];
 };

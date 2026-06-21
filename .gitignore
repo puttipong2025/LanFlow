@@ -9,3 +9,8 @@ out/
 *.log
 *.tsbuildinfo
 lanflow-*.png
+
+# Temporary scripts and Supabase temp folders
+scratch/
+supabase/.temp/
+

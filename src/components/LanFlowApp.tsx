@@ -32,9 +32,10 @@ import {
 } from "@/lib/format";
 import { isSupabaseConfigured } from "@/lib/supabase-browser";
 import { useOfflineQueue } from "@/hooks/use-offline-queue";
-import type { IncomeExpense, Location, PaymentResponsibility, Profile, RubberBill } from "@/types";
+import type { IncomeExpense, Location, PaymentResponsibility, Profile, RubberBill, Customer } from "@/types";
+import { CustomersModule } from "./CustomersModule";
 
-type Tab = "dashboard" | "rubber" | "cash" | "admin" | "sync";
+type Tab = "dashboard" | "rubber" | "cash" | "customers" | "admin" | "sync";
 type RubberWeighItem = NonNullable<RubberBill["weighItems"]>[number];
 type RubberAcidItem = NonNullable<RubberBill["acidItems"]>[number];
 type RubberDebtItem = NonNullable<RubberBill["debtItems"]>[number];
@@ -43,12 +44,14 @@ type LanFlowApiData = {
   profile: Profile;
   bills: RubberBill[];
   transactions: IncomeExpense[];
+  customers: Customer[];
 };
 
 const tabs: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: number }> }> = [
   { id: "dashboard", label: "ภาพรวม", icon: ClipboardList },
   { id: "rubber", label: "บิลยาง", icon: Plus },
   { id: "cash", label: "รับ-จ่าย", icon: Banknote },
+  { id: "customers", label: "ลูกค้า", icon: Users },
   { id: "admin", label: "Admin", icon: ShieldCheck },
   { id: "sync", label: "Sync", icon: RefreshCw }
 ];
@@ -60,6 +63,16 @@ export function LanFlowApp() {
   const [selectedLocationId, setSelectedLocationId] = useState(demoLocations[0].id);
   const [bills, setBills] = useState<RubberBill[]>(initialBills);
   const [transactions, setTransactions] = useState<IncomeExpense[]>(initialTransactions);
+  const [customers, setCustomers] = useState<Customer[]>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        return JSON.parse(window.localStorage.getItem("lanflow:customers") || "[]") as Customer[];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  });
   const queue = useOfflineQueue();
 
   useEffect(() => {
@@ -69,13 +82,17 @@ export function LanFlowApp() {
       try {
         const response = await fetch("/api/lanflow", { cache: "no-store" });
         if (!response.ok) throw new Error(await response.text());
-        const data = await response.json() as LanFlowApiData;
+        const data = await response.json() as LanFlowApiData & { customers: Customer[] };
         if (ignore) return;
 
         setLocations(data.locations.length > 0 ? data.locations : demoLocations);
         setProfile(data.profile);
         setBills(data.bills);
         setTransactions(data.transactions);
+        setCustomers(data.customers || []);
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem("lanflow:customers", JSON.stringify(data.customers || []));
+        }
         setSelectedLocationId(data.profile.locationIds[0] ?? data.locations[0]?.id ?? demoLocations[0].id);
       } catch (error) {
         console.error("LanFlow database load failed", error);
@@ -284,6 +301,121 @@ export function LanFlowApp() {
     }
   }
 
+  function addCustomer(customer: Customer) {
+    const key = customer.idempotencyKey || makeIdempotencyKey("create", customer.id);
+    const customerWithKey = { ...customer, idempotencyKey: key };
+    setCustomers((current) => {
+      const next = [customerWithKey, ...current];
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem("lanflow:customers", JSON.stringify(next));
+      }
+      return next;
+    });
+    queue.enqueue({
+      clientTempId: customerWithKey.clientTempId || customerWithKey.id,
+      idempotencyKey: key,
+      entityType: "customer",
+      operationType: "create",
+      payload: customerWithKey
+    });
+    void persistCustomer(customerWithKey);
+  }
+
+  function updateCustomer(updatedCustomer: Customer) {
+    const nextRevision = (updatedCustomer.revisionNo || 0) + 1;
+    const revisedCustomer: Customer = {
+      ...updatedCustomer,
+      revisionNo: nextRevision,
+      syncStatus: "pending",
+      idempotencyKey: makeIdempotencyKey("update", `${updatedCustomer.clientTempId || updatedCustomer.id}:${nextRevision}`)
+    };
+    setCustomers((current) => {
+      const next = current.map((item) => (item.id === revisedCustomer.id ? revisedCustomer : item));
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem("lanflow:customers", JSON.stringify(next));
+      }
+      return next;
+    });
+    queue.enqueue({
+      clientTempId: revisedCustomer.clientTempId || revisedCustomer.id,
+      idempotencyKey: revisedCustomer.idempotencyKey!,
+      entityType: "customer",
+      operationType: "update",
+      payload: revisedCustomer
+    });
+    void persistCustomer(revisedCustomer);
+  }
+
+  function deleteCustomer(id: string) {
+    const customer = customers.find((item) => item.id === id);
+    if (!customer) return;
+    const nextRevision = (customer.revisionNo || 0) + 1;
+    const idempotencyKey = makeIdempotencyKey("delete", `${customer.clientTempId || customer.id}:${nextRevision}`);
+    
+    setCustomers((current) => {
+      const next = current.filter((item) => item.id !== id);
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem("lanflow:customers", JSON.stringify(next));
+      }
+      return next;
+    });
+    queue.enqueue({
+      clientTempId: customer.clientTempId || customer.id,
+      idempotencyKey,
+      entityType: "customer",
+      operationType: "delete",
+      payload: customer
+    });
+    // BUG-1 fix: pass idempotencyKey directly (customer is removed from state above)
+    void persistDeleteCustomer(id, idempotencyKey);
+  }
+
+  async function persistCustomer(customer: Customer) {
+    try {
+      const response = await fetch("/api/lanflow/customers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(customer)
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const savedCustomer = await response.json() as Customer;
+      setCustomers((current) => {
+        const exists = current.some((item) => item.id === customer.id || item.clientTempId === customer.clientTempId);
+        const next = exists
+          ? current.map((item) => (item.id === customer.id || item.clientTempId === customer.clientTempId ? savedCustomer : item))
+          : [savedCustomer, ...current];
+        
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem("lanflow:customers", JSON.stringify(next));
+        }
+        return next;
+      });
+      queue.markSynced(customer.idempotencyKey!);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "บันทึกข้อมูลลูกค้าไม่สำเร็จ";
+      console.error("LanFlow customer save failed", error);
+      setCustomers((current) =>
+        current.map((item) => (item.clientTempId === customer.clientTempId ? { ...item, syncStatus: "failed" } : item))
+      );
+      queue.markFailed(customer.idempotencyKey!, message);
+    }
+  }
+
+  // BUG-1 fix: accept idempotencyKey as param to avoid stale closure
+  async function persistDeleteCustomer(id: string, idempotencyKey: string) {
+    try {
+      const response = await fetch(`/api/lanflow/customers/${id}`, {
+        method: "DELETE"
+      });
+      if (!response.ok) throw new Error(await response.text());
+      queue.markSynced(idempotencyKey);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "ลบข้อมูลลูกค้าไม่สำเร็จ";
+      console.error("LanFlow customer delete failed", error);
+      queue.markFailed(idempotencyKey, message);
+    }
+  }
+
   function simulateSync() {
     const serverReceivedAt = makeClientRecordedAt();
     setBills((current) =>
@@ -414,9 +546,21 @@ export function LanFlowApp() {
             selectedLocation={selectedLocation}
             profile={profile}
             bills={scopedBills}
+            customers={customers}
             onAdd={addBill}
             onUpdate={updateBill}
             onDelete={deleteBill}
+            onAddCustomer={addCustomer}
+            onUpdateCustomer={updateCustomer}
+          />
+        )}
+        {activeTab === "customers" && (
+          <CustomersModule
+            customers={customers}
+            profile={profile}
+            onAdd={addCustomer}
+            onUpdate={updateCustomer}
+            onDelete={deleteCustomer}
           />
         )}
         {activeTab === "cash" && (
@@ -425,9 +569,12 @@ export function LanFlowApp() {
             profile={profile}
             transactions={scopedTransactions}
             nextNumber={String(scopedTransactions.length + 1)}
+            customers={customers}
             onAdd={addTransaction}
             onUpdate={updateTransaction}
             onDelete={deleteTransaction}
+            onAddCustomer={addCustomer}
+            onUpdateCustomer={updateCustomer}
           />
         )}
         {activeTab === "admin" && (
@@ -581,16 +728,22 @@ function RubberBillsModule({
   selectedLocation,
   profile,
   bills,
+  customers,
   onAdd,
   onUpdate,
-  onDelete
+  onDelete,
+  onAddCustomer,
+  onUpdateCustomer
 }: {
   selectedLocation: Location;
   profile: Profile;
   bills: RubberBill[];
+  customers: Customer[];
   onAdd: (bill: RubberBill) => void;
   onUpdate: (bill: RubberBill) => void;
   onDelete: (id: string) => void;
+  onAddCustomer: (customer: Customer) => void;
+  onUpdateCustomer: (customer: Customer) => void;
 }) {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingBill, setEditingBill] = useState<RubberBill | null>(null);
@@ -814,6 +967,7 @@ function RubberBillsModule({
           selectedLocation={selectedLocation}
           profile={profile}
           bill={editingBill}
+          customers={customers}
           nextLocalSequence={bills.length + 1}
           onClose={() => setModalOpen(false)}
           onSave={(bill) => {
@@ -821,6 +975,8 @@ function RubberBillsModule({
             else onAdd(bill);
             setModalOpen(false);
           }}
+          onAddCustomer={onAddCustomer}
+          onUpdateCustomer={onUpdateCustomer}
         />
       )}
     </section>
@@ -831,16 +987,22 @@ function RubberBillModal({
   selectedLocation,
   profile,
   bill,
+  customers,
   nextLocalSequence,
   onClose,
-  onSave
+  onSave,
+  onAddCustomer,
+  onUpdateCustomer
 }: {
   selectedLocation: Location;
   profile: Profile;
   bill: RubberBill | null;
+  customers: Customer[];
   nextLocalSequence: number;
   onClose: () => void;
   onSave: (bill: RubberBill) => void;
+  onAddCustomer: (customer: Customer) => void;
+  onUpdateCustomer: (customer: Customer) => void;
 }) {
   const initialLocalBillNo = bill?.localBillNo ?? makeLocalBillNo(selectedLocation.code, "R", nextLocalSequence);
   const initialPaymentResponsibility = bill?.customerType ?? "สาขานี้จ่าย";
@@ -861,6 +1023,25 @@ function RubberBillModal({
   const [debtItems, setDebtItems] = useState<RubberDebtItem[]>(() => bill?.debtItems ?? (bill?.debtItem ? [bill.debtItem] : []));
   const [paymentResponsibility, setPaymentResponsibility] = useState<PaymentResponsibility>(initialPaymentResponsibility);
   const [weightDeduct, setWeightDeduct] = useState(0);
+
+  // Autocomplete customer lookup states
+  const [customerSearch, setCustomerSearch] = useState(bill?.customerName ?? "");
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [memberStatus, setMemberStatus] = useState(() => {
+    if (!bill?.customerName) return "ไม่เป็นสมาชิก";
+    const found = customers.some(c => c.mainName === bill.customerName);
+    return found ? "สมาชิก" : "ไม่เป็นสมาชิก";
+  });
+
+  const matchingCustomers = useMemo(() => {
+    if (!customerSearch.trim()) return [];
+    return customers.filter(c => {
+      const nameMatch = c.mainName.toLowerCase().includes(customerSearch.toLowerCase());
+      const idMatch = c.legacyMemberId?.toLowerCase().includes(customerSearch.toLowerCase());
+      return nameMatch || idMatch;
+    }).slice(0, 5);
+  }, [customers, customerSearch]);
+
   const totalWeight = weighItems.reduce((sum, item) => sum + item.netWeight, 0);
   const gross = weighItems.reduce((sum, item) => sum + Math.floor(item.netWeight * item.price), 0);
   const averagePrice = totalWeight > 0 ? gross / totalWeight : 0;
@@ -962,7 +1143,7 @@ function RubberBillModal({
       locationId: selectedLocation.id,
       billNo: bill?.serverBillNo ?? localBillNo,
       billDate: String(form.get("billDate") || todayInputValue()),
-      customerName: String(form.get("customerName") || ""),
+      customerName: customerSearch,
       customerType: paymentResponsibility,
       billType: String(form.get("billType") || "บิลเครื่องชั่งเล็ก"),
       weight: totalWeight,
@@ -1004,17 +1185,117 @@ function RubberBillModal({
             <div className="text-center md:col-span-1">
               <p className="mb-2 text-sm font-bold text-ink">สถานะสมาชิก</p>
               <div className="flex justify-center gap-4 text-sm font-semibold">
-                <InlineRadio name="memberStatus" value="สมาชิก" label="สมาชิก" />
-                <InlineRadio name="memberStatus" value="ไม่เป็นสมาชิก" label="ไม่เป็นสมาชิก" defaultChecked />
+                <InlineRadio
+                  name="memberStatus"
+                  value="สมาชิก"
+                  label="สมาชิก"
+                  checked={memberStatus === "สมาชิก"}
+                  onChange={() => setMemberStatus("สมาชิก")}
+                />
+                <InlineRadio
+                  name="memberStatus"
+                  value="ไม่เป็นสมาชิก"
+                  label="ไม่เป็นสมาชิก"
+                  checked={memberStatus === "ไม่เป็นสมาชิก"}
+                  onChange={() => setMemberStatus("ไม่เป็นสมาชิก")}
+                />
               </div>
             </div>
-            <Field label="ชื่อลูกค้า" name="customerName" defaultValue={bill?.customerName} required placeholder="กรอกชื่อลูกค้าทั่วไป" />
+
+            <div className="relative">
+              <label className="block">
+                <span className="mb-1 block text-sm font-semibold text-ink/70">ชื่อลูกค้า *</span>
+                <input
+                  name="customerName"
+                  value={customerSearch}
+                  onChange={(e) => {
+                    setCustomerSearch(e.target.value);
+                    setShowDropdown(true);
+                  }}
+                  onFocus={() => setShowDropdown(true)}
+                  onBlur={() => {
+                    setTimeout(() => setShowDropdown(false), 200);
+                  }}
+                  required
+                  placeholder="ค้นหาชื่อ หรือ รหัสสมาชิก..."
+                  className="focus-ring h-11 w-full rounded-md border border-black/10 bg-white px-3"
+                  autoComplete="off"
+                />
+              </label>
+
+              {showDropdown && matchingCustomers.length > 0 && (
+                <div className="absolute left-0 right-0 z-50 mt-1 max-h-60 overflow-y-auto rounded-md border border-black/10 bg-white shadow-lg">
+                  {matchingCustomers.map(cust => (
+                    <button
+                      key={cust.id}
+                      type="button"
+                      onClick={() => {
+                        setCustomerSearch(cust.mainName);
+                        setMemberStatus("สมาชิก");
+                        setPaymentResponsibility(cust.class);
+                        setShowDropdown(false);
+                      }}
+                      className="w-full px-4 py-2.5 text-left text-sm hover:bg-slate-100 border-b border-black/5 last:border-0 flex justify-between items-center"
+                    >
+                      <div>
+                        <span className="font-semibold text-ink">{cust.mainName}</span>
+                        {cust.farms?.[0]?.address && <span className="text-xs text-ink/50 ml-2">({cust.farms[0].address})</span>}
+                      </div>
+                      <span className="text-xs font-bold text-leaf bg-leaf/10 px-2 py-0.5 rounded">
+                        {cust.legacyMemberId || "FSC"}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
 
             <div className="flex justify-center gap-2 md:col-span-2">
-              <button type="button" className="rounded-md bg-sky-500 px-3 py-2 text-sm font-semibold text-white">
+              <button
+                type="button"
+                onClick={() => {
+                  const newCust: Customer = {
+                    id: makeClientTempId("cust"),
+                    clientTempId: makeClientTempId("cust"),
+                    class: "สาขานี้จ่าย",
+                    mainName: customerSearch.trim() || "",
+                    syncStatus: "pending",
+                    idempotencyKey: makeIdempotencyKey("create", makeClientTempId("cust")),
+                    revisionNo: 0,
+                    recordStatus: "active"
+                  };
+                  const name = window.prompt("กรอกชื่อสมาชิกใหม่:", customerSearch.trim());
+                  if (name && name.trim()) {
+                    newCust.mainName = name.trim();
+                    newCust.id = makeClientTempId("cust");
+                    newCust.clientTempId = newCust.id;
+                    newCust.idempotencyKey = makeIdempotencyKey("create", newCust.id);
+                    onAddCustomer(newCust);
+                    setCustomerSearch(name.trim());
+                    setMemberStatus("สมาชิก");
+                    setPaymentResponsibility(newCust.class);
+                  }
+                }}
+                className="rounded-md bg-sky-500 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-600 transition-colors"
+              >
                 เพิ่มข้อมูลสมาชิกใหม่
               </button>
-              <button type="button" className="rounded-md bg-amber px-3 py-2 text-sm font-semibold text-ink">
+              <button
+                type="button"
+                onClick={() => {
+                  const found = customers.find(c => c.mainName === customerSearch);
+                  if (!found) {
+                    window.alert("กรุณาเลือกลูกค้าจากรายการก่อน แล้วจึงกดแก้ไข");
+                    return;
+                  }
+                  const newName = window.prompt("แก้ไขชื่อสมาชิก:", found.mainName);
+                  if (newName && newName.trim() && newName.trim() !== found.mainName) {
+                    onUpdateCustomer({ ...found, mainName: newName.trim() });
+                    setCustomerSearch(newName.trim());
+                  }
+                }}
+                className="rounded-md bg-amber px-3 py-2 text-sm font-semibold text-ink hover:bg-amber/80 transition-colors"
+              >
                 แก้ไขข้อมูลสมาชิกนี้
               </button>
             </div>
@@ -1032,7 +1313,7 @@ function RubberBillModal({
                 <InlineRadio
                   name="customerType"
                   value="สาขาใหญ่จ่าย"
-                  label="สาขาใหญ่จ่าย"
+                  label="สาขาใหญ่จ่าย 40,000บาทขึ้นไป"
                   checked={paymentResponsibility === "สาขาใหญ่จ่าย"}
                   onChange={() => setPaymentResponsibility("สาขาใหญ่จ่าย")}
                 />
@@ -1232,17 +1513,23 @@ function IncomeExpenseModule({
   profile,
   transactions,
   nextNumber,
+  customers,
   onAdd,
   onUpdate,
-  onDelete
+  onDelete,
+  onAddCustomer,
+  onUpdateCustomer
 }: {
   selectedLocation: Location;
   profile: Profile;
   transactions: IncomeExpense[];
   nextNumber: string;
+  customers: Customer[];
   onAdd: (transaction: IncomeExpense) => void;
   onUpdate: (transaction: IncomeExpense) => void;
   onDelete: (id: string) => void;
+  onAddCustomer: (customer: Customer) => void;
+  onUpdateCustomer: (customer: Customer) => void;
 }) {
   const [modalOpen, setModalOpen] = useState(false);
   const [modalType, setModalType] = useState<"income" | "expense">("income");
@@ -1295,23 +1582,31 @@ function IncomeExpenseModule({
 
       <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[860px] border-collapse text-sm">
+          <table className="w-full min-w-[1020px] border-collapse text-sm">
             <thead>
               <tr className="border-b border-black/10 text-left text-ink/60">
                 <th className="py-2">เลขที่</th>
+                <th>เลขบิลชั่วคราว</th>
                 <th>วันที่</th>
                 <th>ประเภท</th>
                 <th>รายการ</th>
                 <th>หมวด</th>
                 <th>จำนวนเงิน</th>
                 <th>ผู้บันทึก</th>
+                <th>Sync</th>
                 <th className="text-center">Action</th>
               </tr>
             </thead>
             <tbody>
               {transactions.map((transaction) => (
                 <tr key={transaction.id} className="border-b border-black/5 hover:bg-field/50">
-                  <td className="py-3 font-semibold">{transaction.number}</td>
+                  <td className="py-3 font-semibold">{transaction.serverBillNo ?? transaction.number}</td>
+                  <td className="text-xs text-ink/55">
+                    <div className="flex flex-col gap-0.5">
+                      <span>{transaction.localBillNo}</span>
+                      {!transaction.serverBillNo && <span className="text-[10px] text-amber-600 font-semibold">Local</span>}
+                    </div>
+                  </td>
                   <td>{transaction.txDate}</td>
                   <td>{transaction.type === "income" ? "รายรับ" : "รายจ่าย"}</td>
                   <td>{transaction.title}</td>
@@ -1320,6 +1615,7 @@ function IncomeExpenseModule({
                     {transaction.type === "income" ? "+" : "-"}{formatCurrency(transaction.cost)}
                   </td>
                   <td>{transaction.createdByName} · {transaction.createdByPhone}</td>
+                  <td><SyncStatusBadge status={transaction.syncStatus} /></td>
                   <td>
                     <div className="flex justify-center gap-2">
                       <IconButton label="แก้ไข" onClick={() => openEdit(transaction)} tone="amber">
@@ -1334,7 +1630,7 @@ function IncomeExpenseModule({
               ))}
               {transactions.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="py-8 text-center text-ink/50">
+                  <td colSpan={10} className="py-8 text-center text-ink/50">
                     ยังไม่มีรายการรับ-จ่ายในสาขานี้
                   </td>
                 </tr>
@@ -1351,6 +1647,8 @@ function IncomeExpenseModule({
           type={modalType}
           transaction={editingTransaction}
           nextNumber={nextNumber}
+          nextLocalSequence={transactions.length + 1}
+          customers={customers}
           onClose={() => setModalOpen(false)}
           onSave={(savedTransactions) => {
             if (editingTransaction) {
@@ -1361,6 +1659,8 @@ function IncomeExpenseModule({
             }
             setModalOpen(false);
           }}
+          onAddCustomer={onAddCustomer}
+          onUpdateCustomer={onUpdateCustomer}
         />
       )}
     </section>
@@ -1373,16 +1673,24 @@ function IncomeExpenseModal({
   type,
   transaction,
   nextNumber,
+  nextLocalSequence,
+  customers,
   onClose,
-  onSave
+  onSave,
+  onAddCustomer,
+  onUpdateCustomer
 }: {
   selectedLocation: Location;
   profile: Profile;
   type: "income" | "expense";
   transaction: IncomeExpense | null;
   nextNumber: string;
+  nextLocalSequence: number;
+  customers: Customer[];
   onClose: () => void;
   onSave: (transactions: IncomeExpense[]) => void;
+  onAddCustomer: (customer: Customer) => void;
+  onUpdateCustomer: (customer: Customer) => void;
 }) {
   type CashLine = {
     id: string;
@@ -1391,6 +1699,22 @@ function IncomeExpenseModal({
     price: number;
     cost: number;
   };
+  const initialLocalBillNo = transaction?.localBillNo ?? makeLocalBillNo(selectedLocation.code, type === "income" ? "I" : "E", nextLocalSequence);
+
+  // Customer autocomplete states
+  const [customerSearch, setCustomerSearch] = useState(transaction?.title ?? "");
+  const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
+  const [selectedCustomerName, setSelectedCustomerName] = useState(transaction?.title ?? "");
+
+  const matchingCustomers = useMemo(() => {
+    if (!customerSearch.trim()) return [];
+    return customers.filter(c => {
+      const nameMatch = c.mainName.toLowerCase().includes(customerSearch.toLowerCase());
+      const idMatch = c.legacyMemberId?.toLowerCase().includes(customerSearch.toLowerCase());
+      return nameMatch || idMatch;
+    }).slice(0, 5);
+  }, [customers, customerSearch]);
+
   const [lines, setLines] = useState<CashLine[]>([
     {
       id: transaction?.clientTempId ?? makeClientTempId("cash_line"),
@@ -1473,9 +1797,122 @@ function IncomeExpenseModal({
       title="เพิ่ม/แก้ไข บิลเงินสด"
       subtitle={selectedLocation.name}
       onClose={onClose}
+      size="wide"
     >
-      <form onSubmit={handleSubmit} className="space-y-5">
-        <section>
+      <form onSubmit={handleSubmit} className="space-y-0">
+        {/* Section: Customer data + bill info (like บิลเครื่องชั่งเล็ก) */}
+        <section className="bg-slate-50 p-3 sm:p-4">
+          <h3 className="mb-4 font-bold text-ink">ข้อมูลลูกค้า</h3>
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label="เลขบิลชั่วคราว" name="localBillNo" defaultValue={transaction?.localBillNo ?? initialLocalBillNo} required readOnly />
+            <Field label="เลขที่" name="number" defaultValue={transaction?.number ?? nextNumber} required readOnly />
+            <Field label="วันที่" name="txDate" type="date" defaultValue={transaction?.txDate ?? todayInputValue()} required />
+
+            {/* Customer autocomplete lookup */}
+            <div className="relative">
+              <label className="block">
+                <span className="mb-1 block text-sm font-semibold text-ink/70">ชื่อลูกค้า / ผู้รับเงิน</span>
+                <input
+                  value={customerSearch}
+                  onChange={(e) => {
+                    setCustomerSearch(e.target.value);
+                    setShowCustomerDropdown(true);
+                  }}
+                  onFocus={() => setShowCustomerDropdown(true)}
+                  onBlur={() => {
+                    setTimeout(() => setShowCustomerDropdown(false), 200);
+                  }}
+                  placeholder="ค้นหาชื่อ หรือ รหัสสมาชิก..."
+                  className="focus-ring h-11 w-full rounded-md border border-black/10 bg-white px-3"
+                  autoComplete="off"
+                />
+              </label>
+
+              {showCustomerDropdown && matchingCustomers.length > 0 && (
+                <div className="absolute left-0 right-0 z-50 mt-1 max-h-60 overflow-y-auto rounded-md border border-black/10 bg-white shadow-lg">
+                  {matchingCustomers.map(cust => (
+                    <button
+                      key={cust.id}
+                      type="button"
+                      onClick={() => {
+                        setCustomerSearch(cust.mainName);
+                        setSelectedCustomerName(cust.mainName);
+                        setShowCustomerDropdown(false);
+                      }}
+                      className="w-full px-4 py-2.5 text-left text-sm hover:bg-slate-100 border-b border-black/5 last:border-0 flex justify-between items-center"
+                    >
+                      <div>
+                        <span className="font-semibold text-ink">{cust.mainName}</span>
+                        {cust.farms?.[0]?.address && <span className="text-xs text-ink/50 ml-2">({cust.farms[0].address})</span>}
+                      </div>
+                      <span className="text-xs font-bold text-leaf bg-leaf/10 px-2 py-0.5 rounded">
+                        {cust.legacyMemberId || "สมาชิก"}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Add new / Edit customer buttons */}
+            <div className="flex flex-wrap items-end gap-2 md:col-span-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const newCust: Customer = {
+                    id: makeClientTempId("cust"),
+                    clientTempId: makeClientTempId("cust"),
+                    class: "สาขานี้จ่าย",
+                    mainName: customerSearch.trim() || "",
+                    syncStatus: "pending",
+                    idempotencyKey: makeIdempotencyKey("create", makeClientTempId("cust")),
+                    revisionNo: 0,
+                    recordStatus: "active"
+                  };
+                  const name = window.prompt("กรอกชื่อสมาชิกใหม่ (รหัสสมาชิก 6 หลัก จะสร้างอัตโนมัติ):", customerSearch.trim());
+                  if (name && name.trim()) {
+                    newCust.mainName = name.trim();
+                    newCust.id = makeClientTempId("cust");
+                    newCust.clientTempId = newCust.id;
+                    newCust.idempotencyKey = makeIdempotencyKey("create", newCust.id);
+                    onAddCustomer(newCust);
+                    setCustomerSearch(name.trim());
+                    setSelectedCustomerName(name.trim());
+                  }
+                }}
+                className="rounded-md bg-sky-500 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-600 transition-colors"
+              >
+                เพิ่มข้อมูลสมาชิกใหม่
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const found = customers.find(c => c.mainName === customerSearch);
+                  if (!found) {
+                    window.alert("กรุณาเลือกลูกค้าจากรายการก่อน แล้วจึงกดแก้ไข");
+                    return;
+                  }
+                  const newName = window.prompt("แก้ไขชื่อสมาชิก:", found.mainName);
+                  if (newName && newName.trim() && newName.trim() !== found.mainName) {
+                    onUpdateCustomer({ ...found, mainName: newName.trim() });
+                    setCustomerSearch(newName.trim());
+                    setSelectedCustomerName(newName.trim());
+                  }
+                }}
+                className="rounded-md bg-amber px-3 py-2 text-sm font-semibold text-ink hover:bg-amber/80 transition-colors"
+              >
+                แก้ไขข้อมูลสมาชิกนี้
+              </button>
+              {selectedCustomerName && (
+                <span className="rounded-full bg-leaf/10 px-3 py-1 text-xs font-bold text-leaf">
+                  ลูกค้า: {selectedCustomerName}
+                </span>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <section className="p-3 sm:p-4">
           <p className="mb-3 font-bold text-ink">ช่องทางการรับจ่ายเงิน</p>
           <div className="flex flex-wrap gap-3 text-sm font-semibold text-ink">
             <InlineRadio name="transactionOption" value="ภายในสาขานี้" label="ภายในสาขานี้" defaultChecked={transaction?.transactionOption !== "สำนักงานใหญ่"} />
@@ -1483,12 +1920,7 @@ function IncomeExpenseModal({
           </div>
         </section>
 
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label="เลขที่" name="number" defaultValue={transaction?.number ?? nextNumber} required readOnly />
-          <Field label="วันที่" name="txDate" type="date" defaultValue={transaction?.txDate ?? todayInputValue()} required />
-        </div>
-
-        <section>
+        <section className="p-3 sm:p-4">
           <p className="mb-3 font-bold text-ink">รูปแบบ</p>
           <div className="flex flex-wrap gap-3 text-sm font-semibold text-ink">
             {(type === "income" ? ["รายรับ", "บิลทั่วไป", "บิลน้ำกรด"] : ["ค่าใช้จ่าย", "บิลค่าแรง", "สูญหาย"]).map((option) => (
@@ -1503,7 +1935,7 @@ function IncomeExpenseModal({
           </div>
         </section>
 
-        <section>
+        <section className="bg-emerald-50 p-3 sm:p-4">
           <div className="overflow-x-auto">
             <table className="w-full min-w-[820px] border-collapse text-sm">
               <thead>
@@ -1559,7 +1991,18 @@ function IncomeExpenseModal({
           </div>
         </section>
 
-        <div className="flex justify-end border-t border-black/10 pt-4">
+        {/* Sync status indicator */}
+        {transaction && (
+          <section className="p-3 sm:p-4">
+            <div className="flex items-center gap-3">
+              <span className="text-sm font-semibold text-ink/70">สถานะ Sync:</span>
+              <SyncStatusBadge status={transaction.syncStatus} />
+              <span className="text-xs text-ink/50">{transaction.localBillNo}</span>
+            </div>
+          </section>
+        )}
+
+        <div className="flex justify-end border-t border-black/10 p-4">
           <button type="button" onClick={onClose} className="focus-ring h-11 rounded-md bg-field px-4 font-semibold text-ink">
             ยกเลิก
           </button>

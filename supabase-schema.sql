@@ -74,6 +74,7 @@ create table public.customer_bank_accounts (
   bank_name text not null,
   account_number text not null,
   account_name text not null,
+  is_primary boolean not null default false,
   created_at timestamptz not null default now()
 );
 
