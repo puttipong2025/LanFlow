@@ -18,7 +18,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '163', '690523', 'สาขานี้จ่าย', 'กรรณิการ์ ทองคำตอน(น้องบิว) ลูกเจ๊พร',
+    '163', '690523', 'สาขาใหญ่จ่าย', 'กรรณิการ์ ทองคำตอน(น้องบิว) ลูกเจ๊พร',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690523_id;
@@ -41,7 +41,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773163', '690524', 'สาขานี้จ่าย', 'กฤษฎากรณ์  ทาดำ (โบ้ตะบ่าย)',
+    '1754291773163', '690524', 'สาขาใหญ่จ่าย', 'กฤษฎากรณ์  ทาดำ (โบ้ตะบ่าย)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690524_id;
@@ -64,7 +64,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '141', '690525', 'สาขานี้จ่าย', 'กฤษณะ ทองสาตร์(เสี่ยต้า)',
+    '141', '690525', 'สาขาใหญ่จ่าย', 'กฤษณะ ทองสาตร์(เสี่ยต้า)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690525_id;
@@ -84,7 +84,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '129', '690526', 'สาขานี้จ่าย', 'กวินนา หนูนาค(เจ๊กิม)',
+    '129', '690526', 'สาขาใหญ่จ่าย', 'กวินนา หนูนาค(เจ๊กิม)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690526_id;
@@ -104,7 +104,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '140', '690527', 'สาขานี้จ่าย', 'กัญญาภัค ไชยคำ(น้ำขิง)',
+    '140', '690527', 'สาขาใหญ่จ่าย', 'กัญญาภัค ไชยคำ(น้ำขิง)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690527_id;
@@ -127,7 +127,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '182', '690528', 'สาขานี้จ่าย', 'กัญญารัตน์ บุตรมาต (ร้านทวีสุวรรณ) ชานุมาน',
+    '182', '690528', 'สาขาใหญ่จ่าย', 'กัญญารัตน์ บุตรมาต (ร้านทวีสุวรรณ) ชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690528_id;
@@ -150,7 +150,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '119', '690529', 'สาขานี้จ่าย', 'กาญจณาพร ดีดวงพันธ์ (เสี่ยเบียร์)',
+    '119', '690529', 'สาขาใหญ่จ่าย', 'กาญจณาพร ดีดวงพันธ์ (เสี่ยเบียร์)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690529_id;
@@ -170,7 +170,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '28', '690530', 'สาขานี้จ่าย', 'ขนิษฐา นวนขันธ์ (เสี่ยกุ้ง)',
+    '28', '690530', 'สาขาใหญ่จ่าย', 'ขนิษฐา นวนขันธ์ (เสี่ยกุ้ง)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690530_id;
@@ -193,7 +193,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '180', '690531', 'สาขานี้จ่าย', 'ขุมคำ ยางพารา',
+    '180', '690531', 'สาขาใหญ่จ่าย', 'ขุมคำ ยางพารา',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690531_id;
@@ -213,7 +213,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '15', '690532', 'สาขานี้จ่าย', 'ไข่เพชร ชบาศรี (แม่ไข่)',
+    '15', '690532', 'สาขาใหญ่จ่าย', 'ไข่เพชร ชบาศรี (แม่ไข่)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690532_id;
@@ -233,7 +233,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773175', '690533', 'สาขานี้จ่าย', 'คนึงนิจ เค้าไธสง(เจ๊ปุ้ย) ชานุมาน',
+    '1754291773175', '690533', 'สาขาใหญ่จ่าย', 'คนึงนิจ เค้าไธสง(เจ๊ปุ้ย) ชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690533_id;
@@ -256,7 +256,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '49', '690534', 'สาขานี้จ่าย', 'คำพันศักดิ์ บุตตะวัง(คำพัน)',
+    '49', '690534', 'สาขาใหญ่จ่าย', 'คำพันศักดิ์ บุตตะวัง(คำพัน)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690534_id;
@@ -276,7 +276,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '83', '690535', 'สาขานี้จ่าย', 'จักรพรรณ ทองเทพ(โน๊ต)',
+    '83', '690535', 'สาขาใหญ่จ่าย', 'จักรพรรณ ทองเทพ(โน๊ต)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690535_id;
@@ -296,7 +296,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '90', '690536', 'สาขานี้จ่าย', 'จารุพงษ์ มณีกันท์ (สมหวัง)',
+    '90', '690536', 'สาขาใหญ่จ่าย', 'จารุพงษ์ มณีกันท์ (สมหวัง)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690536_id;
@@ -316,7 +316,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '60', '690537', 'สาขานี้จ่าย', 'จำปี จันทร์ไชยแก้ว  (เสี่ยนพ)',
+    '60', '690537', 'สาขาใหญ่จ่าย', 'จำปี จันทร์ไชยแก้ว  (เสี่ยนพ)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690537_id;
@@ -336,7 +336,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '150', '690538', 'สาขานี้จ่าย', 'จิรตรี หนูนาค(เจ๊ตรี)',
+    '150', '690538', 'สาขาใหญ่จ่าย', 'จิรตรี หนูนาค(เจ๊ตรี)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690538_id;
@@ -362,7 +362,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773172', '690539', 'สาขานี้จ่าย', 'จิราภรณ์ จำปานนท์(เจ๊บุ๋ม)  ชานุมาน',
+    '1754291773172', '690539', 'สาขาใหญ่จ่าย', 'จิราภรณ์ จำปานนท์(เจ๊บุ๋ม)  ชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690539_id;
@@ -382,7 +382,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '136', '690540', 'สาขานี้จ่าย', 'จุฑามาศ ผลจันทร์ (มีมาศ)',
+    '136', '690540', 'สาขาใหญ่จ่าย', 'จุฑามาศ ผลจันทร์ (มีมาศ)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690540_id;
@@ -402,7 +402,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '34', '690541', 'สาขานี้จ่าย', 'จุฑาลักษณ์ หนันตะ (เสี่ยบอย)',
+    '34', '690541', 'สาขาใหญ่จ่าย', 'จุฑาลักษณ์ หนันตะ (เสี่ยบอย)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690541_id;
@@ -422,7 +422,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '175', '690542', 'สาขานี้จ่าย', 'เจตพล ทองไทย(จ่าเดียร์) ดงแถบ',
+    '175', '690542', 'สาขาใหญ่จ่าย', 'เจตพล ทองไทย(จ่าเดียร์) ดงแถบ',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690542_id;
@@ -442,7 +442,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '7', '690543', 'สาขานี้จ่าย', 'เจ๊ถวิล',
+    '7', '690543', 'สาขาใหญ่จ่าย', 'เจ๊ถวิล',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690543_id;
@@ -465,7 +465,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '123', '690544', 'สาขานี้จ่าย', 'เจ๊วิว(จารุภา สมตัว)',
+    '123', '690544', 'สาขาใหญ่จ่าย', 'เจ๊วิว(จารุภา สมตัว)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690544_id;
@@ -485,7 +485,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '9', '690545', 'สาขานี้จ่าย', 'เฉลิมวุฒิ ศรีบัวเทพ(เสี่ยดุ๊ก)',
+    '9', '690545', 'สาขาใหญ่จ่าย', 'เฉลิมวุฒิ ศรีบัวเทพ(เสี่ยดุ๊ก)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690545_id;
@@ -505,7 +505,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '91', '690546', 'สาขานี้จ่าย', 'ชนกนันท์ พรมเวียง(เมียคำพัน)',
+    '91', '690546', 'สาขาใหญ่จ่าย', 'ชนกนันท์ พรมเวียง(เมียคำพัน)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690546_id;
@@ -525,7 +525,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '146', '690547', 'สาขานี้จ่าย', 'ช้วน แวดระเว (เจ๊พร)',
+    '146', '690547', 'สาขาใหญ่จ่าย', 'ช้วน แวดระเว (เจ๊พร)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690547_id;
@@ -548,7 +548,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1', '690548', 'สาขานี้จ่าย', 'ชัยชาญ กมลพันธ์(เฮียเก่ง)',
+    '1', '690548', 'สาขาใหญ่จ่าย', 'ชัยชาญ กมลพันธ์(เฮียเก่ง)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690548_id;
@@ -577,7 +577,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '33', '690549', 'สาขานี้จ่าย', 'ชูชาติ ถาริวร (แม่แต้ม)',
+    '33', '690549', 'สาขาใหญ่จ่าย', 'ชูชาติ ถาริวร (แม่แต้ม)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690549_id;
@@ -597,7 +597,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '43', '690550', 'สาขานี้จ่าย', 'ณรงศักดิ์ จันทราช (นาวายาง)',
+    '43', '690550', 'สาขาใหญ่จ่าย', 'ณรงศักดิ์ จันทราช (นาวายาง)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690550_id;
@@ -620,7 +620,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '169', '690551', 'สาขานี้จ่าย', 'ณัฐคชานัลก์ ศรีประสงค์ (ปิยะ) ชานุมาน',
+    '169', '690551', 'สาขาใหญ่จ่าย', 'ณัฐคชานัลก์ ศรีประสงค์ (ปิยะ) ชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690551_id;
@@ -646,7 +646,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1750763126120', '690552', 'สาขานี้จ่าย', 'ณัฐวุฒิ ยาพระจันทร์(เสี่ยเจมส์)',
+    '1750763126120', '690552', 'สาขาใหญ่จ่าย', 'ณัฐวุฒิ ยาพระจันทร์(เสี่ยเจมส์)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690552_id;
@@ -666,7 +666,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '149', '690553', 'สาขานี้จ่าย', 'ณัฐสุภา สมตัว(เจ๊นัท)',
+    '149', '690553', 'สาขาใหญ่จ่าย', 'ณัฐสุภา สมตัว(เจ๊นัท)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690553_id;
@@ -686,7 +686,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '37', '690554', 'สาขานี้จ่าย', 'ดอกรัก แว่นระเว (เสี่ยรัก)',
+    '37', '690554', 'สาขาใหญ่จ่าย', 'ดอกรัก แว่นระเว (เสี่ยรัก)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690554_id;
@@ -706,7 +706,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773181', '690555', 'สาขานี้จ่าย', 'ดาราภรณ์ ผลทวี (ลานเจริญทรัพย์) ชานุมาน',
+    '1754291773181', '690555', 'สาขาใหญ่จ่าย', 'ดาราภรณ์ ผลทวี (ลานเจริญทรัพย์) ชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690555_id;
@@ -726,7 +726,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '103', '690556', 'สาขานี้จ่าย', 'ตุ๊กตา กุระจินดา(เจ๊ตุ๊กตา)   ชานุมาน (ตุ๊กตา กุระจินดา กสิกรไทย 1992255672)',
+    '103', '690556', 'สาขาใหญ่จ่าย', 'ตุ๊กตา กุระจินดา(เจ๊ตุ๊กตา)   ชานุมาน (ตุ๊กตา กุระจินดา กสิกรไทย 1992255672)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690556_id;
@@ -746,7 +746,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '41', '690557', 'สาขานี้จ่าย', 'แตงอ่อน บุญเนตร',
+    '41', '690557', 'สาขาใหญ่จ่าย', 'แตงอ่อน บุญเนตร',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690557_id;
@@ -766,7 +766,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '53', '690558', 'สาขานี้จ่าย', 'ถนอมจิตร เชื้อกุณะ',
+    '53', '690558', 'สาขาใหญ่จ่าย', 'ถนอมจิตร เชื้อกุณะ',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690558_id;
@@ -789,7 +789,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '38', '690559', 'สาขานี้จ่าย', 'ทนงศักดิ์ วงศ์ทองนิล',
+    '38', '690559', 'สาขาใหญ่จ่าย', 'ทนงศักดิ์ วงศ์ทองนิล',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690559_id;
@@ -809,7 +809,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '55', '690560', 'สาขานี้จ่าย', 'ทองสอน ภูชุม (หนองผือ)',
+    '55', '690560', 'สาขาใหญ่จ่าย', 'ทองสอน ภูชุม (หนองผือ)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690560_id;
@@ -829,7 +829,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '173', '690561', 'สาขานี้จ่าย', 'ทัพพสาร นามสมดี (เสี่ยอั้น)',
+    '173', '690561', 'สาขาใหญ่จ่าย', 'ทัพพสาร นามสมดี (เสี่ยอั้น)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690561_id;
@@ -852,7 +852,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '45', '690562', 'สาขานี้จ่าย', 'เทพสุริยา ลาลา (เสี่ยเทพ)',
+    '45', '690562', 'สาขาใหญ่จ่าย', 'เทพสุริยา ลาลา (เสี่ยเทพ)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690562_id;
@@ -872,7 +872,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1750763126121', '690563', 'สาขานี้จ่าย', 'ธนกร จันทร์สาขะ (ศรีสมหวัง)',
+    '1750763126121', '690563', 'สาขาใหญ่จ่าย', 'ธนกร จันทร์สาขะ (ศรีสมหวัง)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690563_id;
@@ -892,7 +892,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773173', '690564', 'สาขานี้จ่าย', 'ธนะชัย สาวันดี (เฮียเอ กดเงิน ถอนเงิน)',
+    '1754291773173', '690564', 'สาขาใหญ่จ่าย', 'ธนะชัย สาวันดี (เฮียเอ กดเงิน ถอนเงิน)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690564_id;
@@ -912,7 +912,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '98', '690565', 'สาขานี้จ่าย', 'ธวัชชัย นอพิมาย (กอบกำ)',
+    '98', '690565', 'สาขาใหญ่จ่าย', 'ธวัชชัย นอพิมาย (กอบกำ)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690565_id;
@@ -932,7 +932,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '71', '690566', 'สาขานี้จ่าย', 'ธวัช  เซ่งพัด(เจ๊เหมียว)',
+    '71', '690566', 'สาขาใหญ่จ่าย', 'ธวัช  เซ่งพัด(เจ๊เหมียว)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690566_id;
@@ -952,7 +952,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '72', '690567', 'สาขานี้จ่าย', 'ธวัช  เซ่งพัด(เจ๊เหมียว)',
+    '72', '690567', 'สาขาใหญ่จ่าย', 'ธวัช  เซ่งพัด(เจ๊เหมียว)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690567_id;
@@ -972,7 +972,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '14', '690568', 'สาขานี้จ่าย', 'ธัญวรัตน์ หนูนาค (เจ๊เจี๊ยบ)',
+    '14', '690568', 'สาขาใหญ่จ่าย', 'ธัญวรัตน์ หนูนาค (เจ๊เจี๊ยบ)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690568_id;
@@ -995,7 +995,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '152', '690569', 'สาขานี้จ่าย', 'นครศรี ห่อดี(เสี่ยหนุ่ย)',
+    '152', '690569', 'สาขาใหญ่จ่าย', 'นครศรี ห่อดี(เสี่ยหนุ่ย)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690569_id;
@@ -1027,7 +1027,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '6', '690570', 'สาขานี้จ่าย', 'นงลักษณ์ แผนพนา (แม่นงค์)',
+    '6', '690570', 'สาขาใหญ่จ่าย', 'นงลักษณ์ แผนพนา (แม่นงค์)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690570_id;
@@ -1050,7 +1050,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '107', '690571', 'สาขานี้จ่าย', 'นภัสวรรณ (น้าเล็ก ลูกน้อง แม่ดอกแก้ว)',
+    '107', '690571', 'สาขาใหญ่จ่าย', 'นภัสวรรณ (น้าเล็ก ลูกน้อง แม่ดอกแก้ว)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690571_id;
@@ -1070,7 +1070,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '36', '690572', 'สาขานี้จ่าย', 'นราทิพย์ สุวิมล (โป่งน้อย)',
+    '36', '690572', 'สาขาใหญ่จ่าย', 'นราทิพย์ สุวิมล (โป่งน้อย)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690572_id;
@@ -1096,7 +1096,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '162', '690573', 'สาขานี้จ่าย', 'นฤเบศ ชาลือ(เดี่ยว)    ชานุมาน',
+    '162', '690573', 'สาขาใหญ่จ่าย', 'นฤเบศ ชาลือ(เดี่ยว)    ชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690573_id;
@@ -1119,7 +1119,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '178', '690574', 'สาขานี้จ่าย', 'น.ส จิราภรณ์ สุวรรณคำ(พริกเสี่ยเป้)',
+    '178', '690574', 'สาขาใหญ่จ่าย', 'น.ส จิราภรณ์ สุวรรณคำ(พริกเสี่ยเป้)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690574_id;
@@ -1139,7 +1139,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '186', '690575', 'สาขานี้จ่าย', 'นส.มณีสรณ์ คำใต้ (แม่กลม) ชานุมาน',
+    '186', '690575', 'สาขาใหญ่จ่าย', 'นส.มณีสรณ์ คำใต้ (แม่กลม) ชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690575_id;
@@ -1159,7 +1159,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '63', '690576', 'สาขานี้จ่าย', 'นางขันทอง  สิงห์เชื้อ  (ขันทอง)',
+    '63', '690576', 'สาขาใหญ่จ่าย', 'นางขันทอง  สิงห์เชื้อ  (ขันทอง)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690576_id;
@@ -1179,7 +1179,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773182', '690577', 'สาขานี้จ่าย', 'นางชลนภา วันหนา(เจ๊หญิง)  ลานนาโพธิ์กลาง',
+    '1754291773182', '690577', 'สาขาใหญ่จ่าย', 'นางชลนภา วันหนา(เจ๊หญิง)  ลานนาโพธิ์กลาง',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690577_id;
@@ -1199,7 +1199,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '10', '690578', 'สาขานี้จ่าย', 'นาง ดาวประกาย พนาสนธ์(เสี่ยไผ่) ร้านไผ่ทอง',
+    '10', '690578', 'สาขาใหญ่จ่าย', 'นาง ดาวประกาย พนาสนธ์(เสี่ยไผ่) ร้านไผ่ทอง',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690578_id;
@@ -1219,7 +1219,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '135', '690579', 'สาขานี้จ่าย', 'นาง นุจรีย์ เรืองบุญ(เจ๊ตุ้มสิงโต)',
+    '135', '690579', 'สาขาใหญ่จ่าย', 'นาง นุจรีย์ เรืองบุญ(เจ๊ตุ้มสิงโต)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690579_id;
@@ -1239,7 +1239,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '144', '690580', 'สาขานี้จ่าย', 'นางประยูร บุตรราช (น้องตาล)',
+    '144', '690580', 'สาขาใหญ่จ่าย', 'นางประยูร บุตรราช (น้องตาล)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690580_id;
@@ -1259,7 +1259,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '65', '690581', 'สาขานี้จ่าย', 'นางพิศมัย ทุนมาก (เสี่ยเดช)',
+    '65', '690581', 'สาขาใหญ่จ่าย', 'นางพิศมัย ทุนมาก (เสี่ยเดช)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690581_id;
@@ -1279,7 +1279,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '31', '690582', 'สาขานี้จ่าย', 'นางเพ็ญศรี เกษวัต (เจ๊บีบี)',
+    '31', '690582', 'สาขาใหญ่จ่าย', 'นางเพ็ญศรี เกษวัต (เจ๊บีบี)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690582_id;
@@ -1302,7 +1302,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '68', '690583', 'สาขานี้จ่าย', 'นางรจณา  เดชะคำภู (ศรีรุ่ง)',
+    '68', '690583', 'สาขาใหญ่จ่าย', 'นางรจณา  เดชะคำภู (ศรีรุ่ง)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690583_id;
@@ -1322,7 +1322,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773170', '690584', 'สาขานี้จ่าย', 'นางลุนนี อนุสนธ์ (เสี่ยนุช)',
+    '1754291773170', '690584', 'สาขาใหญ่จ่าย', 'นางลุนนี อนุสนธ์ (เสี่ยนุช)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690584_id;
@@ -1345,7 +1345,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '23', '690585', 'สาขานี้จ่าย', 'นางวริษฐา เกษชาติ (นะโม)',
+    '23', '690585', 'สาขาใหญ่จ่าย', 'นางวริษฐา เกษชาติ (นะโม)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690585_id;
@@ -1374,7 +1374,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773177', '690586', 'สาขานี้จ่าย', 'นางศิริลักษณ์ ก้องเสียง(แม่บี) ชานุมาน',
+    '1754291773177', '690586', 'สาขาใหญ่จ่าย', 'นางศิริลักษณ์ ก้องเสียง(แม่บี) ชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690586_id;
@@ -1397,7 +1397,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773167', '690587', 'สาขานี้จ่าย', 'นางสาวฐิติมา จิตมั่น (หนองผือน้อย)',
+    '1754291773167', '690587', 'สาขาใหญ่จ่าย', 'นางสาวฐิติมา จิตมั่น (หนองผือน้อย)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690587_id;
@@ -1417,7 +1417,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773165', '690588', 'สาขานี้จ่าย', 'นางสาวพิศมัย ถุระพันน์(เจ๊ไหม) ดงแถบ',
+    '1754291773165', '690588', 'สาขาใหญ่จ่าย', 'นางสาวพิศมัย ถุระพันน์(เจ๊ไหม) ดงแถบ',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690588_id;
@@ -1437,7 +1437,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '156', '690589', 'สาขานี้จ่าย', 'นางสาว สมพิศ ไชยวัน(เจ๊สมพิศ)   ชานุมาน',
+    '156', '690589', 'สาขาใหญ่จ่าย', 'นางสาว สมพิศ ไชยวัน(เจ๊สมพิศ)   ชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690589_id;
@@ -1457,7 +1457,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '131', '690590', 'สาขานี้จ่าย', 'นางสาวอ้อย ดิษฐเจริญ (ลานสหกรณ์โขงเจียม)',
+    '131', '690590', 'สาขาใหญ่จ่าย', 'นางสาวอ้อย ดิษฐเจริญ (ลานสหกรณ์โขงเจียม)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690590_id;
@@ -1477,7 +1477,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '148', '690591', 'สาขานี้จ่าย', 'นาตยา อุบลพิทักษ์(พิมพ์ชนก)',
+    '148', '690591', 'สาขาใหญ่จ่าย', 'นาตยา อุบลพิทักษ์(พิมพ์ชนก)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690591_id;
@@ -1497,7 +1497,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773179', '690592', 'สาขานี้จ่าย', 'นายกิตติพงษ์ คำมุงคุณ (เสี่ยหนุ่ย 2) ลูกค้าชานุมาน',
+    '1754291773179', '690592', 'สาขาใหญ่จ่าย', 'นายกิตติพงษ์ คำมุงคุณ (เสี่ยหนุ่ย 2) ลูกค้าชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690592_id;
@@ -1517,7 +1517,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '67', '690593', 'สาขานี้จ่าย', 'นายคำ  วงเวียน  (เสี่ยคำ)',
+    '67', '690593', 'สาขาใหญ่จ่าย', 'นายคำ  วงเวียน  (เสี่ยคำ)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690593_id;
@@ -1540,7 +1540,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '120', '690594', 'สาขานี้จ่าย', 'นายคูณ ป้องพิมพ์ (ครูทรัพย์การเกษตร)(พิไลวรรณ)(พ่อคูณ)',
+    '120', '690594', 'สาขาใหญ่จ่าย', 'นายคูณ ป้องพิมพ์ (ครูทรัพย์การเกษตร)(พิไลวรรณ)(พ่อคูณ)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690594_id;
@@ -1563,7 +1563,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '174', '690595', 'สาขานี้จ่าย', 'นายตันติกร เห็มวัง(ร้านต้นกล้า) ชานุมาน',
+    '174', '690595', 'สาขาใหญ่จ่าย', 'นายตันติกร เห็มวัง(ร้านต้นกล้า) ชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690595_id;
@@ -1586,7 +1586,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '132', '690596', 'สาขานี้จ่าย', 'นายนวลจันทร์ เหลียวสูง (ลุงป้อม)',
+    '132', '690596', 'สาขาใหญ่จ่าย', 'นายนวลจันทร์ เหลียวสูง (ลุงป้อม)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690596_id;
@@ -1606,7 +1606,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '64', '690597', 'สาขานี้จ่าย', 'นายประสิทธิ์ สีชมพู (พ่อแก้ว)',
+    '64', '690597', 'สาขาใหญ่จ่าย', 'นายประสิทธิ์ สีชมพู (พ่อแก้ว)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690597_id;
@@ -1626,7 +1626,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '115', '690598', 'สาขานี้จ่าย', 'นายประเสริฐ คำลอย(ประเสริฐ)',
+    '115', '690598', 'สาขาใหญ่จ่าย', 'นายประเสริฐ คำลอย(ประเสริฐ)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690598_id;
@@ -1646,7 +1646,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773185', '690599', 'สาขานี้จ่าย', 'นายเรืองศักดิ์ ขันแก้ว(ลุงเคน) ลานบะไห',
+    '1754291773185', '690599', 'สาขาใหญ่จ่าย', 'นายเรืองศักดิ์ ขันแก้ว(ลุงเคน) ลานบะไห',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690599_id;
@@ -1666,7 +1666,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '138', '690600', 'สาขานี้จ่าย', 'นาย ศักดิ์สิทธิ์  เหมือนเหลา',
+    '138', '690600', 'สาขาใหญ่จ่าย', 'นาย ศักดิ์สิทธิ์  เหมือนเหลา',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690600_id;
@@ -1686,7 +1686,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773183', '690601', 'สาขานี้จ่าย', 'นายสิทธิพัฒน์ ห่อรัตนาเรือง (สตีฟซื้อยาง)',
+    '1754291773183', '690601', 'สาขาใหญ่จ่าย', 'นายสิทธิพัฒน์ ห่อรัตนาเรือง (สตีฟซื้อยาง)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690601_id;
@@ -1706,7 +1706,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '184', '690602', 'สาขานี้จ่าย', 'นายอนิวรรตน์ จันทบุตร(ตูมตาม) ดงแถบ',
+    '184', '690602', 'สาขาใหญ่จ่าย', 'นายอนิวรรตน์ จันทบุตร(ตูมตาม) ดงแถบ',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690602_id;
@@ -1729,7 +1729,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773180', '690603', 'สาขานี้จ่าย', 'นาย อลงกรณ์ บันตะบอน (ลานอลงกรณ์) ชานุมาน',
+    '1754291773180', '690603', 'สาขาใหญ่จ่าย', 'นาย อลงกรณ์ บันตะบอน (ลานอลงกรณ์) ชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690603_id;
@@ -1749,7 +1749,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '8', '690604', 'สาขานี้จ่าย', 'นิตยา ยืนยง(เจ๊นิตติยา)',
+    '8', '690604', 'สาขาใหญ่จ่าย', 'นิตยา ยืนยง(เจ๊นิตติยา)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690604_id;
@@ -1772,7 +1772,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '105', '690605', 'สาขานี้จ่าย', 'นิภาพร ผ่องศรี(บุ๋มบิ๋ม)',
+    '105', '690605', 'สาขาใหญ่จ่าย', 'นิภาพร ผ่องศรี(บุ๋มบิ๋ม)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690605_id;
@@ -1792,7 +1792,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '159', '690606', 'สาขานี้จ่าย', 'นิภาพร วิชพล(เจ๊ลินดา)    ชานุมาน',
+    '159', '690606', 'สาขาใหญ่จ่าย', 'นิภาพร วิชพล(เจ๊ลินดา)    ชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690606_id;
@@ -1815,7 +1815,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '172', '690607', 'สาขานี้จ่าย', 'นิยม เห็มวัง(ร้านนิยม)  ชานุมาน',
+    '172', '690607', 'สาขาใหญ่จ่าย', 'นิยม เห็มวัง(ร้านนิยม)  ชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690607_id;
@@ -1835,7 +1835,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '22', '690608', 'สาขานี้จ่าย', 'นิลาวัลย์ ทองหยิบ (แม่เทียม)',
+    '22', '690608', 'สาขาใหญ่จ่าย', 'นิลาวัลย์ ทองหยิบ (แม่เทียม)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690608_id;
@@ -1855,7 +1855,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '40', '690609', 'สาขานี้จ่าย', 'นิสสัย หนักแน่น (พ่อตึ๋ง)',
+    '40', '690609', 'สาขาใหญ่จ่าย', 'นิสสัย หนักแน่น (พ่อตึ๋ง)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690609_id;
@@ -1878,7 +1878,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '50', '690610', 'สาขานี้จ่าย', 'นุชจรี ทองประมูล (นุช)',
+    '50', '690610', 'สาขาใหญ่จ่าย', 'นุชจรี ทองประมูล (นุช)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690610_id;
@@ -1898,7 +1898,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '2', '690611', 'สาขานี้จ่าย', 'บังวิทย์',
+    '2', '690611', 'สาขาใหญ่จ่าย', 'บังวิทย์',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690611_id;
@@ -1921,7 +1921,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '13', '690612', 'สาขานี้จ่าย', 'บัวผัน ล้านศรี(พ่อโฮม)',
+    '13', '690612', 'สาขาใหญ่จ่าย', 'บัวผัน ล้านศรี(พ่อโฮม)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690612_id;
@@ -1944,7 +1944,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773162', '690613', 'สาขานี้จ่าย', 'บัวลอย อ้วนล่ำ (อัยรดา)',
+    '1754291773162', '690613', 'สาขาใหญ่จ่าย', 'บัวลอย อ้วนล่ำ (อัยรดา)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690613_id;
@@ -1964,7 +1964,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '139', '690614', 'สาขานี้จ่าย', 'บุญเลิศ แรมฤทธิ์(สองพี่น้อง)',
+    '139', '690614', 'สาขาใหญ่จ่าย', 'บุญเลิศ แรมฤทธิ์(สองพี่น้อง)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690614_id;
@@ -1987,7 +1987,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '183', '690615', 'สาขานี้จ่าย', 'ประดิพัทธ์ วรรักษ์ธารา(เสี่ยฮาท)     ชานุมาน',
+    '183', '690615', 'สาขาใหญ่จ่าย', 'ประดิพัทธ์ วรรักษ์ธารา(เสี่ยฮาท)     ชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690615_id;
@@ -2010,7 +2010,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773178', '690616', 'สาขานี้จ่าย', 'ประดิษฐ พิมพ์พันธ์ ชาวสวนดงแถบ(3141)',
+    '1754291773178', '690616', 'สาขาใหญ่จ่าย', 'ประดิษฐ พิมพ์พันธ์ ชาวสวนดงแถบ(3141)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690616_id;
@@ -2030,7 +2030,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '54', '690617', 'สาขานี้จ่าย', 'ประภาส กาฬหว้า(พ่อมนต์)',
+    '54', '690617', 'สาขาใหญ่จ่าย', 'ประภาส กาฬหว้า(พ่อมนต์)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690617_id;
@@ -2050,7 +2050,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '143', '690618', 'สาขานี้จ่าย', 'ประยูร บุตรราช',
+    '143', '690618', 'สาขาใหญ่จ่าย', 'ประยูร บุตรราช',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690618_id;
@@ -2070,7 +2070,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '19', '690619', 'สาขานี้จ่าย', 'ประสงค์ สัจธรรม (แม่จ่อย)',
+    '19', '690619', 'สาขาใหญ่จ่าย', 'ประสงค์ สัจธรรม (แม่จ่อย)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690619_id;
@@ -2096,7 +2096,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '24', '690620', 'สาขานี้จ่าย', 'ปราณี บุญจวบ (แม่ณี)',
+    '24', '690620', 'สาขาใหญ่จ่าย', 'ปราณี บุญจวบ (แม่ณี)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690620_id;
@@ -2119,7 +2119,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '18', '690621', 'สาขานี้จ่าย', 'ปิยะวรรณ สีคำมา (พ่อคิด)',
+    '18', '690621', 'สาขาใหญ่จ่าย', 'ปิยะวรรณ สีคำมา (พ่อคิด)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690621_id;
@@ -2142,7 +2142,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '168', '690622', 'สาขานี้จ่าย', 'พงศ์สิทธิ์ มีชัย(วันเพ็ญ)  ชานุมาน',
+    '168', '690622', 'สาขาใหญ่จ่าย', 'พงศ์สิทธิ์ มีชัย(วันเพ็ญ)  ชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690622_id;
@@ -2165,7 +2165,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773187', '690623', 'สาขานี้จ่าย', 'พ่มพวง  ปัฐมา(ช่างเสา)  ดงตาหวัง',
+    '1754291773187', '690623', 'สาขาใหญ่จ่าย', 'พ่มพวง  ปัฐมา(ช่างเสา)  ดงตาหวัง',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690623_id;
@@ -2185,7 +2185,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '25', '690624', 'สาขานี้จ่าย', 'พรนภา แก้วทอง (พรนภา)',
+    '25', '690624', 'สาขาใหญ่จ่าย', 'พรนภา แก้วทอง (พรนภา)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690624_id;
@@ -2205,7 +2205,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '147', '690625', 'สาขานี้จ่าย', 'พัชนิดา โคตรสาลี(เสี่ยคอยพัชนิดา)',
+    '147', '690625', 'สาขาใหญ่จ่าย', 'พัชนิดา โคตรสาลี(เสี่ยคอยพัชนิดา)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690625_id;
@@ -2225,7 +2225,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '158', '690626', 'สาขานี้จ่าย', 'พัชราภรณ์ ด้วงเงิน (เสี่ยเกลือ)      ชานุมาน',
+    '158', '690626', 'สาขาใหญ่จ่าย', 'พัชราภรณ์ ด้วงเงิน (เสี่ยเกลือ)      ชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690626_id;
@@ -2251,7 +2251,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '155', '690627', 'สาขานี้จ่าย', 'พัฒยา ชาดา(เจ๊เป้) (พัฒยา ชาดา(เจ๊เป้) กรุงเทพ 3624361667)',
+    '155', '690627', 'สาขาใหญ่จ่าย', 'พัฒยา ชาดา(เจ๊เป้) (พัฒยา ชาดา(เจ๊เป้) กรุงเทพ 3624361667)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690627_id;
@@ -2274,7 +2274,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '166', '690628', 'สาขานี้จ่าย', 'พี่เล็กถอนเงินชานุมาน',
+    '166', '690628', 'สาขาใหญ่จ่าย', 'พี่เล็กถอนเงินชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690628_id;
@@ -2294,7 +2294,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '164', '690629', 'สาขานี้จ่าย', 'พุฒ  ภูคำ (เสี่ยคอย)',
+    '164', '690629', 'สาขาใหญ่จ่าย', 'พุฒ  ภูคำ (เสี่ยคอย)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690629_id;
@@ -2314,7 +2314,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773176', '690630', 'สาขานี้จ่าย', 'พุฒิพงศ์ แซ่คู (โด้)',
+    '1754291773176', '690630', 'สาขาใหญ่จ่าย', 'พุฒิพงศ์ แซ่คู (โด้)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690630_id;
@@ -2334,7 +2334,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '26', '690631', 'สาขานี้จ่าย', 'เพชร จันดา (แม่เพชร)',
+    '26', '690631', 'สาขาใหญ่จ่าย', 'เพชร จันดา (แม่เพชร)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690631_id;
@@ -2354,7 +2354,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '161', '690632', 'สาขานี้จ่าย', 'เพชรพรกิจ  สีแสด (เสี่ยอ๊อด) (เพชรพรกิจ สีแสด กสิกร 1283637332)',
+    '161', '690632', 'สาขาใหญ่จ่าย', 'เพชรพรกิจ  สีแสด (เสี่ยอ๊อด) (เพชรพรกิจ สีแสด กสิกร 1283637332)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690632_id;
@@ -2374,7 +2374,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '151', '690633', 'สาขานี้จ่าย', 'เพ็ญศรี เกดวัด(แม่น้องบี)',
+    '151', '690633', 'สาขาใหญ่จ่าย', 'เพ็ญศรี เกดวัด(แม่น้องบี)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690633_id;
@@ -2394,7 +2394,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '157', '690634', 'สาขานี้จ่าย', 'ไพโรจน์ ร่วมทรัพย์(เสี่ยไพโรจน์)',
+    '157', '690634', 'สาขาใหญ่จ่าย', 'ไพโรจน์ ร่วมทรัพย์(เสี่ยไพโรจน์)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690634_id;
@@ -2417,7 +2417,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '108', '690635', 'สาขานี้จ่าย', 'ภาคภูมิ ปราณี(ภาคภูมิ)',
+    '108', '690635', 'สาขาใหญ่จ่าย', 'ภาคภูมิ ปราณี(ภาคภูมิ)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690635_id;
@@ -2437,7 +2437,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '85', '690636', 'สาขานี้จ่าย', 'มงคล ศรีสุข(เสี่ยมงคล)',
+    '85', '690636', 'สาขาใหญ่จ่าย', 'มงคล ศรีสุข(เสี่ยมงคล)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690636_id;
@@ -2457,7 +2457,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773166', '690637', 'สาขานี้จ่าย', 'มณิศรา ตาทอง(แม่ตุ๊)',
+    '1754291773166', '690637', 'สาขาใหญ่จ่าย', 'มณิศรา ตาทอง(แม่ตุ๊)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690637_id;
@@ -2483,7 +2483,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '3', '690638', 'สาขานี้จ่าย', 'มะไลพร เขียวคำรพ(เจ๊พรเข็มราช)',
+    '3', '690638', 'สาขาใหญ่จ่าย', 'มะไลพร เขียวคำรพ(เจ๊พรเข็มราช)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690638_id;
@@ -2509,7 +2509,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '116', '690639', 'สาขานี้จ่าย', 'แม่อึ่ง ลมัย ศรีลาเลิศ',
+    '116', '690639', 'สาขาใหญ่จ่าย', 'แม่อึ่ง ลมัย ศรีลาเลิศ',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690639_id;
@@ -2529,7 +2529,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '134', '690640', 'สาขานี้จ่าย', 'ยุพิน เจริญสุข,JS (เจ๊จอย)',
+    '134', '690640', 'สาขาใหญ่จ่าย', 'ยุพิน เจริญสุข,JS (เจ๊จอย)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690640_id;
@@ -2549,7 +2549,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '111', '690641', 'สาขานี้จ่าย', 'เยาวลักษณ์ เหล่าเต็ม (น้องฟลุ๊ค)',
+    '111', '690641', 'สาขาใหญ่จ่าย', 'เยาวลักษณ์ เหล่าเต็ม (น้องฟลุ๊ค)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690641_id;
@@ -2572,7 +2572,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '58', '690642', 'สาขานี้จ่าย', 'รจนา  สุพร (พ่อบิ้ง)',
+    '58', '690642', 'สาขาใหญ่จ่าย', 'รจนา  สุพร (พ่อบิ้ง)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690642_id;
@@ -2595,7 +2595,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '142', '690643', 'สาขานี้จ่าย', 'รัชนี  พิทักษ์วงษ์จินดา(เมียเสี่ยดุ๊ก)',
+    '142', '690643', 'สาขาใหญ่จ่าย', 'รัชนี  พิทักษ์วงษ์จินดา(เมียเสี่ยดุ๊ก)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690643_id;
@@ -2615,7 +2615,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1750763126119', '690644', 'สาขานี้จ่าย', 'รัฐศาสตร์ รัตนโสภา(ลานสุวรรณ)   ชานุมาน',
+    '1750763126119', '690644', 'สาขาใหญ่จ่าย', 'รัฐศาสตร์ รัตนโสภา(ลานสุวรรณ)   ชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690644_id;
@@ -2635,7 +2635,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '177', '690645', 'สาขานี้จ่าย', 'รัตนา ผางทอง(พ่อวิเชียร) ชานุมาน',
+    '177', '690645', 'สาขาใหญ่จ่าย', 'รัตนา ผางทอง(พ่อวิเชียร) ชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690645_id;
@@ -2658,7 +2658,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '113', '690646', 'สาขานี้จ่าย', 'รัตนาภรณ์ รัตนสกล (แม่แก้ว) (แนน)',
+    '113', '690646', 'สาขาใหญ่จ่าย', 'รัตนาภรณ์ รัตนสกล (แม่แก้ว) (แนน)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690646_id;
@@ -2678,7 +2678,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '5', '690647', 'สาขานี้จ่าย', 'ลานน้องอ้อม',
+    '5', '690647', 'สาขาใหญ่จ่าย', 'ลานน้องอ้อม',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690647_id;
@@ -2701,7 +2701,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '128', '690648', 'สาขานี้จ่าย', 'ลำไย แสนเจริญสุข(ออเจริญสุข)',
+    '128', '690648', 'สาขาใหญ่จ่าย', 'ลำไย แสนเจริญสุข(ออเจริญสุข)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690648_id;
@@ -2724,7 +2724,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '86', '690649', 'สาขานี้จ่าย', 'วนิดา บูชายันต์(เจ๊อิ๋ว)',
+    '86', '690649', 'สาขาใหญ่จ่าย', 'วนิดา บูชายันต์(เจ๊อิ๋ว)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690649_id;
@@ -2744,7 +2744,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773174', '690650', 'สาขานี้จ่าย', 'วนิดา สมพร (มาซื้อแทนพรนภา)',
+    '1754291773174', '690650', 'สาขาใหญ่จ่าย', 'วนิดา สมพร (มาซื้อแทนพรนภา)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690650_id;
@@ -2764,7 +2764,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '21', '690651', 'สาขานี้จ่าย', 'วรพรต โคตะ (เสี่ยโดน)',
+    '21', '690651', 'สาขาใหญ่จ่าย', 'วรพรต โคตะ (เสี่ยโดน)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690651_id;
@@ -2790,7 +2790,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '130', '690652', 'สาขานี้จ่าย', 'วรวุฒิ  ทองไทย (แม่วราภรณ์ ครูหมวย ย่าน้องบี)',
+    '130', '690652', 'สาขาใหญ่จ่าย', 'วรวุฒิ  ทองไทย (แม่วราภรณ์ ครูหมวย ย่าน้องบี)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690652_id;
@@ -2813,7 +2813,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '39', '690653', 'สาขานี้จ่าย', 'วรัญญา แสงชมภู',
+    '39', '690653', 'สาขาใหญ่จ่าย', 'วรัญญา แสงชมภู',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690653_id;
@@ -2836,7 +2836,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773190', '690654', 'สาขานี้จ่าย', 'วราภรณ์ แสวงผล  (ลานยางบ้านนาทอย) ไว้เติมเงิน',
+    '1754291773190', '690654', 'สาขาใหญ่จ่าย', 'วราภรณ์ แสวงผล  (ลานยางบ้านนาทอย) ไว้เติมเงิน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690654_id;
@@ -2856,7 +2856,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773188', '690655', 'สาขานี้จ่าย', 'วราภรภรณ์ รินทร(รุ้ง) ลานโนนสวรรค์โอนเงิน',
+    '1754291773188', '690655', 'สาขาใหญ่จ่าย', 'วราภรภรณ์ รินทร(รุ้ง) ลานโนนสวรรค์โอนเงิน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690655_id;
@@ -2876,7 +2876,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '20', '690656', 'สาขานี้จ่าย', 'วันทอง พากเพียร (พ่อวันทอง)',
+    '20', '690656', 'สาขาใหญ่จ่าย', 'วันทอง พากเพียร (พ่อวันทอง)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690656_id;
@@ -2896,7 +2896,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '100', '690657', 'สาขานี้จ่าย', 'วาทศิลป์ ล้านศรี(แจ็ค ลูก พ่อโฮม)',
+    '100', '690657', 'สาขาใหญ่จ่าย', 'วาทศิลป์ ล้านศรี(แจ็ค ลูก พ่อโฮม)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690657_id;
@@ -2916,7 +2916,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '117', '690658', 'สาขานี้จ่าย', 'วารินี เคนโสภา',
+    '117', '690658', 'สาขาใหญ่จ่าย', 'วารินี เคนโสภา',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690658_id;
@@ -2936,7 +2936,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '16', '690659', 'สาขานี้จ่าย', 'วาสนา อินทร์ทอง (เจ๊วาส)  หุ่งหลวงรุ่งเจริญ',
+    '16', '690659', 'สาขาใหญ่จ่าย', 'วาสนา อินทร์ทอง (เจ๊วาส)  หุ่งหลวงรุ่งเจริญ',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690659_id;
@@ -2959,7 +2959,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '145', '690660', 'สาขานี้จ่าย', 'วิชัย พงศนีย์(วิชัย)',
+    '145', '690660', 'สาขาใหญ่จ่าย', 'วิชัย พงศนีย์(วิชัย)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690660_id;
@@ -2979,7 +2979,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '109', '690661', 'สาขานี้จ่าย', 'วิมลรัตน์ โดงกูล(เจ๊อัน)',
+    '109', '690661', 'สาขาใหญ่จ่าย', 'วิมลรัตน์ โดงกูล(เจ๊อัน)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690661_id;
@@ -2999,7 +2999,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '70', '690662', 'สาขานี้จ่าย', 'ไวยากรณ์ เสียงเย็น(เจ๊ไว)',
+    '70', '690662', 'สาขาใหญ่จ่าย', 'ไวยากรณ์ เสียงเย็น(เจ๊ไว)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690662_id;
@@ -3019,7 +3019,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '44', '690663', 'สาขานี้จ่าย', 'ศดานนท์ สมพร (เสี่ยก๊อฟ)',
+    '44', '690663', 'สาขาใหญ่จ่าย', 'ศดานนท์ สมพร (เสี่ยก๊อฟ)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690663_id;
@@ -3042,7 +3042,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '99', '690664', 'สาขานี้จ่าย', 'ศราวุฒิ อุตราวัน(โอ๊กภูหล่น)',
+    '99', '690664', 'สาขาใหญ่จ่าย', 'ศราวุฒิ อุตราวัน(โอ๊กภูหล่น)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690664_id;
@@ -3062,7 +3062,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '69', '690665', 'สาขานี้จ่าย', 'ศุภกร เนติวรวัฒน์(เสี่ยเอ)',
+    '69', '690665', 'สาขาใหญ่จ่าย', 'ศุภกร เนติวรวัฒน์(เสี่ยเอ)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690665_id;
@@ -3082,7 +3082,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '4', '690666', 'สาขานี้จ่าย', 'สตี๊ฟ',
+    '4', '690666', 'สาขาใหญ่จ่าย', 'สตี๊ฟ',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690666_id;
@@ -3105,7 +3105,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '170', '690667', 'สาขานี้จ่าย', 'สมใจ มารักษ์(มีชัยการเกษตร)  ชานุมาน',
+    '170', '690667', 'สาขาใหญ่จ่าย', 'สมใจ มารักษ์(มีชัยการเกษตร)  ชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690667_id;
@@ -3128,7 +3128,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '93', '690668', 'สาขานี้จ่าย', 'สมร ชุมพร',
+    '93', '690668', 'สาขาใหญ่จ่าย', 'สมร ชุมพร',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690668_id;
@@ -3148,7 +3148,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773186', '690669', 'สาขานี้จ่าย', 'สม สายเสมา(ลานโตมร)  ชานมุมาน',
+    '1754291773186', '690669', 'สาขาใหญ่จ่าย', 'สม สายเสมา(ลานโตมร)  ชานมุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690669_id;
@@ -3171,7 +3171,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '127', '690670', 'สาขานี้จ่าย', 'สรชัช ทองเกิด',
+    '127', '690670', 'สาขาใหญ่จ่าย', 'สรชัช ทองเกิด',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690670_id;
@@ -3191,7 +3191,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '57', '690671', 'สาขานี้จ่าย', 'สรัญญา  รักเนตร (เสี่ยศักดิ์) (ทนงศักดิ์ วงค์ทองนิล (เสี่ยศักดิ์))',
+    '57', '690671', 'สาขาใหญ่จ่าย', 'สรัญญา  รักเนตร (เสี่ยศักดิ์) (ทนงศักดิ์ วงค์ทองนิล (เสี่ยศักดิ์))',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690671_id;
@@ -3214,7 +3214,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '179', '690672', 'สาขานี้จ่าย', 'สหกรณ์ดอนตาล(เจ๊พรดอนตาล)',
+    '179', '690672', 'สาขาใหญ่จ่าย', 'สหกรณ์ดอนตาล(เจ๊พรดอนตาล)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690672_id;
@@ -3237,7 +3237,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773168', '690673', 'สาขานี้จ่าย', 'สายัญ แสนศิริปัญญา(ลานแสนศิริ)',
+    '1754291773168', '690673', 'สาขาใหญ่จ่าย', 'สายัญ แสนศิริปัญญา(ลานแสนศิริ)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690673_id;
@@ -3257,7 +3257,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '27', '690674', 'สาขานี้จ่าย', 'สำราญ แก้วเนตร (เจ๊เมย์)',
+    '27', '690674', 'สาขาใหญ่จ่าย', 'สำราญ แก้วเนตร (เจ๊เมย์)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690674_id;
@@ -3280,7 +3280,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773184', '690675', 'สาขานี้จ่าย', 'สิริกาญจน์ ห่อรัตนาเรือง (สตีฟค่าทำงาน)',
+    '1754291773184', '690675', 'สาขาใหญ่จ่าย', 'สิริกาญจน์ ห่อรัตนาเรือง (สตีฟค่าทำงาน)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690675_id;
@@ -3300,7 +3300,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '104', '690676', 'สาขานี้จ่าย', 'สุชาติ ปะโมนะตา (นัท ลูก แม่จอย)',
+    '104', '690676', 'สาขาใหญ่จ่าย', 'สุชาติ ปะโมนะตา (นัท ลูก แม่จอย)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690676_id;
@@ -3320,7 +3320,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '118', '690677', 'สาขานี้จ่าย', 'สุธิพงษ์ หลักคำ',
+    '118', '690677', 'สาขาใหญ่จ่าย', 'สุธิพงษ์ หลักคำ',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690677_id;
@@ -3340,7 +3340,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '153', '690678', 'สาขานี้จ่าย', 'สุนทร สารคณา (เสี่ยทร)',
+    '153', '690678', 'สาขาใหญ่จ่าย', 'สุนทร สารคณา (เสี่ยทร)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690678_id;
@@ -3360,7 +3360,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '95', '690679', 'สาขานี้จ่าย', 'สุบิน เจริญสุข(เจ๊จอย)(JS)',
+    '95', '690679', 'สาขาใหญ่จ่าย', 'สุบิน เจริญสุข(เจ๊จอย)(JS)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690679_id;
@@ -3380,7 +3380,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '48', '690680', 'สาขานี้จ่าย', 'สุภาพร  พระสุรัตน์ (แม่ดอกแก้ว)',
+    '48', '690680', 'สาขาใหญ่จ่าย', 'สุภาพร  พระสุรัตน์ (แม่ดอกแก้ว)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690680_id;
@@ -3400,7 +3400,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773164', '690681', 'สาขานี้จ่าย', 'สุมาลี แกัวกัญญา (เข็ม ซื้อยางบ้านไฮหย่อง)',
+    '1754291773164', '690681', 'สาขาใหญ่จ่าย', 'สุมาลี แกัวกัญญา (เข็ม ซื้อยางบ้านไฮหย่อง)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690681_id;
@@ -3420,7 +3420,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773189', '690682', 'สาขานี้จ่าย', 'สุรชัย  แสงเขตร(เสี่ยหมี) ลานบ้านพะเนียด',
+    '1754291773189', '690682', 'สาขาใหญ่จ่าย', 'สุรชัย  แสงเขตร(เสี่ยหมี) ลานบ้านพะเนียด',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690682_id;
@@ -3440,7 +3440,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '165', '690683', 'สาขานี้จ่าย', 'สุรพล ไกรสินธุ์(เจ๊เมย์ มนัส)    ชานุมาน',
+    '165', '690683', 'สาขาใหญ่จ่าย', 'สุรพล ไกรสินธุ์(เจ๊เมย์ มนัส)    ชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690683_id;
@@ -3463,7 +3463,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773169', '690684', 'สาขานี้จ่าย', 'สุริยา ชมภูจันทร์ (สุริยา)',
+    '1754291773169', '690684', 'สาขาใหญ่จ่าย', 'สุริยา ชมภูจันทร์ (สุริยา)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690684_id;
@@ -3486,7 +3486,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '30', '690685', 'สาขานี้จ่าย', 'สุรีวรรณ ภูงอก (เจ๊หลิน)',
+    '30', '690685', 'สาขาใหญ่จ่าย', 'สุรีวรรณ ภูงอก (เจ๊หลิน)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690685_id;
@@ -3512,7 +3512,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '29', '690686', 'สาขานี้จ่าย', 'แสงอร่าม ยาตรา (เสี่ยหน่อย)',
+    '29', '690686', 'สาขาใหญ่จ่าย', 'แสงอร่าม ยาตรา (เสี่ยหน่อย)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690686_id;
@@ -3532,7 +3532,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '87', '690687', 'สาขานี้จ่าย', 'ไสว มีคำ(แสนสุข เจริญทรัพย์)',
+    '87', '690687', 'สาขาใหญ่จ่าย', 'ไสว มีคำ(แสนสุข เจริญทรัพย์)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690687_id;
@@ -3552,7 +3552,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '94', '690688', 'สาขานี้จ่าย', 'หนูเพียร ผ่องศรี(หนูเพียร)',
+    '94', '690688', 'สาขาใหญ่จ่าย', 'หนูเพียร ผ่องศรี(หนูเพียร)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690688_id;
@@ -3572,7 +3572,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '46', '690689', 'สาขานี้จ่าย', 'หนูรำพันธ์ โลหะกุล (พ่อสำลี) (แม่หนู) ป่ากุงใหญ่',
+    '46', '690689', 'สาขาใหญ่จ่าย', 'หนูรำพันธ์ โลหะกุล (พ่อสำลี) (แม่หนู) ป่ากุงใหญ่',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690689_id;
@@ -3592,7 +3592,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '171', '690690', 'สาขานี้จ่าย', 'อณุวัฒน์ บุปผาวงศ์(เสี่ยต้อม) ชานุมาน',
+    '171', '690690', 'สาขาใหญ่จ่าย', 'อณุวัฒน์ บุปผาวงศ์(เสี่ยต้อม) ชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690690_id;
@@ -3615,7 +3615,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '92', '690691', 'สาขานี้จ่าย', 'อดุล เจริญทัศน์(เสี่ยเข่ง)',
+    '92', '690691', 'สาขาใหญ่จ่าย', 'อดุล เจริญทัศน์(เสี่ยเข่ง)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690691_id;
@@ -3635,7 +3635,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '101', '690692', 'สาขานี้จ่าย', 'อดุลย์ วรรณคำ (วาสนา ยางพารา)',
+    '101', '690692', 'สาขาใหญ่จ่าย', 'อดุลย์ วรรณคำ (วาสนา ยางพารา)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690692_id;
@@ -3655,7 +3655,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '42', '690693', 'สาขานี้จ่าย', 'อนงค์ วงฤทธิ์ (เจ๊นงค์)',
+    '42', '690693', 'สาขาใหญ่จ่าย', 'อนงค์ วงฤทธิ์ (เจ๊นงค์)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690693_id;
@@ -3675,7 +3675,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '176', '690694', 'สาขานี้จ่าย', 'อนุรัก พิมพ์พันธ์(เจ๊ชู) ชานุมาน',
+    '176', '690694', 'สาขาใหญ่จ่าย', 'อนุรัก พิมพ์พันธ์(เจ๊ชู) ชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690694_id;
@@ -3698,7 +3698,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '17', '690695', 'สาขานี้จ่าย', 'อนุสรณ์ สายแก้ว',
+    '17', '690695', 'สาขาใหญ่จ่าย', 'อนุสรณ์ สายแก้ว',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690695_id;
@@ -3718,7 +3718,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '122', '690696', 'สาขานี้จ่าย', 'อนุสรณ์ สุมาลุ(ทอฝัน) ลูกค้าดงแถบ',
+    '122', '690696', 'สาขาใหญ่จ่าย', 'อนุสรณ์ สุมาลุ(ทอฝัน) ลูกค้าดงแถบ',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690696_id;
@@ -3741,7 +3741,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '154', '690697', 'สาขานี้จ่าย', 'อพินใจ คนไว(แม่อ๋อย)',
+    '154', '690697', 'สาขาใหญ่จ่าย', 'อพินใจ คนไว(แม่อ๋อย)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690697_id;
@@ -3761,7 +3761,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '51', '690698', 'สาขานี้จ่าย', 'อภิรดี ผิวทน',
+    '51', '690698', 'สาขาใหญ่จ่าย', 'อภิรดี ผิวทน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690698_id;
@@ -3781,7 +3781,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '1754291773171', '690699', 'สาขานี้จ่าย', 'อรนิตย์  สุภากรณ์ (น้าอี๊ด ประมูลยางบ้านคำน้ำแซง เดชอุดม)',
+    '1754291773171', '690699', 'สาขาใหญ่จ่าย', 'อรนิตย์  สุภากรณ์ (น้าอี๊ด ประมูลยางบ้านคำน้ำแซง เดชอุดม)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690699_id;
@@ -3801,7 +3801,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '110', '690700', 'สาขานี้จ่าย', 'อรรถพล คงพิรัตน์',
+    '110', '690700', 'สาขาใหญ่จ่าย', 'อรรถพล คงพิรัตน์',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690700_id;
@@ -3821,7 +3821,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '59', '690701', 'สาขานี้จ่าย', 'อรัญชญา นามฮุง(นิค เจ๊วัน)   ชานุมาน',
+    '59', '690701', 'สาขาใหญ่จ่าย', 'อรัญชญา นามฮุง(นิค เจ๊วัน)   ชานุมาน',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690701_id;
@@ -3841,7 +3841,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '124', '690702', 'สาขานี้จ่าย', 'อาพร สีหา(อาพร)',
+    '124', '690702', 'สาขาใหญ่จ่าย', 'อาพร สีหา(อาพร)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690702_id;
@@ -3861,7 +3861,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '32', '690703', 'สาขานี้จ่าย', 'อิสระ วรรณทวี',
+    '32', '690703', 'สาขาใหญ่จ่าย', 'อิสระ วรรณทวี',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690703_id;
@@ -3881,7 +3881,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '114', '690704', 'สาขานี้จ่าย', 'อึ่ง ละมัย',
+    '114', '690704', 'สาขาใหญ่จ่าย', 'อึ่ง ละมัย',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690704_id;
@@ -3901,7 +3901,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '61', '690705', 'สาขานี้จ่าย', 'อุบล จินะศรี (เจ๊บน)',
+    '61', '690705', 'สาขาใหญ่จ่าย', 'อุบล จินะศรี (เจ๊บน)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690705_id;
@@ -3921,7 +3921,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '11', '690706', 'สาขานี้จ่าย', 'เอกยางพารา(เสี่ยเอก)',
+    '11', '690706', 'สาขาใหญ่จ่าย', 'เอกยางพารา(เสี่ยเอก)',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690706_id;
@@ -3944,7 +3944,7 @@ BEGIN
     sync_status, record_status, revision_no,
     created_by_name, created_by_phone, created_at
   ) VALUES (
-    '52', '690707', 'สาขานี้จ่าย', 'เอกสิทธิ์ (ออย,แม็ก) อภิณัฐดา คงคูณ',
+    '52', '690707', 'สาขาใหญ่จ่าย', 'เอกสิทธิ์ (ออย,แม็ก) อภิณัฐดา คงคูณ',
     'synced', 'active', 0,
     'ระบบนำเข้า', '0000000000', now()
   ) RETURNING id INTO cust_690707_id;
