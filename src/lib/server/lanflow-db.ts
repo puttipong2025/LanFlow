@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import type { IncomeExpense, Location, Profile, RubberBill, Customer, CustomerContact, CustomerBankAccount, CustomerFarm } from "@/types";
+import type { IncomeExpense, Location, Profile, RubberBill, Customer, CustomerContact, CustomerBankAccount, CustomerFarm, OcrTicket } from "@/types";
 
 const DEV_PROFILE_ID = "00000000-0000-4000-8000-000000000001";
 const DEV_LOCATIONS = [
@@ -142,7 +142,8 @@ export async function getLanFlowData() {
       contacts.filter(item => item.customer_id === cust.id),
       bankAccounts.filter(item => item.customer_id === cust.id),
       farms.filter(item => item.customer_id === cust.id)
-    ))
+    )),
+    ocrTickets: [] as OcrTicket[]
   };
 }
 
@@ -297,7 +298,7 @@ export async function saveIncomeExpense(transaction: IncomeExpense) {
 }
 
 async function saveSyncEvent(
-  entityType: "rubber_bill" | "income_expense" | "customer",
+  entityType: "rubber_bill" | "income_expense" | "customer" | "ocr_ticket",
   operationType: "create" | "update" | "delete",
   payload: any,
   locationId: string | null,
@@ -495,6 +496,32 @@ function rowToCustomer(row: any, contacts: any[], bankAccounts: any[], farms: an
 }
 
 export async function saveCustomer(customer: Customer) {
+  if (!customer.mainName || customer.mainName.trim() === "") {
+    throw new Error("Validation Error: mainName is required");
+  }
+
+  if (customer.contacts) {
+    for (const c of customer.contacts) {
+      if (c.phone && c.phone.trim() !== "") {
+        const digits = c.phone.replace(/\D/g, "");
+        if (digits.length < 9 || digits.length > 10) {
+          throw new Error(`Validation Error: invalid phone format (${c.phone}), must be 9-10 digits`);
+        }
+      }
+    }
+  }
+
+  if (customer.farms) {
+    for (const f of customer.farms) {
+      if (f.cardNumber && f.cardNumber.trim() !== "") {
+        const digits = f.cardNumber.replace(/\D/g, "");
+        if (digits.length !== 13) {
+          throw new Error(`Validation Error: card number must be exactly 13 digits (${f.cardNumber})`);
+        }
+      }
+    }
+  }
+
   await ensureLanFlowBootstrap();
   const supabase = getAdminClient();
   const serverReceivedAt = new Date().toISOString();
@@ -518,19 +545,25 @@ export async function saveCustomer(customer: Customer) {
     created_by_user_id: DEV_PROFILE_ID,
     created_by_name: customer.createdByName ?? "ผู้ดูแลระบบ",
     created_by_phone: customer.createdByPhone ?? "0800000000",
+    updated_by_user_id: DEV_PROFILE_ID,
+    updated_by_name: customer.createdByName ?? "ผู้ดูแลระบบ",
+    updated_by_phone: customer.createdByPhone ?? "0800000000",
     updated_at: serverReceivedAt
   };
 
   // BUG-2 fix: Use two separate safe queries instead of .or() with string interpolation
   let existingId: string | null = null;
+  const isUuid = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 
-  const byId = await supabase
-    .from("customers")
-    .select("id")
-    .eq("id", customer.id)
-    .maybeSingle();
-  if (byId.error) throw byId.error;
-  existingId = byId.data?.id ?? null;
+  if (customer.id && isUuid(customer.id)) {
+    const byId = await supabase
+      .from("customers")
+      .select("id")
+      .eq("id", customer.id)
+      .maybeSingle();
+    if (byId.error) throw byId.error;
+    existingId = byId.data?.id ?? null;
+  }
 
   if (!existingId && customer.clientTempId) {
     const byClientTempId = await supabase
@@ -568,51 +601,85 @@ export async function saveCustomer(customer: Customer) {
 
     result = await supabase.from("customers").update(row).eq("id", existingId).select("*").single();
   } else {
-    result = await supabase.from("customers").insert({ ...row, id: customer.id }).select("*").single();
+    const insertRow: any = { ...row };
+    if (customer.id && isUuid(customer.id)) {
+      insertRow.id = customer.id;
+    }
+    result = await supabase.from("customers").insert(insertRow).select("*").single();
   }
 
   if (result.error) throw result.error;
   const customerId = result.data.id;
 
-  // Delete and insert contacts
-  const { error: deleteContactsError } = await supabase.from("customer_contacts").delete().eq("customer_id", customerId);
-  if (deleteContactsError) throw deleteContactsError;
+  // Upsert contacts
+  const validIncomingContactIds = (customer.contacts || []).map(c => c.id).filter(id => id && isUuid(id));
+  if (validIncomingContactIds.length > 0) {
+    const { error: deleteContactsError } = await supabase.from("customer_contacts").delete().eq("customer_id", customerId).not("id", "in", `(${validIncomingContactIds.join(",")})`);
+    if (deleteContactsError) throw deleteContactsError;
+  } else {
+    const { error: deleteContactsError } = await supabase.from("customer_contacts").delete().eq("customer_id", customerId);
+    if (deleteContactsError) throw deleteContactsError;
+  }
+
   if (customer.contacts && customer.contacts.length > 0) {
-    const contactRows = customer.contacts.map(c => ({
-      customer_id: customerId,
-      phone: c.phone
-    }));
-    const { error: insertContactsError } = await supabase.from("customer_contacts").insert(contactRows);
-    if (insertContactsError) throw insertContactsError;
+    const contactRows = customer.contacts.map(c => {
+      const contactRow: any = { customer_id: customerId, phone: c.phone };
+      if (c.id && isUuid(c.id)) contactRow.id = c.id;
+      return contactRow;
+    });
+    const { error: upsertContactsError } = await supabase.from("customer_contacts").upsert(contactRows, { onConflict: "id" });
+    if (upsertContactsError) throw upsertContactsError;
   }
 
-  // Delete and insert bank accounts
-  const { error: deleteBanksError } = await supabase.from("customer_bank_accounts").delete().eq("customer_id", customerId);
-  if (deleteBanksError) throw deleteBanksError;
+  // Upsert bank accounts
+  const validIncomingBankIds = (customer.bankAccounts || []).map(b => b.id).filter(id => id && isUuid(id));
+  if (validIncomingBankIds.length > 0) {
+    const { error: deleteBanksError } = await supabase.from("customer_bank_accounts").delete().eq("customer_id", customerId).not("id", "in", `(${validIncomingBankIds.join(",")})`);
+    if (deleteBanksError) throw deleteBanksError;
+  } else {
+    const { error: deleteBanksError } = await supabase.from("customer_bank_accounts").delete().eq("customer_id", customerId);
+    if (deleteBanksError) throw deleteBanksError;
+  }
+
   if (customer.bankAccounts && customer.bankAccounts.length > 0) {
-    const bankRows = customer.bankAccounts.map(b => ({
-      customer_id: customerId,
-      bank_name: b.bankName,
-      account_number: b.accountNumber,
-      account_name: b.accountName,
-      is_primary: b.isPrimary ?? false
-    }));
-    const { error: insertBanksError } = await supabase.from("customer_bank_accounts").insert(bankRows);
-    if (insertBanksError) throw insertBanksError;
+    const bankRows = customer.bankAccounts.map(b => {
+      const bankRow: any = {
+        customer_id: customerId,
+        bank_name: b.bankName,
+        account_number: b.accountNumber,
+        account_name: b.accountName,
+        is_primary: b.isPrimary ?? false
+      };
+      if (b.id && isUuid(b.id)) bankRow.id = b.id;
+      return bankRow;
+    });
+    const { error: upsertBanksError } = await supabase.from("customer_bank_accounts").upsert(bankRows, { onConflict: "id" });
+    if (upsertBanksError) throw upsertBanksError;
   }
 
-  // Delete and insert farms
-  const { error: deleteFarmsError } = await supabase.from("customer_farms").delete().eq("customer_id", customerId);
-  if (deleteFarmsError) throw deleteFarmsError;
+  // Upsert farms
+  const validIncomingFarmIds = (customer.farms || []).map(f => f.id).filter(id => id && isUuid(id));
+  if (validIncomingFarmIds.length > 0) {
+    const { error: deleteFarmsError } = await supabase.from("customer_farms").delete().eq("customer_id", customerId).not("id", "in", `(${validIncomingFarmIds.join(",")})`);
+    if (deleteFarmsError) throw deleteFarmsError;
+  } else {
+    const { error: deleteFarmsError } = await supabase.from("customer_farms").delete().eq("customer_id", customerId);
+    if (deleteFarmsError) throw deleteFarmsError;
+  }
+
   if (customer.farms && customer.farms.length > 0) {
-    const farmRows = customer.farms.map(f => ({
-      customer_id: customerId,
-      owner_name: f.ownerName,
-      address: f.address,
-      card_number: f.cardNumber
-    }));
-    const { error: insertFarmsError } = await supabase.from("customer_farms").insert(farmRows);
-    if (insertFarmsError) throw insertFarmsError;
+    const farmRows = customer.farms.map(f => {
+      const farmRow: any = {
+        customer_id: customerId,
+        owner_name: f.ownerName,
+        address: f.address,
+        card_number: f.cardNumber
+      };
+      if (f.id && isUuid(f.id)) farmRow.id = f.id;
+      return farmRow;
+    });
+    const { error: upsertFarmsError } = await supabase.from("customer_farms").upsert(farmRows, { onConflict: "id" });
+    if (upsertFarmsError) throw upsertFarmsError;
   }
 
   await saveSyncEvent("customer", customer.recordStatus === "deleted" ? "delete" : existingId ? "update" : "create", customer, null, customerId, serverReceivedAt);
@@ -651,4 +718,210 @@ export async function deleteCustomer(id: string) {
 
   // Log sync event for audit trail
   await saveSyncEvent("customer", "delete", data, null, id, serverReceivedAt);
+}
+
+export async function getCustomersPaginated(page: number = 1, pageSize: number = 50) {
+  await ensureLanFlowBootstrap();
+  const supabase = getAdminClient();
+
+  const start = (page - 1) * pageSize;
+  const end = start + pageSize - 1;
+
+  const { data: customers, error, count } = await supabase
+    .from("customers")
+    .select("*", { count: "exact" })
+    .neq("record_status", "deleted")
+    .order("created_at", { ascending: false })
+    .range(start, end);
+
+  if (error) throw error;
+
+  if (!customers || customers.length === 0) {
+    return { data: [], total: count ?? 0, page, pageSize };
+  }
+
+  const customerIds = customers.map(c => c.id);
+  const [contactsRes, banksRes, farmsRes] = await Promise.all([
+    supabase.from("customer_contacts").select("*").in("customer_id", customerIds),
+    supabase.from("customer_bank_accounts").select("*").in("customer_id", customerIds),
+    supabase.from("customer_farms").select("*").in("customer_id", customerIds)
+  ]);
+
+  const contacts = contactsRes.data ?? [];
+  const bankAccounts = banksRes.data ?? [];
+  const farms = farmsRes.data ?? [];
+
+  const resultData = customers.map((cust) => rowToCustomer(
+    cust,
+    contacts.filter(item => item.customer_id === cust.id),
+    bankAccounts.filter(item => item.customer_id === cust.id),
+    farms.filter(item => item.customer_id === cust.id)
+  ));
+
+  return {
+    data: resultData,
+    total: count ?? 0,
+    page,
+    pageSize
+  };
+}
+
+// ═══════════════════════════════════════
+// OCR Tickets
+// ═══════════════════════════════════════
+
+function rowToOcrTicket(row: any): OcrTicket {
+  return {
+    id: row.id,
+    clientTempId: row.client_temp_id ?? row.id,
+    idempotencyKey: row.idempotency_key ?? `server:${row.id}`,
+    locationId: row.location_id,
+    fileName: row.file_name,
+    ticketId: row.ticket_id ?? null,
+    licensePlate: row.license_plate ?? null,
+    dateIn: row.date_in ?? null,
+    weightIn: row.weight_in != null ? Number(row.weight_in) : null,
+    weightOut: row.weight_out != null ? Number(row.weight_out) : null,
+    weightNet: row.weight_net != null ? Number(row.weight_net) : null,
+    weightDeducted: row.weight_deducted != null ? Number(row.weight_deducted) : null,
+    weightRemaining: row.weight_remaining != null ? Number(row.weight_remaining) : null,
+    totalAmount: row.total_amount != null ? Number(row.total_amount) : null,
+    driveFileId: row.drive_file_id ?? null,
+    driveUrl: row.drive_url ?? null,
+    customerName: row.customer_name ?? null,
+    moneyDeducted: row.money_deducted != null ? Number(row.money_deducted) : null,
+    syncStatus: row.sync_status ?? "synced",
+    recordStatus: row.record_status ?? "active",
+    revisionNo: row.revision_no ?? 0,
+    createdByName: row.created_by_name ?? undefined,
+    createdByPhone: row.created_by_phone ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+export async function getOcrTickets(locationId: string): Promise<OcrTicket[]> {
+  await ensureLanFlowBootstrap();
+  const supabase = getAdminClient();
+  const { data, error } = await supabase
+    .from("ocr_tickets")
+    .select("*")
+    .eq("location_id", locationId)
+    .neq("record_status", "deleted")
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map(rowToOcrTicket);
+}
+
+export async function saveOcrTicket(ticket: OcrTicket) {
+  await ensureLanFlowBootstrap();
+  const supabase = getAdminClient();
+  const serverReceivedAt = new Date().toISOString();
+
+  const row = {
+    client_temp_id: ticket.clientTempId ?? null,
+    idempotency_key: ticket.idempotencyKey ?? null,
+    location_id: ticket.locationId,
+    file_name: ticket.fileName,
+    ticket_id: ticket.ticketId,
+    license_plate: ticket.licensePlate,
+    date_in: ticket.dateIn,
+    weight_in: ticket.weightIn,
+    weight_out: ticket.weightOut,
+    weight_net: ticket.weightNet,
+    weight_deducted: ticket.weightDeducted ?? 0,
+    weight_remaining: ticket.weightRemaining ?? 0,
+    total_amount: ticket.totalAmount ?? 0,
+    drive_file_id: ticket.driveFileId ?? null,
+    drive_url: ticket.driveUrl ?? null,
+    customer_name: ticket.customerName ?? null,
+    money_deducted: ticket.moneyDeducted ?? 0,
+    sync_status: "synced",
+    record_status: ticket.recordStatus ?? "active",
+    revision_no: ticket.revisionNo ?? 0,
+    server_received_at: serverReceivedAt,
+    client_recorded_at: ticket.createdAt ?? serverReceivedAt,
+    created_by_user_id: DEV_PROFILE_ID,
+    created_by_name: ticket.createdByName ?? "ผู้ดูแลระบบ",
+    created_by_phone: ticket.createdByPhone ?? "0800000000",
+    updated_at: serverReceivedAt
+  };
+
+  let existingId: string | null = null;
+  if (ticket.clientTempId) {
+    const byClientTempId = await supabase
+      .from("ocr_tickets")
+      .select("id")
+      .eq("client_temp_id", ticket.clientTempId)
+      .maybeSingle();
+    if (byClientTempId.error) throw byClientTempId.error;
+    existingId = byClientTempId.data?.id ?? null;
+  }
+
+  let result;
+  if (existingId) {
+    result = await supabase.from("ocr_tickets").update(row).eq("id", existingId).select("*").single();
+  } else {
+    result = await supabase.from("ocr_tickets").insert({ ...row, id: ticket.id }).select("*").single();
+  }
+  if (result.error) throw result.error;
+
+  await saveSyncEvent("ocr_ticket", existingId ? "update" : "create", ticket, ticket.locationId, result.data.id, serverReceivedAt);
+  return rowToOcrTicket(result.data);
+}
+
+export async function updateOcrTicket(id: string, updates: Partial<OcrTicket>) {
+  await ensureLanFlowBootstrap();
+  const supabase = getAdminClient();
+  const serverReceivedAt = new Date().toISOString();
+
+  const row: Record<string, unknown> = { updated_at: serverReceivedAt };
+  if (updates.ticketId !== undefined) row.ticket_id = updates.ticketId;
+  if (updates.licensePlate !== undefined) row.license_plate = updates.licensePlate;
+  if (updates.dateIn !== undefined) row.date_in = updates.dateIn;
+  if (updates.weightIn !== undefined) row.weight_in = updates.weightIn;
+  if (updates.weightOut !== undefined) row.weight_out = updates.weightOut;
+  if (updates.weightNet !== undefined) row.weight_net = updates.weightNet;
+  if (updates.weightDeducted !== undefined) row.weight_deducted = updates.weightDeducted;
+  if (updates.weightRemaining !== undefined) row.weight_remaining = updates.weightRemaining;
+  if (updates.totalAmount !== undefined) row.total_amount = updates.totalAmount;
+  if (updates.driveFileId !== undefined) row.drive_file_id = updates.driveFileId;
+  if (updates.driveUrl !== undefined) row.drive_url = updates.driveUrl;
+  if (updates.customerName !== undefined) row.customer_name = updates.customerName;
+  if (updates.moneyDeducted !== undefined) row.money_deducted = updates.moneyDeducted;
+
+  const { data, error } = await supabase
+    .from("ocr_tickets")
+    .update(row)
+    .eq("id", id)
+    .select("*")
+    .single();
+  if (error) throw error;
+
+  await saveSyncEvent("ocr_ticket", "update", data, data.location_id, id, serverReceivedAt);
+  return rowToOcrTicket(data);
+}
+
+export async function deleteOcrTicket(id: string) {
+  await ensureLanFlowBootstrap();
+  const supabase = getAdminClient();
+  const serverReceivedAt = new Date().toISOString();
+
+  const { data, error } = await supabase
+    .from("ocr_tickets")
+    .update({
+      record_status: "deleted",
+      sync_status: "synced",
+      deleted_at: serverReceivedAt,
+      deleted_by_name: "ผู้ดูแลระบบ",
+      deleted_by_phone: "0800000000",
+      updated_at: serverReceivedAt
+    })
+    .eq("id", id)
+    .select("*")
+    .single();
+  if (error) throw error;
+
+  await saveSyncEvent("ocr_ticket", "delete", data, data.location_id, id, serverReceivedAt);
+  return data.drive_file_id as string | null;
 }

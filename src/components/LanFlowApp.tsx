@@ -9,6 +9,8 @@ import {
   CloudOff,
   Database,
   Edit3,
+  FileImage,
+  Loader2,
   LockKeyhole,
   Plus,
   RefreshCw,
@@ -32,10 +34,12 @@ import {
 } from "@/lib/format";
 import { isSupabaseConfigured } from "@/lib/supabase-browser";
 import { useOfflineQueue } from "@/hooks/use-offline-queue";
-import type { IncomeExpense, Location, PaymentResponsibility, Profile, RubberBill, Customer } from "@/types";
+import type { IncomeExpense, Location, PaymentResponsibility, Profile, RubberBill, Customer, OcrTicket } from "@/types";
 import { CustomersModule } from "./CustomersModule";
+import { OcrTicketUpload } from "./OcrTicketUpload";
+import type { UploadItem } from "./OcrTicketUpload";
 
-type Tab = "dashboard" | "rubber" | "cash" | "customers" | "admin" | "sync";
+type Tab = "dashboard" | "rubber" | "cash" | "customers" | "ocr" | "admin" | "sync";
 type RubberWeighItem = NonNullable<RubberBill["weighItems"]>[number];
 type RubberAcidItem = NonNullable<RubberBill["acidItems"]>[number];
 type RubberDebtItem = NonNullable<RubberBill["debtItems"]>[number];
@@ -45,6 +49,7 @@ type LanFlowApiData = {
   bills: RubberBill[];
   transactions: IncomeExpense[];
   customers: Customer[];
+  ocrTickets: OcrTicket[];
 };
 
 const tabs: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: number }> }> = [
@@ -52,6 +57,7 @@ const tabs: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: n
   { id: "rubber", label: "บิลยาง", icon: Plus },
   { id: "cash", label: "รับ-จ่าย", icon: Banknote },
   { id: "customers", label: "ลูกค้า", icon: Users },
+  { id: "ocr", label: "อ่านใบชั่ง", icon: FileImage },
   { id: "admin", label: "Admin", icon: ShieldCheck },
   { id: "sync", label: "Sync", icon: RefreshCw }
 ];
@@ -73,6 +79,8 @@ export function LanFlowApp() {
     }
     return [];
   });
+  const [ocrTickets, setOcrTickets] = useState<OcrTicket[]>([]);
+  const [ocrUploadItems, setOcrUploadItems] = useState<UploadItem[]>([]);
   const queue = useOfflineQueue();
 
   useEffect(() => {
@@ -94,6 +102,18 @@ export function LanFlowApp() {
           window.localStorage.setItem("lanflow:customers", JSON.stringify(data.customers || []));
         }
         setSelectedLocationId(data.profile.locationIds[0] ?? data.locations[0]?.id ?? demoLocations[0].id);
+
+        // Load OCR tickets for all accessible locations
+        const locationId = data.profile.locationIds[0] ?? data.locations[0]?.id ?? demoLocations[0].id;
+        try {
+          const ocrRes = await fetch(`/api/lanflow/ocr-tickets?locationId=${locationId}`, { cache: "no-store" });
+          if (ocrRes.ok) {
+            const ocrData = await ocrRes.json() as OcrTicket[];
+            if (!ignore) setOcrTickets(ocrData);
+          }
+        } catch (ocrErr) {
+          console.error("OCR tickets load failed", ocrErr);
+        }
       } catch (error) {
         console.error("LanFlow database load failed", error);
       }
@@ -416,6 +436,103 @@ export function LanFlowApp() {
     }
   }
 
+  // ═══ OCR Tickets ═══
+
+  function addOcrTicket(ticket: OcrTicket) {
+    setOcrTickets((current) => [ticket, ...current]);
+    queue.enqueue({
+      clientTempId: ticket.clientTempId || ticket.id,
+      idempotencyKey: ticket.idempotencyKey || `ocr:${ticket.id}`,
+      entityType: "ocr_ticket",
+      operationType: "create",
+      payload: ticket
+    });
+    void persistOcrTicket(ticket);
+  }
+
+  function updateOcrTicket(updatedTicket: OcrTicket) {
+    setOcrTickets((current) =>
+      current.map((t) => (t.id === updatedTicket.id ? updatedTicket : t))
+    );
+    queue.enqueue({
+      clientTempId: updatedTicket.clientTempId || updatedTicket.id,
+      idempotencyKey: updatedTicket.idempotencyKey || `ocr:update:${updatedTicket.id}`,
+      entityType: "ocr_ticket",
+      operationType: "update",
+      payload: updatedTicket
+    });
+    void persistUpdateOcrTicket(updatedTicket);
+  }
+
+  function deleteOcrTicket(id: string) {
+    const ticket = ocrTickets.find((t) => t.id === id);
+    if (!ticket) return;
+    const idempotencyKey = `ocr:delete:${id}:${Date.now()}`;
+    setOcrTickets((current) => current.filter((t) => t.id !== id));
+    queue.enqueue({
+      clientTempId: ticket.clientTempId || id,
+      idempotencyKey,
+      entityType: "ocr_ticket",
+      operationType: "delete",
+      payload: { ...ticket, recordStatus: "deleted" }
+    });
+    void persistDeleteOcrTicket(id, idempotencyKey);
+  }
+
+  async function persistOcrTicket(ticket: OcrTicket) {
+    try {
+      const response = await fetch("/api/lanflow/ocr-tickets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(ticket)
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const saved = await response.json() as OcrTicket;
+      setOcrTickets((current) =>
+        current.map((t) => (t.id === ticket.id || t.clientTempId === ticket.clientTempId ? saved : t))
+      );
+      queue.markSynced(ticket.idempotencyKey || `ocr:${ticket.id}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "บันทึกใบชั่ง OCR ไม่สำเร็จ";
+      console.error("OCR ticket save failed", error);
+      queue.markFailed(ticket.idempotencyKey || `ocr:${ticket.id}`, message);
+    }
+  }
+
+  async function persistUpdateOcrTicket(ticket: OcrTicket) {
+    try {
+      const response = await fetch(`/api/lanflow/ocr-tickets/${ticket.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(ticket)
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const saved = await response.json() as OcrTicket;
+      setOcrTickets((current) =>
+        current.map((t) => (t.id === ticket.id ? saved : t))
+      );
+      queue.markSynced(ticket.idempotencyKey || `ocr:update:${ticket.id}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "อัพเดทใบชั่ง OCR ไม่สำเร็จ";
+      console.error("OCR ticket update failed", error);
+      queue.markFailed(ticket.idempotencyKey || `ocr:update:${ticket.id}`, message);
+    }
+  }
+
+  async function persistDeleteOcrTicket(id: string, idempotencyKey: string) {
+    try {
+      const response = await fetch(`/api/lanflow/ocr-tickets/${id}`, {
+        method: "DELETE"
+      });
+      if (!response.ok) throw new Error(await response.text());
+      queue.markSynced(idempotencyKey);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "ลบใบชั่ง OCR ไม่สำเร็จ";
+      console.error("OCR ticket delete failed", error);
+      queue.markFailed(idempotencyKey, message);
+    }
+  }
+
   function simulateSync() {
     const serverReceivedAt = makeClientRecordedAt();
     setBills((current) =>
@@ -514,17 +631,45 @@ export function LanFlowApp() {
           {tabs.map((tab) => {
             const Icon = tab.icon;
             const active = activeTab === tab.id;
+            // Badge for OCR tab
+            const ocrProcessing = ocrUploadItems.filter((i) => i.status === "processing").length;
+            const ocrPending = ocrUploadItems.filter((i) => i.status === "pending").length;
+            const ocrSuccess = ocrUploadItems.filter((i) => i.status === "success").length;
+            const ocrError = ocrUploadItems.filter((i) => i.status === "error").length;
+            const showOcrBadge = tab.id === "ocr" && ocrUploadItems.length > 0;
             return (
               <button
                 key={tab.id}
                 type="button"
                 onClick={() => setActiveTab(tab.id)}
-                className={`focus-ring flex h-10 shrink-0 items-center gap-2 rounded-md px-3 text-sm font-semibold ${
+                className={`focus-ring relative flex h-10 shrink-0 items-center gap-2 rounded-md px-3 text-sm font-semibold ${
                   active ? "bg-leaf text-white" : "bg-white text-ink hover:bg-mint"
                 }`}
               >
                 <Icon size={17} />
                 {tab.label}
+                {showOcrBadge && ocrProcessing > 0 && (
+                  <span className="ml-1 flex items-center gap-0.5 rounded-full bg-river px-1.5 py-0.5 text-[10px] font-bold text-white">
+                    <Loader2 size={10} className="animate-spin" />
+                    {ocrProcessing}
+                  </span>
+                )}
+                {showOcrBadge && ocrProcessing === 0 && ocrPending > 0 && (
+                  <span className="ml-1 rounded-full bg-amber px-1.5 py-0.5 text-[10px] font-bold text-ink">
+                    {ocrPending}
+                  </span>
+                )}
+                {showOcrBadge && ocrProcessing === 0 && ocrPending === 0 && ocrSuccess > 0 && ocrError === 0 && (
+                  <span className="ml-1 flex items-center gap-0.5 rounded-full bg-leaf/80 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                    <CheckCircle2 size={10} />
+                    {ocrSuccess}
+                  </span>
+                )}
+                {showOcrBadge && ocrError > 0 && ocrProcessing === 0 && (
+                  <span className="ml-1 rounded-full bg-clay px-1.5 py-0.5 text-[10px] font-bold text-white">
+                    {ocrError}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -561,6 +706,19 @@ export function LanFlowApp() {
             onAdd={addCustomer}
             onUpdate={updateCustomer}
             onDelete={deleteCustomer}
+          />
+        )}
+        {activeTab === "ocr" && (
+          <OcrTicketUpload
+            locationId={selectedLocationId}
+            online={queue.online}
+            ocrTickets={ocrTickets.filter((t) => t.locationId === selectedLocationId)}
+            uploadItems={ocrUploadItems}
+            setUploadItems={setOcrUploadItems}
+            customers={customers}
+            onSave={addOcrTicket}
+            onUpdate={updateOcrTicket}
+            onDelete={deleteOcrTicket}
           />
         )}
         {activeTab === "cash" && (
@@ -2448,7 +2606,7 @@ function SyncPanel({
       <div className="space-y-3">
         {queueItems.length === 0 && <p className="text-sm text-ink/60">ไม่มีรายการค้างซิงก์</p>}
         {queueItems.map((item) => (
-          <div key={item.clientTempId} className="rounded-md border border-black/10 p-3">
+          <div key={item.idempotencyKey} className="rounded-md border border-black/10 p-3">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <span className="font-semibold">{item.entityType} · {item.operationType}</span>
               <span className="rounded bg-field px-2 py-1 text-xs font-semibold">{item.status}</span>

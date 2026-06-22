@@ -1,0 +1,27 @@
+INSERT INTO public.customer_farms (customer_id, owner_name, card_number)
+VALUES
+((SELECT id FROM public.customers WHERE legacy_rec_id = '1748933160372' LIMIT 1), 'นายอุทัย ดอกแก้ว', '3340300119102'),
+((SELECT id FROM public.customers WHERE legacy_rec_id = '1748933160373' LIMIT 1), 'นายด้วง โมระอรรถ', '3330400758719'),
+((SELECT id FROM public.customers WHERE legacy_rec_id = '1748933160374' LIMIT 1), 'นายอำนวย เสียงใส', '3349900804980'),
+((SELECT id FROM public.customers WHERE legacy_rec_id = '1748933160375' LIMIT 1), 'นายเขียน ขยันการ', '3340300113198'),
+((SELECT id FROM public.customers WHERE legacy_rec_id = '1748933160376' LIMIT 1), 'นายเด่นชัย แก้วคำชาติ', '3330400526249'),
+((SELECT id FROM public.customers WHERE legacy_rec_id = '1748933160377' LIMIT 1), 'นางสาวทองใบ ดอกแก้ว', '3340300110148'),
+((SELECT id FROM public.customers WHERE legacy_rec_id = '1748933160378' LIMIT 1), 'นายเกรียงไกร พัฒนปรีดากุล', '8340188000020'),
+((SELECT id FROM public.customers WHERE legacy_rec_id = '1748933160379' LIMIT 1), 'นางเพียร คงรอด', '3340300100738'),
+((SELECT id FROM public.customers WHERE legacy_rec_id = '1748933160380' LIMIT 1), 'นางบังอร ชาวตระการ', '3340300118947'),
+((SELECT id FROM public.customers WHERE legacy_rec_id = '1748933160381' LIMIT 1), 'นางเตียร สีหาธรรม', '5340390001714'),
+((SELECT id FROM public.customers WHERE legacy_rec_id = '1748933160382' LIMIT 1), 'นางเสาวนิย์ ทิพเนตร', '3340300106116'),
+((SELECT id FROM public.customers WHERE legacy_rec_id = '1748933160383' LIMIT 1), 'นางสาววิจิตรา จันทร์เทพ', '3340300111373'),
+((SELECT id FROM public.customers WHERE legacy_rec_id = '1748933160384' LIMIT 1), 'นายสำราญ คำมั่น', '3340300108186'),
+((SELECT id FROM public.customers WHERE legacy_rec_id = '1748933160386' LIMIT 1), 'นายอนุสรณ์ สุธรรมวิจิตร', '3341900588619'),
+((SELECT id FROM public.customers WHERE legacy_rec_id = '1748933160387' LIMIT 1), 'นางคำเขียน สีหาธรรม', '3340300164680'),
+((SELECT id FROM public.customers WHERE legacy_rec_id = '1748933160388' LIMIT 1), 'นายเสือใบ ขาวฟอง', '3340300164698'),
+((SELECT id FROM public.customers WHERE legacy_rec_id = '1748933160389' LIMIT 1), 'นายวีรชาติ ห้วยทราย', '3490500147966'),
+((SELECT id FROM public.customers WHERE legacy_rec_id = '1748933160390' LIMIT 1), 'นายจำนง จำศรี', '3340701526272'),
+((SELECT id FROM public.customers WHERE legacy_rec_id = '1748933160391' LIMIT 1), 'นางสาววันทนา คำมั่น', '1340300072304'),
+((SELECT id FROM public.customers WHERE legacy_rec_id = '1748933160392' LIMIT 1), 'นายนาวา จวงจันทร์', '3340300139049'),
+((SELECT id FROM public.customers WHERE legacy_rec_id = '1748933160393' LIMIT 1), 'นายสมาน สิงหธรรม', '3340300111705'),
+((SELECT id FROM public.customers WHERE legacy_rec_id = '1748933160394' LIMIT 1), 'นางสาวเหลาทอง ป้องพิมพ์', '3340300111667'),
+((SELECT id FROM public.customers WHERE legacy_rec_id = '1748933160395' LIMIT 1), 'นางสาวอรทัย ผลทวี', '3342000169513'),
+((SELECT id FROM public.customers WHERE legacy_rec_id = '1761133823172' LIMIT 1), 'นายสมควร ศิริมาตย์', '3340200150172')
+ON CONFLICT DO NOTHING;

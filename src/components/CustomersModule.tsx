@@ -487,13 +487,41 @@ function CustomerModal({
     setFarms(prev => prev.map(f => f.id === id ? { ...f, ...patch } : f));
   }
 
+  const [validationErrors, setValidationErrors] = useState<string[]>([]);
+
   function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
 
+    const errors: string[] = [];
+
     if (!mainName.trim()) {
-      alert("กรุณากรอกชื่อหลัก");
+      errors.push("กรุณากรอกชื่อหลัก");
+    }
+
+    const filledContacts = contacts.filter(c => c.phone.trim() !== "");
+    filledContacts.forEach((c, idx) => {
+      const digits = c.phone.replace(/\D/g, "");
+      if (digits.length < 9 || digits.length > 10) {
+        errors.push(`เบอร์โทรรายการที่ ${idx + 1} ("${c.phone}") ต้องเป็นตัวเลข 9-10 หลัก`);
+      }
+    });
+
+    const filledFarms = farms.filter(f => f.ownerName.trim() !== "" || f.address.trim() !== "");
+    filledFarms.forEach((f, idx) => {
+      if (f.cardNumber.trim() !== "") {
+        const digits = f.cardNumber.replace(/\D/g, "");
+        if (digits.length !== 13) {
+          errors.push(`เลขบัตรประชาชนฟาร์มรายการที่ ${idx + 1} ("${f.cardNumber}") ต้องเป็นตัวเลข 13 หลัก (ปัจจุบัน ${digits.length} หลัก)`);
+        }
+      }
+    });
+
+    if (errors.length > 0) {
+      setValidationErrors(errors);
       return;
     }
+
+    setValidationErrors([]);
 
     const clientTempId = customer?.clientTempId ?? makeClientTempId("cust");
     const timestampId = customer?.legacyRecId ?? new Date().getTime().toString();
@@ -514,9 +542,9 @@ function CustomerModal({
       revisionNo: (customer?.revisionNo ?? 0) + (customer ? 1 : 0),
       recordStatus: customer?.recordStatus ?? "active",
       
-      contacts: contacts.filter(c => c.phone.trim() !== ""),
+      contacts: filledContacts,
       bankAccounts: bankAccounts.filter(b => b.accountNumber.trim() !== ""),
-      farms: farms.filter(f => f.ownerName.trim() !== "" || f.address.trim() !== "")
+      farms: filledFarms
     });
   }
 
@@ -542,6 +570,18 @@ function CustomerModal({
 
         {/* Modal Form */}
         <form onSubmit={handleSubmit} className="p-5 space-y-6">
+
+          {/* Validation errors banner */}
+          {validationErrors.length > 0 && (
+            <div className="rounded-lg border border-rose-300 bg-rose-50 p-4">
+              <p className="text-sm font-bold text-rose-800 mb-1">⚠️ กรุณาแก้ไขข้อมูลก่อนบันทึก:</p>
+              <ul className="list-disc list-inside space-y-0.5">
+                {validationErrors.map((err, i) => (
+                  <li key={i} className="text-xs text-rose-700">{err}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           
           {/* Section 1: Main customer details */}
           <div className="bg-slate-50 rounded-xl p-4 border border-black/5">

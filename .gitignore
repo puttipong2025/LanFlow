@@ -14,3 +14,7 @@ lanflow-*.png
 scratch/
 supabase/.temp/
 
+
+.gemini/
+src/lib/server/*.json
+backup_customers*.sql

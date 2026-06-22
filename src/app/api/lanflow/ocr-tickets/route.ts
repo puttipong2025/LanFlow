@@ -1,17 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { saveCustomer, getCustomersPaginated } from "@/lib/server/lanflow-db";
-import type { Customer } from "@/types";
+import { getOcrTickets, saveOcrTicket } from "@/lib/server/lanflow-db";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url);
-    const page = parseInt(searchParams.get("page") || "1", 10);
-    const pageSize = parseInt(searchParams.get("pageSize") || "50", 10);
-    
-    const result = await getCustomersPaginated(page, pageSize);
-    return NextResponse.json(result);
+    const locationId = request.nextUrl.searchParams.get("locationId");
+    if (!locationId) {
+      return NextResponse.json({ error: "locationId is required" }, { status: 400 });
+    }
+    const data = await getOcrTickets(locationId);
+    return NextResponse.json(data);
   } catch (error) {
     const message = error instanceof Error ? error.message : JSON.stringify(error);
     return NextResponse.json({ error: message }, { status: 500 });
@@ -20,12 +19,11 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const customer = await request.json() as Customer;
-    const saved = await saveCustomer(customer);
+    const body = await request.json();
+    const saved = await saveOcrTicket(body);
     return NextResponse.json(saved);
   } catch (error) {
     const message = error instanceof Error ? error.message : JSON.stringify(error);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
-

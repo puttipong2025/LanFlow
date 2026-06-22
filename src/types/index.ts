@@ -110,9 +110,9 @@ export type IncomeExpense = {
 export type QueueItem = {
   clientTempId: string;
   idempotencyKey: string;
-  entityType: "rubber_bill" | "income_expense" | "customer";
+  entityType: "rubber_bill" | "income_expense" | "customer" | "ocr_ticket";
   operationType: QueueOperation;
-  payload: RubberBill | IncomeExpense | Customer;
+  payload: RubberBill | IncomeExpense | Customer | OcrTicket;
   status: SyncStatus;
   createdAt: string;
   serverReceivedAt?: string;
@@ -161,4 +161,32 @@ export type Customer = {
   contacts?: CustomerContact[];
   bankAccounts?: CustomerBankAccount[];
   farms?: CustomerFarm[];
+};
+
+export type OcrTicket = {
+  id: string;
+  clientTempId?: string;
+  idempotencyKey?: string;
+  locationId: string;
+  fileName: string;
+  ticketId: string | null;
+  licensePlate: string | null;
+  dateIn: string | null;
+  weightIn: number | null;
+  weightOut: number | null;
+  weightNet: number | null;
+  weightDeducted: number | null;
+  weightRemaining: number | null;
+  totalAmount: number | null;
+  driveFileId?: string | null;
+  driveUrl?: string | null;
+  customerName?: string | null;
+  moneyDeducted?: number | null;
+  syncStatus?: SyncStatus;
+  recordStatus?: RecordStatus;
+  revisionNo?: number;
+  createdByName?: string;
+  createdByPhone?: string;
+  createdAt?: string;
+  updatedAt?: string;
 };
