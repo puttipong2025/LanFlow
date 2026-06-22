@@ -1,5 +1,4 @@
 import type { Metadata, Viewport } from "next";
-import { PwaRegister } from "@/components/PwaRegister";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -18,7 +17,6 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="th">
       <body suppressHydrationWarning>
-        <PwaRegister />
         {children}
       </body>
     </html>

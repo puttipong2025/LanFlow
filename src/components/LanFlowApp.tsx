@@ -34,12 +34,13 @@ import {
 } from "@/lib/format";
 import { isSupabaseConfigured } from "@/lib/supabase-browser";
 import { useOfflineQueue } from "@/hooks/use-offline-queue";
-import type { IncomeExpense, Location, PaymentResponsibility, Profile, RubberBill, Customer, OcrTicket } from "@/types";
+import type { IncomeExpense, Location, PaymentResponsibility, Profile, RubberBill, Customer, OcrTicket, TransportStaff } from "@/types";
 import { CustomersModule } from "./CustomersModule";
+import { TransportModule } from "./TransportModule";
 import { OcrTicketUpload } from "./OcrTicketUpload";
 import type { UploadItem } from "./OcrTicketUpload";
 
-type Tab = "dashboard" | "rubber" | "cash" | "customers" | "ocr" | "admin" | "sync";
+type Tab = "dashboard" | "rubber" | "cash" | "customers" | "transport" | "ocr" | "admin" | "sync";
 type RubberWeighItem = NonNullable<RubberBill["weighItems"]>[number];
 type RubberAcidItem = NonNullable<RubberBill["acidItems"]>[number];
 type RubberDebtItem = NonNullable<RubberBill["debtItems"]>[number];
@@ -49,6 +50,7 @@ type LanFlowApiData = {
   bills: RubberBill[];
   transactions: IncomeExpense[];
   customers: Customer[];
+  transportStaffs: TransportStaff[];
   ocrTickets: OcrTicket[];
 };
 
@@ -57,6 +59,7 @@ const tabs: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: n
   { id: "rubber", label: "บิลยาง", icon: Plus },
   { id: "cash", label: "รับ-จ่าย", icon: Banknote },
   { id: "customers", label: "ลูกค้า", icon: Users },
+  { id: "transport", label: "ขนส่งและพนักงาน", icon: ArrowDownUp },
   { id: "ocr", label: "อ่านใบชั่ง", icon: FileImage },
   { id: "admin", label: "Admin", icon: ShieldCheck },
   { id: "sync", label: "Sync", icon: RefreshCw }
@@ -79,6 +82,7 @@ export function LanFlowApp() {
     }
     return [];
   });
+  const [transportStaffs, setTransportStaffs] = useState<TransportStaff[]>([]);
   const [ocrTickets, setOcrTickets] = useState<OcrTicket[]>([]);
   const [ocrUploadItems, setOcrUploadItems] = useState<UploadItem[]>([]);
   const queue = useOfflineQueue();
@@ -98,10 +102,22 @@ export function LanFlowApp() {
         setBills(data.bills);
         setTransactions(data.transactions);
         setCustomers(data.customers || []);
+        setTransportStaffs((data as any).transportStaffs || []);
         if (typeof window !== "undefined") {
           window.localStorage.setItem("lanflow:customers", JSON.stringify(data.customers || []));
         }
         setSelectedLocationId(data.profile.locationIds[0] ?? data.locations[0]?.id ?? demoLocations[0].id);
+
+        // Load transport staffs
+        try {
+          const tsRes = await fetch("/api/lanflow/transport-staffs", { cache: "no-store" });
+          if (tsRes.ok) {
+            const tsData = await tsRes.json();
+            if (!ignore) setTransportStaffs(tsData.data || []);
+          }
+        } catch (tsErr) {
+          console.error("Transport staffs load failed", tsErr);
+        }
 
         // Load OCR tickets for all accessible locations
         const locationId = data.profile.locationIds[0] ?? data.locations[0]?.id ?? demoLocations[0].id;
@@ -436,6 +452,99 @@ export function LanFlowApp() {
     }
   }
 
+  // ═══ Transport Staffs ═══
+
+  function addTransportStaff(staff: TransportStaff) {
+    const key = staff.idempotencyKey || makeIdempotencyKey("create", staff.id);
+    const staffWithKey = { ...staff, idempotencyKey: key };
+    setTransportStaffs((current) => [staffWithKey, ...current]);
+    queue.enqueue({
+      clientTempId: staffWithKey.clientTempId || staffWithKey.id,
+      idempotencyKey: key,
+      entityType: "transport_staff",
+      operationType: "create",
+      payload: staffWithKey
+    });
+    void persistTransportStaff(staffWithKey);
+  }
+
+  function updateTransportStaff(updatedStaff: TransportStaff) {
+    const nextRevision = (updatedStaff.revisionNo || 0) + 1;
+    const revisedStaff: TransportStaff = {
+      ...updatedStaff,
+      revisionNo: nextRevision,
+      syncStatus: "pending",
+      idempotencyKey: makeIdempotencyKey("update", `${updatedStaff.clientTempId || updatedStaff.id}:${nextRevision}`)
+    };
+    setTransportStaffs((current) => current.map((item) => (item.id === revisedStaff.id ? revisedStaff : item)));
+    queue.enqueue({
+      clientTempId: revisedStaff.clientTempId || revisedStaff.id,
+      idempotencyKey: revisedStaff.idempotencyKey!,
+      entityType: "transport_staff",
+      operationType: "update",
+      payload: revisedStaff
+    });
+    void persistTransportStaff(revisedStaff);
+  }
+
+  function deleteTransportStaff(id: string) {
+    const staff = transportStaffs.find((item) => item.id === id);
+    if (!staff) return;
+    const nextRevision = (staff.revisionNo || 0) + 1;
+    const idempotencyKey = makeIdempotencyKey("delete", `${staff.clientTempId || staff.id}:${nextRevision}`);
+    
+    setTransportStaffs((current) => current.filter((item) => item.id !== id));
+    queue.enqueue({
+      clientTempId: staff.clientTempId || staff.id,
+      idempotencyKey,
+      entityType: "transport_staff",
+      operationType: "delete",
+      payload: staff
+    });
+    void persistDeleteTransportStaff(id, idempotencyKey);
+  }
+
+  async function persistTransportStaff(staff: TransportStaff) {
+    try {
+      const response = await fetch("/api/lanflow/transport-staffs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(staff)
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const savedStaff = await response.json() as TransportStaff;
+      setTransportStaffs((current) => {
+        const exists = current.some((item) => item.id === staff.id || item.clientTempId === staff.clientTempId);
+        if (!exists) return [savedStaff, ...current];
+        return current.map((item) =>
+          item.id === staff.id || item.clientTempId === staff.clientTempId ? savedStaff : item
+        );
+      });
+      queue.markSynced(staff.idempotencyKey!);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "บันทึกข้อมูลขนส่งไม่สำเร็จ";
+      console.error("LanFlow transport staff save failed", error);
+      setTransportStaffs((current) =>
+        current.map((item) => (item.clientTempId === staff.clientTempId ? { ...item, syncStatus: "failed" } : item))
+      );
+      queue.markFailed(staff.idempotencyKey!, message);
+    }
+  }
+
+  async function persistDeleteTransportStaff(id: string, idempotencyKey: string) {
+    try {
+      const response = await fetch(`/api/lanflow/transport-staffs/${id}`, {
+        method: "DELETE"
+      });
+      if (!response.ok) throw new Error(await response.text());
+      queue.markSynced(idempotencyKey);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "ลบข้อมูลขนส่งไม่สำเร็จ";
+      console.error("LanFlow transport staff delete failed", error);
+      queue.markFailed(idempotencyKey, message);
+    }
+  }
+
   // ═══ OCR Tickets ═══
 
   function addOcrTicket(ticket: OcrTicket) {
@@ -706,6 +815,15 @@ export function LanFlowApp() {
             onAdd={addCustomer}
             onUpdate={updateCustomer}
             onDelete={deleteCustomer}
+          />
+        )}
+        {activeTab === "transport" && (
+          <TransportModule
+            staffs={transportStaffs}
+            profile={profile}
+            onAdd={addTransportStaff}
+            onUpdate={updateTransportStaff}
+            onDelete={deleteTransportStaff}
           />
         )}
         {activeTab === "ocr" && (

@@ -18,3 +18,11 @@ supabase/.temp/
 .gemini/
 src/lib/server/*.json
 backup_customers*.sql
+
+# next-pwa generated files
+public/sw.js
+public/sw.js.map
+public/workbox-*.js
+public/workbox-*.js.map
+public/swe-worker-*.js
+public/swe-worker-*.js.map

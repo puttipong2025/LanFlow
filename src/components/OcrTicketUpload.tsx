@@ -197,7 +197,6 @@ export function OcrTicketUpload({
           fileName: item.file.name,
           ticketId: result.ticket_id,
           licensePlate: result.license_plate,
-          driverName: null,
           dateIn: result.date_in,
           weightIn: result.weight_in,
           weightOut: result.weight_out,

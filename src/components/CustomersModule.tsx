@@ -804,6 +804,7 @@ function CustomerModal({
                             <option value="ออมสิน">ออมสิน</option>
                             <option value="ออมสิน (GSB)">ออมสิน (GSB)</option>
                             <option value="ทหารไทยธนชาต (ttb)">ทหารไทยธนชาต (ttb)</option>
+                            <option value="พร้อมเพย์">พร้อมเพย์ (PromptPay)</option>
                           </select>
                         </td>
                         <td className="py-1.5 pr-1">

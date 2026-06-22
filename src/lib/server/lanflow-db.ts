@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import type { IncomeExpense, Location, Profile, RubberBill, Customer, CustomerContact, CustomerBankAccount, CustomerFarm, OcrTicket } from "@/types";
+import type { IncomeExpense, Location, Profile, RubberBill, Customer, CustomerContact, CustomerBankAccount, CustomerFarm, OcrTicket, TransportStaff, TransportStaffPlate, MoneyTransfer, MoneyTransferSlip, MoneyTransferItem } from "@/types";
 
 const DEV_PROFILE_ID = "00000000-0000-4000-8000-000000000001";
 const DEV_LOCATIONS = [
@@ -298,7 +298,7 @@ export async function saveIncomeExpense(transaction: IncomeExpense) {
 }
 
 async function saveSyncEvent(
-  entityType: "rubber_bill" | "income_expense" | "customer" | "ocr_ticket",
+  entityType: "rubber_bill" | "income_expense" | "customer" | "ocr_ticket" | "transport_staff" | "money_transfer",
   operationType: "create" | "update" | "delete",
   payload: any,
   locationId: string | null,
@@ -925,3 +925,492 @@ export async function deleteOcrTicket(id: string) {
   await saveSyncEvent("ocr_ticket", "delete", data, data.location_id, id, serverReceivedAt);
   return data.drive_file_id as string | null;
 }
+
+// ═══════════════════════════════════════
+// Transport Staffs (ขนส่งและพนักงาน)
+// ═══════════════════════════════════════
+
+function rowToTransportStaff(
+  row: any,
+  contacts: any[],
+  bankAccounts: any[],
+  plates: any[]
+): TransportStaff {
+  return {
+    id: row.id,
+    clientTempId: row.client_temp_id ?? row.id,
+    legacyRecId: row.legacy_rec_id ?? undefined,
+    legacyMemberId: row.legacy_member_id ?? undefined,
+    mainName: row.main_name,
+    createdByUserId: row.created_by_user_id ?? undefined,
+    createdByName: row.created_by_name ?? undefined,
+    createdByPhone: row.created_by_phone ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    syncStatus: row.sync_status ?? "synced",
+    idempotencyKey: row.idempotency_key ?? undefined,
+    revisionNo: row.revision_no ?? 0,
+    recordStatus: row.record_status ?? "active",
+    contacts: contacts.map((c) => ({ id: c.id, phone: c.phone })),
+    bankAccounts: bankAccounts.map((b) => ({
+      id: b.id,
+      bankName: b.bank_name,
+      accountNumber: b.account_number,
+      accountName: b.account_name,
+      isPrimary: b.is_primary ?? false,
+    })),
+    plates: plates.map((p) => ({
+      id: p.id,
+      plateNumber: p.plate_number,
+    })),
+  };
+}
+
+export async function getTransportStaffs(): Promise<TransportStaff[]> {
+  await ensureLanFlowBootstrap();
+  const supabase = getAdminClient();
+
+  const { data: staffs, error } = await supabase
+    .from("transport_staffs")
+    .select("*")
+    .neq("record_status", "deleted")
+    .order("main_name", { ascending: true });
+
+  if (error) throw error;
+  if (!staffs || staffs.length === 0) return [];
+
+  const staffIds = staffs.map((s) => s.id);
+  const [contactsRes, banksRes, platesRes] = await Promise.all([
+    supabase.from("transport_staff_contacts").select("*").in("staff_id", staffIds),
+    supabase.from("transport_staff_bank_accounts").select("*").in("staff_id", staffIds),
+    supabase.from("transport_staff_plates").select("*").in("staff_id", staffIds),
+  ]);
+
+  return staffs.map((s) =>
+    rowToTransportStaff(
+      s,
+      (contactsRes.data ?? []).filter((c) => c.staff_id === s.id),
+      (banksRes.data ?? []).filter((b) => b.staff_id === s.id),
+      (platesRes.data ?? []).filter((p) => p.staff_id === s.id)
+    )
+  );
+}
+
+export async function getTransportStaffsPaginated(page: number = 1, pageSize: number = 50) {
+  await ensureLanFlowBootstrap();
+  const supabase = getAdminClient();
+
+  const start = (page - 1) * pageSize;
+  const end = start + pageSize - 1;
+
+  const { data: staffs, error, count } = await supabase
+    .from("transport_staffs")
+    .select("*", { count: "exact" })
+    .neq("record_status", "deleted")
+    .order("created_at", { ascending: false })
+    .range(start, end);
+
+  if (error) throw error;
+
+  if (!staffs || staffs.length === 0) {
+    return { data: [], total: count ?? 0, page, pageSize };
+  }
+
+  const staffIds = staffs.map((s) => s.id);
+  const [contactsRes, banksRes, platesRes] = await Promise.all([
+    supabase.from("transport_staff_contacts").select("*").in("staff_id", staffIds),
+    supabase.from("transport_staff_bank_accounts").select("*").in("staff_id", staffIds),
+    supabase.from("transport_staff_plates").select("*").in("staff_id", staffIds),
+  ]);
+
+  const contacts = contactsRes.data ?? [];
+  const bankAccounts = banksRes.data ?? [];
+  const plates = platesRes.data ?? [];
+
+  const resultData = staffs.map((s) =>
+    rowToTransportStaff(
+      s,
+      contacts.filter((c) => c.staff_id === s.id),
+      bankAccounts.filter((b) => b.staff_id === s.id),
+      plates.filter((p) => p.staff_id === s.id)
+    )
+  );
+
+  return { data: resultData, total: count ?? 0, page, pageSize };
+}
+
+export async function saveTransportStaff(staff: TransportStaff) {
+  if (!staff.mainName || staff.mainName.trim() === "") {
+    throw new Error("Validation Error: mainName is required");
+  }
+
+  if (staff.contacts) {
+    for (const c of staff.contacts) {
+      if (c.phone && c.phone.trim() !== "") {
+        const digits = c.phone.replace(/\D/g, "");
+        if (digits.length < 9 || digits.length > 10) {
+          throw new Error(`Validation Error: invalid phone format (${c.phone}), must be 9-10 digits`);
+        }
+      }
+    }
+  }
+
+  await ensureLanFlowBootstrap();
+  const supabase = getAdminClient();
+  const serverReceivedAt = new Date().toISOString();
+  const isUuid = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+
+  const row = {
+    client_temp_id: staff.clientTempId ?? null,
+    idempotency_key: staff.idempotencyKey ?? null,
+    legacy_rec_id: staff.legacyRecId ?? staff.clientTempId ?? null,
+    legacy_member_id: staff.legacyMemberId ?? null,
+    main_name: staff.mainName,
+    revision_no: staff.revisionNo ?? 0,
+    sync_status: "synced",
+    record_status: staff.recordStatus ?? "active",
+    server_received_at: serverReceivedAt,
+    created_by_user_id: DEV_PROFILE_ID,
+    created_by_name: staff.createdByName ?? "ผู้ดูแลระบบ",
+    created_by_phone: staff.createdByPhone ?? "0800000000",
+    updated_by_user_id: DEV_PROFILE_ID,
+    updated_by_name: staff.createdByName ?? "ผู้ดูแลระบบ",
+    updated_by_phone: staff.createdByPhone ?? "0800000000",
+    updated_at: serverReceivedAt,
+  };
+
+  // Find existing record
+  let existingId: string | null = null;
+
+  if (staff.id && isUuid(staff.id)) {
+    const byId = await supabase.from("transport_staffs").select("id").eq("id", staff.id).maybeSingle();
+    if (byId.error) throw byId.error;
+    existingId = byId.data?.id ?? null;
+  }
+
+  if (!existingId && staff.clientTempId) {
+    const byClientTempId = await supabase.from("transport_staffs").select("id").eq("client_temp_id", staff.clientTempId).maybeSingle();
+    if (byClientTempId.error) throw byClientTempId.error;
+    existingId = byClientTempId.data?.id ?? null;
+  }
+
+  let result;
+  if (existingId) {
+    result = await supabase.from("transport_staffs").update(row).eq("id", existingId).select("*").single();
+  } else {
+    const insertRow: any = { ...row };
+    if (staff.id && isUuid(staff.id)) insertRow.id = staff.id;
+    result = await supabase.from("transport_staffs").insert(insertRow).select("*").single();
+  }
+
+  if (result.error) throw result.error;
+  const staffId = result.data.id;
+
+  // Upsert contacts
+  const validContactIds = (staff.contacts || []).map((c) => c.id).filter((id) => id && isUuid(id));
+  if (validContactIds.length > 0) {
+    await supabase.from("transport_staff_contacts").delete().eq("staff_id", staffId).not("id", "in", `(${validContactIds.join(",")})`);
+  } else {
+    await supabase.from("transport_staff_contacts").delete().eq("staff_id", staffId);
+  }
+  if (staff.contacts && staff.contacts.length > 0) {
+    const contactRows = staff.contacts.map((c) => {
+      const r: any = { staff_id: staffId, phone: c.phone };
+      if (c.id && isUuid(c.id)) r.id = c.id;
+      return r;
+    });
+    const { error: upsertErr } = await supabase.from("transport_staff_contacts").upsert(contactRows, { onConflict: "id" });
+    if (upsertErr) throw upsertErr;
+  }
+
+  // Upsert bank accounts
+  const validBankIds = (staff.bankAccounts || []).map((b) => b.id).filter((id) => id && isUuid(id));
+  if (validBankIds.length > 0) {
+    await supabase.from("transport_staff_bank_accounts").delete().eq("staff_id", staffId).not("id", "in", `(${validBankIds.join(",")})`);
+  } else {
+    await supabase.from("transport_staff_bank_accounts").delete().eq("staff_id", staffId);
+  }
+  if (staff.bankAccounts && staff.bankAccounts.length > 0) {
+    const bankRows = staff.bankAccounts.map((b) => {
+      const r: any = {
+        staff_id: staffId,
+        bank_name: b.bankName,
+        account_number: b.accountNumber,
+        account_name: b.accountName,
+        is_primary: b.isPrimary ?? false,
+      };
+      if (b.id && isUuid(b.id)) r.id = b.id;
+      return r;
+    });
+    const { error: upsertErr } = await supabase.from("transport_staff_bank_accounts").upsert(bankRows, { onConflict: "id" });
+    if (upsertErr) throw upsertErr;
+  }
+
+  // Upsert plates (ทะเบียนรถ)
+  const validPlateIds = (staff.plates || []).map((p) => p.id).filter((id) => id && isUuid(id));
+  if (validPlateIds.length > 0) {
+    await supabase.from("transport_staff_plates").delete().eq("staff_id", staffId).not("id", "in", `(${validPlateIds.join(",")})`);
+  } else {
+    await supabase.from("transport_staff_plates").delete().eq("staff_id", staffId);
+  }
+  if (staff.plates && staff.plates.length > 0) {
+    const plateRows = staff.plates.map((p) => {
+      const r: any = { staff_id: staffId, plate_number: p.plateNumber };
+      if (p.id && isUuid(p.id)) r.id = p.id;
+      return r;
+    });
+    const { error: upsertErr } = await supabase.from("transport_staff_plates").upsert(plateRows, { onConflict: "id" });
+    if (upsertErr) throw upsertErr;
+  }
+
+  await saveSyncEvent("transport_staff", existingId ? "update" : "create", staff, null, staffId, serverReceivedAt);
+
+  const [contactsRes, banksRes, platesRes] = await Promise.all([
+    supabase.from("transport_staff_contacts").select("*").eq("staff_id", staffId),
+    supabase.from("transport_staff_bank_accounts").select("*").eq("staff_id", staffId),
+    supabase.from("transport_staff_plates").select("*").eq("staff_id", staffId),
+  ]);
+
+  return rowToTransportStaff(result.data, contactsRes.data ?? [], banksRes.data ?? [], platesRes.data ?? []);
+}
+
+export async function deleteTransportStaff(id: string) {
+  await ensureLanFlowBootstrap();
+  const supabase = getAdminClient();
+  const serverReceivedAt = new Date().toISOString();
+
+  const { data, error } = await supabase
+    .from("transport_staffs")
+    .update({
+      record_status: "deleted",
+      sync_status: "synced",
+      updated_at: serverReceivedAt,
+    })
+    .eq("id", id)
+    .select("*")
+    .single();
+
+  if (error) throw error;
+  await saveSyncEvent("transport_staff", "delete", data, null, id, serverReceivedAt);
+}
+
+// ═══════════════════════════════════════
+// Money Transfers (ระบบโอนเงิน)
+// ═══════════════════════════════════════
+
+function rowToMoneyTransferSlip(row: any): MoneyTransferSlip {
+  return {
+    id: row.id,
+    amount: Number(row.amount ?? 0),
+    referenceNumber: row.reference_number ?? null,
+    fee: Number(row.fee ?? 0),
+    senderName: row.sender_name ?? null,
+    receiverName: row.receiver_name ?? null,
+    transactionDate: row.transaction_date ?? null,
+    slipImageUrl: row.slip_image_url ?? null,
+    sortOrder: row.sort_order ?? 0,
+  };
+}
+
+function rowToMoneyTransferItem(row: any): MoneyTransferItem {
+  return {
+    id: row.id,
+    sourceType: row.source_type,
+    sourceId: row.source_id,
+    customerName: row.customer_name ?? null,
+    amount: Number(row.amount ?? 0),
+  };
+}
+
+function rowToMoneyTransfer(row: any, slips: any[], items: any[]): MoneyTransfer {
+  return {
+    id: row.id,
+    clientTempId: row.client_temp_id ?? row.id,
+    idempotencyKey: row.idempotency_key ?? `server:${row.id}`,
+    locationId: row.location_id,
+    customerId: row.customer_id ?? null,
+    customerName: row.customer_name ?? null,
+    accountNumber: row.account_number ?? null,
+    accountName: row.account_name ?? null,
+    bankName: row.bank_name ?? null,
+    netAmountToPay: Number(row.net_amount_to_pay ?? 0),
+    transferStatus: row.transfer_status ?? "pending",
+    syncStatus: row.sync_status ?? "synced",
+    recordStatus: row.record_status ?? "active",
+    revisionNo: row.revision_no ?? 0,
+    createdByUserId: row.created_by_user_id ?? undefined,
+    createdByName: row.created_by_name ?? undefined,
+    createdByPhone: row.created_by_phone ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    slips: slips.map(rowToMoneyTransferSlip),
+    items: items.map(rowToMoneyTransferItem),
+  };
+}
+
+export async function getMoneyTransfers(locationId: string): Promise<MoneyTransfer[]> {
+  await ensureLanFlowBootstrap();
+  const supabase = getAdminClient();
+
+  const { data: transfers, error } = await supabase
+    .from("money_transfers")
+    .select("*")
+    .eq("location_id", locationId)
+    .neq("record_status", "deleted")
+    .order("created_at", { ascending: false });
+
+  if (error) throw error;
+  if (!transfers || transfers.length === 0) return [];
+
+  const transferIds = transfers.map((t) => t.id);
+  const [slipsRes, itemsRes] = await Promise.all([
+    supabase.from("money_transfer_slips").select("*").in("transfer_id", transferIds).order("sort_order", { ascending: true }),
+    supabase.from("money_transfer_items").select("*").in("transfer_id", transferIds).order("created_at", { ascending: true }),
+  ]);
+
+  const slips = slipsRes.data ?? [];
+  const items = itemsRes.data ?? [];
+
+  return transfers.map((t) =>
+    rowToMoneyTransfer(
+      t,
+      slips.filter((s) => s.transfer_id === t.id),
+      items.filter((i) => i.transfer_id === t.id)
+    )
+  );
+}
+
+export async function getUsedSourceIds(): Promise<Set<string>> {
+  const supabase = getAdminClient();
+  const { data, error } = await supabase
+    .from("money_transfer_items")
+    .select("source_id");
+  if (error) throw error;
+  return new Set((data ?? []).map((r) => r.source_id));
+}
+
+export async function saveMoneyTransfer(transfer: MoneyTransfer): Promise<MoneyTransfer> {
+  await ensureLanFlowBootstrap();
+  const supabase = getAdminClient();
+  const serverReceivedAt = new Date().toISOString();
+
+  const row = {
+    client_temp_id: transfer.clientTempId ?? null,
+    idempotency_key: transfer.idempotencyKey ?? null,
+    location_id: transfer.locationId,
+    customer_id: transfer.customerId ?? null,
+    customer_name: transfer.customerName ?? null,
+    account_number: transfer.accountNumber ?? null,
+    account_name: transfer.accountName ?? null,
+    bank_name: transfer.bankName ?? null,
+    net_amount_to_pay: transfer.netAmountToPay,
+    transfer_status: transfer.transferStatus ?? "pending",
+    sync_status: "synced",
+    record_status: transfer.recordStatus ?? "active",
+    revision_no: transfer.revisionNo ?? 0,
+    server_received_at: serverReceivedAt,
+    created_by_user_id: DEV_PROFILE_ID,
+    created_by_name: transfer.createdByName ?? "ผู้ดูแลระบบ",
+    created_by_phone: transfer.createdByPhone ?? "0800000000",
+    updated_at: serverReceivedAt,
+  };
+
+  const isUuid = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+
+  let existingId: string | null = null;
+
+  if (transfer.id && isUuid(transfer.id)) {
+    const byId = await supabase.from("money_transfers").select("id").eq("id", transfer.id).maybeSingle();
+    if (byId.error) throw byId.error;
+    existingId = byId.data?.id ?? null;
+  }
+
+  if (!existingId && transfer.clientTempId) {
+    const byClientTempId = await supabase.from("money_transfers").select("id").eq("client_temp_id", transfer.clientTempId).maybeSingle();
+    if (byClientTempId.error) throw byClientTempId.error;
+    existingId = byClientTempId.data?.id ?? null;
+  }
+
+  let result;
+  if (existingId) {
+    result = await supabase.from("money_transfers").update(row).eq("id", existingId).select("*").single();
+  } else {
+    const insertRow: any = { ...row };
+    if (transfer.id && isUuid(transfer.id)) insertRow.id = transfer.id;
+    result = await supabase.from("money_transfers").insert(insertRow).select("*").single();
+  }
+
+  if (result.error) throw result.error;
+  const transferId = result.data.id;
+
+  // Replace slips
+  await supabase.from("money_transfer_slips").delete().eq("transfer_id", transferId);
+  if (transfer.slips && transfer.slips.length > 0) {
+    const slipRows = transfer.slips.map((s, idx) => ({
+      transfer_id: transferId,
+      amount: s.amount,
+      reference_number: s.referenceNumber,
+      fee: s.fee,
+      sender_name: s.senderName,
+      receiver_name: s.receiverName,
+      transaction_date: s.transactionDate,
+      slip_image_url: s.slipImageUrl,
+      sort_order: idx,
+    }));
+    const { error: slipErr } = await supabase.from("money_transfer_slips").insert(slipRows);
+    if (slipErr) throw slipErr;
+  }
+
+  // Replace items
+  await supabase.from("money_transfer_items").delete().eq("transfer_id", transferId);
+  if (transfer.items && transfer.items.length > 0) {
+    const itemRows = transfer.items.map((i) => ({
+      transfer_id: transferId,
+      source_type: i.sourceType,
+      source_id: i.sourceId,
+      customer_name: i.customerName,
+      amount: i.amount,
+    }));
+    const { error: itemErr } = await supabase.from("money_transfer_items").insert(itemRows);
+    if (itemErr) throw itemErr;
+  }
+
+  await saveSyncEvent("money_transfer" as any, existingId ? "update" : "create", transfer, transfer.locationId, transferId, serverReceivedAt);
+
+  // Re-fetch for response
+  const [slipsRes, itemsRes] = await Promise.all([
+    supabase.from("money_transfer_slips").select("*").eq("transfer_id", transferId).order("sort_order", { ascending: true }),
+    supabase.from("money_transfer_items").select("*").eq("transfer_id", transferId).order("created_at", { ascending: true }),
+  ]);
+
+  return rowToMoneyTransfer(result.data, slipsRes.data ?? [], itemsRes.data ?? []);
+}
+
+export async function deleteMoneyTransfer(id: string) {
+  await ensureLanFlowBootstrap();
+  const supabase = getAdminClient();
+  const serverReceivedAt = new Date().toISOString();
+
+  const { data, error } = await supabase
+    .from("money_transfers")
+    .update({
+      record_status: "deleted",
+      sync_status: "synced",
+      deleted_at: serverReceivedAt,
+      deleted_by_name: "ผู้ดูแลระบบ",
+      deleted_by_phone: "0800000000",
+      updated_at: serverReceivedAt,
+    })
+    .eq("id", id)
+    .select("*")
+    .single();
+
+  if (error) throw error;
+
+  // Also delete child rows so source IDs become available again
+  await supabase.from("money_transfer_slips").delete().eq("transfer_id", id);
+  await supabase.from("money_transfer_items").delete().eq("transfer_id", id);
+
+  await saveSyncEvent("money_transfer" as any, "delete", data, data.location_id, id, serverReceivedAt);
+}
+

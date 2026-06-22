@@ -110,9 +110,9 @@ export type IncomeExpense = {
 export type QueueItem = {
   clientTempId: string;
   idempotencyKey: string;
-  entityType: "rubber_bill" | "income_expense" | "customer" | "ocr_ticket";
+  entityType: "rubber_bill" | "income_expense" | "customer" | "ocr_ticket" | "transport_staff" | "money_transfer";
   operationType: QueueOperation;
-  payload: RubberBill | IncomeExpense | Customer | OcrTicket;
+  payload: RubberBill | IncomeExpense | Customer | OcrTicket | TransportStaff | MoneyTransfer;
   status: SyncStatus;
   createdAt: string;
   serverReceivedAt?: string;
@@ -189,4 +189,73 @@ export type OcrTicket = {
   createdByPhone?: string;
   createdAt?: string;
   updatedAt?: string;
+};
+
+export type TransportStaffPlate = {
+  id: string;
+  plateNumber: string;
+};
+
+export type MoneyTransferSlip = {
+  id: string;
+  amount: number;
+  referenceNumber: string | null;
+  fee: number;
+  senderName: string | null;
+  receiverName: string | null;
+  transactionDate: string | null;
+  slipImageUrl: string | null;
+  sortOrder: number;
+};
+
+export type MoneyTransferItem = {
+  id: string;
+  sourceType: 'rubber_bill' | 'ocr_ticket';
+  sourceId: string;
+  customerName: string | null;
+  amount: number;
+};
+
+export type MoneyTransfer = {
+  id: string;
+  clientTempId?: string;
+  idempotencyKey?: string;
+  locationId: string;
+  customerId: string | null;
+  customerName: string | null;
+  accountNumber: string | null;
+  accountName: string | null;
+  bankName: string | null;
+  netAmountToPay: number;
+  transferStatus: 'pending' | 'completed' | 'cancelled';
+  syncStatus?: SyncStatus;
+  recordStatus?: RecordStatus;
+  revisionNo?: number;
+  createdByUserId?: string;
+  createdByName?: string;
+  createdByPhone?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  slips?: MoneyTransferSlip[];
+  items?: MoneyTransferItem[];
+};
+
+export type TransportStaff = {
+  id: string;
+  clientTempId?: string;
+  legacyRecId?: string;
+  legacyMemberId?: string;
+  mainName: string;
+  createdByUserId?: string;
+  createdByName?: string;
+  createdByPhone?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  syncStatus?: SyncStatus;
+  idempotencyKey?: string;
+  revisionNo?: number;
+  recordStatus?: RecordStatus;
+  contacts?: CustomerContact[];
+  bankAccounts?: CustomerBankAccount[];
+  plates?: TransportStaffPlate[];
 };
