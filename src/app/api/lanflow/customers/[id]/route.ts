@@ -13,7 +13,7 @@ export async function DELETE(
 
   try {
     const { id } = await params;
-    await deleteCustomer(id, result.auth.sub);
+    await deleteCustomer(result.supabase, id, result.auth.sub);
     return NextResponse.json({ success: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : JSON.stringify(error);

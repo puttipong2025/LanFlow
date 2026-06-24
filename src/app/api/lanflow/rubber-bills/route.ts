@@ -10,8 +10,19 @@ export async function POST(request: NextRequest) {
   if (!result.ok) return result.response;
 
   try {
-    const bill = await request.json() as RubberBill;
-    const savedBill = await saveRubberBill(bill, result.auth.sub);
+    const input = await request.json() as RubberBill;
+    const bill: RubberBill = {
+      ...input,
+      createdByName: result.auth.name,
+      createdByPhone: result.auth.phone,
+      ...(input.recordStatus === "deleted"
+        ? {
+            deletedByName: result.auth.name,
+            deletedByPhone: result.auth.phone
+          }
+        : {})
+    };
+    const savedBill = await saveRubberBill(result.supabase, bill, result.auth.sub);
     return NextResponse.json(savedBill);
   } catch (error) {
     const message = error instanceof Error ? error.message : JSON.stringify(error);

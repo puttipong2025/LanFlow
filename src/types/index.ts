@@ -246,6 +246,7 @@ export type TransportStaff = {
   legacyRecId?: string;
   legacyMemberId?: string;
   mainName: string;
+  defaultLocationId?: string;
   createdByUserId?: string;
   createdByName?: string;
   createdByPhone?: string;

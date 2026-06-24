@@ -1,31 +1,35 @@
 "use client";
 
-/**
- * Authenticated fetch wrapper.
- * Automatically injects the JWT from localStorage into the Authorization header.
- * Falls back to a normal fetch if no token is found (for unauthenticated routes).
- */
-
-const TOKEN_KEY = "lanflow:auth-token";
-
-function readToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return window.localStorage.getItem(TOKEN_KEY);
+export class ApiResponseError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string
+  ) {
+    super(message);
+    this.name = "ApiResponseError";
+  }
 }
 
 export function authFetch(url: string, init?: RequestInit): Promise<Response> {
-  const token = readToken();
-
-  const headers = new Headers(init?.headers);
-
-  if (token) {
-    headers.set("Authorization", `Bearer ${token}`);
-  }
-
   return fetch(url, {
     ...init,
-    headers,
+    credentials: "same-origin"
   });
+}
+
+export async function assertApiResponse(response: Response): Promise<void> {
+  if (response.ok) return;
+
+  let message = response.statusText || "Request failed";
+  try {
+    const body = await response.clone().json() as { error?: string };
+    if (body.error) message = body.error;
+  } catch {
+    const text = await response.text();
+    if (text) message = text;
+  }
+
+  throw new ApiResponseError(response.status, message);
 }
 
 /**

@@ -1,17 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAdminClient } from "@/lib/server/lanflow-db";
-import { requireAuth, requireRole } from "@/lib/server/auth";
+import { requireRole } from "@/lib/server/auth";
+import { createSupabaseAdminClient } from "@/lib/server/supabase-admin";
+import { phoneToAuthEmail } from "@/lib/phone";
+import type { AppRole } from "@/types";
 
 export async function GET(request: NextRequest) {
-  const auth = await requireAuth(request);
-  if (auth instanceof NextResponse) return auth;
-
-  // Only super_admin or admin can access the user list
   const adminCheck = await requireRole(request, ["super_admin", "admin"]);
-  if (adminCheck instanceof NextResponse) return adminCheck;
+  if (!adminCheck.ok) return adminCheck.response;
 
   try {
-    const supabase = getAdminClient();
+    const supabase = adminCheck.supabase;
 
     // Fetch all active profiles
     const { data: profiles, error: profilesError } = await supabase
@@ -51,5 +49,100 @@ export async function GET(request: NextRequest) {
   } catch (error: any) {
     console.error("Admin fetch users error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+
+export async function POST(request: NextRequest) {
+  const adminCheck = await requireRole(request, ["super_admin"]);
+  if (!adminCheck.ok) return adminCheck.response;
+
+  const admin = createSupabaseAdminClient();
+  let authUserId: string | null = null;
+
+  try {
+    const body = await request.json() as {
+      phone?: string;
+      name?: string;
+      password?: string;
+      role?: AppRole;
+      locationIds?: string[];
+    };
+
+    if (!body.phone || !body.name || !body.password) {
+      return NextResponse.json(
+        { error: "phone, name and password are required" },
+        { status: 400 }
+      );
+    }
+
+    if (body.password.length < 8) {
+      return NextResponse.json(
+        { error: "password must contain at least 8 characters" },
+        { status: 400 }
+      );
+    }
+
+    const role = body.role ?? "user";
+    if (!["user", "admin"].includes(role)) {
+      return NextResponse.json({ error: "invalid role" }, { status: 400 });
+    }
+
+    const id = crypto.randomUUID();
+    const { data: authUser, error: authError } = await admin.auth.admin.createUser({
+      id,
+      email: phoneToAuthEmail(body.phone),
+      email_confirm: true,
+      password: body.password,
+      user_metadata: { name: body.name.trim() }
+    });
+
+    if (authError || !authUser.user) {
+      throw authError ?? new Error("Could not create auth user");
+    }
+    authUserId = authUser.user.id;
+
+    const { error: profileError } = await admin.from("profiles").insert({
+      id,
+      phone: body.phone.trim(),
+      name: body.name.trim(),
+      role,
+      is_active: true,
+      password_hash: null
+    });
+    if (profileError) throw profileError;
+
+    const locationIds = [...new Set(body.locationIds ?? [])];
+    if (locationIds.length > 0) {
+      const { error: assignmentError } = await admin.from("user_locations").insert(
+        locationIds.map((locationId, index) => ({
+          user_id: id,
+          location_id: locationId,
+          assigned_by: adminCheck.auth.sub,
+          is_primary: index === 0
+        }))
+      );
+      if (assignmentError) throw assignmentError;
+    }
+
+    return NextResponse.json(
+      {
+        user: {
+          id,
+          phone: body.phone.trim(),
+          name: body.name.trim(),
+          role,
+          locationIds
+        }
+      },
+      { status: 201 }
+    );
+  } catch (error) {
+    if (authUserId) {
+      await admin.from("profiles").delete().eq("id", authUserId);
+      await admin.auth.admin.deleteUser(authUserId);
+    }
+
+    const message = error instanceof Error ? error.message : "Could not create user";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

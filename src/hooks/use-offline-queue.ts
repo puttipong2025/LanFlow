@@ -3,23 +3,40 @@
 import { useEffect, useMemo, useState } from "react";
 import type { QueueItem } from "@/types";
 
-const STORAGE_KEY = "lanflow:offline-queue";
+const LEGACY_STORAGE_KEY = "lanflow:offline-queue";
 
-function readQueue(): QueueItem[] {
+function storageKey(userId: string) {
+  return `lanflow:offline-queue:${userId}`;
+}
+
+function readQueue(userId: string): QueueItem[] {
   if (typeof window === "undefined") return [];
   try {
-    return JSON.parse(window.localStorage.getItem(STORAGE_KEY) || "[]") as QueueItem[];
+    const key = storageKey(userId);
+    const current = window.localStorage.getItem(key);
+    if (current) {
+      return JSON.parse(current) as QueueItem[];
+    }
+
+    const legacy = window.localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (legacy) {
+      window.localStorage.setItem(key, legacy);
+      window.localStorage.removeItem(LEGACY_STORAGE_KEY);
+      return JSON.parse(legacy) as QueueItem[];
+    }
+
+    return [];
   } catch {
     return [];
   }
 }
 
-export function useOfflineQueue() {
+export function useOfflineQueue(userId: string) {
   const [items, setItems] = useState<QueueItem[]>([]);
   const [online, setOnline] = useState(true);
 
   useEffect(() => {
-    setItems(readQueue());
+    setItems(readQueue(userId));
     setOnline(window.navigator.onLine);
 
     const handleOnline = () => setOnline(true);
@@ -31,13 +48,13 @@ export function useOfflineQueue() {
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
     };
-  }, []);
+  }, [userId]);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+      window.localStorage.setItem(storageKey(userId), JSON.stringify(items));
     }
-  }, [items]);
+  }, [items, userId]);
 
   const pendingCount = useMemo(
     () => items.filter((item) => item.status === "pending" || item.status === "failed").length,
@@ -45,14 +62,20 @@ export function useOfflineQueue() {
   );
 
   function enqueue(item: Omit<QueueItem, "status" | "createdAt">) {
-    setItems((current) => [
-      {
-        ...item,
-        status: "pending",
-        createdAt: new Date().toISOString()
-      },
-      ...current
-    ]);
+    setItems((current) => {
+      if (current.some((queued) => queued.idempotencyKey === item.idempotencyKey)) {
+        return current;
+      }
+
+      return [
+        {
+          ...item,
+          status: "pending",
+          createdAt: new Date().toISOString()
+        },
+        ...current
+      ];
+    });
   }
 
   function markAllSynced() {
@@ -78,6 +101,16 @@ export function useOfflineQueue() {
     );
   }
 
+  function markSyncing(idempotencyKey: string) {
+    setItems((current) =>
+      current.map((item) =>
+        item.idempotencyKey === idempotencyKey
+          ? { ...item, status: "syncing", errorMessage: undefined }
+          : item
+      )
+    );
+  }
+
   function markFailed(idempotencyKey: string, errorMessage: string) {
     setItems((current) =>
       current.map((item) =>
@@ -88,9 +121,30 @@ export function useOfflineQueue() {
     );
   }
 
+  function markConflict(idempotencyKey: string, errorMessage: string) {
+    setItems((current) =>
+      current.map((item) =>
+        item.idempotencyKey === idempotencyKey
+          ? { ...item, status: "conflict", errorMessage }
+          : item
+      )
+    );
+  }
+
   function clearSynced() {
     setItems((current) => current.filter((item) => item.status !== "synced"));
   }
 
-  return { items, online, pendingCount, enqueue, markAllSynced, markSynced, markFailed, clearSynced };
+  return {
+    items,
+    online,
+    pendingCount,
+    enqueue,
+    markAllSynced,
+    markSyncing,
+    markSynced,
+    markFailed,
+    markConflict,
+    clearSynced
+  };
 }

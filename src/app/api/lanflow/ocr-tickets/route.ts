@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
     if (!locationId) {
       return NextResponse.json({ error: "locationId is required" }, { status: 400 });
     }
-    const data = await getOcrTickets(locationId);
+    const data = await getOcrTickets(result.supabase, locationId);
     return NextResponse.json(data);
   } catch (error) {
     const message = error instanceof Error ? error.message : JSON.stringify(error);
@@ -26,8 +26,13 @@ export async function POST(request: NextRequest) {
   if (!result.ok) return result.response;
 
   try {
-    const body = await request.json();
-    const saved = await saveOcrTicket(body, result.auth.sub);
+    const input = await request.json();
+    const body = {
+      ...input,
+      createdByName: result.auth.name,
+      createdByPhone: result.auth.phone
+    };
+    const saved = await saveOcrTicket(result.supabase, body, result.auth.sub);
     return NextResponse.json(saved);
   } catch (error) {
     const message = error instanceof Error ? error.message : JSON.stringify(error);

@@ -33,7 +33,7 @@ export async function POST(request: NextRequest) {
     const { fileId, webViewLink } = await uploadImageToDrive(buffer, mimeType, file.name);
 
     // Update ticket in DB with drive info
-    const updated = await updateOcrTicket(ticketId, {
+    const updated = await updateOcrTicket(result.supabase, ticketId, {
       driveFileId: fileId,
       driveUrl: webViewLink,
     }, result.auth.sub);

@@ -7,24 +7,18 @@ import { Eye, EyeOff, Leaf, Loader2, Phone, Lock } from "lucide-react";
 
 export default function LoginPage() {
   const router = useRouter();
-  const { login, isAuthenticated, isLoading: authLoading, token } = useAuthContext();
+  const { login, isAuthenticated, isLoading: authLoading } = useAuthContext();
   const [phone, setPhone] = useState("");
-  const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [isRegistering, setIsRegistering] = useState(false);
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // If already authenticated, redirect to home via full reload
-  // (so middleware receives the cookie)
   useEffect(() => {
-    if (!authLoading && isAuthenticated && token) {
-      // Ensure cookie is set before navigating
-      document.cookie = `lanflow-token=${token}; path=/; max-age=${7 * 86400}; SameSite=Lax`;
+    if (!authLoading && isAuthenticated) {
       window.location.href = "/";
     }
-  }, [authLoading, isAuthenticated, token]);
+  }, [authLoading, isAuthenticated]);
 
   if (authLoading || isAuthenticated) {
     return (
@@ -49,35 +43,7 @@ export default function LoginPage() {
       return;
     }
 
-    if (isRegistering && !name.trim()) {
-      setError("กรุณากรอกชื่อ-นามสกุล");
-      return;
-    }
-
     setIsSubmitting(true);
-
-    if (isRegistering) {
-      try {
-        const res = await fetch("/api/auth/register", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ phone: phone.trim(), name: name.trim(), password })
-        });
-        const data = await res.json();
-        
-        if (!res.ok) {
-          setError(data.error || "สมัครสมาชิกไม่สำเร็จ");
-          setIsSubmitting(false);
-          return;
-        }
-        
-        // Registration successful, proceed to login
-      } catch (err) {
-        setError("เกิดข้อผิดพลาดในการสมัครสมาชิก");
-        setIsSubmitting(false);
-        return;
-      }
-    }
 
     const result = await login(phone.trim(), password);
     setIsSubmitting(false);
@@ -123,27 +89,6 @@ export default function LoginPage() {
               />
             </div>
           </div>
-
-          {/* Name Input (Only for Registration) */}
-          {isRegistering && (
-            <div className="login-field">
-              <label htmlFor="name" className="login-label">
-                ชื่อ-นามสกุล
-              </label>
-              <div className="login-input-wrap">
-                <span className="login-input-icon text-ink/40">Aa</span>
-                <input
-                  id="name"
-                  type="text"
-                  placeholder="ชื่อ นามสกุล"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="login-input"
-                  disabled={isSubmitting}
-                />
-              </div>
-            </div>
-          )}
 
           {/* Password Input */}
           <div className="login-field">
@@ -191,26 +136,12 @@ export default function LoginPage() {
                 <Loader2 size={18} className="animate-spin" />
                 กำลังดำเนินการ...
               </>
-            ) : isRegistering ? (
-              "สมัครสมาชิก"
-            ) : (
-              "เข้าสู่ระบบ"
-            )}
+            ) : "เข้าสู่ระบบ"}
           </button>
         </form>
 
         <p className="login-footer">
-          {isRegistering ? "มีบัญชีอยู่แล้ว? " : "ยังไม่มีบัญชี? "}
-          <button 
-            type="button" 
-            className="text-leaf hover:underline font-semibold bg-transparent border-none cursor-pointer p-0"
-            onClick={() => {
-              setIsRegistering(!isRegistering);
-              setError("");
-            }}
-          >
-            {isRegistering ? "เข้าสู่ระบบ" : "สมัครสมาชิก"}
-          </button>
+          บัญชีผู้ใช้สร้างและกำหนดสาขาโดยผู้ดูแลระบบ
         </p>
       </div>
 

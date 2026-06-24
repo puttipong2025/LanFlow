@@ -1,7 +1,7 @@
-import { toast } from "sonner";
-import appSwal from "@/lib/swal";
 "use client";
 
+import { toast } from "sonner";
+import appSwal from "@/lib/swal";
 import { useState, useEffect } from "react";
 import { ShieldCheck, Users, Smartphone, Database, Check, X, Building2, UserPlus, Loader2 } from "lucide-react";
 import type { Location, Profile } from "@/types";
@@ -19,6 +19,14 @@ export function AdminModule({
   const [name, setName] = useState("");
   const [users, setUsers] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
+  const [creatingUser, setCreatingUser] = useState(false);
+  const [newUser, setNewUser] = useState({
+    name: "",
+    phone: "",
+    password: "",
+    role: "user" as "user" | "admin",
+    locationId: ""
+  });
 
   async function loadUsers() {
     try {
@@ -62,6 +70,45 @@ export function AdminModule({
       }
     } catch (error) {
       console.error(error);
+    }
+  }
+
+  async function handleCreateUser(event: React.FormEvent) {
+    event.preventDefault();
+    if (profile.role !== "super_admin") return;
+
+    setCreatingUser(true);
+    try {
+      const res = await authFetch("/api/lanflow/admin/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          phone: newUser.phone,
+          name: newUser.name,
+          password: newUser.password,
+          role: newUser.role,
+          locationIds: newUser.locationId ? [newUser.locationId] : []
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || "สร้างบัญชีไม่สำเร็จ");
+        return;
+      }
+
+      toast.success("สร้างบัญชีผู้ใช้แล้ว");
+      setNewUser({
+        name: "",
+        phone: "",
+        password: "",
+        role: "user",
+        locationId: ""
+      });
+      await loadUsers();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "สร้างบัญชีไม่สำเร็จ");
+    } finally {
+      setCreatingUser(false);
     }
   }
 
@@ -147,6 +194,71 @@ export function AdminModule({
           <UserPlus size={18} className="text-river" />
           <h2 className="text-lg font-bold text-ink">รายชื่อพนักงานในระบบ</h2>
         </div>
+
+        {profile.role === "super_admin" && (
+          <form
+            onSubmit={handleCreateUser}
+            className="mb-5 grid gap-3 rounded-md border border-leaf/20 bg-leaf/5 p-3 sm:grid-cols-2"
+          >
+            <input
+              required
+              className="focus-ring h-10 rounded-md border border-black/10 bg-white px-3"
+              placeholder="ชื่อพนักงาน"
+              value={newUser.name}
+              onChange={(event) => setNewUser((current) => ({ ...current, name: event.target.value }))}
+            />
+            <input
+              required
+              className="focus-ring h-10 rounded-md border border-black/10 bg-white px-3"
+              placeholder="เบอร์โทร 08xxxxxxxx"
+              inputMode="tel"
+              value={newUser.phone}
+              onChange={(event) => setNewUser((current) => ({ ...current, phone: event.target.value }))}
+            />
+            <input
+              required
+              minLength={8}
+              type="password"
+              className="focus-ring h-10 rounded-md border border-black/10 bg-white px-3"
+              placeholder="รหัสผ่านอย่างน้อย 8 ตัว"
+              value={newUser.password}
+              onChange={(event) => setNewUser((current) => ({ ...current, password: event.target.value }))}
+            />
+            <select
+              className="focus-ring h-10 rounded-md border border-black/10 bg-white px-3"
+              value={newUser.role}
+              onChange={(event) =>
+                setNewUser((current) => ({
+                  ...current,
+                  role: event.target.value as "user" | "admin"
+                }))
+              }
+            >
+              <option value="user">User</option>
+              <option value="admin">Admin</option>
+            </select>
+            <select
+              required
+              className="focus-ring h-10 rounded-md border border-black/10 bg-white px-3 sm:col-span-2"
+              value={newUser.locationId}
+              onChange={(event) =>
+                setNewUser((current) => ({ ...current, locationId: event.target.value }))
+              }
+            >
+              <option value="">เลือกสาขาเริ่มต้น</option>
+              {locations.map((location) => (
+                <option key={location.id} value={location.id}>{location.name}</option>
+              ))}
+            </select>
+            <button
+              disabled={creatingUser}
+              className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-leaf px-4 font-semibold text-white disabled:opacity-60 sm:col-span-2"
+            >
+              {creatingUser ? <Loader2 className="animate-spin" size={16} /> : <UserPlus size={16} />}
+              สร้างบัญชีผู้ใช้
+            </button>
+          </form>
+        )}
         
         {loading ? (
           <div className="flex h-32 items-center justify-center">

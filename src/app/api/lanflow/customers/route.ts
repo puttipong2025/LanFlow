@@ -14,8 +14,8 @@ export async function GET(request: NextRequest) {
     const page = parseInt(searchParams.get("page") || "1", 10);
     const pageSize = parseInt(searchParams.get("pageSize") || "50", 10);
     
-    const result = await getCustomersPaginated(page, pageSize);
-    return NextResponse.json(result);
+    const pageResult = await getCustomersPaginated(result.supabase, page, pageSize);
+    return NextResponse.json(pageResult);
   } catch (error) {
     const message = error instanceof Error ? error.message : JSON.stringify(error);
     return NextResponse.json({ error: message }, { status: 500 });
@@ -27,8 +27,14 @@ export async function POST(request: NextRequest) {
   if (!result.ok) return result.response;
 
   try {
-    const customer = await request.json() as Customer;
-    const saved = await saveCustomer(customer, result.auth.sub);
+    const input = await request.json() as Customer;
+    const customer: Customer = {
+      ...input,
+      createdByUserId: result.auth.sub,
+      createdByName: result.auth.name,
+      createdByPhone: result.auth.phone
+    };
+    const saved = await saveCustomer(result.supabase, customer, result.auth.sub);
     return NextResponse.json(saved);
   } catch (error) {
     const message = error instanceof Error ? error.message : JSON.stringify(error);

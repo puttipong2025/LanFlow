@@ -16,10 +16,10 @@ export async function GET(request: NextRequest) {
 
     const includeUsedIds = request.nextUrl.searchParams.get("includeUsedIds") === "true";
 
-    const transfers = await getMoneyTransfers(locationId);
+    const transfers = await getMoneyTransfers(result.supabase, locationId);
 
     if (includeUsedIds) {
-      const usedIds = await getUsedSourceIds();
+      const usedIds = await getUsedSourceIds(result.supabase);
       return NextResponse.json({ transfers, usedSourceIds: Array.from(usedIds) });
     }
 
@@ -35,8 +35,14 @@ export async function POST(request: NextRequest) {
   if (!result.ok) return result.response;
 
   try {
-    const body = await request.json();
-    const saved = await saveMoneyTransfer(body, result.auth.sub);
+    const input = await request.json();
+    const body = {
+      ...input,
+      createdByUserId: result.auth.sub,
+      createdByName: result.auth.name,
+      createdByPhone: result.auth.phone
+    };
+    const saved = await saveMoneyTransfer(result.supabase, body, result.auth.sub);
     return NextResponse.json(saved);
   } catch (error) {
     const message = error instanceof Error ? error.message : JSON.stringify(error);

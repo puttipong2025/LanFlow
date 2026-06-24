@@ -1,40 +1,19 @@
-import { createClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type { IncomeExpense, Location, Profile, RubberBill, Customer, CustomerContact, CustomerBankAccount, CustomerFarm, OcrTicket, TransportStaff, TransportStaffPlate, MoneyTransfer, MoneyTransferSlip, MoneyTransferItem } from "@/types";
 
-const DEV_PROFILE_ID = "00000000-0000-4000-8000-000000000001";
-const DEV_LOCATIONS = [
-  { id: "00000000-0000-4000-8000-000000000101", name: "ลานข้าวหอม", code: "LKH" },
-  { id: "00000000-0000-4000-8000-000000000102", name: "ชานุมาน", code: "CNM" },
-  { id: "00000000-0000-4000-8000-000000000103", name: "ป่ากุงใหญ่", code: "PKY" }
-];
-
-export function getAdminClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!url || !serviceRoleKey) {
-    throw new Error("Supabase server env is not configured.");
-  }
-
-  return createClient(url, serviceRoleKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false
-    }
-  });
-}
+export type LanFlowDataClient = SupabaseClient;
 
 function compactDate(value: string) {
   return value.slice(2, 10).replace(/-/g, "");
 }
 
 async function makeServerBillNo(
+  supabase: LanFlowDataClient,
   table: "rubber_bills" | "income_expense",
   locationId: string,
   dateColumn: "bill_date" | "tx_date",
   dateValue: string
 ) {
-  const supabase = getAdminClient();
   const { count, error } = await supabase
     .from(table)
     .select("id", { count: "exact", head: true })
@@ -45,53 +24,7 @@ async function makeServerBillNo(
   return `${compactDate(dateValue)}-${String((count ?? 0) + 1).padStart(3, "0")}`;
 }
 
-export async function ensureLanFlowBootstrap() {
-  const supabase = getAdminClient();
-  const { data: profile, error: profileError } = await supabase
-    .from("profiles")
-    .select("id")
-    .eq("id", DEV_PROFILE_ID)
-    .maybeSingle();
-
-  if (profileError) throw profileError;
-
-  if (!profile) {
-    const { error } = await supabase.from("profiles").insert({
-      id: DEV_PROFILE_ID,
-      phone: "0800000000",
-      name: "ผู้ดูแลระบบ",
-      role: "super_admin",
-      is_active: true
-    });
-    if (error) throw error;
-  }
-
-  for (const location of DEV_LOCATIONS) {
-    const { error: locationError } = await supabase.from("locations").upsert({
-      id: location.id,
-      name: location.name,
-      code: location.code,
-      is_active: true,
-      created_by: DEV_PROFILE_ID
-    });
-    if (locationError) throw locationError;
-
-    const { error: assignmentError } = await supabase.from("user_locations").upsert({
-      user_id: DEV_PROFILE_ID,
-      location_id: location.id,
-      assigned_by: DEV_PROFILE_ID,
-      is_primary: location.id === DEV_LOCATIONS[0].id
-    }, {
-      onConflict: "user_id,location_id"
-    });
-    if (assignmentError) throw assignmentError;
-  }
-}
-
-export async function getLanFlowData(userId: string) {
-  await ensureLanFlowBootstrap();
-  const supabase = getAdminClient();
-
+export async function getLanFlowData(supabase: LanFlowDataClient, userId: string) {
   const [
     locationsResult,
     profileResult,
@@ -105,7 +38,11 @@ export async function getLanFlowData(userId: string) {
     customerFarmsResult
   ] = await Promise.all([
     supabase.from("locations").select("*").order("created_at", { ascending: true }),
-    supabase.from("profiles").select("*").eq("id", userId).single(),
+    supabase
+      .from("profiles")
+      .select("id, phone, name, role, is_active")
+      .eq("id", userId)
+      .single(),
     supabase.from("user_locations").select("location_id").eq("user_id", userId),
     supabase.from("rubber_bills").select("*").order("created_at", { ascending: false }),
     supabase.from("rubber_bill_items").select("*").order("created_at", { ascending: true }),
@@ -147,11 +84,13 @@ export async function getLanFlowData(userId: string) {
   };
 }
 
-export async function saveRubberBill(bill: RubberBill, userId: string) {
-  await ensureLanFlowBootstrap();
-  const supabase = getAdminClient();
+export async function saveRubberBill(
+  supabase: LanFlowDataClient,
+  bill: RubberBill,
+  userId: string
+) {
   const serverReceivedAt = new Date().toISOString();
-  const serverBillNo = bill.serverBillNo ?? await makeServerBillNo("rubber_bills", bill.locationId, "bill_date", bill.billDate);
+  const serverBillNo = bill.serverBillNo ?? await makeServerBillNo(supabase, "rubber_bills", bill.locationId, "bill_date", bill.billDate);
 
   const row = {
     client_temp_id: bill.clientTempId,
@@ -237,7 +176,7 @@ export async function saveRubberBill(bill: RubberBill, userId: string) {
     if (insertItemsError) throw insertItemsError;
   }
 
-  await saveSyncEvent("rubber_bill", bill.recordStatus === "deleted" ? "delete" : existing.data?.id ? "update" : "create", bill, bill.locationId, billId, serverReceivedAt, userId);
+  await saveSyncEvent(supabase, "rubber_bill", bill.recordStatus === "deleted" ? "delete" : existing.data?.id ? "update" : "create", bill, bill.locationId, billId, serverReceivedAt, userId);
 
   const savedItems = await supabase.from("rubber_bill_items").select("*").eq("bill_id", billId).order("created_at", { ascending: true });
   if (savedItems.error) throw savedItems.error;
@@ -245,11 +184,13 @@ export async function saveRubberBill(bill: RubberBill, userId: string) {
   return rowToRubberBill(result.data, savedItems.data ?? []);
 }
 
-export async function saveIncomeExpense(transaction: IncomeExpense, userId: string) {
-  await ensureLanFlowBootstrap();
-  const supabase = getAdminClient();
+export async function saveIncomeExpense(
+  supabase: LanFlowDataClient,
+  transaction: IncomeExpense,
+  userId: string
+) {
   const serverReceivedAt = new Date().toISOString();
-  const serverBillNo = transaction.serverBillNo ?? await makeServerBillNo("income_expense", transaction.locationId, "tx_date", transaction.txDate);
+  const serverBillNo = transaction.serverBillNo ?? await makeServerBillNo(supabase, "income_expense", transaction.locationId, "tx_date", transaction.txDate);
 
   const row = {
     client_temp_id: transaction.clientTempId,
@@ -293,11 +234,12 @@ export async function saveIncomeExpense(transaction: IncomeExpense, userId: stri
     : await supabase.from("income_expense").insert(row).select("*").single();
 
   if (result.error) throw result.error;
-  await saveSyncEvent("income_expense", transaction.recordStatus === "deleted" ? "delete" : existing.data?.id ? "update" : "create", transaction, transaction.locationId, result.data.id, serverReceivedAt, userId);
+  await saveSyncEvent(supabase, "income_expense", transaction.recordStatus === "deleted" ? "delete" : existing.data?.id ? "update" : "create", transaction, transaction.locationId, result.data.id, serverReceivedAt, userId);
   return rowToIncomeExpense(result.data);
 }
 
 async function saveSyncEvent(
+  supabase: LanFlowDataClient,
   entityType: "rubber_bill" | "income_expense" | "customer" | "ocr_ticket" | "transport_staff" | "money_transfer",
   operationType: "create" | "update" | "delete",
   payload: any,
@@ -306,7 +248,6 @@ async function saveSyncEvent(
   serverReceivedAt: string,
   userId: string
 ) {
-  const supabase = getAdminClient();
   const { error } = await supabase.from("offline_sync_events").upsert({
     client_temp_id: payload.clientTempId || payload.id,
     idempotency_key: payload.idempotencyKey || `server:${serverId}`,
@@ -496,7 +437,11 @@ function rowToCustomer(row: any, contacts: any[], bankAccounts: any[], farms: an
   };
 }
 
-export async function saveCustomer(customer: Customer, userId: string) {
+export async function saveCustomer(
+  supabase: LanFlowDataClient,
+  customer: Customer,
+  userId: string
+) {
   if (!customer.mainName || customer.mainName.trim() === "") {
     throw new Error("Validation Error: mainName is required");
   }
@@ -523,8 +468,6 @@ export async function saveCustomer(customer: Customer, userId: string) {
     }
   }
 
-  await ensureLanFlowBootstrap();
-  const supabase = getAdminClient();
   const serverReceivedAt = new Date().toISOString();
 
   const row = {
@@ -683,7 +626,7 @@ export async function saveCustomer(customer: Customer, userId: string) {
     if (upsertFarmsError) throw upsertFarmsError;
   }
 
-  await saveSyncEvent("customer", customer.recordStatus === "deleted" ? "delete" : existingId ? "update" : "create", customer, null, customerId, serverReceivedAt, userId);
+  await saveSyncEvent(supabase, "customer", customer.recordStatus === "deleted" ? "delete" : existingId ? "update" : "create", customer, customer.defaultLocationId ?? null, customerId, serverReceivedAt, userId);
 
   const [contactsRes, banksRes, farmsRes] = await Promise.all([
     supabase.from("customer_contacts").select("*").eq("customer_id", customerId),
@@ -695,9 +638,11 @@ export async function saveCustomer(customer: Customer, userId: string) {
 }
 
 // BUG-4 fix: Soft-delete with sync event logging instead of hard delete
-export async function deleteCustomer(id: string, userId: string) {
-  await ensureLanFlowBootstrap();
-  const supabase = getAdminClient();
+export async function deleteCustomer(
+  supabase: LanFlowDataClient,
+  id: string,
+  userId: string
+) {
   const serverReceivedAt = new Date().toISOString();
 
   // Soft-delete: mark as deleted rather than removing the row
@@ -718,12 +663,14 @@ export async function deleteCustomer(id: string, userId: string) {
   if (error) throw error;
 
   // Log sync event for audit trail
-  await saveSyncEvent("customer", "delete", data, null, id, serverReceivedAt, userId);
+  await saveSyncEvent(supabase, "customer", "delete", data, data.default_location_id, id, serverReceivedAt, userId);
 }
 
-export async function getCustomersPaginated(page: number = 1, pageSize: number = 50) {
-  await ensureLanFlowBootstrap();
-  const supabase = getAdminClient();
+export async function getCustomersPaginated(
+  supabase: LanFlowDataClient,
+  page: number = 1,
+  pageSize: number = 50
+) {
 
   const start = (page - 1) * pageSize;
   const end = start + pageSize - 1;
@@ -801,9 +748,10 @@ function rowToOcrTicket(row: any): OcrTicket {
   };
 }
 
-export async function getOcrTickets(locationId: string): Promise<OcrTicket[]> {
-  await ensureLanFlowBootstrap();
-  const supabase = getAdminClient();
+export async function getOcrTickets(
+  supabase: LanFlowDataClient,
+  locationId: string
+): Promise<OcrTicket[]> {
   const { data, error } = await supabase
     .from("ocr_tickets")
     .select("*")
@@ -814,9 +762,11 @@ export async function getOcrTickets(locationId: string): Promise<OcrTicket[]> {
   return (data ?? []).map(rowToOcrTicket);
 }
 
-export async function saveOcrTicket(ticket: OcrTicket, userId: string) {
-  await ensureLanFlowBootstrap();
-  const supabase = getAdminClient();
+export async function saveOcrTicket(
+  supabase: LanFlowDataClient,
+  ticket: OcrTicket,
+  userId: string
+) {
   const serverReceivedAt = new Date().toISOString();
 
   const row = {
@@ -867,13 +817,16 @@ export async function saveOcrTicket(ticket: OcrTicket, userId: string) {
   }
   if (result.error) throw result.error;
 
-  await saveSyncEvent("ocr_ticket", existingId ? "update" : "create", ticket, ticket.locationId, result.data.id, serverReceivedAt, userId);
+  await saveSyncEvent(supabase, "ocr_ticket", existingId ? "update" : "create", ticket, ticket.locationId, result.data.id, serverReceivedAt, userId);
   return rowToOcrTicket(result.data);
 }
 
-export async function updateOcrTicket(id: string, updates: Partial<OcrTicket>, userId: string) {
-  await ensureLanFlowBootstrap();
-  const supabase = getAdminClient();
+export async function updateOcrTicket(
+  supabase: LanFlowDataClient,
+  id: string,
+  updates: Partial<OcrTicket>,
+  userId: string
+) {
   const serverReceivedAt = new Date().toISOString();
 
   const row: Record<string, unknown> = { updated_at: serverReceivedAt };
@@ -899,13 +852,15 @@ export async function updateOcrTicket(id: string, updates: Partial<OcrTicket>, u
     .single();
   if (error) throw error;
 
-  await saveSyncEvent("ocr_ticket", "update", data, data.location_id, id, serverReceivedAt, userId);
+  await saveSyncEvent(supabase, "ocr_ticket", "update", data, data.location_id, id, serverReceivedAt, userId);
   return rowToOcrTicket(data);
 }
 
-export async function deleteOcrTicket(id: string, userId: string) {
-  await ensureLanFlowBootstrap();
-  const supabase = getAdminClient();
+export async function deleteOcrTicket(
+  supabase: LanFlowDataClient,
+  id: string,
+  userId: string
+) {
   const serverReceivedAt = new Date().toISOString();
 
   const { data, error } = await supabase
@@ -923,7 +878,7 @@ export async function deleteOcrTicket(id: string, userId: string) {
     .single();
   if (error) throw error;
 
-  await saveSyncEvent("ocr_ticket", "delete", data, data.location_id, id, serverReceivedAt, userId);
+  await saveSyncEvent(supabase, "ocr_ticket", "delete", data, data.location_id, id, serverReceivedAt, userId);
   return data.drive_file_id as string | null;
 }
 
@@ -943,6 +898,7 @@ function rowToTransportStaff(
     legacyRecId: row.legacy_rec_id ?? undefined,
     legacyMemberId: row.legacy_member_id ?? undefined,
     mainName: row.main_name,
+    defaultLocationId: row.default_location_id ?? undefined,
     createdByUserId: row.created_by_user_id ?? undefined,
     createdByName: row.created_by_name ?? undefined,
     createdByPhone: row.created_by_phone ?? undefined,
@@ -967,10 +923,9 @@ function rowToTransportStaff(
   };
 }
 
-export async function getTransportStaffs(): Promise<TransportStaff[]> {
-  await ensureLanFlowBootstrap();
-  const supabase = getAdminClient();
-
+export async function getTransportStaffs(
+  supabase: LanFlowDataClient
+): Promise<TransportStaff[]> {
   const { data: staffs, error } = await supabase
     .from("transport_staffs")
     .select("*")
@@ -997,10 +952,11 @@ export async function getTransportStaffs(): Promise<TransportStaff[]> {
   );
 }
 
-export async function getTransportStaffsPaginated(page: number = 1, pageSize: number = 50) {
-  await ensureLanFlowBootstrap();
-  const supabase = getAdminClient();
-
+export async function getTransportStaffsPaginated(
+  supabase: LanFlowDataClient,
+  page: number = 1,
+  pageSize: number = 50
+) {
   const start = (page - 1) * pageSize;
   const end = start + pageSize - 1;
 
@@ -1040,7 +996,11 @@ export async function getTransportStaffsPaginated(page: number = 1, pageSize: nu
   return { data: resultData, total: count ?? 0, page, pageSize };
 }
 
-export async function saveTransportStaff(staff: TransportStaff, userId: string) {
+export async function saveTransportStaff(
+  supabase: LanFlowDataClient,
+  staff: TransportStaff,
+  userId: string
+) {
   if (!staff.mainName || staff.mainName.trim() === "") {
     throw new Error("Validation Error: mainName is required");
   }
@@ -1056,8 +1016,6 @@ export async function saveTransportStaff(staff: TransportStaff, userId: string) 
     }
   }
 
-  await ensureLanFlowBootstrap();
-  const supabase = getAdminClient();
   const serverReceivedAt = new Date().toISOString();
   const isUuid = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 
@@ -1067,6 +1025,7 @@ export async function saveTransportStaff(staff: TransportStaff, userId: string) 
     legacy_rec_id: staff.legacyRecId ?? staff.clientTempId ?? null,
     legacy_member_id: staff.legacyMemberId ?? null,
     main_name: staff.mainName,
+    default_location_id: staff.defaultLocationId ?? null,
     revision_no: staff.revisionNo ?? 0,
     sync_status: "synced",
     record_status: staff.recordStatus ?? "active",
@@ -1164,7 +1123,7 @@ export async function saveTransportStaff(staff: TransportStaff, userId: string) 
     if (upsertErr) throw upsertErr;
   }
 
-  await saveSyncEvent("transport_staff", existingId ? "update" : "create", staff, null, staffId, serverReceivedAt, userId);
+  await saveSyncEvent(supabase, "transport_staff", existingId ? "update" : "create", staff, staff.defaultLocationId ?? null, staffId, serverReceivedAt, userId);
 
   const [contactsRes, banksRes, platesRes] = await Promise.all([
     supabase.from("transport_staff_contacts").select("*").eq("staff_id", staffId),
@@ -1175,9 +1134,11 @@ export async function saveTransportStaff(staff: TransportStaff, userId: string) 
   return rowToTransportStaff(result.data, contactsRes.data ?? [], banksRes.data ?? [], platesRes.data ?? []);
 }
 
-export async function deleteTransportStaff(id: string, userId: string) {
-  await ensureLanFlowBootstrap();
-  const supabase = getAdminClient();
+export async function deleteTransportStaff(
+  supabase: LanFlowDataClient,
+  id: string,
+  userId: string
+) {
   const serverReceivedAt = new Date().toISOString();
 
   const { data, error } = await supabase
@@ -1192,7 +1153,7 @@ export async function deleteTransportStaff(id: string, userId: string) {
     .single();
 
   if (error) throw error;
-  await saveSyncEvent("transport_staff", "delete", data, null, id, serverReceivedAt, userId);
+  await saveSyncEvent(supabase, "transport_staff", "delete", data, data.default_location_id, id, serverReceivedAt, userId);
 }
 
 // ═══════════════════════════════════════
@@ -1249,10 +1210,10 @@ function rowToMoneyTransfer(row: any, slips: any[], items: any[]): MoneyTransfer
   };
 }
 
-export async function getMoneyTransfers(locationId: string): Promise<MoneyTransfer[]> {
-  await ensureLanFlowBootstrap();
-  const supabase = getAdminClient();
-
+export async function getMoneyTransfers(
+  supabase: LanFlowDataClient,
+  locationId: string
+): Promise<MoneyTransfer[]> {
   const { data: transfers, error } = await supabase
     .from("money_transfers")
     .select("*")
@@ -1281,8 +1242,9 @@ export async function getMoneyTransfers(locationId: string): Promise<MoneyTransf
   );
 }
 
-export async function getUsedSourceIds(): Promise<Set<string>> {
-  const supabase = getAdminClient();
+export async function getUsedSourceIds(
+  supabase: LanFlowDataClient
+): Promise<Set<string>> {
   const { data, error } = await supabase
     .from("money_transfer_items")
     .select("source_id");
@@ -1290,9 +1252,11 @@ export async function getUsedSourceIds(): Promise<Set<string>> {
   return new Set((data ?? []).map((r) => r.source_id));
 }
 
-export async function saveMoneyTransfer(transfer: MoneyTransfer, userId: string): Promise<MoneyTransfer> {
-  await ensureLanFlowBootstrap();
-  const supabase = getAdminClient();
+export async function saveMoneyTransfer(
+  supabase: LanFlowDataClient,
+  transfer: MoneyTransfer,
+  userId: string
+): Promise<MoneyTransfer> {
   const serverReceivedAt = new Date().toISOString();
 
   const row = {
@@ -1376,7 +1340,7 @@ export async function saveMoneyTransfer(transfer: MoneyTransfer, userId: string)
     if (itemErr) throw itemErr;
   }
 
-  await saveSyncEvent("money_transfer" as any, existingId ? "update" : "create", transfer, transfer.locationId, transferId, serverReceivedAt, userId);
+  await saveSyncEvent(supabase, "money_transfer", existingId ? "update" : "create", transfer, transfer.locationId, transferId, serverReceivedAt, userId);
 
   // Re-fetch for response
   const [slipsRes, itemsRes] = await Promise.all([
@@ -1387,9 +1351,11 @@ export async function saveMoneyTransfer(transfer: MoneyTransfer, userId: string)
   return rowToMoneyTransfer(result.data, slipsRes.data ?? [], itemsRes.data ?? []);
 }
 
-export async function deleteMoneyTransfer(id: string, userId: string) {
-  await ensureLanFlowBootstrap();
-  const supabase = getAdminClient();
+export async function deleteMoneyTransfer(
+  supabase: LanFlowDataClient,
+  id: string,
+  userId: string
+) {
   const serverReceivedAt = new Date().toISOString();
 
   const { data, error } = await supabase
@@ -1412,6 +1378,6 @@ export async function deleteMoneyTransfer(id: string, userId: string) {
   await supabase.from("money_transfer_slips").delete().eq("transfer_id", id);
   await supabase.from("money_transfer_items").delete().eq("transfer_id", id);
 
-  await saveSyncEvent("money_transfer" as any, "delete", data, data.location_id, id, serverReceivedAt, userId);
+  await saveSyncEvent(supabase, "money_transfer", "delete", data, data.location_id, id, serverReceivedAt, userId);
 }
 

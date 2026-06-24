@@ -14,8 +14,8 @@ export async function GET(request: NextRequest) {
     const page = parseInt(searchParams.get("page") || "1", 10);
     const pageSize = parseInt(searchParams.get("pageSize") || "50", 10);
     
-    const result = await getTransportStaffsPaginated(page, pageSize);
-    return NextResponse.json(result);
+    const pageResult = await getTransportStaffsPaginated(result.supabase, page, pageSize);
+    return NextResponse.json(pageResult);
   } catch (error) {
     const message = error instanceof Error ? error.message : JSON.stringify(error);
     return NextResponse.json({ error: message }, { status: 500 });
@@ -27,8 +27,14 @@ export async function POST(request: NextRequest) {
   if (!result.ok) return result.response;
 
   try {
-    const staff = await request.json() as TransportStaff;
-    const saved = await saveTransportStaff(staff, result.auth.sub);
+    const input = await request.json() as TransportStaff;
+    const staff: TransportStaff = {
+      ...input,
+      createdByUserId: result.auth.sub,
+      createdByName: result.auth.name,
+      createdByPhone: result.auth.phone
+    };
+    const saved = await saveTransportStaff(result.supabase, staff, result.auth.sub);
     return NextResponse.json(saved);
   } catch (error) {
     const message = error instanceof Error ? error.message : JSON.stringify(error);

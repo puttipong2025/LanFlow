@@ -9,7 +9,7 @@ export async function GET(request: NextRequest) {
   if (!result.ok) return result.response;
 
   try {
-    const data = await getLanFlowData(result.auth.sub);
+    const data = await getLanFlowData(result.supabase, result.auth.sub);
     return NextResponse.json(data);
   } catch (error) {
     const message = error instanceof Error ? error.message : JSON.stringify(error);

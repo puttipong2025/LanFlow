@@ -17,20 +17,10 @@ const withPWA = withPWAInit({
     // Don't cache API requests with Cache First — use proper strategies
     runtimeCaching: [
       {
-        // API calls: Network First (fall back to cache when offline)
+        // Never cache authenticated API responses in the shared service-worker
+        // cache. Offline data is stored in a user-partitioned workspace instead.
         urlPattern: /^https?:\/\/.*\/api\/.*/i,
-        handler: "NetworkFirst",
-        options: {
-          cacheName: "lanflow-api-cache",
-          expiration: {
-            maxEntries: 64,
-            maxAgeSeconds: 60 * 60, // 1 hour
-          },
-          networkTimeoutSeconds: 10,
-          cacheableResponse: {
-            statuses: [0, 200],
-          },
-        },
+        handler: "NetworkOnly",
       },
       {
         // Static assets (JS/CSS/fonts): Cache First

@@ -1,12 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAdminClient } from "@/lib/server/lanflow-db";
-import { requireAuth, requireRole } from "@/lib/server/auth";
+import { requireRole } from "@/lib/server/auth";
 
 export async function POST(request: NextRequest) {
-  const auth = await requireAuth(request);
-  if (!auth.ok) return auth.response;
-
-  // super_admin or admin can assign branches
   const adminCheck = await requireRole(request, ["super_admin", "admin"]);
   if (!adminCheck.ok) return adminCheck.response;
 
@@ -16,7 +11,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Missing userId or locationId" }, { status: 400 });
     }
 
-    const supabase = getAdminClient();
+    const supabase = adminCheck.supabase;
 
     // Check if assignment already exists
     const { data: existing, error: existError } = await supabase
@@ -37,7 +32,7 @@ export async function POST(request: NextRequest) {
       .insert({
         user_id: userId,
         location_id: locationId,
-        assigned_by: (auth as any).auth?.sub,
+        assigned_by: adminCheck.auth.sub,
       });
 
     if (insertError) throw insertError;
@@ -50,10 +45,6 @@ export async function POST(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
-  const auth = await requireAuth(request);
-  if (!auth.ok) return auth.response;
-
-  // super_admin or admin can remove branches
   const adminCheck = await requireRole(request, ["super_admin", "admin"]);
   if (!adminCheck.ok) return adminCheck.response;
 
@@ -66,7 +57,7 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: "Missing userId or locationId" }, { status: 400 });
     }
 
-    const supabase = getAdminClient();
+    const supabase = adminCheck.supabase;
 
     const { error: deleteError } = await supabase
       .from("user_locations")

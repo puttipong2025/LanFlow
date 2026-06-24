@@ -12,7 +12,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
   try {
     const { id } = await params;
     const body = await request.json();
-    const updated = await updateOcrTicket(id, body, result.auth.sub);
+    const updated = await updateOcrTicket(result.supabase, id, body, result.auth.sub);
     return NextResponse.json(updated);
   } catch (error) {
     const message = error instanceof Error ? error.message : JSON.stringify(error);
@@ -26,7 +26,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
 
   try {
     const { id } = await params;
-    const driveFileId = await deleteOcrTicket(id, result.auth.sub);
+    const driveFileId = await deleteOcrTicket(result.supabase, id, result.auth.sub);
 
     // Also delete from Google Drive if file was uploaded
     if (driveFileId) {

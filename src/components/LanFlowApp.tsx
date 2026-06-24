@@ -1,7 +1,7 @@
-import { toast } from "sonner";
-import appSwal from "@/lib/swal";
 "use client";
 
+import { toast } from "sonner";
+import appSwal from "@/lib/swal";
 import {
   ArrowDownUp,
   Banknote,
@@ -23,7 +23,7 @@ import {
   Users,
   LogOut
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useAuthContext } from "@/components/AuthProvider";
 import { demoLocations, demoProfile, initialBills, initialTransactions } from "@/lib/demo-data";
 import {
@@ -33,19 +33,19 @@ import {
   makeClientTempId,
   makeIdempotencyKey,
   makeLocalBillNo,
-  makeSimulatedServerBillNo,
   todayInputValue
 } from "@/lib/format";
 import { isSupabaseConfigured } from "@/lib/supabase-browser";
 import { useOfflineQueue } from "@/hooks/use-offline-queue";
-import type { IncomeExpense, Location, PaymentResponsibility, Profile, RubberBill, Customer, OcrTicket, TransportStaff, MoneyTransfer } from "@/types";
+import type { IncomeExpense, Location, PaymentResponsibility, Profile, RubberBill, Customer, OcrTicket, TransportStaff, MoneyTransfer, QueueItem } from "@/types";
 import { CustomersModule } from "./CustomersModule";
 import { TransportModule } from "./TransportModule";
 import { OcrTicketUpload } from "./OcrTicketUpload";
 import type { UploadItem } from "./OcrTicketUpload";
 import { MoneyTransferModule } from "./MoneyTransferModule";
 import { AdminModule } from "./AdminModule";
-import { authFetch } from "@/lib/auth-fetch";
+import { ApiResponseError, assertApiResponse, authFetch } from "@/lib/auth-fetch";
+import { readOfflineWorkspace, writeOfflineWorkspace } from "@/lib/offline-workspace";
 
 type Tab = "dashboard" | "rubber" | "cash" | "customers" | "transport" | "money-transfer" | "ocr" | "admin" | "sync";
 type RubberWeighItem = NonNullable<RubberBill["weighItems"]>[number];
@@ -75,36 +75,47 @@ const tabs: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: n
 
 export function LanFlowApp() {
   const auth = useAuthContext();
+  const userId = auth.profile?.id ?? demoProfile.id;
+  const [initialWorkspace] = useState(() => readOfflineWorkspace(userId));
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
-  const [locations, setLocations] = useState<Location[]>(demoLocations);
-  const [profile, setProfile] = useState<Profile>(auth.profile ?? demoProfile);
-  const [selectedLocationId, setSelectedLocationId] = useState(demoLocations[0].id);
-  const [bills, setBills] = useState<RubberBill[]>(initialBills);
-  const [transactions, setTransactions] = useState<IncomeExpense[]>(initialTransactions);
-  const [customers, setCustomers] = useState<Customer[]>(() => {
-    if (typeof window !== "undefined") {
-      try {
-        return JSON.parse(window.localStorage.getItem("lanflow:customers") || "[]") as Customer[];
-      } catch {
-        return [];
-      }
-    }
-    return [];
-  });
-  const [transportStaffs, setTransportStaffs] = useState<TransportStaff[]>([]);
-  const [ocrTickets, setOcrTickets] = useState<OcrTicket[]>([]);
+  const [locations, setLocations] = useState<Location[]>(initialWorkspace?.locations ?? demoLocations);
+  const [profile, setProfile] = useState<Profile>(auth.profile ?? initialWorkspace?.profile ?? demoProfile);
+  const [selectedLocationId, setSelectedLocationId] = useState(
+    initialWorkspace?.profile.locationIds[0] ??
+    auth.profile?.locationIds[0] ??
+    demoLocations[0].id
+  );
+  const [bills, setBills] = useState<RubberBill[]>(initialWorkspace?.bills ?? initialBills);
+  const [transactions, setTransactions] = useState<IncomeExpense[]>(initialWorkspace?.transactions ?? initialTransactions);
+  const [customers, setCustomers] = useState<Customer[]>(initialWorkspace?.customers ?? []);
+  const [transportStaffs, setTransportStaffs] = useState<TransportStaff[]>(initialWorkspace?.transportStaffs ?? []);
+  const [ocrTickets, setOcrTickets] = useState<OcrTicket[]>(initialWorkspace?.ocrTickets ?? []);
   const [ocrUploadItems, setOcrUploadItems] = useState<UploadItem[]>([]);
-  const [moneyTransfers, setMoneyTransfers] = useState<MoneyTransfer[]>([]);
-  const [usedSourceIds, setUsedSourceIds] = useState<Set<string>>(new Set());
-  const queue = useOfflineQueue();
+  const [moneyTransfers, setMoneyTransfers] = useState<MoneyTransfer[]>(initialWorkspace?.moneyTransfers ?? []);
+  const [usedSourceIds, setUsedSourceIds] = useState<Set<string>>(
+    new Set(initialWorkspace?.usedSourceIds ?? [])
+  );
+  const queue = useOfflineQueue(userId);
+  const isFlushingQueue = useRef(false);
+
+  function markSyncFailure(idempotencyKey: string, error: unknown) {
+    const message = error instanceof Error ? error.message : "Sync ไม่สำเร็จ";
+    if (error instanceof ApiResponseError && (error.status === 403 || error.status === 409)) {
+      queue.markConflict(idempotencyKey, message);
+      return;
+    }
+    queue.markFailed(idempotencyKey, message);
+  }
 
   useEffect(() => {
     let ignore = false;
 
     async function loadDatabaseData() {
+      if (!navigator.onLine) return;
+
       try {
         const response = await authFetch("/api/lanflow", { cache: "no-store" });
-        if (!response.ok) throw new Error(await response.text());
+        await assertApiResponse(response);
         const data = await response.json() as LanFlowApiData & { customers: Customer[] };
         if (ignore) return;
 
@@ -114,9 +125,6 @@ export function LanFlowApp() {
         setTransactions(data.transactions);
         setCustomers(data.customers || []);
         setTransportStaffs((data as any).transportStaffs || []);
-        if (typeof window !== "undefined") {
-          window.localStorage.setItem("lanflow:customers", JSON.stringify(data.customers || []));
-        }
         setSelectedLocationId(data.profile.locationIds[0] ?? data.locations[0]?.id ?? demoLocations[0].id);
 
         // Load transport staffs
@@ -165,6 +173,31 @@ export function LanFlowApp() {
       ignore = true;
     };
   }, []);
+
+  useEffect(() => {
+    writeOfflineWorkspace(userId, {
+      profile,
+      locations,
+      bills,
+      transactions,
+      customers,
+      transportStaffs,
+      ocrTickets,
+      moneyTransfers,
+      usedSourceIds: Array.from(usedSourceIds)
+    });
+  }, [
+    userId,
+    profile,
+    locations,
+    bills,
+    transactions,
+    customers,
+    transportStaffs,
+    ocrTickets,
+    moneyTransfers,
+    usedSourceIds
+  ]);
 
   const selectedLocation = locations.find((location) => location.id === selectedLocationId) ?? locations[0];
   const scopedBills = bills.filter((bill) => bill.locationId === selectedLocationId && bill.recordStatus !== "deleted");
@@ -311,13 +344,14 @@ export function LanFlowApp() {
   }
 
   async function persistRubberBill(bill: RubberBill) {
+    if (!navigator.onLine) return;
     try {
       const response = await authFetch("/api/lanflow/rubber-bills", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(bill)
       });
-      if (!response.ok) throw new Error(await response.text());
+      await assertApiResponse(response);
       const savedBill = await response.json() as RubberBill;
       setBills((current) => {
         const exists = current.some((item) => item.id === bill.id || item.clientTempId === bill.clientTempId);
@@ -331,18 +365,19 @@ export function LanFlowApp() {
       setBills((current) =>
         current.map((item) => (item.clientTempId === bill.clientTempId ? { ...item, syncStatus: "failed" } : item))
       );
-      queue.markFailed(bill.idempotencyKey, message);
+      markSyncFailure(bill.idempotencyKey, error);
     }
   }
 
   async function persistIncomeExpense(transaction: IncomeExpense) {
+    if (!navigator.onLine) return;
     try {
       const response = await authFetch("/api/lanflow/income-expense", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(transaction)
       });
-      if (!response.ok) throw new Error(await response.text());
+      await assertApiResponse(response);
       const savedTransaction = await response.json() as IncomeExpense;
       setTransactions((current) => {
         const exists = current.some((item) => item.id === transaction.id || item.clientTempId === transaction.clientTempId);
@@ -358,20 +393,18 @@ export function LanFlowApp() {
       setTransactions((current) =>
         current.map((item) => (item.clientTempId === transaction.clientTempId ? { ...item, syncStatus: "failed" } : item))
       );
-      queue.markFailed(transaction.idempotencyKey, message);
+      markSyncFailure(transaction.idempotencyKey, error);
     }
   }
 
   function addCustomer(customer: Customer) {
     const key = customer.idempotencyKey || makeIdempotencyKey("create", customer.id);
-    const customerWithKey = { ...customer, idempotencyKey: key };
-    setCustomers((current) => {
-      const next = [customerWithKey, ...current];
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem("lanflow:customers", JSON.stringify(next));
-      }
-      return next;
-    });
+    const customerWithKey = {
+      ...customer,
+      defaultLocationId: customer.defaultLocationId ?? selectedLocationId,
+      idempotencyKey: key
+    };
+    setCustomers((current) => [customerWithKey, ...current]);
     queue.enqueue({
       clientTempId: customerWithKey.clientTempId || customerWithKey.id,
       idempotencyKey: key,
@@ -390,13 +423,9 @@ export function LanFlowApp() {
       syncStatus: "pending",
       idempotencyKey: makeIdempotencyKey("update", `${updatedCustomer.clientTempId || updatedCustomer.id}:${nextRevision}`)
     };
-    setCustomers((current) => {
-      const next = current.map((item) => (item.id === revisedCustomer.id ? revisedCustomer : item));
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem("lanflow:customers", JSON.stringify(next));
-      }
-      return next;
-    });
+    setCustomers((current) =>
+      current.map((item) => (item.id === revisedCustomer.id ? revisedCustomer : item))
+    );
     queue.enqueue({
       clientTempId: revisedCustomer.clientTempId || revisedCustomer.id,
       idempotencyKey: revisedCustomer.idempotencyKey!,
@@ -413,13 +442,7 @@ export function LanFlowApp() {
     const nextRevision = (customer.revisionNo || 0) + 1;
     const idempotencyKey = makeIdempotencyKey("delete", `${customer.clientTempId || customer.id}:${nextRevision}`);
     
-    setCustomers((current) => {
-      const next = current.filter((item) => item.id !== id);
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem("lanflow:customers", JSON.stringify(next));
-      }
-      return next;
-    });
+    setCustomers((current) => current.filter((item) => item.id !== id));
     queue.enqueue({
       clientTempId: customer.clientTempId || customer.id,
       idempotencyKey,
@@ -432,13 +455,14 @@ export function LanFlowApp() {
   }
 
   async function persistCustomer(customer: Customer) {
+    if (!navigator.onLine) return;
     try {
       const response = await authFetch("/api/lanflow/customers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(customer)
       });
-      if (!response.ok) throw new Error(await response.text());
+      await assertApiResponse(response);
       const savedCustomer = await response.json() as Customer;
       setCustomers((current) => {
         const exists = current.some((item) => item.id === customer.id || item.clientTempId === customer.clientTempId);
@@ -446,9 +470,6 @@ export function LanFlowApp() {
           ? current.map((item) => (item.id === customer.id || item.clientTempId === customer.clientTempId ? savedCustomer : item))
           : [savedCustomer, ...current];
         
-        if (typeof window !== "undefined") {
-          window.localStorage.setItem("lanflow:customers", JSON.stringify(next));
-        }
         return next;
       });
       queue.markSynced(customer.idempotencyKey!);
@@ -458,22 +479,23 @@ export function LanFlowApp() {
       setCustomers((current) =>
         current.map((item) => (item.clientTempId === customer.clientTempId ? { ...item, syncStatus: "failed" } : item))
       );
-      queue.markFailed(customer.idempotencyKey!, message);
+      markSyncFailure(customer.idempotencyKey!, error);
     }
   }
 
   // BUG-1 fix: accept idempotencyKey as param to avoid stale closure
   async function persistDeleteCustomer(id: string, idempotencyKey: string) {
+    if (!navigator.onLine) return;
     try {
       const response = await authFetch(`/api/lanflow/customers/${id}`, {
         method: "DELETE"
       });
-      if (!response.ok) throw new Error(await response.text());
+      await assertApiResponse(response);
       queue.markSynced(idempotencyKey);
     } catch (error) {
       const message = error instanceof Error ? error.message : "ลบข้อมูลลูกค้าไม่สำเร็จ";
       console.error("LanFlow customer delete failed", error);
-      queue.markFailed(idempotencyKey, message);
+      markSyncFailure(idempotencyKey, error);
     }
   }
 
@@ -481,7 +503,11 @@ export function LanFlowApp() {
 
   function addTransportStaff(staff: TransportStaff) {
     const key = staff.idempotencyKey || makeIdempotencyKey("create", staff.id);
-    const staffWithKey = { ...staff, idempotencyKey: key };
+    const staffWithKey = {
+      ...staff,
+      defaultLocationId: staff.defaultLocationId ?? selectedLocationId,
+      idempotencyKey: key
+    };
     setTransportStaffs((current) => [staffWithKey, ...current]);
     queue.enqueue({
       clientTempId: staffWithKey.clientTempId || staffWithKey.id,
@@ -530,13 +556,14 @@ export function LanFlowApp() {
   }
 
   async function persistTransportStaff(staff: TransportStaff) {
+    if (!navigator.onLine) return;
     try {
       const response = await authFetch("/api/lanflow/transport-staffs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(staff)
       });
-      if (!response.ok) throw new Error(await response.text());
+      await assertApiResponse(response);
       const savedStaff = await response.json() as TransportStaff;
       setTransportStaffs((current) => {
         const exists = current.some((item) => item.id === staff.id || item.clientTempId === staff.clientTempId);
@@ -552,21 +579,22 @@ export function LanFlowApp() {
       setTransportStaffs((current) =>
         current.map((item) => (item.clientTempId === staff.clientTempId ? { ...item, syncStatus: "failed" } : item))
       );
-      queue.markFailed(staff.idempotencyKey!, message);
+      markSyncFailure(staff.idempotencyKey!, error);
     }
   }
 
   async function persistDeleteTransportStaff(id: string, idempotencyKey: string) {
+    if (!navigator.onLine) return;
     try {
       const response = await authFetch(`/api/lanflow/transport-staffs/${id}`, {
         method: "DELETE"
       });
-      if (!response.ok) throw new Error(await response.text());
+      await assertApiResponse(response);
       queue.markSynced(idempotencyKey);
     } catch (error) {
       const message = error instanceof Error ? error.message : "ลบข้อมูลขนส่งไม่สำเร็จ";
       console.error("LanFlow transport staff delete failed", error);
-      queue.markFailed(idempotencyKey, message);
+      markSyncFailure(idempotencyKey, error);
     }
   }
 
@@ -614,13 +642,14 @@ export function LanFlowApp() {
   }
 
   async function persistOcrTicket(ticket: OcrTicket) {
+    if (!navigator.onLine) return;
     try {
       const response = await authFetch("/api/lanflow/ocr-tickets", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(ticket)
       });
-      if (!response.ok) throw new Error(await response.text());
+      await assertApiResponse(response);
       const saved = await response.json() as OcrTicket;
       setOcrTickets((current) =>
         current.map((t) => (t.id === ticket.id || t.clientTempId === ticket.clientTempId ? saved : t))
@@ -629,18 +658,19 @@ export function LanFlowApp() {
     } catch (error) {
       const message = error instanceof Error ? error.message : "บันทึกใบชั่ง OCR ไม่สำเร็จ";
       console.error("OCR ticket save failed", error);
-      queue.markFailed(ticket.idempotencyKey || `ocr:${ticket.id}`, message);
+      markSyncFailure(ticket.idempotencyKey || `ocr:${ticket.id}`, error);
     }
   }
 
   async function persistUpdateOcrTicket(ticket: OcrTicket) {
+    if (!navigator.onLine) return;
     try {
       const response = await authFetch(`/api/lanflow/ocr-tickets/${ticket.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(ticket)
       });
-      if (!response.ok) throw new Error(await response.text());
+      await assertApiResponse(response);
       const saved = await response.json() as OcrTicket;
       setOcrTickets((current) =>
         current.map((t) => (t.id === ticket.id ? saved : t))
@@ -649,72 +679,121 @@ export function LanFlowApp() {
     } catch (error) {
       const message = error instanceof Error ? error.message : "อัพเดทใบชั่ง OCR ไม่สำเร็จ";
       console.error("OCR ticket update failed", error);
-      queue.markFailed(ticket.idempotencyKey || `ocr:update:${ticket.id}`, message);
+      markSyncFailure(ticket.idempotencyKey || `ocr:update:${ticket.id}`, error);
     }
   }
 
   async function persistDeleteOcrTicket(id: string, idempotencyKey: string) {
+    if (!navigator.onLine) return;
     try {
       const response = await authFetch(`/api/lanflow/ocr-tickets/${id}`, {
         method: "DELETE"
       });
-      if (!response.ok) throw new Error(await response.text());
+      await assertApiResponse(response);
       queue.markSynced(idempotencyKey);
     } catch (error) {
       const message = error instanceof Error ? error.message : "ลบใบชั่ง OCR ไม่สำเร็จ";
       console.error("OCR ticket delete failed", error);
-      queue.markFailed(idempotencyKey, message);
+      markSyncFailure(idempotencyKey, error);
     }
   }
 
   // ── Money Transfer handlers ──
 
   async function saveMoneyTransfer(transfer: MoneyTransfer) {
+    const idempotencyKey =
+      transfer.idempotencyKey ??
+      makeIdempotencyKey("create", transfer.clientTempId ?? transfer.id);
+    const queuedTransfer: MoneyTransfer = {
+      ...transfer,
+      idempotencyKey,
+      syncStatus: "pending"
+    };
+
     setMoneyTransfers((current) => {
-      const exists = current.some((t) => t.id === transfer.id);
-      if (exists) return current.map((t) => (t.id === transfer.id ? transfer : t));
-      return [transfer, ...current];
+      const exists = current.some((item) => item.id === queuedTransfer.id);
+      if (exists) {
+        return current.map((item) =>
+          item.id === queuedTransfer.id ? queuedTransfer : item
+        );
+      }
+      return [queuedTransfer, ...current];
     });
-    // Mark source IDs as used
-    if (transfer.items) {
-      setUsedSourceIds((prev) => {
-        const next = new Set(prev);
-        transfer.items!.forEach((item) => next.add(item.sourceId));
+
+    queue.enqueue({
+      clientTempId: queuedTransfer.clientTempId ?? queuedTransfer.id,
+      idempotencyKey,
+      entityType: "money_transfer",
+      operationType: "create",
+      payload: queuedTransfer
+    });
+
+    if (queuedTransfer.items) {
+      setUsedSourceIds((previous) => {
+        const next = new Set(previous);
+        queuedTransfer.items!.forEach((item) => next.add(item.sourceId));
         return next;
       });
     }
+
+    if (!navigator.onLine) return;
+
     try {
       const response = await authFetch("/api/lanflow/money-transfers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(transfer),
+        body: JSON.stringify(queuedTransfer),
       });
-      if (!response.ok) throw new Error(await response.text());
+      await assertApiResponse(response);
       const saved = await response.json() as MoneyTransfer;
       setMoneyTransfers((current) =>
-        current.map((t) => (t.id === transfer.id ? saved : t))
+        current.map((item) => (item.id === queuedTransfer.id ? saved : item))
       );
+      queue.markSynced(idempotencyKey);
     } catch (error) {
       console.error("Money transfer save failed", error);
+      markSyncFailure(idempotencyKey, error);
     }
   }
 
-  async function deleteMoneyTransfer(id: string) {
-    const transfer = moneyTransfers.find((t) => t.id === id);
-    setMoneyTransfers((current) => current.filter((t) => t.id !== id));
-    // Free used source IDs
-    if (transfer?.items) {
-      setUsedSourceIds((prev) => {
-        const next = new Set(prev);
+  async function deleteMoneyTransfer(
+    id: string,
+    existingIdempotencyKey?: string,
+    transferSnapshot?: MoneyTransfer
+  ) {
+    const transfer = transferSnapshot ?? moneyTransfers.find((item) => item.id === id);
+    if (!transfer) return;
+
+    const idempotencyKey =
+      existingIdempotencyKey ??
+      makeIdempotencyKey("delete", transfer.clientTempId ?? transfer.id);
+
+    setMoneyTransfers((current) => current.filter((item) => item.id !== id));
+    queue.enqueue({
+      clientTempId: transfer.clientTempId ?? transfer.id,
+      idempotencyKey,
+      entityType: "money_transfer",
+      operationType: "delete",
+      payload: transfer
+    });
+
+    if (transfer.items) {
+      setUsedSourceIds((previous) => {
+        const next = new Set(previous);
         transfer.items!.forEach((item) => next.delete(item.sourceId));
         return next;
       });
     }
+
+    if (!navigator.onLine) return;
+
     try {
       const response = await authFetch(`/api/lanflow/money-transfers/${id}`, { method: "DELETE" });
-      if (!response.ok) throw new Error(await response.text());
+      await assertApiResponse(response);
+      queue.markSynced(idempotencyKey);
     } catch (error) {
       console.error("Money transfer delete failed", error);
+      markSyncFailure(idempotencyKey, error);
     }
   }
 
@@ -731,38 +810,88 @@ export function LanFlowApp() {
     }
   }
 
-  function simulateSync() {
-    const serverReceivedAt = makeClientRecordedAt();
-    setBills((current) =>
-      current.map((bill, index) =>
-        bill.syncStatus === "pending" || bill.syncStatus === "failed"
-          ? {
-              ...bill,
-              syncStatus: "synced",
-              serverBillNo: bill.serverBillNo ?? makeSimulatedServerBillNo(index + 1),
-              billNo: bill.serverBillNo ?? makeSimulatedServerBillNo(index + 1),
-              serverReceivedAt,
-              serverCreatedAt: bill.serverCreatedAt ?? serverReceivedAt
-            }
-          : bill
-      )
-    );
-    setTransactions((current) =>
-      current.map((transaction, index) =>
-        transaction.syncStatus === "pending" || transaction.syncStatus === "failed"
-          ? {
-              ...transaction,
-              syncStatus: "synced",
-              serverBillNo: transaction.serverBillNo ?? String(index + 1),
-              number: transaction.serverBillNo ?? String(index + 1),
-              serverReceivedAt,
-              serverCreatedAt: transaction.serverCreatedAt ?? serverReceivedAt
-            }
-          : transaction
-      )
-    );
-    queue.markAllSynced();
+  async function syncQueueItem(item: QueueItem) {
+    queue.markSyncing(item.idempotencyKey);
+
+    switch (item.entityType) {
+      case "rubber_bill":
+        await persistRubberBill(item.payload as RubberBill);
+        break;
+      case "income_expense":
+        await persistIncomeExpense(item.payload as IncomeExpense);
+        break;
+      case "customer": {
+        const customer = item.payload as Customer;
+        if (item.operationType === "delete") {
+          await persistDeleteCustomer(customer.id, item.idempotencyKey);
+        } else {
+          await persistCustomer(customer);
+        }
+        break;
+      }
+      case "transport_staff": {
+        const staff = item.payload as TransportStaff;
+        if (item.operationType === "delete") {
+          await persistDeleteTransportStaff(staff.id, item.idempotencyKey);
+        } else {
+          await persistTransportStaff(staff);
+        }
+        break;
+      }
+      case "ocr_ticket": {
+        const ticket = item.payload as OcrTicket;
+        if (item.operationType === "delete") {
+          await persistDeleteOcrTicket(ticket.id, item.idempotencyKey);
+        } else if (item.operationType === "update") {
+          await persistUpdateOcrTicket(ticket);
+        } else {
+          await persistOcrTicket(ticket);
+        }
+        break;
+      }
+      case "money_transfer": {
+        const transfer = item.payload as MoneyTransfer;
+        if (item.operationType === "delete") {
+          await deleteMoneyTransfer(transfer.id, item.idempotencyKey, transfer);
+        } else {
+          await saveMoneyTransfer(transfer);
+        }
+        break;
+      }
+    }
   }
+
+  async function flushQueue() {
+    if (
+      isFlushingQueue.current ||
+      !queue.online ||
+      auth.mode !== "online"
+    ) {
+      return;
+    }
+
+    isFlushingQueue.current = true;
+    try {
+      const pending = queue.items
+        .filter((item) => item.status === "pending" || item.status === "failed")
+        .reverse();
+
+      for (const item of pending) {
+        await syncQueueItem(item);
+      }
+    } finally {
+      isFlushingQueue.current = false;
+    }
+  }
+
+  useEffect(() => {
+    if (queue.online && auth.mode === "online") {
+      void flushQueue();
+    }
+    // Flush only on connectivity/auth-mode transitions. New online writes already
+    // call their persistence function immediately.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queue.online, auth.mode]);
 
   function addLocation(name: string) {
     const id = makeClientTempId("loc");
@@ -819,7 +948,11 @@ export function LanFlowApp() {
               ) : (
                 <CloudOff size={18} className="text-clay" />
               )}
-              <span>{queue.online ? "Online" : "Offline"}</span>
+              <span>
+                {auth.mode === "offline"
+                  ? `Offline ถึง ${auth.offlineUntil ? new Date(auth.offlineUntil).toLocaleDateString("th-TH") : "7 วัน"}`
+                  : queue.online ? "Online" : "Offline"}
+              </span>
               <span className="rounded bg-amber/25 px-2 py-0.5 font-semibold">{queue.pendingCount}</span>
             </div>
 
@@ -978,7 +1111,7 @@ export function LanFlowApp() {
           <SyncPanel
             queueItems={queue.items}
             online={queue.online}
-            onMarkSynced={simulateSync}
+            onMarkSynced={() => void flushQueue()}
             onClearSynced={queue.clearSynced}
           />
         )}
@@ -2777,7 +2910,7 @@ function SyncPanel({
             disabled={!online}
             className="focus-ring h-10 rounded-md bg-leaf px-3 text-sm font-semibold text-white disabled:bg-ink/25"
           >
-            จำลอง Sync
+            Sync ตอนนี้
           </button>
           <button
             type="button"
@@ -2800,6 +2933,9 @@ function SyncPanel({
             <p className="mt-1 break-all text-xs text-ink/50">idempotency: {item.idempotencyKey}</p>
             {item.serverReceivedAt && (
               <p className="mt-1 text-xs text-leaf">server_received_at: {formatBillTimestamp(item.serverReceivedAt)}</p>
+            )}
+            {item.errorMessage && (
+              <p className="mt-1 text-xs text-red-700">{item.errorMessage}</p>
             )}
           </div>
         ))}

@@ -1,15 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAdminClient } from "@/lib/server/lanflow-db";
-import { requireAuth, requireRole } from "@/lib/server/auth";
+import { requireRole } from "@/lib/server/auth";
 
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = await requireAuth(request);
-  if (!auth.ok) return auth.response;
-
-  // Only super_admin can change roles
   const adminCheck = await requireRole(request, ["super_admin"]);
   if (!adminCheck.ok) return adminCheck.response;
 
@@ -24,7 +19,7 @@ export async function PATCH(
       return NextResponse.json({ error: "Missing user ID" }, { status: 400 });
     }
 
-    const supabase = getAdminClient();
+    const supabase = adminCheck.supabase;
 
     // Ensure target user is not a super_admin
     const { data: targetUser, error: checkError } = await supabase

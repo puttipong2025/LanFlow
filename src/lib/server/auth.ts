@@ -1,134 +1,101 @@
-import { SignJWT, jwtVerify } from "jose";
-import bcrypt from "bcryptjs";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import type { AppRole } from "@/types";
-
-const SALT_ROUNDS = 10;
-const TOKEN_EXPIRY = "7d"; // 7 days for PWA offline support
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export type AuthTokenPayload = {
-  sub: string;        // profile.id
+  sub: string;
   phone: string;
   name: string;
   role: AppRole;
   locationIds: string[];
 };
 
-function getJwtSecret(): Uint8Array {
-  const secret = process.env.LANFLOW_JWT_SECRET;
-  if (!secret) {
-    throw new Error("LANFLOW_JWT_SECRET is not configured");
-  }
-  return new TextEncoder().encode(secret);
-}
+type AuthSuccess = {
+  ok: true;
+  auth: AuthTokenPayload;
+  supabase: SupabaseClient;
+};
 
-// ── Password hashing ──
+type AuthFailure = {
+  ok: false;
+  response: NextResponse;
+};
 
-export async function hashPassword(raw: string): Promise<string> {
-  return bcrypt.hash(raw, SALT_ROUNDS);
-}
+export type AuthResult = AuthSuccess | AuthFailure;
 
-export async function verifyPassword(raw: string, hash: string): Promise<boolean> {
-  return bcrypt.compare(raw, hash);
-}
+export async function requireAuth(_request?: Request): Promise<AuthResult> {
+  const supabase = await createSupabaseServerClient();
+  const { data: claimsData, error: claimsError } = await supabase.auth.getClaims();
+  const userId = claimsData?.claims?.sub;
 
-// ── JWT ──
-
-export async function signToken(payload: AuthTokenPayload): Promise<string> {
-  return new SignJWT({ ...payload })
-    .setProtectedHeader({ alg: "HS256" })
-    .setIssuedAt()
-    .setExpirationTime(TOKEN_EXPIRY)
-    .setIssuer("lanflow")
-    .sign(getJwtSecret());
-}
-
-export async function verifyToken(token: string): Promise<AuthTokenPayload | null> {
-  try {
-    const { payload } = await jwtVerify(token, getJwtSecret(), {
-      issuer: "lanflow",
-    });
-    return payload as unknown as AuthTokenPayload;
-  } catch {
-    return null;
-  }
-}
-
-/** Check if token is expiring within the given seconds */
-export async function isTokenExpiringSoon(token: string, withinSeconds = 86400): Promise<boolean> {
-  try {
-    const { payload } = await jwtVerify(token, getJwtSecret(), { issuer: "lanflow" });
-    const exp = payload.exp ?? 0;
-    return exp - Math.floor(Date.now() / 1000) < withinSeconds;
-  } catch {
-    return true;
-  }
-}
-
-// ── Request helpers ──
-
-export function getTokenFromRequest(request: Request): string | null {
-  const authHeader = request.headers.get("authorization");
-  if (authHeader?.startsWith("Bearer ")) {
-    return authHeader.slice(7);
-  }
-  return null;
-}
-
-export async function getAuthPayload(request: Request): Promise<AuthTokenPayload | null> {
-  const token = getTokenFromRequest(request);
-  if (!token) return null;
-  return verifyToken(token);
-}
-
-// ── API route helpers ──
-
-
-
-type AuthResult =
-  | { ok: true; auth: AuthTokenPayload }
-  | { ok: false; response: NextResponse };
-
-/**
- * Use in API routes: extracts and verifies JWT from request.
- * Returns auth payload or a ready-to-return 401 response.
- *
- * Usage:
- *   const result = await requireAuth(request);
- *   if (!result.ok) return result.response;
- *   const { auth } = result;
- */
-export async function requireAuth(request: Request): Promise<AuthResult> {
-  const auth = await getAuthPayload(request);
-  if (!auth) {
+  if (claimsError || typeof userId !== "string") {
     return {
       ok: false,
       response: NextResponse.json(
-        { error: "ไม่ได้เข้าสู่ระบบ หรือ token หมดอายุ" },
+        { error: "ไม่ได้เข้าสู่ระบบ หรือ session หมดอายุ" },
         { status: 401 }
-      ),
+      )
     };
   }
-  return { ok: true, auth };
+
+  const [{ data: profile, error: profileError }, { data: assignments, error: assignmentsError }] =
+    await Promise.all([
+      supabase
+        .from("profiles")
+        .select("id, phone, name, role, is_active")
+        .eq("id", userId)
+        .maybeSingle(),
+      supabase
+        .from("user_locations")
+        .select("location_id")
+        .eq("user_id", userId)
+    ]);
+
+  if (
+    profileError ||
+    assignmentsError ||
+    !profile ||
+    profile.is_active !== true
+  ) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { error: "บัญชีถูกปิดใช้งาน หรือไม่มีสิทธิ์เข้าถึง" },
+        { status: 403 }
+      )
+    };
+  }
+
+  return {
+    ok: true,
+    auth: {
+      sub: profile.id,
+      phone: profile.phone,
+      name: profile.name,
+      role: profile.role as AppRole,
+      locationIds: (assignments ?? []).map((item) => item.location_id as string)
+    },
+    supabase
+  };
 }
 
-/**
- * Like requireAuth but also checks that the user has the required role.
- */
 export async function requireRole(
   request: Request,
   roles: AppRole[]
 ): Promise<AuthResult> {
   const result = await requireAuth(request);
   if (!result.ok) return result;
+
   if (!roles.includes(result.auth.role)) {
     return {
       ok: false,
       response: NextResponse.json(
         { error: "ไม่มีสิทธิ์เข้าถึง" },
         { status: 403 }
-      ),
+      )
     };
   }
+
   return result;
 }
