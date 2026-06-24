@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { uploadImageToDrive } from "@/lib/server/google-drive";
 import { updateOcrTicket } from "@/lib/server/lanflow-db";
+import { requireAuth } from "@/lib/server/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -10,6 +11,9 @@ export const dynamic = "force-dynamic";
  * Body: multipart/form-data with fields: image (File), ticketId (string)
  */
 export async function POST(request: NextRequest) {
+  const result = await requireAuth(request);
+  if (!result.ok) return result.response;
+
   try {
     const formData = await request.formData();
     const file = formData.get("image") as File | null;
@@ -32,7 +36,7 @@ export async function POST(request: NextRequest) {
     const updated = await updateOcrTicket(ticketId, {
       driveFileId: fileId,
       driveUrl: webViewLink,
-    });
+    }, result.auth.sub);
 
     return NextResponse.json(updated);
   } catch (error) {

@@ -30,6 +30,7 @@ import type {
   RubberBill,
 } from "@/types";
 import { formatCurrency } from "@/lib/format";
+import { authFetch } from "@/lib/auth-fetch";
 
 /* ── OCR Slip API Result ── */
 type OcrSlipResult = {
@@ -348,7 +349,7 @@ function TransferForm({
         try {
           const formData = new FormData();
           formData.append("image", file);
-          const res = await fetch("/api/lanflow/ocr-slip", { method: "POST", body: formData });
+          const res = await authFetch("/api/lanflow/ocr-slip", { method: "POST", body: formData });
           if (!res.ok) {
             const err = await res.json().catch(() => ({ error: "Unknown" }));
             throw new Error(err.error || `HTTP ${res.status}`);

@@ -8,7 +8,7 @@ const DEV_LOCATIONS = [
   { id: "00000000-0000-4000-8000-000000000103", name: "ป่ากุงใหญ่", code: "PKY" }
 ];
 
-function getAdminClient() {
+export function getAdminClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -88,7 +88,7 @@ export async function ensureLanFlowBootstrap() {
   }
 }
 
-export async function getLanFlowData() {
+export async function getLanFlowData(userId: string) {
   await ensureLanFlowBootstrap();
   const supabase = getAdminClient();
 
@@ -105,8 +105,8 @@ export async function getLanFlowData() {
     customerFarmsResult
   ] = await Promise.all([
     supabase.from("locations").select("*").order("created_at", { ascending: true }),
-    supabase.from("profiles").select("*").eq("id", DEV_PROFILE_ID).single(),
-    supabase.from("user_locations").select("location_id").eq("user_id", DEV_PROFILE_ID),
+    supabase.from("profiles").select("*").eq("id", userId).single(),
+    supabase.from("user_locations").select("location_id").eq("user_id", userId),
     supabase.from("rubber_bills").select("*").order("created_at", { ascending: false }),
     supabase.from("rubber_bill_items").select("*").order("created_at", { ascending: true }),
     supabase.from("income_expense").select("*").order("created_at", { ascending: false }),
@@ -147,7 +147,7 @@ export async function getLanFlowData() {
   };
 }
 
-export async function saveRubberBill(bill: RubberBill) {
+export async function saveRubberBill(bill: RubberBill, userId: string) {
   await ensureLanFlowBootstrap();
   const supabase = getAdminClient();
   const serverReceivedAt = new Date().toISOString();
@@ -181,7 +181,7 @@ export async function saveRubberBill(bill: RubberBill) {
     deleted_at: bill.deletedAt,
     deleted_by_name: bill.deletedByName,
     deleted_by_phone: bill.deletedByPhone,
-    created_by_user_id: DEV_PROFILE_ID,
+    created_by_user_id: userId,
     created_by_name: bill.createdByName,
     created_by_phone: bill.createdByPhone,
     updated_at: serverReceivedAt
@@ -237,7 +237,7 @@ export async function saveRubberBill(bill: RubberBill) {
     if (insertItemsError) throw insertItemsError;
   }
 
-  await saveSyncEvent("rubber_bill", bill.recordStatus === "deleted" ? "delete" : existing.data?.id ? "update" : "create", bill, bill.locationId, billId, serverReceivedAt);
+  await saveSyncEvent("rubber_bill", bill.recordStatus === "deleted" ? "delete" : existing.data?.id ? "update" : "create", bill, bill.locationId, billId, serverReceivedAt, userId);
 
   const savedItems = await supabase.from("rubber_bill_items").select("*").eq("bill_id", billId).order("created_at", { ascending: true });
   if (savedItems.error) throw savedItems.error;
@@ -245,7 +245,7 @@ export async function saveRubberBill(bill: RubberBill) {
   return rowToRubberBill(result.data, savedItems.data ?? []);
 }
 
-export async function saveIncomeExpense(transaction: IncomeExpense) {
+export async function saveIncomeExpense(transaction: IncomeExpense, userId: string) {
   await ensureLanFlowBootstrap();
   const supabase = getAdminClient();
   const serverReceivedAt = new Date().toISOString();
@@ -275,7 +275,7 @@ export async function saveIncomeExpense(transaction: IncomeExpense) {
     deleted_at: transaction.deletedAt,
     deleted_by_name: transaction.deletedByName,
     deleted_by_phone: transaction.deletedByPhone,
-    created_by_user_id: DEV_PROFILE_ID,
+    created_by_user_id: userId,
     created_by_name: transaction.createdByName,
     created_by_phone: transaction.createdByPhone,
     updated_at: serverReceivedAt
@@ -293,7 +293,7 @@ export async function saveIncomeExpense(transaction: IncomeExpense) {
     : await supabase.from("income_expense").insert(row).select("*").single();
 
   if (result.error) throw result.error;
-  await saveSyncEvent("income_expense", transaction.recordStatus === "deleted" ? "delete" : existing.data?.id ? "update" : "create", transaction, transaction.locationId, result.data.id, serverReceivedAt);
+  await saveSyncEvent("income_expense", transaction.recordStatus === "deleted" ? "delete" : existing.data?.id ? "update" : "create", transaction, transaction.locationId, result.data.id, serverReceivedAt, userId);
   return rowToIncomeExpense(result.data);
 }
 
@@ -303,7 +303,8 @@ async function saveSyncEvent(
   payload: any,
   locationId: string | null,
   serverId: string,
-  serverReceivedAt: string
+  serverReceivedAt: string,
+  userId: string
 ) {
   const supabase = getAdminClient();
   const { error } = await supabase.from("offline_sync_events").upsert({
@@ -315,7 +316,7 @@ async function saveSyncEvent(
     payload,
     status: "synced",
     server_id: serverId,
-    created_by_user_id: DEV_PROFILE_ID,
+    created_by_user_id: userId,
     client_recorded_at: payload.clientRecordedAt || serverReceivedAt,
     client_created_at: payload.clientCreatedAt || serverReceivedAt,
     server_received_at: serverReceivedAt
@@ -495,7 +496,7 @@ function rowToCustomer(row: any, contacts: any[], bankAccounts: any[], farms: an
   };
 }
 
-export async function saveCustomer(customer: Customer) {
+export async function saveCustomer(customer: Customer, userId: string) {
   if (!customer.mainName || customer.mainName.trim() === "") {
     throw new Error("Validation Error: mainName is required");
   }
@@ -542,10 +543,10 @@ export async function saveCustomer(customer: Customer) {
     client_recorded_at: customer.createdAt ?? serverReceivedAt,
     client_created_at: customer.createdAt ?? serverReceivedAt,
     server_received_at: serverReceivedAt,
-    created_by_user_id: DEV_PROFILE_ID,
+    created_by_user_id: userId,
     created_by_name: customer.createdByName ?? "ผู้ดูแลระบบ",
     created_by_phone: customer.createdByPhone ?? "0800000000",
-    updated_by_user_id: DEV_PROFILE_ID,
+    updated_by_user_id: userId,
     updated_by_name: customer.createdByName ?? "ผู้ดูแลระบบ",
     updated_by_phone: customer.createdByPhone ?? "0800000000",
     updated_at: serverReceivedAt
@@ -682,7 +683,7 @@ export async function saveCustomer(customer: Customer) {
     if (upsertFarmsError) throw upsertFarmsError;
   }
 
-  await saveSyncEvent("customer", customer.recordStatus === "deleted" ? "delete" : existingId ? "update" : "create", customer, null, customerId, serverReceivedAt);
+  await saveSyncEvent("customer", customer.recordStatus === "deleted" ? "delete" : existingId ? "update" : "create", customer, null, customerId, serverReceivedAt, userId);
 
   const [contactsRes, banksRes, farmsRes] = await Promise.all([
     supabase.from("customer_contacts").select("*").eq("customer_id", customerId),
@@ -694,7 +695,7 @@ export async function saveCustomer(customer: Customer) {
 }
 
 // BUG-4 fix: Soft-delete with sync event logging instead of hard delete
-export async function deleteCustomer(id: string) {
+export async function deleteCustomer(id: string, userId: string) {
   await ensureLanFlowBootstrap();
   const supabase = getAdminClient();
   const serverReceivedAt = new Date().toISOString();
@@ -717,7 +718,7 @@ export async function deleteCustomer(id: string) {
   if (error) throw error;
 
   // Log sync event for audit trail
-  await saveSyncEvent("customer", "delete", data, null, id, serverReceivedAt);
+  await saveSyncEvent("customer", "delete", data, null, id, serverReceivedAt, userId);
 }
 
 export async function getCustomersPaginated(page: number = 1, pageSize: number = 50) {
@@ -813,7 +814,7 @@ export async function getOcrTickets(locationId: string): Promise<OcrTicket[]> {
   return (data ?? []).map(rowToOcrTicket);
 }
 
-export async function saveOcrTicket(ticket: OcrTicket) {
+export async function saveOcrTicket(ticket: OcrTicket, userId: string) {
   await ensureLanFlowBootstrap();
   const supabase = getAdminClient();
   const serverReceivedAt = new Date().toISOString();
@@ -841,7 +842,7 @@ export async function saveOcrTicket(ticket: OcrTicket) {
     revision_no: ticket.revisionNo ?? 0,
     server_received_at: serverReceivedAt,
     client_recorded_at: ticket.createdAt ?? serverReceivedAt,
-    created_by_user_id: DEV_PROFILE_ID,
+    created_by_user_id: userId,
     created_by_name: ticket.createdByName ?? "ผู้ดูแลระบบ",
     created_by_phone: ticket.createdByPhone ?? "0800000000",
     updated_at: serverReceivedAt
@@ -866,11 +867,11 @@ export async function saveOcrTicket(ticket: OcrTicket) {
   }
   if (result.error) throw result.error;
 
-  await saveSyncEvent("ocr_ticket", existingId ? "update" : "create", ticket, ticket.locationId, result.data.id, serverReceivedAt);
+  await saveSyncEvent("ocr_ticket", existingId ? "update" : "create", ticket, ticket.locationId, result.data.id, serverReceivedAt, userId);
   return rowToOcrTicket(result.data);
 }
 
-export async function updateOcrTicket(id: string, updates: Partial<OcrTicket>) {
+export async function updateOcrTicket(id: string, updates: Partial<OcrTicket>, userId: string) {
   await ensureLanFlowBootstrap();
   const supabase = getAdminClient();
   const serverReceivedAt = new Date().toISOString();
@@ -898,11 +899,11 @@ export async function updateOcrTicket(id: string, updates: Partial<OcrTicket>) {
     .single();
   if (error) throw error;
 
-  await saveSyncEvent("ocr_ticket", "update", data, data.location_id, id, serverReceivedAt);
+  await saveSyncEvent("ocr_ticket", "update", data, data.location_id, id, serverReceivedAt, userId);
   return rowToOcrTicket(data);
 }
 
-export async function deleteOcrTicket(id: string) {
+export async function deleteOcrTicket(id: string, userId: string) {
   await ensureLanFlowBootstrap();
   const supabase = getAdminClient();
   const serverReceivedAt = new Date().toISOString();
@@ -922,7 +923,7 @@ export async function deleteOcrTicket(id: string) {
     .single();
   if (error) throw error;
 
-  await saveSyncEvent("ocr_ticket", "delete", data, data.location_id, id, serverReceivedAt);
+  await saveSyncEvent("ocr_ticket", "delete", data, data.location_id, id, serverReceivedAt, userId);
   return data.drive_file_id as string | null;
 }
 
@@ -1039,7 +1040,7 @@ export async function getTransportStaffsPaginated(page: number = 1, pageSize: nu
   return { data: resultData, total: count ?? 0, page, pageSize };
 }
 
-export async function saveTransportStaff(staff: TransportStaff) {
+export async function saveTransportStaff(staff: TransportStaff, userId: string) {
   if (!staff.mainName || staff.mainName.trim() === "") {
     throw new Error("Validation Error: mainName is required");
   }
@@ -1070,10 +1071,10 @@ export async function saveTransportStaff(staff: TransportStaff) {
     sync_status: "synced",
     record_status: staff.recordStatus ?? "active",
     server_received_at: serverReceivedAt,
-    created_by_user_id: DEV_PROFILE_ID,
+    created_by_user_id: userId,
     created_by_name: staff.createdByName ?? "ผู้ดูแลระบบ",
     created_by_phone: staff.createdByPhone ?? "0800000000",
-    updated_by_user_id: DEV_PROFILE_ID,
+    updated_by_user_id: userId,
     updated_by_name: staff.createdByName ?? "ผู้ดูแลระบบ",
     updated_by_phone: staff.createdByPhone ?? "0800000000",
     updated_at: serverReceivedAt,
@@ -1163,7 +1164,7 @@ export async function saveTransportStaff(staff: TransportStaff) {
     if (upsertErr) throw upsertErr;
   }
 
-  await saveSyncEvent("transport_staff", existingId ? "update" : "create", staff, null, staffId, serverReceivedAt);
+  await saveSyncEvent("transport_staff", existingId ? "update" : "create", staff, null, staffId, serverReceivedAt, userId);
 
   const [contactsRes, banksRes, platesRes] = await Promise.all([
     supabase.from("transport_staff_contacts").select("*").eq("staff_id", staffId),
@@ -1174,7 +1175,7 @@ export async function saveTransportStaff(staff: TransportStaff) {
   return rowToTransportStaff(result.data, contactsRes.data ?? [], banksRes.data ?? [], platesRes.data ?? []);
 }
 
-export async function deleteTransportStaff(id: string) {
+export async function deleteTransportStaff(id: string, userId: string) {
   await ensureLanFlowBootstrap();
   const supabase = getAdminClient();
   const serverReceivedAt = new Date().toISOString();
@@ -1191,7 +1192,7 @@ export async function deleteTransportStaff(id: string) {
     .single();
 
   if (error) throw error;
-  await saveSyncEvent("transport_staff", "delete", data, null, id, serverReceivedAt);
+  await saveSyncEvent("transport_staff", "delete", data, null, id, serverReceivedAt, userId);
 }
 
 // ═══════════════════════════════════════
@@ -1289,7 +1290,7 @@ export async function getUsedSourceIds(): Promise<Set<string>> {
   return new Set((data ?? []).map((r) => r.source_id));
 }
 
-export async function saveMoneyTransfer(transfer: MoneyTransfer): Promise<MoneyTransfer> {
+export async function saveMoneyTransfer(transfer: MoneyTransfer, userId: string): Promise<MoneyTransfer> {
   await ensureLanFlowBootstrap();
   const supabase = getAdminClient();
   const serverReceivedAt = new Date().toISOString();
@@ -1309,7 +1310,7 @@ export async function saveMoneyTransfer(transfer: MoneyTransfer): Promise<MoneyT
     record_status: transfer.recordStatus ?? "active",
     revision_no: transfer.revisionNo ?? 0,
     server_received_at: serverReceivedAt,
-    created_by_user_id: DEV_PROFILE_ID,
+    created_by_user_id: userId,
     created_by_name: transfer.createdByName ?? "ผู้ดูแลระบบ",
     created_by_phone: transfer.createdByPhone ?? "0800000000",
     updated_at: serverReceivedAt,
@@ -1375,7 +1376,7 @@ export async function saveMoneyTransfer(transfer: MoneyTransfer): Promise<MoneyT
     if (itemErr) throw itemErr;
   }
 
-  await saveSyncEvent("money_transfer" as any, existingId ? "update" : "create", transfer, transfer.locationId, transferId, serverReceivedAt);
+  await saveSyncEvent("money_transfer" as any, existingId ? "update" : "create", transfer, transfer.locationId, transferId, serverReceivedAt, userId);
 
   // Re-fetch for response
   const [slipsRes, itemsRes] = await Promise.all([
@@ -1386,7 +1387,7 @@ export async function saveMoneyTransfer(transfer: MoneyTransfer): Promise<MoneyT
   return rowToMoneyTransfer(result.data, slipsRes.data ?? [], itemsRes.data ?? []);
 }
 
-export async function deleteMoneyTransfer(id: string) {
+export async function deleteMoneyTransfer(id: string, userId: string) {
   await ensureLanFlowBootstrap();
   const supabase = getAdminClient();
   const serverReceivedAt = new Date().toISOString();
@@ -1411,6 +1412,6 @@ export async function deleteMoneyTransfer(id: string) {
   await supabase.from("money_transfer_slips").delete().eq("transfer_id", id);
   await supabase.from("money_transfer_items").delete().eq("transfer_id", id);
 
-  await saveSyncEvent("money_transfer" as any, "delete", data, data.location_id, id, serverReceivedAt);
+  await saveSyncEvent("money_transfer" as any, "delete", data, data.location_id, id, serverReceivedAt, userId);
 }
 

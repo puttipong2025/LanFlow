@@ -1,0 +1,236 @@
+import { toast } from "sonner";
+import appSwal from "@/lib/swal";
+"use client";
+
+import { useState, useEffect } from "react";
+import { ShieldCheck, Users, Smartphone, Database, Check, X, Building2, UserPlus, Loader2 } from "lucide-react";
+import type { Location, Profile } from "@/types";
+import { authFetch } from "@/lib/auth-fetch";
+
+export function AdminModule({
+  locations,
+  profile,
+  onAddLocation
+}: {
+  locations: Location[];
+  profile: Profile;
+  onAddLocation: (name: string) => void;
+}) {
+  const [name, setName] = useState("");
+  const [users, setUsers] = useState<Profile[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  async function loadUsers() {
+    try {
+      setLoading(true);
+      const res = await authFetch("/api/lanflow/admin/users");
+      if (res.ok) {
+        const data = await res.json();
+        setUsers(data.users || []);
+      }
+    } catch (error) {
+      console.error("Failed to load users:", error);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadUsers();
+  }, []);
+
+  async function handleToggleRole(userId: string, currentRole: string) {
+    if (profile.role !== "super_admin") {
+      toast.error("Only super_admin can change roles.");
+      return;
+    }
+    
+    const newRole = currentRole === "admin" ? "user" : "admin";
+    const result = await appSwal.fire({ title: 'Change Role?', text: `Are you sure you want to change this user's role to ${newRole}?`, icon: 'warning', showCancelButton: true, confirmButtonText: 'Yes, change it' });
+    if (!result.isConfirmed) return;
+
+    try {
+      const res = await authFetch(`/api/lanflow/admin/users/${userId}/role`, {
+        method: "PATCH",
+        body: JSON.stringify({ role: newRole })
+      });
+      if (res.ok) {
+        loadUsers();
+      } else {
+        const data = await res.json();
+        toast.error(`Error: ${data.error}`);
+      }
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  async function handleAddLocationToUser(userId: string, locationId: string) {
+    try {
+      const res = await authFetch("/api/lanflow/admin/user-locations", {
+        method: "POST",
+        body: JSON.stringify({ userId, locationId })
+      });
+      if (res.ok) {
+        loadUsers();
+      } else {
+        const data = await res.json();
+        toast.error(`Error: ${data.error}`);
+      }
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  async function handleRemoveLocationFromUser(userId: string, locationId: string) {
+    const result = await appSwal.fire({ title: 'Remove Branch?', text: "Are you sure you want to remove this branch from the user?", icon: 'warning', showCancelButton: true, confirmButtonText: 'Yes, remove it', confirmButtonColor: '#ef4444' });
+    if (!result.isConfirmed) return;
+    try {
+      const res = await authFetch(`/api/lanflow/admin/user-locations?userId=${userId}&locationId=${locationId}`, {
+        method: "DELETE"
+      });
+      if (res.ok) {
+        loadUsers();
+      } else {
+        const data = await res.json();
+        toast.error(`Error: ${data.error}`);
+      }
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  return (
+    <div className="grid gap-5 xl:grid-cols-[0.8fr_1.2fr]">
+      <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel h-fit">
+        <div className="mb-4 flex items-center gap-2">
+          <ShieldCheck size={18} className="text-leaf" />
+          <h2 className="text-lg font-bold text-ink">สิทธิ์ผู้ดูแล</h2>
+        </div>
+        <div className="space-y-3 text-sm">
+          <p className="flex items-center gap-2"><Users size={17} /> {profile.name} · {profile.role}</p>
+          <p className="flex items-center gap-2"><Smartphone size={17} /> Login phone unique: {profile.phone}</p>
+          <p className="flex items-center gap-2"><Database size={17} /> สาขาที่ดูแล {profile.locationIds.length} แห่ง</p>
+        </div>
+
+        <h2 className="mt-8 mb-4 text-lg font-bold text-ink">สาขาทั้งหมด</h2>
+        <form
+          className="mb-4 flex flex-col gap-3 sm:flex-row"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (name.trim()) onAddLocation(name.trim());
+            setName("");
+          }}
+        >
+          <input
+            className="focus-ring h-11 flex-1 rounded-md border border-black/10 px-3"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="ชื่อสาขาใหม่"
+          />
+          <button className="focus-ring h-11 rounded-md bg-leaf px-4 font-semibold text-white">
+            เพิ่มสาขา
+          </button>
+        </form>
+        <div className="grid gap-3 sm:grid-cols-2">
+          {locations.map((loc) => (
+            <div key={loc.id} className="flex items-center justify-between rounded border border-black/5 bg-black/5 px-3 py-2 text-sm">
+              <span className="font-medium text-ink">{loc.name}</span>
+              <span className="rounded bg-black/10 px-1.5 py-0.5 text-xs font-mono">{loc.code}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel">
+        <div className="mb-4 flex items-center gap-2">
+          <UserPlus size={18} className="text-river" />
+          <h2 className="text-lg font-bold text-ink">รายชื่อพนักงานในระบบ</h2>
+        </div>
+        
+        {loading ? (
+          <div className="flex h-32 items-center justify-center">
+            <Loader2 className="animate-spin text-ink/40" />
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {users.map((user) => (
+              <div key={user.id} className="rounded-md border border-black/10 p-3">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <h3 className="font-bold text-ink flex items-center gap-2">
+                      {user.name} 
+                      {user.role === 'super_admin' && <span className="text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded border border-purple-200">Super Admin</span>}
+                      {user.role === 'admin' && <span className="text-xs bg-leaf/10 text-leaf px-1.5 py-0.5 rounded border border-leaf/20">Admin</span>}
+                    </h3>
+                    <p className="text-sm text-ink/70">{user.phone}</p>
+                  </div>
+                  
+                  {/* Role Toggle Button */}
+                  {user.role !== 'super_admin' && profile.role === 'super_admin' && (
+                    <button 
+                      onClick={() => handleToggleRole(user.id, user.role)}
+                      className={`text-xs px-2 py-1 rounded border transition-colors ${
+                        user.role === 'admin' 
+                          ? 'border-red-200 bg-red-50 text-red-600 hover:bg-red-100' 
+                          : 'border-leaf/30 bg-leaf/10 text-leaf hover:bg-leaf/20'
+                      }`}
+                    >
+                      {user.role === 'admin' ? 'ลดสิทธิ์เป็น User' : 'เลื่อนเป็น Admin'}
+                    </button>
+                  )}
+                </div>
+
+                <div className="mt-3">
+                  <p className="text-xs font-semibold text-ink/60 mb-2 uppercase tracking-wider">สาขาที่ดูแล</p>
+                  <div className="flex flex-wrap gap-2">
+                    {user.locationIds.map(locId => {
+                      const loc = locations.find(l => l.id === locId);
+                      if (!loc) return null;
+                      return (
+                        <span key={locId} className="inline-flex items-center gap-1 bg-river/10 text-river border border-river/20 rounded px-2 py-1 text-sm">
+                          <Building2 size={14} />
+                          {loc.name}
+                          {user.role !== 'super_admin' && (
+                            <button 
+                              onClick={() => handleRemoveLocationFromUser(user.id, loc.id)}
+                              className="ml-1 text-river/60 hover:text-red-500 transition-colors"
+                              title="ลบสิทธิ์สาขา"
+                            >
+                              <X size={14} />
+                            </button>
+                          )}
+                        </span>
+                      );
+                    })}
+                    
+                    {/* Add Location Dropdown */}
+                    {user.role !== 'super_admin' && (
+                      <select 
+                        className="bg-black/5 border border-black/10 rounded px-2 py-1 text-sm text-ink/70 outline-none focus:border-river focus:ring-1 focus:ring-river"
+                        onChange={(e) => {
+                          if (e.target.value) {
+                            handleAddLocationToUser(user.id, e.target.value);
+                            e.target.value = ""; // reset
+                          }
+                        }}
+                      >
+                        <option value="">+ เพิ่มสาขา</option>
+                        {locations
+                          .filter(l => !user.locationIds.includes(l.id))
+                          .map(l => (
+                            <option key={l.id} value={l.id}>{l.name}</option>
+                          ))
+                        }
+                      </select>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}

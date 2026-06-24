@@ -21,6 +21,7 @@ import {
   UserX
 } from "lucide-react";
 import type { OcrTicket, Customer } from "@/types";
+import { authFetch } from "@/lib/auth-fetch";
 
 /* ── OCR API Result ── */
 type OcrApiResult = {
@@ -180,7 +181,7 @@ export function OcrTicketUpload({
         // 1. OCR
         const formData = new FormData();
         formData.append("image", item.file);
-        const res = await fetch("/api/lanflow/ocr-ticket", { method: "POST", body: formData });
+        const res = await authFetch("/api/lanflow/ocr-ticket", { method: "POST", body: formData });
         if (!res.ok) {
           const body = await res.json().catch(() => ({ error: "Unknown error" }));
           throw new Error(body.error || `HTTP ${res.status}`);
@@ -240,7 +241,7 @@ export function OcrTicketUpload({
         const fd = new FormData();
         fd.append("image", file);
         fd.append("ticketId", ticketId);
-        const res = await fetch("/api/lanflow/ocr-tickets/upload-image", { method: "POST", body: fd });
+        const res = await authFetch("/api/lanflow/ocr-tickets/upload-image", { method: "POST", body: fd });
         if (res.ok) {
           const updated = (await res.json()) as OcrTicket;
           onUpdate(updated);

@@ -1,3 +1,5 @@
+import { toast } from "sonner";
+import appSwal from "@/lib/swal";
 "use client";
 
 import {
@@ -18,9 +20,11 @@ import {
   ShieldCheck,
   Smartphone,
   Trash2,
-  Users
+  Users,
+  LogOut
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { useAuthContext } from "@/components/AuthProvider";
 import { demoLocations, demoProfile, initialBills, initialTransactions } from "@/lib/demo-data";
 import {
   formatCurrency,
@@ -34,13 +38,16 @@ import {
 } from "@/lib/format";
 import { isSupabaseConfigured } from "@/lib/supabase-browser";
 import { useOfflineQueue } from "@/hooks/use-offline-queue";
-import type { IncomeExpense, Location, PaymentResponsibility, Profile, RubberBill, Customer, OcrTicket, TransportStaff } from "@/types";
+import type { IncomeExpense, Location, PaymentResponsibility, Profile, RubberBill, Customer, OcrTicket, TransportStaff, MoneyTransfer } from "@/types";
 import { CustomersModule } from "./CustomersModule";
 import { TransportModule } from "./TransportModule";
 import { OcrTicketUpload } from "./OcrTicketUpload";
 import type { UploadItem } from "./OcrTicketUpload";
+import { MoneyTransferModule } from "./MoneyTransferModule";
+import { AdminModule } from "./AdminModule";
+import { authFetch } from "@/lib/auth-fetch";
 
-type Tab = "dashboard" | "rubber" | "cash" | "customers" | "transport" | "ocr" | "admin" | "sync";
+type Tab = "dashboard" | "rubber" | "cash" | "customers" | "transport" | "money-transfer" | "ocr" | "admin" | "sync";
 type RubberWeighItem = NonNullable<RubberBill["weighItems"]>[number];
 type RubberAcidItem = NonNullable<RubberBill["acidItems"]>[number];
 type RubberDebtItem = NonNullable<RubberBill["debtItems"]>[number];
@@ -60,15 +67,17 @@ const tabs: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: n
   { id: "cash", label: "รับ-จ่าย", icon: Banknote },
   { id: "customers", label: "ลูกค้า", icon: Users },
   { id: "transport", label: "ขนส่งและพนักงาน", icon: ArrowDownUp },
+  { id: "money-transfer", label: "โอนเงิน", icon: ArrowDownUp },
   { id: "ocr", label: "อ่านใบชั่ง", icon: FileImage },
   { id: "admin", label: "Admin", icon: ShieldCheck },
   { id: "sync", label: "Sync", icon: RefreshCw }
 ];
 
 export function LanFlowApp() {
+  const auth = useAuthContext();
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
   const [locations, setLocations] = useState<Location[]>(demoLocations);
-  const [profile, setProfile] = useState<Profile>(demoProfile);
+  const [profile, setProfile] = useState<Profile>(auth.profile ?? demoProfile);
   const [selectedLocationId, setSelectedLocationId] = useState(demoLocations[0].id);
   const [bills, setBills] = useState<RubberBill[]>(initialBills);
   const [transactions, setTransactions] = useState<IncomeExpense[]>(initialTransactions);
@@ -85,6 +94,8 @@ export function LanFlowApp() {
   const [transportStaffs, setTransportStaffs] = useState<TransportStaff[]>([]);
   const [ocrTickets, setOcrTickets] = useState<OcrTicket[]>([]);
   const [ocrUploadItems, setOcrUploadItems] = useState<UploadItem[]>([]);
+  const [moneyTransfers, setMoneyTransfers] = useState<MoneyTransfer[]>([]);
+  const [usedSourceIds, setUsedSourceIds] = useState<Set<string>>(new Set());
   const queue = useOfflineQueue();
 
   useEffect(() => {
@@ -92,7 +103,7 @@ export function LanFlowApp() {
 
     async function loadDatabaseData() {
       try {
-        const response = await fetch("/api/lanflow", { cache: "no-store" });
+        const response = await authFetch("/api/lanflow", { cache: "no-store" });
         if (!response.ok) throw new Error(await response.text());
         const data = await response.json() as LanFlowApiData & { customers: Customer[] };
         if (ignore) return;
@@ -110,7 +121,7 @@ export function LanFlowApp() {
 
         // Load transport staffs
         try {
-          const tsRes = await fetch("/api/lanflow/transport-staffs", { cache: "no-store" });
+          const tsRes = await authFetch("/api/lanflow/transport-staffs", { cache: "no-store" });
           if (tsRes.ok) {
             const tsData = await tsRes.json();
             if (!ignore) setTransportStaffs(tsData.data || []);
@@ -122,13 +133,27 @@ export function LanFlowApp() {
         // Load OCR tickets for all accessible locations
         const locationId = data.profile.locationIds[0] ?? data.locations[0]?.id ?? demoLocations[0].id;
         try {
-          const ocrRes = await fetch(`/api/lanflow/ocr-tickets?locationId=${locationId}`, { cache: "no-store" });
+          const ocrRes = await authFetch(`/api/lanflow/ocr-tickets?locationId=${locationId}`, { cache: "no-store" });
           if (ocrRes.ok) {
             const ocrData = await ocrRes.json() as OcrTicket[];
             if (!ignore) setOcrTickets(ocrData);
           }
         } catch (ocrErr) {
           console.error("OCR tickets load failed", ocrErr);
+        }
+
+        // Load money transfers
+        try {
+          const mtRes = await authFetch(`/api/lanflow/money-transfers?locationId=${locationId}&includeUsedIds=true`, { cache: "no-store" });
+          if (mtRes.ok) {
+            const mtData = await mtRes.json();
+            if (!ignore) {
+              setMoneyTransfers(mtData.transfers || []);
+              setUsedSourceIds(new Set(mtData.usedSourceIds || []));
+            }
+          }
+        } catch (mtErr) {
+          console.error("Money transfers load failed", mtErr);
         }
       } catch (error) {
         console.error("LanFlow database load failed", error);
@@ -287,7 +312,7 @@ export function LanFlowApp() {
 
   async function persistRubberBill(bill: RubberBill) {
     try {
-      const response = await fetch("/api/lanflow/rubber-bills", {
+      const response = await authFetch("/api/lanflow/rubber-bills", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(bill)
@@ -312,7 +337,7 @@ export function LanFlowApp() {
 
   async function persistIncomeExpense(transaction: IncomeExpense) {
     try {
-      const response = await fetch("/api/lanflow/income-expense", {
+      const response = await authFetch("/api/lanflow/income-expense", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(transaction)
@@ -408,7 +433,7 @@ export function LanFlowApp() {
 
   async function persistCustomer(customer: Customer) {
     try {
-      const response = await fetch("/api/lanflow/customers", {
+      const response = await authFetch("/api/lanflow/customers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(customer)
@@ -440,7 +465,7 @@ export function LanFlowApp() {
   // BUG-1 fix: accept idempotencyKey as param to avoid stale closure
   async function persistDeleteCustomer(id: string, idempotencyKey: string) {
     try {
-      const response = await fetch(`/api/lanflow/customers/${id}`, {
+      const response = await authFetch(`/api/lanflow/customers/${id}`, {
         method: "DELETE"
       });
       if (!response.ok) throw new Error(await response.text());
@@ -506,7 +531,7 @@ export function LanFlowApp() {
 
   async function persistTransportStaff(staff: TransportStaff) {
     try {
-      const response = await fetch("/api/lanflow/transport-staffs", {
+      const response = await authFetch("/api/lanflow/transport-staffs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(staff)
@@ -533,7 +558,7 @@ export function LanFlowApp() {
 
   async function persistDeleteTransportStaff(id: string, idempotencyKey: string) {
     try {
-      const response = await fetch(`/api/lanflow/transport-staffs/${id}`, {
+      const response = await authFetch(`/api/lanflow/transport-staffs/${id}`, {
         method: "DELETE"
       });
       if (!response.ok) throw new Error(await response.text());
@@ -590,7 +615,7 @@ export function LanFlowApp() {
 
   async function persistOcrTicket(ticket: OcrTicket) {
     try {
-      const response = await fetch("/api/lanflow/ocr-tickets", {
+      const response = await authFetch("/api/lanflow/ocr-tickets", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(ticket)
@@ -610,7 +635,7 @@ export function LanFlowApp() {
 
   async function persistUpdateOcrTicket(ticket: OcrTicket) {
     try {
-      const response = await fetch(`/api/lanflow/ocr-tickets/${ticket.id}`, {
+      const response = await authFetch(`/api/lanflow/ocr-tickets/${ticket.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(ticket)
@@ -630,7 +655,7 @@ export function LanFlowApp() {
 
   async function persistDeleteOcrTicket(id: string, idempotencyKey: string) {
     try {
-      const response = await fetch(`/api/lanflow/ocr-tickets/${id}`, {
+      const response = await authFetch(`/api/lanflow/ocr-tickets/${id}`, {
         method: "DELETE"
       });
       if (!response.ok) throw new Error(await response.text());
@@ -639,6 +664,70 @@ export function LanFlowApp() {
       const message = error instanceof Error ? error.message : "ลบใบชั่ง OCR ไม่สำเร็จ";
       console.error("OCR ticket delete failed", error);
       queue.markFailed(idempotencyKey, message);
+    }
+  }
+
+  // ── Money Transfer handlers ──
+
+  async function saveMoneyTransfer(transfer: MoneyTransfer) {
+    setMoneyTransfers((current) => {
+      const exists = current.some((t) => t.id === transfer.id);
+      if (exists) return current.map((t) => (t.id === transfer.id ? transfer : t));
+      return [transfer, ...current];
+    });
+    // Mark source IDs as used
+    if (transfer.items) {
+      setUsedSourceIds((prev) => {
+        const next = new Set(prev);
+        transfer.items!.forEach((item) => next.add(item.sourceId));
+        return next;
+      });
+    }
+    try {
+      const response = await authFetch("/api/lanflow/money-transfers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(transfer),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const saved = await response.json() as MoneyTransfer;
+      setMoneyTransfers((current) =>
+        current.map((t) => (t.id === transfer.id ? saved : t))
+      );
+    } catch (error) {
+      console.error("Money transfer save failed", error);
+    }
+  }
+
+  async function deleteMoneyTransfer(id: string) {
+    const transfer = moneyTransfers.find((t) => t.id === id);
+    setMoneyTransfers((current) => current.filter((t) => t.id !== id));
+    // Free used source IDs
+    if (transfer?.items) {
+      setUsedSourceIds((prev) => {
+        const next = new Set(prev);
+        transfer.items!.forEach((item) => next.delete(item.sourceId));
+        return next;
+      });
+    }
+    try {
+      const response = await authFetch(`/api/lanflow/money-transfers/${id}`, { method: "DELETE" });
+      if (!response.ok) throw new Error(await response.text());
+    } catch (error) {
+      console.error("Money transfer delete failed", error);
+    }
+  }
+
+  async function refreshMoneyTransfers() {
+    try {
+      const res = await authFetch(`/api/lanflow/money-transfers?locationId=${selectedLocationId}&includeUsedIds=true`, { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        setMoneyTransfers(data.transfers || []);
+        setUsedSourceIds(new Set(data.usedSourceIds || []));
+      }
+    } catch (err) {
+      console.error("Money transfers refresh failed", err);
     }
   }
 
@@ -733,6 +822,16 @@ export function LanFlowApp() {
               <span>{queue.online ? "Online" : "Offline"}</span>
               <span className="rounded bg-amber/25 px-2 py-0.5 font-semibold">{queue.pendingCount}</span>
             </div>
+
+            <button
+              type="button"
+              onClick={auth.logout}
+              className="focus-ring flex items-center gap-1.5 rounded-md border border-black/10 bg-white px-3 py-2 text-sm text-ink/70 transition-colors hover:bg-red-50 hover:text-red-600"
+              title="ออกจากระบบ"
+            >
+              <LogOut size={16} />
+              <span className="hidden sm:inline">ออกจากระบบ</span>
+            </button>
           </div>
         </div>
 
@@ -826,6 +925,21 @@ export function LanFlowApp() {
             onDelete={deleteTransportStaff}
           />
         )}
+        {activeTab === "money-transfer" && (
+          <MoneyTransferModule
+            locationId={selectedLocationId}
+            online={queue.online}
+            profile={profile}
+            transfers={moneyTransfers}
+            bills={scopedBills}
+            ocrTickets={ocrTickets.filter((t) => t.locationId === selectedLocationId)}
+            customers={customers}
+            usedSourceIds={usedSourceIds}
+            onSave={saveMoneyTransfer}
+            onDelete={deleteMoneyTransfer}
+            onRefresh={refreshMoneyTransfers}
+          />
+        )}
         {activeTab === "ocr" && (
           <OcrTicketUpload
             locationId={selectedLocationId}
@@ -854,7 +968,7 @@ export function LanFlowApp() {
           />
         )}
         {activeTab === "admin" && (
-          <AdminPanel
+          <AdminModule
             locations={locations}
             profile={profile}
             onAddLocation={addLocation}
@@ -1405,6 +1519,16 @@ function RubberBillModal({
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    // ตรวจสอบ: มีรายการหักสินค้า/หักเงิน แต่ยอดสุทธิ <= 0
+    const hasDeductionItems = acidItems.length > 0 || debtItems.length > 0;
+    if (hasDeductionItems && net <= 0) {
+      alert(
+        `ไม่สามารถบันทึกบิลได้\n\nมีรายการหักสินค้า/หักเงิน แต่ยอดสุทธิที่ต้องจ่าย = ${net.toLocaleString("th-TH")} บาท\n\nกรุณาตรวจสอบน้ำหนักยาง ราคา และรายการหักให้ถูกต้อง`
+      );
+      return;
+    }
+
     const form = new FormData(event.currentTarget);
     const clientTempId = bill?.clientTempId ?? makeClientTempId("rubber");
     const clientRecordedAt = bill?.clientRecordedAt ?? makeClientRecordedAt();
@@ -1443,6 +1567,7 @@ function RubberBillModal({
       recordStatus: bill?.recordStatus ?? "active"
     });
   }
+
 
   return (
     <ModalShell
@@ -1561,7 +1686,7 @@ function RubberBillModal({
                 onClick={() => {
                   const found = customers.find(c => c.mainName === customerSearch);
                   if (!found) {
-                    window.alert("กรุณาเลือกลูกค้าจากรายการก่อน แล้วจึงกดแก้ไข");
+                    toast.error("กรุณาเลือกลูกค้าจากรายการก่อน แล้วจึงกดแก้ไข");
                     return;
                   }
                   const newName = window.prompt("แก้ไขชื่อสมาชิก:", found.mainName);
@@ -2027,7 +2152,7 @@ function IncomeExpenseModal({
     const filledLines = lines.filter((line) => line.title.trim() || line.unit > 0 || line.price > 0 || line.cost > 0);
 
     if (filledLines.length === 0) {
-      window.alert("กรุณาเพิ่มรายการอย่างน้อย 1 รายการ");
+      toast.error("กรุณาเพิ่มรายการอย่างน้อย 1 รายการ");
       return;
     }
 
@@ -2165,7 +2290,7 @@ function IncomeExpenseModal({
                 onClick={() => {
                   const found = customers.find(c => c.mainName === customerSearch);
                   if (!found) {
-                    window.alert("กรุณาเลือกลูกค้าจากรายการก่อน แล้วจึงกดแก้ไข");
+                    toast.error("กรุณาเลือกลูกค้าจากรายการก่อน แล้วจึงกดแก้ไข");
                     return;
                   }
                   const newName = window.prompt("แก้ไขชื่อสมาชิก:", found.mainName);
@@ -2384,7 +2509,7 @@ function enforceDecimalInput(
 
   const isThreeOrMoreDigits = /^\d{3,}$/.test(value);
   if (isThreeOrMoreDigits) {
-    window.alert("กรุณาระบุ ราคา ให้มีจุดทศนิยม");
+    toast.error("กรุณาระบุ ราคา ให้มีจุดทศนิยม");
     inputElement.focus();
     inputElement.select();
     return;
@@ -2627,64 +2752,6 @@ function IncomeExpenseEntry({
         </button>
       </form>
     </section>
-  );
-}
-
-function AdminPanel({
-  locations,
-  profile,
-  onAddLocation
-}: {
-  locations: Location[];
-  profile: Profile;
-  onAddLocation: (name: string) => void;
-}) {
-  const [name, setName] = useState("");
-
-  return (
-    <div className="grid gap-5 xl:grid-cols-[0.8fr_1.2fr]">
-      <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel">
-        <div className="mb-4 flex items-center gap-2">
-          <ShieldCheck size={18} className="text-leaf" />
-          <h2 className="text-lg font-bold text-ink">สิทธิ์ผู้ดูแล</h2>
-        </div>
-        <div className="space-y-3 text-sm">
-          <p className="flex items-center gap-2"><Users size={17} /> {profile.name} · {profile.role}</p>
-          <p className="flex items-center gap-2"><Smartphone size={17} /> Login phone unique: {profile.phone}</p>
-          <p className="flex items-center gap-2"><Database size={17} /> สาขาที่ดูแล {profile.locationIds.length} แห่ง</p>
-        </div>
-      </section>
-
-      <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel">
-        <h2 className="mb-4 text-lg font-bold text-ink">สาขา</h2>
-        <form
-          className="mb-4 flex flex-col gap-3 sm:flex-row"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (name.trim()) onAddLocation(name.trim());
-            setName("");
-          }}
-        >
-          <input
-            className="focus-ring h-11 flex-1 rounded-md border border-black/10 px-3"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            placeholder="ชื่อสาขาใหม่"
-          />
-          <button className="focus-ring h-11 rounded-md bg-leaf px-4 font-semibold text-white">
-            เพิ่มสาขา
-          </button>
-        </form>
-        <div className="grid gap-3 md:grid-cols-2">
-          {locations.map((location) => (
-            <div key={location.id} className="rounded-md border border-black/10 p-3">
-              <p className="font-semibold">{location.name}</p>
-              <p className="text-sm text-ink/60">{location.code} · {location.active ? "ใช้งาน" : "ปิด"}</p>
-            </div>
-          ))}
-        </div>
-      </section>
-    </div>
   );
 }
 

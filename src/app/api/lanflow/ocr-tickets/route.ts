@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth } from "@/lib/server/auth";
 import { getOcrTickets, saveOcrTicket } from "@/lib/server/lanflow-db";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
+  const result = await requireAuth(request);
+  if (!result.ok) return result.response;
+
   try {
     const locationId = request.nextUrl.searchParams.get("locationId");
     if (!locationId) {
@@ -18,9 +22,12 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const result = await requireAuth(request);
+  if (!result.ok) return result.response;
+
   try {
     const body = await request.json();
-    const saved = await saveOcrTicket(body);
+    const saved = await saveOcrTicket(body, result.auth.sub);
     return NextResponse.json(saved);
   } catch (error) {
     const message = error instanceof Error ? error.message : JSON.stringify(error);

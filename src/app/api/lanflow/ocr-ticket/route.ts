@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth } from "@/lib/server/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -32,6 +33,9 @@ const OCR_PROMPT = `คุณคือผู้เชี่ยวชาญด้
 - หากรูปหมุน 90 องศา ให้หมุนกลับก่อนอ่าน`;
 
 export async function POST(request: NextRequest) {
+  const authResult = await requireAuth(request);
+  if (!authResult.ok) return authResult.response;
+
   try {
     const formData = await request.formData();
     const file = formData.get("image") as File | null;

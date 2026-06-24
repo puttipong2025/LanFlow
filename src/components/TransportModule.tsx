@@ -1,3 +1,5 @@
+import { toast } from "sonner";
+import appSwal from "@/lib/swal";
 "use client";
 
 import { useState, useMemo, FormEvent } from "react";
@@ -61,9 +63,19 @@ export function TransportModule({
     setModalOpen(true);
   }
 
-  function confirmDelete(staff: TransportStaff) {
-    if (window.confirm(`คุณแน่ใจหรือไม่ว่าต้องการลบข้อมูล "${staff.mainName}"?`)) {
+  async function confirmDelete(staff: TransportStaff) {
+    const result = await appSwal.fire({
+      title: 'ยืนยันการลบ',
+      text: `คุณแน่ใจหรือไม่ว่าต้องการลบข้อมูล "${staff.mainName}"?`,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'ลบข้อมูล',
+      cancelButtonText: 'ยกเลิก',
+      confirmButtonColor: '#ef4444'
+    });
+    if (result.isConfirmed) {
       onDelete(staff.id);
+      toast.success("ลบข้อมูลสำเร็จ");
     }
   }
 

@@ -1,3 +1,5 @@
+import { toast } from "sonner";
+import appSwal from "@/lib/swal";
 "use client";
 
 import { useState, useMemo, FormEvent } from "react";
@@ -85,9 +87,19 @@ export function CustomersModule({
     setModalOpen(true);
   }
 
-  function confirmDelete(customer: Customer) {
-    if (window.confirm(`คุณแน่ใจหรือไม่ว่าต้องการลบข้อมูลลูกค้า "${customer.mainName}"?`)) {
+  async function confirmDelete(customer: Customer) {
+    const result = await appSwal.fire({
+      title: 'ยืนยันการลบ',
+      text: `คุณแน่ใจหรือไม่ว่าต้องการลบข้อมูลลูกค้า "${customer.mainName}"?`,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'ลบข้อมูล',
+      cancelButtonText: 'ยกเลิก',
+      confirmButtonColor: '#ef4444'
+    });
+    if (result.isConfirmed) {
       onDelete(customer.id);
+      toast.success("ลบลูกค้าสำเร็จ");
     }
   }
 
@@ -211,7 +223,7 @@ export function CustomersModule({
                     <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold ${
                       cust.class === "สาขานี้จ่าย" ? "bg-emerald-100 text-emerald-800" : "bg-sky-100 text-sky-800"
                     }`}>
-                      {cust.class === "สาขานี้จ่าย" ? "ชาวสวน (สาขาจ่าย)" : "ผู้ค้าขาย (ใหญ่จ่าย)"}
+                      {cust.class === "สาขานี้จ่าย" ? "ชาวสวน (สาขาจ่าย)" : "ผู้ค้าขาย(สาขาใหญ่จ่าย)"}
                     </span>
                   </td>
                   
