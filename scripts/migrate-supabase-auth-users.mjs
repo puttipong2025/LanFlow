@@ -29,10 +29,7 @@ function normalizeThaiPhoneToE164(input) {
   throw new Error(`Invalid phone format for profile ${input}`);
 }
 
-function phoneToAuthEmail(input) {
-  const normalized = normalizeThaiPhoneToE164(input);
-  return `${normalized.slice(1)}@phone.lanflow.invalid`;
-}
+// Removed fake email generator
 
 async function listAllAuthUsers() {
   const users = [];
@@ -62,21 +59,20 @@ const identityOwners = new Map();
 
 for (const profile of profiles ?? []) {
   const phone = normalizeThaiPhoneToE164(profile.phone);
-  const authEmail = phoneToAuthEmail(profile.phone);
-  const previousOwner = identityOwners.get(authEmail);
+  const previousOwner = identityOwners.get(phone);
   if (previousOwner && previousOwner !== profile.id) {
     throw new Error(
       `Phone collision after E.164 normalization between ${previousOwner} and ${profile.id}`
     );
   }
-  identityOwners.set(authEmail, profile.id);
-  prepared.push({ ...profile, normalizedPhone: phone, authEmail });
+  identityOwners.set(phone, profile.id);
+  prepared.push({ ...profile, normalizedPhone: phone });
 }
 
 const existingUsers = await listAllAuthUsers();
 const existingById = new Map(existingUsers.map((user) => [user.id, user]));
-const existingByEmail = new Map(
-  existingUsers.filter((user) => user.email).map((user) => [user.email, user])
+const existingByPhone = new Map(
+  existingUsers.filter((user) => user.phone).map((user) => [user.phone, user])
 );
 
 let ready = 0;
@@ -85,10 +81,10 @@ let conflicts = 0;
 
 for (const profile of prepared) {
   const byId = existingById.get(profile.id);
-  const byEmail = existingByEmail.get(profile.authEmail);
+  const byPhone = existingByPhone.get(profile.normalizedPhone);
 
   if (byId) {
-    if (byId.email !== profile.authEmail) {
+    if (byId.phone !== profile.normalizedPhone) {
       console.error(
         `[conflict] ${profile.id}: auth identity does not match normalized profile phone`
       );
@@ -100,9 +96,9 @@ for (const profile of prepared) {
     continue;
   }
 
-  if (byEmail && byEmail.id !== profile.id) {
+  if (byPhone && byPhone.id !== profile.id) {
     console.error(
-      `[conflict] ${profile.id}: normalized phone identity belongs to auth user ${byEmail.id}`
+      `[conflict] ${profile.id}: normalized phone identity belongs to auth user ${byPhone.id}`
     );
     conflicts += 1;
     continue;
@@ -133,8 +129,8 @@ for (const profile of prepared) {
 
   const { error } = await supabase.auth.admin.createUser({
     id: profile.id,
-    email: profile.authEmail,
-    email_confirm: true,
+    phone: profile.normalizedPhone,
+    phone_confirm: true,
     ...credential,
     user_metadata: { name: profile.name },
     app_metadata: { lanflow_role: profile.role },

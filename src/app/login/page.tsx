@@ -81,7 +81,7 @@ export default function LoginPage() {
                 type="tel"
                 inputMode="numeric"
                 autoComplete="tel"
-                placeholder="08xxxxxxxx"
+                placeholder="กรอก 10 หลัก เช่น 0812345678"
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
                 className="login-input"

@@ -16,8 +16,3 @@ export function normalizeThaiPhoneToE164(input: string): string {
   throw new Error("กรุณากรอกเบอร์โทรศัพท์ให้ถูกต้อง");
 }
 
-export function phoneToAuthEmail(input: string): string {
-  const normalized = normalizeThaiPhoneToE164(input);
-  return `${normalized.slice(1)}@phone.lanflow.invalid`;
-}
-

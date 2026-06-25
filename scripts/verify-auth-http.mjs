@@ -23,7 +23,6 @@ const admin = createClient(url, secretKey, {
 const suffix = Date.now().toString().slice(-8);
 const id = randomUUID();
 const phone = `07${suffix}`;
-const email = `66${phone.slice(1)}@phone.lanflow.invalid`;
 const password = `Http-${randomUUID()}`;
 
 try {
@@ -37,8 +36,8 @@ try {
 
   const { error: authError } = await admin.auth.admin.createUser({
     id,
-    email,
-    email_confirm: true,
+    phone: `+66${phone.slice(1)}`,
+    phone_confirm: true,
     password
   });
   if (authError) throw authError;

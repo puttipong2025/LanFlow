@@ -46,32 +46,34 @@ type Props = {
   locationId: string;
   online: boolean;
   profile: Profile;
-  transfers: MoneyTransfer[];
-  bills: RubberBill[];
-  ocrTickets: OcrTicket[];
-  customers: Customer[];
-  usedSourceIds: Set<string>;
-  onSave: (transfer: MoneyTransfer) => void;
-  onDelete: (id: string) => void;
-  onRefresh: () => void;
 };
 
 /* ═════════════════════════════════════════════════════════
    Main Module
    ═════════════════════════════════════════════════════════ */
+import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
+import { useRubberBills } from "@/hooks/useRubberBills";
+import { useOcrTickets } from "@/hooks/useOcrTickets";
+import { useCustomers } from "@/hooks/useCustomers";
+
 export function MoneyTransferModule({
   locationId,
   online,
   profile,
-  transfers,
-  bills,
-  ocrTickets,
-  customers,
-  usedSourceIds,
-  onSave,
-  onDelete,
-  onRefresh,
 }: Props) {
+  const { transfers, isLoading: isTransfersLoading, addTransfer, updateTransfer, deleteTransfer } = useMoneyTransfers(locationId);
+  const { bills, isLoading: isBillsLoading } = useRubberBills(locationId);
+  const { ocrTickets, isLoading: isTicketsLoading } = useOcrTickets(locationId);
+  const { customers, isLoading: isCustomersLoading } = useCustomers();
+
+  const usedSourceIds = useMemo(() => {
+    const set = new Set<string>();
+    transfers.forEach(t => {
+      t.items?.forEach(i => set.add(i.sourceId));
+    });
+    return set;
+  }, [transfers]);
+
   const [showForm, setShowForm] = useState(false);
   const [editTransfer, setEditTransfer] = useState<MoneyTransfer | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -85,21 +87,49 @@ export function MoneyTransferModule({
 
   const handleSave = useCallback(
     (transfer: MoneyTransfer) => {
-      onSave(transfer);
-      setShowForm(false);
-      setEditTransfer(null);
-      setToastMsg("บันทึกรายการโอนเงินสำเร็จ");
+      if (editTransfer) {
+        updateTransfer.mutate(transfer, {
+          onSuccess: () => {
+            setShowForm(false);
+            setEditTransfer(null);
+            setToastMsg("บันทึกรายการโอนเงินสำเร็จ");
+          },
+          onError: (err) => {
+            console.error("Failed to update transfer:", err);
+            setToastMsg("เกิดข้อผิดพลาดในการบันทึก");
+          }
+        });
+      } else {
+        addTransfer.mutate(transfer, {
+          onSuccess: () => {
+            setShowForm(false);
+            setEditTransfer(null);
+            setToastMsg("บันทึกรายการโอนเงินสำเร็จ");
+          },
+          onError: (err) => {
+            console.error("Failed to add transfer:", err);
+            setToastMsg("เกิดข้อผิดพลาดในการบันทึก");
+          }
+        });
+      }
     },
-    [onSave]
+    [editTransfer, addTransfer, updateTransfer]
   );
 
   const handleDeleteConfirm = useCallback(() => {
     if (deleteConfirmId) {
-      onDelete(deleteConfirmId);
-      setDeleteConfirmId(null);
-      setToastMsg("ลบรายการโอนเงินสำเร็จ");
+      deleteTransfer.mutate(deleteConfirmId, {
+        onSuccess: () => {
+          setDeleteConfirmId(null);
+          setToastMsg("ลบรายการโอนเงินสำเร็จ");
+        },
+        onError: (err) => {
+          console.error("Failed to delete transfer:", err);
+          setToastMsg("เกิดข้อผิดพลาดในการลบ");
+        }
+      });
     }
-  }, [deleteConfirmId, onDelete]);
+  }, [deleteConfirmId, deleteTransfer]);
 
   const handleEdit = useCallback((t: MoneyTransfer) => {
     setEditTransfer(t);

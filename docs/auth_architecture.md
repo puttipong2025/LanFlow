@@ -8,35 +8,32 @@
 
 ระบบ Auth ของ LanFlow ถูกออกแบบมาให้รองรับ **Offline-first PWA** และการทำงานร่วมกับ **Next.js Server/Client Components** โดยใช้เทคโนโลยีดังนี้:
 
-1. **Supabase PostgreSQL**: ใช้เป็น Database หลักสำหรับเก็บข้อมูลผู้ใช้และสิทธิ์การเข้าถึง 
-2. **Bcrypt.js (Node.js)**: ใช้ในการเข้ารหัสรหัสผ่าน (Hashing) แบบ One-way encryption เพื่อไม่ให้เก็บรหัสผ่านเป็น Plain Text 
-3. **`jose` (JSON Web Token)**: ใช้สำหรับสร้าง (Sign) และตรวจสอบ (Verify) JWT บนฝั่ง Server Edge/Node
-4. **Local Storage + Cookies**: เก็บ JWT ไว้ 2 ที่ 
-   - `LocalStorage` (`lanflow:auth-token`): เพื่อให้แอปทำงานได้ตอนออฟไลน์ (Offline-first / Service Worker)
-   - `Cookie` (`lanflow-token`): เพื่อให้ Next.js Middleware สามารถกันไม่ให้คนนอกเข้าสู่ระบบได้ตั้งแต่ฝั่ง Server
-5. **Next.js Middleware**: ทำหน้าที่เป็นยามเฝ้าประตู (Gatekeeper) ตรวจจับ Cookie ถ้าไม่มี Token จะเด้งไปหน้า `/login`
-6. **React Context (`AuthProvider`)**: จัดการ State การล็อกอินบนฝั่ง Client ทำให้ทุก Component เข้าถึง Profile ของผู้ใช้ได้
+1. **Supabase Auth (Native Phone Provider)**: ใช้เป็นระบบจัดการผู้ใช้หลัก ล็อกอินด้วยเบอร์โทรศัพท์ (E.164) และรหัสผ่าน
+2. **Supabase PostgreSQL & RLS**: ใช้ Row Level Security (RLS) เพื่อป้องกันการเข้าถึงข้อมูลข้ามสาขาในระดับ Database
+3. **`@supabase/ssr`**: จัดการ Session ผ่าน Cookie อย่างปลอดภัย เพื่อให้ใช้งานร่วมกับ Next.js Middleware และ Server Components ได้
+4. **Local Storage + Offline Queue**: เก็บ Profile ข้อมูลพื้นฐานในเครื่อง เพื่อให้แอปยังเปิดขึ้นมาทำงานได้ในโหมดออฟไลน์
+5. **Next.js Middleware**: ทำหน้าที่เป็นยามเฝ้าประตู (Gatekeeper) ตรวจสอบ Supabase Session Token หากไม่มีจะเด้งไปหน้า `/login`
+6. **React Context (`AuthProvider`)**: จัดการ State การล็อกอินบนฝั่ง Client และเชื่อมต่อ Real-time Auth State Changes ของ Supabase
 
 ---
 
 ## 🗄️ 2. โครงสร้างข้อมูล (Data Structure)
 
-ข้อมูลผู้ใช้และสิทธิ์ถูกเก็บอยู่ใน 2 ตารางหลัก (Table) บน Supabase:
+ข้อมูลผู้ใช้ถูกบริหารจัดการหลักๆ โดย Supabase Auth (`auth.users`) แต่จะมีตารางเสริมเก็บสิทธิ์เพิ่มเติม:
 
-### 1. `profiles` (ตารางพนักงาน/ผู้ใช้)
-เก็บข้อมูลส่วนตัวของพนักงานและสิทธิ์ของแต่ละคน
+### 1. `profiles` (ตารางพนักงาน/ผู้ใช้เสริม)
+เก็บข้อมูลส่วนตัวของพนักงานและสิทธิ์ของแต่ละคน (ทำงานคู่ขนานกับ `auth.users`)
 
 | Column | Type | Detail |
 |---|---|---|
-| `id` | `uuid` (PK) | รหัสผู้ใช้ |
-| `phone` | `text` (Unique) | เบอร์โทรศัพท์ (ใช้เป็น Username สำหรับล็อกอิน) |
+| `id` | `uuid` (PK) | รหัสผู้ใช้ (ตรงกับ `auth.users.id`) |
+| `phone` | `text` (Unique) | เบอร์โทรศัพท์ (เพื่อการแสดงผลหรือค้นหา) |
 | `name` | `text` | ชื่อพนักงาน |
-| `password_hash` | `text` | รหัสผ่านที่เข้ารหัสแล้วด้วย Bcrypt |
 | `role` | `enum` | ระดับสิทธิ์ `user` (พนักงานทั่วไป), `admin` (ผู้ดูแล), `super_admin` (เจ้าของระบบ) |
 | `is_active` | `boolean` | สถานะบัญชี (`true` = ใช้งานได้, `false` = ถูกแบน/ปิดใช้งาน) |
 
 > [!NOTE]
-> ระบบมี Database Level Constraint (Unique Partial Index) เพื่อบังคับให้มี `super_admin` ได้เพียง **1 คน** เสมอ
+> รหัสผ่าน (`password_hash`) จะไม่ได้ถูกจัดการโดยเราอีกต่อไป แต่ถูกจัดการโดย Supabase อย่างปลอดภัย
 
 ### 2. `user_locations` (ตารางเชื่อมผู้ใช้-สาขา)
 ใช้เก็บว่าพนักงานแต่ละคนมีสิทธิ์มองเห็นและจัดการข้อมูลของ "สาขาไหน" บ้าง (1 คนดูแลได้หลายสาขา)
@@ -51,27 +48,21 @@
 ## 🔄 3. ระบบการทำงาน (Authentication Flow)
 
 ### 3.1 การเข้าสู่ระบบ (Login Flow)
-1. **Frontend**: ผู้ใช้กรอก `เบอร์โทรศัพท์` และ `รหัสผ่าน` ส่ง POST Request ไปที่ `/api/auth/login`
-2. **Backend**: ค้นหาผู้ใช้จาก `phone` ในตาราง `profiles`
-3. **Backend**: ตรวจสอบรหัสผ่านโดยใช้ `bcrypt.compare()`
-4. **Backend**: หากถูกต้อง ดึงรายการสาขาจาก `user_locations` และสร้าง **JWT (JSON Web Token)** ซึ่งบรรจุข้อมูล (Payload) เช่น `id`, `name`, `role`, และ `locationIds` 
-5. **Frontend**: เมื่อได้รับ Token กลับมา จะทำการบันทึกลง 2 จุด:
-   - บันทึกลง `localStorage.setItem("lanflow:auth-token", token)`
-   - บันทึกลง `document.cookie = "lanflow-token=token"`
-6. **Frontend**: ทำการโหลดหน้าแอปใหม่ (`window.location.href = "/"`) เพื่อให้ Next.js Middleware เริ่มทำงาน
+1. **Frontend**: ผู้ใช้กรอก `เบอร์โทรศัพท์` และ `รหัสผ่าน` 
+2. **Frontend**: แปลงเบอร์โทรให้เป็นรูปแบบสากล (E.164 เช่น `+66800000001`) และส่งคำสั่ง `supabase.auth.signInWithPassword({ phone, password })`
+3. **Supabase**: ตรวจสอบบัญชีและรหัสผ่าน หากถูกต้องจะคืนค่า Session Token พร้อมกับตั้งค่า Cookie โดยอัตโนมัติผ่าน `@supabase/ssr`
+4. **Frontend**: ฟังก์ชัน Auth Context ทำการ Sync ข้อมูล Profile ของผู้ใช้ และเก็บแคชไว้ใน LocalStorage เพื่อใช้โหมด Offline
+5. **Frontend**: ทำการโหลดหน้าแอปใหม่ (`window.location.href = "/"`) เพื่อให้ Next.js Middleware เริ่มทำงาน
 
 ### 3.2 การรักษาความปลอดภัยของระบบ (Authorization & API Protection)
-เมื่อมีการเรียก API เส้นอื่น ๆ เช่น (ดูข้อมูลลูกค้า, ดูบันทึกการโอนเงิน) จะผ่านกระบวนการดังนี้:
-
-1. **Client API Request**: Frontend เรียกใช้ฟังก์ชัน `authFetch()` ซึ่งจะดึง Token จาก LocalStorage แนบไปกับ Header (`Authorization: Bearer <token>`) โดยอัตโนมัติ
+1. **Client API Request**: Frontend เรียกใช้ Supabase Client ที่ถูกเตรียมไว้พร้อม Session
 2. **Backend Protection**: 
-   - ทุก API จะเรียกใช้ `requireAuth()` เพื่ออ่านค่า Token (จาก Header หรือ Cookie) และแกะ Payload ออกมา
-   - หาก Token หมดอายุ หรือไม่ถูกต้อง API จะคืนค่า `401 Unauthorized` 
-   - ฟังก์ชัน `requireRole(["admin", "super_admin"])` จะใช้เพื่อบล็อก API เฉพาะทางไม่ให้พนักงานทั่วไปเข้าถึง
-3. **Database Security (RLS)**: ปัจจุบันระบบ API เรียกคุยกับ Supabase ผ่าน Service Role Bridge (ข้ามกฎ Database) แต่ใช้ Middleware ของ API กรองสิทธิ์ผู้ใช้เองอย่างรัดกุมก่อนที่จะเข้าถึง Database
+   - Middleware คอยปกป้อง Route หลัก
+   - API Handler เรียกใช้ `@supabase/ssr` Server Client เพื่อตรวจสอบสิทธิ์การเข้าถึงข้อมูล 
+3. **Database Security (RLS)**: คำสั่ง SQL จะถูกผูกติดกับ Role และ UUID ของผู้ใช้ (ผ่าน `auth.uid()`) ทำให้ Database ปฏิเสธคำสั่งที่พยายามดู/แก้ไข ข้อมูลนอกสาขาของตัวเองโดยอัตโนมัติ
 
 ### 3.3 การออกจากระบบ (Logout Flow)
 1. กดปุ่ม Logout ในเมนู
-2. Frontend เรียกฟังก์ชันเคลียร์ `localStorage` 
-3. ยิง API เคลียร์ค่า `Cookie` หรือสั่งลบ Cookie ทางฝั่ง Client 
+2. Frontend เรียกคำสั่ง `supabase.auth.signOut()`
+3. Supabase จะล้าง Cookie Session และ LocalStorage ของระบบ
 4. พาผู้ใช้กลับไปหน้า `/login`

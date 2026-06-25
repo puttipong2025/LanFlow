@@ -49,27 +49,23 @@ export type UploadItem = {
 type Props = {
   locationId: string;
   online: boolean;
-  ocrTickets: OcrTicket[];
   uploadItems: UploadItem[];
   setUploadItems: React.Dispatch<React.SetStateAction<UploadItem[]>>;
-  customers: Customer[];
-  onSave: (ticket: OcrTicket) => void;
-  onUpdate: (ticket: OcrTicket) => void;
-  onDelete: (id: string) => void;
 };
 
 /* ── Main Component ── */
+import { useOcrTickets } from "@/hooks/useOcrTickets";
+import { useCustomers } from "@/hooks/useCustomers";
+
 export function OcrTicketUpload({
   locationId,
   online,
-  ocrTickets,
   uploadItems: items,
   setUploadItems: setItems,
-  customers,
-  onSave,
-  onUpdate,
-  onDelete,
 }: Props) {
+  const { ocrTickets, addTicket, updateTicket, deleteTicket } = useOcrTickets(locationId);
+  const { customers } = useCustomers();
+
   const [previewItem, setPreviewItem] = useState<UploadItem | null>(null);
   const [editTicket, setEditTicket] = useState<OcrTicket | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -108,8 +104,11 @@ export function OcrTicketUpload({
         currentNegIds.add(ticket.id);
         if (!negativeWeightTimers.current[ticket.id]) {
           negativeWeightTimers.current[ticket.id] = setTimeout(() => {
-            onDelete(ticket.id);
-            setToastMsg(`ลบใบชั่ง ${ticket.ticketId ?? ticket.fileName} อัตโนมัติ — น้ำหนักคงเหลือติดลบ`);
+            deleteTicket.mutate(ticket.id, {
+              onSuccess: () => {
+                setToastMsg(`ลบใบชั่ง ${ticket.ticketId ?? ticket.fileName} อัตโนมัติ — น้ำหนักคงเหลือติดลบ`);
+              }
+            });
             delete negativeWeightTimers.current[ticket.id];
           }, 10 * 60 * 1000); // 10 minutes
         }
@@ -125,7 +124,7 @@ export function OcrTicketUpload({
     return () => {
       Object.values(negativeWeightTimers.current).forEach(clearTimeout);
     };
-  }, [ocrTickets, onDelete]);
+  }, [ocrTickets, deleteTicket]);
 
   const existingFileNames = new Set([
     ...items.map((i) => i.file.name),
@@ -212,7 +211,7 @@ export function OcrTicketUpload({
           revisionNo: 0,
           createdAt: new Date().toISOString(),
         };
-        onSave(ticket);
+        addTicket.mutate(ticket);
 
         setItems((prev) =>
           prev.map((i) =>
@@ -231,7 +230,7 @@ export function OcrTicketUpload({
         );
       }
     },
-    [locationId, onSave, setItems]
+    [locationId, addTicket, setItems]
   );
 
   // Upload image to Drive — runs in background, updates ticket via onUpdate
@@ -244,7 +243,7 @@ export function OcrTicketUpload({
         const res = await authFetch("/api/lanflow/ocr-tickets/upload-image", { method: "POST", body: fd });
         if (res.ok) {
           const updated = (await res.json()) as OcrTicket;
-          onUpdate(updated);
+          updateTicket.mutate(updated);
         } else {
           console.error("Drive upload failed:", await res.text());
         }
@@ -252,7 +251,7 @@ export function OcrTicketUpload({
         console.error("Drive upload error:", err);
       }
     },
-    [onUpdate]
+    [updateTicket]
   );
 
   const processAll = useCallback(async () => {
@@ -295,15 +294,18 @@ export function OcrTicketUpload({
 
   const handleDeleteConfirm = useCallback(() => {
     if (deleteConfirmId) {
-      onDelete(deleteConfirmId);
-      setItems((prev) => prev.filter((i) => i.ocrTicketId !== deleteConfirmId));
-      setDeleteConfirmId(null);
+      deleteTicket.mutate(deleteConfirmId, {
+        onSuccess: () => {
+          setItems((prev) => prev.filter((i) => i.ocrTicketId !== deleteConfirmId));
+          setDeleteConfirmId(null);
+        }
+      });
     }
-  }, [deleteConfirmId, onDelete, setItems]);
+  }, [deleteConfirmId, deleteTicket, setItems]);
 
   const handleEditSave = useCallback(
-    (updated: OcrTicket) => { onUpdate(updated); setEditTicket(null); },
-    [onUpdate]
+    (updated: OcrTicket) => { updateTicket.mutate(updated); setEditTicket(null); },
+    [updateTicket]
   );
 
   return (

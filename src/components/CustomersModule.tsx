@@ -9,22 +9,24 @@ import {
 } from "lucide-react";
 import type { Customer, CustomerContact, CustomerBankAccount, CustomerFarm, Profile } from "@/types";
 import { makeClientTempId, makeIdempotencyKey } from "@/lib/format";
+import { useCustomers } from "@/hooks/useCustomers";
+import { useAuthContext } from "@/components/AuthProvider";
+import { Loader2 } from "lucide-react";
 
-type CustomersModuleProps = {
-  customers: Customer[];
-  profile: Profile;
-  onAdd: (customer: Customer) => void;
-  onUpdate: (customer: Customer) => void;
-  onDelete: (id: string) => void;
-};
+export function CustomersModule() {
+  const auth = useAuthContext();
+  const profile = auth.profile as Profile;
+  const { customers, isLoading, addCustomer, updateCustomer, deleteCustomer } = useCustomers();
 
-export function CustomersModule({
-  customers,
-  profile,
-  onAdd,
-  onUpdate,
-  onDelete
-}: CustomersModuleProps) {
+  if (isLoading) {
+    return (
+      <div className="flex h-64 items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+
   const [search, setSearch] = useState("");
   const [selectedBranch, setSelectedBranch] = useState("");
   const [selectedFsc, setSelectedFsc] = useState("");
@@ -98,7 +100,7 @@ export function CustomersModule({
       confirmButtonColor: '#ef4444'
     });
     if (result.isConfirmed) {
-      onDelete(customer.id);
+      deleteCustomer.mutate(customer.id);
       toast.success("ลบลูกค้าสำเร็จ");
     }
   }
@@ -392,8 +394,8 @@ export function CustomersModule({
           allCustomers={customers}
           onClose={() => setModalOpen(false)}
           onSave={(cust) => {
-            if (editingCustomer) onUpdate(cust);
-            else onAdd(cust);
+            if (editingCustomer) updateCustomer.mutate(cust);
+            else addCustomer.mutate(cust);
             setModalOpen(false);
           }}
         />

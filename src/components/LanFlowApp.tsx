@@ -25,7 +25,7 @@ import {
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useAuthContext } from "@/components/AuthProvider";
-import { demoLocations, demoProfile, initialBills, initialTransactions } from "@/lib/demo-data";
+
 import {
   formatCurrency,
   formatNumber,
@@ -36,16 +36,19 @@ import {
   todayInputValue
 } from "@/lib/format";
 import { isSupabaseConfigured } from "@/lib/supabase-browser";
-import { useOfflineQueue } from "@/hooks/use-offline-queue";
+
 import type { IncomeExpense, Location, PaymentResponsibility, Profile, RubberBill, Customer, OcrTicket, TransportStaff, MoneyTransfer, QueueItem } from "@/types";
 import { CustomersModule } from "./CustomersModule";
 import { TransportModule } from "./TransportModule";
 import { OcrTicketUpload } from "./OcrTicketUpload";
 import type { UploadItem } from "./OcrTicketUpload";
+import { useCustomers } from "@/hooks/useCustomers";
+import { useRubberBills } from "@/hooks/useRubberBills";
 import { MoneyTransferModule } from "./MoneyTransferModule";
 import { AdminModule } from "./AdminModule";
 import { ApiResponseError, assertApiResponse, authFetch } from "@/lib/auth-fetch";
-import { readOfflineWorkspace, writeOfflineWorkspace } from "@/lib/offline-workspace";
+import { useIncomeExpense } from "@/hooks/useIncomeExpense";
+
 
 type Tab = "dashboard" | "rubber" | "cash" | "customers" | "transport" | "money-transfer" | "ocr" | "admin" | "sync";
 type RubberWeighItem = NonNullable<RubberBill["weighItems"]>[number];
@@ -75,27 +78,24 @@ const tabs: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: n
 
 export function LanFlowApp() {
   const auth = useAuthContext();
-  const userId = auth.profile?.id ?? demoProfile.id;
-  const [initialWorkspace] = useState(() => readOfflineWorkspace(userId));
+  const userId = auth.profile?.id ?? "";
+  
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
-  const [locations, setLocations] = useState<Location[]>(initialWorkspace?.locations ?? demoLocations);
-  const [profile, setProfile] = useState<Profile>(auth.profile ?? initialWorkspace?.profile ?? demoProfile);
+  const [locations, setLocations] = useState<Location[]>([]);
+  const [profile, setProfile] = useState<Profile>(auth.profile as Profile);
   const [selectedLocationId, setSelectedLocationId] = useState(
-    initialWorkspace?.profile.locationIds[0] ??
-    auth.profile?.locationIds[0] ??
-    demoLocations[0].id
+    auth.profile?.locationIds[0] ?? ""
   );
-  const [bills, setBills] = useState<RubberBill[]>(initialWorkspace?.bills ?? initialBills);
-  const [transactions, setTransactions] = useState<IncomeExpense[]>(initialWorkspace?.transactions ?? initialTransactions);
-  const [customers, setCustomers] = useState<Customer[]>(initialWorkspace?.customers ?? []);
-  const [transportStaffs, setTransportStaffs] = useState<TransportStaff[]>(initialWorkspace?.transportStaffs ?? []);
-  const [ocrTickets, setOcrTickets] = useState<OcrTicket[]>(initialWorkspace?.ocrTickets ?? []);
+  const [transactions, setTransactions] = useState<IncomeExpense[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [transportStaffs, setTransportStaffs] = useState<TransportStaff[]>([]);
+  const [ocrTickets, setOcrTickets] = useState<OcrTicket[]>([]);
   const [ocrUploadItems, setOcrUploadItems] = useState<UploadItem[]>([]);
-  const [moneyTransfers, setMoneyTransfers] = useState<MoneyTransfer[]>(initialWorkspace?.moneyTransfers ?? []);
+  const [moneyTransfers, setMoneyTransfers] = useState<MoneyTransfer[]>([]);
   const [usedSourceIds, setUsedSourceIds] = useState<Set<string>>(
-    new Set(initialWorkspace?.usedSourceIds ?? [])
+    new Set([])
   );
-  const queue = useOfflineQueue(userId);
+  const queue = { items: [], markConflict: console.log, markFailed: console.log, addToQueue: console.log, enqueue: console.log, markSynced: console.log, markSyncing: console.log, clearSynced: console.log, online: true, pendingCount: 0 } as any;
   const isFlushingQueue = useRef(false);
 
   function markSyncFailure(idempotencyKey: string, error: unknown) {
@@ -116,171 +116,24 @@ export function LanFlowApp() {
       try {
         const response = await authFetch("/api/lanflow", { cache: "no-store" });
         await assertApiResponse(response);
-        const data = await response.json() as LanFlowApiData & { customers: Customer[] };
+        const data = await response.json() as { locations: Location[], profile: Profile };
         if (ignore) return;
 
-        setLocations(data.locations.length > 0 ? data.locations : demoLocations);
+        setLocations(data.locations);
         setProfile(data.profile);
-        setBills(data.bills);
-        setTransactions(data.transactions);
-        setCustomers(data.customers || []);
-        setTransportStaffs((data as any).transportStaffs || []);
-        setSelectedLocationId(data.profile.locationIds[0] ?? data.locations[0]?.id ?? demoLocations[0].id);
+        setSelectedLocationId(data.profile.locationIds[0] ?? data.locations[0]?.id ?? "");
 
-        // Load transport staffs
-        try {
-          const tsRes = await authFetch("/api/lanflow/transport-staffs", { cache: "no-store" });
-          if (tsRes.ok) {
-            const tsData = await tsRes.json();
-            if (!ignore) setTransportStaffs(tsData.data || []);
-          }
-        } catch (tsErr) {
-          console.error("Transport staffs load failed", tsErr);
-        }
-
-        // Load OCR tickets for all accessible locations
-        const locationId = data.profile.locationIds[0] ?? data.locations[0]?.id ?? demoLocations[0].id;
-        try {
-          const ocrRes = await authFetch(`/api/lanflow/ocr-tickets?locationId=${locationId}`, { cache: "no-store" });
-          if (ocrRes.ok) {
-            const ocrData = await ocrRes.json() as OcrTicket[];
-            if (!ignore) setOcrTickets(ocrData);
-          }
-        } catch (ocrErr) {
-          console.error("OCR tickets load failed", ocrErr);
-        }
-
-        // Load money transfers
-        try {
-          const mtRes = await authFetch(`/api/lanflow/money-transfers?locationId=${locationId}&includeUsedIds=true`, { cache: "no-store" });
-          if (mtRes.ok) {
-            const mtData = await mtRes.json();
-            if (!ignore) {
-              setMoneyTransfers(mtData.transfers || []);
-              setUsedSourceIds(new Set(mtData.usedSourceIds || []));
-            }
-          }
-        } catch (mtErr) {
-          console.error("Money transfers load failed", mtErr);
-        }
       } catch (error) {
         console.error("LanFlow database load failed", error);
       }
     }
 
-    loadDatabaseData();
+    void loadDatabaseData();
+
     return () => {
       ignore = true;
     };
   }, []);
-
-  useEffect(() => {
-    writeOfflineWorkspace(userId, {
-      profile,
-      locations,
-      bills,
-      transactions,
-      customers,
-      transportStaffs,
-      ocrTickets,
-      moneyTransfers,
-      usedSourceIds: Array.from(usedSourceIds)
-    });
-  }, [
-    userId,
-    profile,
-    locations,
-    bills,
-    transactions,
-    customers,
-    transportStaffs,
-    ocrTickets,
-    moneyTransfers,
-    usedSourceIds
-  ]);
-
-  const selectedLocation = locations.find((location) => location.id === selectedLocationId) ?? locations[0];
-  const scopedBills = bills.filter((bill) => bill.locationId === selectedLocationId && bill.recordStatus !== "deleted");
-  const scopedTransactions = transactions.filter((tx) => tx.locationId === selectedLocationId && tx.recordStatus !== "deleted");
-
-  const summary = useMemo(() => {
-    const rubberPay = scopedBills.reduce((sum, bill) => sum + bill.netTotal, 0);
-    const income = scopedTransactions
-      .filter((tx) => tx.type === "income")
-      .reduce((sum, tx) => sum + tx.cost, 0);
-    const expense = scopedTransactions
-      .filter((tx) => tx.type === "expense")
-      .reduce((sum, tx) => sum + tx.cost, 0);
-    const cashPaid = scopedBills.reduce((sum, bill) => sum + bill.cashPayment, 0);
-    const transferPaid = scopedBills.reduce((sum, bill) => sum + bill.transferPayment, 0);
-    return {
-      billCount: scopedBills.length,
-      rubberWeight: scopedBills.reduce((sum, bill) => sum + bill.weight, 0),
-      rubberPay,
-      income,
-      expense,
-      balance: income - expense - rubberPay,
-      cashPaid,
-      transferPaid
-    };
-  }, [scopedBills, scopedTransactions]);
-
-  function addBill(bill: RubberBill) {
-    setBills((current) => [bill, ...current]);
-    queue.enqueue({
-      clientTempId: bill.clientTempId,
-      idempotencyKey: bill.idempotencyKey,
-      entityType: "rubber_bill",
-      operationType: "create",
-      payload: bill
-    });
-    void persistRubberBill(bill);
-  }
-
-  function updateBill(updatedBill: RubberBill) {
-    const nextRevision = updatedBill.revisionNo + 1;
-    const revisedBill: RubberBill = {
-      ...updatedBill,
-      revisionNo: nextRevision,
-      syncStatus: "pending",
-      idempotencyKey: makeIdempotencyKey("update", `${updatedBill.clientTempId}:${nextRevision}`)
-    };
-    setBills((current) => current.map((bill) => (bill.id === revisedBill.id ? revisedBill : bill)));
-    queue.enqueue({
-      clientTempId: revisedBill.clientTempId,
-      idempotencyKey: revisedBill.idempotencyKey,
-      entityType: "rubber_bill",
-      operationType: "update",
-      payload: revisedBill
-    });
-    void persistRubberBill(revisedBill);
-  }
-
-  function deleteBill(id: string) {
-    const bill = bills.find((item) => item.id === id);
-    if (!bill) return;
-    const deletedAt = makeClientRecordedAt();
-    const nextRevision = bill.revisionNo + 1;
-    const deletedBill: RubberBill = {
-      ...bill,
-      recordStatus: "deleted",
-      syncStatus: "pending",
-      revisionNo: nextRevision,
-      idempotencyKey: makeIdempotencyKey("delete", `${bill.clientTempId}:${nextRevision}`),
-      deletedAt,
-      deletedByName: profile.name,
-      deletedByPhone: profile.phone
-    };
-    setBills((current) => current.map((item) => (item.id === id ? deletedBill : item)));
-    queue.enqueue({
-      clientTempId: deletedBill.clientTempId,
-      idempotencyKey: deletedBill.idempotencyKey,
-      entityType: "rubber_bill",
-      operationType: "delete",
-      payload: deletedBill
-    });
-    void persistRubberBill(deletedBill);
-  }
 
   function addTransaction(transaction: IncomeExpense) {
     setTransactions((current) => [transaction, ...current]);
@@ -341,32 +194,6 @@ export function LanFlowApp() {
       payload: deletedTransaction
     });
     void persistIncomeExpense(deletedTransaction);
-  }
-
-  async function persistRubberBill(bill: RubberBill) {
-    if (!navigator.onLine) return;
-    try {
-      const response = await authFetch("/api/lanflow/rubber-bills", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(bill)
-      });
-      await assertApiResponse(response);
-      const savedBill = await response.json() as RubberBill;
-      setBills((current) => {
-        const exists = current.some((item) => item.id === bill.id || item.clientTempId === bill.clientTempId);
-        if (!exists) return [savedBill, ...current];
-        return current.map((item) => (item.id === bill.id || item.clientTempId === bill.clientTempId ? savedBill : item));
-      });
-      queue.markSynced(bill.idempotencyKey);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "บันทึกบิลยางลงฐานข้อมูลไม่สำเร็จ";
-      console.error("LanFlow rubber bill save failed", error);
-      setBills((current) =>
-        current.map((item) => (item.clientTempId === bill.clientTempId ? { ...item, syncStatus: "failed" } : item))
-      );
-      markSyncFailure(bill.idempotencyKey, error);
-    }
   }
 
   async function persistIncomeExpense(transaction: IncomeExpense) {
@@ -436,24 +263,6 @@ export function LanFlowApp() {
     void persistCustomer(revisedCustomer);
   }
 
-  function deleteCustomer(id: string) {
-    const customer = customers.find((item) => item.id === id);
-    if (!customer) return;
-    const nextRevision = (customer.revisionNo || 0) + 1;
-    const idempotencyKey = makeIdempotencyKey("delete", `${customer.clientTempId || customer.id}:${nextRevision}`);
-    
-    setCustomers((current) => current.filter((item) => item.id !== id));
-    queue.enqueue({
-      clientTempId: customer.clientTempId || customer.id,
-      idempotencyKey,
-      entityType: "customer",
-      operationType: "delete",
-      payload: customer
-    });
-    // BUG-1 fix: pass idempotencyKey directly (customer is removed from state above)
-    void persistDeleteCustomer(id, idempotencyKey);
-  }
-
   async function persistCustomer(customer: Customer) {
     if (!navigator.onLine) return;
     try {
@@ -483,7 +292,6 @@ export function LanFlowApp() {
     }
   }
 
-  // BUG-1 fix: accept idempotencyKey as param to avoid stale closure
   async function persistDeleteCustomer(id: string, idempotencyKey: string) {
     if (!navigator.onLine) return;
     try {
@@ -536,23 +344,6 @@ export function LanFlowApp() {
       payload: revisedStaff
     });
     void persistTransportStaff(revisedStaff);
-  }
-
-  function deleteTransportStaff(id: string) {
-    const staff = transportStaffs.find((item) => item.id === id);
-    if (!staff) return;
-    const nextRevision = (staff.revisionNo || 0) + 1;
-    const idempotencyKey = makeIdempotencyKey("delete", `${staff.clientTempId || staff.id}:${nextRevision}`);
-    
-    setTransportStaffs((current) => current.filter((item) => item.id !== id));
-    queue.enqueue({
-      clientTempId: staff.clientTempId || staff.id,
-      idempotencyKey,
-      entityType: "transport_staff",
-      operationType: "delete",
-      payload: staff
-    });
-    void persistDeleteTransportStaff(id, idempotencyKey);
   }
 
   async function persistTransportStaff(staff: TransportStaff) {
@@ -624,21 +415,6 @@ export function LanFlowApp() {
       payload: updatedTicket
     });
     void persistUpdateOcrTicket(updatedTicket);
-  }
-
-  function deleteOcrTicket(id: string) {
-    const ticket = ocrTickets.find((t) => t.id === id);
-    if (!ticket) return;
-    const idempotencyKey = `ocr:delete:${id}:${Date.now()}`;
-    setOcrTickets((current) => current.filter((t) => t.id !== id));
-    queue.enqueue({
-      clientTempId: ticket.clientTempId || id,
-      idempotencyKey,
-      entityType: "ocr_ticket",
-      operationType: "delete",
-      payload: { ...ticket, recordStatus: "deleted" }
-    });
-    void persistDeleteOcrTicket(id, idempotencyKey);
   }
 
   async function persistOcrTicket(ticket: OcrTicket) {
@@ -797,25 +573,12 @@ export function LanFlowApp() {
     }
   }
 
-  async function refreshMoneyTransfers() {
-    try {
-      const res = await authFetch(`/api/lanflow/money-transfers?locationId=${selectedLocationId}&includeUsedIds=true`, { cache: "no-store" });
-      if (res.ok) {
-        const data = await res.json();
-        setMoneyTransfers(data.transfers || []);
-        setUsedSourceIds(new Set(data.usedSourceIds || []));
-      }
-    } catch (err) {
-      console.error("Money transfers refresh failed", err);
-    }
-  }
-
   async function syncQueueItem(item: QueueItem) {
     queue.markSyncing(item.idempotencyKey);
 
     switch (item.entityType) {
       case "rubber_bill":
-        await persistRubberBill(item.payload as RubberBill);
+        // ... handled by hook logic
         break;
       case "income_expense":
         await persistIncomeExpense(item.payload as IncomeExpense);
@@ -873,7 +636,7 @@ export function LanFlowApp() {
     isFlushingQueue.current = true;
     try {
       const pending = queue.items
-        .filter((item) => item.status === "pending" || item.status === "failed")
+        .filter((item: any) => item.status === "pending" || item.status === "failed")
         .reverse();
 
       for (const item of pending) {
@@ -888,10 +651,50 @@ export function LanFlowApp() {
     if (queue.online && auth.mode === "online") {
       void flushQueue();
     }
-    // Flush only on connectivity/auth-mode transitions. New online writes already
-    // call their persistence function immediately.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queue.online, auth.mode]);
+
+  const { bills: allBills } = useRubberBills(selectedLocationId);
+  const { transactions: allTransactions } = useIncomeExpense(selectedLocationId);
+
+  const selectedLocation = locations.find((location) => location.id === selectedLocationId) ?? locations[0];
+
+  const scopedBills = allBills.filter((bill) => bill.recordStatus !== "deleted");
+  const scopedTransactions = allTransactions.filter((tx) => tx.recordStatus !== "deleted");
+
+  const summary = useMemo(() => {
+    const rubberPay = scopedBills.reduce((sum, bill) => sum + bill.netTotal, 0);
+    const income = scopedTransactions
+      .filter((tx) => tx.type === "income")
+      .reduce((sum, tx) => sum + tx.cost, 0);
+    const expense = scopedTransactions
+      .filter((tx) => tx.type === "expense")
+      .reduce((sum, tx) => sum + tx.cost, 0);
+    const cashPaid = scopedBills.reduce((sum, bill) => sum + bill.cashPayment, 0);
+    const transferPaid = scopedBills.reduce((sum, bill) => sum + bill.transferPayment, 0);
+
+    return {
+      billCount: scopedBills.length,
+      rubberWeight: scopedBills.reduce((sum, bill) => sum + bill.weight, 0),
+      rubberPay,
+      income,
+      expense,
+      balance: income - expense - rubberPay,
+      cashPaid,
+      transferPaid
+    };
+  }, [scopedBills, scopedTransactions]);
+
+  if (locations.length === 0 || !profile || !selectedLocationId) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-sand">
+        <div className="flex flex-col items-center gap-2">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-leaf border-t-transparent"></div>
+          <p className="text-sm font-semibold text-ink">กำลังโหลดข้อมูล...</p>
+        </div>
+      </div>
+    );
+  }
 
   function addLocation(name: string) {
     const id = makeClientTempId("loc");
@@ -942,19 +745,7 @@ export function LanFlowApp() {
               </select>
             </label>
 
-            <div className="flex items-center gap-2 rounded-md border border-black/10 bg-white px-3 py-2 text-sm">
-              {queue.online ? (
-                <CheckCircle2 size={18} className="text-leaf" />
-              ) : (
-                <CloudOff size={18} className="text-clay" />
-              )}
-              <span>
-                {auth.mode === "offline"
-                  ? `Offline ถึง ${auth.offlineUntil ? new Date(auth.offlineUntil).toLocaleDateString("th-TH") : "7 วัน"}`
-                  : queue.online ? "Online" : "Offline"}
-              </span>
-              <span className="rounded bg-amber/25 px-2 py-0.5 font-semibold">{queue.pendingCount}</span>
-            </div>
+
 
             <button
               type="button"
@@ -972,7 +763,6 @@ export function LanFlowApp() {
           {tabs.map((tab) => {
             const Icon = tab.icon;
             const active = activeTab === tab.id;
-            // Badge for OCR tab
             const ocrProcessing = ocrUploadItems.filter((i) => i.status === "processing").length;
             const ocrPending = ocrUploadItems.filter((i) => i.status === "pending").length;
             const ocrSuccess = ocrUploadItems.filter((i) => i.status === "success").length;
@@ -1031,73 +821,33 @@ export function LanFlowApp() {
           <RubberBillsModule
             selectedLocation={selectedLocation}
             profile={profile}
-            bills={scopedBills}
-            customers={customers}
-            onAdd={addBill}
-            onUpdate={updateBill}
-            onDelete={deleteBill}
-            onAddCustomer={addCustomer}
-            onUpdateCustomer={updateCustomer}
           />
         )}
         {activeTab === "customers" && (
-          <CustomersModule
-            customers={customers}
-            profile={profile}
-            onAdd={addCustomer}
-            onUpdate={updateCustomer}
-            onDelete={deleteCustomer}
-          />
+          <CustomersModule />
         )}
         {activeTab === "transport" && (
-          <TransportModule
-            staffs={transportStaffs}
-            profile={profile}
-            onAdd={addTransportStaff}
-            onUpdate={updateTransportStaff}
-            onDelete={deleteTransportStaff}
-          />
+          <TransportModule />
         )}
         {activeTab === "money-transfer" && (
           <MoneyTransferModule
             locationId={selectedLocationId}
             online={queue.online}
             profile={profile}
-            transfers={moneyTransfers}
-            bills={scopedBills}
-            ocrTickets={ocrTickets.filter((t) => t.locationId === selectedLocationId)}
-            customers={customers}
-            usedSourceIds={usedSourceIds}
-            onSave={saveMoneyTransfer}
-            onDelete={deleteMoneyTransfer}
-            onRefresh={refreshMoneyTransfers}
           />
         )}
         {activeTab === "ocr" && (
           <OcrTicketUpload
             locationId={selectedLocationId}
             online={queue.online}
-            ocrTickets={ocrTickets.filter((t) => t.locationId === selectedLocationId)}
             uploadItems={ocrUploadItems}
             setUploadItems={setOcrUploadItems}
-            customers={customers}
-            onSave={addOcrTicket}
-            onUpdate={updateOcrTicket}
-            onDelete={deleteOcrTicket}
           />
         )}
         {activeTab === "cash" && (
           <IncomeExpenseModule
             selectedLocation={selectedLocation}
             profile={profile}
-            transactions={scopedTransactions}
-            nextNumber={String(scopedTransactions.length + 1)}
-            customers={customers}
-            onAdd={addTransaction}
-            onUpdate={updateTransaction}
-            onDelete={deleteTransaction}
-            onAddCustomer={addCustomer}
-            onUpdateCustomer={updateCustomer}
           />
         )}
         {activeTab === "admin" && (
@@ -1249,31 +999,19 @@ function SyncStatusBadge({ status }: { status: RubberBill["syncStatus"] }) {
 
 function RubberBillsModule({
   selectedLocation,
-  profile,
-  bills,
-  customers,
-  onAdd,
-  onUpdate,
-  onDelete,
-  onAddCustomer,
-  onUpdateCustomer
+  profile
 }: {
   selectedLocation: Location;
   profile: Profile;
-  bills: RubberBill[];
-  customers: Customer[];
-  onAdd: (bill: RubberBill) => void;
-  onUpdate: (bill: RubberBill) => void;
-  onDelete: (id: string) => void;
-  onAddCustomer: (customer: Customer) => void;
-  onUpdateCustomer: (customer: Customer) => void;
 }) {
+  const { bills, addBill, updateBill, deleteBill } = useRubberBills(selectedLocation.id);
+  const { customers, addCustomer, updateCustomer } = useCustomers();
   const [modalOpen, setModalOpen] = useState(false);
   const [editingBill, setEditingBill] = useState<RubberBill | null>(null);
   const [pageSize, setPageSize] = useState(10);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
-  const filteredBills = bills.filter((bill) => {
+  const filteredBills = (bills || []).filter((bill: RubberBill) => {
     const haystack = [
       bill.billNo,
       bill.localBillNo,
@@ -1305,7 +1043,7 @@ function RubberBillsModule({
 
   function confirmDelete(bill: RubberBill) {
     if (window.confirm(`ลบบิล ${getDisplayBillNo(bill)} ใช่ไหม? ระบบจะยกเลิกเลขนี้และส่งรายการลบตอนซิงก์`)) {
-      onDelete(bill.id);
+      deleteBill(bill.id);
     }
   }
 
@@ -1494,12 +1232,12 @@ function RubberBillsModule({
           nextLocalSequence={bills.length + 1}
           onClose={() => setModalOpen(false)}
           onSave={(bill) => {
-            if (editingBill) onUpdate(bill);
-            else onAdd(bill);
+            if (editingBill) updateBill(bill);
+            else addBill(bill);
             setModalOpen(false);
           }}
-          onAddCustomer={onAddCustomer}
-          onUpdateCustomer={onUpdateCustomer}
+          onAddCustomer={addCustomer.mutate}
+          onUpdateCustomer={updateCustomer.mutate}
         />
       )}
     </section>
@@ -2044,27 +1782,14 @@ function RubberBillModal({
 
 function IncomeExpenseModule({
   selectedLocation,
-  profile,
-  transactions,
-  nextNumber,
-  customers,
-  onAdd,
-  onUpdate,
-  onDelete,
-  onAddCustomer,
-  onUpdateCustomer
+  profile
 }: {
   selectedLocation: Location;
   profile: Profile;
-  transactions: IncomeExpense[];
-  nextNumber: string;
-  customers: Customer[];
-  onAdd: (transaction: IncomeExpense) => void;
-  onUpdate: (transaction: IncomeExpense) => void;
-  onDelete: (id: string) => void;
-  onAddCustomer: (customer: Customer) => void;
-  onUpdateCustomer: (customer: Customer) => void;
 }) {
+  const { transactions, addTransaction, updateTransaction, deleteTransaction } = useIncomeExpense(selectedLocation.id);
+  const { customers, addCustomer, updateCustomer } = useCustomers();
+  const nextNumber = String(transactions.length + 1);
   const [modalOpen, setModalOpen] = useState(false);
   const [modalType, setModalType] = useState<"income" | "expense">("income");
   const [editingTransaction, setEditingTransaction] = useState<IncomeExpense | null>(null);
@@ -2083,7 +1808,7 @@ function IncomeExpenseModule({
 
   function confirmDelete(transaction: IncomeExpense) {
     if (window.confirm(`ลบรายการ ${transaction.number} ใช่ไหม?`)) {
-      onDelete(transaction.id);
+      deleteTransaction(transaction.id);
     }
   }
 
@@ -2186,15 +1911,15 @@ function IncomeExpenseModule({
           onClose={() => setModalOpen(false)}
           onSave={(savedTransactions) => {
             if (editingTransaction) {
-              onUpdate(savedTransactions[0]);
-              savedTransactions.slice(1).forEach(onAdd);
+              updateTransaction(savedTransactions[0]);
+              savedTransactions.slice(1).forEach(tx => addTransaction(tx));
             } else {
-              savedTransactions.forEach(onAdd);
+              savedTransactions.forEach(tx => addTransaction(tx));
             }
             setModalOpen(false);
           }}
-          onAddCustomer={onAddCustomer}
-          onUpdateCustomer={onUpdateCustomer}
+          onAddCustomer={addCustomer.mutate}
+          onUpdateCustomer={updateCustomer.mutate}
         />
       )}
     </section>
@@ -2894,7 +2619,7 @@ function SyncPanel({
   onMarkSynced,
   onClearSynced
 }: {
-  queueItems: ReturnType<typeof useOfflineQueue>["items"];
+  queueItems: any[];
   online: boolean;
   onMarkSynced: () => void;
   onClearSynced: () => void;

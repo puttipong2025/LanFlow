@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { uploadImageToDrive } from "@/lib/server/google-drive";
-import { updateOcrTicket } from "@/lib/server/lanflow-db";
 import { requireAuth } from "@/lib/server/auth";
 
 export const dynamic = "force-dynamic";
@@ -30,15 +29,25 @@ export async function POST(request: NextRequest) {
     const buffer = Buffer.from(arrayBuffer);
     const mimeType = file.type || "image/jpeg";
 
-    const { fileId, webViewLink } = await uploadImageToDrive(buffer, mimeType, file.name);
+    const { fileId: driveFileId, webViewLink } = await uploadImageToDrive(buffer, mimeType, file.name);
 
     // Update ticket in DB with drive info
-    const updated = await updateOcrTicket(result.supabase, ticketId, {
-      driveFileId: fileId,
-      driveUrl: webViewLink,
-    }, result.auth.sub);
+    const driveUrl = `https://drive.google.com/open?id=${driveFileId}`;
 
-    return NextResponse.json(updated);
+    const { data: updatedTicket, error } = await result.supabase
+      .from("ocr_tickets")
+      .update({
+        drive_file_id: driveFileId,
+        drive_url: driveUrl,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", ticketId)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    return NextResponse.json(updatedTicket);
   } catch (error) {
     const message = error instanceof Error ? error.message : JSON.stringify(error);
     console.error("Drive upload error:", message);

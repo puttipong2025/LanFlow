@@ -10,21 +10,10 @@ import {
 import type { TransportStaff, TransportStaffPlate, CustomerContact, CustomerBankAccount, Profile } from "@/types";
 import { makeClientTempId, makeIdempotencyKey } from "@/lib/format";
 
-type TransportModuleProps = {
-  staffs: TransportStaff[];
-  profile: Profile;
-  onAdd: (staff: TransportStaff) => void;
-  onUpdate: (staff: TransportStaff) => void;
-  onDelete: (id: string) => void;
-};
+import { useTransportStaffs } from "@/hooks/useTransportStaffs";
 
-export function TransportModule({
-  staffs,
-  profile,
-  onAdd,
-  onUpdate,
-  onDelete
-}: TransportModuleProps) {
+export function TransportModule() {
+  const { staffs, isLoading, addStaff, updateStaff, deleteStaff } = useTransportStaffs();
   const [search, setSearch] = useState("");
   const [pageSize, setPageSize] = useState(10);
   const [page, setPage] = useState(1);
@@ -74,7 +63,14 @@ export function TransportModule({
       confirmButtonColor: '#ef4444'
     });
     if (result.isConfirmed) {
-      onDelete(staff.id);
+      deleteStaff.mutate(staff.id, {
+        onSuccess: () => {
+          toast.success("ลบข้อมูลสำเร็จ");
+        },
+        onError: (err) => {
+          toast.error("ลบข้อมูลไม่สำเร็จ: " + err.message);
+        }
+      });
       toast.success("ลบข้อมูลสำเร็จ");
     }
   }
@@ -240,7 +236,13 @@ export function TransportModule({
                   </td>
                 </tr>
               ))}
-              {visibleStaffs.length === 0 && (
+              {isLoading ? (
+                <tr>
+                  <td colSpan={6} className="py-8 text-center text-ink/40">
+                    กำลังโหลดข้อมูล...
+                  </td>
+                </tr>
+              ) : visibleStaffs.length === 0 && (
                 <tr>
                   <td colSpan={6} className="py-8 text-center text-ink/40">
                     ไม่พบข้อมูลขนส่งและพนักงาน
@@ -304,8 +306,17 @@ export function TransportModule({
           allStaffs={staffs}
           onClose={() => setModalOpen(false)}
           onSave={(v) => {
-            if (editingStaff) onUpdate(v);
-            else onAdd(v);
+            if (editingStaff) {
+              updateStaff.mutate(v, {
+                onSuccess: () => toast.success("แก้ไขข้อมูลสำเร็จ"),
+                onError: (err) => toast.error("แก้ไขข้อมูลไม่สำเร็จ: " + err.message)
+              });
+            } else {
+              addStaff.mutate(v, {
+                onSuccess: () => toast.success("เพิ่มข้อมูลสำเร็จ"),
+                onError: (err) => toast.error("เพิ่มข้อมูลไม่สำเร็จ: " + err.message)
+              });
+            }
             setModalOpen(false);
           }}
         />

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireRole } from "@/lib/server/auth";
 import { createSupabaseAdminClient } from "@/lib/server/supabase-admin";
-import { phoneToAuthEmail } from "@/lib/phone";
+import { normalizeThaiPhoneToE164 } from "@/lib/phone";
 import type { AppRole } from "@/types";
 
 export async function GET(request: NextRequest) {
@@ -88,12 +88,14 @@ export async function POST(request: NextRequest) {
     }
 
     const id = crypto.randomUUID();
+    const phoneE164 = normalizeThaiPhoneToE164(body.phone);
     const { data: authUser, error: authError } = await admin.auth.admin.createUser({
       id,
-      email: phoneToAuthEmail(body.phone),
-      email_confirm: true,
+      phone: phoneE164,
+      phone_confirm: true,
       password: body.password,
-      user_metadata: { name: body.name.trim() }
+      user_metadata: { name: body.name.trim() },
+      app_metadata: { lanflow_role: role }
     });
 
     if (authError || !authUser.user) {

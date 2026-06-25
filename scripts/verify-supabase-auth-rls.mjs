@@ -27,13 +27,13 @@ const users = [
   {
     id: randomUUID(),
     phone: `08${suffix}`,
-    email: `rls-a-${suffix}@phone.lanflow.invalid`,
+    e164: `+668${suffix}`,
     password: `Rls-A-${randomUUID()}`
   },
   {
     id: randomUUID(),
     phone: `09${suffix}`,
-    email: `rls-b-${suffix}@phone.lanflow.invalid`,
+    e164: `+669${suffix}`,
     password: `Rls-B-${randomUUID()}`
   }
 ];
@@ -54,8 +54,8 @@ try {
   for (const user of users) {
     const { error } = await admin.auth.admin.createUser({
       id: user.id,
-      email: user.email,
-      email_confirm: true,
+      phone: user.e164,
+      phone_confirm: true,
       password: user.password
     });
     if (error) throw error;
@@ -91,7 +91,7 @@ try {
     auth: { persistSession: false, autoRefreshToken: false }
   });
   const { error: signInError } = await clientA.auth.signInWithPassword({
-    email: users[0].email,
+    phone: users[0].e164,
     password: users[0].password
   });
   if (signInError) throw signInError;

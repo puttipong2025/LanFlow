@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { AuthProvider } from "@/components/AuthProvider";
 import { Toaster } from "sonner";
+import { QueryProvider } from "@/components/QueryProvider";
 
 export const metadata: Metadata = {
   title: "LanFlow",
@@ -19,10 +20,12 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="th">
       <body suppressHydrationWarning>
-        <AuthProvider>
-          {children}
-          <Toaster position="top-center" richColors />
-        </AuthProvider>
+        <QueryProvider>
+          <AuthProvider>
+            {children}
+            <Toaster position="top-center" richColors />
+          </AuthProvider>
+        </QueryProvider>
       </body>
     </html>
   );

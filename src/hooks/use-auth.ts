@@ -165,20 +165,24 @@ export function useAuth(): AuthState {
     };
   }, [applyOfflineCache, refreshProfile]);
 
-  const login = useCallback(async (phone: string, password: string) => {
+  const login = useCallback(async (rawPhone: string, password: string) => {
     try {
-      const loginResponse = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({ phone, password })
+      const supabase = createSupabaseBrowserClient();
+      
+      const phoneStr = rawPhone.replace(/\D/g, '');
+      const phoneE164 = phoneStr.startsWith('0') 
+        ? '+66' + phoneStr.slice(1) 
+        : (phoneStr.startsWith('66') ? '+' + phoneStr : (phoneStr.startsWith('+') ? phoneStr : '+' + phoneStr));
+
+      const { error: authError } = await supabase.auth.signInWithPassword({
+        phone: phoneE164,
+        password,
       });
 
-      const loginData = await loginResponse.json();
-      if (!loginResponse.ok) {
+      if (authError) {
         return {
           success: false,
-          error: loginData.error || "เบอร์โทรหรือรหัสผ่านไม่ถูกต้อง"
+          error: authError.message.includes("Invalid login") ? "เบอร์โทรหรือรหัสผ่านไม่ถูกต้อง" : authError.message
         };
       }
 
