@@ -19,7 +19,7 @@ export function useCustomers() {
         `)
         .order("created_at", { ascending: false });
 
-      if (error) throw error;
+      if (error) throw new Error(error.message || JSON.stringify(error));
       
       // Transform Supabase data to our Customer type
       return data.map((row: any) => ({
@@ -85,7 +85,7 @@ export function useCustomers() {
         record_status: customer.recordStatus
       }).select().single();
       
-      if (error) throw error;
+      if (error) throw new Error(error.message || JSON.stringify(error));
       return data;
     },
     onSuccess: () => {
@@ -109,7 +109,7 @@ export function useCustomers() {
         record_status: customer.recordStatus
       }).eq('id', customer.id).select().single();
       
-      if (error) throw error;
+      if (error) throw new Error(error.message || JSON.stringify(error));
       return data;
     },
     onSuccess: () => {
@@ -120,7 +120,7 @@ export function useCustomers() {
   const deleteCustomer = useMutation({
     mutationFn: async (id: string) => {
       const { error } = await supabase.from('customers').delete().eq('id', id);
-      if (error) throw error;
+      if (error) throw new Error(error.message || JSON.stringify(error));
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["customers"] });

@@ -11,11 +11,10 @@ export async function GET(request: NextRequest) {
   try {
     const supabase = adminCheck.supabase;
 
-    // Fetch all active profiles
+    // Fetch all profiles
     const { data: profiles, error: profilesError } = await supabase
       .from("profiles")
-      .select("id, name, phone, role")
-      .eq("is_active", true)
+      .select("id, name, phone, role, is_active")
       .order("created_at", { ascending: true });
 
     if (profilesError) throw profilesError;
@@ -42,6 +41,7 @@ export async function GET(request: NextRequest) {
       name: p.name,
       phone: p.phone,
       role: p.role,
+      isActive: p.is_active,
       locationIds: locationMap.get(p.id) || [],
     }));
 
@@ -53,7 +53,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const adminCheck = await requireRole(request, ["super_admin"]);
+  const adminCheck = await requireRole(request, ["super_admin", "admin"]);
   if (!adminCheck.ok) return adminCheck.response;
 
   const admin = createSupabaseAdminClient();
@@ -85,6 +85,11 @@ export async function POST(request: NextRequest) {
     const role = body.role ?? "user";
     if (!["user", "admin"].includes(role)) {
       return NextResponse.json({ error: "invalid role" }, { status: 400 });
+    }
+
+    const { data: creatorProfile } = await admin.from('profiles').select('role').eq('id', adminCheck.auth.sub).single();
+    if (role === 'admin' && creatorProfile?.role !== 'super_admin') {
+      return NextResponse.json({ error: "Only super_admin can create admin accounts" }, { status: 403 });
     }
 
     const id = crypto.randomUUID();

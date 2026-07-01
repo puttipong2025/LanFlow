@@ -224,38 +224,6 @@ create unique index ocr_tickets_location_file_unique
   where record_status = 'active';
 
 
-create table public.offline_sync_events (
-  id uuid primary key default gen_random_uuid(),
-  client_temp_id text not null,
-  idempotency_key text not null unique,
-  entity_type text not null,
-  operation_type text not null default 'create',
-  location_id uuid references public.locations(id),
-  payload jsonb not null,
-  status sync_status not null default 'pending',
-  server_id uuid,
-  error_message text,
-  created_by_user_id uuid references public.profiles(id),
-  client_recorded_at timestamptz,
-  client_created_at timestamptz,
-  server_received_at timestamptz,
-  server_created_at timestamptz not null default now()
-);
-
-create table public.audit_logs (
-  id uuid primary key default gen_random_uuid(),
-  location_id uuid references public.locations(id),
-  actor_user_id uuid references public.profiles(id),
-  actor_name text not null,
-  actor_phone text not null,
-  entity_type text not null,
-  entity_id uuid,
-  action text not null,
-  old_data jsonb,
-  new_data jsonb,
-  created_at timestamptz not null default now()
-);
-
 create or replace function public.prevent_location_change()
 returns trigger
 language plpgsql
@@ -324,8 +292,6 @@ alter table public.rubber_bills enable row level security;
 alter table public.rubber_bill_items enable row level security;
 alter table public.income_expense enable row level security;
 alter table public.ocr_tickets enable row level security;
-alter table public.offline_sync_events enable row level security;
-alter table public.audit_logs enable row level security;
 
 create policy "profiles see own or super admin"
   on public.profiles for select
@@ -397,19 +363,6 @@ create policy "ocr tickets update scoped"
   on public.ocr_tickets for update
   using (public.can_access_location(location_id))
   with check (public.can_access_location(location_id));
-
-create policy "sync events scoped"
-  on public.offline_sync_events for all
-  using (location_id is null or public.can_access_location(location_id))
-  with check (location_id is null or public.can_access_location(location_id));
-
-create policy "audit logs scoped"
-  on public.audit_logs for select
-  using (location_id is null or public.can_access_location(location_id));
-
-create policy "audit logs insert scoped"
-  on public.audit_logs for insert
-  with check (location_id is null or public.can_access_location(location_id));
 
 grant usage on schema public to service_role;
 grant all privileges on all tables in schema public to service_role;

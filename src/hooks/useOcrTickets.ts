@@ -16,7 +16,7 @@ export function useOcrTickets(locationId: string) {
         .neq("record_status", "deleted")
         .order("created_at", { ascending: false });
 
-      if (error) throw error;
+      if (error) throw new Error(error.message || JSON.stringify(error));
       
       return (data || []).map((row: any): OcrTicket => ({
         id: row.id,
@@ -77,7 +77,7 @@ export function useOcrTickets(locationId: string) {
         created_by_phone: ticket.createdByPhone,
       }).select().single();
 
-      if (error) throw error;
+      if (error) throw new Error(error.message || JSON.stringify(error));
       return data;
     },
     onSuccess: () => {
@@ -106,7 +106,7 @@ export function useOcrTickets(locationId: string) {
         revision_no: ticket.revisionNo,
       }).eq("id", ticket.id).select().single();
 
-      if (error) throw error;
+      if (error) throw new Error(error.message || JSON.stringify(error));
       return data;
     },
     onSuccess: () => {
@@ -117,7 +117,7 @@ export function useOcrTickets(locationId: string) {
   const deleteTicket = useMutation({
     mutationFn: async (id: string) => {
       const { error } = await supabase.from("ocr_tickets").update({ record_status: "deleted" }).eq("id", id);
-      if (error) throw error;
+      if (error) throw new Error(error.message || JSON.stringify(error));
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ocrTickets", locationId] });

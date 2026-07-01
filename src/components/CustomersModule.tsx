@@ -5,27 +5,15 @@ import appSwal from "@/lib/swal";
 import { useState, useMemo, FormEvent } from "react";
 import { 
   Plus, Search, Edit3, Trash2, Smartphone, CreditCard, 
-  Home, ShieldCheck, Check, X, Users, RefreshCw, Copy, Star
+  Home, ShieldCheck, Check, X, Users, Copy, Star
 } from "lucide-react";
-import type { Customer, CustomerContact, CustomerBankAccount, CustomerFarm, Profile } from "@/types";
+import type { Customer, CustomerContact, CustomerBankAccount, CustomerFarm } from "@/types";
 import { makeClientTempId, makeIdempotencyKey } from "@/lib/format";
 import { useCustomers } from "@/hooks/useCustomers";
-import { useAuthContext } from "@/components/AuthProvider";
 import { Loader2 } from "lucide-react";
 
 export function CustomersModule() {
-  const auth = useAuthContext();
-  const profile = auth.profile as Profile;
   const { customers, isLoading, addCustomer, updateCustomer, deleteCustomer } = useCustomers();
-
-  if (isLoading) {
-    return (
-      <div className="flex h-64 items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
-      </div>
-    );
-  }
-
 
   const [search, setSearch] = useState("");
   const [selectedBranch, setSelectedBranch] = useState("");
@@ -78,6 +66,14 @@ export function CustomersModule() {
 
   const firstVisible = filteredCustomers.length === 0 ? 0 : (currentPage - 1) * pageSize + 1;
   const lastVisible = Math.min(currentPage * pageSize, filteredCustomers.length);
+
+  if (isLoading) {
+    return (
+      <div className="flex h-64 items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
+  }
 
   function openAdd() {
     setEditingCustomer(null);
@@ -442,7 +438,7 @@ function CustomerModal({
     return `${prefix}${nextNumStr}`;
   }, [customer, allCustomers]);
 
-  const [legacyMemberId, setLegacyMemberId] = useState(initialLegacyMemberId);
+  const legacyMemberId = initialLegacyMemberId;
   const [fscStatus, setFscStatus] = useState(customer?.fscStatus ?? "no");
   const [customerClass, setCustomerClass] = useState<Customer["class"]>(customer?.class ?? "สาขานี้จ่าย");
   

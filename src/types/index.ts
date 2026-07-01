@@ -16,6 +16,7 @@ export type Profile = {
   name: string;
   phone: string;
   role: AppRole;
+  isActive: boolean;
   locationIds: string[];
 };
 
@@ -64,6 +65,7 @@ export type RubberBill = {
     title: string;
     amount: number;
   }>;
+  createdByUserId: string;
   createdByName: string;
   createdByPhone: string;
   clientCreatedAt: string;
@@ -227,7 +229,14 @@ export type MoneyTransfer = {
   accountName: string | null;
   bankName: string | null;
   netAmountToPay: number;
-  transferStatus: 'pending' | 'completed' | 'cancelled';
+  transferType: 'customer' | 'transport' | 'branch';
+  transportCost?: number;
+  transportStaffId?: string | null;
+  transportStaffName?: string | null;
+  targetLocationId?: string | null;
+  targetLocationName?: string | null;
+  transferStatus: 'pending' | 'paid' | 'partial' | 'overpaid' | 'branch_and_transfer' | 'advance_payment' | 'cancelled';
+  branchPaidAmount?: number;
   syncStatus?: SyncStatus;
   recordStatus?: RecordStatus;
   revisionNo?: number;

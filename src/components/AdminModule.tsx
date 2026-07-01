@@ -3,7 +3,7 @@
 import { toast } from "sonner";
 import appSwal from "@/lib/swal";
 import { useState, useEffect } from "react";
-import { ShieldCheck, Users, Smartphone, Database, Check, X, Building2, UserPlus, Loader2 } from "lucide-react";
+import { ShieldCheck, Users, Smartphone, Database, X, Building2, UserPlus, Loader2 } from "lucide-react";
 import type { Location, Profile } from "@/types";
 import { authFetch } from "@/lib/auth-fetch";
 
@@ -73,9 +73,41 @@ export function AdminModule({
     }
   }
 
+  async function handleToggleStatus(userId: string, currentStatus: boolean) {
+    if (!["super_admin", "admin"].includes(profile.role)) return;
+
+    const actionText = currentStatus ? "ระงับการใช้งาน" : "กู้คืนการใช้งาน";
+    const result = await appSwal.fire({
+      title: `${actionText}?`,
+      text: `คุณแน่ใจหรือไม่ที่จะ${actionText}บัญชีผู้ใช้นี้?`,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'ยืนยัน',
+      confirmButtonColor: currentStatus ? '#ef4444' : '#2f6b4f'
+    });
+    if (!result.isConfirmed) return;
+
+    try {
+      const res = await authFetch(`/api/lanflow/admin/users/${userId}/status`, {
+        method: "PATCH",
+        body: JSON.stringify({ isActive: !currentStatus })
+      });
+      if (res.ok) {
+        toast.success(`${actionText}สำเร็จ`);
+        loadUsers();
+      } else {
+        const data = await res.json();
+        toast.error(`Error: ${data.error}`);
+      }
+    } catch (error) {
+      console.error(error);
+      toast.error("เกิดข้อผิดพลาด");
+    }
+  }
+
   async function handleCreateUser(event: React.FormEvent) {
     event.preventDefault();
-    if (profile.role !== "super_admin") return;
+    if (!["super_admin", "admin"].includes(profile.role)) return;
 
     setCreatingUser(true);
     try {
@@ -155,30 +187,32 @@ export function AdminModule({
           <h2 className="text-lg font-bold text-ink">สิทธิ์ผู้ดูแล</h2>
         </div>
         <div className="space-y-3 text-sm">
-          <p className="flex items-center gap-2"><Users size={17} /> {profile.name} · {profile.role}</p>
+          <p className="flex items-center gap-2"><Users size={17} /> {profile.name} · {profile.role === 'super_admin' ? 'Super Admin' : profile.role === 'admin' ? 'Admin' : profile.role}</p>
           <p className="flex items-center gap-2"><Smartphone size={17} /> Login phone unique: {profile.phone}</p>
           <p className="flex items-center gap-2"><Database size={17} /> สาขาที่ดูแล {profile.locationIds.length} แห่ง</p>
         </div>
 
         <h2 className="mt-8 mb-4 text-lg font-bold text-ink">สาขาทั้งหมด</h2>
-        <form
-          className="mb-4 flex flex-col gap-3 sm:flex-row"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (name.trim()) onAddLocation(name.trim());
-            setName("");
-          }}
-        >
-          <input
-            className="focus-ring h-11 flex-1 rounded-md border border-black/10 px-3"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            placeholder="ชื่อสาขาใหม่"
-          />
-          <button className="focus-ring h-11 rounded-md bg-leaf px-4 font-semibold text-white">
-            เพิ่มสาขา
-          </button>
-        </form>
+        {profile.role === 'super_admin' && (
+          <form
+            className="mb-4 flex flex-col gap-3 sm:flex-row"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (name.trim()) onAddLocation(name.trim());
+              setName("");
+            }}
+          >
+            <input
+              className="focus-ring h-11 flex-1 rounded-md border border-black/10 px-3"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="ชื่อสาขาใหม่"
+            />
+            <button className="focus-ring h-11 rounded-md bg-leaf px-4 font-semibold text-white">
+              เพิ่มสาขา
+            </button>
+          </form>
+        )}
         <div className="grid gap-3 sm:grid-cols-2">
           {locations.map((loc) => (
             <div key={loc.id} className="flex items-center justify-between rounded border border-black/5 bg-black/5 px-3 py-2 text-sm">
@@ -195,7 +229,7 @@ export function AdminModule({
           <h2 className="text-lg font-bold text-ink">รายชื่อพนักงานในระบบ</h2>
         </div>
 
-        {profile.role === "super_admin" && (
+        {["super_admin", "admin"].includes(profile.role) && (
           <form
             onSubmit={handleCreateUser}
             className="mb-5 grid gap-3 rounded-md border border-leaf/20 bg-leaf/5 p-3 sm:grid-cols-2"
@@ -224,19 +258,21 @@ export function AdminModule({
               value={newUser.password}
               onChange={(event) => setNewUser((current) => ({ ...current, password: event.target.value }))}
             />
-            <select
-              className="focus-ring h-10 rounded-md border border-black/10 bg-white px-3"
-              value={newUser.role}
-              onChange={(event) =>
-                setNewUser((current) => ({
-                  ...current,
-                  role: event.target.value as "user" | "admin"
-                }))
-              }
-            >
-              <option value="user">User</option>
-              <option value="admin">Admin</option>
-            </select>
+            {profile.role === 'super_admin' && (
+              <select
+                className="focus-ring h-10 rounded-md border border-black/10 bg-white px-3"
+                value={newUser.role}
+                onChange={(event) =>
+                  setNewUser((current) => ({
+                    ...current,
+                    role: event.target.value as "user" | "admin"
+                  }))
+                }
+              >
+                <option value="user">User</option>
+                <option value="admin">Admin</option>
+              </select>
+            )}
             <select
               required
               className="focus-ring h-10 rounded-md border border-black/10 bg-white px-3 sm:col-span-2"
@@ -266,7 +302,9 @@ export function AdminModule({
           </div>
         ) : (
           <div className="space-y-4">
-            {users.map((user) => (
+            {users
+              .filter(user => profile.role === "super_admin" || user.role !== "super_admin")
+              .map((user) => (
               <div key={user.id} className="rounded-md border border-black/10 p-3">
                 <div className="flex items-start justify-between">
                   <div>
@@ -274,23 +312,38 @@ export function AdminModule({
                       {user.name} 
                       {user.role === 'super_admin' && <span className="text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded border border-purple-200">Super Admin</span>}
                       {user.role === 'admin' && <span className="text-xs bg-leaf/10 text-leaf px-1.5 py-0.5 rounded border border-leaf/20">Admin</span>}
+                      {user.isActive === false && <span className="text-xs bg-red-100 text-red-700 px-1.5 py-0.5 rounded border border-red-200">ถูกระงับการใช้งาน</span>}
                     </h3>
                     <p className="text-sm text-ink/70">{user.phone}</p>
                   </div>
                   
-                  {/* Role Toggle Button */}
-                  {user.role !== 'super_admin' && profile.role === 'super_admin' && (
-                    <button 
-                      onClick={() => handleToggleRole(user.id, user.role)}
-                      className={`text-xs px-2 py-1 rounded border transition-colors ${
-                        user.role === 'admin' 
-                          ? 'border-red-200 bg-red-50 text-red-600 hover:bg-red-100' 
-                          : 'border-leaf/30 bg-leaf/10 text-leaf hover:bg-leaf/20'
-                      }`}
-                    >
-                      {user.role === 'admin' ? 'ลดสิทธิ์เป็น User' : 'เลื่อนเป็น Admin'}
-                    </button>
-                  )}
+                  {/* Action Buttons */}
+                  <div className="flex items-center gap-2">
+                    {user.role !== 'super_admin' && profile.role === 'super_admin' && (
+                      <button 
+                        onClick={() => handleToggleRole(user.id, user.role)}
+                        className={`text-xs px-2 py-1 rounded border transition-colors ${
+                          user.role === 'admin' 
+                            ? 'border-red-200 bg-red-50 text-red-600 hover:bg-red-100' 
+                            : 'border-leaf/30 bg-leaf/10 text-leaf hover:bg-leaf/20'
+                        }`}
+                      >
+                        {user.role === 'admin' ? 'ลดสิทธิ์เป็น User' : 'เลื่อนเป็น Admin'}
+                      </button>
+                    )}
+                    {user.role !== 'super_admin' && user.id !== profile.id && profile.role === 'super_admin' && (
+                      <button 
+                        onClick={() => handleToggleStatus(user.id, user.isActive !== false)}
+                        className={`text-xs px-2 py-1 rounded border transition-colors ${
+                          user.isActive !== false
+                            ? 'border-red-200 bg-red-50 text-red-600 hover:bg-red-100' 
+                            : 'border-leaf/30 bg-leaf/10 text-leaf hover:bg-leaf/20'
+                        }`}
+                      >
+                        {user.isActive !== false ? 'ระงับการใช้งาน' : 'กู้คืนการใช้งาน'}
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <div className="mt-3">
@@ -303,7 +356,7 @@ export function AdminModule({
                         <span key={locId} className="inline-flex items-center gap-1 bg-river/10 text-river border border-river/20 rounded px-2 py-1 text-sm">
                           <Building2 size={14} />
                           {loc.name}
-                          {user.role !== 'super_admin' && (
+                          {user.role !== 'super_admin' && (profile.role === 'super_admin' || user.role !== 'admin') && (
                             <button 
                               onClick={() => handleRemoveLocationFromUser(user.id, loc.id)}
                               className="ml-1 text-river/60 hover:text-red-500 transition-colors"
@@ -317,7 +370,7 @@ export function AdminModule({
                     })}
                     
                     {/* Add Location Dropdown */}
-                    {user.role !== 'super_admin' && (
+                    {user.role !== 'super_admin' && (profile.role === 'super_admin' || user.role !== 'admin') && (
                       <select 
                         className="bg-black/5 border border-black/10 rounded px-2 py-1 text-sm text-ink/70 outline-none focus:border-river focus:ring-1 focus:ring-river"
                         onChange={(e) => {

@@ -29,7 +29,7 @@ export async function POST(request: NextRequest) {
     const buffer = Buffer.from(arrayBuffer);
     const mimeType = file.type || "image/jpeg";
 
-    const { fileId: driveFileId, webViewLink } = await uploadImageToDrive(buffer, mimeType, file.name);
+    const { fileId: driveFileId } = await uploadImageToDrive(buffer, mimeType, file.name);
 
     // Update ticket in DB with drive info
     const driveUrl = `https://drive.google.com/open?id=${driveFileId}`;

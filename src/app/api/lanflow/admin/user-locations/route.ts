@@ -13,6 +13,13 @@ export async function POST(request: NextRequest) {
 
     const supabase = adminCheck.supabase;
 
+    // Check if target user is admin
+    const { data: targetUser } = await supabase.from('profiles').select('role').eq('id', userId).single();
+    const { data: currentUser } = await supabase.from('profiles').select('role').eq('id', adminCheck.auth.sub).single();
+    if (targetUser?.role === 'admin' && currentUser?.role !== 'super_admin') {
+      return NextResponse.json({ error: "Only super_admin can modify admin locations" }, { status: 403 });
+    }
+
     // Check if assignment already exists
     const { data: existing, error: existError } = await supabase
       .from("user_locations")
@@ -58,6 +65,13 @@ export async function DELETE(request: NextRequest) {
     }
 
     const supabase = adminCheck.supabase;
+
+    // Check if target user is admin
+    const { data: targetUser } = await supabase.from('profiles').select('role').eq('id', userId).single();
+    const { data: currentUser } = await supabase.from('profiles').select('role').eq('id', adminCheck.auth.sub).single();
+    if (targetUser?.role === 'admin' && currentUser?.role !== 'super_admin') {
+      return NextResponse.json({ error: "Only super_admin can modify admin locations" }, { status: 403 });
+    }
 
     const { error: deleteError } = await supabase
       .from("user_locations")

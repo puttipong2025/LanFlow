@@ -1,0 +1,2 @@
+ALTER TABLE money_transfers DROP CONSTRAINT IF EXISTS money_transfers_transfer_status_check;
+ALTER TABLE money_transfers ADD CONSTRAINT money_transfers_transfer_status_check CHECK (transfer_status IN ('pending', 'paid', 'partial', 'overpaid', 'branch_and_transfer', 'advance_payment', 'cancelled'));

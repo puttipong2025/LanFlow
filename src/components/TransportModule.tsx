@@ -5,9 +5,9 @@ import appSwal from "@/lib/swal";
 import { useState, useMemo, FormEvent } from "react";
 import { 
   Plus, Search, Edit3, Trash2, Smartphone, CreditCard, 
-  ShieldCheck, Check, X, Truck, Copy, Star
+  ShieldCheck, Check, Truck, Copy, Star
 } from "lucide-react";
-import type { TransportStaff, TransportStaffPlate, CustomerContact, CustomerBankAccount, Profile } from "@/types";
+import type { TransportStaff, TransportStaffPlate, CustomerContact, CustomerBankAccount } from "@/types";
 import { makeClientTempId, makeIdempotencyKey } from "@/lib/format";
 
 import { useTransportStaffs } from "@/hooks/useTransportStaffs";

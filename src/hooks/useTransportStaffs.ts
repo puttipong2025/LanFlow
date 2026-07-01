@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
-import type { TransportStaff, TransportStaffPlate, CustomerContact, CustomerBankAccount } from "@/types";
+import type { TransportStaff } from "@/types";
 
 function mapStaff(row: any): TransportStaff {
   return {
@@ -55,7 +55,7 @@ export function useTransportStaffs() {
         .neq("record_status", "deleted")
         .order("created_at", { ascending: false });
 
-      if (error) throw error;
+      if (error) throw new Error(error.message || JSON.stringify(error));
       return (data || []).map(mapStaff);
     },
   });
@@ -77,7 +77,7 @@ export function useTransportStaffs() {
         record_status: staff.recordStatus,
       }).select().single();
 
-      if (error) throw error;
+      if (error) throw new Error(error.message || JSON.stringify(error));
 
       if (staff.contacts && staff.contacts.length > 0) {
         await supabase.from("transport_staff_contacts").insert(
@@ -128,7 +128,7 @@ export function useTransportStaffs() {
         .eq("id", staff.id)
         .select().single();
 
-      if (error) throw error;
+      if (error) throw new Error(error.message || JSON.stringify(error));
 
       // Simplistic relation update: delete all and insert new.
       // A more robust approach would diff and patch.
@@ -181,7 +181,7 @@ export function useTransportStaffs() {
         .from("transport_staffs")
         .update({ record_status: "deleted" })
         .eq("id", id);
-      if (error) throw error;
+      if (error) throw new Error(error.message || JSON.stringify(error));
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["transportStaffs"] });

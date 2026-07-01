@@ -1,12 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import { useAuthContext } from "@/components/AuthProvider";
 import { Eye, EyeOff, Leaf, Loader2, Phone, Lock } from "lucide-react";
 
 export default function LoginPage() {
-  const router = useRouter();
   const { login, isAuthenticated, isLoading: authLoading } = useAuthContext();
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");

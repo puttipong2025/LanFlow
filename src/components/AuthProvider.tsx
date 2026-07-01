@@ -5,8 +5,16 @@ import { useAuth, type AuthState } from "@/hooks/use-auth";
 
 const AuthContext = createContext<AuthState | null>(null);
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const auth = useAuth();
+import type { Profile } from "@/types";
+
+export function AuthProvider({ 
+  children, 
+  initialProfile = null 
+}: { 
+  children: React.ReactNode;
+  initialProfile?: Profile | null;
+}) {
+  const auth = useAuth(initialProfile);
   return <AuthContext.Provider value={auth}>{children}</AuthContext.Provider>;
 }
 

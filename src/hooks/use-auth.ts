@@ -65,10 +65,10 @@ function offlineDeadline(cache: CachedProfile | null) {
   return new Date(validatedAt + OFFLINE_AUTH_MAX_AGE_MS).toISOString();
 }
 
-export function useAuth(): AuthState {
-  const [profile, setProfile] = useState<Profile | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [mode, setMode] = useState<AuthMode>("signed_out");
+export function useAuth(initialProfile: Profile | null = null): AuthState {
+  const [profile, setProfile] = useState<Profile | null>(initialProfile);
+  const [isLoading, setIsLoading] = useState(false);
+  const [mode, setMode] = useState<AuthMode>(initialProfile ? "online" : "signed_out");
   const [offlineUntil, setOfflineUntil] = useState<string | null>(null);
 
   const applyOfflineCache = useCallback(() => {
@@ -118,6 +118,12 @@ export function useAuth(): AuthState {
           applyOfflineCache();
           setIsLoading(false);
         }
+        return;
+      }
+
+      if (initialProfile) {
+        // We already have the profile from SSR, no need to fetch again on mount
+        if (active) setIsLoading(false);
         return;
       }
 

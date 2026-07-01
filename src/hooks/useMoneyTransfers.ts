@@ -20,7 +20,7 @@ export function useMoneyTransfers(locationId: string) {
         .neq("record_status", "deleted")
         .order("created_at", { ascending: false });
 
-      if (error) throw error;
+      if (error) throw new Error(error.message || JSON.stringify(error));
       
       return (data || []).map((row: any): MoneyTransfer => ({
         id: row.id,
@@ -33,6 +33,13 @@ export function useMoneyTransfers(locationId: string) {
         accountName: row.account_name,
         bankName: row.bank_name,
         netAmountToPay: Number(row.net_amount_to_pay ?? 0),
+        branchPaidAmount: row.branch_paid_amount != null ? Number(row.branch_paid_amount) : undefined,
+        transferType: row.transfer_type ?? 'customer',
+        transportCost: row.transport_cost != null ? Number(row.transport_cost) : undefined,
+        transportStaffId: row.transport_staff_id,
+        transportStaffName: row.transport_staff_name,
+        targetLocationId: row.target_location_id,
+        targetLocationName: row.target_location_name,
         transferStatus: row.transfer_status,
         syncStatus: row.sync_status ?? "synced",
         recordStatus: row.record_status ?? "active",
@@ -78,6 +85,13 @@ export function useMoneyTransfers(locationId: string) {
         account_name: transfer.accountName,
         bank_name: transfer.bankName,
         net_amount_to_pay: transfer.netAmountToPay,
+        branch_paid_amount: transfer.branchPaidAmount ?? 0,
+        transfer_type: transfer.transferType,
+        transport_cost: transfer.transportCost,
+        transport_staff_id: transfer.transportStaffId,
+        transport_staff_name: transfer.transportStaffName,
+        target_location_id: transfer.targetLocationId,
+        target_location_name: transfer.targetLocationName,
         transfer_status: transfer.transferStatus,
         created_by_user_id: transfer.createdByUserId,
         created_by_name: transfer.createdByName,
@@ -86,10 +100,10 @@ export function useMoneyTransfers(locationId: string) {
         record_status: transfer.recordStatus
       }).select().single();
 
-      if (error) throw error;
+      if (error) throw new Error(error.message || JSON.stringify(error));
 
       if (transfer.slips && transfer.slips.length > 0) {
-        await supabase.from("money_transfer_slips").insert(
+        const { error: slipsError } = await supabase.from("money_transfer_slips").insert(
           transfer.slips.map(s => ({
             id: s.id,
             transfer_id: transfer.id,
@@ -103,10 +117,11 @@ export function useMoneyTransfers(locationId: string) {
             sort_order: s.sortOrder
           }))
         );
+        if (slipsError) throw new Error("Slips Insert Error: " + slipsError.message);
       }
 
       if (transfer.items && transfer.items.length > 0) {
-        await supabase.from("money_transfer_items").insert(
+        const { error: itemsError } = await supabase.from("money_transfer_items").insert(
           transfer.items.map(i => ({
             id: i.id,
             transfer_id: transfer.id,
@@ -116,6 +131,7 @@ export function useMoneyTransfers(locationId: string) {
             amount: i.amount
           }))
         );
+        if (itemsError) throw new Error("Items Insert Error: " + itemsError.message);
       }
 
       return data;
@@ -134,16 +150,23 @@ export function useMoneyTransfers(locationId: string) {
         account_name: transfer.accountName,
         bank_name: transfer.bankName,
         net_amount_to_pay: transfer.netAmountToPay,
+        branch_paid_amount: transfer.branchPaidAmount ?? 0,
+        transfer_type: transfer.transferType,
+        transport_cost: transfer.transportCost,
+        transport_staff_id: transfer.transportStaffId,
+        transport_staff_name: transfer.transportStaffName,
+        target_location_id: transfer.targetLocationId,
+        target_location_name: transfer.targetLocationName,
         transfer_status: transfer.transferStatus,
         revision_no: transfer.revisionNo,
       }).eq("id", transfer.id).select().single();
 
-      if (error) throw error;
+      if (error) throw new Error(error.message || JSON.stringify(error));
 
       // naive relation sync:
       await supabase.from("money_transfer_slips").delete().eq("transfer_id", transfer.id);
       if (transfer.slips && transfer.slips.length > 0) {
-        await supabase.from("money_transfer_slips").insert(
+        const { error: slipsError } = await supabase.from("money_transfer_slips").insert(
           transfer.slips.map(s => ({
             id: s.id,
             transfer_id: transfer.id,
@@ -157,11 +180,12 @@ export function useMoneyTransfers(locationId: string) {
             sort_order: s.sortOrder
           }))
         );
+        if (slipsError) throw new Error("Slips Insert Error: " + slipsError.message);
       }
 
       await supabase.from("money_transfer_items").delete().eq("transfer_id", transfer.id);
       if (transfer.items && transfer.items.length > 0) {
-        await supabase.from("money_transfer_items").insert(
+        const { error: itemsError } = await supabase.from("money_transfer_items").insert(
           transfer.items.map(i => ({
             id: i.id,
             transfer_id: transfer.id,
@@ -171,6 +195,7 @@ export function useMoneyTransfers(locationId: string) {
             amount: i.amount
           }))
         );
+        if (itemsError) throw new Error("Items Insert Error: " + itemsError.message);
       }
 
       return data;
@@ -183,7 +208,10 @@ export function useMoneyTransfers(locationId: string) {
   const deleteTransfer = useMutation({
     mutationFn: async (id: string) => {
       const { error } = await supabase.from("money_transfers").update({ record_status: "deleted" }).eq("id", id);
-      if (error) throw error;
+      if (error) throw new Error(error.message || JSON.stringify(error));
+      
+      // Also release all tied items so they can be re-used
+      await supabase.from("money_transfer_items").delete().eq("transfer_id", id);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["moneyTransfers", locationId] });

@@ -1,29 +1,24 @@
 "use client";
 
 import { toast } from "sonner";
-import appSwal from "@/lib/swal";
 import {
   ArrowDownUp,
   Banknote,
   Building2,
   CheckCircle2,
   ClipboardList,
-  CloudOff,
-  Database,
   Edit3,
   FileImage,
   Loader2,
-  LockKeyhole,
   Plus,
-  RefreshCw,
   Save,
   ShieldCheck,
-  Smartphone,
   Trash2,
   Users,
-  LogOut
+  LogOut,
+  Clock
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useAuthContext } from "@/components/AuthProvider";
 
 import {
@@ -37,7 +32,7 @@ import {
 } from "@/lib/format";
 import { isSupabaseConfigured } from "@/lib/supabase-browser";
 
-import type { IncomeExpense, Location, PaymentResponsibility, Profile, RubberBill, Customer, OcrTicket, TransportStaff, MoneyTransfer, QueueItem } from "@/types";
+import type { IncomeExpense, Location, PaymentResponsibility, Profile, RubberBill, Customer } from "@/types";
 import { CustomersModule } from "./CustomersModule";
 import { TransportModule } from "./TransportModule";
 import { OcrTicketUpload } from "./OcrTicketUpload";
@@ -46,23 +41,15 @@ import { useCustomers } from "@/hooks/useCustomers";
 import { useRubberBills } from "@/hooks/useRubberBills";
 import { MoneyTransferModule } from "./MoneyTransferModule";
 import { AdminModule } from "./AdminModule";
-import { ApiResponseError, assertApiResponse, authFetch } from "@/lib/auth-fetch";
+import { TimeTrackingModule } from "./TimeTrackingModule";
+import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { useIncomeExpense } from "@/hooks/useIncomeExpense";
 
 
-type Tab = "dashboard" | "rubber" | "cash" | "customers" | "transport" | "money-transfer" | "ocr" | "admin" | "sync";
+type Tab = "dashboard" | "rubber" | "cash" | "customers" | "transport" | "money-transfer" | "ocr" | "admin" | "time-tracking";
 type RubberWeighItem = NonNullable<RubberBill["weighItems"]>[number];
 type RubberAcidItem = NonNullable<RubberBill["acidItems"]>[number];
 type RubberDebtItem = NonNullable<RubberBill["debtItems"]>[number];
-type LanFlowApiData = {
-  locations: Location[];
-  profile: Profile;
-  bills: RubberBill[];
-  transactions: IncomeExpense[];
-  customers: Customer[];
-  transportStaffs: TransportStaff[];
-  ocrTickets: OcrTicket[];
-};
 
 const tabs: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: number }> }> = [
   { id: "dashboard", label: "ภาพรวม", icon: ClipboardList },
@@ -72,13 +59,12 @@ const tabs: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: n
   { id: "transport", label: "ขนส่งและพนักงาน", icon: ArrowDownUp },
   { id: "money-transfer", label: "โอนเงิน", icon: ArrowDownUp },
   { id: "ocr", label: "อ่านใบชั่ง", icon: FileImage },
-  { id: "admin", label: "Admin", icon: ShieldCheck },
-  { id: "sync", label: "Sync", icon: RefreshCw }
+  { id: "time-tracking", label: "เวลาและเงินเดือน", icon: Clock },
+  { id: "admin", label: "Admin", icon: ShieldCheck }
 ];
 
 export function LanFlowApp() {
   const auth = useAuthContext();
-  const userId = auth.profile?.id ?? "";
   
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
   const [locations, setLocations] = useState<Location[]>([]);
@@ -86,32 +72,18 @@ export function LanFlowApp() {
   const [selectedLocationId, setSelectedLocationId] = useState(
     auth.profile?.locationIds[0] ?? ""
   );
-  const [transactions, setTransactions] = useState<IncomeExpense[]>([]);
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [transportStaffs, setTransportStaffs] = useState<TransportStaff[]>([]);
-  const [ocrTickets, setOcrTickets] = useState<OcrTicket[]>([]);
   const [ocrUploadItems, setOcrUploadItems] = useState<UploadItem[]>([]);
-  const [moneyTransfers, setMoneyTransfers] = useState<MoneyTransfer[]>([]);
-  const [usedSourceIds, setUsedSourceIds] = useState<Set<string>>(
-    new Set([])
-  );
-  const queue = { items: [], markConflict: console.log, markFailed: console.log, addToQueue: console.log, enqueue: console.log, markSynced: console.log, markSyncing: console.log, clearSynced: console.log, online: true, pendingCount: 0 } as any;
-  const isFlushingQueue = useRef(false);
-
-  function markSyncFailure(idempotencyKey: string, error: unknown) {
-    const message = error instanceof Error ? error.message : "Sync ไม่สำเร็จ";
-    if (error instanceof ApiResponseError && (error.status === 403 || error.status === 409)) {
-      queue.markConflict(idempotencyKey, message);
-      return;
-    }
-    queue.markFailed(idempotencyKey, message);
-  }
+  const [online, setOnline] = useState(true);
+  const [isLoaded, setIsLoaded] = useState(false);
 
   useEffect(() => {
     let ignore = false;
 
     async function loadDatabaseData() {
-      if (!navigator.onLine) return;
+      if (!navigator.onLine) {
+        setIsLoaded(true);
+        return;
+      }
 
       try {
         const response = await authFetch("/api/lanflow", { cache: "no-store" });
@@ -125,6 +97,8 @@ export function LanFlowApp() {
 
       } catch (error) {
         console.error("LanFlow database load failed", error);
+      } finally {
+        if (!ignore) setIsLoaded(true);
       }
     }
 
@@ -135,524 +109,16 @@ export function LanFlowApp() {
     };
   }, []);
 
-  function addTransaction(transaction: IncomeExpense) {
-    setTransactions((current) => [transaction, ...current]);
-    queue.enqueue({
-      clientTempId: transaction.clientTempId,
-      idempotencyKey: transaction.idempotencyKey,
-      entityType: "income_expense",
-      operationType: "create",
-      payload: transaction
-    });
-    void persistIncomeExpense(transaction);
-  }
-
-  function updateTransaction(updatedTransaction: IncomeExpense) {
-    const nextRevision = updatedTransaction.revisionNo + 1;
-    const revisedTransaction: IncomeExpense = {
-      ...updatedTransaction,
-      revisionNo: nextRevision,
-      syncStatus: "pending",
-      idempotencyKey: makeIdempotencyKey("update", `${updatedTransaction.clientTempId}:${nextRevision}`)
-    };
-    setTransactions((current) =>
-      current.map((transaction) =>
-        transaction.id === revisedTransaction.id ? revisedTransaction : transaction
-      )
-    );
-    queue.enqueue({
-      clientTempId: revisedTransaction.clientTempId,
-      idempotencyKey: revisedTransaction.idempotencyKey,
-      entityType: "income_expense",
-      operationType: "update",
-      payload: revisedTransaction
-    });
-    void persistIncomeExpense(revisedTransaction);
-  }
-
-  function deleteTransaction(id: string) {
-    const transaction = transactions.find((item) => item.id === id);
-    if (!transaction) return;
-    const deletedAt = makeClientRecordedAt();
-    const nextRevision = transaction.revisionNo + 1;
-    const deletedTransaction: IncomeExpense = {
-      ...transaction,
-      recordStatus: "deleted",
-      syncStatus: "pending",
-      revisionNo: nextRevision,
-      idempotencyKey: makeIdempotencyKey("delete", `${transaction.clientTempId}:${nextRevision}`),
-      deletedAt,
-      deletedByName: profile.name,
-      deletedByPhone: profile.phone
-    };
-    setTransactions((current) => current.map((item) => (item.id === id ? deletedTransaction : item)));
-    queue.enqueue({
-      clientTempId: deletedTransaction.clientTempId,
-      idempotencyKey: deletedTransaction.idempotencyKey,
-      entityType: "income_expense",
-      operationType: "delete",
-      payload: deletedTransaction
-    });
-    void persistIncomeExpense(deletedTransaction);
-  }
-
-  async function persistIncomeExpense(transaction: IncomeExpense) {
-    if (!navigator.onLine) return;
-    try {
-      const response = await authFetch("/api/lanflow/income-expense", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(transaction)
-      });
-      await assertApiResponse(response);
-      const savedTransaction = await response.json() as IncomeExpense;
-      setTransactions((current) => {
-        const exists = current.some((item) => item.id === transaction.id || item.clientTempId === transaction.clientTempId);
-        if (!exists) return [savedTransaction, ...current];
-        return current.map((item) =>
-          item.id === transaction.id || item.clientTempId === transaction.clientTempId ? savedTransaction : item
-        );
-      });
-      queue.markSynced(transaction.idempotencyKey);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "บันทึกรายรับ-รายจ่ายลงฐานข้อมูลไม่สำเร็จ";
-      console.error("LanFlow income expense save failed", error);
-      setTransactions((current) =>
-        current.map((item) => (item.clientTempId === transaction.clientTempId ? { ...item, syncStatus: "failed" } : item))
-      );
-      markSyncFailure(transaction.idempotencyKey, error);
-    }
-  }
-
-  function addCustomer(customer: Customer) {
-    const key = customer.idempotencyKey || makeIdempotencyKey("create", customer.id);
-    const customerWithKey = {
-      ...customer,
-      defaultLocationId: customer.defaultLocationId ?? selectedLocationId,
-      idempotencyKey: key
-    };
-    setCustomers((current) => [customerWithKey, ...current]);
-    queue.enqueue({
-      clientTempId: customerWithKey.clientTempId || customerWithKey.id,
-      idempotencyKey: key,
-      entityType: "customer",
-      operationType: "create",
-      payload: customerWithKey
-    });
-    void persistCustomer(customerWithKey);
-  }
-
-  function updateCustomer(updatedCustomer: Customer) {
-    const nextRevision = (updatedCustomer.revisionNo || 0) + 1;
-    const revisedCustomer: Customer = {
-      ...updatedCustomer,
-      revisionNo: nextRevision,
-      syncStatus: "pending",
-      idempotencyKey: makeIdempotencyKey("update", `${updatedCustomer.clientTempId || updatedCustomer.id}:${nextRevision}`)
-    };
-    setCustomers((current) =>
-      current.map((item) => (item.id === revisedCustomer.id ? revisedCustomer : item))
-    );
-    queue.enqueue({
-      clientTempId: revisedCustomer.clientTempId || revisedCustomer.id,
-      idempotencyKey: revisedCustomer.idempotencyKey!,
-      entityType: "customer",
-      operationType: "update",
-      payload: revisedCustomer
-    });
-    void persistCustomer(revisedCustomer);
-  }
-
-  async function persistCustomer(customer: Customer) {
-    if (!navigator.onLine) return;
-    try {
-      const response = await authFetch("/api/lanflow/customers", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(customer)
-      });
-      await assertApiResponse(response);
-      const savedCustomer = await response.json() as Customer;
-      setCustomers((current) => {
-        const exists = current.some((item) => item.id === customer.id || item.clientTempId === customer.clientTempId);
-        const next = exists
-          ? current.map((item) => (item.id === customer.id || item.clientTempId === customer.clientTempId ? savedCustomer : item))
-          : [savedCustomer, ...current];
-        
-        return next;
-      });
-      queue.markSynced(customer.idempotencyKey!);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "บันทึกข้อมูลลูกค้าไม่สำเร็จ";
-      console.error("LanFlow customer save failed", error);
-      setCustomers((current) =>
-        current.map((item) => (item.clientTempId === customer.clientTempId ? { ...item, syncStatus: "failed" } : item))
-      );
-      markSyncFailure(customer.idempotencyKey!, error);
-    }
-  }
-
-  async function persistDeleteCustomer(id: string, idempotencyKey: string) {
-    if (!navigator.onLine) return;
-    try {
-      const response = await authFetch(`/api/lanflow/customers/${id}`, {
-        method: "DELETE"
-      });
-      await assertApiResponse(response);
-      queue.markSynced(idempotencyKey);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "ลบข้อมูลลูกค้าไม่สำเร็จ";
-      console.error("LanFlow customer delete failed", error);
-      markSyncFailure(idempotencyKey, error);
-    }
-  }
-
-  // ═══ Transport Staffs ═══
-
-  function addTransportStaff(staff: TransportStaff) {
-    const key = staff.idempotencyKey || makeIdempotencyKey("create", staff.id);
-    const staffWithKey = {
-      ...staff,
-      defaultLocationId: staff.defaultLocationId ?? selectedLocationId,
-      idempotencyKey: key
-    };
-    setTransportStaffs((current) => [staffWithKey, ...current]);
-    queue.enqueue({
-      clientTempId: staffWithKey.clientTempId || staffWithKey.id,
-      idempotencyKey: key,
-      entityType: "transport_staff",
-      operationType: "create",
-      payload: staffWithKey
-    });
-    void persistTransportStaff(staffWithKey);
-  }
-
-  function updateTransportStaff(updatedStaff: TransportStaff) {
-    const nextRevision = (updatedStaff.revisionNo || 0) + 1;
-    const revisedStaff: TransportStaff = {
-      ...updatedStaff,
-      revisionNo: nextRevision,
-      syncStatus: "pending",
-      idempotencyKey: makeIdempotencyKey("update", `${updatedStaff.clientTempId || updatedStaff.id}:${nextRevision}`)
-    };
-    setTransportStaffs((current) => current.map((item) => (item.id === revisedStaff.id ? revisedStaff : item)));
-    queue.enqueue({
-      clientTempId: revisedStaff.clientTempId || revisedStaff.id,
-      idempotencyKey: revisedStaff.idempotencyKey!,
-      entityType: "transport_staff",
-      operationType: "update",
-      payload: revisedStaff
-    });
-    void persistTransportStaff(revisedStaff);
-  }
-
-  async function persistTransportStaff(staff: TransportStaff) {
-    if (!navigator.onLine) return;
-    try {
-      const response = await authFetch("/api/lanflow/transport-staffs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(staff)
-      });
-      await assertApiResponse(response);
-      const savedStaff = await response.json() as TransportStaff;
-      setTransportStaffs((current) => {
-        const exists = current.some((item) => item.id === staff.id || item.clientTempId === staff.clientTempId);
-        if (!exists) return [savedStaff, ...current];
-        return current.map((item) =>
-          item.id === staff.id || item.clientTempId === staff.clientTempId ? savedStaff : item
-        );
-      });
-      queue.markSynced(staff.idempotencyKey!);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "บันทึกข้อมูลขนส่งไม่สำเร็จ";
-      console.error("LanFlow transport staff save failed", error);
-      setTransportStaffs((current) =>
-        current.map((item) => (item.clientTempId === staff.clientTempId ? { ...item, syncStatus: "failed" } : item))
-      );
-      markSyncFailure(staff.idempotencyKey!, error);
-    }
-  }
-
-  async function persistDeleteTransportStaff(id: string, idempotencyKey: string) {
-    if (!navigator.onLine) return;
-    try {
-      const response = await authFetch(`/api/lanflow/transport-staffs/${id}`, {
-        method: "DELETE"
-      });
-      await assertApiResponse(response);
-      queue.markSynced(idempotencyKey);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "ลบข้อมูลขนส่งไม่สำเร็จ";
-      console.error("LanFlow transport staff delete failed", error);
-      markSyncFailure(idempotencyKey, error);
-    }
-  }
-
-  // ═══ OCR Tickets ═══
-
-  function addOcrTicket(ticket: OcrTicket) {
-    setOcrTickets((current) => [ticket, ...current]);
-    queue.enqueue({
-      clientTempId: ticket.clientTempId || ticket.id,
-      idempotencyKey: ticket.idempotencyKey || `ocr:${ticket.id}`,
-      entityType: "ocr_ticket",
-      operationType: "create",
-      payload: ticket
-    });
-    void persistOcrTicket(ticket);
-  }
-
-  function updateOcrTicket(updatedTicket: OcrTicket) {
-    setOcrTickets((current) =>
-      current.map((t) => (t.id === updatedTicket.id ? updatedTicket : t))
-    );
-    queue.enqueue({
-      clientTempId: updatedTicket.clientTempId || updatedTicket.id,
-      idempotencyKey: updatedTicket.idempotencyKey || `ocr:update:${updatedTicket.id}`,
-      entityType: "ocr_ticket",
-      operationType: "update",
-      payload: updatedTicket
-    });
-    void persistUpdateOcrTicket(updatedTicket);
-  }
-
-  async function persistOcrTicket(ticket: OcrTicket) {
-    if (!navigator.onLine) return;
-    try {
-      const response = await authFetch("/api/lanflow/ocr-tickets", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(ticket)
-      });
-      await assertApiResponse(response);
-      const saved = await response.json() as OcrTicket;
-      setOcrTickets((current) =>
-        current.map((t) => (t.id === ticket.id || t.clientTempId === ticket.clientTempId ? saved : t))
-      );
-      queue.markSynced(ticket.idempotencyKey || `ocr:${ticket.id}`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "บันทึกใบชั่ง OCR ไม่สำเร็จ";
-      console.error("OCR ticket save failed", error);
-      markSyncFailure(ticket.idempotencyKey || `ocr:${ticket.id}`, error);
-    }
-  }
-
-  async function persistUpdateOcrTicket(ticket: OcrTicket) {
-    if (!navigator.onLine) return;
-    try {
-      const response = await authFetch(`/api/lanflow/ocr-tickets/${ticket.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(ticket)
-      });
-      await assertApiResponse(response);
-      const saved = await response.json() as OcrTicket;
-      setOcrTickets((current) =>
-        current.map((t) => (t.id === ticket.id ? saved : t))
-      );
-      queue.markSynced(ticket.idempotencyKey || `ocr:update:${ticket.id}`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "อัพเดทใบชั่ง OCR ไม่สำเร็จ";
-      console.error("OCR ticket update failed", error);
-      markSyncFailure(ticket.idempotencyKey || `ocr:update:${ticket.id}`, error);
-    }
-  }
-
-  async function persistDeleteOcrTicket(id: string, idempotencyKey: string) {
-    if (!navigator.onLine) return;
-    try {
-      const response = await authFetch(`/api/lanflow/ocr-tickets/${id}`, {
-        method: "DELETE"
-      });
-      await assertApiResponse(response);
-      queue.markSynced(idempotencyKey);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "ลบใบชั่ง OCR ไม่สำเร็จ";
-      console.error("OCR ticket delete failed", error);
-      markSyncFailure(idempotencyKey, error);
-    }
-  }
-
-  // ── Money Transfer handlers ──
-
-  async function saveMoneyTransfer(transfer: MoneyTransfer) {
-    const idempotencyKey =
-      transfer.idempotencyKey ??
-      makeIdempotencyKey("create", transfer.clientTempId ?? transfer.id);
-    const queuedTransfer: MoneyTransfer = {
-      ...transfer,
-      idempotencyKey,
-      syncStatus: "pending"
-    };
-
-    setMoneyTransfers((current) => {
-      const exists = current.some((item) => item.id === queuedTransfer.id);
-      if (exists) {
-        return current.map((item) =>
-          item.id === queuedTransfer.id ? queuedTransfer : item
-        );
-      }
-      return [queuedTransfer, ...current];
-    });
-
-    queue.enqueue({
-      clientTempId: queuedTransfer.clientTempId ?? queuedTransfer.id,
-      idempotencyKey,
-      entityType: "money_transfer",
-      operationType: "create",
-      payload: queuedTransfer
-    });
-
-    if (queuedTransfer.items) {
-      setUsedSourceIds((previous) => {
-        const next = new Set(previous);
-        queuedTransfer.items!.forEach((item) => next.add(item.sourceId));
-        return next;
-      });
-    }
-
-    if (!navigator.onLine) return;
-
-    try {
-      const response = await authFetch("/api/lanflow/money-transfers", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(queuedTransfer),
-      });
-      await assertApiResponse(response);
-      const saved = await response.json() as MoneyTransfer;
-      setMoneyTransfers((current) =>
-        current.map((item) => (item.id === queuedTransfer.id ? saved : item))
-      );
-      queue.markSynced(idempotencyKey);
-    } catch (error) {
-      console.error("Money transfer save failed", error);
-      markSyncFailure(idempotencyKey, error);
-    }
-  }
-
-  async function deleteMoneyTransfer(
-    id: string,
-    existingIdempotencyKey?: string,
-    transferSnapshot?: MoneyTransfer
-  ) {
-    const transfer = transferSnapshot ?? moneyTransfers.find((item) => item.id === id);
-    if (!transfer) return;
-
-    const idempotencyKey =
-      existingIdempotencyKey ??
-      makeIdempotencyKey("delete", transfer.clientTempId ?? transfer.id);
-
-    setMoneyTransfers((current) => current.filter((item) => item.id !== id));
-    queue.enqueue({
-      clientTempId: transfer.clientTempId ?? transfer.id,
-      idempotencyKey,
-      entityType: "money_transfer",
-      operationType: "delete",
-      payload: transfer
-    });
-
-    if (transfer.items) {
-      setUsedSourceIds((previous) => {
-        const next = new Set(previous);
-        transfer.items!.forEach((item) => next.delete(item.sourceId));
-        return next;
-      });
-    }
-
-    if (!navigator.onLine) return;
-
-    try {
-      const response = await authFetch(`/api/lanflow/money-transfers/${id}`, { method: "DELETE" });
-      await assertApiResponse(response);
-      queue.markSynced(idempotencyKey);
-    } catch (error) {
-      console.error("Money transfer delete failed", error);
-      markSyncFailure(idempotencyKey, error);
-    }
-  }
-
-  async function syncQueueItem(item: QueueItem) {
-    queue.markSyncing(item.idempotencyKey);
-
-    switch (item.entityType) {
-      case "rubber_bill":
-        // ... handled by hook logic
-        break;
-      case "income_expense":
-        await persistIncomeExpense(item.payload as IncomeExpense);
-        break;
-      case "customer": {
-        const customer = item.payload as Customer;
-        if (item.operationType === "delete") {
-          await persistDeleteCustomer(customer.id, item.idempotencyKey);
-        } else {
-          await persistCustomer(customer);
-        }
-        break;
-      }
-      case "transport_staff": {
-        const staff = item.payload as TransportStaff;
-        if (item.operationType === "delete") {
-          await persistDeleteTransportStaff(staff.id, item.idempotencyKey);
-        } else {
-          await persistTransportStaff(staff);
-        }
-        break;
-      }
-      case "ocr_ticket": {
-        const ticket = item.payload as OcrTicket;
-        if (item.operationType === "delete") {
-          await persistDeleteOcrTicket(ticket.id, item.idempotencyKey);
-        } else if (item.operationType === "update") {
-          await persistUpdateOcrTicket(ticket);
-        } else {
-          await persistOcrTicket(ticket);
-        }
-        break;
-      }
-      case "money_transfer": {
-        const transfer = item.payload as MoneyTransfer;
-        if (item.operationType === "delete") {
-          await deleteMoneyTransfer(transfer.id, item.idempotencyKey, transfer);
-        } else {
-          await saveMoneyTransfer(transfer);
-        }
-        break;
-      }
-    }
-  }
-
-  async function flushQueue() {
-    if (
-      isFlushingQueue.current ||
-      !queue.online ||
-      auth.mode !== "online"
-    ) {
-      return;
-    }
-
-    isFlushingQueue.current = true;
-    try {
-      const pending = queue.items
-        .filter((item: any) => item.status === "pending" || item.status === "failed")
-        .reverse();
-
-      for (const item of pending) {
-        await syncQueueItem(item);
-      }
-    } finally {
-      isFlushingQueue.current = false;
-    }
-  }
-
   useEffect(() => {
-    if (queue.online && auth.mode === "online") {
-      void flushQueue();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [queue.online, auth.mode]);
+    const syncOnlineState = () => setOnline(navigator.onLine);
+    syncOnlineState();
+    window.addEventListener("online", syncOnlineState);
+    window.addEventListener("offline", syncOnlineState);
+    return () => {
+      window.removeEventListener("online", syncOnlineState);
+      window.removeEventListener("offline", syncOnlineState);
+    };
+  }, []);
 
   const { bills: allBills } = useRubberBills(selectedLocationId);
   const { transactions: allTransactions } = useIncomeExpense(selectedLocationId);
@@ -685,7 +151,7 @@ export function LanFlowApp() {
     };
   }, [scopedBills, scopedTransactions]);
 
-  if (locations.length === 0 || !profile || !selectedLocationId) {
+  if (!isLoaded || !profile) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-sand">
         <div className="flex flex-col items-center gap-2">
@@ -696,18 +162,46 @@ export function LanFlowApp() {
     );
   }
 
-  function addLocation(name: string) {
-    const id = makeClientTempId("loc");
-    setLocations((current) => [
-      ...current,
-      {
-        id,
-        name,
-        code: name.slice(0, 3).toUpperCase(),
-        active: true
+  if (locations.length === 0 || !selectedLocationId) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-sand p-4 text-center">
+        <div className="mb-4 grid h-16 w-16 place-items-center rounded-full bg-white shadow-sm">
+          <ShieldCheck size={32} className="text-leaf" />
+        </div>
+        <h1 className="text-xl font-bold text-ink">ไม่มีสิทธิ์เข้าถึงสาขา</h1>
+        <p className="mt-2 text-sm text-ink/70">
+          บัญชีของคุณยังไม่ได้รับการกำหนดสาขา<br />
+          กรุณาติดต่อผู้ดูแลระบบเพื่อกำหนดสาขาให้คุณ
+        </p>
+        <button
+          onClick={auth.logout}
+          className="focus-ring mt-6 flex items-center gap-2 rounded-md bg-white px-4 py-2 text-sm font-semibold text-ink shadow-sm hover:bg-red-50 hover:text-red-600"
+        >
+          <LogOut size={16} />
+          ออกจากระบบ
+        </button>
+      </div>
+    );
+  }
+
+  async function addLocation(name: string) {
+    try {
+      const response = await authFetch("/api/lanflow/admin/locations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        console.error("Failed to add location:", data.error);
+        return;
       }
-    ]);
-    setProfile((current) => ({ ...current, locationIds: [...current.locationIds, id] }));
+      const newLoc = data.location;
+      setLocations((current) => [...current, newLoc]);
+      setProfile((current) => ({ ...current, locationIds: [...current.locationIds, newLoc.id] }));
+    } catch (error) {
+      console.error("Add location error:", error);
+    }
   }
 
   return (
@@ -760,7 +254,7 @@ export function LanFlowApp() {
         </div>
 
         <nav className="mx-auto flex w-full max-w-7xl flex-wrap gap-2 px-4 pb-3 sm:flex-nowrap sm:overflow-x-auto">
-          {tabs.map((tab) => {
+          {tabs.filter(tab => tab.id !== "admin" || ["super_admin", "admin"].includes(profile.role)).map((tab) => {
             const Icon = tab.icon;
             const active = activeTab === tab.id;
             const ocrProcessing = ocrUploadItems.filter((i) => i.status === "processing").length;
@@ -832,14 +326,14 @@ export function LanFlowApp() {
         {activeTab === "money-transfer" && (
           <MoneyTransferModule
             locationId={selectedLocationId}
-            online={queue.online}
+            online={online}
             profile={profile}
           />
         )}
         {activeTab === "ocr" && (
           <OcrTicketUpload
             locationId={selectedLocationId}
-            online={queue.online}
+            online={online}
             uploadItems={ocrUploadItems}
             setUploadItems={setOcrUploadItems}
           />
@@ -850,19 +344,14 @@ export function LanFlowApp() {
             profile={profile}
           />
         )}
+        {activeTab === "time-tracking" && (
+          <TimeTrackingModule profile={profile} />
+        )}
         {activeTab === "admin" && (
           <AdminModule
             locations={locations}
             profile={profile}
             onAddLocation={addLocation}
-          />
-        )}
-        {activeTab === "sync" && (
-          <SyncPanel
-            queueItems={queue.items}
-            online={queue.online}
-            onMarkSynced={() => void flushQueue()}
-            onClearSynced={queue.clearSynced}
           />
         )}
       </section>
@@ -1232,9 +721,8 @@ function RubberBillsModule({
           nextLocalSequence={bills.length + 1}
           onClose={() => setModalOpen(false)}
           onSave={(bill) => {
-            if (editingBill) updateBill(bill);
-            else addBill(bill);
-            setModalOpen(false);
+            const promise = editingBill ? updateBill(bill) : addBill(bill);
+            promise.then(() => setModalOpen(false)).catch((err: any) => alert(err.message || "เกิดข้อผิดพลาดในการบันทึกบิล"));
           }}
           onAddCustomer={addCustomer.mutate}
           onUpdateCustomer={updateCustomer.mutate}
@@ -1428,6 +916,7 @@ function RubberBillModal({
       acidItems,
       debtItem: debtItems[0],
       debtItems,
+      createdByUserId: bill?.createdByUserId ?? profile.id,
       createdByName: bill?.createdByName ?? profile.name,
       createdByPhone: bill?.createdByPhone ?? profile.phone,
       clientCreatedAt: bill?.clientCreatedAt ?? clientRecordedAt,
@@ -2378,25 +1867,6 @@ function enforceDecimalInput(
   onChange?.(Number(formattedValue));
 }
 
-function RadioCard({
-  name,
-  value,
-  label,
-  defaultChecked
-}: {
-  name: string;
-  value: string;
-  label: string;
-  defaultChecked?: boolean;
-}) {
-  return (
-    <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-md border border-black/10 bg-white px-3 py-2 text-sm font-semibold">
-      <input type="radio" name={name} value={value} defaultChecked={defaultChecked} className="h-4 w-4 accent-leaf" />
-      {label}
-    </label>
-  );
-}
-
 function InlineRadio({
   name,
   value,
@@ -2464,208 +1934,38 @@ function InlineNumber({
   );
 }
 
-function RubberBillEntry({
-  selectedLocation,
-  profile,
-  onAdd
+function NumberField({
+  label,
+  value,
+  onChange,
+  readOnly = false
 }: {
-  selectedLocation: Location;
-  profile: Profile;
-  onAdd: (bill: RubberBill) => void;
+  label: string;
+  value: number;
+  onChange?: (value: number) => void;
+  readOnly?: boolean;
 }) {
-  const [weight, setWeight] = useState(0);
-  const [price, setPrice] = useState(0);
-  const [deduct, setDeduct] = useState(0);
-  const gross = weight * price;
-  const net = Math.max(gross - deduct, 0);
-
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const clientTempId = makeClientTempId("rubber");
-    const clientRecordedAt = makeClientRecordedAt();
-    const localBillNo = String(form.get("billNo") || makeLocalBillNo(selectedLocation.code, "R", 1));
-    const bill: RubberBill = {
-      id: clientTempId,
-      clientTempId,
-      localBillNo,
-      syncStatus: "pending",
-      idempotencyKey: makeIdempotencyKey("create", clientTempId),
-      locationId: selectedLocation.id,
-      billNo: localBillNo,
-      billDate: String(form.get("billDate") || todayInputValue()),
-      customerName: String(form.get("customerName") || ""),
-      customerType: String(form.get("customerType")) as PaymentResponsibility,
-      billType: String(form.get("billType") || "บิลเครื่องชั่งเล็ก"),
-      weight,
-      price,
-      deductionTotal: deduct,
-      netTotal: net,
-      cashPayment: Number(form.get("cashPayment") || 0),
-      transferPayment: Number(form.get("transferPayment") || 0),
-      acidPackCount: Number(form.get("acidPackCount") || 0),
-      createdByName: profile.name,
-      createdByPhone: profile.phone,
-      clientCreatedAt: clientRecordedAt,
-      clientRecordedAt,
-      revisionNo: 0,
-      recordStatus: "active"
-    };
-    onAdd(bill);
-    event.currentTarget.reset();
-    setWeight(0);
-    setPrice(0);
-    setDeduct(0);
-  }
+  const isReadOnly = readOnly || !onChange;
 
   return (
-    <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel">
-      <div className="mb-4 flex items-center gap-2">
-        <LockKeyhole size={18} className="text-leaf" />
-        <h2 className="text-lg font-bold text-ink">บิลยาง · {selectedLocation.name}</h2>
-      </div>
-      <form onSubmit={handleSubmit} className="grid gap-4 lg:grid-cols-4">
-        <Field label="เลขบิล" name="billNo" required />
-        <Field label="วันที่" name="billDate" type="date" defaultValue={todayInputValue()} required />
-        <Field label="ชื่อลูกค้า" name="customerName" required />
-        <Select label="ผู้รับผิดชอบการจ่าย" name="customerType" options={["สาขานี้จ่าย", "สาขาใหญ่จ่าย"]} />
-        <Select label="ประเภทบิล" name="billType" options={["บิลเครื่องชั่งเล็ก", "บิลเครื่องชั่งใหญ่"]} />
-        <NumberField label="น้ำหนัก กก." value={weight} onChange={setWeight} />
-        <NumberField label="ราคา/กก." value={price} onChange={setPrice} />
-        <NumberField label="รวมหัก" value={deduct} onChange={setDeduct} />
-        <Field label="แพ็คน้ำกรด" name="acidPackCount" type="number" defaultValue="0" />
-        <Field label="จ่ายสด" name="cashPayment" type="number" defaultValue={String(net)} />
-        <Field label="จ่ายโอน" name="transferPayment" type="number" defaultValue="0" />
-        <div className="rounded-md bg-field p-3">
-          <p className="text-sm font-semibold text-ink/60">ยอดสุทธิ</p>
-          <p className="text-2xl font-bold text-leaf">{formatCurrency(net)}</p>
-        </div>
-        <button className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-leaf px-4 font-semibold text-white lg:col-span-4">
-          <Plus size={18} />
-          บันทึกบิล
-        </button>
-      </form>
-    </section>
-  );
-}
-
-function IncomeExpenseEntry({
-  selectedLocation,
-  profile,
-  nextNumber,
-  onAdd
-}: {
-  selectedLocation: Location;
-  profile: Profile;
-  nextNumber: string;
-  onAdd: (transaction: IncomeExpense) => void;
-}) {
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const clientTempId = makeClientTempId("cash");
-    const clientRecordedAt = makeClientRecordedAt();
-    const localBillNo = makeLocalBillNo(selectedLocation.code, String(form.get("type")) === "income" ? "I" : "E", Number(nextNumber));
-    onAdd({
-      id: clientTempId,
-      clientTempId,
-      localBillNo,
-      syncStatus: "pending",
-      idempotencyKey: makeIdempotencyKey("create", clientTempId),
-      locationId: selectedLocation.id,
-      type: String(form.get("type")) as "income" | "expense",
-      number: String(form.get("number") || nextNumber),
-      txDate: String(form.get("txDate") || todayInputValue()),
-      title: String(form.get("title") || ""),
-      cost: Number(form.get("cost") || 0),
-      billOption: String(form.get("billOption") || ""),
-      transactionOption: String(form.get("transactionOption") || ""),
-      createdByName: profile.name,
-      createdByPhone: profile.phone,
-      clientCreatedAt: clientRecordedAt,
-      clientRecordedAt,
-      revisionNo: 0,
-      recordStatus: "active"
-    });
-    event.currentTarget.reset();
-  }
-
-  return (
-    <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel">
-      <div className="mb-4 flex items-center gap-2">
-        <ArrowDownUp size={18} className="text-river" />
-        <h2 className="text-lg font-bold text-ink">รายรับ-รายจ่าย · {selectedLocation.name}</h2>
-      </div>
-      <form onSubmit={handleSubmit} className="grid gap-4 lg:grid-cols-4">
-        <Select label="ประเภท" name="type" options={["income", "expense"]} labels={["รายรับ", "รายจ่าย"]} />
-        <Field label="เลขที่" name="number" defaultValue={nextNumber} required />
-        <Field label="วันที่" name="txDate" type="date" defaultValue={todayInputValue()} required />
-        <Field label="รายการ" name="title" required />
-        <Field label="จำนวนเงิน" name="cost" type="number" defaultValue="0" required />
-        <Select label="หมวดบิล" name="billOption" options={["รายรับ", "ค่าใช้จ่าย", "บิลน้ำกรด", "บิลค่าแรง", "สูญหาย"]} />
-        <Select label="ธุรกรรม" name="transactionOption" options={["ภายในสาขานี้", "สำนักงานใหญ่"]} />
-        <button className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-river px-4 font-semibold text-white lg:col-span-4">
-          <Banknote size={18} />
-          บันทึกรายการ
-        </button>
-      </form>
-    </section>
-  );
-}
-
-function SyncPanel({
-  queueItems,
-  online,
-  onMarkSynced,
-  onClearSynced
-}: {
-  queueItems: any[];
-  online: boolean;
-  onMarkSynced: () => void;
-  onClearSynced: () => void;
-}) {
-  return (
-    <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel">
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <h2 className="text-lg font-bold text-ink">Offline Queue</h2>
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={onMarkSynced}
-            disabled={!online}
-            className="focus-ring h-10 rounded-md bg-leaf px-3 text-sm font-semibold text-white disabled:bg-ink/25"
-          >
-            Sync ตอนนี้
-          </button>
-          <button
-            type="button"
-            onClick={onClearSynced}
-            className="focus-ring h-10 rounded-md bg-field px-3 text-sm font-semibold text-ink"
-          >
-            ล้างที่สำเร็จ
-          </button>
-        </div>
-      </div>
-      <div className="space-y-3">
-        {queueItems.length === 0 && <p className="text-sm text-ink/60">ไม่มีรายการค้างซิงก์</p>}
-        {queueItems.map((item) => (
-          <div key={item.idempotencyKey} className="rounded-md border border-black/10 p-3">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <span className="font-semibold">{item.entityType} · {item.operationType}</span>
-              <span className="rounded bg-field px-2 py-1 text-xs font-semibold">{item.status}</span>
-            </div>
-            <p className="mt-1 break-all text-sm text-ink/60">{item.clientTempId}</p>
-            <p className="mt-1 break-all text-xs text-ink/50">idempotency: {item.idempotencyKey}</p>
-            {item.serverReceivedAt && (
-              <p className="mt-1 text-xs text-leaf">server_received_at: {formatBillTimestamp(item.serverReceivedAt)}</p>
-            )}
-            {item.errorMessage && (
-              <p className="mt-1 text-xs text-red-700">{item.errorMessage}</p>
-            )}
-          </div>
-        ))}
-      </div>
-    </section>
+    <label className="block">
+      <span className="mb-1 block text-sm font-semibold text-ink/70">{label}</span>
+      <input
+        type="number"
+        value={Number.isFinite(value) ? value : 0}
+        readOnly={isReadOnly}
+        onFocus={(event) => {
+          if (!isReadOnly) clearIfZero(event);
+        }}
+        onBlur={(event) => {
+          if (isReadOnly) return;
+          restoreZeroIfBlank(event);
+          onChange?.(Number(event.currentTarget.value || 0));
+        }}
+        onChange={(event) => onChange?.(Number(event.target.value || 0))}
+        className="focus-ring h-11 w-full rounded-md border border-black/10 bg-white px-3 read-only:bg-slate-100 read-only:text-ink/70"
+      />
+    </label>
   );
 }
 
@@ -2704,72 +2004,6 @@ function Field({
         }}
         className="focus-ring h-11 w-full rounded-md border border-black/10 bg-white px-3 read-only:bg-slate-100 read-only:text-ink/75"
       />
-    </label>
-  );
-}
-
-function NumberField({
-  label,
-  value,
-  onChange,
-  readOnly = false
-}: {
-  label: string;
-  value: number;
-  onChange?: (value: number) => void;
-  readOnly?: boolean;
-}) {
-  const isReadOnly = readOnly || !onChange;
-
-  return (
-    <label className="block">
-      <span className="mb-1 block text-sm font-semibold text-ink/70">{label}</span>
-      <input
-        type="number"
-        value={Number.isFinite(value) ? value : 0}
-        readOnly={isReadOnly}
-        onFocus={(event) => {
-          if (!isReadOnly) clearIfZero(event);
-        }}
-        onBlur={(event) => {
-          if (isReadOnly) return;
-          restoreZeroIfBlank(event);
-          onChange?.(Number(event.currentTarget.value || 0));
-        }}
-        onChange={(event) => onChange?.(Number(event.target.value || 0))}
-        className="focus-ring h-11 w-full rounded-md border border-black/10 bg-white px-3 read-only:bg-slate-100 read-only:text-ink/70"
-      />
-    </label>
-  );
-}
-
-function Select({
-  label,
-  name,
-  options,
-  labels,
-  defaultValue
-}: {
-  label: string;
-  name: string;
-  options: string[];
-  labels?: string[];
-  defaultValue?: string;
-}) {
-  return (
-    <label className="block">
-      <span className="mb-1 block text-sm font-semibold text-ink/70">{label}</span>
-      <select
-        name={name}
-        defaultValue={defaultValue}
-        className="focus-ring h-11 w-full rounded-md border border-black/10 bg-white px-3"
-      >
-        {options.map((option, index) => (
-          <option key={option} value={option}>
-            {labels?.[index] ?? option}
-          </option>
-        ))}
-      </select>
     </label>
   );
 }

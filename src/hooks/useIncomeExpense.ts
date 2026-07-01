@@ -17,7 +17,7 @@ export function useIncomeExpense(locationId: string) {
         .order("tx_date", { ascending: false })
         .order("created_at", { ascending: false });
 
-      if (error) throw error;
+      if (error) throw new Error(error.message || JSON.stringify(error));
       
       return data.map((row: any) => ({
         id: row.id,
@@ -108,10 +108,10 @@ export function useIncomeExpense(locationId: string) {
       if (existing.data?.id) {
         txId = existing.data.id;
         const { error } = await supabase.from("income_expense").update(row).eq("id", txId);
-        if (error) throw error;
+        if (error) throw new Error(error.message || JSON.stringify(error));
       } else {
         const { data, error } = await supabase.from("income_expense").insert(row).select("id").single();
-        if (error) throw error;
+        if (error) throw new Error(error.message || JSON.stringify(error));
         txId = data.id;
       }
 
@@ -125,7 +125,7 @@ export function useIncomeExpense(locationId: string) {
   const deleteTxMutation = useMutation({
     mutationFn: async (id: string) => {
       const { error } = await supabase.from("income_expense").update({ record_status: "deleted" }).eq("id", id);
-      if (error) throw error;
+      if (error) throw new Error(error.message || JSON.stringify(error));
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["incomeExpense", locationId] });

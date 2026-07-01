@@ -15,14 +15,14 @@ export function useRubberBills(locationId: string) {
         .eq("location_id", locationId)
         .order("created_at", { ascending: false });
 
-      if (billsError) throw billsError;
+      if (billsError) throw new Error(billsError.message || JSON.stringify(billsError));
 
       const { data: items, error: itemsError } = await supabase
         .from("rubber_bill_items")
         .select("*")
         .in("bill_id", bills.map(b => b.id));
 
-      if (itemsError) throw itemsError;
+      if (itemsError) throw new Error(itemsError.message || JSON.stringify(itemsError));
 
       return (bills || []).map((row: any): RubberBill => {
         const billItems = (items || []).filter((item: any) => item.bill_id === row.id);
@@ -78,6 +78,7 @@ export function useRubberBills(locationId: string) {
           acidItems,
           debtItem: debtItems[0],
           debtItems,
+          createdByUserId: row.created_by_user_id,
           createdByName: row.created_by_name,
           createdByPhone: row.created_by_phone,
           clientCreatedAt: row.client_created_at ?? row.created_at,
@@ -144,6 +145,7 @@ export function useRubberBills(locationId: string) {
         client_recorded_at: bill.clientRecordedAt,
         client_created_at: bill.clientCreatedAt,
         revision_no: bill.revisionNo,
+        created_by_user_id: bill.createdByUserId,
         created_by_name: bill.createdByName,
         created_by_phone: bill.createdByPhone,
         updated_at: new Date().toISOString()
@@ -159,10 +161,10 @@ export function useRubberBills(locationId: string) {
       if (existing.data?.id) {
         billId = existing.data.id;
         const { error } = await supabase.from("rubber_bills").update(row).eq("id", billId);
-        if (error) throw error;
+        if (error) throw new Error(error.message || JSON.stringify(error));
       } else {
         const { data, error } = await supabase.from("rubber_bills").insert(row).select("id").single();
-        if (error) throw error;
+        if (error) throw new Error(error.message || JSON.stringify(error));
         billId = data.id;
       }
 
@@ -200,7 +202,7 @@ export function useRubberBills(locationId: string) {
 
       if (items.length > 0) {
         const { error } = await supabase.from("rubber_bill_items").insert(items);
-        if (error) throw error;
+        if (error) throw new Error(error.message || JSON.stringify(error));
       }
 
       return { ...bill, id: billId, serverBillNo };
@@ -213,7 +215,7 @@ export function useRubberBills(locationId: string) {
   const deleteBillMutation = useMutation({
     mutationFn: async (id: string) => {
       const { error } = await supabase.from("rubber_bills").update({ record_status: "deleted" }).eq("id", id);
-      if (error) throw error;
+      if (error) throw new Error(error.message || JSON.stringify(error));
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["rubberBills", locationId] });

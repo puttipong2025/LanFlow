@@ -16,12 +16,25 @@ export const viewport: Viewport = {
   themeColor: "#2f6b4f"
 };
 
-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+import { requireAuth } from "@/lib/server/auth";
+import type { Profile } from "@/types";
+
+export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  const authResult = await requireAuth();
+  const initialProfile: Profile | null = authResult.ok ? {
+    id: authResult.auth.sub,
+    phone: authResult.auth.phone,
+    name: authResult.auth.name,
+    role: authResult.auth.role,
+    locationIds: authResult.auth.locationIds,
+    isActive: true,
+  } : null;
+
   return (
     <html lang="th">
       <body suppressHydrationWarning>
         <QueryProvider>
-          <AuthProvider>
+          <AuthProvider initialProfile={initialProfile}>
             {children}
             <Toaster position="top-center" richColors />
           </AuthProvider>
