@@ -170,7 +170,6 @@ create table public.income_expense (
   unit text,
   price numeric(12,2),
   bill_option text,
-  transaction_option text,
   locked_at timestamptz not null default now(),
   client_recorded_at timestamptz,
   client_created_at timestamptz,
@@ -185,6 +184,34 @@ create table public.income_expense (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.income_expense
+  add constraint income_expense_bill_option_check
+  check (
+    record_status = 'deleted'
+    or (
+      bill_option is not null
+      and (
+        (type = 'income' and bill_option in ('รายรับ', 'บิลขาย')) or
+        (type = 'expense' and bill_option = 'ค่าใช้จ่าย')
+      )
+    )
+  );
+
+create table public.income_sale_items (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  is_active boolean not null default true,
+  created_by_user_id uuid references public.profiles(id),
+  created_by_name text,
+  created_by_phone text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  deleted_at timestamptz,
+  deleted_by_user_id uuid references public.profiles(id)
+);
+
+create unique index income_sale_items_name_active_idx on public.income_sale_items (lower(trim(name))) where is_active = true;
 
 create table public.ocr_tickets (
   id uuid primary key default gen_random_uuid(),
@@ -291,7 +318,64 @@ alter table public.customer_farms enable row level security;
 alter table public.rubber_bills enable row level security;
 alter table public.rubber_bill_items enable row level security;
 alter table public.income_expense enable row level security;
+alter table public.income_sale_items enable row level security;
 alter table public.ocr_tickets enable row level security;
+
+create policy "Allow all authenticated users to read active items"
+  on public.income_sale_items for select
+  using (is_active = true);
+
+create policy "Allow super_admin to read all items"
+  on public.income_sale_items for select
+  using (public.is_super_admin());
+
+create policy "Allow super_admin to insert"
+  on public.income_sale_items for insert
+  with check (public.is_super_admin());
+
+create policy "Allow super_admin to update"
+  on public.income_sale_items for update
+  using (public.is_super_admin());
+-- No DELETE policy: all deletes go through RPC only
+
+create or replace function public.delete_income_sale_item(item_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  item_name text;
+  usage_count bigint;
+begin
+  if not public.is_super_admin() then
+    raise exception 'Permission denied: only super_admin can delete sale items';
+  end if;
+
+  select name into item_name
+  from public.income_sale_items
+  where id = item_id;
+
+  if item_name is null then
+    raise exception 'Item not found';
+  end if;
+
+  select count(*) into usage_count
+  from public.income_expense
+  where title = item_name
+    and bill_option = 'บิลขาย'
+    and record_status != 'deleted';
+
+  if usage_count > 0 then
+    raise exception 'ไม่สามารถลบได้ เพราะมีรายการรายรับที่ใช้ "%" อยู่ % รายการ', item_name, usage_count;
+  end if;
+
+  delete from public.income_sale_items where id = item_id;
+end;
+$$;
+
+revoke all on function public.delete_income_sale_item(uuid) from public;
+grant execute on function public.delete_income_sale_item(uuid) to authenticated;
 
 create policy "profiles see own or super admin"
   on public.profiles for select
@@ -366,4 +450,5 @@ create policy "ocr tickets update scoped"
 
 grant usage on schema public to service_role;
 grant all privileges on all tables in schema public to service_role;
+grant select, insert, update on table public.income_sale_items to authenticated;
 grant all privileges on all sequences in schema public to service_role;

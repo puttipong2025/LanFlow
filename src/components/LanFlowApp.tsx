@@ -38,12 +38,16 @@ import { TransportModule } from "./TransportModule";
 import { OcrTicketUpload } from "./OcrTicketUpload";
 import type { UploadItem } from "./OcrTicketUpload";
 import { useCustomers } from "@/hooks/useCustomers";
+import { useIncomeSaleItems } from "@/hooks/useIncomeSaleItems";
+import { IncomeSaleItemsModal } from "./IncomeSaleItemsModal";
 import { useRubberBills } from "@/hooks/useRubberBills";
 import { MoneyTransferModule } from "./MoneyTransferModule";
 import { AdminModule } from "./AdminModule";
 import { TimeTrackingModule } from "./TimeTrackingModule";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { useIncomeExpense } from "@/hooks/useIncomeExpense";
+import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
+import { useTimeTrackingPending } from "@/hooks/useTimeTrackingPending";
 
 
 type Tab = "dashboard" | "rubber" | "cash" | "customers" | "transport" | "money-transfer" | "ocr" | "admin" | "time-tracking";
@@ -122,6 +126,8 @@ export function LanFlowApp() {
 
   const { bills: allBills } = useRubberBills(selectedLocationId);
   const { transactions: allTransactions } = useIncomeExpense(selectedLocationId);
+  const { transfers: allTransfers } = useMoneyTransfers(selectedLocationId);
+  const { pendingCount: timeTrackingPendingCount } = useTimeTrackingPending(profile);
 
   const selectedLocation = locations.find((location) => location.id === selectedLocationId) ?? locations[0];
 
@@ -262,6 +268,12 @@ export function LanFlowApp() {
             const ocrSuccess = ocrUploadItems.filter((i) => i.status === "success").length;
             const ocrError = ocrUploadItems.filter((i) => i.status === "error").length;
             const showOcrBadge = tab.id === "ocr" && ocrUploadItems.length > 0;
+            
+            const partialCount = allTransfers?.filter(t => t.recordStatus !== "deleted" && t.transferStatus === "partial").length || 0;
+            const advanceCount = allTransfers?.filter(t => t.recordStatus !== "deleted" && t.transferStatus === "advance_payment").length || 0;
+            const isTransferTab = tab.id === "money-transfer";
+            const isTimeTrackingTab = tab.id === "time-tracking";
+
             return (
               <button
                 key={tab.id}
@@ -295,6 +307,21 @@ export function LanFlowApp() {
                     {ocrError}
                   </span>
                 )}
+                {isTransferTab && partialCount > 0 && (
+                  <span className="ml-1 flex items-center gap-0.5 rounded-full bg-amber/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-800" title="ค้างจ่าย">
+                    {partialCount}
+                  </span>
+                )}
+                {isTransferTab && advanceCount > 0 && (
+                  <span className="ml-1 flex items-center gap-0.5 rounded-full bg-purple-500/20 px-1.5 py-0.5 text-[10px] font-bold text-purple-700" title="จ่ายล่วงหน้า">
+                    {advanceCount}
+                  </span>
+                )}
+                {isTimeTrackingTab && timeTrackingPendingCount > 0 && (
+                  <span className="ml-1 flex items-center gap-0.5 rounded-full bg-amber px-1.5 py-0.5 text-[10px] font-bold text-ink" title="รออนุมัติ">
+                    {timeTrackingPendingCount}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -321,7 +348,7 @@ export function LanFlowApp() {
           <CustomersModule />
         )}
         {activeTab === "transport" && (
-          <TransportModule />
+          <TransportModule locationId={selectedLocationId} />
         )}
         {activeTab === "money-transfer" && (
           <MoneyTransferModule
@@ -465,6 +492,10 @@ function formatBillTimestamp(value: string) {
 
 function getDisplayBillNo(bill: RubberBill) {
   return bill.serverBillNo ?? bill.localBillNo ?? bill.billNo;
+}
+
+function getIncomeExpenseDisplayNo(transaction: IncomeExpense) {
+  return transaction.serverBillNo ?? transaction.number ?? transaction.localBillNo;
 }
 
 function SyncStatusBadge({ status }: { status: RubberBill["syncStatus"] }) {
@@ -1020,6 +1051,7 @@ function RubberBillModal({
                     clientTempId: makeClientTempId("cust"),
                     class: "สาขานี้จ่าย",
                     mainName: customerSearch.trim() || "",
+                    defaultLocationId: selectedLocation.id,
                     syncStatus: "pending",
                     idempotencyKey: makeIdempotencyKey("create", makeClientTempId("cust")),
                     revisionNo: 0,
@@ -1282,6 +1314,7 @@ function IncomeExpenseModule({
   const [modalOpen, setModalOpen] = useState(false);
   const [modalType, setModalType] = useState<"income" | "expense">("income");
   const [editingTransaction, setEditingTransaction] = useState<IncomeExpense | null>(null);
+  const [saleItemsModalOpen, setSaleItemsModalOpen] = useState(false);
 
   function openAdd(type: "income" | "expense") {
     setModalType(type);
@@ -1325,6 +1358,16 @@ function IncomeExpenseModule({
             <Plus size={18} />
             เพิ่มรายจ่าย
           </button>
+          {profile.role === "super_admin" && (
+            <button
+              type="button"
+              onClick={() => setSaleItemsModalOpen(true)}
+              className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-blue-600 px-4 font-semibold text-white"
+            >
+              <Plus size={18} />
+              เพิ่มรายการบิลขาย
+            </button>
+          )}
         </div>
       </div>
 
@@ -1334,7 +1377,7 @@ function IncomeExpenseModule({
             <thead>
               <tr className="border-b border-black/10 text-left text-ink/60">
                 <th className="py-2">เลขที่</th>
-                <th>เลขบิลชั่วคราว</th>
+                <th>เลขบิล</th>
                 <th>วันที่</th>
                 <th>ประเภท</th>
                 <th>รายการ</th>
@@ -1348,11 +1391,17 @@ function IncomeExpenseModule({
             <tbody>
               {transactions.map((transaction) => (
                 <tr key={transaction.id} className="border-b border-black/5 hover:bg-field/50">
-                  <td className="py-3 font-semibold">{transaction.serverBillNo ?? transaction.number}</td>
+                  <td className="py-3 font-semibold">{getIncomeExpenseDisplayNo(transaction)}</td>
                   <td className="text-xs text-ink/55">
                     <div className="flex flex-col gap-0.5">
-                      <span>{transaction.localBillNo}</span>
-                      {!transaction.serverBillNo && <span className="text-[10px] text-amber-600 font-semibold">Local</span>}
+                      <span>{getIncomeExpenseDisplayNo(transaction)}</span>
+                      {transaction.serverBillNo ? (
+                        transaction.localBillNo !== transaction.serverBillNo && (
+                          <span className="text-[10px] text-leaf font-semibold">ซิงก์จาก {transaction.localBillNo}</span>
+                        )
+                      ) : (
+                        <span className="text-[10px] text-amber-600 font-semibold">Local</span>
+                      )}
                     </div>
                   </td>
                   <td>{transaction.txDate}</td>
@@ -1410,6 +1459,10 @@ function IncomeExpenseModule({
           onAddCustomer={addCustomer.mutate}
           onUpdateCustomer={updateCustomer.mutate}
         />
+      )}
+
+      {saleItemsModalOpen && (
+        <IncomeSaleItemsModal onClose={() => setSaleItemsModalOpen(false)} />
       )}
     </section>
   );
@@ -1473,6 +1526,8 @@ function IncomeExpenseModal({
     }
   ]);
   const label = type === "income" ? "รายรับ" : "ค่าใช้จ่าย";
+  const [billOption, setBillOption] = useState<string>(transaction?.billOption ?? (type === "income" ? "รายรับ" : "ค่าใช้จ่าย"));
+  const { items: saleItems } = useIncomeSaleItems();
 
   function updateLine(id: string, patch: Partial<Omit<CashLine, "id">>) {
     setLines((current) => current.map((line) => (line.id === id ? { ...line, ...patch } : line)));
@@ -1490,16 +1545,22 @@ function IncomeExpenseModal({
   }
 
   function getLineCost(line: CashLine) {
-    return line.unit > 0 && line.price > 0 ? line.unit * line.price : line.cost;
+    if (billOption === "บิลขาย") return line.unit * line.price;
+    return line.cost;
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const filledLines = lines.filter((line) => line.title.trim() || line.unit > 0 || line.price > 0 || line.cost > 0);
+    const filledLines = lines.filter((line) => {
+      if (billOption === "บิลขาย") {
+        return line.title.trim() && line.unit > 0 && line.price > 0;
+      }
+      return line.title.trim() && line.cost > 0;
+    });
 
     if (filledLines.length === 0) {
-      toast.error("กรุณาเพิ่มรายการอย่างน้อย 1 รายการ");
+      toast.error("กรุณาเพิ่มรายการและจำนวนเงิน/ราคาให้ถูกต้องอย่างน้อย 1 รายการ");
       return;
     }
 
@@ -1523,10 +1584,10 @@ function IncomeExpenseModal({
           txDate: String(form.get("txDate") || todayInputValue()),
           title: line.title.trim() || `${label} ${index + 1}`,
           cost: getLineCost(line),
-          billOption: String(form.get("billOption") || label),
-          transactionOption: String(form.get("transactionOption") || "ภายในสาขานี้"),
+          billOption: billOption as any,
           unit: line.unit ? String(line.unit) : undefined,
           price: line.price || undefined,
+          createdByUserId: index === 0 && transaction ? transaction.createdByUserId : profile.id,
           createdByName: index === 0 && transaction ? transaction.createdByName : profile.name,
           createdByPhone: index === 0 && transaction ? transaction.createdByPhone : profile.phone,
           clientCreatedAt: index === 0 && transaction ? transaction.clientCreatedAt : clientRecordedAt,
@@ -1612,6 +1673,7 @@ function IncomeExpenseModal({
                     clientTempId: makeClientTempId("cust"),
                     class: "สาขานี้จ่าย",
                     mainName: customerSearch.trim() || "",
+                    defaultLocationId: selectedLocation.id,
                     syncStatus: "pending",
                     idempotencyKey: makeIdempotencyKey("create", makeClientTempId("cust")),
                     revisionNo: 0,
@@ -1661,23 +1723,16 @@ function IncomeExpenseModal({
         </section>
 
         <section className="p-3 sm:p-4">
-          <p className="mb-3 font-bold text-ink">ช่องทางการรับจ่ายเงิน</p>
-          <div className="flex flex-wrap gap-3 text-sm font-semibold text-ink">
-            <InlineRadio name="transactionOption" value="ภายในสาขานี้" label="ภายในสาขานี้" defaultChecked={transaction?.transactionOption !== "สำนักงานใหญ่"} />
-            <InlineRadio name="transactionOption" value="สำนักงานใหญ่" label="สำนักงานใหญ่" defaultChecked={transaction?.transactionOption === "สำนักงานใหญ่"} />
-          </div>
-        </section>
-
-        <section className="p-3 sm:p-4">
           <p className="mb-3 font-bold text-ink">รูปแบบ</p>
           <div className="flex flex-wrap gap-3 text-sm font-semibold text-ink">
-            {(type === "income" ? ["รายรับ", "บิลทั่วไป", "บิลน้ำกรด"] : ["ค่าใช้จ่าย", "บิลค่าแรง", "สูญหาย"]).map((option) => (
+            {(type === "income" ? ["รายรับ", "บิลขาย"] : ["ค่าใช้จ่าย"]).map((option) => (
               <InlineRadio
                 key={option}
                 name="billOption"
                 value={option}
                 label={option}
-                defaultChecked={(transaction?.billOption ?? label) === option}
+                checked={billOption === option}
+                onChange={() => setBillOption(option)}
               />
             ))}
           </div>
@@ -1689,8 +1744,8 @@ function IncomeExpenseModal({
               <thead>
                 <tr className="border-b border-black/80 text-left text-base font-bold text-ink">
                   <th className="px-2 py-2">รายการ</th>
-                  <th className="px-2 py-2">จำนวน</th>
-                  <th className="px-2 py-2">ราคา</th>
+                  {billOption === "บิลขาย" && <th className="px-2 py-2">จำนวน</th>}
+                  {billOption === "บิลขาย" && <th className="px-2 py-2">ราคา</th>}
                   <th className="px-2 py-2">{label}</th>
                   <th className="px-2 py-2 text-center">ลบ</th>
                 </tr>
@@ -1699,20 +1754,45 @@ function IncomeExpenseModal({
                 {lines.map((line) => (
                   <tr key={line.id} className="border-b border-black/10">
                     <td className="px-2 py-2">
-                      <input
-                        value={line.title}
-                        onChange={(event) => updateLine(line.id, { title: event.target.value })}
-                        className="focus-ring h-10 w-full rounded-md border border-black/10 bg-white px-3"
-                      />
+                      {billOption === "บิลขาย" ? (
+                        <select
+                          value={line.title}
+                          onChange={(event) => updateLine(line.id, { title: event.target.value })}
+                          className="focus-ring h-10 w-full rounded-md border border-black/10 bg-white px-3"
+                          required
+                        >
+                          <option value="" disabled>เลือกรหัสสินค้า</option>
+                          {saleItems.map(item => (
+                            <option key={item.id} value={item.name}>{item.name}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          value={line.title}
+                          onChange={(event) => updateLine(line.id, { title: event.target.value })}
+                          className="focus-ring h-10 w-full rounded-md border border-black/10 bg-white px-3"
+                          required
+                        />
+                      )}
                     </td>
+                    {billOption === "บิลขาย" && (
+                      <td className="px-2 py-2">
+                        <InlineNumber value={line.unit} onChange={(value) => updateLine(line.id, { unit: value })} />
+                      </td>
+                    )}
+                    {billOption === "บิลขาย" && (
+                      <td className="px-2 py-2">
+                        <InlineNumber value={line.price} onChange={(value) => updateLine(line.id, { price: value })} />
+                      </td>
+                    )}
                     <td className="px-2 py-2">
-                      <InlineNumber value={line.unit} onChange={(value) => updateLine(line.id, { unit: value })} />
-                    </td>
-                    <td className="px-2 py-2">
-                      <InlineNumber value={line.price} onChange={(value) => updateLine(line.id, { price: value })} />
-                    </td>
-                    <td className="px-2 py-2">
-                      <InlineNumber value={line.cost} onChange={(value) => updateLine(line.id, { cost: value })} />
+                      {billOption === "บิลขาย" ? (
+                        <div className="flex h-10 items-center justify-end rounded-md border border-black/5 bg-slate-50 px-3 text-right text-sm font-semibold text-ink/70">
+                          {(line.unit * line.price).toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </div>
+                      ) : (
+                        <InlineNumber value={line.cost} onChange={(value) => updateLine(line.id, { cost: value })} />
+                      )}
                     </td>
                     <td className="px-2 py-2 text-center">
                       <button

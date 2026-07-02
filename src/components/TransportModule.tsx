@@ -12,7 +12,7 @@ import { makeClientTempId, makeIdempotencyKey } from "@/lib/format";
 
 import { useTransportStaffs } from "@/hooks/useTransportStaffs";
 
-export function TransportModule() {
+export function TransportModule({ locationId }: { locationId: string }) {
   const { staffs, isLoading, addStaff, updateStaff, deleteStaff } = useTransportStaffs();
   const [search, setSearch] = useState("");
   const [pageSize, setPageSize] = useState(10);
@@ -304,6 +304,7 @@ export function TransportModule() {
         <TransportModal
           staff={editingStaff}
           allStaffs={staffs}
+          locationId={locationId}
           onClose={() => setModalOpen(false)}
           onSave={(v) => {
             if (editingStaff) {
@@ -332,11 +333,12 @@ export function TransportModule() {
 type TransportModalProps = {
   staff: TransportStaff | null;
   allStaffs: TransportStaff[];
+  locationId: string;
   onClose: () => void;
   onSave: (staff: TransportStaff) => void;
 };
 
-function TransportModal({ staff, allStaffs, onClose, onSave }: TransportModalProps) {
+function TransportModal({ staff, allStaffs, locationId, onClose, onSave }: TransportModalProps) {
   const [mainName, setMainName] = useState(staff?.mainName ?? "");
 
   const initialLegacyMemberId = useMemo(() => {
@@ -442,6 +444,7 @@ function TransportModal({ staff, allStaffs, onClose, onSave }: TransportModalPro
       legacyRecId: timestampId,
       legacyMemberId: legacyMemberId.trim() || undefined,
       mainName: mainName.trim(),
+      defaultLocationId: staff?.defaultLocationId ?? locationId,
       syncStatus: staff?.syncStatus ?? "pending",
       idempotencyKey: staff?.idempotencyKey ?? makeIdempotencyKey("create", clientTempId),
       revisionNo: (staff?.revisionNo ?? 0) + (staff ? 1 : 0),

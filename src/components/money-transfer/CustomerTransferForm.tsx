@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  Copy,
   CreditCard,
   FileImage,
   Loader2,
@@ -149,6 +150,23 @@ export function CustomerTransferForm({
   const bankAccount = useMemo(() => {
     return bankAccounts.find(a => a.accountNumber === selectedAccountNumber) ?? null;
   }, [bankAccounts, selectedAccountNumber]);
+
+  const handleCopyBankAccount = useCallback(async () => {
+    if (!selectedAccountNumber) return;
+    try {
+      await navigator.clipboard.writeText(selectedAccountNumber);
+      Swal.fire({
+        icon: "success",
+        title: "คัดลอกเลขบัญชีแล้ว",
+        toast: true,
+        position: "top-end",
+        showConfirmButton: false,
+        timer: 3000
+      });
+    } catch (err) {
+      console.error("Failed to copy", err);
+    }
+  }, [selectedAccountNumber]);
 
   // ── Handler: Add slip from OCR ──
   const handleSlipUpload = useCallback(
@@ -335,17 +353,27 @@ export function CustomerTransferForm({
         <div className="rounded-lg border border-black/5 bg-field/40 p-3">
           <p className="text-xs font-semibold text-ink/50">เลขบัญชี</p>
           {bankAccounts.length > 0 ? (
-            <select
-              value={selectedAccountNumber || ""}
-              onChange={(e) => setSelectedAccountNumber(e.target.value)}
-              className="mt-1 w-full rounded border border-black/10 bg-white px-2 py-1 text-sm font-bold font-mono text-ink focus:border-river focus:outline-none"
-            >
-              {bankAccounts.map(a => (
-                <option key={a.accountNumber} value={a.accountNumber}>
-                  {a.isPrimary ? "[หลัก] " : ""}{a.bankName} - {a.accountNumber} {a.accountName ? `(${a.accountName})` : ""}
-                </option>
-              ))}
-            </select>
+            <div className="flex gap-2">
+              <select
+                value={selectedAccountNumber || ""}
+                onChange={(e) => setSelectedAccountNumber(e.target.value)}
+                className="mt-1 w-full rounded border border-black/10 bg-white px-2 py-1 text-sm font-bold font-mono text-ink focus:border-river focus:outline-none"
+              >
+                {bankAccounts.map(a => (
+                  <option key={a.accountNumber} value={a.accountNumber}>
+                    {a.isPrimary ? "[หลัก] " : ""}{a.bankName} - {a.accountNumber} {a.accountName ? `(${a.accountName})` : ""}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={handleCopyBankAccount}
+                className="mt-1 flex items-center justify-center rounded border border-black/10 bg-white px-2 py-1 text-river hover:bg-field focus:outline-none"
+                title="คัดลอกเลขบัญชี"
+              >
+                <Copy size={16} />
+              </button>
+            </div>
           ) : (
             <p className="mt-1 text-sm font-mono font-bold text-ink/30">—</p>
           )}

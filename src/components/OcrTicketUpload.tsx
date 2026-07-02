@@ -93,8 +93,26 @@ export function OcrTicketUpload({
     return () => window.removeEventListener("beforeunload", handler);
   }, [hasProcessing]);
 
-  // Auto-delete tickets with negative weight remaining after 10 minutes
-  const negativeWeightTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  // Auto-delete tickets with negative weight remaining after 10 minutes (with countdown)
+  const negativeWeightTargets = useRef<Record<string, number>>({});
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const currentTime = Date.now();
+      setNow(currentTime);
+      Object.entries(negativeWeightTargets.current).forEach(([id, targetTime]) => {
+        if (currentTime >= targetTime) {
+          delete negativeWeightTargets.current[id]; // Prevent duplicate triggers
+          deleteTicket.mutate(id, {
+            onSuccess: () => setToastMsg(`ลบใบชั่งอัตโนมัติ — น้ำหนักคงเหลือติดลบ`)
+          });
+        }
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [deleteTicket]);
+
   useEffect(() => {
     const currentNegIds = new Set<string>();
     ocrTickets.forEach((ticket) => {
@@ -102,29 +120,15 @@ export function OcrTicketUpload({
       const wRem = wNet - (ticket.weightDeducted ?? 0);
       if (wRem < 0) {
         currentNegIds.add(ticket.id);
-        if (!negativeWeightTimers.current[ticket.id]) {
-          negativeWeightTimers.current[ticket.id] = setTimeout(() => {
-            deleteTicket.mutate(ticket.id, {
-              onSuccess: () => {
-                setToastMsg(`ลบใบชั่ง ${ticket.ticketId ?? ticket.fileName} อัตโนมัติ — น้ำหนักคงเหลือติดลบ`);
-              }
-            });
-            delete negativeWeightTimers.current[ticket.id];
-          }, 10 * 60 * 1000); // 10 minutes
+        if (!negativeWeightTargets.current[ticket.id]) {
+          negativeWeightTargets.current[ticket.id] = Date.now() + 10 * 60 * 1000;
         }
       }
     });
-    // Clear timers for tickets that are no longer negative
-    Object.keys(negativeWeightTimers.current).forEach((id) => {
-      if (!currentNegIds.has(id)) {
-        clearTimeout(negativeWeightTimers.current[id]);
-        delete negativeWeightTimers.current[id];
-      }
+    Object.keys(negativeWeightTargets.current).forEach((id) => {
+      if (!currentNegIds.has(id)) delete negativeWeightTargets.current[id];
     });
-    return () => {
-      Object.values(negativeWeightTimers.current).forEach(clearTimeout);
-    };
-  }, [ocrTickets, deleteTicket]);
+  }, [ocrTickets]);
 
   const existingFileNames = new Set([
     ...items.map((i) => i.file.name),
@@ -437,6 +441,15 @@ export function OcrTicketUpload({
                   const tWNet = (ticket.weightIn ?? 0) - (ticket.weightOut ?? 0);
                   const tWRemaining = tWNet - (ticket.weightDeducted ?? 0);
                   const isNegative = tWRemaining < 0;
+                  
+                  let countdownText = "";
+                  if (isNegative && negativeWeightTargets.current[ticket.id]) {
+                    const remainingSecs = Math.max(0, Math.floor((negativeWeightTargets.current[ticket.id] - now) / 1000));
+                    const mins = Math.floor(remainingSecs / 60);
+                    const secs = remainingSecs % 60;
+                    countdownText = `${mins}:${secs.toString().padStart(2, '0')}`;
+                  }
+                  
                   return (
                   <tr key={ticket.id} className={`border-b border-black/5 transition-colors ${isNegative ? 'bg-red-50 hover:bg-red-100' : 'hover:bg-mint/20'}`}>
                     <td className="px-3 py-2.5 font-mono text-ink/40">{idx + 1}</td>
@@ -462,8 +475,8 @@ export function OcrTicketUpload({
                     <td className="px-3 py-2.5 text-right font-mono font-bold text-river">{ticket.totalAmount?.toLocaleString() ?? "—"}</td>
                     <td className="px-3 py-2.5 text-center">
                       {isNegative ? (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700" title="น้ำหนักคงเหลือติดลบ — จะถูกลบอัตโนมัติใน 10 นาที">
-                          <AlertTriangle size={12} /> น้ำหนักไม่ถูกต้อง
+                        <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700" title={`น้ำหนักคงเหลือติดลบ — จะถูกลบอัตโนมัติใน ${countdownText}`}>
+                          <AlertTriangle size={12} /> น้ำหนักไม่ถูกต้อง ({countdownText})
                         </span>
                       ) : ticket.driveUrl ? (
                         <span className="inline-flex items-center gap-1 rounded-full bg-leaf/10 px-2 py-0.5 text-xs font-semibold text-leaf">
@@ -541,7 +554,7 @@ export function OcrTicketUpload({
       )}
 
       {/* Edit Modal */}
-      {editTicket && <EditTicketModal ticket={editTicket} customers={customers} onSave={handleEditSave} onClose={() => setEditTicket(null)} />}
+      {editTicket && <EditTicketModal ticket={editTicket} targetTime={negativeWeightTargets.current[editTicket.id]} now={now} customers={customers} onSave={handleEditSave} onClose={() => setEditTicket(null)} />}
     </div>
   );
 }
@@ -620,8 +633,8 @@ function UploadCard({ item, onRemove, onRetry, onPreview }: {
 }
 
 /* ── Edit Modal ── */
-function EditTicketModal({ ticket, customers, onSave, onClose }: {
-  ticket: OcrTicket; customers: Customer[]; onSave: (t: OcrTicket) => void; onClose: () => void;
+function EditTicketModal({ ticket, targetTime, now, customers, onSave, onClose }: {
+  ticket: OcrTicket; targetTime?: number; now: number; customers: Customer[]; onSave: (t: OcrTicket) => void; onClose: () => void;
 }) {
   const [form, setForm] = useState({ ...ticket });
   const [customerSearch, setCustomerSearch] = useState(ticket.customerName ?? "");
@@ -790,7 +803,15 @@ function EditTicketModal({ ticket, customers, onSave, onClose }: {
               <AlertTriangle size={16} className="mt-0.5 shrink-0 text-red-600" />
               <div>
                 <p className="text-sm font-semibold text-red-700">น้ำหนักไม่ถูกต้อง</p>
-                <p className="mt-0.5 text-xs text-red-600">น้ำหนักคงเหลือติดลบ ({calcWeightRemaining?.toLocaleString()} กก.) — ข้อมูลนี้จะถูกลบอัตโนมัติใน 10 นาที กรุณาตรวจสอบน้ำหนักเข้า/ออก</p>
+                <p className="mt-0.5 text-xs text-red-600">
+                  น้ำหนักคงเหลือติดลบ ({calcWeightRemaining?.toLocaleString()} กก.) — ข้อมูลนี้จะถูกลบอัตโนมัติใน{' '}
+                  {targetTime ? (
+                    <span className="font-bold">{Math.floor(Math.max(0, targetTime - now) / 60000)}:{(Math.floor(Math.max(0, targetTime - now) / 1000) % 60).toString().padStart(2, '0')}</span>
+                  ) : (
+                    "10 นาที"
+                  )}{' '}
+                  กรุณาตรวจสอบน้ำหนักเข้า/ออก
+                </p>
               </div>
             </div>
           )}

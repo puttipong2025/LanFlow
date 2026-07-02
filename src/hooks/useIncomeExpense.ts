@@ -29,13 +29,13 @@ export function useIncomeExpense(locationId: string) {
         syncStatus: row.sync_status,
         recordStatus: row.record_status,
         type: row.type,
+        number: row.number ?? row.server_bill_no ?? row.local_bill_no,
         txDate: row.tx_date,
         title: row.title,
         cost: row.cost,
         unit: row.unit,
         price: row.price,
         billOption: row.bill_option,
-        transactionOption: row.transaction_option,
         clientRecordedAt: row.client_recorded_at,
         clientCreatedAt: row.client_created_at,
         serverReceivedAt: row.server_received_at,
@@ -43,6 +43,7 @@ export function useIncomeExpense(locationId: string) {
         deletedAt: row.deleted_at,
         deletedByName: row.deleted_by_name,
         deletedByPhone: row.deleted_by_phone,
+        createdByUserId: row.created_by_user_id,
         createdByName: row.created_by_name,
         createdByPhone: row.created_by_phone
       })) as IncomeExpense[];
@@ -86,13 +87,13 @@ export function useIncomeExpense(locationId: string) {
         tx_date: transaction.txDate,
         title: transaction.title,
         cost: transaction.cost,
-        unit: transaction.unit,
-        price: transaction.price,
+        unit: transaction.billOption === "บิลขาย" ? transaction.unit : null,
+        price: transaction.billOption === "บิลขาย" ? transaction.price : null,
         bill_option: transaction.billOption,
-        transaction_option: transaction.transactionOption,
         client_recorded_at: transaction.clientRecordedAt,
         client_created_at: transaction.clientCreatedAt,
         revision_no: transaction.revisionNo,
+        created_by_user_id: transaction.createdByUserId,
         created_by_name: transaction.createdByName,
         created_by_phone: transaction.createdByPhone,
         updated_at: new Date().toISOString()
@@ -115,7 +116,7 @@ export function useIncomeExpense(locationId: string) {
         txId = data.id;
       }
 
-      return { ...transaction, id: txId, serverBillNo };
+      return { ...transaction, id: txId, serverBillNo, number: serverBillNo, syncStatus: "synced" as const };
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["incomeExpense", locationId] });

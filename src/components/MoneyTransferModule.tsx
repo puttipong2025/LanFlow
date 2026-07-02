@@ -202,7 +202,8 @@ export function MoneyTransferModule({
               <thead>
                 <tr className="border-b border-black/5 bg-field/30 text-left text-xs font-bold uppercase tracking-wider text-ink/50">
                   <th className="px-3 py-3">#</th>
-                  <th className="px-3 py-3">ลูกค้า</th>
+                  <th className="px-3 py-3">ประเภท</th>
+                  <th className="px-3 py-3">ปลายทาง</th>
                   <th className="px-3 py-3">เลขบัญชี</th>
                   <th className="px-3 py-3 text-right">ยอดจ่าย</th>
                   <th className="px-3 py-3 text-center">สลิป</th>
@@ -217,6 +218,25 @@ export function MoneyTransferModule({
                 {transfers.map((t, idx) => (
                   <tr key={t.id} className="border-b border-black/5 transition-colors hover:bg-mint/20">
                     <td className="px-3 py-2.5 font-mono text-ink/40">{idx + 1}</td>
+                    <td className="px-3 py-2.5">
+                      <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-bold ${
+                        t.transferType === "customer" 
+                          ? "bg-blue-100 text-blue-700" 
+                          : t.transferType === "transport"
+                          ? "bg-orange-100 text-orange-700"
+                          : t.transferType === "branch"
+                          ? "bg-purple-100 text-purple-700"
+                          : "bg-gray-100 text-gray-700"
+                      }`}>
+                        {t.transferType === "customer" 
+                          ? "ลูกค้า" 
+                          : t.transferType === "transport" 
+                          ? "รถขนส่ง" 
+                          : t.transferType === "branch" 
+                          ? "สาขา" 
+                          : "ไม่ระบุ"}
+                      </span>
+                    </td>
                     <td className="px-3 py-2.5 font-semibold text-ink">{t.customerName ?? t.transportStaffName ?? t.targetLocationName ?? "—"}</td>
                     <td className="px-3 py-2.5 font-mono text-ink/70">{t.accountNumber ?? "—"}</td>
                     <td className="px-3 py-2.5 text-right font-mono font-bold text-river">

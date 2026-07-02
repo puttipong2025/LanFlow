@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
-  
+
   // Verify Admin
   const { data: profile } = await result.supabase.from("profiles").select("role").eq("id", result.auth.sub).single();
   if (profile?.role !== 'super_admin' && profile?.role !== 'admin') {
@@ -16,35 +16,76 @@ export async function GET(request: NextRequest) {
   try {
     let usersQuery = result.supabase.from("profiles").select(`
       id, name, phone, daily_wage, role, is_active,
-      time_segments(id, start_time, end_time),
-      debts(remaining_amount)
+      time_segments(id, start_time, end_time)
     `);
 
-    let txQuery = result.supabase.from("financial_transactions").select("id, profile_id, amount, created_at, type, description, due_date, profiles!inner(name, role)").eq("status", "PENDING");
-    let leaveQuery = result.supabase.from("leave_requests").select("id, profile_id, start_date, end_date, type, created_at, profiles!inner(name, role)").eq("status", "PENDING");
+    let txQuery = result.supabase.from("financial_transactions").select("id, profile_id, amount, created_at, type, description, due_date, profiles!inner!financial_transactions_profile_id_fkey(name, role)").eq("status", "PENDING");
+    let leaveQuery = result.supabase.from("leave_requests").select("id, profile_id, start_date, end_date, type, created_at, profiles!inner!leave_requests_profile_id_fkey(name, role)").eq("status", "PENDING");
     let slipQuery = result.supabase.from("payroll_slips").select("id, profile_id, month, net_pay, created_at, profiles!inner!payroll_slips_profile_id_fkey(name, role)").eq("status", "PENDING");
 
     if (profile?.role === 'admin') {
-      usersQuery = usersQuery.eq('role', 'user');
-      txQuery = txQuery.eq('profiles.role', 'user');
-      leaveQuery = leaveQuery.eq('profiles.role', 'user');
-      slipQuery = slipQuery.eq('profiles.role', 'user');
+      usersQuery = usersQuery.in('role', ['user', 'admin']);
+      txQuery = txQuery.in('profiles.role', ['user', 'admin']);
+      leaveQuery = leaveQuery.in('profiles.role', ['user', 'admin']);
+      slipQuery = slipQuery.in('profiles.role', ['user', 'admin']);
     }
 
     const { data: users, error: usersError } = await usersQuery;
     if (usersError) console.error("usersError", usersError);
-    
-    const { data: pendingTransactions } = await txQuery;
-    const { data: pendingLeaves } = await leaveQuery;
-    const { data: pendingSlips } = await slipQuery;
-    
+
+    const visibleUsers = profile?.role === 'admin'
+      ? (users || []).filter((user: any) => user.role === 'user' || user.id === result.auth.sub)
+      : (users || []);
+
+    let usersWithDebtTotals = visibleUsers;
+    const userIds = visibleUsers.map((user: any) => user.id);
+    if (userIds.length > 0) {
+      const { data: activeDebts, error: debtError } = await result.supabase
+        .from("financial_transactions")
+        .select("profile_id, remaining_amount")
+        .in("profile_id", userIds)
+        .in("type", ["DEBT", "WITHDRAWAL"])
+        .eq("status", "APPROVED")
+        .gt("remaining_amount", 0);
+
+      if (debtError) {
+        console.error("debtError", debtError);
+      } else {
+        const debtTotals = new Map<string, number>();
+        activeDebts?.forEach((debt: any) => {
+          debtTotals.set(
+            debt.profile_id,
+            (debtTotals.get(debt.profile_id) || 0) + Number(debt.remaining_amount || 0)
+          );
+        });
+        usersWithDebtTotals = usersWithDebtTotals.map((user: any) => ({
+          ...user,
+          debt_remaining_amount: debtTotals.get(user.id) || 0
+        }));
+      }
+    }
+
+    const { data: pendingTransactions, error: txError } = await txQuery;
+    if (txError) console.error("txError", txError);
+
+    const { data: pendingLeaves, error: leaveError } = await leaveQuery;
+    if (leaveError) console.error("leaveError", leaveError);
+
+    const { data: pendingSlips, error: slipError } = await slipQuery;
+    if (slipError) console.error("slipError", slipError);
+
+    const canAdminSeeRecord = (record: any) => {
+      if (profile?.role !== 'admin') return true;
+      return record.profile_id === result.auth.sub || record.profiles?.role === 'user';
+    };
+
     const { data: admins } = await result.supabase.from("profiles").select("id, name").in("role", ["admin", "super_admin"]);
 
-    return NextResponse.json({ 
-      users: users || [],
-      pendingTransactions: pendingTransactions || [],
-      pendingLeaves: pendingLeaves || [],
-      pendingSlips: pendingSlips || [],
+    return NextResponse.json({
+      users: usersWithDebtTotals,
+      pendingTransactions: (pendingTransactions || []).filter(canAdminSeeRecord),
+      pendingLeaves: (pendingLeaves || []).filter(canAdminSeeRecord),
+      pendingSlips: (pendingSlips || []).filter(canAdminSeeRecord),
       admins: admins || []
     });
   } catch (error: any) {
@@ -55,7 +96,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
-  
+
   const adminId = result.auth.sub;
   const supabase = result.supabase;
   const body = await request.json();
@@ -67,6 +108,14 @@ export async function POST(request: NextRequest) {
   }
 
   async function canEditUser(targetUserId: string) {
+    if (adminRole === 'super_admin') return true;
+    if (targetUserId === adminId) return true;
+    const { data: target } = await supabase.from('profiles').select('role').eq('id', targetUserId).single();
+    if (!target) return false;
+    return target.role === 'user';
+  }
+
+  async function canApproveUser(targetUserId: string) {
     if (adminRole === 'super_admin') return true;
     const { data: target } = await supabase.from('profiles').select('role').eq('id', targetUserId).single();
     if (!target) return false;
@@ -80,11 +129,11 @@ export async function POST(request: NextRequest) {
         .select('*')
         .order('created_at', { ascending: false })
         .limit(100);
-        
+
       if (admin_user_id) query = query.eq('admin_id', admin_user_id);
       if (target_user_id) query = query.eq('record_id', target_user_id);
       if (action_filter) query = query.eq('action', action_filter);
-      
+
       const { data: logs } = await query;
       return NextResponse.json({ logs: logs || [] });
     }
@@ -92,7 +141,7 @@ export async function POST(request: NextRequest) {
     if (body.action === 'TOGGLE_TRACKING') {
       const { user_id, status } = body.payload;
       if (!(await canEditUser(user_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-      
+
       if (status === 'RUNNING') {
         const { data: active } = await supabase.from("time_segments").select("id").eq("profile_id", user_id).is("end_time", null).maybeSingle();
         if (!active) {
@@ -109,43 +158,13 @@ export async function POST(request: NextRequest) {
     if (body.action === 'CUTOFF_TRACKING') {
       const { user_id, cutoff_time } = body.payload;
       if (!(await canEditUser(user_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-      
+
       await supabase.from("time_segments").update({ end_time: cutoff_time }).eq("profile_id", user_id).is("end_time", null);
       await supabase.from("time_segments").insert({ profile_id: user_id, start_time: cutoff_time });
-      
+
       await supabase.from('time_tracking_audit_logs').insert({
         admin_id: adminId, action: 'CUTOFF_TRACKING', target_table: 'time_segments',
         record_id: user_id, new_data: { cutoff_time }, comment: 'Auto split at 15:00'
-      });
-      
-      return NextResponse.json({ success: true });
-    }
-
-    if (body.action === 'UPSERT_DEBT') {
-      const { user_id, amount, admin_comment } = body.payload;
-      if (!(await canEditUser(user_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-      
-      if (typeof amount !== 'number' || !admin_comment) {
-        return NextResponse.json({ error: "Invalid data" }, { status: 400 });
-      }
-
-      const { data: existingDebt } = await supabase.from('debts').select('*').eq('profile_id', user_id).maybeSingle();
-      let recordId;
-      if (existingDebt) {
-        const { data } = await supabase.from('debts').update({ total_amount: existingDebt.total_amount + amount, remaining_amount: existingDebt.remaining_amount + amount }).eq('id', existingDebt.id).select().single();
-        recordId = data?.id;
-      } else {
-        const { data } = await supabase.from('debts').insert({ profile_id: user_id, total_amount: amount, remaining_amount: amount, installment_amount: 0 }).select().single();
-        recordId = data?.id;
-      }
-
-      await supabase.from('time_tracking_audit_logs').insert({
-        admin_id: adminId,
-        action: 'UPSERT_DEBT',
-        target_table: 'debts',
-        record_id: recordId,
-        new_data: { amount_added: amount },
-        comment: admin_comment
       });
 
       return NextResponse.json({ success: true });
@@ -154,27 +173,32 @@ export async function POST(request: NextRequest) {
     if (body.action === 'CREATE_DEBT') {
       const { user_id, amount, due_date, description } = body.payload;
       if (!(await canEditUser(user_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-      
+      if (typeof amount !== 'number' || amount <= 0 || !due_date || !description) {
+        return NextResponse.json({ error: "Invalid debt data" }, { status: 400 });
+      }
+
       const adminComment = `สร้างหนี้สินโดย: ${profile?.name || 'Admin'}`;
-      const { error } = await supabase.from('financial_transactions').insert({ 
-        profile_id: user_id, type: 'DEBT', amount, due_date, description, admin_comment: adminComment 
+      const { error } = await supabase.from('financial_transactions').insert({
+        profile_id: user_id, type: 'DEBT', amount, due_date, description, admin_comment: adminComment
       });
       if (error) {
          console.error("CREATE_DEBT error", error);
          return NextResponse.json({ error: error.message }, { status: 500 });
       }
       await supabase.from('time_tracking_audit_logs').insert({ admin_id: adminId, action: 'CREATE_DEBT', target_table: 'financial_transactions', record_id: user_id, new_data: { amount, due_date, description }, comment: adminComment });
-      
+
       return NextResponse.json({ success: true });
     }
     if (body.action === 'DELETE_TRANSACTION') {
       const { transaction_id } = body.payload;
-      if (adminRole !== 'super_admin') {
-        return NextResponse.json({ error: "เฉพาะ Super Admin เท่านั้นที่สามารถลบรายการได้" }, { status: 403 });
-      }
-
       const { data: tx } = await supabase.from('financial_transactions').select('*').eq('id', transaction_id).single();
       if (!tx) return NextResponse.json({ error: "ไม่พบรายการ" }, { status: 404 });
+      if (adminRole !== 'super_admin' && tx.profile_id !== adminId) {
+        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      }
+      if (tx.status === 'APPROVED' && adminRole !== 'super_admin') {
+        return NextResponse.json({ error: "Only super_admin can delete approved records" }, { status: 403 });
+      }
 
       // Only allow DEBT or WITHDRAWAL
       if (tx.type !== 'DEBT' && tx.type !== 'WITHDRAWAL') {
@@ -203,9 +227,9 @@ export async function POST(request: NextRequest) {
       if (error) {
         return NextResponse.json({ error: error.message }, { status: 500 });
       }
-      
-      await supabase.from('time_tracking_audit_logs').insert({ 
-        admin_id: adminId, action: 'DELETE_TRANSACTION', target_table: 'financial_transactions', 
+
+      await supabase.from('time_tracking_audit_logs').insert({
+        admin_id: adminId, action: 'DELETE_TRANSACTION', target_table: 'financial_transactions',
         record_id: transaction_id, old_data: tx, comment: `ลบรายการ ${tx.type} จำนวน ${tx.amount}`
       });
 
@@ -216,8 +240,8 @@ export async function POST(request: NextRequest) {
     if (body.action === 'APPROVE_TRANSACTION') {
       const { transaction_id, status, admin_comment } = body.payload;
       const { data: tx } = await supabase.from('financial_transactions').select('*').eq("id", transaction_id).single();
-      if (!tx || !(await canEditUser(tx.profile_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-      
+      if (!tx || !(await canApproveUser(tx.profile_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+
       if (tx.type === 'DEBT' && adminRole !== 'super_admin') {
          return NextResponse.json({ error: "Only super_admin can approve debts" }, { status: 403 });
       }
@@ -226,17 +250,8 @@ export async function POST(request: NextRequest) {
       if (status === 'APPROVED' && (tx.type === 'DEBT' || tx.type === 'WITHDRAWAL') && tx.status !== 'APPROVED') {
          updates.remaining_amount = tx.amount;
       }
-      
+
       await supabase.from('financial_transactions').update(updates).eq("id", transaction_id);
-      
-      if (status === 'APPROVED' && tx && tx.type === 'WITHDRAWAL' && tx.status !== 'APPROVED') {
-         const { data: existingDebt } = await supabase.from('debts').select('*').eq('profile_id', tx.profile_id).maybeSingle();
-         if (existingDebt) {
-           await supabase.from('debts').update({ total_amount: existingDebt.total_amount + tx.amount, remaining_amount: existingDebt.remaining_amount + tx.amount }).eq('id', existingDebt.id);
-         } else {
-           await supabase.from('debts').insert({ profile_id: tx.profile_id, total_amount: tx.amount, remaining_amount: tx.amount, installment_amount: 0 });
-         }
-      }
 
       await supabase.from('time_tracking_audit_logs').insert({
         admin_id: adminId, action: 'APPROVE_TRANSACTION', target_table: 'financial_transactions',
@@ -249,77 +264,16 @@ export async function POST(request: NextRequest) {
     if (body.action === 'APPROVE_LEAVE') {
       const { request_id, status, admin_comment } = body.payload;
       const { data: oldData } = await supabase.from('leave_requests').select('*').eq("id", request_id).single();
-      if (!oldData || !(await canEditUser(oldData.profile_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      if (!oldData || !(await canApproveUser(oldData.profile_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
       await supabase.from('leave_requests').update({ status, admin_comment, approved_by: adminId }).eq("id", request_id);
       await supabase.from('time_tracking_audit_logs').insert({ admin_id: adminId, action: 'APPROVE_LEAVE', target_table: 'leave_requests', record_id: request_id, old_data: oldData, new_data: { status }, comment: admin_comment });
-      return NextResponse.json({ success: true });
-    }
-
-    if (body.action === 'CALCULATE_PAYROLL') {
-      const { user_id, month } = body.payload;
-      if (!(await canEditUser(user_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-      // month is "YYYY-MM". We append timezone offset +07:00 to match local boundary.
-      const startDate = new Date(`${month}-01T00:00:00+07:00`).toISOString();
-      let nextMonthDate = new Date(`${month}-01T00:00:00+07:00`);
-      nextMonthDate.setMonth(nextMonthDate.getMonth() + 1);
-      const endDate = nextMonthDate.toISOString();
-
-      const { data: userSegments } = await supabase.from('time_segments').select('start_time, end_time')
-        .eq('profile_id', user_id)
-        .not('end_time', 'is', null)
-        .gte('start_time', startDate)
-        .lt('start_time', endDate);
-
-      const { data: profile } = await supabase.from('profiles').select('daily_wage').eq('id', user_id).single();
-      
-      let totalMs = 0;
-      userSegments?.forEach(seg => {
-        totalMs += new Date(seg.end_time).getTime() - new Date(seg.start_time).getTime();
-      });
-      // Use 8 hours (28,800,000 ms) as 1 working day instead of 24 hours
-      const totalDays = totalMs / (1000 * 60 * 60 * 8);
-      const grossPay = totalDays * (profile?.daily_wage || 0);
-
-      await supabase.from('time_tracking_audit_logs').insert({ admin_id: adminId, action: 'CALCULATE_PAYROLL', target_table: 'profiles', record_id: user_id, new_data: { totalDays, grossPay, month } });
-
-      return NextResponse.json({ success: true, totalDays, grossPay });
-    }
-
-    if (body.action === 'CONFIRM_PAYROLL') {
-      const { user_id, deduct_amount, gross_pay, net_pay, admin_comment } = body.payload;
-      if (!(await canEditUser(user_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-      
-      const { data: tx } = await supabase.from('financial_transactions').insert({
-        profile_id: user_id, type: 'SALARY', amount: net_pay, status: 'APPROVED', admin_comment
-      }).select().single();
-
-      let oldDebt = null;
-      let actualDeduct = deduct_amount;
-
-      if (deduct_amount > 0) {
-        const { data: existingDebt } = await supabase.from('debts').select('*').eq('profile_id', user_id).maybeSingle();
-        if (existingDebt) {
-           oldDebt = existingDebt;
-           actualDeduct = Math.min(deduct_amount, existingDebt.remaining_amount);
-           await supabase.from('debts').update({ 
-             remaining_amount: existingDebt.remaining_amount - actualDeduct 
-           }).eq('id', existingDebt.id);
-        }
-      }
-
-      await supabase.from('time_tracking_audit_logs').insert({
-        admin_id: adminId, action: 'CONFIRM_PAYROLL', target_table: 'financial_transactions',
-        record_id: tx?.id || user_id, old_data: oldDebt ? { remaining_debt: oldDebt.remaining_amount } : null,
-        new_data: { gross_pay, deduct_amount: actualDeduct, net_pay }, comment: admin_comment
-      });
-
       return NextResponse.json({ success: true });
     }
 
     if (body.action === 'UPDATE_WAGE') {
       const { user_id, daily_wage } = body.payload;
       if (!(await canEditUser(user_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-      
+
       // Use service_role to bypass RLS since profiles often restricts updates to self
       const { createClient } = await import('@supabase/supabase-js');
       const serviceSupabase = createClient(
@@ -329,31 +283,15 @@ export async function POST(request: NextRequest) {
 
       const { data: oldData } = await serviceSupabase.from('profiles').select('daily_wage').eq('id', user_id).single();
       await serviceSupabase.from('profiles').update({ daily_wage }).eq('id', user_id);
-      
+
       await serviceSupabase.from('time_tracking_audit_logs').insert({ admin_id: adminId, action: 'UPDATE_WAGE', target_table: 'profiles', record_id: user_id, old_data: oldData, new_data: { daily_wage } });
-      return NextResponse.json({ success: true });
-    }
-
-    if (body.action === 'ADD_MANUAL_SEGMENT') {
-      const { user_id, start_time, end_time, admin_comment } = body.payload;
-      if (!(await canEditUser(user_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-      await supabase.from('time_segments').insert({ profile_id: user_id, start_time, end_time });
-      await supabase.from('time_tracking_audit_logs').insert({ admin_id: adminId, action: 'ADD_MANUAL_SEGMENT', target_table: 'time_segments', record_id: user_id, new_data: { start_time, end_time }, comment: admin_comment });
-      return NextResponse.json({ success: true });
-    }
-
-    if (body.action === 'ADD_MANUAL_LEAVE') {
-      const { user_id, date, type, admin_comment } = body.payload;
-      if (!(await canEditUser(user_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-      await supabase.from('leave_requests').insert({ profile_id: user_id, start_date: date, end_date: date, type, status: 'APPROVED', admin_comment });
-      await supabase.from('time_tracking_audit_logs').insert({ admin_id: adminId, action: 'ADD_MANUAL_LEAVE', target_table: 'leave_requests', record_id: user_id, new_data: { date, type }, comment: admin_comment });
       return NextResponse.json({ success: true });
     }
 
     if (body.action === 'GET_LOCKED_DATES') {
       const { user_id } = body.payload;
       const lockedDates: Record<string, 'SLIP' | 'DEBT'> = {};
-      
+
       // Find all months that have DEBT_DEDUCTION transactions for this user
       const { data: deductions } = await supabase.from('financial_transactions')
         .select('created_at')
@@ -363,7 +301,7 @@ export async function POST(request: NextRequest) {
         .order('created_at', { ascending: false });
 
 
-      
+
       if (deductions && deductions.length > 0) {
         // For each deduction, find the date it was created
         const deductionDatesByMonth = new Map<string, string>(); // monthKey -> latest deduction date
@@ -375,7 +313,7 @@ export async function POST(request: NextRequest) {
             deductionDatesByMonth.set(monthKey, dateStr);
           }
         }
-        
+
         // Get all time segments for this user to know which dates actually have work recorded
         const { data: segments } = await supabase.from('time_segments')
           .select('start_time')
@@ -389,7 +327,7 @@ export async function POST(request: NextRequest) {
             activeDates.add(dt.toLocaleString('sv', { timeZone: 'Asia/Bangkok' }).split(' ')[0]);
           }
         }
-        
+
         // For each month, only lock dates that actually have a time segment on or before the deduction date
         for (const [monthKey, latestDate] of deductionDatesByMonth) {
           const [year, month] = monthKey.split('-').map(Number);
@@ -415,14 +353,14 @@ export async function POST(request: NextRequest) {
           }
         }
       }
-      
+
       return NextResponse.json({ lockedDates });
     }
 
     if (body.action === 'ADD_BULK_SEGMENTS') {
-      const { user_id, selections, full_snapshot, admin_comment } = body.payload; 
+      const { user_id, selections, full_snapshot, admin_comment } = body.payload;
       if (!(await canEditUser(user_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-      
+
       const bulkOldData: any[] = [];
       const bulkNewData: any[] = [];
       const affectedDates: string[] = [];
@@ -432,12 +370,12 @@ export async function POST(request: NextRequest) {
         affectedDates.push(date);
         const startOfDay = new Date(`${date}T00:00:00+07:00`).toISOString();
         const endOfDay = new Date(`${date}T23:59:59+07:00`).toISOString();
-        
+
         const { data: existing } = await supabase.from('time_segments').select('*')
           .eq('profile_id', user_id)
           .gte('start_time', startOfDay)
           .lte('start_time', endOfDay);
-          
+
         if (existing && existing.length > 0) {
           bulkOldData.push(...existing);
           await supabase.from('time_segments').delete()
@@ -445,16 +383,16 @@ export async function POST(request: NextRequest) {
             .gte('start_time', startOfDay)
             .lte('start_time', endOfDay);
         }
-        
+
         if (work_type !== 'NONE') {
           const startTime = new Date(`${date}T08:00:00+07:00`).toISOString();
           const endTime = new Date(`${date}T${work_type === 'HALF_DAY' ? '12:00:00' : '16:00:00'}+07:00`).toISOString();
-          
+
           const { data: inserted } = await supabase.from('time_segments').insert({ profile_id: user_id, start_time: startTime, end_time: endTime }).select().single();
           if (inserted) bulkNewData.push(inserted);
         }
       }
-      
+
       await supabase.from('time_tracking_audit_logs').insert({
         admin_id: adminId, action: 'BULK_UPDATE_SEGMENTS', target_table: 'time_segments',
         record_id: user_id, old_data: { segments: bulkOldData, dates: affectedDates }, new_data: { segments: bulkNewData, selections, full_snapshot },
@@ -469,29 +407,39 @@ export async function POST(request: NextRequest) {
     if (body.action === 'ADMIN_REQUEST_LEAVE') {
       const { user_id, start_date, end_date, type } = body.payload;
       if (!(await canEditUser(user_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-      
+
       const adminComment = `ยื่นแทนโดย Admin: ${profile?.name || 'Admin'}`;
       await supabase.from('leave_requests').insert({ profile_id: user_id, start_date, end_date, type, admin_comment: adminComment });
       await supabase.from('time_tracking_audit_logs').insert({ admin_id: adminId, action: 'ADMIN_REQUEST_LEAVE', target_table: 'leave_requests', record_id: user_id, new_data: { start_date, end_date, type }, comment: adminComment });
-      
+
       return NextResponse.json({ success: true });
     }
 
     if (body.action === 'ADMIN_REQUEST_WITHDRAWAL') {
       const { user_id, amount } = body.payload;
       if (!(await canEditUser(user_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-      
+
       const adminComment = `ยื่นแทนโดย Admin: ${profile?.name || 'Admin'}`;
       await supabase.from('financial_transactions').insert({ profile_id: user_id, type: 'WITHDRAWAL', amount, admin_comment: adminComment });
       await supabase.from('time_tracking_audit_logs').insert({ admin_id: adminId, action: 'ADMIN_REQUEST_WITHDRAWAL', target_table: 'financial_transactions', record_id: user_id, new_data: { amount }, comment: adminComment });
-      
+
       return NextResponse.json({ success: true });
     }
 
     if (body.action === 'CREATE_PAYROLL_SLIP') {
       const { user_id, month } = body.payload;
       if (!(await canEditUser(user_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-      
+
+      const { data: existingSlip } = await supabase.from('payroll_slips')
+        .select('id')
+        .eq('profile_id', user_id)
+        .eq('month', month)
+        .maybeSingle();
+
+      if (existingSlip) {
+        return NextResponse.json({ error: "Payroll slip already exists for this month" }, { status: 409 });
+      }
+
       const startDate = new Date(`${month}-01T00:00:00+07:00`).toISOString();
       let nextMonthDate = new Date(`${month}-01T00:00:00+07:00`);
       nextMonthDate.setMonth(nextMonthDate.getMonth() + 1);
@@ -550,13 +498,14 @@ export async function POST(request: NextRequest) {
       }).select().single();
 
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-      
+
       await supabase.from('time_tracking_audit_logs').insert({ admin_id: adminId, action: 'CREATE_PAYROLL_SLIP', target_table: 'payroll_slips', record_id: slip.id, new_data: slip, comment: `สร้างสลิปเดือน ${month}` });
       return NextResponse.json({ success: true, slip });
     }
 
     if (body.action === 'LIST_PAYROLL_SLIPS') {
       const { user_id } = body.payload;
+      if (!(await canEditUser(user_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
       const { data: slips } = await supabase.from('payroll_slips').select('*, approver:profiles!payroll_slips_approved_by_fkey(name)').eq('profile_id', user_id).order('month', { ascending: false });
       return NextResponse.json({ slips: slips || [] });
     }
@@ -565,7 +514,8 @@ export async function POST(request: NextRequest) {
       const { slip_id } = body.payload;
       const { data: slip } = await supabase.from('payroll_slips').select('*').eq('id', slip_id).single();
       if (!slip) return NextResponse.json({ error: "Slip not found" }, { status: 404 });
-      
+      if (!(await canEditUser(slip.profile_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+
       // Can only delete if created_at is in the current month
       const now = new Date();
       const createdDate = new Date(slip.created_at);
@@ -586,7 +536,11 @@ export async function POST(request: NextRequest) {
       const { slip_id, status, admin_comment } = body.payload;
       const { data: slip } = await supabase.from('payroll_slips').select('*').eq('id', slip_id).single();
       if (!slip) return NextResponse.json({ error: "Slip not found" }, { status: 404 });
-      
+
+      if (!(await canApproveUser(slip.profile_id))) {
+        return NextResponse.json({ error: "Only super_admin can approve admin payroll slips" }, { status: 403 });
+      }
+
       if (slip.created_by === adminId && adminRole !== 'super_admin') {
          return NextResponse.json({ error: "Cannot approve your own slip" }, { status: 403 });
       }

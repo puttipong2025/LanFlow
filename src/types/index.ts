@@ -79,6 +79,18 @@ export type RubberBill = {
   deletedByPhone?: string;
 };
 
+export type IncomeBillOption = "รายรับ" | "บิลขาย";
+export type ExpenseBillOption = "ค่าใช้จ่าย";
+
+export type IncomeSaleItem = {
+  id: string;
+  name: string;
+  isActive: boolean;
+  createdByName?: string | null;
+  createdByPhone?: string | null;
+  createdAt: string;
+};
+
 export type IncomeExpense = {
   id: string;
   clientTempId: string;
@@ -92,10 +104,10 @@ export type IncomeExpense = {
   txDate: string;
   title: string;
   cost: number;
-  billOption: string;
-  transactionOption: string;
+  billOption: IncomeBillOption | ExpenseBillOption;
   unit?: string;
   price?: number;
+  createdByUserId: string;
   createdByName: string;
   createdByPhone: string;
   clientCreatedAt: string;
