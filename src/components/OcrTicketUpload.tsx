@@ -175,6 +175,26 @@ export function OcrTicketUpload({
     });
   }, [setItems]);
 
+  const uploadImageToDrive = useCallback(
+    async (file: File, ticketId: string) => {
+      try {
+        const fd = new FormData();
+        fd.append("image", file);
+        fd.append("ticketId", ticketId);
+        const res = await authFetch("/api/lanflow/ocr-tickets/upload-image", { method: "POST", body: fd });
+        if (res.ok) {
+          const updated = (await res.json()) as OcrTicket;
+          updateTicket.mutate(updated);
+        } else {
+          console.error("Drive upload failed:", await res.text());
+        }
+      } catch (err) {
+        console.error("Drive upload error:", err);
+      }
+    },
+    [updateTicket]
+  );
+
   const processItem = useCallback(
     async (item: UploadItem) => {
       setItems((prev) =>
@@ -234,30 +254,10 @@ export function OcrTicketUpload({
         );
       }
     },
-    [locationId, addTicket, setItems]
+    [locationId, addTicket, setItems, uploadImageToDrive]
   );
 
-  // Upload image to Drive — runs in background, updates ticket via onUpdate
-  const uploadImageToDrive = useCallback(
-    async (file: File, ticketId: string) => {
-      try {
-        const fd = new FormData();
-        fd.append("image", file);
-        fd.append("ticketId", ticketId);
-        const res = await authFetch("/api/lanflow/ocr-tickets/upload-image", { method: "POST", body: fd });
-        if (res.ok) {
-          const updated = (await res.json()) as OcrTicket;
-          updateTicket.mutate(updated);
-        } else {
-          console.error("Drive upload failed:", await res.text());
-        }
-      } catch (err) {
-        console.error("Drive upload error:", err);
-      }
-    },
-    [updateTicket]
-  );
-
+  // Process pending images one by one so OCR and upload state stay predictable.
   const processAll = useCallback(async () => {
     if (!online) {
       setToastMsg("ไม่มีการเชื่อมต่ออินเทอร์เน็ต — ไม่สามารถอ่านใบชั่งได้");

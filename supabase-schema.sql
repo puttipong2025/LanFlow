@@ -416,19 +416,9 @@ create policy "rubber bills location scoped"
   on public.rubber_bills for select
   using (public.can_access_location(location_id));
 
-create policy "rubber bills insert scoped"
-  on public.rubber_bills for insert
-  with check (public.can_access_location(location_id));
-
-create policy "rubber bills update scoped no location change"
-  on public.rubber_bills for update
-  using (public.can_access_location(location_id))
-  with check (public.can_access_location(location_id));
-
-create policy "rubber bill items scoped through bill"
-  on public.rubber_bill_items for all
-  using (exists (select 1 from public.rubber_bills b where b.id = bill_id and public.can_access_location(b.location_id)))
-  with check (exists (select 1 from public.rubber_bills b where b.id = bill_id and public.can_access_location(b.location_id)));
+create policy "rubber bill items select scoped through bill"
+  on public.rubber_bill_items for select
+  using (exists (select 1 from public.rubber_bills b where b.id = bill_id and public.can_access_location(b.location_id)));
 
 create policy "income expense location scoped"
   on public.income_expense for all
@@ -448,7 +438,240 @@ create policy "ocr tickets update scoped"
   using (public.can_access_location(location_id))
   with check (public.can_access_location(location_id));
 
+create policy "customers update scoped"
+  on public.customers for update
+  using (default_location_id is null or public.can_access_location(default_location_id))
+  with check (default_location_id is null or public.can_access_location(default_location_id));
+
+create policy "customers delete scoped"
+  on public.customers for delete
+  using (default_location_id is null or public.can_access_location(default_location_id));
+
+create policy "customer_contacts all through customer"
+  on public.customer_contacts for all
+  using (exists (
+    select 1 from public.customers c
+    where c.id = customer_id
+      and (c.default_location_id is null or public.can_access_location(c.default_location_id))
+  ))
+  with check (exists (
+    select 1 from public.customers c
+    where c.id = customer_id
+      and (c.default_location_id is null or public.can_access_location(c.default_location_id))
+  ));
+
+create policy "customer_bank_accounts all through customer"
+  on public.customer_bank_accounts for all
+  using (exists (
+    select 1 from public.customers c
+    where c.id = customer_id
+      and (c.default_location_id is null or public.can_access_location(c.default_location_id))
+  ))
+  with check (exists (
+    select 1 from public.customers c
+    where c.id = customer_id
+      and (c.default_location_id is null or public.can_access_location(c.default_location_id))
+  ));
+
+create policy "customer_farms all through customer"
+  on public.customer_farms for all
+  using (exists (
+    select 1 from public.customers c
+    where c.id = customer_id
+      and (c.default_location_id is null or public.can_access_location(c.default_location_id))
+  ))
+  with check (exists (
+    select 1 from public.customers c
+    where c.id = customer_id
+      and (c.default_location_id is null or public.can_access_location(c.default_location_id))
+  ));
+
+create policy "customers_select_legacy_global"
+  on public.customers for select to authenticated
+  using (default_location_id is null and private.is_active_user());
+
+create policy "customer_contacts_select_legacy_global"
+  on public.customer_contacts for select to authenticated
+  using (
+    exists (
+      select 1
+      from public.customers c
+      where c.id = customer_id
+        and c.default_location_id is null
+        and private.is_active_user()
+    )
+  );
+
+create policy "customer_bank_accounts_select_legacy_global"
+  on public.customer_bank_accounts for select to authenticated
+  using (
+    exists (
+      select 1
+      from public.customers c
+      where c.id = customer_id
+        and c.default_location_id is null
+        and private.is_active_user()
+    )
+  );
+
+create policy "customer_farms_select_legacy_global"
+  on public.customer_farms for select to authenticated
+  using (
+    exists (
+      select 1
+      from public.customers c
+      where c.id = customer_id
+        and c.default_location_id is null
+        and private.is_active_user()
+    )
+  );
+
 grant usage on schema public to service_role;
 grant all privileges on all tables in schema public to service_role;
 grant select, insert, update on table public.income_sale_items to authenticated;
 grant all privileges on all sequences in schema public to service_role;
+
+-- Revoke direct write on rubber_bills/rubber_bill_items (write via RPC only)
+revoke all on public.rubber_bills from anon, authenticated;
+revoke all on public.rubber_bill_items from anon, authenticated;
+grant select on public.rubber_bills to authenticated;
+grant select on public.rubber_bill_items to authenticated;
+
+-- sync_rubber_bill RPC: atomic create/update/delete for rubber bills
+create or replace function public.sync_rubber_bill(payload jsonb)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_operation text;
+  v_expected_revision integer;
+  v_client_temp_id text;
+  v_location_id uuid;
+  v_record_status record_status;
+  v_idempotency_key text;
+
+  v_bill_id uuid;
+  v_current_revision integer;
+  v_server_bill_no text;
+  v_existing_idempotency_key text;
+
+  v_item jsonb;
+  v_active_user boolean;
+  v_created_by_user_id uuid;
+  v_created_by_name text;
+  v_created_by_phone text;
+
+  v_date text;
+  v_next_seq integer;
+begin
+  -- 1. Check Auth
+  v_active_user := private.is_active_user();
+  if not coalesce(v_active_user, false) then
+    return jsonb_build_object('status', 'failed', 'errorMessage', 'Unauthorized or inactive user');
+  end if;
+
+  v_created_by_user_id := auth.uid();
+  select name, phone into v_created_by_name, v_created_by_phone from public.profiles where id = v_created_by_user_id;
+
+  -- 2. Extract payload
+  v_operation := payload->>'operation';
+  if v_operation not in ('create', 'update', 'delete') then
+    return jsonb_build_object('status', 'failed', 'errorMessage', 'Invalid operation');
+  end if;
+
+  v_expected_revision := (payload->>'expectedRevisionNo')::integer;
+  v_client_temp_id := payload->>'clientTempId';
+  v_location_id := (payload->>'locationId')::uuid;
+  v_record_status := (payload->>'recordStatus')::record_status;
+  v_idempotency_key := payload->>'idempotencyKey';
+
+  if not public.can_access_location(v_location_id) then
+    return jsonb_build_object('status', 'failed', 'errorMessage', 'Location access denied');
+  end if;
+
+  -- 3. Concurrency & Idempotency
+  select id, revision_no, server_bill_no, idempotency_key
+  into v_bill_id, v_current_revision, v_server_bill_no, v_existing_idempotency_key
+  from public.rubber_bills
+  where client_temp_id = v_client_temp_id
+  for update;
+
+  if v_bill_id is not null then
+    if v_idempotency_key = v_existing_idempotency_key then
+      return jsonb_build_object('status', 'synced', 'id', v_bill_id, 'serverBillNo', v_server_bill_no, 'revisionNo', v_current_revision, 'serverReceivedAt', now());
+    end if;
+    if v_operation = 'create' then
+      return jsonb_build_object('status', 'conflict', 'errorMessage', 'Record already exists');
+    else
+      if v_current_revision != coalesce(v_expected_revision, v_current_revision) then
+        return jsonb_build_object('status', 'conflict', 'errorMessage', 'Revision mismatch');
+      end if;
+    end if;
+  else
+    if v_operation != 'create' then
+      return jsonb_build_object('status', 'failed', 'errorMessage', 'Cannot update or delete non-existent record');
+    end if;
+  end if;
+
+  -- 4. Process
+  if v_operation = 'delete' then
+    update public.rubber_bills
+    set record_status = 'deleted', deleted_at = now(),
+        deleted_by_name = payload->>'deletedByName', deleted_by_phone = payload->>'deletedByPhone',
+        revision_no = revision_no + 1, idempotency_key = v_idempotency_key, server_received_at = now()
+    where id = v_bill_id
+    returning id, revision_no into v_bill_id, v_current_revision;
+  else
+    if v_bill_id is null then
+      v_date := to_char((payload->>'billDate')::date, 'YYMMDD');
+      perform pg_advisory_xact_lock(hashtext(v_location_id::text || v_date));
+      select count(*) + 1 into v_next_seq from public.rubber_bills where location_id = v_location_id and to_char(bill_date, 'YYMMDD') = v_date and server_bill_no is not null;
+      v_server_bill_no := v_date || lpad(v_next_seq::text, 4, '0');
+    end if;
+
+    insert into public.rubber_bills (
+      client_temp_id, idempotency_key, revision_no, sync_status, record_status,
+      location_id, bill_no, local_bill_no, server_bill_no, bill_date,
+      customer_name, customer_type, bill_type,
+      weight, rubber_value, average_price, deduction_total, net_total,
+      cash_payment, transfer_payment, acid_pack_count,
+      client_recorded_at, client_created_at, server_received_at,
+      created_by_user_id, created_by_name, created_by_phone
+    ) values (
+      v_client_temp_id, v_idempotency_key, coalesce(v_expected_revision + 1, 1), 'synced', 'active',
+      v_location_id, coalesce(v_server_bill_no, payload->>'localBillNo'), payload->>'localBillNo', v_server_bill_no, (payload->>'billDate')::date,
+      payload->>'customerName', payload->>'customerType', 'weighing',
+      (payload->>'weight')::numeric, (payload->>'rubberValue')::numeric, (payload->>'averagePrice')::numeric,
+      (payload->>'deductionTotal')::numeric, (payload->>'netTotal')::numeric,
+      (payload->>'cashPayment')::numeric, (payload->>'transferPayment')::numeric, (payload->>'acidPackCount')::numeric,
+      (payload->>'clientRecordedAt')::timestamptz, (payload->>'clientCreatedAt')::timestamptz, now(),
+      v_created_by_user_id, v_created_by_name, v_created_by_phone
+    )
+    on conflict (client_temp_id) do update set
+      revision_no = public.rubber_bills.revision_no + 1, idempotency_key = excluded.idempotency_key,
+      sync_status = 'synced', record_status = 'active',
+      bill_date = excluded.bill_date, customer_name = excluded.customer_name, customer_type = excluded.customer_type,
+      weight = excluded.weight, rubber_value = excluded.rubber_value, average_price = excluded.average_price,
+      deduction_total = excluded.deduction_total, net_total = excluded.net_total,
+      cash_payment = excluded.cash_payment, transfer_payment = excluded.transfer_payment, acid_pack_count = excluded.acid_pack_count,
+      client_recorded_at = excluded.client_recorded_at, server_received_at = now()
+    returning id, revision_no into v_bill_id, v_current_revision;
+
+    delete from public.rubber_bill_items where bill_id = v_bill_id;
+    for v_item in select * from jsonb_array_elements(payload->'items')
+    loop
+      insert into public.rubber_bill_items (bill_id, item_type, description, weight_in, weight_out, net_weight, quantity, unit, price, total)
+      values (v_bill_id, v_item->>'itemType', v_item->>'description', (v_item->>'inWeight')::numeric, (v_item->>'outWeight')::numeric, (v_item->>'netWeight')::numeric, (v_item->>'quantity')::numeric, v_item->>'unit', (v_item->>'unitPrice')::numeric, (v_item->>'totalAmount')::numeric);
+    end loop;
+  end if;
+
+  return jsonb_build_object('status', 'synced', 'id', v_bill_id, 'serverBillNo', v_server_bill_no, 'revisionNo', v_current_revision, 'serverReceivedAt', now());
+exception when others then
+  return jsonb_build_object('status', 'failed', 'errorMessage', sqlerrm);
+end;
+$$;
+
+revoke all on function public.sync_rubber_bill(jsonb) from public, anon;
+grant execute on function public.sync_rubber_bill(jsonb) to authenticated;

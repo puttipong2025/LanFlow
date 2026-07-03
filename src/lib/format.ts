@@ -39,8 +39,12 @@ export function makeClientTempId(prefix: string) {
   return `${prefix}_${compactDate()}_${getDeviceId()}_${randomId}`;
 }
 
-export function makeLocalBillNo(locationCode: string, prefix: string, sequence: number) {
-  return `TEMP-${locationCode}-${getDeviceId()}-${prefix}${String(sequence).padStart(4, "0")}`;
+export function makeLocalBillNo(locationCode: string, prefix: string, clientTempIdOrSequence: string | number) {
+  if (typeof clientTempIdOrSequence === "number") {
+    return `TEMP-${locationCode}-${getDeviceId()}-${prefix}${String(clientTempIdOrSequence).padStart(4, "0")}`;
+  }
+  const shortId = clientTempIdOrSequence.split("_").pop()?.slice(0, 6).toUpperCase() || "000000";
+  return `TEMP-${locationCode}-${getDeviceId()}-${prefix}-${shortId}`;
 }
 
 export function makeIdempotencyKey(operation: string, clientTempId: string) {

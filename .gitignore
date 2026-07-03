@@ -26,3 +26,8 @@ public/workbox-*.js
 public/workbox-*.js.map
 public/swe-worker-*.js
 public/swe-worker-*.js.map
+
+test-results/
+playwright-report/
+test-failed-*.png
+page.html

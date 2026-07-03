@@ -52,6 +52,19 @@ function cacheProfile(profile: Profile, validatedAt = new Date().toISOString()) 
   );
 }
 
+export function clearOfflineAuthCache() {
+  if (typeof window === "undefined") return;
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i);
+      if (key && (key.startsWith('lanflow_bootstrap_cache:') || key.startsWith('lanflow:auth-profile:'))) {
+        localStorage.removeItem(key);
+      }
+    }
+    localStorage.removeItem(LAST_USER_KEY);
+  } catch { /* skip */ }
+}
+
 function isOfflineCacheValid(cache: CachedProfile | null) {
   if (!cache) return false;
   const validatedAt = new Date(cache.validatedAt).getTime();
@@ -66,10 +79,23 @@ function offlineDeadline(cache: CachedProfile | null) {
 }
 
 export function useAuth(initialProfile: Profile | null = null): AuthState {
-  const [profile, setProfile] = useState<Profile | null>(initialProfile);
-  const [isLoading, setIsLoading] = useState(false);
-  const [mode, setMode] = useState<AuthMode>(initialProfile ? "online" : "signed_out");
+  // Check if we are hydrating from stale PWA HTML
+  const isBrowser = typeof window !== "undefined";
+  const initProf = (() => {
+    if (isBrowser && initialProfile) {
+      const lastUser = window.localStorage.getItem(LAST_USER_KEY);
+      if (!lastUser || lastUser !== initialProfile.id) return null;
+      // Offline: don't trust initialProfile — let applyOfflineCache() validate expiry
+      if (!navigator.onLine) return null;
+    }
+    return initialProfile;
+  })();
+
+  const [profile, setProfile] = useState<Profile | null>(initProf);
+  const [isLoading, setIsLoading] = useState(initProf === null);
+  const [mode, setMode] = useState<AuthMode>(initProf ? "online" : "signed_out");
   const [offlineUntil, setOfflineUntil] = useState<string | null>(null);
+
 
   const applyOfflineCache = useCallback(() => {
     const cached = readCachedProfile();
@@ -90,6 +116,7 @@ export function useAuth(initialProfile: Profile | null = null): AuthState {
 
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) {
+          clearOfflineAuthCache();
           setProfile(null);
           setMode("signed_out");
           setOfflineUntil(null);
@@ -108,33 +135,57 @@ export function useAuth(initialProfile: Profile | null = null): AuthState {
     }
   }, [applyOfflineCache]);
 
+  // Refresh profile and sign out if it fails — enforces source-of-truth contract:
+  // only /api/auth/me 200 or valid offline cache may keep user authenticated
+  const refreshOrSignOut = useCallback(async () => {
+    const ok = await refreshProfile();
+    if (!ok) {
+      clearOfflineAuthCache();
+      setProfile(null);
+      setMode("signed_out");
+      setOfflineUntil(null);
+    }
+  }, [refreshProfile]);
+
   useEffect(() => {
     let active = true;
     const supabase = createSupabaseBrowserClient();
 
     async function initialize() {
+      const lastUser = window.localStorage.getItem(LAST_USER_KEY);
+
+      if (initialProfile && (!lastUser || lastUser !== initialProfile.id)) {
+        // Stale HTML served from PWA cache after logout, OR cross-user mismatch
+        if (active) {
+          setProfile(null);
+          setMode("signed_out");
+        }
+      }
+
       if (!navigator.onLine) {
         if (active) {
-          applyOfflineCache();
+          const restored = applyOfflineCache();
+          if (!restored) {
+            // No valid offline cache — stale initialProfile must not survive
+            clearOfflineAuthCache();
+            setProfile(null);
+            setMode("signed_out");
+            setOfflineUntil(null);
+          }
           setIsLoading(false);
         }
         return;
       }
 
-      if (initialProfile) {
-        // We already have the profile from SSR, no need to fetch again on mount
-        if (active) setIsLoading(false);
-        return;
-      }
-
+      // Always revalidate when online — initialProfile may be stale PWA cache
       const refreshed = await refreshProfile();
       if (active) {
         if (!refreshed) {
-          const { data } = await supabase.auth.getSession();
-          if (!data.session) {
-            setProfile(null);
-            setMode("signed_out");
-          }
+          // Neither /api/auth/me nor offline cache succeeded — sign out
+          clearOfflineAuthCache();
+          setProfile(null);
+          setMode("signed_out");
+          setOfflineUntil(null);
         }
         setIsLoading(false);
       }
@@ -144,20 +195,27 @@ export function useAuth(initialProfile: Profile | null = null): AuthState {
 
     const { data: listener } = supabase.auth.onAuthStateChange((event) => {
       if (event === "SIGNED_OUT") {
+        clearOfflineAuthCache();
         setProfile(null);
         setMode("signed_out");
         setOfflineUntil(null);
       }
       if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED") {
-        void refreshProfile();
+        void refreshOrSignOut();
       }
     });
 
     const handleOnline = () => {
-      void refreshProfile();
+      void refreshOrSignOut();
     };
     const handleOffline = () => {
-      applyOfflineCache();
+      const restored = applyOfflineCache();
+      if (!restored) {
+        clearOfflineAuthCache();
+        setProfile(null);
+        setMode("signed_out");
+        setOfflineUntil(null);
+      }
     };
 
     window.addEventListener("online", handleOnline);
@@ -169,7 +227,7 @@ export function useAuth(initialProfile: Profile | null = null): AuthState {
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
     };
-  }, [applyOfflineCache, refreshProfile]);
+  }, [applyOfflineCache, initialProfile, refreshProfile, refreshOrSignOut]);
 
   const login = useCallback(async (rawPhone: string, password: string) => {
     try {
@@ -221,6 +279,8 @@ export function useAuth(initialProfile: Profile | null = null): AuthState {
   }, []);
 
   const logout = useCallback(async () => {
+    clearOfflineAuthCache();
+
     const supabase = createSupabaseBrowserClient();
     await supabase.auth.signOut();
     setProfile(null);

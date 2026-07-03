@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useCallback, useEffect, useState, useMemo } from "react";
 import { Clock, UserCircle, PlayCircle, PauseCircle, XCircle, ChevronLeft, ChevronRight } from "lucide-react";
 import { formatCurrency } from "@/lib/format";
 import { authFetch } from "@/lib/auth-fetch";
@@ -35,7 +35,7 @@ function UserTimeTracking({ profile, targetUserId }: { profile: Profile, targetU
   const isRunning = data?.timeTracking?.status === 'RUNNING';
   const startTimeStr = data?.timeTracking?.start_time;
 
-  async function loadData() {
+  const loadData = useCallback(async () => {
     try {
       const url = targetUserId ? `/api/lanflow/time-tracking/user?userId=${targetUserId}` : "/api/lanflow/time-tracking/user";
       const res = await authFetch(url);
@@ -48,11 +48,11 @@ function UserTimeTracking({ profile, targetUserId }: { profile: Profile, targetU
     } finally {
       setLoading(false);
     }
-  }
+  }, [targetUserId]);
 
   useEffect(() => {
-    loadData();
-  }, [targetUserId]);
+    void loadData();
+  }, [loadData]);
 
   useEffect(() => {
     if (!isRunning || !startTimeStr) {
@@ -807,7 +807,7 @@ function ManageTimeModal({ user, admins, onClose, onSuccess, onRefresh }: { user
     }
   }
 
-  async function loadHistory() {
+  const loadHistory = useCallback(async () => {
     try {
       const res = await authFetch("/api/lanflow/time-tracking/admin", {
         method: 'POST',
@@ -821,7 +821,23 @@ function ManageTimeModal({ user, admins, onClose, onSuccess, onRefresh }: { user
     } catch (e) {
       console.error(e);
     }
-  }
+  }, [user.id]);
+
+  const loadLockedDates = useCallback(async () => {
+    try {
+      const res = await authFetch("/api/lanflow/time-tracking/admin", {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'GET_LOCKED_DATES', payload: { user_id: user.id } })
+      });
+      if (res.ok) {
+        const json = await res.json();
+        setLockedDates(new Map(Object.entries(json.lockedDates || {})));
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }, [user.id]);
 
   const [viewMonth, setViewMonth] = useState(0); // 0 = current month, -1 = previous month
 
@@ -853,25 +869,9 @@ function ManageTimeModal({ user, admins, onClose, onSuccess, onRefresh }: { user
 
   useEffect(() => {
     setSelectedDates(initialDates);
-    loadHistory();
-    loadLockedDates();
-  }, [initialDates]);
-
-  async function loadLockedDates() {
-    try {
-      const res = await authFetch("/api/lanflow/time-tracking/admin", {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'GET_LOCKED_DATES', payload: { user_id: user.id } })
-      });
-      if (res.ok) {
-        const json = await res.json();
-        setLockedDates(new Map(Object.entries(json.lockedDates || {})));
-      }
-    } catch (e) {
-      console.error(e);
-    }
-  }
+    void loadHistory();
+    void loadLockedDates();
+  }, [initialDates, loadHistory, loadLockedDates]);
 
   const viewDate = useMemo(() => {
     const now = new Date();
@@ -1229,7 +1229,7 @@ function PayrollModal({ user, profile, onClose, onRefresh }: { user: any, profil
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  async function loadSlips() {
+  const loadSlips = useCallback(async () => {
     setLoading(true);
     try {
       const res = await authFetch("/api/lanflow/time-tracking/admin", {
@@ -1244,11 +1244,11 @@ function PayrollModal({ user, profile, onClose, onRefresh }: { user: any, profil
     } finally {
       setLoading(false);
     }
-  }
+  }, [user.id]);
 
   useEffect(() => {
-    loadSlips();
-  }, [user.id]);
+    void loadSlips();
+  }, [loadSlips]);
 
   async function createSlip() {
     const month = prompt("ระบุเดือนที่ต้องการสร้างสลิปเงินเดือน (YYYY-MM):", new Date().toISOString().slice(0, 7));

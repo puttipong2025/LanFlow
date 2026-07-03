@@ -77,6 +77,7 @@ export type RubberBill = {
   deletedAt?: string;
   deletedByName?: string;
   deletedByPhone?: string;
+  syncErrorMessage?: string;
 };
 
 export type IncomeBillOption = "รายรับ" | "บิลขาย";

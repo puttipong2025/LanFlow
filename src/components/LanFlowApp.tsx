@@ -48,7 +48,7 @@ import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { useIncomeExpense } from "@/hooks/useIncomeExpense";
 import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
 import { useTimeTrackingPending } from "@/hooks/useTimeTrackingPending";
-
+import { validateRubberBillDraft } from "@/lib/rubber-bill-validation";
 
 type Tab = "dashboard" | "rubber" | "cash" | "customers" | "transport" | "money-transfer" | "ocr" | "admin" | "time-tracking";
 type RubberWeighItem = NonNullable<RubberBill["weighItems"]>[number];
@@ -67,8 +67,42 @@ const tabs: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: n
   { id: "admin", label: "Admin", icon: ShieldCheck }
 ];
 
+function writeBootstrapCache(userId: string, data: { locations: Location[]; profile: Profile; selectedLocationId: string }) {
+  try {
+    localStorage.setItem(`lanflow_bootstrap_cache:${userId}`, JSON.stringify(data));
+  } catch { /* skip */ }
+}
+
+function readBootstrapCache(userId: string): { locations: Location[]; profile: Profile; selectedLocationId: string } | null {
+  try {
+    const raw = localStorage.getItem(`lanflow_bootstrap_cache:${userId}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    
+    // Strict validation
+    if (!parsed.profile || parsed.profile.id !== userId) return null;
+    if (!Array.isArray(parsed.locations) || parsed.locations.length === 0) return null;
+    
+    // Only keep locations the user has access to
+    const allowedLocations = parsed.locations.filter((l: any) => parsed.profile.locationIds.includes(l.id));
+    if (allowedLocations.length === 0) return null;
+
+    // Fallback selectedLocationId if invalid
+    const validSelected = allowedLocations.some((l: any) => l.id === parsed.selectedLocationId);
+
+    return {
+      locations: allowedLocations,
+      profile: parsed.profile,
+      selectedLocationId: validSelected ? parsed.selectedLocationId : allowedLocations[0].id
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function LanFlowApp() {
   const auth = useAuthContext();
+  const authProfileId = auth.profile?.id;
   
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
   const [locations, setLocations] = useState<Location[]>([]);
@@ -84,7 +118,20 @@ export function LanFlowApp() {
     let ignore = false;
 
     async function loadDatabaseData() {
+      setIsLoaded(false);
+
+      if (!authProfileId) {
+        setIsLoaded(true);
+        return;
+      }
+
       if (!navigator.onLine) {
+        const cached = readBootstrapCache(authProfileId);
+        if (cached) {
+          setLocations(cached.locations);
+          setProfile(cached.profile);
+          setSelectedLocationId(cached.selectedLocationId);
+        }
         setIsLoaded(true);
         return;
       }
@@ -97,7 +144,16 @@ export function LanFlowApp() {
 
         setLocations(data.locations);
         setProfile(data.profile);
-        setSelectedLocationId(data.profile.locationIds[0] ?? data.locations[0]?.id ?? "");
+        
+        const locId = data.profile.locationIds[0] ?? data.locations[0]?.id ?? "";
+        setSelectedLocationId(locId);
+
+        writeBootstrapCache(authProfileId, {
+          locations: data.locations,
+          profile: data.profile,
+          selectedLocationId: locId
+        });
+
 
       } catch (error) {
         console.error("LanFlow database load failed", error);
@@ -111,7 +167,7 @@ export function LanFlowApp() {
     return () => {
       ignore = true;
     };
-  }, []);
+  }, [authProfileId]);
 
   useEffect(() => {
     const syncOnlineState = () => setOnline(navigator.onLine);
@@ -123,6 +179,17 @@ export function LanFlowApp() {
       window.removeEventListener("offline", syncOnlineState);
     };
   }, []);
+
+  // Persist selected location on change
+  useEffect(() => {
+    if (authProfileId && isLoaded && locations.length > 0) {
+      writeBootstrapCache(authProfileId, {
+        locations,
+        profile,
+        selectedLocationId
+      });
+    }
+  }, [selectedLocationId, locations, profile, authProfileId, isLoaded]);
 
   const { bills: allBills } = useRubberBills(selectedLocationId);
   const { transactions: allTransactions } = useIncomeExpense(selectedLocationId);
@@ -498,7 +565,7 @@ function getIncomeExpenseDisplayNo(transaction: IncomeExpense) {
   return transaction.serverBillNo ?? transaction.number ?? transaction.localBillNo;
 }
 
-function SyncStatusBadge({ status }: { status: RubberBill["syncStatus"] }) {
+function SyncStatusBadge({ status, errorMessage }: { status: RubberBill["syncStatus"]; errorMessage?: string }) {
   const tone = {
     pending: "bg-amber/25 text-ink",
     syncing: "bg-blue-100 text-blue-800",
@@ -514,7 +581,14 @@ function SyncStatusBadge({ status }: { status: RubberBill["syncStatus"] }) {
     conflict: "ข้อมูลชนกัน"
   }[status];
 
-  return <span className={`rounded px-2 py-1 text-xs font-semibold ${tone}`}>{label}</span>;
+  return (
+    <div className="flex flex-col items-start gap-0.5">
+      <span className={`rounded px-2 py-1 text-xs font-semibold ${tone}`} title={errorMessage}>{label}</span>
+      {errorMessage && (status === "failed" || status === "conflict") && (
+        <span className="text-[10px] leading-tight text-rose-600 max-w-[140px] truncate" title={errorMessage}>{errorMessage}</span>
+      )}
+    </div>
+  );
 }
 
 function RubberBillsModule({
@@ -562,8 +636,9 @@ function RubberBillsModule({
   }
 
   function confirmDelete(bill: RubberBill) {
-    if (window.confirm(`ลบบิล ${getDisplayBillNo(bill)} ใช่ไหม? ระบบจะยกเลิกเลขนี้และส่งรายการลบตอนซิงก์`)) {
-      deleteBill(bill.id);
+    if (confirm("ต้องการลบบิลนี้ใช่หรือไม่?")) {
+      deleteBill({ id: bill.id, clientTempId: bill.clientTempId, deletedByName: profile.name, deletedByPhone: profile.phone, revisionNo: bill.revisionNo })
+        .catch((err) => alert(err.message));
     }
   }
 
@@ -701,7 +776,7 @@ function RubberBillsModule({
                   <td>{formatNumber(bill.netTotal + bill.deductionTotal)}</td>
                   <td>{formatNumber(bill.price)}</td>
                   <td>{formatNumber(bill.deductionTotal)}</td>
-                  <td><SyncStatusBadge status={bill.syncStatus} /></td>
+                  <td><SyncStatusBadge status={bill.syncStatus} errorMessage={bill.syncErrorMessage} /></td>
                 </tr>
               ))}
               {visibleBills.length === 0 && (
@@ -749,11 +824,12 @@ function RubberBillsModule({
           profile={profile}
           bill={editingBill}
           customers={customers}
-          nextLocalSequence={bills.length + 1}
           onClose={() => setModalOpen(false)}
           onSave={(bill) => {
             const promise = editingBill ? updateBill(bill) : addBill(bill);
-            promise.then(() => setModalOpen(false)).catch((err: any) => alert(err.message || "เกิดข้อผิดพลาดในการบันทึกบิล"));
+            promise
+              .then(() => setModalOpen(false))
+              .catch((err: any) => alert(err.message || "เกิดข้อผิดพลาดในการบันทึกบิล"));
           }}
           onAddCustomer={addCustomer.mutate}
           onUpdateCustomer={updateCustomer.mutate}
@@ -768,7 +844,6 @@ function RubberBillModal({
   profile,
   bill,
   customers,
-  nextLocalSequence,
   onClose,
   onSave,
   onAddCustomer,
@@ -778,13 +853,13 @@ function RubberBillModal({
   profile: Profile;
   bill: RubberBill | null;
   customers: Customer[];
-  nextLocalSequence: number;
   onClose: () => void;
   onSave: (bill: RubberBill) => void;
   onAddCustomer: (customer: Customer) => void;
   onUpdateCustomer: (customer: Customer) => void;
 }) {
-  const initialLocalBillNo = bill?.localBillNo ?? makeLocalBillNo(selectedLocation.code, "R", nextLocalSequence);
+  const [clientTempId] = useState(() => bill?.clientTempId ?? makeClientTempId("rubber"));
+  const initialLocalBillNo = bill?.localBillNo ?? makeLocalBillNo(selectedLocation.code, "R", clientTempId);
   const initialPaymentResponsibility = bill?.customerType ?? "สาขานี้จ่าย";
   const [weighItems, setWeighItems] = useState<RubberWeighItem[]>(() => {
     if (bill?.weighItems?.length) return bill.weighItems;
@@ -803,6 +878,7 @@ function RubberBillModal({
   const [debtItems, setDebtItems] = useState<RubberDebtItem[]>(() => bill?.debtItems ?? (bill?.debtItem ? [bill.debtItem] : []));
   const [paymentResponsibility, setPaymentResponsibility] = useState<PaymentResponsibility>(initialPaymentResponsibility);
   const [weightDeduct, setWeightDeduct] = useState(0);
+  const [validationErrors, setValidationErrors] = useState<string[]>([]);
 
   // Autocomplete customer lookup states
   const [customerSearch, setCustomerSearch] = useState(bill?.customerName ?? "");
@@ -910,14 +986,21 @@ function RubberBillModal({
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    // ตรวจสอบ: มีรายการหักสินค้า/หักเงิน แต่ยอดสุทธิ <= 0
-    const hasDeductionItems = acidItems.length > 0 || debtItems.length > 0;
-    if (hasDeductionItems && net <= 0) {
-      alert(
-        `ไม่สามารถบันทึกบิลได้\n\nมีรายการหักสินค้า/หักเงิน แต่ยอดสุทธิที่ต้องจ่าย = ${net.toLocaleString("th-TH")} บาท\n\nกรุณาตรวจสอบน้ำหนักยาง ราคา และรายการหักให้ถูกต้อง`
-      );
+    const errors = validateRubberBillDraft({
+      customerName: customerSearch,
+      weighItems,
+      acidItems,
+      debtItems,
+      netTotal: net
+    });
+
+    if (errors.length > 0) {
+      setValidationErrors(errors);
+      toast.error("ข้อมูลไม่ถูกต้อง กรุณาแก้ไขข้อผิดพลาด");
       return;
     }
+    
+    setValidationErrors([]);
 
     const form = new FormData(event.currentTarget);
     const clientTempId = bill?.clientTempId ?? makeClientTempId("rubber");
@@ -967,7 +1050,17 @@ function RubberBillModal({
       onClose={onClose}
       size="wide"
     >
-      <form onSubmit={handleSubmit} className="space-y-0">
+      <form onSubmit={handleSubmit} className="space-y-0" noValidate>
+        {validationErrors.length > 0 && (
+          <div className="bg-red-50 p-4 border-b border-red-200">
+            <h4 className="text-red-800 font-bold mb-2">ไม่สามารถบันทึกได้เนื่องจาก:</h4>
+            <ul className="list-disc pl-5 text-sm text-red-700 space-y-1">
+              {validationErrors.map((err, i) => (
+                <li key={i}>{err}</li>
+              ))}
+            </ul>
+          </div>
+        )}
         <section className="bg-slate-50 p-3 sm:p-4">
           <h3 className="mb-4 font-bold text-ink">ข้อมูลลูกค้า</h3>
           <div className="grid gap-4 md:grid-cols-2">
