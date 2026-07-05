@@ -1,0 +1,444 @@
+# LanFlow System Architecture & Technical Summary
+
+เอกสารนี้สรุปสถาปัตยกรรมปัจจุบันของ LanFlow หลังการ refactor แบบ modularization โดยอ้างอิงจากโครงสร้างโค้ดจริงใน `src/`, `tests/`, และ config หลักของโปรเจกต์
+
+## 1. โครงสร้างหลักที่สำคัญ (Core Architecture)
+
+### โครงสร้างโฟลเดอร์หลัก
+
+```text
+src/
+  app/
+    api/                         # Next.js API Routes
+    layout.tsx                   # Root layout + AuthProvider + QueryProvider
+    page.tsx                     # Entry page
+  components/
+    LanFlowApp.tsx               # App Shell / Orchestrator
+    lanflow/                     # Shell UI: header, tabs, tab config
+    dashboard/                   # Dashboard summary UI
+    rubber-bills/                # โมดูลบิลยาง
+    income-expense/              # โมดูลรายรับ-รายจ่าย
+    money-transfer/              # โมดูลโอนเงิน
+    shared/                      # Shared UI primitives
+  hooks/                         # Data hooks / feature hooks
+  lib/
+    lanflow/                     # LanFlow-specific helpers
+    server/                      # Server-only helpers
+    supabase/                    # Supabase client/server config
+  types/
+    index.ts                     # Shared domain types
+tests/
+  rubber-bills-offline.spec.ts   # Offline-first E2E tests
+  rubber-bills-pwa.spec.ts       # PWA offline reload tests
+  auth-cache-offline.spec.ts     # Offline auth cache tests
+```
+
+### Domain-oriented components
+
+- **`src/components/lanflow/`**
+  - `AppHeader.tsx`: โลโก้, ข้อมูลผู้ใช้, dropdown เลือกสาขา, ปุ่มออกจากระบบ
+  - `NavigationTabs.tsx`: tab navigation, role guard ของเมนู admin, badge ของ OCR / โอนเงิน / เวลาและเงินเดือน
+  - `tabs.ts`: config รายการ tab และ icon
+
+- **`src/components/dashboard/`**
+  - `Dashboard.tsx`: แสดง summary ภาพรวม, ตารางบิลล่าสุด, รายการเงินล่าสุด
+  - `Metric.tsx`: metric card ขนาดเล็ก
+
+- **`src/components/rubber-bills/`**
+  - `RubberBillsModule.tsx`: state ของหน้าบิลยาง, search, pagination, modal open/close
+  - `RubberBillsTable.tsx`: ตารางบิลยาง
+  - `RubberBillModal.tsx`: form เพิ่ม/แก้ไขบิลยาง
+  - `bill-display.ts`: helper แสดงเลขบิลและเวลา
+
+- **`src/components/income-expense/`**
+  - `IncomeExpenseModule.tsx`: state ของหน้ารายรับ-รายจ่าย
+  - `IncomeExpenseModal.tsx`: form รายรับ-รายจ่าย
+  - `income-expense-display.ts`: helper แสดงเลขบิล
+
+- **`src/components/shared/`**
+  - UI primitives ที่ใช้ร่วมกัน เช่น `ModalShell`, `IconButton`, `Field`, `NumberField`, `InlineNumber`, `InlineRadio`, `SyncStatusBadge`
+
+### หน้าที่ของ `LanFlowApp.tsx`
+
+`LanFlowApp.tsx` ทำหน้าที่เป็น **App Shell / Orchestrator** ไม่ถือ implementation รายละเอียดของ module ใหญ่แล้ว หน้าที่หลักคือ:
+
+- โหลดข้อมูล bootstrap จาก `/api/lanflow`
+- อ่าน/เขียน bootstrap cache สำหรับ offline start ผ่าน `src/lib/lanflow/bootstrap-cache.ts`
+- เก็บ state ระดับแอป เช่น:
+  - `activeTab`
+  - `locations`
+  - `profile`
+  - `selectedLocationId`
+  - `ocrUploadItems`
+  - `online`
+  - `isLoaded`
+- เรียก hooks หลัก:
+  - `useRubberBills(selectedLocationId)`
+  - `useIncomeExpense(selectedLocationId)`
+  - `useMoneyTransfers(selectedLocationId)`
+  - `useTimeTrackingPending(profile)`
+- คำนวณ summary และ badge counts แล้วส่งเป็น props ให้ component ลูก
+- render module ตาม `activeTab`
+
+### การส่ง Props ระหว่าง Component
+
+แนวทางปัจจุบันคือ **state อยู่ใกล้เจ้าของที่สุด**:
+
+- State ระดับ app อยู่ใน `LanFlowApp.tsx`
+- State เฉพาะ module อยู่ใน module component เช่น `RubberBillsModule`, `IncomeExpenseModule`
+- Shared UI รับ props แบบ presentational
+- Module สำคัญรับ domain props ชัดเจน เช่น:
+  - `RubberBillsModule`: `selectedLocation`, `profile`
+  - `IncomeExpenseModule`: `selectedLocation`, `profile`
+  - `MoneyTransferModule`: `locationId`, `online`, `profile`
+  - `OcrTicketUpload`: `locationId`, `online`, `uploadItems`, `setUploadItems`
+
+## 2. เทคโนโลยีที่ใช้ (Tech Stack)
+
+### Frontend / App Runtime
+
+- **Next.js 15**: App Router, API Routes, build/start/dev scripts
+- **React 19**: component-based UI
+- **TypeScript**: type safety ทั้งฝั่ง client/server
+- **Tailwind CSS**: utility-first styling
+- **lucide-react**: icon components
+- **sonner**: toast notifications
+- **SweetAlert2**: dialog/confirm UX บางส่วน
+
+### State / Data Layer
+
+- **React state/hooks**: local UI state
+- **TanStack React Query**: server state และ cache ของ hooks หลัก เช่น `useRubberBills`
+- **Supabase JS / SSR**: auth session, database access, server/client Supabase helpers
+- **IndexedDB**: local offline sync queue สำหรับงานบิลยาง
+
+### Build / PWA
+
+- **`@ducanh2912/next-pwa`**: generate service worker, precache static assets, runtime cache strategies
+- **Workbox runtime caching** ผ่าน `next.config.ts`
+
+## 3. ระบบ Authentication
+
+### Auth Provider และ Profile
+
+ระบบ auth เริ่มจาก `src/app/layout.tsx`:
+
+- server-side เรียก `requireAuth()`
+- สร้าง `initialProfile`
+- ส่งเข้า `AuthProvider`
+- `AuthProvider` เรียก `useAuth(initialProfile)`
+
+`useAuth` เป็นตัวกลางจัดการ:
+
+- login ด้วย Supabase phone/password
+- logout
+- refresh profile ผ่าน `/api/auth/me`
+- offline auth cache
+- mode ของผู้ใช้: `online`, `offline`, `signed_out`
+
+### Offline Auth Cache
+
+มี cache key หลัก:
+
+- `lanflow:last-auth-user`
+- `lanflow:auth-profile:<userId>`
+
+กฎสำคัญ:
+
+- online source of truth คือ `/api/auth/me`
+- offline source of truth คือ cached profile ที่ยังไม่หมดอายุ
+- offline cache อายุสูงสุด 7 วัน (`OFFLINE_AUTH_MAX_AGE_MS`)
+- logout / 401 / 403 จะ clear auth cache และ bootstrap cache
+
+### Role / Permission
+
+Role หลักในระบบ:
+
+- `user`
+- `admin`
+- `super_admin`
+
+การควบคุมสิทธิ์มีหลายชั้น:
+
+- **UI guard**
+  - `NavigationTabs.tsx` แสดง tab `Admin` เฉพาะ `admin` และ `super_admin`
+  - module หรือปุ่มเฉพาะทางตรวจ `profile.role` เพิ่มตาม feature
+
+- **API guard**
+  - API routes ใช้ helper เช่น `requireAuth`, `requireRole`
+  - admin endpoints อยู่ใต้ `/api/lanflow/admin/...`
+
+- **Database / Supabase**
+  - schema ใช้ RLS และ role-based access
+  - งานที่ต้อง atomic เช่น sync บิลยางใช้ API/RPC bridge แทนให้ browser เขียน table โดยตรง
+
+## 4. ระบบ PWA และ Offline-First
+
+### PWA Mechanism
+
+PWA config อยู่ที่ `next.config.ts`:
+
+- development ปิด PWA (`disable: process.env.NODE_ENV === "development"`)
+- production สร้าง service worker ไปที่ `public/sw.js`
+- เปิด `skipWaiting`, `clientsClaim`, `reloadOnOnline`
+- API routes ใช้ `NetworkOnly` เพื่อไม่ cache authenticated API response ใน service worker
+- static assets ใช้ `CacheFirst`
+- images/fonts ใช้ cache strategy แยกตามประเภท
+
+`manifest.json` กำหนด:
+
+- app name: `LanFlow`
+- display: `standalone`
+- theme/background color
+- icon
+
+### Offline Bootstrap
+
+`src/lib/lanflow/bootstrap-cache.ts` เก็บข้อมูลเริ่มต้นของ workspace ต่อ user:
+
+- `locations`
+- `profile`
+- `selectedLocationId`
+
+เมื่อ offline:
+
+- `LanFlowApp.tsx` อ่าน cache ด้วย `readBootstrapCache(authProfileId)`
+- validate ว่า cache เป็นของ user เดียวกัน
+- filter locations ให้เหลือเฉพาะที่ `profile.locationIds` อนุญาต
+- fallback selected branch ถ้า branch เดิมใช้ไม่ได้
+
+### IndexedDB Offline Queue
+
+offline queue อยู่ที่ `src/lib/idb-queue.ts`:
+
+- database: `lanflow_sync_db`
+- object store: `sync_queue`
+- event fields สำคัญ:
+  - `entity`
+  - `operation`: `create`, `update`, `delete`
+  - `payload`
+  - `status`: `pending`, `failed`, `conflict`
+  - `errorMessage`
+
+การ coalesce queue อยู่ที่ `src/lib/coalesceQueueGroup.ts`:
+
+- `create + delete` = no-op
+- `create + update(s)` = create เดียว ใช้ payload ล่าสุด
+- `update(s) + delete` = delete เดียว คง revision เดิม
+- `update(s)` = update เดียว ใช้ payload ล่าสุด
+
+### Rubber Bills Offline-First Flow
+
+โมดูลที่ใช้ offline-first เป็นหลักคือ **Rubber Bills / บิลยาง**:
+
+1. ผู้ใช้สร้าง/แก้ไข/ลบบิลผ่าน `RubberBillModal`
+2. `useRubberBills` สร้าง payload ผ่าน `buildRpcPayload`
+3. ถ้าเป็น create/update/delete จะ enqueue ลง IndexedDB
+4. UI merge server state กับ pending queue เพื่อแสดง optimistic result
+5. `SyncStatusBadge` แสดงสถานะ:
+   - `pending`
+   - `syncing`
+   - `synced`
+   - `failed`
+   - `conflict`
+6. เมื่อ online:
+   - `syncPendingBills()` normalize queue
+   - ส่ง payload ไป `/api/lanflow/rubber-bills`
+   - API route เรียก Supabase RPC `sync_rubber_bill`
+   - success จะ remove event จาก queue
+   - conflict/failed จะคง event ไว้พร้อม error message
+
+### Module Coverage
+
+สถานะ offline-first ณ ตอนนี้:
+
+- **Rubber Bills**: ใช้ offline queue และ PWA flow เป็นหลัก
+- **Auth / Bootstrap**: รองรับ offline auth cache และ branch bootstrap cache
+- **Income/Expense**: มี sync status และโครงสร้าง data hooks แต่ไม่ใช่ full offline queue แบบ Rubber Bills ในระดับเดียวกัน
+- **OCR / Money Transfer / Time Tracking**: มี online state และ badge/status แต่ไม่ได้เป็น offline-first core flow เท่าบิลยาง
+
+### เปรียบเทียบ Offline-First: Rubber Bills vs Income/Expense
+
+| หัวข้อ | Rubber Bills | Income/Expense |
+|---|---|---|
+| สถานะ offline-first | **Full Offline หลักของระบบ** | **ยังไม่ใช่ Full Offline** |
+| Hook หลัก | `useRubberBills` | `useIncomeExpense` |
+| วิธีบันทึกข้อมูล | เขียนคำสั่งลง IndexedDB queue ก่อน แล้ว sync ภายหลัง | เรียก Supabase จาก browser hook โดยตรง |
+| Local queue | ใช้ `lanflow_sync_db` / `sync_queue` ผ่าน `idb-queue.ts` | ยังไม่ใช้ IndexedDB queue |
+| Operations ที่รองรับ offline | `create`, `update`, `delete` | ยังต้อง online เพื่อ insert/update/delete ให้สำเร็จ |
+| Optimistic UI | มี merge server state + pending queue เพื่อแสดงรายการระหว่างรอ sync | มี `syncStatus` ในข้อมูล แต่ไม่มี queue merge แบบ Rubber Bills |
+| Sync trigger | ตอน mount ถ้า online และตอน browser กลับมา online | ไม่มี background sync queue เฉพาะ module |
+| Conflict handling | มี `failed` / `conflict` event ค้างใน queue พร้อม `syncErrorMessage` | ยังไม่มี conflict queue/retry flow |
+| Coalescing | มี `coalesceQueueGroup`: รวม create/update/delete หลาย event ให้เป็นคำสั่งเดียวที่ปลอดภัย | ยังไม่มี coalescing |
+| Idempotency | payload มี `idempotencyKey`, `clientTempId`, `expectedRevisionNo` และ replay ได้ | มี `idempotencyKey` field แต่ flow ยังเป็น direct upsert/check จาก client |
+| Backend path | `POST /api/lanflow/rubber-bills` -> Supabase RPC `sync_rubber_bill` | ไม่มี `/api/lanflow/income-expense` route ในโค้ดปัจจุบัน |
+| Atomic transaction | ใช้ RPC ฝั่ง Supabase สำหรับ sync บิลแม่/รายการลูกแบบ atomic | ยังไม่มี atomic RPC/API bridge สำหรับทั้งชุด transaction |
+| Server bill number | server/RPC เป็นผู้จัดการเพื่อกันเลขชน | client hook generate จาก query ล่าสุด จึงยังเสี่ยง race ถ้าหลายเครื่องทำพร้อมกัน |
+| Delete behavior | enqueue delete และ sync เป็น soft delete ผ่าน backend path | direct update `record_status = "deleted"` จาก hook |
+| PWA test coverage | มีทั้ง `rubber-bills-offline.spec.ts` และ `rubber-bills-pwa.spec.ts` | ยังไม่มี E2E offline-first เฉพาะ Income/Expense |
+| ความพร้อมสำหรับ tablet/offline | พร้อมที่สุดในระบบตอนนี้ | ใช้ได้ดีเมื่อ online แต่ควรยกระดับก่อนนับเป็น offline-first |
+
+**สรุป:** ถ้าต้องการให้ Income/Expense เป็น offline-first ระดับเดียวกับ Rubber Bills ควรทำ phase แยก โดยย้าย save/delete ไปเป็น IndexedDB queue + Next API Route/RPC + idempotency/revision conflict handling ก่อน ไม่ควรแก้ปะปนกับ UI form เล็ก ๆ
+
+## 5. การทดสอบระบบ (Testing Strategy)
+
+### Test Tooling
+
+ใช้ **Playwright** เป็น E2E test runner:
+
+- config หลัก: `playwright.config.ts`
+- dev project: `chromium`
+- PWA project: `chromium-pwa`
+- global teardown: kill port `3000` หรือ `3001` หลัง test บน Windows
+
+### คำสั่งสำคัญ
+
+```powershell
+# Type check
+npx.cmd tsc --noEmit
+
+# Production build
+npm run build
+
+# Dev-mode E2E
+npx.cmd playwright test --project=chromium
+
+# PWA / production-mode E2E
+$env:PW_PROJECT="pwa"; npx.cmd playwright test --project=chromium-pwa
+```
+
+### Dev-mode Offline Tests
+
+`tests/rubber-bills-offline.spec.ts` ทดสอบ flow หลักของ Rubber Bills:
+
+- create/edit/delete แบบ offline
+- reload และ sync เมื่อกลับมา online
+- idempotency replay
+- coalesce update หลายครั้ง
+- coalesce update แล้ว delete
+- legacy duplicate queue events
+- create + delete เป็น no-op
+- create + update เป็น create เดียวด้วย payload ล่าสุด
+
+### PWA Tests
+
+`tests/rubber-bills-pwa.spec.ts` ทดสอบ production-mode PWA:
+
+- service worker ทำงานหลัง build
+- offline page reload ยังกลับมาใช้ UI ได้
+- IndexedDB queue อยู่รอดหลัง reload
+- reconnect แล้ว sync สำเร็จ
+
+`tests/auth-cache-offline.spec.ts` ทดสอบ auth cache:
+
+- logout แล้ว offline reload ต้องไม่ restore profile
+- expired offline cache ต้อง sign out และ clear cache
+
+### ข้อสังเกตจากการรันล่าสุด
+
+- `npx.cmd tsc --noEmit` ผ่าน
+- `npm run build` ผ่าน
+- `chromium-pwa` ผ่าน 3/3
+- `chromium` full suite มีหนึ่งเคส timeout ที่หน้า login จาก cold-load/flaky timing แต่ rerun เฉพาะเคสนั้นผ่าน และ flow offline หลักอื่นผ่าน
+
+## 6. สิ่งที่ควรรู้ก่อนพัฒนาต่อ
+
+### Development Workflow ที่แนะนำ
+
+ก่อนเริ่มแก้ feature ใหญ่ ควรทำตามลำดับนี้:
+
+1. อ่าน domain folder ที่เกี่ยวข้องก่อน เช่น `rubber-bills/`, `income-expense/`, `lanflow/`
+2. ตรวจ hook/API/schema ที่ module นั้นใช้
+3. แก้แบบเล็กที่สุดเท่าที่พอ
+4. รัน `npx.cmd tsc --noEmit`
+5. ถ้าแตะ PWA/offline ให้รัน Playwright ที่เกี่ยวข้องเสมอ
+
+คำสั่งที่ใช้บ่อย:
+
+```powershell
+npm run dev
+npx.cmd tsc --noEmit
+npm run build
+npx.cmd playwright test --project=chromium
+$env:PW_PROJECT="pwa"; npx.cmd playwright test --project=chromium-pwa
+```
+
+### Module Boundary Rules
+
+- **อย่าเอา logic ขนาดใหญ่กลับเข้า `LanFlowApp.tsx`**
+  - ไฟล์นี้ควรเป็น shell/orchestrator เท่านั้น
+  - ถ้าเพิ่ม feature ใหม่ ให้สร้าง module หรือ hook แยกตาม domain
+
+- **แยก domain ให้ชัด**
+  - งานบิลยางอยู่ใน `src/components/rubber-bills/`
+  - งานรายรับ-รายจ่ายอยู่ใน `src/components/income-expense/`
+  - shell/tab/header อยู่ใน `src/components/lanflow/`
+  - UI กลางเท่านั้นอยู่ใน `src/components/shared/`
+
+- **shared component ต้องไม่ผูก domain ถ้าไม่จำเป็น**
+  - ตัวอย่างที่ดีคือ `SyncStatusBadge` ใช้ type กลาง `SyncStatus`
+  - หลีกเลี่ยง shared component ที่ import `RubberBill` หรือ `IncomeExpense` โดยตรง
+
+### Offline-First Rules
+
+Rubber Bills เป็น module ที่เสี่ยงที่สุด เพราะรองรับ full offline flow:
+
+- ห้ามใช้ `new Date()` ฝั่ง client เป็น source of truth ของเวลาสำคัญ
+- ห้ามเปลี่ยน `localBillNo` หลังสร้างแล้ว
+- ห้ามให้ browser เขียน `rubber_bills` / `rubber_bill_items` โดยตรงถ้าเป็น sync flow สำคัญ
+- create/update/delete ต้อง replay ได้โดยไม่เกิดข้อมูลซ้ำ
+- conflict/failed event ต้องอยู่ใน IndexedDB จนกว่าผู้ใช้หรือระบบจะแก้ได้
+- ถ้าแก้ `useRubberBills`, `idb-queue`, `coalesceQueueGroup`, หรือ `/api/lanflow/rubber-bills` ต้องรัน offline/PWA tests
+
+### Auth และ Security Rules
+
+- อย่าใส่ `service_role` หรือ secret ใด ๆ ใน browser/client component
+- client-side role guard เป็นแค่ UX ไม่ใช่ security boundary
+- security จริงต้องอยู่ที่:
+  - API route guard เช่น `requireAuth`, `requireRole`
+  - Supabase RLS / RPC / grant policy
+- ถ้าเพิ่ม admin action ใหม่ ต้องตรวจทั้ง 3 ชั้น:
+  - UI แสดงเฉพาะ role ที่ถูกต้อง
+  - API ตรวจ role
+  - DB/RLS/RPC ไม่เปิด bypass
+
+### Database / Migration Rules
+
+- ถ้าแก้ schema ให้เพิ่ม migration ใน `supabase/migrations/`
+- อัปเดต `supabase-schema.sql` ให้ตรงกับ migration snapshot
+- ถ้าเพิ่ม table ใหม่ ต้องตรวจ:
+  - primary key / unique constraints
+  - `created_at` / `updated_at`
+  - `location_id` ถ้าเป็นข้อมูลแยกสาขา
+  - RLS policies
+  - grants สำหรับ role ที่จำเป็น
+- ถ้าเป็นข้อมูล offline/replay ควรมี idempotency key หรือ RPC transaction
+
+### Testing Notes
+
+- `chromium` project ใช้ dev server และเหมาะกับ logic/flow ปกติ
+- `chromium-pwa` project ใช้ production build และเหมาะกับ service worker/PWA behavior
+- ก่อนรัน PWA tests ต้อง `npm run build`
+- ถ้า dev-mode full suite timeout ที่หน้า login แต่ rerun เฉพาะเคสผ่าน ให้ถือเป็น flaky cold-load ก่อน แต่ควรจับตาถ้าเกิดซ้ำบ่อย
+- tests ที่ควรระวังเป็นพิเศษ:
+  - `tests/rubber-bills-offline.spec.ts`
+  - `tests/rubber-bills-pwa.spec.ts`
+  - `tests/auth-cache-offline.spec.ts`
+
+### Known Caveats
+
+- ข้อความไทยใน PowerShell output อาจแสดงเพี้ยน แต่ไฟล์ source เป็น UTF-8 และ browser แสดงถูกต้อง
+- `public/sw.js` เป็น generated artifact จาก PWA build ไม่ควรแก้ด้วยมือ
+- PWA test อาจ fail ถ้า `.next/BUILD_ID` หายหรือยังไม่ได้ build ใหม่
+- Playwright config ตั้ง `reuseExistingServer: false` ดังนั้นถ้ามี server ค้างบน port `3000` หรือ `3001` test จะเริ่มไม่ได้
+
+## สรุปภาพรวม
+
+LanFlow หลัง modularization มีโครงสร้างแยกตาม domain ชัดเจนขึ้น:
+
+- `LanFlowApp.tsx` ทำหน้าที่ orchestration
+- module ใหญ่ถูกย้ายไป folder เฉพาะ domain
+- shared UI ถูกแยกไว้ที่ `components/shared`
+- Rubber Bills เป็น offline-first core module
+- Auth/PWA/IndexedDB queue ถูกออกแบบให้รองรับ tablet/offline workflow
+- Playwright ครอบคลุมทั้ง dev-mode offline sync และ production-mode PWA reload

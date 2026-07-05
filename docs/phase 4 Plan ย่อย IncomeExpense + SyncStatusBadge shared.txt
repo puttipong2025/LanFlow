@@ -1,0 +1,66 @@
+phase 4 Plan ย่อย: Income/Expense + SyncStatusBadge shared
+
+เป้าหมาย: แยกโมดูลรายรับ-รายจ่าย และแก้ dependency ข้ามโดเมนที่ LanFlowApp ใช้ SyncStatusBadge จาก rubber-bills
+
+Tasks:
+
+
+
+สร้าง shared sync badgeย้าย SyncStatusBadge จาก src/components/rubber-bills/SyncStatusBadge.tsx
+
+ไปเป็น src/components/shared/SyncStatusBadge.tsx
+
+แนะนำเพิ่ม type กลางใน src/types/index.ts:
+
+export type SyncStatus = "pending" | "syncing" | "synced" | "failed" | "conflict";
+
+ให้ RubberBill และ IncomeExpense ใช้ type เดียวกันภายหลัง ถ้าไม่เสี่ยงเกินไป
+
+อัปเดต importsRubberBillsTable.tsx import จาก shared
+
+LanFlowApp.tsx import จาก shared ชั่วคราว
+
+หลังย้าย IncomeExpenseModule ออกแล้ว ให้ module ใหม่ import จาก shared เอง
+
+แยก Income/Expense display helperย้าย getIncomeExpenseDisplayNo ไป src/components/income-expense/income-expense-display.ts
+
+แยก IncomeExpenseModule
+
+สร้าง src/components/income-expense/IncomeExpenseModule.tsx
+
+ย้าย hook/useState/table/modal trigger ไปทั้งก้อน
+
+ห้ามเปลี่ยน behavior ฟอร์ม
+
+แยก IncomeExpenseModal
+
+สร้าง src/components/income-expense/IncomeExpenseModal.tsx
+
+ย้าย autocomplete, lines, validation, save payload เหมือนเดิม
+
+ยังใช้ IncomeSaleItemsModal เดิมก่อน
+
+Verification:
+
+
+
+npx.cmd tsc --noEmit
+
+npm run build
+
+Manual checks:
+
+
+
+เพิ่มรายรับทั่วไป
+
+เพิ่มบิลขาย
+
+เพิ่มรายจ่ายค่าใช้จ่าย
+
+super_admin เห็นปุ่มจัดการรายการบิลขาย
+
+admin/user ไม่เห็นปุ่มนั้น
+
+sync badge ยังแสดงในทั้งบิลยางและรายรับ-รายจ่าย 
+
