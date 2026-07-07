@@ -121,6 +121,10 @@ export type IncomeExpense = {
   deletedByName?: string;
   deletedByPhone?: string;
   syncErrorMessage?: string;
+  relationSourceType?: "money_transfer";
+  relationSourceId?: string;
+  relationLockReason?: string;
+  relationLabel?: string;
 };
 
 export type QueueItem = {

@@ -100,6 +100,17 @@ export function BranchTransferForm({
   const handleSubmit = useCallback(() => {
     if (!selectedLocationId) return;
 
+    if (selectedLocationId === locationId) {
+      Swal.fire({
+        icon: "warning",
+        title: "เลือกสาขาไม่ถูกต้อง",
+        text: "สาขาปลายทางต้องไม่ใช่สาขาปัจจุบัน",
+        confirmButtonColor: "#3b82f6",
+        confirmButtonText: "ตกลง"
+      });
+      return;
+    }
+
     if (slips.some(s => !s.transactionDate)) {
       Swal.fire({
         icon: "warning",
@@ -179,7 +190,7 @@ export function BranchTransferForm({
             >
               <option value="" disabled>-- เลือกสาขา --</option>
               {locations.map(loc => (
-                <option key={loc.id} value={loc.id}>
+                <option key={loc.id} value={loc.id} disabled={loc.id === locationId}>
                   {loc.name} {loc.id === locationId ? "(สาขาปัจจุบัน)" : ""}
                 </option>
               ))}
@@ -244,7 +255,7 @@ export function BranchTransferForm({
         <button
           type="button"
           onClick={handleSubmit}
-          disabled={!selectedLocationId || slips.length === 0}
+          disabled={!selectedLocationId || selectedLocationId === locationId || slips.length === 0}
           className="focus-ring flex items-center gap-1.5 rounded-md bg-river px-5 py-2 text-sm font-semibold text-white hover:bg-river/90 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <Save size={15} /> บันทึก

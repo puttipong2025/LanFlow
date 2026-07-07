@@ -5,10 +5,33 @@ import { enqueueSyncEvent, getPendingEvents, removeSyncEvent, updateSyncEvent, t
 import { coalesceQueueGroup } from "@/lib/coalesceQueueGroup";
 import { buildIncomeExpensePayload } from "@/lib/income-expense/build-income-expense-payload";
 import { useEffect } from "react";
-import { OFFLINE_SYNCED_ACTION_MESSAGE } from "@/lib/record-action-locks";
+import { INCOME_EXPENSE_BRANCH_TRANSFER_LOCK_MESSAGE, OFFLINE_SYNCED_ACTION_MESSAGE } from "@/lib/record-action-locks";
 
 const ENTITY = "income_expense" as const;
 const QUERY_KEY = "incomeExpense" as const;
+
+type IncomingBranchTransferRow = {
+  id: string;
+  location_id: string;
+  target_location_id: string | null;
+  target_location_name: string | null;
+  net_amount_to_pay: number | string | null;
+  transfer_status: string | null;
+  transfer_type: string | null;
+  record_status: string | null;
+  revision_no: number | null;
+  created_by_user_id: string | null;
+  created_by_name: string | null;
+  created_by_phone: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+type LocationLookupRow = {
+  id: string;
+  name: string;
+  code: string | null;
+};
 
 // ─── Sync ────────────────────────────────────────────────────
 
@@ -116,6 +139,43 @@ function payloadToOptimisticRow(event: SyncEvent): IncomeExpense {
   };
 }
 
+function branchTransferToIncomeRow(
+  transfer: IncomingBranchTransferRow,
+  sourceLocation?: LocationLookupRow
+): IncomeExpense {
+  const displayNo = `TR-${transfer.id.slice(0, 8)}`;
+  const recordedAt = transfer.created_at ?? transfer.updated_at ?? "1970-01-01T00:00:00.000Z";
+  const sourceName = sourceLocation?.name ?? "สาขาต้นทาง";
+
+  return {
+    id: `money-transfer-income:${transfer.id}`,
+    clientTempId: `money-transfer-income:${transfer.id}`,
+    localBillNo: displayNo,
+    serverBillNo: displayNo,
+    syncStatus: "synced",
+    idempotencyKey: `money-transfer:${transfer.id}`,
+    locationId: transfer.target_location_id ?? "",
+    type: "income",
+    number: displayNo,
+    txDate: recordedAt.slice(0, 10),
+    title: `รับโอนจาก ${sourceName}`,
+    cost: Number(transfer.net_amount_to_pay ?? 0),
+    billOption: "รายรับ",
+    createdByUserId: transfer.created_by_user_id ?? "",
+    createdByName: transfer.created_by_name ?? "ระบบโอนเงิน",
+    createdByPhone: transfer.created_by_phone ?? "",
+    clientCreatedAt: recordedAt,
+    clientRecordedAt: recordedAt,
+    serverReceivedAt: transfer.updated_at ?? transfer.created_at ?? undefined,
+    revisionNo: transfer.revision_no ?? 0,
+    recordStatus: "active",
+    relationSourceType: "money_transfer",
+    relationSourceId: transfer.id,
+    relationLabel: "โอนเงินสาขา",
+    relationLockReason: INCOME_EXPENSE_BRANCH_TRANSFER_LOCK_MESSAGE,
+  };
+}
+
 // ─── Hook ────────────────────────────────────────────────────
 
 export function useIncomeExpense(locationId: string) {
@@ -138,6 +198,7 @@ export function useIncomeExpense(locationId: string) {
     queryFn: async () => {
       // 1. Fetch server state (gracefully degrade when offline)
       let serverRows: IncomeExpense[] = [];
+      let incomingBranchIncomeRows: IncomeExpense[] = [];
 
       try {
         const { data, error } = await supabase
@@ -186,12 +247,65 @@ export function useIncomeExpense(locationId: string) {
         }
       }
 
+      try {
+        const { data: branchTransfers, error } = await supabase
+          .from("money_transfers")
+          .select(`
+            id,
+            location_id,
+            target_location_id,
+            target_location_name,
+            net_amount_to_pay,
+            transfer_status,
+            transfer_type,
+            record_status,
+            revision_no,
+            created_by_user_id,
+            created_by_name,
+            created_by_phone,
+            created_at,
+            updated_at
+          `)
+          .eq("transfer_type", "branch")
+          .eq("target_location_id", locationId)
+          .neq("record_status", "deleted")
+          .neq("transfer_status", "cancelled");
+
+        if (error) throw new Error(error.message || JSON.stringify(error));
+
+        const incomingTransfers = (branchTransfers || []) as IncomingBranchTransferRow[];
+        const sourceLocationIds = Array.from(new Set(incomingTransfers.map(t => t.location_id).filter(Boolean)));
+        const locationsById = new Map<string, LocationLookupRow>();
+
+        if (sourceLocationIds.length > 0) {
+          const { data: sourceLocations, error: locationsError } = await supabase
+            .from("locations")
+            .select("id, name, code")
+            .in("id", sourceLocationIds);
+
+          if (!locationsError) {
+            (sourceLocations || []).forEach((location: LocationLookupRow) => {
+              locationsById.set(location.id, location);
+            });
+          }
+        }
+
+        incomingBranchIncomeRows = incomingTransfers
+          .filter(transfer => Number(transfer.net_amount_to_pay ?? 0) > 0)
+          .map(transfer => branchTransferToIncomeRow(transfer, locationsById.get(transfer.location_id)));
+      } catch (err) {
+        if (navigator.onLine) {
+          console.warn("Unable to load incoming branch transfer income rows:", err);
+        }
+      }
+
       // 2. Fetch pending queue
       const pendingEvents = await getPendingEvents(ENTITY);
 
       // 3. Merge
       const rowsMap = new Map<string, IncomeExpense>();
       serverRows.forEach(r => rowsMap.set(r.clientTempId, r));
+      incomingBranchIncomeRows.forEach(r => rowsMap.set(r.clientTempId, r));
 
       for (const event of pendingEvents) {
         if (event.operation === "delete") {

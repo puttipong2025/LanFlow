@@ -23,7 +23,9 @@
 
 - ปัจจุบันรองรับ create/update/delete ผ่าน IndexedDB queue แล้ว sync ไปที่ `sync_income_expense(payload)`.
 - ตอนนี้ยังไม่พบ relationship จาก `money_transfer_items` มาที่ `income_expense`.
-- ดังนั้นกติกา relation lock จะยังไม่กระทบ Income/Expense จนกว่าจะออกแบบให้เลือก Income/Expense ในโอนเงินด้วย.
+- ดังนั้นกติกา relation lock แบบ source item ใน `money_transfer_items` ยังไม่กระทบ Income/Expense จนกว่าจะออกแบบให้เลือก Income/Expense ในโอนเงินด้วย.
+- เพิ่มกติกาใหม่สำหรับ **branch transfer income**: ถ้า `money_transfers.transfer_type = 'branch'` และ `target_location_id` ตรงกับสาขาที่กำลังดู โมดูลรับ-จ่ายจะแสดงรายการนั้นเป็นรายรับขาเข้าแบบ derived จาก `money_transfers`.
+- รายรับขาเข้าจาก branch transfer ถูกล็อกใน UI: แก้ไข/ลบจากโมดูลรับ-จ่ายไม่ได้ ต้องแก้ไขหรือลบรายการโอนเงินต้นทางแทน. เมื่อรายการต้นทางเปลี่ยน รายรับ derived จะเปลี่ยนตาม; เมื่อต้นทางถูกลบหรือยกเลิก รายรับ derived จะหายตาม.
 
 ### OCR Tickets
 
@@ -42,6 +44,7 @@
 | Synced record | Offline | No/Unknown | No | No | ตรวจ revision และ relationship ล่าสุดไม่ได้ |
 | Synced record | Online | No | Yes | Yes | Server/RPC ตรวจ revision ได้ |
 | Synced record | Online | Yes | No | No | ต้องยกเลิกความสัมพันธ์โอนเงินก่อน |
+| Derived branch transfer income | Online/Offline | Source money transfer | No | No | เป็นรายรับที่ดึงจากโมดูลโอนเงิน ต้องแก้/ลบจากต้นทาง |
 | Conflict/failed queue | Any | Any | No | No | ต้อง resolve queue ก่อน |
 | Pending delete | Any | Any | No | No | รายการกำลังถูกลบอยู่แล้ว |
 
@@ -133,6 +136,12 @@ Recommendation:
 - ยังไม่เพิ่ม relation lock กับโอนเงิน เพราะ schema ปัจจุบันไม่ได้ผูก `income_expense` กับ `money_transfer_items`
 - ถ้าอนาคตต้องเลือก Income/Expense ในโอนเงิน ให้เพิ่ม `source_type = 'income_expense'` แบบ explicit พร้อม migration และ tests แยก
 
+Update:
+
+- เพิ่ม branch transfer income แบบ derived แล้ว โดยไม่สร้าง row ใหม่ใน `income_expense`.
+- เหตุผล: รายรับปลายทางต้องเปลี่ยน/หายตามรายการโอนเงินต้นทางเสมอ การ derive จาก `money_transfers` ลดโอกาสข้อมูลซ้ำไม่ตรงกัน และทำให้ relation lock ทำได้ตรงไปตรงมาใน UI.
+- เพิ่ม RLS select policy ให้สาขาปลายทางอ่าน `money_transfers` ประเภท `branch` ที่ชี้มาหาสาขาตัวเองได้.
+
 ### Phase 4: Tests And Documentation
 
 Add tests:
@@ -145,6 +154,9 @@ Add tests:
 2. Income/Expense:
    - synced transaction + offline -> edit/delete disabled
    - pending create + offline -> edit/delete allowed
+   - incoming branch transfer -> appears as income
+   - incoming branch transfer income -> edit/delete disabled
+   - update/delete source branch transfer -> derived income updates/disappears
 
 Update docs:
 
@@ -159,6 +171,7 @@ Update docs:
 - **Relation lock:** สถานะที่ record ถูกโมดูลอื่นใช้อยู่ จึงห้ามแก้ไข/ลบ
 - **Active transfer relation:** ความสัมพันธ์ใน `money_transfer_items` ที่ parent transfer ยังไม่ถูกยกเลิก
 - **Business lock:** การปฏิเสธ operation เพราะผิดกติกาธุรกิจ ไม่ใช่ technical conflict
+- **Derived branch transfer income:** รายรับที่แสดงในโมดูลรับ-จ่ายจาก `money_transfers` ประเภท `branch` ที่โอนเข้ามายังสาขาปัจจุบัน ไม่ใช่ row ที่ผู้ใช้แก้/ลบใน `income_expense` โดยตรง
 
 ## Confirmed Decisions
 
@@ -166,3 +179,4 @@ Update docs:
 2. Relationship lock รอบแรกทำกับ Rubber Bills และ OCR Tickets เพราะโอนเงินตอนนี้รองรับ `rubber_bill` และ `ocr_ticket` แต่ยังไม่รองรับ `income_expense`
 3. การ "ยกเลิกความสัมพันธ์" หมายถึงลบ item ออกจากรายการโอน
 4. ถ้า RPC เจอบิลถูกผูกกับโอนเงินแล้ว ให้ return `failed` พร้อมข้อความไทย เช่น `รายการนี้ถูกล็อก ต้องลบ item ออกจากรายการโอนก่อน`
+5. รายรับจากรายการโอนเงินสาขาขาเข้าให้แสดงในรับ-จ่ายเป็น derived row และล็อกให้แก้/ลบจากรายการโอนเงินต้นทางเท่านั้น

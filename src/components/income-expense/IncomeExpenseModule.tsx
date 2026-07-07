@@ -49,6 +49,7 @@ export function IncomeExpenseModule({
   }
 
   function getActionBlockReason(transaction: IncomeExpense) {
+    if (transaction.relationLockReason) return transaction.relationLockReason;
     return getOfflineSyncedActionBlockReason(transaction, isOnline);
   }
 
@@ -147,7 +148,16 @@ export function IncomeExpenseModule({
                   </td>
                   <td>{transaction.txDate}</td>
                   <td>{transaction.type === "income" ? "รายรับ" : "รายจ่าย"}</td>
-                  <td>{transaction.title}</td>
+                  <td>
+                    <div className="flex flex-col gap-1">
+                      <span>{transaction.title}</span>
+                      {transaction.relationLabel && (
+                        <span className="w-fit rounded-full bg-river/10 px-2 py-0.5 text-[10px] font-bold text-river">
+                          {transaction.relationLabel}
+                        </span>
+                      )}
+                    </div>
+                  </td>
                   <td>{transaction.billOption}</td>
                   <td className={transaction.type === "income" ? "font-semibold text-leaf" : "font-semibold text-clay"}>
                     {transaction.type === "income" ? "+" : "-"}{formatCurrency(transaction.cost)}

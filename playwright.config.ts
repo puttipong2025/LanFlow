@@ -60,7 +60,7 @@ export default defineConfig({
     : {
         command: 'node node_modules/next/dist/bin/next dev -p 3000',
         url: 'http://127.0.0.1:3000',
-        reuseExistingServer: false,
+        reuseExistingServer: true,
         gracefulShutdown: { signal: 'SIGINT', timeout: 1000 },
         timeout: 120 * 1000,
       },

@@ -7,7 +7,7 @@
 1. สร้างรายการ **จ่ายเพื่อโยกเงินไปสาขาอื่น**
 2. เมื่อรายการต้นทางผ่านกติกาแล้ว ระบบสร้าง **รายรับของสาขาปลายทาง** อัตโนมัติ
 3. รายรับปลายทางถูกครอบด้วย **relation lock** แก้ไข/ลบโดยตรงไม่ได้ ต้องแก้หรือลบจากรายการต้นทางเท่านั้น
-4. เพิ่มหน้าต่างตั้งค่าในโมดูลรับ-จ่าย ให้ `super_admin` กำหนดรายการจ่ายได้หลายรายการ เช่น `เบิก`, `ค่าแรง`, `กับข้าว`
+4. เพิ่มหน้าต่างตั้งค่าในโมดูลรับ-จ่าย ให้ `super_admin` กำหนดคำตรวจจับรายการได้หลายคำ เช่น `เบิก`, `ค่าแรง`, `กับข้าว`
 5. เพิ่มกติกา approval: รายการรับ-จ่ายบางประเภทหรือยอดเงินตั้งแต่ threshold ที่ `super_admin` กำหนด ต้องเข้าคิวรออนุมัติ/ปฏิเสธก่อน จึงจะถูกบันทึกเป็นรายการรับ-จ่ายจริง
 
 ## Existing Constraints
@@ -22,21 +22,23 @@
 - `income_expense.bill_option` ตอนนี้จำกัดไว้:
   - income: `รายรับ`, `บิลขาย`
   - expense: `ค่าใช้จ่าย`
-- ดังนั้นรายการอย่าง `เบิก`, `ค่าแรง`, `กับข้าว` ไม่ควรใส่เป็น `bill_option`; ควรเป็น field/catalog ใหม่ เช่น `category_id` หรือ `approval_category_id`
+- รายการอย่าง `เบิก`, `ค่าแรง`, `กับข้าว` ไม่เกี่ยวกับ `bill_option` และไม่ใช่หมวดใหม่ของ transaction
+- คำเหล่านี้เป็น **approval keywords** ที่ระบบใช้ตรวจจากข้อความรายการ เช่น `title`; ถ้าเจอคำที่ `super_admin` ตั้งไว้ ให้สร้างคำขออนุมัติแทนการบันทึกลง `income_expense` ทันที
 
 ## Recommended Domain Decision
 
 ฟีเจอร์นี้ควรแบ่งเป็น 3 ชิ้นที่เกี่ยวกัน แต่ไม่ปนกัน:
 
-1. **Income/Expense Category Config**
-   - catalog global ที่ `super_admin` สร้าง/ปิดใช้งาน/แก้กติกาได้
-   - ใช้ได้กับ income, expense หรือทั้งคู่ตาม config
-   - เก็บ label เช่น `เบิก`, `ค่าแรง`, `กับข้าว`
-   - เก็บ threshold ที่ต้องอนุมัติ เช่น `requires_approval`, `approval_min_amount`
+1. **Approval Keyword Config**
+   - config global ที่ `super_admin` สร้าง/ปิดใช้งาน/แก้ได้
+   - เก็บ keyword string เช่น `เบิก`, `ค่าแรง`, `กับข้าว`
+   - ใช้ตรวจจากข้อความรายการรับ-จ่าย เช่น `income_expense.title`
+   - เก็บ scope ได้ เช่น ตรวจเฉพาะ expense หรือทั้ง income/expense
+   - เก็บ threshold เสริมได้ เช่น keyword นี้ต้องอนุมัติเมื่อยอด `>= approval_min_amount`
 
 2. **Pending Approval Queue**
    - table แยกสำหรับรายการที่ยังไม่ควรลง `income_expense`
-   - เมื่อรายการเข้าเงื่อนไขต้องอนุมัติ ให้บันทึกเป็น pending request เท่านั้น
+   - เมื่อรายการมี keyword ที่ตั้งไว้ หรือเข้าเงื่อนไขยอดเงิน ให้บันทึกเป็น pending request เท่านั้น
    - เมื่อ `super_admin` อนุมัติ ค่อยเรียก RPC เพื่อสร้าง `income_expense`
    - เมื่อปฏิเสธ ให้คงประวัติไว้พร้อมเหตุผล ไม่สร้างรายการเงินจริง
 
@@ -51,13 +53,13 @@
 ชื่อจริงปรับได้ตอน implement แต่ concept ควรชัดแบบนี้:
 
 ```text
-income_expense_categories
+income_expense_approval_keywords
   id
-  name
+  keyword
+  match_mode: contains | exact
   applies_to: income | expense | both
   is_active
-  requires_approval
-  approval_min_amount
+  approval_min_amount nullable
   created_by...
   created_at / updated_at / deleted_at
 
@@ -117,6 +119,9 @@ income_expense_relations
 
 - ถ้ารายการไม่เข้าเงื่อนไข approval ให้สร้าง `income_expense` ผ่าน flow เดิม
 - ถ้ารายการเข้าเงื่อนไข approval ให้สร้าง `approval_request` แทน
+- เงื่อนไข keyword ให้ตรวจจาก `title` ของแต่ละ line item หลัง trim/normalize string แล้ว
+- ตัวอย่าง: ถ้า `super_admin` ตั้ง keyword `เบิก` และผู้ใช้กรอก `เบิกเงินสด` รายการนั้นต้องไปอยู่ในคำขออนุมัติ
+- `bill_option` ยังเป็นค่าเดิมตาม constraint ปัจจุบัน เช่น expense ยังเป็น `ค่าใช้จ่าย`
 - รายการ pending/rejected ไม่ควรถูกนับในตารางรับ-จ่ายจริง
 - ตารางใน UI ควรแยกชื่อเป็น **รายการรอตรวจสอบ** หรือ **คำขออนุมัติ**
 - เฉพาะ `super_admin` อนุมัติ/ปฏิเสธได้
@@ -135,13 +140,13 @@ income_expense_relations
 - เพิ่มปุ่ม `ตั้งค่า` ให้ `super_admin`
 - ใช้ modal ซ้อนสำหรับ config เช่น `IncomeExpenseConfigModal`
 - ใน modal config มี tab หรือ section:
-  - รายการรับ-จ่าย
+  - คำที่ต้องตรวจสอบ
   - กติกาอนุมัติ
   - คำขอรอตรวจสอบ
 - ใน form รายจ่ายเพิ่ม control:
-  - หมวดรายการจาก config
   - toggle/option `โยกเงินไปสาขาอื่น`
   - dropdown เลือกสาขาปลายทาง เมื่อเลือกเป็น branch transfer
+- เมื่อพิมพ์รายการที่ match keyword ระบบควรแจ้งสถานะว่า `ต้องรออนุมัติ` ก่อนกดบันทึก
 - รายการที่ปลายทางถูกสร้างจาก branch transfer แสดง badge `ล็อกจากการโยกเงิน`
 - action edit/delete ของปลายทางต้อง disable และแสดงเหตุผล
 
@@ -179,6 +184,7 @@ delete_income_expense_branch_transfer(source_id uuid, deleted_by jsonb)
 - active user
 - role และ location access
 - super_admin สำหรับ config และ decision
+- keyword matching ต้องทำซ้ำใน RPC/API ฝั่ง server ห้ามเชื่อผลตรวจจาก UI อย่างเดียว
 - idempotency/revision สำหรับ operation ที่แก้ row จริง
 - relation lock ฝั่ง server
 
@@ -193,7 +199,9 @@ delete_income_expense_branch_transfer(source_id uuid, deleted_by jsonb)
 Playwright/API tests ที่ควรมี:
 
 - สร้าง expense ปกติที่ไม่ต้อง approval แล้วยังเข้า `income_expense`
-- สร้าง expense ที่เกิน threshold แล้วไปอยู่ในคำขออนุมัติ ไม่เข้า `income_expense`
+- สร้าง expense ที่ title มี keyword เช่น `เบิกเงินสด` แล้วไปอยู่ในคำขออนุมัติ ไม่เข้า `income_expense`
+- สร้าง expense ที่ title ไม่มี keyword แต่เกิน threshold แล้วไปอยู่ในคำขออนุมัติ ถ้าเปิดใช้ threshold
+- ยืนยันว่า keyword ไม่เปลี่ยน `bill_option`; expense ยังบันทึกเป็น `ค่าใช้จ่าย` หลัง approve
 - super_admin approve แล้ว row จริงถูกสร้าง
 - super_admin reject แล้ว row จริงไม่ถูกสร้าง
 - user/admin ที่ไม่ใช่ super_admin approve/reject ไม่ได้
@@ -210,19 +218,18 @@ Playwright/API tests ที่ควรมี:
 - **Target record:** รายรับปลายทางที่ระบบสร้างจาก source record
 - **Relation lock:** การห้ามแก้/ลบ target record โดยตรง เพื่อให้ต้องแก้ผ่าน source record เท่านั้น
 - **Approval request:** คำขอที่ยังไม่กลายเป็นรายการรับ-จ่ายจริงจนกว่า `super_admin` จะอนุมัติ
-- **Category config:** รายการ/หมวดรับ-จ่ายที่ `super_admin` กำหนด เช่น `เบิก`, `ค่าแรง`, `กับข้าว`
+- **Approval keyword:** คำที่ `super_admin` กำหนดให้ระบบตรวจจากข้อความรายการ เช่น `เบิก`, `ค่าแรง`, `กับข้าว`
 - **Approval threshold:** ยอดเงินขั้นต่ำที่ทำให้รายการต้องรออนุมัติ
 
 ## Grilling Round 1 Questions
 
-1. รายการที่ต้อง approval ต้องใช้กติกาแบบไหน: ต่อหมวดรายการ, ต่อประเภท income/expense, หรือ global ทั้งระบบ?
+1. Keyword matching ต้องเป็นแบบ contains หรือ exact? แนะนำ `contains` เพื่อให้ `เบิกเงินสด` match keyword `เบิก`.
 2. ถ้า amount เท่ากับ threshold พอดี ให้ต้องอนุมัติไหม? แนะนำ `>= threshold`.
 3. user/admin ที่สร้าง branch transfer ต้องมีสิทธิ์ในสาขาปลายทางด้วยไหม หรือแค่สาขาต้นทางพอ?
 4. รายรับปลายทางควรใช้ title อะไร: copy จากต้นทาง, หรือ prefix เช่น `รับโอนจากสาขา X - <รายการ>`?
-5. การแก้ต้นทางหลัง approve ต้องกลับไปรออนุมัติใหม่ไหม ถ้า amount เพิ่ม/หมวดเปลี่ยน?
+5. การแก้ต้นทางหลัง approve ต้องกลับไปรออนุมัติใหม่ไหม ถ้า amount เพิ่ม หรือ title เปลี่ยนจนเจอ keyword?
 6. การลบต้นทางหลัง approve ต้องอนุมัติใหม่ไหม หรือผู้มีสิทธิ์ลบได้แล้วปลายทางหายตามทันที?
 7. คำขอที่ถูก reject ต้องให้ผู้สร้างแก้แล้วส่งใหม่ได้ไหม หรือสร้างคำขอใหม่เท่านั้น?
-8. Config รายการรับ-จ่ายควรรองรับทั้งรายรับและรายจ่าย หรือรอบแรกทำเฉพาะรายจ่าย?
-9. รายการ config ที่ถูกใช้งานแล้วควรห้ามลบถาวรเหมือน `income_sale_items` และให้ปิดใช้งานแทน ใช่ไหม?
+8. Approval keyword รอบแรกให้ตรวจเฉพาะรายจ่าย หรือรวมรายรับด้วย?
+9. Keyword ที่ถูกใช้งานแล้วควรห้ามลบถาวรและให้ปิดใช้งานแทน ใช่ไหม?
 10. ต้องการให้ approval queue แสดงรวมทุกสาขาสำหรับ super_admin หรือ filter ตามสาขาที่เลือกอยู่?
-
