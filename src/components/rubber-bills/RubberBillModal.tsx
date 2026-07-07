@@ -41,8 +41,8 @@ export function RubberBillModal({
   onAddCustomer: (customer: Customer) => void;
   onUpdateCustomer: (customer: Customer) => void;
 }) {
-  const [clientTempId] = useState(() => bill?.clientTempId ?? makeClientTempId("rubber"));
-  const initialLocalBillNo = bill?.localBillNo ?? makeLocalBillNo(selectedLocation.code, "R", clientTempId);
+  const [draftClientTempId] = useState(() => bill?.clientTempId ?? makeClientTempId("rubber"));
+  const initialLocalBillNo = bill?.localBillNo ?? makeLocalBillNo(selectedLocation.code, "R", draftClientTempId);
   const initialPaymentResponsibility = bill?.customerType ?? "สาขานี้จ่าย";
   const [weighItems, setWeighItems] = useState<RubberWeighItem[]>(() => {
     if (bill?.weighItems?.length) return bill.weighItems;
@@ -186,7 +186,7 @@ export function RubberBillModal({
     setValidationErrors([]);
 
     const form = new FormData(event.currentTarget);
-    const clientTempId = bill?.clientTempId ?? makeClientTempId("rubber");
+    const clientTempId = bill?.clientTempId ?? draftClientTempId;
     const clientRecordedAt = bill?.clientRecordedAt ?? makeClientRecordedAt();
     const localBillNo = String(form.get("billNo") || initialLocalBillNo);
     onSave({

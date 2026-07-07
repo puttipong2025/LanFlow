@@ -3,6 +3,7 @@ import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { RubberBill } from "@/types";
 import { enqueueSyncEvent, getPendingEvents, removeSyncEvent, SyncEvent } from "@/lib/idb-queue";
 import { useEffect } from "react";
+import { OFFLINE_SYNCED_ACTION_MESSAGE } from "@/lib/record-action-locks";
 
 function buildRpcPayload(bill: RubberBill, operation: "create" | "update" | "delete", deletedByName?: string, deletedByPhone?: string) {
   const items: any[] = [];
@@ -351,6 +352,9 @@ export function useRubberBills(locationId: string) {
     mutationFn: async (bill: RubberBill) => {
       const isUpdate = Boolean(bill.serverBillNo) || bill.id !== bill.clientTempId;
       const operation = isUpdate ? "update" : "create";
+      if (operation === "update" && typeof navigator !== "undefined" && !navigator.onLine) {
+        throw new Error(OFFLINE_SYNCED_ACTION_MESSAGE);
+      }
       
       const payload = buildRpcPayload(bill, operation);
 
@@ -366,6 +370,10 @@ export function useRubberBills(locationId: string) {
 
       const pendingCreates = clientEvents.filter(e => e.operation === "create");
       const pendingUpdates = clientEvents.filter(e => e.operation === "update");
+
+      if (pendingCreates.length === 0 && typeof navigator !== "undefined" && !navigator.onLine) {
+        throw new Error(OFFLINE_SYNCED_ACTION_MESSAGE);
+      }
 
       const mLib = await import("@/lib/idb-queue");
 

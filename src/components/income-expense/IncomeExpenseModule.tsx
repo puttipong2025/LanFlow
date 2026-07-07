@@ -1,9 +1,12 @@
 import { Edit3, Plus, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { useState } from "react";
 
 import { formatCurrency } from "@/lib/format";
 import { useIncomeExpense } from "@/hooks/useIncomeExpense";
 import { useCustomers } from "@/hooks/useCustomers";
+import { useOnlineStatus } from "@/hooks/useOnlineStatus";
+import { getOfflineSyncedActionBlockReason } from "@/lib/record-action-locks";
 
 import type { IncomeExpense, Location, Profile } from "@/types";
 import { IconButton } from "@/components/shared/IconButton";
@@ -21,6 +24,7 @@ export function IncomeExpenseModule({
 }) {
   const { transactions, addTransaction, updateTransaction, deleteTransaction } = useIncomeExpense(selectedLocation.id);
   const { customers, addCustomer, updateCustomer } = useCustomers();
+  const isOnline = useOnlineStatus();
   const nextNumber = String(transactions.length + 1);
   const [modalOpen, setModalOpen] = useState(false);
   const [modalType, setModalType] = useState<"income" | "expense">("income");
@@ -34,14 +38,36 @@ export function IncomeExpenseModule({
   }
 
   function openEdit(transaction: IncomeExpense) {
+    const blockReason = getActionBlockReason(transaction);
+    if (blockReason) {
+      toast.error(blockReason);
+      return;
+    }
     setModalType(transaction.type);
     setEditingTransaction(transaction);
     setModalOpen(true);
   }
 
-  function confirmDelete(transaction: IncomeExpense) {
+  function getActionBlockReason(transaction: IncomeExpense) {
+    return getOfflineSyncedActionBlockReason(transaction, isOnline);
+  }
+
+  async function confirmDelete(transaction: IncomeExpense) {
+    const blockReason = getActionBlockReason(transaction);
+    if (blockReason) {
+      toast.error(blockReason);
+      return;
+    }
     if (window.confirm(`ลบรายการ ${transaction.number} ใช่ไหม?`)) {
-      deleteTransaction(transaction.id);
+      try {
+        await deleteTransaction({
+          clientTempId: transaction.clientTempId,
+          deletedByName: profile.name,
+          deletedByPhone: profile.phone,
+        });
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "ลบรายการไม่สำเร็จ");
+      }
     }
   }
 
@@ -100,7 +126,11 @@ export function IncomeExpenseModule({
               </tr>
             </thead>
             <tbody>
-              {transactions.map((transaction) => (
+              {transactions.map((transaction) => {
+                const actionBlockReason = getActionBlockReason(transaction);
+                const actionsDisabled = Boolean(actionBlockReason);
+
+                return (
                 <tr key={transaction.id} className="border-b border-black/5 hover:bg-field/50">
                   <td className="py-3 font-semibold">{getIncomeExpenseDisplayNo(transaction)}</td>
                   <td className="text-xs text-ink/55">
@@ -123,19 +153,20 @@ export function IncomeExpenseModule({
                     {transaction.type === "income" ? "+" : "-"}{formatCurrency(transaction.cost)}
                   </td>
                   <td>{transaction.createdByName} · {transaction.createdByPhone}</td>
-                  <td><SyncStatusBadge status={transaction.syncStatus} /></td>
+                  <td><SyncStatusBadge status={transaction.syncStatus} errorMessage={transaction.syncErrorMessage} /></td>
                   <td>
                     <div className="flex justify-center gap-2">
-                      <IconButton label="แก้ไข" onClick={() => openEdit(transaction)} tone="amber">
+                      <IconButton label={actionBlockReason ?? "แก้ไข"} onClick={() => openEdit(transaction)} tone="amber" disabled={actionsDisabled}>
                         <Edit3 size={16} />
                       </IconButton>
-                      <IconButton label="ลบ" onClick={() => confirmDelete(transaction)} tone="clay">
+                      <IconButton label={actionBlockReason ?? "ลบ"} onClick={() => void confirmDelete(transaction)} tone="clay" disabled={actionsDisabled}>
                         <Trash2 size={16} />
                       </IconButton>
                     </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
               {transactions.length === 0 && (
                 <tr>
                   <td colSpan={10} className="py-8 text-center text-ink/50">
@@ -158,14 +189,18 @@ export function IncomeExpenseModule({
           nextLocalSequence={transactions.length + 1}
           customers={customers}
           onClose={() => setModalOpen(false)}
-          onSave={(savedTransactions) => {
-            if (editingTransaction) {
-              updateTransaction(savedTransactions[0]);
-              savedTransactions.slice(1).forEach(tx => addTransaction(tx));
-            } else {
-              savedTransactions.forEach(tx => addTransaction(tx));
+          onSave={async (savedTransactions) => {
+            try {
+              if (editingTransaction) {
+                await updateTransaction(savedTransactions[0]);
+                await Promise.all(savedTransactions.slice(1).map(tx => addTransaction(tx)));
+              } else {
+                await Promise.all(savedTransactions.map(tx => addTransaction(tx)));
+              }
+              setModalOpen(false);
+            } catch (error) {
+              toast.error(error instanceof Error ? error.message : "บันทึกรายการไม่สำเร็จ");
             }
-            setModalOpen(false);
           }}
           onAddCustomer={addCustomer.mutate}
           onUpdateCustomer={updateCustomer.mutate}

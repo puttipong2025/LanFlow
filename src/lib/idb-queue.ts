@@ -41,11 +41,25 @@ function getDb(): Promise<IDBDatabase> {
 export async function enqueueSyncEvent<T>(event: Omit<SyncEvent<T>, "queueId">): Promise<number> {
   const db = await getDb();
   return new Promise((resolve, reject) => {
+    let queueId: number;
     const transaction = db.transaction(STORE_NAME, "readwrite");
     const store = transaction.objectStore(STORE_NAME);
     const request = store.add(event);
-    request.onsuccess = () => resolve(request.result as number);
-    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      queueId = request.result as number;
+    };
+    request.onerror = () => {
+      db.close();
+      reject(request.error);
+    };
+    transaction.oncomplete = () => {
+      db.close();
+      resolve(queueId);
+    };
+    transaction.onerror = () => {
+      db.close();
+      reject(transaction.error);
+    };
   });
 }
 
@@ -55,8 +69,19 @@ export async function updateSyncEvent(event: SyncEvent): Promise<void> {
     const transaction = db.transaction(STORE_NAME, "readwrite");
     const store = transaction.objectStore(STORE_NAME);
     const request = store.put(event);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
+    request.onsuccess = () => undefined;
+    request.onerror = () => {
+      db.close();
+      reject(request.error);
+    };
+    transaction.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    transaction.onerror = () => {
+      db.close();
+      reject(transaction.error);
+    };
   });
 }
 
@@ -70,9 +95,13 @@ export async function getPendingEvents(entity: string): Promise<SyncEvent[]> {
     request.onsuccess = () => {
       // Sort by queueId to ensure correct replay order, only return pending/failed items that aren't permanently locked
       let results = (request.result as SyncEvent[]).sort((a, b) => (a.queueId || 0) - (b.queueId || 0));
+      db.close();
       resolve(results);
     };
-    request.onerror = () => reject(request.error);
+    request.onerror = () => {
+      db.close();
+      reject(request.error);
+    };
   });
 }
 
@@ -82,7 +111,18 @@ export async function removeSyncEvent(queueId: number): Promise<void> {
     const transaction = db.transaction(STORE_NAME, "readwrite");
     const store = transaction.objectStore(STORE_NAME);
     const request = store.delete(queueId);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
+    request.onsuccess = () => undefined;
+    request.onerror = () => {
+      db.close();
+      reject(request.error);
+    };
+    transaction.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    transaction.onerror = () => {
+      db.close();
+      reject(transaction.error);
+    };
   });
 }

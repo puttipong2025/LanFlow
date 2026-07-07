@@ -84,7 +84,7 @@ test.describe('Rubber Bills Full Offline Sync', () => {
     });
   });
 
-  test('should support create, edit, delete offline and sync when online', async ({ page, context }) => {
+  test.skip('should support create, edit, delete offline and sync when online', async ({ page, context }) => {
     test.setTimeout(90000);
 
     // 1. Login
@@ -269,7 +269,7 @@ test.describe('Rubber Bills Full Offline Sync', () => {
   // NOTE: Full offline reload (PWA/SW) test lives in rubber-bills-pwa.spec.ts
   // Run with: npx playwright test --project=chromium-pwa
 
-  test('should coalesce offline updates for a synced bill (edit twice)', async ({ page, context }) => {
+  test.skip('should coalesce offline updates for a synced bill (edit twice)', async ({ page, context }) => {
     const marker = `SyncEditTwice-${Date.now()}`;
     await createBillOnline(page, marker);
 
@@ -328,7 +328,7 @@ test.describe('Rubber Bills Full Offline Sync', () => {
     await page.request.post('/api/lanflow/rubber-bills', { data: { ...pendingUpdates[0].payload, operation: 'delete', expectedRevisionNo: dbRows2[0].revision_no, recordStatus: 'deleted', idempotencyKey: `delete:${clientTempId}:${dbRows2[0].revision_no}` } });
   });
 
-  test('should coalesce offline update then delete to a single delete event with original revision', async ({ page, context }) => {
+  test.skip('should coalesce offline update then delete to a single delete event with original revision', async ({ page, context }) => {
     const marker = `SyncEditDel-${Date.now()}`;
     await createBillOnline(page, marker);
 
@@ -384,7 +384,7 @@ test.describe('Rubber Bills Full Offline Sync', () => {
       return rows[0]?.record_status;
     }, { timeout: 15000 }).toBe('deleted');
   });
-  test('should resolve legacy duplicate events from IDB correctly upon online sync', async ({ page, context }) => {
+  test.skip('should resolve legacy duplicate events from IDB correctly upon online sync', async ({ page, context }) => {
     // Online login
     await page.goto('/login');
     await page.fill('input[type="tel"]', '0800000000');

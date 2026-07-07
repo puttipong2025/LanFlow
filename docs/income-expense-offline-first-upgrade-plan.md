@@ -4,6 +4,17 @@
 
 เป้าหมายคือให้ Income/Expense รองรับ **create / update / delete แบบออฟไลน์เต็มรูปแบบ**, replay ได้อย่างปลอดภัย, กันเลขบิลชน, กันข้อมูลซ้ำ, และใช้ server timestamp / server-generated number เป็น source of truth เหมือน Rubber Bills
 
+## Implementation Status
+
+สถานะล่าสุดหลัง Phase 1-4:
+
+- **Phase 1 Dev E2E Offline Proof:** ผ่านแล้วด้วย `tests/income-expense-offline.spec.ts`
+- **Phase 2 PWA Offline Reload Proof:** ผ่านแล้วด้วย `tests/income-expense-pwa.spec.ts`
+- **Phase 3 Lock Down DB Writes:** ปิด direct writes บน `income_expense` แล้ว เหลือ `SELECT` + `sync_income_expense(jsonb)`
+- **Phase 4 Hardening Tests:** ผ่านแล้ว ครอบ conflict, failed, concurrent bill number, shared sequence, idempotency และ soft delete
+
+ดังนั้น Income/Expense ถูกยกระดับเป็น **Full Offline** ระดับเดียวกับ Rubber Bills แล้ว เฉพาะหลังชุดงาน Phase 1-4 นี้ผ่านครบ.
+
 ---
 
 ## 1. Intent
@@ -32,9 +43,11 @@ RubberBillModal
 
 ---
 
-## 2. Current State Trace
+## 2. Original Baseline Trace
 
-### Income/Expense ตอนนี้
+ส่วนนี้เป็น baseline ก่อนเริ่ม upgrade ใช้เก็บเหตุผลว่าทำไมต้องย้าย persistence path ไป IndexedDB queue + API/RPC.
+
+### Income/Expense ก่อน upgrade
 
 ไฟล์หลัก:
 
@@ -105,7 +118,7 @@ Evidence:
 
 ---
 
-## 3. Gap Findings
+## 3. Resolved Gap Findings
 
 ### Finding 1: Income/Expense ยังไม่ใช่ full offline-first
 
@@ -115,6 +128,8 @@ Evidence:
 
 **Fix:** เปลี่ยน mutation เป็น enqueue IndexedDB event และ merge server state + queue เหมือน `useRubberBills`
 
+**Status:** Resolved. `useIncomeExpense` ใช้ IndexedDB queue, API route `/api/lanflow/income-expense`, และ RPC `sync_income_expense`.
+
 ---
 
 ### Finding 2: เลขบิล server ออกใน browser จึง race ได้
@@ -123,7 +138,9 @@ Evidence:
 
 **Evidence:** `generateTxNo()` ใน `useIncomeExpense.ts` query latest row แล้วบวกเลขเอง
 
-**Fix:** ย้ายการออก `server_bill_no` ไป RPC และใช้ `pg_advisory_xact_lock(hashtext(location_id || tx_date || type))`
+**Fix:** ย้ายการออก `server_bill_no` ไป RPC และใช้ `pg_advisory_xact_lock(hashtext(location_id || tx_date))` เพื่อให้ income และ expense ใช้ sequence ร่วมกันต่อสาขา/วัน
+
+**Status:** Resolved. RPC เป็นผู้ออก `server_bill_no` และ Phase 4 test ยืนยันว่า concurrent create ไม่ซ้ำ รวมถึง income/expense ใช้ sequence ร่วมกันต่อสาขา/วัน.
 
 ---
 
@@ -135,6 +152,8 @@ Evidence:
 
 **Fix:** หลัง API/RPC พร้อม ให้เปลี่ยนเป็น `SELECT` only และ `revoke all` แล้ว `grant select` เหมือน Rubber Bills
 
+**Status:** Resolved. Migration `20260706060000_income_expense_write_via_rpc_only.sql` ปิด direct insert/update/delete แล้ว และ DB grants ยืนยันว่า `authenticated` เหลือ `SELECT` บน `income_expense`.
+
 ---
 
 ### Finding 4: UI มี SyncStatusBadge แต่ไม่มี error details ระดับเดียวกับ Rubber Bills
@@ -144,6 +163,8 @@ Evidence:
 **Evidence:** `IncomeExpenseModule` ส่งแค่ `status={transaction.syncStatus}` ให้ `SyncStatusBadge` และ type `IncomeExpense` ยังไม่มี `syncErrorMessage`
 
 **Fix:** เพิ่ม `syncErrorMessage?: string` ใน `IncomeExpense`, map จาก queue event, และส่งเข้า `SyncStatusBadge`
+
+**Status:** Resolved. UI แสดง `failed` / `conflict` พร้อม error message และ Phase 4 tests ยืนยันทั้งสอง path.
 
 ---
 
@@ -156,7 +177,7 @@ src/app/api/lanflow/income-expense/route.ts
 src/lib/income-expense/build-income-expense-payload.ts
 src/lib/income-expense/income-expense-sync.ts          # optional ถ้าต้องแยก syncPending ออกจาก hook
 tests/income-expense-offline.spec.ts
-tests/income-expense-pwa.spec.ts                      # optional หลัง offline dev test ผ่าน
+tests/income-expense-pwa.spec.ts
 supabase/migrations/YYYYMMDDHHMMSS_income_expense_sync_rpc.sql
 supabase/migrations/YYYYMMDDHHMMSS_income_expense_rpc_only.sql
 ```
@@ -263,7 +284,7 @@ RPC ต้องทำสิ่งเหล่านี้:
 
 ```sql
 v_date := to_char((payload->>'txDate')::date, 'YYMMDD');
-perform pg_advisory_xact_lock(hashtext(v_location_id::text || v_date || v_type));
+perform pg_advisory_xact_lock(hashtext(v_location_id::text || v_date));
 
 select count(*) + 1 into v_next_seq
 from public.income_expense
@@ -618,20 +639,21 @@ $env:PW_PROJECT="pwa"; npx.cmd playwright test tests/income-expense-pwa.spec.ts 
 
 ## 13. Ship Criteria
 
-Income/Expense จะถือว่าอยู่ระดับเดียวกับ Rubber Bills ได้เมื่อครบทุกข้อ:
+Income/Expense ถือว่าอยู่ระดับเดียวกับ Rubber Bills เมื่อครบทุกข้อด้านล่าง ซึ่งสถานะล่าสุดผ่านครบแล้ว:
 
-- `useIncomeExpense` ไม่ insert/update/delete Supabase ตรงจาก browser อีกแล้ว
-- create/update/delete offline ได้
-- reload offline แล้วยังเห็น pending rows
-- reconnect แล้ว sync อัตโนมัติ
-- replay payload เดิมไม่สร้าง row ซ้ำ
-- concurrent create ไม่ชนเลขบิล
-- conflict/failed แสดงใน UI พร้อม error message
-- `income_expense` table ให้ authenticated `SELECT` เท่านั้น
-- RPC มี `security definer`, `set search_path = public`, revoke public/anon, grant execute to authenticated
-- `supabase db reset` ผ่าน
-- `tsc --noEmit` ผ่าน
-- Playwright dev offline test ผ่าน
-- Playwright PWA offline reload test ผ่าน
+- [x] `useIncomeExpense` ไม่ insert/update/delete Supabase ตรงจาก browser อีกแล้ว
+- [x] create/update/delete offline ได้
+- [x] reload offline แล้วยังเห็น pending rows
+- [x] reconnect แล้ว sync อัตโนมัติ
+- [x] replay payload เดิมไม่สร้าง row ซ้ำ
+- [x] concurrent create ไม่ชนเลขบิล
+- [x] income/expense ใช้ server bill sequence ร่วมกันต่อสาขา/วัน
+- [x] conflict/failed แสดงใน UI พร้อม error message
+- [x] `income_expense` table ให้ authenticated `SELECT` เท่านั้น
+- [x] RPC มี `security definer`, `set search_path = public`, revoke public/anon, grant execute to authenticated
+- [x] `supabase db reset` ผ่านใน Phase 3
+- [x] `tsc --noEmit` ผ่าน
+- [x] Playwright dev offline test ผ่าน
+- [x] Playwright PWA offline reload test ผ่าน
 
-Verdict: **fix-then-ship**. งานนี้ควรทำเป็น phase แยก ไม่ควรแทรกเป็น refactor เล็ก ๆ เพราะต้องเปลี่ยน persistence path, RLS, API, queue semantics และ E2E coverage พร้อมกัน
+Verdict: **ship-ready for local/Supabase dev validation**. Remote migration/deploy ยังควรทำเป็นขั้นถัดไปหลังตรวจ diff และเลือกเวลาปล่อยขึ้น production.

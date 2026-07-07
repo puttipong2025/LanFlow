@@ -39,14 +39,14 @@ export default defineConfig({
       // Requires: npm run build first
       name: 'chromium-pwa',
       use: { ...devices['Desktop Chrome'] },
-      testMatch: ['**/rubber-bills-pwa.spec.ts', '**/auth-cache-offline.spec.ts'],
+      testMatch: ['**/rubber-bills-pwa.spec.ts', '**/income-expense-pwa.spec.ts', '**/auth-cache-offline.spec.ts'],
     }
   ] : [
     {
       // Dev-mode tests: uses `npm run dev`, PWA/SW disabled
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
-      testIgnore: ['**/rubber-bills-pwa.spec.ts'],
+      testIgnore: ['**/rubber-bills-pwa.spec.ts', '**/income-expense-pwa.spec.ts'],
     }
   ],
   webServer: isPwa

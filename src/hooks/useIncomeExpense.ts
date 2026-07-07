@@ -1,136 +1,392 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { IncomeExpense } from "@/types";
+import { enqueueSyncEvent, getPendingEvents, removeSyncEvent, updateSyncEvent, type SyncEvent } from "@/lib/idb-queue";
+import { coalesceQueueGroup } from "@/lib/coalesceQueueGroup";
+import { buildIncomeExpensePayload } from "@/lib/income-expense/build-income-expense-payload";
+import { useEffect } from "react";
+import { OFFLINE_SYNCED_ACTION_MESSAGE } from "@/lib/record-action-locks";
+
+const ENTITY = "income_expense" as const;
+const QUERY_KEY = "incomeExpense" as const;
+
+// ─── Sync ────────────────────────────────────────────────────
+
+let isSyncing = false;
+
+async function syncPendingIncomeExpense(queryClient: any, locationId: string) {
+  if (isSyncing) return;
+  if (!navigator.onLine) return;
+
+  isSyncing = true;
+  try {
+    await normalizeQueue();
+    const events = await getPendingEvents(ENTITY);
+
+    const blockedIds = new Set<string>(
+      events
+        .filter(e => e.status === "conflict" || e.status === "failed")
+        .map(e => e.id)
+    );
+
+    for (const event of events) {
+      if (!navigator.onLine) break;
+      if (blockedIds.has(event.id)) continue;
+
+      try {
+        const response = await fetch("/api/lanflow/income-expense", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(event.payload),
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+          await removeSyncEvent(event.queueId!);
+        } else {
+          const isConflict = data.status === "conflict";
+          const eventStatus = isConflict ? "conflict" : "failed";
+          event.status = eventStatus;
+          event.errorMessage = data.errorMessage || (isConflict ? "ข้อมูลชนกัน" : "ซิงก์ไม่สำเร็จ");
+          await updateSyncEvent(event);
+          blockedIds.add(event.id);
+          if (response.status >= 500) break;
+        }
+      } catch {
+        break; // Network error → retry later
+      }
+    }
+  } finally {
+    isSyncing = false;
+    queryClient.invalidateQueries({ queryKey: [QUERY_KEY, locationId] });
+  }
+}
+
+async function normalizeQueue() {
+  const events = await getPendingEvents(ENTITY);
+  const grouped = new Map<string, SyncEvent[]>();
+  for (const e of events) {
+    if (!grouped.has(e.id)) grouped.set(e.id, []);
+    grouped.get(e.id)!.push(e);
+  }
+
+  for (const [, group] of grouped.entries()) {
+    if (group.length <= 1) continue;
+    if (group.some(e => e.status === "conflict" || e.status === "failed")) continue;
+
+    const result = coalesceQueueGroup(group);
+    if (result.action === "noop") {
+      for (const e of group) await removeSyncEvent(e.queueId!);
+    } else {
+      await updateSyncEvent(result.keeper);
+      for (const e of result.remove) await removeSyncEvent(e.queueId!);
+    }
+  }
+}
+
+// ─── Optimistic row builder ──────────────────────────────────
+
+function payloadToOptimisticRow(event: SyncEvent): IncomeExpense {
+  const p = event.payload;
+  return {
+    id: p.clientTempId,
+    clientTempId: p.clientTempId,
+    localBillNo: p.localBillNo,
+    serverBillNo: undefined,
+    syncStatus: event.status === "conflict" ? "conflict" : event.status === "failed" ? "failed" : "pending",
+    idempotencyKey: p.idempotencyKey,
+    locationId: p.locationId,
+    type: p.type,
+    number: p.localBillNo,
+    txDate: p.txDate,
+    title: p.title,
+    cost: p.cost,
+    billOption: p.billOption,
+    unit: p.unit ?? undefined,
+    price: p.price ?? undefined,
+    createdByUserId: p.createdByUserId ?? "",
+    createdByName: p.createdByName ?? "",
+    createdByPhone: p.createdByPhone ?? "",
+    clientCreatedAt: p.clientCreatedAt,
+    clientRecordedAt: p.clientRecordedAt,
+    revisionNo: p.expectedRevisionNo,
+    recordStatus: "active",
+    syncErrorMessage: event.errorMessage,
+  };
+}
+
+// ─── Hook ────────────────────────────────────────────────────
 
 export function useIncomeExpense(locationId: string) {
   const supabase = createSupabaseBrowserClient();
   const queryClient = useQueryClient();
 
-  const query = useQuery({
-    queryKey: ["incomeExpense", locationId],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("income_expense")
-        .select("*")
-        .eq("location_id", locationId)
-        .eq("record_status", "active")
-        .order("tx_date", { ascending: false })
-        .order("created_at", { ascending: false });
+  // Auto-sync on mount (if online) and when coming back online
+  useEffect(() => {
+    const handleOnline = () => syncPendingIncomeExpense(queryClient, locationId);
+    window.addEventListener("online", handleOnline);
+    if (navigator.onLine) syncPendingIncomeExpense(queryClient, locationId);
+    return () => window.removeEventListener("online", handleOnline);
+  }, [queryClient, locationId]);
 
-      if (error) throw new Error(error.message || JSON.stringify(error));
-      
-      return data.map((row: any) => ({
-        id: row.id,
-        clientTempId: row.client_temp_id,
-        localBillNo: row.local_bill_no,
-        serverBillNo: row.server_bill_no,
-        idempotencyKey: row.idempotency_key,
-        locationId: row.location_id,
-        syncStatus: row.sync_status,
-        recordStatus: row.record_status,
-        type: row.type,
-        number: row.number ?? row.server_bill_no ?? row.local_bill_no,
-        txDate: row.tx_date,
-        title: row.title,
-        cost: row.cost,
-        unit: row.unit,
-        price: row.price,
-        billOption: row.bill_option,
-        clientRecordedAt: row.client_recorded_at,
-        clientCreatedAt: row.client_created_at,
-        serverReceivedAt: row.server_received_at,
-        revisionNo: row.revision_no,
-        deletedAt: row.deleted_at,
-        deletedByName: row.deleted_by_name,
-        deletedByPhone: row.deleted_by_phone,
-        createdByUserId: row.created_by_user_id,
-        createdByName: row.created_by_name,
-        createdByPhone: row.created_by_phone
-      })) as IncomeExpense[];
+  // ── Query: server rows + pending queue merge ──
+
+  const query = useQuery({
+    queryKey: [QUERY_KEY, locationId],
+    networkMode: "always",
+    queryFn: async () => {
+      // 1. Fetch server state (gracefully degrade when offline)
+      let serverRows: IncomeExpense[] = [];
+
+      try {
+        const { data, error } = await supabase
+          .from("income_expense")
+          .select("*")
+          .eq("location_id", locationId)
+          .eq("record_status", "active")
+          .order("tx_date", { ascending: false })
+          .order("created_at", { ascending: false });
+
+        if (error) throw new Error(error.message || JSON.stringify(error));
+
+        serverRows = (data || []).map((row: any): IncomeExpense => ({
+          id: row.id,
+          clientTempId: row.client_temp_id ?? row.id,
+          localBillNo: row.local_bill_no,
+          serverBillNo: row.server_bill_no ?? undefined,
+          idempotencyKey: row.idempotency_key ?? `server:${row.id}`,
+          locationId: row.location_id,
+          syncStatus: "synced",
+          recordStatus: row.record_status,
+          type: row.type,
+          number: row.number ?? row.server_bill_no ?? row.local_bill_no,
+          txDate: row.tx_date,
+          title: row.title,
+          cost: Number(row.cost),
+          unit: row.unit ?? undefined,
+          price: row.price != null ? Number(row.price) : undefined,
+          billOption: row.bill_option,
+          clientRecordedAt: row.client_recorded_at ?? row.created_at,
+          clientCreatedAt: row.client_created_at ?? row.created_at,
+          serverReceivedAt: row.server_received_at ?? undefined,
+          revisionNo: row.revision_no ?? 0,
+          deletedAt: row.deleted_at ?? undefined,
+          deletedByName: row.deleted_by_name ?? undefined,
+          deletedByPhone: row.deleted_by_phone ?? undefined,
+          createdByUserId: row.created_by_user_id,
+          createdByName: row.created_by_name,
+          createdByPhone: row.created_by_phone,
+        }));
+      } catch (err) {
+        if (!navigator.onLine) {
+          serverRows = [];
+        } else {
+          throw err;
+        }
+      }
+
+      // 2. Fetch pending queue
+      const pendingEvents = await getPendingEvents(ENTITY);
+
+      // 3. Merge
+      const rowsMap = new Map<string, IncomeExpense>();
+      serverRows.forEach(r => rowsMap.set(r.clientTempId, r));
+
+      for (const event of pendingEvents) {
+        if (event.operation === "delete") {
+          if (event.status === "pending") {
+            rowsMap.delete(event.id);
+          } else {
+            // conflict/failed → show row back with error
+            const existing = rowsMap.get(event.id);
+            if (existing) {
+              rowsMap.set(event.id, {
+                ...existing,
+                syncStatus: event.status === "conflict" ? "conflict" : "failed",
+                syncErrorMessage: event.errorMessage,
+              });
+            }
+          }
+        } else {
+          const optimistic = payloadToOptimisticRow(event);
+          const existing = rowsMap.get(event.id);
+          rowsMap.set(event.id, existing ? {
+            ...existing,
+            ...optimistic,
+            id: existing.id,
+            serverBillNo: existing.serverBillNo,
+            number: existing.serverBillNo ?? existing.number,
+            createdByUserId: existing.createdByUserId,
+            createdByName: existing.createdByName,
+            createdByPhone: existing.createdByPhone,
+            serverReceivedAt: existing.serverReceivedAt,
+          } : optimistic);
+        }
+      }
+
+      return Array.from(rowsMap.values()).sort(
+        (a, b) => new Date(b.clientRecordedAt).getTime() - new Date(a.clientRecordedAt).getTime()
+      );
     },
     enabled: !!locationId,
   });
 
-  const generateTxNo = async (date: string) => {
-    const todayStr = date.replace(/-/g, "").slice(2); // YYMMDD
-    const { data } = await supabase
-      .from("income_expense")
-      .select("server_bill_no")
-      .eq("location_id", locationId)
-      .eq("tx_date", date)
-      .order("server_bill_no", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (data?.server_bill_no) {
-      const currentSeq = parseInt(data.server_bill_no.slice(-4), 10);
-      const nextSeq = currentSeq + 1;
-      return `${todayStr}${nextSeq.toString().padStart(4, "0")}`;
-    }
-    return `${todayStr}0001`;
-  };
+  // ── Save (add / update) ──
 
   const saveTxMutation = useMutation({
+    networkMode: "always",
     mutationFn: async (transaction: IncomeExpense) => {
-      const serverBillNo = transaction.serverBillNo || await generateTxNo(transaction.txDate);
+      const isUpdate = Boolean(transaction.serverBillNo) || transaction.id !== transaction.clientTempId;
+      const operation = isUpdate ? "update" : "create";
+      if (operation === "update" && typeof navigator !== "undefined" && !navigator.onLine) {
+        throw new Error(OFFLINE_SYNCED_ACTION_MESSAGE);
+      }
+      const payload = buildIncomeExpensePayload(transaction, operation);
 
-      const row = {
-        client_temp_id: transaction.clientTempId,
-        local_bill_no: transaction.localBillNo,
-        server_bill_no: serverBillNo,
-        idempotency_key: transaction.idempotencyKey,
-        sync_status: "synced",
-        record_status: transaction.recordStatus,
-        location_id: transaction.locationId,
-        type: transaction.type,
-        number: serverBillNo,
-        tx_date: transaction.txDate,
-        title: transaction.title,
-        cost: transaction.cost,
-        unit: transaction.billOption === "บิลขาย" ? transaction.unit : null,
-        price: transaction.billOption === "บิลขาย" ? transaction.price : null,
-        bill_option: transaction.billOption,
-        client_recorded_at: transaction.clientRecordedAt,
-        client_created_at: transaction.clientCreatedAt,
-        revision_no: transaction.revisionNo,
-        created_by_user_id: transaction.createdByUserId,
-        created_by_name: transaction.createdByName,
-        created_by_phone: transaction.createdByPhone,
-        updated_at: new Date().toISOString()
-      };
+      const existingEvents = await getPendingEvents(ENTITY);
+      const clientEvents = existingEvents.filter(e => e.id === transaction.clientTempId);
 
-      const existing = await supabase
-        .from("income_expense")
-        .select("id")
-        .eq("client_temp_id", transaction.clientTempId)
-        .maybeSingle();
-
-      let txId = transaction.id;
-      if (existing.data?.id) {
-        txId = existing.data.id;
-        const { error } = await supabase.from("income_expense").update(row).eq("id", txId);
-        if (error) throw new Error(error.message || JSON.stringify(error));
-      } else {
-        const { data, error } = await supabase.from("income_expense").insert(row).select("id").single();
-        if (error) throw new Error(error.message || JSON.stringify(error));
-        txId = data.id;
+      if (clientEvents.some(e => e.status === "conflict" || e.status === "failed")) {
+        throw new Error("ไม่สามารถบันทึกได้ กรุณาแก้ไขข้อมูลที่ขัดแย้ง หรือลองซิงก์ใหม่อีกครั้ง");
+      }
+      if (clientEvents.some(e => e.operation === "delete")) {
+        throw new Error("ไม่สามารถบันทึกได้ รายการนี้กำลังถูกลบ");
       }
 
-      return { ...transaction, id: txId, serverBillNo, number: serverBillNo, syncStatus: "synced" as const };
+      const pendingCreates = clientEvents.filter(e => e.operation === "create");
+      const pendingUpdates = clientEvents.filter(e => e.operation === "update");
+
+      let keeper: SyncEvent | undefined;
+      let toDelete: SyncEvent[] = [];
+
+      if (pendingCreates.length > 0) {
+        keeper = pendingCreates[0];
+        toDelete = [...pendingCreates.slice(1), ...pendingUpdates];
+      } else if (pendingUpdates.length > 0) {
+        keeper = pendingUpdates[0];
+        toDelete = pendingUpdates.slice(1);
+      }
+
+      for (const e of toDelete) {
+        if (e.queueId) await removeSyncEvent(e.queueId);
+      }
+
+      if (keeper) {
+        if (keeper.operation === "create") {
+          keeper.payload = { ...payload, operation: "create", expectedRevisionNo: 0, idempotencyKey: `create:${transaction.clientTempId}:0` };
+        } else {
+          const originalRev = keeper.payload.expectedRevisionNo;
+          keeper.payload = { ...payload, operation: "update", expectedRevisionNo: originalRev, idempotencyKey: `update:${transaction.clientTempId}:${originalRev}` };
+        }
+        keeper.timestamp = Date.now();
+        await updateSyncEvent(keeper);
+      } else {
+        await enqueueSyncEvent({
+          id: transaction.clientTempId,
+          entity: ENTITY,
+          operation,
+          payload,
+          timestamp: Date.now(),
+          status: "pending",
+        });
+      }
+
+      return transaction;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["incomeExpense", locationId] });
-    }
+    onSuccess: (savedTx) => {
+      queryClient.setQueryData<IncomeExpense[]>([QUERY_KEY, locationId], (old) => {
+        if (!old) return [{ ...savedTx, syncStatus: "pending" as const }];
+        const idx = old.findIndex(t => t.clientTempId === savedTx.clientTempId);
+        if (idx >= 0) {
+          const updated = [...old];
+          updated[idx] = { ...updated[idx], ...savedTx, syncStatus: "pending" };
+          return updated;
+        }
+        return [{ ...savedTx, syncStatus: "pending" as const }, ...old];
+      });
+      queryClient.invalidateQueries({ queryKey: [QUERY_KEY, locationId] });
+      syncPendingIncomeExpense(queryClient, locationId);
+    },
   });
 
+  // ── Delete ──
+
   const deleteTxMutation = useMutation({
-    mutationFn: async (id: string) => {
-      const { error } = await supabase.from("income_expense").update({ record_status: "deleted" }).eq("id", id);
-      if (error) throw new Error(error.message || JSON.stringify(error));
+    networkMode: "always",
+    mutationFn: async ({
+      clientTempId,
+      deletedByName,
+      deletedByPhone,
+    }: {
+      clientTempId: string;
+      deletedByName: string;
+      deletedByPhone: string;
+    }) => {
+      const existingEvents = await getPendingEvents(ENTITY);
+      const clientEvents = existingEvents.filter(e => e.id === clientTempId);
+
+      if (clientEvents.some(e => e.status === "conflict" || e.status === "failed")) {
+        throw new Error("ไม่สามารถลบได้ กรุณาแก้ไขข้อมูลที่ขัดแย้ง หรือลองซิงก์ใหม่อีกครั้ง");
+      }
+      if (clientEvents.some(e => e.operation === "delete")) {
+        return { clientTempId, coalesced: false };
+      }
+
+      const pendingCreates = clientEvents.filter(e => e.operation === "create");
+      const pendingUpdates = clientEvents.filter(e => e.operation === "update");
+
+      if (pendingCreates.length === 0 && typeof navigator !== "undefined" && !navigator.onLine) {
+        throw new Error(OFFLINE_SYNCED_ACTION_MESSAGE);
+      }
+
+      // Create + delete = noop
+      if (pendingCreates.length > 0) {
+        for (const e of clientEvents) {
+          if (e.queueId) await removeSyncEvent(e.queueId);
+        }
+        return { clientTempId, coalesced: true };
+      }
+
+      // Build delete payload from cached row
+      const rows = queryClient.getQueryData<IncomeExpense[]>([QUERY_KEY, locationId]);
+      const latestPendingUpdate = [...pendingUpdates].sort((a, b) => (b.queueId || 0) - (a.queueId || 0))[0];
+      const tx = rows?.find(t => t.clientTempId === clientTempId)
+        ?? (latestPendingUpdate ? payloadToOptimisticRow(latestPendingUpdate) : undefined);
+      if (!tx) throw new Error("ไม่พบรายการในแคช");
+
+      const targetRev = pendingUpdates.length > 0
+        ? pendingUpdates[0].payload.expectedRevisionNo
+        : tx.revisionNo;
+
+      const payload = buildIncomeExpensePayload(tx, "delete", { name: deletedByName, phone: deletedByPhone });
+      payload.expectedRevisionNo = targetRev;
+      payload.idempotencyKey = `delete:${clientTempId}:${targetRev}`;
+
+      await enqueueSyncEvent({
+        id: clientTempId,
+        entity: ENTITY,
+        operation: "delete",
+        payload,
+        timestamp: Date.now(),
+        status: "pending",
+      });
+
+      // Clean up pending updates only after the delete event is safely queued.
+      for (const e of pendingUpdates) {
+        if (e.queueId) await removeSyncEvent(e.queueId);
+      }
+
+      return { clientTempId, coalesced: false };
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["incomeExpense", locationId] });
-    }
+    onSuccess: (data) => {
+      queryClient.setQueryData<IncomeExpense[]>([QUERY_KEY, locationId], (old) => {
+        if (!old) return old;
+        return old.filter(t => t.clientTempId !== data.clientTempId);
+      });
+      queryClient.invalidateQueries({ queryKey: [QUERY_KEY, locationId] });
+      syncPendingIncomeExpense(queryClient, locationId);
+    },
   });
 
   return {

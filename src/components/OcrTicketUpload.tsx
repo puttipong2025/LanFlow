@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import type { OcrTicket, Customer } from "@/types";
 import { authFetch } from "@/lib/auth-fetch";
+import { OCR_TICKET_TRANSFER_LOCK_MESSAGE } from "@/lib/record-action-locks";
 
 /* ── OCR API Result ── */
 type OcrApiResult = {
@@ -56,6 +57,7 @@ type Props = {
 /* ── Main Component ── */
 import { useOcrTickets } from "@/hooks/useOcrTickets";
 import { useCustomers } from "@/hooks/useCustomers";
+import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
 
 export function OcrTicketUpload({
   locationId,
@@ -65,6 +67,7 @@ export function OcrTicketUpload({
 }: Props) {
   const { ocrTickets, addTicket, updateTicket, deleteTicket } = useOcrTickets(locationId);
   const { customers } = useCustomers();
+  const { transfers } = useMoneyTransfers(locationId);
 
   const [previewItem, setPreviewItem] = useState<UploadItem | null>(null);
   const [editTicket, setEditTicket] = useState<OcrTicket | null>(null);
@@ -72,6 +75,32 @@ export function OcrTicketUpload({
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processingRef = useRef(false);
+
+  const lockedOcrTicketIds = useMemo(() => {
+    const ids = new Set<string>();
+    transfers.forEach((transfer) => {
+      transfer.items?.forEach((item) => {
+        if (item.sourceType === "ocr_ticket") ids.add(item.sourceId);
+      });
+    });
+    return ids;
+  }, [transfers]);
+
+  const getTicketActionBlockReason = useCallback(
+    (ticketId: string) =>
+      lockedOcrTicketIds.has(ticketId) ? OCR_TICKET_TRANSFER_LOCK_MESSAGE : null,
+    [lockedOcrTicketIds]
+  );
+
+  const showTicketActionBlocked = useCallback(
+    (ticketId: string) => {
+      const reason = getTicketActionBlockReason(ticketId);
+      if (!reason) return false;
+      setToastMsg(reason);
+      return true;
+    },
+    [getTicketActionBlockReason]
+  );
 
   useEffect(() => {
     if (!toastMsg) return;
@@ -104,14 +133,18 @@ export function OcrTicketUpload({
       Object.entries(negativeWeightTargets.current).forEach(([id, targetTime]) => {
         if (currentTime >= targetTime) {
           delete negativeWeightTargets.current[id]; // Prevent duplicate triggers
+          if (showTicketActionBlocked(id)) return;
           deleteTicket.mutate(id, {
-            onSuccess: () => setToastMsg(`ลบใบชั่งอัตโนมัติ — น้ำหนักคงเหลือติดลบ`)
+            onSuccess: () => setToastMsg(`ลบใบชั่งอัตโนมัติ — น้ำหนักคงเหลือติดลบ`),
+            onError: (error) => {
+              setToastMsg(error instanceof Error ? error.message : "ลบใบชั่งไม่สำเร็จ");
+            }
           });
         }
       });
     }, 1000);
     return () => clearInterval(interval);
-  }, [deleteTicket]);
+  }, [deleteTicket, showTicketActionBlocked]);
 
   useEffect(() => {
     const currentNegIds = new Set<string>();
@@ -298,18 +331,34 @@ export function OcrTicketUpload({
 
   const handleDeleteConfirm = useCallback(() => {
     if (deleteConfirmId) {
+      if (showTicketActionBlocked(deleteConfirmId)) {
+        setDeleteConfirmId(null);
+        return;
+      }
       deleteTicket.mutate(deleteConfirmId, {
         onSuccess: () => {
           setItems((prev) => prev.filter((i) => i.ocrTicketId !== deleteConfirmId));
           setDeleteConfirmId(null);
+        },
+        onError: (error) => {
+          setToastMsg(error instanceof Error ? error.message : "ลบใบชั่งไม่สำเร็จ");
+          setDeleteConfirmId(null);
         }
       });
     }
-  }, [deleteConfirmId, deleteTicket, setItems]);
+  }, [deleteConfirmId, deleteTicket, setItems, showTicketActionBlocked]);
 
   const handleEditSave = useCallback(
-    (updated: OcrTicket) => { updateTicket.mutate(updated); setEditTicket(null); },
-    [updateTicket]
+    (updated: OcrTicket) => {
+      if (showTicketActionBlocked(updated.id)) return;
+      updateTicket.mutate(updated, {
+        onSuccess: () => setEditTicket(null),
+        onError: (error) => {
+          setToastMsg(error instanceof Error ? error.message : "แก้ไขใบชั่งไม่สำเร็จ");
+        }
+      });
+    },
+    [showTicketActionBlocked, updateTicket]
   );
 
   return (
@@ -441,6 +490,8 @@ export function OcrTicketUpload({
                   const tWNet = (ticket.weightIn ?? 0) - (ticket.weightOut ?? 0);
                   const tWRemaining = tWNet - (ticket.weightDeducted ?? 0);
                   const isNegative = tWRemaining < 0;
+                  const actionBlockReason = getTicketActionBlockReason(ticket.id);
+                  const actionsDisabled = Boolean(actionBlockReason);
                   
                   let countdownText = "";
                   if (isNegative && negativeWeightTargets.current[ticket.id]) {
@@ -501,11 +552,15 @@ export function OcrTicketUpload({
                     <td className="px-3 py-2.5 text-center">
                       <div className="flex items-center justify-center gap-1">
                         <button type="button" onClick={() => setEditTicket(ticket)}
-                          className="grid h-7 w-7 place-items-center rounded-md text-ink/50 hover:bg-mint hover:text-leaf" title="แก้ไข">
+                          disabled={actionsDisabled}
+                          className={`grid h-7 w-7 place-items-center rounded-md text-ink/50 ${actionsDisabled ? "cursor-not-allowed opacity-40" : "hover:bg-mint hover:text-leaf"}`}
+                          title={actionBlockReason ?? "แก้ไข"}>
                           <Edit3 size={14} />
                         </button>
                         <button type="button" onClick={() => setDeleteConfirmId(ticket.id)}
-                          className="grid h-7 w-7 place-items-center rounded-md text-ink/50 hover:bg-clay/10 hover:text-clay" title="ลบ">
+                          disabled={actionsDisabled}
+                          className={`grid h-7 w-7 place-items-center rounded-md text-ink/50 ${actionsDisabled ? "cursor-not-allowed opacity-40" : "hover:bg-clay/10 hover:text-clay"}`}
+                          title={actionBlockReason ?? "ลบ"}>
                           <Trash2 size={14} />
                         </button>
                       </div>

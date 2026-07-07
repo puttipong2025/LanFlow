@@ -120,6 +120,7 @@ export type IncomeExpense = {
   deletedAt?: string;
   deletedByName?: string;
   deletedByPhone?: string;
+  syncErrorMessage?: string;
 };
 
 export type QueueItem = {

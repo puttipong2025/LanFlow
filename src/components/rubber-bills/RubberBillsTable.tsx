@@ -11,6 +11,7 @@ export type RubberBillsTableProps = {
   onPageChange: (page: number) => void;
   onEdit: (bill: RubberBill) => void;
   onDelete: (bill: RubberBill) => void;
+  getActionBlockReason?: (bill: RubberBill) => string | null;
 };
 
 export function RubberBillsTable({
@@ -19,7 +20,8 @@ export function RubberBillsTable({
   pageSize,
   onPageChange,
   onEdit,
-  onDelete
+  onDelete,
+  getActionBlockReason
 }: RubberBillsTableProps) {
   const totalPages = Math.max(Math.ceil(bills.length / pageSize), 1);
   const currentPage = Math.min(page, totalPages);
@@ -49,30 +51,38 @@ export function RubberBillsTable({
             </tr>
           </thead>
           <tbody>
-            {visibleBills.map((bill) => (
+            {visibleBills.map((bill) => {
+              const actionBlockReason = getActionBlockReason?.(bill) ?? null;
+              const actionsDisabled = Boolean(actionBlockReason);
+
+              return (
               <tr key={bill.id} className="whitespace-nowrap border-b border-black/10 hover:bg-field/50">
                 <td className="py-3">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      title="ดู"
+                      title={actionBlockReason ?? "ดู"}
+                      disabled={actionsDisabled}
                       onClick={() => onEdit(bill)}
-                      className="grid h-7 w-7 place-items-center rounded-full bg-leaf text-sm font-bold text-white"
+                      className={`grid h-7 w-7 place-items-center rounded-full bg-leaf text-sm font-bold text-white ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
                     >
                       +
                     </button>
                     <button
                       type="button"
+                      title={actionBlockReason ?? "ลบ"}
+                      disabled={actionsDisabled}
                       onClick={() => onDelete(bill)}
-                      className="rounded-md bg-rose-500 px-3 py-1 text-sm font-bold text-white"
+                      className={`rounded-md bg-rose-500 px-3 py-1 text-sm font-bold text-white ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
                     >
                       ลบ
                     </button>
                     <button
                       type="button"
-                      title="แก้ไข"
+                      title={actionBlockReason ?? "แก้ไข"}
+                      disabled={actionsDisabled}
                       onClick={() => onEdit(bill)}
-                      className="grid h-8 w-8 place-items-center rounded-md bg-field text-ink"
+                      className={`grid h-8 w-8 place-items-center rounded-md bg-field text-ink ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
                     >
                       <Edit3 size={16} />
                     </button>
@@ -110,7 +120,8 @@ export function RubberBillsTable({
                 <td>{formatNumber(bill.deductionTotal)}</td>
                 <td><SyncStatusBadge status={bill.syncStatus} errorMessage={bill.syncErrorMessage} /></td>
               </tr>
-            ))}
+              );
+            })}
             {visibleBills.length === 0 && (
               <tr>
                 <td colSpan={13} className="py-8 text-center text-ink/50">

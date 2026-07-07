@@ -1,8 +1,15 @@
 import { Plus } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { toast } from "sonner";
 
 import { useRubberBills } from "@/hooks/useRubberBills";
 import { useCustomers } from "@/hooks/useCustomers";
+import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
+import { useOnlineStatus } from "@/hooks/useOnlineStatus";
+import {
+  getOfflineSyncedActionBlockReason,
+  RUBBER_BILL_TRANSFER_LOCK_MESSAGE
+} from "@/lib/record-action-locks";
 
 import type { Location, Profile, RubberBill } from "@/types";
 import { RubberBillsTable } from "./RubberBillsTable";
@@ -17,6 +24,8 @@ export function RubberBillsModule({
 }) {
   const { bills, addBill, updateBill, deleteBill } = useRubberBills(selectedLocation.id);
   const { customers, addCustomer, updateCustomer } = useCustomers();
+  const { transfers } = useMoneyTransfers(selectedLocation.id);
+  const isOnline = useOnlineStatus();
   const [modalOpen, setModalOpen] = useState(false);
   const [editingBill, setEditingBill] = useState<RubberBill | null>(null);
   const [pageSize, setPageSize] = useState(10);
@@ -36,6 +45,20 @@ export function RubberBillsModule({
     ].join(" ");
     return haystack.toLowerCase().includes(search.toLowerCase());
   });
+  const lockedRubberBillIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const transfer of transfers) {
+      for (const item of transfer.items ?? []) {
+        if (item.sourceType === "rubber_bill") ids.add(item.sourceId);
+      }
+    }
+    return ids;
+  }, [transfers]);
+
+  function getActionBlockReason(bill: RubberBill) {
+    return getOfflineSyncedActionBlockReason(bill, isOnline)
+      ?? (lockedRubberBillIds.has(bill.id) ? RUBBER_BILL_TRANSFER_LOCK_MESSAGE : null);
+  }
 
   function openAdd() {
     setEditingBill(null);
@@ -43,11 +66,21 @@ export function RubberBillsModule({
   }
 
   function openEdit(bill: RubberBill) {
+    const blockReason = getActionBlockReason(bill);
+    if (blockReason) {
+      toast.error(blockReason);
+      return;
+    }
     setEditingBill(bill);
     setModalOpen(true);
   }
 
   function confirmDelete(bill: RubberBill) {
+    const blockReason = getActionBlockReason(bill);
+    if (blockReason) {
+      toast.error(blockReason);
+      return;
+    }
     if (confirm("ต้องการลบบิลนี้ใช่หรือไม่?")) {
       deleteBill({ id: bill.id, clientTempId: bill.clientTempId, deletedByName: profile.name, deletedByPhone: profile.phone, revisionNo: bill.revisionNo })
         .catch((err) => alert(err.message));
@@ -116,6 +149,7 @@ export function RubberBillsModule({
           onPageChange={setPage}
           onEdit={openEdit}
           onDelete={confirmDelete}
+          getActionBlockReason={getActionBlockReason}
         />
       </section>
 
