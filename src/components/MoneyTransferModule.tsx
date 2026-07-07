@@ -24,12 +24,16 @@ type Props = {
   locationId: string;
   online: boolean;
   profile: Profile;
+  initialEditTransferId?: string | null;
+  onInitialEditTransferHandled?: () => void;
 };
 
 export function MoneyTransferModule({
   locationId,
   online,
   profile,
+  initialEditTransferId,
+  onInitialEditTransferHandled,
 }: Props) {
   const { transfers, addTransfer, updateTransfer, deleteTransfer } = useMoneyTransfers(locationId);
   const { bills } = useRubberBills(locationId);
@@ -106,6 +110,14 @@ export function MoneyTransferModule({
     setEditTransfer(t);
     setActiveFormType(t.transferType === 'transport' ? 'transport' : t.transferType === 'branch' ? 'branch' : 'customer');
   }, []);
+
+  useEffect(() => {
+    if (!initialEditTransferId) return;
+    const transfer = transfers.find(t => t.id === initialEditTransferId);
+    if (!transfer) return;
+    handleEdit(transfer);
+    onInitialEditTransferHandled?.();
+  }, [initialEditTransferId, transfers, handleEdit, onInitialEditTransferHandled]);
 
   return (
     <div className="space-y-6">

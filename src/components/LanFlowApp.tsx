@@ -38,6 +38,14 @@ export function LanFlowApp() {
   const [selectedLocationId, setSelectedLocationId] = useState(
     auth.profile?.locationIds[0] ?? ""
   );
+  const [pendingMoneyTransferSource, setPendingMoneyTransferSource] = useState<{
+    transferId: string;
+    locationId: string;
+  } | null>(null);
+  const [pendingRubberBillSource, setPendingRubberBillSource] = useState<{
+    locationId: string;
+    billDate?: string;
+  } | null>(null);
   const [ocrUploadItems, setOcrUploadItems] = useState<UploadItem[]>([]);
   const [online, setOnline] = useState(true);
   const [isLoaded, setIsLoaded] = useState(false);
@@ -137,6 +145,10 @@ export function LanFlowApp() {
     const expense = scopedTransactions
       .filter((tx) => tx.type === "expense")
       .reduce((sum, tx) => sum + tx.cost, 0);
+    const rubberBillDerivedExpense = scopedTransactions
+      .filter((tx) => tx.type === "expense" && tx.relationSourceType === "rubber_bill_daily")
+      .reduce((sum, tx) => sum + tx.cost, 0);
+    const rubberPayOutsideIncomeExpense = Math.max(0, rubberPay - rubberBillDerivedExpense);
     const cashPaid = scopedBills.reduce((sum, bill) => sum + bill.cashPayment, 0);
     const transferPaid = scopedBills.reduce((sum, bill) => sum + bill.transferPayment, 0);
 
@@ -146,7 +158,7 @@ export function LanFlowApp() {
       rubberPay,
       income,
       expense,
-      balance: income - expense - rubberPay,
+      balance: income - expense - rubberPayOutsideIncomeExpense,
       cashPaid,
       transferPaid
     };
@@ -208,6 +220,24 @@ export function LanFlowApp() {
     }
   }
 
+  function canOpenSourceLocation(locationId: string) {
+    return profile.role === "super_admin" || profile.locationIds.includes(locationId);
+  }
+
+  function openMoneyTransferSource(transferId: string, locationId: string) {
+    if (!canOpenSourceLocation(locationId)) return;
+    setSelectedLocationId(locationId);
+    setPendingMoneyTransferSource({ transferId, locationId });
+    setActiveTab("money-transfer");
+  }
+
+  function openRubberBillSource(locationId: string, billDate?: string) {
+    if (!canOpenSourceLocation(locationId)) return;
+    setSelectedLocationId(locationId);
+    setPendingRubberBillSource({ locationId, billDate });
+    setActiveTab("rubber");
+  }
+
   return (
     <main className="min-h-screen">
       <section className="border-b border-black/10 bg-white/85">
@@ -243,6 +273,12 @@ export function LanFlowApp() {
           <RubberBillsModule
             selectedLocation={selectedLocation}
             profile={profile}
+            initialSearch={
+              pendingRubberBillSource?.locationId === selectedLocationId
+                ? pendingRubberBillSource.billDate ?? null
+                : null
+            }
+            onInitialSearchHandled={() => setPendingRubberBillSource(null)}
           />
         )}
         {activeTab === "customers" && (
@@ -256,6 +292,12 @@ export function LanFlowApp() {
             locationId={selectedLocationId}
             online={online}
             profile={profile}
+            initialEditTransferId={
+              pendingMoneyTransferSource?.locationId === selectedLocationId
+                ? pendingMoneyTransferSource.transferId
+                : null
+            }
+            onInitialEditTransferHandled={() => setPendingMoneyTransferSource(null)}
           />
         )}
         {activeTab === "ocr" && (
@@ -270,6 +312,8 @@ export function LanFlowApp() {
           <IncomeExpenseModule
             selectedLocation={selectedLocation}
             profile={profile}
+            onOpenMoneyTransferSource={openMoneyTransferSource}
+            onOpenRubberBillSource={openRubberBillSource}
           />
         )}
         {activeTab === "time-tracking" && (

@@ -5,9 +5,13 @@
 สถานะระบบล่าสุด:
 
 - โอนเงินสาขาใช้ `money_transfers.transfer_type = 'branch'` เป็น source หลัก ไม่ได้สร้างคู่ row จริงใน `income_expense`
+- `IncomeExpenseModule` มีปุ่ม `โยกเงินไปสาขาอื่น` เปิด `BranchTransferForm` เพื่อบันทึก branch transfer จากหน้า รับ-จ่าย โดยตรง
+- `useIncomeExpense` แสดงรายจ่ายขาออกของสาขาต้นทางแบบ derived row จาก `money_transfers.location_id`
 - `useIncomeExpense` แสดงรายรับขาเข้าของสาขาปลายทางแบบ derived row จาก `money_transfers.target_location_id`
 - `useIncomeExpense` แสดงรายจ่ายส่วนสาขาจ่ายจากโอนเงินลูกค้า เมื่อ `transfer_type = 'customer'` และ `transfer_status = 'branch_and_transfer'`
-- derived rows ทั้งสองแบบถูกครอบด้วย relation lock ใน UI: แก้/ลบจากรับ-จ่ายไม่ได้ ต้องแก้หรือลบจากรายการโอนเงินต้นทาง
+- `useIncomeExpense` แสดงรายจ่ายรวมรายวันจาก `rubber_bills` ที่ยังไม่ถูกเลือกไป `money_transfer_items` เป็น derived row จากบิลยาง
+- derived rows ทุกแบบถูกครอบด้วย relation lock ใน UI: แก้/ลบจากรับ-จ่ายไม่ได้ ต้องแก้หรือลบจากรายการต้นทาง
+- ปุ่มเปิดรายการต้นทางบน locked row แสดงเฉพาะผู้ใช้ที่มีสิทธิ์สาขาต้นทางหรือ `super_admin`
 - เพิ่ม approval workflow แล้วผ่าน table `income_expense_approval_settings`, `income_expense_approval_keywords`, `income_expense_approval_requests`
 - keyword approval ไม่เกี่ยวกับ `bill_option`; ระบบตรวจจากข้อความรายการ (`title`) และยอดเงินก่อนสร้าง/แก้ `income_expense`
 - superadmin จัดการ keyword, threshold, และอนุมัติ/ปฏิเสธผ่าน modal `IncomeExpenseApprovalModal` ในโมดูลรับ-จ่าย
@@ -19,6 +23,10 @@ Decisions ที่ใช้จริง:
 - threshold ใช้เงื่อนไข `amount >= approval_min_amount`
 - keyword แต่ละรายการกำหนด scope ได้เป็น `income`, `expense`, หรือ `both`; ค่าเริ่มต้นของ UI คือ `expense`
 - approval เป็น online-only; ถ้า offline และ local config บอกว่ารายการต้องอนุมัติ ระบบจะ block การบันทึกจนกว่าจะ online
+- branch transfer ใช้ Derived Model จาก `money_transfers` ต่อไป ไม่สร้าง row จริงคู่ใน `income_expense`
+- ผู้สร้าง branch transfer ต้องมีสิทธิ์เฉพาะสาขาต้นทาง; สาขาปลายทางเลือกจากสาขา active ทั้งหมด
+- rejected approval ต้องสร้างคำขอใหม่เสมอ และ delete รายการที่เคย approved ไม่ต้องขออนุมัติ
+- approval queue ค่าเริ่มต้นแสดงทุกสาขารวมกัน และมี filter สาขา
 
 ## Purpose
 

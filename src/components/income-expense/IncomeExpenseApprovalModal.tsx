@@ -4,6 +4,7 @@ import { toast } from "sonner";
 
 import { formatCurrency } from "@/lib/format";
 import { useIncomeExpenseApprovals } from "@/hooks/useIncomeExpenseApprovals";
+import { useLocations } from "@/hooks/useLocations";
 import { ModalShell } from "@/components/shared/ModalShell";
 
 import type {
@@ -64,6 +65,7 @@ export function IncomeExpenseApprovalModal({ onClose }: { onClose: () => void })
     saveSettings,
     decideRequest,
   } = useIncomeExpenseApprovals({ includeRequests: true });
+  const { locations } = useLocations();
 
   const [keyword, setKeyword] = useState("");
   const [keywordAppliesTo, setKeywordAppliesTo] = useState<IncomeExpenseApprovalAppliesTo>("expense");
@@ -74,6 +76,7 @@ export function IncomeExpenseApprovalModal({ onClose }: { onClose: () => void })
   const [isAdding, setIsAdding] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [decidingId, setDecidingId] = useState<string | null>(null);
+  const [requestLocationFilter, setRequestLocationFilter] = useState("all");
 
   useEffect(() => {
     if (!settings) return;
@@ -81,9 +84,21 @@ export function IncomeExpenseApprovalModal({ onClose }: { onClose: () => void })
     setSettingsMinAmount(settings.approvalMinAmount != null ? String(settings.approvalMinAmount) : "");
   }, [settings]);
 
+  const locationNameById = useMemo(
+    () => new Map(locations.map((location) => [location.id, location.name])),
+    [locations]
+  );
+
+  const filteredRequests = useMemo(
+    () => requestLocationFilter === "all"
+      ? requests
+      : requests.filter((request) => request.locationId === requestLocationFilter),
+    [requestLocationFilter, requests]
+  );
+
   const pendingCount = useMemo(
-    () => requests.filter((request) => request.requestStatus === "pending").length,
-    [requests]
+    () => filteredRequests.filter((request) => request.requestStatus === "pending").length,
+    [filteredRequests]
   );
 
   async function handleSaveSettings(event: React.FormEvent) {
@@ -351,13 +366,31 @@ export function IncomeExpenseApprovalModal({ onClose }: { onClose: () => void })
         </section>
 
         <section className="rounded-md border border-black/10 p-4">
-          <h3 className="mb-3 font-bold text-ink">คำขออนุมัติรับ-จ่าย</h3>
+          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <h3 className="font-bold text-ink">คำขออนุมัติรับ-จ่าย</h3>
+            <label className="grid gap-1 text-sm font-semibold text-ink sm:w-64">
+              สาขา
+              <select
+                value={requestLocationFilter}
+                onChange={(event) => setRequestLocationFilter(event.target.value)}
+                className="focus-ring h-10 rounded-md border border-black/10 bg-white px-3"
+              >
+                <option value="all">ทุกสาขา</option>
+                {locations.map((location) => (
+                  <option key={location.id} value={location.id}>
+                    {location.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[980px] border-collapse text-sm">
+            <table className="w-full min-w-[1080px] border-collapse text-sm">
               <thead>
                 <tr className="border-b border-black/10 text-left text-ink/60">
                   <th className="py-2">สถานะ</th>
                   <th>ประเภท</th>
+                  <th>สาขา</th>
                   <th>รายการ</th>
                   <th>จำนวนเงิน</th>
                   <th>เหตุผล</th>
@@ -369,18 +402,18 @@ export function IncomeExpenseApprovalModal({ onClose }: { onClose: () => void })
               <tbody>
                 {isLoading ? (
                   <tr>
-                    <td colSpan={8} className="py-5 text-center text-ink/50">
+                    <td colSpan={9} className="py-5 text-center text-ink/50">
                       กำลังโหลด...
                     </td>
                   </tr>
-                ) : requests.length === 0 ? (
+                ) : filteredRequests.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="py-5 text-center text-ink/50">
+                    <td colSpan={9} className="py-5 text-center text-ink/50">
                       ยังไม่มีคำขออนุมัติ
                     </td>
                   </tr>
                 ) : (
-                  requests.map((request) => (
+                  filteredRequests.map((request) => (
                     <tr key={request.id} className="border-b border-black/5">
                       <td className="py-3">
                         <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${
@@ -394,6 +427,7 @@ export function IncomeExpenseApprovalModal({ onClose }: { onClose: () => void })
                         </span>
                       </td>
                       <td>{request.txType === "income" ? "รายรับ" : "รายจ่าย"}</td>
+                      <td>{locationNameById.get(request.locationId) ?? "ไม่ทราบสาขา"}</td>
                       <td>
                         <div className="flex flex-col gap-1">
                           <span className="font-semibold text-ink">{request.title}</span>

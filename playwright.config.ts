@@ -43,9 +43,14 @@ export default defineConfig({
     }
   ] : [
     {
+      name: 'setup',
+      testMatch: /global\.setup\.ts/,
+    },
+    {
       // Dev-mode tests: uses `npm run dev`, PWA/SW disabled
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
+      dependencies: ['setup'],
       testIgnore: ['**/rubber-bills-pwa.spec.ts', '**/income-expense-pwa.spec.ts'],
     }
   ],

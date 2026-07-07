@@ -8,6 +8,7 @@ import { useEffect } from "react";
 import {
   INCOME_EXPENSE_BRANCH_TRANSFER_LOCK_MESSAGE,
   INCOME_EXPENSE_CUSTOMER_TRANSFER_LOCK_MESSAGE,
+  INCOME_EXPENSE_RUBBER_BILL_LOCK_MESSAGE,
   OFFLINE_SYNCED_ACTION_MESSAGE
 } from "@/lib/record-action-locks";
 
@@ -37,6 +38,20 @@ type LocationLookupRow = {
   id: string;
   name: string;
   code: string | null;
+};
+
+type RubberBillExpenseSourceRow = {
+  id: string;
+  location_id: string;
+  bill_date: string;
+  net_total: number | string | null;
+  revision_no: number | null;
+  created_by_user_id: string | null;
+  created_by_name: string | null;
+  created_by_phone: string | null;
+  client_recorded_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
 };
 
 // ─── Sync ────────────────────────────────────────────────────
@@ -177,6 +192,42 @@ function branchTransferToIncomeRow(
     recordStatus: "active",
     relationSourceType: "money_transfer",
     relationSourceId: transfer.id,
+    relationSourceLocationId: transfer.location_id,
+    relationLabel: "โอนเงินสาขา",
+    relationLockReason: INCOME_EXPENSE_BRANCH_TRANSFER_LOCK_MESSAGE,
+  };
+}
+
+function branchTransferToExpenseRow(transfer: IncomingBranchTransferRow): IncomeExpense {
+  const displayNo = `TR-${transfer.id.slice(0, 8)}`;
+  const recordedAt = transfer.created_at ?? transfer.updated_at ?? "1970-01-01T00:00:00.000Z";
+  const targetName = transfer.target_location_name ?? "สาขาปลายทาง";
+
+  return {
+    id: `money-transfer-branch-expense:${transfer.id}`,
+    clientTempId: `money-transfer-branch-expense:${transfer.id}`,
+    localBillNo: displayNo,
+    serverBillNo: displayNo,
+    syncStatus: "synced",
+    idempotencyKey: `money-transfer-branch-expense:${transfer.id}`,
+    locationId: transfer.location_id,
+    type: "expense",
+    number: displayNo,
+    txDate: recordedAt.slice(0, 10),
+    title: `โยกเงินไป ${targetName}`,
+    cost: Number(transfer.net_amount_to_pay ?? 0),
+    billOption: "ค่าใช้จ่าย",
+    createdByUserId: transfer.created_by_user_id ?? "",
+    createdByName: transfer.created_by_name ?? "ระบบโอนเงิน",
+    createdByPhone: transfer.created_by_phone ?? "",
+    clientCreatedAt: recordedAt,
+    clientRecordedAt: recordedAt,
+    serverReceivedAt: transfer.updated_at ?? transfer.created_at ?? undefined,
+    revisionNo: transfer.revision_no ?? 0,
+    recordStatus: "active",
+    relationSourceType: "money_transfer",
+    relationSourceId: transfer.id,
+    relationSourceLocationId: transfer.location_id,
     relationLabel: "โอนเงินสาขา",
     relationLockReason: INCOME_EXPENSE_BRANCH_TRANSFER_LOCK_MESSAGE,
   };
@@ -211,9 +262,102 @@ function customerTransferBranchPaidToExpenseRow(transfer: IncomingBranchTransfer
     recordStatus: "active",
     relationSourceType: "money_transfer",
     relationSourceId: transfer.id,
+    relationSourceLocationId: transfer.location_id,
     relationLabel: "โอน+สาขาจ่าย",
     relationLockReason: INCOME_EXPENSE_CUSTOMER_TRANSFER_LOCK_MESSAGE,
   };
+}
+
+function rubberBillsToDailyExpenseRows(
+  bills: RubberBillExpenseSourceRow[],
+  locationId: string
+): IncomeExpense[] {
+  const groups = new Map<string, {
+    total: number;
+    count: number;
+    latestRecordedAt: string;
+    latestUpdatedAt?: string;
+    revisionNo: number;
+    createdByUserId: string;
+    createdByName: string;
+    createdByPhone: string;
+  }>();
+
+  for (const bill of bills) {
+    const amount = Number(bill.net_total ?? 0);
+    if (amount <= 0) continue;
+
+    const date = bill.bill_date;
+    const recordedAt = bill.client_recorded_at ?? bill.updated_at ?? bill.created_at ?? `${date}T00:00:00.000Z`;
+    const existing = groups.get(date);
+
+    if (!existing) {
+      groups.set(date, {
+        total: amount,
+        count: 1,
+        latestRecordedAt: recordedAt,
+        latestUpdatedAt: bill.updated_at ?? bill.created_at ?? undefined,
+        revisionNo: bill.revision_no ?? 0,
+        createdByUserId: bill.created_by_user_id ?? "",
+        createdByName: bill.created_by_name ?? "ระบบบิลยาง",
+        createdByPhone: bill.created_by_phone ?? "",
+      });
+      continue;
+    }
+
+    const nextRecordedAt = new Date(recordedAt).getTime() > new Date(existing.latestRecordedAt).getTime()
+      ? recordedAt
+      : existing.latestRecordedAt;
+    const nextUpdatedAt = bill.updated_at && (!existing.latestUpdatedAt || new Date(bill.updated_at).getTime() > new Date(existing.latestUpdatedAt).getTime())
+      ? bill.updated_at
+      : existing.latestUpdatedAt;
+
+    groups.set(date, {
+      ...existing,
+      total: existing.total + amount,
+      count: existing.count + 1,
+      latestRecordedAt: nextRecordedAt,
+      latestUpdatedAt: nextUpdatedAt,
+      revisionNo: Math.max(existing.revisionNo, bill.revision_no ?? 0),
+      createdByUserId: "",
+      createdByName: "ระบบบิลยาง",
+      createdByPhone: "",
+    });
+  }
+
+  return Array.from(groups.entries()).map(([date, group]) => {
+    const displayNo = `RB-${date.replaceAll("-", "").slice(2)}`;
+
+    return {
+      id: `rubber-bill-daily-expense:${locationId}:${date}`,
+      clientTempId: `rubber-bill-daily-expense:${locationId}:${date}`,
+      localBillNo: displayNo,
+      serverBillNo: displayNo,
+      syncStatus: "synced",
+      idempotencyKey: `rubber-bill-daily-expense:${locationId}:${date}`,
+      locationId,
+      type: "expense",
+      number: displayNo,
+      txDate: date,
+      title: `จ่ายค่ายางจากบิลยาง ${group.count} ใบ`,
+      cost: group.total,
+      billOption: "ค่าใช้จ่าย",
+      createdByUserId: group.createdByUserId,
+      createdByName: group.createdByName,
+      createdByPhone: group.createdByPhone,
+      clientCreatedAt: group.latestRecordedAt,
+      clientRecordedAt: group.latestRecordedAt,
+      serverReceivedAt: group.latestUpdatedAt,
+      revisionNo: group.revisionNo,
+      recordStatus: "active",
+      relationSourceType: "rubber_bill_daily",
+      relationSourceId: date,
+      relationSourceLocationId: locationId,
+      relationSourceDate: date,
+      relationLabel: "บิลยางรวมรายวัน",
+      relationLockReason: INCOME_EXPENSE_RUBBER_BILL_LOCK_MESSAGE,
+    };
+  });
 }
 
 // ─── Hook ────────────────────────────────────────────────────
@@ -239,7 +383,9 @@ export function useIncomeExpense(locationId: string) {
       // 1. Fetch server state (gracefully degrade when offline)
       let serverRows: IncomeExpense[] = [];
       let incomingBranchIncomeRows: IncomeExpense[] = [];
+      let outgoingBranchExpenseRows: IncomeExpense[] = [];
       let customerBranchPaidExpenseRows: IncomeExpense[] = [];
+      let rubberBillDailyExpenseRows: IncomeExpense[] = [];
 
       try {
         const { data, error } = await supabase
@@ -341,6 +487,41 @@ export function useIncomeExpense(locationId: string) {
       }
 
       try {
+        const { data: outgoingTransfers, error } = await supabase
+          .from("money_transfers")
+          .select(`
+            id,
+            location_id,
+            target_location_id,
+            target_location_name,
+            net_amount_to_pay,
+            transfer_status,
+            transfer_type,
+            record_status,
+            revision_no,
+            created_by_user_id,
+            created_by_name,
+            created_by_phone,
+            created_at,
+            updated_at
+          `)
+          .eq("transfer_type", "branch")
+          .eq("location_id", locationId)
+          .neq("record_status", "deleted")
+          .neq("transfer_status", "cancelled");
+
+        if (error) throw new Error(error.message || JSON.stringify(error));
+
+        outgoingBranchExpenseRows = ((outgoingTransfers || []) as IncomingBranchTransferRow[])
+          .filter(transfer => Number(transfer.net_amount_to_pay ?? 0) > 0)
+          .map(branchTransferToExpenseRow);
+      } catch (err) {
+        if (navigator.onLine) {
+          console.warn("Unable to load outgoing branch transfer expense rows:", err);
+        }
+      }
+
+      try {
         const { data: branchPaidTransfers, error } = await supabase
           .from("money_transfers")
           .select(`
@@ -374,6 +555,55 @@ export function useIncomeExpense(locationId: string) {
         }
       }
 
+      try {
+        const { data: rubberBills, error } = await supabase
+          .from("rubber_bills")
+          .select(`
+            id,
+            location_id,
+            bill_date,
+            net_total,
+            revision_no,
+            created_by_user_id,
+            created_by_name,
+            created_by_phone,
+            client_recorded_at,
+            created_at,
+            updated_at
+          `)
+          .eq("location_id", locationId)
+          .eq("record_status", "active")
+          .gt("net_total", 0);
+
+        if (error) throw new Error(error.message || JSON.stringify(error));
+
+        const rubberBillRows = (rubberBills || []) as RubberBillExpenseSourceRow[];
+        const sourceIds = rubberBillRows.map(bill => bill.id);
+        const usedSourceIds = new Set<string>();
+
+        if (sourceIds.length > 0) {
+          const { data: transferItems, error: transferItemsError } = await supabase
+            .from("money_transfer_items")
+            .select("source_id")
+            .eq("source_type", "rubber_bill")
+            .in("source_id", sourceIds);
+
+          if (transferItemsError) throw new Error(transferItemsError.message || JSON.stringify(transferItemsError));
+          (transferItems || []).forEach((item: any) => {
+            if (item.source_id) usedSourceIds.add(item.source_id);
+          });
+        }
+
+        rubberBillDailyExpenseRows = rubberBillsToDailyExpenseRows(
+          rubberBillRows.filter(bill => !usedSourceIds.has(bill.id)),
+          locationId
+        );
+      } catch (err) {
+        if (navigator.onLine) {
+          console.warn("Unable to load rubber bill daily expense rows:", err);
+        }
+      }
+
       // 2. Fetch pending queue
       const pendingEvents = await getPendingEvents(ENTITY);
 
@@ -381,7 +611,9 @@ export function useIncomeExpense(locationId: string) {
       const rowsMap = new Map<string, IncomeExpense>();
       serverRows.forEach(r => rowsMap.set(r.clientTempId, r));
       incomingBranchIncomeRows.forEach(r => rowsMap.set(r.clientTempId, r));
+      outgoingBranchExpenseRows.forEach(r => rowsMap.set(r.clientTempId, r));
       customerBranchPaidExpenseRows.forEach(r => rowsMap.set(r.clientTempId, r));
+      rubberBillDailyExpenseRows.forEach(r => rowsMap.set(r.clientTempId, r));
 
       for (const event of pendingEvents) {
         if (event.operation === "delete") {

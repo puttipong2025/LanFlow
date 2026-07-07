@@ -164,8 +164,10 @@ export type IncomeExpense = {
   deletedByName?: string;
   deletedByPhone?: string;
   syncErrorMessage?: string;
-  relationSourceType?: "money_transfer";
+  relationSourceType?: "money_transfer" | "rubber_bill_daily";
   relationSourceId?: string;
+  relationSourceLocationId?: string;
+  relationSourceDate?: string;
   relationLockReason?: string;
   relationLabel?: string;
 };

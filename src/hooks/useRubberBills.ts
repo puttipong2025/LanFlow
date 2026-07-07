@@ -433,6 +433,7 @@ export function useRubberBills(locationId: string) {
         return [{ ...savedBill, syncStatus: "pending" }, ...old];
       });
       queryClient.invalidateQueries({ queryKey: ["rubberBills", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["incomeExpense", locationId] });
       syncPendingBills(queryClient, locationId);
     }
   });
@@ -496,6 +497,7 @@ export function useRubberBills(locationId: string) {
         return old.filter(b => b.clientTempId !== data.clientTempId);
       });
       queryClient.invalidateQueries({ queryKey: ["rubberBills", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["incomeExpense", locationId] });
       syncPendingBills(queryClient, locationId);
     }
   });

@@ -1,5 +1,5 @@
 import { Plus } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { useRubberBills } from "@/hooks/useRubberBills";
@@ -17,10 +17,14 @@ import { RubberBillModal } from "./RubberBillModal";
 
 export function RubberBillsModule({
   selectedLocation,
-  profile
+  profile,
+  initialSearch,
+  onInitialSearchHandled
 }: {
   selectedLocation: Location;
   profile: Profile;
+  initialSearch?: string | null;
+  onInitialSearchHandled?: () => void;
 }) {
   const { bills, addBill, updateBill, deleteBill } = useRubberBills(selectedLocation.id);
   const { customers, addCustomer, updateCustomer } = useCustomers();
@@ -31,6 +35,14 @@ export function RubberBillsModule({
   const [pageSize, setPageSize] = useState(10);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
+
+  useEffect(() => {
+    if (!initialSearch) return;
+    setSearch(initialSearch);
+    setPage(1);
+    onInitialSearchHandled?.();
+  }, [initialSearch, onInitialSearchHandled]);
+
   const filteredBills = (bills || []).filter((bill: RubberBill) => {
     const haystack = [
       bill.billNo,

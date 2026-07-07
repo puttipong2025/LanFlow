@@ -334,9 +334,10 @@ API response status:
 
 กฎสำหรับข้อมูลที่ derive จากโมดูลอื่น:
 
-- ถ้า row ใน UI ไม่ใช่ source table ของตัวเอง แต่ derive จากโมดูลอื่น เช่น รายรับ/รายจ่ายที่ดึงจาก `money_transfers` ห้าม enqueue ลง IndexedDB queue ของ module ปลายทาง
+- ถ้า row ใน UI ไม่ใช่ source table ของตัวเอง แต่ derive จากโมดูลอื่น เช่น รายรับ/รายจ่ายที่ดึงจาก `money_transfers` หรือ `rubber_bills` ห้าม enqueue ลง IndexedDB queue ของ module ปลายทาง
 - Derived row ต้องเปลี่ยนหรือหายตาม source record เสมอ ไม่ควร copy เป็น row ใหม่ถ้าไม่มีเหตุผลด้าน audit ที่ชัดเจน
 - Derived row ต้องมี UI lock ชัดเจนและบอกผู้ใช้ว่าต้องแก้จากโมดูลต้นทาง
+- ถ้า derived row มี action เปิดต้นทาง ให้แสดงเฉพาะเมื่อผู้ใช้มีสิทธิ์สาขาต้นทางหรือเป็น `super_admin`
 - ถ้า derived row ต้องเปิดให้สาขาปลายทางเห็น source record ให้เพิ่ม RLS select policy เฉพาะกรณี ไม่เปิด write ข้ามสาขา
 
 ## 11. Income/Expense Approval Rules
@@ -349,7 +350,9 @@ API response status:
 - รายการที่เข้าเงื่อนไข approval ต้องถูกเก็บใน `income_expense_approval_requests` ก่อน และยังไม่สร้าง/แก้ `income_expense`
 - เฉพาะ `super_admin` เท่านั้นที่เพิ่ม/ปิด keyword, ตั้ง threshold, และอนุมัติ/ปฏิเสธคำขอได้
 - เมื่อ approve ให้สร้าง/แก้ row จริงผ่าน RPC ที่คง idempotency/revision/server bill number rule เดิม
-- เมื่อ reject ให้คงประวัติคำขอไว้และไม่สร้าง row จริง
+- เมื่อ reject ให้คงประวัติคำขอไว้และไม่สร้าง row จริง; ถ้าผู้ใช้ส่งรายการเดิมอีกครั้งต้องสร้างคำขอใหม่เสมอ
+- delete รายการที่เคย approved ไม่ต้องผ่าน approval เว้นแต่มี requirement ใหม่
+- approval queue ของ `super_admin` ต้อง default เป็นทุกสาขา และมี filter สาขา
 - approval/decision เป็น online-only; ถ้า offline และระบบรู้ว่ารายการต้องอนุมัติ ต้อง block การบันทึกพร้อมข้อความไทย
 - ถ้าแก้ `useIncomeExpenseApprovals`, approval API route, หรือ migration approval ต้องรัน `npx.cmd tsc --noEmit`, `npm run build`, และ `npx.cmd supabase db reset`
 
@@ -403,7 +406,11 @@ errorMessage
 - ต้องลบ item ออกจากรายการโอนก่อน
 - RPC return `failed` พร้อมข้อความไทย เช่น `รายการนี้ถูกล็อก ต้องลบ item ออกจากรายการโอนก่อน`
 - รายรับใน Income/Expense ที่ derive จาก `money_transfers.transfer_type = 'branch'` และ `target_location_id` ตรงสาขาปัจจุบัน แก้/ลบจาก Income/Expense ไม่ได้ ต้องแก้หรือลบที่รายการโอนเงินสาขาต้นทาง
+- รายจ่ายใน Income/Expense ที่ derive จาก `money_transfers.transfer_type = 'branch'` และ `location_id` ตรงสาขาปัจจุบัน แก้/ลบจาก Income/Expense ไม่ได้ ต้องแก้หรือลบที่รายการโอนเงินสาขาต้นทาง
 - รายจ่ายใน Income/Expense ที่ derive จาก `money_transfers.transfer_type = 'customer'`, `transfer_status = 'branch_and_transfer'`, และ `branch_paid_amount` แก้/ลบจาก Income/Expense ไม่ได้ ต้องแก้หรือลบที่รายการโอนเงินลูกค้าต้นทาง
+- รายจ่ายใน Income/Expense ที่ derive จาก `rubber_bills` แบบรวมยอด `net_total` ต่อ `bill_date` สำหรับบิลที่ยังไม่อยู่ใน `money_transfer_items.source_type = 'rubber_bill'` แก้/ลบจาก Income/Expense ไม่ได้ ต้องแก้หรือลบที่รายการบิลยางต้นทาง
+- branch transfer ต้องใช้สิทธิ์สาขาต้นทางเท่านั้น; สาขาปลายทางเป็น dropdown จากสาขา active ทั้งหมด
+- derived row ที่ผู้ใช้มีสิทธิ์สาขาต้นทางหรือเป็น `super_admin` ควรมี action เปิดรายการต้นทาง; ถ้าไม่มีสิทธิ์สาขาต้นทางต้องไม่แสดงปุ่มและห้ามบังคับสลับสาขา
 
 กฎสำหรับ module ใหม่:
 
@@ -414,7 +421,7 @@ errorMessage
 
 กฎเพิ่มเติมสำหรับ derived money relation:
 
-1. ต้องนิยาม source of truth ให้ชัด เช่น `money_transfers` เป็น source ของ derived income/expense
+1. ต้องนิยาม source of truth ให้ชัด เช่น `money_transfers` หรือ `rubber_bills` เป็น source ของ derived income/expense
 2. ถ้าใช้ derived row แทนการสร้าง row จริงใน table ปลายทาง ต้อง lock action ใน UI เพราะไม่มี mutation path ใน module ปลายทาง
 3. ถ้าสร้าง row จริงใน table ปลายทางแทน derived row ต้องมี relation id, RPC/trigger enforcement, update/delete cascade หรือ sync logic ที่ทำให้ข้อมูลสองฝั่งไม่แยกกัน
 4. ต้องระบุ RLS ให้ปลายทางอ่าน source ได้เท่าที่จำเป็น เช่น branch target อ่าน branch transfer ที่ชี้มายังสาขาตัวเองได้ แต่เขียนไม่ได้

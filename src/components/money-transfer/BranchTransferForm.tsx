@@ -10,6 +10,8 @@ import { useLocations } from "@/hooks/useLocations";
 import { SlipRow, type OcrSlipResult } from "./SlipRow";
 import { formatCurrency } from "@/lib/format";
 
+import { useOnlineStatus } from "@/hooks/useOnlineStatus";
+
 export function BranchTransferForm({
   locationId,
   editTransfer,
@@ -24,8 +26,10 @@ export function BranchTransferForm({
   const { profile } = useAuth();
   const isEdit = !!editTransfer;
   const { locations } = useLocations();
+  const isOnline = useOnlineStatus();
 
   const [selectedLocationId, setSelectedLocationId] = useState<string | null>(editTransfer?.targetLocationId ?? null);
+
   
   // Slips
   const [slips, setSlips] = useState<MoneyTransferSlip[]>(editTransfer?.slips ?? []);
@@ -252,14 +256,21 @@ export function BranchTransferForm({
       
       <div className="flex flex-shrink-0 items-center justify-between border-t border-black/5 p-4">
         <button type="button" onClick={onCancel} className="focus-ring rounded-md border border-black/10 bg-white px-4 py-2 text-sm font-semibold text-ink hover:bg-field">ยกเลิก</button>
-        <button
-          type="button"
-          onClick={handleSubmit}
-          disabled={!selectedLocationId || selectedLocationId === locationId || slips.length === 0}
-          className="focus-ring flex items-center gap-1.5 rounded-md bg-river px-5 py-2 text-sm font-semibold text-white hover:bg-river/90 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          <Save size={15} /> บันทึก
-        </button>
+        <div className="flex items-center gap-3">
+          {!isOnline && (
+            <span className="text-sm font-semibold text-clay text-right">
+              รายการโยกเงินต้องออนไลน์ก่อนบันทึก
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={!selectedLocationId || selectedLocationId === locationId || slips.length === 0 || !isOnline}
+            className="focus-ring flex items-center gap-1.5 rounded-md bg-river px-5 py-2 text-sm font-semibold text-white hover:bg-river/90 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Save size={15} /> บันทึก
+          </button>
+        </div>
       </div>
     </div>
   );

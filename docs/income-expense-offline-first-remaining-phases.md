@@ -54,19 +54,11 @@ npx.cmd playwright test tests/income-expense-offline.spec.ts --project=chromium
 
 หยุดหลัง Phase นี้ แล้วให้ Codex `$scrutinize` ตรวจ call graph + test coverage ก่อนทำ Phase 2
 
-## Phase 2 - PWA Offline Reload Proof
-
-**Status:** Completed. `tests/income-expense-pwa.spec.ts` ผ่านใน `chromium-pwa`.
-
-เป้าหมาย: พิสูจน์ว่า Income/Expense ใช้ได้หลัง reload ตอน offline ใน PWA mode
-
-### Tasks
-
-- สร้าง `tests/income-expense-pwa.spec.ts`
-- Flow:
-  - login online และเปิดแอปให้ bootstrap cache พร้อม
-  - เข้าเมนูรายรับ-รายจ่าย
-  - offline
+## Phase 2 - PWA Offline Reload Proof & Approval Offline Rules
+**Status:** Completed.
+- ทดสอบ PWA offline reload เดิมใน `tests/income-expense-pwa.spec.ts` ผ่าน
+- เพิ่มการบล็อกการโอนเงิน (Branch Transfer) เมื่อ offline ในระดับ UI (ปิดปุ่ม บันทึก และแสดงข้อความเตือน)
+- เพิ่ม test ไฟล์ `tests/income-expense/branch-transfer-offline.spec.ts` เพื่อทดสอบพฤติกรรม Offline Rules ของ Branch Transfer และ Approval Request ตามแผน `income-expense-branch-transfer-approval-plan.md` เรียบร้อยแล้ว (4/4 passed)
   - create transaction
   - reload while offline
   - assert app ยัง render ได้, tab รายรับ-รายจ่าย clickable, row pending visible
@@ -86,9 +78,13 @@ $env:PW_PROJECT="pwa"; npx.cmd playwright test tests/income-expense-pwa.spec.ts 
 
 ## Phase 3 - Lock Down DB Writes
 
-**Status:** Completed. `income_expense` เหลือ direct `SELECT` สำหรับ authenticated และ write ผ่าน `sync_income_expense(jsonb)` เท่านั้น.
+**Status:** Completed. 
+- `income_expense` เหลือ direct `SELECT` สำหรับ authenticated และ write ผ่าน `sync_income_expense(jsonb)` เท่านั้น.
+- เพิ่มการล็อกลึกถึงระดับ RPC: `sync_income_expense` ไม่รับ payload ของการโอนเงิน (Branch Transfer) โดยตรง เพื่อป้องกันการส่ง fake data
+- `sync_income_expense` จะดีดกลับ (`status: 'conflict'`) ทันทีถ้ารายการตรงกับ approval keyword หรือเกิน threshold แล้วพยายามบันทึกตรงๆ โดย bypass คิวอนุมัติ
+- ใช้ `app.bypass_income_expense_approval` เป็น internal flag ที่อนุญาตเฉพาะ `super_admin` ผ่าน `decide_income_expense_approval_request` ในการ override กติกานี้
 
-เป้าหมาย: หลัง E2E ผ่านแล้ว ค่อยปิด direct insert/update/delete บน `income_expense`
+เป้าหมาย: ปิดช่องโหว่ทั้งหมดที่อาจเกิดขึ้นจากการพยายามยิง RPC เพื่ออ้อมผ่าน Approval Queue และระบบโอนเงินของสาขา
 
 ### Tasks
 
@@ -120,7 +116,9 @@ npx.cmd playwright test tests/income-expense-offline.spec.ts --project=chromium
 
 ## Phase 4 - Hardening Tests
 
-**Status:** Completed. Hardening cases ถูกเพิ่มใน `tests/income-expense-offline.spec.ts` และผ่าน 11/11.
+**Status:** Completed. 
+- Hardening cases เดิมถูกเพิ่มใน `tests/income-expense-offline.spec.ts` และผ่าน 11/11.
+- เพิ่มการทดสอบการเจาะระบบเพื่อทำ DB Bypass (Branch Transfer / Approval Keyword) ใน `tests/income-expense/hardening-db-lockdown.spec.ts` และผ่านฉลุยครบถ้วน
 
 เป้าหมาย: ปิด edge cases ก่อนประกาศ Full Offline
 

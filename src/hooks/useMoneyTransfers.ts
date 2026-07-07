@@ -138,6 +138,7 @@ export function useMoneyTransfers(locationId: string) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["moneyTransfers", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["incomeExpense"] });
     }
   });
 
@@ -202,6 +203,7 @@ export function useMoneyTransfers(locationId: string) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["moneyTransfers", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["incomeExpense"] });
     }
   });
 
@@ -215,6 +217,7 @@ export function useMoneyTransfers(locationId: string) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["moneyTransfers", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["incomeExpense"] });
     }
   });
 

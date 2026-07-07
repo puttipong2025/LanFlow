@@ -9,6 +9,7 @@ export const RUBBER_BILL_TRANSFER_LOCK_MESSAGE = "รายการนี้ถ
 export const OCR_TICKET_TRANSFER_LOCK_MESSAGE = "รายการนี้ถูกล็อก ต้องลบ item ออกจากรายการโอนก่อน";
 export const INCOME_EXPENSE_BRANCH_TRANSFER_LOCK_MESSAGE = "รายการนี้มาจากการโอนเงินสาขา ต้องแก้ไขหรือลบที่โมดูลโอนเงินต้นทาง";
 export const INCOME_EXPENSE_CUSTOMER_TRANSFER_LOCK_MESSAGE = "รายการนี้มาจากโอนเงินลูกค้าแบบโอน+สาขาจ่าย ต้องแก้ไขหรือลบที่โมดูลโอนเงินลูกค้าต้นทาง";
+export const INCOME_EXPENSE_RUBBER_BILL_LOCK_MESSAGE = "รายการนี้มาจากบิลยาง ต้องแก้ไขหรือลบที่โมดูลบิลยางต้นทาง";
 
 export function isSyncedServerRecord(record: SyncableRecord) {
   return Boolean(record.serverBillNo) || record.syncStatus === "synced" || record.id !== record.clientTempId;

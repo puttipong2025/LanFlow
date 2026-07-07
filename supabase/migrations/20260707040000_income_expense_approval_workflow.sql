@@ -443,3 +443,4 @@ revoke all on function public.create_income_expense_approval_request(jsonb) from
 revoke all on function public.decide_income_expense_approval_request(uuid, text, text) from public, anon;
 grant execute on function public.create_income_expense_approval_request(jsonb) to authenticated;
 grant execute on function public.decide_income_expense_approval_request(uuid, text, text) to authenticated;
+grant all on table public.income_expense_approval_settings to service_role; grant all on table public.income_expense_approval_keywords to service_role; grant all on table public.income_expense_approval_requests to service_role;

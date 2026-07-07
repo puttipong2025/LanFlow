@@ -26,8 +26,12 @@
 - ดังนั้นกติกา relation lock แบบ source item ใน `money_transfer_items` ยังไม่กระทบ Income/Expense จนกว่าจะออกแบบให้เลือก Income/Expense ในโอนเงินด้วย.
 - เพิ่มกติกาใหม่สำหรับ **branch transfer income**: ถ้า `money_transfers.transfer_type = 'branch'` และ `target_location_id` ตรงกับสาขาที่กำลังดู โมดูลรับ-จ่ายจะแสดงรายการนั้นเป็นรายรับขาเข้าแบบ derived จาก `money_transfers`.
 - รายรับขาเข้าจาก branch transfer ถูกล็อกใน UI: แก้ไข/ลบจากโมดูลรับ-จ่ายไม่ได้ ต้องแก้ไขหรือลบรายการโอนเงินต้นทางแทน. เมื่อรายการต้นทางเปลี่ยน รายรับ derived จะเปลี่ยนตาม; เมื่อต้นทางถูกลบหรือยกเลิก รายรับ derived จะหายตาม.
+- เพิ่มกติกาใหม่สำหรับ **branch transfer expense**: ถ้า `money_transfers.transfer_type = 'branch'` และ `location_id` ตรงกับสาขาที่กำลังดู โมดูลรับ-จ่ายจะแสดงรายการนั้นเป็นรายจ่ายขาออกแบบ derived จาก `money_transfers`.
+- รายจ่ายขาออกจาก branch transfer ถูกล็อกใน UI: แก้ไข/ลบจากโมดูลรับ-จ่ายไม่ได้ ต้องแก้ไขหรือลบรายการโอนเงินต้นทางแทน. เมื่อรายการต้นทางเปลี่ยน รายจ่าย derived จะเปลี่ยนตาม; เมื่อต้นทางถูกลบหรือยกเลิก รายจ่าย derived จะหายตาม.
 - เพิ่มกติกาใหม่สำหรับ **customer transfer branch-paid expense**: ถ้า `money_transfers.transfer_type = 'customer'`, `transfer_status = 'branch_and_transfer'`, และ `location_id` ตรงกับสาขาที่กำลังดู โมดูลรับ-จ่ายจะแสดง `branch_paid_amount` เป็นรายจ่ายแบบ derived จาก `money_transfers`.
 - รายจ่ายจาก customer transfer สถานะ `โอน+สาขาจ่าย` ถูกล็อกใน UI: แก้ไข/ลบจากโมดูลรับ-จ่ายไม่ได้ ต้องแก้ไขหรือลบรายการโอนเงินลูกค้าต้นทางแทน. เมื่อรายการต้นทางเปลี่ยน รายจ่าย derived จะเปลี่ยนตาม; เมื่อต้นทางถูกลบหรือเปลี่ยนสถานะไม่ใช่ `โอน+สาขาจ่าย` รายจ่าย derived จะหายตาม.
+- เพิ่มกติกาใหม่สำหรับ **rubber bill daily expense**: ถ้า `rubber_bills.location_id` ตรงกับสาขาที่กำลังดู และบิลยังไม่ถูกเลือกใน `money_transfer_items.source_type = 'rubber_bill'` โมดูลรับ-จ่ายจะแสดงยอดรวม `net_total` ต่อ `bill_date` เป็นรายจ่ายแบบ derived จาก `rubber_bills`.
+- รายจ่ายรวมรายวันจากบิลยางถูกล็อกใน UI: แก้ไข/ลบจากโมดูลรับ-จ่ายไม่ได้ ต้องแก้ไขหรือลบรายการบิลยางต้นทางแทน. เมื่อบิลถูกแก้หรือลบ ยอด derived จะเปลี่ยนตาม; เมื่อบิลถูกเลือกไปโอนเงิน ยอด derived จะตัดบิลนั้นออก.
 
 ### OCR Tickets
 
@@ -47,7 +51,9 @@
 | Synced record | Online | No | Yes | Yes | Server/RPC ตรวจ revision ได้ |
 | Synced record | Online | Yes | No | No | ต้องยกเลิกความสัมพันธ์โอนเงินก่อน |
 | Derived branch transfer income | Online/Offline | Source money transfer | No | No | เป็นรายรับที่ดึงจากโมดูลโอนเงิน ต้องแก้/ลบจากต้นทาง |
+| Derived branch transfer expense | Online/Offline | Source money transfer | No | No | เป็นรายจ่ายที่ดึงจากโมดูลโอนเงิน ต้องแก้/ลบจากต้นทาง |
 | Derived customer transfer branch-paid expense | Online/Offline | Source customer transfer | No | No | เป็นรายจ่ายส่วนสาขาจ่ายจากโอนเงินลูกค้า ต้องแก้/ลบจากต้นทาง |
+| Derived rubber bill daily expense | Online/Offline | Source rubber bills | No | No | เป็นรายจ่ายรวมรายวันจากบิลยางที่ยังไม่ถูกเลือกไปโอนเงิน ต้องแก้/ลบจากบิลยางต้นทาง |
 | Conflict/failed queue | Any | Any | No | No | ต้อง resolve queue ก่อน |
 | Pending delete | Any | Any | No | No | รายการกำลังถูกลบอยู่แล้ว |
 
@@ -142,10 +148,13 @@ Recommendation:
 Update:
 
 - เพิ่ม branch transfer income แบบ derived แล้ว โดยไม่สร้าง row ใหม่ใน `income_expense`.
-- เหตุผล: รายรับปลายทางต้องเปลี่ยน/หายตามรายการโอนเงินต้นทางเสมอ การ derive จาก `money_transfers` ลดโอกาสข้อมูลซ้ำไม่ตรงกัน และทำให้ relation lock ทำได้ตรงไปตรงมาใน UI.
+- เพิ่ม branch transfer expense แบบ derived แล้ว โดยไม่สร้าง row ใหม่ใน `income_expense`.
+- เหตุผล: รายรับปลายทางและรายจ่ายต้นทางต้องเปลี่ยน/หายตามรายการโอนเงินต้นทางเสมอ การ derive จาก `money_transfers` ลดโอกาสข้อมูลซ้ำไม่ตรงกัน และทำให้ relation lock ทำได้ตรงไปตรงมาใน UI.
 - เพิ่ม RLS select policy ให้สาขาปลายทางอ่าน `money_transfers` ประเภท `branch` ที่ชี้มาหาสาขาตัวเองได้.
 - เพิ่ม customer transfer branch-paid expense แบบ derived แล้ว โดยไม่สร้าง row ใหม่ใน `income_expense`.
 - เหตุผล: `branch_paid_amount` เป็นผลลัพธ์ของรายการโอนเงินลูกค้า เมื่อแก้ยอดสลิป/รายการบิล/สถานะในต้นทาง รายจ่ายในรับ-จ่ายต้องเปลี่ยนตามเสมอ.
+- เพิ่ม rubber bill daily expense แบบ derived แล้ว โดยไม่สร้าง row ใหม่ใน `income_expense`.
+- เหตุผล: `rubber_bills` เป็น source of truth ของยอดจ่ายค่ายาง เมื่อบิลยังไม่ถูกเลือกไปโอนเงิน ระบบรวมยอดต่อวันในรับ-จ่ายเพื่อให้เห็นรายจ่ายขาออก และเมื่อบิลถูกเลือกเข้า `money_transfer_items` ยอด derived ต้องลดลงหรือหายตาม.
 
 ### Phase 4: Tests And Documentation
 
@@ -161,10 +170,15 @@ Add tests:
    - pending create + offline -> edit/delete allowed
    - incoming branch transfer -> appears as income
    - incoming branch transfer income -> edit/delete disabled
+   - outgoing branch transfer -> appears as expense
+   - outgoing branch transfer expense -> edit/delete disabled
    - update/delete source branch transfer -> derived income updates/disappears
    - customer transfer with `branch_and_transfer` -> `branch_paid_amount` appears as expense
    - derived customer transfer expense -> edit/delete disabled
    - update/delete source customer transfer -> derived expense updates/disappears
+   - untransferred rubber bills -> appear as daily aggregate expense
+   - rubber bill daily aggregate expense -> edit/delete disabled
+   - adding a rubber bill to money transfer -> daily aggregate subtracts that bill
 
 Update docs:
 
@@ -180,7 +194,9 @@ Update docs:
 - **Active transfer relation:** ความสัมพันธ์ใน `money_transfer_items` ที่ parent transfer ยังไม่ถูกยกเลิก
 - **Business lock:** การปฏิเสธ operation เพราะผิดกติกาธุรกิจ ไม่ใช่ technical conflict
 - **Derived branch transfer income:** รายรับที่แสดงในโมดูลรับ-จ่ายจาก `money_transfers` ประเภท `branch` ที่โอนเข้ามายังสาขาปัจจุบัน ไม่ใช่ row ที่ผู้ใช้แก้/ลบใน `income_expense` โดยตรง
+- **Derived branch transfer expense:** รายจ่ายที่แสดงในโมดูลรับ-จ่ายจาก `money_transfers` ประเภท `branch` ที่โอนออกจากสาขาปัจจุบัน ไม่ใช่ row ที่ผู้ใช้แก้/ลบใน `income_expense` โดยตรง
 - **Derived customer transfer branch-paid expense:** รายจ่ายที่แสดงในโมดูลรับ-จ่ายจาก `branch_paid_amount` ของรายการโอนเงินลูกค้าสถานะ `โอน+สาขาจ่าย` ไม่ใช่ row ที่ผู้ใช้แก้/ลบใน `income_expense` โดยตรง
+- **Derived rubber bill daily expense:** รายจ่ายรวมรายวันที่แสดงในโมดูลรับ-จ่ายจากบิลยางที่ยังไม่ถูกเลือกไปโอนเงิน ไม่ใช่ row ที่ผู้ใช้แก้/ลบใน `income_expense` โดยตรง
 
 ## Confirmed Decisions
 
@@ -189,4 +205,6 @@ Update docs:
 3. การ "ยกเลิกความสัมพันธ์" หมายถึงลบ item ออกจากรายการโอน
 4. ถ้า RPC เจอบิลถูกผูกกับโอนเงินแล้ว ให้ return `failed` พร้อมข้อความไทย เช่น `รายการนี้ถูกล็อก ต้องลบ item ออกจากรายการโอนก่อน`
 5. รายรับจากรายการโอนเงินสาขาขาเข้าให้แสดงในรับ-จ่ายเป็น derived row และล็อกให้แก้/ลบจากรายการโอนเงินต้นทางเท่านั้น
-6. รายจ่ายส่วนสาขาจ่ายจากรายการโอนเงินลูกค้าสถานะ `โอน+สาขาจ่าย` ให้แสดงในรับ-จ่ายเป็น derived row และล็อกให้แก้/ลบจากรายการโอนเงินลูกค้าต้นทางเท่านั้น
+6. รายจ่ายจากรายการโอนเงินสาขาขาออกให้แสดงในรับ-จ่ายเป็น derived row และล็อกให้แก้/ลบจากรายการโอนเงินต้นทางเท่านั้น
+7. รายจ่ายส่วนสาขาจ่ายจากรายการโอนเงินลูกค้าสถานะ `โอน+สาขาจ่าย` ให้แสดงในรับ-จ่ายเป็น derived row และล็อกให้แก้/ลบจากรายการโอนเงินลูกค้าต้นทางเท่านั้น
+8. รายจ่ายรวมรายวันจากบิลยางที่ยังไม่ถูกเลือกไปโอนเงินให้แสดงในรับ-จ่ายเป็น derived row และล็อกให้แก้/ลบจากโมดูลบิลยางต้นทางเท่านั้น

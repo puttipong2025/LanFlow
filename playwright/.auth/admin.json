@@ -1,0 +1,33 @@
+{
+  "cookies": [
+    {
+      "name": "sb-127-auth-token",
+      "value": "base64-eyJhY2Nlc3NfdG9rZW4iOiJleUpoYkdjaU9pSkZVekkxTmlJc0ltdHBaQ0k2SW1JNE1USTJPV1l4TFRJeFpEZ3ROR1l5WlMxaU56RTVMV015TWpRd1lUZzBNR1E1TUNJc0luUjVjQ0k2SWtwWFZDSjkuZXlKcGMzTWlPaUpvZEhSd09pOHZNVEkzTGpBdU1DNHhPalUwTXpJeEwyRjFkR2d2ZGpFaUxDSnpkV0lpT2lJd01EQXdNREF3TUMwd01EQXdMVFF3TURBdE9EQXdNQzB3TURBd01EQXdNREF3TURJaUxDSmhkV1FpT2lKaGRYUm9aVzUwYVdOaGRHVmtJaXdpWlhod0lqb3hOemd6TkRRME9ETTBMQ0pwWVhRaU9qRTNPRE0wTkRFeU16UXNJbVZ0WVdsc0lqb2lJaXdpY0dodmJtVWlPaUkyTmpneE1EQXdNREF3TVNJc0ltRndjRjl0WlhSaFpHRjBZU0k2ZXlKc1lXNW1iRzkzWDNKdmJHVWlPaUpoWkcxcGJpSXNJbkJ5YjNacFpHVnlJam9pY0dodmJtVWlMQ0p3Y205MmFXUmxjbk1pT2xzaWNHaHZibVVpWFgwc0luVnpaWEpmYldWMFlXUmhkR0VpT25zaWJtRnRaU0k2SWt4aGJrWnNiM2NnWVdSdGFXNGlmU3dpY205c1pTSTZJbUYxZEdobGJuUnBZMkYwWldRaUxDSmhZV3dpT2lKaFlXd3hJaXdpWVcxeUlqcGJleUp0WlhSb2IyUWlPaUp3WVhOemQyOXlaQ0lzSW5ScGJXVnpkR0Z0Y0NJNk1UYzRNelEwTVRJek5IMWRMQ0p6WlhOemFXOXVYMmxrSWpvaVpqQmpNRE16WWpRdE9EVTJOUzAwWTJRM0xXSmhNVEF0TWpVeVpUY3pNemsxTWpBNUlpd2lhWE5mWVc1dmJubHRiM1Z6SWpwbVlXeHpaWDAuZ21GV2gzUHlhQXpsXzYtV0xlUTZtTHlJbXRFRHJBV1VIb2lNV1VqeENXY19vU0paSjduczY3U3NpZEl4Q25jUnNabkRfYURVY0xsc09hNVlfZkZpdnciLCJ0b2tlbl90eXBlIjoiYmVhcmVyIiwiZXhwaXJlc19pbiI6MzYwMCwiZXhwaXJlc19hdCI6MTc4MzQ0NDgzNCwicmVmcmVzaF90b2tlbiI6IjdvMmluM3llNnFpZSIsInVzZXIiOnsiaWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDIiLCJhdWQiOiJhdXRoZW50aWNhdGVkIiwicm9sZSI6ImF1dGhlbnRpY2F0ZWQiLCJlbWFpbCI6IiIsInBob25lIjoiNjY4MTAwMDAwMDEiLCJwaG9uZV9jb25maXJtZWRfYXQiOiIyMDI2LTA3LTA3VDE2OjIwOjIzLjI5NjMwMVoiLCJjb25maXJtZWRfYXQiOiIyMDI2LTA3LTA3VDE2OjIwOjIzLjI5NjMwMVoiLCJsYXN0X3NpZ25faW5fYXQiOiIyMDI2LTA3LTA3VDE2OjIwOjM0LjgxMDI0NDM1NloiLCJhcHBfbWV0YWRhdGEiOnsibGFuZmxvd19yb2xlIjoiYWRtaW4iLCJwcm92aWRlciI6InBob25lIiwicHJvdmlkZXJzIjpbInBob25lIl19LCJ1c2VyX21ldGFkYXRhIjp7Im5hbWUiOiJMYW5GbG93IGFkbWluIn0sImlkZW50aXRpZXMiOlt7ImlkZW50aXR5X2lkIjoiNDM4ZGI1N2UtMWU2YS00MjAxLTgxYjItMjQxYWQ2MjkwNDhhIiwiaWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDIiLCJ1c2VyX2lkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAyIiwiaWRlbnRpdHlfZGF0YSI6eyJlbWFpbF92ZXJpZmllZCI6ZmFsc2UsInBob25lIjoiNjY4MTAwMDAwMDEiLCJwaG9uZV92ZXJpZmllZCI6ZmFsc2UsInN1YiI6IjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMiJ9LCJwcm92aWRlciI6InBob25lIiwibGFzdF9zaWduX2luX2F0IjoiMjAyNi0wNy0wN1QxNjoyMDoyMy4yODc5OTVaIiwiY3JlYXRlZF9hdCI6IjIwMjYtMDctMDdUMTY6MjA6MjMuMjg4MDU5WiIsInVwZGF0ZWRfYXQiOiIyMDI2LTA3LTA3VDE2OjIwOjIzLjI4ODA1OVoifV0sImNyZWF0ZWRfYXQiOiIyMDI2LTA3LTA3VDE2OjIwOjIzLjI4MTUzNloiLCJ1cGRhdGVkX2F0IjoiMjAyNi0wNy0wN1QxNjoyMDozNC44MTg4MThaIiwiaXNfYW5vbnltb3VzIjpmYWxzZX0sIndlYWtfcGFzc3dvcmQiOm51bGx9",
+      "domain": "127.0.0.1",
+      "path": "/",
+      "expires": 1818001234.84135,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    }
+  ],
+  "origins": [
+    {
+      "origin": "http://127.0.0.1:3000",
+      "localStorage": [
+        {
+          "name": "lanflow:last-auth-user",
+          "value": "00000000-0000-4000-8000-000000000002"
+        },
+        {
+          "name": "lanflow:auth-profile:00000000-0000-4000-8000-000000000002",
+          "value": "{\"profile\":{\"id\":\"00000000-0000-4000-8000-000000000002\",\"phone\":\"0810000001\",\"name\":\"LanFlow admin\",\"role\":\"admin\",\"locationIds\":[\"00000000-0000-4000-8000-000000000101\"]},\"validatedAt\":\"2026-07-07T16:20:36.733Z\"}"
+        },
+        {
+          "name": "lanflow_bootstrap_cache:00000000-0000-4000-8000-000000000002",
+          "value": "{\"locations\":[{\"id\":\"00000000-0000-4000-8000-000000000101\",\"code\":\"LKH\",\"name\":\"ลานข้าวหอม\",\"address\":null,\"isActive\":true},{\"id\":\"00000000-0000-4000-8000-000000000102\",\"code\":\"CNM\",\"name\":\"ชานุมาน\",\"address\":null,\"isActive\":true},{\"id\":\"00000000-0000-4000-8000-000000000103\",\"code\":\"PKY\",\"name\":\"ป่ากุงใหญ่\",\"address\":null,\"isActive\":true}],\"profile\":{\"id\":\"00000000-0000-4000-8000-000000000002\",\"name\":\"LanFlow admin\",\"phone\":\"0810000001\",\"role\":\"admin\",\"isActive\":true,\"locationIds\":[\"00000000-0000-4000-8000-000000000101\"]},\"selectedLocationId\":\"00000000-0000-4000-8000-000000000101\"}"
+        }
+      ]
+    }
+  ]
+}

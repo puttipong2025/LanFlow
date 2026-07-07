@@ -1,32 +1,41 @@
-import { Edit3, Plus, Settings, Trash2 } from "lucide-react";
+import { ArrowRightLeft, Edit3, ExternalLink, Plus, Settings, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { formatCurrency } from "@/lib/format";
 import { useIncomeExpense } from "@/hooks/useIncomeExpense";
 import { useIncomeExpenseApprovals } from "@/hooks/useIncomeExpenseApprovals";
 import { useCustomers } from "@/hooks/useCustomers";
+import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { getOfflineSyncedActionBlockReason } from "@/lib/record-action-locks";
 
-import type { IncomeExpense, Location, Profile } from "@/types";
+import type { IncomeExpense, Location, MoneyTransfer, Profile } from "@/types";
 import { IconButton } from "@/components/shared/IconButton";
 import { SyncStatusBadge } from "@/components/shared/SyncStatusBadge";
 import { IncomeSaleItemsModal } from "@/components/IncomeSaleItemsModal";
+import { BranchTransferForm } from "@/components/money-transfer/BranchTransferForm";
 import { getIncomeExpenseDisplayNo } from "./income-expense-display";
 import { IncomeExpenseApprovalModal } from "./IncomeExpenseApprovalModal";
 import { IncomeExpenseModal } from "./IncomeExpenseModal";
 
 export function IncomeExpenseModule({
   selectedLocation,
-  profile
+  profile,
+  onOpenMoneyTransferSource,
+  onOpenRubberBillSource,
 }: {
   selectedLocation: Location;
   profile: Profile;
+  onOpenMoneyTransferSource?: (transferId: string, locationId: string) => void;
+  onOpenRubberBillSource?: (locationId: string, billDate?: string) => void;
 }) {
+  const queryClient = useQueryClient();
   const { transactions, addTransaction, updateTransaction, deleteTransaction } = useIncomeExpense(selectedLocation.id);
   const { submitForApprovalIfNeeded } = useIncomeExpenseApprovals();
   const { customers, addCustomer, updateCustomer } = useCustomers();
+  const { addTransfer } = useMoneyTransfers(selectedLocation.id);
   const isOnline = useOnlineStatus();
   const nextNumber = String(transactions.length + 1);
   const [modalOpen, setModalOpen] = useState(false);
@@ -34,6 +43,7 @@ export function IncomeExpenseModule({
   const [editingTransaction, setEditingTransaction] = useState<IncomeExpense | null>(null);
   const [saleItemsModalOpen, setSaleItemsModalOpen] = useState(false);
   const [approvalModalOpen, setApprovalModalOpen] = useState(false);
+  const [branchTransferModalOpen, setBranchTransferModalOpen] = useState(false);
 
   function openAdd(type: "income" | "expense") {
     setModalType(type);
@@ -55,6 +65,27 @@ export function IncomeExpenseModule({
   function getActionBlockReason(transaction: IncomeExpense) {
     if (transaction.relationLockReason) return transaction.relationLockReason;
     return getOfflineSyncedActionBlockReason(transaction, isOnline);
+  }
+
+  function openBranchTransfer() {
+    if (!isOnline) {
+      toast.error("การโยกเงินไปสาขาอื่นต้องออนไลน์ก่อน");
+      return;
+    }
+    setBranchTransferModalOpen(true);
+  }
+
+  function handleBranchTransferSave(transfer: MoneyTransfer) {
+    addTransfer.mutate(transfer, {
+      onSuccess: () => {
+        setBranchTransferModalOpen(false);
+        queryClient.invalidateQueries({ queryKey: ["incomeExpense"] });
+        toast.success("บันทึกรายการโยกเงินไปสาขาอื่นแล้ว");
+      },
+      onError: (error) => {
+        toast.error(error instanceof Error ? error.message : "บันทึกรายการโยกเงินไม่สำเร็จ");
+      },
+    });
   }
 
   async function confirmDelete(transaction: IncomeExpense) {
@@ -83,7 +114,7 @@ export function IncomeExpenseModule({
           <h2 className="text-lg font-bold text-ink">CRUD รายรับ-รายจ่าย · {selectedLocation.name}</h2>
           <p className="text-sm text-ink/60">เพิ่มผ่าน modal และจัดการรายการจากตาราง</p>
         </div>
-        <div className="flex flex-col gap-2 sm:flex-row">
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
           <button
             type="button"
             onClick={() => openAdd("income")}
@@ -99,6 +130,14 @@ export function IncomeExpenseModule({
           >
             <Plus size={18} />
             เพิ่มรายจ่าย
+          </button>
+          <button
+            type="button"
+            onClick={openBranchTransfer}
+            className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-river px-4 font-semibold text-white"
+          >
+            <ArrowRightLeft size={18} />
+            โยกเงินไปสาขาอื่น
           </button>
           {profile.role === "super_admin" && (
             <>
@@ -144,6 +183,31 @@ export function IncomeExpenseModule({
               {transactions.map((transaction) => {
                 const actionBlockReason = getActionBlockReason(transaction);
                 const actionsDisabled = Boolean(actionBlockReason);
+                const sourceLocationId = transaction.relationSourceLocationId ?? transaction.locationId;
+                const canAccessSourceLocation =
+                  profile.role === "super_admin" || profile.locationIds.includes(sourceLocationId);
+                const canOpenMoneyTransferSource = Boolean(
+                  transaction.relationSourceType === "money_transfer" &&
+                  transaction.relationSourceId &&
+                  onOpenMoneyTransferSource &&
+                  canAccessSourceLocation
+                );
+                const canOpenRubberBillSource = Boolean(
+                  transaction.relationSourceType === "rubber_bill_daily" &&
+                  onOpenRubberBillSource &&
+                  canAccessSourceLocation
+                );
+                const canOpenSource = canOpenMoneyTransferSource || canOpenRubberBillSource;
+
+                function openRelationSource() {
+                  if (canOpenMoneyTransferSource) {
+                    onOpenMoneyTransferSource?.(transaction.relationSourceId!, sourceLocationId);
+                    return;
+                  }
+                  if (canOpenRubberBillSource) {
+                    onOpenRubberBillSource?.(sourceLocationId, transaction.relationSourceDate);
+                  }
+                }
 
                 return (
                 <tr key={transaction.id} className="border-b border-black/5 hover:bg-field/50">
@@ -186,6 +250,17 @@ export function IncomeExpenseModule({
                       <IconButton label={actionBlockReason ?? "ลบ"} onClick={() => void confirmDelete(transaction)} tone="clay" disabled={actionsDisabled}>
                         <Trash2 size={16} />
                       </IconButton>
+                      {canOpenSource && (
+                        <button
+                          type="button"
+                          title="เปิดรายการต้นทาง"
+                          aria-label="เปิดรายการต้นทาง"
+                          onClick={openRelationSource}
+                          className="focus-ring grid h-9 w-9 place-items-center rounded-md bg-river text-white"
+                        >
+                          <ExternalLink size={16} />
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -254,6 +329,18 @@ export function IncomeExpenseModule({
 
       {saleItemsModalOpen && (
         <IncomeSaleItemsModal onClose={() => setSaleItemsModalOpen(false)} />
+      )}
+
+      {branchTransferModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/45 p-3 sm:p-6">
+          <div className="mt-4 w-full max-w-4xl">
+            <BranchTransferForm
+              locationId={selectedLocation.id}
+              onSave={handleBranchTransferSave}
+              onCancel={() => setBranchTransferModalOpen(false)}
+            />
+          </div>
+        </div>
       )}
 
       {approvalModalOpen && (
