@@ -332,7 +332,28 @@ API response status:
 - Record ที่ relation lock แล้ว: ต้องปลด relation ก่อน
 - `failed`/`conflict`: ห้ามลบ queue อัตโนมัติ
 
-## 11. IndexedDB Queue Rules
+กฎสำหรับข้อมูลที่ derive จากโมดูลอื่น:
+
+- ถ้า row ใน UI ไม่ใช่ source table ของตัวเอง แต่ derive จากโมดูลอื่น เช่น รายรับ/รายจ่ายที่ดึงจาก `money_transfers` ห้าม enqueue ลง IndexedDB queue ของ module ปลายทาง
+- Derived row ต้องเปลี่ยนหรือหายตาม source record เสมอ ไม่ควร copy เป็น row ใหม่ถ้าไม่มีเหตุผลด้าน audit ที่ชัดเจน
+- Derived row ต้องมี UI lock ชัดเจนและบอกผู้ใช้ว่าต้องแก้จากโมดูลต้นทาง
+- ถ้า derived row ต้องเปิดให้สาขาปลายทางเห็น source record ให้เพิ่ม RLS select policy เฉพาะกรณี ไม่เปิด write ข้ามสาขา
+
+## 11. Income/Expense Approval Rules
+
+กฎสำหรับฟีเจอร์อนุมัติในโมดูลรับ-จ่าย:
+
+- Approval keyword ไม่ใช่ `bill_option` และห้ามเพิ่ม enum/category ใหม่เพียงเพื่อคำอย่าง `เบิก`, `ค่าแรง`, `กับข้าว`
+- ให้ตรวจ keyword จากข้อความรายการ เช่น `income_expense.title`
+- การตรวจ keyword/threshold ต้องทำซ้ำฝั่ง server ผ่าน API/RPC เสมอ ห้ามเชื่อผลจาก UI อย่างเดียว
+- รายการที่เข้าเงื่อนไข approval ต้องถูกเก็บใน `income_expense_approval_requests` ก่อน และยังไม่สร้าง/แก้ `income_expense`
+- เฉพาะ `super_admin` เท่านั้นที่เพิ่ม/ปิด keyword, ตั้ง threshold, และอนุมัติ/ปฏิเสธคำขอได้
+- เมื่อ approve ให้สร้าง/แก้ row จริงผ่าน RPC ที่คง idempotency/revision/server bill number rule เดิม
+- เมื่อ reject ให้คงประวัติคำขอไว้และไม่สร้าง row จริง
+- approval/decision เป็น online-only; ถ้า offline และระบบรู้ว่ารายการต้องอนุมัติ ต้อง block การบันทึกพร้อมข้อความไทย
+- ถ้าแก้ `useIncomeExpenseApprovals`, approval API route, หรือ migration approval ต้องรัน `npx.cmd tsc --noEmit`, `npm run build`, และ `npx.cmd supabase db reset`
+
+## 12. IndexedDB Queue Rules
 
 ถ้า module เป็น offline-first ให้ใช้ `src/lib/idb-queue.ts` เป็น queue กลาง
 
@@ -356,7 +377,7 @@ errorMessage
 
 ใช้ `src/lib/coalesceQueueGroup.ts` ถ้า pattern ตรงกับ create/update/delete ทั่วไป
 
-## 12. Server Number And Timestamp Rules
+## 13. Server Number And Timestamp Rules
 
 เลขเอกสารจริงต้องออกจาก server เท่านั้น:
 
@@ -371,7 +392,7 @@ errorMessage
 - `server_received_at`: เวลาจริงของ server
 - `created_at` / `updated_at`: ให้ DB default/trigger ดูแล
 
-## 13. Relation Lock Rules
+## 14. Relation Lock Rules
 
 ถ้า record ถูกใช้ในโมดูลอื่นแล้ว ต้องตัดสินใจ lock ให้ชัด
 
@@ -381,6 +402,8 @@ errorMessage
 - OCR Ticket ที่อยู่ใน `money_transfer_items` แก้/ลบไม่ได้
 - ต้องลบ item ออกจากรายการโอนก่อน
 - RPC return `failed` พร้อมข้อความไทย เช่น `รายการนี้ถูกล็อก ต้องลบ item ออกจากรายการโอนก่อน`
+- รายรับใน Income/Expense ที่ derive จาก `money_transfers.transfer_type = 'branch'` และ `target_location_id` ตรงสาขาปัจจุบัน แก้/ลบจาก Income/Expense ไม่ได้ ต้องแก้หรือลบที่รายการโอนเงินสาขาต้นทาง
+- รายจ่ายใน Income/Expense ที่ derive จาก `money_transfers.transfer_type = 'customer'`, `transfer_status = 'branch_and_transfer'`, และ `branch_paid_amount` แก้/ลบจาก Income/Expense ไม่ได้ ต้องแก้หรือลบที่รายการโอนเงินลูกค้าต้นทาง
 
 กฎสำหรับ module ใหม่:
 
@@ -389,7 +412,15 @@ errorMessage
 3. ต้องนิยามวิธีปลดล็อก เช่น remove item, cancel relation, reverse transaction
 4. ต้องมี test สำหรับ locked และ unlocked path
 
-## 14. Testing Rules
+กฎเพิ่มเติมสำหรับ derived money relation:
+
+1. ต้องนิยาม source of truth ให้ชัด เช่น `money_transfers` เป็น source ของ derived income/expense
+2. ถ้าใช้ derived row แทนการสร้าง row จริงใน table ปลายทาง ต้อง lock action ใน UI เพราะไม่มี mutation path ใน module ปลายทาง
+3. ถ้าสร้าง row จริงใน table ปลายทางแทน derived row ต้องมี relation id, RPC/trigger enforcement, update/delete cascade หรือ sync logic ที่ทำให้ข้อมูลสองฝั่งไม่แยกกัน
+4. ต้องระบุ RLS ให้ปลายทางอ่าน source ได้เท่าที่จำเป็น เช่น branch target อ่าน branch transfer ที่ชี้มายังสาขาตัวเองได้ แต่เขียนไม่ได้
+5. ห้ามให้ client ฝั่ง browser ตัดสินใจเองว่า relation lock ผ่านหรือไม่ ถ้ามี write จริง ต้องตรวจซ้ำใน API/RPC/DB
+
+## 15. Testing Rules
 
 ทุก module ใหม่อย่างน้อยต้องมี:
 
@@ -427,7 +458,7 @@ PWA tests ควรครอบ:
 
 ถ้าเปลี่ยนกติกาเดิม ให้ปรับ/skip tests ที่ยืนยัน behavior เก่า พร้อม comment เหตุผล
 
-## 15. Documentation Rules
+## 16. Documentation Rules
 
 ทุก feature ใหญ่ควรมี doc ใน `docs/`
 
@@ -444,7 +475,7 @@ PWA tests ควรครอบ:
 
 ถ้าเป็น decision ระดับ architecture ให้สร้าง ADR ใน `docs/adr/`
 
-## 16. Code Review Checklist
+## 17. Code Review Checklist
 
 ก่อนบอกว่า ship-ready ให้ตรวจ:
 
@@ -460,8 +491,9 @@ PWA tests ควรครอบ:
 - error message ภาษาไทยชัดเจน
 - queue failed/conflict ไม่ถูกลบทิ้ง
 - relation lock มีทั้ง UI และ server enforcement
+- derived money rows ระบุ source of truth ชัดเจน และแก้/ลบได้จากต้นทางเท่านั้น
 
-## 17. Prompt Template For Next AI
+## 18. Prompt Template For Next AI
 
 ใช้ prompt นี้เมื่อต้องสั่ง AI ตัวต่อไปสร้าง module ใหม่:
 
@@ -482,11 +514,12 @@ PWA tests ควรครอบ:
 - ห้ามใช้ service_role ใน browser
 - ถ้าเป็น offline-first ต้องใช้ IndexedDB queue + API/RPC pattern
 - ถ้ามี relation lock ต้อง enforce ใน RPC/DB
+- ถ้าแสดง derived money row จาก module อื่น ต้องระบุ source of truth, RLS read path, และ lock action ที่ปลายทาง
 - หลังทำเสร็จต้องรัน npx.cmd tsc --noEmit และ npm run build
 - ถ้ามี migration ต้องรัน npx.cmd supabase db reset
 ```
 
-## 18. Quick Module Readiness Checklist
+## 19. Quick Module Readiness Checklist
 
 ```text
 [ ] มี folder module ใต้ src/components/<module>/
@@ -499,6 +532,7 @@ PWA tests ควรครอบ:
 [ ] มี UI role guard
 [ ] มี API role guard
 [ ] มี tests ตามระดับความเสี่ยง
+[ ] ถ้ามี derived money row มี source of truth, RLS, และ lock UX ชัดเจน
 [ ] มี docs
 [ ] tsc ผ่าน
 [ ] build ผ่าน

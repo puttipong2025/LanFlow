@@ -1,9 +1,10 @@
-import { Edit3, Plus, Trash2 } from "lucide-react";
+import { Edit3, Plus, Settings, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useState } from "react";
 
 import { formatCurrency } from "@/lib/format";
 import { useIncomeExpense } from "@/hooks/useIncomeExpense";
+import { useIncomeExpenseApprovals } from "@/hooks/useIncomeExpenseApprovals";
 import { useCustomers } from "@/hooks/useCustomers";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { getOfflineSyncedActionBlockReason } from "@/lib/record-action-locks";
@@ -13,6 +14,7 @@ import { IconButton } from "@/components/shared/IconButton";
 import { SyncStatusBadge } from "@/components/shared/SyncStatusBadge";
 import { IncomeSaleItemsModal } from "@/components/IncomeSaleItemsModal";
 import { getIncomeExpenseDisplayNo } from "./income-expense-display";
+import { IncomeExpenseApprovalModal } from "./IncomeExpenseApprovalModal";
 import { IncomeExpenseModal } from "./IncomeExpenseModal";
 
 export function IncomeExpenseModule({
@@ -23,6 +25,7 @@ export function IncomeExpenseModule({
   profile: Profile;
 }) {
   const { transactions, addTransaction, updateTransaction, deleteTransaction } = useIncomeExpense(selectedLocation.id);
+  const { submitForApprovalIfNeeded } = useIncomeExpenseApprovals();
   const { customers, addCustomer, updateCustomer } = useCustomers();
   const isOnline = useOnlineStatus();
   const nextNumber = String(transactions.length + 1);
@@ -30,6 +33,7 @@ export function IncomeExpenseModule({
   const [modalType, setModalType] = useState<"income" | "expense">("income");
   const [editingTransaction, setEditingTransaction] = useState<IncomeExpense | null>(null);
   const [saleItemsModalOpen, setSaleItemsModalOpen] = useState(false);
+  const [approvalModalOpen, setApprovalModalOpen] = useState(false);
 
   function openAdd(type: "income" | "expense") {
     setModalType(type);
@@ -97,14 +101,24 @@ export function IncomeExpenseModule({
             เพิ่มรายจ่าย
           </button>
           {profile.role === "super_admin" && (
-            <button
-              type="button"
-              onClick={() => setSaleItemsModalOpen(true)}
-              className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-blue-600 px-4 font-semibold text-white"
-            >
-              <Plus size={18} />
-              เพิ่มรายการบิลขาย
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => setApprovalModalOpen(true)}
+                className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 font-semibold text-white"
+              >
+                <Settings size={18} />
+                ตั้งค่าอนุมัติ
+              </button>
+              <button
+                type="button"
+                onClick={() => setSaleItemsModalOpen(true)}
+                className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-blue-600 px-4 font-semibold text-white"
+              >
+                <Plus size={18} />
+                เพิ่มรายการบิลขาย
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -201,13 +215,34 @@ export function IncomeExpenseModule({
           onClose={() => setModalOpen(false)}
           onSave={async (savedTransactions) => {
             try {
-              if (editingTransaction) {
-                await updateTransaction(savedTransactions[0]);
-                await Promise.all(savedTransactions.slice(1).map(tx => addTransaction(tx)));
-              } else {
-                await Promise.all(savedTransactions.map(tx => addTransaction(tx)));
+              let pendingApprovalCount = 0;
+              let savedCount = 0;
+
+              for (const [index, tx] of savedTransactions.entries()) {
+                const isSyncedRecord = Boolean(tx.serverBillNo) || tx.id !== tx.clientTempId;
+                const operation = editingTransaction && index === 0 && isSyncedRecord ? "update" : "create";
+                const approvalResult = await submitForApprovalIfNeeded(tx, operation);
+
+                if (approvalResult.requiresApproval) {
+                  pendingApprovalCount += 1;
+                  continue;
+                }
+
+                if (operation === "update") {
+                  await updateTransaction(tx);
+                } else {
+                  await addTransaction(tx);
+                }
+                savedCount += 1;
               }
+
               setModalOpen(false);
+              if (pendingApprovalCount > 0) {
+                toast.info(`ส่งคำขออนุมัติ ${pendingApprovalCount} รายการแล้ว`);
+              }
+              if (savedCount > 0 && pendingApprovalCount > 0) {
+                toast.success(`บันทึกรายการที่ไม่ต้องอนุมัติ ${savedCount} รายการแล้ว`);
+              }
             } catch (error) {
               toast.error(error instanceof Error ? error.message : "บันทึกรายการไม่สำเร็จ");
             }
@@ -219,6 +254,10 @@ export function IncomeExpenseModule({
 
       {saleItemsModalOpen && (
         <IncomeSaleItemsModal onClose={() => setSaleItemsModalOpen(false)} />
+      )}
+
+      {approvalModalOpen && (
+        <IncomeExpenseApprovalModal onClose={() => setApprovalModalOpen(false)} />
       )}
     </section>
   );

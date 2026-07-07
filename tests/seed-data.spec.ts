@@ -14,9 +14,30 @@ test.describe('Seed Data', () => {
     await page.fill('input[type="password"]', password);
     await page.click('button:has-text("เข้าสู่ระบบ")');
     await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
-    // Rubber Bills were already seeded, skipping to Income/Expense
+    // 2. Go to Rubber Bills tab and create 15 items
+    await page.click('button:has-text("บิลยาง")');
+    await expect(page.locator('button:has-text("เพิ่มบิลยาง")')).toBeVisible({ timeout: 10000 });
 
-    // 2. Go to Income/Expense tab and create 30 items
+    for (let i = 1; i <= 15; i++) {
+      const marker = `RubberBill-${Date.now()}-${i}`;
+      await page.click('button:has-text("เพิ่มบิลยาง")');
+      await expect(page.locator('h2:has-text("บิลเครื่องชั่งเล็ก")')).toBeVisible();
+      
+      await page.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]').fill(marker);
+      await page.keyboard.press('Escape'); // close dropdown if any
+      
+      const modal = page.locator('.fixed.inset-0').last();
+      const weighRow = modal.locator('table').first().locator('tbody tr').first();
+      await weighRow.locator('input[type="number"]').nth(0).fill((100 + i * 10).toString()); // weight
+      await weighRow.locator('input[type="number"]').nth(1).fill('10'); // container
+      await weighRow.locator('input[type="number"]').nth(3).fill('20.5'); // price
+      
+      await page.click('button:has-text("Submit")');
+      await expect(page.locator('h2:has-text("บิลเครื่องชั่งเล็ก")')).toBeHidden({ timeout: 10000 });
+      console.log(`Created Rubber Bill ${i}/15`);
+    }
+
+    // 3. Go to Income/Expense tab and create 30 items
 
     await page.click('button:has-text("รับ-จ่าย")');
     await expect(page.locator('button:has-text("เพิ่มรายรับ")')).toBeVisible({ timeout: 10000 });

@@ -1,5 +1,25 @@
 # Income/Expense Branch Transfer And Approval Plan
 
+## Implementation Status (2026-07-07)
+
+สถานะระบบล่าสุด:
+
+- โอนเงินสาขาใช้ `money_transfers.transfer_type = 'branch'` เป็น source หลัก ไม่ได้สร้างคู่ row จริงใน `income_expense`
+- `useIncomeExpense` แสดงรายรับขาเข้าของสาขาปลายทางแบบ derived row จาก `money_transfers.target_location_id`
+- `useIncomeExpense` แสดงรายจ่ายส่วนสาขาจ่ายจากโอนเงินลูกค้า เมื่อ `transfer_type = 'customer'` และ `transfer_status = 'branch_and_transfer'`
+- derived rows ทั้งสองแบบถูกครอบด้วย relation lock ใน UI: แก้/ลบจากรับ-จ่ายไม่ได้ ต้องแก้หรือลบจากรายการโอนเงินต้นทาง
+- เพิ่ม approval workflow แล้วผ่าน table `income_expense_approval_settings`, `income_expense_approval_keywords`, `income_expense_approval_requests`
+- keyword approval ไม่เกี่ยวกับ `bill_option`; ระบบตรวจจากข้อความรายการ (`title`) และยอดเงินก่อนสร้าง/แก้ `income_expense`
+- superadmin จัดการ keyword, threshold, และอนุมัติ/ปฏิเสธผ่าน modal `IncomeExpenseApprovalModal` ในโมดูลรับ-จ่าย
+- รายการที่ match keyword หรือ threshold จะอยู่ในคำขออนุมัติจนกว่า superadmin จะอนุมัติ; เมื่ออนุมัติจึงสร้าง/แก้ row จริงผ่าน RPC
+
+Decisions ที่ใช้จริง:
+
+- keyword matching ค่าเริ่มต้นเป็น `contains`; มีตัวเลือก `exact`
+- threshold ใช้เงื่อนไข `amount >= approval_min_amount`
+- keyword แต่ละรายการกำหนด scope ได้เป็น `income`, `expense`, หรือ `both`; ค่าเริ่มต้นของ UI คือ `expense`
+- approval เป็น online-only; ถ้า offline และ local config บอกว่ารายการต้องอนุมัติ ระบบจะ block การบันทึกจนกว่าจะ online
+
 ## Purpose
 
 เพิ่มความสามารถในโมดูล **รับ-จ่าย** สำหรับ:

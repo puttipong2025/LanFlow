@@ -92,6 +92,49 @@ export type IncomeSaleItem = {
   createdAt: string;
 };
 
+export type IncomeExpenseApprovalAppliesTo = "income" | "expense" | "both";
+export type IncomeExpenseApprovalMatchMode = "contains" | "exact";
+export type IncomeExpenseApprovalStatus = "pending" | "approved" | "rejected" | "cancelled";
+export type IncomeExpenseApprovalReason = "keyword" | "amount_threshold" | "keyword_and_amount";
+
+export type IncomeExpenseApprovalSettings = {
+  appliesTo: IncomeExpenseApprovalAppliesTo;
+  approvalMinAmount?: number | null;
+  updatedByName?: string | null;
+  updatedByPhone?: string | null;
+};
+
+export type IncomeExpenseApprovalKeyword = {
+  id: string;
+  keyword: string;
+  matchMode: IncomeExpenseApprovalMatchMode;
+  appliesTo: IncomeExpenseApprovalAppliesTo;
+  isActive: boolean;
+  approvalMinAmount?: number | null;
+  createdByName?: string | null;
+  createdByPhone?: string | null;
+  createdAt: string;
+};
+
+export type IncomeExpenseApprovalRequest = {
+  id: string;
+  requestStatus: IncomeExpenseApprovalStatus;
+  requestedOperation: QueueOperation;
+  matchedKeyword?: string | null;
+  matchedReason: IncomeExpenseApprovalReason;
+  locationId: string;
+  txType: "income" | "expense";
+  title: string;
+  cost: number;
+  requestedByName: string;
+  requestedByPhone: string;
+  decidedByName?: string | null;
+  decidedByPhone?: string | null;
+  decidedAt?: string | null;
+  decisionComment?: string | null;
+  createdAt: string;
+};
+
 export type IncomeExpense = {
   id: string;
   clientTempId: string;
