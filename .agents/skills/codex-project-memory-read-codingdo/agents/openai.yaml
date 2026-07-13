@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Memory Read — codingDO"
+  short_description: "อ่าน context codingDO แบบ read-only"
+  default_prompt: "Use $codex-project-memory-read-codingdo with $obsidian-cli and $obsidian-markdown to load only task-relevant project context from codingDO before changing code, defaulting PATH to C:\\Users\\Do\\Documents\\codingDO when none is supplied."
