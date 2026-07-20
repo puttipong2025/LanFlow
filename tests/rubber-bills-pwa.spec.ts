@@ -18,7 +18,7 @@ async function readQueue(page: Page): Promise<any[]> {
   await page.waitForLoadState('domcontentloaded');
   return page.evaluate(() => {
     return new Promise<any[]>((resolve, reject) => {
-      const req = indexedDB.open('lanflow_sync_db', 2);
+      const req = indexedDB.open('lanflow_sync_db', 3);
       req.onerror = () => reject(req.error);
       req.onupgradeneeded = () => {
         req.transaction?.abort();

@@ -5,7 +5,7 @@ async function readQueue(page: Page): Promise<any[]> {
   await page.waitForLoadState('domcontentloaded');
   return page.evaluate(() => {
     return new Promise<any[]>((resolve, reject) => {
-      const req = indexedDB.open('lanflow_sync_db', 2);
+      const req = indexedDB.open('lanflow_sync_db', 3);
       req.onerror = () => reject(req.error);
       req.onupgradeneeded = () => {
         req.transaction?.abort();
@@ -200,14 +200,14 @@ test.describe('Income/Expense PWA Offline Reload', () => {
     await page.click('button:has-text("รับ-จ่าย")');
     await expect(page.locator('button:has-text("เพิ่มรายรับ")')).toBeVisible({ timeout: 10000 });
 
-    const offlineReloadRow = page.locator('table tbody tr', { hasText: marker }).first();
-    await expect(offlineReloadRow).toBeVisible({ timeout: 10000 });
-    await expect(offlineReloadRow.locator('span:has-text("รอซิงก์")')).toBeVisible();
-
     const queueAfterReload = await readQueue(page);
     const eventAfterReload = queueAfterReload.find(e => e.id === eventBeforeReload.id);
     expect(eventAfterReload).toBeDefined();
     expect(eventAfterReload.status).toBe('pending');
+
+    const offlineReloadRow = page.locator('table tbody tr', { hasText: marker }).first();
+    await expect(offlineReloadRow).toBeVisible({ timeout: 10000 });
+    await expect(offlineReloadRow.locator('span:has-text("รอซิงก์")')).toBeVisible();
 
     await context.setOffline(false);
     await page.click('button:has-text("รับ-จ่าย")');

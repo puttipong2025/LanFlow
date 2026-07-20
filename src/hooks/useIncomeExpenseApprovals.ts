@@ -241,6 +241,7 @@ export function useIncomeExpenseApprovals(options: { includeRequests?: boolean }
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [REQUESTS_KEY] });
       queryClient.invalidateQueries({ queryKey: ["incomeExpense"] });
+      queryClient.invalidateQueries({ queryKey: ["acidStock"] });
     },
   });
 

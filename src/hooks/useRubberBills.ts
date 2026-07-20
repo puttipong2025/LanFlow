@@ -5,6 +5,12 @@ import { enqueueSyncEvent, getPendingEvents, removeSyncEvent, SyncEvent } from "
 import { useEffect } from "react";
 import { OFFLINE_SYNCED_ACTION_MESSAGE } from "@/lib/record-action-locks";
 
+export function assertRubberBillDeleteAllowed(pendingCreateCount: number, isOnline: boolean) {
+  if (pendingCreateCount === 0 && !isOnline) {
+    throw new Error(OFFLINE_SYNCED_ACTION_MESSAGE);
+  }
+}
+
 function buildRpcPayload(bill: RubberBill, operation: "create" | "update" | "delete", deletedByName?: string, deletedByPhone?: string) {
   const items: any[] = [];
   
@@ -24,9 +30,10 @@ function buildRpcPayload(bill: RubberBill, operation: "create" | "update" | "del
 
   (bill.acidItems || []).forEach((item, i) => {
     items.push({
-      itemType: "acid",
+      itemType: "stock_deduction",
       title: item.name,
       description: item.name,
+      stockProductId: item.stockProductId,
       quantity: item.quantity,
       unit: item.unit,
       unitPrice: item.unitPrice,
@@ -55,8 +62,11 @@ function buildRpcPayload(bill: RubberBill, operation: "create" | "update" | "del
     recordStatus: operation === "delete" ? "deleted" : bill.recordStatus,
     localBillNo: bill.localBillNo,
     billDate: bill.billDate,
+    customerId: bill.customerId ?? null,
     customerName: bill.customerName,
     customerType: bill.customerType || "สาขานี้จ่าย",
+    billType: bill.billType,
+    deductWeight: bill.deductWeight,
     weight: bill.weight,
     rubberValue: bill.netTotal + bill.deductionTotal,
     averagePrice: bill.price,
@@ -74,14 +84,19 @@ function buildRpcPayload(bill: RubberBill, operation: "create" | "update" | "del
 }
 
 let isSyncing = false;
-async function syncPendingBills(queryClient: any, locationId: string) {
+
+function queuePartition(ownerUserId: string, locationId: string) {
+  return { entity: "rubber_bills" as const, ownerUserId, locationId };
+}
+
+async function syncPendingBills(queryClient: any, ownerUserId: string, locationId: string) {
   if (isSyncing) return;
-  if (!navigator.onLine) return;
+  if (!ownerUserId || !locationId || !navigator.onLine) return;
   
   isSyncing = true;
   try {
-    await normalizeRubberBillQueueBeforeSync();
-    const events = await getPendingEvents("rubber_bills");
+    await normalizeRubberBillQueueBeforeSync(ownerUserId, locationId);
+    const events = await getPendingEvents(queuePartition(ownerUserId, locationId));
     // Precompute: block ALL ids that have any failed/conflict event
     const blockedIds = new Set<string>(
       events
@@ -127,14 +142,14 @@ async function syncPendingBills(queryClient: any, locationId: string) {
     }
   } finally {
     isSyncing = false;
-    queryClient.invalidateQueries({ queryKey: ["rubberBills", locationId] });
+    queryClient.invalidateQueries({ queryKey: ["rubberBills", ownerUserId, locationId] });
   }
 }
 
-async function normalizeRubberBillQueueBeforeSync() {
+async function normalizeRubberBillQueueBeforeSync(ownerUserId: string, locationId: string) {
   const { getPendingEvents, removeSyncEvent, updateSyncEvent } = await import("@/lib/idb-queue");
   const { coalesceQueueGroup } = await import("@/lib/coalesceQueueGroup");
-  const events = await getPendingEvents("rubber_bills");
+  const events = await getPendingEvents(queuePartition(ownerUserId, locationId));
   const grouped = new Map<string, typeof events>();
   for (const e of events) {
     if (!grouped.has(e.id)) grouped.set(e.id, []);
@@ -157,25 +172,25 @@ async function normalizeRubberBillQueueBeforeSync() {
   }
 }
 
-export function useRubberBills(locationId: string) {
+export function useRubberBills(locationId: string, ownerUserId: string) {
   const supabase = createSupabaseBrowserClient();
   const queryClient = useQueryClient();
 
   // Trigger sync when coming online or on mount if already online
   useEffect(() => {
-    const handleOnline = () => syncPendingBills(queryClient, locationId);
+    const handleOnline = () => syncPendingBills(queryClient, ownerUserId, locationId);
     window.addEventListener("online", handleOnline);
 
     // Auto sync on mount if already online (e.g. app reopened while connected)
     if (navigator.onLine) {
-      syncPendingBills(queryClient, locationId);
+      syncPendingBills(queryClient, ownerUserId, locationId);
     }
 
     return () => window.removeEventListener("online", handleOnline);
-  }, [queryClient, locationId]);
+  }, [queryClient, ownerUserId, locationId]);
 
   const query = useQuery({
-    queryKey: ["rubberBills", locationId],
+    queryKey: ["rubberBills", ownerUserId, locationId],
     networkMode: "always",
     queryFn: async () => {
       // 1. Fetch Server State (gracefully degrade when offline)
@@ -213,12 +228,13 @@ export function useRubberBills(locationId: string) {
                 price: Number(item.price ?? 0)
               }));
             const acidItems = billItems
-              .filter((item: any) => item.item_type === "acid")
+              .filter((item: any) => item.item_type === "acid" || item.item_type === "stock_deduction")
               .map((item: any) => ({
                 id: item.id,
-                name: item.description ?? "น้ำกรด",
+                name: item.description ?? "สินค้า",
+                stockProductId: item.stock_product_id ?? "",
                 quantity: Number(item.quantity ?? 0),
-                unit: item.unit ?? "แพ็ค",
+                unit: item.unit ?? "ชิ้น",
                 unitPrice: Number(item.price ?? 0)
               }));
             const debtItems = billItems
@@ -239,9 +255,11 @@ export function useRubberBills(locationId: string) {
               locationId: row.location_id,
               billNo: row.bill_no,
               billDate: row.bill_date,
+              customerId: row.customer_id ?? null,
               customerName: row.customer_name ?? "",
               customerType: row.customer_type,
-              billType: row.bill_type,
+              billType: row.bill_type === "weighing" ? "บิลเครื่องชั่งเล็ก" : row.bill_type,
+              deductWeight: Number(row.deduct_weight ?? 0),
               weight: Number(row.weight ?? 0),
               price: Number(row.average_price ?? 0),
               deductionTotal: Number(row.deduction_total ?? 0),
@@ -249,6 +267,7 @@ export function useRubberBills(locationId: string) {
               cashPayment: Number(row.cash_payment ?? 0),
               transferPayment: Number(row.transfer_payment ?? 0),
               acidPackCount: Number(row.acid_pack_count ?? 0),
+              printStatus: row.print_status === "ปริ้นแล้ว" ? "ปริ้นแล้ว" : "ยังไม่ได้ปริ้น",
               weighItems,
               acidItems,
               debtItem: debtItems[0],
@@ -278,7 +297,7 @@ export function useRubberBills(locationId: string) {
       }
 
       // 2. Fetch Pending Queue
-      const pendingEvents = await getPendingEvents("rubber_bills");
+      const pendingEvents = await getPendingEvents(queuePartition(ownerUserId, locationId));
       
       // 3. Merge server state and pending state
       const billsMap = new Map<string, RubberBill>();
@@ -312,9 +331,11 @@ export function useRubberBills(locationId: string) {
             locationId: rawPayload.locationId,
             billNo: rawPayload.localBillNo,
             billDate: rawPayload.billDate,
+            customerId: rawPayload.customerId ?? null,
             customerName: rawPayload.customerName,
             customerType: rawPayload.customerType,
-            billType: "weighing",
+            billType: rawPayload.billType ?? "บิลเครื่องชั่งเล็ก",
+            deductWeight: rawPayload.deductWeight || 0,
             weight: rawPayload.weight || 0,
             price: rawPayload.averagePrice || 0,
             deductionTotal: rawPayload.deductionTotal || 0,
@@ -322,8 +343,9 @@ export function useRubberBills(locationId: string) {
             cashPayment: rawPayload.cashPayment || 0,
             transferPayment: rawPayload.transferPayment || 0,
             acidPackCount: rawPayload.acidPackCount || 0,
+            printStatus: "ยังไม่ได้ปริ้น",
             weighItems: rawPayload.items.filter((i:any) => i.itemType === "weigh").map((i:any) => ({ id: i.sequenceNo.toString(), label: i.title, inWeight: i.inWeight, outWeight: i.outWeight, netWeight: i.netWeight, price: i.unitPrice })),
-            acidItems: rawPayload.items.filter((i:any) => i.itemType === "acid").map((i:any) => ({ id: i.sequenceNo.toString(), name: i.title, quantity: i.quantity, unit: i.unit, unitPrice: i.unitPrice })),
+            acidItems: rawPayload.items.filter((i:any) => i.itemType === "acid" || i.itemType === "stock_deduction").map((i:any) => ({ id: i.sequenceNo.toString(), name: i.title, stockProductId: i.stockProductId, quantity: i.quantity, unit: i.unit, unitPrice: i.unitPrice })),
             debtItems: rawPayload.items.filter((i:any) => i.itemType === "debt").map((i:any) => ({ id: i.sequenceNo.toString(), title: i.title, amount: i.totalAmount })),
             debtItem: rawPayload.items.filter((i:any) => i.itemType === "debt")[0] ? { id: "1", title: rawPayload.items.filter((i:any) => i.itemType === "debt")[0].title, amount: rawPayload.items.filter((i:any) => i.itemType === "debt")[0].totalAmount } : undefined,
             createdByUserId: "",
@@ -344,7 +366,7 @@ export function useRubberBills(locationId: string) {
         new Date(b.clientRecordedAt).getTime() - new Date(a.clientRecordedAt).getTime()
       );
     },
-    enabled: !!locationId,
+    enabled: !!locationId && !!ownerUserId,
   });
 
   const saveBillMutation = useMutation({
@@ -352,13 +374,16 @@ export function useRubberBills(locationId: string) {
     mutationFn: async (bill: RubberBill) => {
       const isUpdate = Boolean(bill.serverBillNo) || bill.id !== bill.clientTempId;
       const operation = isUpdate ? "update" : "create";
+      if ((bill.acidItems?.length ?? 0) > 0 && typeof navigator !== "undefined" && !navigator.onLine) {
+        throw new Error("รายการหักสินค้าตัดสต็อก ต้องออนไลน์ก่อนบันทึก");
+      }
       if (operation === "update" && typeof navigator !== "undefined" && !navigator.onLine) {
         throw new Error(OFFLINE_SYNCED_ACTION_MESSAGE);
       }
       
       const payload = buildRpcPayload(bill, operation);
 
-      const existingEvents = await getPendingEvents("rubber_bills");
+      const existingEvents = await getPendingEvents(queuePartition(ownerUserId, locationId));
       const clientEvents = existingEvents.filter(e => e.id === bill.clientTempId);
 
       if (clientEvents.some(e => e.status === "conflict" || e.status === "failed")) {
@@ -370,10 +395,6 @@ export function useRubberBills(locationId: string) {
 
       const pendingCreates = clientEvents.filter(e => e.operation === "create");
       const pendingUpdates = clientEvents.filter(e => e.operation === "update");
-
-      if (pendingCreates.length === 0 && typeof navigator !== "undefined" && !navigator.onLine) {
-        throw new Error(OFFLINE_SYNCED_ACTION_MESSAGE);
-      }
 
       const mLib = await import("@/lib/idb-queue");
 
@@ -412,6 +433,8 @@ export function useRubberBills(locationId: string) {
         await enqueueSyncEvent({
           id: bill.clientTempId,
           entity: "rubber_bills",
+          ownerUserId,
+          locationId,
           operation,
           payload,
           timestamp: Date.now(),
@@ -422,7 +445,7 @@ export function useRubberBills(locationId: string) {
       return bill;
     },
     onSuccess: (savedBill) => {
-      queryClient.setQueryData<RubberBill[]>(["rubberBills", locationId], (old) => {
+      queryClient.setQueryData<RubberBill[]>(["rubberBills", ownerUserId, locationId], (old) => {
         if (!old) return [savedBill];
         const exists = old.findIndex(b => b.clientTempId === savedBill.clientTempId);
         if (exists >= 0) {
@@ -432,16 +455,17 @@ export function useRubberBills(locationId: string) {
         }
         return [{ ...savedBill, syncStatus: "pending" }, ...old];
       });
-      queryClient.invalidateQueries({ queryKey: ["rubberBills", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["rubberBills", ownerUserId, locationId] });
       queryClient.invalidateQueries({ queryKey: ["incomeExpense", locationId] });
-      syncPendingBills(queryClient, locationId);
+      queryClient.invalidateQueries({ queryKey: ["acidStock", locationId] });
+      syncPendingBills(queryClient, ownerUserId, locationId);
     }
   });
 
   const deleteBillMutation = useMutation({
     networkMode: "always",
     mutationFn: async ({ id, clientTempId, deletedByName, deletedByPhone, revisionNo }: { id: string, clientTempId: string, deletedByName: string, deletedByPhone: string, revisionNo: number }) => {
-      const existingEvents = await getPendingEvents("rubber_bills");
+      const existingEvents = await getPendingEvents(queuePartition(ownerUserId, locationId));
       const clientEvents = existingEvents.filter(e => e.id === clientTempId);
 
       if (clientEvents.some(e => e.status === "conflict" || e.status === "failed")) {
@@ -453,6 +477,11 @@ export function useRubberBills(locationId: string) {
 
       const pendingCreates = clientEvents.filter(e => e.operation === "create");
       const pendingUpdates = clientEvents.filter(e => e.operation === "update");
+
+      assertRubberBillDeleteAllowed(
+        pendingCreates.length,
+        typeof navigator === "undefined" || navigator.onLine
+      );
 
       const mLib = await import("@/lib/idb-queue");
 
@@ -469,7 +498,7 @@ export function useRubberBills(locationId: string) {
         return { clientTempId, coalesced: true };
       }
 
-      const bills = queryClient.getQueryData<RubberBill[]>(["rubberBills", locationId]);
+      const bills = queryClient.getQueryData<RubberBill[]>(["rubberBills", ownerUserId, locationId]);
       const bill = bills?.find(b => b.clientTempId === clientTempId);
       if (!bill) throw new Error("Bill not found in local cache");
 
@@ -484,6 +513,8 @@ export function useRubberBills(locationId: string) {
       await enqueueSyncEvent({
         id: clientTempId,
         entity: "rubber_bills",
+        ownerUserId,
+        locationId,
         operation: "delete",
         payload,
         timestamp: Date.now(),
@@ -492,13 +523,33 @@ export function useRubberBills(locationId: string) {
       return { clientTempId, coalesced: false };
     },
     onSuccess: (data) => {
-      queryClient.setQueryData<RubberBill[]>(["rubberBills", locationId], (old) => {
+      queryClient.setQueryData<RubberBill[]>(["rubberBills", ownerUserId, locationId], (old) => {
         if (!old) return old;
         return old.filter(b => b.clientTempId !== data.clientTempId);
       });
-      queryClient.invalidateQueries({ queryKey: ["rubberBills", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["rubberBills", ownerUserId, locationId] });
       queryClient.invalidateQueries({ queryKey: ["incomeExpense", locationId] });
-      syncPendingBills(queryClient, locationId);
+      queryClient.invalidateQueries({ queryKey: ["acidStock", locationId] });
+      syncPendingBills(queryClient, ownerUserId, locationId);
+    }
+  });
+
+  const markPrintedMutation = useMutation({
+    mutationFn: async (billId: string) => {
+      const response = await fetch(`/api/lanflow/rubber-bills/${encodeURIComponent(billId)}/print-status`, {
+        method: "POST"
+      });
+      const result = await response.json().catch(() => ({})) as { status?: string; errorMessage?: string };
+      if (!response.ok || result.status !== "synced") {
+        throw new Error(result.errorMessage || "บันทึกสถานะการพิมพ์ไม่สำเร็จ");
+      }
+      return billId;
+    },
+    onSuccess: (billId) => {
+      queryClient.setQueryData<RubberBill[]>(["rubberBills", ownerUserId, locationId], (current) =>
+        current?.map((bill) => bill.id === billId ? { ...bill, printStatus: "ปริ้นแล้ว" } : bill)
+      );
+      queryClient.invalidateQueries({ queryKey: ["rubberBills", ownerUserId, locationId] });
     }
   });
 
@@ -509,5 +560,7 @@ export function useRubberBills(locationId: string) {
     addBill: saveBillMutation.mutateAsync,
     updateBill: saveBillMutation.mutateAsync,
     deleteBill: deleteBillMutation.mutateAsync,
+    markPrinted: markPrintedMutation.mutateAsync,
+    isMarkingPrinted: markPrintedMutation.isPending,
   };
 }

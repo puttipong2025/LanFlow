@@ -12,7 +12,7 @@ import { makeClientTempId, makeIdempotencyKey } from "@/lib/format";
 import { useCustomers } from "@/hooks/useCustomers";
 import { Loader2 } from "lucide-react";
 
-export function CustomersModule() {
+export function CustomersModule({ online }: { online: boolean }) {
   const { customers, isLoading, addCustomer, updateCustomer, deleteCustomer } = useCustomers();
 
   const [search, setSearch] = useState("");
@@ -76,16 +76,28 @@ export function CustomersModule() {
   }
 
   function openAdd() {
+    if (!online) {
+      toast.error("เพิ่มลูกค้าใช้ได้เมื่อออนไลน์เท่านั้น");
+      return;
+    }
     setEditingCustomer(null);
     setModalOpen(true);
   }
 
   function openEdit(customer: Customer) {
+    if (!online) {
+      toast.error("แก้ไขลูกค้าใช้ได้เมื่อออนไลน์เท่านั้น");
+      return;
+    }
     setEditingCustomer(customer);
     setModalOpen(true);
   }
 
   async function confirmDelete(customer: Customer) {
+    if (!online) {
+      toast.error("ลบลูกค้าใช้ได้เมื่อออนไลน์เท่านั้น");
+      return;
+    }
     const result = await appSwal.fire({
       title: 'ยืนยันการลบ',
       text: `คุณแน่ใจหรือไม่ว่าต้องการลบข้อมูลลูกค้า "${customer.mainName}"?`,
@@ -115,7 +127,9 @@ export function CustomersModule() {
         <button
           type="button"
           onClick={openAdd}
-          className="focus-ring flex h-11 items-center justify-center gap-2 rounded-lg bg-leaf px-4 font-semibold text-white shadow-md hover:bg-leaf/90 transition-all transform hover:-translate-y-0.5 active:translate-y-0"
+          disabled={!online}
+          title={online ? "เพิ่มลูกค้าใหม่" : "เพิ่มลูกค้าใช้ได้เมื่อออนไลน์เท่านั้น"}
+          className="focus-ring flex h-11 items-center justify-center gap-2 rounded-lg bg-leaf px-4 font-semibold text-white shadow-md transition-all disabled:cursor-not-allowed disabled:bg-slate-300"
         >
           <Plus size={18} />
           เพิ่มลูกค้าใหม่
@@ -308,16 +322,18 @@ export function CustomersModule() {
                       <button
                         type="button"
                         onClick={() => openEdit(cust)}
-                        title="แก้ไขข้อมูลลูกค้า"
-                        className="grid h-8 w-8 place-items-center rounded-md bg-field text-ink hover:bg-slate-200 transition-colors"
+                        disabled={!online}
+                        title={online ? "แก้ไขข้อมูลลูกค้า" : "แก้ไขลูกค้าใช้ได้เมื่อออนไลน์เท่านั้น"}
+                        className="grid h-8 w-8 place-items-center rounded-md bg-field text-ink hover:bg-slate-200 transition-colors disabled:cursor-not-allowed disabled:opacity-45"
                       >
                         <Edit3 size={15} />
                       </button>
                       <button
                         type="button"
                         onClick={() => confirmDelete(cust)}
-                        title="ลบข้อมูลลูกค้า"
-                        className="grid h-8 w-8 place-items-center rounded-md bg-rose-50 text-rose-600 hover:bg-rose-100 transition-colors"
+                        disabled={!online}
+                        title={online ? "ลบข้อมูลลูกค้า" : "ลบลูกค้าใช้ได้เมื่อออนไลน์เท่านั้น"}
+                        className="grid h-8 w-8 place-items-center rounded-md bg-rose-50 text-rose-600 hover:bg-rose-100 transition-colors disabled:cursor-not-allowed disabled:opacity-45"
                       >
                         <Trash2 size={15} />
                       </button>
@@ -388,6 +404,7 @@ export function CustomersModule() {
         <CustomerModal
           customer={editingCustomer}
           allCustomers={customers}
+          online={online}
           onClose={() => setModalOpen(false)}
           onSave={(cust) => {
             if (editingCustomer) updateCustomer.mutate(cust);
@@ -404,6 +421,7 @@ export function CustomersModule() {
 type CustomerModalProps = {
   customer: Customer | null;
   allCustomers: Customer[];
+  online: boolean;
   onClose: () => void;
   onSave: (customer: Customer) => void;
 };
@@ -411,6 +429,7 @@ type CustomerModalProps = {
 function CustomerModal({
   customer,
   allCustomers,
+  online,
   onClose,
   onSave
 }: CustomerModalProps) {
@@ -501,6 +520,10 @@ function CustomerModal({
 
   function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (!online) {
+      toast.error("บันทึกข้อมูลลูกค้าใช้ได้เมื่อออนไลน์เท่านั้น");
+      return;
+    }
 
     const errors: string[] = [];
 
@@ -966,7 +989,8 @@ function CustomerModal({
             </button>
             <button
               type="submit"
-              className="h-10 rounded-lg bg-leaf px-5 text-sm font-semibold text-white shadow hover:bg-leaf/90 transition-colors flex items-center gap-1.5"
+              disabled={!online}
+              className="h-10 rounded-lg bg-leaf px-5 text-sm font-semibold text-white shadow hover:bg-leaf/90 transition-colors flex items-center gap-1.5 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               <ShieldCheck size={18} />
               บันทึกข้อมูลลูกค้า

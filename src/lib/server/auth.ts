@@ -9,6 +9,8 @@ export type AuthTokenPayload = {
   name: string;
   role: AppRole;
   locationIds: string[];
+  canAccessSystemManager: boolean;
+  canAccessMoneyTransfer: boolean;
 };
 
 type AuthSuccess = {
@@ -43,7 +45,7 @@ export async function requireAuth(_request?: Request): Promise<AuthResult> {
     await Promise.all([
       supabase
         .from("profiles")
-        .select("id, phone, name, role, is_active")
+        .select("id, phone, name, role, is_active, can_access_super_admin_features, can_access_money_transfer")
         .eq("id", userId)
         .maybeSingle(),
       supabase
@@ -74,10 +76,56 @@ export async function requireAuth(_request?: Request): Promise<AuthResult> {
       phone: profile.phone,
       name: profile.name,
       role: profile.role as AppRole,
-      locationIds: (assignments ?? []).map((item) => item.location_id as string)
+      locationIds: (assignments ?? []).map((item) => item.location_id as string),
+      canAccessSystemManager: profile.role === "super_admin" || profile.can_access_super_admin_features === true,
+      canAccessMoneyTransfer:
+        profile.role === "super_admin" ||
+        profile.can_access_super_admin_features === true ||
+        profile.can_access_money_transfer === true
     },
     supabase
   };
+}
+
+export function hasSystemManagerAccess(auth: AuthTokenPayload) {
+  return auth.role === "super_admin" || auth.canAccessSystemManager === true;
+}
+
+export async function requireSystemManager(request: Request): Promise<AuthResult> {
+  const result = await requireAuth(request);
+  if (!result.ok) return result;
+
+  if (!hasSystemManagerAccess(result.auth)) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { error: "ไม่มีสิทธิ์เข้าถึง" },
+        { status: 403 }
+      )
+    };
+  }
+
+  return result;
+}
+
+export async function requireRoleOrSystemManager(
+  request: Request,
+  roles: AppRole[]
+): Promise<AuthResult> {
+  const result = await requireAuth(request);
+  if (!result.ok) return result;
+
+  if (!roles.includes(result.auth.role) && !hasSystemManagerAccess(result.auth)) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { error: "ไม่มีสิทธิ์เข้าถึง" },
+        { status: 403 }
+      )
+    };
+  }
+
+  return result;
 }
 
 export async function requireRole(

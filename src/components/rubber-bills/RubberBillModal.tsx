@@ -1,5 +1,5 @@
 import { toast } from "sonner";
-import { Save } from "lucide-react";
+import { Save, WifiOff } from "lucide-react";
 import { FormEvent, useMemo, useState } from "react";
 
 import {
@@ -10,6 +10,8 @@ import {
   todayInputValue
 } from "@/lib/format";
 import { validateRubberBillDraft } from "@/lib/rubber-bill-validation";
+import { useAcidProducts } from "@/hooks/useAcidProducts";
+import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 
 import type { Customer, Location, PaymentResponsibility, Profile, RubberBill } from "@/types";
 import { ModalShell } from "@/components/shared/ModalShell";
@@ -19,7 +21,7 @@ import { InlineRadio } from "@/components/shared/InlineRadio";
 import { InlineNumber } from "@/components/shared/InlineNumber";
 
 type RubberWeighItem = NonNullable<RubberBill["weighItems"]>[number];
-type RubberAcidItem = NonNullable<RubberBill["acidItems"]>[number];
+type RubberStockDeductionItem = NonNullable<RubberBill["acidItems"]>[number];
 type RubberDebtItem = NonNullable<RubberBill["debtItems"]>[number];
 
 export function RubberBillModal({
@@ -57,14 +59,17 @@ export function RubberBillModal({
       }
     ];
   });
-  const [acidItems, setAcidItems] = useState<RubberAcidItem[]>(() => bill?.acidItems ?? []);
+  const [stockDeductionItems, setStockDeductionItems] = useState<RubberStockDeductionItem[]>(() => bill?.acidItems ?? []);
   const [debtItems, setDebtItems] = useState<RubberDebtItem[]>(() => bill?.debtItems ?? (bill?.debtItem ? [bill.debtItem] : []));
   const [paymentResponsibility, setPaymentResponsibility] = useState<PaymentResponsibility>(initialPaymentResponsibility);
-  const [weightDeduct, setWeightDeduct] = useState(0);
+  const [weightDeduct, setWeightDeduct] = useState(bill?.deductWeight ?? 0);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
+  const { products: stockProducts } = useAcidProducts();
+  const isOnline = useOnlineStatus();
 
   // Autocomplete customer lookup states
   const [customerSearch, setCustomerSearch] = useState(bill?.customerName ?? "");
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(bill?.customerId ?? null);
   const [showDropdown, setShowDropdown] = useState(false);
   const [memberStatus, setMemberStatus] = useState(() => {
     if (!bill?.customerName) return "ไม่เป็นสมาชิก";
@@ -84,10 +89,10 @@ export function RubberBillModal({
   const totalWeight = weighItems.reduce((sum, item) => sum + item.netWeight, 0);
   const gross = weighItems.reduce((sum, item) => sum + Math.floor(item.netWeight * item.price), 0);
   const averagePrice = totalWeight > 0 ? gross / totalWeight : 0;
-  const acidDeduction = acidItems.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+  const stockDeduction = stockDeductionItems.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
   const debtDeduction = debtItems.reduce((sum, item) => sum + item.amount, 0);
   const weightDeductValue = weightDeduct * averagePrice;
-  const deduct = acidDeduction + debtDeduction + weightDeductValue;
+  const deduct = stockDeduction + debtDeduction + weightDeductValue;
   const net = Math.max(gross - deduct, 0);
   const branchPayment = paymentResponsibility === "สาขานี้จ่าย" ? net : 0;
   const headOfficePayment = paymentResponsibility === "สาขาใหญ่จ่าย" ? net : 0;
@@ -126,29 +131,39 @@ export function RubberBillModal({
     setWeighItems((current) => (current.length === 1 ? current : current.filter((item) => item.id !== id)));
   }
 
-  function updateAcidItem(id: string, patch: Partial<Omit<RubberAcidItem, "id">>) {
-    setAcidItems((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+  function updateStockDeductionItem(id: string, patch: Partial<Omit<RubberStockDeductionItem, "id">>) {
+    setStockDeductionItems((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)));
   }
 
-  function addAcidItem() {
-    const names = ["น้ำกรดตราเสือไฟท์", "น้ำกรดตรามังกรไฟท์"];
-    setAcidItems((current) => {
-      if (current.length >= 2) return current;
+  function addStockDeductionItem() {
+    if (!isOnline) {
+      toast.error("หักสินค้าใช้ได้เมื่อออนไลน์ เพราะต้องตรวจยอดสต็อกก่อน");
+      return;
+    }
+
+    if (stockProducts.length === 0) {
+      toast.error("ยังไม่มีสินค้าในสต็อกให้เลือก");
+      return;
+    }
+
+    const nextProduct = stockProducts.find((product) => !stockDeductionItems.some((item) => item.stockProductId === product.id)) ?? stockProducts[0];
+    setStockDeductionItems((current) => {
       return [
         ...current,
         {
-          id: makeClientTempId("acid"),
-          name: names[current.length],
+          id: makeClientTempId("stock"),
+          name: nextProduct?.name ?? "",
+          stockProductId: nextProduct?.id ?? "",
           quantity: 1,
-          unit: "แพ็ค",
+          unit: nextProduct?.unit ?? "ชิ้น",
           unitPrice: 0
         }
       ];
     });
   }
 
-  function removeAcidItem(id: string) {
-    setAcidItems((current) => current.filter((item) => item.id !== id));
+  function removeStockDeductionItem(id: string) {
+    setStockDeductionItems((current) => current.filter((item) => item.id !== id));
   }
 
   function updateDebtItem(id: string, patch: Partial<Omit<RubberDebtItem, "id">>) {
@@ -168,11 +183,15 @@ export function RubberBillModal({
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (stockDeductionItems.length > 0 && !isOnline) {
+      toast.error("หักสินค้าใช้ได้เมื่อออนไลน์ เพราะต้องตรวจยอดสต็อกก่อนบันทึก");
+      return;
+    }
 
     const errors = validateRubberBillDraft({
       customerName: customerSearch,
       weighItems,
-      acidItems,
+      acidItems: stockDeductionItems,
       debtItems,
       netTotal: net
     });
@@ -199,18 +218,21 @@ export function RubberBillModal({
       locationId: selectedLocation.id,
       billNo: bill?.serverBillNo ?? localBillNo,
       billDate: String(form.get("billDate") || todayInputValue()),
+      customerId: selectedCustomerId,
       customerName: customerSearch,
       customerType: paymentResponsibility,
       billType: String(form.get("billType") || "บิลเครื่องชั่งเล็ก"),
+      deductWeight: weightDeduct,
       weight: totalWeight,
       price: averagePrice,
       deductionTotal: deduct,
       netTotal: net,
       cashPayment: branchPayment,
       transferPayment: headOfficePayment,
-      acidPackCount: acidItems.reduce((sum, item) => sum + item.quantity, 0),
+      acidPackCount: stockDeductionItems.reduce((sum, item) => sum + item.quantity, 0),
+      printStatus: bill?.printStatus ?? "ยังไม่ได้ปริ้น",
       weighItems,
-      acidItems,
+      acidItems: stockDeductionItems,
       debtItem: debtItems[0],
       debtItems,
       createdByUserId: bill?.createdByUserId ?? profile.id,
@@ -278,6 +300,7 @@ export function RubberBillModal({
                   value={customerSearch}
                   onChange={(e) => {
                     setCustomerSearch(e.target.value);
+                    setSelectedCustomerId(null);
                     setShowDropdown(true);
                   }}
                   onFocus={() => setShowDropdown(true)}
@@ -299,6 +322,7 @@ export function RubberBillModal({
                       type="button"
                       onClick={() => {
                         setCustomerSearch(cust.mainName);
+                        setSelectedCustomerId(cust.id);
                         setMemberStatus("สมาชิก");
                         setPaymentResponsibility(cust.class);
                         setShowDropdown(false);
@@ -341,6 +365,7 @@ export function RubberBillModal({
                     newCust.idempotencyKey = makeIdempotencyKey("create", newCust.id);
                     onAddCustomer(newCust);
                     setCustomerSearch(name.trim());
+                    setSelectedCustomerId(newCust.id);
                     setMemberStatus("สมาชิก");
                     setPaymentResponsibility(newCust.class);
                   }
@@ -352,15 +377,19 @@ export function RubberBillModal({
               <button
                 type="button"
                 onClick={() => {
-                  const found = customers.find(c => c.mainName === customerSearch);
+                  const nameMatches = customers.filter((customer) => customer.mainName === customerSearch);
+                  const found = selectedCustomerId
+                    ? customers.find((customer) => customer.id === selectedCustomerId)
+                    : nameMatches.length === 1 ? nameMatches[0] : undefined;
                   if (!found) {
-                    toast.error("กรุณาเลือกลูกค้าจากรายการก่อน แล้วจึงกดแก้ไข");
+                    toast.error("กรุณาเลือกลูกค้าจากรายการให้ชัดเจนก่อน แล้วจึงกดแก้ไข");
                     return;
                   }
                   const newName = window.prompt("แก้ไขชื่อสมาชิก:", found.mainName);
                   if (newName && newName.trim() && newName.trim() !== found.mainName) {
                     onUpdateCustomer({ ...found, mainName: newName.trim() });
                     setCustomerSearch(newName.trim());
+                    setSelectedCustomerId(found.id);
                   }
                 }}
                 className="rounded-md bg-amber px-3 py-2 text-sm font-semibold text-ink hover:bg-amber/80 transition-colors"
@@ -471,27 +500,40 @@ export function RubberBillModal({
                 </tr>
               </thead>
               <tbody>
-                {acidItems.map((item) => (
+                {stockDeductionItems.map((item) => (
                   <tr key={item.id} className="border-b border-black/10">
                     <td className="py-2">
-                      <input
-                        value={item.name}
-                        onChange={(event) => updateAcidItem(item.id, { name: event.target.value })}
+                      <select
+                        value={item.stockProductId}
+                        onChange={(event) => {
+                          const product = stockProducts.find((nextProduct) => nextProduct.id === event.target.value);
+                          updateStockDeductionItem(item.id, {
+                            stockProductId: product?.id ?? "",
+                            name: product?.name ?? "",
+                            unit: product?.unit ?? item.unit
+                          });
+                        }}
                         className="focus-ring h-10 w-full rounded-md border border-black/10 bg-white px-3"
-                      />
+                        required
+                      >
+                        <option value="" disabled>เลือกสินค้าในสต็อก</option>
+                        {stockProducts.map((product) => (
+                          <option key={product.id} value={product.id}>{product.name}</option>
+                        ))}
+                      </select>
                     </td>
-                    <td><InlineNumber value={item.quantity} onChange={(value) => updateAcidItem(item.id, { quantity: value })} /></td>
+                    <td><InlineNumber value={item.quantity} onChange={(value) => updateStockDeductionItem(item.id, { quantity: value })} /></td>
                     <td>
                       <input
                         value={item.unit}
-                        onChange={(event) => updateAcidItem(item.id, { unit: event.target.value })}
+                        onChange={(event) => updateStockDeductionItem(item.id, { unit: event.target.value })}
                         className="focus-ring h-10 w-20 rounded-md border border-black/10 bg-white px-2"
                       />
                     </td>
-                    <td><InlineNumber value={item.unitPrice} onChange={(value) => updateAcidItem(item.id, { unitPrice: value })} /></td>
+                    <td><InlineNumber value={item.unitPrice} onChange={(value) => updateStockDeductionItem(item.id, { unitPrice: value })} /></td>
                     <td><InlineNumber value={item.quantity * item.unitPrice} readOnly /></td>
                     <td>
-                      <button type="button" onClick={() => removeAcidItem(item.id)} className="rounded bg-rose-500 px-3 py-2 text-sm font-bold text-white">
+                      <button type="button" onClick={() => removeStockDeductionItem(item.id)} className="rounded bg-rose-500 px-3 py-2 text-sm font-bold text-white">
                         ลบ
                       </button>
                     </td>
@@ -502,11 +544,16 @@ export function RubberBillModal({
           </div>
           <button
             type="button"
-            onClick={addAcidItem}
-            disabled={acidItems.length >= 2}
-            className="mt-3 rounded-md bg-amber px-4 py-2 text-sm font-bold text-ink disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-ink/50"
+            onClick={addStockDeductionItem}
+            aria-disabled={!isOnline}
+            className={`mt-3 inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-bold ${
+              isOnline
+                ? "bg-amber text-ink hover:bg-amber/80"
+                : "cursor-not-allowed border border-amber/30 bg-amber/10 text-amber-800"
+            }`}
           >
-            เพิ่มน้ำกรด
+            {!isOnline && <WifiOff size={15} />}
+            {isOnline ? "เพิ่มรายการหักสินค้า" : "กดได้เมื่อออนไลน์"}
           </button>
         </section>
 

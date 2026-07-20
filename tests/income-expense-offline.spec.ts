@@ -6,7 +6,7 @@ async function readQueue(page: Page): Promise<any[]> {
   await page.waitForLoadState('domcontentloaded');
   return page.evaluate(() => {
     return new Promise<any[]>((resolve, reject) => {
-      const req = indexedDB.open('lanflow_sync_db', 2);
+      const req = indexedDB.open('lanflow_sync_db', 3);
       req.onerror = () => reject(req.error);
       req.onupgradeneeded = () => {
         req.transaction?.abort();
@@ -131,10 +131,10 @@ async function cleanupIncomeExpense(page: Page, payload: any, clientTempId: stri
   }, { timeout: 15000 }).toBe('deleted');
 }
 
-async function loginAndGoToIncomeExpense(page: Page) {
+async function loginAndGoToIncomeExpense(page: Page, loginPhone = phone) {
   page.on('dialog', dialog => dialog.accept());
   await page.goto('/login');
-  await page.fill('input[type="tel"]', phone);
+  await page.fill('input[type="tel"]', loginPhone);
   await page.fill('input[type="password"]', password);
   await page.click('button:has-text("เข้าสู่ระบบ")');
   await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
@@ -174,6 +174,28 @@ async function getPrimaryLocationId(page: Page) {
   return locationId as string;
 }
 
+async function getCurrentUserId(page: Page) {
+  const res = await page.request.get('/api/auth/me');
+  expect(res.ok()).toBeTruthy();
+  const data = await res.json();
+  const userId = data.profile?.id;
+  expect(userId).toBeTruthy();
+  return userId as string;
+}
+
+async function getAccessibleLocationIds(page: Page) {
+  const res = await page.request.get('/api/auth/me');
+  expect(res.ok()).toBeTruthy();
+  const data = await res.json();
+  return (data.profile?.locationIds ?? []) as string[];
+}
+
+async function selectHeaderLocation(page: Page, locationId: string) {
+  const locationSelect = page.locator('select[aria-label="เลือกสาขา"]');
+  await expect(locationSelect).toBeVisible({ timeout: 10000 });
+  await locationSelect.selectOption(locationId);
+}
+
 async function buildIncomeExpensePayload(page: Page, overrides: Record<string, any> = {}) {
   const clientTempId = overrides.clientTempId ?? crypto.randomUUID();
   const txDate = overrides.txDate ?? new Date().toISOString().slice(0, 10);
@@ -206,17 +228,23 @@ async function buildIncomeExpensePayload(page: Page, overrides: Record<string, a
 }
 
 async function enqueueIncomeExpenseEvent(page: Page, event: Record<string, any>) {
+  const ownerUserId = event.ownerUserId ?? await getCurrentUserId(page);
+  const locationId = event.locationId ?? event.payload?.locationId;
+  expect(locationId).toBeTruthy();
+
   await page.evaluate((queuedEvent) => {
     return new Promise<void>((resolve, reject) => {
-      const req = indexedDB.open('lanflow_sync_db', 2);
+      const req = indexedDB.open('lanflow_sync_db', 3);
       req.onerror = () => reject(req.error);
       req.onupgradeneeded = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains('sync_queue')) {
           const store = db.createObjectStore('sync_queue', { keyPath: 'queueId', autoIncrement: true });
-          store.createIndex('entity', 'entity', { unique: false });
-          store.createIndex('id', 'id', { unique: false });
-          store.createIndex('status', 'status', { unique: false });
+           store.createIndex('entity', 'entity', { unique: false });
+           store.createIndex('id', 'id', { unique: false });
+           store.createIndex('status', 'status', { unique: false });
+           store.createIndex('ownerUserId', 'ownerUserId', { unique: false });
+           store.createIndex('locationId', 'locationId', { unique: false });
         }
       };
       req.onsuccess = () => {
@@ -233,7 +261,7 @@ async function enqueueIncomeExpenseEvent(page: Page, event: Record<string, any>)
         tx.objectStore('sync_queue').add(queuedEvent);
       };
     });
-  }, event);
+  }, { ...event, ownerUserId, locationId });
 }
 
 async function waitForQueueStatus(page: Page, clientTempId: string, status: 'failed' | 'conflict') {
@@ -256,7 +284,7 @@ function serverBillSuffix(serverBillNo: string) {
   return Number(serverBillNo.slice(-4));
 }
 
-test.describe('Income/Expense Offline Sync', () => {
+test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
   test.beforeAll(async () => {
     await ensureTestUser();
   });
@@ -374,124 +402,45 @@ test.describe('Income/Expense Offline Sync', () => {
     }
   });
 
-  test.skip('synced row → offline edit twice → coalesce to single update', async ({ page, context }) => {
+  test('synced row blocks offline edit and delete without queue or server changes', async ({ page, context }) => {
     test.setTimeout(90000);
     await loginAndGoToIncomeExpense(page);
 
-    const marker = `E2E-EDIT2-${Date.now()}`;
-    await createIncomeOnline(page, marker, 1000);
-
-    // Get clientTempId and revision from DB
-    const dbRes = await page.request.fetch(
-      `${supabaseUrl}/rest/v1/income_expense?title=eq.${marker}&select=client_temp_id,revision_no`,
+    const marker = `E2E-SYNCED-OFFLINE-${Date.now()}`;
+    const row = await createIncomeOnline(page, marker, 1000);
+    const beforeRes = await page.request.fetch(
+      `${supabaseUrl}/rest/v1/income_expense?title=eq.${marker}&select=client_temp_id,title,revision_no,record_status`,
       { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
     );
-    const dbRows = await dbRes.json();
-    const clientTempId = dbRows[0].client_temp_id;
-    const initialRev = dbRows[0].revision_no;
+    const [before] = await beforeRes.json();
 
-    const row = page.locator('table tbody tr', { hasText: marker }).first();
-    const editBtn = row.locator('button[title="แก้ไข"]');
-
-    // Go offline
     await context.setOffline(true);
 
-    // Edit 1
-    await editBtn.click();
-    await expect(page.locator('h2:has-text("เพิ่ม/แก้ไข บิลเงินสด")')).toBeVisible();
-    const modal1 = page.locator('.fixed.inset-0').last();
-    const lineInput1 = modal1.locator('table tbody tr').first().locator('input').first();
-    await lineInput1.fill(`${marker}-EDIT1`);
-    await modal1.locator('button:has-text("บันทึกบิล")').click();
-    await expect(page.locator('h2:has-text("เพิ่ม/แก้ไข บิลเงินสด")')).toBeHidden({ timeout: 10000 });
+    const blockMessage = 'รายการนี้ซิงก์แล้ว ต้องออนไลน์เพื่อแก้ไขหรือลบ';
+    const blockedActions = row.getByRole('button', { name: blockMessage, exact: true });
+    await expect(blockedActions).toHaveCount(2);
+    await expect(blockedActions.nth(0)).toBeDisabled();
+    await expect(blockedActions.nth(1)).toBeDisabled();
+    expect((await readQueue(page)).filter(event => event.id === before.client_temp_id)).toHaveLength(0);
 
-    // Edit 2
-    const row2 = page.locator('table tbody tr', { hasText: `${marker}-EDIT1` }).first();
-    await row2.locator('button[title="แก้ไข"]').click();
-    await expect(page.locator('h2:has-text("เพิ่ม/แก้ไข บิลเงินสด")')).toBeVisible();
-    const modal2 = page.locator('.fixed.inset-0').last();
-    const lineInput2 = modal2.locator('table tbody tr').first().locator('input').first();
-    await lineInput2.fill(`${marker}-EDIT2`);
-    await modal2.locator('button:has-text("บันทึกบิล")').click();
-    await expect(page.locator('h2:has-text("เพิ่ม/แก้ไข บิลเงินสด")')).toBeHidden({ timeout: 10000 });
-
-    // Verify queue: exactly ONE update with original expectedRevisionNo
-    const queue = await readQueue(page);
-    const pendingUpdates = queue.filter(e => e.id === clientTempId && e.entity === 'income_expense');
-    expect(pendingUpdates.length).toBe(1);
-    expect(pendingUpdates[0].payload.expectedRevisionNo).toBe(initialRev);
-    expect(pendingUpdates[0].payload.title).toBe(`${marker}-EDIT2`);
-
-    // Go online, wait for sync
     await context.setOffline(false);
-    const syncedRow = page.locator('table tbody tr', { hasText: `${marker}-EDIT2` }).first();
-    await expect(syncedRow.locator('span:has-text("ซิงก์แล้ว")')).toBeVisible({ timeout: 20000 });
-
-    // Verify DB
-    const dbCheck = await page.request.fetch(
-      `${supabaseUrl}/rest/v1/income_expense?client_temp_id=eq.${clientTempId}&select=title,revision_no`,
+    const afterRes = await page.request.fetch(
+      `${supabaseUrl}/rest/v1/income_expense?client_temp_id=eq.${before.client_temp_id}&select=title,revision_no,record_status`,
       { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
     );
-    const finalRows = await dbCheck.json();
-    expect(finalRows[0].title).toBe(`${marker}-EDIT2`);
-    expect(finalRows[0].revision_no).toBeGreaterThan(initialRev);
+    expect(await afterRes.json()).toEqual([{
+      title: marker,
+      revision_no: before.revision_no,
+      record_status: before.record_status,
+    }]);
 
-    // Cleanup
-    await cleanupIncomeExpense(page, pendingUpdates[0].payload, clientTempId, finalRows[0].revision_no);
-  });
-
-  test.skip('synced row → offline edit → delete → sync as soft delete', async ({ page, context }) => {
-    test.setTimeout(90000);
-    await loginAndGoToIncomeExpense(page);
-
-    const marker = `E2E-EDITDEL-${Date.now()}`;
-    await createIncomeOnline(page, marker, 1000);
-
-    // Get from DB
-    const dbRes = await page.request.fetch(
-      `${supabaseUrl}/rest/v1/income_expense?title=eq.${marker}&select=client_temp_id,revision_no`,
-      { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
-    );
-    const dbRows = await dbRes.json();
-    const clientTempId = dbRows[0].client_temp_id;
-    const initialRev = dbRows[0].revision_no;
-
-    const row = page.locator('table tbody tr', { hasText: marker }).first();
-
-    // Go offline
-    await context.setOffline(true);
-
-    // Edit
-    await row.locator('button[title="แก้ไข"]').click();
-    await expect(page.locator('h2:has-text("เพิ่ม/แก้ไข บิลเงินสด")')).toBeVisible();
-    const modal = page.locator('.fixed.inset-0').last();
-    await modal.locator('table tbody tr').first().locator('input').first().fill(`${marker}-EDITED`);
-    await modal.locator('button:has-text("บันทึกบิล")').click();
-    await expect(page.locator('h2:has-text("เพิ่ม/แก้ไข บิลเงินสด")')).toBeHidden({ timeout: 10000 });
-
-    // Delete
-    const editedRow = page.locator('table tbody tr', { hasText: `${marker}-EDITED` }).first();
-    await editedRow.locator('button[title="ลบ"]').click();
-    await expect(editedRow).toBeHidden({ timeout: 10000 });
-
-    // Queue: exactly ONE delete with original revision
-    const queue = await readQueue(page);
-    const events = queue.filter(e => e.id === clientTempId && e.entity === 'income_expense');
-    expect(events.length).toBe(1);
-    expect(events[0].operation).toBe('delete');
-    expect(events[0].payload.expectedRevisionNo).toBe(initialRev);
-
-    // Go online
-    await context.setOffline(false);
-
-    // DB check: soft deleted
+    await row.getByRole('button', { name: 'ลบ', exact: true }).click();
     await expect.poll(async () => {
       const res = await page.request.fetch(
-        `${supabaseUrl}/rest/v1/income_expense?client_temp_id=eq.${clientTempId}&select=record_status`,
+        `${supabaseUrl}/rest/v1/income_expense?client_temp_id=eq.${before.client_temp_id}&select=record_status`,
         { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
       );
-      const rows = await res.json();
-      return rows[0]?.record_status;
+      return (await res.json())[0]?.record_status;
     }, { timeout: 15000 }).toBe('deleted');
   });
 
@@ -541,6 +490,54 @@ test.describe('Income/Expense Offline Sync', () => {
       );
       const dbRows = await dbCheck.json();
       return dbRows.length;
+    }, { timeout: 15000 }).toBe(0);
+  });
+
+  test('offline local draft edit coalesces into create and delete remains a no-op', async ({ page, context }) => {
+    test.setTimeout(90000);
+    await loginAndGoToIncomeExpense(page);
+
+    const marker = `E2E-DRAFTEDIT-${Date.now()}`;
+    const editedMarker = `${marker}-EDITED`;
+
+    await context.setOffline(true);
+    await page.click('button:has-text("เพิ่มรายรับ")');
+    const createModal = page.locator('.fixed.inset-0').last();
+    await createModal.locator('table tbody tr').first().locator('input').first().fill(marker);
+    await createModal.locator('table tbody tr').first().locator('input[type="number"]').first().fill('500');
+    await createModal.locator('button:has-text("บันทึกบิล")').click();
+
+    const row = page.locator('table tbody tr', { hasText: marker }).first();
+    await expect(row).toBeVisible({ timeout: 5000 });
+    const createEvent = (await readQueue(page)).find(e => e.entity === 'income_expense' && e.payload?.title === marker);
+    expect(createEvent).toBeDefined();
+
+    await row.locator('button[title="แก้ไข"]').click();
+    const editModal = page.locator('.fixed.inset-0').last();
+    await editModal.locator('table tbody tr').first().locator('input').first().fill(editedMarker);
+    await editModal.locator('table tbody tr').first().locator('input[type="number"]').first().fill('750');
+    await editModal.locator('button:has-text("บันทึกบิล")').click();
+
+    const editedRow = page.locator('table tbody tr', { hasText: editedMarker }).first();
+    await expect(editedRow).toBeVisible({ timeout: 5000 });
+    const eventsAfterEdit = (await readQueue(page)).filter(e => e.id === createEvent.id);
+    expect(eventsAfterEdit).toHaveLength(1);
+    expect(eventsAfterEdit[0]).toMatchObject({
+      operation: 'create',
+      payload: { title: editedMarker, cost: 750 },
+    });
+
+    await editedRow.locator('button[title="ลบ"]').click();
+    await expect(editedRow).toBeHidden({ timeout: 5000 });
+    expect((await readQueue(page)).filter(e => e.id === createEvent.id)).toHaveLength(0);
+
+    await context.setOffline(false);
+    await expect.poll(async () => {
+      const response = await page.request.fetch(
+        `${supabaseUrl}/rest/v1/income_expense?client_temp_id=eq.${createEvent.id}&select=id`,
+        { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
+      );
+      return (await response.json()).length;
     }, { timeout: 15000 }).toBe(0);
   });
 
@@ -660,6 +657,11 @@ test.describe('Income/Expense Offline Sync', () => {
     await expect(conflictRow).toBeVisible({ timeout: 15000 });
     await expect(conflictRow.locator('text=Revision mismatch')).toBeVisible();
 
+    const queueAfterReload = await readQueue(page);
+    const conflictEvent = queueAfterReload.find(e => e.id === clientTempId && e.entity === 'income_expense');
+    expect(conflictEvent).toBeDefined();
+    expect(conflictEvent.status).toBe('conflict');
+
     await cleanupIncomeExpense(page, serverUpdatePayload, clientTempId, serverUpdateData.revisionNo);
   });
 
@@ -699,8 +701,196 @@ test.describe('Income/Expense Offline Sync', () => {
     await expect(failedRow).toBeVisible({ timeout: 15000 });
     await expect(failedRow.locator('text=cost must be > 0')).toBeVisible();
 
+    const queueAfterReload = await readQueue(page);
+    const failedEventAfterReload = queueAfterReload.find(e => e.id === payload.clientTempId && e.entity === 'income_expense');
+    expect(failedEventAfterReload).toBeDefined();
+    expect(failedEventAfterReload.status).toBe('failed');
+
     const dbRows = await fetchIncomeExpenseRows(page, payload.clientTempId, 'id');
     expect(dbRows.length).toBe(0);
+  });
+
+  test('failed event retry syncs once and removes its queue event', async ({ page }) => {
+    test.setTimeout(90000);
+    await loginAndGoToIncomeExpense(page);
+
+    const marker = `E2E-RETRY-${Date.now()}`;
+    const payload = await buildIncomeExpensePayload(page, { title: marker, cost: 500 });
+    await enqueueIncomeExpenseEvent(page, {
+      id: payload.clientTempId,
+      entity: 'income_expense',
+      operation: 'create',
+      payload,
+      timestamp: Date.now(),
+      status: 'failed',
+      errorMessage: 'temporary network error',
+    });
+
+    await page.reload();
+    await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+    await page.click('button:has-text("รับ-จ่าย")');
+    const row = page.locator('table tbody tr', { hasText: marker }).first();
+    await expect(row).toBeVisible({ timeout: 15000 });
+    await expect(row.getByRole('button', { name: 'ลองซิงก์อีกครั้ง' })).toBeVisible();
+
+    await row.getByRole('button', { name: 'ลองซิงก์อีกครั้ง' }).click();
+    await expect(row.locator('span:has-text("ซิงก์แล้ว")')).toBeVisible({ timeout: 20000 });
+    expect((await readQueue(page)).filter(e => e.id === payload.clientTempId)).toHaveLength(0);
+
+    const rows = await fetchIncomeExpenseRows(page, payload.clientTempId, 'id,revision_no');
+    expect(rows).toHaveLength(1);
+    await cleanupIncomeExpense(page, payload, payload.clientTempId, rows[0].revision_no);
+  });
+
+  test('User B cannot see or retry User A failed event', async ({ page, context }) => {
+    test.setTimeout(90000);
+    await loginAndGoToIncomeExpense(page);
+
+    const marker = `E2E-RETRY-XUSER-${Date.now()}`;
+    const payload = await buildIncomeExpensePayload(page, { title: marker, cost: 500 });
+    await enqueueIncomeExpenseEvent(page, {
+      id: payload.clientTempId,
+      entity: 'income_expense',
+      operation: 'create',
+      payload,
+      timestamp: Date.now(),
+      status: 'failed',
+      errorMessage: 'temporary network error',
+    });
+
+    await page.evaluate(() => {
+      localStorage.clear();
+      sessionStorage.clear();
+    });
+    await context.clearCookies();
+    await page.goto('about:blank');
+    await loginAndGoToIncomeExpense(page, '0810000001');
+
+    await expect(page.locator('table tbody tr', { hasText: marker })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'ลองซิงก์อีกครั้ง' })).toHaveCount(0);
+    expect((await readQueue(page)).find(e => e.id === payload.clientTempId && e.entity === 'income_expense')).toMatchObject({ status: 'failed' });
+    expect(await fetchIncomeExpenseRows(page, payload.clientTempId, 'id')).toHaveLength(0);
+  });
+
+  test('P0-T3 target: User B must not see or sync User A pending queue', async ({ page, context }) => {
+    test.setTimeout(90000);
+
+    await loginAndGoToIncomeExpense(page);
+    const locationId = await getPrimaryLocationId(page);
+    const marker = `E2E-XUSER-${Date.now()}`;
+
+    await context.setOffline(true);
+    const payload = await buildIncomeExpensePayload(page, {
+      locationId,
+      title: marker,
+    });
+    await enqueueIncomeExpenseEvent(page, {
+      id: payload.clientTempId,
+      entity: 'income_expense',
+      operation: 'create',
+      payload,
+      timestamp: Date.now(),
+      status: 'pending',
+    });
+
+    await page.evaluate(() => {
+      localStorage.clear();
+      sessionStorage.clear();
+    });
+    await context.clearCookies();
+    await page.goto('about:blank');
+    await context.setOffline(false);
+
+    await loginAndGoToIncomeExpense(page, '0810000001');
+
+    const queue = await readQueue(page);
+    expect(queue.find(e => e.id === payload.clientTempId && e.entity === 'income_expense')).toMatchObject({ status: 'pending' });
+    await expect(page.locator('table tbody tr', { hasText: marker })).toHaveCount(0);
+    expect((await fetchIncomeExpenseRows(page, payload.clientTempId, 'id')).length).toBe(0);
+  });
+
+  test('P0-T3 target: branch switch must only load queue for selected location', async ({ page, context }) => {
+    test.setTimeout(60000);
+
+    await loginAndGoToIncomeExpense(page);
+    const locationIds = await getAccessibleLocationIds(page);
+    test.skip(locationIds.length < 2, 'requires a test user with access to at least two locations');
+
+    const [sourceLocationId, targetLocationId] = locationIds;
+    await selectHeaderLocation(page, sourceLocationId);
+
+    await context.setOffline(true);
+    const marker = `E2E-XBRANCH-${Date.now()}`;
+    const payload = await buildIncomeExpensePayload(page, {
+      locationId: sourceLocationId,
+      title: marker,
+    });
+    await enqueueIncomeExpenseEvent(page, {
+      id: payload.clientTempId,
+      entity: 'income_expense',
+      operation: 'create',
+      payload,
+      timestamp: Date.now(),
+      status: 'pending',
+    });
+
+    await selectHeaderLocation(page, targetLocationId);
+    await page.waitForTimeout(1000);
+
+    await expect(page.locator('table tbody tr', { hasText: marker })).toHaveCount(0);
+    await context.setOffline(false);
+    await expect.poll(async () => (await fetchIncomeExpenseRows(page, payload.clientTempId, 'id')).length, { timeout: 15000 }).toBe(0);
+    expect((await readQueue(page)).find(event => event.id === payload.clientTempId && event.entity === 'income_expense')).toMatchObject({ status: 'pending' });
+  });
+
+  test('P1-T4: v2 events without an owner are quarantined during the v3 upgrade', async ({ page }) => {
+    const legacyId = crypto.randomUUID();
+
+    await page.goto('/login');
+    await page.evaluate((eventId) => {
+      return new Promise<void>((resolve, reject) => {
+        const deleteRequest = indexedDB.deleteDatabase('lanflow_sync_db');
+        deleteRequest.onerror = () => reject(deleteRequest.error);
+        deleteRequest.onsuccess = () => {
+          const request = indexedDB.open('lanflow_sync_db', 2);
+          request.onerror = () => reject(request.error);
+          request.onupgradeneeded = () => {
+            const store = request.result.createObjectStore('sync_queue', { keyPath: 'queueId', autoIncrement: true });
+            store.createIndex('entity', 'entity', { unique: false });
+            store.createIndex('id', 'id', { unique: false });
+            store.createIndex('status', 'status', { unique: false });
+          };
+          request.onsuccess = () => {
+            const db = request.result;
+            const transaction = db.transaction('sync_queue', 'readwrite');
+            transaction.objectStore('sync_queue').add({
+              id: eventId,
+              entity: 'income_expense',
+              operation: 'create',
+              payload: { clientTempId: eventId, locationId: 'legacy-location', title: 'legacy event' },
+              timestamp: Date.now(),
+              status: 'pending',
+            });
+            transaction.oncomplete = () => {
+              db.close();
+              resolve();
+            };
+            transaction.onerror = () => reject(transaction.error);
+          };
+        };
+      });
+    }, legacyId);
+
+    await loginAndGoToIncomeExpense(page);
+
+    const queue = await readQueue(page);
+    const legacyEvent = queue.find(event => event.id === legacyId);
+    expect(legacyEvent).toMatchObject({
+      ownerUserId: '',
+      locationId: 'legacy-location',
+      status: 'failed',
+    });
+    expect(legacyEvent.errorMessage).toContain('ไม่มีข้อมูลผู้ใช้');
   });
 
   test('concurrent create → server bill numbers are unique', async ({ page }) => {

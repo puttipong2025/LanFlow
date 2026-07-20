@@ -1,4 +1,4 @@
 interface:
   display_name: "Project Memory Write — codingDO"
   short_description: "เขียน memory codingDO หลังยืนยันแล้ว"
-  default_prompt: "Use $codex-project-memory-write-codingdo with $obsidian-cli and $obsidian-markdown to save verified durable project knowledge into codingDO, defaulting PATH to C:\\Users\\Do\\Documents\\codingDO when none is supplied."
+  default_prompt: "Use $codex-project-memory-write-codingdo with $obsidian-cli for discovery/backlinks, $obsidian-markdown for note syntax, and atomic vault_note.py for verified writes to codingDO."

@@ -14,17 +14,20 @@ import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 
 export function BranchTransferForm({
   locationId,
+  mode = "branch-to-branch",
   editTransfer,
   onSave,
   onCancel,
 }: {
   locationId: string;
+  mode?: "branch-to-branch" | "head-office-to-branch";
   editTransfer?: MoneyTransfer | null;
   onSave: (transfer: MoneyTransfer) => void;
   onCancel: () => void;
 }) {
   const { profile } = useAuth();
   const isEdit = !!editTransfer;
+  const isHeadOfficeTransfer = mode === "head-office-to-branch";
   const { locations } = useLocations();
   const isOnline = useOnlineStatus();
 
@@ -37,6 +40,16 @@ export function BranchTransferForm({
 
   const handleSlipUpload = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (!isOnline) {
+        void Swal.fire({
+          icon: "warning",
+          title: "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น",
+          confirmButtonColor: "#3b82f6",
+          confirmButtonText: "ตกลง"
+        });
+        e.target.value = "";
+        return;
+      }
       const files = e.target.files;
       if (!files || files.length === 0) return;
       setSlipUploading(true);
@@ -68,10 +81,19 @@ export function BranchTransferForm({
       }
       setSlipUploading(false);
     },
-    [slips.length]
+    [slips.length, isOnline]
   );
 
   const addEmptySlip = useCallback(() => {
+    if (!isOnline) {
+      void Swal.fire({
+        icon: "warning",
+        title: "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น",
+        confirmButtonColor: "#3b82f6",
+        confirmButtonText: "ตกลง"
+      });
+      return;
+    }
     const newSlip: MoneyTransferSlip = {
       id: crypto.randomUUID(),
       amount: 0,
@@ -84,7 +106,7 @@ export function BranchTransferForm({
       sortOrder: slips.length,
     };
     setSlips((prev) => [...prev, newSlip]);
-  }, [slips.length]);
+  }, [slips.length, isOnline]);
 
   const updateSlip = useCallback((id: string, field: keyof MoneyTransferSlip, value: any) => {
     setSlips((prev) => prev.map((s) => (s.id === id ? { ...s, [field]: value } : s)));
@@ -102,9 +124,18 @@ export function BranchTransferForm({
   const computedStatus = slips.length > 0 ? "paid" : "pending";
 
   const handleSubmit = useCallback(() => {
+    if (!isOnline) {
+      void Swal.fire({
+        icon: "warning",
+        title: "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น",
+        confirmButtonColor: "#3b82f6",
+        confirmButtonText: "ตกลง"
+      });
+      return;
+    }
     if (!selectedLocationId) return;
 
-    if (selectedLocationId === locationId) {
+    if (!isHeadOfficeTransfer && selectedLocationId === locationId) {
       Swal.fire({
         icon: "warning",
         title: "เลือกสาขาไม่ถูกต้อง",
@@ -127,12 +158,13 @@ export function BranchTransferForm({
     }
 
     const targetLoc = locations.find(l => l.id === selectedLocationId);
+    const transferLocationId = isHeadOfficeTransfer ? selectedLocationId : locationId;
     
     const transfer: MoneyTransfer = {
       id: editTransfer?.id ?? crypto.randomUUID(),
       clientTempId: editTransfer?.clientTempId ?? crypto.randomUUID(),
       idempotencyKey: editTransfer?.idempotencyKey ?? `mt:${crypto.randomUUID()}`,
-      locationId,
+      locationId: transferLocationId,
       customerId: null,
       customerName: null,
       accountNumber: null,
@@ -159,6 +191,7 @@ export function BranchTransferForm({
   }, [
     editTransfer,
     locationId,
+    isHeadOfficeTransfer,
     selectedLocationId,
     locations,
     isEdit,
@@ -167,6 +200,7 @@ export function BranchTransferForm({
     onSave,
     computedStatus,
     totalFromSlips,
+    isOnline,
   ]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -176,7 +210,9 @@ export function BranchTransferForm({
       <div className="flex flex-shrink-0 items-center justify-between border-b border-black/5 p-4">
         <h3 className="flex items-center gap-2 text-lg font-bold text-ink">
           <Banknote className="text-river" />
-          {isEdit ? "แก้ไขรายการโอนเงิน (ระหว่างสาขา)" : "สร้างรายการโอนเงินใหม่ (ระหว่างสาขา)"}
+          {isHeadOfficeTransfer
+            ? (isEdit ? "แก้ไขรายการโอนเงิน (ให้สาขา)" : "สร้างรายการโอนเงินใหม่ (ให้สาขา)")
+            : (isEdit ? "แก้ไขรายการโอนเงิน (ระหว่างสาขา)" : "สร้างรายการโอนเงินใหม่ (ระหว่างสาขา)")}
         </h3>
         <button onClick={onCancel} className="rounded-md p-1 hover:bg-black/5">
           <X size={20} />
@@ -186,7 +222,9 @@ export function BranchTransferForm({
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="rounded-lg border border-black/5 bg-field/40 p-3 overflow-visible">
-            <p className="text-xs font-semibold text-ink/50">สาขาปลายทาง</p>
+            <p className="text-xs font-semibold text-ink/50">
+              {isHeadOfficeTransfer ? "สาขาที่รับเงิน" : "สาขาปลายทาง"}
+            </p>
             <select
               value={selectedLocationId || ""}
               onChange={(e) => setSelectedLocationId(e.target.value)}
@@ -194,8 +232,8 @@ export function BranchTransferForm({
             >
               <option value="" disabled>-- เลือกสาขา --</option>
               {locations.map(loc => (
-                <option key={loc.id} value={loc.id} disabled={loc.id === locationId}>
-                  {loc.name} {loc.id === locationId ? "(สาขาปัจจุบัน)" : ""}
+                <option key={loc.id} value={loc.id} disabled={!isHeadOfficeTransfer && loc.id === locationId}>
+                  {loc.name} {!isHeadOfficeTransfer && loc.id === locationId ? "(สาขาปัจจุบัน)" : ""}
                 </option>
               ))}
             </select>
@@ -205,7 +243,9 @@ export function BranchTransferForm({
         {/* ── Net Amount Summary ── */}
         <div className="rounded-lg border border-river/20 bg-river/5 p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-sm font-semibold text-ink/70">ยอดรวมที่โอนระหว่างสาขา</span>
+            <span className="text-sm font-semibold text-ink/70">
+              {isHeadOfficeTransfer ? "ยอดรวมที่โอนให้สาขา" : "ยอดรวมที่โอนระหว่างสาขา"}
+            </span>
             <span className="text-2xl font-bold text-river">{formatCurrency(totalFromSlips)}</span>
           </div>
           {slips.length > 0 && (
@@ -224,8 +264,9 @@ export function BranchTransferForm({
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                disabled={slipUploading}
-                className="focus-ring flex items-center gap-1.5 rounded-md border border-river text-river px-3 py-1.5 text-xs font-semibold hover:bg-river/5 disabled:opacity-50"
+                disabled={slipUploading || !isOnline}
+                title={isOnline ? undefined : "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น"}
+                className="focus-ring flex items-center gap-1.5 rounded-md border border-river text-river px-3 py-1.5 text-xs font-semibold hover:bg-river/5 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {slipUploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
                 อ่านสลิป
@@ -233,12 +274,14 @@ export function BranchTransferForm({
               <button
                 type="button"
                 onClick={addEmptySlip}
-                className="focus-ring flex items-center gap-1.5 rounded-md bg-black/5 px-3 py-1.5 text-xs font-semibold text-ink hover:bg-black/10"
+                disabled={!isOnline}
+                title={isOnline ? undefined : "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น"}
+                className="focus-ring flex items-center gap-1.5 rounded-md bg-black/5 px-3 py-1.5 text-xs font-semibold text-ink hover:bg-black/10 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Plus size={14} /> เพิ่มเอง
               </button>
             </div>
-            <input type="file" accept="image/*" multiple className="hidden" ref={fileInputRef} onChange={handleSlipUpload} />
+            <input type="file" accept="image/*" multiple className="hidden" ref={fileInputRef} onChange={handleSlipUpload} disabled={!isOnline} />
           </div>
           {slips.length > 0 ? (
             <div className="space-y-2">
@@ -259,13 +302,13 @@ export function BranchTransferForm({
         <div className="flex items-center gap-3">
           {!isOnline && (
             <span className="text-sm font-semibold text-clay text-right">
-              รายการโยกเงินต้องออนไลน์ก่อนบันทึก
+              {isHeadOfficeTransfer ? "รายการโอนให้สาขาต้องออนไลน์ก่อนบันทึก" : "รายการโยกเงินต้องออนไลน์ก่อนบันทึก"}
             </span>
           )}
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={!selectedLocationId || selectedLocationId === locationId || slips.length === 0 || !isOnline}
+            disabled={!selectedLocationId || (!isHeadOfficeTransfer && selectedLocationId === locationId) || slips.length === 0 || !isOnline}
             className="focus-ring flex items-center gap-1.5 rounded-md bg-river px-5 py-2 text-sm font-semibold text-white hover:bg-river/90 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Save size={15} /> บันทึก

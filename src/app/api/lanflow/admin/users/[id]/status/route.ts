@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireRole } from "@/lib/server/auth";
+import { hasSystemManagerAccess, requireRoleOrSystemManager } from "@/lib/server/auth";
 import { createSupabaseAdminClient } from "@/lib/server/supabase-admin";
 
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const adminCheck = await requireRole(request, ["super_admin", "admin"]);
+  const adminCheck = await requireRoleOrSystemManager(request, ["super_admin", "admin"]);
   if (!adminCheck.ok) return adminCheck.response;
 
   try {
@@ -29,6 +29,22 @@ export async function PATCH(
 
     // We use admin client because ordinary admins might not have RLS permission to update all profiles
     const admin = createSupabaseAdminClient();
+    const { data: targetUser, error: targetError } = await admin
+      .from("profiles")
+      .select("role")
+      .eq("id", userId)
+      .maybeSingle();
+
+    if (targetError) throw targetError;
+    if (!targetUser) {
+      return NextResponse.json({ error: "User not found" }, { status: 404 });
+    }
+    if (targetUser.role === "super_admin") {
+      return NextResponse.json({ error: "Cannot change status of super_admin" }, { status: 403 });
+    }
+    if (targetUser.role === "admin" && !hasSystemManagerAccess(adminCheck.auth)) {
+      return NextResponse.json({ error: "Only system managers can change admin status" }, { status: 403 });
+    }
 
     const { error } = await admin
       .from("profiles")

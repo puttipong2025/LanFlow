@@ -1,7 +1,7 @@
 export function validateRubberBillDraft(draft: {
   customerName: string;
   weighItems: { inWeight: number; outWeight: number; netWeight: number; price: number }[];
-  acidItems: { name: string; quantity: number; unitPrice: number }[];
+  acidItems: { name: string; stockProductId?: string | null; quantity: number; unitPrice: number }[];
   debtItems: { title: string; amount: number }[];
   netTotal: number;
 }): string[] {
@@ -28,19 +28,18 @@ export function validateRubberBillDraft(draft: {
     }
   });
 
-  if (draft.acidItems.length > 2) {
-    errors.push("รายการเบิกน้ำกรดต้องไม่เกิน 2 รายการ");
-  }
-
   draft.acidItems.forEach((item, index) => {
     if (!item.name.trim()) {
-      errors.push(`รายการน้ำกรดที่ ${index + 1}: ต้องระบุชื่อ`);
+      errors.push(`รายการหักสินค้าที่ ${index + 1}: ต้องระบุชื่อ`);
+    }
+    if (!item.stockProductId) {
+      errors.push(`รายการหักสินค้าที่ ${index + 1}: ต้องเลือกสินค้าในสต็อก`);
     }
     if (item.quantity <= 0) {
-      errors.push(`รายการน้ำกรดที่ ${index + 1}: จำนวนต้องมากกว่า 0`);
+      errors.push(`รายการหักสินค้าที่ ${index + 1}: จำนวนต้องมากกว่า 0`);
     }
     if (item.unitPrice < 0) {
-      errors.push(`รายการน้ำกรดที่ ${index + 1}: ราคาต้องไม่ติดลบ`);
+      errors.push(`รายการหักสินค้าที่ ${index + 1}: ราคาต้องไม่ติดลบ`);
     }
   });
 

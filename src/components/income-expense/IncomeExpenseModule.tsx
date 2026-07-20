@@ -9,12 +9,13 @@ import { useIncomeExpenseApprovals } from "@/hooks/useIncomeExpenseApprovals";
 import { useCustomers } from "@/hooks/useCustomers";
 import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
+import { usePerRecordSyncRetry } from "@/hooks/usePerRecordSyncRetry";
 import { getOfflineSyncedActionBlockReason } from "@/lib/record-action-locks";
+import { canAccessSourceLocation, canManageSystemFeatures } from "@/lib/permissions";
 
 import type { IncomeExpense, Location, MoneyTransfer, Profile } from "@/types";
 import { IconButton } from "@/components/shared/IconButton";
 import { SyncStatusBadge } from "@/components/shared/SyncStatusBadge";
-import { IncomeSaleItemsModal } from "@/components/IncomeSaleItemsModal";
 import { BranchTransferForm } from "@/components/money-transfer/BranchTransferForm";
 import { getIncomeExpenseDisplayNo } from "./income-expense-display";
 import { IncomeExpenseApprovalModal } from "./IncomeExpenseApprovalModal";
@@ -23,27 +24,50 @@ import { IncomeExpenseModal } from "./IncomeExpenseModal";
 export function IncomeExpenseModule({
   selectedLocation,
   profile,
+  canCreateMoneyTransfer = true,
   onOpenMoneyTransferSource,
   onOpenRubberBillSource,
+  onOpenOcrTicketSource,
+  onOpenTimeTrackingSource,
 }: {
   selectedLocation: Location;
   profile: Profile;
+  canCreateMoneyTransfer?: boolean;
   onOpenMoneyTransferSource?: (transferId: string, locationId: string) => void;
   onOpenRubberBillSource?: (locationId: string, billDate?: string) => void;
+  onOpenOcrTicketSource?: (locationId: string, ticketDate?: string) => void;
+  onOpenTimeTrackingSource?: (sourceId: string, sourceType: "time_tracking_withdrawal" | "payroll_slip") => void;
 }) {
   const queryClient = useQueryClient();
-  const { transactions, addTransaction, updateTransaction, deleteTransaction } = useIncomeExpense(selectedLocation.id);
+  const {
+    transactions,
+    addTransaction,
+    updateTransaction,
+    deleteTransaction,
+    hasMore,
+    isLoadingMore,
+    loadMore,
+  } = useIncomeExpense(selectedLocation.id, profile.id);
   const { submitForApprovalIfNeeded } = useIncomeExpenseApprovals();
   const { customers, addCustomer, updateCustomer } = useCustomers();
-  const { addTransfer } = useMoneyTransfers(selectedLocation.id);
+  const { addTransfer } = useMoneyTransfers(selectedLocation.id, { enabled: canCreateMoneyTransfer });
   const isOnline = useOnlineStatus();
+  const { retrySyncEvent, isRetrying } = usePerRecordSyncRetry(selectedLocation.id, profile.id);
+  const canManageSystem = canManageSystemFeatures(profile);
   const nextNumber = String(transactions.length + 1);
   const [modalOpen, setModalOpen] = useState(false);
   const [modalType, setModalType] = useState<"income" | "expense">("income");
   const [editingTransaction, setEditingTransaction] = useState<IncomeExpense | null>(null);
-  const [saleItemsModalOpen, setSaleItemsModalOpen] = useState(false);
   const [approvalModalOpen, setApprovalModalOpen] = useState(false);
   const [branchTransferModalOpen, setBranchTransferModalOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const visibleTransactions = search.trim()
+    ? transactions.filter((transaction) =>
+      `${transaction.number} ${transaction.title} ${transaction.createdByName}`
+        .toLocaleLowerCase("th-TH")
+        .includes(search.trim().toLocaleLowerCase("th-TH"))
+    )
+    : transactions;
 
   function openAdd(type: "income" | "expense") {
     setModalType(type);
@@ -68,6 +92,10 @@ export function IncomeExpenseModule({
   }
 
   function openBranchTransfer() {
+    if (!canCreateMoneyTransfer) {
+      toast.error("ไม่มีสิทธิ์ใช้โมดูลโอนเงิน");
+      return;
+    }
     if (!isOnline) {
       toast.error("การโยกเงินไปสาขาอื่นต้องออนไลน์ก่อน");
       return;
@@ -107,12 +135,28 @@ export function IncomeExpenseModule({
     }
   }
 
+  async function retryFailedSync(transaction: IncomeExpense) {
+    try {
+      await retrySyncEvent({ entity: "income_expense", id: transaction.clientTempId });
+      toast.success("ซิงก์รายการสำเร็จ");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "ซิงก์รายการไม่สำเร็จ");
+    }
+  }
+
   return (
     <section className="space-y-4">
       <div className="flex flex-col gap-3 rounded-md border border-black/10 bg-white p-4 shadow-panel lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h2 className="text-lg font-bold text-ink">CRUD รายรับ-รายจ่าย · {selectedLocation.name}</h2>
           <p className="text-sm text-ink/60">เพิ่มผ่าน modal และจัดการรายการจากตาราง</p>
+          <input
+            type="search"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="ค้นหาในรายการที่โหลดแล้ว"
+            className="mt-3 h-9 w-full max-w-xs rounded-md border border-black/15 px-3 text-sm"
+          />
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
           <button
@@ -131,33 +175,35 @@ export function IncomeExpenseModule({
             <Plus size={18} />
             เพิ่มรายจ่าย
           </button>
-          <button
-            type="button"
-            onClick={openBranchTransfer}
-            className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-river px-4 font-semibold text-white"
-          >
-            <ArrowRightLeft size={18} />
-            โยกเงินไปสาขาอื่น
-          </button>
-          {profile.role === "super_admin" && (
-            <>
-              <button
-                type="button"
-                onClick={() => setApprovalModalOpen(true)}
-                className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 font-semibold text-white"
-              >
-                <Settings size={18} />
-                ตั้งค่าอนุมัติ
-              </button>
-              <button
-                type="button"
-                onClick={() => setSaleItemsModalOpen(true)}
-                className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-blue-600 px-4 font-semibold text-white"
-              >
-                <Plus size={18} />
-                เพิ่มรายการบิลขาย
-              </button>
-            </>
+          {canCreateMoneyTransfer && (
+            <button
+              type="button"
+              onClick={openBranchTransfer}
+              disabled={!isOnline}
+              title={isOnline ? "โยกเงินไปสาขาอื่น" : "โยกเงินต้องออนไลน์ก่อน"}
+              className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-river px-4 font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              <ArrowRightLeft size={18} />
+              {isOnline ? "โยกเงินไปสาขาอื่น" : "โยกเงินใช้ได้เมื่อออนไลน์"}
+            </button>
+          )}
+          {canManageSystem && (
+            <button
+              type="button"
+              onClick={() => {
+                if (!isOnline) {
+                  toast.error("ตั้งค่าอนุมัติใช้ได้เมื่อออนไลน์เท่านั้น");
+                  return;
+                }
+                setApprovalModalOpen(true);
+              }}
+              disabled={!isOnline}
+              title={isOnline ? "ตั้งค่าอนุมัติ" : "ตั้งค่าอนุมัติใช้ได้เมื่อออนไลน์เท่านั้น"}
+              className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              <Settings size={18} />
+              {isOnline ? "ตั้งค่าอนุมัติ" : "ตั้งค่าอนุมัติออนไลน์เท่านั้น"}
+            </button>
           )}
         </div>
       </div>
@@ -180,24 +226,33 @@ export function IncomeExpenseModule({
               </tr>
             </thead>
             <tbody>
-              {transactions.map((transaction) => {
+              {visibleTransactions.map((transaction) => {
                 const actionBlockReason = getActionBlockReason(transaction);
                 const actionsDisabled = Boolean(actionBlockReason);
                 const sourceLocationId = transaction.relationSourceLocationId ?? transaction.locationId;
-                const canAccessSourceLocation =
-                  profile.role === "super_admin" || profile.locationIds.includes(sourceLocationId);
                 const canOpenMoneyTransferSource = Boolean(
                   transaction.relationSourceType === "money_transfer" &&
                   transaction.relationSourceId &&
                   onOpenMoneyTransferSource &&
-                  canAccessSourceLocation
+                  canAccessSourceLocation(profile, sourceLocationId)
                 );
                 const canOpenRubberBillSource = Boolean(
                   transaction.relationSourceType === "rubber_bill_daily" &&
                   onOpenRubberBillSource &&
-                  canAccessSourceLocation
+                  canAccessSourceLocation(profile, sourceLocationId)
                 );
-                const canOpenSource = canOpenMoneyTransferSource || canOpenRubberBillSource;
+                const canOpenOcrTicketSource = Boolean(
+                  transaction.relationSourceType === "ocr_ticket_daily" &&
+                  onOpenOcrTicketSource &&
+                  canAccessSourceLocation(profile, sourceLocationId)
+                );
+                const canOpenTimeTrackingSource = Boolean(
+                  (transaction.relationSourceType === "time_tracking_withdrawal" || transaction.relationSourceType === "payroll_slip") &&
+                  transaction.relationSourceId &&
+                  onOpenTimeTrackingSource &&
+                  (profile.role === "admin" || profile.role === "super_admin")
+                );
+                const canOpenSource = canOpenMoneyTransferSource || canOpenRubberBillSource || canOpenOcrTicketSource || canOpenTimeTrackingSource;
 
                 function openRelationSource() {
                   if (canOpenMoneyTransferSource) {
@@ -206,6 +261,17 @@ export function IncomeExpenseModule({
                   }
                   if (canOpenRubberBillSource) {
                     onOpenRubberBillSource?.(sourceLocationId, transaction.relationSourceDate);
+                    return;
+                  }
+                  if (canOpenOcrTicketSource) {
+                    onOpenOcrTicketSource?.(sourceLocationId, transaction.relationSourceDate);
+                    return;
+                  }
+                  if (canOpenTimeTrackingSource) {
+                    onOpenTimeTrackingSource?.(
+                      transaction.relationSourceId!,
+                      transaction.relationSourceType as "time_tracking_withdrawal" | "payroll_slip",
+                    );
                   }
                 }
 
@@ -250,6 +316,16 @@ export function IncomeExpenseModule({
                       <IconButton label={actionBlockReason ?? "ลบ"} onClick={() => void confirmDelete(transaction)} tone="clay" disabled={actionsDisabled}>
                         <Trash2 size={16} />
                       </IconButton>
+                      {transaction.syncStatus === "failed" && (
+                        <button
+                          type="button"
+                          onClick={() => void retryFailedSync(transaction)}
+                          disabled={!isOnline || isRetrying}
+                          className="rounded-md bg-blue-600 px-2 py-1 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                        >
+                          ลองซิงก์อีกครั้ง
+                        </button>
+                      )}
                       {canOpenSource && (
                         <button
                           type="button"
@@ -266,10 +342,10 @@ export function IncomeExpenseModule({
                 </tr>
                 );
               })}
-              {transactions.length === 0 && (
+              {visibleTransactions.length === 0 && (
                 <tr>
                   <td colSpan={10} className="py-8 text-center text-ink/50">
-                    ยังไม่มีรายการรับ-จ่ายในสาขานี้
+                    {search ? "ไม่พบรายการที่ค้นหา" : "ยังไม่มีรายการรับ-จ่ายในสาขานี้"}
                   </td>
                 </tr>
               )}
@@ -277,6 +353,19 @@ export function IncomeExpenseModule({
           </table>
         </div>
       </section>
+
+      {hasMore && (
+        <div className="flex justify-center">
+          <button
+            type="button"
+            onClick={() => void loadMore()}
+            disabled={isLoadingMore}
+            className="focus-ring rounded-md border border-black/15 bg-white px-4 py-2 text-sm font-semibold text-ink disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isLoadingMore ? "กำลังโหลด..." : "โหลดรายการเพิ่ม"}
+          </button>
+        </div>
+      )}
 
       {modalOpen && (
         <IncomeExpenseModal
@@ -325,10 +414,6 @@ export function IncomeExpenseModule({
           onAddCustomer={addCustomer.mutate}
           onUpdateCustomer={updateCustomer.mutate}
         />
-      )}
-
-      {saleItemsModalOpen && (
-        <IncomeSaleItemsModal onClose={() => setSaleItemsModalOpen(false)} />
       )}
 
       {branchTransferModalOpen && (

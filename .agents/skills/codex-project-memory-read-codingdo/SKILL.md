@@ -11,9 +11,10 @@ Load only the task-relevant project memory from the `codingDO` Obsidian vault be
 
 Use these skills together when reading vault context:
 
-1. Invoke `$obsidian-cli` for vault discovery, search, reads, backlinks, properties, tasks, and read-only verification through the running Obsidian application.
+1. Invoke `$obsidian-cli` for vault discovery, short searches, backlinks, properties, tasks, and app-level graph checks through the running Obsidian application.
 2. Invoke `$obsidian-markdown` when interpreting Obsidian Markdown syntax, frontmatter, wikilinks, embeds, callouts, tags, comments, or properties.
-3. Use `$codex-project-memory-read-codingdo` for memory-selection rules, evidence boundaries, and read-only session flow.
+3. Use `scripts/vault_read.py` for exact note bodies and SHA-256 metadata without modifying any vault file.
+4. Use `$codex-project-memory-read-codingdo` for memory-selection rules, evidence boundaries, and read-only session flow.
 
 If the user asks to save, update, bootstrap, capture, create, remove, or edit memory, stop and use `$codex-project-memory-write-codingdo` instead.
 
@@ -24,6 +25,41 @@ If the user asks to save, update, bootstrap, capture, create, remove, or edit me
 - Verify that the resolved directory exists. If it does not exist, ask for the correct path.
 - Pass the full path to bundled scripts through `--vault`.
 - For Obsidian CLI commands, target `vault="codingDO"` and keep note paths relative to the Vault root.
+
+## Hybrid read transport
+
+Use Obsidian CLI for discovery and graph information; use `vault_read.py` for complete Markdown bodies. Do not use `obsidian read` in this skill: a blank CLI response is ambiguous and is not evidence that a note is empty.
+
+When Obsidian is open, check the app view once and run compact queries:
+
+```powershell
+$obsidian = if (Get-Command obsidian -ErrorAction SilentlyContinue) {
+  'obsidian'
+} else {
+  'C:\Users\Do\AppData\Local\Programs\Obsidian\Obsidian.com'
+}
+& $obsidian vault="codingDO" vault info=name
+& $obsidian vault="codingDO" search query="<project or component>" limit=20
+& $obsidian vault="codingDO" backlinks path="<vault-relative-path>"
+```
+
+### Recover from sandbox denial
+
+Codex's sandbox may omit the executable from `PATH` or deny execution from `AppData`. Treat `Access is denied` as a sandbox policy failure, not proof that Obsidian CLI is missing or that Windows file permissions need repair.
+
+1. Resolve the exact executable as `C:\Users\Do\AppData\Local\Programs\Obsidian\Obsidian.com`, verify it exists, and verify that the Obsidian process is running.
+2. Attempt the compact read-only CLI query once inside the sandbox.
+3. If it fails with `Access is denied`, immediately rerun the same query outside the sandbox with `sandbox_permissions: "require_escalated"`. Use a read-only justification and request a reusable approval prefix scoped to exactly `C:\Users\Do\AppData\Local\Programs\Obsidian\Obsidian.com`; never request a broad PowerShell, `cmd.exe`, or Python prefix.
+4. Do not repeat the unchanged sandbox command, edit NTFS permissions, run Obsidian as Administrator, move the executable, or disable the sandbox.
+
+If Obsidian is closed or scoped external execution remains unavailable, fall back to `rg` for discovery and continue with `vault_read.py`; do not report that the vault or its note body is empty from a blank CLI result.
+
+Use `<skill-directory>/scripts/vault_read.py` for the authoritative note body. It only supports `stat` and `read`, rejects paths outside the vault and non-Markdown targets, and never contains a write operation:
+
+```powershell
+python <skill-directory>/scripts/vault_read.py stat --vault "<vault>" --path "<vault-relative-path>"
+python <skill-directory>/scripts/vault_read.py read --vault "<vault>" --path "<vault-relative-path>"
+```
 
 For the default vault, expect this layout:
 
@@ -50,7 +86,7 @@ Read `references/codingdo-vault-map.md` before selecting a project hub or interp
 
 1. Locate the repository root and nearest applicable `AGENTS.md` files.
 2. Run `<skill-directory>/scripts/scan_project.py --repo <repo> --vault <vault> [--project <slug>]` for a compact inventory; do not rely on the current working directory.
-3. Read the vault map, then use `obsidian search`, `obsidian read`, and `obsidian backlinks` to resolve an existing hub by its `project` property, title, aliases, and configured path. Read only what the task needs.
+3. Read the vault map, then use `obsidian search` and `obsidian backlinks` to resolve an existing hub by its `project` property, title, aliases, and configured path. Use `vault_read.py stat` and `vault_read.py read` for the selected note bodies. Read only what the task needs.
 4. Prefer this order:
    - applicable `AGENTS.md` instructions;
    - `package.json`, framework config, and environment examples without reading secret values;
@@ -84,16 +120,22 @@ Review missing required metadata, metadata-quality warnings, broken or ambiguous
 
 Read `references/nextjs-database-checklist.md` when the task touches routes, server actions, authentication, data models, migrations, or deployment behavior.
 
-## Safe Obsidian commands
+## Safe read commands
 
-Prefer read-only CLI commands when Obsidian is open:
+Use CLI for compact app-level queries when Obsidian is open, and use `vault_read.py` for exact Markdown:
 
 ```powershell
-obsidian vault="codingDO" search query="<project or component>" limit=20
-obsidian vault="codingDO" read path="<vault-relative-path>"
-obsidian vault="codingDO" backlinks path="<vault-relative-path>"
-obsidian vault="codingDO" properties path="<vault-relative-path>"
-obsidian vault="codingDO" tasks path="<vault-relative-path>"
+$obsidian = if (Get-Command obsidian -ErrorAction SilentlyContinue) {
+  'obsidian'
+} else {
+  'C:\Users\Do\AppData\Local\Programs\Obsidian\Obsidian.com'
+}
+& $obsidian vault="codingDO" search query="<project or component>" limit=20
+& $obsidian vault="codingDO" backlinks path="<vault-relative-path>"
+& $obsidian vault="codingDO" properties path="<vault-relative-path>"
+& $obsidian vault="codingDO" tasks path="<vault-relative-path>"
+python <skill-directory>/scripts/vault_read.py stat --vault "<vault>" --path "<vault-relative-path>"
+python <skill-directory>/scripts/vault_read.py read --vault "<vault>" --path "<vault-relative-path>"
 ```
 
 Do not use `create`, `append`, `prepend`, `delete`, `move`, `rename`, `property:set`, `property:remove`, `daily:append`, or other write commands from this skill.

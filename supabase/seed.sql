@@ -47,11 +47,98 @@ SET row_security = off;
 -- Data for Name: users; Type: TABLE DATA; Schema: auth; Owner: supabase_auth_admin
 --
 
+INSERT INTO "auth"."users" (
+	"instance_id", "id", "aud", "role", "email", "encrypted_password",
+	"email_confirmed_at", "invited_at", "confirmation_token", "confirmation_sent_at",
+	"recovery_token", "recovery_sent_at", "email_change_token_new", "email_change",
+	"email_change_sent_at", "last_sign_in_at", "raw_app_meta_data", "raw_user_meta_data",
+	"is_super_admin", "created_at", "updated_at", "phone", "phone_confirmed_at",
+	"phone_change", "phone_change_token", "phone_change_sent_at", "email_change_token_current",
+	"email_change_confirm_status", "banned_until", "reauthentication_token",
+	"reauthentication_sent_at", "is_sso_user", "deleted_at", "is_anonymous"
+) VALUES (
+	'00000000-0000-0000-0000-000000000000',
+	'00000000-0000-4000-8000-000000000001',
+	'authenticated',
+	'authenticated',
+	NULL,
+	extensions.crypt('password123', extensions.gen_salt('bf')),
+	NULL,
+	NULL,
+	'',
+	NULL,
+	'',
+	NULL,
+	'',
+	'',
+	NULL,
+	NULL,
+	jsonb_build_object('provider', 'phone', 'providers', jsonb_build_array('phone'), 'lanflow_role', 'super_admin'),
+	jsonb_build_object('name', 'Super Admin'),
+	NULL,
+	'2026-06-30 08:26:28.881991+00',
+	now(),
+	'66800000000',
+	now(),
+	'',
+	'',
+	NULL,
+	'',
+	0,
+	NULL,
+	'',
+	NULL,
+	false,
+	NULL,
+	false
+) ON CONFLICT ("id") DO UPDATE
+SET "encrypted_password" = EXCLUDED."encrypted_password",
+	"confirmation_token" = '',
+	"recovery_token" = '',
+	"email_change_token_new" = '',
+	"email_change" = '',
+	"phone" = EXCLUDED."phone",
+	"phone_confirmed_at" = COALESCE("auth"."users"."phone_confirmed_at", now()),
+	"phone_change" = '',
+	"phone_change_token" = '',
+	"email_change_token_current" = '',
+	"email_change_confirm_status" = 0,
+	"reauthentication_token" = '',
+	"raw_app_meta_data" = EXCLUDED."raw_app_meta_data",
+	"raw_user_meta_data" = EXCLUDED."raw_user_meta_data",
+	"is_sso_user" = false,
+	"is_anonymous" = false,
+	"deleted_at" = NULL,
+	"banned_until" = NULL,
+	"updated_at" = now();
+
 
 
 --
 -- Data for Name: identities; Type: TABLE DATA; Schema: auth; Owner: supabase_auth_admin
 --
+
+INSERT INTO "auth"."identities" (
+	"provider_id", "user_id", "identity_data", "provider",
+	"last_sign_in_at", "created_at", "updated_at", "id"
+) VALUES (
+	'00000000-0000-4000-8000-000000000001',
+	'00000000-0000-4000-8000-000000000001',
+	jsonb_build_object(
+		'sub', '00000000-0000-4000-8000-000000000001',
+		'phone', '66800000000',
+		'email_verified', false,
+		'phone_verified', true
+	),
+	'phone',
+	NULL,
+	'2026-06-30 08:26:28.886726+00',
+	now(),
+	'94ab2f80-e1e5-4a29-ac81-650282c67123'
+) ON CONFLICT ("provider_id", "provider") DO UPDATE
+SET "user_id" = EXCLUDED."user_id",
+	"identity_data" = EXCLUDED."identity_data",
+	"updated_at" = now();
 
 
 
@@ -2424,6 +2511,39 @@ SELECT pg_catalog.setval('"auth"."refresh_tokens_id_seq"', 1, false);
 --
 
 SELECT pg_catalog.setval('"supabase_functions"."hooks_id_seq"', 1, false);
+
+
+--
+-- Stock seed data
+--
+
+INSERT INTO "public"."stock_products" ("name", "unit", "is_active") VALUES
+	('น้ำกรดตราเสือไฟท์', 'แพ็ค', true),
+	('น้ำกรดตรามังกรไฟท์', 'แพ็ค', true)
+ON CONFLICT ("name") DO UPDATE
+SET "unit" = EXCLUDED."unit",
+	"is_active" = true,
+	"updated_at" = now();
+
+INSERT INTO "public"."income_sale_items" ("name", "stock_product_id")
+SELECT p."name", p."id"
+FROM "public"."stock_products" p
+WHERE p."name" IN ('น้ำกรดตราเสือไฟท์', 'น้ำกรดตรามังกรไฟท์')
+	AND NOT EXISTS (
+		SELECT 1
+		FROM "public"."income_sale_items" i
+		WHERE i."is_active" = true
+			AND lower(trim(i."name")) = lower(trim(p."name"))
+	);
+
+UPDATE "public"."income_sale_items" i
+SET "stock_product_id" = p."id",
+	"updated_at" = now()
+FROM "public"."stock_products" p
+WHERE p."name" IN ('น้ำกรดตราเสือไฟท์', 'น้ำกรดตรามังกรไฟท์')
+	AND i."is_active" = true
+	AND lower(trim(i."name")) = lower(trim(p."name"))
+	AND i."stock_product_id" IS DISTINCT FROM p."id";
 
 
 --

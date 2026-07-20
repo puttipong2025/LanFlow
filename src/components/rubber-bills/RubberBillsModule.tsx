@@ -6,14 +6,21 @@ import { useRubberBills } from "@/hooks/useRubberBills";
 import { useCustomers } from "@/hooks/useCustomers";
 import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
+import { usePerRecordSyncRetry } from "@/hooks/usePerRecordSyncRetry";
 import {
   getOfflineSyncedActionBlockReason,
   RUBBER_BILL_TRANSFER_LOCK_MESSAGE
 } from "@/lib/record-action-locks";
-
 import type { Location, Profile, RubberBill } from "@/types";
 import { RubberBillsTable } from "./RubberBillsTable";
 import { RubberBillModal } from "./RubberBillModal";
+import {
+  buildRubberBillReceiptModel,
+  getRubberBillPrintBlockReason,
+  renderRubberBillReceiptHtml,
+  resolveReceiptCustomer
+} from "./bill-display";
+import { printReceiptHtml } from "@/lib/rubber-bills/print-receipt";
 
 export function RubberBillsModule({
   selectedLocation,
@@ -26,10 +33,11 @@ export function RubberBillsModule({
   initialSearch?: string | null;
   onInitialSearchHandled?: () => void;
 }) {
-  const { bills, addBill, updateBill, deleteBill } = useRubberBills(selectedLocation.id);
+  const { bills, addBill, updateBill, deleteBill, markPrinted, isMarkingPrinted } = useRubberBills(selectedLocation.id, profile.id);
   const { customers, addCustomer, updateCustomer } = useCustomers();
   const { transfers } = useMoneyTransfers(selectedLocation.id);
   const isOnline = useOnlineStatus();
+  const { retrySyncEvent, isRetrying } = usePerRecordSyncRetry(selectedLocation.id, profile.id);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingBill, setEditingBill] = useState<RubberBill | null>(null);
   const [pageSize, setPageSize] = useState(10);
@@ -72,6 +80,32 @@ export function RubberBillsModule({
       ?? (lockedRubberBillIds.has(bill.id) ? RUBBER_BILL_TRANSFER_LOCK_MESSAGE : null);
   }
 
+  function getPrintBlockReason(bill: RubberBill) {
+    return getRubberBillPrintBlockReason(bill, isOnline, isMarkingPrinted);
+  }
+
+  async function handlePrint(bill: RubberBill) {
+    const blockReason = getPrintBlockReason(bill);
+    if (blockReason) {
+      toast.error(blockReason);
+      return;
+    }
+
+    try {
+      const customer = resolveReceiptCustomer(bill, customers);
+      const html = renderRubberBillReceiptHtml(buildRubberBillReceiptModel(bill, customer));
+      await printReceiptHtml(html);
+      if (!window.confirm("เครื่องพิมพ์ออกกระดาษเรียบร้อยแล้วใช่หรือไม่?")) {
+        toast.info("ยังไม่ได้เปลี่ยนสถานะการพิมพ์");
+        return;
+      }
+      await markPrinted(bill.id);
+      toast.success("บันทึกสถานะปริ้นแล้ว");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "พิมพ์บิลไม่สำเร็จ");
+    }
+  }
+
   function openAdd() {
     setEditingBill(null);
     setModalOpen(true);
@@ -96,6 +130,15 @@ export function RubberBillsModule({
     if (confirm("ต้องการลบบิลนี้ใช่หรือไม่?")) {
       deleteBill({ id: bill.id, clientTempId: bill.clientTempId, deletedByName: profile.name, deletedByPhone: profile.phone, revisionNo: bill.revisionNo })
         .catch((err) => alert(err.message));
+    }
+  }
+
+  async function retryFailedSync(bill: RubberBill) {
+    try {
+      await retrySyncEvent({ entity: "rubber_bills", id: bill.clientTempId });
+      toast.success("ซิงก์รายการสำเร็จ");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "ซิงก์รายการไม่สำเร็จ");
     }
   }
 
@@ -161,7 +204,11 @@ export function RubberBillsModule({
           onPageChange={setPage}
           onEdit={openEdit}
           onDelete={confirmDelete}
+          onPrint={handlePrint}
           getActionBlockReason={getActionBlockReason}
+          getPrintBlockReason={getPrintBlockReason}
+          onRetry={retryFailedSync}
+          retryDisabled={!isOnline || isRetrying}
         />
       </section>
 

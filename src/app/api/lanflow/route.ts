@@ -11,7 +11,7 @@ export async function GET(request: NextRequest) {
     const userId = result.auth.sub;
     const [locationsResult, profileResult, assignmentsResult] = await Promise.all([
       result.supabase.from("locations").select("*").order("created_at", { ascending: true }),
-      result.supabase.from("profiles").select("id, phone, name, role, is_active").eq("id", userId).single(),
+      result.supabase.from("profiles").select("id, phone, name, role, is_active, can_access_super_admin_features, can_access_money_transfer").eq("id", userId).single(),
       result.supabase.from("user_locations").select("location_id").eq("user_id", userId),
     ]);
 
@@ -24,7 +24,7 @@ export async function GET(request: NextRequest) {
       code: row.code,
       name: row.name,
       address: row.address,
-      isActive: row.is_active
+      active: row.is_active
     }));
 
     const locationIds = (assignmentsResult.data ?? []).map((item: any) => item.location_id);
@@ -34,7 +34,14 @@ export async function GET(request: NextRequest) {
       phone: profileResult.data.phone,
       role: profileResult.data.role,
       isActive: profileResult.data.is_active,
-      locationIds
+      locationIds,
+      canAccessSystemManager:
+        profileResult.data.role === "super_admin" ||
+        profileResult.data.can_access_super_admin_features === true,
+      canAccessMoneyTransfer:
+        profileResult.data.role === "super_admin" ||
+        profileResult.data.can_access_super_admin_features === true ||
+        profileResult.data.can_access_money_transfer === true
     };
 
     return NextResponse.json({ locations, profile });

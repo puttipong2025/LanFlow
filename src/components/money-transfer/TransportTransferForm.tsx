@@ -12,11 +12,13 @@ import { formatCurrency } from "@/lib/format";
 
 export function TransportTransferForm({
   locationId,
+  online,
   editTransfer,
   onSave,
   onCancel,
 }: {
   locationId: string;
+  online: boolean;
   editTransfer?: MoneyTransfer | null;
   onSave: (transfer: MoneyTransfer) => void;
   onCancel: () => void;
@@ -95,6 +97,16 @@ export function TransportTransferForm({
 
   const handleSlipUpload = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (!online) {
+        void Swal.fire({
+          icon: "warning",
+          title: "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น",
+          confirmButtonColor: "#3b82f6",
+          confirmButtonText: "ตกลง"
+        });
+        e.target.value = "";
+        return;
+      }
       const files = e.target.files;
       if (!files || files.length === 0) return;
       setSlipUploading(true);
@@ -126,10 +138,19 @@ export function TransportTransferForm({
       }
       setSlipUploading(false);
     },
-    [slips.length]
+    [slips.length, online]
   );
 
   const addEmptySlip = useCallback(() => {
+    if (!online) {
+      void Swal.fire({
+        icon: "warning",
+        title: "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น",
+        confirmButtonColor: "#3b82f6",
+        confirmButtonText: "ตกลง"
+      });
+      return;
+    }
     const newSlip: MoneyTransferSlip = {
       id: crypto.randomUUID(),
       amount: 0,
@@ -142,7 +163,7 @@ export function TransportTransferForm({
       sortOrder: slips.length,
     };
     setSlips((prev) => [...prev, newSlip]);
-  }, [slips.length]);
+  }, [slips.length, online]);
 
   const updateSlip = useCallback((id: string, field: keyof MoneyTransferSlip, value: any) => {
     setSlips((prev) => prev.map((s) => (s.id === id ? { ...s, [field]: value } : s)));
@@ -180,6 +201,15 @@ export function TransportTransferForm({
   const slipAmountMatch = Math.abs(totalCost - totalFromSlips) < 0.01;
 
   const handleSubmit = useCallback(() => {
+    if (!online) {
+      void Swal.fire({
+        icon: "warning",
+        title: "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น",
+        confirmButtonColor: "#3b82f6",
+        confirmButtonText: "ตกลง"
+      });
+      return;
+    }
     if (!matchingStaff && !transportSearch) return;
 
     if (slips.some(s => !s.transactionDate)) {
@@ -234,6 +264,7 @@ export function TransportTransferForm({
     onSave,
     computedStatus,
     totalFromSlips,
+    online,
   ]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -372,8 +403,9 @@ export function TransportTransferForm({
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                disabled={slipUploading}
-                className="focus-ring flex items-center gap-1.5 rounded-md border border-river text-river px-3 py-1.5 text-xs font-semibold hover:bg-river/5 disabled:opacity-50"
+                disabled={slipUploading || !online}
+                title={online ? undefined : "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น"}
+                className="focus-ring flex items-center gap-1.5 rounded-md border border-river text-river px-3 py-1.5 text-xs font-semibold hover:bg-river/5 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {slipUploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
                 อ่านสลิป
@@ -381,12 +413,14 @@ export function TransportTransferForm({
               <button
                 type="button"
                 onClick={addEmptySlip}
-                className="focus-ring flex items-center gap-1.5 rounded-md bg-black/5 px-3 py-1.5 text-xs font-semibold text-ink hover:bg-black/10"
+                disabled={!online}
+                title={online ? undefined : "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น"}
+                className="focus-ring flex items-center gap-1.5 rounded-md bg-black/5 px-3 py-1.5 text-xs font-semibold text-ink hover:bg-black/10 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Plus size={14} /> เพิ่มเอง
               </button>
             </div>
-            <input type="file" accept="image/*" multiple className="hidden" ref={fileInputRef} onChange={handleSlipUpload} />
+            <input type="file" accept="image/*" multiple className="hidden" ref={fileInputRef} onChange={handleSlipUpload} disabled={!online} />
           </div>
           {slips.length > 0 ? (
             <div className="space-y-2">
@@ -407,6 +441,8 @@ export function TransportTransferForm({
         <button
           type="button"
           onClick={handleSubmit}
+          disabled={!online}
+          title={online ? undefined : "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น"}
           className="focus-ring flex items-center gap-1.5 rounded-md bg-river px-5 py-2 text-sm font-semibold text-white hover:bg-river/90 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <Save size={15} /> บันทึก

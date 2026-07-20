@@ -2,9 +2,10 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { MoneyTransfer, MoneyTransferSlip, MoneyTransferItem } from "@/types";
 
-export function useMoneyTransfers(locationId: string) {
+export function useMoneyTransfers(locationId: string, options: { enabled?: boolean } = {}) {
   const supabase = createSupabaseBrowserClient();
   const queryClient = useQueryClient();
+  const enabled = options.enabled ?? true;
 
   const query = useQuery({
     queryKey: ["moneyTransfers", locationId],
@@ -69,7 +70,7 @@ export function useMoneyTransfers(locationId: string) {
         }))
       }));
     },
-    enabled: !!locationId,
+    enabled: !!locationId && enabled,
   });
 
   const addTransfer = useMutation({
@@ -137,7 +138,7 @@ export function useMoneyTransfers(locationId: string) {
       return data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["moneyTransfers", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["moneyTransfers"] });
       queryClient.invalidateQueries({ queryKey: ["incomeExpense"] });
     }
   });
@@ -145,6 +146,7 @@ export function useMoneyTransfers(locationId: string) {
   const updateTransfer = useMutation({
     mutationFn: async (transfer: MoneyTransfer) => {
       const { data, error } = await supabase.from("money_transfers").update({
+        location_id: transfer.locationId,
         customer_id: transfer.customerId,
         customer_name: transfer.customerName,
         account_number: transfer.accountNumber,
@@ -202,7 +204,7 @@ export function useMoneyTransfers(locationId: string) {
       return data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["moneyTransfers", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["moneyTransfers"] });
       queryClient.invalidateQueries({ queryKey: ["incomeExpense"] });
     }
   });
@@ -216,7 +218,7 @@ export function useMoneyTransfers(locationId: string) {
       await supabase.from("money_transfer_items").delete().eq("transfer_id", id);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["moneyTransfers", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["moneyTransfers"] });
       queryClient.invalidateQueries({ queryKey: ["incomeExpense"] });
     }
   });

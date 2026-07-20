@@ -1,6 +1,7 @@
 "use client";
 
 import { ShieldCheck, LogOut } from "lucide-react";
+import { toast } from "sonner";
 import { useEffect, useMemo, useState } from "react";
 import { useAuthContext } from "@/components/AuthProvider";
 
@@ -25,12 +26,16 @@ import { type Tab } from "@/components/lanflow/tabs";
 import { Dashboard } from "@/components/dashboard/Dashboard";
 import { RubberBillsModule } from "@/components/rubber-bills/RubberBillsModule";
 import { IncomeExpenseModule } from "@/components/income-expense/IncomeExpenseModule";
+import { AcidStockModule } from "@/components/acid-stock/AcidStockModule";
 import { AppHeader } from "@/components/lanflow/AppHeader";
 import { NavigationTabs } from "@/components/lanflow/NavigationTabs";
+import { canAccessSourceLocation, canUseMoneyTransfer } from "@/lib/permissions";
+import { getOfflineTabBlockMessage, isTabBlockedOffline } from "@/lib/offline-module-policy";
 
 export function LanFlowApp() {
   const auth = useAuthContext();
   const authProfileId = auth.profile?.id;
+  const queueOwnerUserId = authProfileId ?? "";
   
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
   const [locations, setLocations] = useState<Location[]>([]);
@@ -45,6 +50,10 @@ export function LanFlowApp() {
   const [pendingRubberBillSource, setPendingRubberBillSource] = useState<{
     locationId: string;
     billDate?: string;
+  } | null>(null);
+  const [pendingOcrTicketSource, setPendingOcrTicketSource] = useState<{
+    locationId: string;
+    ticketDate?: string;
   } | null>(null);
   const [ocrUploadItems, setOcrUploadItems] = useState<UploadItem[]>([]);
   const [online, setOnline] = useState(true);
@@ -116,6 +125,21 @@ export function LanFlowApp() {
     };
   }, []);
 
+  const canAccessMoneyTransfer = canUseMoneyTransfer(profile);
+
+  useEffect(() => {
+    if (activeTab === "money-transfer" && !canAccessMoneyTransfer) {
+      setActiveTab("dashboard");
+    }
+  }, [activeTab, canAccessMoneyTransfer]);
+
+  useEffect(() => {
+    if (!isTabBlockedOffline(activeTab, online)) return;
+    const message = getOfflineTabBlockMessage(activeTab);
+    if (message) toast.error(message);
+    setActiveTab("dashboard");
+  }, [activeTab, online]);
+
   // Persist selected location on change
   useEffect(() => {
     if (authProfileId && isLoaded && locations.length > 0) {
@@ -127,9 +151,9 @@ export function LanFlowApp() {
     }
   }, [selectedLocationId, locations, profile, authProfileId, isLoaded]);
 
-  const { bills: allBills } = useRubberBills(selectedLocationId);
-  const { transactions: allTransactions } = useIncomeExpense(selectedLocationId);
-  const { transfers: allTransfers } = useMoneyTransfers(selectedLocationId);
+  const { bills: allBills } = useRubberBills(selectedLocationId, queueOwnerUserId);
+  const { transactions: allTransactions } = useIncomeExpense(selectedLocationId, queueOwnerUserId);
+  const { transfers: allTransfers } = useMoneyTransfers(selectedLocationId, { enabled: canAccessMoneyTransfer });
   const { pendingCount: timeTrackingPendingCount } = useTimeTrackingPending(profile);
 
   const selectedLocation = locations.find((location) => location.id === selectedLocationId) ?? locations[0];
@@ -221,10 +245,15 @@ export function LanFlowApp() {
   }
 
   function canOpenSourceLocation(locationId: string) {
-    return profile.role === "super_admin" || profile.locationIds.includes(locationId);
+    return canAccessSourceLocation(profile, locationId);
   }
 
   function openMoneyTransferSource(transferId: string, locationId: string) {
+    if (!online) {
+      toast.error("โมดูลโอนเงินใช้ได้เมื่อออนไลน์เท่านั้น");
+      return;
+    }
+    if (!canAccessMoneyTransfer) return;
     if (!canOpenSourceLocation(locationId)) return;
     setSelectedLocationId(locationId);
     setPendingMoneyTransferSource({ transferId, locationId });
@@ -236,6 +265,17 @@ export function LanFlowApp() {
     setSelectedLocationId(locationId);
     setPendingRubberBillSource({ locationId, billDate });
     setActiveTab("rubber");
+  }
+
+  function openOcrTicketSource(locationId: string, ticketDate?: string) {
+    if (!online) {
+      toast.error("อ่านใบชั่งใช้ได้เมื่อออนไลน์เท่านั้น");
+      return;
+    }
+    if (!canOpenSourceLocation(locationId)) return;
+    setSelectedLocationId(locationId);
+    setPendingOcrTicketSource({ locationId, ticketDate });
+    setActiveTab("ocr");
   }
 
   return (
@@ -256,6 +296,7 @@ export function LanFlowApp() {
           transferPartialCount={transferPartialCount}
           transferAdvanceCount={transferAdvanceCount}
           timeTrackingPendingCount={timeTrackingPendingCount}
+          online={online}
         />
       </section>
 
@@ -282,12 +323,12 @@ export function LanFlowApp() {
           />
         )}
         {activeTab === "customers" && (
-          <CustomersModule />
+          <CustomersModule online={online} />
         )}
         {activeTab === "transport" && (
-          <TransportModule locationId={selectedLocationId} />
+          <TransportModule locationId={selectedLocationId} online={online} />
         )}
-        {activeTab === "money-transfer" && (
+        {activeTab === "money-transfer" && canAccessMoneyTransfer && (
           <MoneyTransferModule
             locationId={selectedLocationId}
             online={online}
@@ -306,18 +347,35 @@ export function LanFlowApp() {
             online={online}
             uploadItems={ocrUploadItems}
             setUploadItems={setOcrUploadItems}
+            initialDateFilter={
+              pendingOcrTicketSource?.locationId === selectedLocationId
+                ? pendingOcrTicketSource.ticketDate ?? null
+                : null
+            }
+            onInitialDateFilterHandled={() => setPendingOcrTicketSource(null)}
           />
         )}
         {activeTab === "cash" && (
           <IncomeExpenseModule
             selectedLocation={selectedLocation}
             profile={profile}
-            onOpenMoneyTransferSource={openMoneyTransferSource}
+            canCreateMoneyTransfer={canAccessMoneyTransfer}
+            onOpenMoneyTransferSource={canAccessMoneyTransfer ? openMoneyTransferSource : undefined}
             onOpenRubberBillSource={openRubberBillSource}
+            onOpenOcrTicketSource={openOcrTicketSource}
+            onOpenTimeTrackingSource={() => setActiveTab("time-tracking")}
+          />
+        )}
+        {activeTab === "acid-stock" && (
+          <AcidStockModule
+            selectedLocation={selectedLocation}
+            profile={profile}
+            locations={locations}
+            online={online}
           />
         )}
         {activeTab === "time-tracking" && (
-          <TimeTrackingModule profile={profile} />
+          <TimeTrackingModule profile={profile} online={online} locations={locations} />
         )}
         {activeTab === "admin" && (
           <AdminModule

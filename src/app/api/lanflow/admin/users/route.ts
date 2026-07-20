@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireRole } from "@/lib/server/auth";
+import { requireRoleOrSystemManager } from "@/lib/server/auth";
 import { createSupabaseAdminClient } from "@/lib/server/supabase-admin";
 import { normalizeThaiPhoneToE164 } from "@/lib/phone";
 import type { AppRole } from "@/types";
 
 export async function GET(request: NextRequest) {
-  const adminCheck = await requireRole(request, ["super_admin", "admin"]);
+  const adminCheck = await requireRoleOrSystemManager(request, ["super_admin", "admin"]);
   if (!adminCheck.ok) return adminCheck.response;
 
   try {
@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
     // Fetch all profiles
     const { data: profiles, error: profilesError } = await supabase
       .from("profiles")
-      .select("id, name, phone, role, is_active")
+      .select("id, name, phone, role, is_active, can_access_super_admin_features, can_access_money_transfer")
       .order("created_at", { ascending: true });
 
     if (profilesError) throw profilesError;
@@ -43,6 +43,11 @@ export async function GET(request: NextRequest) {
       role: p.role,
       isActive: p.is_active,
       locationIds: locationMap.get(p.id) || [],
+      canAccessSystemManager: p.role === "super_admin" || p.can_access_super_admin_features === true,
+      canAccessMoneyTransfer:
+        p.role === "super_admin" ||
+        p.can_access_super_admin_features === true ||
+        p.can_access_money_transfer === true,
     }));
 
     return NextResponse.json({ users: result });
@@ -53,7 +58,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const adminCheck = await requireRole(request, ["super_admin", "admin"]);
+  const adminCheck = await requireRoleOrSystemManager(request, ["super_admin", "admin"]);
   if (!adminCheck.ok) return adminCheck.response;
 
   const admin = createSupabaseAdminClient();
@@ -87,8 +92,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "invalid role" }, { status: 400 });
     }
 
-    const { data: creatorProfile } = await admin.from('profiles').select('role').eq('id', adminCheck.auth.sub).single();
-    if (role === 'admin' && creatorProfile?.role !== 'super_admin') {
+    if (role === 'admin' && adminCheck.auth.role !== 'super_admin') {
       return NextResponse.json({ error: "Only super_admin can create admin accounts" }, { status: 403 });
     }
 
@@ -138,7 +142,9 @@ export async function POST(request: NextRequest) {
           phone: body.phone.trim(),
           name: body.name.trim(),
           role,
-          locationIds
+          locationIds,
+          canAccessSystemManager: false,
+          canAccessMoneyTransfer: false
         }
       },
       { status: 201 }

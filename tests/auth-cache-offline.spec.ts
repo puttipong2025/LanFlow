@@ -1,4 +1,17 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
+
+async function waitForServiceWorkerControl(page: Page) {
+  await page.evaluate(async () => {
+    await navigator.serviceWorker?.ready;
+  });
+  if (!await page.evaluate(() => Boolean(navigator.serviceWorker?.controller))) {
+    await page.reload({ waitUntil: 'domcontentloaded' });
+  }
+  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker?.controller)), {
+    message: 'Service worker did not take control before offline navigation',
+    timeout: 10000,
+  }).toBe(true);
+}
 
 test.describe('Offline Auth Cache Clearance', () => {
   test.skip(process.env.PW_PROJECT !== 'pwa', 'Offline routing relies on PWA service worker');
@@ -17,6 +30,7 @@ test.describe('Offline Auth Cache Clearance', () => {
     await page.click('button:has-text("เข้าสู่ระบบ")');
 
     await expect(page.locator('text=ภาพรวม')).toBeVisible({ timeout: 15000 });
+    await waitForServiceWorkerControl(page);
 
     // Verify localStorage has auth cache
     const hasCache = await page.evaluate(() => {
@@ -57,6 +71,7 @@ test.describe('Offline Auth Cache Clearance', () => {
     await page.fill('input[type="password"]', password);
     await page.click('button:has-text("เข้าสู่ระบบ")');
     await expect(page.locator('text=ภาพรวม')).toBeVisible({ timeout: 15000 });
+    await waitForServiceWorkerControl(page);
 
     // 2. Expire the offline cache by setting validatedAt to 8 days ago
     const cacheExpired = await page.evaluate(() => {

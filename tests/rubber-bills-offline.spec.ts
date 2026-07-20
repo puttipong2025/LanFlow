@@ -1,11 +1,14 @@
 import { test, expect, Page } from '@playwright/test';
+import { assertRubberBillDeleteAllowed } from '../src/hooks/useRubberBills';
+
+const testUserId = process.env.TEST_USER_ID || '00000000-0000-4000-8000-000000000001';
 
 /** Read all events from IndexedDB sync_queue (matching idb-queue.ts store name) */
 async function readQueue(page: Page): Promise<any[]> {
   await page.waitForLoadState('domcontentloaded');
   return page.evaluate(() => {
     return new Promise<any[]>((resolve, reject) => {
-      const req = indexedDB.open('lanflow_sync_db', 2);
+      const req = indexedDB.open('lanflow_sync_db', 3);
       req.onerror = () => reject(req.error);
       req.onupgradeneeded = () => {
         // DB doesn't exist yet → return empty
@@ -67,7 +70,7 @@ async function createBillOnline(page: Page, marker: string) {
   await expect(row.locator('span:has-text("ซิงก์แล้ว")')).toBeVisible({ timeout: 20000 });
 }
 
-test.describe('Rubber Bills Full Offline Sync', () => {
+test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
   const marker = `E2E-${Date.now()}`;
   const phone = process.env.TEST_PHONE || '0800000000';
   const password = process.env.TEST_PASSWORD || 'password123';
@@ -84,7 +87,7 @@ test.describe('Rubber Bills Full Offline Sync', () => {
     });
   });
 
-  test.skip('should support create, edit, delete offline and sync when online', async ({ page, context }) => {
+  test('should support create, edit, delete offline and sync when online', async ({ page, context }) => {
     test.setTimeout(90000);
 
     // 1. Login
@@ -269,227 +272,29 @@ test.describe('Rubber Bills Full Offline Sync', () => {
   // NOTE: Full offline reload (PWA/SW) test lives in rubber-bills-pwa.spec.ts
   // Run with: npx playwright test --project=chromium-pwa
 
-  test.skip('should coalesce offline updates for a synced bill (edit twice)', async ({ page, context }) => {
-    const marker = `SyncEditTwice-${Date.now()}`;
+  test('should block editing and deleting a synced bill while offline', async ({ page, context }) => {
+    const marker = `SyncedOffline-${Date.now()}`;
     await createBillOnline(page, marker);
 
-    // Get the bill from table
     const row = page.locator('table tbody tr', { hasText: marker }).first();
-    const editBtn = row.locator('button[title="แก้ไข"]');
-    await editBtn.click();
-
-    // Get clientTempId from URL or we can just fetch it from DB since it's online
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://127.0.0.1:54321';
-    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-    const dbCheckRes = await page.request.fetch(
-      `${supabaseUrl}/rest/v1/rubber_bills?customer_name=eq.${marker}&select=client_temp_id,revision_no,server_bill_no`,
-      { headers: { 'apikey': serviceRoleKey, 'Authorization': `Bearer ${serviceRoleKey}` } }
-    );
-    const dbRows = await dbCheckRes.json();
-    const clientTempId = dbRows[0].client_temp_id;
-    const initialRev = dbRows[0].revision_no;
-
-    // Go offline
     await context.setOffline(true);
 
-    // Edit 1
-    await page.fill('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]', `${marker}-EDIT1`);
-    await page.click('button:has-text("Submit")');
-    await expect(page.locator('h2:has-text("แก้ไขบิลเครื่องชั่งเล็ก")')).toBeHidden({ timeout: 10000 });
+    const blockMessage = 'รายการนี้ซิงก์แล้ว ต้องออนไลน์เพื่อแก้ไขหรือลบ';
+    const deleteButton = row.locator('button').nth(1);
+    const editButton = row.locator('button').nth(2);
 
-    // Edit 2
-    await editBtn.click();
-    await page.fill('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]', `${marker}-EDIT2`);
-    await page.click('button:has-text("Submit")');
-    await expect(page.locator('h2:has-text("แก้ไขบิลเครื่องชั่งเล็ก")')).toBeHidden({ timeout: 10000 });
-
-    // Verify queue has exactly ONE update event with expectedRevisionNo = initialRev
-    const queue = await readQueue(page);
-    const pendingUpdates = queue.filter(e => e.id === clientTempId && e.operation === 'update');
-    expect(pendingUpdates.length).toBe(1);
-    expect(pendingUpdates[0].payload.expectedRevisionNo).toBe(initialRev);
-    expect(pendingUpdates[0].payload.customerName).toBe(`${marker}-EDIT2`);
-    expect(pendingUpdates[0].payload.idempotencyKey).toBe(`update:${clientTempId}:${initialRev}`);
-
-    // Go online, wait for sync
-    await context.setOffline(false);
-    await expect(row.locator('span:has-text("รอซิงก์")')).toBeHidden({ timeout: 15000 });
-
-    // Verify DB
-    const dbCheckRes2 = await page.request.fetch(
-      `${supabaseUrl}/rest/v1/rubber_bills?client_temp_id=eq.${clientTempId}&select=customer_name,revision_no`,
-      { headers: { 'apikey': serviceRoleKey, 'Authorization': `Bearer ${serviceRoleKey}` } }
-    );
-    const dbRows2 = await dbCheckRes2.json();
-    expect(dbRows2[0].customer_name).toBe(`${marker}-EDIT2`);
-    expect(dbRows2[0].revision_no).toBeGreaterThan(initialRev);
-
-    // Cleanup
-    await page.request.post('/api/lanflow/rubber-bills', { data: { ...pendingUpdates[0].payload, operation: 'delete', expectedRevisionNo: dbRows2[0].revision_no, recordStatus: 'deleted', idempotencyKey: `delete:${clientTempId}:${dbRows2[0].revision_no}` } });
+    await expect(editButton).toBeDisabled();
+    await expect(deleteButton).toBeDisabled();
+    await expect(editButton).toHaveAttribute('title', blockMessage);
+    await expect(deleteButton).toHaveAttribute('title', blockMessage);
+    await expect(readQueue(page)).resolves.toHaveLength(0);
   });
 
-  test.skip('should coalesce offline update then delete to a single delete event with original revision', async ({ page, context }) => {
-    const marker = `SyncEditDel-${Date.now()}`;
-    await createBillOnline(page, marker);
-
-    // Get the bill from table
-    const row = page.locator('table tbody tr', { hasText: marker }).first();
-    const editBtn = row.locator('button[title="แก้ไข"]');
-    const deleteBtn = row.locator('button:has-text("ลบ")');
-
-    // Fetch details
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://127.0.0.1:54321';
-    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-    const dbCheckRes = await page.request.fetch(
-      `${supabaseUrl}/rest/v1/rubber_bills?customer_name=eq.${marker}&select=client_temp_id,revision_no,location_id`,
-      { headers: { 'apikey': serviceRoleKey, 'Authorization': `Bearer ${serviceRoleKey}` } }
+  test('hook delete guard rejects a synced bill offline before queue work', () => {
+    expect(() => assertRubberBillDeleteAllowed(0, false)).toThrow(
+      'รายการนี้ซิงก์แล้ว ต้องออนไลน์เพื่อแก้ไขหรือลบ'
     );
-    const dbRows = await dbCheckRes.json();
-    const clientTempId = dbRows[0].client_temp_id;
-    const initialRev = dbRows[0].revision_no;
-    const locationId = dbRows[0].location_id;
-
-    // Go offline
-    await context.setOffline(true);
-
-    // Edit 1
-    await editBtn.click();
-    await page.fill('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]', `${marker}-EDIT1`);
-    await page.click('button:has-text("Submit")');
-    await expect(page.locator('h2:has-text("แก้ไขบิลเครื่องชั่งเล็ก")')).toBeHidden({ timeout: 10000 });
-
-    // Delete
-    // Dialog confirm is already mocked in createBillOnline
-    await deleteBtn.click();
-    await expect(row).toBeHidden({ timeout: 10000 });
-
-    // Verify queue has exactly ONE delete event with expectedRevisionNo = initialRev
-    const queue = await readQueue(page);
-    const pendingEvents = queue.filter(e => e.id === clientTempId);
-    expect(pendingEvents.length).toBe(1);
-    expect(pendingEvents[0].operation).toBe('delete');
-    expect(pendingEvents[0].payload.expectedRevisionNo).toBe(initialRev);
-    expect(pendingEvents[0].payload.idempotencyKey).toBe(`delete:${clientTempId}:${initialRev}`);
-
-    // Go online
-    await context.setOffline(false);
-    
-    // DB-level check: ensure record is deleted
-    await expect.poll(async () => {
-      const res = await page.request.fetch(
-        `${supabaseUrl}/rest/v1/rubber_bills?client_temp_id=eq.${clientTempId}&select=record_status`,
-        { headers: { 'apikey': serviceRoleKey, 'Authorization': `Bearer ${serviceRoleKey}` } }
-      );
-      const rows = await res.json();
-      return rows[0]?.record_status;
-    }, { timeout: 15000 }).toBe('deleted');
-  });
-  test.skip('should resolve legacy duplicate events from IDB correctly upon online sync', async ({ page, context }) => {
-    // Online login
-    await page.goto('/login');
-    await page.fill('input[type="tel"]', '0800000000');
-    await page.fill('input[type="password"]', 'password123');
-    await page.click('button:has-text("เข้าสู่ระบบ")');
-
-    await expect(page.locator('text=ภาพรวม')).toBeVisible({ timeout: 15000 });
-    await page.click('button:has-text("บิลยาง")');
-
-    // 1. Create a bill online first
-    const marker = `Legacy-${Date.now()}`;
-
-    await page.click('button:has-text("เพิ่มบิลยาง")');
-    await expect(page.locator('h2:has-text("บิลเครื่องชั่งเล็ก")')).toBeVisible();
-
-    await page.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]').fill(marker);
-    await page.keyboard.press('Escape');
-
-    const modal = page.locator('.fixed.inset-0').last();
-    const weighRow = modal.locator('table').first().locator('tbody tr').first();
-    await weighRow.locator('input[type="number"]').nth(0).fill('1000');
-    await weighRow.locator('input[type="number"]').nth(1).fill('200');
-    await weighRow.locator('input[type="number"]').nth(3).fill('25.5');
-
-    await page.click('button:has-text("Submit")');
-    await expect(page.locator('h2:has-text("บิลเครื่องชั่งเล็ก")')).toBeHidden({ timeout: 10000 });
-    
-    // Wait for sync
-    const row = page.locator(`tr:has-text("${marker}")`).first();
-    await expect(row.locator('span:has-text("รอซิงก์")')).toBeHidden({ timeout: 15000 });
-
-    // 2. Fetch revision and client_temp_id
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://127.0.0.1:54321';
-    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
-    const dbCheckRes = await page.request.fetch(
-      `${supabaseUrl}/rest/v1/rubber_bills?customer_name=eq.${marker}&select=client_temp_id,revision_no`,
-      { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
-    );
-    const dbRows = await dbCheckRes.json();
-    const initialRev = dbRows[0].revision_no;
-    const clientTempId = dbRows[0].client_temp_id;
-
-    // 3. Go offline
-    await context.setOffline(true);
-
-    // 4. Edit bill via UI to generate a FULL valid update payload in the queue
-    await row.locator('button[title="แก้ไข"]').click();
-    await page.fill('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]', `${marker}-Legacy1`);
-    await page.click('button:has-text("Submit")');
-    await expect(page.locator('h2:has-text("แก้ไขบิลเครื่องชั่งเล็ก")')).toBeHidden({ timeout: 10000 });
-
-    // 5. Clone the event in IDB to simulate duplicate bug
-    await page.evaluate(async ({ clientTempId, marker }) => {
-      const db = await new Promise<IDBDatabase>((resolve, reject) => {
-        const req = indexedDB.open('lanflow_sync_db', 2);
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error);
-      });
-
-      const tx = db.transaction('sync_queue', 'readwrite');
-      const store = tx.objectStore('sync_queue');
-      
-      const allEvents = await new Promise<any[]>((resolve) => {
-        const req = store.getAll();
-        req.onsuccess = () => resolve(req.result);
-      });
-
-      const originalEvent = allEvents.find(e => e.id === clientTempId && e.operation === 'update');
-      
-      // Create duplicate event with same idempotencyKey and expectedRevisionNo but different name
-      const duplicateEvent = JSON.parse(JSON.stringify(originalEvent));
-      delete duplicateEvent.queueId; // let autoIncrement assign a new one
-      duplicateEvent.payload.customerName = `${marker}-Legacy2`;
-      duplicateEvent.createdAt = new Date().toISOString();
-
-      store.add(duplicateEvent);
-
-      await new Promise((resolve) => {
-        tx.oncomplete = resolve;
-      });
-      db.close();
-    }, { clientTempId, marker });
-
-    // 6. Go online, wait for sync
-    await context.setOffline(false);
-    
-    // We expect the sync to resolve the duplicates and successfully sync Legacy2
-    // We can't rely on UI row text updating instantly since we bypassed the query cache,
-    // so we just wait a bit and check DB directly.
-    await page.waitForTimeout(3000);
-
-    // 6. Verify DB has Legacy2 and revision incremented
-    const dbCheckRes2 = await page.request.fetch(
-      `${supabaseUrl}/rest/v1/rubber_bills?client_temp_id=eq.${clientTempId}&select=customer_name,revision_no`,
-      { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
-    );
-    const finalRows = await dbCheckRes2.json();
-    
-    expect(finalRows[0].customer_name).toBe(`${marker}-Legacy2`);
-    expect(finalRows[0].revision_no).toBeGreaterThan(initialRev);
-    
-    // 7. Verify queue is empty for this bill
-    const queue = await readQueue(page);
-    const remaining = queue.filter(e => e.id === clientTempId);
-    expect(remaining.length).toBe(0);
+    expect(() => assertRubberBillDeleteAllowed(1, false)).not.toThrow();
   });
 
   test('legacy create + delete in IDB should be no-op after normalizer', async ({ page, context }) => {
@@ -519,7 +324,7 @@ test.describe('Rubber Bills Full Offline Sync', () => {
 
     // 4. Seed IDB with create + delete for a fresh clientTempId
     const marker = `LegacyCD-${Date.now()}`;
-    const freshId = await page.evaluate(async ({ locationId, marker }) => {
+    const freshId = await page.evaluate(async ({ locationId, marker, ownerUserId }) => {
       const clientTempId = crypto.randomUUID();
       const now = new Date().toISOString();
 
@@ -558,7 +363,7 @@ test.describe('Rubber Bills Full Offline Sync', () => {
       };
 
       const db = await new Promise<IDBDatabase>((resolve, reject) => {
-        const req = indexedDB.open('lanflow_sync_db', 2);
+        const req = indexedDB.open('lanflow_sync_db', 3);
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
       });
@@ -570,6 +375,8 @@ test.describe('Rubber Bills Full Offline Sync', () => {
       store.add({
         id: clientTempId,
         entity: 'rubber_bills',
+        ownerUserId,
+        locationId,
         operation: 'create',
         payload: basePayload,
         timestamp: Date.now(),
@@ -580,6 +387,8 @@ test.describe('Rubber Bills Full Offline Sync', () => {
       store.add({
         id: clientTempId,
         entity: 'rubber_bills',
+        ownerUserId,
+        locationId,
         operation: 'delete',
         payload: {
           ...basePayload,
@@ -594,7 +403,7 @@ test.describe('Rubber Bills Full Offline Sync', () => {
       await new Promise(resolve => { tx.oncomplete = resolve; });
       db.close();
       return clientTempId;
-    }, { locationId, marker });
+    }, { locationId, marker, ownerUserId: testUserId });
 
     // 5. Go online → normalizer fires → create+delete = no-op
     await context.setOffline(false);
@@ -641,7 +450,7 @@ test.describe('Rubber Bills Full Offline Sync', () => {
 
     const marker = `LegacyCU-${Date.now()}`;
     // 4. Seed IDB with create + update for a fresh clientTempId
-    const freshId = await page.evaluate(async ({ locationId, marker }) => {
+    const freshId = await page.evaluate(async ({ locationId, marker, ownerUserId }) => {
       const clientTempId = crypto.randomUUID();
       const now = new Date().toISOString();
 
@@ -703,7 +512,7 @@ test.describe('Rubber Bills Full Offline Sync', () => {
       };
 
       const db = await new Promise<IDBDatabase>((resolve, reject) => {
-        const req = indexedDB.open('lanflow_sync_db', 2);
+        const req = indexedDB.open('lanflow_sync_db', 3);
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
       });
@@ -715,6 +524,8 @@ test.describe('Rubber Bills Full Offline Sync', () => {
       store.add({
         id: clientTempId,
         entity: 'rubber_bills',
+        ownerUserId,
+        locationId,
         operation: 'create',
         payload: createPayload,
         timestamp: Date.now(),
@@ -725,6 +536,8 @@ test.describe('Rubber Bills Full Offline Sync', () => {
       store.add({
         id: clientTempId,
         entity: 'rubber_bills',
+        ownerUserId,
+        locationId,
         operation: 'update',
         payload: updatePayload,
         timestamp: Date.now() + 1,
@@ -734,7 +547,7 @@ test.describe('Rubber Bills Full Offline Sync', () => {
       await new Promise(resolve => { tx.oncomplete = resolve; });
       db.close();
       return clientTempId;
-    }, { locationId, marker });
+    }, { locationId, marker, ownerUserId: testUserId });
 
     // 5. Go online → normalizer coalesces create+update → single create with latest payload → sync
     await context.setOffline(false);

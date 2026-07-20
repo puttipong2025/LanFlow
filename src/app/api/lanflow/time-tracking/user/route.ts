@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/server/auth";
+import { calculatePaidWorkDays } from "@/lib/time-tracking/pay";
 
 export const dynamic = "force-dynamic";
 
@@ -44,11 +45,7 @@ export async function GET(request: NextRequest) {
       activeDebtsPromise
     ]);
 
-    let totalMs = 0;
-    segmentsRes.data?.forEach((seg: any) => {
-      totalMs += new Date(seg.end_time).getTime() - new Date(seg.start_time).getTime();
-    });
-    const totalDays = totalMs / (1000 * 60 * 60 * 8);
+    const totalDays = calculatePaidWorkDays(segmentsRes.data);
     const grossPay = totalDays * (profileRes.data?.daily_wage || 0);
 
     let usedThisMonth = 0;

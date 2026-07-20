@@ -1,7 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/server/auth";
+import { calculatePaidWorkDays } from "@/lib/time-tracking/pay";
 
 export const dynamic = "force-dynamic";
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isUuid(value: unknown): value is string {
+  return typeof value === "string" && UUID_PATTERN.test(value);
+}
+
+function approvalRpcErrorStatus(message: string) {
+  if (/Authentication required/i.test(message)) return 401;
+  if (/Forbidden|access denied|Cannot approve/i.test(message)) return 403;
+  if (/already been decided/i.test(message)) return 409;
+  return 400;
+}
+
+function approvalRpcErrorMessage(message: string) {
+  if (/Authentication required/i.test(message)) return "กรุณาเข้าสู่ระบบใหม่";
+  if (/Expense location.*access denied|New expense location access denied/i.test(message)) return "คุณไม่มีสิทธิ์ดูแลสาขาค่าใช้จ่ายที่เลือก";
+  if (/Expense location is not valid/i.test(message)) return "รายการนี้ไม่ต้องเลือกสาขาค่าใช้จ่าย";
+  if (/already been decided/i.test(message)) return "รายการนี้ถูกตัดสินแล้ว กรุณารีเฟรชข้อมูล";
+  if (/Cannot approve your own slip/i.test(message)) return "ไม่สามารถอนุมัติสลิปของตนเองได้";
+  if (/Forbidden|Cannot approve/i.test(message)) return "คุณไม่มีสิทธิ์ทำรายการนี้";
+  return "ไม่สามารถทำรายการได้ กรุณาลองใหม่";
+}
 
 export async function GET(request: NextRequest) {
   const result = await requireAuth(request);
@@ -193,6 +217,15 @@ export async function POST(request: NextRequest) {
       const { transaction_id } = body.payload;
       const { data: tx } = await supabase.from('financial_transactions').select('*').eq('id', transaction_id).single();
       if (!tx) return NextResponse.json({ error: "ไม่พบรายการ" }, { status: 404 });
+      if (tx.type === 'WITHDRAWAL' && tx.status === 'APPROVED' && tx.expense_location_id) {
+        const { data, error } = await supabase.rpc('cancel_time_tracking_expense_source', {
+          p_source_type: 'transaction',
+          p_source_id: transaction_id,
+          p_reason: body.payload.cancel_reason || null,
+        });
+        if (error) return NextResponse.json({ error: approvalRpcErrorMessage(error.message) }, { status: approvalRpcErrorStatus(error.message) });
+        return NextResponse.json({ success: true, cancelled: true, result: data });
+      }
       if (adminRole !== 'super_admin' && tx.profile_id !== adminId) {
         return NextResponse.json({ error: "Forbidden" }, { status: 403 });
       }
@@ -238,27 +271,19 @@ export async function POST(request: NextRequest) {
 
 
     if (body.action === 'APPROVE_TRANSACTION') {
-      const { transaction_id, status, admin_comment } = body.payload;
-      const { data: tx } = await supabase.from('financial_transactions').select('*').eq("id", transaction_id).single();
-      if (!tx || !(await canApproveUser(tx.profile_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-
-      if (tx.type === 'DEBT' && adminRole !== 'super_admin') {
-         return NextResponse.json({ error: "Only super_admin can approve debts" }, { status: 403 });
+      const { transaction_id, status, admin_comment, expense_location_id } = body.payload;
+      if (!isUuid(transaction_id) || !['APPROVED', 'REJECTED'].includes(status) || (expense_location_id && !isUuid(expense_location_id))) {
+        return NextResponse.json({ error: 'ข้อมูลการอนุมัติไม่ถูกต้อง' }, { status: 400 });
       }
-
-      const updates: any = { status, admin_comment, approved_by: adminId };
-      if (status === 'APPROVED' && (tx.type === 'DEBT' || tx.type === 'WITHDRAWAL') && tx.status !== 'APPROVED') {
-         updates.remaining_amount = tx.amount;
-      }
-
-      await supabase.from('financial_transactions').update(updates).eq("id", transaction_id);
-
-      await supabase.from('time_tracking_audit_logs').insert({
-        admin_id: adminId, action: 'APPROVE_TRANSACTION', target_table: 'financial_transactions',
-        record_id: transaction_id, old_data: { status: tx?.status }, new_data: { status }, comment: admin_comment
+      const { data, error } = await supabase.rpc('decide_time_tracking_approval', {
+        p_source_type: 'transaction',
+        p_source_id: transaction_id,
+        p_decision: status,
+        p_comment: admin_comment || null,
+        p_expense_location_id: expense_location_id || null,
       });
-
-      return NextResponse.json({ success: true });
+      if (error) return NextResponse.json({ error: approvalRpcErrorMessage(error.message) }, { status: approvalRpcErrorStatus(error.message) });
+      return NextResponse.json({ success: true, result: data });
     }
 
     if (body.action === 'APPROVE_LEAVE') {
@@ -268,6 +293,21 @@ export async function POST(request: NextRequest) {
       await supabase.from('leave_requests').update({ status, admin_comment, approved_by: adminId }).eq("id", request_id);
       await supabase.from('time_tracking_audit_logs').insert({ admin_id: adminId, action: 'APPROVE_LEAVE', target_table: 'leave_requests', record_id: request_id, old_data: oldData, new_data: { status }, comment: admin_comment });
       return NextResponse.json({ success: true });
+    }
+
+    if (body.action === 'CHANGE_EXPENSE_LOCATION') {
+      const { source_type, source_id, expense_location_id, admin_comment } = body.payload;
+      if (!['transaction', 'payroll_slip'].includes(source_type) || !isUuid(source_id) || !isUuid(expense_location_id)) {
+        return NextResponse.json({ error: 'ข้อมูลการเปลี่ยนสาขาไม่ถูกต้อง' }, { status: 400 });
+      }
+      const { data, error } = await supabase.rpc('change_time_tracking_expense_location', {
+        p_source_type: source_type,
+        p_source_id: source_id,
+        p_expense_location_id: expense_location_id,
+        p_comment: admin_comment || null,
+      });
+      if (error) return NextResponse.json({ error: approvalRpcErrorMessage(error.message) }, { status: approvalRpcErrorStatus(error.message) });
+      return NextResponse.json({ success: true, result: data });
     }
 
     if (body.action === 'UPDATE_WAGE') {
@@ -456,11 +496,7 @@ export async function POST(request: NextRequest) {
         .gte('start_time', startDate)
         .lt('start_time', endDate);
 
-      let totalMs = 0;
-      segments?.forEach(seg => {
-        totalMs += new Date(seg.end_time).getTime() - new Date(seg.start_time).getTime();
-      });
-      const total_days = totalMs / (1000 * 60 * 60 * 8);
+      const total_days = calculatePaidWorkDays(segments);
       const gross_pay = total_days * daily_wage;
 
       // Get Transactions
@@ -514,6 +550,15 @@ export async function POST(request: NextRequest) {
       const { slip_id } = body.payload;
       const { data: slip } = await supabase.from('payroll_slips').select('*').eq('id', slip_id).single();
       if (!slip) return NextResponse.json({ error: "Slip not found" }, { status: 404 });
+      if (slip.status === 'APPROVED' && Number(slip.net_pay) > 0 && slip.expense_location_id) {
+        const { data, error } = await supabase.rpc('cancel_time_tracking_expense_source', {
+          p_source_type: 'payroll_slip',
+          p_source_id: slip_id,
+          p_reason: body.payload.cancel_reason || null,
+        });
+        if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+        return NextResponse.json({ success: true, cancelled: true, result: data });
+      }
       if (!(await canEditUser(slip.profile_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
       // Can only delete if created_at is in the current month
@@ -533,21 +578,19 @@ export async function POST(request: NextRequest) {
     }
 
     if (body.action === 'APPROVE_PAYROLL_SLIP') {
-      const { slip_id, status, admin_comment } = body.payload;
-      const { data: slip } = await supabase.from('payroll_slips').select('*').eq('id', slip_id).single();
-      if (!slip) return NextResponse.json({ error: "Slip not found" }, { status: 404 });
-
-      if (!(await canApproveUser(slip.profile_id))) {
-        return NextResponse.json({ error: "Only super_admin can approve admin payroll slips" }, { status: 403 });
+      const { slip_id, status, admin_comment, expense_location_id } = body.payload;
+      if (!isUuid(slip_id) || !['APPROVED', 'REJECTED'].includes(status) || (expense_location_id && !isUuid(expense_location_id))) {
+        return NextResponse.json({ error: 'ข้อมูลการอนุมัติไม่ถูกต้อง' }, { status: 400 });
       }
-
-      if (slip.created_by === adminId && adminRole !== 'super_admin') {
-         return NextResponse.json({ error: "Cannot approve your own slip" }, { status: 403 });
-      }
-
-      await supabase.from('payroll_slips').update({ status, admin_comment, approved_by: adminId }).eq('id', slip_id);
-      await supabase.from('time_tracking_audit_logs').insert({ admin_id: adminId, action: 'APPROVE_PAYROLL_SLIP', target_table: 'payroll_slips', record_id: slip_id, old_data: slip, new_data: { status, admin_comment, approved_by: adminId }, comment: admin_comment });
-      return NextResponse.json({ success: true });
+      const { data, error } = await supabase.rpc('decide_time_tracking_approval', {
+        p_source_type: 'payroll_slip',
+        p_source_id: slip_id,
+        p_decision: status,
+        p_comment: admin_comment || null,
+        p_expense_location_id: expense_location_id || null,
+      });
+      if (error) return NextResponse.json({ error: error.message }, { status: approvalRpcErrorStatus(error.message) });
+      return NextResponse.json({ success: true, result: data });
     }
 
     return NextResponse.json({ error: "Invalid action" }, { status: 400 });

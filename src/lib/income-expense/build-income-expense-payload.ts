@@ -15,6 +15,9 @@ export type IncomeExpenseSyncPayload = {
   billOption: IncomeBillOption | ExpenseBillOption;
   unit?: string | null;
   price?: number | null;
+  incomeSaleItemId?: string | null;
+  stockProductId?: string | null;
+  stockQuantity?: number | null;
   clientRecordedAt: string;
   clientCreatedAt: string;
   createdByUserId?: string;
@@ -46,6 +49,9 @@ export function buildIncomeExpensePayload(
     billOption: tx.billOption,
     unit: tx.billOption === "บิลขาย" ? (tx.unit ?? null) : null,
     price: tx.billOption === "บิลขาย" ? (tx.price ?? null) : null,
+    incomeSaleItemId: tx.billOption === "บิลขาย" ? (tx.incomeSaleItemId ?? null) : null,
+    stockProductId: tx.billOption === "บิลขาย" ? (tx.stockProductId ?? null) : null,
+    stockQuantity: tx.billOption === "บิลขาย" ? (tx.stockQuantity ?? Number(tx.unit ?? 0)) : null,
     clientRecordedAt: tx.clientRecordedAt,
     clientCreatedAt: tx.clientCreatedAt,
     createdByUserId: tx.createdByUserId,

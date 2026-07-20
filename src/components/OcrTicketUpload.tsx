@@ -52,6 +52,8 @@ type Props = {
   online: boolean;
   uploadItems: UploadItem[];
   setUploadItems: React.Dispatch<React.SetStateAction<UploadItem[]>>;
+  initialDateFilter?: string | null;
+  onInitialDateFilterHandled?: () => void;
 };
 
 /* ── Main Component ── */
@@ -64,6 +66,8 @@ export function OcrTicketUpload({
   online,
   uploadItems: items,
   setUploadItems: setItems,
+  initialDateFilter,
+  onInitialDateFilterHandled,
 }: Props) {
   const { ocrTickets, addTicket, updateTicket, deleteTicket } = useOcrTickets(locationId);
   const { customers } = useCustomers();
@@ -73,8 +77,10 @@ export function OcrTicketUpload({
   const [editTicket, setEditTicket] = useState<OcrTicket | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [dateFilter, setDateFilter] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processingRef = useRef(false);
+  const offlineMessage = "อ่านใบชั่งและ OCR ใช้ได้เมื่อออนไลน์เท่านั้น";
 
   const lockedOcrTicketIds = useMemo(() => {
     const ids = new Set<string>();
@@ -87,9 +93,11 @@ export function OcrTicketUpload({
   }, [transfers]);
 
   const getTicketActionBlockReason = useCallback(
-    (ticketId: string) =>
-      lockedOcrTicketIds.has(ticketId) ? OCR_TICKET_TRANSFER_LOCK_MESSAGE : null,
-    [lockedOcrTicketIds]
+    (ticketId: string) => {
+      if (!online) return offlineMessage;
+      return lockedOcrTicketIds.has(ticketId) ? OCR_TICKET_TRANSFER_LOCK_MESSAGE : null;
+    },
+    [lockedOcrTicketIds, online, offlineMessage]
   );
 
   const showTicketActionBlocked = useCallback(
@@ -107,6 +115,17 @@ export function OcrTicketUpload({
     const t = setTimeout(() => setToastMsg(null), 3000);
     return () => clearTimeout(t);
   }, [toastMsg]);
+
+  useEffect(() => {
+    if (!initialDateFilter) return;
+    setDateFilter(initialDateFilter);
+    onInitialDateFilterHandled?.();
+  }, [initialDateFilter, onInitialDateFilterHandled]);
+
+  const visibleOcrTickets = useMemo(() => {
+    if (!dateFilter) return ocrTickets;
+    return ocrTickets.filter((ticket) => ticket.dateIn === dateFilter);
+  }, [dateFilter, ocrTickets]);
 
   // Warn before closing/refreshing if uploads are in progress
   const hasProcessing = items.some((i) => i.status === "processing");
@@ -170,6 +189,10 @@ export function OcrTicketUpload({
 
   const handleFiles = useCallback(
     (files: FileList | File[]) => {
+      if (!online) {
+        setToastMsg(offlineMessage);
+        return;
+      }
       const newItems: UploadItem[] = [];
       const duplicates: string[] = [];
       Array.from(files)
@@ -191,7 +214,7 @@ export function OcrTicketUpload({
       if (newItems.length > 0) setItems((prev) => [...prev, ...newItems]);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [items, ocrTickets]
+    [items, ocrTickets, online, offlineMessage]
   );
 
   const handleDrop = useCallback(
@@ -230,6 +253,10 @@ export function OcrTicketUpload({
 
   const processItem = useCallback(
     async (item: UploadItem) => {
+      if (!online) {
+        setToastMsg(offlineMessage);
+        return;
+      }
       setItems((prev) =>
         prev.map((i) => (i.id === item.id ? { ...i, status: "processing" } : i))
       );
@@ -287,13 +314,13 @@ export function OcrTicketUpload({
         );
       }
     },
-    [locationId, addTicket, setItems, uploadImageToDrive]
+    [locationId, addTicket, setItems, uploadImageToDrive, online, offlineMessage]
   );
 
   // Process pending images one by one so OCR and upload state stay predictable.
   const processAll = useCallback(async () => {
     if (!online) {
-      setToastMsg("ไม่มีการเชื่อมต่ออินเทอร์เน็ต — ไม่สามารถอ่านใบชั่งได้");
+      setToastMsg(offlineMessage);
       return;
     }
     if (processingRef.current) return;
@@ -303,7 +330,7 @@ export function OcrTicketUpload({
       await processItem(item);
     }
     processingRef.current = false;
-  }, [items, processItem, online]);
+  }, [items, processItem, online, offlineMessage]);
 
   const clearAll = useCallback(() => {
     items.forEach((i) => URL.revokeObjectURL(i.previewUrl));
@@ -395,14 +422,29 @@ export function OcrTicketUpload({
       </div>
 
       {/* Drop Zone */}
-      <div onDrop={handleDrop} onDragOver={handleDragOver} onClick={() => fileInputRef.current?.click()}
-        className="group cursor-pointer rounded-xl border-2 border-dashed border-leaf/30 bg-mint/30 p-8 text-center transition-all hover:border-leaf/60 hover:bg-mint/50">
+      <div
+        onDrop={handleDrop}
+        onDragOver={handleDragOver}
+        onClick={() => {
+          if (!online) {
+            setToastMsg(offlineMessage);
+            return;
+          }
+          fileInputRef.current?.click();
+        }}
+        title={online ? undefined : offlineMessage}
+        className={`group rounded-xl border-2 border-dashed p-8 text-center transition-all ${
+          online
+            ? "cursor-pointer border-leaf/30 bg-mint/30 hover:border-leaf/60 hover:bg-mint/50"
+            : "cursor-not-allowed border-black/10 bg-field/60 opacity-70"
+        }`}
+      >
         <div className="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-full bg-leaf/10 text-leaf transition-transform group-hover:scale-110">
           <Upload size={28} />
         </div>
         <p className="font-semibold text-ink">คลิกหรือลากไฟล์มาวางที่นี่</p>
         <p className="mt-1 text-sm text-ink/50">รองรับ JPG, PNG, WEBP — เลือกได้หลายไฟล์</p>
-        <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden"
+        <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" disabled={!online}
           onChange={(e) => { if (e.target.files) handleFiles(e.target.files); e.target.value = ""; }} />
       </div>
 
@@ -449,12 +491,27 @@ export function OcrTicketUpload({
       {/* Saved Results Table */}
       {ocrTickets.length > 0 && (
         <div className="overflow-hidden rounded-xl border border-black/10 bg-white shadow-panel">
-          <div className="flex items-center justify-between border-b border-black/5 bg-field/60 px-5 py-3">
+          <div className="flex flex-col gap-3 border-b border-black/5 bg-field/60 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
             <h3 className="font-bold text-ink">
               <CheckCircle2 size={16} className="mr-1.5 inline-block text-leaf" />
-              ข้อมูลใบชั่ง ({ocrTickets.length} รายการ)
+              ข้อมูลใบชั่ง ({dateFilter ? `${visibleOcrTickets.length}/${ocrTickets.length}` : ocrTickets.length} รายการ)
             </h3>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
+              <label className="flex items-center gap-2 rounded-md border border-black/10 bg-white px-2 py-1.5 text-xs font-semibold text-ink/60">
+                วันที่
+                <input
+                  type="date"
+                  value={dateFilter}
+                  onChange={(event) => setDateFilter(event.target.value)}
+                  className="bg-transparent text-sm font-semibold text-ink outline-none"
+                />
+              </label>
+              {dateFilter && (
+                <button type="button" onClick={() => setDateFilter("")}
+                  className="focus-ring rounded-md border border-black/10 bg-white px-3 py-1.5 text-xs font-semibold text-ink hover:bg-field">
+                  ล้างวันที่
+                </button>
+              )}
               <button type="button" onClick={copyAllJSON}
                 className="focus-ring flex items-center gap-1.5 rounded-md border border-black/10 bg-white px-3 py-1.5 text-xs font-semibold text-ink hover:bg-field">
                 <Copy size={12} /> คัดลอก
@@ -486,7 +543,7 @@ export function OcrTicketUpload({
                 </tr>
               </thead>
               <tbody>
-                {ocrTickets.map((ticket, idx) => {
+                {visibleOcrTickets.map((ticket, idx) => {
                   const tWNet = (ticket.weightIn ?? 0) - (ticket.weightOut ?? 0);
                   const tWRemaining = tWNet - (ticket.weightDeducted ?? 0);
                   const isNegative = tWRemaining < 0;
@@ -568,6 +625,13 @@ export function OcrTicketUpload({
                   </tr>
                   );
                 })}
+                {visibleOcrTickets.length === 0 && (
+                  <tr>
+                    <td colSpan={14} className="px-3 py-8 text-center text-sm text-ink/50">
+                      ไม่พบใบชั่งในวันที่เลือก
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -599,8 +663,8 @@ export function OcrTicketUpload({
                 className="focus-ring rounded-md border border-black/10 bg-white px-4 py-2 text-sm font-semibold text-ink hover:bg-field">
                 ยกเลิก
               </button>
-              <button type="button" onClick={handleDeleteConfirm}
-                className="focus-ring rounded-md bg-clay px-4 py-2 text-sm font-semibold text-white hover:bg-clay/90">
+              <button type="button" onClick={handleDeleteConfirm} disabled={!online} title={online ? undefined : offlineMessage}
+                className="focus-ring rounded-md bg-clay px-4 py-2 text-sm font-semibold text-white hover:bg-clay/90 disabled:cursor-not-allowed disabled:opacity-50">
                 ลบ
               </button>
             </div>
@@ -609,7 +673,7 @@ export function OcrTicketUpload({
       )}
 
       {/* Edit Modal */}
-      {editTicket && <EditTicketModal ticket={editTicket} targetTime={negativeWeightTargets.current[editTicket.id]} now={now} customers={customers} onSave={handleEditSave} onClose={() => setEditTicket(null)} />}
+      {editTicket && <EditTicketModal ticket={editTicket} targetTime={negativeWeightTargets.current[editTicket.id]} now={now} customers={customers} online={online} offlineMessage={offlineMessage} onSave={handleEditSave} onClose={() => setEditTicket(null)} />}
     </div>
   );
 }
@@ -688,8 +752,8 @@ function UploadCard({ item, onRemove, onRetry, onPreview }: {
 }
 
 /* ── Edit Modal ── */
-function EditTicketModal({ ticket, targetTime, now, customers, onSave, onClose }: {
-  ticket: OcrTicket; targetTime?: number; now: number; customers: Customer[]; onSave: (t: OcrTicket) => void; onClose: () => void;
+function EditTicketModal({ ticket, targetTime, now, customers, online, offlineMessage, onSave, onClose }: {
+  ticket: OcrTicket; targetTime?: number; now: number; customers: Customer[]; online: boolean; offlineMessage: string; onSave: (t: OcrTicket) => void; onClose: () => void;
 }) {
   const [form, setForm] = useState({ ...ticket });
   const [customerSearch, setCustomerSearch] = useState(ticket.customerName ?? "");
@@ -719,6 +783,10 @@ function EditTicketModal({ ticket, targetTime, now, customers, onSave, onClose }
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!online) {
+      alert(offlineMessage);
+      return;
+    }
     onSave({
       ...form,
       customerName: customerSearch || null,
@@ -893,8 +961,8 @@ function EditTicketModal({ ticket, targetTime, now, customers, onSave, onClose }
           <div className="flex justify-end gap-3 pt-2">
             <button type="button" onClick={onClose}
               className="focus-ring rounded-md border border-black/10 bg-white px-4 py-2 text-sm font-semibold text-ink hover:bg-field">ยกเลิก</button>
-            <button type="submit" disabled={isWeightInvalid}
-              className={`focus-ring flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-semibold text-white ${isWeightInvalid ? 'bg-gray-300 cursor-not-allowed' : 'bg-leaf hover:bg-leaf/90'}`}>
+            <button type="submit" disabled={isWeightInvalid || !online} title={online ? undefined : offlineMessage}
+              className={`focus-ring flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-semibold text-white ${isWeightInvalid || !online ? 'bg-gray-300 cursor-not-allowed' : 'bg-leaf hover:bg-leaf/90'}`}>
               <Save size={15} /> บันทึก</button>
           </div>
         </form>

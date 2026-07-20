@@ -6,6 +6,7 @@
 
 - โอนเงินสาขาใช้ `money_transfers.transfer_type = 'branch'` เป็น source หลัก ไม่ได้สร้างคู่ row จริงใน `income_expense`
 - `IncomeExpenseModule` มีปุ่ม `โยกเงินไปสาขาอื่น` เปิด `BranchTransferForm` เพื่อบันทึก branch transfer จากหน้า รับ-จ่าย โดยตรง
+- `MoneyTransferModule` ใช้ `BranchTransferForm` ในโหมด `โอนให้สาขา` สำหรับสำนักงานใหญ่/CEO โอนเงินให้สาขา โดยเลือกสาขาปัจจุบันเป็นผู้รับได้ และบันทึก `location_id = target_location_id`
 - `useIncomeExpense` แสดงรายจ่ายขาออกของสาขาต้นทางแบบ derived row จาก `money_transfers.location_id`
 - `useIncomeExpense` แสดงรายรับขาเข้าของสาขาปลายทางแบบ derived row จาก `money_transfers.target_location_id`
 - `useIncomeExpense` แสดงรายจ่ายส่วนสาขาจ่ายจากโอนเงินลูกค้า เมื่อ `transfer_type = 'customer'` และ `transfer_status = 'branch_and_transfer'`
@@ -25,6 +26,7 @@ Decisions ที่ใช้จริง:
 - approval เป็น online-only; ถ้า offline และ local config บอกว่ารายการต้องอนุมัติ ระบบจะ block การบันทึกจนกว่าจะ online
 - branch transfer ใช้ Derived Model จาก `money_transfers` ต่อไป ไม่สร้าง row จริงคู่ใน `income_expense`
 - ผู้สร้าง branch transfer ต้องมีสิทธิ์เฉพาะสาขาต้นทาง; สาขาปลายทางเลือกจากสาขา active ทั้งหมด
+- รายการ `โอนให้สาขา` ในโมดูลโอนเงินไม่ใช่ branch-to-branch transfer จึงไม่สร้างรายจ่ายขาออกในรับ-จ่าย
 - rejected approval ต้องสร้างคำขอใหม่เสมอ และ delete รายการที่เคย approved ไม่ต้องขออนุมัติ
 - approval queue ค่าเริ่มต้นแสดงทุกสาขารวมกัน และมี filter สาขา
 

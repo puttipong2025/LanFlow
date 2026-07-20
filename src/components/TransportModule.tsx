@@ -12,7 +12,7 @@ import { makeClientTempId, makeIdempotencyKey } from "@/lib/format";
 
 import { useTransportStaffs } from "@/hooks/useTransportStaffs";
 
-export function TransportModule({ locationId }: { locationId: string }) {
+export function TransportModule({ locationId, online }: { locationId: string; online: boolean }) {
   const { staffs, isLoading, addStaff, updateStaff, deleteStaff } = useTransportStaffs();
   const [search, setSearch] = useState("");
   const [pageSize, setPageSize] = useState(10);
@@ -43,16 +43,28 @@ export function TransportModule({ locationId }: { locationId: string }) {
   const lastVisible = Math.min(currentPage * pageSize, filteredStaffs.length);
 
   function openAdd() {
+    if (!online) {
+      toast.error("เพิ่มขนส่งและพนักงานใช้ได้เมื่อออนไลน์เท่านั้น");
+      return;
+    }
     setEditingStaff(null);
     setModalOpen(true);
   }
 
   function openEdit(staff: TransportStaff) {
+    if (!online) {
+      toast.error("แก้ไขขนส่งและพนักงานใช้ได้เมื่อออนไลน์เท่านั้น");
+      return;
+    }
     setEditingStaff(staff);
     setModalOpen(true);
   }
 
   async function confirmDelete(staff: TransportStaff) {
+    if (!online) {
+      toast.error("ลบขนส่งและพนักงานใช้ได้เมื่อออนไลน์เท่านั้น");
+      return;
+    }
     const result = await appSwal.fire({
       title: 'ยืนยันการลบ',
       text: `คุณแน่ใจหรือไม่ว่าต้องการลบข้อมูล "${staff.mainName}"?`,
@@ -89,7 +101,9 @@ export function TransportModule({ locationId }: { locationId: string }) {
         <button
           type="button"
           onClick={openAdd}
-          className="focus-ring flex h-11 items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 font-semibold text-white shadow-md hover:bg-indigo-700 transition-all transform hover:-translate-y-0.5 active:translate-y-0"
+          disabled={!online}
+          title={online ? "เพิ่มขนส่งและพนักงานใหม่" : "เพิ่มข้อมูลใช้ได้เมื่อออนไลน์เท่านั้น"}
+          className="focus-ring flex h-11 items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 font-semibold text-white shadow-md transition-all disabled:cursor-not-allowed disabled:bg-slate-300"
         >
           <Plus size={18} />
           เพิ่มขนส่งและพนักงานใหม่
@@ -219,16 +233,18 @@ export function TransportModule({ locationId }: { locationId: string }) {
                       <button
                         type="button"
                         onClick={() => openEdit(v)}
-                        title="แก้ไข"
-                        className="grid h-8 w-8 place-items-center rounded-md bg-field text-ink hover:bg-slate-200 transition-colors"
+                        disabled={!online}
+                        title={online ? "แก้ไข" : "แก้ไขใช้ได้เมื่อออนไลน์เท่านั้น"}
+                        className="grid h-8 w-8 place-items-center rounded-md bg-field text-ink hover:bg-slate-200 transition-colors disabled:cursor-not-allowed disabled:opacity-45"
                       >
                         <Edit3 size={15} />
                       </button>
                       <button
                         type="button"
                         onClick={() => confirmDelete(v)}
-                        title="ลบ"
-                        className="grid h-8 w-8 place-items-center rounded-md bg-rose-50 text-rose-600 hover:bg-rose-100 transition-colors"
+                        disabled={!online}
+                        title={online ? "ลบ" : "ลบใช้ได้เมื่อออนไลน์เท่านั้น"}
+                        className="grid h-8 w-8 place-items-center rounded-md bg-rose-50 text-rose-600 hover:bg-rose-100 transition-colors disabled:cursor-not-allowed disabled:opacity-45"
                       >
                         <Trash2 size={15} />
                       </button>
@@ -305,6 +321,7 @@ export function TransportModule({ locationId }: { locationId: string }) {
           staff={editingStaff}
           allStaffs={staffs}
           locationId={locationId}
+          online={online}
           onClose={() => setModalOpen(false)}
           onSave={(v) => {
             if (editingStaff) {
@@ -334,11 +351,12 @@ type TransportModalProps = {
   staff: TransportStaff | null;
   allStaffs: TransportStaff[];
   locationId: string;
+  online: boolean;
   onClose: () => void;
   onSave: (staff: TransportStaff) => void;
 };
 
-function TransportModal({ staff, allStaffs, locationId, onClose, onSave }: TransportModalProps) {
+function TransportModal({ staff, allStaffs, locationId, online, onClose, onSave }: TransportModalProps) {
   const [mainName, setMainName] = useState(staff?.mainName ?? "");
 
   const initialLegacyMemberId = useMemo(() => {
@@ -415,6 +433,10 @@ function TransportModal({ staff, allStaffs, locationId, onClose, onSave }: Trans
 
   function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (!online) {
+      toast.error("บันทึกข้อมูลขนส่งและพนักงานใช้ได้เมื่อออนไลน์เท่านั้น");
+      return;
+    }
     const errors: string[] = [];
 
     if (!mainName.trim()) errors.push("กรุณากรอกชื่อหลัก");
@@ -736,7 +758,8 @@ function TransportModal({ staff, allStaffs, locationId, onClose, onSave }: Trans
             </button>
             <button
               type="submit"
-              className="h-10 rounded-lg bg-indigo-600 px-5 text-sm font-semibold text-white shadow hover:bg-indigo-700 transition-colors flex items-center gap-1.5"
+              disabled={!online}
+              className="h-10 rounded-lg bg-indigo-600 px-5 text-sm font-semibold text-white shadow hover:bg-indigo-700 transition-colors flex items-center gap-1.5 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               <ShieldCheck size={18} />
               บันทึกข้อมูลขนส่งและพนักงาน

@@ -171,7 +171,15 @@ export function CustomerTransferForm({
   // ── Handler: Add slip from OCR ──
   const handleSlipUpload = useCallback(
     async (files: FileList) => {
-      if (!online) return;
+      if (!online) {
+        void Swal.fire({
+          icon: "warning",
+          title: "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น",
+          confirmButtonColor: "#3b82f6",
+          confirmButtonText: "ตกลง"
+        });
+        return;
+      }
       setSlipUploading(true);
       for (const file of Array.from(files)) {
         try {
@@ -206,6 +214,15 @@ export function CustomerTransferForm({
 
   // ── Handler: Add slip manually ──
   const addEmptySlip = useCallback(() => {
+    if (!online) {
+      void Swal.fire({
+        icon: "warning",
+        title: "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น",
+        confirmButtonColor: "#3b82f6",
+        confirmButtonText: "ตกลง"
+      });
+      return;
+    }
     const newSlip: MoneyTransferSlip = {
       id: crypto.randomUUID(),
       amount: 0,
@@ -218,7 +235,7 @@ export function CustomerTransferForm({
       sortOrder: slips.length,
     };
     setSlips((prev) => [...prev, newSlip]);
-  }, [slips.length]);
+  }, [slips.length, online]);
 
   const updateSlip = useCallback((id: string, field: keyof MoneyTransferSlip, value: any) => {
     setSlips((prev) => prev.map((s) => (s.id === id ? { ...s, [field]: value } : s)));
@@ -230,6 +247,15 @@ export function CustomerTransferForm({
 
   // ── Handler: Save ──
   const handleSubmit = useCallback(() => {
+    if (!online) {
+      void Swal.fire({
+        icon: "warning",
+        title: "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น",
+        confirmButtonColor: "#3b82f6",
+        confirmButtonText: "ตกลง"
+      });
+      return;
+    }
     if (!customerName || (selectedItems.length === 0 && slips.length === 0)) return;
 
     if (slips.some(s => !s.transactionDate)) {
@@ -285,6 +311,7 @@ export function CustomerTransferForm({
     onSave,
     computedStatus,
     totalFromSlips,
+    online,
   ]);
 
   return (
@@ -523,14 +550,15 @@ export function CustomerTransferForm({
             สลิปโอนเงิน ({slips.length})
           </h4>
           <div className="flex gap-2">
-            <button type="button" onClick={addEmptySlip} className="focus-ring flex items-center gap-1.5 rounded-md border border-black/10 bg-white px-3 py-2 text-sm font-semibold text-ink hover:bg-field">
+            <button type="button" onClick={addEmptySlip} disabled={!online} title={online ? undefined : "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น"} className="focus-ring flex items-center gap-1.5 rounded-md border border-black/10 bg-white px-3 py-2 text-sm font-semibold text-ink hover:bg-field disabled:cursor-not-allowed disabled:opacity-50">
               <Plus size={14} /> เพิ่มเอง
             </button>
             <button
               type="button"
               onClick={() => slipFileRef.current?.click()}
               disabled={!online || slipUploading}
-              className="focus-ring flex items-center gap-1.5 rounded-md bg-river px-3 py-2 text-sm font-semibold text-white hover:bg-river/90 disabled:opacity-50"
+              title={online ? undefined : "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น"}
+              className="focus-ring flex items-center gap-1.5 rounded-md bg-river px-3 py-2 text-sm font-semibold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {slipUploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
               อ่านสลิป
@@ -541,6 +569,7 @@ export function CustomerTransferForm({
               accept="image/*"
               multiple
               className="hidden"
+              disabled={!online}
               onChange={(e) => {
                 if (e.target.files) handleSlipUpload(e.target.files);
                 e.target.value = "";
@@ -579,7 +608,9 @@ export function CustomerTransferForm({
         <button
           type="button"
           onClick={handleSubmit}
-          className="focus-ring flex items-center gap-1.5 rounded-md bg-river px-5 py-2 text-sm font-semibold text-white hover:bg-river/90"
+          disabled={!online}
+          title={online ? undefined : "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น"}
+          className="focus-ring flex items-center gap-1.5 rounded-md bg-river px-5 py-2 text-sm font-semibold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Save size={15} /> บันทึก
         </button>

@@ -1,8 +1,9 @@
-import { test as setup, expect } from '@playwright/test';
+import { test as setup } from '@playwright/test';
 import * as path from 'path';
 import * as fs from 'fs';
 
 import { createClient } from '@supabase/supabase-js';
+import { createBrowserClient } from '@supabase/ssr';
 
 const authDir = path.join(__dirname, '../playwright/.auth');
 
@@ -24,12 +25,7 @@ async function ensureTestUser() {
   if (!serviceRoleKey) return;
   const admin = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
 
-  // ensure location exists first
-  let locId = '';
   const { data: locations } = await admin.from('locations').select('id').eq('is_active', true).limit(1);
-  if (locations && locations.length > 0) {
-    locId = locations[0].id;
-  }
 
   const usersConfig = [
     { id: testUserId, phone: phone, role: 'super_admin' },
@@ -83,10 +79,12 @@ const authUsers = [
   { role: 'user', phone: '0820000001' }
 ];
 
-setup('authenticate users', async ({ page }) => {
-  setup.setTimeout(60000); // 1 minute
+setup('authenticate users', async () => {
+  setup.setTimeout(60000);
   await ensureTestUser();
   const password = process.env.TEST_PASSWORD || 'password123';
+  const publishableKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+  if (!publishableKey) throw new Error('NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY is required for Playwright auth fixtures');
 
   // Ensure the auth directory exists
   if (!fs.existsSync(authDir)) {
@@ -94,27 +92,36 @@ setup('authenticate users', async ({ page }) => {
   }
 
   for (const user of authUsers) {
-    console.log(`Logging in as ${user.role} (${user.phone})...`);
-    page.on('dialog', dialog => dialog.accept());
-    
-    // Using a fresh context for each user is safer to clear cookies/storage,
-    // but navigating to /login and then logging out also works.
-    // Let's use the current page and explicitly logout later.
-    await page.goto('/login');
-    await page.fill('input[type="tel"]', user.phone);
-    await page.fill('input[type="password"]', password);
-    await page.click('button:has-text("เข้าสู่ระบบ")');
-    await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 15000 });
+    const cookieValues = new Map<string, string>();
+    const client = createBrowserClient(supabaseUrl, publishableKey, {
+      isSingleton: false,
+      cookieOptions: { name: 'sb-127-auth-token' },
+      cookies: {
+        getAll: () => [],
+        setAll: (cookies: Array<{ name: string; value: string }>) => {
+          for (const cookie of cookies) cookieValues.set(cookie.name, cookie.value);
+        },
+      },
+    });
+    const { error } = await client.auth.signInWithPassword({
+      phone: normalizeThaiPhoneToE164(user.phone),
+      password,
+    });
+    if (error) throw error;
 
     const statePath = path.join(authDir, `${user.role}.json`);
-    await page.context().storageState({ path: statePath });
-    console.log(`Saved storageState for ${user.role} to ${statePath}`);
-
-    // Wait for the UI to settle
-    await page.waitForTimeout(500);
-
-    // Logout to clear the session for the next iteration
-    await page.click('button:has-text("ออกจากระบบ")');
-    await expect(page.locator('button:has-text("เข้าสู่ระบบ")')).toBeVisible({ timeout: 10000 });
+    fs.writeFileSync(statePath, JSON.stringify({
+      cookies: [...cookieValues].map(([name, value]) => ({
+        name,
+        value,
+        domain: '127.0.0.1',
+        path: '/',
+        expires: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 365,
+        httpOnly: false,
+        secure: false,
+        sameSite: 'Lax',
+      })),
+      origins: [],
+    }));
   }
 });

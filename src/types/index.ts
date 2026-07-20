@@ -3,6 +3,7 @@ export type SyncStatus = "pending" | "syncing" | "synced" | "failed" | "conflict
 export type RecordStatus = "active" | "deleted" | "cancelled";
 export type QueueOperation = "create" | "update" | "delete";
 export type PaymentResponsibility = "สาขานี้จ่าย" | "สาขาใหญ่จ่าย";
+export type PrintStatus = "ยังไม่ได้ปริ้น" | "ปริ้นแล้ว";
 
 export type Location = {
   id: string;
@@ -18,6 +19,8 @@ export type Profile = {
   role: AppRole;
   isActive: boolean;
   locationIds: string[];
+  canAccessSystemManager?: boolean;
+  canAccessMoneyTransfer?: boolean;
 };
 
 export type RubberBill = {
@@ -30,9 +33,11 @@ export type RubberBill = {
   locationId: string;
   billNo: string;
   billDate: string;
+  customerId?: string | null;
   customerName: string;
   customerType: PaymentResponsibility;
   billType: string;
+  deductWeight: number;
   weight: number;
   price: number;
   deductionTotal: number;
@@ -40,6 +45,7 @@ export type RubberBill = {
   cashPayment: number;
   transferPayment: number;
   acidPackCount: number;
+  printStatus: PrintStatus;
   weighItems?: Array<{
     id: string;
     label: string;
@@ -51,6 +57,7 @@ export type RubberBill = {
   acidItems?: Array<{
     id: string;
     name: string;
+    stockProductId: string;
     quantity: number;
     unit: string;
     unitPrice: number;
@@ -86,9 +93,65 @@ export type ExpenseBillOption = "ค่าใช้จ่าย";
 export type IncomeSaleItem = {
   id: string;
   name: string;
+  stockProductId?: string | null;
   isActive: boolean;
   createdByName?: string | null;
   createdByPhone?: string | null;
+  createdAt: string;
+};
+
+export type AcidProduct = {
+  id: string;
+  name: string;
+  unit: string;
+  isActive: boolean;
+  createdByName?: string | null;
+  createdByPhone?: string | null;
+  createdAt: string;
+};
+
+export type StockProductApprovalStatus = "pending" | "approved" | "rejected" | "cancelled";
+export type StockProductApprovalRequestType = "create_product" | "delete_product";
+
+export type StockProductApprovalRequest = {
+  id: string;
+  requestStatus: StockProductApprovalStatus;
+  requestType: StockProductApprovalRequestType;
+  productId?: string | null;
+  productName: string;
+  unit?: string | null;
+  createSaleItem?: boolean | null;
+  requestedByName: string;
+  requestedByPhone: string;
+  decidedByName?: string | null;
+  decidedByPhone?: string | null;
+  decidedAt?: string | null;
+  decisionComment?: string | null;
+  createdAt: string;
+};
+
+export type StockEntryApprovalStatus = "pending" | "approved" | "rejected" | "cancelled";
+
+export type StockEntryApprovalRequest = {
+  id: string;
+  requestStatus: StockEntryApprovalStatus;
+  requestType: "delete_stock_entry";
+  stockEntryId: string;
+  transferBillNo?: string | null;
+  txType: "receive" | "transfer_out";
+  productId: string;
+  productName: string;
+  quantity: number;
+  locationId: string;
+  locationName: string;
+  targetLocationId?: string | null;
+  targetLocationName?: string | null;
+  requestedByName: string;
+  requestedByPhone: string;
+  decidedByName?: string | null;
+  decidedByPhone?: string | null;
+  decidedAt?: string | null;
+  decisionComment?: string | null;
   createdAt: string;
 };
 
@@ -151,6 +214,9 @@ export type IncomeExpense = {
   billOption: IncomeBillOption | ExpenseBillOption;
   unit?: string;
   price?: number;
+  incomeSaleItemId?: string | null;
+  stockProductId?: string | null;
+  stockQuantity?: number | null;
   createdByUserId: string;
   createdByName: string;
   createdByPhone: string;
@@ -164,12 +230,34 @@ export type IncomeExpense = {
   deletedByName?: string;
   deletedByPhone?: string;
   syncErrorMessage?: string;
-  relationSourceType?: "money_transfer" | "rubber_bill_daily";
+  relationSourceType?: "money_transfer" | "rubber_bill_daily" | "ocr_ticket_daily" | "time_tracking_withdrawal" | "payroll_slip";
   relationSourceId?: string;
   relationSourceLocationId?: string;
   relationSourceDate?: string;
   relationLockReason?: string;
   relationLabel?: string;
+};
+
+export type AcidStockSourceType = "stock_entry" | "income_sale" | "rubber_bill_acid" | "rubber_bill_stock_deduction";
+
+export type AcidStockMovement = {
+  movementId: string;
+  sourceType: AcidStockSourceType;
+  sourceId: string;
+  sourceLineId?: string | null;
+  txDate: string;
+  locationId: string;
+  productId: string;
+  productName: string;
+  quantityDelta: number;
+  amount: number;
+  displayBillNo: string;
+  txType: string;
+  createdByUserId?: string | null;
+  createdByName?: string | null;
+  createdByPhone?: string | null;
+  createdAt: string;
+  relationLockReason?: string | null;
 };
 
 export type QueueItem = {

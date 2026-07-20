@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireRole } from "@/lib/server/auth";
+import { hasSystemManagerAccess, requireRoleOrSystemManager } from "@/lib/server/auth";
 
 export async function POST(request: NextRequest) {
-  const adminCheck = await requireRole(request, ["super_admin", "admin"]);
+  const adminCheck = await requireRoleOrSystemManager(request, ["super_admin", "admin"]);
   if (!adminCheck.ok) return adminCheck.response;
 
   try {
@@ -15,9 +15,11 @@ export async function POST(request: NextRequest) {
 
     // Check if target user is admin
     const { data: targetUser } = await supabase.from('profiles').select('role').eq('id', userId).single();
-    const { data: currentUser } = await supabase.from('profiles').select('role').eq('id', adminCheck.auth.sub).single();
-    if (targetUser?.role === 'admin' && currentUser?.role !== 'super_admin') {
-      return NextResponse.json({ error: "Only super_admin can modify admin locations" }, { status: 403 });
+    if (targetUser?.role === 'super_admin') {
+      return NextResponse.json({ error: "Cannot modify super_admin locations" }, { status: 403 });
+    }
+    if (targetUser?.role === 'admin' && !hasSystemManagerAccess(adminCheck.auth)) {
+      return NextResponse.json({ error: "Only system managers can modify admin locations" }, { status: 403 });
     }
 
     // Check if assignment already exists
@@ -52,7 +54,7 @@ export async function POST(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
-  const adminCheck = await requireRole(request, ["super_admin", "admin"]);
+  const adminCheck = await requireRoleOrSystemManager(request, ["super_admin", "admin"]);
   if (!adminCheck.ok) return adminCheck.response;
 
   try {
@@ -68,9 +70,11 @@ export async function DELETE(request: NextRequest) {
 
     // Check if target user is admin
     const { data: targetUser } = await supabase.from('profiles').select('role').eq('id', userId).single();
-    const { data: currentUser } = await supabase.from('profiles').select('role').eq('id', adminCheck.auth.sub).single();
-    if (targetUser?.role === 'admin' && currentUser?.role !== 'super_admin') {
-      return NextResponse.json({ error: "Only super_admin can modify admin locations" }, { status: 403 });
+    if (targetUser?.role === 'super_admin') {
+      return NextResponse.json({ error: "Cannot modify super_admin locations" }, { status: 403 });
+    }
+    if (targetUser?.role === 'admin' && !hasSystemManagerAccess(adminCheck.auth)) {
+      return NextResponse.json({ error: "Only system managers can modify admin locations" }, { status: 403 });
     }
 
     const { error: deleteError } = await supabase

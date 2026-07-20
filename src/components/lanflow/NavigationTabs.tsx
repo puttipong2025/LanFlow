@@ -1,7 +1,9 @@
-import { CheckCircle2, Loader2 } from "lucide-react";
+import { CheckCircle2, Loader2, WifiOff } from "lucide-react";
 import { type Tab, tabs } from "@/components/lanflow/tabs";
 import type { Profile } from "@/types";
 import type { UploadItem } from "@/components/OcrTicketUpload";
+import { canManageSystemFeatures, canUseMoneyTransfer } from "@/lib/permissions";
+import { getOfflineTabBlockMessage } from "@/lib/offline-module-policy";
 
 export function NavigationTabs({
   activeTab,
@@ -10,7 +12,8 @@ export function NavigationTabs({
   ocrUploadItems,
   transferPartialCount,
   transferAdvanceCount,
-  timeTrackingPendingCount
+  timeTrackingPendingCount,
+  online
 }: {
   activeTab: Tab;
   onTabChange: (tab: Tab) => void;
@@ -19,10 +22,15 @@ export function NavigationTabs({
   transferPartialCount: number;
   transferAdvanceCount: number;
   timeTrackingPendingCount: number;
+  online: boolean;
 }) {
   return (
     <nav className="mx-auto flex w-full max-w-7xl flex-wrap gap-2 px-4 pb-3 sm:flex-nowrap sm:overflow-x-auto">
-      {tabs.filter(tab => tab.id !== "admin" || ["super_admin", "admin"].includes(profile.role)).map((tab) => {
+      {tabs.filter(tab => {
+        if (tab.id === "admin") return canManageSystemFeatures(profile) || ["super_admin", "admin"].includes(profile.role);
+        if (tab.id === "money-transfer") return canUseMoneyTransfer(profile);
+        return true;
+      }).map((tab) => {
         const Icon = tab.icon;
         const active = activeTab === tab.id;
         const ocrProcessing = ocrUploadItems.filter((i) => i.status === "processing").length;
@@ -33,18 +41,27 @@ export function NavigationTabs({
 
         const isTransferTab = tab.id === "money-transfer";
         const isTimeTrackingTab = tab.id === "time-tracking";
+        const offlineBlockMessage = online ? null : getOfflineTabBlockMessage(tab.id);
+        const isOfflineBlocked = Boolean(offlineBlockMessage);
 
         return (
           <button
             key={tab.id}
             type="button"
             onClick={() => onTabChange(tab.id)}
+            disabled={isOfflineBlocked}
+            title={offlineBlockMessage ?? tab.label}
             className={`focus-ring relative flex h-10 shrink-0 items-center gap-2 rounded-md px-3 text-sm font-semibold ${
-              active ? "bg-leaf text-white" : "bg-white text-ink hover:bg-mint"
+              isOfflineBlocked
+                ? "cursor-not-allowed bg-slate-200 text-ink/45"
+                : active
+                  ? "bg-leaf text-white"
+                  : "bg-white text-ink hover:bg-mint"
             }`}
           >
             <Icon size={17} />
             {tab.label}
+            {isOfflineBlocked && <WifiOff size={13} />}
             {showOcrBadge && ocrProcessing > 0 && (
               <span className="ml-1 flex items-center gap-0.5 rounded-full bg-river px-1.5 py-0.5 text-[10px] font-bold text-white">
                 <Loader2 size={10} className="animate-spin" />

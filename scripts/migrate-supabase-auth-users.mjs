@@ -72,7 +72,10 @@ for (const profile of profiles ?? []) {
 const existingUsers = await listAllAuthUsers();
 const existingById = new Map(existingUsers.map((user) => [user.id, user]));
 const existingByPhone = new Map(
-  existingUsers.filter((user) => user.phone).map((user) => [user.phone, user])
+  existingUsers.filter((user) => user.phone).map((user) => [
+    user.phone.startsWith('+') ? user.phone : `+${user.phone}`, 
+    user
+  ])
 );
 
 let ready = 0;
@@ -84,7 +87,11 @@ for (const profile of prepared) {
   const byPhone = existingByPhone.get(profile.normalizedPhone);
 
   if (byId) {
-    if (byId.phone !== profile.normalizedPhone) {
+    // Supabase auth user phone might not include the '+' prefix
+    const authPhone = byId.phone.replace('+', '');
+    const normPhone = profile.normalizedPhone.replace('+', '');
+    
+    if (authPhone !== normPhone) {
       console.error(
         `[conflict] ${profile.id}: auth identity does not match normalized profile phone`
       );

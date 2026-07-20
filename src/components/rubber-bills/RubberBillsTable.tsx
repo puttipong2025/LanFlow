@@ -11,7 +11,11 @@ export type RubberBillsTableProps = {
   onPageChange: (page: number) => void;
   onEdit: (bill: RubberBill) => void;
   onDelete: (bill: RubberBill) => void;
+  onPrint: (bill: RubberBill) => void;
+  onRetry: (bill: RubberBill) => void;
+  retryDisabled: boolean;
   getActionBlockReason?: (bill: RubberBill) => string | null;
+  getPrintBlockReason?: (bill: RubberBill) => string | null;
 };
 
 export function RubberBillsTable({
@@ -21,7 +25,11 @@ export function RubberBillsTable({
   onPageChange,
   onEdit,
   onDelete,
-  getActionBlockReason
+  onPrint,
+  onRetry,
+  retryDisabled,
+  getActionBlockReason,
+  getPrintBlockReason
 }: RubberBillsTableProps) {
   const totalPages = Math.max(Math.ceil(bills.length / pageSize), 1);
   const currentPage = Math.min(page, totalPages);
@@ -54,6 +62,7 @@ export function RubberBillsTable({
             {visibleBills.map((bill) => {
               const actionBlockReason = getActionBlockReason?.(bill) ?? null;
               const actionsDisabled = Boolean(actionBlockReason);
+              const printBlockReason = getPrintBlockReason?.(bill) ?? null;
 
               return (
               <tr key={bill.id} className="whitespace-nowrap border-b border-black/10 hover:bg-field/50">
@@ -88,8 +97,12 @@ export function RubberBillsTable({
                     </button>
                     <button
                       type="button"
-                      title="พิมพ์"
-                      className="grid h-8 w-8 place-items-center rounded-md bg-violet-100 text-violet-800"
+                      title={printBlockReason ?? (bill.printStatus === "ปริ้นแล้ว" ? "พิมพ์ซ้ำ (สถานะ: ปริ้นแล้ว)" : "พิมพ์บิล")}
+                      disabled={Boolean(printBlockReason)}
+                      onClick={() => onPrint(bill)}
+                      className={`grid h-8 w-8 place-items-center rounded-md ${
+                        bill.printStatus === "ปริ้นแล้ว" ? "bg-emerald-100 text-emerald-800" : "bg-violet-100 text-violet-800"
+                      } ${printBlockReason ? "cursor-not-allowed opacity-45" : ""}`}
                     >
                       <ClipboardList size={16} />
                     </button>
@@ -100,6 +113,16 @@ export function RubberBillsTable({
                     >
                       <Banknote size={18} />
                     </button>
+                    {bill.syncStatus === "failed" && (
+                      <button
+                        type="button"
+                        onClick={() => onRetry(bill)}
+                        disabled={retryDisabled}
+                        className="rounded-md bg-blue-600 px-2 py-1 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                      >
+                        ลองซิงก์อีกครั้ง
+                      </button>
+                    )}
                   </div>
                 </td>
                 <td className="font-semibold">
@@ -113,7 +136,7 @@ export function RubberBillsTable({
                 <td>{bill.customerName}</td>
                 <td>{bill.customerType}</td>
                 <td>{bill.billType}</td>
-                <td>{formatNumber(bill.deductionTotal)}</td>
+                <td>{formatNumber(bill.deductWeight)}</td>
                 <td>{formatNumber(bill.weight)}</td>
                 <td>{formatNumber(bill.netTotal + bill.deductionTotal)}</td>
                 <td>{formatNumber(bill.price)}</td>

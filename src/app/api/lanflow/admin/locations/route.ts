@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireRole } from "@/lib/server/auth";
+import { requireSystemManager } from "@/lib/server/auth";
 import { createSupabaseAdminClient } from "@/lib/server/supabase-admin";
 
 export async function POST(request: NextRequest) {
-  const adminCheck = await requireRole(request, ["super_admin"]);
+  const adminCheck = await requireSystemManager(request);
   if (!adminCheck.ok) return adminCheck.response;
 
   try {

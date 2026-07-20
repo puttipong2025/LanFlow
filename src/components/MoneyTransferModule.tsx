@@ -7,6 +7,7 @@ import {
   Edit3,
   Plus,
   Trash2,
+  WifiOff,
 } from "lucide-react";
 import type { MoneyTransfer, Profile } from "@/types";
 import { formatCurrency } from "@/lib/format";
@@ -36,7 +37,7 @@ export function MoneyTransferModule({
   onInitialEditTransferHandled,
 }: Props) {
   const { transfers, addTransfer, updateTransfer, deleteTransfer } = useMoneyTransfers(locationId);
-  const { bills } = useRubberBills(locationId);
+  const { bills } = useRubberBills(locationId, profile.id);
   const { ocrTickets } = useOcrTickets(locationId);
   const { customers } = useCustomers();
 
@@ -53,6 +54,11 @@ export function MoneyTransferModule({
   const [editTransfer, setEditTransfer] = useState<MoneyTransfer | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const offlineMessage = "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น";
+  const branchTransferFormMode =
+    editTransfer?.transferType === "branch" && editTransfer.targetLocationId && editTransfer.locationId !== editTransfer.targetLocationId
+      ? "branch-to-branch"
+      : "head-office-to-branch";
 
   useEffect(() => {
     if (!toastMsg) return;
@@ -62,6 +68,10 @@ export function MoneyTransferModule({
 
   const handleSave = useCallback(
     (transfer: MoneyTransfer) => {
+      if (!online) {
+        setToastMsg(offlineMessage);
+        return;
+      }
       if (editTransfer) {
         updateTransfer.mutate(transfer, {
           onSuccess: () => {
@@ -88,10 +98,14 @@ export function MoneyTransferModule({
         });
       }
     },
-    [editTransfer, addTransfer, updateTransfer]
+    [editTransfer, addTransfer, updateTransfer, online, offlineMessage]
   );
 
   const handleDeleteConfirm = useCallback(() => {
+    if (!online) {
+      setToastMsg(offlineMessage);
+      return;
+    }
     if (deleteConfirmId) {
       deleteTransfer.mutate(deleteConfirmId, {
         onSuccess: () => {
@@ -104,12 +118,16 @@ export function MoneyTransferModule({
         }
       });
     }
-  }, [deleteConfirmId, deleteTransfer]);
+  }, [deleteConfirmId, deleteTransfer, online, offlineMessage]);
 
   const handleEdit = useCallback((t: MoneyTransfer) => {
+    if (!online) {
+      setToastMsg(offlineMessage);
+      return;
+    }
     setEditTransfer(t);
     setActiveFormType(t.transferType === 'transport' ? 'transport' : t.transferType === 'branch' ? 'branch' : 'customer');
-  }, []);
+  }, [online, offlineMessage]);
 
   useEffect(() => {
     if (!initialEditTransferId) return;
@@ -143,16 +161,24 @@ export function MoneyTransferModule({
           <div className="relative">
             <button
               type="button"
-              onClick={() => setShowTypeSelector(!showTypeSelector)}
-              className="focus-ring flex items-center gap-1.5 rounded-md bg-river px-4 py-2.5 text-sm font-semibold text-white hover:bg-river/90"
+              onClick={() => {
+                if (!online) {
+                  setToastMsg(offlineMessage);
+                  return;
+                }
+                setShowTypeSelector(!showTypeSelector);
+              }}
+              disabled={!online}
+              title={online ? undefined : offlineMessage}
+              className="focus-ring flex items-center gap-1.5 rounded-md bg-river px-4 py-2.5 text-sm font-semibold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <Plus size={16} /> สร้างรายการโอน
+              {online ? <Plus size={16} /> : <WifiOff size={16} />} สร้างรายการโอน
             </button>
             {showTypeSelector && (
               <div className="absolute right-0 top-full z-20 mt-2 w-56 rounded-lg border border-black/10 bg-white py-1 shadow-xl">
                 <button type="button" onClick={() => { setActiveFormType('customer'); setShowTypeSelector(false); setEditTransfer(null); }} className="w-full px-4 py-2.5 text-left text-sm font-semibold text-ink hover:bg-river/10">💰 โอนให้ลูกค้า</button>
                 <button type="button" onClick={() => { setActiveFormType('transport'); setShowTypeSelector(false); setEditTransfer(null); }} className="w-full px-4 py-2.5 text-left text-sm font-semibold text-ink hover:bg-amber/10">🚛 จ่ายค่าขนส่ง</button>
-                <button type="button" onClick={() => { setActiveFormType('branch'); setShowTypeSelector(false); setEditTransfer(null); }} className="w-full px-4 py-2.5 text-left text-sm font-semibold text-ink hover:bg-leaf/10">🏢 โอนเงินสาขา</button>
+                <button type="button" onClick={() => { setActiveFormType('branch'); setShowTypeSelector(false); setEditTransfer(null); }} className="w-full px-4 py-2.5 text-left text-sm font-semibold text-ink hover:bg-leaf/10">🏢 โอนให้สาขา</button>
               </div>
             )}
           </div>
@@ -180,6 +206,7 @@ export function MoneyTransferModule({
       {activeFormType === 'transport' && (
         <TransportTransferForm
           locationId={locationId}
+          online={online}
           editTransfer={editTransfer}
           onSave={handleSave}
           onCancel={() => {
@@ -191,6 +218,7 @@ export function MoneyTransferModule({
       {activeFormType === 'branch' && (
         <BranchTransferForm
           locationId={locationId}
+          mode={branchTransferFormMode}
           editTransfer={editTransfer}
           onSave={handleSave}
           onCancel={() => {
@@ -240,12 +268,12 @@ export function MoneyTransferModule({
                           ? "bg-purple-100 text-purple-700"
                           : "bg-gray-100 text-gray-700"
                       }`}>
-                        {t.transferType === "customer" 
-                          ? "ลูกค้า" 
-                          : t.transferType === "transport" 
-                          ? "รถขนส่ง" 
-                          : t.transferType === "branch" 
-                          ? "สาขา" 
+                        {t.transferType === "customer"
+                          ? "ลูกค้า"
+                          : t.transferType === "transport"
+                          ? "รถขนส่ง"
+                          : t.transferType === "branch"
+                          ? "ให้สาขา"
                           : "ไม่ระบุ"}
                       </span>
                     </td>
@@ -300,16 +328,24 @@ export function MoneyTransferModule({
                         <button
                           type="button"
                           onClick={() => handleEdit(t)}
-                          className="grid h-7 w-7 place-items-center rounded-md text-ink/50 hover:bg-mint hover:text-leaf"
-                          title="แก้ไข"
+                          disabled={!online}
+                          className="grid h-7 w-7 place-items-center rounded-md text-ink/50 hover:bg-mint hover:text-leaf disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-ink/50"
+                          title={online ? "แก้ไข" : offlineMessage}
                         >
                           <Edit3 size={14} />
                         </button>
                         <button
                           type="button"
-                          onClick={() => setDeleteConfirmId(t.id)}
-                          className="grid h-7 w-7 place-items-center rounded-md text-ink/50 hover:bg-clay/10 hover:text-clay"
-                          title="ลบ"
+                          onClick={() => {
+                            if (!online) {
+                              setToastMsg(offlineMessage);
+                              return;
+                            }
+                            setDeleteConfirmId(t.id);
+                          }}
+                          disabled={!online}
+                          className="grid h-7 w-7 place-items-center rounded-md text-ink/50 hover:bg-clay/10 hover:text-clay disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-ink/50"
+                          title={online ? "ลบ" : offlineMessage}
                         >
                           <Trash2 size={14} />
                         </button>
@@ -341,7 +377,7 @@ export function MoneyTransferModule({
               <button type="button" onClick={() => setDeleteConfirmId(null)} className="focus-ring rounded-md border border-black/10 bg-white px-4 py-2 text-sm font-semibold text-ink hover:bg-field">
                 ยกเลิก
               </button>
-              <button type="button" onClick={handleDeleteConfirm} className="focus-ring rounded-md bg-clay px-4 py-2 text-sm font-semibold text-white hover:bg-clay/90">
+              <button type="button" onClick={handleDeleteConfirm} disabled={!online} title={online ? undefined : offlineMessage} className="focus-ring rounded-md bg-clay px-4 py-2 text-sm font-semibold text-white hover:bg-clay/90 disabled:cursor-not-allowed disabled:opacity-50">
                 ลบ
               </button>
             </div>

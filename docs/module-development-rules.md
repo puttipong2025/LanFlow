@@ -238,6 +238,9 @@ super_admin
 - `user`: ทำงานในสาขาที่ได้รับสิทธิ์
 - `admin`: จัดการข้อมูลในสาขาที่ได้รับสิทธิ์ และงานอนุมัติบางส่วน
 - `super_admin`: เห็นและจัดการทุกสาขา/งาน critical
+- สิทธิ์ผู้จัดการระบบใช้ `profiles.can_access_super_admin_features`: `super_admin` เข้าได้เสมอ ส่วน `user`/`admin` ต้องให้ `super_admin` จริงเปิดจาก Admin Module
+- สิทธิ์ผู้จัดการระบบครอบคลุมตั้งค่าอนุมัติ, รายการบิลขาย, โอนเงิน, เห็นทุกสาขา และงานผู้ดูแลส่วนใหญ่ แต่ไม่ครอบคลุมการให้/ถอนสิทธิ์นี้, เปลี่ยน role, หรือจัดการ `super_admin`
+- `profiles.can_access_money_transfer` คงไว้เพื่อ compatibility เท่านั้น; feature ใหม่ต้องอิง `Profile.canAccessSystemManager` / `profiles.can_access_super_admin_features` เป็นหลัก
 
 ถ้าเพิ่ม admin feature ใหม่ ให้ระบุให้ชัดว่า:
 
@@ -245,6 +248,7 @@ super_admin
 - admin เห็นของตัวเองหรือทุกคนในสาขา
 - super_admin ทำเพิ่มอะไรได้
 - record ที่ approved แล้วใครแก้/ลบได้
+- ถ้า feature เป็นเมนูหรือ write path แบบ super_admin-like ต้องตรวจ `Profile.canAccessSystemManager` ใน UI/API และ helper ฝั่ง DB เช่น `public.can_access_super_admin_features()` หรือ `private.can_access_money_transfer_module()` ใน RLS/RPC
 
 ## 8. Database And Migration Rules
 
@@ -334,11 +338,18 @@ API response status:
 
 กฎสำหรับข้อมูลที่ derive จากโมดูลอื่น:
 
-- ถ้า row ใน UI ไม่ใช่ source table ของตัวเอง แต่ derive จากโมดูลอื่น เช่น รายรับ/รายจ่ายที่ดึงจาก `money_transfers` หรือ `rubber_bills` ห้าม enqueue ลง IndexedDB queue ของ module ปลายทาง
+- ถ้า row ใน UI ไม่ใช่ source table ของตัวเอง แต่ derive จากโมดูลอื่น เช่น รายรับ/รายจ่ายที่ดึงจาก `money_transfers`, `rubber_bills`, หรือ `ocr_tickets` ห้าม enqueue ลง IndexedDB queue ของ module ปลายทาง
 - Derived row ต้องเปลี่ยนหรือหายตาม source record เสมอ ไม่ควร copy เป็น row ใหม่ถ้าไม่มีเหตุผลด้าน audit ที่ชัดเจน
 - Derived row ต้องมี UI lock ชัดเจนและบอกผู้ใช้ว่าต้องแก้จากโมดูลต้นทาง
 - ถ้า derived row มี action เปิดต้นทาง ให้แสดงเฉพาะเมื่อผู้ใช้มีสิทธิ์สาขาต้นทางหรือเป็น `super_admin`
 - ถ้า derived row ต้องเปิดให้สาขาปลายทางเห็น source record ให้เพิ่ม RLS select policy เฉพาะกรณี ไม่เปิด write ข้ามสาขา
+
+กฎเพิ่มเติมสำหรับ stock source of truth:
+
+- `stock_products.id` เป็น product identity กลางของสินค้าที่กระทบสต็อก
+- `stock_entries` เก็บเฉพาะ row ของโมดูลสต็อกเอง เช่น รับเข้า/ย้าย ไม่ใช่ ledger รวมทุก source
+- movement จาก `บิลขาย` และ `บิลยาง` ต้อง derive ผ่าน `stock_movements` โดยอ้าง FK ไปที่ `stock_products.id`; ห้าม copy เป็น row ใหม่ใน `stock_entries`
+- ยอดคงเหลือต้อง sum จาก `stock_movements` เพื่อรวม stock-owned rows และ source-owned derived rows ให้ตรงกัน
 
 ## 11. Income/Expense Approval Rules
 
@@ -356,7 +367,30 @@ API response status:
 - approval/decision เป็น online-only; ถ้า offline และระบบรู้ว่ารายการต้องอนุมัติ ต้อง block การบันทึกพร้อมข้อความไทย
 - ถ้าแก้ `useIncomeExpenseApprovals`, approval API route, หรือ migration approval ต้องรัน `npx.cmd tsc --noEmit`, `npm run build`, และ `npx.cmd supabase db reset`
 
-## 12. IndexedDB Queue Rules
+## 12. Time Tracking And Payroll Rules
+
+กฎค่าแรงของโมดูล `เวลาและเงินเดือน` ต้องใช้ cutoff เวลา `15:00` ตาม timezone `Asia/Bangkok` เป็นเส้นนับวันทำงาน:
+
+- `time_segments.start_time` และ `time_segments.end_time` เป็น source row ของช่วงทำงานจริง
+- ถ้า segment ผ่านเวลา `15:00` ให้คิดค่าแรงตามจำนวนเส้น `15:00` ที่ผ่าน ไม่ใช่เอาชั่วโมงรวมหาร 8 อย่างเดียว
+- ถ้า segment ยังไม่ผ่าน `15:00` ให้คิดแบบชั่วโมงรวม / 8 เพื่อรองรับครึ่งวันหรือช่วงสั้น เช่น `08:00-12:00 = 0.5`
+- ตัวอย่างที่ต้องถูกเสมอ:
+  - `14:59 -> 15:00` = `1` วัน
+  - `06:59 -> 15:00` = `1` วัน
+  - `15:01 -> 15:00` ของวันถัดไป = `1` วัน
+  - `08:00 -> 12:00` = `0.5` วัน
+  - `08:00 -> 16:00` = `1` วัน
+
+กฎ implementation:
+
+- ฝั่ง TypeScript ต้องใช้ `src/lib/time-tracking/pay.ts` เป็น helper กลาง ห้าม duplicate สูตรใน API route หรือ component
+- `GET /api/lanflow/time-tracking/user` ต้องคำนวณ `wageInfo.totalDays`, `grossPay`, และ `remainingBalance` จาก helper กลาง
+- `POST /api/lanflow/time-tracking/admin` action `CREATE_PAYROLL_SLIP` ต้องใช้ helper กลางเดียวกันในการ snapshot `total_days` และ `gross_pay`
+- ฝั่ง database ต้องใช้ `public.calculate_time_segment_paid_days(start_time, end_time)` และ `public.calculate_paid_work_days(profile_id, period_start, period_end)` สำหรับ logic ที่รันใน DB เช่น `deduct_debts_daily()`
+- ถ้าแก้สูตรค่าแรง ต้องแก้ทั้ง TypeScript helper และ SQL helper ให้ตรงกัน พร้อมทดสอบ edge cases ข้างต้น
+- ห้ามใช้เวลาจาก client เป็น source of truth สำหรับการปิดรอบค่าแรง; client timer ใช้ได้แค่ UX/countdown แต่ server/API/DB ต้องคำนวณซ้ำเอง
+
+## 13. IndexedDB Queue Rules
 
 ถ้า module เป็น offline-first ให้ใช้ `src/lib/idb-queue.ts` เป็น queue กลาง
 
@@ -380,7 +414,7 @@ errorMessage
 
 ใช้ `src/lib/coalesceQueueGroup.ts` ถ้า pattern ตรงกับ create/update/delete ทั่วไป
 
-## 13. Server Number And Timestamp Rules
+## 14. Server Number And Timestamp Rules
 
 เลขเอกสารจริงต้องออกจาก server เท่านั้น:
 
@@ -395,7 +429,7 @@ errorMessage
 - `server_received_at`: เวลาจริงของ server
 - `created_at` / `updated_at`: ให้ DB default/trigger ดูแล
 
-## 14. Relation Lock Rules
+## 15. Relation Lock Rules
 
 ถ้า record ถูกใช้ในโมดูลอื่นแล้ว ต้องตัดสินใจ lock ให้ชัด
 
@@ -406,11 +440,14 @@ errorMessage
 - ต้องลบ item ออกจากรายการโอนก่อน
 - RPC return `failed` พร้อมข้อความไทย เช่น `รายการนี้ถูกล็อก ต้องลบ item ออกจากรายการโอนก่อน`
 - รายรับใน Income/Expense ที่ derive จาก `money_transfers.transfer_type = 'branch'` และ `target_location_id` ตรงสาขาปัจจุบัน แก้/ลบจาก Income/Expense ไม่ได้ ต้องแก้หรือลบที่รายการโอนเงินสาขาต้นทาง
-- รายจ่ายใน Income/Expense ที่ derive จาก `money_transfers.transfer_type = 'branch'` และ `location_id` ตรงสาขาปัจจุบัน แก้/ลบจาก Income/Expense ไม่ได้ ต้องแก้หรือลบที่รายการโอนเงินสาขาต้นทาง
+- รายจ่ายใน Income/Expense ที่ derive จาก `money_transfers.transfer_type = 'branch'`, `location_id` ตรงสาขาปัจจุบัน, และ `target_location_id != location_id` แก้/ลบจาก Income/Expense ไม่ได้ ต้องแก้หรือลบที่รายการโอนเงินสาขาต้นทาง
 - รายจ่ายใน Income/Expense ที่ derive จาก `money_transfers.transfer_type = 'customer'`, `transfer_status = 'branch_and_transfer'`, และ `branch_paid_amount` แก้/ลบจาก Income/Expense ไม่ได้ ต้องแก้หรือลบที่รายการโอนเงินลูกค้าต้นทาง
 - รายจ่ายใน Income/Expense ที่ derive จาก `rubber_bills` แบบรวมยอด `net_total` ต่อ `bill_date` สำหรับบิลที่ยังไม่อยู่ใน `money_transfer_items.source_type = 'rubber_bill'` แก้/ลบจาก Income/Expense ไม่ได้ ต้องแก้หรือลบที่รายการบิลยางต้นทาง
-- branch transfer ต้องใช้สิทธิ์สาขาต้นทางเท่านั้น; สาขาปลายทางเป็น dropdown จากสาขา active ทั้งหมด
-- derived row ที่ผู้ใช้มีสิทธิ์สาขาต้นทางหรือเป็น `super_admin` ควรมี action เปิดรายการต้นทาง; ถ้าไม่มีสิทธิ์สาขาต้นทางต้องไม่แสดงปุ่มและห้ามบังคับสลับสาขา
+- รายจ่ายใน Income/Expense ที่ derive จาก `ocr_tickets` แบบรวมยอด `total_amount` ต่อ `date_in` สำหรับ OCR ticket ที่ยังไม่อยู่ใน `money_transfer_items.source_type = 'ocr_ticket'` แก้/ลบจาก Income/Expense ไม่ได้ ต้องแก้หรือลบที่โมดูล OCR บิลยางต้นทาง
+- branch transfer จากโมดูลรับ-จ่าย (`โยกเงินไปสาขาอื่น`) ต้องใช้สิทธิ์สาขาต้นทางเท่านั้น; สาขาปลายทางเป็น dropdown จากสาขา active ทั้งหมด และต้องไม่ใช่สาขาปัจจุบัน
+- branch transfer จากโมดูลโอนเงิน (`โอนให้สาขา`) คือสำนักงานใหญ่/CEO โอนให้สาขา ไม่ใช่สาขาโยกเงินหากัน; ต้องอนุญาตให้เลือกสาขาปัจจุบันเป็นสาขารับเงินได้ และควรบันทึก `location_id = target_location_id` เพื่อไม่สร้างรายจ่ายขาออกในรับ-จ่าย
+- derived row ที่ผู้ใช้มีสิทธิ์สาขาต้นทาง, เป็น `super_admin`, หรือมีสิทธิ์ผู้จัดการระบบ ควรมี action เปิดรายการต้นทาง; ถ้าไม่มีสิทธิ์สาขาต้นทางต้องไม่แสดงปุ่มและห้ามบังคับสลับสาขา
+- action ที่สร้างหรือแก้ `money_transfers` เช่น `โยกเงินไปสาขาอื่น` และ `โอนให้สาขา` ต้องซ่อน/บล็อกเมื่อผู้ใช้ไม่มีสิทธิ์ผู้จัดการระบบ/โมดูลโอนเงิน แม้ผู้ใช้นั้นจะมีสิทธิ์อ่านสาขาเพื่อดู derived locked rows ก็ตาม
 
 กฎสำหรับ module ใหม่:
 
@@ -421,13 +458,13 @@ errorMessage
 
 กฎเพิ่มเติมสำหรับ derived money relation:
 
-1. ต้องนิยาม source of truth ให้ชัด เช่น `money_transfers` หรือ `rubber_bills` เป็น source ของ derived income/expense
+1. ต้องนิยาม source of truth ให้ชัด เช่น `money_transfers`, `rubber_bills`, หรือ `ocr_tickets` เป็น source ของ derived income/expense
 2. ถ้าใช้ derived row แทนการสร้าง row จริงใน table ปลายทาง ต้อง lock action ใน UI เพราะไม่มี mutation path ใน module ปลายทาง
 3. ถ้าสร้าง row จริงใน table ปลายทางแทน derived row ต้องมี relation id, RPC/trigger enforcement, update/delete cascade หรือ sync logic ที่ทำให้ข้อมูลสองฝั่งไม่แยกกัน
 4. ต้องระบุ RLS ให้ปลายทางอ่าน source ได้เท่าที่จำเป็น เช่น branch target อ่าน branch transfer ที่ชี้มายังสาขาตัวเองได้ แต่เขียนไม่ได้
 5. ห้ามให้ client ฝั่ง browser ตัดสินใจเองว่า relation lock ผ่านหรือไม่ ถ้ามี write จริง ต้องตรวจซ้ำใน API/RPC/DB
 
-## 15. Testing Rules
+## 16. Testing Rules
 
 ทุก module ใหม่อย่างน้อยต้องมี:
 
@@ -465,7 +502,7 @@ PWA tests ควรครอบ:
 
 ถ้าเปลี่ยนกติกาเดิม ให้ปรับ/skip tests ที่ยืนยัน behavior เก่า พร้อม comment เหตุผล
 
-## 16. Documentation Rules
+## 17. Documentation Rules
 
 ทุก feature ใหญ่ควรมี doc ใน `docs/`
 
@@ -482,7 +519,7 @@ PWA tests ควรครอบ:
 
 ถ้าเป็น decision ระดับ architecture ให้สร้าง ADR ใน `docs/adr/`
 
-## 17. Code Review Checklist
+## 18. Code Review Checklist
 
 ก่อนบอกว่า ship-ready ให้ตรวจ:
 
@@ -500,7 +537,7 @@ PWA tests ควรครอบ:
 - relation lock มีทั้ง UI และ server enforcement
 - derived money rows ระบุ source of truth ชัดเจน และแก้/ลบได้จากต้นทางเท่านั้น
 
-## 18. Prompt Template For Next AI
+## 19. Prompt Template For Next AI
 
 ใช้ prompt นี้เมื่อต้องสั่ง AI ตัวต่อไปสร้าง module ใหม่:
 
@@ -526,7 +563,7 @@ PWA tests ควรครอบ:
 - ถ้ามี migration ต้องรัน npx.cmd supabase db reset
 ```
 
-## 19. Quick Module Readiness Checklist
+## 20. Quick Module Readiness Checklist
 
 ```text
 [ ] มี folder module ใต้ src/components/<module>/

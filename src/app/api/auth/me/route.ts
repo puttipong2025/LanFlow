@@ -14,7 +14,9 @@ export async function GET(request: NextRequest) {
         phone: result.auth.phone,
         name: result.auth.name,
         role: result.auth.role,
-        locationIds: result.auth.locationIds
+        locationIds: result.auth.locationIds,
+        canAccessSystemManager: result.auth.canAccessSystemManager,
+        canAccessMoneyTransfer: result.auth.canAccessMoneyTransfer
       }
     });
   } catch (error) {
