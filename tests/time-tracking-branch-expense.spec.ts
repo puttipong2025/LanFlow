@@ -243,11 +243,13 @@ test.describe("Time Tracking approval picker UI @time-tracking", () => {
   test.use({ storageState: "playwright/.auth/admin.json" });
 
   test("approval queue and payroll modal use the same branch picker", async ({ page }) => {
+    const admin = serviceClient();
     const adminRequest = page.request;
     const superAdminRequest = await playwrightRequest.newContext({
       baseURL: "http://127.0.0.1:3000",
       storageState: "playwright/.auth/super_admin.json",
     });
+    let temporaryLocationId: string | undefined;
 
     try {
       async function chooseExpenseLocation() {
@@ -262,6 +264,17 @@ test.describe("Time Tracking approval picker UI @time-tracking", () => {
       const dashboard = await dashboardResponse.json() as { users: Array<{ id: string; role: string }> };
       const employee = dashboard.users.find((user) => user.role === "user");
       expect(employee).toBeTruthy();
+
+      const marker = `E2E-TIME-TRACKING-PICKER-${Date.now()}`;
+      const { data: temporaryLocation, error: createLocationError } = await admin.from("locations").insert({
+        name: marker,
+        code: `E2E-PICKER-${Date.now()}`,
+        is_active: true,
+      }).select("id").single();
+      expect(createLocationError).toBeNull();
+      temporaryLocationId = temporaryLocation!.id;
+      const { error: assignLocationError } = await admin.from("user_locations").insert({ user_id: adminId, location_id: temporaryLocationId });
+      expect(assignLocationError).toBeNull();
 
       const withdrawalAmount = 400000 + (Date.now() % 10000);
       expect((await adminRequest.post("/api/lanflow/time-tracking/admin", { data: {
@@ -296,8 +309,10 @@ test.describe("Time Tracking approval picker UI @time-tracking", () => {
       await withdrawalRow.getByRole("button", { name: "อนุมัติ" }).click();
       const pickerHeading = page.getByRole("heading", { name: "เลือกสาขาสำหรับบันทึกค่าใช้จ่าย" });
       await expect(pickerHeading).toBeVisible();
+      await expect(page.getByRole("button", { name: "อนุมัติและสร้างค่าใช้จ่าย" })).toBeDisabled();
       await chooseExpenseLocation();
-      await page.getByRole("button", { name: "อนุมัติและสร้างค่าใช้จ่าย" }).click();
+      const submitExpense = page.getByRole("button", { name: "อนุมัติและสร้างค่าใช้จ่าย" });
+      await submitExpense.click();
       await expect(pickerHeading).toBeHidden();
 
       const employeeRow = page.locator("tr", { hasText: "LanFlow user" }).first();
@@ -314,6 +329,82 @@ test.describe("Time Tracking approval picker UI @time-tracking", () => {
       await expect(pickerHeading).toBeHidden();
     } finally {
       await superAdminRequest.dispose();
+      if (temporaryLocationId) {
+        await admin.from("user_locations").delete().eq("user_id", adminId).eq("location_id", temporaryLocationId);
+        await admin.from("locations").delete().eq("id", temporaryLocationId);
+      }
+    }
+  });
+
+  test("preselects one branch and keeps approval online-only", async ({ page, context }) => {
+    test.setTimeout(60_000);
+    const admin = serviceClient();
+    const request = page.request;
+    let originalLocationIds: string[] = [];
+    let sourceLocationId: string | undefined;
+    const pendingTransactionIds: string[] = [];
+
+    async function createWithdrawal(employeeId: string, amount: number) {
+      expect((await request.post("/api/lanflow/time-tracking/admin", { data: {
+        action: "ADMIN_REQUEST_WITHDRAWAL",
+        payload: { user_id: employeeId, amount },
+      }})).ok()).toBeTruthy();
+      const pendingResponse = await request.get("/api/lanflow/time-tracking/admin");
+      const pending = await pendingResponse.json() as { pendingTransactions: Array<{ id: string; profile_id: string; type: string; amount: number }> };
+      const withdrawal = pending.pendingTransactions.find((transaction) =>
+        transaction.profile_id === employeeId && transaction.type === "WITHDRAWAL" && Number(transaction.amount) === amount,
+      );
+      expect(withdrawal).toBeTruthy();
+      pendingTransactionIds.push(withdrawal!.id);
+      return amount;
+    }
+
+    try {
+      const meResponse = await request.get("/api/auth/me");
+      const me = await meResponse.json() as { profile: { locationIds: string[] } };
+      originalLocationIds = me.profile.locationIds;
+      sourceLocationId = originalLocationIds[0];
+      expect(sourceLocationId).toBeTruthy();
+
+      const dashboardResponse = await request.get("/api/lanflow/time-tracking/admin");
+      const dashboard = await dashboardResponse.json() as { users: Array<{ id: string; role: string }> };
+      const employee = dashboard.users.find((user) => user.role === "user");
+      expect(employee).toBeTruthy();
+      const oneBranchAmount = await createWithdrawal(employee!.id, 600000 + (Date.now() % 10000));
+
+      await admin.from("user_locations").delete().eq("user_id", adminId);
+      await admin.from("user_locations").insert({ user_id: adminId, location_id: sourceLocationId! });
+
+      await page.goto("/");
+      await page.getByRole("button", { name: "เวลาและเงินเดือน" }).click();
+      const oneBranchRow = page.locator("li", { hasText: oneBranchAmount.toLocaleString("en-US") }).first();
+      await oneBranchRow.getByRole("button", { name: "อนุมัติ" }).click();
+      await expect(page.locator("#expense-location")).toHaveValue(sourceLocationId!);
+      await page.getByRole("button", { name: "ยกเลิก" }).click();
+
+      await context.setOffline(true);
+      const offlineApprove = oneBranchRow.getByRole("button", { name: "อนุมัติ" });
+      await expect(offlineApprove).toBeDisabled();
+    } finally {
+      await context.setOffline(false).catch(() => {});
+      await admin.from("user_locations").delete().eq("user_id", adminId);
+      for (const locationId of originalLocationIds) {
+        await admin.from("user_locations").upsert({ user_id: adminId, location_id: locationId });
+      }
+      const cleanupRequest = await playwrightRequest.newContext({
+        baseURL: "http://127.0.0.1:3000",
+        storageState: "playwright/.auth/admin.json",
+      });
+      try {
+        for (const transactionId of pendingTransactionIds) {
+          await cleanupRequest.post("/api/lanflow/time-tracking/admin", { data: {
+            action: "APPROVE_TRANSACTION",
+            payload: { transaction_id: transactionId, status: "REJECTED", admin_comment: "E2E picker coverage cleanup" },
+          }});
+        }
+      } finally {
+        await cleanupRequest.dispose();
+      }
     }
   });
 });
@@ -533,6 +624,71 @@ test.describe("Time Tracking non-expense approvals @time-tracking", () => {
 
 test.describe("Time Tracking expense correction @time-tracking", () => {
   test.use({ storageState: "playwright/.auth/admin.json" });
+
+  test("shows the Thai relation lock and routes to its source UI", async ({ page, request }) => {
+    test.setTimeout(60_000);
+    const admin = serviceClient();
+    const marker = `E2E-TIME-TRACKING-UI-CORRECTION-${Date.now()}`;
+    let correctionLocationId: string | undefined;
+    let withdrawalId: string | undefined;
+
+    try {
+      const meResponse = await request.get("/api/auth/me");
+      const me = await meResponse.json() as { profile: { locationIds: string[] } };
+      const sourceLocationId = me.profile.locationIds[0];
+      expect(sourceLocationId).toBeTruthy();
+
+      const { data: correctionLocation, error: createLocationError } = await admin.from("locations").insert({
+        name: marker,
+        code: `E2E-UI-CORR-${Date.now()}`,
+        is_active: true,
+      }).select("id").single();
+      expect(createLocationError).toBeNull();
+      correctionLocationId = correctionLocation!.id;
+      expect((await admin.from("user_locations").insert({ user_id: adminId, location_id: correctionLocationId })).error).toBeNull();
+
+      const dashboardResponse = await request.get("/api/lanflow/time-tracking/admin");
+      const dashboard = await dashboardResponse.json() as { users: Array<{ id: string; role: string }> };
+      const employee = dashboard.users.find((user) => user.role === "user");
+      expect(employee).toBeTruthy();
+      const amount = 700000 + (Date.now() % 10000);
+      expect((await request.post("/api/lanflow/time-tracking/admin", { data: {
+        action: "ADMIN_REQUEST_WITHDRAWAL",
+        payload: { user_id: employee!.id, amount },
+      }})).ok()).toBeTruthy();
+      const pendingResponse = await request.get("/api/lanflow/time-tracking/admin");
+      const pending = await pendingResponse.json() as { pendingTransactions: Array<{ id: string; profile_id: string; type: string; amount: number }> };
+      const withdrawal = pending.pendingTransactions.find((transaction) =>
+        transaction.profile_id === employee!.id && transaction.type === "WITHDRAWAL" && Number(transaction.amount) === amount,
+      );
+      expect(withdrawal).toBeTruthy();
+      withdrawalId = withdrawal!.id;
+      expect((await request.post("/api/lanflow/time-tracking/admin", { data: {
+        action: "APPROVE_TRANSACTION",
+        payload: { transaction_id: withdrawalId, status: "APPROVED", expense_location_id: sourceLocationId, admin_comment: marker },
+      }})).ok()).toBeTruthy();
+
+      await page.goto("/");
+      await page.getByRole("button", { name: "รับ-จ่าย" }).click();
+      const lockMessage = "รายการนี้มาจากการเบิกเงินที่อนุมัติแล้ว ต้องแก้ไขสาขาหรือยกเลิกที่โมดูลลงเวลาต้นทาง";
+      await expect(page.getByTitle(lockMessage).first()).toBeVisible();
+      const openSource = page.getByRole("button", { name: "เปิดรายการต้นทาง" }).first();
+      await expect(openSource).toBeVisible();
+      await openSource.click();
+      await expect(page.getByRole("heading", { name: "จัดการเวลาและเงินเดือน" })).toBeVisible();
+    } finally {
+      if (withdrawalId) {
+        await request.post("/api/lanflow/time-tracking/admin", { data: {
+          action: "DELETE_TRANSACTION",
+          payload: { transaction_id: withdrawalId, cancel_reason: marker },
+        }});
+      }
+      if (correctionLocationId) {
+        await admin.from("user_locations").delete().eq("user_id", adminId).eq("location_id", correctionLocationId);
+        await admin.from("locations").delete().eq("id", correctionLocationId);
+      }
+    }
+  });
 
   test("moves an approved withdrawal only through its source and preserves soft-cancel", async ({ request }) => {
     const admin = serviceClient();
