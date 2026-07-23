@@ -16,6 +16,12 @@ interface TimeTrackingModuleProps {
 const TIME_TRACKING_OFFLINE_MESSAGE = "เวลาและเงินเดือนใช้ได้เมื่อออนไลน์เท่านั้น";
 type ApprovalType = 'TRANSACTION' | 'LEAVE' | 'SLIP';
 
+function reportLockReason(item: { report_lock_no?: string | null }) {
+  return item.report_lock_no
+    ? `ล็อกโดยรายงาน ${item.report_lock_no} — ต้องลบรายงานล่าสุดตามลำดับก่อน`
+    : null;
+}
+
 export function TimeTrackingModule({ profile, online, locations }: TimeTrackingModuleProps) {
   const isAdmin = profile.role === "admin" || profile.role === "super_admin";
 
@@ -142,6 +148,11 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
   }
 
   async function handleDeleteTransaction(tx: any) {
+    const lockReason = reportLockReason(tx);
+    if (lockReason) {
+      alert(lockReason);
+      return;
+    }
     if (!online) {
       alert(TIME_TRACKING_OFFLINE_MESSAGE);
       return;
@@ -169,6 +180,11 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
   }
 
   async function changeWithdrawalExpenseLocation(tx: any) {
+    const lockReason = reportLockReason(tx);
+    if (lockReason) {
+      alert(lockReason);
+      return;
+    }
     if (!online || expenseLocations.length === 0) return;
     const choices = expenseLocations.map((location, index) => `${index + 1}. ${location.name}`).join('\n');
     const selected = Number(prompt(`เลือกสาขาค่าใช้จ่ายใหม่\n${choices}`));
@@ -339,10 +355,10 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
                       <button onClick={() => onApprove('TRANSACTION', t)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-leaf/20 text-leaf px-3 py-1 rounded font-bold hover:bg-leaf/30 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
                     )}
                     {t.type === 'WITHDRAWAL' && t.status === 'APPROVED' && !t.cancelled_at && (profile.role === 'admin' || profile.role === 'super_admin') && (
-                      <button onClick={() => changeWithdrawalExpenseLocation(t)} disabled={saving || !online || expenseLocations.length === 0} className="text-river hover:text-river/70 text-sm underline disabled:opacity-40">เปลี่ยนสาขาค่าใช้จ่าย</button>
+                      <button onClick={() => changeWithdrawalExpenseLocation(t)} disabled={saving || !online || expenseLocations.length === 0 || Boolean(t.report_lock_no)} title={reportLockReason(t) ?? undefined} className="text-river hover:text-river/70 text-sm underline disabled:opacity-40">เปลี่ยนสาขาค่าใช้จ่าย</button>
                     )}
                     {(profile.role === 'super_admin' || (profile.role === 'admin' && !targetUserId && t.status !== 'APPROVED')) && (t.type === 'DEBT' || t.type === 'WITHDRAWAL') && (
-                      <button onClick={() => handleDeleteTransaction(t)} disabled={saving || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="text-clay hover:text-clay/70 p-1 disabled:cursor-not-allowed disabled:opacity-40">
+                      <button onClick={() => handleDeleteTransaction(t)} disabled={saving || !online || Boolean(t.report_lock_no)} title={reportLockReason(t) ?? (online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE)} className="text-clay hover:text-clay/70 p-1 disabled:cursor-not-allowed disabled:opacity-40">
                         <XCircle size={18} />
                       </button>
                     )}
@@ -411,7 +427,7 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
                       <button onClick={() => onApprove('TRANSACTION', t)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-leaf/20 text-leaf px-3 py-1 rounded font-bold hover:bg-leaf/30 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
                     )}
                     {(profile.role === 'super_admin' || (profile.role === 'admin' && !targetUserId && t.status !== 'APPROVED')) && (t.type === 'DEBT' || t.type === 'WITHDRAWAL') && (
-                      <button onClick={() => handleDeleteTransaction(t)} disabled={saving || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="text-clay hover:text-clay/70 p-1 disabled:cursor-not-allowed disabled:opacity-40">
+                      <button onClick={() => handleDeleteTransaction(t)} disabled={saving || !online || Boolean(t.report_lock_no)} title={reportLockReason(t) ?? (online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE)} className="text-clay hover:text-clay/70 p-1 disabled:cursor-not-allowed disabled:opacity-40">
                         <XCircle size={18} />
                       </button>
                     )}
@@ -822,7 +838,7 @@ function ManageTimeModal({ user, admins, online, onClose, onSuccess, onRefresh }
   const [selectedDates, setSelectedDates] = useState<Record<string, 'FULL_DAY' | 'HALF_DAY'>>({});
   const [saving, setSaving] = useState(false);
   const [histories, setHistories] = useState<any[]>([]);
-  const [lockedDates, setLockedDates] = useState<Map<string, 'SLIP' | 'DEBT'>>(new Map());
+  const [lockedDates, setLockedDates] = useState<Map<string, string>>(new Map());
 
   const activeSegment = useMemo(() => user.time_segments?.find((s: any) => !s.end_time), [user]);
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
@@ -999,7 +1015,12 @@ function ManageTimeModal({ user, admins, online, onClose, onSuccess, onRefresh }
     }
     const lockReason = lockedDates.get(d);
     if (lockReason) {
-      alert(`วันที่ ${d} ไม่สามารถแก้ไขได้\nเนื่องจาก${lockReason === 'SLIP' ? 'ได้ออกสลิปเงินเดือนของเดือนนี้ไปแล้ว' : 'ยอดค่าแรงวันนี้ถูกนำไปหักหนี้สินแล้ว'}`);
+      const reason = lockReason.startsWith('REPORT:')
+        ? `ล็อกโดยรายงาน ${lockReason.slice('REPORT:'.length)} — ต้องลบรายงานล่าสุดตามลำดับก่อน`
+        : lockReason === 'SLIP'
+          ? 'ได้ออกสลิปเงินเดือนของเดือนนี้ไปแล้ว'
+          : 'ยอดค่าแรงวันนี้ถูกนำไปหักหนี้สินแล้ว';
+      alert(`วันที่ ${d} ไม่สามารถแก้ไขได้\nเนื่องจาก${reason}`);
       return;
     }
     setSelectedDates(prev => {
@@ -1081,7 +1102,7 @@ function ManageTimeModal({ user, admins, online, onClose, onSuccess, onRefresh }
     for (const d of days) {
       const current = initialDates[d] || 'NONE';
       const target = fullSnapshot[d] || 'NONE';
-      if (current !== target) {
+      if (current !== target && !lockedDates.has(d)) {
         selections.push({ date: d, work_type: target });
       }
     }
@@ -1178,12 +1199,19 @@ function ManageTimeModal({ user, admins, online, onClose, onSuccess, onRefresh }
         <div className="grid grid-cols-4 sm:grid-cols-7 gap-2 mb-6 overflow-y-auto p-1 flex-1">
           {days.map(d => {
             const current = selectedDates[d];
+            const lockReason = lockedDates.get(d);
+            const lockLabel = lockReason?.startsWith('REPORT:')
+              ? lockReason.slice('REPORT:'.length)
+              : lockReason === 'SLIP' ? '🔒 เงินเดือน' : '🔒 หักหนี้';
+            const lockTitle = lockReason?.startsWith('REPORT:')
+              ? `ล็อกโดยรายงาน ${lockLabel} — ต้องลบรายงานล่าสุดตามลำดับก่อน`
+              : undefined;
             return (
               <button
                 key={d}
                 onClick={() => toggleDate(d)}
                 disabled={!online || lockedDates.has(d)}
-                title={!online ? TIME_TRACKING_OFFLINE_MESSAGE : undefined}
+                title={!online ? TIME_TRACKING_OFFLINE_MESSAGE : lockTitle}
                 className={`
                   relative overflow-hidden h-14 rounded-md border flex flex-col items-center justify-center text-sm font-semibold transition-colors
                   ${!online || lockedDates.has(d) ? 'bg-black/5 border-black/20 cursor-not-allowed opacity-60' : current ? 'border-river ring-2 ring-river/30 ring-offset-1' : 'bg-white border-black/10 text-ink/70 hover:bg-sand'}
@@ -1198,7 +1226,7 @@ function ManageTimeModal({ user, admins, online, onClose, onSuccess, onRefresh }
 
                 {lockedDates.has(d) && (
                   <span className="relative z-10 text-[9px] text-clay font-bold">
-                    {lockedDates.get(d) === 'SLIP' ? '🔒 เงินเดือน' : '🔒 หักหนี้'}
+                    {lockLabel}
                   </span>
                 )}
                 {current && !lockedDates.has(d) && (
@@ -1394,6 +1422,12 @@ function PayrollModal({ user, profile, online, onApprove, onClose, onRefresh }: 
   }
 
   async function deleteSlip(slipId: string, month: string) {
+    const slip = slips.find((item: any) => item.id === slipId);
+    const lockReason = reportLockReason(slip ?? {});
+    if (lockReason) {
+      alert(lockReason);
+      return;
+    }
     if (!online) {
       alert(TIME_TRACKING_OFFLINE_MESSAGE);
       return;
@@ -1484,7 +1518,7 @@ function PayrollModal({ user, profile, online, onApprove, onClose, onRefresh }: 
                        )}
 
                       {canDelete && (
-                        <button onClick={() => deleteSlip(slip.id, slip.month)} disabled={saving || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="text-clay/70 hover:text-clay text-sm underline disabled:cursor-not-allowed disabled:opacity-40">
+                        <button onClick={() => deleteSlip(slip.id, slip.month)} disabled={saving || !online || Boolean(slip.report_lock_no)} title={reportLockReason(slip) ?? (online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE)} className="text-clay/70 hover:text-clay text-sm underline disabled:cursor-not-allowed disabled:opacity-40">
                           {slip.status === 'APPROVED' && Number(slip.net_pay) > 0 ? 'ยกเลิกค่าใช้จ่าย' : 'ลบสลิป'}
                         </button>
                       )}

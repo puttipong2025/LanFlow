@@ -11,7 +11,7 @@ export function useOcrTickets(locationId: string) {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("ocr_tickets")
-        .select("*")
+        .select("*, report_lock_no")
         .eq("location_id", locationId)
         .neq("record_status", "deleted")
         .order("created_at", { ascending: false });
@@ -43,7 +43,8 @@ export function useOcrTickets(locationId: string) {
         createdByName: row.created_by_name ?? undefined,
         createdByPhone: row.created_by_phone ?? undefined,
         createdAt: row.created_at,
-        updatedAt: row.updated_at
+        updatedAt: row.updated_at,
+        reportLockNo: row.report_lock_no ?? null
       }));
     },
     enabled: !!locationId,

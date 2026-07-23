@@ -13,11 +13,13 @@ function isUuid(value: unknown): value is string {
 function approvalRpcErrorStatus(message: string) {
   if (/Authentication required/i.test(message)) return 401;
   if (/Forbidden|access denied|Cannot approve/i.test(message)) return 403;
-  if (/already been decided/i.test(message)) return 409;
+  if (/already been decided|REPORT_LOCKED/i.test(message)) return 409;
   return 400;
 }
 
 function approvalRpcErrorMessage(message: string) {
+  const reportNo = message.match(/REPORT_LOCKED:([A-Z0-9-]+)/i)?.[1];
+  if (reportNo) return `ล็อกโดยรายงาน ${reportNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`;
   if (/Authentication required/i.test(message)) return "กรุณาเข้าสู่ระบบใหม่";
   if (/Expense location.*access denied|New expense location access denied/i.test(message)) return "คุณไม่มีสิทธิ์ดูแลสาขาค่าใช้จ่ายที่เลือก";
   if (/Expense location is not valid/i.test(message)) return "รายการนี้ไม่ต้องเลือกสาขาค่าใช้จ่าย";
@@ -40,7 +42,7 @@ export async function GET(request: NextRequest) {
   try {
     let usersQuery = result.supabase.from("profiles").select(`
       id, name, phone, daily_wage, role, is_active,
-      time_segments(id, start_time, end_time)
+      time_segments(id, start_time, end_time, report_lock_no)
     `);
 
     let txQuery = result.supabase.from("financial_transactions").select("id, profile_id, amount, created_at, type, description, due_date, profiles!inner!financial_transactions_profile_id_fkey(name, role)").eq("status", "PENDING");
@@ -284,7 +286,7 @@ export async function POST(request: NextRequest) {
 
     if (body.action === 'GET_LOCKED_DATES') {
       const { user_id } = body.payload;
-      const lockedDates: Record<string, 'SLIP' | 'DEBT'> = {};
+      const lockedDates: Record<string, string> = {};
 
       // Find all months that have DEBT_DEDUCTION transactions for this user
       const { data: deductions } = await supabase.from('financial_transactions')
@@ -346,6 +348,19 @@ export async function POST(request: NextRequest) {
             lockedDates[dStr] = 'SLIP';
           }
         }
+      }
+
+      const { data: reportedSegments } = await supabase
+        .from('time_segments')
+        .select('start_time, report_lock_no')
+        .eq('profile_id', user_id)
+        .not('end_time', 'is', null);
+      for (const segment of reportedSegments ?? []) {
+        if (!segment.report_lock_no) continue;
+        const date = new Date(segment.start_time)
+          .toLocaleString('sv', { timeZone: 'Asia/Bangkok' })
+          .split(' ')[0];
+        lockedDates[date] = `REPORT:${segment.report_lock_no}`;
       }
 
       return NextResponse.json({ lockedDates });
@@ -499,7 +514,7 @@ export async function POST(request: NextRequest) {
     if (body.action === 'LIST_PAYROLL_SLIPS') {
       const { user_id } = body.payload;
       if (!(await canEditUser(user_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-      const { data: slips } = await supabase.from('payroll_slips').select('*, approver:profiles!payroll_slips_approved_by_fkey(name)').eq('profile_id', user_id).order('month', { ascending: false });
+      const { data: slips } = await supabase.from('payroll_slips').select('*, report_lock_no, approver:profiles!payroll_slips_approved_by_fkey(name)').eq('profile_id', user_id).order('month', { ascending: false });
       return NextResponse.json({ slips: slips || [] });
     }
 

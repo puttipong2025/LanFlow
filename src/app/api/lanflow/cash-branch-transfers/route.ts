@@ -16,7 +16,7 @@ export async function GET(request: NextRequest) {
 
   const { data, error } = await result.supabase
     .from("money_transfers")
-    .select("*, money_transfer_cash_details(*)")
+    .select("*, report_lock_no, money_transfer_cash_details(*)")
     .eq("transfer_type", "cash")
     .eq("transfer_method", "cash")
     .or(`location_id.eq.${locationId},target_location_id.eq.${locationId}`)

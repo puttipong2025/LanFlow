@@ -27,9 +27,10 @@ import { Dashboard } from "@/components/dashboard/Dashboard";
 import { RubberBillsModule } from "@/components/rubber-bills/RubberBillsModule";
 import { IncomeExpenseModule } from "@/components/income-expense/IncomeExpenseModule";
 import { AcidStockModule } from "@/components/acid-stock/AcidStockModule";
+import { ReportsModule } from "@/components/reports/ReportsModule";
 import { AppHeader } from "@/components/lanflow/AppHeader";
 import { NavigationTabs } from "@/components/lanflow/NavigationTabs";
-import { canAccessSourceLocation, canUseMoneyTransfer } from "@/lib/permissions";
+import { canAccessSourceLocation, canUseMoneyTransfer, canUseReports } from "@/lib/permissions";
 import { getOfflineTabBlockMessage, isTabBlockedOffline } from "@/lib/offline-module-policy";
 
 export function LanFlowApp() {
@@ -126,12 +127,19 @@ export function LanFlowApp() {
   }, []);
 
   const canAccessMoneyTransfer = canUseMoneyTransfer(profile);
+  const canAccessReports = canUseReports(profile);
 
   useEffect(() => {
     if (activeTab === "money-transfer" && !canAccessMoneyTransfer) {
       setActiveTab("dashboard");
     }
   }, [activeTab, canAccessMoneyTransfer]);
+
+  useEffect(() => {
+    if (activeTab === "reports" && !canAccessReports) {
+      setActiveTab("dashboard");
+    }
+  }, [activeTab, canAccessReports]);
 
   useEffect(() => {
     if (!isTabBlockedOffline(activeTab, online)) return;
@@ -376,6 +384,13 @@ export function LanFlowApp() {
         )}
         {activeTab === "time-tracking" && (
           <TimeTrackingModule profile={profile} online={online} locations={locations} />
+        )}
+        {activeTab === "reports" && canAccessReports && (
+          <ReportsModule
+            selectedLocation={selectedLocation}
+            profile={profile}
+            online={online}
+          />
         )}
         {activeTab === "admin" && (
           <AdminModule

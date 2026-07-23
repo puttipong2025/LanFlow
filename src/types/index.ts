@@ -85,6 +85,7 @@ export type RubberBill = {
   deletedByName?: string;
   deletedByPhone?: string;
   syncErrorMessage?: string;
+  reportLockNo?: string | null;
 };
 
 export type IncomeBillOption = "รายรับ" | "บิลขาย";
@@ -236,6 +237,7 @@ export type IncomeExpense = {
   relationSourceDate?: string;
   relationLockReason?: string;
   relationLabel?: string;
+  reportLockNo?: string | null;
 };
 
 export type AcidStockSourceType = "stock_entry" | "income_sale" | "rubber_bill_acid" | "rubber_bill_stock_deduction";
@@ -258,6 +260,7 @@ export type AcidStockMovement = {
   createdByPhone?: string | null;
   createdAt: string;
   relationLockReason?: string | null;
+  reportLockNo?: string | null;
 };
 
 export type QueueItem = {
@@ -342,6 +345,7 @@ export type OcrTicket = {
   createdByPhone?: string;
   createdAt?: string;
   updatedAt?: string;
+  reportLockNo?: string | null;
 };
 
 export type TransportStaffPlate = {
@@ -398,6 +402,7 @@ export type MoneyTransfer = {
   updatedAt?: string;
   slips?: MoneyTransferSlip[];
   items?: MoneyTransferItem[];
+  reportLockNo?: string | null;
 };
 
 export type CashDenominationCounts = {
@@ -434,6 +439,7 @@ export type CashBranchTransfer = {
   receivedByName: string | null;
   receivedByPhone: string | null;
   differenceAcceptReason: string | null;
+  reportLockNo?: string | null;
 };
 
 export type TransportStaff = {

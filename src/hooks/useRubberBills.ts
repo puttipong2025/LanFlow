@@ -199,7 +199,7 @@ export function useRubberBills(locationId: string, ownerUserId: string) {
       try {
         const { data: bills, error: billsError } = await supabase
           .from("rubber_bills")
-          .select("*")
+          .select("*, report_lock_no")
           .eq("location_id", locationId)
           .eq("record_status", "active")
           .order("created_at", { ascending: false });
@@ -283,7 +283,8 @@ export function useRubberBills(locationId: string, ownerUserId: string) {
               recordStatus: row.record_status,
               deletedAt: row.deleted_at ?? undefined,
               deletedByName: row.deleted_by_name ?? undefined,
-              deletedByPhone: row.deleted_by_phone ?? undefined
+              deletedByPhone: row.deleted_by_phone ?? undefined,
+              reportLockNo: row.report_lock_no ?? null
             };
           });
         }

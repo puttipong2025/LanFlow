@@ -414,6 +414,9 @@ test.describe("Time Tracking approval picker UI @time-tracking", () => {
 
       await page.goto("/");
       await page.getByRole("button", { name: "เวลาและเงินเดือน" }).click();
+      const employeeRow = page.locator("tr", { hasText: "LanFlow user" }).first();
+      await expect(employeeRow).toBeVisible();
+      await employeeRow.getByRole("button", { name: /ดู Dashboard/ }).click();
       const oneBranchRow = page.locator("li", { hasText: oneBranchAmount.toLocaleString("en-US") }).first();
       await oneBranchRow.getByRole("button", { name: "อนุมัติ" }).click();
       await expect(page.locator("#expense-location")).toHaveValue(sourceLocationId!);

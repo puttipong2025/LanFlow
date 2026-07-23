@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/server/auth";
+import type { IncomeExpense } from "@/types";
 
 export const dynamic = "force-dynamic";
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function defaultStartDate() {
   const date = new Date();
@@ -56,5 +58,38 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "โหลดรายการรับ-จ่ายไม่สำเร็จ" }, { status: 500 });
   }
 
-  return NextResponse.json(data ?? { rows: [], nextCursor: null });
+  const payload = (data ?? { rows: [], nextCursor: null }) as {
+    rows: IncomeExpense[];
+    nextCursor: string | null;
+  };
+  const directIds = payload.rows
+    .filter((row) => !row.relationSourceType && UUID.test(row.id))
+    .map((row) => row.id);
+
+  if (directIds.length > 0) {
+    const { data: locks, error: lockError } = await result.supabase
+      .from("income_expense")
+      .select("id, report_lock_no")
+      .in("id", directIds);
+    if (lockError) {
+      console.error("Income/Expense report lock error:", lockError.message);
+      return NextResponse.json({ error: "โหลดสถานะล็อกรายงานไม่สำเร็จ" }, { status: 500 });
+    }
+
+    const lockById = new Map(
+      (locks ?? []).map((row) => [row.id, row.report_lock_no as string | null])
+    );
+    payload.rows = payload.rows.map((row) => {
+      const reportLockNo = lockById.get(row.id) ?? null;
+      return reportLockNo
+        ? {
+            ...row,
+            reportLockNo,
+            relationLockReason: `ล็อกโดยรายงาน ${reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`,
+          }
+        : row;
+    });
+  }
+
+  return NextResponse.json(payload);
 }

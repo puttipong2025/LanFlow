@@ -606,6 +606,10 @@ export function AcidStockModule({
   }
 
   async function handleDeleteStockMovement(movement: AcidStockMovement) {
+    if (movement.reportLockNo) {
+      toast.error(`ล็อกโดยรายงาน ${movement.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`);
+      return;
+    }
     if (!online) {
       toast.error("ลบรายการสต็อกได้เมื่อออนไลน์เท่านั้น");
       return;
@@ -840,8 +844,10 @@ export function AcidStockModule({
                         <button
                           type="button"
                           onClick={() => handleDeleteStockMovement(movement)}
-                          disabled={!online}
-                          title={online ? undefined : "ลบรายการสต็อกได้เมื่อออนไลน์เท่านั้น"}
+                          disabled={!online || Boolean(movement.reportLockNo)}
+                          title={movement.reportLockNo
+                            ? `ล็อกโดยรายงาน ${movement.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`
+                            : online ? undefined : "ลบรายการสต็อกได้เมื่อออนไลน์เท่านั้น"}
                           className="focus-ring inline-flex h-9 items-center gap-1 rounded-md bg-field px-3 text-xs font-bold text-ink disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-white"
                         >
                           <Trash2 size={14} />

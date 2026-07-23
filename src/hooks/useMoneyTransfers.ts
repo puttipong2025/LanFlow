@@ -14,7 +14,7 @@ export function useMoneyTransfers(locationId: string, options: { enabled?: boole
       const { data, error } = await supabase
         .from("money_transfers")
         .select(`
-          *,
+          *, report_lock_no,
           money_transfer_slips(*),
           money_transfer_items(*)
         `)
@@ -51,6 +51,7 @@ export function useMoneyTransfers(locationId: string, options: { enabled?: boole
         createdByPhone: row.created_by_phone,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
+        reportLockNo: row.report_lock_no ?? null,
         slips: (row.money_transfer_slips || []).map((s: any): MoneyTransferSlip => ({
           id: s.id,
           amount: Number(s.amount ?? 0),

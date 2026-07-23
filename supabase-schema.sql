@@ -508,6 +508,101 @@ $$;
 ALTER FUNCTION "public"."create_income_expense_approval_request"("payload" "jsonb") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."create_report_batch"("p_location_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_actor_id uuid := auth.uid();
+  v_actor_name text;
+  v_actor_phone text;
+  v_cutoff_at timestamptz := clock_timestamp();
+  v_report_date date;
+  v_sequence_no integer;
+  v_report_id uuid;
+  v_report_no text;
+  v_item_count integer;
+begin
+  if p_location_id is null or not private.can_manage_reports(p_location_id) then
+    raise exception 'ไม่มีสิทธิ์สร้างรายงานของสาขานี้';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended(p_location_id::text, 0));
+
+  select p.name, p.phone
+  into v_actor_name, v_actor_phone
+  from public.profiles p
+  where p.id = v_actor_id;
+
+  v_report_date := (v_cutoff_at at time zone 'Asia/Bangkok')::date;
+
+  select coalesce(max(b.sequence_no), 0) + 1
+  into v_sequence_no
+  from public.report_batches b
+  where b.location_id = p_location_id
+    and b.report_date = v_report_date;
+
+  v_report_no :=
+    'RPT-' || to_char(v_report_date, 'YYYYMMDD') || '-' ||
+    lpad(v_sequence_no::text, 3, '0');
+
+  insert into public.report_batches (
+    report_no,
+    report_date,
+    sequence_no,
+    location_id,
+    cutoff_at,
+    created_by_user_id,
+    created_by_name,
+    created_by_phone
+  )
+  values (
+    v_report_no,
+    v_report_date,
+    v_sequence_no,
+    p_location_id,
+    v_cutoff_at,
+    v_actor_id,
+    coalesce(v_actor_name, ''),
+    coalesce(v_actor_phone, '')
+  )
+  returning id into v_report_id;
+
+  insert into public.report_items (
+    report_id,
+    location_id,
+    entity_type,
+    entity_id,
+    eligibility_at
+  )
+  select
+    v_report_id,
+    p_location_id,
+    r.entity_type,
+    r.entity_id,
+    r.eligibility_at
+  from private.reportable_items(p_location_id, v_cutoff_at) r
+  on conflict do nothing;
+
+  get diagnostics v_item_count = row_count;
+
+  if v_item_count = 0 then
+    raise exception 'ไม่มีรายการที่พร้อมออกรายงาน';
+  end if;
+
+  return jsonb_build_object(
+    'id', v_report_id,
+    'reportNo', v_report_no,
+    'cutoffAt', v_cutoff_at,
+    'itemCount', v_item_count
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."create_report_batch"("p_location_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."create_stock_entry_delete_approval_request"("payload" "jsonb") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public'
@@ -1653,6 +1748,69 @@ $$;
 ALTER FUNCTION "public"."delete_income_sale_item"("item_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."delete_report_batch"("p_report_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_report public.report_batches%rowtype;
+  v_actor_name text;
+  v_actor_phone text;
+begin
+  if not private.can_delete_reports() then
+    raise exception 'เฉพาะ super_admin หรือผู้จัดการระบบเท่านั้นที่ลบรายงานได้';
+  end if;
+
+  select *
+  into v_report
+  from public.report_batches
+  where id = p_report_id
+  for update;
+
+  if v_report.id is null or v_report.status <> 'active' then
+    raise exception 'ไม่พบรายงาน active';
+  end if;
+
+  if exists (
+    select 1
+    from public.report_batches newer
+    where newer.location_id = v_report.location_id
+      and newer.status = 'active'
+      and (newer.created_at, newer.id) > (v_report.created_at, v_report.id)
+  ) then
+    raise exception 'ลบได้เฉพาะรายงาน active ล่าสุดของสาขา';
+  end if;
+
+  select p.name, p.phone
+  into v_actor_name, v_actor_phone
+  from public.profiles p
+  where p.id = auth.uid();
+
+  update public.report_batches
+  set status = 'deleted',
+      deleted_at = clock_timestamp(),
+      deleted_by_user_id = auth.uid(),
+      deleted_by_name = coalesce(v_actor_name, ''),
+      deleted_by_phone = coalesce(v_actor_phone, '')
+  where id = p_report_id;
+
+  update public.report_items
+  set active = false
+  where report_id = p_report_id
+    and active = true;
+
+  return jsonb_build_object(
+    'id', p_report_id,
+    'reportNo', v_report.report_no,
+    'status', 'deleted'
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."delete_report_batch"("p_report_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."delete_time_tracking_source_permanently"("p_source_type" "text", "p_source_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -2067,6 +2225,203 @@ $$;
 ALTER FUNCTION "public"."get_income_expense_feed"("p_location_id" "uuid", "p_from_date" "date", "p_to_date" "date", "p_cursor_date" "date", "p_cursor_key" "text", "p_page_size" integer) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."get_report_income_expense_rows"("p_report_id" "uuid") RETURNS TABLE("tx_date" "date", "number" "text", "entry_type" "text", "title" "text", "amount" numeric)
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_location_id uuid;
+begin
+  select b.location_id
+  into v_location_id
+  from public.report_batches b
+  where b.id = p_report_id;
+
+  if v_location_id is null or not private.can_manage_reports(v_location_id) then
+    raise exception 'ไม่มีสิทธิ์ดูรายงานนี้';
+  end if;
+
+  return query
+  with rows as (
+    select
+      e.tx_date,
+      coalesce(e.number, e.server_bill_no, e.local_bill_no) as number,
+      e.type::text as entry_type,
+      e.title,
+      e.cost as amount,
+      '10-' || e.id::text as sort_key
+    from public.report_items i
+    join public.income_expense e on e.id = i.entity_id
+    where i.report_id = p_report_id
+      and i.entity_type = 'income_expense'
+
+    union all
+
+    select
+      b.bill_date,
+      'RB-' || to_char(b.bill_date, 'YYMMDD'),
+      'expense',
+      'จ่ายค่ายางจากบิลยาง ' || count(*)::text || ' ใบ',
+      sum(b.net_total),
+      '20-' || b.bill_date::text
+    from public.report_items i
+    join public.rubber_bills b on b.id = i.entity_id
+    where i.report_id = p_report_id
+      and i.entity_type = 'rubber_bill'
+      and b.net_total > 0
+      and not exists (
+        select 1
+        from public.money_transfer_items mi
+        where mi.source_type = 'rubber_bill'
+          and mi.source_id = b.id
+      )
+    group by b.bill_date
+
+    union all
+
+    select
+      o.date_in,
+      'OCR-' || to_char(o.date_in, 'YYMMDD'),
+      'expense',
+      'จ่ายค่ายางจาก OCR บิลยาง ' || count(*)::text || ' ใบ',
+      sum(o.total_amount),
+      '30-' || o.date_in::text
+    from public.report_items i
+    join public.ocr_tickets o on o.id = i.entity_id
+    where i.report_id = p_report_id
+      and i.entity_type = 'ocr_ticket'
+      and o.total_amount > 0
+      and not exists (
+        select 1
+        from public.money_transfer_items mi
+        where mi.source_type = 'ocr_ticket'
+          and mi.source_id = o.id
+      )
+    group by o.date_in
+
+    union all
+
+    select
+      (coalesce(m.server_received_at, m.updated_at, m.created_at) at time zone 'Asia/Bangkok')::date,
+      'TR-' || left(m.id::text, 8),
+      'expense',
+      'โยกเงินไป ' || coalesce(m.target_location_name, 'สาขาปลายทาง'),
+      m.net_amount_to_pay,
+      '40-' || m.id::text
+    from public.report_items i
+    join public.money_transfers m on m.id = i.entity_id
+    where i.report_id = p_report_id
+      and i.entity_type = 'bank_transfer_source'
+      and m.transfer_type = 'branch'
+      and m.location_id <> m.target_location_id
+      and m.net_amount_to_pay > 0
+
+    union all
+
+    select
+      (coalesce(m.server_received_at, m.updated_at, m.created_at) at time zone 'Asia/Bangkok')::date,
+      'CT-' || left(m.id::text, 8),
+      'expense',
+      'สาขาจ่ายส่วนต่างให้ ' || coalesce(m.customer_name, 'ลูกค้า'),
+      m.branch_paid_amount,
+      '41-' || m.id::text
+    from public.report_items i
+    join public.money_transfers m on m.id = i.entity_id
+    where i.report_id = p_report_id
+      and i.entity_type = 'bank_transfer_source'
+      and m.transfer_type = 'customer'
+      and m.transfer_status = 'branch_and_transfer'
+      and m.branch_paid_amount > 0
+
+    union all
+
+    select
+      (coalesce(m.server_received_at, m.updated_at, m.created_at) at time zone 'Asia/Bangkok')::date,
+      'TR-' || left(m.id::text, 8),
+      'income',
+      'รับโอนจากสาขาต้นทาง',
+      m.net_amount_to_pay,
+      '42-' || m.id::text
+    from public.report_items i
+    join public.money_transfers m on m.id = i.entity_id
+    where i.report_id = p_report_id
+      and i.entity_type = 'bank_transfer_target'
+      and m.net_amount_to_pay > 0
+
+    union all
+
+    select
+      (d.sent_at at time zone 'Asia/Bangkok')::date,
+      'CASH-' || left(m.id::text, 8),
+      'expense',
+      'โยกเงินสดไป ' || coalesce(m.target_location_name, 'สาขาปลายทาง'),
+      d.sent_total,
+      '50-' || m.id::text
+    from public.report_items i
+    join public.money_transfers m on m.id = i.entity_id
+    join public.money_transfer_cash_details d on d.transfer_id = m.id
+    where i.report_id = p_report_id
+      and i.entity_type = 'cash_transfer_sent'
+
+    union all
+
+    select
+      (d.received_at at time zone 'Asia/Bangkok')::date,
+      'CASH-' || left(m.id::text, 8),
+      'income',
+      'รับเงินสดจากสาขาต้นทาง',
+      d.received_total,
+      '51-' || m.id::text
+    from public.report_items i
+    join public.money_transfers m on m.id = i.entity_id
+    join public.money_transfer_cash_details d on d.transfer_id = m.id
+    where i.report_id = p_report_id
+      and i.entity_type = 'cash_transfer_received'
+
+    union all
+
+    select
+      (f.approved_at at time zone 'Asia/Bangkok')::date,
+      'TW-' || left(f.id::text, 8),
+      'expense',
+      'เบิกเงิน — ' || coalesce(p.name, 'พนักงาน') ||
+        coalesce(': ' || nullif(f.description, ''), ''),
+      f.amount,
+      '60-' || f.id::text
+    from public.report_items i
+    join public.financial_transactions f on f.id = i.entity_id
+    join public.profiles p on p.id = f.profile_id
+    where i.report_id = p_report_id
+      and i.entity_type = 'financial_transaction'
+      and f.type = 'WITHDRAWAL'
+      and f.amount > 0
+
+    union all
+
+    select
+      (p.approved_at at time zone 'Asia/Bangkok')::date,
+      'PS-' || left(p.id::text, 8),
+      'expense',
+      'เงินเดือน — ' || coalesce(profile.name, 'พนักงาน') || ' — ' || p.month,
+      p.net_pay,
+      '61-' || p.id::text
+    from public.report_items i
+    join public.payroll_slips p on p.id = i.entity_id
+    join public.profiles profile on profile.id = p.profile_id
+    where i.report_id = p_report_id
+      and i.entity_type = 'payroll_slip'
+      and p.net_pay > 0
+  )
+  select r.tx_date, r.number, r.entry_type, r.title, r.amount
+  from rows r
+  order by r.tx_date, r.sort_key;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_report_income_expense_rows"("p_report_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."get_stock_balance"("p_location_id" "uuid", "p_product_id" "uuid") RETURNS numeric
     LANGUAGE "sql" STABLE
     AS $$
@@ -2211,6 +2566,367 @@ $$;
 
 
 ALTER FUNCTION "public"."receive_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") OWNER TO "postgres";
+
+SET default_tablespace = '';
+
+SET default_table_access_method = "heap";
+
+
+CREATE TABLE IF NOT EXISTS "public"."financial_transactions" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "profile_id" "uuid" NOT NULL,
+    "type" "public"."financial_transaction_type" NOT NULL,
+    "amount" numeric NOT NULL,
+    "status" "public"."approval_status" DEFAULT 'PENDING'::"public"."approval_status" NOT NULL,
+    "admin_comment" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "due_date" "date",
+    "description" "text",
+    "remaining_amount" numeric DEFAULT 0,
+    "parent_debt_id" "uuid",
+    "approved_by" "uuid",
+    "expense_location_id" "uuid",
+    "approved_at" timestamp with time zone,
+    "cancelled_at" timestamp with time zone,
+    "cancelled_by" "uuid",
+    "cancel_reason" "text"
+);
+
+
+ALTER TABLE "public"."financial_transactions" OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."report_lock_no"("source_row" "public"."financial_transactions") RETURNS "text"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$ select private.active_report_no('financial_transaction', source_row.id); $$;
+
+
+ALTER FUNCTION "public"."report_lock_no"("source_row" "public"."financial_transactions") OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."income_expense" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "client_temp_id" "text",
+    "local_bill_no" "text" NOT NULL,
+    "server_bill_no" "text",
+    "idempotency_key" "text",
+    "sync_status" "public"."sync_status" DEFAULT 'pending'::"public"."sync_status" NOT NULL,
+    "record_status" "public"."record_status" DEFAULT 'active'::"public"."record_status" NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "type" "public"."transaction_type" NOT NULL,
+    "number" "text" NOT NULL,
+    "tx_date" "date" NOT NULL,
+    "title" "text" NOT NULL,
+    "cost" numeric(12,2) DEFAULT 0 NOT NULL,
+    "gateway" "text",
+    "color" "text",
+    "unit" "text",
+    "price" numeric(12,2),
+    "bill_option" "text",
+    "locked_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "client_recorded_at" timestamp with time zone,
+    "client_created_at" timestamp with time zone,
+    "server_received_at" timestamp with time zone,
+    "revision_no" integer DEFAULT 0 NOT NULL,
+    "deleted_at" timestamp with time zone,
+    "deleted_by_name" "text",
+    "deleted_by_phone" "text",
+    "created_by_user_id" "uuid" NOT NULL,
+    "created_by_name" "text" NOT NULL,
+    "created_by_phone" "text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "income_sale_item_id" "uuid",
+    "stock_product_id" "uuid",
+    "stock_quantity" numeric(12,2),
+    CONSTRAINT "income_expense_bill_option_check" CHECK ((("record_status" = 'deleted'::"public"."record_status") OR (("bill_option" IS NOT NULL) AND ((("type" = 'income'::"public"."transaction_type") AND ("bill_option" = ANY (ARRAY['รายรับ'::"text", 'บิลขาย'::"text"]))) OR (("type" = 'expense'::"public"."transaction_type") AND ("bill_option" = 'ค่าใช้จ่าย'::"text"))))))
+);
+
+
+ALTER TABLE "public"."income_expense" OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."report_lock_no"("source_row" "public"."income_expense") RETURNS "text"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$ select private.active_report_no('income_expense', source_row.id); $$;
+
+
+ALTER FUNCTION "public"."report_lock_no"("source_row" "public"."income_expense") OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."leave_requests" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "profile_id" "uuid" NOT NULL,
+    "start_date" "date" NOT NULL,
+    "end_date" "date" NOT NULL,
+    "type" "public"."leave_request_type" DEFAULT 'FULL_DAY'::"public"."leave_request_type" NOT NULL,
+    "status" "public"."approval_status" DEFAULT 'PENDING'::"public"."approval_status" NOT NULL,
+    "admin_comment" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "approved_by" "uuid"
+);
+
+
+ALTER TABLE "public"."leave_requests" OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."report_lock_no"("source_row" "public"."leave_requests") RETURNS "text"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$ select private.active_report_no('leave_request', source_row.id); $$;
+
+
+ALTER FUNCTION "public"."report_lock_no"("source_row" "public"."leave_requests") OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."money_transfers" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "client_temp_id" "text",
+    "idempotency_key" "text",
+    "location_id" "uuid" NOT NULL,
+    "customer_id" "uuid",
+    "customer_name" "text",
+    "account_number" "text",
+    "account_name" "text",
+    "bank_name" "text",
+    "net_amount_to_pay" numeric(12,2) DEFAULT 0 NOT NULL,
+    "transfer_status" "text" DEFAULT 'pending'::"text" NOT NULL,
+    "sync_status" "public"."sync_status" DEFAULT 'synced'::"public"."sync_status" NOT NULL,
+    "record_status" "public"."record_status" DEFAULT 'active'::"public"."record_status" NOT NULL,
+    "revision_no" integer DEFAULT 0 NOT NULL,
+    "created_by_user_id" "uuid",
+    "created_by_name" "text" DEFAULT ''::"text" NOT NULL,
+    "created_by_phone" "text" DEFAULT ''::"text" NOT NULL,
+    "client_recorded_at" timestamp with time zone,
+    "server_received_at" timestamp with time zone,
+    "deleted_at" timestamp with time zone,
+    "deleted_by_name" "text",
+    "deleted_by_phone" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "branch_paid_amount" numeric(12,2) DEFAULT 0,
+    "transfer_type" "text" DEFAULT 'customer'::"text" NOT NULL,
+    "transport_cost" numeric(12,2) DEFAULT 0,
+    "transport_staff_id" "uuid",
+    "transport_staff_name" "text",
+    "target_location_id" "uuid",
+    "target_location_name" "text",
+    "transfer_method" "text" DEFAULT 'bank'::"text" NOT NULL,
+    CONSTRAINT "money_transfers_transfer_method_check" CHECK (("transfer_method" = ANY (ARRAY['bank'::"text", 'cash'::"text"]))),
+    CONSTRAINT "money_transfers_transfer_status_check" CHECK (("transfer_status" = ANY (ARRAY['pending'::"text", 'paid'::"text", 'partial'::"text", 'overpaid'::"text", 'branch_and_transfer'::"text", 'advance_payment'::"text", 'cancelled'::"text"]))),
+    CONSTRAINT "money_transfers_transfer_type_check" CHECK (("transfer_type" = ANY (ARRAY['customer'::"text", 'transport'::"text", 'branch'::"text", 'cash'::"text"])))
+);
+
+
+ALTER TABLE "public"."money_transfers" OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."report_lock_no"("source_row" "public"."money_transfers") RETURNS "text"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$ select private.active_transfer_report_no(source_row.id); $$;
+
+
+ALTER FUNCTION "public"."report_lock_no"("source_row" "public"."money_transfers") OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."ocr_tickets" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "client_temp_id" "text",
+    "idempotency_key" "text",
+    "location_id" "uuid" NOT NULL,
+    "file_name" "text" NOT NULL,
+    "ticket_id" "text",
+    "license_plate" "text",
+    "date_in" "date",
+    "weight_in" integer,
+    "weight_out" integer,
+    "weight_net" integer,
+    "weight_deducted" numeric(12,2) DEFAULT 0,
+    "weight_remaining" numeric(12,2) DEFAULT 0,
+    "total_amount" numeric(12,2) DEFAULT 0,
+    "sync_status" "public"."sync_status" DEFAULT 'pending'::"public"."sync_status" NOT NULL,
+    "record_status" "public"."record_status" DEFAULT 'active'::"public"."record_status" NOT NULL,
+    "revision_no" integer DEFAULT 0 NOT NULL,
+    "created_by_user_id" "uuid",
+    "created_by_name" "text" DEFAULT 'ผู้ดูแลระบบ'::"text" NOT NULL,
+    "created_by_phone" "text" DEFAULT '0800000000'::"text" NOT NULL,
+    "client_recorded_at" timestamp with time zone,
+    "server_received_at" timestamp with time zone,
+    "deleted_at" timestamp with time zone,
+    "deleted_by_name" "text",
+    "deleted_by_phone" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "drive_file_id" "text",
+    "drive_url" "text",
+    "customer_name" "text",
+    "money_deducted" numeric DEFAULT 0
+);
+
+
+ALTER TABLE "public"."ocr_tickets" OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."report_lock_no"("source_row" "public"."ocr_tickets") RETURNS "text"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$ select private.active_report_no('ocr_ticket', source_row.id); $$;
+
+
+ALTER FUNCTION "public"."report_lock_no"("source_row" "public"."ocr_tickets") OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."payroll_slips" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "profile_id" "uuid" NOT NULL,
+    "month" "text" NOT NULL,
+    "gross_pay" numeric DEFAULT 0 NOT NULL,
+    "total_deductions" numeric DEFAULT 0 NOT NULL,
+    "net_pay" numeric DEFAULT 0 NOT NULL,
+    "total_days" numeric DEFAULT 0 NOT NULL,
+    "daily_wage" numeric DEFAULT 0 NOT NULL,
+    "slip_data" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
+    "status" "public"."approval_status" DEFAULT 'PENDING'::"public"."approval_status" NOT NULL,
+    "created_by" "uuid" NOT NULL,
+    "approved_by" "uuid",
+    "admin_comment" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "expense_location_id" "uuid",
+    "approved_at" timestamp with time zone,
+    "cancelled_at" timestamp with time zone,
+    "cancelled_by" "uuid",
+    "cancel_reason" "text"
+);
+
+
+ALTER TABLE "public"."payroll_slips" OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."report_lock_no"("source_row" "public"."payroll_slips") RETURNS "text"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$ select private.active_report_no('payroll_slip', source_row.id); $$;
+
+
+ALTER FUNCTION "public"."report_lock_no"("source_row" "public"."payroll_slips") OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."rubber_bills" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "client_temp_id" "text",
+    "local_bill_no" "text" NOT NULL,
+    "server_bill_no" "text",
+    "idempotency_key" "text",
+    "sync_status" "public"."sync_status" DEFAULT 'pending'::"public"."sync_status" NOT NULL,
+    "record_status" "public"."record_status" DEFAULT 'active'::"public"."record_status" NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "bill_no" "text" NOT NULL,
+    "bill_date" "date" NOT NULL,
+    "customer_id" "uuid",
+    "customer_name" "text",
+    "customer_type" "text",
+    "bill_type" "text" NOT NULL,
+    "deduct_weight" numeric(12,2) DEFAULT 0 NOT NULL,
+    "weight" numeric(12,2) DEFAULT 0 NOT NULL,
+    "rubber_value" numeric(12,2) DEFAULT 0 NOT NULL,
+    "average_price" numeric(12,2) DEFAULT 0 NOT NULL,
+    "deduction_total" numeric(12,2) DEFAULT 0 NOT NULL,
+    "net_total" numeric(12,2) DEFAULT 0 NOT NULL,
+    "cash_payment" numeric(12,2) DEFAULT 0 NOT NULL,
+    "transfer_payment" numeric(12,2) DEFAULT 0 NOT NULL,
+    "acid_pack_count" numeric(12,2) DEFAULT 0 NOT NULL,
+    "print_status" "text" DEFAULT 'ยังไม่ได้ปริ้น'::"text" NOT NULL,
+    "locked_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "client_recorded_at" timestamp with time zone,
+    "client_created_at" timestamp with time zone,
+    "server_received_at" timestamp with time zone,
+    "revision_no" integer DEFAULT 0 NOT NULL,
+    "deleted_at" timestamp with time zone,
+    "deleted_by_name" "text",
+    "deleted_by_phone" "text",
+    "created_by_user_id" "uuid" NOT NULL,
+    "created_by_name" "text" NOT NULL,
+    "created_by_phone" "text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "rubber_bills_customer_type_check" CHECK (("customer_type" = ANY (ARRAY['สาขานี้จ่าย'::"text", 'สาขาใหญ่จ่าย'::"text"])))
+);
+
+
+ALTER TABLE "public"."rubber_bills" OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."report_lock_no"("source_row" "public"."rubber_bills") RETURNS "text"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$ select private.active_report_no('rubber_bill', source_row.id); $$;
+
+
+ALTER FUNCTION "public"."report_lock_no"("source_row" "public"."rubber_bills") OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."stock_entries" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "server_bill_no" "text",
+    "tx_date" "date" NOT NULL,
+    "product_id" "uuid" NOT NULL,
+    "product_name" "text" NOT NULL,
+    "quantity_delta" numeric(12,2) NOT NULL,
+    "amount" numeric(12,2) DEFAULT 0 NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "tx_type" "text" NOT NULL,
+    "transfer_bill_no" "text",
+    "record_status" "public"."record_status" DEFAULT 'active'::"public"."record_status" NOT NULL,
+    "created_by_user_id" "uuid" NOT NULL,
+    "created_by_name" "text" NOT NULL,
+    "created_by_phone" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "deleted_at" timestamp with time zone,
+    "deleted_by_name" "text",
+    "deleted_by_phone" "text",
+    CONSTRAINT "acid_stock_entries_tx_type_check" CHECK (("tx_type" = ANY (ARRAY['receive'::"text", 'transfer_out'::"text", 'transfer_in'::"text"])))
+);
+
+
+ALTER TABLE "public"."stock_entries" OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."report_lock_no"("source_row" "public"."stock_entries") RETURNS "text"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$ select private.active_report_no('acid_stock_entry', source_row.id); $$;
+
+
+ALTER FUNCTION "public"."report_lock_no"("source_row" "public"."stock_entries") OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."time_segments" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "profile_id" "uuid" NOT NULL,
+    "start_time" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "end_time" timestamp with time zone,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL
+);
+
+
+ALTER TABLE "public"."time_segments" OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."report_lock_no"("source_row" "public"."time_segments") RETURNS "text"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$ select private.active_report_no('time_segment', source_row.id); $$;
+
+
+ALTER FUNCTION "public"."report_lock_no"("source_row" "public"."time_segments") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."sync_acid_stock_entry"("payload" "jsonb") RETURNS "jsonb"
@@ -3170,10 +3886,6 @@ $$;
 
 ALTER FUNCTION "public"."validate_stock_non_negative_after_entry_delete"("p_location_id" "uuid", "p_product_id" "uuid", "p_deleted_entry_ids" "uuid"[]) OWNER TO "postgres";
 
-SET default_tablespace = '';
-
-SET default_table_access_method = "heap";
-
 
 CREATE TABLE IF NOT EXISTS "public"."stock_products" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
@@ -3207,33 +3919,6 @@ CREATE OR REPLACE VIEW "public"."acid_products" WITH ("security_invoker"='true')
 ALTER VIEW "public"."acid_products" OWNER TO "postgres";
 
 
-CREATE TABLE IF NOT EXISTS "public"."stock_entries" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "server_bill_no" "text",
-    "tx_date" "date" NOT NULL,
-    "product_id" "uuid" NOT NULL,
-    "product_name" "text" NOT NULL,
-    "quantity_delta" numeric(12,2) NOT NULL,
-    "amount" numeric(12,2) DEFAULT 0 NOT NULL,
-    "location_id" "uuid" NOT NULL,
-    "tx_type" "text" NOT NULL,
-    "transfer_bill_no" "text",
-    "record_status" "public"."record_status" DEFAULT 'active'::"public"."record_status" NOT NULL,
-    "created_by_user_id" "uuid" NOT NULL,
-    "created_by_name" "text" NOT NULL,
-    "created_by_phone" "text",
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "deleted_at" timestamp with time zone,
-    "deleted_by_name" "text",
-    "deleted_by_phone" "text",
-    CONSTRAINT "acid_stock_entries_tx_type_check" CHECK (("tx_type" = ANY (ARRAY['receive'::"text", 'transfer_out'::"text", 'transfer_in'::"text"])))
-);
-
-
-ALTER TABLE "public"."stock_entries" OWNER TO "postgres";
-
-
 CREATE OR REPLACE VIEW "public"."acid_stock_entries" WITH ("security_invoker"='true') AS
  SELECT "id",
     "server_bill_no",
@@ -3260,48 +3945,6 @@ CREATE OR REPLACE VIEW "public"."acid_stock_entries" WITH ("security_invoker"='t
 ALTER VIEW "public"."acid_stock_entries" OWNER TO "postgres";
 
 
-CREATE TABLE IF NOT EXISTS "public"."income_expense" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "client_temp_id" "text",
-    "local_bill_no" "text" NOT NULL,
-    "server_bill_no" "text",
-    "idempotency_key" "text",
-    "sync_status" "public"."sync_status" DEFAULT 'pending'::"public"."sync_status" NOT NULL,
-    "record_status" "public"."record_status" DEFAULT 'active'::"public"."record_status" NOT NULL,
-    "location_id" "uuid" NOT NULL,
-    "type" "public"."transaction_type" NOT NULL,
-    "number" "text" NOT NULL,
-    "tx_date" "date" NOT NULL,
-    "title" "text" NOT NULL,
-    "cost" numeric(12,2) DEFAULT 0 NOT NULL,
-    "gateway" "text",
-    "color" "text",
-    "unit" "text",
-    "price" numeric(12,2),
-    "bill_option" "text",
-    "locked_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "client_recorded_at" timestamp with time zone,
-    "client_created_at" timestamp with time zone,
-    "server_received_at" timestamp with time zone,
-    "revision_no" integer DEFAULT 0 NOT NULL,
-    "deleted_at" timestamp with time zone,
-    "deleted_by_name" "text",
-    "deleted_by_phone" "text",
-    "created_by_user_id" "uuid" NOT NULL,
-    "created_by_name" "text" NOT NULL,
-    "created_by_phone" "text" NOT NULL,
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "income_sale_item_id" "uuid",
-    "stock_product_id" "uuid",
-    "stock_quantity" numeric(12,2),
-    CONSTRAINT "income_expense_bill_option_check" CHECK ((("record_status" = 'deleted'::"public"."record_status") OR (("bill_option" IS NOT NULL) AND ((("type" = 'income'::"public"."transaction_type") AND ("bill_option" = ANY (ARRAY['รายรับ'::"text", 'บิลขาย'::"text"]))) OR (("type" = 'expense'::"public"."transaction_type") AND ("bill_option" = 'ค่าใช้จ่าย'::"text"))))))
-);
-
-
-ALTER TABLE "public"."income_expense" OWNER TO "postgres";
-
-
 CREATE TABLE IF NOT EXISTS "public"."rubber_bill_items" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "bill_id" "uuid" NOT NULL,
@@ -3320,51 +3963,6 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_bill_items" (
 
 
 ALTER TABLE "public"."rubber_bill_items" OWNER TO "postgres";
-
-
-CREATE TABLE IF NOT EXISTS "public"."rubber_bills" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "client_temp_id" "text",
-    "local_bill_no" "text" NOT NULL,
-    "server_bill_no" "text",
-    "idempotency_key" "text",
-    "sync_status" "public"."sync_status" DEFAULT 'pending'::"public"."sync_status" NOT NULL,
-    "record_status" "public"."record_status" DEFAULT 'active'::"public"."record_status" NOT NULL,
-    "location_id" "uuid" NOT NULL,
-    "bill_no" "text" NOT NULL,
-    "bill_date" "date" NOT NULL,
-    "customer_id" "uuid",
-    "customer_name" "text",
-    "customer_type" "text",
-    "bill_type" "text" NOT NULL,
-    "deduct_weight" numeric(12,2) DEFAULT 0 NOT NULL,
-    "weight" numeric(12,2) DEFAULT 0 NOT NULL,
-    "rubber_value" numeric(12,2) DEFAULT 0 NOT NULL,
-    "average_price" numeric(12,2) DEFAULT 0 NOT NULL,
-    "deduction_total" numeric(12,2) DEFAULT 0 NOT NULL,
-    "net_total" numeric(12,2) DEFAULT 0 NOT NULL,
-    "cash_payment" numeric(12,2) DEFAULT 0 NOT NULL,
-    "transfer_payment" numeric(12,2) DEFAULT 0 NOT NULL,
-    "acid_pack_count" numeric(12,2) DEFAULT 0 NOT NULL,
-    "print_status" "text" DEFAULT 'ยังไม่ได้ปริ้น'::"text" NOT NULL,
-    "locked_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "client_recorded_at" timestamp with time zone,
-    "client_created_at" timestamp with time zone,
-    "server_received_at" timestamp with time zone,
-    "revision_no" integer DEFAULT 0 NOT NULL,
-    "deleted_at" timestamp with time zone,
-    "deleted_by_name" "text",
-    "deleted_by_phone" "text",
-    "created_by_user_id" "uuid" NOT NULL,
-    "created_by_name" "text" NOT NULL,
-    "created_by_phone" "text" NOT NULL,
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    CONSTRAINT "rubber_bills_customer_type_check" CHECK (("customer_type" = ANY (ARRAY['สาขานี้จ่าย'::"text", 'สาขาใหญ่จ่าย'::"text"])))
-);
-
-
-ALTER TABLE "public"."rubber_bills" OWNER TO "postgres";
 
 
 CREATE OR REPLACE VIEW "public"."acid_stock_movements" WITH ("security_invoker"='true') AS
@@ -3509,31 +4107,6 @@ CREATE TABLE IF NOT EXISTS "public"."customers" (
 ALTER TABLE "public"."customers" OWNER TO "postgres";
 
 
-CREATE TABLE IF NOT EXISTS "public"."financial_transactions" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "profile_id" "uuid" NOT NULL,
-    "type" "public"."financial_transaction_type" NOT NULL,
-    "amount" numeric NOT NULL,
-    "status" "public"."approval_status" DEFAULT 'PENDING'::"public"."approval_status" NOT NULL,
-    "admin_comment" "text",
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "due_date" "date",
-    "description" "text",
-    "remaining_amount" numeric DEFAULT 0,
-    "parent_debt_id" "uuid",
-    "approved_by" "uuid",
-    "expense_location_id" "uuid",
-    "approved_at" timestamp with time zone,
-    "cancelled_at" timestamp with time zone,
-    "cancelled_by" "uuid",
-    "cancel_reason" "text"
-);
-
-
-ALTER TABLE "public"."financial_transactions" OWNER TO "postgres";
-
-
 CREATE TABLE IF NOT EXISTS "public"."income_expense_approval_keywords" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "keyword" "text" NOT NULL,
@@ -3624,23 +4197,6 @@ CREATE TABLE IF NOT EXISTS "public"."income_sale_items" (
 
 
 ALTER TABLE "public"."income_sale_items" OWNER TO "postgres";
-
-
-CREATE TABLE IF NOT EXISTS "public"."leave_requests" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "profile_id" "uuid" NOT NULL,
-    "start_date" "date" NOT NULL,
-    "end_date" "date" NOT NULL,
-    "type" "public"."leave_request_type" DEFAULT 'FULL_DAY'::"public"."leave_request_type" NOT NULL,
-    "status" "public"."approval_status" DEFAULT 'PENDING'::"public"."approval_status" NOT NULL,
-    "admin_comment" "text",
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "approved_by" "uuid"
-);
-
-
-ALTER TABLE "public"."leave_requests" OWNER TO "postgres";
 
 
 CREATE TABLE IF NOT EXISTS "public"."locations" (
@@ -3765,113 +4321,6 @@ CREATE TABLE IF NOT EXISTS "public"."money_transfer_slips" (
 ALTER TABLE "public"."money_transfer_slips" OWNER TO "postgres";
 
 
-CREATE TABLE IF NOT EXISTS "public"."money_transfers" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "client_temp_id" "text",
-    "idempotency_key" "text",
-    "location_id" "uuid" NOT NULL,
-    "customer_id" "uuid",
-    "customer_name" "text",
-    "account_number" "text",
-    "account_name" "text",
-    "bank_name" "text",
-    "net_amount_to_pay" numeric(12,2) DEFAULT 0 NOT NULL,
-    "transfer_status" "text" DEFAULT 'pending'::"text" NOT NULL,
-    "sync_status" "public"."sync_status" DEFAULT 'pending'::"public"."sync_status" NOT NULL,
-    "record_status" "public"."record_status" DEFAULT 'active'::"public"."record_status" NOT NULL,
-    "revision_no" integer DEFAULT 0 NOT NULL,
-    "created_by_user_id" "uuid",
-    "created_by_name" "text" DEFAULT ''::"text" NOT NULL,
-    "created_by_phone" "text" DEFAULT ''::"text" NOT NULL,
-    "client_recorded_at" timestamp with time zone,
-    "server_received_at" timestamp with time zone,
-    "deleted_at" timestamp with time zone,
-    "deleted_by_name" "text",
-    "deleted_by_phone" "text",
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "branch_paid_amount" numeric(12,2) DEFAULT 0,
-    "transfer_type" "text" DEFAULT 'customer'::"text" NOT NULL,
-    "transport_cost" numeric(12,2) DEFAULT 0,
-    "transport_staff_id" "uuid",
-    "transport_staff_name" "text",
-    "target_location_id" "uuid",
-    "target_location_name" "text",
-    "transfer_method" "text" DEFAULT 'bank'::"text" NOT NULL,
-    CONSTRAINT "money_transfers_transfer_method_check" CHECK (("transfer_method" = ANY (ARRAY['bank'::"text", 'cash'::"text"]))),
-    CONSTRAINT "money_transfers_transfer_status_check" CHECK (("transfer_status" = ANY (ARRAY['pending'::"text", 'paid'::"text", 'partial'::"text", 'overpaid'::"text", 'branch_and_transfer'::"text", 'advance_payment'::"text", 'cancelled'::"text"]))),
-    CONSTRAINT "money_transfers_transfer_type_check" CHECK (("transfer_type" = ANY (ARRAY['customer'::"text", 'transport'::"text", 'branch'::"text", 'cash'::"text"])))
-);
-
-
-ALTER TABLE "public"."money_transfers" OWNER TO "postgres";
-
-
-CREATE TABLE IF NOT EXISTS "public"."ocr_tickets" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "client_temp_id" "text",
-    "idempotency_key" "text",
-    "location_id" "uuid" NOT NULL,
-    "file_name" "text" NOT NULL,
-    "ticket_id" "text",
-    "license_plate" "text",
-    "date_in" "date",
-    "weight_in" integer,
-    "weight_out" integer,
-    "weight_net" integer,
-    "weight_deducted" numeric(12,2) DEFAULT 0,
-    "weight_remaining" numeric(12,2) DEFAULT 0,
-    "total_amount" numeric(12,2) DEFAULT 0,
-    "sync_status" "public"."sync_status" DEFAULT 'pending'::"public"."sync_status" NOT NULL,
-    "record_status" "public"."record_status" DEFAULT 'active'::"public"."record_status" NOT NULL,
-    "revision_no" integer DEFAULT 0 NOT NULL,
-    "created_by_user_id" "uuid",
-    "created_by_name" "text" DEFAULT 'ผู้ดูแลระบบ'::"text" NOT NULL,
-    "created_by_phone" "text" DEFAULT '0800000000'::"text" NOT NULL,
-    "client_recorded_at" timestamp with time zone,
-    "server_received_at" timestamp with time zone,
-    "deleted_at" timestamp with time zone,
-    "deleted_by_name" "text",
-    "deleted_by_phone" "text",
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "drive_file_id" "text",
-    "drive_url" "text",
-    "customer_name" "text",
-    "money_deducted" numeric DEFAULT 0
-);
-
-
-ALTER TABLE "public"."ocr_tickets" OWNER TO "postgres";
-
-
-CREATE TABLE IF NOT EXISTS "public"."payroll_slips" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "profile_id" "uuid" NOT NULL,
-    "month" "text" NOT NULL,
-    "gross_pay" numeric DEFAULT 0 NOT NULL,
-    "total_deductions" numeric DEFAULT 0 NOT NULL,
-    "net_pay" numeric DEFAULT 0 NOT NULL,
-    "total_days" numeric DEFAULT 0 NOT NULL,
-    "daily_wage" numeric DEFAULT 0 NOT NULL,
-    "slip_data" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
-    "status" "public"."approval_status" DEFAULT 'PENDING'::"public"."approval_status" NOT NULL,
-    "created_by" "uuid" NOT NULL,
-    "approved_by" "uuid",
-    "admin_comment" "text",
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "expense_location_id" "uuid",
-    "approved_at" timestamp with time zone,
-    "cancelled_at" timestamp with time zone,
-    "cancelled_by" "uuid",
-    "cancel_reason" "text"
-);
-
-
-ALTER TABLE "public"."payroll_slips" OWNER TO "postgres";
-
-
 CREATE TABLE IF NOT EXISTS "public"."profiles" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "phone" "text" NOT NULL,
@@ -3888,6 +4337,46 @@ CREATE TABLE IF NOT EXISTS "public"."profiles" (
 
 
 ALTER TABLE "public"."profiles" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."report_batches" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "report_no" "text" NOT NULL,
+    "report_date" "date" NOT NULL,
+    "sequence_no" integer NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "cutoff_at" timestamp with time zone NOT NULL,
+    "status" "text" DEFAULT 'active'::"text" NOT NULL,
+    "created_by_user_id" "uuid" NOT NULL,
+    "created_by_name" "text" NOT NULL,
+    "created_by_phone" "text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "deleted_at" timestamp with time zone,
+    "deleted_by_user_id" "uuid",
+    "deleted_by_name" "text",
+    "deleted_by_phone" "text",
+    CONSTRAINT "report_batches_sequence_no_check" CHECK (("sequence_no" > 0)),
+    CONSTRAINT "report_batches_status_check" CHECK (("status" = ANY (ARRAY['active'::"text", 'deleted'::"text"])))
+);
+
+
+ALTER TABLE "public"."report_batches" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."report_items" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "report_id" "uuid" NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "entity_type" "text" NOT NULL,
+    "entity_id" "uuid" NOT NULL,
+    "eligibility_at" timestamp with time zone NOT NULL,
+    "active" boolean DEFAULT true NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "report_items_entity_type_check" CHECK (("entity_type" = ANY (ARRAY['rubber_bill'::"text", 'ocr_ticket'::"text", 'income_expense'::"text", 'acid_stock_entry'::"text", 'time_segment'::"text", 'leave_request'::"text", 'financial_transaction'::"text", 'payroll_slip'::"text", 'bank_transfer_source'::"text", 'bank_transfer_target'::"text", 'cash_transfer_sent'::"text", 'cash_transfer_received'::"text"])))
+);
+
+
+ALTER TABLE "public"."report_items" OWNER TO "postgres";
 
 
 CREATE TABLE IF NOT EXISTS "public"."stock_entry_approval_requests" (
@@ -3975,19 +4464,6 @@ CREATE TABLE IF NOT EXISTS "public"."stock_product_approval_requests" (
 
 
 ALTER TABLE "public"."stock_product_approval_requests" OWNER TO "postgres";
-
-
-CREATE TABLE IF NOT EXISTS "public"."time_segments" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "profile_id" "uuid" NOT NULL,
-    "start_time" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "end_time" timestamp with time zone,
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL
-);
-
-
-ALTER TABLE "public"."time_segments" OWNER TO "postgres";
 
 
 CREATE TABLE IF NOT EXISTS "public"."time_tracking_audit_logs" (
@@ -4251,6 +4727,31 @@ ALTER TABLE ONLY "public"."profiles"
 
 
 
+ALTER TABLE ONLY "public"."report_batches"
+    ADD CONSTRAINT "report_batches_location_id_report_date_sequence_no_key" UNIQUE ("location_id", "report_date", "sequence_no");
+
+
+
+ALTER TABLE ONLY "public"."report_batches"
+    ADD CONSTRAINT "report_batches_location_id_report_no_key" UNIQUE ("location_id", "report_no");
+
+
+
+ALTER TABLE ONLY "public"."report_batches"
+    ADD CONSTRAINT "report_batches_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."report_items"
+    ADD CONSTRAINT "report_items_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."report_items"
+    ADD CONSTRAINT "report_items_report_id_entity_type_entity_id_key" UNIQUE ("report_id", "entity_type", "entity_id");
+
+
+
 ALTER TABLE ONLY "public"."rubber_bill_items"
     ADD CONSTRAINT "rubber_bill_items_pkey" PRIMARY KEY ("id");
 
@@ -4420,6 +4921,22 @@ CREATE UNIQUE INDEX "profiles_only_one_super_admin" ON "public"."profiles" USING
 
 
 
+CREATE INDEX "report_batches_latest_active" ON "public"."report_batches" USING "btree" ("location_id", "created_at" DESC, "id" DESC) WHERE ("status" = 'active'::"text");
+
+
+
+CREATE INDEX "report_batches_location_history" ON "public"."report_batches" USING "btree" ("location_id", "created_at" DESC);
+
+
+
+CREATE INDEX "report_items_active_source" ON "public"."report_items" USING "btree" ("entity_type", "entity_id") WHERE ("active" = true);
+
+
+
+CREATE UNIQUE INDEX "report_items_one_active_context" ON "public"."report_items" USING "btree" ("location_id", "entity_type", "entity_id") WHERE ("active" = true);
+
+
+
 CREATE INDEX "rubber_bills_feed_active_idx" ON "public"."rubber_bills" USING "btree" ("location_id", "bill_date" DESC, "id") WHERE (("record_status" = 'active'::"public"."record_status") AND ("net_total" > (0)::numeric));
 
 
@@ -4493,6 +5010,58 @@ CREATE OR REPLACE TRIGGER "prevent_hard_delete_of_linked_financial_transaction" 
 
 
 CREATE OR REPLACE TRIGGER "prevent_hard_delete_of_linked_payroll_slip" BEFORE DELETE ON "public"."payroll_slips" FOR EACH ROW EXECUTE FUNCTION "private"."prevent_hard_delete_of_linked_time_tracking_source"();
+
+
+
+CREATE OR REPLACE TRIGGER "report_lock_financial_transactions" BEFORE DELETE OR UPDATE ON "public"."financial_transactions" FOR EACH ROW EXECUTE FUNCTION "private"."guard_reported_entity"('financial_transaction');
+
+
+
+CREATE OR REPLACE TRIGGER "report_lock_income_expense" BEFORE DELETE OR UPDATE ON "public"."income_expense" FOR EACH ROW EXECUTE FUNCTION "private"."guard_reported_entity"('income_expense');
+
+
+
+CREATE OR REPLACE TRIGGER "report_lock_leave_requests" BEFORE DELETE OR UPDATE ON "public"."leave_requests" FOR EACH ROW EXECUTE FUNCTION "private"."guard_reported_entity"('leave_request');
+
+
+
+CREATE OR REPLACE TRIGGER "report_lock_money_transfer_cash_details" BEFORE DELETE OR UPDATE ON "public"."money_transfer_cash_details" FOR EACH ROW EXECUTE FUNCTION "private"."guard_reported_cash_details"();
+
+
+
+CREATE OR REPLACE TRIGGER "report_lock_money_transfer_items" BEFORE INSERT OR DELETE OR UPDATE ON "public"."money_transfer_items" FOR EACH ROW EXECUTE FUNCTION "private"."guard_reported_transfer_item"();
+
+
+
+CREATE OR REPLACE TRIGGER "report_lock_money_transfer_slips" BEFORE INSERT OR DELETE OR UPDATE ON "public"."money_transfer_slips" FOR EACH ROW EXECUTE FUNCTION "private"."guard_reported_transfer_child"();
+
+
+
+CREATE OR REPLACE TRIGGER "report_lock_money_transfers" BEFORE DELETE OR UPDATE ON "public"."money_transfers" FOR EACH ROW EXECUTE FUNCTION "private"."guard_reported_money_transfer"();
+
+
+
+CREATE OR REPLACE TRIGGER "report_lock_ocr_tickets" BEFORE DELETE OR UPDATE ON "public"."ocr_tickets" FOR EACH ROW EXECUTE FUNCTION "private"."guard_reported_entity"('ocr_ticket');
+
+
+
+CREATE OR REPLACE TRIGGER "report_lock_payroll_slips" BEFORE DELETE OR UPDATE ON "public"."payroll_slips" FOR EACH ROW EXECUTE FUNCTION "private"."guard_reported_entity"('payroll_slip');
+
+
+
+CREATE OR REPLACE TRIGGER "report_lock_rubber_bill_items" BEFORE INSERT OR DELETE OR UPDATE ON "public"."rubber_bill_items" FOR EACH ROW EXECUTE FUNCTION "private"."guard_reported_rubber_item"();
+
+
+
+CREATE OR REPLACE TRIGGER "report_lock_rubber_bills" BEFORE DELETE OR UPDATE ON "public"."rubber_bills" FOR EACH ROW EXECUTE FUNCTION "private"."guard_reported_entity"('rubber_bill');
+
+
+
+CREATE OR REPLACE TRIGGER "report_lock_stock_entries" BEFORE DELETE OR UPDATE ON "public"."stock_entries" FOR EACH ROW EXECUTE FUNCTION "private"."guard_reported_entity"('acid_stock_entry');
+
+
+
+CREATE OR REPLACE TRIGGER "report_lock_time_segments" BEFORE DELETE OR UPDATE ON "public"."time_segments" FOR EACH ROW EXECUTE FUNCTION "private"."guard_reported_entity"('time_segment');
 
 
 
@@ -4752,6 +5321,31 @@ ALTER TABLE ONLY "public"."payroll_slips"
 
 ALTER TABLE ONLY "public"."payroll_slips"
     ADD CONSTRAINT "payroll_slips_profile_id_fkey" FOREIGN KEY ("profile_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."report_batches"
+    ADD CONSTRAINT "report_batches_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."report_batches"
+    ADD CONSTRAINT "report_batches_deleted_by_user_id_fkey" FOREIGN KEY ("deleted_by_user_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."report_batches"
+    ADD CONSTRAINT "report_batches_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id");
+
+
+
+ALTER TABLE ONLY "public"."report_items"
+    ADD CONSTRAINT "report_items_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id");
+
+
+
+ALTER TABLE ONLY "public"."report_items"
+    ADD CONSTRAINT "report_items_report_id_fkey" FOREIGN KEY ("report_id") REFERENCES "public"."report_batches"("id");
 
 
 
@@ -5177,6 +5771,22 @@ CREATE POLICY "profiles_update_super_admin" ON "public"."profiles" FOR UPDATE TO
 
 
 
+CREATE POLICY "report batches scoped read" ON "public"."report_batches" FOR SELECT TO "authenticated" USING ("private"."can_manage_reports"("location_id"));
+
+
+
+CREATE POLICY "report items scoped read" ON "public"."report_items" FOR SELECT TO "authenticated" USING ((EXISTS ( SELECT 1
+   FROM "public"."report_batches" "b"
+  WHERE (("b"."id" = "report_items"."report_id") AND "private"."can_manage_reports"("b"."location_id")))));
+
+
+
+ALTER TABLE "public"."report_batches" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."report_items" ENABLE ROW LEVEL SECURITY;
+
+
 CREATE POLICY "rubber bill items select scoped through bill" ON "public"."rubber_bill_items" FOR SELECT USING ((EXISTS ( SELECT 1
    FROM "public"."rubber_bills" "b"
   WHERE (("b"."id" = "rubber_bill_items"."bill_id") AND "public"."can_access_location"("b"."location_id")))));
@@ -5362,6 +5972,11 @@ GRANT ALL ON FUNCTION "public"."create_income_expense_approval_request"("payload
 
 
 
+REVOKE ALL ON FUNCTION "public"."create_report_batch"("p_location_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."create_report_batch"("p_location_id" "uuid") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."create_stock_entry_delete_approval_request"("payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."create_stock_entry_delete_approval_request"("payload" "jsonb") TO "authenticated";
 
@@ -5412,6 +6027,11 @@ GRANT ALL ON FUNCTION "public"."delete_income_sale_item"("item_id" "uuid") TO "a
 
 
 
+REVOKE ALL ON FUNCTION "public"."delete_report_batch"("p_report_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."delete_report_batch"("p_report_id" "uuid") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."delete_time_tracking_source_permanently"("p_source_type" "text", "p_source_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."delete_time_tracking_source_permanently"("p_source_type" "text", "p_source_id" "uuid") TO "authenticated";
 
@@ -5424,6 +6044,11 @@ GRANT ALL ON FUNCTION "public"."get_acid_stock_balance"("p_location_id" "uuid", 
 
 REVOKE ALL ON FUNCTION "public"."get_income_expense_feed"("p_location_id" "uuid", "p_from_date" "date", "p_to_date" "date", "p_cursor_date" "date", "p_cursor_key" "text", "p_page_size" integer) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_income_expense_feed"("p_location_id" "uuid", "p_from_date" "date", "p_to_date" "date", "p_cursor_date" "date", "p_cursor_key" "text", "p_page_size" integer) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_report_income_expense_rows"("p_report_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_report_income_expense_rows"("p_report_id" "uuid") TO "authenticated";
 
 
 
@@ -5448,6 +6073,111 @@ REVOKE ALL ON FUNCTION "public"."prevent_locked_ocr_ticket_change"() FROM PUBLIC
 
 REVOKE ALL ON FUNCTION "public"."receive_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."receive_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") TO "authenticated";
+
+
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."financial_transactions" TO "anon";
+GRANT ALL ON TABLE "public"."financial_transactions" TO "authenticated";
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."financial_transactions" TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."financial_transactions") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."financial_transactions") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."financial_transactions") TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."income_expense" TO "service_role";
+GRANT SELECT ON TABLE "public"."income_expense" TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."income_expense") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."income_expense") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."income_expense") TO "service_role";
+
+
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."leave_requests" TO "anon";
+GRANT ALL ON TABLE "public"."leave_requests" TO "authenticated";
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."leave_requests" TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."leave_requests") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."leave_requests") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."leave_requests") TO "service_role";
+
+
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."money_transfers" TO "anon";
+GRANT ALL ON TABLE "public"."money_transfers" TO "authenticated";
+GRANT ALL ON TABLE "public"."money_transfers" TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."money_transfers") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."money_transfers") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."money_transfers") TO "service_role";
+
+
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."ocr_tickets" TO "anon";
+GRANT ALL ON TABLE "public"."ocr_tickets" TO "authenticated";
+GRANT ALL ON TABLE "public"."ocr_tickets" TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."ocr_tickets") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."ocr_tickets") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."ocr_tickets") TO "service_role";
+
+
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."payroll_slips" TO "anon";
+GRANT ALL ON TABLE "public"."payroll_slips" TO "authenticated";
+GRANT ALL ON TABLE "public"."payroll_slips" TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."payroll_slips") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."payroll_slips") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."payroll_slips") TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."rubber_bills" TO "service_role";
+GRANT SELECT ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."rubber_bills") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."rubber_bills") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."rubber_bills") TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."stock_entries" TO "service_role";
+GRANT SELECT ON TABLE "public"."stock_entries" TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."stock_entries") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."stock_entries") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."stock_entries") TO "service_role";
+
+
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."time_segments" TO "anon";
+GRANT ALL ON TABLE "public"."time_segments" TO "authenticated";
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."time_segments" TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."time_segments") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."time_segments") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."time_segments") TO "service_role";
 
 
 
@@ -5504,28 +6234,13 @@ GRANT SELECT ON TABLE "public"."acid_products" TO "authenticated";
 
 
 
-GRANT ALL ON TABLE "public"."stock_entries" TO "service_role";
-GRANT SELECT ON TABLE "public"."stock_entries" TO "authenticated";
-
-
-
 GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."acid_stock_entries" TO "service_role";
 GRANT SELECT ON TABLE "public"."acid_stock_entries" TO "authenticated";
 
 
 
-GRANT ALL ON TABLE "public"."income_expense" TO "service_role";
-GRANT SELECT ON TABLE "public"."income_expense" TO "authenticated";
-
-
-
 GRANT ALL ON TABLE "public"."rubber_bill_items" TO "service_role";
 GRANT SELECT ON TABLE "public"."rubber_bill_items" TO "authenticated";
-
-
-
-GRANT ALL ON TABLE "public"."rubber_bills" TO "service_role";
-GRANT SELECT ON TABLE "public"."rubber_bills" TO "authenticated";
 
 
 
@@ -5559,12 +6274,6 @@ GRANT ALL ON TABLE "public"."customers" TO "service_role";
 
 
 
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."financial_transactions" TO "anon";
-GRANT ALL ON TABLE "public"."financial_transactions" TO "authenticated";
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."financial_transactions" TO "service_role";
-
-
-
 GRANT ALL ON TABLE "public"."income_expense_approval_keywords" TO "service_role";
 GRANT SELECT,INSERT,UPDATE ON TABLE "public"."income_expense_approval_keywords" TO "authenticated";
 
@@ -5583,12 +6292,6 @@ GRANT SELECT,INSERT,UPDATE ON TABLE "public"."income_expense_approval_settings" 
 GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."income_sale_items" TO "anon";
 GRANT SELECT,INSERT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN,UPDATE ON TABLE "public"."income_sale_items" TO "authenticated";
 GRANT ALL ON TABLE "public"."income_sale_items" TO "service_role";
-
-
-
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."leave_requests" TO "anon";
-GRANT ALL ON TABLE "public"."leave_requests" TO "authenticated";
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."leave_requests" TO "service_role";
 
 
 
@@ -5612,24 +6315,6 @@ GRANT ALL ON TABLE "public"."money_transfer_items" TO "service_role";
 GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."money_transfer_slips" TO "anon";
 GRANT ALL ON TABLE "public"."money_transfer_slips" TO "authenticated";
 GRANT ALL ON TABLE "public"."money_transfer_slips" TO "service_role";
-
-
-
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."money_transfers" TO "anon";
-GRANT ALL ON TABLE "public"."money_transfers" TO "authenticated";
-GRANT ALL ON TABLE "public"."money_transfers" TO "service_role";
-
-
-
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."ocr_tickets" TO "anon";
-GRANT ALL ON TABLE "public"."ocr_tickets" TO "authenticated";
-GRANT ALL ON TABLE "public"."ocr_tickets" TO "service_role";
-
-
-
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."payroll_slips" TO "anon";
-GRANT ALL ON TABLE "public"."payroll_slips" TO "authenticated";
-GRANT ALL ON TABLE "public"."payroll_slips" TO "service_role";
 
 
 
@@ -5678,6 +6363,16 @@ GRANT SELECT("can_access_super_admin_features"),UPDATE("can_access_super_admin_f
 
 
 
+GRANT ALL ON TABLE "public"."report_batches" TO "service_role";
+GRANT SELECT ON TABLE "public"."report_batches" TO "authenticated";
+
+
+
+GRANT ALL ON TABLE "public"."report_items" TO "service_role";
+GRANT SELECT ON TABLE "public"."report_items" TO "authenticated";
+
+
+
 GRANT ALL ON TABLE "public"."stock_entry_approval_requests" TO "service_role";
 GRANT SELECT ON TABLE "public"."stock_entry_approval_requests" TO "authenticated";
 
@@ -5691,12 +6386,6 @@ GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."stock_movem
 
 GRANT ALL ON TABLE "public"."stock_product_approval_requests" TO "service_role";
 GRANT SELECT ON TABLE "public"."stock_product_approval_requests" TO "authenticated";
-
-
-
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."time_segments" TO "anon";
-GRANT ALL ON TABLE "public"."time_segments" TO "authenticated";
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."time_segments" TO "service_role";
 
 
 

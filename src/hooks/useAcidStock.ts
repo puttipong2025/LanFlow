@@ -24,6 +24,7 @@ function mapMovement(row: any): AcidStockMovement {
     createdByPhone: row.created_by_phone,
     createdAt: row.created_at,
     relationLockReason: row.relation_lock_reason,
+    reportLockNo: row.report_lock_no ?? null,
   };
 }
 
@@ -90,7 +91,26 @@ export function useAcidStock(locationId: string) {
         .order("created_at", { ascending: false });
 
       if (error) throw new Error(error.message || JSON.stringify(error));
-      return (data || []).map(mapMovement);
+      const rows = (data || []).map(mapMovement);
+      const entryIds = [...new Set(
+        rows.filter((row) => row.sourceType === "stock_entry").map((row) => row.sourceId)
+      )];
+      if (entryIds.length === 0) return rows;
+
+      const { data: locks, error: lockError } = await supabase
+        .from("stock_entries")
+        .select("id, report_lock_no")
+        .in("id", entryIds);
+      if (lockError) throw new Error(lockError.message || JSON.stringify(lockError));
+      const lockById = new Map(
+        (locks || []).map((row) => [row.id, row.report_lock_no as string | null])
+      );
+      return rows.map((row) => ({
+        ...row,
+        reportLockNo: row.sourceType === "stock_entry"
+          ? lockById.get(row.sourceId) ?? null
+          : null,
+      }));
     },
     enabled: !!locationId,
   });

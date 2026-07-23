@@ -31,14 +31,14 @@ export async function GET(request: NextRequest) {
     
     // We need profile to get daily_wage
     const profilePromise = supabase.from("profiles").select("daily_wage").eq("id", targetUserId).single();
-    const segmentsPromise = supabase.from("time_segments").select("start_time, end_time").eq("profile_id", targetUserId).not("end_time", "is", null).gte("start_time", startOfMonth);
+    const segmentsPromise = supabase.from("time_segments").select("start_time, end_time, report_lock_no").eq("profile_id", targetUserId).not("end_time", "is", null).gte("start_time", startOfMonth);
     const approvedTxPromise = supabase.from("financial_transactions").select("amount, type").eq("profile_id", targetUserId).eq("status", "APPROVED").gte("created_at", startOfMonth).in("type", ["WITHDRAWAL_DEDUCTION", "DEBT_DEDUCTION", "SALARY"]);
-    const activeDebtsPromise = supabase.from("financial_transactions").select("*").eq("profile_id", targetUserId).in("type", ["DEBT", "WITHDRAWAL"]).eq("status", "APPROVED").gt("remaining_amount", 0);
+    const activeDebtsPromise = supabase.from("financial_transactions").select("*, report_lock_no").eq("profile_id", targetUserId).in("type", ["DEBT", "WITHDRAWAL"]).eq("status", "APPROVED").gt("remaining_amount", 0);
 
     const [timeTracking, leaveRequests, transactions, profileRes, segmentsRes, approvedTxRes, activeDebtsRes] = await Promise.all([
-      supabase.from("time_segments").select("*").eq("profile_id", targetUserId).is("end_time", null).maybeSingle(),
-      supabase.from("leave_requests").select("*, approver:profiles!leave_requests_approved_by_fkey(name)").eq("profile_id", targetUserId).order("created_at", { ascending: false }).limit(10),
-      supabase.from("financial_transactions").select("*, approver:profiles!financial_transactions_approved_by_fkey(name)").eq("profile_id", targetUserId).order("created_at", { ascending: false }).limit(20),
+      supabase.from("time_segments").select("*, report_lock_no").eq("profile_id", targetUserId).is("end_time", null).maybeSingle(),
+      supabase.from("leave_requests").select("*, report_lock_no, approver:profiles!leave_requests_approved_by_fkey(name)").eq("profile_id", targetUserId).order("created_at", { ascending: false }).limit(10),
+      supabase.from("financial_transactions").select("*, report_lock_no, approver:profiles!financial_transactions_approved_by_fkey(name)").eq("profile_id", targetUserId).order("created_at", { ascending: false }).limit(20),
       profilePromise,
       segmentsPromise,
       approvedTxPromise,

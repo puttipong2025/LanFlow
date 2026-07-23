@@ -12,6 +12,10 @@ export function canUseMoneyTransfer(profile: Profile | null | undefined) {
   return canManageSystemFeatures(profile) || profile?.canAccessMoneyTransfer === true;
 }
 
+export function canUseReports(profile: Profile | null | undefined) {
+  return canManageSystemFeatures(profile) || profile?.role === "admin";
+}
+
 export function canAccessSourceLocation(profile: Profile | null | undefined, locationId: string) {
   return canManageSystemFeatures(profile) || profile?.locationIds.includes(locationId) === true;
 }

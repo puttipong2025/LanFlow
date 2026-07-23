@@ -75,13 +75,16 @@ export function ItemPicker({
                 const alreadySelected = selectedSourceIds.has(bill.id);
                 const noCustomer = !bill.customerName;
                 const negative = bill.netTotal < 0;
-                const disabled = alreadyUsed || noCustomer || negative;
+                const disabled = alreadyUsed || noCustomer || negative || Boolean(bill.reportLockNo);
+                const reportLockReason = bill.reportLockNo
+                  ? `ล็อกโดยรายงาน ${bill.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`
+                  : undefined;
 
                 return (
                   <tr key={bill.id} className={`border-b border-black/5 ${disabled && !alreadySelected ? "opacity-50" : ""}`}>
                     <td className="px-3 py-2">
                       {alreadySelected ? (
-                        <button type="button" onClick={() => onDeselect(bill.id)} className="rounded bg-leaf px-2 py-0.5 text-xs font-bold text-white">
+                        <button type="button" onClick={() => onDeselect(bill.id)} disabled={Boolean(reportLockReason)} title={reportLockReason} className="rounded bg-leaf px-2 py-0.5 text-xs font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
                           ✓
                         </button>
                       ) : disabled ? (
@@ -117,7 +120,9 @@ export function ItemPicker({
                       {formatCurrency(bill.netTotal)}
                     </td>
                     <td className="px-3 py-2 text-center">
-                      {alreadyUsed && !alreadySelected ? (
+                      {reportLockReason ? (
+                        <span title={reportLockReason} className="rounded-full bg-amber/20 px-2 py-0.5 text-xs font-bold text-amber">{bill.reportLockNo}</span>
+                      ) : alreadyUsed && !alreadySelected ? (
                         <span className="rounded-full bg-amber/20 px-2 py-0.5 text-xs font-bold text-amber">โอนแล้ว</span>
                       ) : noCustomer ? (
                         <span className="rounded-full bg-clay/10 px-2 py-0.5 text-xs font-bold text-clay">ไม่มีชื่อ</span>
@@ -137,13 +142,16 @@ export function ItemPicker({
                 const noCustomer = !ticket.customerName;
                 const amount = ticket.totalAmount ?? 0;
                 const negative = amount < 0;
-                const disabled = alreadyUsed || noCustomer || negative;
+                const disabled = alreadyUsed || noCustomer || negative || Boolean(ticket.reportLockNo);
+                const reportLockReason = ticket.reportLockNo
+                  ? `ล็อกโดยรายงาน ${ticket.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`
+                  : undefined;
 
                 return (
                   <tr key={ticket.id} className={`border-b border-black/5 ${disabled && !alreadySelected ? "opacity-50" : ""}`}>
                     <td className="px-3 py-2">
                       {alreadySelected ? (
-                        <button type="button" onClick={() => onDeselect(ticket.id)} className="rounded bg-river px-2 py-0.5 text-xs font-bold text-white">
+                        <button type="button" onClick={() => onDeselect(ticket.id)} disabled={Boolean(reportLockReason)} title={reportLockReason} className="rounded bg-river px-2 py-0.5 text-xs font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
                           ✓
                         </button>
                       ) : disabled ? (
@@ -179,7 +187,9 @@ export function ItemPicker({
                       {formatCurrency(amount)}
                     </td>
                     <td className="px-3 py-2 text-center">
-                      {alreadyUsed && !alreadySelected ? (
+                      {reportLockReason ? (
+                        <span title={reportLockReason} className="rounded-full bg-amber/20 px-2 py-0.5 text-xs font-bold text-amber">{ticket.reportLockNo}</span>
+                      ) : alreadyUsed && !alreadySelected ? (
                         <span className="rounded-full bg-amber/20 px-2 py-0.5 text-xs font-bold text-amber">โอนแล้ว</span>
                       ) : noCustomer ? (
                         <span className="rounded-full bg-clay/10 px-2 py-0.5 text-xs font-bold text-clay">ไม่มีชื่อ</span>

@@ -2,7 +2,7 @@ import { CheckCircle2, Loader2, WifiOff } from "lucide-react";
 import { type Tab, tabs } from "@/components/lanflow/tabs";
 import type { Profile } from "@/types";
 import type { UploadItem } from "@/components/OcrTicketUpload";
-import { canManageSystemFeatures, canUseMoneyTransfer } from "@/lib/permissions";
+import { canManageSystemFeatures, canUseMoneyTransfer, canUseReports } from "@/lib/permissions";
 import { getOfflineTabBlockMessage } from "@/lib/offline-module-policy";
 
 export function NavigationTabs({
@@ -29,6 +29,7 @@ export function NavigationTabs({
       {tabs.filter(tab => {
         if (tab.id === "admin") return canManageSystemFeatures(profile) || ["super_admin", "admin"].includes(profile.role);
         if (tab.id === "money-transfer") return canUseMoneyTransfer(profile);
+        if (tab.id === "reports") return canUseReports(profile);
         return true;
       }).map((tab) => {
         const Icon = tab.icon;

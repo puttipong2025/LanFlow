@@ -328,24 +328,28 @@ export function MoneyTransferModule({
                         <button
                           type="button"
                           onClick={() => handleEdit(t)}
-                          disabled={!online}
+                          disabled={!online || Boolean(t.reportLockNo)}
                           className="grid h-7 w-7 place-items-center rounded-md text-ink/50 hover:bg-mint hover:text-leaf disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-ink/50"
-                          title={online ? "แก้ไข" : offlineMessage}
+                          title={t.reportLockNo ? `ล็อกโดยรายงาน ${t.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน` : online ? "แก้ไข" : offlineMessage}
                         >
                           <Edit3 size={14} />
                         </button>
                         <button
                           type="button"
                           onClick={() => {
+                            if (t.reportLockNo) {
+                              setToastMsg(`ล็อกโดยรายงาน ${t.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`);
+                              return;
+                            }
                             if (!online) {
                               setToastMsg(offlineMessage);
                               return;
                             }
                             setDeleteConfirmId(t.id);
                           }}
-                          disabled={!online}
+                          disabled={!online || Boolean(t.reportLockNo)}
                           className="grid h-7 w-7 place-items-center rounded-md text-ink/50 hover:bg-clay/10 hover:text-clay disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-ink/50"
-                          title={online ? "ลบ" : offlineMessage}
+                          title={t.reportLockNo ? `ล็อกโดยรายงาน ${t.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน` : online ? "ลบ" : offlineMessage}
                         >
                           <Trash2 size={14} />
                         </button>

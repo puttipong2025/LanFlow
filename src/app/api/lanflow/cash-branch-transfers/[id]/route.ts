@@ -8,7 +8,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   const { id } = await params;
   const { data, error } = await result.supabase
     .from("money_transfers")
-    .select("*, money_transfer_cash_details(*)")
+    .select("*, report_lock_no, money_transfer_cash_details(*)")
     .eq("id", id)
     .eq("transfer_type", "cash")
     .eq("transfer_method", "cash")

@@ -95,9 +95,11 @@ export function OcrTicketUpload({
   const getTicketActionBlockReason = useCallback(
     (ticketId: string) => {
       if (!online) return offlineMessage;
+      const reportLockNo = ocrTickets.find((ticket) => ticket.id === ticketId)?.reportLockNo;
+      if (reportLockNo) return `ล็อกโดยรายงาน ${reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`;
       return lockedOcrTicketIds.has(ticketId) ? OCR_TICKET_TRANSFER_LOCK_MESSAGE : null;
     },
-    [lockedOcrTicketIds, online, offlineMessage]
+    [lockedOcrTicketIds, ocrTickets, online, offlineMessage]
   );
 
   const showTicketActionBlocked = useCallback(

@@ -76,7 +76,8 @@ export function RubberBillsModule({
   }, [transfers]);
 
   function getActionBlockReason(bill: RubberBill) {
-    return getOfflineSyncedActionBlockReason(bill, isOnline)
+    return (bill.reportLockNo ? `ล็อกโดยรายงาน ${bill.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน` : null)
+      ?? getOfflineSyncedActionBlockReason(bill, isOnline)
       ?? (lockedRubberBillIds.has(bill.id) ? RUBBER_BILL_TRANSFER_LOCK_MESSAGE : null);
   }
 

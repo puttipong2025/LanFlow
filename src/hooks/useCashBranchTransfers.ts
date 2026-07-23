@@ -18,6 +18,7 @@ const mapTransfer = (row: any): CashBranchTransfer => {
     createdByName: row.created_by_name, createdByPhone: row.created_by_phone, createdByUserId: row.created_by_user_id,
     sent: mapCounts(detail, "sent")!, received: mapCounts(detail, "received"), sentTotal: Number(detail.sent_total), receivedTotal: detail.received_total == null ? null : Number(detail.received_total), differenceTotal: detail.difference_total == null ? null : Number(detail.difference_total),
     status: detail.cash_status, note: detail.note, sentAt: detail.sent_at, receivedAt: detail.received_at, receivedByName: detail.received_by_name, receivedByPhone: detail.received_by_phone, differenceAcceptReason: detail.difference_accept_reason,
+    reportLockNo: row.report_lock_no ?? null,
   };
 };
 
