@@ -202,71 +202,25 @@ export async function POST(request: NextRequest) {
       }
 
       const adminComment = `สร้างหนี้สินโดย: ${profile?.name || 'Admin'}`;
-      const { error } = await supabase.from('financial_transactions').insert({
+      const { data: debt, error } = await supabase.from('financial_transactions').insert({
         profile_id: user_id, type: 'DEBT', amount, due_date, description, admin_comment: adminComment
-      });
+      }).select('id').single();
       if (error) {
          console.error("CREATE_DEBT error", error);
          return NextResponse.json({ error: error.message }, { status: 500 });
       }
-      await supabase.from('time_tracking_audit_logs').insert({ admin_id: adminId, action: 'CREATE_DEBT', target_table: 'financial_transactions', record_id: user_id, new_data: { amount, due_date, description }, comment: adminComment });
+      await supabase.from('time_tracking_audit_logs').insert({ admin_id: adminId, action: 'CREATE_DEBT', target_table: 'financial_transactions', record_id: debt.id, new_data: { amount, due_date, description }, comment: adminComment });
 
       return NextResponse.json({ success: true });
     }
     if (body.action === 'DELETE_TRANSACTION') {
       const { transaction_id } = body.payload;
-      const { data: tx } = await supabase.from('financial_transactions').select('*').eq('id', transaction_id).single();
-      if (!tx) return NextResponse.json({ error: "ไม่พบรายการ" }, { status: 404 });
-      if (tx.type === 'WITHDRAWAL' && tx.status === 'APPROVED' && tx.expense_location_id) {
-        const { data, error } = await supabase.rpc('cancel_time_tracking_expense_source', {
-          p_source_type: 'transaction',
-          p_source_id: transaction_id,
-          p_reason: body.payload.cancel_reason || null,
-        });
-        if (error) return NextResponse.json({ error: approvalRpcErrorMessage(error.message) }, { status: approvalRpcErrorStatus(error.message) });
-        return NextResponse.json({ success: true, cancelled: true, result: data });
-      }
-      if (adminRole !== 'super_admin' && tx.profile_id !== adminId) {
-        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-      }
-      if (tx.status === 'APPROVED' && adminRole !== 'super_admin') {
-        return NextResponse.json({ error: "Only super_admin can delete approved records" }, { status: 403 });
-      }
-
-      // Only allow DEBT or WITHDRAWAL
-      if (tx.type !== 'DEBT' && tx.type !== 'WITHDRAWAL') {
-        return NextResponse.json({ error: "ไม่สามารถลบรายการประเภทนี้ได้" }, { status: 400 });
-      }
-
-      // Check if slip exists in the same month
-      const createdDate = new Date(tx.created_at);
-      const monthStr = `${createdDate.getFullYear()}-${String(createdDate.getMonth() + 1).padStart(2, '0')}`;
-      const { data: slips } = await supabase.from('payroll_slips')
-        .select('id')
-        .eq('profile_id', tx.profile_id)
-        .eq('month', monthStr)
-        .limit(1);
-
-      if (slips && slips.length > 0) {
-        return NextResponse.json({ error: "ไม่สามารถลบได้เนื่องจากมีการออกสลิปเงินเดือนของเดือนนี้ไปแล้ว โปรดลบสลิปเงินเดือนก่อน" }, { status: 400 });
-      }
-
-      // Delete linked child transactions (e.g. DEBT_DEDUCTION) to prevent FK violation
-      if (tx.type === 'DEBT' || tx.type === 'WITHDRAWAL') {
-         await supabase.from('financial_transactions').delete().eq('parent_debt_id', transaction_id);
-      }
-
-      const { error } = await supabase.from('financial_transactions').delete().eq('id', transaction_id);
-      if (error) {
-        return NextResponse.json({ error: error.message }, { status: 500 });
-      }
-
-      await supabase.from('time_tracking_audit_logs').insert({
-        admin_id: adminId, action: 'DELETE_TRANSACTION', target_table: 'financial_transactions',
-        record_id: transaction_id, old_data: tx, comment: `ลบรายการ ${tx.type} จำนวน ${tx.amount}`
+      const { data, error } = await supabase.rpc('delete_time_tracking_source_permanently', {
+        p_source_type: 'transaction',
+        p_source_id: transaction_id,
       });
-
-      return NextResponse.json({ success: true });
+      if (error) return NextResponse.json({ error: approvalRpcErrorMessage(error.message) }, { status: approvalRpcErrorStatus(error.message) });
+      return NextResponse.json({ success: true, deleted: true, result: data });
     }
 
 
@@ -460,8 +414,11 @@ export async function POST(request: NextRequest) {
       if (!(await canEditUser(user_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
       const adminComment = `ยื่นแทนโดย Admin: ${profile?.name || 'Admin'}`;
-      await supabase.from('financial_transactions').insert({ profile_id: user_id, type: 'WITHDRAWAL', amount, admin_comment: adminComment });
-      await supabase.from('time_tracking_audit_logs').insert({ admin_id: adminId, action: 'ADMIN_REQUEST_WITHDRAWAL', target_table: 'financial_transactions', record_id: user_id, new_data: { amount }, comment: adminComment });
+      const { data: withdrawal, error } = await supabase.from('financial_transactions').insert({
+        profile_id: user_id, type: 'WITHDRAWAL', amount, admin_comment: adminComment,
+      }).select('id').single();
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      await supabase.from('time_tracking_audit_logs').insert({ admin_id: adminId, action: 'ADMIN_REQUEST_WITHDRAWAL', target_table: 'financial_transactions', record_id: withdrawal.id, new_data: { amount }, comment: adminComment });
 
       return NextResponse.json({ success: true });
     }
@@ -548,33 +505,12 @@ export async function POST(request: NextRequest) {
 
     if (body.action === 'DELETE_PAYROLL_SLIP') {
       const { slip_id } = body.payload;
-      const { data: slip } = await supabase.from('payroll_slips').select('*').eq('id', slip_id).single();
-      if (!slip) return NextResponse.json({ error: "Slip not found" }, { status: 404 });
-      if (slip.status === 'APPROVED' && Number(slip.net_pay) > 0 && slip.expense_location_id) {
-        const { data, error } = await supabase.rpc('cancel_time_tracking_expense_source', {
-          p_source_type: 'payroll_slip',
-          p_source_id: slip_id,
-          p_reason: body.payload.cancel_reason || null,
-        });
-        if (error) return NextResponse.json({ error: error.message }, { status: 400 });
-        return NextResponse.json({ success: true, cancelled: true, result: data });
-      }
-      if (!(await canEditUser(slip.profile_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-
-      // Can only delete if created_at is in the current month
-      const now = new Date();
-      const createdDate = new Date(slip.created_at);
-      if (now.getMonth() !== createdDate.getMonth() || now.getFullYear() !== createdDate.getFullYear()) {
-        return NextResponse.json({ error: "Cannot delete slips from previous months" }, { status: 400 });
-      }
-
-      if (slip.status === 'APPROVED' && adminRole !== 'super_admin') {
-        return NextResponse.json({ error: "ไม่สามารถลบสลิปที่อนุมัติแล้วได้" }, { status: 403 });
-      }
-
-      await supabase.from('payroll_slips').delete().eq('id', slip_id);
-      await supabase.from('time_tracking_audit_logs').insert({ admin_id: adminId, action: 'DELETE_PAYROLL_SLIP', target_table: 'payroll_slips', record_id: slip_id, old_data: slip, comment: `ลบสลิปเดือน ${slip.month}` });
-      return NextResponse.json({ success: true });
+      const { data, error } = await supabase.rpc('delete_time_tracking_source_permanently', {
+        p_source_type: 'payroll_slip',
+        p_source_id: slip_id,
+      });
+      if (error) return NextResponse.json({ error: approvalRpcErrorMessage(error.message) }, { status: approvalRpcErrorStatus(error.message) });
+      return NextResponse.json({ success: true, deleted: true, result: data });
     }
 
     if (body.action === 'APPROVE_PAYROLL_SLIP') {

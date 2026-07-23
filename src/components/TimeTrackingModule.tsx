@@ -14,6 +14,7 @@ interface TimeTrackingModuleProps {
 }
 
 const TIME_TRACKING_OFFLINE_MESSAGE = "เวลาและเงินเดือนใช้ได้เมื่อออนไลน์เท่านั้น";
+type ApprovalType = 'TRANSACTION' | 'LEAVE' | 'SLIP';
 
 export function TimeTrackingModule({ profile, online, locations }: TimeTrackingModuleProps) {
   const isAdmin = profile.role === "admin" || profile.role === "super_admin";
@@ -25,7 +26,7 @@ export function TimeTrackingModule({ profile, online, locations }: TimeTrackingM
   return <UserTimeTracking profile={profile} online={online} />;
 }
 
-function UserTimeTracking({ profile, targetUserId, online, expenseLocations = [] }: { profile: Profile, targetUserId?: string, online: boolean, expenseLocations?: Location[] }) {
+function UserTimeTracking({ profile, targetUserId, online, expenseLocations = [], onApprove }: { profile: Profile, targetUserId?: string, online: boolean, expenseLocations?: Location[], onApprove?: (type: ApprovalType, item: any) => void }) {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -157,8 +158,7 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
          const json = await res.json();
          alert(json.error || "ไม่สามารถลบรายการได้");
       } else {
-         const json = await res.json();
-         alert(json.cancelled ? "ยกเลิกรายจ่ายสำเร็จ (เก็บประวัติไว้)" : "ลบรายการสำเร็จ");
+         alert("ลบรายการสำเร็จ");
          loadData();
       }
     } catch (e) {
@@ -192,8 +192,9 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
 
   if (loading) return <div>กำลังโหลดข้อมูล...</div>;
 
-  const regularTransactions = data?.transactions?.filter((t: any) => t.type !== 'DEBT' && t.type !== 'WITHDRAWAL') || [];
-  const debtTransactions = data?.transactions?.filter((t: any) => t.type === 'DEBT' || t.type === 'WITHDRAWAL') || [];
+  const regularTransactions = data?.transactions?.filter((t: any) => t.status !== 'REJECTED' && t.type !== 'DEBT' && t.type !== 'WITHDRAWAL') || [];
+  const debtTransactions = data?.transactions?.filter((t: any) => t.status !== 'REJECTED' && (t.type === 'DEBT' || t.type === 'WITHDRAWAL')) || [];
+  const leaveRequests = data?.leaveRequests?.filter((request: any) => request.status !== 'REJECTED') || [];
 
   return (
     <div className={`flex flex-col gap-6 p-4 ${targetUserId ? 'bg-sky-50/50 rounded-2xl border border-black/5 shadow-inner' : ''}`}>
@@ -305,7 +306,7 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
 
       <div className="bg-white p-4 rounded-xl border border-black/10 shadow-sm mt-4">
         <h3 className="font-semibold text-ink/70 mb-4">ประวัติหักเงิน</h3>
-        {data?.leaveRequests?.length === 0 && regularTransactions.length === 0 ? (
+        {leaveRequests.length === 0 && regularTransactions.length === 0 ? (
           <p className="text-sm text-ink/50">ไม่มีประวัติ</p>
         ) : (
           <ul className="divide-y divide-black/5">
@@ -319,8 +320,8 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
                     {t.description && <span className="text-sm text-ink/70 mt-1">{t.description}</span>}
                     {t.due_date && <span className="text-xs text-clay mt-1">กำหนดชำระ: {new Date(t.due_date).toLocaleDateString('th-TH')}</span>}
                     <span className="text-xs text-ink/50 mt-1">วันที่ขอ: {t.created_at ? new Date(t.created_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-'}</span>
-                    {t.status !== 'PENDING' && (
-                      <span className="text-xs text-ink/50">{t.status === 'REJECTED' ? 'วันที่ไม่อนุมัติ' : 'วันที่อนุมัติ'}: {t.updated_at ? new Date(t.updated_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : (t.created_at ? new Date(t.created_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-')}</span>
+                    {t.status === 'APPROVED' && (
+                      <span className="text-xs text-ink/50">วันที่อนุมัติ: {t.updated_at ? new Date(t.updated_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : (t.created_at ? new Date(t.created_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-')}</span>
                     )}
                     {t.admin_comment?.startsWith("ระบบอัตโนมัติ:") && (
                       <span className="text-xs text-amber mt-1 font-bold">{t.admin_comment}</span>
@@ -333,7 +334,10 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
                     )}
                   </div>
                   <div className="flex items-center gap-2 self-start sm:self-center">
-                    <span className={`text-xs font-bold px-2 py-1 rounded-md ${t.status === 'APPROVED' ? 'bg-leaf/20 text-leaf' : t.status === 'REJECTED' ? 'bg-clay/20 text-clay' : 'bg-ink/10 text-ink'}`}>{t.status}</span>
+                    <span className={`text-xs font-bold px-2 py-1 rounded-md ${t.status === 'APPROVED' ? 'bg-leaf/20 text-leaf' : 'bg-ink/10 text-ink'}`}>{t.status}</span>
+                    {targetUserId && t.status === 'PENDING' && onApprove && (profile.role === 'super_admin' || t.type === 'WITHDRAWAL') && (
+                      <button onClick={() => onApprove('TRANSACTION', t)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-leaf/20 text-leaf px-3 py-1 rounded font-bold hover:bg-leaf/30 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
+                    )}
                     {t.type === 'WITHDRAWAL' && t.status === 'APPROVED' && !t.cancelled_at && (profile.role === 'admin' || profile.role === 'super_admin') && (
                       <button onClick={() => changeWithdrawalExpenseLocation(t)} disabled={saving || !online || expenseLocations.length === 0} className="text-river hover:text-river/70 text-sm underline disabled:opacity-40">เปลี่ยนสาขาค่าใช้จ่าย</button>
                     )}
@@ -345,13 +349,13 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
                   </div>
                 </li>
              ))}
-             {data?.leaveRequests?.map((r: any) => (
+              {leaveRequests.map((r: any) => (
                 <li key={r.id} className="py-3 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 border-b border-black/5 last:border-0">
                   <div className="flex flex-col">
                     <span>ลางาน ({r.type}) <strong>{r.start_date}</strong></span>
                     <span className="text-xs text-ink/50 mt-1">วันที่ขอ: {r.created_at ? new Date(r.created_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-'}</span>
-                    {r.status !== 'PENDING' && (
-                      <span className="text-xs text-ink/50">{r.status === 'REJECTED' ? 'วันที่ไม่อนุมัติ' : 'วันที่อนุมัติ'}: {r.updated_at ? new Date(r.updated_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : (r.created_at ? new Date(r.created_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-')}</span>
+                    {r.status === 'APPROVED' && (
+                      <span className="text-xs text-ink/50">วันที่อนุมัติ: {r.updated_at ? new Date(r.updated_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : (r.created_at ? new Date(r.created_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-')}</span>
                     )}
                     {r.admin_comment?.startsWith("ยื่นแทนโดย") && (
                       <span className="text-xs text-river mt-1">{r.admin_comment}</span>
@@ -360,7 +364,12 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
                       <span className="text-xs text-leaf mt-1">ผู้ทำรายการ: {r.approver.name}</span>
                     )}
                   </div>
-                  <span className={`text-xs font-bold px-2 py-1 rounded-md self-start sm:self-center ${r.status === 'APPROVED' ? 'bg-leaf/20 text-leaf' : r.status === 'REJECTED' ? 'bg-clay/20 text-clay' : 'bg-ink/10 text-ink'}`}>{r.status}</span>
+                  <div className="flex items-center gap-2 self-start sm:self-center">
+                    <span className={`text-xs font-bold px-2 py-1 rounded-md ${r.status === 'APPROVED' ? 'bg-leaf/20 text-leaf' : 'bg-ink/10 text-ink'}`}>{r.status}</span>
+                    {targetUserId && r.status === 'PENDING' && onApprove && (
+                      <button onClick={() => onApprove('LEAVE', r)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-leaf/20 text-leaf px-3 py-1 rounded font-bold hover:bg-leaf/30 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
+                    )}
+                  </div>
                 </li>
              ))}
           </ul>
@@ -383,8 +392,8 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
                     {t.description && <span className="text-sm text-ink/70 mt-1">{t.description}</span>}
                     {t.type === 'DEBT' && t.due_date && <span className="text-xs text-clay mt-1 font-semibold">กำหนดชำระ: {new Date(t.due_date).toLocaleDateString('th-TH')}</span>}
                     <span className="text-xs text-ink/50 mt-1">วันที่ทำรายการ: {t.created_at ? new Date(t.created_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-'}</span>
-                    {t.status !== 'PENDING' && (
-                      <span className="text-xs text-ink/50">{t.status === 'REJECTED' ? 'วันที่ไม่อนุมัติ' : 'วันที่อนุมัติ'}: {t.updated_at ? new Date(t.updated_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : (t.created_at ? new Date(t.created_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-')}</span>
+                    {t.status === 'APPROVED' && (
+                      <span className="text-xs text-ink/50">วันที่อนุมัติ: {t.updated_at ? new Date(t.updated_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : (t.created_at ? new Date(t.created_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-')}</span>
                     )}
                     {t.admin_comment?.startsWith("ระบบอัตโนมัติ:") && (
                       <span className="text-xs text-amber mt-1 font-bold">{t.admin_comment}</span>
@@ -397,7 +406,10 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
                     )}
                   </div>
                   <div className="flex items-center gap-2 self-start sm:self-center">
-                    <span className={`text-xs font-bold px-2 py-1 rounded-md ${t.status === 'APPROVED' ? 'bg-leaf/20 text-leaf' : t.status === 'REJECTED' ? 'bg-clay/20 text-clay' : 'bg-ink/10 text-ink'}`}>{t.status}</span>
+                    <span className={`text-xs font-bold px-2 py-1 rounded-md ${t.status === 'APPROVED' ? 'bg-leaf/20 text-leaf' : 'bg-ink/10 text-ink'}`}>{t.status}</span>
+                    {targetUserId && t.status === 'PENDING' && onApprove && (profile.role === 'super_admin' || t.type === 'WITHDRAWAL') && (
+                      <button onClick={() => onApprove('TRANSACTION', t)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-leaf/20 text-leaf px-3 py-1 rounded font-bold hover:bg-leaf/30 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
+                    )}
                     {(profile.role === 'super_admin' || (profile.role === 'admin' && !targetUserId && t.status !== 'APPROVED')) && (t.type === 'DEBT' || t.type === 'WITHDRAWAL') && (
                       <button onClick={() => handleDeleteTransaction(t)} disabled={saving || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="text-clay hover:text-clay/70 p-1 disabled:cursor-not-allowed disabled:opacity-40">
                         <XCircle size={18} />
@@ -543,37 +555,10 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
     load();
   }, []);
 
-  async function addDebt(userId: string) {
-    if (!online) {
-      alert(TIME_TRACKING_OFFLINE_MESSAGE);
-      return;
-    }
-    const amountStr = prompt("Debt amount (THB):");
-    if (!amountStr) return;
-    const amount = Number(amountStr);
-    if (!Number.isFinite(amount) || amount <= 0) {
-      alert("Invalid amount");
-      return;
-    }
-    const dueDate = prompt("Due date (YYYY-MM-DD):", new Date().toISOString().slice(0, 10));
-    if (!dueDate) return;
-    const description = prompt("Description (required):");
-    if (!description) {
-      alert("Description is required");
-      return;
-    }
-
-    await authFetch("/api/lanflow/time-tracking/admin", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "CREATE_DEBT", payload: { user_id: userId, amount, due_date: dueDate, description } })
-    });
-    load();
-  }
   async function submitApproval(
-    type: 'TRANSACTION' | 'LEAVE' | 'SLIP',
+    type: ApprovalType,
     id: string,
-    status: 'APPROVED' | 'REJECTED',
+    status: 'APPROVED',
     expenseLocationId?: string,
     providedComment?: string,
   ) {
@@ -581,7 +566,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
       alert(TIME_TRACKING_OFFLINE_MESSAGE);
       return false;
     }
-    const comment = providedComment ?? prompt(`ระบุเหตุผล (การ${status === 'APPROVED' ? 'อนุมัติ' : 'ไม่อนุมัติ'}):`) ?? '';
+    const comment = providedComment ?? prompt('ระบุเหตุผลการอนุมัติ:') ?? '';
     const res = await authFetch("/api/lanflow/time-tracking/admin", {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -604,13 +589,12 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
   }
 
   function handleApprove(
-    type: 'TRANSACTION' | 'LEAVE' | 'SLIP',
+    type: ApprovalType,
     id: string,
-    status: 'APPROVED' | 'REJECTED',
     expense?: { title: string; amount: number },
     onSuccess?: () => void,
   ) {
-    if (status === 'APPROVED' && expense) {
+    if (expense) {
       if (expenseLocations.length === 0) {
         alert('ไม่พบสาขาที่คุณดูแลและยังเปิดใช้งานอยู่ จึงไม่สามารถอนุมัติรายจ่ายนี้ได้');
         return;
@@ -618,7 +602,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
       setPendingExpenseApproval({ type: type as 'TRANSACTION' | 'SLIP', id, ...expense, onSuccess });
       return;
     }
-    void submitApproval(type, id, status).then((success) => {
+    void submitApproval(type, id, 'APPROVED').then((success) => {
       if (success) onSuccess?.();
     });
   }
@@ -649,6 +633,10 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
       body: JSON.stringify({ action: 'UPDATE_WAGE', payload: { user_id: userId, daily_wage: wage } })
     });
     load();
+  }
+
+  function pendingCountForUser(items: Array<{ profile_id: string }> | undefined, userId: string) {
+    return items?.filter((item) => item.profile_id === userId).length || 0;
   }
 
   if (loading) return <div>กำลังโหลดข้อมูล...</div>;
@@ -702,10 +690,13 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
             </tr>
           </thead>
           <tbody className="divide-y divide-black/5">
-            {data?.users?.map((user: any) => {
+             {data?.users?.map((user: any) => {
                const activeSegment = user.time_segments?.find((s: any) => !s.end_time);
                const status = activeSegment ? 'RUNNING' : 'PAUSED';
                const debtRemainingAmount = Number(user.debt_remaining_amount || 0);
+               const dashboardPendingCount = pendingCountForUser(data?.pendingTransactions, user.id)
+                 + pendingCountForUser(data?.pendingLeaves, user.id);
+               const payrollPendingCount = pendingCountForUser(data?.pendingSlips, user.id);
                return (
                 <tr key={user.id} className={`hover:bg-sand/30 ${user.is_active === false ? 'opacity-70 bg-red-50/50' : ''}`}>
                   <td className="py-3">
@@ -735,19 +726,18 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
                     </button>
                   </td>
                   <td className="py-3">
-                     <button onClick={() => setViewDashboardUserId(user.id)} className="bg-ink/5 text-ink px-3 py-1 rounded text-xs hover:bg-ink/10 font-bold">
+                     <button onClick={() => setViewDashboardUserId(user.id)} className="bg-ink/5 text-ink px-3 py-1 rounded text-xs hover:bg-ink/10 font-bold inline-flex items-center gap-1">
                        ดู Dashboard
+                       {dashboardPendingCount > 0 && <span className="min-w-4 rounded-full bg-clay px-1.5 py-0.5 text-[10px] text-white">{dashboardPendingCount}</span>}
                      </button>
                   </td>
                   <td className="py-3">
-                    <div className="flex items-center gap-2">
-                      <span className="text-clay font-bold">{formatCurrency(debtRemainingAmount)}</span>
-                      <button onClick={() => addDebt(user.id)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-clay text-white px-2 py-1 rounded text-xs hover:bg-clay/80 disabled:cursor-not-allowed disabled:opacity-50">เพิ่มหนี้</button>
-                    </div>
+                     <span className="text-clay font-bold">{formatCurrency(debtRemainingAmount)}</span>
                   </td>
                   <td className="py-3">
-                    <button onClick={() => openPayroll(user)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-leaf text-white px-3 py-1 rounded text-xs hover:bg-leaf/80 font-bold shadow-sm disabled:cursor-not-allowed disabled:opacity-50">
+                    <button onClick={() => openPayroll(user)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-leaf text-white px-3 py-1 rounded text-xs hover:bg-leaf/80 font-bold shadow-sm disabled:cursor-not-allowed disabled:opacity-50 inline-flex items-center gap-1">
                       คำนวณเงินเดือน
+                      {payrollPendingCount > 0 && <span className="min-w-4 rounded-full bg-white px-1.5 py-0.5 text-[10px] text-leaf">{payrollPendingCount}</span>}
                     </button>
                   </td>
                 </tr>
@@ -756,64 +746,6 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
           </tbody>
         </table>
       </div>
-
-      <div className="bg-white p-4 rounded-xl border border-black/10 shadow-sm mt-4">
-          <h3 className="font-semibold text-ink/70 mb-4">รายการรออนุมัติ</h3>
-          {(data?.pendingTransactions?.length > 0 || data?.pendingLeaves?.length > 0 || data?.pendingSlips?.length > 0) ? (
-          <ul className="divide-y divide-black/5">
-            {data?.pendingTransactions?.map((t: any) => (
-              <li key={t.id} className="py-3 flex justify-between items-center">
-                <span>
-                  {t.profiles?.name} {t.type === 'DEBT' ? 'สร้างหนี้สิน' : 'ขอเบิกเงิน'} <strong>{formatCurrency(t.amount)}</strong>
-                  {t.type === 'DEBT' && <span className="text-sm text-ink/70 ml-2">({t.description})</span>}
-                </span>
-                <div className="flex gap-2 items-center">
-                  {profile.role !== 'super_admin' && (t.type === 'DEBT' || t.profiles?.role !== 'user') ? (
-                     <span className="text-xs text-clay">เฉพาะ Super Admin</span>
-                  ) : (
-                    <>
-                      <button onClick={() => handleApprove('TRANSACTION', t.id, 'APPROVED', t.type === 'WITHDRAWAL' ? { title: `เบิกเงินของ ${t.profiles?.name || 'พนักงาน'}`, amount: Number(t.amount) } : undefined)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-leaf/20 text-leaf px-3 py-1 rounded font-bold hover:bg-leaf/30 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
-                      <button onClick={() => handleApprove('TRANSACTION', t.id, 'REJECTED')} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-clay/20 text-clay px-3 py-1 rounded font-bold hover:bg-clay/30 disabled:cursor-not-allowed disabled:opacity-50">ปฏิเสธ</button>
-                    </>
-                  )}
-                </div>
-              </li>
-            ))}
-            {data?.pendingLeaves?.map((r: any) => (
-              <li key={r.id} className="py-3 flex justify-between items-center">
-                <span>{r.profiles?.name} ขอลางาน <strong>{r.type}</strong> ({r.start_date})</span>
-                <div className="flex gap-2">
-                  {profile.role !== 'super_admin' && r.profiles?.role !== 'user' ? (
-                    <span className="text-xs text-clay">เฉพาะ Super Admin</span>
-                  ) : (
-                    <>
-                      <button onClick={() => handleApprove('LEAVE', r.id, 'APPROVED')} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-leaf/20 text-leaf px-3 py-1 rounded font-bold hover:bg-leaf/30 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
-                      <button onClick={() => handleApprove('LEAVE', r.id, 'REJECTED')} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-clay/20 text-clay px-3 py-1 rounded font-bold hover:bg-clay/30 disabled:cursor-not-allowed disabled:opacity-50">ปฏิเสธ</button>
-                    </>
-                  )}
-                </div>
-              </li>
-            ))}
-            {data?.pendingSlips?.map((s: any) => (
-              <li key={s.id} className="py-3 flex justify-between items-center">
-                <span>{s.profiles?.name} ขออนุมัติ <strong>สลิปเงินเดือน</strong> เดือน {s.month} (ยอดสุทธิ: {formatCurrency(s.net_pay)}){Number(s.net_pay) <= 0 && <small className="ml-2 text-ink/55">อนุมัติได้ แต่จะไม่สร้างค่าใช้จ่าย</small>}</span>
-                <div className="flex gap-2">
-                  {profile.role !== 'super_admin' && s.profiles?.role !== 'user' ? (
-                    <span className="text-xs text-clay">เฉพาะ Super Admin</span>
-                  ) : (
-                    <>
-                      <button onClick={() => handleApprove('SLIP', s.id, 'APPROVED', Number(s.net_pay) > 0 ? { title: `เงินเดือนของ ${s.profiles?.name || 'พนักงาน'} เดือน ${s.month}`, amount: Number(s.net_pay) } : undefined)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-leaf/20 text-leaf px-3 py-1 rounded font-bold hover:bg-leaf/30 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
-                      <button onClick={() => handleApprove('SLIP', s.id, 'REJECTED')} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-clay/20 text-clay px-3 py-1 rounded font-bold hover:bg-clay/30 disabled:cursor-not-allowed disabled:opacity-50">ปฏิเสธ</button>
-                    </>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ul>
-          ) : (
-            <p className="text-sm text-ink/50">ไม่มีรายการรออนุมัติในขณะนี้</p>
-          )}
-        </div>
 
       {manageTimeUser && (
         <ManageTimeModal
@@ -830,7 +762,20 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
           <div className="bg-sand rounded-xl w-full max-w-4xl max-h-[90vh] overflow-y-auto relative shadow-2xl">
             <button onClick={() => setViewDashboardUserId(null)} className="absolute top-4 right-4 text-ink/50 hover:text-ink bg-white rounded-full"><XCircle size={32} /></button>
-            <UserTimeTracking profile={profile} targetUserId={viewDashboardUserId} online={online} expenseLocations={expenseLocations} />
+            <UserTimeTracking
+              profile={profile}
+              targetUserId={viewDashboardUserId}
+              online={online}
+              expenseLocations={expenseLocations}
+              onApprove={(type, item) => handleApprove(
+                type,
+                item.id,
+                type === 'TRANSACTION' && item.type === 'WITHDRAWAL'
+                  ? { title: `เบิกเงินของ ${item.profiles?.name || 'พนักงาน'}`, amount: Number(item.amount) }
+                  : undefined,
+                () => load(),
+              )}
+            />
           </div>
         </div>
       )}
@@ -847,8 +792,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
           user={payrollUser}
           profile={profile}
           online={online}
-          expenseLocations={expenseLocations}
-          onApprove={(slip, status) => handleApprove('SLIP', slip.id, status, status === 'APPROVED' && Number(slip.net_pay) > 0 ? { title: `เงินเดือนของ ${payrollUser.name} เดือน ${slip.month}`, amount: Number(slip.net_pay) } : undefined, () => load())}
+          onApprove={(slip) => handleApprove('SLIP', slip.id, Number(slip.net_pay) > 0 ? { title: `เงินเดือนของ ${payrollUser.name} เดือน ${slip.month}`, amount: Number(slip.net_pay) } : undefined, () => load())}
           onClose={() => setPayrollUser(null)}
           onRefresh={() => load()}
         />
@@ -1392,7 +1336,7 @@ function AuditLogsModal({ adminId, adminName, onClose }: { adminId: string, admi
   )
 }
 
-function PayrollModal({ user, profile, online, expenseLocations, onApprove, onClose, onRefresh }: { user: any, profile: Profile, online: boolean, expenseLocations: Location[], onApprove: (slip: any, status: 'APPROVED' | 'REJECTED') => void, onClose: () => void, onRefresh: () => void }) {
+function PayrollModal({ user, profile, online, onApprove, onClose, onRefresh }: { user: any, profile: Profile, online: boolean, onApprove: (slip: any) => void, onClose: () => void, onRefresh: () => void }) {
   const [slips, setSlips] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1454,7 +1398,7 @@ function PayrollModal({ user, profile, online, expenseLocations, onApprove, onCl
       alert(TIME_TRACKING_OFFLINE_MESSAGE);
       return;
     }
-    if (!confirm(`ยืนยันการลบ/ยกเลิกสลิปเดือน ${month} หรือไม่? (รายการที่สร้างค่าใช้จ่ายแล้วจะถูกยกเลิกโดยเก็บประวัติไว้)`)) return;
+    if (!confirm(`ยืนยันการลบสลิปเดือน ${month} หรือไม่? รายการจะถูกลบถาวร`)) return;
     setSaving(true);
     try {
       const res = await authFetch("/api/lanflow/time-tracking/admin", {
@@ -1475,29 +1419,6 @@ function PayrollModal({ user, profile, online, expenseLocations, onApprove, onCl
     } finally {
       setSaving(false);
     }
-  }
-
-  async function changeExpenseLocation(slip: any) {
-    if (!online) return;
-    const choices = expenseLocations.map((location, index) => `${index + 1}. ${location.name}`).join('\n');
-    const selected = Number(prompt(`เลือกสาขาค่าใช้จ่ายใหม่\n${choices}`));
-    const location = expenseLocations[selected - 1];
-    if (!location) return;
-    const admin_comment = prompt('หมายเหตุ (ถ้ามี):') || '';
-    setSaving(true);
-    try {
-      const res = await authFetch('/api/lanflow/time-tracking/admin', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'CHANGE_EXPENSE_LOCATION', payload: { source_type: 'payroll_slip', source_id: slip.id, expense_location_id: location.id, admin_comment } }),
-      });
-      if (!res.ok) {
-        const json = await res.json();
-        alert(json.error || 'ไม่สามารถเปลี่ยนสาขาค่าใช้จ่ายได้');
-        return;
-      }
-      await loadSlips();
-      onRefresh();
-    } finally { setSaving(false); }
   }
 
   return (
@@ -1526,7 +1447,7 @@ function PayrollModal({ user, profile, online, expenseLocations, onApprove, onCl
              <div className="text-ink/50">ไม่มีประวัติการทำสลิปเงินเดือน</div>
           ) : (
             <ul className="divide-y divide-black/5 bg-white border border-black/10 rounded-xl overflow-hidden shadow-sm">
-               {slips.map((slip: any) => {
+                {slips.filter((slip: any) => slip.status !== 'REJECTED').map((slip: any) => {
                   const canDelete = (profile.role === 'super_admin' || slip.status !== 'APPROVED') && !slip.cancelled_at && new Date(slip.created_at).getMonth() === new Date().getMonth() && new Date(slip.created_at).getFullYear() === new Date().getFullYear();
                  const canApprove = slip.created_by !== profile.id || profile.role === 'super_admin';
 
@@ -1547,7 +1468,7 @@ function PayrollModal({ user, profile, online, expenseLocations, onApprove, onCl
                     </div>
 
                     <div className="flex items-center gap-3">
-                      <span className={`text-xs font-bold px-2 py-1 rounded-md ${slip.status === 'APPROVED' ? 'bg-leaf/20 text-leaf' : slip.status === 'REJECTED' ? 'bg-clay/20 text-clay' : 'bg-ink/10 text-ink'}`}>
+                      <span className={`text-xs font-bold px-2 py-1 rounded-md ${slip.status === 'APPROVED' ? 'bg-leaf/20 text-leaf' : 'bg-ink/10 text-ink'}`}>
                         {slip.status}
                       </span>
 
@@ -1559,14 +1480,7 @@ function PayrollModal({ user, profile, online, expenseLocations, onApprove, onCl
                       </button>
 
                        {slip.status === 'PENDING' && canApprove && (
-                        <>
-                          <button onClick={() => onApprove(slip, 'APPROVED')} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-leaf text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-leaf/80 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
-                          <button onClick={() => onApprove(slip, 'REJECTED')} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-clay text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-clay/80 disabled:cursor-not-allowed disabled:opacity-50">ปฏิเสธ</button>
-                        </>
-                       )}
-
-                       {slip.status === 'APPROVED' && Number(slip.net_pay) > 0 && !slip.cancelled_at && (
-                         <button onClick={() => changeExpenseLocation(slip)} disabled={saving || !online || expenseLocations.length === 0} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="text-river hover:text-river/70 text-sm underline disabled:cursor-not-allowed disabled:opacity-40">เปลี่ยนสาขาค่าใช้จ่าย</button>
+                        <button onClick={() => onApprove(slip)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-leaf text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-leaf/80 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
                        )}
 
                       {canDelete && (

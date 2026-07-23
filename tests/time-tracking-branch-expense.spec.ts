@@ -36,7 +36,7 @@ function bangkokDate(date = new Date()) {
 test.describe("Time Tracking branch expense @time-tracking", () => {
   test.use({ storageState: "playwright/.auth/admin.json" });
 
-  test("approved withdrawal derives one cash-basis expense and soft-cancel hides it", async ({ request }) => {
+  test("approved withdrawal derives one cash-basis expense and permanent deletion removes it", async ({ request }) => {
     const meResponse = await request.get("/api/auth/me");
     expect(meResponse.ok()).toBeTruthy();
     const me = await meResponse.json() as { profile: { locationIds: string[] } };
@@ -93,15 +93,23 @@ test.describe("Time Tracking branch expense @time-tracking", () => {
     const rows = (await feed.json()).rows as Array<{ relationSourceId?: string; relationSourceType?: string; cost?: number }>;
     expect(rows).toContainEqual(expect.objectContaining({ relationSourceType: "time_tracking_withdrawal", relationSourceId: withdrawal!.id, cost: amount }));
 
-    const cancelled = await request.post("/api/lanflow/time-tracking/admin", { data: { action: "DELETE_TRANSACTION", payload: { transaction_id: withdrawal!.id, cancel_reason: marker } } });
-    expect(cancelled.ok()).toBeTruthy();
+    const deleted = await request.post("/api/lanflow/time-tracking/admin", { data: { action: "DELETE_TRANSACTION", payload: { transaction_id: withdrawal!.id } } });
+    expect(deleted.ok()).toBeTruthy();
+    expect((await deleted.json()).deleted).toBeTruthy();
     const afterCancel = await request.get(`/api/lanflow/income-expense/feed?locationId=${locationId}&from=${date}&to=${date}`);
     const afterRows = (await afterCancel.json()).rows as Array<{ relationSourceId?: string }>;
     expect(afterRows.some((row) => row.relationSourceId === withdrawal!.id)).toBeFalsy();
 
-    const cancelledSource = await request.get(`/api/lanflow/time-tracking/user?userId=${employee!.id}`);
-    const cancelledData = await cancelledSource.json() as { transactions: Array<{ id: string; cancelled_at?: string }> };
-    expect(cancelledData.transactions.find((transaction) => transaction.id === withdrawal!.id)?.cancelled_at).toBeTruthy();
+    const deletedSource = await request.get(`/api/lanflow/time-tracking/user?userId=${employee!.id}`);
+    const deletedData = await deletedSource.json() as { transactions: Array<{ id: string }> };
+    expect(deletedData.transactions.some((transaction) => transaction.id === withdrawal!.id)).toBeFalsy();
+    const auditResponse = await request.post("/api/lanflow/time-tracking/admin", { data: {
+      action: "GET_AUDIT_LOGS",
+      payload: { target_user_id: withdrawal!.id },
+    }});
+    expect(auditResponse.ok()).toBeTruthy();
+    const { logs: withdrawalAuditRows } = await auditResponse.json() as { logs: Array<{ record_id: string }> };
+    expect(withdrawalAuditRows.filter((log) => log.record_id === withdrawal!.id)).toHaveLength(0);
   });
 });
 
@@ -233,6 +241,26 @@ test.describe("Time Tracking positive payroll feed @time-tracking", () => {
       expect(afterBoundary.ok()).toBeTruthy();
       const afterRows = (await afterBoundary.json()).rows as Array<{ relationSourceId?: string; cost?: number }>;
       expect(afterRows).toContainEqual(expect.objectContaining({ relationSourceId: slip.id, cost: netPay }));
+
+      const deleted = await request.post("/api/lanflow/time-tracking/admin", { data: {
+        action: "DELETE_PAYROLL_SLIP",
+        payload: { slip_id: slip.id },
+      }});
+      expect(deleted.ok()).toBeTruthy();
+      expect((await deleted.json()).deleted).toBeTruthy();
+      const listed = await request.post("/api/lanflow/time-tracking/admin", { data: {
+        action: "LIST_PAYROLL_SLIPS",
+        payload: { user_id: employee!.id },
+      }});
+      const { slips } = await listed.json() as { slips: Array<{ id: string }> };
+      expect(slips.some((payrollSlip) => payrollSlip.id === slip.id)).toBeFalsy();
+      const auditResponse = await adminRequest.post("/api/lanflow/time-tracking/admin", { data: {
+        action: "GET_AUDIT_LOGS",
+        payload: { target_user_id: slip.id },
+      }});
+      expect(auditResponse.ok()).toBeTruthy();
+      const { logs: payrollAuditRows } = await auditResponse.json() as { logs: Array<{ record_id: string }> };
+      expect(payrollAuditRows.filter((log) => log.record_id === slip.id)).toHaveLength(0);
     } finally {
       await adminRequest.dispose();
     }
@@ -242,7 +270,7 @@ test.describe("Time Tracking positive payroll feed @time-tracking", () => {
 test.describe("Time Tracking approval picker UI @time-tracking", () => {
   test.use({ storageState: "playwright/.auth/admin.json" });
 
-  test("approval queue and payroll modal use the same branch picker", async ({ page }) => {
+  test("dashboard and payroll modal use the same branch picker", async ({ page }) => {
     const admin = serviceClient();
     const adminRequest = page.request;
     const superAdminRequest = await playwrightRequest.newContext({
@@ -303,9 +331,16 @@ test.describe("Time Tracking approval picker UI @time-tracking", () => {
       await page.goto("/");
       await page.getByRole("button", { name: "เวลาและเงินเดือน" }).click();
       await expect(page.getByRole("heading", { name: "จัดการเวลาและเงินเดือน" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "รายการรออนุมัติ" })).toHaveCount(0);
 
+      const employeeRow = page.locator("tr", { hasText: "LanFlow user" }).first();
+      await expect(employeeRow).toBeVisible();
+      const dashboardButton = employeeRow.getByRole("button", { name: /ดู Dashboard/ });
+      await expect(dashboardButton.locator("span")).toContainText(/\d+/);
+      await dashboardButton.click();
       const withdrawalRow = page.locator("li", { hasText: withdrawalAmount.toLocaleString("en-US") }).first();
       await expect(withdrawalRow).toBeVisible();
+      await expect(withdrawalRow.getByRole("button", { name: "ปฏิเสธ" })).toHaveCount(0);
       await withdrawalRow.getByRole("button", { name: "อนุมัติ" }).click();
       const pickerHeading = page.getByRole("heading", { name: "เลือกสาขาสำหรับบันทึกค่าใช้จ่าย" });
       await expect(pickerHeading).toBeVisible();
@@ -314,14 +349,16 @@ test.describe("Time Tracking approval picker UI @time-tracking", () => {
       const submitExpense = page.getByRole("button", { name: "อนุมัติและสร้างค่าใช้จ่าย" });
       await submitExpense.click();
       await expect(pickerHeading).toBeHidden();
+      await page.locator("div.fixed.inset-0").last().locator("button").first().click();
 
-      const employeeRow = page.locator("tr", { hasText: "LanFlow user" }).first();
-      await expect(employeeRow).toBeVisible();
-      await employeeRow.getByRole("button", { name: "คำนวณเงินเดือน" }).click();
+      const payrollButton = employeeRow.getByRole("button", { name: /คำนวณเงินเดือน/ });
+      await expect(payrollButton.locator("span")).toContainText(/\d+/);
+      await payrollButton.click();
       const payrollHeading = page.getByRole("heading", { name: "สลิปเงินเดือนของ LanFlow user" });
       await expect(payrollHeading).toBeVisible();
       const slipRow = page.locator("li", { hasText: `สลิปเดือน ${month}` }).first();
       await expect(slipRow).toBeVisible();
+      await expect(slipRow.getByRole("button", { name: "ปฏิเสธ" })).toHaveCount(0);
       await slipRow.getByRole("button", { name: "อนุมัติ" }).click();
       await expect(pickerHeading).toBeVisible();
       await chooseExpenseLocation();
@@ -690,7 +727,7 @@ test.describe("Time Tracking expense correction @time-tracking", () => {
     }
   });
 
-  test("moves an approved withdrawal only through its source and preserves soft-cancel", async ({ request }) => {
+  test("moves an approved withdrawal only through its source and permanently deletes it", async ({ request }) => {
     const admin = serviceClient();
     const marker = `E2E-TIME-TRACKING-CORRECTION-${Date.now()}`;
     let correctionLocationId: string | undefined;

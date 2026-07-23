@@ -9,9 +9,9 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
     test('Super Admin configures keyword', async ({ page }) => {
       await page.goto('/');
       await page.click('button:has-text("รับ-จ่าย")');
-      await expect(page.locator('button:has-text("ตั้งค่าอนุมัติ")')).toBeVisible({ timeout: 10000 });
+      await expect(page.locator('button:has-text("ตั้งค่าและอนุมัติรับ-จ่าย")')).toBeVisible({ timeout: 10000 });
 
-      await page.click('button:has-text("ตั้งค่าอนุมัติ")');
+      await page.click('button:has-text("ตั้งค่าและอนุมัติรับ-จ่าย")');
       const approvalModal = page.locator('.fixed.inset-0').last();
       await expect(approvalModal).toBeVisible();
 
@@ -86,6 +86,34 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
   test.describe('1.1 Super Admin Approval Workflow @approval', () => {
     test.use({ storageState: 'playwright/.auth/super_admin.json' });
 
+    test('Super Admin: shows pending approval count on the action button', async ({ page }) => {
+      await page.goto('/');
+      await page.click('button:has-text("รับ-จ่าย")');
+      await expect(page.locator('button:has-text("เพิ่มรายจ่าย")')).toBeVisible({ timeout: 10000 });
+
+      const marker = `เบิกเงินสด-Badge-${Date.now()}`;
+      await page.click('button:has-text("เพิ่มรายจ่าย")');
+      const modal = page.locator('.fixed.inset-0').last();
+      await modal.locator('table tbody tr').first().locator('input').first().fill(marker);
+      await modal.locator('table tbody tr').first().locator('input[type="number"]').first().fill('250');
+      await modal.locator('button:has-text("บันทึกบิล")').click();
+      await expect(page.locator('h2:has-text("เพิ่ม/แก้ไข บิลเงินสด")')).toBeHidden({ timeout: 10000 });
+
+      const approvalButton = page.locator('button:has-text("ตั้งค่าและอนุมัติรับ-จ่าย")');
+      const pendingBadge = approvalButton.locator('[aria-label^="รออนุมัติ "]');
+      await expect(pendingBadge).toBeVisible();
+      await expect(pendingBadge).toHaveText(/^[1-9]\d*$/);
+
+      await approvalButton.click();
+      const approvalModal = page.locator('.fixed.inset-0').last();
+      const requestRow = approvalModal.locator('tr', { hasText: marker }).first();
+      await expect(requestRow).toBeVisible();
+      page.once('dialog', dialog => dialog.accept('badge test cleanup'));
+      await requestRow.locator('button[title="ปฏิเสธ"]').click();
+      await expect(page.getByText('ปฏิเสธรายการแล้ว')).toBeVisible();
+      await approvalModal.locator('button[aria-label="ปิด"]').first().click();
+    });
+
     test('Super Admin: approve and reject pending requests', async ({ page }) => {
       await page.goto('/');
       await page.click('button:has-text("รับ-จ่าย")');
@@ -110,7 +138,7 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       await expect(page.locator('h2:has-text("เพิ่ม/แก้ไข บิลเงินสด")')).toBeHidden({ timeout: 10000 });
 
       // Open settings / approval modal
-      await page.click('button:has-text("ตั้งค่าอนุมัติ")');
+      await page.click('button:has-text("ตั้งค่าและอนุมัติรับ-จ่าย")');
       const approvalModal = page.locator('.fixed.inset-0').last();
       await expect(approvalModal).toBeVisible();
 
@@ -120,12 +148,14 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       page.once("dialog", dialog => dialog.accept());
       await approveRow.locator('button[title="อนุมัติ"]').click();
 
+      await expect(page.getByText("อนุมัติรายการแล้ว")).toBeVisible();
       // Reject the second one
       const rejectRow = approvalModal.locator('tr', { hasText: rejectMarker }).first();
       await expect(rejectRow).toBeVisible();
       page.once("dialog", dialog => dialog.accept("ทดสอบปฏิเสธ"));
       await rejectRow.locator('button[title="ปฏิเสธ"]').first().click();
 
+      await expect(page.getByText("ปฏิเสธรายการแล้ว")).toBeVisible();
       await approvalModal.locator('button[aria-label="ปิด"]').first().click();
       await expect(approvalModal).toBeHidden();
 
@@ -224,8 +254,8 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       await page.click('button:has-text("รับ-จ่าย")');
       await expect(page.locator('button:has-text("เพิ่มรายจ่าย")')).toBeVisible({ timeout: 10000 });
 
-      // Normal user should not see "ตั้งค่าอนุมัติ"
-      await expect(page.locator('button:has-text("ตั้งค่าอนุมัติ")')).toBeHidden();
+      // Normal user should not see the approval settings button
+      await expect(page.locator('button:has-text("ตั้งค่าและอนุมัติรับ-จ่าย")')).toBeHidden();
 
       // Can also test API direct access if needed, but UI hiding is a good first step
     });

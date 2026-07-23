@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { MoneyTransfer, MoneyTransferSlip, MoneyTransferItem } from "@/types";
+import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
 
 export function useMoneyTransfers(locationId: string, options: { enabled?: boolean } = {}) {
   const supabase = createSupabaseBrowserClient();
@@ -139,7 +140,7 @@ export function useMoneyTransfers(locationId: string, options: { enabled?: boole
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["moneyTransfers"] });
-      queryClient.invalidateQueries({ queryKey: ["incomeExpense"] });
+      queryClient.invalidateQueries({ queryKey: [INCOME_EXPENSE_FEED_QUERY_KEY] });
     }
   });
 
@@ -205,7 +206,7 @@ export function useMoneyTransfers(locationId: string, options: { enabled?: boole
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["moneyTransfers"] });
-      queryClient.invalidateQueries({ queryKey: ["incomeExpense"] });
+      queryClient.invalidateQueries({ queryKey: [INCOME_EXPENSE_FEED_QUERY_KEY] });
     }
   });
 
@@ -219,7 +220,7 @@ export function useMoneyTransfers(locationId: string, options: { enabled?: boole
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["moneyTransfers"] });
-      queryClient.invalidateQueries({ queryKey: ["incomeExpense"] });
+      queryClient.invalidateQueries({ queryKey: [INCOME_EXPENSE_FEED_QUERY_KEY] });
     }
   });
 

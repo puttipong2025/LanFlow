@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { buildIncomeExpensePayload } from "@/lib/income-expense/build-income-expense-payload";
+import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
 import type {
   IncomeExpense,
   IncomeExpenseApprovalAppliesTo,
@@ -54,10 +55,11 @@ function settingsMatch(settings: IncomeExpenseApprovalSettings | undefined, tx: 
   return appliesToType(settings.appliesTo, tx.type) && tx.cost >= settings.approvalMinAmount;
 }
 
-export function useIncomeExpenseApprovals(options: { includeRequests?: boolean } = {}) {
+export function useIncomeExpenseApprovals(options: { includeRequests?: boolean; includePendingCount?: boolean } = {}) {
   const supabase = createSupabaseBrowserClient();
   const queryClient = useQueryClient();
   const includeRequests = options.includeRequests ?? false;
+  const includePendingCount = options.includePendingCount ?? includeRequests;
 
   const keywordsQuery = useQuery({
     queryKey: [KEYWORDS_KEY],
@@ -133,6 +135,21 @@ export function useIncomeExpenseApprovals(options: { includeRequests?: boolean }
         decisionComment: row.decision_comment,
         createdAt: row.created_at,
       }));
+    },
+  });
+
+  const pendingCountQuery = useQuery({
+    queryKey: [REQUESTS_KEY, "pendingCount"],
+    enabled: includePendingCount,
+    queryFn: async () => {
+      const { count, error } = await supabase
+        .from("income_expense_approval_requests")
+        .select("id", { count: "exact", head: true })
+        .eq("request_status", "pending");
+
+      if (error) throw new Error(error.message || JSON.stringify(error));
+
+      return count ?? 0;
     },
   });
 
@@ -238,9 +255,11 @@ export function useIncomeExpenseApprovals(options: { includeRequests?: boolean }
 
       return data;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [REQUESTS_KEY] });
-      queryClient.invalidateQueries({ queryKey: ["incomeExpense"] });
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: [REQUESTS_KEY] }),
+        queryClient.invalidateQueries({ queryKey: [INCOME_EXPENSE_FEED_QUERY_KEY] }),
+      ]);
       queryClient.invalidateQueries({ queryKey: ["acidStock"] });
     },
   });
@@ -290,7 +309,12 @@ export function useIncomeExpenseApprovals(options: { includeRequests?: boolean }
     keywords: keywordsQuery.data || [],
     settings: settingsQuery.data,
     requests: requestsQuery.data || [],
-    isLoading: keywordsQuery.isLoading || settingsQuery.isLoading || (includeRequests && requestsQuery.isLoading),
+    pendingCount: pendingCountQuery.data ?? 0,
+    isLoading:
+      keywordsQuery.isLoading ||
+      settingsQuery.isLoading ||
+      (includeRequests && requestsQuery.isLoading) ||
+      (includePendingCount && pendingCountQuery.isLoading),
     addKeyword: addKeywordMutation.mutateAsync,
     disableKeyword: disableKeywordMutation.mutateAsync,
     saveSettings: saveSettingsMutation.mutateAsync,

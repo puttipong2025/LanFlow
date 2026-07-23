@@ -12,6 +12,7 @@ import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { usePerRecordSyncRetry } from "@/hooks/usePerRecordSyncRetry";
 import { getOfflineSyncedActionBlockReason } from "@/lib/record-action-locks";
 import { canAccessSourceLocation, canManageSystemFeatures } from "@/lib/permissions";
+import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
 
 import type { IncomeExpense, Location, MoneyTransfer, Profile } from "@/types";
 import { IconButton } from "@/components/shared/IconButton";
@@ -48,12 +49,15 @@ export function IncomeExpenseModule({
     isLoadingMore,
     loadMore,
   } = useIncomeExpense(selectedLocation.id, profile.id);
-  const { submitForApprovalIfNeeded } = useIncomeExpenseApprovals();
+  const isOnline = useOnlineStatus();
+  const canManageSystem = canManageSystemFeatures(profile);
+  const {
+    pendingCount: approvalRequestsPendingCount,
+    submitForApprovalIfNeeded,
+  } = useIncomeExpenseApprovals({ includePendingCount: canManageSystem && isOnline });
   const { customers, addCustomer, updateCustomer } = useCustomers();
   const { addTransfer } = useMoneyTransfers(selectedLocation.id, { enabled: canCreateMoneyTransfer });
-  const isOnline = useOnlineStatus();
   const { retrySyncEvent, isRetrying } = usePerRecordSyncRetry(selectedLocation.id, profile.id);
-  const canManageSystem = canManageSystemFeatures(profile);
   const nextNumber = String(transactions.length + 1);
   const [modalOpen, setModalOpen] = useState(false);
   const [modalType, setModalType] = useState<"income" | "expense">("income");
@@ -107,7 +111,7 @@ export function IncomeExpenseModule({
     addTransfer.mutate(transfer, {
       onSuccess: () => {
         setBranchTransferModalOpen(false);
-        queryClient.invalidateQueries({ queryKey: ["incomeExpense"] });
+        queryClient.invalidateQueries({ queryKey: [INCOME_EXPENSE_FEED_QUERY_KEY] });
         toast.success("บันทึกรายการโยกเงินไปสาขาอื่นแล้ว");
       },
       onError: (error) => {
@@ -192,17 +196,25 @@ export function IncomeExpenseModule({
               type="button"
               onClick={() => {
                 if (!isOnline) {
-                  toast.error("ตั้งค่าอนุมัติใช้ได้เมื่อออนไลน์เท่านั้น");
+                  toast.error("ตั้งค่าและอนุมัติรับ-จ่ายใช้ได้เมื่อออนไลน์เท่านั้น");
                   return;
                 }
                 setApprovalModalOpen(true);
               }}
               disabled={!isOnline}
-              title={isOnline ? "ตั้งค่าอนุมัติ" : "ตั้งค่าอนุมัติใช้ได้เมื่อออนไลน์เท่านั้น"}
+              title={isOnline ? "ตั้งค่าและอนุมัติรับ-จ่าย" : "ตั้งค่าและอนุมัติรับ-จ่ายใช้ได้เมื่อออนไลน์เท่านั้น"}
               className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               <Settings size={18} />
-              {isOnline ? "ตั้งค่าอนุมัติ" : "ตั้งค่าอนุมัติออนไลน์เท่านั้น"}
+              ตั้งค่าและอนุมัติรับ-จ่าย
+              {approvalRequestsPendingCount > 0 && (
+                <span
+                  aria-label={`รออนุมัติ ${approvalRequestsPendingCount} รายการ`}
+                  className="ml-1 rounded-full bg-amber px-1.5 py-0.5 text-[10px] font-bold text-ink"
+                >
+                  {approvalRequestsPendingCount}
+                </span>
+              )}
             </button>
           )}
         </div>

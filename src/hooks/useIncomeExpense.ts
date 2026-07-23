@@ -5,9 +5,10 @@ import { enqueueSyncEvent, getPendingEvents, removeSyncEvent, updateSyncEvent, t
 import { coalesceQueueGroup } from "@/lib/coalesceQueueGroup";
 import { buildIncomeExpensePayload } from "@/lib/income-expense/build-income-expense-payload";
 import { OFFLINE_SYNCED_ACTION_MESSAGE } from "@/lib/record-action-locks";
+import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
 
 const ENTITY = "income_expense" as const;
-const FEED_QUERY_KEY = "incomeExpenseFeed" as const;
+const FEED_QUERY_KEY = INCOME_EXPENSE_FEED_QUERY_KEY;
 const PENDING_QUERY_KEY = "incomeExpensePending" as const;
 const PAGE_SIZE = 100;
 

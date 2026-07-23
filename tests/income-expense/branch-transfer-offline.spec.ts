@@ -11,9 +11,9 @@ test.describe.serial('Income/Expense: Branch Transfer & Approval Offline Rules',
     
     await saPage.goto('/');
     await saPage.click('button:has-text("รับ-จ่าย")');
-    await expect(saPage.locator('button:has-text("ตั้งค่าอนุมัติ")')).toBeVisible({ timeout: 10000 });
+    await expect(saPage.locator('button:has-text("ตั้งค่าและอนุมัติรับ-จ่าย")')).toBeVisible({ timeout: 10000 });
 
-    await saPage.click('button:has-text("ตั้งค่าอนุมัติ")');
+    await saPage.click('button:has-text("ตั้งค่าและอนุมัติรับ-จ่าย")');
     const approvalModal = saPage.locator('.fixed.inset-0').last();
     await expect(approvalModal).toBeVisible();
 
