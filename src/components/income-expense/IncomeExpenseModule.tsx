@@ -8,6 +8,7 @@ import { useIncomeExpense } from "@/hooks/useIncomeExpense";
 import { useIncomeExpenseApprovals } from "@/hooks/useIncomeExpenseApprovals";
 import { useCustomers } from "@/hooks/useCustomers";
 import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
+import { useCashBranchTransfers } from "@/hooks/useCashBranchTransfers";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { usePerRecordSyncRetry } from "@/hooks/usePerRecordSyncRetry";
 import { getOfflineSyncedActionBlockReason } from "@/lib/record-action-locks";
@@ -18,6 +19,7 @@ import type { IncomeExpense, Location, MoneyTransfer, Profile } from "@/types";
 import { IconButton } from "@/components/shared/IconButton";
 import { SyncStatusBadge } from "@/components/shared/SyncStatusBadge";
 import { BranchTransferForm } from "@/components/money-transfer/BranchTransferForm";
+import { CashBranchTransferCreateModal, CashBranchTransferDetails, CashBranchTransferReceiveModal } from "./CashBranchTransferModal";
 import { getIncomeExpenseDisplayNo } from "./income-expense-display";
 import { IncomeExpenseApprovalModal } from "./IncomeExpenseApprovalModal";
 import { IncomeExpenseModal } from "./IncomeExpenseModal";
@@ -57,21 +59,28 @@ export function IncomeExpenseModule({
   } = useIncomeExpenseApprovals({ includePendingCount: canManageSystem && isOnline });
   const { customers, addCustomer, updateCustomer } = useCustomers();
   const { addTransfer } = useMoneyTransfers(selectedLocation.id, { enabled: canCreateMoneyTransfer });
+  const cashTransfers = useCashBranchTransfers(selectedLocation.id);
+  const pendingCashReceipts = cashTransfers.transfers.filter((transfer) => transfer.targetLocationId === selectedLocation.id && transfer.status === "pending_receipt");
   const { retrySyncEvent, isRetrying } = usePerRecordSyncRetry(selectedLocation.id, profile.id);
-  const nextNumber = String(transactions.length + 1);
+  const ledgerTransactions = transactions;
+  const nextNumber = String(ledgerTransactions.length + 1);
   const [modalOpen, setModalOpen] = useState(false);
   const [modalType, setModalType] = useState<"income" | "expense">("income");
   const [editingTransaction, setEditingTransaction] = useState<IncomeExpense | null>(null);
   const [approvalModalOpen, setApprovalModalOpen] = useState(false);
   const [branchTransferModalOpen, setBranchTransferModalOpen] = useState(false);
+  const [branchTransferMode, setBranchTransferMode] = useState<"cash" | "bank">("cash");
+  const [cashReceiptId, setCashReceiptId] = useState<string | null>(null);
+  const [cashDetailsId, setCashDetailsId] = useState<string | null>(null);
+  const [cashEditingId, setCashEditingId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const visibleTransactions = search.trim()
-    ? transactions.filter((transaction) =>
+    ? ledgerTransactions.filter((transaction) =>
       `${transaction.number} ${transaction.title} ${transaction.createdByName}`
         .toLocaleLowerCase("th-TH")
         .includes(search.trim().toLocaleLowerCase("th-TH"))
     )
-    : transactions;
+    : ledgerTransactions;
 
   function openAdd(type: "income" | "expense") {
     setModalType(type);
@@ -96,14 +105,11 @@ export function IncomeExpenseModule({
   }
 
   function openBranchTransfer() {
-    if (!canCreateMoneyTransfer) {
-      toast.error("ไม่มีสิทธิ์ใช้โมดูลโอนเงิน");
-      return;
-    }
     if (!isOnline) {
       toast.error("การโยกเงินไปสาขาอื่นต้องออนไลน์ก่อน");
       return;
     }
+    setBranchTransferMode("cash");
     setBranchTransferModalOpen(true);
   }
 
@@ -179,7 +185,7 @@ export function IncomeExpenseModule({
             <Plus size={18} />
             เพิ่มรายจ่าย
           </button>
-          {canCreateMoneyTransfer && (
+          {canAccessSourceLocation(profile, selectedLocation.id) && (
             <button
               type="button"
               onClick={openBranchTransfer}
@@ -189,6 +195,11 @@ export function IncomeExpenseModule({
             >
               <ArrowRightLeft size={18} />
               {isOnline ? "โยกเงินไปสาขาอื่น" : "โยกเงินใช้ได้เมื่อออนไลน์"}
+            </button>
+          )}
+          {pendingCashReceipts.length > 0 && (
+            <button type="button" disabled={!isOnline} onClick={() => setCashReceiptId(pendingCashReceipts[0]?.id ?? null)} className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-amber px-4 font-semibold text-ink disabled:cursor-not-allowed disabled:bg-slate-300">
+              <ArrowRightLeft size={18} /> รอรับเงิน ({pendingCashReceipts.length})
             </button>
           )}
           {canManageSystem && (
@@ -220,6 +231,15 @@ export function IncomeExpenseModule({
         </div>
       </div>
 
+      {pendingCashReceipts.length > 0 && (
+        <section className="rounded-md border border-amber/40 bg-amber/10 p-3">
+          <h3 className="font-bold text-ink">คิวรอตรวจรับเงินสด</h3>
+          <div className="mt-2 space-y-2">
+            {pendingCashReceipts.map((transfer) => <button key={transfer.id} type="button" disabled={!isOnline} onClick={() => setCashReceiptId(transfer.id)} className="flex w-full items-center justify-between rounded bg-white px-3 py-2 text-left text-sm disabled:opacity-60"><span>จาก {transfer.createdByName} · {formatCurrency(transfer.sentTotal)}</span><span className="font-semibold text-river">ตรวจรับ</span></button>)}
+          </div>
+        </section>
+      )}
+
       <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1020px] border-collapse text-sm">
@@ -242,6 +262,7 @@ export function IncomeExpenseModule({
                 const actionBlockReason = getActionBlockReason(transaction);
                 const actionsDisabled = Boolean(actionBlockReason);
                 const sourceLocationId = transaction.relationSourceLocationId ?? transaction.locationId;
+                const cashTransferId = transaction.relationSourceId?.startsWith("cash:") ? transaction.relationSourceId.slice(5) : null;
                 const canOpenMoneyTransferSource = Boolean(
                   transaction.relationSourceType === "money_transfer" &&
                   transaction.relationSourceId &&
@@ -264,9 +285,10 @@ export function IncomeExpenseModule({
                   onOpenTimeTrackingSource &&
                   (profile.role === "admin" || profile.role === "super_admin")
                 );
-                const canOpenSource = canOpenMoneyTransferSource || canOpenRubberBillSource || canOpenOcrTicketSource || canOpenTimeTrackingSource;
+                const canOpenSource = Boolean(cashTransferId) || canOpenMoneyTransferSource || canOpenRubberBillSource || canOpenOcrTicketSource || canOpenTimeTrackingSource;
 
                 function openRelationSource() {
+                  if (cashTransferId) { setCashDetailsId(cashTransferId); return; }
                   if (canOpenMoneyTransferSource) {
                     onOpenMoneyTransferSource?.(transaction.relationSourceId!, sourceLocationId);
                     return;
@@ -429,16 +451,21 @@ export function IncomeExpenseModule({
       )}
 
       {branchTransferModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/45 p-3 sm:p-6">
-          <div className="mt-4 w-full max-w-4xl">
-            <BranchTransferForm
-              locationId={selectedLocation.id}
-              onSave={handleBranchTransferSave}
-              onCancel={() => setBranchTransferModalOpen(false)}
-            />
+        <>
+          {branchTransferMode === "cash" ? (
+            <CashBranchTransferCreateModal location={selectedLocation} online={isOnline} onSave={cashTransfers.create.mutateAsync} onClose={() => setBranchTransferModalOpen(false)} />
+          ) : (
+            <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/45 p-3 sm:p-6"><div className="mt-4 w-full max-w-4xl"><BranchTransferForm locationId={selectedLocation.id} onSave={handleBranchTransferSave} onCancel={() => setBranchTransferModalOpen(false)} /></div></div>
+          )}
+          <div className="fixed bottom-4 left-1/2 z-[60] -translate-x-1/2 rounded-full bg-white p-1 shadow-lg">
+            <button onClick={() => setBranchTransferMode("cash")} className={branchTransferMode === "cash" ? "rounded-full bg-river px-3 py-1 text-white" : "px-3 py-1"}>เงินสด</button>
+            <button onClick={() => { if (!canCreateMoneyTransfer) return toast.error("ไม่มีสิทธิ์ใช้โอนธนาคาร"); setBranchTransferMode("bank"); }} className={branchTransferMode === "bank" ? "rounded-full bg-river px-3 py-1 text-white" : "px-3 py-1"}>โอนธนาคาร</button>
           </div>
-        </div>
+        </>
       )}
+      {cashReceiptId && (() => { const transfer = cashTransfers.transfers.find((item) => item.id === cashReceiptId); return transfer ? <CashBranchTransferReceiveModal transfer={transfer} online={isOnline} onReceive={(received) => cashTransfers.receive.mutateAsync({ id: transfer.id, received })} onClose={() => setCashReceiptId(null)} /> : null; })()}
+      {cashEditingId && (() => { const transfer = cashTransfers.transfers.find((item) => item.id === cashEditingId); return transfer ? <CashBranchTransferCreateModal location={selectedLocation} transfer={transfer} online={isOnline} onSave={(payload) => cashTransfers.update.mutateAsync({ id: transfer.id, payload })} onClose={() => setCashEditingId(null)} /> : null; })()}
+      {cashDetailsId && (() => { const transfer = cashTransfers.transfers.find((item) => item.id === cashDetailsId); return transfer ? <CashBranchTransferDetails transfer={transfer} superAdmin={profile.role === "super_admin"} canEdit={transfer.status === "pending_receipt" && (profile.role === "super_admin" || transfer.createdByUserId === profile.id)} online={isOnline} onEdit={() => { setCashDetailsId(null); setCashEditingId(transfer.id); }} onAccept={(reason) => cashTransfers.acceptDifference.mutateAsync({ id: transfer.id, reason })} onDelete={() => cashTransfers.remove.mutateAsync(transfer.id)} onClose={() => setCashDetailsId(null)} /> : null; })()}
 
       {approvalModalOpen && (
         <IncomeExpenseApprovalModal onClose={() => setApprovalModalOpen(false)} />

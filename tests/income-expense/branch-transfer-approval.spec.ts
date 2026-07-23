@@ -181,6 +181,7 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       await page.click('button:has-text("โยกเงินไปสาขาอื่น")');
       const modal = page.locator('.fixed.inset-0').last();
       await expect(modal).toBeVisible();
+      await page.locator('button:has-text("โอนธนาคาร")').click();
 
       // Ensure target location dropdown exists
       const targetSelect = modal.locator('select').first();
@@ -202,6 +203,7 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       await page.click('button:has-text("โยกเงินไปสาขาอื่น")');
       const modal = page.locator('.fixed.inset-0').last();
       await expect(modal).toBeVisible();
+      await page.locator('button:has-text("โอนธนาคาร")').click();
 
       // Select target location (pick index 1 which should be another branch)
       const targetSelect = modal.locator('select').first();
@@ -243,6 +245,68 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
 
       const deleteButton = targetRow.locator('button').nth(1);
       await expect(deleteButton).toBeDisabled();
+    });
+
+    test('create cash branch transfer with separate denomination counts', async ({ page }) => {
+      await page.goto('/');
+      await page.click('button:has-text("รับ-จ่าย")');
+      await page.click('button:has-text("โยกเงินไปสาขาอื่น")');
+      const modal = page.locator('.fixed.inset-0').last();
+      await modal.getByLabel('สาขาปลายทาง').selectOption({ index: 1 });
+      const values = ['1', '0', '0', '0', '0', '0', '0', '0', '1'];
+      for (const [index, input] of (await modal.locator('input').all()).entries()) await input.fill(values[index]);
+      await modal.locator('button:has-text("บันทึก")').click();
+      await expect(page.getByText('บันทึกรายการเงินสด รอปลายทางรับเงิน')).toBeVisible();
+      await expect(page.locator('table tbody tr', { hasText: 'โยกเงินสดไป' }).first()).toBeVisible();
+    });
+
+    test('receive cash transfer with zero actual counts and show mismatch', async ({ page }) => {
+      await page.context().setOffline(false);
+      await page.goto('/');
+      await page.click('button:has-text("รับ-จ่าย")');
+      await page.click('button:has-text("โยกเงินไปสาขาอื่น")');
+      const createModal = page.locator('.fixed.inset-0').last();
+      const targetSelect = createModal.getByLabel('สาขาปลายทาง');
+      const targetLocationId = await targetSelect.locator('option').nth(1).getAttribute('value');
+      await targetSelect.selectOption({ index: 1 });
+      for (const input of await createModal.locator('input').all()) await input.fill('0');
+      await createModal.getByLabel('แบงค์ 20').fill('1');
+      await createModal.locator('button:has-text("บันทึก")').click();
+      await expect(page.getByText('บันทึกรายการเงินสด รอปลายทางรับเงิน')).toBeVisible();
+
+      await page.locator('select[aria-label="เลือกสาขา"]').first().selectOption(targetLocationId!);
+      await expect(page.locator('button:has-text("รอรับเงิน")')).toBeVisible({ timeout: 10000 });
+      await page.locator('button:has-text("รอรับเงิน")').click();
+      const receiveModal = page.locator('.fixed.inset-0').last();
+      for (const input of await receiveModal.locator('input').all()) await input.fill('0');
+      await receiveModal.locator('button:has-text("ยืนยันรับเงิน")').click();
+      await expect(page.getByText('บันทึกยอดไม่ตรงแล้ว')).toBeVisible();
+      await expect(page.locator('table tbody tr', { hasText: 'ยอดไม่ตรง' }).first()).toBeVisible();
+    });
+
+    test('receive cash transfer with exact counts', async ({ page }) => {
+      await page.context().setOffline(false);
+      await page.goto('/');
+      await page.click('button:has-text("รับ-จ่าย")');
+      await page.click('button:has-text("โยกเงินไปสาขาอื่น")');
+      const createModal = page.locator('.fixed.inset-0').last();
+      const targetSelect = createModal.getByLabel('สาขาปลายทาง');
+      const targetLocationId = await targetSelect.locator('option').nth(1).getAttribute('value');
+      await targetSelect.selectOption({ index: 1 });
+      for (const input of await createModal.locator('input').all()) await input.fill('0');
+      await createModal.getByLabel('แบงค์ 20').fill('1');
+      await createModal.locator('button:has-text("บันทึก")').click();
+      await expect(page.getByText('บันทึกรายการเงินสด รอปลายทางรับเงิน')).toBeVisible();
+
+      await page.locator('select[aria-label="เลือกสาขา"]').first().selectOption(targetLocationId!);
+      await page.locator('button:has-text("รอรับเงิน")').click();
+      const receiveModal = page.locator('.fixed.inset-0').last();
+      for (const input of await receiveModal.locator('input').all()) await input.fill('0');
+      await receiveModal.getByLabel('แบงค์ 20').fill('1');
+      await page.evaluate(() => window.dispatchEvent(new Event('online')));
+      await receiveModal.locator('button:has-text("ยืนยันรับเงิน")').click();
+      await expect(page.getByText('ยืนยันรับเงินแล้ว')).toBeVisible();
+      await expect(page.locator('table tbody tr', { hasText: 'รับเงินแล้ว' }).first()).toBeVisible();
     });
   });
 

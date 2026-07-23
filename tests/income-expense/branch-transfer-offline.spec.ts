@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-test.use({ storageState: 'playwright/.auth/admin.json' });
+test.use({ storageState: 'playwright/.auth/super_admin.json' });
 
 test.describe.serial('Income/Expense: Branch Transfer & Approval Offline Rules', () => {
   test('Super Admin configures keyword for offline test', async ({ page }) => {
@@ -28,7 +28,7 @@ test.describe.serial('Income/Expense: Branch Transfer & Approval Offline Rules',
     await superAdminContext.close();
   });
 
-  test.describe('Admin actions', () => {
+  test.describe('Super Admin actions', () => {
     test.beforeEach(async ({ page }) => {
       await page.goto('/');
       await page.click('button:has-text("รับ-จ่าย")');
@@ -45,6 +45,8 @@ test.describe.serial('Income/Expense: Branch Transfer & Approval Offline Rules',
     await page.click('button:has-text("โยกเงินไปสาขาอื่น")');
     const modal = page.locator('.fixed.inset-0').last();
     await expect(modal).toBeVisible();
+    await page.locator('button:has-text("โอนธนาคาร")').click();
+    await expect(modal.locator('button:has-text("เพิ่มเอง")')).toBeVisible();
 
     // Select target location to try enabling save button
     await modal.locator('select').first().selectOption({ index: 1 });
@@ -54,6 +56,7 @@ test.describe.serial('Income/Expense: Branch Transfer & Approval Offline Rules',
 
     // Go offline after opening modal
     await context.setOffline(true);
+    await page.evaluate(() => window.dispatchEvent(new Event('offline')));
 
     // Verify warning message is visible
     await expect(modal.locator('text=รายการโยกเงินต้องออนไลน์ก่อนบันทึก')).toBeVisible();
@@ -86,6 +89,7 @@ test.describe.serial('Income/Expense: Branch Transfer & Approval Offline Rules',
 
     // Go offline before clicking save
     await context.setOffline(true);
+    await page.evaluate(() => window.dispatchEvent(new Event('offline')));
 
     // Click Save
     await modal.locator('button:has-text("บันทึกบิล")').click();

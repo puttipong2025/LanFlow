@@ -97,6 +97,26 @@ CREATE TYPE "public"."transaction_type" AS ENUM (
 ALTER TYPE "public"."transaction_type" OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."accept_cash_branch_difference"("p_transfer_id" "uuid", "p_reason" "text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare actor_id uuid := auth.uid(); actor_name text; actor_phone text;
+begin
+  if not private.is_super_admin() then raise exception 'เฉพาะ super_admin เท่านั้นที่ยอมรับผลต่างได้'; end if;
+  if nullif(btrim(p_reason), '') is null then raise exception 'กรุณาระบุเหตุผลยอมรับผลต่าง'; end if;
+  select name, phone into actor_name, actor_phone from public.profiles where id = actor_id;
+  update public.money_transfer_cash_details set cash_status = 'difference_accepted', difference_accepted_by_user_id = actor_id, difference_accept_reason = btrim(p_reason), difference_accepted_at = now(), updated_at = now()
+  where transfer_id = p_transfer_id and cash_status = 'mismatched';
+  if not found then raise exception 'รายการนี้ไม่อยู่ในสถานะยอดไม่ตรง'; end if;
+  return jsonb_build_object('id', p_transfer_id, 'status', 'synced');
+end;
+$$;
+
+
+ALTER FUNCTION "public"."accept_cash_branch_difference"("p_transfer_id" "uuid", "p_reason" "text") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."calculate_paid_work_days"("p_profile_id" "uuid", "p_period_start" timestamp with time zone, "p_period_end" timestamp with time zone DEFAULT NULL::timestamp with time zone) RETURNS numeric
     LANGUAGE "sql" STABLE
     AS $$
@@ -264,6 +284,43 @@ $$;
 
 
 ALTER FUNCTION "public"."change_time_tracking_expense_location"("p_source_type" "text", "p_source_id" "uuid", "p_expense_location_id" "uuid", "p_comment" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."create_cash_branch_transfer"("payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  actor_id uuid := auth.uid(); actor_name text; actor_phone text;
+  source_id uuid := (payload->>'sourceLocationId')::uuid;
+  target_id uuid := (payload->>'targetLocationId')::uuid;
+  target_name text; counts integer[]; new_transfer_id uuid := coalesce((payload->>'id')::uuid, gen_random_uuid());
+  existing_transfer_id uuid;
+begin
+  if not private.is_active_user() or not private.can_access_location(source_id) then raise exception 'ไม่มีสิทธิ์สร้างรายการสำหรับสาขานี้'; end if;
+  if source_id is null or target_id is null or source_id = target_id then raise exception 'สาขาปลายทางต้องต่างจากสาขาต้นทาง'; end if;
+  select id into existing_transfer_id
+  from public.money_transfers
+  where idempotency_key = coalesce(payload->>'idempotencyKey', 'cash:' || new_transfer_id::text)
+    and transfer_method = 'cash'
+    and location_id = source_id
+    and created_by_user_id = actor_id;
+  if existing_transfer_id is not null then return jsonb_build_object('id', existing_transfer_id, 'status', 'synced'); end if;
+  select name, phone into actor_name, actor_phone from public.profiles where id = actor_id;
+  select name into target_name from public.locations where id = target_id and is_active = true;
+  if target_name is null then raise exception 'ไม่พบสาขาปลายทางที่ใช้งาน'; end if;
+  counts := private.cash_transfer_counts(payload, 'sent');
+  insert into public.money_transfers (id, client_temp_id, idempotency_key, location_id, target_location_id, target_location_name, net_amount_to_pay, transfer_type, transfer_method, transfer_status, created_by_user_id, created_by_name, created_by_phone, revision_no, record_status)
+  values (new_transfer_id, coalesce(payload->>'clientTempId', new_transfer_id::text), coalesce(payload->>'idempotencyKey', 'cash:' || new_transfer_id::text), source_id, target_id, target_name, 0, 'cash', 'cash', 'pending', actor_id, coalesce(actor_name, ''), coalesce(actor_phone, ''), 0, 'active');
+  insert into public.money_transfer_cash_details (transfer_id, sent_coin_1_count, sent_coin_2_count, sent_coin_5_count, sent_coin_10_count, sent_banknote_20_count, sent_banknote_50_count, sent_banknote_100_count, sent_banknote_500_count, sent_banknote_1000_count, note)
+  values (new_transfer_id, counts[1], counts[2], counts[3], counts[4], counts[5], counts[6], counts[7], counts[8], counts[9], nullif(btrim(payload->>'note'), ''));
+  update public.money_transfers set net_amount_to_pay = d.sent_total, updated_at = now() from public.money_transfer_cash_details d where money_transfers.id = new_transfer_id and d.transfer_id = new_transfer_id;
+  return jsonb_build_object('id', new_transfer_id, 'status', 'synced');
+end;
+$$;
+
+
+ALTER FUNCTION "public"."create_cash_branch_transfer"("payload" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."create_income_expense_approval_request"("payload" "jsonb") RETURNS "jsonb"
@@ -1542,6 +1599,22 @@ $$;
 ALTER FUNCTION "public"."deduct_debts_daily"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."delete_cash_branch_transfer"("p_transfer_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+begin
+  if not private.is_super_admin() then raise exception 'เฉพาะ super_admin เท่านั้นที่ลบรายการเงินสดได้'; end if;
+  delete from public.money_transfers where id = p_transfer_id and transfer_method = 'cash';
+  if not found then raise exception 'ไม่พบรายการเงินสด'; end if;
+  return jsonb_build_object('id', p_transfer_id, 'status', 'synced');
+end;
+$$;
+
+
+ALTER FUNCTION "public"."delete_cash_branch_transfer"("p_transfer_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."delete_income_sale_item"("item_id" "uuid") RETURNS "void"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public'
@@ -1779,6 +1852,68 @@ begin
         and mt.target_location_id <> mt.location_id and mt.record_status <> 'deleted'
         and mt.transfer_status <> 'cancelled' and mt.net_amount_to_pay > 0
         and mt.created_at::date between p_from_date and p_to_date
+
+      union all
+
+      select (d.sent_at at time zone 'Asia/Bangkok')::date, 'cash-transfer-expense:' || mt.id::text,
+        jsonb_build_object(
+          'id', 'cash-transfer-expense:' || mt.id, 'clientTempId', 'cash-transfer-expense:' || mt.id,
+          'localBillNo', 'CASH-' || left(mt.id::text, 8), 'serverBillNo', 'CASH-' || left(mt.id::text, 8),
+          'idempotencyKey', 'cash-transfer-expense:' || mt.id, 'locationId', mt.location_id,
+          'syncStatus', 'synced', 'recordStatus', 'active', 'type', 'expense',
+          'number', 'CASH-' || left(mt.id::text, 8),
+          'txDate', (d.sent_at at time zone 'Asia/Bangkok')::date,
+          'title', 'โยกเงินสดไป ' || coalesce(mt.target_location_name, 'สาขาปลายทาง'),
+          'cost', d.sent_total, 'billOption', 'ค่าใช้จ่าย',
+          'clientRecordedAt', d.sent_at, 'clientCreatedAt', d.sent_at,
+          'serverReceivedAt', d.updated_at, 'revisionNo', mt.revision_no,
+          'createdByUserId', mt.created_by_user_id, 'createdByName', mt.created_by_name,
+          'createdByPhone', mt.created_by_phone, 'relationSourceType', 'money_transfer',
+          'relationSourceId', 'cash:' || mt.id, 'relationSourceLocationId', mt.location_id,
+          'relationLabel', case d.cash_status
+            when 'pending_receipt' then 'รอรับเงิน'
+            when 'received' then 'รับเงินแล้ว'
+            when 'mismatched' then 'ยอดไม่ตรง ' || case when d.difference_total >= 0 then '+฿' else '-฿' end || trim(to_char(abs(d.difference_total), 'FM999999999990'))
+            else 'ยอมรับผลต่าง ' || case when d.difference_total >= 0 then '+฿' else '-฿' end || trim(to_char(abs(d.difference_total), 'FM999999999990'))
+          end,
+          'relationLockReason', 'รายการนี้มาจากการโยกเงินสด ต้องเปิดรายละเอียดเพื่อดูข้อมูล'
+        )
+      from public.money_transfers mt
+      join public.money_transfer_cash_details d on d.transfer_id = mt.id
+      where mt.transfer_type = 'cash' and mt.transfer_method = 'cash'
+        and mt.location_id = p_location_id and mt.record_status <> 'deleted'
+        and (d.sent_at at time zone 'Asia/Bangkok')::date between p_from_date and p_to_date
+
+      union all
+
+      select (d.received_at at time zone 'Asia/Bangkok')::date, 'cash-transfer-income:' || mt.id::text,
+        jsonb_build_object(
+          'id', 'cash-transfer-income:' || mt.id, 'clientTempId', 'cash-transfer-income:' || mt.id,
+          'localBillNo', 'CASH-' || left(mt.id::text, 8), 'serverBillNo', 'CASH-' || left(mt.id::text, 8),
+          'idempotencyKey', 'cash-transfer-income:' || mt.id, 'locationId', mt.target_location_id,
+          'syncStatus', 'synced', 'recordStatus', 'active', 'type', 'income',
+          'number', 'CASH-' || left(mt.id::text, 8),
+          'txDate', (d.received_at at time zone 'Asia/Bangkok')::date,
+          'title', 'รับโอนเงินสดจากสาขาต้นทาง',
+          'cost', d.received_total, 'billOption', 'รายรับ',
+          'clientRecordedAt', d.received_at, 'clientCreatedAt', d.received_at,
+          'serverReceivedAt', d.updated_at, 'revisionNo', mt.revision_no,
+          'createdByUserId', mt.created_by_user_id, 'createdByName', mt.created_by_name,
+          'createdByPhone', mt.created_by_phone, 'relationSourceType', 'money_transfer',
+          'relationSourceId', 'cash:' || mt.id, 'relationSourceLocationId', mt.location_id,
+          'relationLabel', case d.cash_status
+            when 'received' then 'รับเงินแล้ว'
+            when 'mismatched' then 'ยอดไม่ตรง ' || case when d.difference_total >= 0 then '+฿' else '-฿' end || trim(to_char(abs(d.difference_total), 'FM999999999990'))
+            else 'ยอมรับผลต่าง ' || case when d.difference_total >= 0 then '+฿' else '-฿' end || trim(to_char(abs(d.difference_total), 'FM999999999990'))
+          end,
+          'relationLockReason', 'รายการนี้มาจากการโยกเงินสด ต้องเปิดรายละเอียดเพื่อดูข้อมูล'
+        )
+      from public.money_transfers mt
+      join public.money_transfer_cash_details d on d.transfer_id = mt.id
+      where mt.transfer_type = 'cash' and mt.transfer_method = 'cash'
+        and mt.target_location_id = p_location_id and mt.record_status <> 'deleted'
+        and d.cash_status in ('received', 'mismatched', 'difference_accepted')
+        and (d.received_at at time zone 'Asia/Bangkok')::date between p_from_date and p_to_date
 
       union all
 
@@ -2047,6 +2182,35 @@ $$;
 
 
 ALTER FUNCTION "public"."prevent_locked_ocr_ticket_change"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."receive_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  transfer_row public.money_transfers%rowtype; counts integer[]; actor_id uuid := auth.uid(); actor_name text; actor_phone text; total numeric; sent numeric;
+begin
+  select * into transfer_row from public.money_transfers where id = p_transfer_id for update;
+  if transfer_row.id is null or transfer_row.transfer_method <> 'cash' then raise exception 'ไม่พบรายการเงินสด'; end if;
+  if not private.can_access_location(transfer_row.target_location_id) then raise exception 'ไม่มีสิทธิ์ตรวจรับสาขานี้'; end if;
+  counts := private.cash_transfer_counts(payload, 'received');
+  select name, phone into actor_name, actor_phone from public.profiles where id = actor_id;
+  update public.money_transfer_cash_details set
+    received_coin_1_count = counts[1], received_coin_2_count = counts[2], received_coin_5_count = counts[3], received_coin_10_count = counts[4],
+    received_banknote_20_count = counts[5], received_banknote_50_count = counts[6], received_banknote_100_count = counts[7], received_banknote_500_count = counts[8], received_banknote_1000_count = counts[9],
+    received_by_user_id = actor_id, received_by_name = coalesce(actor_name, ''), received_by_phone = coalesce(actor_phone, ''), received_at = now(), updated_at = now(),
+    cash_status = case when counts[1] + counts[2] * 2 + counts[3] * 5 + counts[4] * 10 + counts[5] * 20 + counts[6] * 50 + counts[7] * 100 + counts[8] * 500 + counts[9] * 1000 = sent_total then 'received' else 'mismatched' end
+  where transfer_id = p_transfer_id and cash_status = 'pending_receipt'
+  returning received_total, sent_total into total, sent;
+  if not found then raise exception 'รายการนี้ถูกตรวจรับแล้ว'; end if;
+  update public.money_transfers set transfer_status = 'paid', revision_no = revision_no + 1, updated_at = now() where id = p_transfer_id;
+  return jsonb_build_object('id', p_transfer_id, 'status', 'synced', 'mismatched', total <> sent);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."receive_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."sync_acid_stock_entry"("payload" "jsonb") RETURNS "jsonb"
@@ -2927,6 +3091,43 @@ $$;
 ALTER FUNCTION "public"."transfer_stock"("payload" "jsonb") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."update_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  transfer_row public.money_transfers%rowtype;
+  target_id uuid := (payload->>'targetLocationId')::uuid;
+  target_name text;
+  counts integer[];
+begin
+  select * into transfer_row from public.money_transfers where id = p_transfer_id for update;
+  if transfer_row.id is null or transfer_row.transfer_method <> 'cash' then raise exception 'ไม่พบรายการเงินสด'; end if;
+  if not private.is_active_user() or not private.can_access_location(transfer_row.location_id) then raise exception 'ไม่มีสิทธิ์แก้ไขรายการนี้'; end if;
+  if auth.uid() <> transfer_row.created_by_user_id and not private.is_super_admin() then raise exception 'ผู้สร้างหรือ super_admin เท่านั้นที่แก้ไขได้'; end if;
+  if target_id is null or target_id = transfer_row.location_id then raise exception 'สาขาปลายทางต้องต่างจากสาขาต้นทาง'; end if;
+  if not exists (select 1 from public.money_transfer_cash_details where transfer_id = p_transfer_id and cash_status = 'pending_receipt') then raise exception 'แก้ไขได้ก่อนตรวจรับเงินเท่านั้น'; end if;
+  select name into target_name from public.locations where id = target_id and is_active = true;
+  if target_name is null then raise exception 'ไม่พบสาขาปลายทางที่ใช้งาน'; end if;
+  counts := private.cash_transfer_counts(payload, 'sent');
+  update public.money_transfer_cash_details set
+    sent_coin_1_count = counts[1], sent_coin_2_count = counts[2], sent_coin_5_count = counts[3], sent_coin_10_count = counts[4],
+    sent_banknote_20_count = counts[5], sent_banknote_50_count = counts[6], sent_banknote_100_count = counts[7], sent_banknote_500_count = counts[8], sent_banknote_1000_count = counts[9],
+    note = nullif(btrim(payload->>'note'), ''), updated_at = now()
+  where transfer_id = p_transfer_id;
+  update public.money_transfers set
+    target_location_id = target_id, target_location_name = target_name,
+    net_amount_to_pay = d.sent_total, revision_no = revision_no + 1, updated_at = now()
+  from public.money_transfer_cash_details d
+  where money_transfers.id = p_transfer_id and d.transfer_id = p_transfer_id;
+  return jsonb_build_object('id', p_transfer_id, 'status', 'synced');
+end;
+$$;
+
+
+ALTER FUNCTION "public"."update_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."validate_stock_non_negative_after_entry_delete"("p_location_id" "uuid", "p_product_id" "uuid", "p_deleted_entry_ids" "uuid"[]) RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public'
@@ -3458,6 +3659,78 @@ CREATE TABLE IF NOT EXISTS "public"."locations" (
 ALTER TABLE "public"."locations" OWNER TO "postgres";
 
 
+CREATE TABLE IF NOT EXISTS "public"."money_transfer_cash_details" (
+    "transfer_id" "uuid" NOT NULL,
+    "sent_coin_1_count" integer NOT NULL,
+    "sent_coin_2_count" integer NOT NULL,
+    "sent_coin_5_count" integer NOT NULL,
+    "sent_coin_10_count" integer NOT NULL,
+    "sent_banknote_20_count" integer NOT NULL,
+    "sent_banknote_50_count" integer NOT NULL,
+    "sent_banknote_100_count" integer NOT NULL,
+    "sent_banknote_500_count" integer NOT NULL,
+    "sent_banknote_1000_count" integer NOT NULL,
+    "received_coin_1_count" integer,
+    "received_coin_2_count" integer,
+    "received_coin_5_count" integer,
+    "received_coin_10_count" integer,
+    "received_banknote_20_count" integer,
+    "received_banknote_50_count" integer,
+    "received_banknote_100_count" integer,
+    "received_banknote_500_count" integer,
+    "received_banknote_1000_count" integer,
+    "sent_total" numeric(12,2) GENERATED ALWAYS AS ((((((((("sent_coin_1_count" + ("sent_coin_2_count" * 2)) + ("sent_coin_5_count" * 5)) + ("sent_coin_10_count" * 10)) + ("sent_banknote_20_count" * 20)) + ("sent_banknote_50_count" * 50)) + ("sent_banknote_100_count" * 100)) + ("sent_banknote_500_count" * 500)) + ("sent_banknote_1000_count" * 1000))) STORED,
+    "received_total" numeric(12,2) GENERATED ALWAYS AS (
+CASE
+    WHEN ("received_coin_1_count" IS NULL) THEN NULL::integer
+    ELSE (((((((("received_coin_1_count" + ("received_coin_2_count" * 2)) + ("received_coin_5_count" * 5)) + ("received_coin_10_count" * 10)) + ("received_banknote_20_count" * 20)) + ("received_banknote_50_count" * 50)) + ("received_banknote_100_count" * 100)) + ("received_banknote_500_count" * 500)) + ("received_banknote_1000_count" * 1000))
+END) STORED,
+    "difference_total" numeric(12,2) GENERATED ALWAYS AS (
+CASE
+    WHEN ("received_coin_1_count" IS NULL) THEN NULL::integer
+    ELSE ((((((((("received_coin_1_count" - "sent_coin_1_count") + (("received_coin_2_count" - "sent_coin_2_count") * 2)) + (("received_coin_5_count" - "sent_coin_5_count") * 5)) + (("received_coin_10_count" - "sent_coin_10_count") * 10)) + (("received_banknote_20_count" - "sent_banknote_20_count") * 20)) + (("received_banknote_50_count" - "sent_banknote_50_count") * 50)) + (("received_banknote_100_count" - "sent_banknote_100_count") * 100)) + (("received_banknote_500_count" - "sent_banknote_500_count") * 500)) + (("received_banknote_1000_count" - "sent_banknote_1000_count") * 1000))
+END) STORED,
+    "cash_status" "text" DEFAULT 'pending_receipt'::"text" NOT NULL,
+    "note" "text",
+    "sent_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "received_by_user_id" "uuid",
+    "received_by_name" "text",
+    "received_by_phone" "text",
+    "received_at" timestamp with time zone,
+    "difference_accepted_by_user_id" "uuid",
+    "difference_accept_reason" "text",
+    "difference_accepted_at" timestamp with time zone,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "money_transfer_cash_details_cash_status_check" CHECK (("cash_status" = ANY (ARRAY['pending_receipt'::"text", 'received'::"text", 'mismatched'::"text", 'difference_accepted'::"text"]))),
+    CONSTRAINT "money_transfer_cash_details_check" CHECK (((("cash_status" = 'pending_receipt'::"text") AND ("num_nonnulls"("received_coin_1_count", "received_coin_2_count", "received_coin_5_count", "received_coin_10_count", "received_banknote_20_count", "received_banknote_50_count", "received_banknote_100_count", "received_banknote_500_count", "received_banknote_1000_count") = 0) AND ("received_by_user_id" IS NULL) AND ("received_at" IS NULL)) OR (("cash_status" = ANY (ARRAY['received'::"text", 'mismatched'::"text", 'difference_accepted'::"text"])) AND ("num_nonnulls"("received_coin_1_count", "received_coin_2_count", "received_coin_5_count", "received_coin_10_count", "received_banknote_20_count", "received_banknote_50_count", "received_banknote_100_count", "received_banknote_500_count", "received_banknote_1000_count") = 9) AND ("received_by_user_id" IS NOT NULL) AND ("received_at" IS NOT NULL)))),
+    CONSTRAINT "money_transfer_cash_details_check1" CHECK (((("cash_status" = 'pending_receipt'::"text") AND ("difference_total" IS NULL)) OR (("cash_status" = 'received'::"text") AND ("difference_total" = (0)::numeric)) OR (("cash_status" = ANY (ARRAY['mismatched'::"text", 'difference_accepted'::"text"])) AND ("difference_total" <> (0)::numeric)))),
+    CONSTRAINT "money_transfer_cash_details_check2" CHECK ((("cash_status" <> 'difference_accepted'::"text") OR (("difference_accepted_by_user_id" IS NOT NULL) AND (NULLIF("btrim"("difference_accept_reason"), ''::"text") IS NOT NULL) AND ("difference_accepted_at" IS NOT NULL)))),
+    CONSTRAINT "money_transfer_cash_details_received_banknote_1000_count_check" CHECK (("received_banknote_1000_count" >= 0)),
+    CONSTRAINT "money_transfer_cash_details_received_banknote_100_count_check" CHECK (("received_banknote_100_count" >= 0)),
+    CONSTRAINT "money_transfer_cash_details_received_banknote_20_count_check" CHECK (("received_banknote_20_count" >= 0)),
+    CONSTRAINT "money_transfer_cash_details_received_banknote_500_count_check" CHECK (("received_banknote_500_count" >= 0)),
+    CONSTRAINT "money_transfer_cash_details_received_banknote_50_count_check" CHECK (("received_banknote_50_count" >= 0)),
+    CONSTRAINT "money_transfer_cash_details_received_coin_10_count_check" CHECK (("received_coin_10_count" >= 0)),
+    CONSTRAINT "money_transfer_cash_details_received_coin_1_count_check" CHECK (("received_coin_1_count" >= 0)),
+    CONSTRAINT "money_transfer_cash_details_received_coin_2_count_check" CHECK (("received_coin_2_count" >= 0)),
+    CONSTRAINT "money_transfer_cash_details_received_coin_5_count_check" CHECK (("received_coin_5_count" >= 0)),
+    CONSTRAINT "money_transfer_cash_details_sent_banknote_1000_count_check" CHECK (("sent_banknote_1000_count" >= 0)),
+    CONSTRAINT "money_transfer_cash_details_sent_banknote_100_count_check" CHECK (("sent_banknote_100_count" >= 0)),
+    CONSTRAINT "money_transfer_cash_details_sent_banknote_20_count_check" CHECK (("sent_banknote_20_count" >= 0)),
+    CONSTRAINT "money_transfer_cash_details_sent_banknote_500_count_check" CHECK (("sent_banknote_500_count" >= 0)),
+    CONSTRAINT "money_transfer_cash_details_sent_banknote_50_count_check" CHECK (("sent_banknote_50_count" >= 0)),
+    CONSTRAINT "money_transfer_cash_details_sent_coin_10_count_check" CHECK (("sent_coin_10_count" >= 0)),
+    CONSTRAINT "money_transfer_cash_details_sent_coin_1_count_check" CHECK (("sent_coin_1_count" >= 0)),
+    CONSTRAINT "money_transfer_cash_details_sent_coin_2_count_check" CHECK (("sent_coin_2_count" >= 0)),
+    CONSTRAINT "money_transfer_cash_details_sent_coin_5_count_check" CHECK (("sent_coin_5_count" >= 0)),
+    CONSTRAINT "money_transfer_cash_details_sent_total_check" CHECK (("sent_total" > (0)::numeric))
+);
+
+
+ALTER TABLE "public"."money_transfer_cash_details" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "public"."money_transfer_items" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "transfer_id" "uuid" NOT NULL,
@@ -3524,8 +3797,10 @@ CREATE TABLE IF NOT EXISTS "public"."money_transfers" (
     "transport_staff_name" "text",
     "target_location_id" "uuid",
     "target_location_name" "text",
+    "transfer_method" "text" DEFAULT 'bank'::"text" NOT NULL,
+    CONSTRAINT "money_transfers_transfer_method_check" CHECK (("transfer_method" = ANY (ARRAY['bank'::"text", 'cash'::"text"]))),
     CONSTRAINT "money_transfers_transfer_status_check" CHECK (("transfer_status" = ANY (ARRAY['pending'::"text", 'paid'::"text", 'partial'::"text", 'overpaid'::"text", 'branch_and_transfer'::"text", 'advance_payment'::"text", 'cancelled'::"text"]))),
-    CONSTRAINT "money_transfers_transfer_type_check" CHECK (("transfer_type" = ANY (ARRAY['customer'::"text", 'transport'::"text", 'branch'::"text"])))
+    CONSTRAINT "money_transfers_transfer_type_check" CHECK (("transfer_type" = ANY (ARRAY['customer'::"text", 'transport'::"text", 'branch'::"text", 'cash'::"text"])))
 );
 
 
@@ -3911,6 +4186,11 @@ ALTER TABLE ONLY "public"."locations"
 
 
 
+ALTER TABLE ONLY "public"."money_transfer_cash_details"
+    ADD CONSTRAINT "money_transfer_cash_details_pkey" PRIMARY KEY ("transfer_id");
+
+
+
 ALTER TABLE ONLY "public"."money_transfer_items"
     ADD CONSTRAINT "money_transfer_items_pkey" PRIMARY KEY ("id");
 
@@ -4105,6 +4385,10 @@ CREATE INDEX "income_expense_feed_active_idx" ON "public"."income_expense" USING
 
 
 CREATE UNIQUE INDEX "income_sale_items_name_active_idx" ON "public"."income_sale_items" USING "btree" ("lower"(TRIM(BOTH FROM "name"))) WHERE ("is_active" = true);
+
+
+
+CREATE INDEX "money_transfer_cash_details_status_idx" ON "public"."money_transfer_cash_details" USING "btree" ("cash_status", "sent_at" DESC);
 
 
 
@@ -4386,6 +4670,21 @@ ALTER TABLE ONLY "public"."locations"
 
 
 
+ALTER TABLE ONLY "public"."money_transfer_cash_details"
+    ADD CONSTRAINT "money_transfer_cash_details_difference_accepted_by_user_id_fkey" FOREIGN KEY ("difference_accepted_by_user_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."money_transfer_cash_details"
+    ADD CONSTRAINT "money_transfer_cash_details_received_by_user_id_fkey" FOREIGN KEY ("received_by_user_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."money_transfer_cash_details"
+    ADD CONSTRAINT "money_transfer_cash_details_transfer_id_fkey" FOREIGN KEY ("transfer_id") REFERENCES "public"."money_transfers"("id") ON DELETE CASCADE;
+
+
+
 ALTER TABLE ONLY "public"."money_transfer_items"
     ADD CONSTRAINT "money_transfer_items_transfer_id_fkey" FOREIGN KEY ("transfer_id") REFERENCES "public"."money_transfers"("id") ON DELETE CASCADE;
 
@@ -4617,6 +4916,12 @@ CREATE POLICY "acid_stock_entries_location_read" ON "public"."stock_entries" FOR
 
 
 
+CREATE POLICY "cash details source or target select" ON "public"."money_transfer_cash_details" FOR SELECT TO "authenticated" USING ((EXISTS ( SELECT 1
+   FROM "public"."money_transfers" "t"
+  WHERE (("t"."id" = "money_transfer_cash_details"."transfer_id") AND ("private"."can_access_location"("t"."location_id") OR "private"."can_access_location"("t"."target_location_id"))))));
+
+
+
 ALTER TABLE "public"."customer_bank_accounts" ENABLE ROW LEVEL SECURITY;
 
 
@@ -4759,6 +5064,9 @@ CREATE POLICY "locations_select_assigned" ON "public"."locations" FOR SELECT TO 
 
 
 
+ALTER TABLE "public"."money_transfer_cash_details" ENABLE ROW LEVEL SECURITY;
+
+
 ALTER TABLE "public"."money_transfer_items" ENABLE ROW LEVEL SECURITY;
 
 
@@ -4821,6 +5129,10 @@ ALTER TABLE "public"."money_transfers" ENABLE ROW LEVEL SECURITY;
 
 
 CREATE POLICY "money_transfers_branch_target_select_scope" ON "public"."money_transfers" FOR SELECT TO "authenticated" USING ((("transfer_type" = 'branch'::"text") AND ("target_location_id" IS NOT NULL) AND "private"."can_access_location"("target_location_id")));
+
+
+
+CREATE POLICY "money_transfers_cash_target_select_scope" ON "public"."money_transfers" FOR SELECT TO "authenticated" USING ((("transfer_type" = 'cash'::"text") AND ("target_location_id" IS NOT NULL) AND "private"."can_access_location"("target_location_id")));
 
 
 
@@ -5003,6 +5315,11 @@ GRANT USAGE ON SCHEMA "public" TO "service_role";
 
 
 
+REVOKE ALL ON FUNCTION "public"."accept_cash_branch_difference"("p_transfer_id" "uuid", "p_reason" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."accept_cash_branch_difference"("p_transfer_id" "uuid", "p_reason" "text") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."calculate_paid_work_days"("p_profile_id" "uuid", "p_period_start" timestamp with time zone, "p_period_end" timestamp with time zone) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."calculate_paid_work_days"("p_profile_id" "uuid", "p_period_start" timestamp with time zone, "p_period_end" timestamp with time zone) TO "authenticated";
 GRANT ALL ON FUNCTION "public"."calculate_paid_work_days"("p_profile_id" "uuid", "p_period_start" timestamp with time zone, "p_period_end" timestamp with time zone) TO "service_role";
@@ -5032,6 +5349,11 @@ GRANT ALL ON FUNCTION "public"."cancel_time_tracking_expense_source"("p_source_t
 
 REVOKE ALL ON FUNCTION "public"."change_time_tracking_expense_location"("p_source_type" "text", "p_source_id" "uuid", "p_expense_location_id" "uuid", "p_comment" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."change_time_tracking_expense_location"("p_source_type" "text", "p_source_id" "uuid", "p_expense_location_id" "uuid", "p_comment" "text") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."create_cash_branch_transfer"("payload" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."create_cash_branch_transfer"("payload" "jsonb") TO "authenticated";
 
 
 
@@ -5080,6 +5402,11 @@ GRANT ALL ON FUNCTION "public"."decide_time_tracking_approval"("p_source_type" "
 
 
 
+REVOKE ALL ON FUNCTION "public"."delete_cash_branch_transfer"("p_transfer_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."delete_cash_branch_transfer"("p_transfer_id" "uuid") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."delete_income_sale_item"("item_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."delete_income_sale_item"("item_id" "uuid") TO "authenticated";
 
@@ -5119,6 +5446,11 @@ REVOKE ALL ON FUNCTION "public"."prevent_locked_ocr_ticket_change"() FROM PUBLIC
 
 
 
+REVOKE ALL ON FUNCTION "public"."receive_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."receive_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."sync_acid_stock_entry"("payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."sync_acid_stock_entry"("payload" "jsonb") TO "authenticated";
 
@@ -5150,6 +5482,11 @@ GRANT ALL ON FUNCTION "public"."transfer_acid_stock"("payload" "jsonb") TO "auth
 
 REVOKE ALL ON FUNCTION "public"."transfer_stock"("payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."transfer_stock"("payload" "jsonb") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."update_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."update_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") TO "authenticated";
 
 
 
@@ -5258,6 +5595,11 @@ GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."leave_requests" TO
 GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."locations" TO "anon";
 GRANT ALL ON TABLE "public"."locations" TO "authenticated";
 GRANT ALL ON TABLE "public"."locations" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."money_transfer_cash_details" TO "service_role";
+GRANT SELECT ON TABLE "public"."money_transfer_cash_details" TO "authenticated";
 
 
 

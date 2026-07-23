@@ -400,6 +400,42 @@ export type MoneyTransfer = {
   items?: MoneyTransferItem[];
 };
 
+export type CashDenominationCounts = {
+  coin1: number;
+  coin2: number;
+  coin5: number;
+  coin10: number;
+  banknote20: number;
+  banknote50: number;
+  banknote100: number;
+  banknote500: number;
+  banknote1000: number;
+};
+
+export type CashBranchTransferStatus = "pending_receipt" | "received" | "mismatched" | "difference_accepted";
+
+export type CashBranchTransfer = {
+  id: string;
+  locationId: string;
+  targetLocationId: string;
+  targetLocationName: string | null;
+  createdByName: string;
+  createdByPhone: string;
+  createdByUserId?: string | null;
+  sent: CashDenominationCounts;
+  received: CashDenominationCounts | null;
+  sentTotal: number;
+  receivedTotal: number | null;
+  differenceTotal: number | null;
+  status: CashBranchTransferStatus;
+  note: string | null;
+  sentAt: string;
+  receivedAt: string | null;
+  receivedByName: string | null;
+  receivedByPhone: string | null;
+  differenceAcceptReason: string | null;
+};
+
 export type TransportStaff = {
   id: string;
   clientTempId?: string;
