@@ -3,7 +3,9 @@ import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { RubberBill } from "@/types";
 import { enqueueSyncEvent, getPendingEvents, removeSyncEvent, SyncEvent } from "@/lib/idb-queue";
 import { useEffect } from "react";
+import { toast } from "sonner";
 import { OFFLINE_SYNCED_ACTION_MESSAGE } from "@/lib/record-action-locks";
+import { assertOfflineRubberBillPriceAllowed } from "@/lib/rubber-bills/approval";
 
 export function assertRubberBillDeleteAllowed(pendingCreateCount: number, isOnline: boolean) {
   if (pendingCreateCount === 0 && !isOnline) {
@@ -119,6 +121,9 @@ async function syncPendingBills(queryClient: any, ownerUserId: string, locationI
         const data = await response.json();
         
         if (response.ok) {
+          if (data.status === "pending_approval") {
+            toast.success("ส่งคำขออนุมัติบิลยางแล้ว");
+          }
           // Success -> remove from queue
           await removeSyncEvent(event.queueId!);
         } else if (!response.ok) {
@@ -143,6 +148,8 @@ async function syncPendingBills(queryClient: any, ownerUserId: string, locationI
   } finally {
     isSyncing = false;
     queryClient.invalidateQueries({ queryKey: ["rubberBills", ownerUserId, locationId] });
+    queryClient.invalidateQueries({ queryKey: ["rubberBillApprovalMarkers", locationId] });
+    queryClient.invalidateQueries({ queryKey: ["rubberBillApprovalRequests"] });
   }
 }
 
@@ -172,7 +179,11 @@ async function normalizeRubberBillQueueBeforeSync(ownerUserId: string, locationI
   }
 }
 
-export function useRubberBills(locationId: string, ownerUserId: string) {
+export function useRubberBills(
+  locationId: string,
+  ownerUserId: string,
+  configuredPrice?: number | null
+) {
   const supabase = createSupabaseBrowserClient();
   const queryClient = useQueryClient();
 
@@ -380,6 +391,13 @@ export function useRubberBills(locationId: string, ownerUserId: string) {
       }
       if (operation === "update" && typeof navigator !== "undefined" && !navigator.onLine) {
         throw new Error(OFFLINE_SYNCED_ACTION_MESSAGE);
+      }
+      if (operation === "create" && typeof navigator !== "undefined") {
+        assertOfflineRubberBillPriceAllowed(
+          (bill.weighItems ?? []).map((item) => item.price),
+          configuredPrice,
+          navigator.onLine
+        );
       }
       
       const payload = buildRpcPayload(bill, operation);

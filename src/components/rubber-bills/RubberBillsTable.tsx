@@ -108,8 +108,9 @@ export function RubberBillsTable({
                     </button>
                     <button
                       type="button"
-                      title="จ่ายเงิน"
-                      className="grid h-8 w-10 place-items-center rounded-md bg-amber text-ink"
+                      title={actionBlockReason ?? "จ่ายเงิน"}
+                      disabled={actionsDisabled}
+                      className={`grid h-8 w-10 place-items-center rounded-md bg-amber text-ink ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
                     >
                       <Banknote size={18} />
                     </button>
@@ -129,6 +130,17 @@ export function RubberBillsTable({
                   <div className="flex flex-col gap-1">
                     <span>{getDisplayBillNo(bill)}</span>
                     {!bill.serverBillNo && <span className="text-xs font-normal text-ink/55">{bill.localBillNo}</span>}
+                    {bill.approvalPending && (
+                      <span
+                        className="w-fit rounded-full bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-800"
+                        title={bill.approvalReasons?.map((reason) => reason === "price" ? "ราคาไม่ตรง" : "พ้นเวลาที่กำหนด").join(", ")}
+                      >
+                        รออนุมัติ{bill.approvalOperation === "create" ? "สร้างบิล" : ""}
+                        {bill.approvalReasons?.length
+                          ? ` · ${bill.approvalReasons.map((reason) => reason === "price" ? "ราคา" : "เวลา").join("+")}`
+                          : ""}
+                      </span>
+                    )}
                   </div>
                 </td>
                 <td>{bill.billDate}</td>
@@ -141,7 +153,13 @@ export function RubberBillsTable({
                 <td>{formatNumber(bill.netTotal + bill.deductionTotal)}</td>
                 <td>{formatNumber(bill.price)}</td>
                 <td>{formatNumber(bill.deductionTotal)}</td>
-                <td><SyncStatusBadge status={bill.syncStatus} errorMessage={bill.syncErrorMessage} /></td>
+                <td>
+                  {bill.approvalPending ? (
+                    <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-amber-800">รออนุมัติ</span>
+                  ) : (
+                    <SyncStatusBadge status={bill.syncStatus} errorMessage={bill.syncErrorMessage} />
+                  )}
+                </td>
               </tr>
               );
             })}

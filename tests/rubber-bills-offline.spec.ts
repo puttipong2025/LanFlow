@@ -2,6 +2,8 @@ import { test, expect, Page } from '@playwright/test';
 import { assertRubberBillDeleteAllowed } from '../src/hooks/useRubberBills';
 
 const testUserId = process.env.TEST_USER_ID || '00000000-0000-4000-8000-000000000001';
+const localSupabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://127.0.0.1:54321';
+const localServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
 /** Read all events from IndexedDB sync_queue (matching idb-queue.ts store name) */
 async function readQueue(page: Page): Promise<any[]> {
@@ -76,6 +78,18 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
   const password = process.env.TEST_PASSWORD || 'password123';
   
   test.beforeEach(async ({ page }) => {
+    const resetApprovalSetting = await page.request.patch(
+      `${localSupabaseUrl}/rest/v1/rubber_bill_approval_settings?id=eq.true`,
+      {
+        headers: {
+          apikey: localServiceRoleKey,
+          Authorization: `Bearer ${localServiceRoleKey}`,
+          Prefer: 'return=minimal',
+        },
+        data: { edit_window_minutes: 30, configured_price: null },
+      }
+    );
+    expect(resetApprovalSetting.ok()).toBeTruthy();
     await page.goto('/');
     await page.evaluate(async () => {
       return new Promise<void>((resolve, reject) => {

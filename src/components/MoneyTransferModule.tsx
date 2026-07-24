@@ -16,6 +16,7 @@ import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
 import { useRubberBills } from "@/hooks/useRubberBills";
 import { useOcrTickets } from "@/hooks/useOcrTickets";
 import { useCustomers } from "@/hooks/useCustomers";
+import { useRubberBillApprovals } from "@/hooks/useRubberBillApprovals";
 
 import { CustomerTransferForm } from "./money-transfer/CustomerTransferForm";
 import { TransportTransferForm } from "./money-transfer/TransportTransferForm";
@@ -38,8 +39,19 @@ export function MoneyTransferModule({
 }: Props) {
   const { transfers, addTransfer, updateTransfer, deleteTransfer } = useMoneyTransfers(locationId);
   const { bills } = useRubberBills(locationId, profile.id);
+  const { markers: rubberBillApprovalMarkers } = useRubberBillApprovals({ locationId });
   const { ocrTickets } = useOcrTickets(locationId);
   const { customers } = useCustomers();
+  const billsWithApprovalState = useMemo(() => {
+    const pendingBillIds = new Set(
+      rubberBillApprovalMarkers
+        .map((marker) => marker.billId)
+        .filter((id): id is string => Boolean(id))
+    );
+    return bills.map((bill) => (
+      pendingBillIds.has(bill.id) ? { ...bill, approvalPending: true } : bill
+    ));
+  }, [bills, rubberBillApprovalMarkers]);
 
   const usedSourceIds = useMemo(() => {
     const set = new Set<string>();
@@ -191,7 +203,7 @@ export function MoneyTransferModule({
           locationId={locationId}
           online={online}
           profile={profile}
-          bills={bills}
+          bills={billsWithApprovalState}
           ocrTickets={ocrTickets}
           customers={customers}
           usedSourceIds={usedSourceIds}

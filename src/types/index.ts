@@ -86,6 +86,53 @@ export type RubberBill = {
   deletedByPhone?: string;
   syncErrorMessage?: string;
   reportLockNo?: string | null;
+  approvalPending?: boolean;
+  approvalRequestId?: string;
+  approvalOperation?: RubberBillApprovalOperation;
+  approvalReasons?: RubberBillApprovalReason[];
+};
+
+export type RubberBillApprovalOperation = "create" | "update" | "delete";
+export type RubberBillApprovalReason = "price" | "time";
+export type RubberBillApprovalStatus = "pending" | "approved";
+
+export type RubberBillApprovalSettings = {
+  editWindowMinutes: number;
+  configuredPrice: number | null;
+  updatedByName?: string | null;
+  updatedByPhone?: string | null;
+  updatedAt?: string;
+};
+
+export type RubberBillApprovalRequest = {
+  id: string;
+  operation: RubberBillApprovalOperation;
+  requestStatus: RubberBillApprovalStatus;
+  billId: string | null;
+  locationId: string;
+  clientTempId: string;
+  baseRevisionNo: number;
+  matchedReasons: RubberBillApprovalReason[];
+  configuredPriceSnapshot: number | null;
+  originalPayload: Record<string, unknown> | null;
+  proposedPayload: Record<string, unknown>;
+  requestedByName: string;
+  requestedByPhone: string;
+  requestedAt: string;
+  approvedByName?: string | null;
+  approvedByPhone?: string | null;
+  approvedAt?: string | null;
+  createdBillId?: string | null;
+};
+
+export type RubberBillApprovalMarker = {
+  requestId: string;
+  billId: string | null;
+  clientTempId: string;
+  operation: RubberBillApprovalOperation;
+  matchedReasons: RubberBillApprovalReason[];
+  requestedAt: string;
+  proposedCreatePayload: Record<string, any> | null;
 };
 
 export type IncomeBillOption = "รายรับ" | "บิลขาย";

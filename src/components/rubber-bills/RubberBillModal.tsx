@@ -28,6 +28,7 @@ export function RubberBillModal({
   selectedLocation,
   profile,
   bill,
+  configuredPrice,
   customers,
   onClose,
   onSave,
@@ -37,6 +38,7 @@ export function RubberBillModal({
   selectedLocation: Location;
   profile: Profile;
   bill: RubberBill | null;
+  configuredPrice?: number | null;
   customers: Customer[];
   onClose: () => void;
   onSave: (bill: RubberBill) => void;
@@ -55,7 +57,7 @@ export function RubberBillModal({
         inWeight: 0,
         outWeight: 0,
         netWeight: bill?.weight ?? 0,
-        price: bill?.price ?? 0
+        price: bill?.price ?? configuredPrice ?? 0
       }
     ];
   });
@@ -94,6 +96,9 @@ export function RubberBillModal({
   const weightDeductValue = weightDeduct * averagePrice;
   const deduct = stockDeduction + debtDeduction + weightDeductValue;
   const net = Math.max(gross - deduct, 0);
+  const hasConfiguredPriceMismatch =
+    configuredPrice != null &&
+    weighItems.some((item) => item.price !== configuredPrice);
   const branchPayment = paymentResponsibility === "สาขานี้จ่าย" ? net : 0;
   const headOfficePayment = paymentResponsibility === "สาขาใหญ่จ่าย" ? net : 0;
 
@@ -122,7 +127,7 @@ export function RubberBillModal({
         inWeight: 0,
         outWeight: 0,
         netWeight: 0,
-        price: current.at(-1)?.price ?? 0
+        price: configuredPrice ?? current.at(-1)?.price ?? 0
       }
     ]);
   }
@@ -423,6 +428,16 @@ export function RubberBillModal({
 
         <section className="bg-emerald-50 p-3 sm:p-4">
           <h3 className="mb-3 font-bold text-ink">ชั่งสินค้า</h3>
+          {configuredPrice != null && (
+            <div className={`mb-3 rounded-md border px-3 py-2 text-sm ${
+              hasConfiguredPriceMismatch
+                ? "border-amber-300 bg-amber-50 text-amber-900"
+                : "border-leaf/20 bg-leaf/5 text-leaf"
+            }`}>
+              ราคาที่กำหนด {configuredPrice.toFixed(2)} บาท
+              {hasConfiguredPriceMismatch && " — บิลนี้จะเข้ารออนุมัติเมื่อบันทึก"}
+            </div>
+          )}
           <div className="overflow-x-auto">
             <table className="w-full min-w-[900px] border-collapse text-sm">
               <thead>

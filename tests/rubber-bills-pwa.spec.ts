@@ -1,5 +1,8 @@
 import { test, expect, Page } from '@playwright/test';
 
+const localSupabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://127.0.0.1:54321';
+const localServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+
 /**
  * PWA Offline Reload Test
  * 
@@ -52,6 +55,18 @@ test.describe('PWA Offline Reload', () => {
   });
 
   test.beforeEach(async ({ page }) => {
+    const resetApprovalSetting = await page.request.patch(
+      `${localSupabaseUrl}/rest/v1/rubber_bill_approval_settings?id=eq.true`,
+      {
+        headers: {
+          apikey: localServiceRoleKey,
+          Authorization: `Bearer ${localServiceRoleKey}`,
+          Prefer: 'return=minimal',
+        },
+        data: { edit_window_minutes: 30, configured_price: null },
+      }
+    );
+    expect(resetApprovalSetting.ok()).toBeTruthy();
     await page.goto('/');
     await page.evaluate(async () => {
       return new Promise<void>((resolve, reject) => {

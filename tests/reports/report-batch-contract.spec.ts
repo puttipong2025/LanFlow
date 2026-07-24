@@ -333,6 +333,140 @@ test.describe.serial("Report batch contract @report-batch", () => {
     }
   });
 
+  test("partial customer transfer can be saved when its unchanged source bill is report locked", async ({ browser }) => {
+    const superAdmin = await authContext(browser, "super_admin");
+    const db = service();
+    const actor = await profile(superAdmin);
+    const locationId = actor.locationIds[0];
+    const rubberId = crypto.randomUUID();
+    const transferId = crypto.randomUUID();
+    const transferItemId = crypto.randomUUID();
+    const slipId = crypto.randomUUID();
+    const customerName = `ลูกค้าค้างจ่าย ${transferId.slice(0, 8)}`;
+    const rubberNumber = `RB-P-${rubberId.slice(0, 8)}`;
+    let reportId: string | null = null;
+
+    try {
+      expect((await db.from("rubber_bills").insert({
+        id: rubberId,
+        client_temp_id: rubberId,
+        local_bill_no: rubberNumber,
+        server_bill_no: rubberNumber,
+        idempotency_key: `report-partial-rubber:${rubberId}`,
+        sync_status: "synced",
+        record_status: "active",
+        location_id: locationId,
+        bill_no: rubberNumber,
+        bill_date: new Date().toISOString().slice(0, 10),
+        customer_name: customerName,
+        customer_type: "สาขานี้จ่าย",
+        bill_type: "weighing",
+        weight: 10,
+        rubber_value: 100,
+        average_price: 10,
+        net_total: 100,
+        server_received_at: new Date().toISOString(),
+        created_by_user_id: actor.id,
+        created_by_name: actor.name,
+        created_by_phone: actor.phone,
+      })).error).toBeNull();
+
+      expect((await db.from("money_transfers").insert({
+        id: transferId,
+        client_temp_id: transferId,
+        idempotency_key: `report-partial-transfer:${transferId}`,
+        location_id: locationId,
+        customer_name: customerName,
+        net_amount_to_pay: 100,
+        transfer_status: "partial",
+        sync_status: "synced",
+        record_status: "active",
+        transfer_type: "customer",
+        transfer_method: "bank",
+        created_by_user_id: actor.id,
+        created_by_name: actor.name,
+        created_by_phone: actor.phone,
+      })).error).toBeNull();
+
+      expect((await db.from("money_transfer_items").insert({
+        id: transferItemId,
+        transfer_id: transferId,
+        source_type: "rubber_bill",
+        source_id: rubberId,
+        customer_name: customerName,
+        amount: 100,
+      })).error).toBeNull();
+
+      expect((await db.from("money_transfer_slips").insert({
+        id: slipId,
+        transfer_id: transferId,
+        amount: 40,
+        transaction_date: new Date().toISOString().slice(0, 10),
+        sort_order: 0,
+      })).error).toBeNull();
+
+      const report = await createReport(superAdmin, locationId);
+      reportId = report.id;
+
+      const { data: locks, error: locksError } = await db
+        .from("money_transfers")
+        .select("report_lock_no, money_transfer_items(source_id)")
+        .eq("id", transferId)
+        .single();
+      expect(locksError).toBeNull();
+      expect(locks?.report_lock_no).toBeNull();
+      expect(locks?.money_transfer_items).toEqual([
+        expect.objectContaining({ source_id: rubberId }),
+      ]);
+
+      const parentOnlyUpdate = await db
+        .from("money_transfers")
+        .update({ revision_no: 1 })
+        .eq("id", transferId);
+      expect(parentOnlyUpdate.error).toBeNull();
+
+      const slipOnlyUpdate = await db
+        .from("money_transfer_slips")
+        .update({ reference_number: "unchanged-source-test" })
+        .eq("id", slipId);
+      expect(slipOnlyUpdate.error).toBeNull();
+
+      const lockedItemDelete = await db
+        .from("money_transfer_items")
+        .delete()
+        .eq("id", transferItemId);
+      expect(lockedItemDelete.error?.message).toContain(`REPORT_LOCKED:${report.reportNo}`);
+
+      const page = await superAdmin.newPage();
+      await page.goto("/");
+      await page.getByLabel("เลือกสาขา").selectOption(locationId);
+      await page.getByRole("button", { name: /^โอนเงิน/ }).click();
+
+      const transferRow = page.getByRole("row").filter({ hasText: customerName });
+      await expect(transferRow).toContainText("ค้างจ่าย");
+      await transferRow.getByTitle("แก้ไข").click();
+      await expect(page.getByRole("heading", { name: "แก้ไขรายการโอนเงิน" })).toBeVisible();
+      await page.getByRole("button", { name: "บันทึก" }).click();
+
+      await expect(page.getByText("บันทึกรายการโอนเงินสำเร็จ")).toBeVisible();
+      await expect(page.getByRole("heading", { name: "แก้ไขรายการโอนเงิน" })).toBeHidden();
+
+      const { data: items, error: itemsError } = await db
+        .from("money_transfer_items")
+        .select("id, source_id")
+        .eq("transfer_id", transferId);
+      expect(itemsError).toBeNull();
+      expect(items).toEqual([{ id: transferItemId, source_id: rubberId }]);
+    } finally {
+      if (reportId) await deleteReport(superAdmin, reportId);
+      await db.from("money_transfer_slips").delete().eq("transfer_id", transferId);
+      await db.from("money_transfer_items").delete().eq("transfer_id", transferId);
+      await db.from("money_transfers").delete().eq("id", transferId);
+      await db.from("rubber_bills").delete().eq("id", rubberId);
+      await superAdmin.close();
+    }
+  });
+
   test("cash sent and received legs report once, preserve receipt, and block hard delete", async ({ browser }) => {
     const superAdmin = await authContext(browser, "super_admin");
     const db = service();

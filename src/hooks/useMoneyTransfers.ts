@@ -3,6 +3,95 @@ import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { MoneyTransfer, MoneyTransferSlip, MoneyTransferItem } from "@/types";
 import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
 
+type MoneyTransferClient = ReturnType<typeof createSupabaseBrowserClient>;
+
+type StoredTransferItem = {
+  id: string;
+  source_type: MoneyTransferItem["sourceType"];
+  source_id: string;
+  customer_name: string | null;
+  amount: number | string;
+};
+
+function toTransferItemRow(transferId: string, item: MoneyTransferItem) {
+  return {
+    id: item.id,
+    transfer_id: transferId,
+    source_type: item.sourceType,
+    source_id: item.sourceId,
+    customer_name: item.customerName,
+    amount: item.amount,
+  };
+}
+
+function transferItemChanged(stored: StoredTransferItem, desired: MoneyTransferItem) {
+  return (
+    stored.customer_name !== desired.customerName
+    || Number(stored.amount) !== desired.amount
+  );
+}
+
+async function syncTransferItems(
+  supabase: MoneyTransferClient,
+  transferId: string,
+  desiredItems: MoneyTransferItem[],
+) {
+  const { data: storedItems, error: fetchError } = await supabase
+    .from("money_transfer_items")
+    .select("id, source_type, source_id, customer_name, amount")
+    .eq("transfer_id", transferId);
+
+  if (fetchError) throw new Error("Items Fetch Error: " + fetchError.message);
+
+  const desiredById = new Map(desiredItems.map((item) => [item.id, item]));
+  const storedById = new Map(
+    ((storedItems ?? []) as StoredTransferItem[]).map((item) => [item.id, item]),
+  );
+
+  // A source identity change must delete the old relation first so report-lock
+  // triggers still validate the source that is being detached.
+  const idsToDelete = [...storedById.values()]
+    .filter((stored) => {
+      const desired = desiredById.get(stored.id);
+      return (
+        !desired
+        || desired.sourceType !== stored.source_type
+        || desired.sourceId !== stored.source_id
+      );
+    })
+    .map((stored) => stored.id);
+
+  if (idsToDelete.length > 0) {
+    const { error: deleteError } = await supabase
+      .from("money_transfer_items")
+      .delete()
+      .eq("transfer_id", transferId)
+      .in("id", idsToDelete);
+
+    if (deleteError) throw new Error("Items Delete Error: " + deleteError.message);
+  }
+
+  const rowsToWrite = desiredItems
+    .filter((desired) => {
+      const stored = storedById.get(desired.id);
+      return (
+        !stored
+        || desired.sourceType !== stored.source_type
+        || desired.sourceId !== stored.source_id
+        || transferItemChanged(stored, desired)
+      );
+    })
+    .map((item) => toTransferItemRow(transferId, item));
+
+  if (rowsToWrite.length > 0) {
+    const { error: writeError } = await supabase
+      .from("money_transfer_items")
+      .upsert(rowsToWrite);
+
+    if (writeError) throw new Error("Items Sync Error: " + writeError.message);
+  }
+}
+
 export function useMoneyTransfers(locationId: string, options: { enabled?: boolean } = {}) {
   const supabase = createSupabaseBrowserClient();
   const queryClient = useQueryClient();
@@ -188,20 +277,7 @@ export function useMoneyTransfers(locationId: string, options: { enabled?: boole
         if (slipsError) throw new Error("Slips Insert Error: " + slipsError.message);
       }
 
-      await supabase.from("money_transfer_items").delete().eq("transfer_id", transfer.id);
-      if (transfer.items && transfer.items.length > 0) {
-        const { error: itemsError } = await supabase.from("money_transfer_items").insert(
-          transfer.items.map(i => ({
-            id: i.id,
-            transfer_id: transfer.id,
-            source_type: i.sourceType,
-            source_id: i.sourceId,
-            customer_name: i.customerName,
-            amount: i.amount
-          }))
-        );
-        if (itemsError) throw new Error("Items Insert Error: " + itemsError.message);
-      }
+      await syncTransferItems(supabase, transfer.id, transfer.items ?? []);
 
       return data;
     },

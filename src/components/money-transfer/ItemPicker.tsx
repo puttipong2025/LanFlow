@@ -75,7 +75,7 @@ export function ItemPicker({
                 const alreadySelected = selectedSourceIds.has(bill.id);
                 const noCustomer = !bill.customerName;
                 const negative = bill.netTotal < 0;
-                const disabled = alreadyUsed || noCustomer || negative || Boolean(bill.reportLockNo);
+                const disabled = alreadyUsed || noCustomer || negative || Boolean(bill.reportLockNo) || bill.approvalPending === true;
                 const reportLockReason = bill.reportLockNo
                   ? `ล็อกโดยรายงาน ${bill.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`
                   : undefined;
@@ -120,7 +120,9 @@ export function ItemPicker({
                       {formatCurrency(bill.netTotal)}
                     </td>
                     <td className="px-3 py-2 text-center">
-                      {reportLockReason ? (
+                      {bill.approvalPending ? (
+                        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-800">รออนุมัติ</span>
+                      ) : reportLockReason ? (
                         <span title={reportLockReason} className="rounded-full bg-amber/20 px-2 py-0.5 text-xs font-bold text-amber">{bill.reportLockNo}</span>
                       ) : alreadyUsed && !alreadySelected ? (
                         <span className="rounded-full bg-amber/20 px-2 py-0.5 text-xs font-bold text-amber">โอนแล้ว</span>

@@ -26,6 +26,9 @@ export function validateRubberBillDraft(draft: {
     if (item.price <= 0) {
       errors.push(`รายการชั่งที่ ${index + 1}: ราคาต้องมากกว่า 0`);
     }
+    if (Math.abs(item.price * 100 - Math.round(item.price * 100)) > 1e-9) {
+      errors.push(`รายการชั่งที่ ${index + 1}: ราคาต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง`);
+    }
   });
 
   draft.acidItems.forEach((item, index) => {
