@@ -2549,6 +2549,10 @@ INSERT INTO "public"."rubber_bill_approval_settings" ("id", "edit_window_minutes
 VALUES (true, 30)
 ON CONFLICT ("id") DO NOTHING;
 
+INSERT INTO "public"."telegram_badge_settings" ("id")
+VALUES (true)
+ON CONFLICT ("id") DO NOTHING;
+
 
 --
 -- PostgreSQL database dump complete

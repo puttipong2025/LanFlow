@@ -1159,6 +1159,50 @@ $$;
 ALTER FUNCTION "private"."rubber_export_candidates"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."telegram_badge_latest_slot"("p_now" timestamp with time zone, "p_start_time" time without time zone, "p_end_time" time without time zone, "p_interval_minutes" integer) RETURNS timestamp with time zone
+    LANGUAGE "plpgsql" STABLE
+    SET "search_path" TO ''
+    AS $$
+declare
+  local_now timestamp := p_now at time zone 'Asia/Bangkok';
+  window_start timestamptz;
+  window_end timestamptz;
+  elapsed_minutes integer;
+begin
+  window_start := ((local_now::date + p_start_time) at time zone 'Asia/Bangkok');
+  window_end := ((local_now::date + p_end_time) at time zone 'Asia/Bangkok');
+
+  if p_now < window_start or p_now > window_end then
+    return null;
+  end if;
+
+  elapsed_minutes := floor(extract(epoch from (p_now - window_start)) / 60)::integer;
+  return window_start
+    + make_interval(mins => (elapsed_minutes / p_interval_minutes) * p_interval_minutes);
+end;
+$$;
+
+
+ALTER FUNCTION "private"."telegram_badge_latest_slot"("p_now" timestamp with time zone, "p_start_time" time without time zone, "p_end_time" time without time zone, "p_interval_minutes" integer) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."telegram_badge_require_manager"() RETURNS "void"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if not private.is_active_user()
+    or not private.can_access_super_admin_features()
+  then
+    raise exception 'ไม่มีสิทธิ์จัดการ Telegram Badge';
+  end if;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."telegram_badge_require_manager"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."validate_rubber_export_candidates"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) RETURNS "void"
     LANGUAGE "plpgsql" STABLE SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -1450,6 +1494,209 @@ $$;
 
 
 ALTER FUNCTION "public"."change_time_tracking_expense_location"("p_source_type" "text", "p_source_id" "uuid", "p_expense_location_id" "uuid", "p_comment" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."claim_telegram_badge_dispatch"() RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  settings public.telegram_badge_settings%rowtype;
+  now_at timestamptz := now();
+  latest_slot timestamptz;
+  due_slot timestamptz;
+  next_claim_token uuid;
+  local_today date := (now_at at time zone 'Asia/Bangkok')::date;
+begin
+  if auth.role() <> 'service_role' then
+    raise exception 'service_role required';
+  end if;
+
+  select * into strict settings
+  from public.telegram_badge_settings
+  where id = true
+  for update;
+
+  if not settings.enabled then
+    return jsonb_build_object('claimed', false, 'reason', 'disabled');
+  end if;
+
+  latest_slot := private.telegram_badge_latest_slot(
+    now_at,
+    settings.start_time,
+    settings.end_time,
+    settings.interval_minutes
+  );
+  if latest_slot is null then
+    return jsonb_build_object('claimed', false, 'reason', 'outside_window');
+  end if;
+
+  if settings.claim_token is not null
+    and settings.claimed_at > now_at - interval '5 minutes'
+  then
+    return jsonb_build_object('claimed', false, 'reason', 'already_claimed');
+  end if;
+
+  if settings.pending_slot_at is not null
+    and (settings.pending_slot_at at time zone 'Asia/Bangkok')::date <> local_today
+  then
+    settings.pending_slot_at := null;
+    settings.retry_at := null;
+  end if;
+
+  if settings.pending_slot_at is not null
+    and settings.retry_at is not null
+    and settings.retry_at <= now_at
+  then
+    due_slot := settings.pending_slot_at;
+  elsif settings.initial_attempt_at is not null
+    and settings.initial_attempt_at <= now_at
+  then
+    due_slot := latest_slot;
+  elsif settings.initial_attempt_at is null
+    and settings.pending_slot_at is null
+    and (
+      settings.last_completed_slot_at is null
+      or latest_slot > settings.last_completed_slot_at
+    )
+  then
+    due_slot := latest_slot;
+  else
+    return jsonb_build_object('claimed', false, 'reason', 'not_due');
+  end if;
+
+  next_claim_token := extensions.gen_random_uuid();
+  update public.telegram_badge_settings
+  set pending_slot_at = due_slot,
+      claim_token = next_claim_token,
+      claimed_at = now_at,
+      initial_attempt_at = null,
+      last_attempt_at = now_at,
+      updated_at = now_at
+  where id = true;
+
+  return jsonb_build_object(
+    'claimed', true,
+    'claimToken', next_claim_token,
+    'slotAt', due_slot
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."claim_telegram_badge_dispatch"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."complete_telegram_badge_dispatch"("p_claim_token" "uuid", "p_outcome" "text", "p_error" "text" DEFAULT NULL::"text") RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  settings public.telegram_badge_settings%rowtype;
+begin
+  if auth.role() <> 'service_role' then
+    raise exception 'service_role required';
+  end if;
+  if p_outcome not in ('sent', 'no_items', 'failed') then
+    raise exception 'ผลการส่งไม่ถูกต้อง';
+  end if;
+
+  select * into strict settings
+  from public.telegram_badge_settings
+  where id = true
+  for update;
+
+  if settings.claim_token is distinct from p_claim_token then
+    raise exception 'claim ไม่ตรงหรือหมดอายุ';
+  end if;
+
+  update public.telegram_badge_settings
+  set last_completed_slot_at = case
+        when p_outcome in ('sent', 'no_items') then pending_slot_at
+        else last_completed_slot_at
+      end,
+      last_success_at = case
+        when p_outcome = 'sent' then now()
+        else last_success_at
+      end,
+      last_error = case
+        when p_outcome = 'failed' then left(coalesce(p_error, 'ส่ง Telegram ไม่สำเร็จ'), 500)
+        else null
+      end,
+      retry_at = case
+        when p_outcome = 'failed' then now() + interval '10 minutes'
+        else null
+      end,
+      pending_slot_at = case
+        when p_outcome = 'failed' then pending_slot_at
+        else null
+      end,
+      claim_token = null,
+      claimed_at = null,
+      updated_at = now()
+  where id = true;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."complete_telegram_badge_dispatch"("p_claim_token" "uuid", "p_outcome" "text", "p_error" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."configure_telegram_badge_dispatcher"("p_edge_url" "text") RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  settings public.telegram_badge_settings%rowtype;
+  normalized_url text := nullif(btrim(p_edge_url), '');
+  dispatch_secret text;
+begin
+  if auth.role() <> 'service_role' then
+    raise exception 'service_role required';
+  end if;
+  if normalized_url is null or normalized_url !~ '^https?://' then
+    raise exception 'Edge Function URL ไม่ถูกต้อง';
+  end if;
+
+  select * into strict settings
+  from public.telegram_badge_settings
+  where id = true
+  for update;
+
+  if settings.edge_url_secret_id is null then
+    settings.edge_url_secret_id := vault.create_secret(
+      normalized_url,
+      'lanflow_telegram_badge_edge_url',
+      'Telegram badge Edge Function URL'
+    );
+  else
+    perform vault.update_secret(
+      settings.edge_url_secret_id,
+      normalized_url,
+      'lanflow_telegram_badge_edge_url',
+      'Telegram badge Edge Function URL'
+    );
+  end if;
+
+  if settings.dispatch_secret_id is null then
+    dispatch_secret := encode(extensions.gen_random_bytes(32), 'hex');
+    settings.dispatch_secret_id := vault.create_secret(
+      dispatch_secret,
+      'lanflow_telegram_badge_dispatch_secret',
+      'Internal secret used by pg_cron to invoke the badge Edge Function'
+    );
+  end if;
+
+  update public.telegram_badge_settings
+  set edge_url_secret_id = settings.edge_url_secret_id,
+      dispatch_secret_id = settings.dispatch_secret_id,
+      updated_at = now()
+  where id = true;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."configure_telegram_badge_dispatcher"("p_edge_url" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."create_cash_branch_transfer"("payload" "jsonb") RETURNS "jsonb"
@@ -3298,6 +3545,53 @@ $$;
 ALTER FUNCTION "public"."delete_time_tracking_source_permanently"("p_source_type" "text", "p_source_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."dispatch_telegram_badge_tick"() RETURNS bigint
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  edge_url text;
+  dispatch_secret text;
+  request_id bigint;
+begin
+  if not exists (
+    select 1
+    from public.telegram_badge_settings s
+    where s.id = true and s.enabled = true
+  ) then
+    return null;
+  end if;
+
+  select url_secret.decrypted_secret, dispatch_secret_row.decrypted_secret
+  into edge_url, dispatch_secret
+  from public.telegram_badge_settings s
+  left join vault.decrypted_secrets url_secret on url_secret.id = s.edge_url_secret_id
+  left join vault.decrypted_secrets dispatch_secret_row on dispatch_secret_row.id = s.dispatch_secret_id
+  where s.id = true;
+
+  if edge_url is null or dispatch_secret is null then
+    return null;
+  end if;
+
+  select net.http_post(
+    url := edge_url,
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'x-lanflow-dispatch-secret', dispatch_secret
+    ),
+    body := '{}'::jsonb,
+    timeout_milliseconds := 10000
+  )
+  into request_id;
+
+  return request_id;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."dispatch_telegram_badge_tick"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."get_acid_stock_balance"("p_location_id" "uuid", "p_product_id" "uuid") RETURNS numeric
     LANGUAGE "plpgsql" STABLE SECURITY DEFINER
     SET "search_path" TO 'public'
@@ -3909,6 +4203,196 @@ $$;
 
 
 ALTER FUNCTION "public"."get_stock_balance"("p_location_id" "uuid", "p_product_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_telegram_badge_config"() RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  settings public.telegram_badge_settings%rowtype;
+  catalog jsonb;
+begin
+  perform private.telegram_badge_require_manager();
+
+  select * into strict settings
+  from public.telegram_badge_settings
+  where id = true;
+
+  select coalesce(
+    jsonb_agg(
+      jsonb_build_object(
+        'key', c.badge_key,
+        'moduleLabel', c.module_name,
+        'statusLabel', c.status_label,
+        'sortOrder', c.sort_order,
+        'enabled', c.badge_key = any(settings.enabled_badge_keys)
+      )
+      order by c.sort_order
+    ),
+    '[]'::jsonb
+  )
+  into catalog
+  from public.telegram_badge_catalog c;
+
+  return jsonb_build_object(
+    'enabled', settings.enabled,
+    'chatId', coalesce(settings.chat_id, ''),
+    'startTime', to_char(settings.start_time, 'HH24:MI'),
+    'endTime', to_char(settings.end_time, 'HH24:MI'),
+    'intervalMinutes', settings.interval_minutes,
+    'enabledBadgeKeys', to_jsonb(settings.enabled_badge_keys),
+    'tokenConfigured', settings.bot_token_secret_id is not null,
+    'catalog', catalog,
+    'lastAttemptAt', settings.last_attempt_at,
+    'lastSuccessAt', settings.last_success_at,
+    'lastError', settings.last_error,
+    'updatedAt', settings.updated_at,
+    'updatedByName', settings.updated_by_name
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_telegram_badge_config"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_telegram_badge_counts"() RETURNS TABLE("badge_key" "text", "location_id" "uuid", "branch_name" "text", "module_name" "text", "status_label" "text", "item_count" bigint, "sort_order" integer)
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  with enabled as (
+    select c.badge_key, c.module_name, c.status_label, c.sort_order
+    from public.telegram_badge_catalog c
+    join public.telegram_badge_settings s
+      on s.id = true and c.badge_key = any(s.enabled_badge_keys)
+  ),
+  pending as (
+    select 'rubber_bill_approval_pending'::text badge_key,
+      r.location_id, coalesce(l.name, 'ส่วนกลาง') branch_name, count(*)::bigint item_count
+    from public.rubber_bill_approval_requests r
+    left join public.locations l on l.id = r.location_id
+    where r.request_status = 'pending'
+    group by r.location_id, coalesce(l.name, 'ส่วนกลาง')
+
+    union all
+    select 'income_expense_approval_pending',
+      r.location_id, coalesce(l.name, 'ส่วนกลาง'), count(*)::bigint
+    from public.income_expense_approval_requests r
+    left join public.locations l on l.id = r.location_id
+    where r.request_status = 'pending'
+    group by r.location_id, coalesce(l.name, 'ส่วนกลาง')
+
+    union all
+    select 'cash_transfer_pending_receipt',
+      t.target_location_id, coalesce(l.name, 'ส่วนกลาง'), count(*)::bigint
+    from public.money_transfer_cash_details d
+    join public.money_transfers t on t.id = d.transfer_id
+    left join public.locations l on l.id = t.target_location_id
+    where d.cash_status = 'pending_receipt'
+      and t.record_status <> 'deleted'
+    group by t.target_location_id, coalesce(l.name, 'ส่วนกลาง')
+
+    union all
+    select 'cash_transfer_mismatched',
+      t.target_location_id, coalesce(l.name, 'ส่วนกลาง'), count(*)::bigint
+    from public.money_transfer_cash_details d
+    join public.money_transfers t on t.id = d.transfer_id
+    left join public.locations l on l.id = t.target_location_id
+    where d.cash_status = 'mismatched'
+      and t.record_status <> 'deleted'
+    group by t.target_location_id, coalesce(l.name, 'ส่วนกลาง')
+
+    union all
+    select 'stock_approval_pending', null::uuid, 'ส่วนกลาง', count(*)::bigint
+    from public.stock_product_approval_requests r
+    where r.request_status = 'pending'
+    having count(*) > 0
+
+    union all
+    select 'stock_approval_pending',
+      r.location_id, coalesce(l.name, 'ส่วนกลาง'), count(*)::bigint
+    from public.stock_entry_approval_requests r
+    left join public.locations l on l.id = r.location_id
+    where r.request_status = 'pending'
+    group by r.location_id, coalesce(l.name, 'ส่วนกลาง')
+
+    union all
+    select
+      case t.transfer_status
+        when 'pending' then 'money_transfer_pending'
+        when 'partial' then 'money_transfer_partial'
+        else 'money_transfer_advance'
+      end,
+      t.location_id,
+      coalesce(l.name, 'ส่วนกลาง'),
+      count(*)::bigint
+    from public.money_transfers t
+    left join public.locations l on l.id = t.location_id
+    where t.transfer_method = 'bank'
+      and t.transfer_status in ('pending', 'partial', 'advance_payment')
+      and t.record_status <> 'deleted'
+    group by t.transfer_status, t.location_id, coalesce(l.name, 'ส่วนกลาง')
+
+    union all
+    select 'time_tracking_approval_pending', null::uuid, 'ส่วนกลาง', count(*)::bigint
+    from (
+      select id from public.financial_transactions where status = 'PENDING'
+      union all
+      select id from public.leave_requests where status = 'PENDING'
+      union all
+      select id from public.payroll_slips where status = 'PENDING'
+    ) requests
+    having count(*) > 0
+
+    union all
+    select 'rubber_export_draft',
+      e.location_id, coalesce(l.name, 'ส่วนกลาง'), count(*)::bigint
+    from public.rubber_exports e
+    left join public.locations l on l.id = e.location_id
+    where e.status = 'draft'
+    group by e.location_id, coalesce(l.name, 'ส่วนกลาง')
+  )
+  select e.badge_key, p.location_id, p.branch_name, e.module_name, e.status_label,
+    sum(p.item_count)::bigint item_count, e.sort_order
+  from pending p
+  join enabled e on e.badge_key = p.badge_key
+  where p.item_count > 0
+  group by e.badge_key, p.location_id, p.branch_name, e.module_name, e.status_label, e.sort_order
+  order by
+    case when p.branch_name = 'ส่วนกลาง' then 1 else 0 end,
+    p.branch_name,
+    e.sort_order;
+$$;
+
+
+ALTER FUNCTION "public"."get_telegram_badge_counts"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_telegram_badge_delivery_credentials"() RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  token_value text;
+  target_chat_id text;
+begin
+  if auth.role() <> 'service_role' then
+    raise exception 'service_role required';
+  end if;
+
+  select ds.decrypted_secret, s.chat_id
+  into token_value, target_chat_id
+  from public.telegram_badge_settings s
+  left join vault.decrypted_secrets ds on ds.id = s.bot_token_secret_id
+  where s.id = true;
+
+  return jsonb_build_object('botToken', token_value, 'chatId', target_chat_id);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_telegram_badge_delivery_credentials"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."is_super_admin"() RETURNS boolean
@@ -4648,6 +5132,153 @@ $$;
 
 
 ALTER FUNCTION "public"."save_rubber_bill_approval_settings"("p_edit_window_minutes" integer, "p_configured_price" numeric) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."save_telegram_badge_config"("payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  current_settings public.telegram_badge_settings%rowtype;
+  next_enabled boolean;
+  next_chat_id text;
+  next_start_time time;
+  next_end_time time;
+  next_interval integer;
+  next_keys text[];
+  token_value text;
+  actor_name text;
+  actor_phone text;
+  unknown_keys text[];
+  schedule_changed boolean;
+begin
+  perform private.telegram_badge_require_manager();
+
+  select * into strict current_settings
+  from public.telegram_badge_settings
+  where id = true
+  for update;
+
+  next_enabled := coalesce((payload->>'enabled')::boolean, current_settings.enabled);
+  next_chat_id := nullif(btrim(coalesce(payload->>'chatId', current_settings.chat_id)), '');
+  next_start_time := coalesce(nullif(payload->>'startTime', '')::time, current_settings.start_time);
+  next_end_time := coalesce(nullif(payload->>'endTime', '')::time, current_settings.end_time);
+  next_interval := coalesce((payload->>'intervalMinutes')::integer, current_settings.interval_minutes);
+  token_value := nullif(btrim(payload->>'botToken'), '');
+
+  if jsonb_typeof(payload->'enabledBadgeKeys') = 'array' then
+    select coalesce(array_agg(value order by value), array[]::text[])
+    into next_keys
+    from (
+      select distinct jsonb_array_elements_text(payload->'enabledBadgeKeys') as value
+    ) selected;
+  else
+    next_keys := current_settings.enabled_badge_keys;
+  end if;
+
+  select array_agg(key)
+  into unknown_keys
+  from unnest(next_keys) key
+  where not exists (
+    select 1 from public.telegram_badge_catalog c where c.badge_key = key
+  );
+
+  if unknown_keys is not null then
+    raise exception 'ประเภท Badge ไม่ถูกต้อง';
+  end if;
+  if next_start_time >= next_end_time then
+    raise exception 'เวลาเริ่มต้องน้อยกว่าเวลาสิ้นสุด';
+  end if;
+  if next_interval not between 10 and 240 then
+    raise exception 'ระยะห่างต้องอยู่ระหว่าง 10 ถึง 240 นาที';
+  end if;
+  if next_enabled and next_chat_id is null then
+    raise exception 'กรุณาระบุ Chat ID';
+  end if;
+  if next_enabled and current_settings.bot_token_secret_id is null and token_value is null then
+    raise exception 'กรุณาระบุ Bot Token';
+  end if;
+
+  schedule_changed :=
+    next_start_time is distinct from current_settings.start_time
+    or next_end_time is distinct from current_settings.end_time
+    or next_interval is distinct from current_settings.interval_minutes;
+
+  if token_value is not null then
+    if current_settings.bot_token_secret_id is null then
+      current_settings.bot_token_secret_id := vault.create_secret(
+        token_value,
+        'lanflow_telegram_badge_bot_token',
+        'Telegram Bot Token for the LanFlow badge digest'
+      );
+    else
+      perform vault.update_secret(
+        current_settings.bot_token_secret_id,
+        token_value,
+        'lanflow_telegram_badge_bot_token',
+        'Telegram Bot Token for the LanFlow badge digest'
+      );
+    end if;
+  end if;
+
+  select p.name, p.phone
+  into actor_name, actor_phone
+  from public.profiles p
+  where p.id = auth.uid();
+
+  update public.telegram_badge_settings
+  set enabled = next_enabled,
+      chat_id = next_chat_id,
+      start_time = next_start_time,
+      end_time = next_end_time,
+      interval_minutes = next_interval,
+      enabled_badge_keys = next_keys,
+      bot_token_secret_id = current_settings.bot_token_secret_id,
+      initial_attempt_at = case
+        when next_enabled and not current_settings.enabled then now() + interval '10 minutes'
+        when not next_enabled then null
+        when schedule_changed then null
+        else initial_attempt_at
+      end,
+      retry_at = case
+        when not next_enabled or schedule_changed then null
+        else retry_at
+      end,
+      pending_slot_at = case
+        when not next_enabled or schedule_changed then null
+        else pending_slot_at
+      end,
+      claim_token = case
+        when not next_enabled or schedule_changed then null
+        else claim_token
+      end,
+      claimed_at = case
+        when not next_enabled or schedule_changed then null
+        else claimed_at
+      end,
+      last_completed_slot_at = case
+        when next_enabled and current_settings.enabled and schedule_changed
+          then private.telegram_badge_latest_slot(
+            now(),
+            next_start_time,
+            next_end_time,
+            next_interval
+          )
+        else last_completed_slot_at
+      end,
+      last_error = case when not next_enabled then null else last_error end,
+      updated_by_user_id = auth.uid(),
+      updated_by_name = actor_name,
+      updated_by_phone = actor_phone,
+      updated_at = now()
+  where id = true;
+
+  return public.get_telegram_badge_config();
+end;
+$$;
+
+
+ALTER FUNCTION "public"."save_telegram_badge_config"("payload" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."sync_acid_stock_entry"("payload" "jsonb") RETURNS "jsonb"
@@ -6011,6 +6642,26 @@ $$;
 ALTER FUNCTION "public"."verify_rubber_export"("p_export_id" "uuid", "p_expense_destination" "text") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."verify_telegram_badge_dispatch_secret"("p_secret" "text") RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select auth.role() = 'service_role'
+    and coalesce(
+      (
+        select p_secret = ds.decrypted_secret
+        from public.telegram_badge_settings s
+        join vault.decrypted_secrets ds on ds.id = s.dispatch_secret_id
+        where s.id = true
+      ),
+      false
+    )
+$$;
+
+
+ALTER FUNCTION "public"."verify_telegram_badge_dispatch_secret"("p_secret" "text") OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "public"."stock_products" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "name" "text" NOT NULL,
@@ -6623,6 +7274,53 @@ CREATE TABLE IF NOT EXISTS "public"."stock_product_approval_requests" (
 ALTER TABLE "public"."stock_product_approval_requests" OWNER TO "postgres";
 
 
+CREATE TABLE IF NOT EXISTS "public"."telegram_badge_catalog" (
+    "badge_key" "text" NOT NULL,
+    "module_name" "text" NOT NULL,
+    "status_label" "text" NOT NULL,
+    "sort_order" integer NOT NULL,
+    CONSTRAINT "telegram_badge_catalog_badge_key_check" CHECK (("badge_key" ~ '^[a-z0-9_]+$'::"text"))
+);
+
+
+ALTER TABLE "public"."telegram_badge_catalog" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."telegram_badge_settings" (
+    "id" boolean DEFAULT true NOT NULL,
+    "enabled" boolean DEFAULT false NOT NULL,
+    "chat_id" "text",
+    "start_time" time without time zone DEFAULT '08:00:00'::time without time zone NOT NULL,
+    "end_time" time without time zone DEFAULT '20:00:00'::time without time zone NOT NULL,
+    "interval_minutes" integer DEFAULT 60 NOT NULL,
+    "enabled_badge_keys" "text"[] DEFAULT ARRAY['rubber_bill_approval_pending'::"text", 'income_expense_approval_pending'::"text", 'cash_transfer_pending_receipt'::"text", 'cash_transfer_mismatched'::"text", 'stock_approval_pending'::"text", 'money_transfer_pending'::"text", 'money_transfer_partial'::"text", 'money_transfer_advance'::"text", 'time_tracking_approval_pending'::"text", 'rubber_export_draft'::"text"] NOT NULL,
+    "bot_token_secret_id" "uuid",
+    "dispatch_secret_id" "uuid",
+    "edge_url_secret_id" "uuid",
+    "initial_attempt_at" timestamp with time zone,
+    "retry_at" timestamp with time zone,
+    "pending_slot_at" timestamp with time zone,
+    "claim_token" "uuid",
+    "claimed_at" timestamp with time zone,
+    "last_completed_slot_at" timestamp with time zone,
+    "last_attempt_at" timestamp with time zone,
+    "last_success_at" timestamp with time zone,
+    "last_error" "text",
+    "updated_by_user_id" "uuid",
+    "updated_by_name" "text",
+    "updated_by_phone" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "telegram_badge_settings_chat_id_check" CHECK ((("chat_id" IS NULL) OR (NULLIF("btrim"("chat_id"), ''::"text") IS NOT NULL))),
+    CONSTRAINT "telegram_badge_settings_check" CHECK (("start_time" < "end_time")),
+    CONSTRAINT "telegram_badge_settings_id_check" CHECK (("id" = true)),
+    CONSTRAINT "telegram_badge_settings_interval_minutes_check" CHECK ((("interval_minutes" >= 10) AND ("interval_minutes" <= 240)))
+);
+
+
+ALTER TABLE "public"."telegram_badge_settings" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "public"."time_tracking_audit_logs" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "admin_id" "uuid" NOT NULL,
@@ -7014,6 +7712,21 @@ ALTER TABLE ONLY "public"."stock_products"
 
 
 
+ALTER TABLE ONLY "public"."telegram_badge_catalog"
+    ADD CONSTRAINT "telegram_badge_catalog_pkey" PRIMARY KEY ("badge_key");
+
+
+
+ALTER TABLE ONLY "public"."telegram_badge_catalog"
+    ADD CONSTRAINT "telegram_badge_catalog_sort_order_key" UNIQUE ("sort_order");
+
+
+
+ALTER TABLE ONLY "public"."telegram_badge_settings"
+    ADD CONSTRAINT "telegram_badge_settings_pkey" PRIMARY KEY ("id");
+
+
+
 ALTER TABLE ONLY "public"."time_segments"
     ADD CONSTRAINT "time_segments_pkey" PRIMARY KEY ("id");
 
@@ -7059,7 +7772,15 @@ ALTER TABLE ONLY "public"."user_locations"
 
 
 
+CREATE INDEX "cash_transfer_pending_digest" ON "public"."money_transfer_cash_details" USING "btree" ("transfer_id") WHERE ("cash_status" = ANY (ARRAY['pending_receipt'::"text", 'mismatched'::"text"]));
+
+
+
 CREATE UNIQUE INDEX "customer_bank_accounts_only_one_primary" ON "public"."customer_bank_accounts" USING "btree" ("customer_id") WHERE ("is_primary" = true);
+
+
+
+CREATE INDEX "financial_transactions_pending_digest" ON "public"."financial_transactions" USING "btree" ("id") WHERE ("status" = 'PENDING'::"public"."approval_status");
 
 
 
@@ -7083,6 +7804,10 @@ CREATE UNIQUE INDEX "income_expense_approval_keywords_active_unique" ON "public"
 
 
 
+CREATE INDEX "income_expense_approval_pending_digest" ON "public"."income_expense_approval_requests" USING "btree" ("location_id") WHERE ("request_status" = 'pending'::"text");
+
+
+
 CREATE INDEX "income_expense_feed_active_idx" ON "public"."income_expense" USING "btree" ("location_id", "tx_date" DESC, "created_at" DESC, "id" DESC) WHERE ("record_status" = 'active'::"public"."record_status");
 
 
@@ -7091,11 +7816,19 @@ CREATE UNIQUE INDEX "income_sale_items_name_active_idx" ON "public"."income_sale
 
 
 
+CREATE INDEX "leave_requests_pending_digest" ON "public"."leave_requests" USING "btree" ("id") WHERE ("status" = 'PENDING'::"public"."approval_status");
+
+
+
 CREATE INDEX "money_transfer_cash_details_status_idx" ON "public"."money_transfer_cash_details" USING "btree" ("cash_status", "sent_at" DESC);
 
 
 
 CREATE UNIQUE INDEX "money_transfer_items_source_unique" ON "public"."money_transfer_items" USING "btree" ("source_type", "source_id");
+
+
+
+CREATE INDEX "money_transfer_pending_digest" ON "public"."money_transfers" USING "btree" ("location_id", "transfer_status") WHERE (("transfer_method" = 'bank'::"text") AND ("transfer_status" = ANY (ARRAY['pending'::"text", 'partial'::"text", 'advance_payment'::"text"])) AND ("record_status" <> 'deleted'::"public"."record_status"));
 
 
 
@@ -7116,6 +7849,10 @@ CREATE UNIQUE INDEX "ocr_tickets_location_file_unique" ON "public"."ocr_tickets"
 
 
 CREATE INDEX "payroll_slips_expense_feed_idx" ON "public"."payroll_slips" USING "btree" ("expense_location_id", "approved_at" DESC, "id" DESC) WHERE (("status" = 'APPROVED'::"public"."approval_status") AND ("cancelled_at" IS NULL) AND ("net_pay" > (0)::numeric));
+
+
+
+CREATE INDEX "payroll_slips_pending_digest" ON "public"."payroll_slips" USING "btree" ("id") WHERE ("status" = 'PENDING'::"public"."approval_status");
 
 
 
@@ -7160,6 +7897,10 @@ CREATE UNIQUE INDEX "rubber_export_items_one_active_bill" ON "public"."rubber_ex
 
 
 CREATE INDEX "rubber_export_items_source_report" ON "public"."rubber_export_items" USING "btree" ("source_report_item_id") WHERE ("active" = true);
+
+
+
+CREATE INDEX "rubber_exports_draft_digest" ON "public"."rubber_exports" USING "btree" ("location_id") WHERE ("status" = 'draft'::"text");
 
 
 
@@ -7748,6 +8489,11 @@ ALTER TABLE ONLY "public"."stock_product_approval_requests"
 
 
 
+ALTER TABLE ONLY "public"."telegram_badge_settings"
+    ADD CONSTRAINT "telegram_badge_settings_updated_by_user_id_fkey" FOREIGN KEY ("updated_by_user_id") REFERENCES "public"."profiles"("id");
+
+
+
 ALTER TABLE ONLY "public"."time_segments"
     ADD CONSTRAINT "time_segments_profile_id_fkey" FOREIGN KEY ("profile_id") REFERENCES "public"."profiles"("id");
 
@@ -8182,6 +8928,20 @@ CREATE POLICY "system managers read rubber bill approval requests" ON "public"."
 
 
 
+CREATE POLICY "system managers read telegram badge catalog" ON "public"."telegram_badge_catalog" FOR SELECT TO "authenticated" USING (("private"."is_active_user"() AND "public"."can_access_super_admin_features"()));
+
+
+
+CREATE POLICY "system managers read telegram badge settings" ON "public"."telegram_badge_settings" FOR SELECT TO "authenticated" USING (("private"."is_active_user"() AND "public"."can_access_super_admin_features"()));
+
+
+
+ALTER TABLE "public"."telegram_badge_catalog" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."telegram_badge_settings" ENABLE ROW LEVEL SECURITY;
+
+
 ALTER TABLE "public"."time_segments" ENABLE ROW LEVEL SECURITY;
 
 
@@ -8338,6 +9098,14 @@ GRANT ALL ON FUNCTION "private"."is_super_admin"() TO "authenticated";
 
 
 
+REVOKE ALL ON FUNCTION "private"."telegram_badge_latest_slot"("p_now" timestamp with time zone, "p_start_time" time without time zone, "p_end_time" time without time zone, "p_interval_minutes" integer) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."telegram_badge_require_manager"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "public"."accept_cash_branch_difference"("p_transfer_id" "uuid", "p_reason" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."accept_cash_branch_difference"("p_transfer_id" "uuid", "p_reason" "text") TO "authenticated";
 
@@ -8377,6 +9145,21 @@ GRANT ALL ON FUNCTION "public"."cancel_time_tracking_expense_source"("p_source_t
 
 REVOKE ALL ON FUNCTION "public"."change_time_tracking_expense_location"("p_source_type" "text", "p_source_id" "uuid", "p_expense_location_id" "uuid", "p_comment" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."change_time_tracking_expense_location"("p_source_type" "text", "p_source_id" "uuid", "p_expense_location_id" "uuid", "p_comment" "text") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."claim_telegram_badge_dispatch"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."claim_telegram_badge_dispatch"() TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."complete_telegram_badge_dispatch"("p_claim_token" "uuid", "p_outcome" "text", "p_error" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."complete_telegram_badge_dispatch"("p_claim_token" "uuid", "p_outcome" "text", "p_error" "text") TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."configure_telegram_badge_dispatcher"("p_edge_url" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."configure_telegram_badge_dispatcher"("p_edge_url" "text") TO "service_role";
 
 
 
@@ -8470,6 +9253,11 @@ GRANT ALL ON FUNCTION "public"."delete_time_tracking_source_permanently"("p_sour
 
 
 
+REVOKE ALL ON FUNCTION "public"."dispatch_telegram_badge_tick"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."dispatch_telegram_badge_tick"() TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."get_acid_stock_balance"("p_location_id" "uuid", "p_product_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_acid_stock_balance"("p_location_id" "uuid", "p_product_id" "uuid") TO "authenticated";
 
@@ -8492,6 +9280,21 @@ GRANT ALL ON FUNCTION "public"."get_rubber_export_cutoff_options"("p_location_id
 
 REVOKE ALL ON FUNCTION "public"."get_stock_balance"("p_location_id" "uuid", "p_product_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_stock_balance"("p_location_id" "uuid", "p_product_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_telegram_badge_config"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_telegram_badge_config"() TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_telegram_badge_counts"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_telegram_badge_counts"() TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_telegram_badge_delivery_credentials"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_telegram_badge_delivery_credentials"() TO "service_role";
 
 
 
@@ -8661,6 +9464,11 @@ GRANT ALL ON FUNCTION "public"."save_rubber_bill_approval_settings"("p_edit_wind
 
 
 
+REVOKE ALL ON FUNCTION "public"."save_telegram_badge_config"("payload" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."save_telegram_badge_config"("payload" "jsonb") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."sync_acid_stock_entry"("payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."sync_acid_stock_entry"("payload" "jsonb") TO "authenticated";
 
@@ -8715,6 +9523,11 @@ REVOKE ALL ON FUNCTION "public"."validate_stock_non_negative_after_entry_delete"
 
 REVOKE ALL ON FUNCTION "public"."verify_rubber_export"("p_export_id" "uuid", "p_expense_destination" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."verify_rubber_export"("p_export_id" "uuid", "p_expense_destination" "text") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."verify_telegram_badge_dispatch_secret"("p_secret" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."verify_telegram_badge_dispatch_secret"("p_secret" "text") TO "service_role";
 
 
 
@@ -8885,6 +9698,16 @@ GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."stock_movem
 
 GRANT ALL ON TABLE "public"."stock_product_approval_requests" TO "service_role";
 GRANT SELECT ON TABLE "public"."stock_product_approval_requests" TO "authenticated";
+
+
+
+GRANT ALL ON TABLE "public"."telegram_badge_catalog" TO "service_role";
+GRANT SELECT ON TABLE "public"."telegram_badge_catalog" TO "authenticated";
+
+
+
+GRANT ALL ON TABLE "public"."telegram_badge_settings" TO "service_role";
+GRANT SELECT ON TABLE "public"."telegram_badge_settings" TO "authenticated";
 
 
 
