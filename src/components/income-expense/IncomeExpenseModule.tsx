@@ -30,6 +30,7 @@ export function IncomeExpenseModule({
   canCreateMoneyTransfer = true,
   onOpenMoneyTransferSource,
   onOpenRubberBillSource,
+  onOpenRubberExportSource,
   onOpenOcrTicketSource,
   onOpenTimeTrackingSource,
 }: {
@@ -38,6 +39,7 @@ export function IncomeExpenseModule({
   canCreateMoneyTransfer?: boolean;
   onOpenMoneyTransferSource?: (transferId: string, locationId: string) => void;
   onOpenRubberBillSource?: (locationId: string, billDate?: string) => void;
+  onOpenRubberExportSource?: (exportId: string, locationId: string) => void;
   onOpenOcrTicketSource?: (locationId: string, ticketDate?: string) => void;
   onOpenTimeTrackingSource?: (sourceId: string, sourceType: "time_tracking_withdrawal" | "payroll_slip") => void;
 }) {
@@ -279,13 +281,22 @@ export function IncomeExpenseModule({
                   onOpenOcrTicketSource &&
                   canAccessSourceLocation(profile, sourceLocationId)
                 );
+                const canOpenRubberExportSource = Boolean(
+                  transaction.relationSourceType === "rubber_export" &&
+                  transaction.relationSourceId &&
+                  onOpenRubberExportSource &&
+                  canAccessSourceLocation(profile, sourceLocationId)
+                );
                 const canOpenTimeTrackingSource = Boolean(
                   (transaction.relationSourceType === "time_tracking_withdrawal" || transaction.relationSourceType === "payroll_slip") &&
                   transaction.relationSourceId &&
                   onOpenTimeTrackingSource &&
                   (profile.role === "admin" || profile.role === "super_admin")
                 );
-                const canOpenSource = Boolean(cashTransferId) || canOpenMoneyTransferSource || canOpenRubberBillSource || canOpenOcrTicketSource || canOpenTimeTrackingSource;
+                const canOpenSource = Boolean(cashTransferId) || canOpenMoneyTransferSource || canOpenRubberBillSource || canOpenRubberExportSource || canOpenOcrTicketSource || canOpenTimeTrackingSource;
+                const openSourceLabel = transaction.relationSourceType === "rubber_export"
+                  ? "ดูรายการส่งออกยาง"
+                  : "เปิดรายการต้นทาง";
 
                 function openRelationSource() {
                   if (cashTransferId) { setCashDetailsId(cashTransferId); return; }
@@ -295,6 +306,10 @@ export function IncomeExpenseModule({
                   }
                   if (canOpenRubberBillSource) {
                     onOpenRubberBillSource?.(sourceLocationId, transaction.relationSourceDate);
+                    return;
+                  }
+                  if (canOpenRubberExportSource) {
+                    onOpenRubberExportSource?.(transaction.relationSourceId!, sourceLocationId);
                     return;
                   }
                   if (canOpenOcrTicketSource) {
@@ -363,8 +378,8 @@ export function IncomeExpenseModule({
                       {canOpenSource && (
                         <button
                           type="button"
-                          title="เปิดรายการต้นทาง"
-                          aria-label="เปิดรายการต้นทาง"
+                          title={openSourceLabel}
+                          aria-label={openSourceLabel}
                           onClick={openRelationSource}
                           className="focus-ring grid h-9 w-9 place-items-center rounded-md bg-river text-white"
                         >

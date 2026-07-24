@@ -1,26 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/server/auth";
 import type { IncomeExpense } from "@/types";
+import { bangkokDateWindow } from "@/lib/bangkok-date";
 
 export const dynamic = "force-dynamic";
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-function defaultStartDate() {
-  const date = new Date();
-  date.setUTCDate(date.getUTCDate() - 89);
-  return date.toISOString().slice(0, 10);
-}
-
 export async function GET(request: NextRequest) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
 
   const { searchParams } = request.nextUrl;
+  const defaultWindow = bangkokDateWindow(90);
   const locationId = searchParams.get("locationId");
-  const from = searchParams.get("from") ?? defaultStartDate();
-  const to = searchParams.get("to") ?? new Date().toISOString().slice(0, 10);
+  const from = searchParams.get("from") ?? defaultWindow.from;
+  const to = searchParams.get("to") ?? defaultWindow.to;
   const pageSize = Math.min(Math.max(Number(searchParams.get("pageSize") ?? 100), 1), 100);
   const cursor = searchParams.get("cursor");
 

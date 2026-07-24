@@ -28,6 +28,7 @@ import { RubberBillsModule } from "@/components/rubber-bills/RubberBillsModule";
 import { IncomeExpenseModule } from "@/components/income-expense/IncomeExpenseModule";
 import { AcidStockModule } from "@/components/acid-stock/AcidStockModule";
 import { ReportsModule } from "@/components/reports/ReportsModule";
+import { RubberExportsModule } from "@/components/rubber-exports/RubberExportsModule";
 import { AppHeader } from "@/components/lanflow/AppHeader";
 import { NavigationTabs } from "@/components/lanflow/NavigationTabs";
 import { canAccessSourceLocation, canUseMoneyTransfer, canUseReports } from "@/lib/permissions";
@@ -55,6 +56,10 @@ export function LanFlowApp() {
   const [pendingOcrTicketSource, setPendingOcrTicketSource] = useState<{
     locationId: string;
     ticketDate?: string;
+  } | null>(null);
+  const [pendingRubberExportSource, setPendingRubberExportSource] = useState<{
+    exportId: string;
+    locationId: string;
   } | null>(null);
   const [ocrUploadItems, setOcrUploadItems] = useState<UploadItem[]>([]);
   const [online, setOnline] = useState(true);
@@ -136,7 +141,7 @@ export function LanFlowApp() {
   }, [activeTab, canAccessMoneyTransfer]);
 
   useEffect(() => {
-    if (activeTab === "reports" && !canAccessReports) {
+    if ((activeTab === "reports" || activeTab === "rubber-export") && !canAccessReports) {
       setActiveTab("dashboard");
     }
   }, [activeTab, canAccessReports]);
@@ -286,6 +291,17 @@ export function LanFlowApp() {
     setActiveTab("ocr");
   }
 
+  function openRubberExportSource(exportId: string, locationId: string) {
+    if (!online) {
+      toast.error("ส่งออกยางใช้ได้เมื่อออนไลน์เท่านั้น");
+      return;
+    }
+    if (!canAccessReports || !canOpenSourceLocation(locationId)) return;
+    setSelectedLocationId(locationId);
+    setPendingRubberExportSource({ exportId, locationId });
+    setActiveTab("rubber-export");
+  }
+
   return (
     <main className="min-h-screen">
       <section className="border-b border-black/10 bg-white/85">
@@ -308,7 +324,7 @@ export function LanFlowApp() {
         />
       </section>
 
-      <section className={`mx-auto w-full px-4 py-5 ${activeTab === "rubber" ? "max-w-[1800px]" : "max-w-7xl"}`}>
+      <section className={`mx-auto w-full px-4 py-5 ${activeTab === "rubber" || activeTab === "rubber-export" ? "max-w-[1800px]" : "max-w-7xl"}`}>
         {activeTab === "dashboard" && (
           <Dashboard
             selectedLocation={selectedLocation}
@@ -328,6 +344,19 @@ export function LanFlowApp() {
                 : null
             }
             onInitialSearchHandled={() => setPendingRubberBillSource(null)}
+          />
+        )}
+        {activeTab === "rubber-export" && canAccessReports && (
+          <RubberExportsModule
+            selectedLocation={selectedLocation}
+            profile={profile}
+            online={online}
+            initialExportId={
+              pendingRubberExportSource?.locationId === selectedLocationId
+                ? pendingRubberExportSource.exportId
+                : null
+            }
+            onInitialExportHandled={() => setPendingRubberExportSource(null)}
           />
         )}
         {activeTab === "customers" && (
@@ -370,6 +399,7 @@ export function LanFlowApp() {
             canCreateMoneyTransfer={canAccessMoneyTransfer}
             onOpenMoneyTransferSource={canAccessMoneyTransfer ? openMoneyTransferSource : undefined}
             onOpenRubberBillSource={openRubberBillSource}
+            onOpenRubberExportSource={openRubberExportSource}
             onOpenOcrTicketSource={openOcrTicketSource}
             onOpenTimeTrackingSource={() => setActiveTab("time-tracking")}
           />

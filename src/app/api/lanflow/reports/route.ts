@@ -24,7 +24,7 @@ export async function GET(request: NextRequest) {
 
   const { data, error } = await result.supabase
     .from("report_batches")
-    .select("id, report_no, location_id, cutoff_at, status, created_by_name, created_at, deleted_at, report_items(count), locations(name)")
+    .select("id, report_no, location_id, cutoff_at, status, created_by_name, created_at, deleted_at, rubber_export_lock_no, report_items(count), locations(name)")
     .eq("location_id", locationId)
     .order("created_at", { ascending: false })
     .order("id", { ascending: false });
@@ -47,6 +47,7 @@ export async function GET(request: NextRequest) {
       deletedAt: row.deleted_at,
       itemCount: Number(count ?? 0),
       isLatestActive: row.id === latestActiveId,
+      rubberExportLockNo: row.rubber_export_lock_no,
     };
   });
 

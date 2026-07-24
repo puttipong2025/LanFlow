@@ -29,7 +29,7 @@ export function NavigationTabs({
       {tabs.filter(tab => {
         if (tab.id === "admin") return canManageSystemFeatures(profile) || ["super_admin", "admin"].includes(profile.role);
         if (tab.id === "money-transfer") return canUseMoneyTransfer(profile);
-        if (tab.id === "reports") return canUseReports(profile);
+        if (tab.id === "reports" || tab.id === "rubber-export") return canUseReports(profile);
         return true;
       }).map((tab) => {
         const Icon = tab.icon;

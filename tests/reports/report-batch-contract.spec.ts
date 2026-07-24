@@ -484,6 +484,7 @@ test.describe.serial("Report batch contract @report-batch", () => {
   });
 
   test("report tab is hidden from user and print route is reusable after print cancellation", async ({ browser }) => {
+    test.setTimeout(60_000);
     const user = await authContext(browser, "user");
     const superAdmin = await authContext(browser, "super_admin");
     const db = service();

@@ -231,7 +231,7 @@ export type IncomeExpense = {
   deletedByName?: string;
   deletedByPhone?: string;
   syncErrorMessage?: string;
-  relationSourceType?: "money_transfer" | "rubber_bill_daily" | "ocr_ticket_daily" | "time_tracking_withdrawal" | "payroll_slip";
+  relationSourceType?: "money_transfer" | "rubber_bill_daily" | "rubber_export" | "ocr_ticket_daily" | "time_tracking_withdrawal" | "payroll_slip";
   relationSourceId?: string;
   relationSourceLocationId?: string;
   relationSourceDate?: string;

@@ -6,6 +6,7 @@ import { coalesceQueueGroup } from "@/lib/coalesceQueueGroup";
 import { buildIncomeExpensePayload } from "@/lib/income-expense/build-income-expense-payload";
 import { OFFLINE_SYNCED_ACTION_MESSAGE } from "@/lib/record-action-locks";
 import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
+import { bangkokDateWindow } from "@/lib/bangkok-date";
 
 const ENTITY = "income_expense" as const;
 const FEED_QUERY_KEY = INCOME_EXPENSE_FEED_QUERY_KEY;
@@ -19,10 +20,7 @@ function queuePartition(ownerUserId: string, locationId: string) {
 }
 
 function defaultDateWindow() {
-  const to = new Date().toISOString().slice(0, 10);
-  const fromDate = new Date();
-  fromDate.setUTCDate(fromDate.getUTCDate() - 89);
-  return { from: fromDate.toISOString().slice(0, 10), to };
+  return bangkokDateWindow(90);
 }
 
 function payloadToOptimisticRow(event: SyncEvent): IncomeExpense {

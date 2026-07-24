@@ -8,6 +8,7 @@ export function reportErrorResponse(message: string) {
     message.includes("ไม่มีรายการ") ||
     message.includes("ล่าสุด") ||
     message.includes("REPORT_LOCKED") ||
+    message.includes("RUBBER_EXPORT_LOCKED") ||
     message.includes("active")
   ) {
     return NextResponse.json({ error: message }, { status: 409 });

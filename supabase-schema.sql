@@ -13,6 +13,12 @@ SET client_min_messages = warning;
 SET row_security = off;
 
 
+CREATE SCHEMA IF NOT EXISTS "private";
+
+
+ALTER SCHEMA "private" OWNER TO "postgres";
+
+
 CREATE SCHEMA IF NOT EXISTS "public";
 
 
@@ -95,6 +101,926 @@ CREATE TYPE "public"."transaction_type" AS ENUM (
 
 
 ALTER TYPE "public"."transaction_type" OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."active_report_no"("p_entity_type" "text", "p_entity_id" "uuid") RETURNS "text"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+  select b.report_no
+  from public.report_items i
+  join public.report_batches b on b.id = i.report_id
+  where i.entity_type = p_entity_type
+    and i.entity_id = p_entity_id
+    and i.active = true
+    and b.status = 'active'
+  order by b.created_at desc, b.id desc
+  limit 1;
+$$;
+
+
+ALTER FUNCTION "private"."active_report_no"("p_entity_type" "text", "p_entity_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."active_rubber_export_no_for_report"("p_report_id" "uuid") RETURNS "text"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+  select e.export_no
+  from public.rubber_export_items x
+  join public.rubber_exports e on e.id = x.export_id
+  join public.report_items i on i.id = x.source_report_item_id
+  where i.report_id = p_report_id
+    and i.active = true
+    and x.active = true
+    and e.status in ('draft', 'verified')
+  order by e.created_at, e.id
+  limit 1;
+$$;
+
+
+ALTER FUNCTION "private"."active_rubber_export_no_for_report"("p_report_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."active_transfer_report_no"("p_transfer_id" "uuid") RETURNS "text"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+  select b.report_no
+  from public.report_items i
+  join public.report_batches b on b.id = i.report_id
+  where i.entity_id = p_transfer_id
+    and i.entity_type in (
+      'bank_transfer_source',
+      'bank_transfer_target',
+      'cash_transfer_sent',
+      'cash_transfer_received'
+    )
+    and i.active = true
+    and b.status = 'active'
+  order by b.created_at desc, b.id desc
+  limit 1;
+$$;
+
+
+ALTER FUNCTION "private"."active_transfer_report_no"("p_transfer_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."can_access_location"("target_location" "uuid") RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select private.can_access_super_admin_features()
+    or (
+      private.is_active_user()
+      and target_location is not null
+      and exists (
+        select 1
+        from public.user_locations ul
+        where ul.user_id = auth.uid()
+          and ul.location_id = target_location
+      )
+    )
+$$;
+
+
+ALTER FUNCTION "private"."can_access_location"("target_location" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."can_access_money_transfer_module"() RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select private.can_access_super_admin_features()
+$$;
+
+
+ALTER FUNCTION "private"."can_access_money_transfer_module"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."can_access_optional_location"("target_location" "uuid") RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select private.can_access_super_admin_features()
+    or (
+      target_location is not null
+      and private.can_access_location(target_location)
+    )
+$$;
+
+
+ALTER FUNCTION "private"."can_access_optional_location"("target_location" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."can_access_super_admin_features"() RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select private.is_super_admin()
+    or exists (
+      select 1
+      from public.profiles p
+      where p.id = auth.uid()
+        and p.is_active = true
+        and p.role in ('user', 'admin')
+        and p.can_access_super_admin_features = true
+    )
+$$;
+
+
+ALTER FUNCTION "private"."can_access_super_admin_features"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."can_approve_time_tracking_profile"("target_profile_id" "uuid") RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select private.is_active_user()
+    and (
+      private.current_user_role() = 'super_admin'
+      or (
+        private.current_user_role() = 'admin'
+        and exists (
+          select 1
+          from public.profiles p
+          where p.id = target_profile_id
+            and p.role = 'user'
+            and p.is_active = true
+        )
+      )
+    )
+$$;
+
+
+ALTER FUNCTION "private"."can_approve_time_tracking_profile"("target_profile_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."can_assign_time_tracking_expense_location"("target_location" "uuid") RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select private.is_active_user()
+    and target_location is not null
+    and exists (
+      select 1
+      from public.user_locations ul
+      join public.locations l on l.id = ul.location_id
+      where ul.user_id = auth.uid()
+        and ul.location_id = target_location
+        and l.is_active = true
+    )
+$$;
+
+
+ALTER FUNCTION "private"."can_assign_time_tracking_expense_location"("target_location" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."can_delete_reports"() RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+  select private.is_active_user()
+    and public.can_access_super_admin_features();
+$$;
+
+
+ALTER FUNCTION "private"."can_delete_reports"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."can_manage_location"("target_location" "uuid") RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select private.can_access_super_admin_features()
+    or (
+      private.current_user_role() = 'admin'
+      and private.can_access_location(target_location)
+    )
+$$;
+
+
+ALTER FUNCTION "private"."can_manage_location"("target_location" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."can_manage_profile"("target_user" "uuid") RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select (
+      private.can_access_super_admin_features()
+      and exists (
+        select 1
+        from public.profiles target
+        where target.id = target_user
+          and target.role <> 'super_admin'
+          and target.is_active = true
+      )
+    )
+    or (
+      private.current_user_role() = 'admin'
+      and exists (
+        select 1
+        from public.profiles target
+        where target.id = target_user
+          and target.role = 'user'
+          and target.is_active = true
+      )
+      and exists (
+        select 1
+        from public.user_locations mine
+        join public.user_locations theirs
+          on theirs.location_id = mine.location_id
+        where mine.user_id = auth.uid()
+          and theirs.user_id = target_user
+      )
+    )
+$$;
+
+
+ALTER FUNCTION "private"."can_manage_profile"("target_user" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."can_manage_reports"("p_location_id" "uuid") RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+  select private.is_active_user()
+    and (
+      public.can_access_super_admin_features()
+      or exists (
+        select 1
+        from public.profiles p
+        join public.user_locations ul on ul.user_id = p.id
+        where p.id = auth.uid()
+          and p.role = 'admin'
+          and ul.location_id = p_location_id
+      )
+    );
+$$;
+
+
+ALTER FUNCTION "private"."can_manage_reports"("p_location_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."can_view_profile"("target_user" "uuid") RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select private.is_active_user()
+    and (
+      target_user = auth.uid()
+      or private.can_access_super_admin_features()
+      or (
+        private.current_user_role() = 'admin'
+        and exists (
+          select 1
+          from public.user_locations mine
+          join public.user_locations theirs
+            on theirs.location_id = mine.location_id
+          where mine.user_id = auth.uid()
+            and theirs.user_id = target_user
+        )
+      )
+    )
+$$;
+
+
+ALTER FUNCTION "private"."can_view_profile"("target_user" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."cash_transfer_counts"("payload" "jsonb", "prefix" "text") RETURNS integer[]
+    LANGUAGE "plpgsql" IMMUTABLE
+    SET "search_path" TO ''
+    AS $$
+declare
+  keys text[] := array['coin1', 'coin2', 'coin5', 'coin10', 'banknote20', 'banknote50', 'banknote100', 'banknote500', 'banknote1000'];
+  result integer[] := array[]::integer[];
+  key text;
+  value integer;
+begin
+  foreach key in array keys loop
+    if payload #>> array[prefix, key] is null then raise exception 'กรอกจำนวนเงินสดให้ครบทุกช่อง'; end if;
+    value := (payload #>> array[prefix, key])::integer;
+    if value < 0 then raise exception 'จำนวนเงินสดต้องเป็นศูนย์หรือมากกว่า'; end if;
+    result := array_append(result, value);
+  end loop;
+  return result;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."cash_transfer_counts"("payload" "jsonb", "prefix" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."current_user_role"() RETURNS "public"."app_role"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select p.role
+  from public.profiles p
+  where p.id = auth.uid()
+    and p.is_active = true
+$$;
+
+
+ALTER FUNCTION "private"."current_user_role"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."enforce_time_tracking_expense_relation"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_rpc_write boolean := coalesce(current_setting('app.time_tracking_expense_rpc', true), 'false') = 'true';
+begin
+  if tg_table_name = 'financial_transactions' then
+    if old.status <> 'APPROVED'
+      and new.status = 'APPROVED'
+      and new.type = 'WITHDRAWAL' then
+      if not v_rpc_write
+        or new.expense_location_id is null
+        or new.approved_at is null
+        or new.cancelled_at is not null then
+        raise exception 'Withdrawal approval must use the time tracking approval RPC';
+      end if;
+    end if;
+
+    if old.status = 'APPROVED'
+      and old.type = 'WITHDRAWAL'
+      and (
+        new.expense_location_id is distinct from old.expense_location_id
+        or new.cancelled_at is distinct from old.cancelled_at
+        or new.cancelled_by is distinct from old.cancelled_by
+        or new.cancel_reason is distinct from old.cancel_reason
+      )
+      and not v_rpc_write then
+      raise exception 'Withdrawal expense relation must be changed at its source through the time tracking RPC';
+    end if;
+
+  elsif tg_table_name = 'payroll_slips' then
+    if old.status <> 'APPROVED' and new.status = 'APPROVED' then
+      if not v_rpc_write
+        or new.approved_at is null
+        or (new.net_pay > 0 and new.expense_location_id is null)
+        or new.cancelled_at is not null then
+        raise exception 'Payroll approval must use the time tracking approval RPC';
+      end if;
+    end if;
+
+    if old.status = 'APPROVED'
+      and (
+        new.expense_location_id is distinct from old.expense_location_id
+        or new.cancelled_at is distinct from old.cancelled_at
+        or new.cancelled_by is distinct from old.cancelled_by
+        or new.cancel_reason is distinct from old.cancel_reason
+      )
+      and not v_rpc_write then
+      raise exception 'Payroll expense relation must be changed at its source through the time tracking RPC';
+    end if;
+  end if;
+
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."enforce_time_tracking_expense_relation"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."guard_reported_cash_details"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_sent_report text;
+  v_received_report text;
+begin
+  v_sent_report := private.active_report_no('cash_transfer_sent', old.transfer_id);
+  v_received_report := private.active_report_no('cash_transfer_received', old.transfer_id);
+
+  if tg_op = 'DELETE' then
+    if v_sent_report is not null then perform private.raise_report_lock(v_sent_report); end if;
+    if v_received_report is not null then perform private.raise_report_lock(v_received_report); end if;
+    return old;
+  end if;
+
+  if v_sent_report is not null and (
+    new.sent_coin_1_count,
+    new.sent_coin_2_count,
+    new.sent_coin_5_count,
+    new.sent_coin_10_count,
+    new.sent_banknote_20_count,
+    new.sent_banknote_50_count,
+    new.sent_banknote_100_count,
+    new.sent_banknote_500_count,
+    new.sent_banknote_1000_count,
+    new.note,
+    new.sent_at
+  ) is distinct from (
+    old.sent_coin_1_count,
+    old.sent_coin_2_count,
+    old.sent_coin_5_count,
+    old.sent_coin_10_count,
+    old.sent_banknote_20_count,
+    old.sent_banknote_50_count,
+    old.sent_banknote_100_count,
+    old.sent_banknote_500_count,
+    old.sent_banknote_1000_count,
+    old.note,
+    old.sent_at
+  ) then
+    perform private.raise_report_lock(v_sent_report);
+  end if;
+
+  if v_received_report is not null and (
+    new.received_coin_1_count,
+    new.received_coin_2_count,
+    new.received_coin_5_count,
+    new.received_coin_10_count,
+    new.received_banknote_20_count,
+    new.received_banknote_50_count,
+    new.received_banknote_100_count,
+    new.received_banknote_500_count,
+    new.received_banknote_1000_count,
+    new.received_by_user_id,
+    new.received_by_name,
+    new.received_by_phone,
+    new.received_at
+  ) is distinct from (
+    old.received_coin_1_count,
+    old.received_coin_2_count,
+    old.received_coin_5_count,
+    old.received_coin_10_count,
+    old.received_banknote_20_count,
+    old.received_banknote_50_count,
+    old.received_banknote_100_count,
+    old.received_banknote_500_count,
+    old.received_banknote_1000_count,
+    old.received_by_user_id,
+    old.received_by_name,
+    old.received_by_phone,
+    old.received_at
+  ) then
+    perform private.raise_report_lock(v_received_report);
+  end if;
+
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."guard_reported_cash_details"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."guard_reported_entity"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_id uuid;
+  v_report_no text;
+begin
+  v_id := case when tg_op = 'DELETE' then old.id else new.id end;
+  v_report_no := private.active_report_no(tg_argv[0], v_id);
+
+  if v_report_no is not null then
+    if tg_argv[0] = 'rubber_bill'
+      and tg_op = 'UPDATE'
+      and (to_jsonb(new) - array['print_status', 'updated_at'])
+          = (to_jsonb(old) - array['print_status', 'updated_at']) then
+      return new;
+    end if;
+    perform private.raise_report_lock(v_report_no);
+  end if;
+
+  if tg_op = 'DELETE' then return old; end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."guard_reported_entity"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."guard_reported_money_transfer"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_report_no text;
+begin
+  v_report_no := private.active_transfer_report_no(
+    case when tg_op = 'DELETE' then old.id else new.id end
+  );
+
+  if v_report_no is not null then
+    if tg_op = 'UPDATE'
+      and old.transfer_method = 'cash'
+      and (to_jsonb(new) - array['transfer_status', 'revision_no', 'updated_at'])
+          = (to_jsonb(old) - array['transfer_status', 'revision_no', 'updated_at']) then
+      return new;
+    end if;
+    perform private.raise_report_lock(v_report_no);
+  end if;
+
+  if tg_op = 'DELETE' then return old; end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."guard_reported_money_transfer"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."guard_reported_rubber_item"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_bill_id uuid := case when tg_op = 'DELETE' then old.bill_id else new.bill_id end;
+  v_report_no text;
+begin
+  v_report_no := private.active_report_no('rubber_bill', v_bill_id);
+  if v_report_no is not null then
+    perform private.raise_report_lock(v_report_no);
+  end if;
+  if tg_op = 'DELETE' then return old; end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."guard_reported_rubber_item"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."guard_reported_transfer_child"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_transfer_id uuid;
+  v_report_no text;
+begin
+  v_transfer_id := case when tg_op = 'DELETE' then old.transfer_id else new.transfer_id end;
+  v_report_no := private.active_transfer_report_no(v_transfer_id);
+  if v_report_no is not null then
+    perform private.raise_report_lock(v_report_no);
+  end if;
+  if tg_op = 'DELETE' then return old; end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."guard_reported_transfer_child"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."guard_reported_transfer_item"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_transfer_id uuid;
+  v_source_type text;
+  v_source_id uuid;
+  v_report_no text;
+begin
+  v_transfer_id := case when tg_op = 'DELETE' then old.transfer_id else new.transfer_id end;
+  v_source_type := case when tg_op = 'DELETE' then old.source_type else new.source_type end;
+  v_source_id := case when tg_op = 'DELETE' then old.source_id else new.source_id end;
+
+  v_report_no := private.active_transfer_report_no(v_transfer_id);
+  if v_report_no is not null then
+    perform private.raise_report_lock(v_report_no);
+  end if;
+
+  v_report_no := private.active_report_no(v_source_type, v_source_id);
+  if v_report_no is not null then
+    perform private.raise_report_lock(v_report_no);
+  end if;
+
+  if tg_op = 'DELETE' then return old; end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."guard_reported_transfer_item"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."guard_rubber_export_state"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+begin
+  if old.status = 'deleted' then
+    raise exception 'รายการส่งออกที่ลบแล้วแก้ไขไม่ได้';
+  end if;
+  if old.status = 'verified' and new.status <> 'deleted' then
+    raise exception 'รายการส่งออกที่ตรวจสอบแล้วแก้ไขไม่ได้';
+  end if;
+  if (
+    new.export_no,
+    new.export_date,
+    new.sequence_no,
+    new.location_id,
+    new.cutoff_at,
+    new.cutoff_report_item_id,
+    new.original_weight_total,
+    new.paid_total,
+    new.average_price,
+    new.created_by_user_id,
+    new.created_at
+  ) is distinct from (
+    old.export_no,
+    old.export_date,
+    old.sequence_no,
+    old.location_id,
+    old.cutoff_at,
+    old.cutoff_report_item_id,
+    old.original_weight_total,
+    old.paid_total,
+    old.average_price,
+    old.created_by_user_id,
+    old.created_at
+  ) then
+    raise exception 'ข้อมูล cutoff และ snapshot ของรายการส่งออกแก้ไขไม่ได้';
+  end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."guard_rubber_export_state"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."is_active_user"() RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select exists (
+    select 1
+    from public.profiles p
+    where p.id = auth.uid()
+      and p.is_active = true
+  )
+$$;
+
+
+ALTER FUNCTION "private"."is_active_user"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."is_super_admin"() RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select coalesce(private.current_user_role() = 'super_admin', false)
+$$;
+
+
+ALTER FUNCTION "private"."is_super_admin"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."prevent_hard_delete_of_linked_time_tracking_source"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+begin
+  if current_setting('app.time_tracking_permanent_delete_rpc', true) = 'true' then
+    return old;
+  end if;
+
+  if tg_table_name = 'financial_transactions'
+    and old.type = 'WITHDRAWAL'
+    and old.status = 'APPROVED'
+    and old.expense_location_id is not null then
+    raise exception 'Approved withdrawal must be permanently deleted through the time tracking RPC';
+  end if;
+
+  if tg_table_name = 'payroll_slips'
+    and old.status = 'APPROVED'
+    and old.net_pay > 0
+    and old.expense_location_id is not null then
+    raise exception 'Approved payroll slip must be permanently deleted through the time tracking RPC';
+  end if;
+
+  return old;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."prevent_hard_delete_of_linked_time_tracking_source"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."raise_report_lock"("p_report_no" "text") RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+begin
+  raise exception 'REPORT_LOCKED:%', p_report_no
+    using errcode = 'P0001',
+          hint = 'ลบรายงาน active ล่าสุดตามลำดับเพื่อปลดล็อก';
+end;
+$$;
+
+
+ALTER FUNCTION "private"."raise_report_lock"("p_report_no" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."reportable_items"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) RETURNS TABLE("entity_type" "text", "entity_id" "uuid", "eligibility_at" timestamp with time zone)
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+  with candidates(entity_type, entity_id, eligibility_at) as (
+    select 'rubber_bill'::text, b.id,
+      coalesce(b.server_received_at, b.updated_at, b.created_at)
+    from public.rubber_bills b
+    where b.location_id = p_location_id
+      and b.record_status = 'active'
+      and b.sync_status = 'synced'
+      and b.server_bill_no is not null
+
+    union all
+
+    select 'ocr_ticket', o.id,
+      coalesce(o.server_received_at, o.updated_at, o.created_at)
+    from public.ocr_tickets o
+    where o.location_id = p_location_id
+      and o.record_status = 'active'
+      and o.sync_status = 'synced'
+      and o.server_received_at is not null
+
+    union all
+
+    select 'income_expense', e.id,
+      coalesce(e.server_received_at, e.updated_at, e.created_at)
+    from public.income_expense e
+    where e.location_id = p_location_id
+      and e.record_status = 'active'
+      and e.sync_status = 'synced'
+
+    union all
+
+    select 'acid_stock_entry', s.id, coalesce(s.updated_at, s.created_at)
+    from public.stock_entries s
+    where s.location_id = p_location_id
+      and s.record_status = 'active'
+
+    union all
+
+    select 'financial_transaction', f.id,
+      coalesce(f.approved_at, f.updated_at, f.created_at)
+    from public.financial_transactions f
+    where f.status = 'APPROVED'
+      and f.cancelled_at is null
+      and f.expense_location_id = p_location_id
+
+    union all
+
+    select 'payroll_slip', p.id,
+      coalesce(p.approved_at, p.updated_at, p.created_at)
+    from public.payroll_slips p
+    where p.status = 'APPROVED'
+      and p.cancelled_at is null
+      and p.expense_location_id = p_location_id
+
+    union all
+
+    select 'rubber_export', e.id, e.verified_at
+    from public.rubber_exports e
+    where e.location_id = p_location_id
+      and e.status = 'verified'
+      and e.expense_destination = 'branch'
+      and e.work_total > 0
+      and e.verified_at is not null
+
+
+    union all
+
+    select 'bank_transfer_source', m.id,
+      coalesce(m.server_received_at, m.updated_at, m.created_at)
+    from public.money_transfers m
+    where m.location_id = p_location_id
+      and m.transfer_method = 'bank'
+      and m.record_status = 'active'
+      and m.sync_status = 'synced'
+      and m.transfer_status in ('paid', 'overpaid', 'branch_and_transfer', 'advance_payment')
+
+    union all
+
+    select 'bank_transfer_target', m.id,
+      coalesce(m.server_received_at, m.updated_at, m.created_at)
+    from public.money_transfers m
+    where m.target_location_id = p_location_id
+      and m.location_id <> p_location_id
+      and m.transfer_type = 'branch'
+      and m.transfer_method = 'bank'
+      and m.record_status = 'active'
+      and m.sync_status = 'synced'
+      and m.transfer_status in ('paid', 'overpaid', 'branch_and_transfer', 'advance_payment')
+
+    union all
+
+    select 'cash_transfer_sent', m.id, d.sent_at
+    from public.money_transfers m
+    join public.money_transfer_cash_details d on d.transfer_id = m.id
+    where m.location_id = p_location_id
+      and m.transfer_type = 'cash'
+      and m.transfer_method = 'cash'
+      and m.record_status = 'active'
+      and m.sync_status = 'synced'
+      and d.sent_at is not null
+
+    union all
+
+    select 'cash_transfer_received', m.id, d.received_at
+    from public.money_transfers m
+    join public.money_transfer_cash_details d on d.transfer_id = m.id
+    where m.target_location_id = p_location_id
+      and m.transfer_type = 'cash'
+      and m.transfer_method = 'cash'
+      and m.record_status = 'active'
+      and m.sync_status = 'synced'
+      and d.cash_status in ('received', 'mismatched', 'difference_accepted')
+      and d.received_at is not null
+  )
+  select c.entity_type, c.entity_id, c.eligibility_at
+  from candidates c
+  where c.eligibility_at <= p_cutoff_at
+    and not exists (
+      select 1
+      from public.report_items i
+      where i.location_id = p_location_id
+        and i.entity_type = c.entity_type
+        and i.entity_id = c.entity_id
+        and i.active = true
+    );
+$$;
+
+
+ALTER FUNCTION "private"."reportable_items"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."rubber_export_candidates"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) RETURNS TABLE("report_item_id" "uuid", "bill_id" "uuid", "bill_date" "date", "bill_no" "text", "customer_name" "text", "eligibility_at" timestamp with time zone, "net_weight" numeric, "paid_amount" numeric)
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+  select
+    i.id,
+    b.id,
+    b.bill_date,
+    coalesce(b.server_bill_no, nullif(b.local_bill_no, ''), nullif(b.bill_no, ''), left(b.id::text, 8)),
+    coalesce(b.customer_name, ''),
+    i.eligibility_at,
+    round(b.weight - b.deduct_weight, 2),
+    round(b.net_total, 2)
+  from public.report_items i
+  join public.report_batches r on r.id = i.report_id
+  join public.rubber_bills b on b.id = i.entity_id
+  where i.location_id = p_location_id
+    and i.entity_type = 'rubber_bill'
+    and i.active = true
+    and i.eligibility_at <= p_cutoff_at
+    and r.status = 'active'
+    and b.location_id = p_location_id
+    and b.record_status = 'active'
+    and not exists (
+      select 1
+      from public.rubber_export_items x
+      where x.location_id = p_location_id
+        and x.source_bill_id = b.id
+        and x.active = true
+    )
+  order by i.eligibility_at, b.id;
+$$;
+
+
+ALTER FUNCTION "private"."rubber_export_candidates"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."validate_rubber_export_candidates"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) RETURNS "void"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_invalid text;
+begin
+  select string_agg(c.bill_no, ', ' order by c.eligibility_at, c.bill_id)
+  into v_invalid
+  from private.rubber_export_candidates(p_location_id, p_cutoff_at) c
+  where c.net_weight <= 0 or c.paid_amount <= 0;
+
+  if v_invalid is not null then
+    raise exception 'INVALID_RUBBER_BILL:%', v_invalid
+      using errcode = 'P0001',
+            hint = 'น้ำหนักสุทธิหลังหักและยอดจ่ายจริงต้องมากกว่า 0';
+  end if;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."validate_rubber_export_candidates"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."accept_cash_branch_difference"("p_transfer_id" "uuid", "p_reason" "text") RETURNS "jsonb"
@@ -601,6 +1527,137 @@ $$;
 
 
 ALTER FUNCTION "public"."create_report_batch"("p_location_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."create_rubber_export"("p_location_id" "uuid", "p_cutoff_report_item_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_actor_id uuid := auth.uid();
+  v_actor_name text;
+  v_actor_phone text;
+  v_now timestamptz := clock_timestamp();
+  v_export_date date;
+  v_sequence_no integer;
+  v_export_no text;
+  v_export_id uuid;
+  v_cutoff_at timestamptz;
+  v_item_count integer;
+  v_original_weight numeric;
+  v_paid_total numeric;
+begin
+  if p_location_id is null or not private.can_manage_reports(p_location_id) then
+    raise exception 'ไม่มีสิทธิ์สร้างรายการส่งออกของสาขานี้';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended('rubber-export:' || p_location_id::text, 0));
+
+  select c.eligibility_at
+  into v_cutoff_at
+  from private.rubber_export_candidates(p_location_id, 'infinity'::timestamptz) c
+  where c.report_item_id = p_cutoff_report_item_id;
+
+  if v_cutoff_at is null then
+    raise exception 'บิล cutoff ไม่พร้อมใช้งานหรือถูกจองแล้ว';
+  end if;
+
+  perform private.validate_rubber_export_candidates(p_location_id, v_cutoff_at);
+
+  select count(*)::integer, round(sum(c.net_weight), 2), round(sum(c.paid_amount), 2)
+  into v_item_count, v_original_weight, v_paid_total
+  from private.rubber_export_candidates(p_location_id, v_cutoff_at) c;
+
+  if coalesce(v_item_count, 0) = 0 then
+    raise exception 'ไม่มีบิลที่พร้อมสร้างรายการส่งออก';
+  end if;
+
+  select p.name, p.phone
+  into v_actor_name, v_actor_phone
+  from public.profiles p
+  where p.id = v_actor_id;
+
+  v_export_date := (v_now at time zone 'Asia/Bangkok')::date;
+
+  select coalesce(max(e.sequence_no), 0) + 1
+  into v_sequence_no
+  from public.rubber_exports e
+  where e.location_id = p_location_id
+    and e.export_date = v_export_date;
+
+  v_export_no := 'REX-' || to_char(v_export_date, 'YYYYMMDD') || '-' ||
+    lpad(v_sequence_no::text, 3, '0');
+
+  insert into public.rubber_exports (
+    export_no,
+    export_date,
+    sequence_no,
+    location_id,
+    cutoff_at,
+    cutoff_report_item_id,
+    original_weight_total,
+    paid_total,
+    average_price,
+    created_by_user_id,
+    created_by_name,
+    created_by_phone,
+    created_at
+  )
+  values (
+    v_export_no,
+    v_export_date,
+    v_sequence_no,
+    p_location_id,
+    v_cutoff_at,
+    p_cutoff_report_item_id,
+    v_original_weight,
+    v_paid_total,
+    round(v_paid_total / v_original_weight, 2),
+    v_actor_id,
+    coalesce(v_actor_name, ''),
+    coalesce(v_actor_phone, ''),
+    v_now
+  )
+  returning id into v_export_id;
+
+  insert into public.rubber_export_items (
+    export_id,
+    location_id,
+    source_report_item_id,
+    source_bill_id,
+    bill_date,
+    bill_no,
+    customer_name,
+    eligibility_at,
+    net_weight,
+    paid_amount
+  )
+  select
+    v_export_id,
+    p_location_id,
+    c.report_item_id,
+    c.bill_id,
+    c.bill_date,
+    c.bill_no,
+    c.customer_name,
+    c.eligibility_at,
+    c.net_weight,
+    c.paid_amount
+  from private.rubber_export_candidates(p_location_id, v_cutoff_at) c;
+
+  get diagnostics v_item_count = row_count;
+
+  return jsonb_build_object(
+    'id', v_export_id,
+    'exportNo', v_export_no,
+    'cutoffAt', v_cutoff_at,
+    'itemCount', v_item_count
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."create_rubber_export"("p_location_id" "uuid", "p_cutoff_report_item_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."create_stock_entry_delete_approval_request"("payload" "jsonb") RETURNS "jsonb"
@@ -1754,6 +2811,7 @@ CREATE OR REPLACE FUNCTION "public"."delete_report_batch"("p_report_id" "uuid") 
     AS $$
 declare
   v_report public.report_batches%rowtype;
+  v_export_no text;
   v_actor_name text;
   v_actor_phone text;
 begin
@@ -1771,6 +2829,10 @@ begin
     raise exception 'ไม่พบรายงาน active';
   end if;
 
+  perform pg_advisory_xact_lock(
+    hashtextextended('rubber-export:' || v_report.location_id::text, 0)
+  );
+
   if exists (
     select 1
     from public.report_batches newer
@@ -1779,6 +2841,13 @@ begin
       and (newer.created_at, newer.id) > (v_report.created_at, v_report.id)
   ) then
     raise exception 'ลบได้เฉพาะรายงาน active ล่าสุดของสาขา';
+  end if;
+
+  v_export_no := private.active_rubber_export_no_for_report(p_report_id);
+  if v_export_no is not null then
+    raise exception 'RUBBER_EXPORT_LOCKED:%', v_export_no
+      using errcode = 'P0001',
+            hint = 'ลบรายการส่งออกยางก่อนจึงจะลบรายงานได้';
   end if;
 
   select p.name, p.phone
@@ -1809,6 +2878,70 @@ $$;
 
 
 ALTER FUNCTION "public"."delete_report_batch"("p_report_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."delete_rubber_export"("p_export_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_export public.rubber_exports%rowtype;
+  v_report_no text;
+  v_actor_name text;
+  v_actor_phone text;
+  v_now timestamptz := clock_timestamp();
+begin
+  if not private.can_delete_reports() then
+    raise exception 'เฉพาะ super_admin หรือผู้มีสิทธิ์จัดการระบบเท่านั้นที่ลบได้';
+  end if;
+
+  select *
+  into v_export
+  from public.rubber_exports
+  where id = p_export_id
+  for update;
+
+  if v_export.id is null then
+    raise exception 'ไม่พบรายการส่งออก';
+  end if;
+  if v_export.status = 'deleted' then
+    return jsonb_build_object('id', p_export_id, 'status', 'deleted');
+  end if;
+
+  v_report_no := private.active_report_no('rubber_export', p_export_id);
+  if v_report_no is not null then
+    perform private.raise_report_lock(v_report_no);
+  end if;
+
+  select p.name, p.phone
+  into v_actor_name, v_actor_phone
+  from public.profiles p
+  where p.id = auth.uid();
+
+  update public.rubber_exports
+  set status = 'deleted',
+      previous_status = v_export.status,
+      deleted_by_user_id = auth.uid(),
+      deleted_by_name = coalesce(v_actor_name, ''),
+      deleted_by_phone = coalesce(v_actor_phone, ''),
+      deleted_at = v_now
+  where id = p_export_id;
+
+  update public.rubber_export_items
+  set active = false
+  where export_id = p_export_id
+    and active = true;
+
+  return jsonb_build_object(
+    'id', p_export_id,
+    'exportNo', v_export.export_no,
+    'status', 'deleted'
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."delete_rubber_export"("p_export_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."delete_time_tracking_source_permanently"("p_source_type" "text", "p_source_id" "uuid") RETURNS "jsonb"
@@ -2147,6 +3280,45 @@ begin
 
       union all
 
+      select (e.verified_at at time zone 'Asia/Bangkok')::date,
+        'rubber-export-expense:' || e.id::text,
+        jsonb_build_object(
+          'id', 'rubber-export-expense:' || e.id,
+          'clientTempId', 'rubber-export-expense:' || e.id,
+          'localBillNo', e.export_no,
+          'serverBillNo', e.export_no,
+          'idempotencyKey', 'rubber-export-expense:' || e.id,
+          'locationId', e.location_id,
+          'syncStatus', 'synced',
+          'recordStatus', 'active',
+          'type', 'expense',
+          'number', e.export_no,
+          'txDate', (e.verified_at at time zone 'Asia/Bangkok')::date,
+          'title', 'ค่าทำงานส่งออกยาง — ' || e.export_no,
+          'cost', e.work_total,
+          'billOption', 'ค่าใช้จ่าย',
+          'clientRecordedAt', e.verified_at,
+          'clientCreatedAt', e.created_at,
+          'serverReceivedAt', e.verified_at,
+          'revisionNo', 1,
+          'createdByUserId', e.created_by_user_id,
+          'createdByName', e.created_by_name,
+          'createdByPhone', e.created_by_phone,
+          'relationSourceType', 'rubber_export',
+          'relationSourceId', e.id,
+          'relationSourceLocationId', e.location_id,
+          'relationLabel', 'ส่งออกยาง',
+          'relationLockReason', 'รายการนี้มาจากรายการส่งออกยาง ต้องเปิดหรือจัดการที่โมดูลส่งออกยางต้นทาง'
+        )
+      from public.rubber_exports e
+      where e.location_id = p_location_id
+        and e.status = 'verified'
+        and e.expense_destination = 'branch'
+        and e.work_total > 0
+        and (e.verified_at at time zone 'Asia/Bangkok')::date between p_from_date and p_to_date
+
+      union all
+
       select rb.bill_date, 'rubber:' || rb.bill_date::text,
         jsonb_build_object(
           'id', 'rubber-bill-daily-expense:' || p_location_id || ':' || rb.bill_date,
@@ -2381,6 +3553,22 @@ begin
     union all
 
     select
+      (e.verified_at at time zone 'Asia/Bangkok')::date,
+      e.export_no,
+      'expense',
+      'ค่าทำงานส่งออกยาง — ' || e.export_no,
+      e.work_total,
+      '55-' || e.id::text
+    from public.report_items i
+    join public.rubber_exports e on e.id = i.entity_id
+    where i.report_id = p_report_id
+      and i.entity_type = 'rubber_export'
+      and e.work_total > 0
+
+
+    union all
+
+    select
       (f.approved_at at time zone 'Asia/Bangkok')::date,
       'TW-' || left(f.id::text, 8),
       'expense',
@@ -2420,6 +3608,31 @@ $$;
 
 
 ALTER FUNCTION "public"."get_report_income_expense_rows"("p_report_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_rubber_export_cutoff_options"("p_location_id" "uuid") RETURNS TABLE("report_item_id" "uuid", "bill_id" "uuid", "bill_date" "date", "bill_no" "text", "customer_name" "text", "eligibility_at" timestamp with time zone)
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+begin
+  if p_location_id is null or not private.can_manage_reports(p_location_id) then
+    raise exception 'ไม่มีสิทธิ์ดูบิลส่งออกของสาขานี้';
+  end if;
+
+  return query
+  select
+    c.report_item_id,
+    c.bill_id,
+    c.bill_date,
+    c.bill_no,
+    c.customer_name,
+    c.eligibility_at
+  from private.rubber_export_candidates(p_location_id, 'infinity'::timestamptz) c;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_rubber_export_cutoff_options"("p_location_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_stock_balance"("p_location_id" "uuid", "p_product_id" "uuid") RETURNS numeric
@@ -2537,6 +3750,68 @@ $$;
 
 
 ALTER FUNCTION "public"."prevent_locked_ocr_ticket_change"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_cutoff_report_item_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_cutoff_at timestamptz;
+  v_item_count integer;
+  v_original_weight numeric;
+  v_paid_total numeric;
+  v_items jsonb;
+begin
+  if p_location_id is null or not private.can_manage_reports(p_location_id) then
+    raise exception 'ไม่มีสิทธิ์สร้างรายการส่งออกของสาขานี้';
+  end if;
+
+  select c.eligibility_at
+  into v_cutoff_at
+  from private.rubber_export_candidates(p_location_id, 'infinity'::timestamptz) c
+  where c.report_item_id = p_cutoff_report_item_id;
+
+  if v_cutoff_at is null then
+    raise exception 'บิล cutoff ไม่พร้อมใช้งานหรือถูกจองแล้ว';
+  end if;
+
+  perform private.validate_rubber_export_candidates(p_location_id, v_cutoff_at);
+
+  select
+    count(*)::integer,
+    round(sum(c.net_weight), 2),
+    round(sum(c.paid_amount), 2),
+    jsonb_agg(jsonb_build_object(
+      'reportItemId', c.report_item_id,
+      'billId', c.bill_id,
+      'billDate', c.bill_date,
+      'billNo', c.bill_no,
+      'customerName', c.customer_name,
+      'eligibilityAt', c.eligibility_at,
+      'netWeight', c.net_weight,
+      'paidAmount', c.paid_amount
+    ) order by c.eligibility_at, c.bill_id)
+  into v_item_count, v_original_weight, v_paid_total, v_items
+  from private.rubber_export_candidates(p_location_id, v_cutoff_at) c;
+
+  if coalesce(v_item_count, 0) = 0 then
+    raise exception 'ไม่มีบิลที่พร้อมสร้างรายการส่งออก';
+  end if;
+
+  return jsonb_build_object(
+    'cutoffAt', v_cutoff_at,
+    'itemCount', v_item_count,
+    'originalWeightTotal', v_original_weight,
+    'paidTotal', v_paid_total,
+    'averagePrice', round(v_paid_total / v_original_weight, 2),
+    'items', coalesce(v_items, '[]'::jsonb)
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_cutoff_report_item_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."receive_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") RETURNS "jsonb"
@@ -2871,6 +4146,67 @@ CREATE OR REPLACE FUNCTION "public"."report_lock_no"("source_row" "public"."rubb
 ALTER FUNCTION "public"."report_lock_no"("source_row" "public"."rubber_bills") OWNER TO "postgres";
 
 
+CREATE TABLE IF NOT EXISTS "public"."rubber_exports" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "export_no" "text" NOT NULL,
+    "export_date" "date" NOT NULL,
+    "sequence_no" integer NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "cutoff_at" timestamp with time zone NOT NULL,
+    "cutoff_report_item_id" "uuid" NOT NULL,
+    "status" "text" DEFAULT 'draft'::"text" NOT NULL,
+    "previous_status" "text",
+    "original_weight_total" numeric(14,2) NOT NULL,
+    "paid_total" numeric(14,2) NOT NULL,
+    "average_price" numeric(14,2) NOT NULL,
+    "current_weight" numeric(14,2),
+    "weight_loss_percent" numeric(8,2),
+    "work_rate" numeric(14,2),
+    "other_operating_cost" numeric(14,2) DEFAULT 0 NOT NULL,
+    "work_total" numeric(14,2),
+    "expense_destination" "text",
+    "created_by_user_id" "uuid" NOT NULL,
+    "created_by_name" "text" NOT NULL,
+    "created_by_phone" "text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "verified_by_user_id" "uuid",
+    "verified_by_name" "text",
+    "verified_by_phone" "text",
+    "verified_at" timestamp with time zone,
+    "deleted_by_user_id" "uuid",
+    "deleted_by_name" "text",
+    "deleted_by_phone" "text",
+    "deleted_at" timestamp with time zone,
+    CONSTRAINT "rubber_exports_average_price_check" CHECK (("average_price" > (0)::numeric)),
+    CONSTRAINT "rubber_exports_check" CHECK ((("current_weight" IS NULL) OR (("current_weight" > (0)::numeric) AND ("current_weight" <= "original_weight_total")))),
+    CONSTRAINT "rubber_exports_check1" CHECK (((("status" = 'draft'::"text") AND ("previous_status" IS NULL) AND ("verified_at" IS NULL) AND ("expense_destination" IS NULL)) OR (("status" = 'verified'::"text") AND ("previous_status" IS NULL) AND ("current_weight" IS NOT NULL) AND ("work_rate" IS NOT NULL) AND ("work_total" IS NOT NULL) AND ("expense_destination" IS NOT NULL) AND ("verified_by_user_id" IS NOT NULL) AND ("verified_at" IS NOT NULL)) OR (("status" = 'deleted'::"text") AND ("previous_status" IS NOT NULL) AND ("deleted_by_user_id" IS NOT NULL) AND ("deleted_at" IS NOT NULL)))),
+    CONSTRAINT "rubber_exports_expense_destination_check" CHECK (("expense_destination" = ANY (ARRAY['branch'::"text", 'external'::"text"]))),
+    CONSTRAINT "rubber_exports_original_weight_total_check" CHECK (("original_weight_total" > (0)::numeric)),
+    CONSTRAINT "rubber_exports_other_operating_cost_check" CHECK (("other_operating_cost" >= (0)::numeric)),
+    CONSTRAINT "rubber_exports_paid_total_check" CHECK (("paid_total" > (0)::numeric)),
+    CONSTRAINT "rubber_exports_previous_status_check" CHECK (("previous_status" = ANY (ARRAY['draft'::"text", 'verified'::"text"]))),
+    CONSTRAINT "rubber_exports_sequence_no_check" CHECK (("sequence_no" > 0)),
+    CONSTRAINT "rubber_exports_status_check" CHECK (("status" = ANY (ARRAY['draft'::"text", 'verified'::"text", 'deleted'::"text"]))),
+    CONSTRAINT "rubber_exports_weight_loss_percent_check" CHECK ((("weight_loss_percent" IS NULL) OR ("weight_loss_percent" >= (0)::numeric))),
+    CONSTRAINT "rubber_exports_work_rate_check" CHECK ((("work_rate" IS NULL) OR ("work_rate" >= (0)::numeric))),
+    CONSTRAINT "rubber_exports_work_total_check" CHECK ((("work_total" IS NULL) OR ("work_total" >= (0)::numeric)))
+);
+
+
+ALTER TABLE "public"."rubber_exports" OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."report_lock_no"("source_row" "public"."rubber_exports") RETURNS "text"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+  select private.active_report_no('rubber_export', source_row.id);
+$$;
+
+
+ALTER FUNCTION "public"."report_lock_no"("source_row" "public"."rubber_exports") OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "public"."stock_entries" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "server_bill_no" "text",
@@ -2927,6 +4263,41 @@ CREATE OR REPLACE FUNCTION "public"."report_lock_no"("source_row" "public"."time
 
 
 ALTER FUNCTION "public"."report_lock_no"("source_row" "public"."time_segments") OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."report_batches" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "report_no" "text" NOT NULL,
+    "report_date" "date" NOT NULL,
+    "sequence_no" integer NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "cutoff_at" timestamp with time zone NOT NULL,
+    "status" "text" DEFAULT 'active'::"text" NOT NULL,
+    "created_by_user_id" "uuid" NOT NULL,
+    "created_by_name" "text" NOT NULL,
+    "created_by_phone" "text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "deleted_at" timestamp with time zone,
+    "deleted_by_user_id" "uuid",
+    "deleted_by_name" "text",
+    "deleted_by_phone" "text",
+    CONSTRAINT "report_batches_sequence_no_check" CHECK (("sequence_no" > 0)),
+    CONSTRAINT "report_batches_status_check" CHECK (("status" = ANY (ARRAY['active'::"text", 'deleted'::"text"])))
+);
+
+
+ALTER TABLE "public"."report_batches" OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."rubber_export_lock_no"("source_row" "public"."report_batches") RETURNS "text"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+  select private.active_rubber_export_no_for_report(source_row.id);
+$$;
+
+
+ALTER FUNCTION "public"."rubber_export_lock_no"("source_row" "public"."report_batches") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."sync_acid_stock_entry"("payload" "jsonb") RETURNS "jsonb"
@@ -3844,6 +5215,68 @@ $$;
 ALTER FUNCTION "public"."update_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."update_rubber_export"("p_export_id" "uuid", "p_current_weight" numeric, "p_work_rate" numeric, "p_other_operating_cost" numeric) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_export public.rubber_exports%rowtype;
+  v_other numeric := coalesce(p_other_operating_cost, 0);
+  v_loss numeric;
+  v_total numeric;
+begin
+  select *
+  into v_export
+  from public.rubber_exports
+  where id = p_export_id
+  for update;
+
+  if v_export.id is null or not private.can_manage_reports(v_export.location_id) then
+    raise exception 'ไม่มีสิทธิ์แก้ไขรายการส่งออกนี้';
+  end if;
+  if v_export.status <> 'draft' then
+    raise exception 'แก้ไขได้เฉพาะรายการฉบับร่าง';
+  end if;
+  if p_current_weight is not null
+    and (p_current_weight <= 0 or p_current_weight > v_export.original_weight_total) then
+    raise exception 'น้ำหนักปัจจุบันต้องมากกว่า 0 และไม่เกินน้ำหนักสุทธิหลังหักรวม';
+  end if;
+  if p_work_rate is not null and p_work_rate < 0 then
+    raise exception 'ค่าทำงานต้องไม่ติดลบ';
+  end if;
+  if v_other < 0 then
+    raise exception 'ค่าดำเนินการอื่นต้องไม่ติดลบ';
+  end if;
+
+  v_loss := case when p_current_weight is null then null
+    else round((v_export.original_weight_total - p_current_weight) /
+      v_export.original_weight_total * 100, 2)
+  end;
+  v_total := case when p_current_weight is null or p_work_rate is null then null
+    else round(p_current_weight * p_work_rate + v_other, 2)
+  end;
+
+  update public.rubber_exports
+  set current_weight = p_current_weight,
+      weight_loss_percent = v_loss,
+      work_rate = p_work_rate,
+      other_operating_cost = v_other,
+      work_total = v_total
+  where id = p_export_id;
+
+  return jsonb_build_object(
+    'id', p_export_id,
+    'status', 'draft',
+    'weightLossPercent', v_loss,
+    'workTotal', v_total
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."update_rubber_export"("p_export_id" "uuid", "p_current_weight" numeric, "p_work_rate" numeric, "p_other_operating_cost" numeric) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."validate_stock_non_negative_after_entry_delete"("p_location_id" "uuid", "p_product_id" "uuid", "p_deleted_entry_ids" "uuid"[]) RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public'
@@ -3885,6 +5318,76 @@ $$;
 
 
 ALTER FUNCTION "public"."validate_stock_non_negative_after_entry_delete"("p_location_id" "uuid", "p_product_id" "uuid", "p_deleted_entry_ids" "uuid"[]) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."verify_rubber_export"("p_export_id" "uuid", "p_expense_destination" "text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_export public.rubber_exports%rowtype;
+  v_actor_name text;
+  v_actor_phone text;
+  v_now timestamptz := clock_timestamp();
+begin
+  if not private.can_delete_reports() then
+    raise exception 'เฉพาะ super_admin หรือผู้มีสิทธิ์จัดการระบบเท่านั้นที่ตรวจสอบได้';
+  end if;
+  if p_expense_destination not in ('branch', 'external') then
+    raise exception 'กรุณาเลือกปลายทางค่าใช้จ่าย';
+  end if;
+
+  select *
+  into v_export
+  from public.rubber_exports
+  where id = p_export_id
+  for update;
+
+  if v_export.id is null then
+    raise exception 'ไม่พบรายการส่งออก';
+  end if;
+  if v_export.status = 'verified' then
+    if v_export.expense_destination = p_expense_destination then
+      return jsonb_build_object('id', p_export_id, 'status', 'verified');
+    end if;
+    raise exception 'รายการนี้ตรวจสอบแล้วด้วยปลายทางค่าใช้จ่ายอื่น';
+  end if;
+  if v_export.status <> 'draft' then
+    raise exception 'ตรวจสอบได้เฉพาะรายการฉบับร่าง';
+  end if;
+  if v_export.current_weight is null or v_export.work_rate is null then
+    raise exception 'กรุณากรอกน้ำหนักปัจจุบันและค่าทำงานก่อนตรวจสอบ';
+  end if;
+
+  select p.name, p.phone
+  into v_actor_name, v_actor_phone
+  from public.profiles p
+  where p.id = auth.uid();
+
+  update public.rubber_exports
+  set status = 'verified',
+      expense_destination = p_expense_destination,
+      weight_loss_percent = round(
+        (original_weight_total - current_weight) / original_weight_total * 100,
+        2
+      ),
+      work_total = round(current_weight * work_rate + other_operating_cost, 2),
+      verified_by_user_id = auth.uid(),
+      verified_by_name = coalesce(v_actor_name, ''),
+      verified_by_phone = coalesce(v_actor_phone, ''),
+      verified_at = v_now
+  where id = p_export_id;
+
+  return jsonb_build_object(
+    'id', p_export_id,
+    'status', 'verified',
+    'verifiedAt', v_now
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."verify_rubber_export"("p_export_id" "uuid", "p_expense_destination" "text") OWNER TO "postgres";
 
 
 CREATE TABLE IF NOT EXISTS "public"."stock_products" (
@@ -4339,30 +5842,6 @@ CREATE TABLE IF NOT EXISTS "public"."profiles" (
 ALTER TABLE "public"."profiles" OWNER TO "postgres";
 
 
-CREATE TABLE IF NOT EXISTS "public"."report_batches" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "report_no" "text" NOT NULL,
-    "report_date" "date" NOT NULL,
-    "sequence_no" integer NOT NULL,
-    "location_id" "uuid" NOT NULL,
-    "cutoff_at" timestamp with time zone NOT NULL,
-    "status" "text" DEFAULT 'active'::"text" NOT NULL,
-    "created_by_user_id" "uuid" NOT NULL,
-    "created_by_name" "text" NOT NULL,
-    "created_by_phone" "text" NOT NULL,
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "deleted_at" timestamp with time zone,
-    "deleted_by_user_id" "uuid",
-    "deleted_by_name" "text",
-    "deleted_by_phone" "text",
-    CONSTRAINT "report_batches_sequence_no_check" CHECK (("sequence_no" > 0)),
-    CONSTRAINT "report_batches_status_check" CHECK (("status" = ANY (ARRAY['active'::"text", 'deleted'::"text"])))
-);
-
-
-ALTER TABLE "public"."report_batches" OWNER TO "postgres";
-
-
 CREATE TABLE IF NOT EXISTS "public"."report_items" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "report_id" "uuid" NOT NULL,
@@ -4372,11 +5851,33 @@ CREATE TABLE IF NOT EXISTS "public"."report_items" (
     "eligibility_at" timestamp with time zone NOT NULL,
     "active" boolean DEFAULT true NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    CONSTRAINT "report_items_entity_type_check" CHECK (("entity_type" = ANY (ARRAY['rubber_bill'::"text", 'ocr_ticket'::"text", 'income_expense'::"text", 'acid_stock_entry'::"text", 'time_segment'::"text", 'leave_request'::"text", 'financial_transaction'::"text", 'payroll_slip'::"text", 'bank_transfer_source'::"text", 'bank_transfer_target'::"text", 'cash_transfer_sent'::"text", 'cash_transfer_received'::"text"])))
+    CONSTRAINT "report_items_entity_type_check" CHECK (("entity_type" = ANY (ARRAY['rubber_bill'::"text", 'rubber_export'::"text", 'ocr_ticket'::"text", 'income_expense'::"text", 'acid_stock_entry'::"text", 'time_segment'::"text", 'leave_request'::"text", 'financial_transaction'::"text", 'payroll_slip'::"text", 'bank_transfer_source'::"text", 'bank_transfer_target'::"text", 'cash_transfer_sent'::"text", 'cash_transfer_received'::"text"])))
 );
 
 
 ALTER TABLE "public"."report_items" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."rubber_export_items" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "export_id" "uuid" NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "source_report_item_id" "uuid" NOT NULL,
+    "source_bill_id" "uuid" NOT NULL,
+    "bill_date" "date" NOT NULL,
+    "bill_no" "text" NOT NULL,
+    "customer_name" "text" NOT NULL,
+    "eligibility_at" timestamp with time zone NOT NULL,
+    "net_weight" numeric(14,2) NOT NULL,
+    "paid_amount" numeric(14,2) NOT NULL,
+    "active" boolean DEFAULT true NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "rubber_export_items_net_weight_check" CHECK (("net_weight" > (0)::numeric)),
+    CONSTRAINT "rubber_export_items_paid_amount_check" CHECK (("paid_amount" > (0)::numeric))
+);
+
+
+ALTER TABLE "public"."rubber_export_items" OWNER TO "postgres";
 
 
 CREATE TABLE IF NOT EXISTS "public"."stock_entry_approval_requests" (
@@ -4782,6 +6283,31 @@ ALTER TABLE ONLY "public"."rubber_bills"
 
 
 
+ALTER TABLE ONLY "public"."rubber_export_items"
+    ADD CONSTRAINT "rubber_export_items_export_id_source_bill_id_key" UNIQUE ("export_id", "source_bill_id");
+
+
+
+ALTER TABLE ONLY "public"."rubber_export_items"
+    ADD CONSTRAINT "rubber_export_items_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."rubber_exports"
+    ADD CONSTRAINT "rubber_exports_location_id_export_date_sequence_no_key" UNIQUE ("location_id", "export_date", "sequence_no");
+
+
+
+ALTER TABLE ONLY "public"."rubber_exports"
+    ADD CONSTRAINT "rubber_exports_location_id_export_no_key" UNIQUE ("location_id", "export_no");
+
+
+
+ALTER TABLE ONLY "public"."rubber_exports"
+    ADD CONSTRAINT "rubber_exports_pkey" PRIMARY KEY ("id");
+
+
+
 ALTER TABLE ONLY "public"."stock_entries"
     ADD CONSTRAINT "stock_entries_pkey" PRIMARY KEY ("id");
 
@@ -4941,6 +6467,22 @@ CREATE INDEX "rubber_bills_feed_active_idx" ON "public"."rubber_bills" USING "bt
 
 
 
+CREATE UNIQUE INDEX "rubber_export_items_one_active_bill" ON "public"."rubber_export_items" USING "btree" ("location_id", "source_bill_id") WHERE ("active" = true);
+
+
+
+CREATE INDEX "rubber_export_items_source_report" ON "public"."rubber_export_items" USING "btree" ("source_report_item_id") WHERE ("active" = true);
+
+
+
+CREATE INDEX "rubber_exports_location_history" ON "public"."rubber_exports" USING "btree" ("location_id", "created_at" DESC, "id" DESC);
+
+
+
+CREATE INDEX "rubber_exports_report_candidates" ON "public"."rubber_exports" USING "btree" ("location_id", "verified_at", "id") WHERE (("status" = 'verified'::"text") AND ("expense_destination" = 'branch'::"text") AND ("work_total" > (0)::numeric));
+
+
+
 CREATE UNIQUE INDEX "stock_entry_approval_requests_pending_entry_idx" ON "public"."stock_entry_approval_requests" USING "btree" ("stock_entry_id") WHERE ("request_status" = 'pending'::"text");
 
 
@@ -4974,6 +6516,10 @@ CREATE OR REPLACE TRIGGER "enforce_financial_transaction_expense_relation" BEFOR
 
 
 CREATE OR REPLACE TRIGGER "enforce_payroll_slip_expense_relation" BEFORE UPDATE ON "public"."payroll_slips" FOR EACH ROW EXECUTE FUNCTION "private"."enforce_time_tracking_expense_relation"();
+
+
+
+CREATE OR REPLACE TRIGGER "guard_rubber_export_state" BEFORE UPDATE ON "public"."rubber_exports" FOR EACH ROW EXECUTE FUNCTION "private"."guard_rubber_export_state"();
 
 
 
@@ -5054,6 +6600,10 @@ CREATE OR REPLACE TRIGGER "report_lock_rubber_bill_items" BEFORE INSERT OR DELET
 
 
 CREATE OR REPLACE TRIGGER "report_lock_rubber_bills" BEFORE DELETE OR UPDATE ON "public"."rubber_bills" FOR EACH ROW EXECUTE FUNCTION "private"."guard_reported_entity"('rubber_bill');
+
+
+
+CREATE OR REPLACE TRIGGER "report_lock_rubber_exports" BEFORE DELETE OR UPDATE ON "public"."rubber_exports" FOR EACH ROW EXECUTE FUNCTION "private"."guard_reported_entity"('rubber_export');
 
 
 
@@ -5371,6 +6921,51 @@ ALTER TABLE ONLY "public"."rubber_bills"
 
 ALTER TABLE ONLY "public"."rubber_bills"
     ADD CONSTRAINT "rubber_bills_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id");
+
+
+
+ALTER TABLE ONLY "public"."rubber_export_items"
+    ADD CONSTRAINT "rubber_export_items_export_id_fkey" FOREIGN KEY ("export_id") REFERENCES "public"."rubber_exports"("id");
+
+
+
+ALTER TABLE ONLY "public"."rubber_export_items"
+    ADD CONSTRAINT "rubber_export_items_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id");
+
+
+
+ALTER TABLE ONLY "public"."rubber_export_items"
+    ADD CONSTRAINT "rubber_export_items_source_bill_id_fkey" FOREIGN KEY ("source_bill_id") REFERENCES "public"."rubber_bills"("id");
+
+
+
+ALTER TABLE ONLY "public"."rubber_export_items"
+    ADD CONSTRAINT "rubber_export_items_source_report_item_id_fkey" FOREIGN KEY ("source_report_item_id") REFERENCES "public"."report_items"("id");
+
+
+
+ALTER TABLE ONLY "public"."rubber_exports"
+    ADD CONSTRAINT "rubber_exports_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."rubber_exports"
+    ADD CONSTRAINT "rubber_exports_cutoff_report_item_id_fkey" FOREIGN KEY ("cutoff_report_item_id") REFERENCES "public"."report_items"("id");
+
+
+
+ALTER TABLE ONLY "public"."rubber_exports"
+    ADD CONSTRAINT "rubber_exports_deleted_by_user_id_fkey" FOREIGN KEY ("deleted_by_user_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."rubber_exports"
+    ADD CONSTRAINT "rubber_exports_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id");
+
+
+
+ALTER TABLE ONLY "public"."rubber_exports"
+    ADD CONSTRAINT "rubber_exports_verified_by_user_id_fkey" FOREIGN KEY ("verified_by_user_id") REFERENCES "public"."profiles"("id");
 
 
 
@@ -5797,10 +7392,26 @@ CREATE POLICY "rubber bills location scoped" ON "public"."rubber_bills" FOR SELE
 
 
 
+CREATE POLICY "rubber export items scoped read" ON "public"."rubber_export_items" FOR SELECT TO "authenticated" USING ((EXISTS ( SELECT 1
+   FROM "public"."rubber_exports" "e"
+  WHERE (("e"."id" = "rubber_export_items"."export_id") AND "private"."can_manage_reports"("e"."location_id")))));
+
+
+
+CREATE POLICY "rubber exports scoped read" ON "public"."rubber_exports" FOR SELECT TO "authenticated" USING ("private"."can_manage_reports"("location_id"));
+
+
+
 ALTER TABLE "public"."rubber_bill_items" ENABLE ROW LEVEL SECURITY;
 
 
 ALTER TABLE "public"."rubber_bills" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."rubber_export_items" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."rubber_exports" ENABLE ROW LEVEL SECURITY;
 
 
 ALTER TABLE "public"."stock_entries" ENABLE ROW LEVEL SECURITY;
@@ -5918,10 +7529,64 @@ CREATE POLICY "user_locations_update_scoped_admin" ON "public"."user_locations" 
 
 
 
+GRANT USAGE ON SCHEMA "private" TO "authenticated";
+
+
+
 GRANT USAGE ON SCHEMA "public" TO "postgres";
 GRANT USAGE ON SCHEMA "public" TO "anon";
 GRANT USAGE ON SCHEMA "public" TO "authenticated";
 GRANT USAGE ON SCHEMA "public" TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "private"."can_access_location"("target_location" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "private"."can_access_location"("target_location" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "private"."can_access_money_transfer_module"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "private"."can_access_money_transfer_module"() TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "private"."can_access_optional_location"("target_location" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "private"."can_access_optional_location"("target_location" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "private"."can_access_super_admin_features"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "private"."can_access_super_admin_features"() TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "private"."can_manage_location"("target_location" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "private"."can_manage_location"("target_location" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "private"."can_manage_profile"("target_user" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "private"."can_manage_profile"("target_user" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "private"."can_view_profile"("target_user" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "private"."can_view_profile"("target_user" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "private"."current_user_role"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "private"."current_user_role"() TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "private"."is_active_user"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "private"."is_active_user"() TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "private"."is_super_admin"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "private"."is_super_admin"() TO "authenticated";
 
 
 
@@ -5974,6 +7639,11 @@ GRANT ALL ON FUNCTION "public"."create_income_expense_approval_request"("payload
 
 REVOKE ALL ON FUNCTION "public"."create_report_batch"("p_location_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."create_report_batch"("p_location_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."create_rubber_export"("p_location_id" "uuid", "p_cutoff_report_item_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."create_rubber_export"("p_location_id" "uuid", "p_cutoff_report_item_id" "uuid") TO "authenticated";
 
 
 
@@ -6032,6 +7702,11 @@ GRANT ALL ON FUNCTION "public"."delete_report_batch"("p_report_id" "uuid") TO "a
 
 
 
+REVOKE ALL ON FUNCTION "public"."delete_rubber_export"("p_export_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."delete_rubber_export"("p_export_id" "uuid") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."delete_time_tracking_source_permanently"("p_source_type" "text", "p_source_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."delete_time_tracking_source_permanently"("p_source_type" "text", "p_source_id" "uuid") TO "authenticated";
 
@@ -6052,6 +7727,11 @@ GRANT ALL ON FUNCTION "public"."get_report_income_expense_rows"("p_report_id" "u
 
 
 
+REVOKE ALL ON FUNCTION "public"."get_rubber_export_cutoff_options"("p_location_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_rubber_export_cutoff_options"("p_location_id" "uuid") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."get_stock_balance"("p_location_id" "uuid", "p_product_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_stock_balance"("p_location_id" "uuid", "p_product_id" "uuid") TO "authenticated";
 
@@ -6068,6 +7748,11 @@ GRANT ALL ON FUNCTION "public"."mark_rubber_bill_printed"("p_bill_id" "uuid") TO
 
 
 REVOKE ALL ON FUNCTION "public"."prevent_locked_ocr_ticket_change"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_cutoff_report_item_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_cutoff_report_item_id" "uuid") TO "authenticated";
 
 
 
@@ -6158,6 +7843,17 @@ GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."rubber_bi
 
 
 
+GRANT ALL ON TABLE "public"."rubber_exports" TO "service_role";
+GRANT SELECT ON TABLE "public"."rubber_exports" TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."rubber_exports") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."rubber_exports") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."rubber_exports") TO "service_role";
+
+
+
 GRANT ALL ON TABLE "public"."stock_entries" TO "service_role";
 GRANT SELECT ON TABLE "public"."stock_entries" TO "authenticated";
 
@@ -6178,6 +7874,17 @@ GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."time_segments" TO 
 REVOKE ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."time_segments") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."time_segments") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."time_segments") TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."report_batches" TO "service_role";
+GRANT SELECT ON TABLE "public"."report_batches" TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."rubber_export_lock_no"("source_row" "public"."report_batches") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."rubber_export_lock_no"("source_row" "public"."report_batches") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."rubber_export_lock_no"("source_row" "public"."report_batches") TO "service_role";
 
 
 
@@ -6220,7 +7927,17 @@ GRANT ALL ON FUNCTION "public"."update_cash_branch_transfer"("p_transfer_id" "uu
 
 
 
+REVOKE ALL ON FUNCTION "public"."update_rubber_export"("p_export_id" "uuid", "p_current_weight" numeric, "p_work_rate" numeric, "p_other_operating_cost" numeric) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."update_rubber_export"("p_export_id" "uuid", "p_current_weight" numeric, "p_work_rate" numeric, "p_other_operating_cost" numeric) TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."validate_stock_non_negative_after_entry_delete"("p_location_id" "uuid", "p_product_id" "uuid", "p_deleted_entry_ids" "uuid"[]) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "public"."verify_rubber_export"("p_export_id" "uuid", "p_expense_destination" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."verify_rubber_export"("p_export_id" "uuid", "p_expense_destination" "text") TO "authenticated";
 
 
 
@@ -6363,13 +8080,13 @@ GRANT SELECT("can_access_super_admin_features"),UPDATE("can_access_super_admin_f
 
 
 
-GRANT ALL ON TABLE "public"."report_batches" TO "service_role";
-GRANT SELECT ON TABLE "public"."report_batches" TO "authenticated";
-
-
-
 GRANT ALL ON TABLE "public"."report_items" TO "service_role";
 GRANT SELECT ON TABLE "public"."report_items" TO "authenticated";
+
+
+
+GRANT ALL ON TABLE "public"."rubber_export_items" TO "service_role";
+GRANT SELECT ON TABLE "public"."rubber_export_items" TO "authenticated";
 
 
 

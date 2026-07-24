@@ -75,7 +75,7 @@ export function ReportsModule({
   }
 
   async function deleteReport(report: ReportSummary) {
-    if (!report.isLatestActive || !canDelete || deletingId) return;
+    if (!report.isLatestActive || !canDelete || deletingId || report.rubberExportLockNo) return;
     if (!window.confirm(`ลบ ${report.reportNo} เพื่อปลดล็อกรายการหรือไม่?`)) return;
     setDeletingId(report.id);
     try {
@@ -173,14 +173,16 @@ export function ReportsModule({
                         <button
                           type="button"
                           onClick={() => void deleteReport(report)}
-                          disabled={deletingId === report.id}
-                          title="ลบรายงานล่าสุดเพื่อปลดล็อกรายการ"
+                          disabled={deletingId === report.id || Boolean(report.rubberExportLockNo)}
+                          title={report.rubberExportLockNo
+                            ? `ต้องลบรายการส่งออกยาง ${report.rubberExportLockNo} ก่อน`
+                            : "ลบรายงานล่าสุดเพื่อปลดล็อกรายการ"}
                           className="focus-ring inline-flex items-center gap-1 rounded-md bg-clay px-3 py-1.5 font-semibold text-white disabled:opacity-50"
                         >
                           {deletingId === report.id
                             ? <Loader2 size={15} className="animate-spin" />
                             : <Trash2 size={15} />}
-                          ลบ
+                          {report.rubberExportLockNo ? `ล็อกโดย ${report.rubberExportLockNo}` : "ลบ"}
                         </button>
                       )}
                     </div>

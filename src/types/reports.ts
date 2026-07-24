@@ -10,6 +10,7 @@ export type ReportSummary = {
   deletedAt: string | null;
   itemCount: number;
   isLatestActive: boolean;
+  rubberExportLockNo?: string | null;
 };
 
 export type ReportLedgerRow = {

@@ -4,6 +4,7 @@ import {
   ClipboardList,
   FileImage,
   Package,
+  PackageCheck,
   Printer,
   Plus,
   ShieldCheck,
@@ -11,11 +12,12 @@ import {
   Clock
 } from "lucide-react";
 
-export type Tab = "dashboard" | "rubber" | "cash" | "acid-stock" | "customers" | "transport" | "money-transfer" | "ocr" | "reports" | "admin" | "time-tracking";
+export type Tab = "dashboard" | "rubber" | "rubber-export" | "cash" | "acid-stock" | "customers" | "transport" | "money-transfer" | "ocr" | "reports" | "admin" | "time-tracking";
 
 export const tabs: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: number }> }> = [
   { id: "dashboard", label: "ภาพรวม", icon: ClipboardList },
   { id: "rubber", label: "บิลยาง", icon: Plus },
+  { id: "rubber-export", label: "ส่งออกยาง", icon: PackageCheck },
   { id: "cash", label: "รับ-จ่าย", icon: Banknote },
   { id: "acid-stock", label: "สต็อกสินค้า", icon: Package },
   { id: "customers", label: "ลูกค้า", icon: Users },
