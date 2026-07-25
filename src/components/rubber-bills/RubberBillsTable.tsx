@@ -174,16 +174,8 @@ export function RubberBillsTable({
         </table>
       </div>
       <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="space-y-2 text-sm text-ink">
+        <div className="text-sm text-ink">
           <p>แสดง {firstVisible} ถึง {lastVisible} จาก {bills.length} แถว</p>
-          <div className="flex flex-wrap gap-2">
-            <button type="button" className="rounded-md bg-leaf px-3 py-2 text-sm font-bold text-white">
-              ข้อมูลทั้งหมด
-            </button>
-            <button type="button" className="rounded-md bg-blue-600 px-4 py-2 text-sm font-bold text-white">
-              เปิดกรองข้อมูล
-            </button>
-          </div>
         </div>
         <div className="flex flex-wrap gap-2">
           {Array.from({ length: totalPages }, (_, index) => index + 1).slice(0, 7).map((pageNumber) => (

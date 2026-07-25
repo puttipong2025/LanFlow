@@ -6,7 +6,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import { formatCurrency } from "@/lib/format";
 import { useIncomeExpense } from "@/hooks/useIncomeExpense";
 import { useIncomeExpenseApprovals } from "@/hooks/useIncomeExpenseApprovals";
-import { useCustomers } from "@/hooks/useCustomers";
 import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
 import { useCashBranchTransfers } from "@/hooks/useCashBranchTransfers";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
@@ -59,7 +58,6 @@ export function IncomeExpenseModule({
     pendingCount: approvalRequestsPendingCount,
     submitForApprovalIfNeeded,
   } = useIncomeExpenseApprovals({ includePendingCount: canManageSystem && isOnline });
-  const { customers, addCustomer, updateCustomer } = useCustomers();
   const { addTransfer } = useMoneyTransfers(selectedLocation.id, { enabled: canCreateMoneyTransfer });
   const cashTransfers = useCashBranchTransfers(selectedLocation.id);
   const pendingCashReceipts = cashTransfers.transfers.filter((transfer) => transfer.targetLocationId === selectedLocation.id && transfer.status === "pending_receipt");
@@ -424,7 +422,6 @@ export function IncomeExpenseModule({
           transaction={editingTransaction}
           nextNumber={nextNumber}
           nextLocalSequence={transactions.length + 1}
-          customers={customers}
           onClose={() => setModalOpen(false)}
           onSave={async (savedTransactions) => {
             try {
@@ -460,8 +457,6 @@ export function IncomeExpenseModule({
               toast.error(error instanceof Error ? error.message : "บันทึกรายการไม่สำเร็จ");
             }
           }}
-          onAddCustomer={addCustomer.mutate}
-          onUpdateCustomer={updateCustomer.mutate}
         />
       )}
 

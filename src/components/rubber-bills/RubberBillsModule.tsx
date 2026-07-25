@@ -1,4 +1,4 @@
-import { Plus, Settings } from "lucide-react";
+import { Clock3, Plus, Settings, Ticket } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -17,6 +17,8 @@ import type { Location, Profile, RubberBill, RubberBillApprovalMarker } from "@/
 import { RubberBillsTable } from "./RubberBillsTable";
 import { RubberBillModal } from "./RubberBillModal";
 import { RubberBillApprovalModal } from "./RubberBillApprovalModal";
+import { WeighingAppointmentModal } from "./WeighingAppointmentModal";
+import { WeighingQueueModal } from "./WeighingQueueModal";
 import {
   buildRubberBillReceiptModel,
   getRubberBillPrintBlockReason,
@@ -24,6 +26,8 @@ import {
   resolveReceiptCustomer
 } from "./bill-display";
 import { printReceiptHtml } from "@/lib/rubber-bills/print-receipt";
+import { getDeviceId } from "@/lib/format";
+import { saveCustomerCache } from "@/lib/rubber-bills/weighing-queue";
 
 function pendingCreateBill(marker: RubberBillApprovalMarker): RubberBill | null {
   const payload = marker.proposedCreatePayload;
@@ -122,11 +126,14 @@ export function RubberBillsModule({
     profile.id,
     approvalSettings?.configuredPrice
   );
-  const { customers, addCustomer, updateCustomer } = useCustomers();
+  const { customers, isLoading: customersLoading, error: customersError } = useCustomers();
   const { transfers } = useMoneyTransfers(selectedLocation.id);
   const isOnline = useOnlineStatus();
   const { retrySyncEvent, isRetrying } = usePerRecordSyncRetry(selectedLocation.id, profile.id);
+  const [deviceId] = useState(getDeviceId);
   const [modalOpen, setModalOpen] = useState(false);
+  const [queueModalOpen, setQueueModalOpen] = useState(false);
+  const [appointmentModalOpen, setAppointmentModalOpen] = useState(false);
   const [approvalModalOpen, setApprovalModalOpen] = useState(false);
   const [editingBill, setEditingBill] = useState<RubberBill | null>(null);
   const [pageSize, setPageSize] = useState(10);
@@ -139,6 +146,22 @@ export function RubberBillsModule({
     setPage(1);
     onInitialSearchHandled?.();
   }, [initialSearch, onInitialSearchHandled]);
+
+  useEffect(() => {
+    if (customersLoading || customersError) return;
+    try {
+      saveCustomerCache(
+        deviceId,
+        customers.map((customer) => ({
+          id: customer.id,
+          mainName: customer.mainName,
+          legacyMemberId: customer.legacyMemberId ?? null,
+        })),
+      );
+    } catch {
+      // The queue still accepts manually entered names when the optional cache is unavailable.
+    }
+  }, [customers, customersError, customersLoading, deviceId]);
 
   const displayedBills = useMemo(() => {
     const markersByBillId = new Map(
@@ -275,6 +298,14 @@ export function RubberBillsModule({
           <p className="text-sm text-ink/60">เพิ่ม แก้ไข ลบ และตรวจรายการบิลของสาขาที่เลือก</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setQueueModalOpen(true)}
+            className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-river px-4 font-semibold text-white"
+          >
+            <Ticket size={18} />
+            บัตรคิว
+          </button>
           {canManageApprovals && (
             <button
               type="button"
@@ -302,8 +333,13 @@ export function RubberBillsModule({
       <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel">
         <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div className="flex flex-wrap items-center gap-3">
-            <button type="button" className="rounded-md bg-amber px-4 py-2 text-sm font-bold text-ink">
-              จับเวลา เท็กรับน้ำ
+            <button
+              type="button"
+              onClick={() => setAppointmentModalOpen(true)}
+              className="focus-ring inline-flex h-10 items-center gap-2 rounded-md bg-amber px-4 text-sm font-bold text-ink"
+            >
+              <Clock3 size={17} />
+              จับเวลา
             </button>
             <button type="button" onClick={openAdd} className="rounded-md bg-blue-600 px-4 py-2 text-sm font-bold text-white">
               เพิ่มข้อมูล
@@ -356,8 +392,25 @@ export function RubberBillsModule({
               .then(() => setModalOpen(false))
               .catch((err: any) => alert(err.message || "เกิดข้อผิดพลาดในการบันทึกบิล"));
           }}
-          onAddCustomer={addCustomer.mutate}
-          onUpdateCustomer={updateCustomer.mutate}
+        />
+      )}
+
+      {appointmentModalOpen && (
+        <WeighingAppointmentModal onClose={() => setAppointmentModalOpen(false)} />
+      )}
+
+      {queueModalOpen && (
+        <WeighingQueueModal
+          deviceId={deviceId}
+          locationId={selectedLocation.id}
+          locationName={selectedLocation.name}
+          liveCustomers={customers.map((customer) => ({
+            id: customer.id,
+            mainName: customer.mainName,
+            legacyMemberId: customer.legacyMemberId ?? null,
+          }))}
+          liveCustomersLoaded={!customersLoading && !customersError}
+          onClose={() => setQueueModalOpen(false)}
         />
       )}
 

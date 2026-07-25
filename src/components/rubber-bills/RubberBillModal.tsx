@@ -31,9 +31,7 @@ export function RubberBillModal({
   configuredPrice,
   customers,
   onClose,
-  onSave,
-  onAddCustomer,
-  onUpdateCustomer
+  onSave
 }: {
   selectedLocation: Location;
   profile: Profile;
@@ -42,8 +40,6 @@ export function RubberBillModal({
   customers: Customer[];
   onClose: () => void;
   onSave: (bill: RubberBill) => void;
-  onAddCustomer: (customer: Customer) => void;
-  onUpdateCustomer: (customer: Customer) => void;
 }) {
   const [draftClientTempId] = useState(() => bill?.clientTempId ?? makeClientTempId("rubber"));
   const initialLocalBillNo = bill?.localBillNo ?? makeLocalBillNo(selectedLocation.code, "R", draftClientTempId);
@@ -345,62 +341,6 @@ export function RubberBillModal({
                   ))}
                 </div>
               )}
-            </div>
-
-            <div className="flex justify-center gap-2 md:col-span-2">
-              <button
-                type="button"
-                onClick={() => {
-                  const newCust: Customer = {
-                    id: makeClientTempId("cust"),
-                    clientTempId: makeClientTempId("cust"),
-                    class: "สาขานี้จ่าย",
-                    mainName: customerSearch.trim() || "",
-                    defaultLocationId: selectedLocation.id,
-                    syncStatus: "pending",
-                    idempotencyKey: makeIdempotencyKey("create", makeClientTempId("cust")),
-                    revisionNo: 0,
-                    recordStatus: "active"
-                  };
-                  const name = window.prompt("กรอกชื่อสมาชิกใหม่:", customerSearch.trim());
-                  if (name && name.trim()) {
-                    newCust.mainName = name.trim();
-                    newCust.id = makeClientTempId("cust");
-                    newCust.clientTempId = newCust.id;
-                    newCust.idempotencyKey = makeIdempotencyKey("create", newCust.id);
-                    onAddCustomer(newCust);
-                    setCustomerSearch(name.trim());
-                    setSelectedCustomerId(newCust.id);
-                    setMemberStatus("สมาชิก");
-                    setPaymentResponsibility(newCust.class);
-                  }
-                }}
-                className="rounded-md bg-sky-500 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-600 transition-colors"
-              >
-                เพิ่มข้อมูลสมาชิกใหม่
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const nameMatches = customers.filter((customer) => customer.mainName === customerSearch);
-                  const found = selectedCustomerId
-                    ? customers.find((customer) => customer.id === selectedCustomerId)
-                    : nameMatches.length === 1 ? nameMatches[0] : undefined;
-                  if (!found) {
-                    toast.error("กรุณาเลือกลูกค้าจากรายการให้ชัดเจนก่อน แล้วจึงกดแก้ไข");
-                    return;
-                  }
-                  const newName = window.prompt("แก้ไขชื่อสมาชิก:", found.mainName);
-                  if (newName && newName.trim() && newName.trim() !== found.mainName) {
-                    onUpdateCustomer({ ...found, mainName: newName.trim() });
-                    setCustomerSearch(newName.trim());
-                    setSelectedCustomerId(found.id);
-                  }
-                }}
-                className="rounded-md bg-amber px-3 py-2 text-sm font-semibold text-ink hover:bg-amber/80 transition-colors"
-              >
-                แก้ไขข้อมูลสมาชิกนี้
-              </button>
             </div>
 
             <div className="text-center md:col-span-2">
