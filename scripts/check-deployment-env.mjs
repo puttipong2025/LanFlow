@@ -1,9 +1,9 @@
 import { config } from "dotenv";
 
 const envFileArgument = process.argv.find((argument) =>
-  argument.startsWith("--env-file="),
+  argument.startsWith("--deployment-env-file="),
 );
-const envFile = envFileArgument?.slice("--env-file=".length) ||
+const envFile = envFileArgument?.slice("--deployment-env-file=".length) ||
   ".env.production.local";
 
 config({ path: envFile, override: false, quiet: true });
