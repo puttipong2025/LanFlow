@@ -24,11 +24,11 @@ export async function PUT(request: NextRequest) {
     if (
       configuredPrice !== null &&
       (!Number.isFinite(configuredPrice) ||
-        configuredPrice <= 0 ||
+        configuredPrice < 0 ||
         Math.round(configuredPrice * 100) !== configuredPrice * 100)
     ) {
       return NextResponse.json(
-        { errorMessage: "ราคายางต้องมากกว่า 0 และมีทศนิยมไม่เกิน 2 ตำแหน่ง" },
+        { errorMessage: "ราคายางต้องไม่ติดลบและมีทศนิยมไม่เกิน 2 ตำแหน่ง" },
         { status: 400 }
       );
     }

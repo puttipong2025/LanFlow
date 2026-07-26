@@ -15,19 +15,26 @@ import {
 } from "@/lib/record-action-locks";
 import type { Location, Profile, RubberBill, RubberBillApprovalMarker } from "@/types";
 import { RubberBillsTable } from "./RubberBillsTable";
-import { RubberBillModal } from "./RubberBillModal";
+import { RubberBillModal, type RubberBillCustomerOption } from "./RubberBillModal";
 import { RubberBillApprovalModal } from "./RubberBillApprovalModal";
 import { WeighingAppointmentModal } from "./WeighingAppointmentModal";
 import { WeighingQueueModal } from "./WeighingQueueModal";
 import {
-  buildRubberBillReceiptModel,
   getRubberBillPrintBlockReason,
-  renderRubberBillReceiptHtml,
-  resolveReceiptCustomer
+  resolveRubberBillReceiptForPrint,
+  renderRubberBillReceiptHtml
 } from "./bill-display";
-import { printReceiptHtml } from "@/lib/rubber-bills/print-receipt";
+import {
+  receiptPdfFilename,
+  shareReceiptPdf,
+} from "@/lib/rubber-bills/print-receipt";
 import { getDeviceId } from "@/lib/format";
-import { saveCustomerCache } from "@/lib/rubber-bills/weighing-queue";
+import { getRubberBillReceiptSnapshot } from "@/lib/idb-queue";
+import {
+  loadCustomerCache,
+  saveCustomerCache,
+  type WeighingQueueCustomer,
+} from "@/lib/rubber-bills/weighing-queue";
 
 function pendingCreateBill(marker: RubberBillApprovalMarker): RubberBill | null {
   const payload = marker.proposedCreatePayload;
@@ -72,24 +79,27 @@ function pendingCreateBill(marker: RubberBillApprovalMarker): RubberBill | null 
     billDate: String(payload.billDate),
     customerId: payload.customerId ? String(payload.customerId) : null,
     customerName: String(payload.customerName ?? ""),
-    customerType: payload.customerType === "สาขาใหญ่จ่าย" ? "สาขาใหญ่จ่าย" : "สาขานี้จ่าย",
     billType: String(payload.billType ?? "บิลเครื่องชั่งเล็ก"),
     deductWeight: Number(payload.deductWeight ?? 0),
     weight: Number(payload.weight ?? 0),
     price: Number(payload.averagePrice ?? 0),
     deductionTotal: Number(payload.deductionTotal ?? 0),
     netTotal: Number(payload.netTotal ?? 0),
-    cashPayment: Number(payload.cashPayment ?? 0),
-    transferPayment: Number(payload.transferPayment ?? 0),
     acidPackCount: Number(payload.acidPackCount ?? 0),
-    printStatus: "ยังไม่ได้ปริ้น",
+    configuredPriceSnapshot:
+      payload.configuredPriceSnapshot == null
+        ? null
+        : Number(payload.configuredPriceSnapshot),
+    approvalState: "not_required",
+    approvalApprovedByName: null,
+    approvalRevisionNo: null,
     weighItems,
     acidItems,
     debtItem: debtItems[0],
     debtItems,
-    createdByUserId: "",
-    createdByName: "",
-    createdByPhone: "",
+    createdByUserId: String(payload.createdByUserId ?? ""),
+    createdByName: String(payload.createdByName ?? ""),
+    createdByPhone: String(payload.createdByPhone ?? ""),
     clientCreatedAt: String(payload.clientCreatedAt),
     clientRecordedAt: String(payload.clientRecordedAt),
     revisionNo: 0,
@@ -121,16 +131,19 @@ export function RubberBillsModule({
     locationId: selectedLocation.id,
     includeRequests: canManageApprovals,
   });
-  const { bills, addBill, updateBill, deleteBill, markPrinted, isMarkingPrinted } = useRubberBills(
+  const { bills, addBill, updateBill, deleteBill } = useRubberBills(
     selectedLocation.id,
     profile.id,
-    approvalSettings?.configuredPrice
+    approvalSettings
   );
   const { customers, isLoading: customersLoading, error: customersError } = useCustomers();
   const { transfers } = useMoneyTransfers(selectedLocation.id);
   const isOnline = useOnlineStatus();
   const { retrySyncEvent, isRetrying } = usePerRecordSyncRetry(selectedLocation.id, profile.id);
   const [deviceId] = useState(getDeviceId);
+  const [cachedCustomers, setCachedCustomers] = useState<WeighingQueueCustomer[]>(() => (
+    loadCustomerCache(deviceId)
+  ));
   const [modalOpen, setModalOpen] = useState(false);
   const [queueModalOpen, setQueueModalOpen] = useState(false);
   const [appointmentModalOpen, setAppointmentModalOpen] = useState(false);
@@ -150,18 +163,35 @@ export function RubberBillsModule({
   useEffect(() => {
     if (customersLoading || customersError) return;
     try {
-      saveCustomerCache(
-        deviceId,
-        customers.map((customer) => ({
-          id: customer.id,
-          mainName: customer.mainName,
-          legacyMemberId: customer.legacyMemberId ?? null,
-        })),
-      );
+      const snapshot = customers.map((customer) => ({
+        id: customer.id,
+        mainName: customer.mainName,
+        legacyMemberId: customer.legacyMemberId ?? null,
+        class: customer.class,
+        farmAddress: customer.farms?.[0]?.address ?? null,
+      }));
+      saveCustomerCache(deviceId, snapshot);
+      setCachedCustomers(snapshot);
     } catch {
-      // The queue still accepts manually entered names when the optional cache is unavailable.
+      // Both forms still accept manually entered names when local storage is unavailable.
     }
   }, [customers, customersError, customersLoading, deviceId]);
+
+  const liveCustomerOptions: RubberBillCustomerOption[] = customers.map((customer) => ({
+    id: customer.id,
+    mainName: customer.mainName,
+    legacyMemberId: customer.legacyMemberId ?? null,
+    farmAddress: customer.farms?.[0]?.address ?? null,
+  }));
+  const cachedCustomerOptions: RubberBillCustomerOption[] = cachedCustomers.map((customer) => ({
+    id: customer.id,
+    mainName: customer.mainName,
+    legacyMemberId: customer.legacyMemberId,
+    farmAddress: customer.farmAddress ?? null,
+  }));
+  const customerOptions = !isOnline || customersLoading || customersError
+    ? cachedCustomerOptions
+    : liveCustomerOptions;
 
   const displayedBills = useMemo(() => {
     const markersByBillId = new Map(
@@ -194,7 +224,6 @@ export function RubberBillsModule({
       bill.serverBillNo,
       bill.billDate,
       bill.customerName,
-      bill.customerType,
       bill.billType,
       bill.createdByName,
       bill.createdByPhone
@@ -219,7 +248,7 @@ export function RubberBillsModule({
   }
 
   function getPrintBlockReason(bill: RubberBill) {
-    return getRubberBillPrintBlockReason(bill, isOnline, isMarkingPrinted);
+    return getRubberBillPrintBlockReason(bill);
   }
 
   async function handlePrint(bill: RubberBill) {
@@ -230,17 +259,23 @@ export function RubberBillsModule({
     }
 
     try {
-      const customer = resolveReceiptCustomer(bill, customers);
-      const html = renderRubberBillReceiptHtml(buildRubberBillReceiptModel(bill, customer));
-      await printReceiptHtml(html);
-      if (!window.confirm("เครื่องพิมพ์ออกกระดาษเรียบร้อยแล้วใช่หรือไม่?")) {
-        toast.info("ยังไม่ได้เปลี่ยนสถานะการพิมพ์");
-        return;
+      let snapshot = null;
+      if (bill.syncStatus === "synced" && bill.serverBillNo) {
+        snapshot = await getRubberBillReceiptSnapshot(bill.id);
       }
-      await markPrinted(bill.id);
-      toast.success("บันทึกสถานะปริ้นแล้ว");
+      const receipt = resolveRubberBillReceiptForPrint(bill, snapshot, isOnline);
+      const html = renderRubberBillReceiptHtml(receipt);
+      const delivery = await shareReceiptPdf(
+        html,
+        receiptPdfFilename("LanFlow-rubber-bill", receipt.referenceNo)
+      );
+      if (delivery === "shared") {
+        toast.success("แชร์ PDF ใบรับซื้อยางแล้ว");
+      } else if (delivery === "downloaded") {
+        toast.success("แชร์บนอุปกรณ์นี้ไม่ได้ จึงดาวน์โหลด PDF แทน");
+      }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "พิมพ์บิลไม่สำเร็จ");
+      toast.error(error instanceof Error ? error.message : "สร้าง PDF ไม่สำเร็จ");
     }
   }
 
@@ -384,7 +419,7 @@ export function RubberBillsModule({
           profile={profile}
           bill={editingBill}
           configuredPrice={approvalSettings?.configuredPrice}
-          customers={customers}
+          customers={customerOptions}
           onClose={() => setModalOpen(false)}
           onSave={(bill) => {
             const promise = editingBill ? updateBill(bill) : addBill(bill);
@@ -404,12 +439,8 @@ export function RubberBillsModule({
           deviceId={deviceId}
           locationId={selectedLocation.id}
           locationName={selectedLocation.name}
-          liveCustomers={customers.map((customer) => ({
-            id: customer.id,
-            mainName: customer.mainName,
-            legacyMemberId: customer.legacyMemberId ?? null,
-          }))}
-          liveCustomersLoaded={!customersLoading && !customersError}
+          liveCustomers={isOnline && !customersError ? liveCustomerOptions : []}
+          liveCustomersLoaded={isOnline && !customersLoading && !customersError}
           onClose={() => setQueueModalOpen(false)}
         />
       )}

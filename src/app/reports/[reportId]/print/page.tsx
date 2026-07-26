@@ -75,8 +75,6 @@ export default function ReportPrintPage() {
       rubberWeight: details.rubberBills.reduce((sum, row) => sum + row.weight, 0),
       rubberDeduction: details.rubberBills.reduce((sum, row) => sum + row.deduction, 0),
       rubberNet: details.rubberBills.reduce((sum, row) => sum + row.net, 0),
-      rubberCash: details.rubberBills.reduce((sum, row) => sum + row.cash, 0),
-      rubberTransfer: details.rubberBills.reduce((sum, row) => sum + row.transfer, 0),
       ocrNet: details.ocrTickets.reduce((sum, row) => sum + row.weightNet, 0),
       ocrRemaining: details.ocrTickets.reduce((sum, row) => sum + row.weightRemaining, 0),
       ocrAmount: details.ocrTickets.reduce((sum, row) => sum + row.amount, 0),
@@ -151,12 +149,12 @@ export default function ReportPrintPage() {
       <section className="report-section">
         <h2>1. บิลยาง</h2>
         <table className="report-table">
-          <thead><tr><th>วันที่</th><th>เลขที่</th><th>ลูกค้า</th><th>ประเภท</th><th className="num">น้ำหนัก</th><th className="num">ยอดหัก</th><th className="num">ยอดสุทธิ</th><th className="num">เงินสด</th><th className="num">โอน</th></tr></thead>
+          <thead><tr><th>วันที่</th><th>เลขที่</th><th>ลูกค้า</th><th>ประเภท</th><th className="num">น้ำหนัก</th><th className="num">ยอดหัก</th><th className="num">ยอดสุทธิ</th></tr></thead>
           <tbody>
-            {details.rubberBills.length === 0 && <EmptyRow columns={9} />}
-            {details.rubberBills.map((row, index) => <tr key={`${row.number}-${index}`}><td>{thaiDate(row.date)}</td><td>{row.number}</td><td>{row.customer}</td><td>{row.billType}</td><td className="num">{quantity(row.weight)}</td><td className="num">{money(row.deduction)}</td><td className="num">{money(row.net)}</td><td className="num">{money(row.cash)}</td><td className="num">{money(row.transfer)}</td></tr>)}
+            {details.rubberBills.length === 0 && <EmptyRow columns={7} />}
+            {details.rubberBills.map((row, index) => <tr key={`${row.number}-${index}`}><td>{thaiDate(row.date)}</td><td>{row.number}</td><td>{row.customer}</td><td>{row.billType}</td><td className="num">{quantity(row.weight)}</td><td className="num">{money(row.deduction)}</td><td className="num">{money(row.net)}</td></tr>)}
           </tbody>
-          <tfoot><tr><td colSpan={4}>รวม</td><td className="num">{quantity(totals.rubberWeight)}</td><td className="num">{money(totals.rubberDeduction)}</td><td className="num">{money(totals.rubberNet)}</td><td className="num">{money(totals.rubberCash)}</td><td className="num">{money(totals.rubberTransfer)}</td></tr></tfoot>
+          <tfoot><tr><td colSpan={4}>รวม</td><td className="num">{quantity(totals.rubberWeight)}</td><td className="num">{money(totals.rubberDeduction)}</td><td className="num">{money(totals.rubberNet)}</td></tr></tfoot>
         </table>
       </section>
 

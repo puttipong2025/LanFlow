@@ -447,7 +447,7 @@ CREATE OR REPLACE FUNCTION "private"."current_rubber_bill_payload"("p_bill_id" "
     'billDate', b.bill_date,
     'customerId', b.customer_id,
     'customerName', b.customer_name,
-    'customerType', b.customer_type,
+    'configuredPriceSnapshot', b.configured_price_snapshot,
     'billType', b.bill_type,
     'deductWeight', b.deduct_weight,
     'weight', b.weight,
@@ -455,8 +455,6 @@ CREATE OR REPLACE FUNCTION "private"."current_rubber_bill_payload"("p_bill_id" "
     'averagePrice', b.average_price,
     'deductionTotal', b.deduction_total,
     'netTotal', b.net_total,
-    'cashPayment', b.cash_payment,
-    'transferPayment', b.transfer_payment,
     'acidPackCount', b.acid_pack_count,
     'clientRecordedAt', b.client_recorded_at,
     'clientCreatedAt', b.client_created_at,
@@ -602,9 +600,15 @@ begin
   end if;
 
   perform pg_advisory_xact_lock(hashtext('rubber-bill-approval:' || v_bill_id::text));
+
   if private.rubber_bill_has_pending_approval(v_bill_id) then
     raise exception 'บิลยางกำลังรออนุมัติ จึงนำไปทำรายงานหรือโอนเงินไม่ได้';
   end if;
+
+  if not private.rubber_bill_is_payable(v_bill_id) then
+    raise exception 'บิลยางยังมีรายการราคา 0 หรือยอดสุทธิไม่มากกว่า 0 จึงนำไปทำรายงานหรือโอนเงินไม่ได้';
+  end if;
+
   return new;
 end;
 $$;
@@ -710,12 +714,6 @@ begin
   v_report_no := private.active_report_no(tg_argv[0], v_id);
 
   if v_report_no is not null then
-    if tg_argv[0] = 'rubber_bill'
-      and tg_op = 'UPDATE'
-      and (to_jsonb(new) - array['print_status', 'updated_at'])
-          = (to_jsonb(old) - array['print_status', 'updated_at']) then
-      return new;
-    end if;
     perform private.raise_report_lock(v_report_no);
   end if;
 
@@ -966,6 +964,7 @@ CREATE OR REPLACE FUNCTION "private"."reportable_items"("p_location_id" "uuid", 
       and b.sync_status = 'synced'
       and b.server_bill_no is not null
       and not private.rubber_bill_has_pending_approval(b.id)
+      and private.rubber_bill_is_payable(b.id)
 
     union all
 
@@ -1120,6 +1119,38 @@ $$;
 
 
 ALTER FUNCTION "private"."rubber_bill_has_pending_approval"("p_bill_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."rubber_bill_is_payable"("p_bill_id" "uuid") RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+  select exists (
+    select 1
+    from public.rubber_bills b
+    where b.id = p_bill_id
+      and b.record_status = 'active'
+      and b.sync_status = 'synced'
+      and b.server_bill_no is not null
+      and b.net_total > 0
+      and exists (
+        select 1
+        from public.rubber_bill_items i
+        where i.bill_id = b.id
+          and i.item_type = 'weigh'
+      )
+      and not exists (
+        select 1
+        from public.rubber_bill_items i
+        where i.bill_id = b.id
+          and i.item_type = 'weigh'
+          and coalesce(i.price, 0) <= 0
+      )
+  );
+$$;
+
+
+ALTER FUNCTION "private"."rubber_bill_is_payable"("p_bill_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."rubber_export_candidates"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) RETURNS TABLE("report_item_id" "uuid", "bill_id" "uuid", "bill_date" "date", "bill_no" "text", "customer_name" "text", "eligibility_at" timestamp with time zone, "net_weight" numeric, "paid_amount" numeric)
@@ -1286,23 +1317,33 @@ begin
     perform pg_advisory_xact_lock(hashtext('rubber-bill-create:' || v_request.client_temp_id));
   end if;
 
-  v_result := public.sync_rubber_bill_core_20260724020000(v_request.proposed_payload);
+  v_result := public.sync_rubber_bill_core_20260725010000(v_request.proposed_payload);
   if v_result->>'status' <> 'synced' then
     raise exception '%', coalesce(v_result->>'errorMessage', 'อนุมัติคำขอไม่สำเร็จ');
   end if;
 
   v_created_bill_id := (v_result->>'id')::uuid;
 
-  if v_request.operation = 'create' then
-    update public.rubber_bills
-    set created_by_user_id = v_request.requested_by_user_id,
-        created_by_name = v_request.requested_by_name,
-        created_by_phone = v_request.requested_by_phone
-    where id = v_created_bill_id;
-  end if;
-
   select name, phone into v_actor_name, v_actor_phone
   from public.profiles where id = auth.uid();
+
+  update public.rubber_bills
+  set created_by_user_id = case
+        when v_request.operation = 'create' then v_request.requested_by_user_id
+        else created_by_user_id
+      end,
+      created_by_name = case
+        when v_request.operation = 'create' then v_request.requested_by_name
+        else created_by_name
+      end,
+      created_by_phone = case
+        when v_request.operation = 'create' then v_request.requested_by_phone
+        else created_by_phone
+      end,
+      approval_state = 'approved',
+      approved_by_name = coalesce(v_actor_name, ''),
+      approval_revision_no = revision_no
+  where id = v_created_bill_id;
 
   update public.rubber_bill_approval_requests
   set request_status = 'approved',
@@ -3899,6 +3940,7 @@ begin
           max(updated_at) as updated_at, max(revision_no) as revision_no
         from public.rubber_bills rb
         where rb.location_id = p_location_id and rb.record_status = 'active' and rb.net_total > 0
+          and private.rubber_bill_is_payable(rb.id)
           and rb.bill_date between p_from_date and p_to_date
           and not exists (select 1 from public.money_transfer_items i where i.source_type = 'rubber_bill' and i.source_id = rb.id)
         group by bill_date
@@ -4435,56 +4477,6 @@ $$;
 ALTER FUNCTION "public"."list_rubber_bill_approval_markers"("p_location_id" "uuid") OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "public"."mark_rubber_bill_printed"("p_bill_id" "uuid") RETURNS "jsonb"
-    LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public'
-    AS $$
-declare
-  v_bill record;
-begin
-  if not coalesce(private.is_active_user(), false) then
-    return jsonb_build_object('status', 'failed', 'errorMessage', 'Unauthorized or inactive user');
-  end if;
-
-  select id, location_id, record_status, print_status, revision_no
-    into v_bill
-  from public.rubber_bills
-  where id = p_bill_id
-  for update;
-
-  if not found then
-    return jsonb_build_object('status', 'failed', 'errorMessage', 'Rubber Bill not found');
-  end if;
-
-  if not public.can_access_location(v_bill.location_id) then
-    return jsonb_build_object('status', 'failed', 'errorMessage', 'Location access denied');
-  end if;
-
-  if v_bill.record_status <> 'active' then
-    return jsonb_build_object('status', 'failed', 'errorMessage', 'Only active Rubber Bills can be marked printed');
-  end if;
-
-  if v_bill.print_status <> 'ปริ้นแล้ว' then
-    update public.rubber_bills
-    set print_status = 'ปริ้นแล้ว'
-    where id = p_bill_id;
-  end if;
-
-  return jsonb_build_object(
-    'status', 'synced',
-    'id', p_bill_id,
-    'printStatus', 'ปริ้นแล้ว',
-    'revisionNo', v_bill.revision_no
-  );
-exception when others then
-  return jsonb_build_object('status', 'failed', 'errorMessage', sqlerrm);
-end;
-$$;
-
-
-ALTER FUNCTION "public"."mark_rubber_bill_printed"("p_bill_id" "uuid") OWNER TO "postgres";
-
-
 CREATE OR REPLACE FUNCTION "public"."prevent_location_change"() RETURNS "trigger"
     LANGUAGE "plpgsql"
     AS $$
@@ -4881,7 +4873,6 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_bills" (
     "bill_date" "date" NOT NULL,
     "customer_id" "uuid",
     "customer_name" "text",
-    "customer_type" "text",
     "bill_type" "text" NOT NULL,
     "deduct_weight" numeric(12,2) DEFAULT 0 NOT NULL,
     "weight" numeric(12,2) DEFAULT 0 NOT NULL,
@@ -4889,10 +4880,7 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_bills" (
     "average_price" numeric(12,2) DEFAULT 0 NOT NULL,
     "deduction_total" numeric(12,2) DEFAULT 0 NOT NULL,
     "net_total" numeric(12,2) DEFAULT 0 NOT NULL,
-    "cash_payment" numeric(12,2) DEFAULT 0 NOT NULL,
-    "transfer_payment" numeric(12,2) DEFAULT 0 NOT NULL,
     "acid_pack_count" numeric(12,2) DEFAULT 0 NOT NULL,
-    "print_status" "text" DEFAULT 'ยังไม่ได้ปริ้น'::"text" NOT NULL,
     "locked_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "client_recorded_at" timestamp with time zone,
     "client_created_at" timestamp with time zone,
@@ -4906,7 +4894,13 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_bills" (
     "created_by_phone" "text" NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    CONSTRAINT "rubber_bills_customer_type_check" CHECK (("customer_type" = ANY (ARRAY['สาขานี้จ่าย'::"text", 'สาขาใหญ่จ่าย'::"text"])))
+    "configured_price_snapshot" numeric(12,2),
+    "approval_state" "text" DEFAULT 'not_required'::"text" NOT NULL,
+    "approved_by_name" "text",
+    "approval_revision_no" integer,
+    CONSTRAINT "rubber_bills_approval_revision_shape_check" CHECK (((("approval_state" = 'not_required'::"text") AND ("approved_by_name" IS NULL) AND ("approval_revision_no" IS NULL)) OR (("approval_state" = 'approved'::"text") AND ("approved_by_name" IS NOT NULL) AND ("approval_revision_no" = "revision_no")))),
+    CONSTRAINT "rubber_bills_approval_state_check" CHECK (("approval_state" = ANY (ARRAY['not_required'::"text", 'approved'::"text"]))),
+    CONSTRAINT "rubber_bills_configured_price_snapshot_check" CHECK ((("configured_price_snapshot" IS NULL) OR ("configured_price_snapshot" >= (0)::numeric)))
 );
 
 
@@ -5084,7 +5078,7 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_bill_approval_settings" (
     "updated_by_name" "text",
     "updated_by_phone" "text",
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    CONSTRAINT "rubber_bill_approval_settings_configured_price_check" CHECK ((("configured_price" IS NULL) OR ("configured_price" > (0)::numeric))),
+    CONSTRAINT "rubber_bill_approval_settings_configured_price_check" CHECK ((("configured_price" IS NULL) OR ("configured_price" >= (0)::numeric))),
     CONSTRAINT "rubber_bill_approval_settings_edit_window_minutes_check" CHECK (("edit_window_minutes" >= 0)),
     CONSTRAINT "rubber_bill_approval_settings_id_check" CHECK (("id" = true))
 );
@@ -5109,8 +5103,8 @@ begin
     raise exception 'จำนวนนาทีต้องเป็นจำนวนเต็มตั้งแต่ 0 ขึ้นไป';
   end if;
   if p_configured_price is not null
-     and (p_configured_price <= 0 or scale(p_configured_price) > 2) then
-    raise exception 'ราคายางต้องมากกว่า 0 และมีทศนิยมไม่เกิน 2 ตำแหน่ง';
+     and (p_configured_price < 0 or scale(p_configured_price) > 2) then
+    raise exception 'ราคายางต้องไม่ติดลบและมีทศนิยมไม่เกิน 2 ตำแหน่ง';
   end if;
 
   select name, phone into v_actor_name, v_actor_phone
@@ -5704,7 +5698,8 @@ declare
   v_proposed_prices jsonb := '[]'::jsonb;
   v_price numeric;
   v_price_scale integer;
-  v_has_mismatch boolean := false;
+  v_price_cap numeric;
+  v_has_exceeded_cap boolean := false;
   v_reasons text[] := array[]::text[];
   v_request_id uuid;
   v_existing_request_status text;
@@ -5744,6 +5739,42 @@ begin
   from public.rubber_bill_approval_settings
   where id = true;
 
+  if v_operation = 'create' then
+    if not (payload ? 'configuredPriceSnapshot') then
+      return jsonb_build_object(
+        'status', 'failed',
+        'errorMessage', 'configuredPriceSnapshot is required for create'
+      );
+    end if;
+
+    if jsonb_typeof(payload->'configuredPriceSnapshot') = 'null' then
+      v_price_cap := null;
+    elsif jsonb_typeof(payload->'configuredPriceSnapshot') = 'number' then
+      begin
+        v_price_cap := (payload->>'configuredPriceSnapshot')::numeric;
+      exception when others then
+        return jsonb_build_object(
+          'status', 'failed',
+          'errorMessage', 'configuredPriceSnapshot must be numeric or null'
+        );
+      end;
+
+      if v_price_cap < 0 or scale(v_price_cap) > 2 then
+        return jsonb_build_object(
+          'status', 'failed',
+          'errorMessage', 'configuredPriceSnapshot must be non-negative with at most 2 decimal places'
+        );
+      end if;
+    else
+      return jsonb_build_object(
+        'status', 'failed',
+        'errorMessage', 'configuredPriceSnapshot must be numeric or null'
+      );
+    end if;
+  else
+    v_price_cap := v_settings.configured_price;
+  end if;
+
   if v_operation in ('create', 'update') then
     for v_price, v_price_scale in
       select (item->>'unitPrice')::numeric, scale((item->>'unitPrice')::numeric)
@@ -5756,13 +5787,15 @@ begin
           'errorMessage', 'ราคายางต้องไม่ติดลบและมีทศนิยมไม่เกิน 2 ตำแหน่ง'
         );
       end if;
-      if v_settings.configured_price is not null
-         and v_price is distinct from v_settings.configured_price then
-        v_has_mismatch := true;
+      if v_price_cap is not null and v_price > v_price_cap then
+        v_has_exceeded_cap := true;
       end if;
     end loop;
 
-    select coalesce(jsonb_agg((item->>'unitPrice')::numeric order by (item->>'sequenceNo')::integer), '[]'::jsonb)
+    select coalesce(
+      jsonb_agg((item->>'unitPrice')::numeric order by (item->>'sequenceNo')::integer),
+      '[]'::jsonb
+    )
       into v_proposed_prices
     from jsonb_array_elements(coalesce(payload->'items', '[]'::jsonb)) item
     where item->>'itemType' = 'weigh';
@@ -5798,8 +5831,8 @@ begin
       );
     end if;
 
-    if v_settings.configured_price is null or not v_has_mismatch then
-      return public.sync_rubber_bill_core_20260724020000(payload);
+    if v_price_cap is null or not v_has_exceeded_cap then
+      return public.sync_rubber_bill_core_20260725010000(payload);
     end if;
 
     v_reasons := array_append(v_reasons, 'price');
@@ -5868,20 +5901,20 @@ begin
       v_reasons := array_append(v_reasons, 'time');
     end if;
 
-    if v_operation = 'update' and v_settings.configured_price is not null then
+    if v_operation = 'update' and v_price_cap is not null then
       select coalesce(jsonb_agg(i.price order by i.sequence_no), '[]'::jsonb)
         into v_current_prices
       from public.rubber_bill_items i
       where i.bill_id = v_bill.id
         and i.item_type = 'weigh';
 
-      if v_current_prices is distinct from v_proposed_prices and v_has_mismatch then
+      if v_current_prices is distinct from v_proposed_prices and v_has_exceeded_cap then
         v_reasons := array_append(v_reasons, 'price');
       end if;
     end if;
 
     if cardinality(v_reasons) = 0 then
-      return public.sync_rubber_bill_core_20260724020000(payload);
+      return public.sync_rubber_bill_core_20260725010000(payload);
     end if;
 
     v_original_payload := private.current_rubber_bill_payload(v_bill.id);
@@ -5896,6 +5929,7 @@ begin
     base_revision_no,
     matched_reasons,
     configured_price_snapshot,
+    edit_window_minutes_snapshot,
     original_payload,
     proposed_payload,
     requested_by_user_id,
@@ -5910,7 +5944,8 @@ begin
     v_idempotency_key,
     v_expected_revision,
     v_reasons,
-    v_settings.configured_price,
+    v_price_cap,
+    v_settings.edit_window_minutes,
     v_original_payload,
     payload,
     auth.uid(),
@@ -5958,7 +5993,7 @@ $$;
 ALTER FUNCTION "public"."sync_rubber_bill"("payload" "jsonb") OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "public"."sync_rubber_bill_core_20260716020000"("payload" "jsonb") RETURNS "jsonb"
+CREATE OR REPLACE FUNCTION "public"."sync_rubber_bill_core_20260725010000"("payload" "jsonb") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public'
     AS $$
@@ -5969,6 +6004,8 @@ declare
   v_location_id uuid;
   v_record_status record_status;
   v_idempotency_key text;
+  v_customer_id uuid;
+  v_deduct_weight numeric;
 
   v_bill_id uuid;
   v_current_revision integer;
@@ -6012,6 +6049,20 @@ begin
   v_record_status := (payload->>'recordStatus')::record_status;
   v_idempotency_key := payload->>'idempotencyKey';
 
+  if v_operation in ('create', 'update') then
+    v_customer_id := nullif(payload->>'customerId', '')::uuid;
+    v_deduct_weight := coalesce(nullif(payload->>'deductWeight', '')::numeric, 0);
+
+    if v_deduct_weight < 0 then
+      return jsonb_build_object('status', 'failed', 'errorMessage', 'deductWeight must be non-negative');
+    end if;
+
+    if v_customer_id is not null
+       and not exists (select 1 from public.customers where id = v_customer_id) then
+      return jsonb_build_object('status', 'failed', 'errorMessage', 'Customer not found');
+    end if;
+  end if;
+
   if not public.can_access_location(v_location_id) then
     return jsonb_build_object('status', 'failed', 'errorMessage', 'Location access denied');
   end if;
@@ -6035,15 +6086,11 @@ begin
 
     if v_operation = 'create' then
       return jsonb_build_object('status', 'conflict', 'errorMessage', 'Record already exists');
-    else
-      if v_current_revision != coalesce(v_expected_revision, v_current_revision) then
-        return jsonb_build_object('status', 'conflict', 'errorMessage', 'Revision mismatch');
-      end if;
+    elsif v_current_revision != coalesce(v_expected_revision, v_current_revision) then
+      return jsonb_build_object('status', 'conflict', 'errorMessage', 'Revision mismatch');
     end if;
-  else
-    if v_operation != 'create' then
-      return jsonb_build_object('status', 'failed', 'errorMessage', 'Cannot update or delete non-existent record');
-    end if;
+  elsif v_operation != 'create' then
+    return jsonb_build_object('status', 'failed', 'errorMessage', 'Cannot update or delete non-existent record');
   end if;
 
   if v_bill_id is not null and v_operation in ('update', 'delete') then
@@ -6092,7 +6139,12 @@ begin
           return jsonb_build_object('status', 'failed', 'errorMessage', 'รายการหักสินค้าต้องเลือกสินค้าในสต็อกและระบุจำนวน');
         end if;
 
-        if not exists (select 1 from public.acid_products where id = v_stock_product_id and is_active = true) then
+        if not exists (
+          select 1
+          from public.acid_products
+          where id = v_stock_product_id
+            and is_active = true
+        ) then
           return jsonb_build_object('status', 'failed', 'errorMessage', 'ไม่พบสินค้าในสต็อกสำหรับรายการหักสินค้า');
         end if;
 
@@ -6105,7 +6157,9 @@ begin
 
     for v_stock_row in select * from pg_temp._acid_stock_delta
     loop
-      perform pg_advisory_xact_lock(hashtext('acid-stock:' || v_location_id::text || ':' || v_stock_row.product_id::text));
+      perform pg_advisory_xact_lock(
+        hashtext('acid-stock:' || v_location_id::text || ':' || v_stock_row.product_id::text)
+      );
       v_current_balance := public.get_acid_stock_balance(v_location_id, v_stock_row.product_id);
       v_projected_balance := v_current_balance + v_stock_row.old_qty - v_stock_row.new_qty;
 
@@ -6123,7 +6177,10 @@ begin
         deleted_by_phone = payload->>'deletedByPhone',
         revision_no = revision_no + 1,
         idempotency_key = v_idempotency_key,
-        server_received_at = now()
+        server_received_at = now(),
+        approval_state = 'not_required',
+        approved_by_name = null,
+        approval_revision_no = null
     where id = v_bill_id
     returning id, revision_no into v_bill_id, v_current_revision;
 
@@ -6144,12 +6201,12 @@ begin
     insert into public.rubber_bills (
       client_temp_id, idempotency_key, revision_no, sync_status, record_status,
       location_id, bill_no, local_bill_no, server_bill_no, bill_date,
-      customer_name, customer_type, bill_type,
-      weight, rubber_value, average_price,
-      deduction_total, net_total,
-      cash_payment, transfer_payment, acid_pack_count,
+      customer_id, customer_name, configured_price_snapshot, bill_type,
+      deduct_weight, weight, rubber_value, average_price,
+      deduction_total, net_total, acid_pack_count,
       client_recorded_at, client_created_at, server_received_at,
-      created_by_user_id, created_by_name, created_by_phone
+      created_by_user_id, created_by_name, created_by_phone,
+      approval_state, approved_by_name, approval_revision_no
     ) values (
       v_client_temp_id,
       v_idempotency_key,
@@ -6161,23 +6218,29 @@ begin
       payload->>'localBillNo',
       v_server_bill_no,
       (payload->>'billDate')::date,
+      v_customer_id,
       payload->>'customerName',
-      payload->>'customerType',
-      'weighing',
+      case
+        when v_operation = 'create' then (payload->>'configuredPriceSnapshot')::numeric
+        else null
+      end,
+      coalesce(nullif(payload->>'billType', ''), 'weighing'),
+      v_deduct_weight,
       (payload->>'weight')::numeric,
       (payload->>'rubberValue')::numeric,
       (payload->>'averagePrice')::numeric,
       (payload->>'deductionTotal')::numeric,
       (payload->>'netTotal')::numeric,
-      (payload->>'cashPayment')::numeric,
-      (payload->>'transferPayment')::numeric,
       (payload->>'acidPackCount')::numeric,
       (payload->>'clientRecordedAt')::timestamptz,
       (payload->>'clientCreatedAt')::timestamptz,
       now(),
       v_created_by_user_id,
       coalesce(v_created_by_name, ''),
-      coalesce(v_created_by_phone, '')
+      coalesce(v_created_by_phone, ''),
+      'not_required',
+      null,
+      null
     )
     on conflict (client_temp_id) do update set
       revision_no = public.rubber_bills.revision_no + 1,
@@ -6185,32 +6248,35 @@ begin
       sync_status = 'synced',
       record_status = 'active',
       bill_date = excluded.bill_date,
+      customer_id = excluded.customer_id,
       customer_name = excluded.customer_name,
-      customer_type = excluded.customer_type,
+      bill_type = excluded.bill_type,
+      deduct_weight = excluded.deduct_weight,
       weight = excluded.weight,
       rubber_value = excluded.rubber_value,
       average_price = excluded.average_price,
       deduction_total = excluded.deduction_total,
       net_total = excluded.net_total,
-      cash_payment = excluded.cash_payment,
-      transfer_payment = excluded.transfer_payment,
       acid_pack_count = excluded.acid_pack_count,
       client_recorded_at = excluded.client_recorded_at,
-      server_received_at = now()
+      server_received_at = now(),
+      approval_state = 'not_required',
+      approved_by_name = null,
+      approval_revision_no = null
     returning id, revision_no into v_bill_id, v_current_revision;
 
     delete from public.rubber_bill_items where bill_id = v_bill_id;
 
-    for v_item in select * from jsonb_array_elements(payload->'items')
+    for v_item in select * from jsonb_array_elements(coalesce(payload->'items', '[]'::jsonb))
     loop
       insert into public.rubber_bill_items (
         bill_id, item_type, description,
         weight_in, weight_out, net_weight,
-        quantity, unit, price, total, stock_product_id
+        quantity, unit, price, total, stock_product_id, sequence_no
       ) values (
         v_bill_id,
         v_item->>'itemType',
-        v_item->>'description',
+        coalesce(v_item->>'description', v_item->>'title'),
         (v_item->>'inWeight')::numeric,
         (v_item->>'outWeight')::numeric,
         (v_item->>'netWeight')::numeric,
@@ -6218,7 +6284,8 @@ begin
         v_item->>'unit',
         (v_item->>'unitPrice')::numeric,
         (v_item->>'totalAmount')::numeric,
-        nullif(v_item->>'stockProductId', '')::uuid
+        nullif(v_item->>'stockProductId', '')::uuid,
+        nullif(v_item->>'sequenceNo', '')::integer
       );
     end loop;
   end if;
@@ -6236,53 +6303,7 @@ end;
 $$;
 
 
-ALTER FUNCTION "public"."sync_rubber_bill_core_20260716020000"("payload" "jsonb") OWNER TO "postgres";
-
-
-CREATE OR REPLACE FUNCTION "public"."sync_rubber_bill_core_20260724020000"("payload" "jsonb") RETURNS "jsonb"
-    LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public'
-    AS $$
-declare
-  v_operation text := payload->>'operation';
-  v_customer_id uuid;
-  v_deduct_weight numeric;
-  v_result jsonb;
-  v_bill_id uuid;
-begin
-  if v_operation in ('create', 'update') then
-    v_customer_id := nullif(payload->>'customerId', '')::uuid;
-    v_deduct_weight := coalesce(nullif(payload->>'deductWeight', '')::numeric, 0);
-
-    if v_deduct_weight < 0 then
-      return jsonb_build_object('status', 'failed', 'errorMessage', 'deductWeight must be non-negative');
-    end if;
-
-    if v_customer_id is not null
-       and not exists (select 1 from public.customers where id = v_customer_id) then
-      return jsonb_build_object('status', 'failed', 'errorMessage', 'Customer not found');
-    end if;
-  end if;
-
-  v_result := public.sync_rubber_bill_core_20260716020000(payload);
-
-  if v_operation in ('create', 'update') and v_result->>'status' = 'synced' then
-    v_bill_id := (v_result->>'id')::uuid;
-    update public.rubber_bills
-    set customer_id = v_customer_id,
-        deduct_weight = v_deduct_weight,
-        bill_type = coalesce(nullif(payload->>'billType', ''), bill_type)
-    where id = v_bill_id;
-  end if;
-
-  return v_result;
-exception when others then
-  return jsonb_build_object('status', 'failed', 'errorMessage', sqlerrm);
-end;
-$$;
-
-
-ALTER FUNCTION "public"."sync_rubber_bill_core_20260724020000"("payload" "jsonb") OWNER TO "postgres";
+ALTER FUNCTION "public"."sync_rubber_bill_core_20260725010000"("payload" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."sync_stock_entry"("payload" "jsonb") RETURNS "jsonb"
@@ -7154,8 +7175,10 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_bill_approval_requests" (
     "approved_by_phone" "text",
     "approved_at" timestamp with time zone,
     "created_bill_id" "uuid",
+    "edit_window_minutes_snapshot" integer NOT NULL,
     CONSTRAINT "rubber_bill_approval_decision_shape" CHECK (((("request_status" = 'pending'::"text") AND ("approved_by_user_id" IS NULL) AND ("approved_at" IS NULL)) OR (("request_status" = 'approved'::"text") AND ("approved_by_user_id" IS NOT NULL) AND ("approved_at" IS NOT NULL)))),
     CONSTRAINT "rubber_bill_approval_request_shape" CHECK (((("operation" = 'create'::"text") AND ("bill_id" IS NULL) AND ("original_payload" IS NULL)) OR (("operation" = ANY (ARRAY['update'::"text", 'delete'::"text"])) AND ("bill_id" IS NOT NULL) AND ("original_payload" IS NOT NULL)))),
+    CONSTRAINT "rubber_bill_approval_requests_edit_window_snapshot_check" CHECK (("edit_window_minutes_snapshot" >= 0)),
     CONSTRAINT "rubber_bill_approval_requests_matched_reasons_check" CHECK (("cardinality"("matched_reasons") > 0)),
     CONSTRAINT "rubber_bill_approval_requests_operation_check" CHECK (("operation" = ANY (ARRAY['create'::"text", 'update'::"text", 'delete'::"text"]))),
     CONSTRAINT "rubber_bill_approval_requests_request_status_check" CHECK (("request_status" = ANY (ARRAY['pending'::"text", 'approved'::"text"])))
@@ -7885,6 +7908,10 @@ CREATE UNIQUE INDEX "rubber_bill_approval_one_pending_create" ON "public"."rubbe
 
 
 CREATE INDEX "rubber_bill_approval_queue" ON "public"."rubber_bill_approval_requests" USING "btree" ("request_status", "requested_at" DESC);
+
+
+
+CREATE INDEX "rubber_bill_items_payable_lookup" ON "public"."rubber_bill_items" USING "btree" ("bill_id", "item_type", "price");
 
 
 
@@ -9098,6 +9125,10 @@ GRANT ALL ON FUNCTION "private"."is_super_admin"() TO "authenticated";
 
 
 
+REVOKE ALL ON FUNCTION "private"."rubber_bill_is_payable"("p_bill_id" "uuid") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."telegram_badge_latest_slot"("p_now" timestamp with time zone, "p_start_time" time without time zone, "p_end_time" time without time zone, "p_interval_minutes" integer) FROM PUBLIC;
 
 
@@ -9308,11 +9339,6 @@ GRANT ALL ON FUNCTION "public"."list_rubber_bill_approval_markers"("p_location_i
 
 
 
-REVOKE ALL ON FUNCTION "public"."mark_rubber_bill_printed"("p_bill_id" "uuid") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."mark_rubber_bill_printed"("p_bill_id" "uuid") TO "authenticated";
-
-
-
 REVOKE ALL ON FUNCTION "public"."prevent_locked_ocr_ticket_change"() FROM PUBLIC;
 
 
@@ -9484,11 +9510,7 @@ GRANT ALL ON FUNCTION "public"."sync_rubber_bill"("payload" "jsonb") TO "authent
 
 
 
-REVOKE ALL ON FUNCTION "public"."sync_rubber_bill_core_20260716020000"("payload" "jsonb") FROM PUBLIC;
-
-
-
-REVOKE ALL ON FUNCTION "public"."sync_rubber_bill_core_20260724020000"("payload" "jsonb") FROM PUBLIC;
+REVOKE ALL ON FUNCTION "public"."sync_rubber_bill_core_20260725010000"("payload" "jsonb") FROM PUBLIC;
 
 
 

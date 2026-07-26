@@ -1,4 +1,6 @@
 import { test, expect, Page } from '@playwright/test';
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
 
 const localSupabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://127.0.0.1:54321';
 const localServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
@@ -21,7 +23,7 @@ async function readQueue(page: Page): Promise<any[]> {
   await page.waitForLoadState('domcontentloaded');
   return page.evaluate(() => {
     return new Promise<any[]>((resolve, reject) => {
-      const req = indexedDB.open('lanflow_sync_db', 3);
+      const req = indexedDB.open('lanflow_sync_db');
       req.onerror = () => reject(req.error);
       req.onupgradeneeded = () => {
         req.transaction?.abort();
@@ -42,6 +44,46 @@ async function readQueue(page: Page): Promise<any[]> {
       };
     });
   });
+}
+
+async function readReceiptSnapshots(page: Page): Promise<any[]> {
+  return page.evaluate(() => new Promise<any[]>((resolve, reject) => {
+    const request = indexedDB.open('lanflow_sync_db');
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains('rubber_bill_receipts')) {
+        db.close();
+        resolve([]);
+        return;
+      }
+      const transaction = db.transaction('rubber_bill_receipts', 'readonly');
+      const all = transaction.objectStore('rubber_bill_receipts').getAll();
+      all.onsuccess = () => resolve(all.result);
+      all.onerror = () => reject(all.error);
+      transaction.oncomplete = () => db.close();
+    };
+  }));
+}
+
+async function deleteReceiptSnapshot(page: Page, billId: string) {
+  await page.evaluate((targetBillId) => new Promise<void>((resolve, reject) => {
+    const request = indexedDB.open('lanflow_sync_db');
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      const transaction = db.transaction('rubber_bill_receipts', 'readwrite');
+      transaction.objectStore('rubber_bill_receipts').delete(targetBillId);
+      transaction.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      transaction.onerror = () => {
+        db.close();
+        reject(transaction.error);
+      };
+    };
+  }), billId);
 }
 
 test.use({ baseURL: 'http://127.0.0.1:3001' });
@@ -67,6 +109,13 @@ test.describe('PWA Offline Reload', () => {
       }
     );
     expect(resetApprovalSetting.ok()).toBeTruthy();
+    await page.addInitScript(() => {
+      localStorage.setItem("lanflow:rubber-bill-approval-settings:v1", JSON.stringify({
+        editWindowMinutes: 30,
+        configuredPrice: null,
+        cachedAt: new Date().toISOString(),
+      }));
+    });
     await page.goto('/');
     await page.evaluate(async () => {
       return new Promise<void>((resolve, reject) => {
@@ -79,9 +128,16 @@ test.describe('PWA Offline Reload', () => {
   });
 
   test('should preserve IDB queue across offline page reload and sync after reconnect', async ({ page, context }) => {
-    test.setTimeout(120000);
+    test.setTimeout(150000);
 
     page.on('dialog', dialog => dialog.accept());
+    await page.addInitScript(() => {
+      Window.prototype.print = function printWithoutDialog() {
+        window.setTimeout(() => {
+          this.dispatchEvent(new Event('afterprint'));
+        }, 0);
+      };
+    });
 
     // === Phase 1: Login online — let SW install and cache the app shell ===
     await page.goto('/login');
@@ -93,6 +149,29 @@ test.describe('PWA Offline Reload', () => {
     // Visit rubber bills tab to trigger SW precaching of this view
     await page.click('button:has-text("บิลยาง")');
     await expect(page.locator('button:has-text("เพิ่มบิลยาง")')).toBeVisible();
+
+    // Create one synced bill so the online query stores a complete receipt snapshot.
+    const syncedMarker = `PWA-SYNCED-${Date.now()}`;
+    await page.click('button:has-text("เพิ่มบิลยาง")');
+    await page.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]').fill(syncedMarker);
+    await page.keyboard.press('Escape');
+    const syncedModal = page.locator('.fixed.inset-0').last();
+    const syncedWeighRow = syncedModal.locator('table').first().locator('tbody tr').first();
+    await syncedWeighRow.locator('input[type="number"]').nth(0).fill('1000');
+    await syncedWeighRow.locator('input[type="number"]').nth(1).fill('200');
+    await syncedWeighRow.locator('input[type="number"]').nth(3).fill('20.00');
+    await page.click('button:has-text("Submit")');
+
+    const syncedRow = page.locator('table tbody tr', { hasText: syncedMarker }).first();
+    await expect(syncedRow).toBeVisible({ timeout: 10000 });
+    await expect(syncedRow.locator('span:has-text("ซิงก์แล้ว")')).toBeVisible({ timeout: 20000 });
+    await expect.poll(async () => {
+      const snapshots = await readReceiptSnapshots(page);
+      return snapshots.find((snapshot) => snapshot.bill?.customerName === syncedMarker) ?? null;
+    }, {
+      message: 'Synced receipt snapshot was not cached',
+      timeout: 20000,
+    }).not.toBeNull();
 
     // Wait for service worker to be active and controlling the page
     await expect.poll(async () => {
@@ -142,6 +221,9 @@ test.describe('PWA Offline Reload', () => {
     const offlineRow = page.locator('table tbody tr', { hasText: pwaMarker }).first();
     await expect(offlineRow).toBeVisible({ timeout: 10000 });
     await expect(offlineRow.locator('span:has-text("รอซิงก์")')).toBeVisible();
+    const cachedSyncedRow = page.locator('table tbody tr', { hasText: syncedMarker }).first();
+    await expect(cachedSyncedRow).toBeVisible({ timeout: 10000 });
+    await expect(cachedSyncedRow.locator('span:has-text("ซิงก์แล้ว")')).toBeVisible();
 
     // Verify IDB queue survived the offline reload
     const queueAfterReload = await readQueue(page);
@@ -149,6 +231,45 @@ test.describe('PWA Offline Reload', () => {
     expect(eventAfterReload).toBeDefined();
     expect(eventAfterReload.operation).toBe('create');
     expect(eventAfterReload.status).toBe('pending');
+
+    // Both offline PDF downloads must work without any network request or mutation.
+    await page.waitForTimeout(1000);
+    const printRequests: string[] = [];
+    let capturePrintRequests = false;
+    page.on('request', (request) => {
+      if (capturePrintRequests) {
+        printRequests.push(`${request.method()} ${request.url()}`);
+      }
+    });
+    capturePrintRequests = true;
+    const offlineDownloadPromise = page.waitForEvent("download");
+    await offlineRow.locator('button[title="ดาวน์โหลด PDF ใบรับซื้อยาง"]').click();
+    const offlineDownload = await offlineDownloadPromise;
+    expect(offlineDownload.suggestedFilename()).toMatch(/^LanFlow-rubber-bill-.*-80mm\.pdf$/);
+    const pdfOutputDir = join(process.cwd(), "output", "pdf");
+    await mkdir(pdfOutputDir, { recursive: true });
+    await offlineDownload.saveAs(join(pdfOutputDir, "rubber-bill-offline-80mm.pdf"));
+    await expect(page.locator('iframe[aria-hidden="true"]')).toHaveCount(0);
+    const syncedDownloadPromise = page.waitForEvent("download");
+    await cachedSyncedRow.locator('button[title="ดาวน์โหลด PDF ใบรับซื้อยาง"]').click();
+    const syncedDownload = await syncedDownloadPromise;
+    expect(syncedDownload.suggestedFilename()).toMatch(/^LanFlow-rubber-bill-.*-80mm\.pdf$/);
+    await syncedDownload.saveAs(join(pdfOutputDir, "rubber-bill-synced-80mm.pdf"));
+    await expect(page.locator('iframe[aria-hidden="true"]')).toHaveCount(0);
+    await page.waitForTimeout(200);
+    capturePrintRequests = false;
+    expect(printRequests).toEqual([]);
+
+    // A synced row without its receipt snapshot must ask to reconnect instead of rebuilding from network.
+    const cachedSnapshots = await readReceiptSnapshots(page);
+    const cachedSyncedSnapshot = cachedSnapshots.find(
+      (snapshot) => snapshot.bill?.customerName === syncedMarker
+    );
+    expect(cachedSyncedSnapshot).toBeDefined();
+    await deleteReceiptSnapshot(page, cachedSyncedSnapshot.billId);
+    await cachedSyncedRow.locator('button[title="ดาวน์โหลด PDF ใบรับซื้อยาง"]').click();
+    await expect(page.getByText('ไม่พบสำเนาใบพิมพ์ของบิลนี้ในเครื่อง กรุณาออนไลน์เพื่อโหลดใหม่'))
+      .toBeVisible();
 
     // === Phase 4: Go online → reload again → full app renders → sync ===
     await context.setOffline(false);
@@ -185,5 +306,15 @@ test.describe('PWA Offline Reload', () => {
       locationId: eventBeforeReload.payload.locationId,
     };
     await page.request.post('/api/lanflow/rubber-bills', { data: cleanupPayload });
+
+    const syncedCleanup = {
+      operation: 'delete',
+      clientTempId: cachedSyncedSnapshot.bill.clientTempId,
+      idempotencyKey: `delete:${cachedSyncedSnapshot.bill.clientTempId}:${cachedSyncedSnapshot.revisionNo}`,
+      expectedRevisionNo: cachedSyncedSnapshot.revisionNo,
+      recordStatus: 'deleted',
+      locationId: cachedSyncedSnapshot.locationId,
+    };
+    await page.request.post('/api/lanflow/rubber-bills', { data: syncedCleanup });
   });
 });

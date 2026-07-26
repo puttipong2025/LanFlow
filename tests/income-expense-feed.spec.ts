@@ -106,7 +106,7 @@ test.describe("Income/Expense feed correctness @income-expense-feed", () => {
     const [actualResult, transferResult, rubberResult, ocrResult] = await Promise.all([
       admin.from("income_expense").select("type,cost").eq("location_id", locationId).eq("record_status", "active").gte("tx_date", rangeStart).lte("tx_date", rangeEnd),
       admin.from("money_transfers").select("id,location_id,target_location_id,transfer_type,transfer_status,record_status,net_amount_to_pay,branch_paid_amount,created_at").gte("created_at", `${rangeStart}T00:00:00.000Z`).lte("created_at", `${rangeEnd}T23:59:59.999Z`),
-      admin.from("rubber_bills").select("id,bill_date,net_total").eq("location_id", locationId).eq("record_status", "active").gt("net_total", 0).gte("bill_date", rangeStart).lte("bill_date", rangeEnd),
+      admin.from("rubber_bills").select("id,bill_date,net_total,sync_status,server_bill_no").eq("location_id", locationId).eq("record_status", "active").gt("net_total", 0).gte("bill_date", rangeStart).lte("bill_date", rangeEnd),
       admin.from("ocr_tickets").select("id,date_in,total_amount").eq("location_id", locationId).eq("record_status", "active").gt("total_amount", 0).gte("date_in", rangeStart).lte("date_in", rangeEnd),
     ]);
     expect(actualResult.error).toBeNull();
@@ -123,16 +123,32 @@ test.describe("Income/Expense feed correctness @income-expense-feed", () => {
 
     const rubberIds = (rubberResult.data ?? []).map((row) => row.id);
     const ocrIds = (ocrResult.data ?? []).map((row) => row.id);
-    const [usedRubberResult, usedOcrResult] = await Promise.all([
+    const [usedRubberResult, usedOcrResult, rubberItemResult] = await Promise.all([
       rubberIds.length ? admin.from("money_transfer_items").select("source_id").eq("source_type", "rubber_bill").in("source_id", rubberIds) : Promise.resolve({ data: [], error: null }),
       ocrIds.length ? admin.from("money_transfer_items").select("source_id").eq("source_type", "ocr_ticket").in("source_id", ocrIds) : Promise.resolve({ data: [], error: null }),
+      rubberIds.length ? admin.from("rubber_bill_items").select("bill_id,item_type,price").in("bill_id", rubberIds) : Promise.resolve({ data: [], error: null }),
     ]);
     expect(usedRubberResult.error).toBeNull();
     expect(usedOcrResult.error).toBeNull();
+    expect(rubberItemResult.error).toBeNull();
     const usedRubberIds = new Set((usedRubberResult.data ?? []).map((row) => row.source_id));
     const usedOcrIds = new Set((usedOcrResult.data ?? []).map((row) => row.source_id));
+    const weighItemsByBill = new Map<string, Array<{ price: number | string }>>();
+    for (const item of rubberItemResult.data ?? []) {
+      if (item.item_type !== "weigh") continue;
+      const items = weighItemsByBill.get(item.bill_id) ?? [];
+      items.push({ price: item.price });
+      weighItemsByBill.set(item.bill_id, items);
+    }
 
-    expect(Object.fromEntries(feedRubber.map((row) => [row.relationSourceId, Number(row.cost)]))).toEqual(dailyTotals((rubberResult.data ?? []).filter((row) => !usedRubberIds.has(row.id)).map((row) => ({ date: row.bill_date, amount: row.net_total }))));
+    expect(Object.fromEntries(feedRubber.map((row) => [row.relationSourceId, Number(row.cost)]))).toEqual(dailyTotals((rubberResult.data ?? []).filter((row) => {
+      const weighItems = weighItemsByBill.get(row.id) ?? [];
+      return row.sync_status === "synced"
+        && Boolean(row.server_bill_no)
+        && weighItems.length > 0
+        && weighItems.every((item) => Number(item.price) > 0)
+        && !usedRubberIds.has(row.id);
+    }).map((row) => ({ date: row.bill_date, amount: row.net_total }))));
     expect(Object.fromEntries(feedOcr.map((row) => [row.relationSourceId, Number(row.cost)]))).toEqual(dailyTotals((ocrResult.data ?? []).filter((row) => !usedOcrIds.has(row.id)).map((row) => ({ date: row.date_in, amount: row.total_amount }))));
   });
 

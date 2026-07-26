@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/server/auth";
+import { createSupabaseAdminClient } from "@/lib/server/supabase-admin";
 import { calculatePaidWorkDays } from "@/lib/time-tracking/pay";
 
 export const dynamic = "force-dynamic";
@@ -270,12 +271,9 @@ export async function POST(request: NextRequest) {
       const { user_id, daily_wage } = body.payload;
       if (!(await canEditUser(user_id))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
-      // Use service_role to bypass RLS since profiles often restricts updates to self
-      const { createClient } = await import('@supabase/supabase-js');
-      const serviceSupabase = createClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.SUPABASE_SERVICE_ROLE_KEY!
-      );
+      // Use the server-only admin client to support both current Supabase
+      // secret keys and the legacy service-role key.
+      const serviceSupabase = createSupabaseAdminClient();
 
       const { data: oldData } = await serviceSupabase.from('profiles').select('daily_wage').eq('id', user_id).single();
       await serviceSupabase.from('profiles').update({ daily_wage }).eq('id', user_id);

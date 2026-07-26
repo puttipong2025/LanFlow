@@ -1,4 +1,4 @@
-import { Banknote, ClipboardList, Edit3 } from "lucide-react";
+import { Banknote, Edit3, Share2 } from "lucide-react";
 import { formatNumber } from "@/lib/format";
 import type { RubberBill } from "@/types";
 import { formatBillTimestamp, getDisplayBillNo } from "./bill-display";
@@ -97,14 +97,14 @@ export function RubberBillsTable({
                     </button>
                     <button
                       type="button"
-                      title={printBlockReason ?? (bill.printStatus === "ปริ้นแล้ว" ? "พิมพ์ซ้ำ (สถานะ: ปริ้นแล้ว)" : "พิมพ์บิล")}
+                      title={printBlockReason ?? "แชร์ PDF ใบรับซื้อยาง"}
                       disabled={Boolean(printBlockReason)}
                       onClick={() => onPrint(bill)}
-                      className={`grid h-8 w-8 place-items-center rounded-md ${
-                        bill.printStatus === "ปริ้นแล้ว" ? "bg-emerald-100 text-emerald-800" : "bg-violet-100 text-violet-800"
-                      } ${printBlockReason ? "cursor-not-allowed opacity-45" : ""}`}
+                      className={`grid h-8 w-8 place-items-center rounded-md bg-violet-100 text-violet-800 ${
+                        printBlockReason ? "cursor-not-allowed opacity-45" : ""
+                      }`}
                     >
-                      <ClipboardList size={16} />
+                      <Share2 size={16} />
                     </button>
                     <button
                       type="button"
@@ -133,7 +133,7 @@ export function RubberBillsTable({
                     {bill.approvalPending && (
                       <span
                         className="w-fit rounded-full bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-800"
-                        title={bill.approvalReasons?.map((reason) => reason === "price" ? "ราคาไม่ตรง" : "พ้นเวลาที่กำหนด").join(", ")}
+                        title={bill.approvalReasons?.map((reason) => reason === "price" ? "ราคาเกินเพดาน" : "พ้นเวลาที่กำหนด").join(", ")}
                       >
                         รออนุมัติ{bill.approvalOperation === "create" ? "สร้างบิล" : ""}
                         {bill.approvalReasons?.length
@@ -146,7 +146,7 @@ export function RubberBillsTable({
                 <td>{bill.billDate}</td>
                 <td>{formatBillTimestamp(bill.clientCreatedAt)}</td>
                 <td>{bill.customerName}</td>
-                <td>{bill.customerType}</td>
+                <td>{bill.createdByName?.trim() || "ไม่ระบุ"}</td>
                 <td>{bill.billType}</td>
                 <td>{formatNumber(bill.deductWeight)}</td>
                 <td>{formatNumber(bill.weight)}</td>

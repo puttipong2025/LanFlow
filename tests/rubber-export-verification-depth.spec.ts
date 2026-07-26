@@ -56,7 +56,6 @@ async function insertBill({
     bill_no: billNo,
     bill_date: "2026-07-24",
     customer_name: `ลูกค้า ${billNo}`,
-    customer_type: "สาขานี้จ่าย",
     bill_type: "weighing",
     deduct_weight: deductWeight,
     weight,
@@ -69,6 +68,17 @@ async function insertBill({
     created_by_phone: actor.phone,
   });
   expect(error).toBeNull();
+  expect((await db.from("rubber_bill_items").insert({
+    bill_id: billId,
+    item_type: "weigh",
+    description: "ชั่ง 1",
+    weight_in: weight,
+    weight_out: deductWeight,
+    net_weight: weight - deductWeight,
+    price: 10,
+    total: paidAmount,
+    sequence_no: 1,
+  })).error).toBeNull();
 }
 
 async function createReport(context: BrowserContext, locationId: string) {
@@ -646,7 +656,6 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
           bill_no: billNo,
           bill_date: "2026-07-24",
           customer_name: index === 0 ? originalFirstCustomer : `ลูกค้าพิมพ์ ${index + 1}`,
-          customer_type: "สาขานี้จ่าย",
           bill_type: "weighing",
           deduct_weight: 10,
           weight: 100,
@@ -660,6 +669,19 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
         };
       });
       expect((await db.from("rubber_bills").insert(bills)).error).toBeNull();
+      expect((await db.from("rubber_bill_items").insert(
+        billIds.map((billId) => ({
+          bill_id: billId,
+          item_type: "weigh",
+          description: "ชั่ง 1",
+          weight_in: 100,
+          weight_out: 10,
+          net_weight: 90,
+          price: 10,
+          total: 900,
+          sequence_no: 1,
+        }))
+      )).error).toBeNull();
 
       const sourceReport = await createReport(admin, locationId);
       sourceReportId = sourceReport.id;

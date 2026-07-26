@@ -1,6 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import {
+  loadRubberBillApprovalSettingsCache,
+  saveRubberBillApprovalSettingsCache,
+} from "@/lib/rubber-bills/approval";
 import type {
   RubberBillApprovalMarker,
   RubberBillApprovalReason,
@@ -24,6 +29,7 @@ function mapRequest(row: any): RubberBillApprovalRequest {
     matchedReasons: row.matched_reasons as RubberBillApprovalReason[],
     configuredPriceSnapshot:
       row.configured_price_snapshot == null ? null : Number(row.configured_price_snapshot),
+    editWindowMinutesSnapshot: Number(row.edit_window_minutes_snapshot ?? 0),
     originalPayload: row.original_payload,
     proposedPayload: row.proposed_payload,
     requestedByName: row.requested_by_name,
@@ -45,6 +51,7 @@ export function useRubberBillApprovals({
 }) {
   const supabase = createSupabaseBrowserClient();
   const queryClient = useQueryClient();
+  const [cachedSettings, setCachedSettings] = useState(loadRubberBillApprovalSettingsCache);
 
   const settingsQuery = useQuery({
     queryKey: [RUBBER_BILL_APPROVAL_SETTINGS_KEY],
@@ -87,6 +94,16 @@ export function useRubberBillApprovals({
       }));
     },
   });
+
+  useEffect(() => {
+    if (!settingsQuery.data) return;
+    saveRubberBillApprovalSettingsCache(settingsQuery.data);
+    setCachedSettings({
+      editWindowMinutes: settingsQuery.data.editWindowMinutes,
+      configuredPrice: settingsQuery.data.configuredPrice,
+      cachedAt: new Date().toISOString(),
+    });
+  }, [settingsQuery.data]);
 
   const requestsQuery = useQuery({
     queryKey: [RUBBER_BILL_APPROVAL_REQUESTS_KEY],
@@ -161,7 +178,8 @@ export function useRubberBillApprovals({
   });
 
   return {
-    settings: settingsQuery.data,
+    settings: settingsQuery.data ?? cachedSettings ?? undefined,
+    hasCachedSettings: cachedSettings !== null,
     markers: markersQuery.data ?? [],
     requests: requestsQuery.data ?? [],
     pendingCount: (requestsQuery.data ?? []).filter(

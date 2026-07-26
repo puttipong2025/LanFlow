@@ -13,7 +13,7 @@ import { validateRubberBillDraft } from "@/lib/rubber-bill-validation";
 import { useAcidProducts } from "@/hooks/useAcidProducts";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 
-import type { Customer, Location, PaymentResponsibility, Profile, RubberBill } from "@/types";
+import type { Location, Profile, RubberBill } from "@/types";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { Field } from "@/components/shared/Field";
 import { NumberField } from "@/components/shared/NumberField";
@@ -23,6 +23,12 @@ import { InlineNumber } from "@/components/shared/InlineNumber";
 type RubberWeighItem = NonNullable<RubberBill["weighItems"]>[number];
 type RubberStockDeductionItem = NonNullable<RubberBill["acidItems"]>[number];
 type RubberDebtItem = NonNullable<RubberBill["debtItems"]>[number];
+export type RubberBillCustomerOption = {
+  id: string;
+  mainName: string;
+  legacyMemberId: string | null;
+  farmAddress?: string | null;
+};
 
 export function RubberBillModal({
   selectedLocation,
@@ -37,13 +43,15 @@ export function RubberBillModal({
   profile: Profile;
   bill: RubberBill | null;
   configuredPrice?: number | null;
-  customers: Customer[];
+  customers: RubberBillCustomerOption[];
   onClose: () => void;
   onSave: (bill: RubberBill) => void;
 }) {
   const [draftClientTempId] = useState(() => bill?.clientTempId ?? makeClientTempId("rubber"));
   const initialLocalBillNo = bill?.localBillNo ?? makeLocalBillNo(selectedLocation.code, "R", draftClientTempId);
-  const initialPaymentResponsibility = bill?.customerType ?? "สาขานี้จ่าย";
+  const payerName = bill
+    ? bill.createdByName?.trim() || "ไม่ระบุ"
+    : profile.name?.trim() || "ไม่ระบุ";
   const [weighItems, setWeighItems] = useState<RubberWeighItem[]>(() => {
     if (bill?.weighItems?.length) return bill.weighItems;
     return [
@@ -53,13 +61,12 @@ export function RubberBillModal({
         inWeight: 0,
         outWeight: 0,
         netWeight: bill?.weight ?? 0,
-        price: bill?.price ?? configuredPrice ?? 0
+        price: 0
       }
     ];
   });
   const [stockDeductionItems, setStockDeductionItems] = useState<RubberStockDeductionItem[]>(() => bill?.acidItems ?? []);
   const [debtItems, setDebtItems] = useState<RubberDebtItem[]>(() => bill?.debtItems ?? (bill?.debtItem ? [bill.debtItem] : []));
-  const [paymentResponsibility, setPaymentResponsibility] = useState<PaymentResponsibility>(initialPaymentResponsibility);
   const [weightDeduct, setWeightDeduct] = useState(bill?.deductWeight ?? 0);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const { products: stockProducts } = useAcidProducts();
@@ -92,11 +99,17 @@ export function RubberBillModal({
   const weightDeductValue = weightDeduct * averagePrice;
   const deduct = stockDeduction + debtDeduction + weightDeductValue;
   const net = Math.max(gross - deduct, 0);
-  const hasConfiguredPriceMismatch =
+  const hasPriceChange = !bill || (
+    (bill.weighItems?.length ?? 0) !== weighItems.length
+    || weighItems.some((item, index) =>
+      Math.round(item.price * 100)
+      !== Math.round((bill.weighItems?.[index]?.price ?? Number.NaN) * 100)
+    )
+  );
+  const exceedsConfiguredPrice =
+    hasPriceChange &&
     configuredPrice != null &&
-    weighItems.some((item) => item.price !== configuredPrice);
-  const branchPayment = paymentResponsibility === "สาขานี้จ่าย" ? net : 0;
-  const headOfficePayment = paymentResponsibility === "สาขาใหญ่จ่าย" ? net : 0;
+    weighItems.some((item) => Math.round(item.price * 100) > Math.round(configuredPrice * 100));
 
   function updateWeighItem(id: string, patch: Partial<Omit<RubberWeighItem, "id">>) {
     setWeighItems((current) =>
@@ -123,7 +136,7 @@ export function RubberBillModal({
         inWeight: 0,
         outWeight: 0,
         netWeight: 0,
-        price: configuredPrice ?? current.at(-1)?.price ?? 0
+        price: 0
       }
     ]);
   }
@@ -221,17 +234,17 @@ export function RubberBillModal({
       billDate: String(form.get("billDate") || todayInputValue()),
       customerId: selectedCustomerId,
       customerName: customerSearch,
-      customerType: paymentResponsibility,
       billType: String(form.get("billType") || "บิลเครื่องชั่งเล็ก"),
       deductWeight: weightDeduct,
       weight: totalWeight,
       price: averagePrice,
       deductionTotal: deduct,
       netTotal: net,
-      cashPayment: branchPayment,
-      transferPayment: headOfficePayment,
       acidPackCount: stockDeductionItems.reduce((sum, item) => sum + item.quantity, 0),
-      printStatus: bill?.printStatus ?? "ยังไม่ได้ปริ้น",
+      configuredPriceSnapshot: bill?.configuredPriceSnapshot ?? configuredPrice ?? null,
+      approvalState: bill?.approvalState ?? "not_required",
+      approvalApprovedByName: bill?.approvalApprovedByName ?? null,
+      approvalRevisionNo: bill?.approvalRevisionNo ?? null,
       weighItems,
       acidItems: stockDeductionItems,
       debtItem: debtItems[0],
@@ -325,14 +338,13 @@ export function RubberBillModal({
                         setCustomerSearch(cust.mainName);
                         setSelectedCustomerId(cust.id);
                         setMemberStatus("สมาชิก");
-                        setPaymentResponsibility(cust.class);
                         setShowDropdown(false);
                       }}
                       className="w-full px-4 py-2.5 text-left text-sm hover:bg-slate-100 border-b border-black/5 last:border-0 flex justify-between items-center"
                     >
                       <div>
                         <span className="font-semibold text-ink">{cust.mainName}</span>
-                        {cust.farms?.[0]?.address && <span className="text-xs text-ink/50 ml-2">({cust.farms[0].address})</span>}
+                        {cust.farmAddress && <span className="text-xs text-ink/50 ml-2">({cust.farmAddress})</span>}
                       </div>
                       <span className="text-xs font-bold text-leaf bg-leaf/10 px-2 py-0.5 rounded">
                         {cust.legacyMemberId || "FSC"}
@@ -343,24 +355,8 @@ export function RubberBillModal({
               )}
             </div>
 
-            <div className="text-center md:col-span-2">
-              <p className="mb-2 text-sm font-bold text-ink">ผู้รับผิดชอบการจ่าย</p>
-              <div className="flex justify-center gap-4 text-sm font-semibold">
-                <InlineRadio
-                  name="customerType"
-                  value="สาขานี้จ่าย"
-                  label="สาขานี้จ่าย"
-                  checked={paymentResponsibility === "สาขานี้จ่าย"}
-                  onChange={() => setPaymentResponsibility("สาขานี้จ่าย")}
-                />
-                <InlineRadio
-                  name="customerType"
-                  value="สาขาใหญ่จ่าย"
-                  label="สาขาใหญ่จ่าย 40,000บาทขึ้นไป"
-                  checked={paymentResponsibility === "สาขาใหญ่จ่าย"}
-                  onChange={() => setPaymentResponsibility("สาขาใหญ่จ่าย")}
-                />
-              </div>
+            <div className="md:col-span-2">
+              <Field label="ผู้รับผิดชอบการจ่าย" name="payerName" defaultValue={payerName} readOnly />
             </div>
             <input type="hidden" name="billType" value="บิลเครื่องชั่งเล็ก" />
           </div>
@@ -370,12 +366,12 @@ export function RubberBillModal({
           <h3 className="mb-3 font-bold text-ink">ชั่งสินค้า</h3>
           {configuredPrice != null && (
             <div className={`mb-3 rounded-md border px-3 py-2 text-sm ${
-              hasConfiguredPriceMismatch
+              exceedsConfiguredPrice
                 ? "border-amber-300 bg-amber-50 text-amber-900"
                 : "border-leaf/20 bg-leaf/5 text-leaf"
             }`}>
               ราคาที่กำหนด {configuredPrice.toFixed(2)} บาท
-              {hasConfiguredPriceMismatch && " — บิลนี้จะเข้ารออนุมัติเมื่อบันทึก"}
+              {exceedsConfiguredPrice && " — บิลนี้จะเข้ารออนุมัติเมื่อบันทึก"}
             </div>
           )}
           <div className="overflow-x-auto">
@@ -562,10 +558,6 @@ export function RubberBillModal({
           <NumberField label="รวมมูลค่ายาง (บาท)" value={gross} readOnly />
           <NumberField label="ยอดรวมที่ถูกหัก (บาท)" value={deduct} readOnly />
           <NumberField label="ยอดสุทธิที่ต้องจ่ายลูกค้า (บาท)" value={net} readOnly />
-          <NumberField label="สาขานี้จ่าย" value={branchPayment} readOnly />
-          <NumberField label="สาขาใหญ่จ่าย" value={headOfficePayment} readOnly />
-          <input type="hidden" name="cashPayment" value={branchPayment} />
-          <input type="hidden" name="transferPayment" value={headOfficePayment} />
         </section>
 
         <div className="flex justify-center border-t border-black/10 p-4">

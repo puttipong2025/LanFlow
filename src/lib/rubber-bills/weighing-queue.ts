@@ -1,4 +1,5 @@
 import { bangkokDateString } from "@/lib/bangkok-date";
+import type { PaymentResponsibility } from "@/types";
 
 export const CUSTOMER_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -24,6 +25,8 @@ export type WeighingQueueCustomer = {
   id: string;
   mainName: string;
   legacyMemberId: string | null;
+  class?: PaymentResponsibility;
+  farmAddress?: string | null;
 };
 
 export type WeighingQueuePrintSnapshot = {
@@ -190,6 +193,16 @@ export function loadCustomerCache(
       typeof customer?.id === "string"
       && typeof customer.mainName === "string"
       && (customer.legacyMemberId === null || typeof customer.legacyMemberId === "string")
+      && (
+        customer.class === undefined
+        || customer.class === "สาขานี้จ่าย"
+        || customer.class === "สาขาใหญ่จ่าย"
+      )
+      && (
+        customer.farmAddress === undefined
+        || customer.farmAddress === null
+        || typeof customer.farmAddress === "string"
+      )
     ));
   } catch {
     return [];

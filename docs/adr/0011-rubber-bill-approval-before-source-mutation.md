@@ -1,6 +1,6 @@
 # ADR-0011: Rubber Bill Approval Precedes Source Mutation
 
-Status: Accepted
+Status: Accepted; online-only/current-setting portions superseded by ADR-0014
 
 LanFlow will store an approval request instead of creating or mutating a Rubber Bill whenever a configured price rule or edit-time rule matches. The real `rubber_bills` source remains unchanged until approval; a mismatched-price create therefore has no real bill, feed row, report item, transfer relation, or export eligibility before approval.
 

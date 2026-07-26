@@ -1,3 +1,35 @@
+import type { RubberBill } from "@/types";
+
+export function getRubberBillPaymentBlockReason(
+  bill: Pick<RubberBill, "netTotal" | "weighItems">
+) {
+  const weighItems = bill.weighItems ?? [];
+  if (weighItems.length === 0 || weighItems.some((item) => item.price <= 0)) {
+    return "ยังมีรายการราคายาง 0 จึงยังจ่ายเงินไม่ได้";
+  }
+  if (bill.netTotal <= 0) {
+    return "ยอดสุทธิต้องมากกว่า 0 จึงจะจ่ายเงินได้";
+  }
+  return null;
+}
+
+export function isRubberBillPayable(
+  bill: Pick<RubberBill, "netTotal" | "weighItems">
+) {
+  return getRubberBillPaymentBlockReason(bill) === null;
+}
+
+export function getRubberBillTransferBlockReason(
+  bill: Pick<RubberBill, "netTotal" | "weighItems" | "syncStatus" | "serverBillNo">
+) {
+  const paymentReason = getRubberBillPaymentBlockReason(bill);
+  if (paymentReason) return paymentReason;
+  if (bill.syncStatus !== "synced" || !bill.serverBillNo) {
+    return "กรุณารอให้บิลซิงก์กับเซิร์ฟเวอร์ก่อนโอนเงิน";
+  }
+  return null;
+}
+
 export function validateRubberBillDraft(draft: {
   customerName: string;
   weighItems: { inWeight: number; outWeight: number; netWeight: number; price: number }[];
@@ -23,8 +55,8 @@ export function validateRubberBillDraft(draft: {
     if (item.netWeight <= 0) {
       errors.push(`รายการชั่งที่ ${index + 1}: น้ำหนักสุทธิต้องมากกว่า 0`);
     }
-    if (item.price <= 0) {
-      errors.push(`รายการชั่งที่ ${index + 1}: ราคาต้องมากกว่า 0`);
+    if (item.price < 0) {
+      errors.push(`รายการชั่งที่ ${index + 1}: ราคาต้องไม่ติดลบ`);
     }
     if (Math.abs(item.price * 100 - Math.round(item.price * 100)) > 1e-9) {
       errors.push(`รายการชั่งที่ ${index + 1}: ราคาต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง`);
@@ -55,10 +87,7 @@ export function validateRubberBillDraft(draft: {
     }
   });
 
-  const hasDeductions = draft.acidItems.length > 0 || draft.debtItems.length > 0;
-  if (hasDeductions && draft.netTotal <= 0) {
-    errors.push("ยอดเงินสุทธิต้องมากกว่า 0 เมื่อมีการหักหนี้/เบิกของ");
-  } else if (draft.netTotal < 0) {
+  if (draft.netTotal < 0) {
     errors.push("ยอดเงินสุทธิไม่สามารถติดลบได้");
   }
 

@@ -2,8 +2,9 @@
 
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
   Clock3,
-  GripVertical,
   Printer,
   Trash2,
   UserRoundPlus,
@@ -68,7 +69,6 @@ export function WeighingQueueModal({
   const [customerSearch, setCustomerSearch] = useState("");
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
   const [showSuggestions, setShowSuggestions] = useState(false);
-  const [draggingId, setDraggingId] = useState<string | null>(null);
   const [printingId, setPrintingId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -164,11 +164,12 @@ export function WeighingQueueModal({
     }
   }
 
-  function dropOnItem(targetId: string) {
-    if (!draggingId) return;
-    const items = moveQueueItem(queue.items, draggingId, targetId);
+  function moveItem(itemId: string, direction: -1 | 1) {
+    const currentIndex = queue.items.findIndex((item) => item.id === itemId);
+    const targetItem = queue.items[currentIndex + direction];
+    if (currentIndex < 0 || !targetItem) return;
+    const items = moveQueueItem(queue.items, itemId, targetItem.id);
     if (items !== queue.items) commitQueue({ ...queue, items });
-    setDraggingId(null);
   }
 
   function deleteItem(item: WeighingQueueItem, queueNumber: number) {
@@ -371,7 +372,7 @@ export function WeighingQueueModal({
               <table aria-label="ตารางคิวชั่ง" className="w-full min-w-[760px] text-sm">
                 <thead className="bg-field text-left text-xs font-bold uppercase tracking-wide text-ink/55">
                   <tr>
-                    <th className="w-14 px-3 py-3 text-center">ลาก</th>
+                    <th className="w-24 px-3 py-3 text-center">ลำดับ</th>
                     <th className="w-20 px-3 py-3 text-center">คิว</th>
                     <th className="px-3 py-3">ชื่อลูกค้า</th>
                     <th className="w-56 px-3 py-3">สถานะ</th>
@@ -387,19 +388,28 @@ export function WeighingQueueModal({
                       queue.weighingTime!,
                     );
                     return (
-                      <tr
-                        key={item.id}
-                        draggable
-                        onDragStart={() => setDraggingId(item.id)}
-                        onDragEnd={() => setDraggingId(null)}
-                        onDragOver={(event) => event.preventDefault()}
-                        onDrop={() => dropOnItem(item.id)}
-                        className={`border-t border-black/5 transition ${
-                          draggingId === item.id ? "bg-river/10 opacity-60" : "hover:bg-field/60"
-                        }`}
-                      >
+                      <tr key={item.id} className="border-t border-black/5 transition hover:bg-field/60">
                         <td className="px-3 py-3 text-center">
-                          <GripVertical className="mx-auto cursor-grab text-ink/35 active:cursor-grabbing" size={20} />
+                          <div className="flex justify-center gap-1">
+                            <button
+                              type="button"
+                              aria-label={`เลื่อนคิว ${queueNumber} ขึ้น`}
+                              disabled={index === 0}
+                              onClick={() => moveItem(item.id, -1)}
+                              className="focus-ring grid h-9 w-9 place-items-center rounded-lg border border-black/10 bg-white text-ink hover:bg-river/10 hover:text-river disabled:cursor-not-allowed disabled:opacity-25"
+                            >
+                              <ArrowUp size={17} />
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`เลื่อนคิว ${queueNumber} ลง`}
+                              disabled={index === queue.items.length - 1}
+                              onClick={() => moveItem(item.id, 1)}
+                              className="focus-ring grid h-9 w-9 place-items-center rounded-lg border border-black/10 bg-white text-ink hover:bg-river/10 hover:text-river disabled:cursor-not-allowed disabled:opacity-25"
+                            >
+                              <ArrowDown size={17} />
+                            </button>
+                          </div>
                         </td>
                         <td className="px-3 py-3 text-center">
                           <span className="inline-grid h-10 min-w-10 place-items-center rounded-xl bg-river/10 px-2 text-lg font-black tabular-nums text-river">

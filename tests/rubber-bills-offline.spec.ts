@@ -10,7 +10,7 @@ async function readQueue(page: Page): Promise<any[]> {
   await page.waitForLoadState('domcontentloaded');
   return page.evaluate(() => {
     return new Promise<any[]>((resolve, reject) => {
-      const req = indexedDB.open('lanflow_sync_db', 3);
+      const req = indexedDB.open('lanflow_sync_db');
       req.onerror = () => reject(req.error);
       req.onupgradeneeded = () => {
         // DB doesn't exist yet → return empty
@@ -90,6 +90,13 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
       }
     );
     expect(resetApprovalSetting.ok()).toBeTruthy();
+    await page.addInitScript(() => {
+      localStorage.setItem("lanflow:rubber-bill-approval-settings:v1", JSON.stringify({
+        editWindowMinutes: 30,
+        configuredPrice: null,
+        cachedAt: new Date().toISOString(),
+      }));
+    });
     await page.goto('/');
     await page.evaluate(async () => {
       return new Promise<void>((resolve, reject) => {
@@ -111,6 +118,9 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     await page.fill('input[type="password"]', password);
     await page.click('button:has-text("เข้าสู่ระบบ")');
     await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+    const meResponse = await page.request.get('/api/auth/me');
+    expect(meResponse.ok()).toBeTruthy();
+    const payerName = (await meResponse.json() as { profile: { name: string } }).profile.name;
 
     // 2. Go to Rubber Bills tab
     await page.click('button:has-text("บิลยาง")');
@@ -131,7 +141,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     const weighRow = modal.locator('table').first().locator('tbody tr').first();
     await weighRow.locator('input[type="number"]').nth(0).fill('1000');
     await weighRow.locator('input[type="number"]').nth(1).fill('200');
-    await weighRow.locator('input[type="number"]').nth(3).fill('25.5');
+    await weighRow.locator('input[type="number"]').nth(3).fill('19.5');
 
     await page.click('button:has-text("Submit")');
     await expect(page.locator('h2:has-text("บิลเครื่องชั่งเล็ก")')).toBeHidden({ timeout: 10000 });
@@ -140,6 +150,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     const createdRow = page.locator('table tbody tr', { hasText: marker }).first();
     await expect(createdRow).toBeVisible({ timeout: 5000 });
     await expect(createdRow.locator('span:has-text("รอซิงก์")')).toBeVisible();
+    await expect(createdRow.locator('td').nth(5)).toHaveText(payerName);
 
     // Assert: IDB queue has the create event with correct payload shape
     const queueAfterCreate = await readQueue(page);
@@ -150,7 +161,8 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     // payload uses items[] with unitPrice, not weighItems[].price
     expect(createEvent.payload.items).toBeDefined();
     const weighItem = createEvent.payload.items.find((i: any) => i.itemType === 'weigh');
-    expect(weighItem.unitPrice).toBe(25.5);
+    expect(weighItem.unitPrice).toBe(19.5);
+    expect(createEvent.payload.configuredPriceSnapshot).toBeNull();
     const clientTempId = createEvent.id;
 
     // === STEP 2: EDIT the pending bill offline ===
@@ -159,16 +171,18 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     
     const editModal = page.locator('.fixed.inset-0').last();
     const editWeighRow = editModal.locator('table').first().locator('tbody tr').first();
-    await editWeighRow.locator('input[type="number"]').nth(3).fill('26.5');
+    await editWeighRow.locator('input[type="number"]').nth(3).fill('19.75');
     await page.click('button:has-text("Submit")');
     await expect(page.locator('h2:has-text("แก้ไขบิลเครื่องชั่งเล็ก")')).toBeHidden({ timeout: 10000 });
+    await expect(createdRow.locator('td').nth(5)).toHaveText(payerName);
 
     // Assert: edit coalesced into existing create (not a second event)
     const queueAfterEdit = await readQueue(page);
     const editEvents = queueAfterEdit.filter(e => e.id === clientTempId);
     expect(editEvents.length).toBe(1);
     expect(editEvents[0].operation).toBe('create'); // still "create", payload updated
-    expect(editEvents[0].payload.items.find((i: any) => i.itemType === 'weigh').unitPrice).toBe(26.5);
+    expect(editEvents[0].payload.items.find((i: any) => i.itemType === 'weigh').unitPrice).toBe(19.75);
+    expect(editEvents[0].payload.configuredPriceSnapshot).toBeNull();
 
     // === STEP 3: CREATE second bill, then DELETE (test coalesce: create+delete = no-op) ===
     const markerDelete = `${marker}-DEL`;
@@ -180,7 +194,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     const deleteWeighRow = deleteModal.locator('table').first().locator('tbody tr').first();
     await deleteWeighRow.locator('input[type="number"]').nth(0).fill('500');
     await deleteWeighRow.locator('input[type="number"]').nth(1).fill('100');
-    await deleteWeighRow.locator('input[type="number"]').nth(3).fill('20.5');
+    await deleteWeighRow.locator('input[type="number"]').nth(3).fill('18.5');
     await page.click('button:has-text("Submit")');
     await expect(page.locator('h2:has-text("บิลเครื่องชั่งเล็ก")')).toBeHidden({ timeout: 10000 });
 
@@ -304,6 +318,67 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     await expect(readQueue(page)).resolves.toHaveLength(0);
   });
 
+  test('online approval requests never enter sync_queue', async ({ page }) => {
+    const marker = `ApprovalNoQueue-${Date.now()}`;
+    const settingsUrl = `${localSupabaseUrl}/rest/v1/rubber_bill_approval_settings?id=eq.true`;
+    const serviceHeaders = {
+      apikey: localServiceRoleKey,
+      Authorization: `Bearer ${localServiceRoleKey}`,
+      Prefer: 'return=minimal',
+    };
+    expect((await page.request.patch(settingsUrl, {
+      headers: serviceHeaders,
+      data: { edit_window_minutes: 30, configured_price: 0 },
+    })).ok()).toBeTruthy();
+
+    let requestId: string | undefined;
+    try {
+      page.on('dialog', dialog => dialog.accept());
+      await page.goto('/login');
+      await page.fill('input[type="tel"]', phone);
+      await page.fill('input[type="password"]', password);
+      await page.click('button:has-text("เข้าสู่ระบบ")');
+      await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+      await page.click('button:has-text("บิลยาง")');
+      await page.click('button:has-text("เพิ่มบิลยาง")');
+      await expect(page.getByText('ราคาที่กำหนด 0.00 บาท')).toBeVisible({ timeout: 15000 });
+
+      const modal = page.locator('.fixed.inset-0').last();
+      await modal.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]').fill(marker);
+      await page.keyboard.press('Escape');
+      const weighRow = modal.locator('table').first().locator('tbody tr').first();
+      await weighRow.locator('input[type="number"]').nth(0).fill('100');
+      await weighRow.locator('input[type="number"]').nth(1).fill('20');
+      await weighRow.locator('input[type="number"]').nth(3).fill('1');
+      await page.click('button:has-text("Submit")');
+      await expect(modal).toBeHidden({ timeout: 10000 });
+
+      const pendingRow = page.locator('table tbody tr', { hasText: marker }).first();
+      await expect(pendingRow).toContainText('รออนุมัติสร้างบิล', { timeout: 15000 });
+      expect((await readQueue(page)).some((event) => event.payload?.customerName === marker)).toBe(false);
+
+      const requestsResponse = await page.request.get(
+        `${localSupabaseUrl}/rest/v1/rubber_bill_approval_requests?select=id,proposed_payload&request_status=eq.pending`,
+        { headers: serviceHeaders }
+      );
+      expect(requestsResponse.ok()).toBeTruthy();
+      const requests = await requestsResponse.json() as Array<{
+        id: string;
+        proposed_payload?: { customerName?: string };
+      }>;
+      requestId = requests.find((request) => request.proposed_payload?.customerName === marker)?.id;
+      expect(requestId).toBeTruthy();
+    } finally {
+      if (requestId) {
+        await page.request.delete(`/api/lanflow/rubber-bills/approval-requests/${requestId}`);
+      }
+      await page.request.patch(settingsUrl, {
+        headers: serviceHeaders,
+        data: { edit_window_minutes: 30, configured_price: null },
+      });
+    }
+  });
+
   test('hook delete guard rejects a synced bill offline before queue work', () => {
     expect(() => assertRubberBillDeleteAllowed(0, false)).toThrow(
       'รายการนี้ซิงก์แล้ว ต้องออนไลน์เพื่อแก้ไขหรือลบ'
@@ -352,14 +427,12 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
         localBillNo: `TEMP-${clientTempId.slice(0, 8)}`,
         billDate: now.split('T')[0],
         customerName: marker,
-        customerType: 'สาขานี้จ่าย',
+        configuredPriceSnapshot: null,
         weight: 800,
         rubberValue: 20400,
         averagePrice: 25.5,
         deductionTotal: 0,
         netTotal: 20400,
-        cashPayment: 20400,
-        transferPayment: 0,
         acidPackCount: 0,
         clientRecordedAt: now,
         clientCreatedAt: now,
@@ -377,7 +450,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
       };
 
       const db = await new Promise<IDBDatabase>((resolve, reject) => {
-        const req = indexedDB.open('lanflow_sync_db', 3);
+        const req = indexedDB.open('lanflow_sync_db');
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
       });
@@ -478,14 +551,12 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
         localBillNo: `TEMP-${clientTempId.slice(0, 8)}`,
         billDate: now.split('T')[0],
         customerName: marker,
-        customerType: 'สาขานี้จ่าย',
+        configuredPriceSnapshot: null,
         weight: 800,
         rubberValue: 20400,
         averagePrice: 25.5,
         deductionTotal: 0,
         netTotal: 20400,
-        cashPayment: 20400,
-        transferPayment: 0,
         acidPackCount: 0,
         clientRecordedAt: now,
         clientCreatedAt: now,
@@ -511,7 +582,6 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
         weight: 900,
         rubberValue: 22950,
         netTotal: 22950,
-        cashPayment: 22950,
         items: [{
           itemType: 'weigh',
           title: 'ชั่ง',
@@ -526,7 +596,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
       };
 
       const db = await new Promise<IDBDatabase>((resolve, reject) => {
-        const req = indexedDB.open('lanflow_sync_db', 3);
+        const req = indexedDB.open('lanflow_sync_db');
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
       });
@@ -601,14 +671,12 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
         localBillNo: `TEMP-${freshId.slice(0, 8)}`,
         billDate: new Date().toISOString().split('T')[0],
         customerName: `${marker}-Updated`,
-        customerType: 'สาขานี้จ่าย',
+        configuredPriceSnapshot: null,
         weight: 900,
         rubberValue: 22950,
         averagePrice: 25.5,
         deductionTotal: 0,
         netTotal: 22950,
-        cashPayment: 22950,
-        transferPayment: 0,
         acidPackCount: 0,
         clientRecordedAt: new Date().toISOString(),
         clientCreatedAt: new Date().toISOString(),

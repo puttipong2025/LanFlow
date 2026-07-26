@@ -34,6 +34,7 @@ function billPayload({
   expectedRevisionNo = 0,
   price = 20,
   prices,
+  configuredPriceSnapshot = 20,
   customerName = "ลูกค้าทดสอบอนุมัติบิลยาง",
 }: {
   locationId: string;
@@ -42,6 +43,7 @@ function billPayload({
   expectedRevisionNo?: number;
   price?: number;
   prices?: number[];
+  configuredPriceSnapshot?: number | null;
   customerName?: string;
 }) {
   const now = new Date().toISOString();
@@ -59,7 +61,7 @@ function billPayload({
     billDate: now.slice(0, 10),
     customerId: null,
     customerName,
-    customerType: "สาขานี้จ่าย",
+    configuredPriceSnapshot,
     billType: "บิลเครื่องชั่งเล็ก",
     deductWeight: 0,
     weight,
@@ -67,8 +69,6 @@ function billPayload({
     averagePrice: rubberValue / weight,
     deductionTotal: 0,
     netTotal: rubberValue,
-    cashPayment: rubberValue,
-    transferPayment: 0,
     acidPackCount: 0,
     clientRecordedAt: now,
     clientCreatedAt: now,
@@ -112,12 +112,20 @@ async function saveSettings(
 }
 
 test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () => {
-  test("offline cached-price guard blocks known mismatch only", () => {
-    expect(() => assertOfflineRubberBillPriceAllowed([20, 20], 20, false)).not.toThrow();
-    expect(() => assertOfflineRubberBillPriceAllowed([20.5], null, false)).not.toThrow();
-    expect(() => assertOfflineRubberBillPriceAllowed([20.5], 20, true)).not.toThrow();
-    expect(() => assertOfflineRubberBillPriceAllowed([20, 20.5], 20, false))
+  test("offline cached-price guard blocks only values above the cached cap", () => {
+    const cap20 = { editWindowMinutes: 30, configuredPrice: 20 };
+    const cap0 = { editWindowMinutes: 30, configuredPrice: 0 };
+    const noCap = { editWindowMinutes: 30, configuredPrice: null };
+    expect(() => assertOfflineRubberBillPriceAllowed([0, 19.99, 20], cap20, false)).not.toThrow();
+    expect(() => assertOfflineRubberBillPriceAllowed([20.5], noCap, false)).not.toThrow();
+    expect(() => assertOfflineRubberBillPriceAllowed([20.5], cap20, true)).not.toThrow();
+    expect(() => assertOfflineRubberBillPriceAllowed([20, 20.5], cap20, false))
       .toThrow("ต้องออนไลน์เพื่อส่งคำขออนุมัติ");
+    expect(() => assertOfflineRubberBillPriceAllowed([0], cap0, false)).not.toThrow();
+    expect(() => assertOfflineRubberBillPriceAllowed([0.01], cap0, false))
+      .toThrow("ต้องออนไลน์เพื่อส่งคำขออนุมัติ");
+    expect(() => assertOfflineRubberBillPriceAllowed([0], null, false))
+      .toThrow("ยังไม่เคยโหลดกติกาอนุมัติ");
   });
 
   test("settings permission, mismatched create, and permanent request delete", async ({ browser }) => {
@@ -133,9 +141,14 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       expect((await saveSettings(superAdmin, -1, 20)).status()).toBe(400);
       expect((await saveSettings(superAdmin, 1.5, 20)).status()).toBe(400);
       expect((await saveSettings(superAdmin, 30, 20.555)).status()).toBe(400);
+      expect((await saveSettings(superAdmin, 30, 0)).ok()).toBeTruthy();
       expect((await saveSettings(superAdmin, 30, null)).ok()).toBeTruthy();
 
-      const noSettingPayload = billPayload({ locationId, price: 20.5 });
+      const noSettingPayload = billPayload({
+        locationId,
+        price: 20.5,
+        configuredPriceSnapshot: null,
+      });
       const noSettingCreate = await syncBill(user, noSettingPayload);
       expect(noSettingCreate.body.status).toBe("synced");
 
@@ -159,6 +172,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         operation: "create",
         request_status: "pending",
         configured_price_snapshot: 20,
+        edit_window_minutes_snapshot: 30,
       });
 
       expect((await saveSettings(superAdmin, 30, 21)).ok()).toBeTruthy();
@@ -204,6 +218,16 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       const approvedBody = await approved.json() as { status?: string; billId?: string };
       expect(approved.ok(), JSON.stringify(approvedBody)).toBeTruthy();
       expect(approvedBody.status).toBe("approved");
+      expect((await db.from("rubber_bills")
+        .select("configured_price_snapshot,approval_state,approved_by_name,approval_revision_no,revision_no")
+        .eq("id", approvedBody.billId!)
+        .single()).data).toMatchObject({
+          configured_price_snapshot: 20,
+          approval_state: "approved",
+          approved_by_name: superProfile.name,
+          approval_revision_no: 1,
+          revision_no: 1,
+        });
 
       const retry = await syncBill(superAdmin, createPayload);
       expect(retry.body.status).toBe("synced");
@@ -219,6 +243,15 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       });
       const updated = await syncBill(superAdmin, nonPriceUpdate);
       expect(updated.body.status).toBe("synced");
+      expect((await db.from("rubber_bills")
+        .select("approval_state,approved_by_name,approval_revision_no,revision_no")
+        .eq("id", approvedBody.billId!)
+        .single()).data).toMatchObject({
+          approval_state: "not_required",
+          approved_by_name: null,
+          approval_revision_no: null,
+          revision_no: updated.body.revisionNo,
+        });
 
       const changedPrice = billPayload({
         locationId,
@@ -393,24 +426,10 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
 
       const { data: unchanged } = await db
         .from("rubber_bills")
-        .select("id, customer_name, print_status")
+        .select("id, customer_name")
         .eq("id", created.body.id!)
         .single();
       expect(unchanged?.customer_name).toBe("ลูกค้าทดสอบอนุมัติบิลยาง");
-
-      const printed = await user.request.post(
-        `/api/lanflow/rubber-bills/${created.body.id}/print-status`
-      );
-      expect(printed.ok(), await printed.text()).toBeTruthy();
-      const { data: printedSource } = await db
-        .from("rubber_bills")
-        .select("customer_name, print_status")
-        .eq("id", created.body.id!)
-        .single();
-      expect(printedSource).toMatchObject({
-        customer_name: "ลูกค้าทดสอบอนุมัติบิลยาง",
-        print_status: "ปริ้นแล้ว",
-      });
 
       transferId = crypto.randomUUID();
       expect((await db.from("money_transfers").insert({

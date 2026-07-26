@@ -1,11 +1,24 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { RubberBill } from "@/types";
-import { enqueueSyncEvent, getPendingEvents, removeSyncEvent, SyncEvent } from "@/lib/idb-queue";
+import {
+  enqueueSyncEvent,
+  deleteRubberBillReceiptSnapshotsNotIn,
+  getPendingEvents,
+  getRubberBillReceiptSnapshots,
+  pruneRubberBillReceiptSnapshots,
+  putRubberBillReceiptSnapshot,
+  removeSyncEvent,
+} from "@/lib/idb-queue";
 import { useEffect } from "react";
 import { toast } from "sonner";
 import { OFFLINE_SYNCED_ACTION_MESSAGE } from "@/lib/record-action-locks";
-import { assertOfflineRubberBillPriceAllowed } from "@/lib/rubber-bills/approval";
+import {
+  assertOfflineRubberBillPriceAllowed,
+  isRubberBillPriceApprovalRequired,
+} from "@/lib/rubber-bills/approval";
+import type { RubberBillApprovalSettings } from "@/types";
+import { buildRubberBillReceiptModel } from "@/components/rubber-bills/bill-display";
 
 export function assertRubberBillDeleteAllowed(pendingCreateCount: number, isOnline: boolean) {
   if (pendingCreateCount === 0 && !isOnline) {
@@ -13,7 +26,13 @@ export function assertRubberBillDeleteAllowed(pendingCreateCount: number, isOnli
   }
 }
 
-function buildRpcPayload(bill: RubberBill, operation: "create" | "update" | "delete", deletedByName?: string, deletedByPhone?: string) {
+function buildRpcPayload(
+  bill: RubberBill,
+  operation: "create" | "update" | "delete",
+  configuredPriceSnapshot?: number | null,
+  deletedByName?: string,
+  deletedByPhone?: string
+) {
   const items: any[] = [];
   
   (bill.weighItems || []).forEach((item, i) => {
@@ -66,7 +85,10 @@ function buildRpcPayload(bill: RubberBill, operation: "create" | "update" | "del
     billDate: bill.billDate,
     customerId: bill.customerId ?? null,
     customerName: bill.customerName,
-    customerType: bill.customerType || "สาขานี้จ่าย",
+    configuredPriceSnapshot:
+      operation === "create"
+        ? configuredPriceSnapshot
+        : bill.configuredPriceSnapshot ?? null,
     billType: bill.billType,
     deductWeight: bill.deductWeight,
     weight: bill.weight,
@@ -74,9 +96,10 @@ function buildRpcPayload(bill: RubberBill, operation: "create" | "update" | "del
     averagePrice: bill.price,
     deductionTotal: bill.deductionTotal || 0,
     netTotal: bill.netTotal,
-    cashPayment: bill.cashPayment,
-    transferPayment: bill.transferPayment,
     acidPackCount: bill.acidPackCount,
+    createdByUserId: bill.createdByUserId,
+    createdByName: bill.createdByName,
+    createdByPhone: bill.createdByPhone,
     clientRecordedAt: bill.clientRecordedAt || new Date().toISOString(),
     clientCreatedAt: bill.clientCreatedAt || new Date().toISOString(),
     deletedByName,
@@ -182,7 +205,10 @@ async function normalizeRubberBillQueueBeforeSync(ownerUserId: string, locationI
 export function useRubberBills(
   locationId: string,
   ownerUserId: string,
-  configuredPrice?: number | null
+  approvalSettings?: Pick<
+    RubberBillApprovalSettings,
+    "editWindowMinutes" | "configuredPrice"
+  > | null
 ) {
   const supabase = createSupabaseBrowserClient();
   const queryClient = useQueryClient();
@@ -268,17 +294,21 @@ export function useRubberBills(
               billDate: row.bill_date,
               customerId: row.customer_id ?? null,
               customerName: row.customer_name ?? "",
-              customerType: row.customer_type,
               billType: row.bill_type === "weighing" ? "บิลเครื่องชั่งเล็ก" : row.bill_type,
               deductWeight: Number(row.deduct_weight ?? 0),
               weight: Number(row.weight ?? 0),
               price: Number(row.average_price ?? 0),
               deductionTotal: Number(row.deduction_total ?? 0),
               netTotal: Number(row.net_total ?? 0),
-              cashPayment: Number(row.cash_payment ?? 0),
-              transferPayment: Number(row.transfer_payment ?? 0),
               acidPackCount: Number(row.acid_pack_count ?? 0),
-              printStatus: row.print_status === "ปริ้นแล้ว" ? "ปริ้นแล้ว" : "ยังไม่ได้ปริ้น",
+              configuredPriceSnapshot:
+                row.configured_price_snapshot == null
+                  ? null
+                  : Number(row.configured_price_snapshot),
+              approvalState: row.approval_state === "approved" ? "approved" : "not_required",
+              approvalApprovedByName: row.approved_by_name ?? null,
+              approvalRevisionNo:
+                row.approval_revision_no == null ? null : Number(row.approval_revision_no),
               weighItems,
               acidItems,
               debtItem: debtItems[0],
@@ -298,11 +328,46 @@ export function useRubberBills(
               reportLockNo: row.report_lock_no ?? null
             };
           });
+
+          try {
+            await Promise.all(
+              serverBills
+                .filter((bill) => bill.serverBillNo)
+                .map((bill) => putRubberBillReceiptSnapshot({
+                  billId: bill.id,
+                  locationId: bill.locationId,
+                  serverBillNo: bill.serverBillNo!,
+                  serverReceivedAt:
+                    bill.serverReceivedAt
+                    ?? bill.serverCreatedAt
+                    ?? bill.clientRecordedAt,
+                  revisionNo: bill.revisionNo,
+                  bill,
+                  receipt: buildRubberBillReceiptModel(bill),
+                }))
+            );
+          } catch (cacheError) {
+            console.warn("Unable to cache rubber bill receipts", cacheError);
+          }
+        }
+        try {
+          await deleteRubberBillReceiptSnapshotsNotIn(
+            locationId,
+            new Set(serverBills.map((bill) => bill.id))
+          );
+          await pruneRubberBillReceiptSnapshots(locationId, 100);
+        } catch (cacheError) {
+          console.warn("Unable to clean rubber bill receipt cache", cacheError);
         }
       } catch (err) {
-        // Offline or network error → use empty server state, merge queue below
+        // Offline or network error → use the latest synced receipt snapshots.
         if (!navigator.onLine) {
-          serverBills = [];
+          try {
+            serverBills = (await getRubberBillReceiptSnapshots(locationId))
+              .map((snapshot) => snapshot.bill);
+          } catch {
+            serverBills = [];
+          }
         } else {
           throw err; // re-throw real errors when online
         }
@@ -345,24 +410,32 @@ export function useRubberBills(
             billDate: rawPayload.billDate,
             customerId: rawPayload.customerId ?? null,
             customerName: rawPayload.customerName,
-            customerType: rawPayload.customerType,
             billType: rawPayload.billType ?? "บิลเครื่องชั่งเล็ก",
             deductWeight: rawPayload.deductWeight || 0,
             weight: rawPayload.weight || 0,
             price: rawPayload.averagePrice || 0,
             deductionTotal: rawPayload.deductionTotal || 0,
             netTotal: rawPayload.netTotal || 0,
-            cashPayment: rawPayload.cashPayment || 0,
-            transferPayment: rawPayload.transferPayment || 0,
             acidPackCount: rawPayload.acidPackCount || 0,
-            printStatus: "ยังไม่ได้ปริ้น",
+            configuredPriceSnapshot: rawPayload.configuredPriceSnapshot ?? null,
+            approvalState: "not_required",
+            approvalApprovedByName: null,
+            approvalRevisionNo: null,
+            approvalPending:
+              rawPayload.operation === "create"
+              && isRubberBillPriceApprovalRequired(
+                rawPayload.items
+                  .filter((item: any) => item.itemType === "weigh")
+                  .map((item: any) => Number(item.unitPrice)),
+                rawPayload.configuredPriceSnapshot ?? null
+              ),
             weighItems: rawPayload.items.filter((i:any) => i.itemType === "weigh").map((i:any) => ({ id: i.sequenceNo.toString(), label: i.title, inWeight: i.inWeight, outWeight: i.outWeight, netWeight: i.netWeight, price: i.unitPrice })),
             acidItems: rawPayload.items.filter((i:any) => i.itemType === "acid" || i.itemType === "stock_deduction").map((i:any) => ({ id: i.sequenceNo.toString(), name: i.title, stockProductId: i.stockProductId, quantity: i.quantity, unit: i.unit, unitPrice: i.unitPrice })),
             debtItems: rawPayload.items.filter((i:any) => i.itemType === "debt").map((i:any) => ({ id: i.sequenceNo.toString(), title: i.title, amount: i.totalAmount })),
             debtItem: rawPayload.items.filter((i:any) => i.itemType === "debt")[0] ? { id: "1", title: rawPayload.items.filter((i:any) => i.itemType === "debt")[0].title, amount: rawPayload.items.filter((i:any) => i.itemType === "debt")[0].totalAmount } : undefined,
-            createdByUserId: "",
-            createdByName: "",
-            createdByPhone: "",
+            createdByUserId: rawPayload.createdByUserId ?? ownerUserId,
+            createdByName: rawPayload.createdByName ?? "",
+            createdByPhone: rawPayload.createdByPhone ?? "",
             clientCreatedAt: rawPayload.clientCreatedAt,
             serverCreatedAt: rawPayload.clientCreatedAt,
             clientRecordedAt: rawPayload.clientRecordedAt,
@@ -393,17 +466,56 @@ export function useRubberBills(
         throw new Error(OFFLINE_SYNCED_ACTION_MESSAGE);
       }
       if (operation === "create" && typeof navigator !== "undefined") {
+        if (!approvalSettings) {
+          throw new Error(
+            navigator.onLine
+              ? "กำลังโหลดกติกาอนุมัติ กรุณารอสักครู่แล้วบันทึกอีกครั้ง"
+              : "เครื่องนี้ยังไม่เคยโหลดกติกาอนุมัติ กรุณาออนไลน์ก่อนสร้างบิล"
+          );
+        }
         assertOfflineRubberBillPriceAllowed(
           (bill.weighItems ?? []).map((item) => item.price),
-          configuredPrice,
+          approvalSettings,
           navigator.onLine
         );
       }
       
-      const payload = buildRpcPayload(bill, operation);
-
+      const payload = buildRpcPayload(
+        bill,
+        operation,
+        operation === "create" ? approvalSettings?.configuredPrice : bill.configuredPriceSnapshot
+      );
+      const isOnline = typeof navigator === "undefined" || navigator.onLine;
       const existingEvents = await getPendingEvents(queuePartition(ownerUserId, locationId));
       const clientEvents = existingEvents.filter(e => e.id === bill.clientTempId);
+
+      if (isOnline && clientEvents.length === 0) {
+        const response = await fetch("/api/lanflow/rubber-bills", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.errorMessage || "บันทึกบิลไม่สำเร็จ");
+        }
+        return {
+          ...bill,
+          id: data.id ?? bill.id,
+          serverBillNo: data.serverBillNo ?? bill.serverBillNo,
+          billNo: data.serverBillNo ?? bill.billNo,
+          syncStatus: data.status === "synced" ? "synced" as const : "pending" as const,
+          revisionNo: data.revisionNo ?? bill.revisionNo,
+          serverReceivedAt: data.serverReceivedAt ?? bill.serverReceivedAt,
+          configuredPriceSnapshot:
+            operation === "create"
+              ? approvalSettings?.configuredPrice ?? null
+              : bill.configuredPriceSnapshot,
+          approvalPending: data.status === "pending_approval",
+          approvalRequestId: data.requestId,
+          approvalOperation: data.operation,
+        };
+      }
 
       if (clientEvents.some(e => e.status === "conflict" || e.status === "failed")) {
         throw new Error("ไม่สามารถบันทึกได้ กรุณาแก้ไขข้อมูลที่ขัดแย้ง หรือลองซิงก์ใหม่อีกครั้ง");
@@ -461,7 +573,19 @@ export function useRubberBills(
         });
       }
       
-      return bill;
+      return {
+        ...bill,
+        configuredPriceSnapshot:
+          operation === "create"
+            ? approvalSettings?.configuredPrice ?? null
+            : bill.configuredPriceSnapshot,
+        approvalPending:
+          operation === "create"
+          && isRubberBillPriceApprovalRequired(
+            (bill.weighItems ?? []).map((item) => item.price),
+            approvalSettings?.configuredPrice ?? null
+          ),
+      };
     },
     onSuccess: (savedBill) => {
       queryClient.setQueryData<RubberBill[]>(["rubberBills", ownerUserId, locationId], (old) => {
@@ -469,12 +593,17 @@ export function useRubberBills(
         const exists = old.findIndex(b => b.clientTempId === savedBill.clientTempId);
         if (exists >= 0) {
           const newBills = [...old];
-          newBills[exists] = { ...newBills[exists], ...savedBill, syncStatus: "pending" };
+          newBills[exists] = { ...newBills[exists], ...savedBill };
           return newBills;
         }
-        return [{ ...savedBill, syncStatus: "pending" }, ...old];
+        return [savedBill, ...old];
       });
+      if (savedBill.approvalPending) {
+        toast.success("ส่งคำขออนุมัติบิลยางแล้ว");
+      }
       queryClient.invalidateQueries({ queryKey: ["rubberBills", ownerUserId, locationId] });
+      queryClient.invalidateQueries({ queryKey: ["rubberBillApprovalMarkers", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["rubberBillApprovalRequests"] });
       queryClient.invalidateQueries({ queryKey: ["incomeExpense", locationId] });
       queryClient.invalidateQueries({ queryKey: ["acidStock", locationId] });
       syncPendingBills(queryClient, ownerUserId, locationId);
@@ -524,11 +653,34 @@ export function useRubberBills(
       // If we replaced a pending update, use its server revision. Else use current bill's server revision.
       const targetRev = pendingUpdates.length > 0 ? pendingUpdates[0].payload.expectedRevisionNo : bill.revisionNo;
       const payload = {
-        ...buildRpcPayload(bill, "delete", deletedByName, deletedByPhone),
+        ...buildRpcPayload(
+          bill,
+          "delete",
+          bill.configuredPriceSnapshot,
+          deletedByName,
+          deletedByPhone
+        ),
         expectedRevisionNo: targetRev,
         idempotencyKey: `delete:${clientTempId}:${targetRev}`
       };
-      
+
+      if (typeof navigator === "undefined" || navigator.onLine) {
+        const response = await fetch("/api/lanflow/rubber-bills", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.errorMessage || "ลบบิลไม่สำเร็จ");
+        }
+        return {
+          clientTempId,
+          coalesced: false,
+          approvalPending: data.status === "pending_approval",
+        };
+      }
+
       await enqueueSyncEvent({
         id: clientTempId,
         entity: "rubber_bills",
@@ -539,36 +691,27 @@ export function useRubberBills(
         timestamp: Date.now(),
         status: "pending"
       });
-      return { clientTempId, coalesced: false };
+      return { clientTempId, coalesced: false, approvalPending: false };
     },
     onSuccess: (data) => {
       queryClient.setQueryData<RubberBill[]>(["rubberBills", ownerUserId, locationId], (old) => {
         if (!old) return old;
+        if (data.approvalPending) {
+          return old.map((bill) => bill.clientTempId === data.clientTempId
+            ? { ...bill, approvalPending: true, approvalOperation: "delete" }
+            : bill);
+        }
         return old.filter(b => b.clientTempId !== data.clientTempId);
       });
+      if (data.approvalPending) {
+        toast.success("ส่งคำขออนุมัติลบบิลยางแล้ว");
+      }
       queryClient.invalidateQueries({ queryKey: ["rubberBills", ownerUserId, locationId] });
+      queryClient.invalidateQueries({ queryKey: ["rubberBillApprovalMarkers", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["rubberBillApprovalRequests"] });
       queryClient.invalidateQueries({ queryKey: ["incomeExpense", locationId] });
       queryClient.invalidateQueries({ queryKey: ["acidStock", locationId] });
       syncPendingBills(queryClient, ownerUserId, locationId);
-    }
-  });
-
-  const markPrintedMutation = useMutation({
-    mutationFn: async (billId: string) => {
-      const response = await fetch(`/api/lanflow/rubber-bills/${encodeURIComponent(billId)}/print-status`, {
-        method: "POST"
-      });
-      const result = await response.json().catch(() => ({})) as { status?: string; errorMessage?: string };
-      if (!response.ok || result.status !== "synced") {
-        throw new Error(result.errorMessage || "บันทึกสถานะการพิมพ์ไม่สำเร็จ");
-      }
-      return billId;
-    },
-    onSuccess: (billId) => {
-      queryClient.setQueryData<RubberBill[]>(["rubberBills", ownerUserId, locationId], (current) =>
-        current?.map((bill) => bill.id === billId ? { ...bill, printStatus: "ปริ้นแล้ว" } : bill)
-      );
-      queryClient.invalidateQueries({ queryKey: ["rubberBills", ownerUserId, locationId] });
     }
   });
 
@@ -579,7 +722,5 @@ export function useRubberBills(
     addBill: saveBillMutation.mutateAsync,
     updateBill: saveBillMutation.mutateAsync,
     deleteBill: deleteBillMutation.mutateAsync,
-    markPrinted: markPrintedMutation.mutateAsync,
-    isMarkingPrinted: markPrintedMutation.isPending,
   };
 }

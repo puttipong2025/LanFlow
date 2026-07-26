@@ -19,7 +19,7 @@ const operationLabels: Record<RubberBillApprovalOperation, string> = {
 };
 
 const reasonLabels: Record<RubberBillApprovalReason, string> = {
-  price: "ราคาไม่ตรง",
+  price: "ราคาเกินเพดาน",
   time: "พ้นเวลาที่กำหนด",
 };
 
@@ -99,9 +99,9 @@ export function RubberBillApprovalModal({
     }
     if (
       parsedPrice !== null &&
-      (!/^\d+(\.\d{1,2})?$/.test(normalizedPrice) || parsedPrice <= 0)
+      (!/^\d+(\.\d{1,2})?$/.test(normalizedPrice) || parsedPrice < 0)
     ) {
-      toast.error("ราคายางต้องมากกว่า 0 และมีทศนิยมไม่เกิน 2 ตำแหน่ง");
+      toast.error("ราคายางต้องไม่ติดลบและมีทศนิยมไม่เกิน 2 ตำแหน่ง");
       return;
     }
 
@@ -250,7 +250,8 @@ export function RubberBillApprovalModal({
                     </p>
                     <p className="text-ink/55">{formatDateTime(request.requestedAt)}</p>
                     <p className="text-ink/70">
-                      ราคาที่ใช้ตรวจ: {request.configuredPriceSnapshot == null ? "ไม่ได้ตั้ง" : request.configuredPriceSnapshot}
+                      ราคาเพดานที่ใช้ตรวจ: {request.configuredPriceSnapshot == null ? "ไม่ได้ตั้ง" : request.configuredPriceSnapshot}
+                      {" · "}เวลาแก้ไขที่ใช้ตรวจ: {request.editWindowMinutesSnapshot} นาที
                     </p>
                   </div>
                   {request.requestStatus === "pending" && (

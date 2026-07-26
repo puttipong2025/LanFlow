@@ -70,7 +70,6 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
           bill_no: billNo,
           bill_date: "2026-07-24",
           customer_name: `ลูกค้าส่งออก ${index}`,
-          customer_type: "สาขานี้จ่าย",
           bill_type: "weighing",
           deduct_weight: index * 10,
           weight: index * 100,
@@ -86,6 +85,19 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
         });
         expect(error).toBeNull();
       }
+      expect((await db.from("rubber_bill_items").insert(
+        billIds.map((billId, index) => ({
+          bill_id: billId,
+          item_type: "weigh",
+          description: "ชั่ง 1",
+          weight_in: (index + 1) * 100,
+          weight_out: (index + 1) * 10,
+          net_weight: (index + 1) * 90,
+          price: 10,
+          total: (index + 1) * 900,
+          sequence_no: 1,
+        }))
+      )).error).toBeNull();
 
       const sourceReportResponse = await admin.request.post("/api/lanflow/reports", {
         data: { locationId },

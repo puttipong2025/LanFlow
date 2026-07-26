@@ -90,11 +90,23 @@ test.describe("Device-local weighing queue", () => {
       { id: "one", mainName: "ลูกค้าเดิม", legacyMemberId: "M001" },
     ], cachedAt, storage);
     saveCustomerCache("device-a", [
-      { id: "two", mainName: "ลูกค้าใหม่", legacyMemberId: null },
+      {
+        id: "two",
+        mainName: "ลูกค้าใหม่",
+        legacyMemberId: null,
+        class: "สาขาใหญ่จ่าย",
+        farmAddress: "สวนทดสอบ",
+      },
     ], new Date("2026-07-26T00:00:00.000Z"), storage);
 
     expect(loadCustomerCache("device-a", new Date("2026-08-01T00:00:00.000Z"), storage)).toEqual([
-      { id: "two", mainName: "ลูกค้าใหม่", legacyMemberId: null },
+      {
+        id: "two",
+        mainName: "ลูกค้าใหม่",
+        legacyMemberId: null,
+        class: "สาขาใหญ่จ่าย",
+        farmAddress: "สวนทดสอบ",
+      },
     ]);
     expect(loadCustomerCache("device-a", new Date("2026-08-02T00:00:00.001Z"), storage)).toEqual([]);
   });

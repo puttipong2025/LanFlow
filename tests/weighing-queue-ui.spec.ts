@@ -42,7 +42,7 @@ test("manages, reorders, warns, reprints, deletes, and persists the daily queue"
   await rows.nth(1).getByRole("button", { name: "พิมพ์บัตรคิว 2" }).click();
   await expect(rows.nth(1)).toContainText("พิมพ์ล่าสุด");
 
-  await rows.nth(1).dragTo(rows.nth(0));
+  await rows.nth(1).getByRole("button", { name: "เลื่อนคิว 2 ขึ้น" }).click();
   rows = queueTable.locator("tbody tr");
   await expect(rows.nth(0)).toContainText("ข้อมูลเปลี่ยนหลังพิมพ์");
 
@@ -82,6 +82,8 @@ test("reloads offline with cached customers and the device-local queue", async (
         id: "cached-customer",
         mainName: "ลูกค้าแคชทดสอบ",
         legacyMemberId: "CACHE001",
+        class: "สาขาใหญ่จ่าย",
+        farmAddress: "สวนออฟไลน์",
       }],
     }));
   });
@@ -89,6 +91,17 @@ test("reloads offline with cached customers and the device-local queue", async (
   await context.setOffline(true);
   await page.reload();
   await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
+
+  await page.getByRole("button", { name: "เพิ่มบิลยาง" }).click();
+  const billCustomerInput = page.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]');
+  await billCustomerInput.fill("CACHE001");
+  await expect(page.getByRole("button", { name: /ลูกค้าแคชทดสอบ/ })).toBeVisible();
+  await page.getByRole("button", { name: /ลูกค้าแคชทดสอบ/ }).click();
+  await expect(billCustomerInput).toHaveValue("ลูกค้าแคชทดสอบ");
+  await expect(page.getByRole("radio", { name: "สาขาใหญ่จ่าย" })).toHaveCount(0);
+  await expect(page.getByText("สวนออฟไลน์")).toHaveCount(0);
+  await page.getByRole("button", { name: "ปิด" }).click();
+
   await page.getByRole("button", { name: "บัตรคิว", exact: true }).click();
   await page.locator('input[type="time"]').fill("16:00");
   await page.getByRole("button", { name: "เริ่มคิววันนี้" }).click();
@@ -107,7 +120,7 @@ test("reloads offline with cached customers and the device-local queue", async (
 
   await queueRows.nth(0).getByRole("button", { name: "พิมพ์บัตรคิว 1" }).click();
   await expect(queueRows.nth(0)).toContainText("พิมพ์ล่าสุด");
-  await queueRows.nth(1).dragTo(queueRows.nth(0));
+  await queueRows.nth(1).getByRole("button", { name: "เลื่อนคิว 2 ขึ้น" }).click();
   await expect(queueRows.nth(1)).toContainText("ข้อมูลเปลี่ยนหลังพิมพ์");
 
   page.once("dialog", (dialog) => dialog.accept());

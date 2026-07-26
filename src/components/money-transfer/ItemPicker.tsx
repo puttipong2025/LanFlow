@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { UserCheck, UserX } from "lucide-react";
 import type { MoneyTransferItem, OcrTicket, RubberBill } from "@/types";
+import { getRubberBillTransferBlockReason } from "@/lib/rubber-bill-validation";
 import { formatCurrency } from "@/lib/format";
 
 export function ItemPicker({
@@ -75,7 +76,8 @@ export function ItemPicker({
                 const alreadySelected = selectedSourceIds.has(bill.id);
                 const noCustomer = !bill.customerName;
                 const negative = bill.netTotal < 0;
-                const disabled = alreadyUsed || noCustomer || negative || Boolean(bill.reportLockNo) || bill.approvalPending === true;
+                const paymentBlockReason = getRubberBillTransferBlockReason(bill);
+                const disabled = alreadyUsed || noCustomer || Boolean(paymentBlockReason) || Boolean(bill.reportLockNo) || bill.approvalPending === true;
                 const reportLockReason = bill.reportLockNo
                   ? `ล็อกโดยรายงาน ${bill.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`
                   : undefined;
@@ -130,6 +132,8 @@ export function ItemPicker({
                         <span className="rounded-full bg-clay/10 px-2 py-0.5 text-xs font-bold text-clay">ไม่มีชื่อ</span>
                       ) : negative ? (
                         <span className="rounded-full bg-clay/10 px-2 py-0.5 text-xs font-bold text-clay">ติดลบ</span>
+                      ) : paymentBlockReason ? (
+                        <span title={paymentBlockReason} className="rounded-full bg-clay/10 px-2 py-0.5 text-xs font-bold text-clay">ห้ามจ่าย</span>
                       ) : (
                         <span className="rounded-full bg-leaf/10 px-2 py-0.5 text-xs font-bold text-leaf">พร้อม</span>
                       )}

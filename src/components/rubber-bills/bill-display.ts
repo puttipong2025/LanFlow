@@ -1,13 +1,15 @@
 import { thaiBahtText } from "@/lib/thai-baht-text";
-import type { Customer, RubberBill } from "@/types";
+import type { RubberBill } from "@/types";
 
 export type RubberBillReceiptModel = {
-  billNo: string;
+  receiptKind: "offline" | "synced";
+  referenceLabel: "เลขอ้างอิงบนเครื่อง" | "เลขบิล";
+  referenceNo: string;
   billDate: string;
   customerName: string;
-  customerAddress?: string;
-  showFscEudr: boolean;
-  paymentResponsibility: string;
+  payerName: string;
+  approvalLabel: string;
+  hasZeroPrice: boolean;
   weighItems: Array<{
     label: string;
     inWeight: number;
@@ -35,29 +37,41 @@ export function getDisplayBillNo(bill: RubberBill) {
   return bill.serverBillNo ?? bill.localBillNo ?? bill.billNo;
 }
 
-export function getRubberBillPrintBlockReason(
-  bill: RubberBill,
-  isOnline: boolean,
-  isMarkingPrinted = false
-) {
+export function getRubberBillPrintBlockReason(bill: RubberBill) {
   if (bill.billType !== "บิลเครื่องชั่งเล็ก") return "รองรับเฉพาะบิลเครื่องชั่งเล็ก";
   if (bill.recordStatus !== "active") return "พิมพ์ได้เฉพาะบิลที่ยังใช้งาน";
-  if (bill.syncStatus !== "synced" || !bill.serverBillNo) return "กรุณารอให้บิลซิงก์และได้รับเลขบิลจากเซิร์ฟเวอร์ก่อน";
-  if (!isOnline) return "ต้องออนไลน์เพื่อบันทึกสถานะหลังยืนยันว่าพิมพ์แล้ว";
-  if (isMarkingPrinted) return "กำลังบันทึกสถานะการพิมพ์";
+  if (bill.approvalPending) return "บิลนี้ยังรออนุมัติ จึงยังพิมพ์ไม่ได้";
+  if (bill.syncStatus === "pending" && bill.serverBillNo) {
+    return "บิลที่ซิงก์แล้วกำลังรอบันทึกการเปลี่ยนแปลง";
+  }
+  if (bill.syncStatus === "failed" || bill.syncStatus === "conflict") {
+    return "บิลมีปัญหาการซิงก์ กรุณาแก้ไขก่อนพิมพ์";
+  }
+  if (bill.syncStatus !== "pending" && bill.syncStatus !== "synced") {
+    return "สถานะบิลนี้ยังไม่พร้อมพิมพ์";
+  }
   return null;
 }
 
-export function resolveReceiptCustomer(bill: RubberBill, customers: Customer[]) {
-  if (bill.customerId) return customers.find((customer) => customer.id === bill.customerId);
-  const matches = customers.filter((customer) => customer.mainName === bill.customerName);
-  return matches.length === 1 ? matches[0] : undefined;
+function currentRevisionApprovalLabel(
+  bill: RubberBill,
+  receiptKind: RubberBillReceiptModel["receiptKind"]
+) {
+  if (receiptKind === "offline") {
+    return bill.configuredPriceSnapshot === null
+      ? "ไม่ได้เปิดใช้กฎอนุมัติราคา"
+      : "ผ่านการตรวจราคาบนเครื่อง — ไม่ต้องอนุมัติ";
+  }
+  if (
+    bill.approvalState === "approved"
+    && bill.approvalRevisionNo === bill.revisionNo
+  ) {
+    return `อนุมัติแล้ว — ${bill.approvalApprovedByName?.trim() || "ไม่ระบุ"}`;
+  }
+  return "ไม่ต้องอนุมัติ";
 }
 
-export function buildRubberBillReceiptModel(
-  bill: RubberBill,
-  customer?: Customer
-): RubberBillReceiptModel {
+export function buildRubberBillReceiptModel(bill: RubberBill): RubberBillReceiptModel {
   const deductions = [
     ...(bill.acidItems ?? []).map((item) => ({
       label: `${item.name} ${formatReceiptNumber(item.quantity)} ${item.unit}`,
@@ -74,34 +88,62 @@ export function buildRubberBillReceiptModel(
     : bill.deductionTotal - knownDeduction;
   if (weightDeduction > 0.005) {
     deductions.push({
-      label: bill.deductWeight > 0 ? `หักน้ำหนัก ${formatReceiptNumber(bill.deductWeight)} กก.` : "หักน้ำหนัก/รายการหักเดิม",
+      label: bill.deductWeight > 0
+        ? `หักน้ำหนัก ${formatReceiptNumber(bill.deductWeight)} กก.`
+        : "หักน้ำหนัก/รายการหักเดิม",
       amount: weightDeduction
     });
   }
 
+  const receiptKind = bill.syncStatus === "synced" && Boolean(bill.serverBillNo)
+    ? "synced"
+    : "offline";
+  const weighItems = (bill.weighItems ?? []).map((item) => ({
+    label: item.label,
+    inWeight: item.inWeight,
+    outWeight: item.outWeight,
+    netWeight: item.netWeight,
+    price: item.price,
+    lineTotal: Math.floor(item.netWeight * item.price)
+  }));
+
   return {
-    billNo: getDisplayBillNo(bill),
+    receiptKind,
+    referenceLabel: receiptKind === "synced" ? "เลขบิล" : "เลขอ้างอิงบนเครื่อง",
+    referenceNo: receiptKind === "synced"
+      ? bill.serverBillNo!
+      : bill.localBillNo,
     billDate: bill.billDate,
     customerName: bill.customerName,
-    customerAddress: customer?.farms?.[0]?.address || undefined,
-    showFscEudr: customer?.fscStatus === "yes",
-    paymentResponsibility: bill.customerType,
-    weighItems: (bill.weighItems ?? []).map((item) => ({
-      label: item.label,
-      inWeight: item.inWeight,
-      outWeight: item.outWeight,
-      netWeight: item.netWeight,
-      price: item.price,
-      lineTotal: Math.floor(item.netWeight * item.price)
-    })),
+    payerName: bill.createdByName?.trim() || "ไม่ระบุ",
+    approvalLabel: currentRevisionApprovalLabel(bill, receiptKind),
+    hasZeroPrice: weighItems.some((item) => item.price === 0),
+    weighItems,
     weight: bill.weight,
-    grossTotal: bill.netTotal + bill.deductionTotal,
+    grossTotal: weighItems.reduce((sum, item) => sum + item.lineTotal, 0),
     averagePrice: bill.price,
     deductions,
     deductionTotal: bill.deductionTotal,
     netTotal: bill.netTotal,
     netTotalText: thaiBahtText(bill.netTotal)
   };
+}
+
+export function resolveRubberBillReceiptForPrint(
+  bill: RubberBill,
+  snapshot: { revisionNo: number; receipt: RubberBillReceiptModel } | null,
+  isOnline: boolean
+) {
+  if (bill.syncStatus !== "synced" || !bill.serverBillNo) {
+    return buildRubberBillReceiptModel(bill);
+  }
+  if (snapshot?.revisionNo === bill.revisionNo) {
+    return snapshot.receipt;
+  }
+  if (!isOnline) {
+    throw new Error("ไม่พบสำเนาใบพิมพ์ของบิลนี้ในเครื่อง กรุณาออนไลน์เพื่อโหลดใหม่");
+  }
+  return buildRubberBillReceiptModel(bill);
 }
 
 export function escapeReceiptHtml(value: unknown) {
@@ -130,30 +172,35 @@ export function renderRubberBillReceiptHtml(model: RubberBillReceiptModel) {
   const deductionRows = model.deductions.length === 0
     ? '<div class="row muted"><span>ไม่มีรายการหัก</span><span>0</span></div>'
     : model.deductions.map((item) => `<div class="row"><span>${h(item.label)}</span><span>${n(item.amount)}</span></div>`).join("");
+  const title = model.receiptKind === "offline"
+    ? "ใบรับซื้อยางออฟไลน์"
+    : "ใบรับซื้อยาง";
 
   return `<!doctype html>
-<html lang="th"><head><meta charset="utf-8"><title>บิล ${h(model.billNo)}</title>
+<html lang="th"><head><meta charset="utf-8"><title>${h(title)} ${h(model.referenceNo)}</title>
 <style>
 @page { size: 78mm auto; margin: 3mm; }
 * { box-sizing: border-box; } body { margin: 0; width: 72mm; color: #000; font: 11px/1.35 Arial, "Noto Sans Thai", sans-serif; }
-h1 { margin: 0 0 4px; text-align: center; font-size: 18px; } .center { text-align: center; } .fsc { margin: 4px 0; border: 1px solid #000; padding: 3px; text-align: center; font-weight: 700; }
+h1 { margin: 0 0 4px; text-align: center; font-size: 18px; } .warning { margin: 6px 0; border: 3px double #000; padding: 6px 3px; text-align: center; font-size: 14px; font-weight: 800; }
 .meta { margin: 6px 0; } .row { display: flex; justify-content: space-between; gap: 8px; } .row span:first-child { overflow-wrap: anywhere; }
 table { width: 100%; border-collapse: collapse; margin: 6px 0; } th, td { border-bottom: 1px solid #777; padding: 2px 1px; text-align: left; } th { font-size: 9px; } .num { text-align: right; } .muted { color: #555; text-align: center; }
 .totals { border-top: 1px solid #000; padding-top: 4px; } .grand { margin-top: 4px; border-top: 2px solid #000; padding-top: 4px; font-size: 14px; font-weight: 700; }
+.payable { margin-top: 5px; border: 2px solid #000; padding: 5px 3px; font-size: 15px; font-weight: 800; }
 .words { margin-top: 5px; text-align: center; font-weight: 700; overflow-wrap: anywhere; } .signature { margin-top: 14px; display: flex; justify-content: space-between; gap: 12px; text-align: center; }
 </style></head><body>
-<h1>ใบรับซื้อยาง</h1>
-${model.showFscEudr ? '<div class="fsc">FSC / EUDR</div>' : ""}
-<div class="meta"><div class="row"><span>เลขบิล</span><strong>${h(model.billNo)}</strong></div><div class="row"><span>วันที่</span><span>${h(model.billDate)}</span></div></div>
+<h1>${h(title)}</h1>
+${model.hasZeroPrice ? '<div class="warning">ยังไม่กำหนดราคา — ห้ามจ่าย</div>' : ""}
+<div class="meta"><div class="row"><span>${h(model.referenceLabel)}</span><strong>${h(model.referenceNo)}</strong></div><div class="row"><span>วันที่</span><span>${h(model.billDate)}</span></div></div>
 <div><strong>ลูกค้า:</strong> ${h(model.customerName)}</div>
-${model.customerAddress ? `<div><strong>ที่อยู่:</strong> ${h(model.customerAddress)}</div>` : ""}
-<div><strong>ผู้รับผิดชอบการจ่าย:</strong> ${h(model.paymentResponsibility)}</div>
+<div><strong>ผู้รับผิดชอบการจ่าย:</strong> ${h(model.payerName)}</div>
+<div><strong>สถานะอนุมัติ:</strong> ${h(model.approvalLabel)}</div>
 <table><thead><tr><th>รายการ</th><th class="num">เข้า</th><th class="num">ออก</th><th class="num">สุทธิ</th><th class="num">ราคา</th><th class="num">รวม</th></tr></thead><tbody>${weighRows}</tbody></table>
 <div class="row"><strong>น้ำหนักรวม</strong><strong>${n(model.weight)} กก.</strong></div>
 <div class="row"><span>ราคาเฉลี่ย</span><span>${n(model.averagePrice)}</span></div>
 <div class="row"><span>มูลค่ายาง</span><span>${n(model.grossTotal)}</span></div>
 <div class="totals"><strong>รายการหัก</strong>${deductionRows}<div class="row"><strong>ยอดหักรวม</strong><strong>${n(model.deductionTotal)}</strong></div></div>
 <div class="row grand"><span>ยอดสุทธิ</span><span>${n(model.netTotal)} บาท</span></div>
+<div class="row payable"><span>ยอดที่ต้องจ่ายลูกค้า</span><span>${n(model.netTotal)} บาท</span></div>
 <div class="words">(${h(model.netTotalText)})</div>
 <div class="signature"><div>________________<br>ผู้ขาย</div><div>________________<br>ผู้รับซื้อ</div></div>
 </body></html>`;

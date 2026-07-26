@@ -31,8 +31,6 @@ export type ReportDetails = {
     weight: number;
     deduction: number;
     net: number;
-    cash: number;
-    transfer: number;
   }>;
   ocrTickets: Array<{
     date: string;

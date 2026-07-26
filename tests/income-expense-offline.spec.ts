@@ -6,7 +6,7 @@ async function readQueue(page: Page): Promise<any[]> {
   await page.waitForLoadState('domcontentloaded');
   return page.evaluate(() => {
     return new Promise<any[]>((resolve, reject) => {
-      const req = indexedDB.open('lanflow_sync_db', 3);
+      const req = indexedDB.open('lanflow_sync_db');
       req.onerror = () => reject(req.error);
       req.onupgradeneeded = () => {
         req.transaction?.abort();
@@ -234,7 +234,7 @@ async function enqueueIncomeExpenseEvent(page: Page, event: Record<string, any>)
 
   await page.evaluate((queuedEvent) => {
     return new Promise<void>((resolve, reject) => {
-      const req = indexedDB.open('lanflow_sync_db', 3);
+      const req = indexedDB.open('lanflow_sync_db');
       req.onerror = () => reject(req.error);
       req.onupgradeneeded = () => {
         const db = req.result;
@@ -852,7 +852,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
         const deleteRequest = indexedDB.deleteDatabase('lanflow_sync_db');
         deleteRequest.onerror = () => reject(deleteRequest.error);
         deleteRequest.onsuccess = () => {
-          const request = indexedDB.open('lanflow_sync_db', 2);
+          const request = indexedDB.open('lanflow_sync_db');
           request.onerror = () => reject(request.error);
           request.onupgradeneeded = () => {
             const store = request.result.createObjectStore('sync_queue', { keyPath: 'queueId', autoIncrement: true });

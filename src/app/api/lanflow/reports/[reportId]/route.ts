@@ -75,7 +75,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
       ledgerResult,
       latestResult,
     ] = await Promise.all([
-      rowsByIds(admin, "rubber_bills", "id, bill_date, server_bill_no, local_bill_no, customer_name, bill_type, weight, deduction_total, net_total, cash_payment, transfer_payment", ids(items, "rubber_bill")),
+      rowsByIds(admin, "rubber_bills", "id, bill_date, server_bill_no, local_bill_no, customer_name, bill_type, weight, deduction_total, net_total", ids(items, "rubber_bill")),
       rowsByIds(admin, "ocr_tickets", "id, date_in, ticket_id, file_name, customer_name, license_plate, weight_in, weight_out, weight_net, weight_deducted, weight_remaining, total_amount", ids(items, "ocr_ticket")),
       rowsByIds(admin, "stock_entries", "id, tx_date, server_bill_no, transfer_bill_no, product_name, tx_type, quantity_delta, amount", ids(items, "acid_stock_entry")),
       rowsByIds(admin, "income_expense", "id, tx_date, server_bill_no, local_bill_no, stock_product_id, stock_quantity, cost, stock_products(name)", ids(items, "income_expense")),
@@ -160,8 +160,6 @@ export async function GET(request: NextRequest, context: RouteContext) {
         weight: number(row.weight),
         deduction: number(row.deduction_total),
         net: number(row.net_total),
-        cash: number(row.cash_payment),
-        transfer: number(row.transfer_payment),
       })),
       ocrTickets: ocr.map((row) => ({
         date: datePart(row.date_in),

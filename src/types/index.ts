@@ -3,7 +3,6 @@ export type SyncStatus = "pending" | "syncing" | "synced" | "failed" | "conflict
 export type RecordStatus = "active" | "deleted" | "cancelled";
 export type QueueOperation = "create" | "update" | "delete";
 export type PaymentResponsibility = "สาขานี้จ่าย" | "สาขาใหญ่จ่าย";
-export type PrintStatus = "ยังไม่ได้ปริ้น" | "ปริ้นแล้ว";
 
 export type Location = {
   id: string;
@@ -35,17 +34,17 @@ export type RubberBill = {
   billDate: string;
   customerId?: string | null;
   customerName: string;
-  customerType: PaymentResponsibility;
   billType: string;
   deductWeight: number;
   weight: number;
   price: number;
   deductionTotal: number;
   netTotal: number;
-  cashPayment: number;
-  transferPayment: number;
   acidPackCount: number;
-  printStatus: PrintStatus;
+  configuredPriceSnapshot?: number | null;
+  approvalState: "not_required" | "approved";
+  approvalApprovedByName?: string | null;
+  approvalRevisionNo?: number | null;
   weighItems?: Array<{
     id: string;
     label: string;
@@ -114,6 +113,7 @@ export type RubberBillApprovalRequest = {
   baseRevisionNo: number;
   matchedReasons: RubberBillApprovalReason[];
   configuredPriceSnapshot: number | null;
+  editWindowMinutesSnapshot: number;
   originalPayload: Record<string, unknown> | null;
   proposedPayload: Record<string, unknown>;
   requestedByName: string;

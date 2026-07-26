@@ -20,6 +20,7 @@ import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { useIncomeExpense } from "@/hooks/useIncomeExpense";
 import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
 import { useTimeTrackingPending } from "@/hooks/useTimeTrackingPending";
+import { isRubberBillPayable } from "@/lib/rubber-bill-validation";
 
 import { writeBootstrapCache, readBootstrapCache } from "@/lib/lanflow/bootstrap-cache";
 import { type Tab } from "@/components/lanflow/tabs";
@@ -175,7 +176,9 @@ export function LanFlowApp() {
   const scopedTransactions = allTransactions.filter((tx) => tx.recordStatus !== "deleted");
 
   const summary = useMemo(() => {
-    const rubberPay = scopedBills.reduce((sum, bill) => sum + bill.netTotal, 0);
+    const rubberPay = scopedBills
+      .filter(isRubberBillPayable)
+      .reduce((sum, bill) => sum + bill.netTotal, 0);
     const income = scopedTransactions
       .filter((tx) => tx.type === "income")
       .reduce((sum, tx) => sum + tx.cost, 0);
@@ -186,18 +189,13 @@ export function LanFlowApp() {
       .filter((tx) => tx.type === "expense" && tx.relationSourceType === "rubber_bill_daily")
       .reduce((sum, tx) => sum + tx.cost, 0);
     const rubberPayOutsideIncomeExpense = Math.max(0, rubberPay - rubberBillDerivedExpense);
-    const cashPaid = scopedBills.reduce((sum, bill) => sum + bill.cashPayment, 0);
-    const transferPaid = scopedBills.reduce((sum, bill) => sum + bill.transferPayment, 0);
-
     return {
       billCount: scopedBills.length,
       rubberWeight: scopedBills.reduce((sum, bill) => sum + bill.weight, 0),
       rubberPay,
       income,
       expense,
-      balance: income - expense - rubberPayOutsideIncomeExpense,
-      cashPaid,
-      transferPaid
+      balance: income - expense - rubberPayOutsideIncomeExpense
     };
   }, [scopedBills, scopedTransactions]);
 
@@ -368,6 +366,7 @@ export function LanFlowApp() {
         {activeTab === "money-transfer" && canAccessMoneyTransfer && (
           <MoneyTransferModule
             locationId={selectedLocationId}
+            locations={locations}
             online={online}
             profile={profile}
             initialEditTransferId={

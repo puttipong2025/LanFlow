@@ -1,6 +1,6 @@
 # ADR-0005: Rubber Bill Printing Uses a Safe Browser Receipt and Confirmed Server Status
 
-- Status: Accepted
+- Status: Superseded by ADR-0014
 - Date: 2026-07-16
 - Owners: LanFlow team
 - Decision scope: Small-scale Rubber Bill printing

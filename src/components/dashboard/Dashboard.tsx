@@ -18,8 +18,6 @@ export function Dashboard({
     income: number;
     expense: number;
     balance: number;
-    cashPaid: number;
-    transferPaid: number;
   };
   bills: RubberBill[];
   transactions: IncomeExpense[];
@@ -29,9 +27,9 @@ export function Dashboard({
     <div className="space-y-5">
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <Metric label="บิลวันนี้" value={`${summary.billCount}`} detail={`${formatNumber(summary.rubberWeight)} กก.`} />
-        <Metric label="จ่ายค่ายาง" value={formatCurrency(summary.rubberPay)} detail={`สด ${formatCurrency(summary.cashPaid)}`} />
+        <Metric label="จ่ายค่ายาง" value={formatCurrency(summary.rubberPay)} detail="ยอดสุทธิรวม" />
         <Metric label="รายรับ" value={formatCurrency(summary.income)} detail={`รายจ่าย ${formatCurrency(summary.expense)}`} />
-        <Metric label="คงเหลือ" value={formatCurrency(summary.balance)} detail={`โอน ${formatCurrency(summary.transferPaid)}`} />
+        <Metric label="คงเหลือ" value={formatCurrency(summary.balance)} detail="ยอดคงเหลือสุทธิ" />
       </div>
 
       <div className="grid gap-5 xl:grid-cols-[1.35fr_0.65fr]">

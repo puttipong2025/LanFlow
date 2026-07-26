@@ -6,10 +6,11 @@ import {
   CheckCircle2,
   Edit3,
   Plus,
+  Download,
   Trash2,
   WifiOff,
 } from "lucide-react";
-import type { MoneyTransfer, Profile } from "@/types";
+import type { Location, MoneyTransfer, Profile } from "@/types";
 import { formatCurrency } from "@/lib/format";
 
 import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
@@ -17,13 +18,24 @@ import { useRubberBills } from "@/hooks/useRubberBills";
 import { useOcrTickets } from "@/hooks/useOcrTickets";
 import { useCustomers } from "@/hooks/useCustomers";
 import { useRubberBillApprovals } from "@/hooks/useRubberBillApprovals";
+import {
+  downloadReceiptPdf,
+  receiptPdfFilename,
+} from "@/lib/rubber-bills/print-receipt";
 
 import { CustomerTransferForm } from "./money-transfer/CustomerTransferForm";
 import { TransportTransferForm } from "./money-transfer/TransportTransferForm";
 import { BranchTransferForm } from "./money-transfer/BranchTransferForm";
+import {
+  buildMoneyTransferReceiptModel,
+  getMoneyTransferPrintBlockReason,
+  renderMoneyTransferReceiptHtml,
+  shortTransferId,
+} from "./money-transfer/money-transfer-print";
 
 type Props = {
   locationId: string;
+  locations: Location[];
   online: boolean;
   profile: Profile;
   initialEditTransferId?: string | null;
@@ -32,6 +44,7 @@ type Props = {
 
 export function MoneyTransferModule({
   locationId,
+  locations,
   online,
   profile,
   initialEditTransferId,
@@ -65,6 +78,7 @@ export function MoneyTransferModule({
   const [activeFormType, setActiveFormType] = useState<'customer' | 'transport' | 'branch' | null>(null);
   const [editTransfer, setEditTransfer] = useState<MoneyTransfer | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const offlineMessage = "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น";
   const branchTransferFormMode =
@@ -140,6 +154,28 @@ export function MoneyTransferModule({
     setEditTransfer(t);
     setActiveFormType(t.transferType === 'transport' ? 'transport' : t.transferType === 'branch' ? 'branch' : 'customer');
   }, [online, offlineMessage]);
+
+  const handleDownload = useCallback(async (transfer: MoneyTransfer) => {
+    const blockReason = getMoneyTransferPrintBlockReason(transfer);
+    if (blockReason || downloadingId) {
+      if (blockReason) setToastMsg(blockReason);
+      return;
+    }
+
+    setDownloadingId(transfer.id);
+    try {
+      const model = buildMoneyTransferReceiptModel(transfer, locations);
+      await downloadReceiptPdf(
+        renderMoneyTransferReceiptHtml(model),
+        receiptPdfFilename("LanFlow-money-transfer", model.shortId)
+      );
+      setToastMsg("ดาวน์โหลด PDF ใบรายการโอนเงินแล้ว");
+    } catch (error) {
+      setToastMsg(error instanceof Error ? error.message : "ดาวน์โหลด PDF ใบรายการโอนเงินไม่สำเร็จ");
+    } finally {
+      setDownloadingId(null);
+    }
+  }, [downloadingId, locations]);
 
   useEffect(() => {
     if (!initialEditTransferId) return;
@@ -268,7 +304,7 @@ export function MoneyTransferModule({
               </thead>
               <tbody>
                 {transfers.map((t, idx) => (
-                  <tr key={t.id} className="border-b border-black/5 transition-colors hover:bg-mint/20">
+                  <tr key={t.id} data-transfer-id={t.id} className="border-b border-black/5 transition-colors hover:bg-mint/20">
                     <td className="px-3 py-2.5 font-mono text-ink/40">{idx + 1}</td>
                     <td className="px-3 py-2.5">
                       <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-bold ${
@@ -337,6 +373,16 @@ export function MoneyTransferModule({
                     </td>
                     <td className="px-3 py-2.5 text-center">
                       <div className="flex items-center justify-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => void handleDownload(t)}
+                          disabled={Boolean(getMoneyTransferPrintBlockReason(t)) || downloadingId !== null}
+                          aria-label={`ดาวน์โหลด PDF รายการโอนเงิน ${shortTransferId(t.id)}`}
+                          className="grid h-7 w-7 place-items-center rounded-md text-ink/50 hover:bg-river/10 hover:text-river disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-ink/50"
+                          title={getMoneyTransferPrintBlockReason(t) ?? (downloadingId ? "กำลังสร้าง PDF" : "ดาวน์โหลด PDF ใบรายการโอนเงิน 80 มม.")}
+                        >
+                          <Download size={14} />
+                        </button>
                         <button
                           type="button"
                           onClick={() => handleEdit(t)}
