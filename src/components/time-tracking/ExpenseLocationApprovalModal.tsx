@@ -31,8 +31,8 @@ export function ExpenseLocationApprovalModal({ approval, locations, onClose, onS
       <label className="mt-4 block text-sm font-semibold text-ink" htmlFor="expense-comment">หมายเหตุ (ถ้ามี)</label>
       <textarea id="expense-comment" value={comment} onChange={(event) => setComment(event.target.value)} rows={3} className="mt-2 w-full rounded-md border border-black/15 px-3 py-2" />
       <div className="mt-6 flex justify-end gap-3">
-        <button onClick={onClose} disabled={saving} className="rounded-md px-4 py-2 text-sm font-bold text-ink/70">ยกเลิก</button>
-        <button onClick={approve} disabled={saving || !locationId} className="rounded-md bg-leaf px-4 py-2 text-sm font-bold text-white disabled:opacity-50">{saving ? "กำลังบันทึก..." : "อนุมัติและสร้างค่าใช้จ่าย"}</button>
+        <button onClick={onClose} disabled={saving} className="rounded-md bg-actionSecondary px-4 py-2 text-sm font-bold text-white hover:bg-actionSecondary/90">ยกเลิก</button>
+        <button onClick={approve} disabled={saving || !locationId} className="rounded-md bg-success px-4 py-2 text-sm font-bold text-white disabled:opacity-50">{saving ? "กำลังบันทึก..." : "อนุมัติและสร้างค่าใช้จ่าย"}</button>
       </div>
     </div>
   </div>;

@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, requireSystemManager } from "@/lib/server/auth";
-import { createSupabaseAdminClient } from "@/lib/server/supabase-admin";
 import { reportErrorResponse } from "@/lib/server/report-response";
 import type { ReportDetails } from "@/types/reports";
 
@@ -23,13 +22,13 @@ function datePart(value: unknown) {
 }
 
 async function rowsByIds(
-  admin: ReturnType<typeof createSupabaseAdminClient>,
+  client: Extract<Awaited<ReturnType<typeof requireAuth>>, { ok: true }>["supabase"],
   table: string,
   columns: string,
   rowIds: string[]
 ): Promise<Array<Record<string, any>>> {
   if (rowIds.length === 0) return [];
-  const { data, error } = await (admin as any).from(table).select(columns).in("id", rowIds);
+  const { data, error } = await (client as any).from(table).select(columns).in("id", rowIds);
   if (error) throw new Error(error.message);
   return (data ?? []) as Array<Record<string, any>>;
 }
@@ -57,7 +56,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
   if (itemsError) return reportErrorResponse(itemsError.message);
 
   const items = (itemRows ?? []) as Item[];
-  const admin = createSupabaseAdminClient();
+  const client = result.supabase;
 
   try {
     const [
@@ -75,28 +74,28 @@ export async function GET(request: NextRequest, context: RouteContext) {
       ledgerResult,
       latestResult,
     ] = await Promise.all([
-      rowsByIds(admin, "rubber_bills", "id, bill_date, server_bill_no, local_bill_no, customer_name, bill_type, weight, deduction_total, net_total", ids(items, "rubber_bill")),
-      rowsByIds(admin, "ocr_tickets", "id, date_in, ticket_id, file_name, customer_name, license_plate, weight_in, weight_out, weight_net, weight_deducted, weight_remaining, total_amount", ids(items, "ocr_ticket")),
-      rowsByIds(admin, "stock_entries", "id, tx_date, server_bill_no, transfer_bill_no, product_name, tx_type, quantity_delta, amount", ids(items, "acid_stock_entry")),
-      rowsByIds(admin, "income_expense", "id, tx_date, server_bill_no, local_bill_no, stock_product_id, stock_quantity, cost, stock_products(name)", ids(items, "income_expense")),
+      rowsByIds(client, "rubber_bills", "id, bill_date, server_bill_no, local_bill_no, customer_name, bill_type, net_weight, average_price, net_rubber_value, deduction_total, net_total", ids(items, "rubber_bill")),
+      rowsByIds(client, "ocr_tickets", "id, date_in, ticket_id, file_name, customer_name, license_plate, weight_in, weight_out, weight_net, weight_deducted, weight_remaining, total_amount", ids(items, "ocr_ticket")),
+      rowsByIds(client, "stock_entries", "id, tx_date, server_bill_no, transfer_bill_no, product_name, tx_type, quantity_delta, amount", ids(items, "acid_stock_entry")),
+      rowsByIds(client, "income_expense", "id, tx_date, server_bill_no, local_bill_no, stock_product_id, stock_quantity, cost, stock_products(name)", ids(items, "income_expense")),
       ids(items, "rubber_bill").length > 0
-        ? (admin as any)
+        ? (client as any)
             .from("rubber_bill_items")
             .select("id, bill_id, quantity, total, stock_product_id, rubber_bills!inner(bill_date, server_bill_no, local_bill_no), stock_products(name)")
             .in("bill_id", ids(items, "rubber_bill"))
             .not("stock_product_id", "is", null)
         : Promise.resolve({ data: [], error: null }),
-      (admin as any)
+      (client as any)
         .from("acid_stock_movements")
         .select("product_name, quantity_delta")
         .eq("location_id", header.location_id)
         .lte("created_at", header.cutoff_at),
-      rowsByIds(admin, "time_segments", "id, profile_id, start_time, end_time", ids(items, "time_segment")),
-      rowsByIds(admin, "leave_requests", "id, profile_id, start_date, end_date, type, updated_at", ids(items, "leave_request")),
-      rowsByIds(admin, "financial_transactions", "id, profile_id, type, amount, description, approved_at, updated_at", ids(items, "financial_transaction")),
-      rowsByIds(admin, "payroll_slips", "id, profile_id, month, gross_pay, total_deductions, net_pay, approved_at, updated_at", ids(items, "payroll_slip")),
+      rowsByIds(client, "time_segments", "id, profile_id, start_time, end_time", ids(items, "time_segment")),
+      rowsByIds(client, "leave_requests", "id, profile_id, start_date, end_date, type, updated_at", ids(items, "leave_request")),
+      rowsByIds(client, "financial_transactions", "id, profile_id, type, amount, description, approved_at, updated_at", ids(items, "financial_transaction")),
+      rowsByIds(client, "payroll_slips", "id, profile_id, month, gross_pay, total_deductions, net_pay, approved_at, updated_at", ids(items, "payroll_slip")),
       rowsByIds(
-        admin,
+        client,
         "money_transfers",
         "id, location_id, target_location_id, target_location_name, customer_name, transport_staff_name, transfer_type, transfer_status, net_amount_to_pay, branch_paid_amount, server_received_at, updated_at, created_at, money_transfer_slips(amount, fee)",
         [...ids(items, "bank_transfer_source"), ...ids(items, "bank_transfer_target")]
@@ -125,7 +124,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
       ...payroll.map((row) => row.profile_id),
     ].filter(Boolean))];
     const profileRows = profileIds.length > 0
-      ? await admin.from("profiles").select("id, name").in("id", profileIds)
+      ? await client.from("profiles").select("id, name").in("id", profileIds)
       : { data: [], error: null };
     if (profileRows.error) throw new Error(profileRows.error.message);
     const profileName = new Map((profileRows.data ?? []).map((row) => [row.id, row.name]));
@@ -157,7 +156,9 @@ export async function GET(request: NextRequest, context: RouteContext) {
         number: row.server_bill_no ?? row.local_bill_no ?? "",
         customer: row.customer_name ?? "",
         billType: row.bill_type ?? "",
-        weight: number(row.weight),
+        netWeight: number(row.net_weight),
+        averagePrice: number(row.average_price),
+        rubberValue: number(row.net_rubber_value),
         deduction: number(row.deduction_total),
         net: number(row.net_total),
       })),

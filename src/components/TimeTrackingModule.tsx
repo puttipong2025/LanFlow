@@ -1,10 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useState, useMemo } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Clock, UserCircle, PlayCircle, PauseCircle, XCircle, ChevronLeft, ChevronRight } from "lucide-react";
+import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import { formatCurrency } from "@/lib/format";
 import { authFetch } from "@/lib/auth-fetch";
 import { Location, Profile } from "@/types";
+import { useInputDialog } from "@/hooks/useInputDialog";
+import { ExpenseLocationChangeModal } from "./time-tracking/ExpenseLocationChangeModal";
 import { ExpenseLocationApprovalModal } from "./time-tracking/ExpenseLocationApprovalModal";
 
 interface TimeTrackingModuleProps {
@@ -37,6 +41,8 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
+  const [pendingExpenseLocationTx, setPendingExpenseLocationTx] = useState<any>(null);
+  const { requestInput, inputDialog } = useInputDialog();
 
   // Debt Modal State
   const [isDebtModalOpen, setIsDebtModalOpen] = useState(false);
@@ -186,24 +192,36 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
       return;
     }
     if (!online || expenseLocations.length === 0) return;
-    const choices = expenseLocations.map((location, index) => `${index + 1}. ${location.name}`).join('\n');
-    const selected = Number(prompt(`เลือกสาขาค่าใช้จ่ายใหม่\n${choices}`));
-    const location = expenseLocations[selected - 1];
-    if (!location) return;
-    const admin_comment = prompt('หมายเหตุ (ถ้ามี):') || '';
+    setPendingExpenseLocationTx(tx);
+  }
+
+  async function submitWithdrawalExpenseLocation(expenseLocationId: string, adminComment: string) {
+    if (!pendingExpenseLocationTx) return false;
     setSaving(true);
     try {
       const res = await authFetch('/api/lanflow/time-tracking/admin', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'CHANGE_EXPENSE_LOCATION', payload: { source_type: 'transaction', source_id: tx.id, expense_location_id: location.id, admin_comment } }),
+        body: JSON.stringify({
+          action: 'CHANGE_EXPENSE_LOCATION',
+          payload: {
+            source_type: 'transaction',
+            source_id: pendingExpenseLocationTx.id,
+            expense_location_id: expenseLocationId,
+            admin_comment: adminComment,
+          },
+        }),
       });
       if (!res.ok) {
         const json = await res.json();
         alert(json.error || 'ไม่สามารถเปลี่ยนสาขาค่าใช้จ่ายได้');
-        return;
+        return false;
       }
+      setPendingExpenseLocationTx(null);
       await loadData();
-    } finally { setSaving(false); }
+      return true;
+    } finally {
+      setSaving(false);
+    }
   }
 
   if (loading) return <div>กำลังโหลดข้อมูล...</div>;
@@ -213,7 +231,7 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
   const leaveRequests = data?.leaveRequests?.filter((request: any) => request.status !== 'REJECTED') || [];
 
   return (
-    <div className={`flex flex-col gap-6 p-4 ${targetUserId ? 'bg-sky-50/50 rounded-2xl border border-black/5 shadow-inner' : ''}`}>
+    <div className={`flex flex-col gap-6 p-4 ${targetUserId ? 'bg-mint/35 rounded-2xl border border-black/5 shadow-inner' : ''}`}>
       <h2 className="text-xl font-bold text-ink flex items-center gap-2">
         <UserCircle /> {targetUserId ? "ข้อมูลของพนักงาน" : "ระบบเวลาและเงินเดือน (ของตนเอง)"}
       </h2>
@@ -281,7 +299,7 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
                 }}
                 disabled={!online}
                 title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE}
-                className="w-full py-2 rounded-lg text-sm font-bold shadow-sm transition-colors bg-clay/10 text-clay border border-clay/20 hover:bg-clay/20 disabled:cursor-not-allowed disabled:opacity-50"
+                className="w-full rounded-lg bg-clay py-2 text-sm font-bold text-white shadow-sm transition-colors hover:bg-clay/90 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 สร้างหนี้สินเพิ่ม
               </button>
@@ -297,7 +315,14 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
               alert(TIME_TRACKING_OFFLINE_MESSAGE);
               return;
             }
-            const amount = prompt("ระบุยอดเงินที่ต้องการเบิก (บาท):");
+            const amount = await requestInput({
+              title: targetUserId ? "ขอเบิกเงินแทน" : "ขอเบิกเงินล่วงหน้า",
+              label: "ยอดเงินที่ต้องการเบิก (บาท)",
+              inputType: "number",
+              required: true,
+              min: 0.01,
+              step: 0.01,
+            });
             if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) return;
 
             const endpoint = targetUserId ? "/api/lanflow/time-tracking/admin" : "/api/lanflow/time-tracking/user";
@@ -314,7 +339,7 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
           }}
           disabled={!online}
           title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE}
-          className="bg-amber text-ink px-4 py-2 rounded-md font-semibold hover:bg-amber/80 shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
+          className="bg-amber px-4 py-2 rounded-md font-semibold text-white hover:bg-amber/80 shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
         >
           {targetUserId ? 'ขอเบิกเงินแทน' : 'ขอเบิกเงินล่วงหน้า'}
         </button>
@@ -350,16 +375,17 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
                     )}
                   </div>
                   <div className="flex items-center gap-2 self-start sm:self-center">
-                    <span className={`text-xs font-bold px-2 py-1 rounded-md ${t.status === 'APPROVED' ? 'bg-leaf/20 text-leaf' : 'bg-ink/10 text-ink'}`}>{t.status}</span>
+                    <span className={`text-xs font-bold px-2 py-1 rounded-md ${t.status === 'APPROVED' ? 'bg-success/15 text-success' : 'bg-ink/10 text-ink'}`}>{t.status}</span>
                     {targetUserId && t.status === 'PENDING' && onApprove && (profile.role === 'super_admin' || t.type === 'WITHDRAWAL') && (
-                      <button onClick={() => onApprove('TRANSACTION', t)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-leaf/20 text-leaf px-3 py-1 rounded font-bold hover:bg-leaf/30 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
+                      <button onClick={() => onApprove('TRANSACTION', t)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded bg-success px-3 py-1 font-bold text-white hover:bg-success/90 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
                     )}
                     {t.type === 'WITHDRAWAL' && t.status === 'APPROVED' && !t.cancelled_at && (profile.role === 'admin' || profile.role === 'super_admin') && (
-                      <button onClick={() => changeWithdrawalExpenseLocation(t)} disabled={saving || !online || expenseLocations.length === 0 || Boolean(t.report_lock_no)} title={reportLockReason(t) ?? undefined} className="text-river hover:text-river/70 text-sm underline disabled:opacity-40">เปลี่ยนสาขาค่าใช้จ่าย</button>
+                      <button onClick={() => changeWithdrawalExpenseLocation(t)} disabled={saving || !online || expenseLocations.length === 0 || Boolean(t.report_lock_no)} title={reportLockReason(t) ?? undefined} className="rounded-md bg-river px-3 py-1 text-sm font-semibold text-white hover:bg-river/90 disabled:opacity-40">เปลี่ยนสาขาค่าใช้จ่าย</button>
                     )}
                     {(profile.role === 'super_admin' || (profile.role === 'admin' && !targetUserId && t.status !== 'APPROVED')) && (t.type === 'DEBT' || t.type === 'WITHDRAWAL') && (
-                      <button onClick={() => handleDeleteTransaction(t)} disabled={saving || !online || Boolean(t.report_lock_no)} title={reportLockReason(t) ?? (online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE)} className="text-clay hover:text-clay/70 p-1 disabled:cursor-not-allowed disabled:opacity-40">
+                      <button onClick={() => handleDeleteTransaction(t)} disabled={saving || !online || Boolean(t.report_lock_no)} title={reportLockReason(t) ?? (online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE)} className="inline-flex h-10 items-center gap-1 rounded-md bg-danger px-2 text-sm font-semibold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-40">
                         <XCircle size={18} />
+                        ลบ
                       </button>
                     )}
                   </div>
@@ -381,9 +407,9 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
                     )}
                   </div>
                   <div className="flex items-center gap-2 self-start sm:self-center">
-                    <span className={`text-xs font-bold px-2 py-1 rounded-md ${r.status === 'APPROVED' ? 'bg-leaf/20 text-leaf' : 'bg-ink/10 text-ink'}`}>{r.status}</span>
+                    <span className={`text-xs font-bold px-2 py-1 rounded-md ${r.status === 'APPROVED' ? 'bg-success/15 text-success' : 'bg-ink/10 text-ink'}`}>{r.status}</span>
                     {targetUserId && r.status === 'PENDING' && onApprove && (
-                      <button onClick={() => onApprove('LEAVE', r)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-leaf/20 text-leaf px-3 py-1 rounded font-bold hover:bg-leaf/30 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
+                      <button onClick={() => onApprove('LEAVE', r)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded bg-success px-3 py-1 font-bold text-white hover:bg-success/90 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
                     )}
                   </div>
                 </li>
@@ -422,13 +448,14 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
                     )}
                   </div>
                   <div className="flex items-center gap-2 self-start sm:self-center">
-                    <span className={`text-xs font-bold px-2 py-1 rounded-md ${t.status === 'APPROVED' ? 'bg-leaf/20 text-leaf' : 'bg-ink/10 text-ink'}`}>{t.status}</span>
+                    <span className={`text-xs font-bold px-2 py-1 rounded-md ${t.status === 'APPROVED' ? 'bg-success/15 text-success' : 'bg-ink/10 text-ink'}`}>{t.status}</span>
                     {targetUserId && t.status === 'PENDING' && onApprove && (profile.role === 'super_admin' || t.type === 'WITHDRAWAL') && (
-                      <button onClick={() => onApprove('TRANSACTION', t)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-leaf/20 text-leaf px-3 py-1 rounded font-bold hover:bg-leaf/30 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
+                      <button onClick={() => onApprove('TRANSACTION', t)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded bg-success px-3 py-1 font-bold text-white hover:bg-success/90 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
                     )}
                     {(profile.role === 'super_admin' || (profile.role === 'admin' && !targetUserId && t.status !== 'APPROVED')) && (t.type === 'DEBT' || t.type === 'WITHDRAWAL') && (
-                      <button onClick={() => handleDeleteTransaction(t)} disabled={saving || !online || Boolean(t.report_lock_no)} title={reportLockReason(t) ?? (online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE)} className="text-clay hover:text-clay/70 p-1 disabled:cursor-not-allowed disabled:opacity-40">
+                      <button onClick={() => handleDeleteTransaction(t)} disabled={saving || !online || Boolean(t.report_lock_no)} title={reportLockReason(t) ?? (online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE)} className="inline-flex h-10 items-center gap-1 rounded-md bg-danger px-2 text-sm font-semibold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-40">
                         <XCircle size={18} />
+                        ลบ
                       </button>
                     )}
                   </div>
@@ -443,8 +470,9 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
           <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden">
             <div className="p-4 border-b border-black/10 flex justify-between items-center">
               <h3 className="font-bold text-lg text-ink">สร้างหนี้สิน</h3>
-              <button onClick={() => setIsDebtModalOpen(false)} className="text-ink/50 hover:text-clay">
+              <button onClick={() => setIsDebtModalOpen(false)} className="inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white hover:bg-actionSecondary/90">
                 <XCircle />
+                ปิด
               </button>
             </div>
             <div className="p-4 flex flex-col gap-4">
@@ -483,7 +511,7 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
             <div className="p-4 border-t border-black/10 flex justify-end gap-2 bg-black/5">
               <button
                 onClick={() => setIsDebtModalOpen(false)}
-                className="px-4 py-2 font-semibold text-ink/70 hover:bg-black/10 rounded-md"
+                className="rounded-md bg-actionSecondary px-4 py-2 font-semibold text-white hover:bg-actionSecondary/90"
               >
                 ยกเลิก
               </button>
@@ -521,7 +549,7 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
                     setSaving(false);
                   }
                 }}
-                className="px-4 py-2 font-bold bg-clay text-white rounded-md hover:bg-clay/80 disabled:opacity-50"
+                className="rounded-md bg-commit px-4 py-2 font-bold text-white hover:bg-commit/90 disabled:opacity-50"
               >
                 บันทึก
               </button>
@@ -529,11 +557,21 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
           </div>
         </div>
       )}
+      {pendingExpenseLocationTx && (
+        <ExpenseLocationChangeModal
+          locations={expenseLocations}
+          onClose={() => setPendingExpenseLocationTx(null)}
+          onSubmit={submitWithdrawalExpenseLocation}
+        />
+      )}
+      {inputDialog}
     </div>
   );
 }
 
 function AdminTimeTracking({ profile, online, locations }: { profile: Profile, online: boolean, locations: Location[] }) {
+  const queryClient = useQueryClient();
+  const { requestInput, inputDialog } = useInputDialog();
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
@@ -582,7 +620,15 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
       alert(TIME_TRACKING_OFFLINE_MESSAGE);
       return false;
     }
-    const comment = providedComment ?? prompt('ระบุเหตุผลการอนุมัติ:') ?? '';
+    const requestedComment = providedComment === undefined
+      ? await requestInput({
+          title: "อนุมัติรายการ",
+          label: "เหตุผลการอนุมัติ",
+          multiline: true,
+        })
+      : providedComment;
+    if (requestedComment === null) return false;
+    const comment = requestedComment;
     const res = await authFetch("/api/lanflow/time-tracking/admin", {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -600,7 +646,10 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
       alert(json?.error || 'ไม่สามารถบันทึกการอนุมัติได้');
       return false;
     }
-    load();
+    void load();
+    void queryClient.invalidateQueries({
+      queryKey: [ACTIONABLE_BADGES_QUERY_KEY],
+    });
     return true;
   }
 
@@ -638,7 +687,15 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
       alert(TIME_TRACKING_OFFLINE_MESSAGE);
       return;
     }
-    const wageStr = prompt("ระบุค่าแรงรายวัน (บาท):", currentWage.toString());
+    const wageStr = await requestInput({
+      title: "แก้ไขค่าแรงรายวัน",
+      label: "ค่าแรงรายวัน (บาท)",
+      initialValue: currentWage.toString(),
+      inputType: "number",
+      required: true,
+      min: 0,
+      step: 0.01,
+    });
     if (wageStr === null) return;
     const wage = Number(wageStr);
     if (isNaN(wage) || wage < 0) return;
@@ -722,7 +779,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
                   <td className="py-3">
                     <div className="flex items-center gap-2">
                       <span>{formatCurrency(user.daily_wage || 0)}</span>
-                      <button onClick={() => editWage(user.id, user.daily_wage || 0)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="text-river hover:underline text-xs disabled:cursor-not-allowed disabled:opacity-40">แก้ไข</button>
+                      <button onClick={() => editWage(user.id, user.daily_wage || 0)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded-md bg-river px-2 py-1 text-xs font-semibold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-40">แก้ไข</button>
                     </div>
                   </td>
                   <td className="py-3">
@@ -742,7 +799,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
                     </button>
                   </td>
                   <td className="py-3">
-                     <button onClick={() => setViewDashboardUserId(user.id)} className="bg-ink/5 text-ink px-3 py-1 rounded text-xs hover:bg-ink/10 font-bold inline-flex items-center gap-1">
+                     <button onClick={() => setViewDashboardUserId(user.id)} className="inline-flex items-center gap-1 rounded bg-river px-3 py-1 text-xs font-bold text-white hover:bg-river/90">
                        ดู Dashboard
                        {dashboardPendingCount > 0 && <span className="min-w-4 rounded-full bg-clay px-1.5 py-0.5 text-[10px] text-white">{dashboardPendingCount}</span>}
                      </button>
@@ -777,7 +834,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
       {viewDashboardUserId && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
           <div className="bg-sand rounded-xl w-full max-w-4xl max-h-[90vh] overflow-y-auto relative shadow-2xl">
-            <button onClick={() => setViewDashboardUserId(null)} className="absolute top-4 right-4 text-ink/50 hover:text-ink bg-white rounded-full"><XCircle size={32} /></button>
+            <button onClick={() => setViewDashboardUserId(null)} className="absolute right-4 top-4 inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white shadow-sm hover:bg-actionSecondary/90"><XCircle size={20} />ปิด</button>
             <UserTimeTracking
               profile={profile}
               targetUserId={viewDashboardUserId}
@@ -829,6 +886,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
           }}
         />
       )}
+      {inputDialog}
       </div>
     </div>
   );
@@ -839,6 +897,7 @@ function ManageTimeModal({ user, admins, online, onClose, onSuccess, onRefresh }
   const [saving, setSaving] = useState(false);
   const [histories, setHistories] = useState<any[]>([]);
   const [lockedDates, setLockedDates] = useState<Map<string, string>>(new Map());
+  const { requestInput, inputDialog } = useInputDialog();
 
   const activeSegment = useMemo(() => user.time_segments?.find((s: any) => !s.end_time), [user]);
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
@@ -1063,7 +1122,12 @@ function ManageTimeModal({ user, admins, online, onClose, onSuccess, onRefresh }
       return;
     }
 
-    const admin_comment = prompt("กรุณาระบุหมายเหตุการแก้ไขเวลา:");
+    const admin_comment = await requestInput({
+      title: "บันทึกการแก้ไขเวลา",
+      label: "หมายเหตุการแก้ไขเวลา",
+      multiline: true,
+      required: true,
+    });
     if (!admin_comment) return;
 
     setSaving(true);
@@ -1133,7 +1197,7 @@ function ManageTimeModal({ user, admins, online, onClose, onSuccess, onRefresh }
   return (
     <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
       <div className="bg-white rounded-xl w-full max-w-2xl p-6 shadow-2xl relative max-h-[95vh] overflow-hidden flex flex-col">
-        <button onClick={onClose} className="absolute top-4 right-4 text-ink/50 hover:text-ink"><XCircle size={28} /></button>
+        <button onClick={onClose} className="absolute right-4 top-4 inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white hover:bg-actionSecondary/90"><XCircle size={20} />ปิด</button>
         <h2 className="text-xl font-bold mb-2 shrink-0">จัดการเวลาทำงานของ {user.name}</h2>
 
         {/* Real-time Timer Section */}
@@ -1240,8 +1304,8 @@ function ManageTimeModal({ user, admins, online, onClose, onSuccess, onRefresh }
         </div>
 
         <div className="flex justify-end gap-3 border-t border-black/10 pt-4 shrink-0">
-           <button onClick={onClose} className="px-4 py-2 rounded-md font-semibold text-ink/70 hover:bg-sand">ยกเลิก</button>
-           <button onClick={handleSubmit} disabled={saving || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="px-4 py-2 rounded-md font-bold bg-river text-white hover:bg-river/80 disabled:cursor-not-allowed disabled:opacity-50">
+           <button onClick={onClose} className="rounded-md bg-actionSecondary px-4 py-2 font-semibold text-white hover:bg-actionSecondary/90">ยกเลิก</button>
+           <button onClick={handleSubmit} disabled={saving || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded-md bg-commit px-4 py-2 font-bold text-white hover:bg-commit/90 disabled:cursor-not-allowed disabled:opacity-50">
              {saving ? 'กำลังบันทึก...' : `บันทึกข้อมูล (${Object.keys(selectedDates).length} วัน)`}
            </button>
         </div>
@@ -1292,6 +1356,7 @@ function ManageTimeModal({ user, admins, online, onClose, onSuccess, onRefresh }
           </div>
         )}
       </div>
+      {inputDialog}
     </div>
   )
 }
@@ -1326,7 +1391,7 @@ function AuditLogsModal({ adminId, adminName, onClose }: { adminId: string, admi
       <div className="bg-white rounded-xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl relative">
         <div className="p-6 border-b border-black/10 flex justify-between items-center shrink-0">
           <h2 className="text-xl font-bold">ประวัติการกระทำของ Admin: {adminName}</h2>
-          <button onClick={onClose} className="text-ink/50 hover:text-ink"><XCircle size={28} /></button>
+          <button onClick={onClose} className="inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white hover:bg-actionSecondary/90"><XCircle size={20} />ปิด</button>
         </div>
 
         <div className="p-6 overflow-y-auto flex-1">
@@ -1368,6 +1433,7 @@ function PayrollModal({ user, profile, online, onApprove, onClose, onRefresh }: 
   const [slips, setSlips] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const { requestInput, inputDialog } = useInputDialog();
 
   const loadSlips = useCallback(async () => {
     setLoading(true);
@@ -1395,7 +1461,13 @@ function PayrollModal({ user, profile, online, onApprove, onClose, onRefresh }: 
       alert(TIME_TRACKING_OFFLINE_MESSAGE);
       return;
     }
-    const month = prompt("ระบุเดือนที่ต้องการสร้างสลิปเงินเดือน (YYYY-MM):", new Date().toISOString().slice(0, 7));
+    const month = await requestInput({
+      title: "สร้างสลิปเงินเดือน",
+      label: "เดือน",
+      initialValue: new Date().toISOString().slice(0, 7),
+      inputType: "month",
+      required: true,
+    });
     if (!month) return;
 
     setSaving(true);
@@ -1458,7 +1530,7 @@ function PayrollModal({ user, profile, online, onApprove, onClose, onRefresh }: 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
       <div className="bg-sand rounded-xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl relative">
-        <button onClick={onClose} className="absolute top-4 right-4 text-ink/50 hover:text-ink bg-white rounded-full"><XCircle size={32} /></button>
+        <button onClick={onClose} className="absolute right-4 top-4 inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white shadow-sm hover:bg-actionSecondary/90"><XCircle size={20} />ปิด</button>
 
         <div className="p-6 border-b border-black/10 bg-white rounded-t-xl flex justify-between items-center">
           <div>
@@ -1502,23 +1574,23 @@ function PayrollModal({ user, profile, online, onApprove, onClose, onRefresh }: 
                     </div>
 
                     <div className="flex items-center gap-3">
-                      <span className={`text-xs font-bold px-2 py-1 rounded-md ${slip.status === 'APPROVED' ? 'bg-leaf/20 text-leaf' : 'bg-ink/10 text-ink'}`}>
+                      <span className={`text-xs font-bold px-2 py-1 rounded-md ${slip.status === 'APPROVED' ? 'bg-success/15 text-success' : 'bg-ink/10 text-ink'}`}>
                         {slip.status}
                       </span>
 
                       <button
                         onClick={() => window.open(`/slip/${slip.id}`, '_blank')}
-                        className="bg-river/10 text-river px-3 py-1.5 rounded-md text-sm font-bold hover:bg-river/20"
+                        className="rounded-md bg-river px-3 py-1.5 text-sm font-bold text-white hover:bg-river/90"
                       >
                         ดูสลิป
                       </button>
 
                        {slip.status === 'PENDING' && canApprove && (
-                        <button onClick={() => onApprove(slip)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-leaf text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-leaf/80 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
+                        <button onClick={() => onApprove(slip)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-success text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-success/85 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
                        )}
 
                       {canDelete && (
-                        <button onClick={() => deleteSlip(slip.id, slip.month)} disabled={saving || !online || Boolean(slip.report_lock_no)} title={reportLockReason(slip) ?? (online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE)} className="text-clay/70 hover:text-clay text-sm underline disabled:cursor-not-allowed disabled:opacity-40">
+                        <button onClick={() => deleteSlip(slip.id, slip.month)} disabled={saving || !online || Boolean(slip.report_lock_no)} title={reportLockReason(slip) ?? (online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE)} className="rounded-md bg-danger px-3 py-1.5 text-sm font-semibold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-40">
                           {slip.status === 'APPROVED' && Number(slip.net_pay) > 0 ? 'ยกเลิกค่าใช้จ่าย' : 'ลบสลิป'}
                         </button>
                       )}
@@ -1530,6 +1602,7 @@ function PayrollModal({ user, profile, online, onApprove, onClose, onRefresh }: 
           )}
         </div>
       </div>
+      {inputDialog}
     </div>
   )
 }

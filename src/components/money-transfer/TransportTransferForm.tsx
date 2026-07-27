@@ -101,7 +101,7 @@ export function TransportTransferForm({
         void Swal.fire({
           icon: "warning",
           title: "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น",
-          confirmButtonColor: "#3b82f6",
+          confirmButtonColor: "#4f6f65",
           confirmButtonText: "ตกลง"
         });
         e.target.value = "";
@@ -146,7 +146,7 @@ export function TransportTransferForm({
       void Swal.fire({
         icon: "warning",
         title: "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น",
-        confirmButtonColor: "#3b82f6",
+        confirmButtonColor: "#4f6f65",
         confirmButtonText: "ตกลง"
       });
       return;
@@ -205,7 +205,7 @@ export function TransportTransferForm({
       void Swal.fire({
         icon: "warning",
         title: "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น",
-        confirmButtonColor: "#3b82f6",
+        confirmButtonColor: "#4f6f65",
         confirmButtonText: "ตกลง"
       });
       return;
@@ -217,7 +217,7 @@ export function TransportTransferForm({
         icon: "warning",
         title: "ข้อมูลไม่ครบถ้วน",
         text: "กรุณาระบุวันที่ทำรายการให้ครบทุกสลิป",
-        confirmButtonColor: "#3b82f6",
+        confirmButtonColor: "#4f6f65",
         confirmButtonText: "ตกลง"
       });
       return;
@@ -276,8 +276,9 @@ export function TransportTransferForm({
           <Banknote className="text-river" />
           {isEdit ? "แก้ไขรายการโอนเงิน (รถขนส่ง)" : "สร้างรายการโอนเงินใหม่ (รถขนส่ง)"}
         </h3>
-        <button onClick={onCancel} className="rounded-md p-1 hover:bg-black/5">
+        <button onClick={onCancel} className="inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white hover:bg-actionSecondary/90">
           <X size={20} />
+          ปิด
         </button>
       </div>
 
@@ -334,10 +335,11 @@ export function TransportTransferForm({
                 <button 
                   type="button" 
                   onClick={handleCopyBankAccount}
-                  className="mt-1 flex items-center justify-center rounded border border-black/10 bg-white px-2 py-1 text-river hover:bg-field focus:outline-none"
+                  className="mt-1 flex items-center justify-center rounded bg-actionSecondary px-2 py-1 font-semibold text-white hover:bg-actionSecondary/90 focus:outline-none"
                   title="คัดลอกเลขบัญชี"
                 >
                   <Copy size={16} />
+                  คัดลอก
                 </button>
               </div>
             ) : (
@@ -384,10 +386,10 @@ export function TransportTransferForm({
                   className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold transition-colors ${
                     isBranchPayingRemaining 
                       ? "bg-leaf text-white hover:bg-leaf/90" 
-                      : "bg-amber/20 text-amber-700 hover:bg-amber/30"
+                      : "bg-amber text-white hover:bg-amber/90"
                   }`}
                 >
-                  <CheckCircle2 size={14} className={isBranchPayingRemaining ? "text-white" : "text-amber-700"} />
+                  <CheckCircle2 size={14} className="text-white" />
                   {isBranchPayingRemaining ? "สาขากำลังจ่ายส่วนต่าง" : "ให้สาขาจ่ายส่วนต่าง"}
                 </button>
               )}
@@ -405,7 +407,7 @@ export function TransportTransferForm({
                 onClick={() => fileInputRef.current?.click()}
                 disabled={slipUploading || !online}
                 title={online ? undefined : "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น"}
-                className="focus-ring flex items-center gap-1.5 rounded-md border border-river text-river px-3 py-1.5 text-xs font-semibold hover:bg-river/5 disabled:cursor-not-allowed disabled:opacity-50"
+                className="focus-ring flex items-center gap-1.5 rounded-md bg-river px-3 py-1.5 text-xs font-semibold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {slipUploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
                 อ่านสลิป
@@ -415,7 +417,7 @@ export function TransportTransferForm({
                 onClick={addEmptySlip}
                 disabled={!online}
                 title={online ? undefined : "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น"}
-                className="focus-ring flex items-center gap-1.5 rounded-md bg-black/5 px-3 py-1.5 text-xs font-semibold text-ink hover:bg-black/10 disabled:cursor-not-allowed disabled:opacity-50"
+                className="focus-ring flex items-center gap-1.5 rounded-md bg-leaf px-3 py-1.5 text-xs font-semibold text-white hover:bg-leaf/90 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Plus size={14} /> เพิ่มเอง
               </button>
@@ -437,13 +439,13 @@ export function TransportTransferForm({
       </div>
       
       <div className="flex flex-shrink-0 items-center justify-between border-t border-black/5 p-4">
-        <button type="button" onClick={onCancel} className="focus-ring rounded-md border border-black/10 bg-white px-4 py-2 text-sm font-semibold text-ink hover:bg-field">ยกเลิก</button>
+        <button type="button" onClick={onCancel} className="focus-ring rounded-md bg-actionSecondary px-4 py-2 text-sm font-semibold text-white hover:bg-actionSecondary/90">ยกเลิก</button>
         <button
           type="button"
           onClick={handleSubmit}
           disabled={!online}
           title={online ? undefined : "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น"}
-          className="focus-ring flex items-center gap-1.5 rounded-md bg-river px-5 py-2 text-sm font-semibold text-white hover:bg-river/90 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="focus-ring flex items-center gap-1.5 rounded-md bg-commit px-5 py-2 text-sm font-semibold text-white hover:bg-commit/90 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <Save size={15} /> บันทึก
         </button>

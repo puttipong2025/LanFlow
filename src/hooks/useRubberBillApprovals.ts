@@ -6,6 +6,7 @@ import {
   loadRubberBillApprovalSettingsCache,
   saveRubberBillApprovalSettingsCache,
 } from "@/lib/rubber-bills/approval";
+import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import type {
   RubberBillApprovalMarker,
   RubberBillApprovalReason,
@@ -127,6 +128,7 @@ export function useRubberBillApprovals({
     void queryClient.invalidateQueries({ queryKey: ["moneyTransfers"] });
     void queryClient.invalidateQueries({ queryKey: ["incomeExpense"] });
     void queryClient.invalidateQueries({ queryKey: ["acidStock"] });
+    void queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
   }
 
   const saveSettingsMutation = useMutation({

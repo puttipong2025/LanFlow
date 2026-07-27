@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { StockProductApprovalRequest } from "@/types";
+import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 
 const REQUESTS_KEY = "stockProductApprovalRequests";
 
@@ -63,6 +64,7 @@ export function useStockProductApprovals(options: { includeRequests?: boolean } 
       queryClient.invalidateQueries({ queryKey: ["stockProducts"] });
       queryClient.invalidateQueries({ queryKey: ["incomeSaleItems"] });
       queryClient.invalidateQueries({ queryKey: ["stock"] });
+      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
     },
   });
 

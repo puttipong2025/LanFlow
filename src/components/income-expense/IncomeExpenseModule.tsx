@@ -1,6 +1,6 @@
-import { ArrowRightLeft, Edit3, ExternalLink, Plus, Settings, Trash2 } from "lucide-react";
+import { ArrowRightLeft, Edit3, ExternalLink, Plus, Settings, Share2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { formatCurrency } from "@/lib/format";
@@ -8,13 +8,27 @@ import { useIncomeExpense } from "@/hooks/useIncomeExpense";
 import { useIncomeExpenseApprovals } from "@/hooks/useIncomeExpenseApprovals";
 import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
 import { useCashBranchTransfers } from "@/hooks/useCashBranchTransfers";
+import { useLocations } from "@/hooks/useLocations";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { usePerRecordSyncRetry } from "@/hooks/usePerRecordSyncRetry";
 import { getOfflineSyncedActionBlockReason } from "@/lib/record-action-locks";
 import { canAccessSourceLocation, canManageSystemFeatures } from "@/lib/permissions";
 import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
+import {
+  buildSaleReceiptGroups,
+  buildSaleReceiptModel,
+  getSaleReceiptShareBlockReason,
+  renderSaleReceiptHtml,
+  saleReceiptGroupKey,
+} from "@/lib/income-expense/sale-receipt";
+import { receiptPdfFilename } from "@/lib/rubber-bills/print-receipt";
+import {
+  cashTransferReference,
+  renderCashTransferReceiptHtml,
+} from "@/lib/cash-branch-transfer-receipt";
+import { useSharePdf } from "@/hooks/useSharePdf";
 
-import type { IncomeExpense, Location, MoneyTransfer, Profile } from "@/types";
+import type { CashBranchTransfer, IncomeExpense, Location, MoneyTransfer, Profile } from "@/types";
 import { IconButton } from "@/components/shared/IconButton";
 import { SyncStatusBadge } from "@/components/shared/SyncStatusBadge";
 import { BranchTransferForm } from "@/components/money-transfer/BranchTransferForm";
@@ -22,6 +36,52 @@ import { CashBranchTransferCreateModal, CashBranchTransferDetails, CashBranchTra
 import { getIncomeExpenseDisplayNo } from "./income-expense-display";
 import { IncomeExpenseApprovalModal } from "./IncomeExpenseApprovalModal";
 import { IncomeExpenseModal } from "./IncomeExpenseModal";
+import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
+
+function BranchTransferModeSelector({
+  mode,
+  bankAllowed,
+  onChange,
+}: {
+  mode: "cash" | "bank";
+  bankAllowed: boolean;
+  onChange: (mode: "cash" | "bank") => void;
+}) {
+  const buttonClass = (active: boolean) =>
+    active
+      ? "focus-ring rounded-md bg-river px-3 py-1.5 text-sm font-semibold text-white"
+      : "focus-ring rounded-md px-3 py-1.5 text-sm font-semibold text-ink/65 hover:bg-white";
+
+  return (
+    <div
+      data-testid="branch-transfer-mode-selector"
+      className="flex shrink-0 items-center justify-between gap-3 border-b border-black/[0.07] bg-white px-3 py-2.5 sm:px-4"
+    >
+      <span className="text-sm font-semibold text-ink/60">รูปแบบการโยกเงิน</span>
+      <div className="inline-flex rounded-lg bg-field p-1">
+        <button
+          type="button"
+          aria-pressed={mode === "cash"}
+          onClick={() => onChange("cash")}
+          className={buttonClass(mode === "cash")}
+        >
+          เงินสด
+        </button>
+        <button
+          type="button"
+          aria-pressed={mode === "bank"}
+          onClick={() => {
+            if (!bankAllowed) return toast.error("ไม่มีสิทธิ์ใช้โอนธนาคาร");
+            onChange("bank");
+          }}
+          className={buttonClass(mode === "bank")}
+        >
+          โอนธนาคาร
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export function IncomeExpenseModule({
   selectedLocation,
@@ -43,6 +103,7 @@ export function IncomeExpenseModule({
   onOpenTimeTrackingSource?: (sourceId: string, sourceType: "time_tracking_withdrawal" | "payroll_slip") => void;
 }) {
   const queryClient = useQueryClient();
+  const pdfShare = useSharePdf();
   const {
     transactions,
     addTransaction,
@@ -55,14 +116,18 @@ export function IncomeExpenseModule({
   const isOnline = useOnlineStatus();
   const canManageSystem = canManageSystemFeatures(profile);
   const {
-    pendingCount: approvalRequestsPendingCount,
     submitForApprovalIfNeeded,
-  } = useIncomeExpenseApprovals({ includePendingCount: canManageSystem && isOnline });
+  } = useIncomeExpenseApprovals();
   const { addTransfer } = useMoneyTransfers(selectedLocation.id, { enabled: canCreateMoneyTransfer });
   const cashTransfers = useCashBranchTransfers(selectedLocation.id);
+  const { locations } = useLocations();
   const pendingCashReceipts = cashTransfers.transfers.filter((transfer) => transfer.targetLocationId === selectedLocation.id && transfer.status === "pending_receipt");
   const { retrySyncEvent, isRetrying } = usePerRecordSyncRetry(selectedLocation.id, profile.id);
   const ledgerTransactions = transactions;
+  const saleGroups = useMemo(
+    () => buildSaleReceiptGroups(ledgerTransactions),
+    [ledgerTransactions]
+  );
   const nextNumber = String(ledgerTransactions.length + 1);
   const [modalOpen, setModalOpen] = useState(false);
   const [modalType, setModalType] = useState<"income" | "expense">("income");
@@ -154,9 +219,87 @@ export function IncomeExpenseModule({
     }
   }
 
+  async function shareSaleReceipt(transaction: IncomeExpense) {
+    const group = saleGroups.get(saleReceiptGroupKey(transaction));
+    const blockReason = getSaleReceiptShareBlockReason(group, isOnline)
+      ?? (pdfShare.busy ? "กำลังสร้าง PDF" : null);
+    if (blockReason || !group) {
+      toast.error(blockReason ?? "ไม่พบกลุ่มบิลขาย");
+      return;
+    }
+
+    try {
+      const delivery = await pdfShare.sharePdf(() => {
+        const referenceNo = group.lines[0].serverBillNo ?? group.lines[0].localBillNo;
+        return {
+          html: renderSaleReceiptHtml(buildSaleReceiptModel(group, selectedLocation)),
+          filename: receiptPdfFilename("LanFlow-sale-bill", referenceNo),
+        };
+      });
+      if (delivery === "shared") toast.success("แชร์ PDF บิลขายแล้ว");
+      if (delivery === "downloaded") toast.success("แชร์บนอุปกรณ์นี้ไม่ได้ จึงดาวน์โหลด PDF แทน");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "สร้าง PDF บิลขายไม่สำเร็จ");
+    }
+  }
+
+  async function shareCashTransfer(transfer: CashBranchTransfer) {
+    if (pdfShare.busy) {
+      toast.error("กำลังสร้าง PDF");
+      return;
+    }
+
+    const sourceLocationName = locations.find((location) => location.id === transfer.locationId)?.name
+      ?? (transfer.locationId === selectedLocation.id ? selectedLocation.name : "ไม่ทราบสาขา");
+    const reference = cashTransferReference(transfer.id);
+    try {
+      const delivery = await pdfShare.sharePdf(() => ({
+        html: renderCashTransferReceiptHtml(transfer, sourceLocationName),
+        filename: receiptPdfFilename("LanFlow-cash-transfer", reference),
+      }));
+      if (delivery === "shared") toast.success("แชร์ PDF รายละเอียดเงินสดแล้ว");
+      if (delivery === "downloaded") toast.success("แชร์บนอุปกรณ์นี้ไม่ได้ จึงดาวน์โหลด PDF แทน");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "สร้าง PDF รายละเอียดเงินสดไม่สำเร็จ");
+    }
+  }
+
+  function cashDeleteBlockReason(transfer: CashBranchTransfer) {
+    if (!isOnline) return "การลบรายการโยกเงินต้องออนไลน์";
+    if (transfer.reportLockNo) {
+      return `ล็อกโดยรายงาน ${transfer.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`;
+    }
+    const isSourceAdmin = profile.role === "admin" && profile.locationIds.includes(transfer.locationId);
+    if (!canManageSystem && !isSourceAdmin) return "เฉพาะผู้ดูแลสาขาต้นทางหรือผู้จัดการระบบเท่านั้น";
+    return null;
+  }
+
+  async function confirmCashDelete(transfer: CashBranchTransfer) {
+    const blockReason = cashDeleteBlockReason(transfer);
+    if (blockReason) {
+      toast.error(blockReason);
+      return;
+    }
+    const warning = transfer.status === "received"
+      ? "ปลายทางยืนยันยอดแล้ว ระบบอาจส่งคำขอลบให้ผู้จัดการอนุมัติ ดำเนินการต่อใช่ไหม?"
+      : "ลบรายการโยกเงินนี้ถาวรใช่ไหม?";
+    if (!window.confirm(warning)) return;
+
+    try {
+      const result = await cashTransfers.remove.mutateAsync(transfer.id);
+      if (result.status === "pending_approval") {
+        toast.info("ส่งคำขอลบไปที่ ตั้งค่าและอนุมัติรับ-จ่าย แล้ว");
+      } else {
+        toast.success("ลบรายการโยกเงินแล้ว");
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "ลบรายการโยกเงินไม่สำเร็จ");
+    }
+  }
+
   return (
     <section className="space-y-4">
-      <div className="flex flex-col gap-3 rounded-md border border-black/10 bg-white p-4 shadow-panel lg:flex-row lg:items-center lg:justify-between">
+      <div className="flex flex-col gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:p-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h2 className="text-lg font-bold text-ink">CRUD รายรับ-รายจ่าย · {selectedLocation.name}</h2>
           <p className="text-sm text-ink/60">เพิ่มผ่าน modal และจัดการรายการจากตาราง</p>
@@ -168,11 +311,11 @@ export function IncomeExpenseModule({
             className="mt-3 h-9 w-full max-w-xs rounded-md border border-black/15 px-3 text-sm"
           />
         </div>
-        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
+        <div className="flex flex-wrap gap-2 sm:justify-end">
           <button
             type="button"
             onClick={() => openAdd("income")}
-            className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-leaf px-4 font-semibold text-white"
+            className="focus-ring flex h-10 w-full items-center justify-center gap-2 rounded-md bg-leaf px-4 text-sm font-semibold text-white sm:w-auto"
           >
             <Plus size={18} />
             เพิ่มรายรับ
@@ -180,7 +323,7 @@ export function IncomeExpenseModule({
           <button
             type="button"
             onClick={() => openAdd("expense")}
-            className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-clay px-4 font-semibold text-white"
+            className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-clay px-3 text-sm font-semibold text-white hover:bg-clay/90"
           >
             <Plus size={18} />
             เพิ่มรายจ่าย
@@ -191,14 +334,14 @@ export function IncomeExpenseModule({
               onClick={openBranchTransfer}
               disabled={!isOnline}
               title={isOnline ? "โยกเงินไปสาขาอื่น" : "โยกเงินต้องออนไลน์ก่อน"}
-              className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-river px-4 font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+              className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-river px-3 text-sm font-semibold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               <ArrowRightLeft size={18} />
               {isOnline ? "โยกเงินไปสาขาอื่น" : "โยกเงินใช้ได้เมื่อออนไลน์"}
             </button>
           )}
           {pendingCashReceipts.length > 0 && (
-            <button type="button" disabled={!isOnline} onClick={() => setCashReceiptId(pendingCashReceipts[0]?.id ?? null)} className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-amber px-4 font-semibold text-ink disabled:cursor-not-allowed disabled:bg-slate-300">
+            <button type="button" disabled={!isOnline} onClick={() => setCashReceiptId(pendingCashReceipts[0]?.id ?? null)} className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-amber px-3 text-sm font-semibold text-white hover:bg-amber/90 disabled:cursor-not-allowed disabled:bg-slate-300">
               <ArrowRightLeft size={18} /> รอรับเงิน ({pendingCashReceipts.length})
             </button>
           )}
@@ -214,18 +357,10 @@ export function IncomeExpenseModule({
               }}
               disabled={!isOnline}
               title={isOnline ? "ตั้งค่าและอนุมัติรับ-จ่าย" : "ตั้งค่าและอนุมัติรับ-จ่ายใช้ได้เมื่อออนไลน์เท่านั้น"}
-              className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+              className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-settings px-3 text-sm font-semibold text-white hover:bg-settings/90 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               <Settings size={18} />
               ตั้งค่าและอนุมัติรับ-จ่าย
-              {approvalRequestsPendingCount > 0 && (
-                <span
-                  aria-label={`รออนุมัติ ${approvalRequestsPendingCount} รายการ`}
-                  className="ml-1 rounded-full bg-amber px-1.5 py-0.5 text-[10px] font-bold text-ink"
-                >
-                  {approvalRequestsPendingCount}
-                </span>
-              )}
             </button>
           )}
         </div>
@@ -235,7 +370,7 @@ export function IncomeExpenseModule({
         <section className="rounded-md border border-amber/40 bg-amber/10 p-3">
           <h3 className="font-bold text-ink">คิวรอตรวจรับเงินสด</h3>
           <div className="mt-2 space-y-2">
-            {pendingCashReceipts.map((transfer) => <button key={transfer.id} type="button" disabled={!isOnline} onClick={() => setCashReceiptId(transfer.id)} className="flex w-full items-center justify-between rounded bg-white px-3 py-2 text-left text-sm disabled:opacity-60"><span>จาก {transfer.createdByName} · {formatCurrency(transfer.sentTotal)}</span><span className="font-semibold text-river">ตรวจรับ</span></button>)}
+            {pendingCashReceipts.map((transfer) => <button key={transfer.id} type="button" disabled={!isOnline} onClick={() => setCashReceiptId(transfer.id)} className="flex w-full items-center justify-between rounded bg-amber px-3 py-2 text-left text-sm text-white hover:bg-amber/90 disabled:opacity-60"><span>จาก {transfer.createdByName} · {formatCurrency(transfer.sentTotal)}</span><span className="font-semibold">ตรวจรับ</span></button>)}
           </div>
         </section>
       )}
@@ -261,8 +396,26 @@ export function IncomeExpenseModule({
               {visibleTransactions.map((transaction) => {
                 const actionBlockReason = getActionBlockReason(transaction);
                 const actionsDisabled = Boolean(actionBlockReason);
+                const saleGroup = transaction.billOption === "บิลขาย"
+                  ? saleGroups.get(saleReceiptGroupKey(transaction))
+                  : undefined;
+                const isSaleGroupLeader = Boolean(
+                  saleGroup && saleGroup.leaderId === transaction.id
+                );
+                const saleShareBlockReason = isSaleGroupLeader
+                  ? getSaleReceiptShareBlockReason(saleGroup, isOnline)
+                    ?? (pdfShare.busy ? "กำลังสร้าง PDF" : null)
+                  : null;
                 const sourceLocationId = transaction.relationSourceLocationId ?? transaction.locationId;
                 const cashTransferId = transaction.relationSourceId?.startsWith("cash:") ? transaction.relationSourceId.slice(5) : null;
+                const cashTransfer = cashTransferId
+                  ? cashTransfers.transfers.find((item) => item.id === cashTransferId)
+                  : undefined;
+                const cashDeleteReason = cashTransferId
+                  ? cashTransfer
+                    ? cashDeleteBlockReason(cashTransfer)
+                    : "กำลังโหลดรายละเอียดเงินสด"
+                  : null;
                 const canOpenMoneyTransferSource = Boolean(
                   transaction.relationSourceType === "money_transfer" &&
                   transaction.relationSourceId &&
@@ -356,19 +509,54 @@ export function IncomeExpenseModule({
                   <td>{transaction.createdByName} · {transaction.createdByPhone}</td>
                   <td><SyncStatusBadge status={transaction.syncStatus} errorMessage={transaction.syncErrorMessage} /></td>
                   <td>
-                    <div className="flex justify-center gap-2">
-                      <IconButton label={actionBlockReason ?? "แก้ไข"} onClick={() => openEdit(transaction)} tone="amber" disabled={actionsDisabled}>
-                        <Edit3 size={16} />
-                      </IconButton>
-                      <IconButton label={actionBlockReason ?? "ลบ"} onClick={() => void confirmDelete(transaction)} tone="clay" disabled={actionsDisabled}>
-                        <Trash2 size={16} />
-                      </IconButton>
+                    <div className="flex items-center justify-center gap-1.5 whitespace-nowrap">
+                      {cashTransferId ? (
+                        <IconButton
+                          label={!cashTransfer ? "กำลังโหลดรายละเอียดเงินสด" : pdfShare.busy ? "กำลังสร้าง PDF" : "แชร์ PDF รายละเอียดเงินสด 80 มม."}
+                          onClick={() => { if (cashTransfer) void shareCashTransfer(cashTransfer); }}
+                          tone="amber"
+                          disabled={!cashTransfer || pdfShare.busy}
+                        >
+                          <Share2 size={16} />
+                        </IconButton>
+                      ) : (
+                        <IconButton label={actionBlockReason ?? "แก้ไข"} onClick={() => openEdit(transaction)} tone="amber" disabled={actionsDisabled}>
+                          <Edit3 size={16} />
+                        </IconButton>
+                      )}
+                      {cashTransferId ? (
+                        <IconButton
+                          label={cashDeleteReason ?? "ลบรายการโยกเงิน"}
+                          onClick={() => { if (cashTransfer) void confirmCashDelete(cashTransfer); }}
+                          tone="clay"
+                          disabled={!cashTransfer || Boolean(cashDeleteReason) || cashTransfers.remove.isPending}
+                        >
+                          <Trash2 size={16} />
+                        </IconButton>
+                      ) : (
+                        <IconButton label={actionBlockReason ?? "ลบ"} onClick={() => void confirmDelete(transaction)} tone="clay" disabled={actionsDisabled}>
+                          <Trash2 size={16} />
+                        </IconButton>
+                      )}
+                      {isSaleGroupLeader && (
+                        <button
+                          type="button"
+                          onClick={() => void shareSaleReceipt(transaction)}
+                          disabled={Boolean(saleShareBlockReason)}
+                          title={saleShareBlockReason ?? "แชร์ PDF บิลขาย 80 มม."}
+                          aria-label={`แชร์ PDF บิลขาย ${transaction.serverBillNo ?? transaction.localBillNo}`}
+                          className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          <Share2 size={16} />
+                          แชร์ PDF
+                        </button>
+                      )}
                       {transaction.syncStatus === "failed" && (
                         <button
                           type="button"
                           onClick={() => void retryFailedSync(transaction)}
                           disabled={!isOnline || isRetrying}
-                          className="rounded-md bg-blue-600 px-2 py-1 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                          className="rounded-md bg-river px-2 py-1 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
                         >
                           ลองซิงก์อีกครั้ง
                         </button>
@@ -379,9 +567,10 @@ export function IncomeExpenseModule({
                           title={openSourceLabel}
                           aria-label={openSourceLabel}
                           onClick={openRelationSource}
-                          className="focus-ring grid h-9 w-9 place-items-center rounded-md bg-river text-white"
+                          className="focus-ring inline-flex h-9 shrink-0 items-center gap-1 rounded-md bg-river px-2 text-xs font-semibold text-white hover:bg-river/90"
                         >
                           <ExternalLink size={16} />
+                          {openSourceLabel}
                         </button>
                       )}
                     </div>
@@ -407,7 +596,7 @@ export function IncomeExpenseModule({
             type="button"
             onClick={() => void loadMore()}
             disabled={isLoadingMore}
-            className="focus-ring rounded-md border border-black/15 bg-white px-4 py-2 text-sm font-semibold text-ink disabled:cursor-not-allowed disabled:opacity-60"
+            className="focus-ring rounded-md bg-actionSecondary px-4 py-2 text-sm font-semibold text-white hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isLoadingMore ? "กำลังโหลด..." : "โหลดรายการเพิ่ม"}
           </button>
@@ -463,19 +652,31 @@ export function IncomeExpenseModule({
       {branchTransferModalOpen && (
         <>
           {branchTransferMode === "cash" ? (
-            <CashBranchTransferCreateModal location={selectedLocation} online={isOnline} onSave={cashTransfers.create.mutateAsync} onClose={() => setBranchTransferModalOpen(false)} />
+            <CashBranchTransferCreateModal
+              location={selectedLocation}
+              online={isOnline}
+              modeSelector={<BranchTransferModeSelector mode={branchTransferMode} bankAllowed={canCreateMoneyTransfer} onChange={setBranchTransferMode} />}
+              onSave={cashTransfers.create.mutateAsync}
+              onClose={() => setBranchTransferModalOpen(false)}
+            />
           ) : (
-            <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/45 p-3 sm:p-6"><div className="mt-4 w-full max-w-4xl"><BranchTransferForm locationId={selectedLocation.id} onSave={handleBranchTransferSave} onCancel={() => setBranchTransferModalOpen(false)} /></div></div>
+            <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/45 p-3 sm:p-6">
+              <div className="mt-4 w-full max-w-4xl">
+                <BranchTransferForm
+                  locationId={selectedLocation.id}
+                  modeSelector={<BranchTransferModeSelector mode={branchTransferMode} bankAllowed={canCreateMoneyTransfer} onChange={setBranchTransferMode} />}
+                  onSave={handleBranchTransferSave}
+                  onCancel={() => setBranchTransferModalOpen(false)}
+                />
+              </div>
+            </div>
           )}
-          <div className="fixed bottom-4 left-1/2 z-[60] -translate-x-1/2 rounded-full bg-white p-1 shadow-lg">
-            <button onClick={() => setBranchTransferMode("cash")} className={branchTransferMode === "cash" ? "rounded-full bg-river px-3 py-1 text-white" : "px-3 py-1"}>เงินสด</button>
-            <button onClick={() => { if (!canCreateMoneyTransfer) return toast.error("ไม่มีสิทธิ์ใช้โอนธนาคาร"); setBranchTransferMode("bank"); }} className={branchTransferMode === "bank" ? "rounded-full bg-river px-3 py-1 text-white" : "px-3 py-1"}>โอนธนาคาร</button>
-          </div>
         </>
       )}
       {cashReceiptId && (() => { const transfer = cashTransfers.transfers.find((item) => item.id === cashReceiptId); return transfer ? <CashBranchTransferReceiveModal transfer={transfer} online={isOnline} onReceive={(received) => cashTransfers.receive.mutateAsync({ id: transfer.id, received })} onClose={() => setCashReceiptId(null)} /> : null; })()}
       {cashEditingId && (() => { const transfer = cashTransfers.transfers.find((item) => item.id === cashEditingId); return transfer ? <CashBranchTransferCreateModal location={selectedLocation} transfer={transfer} online={isOnline} onSave={(payload) => cashTransfers.update.mutateAsync({ id: transfer.id, payload })} onClose={() => setCashEditingId(null)} /> : null; })()}
-      {cashDetailsId && (() => { const transfer = cashTransfers.transfers.find((item) => item.id === cashDetailsId); return transfer ? <CashBranchTransferDetails transfer={transfer} superAdmin={profile.role === "super_admin"} canEdit={!transfer.reportLockNo && transfer.status === "pending_receipt" && (profile.role === "super_admin" || transfer.createdByUserId === profile.id)} online={isOnline} onEdit={() => { setCashDetailsId(null); setCashEditingId(transfer.id); }} onAccept={(reason) => cashTransfers.acceptDifference.mutateAsync({ id: transfer.id, reason })} onDelete={() => cashTransfers.remove.mutateAsync(transfer.id)} onClose={() => setCashDetailsId(null)} /> : null; })()}
+      {cashDetailsId && (() => { const transfer = cashTransfers.transfers.find((item) => item.id === cashDetailsId); return transfer ? <CashBranchTransferDetails transfer={transfer} canEdit={!transfer.reportLockNo && transfer.status === "pending_receipt" && (profile.role === "super_admin" || transfer.createdByUserId === profile.id)} online={isOnline} onEdit={() => { setCashDetailsId(null); setCashEditingId(transfer.id); }} onClose={() => setCashDetailsId(null)} /> : null; })()}
+      <SharePdfWaitingModal open={pdfShare.waiting} onCancel={pdfShare.cancel} />
 
       {approvalModalOpen && (
         <IncomeExpenseApprovalModal onClose={() => setApprovalModalOpen(false)} />

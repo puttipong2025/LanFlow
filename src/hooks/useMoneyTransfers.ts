@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { MoneyTransfer, MoneyTransferSlip, MoneyTransferItem } from "@/types";
 import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
+import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 
 type MoneyTransferClient = ReturnType<typeof createSupabaseBrowserClient>;
 
@@ -19,6 +20,8 @@ function toTransferItemRow(transferId: string, item: MoneyTransferItem) {
     transfer_id: transferId,
     source_type: item.sourceType,
     source_id: item.sourceId,
+    rubber_bill_id: item.sourceType === "rubber_bill" ? item.sourceId : null,
+    ocr_ticket_id: item.sourceType === "ocr_ticket" ? item.sourceId : null,
     customer_name: item.customerName,
     amount: item.amount,
   };
@@ -214,14 +217,7 @@ export function useMoneyTransfers(locationId: string, options: { enabled?: boole
 
       if (transfer.items && transfer.items.length > 0) {
         const { error: itemsError } = await supabase.from("money_transfer_items").insert(
-          transfer.items.map(i => ({
-            id: i.id,
-            transfer_id: transfer.id,
-            source_type: i.sourceType,
-            source_id: i.sourceId,
-            customer_name: i.customerName,
-            amount: i.amount
-          }))
+          transfer.items.map((item) => toTransferItemRow(transfer.id, item))
         );
         if (itemsError) throw new Error("Items Insert Error: " + itemsError.message);
       }
@@ -231,6 +227,7 @@ export function useMoneyTransfers(locationId: string, options: { enabled?: boole
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["moneyTransfers"] });
       queryClient.invalidateQueries({ queryKey: [INCOME_EXPENSE_FEED_QUERY_KEY] });
+      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
     }
   });
 
@@ -284,6 +281,7 @@ export function useMoneyTransfers(locationId: string, options: { enabled?: boole
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["moneyTransfers"] });
       queryClient.invalidateQueries({ queryKey: [INCOME_EXPENSE_FEED_QUERY_KEY] });
+      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
     }
   });
 
@@ -298,8 +296,34 @@ export function useMoneyTransfers(locationId: string, options: { enabled?: boole
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["moneyTransfers"] });
       queryClient.invalidateQueries({ queryKey: [INCOME_EXPENSE_FEED_QUERY_KEY] });
+      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
     }
   });
+
+  async function getReceiptSourceDetails(transferId: string): Promise<MoneyTransferItem[]> {
+    const { data, error } = await supabase.rpc(
+      "get_money_transfer_receipt_source_details",
+      { p_transfer_id: transferId },
+    );
+
+    if (error) throw new Error(error.message || "โหลดรายละเอียดต้นทางไม่สำเร็จ");
+
+    const items = (data as { items?: Array<Record<string, unknown>> } | null)?.items;
+    if (!Array.isArray(items)) throw new Error("รูปแบบรายละเอียดต้นทางไม่ถูกต้อง");
+
+    return items.map((item) => ({
+      id: String(item.itemId),
+      sourceType: item.sourceType as MoneyTransferItem["sourceType"],
+      sourceId: String(item.sourceId),
+      customerName: null,
+      amount: 0,
+      netWeightAfterDeduction: item.netWeightAfterDeduction == null
+        ? null
+        : Number(item.netWeightAfterDeduction),
+      deductedAmount: item.deductedAmount == null ? null : Number(item.deductedAmount),
+      netPayableAmount: item.netPayableAmount == null ? null : Number(item.netPayableAmount),
+    }));
+  }
 
   return {
     transfers: query.data || [],
@@ -307,6 +331,7 @@ export function useMoneyTransfers(locationId: string, options: { enabled?: boole
     isError: query.isError,
     addTransfer,
     updateTransfer,
-    deleteTransfer
+    deleteTransfer,
+    getReceiptSourceDetails,
   };
 }

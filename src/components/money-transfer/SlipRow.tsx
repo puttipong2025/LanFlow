@@ -2,6 +2,7 @@
 
 import { Trash2 } from "lucide-react";
 import type { MoneyTransferSlip } from "@/types";
+import { InlineNumber } from "@/components/shared/InlineNumber";
 
 export type OcrSlipResult = {
   amount: number | null;
@@ -31,18 +32,18 @@ export function SlipRow({
     <div className="rounded-lg border border-black/10 bg-field/20 p-3">
       <div className="mb-2 flex items-center justify-between">
         <span className="text-xs font-bold text-ink/40">สลิป #{index + 1}</span>
-        <button type="button" onClick={() => onRemove(slip.id)} className="text-ink/40 hover:text-clay">
+        <button type="button" onClick={() => onRemove(slip.id)} className="inline-flex h-10 items-center gap-1 rounded-md bg-danger px-2 text-xs font-semibold text-white hover:bg-danger/90">
           <Trash2 size={14} />
+          ลบ
         </button>
       </div>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <label className="block">
           <span className="mb-1 block text-xs font-semibold text-ink/60">จำนวนเงิน (฿)</span>
-          <input
-            type="number"
-            value={slip.amount || ""}
-            onChange={(e) => onUpdate(slip.id, "amount", e.target.value ? Number(e.target.value) : 0)}
-            className="focus-ring h-9 w-full rounded-md border border-black/10 bg-white px-3 text-sm"
+          <InlineNumber
+            ariaLabel={`จำนวนเงินสลิป ${index + 1}`}
+            value={slip.amount}
+            onChange={(value) => onUpdate(slip.id, "amount", value)}
           />
         </label>
         <label className="block">
@@ -57,11 +58,10 @@ export function SlipRow({
         </label>
         <label className="block">
           <span className="mb-1 block text-xs font-semibold text-ink/60">ค่าธรรมเนียม (฿)</span>
-          <input
-            type="number"
-            value={slip.fee || ""}
-            onChange={(e) => onUpdate(slip.id, "fee", e.target.value ? Number(e.target.value) : 0)}
-            className="focus-ring h-9 w-full rounded-md border border-black/10 bg-white px-3 text-sm"
+          <InlineNumber
+            ariaLabel={`ค่าธรรมเนียมสลิป ${index + 1}`}
+            value={slip.fee}
+            onChange={(value) => onUpdate(slip.id, "fee", value)}
           />
         </label>
         <label className="block">

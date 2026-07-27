@@ -5,7 +5,7 @@ import {
   ArrowDown,
   ArrowUp,
   Clock3,
-  Printer,
+  Share2,
   Trash2,
   UserRoundPlus,
 } from "lucide-react";
@@ -13,17 +13,19 @@ import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { ModalShell } from "@/components/shared/ModalShell";
+import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
+import { useSharePdf } from "@/hooks/useSharePdf";
 import { makeClientTempId } from "@/lib/format";
-import { printReceiptHtml } from "@/lib/rubber-bills/print-receipt";
+import { receiptPdfFilename } from "@/lib/rubber-bills/print-receipt";
 import {
   buildWeighingQueueTicket,
   createEmptyDailyQueue,
-  hasQueueItemChangedSincePrint,
+  hasQueueItemChangedSinceShare,
   isQueueForCurrentBangkokDay,
   isValidWeighingTime,
   loadCustomerCache,
   loadDailyWeighingQueue,
-  markQueueItemPrinted,
+  markQueueItemShared,
   moveQueueItem,
   removeQueueItem,
   renderWeighingQueueTicketHtml,
@@ -33,7 +35,7 @@ import {
   type WeighingQueueItem,
 } from "@/lib/rubber-bills/weighing-queue";
 
-const PRINTED_AT_FORMATTER = new Intl.DateTimeFormat("th-TH-u-ca-buddhist-nu-latn", {
+const SHARED_AT_FORMATTER = new Intl.DateTimeFormat("th-TH-u-ca-buddhist-nu-latn", {
   timeZone: "Asia/Bangkok",
   day: "2-digit",
   month: "2-digit",
@@ -69,7 +71,8 @@ export function WeighingQueueModal({
   const [customerSearch, setCustomerSearch] = useState("");
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
   const [showSuggestions, setShowSuggestions] = useState(false);
-  const [printingId, setPrintingId] = useState<string | null>(null);
+  const [sharingId, setSharingId] = useState<string | null>(null);
+  const pdfShare = useSharePdf();
 
   useEffect(() => {
     const next = loadDailyWeighingQueue(deviceId, locationId);
@@ -177,26 +180,38 @@ export function WeighingQueueModal({
     commitQueue({ ...queue, items: removeQueueItem(queue.items, item.id) });
   }
 
-  async function printItem(item: WeighingQueueItem, queueNumber: number) {
-    if (!queue.weighingTime || printingId) return;
-    const printedAt = new Date();
-    const ticket = buildWeighingQueueTicket(item, queueNumber, queue.weighingTime, printedAt);
-    const items = markQueueItemPrinted(
-      queue.items,
-      item.id,
-      queueNumber,
-      queue.weighingTime,
-      printedAt,
-    );
-    if (!commitQueue({ ...queue, items })) return;
-
-    setPrintingId(item.id);
+  async function shareItem(item: WeighingQueueItem, queueNumber: number) {
+    if (!queue.weighingTime || pdfShare.busy) return;
+    const sharedAt = new Date();
+    const ticket = buildWeighingQueueTicket(item, queueNumber, queue.weighingTime, sharedAt);
+    setSharingId(item.id);
     try {
-      await printReceiptHtml(renderWeighingQueueTicketHtml(ticket));
+      const delivery = await pdfShare.sharePdf(() => ({
+        html: renderWeighingQueueTicketHtml(ticket),
+        filename: receiptPdfFilename(
+          "LanFlow-weighing-queue",
+          `Q${String(queueNumber).padStart(2, "0")}-${ticket.printedDate}-${ticket.weighingTime}`,
+        ),
+      }));
+      if (delivery === "cancelled") return;
+
+      const items = markQueueItemShared(
+        queue.items,
+        item.id,
+        queueNumber,
+        queue.weighingTime,
+        sharedAt,
+      );
+      if (!commitQueue({ ...queue, items })) return;
+      toast.success(
+        delivery === "shared"
+          ? "แชร์ PDF บัตรคิวแล้ว"
+          : "แชร์บนอุปกรณ์นี้ไม่ได้ จึงดาวน์โหลด PDF แทน",
+      );
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "พิมพ์บัตรคิวไม่สำเร็จ");
+      toast.error(error instanceof Error ? error.message : "สร้าง PDF บัตรคิวไม่สำเร็จ");
     } finally {
-      setPrintingId(null);
+      setSharingId(null);
     }
   }
 
@@ -260,7 +275,7 @@ export function WeighingQueueModal({
                 <button
                   type="button"
                   onClick={saveWeighingTime}
-                  className="focus-ring h-11 rounded-xl bg-white px-4 font-bold text-river"
+                  className="focus-ring h-11 rounded-xl bg-commit px-4 font-bold text-white hover:bg-commit/90"
                 >
                   บันทึกเวลา
                 </button>
@@ -270,7 +285,7 @@ export function WeighingQueueModal({
                     setTimeDraft(queue.weighingTime ?? "");
                     setEditingTime(false);
                   }}
-                  className="focus-ring h-11 rounded-xl bg-white/15 px-4 font-semibold text-white"
+                  className="focus-ring h-11 rounded-xl bg-actionSecondary px-4 font-semibold text-white hover:bg-actionSecondary/90"
                 >
                   ยกเลิก
                 </button>
@@ -281,7 +296,7 @@ export function WeighingQueueModal({
                 <button
                   type="button"
                   onClick={() => setEditingTime(true)}
-                  className="focus-ring rounded-xl bg-white/15 px-3 py-2 text-sm font-bold text-white hover:bg-white/25"
+                  className="focus-ring rounded-xl bg-amber px-3 py-2 text-sm font-bold text-white hover:bg-amber/90"
                 >
                   แก้เวลา
                 </button>
@@ -382,7 +397,7 @@ export function WeighingQueueModal({
                 <tbody>
                   {queue.items.map((item, index) => {
                     const queueNumber = index + 1;
-                    const changedAfterPrint = hasQueueItemChangedSincePrint(
+                    const changedAfterShare = hasQueueItemChangedSinceShare(
                       item,
                       queueNumber,
                       queue.weighingTime!,
@@ -396,18 +411,20 @@ export function WeighingQueueModal({
                               aria-label={`เลื่อนคิว ${queueNumber} ขึ้น`}
                               disabled={index === 0}
                               onClick={() => moveItem(item.id, -1)}
-                              className="focus-ring grid h-9 w-9 place-items-center rounded-lg border border-black/10 bg-white text-ink hover:bg-river/10 hover:text-river disabled:cursor-not-allowed disabled:opacity-25"
+                              className="focus-ring inline-flex h-10 items-center gap-1 rounded-lg bg-actionSecondary px-2 text-xs font-semibold text-white hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-25"
                             >
                               <ArrowUp size={17} />
+                              ขึ้น
                             </button>
                             <button
                               type="button"
                               aria-label={`เลื่อนคิว ${queueNumber} ลง`}
                               disabled={index === queue.items.length - 1}
                               onClick={() => moveItem(item.id, 1)}
-                              className="focus-ring grid h-9 w-9 place-items-center rounded-lg border border-black/10 bg-white text-ink hover:bg-river/10 hover:text-river disabled:cursor-not-allowed disabled:opacity-25"
+                              className="focus-ring inline-flex h-10 items-center gap-1 rounded-lg bg-river px-2 text-xs font-semibold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-25"
                             >
                               <ArrowDown size={17} />
+                              ลง
                             </button>
                           </div>
                         </td>
@@ -421,38 +438,39 @@ export function WeighingQueueModal({
                           {item.customerId && <p className="text-xs text-ink/45">จากทะเบียนลูกค้า</p>}
                         </td>
                         <td className="px-3 py-3">
-                          {changedAfterPrint ? (
+                          {changedAfterShare ? (
                             <span className="inline-flex items-center gap-1.5 rounded-full bg-amber/25 px-3 py-1 text-xs font-bold text-ink">
                               <AlertTriangle size={14} />
-                              ข้อมูลเปลี่ยนหลังพิมพ์
+                              ข้อมูลเปลี่ยนหลังแชร์
                             </span>
                           ) : item.printSnapshot ? (
                             <span className="text-xs font-semibold text-ink/55">
-                              พิมพ์ล่าสุด {PRINTED_AT_FORMATTER.format(new Date(item.printSnapshot.printedAt))} น.
+                              แชร์ล่าสุด {SHARED_AT_FORMATTER.format(new Date(item.printSnapshot.printedAt))} น.
                             </span>
                           ) : (
-                            <span className="text-xs font-semibold text-ink/40">ยังไม่พิมพ์</span>
+                            <span className="text-xs font-semibold text-ink/40">ยังไม่แชร์</span>
                           )}
                         </td>
                         <td className="px-3 py-3">
                           <div className="flex justify-end gap-2">
                             <button
                               type="button"
-                              aria-label={`พิมพ์บัตรคิว ${queueNumber}`}
-                              disabled={printingId !== null}
-                              onClick={() => void printItem(item, queueNumber)}
+                              aria-label={`แชร์ PDF บัตรคิว ${queueNumber}`}
+                              disabled={pdfShare.busy}
+                              onClick={() => void shareItem(item, queueNumber)}
                               className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-xl bg-river px-3 font-bold text-white disabled:cursor-wait disabled:opacity-50"
                             >
-                              <Printer size={16} />
-                              {printingId === item.id ? "กำลังพิมพ์" : "พิมพ์"}
+                              <Share2 size={16} />
+                              {sharingId === item.id ? "กำลังสร้าง PDF" : "แชร์ PDF"}
                             </button>
                             <button
                               type="button"
                               aria-label={`ลบคิว ${queueNumber}`}
                               onClick={() => deleteItem(item, queueNumber)}
-                              className="focus-ring grid h-10 w-10 place-items-center rounded-xl bg-rose-50 text-rose-700 hover:bg-rose-100"
+                              className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-clay px-3 text-sm font-semibold text-white hover:bg-clay/90"
                             >
                               <Trash2 size={17} />
+                              ลบ
                             </button>
                           </div>
                         </td>
@@ -469,6 +487,7 @@ export function WeighingQueueModal({
           ข้อมูลเก็บเฉพาะเครื่องนี้ · วันใหม่จะล้างคิวและต้องตั้งเวลาชั่งอีกครั้ง
         </p>
       </div>
+      <SharePdfWaitingModal open={pdfShare.waiting} onCancel={pdfShare.cancel} />
     </ModalShell>
   );
 }

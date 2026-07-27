@@ -46,6 +46,7 @@ export type MoneyTransferReceiptModel = {
   shortId: string;
   typeLabel: string;
   statusLabel: string;
+  isUnfinished: boolean;
   createdAtText: string;
   sourceLocationName: string;
   targetLocationName: string | null;
@@ -69,7 +70,7 @@ export type MoneyTransferReceiptModel = {
 export function getMoneyTransferPrintBlockReason(transfer: MoneyTransfer) {
   return PRINTABLE_STATUSES.has(transfer.transferStatus)
     ? null
-    : "ดาวน์โหลด PDF ได้เมื่อจ่ายเสร็จสิ้น";
+    : "แชร์ PDF ได้เมื่อจ่ายเสร็จสิ้น";
 }
 
 export function shortTransferId(id: string) {
@@ -122,6 +123,7 @@ export function buildMoneyTransferReceiptModel(
     shortId: shortTransferId(transfer.id),
     typeLabel: TYPE_LABELS[transfer.transferType],
     statusLabel: STATUS_LABELS[transfer.transferStatus],
+    isUnfinished: transfer.transferStatus === "advance_payment",
     createdAtText: formatBangkokDateTime(transfer.createdAt),
     sourceLocationName,
     targetLocationName,
@@ -164,6 +166,19 @@ function formatMoney(value: number) {
   }).format(value);
 }
 
+function formatWholeMoney(value: number) {
+  return new Intl.NumberFormat("th-TH", {
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
+function formatWeight(value: number) {
+  return new Intl.NumberFormat("th-TH", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
 export function renderMoneyTransferReceiptHtml(model: MoneyTransferReceiptModel) {
   const h = escapeHtml;
   const money = formatMoney;
@@ -174,11 +189,17 @@ export function renderMoneyTransferReceiptHtml(model: MoneyTransferReceiptModel)
   ].filter(Boolean).join("");
   const itemRows = model.items.length === 0
     ? '<div class="muted">ไม่มีรายการบิล/ใบชั่งต้นทาง</div>'
-    : model.items.map((item, index) => `
-      <div class="entry">
-        <div class="row"><strong>${index + 1}. ${h(item.sourceLabel)} #${h(item.shortSourceId)}</strong><strong>${money(item.amount)}</strong></div>
-        <div class="small">${h(item.customerName ?? "ไม่ระบุชื่อลูกค้า")}</div>
-      </div>`).join("");
+    : model.items.map((item, index) => {
+      const deductionLabel = "ยอดหักเงิน (บาท)";
+      return `
+        <div class="entry">
+          <div class="row"><strong>${index + 1}. ${h(item.sourceLabel)} #${h(item.shortSourceId)}</strong><strong>${money(item.amount)}</strong></div>
+          <div class="small">${h(item.customerName ?? "ไม่ระบุชื่อลูกค้า")}</div>
+          ${item.netWeightAfterDeduction == null ? "" : `<div class="row small"><span>น้ำหนักสุทธิ (กก.)</span><span>${formatWeight(item.netWeightAfterDeduction)}</span></div>`}
+          ${item.deductedAmount != null && item.deductedAmount > 0 ? `<div class="row small"><span>${deductionLabel}</span><span>${money(item.deductedAmount)}</span></div>` : ""}
+          ${item.netPayableAmount == null ? "" : `<div class="row small"><span>ยอดสุทธิที่ต้องจ่ายลูกค้า (บาท)</span><span>${item.sourceType === "rubber_bill" ? formatWholeMoney(item.netPayableAmount) : money(item.netPayableAmount)}</span></div>`}
+        </div>`;
+    }).join("");
   const slipRows = model.slips.length === 0
     ? '<div class="muted">ไม่มีสลิป</div>'
     : model.slips.map((slip, index) => `
@@ -200,6 +221,7 @@ body { margin: 0; width: 80mm; padding: 3mm; color: #000; font: 11px/1.4 Arial, 
 h1 { margin: 0; text-align: center; font-size: 18px; }
 .center { text-align: center; }
 .status { display: inline-block; margin: 5px 0; border: 1.5px solid #000; padding: 2px 8px; font-size: 13px; font-weight: 700; }
+.warning { margin: 5px 0; border: 2px solid #000; padding: 4px; text-align: center; font-weight: 800; }
 .section { margin-top: 7px; border-top: 1px dashed #000; padding-top: 5px; }
 .section-title { margin-bottom: 3px; font-size: 12px; font-weight: 700; }
 .row { display: flex; justify-content: space-between; gap: 8px; }
@@ -214,6 +236,7 @@ h1 { margin: 0; text-align: center; font-size: 18px; }
 <h1>ใบรายการโอนเงิน</h1>
 <div class="center">รหัสรายการ ${h(model.shortId)}</div>
 <div class="center"><span class="status">${h(model.statusLabel)}</span></div>
+${model.isUnfinished ? '<div class="warning">รายการยังไม่สิ้นสุด</div>' : ""}
 <div class="row"><span>ประเภท</span><strong>${h(model.typeLabel)}</strong></div>
 <div class="row"><span>วันที่สร้าง</span><strong>${h(model.createdAtText)}</strong></div>
 <div class="section">

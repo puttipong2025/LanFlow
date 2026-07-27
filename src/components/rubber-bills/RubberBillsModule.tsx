@@ -26,8 +26,9 @@ import {
 } from "./bill-display";
 import {
   receiptPdfFilename,
-  shareReceiptPdf,
 } from "@/lib/rubber-bills/print-receipt";
+import { useSharePdf } from "@/hooks/useSharePdf";
+import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
 import { getDeviceId } from "@/lib/format";
 import { getRubberBillReceiptSnapshot } from "@/lib/idb-queue";
 import {
@@ -35,6 +36,7 @@ import {
   saveCustomerCache,
   type WeighingQueueCustomer,
 } from "@/lib/rubber-bills/weighing-queue";
+import { calculateRubberBill } from "@/lib/rubber-bills/calculations";
 
 function pendingCreateBill(marker: RubberBillApprovalMarker): RubberBill | null {
   const payload = marker.proposedCreatePayload;
@@ -67,6 +69,12 @@ function pendingCreateBill(marker: RubberBillApprovalMarker): RubberBill | null 
       title: item.title,
       amount: Number(item.totalAmount),
     }));
+  const calculation = calculateRubberBill({
+    weighItems,
+    deductWeight: Number(payload.deductWeight ?? 0),
+    stockDeductionItems: acidItems,
+    debtItems,
+  });
 
   return {
     id: `approval:${marker.requestId}`,
@@ -82,8 +90,14 @@ function pendingCreateBill(marker: RubberBillApprovalMarker): RubberBill | null 
     billType: String(payload.billType ?? "บิลเครื่องชั่งเล็ก"),
     deductWeight: Number(payload.deductWeight ?? 0),
     weight: Number(payload.weight ?? 0),
+    netWeight: Number(payload.netWeight ?? calculation.netWeight),
+    weighValueTotal: Number(payload.rubberValue ?? calculation.weighValueTotal),
+    rubberValue: Number(payload.netRubberValue ?? calculation.rubberValue),
     price: Number(payload.averagePrice ?? 0),
     deductionTotal: Number(payload.deductionTotal ?? 0),
+    payableBeforeRounding: Number(
+      payload.payableBeforeRounding ?? calculation.payableBeforeRounding
+    ),
     netTotal: Number(payload.netTotal ?? 0),
     acidPackCount: Number(payload.acidPackCount ?? 0),
     configuredPriceSnapshot:
@@ -122,11 +136,11 @@ export function RubberBillsModule({
   initialSearch?: string | null;
   onInitialSearchHandled?: () => void;
 }) {
+  const pdfShare = useSharePdf();
   const canManageApprovals = canManageSystemFeatures(profile);
   const {
     settings: approvalSettings,
     markers: approvalMarkers,
-    pendingCount,
   } = useRubberBillApprovals({
     locationId: selectedLocation.id,
     includeRequests: canManageApprovals,
@@ -248,7 +262,7 @@ export function RubberBillsModule({
   }
 
   function getPrintBlockReason(bill: RubberBill) {
-    return getRubberBillPrintBlockReason(bill);
+    return pdfShare.busy ? "กำลังสร้าง PDF" : getRubberBillPrintBlockReason(bill);
   }
 
   async function handlePrint(bill: RubberBill) {
@@ -259,16 +273,22 @@ export function RubberBillsModule({
     }
 
     try {
-      let snapshot = null;
-      if (bill.syncStatus === "synced" && bill.serverBillNo) {
-        snapshot = await getRubberBillReceiptSnapshot(bill.id);
-      }
-      const receipt = resolveRubberBillReceiptForPrint(bill, snapshot, isOnline);
-      const html = renderRubberBillReceiptHtml(receipt);
-      const delivery = await shareReceiptPdf(
-        html,
-        receiptPdfFilename("LanFlow-rubber-bill", receipt.referenceNo)
-      );
+      const delivery = await pdfShare.sharePdf(async (signal) => {
+        let snapshot = null;
+        if (bill.syncStatus === "synced" && bill.serverBillNo) {
+          snapshot = await getRubberBillReceiptSnapshot(bill.id);
+        }
+        if (signal.aborted) {
+          const error = new Error("ยกเลิกการสร้าง PDF");
+          error.name = "AbortError";
+          throw error;
+        }
+        const receipt = resolveRubberBillReceiptForPrint(bill, snapshot, isOnline);
+        return {
+          html: renderRubberBillReceiptHtml(receipt),
+          filename: receiptPdfFilename("LanFlow-rubber-bill", receipt.referenceNo),
+        };
+      });
       if (delivery === "shared") {
         toast.success("แชร์ PDF ใบรับซื้อยางแล้ว");
       } else if (delivery === "downloaded") {
@@ -336,28 +356,33 @@ export function RubberBillsModule({
           <button
             type="button"
             onClick={() => setQueueModalOpen(true)}
-            className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-river px-4 font-semibold text-white"
+            className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-river px-3 text-sm font-semibold text-white hover:bg-river/90"
           >
             <Ticket size={18} />
             บัตรคิว
+          </button>
+          <button
+            type="button"
+            onClick={() => setAppointmentModalOpen(true)}
+            className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-amber px-3 text-sm font-semibold text-white hover:bg-amber/90"
+          >
+            <Clock3 size={17} />
+            จับเวลา
           </button>
           {canManageApprovals && (
             <button
               type="button"
               onClick={() => setApprovalModalOpen(true)}
-              className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-amber px-4 font-semibold text-ink"
+              className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-settings px-3 text-sm font-semibold text-white hover:bg-settings/90"
             >
               <Settings size={18} />
               ตั้งค่าและอนุมัติบิลยาง
-              {pendingCount > 0 && (
-                <span className="rounded-full bg-rose-600 px-2 py-0.5 text-xs text-white">{pendingCount}</span>
-              )}
             </button>
           )}
           <button
             type="button"
             onClick={openAdd}
-            className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-leaf px-4 font-semibold text-white"
+            className="focus-ring flex h-10 w-full items-center justify-center gap-2 rounded-md bg-leaf px-4 text-sm font-semibold text-white sm:w-auto"
           >
             <Plus size={18} />
             เพิ่มบิลยาง
@@ -368,17 +393,6 @@ export function RubberBillsModule({
       <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel">
         <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div className="flex flex-wrap items-center gap-3">
-            <button
-              type="button"
-              onClick={() => setAppointmentModalOpen(true)}
-              className="focus-ring inline-flex h-10 items-center gap-2 rounded-md bg-amber px-4 text-sm font-bold text-ink"
-            >
-              <Clock3 size={17} />
-              จับเวลา
-            </button>
-            <button type="button" onClick={openAdd} className="rounded-md bg-blue-600 px-4 py-2 text-sm font-bold text-white">
-              เพิ่มข้อมูล
-            </button>
             <select
               value={pageSize}
               onChange={(event) => handlePageSize(event.target.value)}
@@ -451,6 +465,7 @@ export function RubberBillsModule({
           onClose={() => setApprovalModalOpen(false)}
         />
       )}
+      <SharePdfWaitingModal open={pdfShare.waiting} onCancel={pdfShare.cancel} />
     </section>
   );
 }

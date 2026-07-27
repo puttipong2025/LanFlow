@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, hasSystemManagerAccess } from "@/lib/server/auth";
 import type { AuthTokenPayload } from "@/lib/server/auth";
-import { reportErrorResponse } from "@/lib/server/report-response";
+import {
+  reportCreateErrorResponse,
+  reportErrorResponse,
+} from "@/lib/server/report-response";
 
 export const dynamic = "force-dynamic";
 
@@ -69,7 +72,22 @@ export async function POST(request: Request) {
   const { data, error } = await result.supabase.rpc("create_report_batch", {
     p_location_id: locationId,
   });
-  if (error) return reportErrorResponse(error.message);
+  if (error) {
+    const diagnostic = [error.message, error.details, error.hint]
+      .filter(Boolean)
+      .join("\n");
+    const response = reportCreateErrorResponse(diagnostic);
+    if (response.status !== 403 && !diagnostic.includes("ไม่มีรายการ")) {
+      console.error("create_report_batch failed", {
+        locationId,
+        code: error.code,
+        message: error.message,
+        details: error.details,
+        hint: error.hint,
+      });
+    }
+    return response;
+  }
 
   return NextResponse.json(data, {
     status: 201,

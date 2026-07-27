@@ -4,7 +4,7 @@
 
 :root {
   color-scheme: light;
-  background: #eef4ef;
+  background: #f9faf9;
 }
 
 * {
@@ -19,10 +19,8 @@ body {
   margin: 0;
   min-height: 100vh;
   overflow-x: hidden;
-  background:
-    linear-gradient(180deg, rgba(217, 239, 226, 0.8), rgba(238, 244, 239, 0.96)),
-    #eef4ef;
-  color: #17201b;
+  background: #f9faf9;
+  color: #203028;
   font-family: Arial, "Noto Sans Thai", sans-serif;
 }
 
@@ -33,7 +31,12 @@ select {
 }
 
 button {
+  min-height: 2.5rem;
   letter-spacing: 0;
+}
+
+button svg {
+  flex-shrink: 0;
 }
 
 input,
@@ -47,11 +50,33 @@ select {
 }
 
 .focus-ring:focus-visible {
-  outline-color: #316b83;
+  outline-color: #4f6f65;
 }
 
 main,
 section,
 div {
   min-width: 0;
+}
+
+.modal-scroll-body footer,
+.modal-scroll-body .modal-actions {
+  position: sticky;
+  bottom: -0.75rem;
+  z-index: 10;
+  margin-inline: -0.75rem;
+  margin-bottom: -0.75rem;
+  padding: 0.75rem;
+  border-top: 1px solid rgba(32, 48, 40, 0.12);
+  background: rgba(249, 250, 249, 0.98);
+}
+
+@media (min-width: 640px) {
+  .modal-scroll-body footer,
+  .modal-scroll-body .modal-actions {
+    bottom: -1rem;
+    margin-inline: -1rem;
+    margin-bottom: -1rem;
+    padding: 1rem;
+  }
 }

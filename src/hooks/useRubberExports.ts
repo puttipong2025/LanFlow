@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import type {
   RubberExportCutoffOption,
@@ -11,6 +13,7 @@ import type {
 } from "@/types/rubber-exports";
 
 export function useRubberExports(locationId: string, online: boolean) {
+  const queryClient = useQueryClient();
   const [exports, setExports] = useState<RubberExportSummary[]>([]);
   const [cutoffOptions, setCutoffOptions] = useState<RubberExportCutoffOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -46,6 +49,13 @@ export function useRubberExports(locationId: string, online: boolean) {
     void reload();
   }, [reload]);
 
+  async function reloadWithBadges() {
+    await Promise.all([
+      reload(),
+      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
+    ]);
+  }
+
   async function preview(cutoffReportItemId: string) {
     const response = await authFetch("/api/lanflow/rubber-exports/preview", {
       method: "POST",
@@ -64,7 +74,7 @@ export function useRubberExports(locationId: string, online: boolean) {
     });
     await assertApiResponse(response);
     const created = await response.json() as { id: string; exportNo: string };
-    await reload();
+    await reloadWithBadges();
     return created;
   }
 
@@ -100,7 +110,7 @@ export function useRubberExports(locationId: string, online: boolean) {
       body: JSON.stringify({ expenseDestination }),
     });
     await assertApiResponse(response);
-    await reload();
+    await reloadWithBadges();
   }
 
   async function remove(exportId: string) {
@@ -108,7 +118,7 @@ export function useRubberExports(locationId: string, online: boolean) {
       method: "DELETE",
     });
     await assertApiResponse(response);
-    await reload();
+    await reloadWithBadges();
   }
 
   return {

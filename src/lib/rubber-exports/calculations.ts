@@ -2,11 +2,15 @@ function round2(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
+function floor2(value: number) {
+  return Math.floor((value + Number.EPSILON) * 100) / 100;
+}
+
 export function calculateNetWeight(weight: number, deductWeight: number) {
   if (!Number.isFinite(weight) || !Number.isFinite(deductWeight)) return null;
   if (weight <= 0 || deductWeight < 0) return null;
 
-  const netWeight = round2(weight - deductWeight);
+  const netWeight = floor2(weight - deductWeight);
   return netWeight > 0 ? netWeight : null;
 }
 

@@ -1,0 +1,3 @@
+# Close cash transfer on destination receipt and conditionally gate deletion
+
+A destination receipt closes a cash transfer even when the received total differs from the sent total; both counts and the difference remain evidence without a separate settlement action. Source-branch admins and system managers may delete before receipt immediately, while deletion after receipt follows one global approval toggle (enabled by default) and preserves the approval-request history; report-locked transfers remain undeletable. This replaces ADR-0007's pending mismatch settlement and ADR-0008's super-admin-only deletion because the destination's physical count is the terminal business event while reviewed deletion is needed only after both branches have recognized the transfer.

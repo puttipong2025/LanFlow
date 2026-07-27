@@ -25,8 +25,12 @@ function makeBill(patch: Partial<RubberBill> = {}): RubberBill {
     billType: "บิลเครื่องชั่งเล็ก",
     deductWeight: 2,
     weight: 10,
+    netWeight: 8,
+    weighValueTotal: 200,
+    rubberValue: 160,
     price: 20,
-    deductionTotal: 65,
+    deductionTotal: 25,
+    payableBeforeRounding: 135,
     netTotal: 135,
     acidPackCount: 1,
     configuredPriceSnapshot: 20,
@@ -75,17 +79,19 @@ test.describe("Rubber Bill receipt contract @rubber-bill-print", () => {
     const model = buildRubberBillReceiptModel(makeBill());
     const html = renderRubberBillReceiptHtml(model);
 
-    expect(model.grossTotal).toBe(200);
-    expect(model.deductionTotal).toBe(65);
+    expect(model.rubberValue).toBe(160);
+    expect(model.deductionTotal).toBe(25);
     expect(model.netTotal).toBe(135);
     expect(model.payerName).toBe("ผู้ใช้");
     expect(model.approvalLabel).toBe("ไม่ต้องอนุมัติ");
     expect(model.deductions).toEqual([
       { label: "กรด & สินค้า 1 ถัง", amount: 10 },
       { label: "หักหนี้", amount: 15 },
-      { label: "หักน้ำหนัก 2 กก.", amount: 40 },
     ]);
+    expect(html).toContain("น้ำหนักสุทธิ");
+    expect(html).not.toContain("หักน้ำหนัก");
     expect(html).toContain("ยอดที่ต้องจ่ายลูกค้า");
+    expect(html).not.toContain(">ยอดสุทธิ<");
     expect(html).toContain("สถานะอนุมัติ");
     expect(html).not.toContain("ที่อยู่:");
     expect(html).not.toContain("FSC");
@@ -97,6 +103,8 @@ test.describe("Rubber Bill receipt contract @rubber-bill-print", () => {
       serverBillNo: undefined,
       syncStatus: "pending",
       price: 0,
+      rubberValue: 0,
+      payableBeforeRounding: 0,
       netTotal: 0,
       deductionTotal: 0,
       weighItems: [{

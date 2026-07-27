@@ -10,6 +10,7 @@ import {
   todayInputValue
 } from "@/lib/format";
 import { validateRubberBillDraft } from "@/lib/rubber-bill-validation";
+import { calculateRubberBill } from "@/lib/rubber-bills/calculations";
 import { useAcidProducts } from "@/hooks/useAcidProducts";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 
@@ -91,14 +92,15 @@ export function RubberBillModal({
     }).slice(0, 5);
   }, [customers, customerSearch]);
 
-  const totalWeight = weighItems.reduce((sum, item) => sum + item.netWeight, 0);
-  const gross = weighItems.reduce((sum, item) => sum + Math.floor(item.netWeight * item.price), 0);
-  const averagePrice = totalWeight > 0 ? gross / totalWeight : 0;
-  const stockDeduction = stockDeductionItems.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
-  const debtDeduction = debtItems.reduce((sum, item) => sum + item.amount, 0);
-  const weightDeductValue = weightDeduct * averagePrice;
-  const deduct = stockDeduction + debtDeduction + weightDeductValue;
-  const net = Math.max(gross - deduct, 0);
+  const calculation = useMemo(
+    () => calculateRubberBill({
+      weighItems,
+      deductWeight: weightDeduct,
+      stockDeductionItems,
+      debtItems,
+    }),
+    [debtItems, stockDeductionItems, weighItems, weightDeduct],
+  );
   const hasPriceChange = !bill || (
     (bill.weighItems?.length ?? 0) !== weighItems.length
     || weighItems.some((item, index) =>
@@ -205,9 +207,11 @@ export function RubberBillModal({
     const errors = validateRubberBillDraft({
       customerName: customerSearch,
       weighItems,
+      deductWeight: weightDeduct,
+      totalWeight: calculation.totalWeight,
       acidItems: stockDeductionItems,
       debtItems,
-      netTotal: net
+      netTotal: calculation.netTotal
     });
 
     if (errors.length > 0) {
@@ -236,10 +240,14 @@ export function RubberBillModal({
       customerName: customerSearch,
       billType: String(form.get("billType") || "บิลเครื่องชั่งเล็ก"),
       deductWeight: weightDeduct,
-      weight: totalWeight,
-      price: averagePrice,
-      deductionTotal: deduct,
-      netTotal: net,
+      weight: calculation.totalWeight,
+      netWeight: calculation.netWeight,
+      weighValueTotal: calculation.weighValueTotal,
+      rubberValue: calculation.rubberValue,
+      price: calculation.averagePrice,
+      deductionTotal: calculation.deductionTotal,
+      payableBeforeRounding: calculation.payableBeforeRounding,
+      netTotal: calculation.netTotal,
       acidPackCount: stockDeductionItems.reduce((sum, item) => sum + item.quantity, 0),
       configuredPriceSnapshot: bill?.configuredPriceSnapshot ?? configuredPrice ?? null,
       approvalState: bill?.approvalState ?? "not_required",
@@ -362,7 +370,7 @@ export function RubberBillModal({
           </div>
         </section>
 
-        <section className="bg-emerald-50 p-3 sm:p-4">
+        <section className="bg-mint/45 p-3 sm:p-4">
           <h3 className="mb-3 font-bold text-ink">ชั่งสินค้า</h3>
           {configuredPrice != null && (
             <div className={`mb-3 rounded-md border px-3 py-2 text-sm ${
@@ -381,14 +389,14 @@ export function RubberBillModal({
                   <th className="py-2">รายการชั่ง</th>
                   <th>น้ำหนักเข้า</th>
                   <th>น้ำหนักออก</th>
-                  <th>น้ำหนักสุทธิ</th>
+                  <th>น้ำหนักชั่งสุทธิ</th>
                   <th>ราคาสินค้า</th>
                   <th>ยอดเงิน</th>
                   <th>ลบ</th>
                 </tr>
               </thead>
               <tbody>
-                {weighItems.map((item) => (
+                {weighItems.map((item, index) => (
                   <tr key={item.id} className="border-b border-black/10">
                     <td className="py-2">
                       <input
@@ -407,7 +415,7 @@ export function RubberBillModal({
                         decimalOnBlur
                       />
                     </td>
-                    <td><InlineNumber value={Math.floor(item.netWeight * item.price)} readOnly /></td>
+                    <td><InlineNumber value={calculation.lineTotals[index] ?? 0} readOnly /></td>
                     <td>
                       <button
                         type="button"
@@ -429,9 +437,6 @@ export function RubberBillModal({
             </button>
             <div className="w-32">
               <NumberField label="หักน้ำหนักยาง (กก.)" value={weightDeduct} onChange={setWeightDeduct} />
-            </div>
-            <div className="w-36">
-              <NumberField label="มูลค่าหักน้ำหนัก (บาท)" value={weightDeductValue} readOnly />
             </div>
           </div>
         </section>
@@ -499,8 +504,8 @@ export function RubberBillModal({
             aria-disabled={!isOnline}
             className={`mt-3 inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-bold ${
               isOnline
-                ? "bg-amber text-ink hover:bg-amber/80"
-                : "cursor-not-allowed border border-amber/30 bg-amber/10 text-amber-800"
+                ? "bg-clay text-white hover:bg-clay/90"
+                : "cursor-not-allowed bg-slate-300 text-white"
             }`}
           >
             {!isOnline && <WifiOff size={15} />}
@@ -547,21 +552,22 @@ export function RubberBillModal({
           <button
             type="button"
             onClick={addDebtItem}
-            className="mt-3 rounded-md bg-slate-500 px-4 py-2 text-sm font-bold text-white"
+            className="mt-3 rounded-md bg-clay px-4 py-2 text-sm font-bold text-white hover:bg-clay/90"
           >
-            หักหนี้
+            เพิ่มหักเงิน
           </button>
         </section>
 
         <section className="grid gap-3 p-3 sm:w-48 sm:p-4">
-          <NumberField label="ราคาเฉลี่ยยาง (บาท/กก.)" value={averagePrice} readOnly />
-          <NumberField label="รวมมูลค่ายาง (บาท)" value={gross} readOnly />
-          <NumberField label="ยอดรวมที่ถูกหัก (บาท)" value={deduct} readOnly />
-          <NumberField label="ยอดสุทธิที่ต้องจ่ายลูกค้า (บาท)" value={net} readOnly />
+          <NumberField label="น้ำหนักสุทธิ (กก.)" value={calculation.netWeight} readOnly />
+          <NumberField label="ราคาเฉลี่ย (บาท/กก.)" value={calculation.averagePrice} readOnly />
+          <NumberField label="มูลค่ายาง (บาท)" value={calculation.rubberValue} readOnly />
+          <NumberField label="ยอดหักเงิน (บาท)" value={calculation.deductionTotal} readOnly />
+          <NumberField label="ยอดที่ต้องจ่ายลูกค้า (บาท)" value={calculation.netTotal} readOnly />
         </section>
 
-        <div className="flex justify-center border-t border-black/10 p-4">
-          <button className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-blue-600 px-5 font-semibold text-white">
+        <div className="modal-actions flex justify-center border-t border-black/10 p-4">
+          <button className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-commit px-5 font-semibold text-white hover:bg-commit/90">
             <Save size={18} />
             Submit
           </button>

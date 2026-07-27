@@ -1,4 +1,5 @@
 import type { RubberBill } from "@/types";
+import { hasAtMostTwoDecimalPlaces } from "@/lib/rubber-bills/calculations";
 
 export function getRubberBillPaymentBlockReason(
   bill: Pick<RubberBill, "netTotal" | "weighItems">
@@ -33,6 +34,8 @@ export function getRubberBillTransferBlockReason(
 export function validateRubberBillDraft(draft: {
   customerName: string;
   weighItems: { inWeight: number; outWeight: number; netWeight: number; price: number }[];
+  deductWeight: number;
+  totalWeight: number;
   acidItems: { name: string; stockProductId?: string | null; quantity: number; unitPrice: number }[];
   debtItems: { title: string; amount: number }[];
   netTotal: number;
@@ -49,11 +52,21 @@ export function validateRubberBillDraft(draft: {
   }
 
   activeWeighItems.forEach((item, index) => {
+    if (item.inWeight < 0 || item.outWeight < 0) {
+      errors.push(`รายการชั่งที่ ${index + 1}: น้ำหนักต้องไม่ติดลบ`);
+    }
     if (item.inWeight <= item.outWeight) {
       errors.push(`รายการชั่งที่ ${index + 1}: น้ำหนักเข้าต้องมากกว่าน้ำหนักออก`);
     }
     if (item.netWeight <= 0) {
       errors.push(`รายการชั่งที่ ${index + 1}: น้ำหนักสุทธิต้องมากกว่า 0`);
+    }
+    if (
+      !hasAtMostTwoDecimalPlaces(item.inWeight)
+      || !hasAtMostTwoDecimalPlaces(item.outWeight)
+      || !hasAtMostTwoDecimalPlaces(item.netWeight)
+    ) {
+      errors.push(`รายการชั่งที่ ${index + 1}: น้ำหนักต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง`);
     }
     if (item.price < 0) {
       errors.push(`รายการชั่งที่ ${index + 1}: ราคาต้องไม่ติดลบ`);
@@ -62,6 +75,16 @@ export function validateRubberBillDraft(draft: {
       errors.push(`รายการชั่งที่ ${index + 1}: ราคาต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง`);
     }
   });
+
+  if (!hasAtMostTwoDecimalPlaces(draft.deductWeight)) {
+    errors.push("น้ำหนักที่หักต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง");
+  }
+  if (draft.deductWeight < 0) {
+    errors.push("น้ำหนักที่หักต้องไม่ติดลบ");
+  }
+  if (draft.totalWeight > 0 && draft.deductWeight >= draft.totalWeight) {
+    errors.push("น้ำหนักที่หักต้องน้อยกว่าน้ำหนักรวม");
+  }
 
   draft.acidItems.forEach((item, index) => {
     if (!item.name.trim()) {
@@ -76,6 +99,12 @@ export function validateRubberBillDraft(draft: {
     if (item.unitPrice < 0) {
       errors.push(`รายการหักสินค้าที่ ${index + 1}: ราคาต้องไม่ติดลบ`);
     }
+    if (
+      !hasAtMostTwoDecimalPlaces(item.quantity)
+      || !hasAtMostTwoDecimalPlaces(item.unitPrice)
+    ) {
+      errors.push(`รายการหักสินค้าที่ ${index + 1}: จำนวนและราคาต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง`);
+    }
   });
 
   draft.debtItems.forEach((item, index) => {
@@ -84,6 +113,9 @@ export function validateRubberBillDraft(draft: {
     }
     if (item.amount <= 0) {
       errors.push(`รายการหักหนี้ที่ ${index + 1}: จำนวนเงินต้องมากกว่า 0`);
+    }
+    if (!hasAtMostTwoDecimalPlaces(item.amount)) {
+      errors.push(`รายการหักหนี้ที่ ${index + 1}: จำนวนเงินต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง`);
     }
   });
 

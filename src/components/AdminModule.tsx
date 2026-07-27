@@ -378,8 +378,8 @@ export function AdminModule({
                         onClick={() => handleToggleRole(user.id, user.role)}
                         className={`text-xs px-2 py-1 rounded border transition-colors ${
                           user.role === 'admin' 
-                            ? 'border-red-200 bg-red-50 text-red-600 hover:bg-red-100' 
-                            : 'border-leaf/30 bg-leaf/10 text-leaf hover:bg-leaf/20'
+                            ? 'border-clay bg-clay text-white hover:bg-clay/90'
+                            : 'border-leaf bg-leaf text-white hover:bg-leaf/90'
                         }`}
                       >
                         {user.role === 'admin' ? 'ลดสิทธิ์เป็น User' : 'เลื่อนเป็น Admin'}
@@ -390,8 +390,8 @@ export function AdminModule({
                         onClick={() => handleToggleStatus(user.id, user.isActive !== false)}
                         className={`text-xs px-2 py-1 rounded border transition-colors ${
                           user.isActive !== false
-                            ? 'border-red-200 bg-red-50 text-red-600 hover:bg-red-100' 
-                            : 'border-leaf/30 bg-leaf/10 text-leaf hover:bg-leaf/20'
+                            ? 'border-clay bg-clay text-white hover:bg-clay/90'
+                            : 'border-leaf bg-leaf text-white hover:bg-leaf/90'
                         }`}
                       >
                         {user.isActive !== false ? 'ระงับการใช้งาน' : 'กู้คืนการใช้งาน'}
@@ -402,8 +402,8 @@ export function AdminModule({
                         onClick={() => handleToggleSystemManagerAccess(user.id, user.canAccessSystemManager === true)}
                         className={`text-xs px-2 py-1 rounded border transition-colors ${
                           user.canAccessSystemManager === true
-                            ? 'border-red-200 bg-red-50 text-red-600 hover:bg-red-100'
-                            : 'border-river/30 bg-river/10 text-river hover:bg-river/20'
+                            ? 'border-clay bg-clay text-white hover:bg-clay/90'
+                            : 'border-river bg-river text-white hover:bg-river/90'
                         }`}
                       >
                         {user.canAccessSystemManager === true ? 'ปิดสิทธิ์ผู้จัดการระบบ' : 'เปิดสิทธิ์ผู้จัดการระบบ'}
@@ -425,10 +425,11 @@ export function AdminModule({
                           {user.role !== 'super_admin' && (canManageSystem || user.role !== 'admin') && (
                             <button 
                               onClick={() => handleRemoveLocationFromUser(user.id, loc.id)}
-                              className="ml-1 text-river/60 hover:text-red-500 transition-colors"
+                              className="ml-1 rounded bg-clay px-2 py-1 text-white transition-colors hover:bg-clay/90"
                               title="ลบสิทธิ์สาขา"
                             >
                               <X size={14} />
+                              ลบ
                             </button>
                           )}
                         </span>

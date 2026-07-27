@@ -18,7 +18,7 @@ export function IconButton({
       aria-label={label}
       disabled={disabled}
       onClick={onClick}
-      className={`focus-ring grid h-9 w-9 place-items-center rounded-md text-white ${
+      className={`focus-ring inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-white ${
         tone === "amber" ? "bg-amber" : "bg-clay"
       } ${disabled ? "cursor-not-allowed opacity-45" : ""}`}
     >

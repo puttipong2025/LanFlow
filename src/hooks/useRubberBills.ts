@@ -12,6 +12,7 @@ import {
 } from "@/lib/idb-queue";
 import { useEffect } from "react";
 import { toast } from "sonner";
+import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import { OFFLINE_SYNCED_ACTION_MESSAGE } from "@/lib/record-action-locks";
 import {
   assertOfflineRubberBillPriceAllowed,
@@ -19,6 +20,10 @@ import {
 } from "@/lib/rubber-bills/approval";
 import type { RubberBillApprovalSettings } from "@/types";
 import { buildRubberBillReceiptModel } from "@/components/rubber-bills/bill-display";
+import {
+  calculateRubberBill,
+  multiplyMoneyHalfUp,
+} from "@/lib/rubber-bills/calculations";
 
 export function assertRubberBillDeleteAllowed(pendingCreateCount: number, isOnline: boolean) {
   if (pendingCreateCount === 0 && !isOnline) {
@@ -34,6 +39,12 @@ function buildRpcPayload(
   deletedByPhone?: string
 ) {
   const items: any[] = [];
+  const calculation = calculateRubberBill({
+    weighItems: bill.weighItems ?? [],
+    deductWeight: bill.deductWeight,
+    stockDeductionItems: bill.acidItems ?? [],
+    debtItems: bill.debtItems ?? (bill.debtItem ? [bill.debtItem] : []),
+  });
   
   (bill.weighItems || []).forEach((item, i) => {
     items.push({
@@ -44,7 +55,7 @@ function buildRpcPayload(
       outWeight: item.outWeight,
       netWeight: item.netWeight,
       unitPrice: item.price,
-      totalAmount: Math.floor(item.netWeight * item.price),
+      totalAmount: calculation.lineTotals[i] ?? 0,
       sequenceNo: i + 1
     });
   });
@@ -58,7 +69,7 @@ function buildRpcPayload(
       quantity: item.quantity,
       unit: item.unit,
       unitPrice: item.unitPrice,
-      totalAmount: item.quantity * item.unitPrice,
+      totalAmount: multiplyMoneyHalfUp(item.quantity, item.unitPrice),
       sequenceNo: (bill.weighItems?.length || 0) + i + 1
     });
   });
@@ -91,11 +102,14 @@ function buildRpcPayload(
         : bill.configuredPriceSnapshot ?? null,
     billType: bill.billType,
     deductWeight: bill.deductWeight,
-    weight: bill.weight,
-    rubberValue: bill.netTotal + bill.deductionTotal,
-    averagePrice: bill.price,
-    deductionTotal: bill.deductionTotal || 0,
-    netTotal: bill.netTotal,
+    weight: calculation.totalWeight,
+    netWeight: calculation.netWeight,
+    rubberValue: calculation.weighValueTotal,
+    netRubberValue: calculation.rubberValue,
+    averagePrice: calculation.averagePrice,
+    deductionTotal: calculation.deductionTotal,
+    payableBeforeRounding: calculation.payableBeforeRounding,
+    netTotal: calculation.netTotal,
     acidPackCount: bill.acidPackCount,
     createdByUserId: bill.createdByUserId,
     createdByName: bill.createdByName,
@@ -173,6 +187,7 @@ async function syncPendingBills(queryClient: any, ownerUserId: string, locationI
     queryClient.invalidateQueries({ queryKey: ["rubberBills", ownerUserId, locationId] });
     queryClient.invalidateQueries({ queryKey: ["rubberBillApprovalMarkers", locationId] });
     queryClient.invalidateQueries({ queryKey: ["rubberBillApprovalRequests"] });
+    queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
   }
 }
 
@@ -281,6 +296,12 @@ export function useRubberBills(
                 title: item.description ?? "หักชำระหนี้",
                 amount: Number(item.total ?? 0)
               }));
+            const fallbackCalculation = calculateRubberBill({
+              weighItems,
+              deductWeight: Number(row.deduct_weight ?? 0),
+              stockDeductionItems: acidItems,
+              debtItems,
+            });
 
             return {
               id: row.id,
@@ -297,8 +318,14 @@ export function useRubberBills(
               billType: row.bill_type === "weighing" ? "บิลเครื่องชั่งเล็ก" : row.bill_type,
               deductWeight: Number(row.deduct_weight ?? 0),
               weight: Number(row.weight ?? 0),
+              netWeight: Number(row.net_weight ?? fallbackCalculation.netWeight),
+              weighValueTotal: Number(row.rubber_value ?? fallbackCalculation.weighValueTotal),
+              rubberValue: Number(row.net_rubber_value ?? fallbackCalculation.rubberValue),
               price: Number(row.average_price ?? 0),
               deductionTotal: Number(row.deduction_total ?? 0),
+              payableBeforeRounding: Number(
+                row.payable_before_rounding ?? fallbackCalculation.payableBeforeRounding
+              ),
               netTotal: Number(row.net_total ?? 0),
               acidPackCount: Number(row.acid_pack_count ?? 0),
               configuredPriceSnapshot:
@@ -396,6 +423,40 @@ export function useRubberBills(
         } else {
           // It's create or update, overlay it
           const rawPayload = event.payload;
+          const optimisticItems = Array.isArray(rawPayload.items) ? rawPayload.items : [];
+          const optimisticWeighItems = optimisticItems
+            .filter((item: any) => item.itemType === "weigh")
+            .map((item: any) => ({
+              id: item.sequenceNo.toString(),
+              label: item.title,
+              inWeight: item.inWeight,
+              outWeight: item.outWeight,
+              netWeight: item.netWeight,
+              price: item.unitPrice,
+            }));
+          const optimisticAcidItems = optimisticItems
+            .filter((item: any) => item.itemType === "acid" || item.itemType === "stock_deduction")
+            .map((item: any) => ({
+              id: item.sequenceNo.toString(),
+              name: item.title,
+              stockProductId: item.stockProductId,
+              quantity: item.quantity,
+              unit: item.unit,
+              unitPrice: item.unitPrice,
+            }));
+          const optimisticDebtItems = optimisticItems
+            .filter((item: any) => item.itemType === "debt")
+            .map((item: any) => ({
+              id: item.sequenceNo.toString(),
+              title: item.title,
+              amount: item.totalAmount,
+            }));
+          const optimisticCalculation = calculateRubberBill({
+            weighItems: optimisticWeighItems,
+            deductWeight: rawPayload.deductWeight || 0,
+            stockDeductionItems: optimisticAcidItems,
+            debtItems: optimisticDebtItems,
+          });
           
           // Convert RPC payload back to RubberBill shape for Optimistic UI
           const optimisticBill: RubberBill = {
@@ -413,9 +474,14 @@ export function useRubberBills(
             billType: rawPayload.billType ?? "บิลเครื่องชั่งเล็ก",
             deductWeight: rawPayload.deductWeight || 0,
             weight: rawPayload.weight || 0,
-            price: rawPayload.averagePrice || 0,
-            deductionTotal: rawPayload.deductionTotal || 0,
-            netTotal: rawPayload.netTotal || 0,
+            netWeight: rawPayload.netWeight ?? optimisticCalculation.netWeight,
+            weighValueTotal: rawPayload.rubberValue ?? optimisticCalculation.weighValueTotal,
+            rubberValue: rawPayload.netRubberValue ?? optimisticCalculation.rubberValue,
+            price: rawPayload.averagePrice ?? optimisticCalculation.averagePrice,
+            deductionTotal: rawPayload.deductionTotal ?? optimisticCalculation.deductionTotal,
+            payableBeforeRounding:
+              rawPayload.payableBeforeRounding ?? optimisticCalculation.payableBeforeRounding,
+            netTotal: rawPayload.netTotal ?? optimisticCalculation.netTotal,
             acidPackCount: rawPayload.acidPackCount || 0,
             configuredPriceSnapshot: rawPayload.configuredPriceSnapshot ?? null,
             approvalState: "not_required",
@@ -429,10 +495,10 @@ export function useRubberBills(
                   .map((item: any) => Number(item.unitPrice)),
                 rawPayload.configuredPriceSnapshot ?? null
               ),
-            weighItems: rawPayload.items.filter((i:any) => i.itemType === "weigh").map((i:any) => ({ id: i.sequenceNo.toString(), label: i.title, inWeight: i.inWeight, outWeight: i.outWeight, netWeight: i.netWeight, price: i.unitPrice })),
-            acidItems: rawPayload.items.filter((i:any) => i.itemType === "acid" || i.itemType === "stock_deduction").map((i:any) => ({ id: i.sequenceNo.toString(), name: i.title, stockProductId: i.stockProductId, quantity: i.quantity, unit: i.unit, unitPrice: i.unitPrice })),
-            debtItems: rawPayload.items.filter((i:any) => i.itemType === "debt").map((i:any) => ({ id: i.sequenceNo.toString(), title: i.title, amount: i.totalAmount })),
-            debtItem: rawPayload.items.filter((i:any) => i.itemType === "debt")[0] ? { id: "1", title: rawPayload.items.filter((i:any) => i.itemType === "debt")[0].title, amount: rawPayload.items.filter((i:any) => i.itemType === "debt")[0].totalAmount } : undefined,
+            weighItems: optimisticWeighItems,
+            acidItems: optimisticAcidItems,
+            debtItems: optimisticDebtItems,
+            debtItem: optimisticDebtItems[0],
             createdByUserId: rawPayload.createdByUserId ?? ownerUserId,
             createdByName: rawPayload.createdByName ?? "",
             createdByPhone: rawPayload.createdByPhone ?? "",
@@ -606,6 +672,7 @@ export function useRubberBills(
       queryClient.invalidateQueries({ queryKey: ["rubberBillApprovalRequests"] });
       queryClient.invalidateQueries({ queryKey: ["incomeExpense", locationId] });
       queryClient.invalidateQueries({ queryKey: ["acidStock", locationId] });
+      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
       syncPendingBills(queryClient, ownerUserId, locationId);
     }
   });
@@ -711,6 +778,7 @@ export function useRubberBills(
       queryClient.invalidateQueries({ queryKey: ["rubberBillApprovalRequests"] });
       queryClient.invalidateQueries({ queryKey: ["incomeExpense", locationId] });
       queryClient.invalidateQueries({ queryKey: ["acidStock", locationId] });
+      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
       syncPendingBills(queryClient, ownerUserId, locationId);
     }
   });

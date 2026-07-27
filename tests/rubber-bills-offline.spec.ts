@@ -139,6 +139,12 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
 
     const modal = page.locator('.fixed.inset-0').last();
     const weighRow = modal.locator('table').first().locator('tbody tr').first();
+    const inWeightInput = weighRow.locator('input[type="number"]').nth(0);
+    await expect(inWeightInput).toHaveValue('0');
+    await inWeightInput.focus();
+    await expect(inWeightInput).toHaveValue('');
+    await inWeightInput.blur();
+    await expect(inWeightInput).toHaveValue('0');
     await weighRow.locator('input[type="number"]').nth(0).fill('1000');
     await weighRow.locator('input[type="number"]').nth(1).fill('200');
     await weighRow.locator('input[type="number"]').nth(3).fill('19.5');
@@ -166,7 +172,13 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     const clientTempId = createEvent.id;
 
     // === STEP 2: EDIT the pending bill offline ===
-    await createdRow.locator('button[title="แก้ไข"]').click();
+    const editAction = createdRow.locator('button[title="แก้ไข"]');
+    const deleteAction = createdRow.locator('button[title="ลบ"]');
+    await expect(editAction).toHaveAttribute('aria-label', 'แก้ไข');
+    await expect(deleteAction).toHaveAttribute('aria-label', 'ลบ');
+    await expect(editAction).toHaveText('');
+    await expect(deleteAction).toHaveText('');
+    await editAction.click();
     await expect(page.locator('h2:has-text("แก้ไขบิลเครื่องชั่งเล็ก")')).toBeVisible();
     
     const editModal = page.locator('.fixed.inset-0').last();
@@ -202,7 +214,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     await expect(deleteRow).toBeVisible({ timeout: 5000 });
 
     // Delete the second bill — should coalesce with its pending create
-    await deleteRow.locator('button:has-text("ลบ")').click();
+    await deleteRow.getByRole('button', { name: 'ลบ', exact: true }).click();
     await expect(deleteRow).toBeHidden({ timeout: 5000 });
 
     // Assert: coalesce removed both create and delete events for second bill
@@ -315,7 +327,35 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     await expect(deleteButton).toBeDisabled();
     await expect(editButton).toHaveAttribute('title', blockMessage);
     await expect(deleteButton).toHaveAttribute('title', blockMessage);
+    await expect(editButton).toHaveAttribute('aria-label', blockMessage);
+    await expect(deleteButton).toHaveAttribute('aria-label', blockMessage);
     await expect(readQueue(page)).resolves.toHaveLength(0);
+  });
+
+  test('offline stock deduction cannot be added to the sync queue', async ({ page, context }) => {
+    page.on('dialog', dialog => dialog.accept());
+    await page.goto('/login');
+    await page.fill('input[type="tel"]', phone);
+    await page.fill('input[type="password"]', password);
+    await page.click('button:has-text("เข้าสู่ระบบ")');
+    await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+    await page.click('button:has-text("บิลยาง")');
+    await expect(page.locator('button:has-text("เพิ่มบิลยาง")')).toBeVisible();
+
+    await context.setOffline(true);
+    await page.click('button:has-text("เพิ่มบิลยาง")');
+    const modal = page.locator('.fixed.inset-0').last();
+    await expect(modal.locator('h2:has-text("บิลเครื่องชั่งเล็ก")')).toBeVisible();
+    const queueBefore = await readQueue(page);
+    const offlineStockButton = modal.getByRole('button', { name: 'กดได้เมื่อออนไลน์' });
+    await expect(offlineStockButton).toHaveAttribute('aria-disabled', 'true');
+
+    await offlineStockButton.evaluate((button) => (button as HTMLButtonElement).click());
+    await expect(page.getByText('หักสินค้าใช้ได้เมื่อออนไลน์ เพราะต้องตรวจยอดสต็อกก่อน')).toBeVisible();
+    await expect(
+      modal.locator('section', { hasText: 'หักสินค้า' }).locator('tbody tr')
+    ).toHaveCount(0);
+    expect(await readQueue(page)).toEqual(queueBefore);
   });
 
   test('online approval requests never enter sync_queue', async ({ page }) => {

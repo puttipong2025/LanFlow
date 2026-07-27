@@ -1,4 +1,4 @@
-import { Banknote, Edit3, Share2 } from "lucide-react";
+import { Edit3, Eye, Share2, Trash2 } from "lucide-react";
 import { formatNumber } from "@/lib/format";
 import type { RubberBill } from "@/types";
 import { formatBillTimestamp, getDisplayBillNo } from "./bill-display";
@@ -43,18 +43,18 @@ export function RubberBillsTable({
         <table className="w-full min-w-[1320px] border-collapse text-sm">
           <thead>
             <tr className="whitespace-nowrap border-b border-black/20 text-left text-ink">
-              <th className="py-2">Delete/Edit/View</th>
+              <th className="py-2">การทำงาน</th>
               <th>เลขที่บิล</th>
               <th>วันที่ออกบิล</th>
               <th>TimestampBill</th>
               <th>ชื่อลูกค้า</th>
               <th>ผู้รับผิดชอบการจ่าย</th>
               <th>ประเภทบิล</th>
-              <th>น้ำหนักที่หัก</th>
-              <th>น้ำหนักรวม</th>
-              <th>รวมมูลค่ายาง(บาท)</th>
+              <th>น้ำหนักสุทธิ</th>
+              <th>มูลค่ายาง (บาท)</th>
               <th>ราคาเฉลี่ย</th>
-              <th>ยอดรวมที่ถูกหัก</th>
+              <th>ยอดหักเงิน</th>
+              <th>ยอดที่ต้องจ่ายลูกค้า</th>
               <th>Sync</th>
             </tr>
           </thead>
@@ -71,55 +71,53 @@ export function RubberBillsTable({
                     <button
                       type="button"
                       title={actionBlockReason ?? "ดู"}
+                      aria-label={actionBlockReason ?? "ดู"}
                       disabled={actionsDisabled}
                       onClick={() => onEdit(bill)}
-                      className={`grid h-7 w-7 place-items-center rounded-full bg-leaf text-sm font-bold text-white ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
+                      className={`inline-flex h-10 items-center gap-1.5 rounded-md bg-river px-3 text-sm font-semibold text-white ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
                     >
-                      +
+                      <Eye size={16} />
+                      ดู
                     </button>
                     <button
                       type="button"
                       title={actionBlockReason ?? "ลบ"}
+                      aria-label={actionBlockReason ?? "ลบ"}
                       disabled={actionsDisabled}
                       onClick={() => onDelete(bill)}
-                      className={`rounded-md bg-rose-500 px-3 py-1 text-sm font-bold text-white ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
+                      className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-clay text-white ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
                     >
-                      ลบ
+                      <Trash2 size={16} />
                     </button>
                     <button
                       type="button"
                       title={actionBlockReason ?? "แก้ไข"}
+                      aria-label={actionBlockReason ?? "แก้ไข"}
                       disabled={actionsDisabled}
                       onClick={() => onEdit(bill)}
-                      className={`grid h-8 w-8 place-items-center rounded-md bg-field text-ink ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
+                      className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-amber text-white ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
                     >
                       <Edit3 size={16} />
                     </button>
                     <button
                       type="button"
                       title={printBlockReason ?? "แชร์ PDF ใบรับซื้อยาง"}
+                      aria-label={printBlockReason ?? "แชร์ PDF ใบรับซื้อยาง"}
                       disabled={Boolean(printBlockReason)}
                       onClick={() => onPrint(bill)}
-                      className={`grid h-8 w-8 place-items-center rounded-md bg-violet-100 text-violet-800 ${
+                      className={`inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white hover:bg-actionSecondary/90 ${
                         printBlockReason ? "cursor-not-allowed opacity-45" : ""
                       }`}
                     >
                       <Share2 size={16} />
-                    </button>
-                    <button
-                      type="button"
-                      title={actionBlockReason ?? "จ่ายเงิน"}
-                      disabled={actionsDisabled}
-                      className={`grid h-8 w-10 place-items-center rounded-md bg-amber text-ink ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
-                    >
-                      <Banknote size={18} />
+                      แชร์ PDF
                     </button>
                     {bill.syncStatus === "failed" && (
                       <button
                         type="button"
                         onClick={() => onRetry(bill)}
                         disabled={retryDisabled}
-                        className="rounded-md bg-blue-600 px-2 py-1 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                        className="rounded-md bg-river px-2 py-1 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
                       >
                         ลองซิงก์อีกครั้ง
                       </button>
@@ -148,11 +146,11 @@ export function RubberBillsTable({
                 <td>{bill.customerName}</td>
                 <td>{bill.createdByName?.trim() || "ไม่ระบุ"}</td>
                 <td>{bill.billType}</td>
-                <td>{formatNumber(bill.deductWeight)}</td>
-                <td>{formatNumber(bill.weight)}</td>
-                <td>{formatNumber(bill.netTotal + bill.deductionTotal)}</td>
+                <td>{formatNumber(bill.netWeight)}</td>
+                <td>{formatNumber(bill.rubberValue)}</td>
                 <td>{formatNumber(bill.price)}</td>
                 <td>{formatNumber(bill.deductionTotal)}</td>
+                <td>{formatNumber(bill.netTotal)}</td>
                 <td>
                   {bill.approvalPending ? (
                     <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-amber-800">รออนุมัติ</span>
@@ -183,8 +181,8 @@ export function RubberBillsTable({
               key={pageNumber}
               type="button"
               onClick={() => onPageChange(pageNumber)}
-              className={`h-10 min-w-10 rounded-md border px-3 text-sm font-semibold ${
-                currentPage === pageNumber ? "border-black/20 bg-field text-ink" : "border-transparent bg-white text-ink"
+              className={`h-10 min-w-10 rounded-md border px-3 text-sm font-semibold text-white ${
+                currentPage === pageNumber ? "border-leaf bg-leaf" : "border-actionSecondary bg-actionSecondary hover:bg-actionSecondary/90"
               }`}
             >
               {pageNumber}

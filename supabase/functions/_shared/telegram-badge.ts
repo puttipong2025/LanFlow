@@ -2,7 +2,6 @@ export const TELEGRAM_BADGE_KEYS = [
   "rubber_bill_approval_pending",
   "income_expense_approval_pending",
   "cash_transfer_pending_receipt",
-  "cash_transfer_mismatched",
   "stock_approval_pending",
   "money_transfer_pending",
   "money_transfer_partial",

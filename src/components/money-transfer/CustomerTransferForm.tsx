@@ -175,7 +175,7 @@ export function CustomerTransferForm({
         void Swal.fire({
           icon: "warning",
           title: "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น",
-          confirmButtonColor: "#3b82f6",
+          confirmButtonColor: "#4f6f65",
           confirmButtonText: "ตกลง"
         });
         return;
@@ -218,7 +218,7 @@ export function CustomerTransferForm({
       void Swal.fire({
         icon: "warning",
         title: "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น",
-        confirmButtonColor: "#3b82f6",
+        confirmButtonColor: "#4f6f65",
         confirmButtonText: "ตกลง"
       });
       return;
@@ -251,7 +251,7 @@ export function CustomerTransferForm({
       void Swal.fire({
         icon: "warning",
         title: "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น",
-        confirmButtonColor: "#3b82f6",
+        confirmButtonColor: "#4f6f65",
         confirmButtonText: "ตกลง"
       });
       return;
@@ -263,7 +263,7 @@ export function CustomerTransferForm({
         icon: "warning",
         title: "ข้อมูลไม่ครบถ้วน",
         text: "กรุณาระบุวันที่ทำรายการให้ครบทุกสลิป",
-        confirmButtonColor: "#3b82f6",
+        confirmButtonColor: "#4f6f65",
         confirmButtonText: "ตกลง"
       });
       return;
@@ -322,8 +322,9 @@ export function CustomerTransferForm({
           <CreditCard size={18} className="mr-2 inline-block text-river" />
           {isEdit ? "แก้ไขรายการโอนเงิน" : "สร้างรายการโอนเงินใหม่"}
         </h3>
-        <button type="button" onClick={onCancel} className="grid h-8 w-8 place-items-center rounded-full hover:bg-field">
+        <button type="button" onClick={onCancel} className="inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white hover:bg-actionSecondary/90">
           <X size={18} />
+          ปิด
         </button>
       </div>
 
@@ -395,10 +396,11 @@ export function CustomerTransferForm({
               <button
                 type="button"
                 onClick={handleCopyBankAccount}
-                className="mt-1 flex items-center justify-center rounded border border-black/10 bg-white px-2 py-1 text-river hover:bg-field focus:outline-none"
+                className="mt-1 flex items-center justify-center rounded bg-actionSecondary px-2 py-1 font-semibold text-white hover:bg-actionSecondary/90 focus:outline-none"
                 title="คัดลอกเลขบัญชี"
               >
                 <Copy size={16} />
+                คัดลอก
               </button>
             </div>
           ) : (
@@ -457,7 +459,7 @@ export function CustomerTransferForm({
               <button
                 type="button"
                 onClick={() => setIsBranchPayingRemaining(false)}
-                className="ml-auto text-[10px] font-bold text-ink/40 hover:text-clay transition-colors underline"
+                className="ml-auto rounded-md bg-clay px-2 py-1 text-[10px] font-bold text-white transition-colors hover:bg-clay/90"
               >
                 ยกเลิกสาขาจ่าย
               </button>
@@ -518,8 +520,9 @@ export function CustomerTransferForm({
                     <td className="px-3 py-2 font-semibold">{item.customerName ?? "—"}</td>
                     <td className="px-3 py-2 text-right font-mono font-bold text-river">{formatCurrency(item.amount)}</td>
                     <td className="px-3 py-2 text-center">
-                      <button type="button" onClick={() => setSelectedItems((prev) => prev.filter((i) => i.id !== item.id))} className="text-ink/40 hover:text-clay">
+                      <button type="button" onClick={() => setSelectedItems((prev) => prev.filter((i) => i.id !== item.id))} className="inline-flex h-10 items-center gap-1 rounded-md bg-danger px-2 text-xs font-semibold text-white hover:bg-danger/90">
                         <Trash2 size={14} />
+                        ลบ
                       </button>
                     </td>
                   </tr>
@@ -550,7 +553,7 @@ export function CustomerTransferForm({
             สลิปโอนเงิน ({slips.length})
           </h4>
           <div className="flex gap-2">
-            <button type="button" onClick={addEmptySlip} disabled={!online} title={online ? undefined : "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น"} className="focus-ring flex items-center gap-1.5 rounded-md border border-black/10 bg-white px-3 py-2 text-sm font-semibold text-ink hover:bg-field disabled:cursor-not-allowed disabled:opacity-50">
+            <button type="button" onClick={addEmptySlip} disabled={!online} title={online ? undefined : "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น"} className="focus-ring flex items-center gap-1.5 rounded-md bg-leaf px-3 py-2 text-sm font-semibold text-white hover:bg-leaf/90 disabled:cursor-not-allowed disabled:opacity-50">
               <Plus size={14} /> เพิ่มเอง
             </button>
             <button
@@ -602,7 +605,7 @@ export function CustomerTransferForm({
 
       {/* ── Actions ── */}
       <div className="flex items-center justify-between border-t border-black/5 pt-4">
-        <button type="button" onClick={onCancel} className="focus-ring rounded-md border border-black/10 bg-white px-4 py-2 text-sm font-semibold text-ink hover:bg-field">
+        <button type="button" onClick={onCancel} className="focus-ring rounded-md bg-actionSecondary px-4 py-2 text-sm font-semibold text-white hover:bg-actionSecondary/90">
           ยกเลิก
         </button>
         <button
@@ -610,7 +613,7 @@ export function CustomerTransferForm({
           onClick={handleSubmit}
           disabled={!online}
           title={online ? undefined : "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น"}
-          className="focus-ring flex items-center gap-1.5 rounded-md bg-river px-5 py-2 text-sm font-semibold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-50"
+          className="focus-ring flex items-center gap-1.5 rounded-md bg-commit px-5 py-2 text-sm font-semibold text-white hover:bg-commit/90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Save size={15} /> บันทึก
         </button>

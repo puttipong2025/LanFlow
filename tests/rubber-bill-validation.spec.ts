@@ -16,6 +16,8 @@ function draft(price: number) {
       netWeight: 80,
       price,
     }],
+    deductWeight: 0,
+    totalWeight: 80,
     acidItems: [],
     debtItems: [],
     netTotal: Math.max(80 * price, 0),
@@ -33,6 +35,20 @@ test.describe("Rubber Bill price validation", () => {
     );
     expect(validateRubberBillDraft(draft(1.001))).toContain(
       "รายการชั่งที่ 1: ราคาต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง"
+    );
+  });
+
+  test("rejects negative individual weigh-row inputs", () => {
+    const invalid = draft(20);
+    invalid.weighItems[0] = {
+      inWeight: -10,
+      outWeight: -20,
+      netWeight: 10,
+      price: 20,
+    };
+
+    expect(validateRubberBillDraft(invalid)).toContain(
+      "รายการชั่งที่ 1: น้ำหนักต้องไม่ติดลบ"
     );
   });
 

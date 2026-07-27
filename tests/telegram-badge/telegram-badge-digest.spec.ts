@@ -138,7 +138,7 @@ test.describe.serial("Telegram badge digest @telegram-badge", () => {
       );
       const loadedBody = await loaded.json();
       expect(loaded.ok(), JSON.stringify(loadedBody)).toBeTruthy();
-      expect(loadedBody.catalog).toHaveLength(10);
+      expect(loadedBody.catalog).toHaveLength(TELEGRAM_BADGE_KEYS.length);
       expect(JSON.stringify(loadedBody)).not.toContain(
         "test-token-never-returned",
       );
@@ -274,6 +274,71 @@ test.describe.serial("Telegram badge digest @telegram-badge", () => {
         .from("stock_product_approval_requests")
         .delete()
         .in("id", [pendingId, approvedId]);
+    }
+  });
+
+  test("advance payment stays in Telegram badges until it is completed or deleted", async () => {
+    const db = service();
+    const transferId = crypto.randomUUID();
+    const { data: location, error: locationError } = await db
+      .from("locations")
+      .select("id")
+      .eq("is_active", true)
+      .limit(1)
+      .single();
+    expect(locationError).toBeNull();
+
+    const readAdvanceCount = async () => {
+      const { data, error } = await db.rpc("get_telegram_badge_counts");
+      expect(error).toBeNull();
+      const row = data?.find(
+        (item: { badge_key: string; location_id: string | null }) =>
+          item.badge_key === "money_transfer_advance" &&
+          item.location_id === location!.id,
+      );
+      return Number(row?.item_count ?? 0);
+    };
+
+    const baseline = await readAdvanceCount();
+    const inserted = await db.from("money_transfers").insert({
+      id: transferId,
+      client_temp_id: transferId,
+      idempotency_key: `telegram-advance:${transferId}`,
+      location_id: location!.id,
+      customer_name: "ทดสอบแจ้งเตือนจ่ายล่วงหน้า",
+      net_amount_to_pay: 0,
+      transfer_method: "bank",
+      transfer_type: "customer",
+      transfer_status: "advance_payment",
+      created_by_user_id: superAdminId,
+      created_by_name: "LanFlow super_admin",
+      created_by_phone: "0800000000",
+    });
+    expect(inserted.error).toBeNull();
+
+    try {
+      expect(await readAdvanceCount()).toBe(baseline + 1);
+
+      expect(
+        (await db
+          .from("money_transfers")
+          .update({ transfer_status: "paid" })
+          .eq("id", transferId)).error,
+      ).toBeNull();
+      expect(await readAdvanceCount()).toBe(baseline);
+
+      expect(
+        (await db
+          .from("money_transfers")
+          .update({
+            transfer_status: "advance_payment",
+            record_status: "deleted",
+          })
+          .eq("id", transferId)).error,
+      ).toBeNull();
+      expect(await readAdvanceCount()).toBe(baseline);
+    } finally {
+      await db.from("money_transfers").delete().eq("id", transferId);
     }
   });
 

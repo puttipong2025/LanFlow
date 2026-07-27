@@ -243,7 +243,7 @@ test.describe('PWA Offline Reload', () => {
     });
     capturePrintRequests = true;
     const offlineDownloadPromise = page.waitForEvent("download");
-    await offlineRow.locator('button[title="ดาวน์โหลด PDF ใบรับซื้อยาง"]').click();
+    await offlineRow.locator('button[title="แชร์ PDF ใบรับซื้อยาง"]').click();
     const offlineDownload = await offlineDownloadPromise;
     expect(offlineDownload.suggestedFilename()).toMatch(/^LanFlow-rubber-bill-.*-80mm\.pdf$/);
     const pdfOutputDir = join(process.cwd(), "output", "pdf");
@@ -251,7 +251,7 @@ test.describe('PWA Offline Reload', () => {
     await offlineDownload.saveAs(join(pdfOutputDir, "rubber-bill-offline-80mm.pdf"));
     await expect(page.locator('iframe[aria-hidden="true"]')).toHaveCount(0);
     const syncedDownloadPromise = page.waitForEvent("download");
-    await cachedSyncedRow.locator('button[title="ดาวน์โหลด PDF ใบรับซื้อยาง"]').click();
+    await cachedSyncedRow.locator('button[title="แชร์ PDF ใบรับซื้อยาง"]').click();
     const syncedDownload = await syncedDownloadPromise;
     expect(syncedDownload.suggestedFilename()).toMatch(/^LanFlow-rubber-bill-.*-80mm\.pdf$/);
     await syncedDownload.saveAs(join(pdfOutputDir, "rubber-bill-synced-80mm.pdf"));
@@ -267,7 +267,7 @@ test.describe('PWA Offline Reload', () => {
     );
     expect(cachedSyncedSnapshot).toBeDefined();
     await deleteReceiptSnapshot(page, cachedSyncedSnapshot.billId);
-    await cachedSyncedRow.locator('button[title="ดาวน์โหลด PDF ใบรับซื้อยาง"]').click();
+    await cachedSyncedRow.locator('button[title="แชร์ PDF ใบรับซื้อยาง"]').click();
     await expect(page.getByText('ไม่พบสำเนาใบพิมพ์ของบิลนี้ในเครื่อง กรุณาออนไลน์เพื่อโหลดใหม่'))
       .toBeVisible();
 

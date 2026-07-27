@@ -91,9 +91,9 @@ export function RubberExportDetailModal({
         )}
 
         <div className="grid gap-3 sm:grid-cols-3">
-          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">น้ำหนักสุทธิหลังหักรวม</div><div className="font-bold">{number(details.originalWeightTotal)} กก.</div></div>
+          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">น้ำหนักสุทธิรวม</div><div className="font-bold">{number(details.originalWeightTotal)} กก.</div></div>
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ยอดจ่ายจริงรวม</div><div className="font-bold">฿{number(details.paidTotal)}</div></div>
-          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ราคาเฉลี่ย</div><div className="font-bold">฿{number(details.averagePrice)}/กก.</div></div>
+          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ต้นทุนซื้อเฉลี่ย</div><div className="font-bold">฿{number(details.averagePrice)}/กก.</div></div>
         </div>
 
         <div className="grid gap-3 sm:grid-cols-5">
@@ -163,7 +163,7 @@ export function RubberExportDetailModal({
           </table>
         </div>
 
-        <div className="flex flex-wrap justify-end gap-2">
+        <div className="modal-actions flex flex-wrap justify-end gap-2">
           {(details.status === "verified" || details.status === "deleted") && (
             <a
               href={`/rubber-exports/${details.id}/print`}
@@ -182,7 +182,7 @@ export function RubberExportDetailModal({
                 setSaving(true);
                 void onSave(values).finally(() => setSaving(false));
               }}
-              className="focus-ring inline-flex items-center gap-2 rounded-md bg-river px-4 py-2 font-semibold text-white disabled:opacity-50"
+              className="focus-ring inline-flex items-center gap-2 rounded-md bg-commit px-4 py-2 font-semibold text-white hover:bg-commit/90 disabled:opacity-50"
             >
               {saving && <Loader2 size={16} className="animate-spin" />} บันทึกร่าง
             </button>
@@ -221,7 +221,7 @@ export function RubberExportDetailModal({
               >
                 จ่ายภายนอก
               </button>
-              <button type="button" onClick={() => setShowVerify(false)} className="focus-ring rounded-md bg-field px-4 py-2 font-semibold">ยกเลิก</button>
+              <button type="button" onClick={() => setShowVerify(false)} className="focus-ring rounded-md bg-actionSecondary px-4 py-2 font-semibold text-white hover:bg-actionSecondary/90">ยกเลิก</button>
             </div>
           </div>
         )}
@@ -229,4 +229,3 @@ export function RubberExportDetailModal({
     </ModalShell>
   );
 }
-

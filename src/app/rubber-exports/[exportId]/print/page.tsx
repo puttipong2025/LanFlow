@@ -99,9 +99,9 @@ export default function RubberExportPrintPage() {
       </header>
 
       <section className="summary">
-        <div><strong>น้ำหนักสุทธิหลังหักรวม</strong><br />{number(details.originalWeightTotal)} กก.</div>
+        <div><strong>น้ำหนักสุทธิรวม</strong><br />{number(details.originalWeightTotal)} กก.</div>
         <div><strong>ยอดจ่ายจริงรวม</strong><br />฿{number(details.paidTotal)}</div>
-        <div><strong>ราคาเฉลี่ย</strong><br />฿{number(details.averagePrice)}/กก.</div>
+        <div><strong>ต้นทุนซื้อเฉลี่ย</strong><br />฿{number(details.averagePrice)}/กก.</div>
         <div><strong>น้ำหนักปัจจุบัน</strong><br />{number(details.currentWeight)} กก.</div>
         <div><strong>น้ำหนักหาย</strong><br />{number(details.weightLossPercent)}%</div>
         <div><strong>ค่าทำงานต่อกิโลกรัม</strong><br />฿{number(details.workRate)}</div>
@@ -116,7 +116,7 @@ export default function RubberExportPrintPage() {
             <th>เลขบิล</th>
             <th>ลูกค้า</th>
             <th>เวลาพร้อมออกรายงาน</th>
-            <th className="num">น้ำหนักสุทธิหลังหัก</th>
+            <th className="num">น้ำหนักสุทธิ</th>
             <th className="num">ยอดจ่ายจริง</th>
           </tr>
         </thead>
@@ -142,4 +142,3 @@ export default function RubberExportPrintPage() {
     </main>
   );
 }
-

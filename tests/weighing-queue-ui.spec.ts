@@ -10,13 +10,23 @@ async function openRubberBills(page: import("@playwright/test").Page) {
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
-    window.print = () => {
-      window.setTimeout(() => window.dispatchEvent(new Event("afterprint")), 0);
-    };
+    Object.defineProperty(navigator, "canShare", {
+      configurable: true,
+      value: (data: ShareData) => data.files?.[0]?.type === "application/pdf",
+    });
+    Object.defineProperty(navigator, "share", {
+      configurable: true,
+      value: async (data: ShareData) => {
+        const state = window as typeof window & { sharedQueuePdfs?: string[] };
+        state.sharedQueuePdfs ??= [];
+        const filename = data.files?.[0]?.name;
+        if (filename) state.sharedQueuePdfs.push(filename);
+      },
+    });
   });
 });
 
-test("manages, reorders, warns, reprints, deletes, and persists the daily queue", async ({ page }) => {
+test("manages, reorders, warns, reshares, deletes, and persists the daily queue", async ({ page }) => {
   await openRubberBills(page);
   await expect.poll(() => page.evaluate(() => (
     Object.keys(localStorage).some((key) => key.startsWith("lanflow:weighing-queue-customers:v1:"))
@@ -39,20 +49,23 @@ test("manages, reorders, warns, reprints, deletes, and persists the daily queue"
   await expect(rows.nth(0)).toContainText("1");
   await expect(rows.nth(1)).toContainText("2");
 
-  await rows.nth(1).getByRole("button", { name: "พิมพ์บัตรคิว 2" }).click();
-  await expect(rows.nth(1)).toContainText("พิมพ์ล่าสุด");
+  await rows.nth(1).getByRole("button", { name: "แชร์ PDF บัตรคิว 2" }).click();
+  await expect(rows.nth(1)).toContainText("แชร์ล่าสุด");
+  await expect.poll(() => page.evaluate(() =>
+    (window as typeof window & { sharedQueuePdfs?: string[] }).sharedQueuePdfs?.at(-1)
+  )).toMatch(/^LanFlow-weighing-queue-Q02-.*-80mm\.pdf$/);
 
   await rows.nth(1).getByRole("button", { name: "เลื่อนคิว 2 ขึ้น" }).click();
   rows = queueTable.locator("tbody tr");
-  await expect(rows.nth(0)).toContainText("ข้อมูลเปลี่ยนหลังพิมพ์");
+  await expect(rows.nth(0)).toContainText("ข้อมูลเปลี่ยนหลังแชร์");
 
-  await rows.nth(0).getByRole("button", { name: "พิมพ์บัตรคิว 1" }).click();
-  await expect(rows.nth(0)).toContainText("พิมพ์ล่าสุด");
+  await rows.nth(0).getByRole("button", { name: "แชร์ PDF บัตรคิว 1" }).click();
+  await expect(rows.nth(0)).toContainText("แชร์ล่าสุด");
 
   await page.getByRole("button", { name: "แก้เวลา" }).click();
   await page.locator('input[type="time"]').fill("15:00");
   await page.getByRole("button", { name: "บันทึกเวลา" }).click();
-  await expect(rows.nth(0)).toContainText("ข้อมูลเปลี่ยนหลังพิมพ์");
+  await expect(rows.nth(0)).toContainText("ข้อมูลเปลี่ยนหลังแชร์");
 
   page.once("dialog", (dialog) => dialog.accept());
   await rows.nth(1).getByRole("button", { name: "ลบคิว 2" }).click();
@@ -118,10 +131,10 @@ test("reloads offline with cached customers and the device-local queue", async (
   await expect(queueRows).toHaveCount(2);
   await expect(queueRows.nth(0)).toContainText("ลูกค้าแคชทดสอบ");
 
-  await queueRows.nth(0).getByRole("button", { name: "พิมพ์บัตรคิว 1" }).click();
-  await expect(queueRows.nth(0)).toContainText("พิมพ์ล่าสุด");
+  await queueRows.nth(0).getByRole("button", { name: "แชร์ PDF บัตรคิว 1" }).click();
+  await expect(queueRows.nth(0)).toContainText("แชร์ล่าสุด");
   await queueRows.nth(1).getByRole("button", { name: "เลื่อนคิว 2 ขึ้น" }).click();
-  await expect(queueRows.nth(1)).toContainText("ข้อมูลเปลี่ยนหลังพิมพ์");
+  await expect(queueRows.nth(1)).toContainText("ข้อมูลเปลี่ยนหลังแชร์");
 
   page.once("dialog", (dialog) => dialog.accept());
   await queueRows.nth(0).getByRole("button", { name: "ลบคิว 1" }).click();
@@ -132,4 +145,16 @@ test("reloads offline with cached customers and the device-local queue", async (
   await page.getByRole("button", { name: "บัตรคิว", exact: true }).click();
   await expect(page.getByRole("table", { name: "ตารางคิวชั่ง" }).locator("tbody tr")).toContainText("ลูกค้าแคชทดสอบ");
   await expect(page.getByText("16:00 น.", { exact: true })).toBeVisible();
+});
+
+test("shares an 80mm appointment PDF from a wait preset", async ({ page }) => {
+  await openRubberBills(page);
+  await page.getByRole("button", { name: "จับเวลา", exact: true }).click();
+  await page.getByRole("button", { name: "แชร์ PDF บัตรนัด 5 นาที" }).click();
+
+  await expect.poll(() => page.evaluate(() =>
+    (window as typeof window & { sharedQueuePdfs?: string[] }).sharedQueuePdfs?.at(-1)
+  )).toMatch(/^LanFlow-weighing-appointment-.*-5min-80mm\.pdf$/);
+  await expect(page.getByText("แชร์ PDF บัตรนัดชั่งแล้ว")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "เลือกระยะเวลารอ" })).toHaveCount(0);
 });

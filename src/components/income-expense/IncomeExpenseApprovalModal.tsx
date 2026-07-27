@@ -4,6 +4,7 @@ import { toast } from "sonner";
 
 import { formatCurrency } from "@/lib/format";
 import { useIncomeExpenseApprovals } from "@/hooks/useIncomeExpenseApprovals";
+import { useInputDialog } from "@/hooks/useInputDialog";
 import { useLocations } from "@/hooks/useLocations";
 import { ModalShell } from "@/components/shared/ModalShell";
 
@@ -55,15 +56,18 @@ function formatDateTime(value: string) {
 }
 
 export function IncomeExpenseApprovalModal({ onClose }: { onClose: () => void }) {
+  const { requestInput, inputDialog } = useInputDialog();
   const {
     keywords,
     settings,
     requests,
+    cashDeleteRequests,
     isLoading,
     addKeyword,
     disableKeyword,
     saveSettings,
     decideRequest,
+    decideCashDeleteRequest,
   } = useIncomeExpenseApprovals({ includeRequests: true });
   const { locations } = useLocations();
 
@@ -73,6 +77,7 @@ export function IncomeExpenseApprovalModal({ onClose }: { onClose: () => void })
   const [keywordMinAmount, setKeywordMinAmount] = useState("");
   const [settingsAppliesTo, setSettingsAppliesTo] = useState<IncomeExpenseApprovalAppliesTo>("both");
   const [settingsMinAmount, setSettingsMinAmount] = useState("");
+  const [cashDeleteRequiresApproval, setCashDeleteRequiresApproval] = useState(true);
   const [isAdding, setIsAdding] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [decidingId, setDecidingId] = useState<string | null>(null);
@@ -82,6 +87,7 @@ export function IncomeExpenseApprovalModal({ onClose }: { onClose: () => void })
     if (!settings) return;
     setSettingsAppliesTo(settings.appliesTo);
     setSettingsMinAmount(settings.approvalMinAmount != null ? String(settings.approvalMinAmount) : "");
+    setCashDeleteRequiresApproval(settings.cashTransferDeleteRequiresApproval);
   }, [settings]);
 
   const locationNameById = useMemo(
@@ -96,9 +102,17 @@ export function IncomeExpenseApprovalModal({ onClose }: { onClose: () => void })
     [requestLocationFilter, requests]
   );
 
+  const filteredCashDeleteRequests = useMemo(
+    () => requestLocationFilter === "all"
+      ? cashDeleteRequests
+      : cashDeleteRequests.filter((request) => request.sourceLocationId === requestLocationFilter),
+    [cashDeleteRequests, requestLocationFilter],
+  );
+
   const pendingCount = useMemo(
-    () => filteredRequests.filter((request) => request.requestStatus === "pending").length,
-    [filteredRequests]
+    () => filteredRequests.filter((request) => request.requestStatus === "pending").length
+      + filteredCashDeleteRequests.filter((request) => request.requestStatus === "pending").length,
+    [filteredCashDeleteRequests, filteredRequests]
   );
 
   async function handleSaveSettings(event: React.FormEvent) {
@@ -115,6 +129,7 @@ export function IncomeExpenseApprovalModal({ onClose }: { onClose: () => void })
       await saveSettings({
         appliesTo: settingsAppliesTo,
         approvalMinAmount,
+        cashTransferDeleteRequiresApproval: cashDeleteRequiresApproval,
       });
       toast.success("บันทึกการตั้งค่าอนุมัติแล้ว");
     } catch (error) {
@@ -188,7 +203,11 @@ export function IncomeExpenseApprovalModal({ onClose }: { onClose: () => void })
   }
 
   async function handleReject(id: string) {
-    const comment = window.prompt("เหตุผลที่ปฏิเสธ (ไม่บังคับ)");
+    const comment = await requestInput({
+      title: "ปฏิเสธรายการ",
+      label: "เหตุผลที่ปฏิเสธ (ไม่บังคับ)",
+      multiline: true,
+    });
     if (comment === null) return;
 
     try {
@@ -197,6 +216,27 @@ export function IncomeExpenseApprovalModal({ onClose }: { onClose: () => void })
       toast.success("ปฏิเสธรายการแล้ว");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "ปฏิเสธรายการไม่สำเร็จ");
+    } finally {
+      setDecidingId(null);
+    }
+  }
+
+  async function handleCashDeleteDecision(id: string, decision: "approved" | "rejected") {
+    const comment = decision === "approved"
+      ? (window.confirm("อนุมัติให้ลบรายการโยกเงินนี้ถาวรใช่ไหม?") ? "" : null)
+      : await requestInput({
+          title: "ปฏิเสธคำขอลบ",
+          label: "เหตุผลที่ปฏิเสธ (ไม่บังคับ)",
+          multiline: true,
+        });
+    if (comment === null) return;
+
+    try {
+      setDecidingId(id);
+      await decideCashDeleteRequest({ id, decision, comment });
+      toast.success(decision === "approved" ? "อนุมัติและลบรายการแล้ว" : "ปฏิเสธคำขอลบแล้ว");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "ดำเนินการคำขอลบไม่สำเร็จ");
     } finally {
       setDecidingId(null);
     }
@@ -243,12 +283,30 @@ export function IncomeExpenseApprovalModal({ onClose }: { onClose: () => void })
             <button
               type="submit"
               disabled={isSavingSettings}
-              className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 font-bold text-white disabled:opacity-50"
+              className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-commit px-4 font-bold text-white hover:bg-commit/90 disabled:opacity-50"
             >
               <Check size={18} />
               บันทึก
             </button>
           </div>
+          <label className="mt-4 flex items-start gap-3 rounded-md bg-field/55 p-3 text-sm text-ink">
+            <input
+              type="checkbox"
+              checked={cashDeleteRequiresApproval}
+              onChange={(event) => setCashDeleteRequiresApproval(event.target.checked)}
+              className="mt-0.5 h-4 w-4 accent-river"
+            />
+            <span>
+              <strong className="block">ขออนุมัติก่อนลบรายการโยกเงินที่ปลายทางรับแล้ว</strong>
+              <span className="text-ink/60">ปิดเพื่อให้ผู้ดูแลสาขาต้นทางลบได้ทันที แม้ปลายทางยืนยันยอดแล้ว</span>
+            </span>
+          </label>
+          {(settings?.updatedByName || settings?.updatedByPhone) && (
+            <p className="mt-2 text-xs text-ink/55">
+              แก้ไขล่าสุดโดย {settings.updatedByName || "ไม่ทราบชื่อ"}
+              {settings.updatedByPhone ? ` · ${settings.updatedByPhone}` : ""}
+            </p>
+          )}
         </form>
 
         <form onSubmit={handleAddKeyword} className="rounded-md border border-black/10 p-4">
@@ -304,7 +362,7 @@ export function IncomeExpenseApprovalModal({ onClose }: { onClose: () => void })
             <button
               type="submit"
               disabled={isAdding}
-              className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-blue-600 px-4 font-bold text-white disabled:opacity-50"
+              className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-leaf px-4 font-bold text-white disabled:opacity-50"
             >
               <Plus size={18} />
               เพิ่ม
@@ -350,7 +408,7 @@ export function IncomeExpenseApprovalModal({ onClose }: { onClose: () => void })
                           <button
                             type="button"
                             onClick={() => void handleDisableKeyword(item.id, item.keyword)}
-                            className="focus-ring inline-flex h-9 items-center gap-2 rounded-md bg-field px-3 font-semibold text-ink"
+                            className="focus-ring inline-flex h-9 items-center gap-2 rounded-md bg-amber px-3 font-semibold text-white hover:bg-amber/90"
                           >
                             <Power size={16} />
                             ปิด
@@ -406,14 +464,68 @@ export function IncomeExpenseApprovalModal({ onClose }: { onClose: () => void })
                       กำลังโหลด...
                     </td>
                   </tr>
-                ) : filteredRequests.length === 0 ? (
+                ) : filteredRequests.length === 0 && filteredCashDeleteRequests.length === 0 ? (
                   <tr>
                     <td colSpan={9} className="py-5 text-center text-ink/50">
                       ยังไม่มีคำขออนุมัติ
                     </td>
                   </tr>
                 ) : (
-                  filteredRequests.map((request) => (
+                  <>
+                  {filteredCashDeleteRequests.map((request) => (
+                    <tr key={`cash-delete:${request.id}`} className="border-b border-black/5">
+                      <td className="py-3">
+                        <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${
+                          request.requestStatus === "pending"
+                            ? "bg-amber-100 text-amber-700"
+                            : request.requestStatus === "approved"
+                              ? "bg-leaf/10 text-leaf"
+                              : "bg-clay/10 text-clay"
+                        }`}>
+                          {statusLabels[request.requestStatus]}
+                        </span>
+                      </td>
+                      <td>ลบถาวรรายการโยกเงิน</td>
+                      <td>{request.sourceLocationName}</td>
+                      <td>
+                        <div className="flex flex-col gap-1">
+                          <span className="font-semibold text-ink">{request.transferDisplayNo} → {request.targetLocationName}</span>
+                          <span className="text-xs text-ink/55">รับจริง {formatCurrency(request.receivedTotal)} · ผลต่าง {formatCurrency(request.differenceTotal)}</span>
+                        </div>
+                      </td>
+                      <td className="font-semibold text-clay">{formatCurrency(request.sentTotal)}</td>
+                      <td>ลบหลังปลายทางตรวจรับ</td>
+                      <td>{request.requestedByName} · {request.requestedByPhone}</td>
+                      <td>{formatDateTime(request.createdAt)}</td>
+                      <td className="text-right">
+                        {request.requestStatus === "pending" && (
+                          <div className="flex justify-end gap-2">
+                            <button
+                              type="button"
+                              disabled={decidingId === request.id}
+                              onClick={() => void handleCashDeleteDecision(request.id, "approved")}
+                              className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-success px-3 text-sm font-semibold text-white disabled:opacity-50"
+                              title="อนุมัติการลบ"
+                            >
+                              <Check size={16} />
+                              อนุมัติ
+                            </button>
+                            <button
+                              type="button"
+                              disabled={decidingId === request.id}
+                              onClick={() => void handleCashDeleteDecision(request.id, "rejected")}
+                              className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-clay px-3 text-sm font-semibold text-white disabled:opacity-50"
+                              title="ปฏิเสธการลบ"
+                            >
+                              <X size={16} />
+                              ปฏิเสธ
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                  {filteredRequests.map((request) => (
                     <tr key={request.id} className="border-b border-black/5">
                       <td className="py-3">
                         <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${
@@ -449,31 +561,35 @@ export function IncomeExpenseApprovalModal({ onClose }: { onClose: () => void })
                               type="button"
                               disabled={decidingId === request.id}
                               onClick={() => void handleApprove(request.id)}
-                              className="focus-ring grid h-9 w-9 place-items-center rounded-md bg-leaf text-white disabled:opacity-50"
+                              className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-success px-3 text-sm font-semibold text-white disabled:opacity-50"
                               title="อนุมัติ"
                             >
                               <Check size={16} />
+                              อนุมัติ
                             </button>
                             <button
                               type="button"
                               disabled={decidingId === request.id}
                               onClick={() => void handleReject(request.id)}
-                              className="focus-ring grid h-9 w-9 place-items-center rounded-md bg-clay text-white disabled:opacity-50"
+                              className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-clay px-3 text-sm font-semibold text-white disabled:opacity-50"
                               title="ปฏิเสธ"
                             >
                               <X size={16} />
+                              ปฏิเสธ
                             </button>
                           </div>
                         )}
                       </td>
                     </tr>
-                  ))
+                  ))}
+                  </>
                 )}
               </tbody>
             </table>
           </div>
         </section>
       </div>
+      {inputDialog}
     </ModalShell>
   );
 }

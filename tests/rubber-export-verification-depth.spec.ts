@@ -1,5 +1,6 @@
 import { expect, test, type Browser, type BrowserContext } from "@playwright/test";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { selectAppLocation } from "./helpers/select-app-location";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -33,6 +34,7 @@ async function insertBill({
   weight = 100,
   deductWeight = 10,
   paidAmount = 900,
+  expectValid = true,
 }: {
   db: SupabaseClient;
   locationId: string;
@@ -43,7 +45,10 @@ async function insertBill({
   weight?: number;
   deductWeight?: number;
   paidAmount?: number;
+  expectValid?: boolean;
 }) {
+  const netRubberValue = Math.round((weight - deductWeight) * 10 * 100) / 100;
+  const deductionTotal = Math.max(netRubberValue - paidAmount, 0);
   const { error } = await db.from("rubber_bills").insert({
     id: billId,
     client_temp_id: billId,
@@ -59,24 +64,29 @@ async function insertBill({
     bill_type: "weighing",
     deduct_weight: deductWeight,
     weight,
-    rubber_value: paidAmount,
+    rubber_value: weight * 10,
     average_price: 10,
+    deduction_total: deductionTotal,
     net_total: paidAmount,
     server_received_at: receivedAt,
     created_by_user_id: actor.id,
     created_by_name: actor.name,
     created_by_phone: actor.phone,
   });
+  if (!expectValid) {
+    expect(error?.code).toBe("23514");
+    return;
+  }
   expect(error).toBeNull();
   expect((await db.from("rubber_bill_items").insert({
     bill_id: billId,
     item_type: "weigh",
     description: "ชั่ง 1",
     weight_in: weight,
-    weight_out: deductWeight,
-    net_weight: weight - deductWeight,
+    weight_out: 0,
+    net_weight: weight,
     price: 10,
-    total: paidAmount,
+    total: weight * 10,
     sequence_no: 1,
   })).error).toBeNull();
 }
@@ -266,7 +276,7 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
         await route.continue();
       });
       await uiPage.goto("/");
-      await uiPage.getByLabel("เลือกสาขา").selectOption(locationA);
+      await selectAppLocation(uiPage, locationA);
       await uiPage.getByRole("button", { name: "ส่งออกยาง", exact: true }).click();
       await uiPage.getByRole("button", { name: "สร้างรายการ", exact: true }).click();
       const cutoffSelect = uiPage.locator(".fixed.inset-0 select");
@@ -360,6 +370,7 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
         receivedAt: "2026-07-23T04:00:00.000Z",
         weight: 10,
         deductWeight: 10,
+        expectValid: false,
       });
       await insertBill({
         db,
@@ -381,34 +392,7 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
         (option) => option.billId === validAfterInvalidBill,
       );
       expect(invalidCutoff).toBeTruthy();
-
-      const countBefore = await db
-        .from("rubber_exports")
-        .select("id", { count: "exact", head: true })
-        .eq("location_id", locationA);
-      const invalidPreview = await admin.request.post("/api/lanflow/rubber-exports/preview", {
-        data: { locationId: locationA, cutoffReportItemId: invalidCutoff!.reportItemId },
-      });
-      expect(invalidPreview.status()).toBe(409);
-      expect((await invalidPreview.json() as { error: string }).error).toContain(
-        "INVALID_RUBBER_BILL",
-      );
-      const invalidCreate = await admin.request.post("/api/lanflow/rubber-exports", {
-        data: { locationId: locationA, cutoffReportItemId: invalidCutoff!.reportItemId },
-      });
-      expect(invalidCreate.status()).toBe(409);
-      const countAfter = await db
-        .from("rubber_exports")
-        .select("id", { count: "exact", head: true })
-        .eq("location_id", locationA);
-      expect(countAfter.count).toBe(countBefore.count);
-      const { data: invalidReservations, error: invalidReservationsError } = await db
-        .from("rubber_export_items")
-        .select("source_bill_id")
-        .in("source_bill_id", [invalidBill, validAfterInvalidBill])
-        .eq("active", true);
-      expect(invalidReservationsError).toBeNull();
-      expect(invalidReservations).toEqual([]);
+      expect(invalidOptions.some((option) => option.billId === invalidBill)).toBe(false);
     } finally {
       for (const exportId of exportIds.reverse()) {
         await superAdmin.request.delete(`/api/lanflow/rubber-exports/${exportId}`);
@@ -580,7 +564,7 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
 
       const page = await admin.newPage();
       await page.goto("/");
-      await page.getByLabel("เลือกสาขา").selectOption(locationId);
+      await selectAppLocation(page, locationId);
       await page.getByRole("button", { name: "รับ-จ่าย", exact: true }).click();
       const sourceRow = page.locator("tbody tr").filter({ hasText: exports[0].exportNo });
       await expect(sourceRow).toBeVisible();
@@ -659,7 +643,7 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
           bill_type: "weighing",
           deduct_weight: 10,
           weight: 100,
-          rubber_value: 900,
+          rubber_value: 1000,
           average_price: 10,
           net_total: 900,
           server_received_at: `2026-07-22T00:${String(index).padStart(2, "0")}:00.000Z`,
@@ -675,10 +659,10 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
           item_type: "weigh",
           description: "ชั่ง 1",
           weight_in: 100,
-          weight_out: 10,
-          net_weight: 90,
+          weight_out: 0,
+          net_weight: 100,
           price: 10,
-          total: 900,
+          total: 1000,
           sequence_no: 1,
         }))
       )).error).toBeNull();
@@ -740,6 +724,8 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
           customer_name: mutatedCustomer,
           weight: 150,
           deduct_weight: 5,
+          rubber_value: 1500,
+          average_price: 10,
           net_total: 1450,
         })
         .eq("id", billIds[0]);

@@ -18,8 +18,7 @@ import { AdminModule } from "./AdminModule";
 import { TimeTrackingModule } from "./TimeTrackingModule";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { useIncomeExpense } from "@/hooks/useIncomeExpense";
-import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
-import { useTimeTrackingPending } from "@/hooks/useTimeTrackingPending";
+import { useActionableBadges } from "@/hooks/useActionableBadges";
 import { isRubberBillPayable } from "@/lib/rubber-bill-validation";
 
 import { writeBootstrapCache, readBootstrapCache } from "@/lib/lanflow/bootstrap-cache";
@@ -34,6 +33,7 @@ import { AppHeader } from "@/components/lanflow/AppHeader";
 import { NavigationTabs } from "@/components/lanflow/NavigationTabs";
 import { canAccessSourceLocation, canUseMoneyTransfer, canUseReports } from "@/lib/permissions";
 import { getOfflineTabBlockMessage, isTabBlockedOffline } from "@/lib/offline-module-policy";
+import { getOcrActionState } from "@/lib/ocr-action-state";
 
 export function LanFlowApp() {
   const auth = useAuthContext();
@@ -134,6 +134,7 @@ export function LanFlowApp() {
 
   const canAccessMoneyTransfer = canUseMoneyTransfer(profile);
   const canAccessReports = canUseReports(profile);
+  const { counts: actionableBadgeCounts } = useActionableBadges(isLoaded && online);
 
   useEffect(() => {
     if (activeTab === "money-transfer" && !canAccessMoneyTransfer) {
@@ -167,10 +168,29 @@ export function LanFlowApp() {
 
   const { bills: allBills } = useRubberBills(selectedLocationId, queueOwnerUserId);
   const { transactions: allTransactions } = useIncomeExpense(selectedLocationId, queueOwnerUserId);
-  const { transfers: allTransfers } = useMoneyTransfers(selectedLocationId, { enabled: canAccessMoneyTransfer });
-  const { pendingCount: timeTrackingPendingCount } = useTimeTrackingPending(profile);
 
   const selectedLocation = locations.find((location) => location.id === selectedLocationId) ?? locations[0];
+  const selectedOcrUploadItems = ocrUploadItems.filter(
+    (item) => item.locationId === selectedLocationId,
+  );
+  const visibleActionableBadgeCounts = useMemo(
+    () => online ? actionableBadgeCounts : {},
+    [actionableBadgeCounts, online],
+  );
+  const selectedModuleBadgeCounts = visibleActionableBadgeCounts[selectedLocationId] ?? {};
+  const locationBadgeTotals = useMemo(() => {
+    const totals: Record<string, number> = {};
+    for (const location of locations) {
+      totals[location.id] = Object.values(visibleActionableBadgeCounts[location.id] ?? {})
+        .reduce((sum, count) => sum + (count ?? 0), 0);
+      if (online) {
+        totals[location.id] += getOcrActionState(
+          ocrUploadItems.filter((item) => item.locationId === location.id),
+        ).actionableCount;
+      }
+    }
+    return totals;
+  }, [locations, ocrUploadItems, online, visibleActionableBadgeCounts]);
 
   const scopedBills = allBills.filter((bill) => bill.recordStatus !== "deleted");
   const scopedTransactions = allTransactions.filter((tx) => tx.recordStatus !== "deleted");
@@ -191,16 +211,13 @@ export function LanFlowApp() {
     const rubberPayOutsideIncomeExpense = Math.max(0, rubberPay - rubberBillDerivedExpense);
     return {
       billCount: scopedBills.length,
-      rubberWeight: scopedBills.reduce((sum, bill) => sum + bill.weight, 0),
+      rubberWeight: scopedBills.reduce((sum, bill) => sum + bill.netWeight, 0),
       rubberPay,
       income,
       expense,
       balance: income - expense - rubberPayOutsideIncomeExpense
     };
   }, [scopedBills, scopedTransactions]);
-
-  const transferPartialCount = allTransfers?.filter(t => t.recordStatus !== "deleted" && t.transferStatus === "partial").length || 0;
-  const transferAdvanceCount = allTransfers?.filter(t => t.recordStatus !== "deleted" && t.transferStatus === "advance_payment").length || 0;
 
   if (!isLoaded || !profile) {
     return (
@@ -226,7 +243,7 @@ export function LanFlowApp() {
         </p>
         <button
           onClick={auth.logout}
-          className="focus-ring mt-6 flex items-center gap-2 rounded-md bg-white px-4 py-2 text-sm font-semibold text-ink shadow-sm hover:bg-red-50 hover:text-red-600"
+          className="focus-ring mt-6 flex items-center gap-2 rounded-md bg-danger px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-danger/90"
         >
           <LogOut size={16} />
           ออกจากระบบ
@@ -307,6 +324,7 @@ export function LanFlowApp() {
           profile={profile}
           locations={locations}
           selectedLocationId={selectedLocationId}
+          locationBadgeTotals={locationBadgeTotals}
           onLocationChange={setSelectedLocationId}
           onLogout={auth.logout}
         />
@@ -314,15 +332,13 @@ export function LanFlowApp() {
           activeTab={activeTab}
           onTabChange={setActiveTab}
           profile={profile}
-          ocrUploadItems={ocrUploadItems}
-          transferPartialCount={transferPartialCount}
-          transferAdvanceCount={transferAdvanceCount}
-          timeTrackingPendingCount={timeTrackingPendingCount}
+          ocrUploadItems={selectedOcrUploadItems}
+          moduleBadgeCounts={selectedModuleBadgeCounts}
           online={online}
         />
       </section>
 
-      <section className={`mx-auto w-full px-4 py-5 ${activeTab === "rubber" || activeTab === "rubber-export" ? "max-w-[1800px]" : "max-w-7xl"}`}>
+      <section className={`mx-auto w-full px-3 py-4 sm:px-4 sm:py-5 ${activeTab === "rubber" || activeTab === "rubber-export" ? "max-w-[1800px]" : "max-w-7xl"}`}>
         {activeTab === "dashboard" && (
           <Dashboard
             selectedLocation={selectedLocation}

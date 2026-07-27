@@ -29,7 +29,7 @@ export type WeighingQueueCustomer = {
   farmAddress?: string | null;
 };
 
-export type WeighingQueuePrintSnapshot = {
+export type WeighingQueueShareSnapshot = {
   queueNumber: number;
   weighingTime: string;
   printedAt: string;
@@ -40,7 +40,8 @@ export type WeighingQueueItem = {
   customerId: string | null;
   customerName: string;
   createdAt: string;
-  printSnapshot: WeighingQueuePrintSnapshot | null;
+  // Keep the v1 storage key for existing device-local queues.
+  printSnapshot: WeighingQueueShareSnapshot | null;
 };
 
 export type DailyWeighingQueue = {
@@ -224,7 +225,7 @@ export function removeQueueItem(items: WeighingQueueItem[], itemId: string) {
   return items.filter((item) => item.id !== itemId);
 }
 
-export function hasQueueItemChangedSincePrint(
+export function hasQueueItemChangedSinceShare(
   item: WeighingQueueItem,
   queueNumber: number,
   weighingTime: string,
@@ -238,12 +239,12 @@ export function hasQueueItemChangedSincePrint(
   );
 }
 
-export function markQueueItemPrinted(
+export function markQueueItemShared(
   items: WeighingQueueItem[],
   itemId: string,
   queueNumber: number,
   weighingTime: string,
-  printedAt: Date,
+  sharedAt: Date,
 ) {
   return items.map((item) => item.id === itemId
     ? {
@@ -251,7 +252,7 @@ export function markQueueItemPrinted(
         printSnapshot: {
           queueNumber,
           weighingTime,
-          printedAt: printedAt.toISOString(),
+          printedAt: sharedAt.toISOString(),
         },
       }
     : item);

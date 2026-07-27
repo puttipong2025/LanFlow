@@ -1,5 +1,6 @@
 import { expect, test, type Browser, type BrowserContext } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
+import { selectAppLocation } from "../helpers/select-app-location";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -17,7 +18,23 @@ const zeroCounts = {
 };
 
 async function authContext(browser: Browser, role: "user" | "admin" | "super_admin") {
-  return browser.newContext({ storageState: `playwright/.auth/${role}.json` });
+  const context = await browser.newContext({ storageState: `playwright/.auth/${role}.json` });
+  const me = await context.request.get("/api/auth/me");
+  if (!me.ok()) {
+    const phoneByRole = {
+      user: "0820000001",
+      admin: "0810000001",
+      super_admin: process.env.TEST_PHONE || "0800000000",
+    };
+    const page = await context.newPage();
+    await page.goto("/login");
+    await page.fill('input[type="tel"]', phoneByRole[role]);
+    await page.fill('input[type="password"]', process.env.TEST_PASSWORD || "password123");
+    await page.click('button:has-text("เข้าสู่ระบบ")');
+    await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+    await page.close();
+  }
+  return context;
 }
 
 async function profile(context: BrowserContext) {
@@ -211,6 +228,7 @@ test.describe.serial("Report batch contract @report-batch", () => {
       };
       expect(first.reportNo).toMatch(/^RPT-\d{8}-\d{3}$/);
       const firstSequence = Number(first.reportNo.slice(-3));
+      expect((await user.request.get(`/api/lanflow/reports/${first.id}`)).status()).toBe(403);
 
       const duplicate = await Promise.all([
         adminContext.request.post("/api/lanflow/reports", { data: { locationId } }),
@@ -393,19 +411,14 @@ test.describe.serial("Report batch contract @report-batch", () => {
       expect(Number(rubberFeed[0].cost)).toBe(200);
       expect(rubberFeed[0].title).toContain("1 ใบ");
 
-      const report = await createReport(superAdmin, locationId);
-      reportId = report.id;
-      const { data: reportItems, error: reportItemsError } = await db
-        .from("report_items")
-        .select("entity_id")
-        .eq("report_id", report.id)
-        .eq("entity_type", "rubber_bill")
-        .in("entity_id", [zeroBillId, mixedBillId, payableBillId]);
-      expect(reportItemsError).toBeNull();
-      const reportedIds = new Set((reportItems ?? []).map((item) => item.entity_id));
-
-      expect((await deleteReport(superAdmin, report.id)).ok()).toBeTruthy();
-      reportId = undefined;
+      const blockedReport = await superAdmin.request.post("/api/lanflow/reports", {
+        data: { locationId },
+      });
+      expect(blockedReport.status()).toBe(409);
+      expect(await blockedReport.json()).toEqual({
+        error: "สร้างรายงานไม่สำเร็จ",
+        errorGroups: ["บิลยาง"],
+      });
 
       expect((await db.from("money_transfers").insert({
         id: transferId,
@@ -438,16 +451,226 @@ test.describe.serial("Report batch contract @report-batch", () => {
         amount: 200,
       });
 
-      expect.soft(reportedIds.has(zeroBillId)).toBe(false);
-      expect.soft(reportedIds.has(mixedBillId)).toBe(false);
-      expect.soft(reportedIds.has(payableBillId)).toBe(true);
       expect.soft(zeroTransfer.error?.message).toContain("ราคา 0");
       expect.soft(mixedTransfer.error?.message).toContain("ราคา 0");
       expect.soft(payableTransfer.error).toBeNull();
+
+      await db.from("money_transfer_items").delete().eq("transfer_id", transferId);
+      await db.from("money_transfers").delete().eq("id", transferId);
+      expect((await db.from("rubber_bill_items").update({ price: 20, total: 200 })
+        .in("bill_id", [zeroBillId, mixedBillId])
+        .eq("price", 0)).error).toBeNull();
+      expect((await db.from("rubber_bills").update({
+        average_price: 20,
+        rubber_value: 200,
+        net_total: 200,
+      }).eq("id", zeroBillId)).error).toBeNull();
+
+      const report = await createReport(superAdmin, locationId);
+      reportId = report.id;
+      const { data: reportItems, error: reportItemsError } = await db
+        .from("report_items")
+        .select("entity_id")
+        .eq("report_id", report.id)
+        .eq("entity_type", "rubber_bill")
+        .in("entity_id", [zeroBillId, mixedBillId, payableBillId]);
+      expect(reportItemsError).toBeNull();
+      expect(new Set((reportItems ?? []).map((item) => item.entity_id))).toEqual(
+        new Set([zeroBillId, mixedBillId, payableBillId]),
+      );
     } finally {
       await db.from("money_transfers").delete().eq("id", transferId);
       if (reportId) await deleteReport(superAdmin, reportId);
       await db.from("rubber_bills").delete().in("id", [zeroBillId, mixedBillId, payableBillId]);
+      await db.from("income_expense").delete().eq("id", incomeId);
+      await superAdmin.close();
+    }
+  });
+
+  test("pending rubber-bill create and change requests block the whole report", async ({ browser }) => {
+    const superAdmin = await authContext(browser, "super_admin");
+    const admin = await authContext(browser, "admin");
+    const db = service();
+    const actor = await profile(superAdmin);
+    const adminActor = await profile(admin);
+    const locationId = adminActor.locationIds[0];
+    const { data: otherLocation, error: otherLocationError } = await db
+      .from("locations")
+      .select("id")
+      .eq("is_active", true)
+      .neq("id", locationId)
+      .limit(1)
+      .single();
+    expect(otherLocationError).toBeNull();
+    const incomeId = await addIncomeExpense(db, locationId, actor, "ตัวค้ำสำหรับงานบิลยางค้าง");
+    const rubberId = await addRubberBill(db, locationId, actor, [20]);
+    const createRequestId = crypto.randomUUID();
+    const changeRequestId = crypto.randomUUID();
+    const otherBranchRequestId = crypto.randomUUID();
+    const futureRequestId = crypto.randomUUID();
+    let reportId: string | null = null;
+
+    const requestBase = {
+      location_id: locationId,
+      base_revision_no: 0,
+      configured_price_snapshot: 10,
+      edit_window_minutes_snapshot: 30,
+      proposed_payload: {},
+      requested_by_user_id: actor.id,
+      requested_by_name: actor.name,
+      requested_by_phone: actor.phone,
+    };
+
+    try {
+      expect((await db.from("rubber_bill_approval_requests").insert({
+        ...requestBase,
+        id: createRequestId,
+        operation: "create",
+        client_temp_id: createRequestId,
+        idempotency_key: `report-pending-create:${createRequestId}`,
+        matched_reasons: ["price"],
+      })).error).toBeNull();
+
+      const adminPage = await admin.newPage();
+      await adminPage.goto("/");
+      await selectAppLocation(adminPage, locationId);
+      await expect(
+        adminPage.getByRole("navigation").getByRole("button", {
+          name: "บิลยาง",
+          exact: true,
+        }),
+      ).toBeVisible();
+      await adminPage.close();
+
+      let blocked = await admin.request.post("/api/lanflow/reports", {
+        data: { locationId },
+      });
+      expect(blocked.status()).toBe(409);
+      expect((await blocked.json()).errorGroups).toEqual(["บิลยาง"]);
+
+      expect((await db.from("rubber_bill_approval_requests")
+        .delete().eq("id", createRequestId)).error).toBeNull();
+
+      expect((await db.from("rubber_bill_approval_requests").insert({
+        ...requestBase,
+        id: otherBranchRequestId,
+        location_id: otherLocation!.id,
+        operation: "create",
+        client_temp_id: otherBranchRequestId,
+        idempotency_key: `report-other-branch:${otherBranchRequestId}`,
+        matched_reasons: ["price"],
+      })).error).toBeNull();
+      reportId = (await createReport(admin, locationId)).id;
+      expect((await deleteReport(superAdmin, reportId)).ok()).toBeTruthy();
+      reportId = null;
+      expect((await db.from("rubber_bill_approval_requests")
+        .delete().eq("id", otherBranchRequestId)).error).toBeNull();
+
+      expect((await db.from("rubber_bill_approval_requests").insert({
+        ...requestBase,
+        id: futureRequestId,
+        operation: "create",
+        client_temp_id: futureRequestId,
+        idempotency_key: `report-future:${futureRequestId}`,
+        matched_reasons: ["price"],
+        requested_at: new Date(Date.now() + 60_000).toISOString(),
+      })).error).toBeNull();
+      reportId = (await createReport(admin, locationId)).id;
+      expect((await deleteReport(superAdmin, reportId)).ok()).toBeTruthy();
+      reportId = null;
+      expect((await db.from("rubber_bill_approval_requests")
+        .delete().eq("id", futureRequestId)).error).toBeNull();
+
+      expect((await db.from("rubber_bill_approval_requests").insert({
+        ...requestBase,
+        id: changeRequestId,
+        operation: "update",
+        bill_id: rubberId,
+        client_temp_id: changeRequestId,
+        idempotency_key: `report-pending-change:${changeRequestId}`,
+        matched_reasons: ["time"],
+        original_payload: {},
+      })).error).toBeNull();
+
+      blocked = await superAdmin.request.post("/api/lanflow/reports", {
+        data: { locationId },
+      });
+      expect(blocked.status()).toBe(409);
+      expect((await blocked.json()).errorGroups).toEqual(["บิลยาง"]);
+
+      expect((await db.from("rubber_bill_approval_requests")
+        .delete().eq("id", changeRequestId)).error).toBeNull();
+      const report = await createReport(superAdmin, locationId);
+      reportId = report.id;
+    } finally {
+      if (reportId) await deleteReport(superAdmin, reportId);
+      await db.from("rubber_bill_approval_requests")
+        .delete().in("id", [
+          createRequestId,
+          changeRequestId,
+          otherBranchRequestId,
+          futureRequestId,
+        ]);
+      await db.from("rubber_bills").delete().eq("id", rubberId);
+      await db.from("income_expense").delete().eq("id", incomeId);
+      await admin.close();
+      await superAdmin.close();
+    }
+  });
+
+  test("advance payments stay unfinished and out of reports", async ({ browser }) => {
+    const superAdmin = await authContext(browser, "super_admin");
+    const db = service();
+    const actor = await profile(superAdmin);
+    const locationId = actor.locationIds[0];
+    const transferId = crypto.randomUUID();
+    let reportId: string | null = null;
+    const incomeId = await addIncomeExpense(
+      db,
+      locationId,
+      actor,
+      "รายรับสำหรับยืนยันว่าเงินล่วงหน้าไม่เข้ารายงาน",
+    );
+
+    expect((await db.from("money_transfers").insert({
+      id: transferId,
+      client_temp_id: transferId,
+      idempotency_key: `report-advance:${transferId}`,
+      location_id: locationId,
+      customer_name: "ลูกค้าจ่ายล่วงหน้า",
+      net_amount_to_pay: 0,
+      transfer_method: "bank",
+      transfer_type: "customer",
+      transfer_status: "advance_payment",
+      created_by_user_id: actor.id,
+      created_by_name: actor.name,
+      created_by_phone: actor.phone,
+    })).error).toBeNull();
+
+    try {
+      const report = await createReport(superAdmin, locationId);
+      reportId = report.id;
+      const { data: reportItems, error: reportItemsError } = await db
+        .from("report_items")
+        .select("entity_id")
+        .eq("report_id", report.id)
+        .eq("entity_id", transferId);
+      expect(reportItemsError).toBeNull();
+      expect(reportItems).toEqual([]);
+
+      const { data: transfer, error: transferError } = await db
+        .from("money_transfers")
+        .select("report_lock_no,transfer_status")
+        .eq("id", transferId)
+        .single();
+      expect(transferError).toBeNull();
+      expect(transfer).toEqual({
+        report_lock_no: null,
+        transfer_status: "advance_payment",
+      });
+    } finally {
+      if (reportId) await deleteReport(superAdmin, reportId);
+      await db.from("money_transfers").delete().eq("id", transferId);
       await db.from("income_expense").delete().eq("id", incomeId);
       await superAdmin.close();
     }
@@ -569,7 +792,7 @@ test.describe.serial("Report batch contract @report-batch", () => {
 
       const page = await superAdmin.newPage();
       await page.goto("/");
-      await page.getByLabel("เลือกสาขา").selectOption(locationId);
+      await selectAppLocation(page, locationId);
       await page.getByRole("button", { name: /^โอนเงิน/ }).click();
 
       const transferRow = page.getByRole("row").filter({ hasText: customerName });
@@ -659,10 +882,6 @@ test.describe.serial("Report batch contract @report-batch", () => {
       ]);
       expect(targetDetails.bankTransfers.filter((row) => row.number === `CASH-${transferId.slice(0, 8)}`)).toEqual([]);
 
-      const accepted = await superAdmin.request.post(`/api/lanflow/cash-branch-transfers/${transferId}/accept-difference`, {
-        data: { reason: "ตรวจสอบแล้ว" },
-      });
-      expect(accepted.ok(), await accepted.text()).toBeTruthy();
       expect((await superAdmin.request.delete(`/api/lanflow/cash-branch-transfers/${transferId}`)).status()).toBe(409);
 
       expect((await deleteReport(superAdmin, targetReport.id)).ok()).toBeTruthy();
@@ -670,20 +889,31 @@ test.describe.serial("Report batch contract @report-batch", () => {
       expect((await superAdmin.request.delete(`/api/lanflow/cash-branch-transfers/${transferId}`)).status()).toBe(409);
       expect((await deleteReport(superAdmin, sourceReport.id)).ok()).toBeTruthy();
       sourceReportId = null;
-      expect((await superAdmin.request.delete(`/api/lanflow/cash-branch-transfers/${transferId}`)).ok()).toBeTruthy();
+      const requested = await superAdmin.request.delete(`/api/lanflow/cash-branch-transfers/${transferId}`);
+      expect(requested.ok(), await requested.text()).toBeTruthy();
+      const requestResult = await requested.json() as { status: string; requestId: string };
+      expect(requestResult.status).toBe("pending_approval");
+      const approved = await superAdmin.request.post(
+        `/api/lanflow/cash-branch-transfers/delete-requests/${requestResult.requestId}/decide`,
+        { data: { decision: "approved" } },
+      );
+      expect(approved.ok(), await approved.text()).toBeTruthy();
 
       const { data: remaining } = await db.from("money_transfers").select("id").eq("id", transferId);
       expect(remaining).toEqual([]);
     } finally {
       if (targetReportId) await deleteReport(superAdmin, targetReportId);
       if (sourceReportId) await deleteReport(superAdmin, sourceReportId);
-      await superAdmin.request.delete(`/api/lanflow/cash-branch-transfers/${transferId}`);
+      await db.from("money_transfers").delete().eq("id", transferId);
       await superAdmin.close();
     }
   });
 
   test("time tracking permanent delete exposes the report number and stays locked", async ({ browser }) => {
     const superAdmin = await authContext(browser, "super_admin");
+    const db = service();
+    let reportId: string | undefined;
+    let withdrawalId: string | undefined;
     try {
       const actor = await profile(superAdmin);
       const locationId = actor.locationIds[0];
@@ -711,6 +941,7 @@ test.describe.serial("Report batch contract @report-batch", () => {
         item.profile_id === employee!.id && Number(item.amount) === amount
       );
       expect(withdrawal).toBeTruthy();
+      withdrawalId = withdrawal!.id;
       expect((await superAdmin.request.post("/api/lanflow/time-tracking/admin", {
         data: {
           action: "APPROVE_TRANSACTION",
@@ -724,6 +955,17 @@ test.describe.serial("Report batch contract @report-batch", () => {
       })).ok()).toBeTruthy();
 
       const report = await createReport(superAdmin, locationId);
+      reportId = report.id;
+      const detailResponse = await superAdmin.request.get(`/api/lanflow/reports/${report.id}`);
+      expect(detailResponse.ok(), await detailResponse.text()).toBeTruthy();
+      const details = await detailResponse.json() as {
+        timePayroll: Array<{ number: string; amount: number }>;
+      };
+      expect(details.timePayroll).toContainEqual(expect.objectContaining({
+        number: `FT-${withdrawal!.id.slice(0, 8)}`,
+        amount,
+      }));
+
       const sourceResponse = await superAdmin.request.get(
         `/api/lanflow/time-tracking/user?userId=${employee!.id}`
       );
@@ -745,13 +987,21 @@ test.describe.serial("Report batch contract @report-batch", () => {
       expect((await lockedDelete.json() as { error: string }).error).toContain(report.reportNo);
 
       expect((await deleteReport(superAdmin, report.id)).ok()).toBeTruthy();
+      reportId = undefined;
       expect((await superAdmin.request.post("/api/lanflow/time-tracking/admin", {
         data: {
           action: "DELETE_TRANSACTION",
           payload: { transaction_id: withdrawal!.id },
         },
       })).ok()).toBeTruthy();
+      withdrawalId = undefined;
     } finally {
+      if (reportId) {
+        await deleteReport(superAdmin, reportId);
+      }
+      if (withdrawalId) {
+        await db.from("financial_transactions").delete().eq("id", withdrawalId);
+      }
       await superAdmin.close();
     }
   });

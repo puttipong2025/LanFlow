@@ -136,11 +136,11 @@ function ReceiveModal({
         </label>
         <NumberField label="จำนวน" value={quantity} onChange={setQuantity} />
         <NumberField label="ยอดเงิน" value={amount} onChange={setAmount} />
-        <div className="flex justify-end gap-2 border-t border-black/10 pt-4">
-          <button type="button" onClick={onClose} className="focus-ring h-11 rounded-md bg-field px-4 font-semibold text-ink">
+        <div className="modal-actions flex justify-end gap-2 border-t border-black/10 pt-4">
+          <button type="button" onClick={onClose} className="focus-ring h-11 rounded-md bg-actionSecondary px-4 font-semibold text-white hover:bg-actionSecondary/90">
             ยกเลิก
           </button>
-          <button disabled={!online} className="focus-ring h-11 rounded-md bg-leaf px-4 font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
+          <button disabled={!online} className="focus-ring h-11 rounded-md bg-commit px-4 font-semibold text-white hover:bg-commit/90 disabled:cursor-not-allowed disabled:bg-slate-300">
             บันทึก
           </button>
         </div>
@@ -235,11 +235,11 @@ function TransferModal({
           คงเหลือปัจจุบัน: <span className="text-leaf">{balance.toLocaleString("th-TH")}</span>
         </div>
         <NumberField label="จำนวนย้าย" value={quantity} onChange={setQuantity} />
-        <div className="flex justify-end gap-2 border-t border-black/10 pt-4">
-          <button type="button" onClick={onClose} className="focus-ring h-11 rounded-md bg-field px-4 font-semibold text-ink">
+        <div className="modal-actions flex justify-end gap-2 border-t border-black/10 pt-4">
+          <button type="button" onClick={onClose} className="focus-ring h-11 rounded-md bg-actionSecondary px-4 font-semibold text-white hover:bg-actionSecondary/90">
             ยกเลิก
           </button>
-          <button disabled={!online} className="focus-ring h-11 rounded-md bg-river px-4 font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
+          <button disabled={!online} className="focus-ring h-11 rounded-md bg-commit px-4 font-semibold text-white hover:bg-commit/90 disabled:cursor-not-allowed disabled:bg-slate-300">
             บันทึก
           </button>
         </div>
@@ -419,11 +419,11 @@ function ProductModal({
             <span className="block text-xs font-medium text-ink/60">เปิดไว้แล้วสินค้านี้จะขึ้นใน dropdown บิลขายทันที</span>
           </span>
         </label>
-        <div className="flex justify-end gap-2 border-t border-black/10 pt-4">
-          <button type="button" onClick={onClose} className="focus-ring h-11 rounded-md bg-field px-4 font-semibold text-ink">
+        <div className="modal-actions flex justify-end gap-2 border-t border-black/10 pt-4">
+          <button type="button" onClick={onClose} className="focus-ring h-11 rounded-md bg-actionSecondary px-4 font-semibold text-white hover:bg-actionSecondary/90">
             ยกเลิก
           </button>
-          <button disabled={isSaving || !online} className="focus-ring h-11 rounded-md bg-ink px-4 font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
+          <button disabled={isSaving || !online} className="focus-ring h-11 rounded-md bg-commit px-4 font-semibold text-white hover:bg-commit/90 disabled:cursor-not-allowed disabled:bg-slate-300">
             บันทึก
           </button>
         </div>
@@ -474,7 +474,7 @@ function ProductModal({
                               type="button"
                               onClick={() => handleSaleStatusChange(product, false)}
                               disabled={isChanging || isSaleItemsLoading || !online}
-                              className="focus-ring h-9 rounded-md bg-field px-3 text-xs font-bold text-ink disabled:opacity-50"
+                              className="focus-ring h-9 rounded-md bg-amber px-3 text-xs font-bold text-white hover:bg-amber/90 disabled:opacity-50"
                             >
                               ปิดขาย
                             </button>
@@ -652,18 +652,18 @@ export function AcidStockModule({
 
   return (
     <section className="space-y-4">
-      <div className="flex flex-col gap-3 rounded-md border border-black/10 bg-white p-4 shadow-panel lg:flex-row lg:items-center lg:justify-between">
+      <div className="flex flex-col gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:p-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h2 className="text-lg font-bold text-ink">สต็อกสินค้า · {selectedLocation.name}</h2>
           <p className="text-sm text-ink/60">ยอดคงเหลือรวมรายการรับเข้า ย้าย บิลขาย และหักจากบิลยาง</p>
         </div>
-        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
+        <div className="flex flex-wrap gap-2 sm:justify-end">
           <button
             type="button"
             onClick={handleRetryStockSync}
             disabled={!online || isRetrying}
             title={offlineActionTitle}
-            className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-field px-4 font-semibold text-ink disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-white"
+            className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:bg-slate-300"
           >
             <RefreshCw size={18} className={isRetrying ? "animate-spin" : undefined} />
             ซิงก์รายการ
@@ -674,7 +674,7 @@ export function AcidStockModule({
               onClick={() => setProductOpen(true)}
               disabled={!online}
               title={offlineActionTitle}
-              className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+              className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-stockAdd px-3 text-sm font-semibold text-white hover:bg-stockAdd/90 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               <Plus size={18} />
               เพิ่มสินค้า
@@ -685,7 +685,7 @@ export function AcidStockModule({
             onClick={() => setReceiveOpen(true)}
             disabled={products.length === 0 || !online}
             title={products.length === 0 ? "ยังไม่มีสินค้าในสต็อก" : offlineActionTitle}
-            className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-leaf px-4 font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+            className="focus-ring flex h-10 w-full items-center justify-center gap-2 rounded-md bg-leaf px-4 text-sm font-semibold text-white hover:bg-leaf/90 disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto"
           >
             <PackagePlus size={18} />
             รับเข้า
@@ -695,7 +695,7 @@ export function AcidStockModule({
             onClick={() => setTransferOpen(true)}
             disabled={products.length === 0 || locations.length < 2 || !online}
             title={products.length === 0 || locations.length < 2 ? "ต้องมีสินค้าและสาขาปลายทางก่อน" : offlineActionTitle}
-            className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-river px-4 font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+            className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-stockMove px-3 text-sm font-semibold text-white hover:bg-stockMove/90 disabled:cursor-not-allowed disabled:bg-slate-300"
           >
             <ArrowRightLeft size={18} />
             ย้ายสต็อก
@@ -747,7 +747,7 @@ export function AcidStockModule({
                               type="button"
                               onClick={() => handleDecideApproval(approval, "approved")}
                               disabled={!online}
-                              className="focus-ring inline-flex h-9 items-center gap-1 rounded-md bg-leaf px-3 text-xs font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                              className="focus-ring inline-flex h-10 items-center gap-1 rounded-md bg-success px-3 text-xs font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
                             >
                               <Check size={14} />
                               อนุมัติ
@@ -756,7 +756,7 @@ export function AcidStockModule({
                               type="button"
                               onClick={() => handleDecideApproval(approval, "rejected")}
                               disabled={!online}
-                              className="focus-ring inline-flex h-9 items-center gap-1 rounded-md bg-field px-3 text-xs font-bold text-ink disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-white"
+                              className="focus-ring inline-flex h-9 items-center gap-1 rounded-md bg-clay px-3 text-xs font-bold text-white hover:bg-clay/90 disabled:cursor-not-allowed disabled:bg-slate-300"
                             >
                               <X size={14} />
                               ปฏิเสธ
@@ -848,7 +848,7 @@ export function AcidStockModule({
                           title={movement.reportLockNo
                             ? `ล็อกโดยรายงาน ${movement.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`
                             : online ? undefined : "ลบรายการสต็อกได้เมื่อออนไลน์เท่านั้น"}
-                          className="focus-ring inline-flex h-9 items-center gap-1 rounded-md bg-field px-3 text-xs font-bold text-ink disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-white"
+                          className="focus-ring inline-flex h-9 items-center gap-1 rounded-md bg-clay px-3 text-xs font-bold text-white hover:bg-clay/90 disabled:cursor-not-allowed disabled:bg-slate-300"
                         >
                           <Trash2 size={14} />
                           ขอลบ

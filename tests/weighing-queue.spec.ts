@@ -3,11 +3,11 @@ import { expect, test } from "@playwright/test";
 import {
   buildWeighingQueueTicket,
   createEmptyDailyQueue,
-  hasQueueItemChangedSincePrint,
+  hasQueueItemChangedSinceShare,
   isQueueForCurrentBangkokDay,
   loadCustomerCache,
   loadDailyWeighingQueue,
-  markQueueItemPrinted,
+  markQueueItemShared,
   moveQueueItem,
   removeQueueItem,
   renderWeighingQueueTicketHtml,
@@ -123,25 +123,25 @@ test.describe("Device-local weighing queue", () => {
     ]);
   });
 
-  test("warns only when the current number or shared weighing time differs from print", () => {
-    const printedAt = new Date("2026-07-25T07:10:00.000Z");
-    const [printed] = markQueueItemPrinted([queueItem("one")], "one", 1, "14:00", printedAt);
+  test("warns only when the current number or weighing time differs from the last share", () => {
+    const sharedAt = new Date("2026-07-25T07:10:00.000Z");
+    const [shared] = markQueueItemShared([queueItem("one")], "one", 1, "14:00", sharedAt);
 
-    expect(hasQueueItemChangedSincePrint(printed, 1, "14:00")).toBe(false);
-    expect(hasQueueItemChangedSincePrint(printed, 2, "14:00")).toBe(true);
-    expect(hasQueueItemChangedSincePrint(printed, 1, "15:00")).toBe(true);
+    expect(hasQueueItemChangedSinceShare(shared, 1, "14:00")).toBe(false);
+    expect(hasQueueItemChangedSinceShare(shared, 2, "14:00")).toBe(true);
+    expect(hasQueueItemChangedSinceShare(shared, 1, "15:00")).toBe(true);
   });
 
-  test("deletes a row and exposes the renumbered printed row as changed", () => {
+  test("deletes a row and exposes the renumbered shared row as changed", () => {
     const first = queueItem("one");
-    const [second] = markQueueItemPrinted([queueItem("two")], "two", 2, "14:00", new Date());
+    const [second] = markQueueItemShared([queueItem("two")], "two", 2, "14:00", new Date());
     const remaining = removeQueueItem([first, second], "one");
 
     expect(remaining.map((item) => item.id)).toEqual(["two"]);
-    expect(hasQueueItemChangedSincePrint(remaining[0], 1, "14:00")).toBe(true);
+    expect(hasQueueItemChangedSinceShare(remaining[0], 1, "14:00")).toBe(true);
   });
 
-  test("renders an escaped 80mm ticket with Bangkok print time", () => {
+  test("renders an escaped 80mm ticket with Bangkok issue time", () => {
     const item = queueItem("one", "<ร้าน & ลูกค้า>");
     const ticket = buildWeighingQueueTicket(
       item,

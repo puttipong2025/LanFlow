@@ -28,7 +28,9 @@ export type ReportDetails = {
     number: string;
     customer: string;
     billType: string;
-    weight: number;
+    netWeight: number;
+    averagePrice: number;
+    rubberValue: number;
     deduction: number;
     net: number;
   }>;

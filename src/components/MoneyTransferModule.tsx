@@ -6,7 +6,7 @@ import {
   CheckCircle2,
   Edit3,
   Plus,
-  Download,
+  Share2,
   Trash2,
   WifiOff,
 } from "lucide-react";
@@ -19,9 +19,10 @@ import { useOcrTickets } from "@/hooks/useOcrTickets";
 import { useCustomers } from "@/hooks/useCustomers";
 import { useRubberBillApprovals } from "@/hooks/useRubberBillApprovals";
 import {
-  downloadReceiptPdf,
   receiptPdfFilename,
 } from "@/lib/rubber-bills/print-receipt";
+import { useSharePdf } from "@/hooks/useSharePdf";
+import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
 
 import { CustomerTransferForm } from "./money-transfer/CustomerTransferForm";
 import { TransportTransferForm } from "./money-transfer/TransportTransferForm";
@@ -50,11 +51,18 @@ export function MoneyTransferModule({
   initialEditTransferId,
   onInitialEditTransferHandled,
 }: Props) {
-  const { transfers, addTransfer, updateTransfer, deleteTransfer } = useMoneyTransfers(locationId);
+  const {
+    transfers,
+    addTransfer,
+    updateTransfer,
+    deleteTransfer,
+    getReceiptSourceDetails,
+  } = useMoneyTransfers(locationId);
   const { bills } = useRubberBills(locationId, profile.id);
   const { markers: rubberBillApprovalMarkers } = useRubberBillApprovals({ locationId });
   const { ocrTickets } = useOcrTickets(locationId);
   const { customers } = useCustomers();
+  const pdfShare = useSharePdf();
   const billsWithApprovalState = useMemo(() => {
     const pendingBillIds = new Set(
       rubberBillApprovalMarkers
@@ -78,7 +86,6 @@ export function MoneyTransferModule({
   const [activeFormType, setActiveFormType] = useState<'customer' | 'transport' | 'branch' | null>(null);
   const [editTransfer, setEditTransfer] = useState<MoneyTransfer | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-  const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const offlineMessage = "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น";
   const branchTransferFormMode =
@@ -155,27 +162,47 @@ export function MoneyTransferModule({
     setActiveFormType(t.transferType === 'transport' ? 'transport' : t.transferType === 'branch' ? 'branch' : 'customer');
   }, [online, offlineMessage]);
 
-  const handleDownload = useCallback(async (transfer: MoneyTransfer) => {
+  const handleShare = useCallback(async (transfer: MoneyTransfer) => {
+    if (!online) {
+      setToastMsg(offlineMessage);
+      return;
+    }
     const blockReason = getMoneyTransferPrintBlockReason(transfer);
-    if (blockReason || downloadingId) {
+    if (blockReason || pdfShare.busy) {
       if (blockReason) setToastMsg(blockReason);
       return;
     }
 
-    setDownloadingId(transfer.id);
     try {
-      const model = buildMoneyTransferReceiptModel(transfer, locations);
-      await downloadReceiptPdf(
-        renderMoneyTransferReceiptHtml(model),
-        receiptPdfFilename("LanFlow-money-transfer", model.shortId)
-      );
-      setToastMsg("ดาวน์โหลด PDF ใบรายการโอนเงินแล้ว");
+      const sourceDetails = await getReceiptSourceDetails(transfer.id);
+      const sourceDetailsById = new Map(sourceDetails.map((item) => [item.id, item]));
+      const enrichedTransfer: MoneyTransfer = {
+        ...transfer,
+        items: (transfer.items ?? []).map((item) => {
+          const detail = sourceDetailsById.get(item.id);
+          if (
+            !detail
+            || detail.sourceType !== item.sourceType
+            || detail.sourceId !== item.sourceId
+          ) {
+            throw new Error("ไม่พบรายละเอียดต้นทางของรายการโอนเงิน");
+          }
+          return { ...item, ...detail, customerName: item.customerName, amount: item.amount };
+        }),
+      };
+      const delivery = await pdfShare.sharePdf(() => {
+        const model = buildMoneyTransferReceiptModel(enrichedTransfer, locations);
+        return {
+          html: renderMoneyTransferReceiptHtml(model),
+          filename: receiptPdfFilename("LanFlow-money-transfer", model.shortId),
+        };
+      });
+      if (delivery === "shared") setToastMsg("แชร์ PDF ใบรายการโอนเงินแล้ว");
+      if (delivery === "downloaded") setToastMsg("แชร์บนอุปกรณ์นี้ไม่ได้ จึงดาวน์โหลด PDF แทน");
     } catch (error) {
-      setToastMsg(error instanceof Error ? error.message : "ดาวน์โหลด PDF ใบรายการโอนเงินไม่สำเร็จ");
-    } finally {
-      setDownloadingId(null);
+      setToastMsg(error instanceof Error ? error.message : "สร้าง PDF ใบรายการโอนเงินไม่สำเร็จ");
     }
-  }, [downloadingId, locations]);
+  }, [getReceiptSourceDetails, locations, offlineMessage, online, pdfShare]);
 
   useEffect(() => {
     if (!initialEditTransferId) return;
@@ -195,7 +222,7 @@ export function MoneyTransferModule({
       )}
 
       {/* Header */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:flex-row sm:items-center sm:justify-between sm:p-4">
         <div>
           <h2 className="text-xl font-bold text-ink">
             <ArrowDownUp size={22} className="mr-2 inline-block text-river" />
@@ -206,7 +233,7 @@ export function MoneyTransferModule({
           </p>
         </div>
         {!activeFormType && (
-          <div className="relative">
+          <div className="relative w-full sm:w-auto">
             <button
               type="button"
               onClick={() => {
@@ -218,15 +245,15 @@ export function MoneyTransferModule({
               }}
               disabled={!online}
               title={online ? undefined : offlineMessage}
-              className="focus-ring flex items-center gap-1.5 rounded-md bg-river px-4 py-2.5 text-sm font-semibold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-50"
+              className="focus-ring flex h-10 w-full items-center justify-center gap-1.5 rounded-md bg-leaf px-4 text-sm font-semibold text-white hover:bg-leaf/90 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
             >
               {online ? <Plus size={16} /> : <WifiOff size={16} />} สร้างรายการโอน
             </button>
             {showTypeSelector && (
               <div className="absolute right-0 top-full z-20 mt-2 w-56 rounded-lg border border-black/10 bg-white py-1 shadow-xl">
-                <button type="button" onClick={() => { setActiveFormType('customer'); setShowTypeSelector(false); setEditTransfer(null); }} className="w-full px-4 py-2.5 text-left text-sm font-semibold text-ink hover:bg-river/10">💰 โอนให้ลูกค้า</button>
-                <button type="button" onClick={() => { setActiveFormType('transport'); setShowTypeSelector(false); setEditTransfer(null); }} className="w-full px-4 py-2.5 text-left text-sm font-semibold text-ink hover:bg-amber/10">🚛 จ่ายค่าขนส่ง</button>
-                <button type="button" onClick={() => { setActiveFormType('branch'); setShowTypeSelector(false); setEditTransfer(null); }} className="w-full px-4 py-2.5 text-left text-sm font-semibold text-ink hover:bg-leaf/10">🏢 โอนให้สาขา</button>
+                <button type="button" onClick={() => { setActiveFormType('customer'); setShowTypeSelector(false); setEditTransfer(null); }} className="focus-ring w-full bg-actionSecondary px-4 py-2.5 text-left text-sm font-semibold text-white transition-colors hover:bg-leaf focus:bg-leaf">💰 โอนให้ลูกค้า</button>
+                <button type="button" onClick={() => { setActiveFormType('transport'); setShowTypeSelector(false); setEditTransfer(null); }} className="focus-ring w-full bg-actionSecondary px-4 py-2.5 text-left text-sm font-semibold text-white transition-colors hover:bg-leaf focus:bg-leaf">🚛 จ่ายค่าขนส่ง</button>
+                <button type="button" onClick={() => { setActiveFormType('branch'); setShowTypeSelector(false); setEditTransfer(null); }} className="focus-ring w-full bg-actionSecondary px-4 py-2.5 text-left text-sm font-semibold text-white transition-colors hover:bg-leaf focus:bg-leaf">🏢 โอนให้สาขา</button>
               </div>
             )}
           </div>
@@ -375,22 +402,24 @@ export function MoneyTransferModule({
                       <div className="flex items-center justify-center gap-1">
                         <button
                           type="button"
-                          onClick={() => void handleDownload(t)}
-                          disabled={Boolean(getMoneyTransferPrintBlockReason(t)) || downloadingId !== null}
-                          aria-label={`ดาวน์โหลด PDF รายการโอนเงิน ${shortTransferId(t.id)}`}
-                          className="grid h-7 w-7 place-items-center rounded-md text-ink/50 hover:bg-river/10 hover:text-river disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-ink/50"
-                          title={getMoneyTransferPrintBlockReason(t) ?? (downloadingId ? "กำลังสร้าง PDF" : "ดาวน์โหลด PDF ใบรายการโอนเงิน 80 มม.")}
+                          onClick={() => void handleShare(t)}
+                          disabled={!online || Boolean(getMoneyTransferPrintBlockReason(t)) || pdfShare.busy}
+                          aria-label={`แชร์ PDF รายการโอนเงิน ${shortTransferId(t.id)}`}
+                          className="inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-xs font-semibold text-white hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-40"
+                          title={!online ? offlineMessage : getMoneyTransferPrintBlockReason(t) ?? (pdfShare.busy ? "กำลังสร้าง PDF" : "แชร์ PDF ใบรายการโอนเงิน 80 มม.")}
                         >
-                          <Download size={14} />
+                          <Share2 size={14} />
+                          แชร์ PDF
                         </button>
                         <button
                           type="button"
                           onClick={() => handleEdit(t)}
                           disabled={!online || Boolean(t.reportLockNo)}
-                          className="grid h-7 w-7 place-items-center rounded-md text-ink/50 hover:bg-mint hover:text-leaf disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-ink/50"
+                          className="inline-flex h-10 items-center gap-1.5 rounded-md bg-river px-3 text-xs font-semibold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-40"
                           title={t.reportLockNo ? `ล็อกโดยรายงาน ${t.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน` : online ? "แก้ไข" : offlineMessage}
                         >
                           <Edit3 size={14} />
+                          แก้ไข
                         </button>
                         <button
                           type="button"
@@ -406,10 +435,11 @@ export function MoneyTransferModule({
                             setDeleteConfirmId(t.id);
                           }}
                           disabled={!online || Boolean(t.reportLockNo)}
-                          className="grid h-7 w-7 place-items-center rounded-md text-ink/50 hover:bg-clay/10 hover:text-clay disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-ink/50"
+                          className="inline-flex h-10 items-center gap-1.5 rounded-md bg-clay px-3 text-xs font-semibold text-white hover:bg-clay/90 disabled:cursor-not-allowed disabled:opacity-40"
                           title={t.reportLockNo ? `ล็อกโดยรายงาน ${t.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน` : online ? "ลบ" : offlineMessage}
                         >
                           <Trash2 size={14} />
+                          ลบ
                         </button>
                       </div>
                     </td>
@@ -436,7 +466,7 @@ export function MoneyTransferModule({
             <h3 className="text-lg font-bold text-ink">ยืนยันการลบ</h3>
             <p className="mt-2 text-sm text-ink/70">คุณแน่ใจหรือไม่ว่าต้องการลบรายการโอนเงินนี้? บิลยาง/ใบชั่งที่เลือกไว้จะสามารถเลือกใช้ใหม่ได้</p>
             <div className="mt-5 flex justify-end gap-3">
-              <button type="button" onClick={() => setDeleteConfirmId(null)} className="focus-ring rounded-md border border-black/10 bg-white px-4 py-2 text-sm font-semibold text-ink hover:bg-field">
+              <button type="button" onClick={() => setDeleteConfirmId(null)} className="focus-ring rounded-md bg-actionSecondary px-4 py-2 text-sm font-semibold text-white hover:bg-actionSecondary/90">
                 ยกเลิก
               </button>
               <button type="button" onClick={handleDeleteConfirm} disabled={!online} title={online ? undefined : offlineMessage} className="focus-ring rounded-md bg-clay px-4 py-2 text-sm font-semibold text-white hover:bg-clay/90 disabled:cursor-not-allowed disabled:opacity-50">
@@ -446,6 +476,7 @@ export function MoneyTransferModule({
           </div>
         </div>
       )}
+      <SharePdfWaitingModal open={pdfShare.waiting} onCancel={pdfShare.cancel} />
     </div>
   );
 }

@@ -1,9 +1,15 @@
 import { expect, test } from "@playwright/test";
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
 
 test.use({ storageState: { cookies: [], origins: [] } });
 
 test("shares a Rubber Bill PDF and falls back to download", async ({ page }) => {
   await page.addInitScript(() => {
+    const originalToBlob = HTMLCanvasElement.prototype.toBlob;
+    HTMLCanvasElement.prototype.toBlob = function (...args) {
+      window.setTimeout(() => originalToBlob.apply(this, args), 200);
+    };
     Object.defineProperty(navigator, "canShare", {
       configurable: true,
       value: (data: ShareData) => data.files?.[0]?.type === "application/pdf",
@@ -12,9 +18,14 @@ test("shares a Rubber Bill PDF and falls back to download", async ({ page }) => 
       configurable: true,
       value: async (data: ShareData) => {
         const file = data.files?.[0];
-        (window as typeof window & {
+        const state = window as typeof window & {
           sharedReceipt?: { name: string; size: number; type: string };
-        }).sharedReceipt = file
+          shareCallCount?: number;
+          waitingVisibleAtShare?: boolean;
+        };
+        state.shareCallCount = (state.shareCallCount ?? 0) + 1;
+        state.waitingVisibleAtShare = Boolean(document.getElementById("share-pdf-waiting-title"));
+        state.sharedReceipt = file
           ? { name: file.name, size: file.size, type: file.type }
           : undefined;
       },
@@ -49,11 +60,47 @@ test("shares a Rubber Bill PDF and falls back to download", async ({ page }) => 
   });
   expect(sharedReceipt?.name).toMatch(/^LanFlow-rubber-bill-.*-80mm\.pdf$/);
   expect(sharedReceipt?.size).toBeGreaterThan(1_000);
+  expect(await page.evaluate(() =>
+    (window as typeof window & { waitingVisibleAtShare?: boolean }).waitingVisibleAtShare
+  )).toBe(false);
+
+  const shareCallsBeforeCancel = await page.evaluate(() =>
+    (window as typeof window & { shareCallCount?: number }).shareCallCount ?? 0
+  );
+  await shareButton.click();
+  const waitingDialog = page.getByRole("dialog", { name: "กำลังสร้าง PDF" });
+  await expect(waitingDialog).toBeVisible();
+  await waitingDialog.getByRole("button", { name: "ยกเลิก" }).click();
+  await expect(waitingDialog).toBeHidden();
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() =>
+    (window as typeof window & { shareCallCount?: number }).shareCallCount ?? 0
+  )).toBe(shareCallsBeforeCancel);
+  await expect(shareButton).toBeEnabled();
+
+  let cancelledDownloads = 0;
+  page.on("download", () => {
+    cancelledDownloads += 1;
+  });
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "share", {
+      configurable: true,
+      value: async () => {
+        throw new DOMException("cancelled", "AbortError");
+      },
+    });
+  });
+  await shareButton.click();
+  await expect(shareButton).toBeEnabled();
+  await page.waitForTimeout(300);
+  expect(cancelledDownloads).toBe(0);
 
   await page.evaluate(() => {
     Object.defineProperty(navigator, "canShare", {
       configurable: true,
-      value: undefined,
+      value: () => {
+        throw new Error("unsupported");
+      },
     });
     Object.defineProperty(navigator, "share", {
       configurable: true,
@@ -66,4 +113,7 @@ test("shares a Rubber Bill PDF and falls back to download", async ({ page }) => 
   expect(download.suggestedFilename()).toMatch(
     /^LanFlow-rubber-bill-.*-80mm\.pdf$/
   );
+  const outputDir = join(process.cwd(), "output", "pdf");
+  await mkdir(outputDir, { recursive: true });
+  await download.saveAs(join(outputDir, "rubber-bill-receipt-80mm.pdf"));
 });

@@ -1,4 +1,5 @@
 import { thaiBahtText } from "@/lib/thai-baht-text";
+import { multiplyMoneyHalfUp } from "@/lib/rubber-bills/calculations";
 import type { RubberBill } from "@/types";
 
 export type RubberBillReceiptModel = {
@@ -19,8 +20,8 @@ export type RubberBillReceiptModel = {
     lineTotal: number;
   }>;
   deductions: Array<{ label: string; amount: number }>;
-  weight: number;
-  grossTotal: number;
+  netWeight: number;
+  rubberValue: number;
   averagePrice: number;
   deductionTotal: number;
   netTotal: number;
@@ -82,18 +83,6 @@ export function buildRubberBillReceiptModel(bill: RubberBill): RubberBillReceipt
       amount: item.amount
     }))
   ];
-  const knownDeduction = deductions.reduce((sum, item) => sum + item.amount, 0);
-  const weightDeduction = bill.deductWeight > 0
-    ? Math.min(bill.deductionTotal - knownDeduction, bill.deductWeight * bill.price)
-    : bill.deductionTotal - knownDeduction;
-  if (weightDeduction > 0.005) {
-    deductions.push({
-      label: bill.deductWeight > 0
-        ? `หักน้ำหนัก ${formatReceiptNumber(bill.deductWeight)} กก.`
-        : "หักน้ำหนัก/รายการหักเดิม",
-      amount: weightDeduction
-    });
-  }
 
   const receiptKind = bill.syncStatus === "synced" && Boolean(bill.serverBillNo)
     ? "synced"
@@ -104,7 +93,7 @@ export function buildRubberBillReceiptModel(bill: RubberBill): RubberBillReceipt
     outWeight: item.outWeight,
     netWeight: item.netWeight,
     price: item.price,
-    lineTotal: Math.floor(item.netWeight * item.price)
+    lineTotal: multiplyMoneyHalfUp(item.netWeight, item.price)
   }));
 
   return {
@@ -119,8 +108,8 @@ export function buildRubberBillReceiptModel(bill: RubberBill): RubberBillReceipt
     approvalLabel: currentRevisionApprovalLabel(bill, receiptKind),
     hasZeroPrice: weighItems.some((item) => item.price === 0),
     weighItems,
-    weight: bill.weight,
-    grossTotal: weighItems.reduce((sum, item) => sum + item.lineTotal, 0),
+    netWeight: bill.netWeight,
+    rubberValue: bill.rubberValue,
     averagePrice: bill.price,
     deductions,
     deductionTotal: bill.deductionTotal,
@@ -184,7 +173,7 @@ export function renderRubberBillReceiptHtml(model: RubberBillReceiptModel) {
 h1 { margin: 0 0 4px; text-align: center; font-size: 18px; } .warning { margin: 6px 0; border: 3px double #000; padding: 6px 3px; text-align: center; font-size: 14px; font-weight: 800; }
 .meta { margin: 6px 0; } .row { display: flex; justify-content: space-between; gap: 8px; } .row span:first-child { overflow-wrap: anywhere; }
 table { width: 100%; border-collapse: collapse; margin: 6px 0; } th, td { border-bottom: 1px solid #777; padding: 2px 1px; text-align: left; } th { font-size: 9px; } .num { text-align: right; } .muted { color: #555; text-align: center; }
-.totals { border-top: 1px solid #000; padding-top: 4px; } .grand { margin-top: 4px; border-top: 2px solid #000; padding-top: 4px; font-size: 14px; font-weight: 700; }
+.totals { border-top: 1px solid #000; padding-top: 4px; }
 .payable { margin-top: 5px; border: 2px solid #000; padding: 5px 3px; font-size: 15px; font-weight: 800; }
 .words { margin-top: 5px; text-align: center; font-weight: 700; overflow-wrap: anywhere; } .signature { margin-top: 14px; display: flex; justify-content: space-between; gap: 12px; text-align: center; }
 </style></head><body>
@@ -194,12 +183,11 @@ ${model.hasZeroPrice ? '<div class="warning">ยังไม่กำหนด�
 <div><strong>ลูกค้า:</strong> ${h(model.customerName)}</div>
 <div><strong>ผู้รับผิดชอบการจ่าย:</strong> ${h(model.payerName)}</div>
 <div><strong>สถานะอนุมัติ:</strong> ${h(model.approvalLabel)}</div>
-<table><thead><tr><th>รายการ</th><th class="num">เข้า</th><th class="num">ออก</th><th class="num">สุทธิ</th><th class="num">ราคา</th><th class="num">รวม</th></tr></thead><tbody>${weighRows}</tbody></table>
-<div class="row"><strong>น้ำหนักรวม</strong><strong>${n(model.weight)} กก.</strong></div>
+<table><thead><tr><th>รายการ</th><th class="num">เข้า</th><th class="num">ออก</th><th class="num">ชั่งสุทธิ</th><th class="num">ราคา</th><th class="num">รวม</th></tr></thead><tbody>${weighRows}</tbody></table>
+<div class="row"><strong>น้ำหนักสุทธิ</strong><strong>${n(model.netWeight)} กก.</strong></div>
 <div class="row"><span>ราคาเฉลี่ย</span><span>${n(model.averagePrice)}</span></div>
-<div class="row"><span>มูลค่ายาง</span><span>${n(model.grossTotal)}</span></div>
-<div class="totals"><strong>รายการหัก</strong>${deductionRows}<div class="row"><strong>ยอดหักรวม</strong><strong>${n(model.deductionTotal)}</strong></div></div>
-<div class="row grand"><span>ยอดสุทธิ</span><span>${n(model.netTotal)} บาท</span></div>
+<div class="row"><span>มูลค่ายาง</span><span>${n(model.rubberValue)}</span></div>
+<div class="totals"><strong>รายการหักเงิน</strong>${deductionRows}<div class="row"><strong>ยอดหักเงิน</strong><strong>${n(model.deductionTotal)}</strong></div></div>
 <div class="row payable"><span>ยอดที่ต้องจ่ายลูกค้า</span><span>${n(model.netTotal)} บาท</span></div>
 <div class="words">(${h(model.netTotalText)})</div>
 <div class="signature"><div>________________<br>ผู้ขาย</div><div>________________<br>ผู้รับซื้อ</div></div>

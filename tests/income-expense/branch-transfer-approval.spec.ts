@@ -1,4 +1,19 @@
 import { test, expect } from '@playwright/test';
+import { selectAppLocation, selectAppLocationByIndex } from '../helpers/select-app-location';
+
+async function ensureLoggedIn(page: import("@playwright/test").Page, role: "admin" | "super_admin") {
+  await page.goto("/");
+  await page.locator('button:has-text("รับ-จ่าย"), input[type="tel"]').first().waitFor({
+    state: "visible",
+    timeout: 30000,
+  });
+  if (await page.locator('input[type="tel"]').isVisible()) {
+    await page.fill('input[type="tel"]', role === "admin" ? "0810000001" : process.env.TEST_PHONE || "0800000000");
+    await page.fill('input[type="password"]', process.env.TEST_PASSWORD || "password123");
+    await page.click('button:has-text("เข้าสู่ระบบ")');
+    await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+  }
+}
 
 test.describe('Income/Expense: Branch Transfer & Approval', () => {
   // We use admin for creating normal records
@@ -86,7 +101,7 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
   test.describe('1.1 Super Admin Approval Workflow @approval', () => {
     test.use({ storageState: 'playwright/.auth/super_admin.json' });
 
-    test('Super Admin: shows pending approval count on the action button', async ({ page }) => {
+    test('Super Admin: shows pending approval count only on the module nav', async ({ page }) => {
       await page.goto('/');
       await page.click('button:has-text("รับ-จ่าย")');
       await expect(page.locator('button:has-text("เพิ่มรายจ่าย")')).toBeVisible({ timeout: 10000 });
@@ -100,9 +115,12 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       await expect(page.locator('h2:has-text("เพิ่ม/แก้ไข บิลเงินสด")')).toBeHidden({ timeout: 10000 });
 
       const approvalButton = page.locator('button:has-text("ตั้งค่าและอนุมัติรับ-จ่าย")');
-      const pendingBadge = approvalButton.locator('[aria-label^="รออนุมัติ "]');
-      await expect(pendingBadge).toBeVisible();
-      await expect(pendingBadge).toHaveText(/^[1-9]\d*$/);
+      await expect(
+        page.getByRole('navigation').getByRole('button', {
+          name: /^รับ-จ่าย มีงานที่จัดการได้ [1-9]\d* รายการ$/,
+        }),
+      ).toBeVisible();
+      await expect(approvalButton.locator('[aria-label^="รออนุมัติ "]')).toHaveCount(0);
 
       await approvalButton.click();
       const approvalModal = page.locator('.fixed.inset-0').last();
@@ -171,6 +189,7 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
 
   test.describe('2. Branch Transfer @transfer', () => {
     test.use({ storageState: 'playwright/.auth/super_admin.json' });
+    test.beforeEach(async ({ page }) => ensureLoggedIn(page, "super_admin"));
 
     test('target location cannot be same as source location', async ({ page }) => {
       await page.goto('/');
@@ -215,6 +234,8 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       // Wait for SlipRow
       const slipRow = modal.locator('.grid.gap-3').first();
       await expect(slipRow).toBeVisible();
+      await expect(modal.getByLabel('จำนวนเงินสลิป 1')).toBeVisible();
+      await expect(modal.getByLabel('ค่าธรรมเนียมสลิป 1')).toBeVisible();
 
       // Fill amount and date
       await slipRow.locator('input[type="number"]').first().fill('1000');
@@ -226,8 +247,7 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
 
       // Switch to the target branch via Header location selector
       // In super_admin, we should be able to select the location
-      const branchSelector = page.locator('select[aria-label="เลือกสาขา"]').first();
-      await branchSelector.selectOption({ index: 1 }); 
+      await selectAppLocationByIndex(page, 1);
       
       // Wait for table to load
       await page.waitForTimeout(2000);
@@ -260,7 +280,7 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       await expect(page.locator('table tbody tr', { hasText: 'โยกเงินสดไป' }).first()).toBeVisible();
     });
 
-    test('receive cash transfer with zero actual counts and show mismatch', async ({ page }) => {
+    test('receive cash transfer with zero actual counts and finish with visible difference', async ({ page }) => {
       await page.context().setOffline(false);
       await page.goto('/');
       await page.click('button:has-text("รับ-จ่าย")');
@@ -274,14 +294,16 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       await createModal.locator('button:has-text("บันทึก")').click();
       await expect(page.getByText('บันทึกรายการเงินสด รอปลายทางรับเงิน')).toBeVisible();
 
-      await page.locator('select[aria-label="เลือกสาขา"]').first().selectOption(targetLocationId!);
+      await selectAppLocation(page, targetLocationId!);
       await expect(page.locator('button:has-text("รอรับเงิน")')).toBeVisible({ timeout: 10000 });
       await page.locator('button:has-text("รอรับเงิน")').click();
       const receiveModal = page.locator('.fixed.inset-0').last();
       for (const input of await receiveModal.locator('input').all()) await input.fill('0');
       await receiveModal.locator('button:has-text("ยืนยันรับเงิน")').click();
-      await expect(page.getByText('บันทึกยอดไม่ตรงแล้ว')).toBeVisible();
-      await expect(page.locator('table tbody tr', { hasText: 'ยอดไม่ตรง' }).first()).toBeVisible();
+      await expect(page.getByText('ยืนยันรับเงินและบันทึกผลต่างแล้ว')).toBeVisible();
+      const receivedRow = page.locator('table tbody tr', { hasText: 'รับเงินแล้ว' }).first();
+      await expect(receivedRow).toBeVisible();
+      await expect(receivedRow).toContainText('ผลต่าง');
     });
 
     test('receive cash transfer with exact counts', async ({ page }) => {
@@ -298,7 +320,7 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       await createModal.locator('button:has-text("บันทึก")').click();
       await expect(page.getByText('บันทึกรายการเงินสด รอปลายทางรับเงิน')).toBeVisible();
 
-      await page.locator('select[aria-label="เลือกสาขา"]').first().selectOption(targetLocationId!);
+      await selectAppLocation(page, targetLocationId!);
       await page.locator('button:has-text("รอรับเงิน")').click();
       const receiveModal = page.locator('.fixed.inset-0').last();
       for (const input of await receiveModal.locator('input').all()) await input.fill('0');

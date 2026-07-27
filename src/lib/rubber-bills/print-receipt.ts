@@ -136,7 +136,29 @@ function jpegPdf(
   return concatBytes(parts);
 }
 
-async function receiptCanvas(html: string) {
+function abortError() {
+  const error = new Error("ยกเลิกการสร้าง PDF");
+  error.name = "AbortError";
+  return error;
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw abortError();
+}
+
+function abortable<T>(promise: Promise<T>, signal?: AbortSignal) {
+  if (!signal) return promise;
+  throwIfAborted(signal);
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      signal.addEventListener("abort", () => reject(abortError()), { once: true });
+    }),
+  ]);
+}
+
+async function receiptCanvas(html: string, signal?: AbortSignal) {
+  throwIfAborted(signal);
   const iframe = document.createElement("iframe");
   iframe.setAttribute("aria-hidden", "true");
   iframe.style.position = "fixed";
@@ -153,11 +175,12 @@ async function receiptCanvas(html: string) {
     frameDocument.open();
     frameDocument.write(html);
     frameDocument.close();
-    await new Promise<void>((resolve) => {
+    await abortable(new Promise<void>((resolve) => {
       if (frameDocument.readyState === "complete") resolve();
       else iframe.addEventListener("load", () => resolve(), { once: true });
-    });
-    await frameDocument.fonts?.ready;
+    }), signal);
+    if (frameDocument.fonts?.ready) await abortable(frameDocument.fonts.ready, signal);
+    throwIfAborted(signal);
 
     const body = frameDocument.body;
     const width = Math.max(1, Math.ceil(body.getBoundingClientRect().width));
@@ -180,11 +203,12 @@ async function receiptCanvas(html: string) {
     ].join("");
     const imageUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
     const image = new Image();
-    await new Promise<void>((resolve, reject) => {
+    await abortable(new Promise<void>((resolve, reject) => {
       image.onload = () => resolve();
       image.onerror = () => reject(new Error("ไม่สามารถแปลงใบรายการเป็นภาพ PDF ได้"));
       image.src = imageUrl;
-    });
+    }), signal);
+    throwIfAborted(signal);
     const scale = 2;
     const canvas = document.createElement("canvas");
     canvas.width = width * scale;
@@ -201,8 +225,8 @@ async function receiptCanvas(html: string) {
   }
 }
 
-function canvasJpeg(canvas: HTMLCanvasElement) {
-  return new Promise<Uint8Array>((resolve, reject) => {
+function canvasJpeg(canvas: HTMLCanvasElement, signal?: AbortSignal) {
+  return abortable(new Promise<Uint8Array>((resolve, reject) => {
     canvas.toBlob(async (blob) => {
       if (!blob) {
         reject(new Error("ไม่สามารถสร้างข้อมูล PDF ได้"));
@@ -210,7 +234,7 @@ function canvasJpeg(canvas: HTMLCanvasElement) {
       }
       resolve(new Uint8Array(await blob.arrayBuffer()));
     }, "image/jpeg", 0.95);
-  });
+  }), signal);
 }
 
 export function receiptPdfFilename(prefix: string, referenceNo: string) {
@@ -222,12 +246,13 @@ export function receiptPdfFilename(prefix: string, referenceNo: string) {
   return `${prefix}-${safeReference}-80mm.pdf`;
 }
 
-async function createReceiptPdfBlob(html: string) {
+async function createReceiptPdfBlob(html: string, signal?: AbortSignal) {
   if (typeof document === "undefined" || typeof window === "undefined") {
     throw new Error("บันทึก PDF ได้เฉพาะใน browser");
   }
-  const canvas = await receiptCanvas(html);
-  const jpeg = await canvasJpeg(canvas);
+  const canvas = await receiptCanvas(html, signal);
+  const jpeg = await canvasJpeg(canvas, signal);
+  throwIfAborted(signal);
   const pdf = jpegPdf(jpeg, canvas.width, canvas.height);
   return new Blob([pdf], { type: "application/pdf" });
 }
@@ -250,20 +275,45 @@ export async function downloadReceiptPdf(html: string, filename: string) {
   downloadReceiptPdfBlob(await createReceiptPdfBlob(html), filename);
 }
 
-export async function shareReceiptPdf(html: string, filename: string) {
-  const blob = await createReceiptPdfBlob(html);
-  const file = new File([blob], filename, { type: "application/pdf" });
+export type ShareReceiptPdfResult = "shared" | "downloaded" | "cancelled";
 
-  if (
-    typeof navigator.share === "function"
-    && typeof navigator.canShare === "function"
-    && navigator.canShare({ files: [file] })
-  ) {
+export async function shareReceiptPdf(
+  html: string,
+  filename: string,
+  options: {
+    signal?: AbortSignal;
+    onBeforeHandoff?: () => void | Promise<void>;
+  } = {},
+): Promise<ShareReceiptPdfResult> {
+  const blob = await createReceiptPdfBlob(html, options.signal);
+  throwIfAborted(options.signal);
+  await options.onBeforeHandoff?.();
+  throwIfAborted(options.signal);
+
+  let file: File | null = null;
+  let canShareFile = false;
+  if (typeof navigator.share === "function" && typeof navigator.canShare === "function") {
+    try {
+      file = new File([blob], filename, { type: "application/pdf" });
+      canShareFile = navigator.canShare({ files: [file] });
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        return "cancelled" as const;
+      }
+    }
+  }
+
+  if (canShareFile && file) {
     try {
       await navigator.share({ files: [file], title: filename });
       return "shared" as const;
     } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") {
+      if (
+        typeof error === "object"
+        && error !== null
+        && "name" in error
+        && error.name === "AbortError"
+      ) {
         return "cancelled" as const;
       }
     }

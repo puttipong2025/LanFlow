@@ -183,7 +183,7 @@ export function RubberBillApprovalModal({
             <button
               type="submit"
               disabled={isSaving}
-              className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 font-bold text-white disabled:opacity-50"
+              className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-commit px-4 font-bold text-white hover:bg-commit/90 disabled:opacity-50"
             >
               <Check size={18} />
               บันทึก
@@ -260,7 +260,7 @@ export function RubberBillApprovalModal({
                         type="button"
                         disabled={busyId === request.id}
                         onClick={() => void handleApprove(request)}
-                        className="focus-ring flex h-9 items-center gap-2 rounded-md bg-leaf px-3 font-bold text-white disabled:opacity-50"
+                        className="focus-ring flex h-10 items-center gap-2 rounded-md bg-success px-3 font-bold text-white disabled:opacity-50"
                       >
                         <Check size={16} />
                         อนุมัติ

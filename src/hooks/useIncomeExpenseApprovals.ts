@@ -2,7 +2,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { buildIncomeExpensePayload } from "@/lib/income-expense/build-income-expense-payload";
 import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
+import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import type {
+  CashTransferDeleteRequest,
   IncomeExpense,
   IncomeExpenseApprovalAppliesTo,
   IncomeExpenseApprovalKeyword,
@@ -26,6 +28,7 @@ type AddKeywordInput = {
 type SettingsInput = {
   appliesTo: IncomeExpenseApprovalAppliesTo;
   approvalMinAmount?: number | null;
+  cashTransferDeleteRequiresApproval: boolean;
 };
 
 type ApprovalSubmitResult = {
@@ -99,6 +102,7 @@ export function useIncomeExpenseApprovals(options: { includeRequests?: boolean; 
       return {
         appliesTo: data?.applies_to ?? "both",
         approvalMinAmount: data?.approval_min_amount != null ? Number(data.approval_min_amount) : null,
+        cashTransferDeleteRequiresApproval: data?.cash_transfer_delete_requires_approval ?? true,
         updatedByName: data?.updated_by_name,
         updatedByPhone: data?.updated_by_phone,
       } satisfies IncomeExpenseApprovalSettings;
@@ -138,18 +142,61 @@ export function useIncomeExpenseApprovals(options: { includeRequests?: boolean; 
     },
   });
 
+  const cashDeleteRequestsQuery = useQuery({
+    queryKey: [REQUESTS_KEY, "cashTransferDeletes"],
+    enabled: includeRequests,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("cash_transfer_delete_requests")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(80);
+
+      if (error) throw new Error(error.message || JSON.stringify(error));
+
+      return (data || []).map((row: any): CashTransferDeleteRequest => ({
+        id: row.id,
+        transferId: row.transfer_id,
+        sourceLocationId: row.source_location_id,
+        sourceLocationName: row.source_location_name,
+        targetLocationId: row.target_location_id,
+        targetLocationName: row.target_location_name,
+        transferDisplayNo: row.transfer_display_no,
+        sentTotal: Number(row.sent_total),
+        receivedTotal: Number(row.received_total),
+        differenceTotal: Number(row.difference_total),
+        note: row.note,
+        requestStatus: row.request_status,
+        requestedByName: row.requested_by_name,
+        requestedByPhone: row.requested_by_phone,
+        decidedByName: row.decided_by_name,
+        decidedByPhone: row.decided_by_phone,
+        decidedAt: row.decided_at,
+        decisionComment: row.decision_comment,
+        createdAt: row.created_at,
+      }));
+    },
+  });
+
   const pendingCountQuery = useQuery({
     queryKey: [REQUESTS_KEY, "pendingCount"],
     enabled: includePendingCount,
     queryFn: async () => {
-      const { count, error } = await supabase
-        .from("income_expense_approval_requests")
-        .select("id", { count: "exact", head: true })
-        .eq("request_status", "pending");
+      const [incomeExpense, cashTransfer] = await Promise.all([
+        supabase
+          .from("income_expense_approval_requests")
+          .select("id", { count: "exact", head: true })
+          .eq("request_status", "pending"),
+        supabase
+          .from("cash_transfer_delete_requests")
+          .select("id", { count: "exact", head: true })
+          .eq("request_status", "pending"),
+      ]);
 
-      if (error) throw new Error(error.message || JSON.stringify(error));
+      if (incomeExpense.error) throw new Error(incomeExpense.error.message || JSON.stringify(incomeExpense.error));
+      if (cashTransfer.error) throw new Error(cashTransfer.error.message || JSON.stringify(cashTransfer.error));
 
-      return count ?? 0;
+      return (incomeExpense.count ?? 0) + (cashTransfer.count ?? 0);
     },
   });
 
@@ -227,6 +274,7 @@ export function useIncomeExpenseApprovals(options: { includeRequests?: boolean; 
         id: true,
         applies_to: input.appliesTo,
         approval_min_amount: input.approvalMinAmount ?? null,
+        cash_transfer_delete_requires_approval: input.cashTransferDeleteRequiresApproval,
         updated_by_user_id: session?.user?.id,
         updated_by_name: updatedByName,
         updated_by_phone: updatedByPhone,
@@ -259,8 +307,34 @@ export function useIncomeExpenseApprovals(options: { includeRequests?: boolean; 
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: [REQUESTS_KEY] }),
         queryClient.invalidateQueries({ queryKey: [INCOME_EXPENSE_FEED_QUERY_KEY] }),
+        queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
       ]);
       queryClient.invalidateQueries({ queryKey: ["acidStock"] });
+    },
+  });
+
+  const decideCashDeleteRequestMutation = useMutation({
+    mutationFn: async ({ id, decision, comment }: { id: string; decision: "approved" | "rejected"; comment?: string }) => {
+      const response = await fetch(`/api/lanflow/cash-branch-transfers/delete-requests/${id}/decide`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision, comment }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.errorMessage || data.error || "ดำเนินการคำขอลบไม่สำเร็จ");
+      }
+
+      return data;
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: [REQUESTS_KEY] }),
+        queryClient.invalidateQueries({ queryKey: [INCOME_EXPENSE_FEED_QUERY_KEY] }),
+        queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
+        queryClient.invalidateQueries({ queryKey: ["cashBranchTransfers"] }),
+      ]);
     },
   });
 
@@ -294,6 +368,7 @@ export function useIncomeExpenseApprovals(options: { includeRequests?: boolean; 
 
     if (data.status === "pending") {
       queryClient.invalidateQueries({ queryKey: [REQUESTS_KEY] });
+      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
       return {
         requiresApproval: true,
         requestId: data.requestId,
@@ -309,16 +384,19 @@ export function useIncomeExpenseApprovals(options: { includeRequests?: boolean; 
     keywords: keywordsQuery.data || [],
     settings: settingsQuery.data,
     requests: requestsQuery.data || [],
+    cashDeleteRequests: cashDeleteRequestsQuery.data || [],
     pendingCount: pendingCountQuery.data ?? 0,
     isLoading:
       keywordsQuery.isLoading ||
       settingsQuery.isLoading ||
       (includeRequests && requestsQuery.isLoading) ||
+      (includeRequests && cashDeleteRequestsQuery.isLoading) ||
       (includePendingCount && pendingCountQuery.isLoading),
     addKeyword: addKeywordMutation.mutateAsync,
     disableKeyword: disableKeywordMutation.mutateAsync,
     saveSettings: saveSettingsMutation.mutateAsync,
     decideRequest: decideRequestMutation.mutateAsync,
+    decideCashDeleteRequest: decideCashDeleteRequestMutation.mutateAsync,
     submitForApprovalIfNeeded,
   };
 }

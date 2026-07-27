@@ -137,6 +137,10 @@ export function IncomeExpenseModal({
       return;
     }
 
+    const saleGroupId = billOption === "บิลขาย"
+      ? transaction?.saleGroupId ?? crypto.randomUUID()
+      : null;
+
     onSave(
       filledLines.map((line, index) => {
         const clientTempId = index === 0 && transaction ? transaction.clientTempId : makeClientTempId("cash");
@@ -163,6 +167,13 @@ export function IncomeExpenseModal({
           incomeSaleItemId: billOption === "บิลขาย" ? line.incomeSaleItemId ?? null : null,
           stockProductId: billOption === "บิลขาย" ? line.stockProductId ?? null : null,
           stockQuantity: billOption === "บิลขาย" ? line.unit : null,
+          saleGroupId,
+          saleLineOrder: billOption === "บิลขาย"
+            ? transaction?.saleLineOrder ?? index + 1
+            : null,
+          saleExpectedLines: billOption === "บิลขาย"
+            ? transaction?.saleExpectedLines ?? filledLines.length
+            : null,
           createdByUserId: index === 0 && transaction ? transaction.createdByUserId : profile.id,
           createdByName: index === 0 && transaction ? transaction.createdByName : profile.name,
           createdByPhone: index === 0 && transaction ? transaction.createdByPhone : profile.phone,
@@ -212,28 +223,26 @@ export function IncomeExpenseModal({
                   onClick={() => selectBillOption(option.value)}
                   className={`focus-ring flex min-h-[76px] items-center gap-3 rounded-md border px-3 py-3 text-left transition-colors ${
                     blocked
-                      ? "cursor-not-allowed border-amber/40 bg-amber/10 text-ink/60"
+                      ? "cursor-not-allowed border-amber bg-amber text-white opacity-50"
                       : active
-                      ? "border-leaf bg-leaf/10 text-ink shadow-sm"
-                      : "border-black/10 bg-white text-ink hover:border-leaf/40 hover:bg-mint"
+                      ? "border-leaf bg-leaf text-white shadow-sm"
+                      : "border-actionSecondary bg-actionSecondary text-white hover:bg-actionSecondary/90"
                   }`}
                 >
-                  <span className={`grid h-10 w-10 shrink-0 place-items-center rounded-md ${
-                    blocked ? "bg-amber/20 text-amber-800" : active ? "bg-leaf text-white" : "bg-field text-ink/70"
-                  }`}>
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-white/15 text-white">
                     <Icon size={19} />
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="flex flex-wrap items-center gap-2 text-sm font-bold">
                       {option.title}
                       {option.onlineOnly && (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-amber/20 px-2 py-0.5 text-[11px] font-bold text-amber-800">
+                        <span className="inline-flex items-center gap-1 rounded-full bg-white/15 px-2 py-0.5 text-[11px] font-bold text-white">
                           <WifiOff size={12} />
                           {blocked ? "กดได้เมื่อออนไลน์" : "ตรวจสต็อก"}
                         </span>
                       )}
                     </span>
-                    <span className="mt-0.5 block text-xs font-semibold text-ink/60">
+                    <span className="mt-0.5 block text-xs font-semibold text-white/80">
                       {option.description}
                     </span>
                   </span>
@@ -243,7 +252,7 @@ export function IncomeExpenseModal({
           </div>
         </section>
 
-        <section className="bg-emerald-50 p-3 sm:p-4">
+        <section className="bg-mint/45 p-3 sm:p-4">
           <div className="overflow-x-auto">
             <table className="w-full min-w-[820px] border-collapse text-sm">
               <thead>
@@ -325,7 +334,7 @@ export function IncomeExpenseModal({
             <button type="button" onClick={addLine} className="rounded-md bg-leaf px-4 py-2 text-sm font-bold text-white">
               เพิ่มรายการ
             </button>
-            <button className="focus-ring rounded-md bg-blue-600 px-4 py-2 text-sm font-bold text-white">
+            <button className="focus-ring rounded-md bg-commit px-4 py-2 text-sm font-bold text-white hover:bg-commit/90">
               บันทึกบิล
             </button>
           </div>
@@ -342,8 +351,8 @@ export function IncomeExpenseModal({
           </section>
         )}
 
-        <div className="flex justify-end border-t border-black/10 p-4">
-          <button type="button" onClick={onClose} className="focus-ring h-11 rounded-md bg-field px-4 font-semibold text-ink">
+        <div className="modal-actions flex justify-end border-t border-black/10 p-4">
+          <button type="button" onClick={onClose} className="focus-ring h-11 rounded-md bg-actionSecondary px-4 font-semibold text-white hover:bg-actionSecondary/90">
             ยกเลิก
           </button>
         </div>

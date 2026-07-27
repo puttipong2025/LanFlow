@@ -1,5 +1,6 @@
 import { test, expect, Page } from '@playwright/test';
 import { createClient } from '@supabase/supabase-js';
+import { selectAppLocation } from './helpers/select-app-location';
 
 /** Read all events from IndexedDB sync_queue */
 async function readQueue(page: Page): Promise<any[]> {
@@ -191,9 +192,7 @@ async function getAccessibleLocationIds(page: Page) {
 }
 
 async function selectHeaderLocation(page: Page, locationId: string) {
-  const locationSelect = page.locator('select[aria-label="เลือกสาขา"]');
-  await expect(locationSelect).toBeVisible({ timeout: 10000 });
-  await locationSelect.selectOption(locationId);
+  await selectAppLocation(page, locationId);
 }
 
 async function buildIncomeExpensePayload(page: Page, overrides: Record<string, any> = {}) {
@@ -421,6 +420,10 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
     await expect(blockedActions).toHaveCount(2);
     await expect(blockedActions.nth(0)).toBeDisabled();
     await expect(blockedActions.nth(1)).toBeDisabled();
+    await expect(blockedActions.nth(0)).toHaveAttribute('title', blockMessage);
+    await expect(blockedActions.nth(1)).toHaveAttribute('title', blockMessage);
+    await expect(blockedActions.nth(0)).toHaveText('');
+    await expect(blockedActions.nth(1)).toHaveText('');
     expect((await readQueue(page)).filter(event => event.id === before.client_temp_id)).toHaveLength(0);
 
     await context.setOffline(false);

@@ -78,9 +78,9 @@ export function RubberExportCreateModal({
           <>
             <div className="grid gap-3 sm:grid-cols-4">
               <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">จำนวนบิล</div><div className="font-bold">{preview.itemCount}</div></div>
-              <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">น้ำหนักสุทธิหลังหักรวม</div><div className="font-bold">{number(preview.originalWeightTotal)} กก.</div></div>
+              <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">น้ำหนักสุทธิรวม</div><div className="font-bold">{number(preview.originalWeightTotal)} กก.</div></div>
               <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ยอดจ่ายจริงรวม</div><div className="font-bold">฿{number(preview.paidTotal)}</div></div>
-              <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ราคาเฉลี่ย</div><div className="font-bold">฿{number(preview.averagePrice)}/กก.</div></div>
+              <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ต้นทุนซื้อเฉลี่ย</div><div className="font-bold">฿{number(preview.averagePrice)}/กก.</div></div>
             </div>
             <div className="overflow-x-auto rounded-md border border-black/10">
               <table className="min-w-full text-sm">
@@ -102,8 +102,8 @@ export function RubberExportCreateModal({
           </>
         )}
 
-        <div className="flex justify-end gap-2">
-          <button type="button" onClick={onClose} className="focus-ring rounded-md bg-field px-4 py-2 font-semibold">ยกเลิก</button>
+        <div className="modal-actions flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="focus-ring rounded-md bg-actionSecondary px-4 py-2 font-semibold text-white hover:bg-actionSecondary/90">ยกเลิก</button>
           <button
             type="button"
             disabled={!preview || creating}

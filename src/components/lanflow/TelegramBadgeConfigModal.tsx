@@ -283,12 +283,12 @@ export function TelegramBadgeConfigModal({
             </dl>
           </section>
 
-          <div className="flex flex-col-reverse gap-2 border-t border-black/10 pt-4 sm:flex-row sm:justify-end">
+          <div className="modal-actions flex flex-col-reverse gap-2 border-t border-black/10 pt-4 sm:flex-row sm:justify-end">
             <button
               type="button"
               onClick={onClose}
               disabled={busyAction !== null}
-              className="focus-ring rounded-md border border-black/15 px-4 py-2 text-sm font-semibold text-ink/70 disabled:opacity-50"
+              className="focus-ring rounded-md bg-actionSecondary px-4 py-2 text-sm font-semibold text-white hover:bg-actionSecondary/90 disabled:opacity-50"
             >
               ปิด
             </button>
@@ -296,7 +296,7 @@ export function TelegramBadgeConfigModal({
               type="button"
               onClick={handleTest}
               disabled={busyAction !== null}
-              className="focus-ring flex items-center justify-center gap-2 rounded-md border border-river px-4 py-2 text-sm font-semibold text-river disabled:opacity-50"
+              className="focus-ring flex items-center justify-center gap-2 rounded-md bg-telegram px-4 py-2 text-sm font-semibold text-white hover:bg-telegram/90 disabled:opacity-50"
             >
               {busyAction === "test" ? (
                 <LoaderCircle className="animate-spin" size={16} />
@@ -309,7 +309,7 @@ export function TelegramBadgeConfigModal({
               type="button"
               onClick={handleSave}
               disabled={busyAction !== null}
-              className="focus-ring flex items-center justify-center gap-2 rounded-md bg-leaf px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+              className="focus-ring flex items-center justify-center gap-2 rounded-md bg-commit px-4 py-2 text-sm font-semibold text-white hover:bg-commit/90 disabled:opacity-50"
             >
               {busyAction === "save" && (
                 <LoaderCircle className="animate-spin" size={16} />

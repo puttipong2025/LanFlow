@@ -5,7 +5,7 @@ import { FilePlus2, Loader2, Printer, RotateCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import type { Location, Profile } from "@/types";
 import type { ReportSummary } from "@/types/reports";
-import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
+import { ApiResponseError, assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { canManageSystemFeatures } from "@/lib/permissions";
 
 function dateTime(value: string) {
@@ -14,6 +14,21 @@ function dateTime(value: string) {
     timeStyle: "short",
     timeZone: "Asia/Bangkok",
   }).format(new Date(value));
+}
+
+function showCreateReportError(groups: string[]) {
+  toast.error("สร้างรายงานไม่สำเร็จ", {
+    description: (
+      <div>
+        <div>คาดว่าเกิดจาก:</div>
+        <div role="list" aria-label="กลุ่มที่คาดว่าเกิดข้อผิดพลาด">
+          {groups.map((group) => (
+            <div key={group} role="listitem">{group}</div>
+          ))}
+        </div>
+      </div>
+    ),
+  });
 }
 
 export function ReportsModule({
@@ -62,13 +77,31 @@ export function ReportsModule({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ locationId: selectedLocation.id }),
       });
+      const errorBody = !response.ok
+        ? await response.clone().json().catch(() => null) as { errorGroups?: unknown } | null
+        : null;
+      const errorGroups = Array.isArray(errorBody?.errorGroups)
+        ? errorBody.errorGroups.filter((group): group is string => typeof group === "string")
+        : [];
+      if (errorGroups.length > 0) {
+        showCreateReportError(errorGroups);
+        return;
+      }
       await assertApiResponse(response);
       const created = await response.json() as { id: string; reportNo: string };
       toast.success(`สร้าง ${created.reportNo} แล้ว`);
       await loadReports();
       window.open(`/reports/${created.id}/print`, "_blank", "noopener,noreferrer");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "สร้างรายงานไม่สำเร็จ");
+      if (
+        error instanceof ApiResponseError
+        && (error.status === 401 || error.status === 403 || error.message.includes("ไม่มีรายการ"))
+      ) {
+        toast.error(error.message);
+      } else {
+        console.error("create report request failed", error);
+        showCreateReportError(["ระบบรายงาน"]);
+      }
     } finally {
       setCreating(false);
     }
@@ -94,19 +127,19 @@ export function ReportsModule({
 
   return (
     <section className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-white p-4 shadow-sm">
+      <div className="flex flex-col gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:flex-row sm:items-center sm:justify-between sm:p-4">
         <div>
           <h2 className="text-xl font-bold text-ink">ชุดรายงาน — {selectedLocation.name}</h2>
           <p className="mt-1 text-sm text-ink/65">
             เมื่อสร้างสำเร็จ รายการทั้งหมดใน cutoff จะถูกล็อกทันที แม้ปิดหน้าพิมพ์
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex w-full flex-wrap gap-2 sm:w-auto">
           <button
             type="button"
             onClick={() => void loadReports()}
             disabled={!online || loading}
-            className="focus-ring inline-flex items-center gap-2 rounded-md border border-black/10 bg-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
+            className="focus-ring inline-flex items-center gap-2 rounded-md bg-actionSecondary px-3 py-2 text-sm font-semibold text-white hover:bg-actionSecondary/90 disabled:opacity-50"
           >
             <RotateCw size={16} className={loading ? "animate-spin" : ""} />
             รีเฟรช
@@ -115,7 +148,7 @@ export function ReportsModule({
             type="button"
             onClick={() => void createReport()}
             disabled={!online || creating}
-            className="focus-ring inline-flex items-center gap-2 rounded-md bg-leaf px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+            className="focus-ring inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-leaf px-4 text-sm font-semibold text-white disabled:opacity-50 sm:w-auto"
           >
             {creating ? <Loader2 size={16} className="animate-spin" /> : <FilePlus2 size={16} />}
             สร้างรายงาน

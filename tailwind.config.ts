@@ -5,16 +5,25 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        ink: "#17201b",
-        field: "#eef4ef",
-        leaf: "#2f6b4f",
-        mint: "#d9efe2",
-        amber: "#f2b84b",
-        clay: "#c76848",
-        river: "#316b83"
+        ink: "#203028",
+        field: "#edf3f0",
+        leaf: "#2f7d5c",
+        mint: "#d7e5df",
+        amber: "#9a631c",
+        clay: "#a94f45",
+        river: "#28776f",
+        success: "#2f7d5c",
+        danger: "#b33f4a",
+        commit: "#3d73a3",
+        actionSecondary: "#586a7c",
+        settings: "#58697f",
+        telegram: "#087ab8",
+        stockAdd: "#6b59a5",
+        stockMove: "#a85f2b",
+        sand: "#f9faf9",
       },
       boxShadow: {
-        panel: "0 14px 40px rgba(23, 32, 27, 0.08)"
+        panel: "0 4px 16px rgba(32, 48, 40, 0.08)"
       }
     }
   },

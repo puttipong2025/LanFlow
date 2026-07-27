@@ -270,6 +270,21 @@ test.describe("Time Tracking positive payroll feed @time-tracking", () => {
 test.describe("Time Tracking approval picker UI @time-tracking", () => {
   test.use({ storageState: "playwright/.auth/admin.json" });
 
+  test("opens the advance-withdrawal input as an overlay", async ({ page }) => {
+    await page.goto("/");
+    await page.getByRole("button", { name: "เวลาและเงินเดือน" }).click();
+    await expect(page.getByRole("heading", { name: "จัดการเวลาและเงินเดือน" })).toBeVisible();
+
+    const withdrawalButton = page.getByRole("button", { name: "ขอเบิกเงินล่วงหน้า" });
+    await expect(withdrawalButton).toHaveClass(/text-white/);
+    await withdrawalButton.click();
+
+    await expect(page.getByRole("heading", { name: "ขอเบิกเงินล่วงหน้า" })).toBeVisible();
+    await expect(page.getByLabel("ยอดเงินที่ต้องการเบิก (บาท)")).toHaveAttribute("type", "number");
+    await page.getByRole("button", { name: "ยกเลิก" }).last().click();
+    await expect(page.getByRole("heading", { name: "ขอเบิกเงินล่วงหน้า" })).toBeHidden();
+  });
+
   test("dashboard and payroll modal use the same branch picker", async ({ page }) => {
     const admin = serviceClient();
     const adminRequest = page.request;

@@ -6,6 +6,7 @@ import {
   renderMoneyTransferReceiptHtml,
   shortTransferId,
 } from "../src/components/money-transfer/money-transfer-print";
+import { getOcrTransferAmount } from "../src/components/money-transfer/ItemPicker";
 import type { Location, MoneyTransfer } from "../src/types";
 
 const locations: Location[] = [
@@ -133,6 +134,8 @@ test.describe("Money transfer 80mm print", () => {
 
     expect(model.primaryAmountLabel).toBe("ยอดจ่ายล่วงหน้า");
     expect(model.primaryAmount).toBe(1_000);
+    expect(model.isUnfinished).toBe(true);
+    expect(renderMoneyTransferReceiptHtml(model)).toContain("รายการยังไม่สิ้นสุด");
   });
 
   test("renders escaped 80mm HTML with every child and no slip images", () => {
@@ -147,6 +150,9 @@ test.describe("Money transfer 80mm print", () => {
           sourceId: "fedcba98-1234-4234-8234-1234567890ab",
           customerName: "ลูกค้า OCR",
           amount: 250,
+          netWeightAfterDeduction: 80,
+          deductedAmount: 0,
+          netPayableAmount: 250,
         },
       ],
       slips: makeTransfer().slips?.map((slip) => (
@@ -168,6 +174,66 @@ test.describe("Money transfer 80mm print", () => {
     expect(html).toContain("ร้าน &amp; ลูกค้า");
     expect(html).not.toContain('<img src=x onerror="alert(1)">');
     expect(html).not.toContain("secret-slip.jpg");
+  });
+
+  test("renders source details on separate rows and hides zero deductions", () => {
+    const transfer = makeTransfer({
+      items: [
+        {
+          id: "rubber-item",
+          sourceType: "rubber_bill",
+          sourceId: "abcdef12-1234-4234-8234-1234567890ab",
+          customerName: "ลูกค้าบิลยาง",
+          amount: 5_430,
+          netWeightAfterDeduction: 190,
+          deductedAmount: 2_857.89,
+          netPayableAmount: 2_572,
+        },
+        {
+          id: "ocr-item",
+          sourceType: "ocr_ticket",
+          sourceId: "fedcba98-1234-4234-8234-1234567890ab",
+          customerName: "ลูกค้า OCR",
+          amount: 900,
+          netWeightAfterDeduction: 75,
+          deductedAmount: 0,
+          netPayableAmount: 900,
+        },
+      ],
+    });
+    const html = renderMoneyTransferReceiptHtml(buildMoneyTransferReceiptModel(transfer, locations));
+
+    expect(html).toContain("น้ำหนักสุทธิ (กก.)");
+    expect(html).toContain("ยอดหักเงิน (บาท)");
+    expect(html).toContain("2,857.89");
+    expect(html).toContain("ยอดสุทธิที่ต้องจ่ายลูกค้า (บาท)");
+    expect(html).toContain("<span>2,572</span>");
+    expect(html).not.toContain("<span>2,572.00</span>");
+    expect(html).not.toContain("หักนน.");
+  });
+
+  test("uses OCR amount after money deduction", () => {
+    expect(getOcrTransferAmount({ totalAmount: 1_250, moneyDeducted: 350 })).toBe(900);
+    expect(getOcrTransferAmount({ totalAmount: 1_250, moneyDeducted: null })).toBe(1_250);
+  });
+
+  test("labels a positive OCR money deduction without showing weight-deduction wording", () => {
+    const html = renderMoneyTransferReceiptHtml(buildMoneyTransferReceiptModel(makeTransfer({
+      items: [{
+        id: "ocr-item",
+        sourceType: "ocr_ticket",
+        sourceId: "fedcba98-1234-4234-8234-1234567890ab",
+        customerName: "ลูกค้า OCR",
+        amount: 900,
+        netWeightAfterDeduction: 75,
+        deductedAmount: 350,
+        netPayableAmount: 900,
+      }],
+    }), locations));
+
+    expect(html).toContain("ยอดหักเงิน (บาท)");
+    expect(html).toContain("350.00");
+    expect(html).not.toContain("หักนน.");
   });
 
   test("creates an eight-character reference without changing the source ID", () => {

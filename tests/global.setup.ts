@@ -95,7 +95,6 @@ setup('authenticate users', async () => {
     const cookieValues = new Map<string, string>();
     const client = createBrowserClient(supabaseUrl, publishableKey, {
       isSingleton: false,
-      cookieOptions: { name: 'sb-127-auth-token' },
       cookies: {
         getAll: () => [],
         setAll: (cookies: Array<{ name: string; value: string }>) => {

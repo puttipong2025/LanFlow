@@ -6,6 +6,10 @@ import type { MoneyTransferItem, OcrTicket, RubberBill } from "@/types";
 import { getRubberBillTransferBlockReason } from "@/lib/rubber-bill-validation";
 import { formatCurrency } from "@/lib/format";
 
+export function getOcrTransferAmount(ticket: Pick<OcrTicket, "totalAmount" | "moneyDeducted">) {
+  return (ticket.totalAmount ?? 0) - (ticket.moneyDeducted ?? 0);
+}
+
 export function ItemPicker({
   bills,
   ocrTickets,
@@ -33,14 +37,14 @@ export function ItemPicker({
         <button
           type="button"
           onClick={() => setTab("rubber")}
-          className={`rounded-md px-3 py-1.5 text-sm font-semibold ${tab === "rubber" ? "bg-leaf text-white" : "bg-white text-ink hover:bg-field"}`}
+          className={`rounded-md px-3 py-1.5 text-sm font-semibold text-white ${tab === "rubber" ? "bg-leaf" : "bg-actionSecondary hover:bg-actionSecondary/90"}`}
         >
           บิลยาง ({activeBills.length})
         </button>
         <button
           type="button"
           onClick={() => setTab("ocr")}
-          className={`rounded-md px-3 py-1.5 text-sm font-semibold ${tab === "ocr" ? "bg-river text-white" : "bg-white text-ink hover:bg-field"}`}
+          className={`rounded-md px-3 py-1.5 text-sm font-semibold text-white ${tab === "ocr" ? "bg-river" : "bg-actionSecondary hover:bg-actionSecondary/90"}`}
         >
           ใบชั่ง ({activeTickets.length})
         </button>
@@ -103,7 +107,7 @@ export function ItemPicker({
                               amount: bill.netTotal,
                             })
                           }
-                          className="rounded bg-leaf/10 px-2 py-0.5 text-xs font-bold text-leaf hover:bg-leaf/20"
+                          className="rounded bg-leaf px-2 py-0.5 text-xs font-bold text-white hover:bg-leaf/90"
                         >
                           เลือก
                         </button>
@@ -146,7 +150,7 @@ export function ItemPicker({
                 const alreadyUsed = usedSourceIds.has(ticket.id);
                 const alreadySelected = selectedSourceIds.has(ticket.id);
                 const noCustomer = !ticket.customerName;
-                const amount = ticket.totalAmount ?? 0;
+                const amount = getOcrTransferAmount(ticket);
                 const negative = amount < 0;
                 const disabled = alreadyUsed || noCustomer || negative || Boolean(ticket.reportLockNo);
                 const reportLockReason = ticket.reportLockNo
@@ -174,7 +178,7 @@ export function ItemPicker({
                               amount,
                             })
                           }
-                          className="rounded bg-river/10 px-2 py-0.5 text-xs font-bold text-river hover:bg-river/20"
+                          className="rounded bg-leaf px-2 py-0.5 text-xs font-bold text-white hover:bg-leaf/90"
                         >
                           เลือก
                         </button>

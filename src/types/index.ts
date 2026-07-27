@@ -37,8 +37,12 @@ export type RubberBill = {
   billType: string;
   deductWeight: number;
   weight: number;
+  netWeight: number;
+  weighValueTotal: number;
+  rubberValue: number;
   price: number;
   deductionTotal: number;
+  payableBeforeRounding: number;
   netTotal: number;
   acidPackCount: number;
   configuredPriceSnapshot?: number | null;
@@ -211,6 +215,7 @@ export type IncomeExpenseApprovalReason = "keyword" | "amount_threshold" | "keyw
 export type IncomeExpenseApprovalSettings = {
   appliesTo: IncomeExpenseApprovalAppliesTo;
   approvalMinAmount?: number | null;
+  cashTransferDeleteRequiresApproval: boolean;
   updatedByName?: string | null;
   updatedByPhone?: string | null;
 };
@@ -265,6 +270,9 @@ export type IncomeExpense = {
   incomeSaleItemId?: string | null;
   stockProductId?: string | null;
   stockQuantity?: number | null;
+  saleGroupId?: string | null;
+  saleLineOrder?: number | null;
+  saleExpectedLines?: number | null;
   createdByUserId: string;
   createdByName: string;
   createdByPhone: string;
@@ -418,6 +426,9 @@ export type MoneyTransferItem = {
   sourceId: string;
   customerName: string | null;
   amount: number;
+  netWeightAfterDeduction?: number | null;
+  deductedAmount?: number | null;
+  netPayableAmount?: number | null;
 };
 
 export type MoneyTransfer = {
@@ -464,7 +475,7 @@ export type CashDenominationCounts = {
   banknote1000: number;
 };
 
-export type CashBranchTransferStatus = "pending_receipt" | "received" | "mismatched" | "difference_accepted";
+export type CashBranchTransferStatus = "pending_receipt" | "received";
 
 export type CashBranchTransfer = {
   id: string;
@@ -485,8 +496,29 @@ export type CashBranchTransfer = {
   receivedAt: string | null;
   receivedByName: string | null;
   receivedByPhone: string | null;
-  differenceAcceptReason: string | null;
   reportLockNo?: string | null;
+};
+
+export type CashTransferDeleteRequest = {
+  id: string;
+  transferId: string | null;
+  sourceLocationId: string;
+  sourceLocationName: string;
+  targetLocationId: string;
+  targetLocationName: string;
+  transferDisplayNo: string;
+  sentTotal: number;
+  receivedTotal: number;
+  differenceTotal: number;
+  note: string | null;
+  requestStatus: "pending" | "approved" | "rejected";
+  requestedByName: string;
+  requestedByPhone: string;
+  decidedByName: string | null;
+  decidedByPhone: string | null;
+  decidedAt: string | null;
+  decisionComment: string | null;
+  createdAt: string;
 };
 
 export type TransportStaff = {

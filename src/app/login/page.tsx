@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useAuthContext } from "@/components/AuthProvider";
-import { Eye, EyeOff, Leaf, Loader2, Phone, Lock } from "lucide-react";
+import { Eye, EyeOff, Leaf, Loader2, LogIn, Phone, Lock } from "lucide-react";
 
 export default function LoginPage() {
   const { login, isAuthenticated, isLoading: authLoading } = useAuthContext();
@@ -112,6 +112,7 @@ export default function LoginPage() {
                 tabIndex={-1}
               >
                 {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                {showPassword ? "ซ่อน" : "แสดง"}
               </button>
             </div>
           </div>
@@ -135,6 +136,7 @@ export default function LoginPage() {
                 กำลังดำเนินการ...
               </>
             ) : "เข้าสู่ระบบ"}
+            {!isSubmitting && <LogIn size={18} />}
           </button>
         </form>
 
@@ -149,12 +151,12 @@ export default function LoginPage() {
           display: flex;
           align-items: center;
           justify-content: center;
-          padding: 1rem;
-          background: linear-gradient(135deg, #1a3a2a 0%, #2f6b4f 40%, #3a8c6a 70%, #2f6b4f 100%);
+          padding: 0.75rem;
+          background: #f9faf9;
         }
 
         .login-loader {
-          color: white;
+          color: #2f7d5c;
           display: flex;
           align-items: center;
           justify-content: center;
@@ -163,13 +165,11 @@ export default function LoginPage() {
         .login-card {
           width: 100%;
           max-width: 400px;
-          background: rgba(255, 255, 255, 0.95);
-          backdrop-filter: blur(20px);
-          border-radius: 20px;
-          padding: 2.5rem 2rem;
-          box-shadow:
-            0 25px 50px -12px rgba(0, 0, 0, 0.4),
-            0 0 0 1px rgba(255, 255, 255, 0.1);
+          background: white;
+          border-radius: 12px;
+          padding: 1.5rem;
+          border: 1px solid #d7e5df;
+          box-shadow: 0 12px 32px rgba(32, 48, 40, 0.12);
           animation: slideUp 0.5s ease-out;
         }
 
@@ -195,11 +195,11 @@ export default function LoginPage() {
           justify-content: center;
           width: 64px;
           height: 64px;
-          background: linear-gradient(135deg, #2f6b4f, #3a8c6a);
-          border-radius: 16px;
+          background: #2f7d5c;
+          border-radius: 12px;
           color: white;
           margin-bottom: 1rem;
-          box-shadow: 0 4px 14px rgba(47, 107, 79, 0.4);
+          box-shadow: 0 4px 12px rgba(47, 125, 92, 0.28);
         }
 
         .login-title {
@@ -261,8 +261,8 @@ export default function LoginPage() {
         }
 
         .login-input:focus {
-          border-color: #2f6b4f;
-          box-shadow: 0 0 0 3px rgba(47, 107, 79, 0.15);
+          border-color: #2f7d5c;
+          box-shadow: 0 0 0 3px rgba(47, 125, 92, 0.16);
         }
 
         .login-input:disabled {
@@ -271,7 +271,7 @@ export default function LoginPage() {
         }
 
         .login-input-password {
-          padding-right: 3rem;
+          padding-right: 5.75rem;
         }
 
         .login-eye-btn {
@@ -280,19 +280,23 @@ export default function LoginPage() {
           display: flex;
           align-items: center;
           justify-content: center;
-          width: 36px;
-          height: 36px;
+          gap: 0.25rem;
+          min-width: 4.75rem;
+          height: 40px;
+          padding: 0 0.5rem;
           border: none;
           border-radius: 8px;
-          background: transparent;
-          color: #8a9b8f;
+          background: #586a7c;
+          color: white;
+          font-size: 0.75rem;
+          font-weight: 600;
           cursor: pointer;
           transition: color 0.2s, background 0.2s;
         }
 
         .login-eye-btn:hover {
-          color: #2f6b4f;
-          background: rgba(47, 107, 79, 0.08);
+          color: white;
+          background: #4f6071;
         }
 
         .login-error {
@@ -322,19 +326,19 @@ export default function LoginPage() {
           height: 48px;
           border: none;
           border-radius: 12px;
-          background: linear-gradient(135deg, #2f6b4f, #3a8c6a);
+          background: #2f7d5c;
           color: white;
           font-size: 1rem;
           font-weight: 700;
           cursor: pointer;
           transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
-          box-shadow: 0 4px 14px rgba(47, 107, 79, 0.35);
+          box-shadow: 0 4px 12px rgba(47, 125, 92, 0.28);
           margin-top: 0.25rem;
         }
 
         .login-submit:hover:not(:disabled) {
           transform: translateY(-1px);
-          box-shadow: 0 6px 20px rgba(47, 107, 79, 0.45);
+          box-shadow: 0 6px 18px rgba(47, 125, 92, 0.34);
         }
 
         .login-submit:active:not(:disabled) {
@@ -351,6 +355,30 @@ export default function LoginPage() {
           font-size: 0.75rem;
           color: #8a9b8f;
           margin: 1.5rem 0 0;
+        }
+
+        @media (max-height: 700px) {
+          .login-card {
+            padding-block: 1rem;
+          }
+
+          .login-logo {
+            margin-bottom: 1rem;
+          }
+
+          .login-logo-icon {
+            width: 52px;
+            height: 52px;
+            margin-bottom: 0.5rem;
+          }
+
+          .login-form {
+            gap: 0.875rem;
+          }
+
+          .login-footer {
+            margin-top: 1rem;
+          }
         }
       `}</style>
     </div>

@@ -116,7 +116,7 @@ export function CustomersModule({ online }: { online: boolean }) {
   return (
     <div className="space-y-4">
       {/* Header section with Premium design */}
-      <div className="flex flex-col gap-4 rounded-xl border border-black/10 bg-gradient-to-r from-emerald-500/10 to-teal-500/10 p-5 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:flex-row sm:items-center sm:justify-between sm:p-4">
         <div>
           <h2 className="text-xl font-bold text-ink flex items-center gap-2">
             <Users className="text-leaf" size={24} />
@@ -129,7 +129,7 @@ export function CustomersModule({ online }: { online: boolean }) {
           onClick={openAdd}
           disabled={!online}
           title={online ? "เพิ่มลูกค้าใหม่" : "เพิ่มลูกค้าใช้ได้เมื่อออนไลน์เท่านั้น"}
-          className="focus-ring flex h-11 items-center justify-center gap-2 rounded-lg bg-leaf px-4 font-semibold text-white shadow-md transition-all disabled:cursor-not-allowed disabled:bg-slate-300"
+          className="focus-ring flex h-10 w-full items-center justify-center gap-2 rounded-md bg-leaf px-4 text-sm font-semibold text-white transition-colors disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto"
         >
           <Plus size={18} />
           เพิ่มลูกค้าใหม่
@@ -277,9 +277,10 @@ export function CustomersModule({ online }: { online: boolean }) {
                                 type="button"
                                 onClick={() => { navigator.clipboard.writeText(bank.accountNumber); }}
                                 title="คัดลอกเลขบัญชี"
-                                className="inline-flex items-center justify-center h-4 w-4 rounded hover:bg-black/10 text-ink/40 hover:text-ink/70 transition-colors flex-shrink-0"
+                className="inline-flex h-10 items-center justify-center gap-1 rounded bg-actionSecondary px-2 text-xs font-semibold text-white transition-colors hover:bg-actionSecondary/90"
                               >
                                 <Copy size={9} />
+                                คัดลอก
                               </button>
                             </div>
                             <span className="block text-ink/50 text-[10px] truncate">{bank.accountName}</span>
@@ -324,18 +325,20 @@ export function CustomersModule({ online }: { online: boolean }) {
                         onClick={() => openEdit(cust)}
                         disabled={!online}
                         title={online ? "แก้ไขข้อมูลลูกค้า" : "แก้ไขลูกค้าใช้ได้เมื่อออนไลน์เท่านั้น"}
-                        className="grid h-8 w-8 place-items-center rounded-md bg-field text-ink hover:bg-slate-200 transition-colors disabled:cursor-not-allowed disabled:opacity-45"
+                        className="inline-flex h-10 items-center gap-1.5 rounded-md bg-amber px-3 text-sm font-semibold text-white transition-colors hover:bg-amber/90 disabled:cursor-not-allowed disabled:opacity-45"
                       >
                         <Edit3 size={15} />
+                        แก้ไข
                       </button>
                       <button
                         type="button"
                         onClick={() => confirmDelete(cust)}
                         disabled={!online}
                         title={online ? "ลบข้อมูลลูกค้า" : "ลบลูกค้าใช้ได้เมื่อออนไลน์เท่านั้น"}
-                        className="grid h-8 w-8 place-items-center rounded-md bg-rose-50 text-rose-600 hover:bg-rose-100 transition-colors disabled:cursor-not-allowed disabled:opacity-45"
+                        className="inline-flex h-10 items-center gap-1.5 rounded-md bg-clay px-3 text-sm font-semibold text-white transition-colors hover:bg-clay/90 disabled:cursor-not-allowed disabled:opacity-45"
                       >
                         <Trash2 size={15} />
+                        ลบ
                       </button>
                     </div>
                   </td>
@@ -361,7 +364,7 @@ export function CustomersModule({ online }: { online: boolean }) {
               type="button"
               disabled={currentPage <= 1}
               onClick={() => setPage(currentPage - 1)}
-              className="h-9 px-2.5 rounded-lg border border-black/10 bg-white text-sm font-semibold text-ink hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+              className="h-9 rounded-lg bg-actionSecondary px-2.5 text-sm font-semibold text-white transition-all hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-30"
             >
               ◀ ก่อนหน้า
             </button>
@@ -380,7 +383,7 @@ export function CustomersModule({ online }: { online: boolean }) {
                   className={`h-9 w-9 rounded-lg border text-sm font-semibold transition-all ${
                     currentPage === pageNo
                       ? "border-leaf bg-leaf text-white"
-                      : "border-black/10 bg-white text-ink hover:bg-slate-50"
+                      : "border-actionSecondary bg-actionSecondary text-white hover:bg-actionSecondary/90"
                   }`}
                 >
                   {pageNo}
@@ -391,7 +394,7 @@ export function CustomersModule({ online }: { online: boolean }) {
               type="button"
               disabled={currentPage >= totalPages}
               onClick={() => setPage(currentPage + 1)}
-              className="h-9 px-2.5 rounded-lg border border-black/10 bg-white text-sm font-semibold text-ink hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+              className="h-9 rounded-lg bg-actionSecondary px-2.5 text-sm font-semibold text-white transition-all hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-30"
             >
               ถัดไป ▶
             </button>
@@ -595,7 +598,7 @@ function CustomerModal({
           <button
             type="button"
             onClick={onClose}
-            className="flex h-8 w-8 items-center justify-center rounded-lg bg-field text-ink hover:bg-slate-200 transition-colors text-lg"
+              className="flex h-8 w-8 items-center justify-center rounded-lg bg-actionSecondary text-lg text-white transition-colors hover:bg-actionSecondary/90"
           >
             ×
           </button>
@@ -773,8 +776,8 @@ function CustomerModal({
 
             {/* Bank account table card */}
             <div className="card border rounded-xl overflow-hidden shadow-sm bg-white md:col-span-2">
-              <div className="bg-sky-500/10 border-b px-4 py-2.5 flex items-center justify-between">
-                <span className="text-xs font-bold text-sky-950 flex items-center gap-1">
+              <div className="flex items-center justify-between border-b bg-river/10 px-4 py-2.5">
+                <span className="flex items-center gap-1 text-xs font-bold text-ink">
                   <CreditCard size={14} />
                   บัญชีธนาคารผู้ขาย
                   <span className="text-[10px] font-normal text-ink/50 ml-1">(กำหนดบัญชีหลักได้ 1 บัญชี)</span>
@@ -782,7 +785,7 @@ function CustomerModal({
                 <button
                   type="button"
                   onClick={addBankRow}
-                  className="rounded bg-sky-600 text-white px-2 py-0.5 text-xs font-bold hover:bg-sky-700 active:scale-95 transition-all"
+                  className="rounded bg-river px-2 py-0.5 text-xs font-bold text-white transition-all hover:bg-river/90 active:scale-95"
                 >
                   ➕ เพิ่ม
                 </button>
@@ -809,20 +812,21 @@ function CustomerModal({
                             type="button"
                             onClick={() => setPrimaryBank(b.id)}
                             title={b.isPrimary ? 'บัญชีหลักปัจจุบัน' : 'กำหนดเป็นบัญชีหลัก'}
-                            className={`inline-flex items-center justify-center h-7 w-7 rounded-full transition-all ${
+                            className={`inline-flex h-10 items-center justify-center gap-1 rounded-md px-2 text-xs font-semibold transition-all ${
                               b.isPrimary
                                 ? 'bg-slate-100 text-slate-400 hover:bg-amber-100 hover:text-amber-500'
                                 : 'bg-amber-400 text-white shadow-sm scale-110'
                             }`}
                           >
                             <Star size={13} className={b.isPrimary ? '' : 'fill-white'} />
+                            {b.isPrimary ? "ยกเลิกหลัก" : "ตั้งเป็นหลัก"}
                           </button>
                         </td>
                         <td className="py-1.5 pr-1">
                           <select
                             value={b.bankName}
                             onChange={(e) => updateBankRow(b.id, { bankName: e.target.value })}
-                            className="h-8 w-full rounded border px-1 focus:ring-1 focus:ring-sky-500 focus:outline-none"
+                            className="h-8 w-full rounded border px-1 focus:outline-none focus:ring-1 focus:ring-river"
                           >
                             <option value="ธ.ก.ส.">ธ.ก.ส.</option>
                             <option value="กสิกรไทย">กสิกรไทย</option>
@@ -846,7 +850,7 @@ function CustomerModal({
                             value={b.accountNumber}
                             onChange={(e) => updateBankRow(b.id, { accountNumber: e.target.value.replace(/\D/g, "") })}
                             placeholder="เลขบัญชี"
-                            className="h-8 w-full rounded border px-2 font-mono focus:ring-1 focus:ring-sky-500 focus:outline-none"
+                            className="h-8 w-full rounded border px-2 font-mono focus:outline-none focus:ring-1 focus:ring-river"
                           />
                         </td>
                         <td className="py-1.5 pr-1">
@@ -855,7 +859,7 @@ function CustomerModal({
                             value={b.accountName}
                             onChange={(e) => updateBankRow(b.id, { accountName: e.target.value })}
                             placeholder="ชื่อบัญชี"
-                            className="h-8 w-full rounded border px-2 focus:ring-1 focus:ring-sky-500 focus:outline-none"
+                            className="h-8 w-full rounded border px-2 focus:outline-none focus:ring-1 focus:ring-river"
                           />
                         </td>
                         <td className="py-1.5 text-center">
@@ -901,15 +905,15 @@ function CustomerModal({
 
           {/* Section 3: Farm details */}
           <div className="card border rounded-xl overflow-hidden shadow-sm bg-white">
-            <div className="bg-emerald-500/10 border-b px-4 py-2.5 flex items-center justify-between">
-              <span className="text-xs font-bold text-emerald-950 flex items-center gap-1">
+            <div className="flex items-center justify-between border-b bg-mint/70 px-4 py-2.5">
+              <span className="flex items-center gap-1 text-xs font-bold text-ink">
                 <Home size={14} />
                 ข้อมูลฟาร์ม / ที่อยู่ฟาร์ม / บัตรสมาชิก
               </span>
               <button
                 type="button"
                 onClick={addFarmRow}
-                className="rounded bg-emerald-600 text-white px-2 py-0.5 text-xs font-bold hover:bg-emerald-700 active:scale-95 transition-all"
+                className="rounded bg-leaf px-2 py-0.5 text-xs font-bold text-white transition-all hover:bg-leaf/90 active:scale-95"
               >
                 ➕ เพิ่มข้อมูลฟาร์ม
               </button>
@@ -983,14 +987,14 @@ function CustomerModal({
             <button
               type="button"
               onClick={onClose}
-              className="h-10 rounded-lg bg-field px-4 text-sm font-semibold text-ink hover:bg-slate-200 transition-colors"
+              className="h-10 rounded-lg bg-actionSecondary px-4 text-sm font-semibold text-white transition-colors hover:bg-actionSecondary/90"
             >
               ยกเลิก
             </button>
             <button
               type="submit"
               disabled={!online}
-              className="h-10 rounded-lg bg-leaf px-5 text-sm font-semibold text-white shadow hover:bg-leaf/90 transition-colors flex items-center gap-1.5 disabled:cursor-not-allowed disabled:bg-slate-300"
+              className="h-10 rounded-lg bg-commit px-5 text-sm font-semibold text-white shadow hover:bg-commit/90 transition-colors flex items-center gap-1.5 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               <ShieldCheck size={18} />
               บันทึกข้อมูลลูกค้า

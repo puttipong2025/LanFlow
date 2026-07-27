@@ -13,19 +13,62 @@ SET client_min_messages = warning;
 SET row_security = off;
 
 
+CREATE EXTENSION IF NOT EXISTS "pg_cron" WITH SCHEMA "pg_catalog";
+
+
+
+
+
+
+CREATE EXTENSION IF NOT EXISTS "pg_net" WITH SCHEMA "extensions";
+
+
+
+
+
+
 CREATE SCHEMA IF NOT EXISTS "private";
 
 
 ALTER SCHEMA "private" OWNER TO "postgres";
 
 
-CREATE SCHEMA IF NOT EXISTS "public";
-
-
-ALTER SCHEMA "public" OWNER TO "pg_database_owner";
-
-
 COMMENT ON SCHEMA "public" IS 'standard public schema';
+
+
+
+CREATE EXTENSION IF NOT EXISTS "moddatetime" WITH SCHEMA "extensions";
+
+
+
+
+
+
+CREATE EXTENSION IF NOT EXISTS "pg_stat_statements" WITH SCHEMA "extensions";
+
+
+
+
+
+
+CREATE EXTENSION IF NOT EXISTS "pgcrypto" WITH SCHEMA "extensions";
+
+
+
+
+
+
+CREATE EXTENSION IF NOT EXISTS "supabase_vault" WITH SCHEMA "vault";
+
+
+
+
+
+
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA "extensions";
+
+
+
 
 
 
@@ -905,6 +948,165 @@ $$;
 ALTER FUNCTION "private"."is_super_admin"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."normalize_rubber_bill_calculation_payload"("payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'pg_catalog', 'public'
+    AS $$
+declare
+  v_operation text := payload->>'operation';
+  v_items jsonb := '[]'::jsonb;
+  v_item jsonb;
+  v_item_type text;
+  v_in_weight numeric;
+  v_out_weight numeric;
+  v_row_weight numeric;
+  v_price numeric;
+  v_quantity numeric;
+  v_line_value numeric;
+  v_total_weight numeric := 0;
+  v_total_weigh_value numeric := 0;
+  v_money_deduction_raw numeric := 0;
+  v_deduct_weight numeric;
+  v_net_weight numeric;
+  v_average_price numeric;
+  v_net_rubber_value numeric;
+  v_deduction_total numeric;
+  v_payable_before_rounding numeric;
+  v_weigh_count integer := 0;
+begin
+  if v_operation not in ('create', 'update') then
+    return payload;
+  end if;
+
+  if jsonb_typeof(payload->'items') <> 'array' then
+    raise exception 'items must be an array';
+  end if;
+
+  v_deduct_weight := coalesce(nullif(payload->>'deductWeight', '')::numeric, 0);
+  if v_deduct_weight < 0 or v_deduct_weight <> round(v_deduct_weight, 2) then
+    raise exception 'deductWeight must be non-negative with at most 2 decimal places';
+  end if;
+
+  for v_item in
+    select value from jsonb_array_elements(payload->'items')
+  loop
+    v_item_type := v_item->>'itemType';
+
+    if v_item_type = 'weigh' then
+      v_in_weight := nullif(v_item->>'inWeight', '')::numeric;
+      v_out_weight := nullif(v_item->>'outWeight', '')::numeric;
+
+      if v_in_weight is not null and v_out_weight is not null then
+        if v_in_weight < 0 or v_out_weight < 0 then
+          raise exception 'weigh-row weights must be non-negative';
+        end if;
+        if v_in_weight <> round(v_in_weight, 2)
+           or v_out_weight <> round(v_out_weight, 2) then
+          raise exception 'weigh-row weights must have at most 2 decimal places';
+        end if;
+        v_row_weight := v_in_weight - v_out_weight;
+      else
+        v_row_weight := nullif(v_item->>'netWeight', '')::numeric;
+        if v_row_weight is null or v_row_weight <> round(v_row_weight, 2) then
+          raise exception 'weigh-row net weight must have at most 2 decimal places';
+        end if;
+      end if;
+
+      v_price := nullif(v_item->>'unitPrice', '')::numeric;
+      if v_row_weight <= 0 then
+        raise exception 'weigh-row net weight must be positive';
+      end if;
+      if v_price is null or v_price < 0 or v_price <> round(v_price, 2) then
+        raise exception 'weigh-row price must be non-negative with at most 2 decimal places';
+      end if;
+
+      v_row_weight := round(v_row_weight, 2);
+      v_line_value := v_row_weight * v_price;
+      v_total_weight := v_total_weight + v_row_weight;
+      v_total_weigh_value := v_total_weigh_value + v_line_value;
+      v_weigh_count := v_weigh_count + 1;
+      v_item := v_item || jsonb_build_object(
+        'netWeight', v_row_weight,
+        'totalAmount', round(v_line_value, 2)
+      );
+
+    elsif v_item_type in ('acid', 'stock_deduction') then
+      v_quantity := nullif(v_item->>'quantity', '')::numeric;
+      v_price := nullif(v_item->>'unitPrice', '')::numeric;
+      if v_quantity is null
+         or v_quantity <= 0
+         or v_quantity <> round(v_quantity, 2)
+         or v_price is null
+         or v_price < 0
+         or v_price <> round(v_price, 2) then
+        raise exception 'stock deductions must use non-negative values with at most 2 decimal places';
+      end if;
+
+      v_line_value := v_quantity * v_price;
+      v_money_deduction_raw := v_money_deduction_raw + v_line_value;
+      v_item := v_item || jsonb_build_object(
+        'totalAmount', round(v_line_value, 2)
+      );
+
+    elsif v_item_type = 'debt' then
+      v_line_value := nullif(v_item->>'totalAmount', '')::numeric;
+      if v_line_value is null
+         or v_line_value < 0
+         or v_line_value <> round(v_line_value, 2) then
+        raise exception 'debt deductions must be non-negative with at most 2 decimal places';
+      end if;
+      v_money_deduction_raw := v_money_deduction_raw + v_line_value;
+      v_item := v_item || jsonb_build_object(
+        'totalAmount', round(v_line_value, 2)
+      );
+    end if;
+
+    v_items := v_items || jsonb_build_array(v_item);
+  end loop;
+
+  if v_weigh_count = 0 or v_total_weight <= 0 then
+    raise exception 'at least one positive weigh row is required';
+  end if;
+  if v_deduct_weight >= v_total_weight then
+    raise exception 'deductWeight must be less than total weight';
+  end if;
+
+  v_total_weight := round(v_total_weight, 2);
+  v_total_weigh_value := round(v_total_weigh_value, 4);
+  v_net_weight := trunc(v_total_weight - v_deduct_weight, 2);
+  v_average_price := round(v_total_weigh_value / v_total_weight, 2);
+  v_net_rubber_value := round(
+    v_total_weigh_value * v_net_weight / v_total_weight,
+    2
+  );
+  v_deduction_total := round(v_money_deduction_raw, 2);
+  v_payable_before_rounding := greatest(
+    v_net_rubber_value - v_deduction_total,
+    0
+  );
+
+  return payload || jsonb_build_object(
+    'items', v_items,
+    'weight', v_total_weight,
+    'netWeight', v_net_weight,
+    'rubberValue', v_total_weigh_value,
+    'netRubberValue', v_net_rubber_value,
+    'averagePrice', v_average_price,
+    'deductionTotal', v_deduction_total,
+    'payableBeforeRounding', v_payable_before_rounding,
+    'netTotal', floor(v_payable_before_rounding)
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "private"."normalize_rubber_bill_calculation_payload"("payload" "jsonb") OWNER TO "postgres";
+
+
+COMMENT ON FUNCTION "private"."normalize_rubber_bill_calculation_payload"("payload" "jsonb") IS 'Recalculates Rubber Bill source values from item inputs using the same fixed two-decimal contract as the offline browser.';
+
+
+
 CREATE OR REPLACE FUNCTION "private"."prevent_hard_delete_of_linked_time_tracking_source"() RETURNS "trigger"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -1030,7 +1232,7 @@ CREATE OR REPLACE FUNCTION "private"."reportable_items"("p_location_id" "uuid", 
       and m.transfer_method = 'bank'
       and m.record_status = 'active'
       and m.sync_status = 'synced'
-      and m.transfer_status in ('paid', 'overpaid', 'branch_and_transfer', 'advance_payment')
+      and m.transfer_status in ('paid', 'overpaid', 'branch_and_transfer')
 
     union all
 
@@ -1043,7 +1245,7 @@ CREATE OR REPLACE FUNCTION "private"."reportable_items"("p_location_id" "uuid", 
       and m.transfer_method = 'bank'
       and m.record_status = 'active'
       and m.sync_status = 'synced'
-      and m.transfer_status in ('paid', 'overpaid', 'branch_and_transfer', 'advance_payment')
+      and m.transfer_status in ('paid', 'overpaid', 'branch_and_transfer')
 
     union all
 
@@ -1153,6 +1355,39 @@ $$;
 ALTER FUNCTION "private"."rubber_bill_is_payable"("p_bill_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."rubber_bill_report_blockers"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) RETURNS TABLE("blocker_type" "text", "blocker_id" "uuid")
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select 'zero_price'::text, b.id
+  from public.rubber_bills b
+  where b.location_id = p_location_id
+    and b.record_status = 'active'
+    and b.created_at <= p_cutoff_at
+    and not private.rubber_bill_has_pending_approval(b.id)
+    and exists (
+      select 1
+      from public.rubber_bill_items i
+      where i.bill_id = b.id
+        and i.item_type = 'weigh'
+        and coalesce(i.price, 0) <= 0
+    )
+
+  union all
+
+  select
+    case when r.operation = 'create' then 'pending_create' else 'pending_change' end,
+    r.id
+  from public.rubber_bill_approval_requests r
+  where r.location_id = p_location_id
+    and r.request_status = 'pending'
+    and r.requested_at <= p_cutoff_at
+$$;
+
+
+ALTER FUNCTION "private"."rubber_bill_report_blockers"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."rubber_export_candidates"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) RETURNS TABLE("report_item_id" "uuid", "bill_id" "uuid", "bill_date" "date", "bill_no" "text", "customer_name" "text", "eligibility_at" timestamp with time zone, "net_weight" numeric, "paid_amount" numeric)
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -1164,7 +1399,7 @@ CREATE OR REPLACE FUNCTION "private"."rubber_export_candidates"("p_location_id" 
     coalesce(b.server_bill_no, nullif(b.local_bill_no, ''), nullif(b.bill_no, ''), left(b.id::text, 8)),
     coalesce(b.customer_name, ''),
     i.eligibility_at,
-    round(b.weight - b.deduct_weight, 2),
+    b.net_weight,
     round(b.net_total, 2)
   from public.report_items i
   join public.report_batches r on r.id = i.report_id
@@ -1258,26 +1493,6 @@ $$;
 ALTER FUNCTION "private"."validate_rubber_export_candidates"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "public"."accept_cash_branch_difference"("p_transfer_id" "uuid", "p_reason" "text") RETURNS "jsonb"
-    LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public', 'private'
-    AS $$
-declare actor_id uuid := auth.uid(); actor_name text; actor_phone text;
-begin
-  if not private.is_super_admin() then raise exception 'เฉพาะ super_admin เท่านั้นที่ยอมรับผลต่างได้'; end if;
-  if nullif(btrim(p_reason), '') is null then raise exception 'กรุณาระบุเหตุผลยอมรับผลต่าง'; end if;
-  select name, phone into actor_name, actor_phone from public.profiles where id = actor_id;
-  update public.money_transfer_cash_details set cash_status = 'difference_accepted', difference_accepted_by_user_id = actor_id, difference_accept_reason = btrim(p_reason), difference_accepted_at = now(), updated_at = now()
-  where transfer_id = p_transfer_id and cash_status = 'mismatched';
-  if not found then raise exception 'รายการนี้ไม่อยู่ในสถานะยอดไม่ตรง'; end if;
-  return jsonb_build_object('id', p_transfer_id, 'status', 'synced');
-end;
-$$;
-
-
-ALTER FUNCTION "public"."accept_cash_branch_difference"("p_transfer_id" "uuid", "p_reason" "text") OWNER TO "postgres";
-
-
 CREATE OR REPLACE FUNCTION "public"."approve_rubber_bill_approval_request"("p_request_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -1316,6 +1531,8 @@ begin
   else
     perform pg_advisory_xact_lock(hashtext('rubber-bill-create:' || v_request.client_temp_id));
   end if;
+
+  perform pg_advisory_xact_lock(hashtextextended(v_request.location_id::text, 0));
 
   v_result := public.sync_rubber_bill_core_20260725010000(v_request.proposed_payload);
   if v_result->>'status' <> 'synced' then
@@ -1982,6 +2199,13 @@ begin
   end if;
 
   perform pg_advisory_xact_lock(hashtextextended(p_location_id::text, 0));
+
+  if exists (
+    select 1
+    from private.rubber_bill_report_blockers(p_location_id, v_cutoff_at)
+  ) then
+    raise exception 'RUBBER_BILL_PENDING: ยังมีงานบิลยางที่ต้องจัดการก่อนสร้างรายงาน';
+  end if;
 
   select p.name, p.phone
   into v_actor_name, v_actor_phone
@@ -2689,6 +2913,104 @@ $$;
 ALTER FUNCTION "public"."current_profile_id"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."decide_cash_transfer_delete_request"("p_request_id" "uuid", "p_decision" "text", "p_comment" "text" DEFAULT NULL::"text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  request_row public.cash_transfer_delete_requests%rowtype;
+  decider_id uuid := auth.uid();
+  decider_name text;
+  decider_phone text;
+  report_no text;
+begin
+  if not private.is_active_user()
+    or not private.can_access_super_admin_features()
+  then
+    raise exception 'เฉพาะผู้จัดการระบบเท่านั้นที่อนุมัติหรือปฏิเสธได้';
+  end if;
+  if p_decision not in ('approved', 'rejected') then
+    raise exception 'คำตัดสินไม่ถูกต้อง';
+  end if;
+
+  select * into request_row
+  from public.cash_transfer_delete_requests
+  where id = p_request_id;
+
+  if request_row.id is null then
+    raise exception 'ไม่พบคำขอลบรายการโยกเงิน';
+  end if;
+  if request_row.request_status <> 'pending' then
+    raise exception 'คำขอนี้ถูกดำเนินการแล้ว';
+  end if;
+
+  if request_row.transfer_id is not null then
+    perform 1
+    from public.money_transfers
+    where id = request_row.transfer_id
+      and transfer_type = 'cash'
+      and transfer_method = 'cash'
+    for update;
+    if not found and p_decision = 'approved' then
+      select * into request_row
+      from public.cash_transfer_delete_requests
+      where id = p_request_id
+      for update;
+      if request_row.request_status <> 'pending' then
+        raise exception 'คำขอนี้ถูกดำเนินการแล้ว';
+      end if;
+      raise exception 'ไม่พบรายการเงินสดต้นทาง';
+    end if;
+  end if;
+
+  select * into request_row
+  from public.cash_transfer_delete_requests
+  where id = p_request_id
+  for update;
+
+  if request_row.request_status <> 'pending' then
+    raise exception 'คำขอนี้ถูกดำเนินการแล้ว';
+  end if;
+
+  select name, phone into decider_name, decider_phone
+  from public.profiles
+  where id = decider_id;
+
+  if p_decision = 'approved' then
+    if request_row.transfer_id is null then
+      raise exception 'ไม่พบรายการเงินสดต้นทาง';
+    end if;
+
+    report_no := private.active_transfer_report_no(request_row.transfer_id);
+    if report_no is not null then
+      perform private.raise_report_lock(report_no);
+    end if;
+
+    delete from public.money_transfers
+    where id = request_row.transfer_id;
+  end if;
+
+  update public.cash_transfer_delete_requests
+  set request_status = p_decision,
+      decided_by_user_id = decider_id,
+      decided_by_name = coalesce(decider_name, ''),
+      decided_by_phone = coalesce(decider_phone, ''),
+      decided_at = now(),
+      decision_comment = nullif(btrim(p_comment), ''),
+      updated_at = now()
+  where id = p_request_id;
+
+  return jsonb_build_object(
+    'status', p_decision,
+    'requestId', p_request_id
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."decide_cash_transfer_delete_request"("p_request_id" "uuid", "p_decision" "text", "p_comment" "text") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."decide_income_expense_approval_request"("p_request_id" "uuid", "p_decision" "text", "p_comment" "text" DEFAULT NULL::"text") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public'
@@ -3283,11 +3605,126 @@ CREATE OR REPLACE FUNCTION "public"."delete_cash_branch_transfer"("p_transfer_id
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
     AS $$
+declare
+  transfer_row public.money_transfers%rowtype;
+  cash_row public.money_transfer_cash_details%rowtype;
+  actor_id uuid := auth.uid();
+  actor_name text;
+  actor_phone text;
+  source_name text;
+  target_name text;
+  requires_approval boolean;
+  existing_request_id uuid;
+  request_id uuid;
+  report_no text;
 begin
-  if not private.is_super_admin() then raise exception 'เฉพาะ super_admin เท่านั้นที่ลบรายการเงินสดได้'; end if;
-  delete from public.money_transfers where id = p_transfer_id and transfer_method = 'cash';
-  if not found then raise exception 'ไม่พบรายการเงินสด'; end if;
-  return jsonb_build_object('id', p_transfer_id, 'status', 'synced');
+  if not private.is_active_user() then
+    raise exception 'ไม่มีสิทธิ์ลบรายการเงินสด';
+  end if;
+
+  select * into transfer_row
+  from public.money_transfers
+  where id = p_transfer_id
+  for update;
+
+  if transfer_row.id is null
+    or transfer_row.transfer_type <> 'cash'
+    or transfer_row.transfer_method <> 'cash'
+  then
+    raise exception 'ไม่พบรายการเงินสด';
+  end if;
+
+  if not private.can_manage_location(transfer_row.location_id) then
+    raise exception 'เฉพาะผู้ดูแลสาขาต้นทางหรือผู้จัดการระบบเท่านั้นที่ลบรายการเงินสดได้';
+  end if;
+
+  select * into cash_row
+  from public.money_transfer_cash_details
+  where transfer_id = p_transfer_id
+  for update;
+
+  if cash_row.transfer_id is null then
+    raise exception 'ไม่พบรายละเอียดเงินสด';
+  end if;
+
+  report_no := private.active_transfer_report_no(p_transfer_id);
+  if report_no is not null then
+    perform private.raise_report_lock(report_no);
+  end if;
+
+  select id into existing_request_id
+  from public.cash_transfer_delete_requests
+  where transfer_id = p_transfer_id
+    and request_status = 'pending'
+  for update;
+
+  if existing_request_id is not null then
+    return jsonb_build_object(
+      'id', p_transfer_id,
+      'status', 'pending_approval',
+      'requestId', existing_request_id
+    );
+  end if;
+
+  select coalesce(cash_transfer_delete_requires_approval, true)
+  into requires_approval
+  from public.income_expense_approval_settings
+  where id = true;
+
+  if cash_row.cash_status = 'pending_receipt'
+    or not coalesce(requires_approval, true)
+  then
+    delete from public.money_transfers where id = p_transfer_id;
+    return jsonb_build_object('id', p_transfer_id, 'status', 'deleted');
+  end if;
+
+  select name, phone into actor_name, actor_phone
+  from public.profiles
+  where id = actor_id;
+  select name into source_name
+  from public.locations
+  where id = transfer_row.location_id;
+  select name into target_name
+  from public.locations
+  where id = transfer_row.target_location_id;
+
+  insert into public.cash_transfer_delete_requests (
+    transfer_id,
+    source_location_id,
+    source_location_name,
+    target_location_id,
+    target_location_name,
+    transfer_display_no,
+    sent_total,
+    received_total,
+    difference_total,
+    note,
+    requested_by_user_id,
+    requested_by_name,
+    requested_by_phone
+  )
+  values (
+    p_transfer_id,
+    transfer_row.location_id,
+    coalesce(source_name, 'ไม่ทราบสาขา'),
+    transfer_row.target_location_id,
+    coalesce(target_name, transfer_row.target_location_name, 'ไม่ทราบสาขา'),
+    'CASH-' || left(p_transfer_id::text, 8),
+    cash_row.sent_total,
+    cash_row.received_total,
+    cash_row.difference_total,
+    cash_row.note,
+    actor_id,
+    coalesce(actor_name, ''),
+    coalesce(actor_phone, '')
+  )
+  returning id into request_id;
+
+  return jsonb_build_object(
+    'id', p_transfer_id,
+    'status', 'pending_approval',
+    'requestId', request_id
+  );
 end;
 $$;
 
@@ -3658,6 +4095,177 @@ $$;
 ALTER FUNCTION "public"."get_acid_stock_balance"("p_location_id" "uuid", "p_product_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."get_actionable_badge_counts"() RETURNS TABLE("location_id" "uuid", "module_id" "text", "item_count" bigint)
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_user_id uuid := auth.uid();
+  v_role text;
+  v_can_manage_system boolean;
+  v_can_use_money_transfer boolean;
+begin
+  if v_user_id is null then
+    raise exception 'Authentication required';
+  end if;
+
+  select
+    p.role,
+    p.role = 'super_admin' or p.can_access_super_admin_features = true,
+    p.role = 'super_admin'
+      or p.can_access_super_admin_features = true
+      or p.can_access_money_transfer = true
+  into v_role, v_can_manage_system, v_can_use_money_transfer
+  from public.profiles p
+  where p.id = v_user_id
+    and p.is_active = true;
+
+  if v_role is null then
+    raise exception 'Inactive profile';
+  end if;
+
+  return query
+  with accessible_locations as (
+    select ul.location_id
+    from public.user_locations ul
+    join public.locations l on l.id = ul.location_id and l.is_active = true
+    where ul.user_id = v_user_id
+  ),
+  counts as (
+    select
+      al.location_id,
+      'rubber'::text module_id,
+      count(*)::bigint item_count
+    from accessible_locations al
+    cross join lateral private.rubber_bill_report_blockers(al.location_id, now()) b
+    where v_can_manage_system or b.blocker_type = 'zero_price'
+    group by al.location_id
+
+    union all
+
+    select
+      t.target_location_id,
+      'cash',
+      count(*)::bigint
+    from public.money_transfer_cash_details d
+    join public.money_transfers t on t.id = d.transfer_id
+    join accessible_locations al on al.location_id = t.target_location_id
+    where d.cash_status = 'pending_receipt'
+      and t.record_status <> 'deleted'
+    group by t.target_location_id
+
+    union all
+
+    select r.location_id, 'cash', count(*)::bigint
+    from public.income_expense_approval_requests r
+    join accessible_locations al on al.location_id = r.location_id
+    where v_can_manage_system
+      and r.request_status = 'pending'
+    group by r.location_id
+
+    union all
+
+    select r.source_location_id, 'cash', count(*)::bigint
+    from public.cash_transfer_delete_requests r
+    join accessible_locations al on al.location_id = r.source_location_id
+    where v_can_manage_system
+      and r.request_status = 'pending'
+    group by r.source_location_id
+
+    union all
+
+    select t.location_id, 'money-transfer', count(*)::bigint
+    from public.money_transfers t
+    join accessible_locations al on al.location_id = t.location_id
+    where v_can_use_money_transfer
+      and t.transfer_method = 'bank'
+      and t.transfer_status in ('pending', 'partial', 'advance_payment')
+      and t.record_status <> 'deleted'
+    group by t.location_id
+
+    union all
+
+    select r.location_id, 'acid-stock', count(*)::bigint
+    from public.stock_entry_approval_requests r
+    join accessible_locations al on al.location_id = r.location_id
+    where v_can_manage_system
+      and r.request_status = 'pending'
+    group by r.location_id
+
+    union all
+
+    select al.location_id, 'acid-stock', count(r.id)::bigint
+    from accessible_locations al
+    cross join public.stock_product_approval_requests r
+    where v_can_manage_system
+      and r.request_status = 'pending'
+    group by al.location_id
+
+    union all
+
+    select al.location_id, 'time-tracking', count(requests.id)::bigint
+    from accessible_locations al
+    cross join (
+      select ft.id
+      from public.financial_transactions ft
+      join public.profiles p on p.id = ft.profile_id
+      where ft.status = 'PENDING'
+        and (
+          v_role = 'super_admin'
+          or (
+            v_role = 'admin'
+            and ft.type = 'WITHDRAWAL'
+            and p.role = 'user'
+            and p.is_active
+          )
+        )
+      union all
+      select lr.id
+      from public.leave_requests lr
+      join public.profiles p on p.id = lr.profile_id
+      where lr.status = 'PENDING'
+        and (
+          v_role = 'super_admin'
+          or (v_role = 'admin' and p.role = 'user' and p.is_active)
+        )
+      union all
+      select ps.id
+      from public.payroll_slips ps
+      join public.profiles p on p.id = ps.profile_id
+      where ps.status = 'PENDING'
+        and (
+          v_role = 'super_admin'
+          or (
+            v_role = 'admin'
+            and p.role = 'user'
+            and p.is_active
+            and ps.created_by is distinct from v_user_id
+          )
+        )
+    ) requests
+    group by al.location_id
+
+    union all
+
+    select e.location_id, 'rubber-export', count(*)::bigint
+    from public.rubber_exports e
+    join accessible_locations al on al.location_id = e.location_id
+    where (v_can_manage_system or v_role = 'admin')
+      and e.status = 'draft'
+    group by e.location_id
+  )
+  select c.location_id, c.module_id, sum(c.item_count)::bigint
+  from counts c
+  where c.item_count > 0
+  group by c.location_id, c.module_id
+  order by c.location_id, c.module_id;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_actionable_badge_counts"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."get_income_expense_feed"("p_location_id" "uuid", "p_from_date" "date", "p_to_date" "date", "p_cursor_date" "date" DEFAULT NULL::"date", "p_cursor_key" "text" DEFAULT NULL::"text", "p_page_size" integer DEFAULT 100) RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -3994,6 +4602,97 @@ $$;
 
 
 ALTER FUNCTION "public"."get_income_expense_feed"("p_location_id" "uuid", "p_from_date" "date", "p_to_date" "date", "p_cursor_date" "date", "p_cursor_key" "text", "p_page_size" integer) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_money_transfer_receipt_source_details"("p_transfer_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_location_id uuid;
+  v_items jsonb;
+begin
+  if not private.is_active_user() then
+    raise exception 'Unauthorized or inactive user';
+  end if;
+
+  if not private.can_access_money_transfer_module() then
+    raise exception 'Money transfer module access denied';
+  end if;
+
+  select t.location_id
+  into v_location_id
+  from public.money_transfers t
+  where t.id = p_transfer_id
+    and t.record_status <> 'deleted';
+
+  if v_location_id is null then
+    raise exception 'Money transfer not found';
+  end if;
+
+  if not private.can_access_location(v_location_id) then
+    raise exception 'Location access denied';
+  end if;
+
+  if exists (
+    select 1
+    from public.money_transfer_items i
+    left join public.rubber_bills rb on rb.id = i.rubber_bill_id
+    left join public.ocr_tickets ot on ot.id = i.ocr_ticket_id
+    where i.transfer_id = p_transfer_id
+      and (
+        (i.source_type = 'rubber_bill' and rb.id is null)
+        or (i.source_type = 'ocr_ticket' and ot.id is null)
+        or (i.source_type = 'rubber_bill' and rb.location_id <> v_location_id)
+        or (i.source_type = 'ocr_ticket' and ot.location_id <> v_location_id)
+        or (i.source_type = 'rubber_bill' and rb.record_status = 'deleted')
+        or (i.source_type = 'ocr_ticket' and ot.record_status = 'deleted')
+      )
+  ) then
+    raise exception 'Money transfer source is missing or belongs to another location';
+  end if;
+
+  select coalesce(
+    jsonb_agg(
+      jsonb_build_object(
+        'itemId', i.id,
+        'sourceType', i.source_type,
+        'sourceId', i.source_id,
+        'netWeightAfterDeduction',
+          case
+            when i.source_type = 'rubber_bill' then rb.net_weight
+            else coalesce(ot.weight_remaining, 0)
+          end,
+        'deductedAmount',
+          case
+            when i.source_type = 'rubber_bill' then rb.deduction_total
+            else ot.money_deducted
+          end,
+        'netPayableAmount',
+          case
+            when i.source_type = 'rubber_bill' then rb.net_total
+            else coalesce(ot.total_amount, 0) - coalesce(ot.money_deducted, 0)
+          end
+      )
+      order by i.created_at, i.id
+    ),
+    '[]'::jsonb
+  )
+  into v_items
+  from public.money_transfer_items i
+  left join public.rubber_bills rb on rb.id = i.rubber_bill_id
+  left join public.ocr_tickets ot on ot.id = i.ocr_ticket_id
+  where i.transfer_id = p_transfer_id;
+
+  return jsonb_build_object(
+    'transferId', p_transfer_id,
+    'items', v_items
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_money_transfer_receipt_source_details"("p_transfer_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_report_income_expense_rows"("p_report_id" "uuid") RETURNS TABLE("tx_date" "date", "number" "text", "entry_type" "text", "title" "text", "amount" numeric)
@@ -4587,23 +5286,66 @@ CREATE OR REPLACE FUNCTION "public"."receive_cash_branch_transfer"("p_transfer_i
     SET "search_path" TO 'public', 'private'
     AS $$
 declare
-  transfer_row public.money_transfers%rowtype; counts integer[]; actor_id uuid := auth.uid(); actor_name text; actor_phone text; total numeric; sent numeric;
+  transfer_row public.money_transfers%rowtype;
+  counts integer[];
+  actor_id uuid := auth.uid();
+  actor_name text;
+  actor_phone text;
+  total numeric;
+  sent numeric;
 begin
-  select * into transfer_row from public.money_transfers where id = p_transfer_id for update;
-  if transfer_row.id is null or transfer_row.transfer_method <> 'cash' then raise exception 'ไม่พบรายการเงินสด'; end if;
-  if not private.can_access_location(transfer_row.target_location_id) then raise exception 'ไม่มีสิทธิ์ตรวจรับสาขานี้'; end if;
+  select * into transfer_row
+  from public.money_transfers
+  where id = p_transfer_id
+  for update;
+
+  if transfer_row.id is null or transfer_row.transfer_method <> 'cash' then
+    raise exception 'ไม่พบรายการเงินสด';
+  end if;
+  if not private.can_access_location(transfer_row.target_location_id) then
+    raise exception 'ไม่มีสิทธิ์ตรวจรับสาขานี้';
+  end if;
+
   counts := private.cash_transfer_counts(payload, 'received');
-  select name, phone into actor_name, actor_phone from public.profiles where id = actor_id;
-  update public.money_transfer_cash_details set
-    received_coin_1_count = counts[1], received_coin_2_count = counts[2], received_coin_5_count = counts[3], received_coin_10_count = counts[4],
-    received_banknote_20_count = counts[5], received_banknote_50_count = counts[6], received_banknote_100_count = counts[7], received_banknote_500_count = counts[8], received_banknote_1000_count = counts[9],
-    received_by_user_id = actor_id, received_by_name = coalesce(actor_name, ''), received_by_phone = coalesce(actor_phone, ''), received_at = now(), updated_at = now(),
-    cash_status = case when counts[1] + counts[2] * 2 + counts[3] * 5 + counts[4] * 10 + counts[5] * 20 + counts[6] * 50 + counts[7] * 100 + counts[8] * 500 + counts[9] * 1000 = sent_total then 'received' else 'mismatched' end
-  where transfer_id = p_transfer_id and cash_status = 'pending_receipt'
+  select name, phone into actor_name, actor_phone
+  from public.profiles
+  where id = actor_id;
+
+  update public.money_transfer_cash_details
+  set received_coin_1_count = counts[1],
+      received_coin_2_count = counts[2],
+      received_coin_5_count = counts[3],
+      received_coin_10_count = counts[4],
+      received_banknote_20_count = counts[5],
+      received_banknote_50_count = counts[6],
+      received_banknote_100_count = counts[7],
+      received_banknote_500_count = counts[8],
+      received_banknote_1000_count = counts[9],
+      received_by_user_id = actor_id,
+      received_by_name = coalesce(actor_name, ''),
+      received_by_phone = coalesce(actor_phone, ''),
+      received_at = now(),
+      updated_at = now(),
+      cash_status = 'received'
+  where transfer_id = p_transfer_id
+    and cash_status = 'pending_receipt'
   returning received_total, sent_total into total, sent;
-  if not found then raise exception 'รายการนี้ถูกตรวจรับแล้ว'; end if;
-  update public.money_transfers set transfer_status = 'paid', revision_no = revision_no + 1, updated_at = now() where id = p_transfer_id;
-  return jsonb_build_object('id', p_transfer_id, 'status', 'synced', 'mismatched', total <> sent);
+
+  if not found then
+    raise exception 'รายการนี้ถูกตรวจรับแล้ว';
+  end if;
+
+  update public.money_transfers
+  set transfer_status = 'paid',
+      revision_no = revision_no + 1,
+      updated_at = now()
+  where id = p_transfer_id;
+
+  return jsonb_build_object(
+    'id', p_transfer_id,
+    'status', 'synced',
+    'difference', total - sent
+  );
 end;
 $$;
 
@@ -4684,7 +5426,11 @@ CREATE TABLE IF NOT EXISTS "public"."income_expense" (
     "income_sale_item_id" "uuid",
     "stock_product_id" "uuid",
     "stock_quantity" numeric(12,2),
-    CONSTRAINT "income_expense_bill_option_check" CHECK ((("record_status" = 'deleted'::"public"."record_status") OR (("bill_option" IS NOT NULL) AND ((("type" = 'income'::"public"."transaction_type") AND ("bill_option" = ANY (ARRAY['รายรับ'::"text", 'บิลขาย'::"text"]))) OR (("type" = 'expense'::"public"."transaction_type") AND ("bill_option" = 'ค่าใช้จ่าย'::"text"))))))
+    "sale_group_id" "uuid",
+    "sale_line_order" integer,
+    "sale_expected_lines" integer,
+    CONSTRAINT "income_expense_bill_option_check" CHECK ((("record_status" = 'deleted'::"public"."record_status") OR (("bill_option" IS NOT NULL) AND ((("type" = 'income'::"public"."transaction_type") AND ("bill_option" = ANY (ARRAY['รายรับ'::"text", 'บิลขาย'::"text"]))) OR (("type" = 'expense'::"public"."transaction_type") AND ("bill_option" = 'ค่าใช้จ่าย'::"text")))))),
+    CONSTRAINT "income_expense_sale_group_shape_check" CHECK (((("sale_group_id" IS NULL) AND ("sale_line_order" IS NULL) AND ("sale_expected_lines" IS NULL)) OR (("sale_group_id" IS NOT NULL) AND ("sale_line_order" >= 1) AND ("sale_expected_lines" >= 1) AND ("bill_option" = 'บิลขาย'::"text"))))
 );
 
 
@@ -4876,7 +5622,7 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_bills" (
     "bill_type" "text" NOT NULL,
     "deduct_weight" numeric(12,2) DEFAULT 0 NOT NULL,
     "weight" numeric(12,2) DEFAULT 0 NOT NULL,
-    "rubber_value" numeric(12,2) DEFAULT 0 NOT NULL,
+    "rubber_value" numeric(14,4) DEFAULT 0 NOT NULL,
     "average_price" numeric(12,2) DEFAULT 0 NOT NULL,
     "deduction_total" numeric(12,2) DEFAULT 0 NOT NULL,
     "net_total" numeric(12,2) DEFAULT 0 NOT NULL,
@@ -4898,13 +5644,61 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_bills" (
     "approval_state" "text" DEFAULT 'not_required'::"text" NOT NULL,
     "approved_by_name" "text",
     "approval_revision_no" integer,
+    "net_weight" numeric(12,2) GENERATED ALWAYS AS ("trunc"(GREATEST(("weight" - "deduct_weight"), (0)::numeric), 2)) STORED,
+    "net_rubber_value" numeric(14,2) GENERATED ALWAYS AS (
+CASE
+    WHEN ("weight" > (0)::numeric) THEN "round"((("rubber_value" * "trunc"(GREATEST(("weight" - "deduct_weight"), (0)::numeric), 2)) / "weight"), 2)
+    ELSE (0)::numeric
+END) STORED,
+    "payable_before_rounding" numeric(14,2) GENERATED ALWAYS AS (GREATEST((
+CASE
+    WHEN ("weight" > (0)::numeric) THEN "round"((("rubber_value" * "trunc"(GREATEST(("weight" - "deduct_weight"), (0)::numeric), 2)) / "weight"), 2)
+    ELSE (0)::numeric
+END - "deduction_total"), (0)::numeric)) STORED,
     CONSTRAINT "rubber_bills_approval_revision_shape_check" CHECK (((("approval_state" = 'not_required'::"text") AND ("approved_by_name" IS NULL) AND ("approval_revision_no" IS NULL)) OR (("approval_state" = 'approved'::"text") AND ("approved_by_name" IS NOT NULL) AND ("approval_revision_no" = "revision_no")))),
     CONSTRAINT "rubber_bills_approval_state_check" CHECK (("approval_state" = ANY (ARRAY['not_required'::"text", 'approved'::"text"]))),
-    CONSTRAINT "rubber_bills_configured_price_snapshot_check" CHECK ((("configured_price_snapshot" IS NULL) OR ("configured_price_snapshot" >= (0)::numeric)))
+    CONSTRAINT "rubber_bills_configured_price_snapshot_check" CHECK ((("configured_price_snapshot" IS NULL) OR ("configured_price_snapshot" >= (0)::numeric))),
+    CONSTRAINT "rubber_bills_deduct_weight_range_check" CHECK ((("deduct_weight" >= (0)::numeric) AND ("deduct_weight" < "weight"))),
+    CONSTRAINT "rubber_bills_money_values_nonnegative_check" CHECK ((("rubber_value" >= (0)::numeric) AND ("average_price" >= (0)::numeric) AND ("deduction_total" >= (0)::numeric) AND ("net_total" >= (0)::numeric))),
+    CONSTRAINT "rubber_bills_net_total_formula_check" CHECK (("net_total" = "floor"("payable_before_rounding"))),
+    CONSTRAINT "rubber_bills_net_total_whole_baht_check" CHECK (("net_total" = "trunc"("net_total"))),
+    CONSTRAINT "rubber_bills_weight_positive_check" CHECK (("weight" > (0)::numeric))
 );
 
 
 ALTER TABLE "public"."rubber_bills" OWNER TO "postgres";
+
+
+COMMENT ON COLUMN "public"."rubber_bills"."deduct_weight" IS 'Single bill-level weight deduction entered by the user.';
+
+
+
+COMMENT ON COLUMN "public"."rubber_bills"."weight" IS 'Sum of weigh-row net weights before the single bill-level weight deduction.';
+
+
+
+COMMENT ON COLUMN "public"."rubber_bills"."rubber_value" IS 'Exact weigh-row value total before applying the bill-level weight proportion.';
+
+
+
+COMMENT ON COLUMN "public"."rubber_bills"."deduction_total" IS 'Money deductions only (stock and debt); excludes the bill-level weight deduction.';
+
+
+
+COMMENT ON COLUMN "public"."rubber_bills"."net_total" IS 'Actual customer payable amount floored to whole baht.';
+
+
+
+COMMENT ON COLUMN "public"."rubber_bills"."net_weight" IS 'Bill net weight: total weigh-row weight minus the bill-level weight deduction.';
+
+
+
+COMMENT ON COLUMN "public"."rubber_bills"."net_rubber_value" IS 'Rubber value after applying the bill net-weight proportion, rounded half-up to 2 decimals.';
+
+
+
+COMMENT ON COLUMN "public"."rubber_bills"."payable_before_rounding" IS 'Net rubber value minus money deductions before whole-baht flooring.';
+
 
 
 CREATE OR REPLACE FUNCTION "public"."report_lock_no"("source_row" "public"."rubber_bills") RETURNS "text"
@@ -5369,6 +6163,158 @@ CREATE OR REPLACE FUNCTION "public"."sync_income_expense"("payload" "jsonb") RET
     SET "search_path" TO 'public'
     AS $$
 declare
+  v_result jsonb;
+  v_operation text := payload->>'operation';
+  v_bill_option text := payload->>'billOption';
+  v_client_temp_id text := payload->>'clientTempId';
+  v_location_id uuid := nullif(payload->>'locationId', '')::uuid;
+  v_idempotency_key text := payload->>'idempotencyKey';
+  v_previous_location_id uuid;
+  v_sale_group_id uuid;
+  v_previous_sale_group_id uuid;
+  v_previous_sale_line_order integer;
+  v_previous_sale_expected_lines integer;
+  v_sale_line_order integer;
+  v_sale_expected_lines integer;
+  v_remaining_lines integer;
+begin
+  if v_operation in ('update', 'delete') then
+    perform pg_advisory_xact_lock(hashtext('income_expense:' || v_client_temp_id));
+    select location_id, sale_group_id, sale_line_order, sale_expected_lines
+      into v_previous_location_id, v_previous_sale_group_id,
+           v_previous_sale_line_order, v_previous_sale_expected_lines
+    from public.income_expense
+    where client_temp_id = v_client_temp_id;
+
+    if v_previous_location_id is not null
+       and v_previous_location_id is distinct from v_location_id then
+      return jsonb_build_object(
+        'status', 'failed',
+        'errorMessage', 'ไม่สามารถย้ายรายการรับ-จ่ายข้ามสาขาได้'
+      );
+    end if;
+  end if;
+
+  if v_operation in ('create', 'update') and v_bill_option = 'บิลขาย' then
+    v_sale_group_id := nullif(payload->>'saleGroupId', '')::uuid;
+    v_sale_line_order := nullif(payload->>'saleLineOrder', '')::integer;
+    v_sale_expected_lines := nullif(payload->>'saleExpectedLines', '')::integer;
+
+    if v_sale_group_id is null
+       or v_sale_line_order is null
+       or v_sale_expected_lines is null
+       or v_sale_line_order < 1
+       or v_sale_expected_lines < 1 then
+      return jsonb_build_object(
+        'status', 'failed',
+        'errorMessage', 'ข้อมูลกลุ่มบิลขายไม่ถูกต้อง'
+      );
+    end if;
+    if v_operation = 'update'
+       and v_previous_sale_group_id is not null
+       and v_sale_group_id is distinct from v_previous_sale_group_id then
+      return jsonb_build_object(
+        'status', 'failed',
+        'errorMessage', 'ไม่สามารถย้ายรายการไปกลุ่มบิลขายอื่นได้'
+      );
+    end if;
+  elsif v_operation = 'delete' then
+    v_sale_group_id := v_previous_sale_group_id;
+  end if;
+
+  if v_previous_sale_group_id is not null then
+    perform pg_advisory_xact_lock(
+      hashtext('income-sale-group:' || v_previous_location_id::text || ':' || v_previous_sale_group_id::text)
+    );
+  end if;
+  if v_sale_group_id is not null
+     and v_sale_group_id is distinct from v_previous_sale_group_id then
+    perform pg_advisory_xact_lock(
+      hashtext('income-sale-group:' || v_location_id::text || ':' || v_sale_group_id::text)
+    );
+  end if;
+
+  if v_operation = 'update'
+     and v_previous_sale_group_id is not null
+     and v_bill_option <> 'บิลขาย' then
+    update public.income_expense
+    set sale_group_id = null,
+        sale_line_order = null,
+        sale_expected_lines = null
+    where client_temp_id = v_client_temp_id
+      and location_id = v_previous_location_id;
+  end if;
+
+  v_result := public.sync_income_expense_core(payload);
+  if coalesce(v_result->>'status', '') <> 'synced' then
+    if v_operation = 'update'
+       and v_previous_sale_group_id is not null
+       and v_bill_option <> 'บิลขาย' then
+      update public.income_expense
+      set sale_group_id = v_previous_sale_group_id,
+          sale_line_order = v_previous_sale_line_order,
+          sale_expected_lines = v_previous_sale_expected_lines
+      where client_temp_id = v_client_temp_id
+        and location_id = v_previous_location_id;
+    end if;
+    return v_result;
+  end if;
+
+  if v_operation in ('create', 'update') then
+    update public.income_expense
+    set sale_group_id = case when v_bill_option = 'บิลขาย' then v_sale_group_id else null end,
+        sale_line_order = case when v_bill_option = 'บิลขาย' then v_sale_line_order else null end,
+        sale_expected_lines = case when v_bill_option = 'บิลขาย' then v_sale_expected_lines else null end
+    where client_temp_id = v_client_temp_id
+      and location_id = v_location_id
+      and idempotency_key = v_idempotency_key;
+
+    if v_operation = 'update'
+       and v_previous_sale_group_id is not null
+       and v_previous_sale_group_id is distinct from v_sale_group_id then
+      select count(*)::integer
+        into v_remaining_lines
+      from public.income_expense
+      where location_id = v_previous_location_id
+        and sale_group_id = v_previous_sale_group_id
+        and record_status = 'active';
+
+      update public.income_expense
+      set sale_expected_lines = v_remaining_lines
+      where location_id = v_previous_location_id
+        and sale_group_id = v_previous_sale_group_id
+        and record_status = 'active';
+    end if;
+  elsif v_operation = 'delete' and v_previous_sale_group_id is not null then
+    select count(*)::integer
+      into v_remaining_lines
+    from public.income_expense
+    where location_id = v_previous_location_id
+      and sale_group_id = v_previous_sale_group_id
+      and record_status = 'active';
+
+    update public.income_expense
+    set sale_expected_lines = v_remaining_lines
+    where location_id = v_previous_location_id
+      and sale_group_id = v_previous_sale_group_id
+      and record_status = 'active';
+  end if;
+
+  return v_result;
+exception when others then
+  return jsonb_build_object('status', 'failed', 'errorMessage', sqlerrm);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."sync_income_expense"("payload" "jsonb") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."sync_income_expense_core"("payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
   v_operation text;
   v_expected_revision integer;
   v_client_temp_id text;
@@ -5678,7 +6624,70 @@ end;
 $$;
 
 
-ALTER FUNCTION "public"."sync_income_expense"("payload" "jsonb") OWNER TO "postgres";
+ALTER FUNCTION "public"."sync_income_expense_core"("payload" "jsonb") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."sync_money_transfer_item_source_fks"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_transfer_location_id uuid;
+  v_source_location_id uuid;
+begin
+  select t.location_id
+  into v_transfer_location_id
+  from public.money_transfers t
+  where t.id = new.transfer_id
+    and t.record_status <> 'deleted'
+  for update;
+
+  if v_transfer_location_id is null then
+    raise exception 'money transfer not found';
+  end if;
+
+  if new.source_type = 'rubber_bill' then
+    if new.rubber_bill_id is not null and new.rubber_bill_id <> new.source_id then
+      raise exception 'rubber_bill_id must match source_id';
+    end if;
+    new.rubber_bill_id := new.source_id;
+    new.ocr_ticket_id := null;
+    select rb.location_id
+    into v_source_location_id
+    from public.rubber_bills rb
+    where rb.id = new.rubber_bill_id
+      and rb.record_status <> 'deleted'
+    for update;
+  elsif new.source_type = 'ocr_ticket' then
+    if new.ocr_ticket_id is not null and new.ocr_ticket_id <> new.source_id then
+      raise exception 'ocr_ticket_id must match source_id';
+    end if;
+    new.rubber_bill_id := null;
+    new.ocr_ticket_id := new.source_id;
+    select ot.location_id
+    into v_source_location_id
+    from public.ocr_tickets ot
+    where ot.id = new.ocr_ticket_id
+      and ot.record_status <> 'deleted'
+    for update;
+  else
+    raise exception 'unsupported money transfer source type: %', new.source_type;
+  end if;
+
+  if v_source_location_id is null then
+    raise exception 'money transfer source not found';
+  end if;
+
+  if v_source_location_id <> v_transfer_location_id then
+    raise exception 'money transfer source must belong to the transfer location';
+  end if;
+
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."sync_money_transfer_item_source_fks"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."sync_rubber_bill"("payload" "jsonb") RETURNS "jsonb"
@@ -5728,6 +6737,10 @@ begin
      or not public.can_access_location(v_location_id) then
     return jsonb_build_object('status', 'failed', 'errorMessage', 'Location access denied or invalid identity');
   end if;
+
+  payload := private.normalize_rubber_bill_calculation_payload(payload);
+
+  perform pg_advisory_xact_lock(hashtextextended(v_location_id::text, 0));
 
   select name, phone
     into v_actor_name, v_actor_phone
@@ -6028,6 +7041,7 @@ declare
   v_current_balance numeric;
   v_projected_balance numeric;
 begin
+  payload := private.normalize_rubber_bill_calculation_payload(payload);
   v_active_user := private.is_active_user();
   if not coalesce(v_active_user, false) then
     return jsonb_build_object('status', 'failed', 'errorMessage', 'Unauthorized or inactive user');
@@ -6831,6 +7845,39 @@ UNION ALL
 ALTER VIEW "public"."acid_stock_movements" OWNER TO "postgres";
 
 
+CREATE TABLE IF NOT EXISTS "public"."cash_transfer_delete_requests" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "transfer_id" "uuid",
+    "source_location_id" "uuid" NOT NULL,
+    "source_location_name" "text" NOT NULL,
+    "target_location_id" "uuid" NOT NULL,
+    "target_location_name" "text" NOT NULL,
+    "transfer_display_no" "text" NOT NULL,
+    "sent_total" numeric(12,2) NOT NULL,
+    "received_total" numeric(12,2) NOT NULL,
+    "difference_total" numeric(12,2) NOT NULL,
+    "note" "text",
+    "request_status" "text" DEFAULT 'pending'::"text" NOT NULL,
+    "requested_by_user_id" "uuid" NOT NULL,
+    "requested_by_name" "text" NOT NULL,
+    "requested_by_phone" "text" NOT NULL,
+    "decided_by_user_id" "uuid",
+    "decided_by_name" "text",
+    "decided_by_phone" "text",
+    "decided_at" timestamp with time zone,
+    "decision_comment" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "cash_transfer_delete_requests_check" CHECK (((("request_status" = 'pending'::"text") AND ("decided_by_user_id" IS NULL) AND ("decided_at" IS NULL)) OR (("request_status" = ANY (ARRAY['approved'::"text", 'rejected'::"text"])) AND ("decided_by_user_id" IS NOT NULL) AND ("decided_at" IS NOT NULL)))),
+    CONSTRAINT "cash_transfer_delete_requests_received_total_check" CHECK (("received_total" >= (0)::numeric)),
+    CONSTRAINT "cash_transfer_delete_requests_request_status_check" CHECK (("request_status" = ANY (ARRAY['pending'::"text", 'approved'::"text", 'rejected'::"text"]))),
+    CONSTRAINT "cash_transfer_delete_requests_sent_total_check" CHECK (("sent_total" > (0)::numeric))
+);
+
+
+ALTER TABLE "public"."cash_transfer_delete_requests" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "public"."customer_bank_accounts" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "customer_id" "uuid" NOT NULL,
@@ -6971,6 +8018,7 @@ CREATE TABLE IF NOT EXISTS "public"."income_expense_approval_settings" (
     "updated_by_phone" "text",
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "cash_transfer_delete_requires_approval" boolean DEFAULT true NOT NULL,
     CONSTRAINT "income_expense_approval_settings_applies_to_check" CHECK (("applies_to" = ANY (ARRAY['income'::"text", 'expense'::"text", 'both'::"text"]))),
     CONSTRAINT "income_expense_approval_settings_id_check" CHECK ("id")
 );
@@ -7056,10 +8104,9 @@ END) STORED,
     "difference_accepted_at" timestamp with time zone,
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    CONSTRAINT "money_transfer_cash_details_cash_status_check" CHECK (("cash_status" = ANY (ARRAY['pending_receipt'::"text", 'received'::"text", 'mismatched'::"text", 'difference_accepted'::"text"]))),
-    CONSTRAINT "money_transfer_cash_details_check" CHECK (((("cash_status" = 'pending_receipt'::"text") AND ("num_nonnulls"("received_coin_1_count", "received_coin_2_count", "received_coin_5_count", "received_coin_10_count", "received_banknote_20_count", "received_banknote_50_count", "received_banknote_100_count", "received_banknote_500_count", "received_banknote_1000_count") = 0) AND ("received_by_user_id" IS NULL) AND ("received_at" IS NULL)) OR (("cash_status" = ANY (ARRAY['received'::"text", 'mismatched'::"text", 'difference_accepted'::"text"])) AND ("num_nonnulls"("received_coin_1_count", "received_coin_2_count", "received_coin_5_count", "received_coin_10_count", "received_banknote_20_count", "received_banknote_50_count", "received_banknote_100_count", "received_banknote_500_count", "received_banknote_1000_count") = 9) AND ("received_by_user_id" IS NOT NULL) AND ("received_at" IS NOT NULL)))),
-    CONSTRAINT "money_transfer_cash_details_check1" CHECK (((("cash_status" = 'pending_receipt'::"text") AND ("difference_total" IS NULL)) OR (("cash_status" = 'received'::"text") AND ("difference_total" = (0)::numeric)) OR (("cash_status" = ANY (ARRAY['mismatched'::"text", 'difference_accepted'::"text"])) AND ("difference_total" <> (0)::numeric)))),
-    CONSTRAINT "money_transfer_cash_details_check2" CHECK ((("cash_status" <> 'difference_accepted'::"text") OR (("difference_accepted_by_user_id" IS NOT NULL) AND (NULLIF("btrim"("difference_accept_reason"), ''::"text") IS NOT NULL) AND ("difference_accepted_at" IS NOT NULL)))),
+    CONSTRAINT "money_transfer_cash_details_cash_status_check" CHECK (("cash_status" = ANY (ARRAY['pending_receipt'::"text", 'received'::"text"]))),
+    CONSTRAINT "money_transfer_cash_details_difference_shape_check" CHECK (((("cash_status" = 'pending_receipt'::"text") AND ("difference_total" IS NULL)) OR (("cash_status" = 'received'::"text") AND ("difference_total" IS NOT NULL)))),
+    CONSTRAINT "money_transfer_cash_details_receipt_shape_check" CHECK (((("cash_status" = 'pending_receipt'::"text") AND ("num_nonnulls"("received_coin_1_count", "received_coin_2_count", "received_coin_5_count", "received_coin_10_count", "received_banknote_20_count", "received_banknote_50_count", "received_banknote_100_count", "received_banknote_500_count", "received_banknote_1000_count") = 0) AND ("received_by_user_id" IS NULL) AND ("received_at" IS NULL)) OR (("cash_status" = 'received'::"text") AND ("num_nonnulls"("received_coin_1_count", "received_coin_2_count", "received_coin_5_count", "received_coin_10_count", "received_banknote_20_count", "received_banknote_50_count", "received_banknote_100_count", "received_banknote_500_count", "received_banknote_1000_count") = 9) AND ("received_by_user_id" IS NOT NULL) AND ("received_at" IS NOT NULL)))),
     CONSTRAINT "money_transfer_cash_details_received_banknote_1000_count_check" CHECK (("received_banknote_1000_count" >= 0)),
     CONSTRAINT "money_transfer_cash_details_received_banknote_100_count_check" CHECK (("received_banknote_100_count" >= 0)),
     CONSTRAINT "money_transfer_cash_details_received_banknote_20_count_check" CHECK (("received_banknote_20_count" >= 0)),
@@ -7078,7 +8125,8 @@ END) STORED,
     CONSTRAINT "money_transfer_cash_details_sent_coin_1_count_check" CHECK (("sent_coin_1_count" >= 0)),
     CONSTRAINT "money_transfer_cash_details_sent_coin_2_count_check" CHECK (("sent_coin_2_count" >= 0)),
     CONSTRAINT "money_transfer_cash_details_sent_coin_5_count_check" CHECK (("sent_coin_5_count" >= 0)),
-    CONSTRAINT "money_transfer_cash_details_sent_total_check" CHECK (("sent_total" > (0)::numeric))
+    CONSTRAINT "money_transfer_cash_details_sent_total_check" CHECK (("sent_total" > (0)::numeric)),
+    CONSTRAINT "money_transfer_cash_details_sent_total_positive_check" CHECK (("sent_total" > (0)::numeric))
 );
 
 
@@ -7093,6 +8141,9 @@ CREATE TABLE IF NOT EXISTS "public"."money_transfer_items" (
     "customer_name" "text",
     "amount" numeric(12,2) DEFAULT 0 NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "rubber_bill_id" "uuid",
+    "ocr_ticket_id" "uuid",
+    CONSTRAINT "money_transfer_items_source_fk_shape_check" CHECK (((("source_type" = 'rubber_bill'::"text") AND ("rubber_bill_id" IS NOT NULL) AND ("rubber_bill_id" = "source_id") AND ("ocr_ticket_id" IS NULL)) OR (("source_type" = 'ocr_ticket'::"text") AND ("ocr_ticket_id" IS NOT NULL) AND ("ocr_ticket_id" = "source_id") AND ("rubber_bill_id" IS NULL)))),
     CONSTRAINT "money_transfer_items_source_type_check" CHECK (("source_type" = ANY (ARRAY['rubber_bill'::"text", 'ocr_ticket'::"text"])))
 );
 
@@ -7316,7 +8367,7 @@ CREATE TABLE IF NOT EXISTS "public"."telegram_badge_settings" (
     "start_time" time without time zone DEFAULT '08:00:00'::time without time zone NOT NULL,
     "end_time" time without time zone DEFAULT '20:00:00'::time without time zone NOT NULL,
     "interval_minutes" integer DEFAULT 60 NOT NULL,
-    "enabled_badge_keys" "text"[] DEFAULT ARRAY['rubber_bill_approval_pending'::"text", 'income_expense_approval_pending'::"text", 'cash_transfer_pending_receipt'::"text", 'cash_transfer_mismatched'::"text", 'stock_approval_pending'::"text", 'money_transfer_pending'::"text", 'money_transfer_partial'::"text", 'money_transfer_advance'::"text", 'time_tracking_approval_pending'::"text", 'rubber_export_draft'::"text"] NOT NULL,
+    "enabled_badge_keys" "text"[] DEFAULT ARRAY['rubber_bill_approval_pending'::"text", 'income_expense_approval_pending'::"text", 'cash_transfer_pending_receipt'::"text", 'stock_approval_pending'::"text", 'money_transfer_pending'::"text", 'money_transfer_partial'::"text", 'money_transfer_advance'::"text", 'time_tracking_approval_pending'::"text", 'rubber_export_draft'::"text"] NOT NULL,
     "bot_token_secret_id" "uuid",
     "dispatch_secret_id" "uuid",
     "edge_url_secret_id" "uuid",
@@ -7437,6 +8488,11 @@ ALTER TABLE "public"."user_locations" OWNER TO "postgres";
 
 ALTER TABLE ONLY "public"."stock_products"
     ADD CONSTRAINT "acid_products_name_key" UNIQUE ("name");
+
+
+
+ALTER TABLE ONLY "public"."cash_transfer_delete_requests"
+    ADD CONSTRAINT "cash_transfer_delete_requests_pkey" PRIMARY KEY ("id");
 
 
 
@@ -7795,7 +8851,15 @@ ALTER TABLE ONLY "public"."user_locations"
 
 
 
-CREATE INDEX "cash_transfer_pending_digest" ON "public"."money_transfer_cash_details" USING "btree" ("transfer_id") WHERE ("cash_status" = ANY (ARRAY['pending_receipt'::"text", 'mismatched'::"text"]));
+CREATE UNIQUE INDEX "cash_transfer_delete_requests_one_pending" ON "public"."cash_transfer_delete_requests" USING "btree" ("transfer_id") WHERE (("request_status" = 'pending'::"text") AND ("transfer_id" IS NOT NULL));
+
+
+
+CREATE INDEX "cash_transfer_delete_requests_status_created" ON "public"."cash_transfer_delete_requests" USING "btree" ("request_status", "created_at" DESC);
+
+
+
+CREATE INDEX "cash_transfer_pending_digest" ON "public"."money_transfer_cash_details" USING "btree" ("transfer_id") WHERE ("cash_status" = 'pending_receipt'::"text");
 
 
 
@@ -7820,6 +8884,10 @@ CREATE INDEX "idx_stock_entries_location_active" ON "public"."stock_entries" USI
 
 
 CREATE INDEX "idx_stock_entries_product_location" ON "public"."stock_entries" USING "btree" ("product_id", "location_id");
+
+
+
+CREATE UNIQUE INDEX "income_expense_active_sale_group_line_uidx" ON "public"."income_expense" USING "btree" ("location_id", "sale_group_id", "sale_line_order") WHERE (("record_status" = 'active'::"public"."record_status") AND ("sale_group_id" IS NOT NULL));
 
 
 
@@ -8007,6 +9075,10 @@ CREATE OR REPLACE TRIGGER "income_expense_lock_location" BEFORE UPDATE ON "publi
 
 
 
+CREATE OR REPLACE TRIGGER "money_transfer_items_sync_source_fks" BEFORE INSERT OR UPDATE OF "source_type", "source_id", "rubber_bill_id", "ocr_ticket_id" ON "public"."money_transfer_items" FOR EACH ROW EXECUTE FUNCTION "public"."sync_money_transfer_item_source_fks"();
+
+
+
 CREATE OR REPLACE TRIGGER "ocr_tickets_transfer_relation_delete_lock" BEFORE DELETE ON "public"."ocr_tickets" FOR EACH ROW EXECUTE FUNCTION "public"."prevent_locked_ocr_ticket_change"();
 
 
@@ -8108,6 +9180,31 @@ ALTER TABLE ONLY "public"."stock_entries"
 
 ALTER TABLE ONLY "public"."stock_entries"
     ADD CONSTRAINT "acid_stock_entries_product_id_fkey" FOREIGN KEY ("product_id") REFERENCES "public"."stock_products"("id");
+
+
+
+ALTER TABLE ONLY "public"."cash_transfer_delete_requests"
+    ADD CONSTRAINT "cash_transfer_delete_requests_decided_by_user_id_fkey" FOREIGN KEY ("decided_by_user_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."cash_transfer_delete_requests"
+    ADD CONSTRAINT "cash_transfer_delete_requests_requested_by_user_id_fkey" FOREIGN KEY ("requested_by_user_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."cash_transfer_delete_requests"
+    ADD CONSTRAINT "cash_transfer_delete_requests_source_location_id_fkey" FOREIGN KEY ("source_location_id") REFERENCES "public"."locations"("id");
+
+
+
+ALTER TABLE ONLY "public"."cash_transfer_delete_requests"
+    ADD CONSTRAINT "cash_transfer_delete_requests_target_location_id_fkey" FOREIGN KEY ("target_location_id") REFERENCES "public"."locations"("id");
+
+
+
+ALTER TABLE ONLY "public"."cash_transfer_delete_requests"
+    ADD CONSTRAINT "cash_transfer_delete_requests_transfer_id_fkey" FOREIGN KEY ("transfer_id") REFERENCES "public"."money_transfers"("id") ON DELETE SET NULL;
 
 
 
@@ -8273,6 +9370,16 @@ ALTER TABLE ONLY "public"."money_transfer_cash_details"
 
 ALTER TABLE ONLY "public"."money_transfer_cash_details"
     ADD CONSTRAINT "money_transfer_cash_details_transfer_id_fkey" FOREIGN KEY ("transfer_id") REFERENCES "public"."money_transfers"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."money_transfer_items"
+    ADD CONSTRAINT "money_transfer_items_ocr_ticket_fk" FOREIGN KEY ("ocr_ticket_id") REFERENCES "public"."ocr_tickets"("id") ON DELETE RESTRICT;
+
+
+
+ALTER TABLE ONLY "public"."money_transfer_items"
+    ADD CONSTRAINT "money_transfer_items_rubber_bill_fk" FOREIGN KEY ("rubber_bill_id") REFERENCES "public"."rubber_bills"("id") ON DELETE RESTRICT;
 
 
 
@@ -8620,6 +9727,13 @@ CREATE POLICY "cash details source or target select" ON "public"."money_transfer
    FROM "public"."money_transfers" "t"
   WHERE (("t"."id" = "money_transfer_cash_details"."transfer_id") AND ("private"."can_access_location"("t"."location_id") OR "private"."can_access_location"("t"."target_location_id"))))));
 
+
+
+CREATE POLICY "cash transfer delete requests read" ON "public"."cash_transfer_delete_requests" FOR SELECT TO "authenticated" USING (("private"."can_access_super_admin_features"() OR ("requested_by_user_id" = "auth"."uid"()) OR "private"."can_access_location"("source_location_id")));
+
+
+
+ALTER TABLE "public"."cash_transfer_delete_requests" ENABLE ROW LEVEL SECURITY;
 
 
 ALTER TABLE "public"."customer_bank_accounts" ENABLE ROW LEVEL SECURITY;
@@ -9064,6 +10178,17 @@ CREATE POLICY "user_locations_update_scoped_admin" ON "public"."user_locations" 
 
 
 
+
+
+ALTER PUBLICATION "supabase_realtime" OWNER TO "postgres";
+
+
+
+
+
+
+
+
 GRANT USAGE ON SCHEMA "private" TO "authenticated";
 
 
@@ -9072,6 +10197,183 @@ GRANT USAGE ON SCHEMA "public" TO "postgres";
 GRANT USAGE ON SCHEMA "public" TO "anon";
 GRANT USAGE ON SCHEMA "public" TO "authenticated";
 GRANT USAGE ON SCHEMA "public" TO "service_role";
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -9125,7 +10427,15 @@ GRANT ALL ON FUNCTION "private"."is_super_admin"() TO "authenticated";
 
 
 
+REVOKE ALL ON FUNCTION "private"."normalize_rubber_bill_calculation_payload"("payload" "jsonb") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."rubber_bill_is_payable"("p_bill_id" "uuid") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."rubber_bill_report_blockers"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) FROM PUBLIC;
 
 
 
@@ -9134,11 +10444,6 @@ REVOKE ALL ON FUNCTION "private"."telegram_badge_latest_slot"("p_now" timestamp 
 
 
 REVOKE ALL ON FUNCTION "private"."telegram_badge_require_manager"() FROM PUBLIC;
-
-
-
-REVOKE ALL ON FUNCTION "public"."accept_cash_branch_difference"("p_transfer_id" "uuid", "p_reason" "text") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."accept_cash_branch_difference"("p_transfer_id" "uuid", "p_reason" "text") TO "authenticated";
 
 
 
@@ -9234,6 +10539,11 @@ GRANT ALL ON FUNCTION "public"."current_profile_id"() TO "authenticated";
 
 
 
+REVOKE ALL ON FUNCTION "public"."decide_cash_transfer_delete_request"("p_request_id" "uuid", "p_decision" "text", "p_comment" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."decide_cash_transfer_delete_request"("p_request_id" "uuid", "p_decision" "text", "p_comment" "text") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."decide_income_expense_approval_request"("p_request_id" "uuid", "p_decision" "text", "p_comment" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."decide_income_expense_approval_request"("p_request_id" "uuid", "p_decision" "text", "p_comment" "text") TO "authenticated";
 
@@ -9294,8 +10604,18 @@ GRANT ALL ON FUNCTION "public"."get_acid_stock_balance"("p_location_id" "uuid", 
 
 
 
+REVOKE ALL ON FUNCTION "public"."get_actionable_badge_counts"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_actionable_badge_counts"() TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."get_income_expense_feed"("p_location_id" "uuid", "p_from_date" "date", "p_to_date" "date", "p_cursor_date" "date", "p_cursor_key" "text", "p_page_size" integer) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_income_expense_feed"("p_location_id" "uuid", "p_from_date" "date", "p_to_date" "date", "p_cursor_date" "date", "p_cursor_key" "text", "p_page_size" integer) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_money_transfer_receipt_source_details"("p_transfer_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_money_transfer_receipt_source_details"("p_transfer_id" "uuid") TO "authenticated";
 
 
 
@@ -9505,6 +10825,14 @@ GRANT ALL ON FUNCTION "public"."sync_income_expense"("payload" "jsonb") TO "auth
 
 
 
+REVOKE ALL ON FUNCTION "public"."sync_income_expense_core"("payload" "jsonb") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "public"."sync_money_transfer_item_source_fks"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "public"."sync_rubber_bill"("payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."sync_rubber_bill"("payload" "jsonb") TO "authenticated";
 
@@ -9553,6 +10881,27 @@ GRANT ALL ON FUNCTION "public"."verify_telegram_badge_dispatch_secret"("p_secret
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 GRANT ALL ON TABLE "public"."stock_products" TO "service_role";
 GRANT SELECT,INSERT,UPDATE ON TABLE "public"."stock_products" TO "authenticated";
 
@@ -9576,6 +10925,11 @@ GRANT SELECT ON TABLE "public"."rubber_bill_items" TO "authenticated";
 GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."acid_stock_movements" TO "anon";
 GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."acid_stock_movements" TO "authenticated";
 GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."acid_stock_movements" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."cash_transfer_delete_requests" TO "service_role";
+GRANT SELECT ON TABLE "public"."cash_transfer_delete_requests" TO "authenticated";
 
 
 
@@ -9766,6 +11120,12 @@ GRANT ALL ON TABLE "public"."transport_staffs" TO "service_role";
 GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."user_locations" TO "anon";
 GRANT ALL ON TABLE "public"."user_locations" TO "authenticated";
 GRANT ALL ON TABLE "public"."user_locations" TO "service_role";
+
+
+
+
+
+
 
 
 

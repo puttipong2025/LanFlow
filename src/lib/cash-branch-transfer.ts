@@ -29,6 +29,12 @@ export function emptyCashCountValues(): CashCountValues {
   };
 }
 
+export function zeroCashCountValues(): CashCountValues {
+  return Object.fromEntries(
+    CASH_DENOMINATIONS.map(([key]) => [key, "0"]),
+  ) as CashCountValues;
+}
+
 export function cashCountValues(counts: CashDenominationCounts): CashCountValues {
   return Object.fromEntries(
     Object.entries(counts).map(([key, value]) => [key, String(value)]),
@@ -65,9 +71,9 @@ export function calculateCashDifferences(
 
 export function cashTransferStatusLabel(status: CashBranchTransferStatus, differenceTotal: number | null) {
   if (status === "pending_receipt") return "รอรับเงิน";
-  if (status === "received") return "รับเงินแล้ว";
-  const difference = formatCurrency(differenceTotal ?? 0);
-  return status === "mismatched" ? `ยอดไม่ตรง ${difference}` : `ยอมรับผลต่าง ${difference}`;
+  return differenceTotal
+    ? `รับเงินแล้ว · ผลต่าง ${formatCurrency(differenceTotal)}`
+    : "รับเงินแล้ว";
 }
 
 export function buildCashTransferCreatePayload(input: {

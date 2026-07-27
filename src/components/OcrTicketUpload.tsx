@@ -39,6 +39,7 @@ type OcrApiResult = {
 
 export type UploadItem = {
   id: string;
+  locationId: string;
   file: File;
   previewUrl: string;
   status: "pending" | "processing" | "success" | "error";
@@ -64,11 +65,15 @@ import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
 export function OcrTicketUpload({
   locationId,
   online,
-  uploadItems: items,
+  uploadItems: allItems,
   setUploadItems: setItems,
   initialDateFilter,
   onInitialDateFilterHandled,
 }: Props) {
+  const items = useMemo(
+    () => allItems.filter((item) => item.locationId === locationId),
+    [allItems, locationId],
+  );
   const { ocrTickets, addTicket, updateTicket, deleteTicket } = useOcrTickets(locationId);
   const { customers } = useCustomers();
   const { transfers } = useMoneyTransfers(locationId);
@@ -206,6 +211,7 @@ export function OcrTicketUpload({
             existingFileNames.add(file.name);
             newItems.push({
               id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+              locationId,
               file,
               previewUrl: URL.createObjectURL(file),
               status: "pending" as const,
@@ -216,7 +222,7 @@ export function OcrTicketUpload({
       if (newItems.length > 0) setItems((prev) => [...prev, ...newItems]);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [items, ocrTickets, online, offlineMessage]
+    [items, ocrTickets, online, offlineMessage, locationId]
   );
 
   const handleDrop = useCallback(
@@ -336,8 +342,8 @@ export function OcrTicketUpload({
 
   const clearAll = useCallback(() => {
     items.forEach((i) => URL.revokeObjectURL(i.previewUrl));
-    setItems([]);
-  }, [items, setItems]);
+    setItems((current) => current.filter((item) => item.locationId !== locationId));
+  }, [items, locationId, setItems]);
 
   const successItems = items.filter((i) => i.status === "success");
   const pendingItems = items.filter((i) => i.status === "pending" || i.status === "error");
@@ -400,7 +406,7 @@ export function OcrTicketUpload({
       )}
 
       {/* Header */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:flex-row sm:items-center sm:justify-between sm:p-4">
         <div>
           <h2 className="text-xl font-bold text-ink">
             <FileImage size={22} className="mr-2 inline-block text-leaf" />
@@ -417,7 +423,7 @@ export function OcrTicketUpload({
         </div>
         {items.length > 0 && (
           <button type="button" onClick={clearAll}
-            className="focus-ring flex items-center gap-1.5 rounded-md border border-clay/30 bg-white px-3 py-2 text-sm font-semibold text-clay hover:bg-clay/10">
+            className="focus-ring flex items-center gap-1.5 rounded-md bg-danger px-3 py-2 text-sm font-semibold text-white hover:bg-danger/90">
             <Trash2 size={15} /> ล้างรายการอัปโหลด
           </button>
         )}
@@ -510,16 +516,16 @@ export function OcrTicketUpload({
               </label>
               {dateFilter && (
                 <button type="button" onClick={() => setDateFilter("")}
-                  className="focus-ring rounded-md border border-black/10 bg-white px-3 py-1.5 text-xs font-semibold text-ink hover:bg-field">
+                  className="focus-ring rounded-md bg-actionSecondary px-3 py-1.5 text-xs font-semibold text-white hover:bg-actionSecondary/90">
                   ล้างวันที่
                 </button>
               )}
               <button type="button" onClick={copyAllJSON}
-                className="focus-ring flex items-center gap-1.5 rounded-md border border-black/10 bg-white px-3 py-1.5 text-xs font-semibold text-ink hover:bg-field">
+                className="focus-ring flex items-center gap-1.5 rounded-md bg-actionSecondary px-3 py-1.5 text-xs font-semibold text-white hover:bg-actionSecondary/90">
                 <Copy size={12} /> คัดลอก
               </button>
               <button type="button" onClick={exportJSON}
-                className="focus-ring flex items-center gap-1.5 rounded-md border border-black/10 bg-white px-3 py-1.5 text-xs font-semibold text-ink hover:bg-field">
+                className="focus-ring flex items-center gap-1.5 rounded-md bg-river px-3 py-1.5 text-xs font-semibold text-white hover:bg-river/90">
                 <Download size={12} /> ดาวน์โหลด
               </button>
             </div>
@@ -612,15 +618,17 @@ export function OcrTicketUpload({
                       <div className="flex items-center justify-center gap-1">
                         <button type="button" onClick={() => setEditTicket(ticket)}
                           disabled={actionsDisabled}
-                          className={`grid h-7 w-7 place-items-center rounded-md text-ink/50 ${actionsDisabled ? "cursor-not-allowed opacity-40" : "hover:bg-mint hover:text-leaf"}`}
+                          className={`inline-flex h-10 items-center gap-1.5 rounded-md bg-amber px-3 text-xs font-semibold text-white ${actionsDisabled ? "cursor-not-allowed opacity-40" : "hover:bg-amber/90"}`}
                           title={actionBlockReason ?? "แก้ไข"}>
                           <Edit3 size={14} />
+                          แก้ไข
                         </button>
                         <button type="button" onClick={() => setDeleteConfirmId(ticket.id)}
                           disabled={actionsDisabled}
-                          className={`grid h-7 w-7 place-items-center rounded-md text-ink/50 ${actionsDisabled ? "cursor-not-allowed opacity-40" : "hover:bg-clay/10 hover:text-clay"}`}
+                          className={`inline-flex h-10 items-center gap-1.5 rounded-md bg-clay px-3 text-xs font-semibold text-white ${actionsDisabled ? "cursor-not-allowed opacity-40" : "hover:bg-clay/90"}`}
                           title={actionBlockReason ?? "ลบ"}>
                           <Trash2 size={14} />
+                          ลบ
                         </button>
                       </div>
                     </td>
@@ -645,8 +653,9 @@ export function OcrTicketUpload({
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setPreviewItem(null)}>
           <div className="relative max-h-[90vh] max-w-4xl overflow-auto rounded-xl bg-white p-2 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <button type="button" onClick={() => setPreviewItem(null)}
-              className="absolute right-3 top-3 grid h-8 w-8 place-items-center rounded-full bg-black/60 text-white hover:bg-black/80">
+              className="absolute right-3 top-3 inline-flex h-10 items-center gap-1.5 rounded-md bg-black/65 px-3 text-sm font-semibold text-white hover:bg-black/80">
               <X size={18} />
+              ปิด
             </button>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={previewItem.previewUrl} alt={previewItem.file.name} className="max-h-[85vh] rounded-lg object-contain" />
@@ -662,7 +671,7 @@ export function OcrTicketUpload({
             <p className="mt-2 text-sm text-ink/70">คุณแน่ใจหรือไม่ว่าต้องการลบใบชั่งนี้? รูปภาพใน Google Drive จะถูกลบด้วย</p>
             <div className="mt-5 flex justify-end gap-3">
               <button type="button" onClick={() => setDeleteConfirmId(null)}
-                className="focus-ring rounded-md border border-black/10 bg-white px-4 py-2 text-sm font-semibold text-ink hover:bg-field">
+                className="focus-ring rounded-md bg-actionSecondary px-4 py-2 text-sm font-semibold text-white hover:bg-actionSecondary/90">
                 ยกเลิก
               </button>
               <button type="button" onClick={handleDeleteConfirm} disabled={!online} title={online ? undefined : offlineMessage}
@@ -719,13 +728,15 @@ function UploadCard({ item, onRemove, onRetry, onPreview }: {
         )}
         <div className="absolute right-2 top-2 flex gap-1">
           <button type="button" onClick={onPreview}
-            className="grid h-7 w-7 place-items-center rounded-full bg-black/50 text-white hover:bg-black/70" title="ดูรูปขยาย">
+            className="inline-flex h-10 items-center gap-1 rounded-md bg-black/55 px-2 text-xs font-semibold text-white hover:bg-black/70" title="ดูรูปขยาย">
             <Eye size={14} />
+            ดูรูป
           </button>
           {item.status !== "processing" && (
             <button type="button" onClick={onRemove}
-              className="grid h-7 w-7 place-items-center rounded-full bg-black/50 text-white hover:bg-clay" title="ลบ">
+              className="inline-flex h-10 items-center gap-1 rounded-md bg-black/55 px-2 text-xs font-semibold text-white hover:bg-clay" title="ลบ">
               <X size={14} />
+              ลบ
             </button>
           )}
         </div>
@@ -736,7 +747,7 @@ function UploadCard({ item, onRemove, onRetry, onPreview }: {
         {item.status === "error" && item.errorMessage && (
           <div className="mt-2 rounded-md bg-clay/10 px-2 py-1.5 text-xs text-clay">
             {item.errorMessage}
-            <button type="button" onClick={onRetry} className="ml-2 font-bold underline hover:text-clay/80">ลองอีกครั้ง</button>
+            <button type="button" onClick={onRetry} className="ml-2 rounded-md bg-danger px-2 py-1 font-bold text-white hover:bg-danger/90">ลองอีกครั้ง</button>
           </div>
         )}
         {item.status === "success" && item.result && (
@@ -811,7 +822,7 @@ function EditTicketModal({ ticket, targetTime, now, customers, online, offlineMe
       <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between border-b border-black/5 px-5 py-4">
           <h3 className="text-lg font-bold text-ink"><Edit3 size={18} className="mr-2 inline-block text-leaf" /> แก้ไขข้อมูลใบชั่ง</h3>
-          <button type="button" onClick={onClose} className="grid h-8 w-8 place-items-center rounded-full hover:bg-field"><X size={18} /></button>
+          <button type="button" onClick={onClose} className="inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white hover:bg-actionSecondary/90"><X size={18} />ปิด</button>
         </div>
 
         {/* Drive Image Preview */}
@@ -838,7 +849,7 @@ function EditTicketModal({ ticket, targetTime, now, customers, online, offlineMe
         )}
 
         <form onSubmit={handleSubmit} className="space-y-4 p-5">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid gap-4 sm:grid-cols-2">
             <label className="block"><span className="mb-1 block text-sm font-semibold text-ink/70">เลขที่เอกสาร</span>
               <input type="text" value={form.ticketId ?? ""} onChange={(e) => set("ticketId", e.target.value || null)}
                 className="focus-ring h-10 w-full rounded-md border border-black/10 bg-white px-3 text-sm" /></label>
@@ -902,7 +913,7 @@ function EditTicketModal({ ticket, targetTime, now, customers, online, offlineMe
           </div>
 
           {/* Weight fields */}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid gap-4 sm:grid-cols-2">
             <label className="block"><span className="mb-1 block text-sm font-semibold text-ink/70">นน.เข้า (กก.)</span>
               <input type="number" value={form.weightIn ?? ""} onChange={(e) => set("weightIn", e.target.value ? Number(e.target.value) : null)}
                 className="focus-ring h-10 w-full rounded-md border border-black/10 bg-white px-3 text-sm" /></label>
@@ -910,7 +921,7 @@ function EditTicketModal({ ticket, targetTime, now, customers, online, offlineMe
               <input type="number" value={form.weightOut ?? ""} onChange={(e) => set("weightOut", e.target.value ? Number(e.target.value) : null)}
                 className="focus-ring h-10 w-full rounded-md border border-black/10 bg-white px-3 text-sm" /></label>
           </div>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid gap-4 sm:grid-cols-3">
             <label className="block"><span className="mb-1 block text-sm font-semibold text-ink/70">สุทธิ (กก.)</span>
               <input type="number" value={calcWeightNet ?? ""} readOnly
                 className="h-10 w-full rounded-md border border-black/5 bg-field/50 px-3 text-sm font-semibold text-leaf cursor-not-allowed" /></label>
@@ -942,10 +953,11 @@ function EditTicketModal({ ticket, targetTime, now, customers, online, offlineMe
           )}
 
           {/* Money fields */}
-          <div className="grid grid-cols-2 gap-4">
-            <label className="block"><span className="mb-1 block text-sm font-semibold text-ink/70">ราคาสินค้า (฿)</span>
-              <input type="number" value={form.totalAmount ?? ""} readOnly
-                className="h-10 w-full rounded-md border border-black/5 bg-field/50 px-3 text-sm font-semibold text-river cursor-not-allowed" /></label>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="block"><span className="mb-1 block text-sm font-semibold text-ink/70">ยอดเงินสินค้า (฿)</span>
+              <input type="number" min="0" step="0.01" value={form.totalAmount ?? ""}
+                onChange={(e) => set("totalAmount", e.target.value ? Number(e.target.value) : null)}
+                className="focus-ring h-10 w-full rounded-md border border-black/10 bg-white px-3 text-sm font-semibold text-river" /></label>
             <label className="block"><span className="mb-1 block text-sm font-semibold text-ink/70">หักเงิน (฿)</span>
               <input type="number" value={moneyDeducted || ""} onChange={(e) => setMoneyDeducted(e.target.value ? Number(e.target.value) : 0)}
                 className="focus-ring h-10 w-full rounded-md border border-black/10 bg-white px-3 text-sm" placeholder="0" /></label>
@@ -956,15 +968,15 @@ function EditTicketModal({ ticket, targetTime, now, customers, online, offlineMe
               <span className="text-lg font-bold text-leaf">{calcNetPay != null ? `฿${calcNetPay.toLocaleString()}` : "—"}</span>
             </div>
             {moneyDeducted > 0 && (
-              <p className="mt-1 text-xs text-ink/50">ราคาสินค้า {(form.totalAmount ?? 0).toLocaleString()} − หักเงิน {moneyDeducted.toLocaleString()} = {calcNetPay?.toLocaleString()}</p>
+              <p className="mt-1 text-xs text-ink/50">ยอดเงินสินค้า {(form.totalAmount ?? 0).toLocaleString()} − หักเงิน {moneyDeducted.toLocaleString()} = {calcNetPay?.toLocaleString()}</p>
             )}
           </div>
 
           <div className="flex justify-end gap-3 pt-2">
             <button type="button" onClick={onClose}
-              className="focus-ring rounded-md border border-black/10 bg-white px-4 py-2 text-sm font-semibold text-ink hover:bg-field">ยกเลิก</button>
+              className="focus-ring rounded-md bg-actionSecondary px-4 py-2 text-sm font-semibold text-white hover:bg-actionSecondary/90">ยกเลิก</button>
             <button type="submit" disabled={isWeightInvalid || !online} title={online ? undefined : offlineMessage}
-              className={`focus-ring flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-semibold text-white ${isWeightInvalid || !online ? 'bg-gray-300 cursor-not-allowed' : 'bg-leaf hover:bg-leaf/90'}`}>
+              className={`focus-ring flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-semibold text-white ${isWeightInvalid || !online ? 'bg-gray-300 cursor-not-allowed' : 'bg-commit hover:bg-commit/90'}`}>
               <Save size={15} /> บันทึก</button>
           </div>
         </form>

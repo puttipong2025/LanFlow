@@ -9,9 +9,9 @@ import {
 import { bangkokDateString, bangkokDateWindow } from "../src/lib/bangkok-date";
 
 test.describe("Rubber export calculations @rubber-export", () => {
-  test("calculates net weight and average price with 2-decimal rounding", () => {
+  test("floors net weight and rounds average price to 2 decimals", () => {
     expect(calculateNetWeight(100.555, 0.111)).toBe(100.44);
-    expect(calculateNetWeight(100, 2.345)).toBe(97.66);
+    expect(calculateNetWeight(100, 2.345)).toBe(97.65);
     expect(calculateAveragePrice(1000, 3)).toBe(333.33);
     expect(calculateAveragePrice(1234.56, 97.66)).toBe(12.64);
   });

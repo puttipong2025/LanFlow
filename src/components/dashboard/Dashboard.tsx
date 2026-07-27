@@ -57,7 +57,7 @@ export function Dashboard({
                   <tr key={bill.id} className="border-b border-black/5">
                     <td className="py-3 font-semibold">{getDisplayBillNo(bill)}</td>
                     <td>{bill.customerName}</td>
-                    <td>{formatNumber(bill.weight)} กก.</td>
+                    <td>{formatNumber(bill.netWeight)} กก.</td>
                     <td>{formatCurrency(bill.price)}</td>
                     <td className="font-semibold">{formatCurrency(bill.netTotal)}</td>
                     <td>{bill.createdByName} · {bill.createdByPhone}</td>
