@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>LanFlow</title>
+  <rect width="512" height="512" rx="104" fill="#2f6b4f"/>
+  <path d="M104 160h68v166h98v66H104V160Z" fill="#fff"/>
+  <path d="M278 160h140v66h-72v48h62v64h-62v54h-68V160Z" fill="#fff"/>
+  <path d="M354 142c8-49 44-78 102-78-5 55-36 86-92 94 19-16 39-29 62-39-27 4-50 12-72 23Z" fill="#d9efe2"/>
+</svg>
