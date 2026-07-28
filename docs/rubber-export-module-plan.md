@@ -2,7 +2,7 @@
 
 ## Goal
 
-Create an online-only branch-scoped module that groups report-locked rubber bills by a selected cutoff, preserves bill snapshots, calculates weight loss and work expense, exposes a verified source-linked expense, participates in Report Batch locks, and prints verified or deleted evidence.
+Create an online-only branch-scoped module that groups explicitly selected report-locked rubber bills, preserves bill snapshots, calculates weight loss and work expense, exposes a verified source-linked expense, participates in Report Batch locks, and prints verified or deleted evidence.
 
 ## Source Ownership
 
@@ -10,22 +10,21 @@ Create an online-only branch-scoped module that groups report-locked rubber bill
 - `rubber_export_items` reserves source bills and stores immutable bill snapshots.
 - Income/Expense shows a derived read-only row. It does not create an `income_expense` row.
 - Report Batch stores `entity_type = 'rubber_export'` and the export ID.
-- Active references enforce deletion order. Timestamps only determine cutoff eligibility.
+- Active references enforce deletion order. Timestamps remain snapshot and ordering data, not implicit membership rules.
 
 ## Lifecycle
 
 ### Draft creation
 
-1. User selects one cutoff bill from unreserved rubber bills held by active report items in the selected branch.
-2. The server uses that item's `eligibility_at` as the cutoff.
-3. The server selects every unreserved eligible rubber bill in the branch where `eligibility_at <= cutoff`.
-4. Every selected bill must have:
+1. User selects one or more unreserved rubber bills held by active report items in the selected branch.
+2. The server revalidates the complete selected report-item ID set.
+3. Every selected bill must have:
    - `weight - deduct_weight > 0`
    - `net_total > 0`
-5. One transaction rechecks candidates, assigns `REX-YYYYMMDD-001`, inserts the draft and snapshots its items.
-6. The active item rows reserve their source bills immediately.
+4. One transaction rechecks exact membership, assigns `REX-YYYYMMDD-001`, inserts the draft and snapshots its items.
+5. The active item rows reserve their source bills immediately.
 
-The cutoff and item membership cannot change after creation. A mistaken draft must be deleted and recreated.
+Item membership cannot change after creation. A mistaken draft must be deleted and recreated.
 
 ### Draft editing
 
@@ -131,7 +130,7 @@ UI guards are for experience only. API routes and security-definer RPCs recheck 
 Required fields:
 
 - identity: `id`, `export_no`, `export_date`, `sequence_no`, `location_id`
-- lifecycle: `status`, `previous_status`, `cutoff_at`
+- lifecycle: `status`, `previous_status`
 - snapshot totals: `original_weight_total`, `paid_total`, `average_price`
 - editable/final totals: `current_weight`, `weight_loss_percent`, `work_rate`, `other_operating_cost`, `work_total`
 - expense destination: `expense_destination`
@@ -162,7 +161,7 @@ Required invariants:
 Next.js App Router endpoints remain thin authenticated wrappers over database RPCs:
 
 - list/detail
-- cutoff options and preview
+- available-bill options and selected-set preview
 - create draft
 - update draft
 - verify
@@ -174,7 +173,7 @@ RPC transactions own:
 
 - authorization
 - advisory locks
-- deterministic cutoff selection
+- exact selected-set validation
 - validation and snapshots
 - document numbering
 - status transitions and audit
@@ -187,7 +186,7 @@ Print is available for `verified` and `deleted` rows only.
 
 The document includes:
 
-- export number, branch, status, cutoff
+- export number, branch, status, created time, and selected bill count
 - snapshot bill date, number, customer, eligibility time, weight, and paid amount
 - original weight total, paid total, and average price
 - current weight, loss percent, work rate, other cost, and work total
@@ -200,8 +199,8 @@ A draft deleted before completion prints missing values as `—`.
 
 ### Database and concurrency
 
-- cutoff includes timestamp ties and earlier items across active reports in one branch
-- cutoff excludes another branch, inactive report items, and already reserved bills
+- explicit selection includes only requested active report items in one branch
+- selection rejects another branch, inactive report items, duplicates, unknown IDs, and already reserved bills
 - invalid source weight or paid total blocks the entire create
 - concurrent creates cannot reserve the same bill or duplicate an export number
 - admin is branch-scoped; system manager has global access; user is denied
@@ -220,7 +219,7 @@ A draft deleted before completion prints missing values as `—`.
 
 ### UI and print
 
-- cutoff preview matches the created item set
+- selected-set preview matches the created item set
 - verification controls and disabled reasons match permissions and form state
 - source navigation opens the export
 - verified, deleted-verified, and deleted-draft print contracts render
@@ -242,7 +241,7 @@ git diff --check
 - Migration: `20260724010000_rubber_exports.sql`
 - Tables: `rubber_exports`, `rubber_export_items`
 - RPCs:
-  - `get_rubber_export_cutoff_options`
+  - `get_rubber_export_available_bills`
   - `preview_rubber_export`
   - `create_rubber_export`
   - `update_rubber_export`
@@ -251,10 +250,14 @@ git diff --check
 - API base: `/api/lanflow/rubber-exports`
 - Print route: `/rubber-exports/[exportId]/print`
 
-Verified on 2026-07-24:
+Verified on 2026-07-28:
 
-- local database reset and full migration replay passed
+- local database reset and full migration replay passed twice, including final cleanup
+- customer and transport master restore matched all 2,060 backed-up rows with zero orphan records
+- local Auth/Profile contains only the seeded Super Admin; transaction tables are empty
 - TypeScript and production build passed
-- rubber-export calculation and end-to-end contract tests passed
+- explicit selection, calculation, concurrency, stale-selection, permission, and multi-page print tests passed
 - Reports, Income/Expense feed, and Rubber Bill print regressions passed
-- Supabase lint reported no rubber-export finding; its non-zero exit is from pre-existing findings in `sync_income_expense`, `sync_rubber_bill_core_20260716020000`, and `accept_cash_branch_difference`
+- `git diff --check` passed
+- Supabase lint reported no rubber-export finding; the remaining pre-existing findings are an unused variable in `sync_income_expense_core` and a temp-table analysis error in `sync_rubber_bill_core_20260725010000`
+- one report-contract test initially timed out because `.env.local` pointed Next.js to an unavailable LAN Supabase URL; rerunning with the local loopback URL passed and no process restart was required

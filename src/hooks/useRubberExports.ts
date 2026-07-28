@@ -5,7 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import type {
-  RubberExportCutoffOption,
+  RubberExportAvailableBill,
   RubberExportDetails,
   RubberExportExpenseDestination,
   RubberExportPreview,
@@ -15,7 +15,7 @@ import type {
 export function useRubberExports(locationId: string, online: boolean) {
   const queryClient = useQueryClient();
   const [exports, setExports] = useState<RubberExportSummary[]>([]);
-  const [cutoffOptions, setCutoffOptions] = useState<RubberExportCutoffOption[]>([]);
+  const [availableBills, setAvailableBills] = useState<RubberExportAvailableBill[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -34,10 +34,10 @@ export function useRubberExports(locationId: string, online: boolean) {
       await assertApiResponse(response);
       const body = await response.json() as {
         exports: RubberExportSummary[];
-        cutoffOptions: RubberExportCutoffOption[];
+        availableBills: RubberExportAvailableBill[];
       };
       setExports(body.exports);
-      setCutoffOptions(body.cutoffOptions);
+      setAvailableBills(body.availableBills);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "โหลดรายการส่งออกไม่สำเร็จ");
     } finally {
@@ -56,21 +56,21 @@ export function useRubberExports(locationId: string, online: boolean) {
     ]);
   }
 
-  async function preview(cutoffReportItemId: string) {
+  async function preview(selectedReportItemIds: string[]) {
     const response = await authFetch("/api/lanflow/rubber-exports/preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ locationId, cutoffReportItemId }),
+      body: JSON.stringify({ locationId, selectedReportItemIds }),
     });
     await assertApiResponse(response);
     return response.json() as Promise<RubberExportPreview>;
   }
 
-  async function create(cutoffReportItemId: string) {
+  async function create(selectedReportItemIds: string[]) {
     const response = await authFetch("/api/lanflow/rubber-exports", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ locationId, cutoffReportItemId }),
+      body: JSON.stringify({ locationId, selectedReportItemIds }),
     });
     await assertApiResponse(response);
     const created = await response.json() as { id: string; exportNo: string };
@@ -123,7 +123,7 @@ export function useRubberExports(locationId: string, online: boolean) {
 
   return {
     exports,
-    cutoffOptions,
+    availableBills,
     loading,
     error,
     reload,

@@ -5,8 +5,6 @@ import { toast } from "sonner";
 import { useEffect, useMemo, useState } from "react";
 import { useAuthContext } from "@/components/AuthProvider";
 
-import { isSupabaseConfigured } from "@/lib/supabase-browser";
-
 import type { Location, Profile } from "@/types";
 import { CustomersModule } from "./CustomersModule";
 import { TransportModule } from "./TransportModule";
@@ -19,7 +17,6 @@ import { TimeTrackingModule } from "./TimeTrackingModule";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { useIncomeExpense } from "@/hooks/useIncomeExpense";
 import { useActionableBadges } from "@/hooks/useActionableBadges";
-import { isRubberBillPayable } from "@/lib/rubber-bill-validation";
 
 import { writeBootstrapCache, readBootstrapCache } from "@/lib/lanflow/bootstrap-cache";
 import { type Tab } from "@/components/lanflow/tabs";
@@ -31,7 +28,12 @@ import { ReportsModule } from "@/components/reports/ReportsModule";
 import { RubberExportsModule } from "@/components/rubber-exports/RubberExportsModule";
 import { AppHeader } from "@/components/lanflow/AppHeader";
 import { NavigationTabs } from "@/components/lanflow/NavigationTabs";
-import { canAccessSourceLocation, canUseMoneyTransfer, canUseReports } from "@/lib/permissions";
+import {
+  canAccessSourceLocation,
+  canManageSystemFeatures,
+  canUseMoneyTransfer,
+  canUseReports,
+} from "@/lib/permissions";
 import { getOfflineTabBlockMessage, isTabBlockedOffline } from "@/lib/offline-module-policy";
 import { getOcrActionState } from "@/lib/ocr-action-state";
 
@@ -166,8 +168,8 @@ export function LanFlowApp() {
     }
   }, [selectedLocationId, locations, profile, authProfileId, isLoaded]);
 
-  const { bills: allBills } = useRubberBills(selectedLocationId, queueOwnerUserId);
-  const { transactions: allTransactions } = useIncomeExpense(selectedLocationId, queueOwnerUserId);
+  useRubberBills(selectedLocationId, queueOwnerUserId);
+  useIncomeExpense(selectedLocationId, queueOwnerUserId);
 
   const selectedLocation = locations.find((location) => location.id === selectedLocationId) ?? locations[0];
   const selectedOcrUploadItems = ocrUploadItems.filter(
@@ -191,33 +193,6 @@ export function LanFlowApp() {
     }
     return totals;
   }, [locations, ocrUploadItems, online, visibleActionableBadgeCounts]);
-
-  const scopedBills = allBills.filter((bill) => bill.recordStatus !== "deleted");
-  const scopedTransactions = allTransactions.filter((tx) => tx.recordStatus !== "deleted");
-
-  const summary = useMemo(() => {
-    const rubberPay = scopedBills
-      .filter(isRubberBillPayable)
-      .reduce((sum, bill) => sum + bill.netTotal, 0);
-    const income = scopedTransactions
-      .filter((tx) => tx.type === "income")
-      .reduce((sum, tx) => sum + tx.cost, 0);
-    const expense = scopedTransactions
-      .filter((tx) => tx.type === "expense")
-      .reduce((sum, tx) => sum + tx.cost, 0);
-    const rubberBillDerivedExpense = scopedTransactions
-      .filter((tx) => tx.type === "expense" && tx.relationSourceType === "rubber_bill_daily")
-      .reduce((sum, tx) => sum + tx.cost, 0);
-    const rubberPayOutsideIncomeExpense = Math.max(0, rubberPay - rubberBillDerivedExpense);
-    return {
-      billCount: scopedBills.length,
-      rubberWeight: scopedBills.reduce((sum, bill) => sum + bill.netWeight, 0),
-      rubberPay,
-      income,
-      expense,
-      balance: income - expense - rubberPayOutsideIncomeExpense
-    };
-  }, [scopedBills, scopedTransactions]);
 
   if (!isLoaded || !profile) {
     return (
@@ -342,10 +317,8 @@ export function LanFlowApp() {
         {activeTab === "dashboard" && (
           <Dashboard
             selectedLocation={selectedLocation}
-            summary={summary}
-            bills={scopedBills}
-            transactions={scopedTransactions}
-            supabaseReady={isSupabaseConfigured()}
+            online={online}
+            canManageDashboard={canManageSystemFeatures(profile)}
           />
         )}
         {activeTab === "rubber" && (

@@ -171,6 +171,8 @@ test.describe("Money transfer 80mm print", () => {
     expect(html).toContain("สลิป 1");
     expect(html).toContain("สลิป 2");
     expect(html).toContain("&lt;REF-2&gt;");
+    expect(html).toContain('<div class="small">ผู้จ่าย ผู้ส่ง 2</div>');
+    expect(html).not.toContain('<div class="small">ผู้ส่ง ผู้ส่ง 2</div>');
     expect(html).toContain("ร้าน &amp; ลูกค้า");
     expect(html).not.toContain('<img src=x onerror="alert(1)">');
     expect(html).not.toContain("secret-slip.jpg");

@@ -13,62 +13,19 @@ SET client_min_messages = warning;
 SET row_security = off;
 
 
-CREATE EXTENSION IF NOT EXISTS "pg_cron" WITH SCHEMA "pg_catalog";
-
-
-
-
-
-
-CREATE EXTENSION IF NOT EXISTS "pg_net" WITH SCHEMA "extensions";
-
-
-
-
-
-
 CREATE SCHEMA IF NOT EXISTS "private";
 
 
 ALTER SCHEMA "private" OWNER TO "postgres";
 
 
+CREATE SCHEMA IF NOT EXISTS "public";
+
+
+ALTER SCHEMA "public" OWNER TO "pg_database_owner";
+
+
 COMMENT ON SCHEMA "public" IS 'standard public schema';
-
-
-
-CREATE EXTENSION IF NOT EXISTS "moddatetime" WITH SCHEMA "extensions";
-
-
-
-
-
-
-CREATE EXTENSION IF NOT EXISTS "pg_stat_statements" WITH SCHEMA "extensions";
-
-
-
-
-
-
-CREATE EXTENSION IF NOT EXISTS "pgcrypto" WITH SCHEMA "extensions";
-
-
-
-
-
-
-CREATE EXTENSION IF NOT EXISTS "supabase_vault" WITH SCHEMA "vault";
-
-
-
-
-
-
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA "extensions";
-
-
-
 
 
 
@@ -226,6 +183,297 @@ $$;
 
 
 ALTER FUNCTION "private"."assign_rubber_bill_item_sequence"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."calculate_dashboard_summary"("p_location_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  with bounds as (
+    select
+      (current_timestamp at time zone 'Asia/Bangkok')::date as today,
+      (current_timestamp at time zone 'Asia/Bangkok')::date - 6 as from_date
+  ),
+  active_bills as (
+    select b.*
+    from public.rubber_bills b
+    where b.location_id = p_location_id
+      and b.record_status = 'active'
+  ),
+  payable_bills as (
+    select b.*
+    from active_bills b
+    where private.rubber_bill_is_payable(b.id)
+  ),
+  purchase_stats as (
+    select
+      count(*) filter (where b.bill_date = d.today) as today_bill_count,
+      coalesce(sum(b.net_weight) filter (where b.bill_date = d.today), 0) as today_net_weight,
+      coalesce(sum(b.net_total) filter (
+        where b.bill_date = d.today
+          and private.rubber_bill_is_payable(b.id)
+      ), 0) as today_paid_total,
+      coalesce(sum(b.net_weight) filter (
+        where b.bill_date between d.from_date and d.today
+          and private.rubber_bill_is_payable(b.id)
+      ), 0) as seven_day_net_weight,
+      coalesce(sum(b.net_total) filter (
+        where b.bill_date between d.from_date and d.today
+          and private.rubber_bill_is_payable(b.id)
+      ), 0) as seven_day_paid_total,
+      coalesce(sum(b.net_weight), 0) as accumulated_net_weight
+    from active_bills b
+    cross join bounds d
+  ),
+  payable_total as (
+    select coalesce(sum(b.net_total), 0) as accumulated_purchase
+    from payable_bills b
+  ),
+  export_stats as (
+    select
+      coalesce(sum(e.original_weight_total) filter (where e.status = 'verified'), 0)
+        as accumulated_original_weight,
+      count(*) filter (
+        where e.status = 'verified'
+          and (e.verified_at at time zone 'Asia/Bangkok')::date
+            between d.from_date and d.today
+      ) as seven_day_export_count,
+      coalesce(sum(e.original_weight_total - e.current_weight) filter (
+        where e.status = 'verified'
+          and (e.verified_at at time zone 'Asia/Bangkok')::date
+            between d.from_date and d.today
+      ), 0) as seven_day_loss_weight,
+      coalesce(sum(e.original_weight_total) filter (
+        where e.status = 'verified'
+          and (e.verified_at at time zone 'Asia/Bangkok')::date
+            between d.from_date and d.today
+      ), 0) as seven_day_original_weight
+    from public.rubber_exports e
+    cross join bounds d
+    where e.location_id = p_location_id
+  ),
+  stock_balances as (
+    select
+      p.id,
+      p.name,
+      p.unit,
+      round(coalesce(sum(m.quantity_delta), 0), 2) as balance
+    from public.stock_products p
+    left join public.stock_movements m
+      on m.product_id = p.id
+     and m.location_id = p_location_id
+    where p.is_active = true
+    group by p.id, p.name, p.unit
+  ),
+  stock_summary as (
+    select
+      count(*) filter (where balance > 0) as in_stock_count,
+      count(*) filter (where balance <= 0) as out_of_stock_count,
+      coalesce(
+        jsonb_agg(
+          jsonb_build_object(
+            'productId', id,
+            'name', name,
+            'unit', unit,
+            'balance', balance
+          )
+          order by (balance <= 0) desc, name, id
+        ),
+        '[]'::jsonb
+      ) as items
+    from stock_balances
+  ),
+  financial_amounts as (
+    select
+      ie.type::text as direction,
+      ie.cost as amount,
+      true as affects_balance,
+      ie.type = 'expense' as operating_expense
+    from public.income_expense ie
+    where ie.location_id = p_location_id
+      and ie.record_status = 'active'
+      and ie.cost > 0
+
+    union all
+
+    select 'income', mt.net_amount_to_pay, true, false
+    from public.money_transfers mt
+    where mt.transfer_type = 'branch'
+      and coalesce(mt.transfer_method, 'bank') <> 'cash'
+      and mt.target_location_id = p_location_id
+      and mt.record_status <> 'deleted'
+      and mt.transfer_status in ('paid', 'overpaid', 'branch_and_transfer')
+      and mt.net_amount_to_pay > 0
+
+    union all
+
+    select 'expense', mt.net_amount_to_pay, true, false
+    from public.money_transfers mt
+    where mt.transfer_type = 'branch'
+      and coalesce(mt.transfer_method, 'bank') <> 'cash'
+      and mt.location_id = p_location_id
+      and mt.target_location_id <> mt.location_id
+      and mt.record_status <> 'deleted'
+      and mt.transfer_status in ('paid', 'overpaid', 'branch_and_transfer')
+      and mt.net_amount_to_pay > 0
+
+    union all
+
+    select 'expense', mt.branch_paid_amount, true, false
+    from public.money_transfers mt
+    where mt.transfer_type = 'customer'
+      and mt.transfer_status = 'branch_and_transfer'
+      and mt.location_id = p_location_id
+      and mt.record_status <> 'deleted'
+      and mt.branch_paid_amount > 0
+
+    union all
+
+    select 'expense', d.sent_total, true, false
+    from public.money_transfers mt
+    join public.money_transfer_cash_details d on d.transfer_id = mt.id
+    where mt.transfer_type = 'cash'
+      and mt.transfer_method = 'cash'
+      and mt.location_id = p_location_id
+      and mt.record_status <> 'deleted'
+      and d.sent_total > 0
+
+    union all
+
+    select 'income', d.received_total, true, false
+    from public.money_transfers mt
+    join public.money_transfer_cash_details d on d.transfer_id = mt.id
+    where mt.transfer_type = 'cash'
+      and mt.transfer_method = 'cash'
+      and mt.target_location_id = p_location_id
+      and mt.record_status <> 'deleted'
+      and d.cash_status in ('received', 'mismatched', 'difference_accepted')
+      and d.received_total > 0
+
+    union all
+
+    select 'expense', ft.amount, true, true
+    from public.financial_transactions ft
+    where ft.type = 'WITHDRAWAL'
+      and ft.status = 'APPROVED'
+      and ft.cancelled_at is null
+      and ft.expense_location_id = p_location_id
+      and ft.amount > 0
+
+    union all
+
+    select 'expense', ps.net_pay, true, true
+    from public.payroll_slips ps
+    where ps.status = 'APPROVED'
+      and ps.cancelled_at is null
+      and ps.expense_location_id = p_location_id
+      and ps.net_pay > 0
+
+    union all
+
+    select
+      'expense',
+      b.net_total,
+      not exists (
+        select 1
+        from public.money_transfer_items i
+        where i.source_type = 'rubber_bill'
+          and i.source_id = b.id
+      ),
+      false
+    from payable_bills b
+
+    union all
+
+    select
+      'expense',
+      ot.total_amount,
+      not exists (
+        select 1
+        from public.money_transfer_items i
+        where i.source_type = 'ocr_ticket'
+          and i.source_id = ot.id
+      ),
+      false
+    from public.ocr_tickets ot
+    where ot.location_id = p_location_id
+      and ot.record_status = 'active'
+      and ot.total_amount > 0
+
+    union all
+
+    select 'expense', e.work_total, true, true
+    from public.rubber_exports e
+    where e.location_id = p_location_id
+      and e.status = 'verified'
+      and e.expense_destination = 'branch'
+      and e.work_total > 0
+  ),
+  financial_totals as (
+    select
+      coalesce(sum(
+        case
+          when not affects_balance then 0
+          when direction = 'income' then amount
+          else -amount
+        end
+      ), 0) as net_cash_flow,
+      coalesce(sum(amount) filter (where operating_expense), 0)
+        as operating_expense
+    from financial_amounts
+  )
+  select jsonb_build_object(
+    'purchaseToday', jsonb_build_object(
+      'billCount', ps.today_bill_count,
+      'netWeight', round(ps.today_net_weight, 2),
+      'paidTotal', round(ps.today_paid_total, 2)
+    ),
+    'purchase7Days', jsonb_build_object(
+      'paidTotal', round(ps.seven_day_paid_total, 2),
+      'dailyAverage', round(ps.seven_day_paid_total / 7, 2),
+      'netWeight', round(ps.seven_day_net_weight, 2),
+      'averageCostPerKg', case
+        when ps.seven_day_net_weight > 0
+          then round(ps.seven_day_paid_total / ps.seven_day_net_weight, 2)
+        else null
+      end
+    ),
+    'netCashFlow', round(ft.net_cash_flow, 2),
+    'operatingExpenseAccumulated', round(ft.operating_expense, 2),
+    'payablePurchaseAccumulated', round(pt.accumulated_purchase, 2),
+    'operatingBurdenPercent', case
+      when pt.accumulated_purchase > 0
+        then round(ft.operating_expense / pt.accumulated_purchase * 100, 2)
+      else null
+    end,
+    'rubberInventoryWeight', round(
+      ps.accumulated_net_weight - es.accumulated_original_weight,
+      2
+    ),
+    'waterLoss7Days', jsonb_build_object(
+      'exportCount', es.seven_day_export_count,
+      'weight', round(es.seven_day_loss_weight, 2),
+      'percent', case
+        when es.seven_day_original_weight > 0
+          then round(es.seven_day_loss_weight / es.seven_day_original_weight * 100, 2)
+        else null
+      end
+    ),
+    'stock', jsonb_build_object(
+      'inStockCount', ss.in_stock_count,
+      'outOfStockCount', ss.out_of_stock_count,
+      'items', ss.items
+    )
+  )
+  from purchase_stats ps
+  cross join payable_total pt
+  cross join export_stats es
+  cross join stock_summary ss
+  cross join financial_totals ft
+$$;
+
+
+ALTER FUNCTION "private"."calculate_dashboard_summary"("p_location_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."can_access_location"("target_location" "uuid") RETURNS boolean
@@ -475,6 +723,76 @@ $$;
 ALTER FUNCTION "private"."cash_transfer_counts"("payload" "jsonb", "prefix" "text") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."claim_dashboard_branch"() RETURNS "uuid"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  branch_id uuid;
+  refresh_minutes integer;
+begin
+  perform private.dashboard_rollover_if_needed();
+
+  update public.dashboard_branch_snapshots
+  set status = 'failed',
+      claimed_version = null,
+      claimed_at = null,
+      last_error = 'งานคำนวณก่อนหน้าไม่สิ้นสุด',
+      updated_at = now()
+  where status = 'running'
+    and claimed_at < now() - interval '15 minutes';
+
+  select s.interval_minutes
+  into refresh_minutes
+  from public.dashboard_refresh_settings s
+  where s.id = true;
+
+  select snapshot.location_id
+  into branch_id
+  from public.dashboard_branch_snapshots snapshot
+  join public.locations l
+    on l.id = snapshot.location_id
+   and l.is_active = true
+  where snapshot.status = 'queued'
+     or (
+       snapshot.status = 'dirty'
+       and (
+         snapshot.summary is null
+         or snapshot.updated_at <= now() - make_interval(mins => refresh_minutes)
+       )
+     )
+     or (
+       snapshot.status = 'failed'
+       and snapshot.updated_at <= now() - make_interval(mins => refresh_minutes)
+     )
+  order by
+    (snapshot.status = 'queued') desc,
+    (snapshot.summary is null) desc,
+    snapshot.updated_at,
+    snapshot.location_id
+  for update of snapshot skip locked
+  limit 1;
+
+  if branch_id is null then
+    return null;
+  end if;
+
+  update public.dashboard_branch_snapshots
+  set status = 'running',
+      claimed_version = source_version,
+      claimed_at = now(),
+      last_error = null,
+      updated_at = now()
+  where location_id = branch_id;
+
+  return branch_id;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."claim_dashboard_branch"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."current_rubber_bill_payload"("p_bill_id" "uuid") RETURNS "jsonb"
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -543,6 +861,302 @@ $$;
 
 
 ALTER FUNCTION "private"."current_user_role"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."dashboard_dirty_all_active_locations"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  location_id uuid;
+begin
+  for location_id in
+    select l.id
+    from public.locations l
+    where l.is_active = true
+  loop
+    perform private.mark_dashboard_dirty(location_id);
+  end loop;
+  return null;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."dashboard_dirty_all_active_locations"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."dashboard_dirty_location_columns"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  old_row jsonb;
+  new_row jsonb;
+  location_ids uuid[] := array[]::uuid[];
+  column_name text;
+  location_id uuid;
+begin
+  if tg_op <> 'INSERT' then
+    old_row := to_jsonb(old);
+  end if;
+  if tg_op <> 'DELETE' then
+    new_row := to_jsonb(new);
+  end if;
+
+  foreach column_name in array tg_argv loop
+    if old_row is not null then
+      location_id := nullif(old_row ->> column_name, '')::uuid;
+      if location_id is not null
+        and array_position(location_ids, location_id) is null
+      then
+        location_ids := array_append(location_ids, location_id);
+      end if;
+    end if;
+
+    if new_row is not null then
+      location_id := nullif(new_row ->> column_name, '')::uuid;
+      if location_id is not null
+        and array_position(location_ids, location_id) is null
+      then
+        location_ids := array_append(location_ids, location_id);
+      end if;
+    end if;
+  end loop;
+
+  foreach location_id in array location_ids loop
+    perform private.mark_dashboard_dirty(location_id);
+  end loop;
+
+  if tg_op = 'DELETE' then
+    return old;
+  end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."dashboard_dirty_location_columns"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."dashboard_dirty_money_transfer_dependents"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  old_row jsonb;
+  new_row jsonb;
+  transfer_ids uuid[] := array[]::uuid[];
+  source_refs jsonb[] := array[]::jsonb[];
+  transfer_id uuid;
+  source_ref jsonb;
+  location_id uuid;
+begin
+  if tg_op <> 'INSERT' then
+    old_row := to_jsonb(old);
+  end if;
+  if tg_op <> 'DELETE' then
+    new_row := to_jsonb(new);
+  end if;
+
+  if old_row is not null then
+    transfer_id := nullif(old_row ->> 'transfer_id', '')::uuid;
+    if transfer_id is not null then
+      transfer_ids := array_append(transfer_ids, transfer_id);
+    end if;
+    if old_row ? 'source_type' and old_row ? 'source_id' then
+      source_refs := array_append(
+        source_refs,
+        jsonb_build_object(
+          'type', old_row ->> 'source_type',
+          'id', old_row ->> 'source_id'
+        )
+      );
+    end if;
+  end if;
+
+  if new_row is not null then
+    transfer_id := nullif(new_row ->> 'transfer_id', '')::uuid;
+    if transfer_id is not null
+      and array_position(transfer_ids, transfer_id) is null
+    then
+      transfer_ids := array_append(transfer_ids, transfer_id);
+    end if;
+    if new_row ? 'source_type' and new_row ? 'source_id' then
+      source_ref := jsonb_build_object(
+        'type', new_row ->> 'source_type',
+        'id', new_row ->> 'source_id'
+      );
+      if array_position(source_refs, source_ref) is null then
+        source_refs := array_append(source_refs, source_ref);
+      end if;
+    end if;
+  end if;
+
+  for location_id in
+    select distinct branch_id
+    from (
+      select mt.location_id as branch_id
+      from public.money_transfers mt
+      where mt.id = any(transfer_ids)
+      union
+      select mt.target_location_id
+      from public.money_transfers mt
+      where mt.id = any(transfer_ids)
+    ) branches
+    where branch_id is not null
+  loop
+    perform private.mark_dashboard_dirty(location_id);
+  end loop;
+
+  foreach source_ref in array source_refs loop
+    if source_ref ->> 'type' = 'rubber_bill' then
+      select b.location_id
+      into location_id
+      from public.rubber_bills b
+      where b.id = nullif(source_ref ->> 'id', '')::uuid;
+    elsif source_ref ->> 'type' = 'ocr_ticket' then
+      select t.location_id
+      into location_id
+      from public.ocr_tickets t
+      where t.id = nullif(source_ref ->> 'id', '')::uuid;
+    else
+      location_id := null;
+    end if;
+
+    perform private.mark_dashboard_dirty(location_id);
+  end loop;
+
+  if tg_op = 'DELETE' then
+    return old;
+  end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."dashboard_dirty_money_transfer_dependents"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."dashboard_dirty_rubber_bill_items"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  bill_ids uuid[] := array[]::uuid[];
+  location_id uuid;
+begin
+  if tg_op <> 'INSERT' and old.bill_id is not null then
+    bill_ids := array_append(bill_ids, old.bill_id);
+  end if;
+  if tg_op <> 'DELETE'
+    and new.bill_id is not null
+    and array_position(bill_ids, new.bill_id) is null
+  then
+    bill_ids := array_append(bill_ids, new.bill_id);
+  end if;
+
+  for location_id in
+    select distinct b.location_id
+    from public.rubber_bills b
+    where b.id = any(bill_ids)
+  loop
+    perform private.mark_dashboard_dirty(location_id);
+  end loop;
+
+  if tg_op = 'DELETE' then
+    return old;
+  end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."dashboard_dirty_rubber_bill_items"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."dashboard_require_manager"() RETURNS "void"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if not private.is_active_user()
+    or not private.can_access_super_admin_features()
+  then
+    raise exception 'ไม่มีสิทธิ์จัดการ Dashboard';
+  end if;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."dashboard_require_manager"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."dashboard_rollover_if_needed"() RETURNS boolean
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  today date := (current_timestamp at time zone 'Asia/Bangkok')::date;
+  changed boolean := false;
+  next_version bigint := pg_catalog.txid_current();
+begin
+  update public.dashboard_refresh_settings
+  set last_rollover_date = today,
+      updated_at = now()
+  where id = true
+    and last_rollover_date < today
+  returning true into changed;
+
+  if not coalesce(changed, false) then
+    return false;
+  end if;
+
+  insert into public.dashboard_branch_snapshots (
+    location_id,
+    status,
+    source_version
+  )
+  select l.id, 'dirty', next_version
+  from public.locations l
+  where l.is_active = true
+  on conflict (location_id) do update
+  set status = case
+        when dashboard_branch_snapshots.status in ('queued', 'running')
+          then dashboard_branch_snapshots.status
+        else 'dirty'
+      end,
+      source_version = greatest(
+        dashboard_branch_snapshots.source_version + 1,
+        excluded.source_version
+      ),
+      updated_at = now();
+
+  return true;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."dashboard_rollover_if_needed"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."dashboard_seed_active_location"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if tg_op = 'INSERT' and new.is_active = true then
+    perform private.mark_dashboard_dirty(new.id);
+  elsif new.is_active = true
+    and old.is_active is distinct from new.is_active
+  then
+    perform private.mark_dashboard_dirty(new.id);
+  end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."dashboard_seed_active_location"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."enforce_time_tracking_expense_relation"() RETURNS "trigger"
@@ -891,8 +1505,6 @@ begin
     new.export_date,
     new.sequence_no,
     new.location_id,
-    new.cutoff_at,
-    new.cutoff_report_item_id,
     new.original_weight_total,
     new.paid_total,
     new.average_price,
@@ -903,15 +1515,13 @@ begin
     old.export_date,
     old.sequence_no,
     old.location_id,
-    old.cutoff_at,
-    old.cutoff_report_item_id,
     old.original_weight_total,
     old.paid_total,
     old.average_price,
     old.created_by_user_id,
     old.created_at
   ) then
-    raise exception 'ข้อมูล cutoff และ snapshot ของรายการส่งออกแก้ไขไม่ได้';
+    raise exception 'ข้อมูลสมาชิกและ snapshot ของรายการส่งออกแก้ไขไม่ได้';
   end if;
   return new;
 end;
@@ -946,6 +1556,52 @@ $$;
 
 
 ALTER FUNCTION "private"."is_super_admin"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."mark_dashboard_dirty"("p_location_id" "uuid") RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  next_version bigint := pg_catalog.txid_current();
+begin
+  if p_location_id is null or not exists (
+    select 1
+    from public.locations l
+    where l.id = p_location_id
+      and l.is_active = true
+  ) then
+    return;
+  end if;
+
+  insert into public.dashboard_branch_snapshots (
+    location_id,
+    status,
+    source_version
+  )
+  values (
+    p_location_id,
+    'dirty',
+    next_version
+  )
+  on conflict (location_id) do update
+  set status = case
+        when dashboard_branch_snapshots.status in ('queued', 'running')
+          then dashboard_branch_snapshots.status
+        else 'dirty'
+      end,
+      source_version = excluded.source_version,
+      updated_at = now()
+  where dashboard_branch_snapshots.source_version < excluded.source_version;
+
+  insert into public.dashboard_alert_thresholds (location_id)
+  values (p_location_id)
+  on conflict (location_id) do nothing;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."mark_dashboard_dirty"("p_location_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."normalize_rubber_bill_calculation_payload"("payload" "jsonb") RETURNS "jsonb"
@@ -1151,6 +1807,74 @@ $$;
 
 
 ALTER FUNCTION "private"."raise_report_lock"("p_report_no" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."rebuild_dashboard_branch"() RETURNS "uuid"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  branch_id uuid;
+  claim_version bigint;
+  next_summary jsonb;
+begin
+  if not pg_catalog.pg_try_advisory_xact_lock(
+    pg_catalog.hashtext('lanflow-dashboard-rebuild')
+  ) then
+    return null;
+  end if;
+
+  select snapshot.location_id, snapshot.claimed_version
+  into branch_id, claim_version
+  from public.dashboard_branch_snapshots snapshot
+  join public.locations l
+    on l.id = snapshot.location_id
+   and l.is_active = true
+  where snapshot.status = 'running'
+  order by snapshot.claimed_at, snapshot.location_id
+  limit 1;
+
+  if branch_id is null then
+    return null;
+  end if;
+
+  begin
+    next_summary := private.calculate_dashboard_summary(branch_id);
+
+    update public.dashboard_branch_snapshots
+    set summary = next_summary,
+        calculated_at = now(),
+        snapshot_version = claim_version,
+        status = case
+          when source_version = claim_version then 'ready'
+          else 'dirty'
+        end,
+        claimed_version = null,
+        claimed_at = null,
+        manual_requested_at = null,
+        last_error = null,
+        updated_at = now()
+    where location_id = branch_id
+      and status = 'running'
+      and claimed_version = claim_version;
+  exception when others then
+    update public.dashboard_branch_snapshots
+    set status = 'failed',
+        claimed_version = null,
+        claimed_at = null,
+        last_error = 'คำนวณ Dashboard ไม่สำเร็จ',
+        updated_at = now()
+    where location_id = branch_id
+      and status = 'running'
+      and claimed_version = claim_version;
+  end;
+
+  return branch_id;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."rebuild_dashboard_branch"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."reportable_items"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) RETURNS TABLE("entity_type" "text", "entity_id" "uuid", "eligibility_at" timestamp with time zone)
@@ -1388,7 +2112,7 @@ $$;
 ALTER FUNCTION "private"."rubber_bill_report_blockers"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "private"."rubber_export_candidates"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) RETURNS TABLE("report_item_id" "uuid", "bill_id" "uuid", "bill_date" "date", "bill_no" "text", "customer_name" "text", "eligibility_at" timestamp with time zone, "net_weight" numeric, "paid_amount" numeric)
+CREATE OR REPLACE FUNCTION "private"."rubber_export_candidates"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) RETURNS TABLE("report_item_id" "uuid", "bill_id" "uuid", "bill_date" "date", "bill_no" "text", "customer_name" "text", "eligibility_at" timestamp with time zone, "net_weight" numeric, "paid_amount" numeric)
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
     AS $$
@@ -1407,7 +2131,10 @@ CREATE OR REPLACE FUNCTION "private"."rubber_export_candidates"("p_location_id" 
   where i.location_id = p_location_id
     and i.entity_type = 'rubber_bill'
     and i.active = true
-    and i.eligibility_at <= p_cutoff_at
+    and (
+      p_selected_report_item_ids is null
+      or i.id = any(p_selected_report_item_ids)
+    )
     and r.status = 'active'
     and b.location_id = p_location_id
     and b.record_status = 'active'
@@ -1422,7 +2149,7 @@ CREATE OR REPLACE FUNCTION "private"."rubber_export_candidates"("p_location_id" 
 $$;
 
 
-ALTER FUNCTION "private"."rubber_export_candidates"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) OWNER TO "postgres";
+ALTER FUNCTION "private"."rubber_export_candidates"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."telegram_badge_latest_slot"("p_now" timestamp with time zone, "p_start_time" time without time zone, "p_end_time" time without time zone, "p_interval_minutes" integer) RETURNS timestamp with time zone
@@ -1469,16 +2196,49 @@ $$;
 ALTER FUNCTION "private"."telegram_badge_require_manager"() OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "private"."validate_rubber_export_candidates"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) RETURNS "void"
+CREATE OR REPLACE FUNCTION "private"."validate_rubber_export_selection"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) RETURNS "void"
     LANGUAGE "plpgsql" STABLE SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
     AS $$
 declare
+  v_selected_count integer;
+  v_candidate_count integer;
   v_invalid text;
 begin
+  v_selected_count := coalesce(cardinality(p_selected_report_item_ids), 0);
+
+  if v_selected_count = 0 then
+    raise exception 'RUBBER_EXPORT_SELECTION_EMPTY: กรุณาเลือกบิลอย่างน้อย 1 ใบ'
+      using errcode = 'P0001';
+  end if;
+
+  if (
+    select count(distinct selected_id)
+    from unnest(p_selected_report_item_ids) selected_id
+  ) <> v_selected_count then
+    raise exception 'RUBBER_EXPORT_SELECTION_DUPLICATE: พบบิลที่เลือกซ้ำ'
+      using errcode = 'P0001';
+  end if;
+
+  select count(*)::integer
+  into v_candidate_count
+  from private.rubber_export_candidates(
+    p_location_id,
+    p_selected_report_item_ids
+  );
+
+  if v_candidate_count <> v_selected_count then
+    raise exception 'RUBBER_EXPORT_SELECTION_STALE: บิลที่เลือกบางรายการไม่พร้อมส่งออกแล้ว'
+      using errcode = 'P0001',
+            hint = 'รีเฟรชรายการบิลแล้วเลือกใหม่';
+  end if;
+
   select string_agg(c.bill_no, ', ' order by c.eligibility_at, c.bill_id)
   into v_invalid
-  from private.rubber_export_candidates(p_location_id, p_cutoff_at) c
+  from private.rubber_export_candidates(
+    p_location_id,
+    p_selected_report_item_ids
+  ) c
   where c.net_weight <= 0 or c.paid_amount <= 0;
 
   if v_invalid is not null then
@@ -1490,7 +2250,7 @@ end;
 $$;
 
 
-ALTER FUNCTION "private"."validate_rubber_export_candidates"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) OWNER TO "postgres";
+ALTER FUNCTION "private"."validate_rubber_export_selection"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."approve_rubber_bill_approval_request"("p_request_id" "uuid") RETURNS "jsonb"
@@ -2281,7 +3041,7 @@ $$;
 ALTER FUNCTION "public"."create_report_batch"("p_location_id" "uuid") OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "public"."create_rubber_export"("p_location_id" "uuid", "p_cutoff_report_item_id" "uuid") RETURNS "jsonb"
+CREATE OR REPLACE FUNCTION "public"."create_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
     AS $$
@@ -2294,7 +3054,6 @@ declare
   v_sequence_no integer;
   v_export_no text;
   v_export_id uuid;
-  v_cutoff_at timestamptz;
   v_item_count integer;
   v_original_weight numeric;
   v_paid_total numeric;
@@ -2305,20 +3064,17 @@ begin
 
   perform pg_advisory_xact_lock(hashtextextended('rubber-export:' || p_location_id::text, 0));
 
-  select c.eligibility_at
-  into v_cutoff_at
-  from private.rubber_export_candidates(p_location_id, 'infinity'::timestamptz) c
-  where c.report_item_id = p_cutoff_report_item_id;
-
-  if v_cutoff_at is null then
-    raise exception 'บิล cutoff ไม่พร้อมใช้งานหรือถูกจองแล้ว';
-  end if;
-
-  perform private.validate_rubber_export_candidates(p_location_id, v_cutoff_at);
+  perform private.validate_rubber_export_selection(
+    p_location_id,
+    p_selected_report_item_ids
+  );
 
   select count(*)::integer, round(sum(c.net_weight), 2), round(sum(c.paid_amount), 2)
   into v_item_count, v_original_weight, v_paid_total
-  from private.rubber_export_candidates(p_location_id, v_cutoff_at) c;
+  from private.rubber_export_candidates(
+    p_location_id,
+    p_selected_report_item_ids
+  ) c;
 
   if coalesce(v_item_count, 0) = 0 then
     raise exception 'ไม่มีบิลที่พร้อมสร้างรายการส่งออก';
@@ -2345,8 +3101,6 @@ begin
     export_date,
     sequence_no,
     location_id,
-    cutoff_at,
-    cutoff_report_item_id,
     original_weight_total,
     paid_total,
     average_price,
@@ -2360,8 +3114,6 @@ begin
     v_export_date,
     v_sequence_no,
     p_location_id,
-    v_cutoff_at,
-    p_cutoff_report_item_id,
     v_original_weight,
     v_paid_total,
     round(v_paid_total / v_original_weight, 2),
@@ -2395,21 +3147,23 @@ begin
     c.eligibility_at,
     c.net_weight,
     c.paid_amount
-  from private.rubber_export_candidates(p_location_id, v_cutoff_at) c;
+  from private.rubber_export_candidates(
+    p_location_id,
+    p_selected_report_item_ids
+  ) c;
 
   get diagnostics v_item_count = row_count;
 
   return jsonb_build_object(
     'id', v_export_id,
     'exportNo', v_export_no,
-    'cutoffAt', v_cutoff_at,
     'itemCount', v_item_count
   );
 end;
 $$;
 
 
-ALTER FUNCTION "public"."create_rubber_export"("p_location_id" "uuid", "p_cutoff_report_item_id" "uuid") OWNER TO "postgres";
+ALTER FUNCTION "public"."create_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."create_stock_entry_delete_approval_request"("payload" "jsonb") RETURNS "jsonb"
@@ -4266,6 +5020,1054 @@ $$;
 ALTER FUNCTION "public"."get_actionable_badge_counts"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."get_dashboard_alert_thresholds"("p_location_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  thresholds public.dashboard_alert_thresholds%rowtype;
+  stock_items jsonb;
+begin
+  perform private.dashboard_require_manager();
+
+  if not exists (
+    select 1 from public.locations l
+    where l.id = p_location_id and l.is_active = true
+  ) then
+    raise exception 'ไม่พบสาขาที่เปิดใช้งาน';
+  end if;
+
+  select *
+  into thresholds
+  from public.dashboard_alert_thresholds t
+  where t.location_id = p_location_id;
+
+  select coalesce(
+    jsonb_agg(
+      jsonb_build_object(
+        'productId', p.id,
+        'name', p.name,
+        'unit', p.unit,
+        'minimumBalance', st.minimum_balance
+      )
+      order by p.name, p.id
+    ),
+    '[]'::jsonb
+  )
+  into stock_items
+  from public.stock_products p
+  left join public.dashboard_stock_alert_thresholds st
+    on st.product_id = p.id
+   and st.location_id = p_location_id
+  where p.is_active = true;
+
+  return jsonb_build_object(
+    'locationId', p_location_id,
+    'purchaseAverageMin', thresholds.purchase_average_min,
+    'netCashMin', coalesce(thresholds.net_cash_min, 30000),
+    'stockItems', stock_items,
+    'updatedAt', thresholds.updated_at,
+    'updatedByName', thresholds.updated_by_name
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_dashboard_alert_thresholds"("p_location_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_dashboard_alerts_for_telegram"() RETURNS TABLE("location_id" "uuid", "branch_name" "text", "alert_key" "text", "metric_label" "text", "current_value" numeric, "minimum_value" numeric, "unit" "text", "detail" "text")
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  with branch_metrics as (
+    select
+      l.id as location_id,
+      l.name as branch_name,
+      s.summary,
+      s.status,
+      s.calculated_at,
+      t.purchase_average_min,
+      t.net_cash_min,
+      'ต่ำกว่ายอดขั้นต่ำ · ผลคำนวณ '
+        || to_char(
+          s.calculated_at at time zone 'Asia/Bangkok',
+          'DD/MM/YYYY HH24:MI'
+        )
+        || case
+          when s.status = 'ready' then ''
+          else ' · ข้อมูลกำลังรออัปเดต'
+        end as alert_detail
+    from public.locations l
+    join public.dashboard_branch_snapshots s on s.location_id = l.id
+    join public.dashboard_alert_thresholds t on t.location_id = l.id
+    where l.is_active = true
+      and s.summary is not null
+      and s.calculated_at is not null
+  ),
+  scalar_alerts as (
+    select
+      b.location_id,
+      b.branch_name,
+      'purchase_average_7_days'::text as alert_key,
+      'ยอดซื้อเฉลี่ย 7 วัน'::text as metric_label,
+      round((b.summary #>> '{purchase7Days,dailyAverage}')::numeric, 2)
+        as current_value,
+      b.purchase_average_min as minimum_value,
+      'บาท/วัน'::text as unit,
+      b.alert_detail as detail
+    from branch_metrics b
+    where b.purchase_average_min is not null
+      and (b.summary #>> '{purchase7Days,dailyAverage}')::numeric
+        < b.purchase_average_min
+
+    union all
+
+    select
+      b.location_id,
+      b.branch_name,
+      'net_cash_accumulated',
+      'รับ–จ่ายสุทธิสะสม',
+      round((b.summary ->> 'netCashFlow')::numeric, 2),
+      b.net_cash_min,
+      'บาท',
+      b.alert_detail
+    from branch_metrics b
+    where (b.summary ->> 'netCashFlow')::numeric < b.net_cash_min
+  ),
+  stock_alerts as (
+    select
+      b.location_id,
+      b.branch_name,
+      'stock:' || (product.item ->> 'productId') as alert_key,
+      'สต็อกสินค้า · ' || (product.item ->> 'name') as metric_label,
+      round((product.item ->> 'balance')::numeric, 2) as current_value,
+      threshold.minimum_balance as minimum_value,
+      product.item ->> 'unit' as unit,
+      b.alert_detail as detail
+    from branch_metrics b
+    cross join lateral jsonb_array_elements(
+      coalesce(b.summary #> '{stock,items}', '[]'::jsonb)
+    ) product(item)
+    join public.dashboard_stock_alert_thresholds threshold
+      on threshold.location_id = b.location_id
+     and threshold.product_id = (product.item ->> 'productId')::uuid
+    where (product.item ->> 'balance')::numeric < threshold.minimum_balance
+  )
+  select * from scalar_alerts
+  union all
+  select * from stock_alerts
+  order by branch_name, alert_key;
+$$;
+
+
+ALTER FUNCTION "public"."get_dashboard_alerts_for_telegram"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_dashboard_money_feed"("p_location_id" "uuid", "p_cursor_at" timestamp with time zone DEFAULT NULL::timestamp with time zone, "p_cursor_key" "text" DEFAULT NULL::"text", "p_page_size" integer DEFAULT 10) RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  page_size integer := least(greatest(coalesce(p_page_size, 10), 1), 50);
+begin
+  if not private.is_active_user()
+    or not public.can_access_location(p_location_id)
+  then
+    raise exception 'Location access denied';
+  end if;
+
+  if (p_cursor_at is null) <> (p_cursor_key is null) then
+    raise exception 'Invalid dashboard cursor';
+  end if;
+
+  return (
+    with income_expense_candidates as (
+      select
+        coalesce(ie.client_recorded_at, ie.created_at) as occurred_at,
+        'actual:' || ie.id::text as sort_key,
+        ie.id::text as id,
+        ie.type::text as kind,
+        coalesce(
+          ie.number,
+          ie.server_bill_no,
+          ie.local_bill_no,
+          left(ie.id::text, 8)
+        ) as number,
+        ie.title,
+        ie.type::text as direction,
+        ie.cost as amount,
+        ie.created_by_name
+      from public.income_expense ie
+      where ie.location_id = p_location_id
+        and ie.record_status = 'active'
+        and ie.cost > 0
+        and (
+          p_cursor_at is null
+          or (
+            coalesce(ie.client_recorded_at, ie.created_at),
+            'actual:' || ie.id::text
+          ) < (p_cursor_at, p_cursor_key)
+        )
+      order by
+        coalesce(ie.client_recorded_at, ie.created_at) desc,
+        'actual:' || ie.id::text desc
+      limit page_size + 1
+    ),
+    branch_transfer_in_candidates as (
+      select
+        mt.created_at as occurred_at,
+        'branch-transfer-in:' || mt.id::text as sort_key,
+        'branch-transfer-in:' || mt.id::text as id,
+        'transfer_in'::text as kind,
+        'TR-' || left(mt.id::text, 8) as number,
+        'รับโอนเงินเข้าสาขา'::text as title,
+        'income'::text as direction,
+        mt.net_amount_to_pay as amount,
+        coalesce(mt.created_by_name, 'ระบบโอนเงิน') as created_by_name
+      from public.money_transfers mt
+      where mt.transfer_type = 'branch'
+        and coalesce(mt.transfer_method, 'bank') <> 'cash'
+        and mt.target_location_id = p_location_id
+        and mt.record_status <> 'deleted'
+        and mt.transfer_status in ('paid', 'overpaid', 'branch_and_transfer')
+        and mt.net_amount_to_pay > 0
+        and (
+          p_cursor_at is null
+          or (mt.created_at, 'branch-transfer-in:' || mt.id::text)
+            < (p_cursor_at, p_cursor_key)
+        )
+      order by mt.created_at desc, 'branch-transfer-in:' || mt.id::text desc
+      limit page_size + 1
+    ),
+    branch_transfer_out_candidates as (
+      select
+        mt.created_at as occurred_at,
+        'branch-transfer-out:' || mt.id::text as sort_key,
+        'branch-transfer-out:' || mt.id::text as id,
+        'transfer_out'::text as kind,
+        'TR-' || left(mt.id::text, 8) as number,
+        'โยกเงินไป ' || coalesce(mt.target_location_name, 'สาขาปลายทาง')
+          as title,
+        'expense'::text as direction,
+        mt.net_amount_to_pay as amount,
+        coalesce(mt.created_by_name, 'ระบบโอนเงิน') as created_by_name
+      from public.money_transfers mt
+      where mt.transfer_type = 'branch'
+        and coalesce(mt.transfer_method, 'bank') <> 'cash'
+        and mt.location_id = p_location_id
+        and mt.target_location_id <> mt.location_id
+        and mt.record_status <> 'deleted'
+        and mt.transfer_status in ('paid', 'overpaid', 'branch_and_transfer')
+        and mt.net_amount_to_pay > 0
+        and (
+          p_cursor_at is null
+          or (mt.created_at, 'branch-transfer-out:' || mt.id::text)
+            < (p_cursor_at, p_cursor_key)
+        )
+      order by mt.created_at desc, 'branch-transfer-out:' || mt.id::text desc
+      limit page_size + 1
+    ),
+    customer_paid_candidates as (
+      select
+        mt.created_at as occurred_at,
+        'customer-branch-paid:' || mt.id::text as sort_key,
+        'customer-branch-paid:' || mt.id::text as id,
+        'transfer_out'::text as kind,
+        'CT-' || left(mt.id::text, 8) as number,
+        'สาขาจ่ายส่วนต่างให้ ' || coalesce(mt.customer_name, 'ลูกค้า') as title,
+        'expense'::text as direction,
+        mt.branch_paid_amount as amount,
+        coalesce(mt.created_by_name, 'ระบบโอนเงิน') as created_by_name
+      from public.money_transfers mt
+      where mt.transfer_type = 'customer'
+        and mt.transfer_status = 'branch_and_transfer'
+        and mt.location_id = p_location_id
+        and mt.record_status <> 'deleted'
+        and mt.branch_paid_amount > 0
+        and (
+          p_cursor_at is null
+          or (mt.created_at, 'customer-branch-paid:' || mt.id::text)
+            < (p_cursor_at, p_cursor_key)
+        )
+      order by mt.created_at desc, 'customer-branch-paid:' || mt.id::text desc
+      limit page_size + 1
+    ),
+    cash_out_candidates as (
+      select
+        d.sent_at as occurred_at,
+        'cash-transfer-out:' || mt.id::text as sort_key,
+        'cash-transfer-out:' || mt.id::text as id,
+        'transfer_out'::text as kind,
+        'CASH-' || left(mt.id::text, 8) as number,
+        'โยกเงินสดไป ' || coalesce(mt.target_location_name, 'สาขาปลายทาง')
+          as title,
+        'expense'::text as direction,
+        d.sent_total as amount,
+        coalesce(mt.created_by_name, 'ระบบโอนเงิน') as created_by_name
+      from public.money_transfers mt
+      join public.money_transfer_cash_details d on d.transfer_id = mt.id
+      where mt.transfer_type = 'cash'
+        and mt.transfer_method = 'cash'
+        and mt.location_id = p_location_id
+        and mt.record_status <> 'deleted'
+        and d.sent_total > 0
+        and (
+          p_cursor_at is null
+          or (d.sent_at, 'cash-transfer-out:' || mt.id::text)
+            < (p_cursor_at, p_cursor_key)
+        )
+      order by d.sent_at desc, 'cash-transfer-out:' || mt.id::text desc
+      limit page_size + 1
+    ),
+    cash_in_candidates as (
+      select
+        d.received_at as occurred_at,
+        'cash-transfer-in:' || mt.id::text as sort_key,
+        'cash-transfer-in:' || mt.id::text as id,
+        'transfer_in'::text as kind,
+        'CASH-' || left(mt.id::text, 8) as number,
+        'รับโอนเงินสดเข้าสาขา'::text as title,
+        'income'::text as direction,
+        d.received_total as amount,
+        coalesce(
+          d.received_by_name,
+          mt.created_by_name,
+          'ระบบโอนเงิน'
+        ) as created_by_name
+      from public.money_transfers mt
+      join public.money_transfer_cash_details d on d.transfer_id = mt.id
+      where mt.transfer_type = 'cash'
+        and mt.transfer_method = 'cash'
+        and mt.target_location_id = p_location_id
+        and mt.record_status <> 'deleted'
+        and d.cash_status in ('received', 'mismatched', 'difference_accepted')
+        and d.received_total > 0
+        and (
+          p_cursor_at is null
+          or (d.received_at, 'cash-transfer-in:' || mt.id::text)
+            < (p_cursor_at, p_cursor_key)
+        )
+      order by d.received_at desc, 'cash-transfer-in:' || mt.id::text desc
+      limit page_size + 1
+    ),
+    withdrawal_candidates as (
+      select
+        ft.approved_at as occurred_at,
+        'withdrawal:' || ft.id::text as sort_key,
+        'withdrawal:' || ft.id::text as id,
+        'expense'::text as kind,
+        'TW-' || left(ft.id::text, 8) as number,
+        'เบิกเงิน — ' || coalesce(p.name, 'พนักงาน')
+          || coalesce(': ' || nullif(ft.description, ''), '') as title,
+        'expense'::text as direction,
+        ft.amount,
+        coalesce(p.name, 'พนักงาน') as created_by_name
+      from public.financial_transactions ft
+      join public.profiles p on p.id = ft.profile_id
+      where ft.type = 'WITHDRAWAL'
+        and ft.status = 'APPROVED'
+        and ft.cancelled_at is null
+        and ft.expense_location_id = p_location_id
+        and ft.amount > 0
+        and (
+          p_cursor_at is null
+          or (ft.approved_at, 'withdrawal:' || ft.id::text)
+            < (p_cursor_at, p_cursor_key)
+        )
+      order by ft.approved_at desc, 'withdrawal:' || ft.id::text desc
+      limit page_size + 1
+    ),
+    payroll_candidates as (
+      select
+        ps.approved_at as occurred_at,
+        'payroll:' || ps.id::text as sort_key,
+        'payroll:' || ps.id::text as id,
+        'expense'::text as kind,
+        'PS-' || left(ps.id::text, 8) as number,
+        'เงินเดือน — ' || coalesce(p.name, 'พนักงาน') || ' — ' || ps.month
+          as title,
+        'expense'::text as direction,
+        ps.net_pay as amount,
+        coalesce(p.name, 'พนักงาน') as created_by_name
+      from public.payroll_slips ps
+      join public.profiles p on p.id = ps.profile_id
+      where ps.status = 'APPROVED'
+        and ps.cancelled_at is null
+        and ps.expense_location_id = p_location_id
+        and ps.net_pay > 0
+        and (
+          p_cursor_at is null
+          or (ps.approved_at, 'payroll:' || ps.id::text)
+            < (p_cursor_at, p_cursor_key)
+        )
+      order by ps.approved_at desc, 'payroll:' || ps.id::text desc
+      limit page_size + 1
+    ),
+    rubber_bill_candidates as (
+      select
+        coalesce(b.client_recorded_at, b.created_at) as occurred_at,
+        'rubber-bill:' || b.id::text as sort_key,
+        'rubber-bill:' || b.id::text as id,
+        'rubber_bill'::text as kind,
+        coalesce(
+          b.server_bill_no,
+          nullif(b.local_bill_no, ''),
+          nullif(b.bill_no, ''),
+          left(b.id::text, 8)
+        ) as number,
+        'รับซื้อยาง — ' || coalesce(nullif(b.customer_name, ''), 'ไม่ระบุลูกค้า')
+          as title,
+        'expense'::text as direction,
+        b.net_total as amount,
+        b.created_by_name
+      from public.rubber_bills b
+      where b.location_id = p_location_id
+        and b.record_status = 'active'
+        and private.rubber_bill_is_payable(b.id)
+        and (
+          p_cursor_at is null
+          or (
+            coalesce(b.client_recorded_at, b.created_at),
+            'rubber-bill:' || b.id::text
+          ) < (p_cursor_at, p_cursor_key)
+        )
+      order by
+        coalesce(b.client_recorded_at, b.created_at) desc,
+        'rubber-bill:' || b.id::text desc
+      limit page_size + 1
+    ),
+    ocr_candidates as (
+      select
+        coalesce(ot.client_recorded_at, ot.created_at) as occurred_at,
+        'ocr-ticket:' || ot.id::text as sort_key,
+        'ocr-ticket:' || ot.id::text as id,
+        'rubber_bill'::text as kind,
+        coalesce(nullif(ot.ticket_id, ''), left(ot.id::text, 8)) as number,
+        'รับซื้อยางจากใบชั่ง — '
+          || coalesce(nullif(ot.customer_name, ''), 'ไม่ระบุลูกค้า') as title,
+        'expense'::text as direction,
+        ot.total_amount as amount,
+        ot.created_by_name
+      from public.ocr_tickets ot
+      where ot.location_id = p_location_id
+        and ot.record_status = 'active'
+        and ot.total_amount > 0
+        and (
+          p_cursor_at is null
+          or (
+            coalesce(ot.client_recorded_at, ot.created_at),
+            'ocr-ticket:' || ot.id::text
+          ) < (p_cursor_at, p_cursor_key)
+        )
+      order by
+        coalesce(ot.client_recorded_at, ot.created_at) desc,
+        'ocr-ticket:' || ot.id::text desc
+      limit page_size + 1
+    ),
+    export_candidates as (
+      select
+        e.verified_at as occurred_at,
+        'rubber-export:' || e.id::text as sort_key,
+        'rubber-export:' || e.id::text as id,
+        'rubber_export'::text as kind,
+        e.export_no as number,
+        'ค่าทำงานส่งออกยาง — ' || e.export_no as title,
+        'expense'::text as direction,
+        e.work_total as amount,
+        e.created_by_name
+      from public.rubber_exports e
+      where e.location_id = p_location_id
+        and e.status = 'verified'
+        and e.expense_destination = 'branch'
+        and e.work_total > 0
+        and (
+          p_cursor_at is null
+          or (e.verified_at, 'rubber-export:' || e.id::text)
+            < (p_cursor_at, p_cursor_key)
+        )
+      order by e.verified_at desc, 'rubber-export:' || e.id::text desc
+      limit page_size + 1
+    ),
+    candidates as (
+      select * from income_expense_candidates
+      union all select * from branch_transfer_in_candidates
+      union all select * from branch_transfer_out_candidates
+      union all select * from customer_paid_candidates
+      union all select * from cash_out_candidates
+      union all select * from cash_in_candidates
+      union all select * from withdrawal_candidates
+      union all select * from payroll_candidates
+      union all select * from rubber_bill_candidates
+      union all select * from ocr_candidates
+      union all select * from export_candidates
+    ),
+    page as (
+      select *
+      from candidates
+      order by occurred_at desc, sort_key desc
+      limit page_size + 1
+    )
+    select jsonb_build_object(
+      'rows',
+      coalesce((
+        select jsonb_agg(
+          jsonb_build_object(
+            'id', id,
+            'kind', kind,
+            'number', number,
+            'title', title,
+            'direction', direction,
+            'amount', round(amount, 2),
+            'occurredAt', occurred_at,
+            'createdByName', created_by_name
+          )
+          order by occurred_at desc, sort_key desc
+        )
+        from (
+          select *
+          from page
+          order by occurred_at desc, sort_key desc
+          limit page_size
+        ) visible
+      ), '[]'::jsonb),
+      'nextCursor',
+      case
+        when (select count(*) from page) > page_size then (
+          select jsonb_build_object('at', occurred_at, 'key', sort_key)
+          from page
+          order by occurred_at desc, sort_key desc
+          offset page_size - 1
+          limit 1
+        )
+        else null
+      end
+    )
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_dashboard_money_feed"("p_location_id" "uuid", "p_cursor_at" timestamp with time zone, "p_cursor_key" "text", "p_page_size" integer) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_dashboard_overview"("p_location_id" "uuid", "p_cursor_at" timestamp with time zone DEFAULT NULL::timestamp with time zone, "p_cursor_key" "text" DEFAULT NULL::"text", "p_page_size" integer DEFAULT 10) RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_today date := (current_timestamp at time zone 'Asia/Bangkok')::date;
+  v_from date := v_today - 6;
+  v_page_size integer := least(greatest(coalesce(p_page_size, 10), 1), 50);
+begin
+  if not private.is_active_user() or not public.can_access_location(p_location_id) then
+    raise exception 'Location access denied';
+  end if;
+
+  if (p_cursor_at is null) <> (p_cursor_key is null) then
+    raise exception 'Invalid dashboard cursor';
+  end if;
+
+  return (
+    with active_bills as (
+      select b.*
+      from public.rubber_bills b
+      where b.location_id = p_location_id
+        and b.record_status = 'active'
+    ),
+    payable_bills as (
+      select b.*
+      from active_bills b
+      where private.rubber_bill_is_payable(b.id)
+    ),
+    purchase_stats as (
+      select
+        (select count(*) from active_bills b where b.bill_date = v_today) as today_bill_count,
+        (select coalesce(sum(b.net_weight), 0) from active_bills b where b.bill_date = v_today) as today_net_weight,
+        (select coalesce(sum(b.net_total), 0) from payable_bills b where b.bill_date = v_today) as today_paid_total,
+        (select coalesce(sum(b.net_weight), 0) from payable_bills b where b.bill_date between v_from and v_today) as seven_day_net_weight,
+        (select coalesce(sum(b.net_total), 0) from payable_bills b where b.bill_date between v_from and v_today) as seven_day_paid_total,
+        (select coalesce(sum(b.net_weight), 0) from active_bills b) as accumulated_net_weight
+    ),
+    export_stats as (
+      select
+        coalesce(sum(e.original_weight_total) filter (where e.status = 'verified'), 0) as accumulated_original_weight,
+        count(*) filter (
+          where e.status = 'verified'
+            and (e.verified_at at time zone 'Asia/Bangkok')::date between v_from and v_today
+        ) as seven_day_export_count,
+        coalesce(sum(e.original_weight_total - e.current_weight) filter (
+          where e.status = 'verified'
+            and (e.verified_at at time zone 'Asia/Bangkok')::date between v_from and v_today
+        ), 0) as seven_day_loss_weight,
+        coalesce(sum(e.original_weight_total) filter (
+          where e.status = 'verified'
+            and (e.verified_at at time zone 'Asia/Bangkok')::date between v_from and v_today
+        ), 0) as seven_day_original_weight
+      from public.rubber_exports e
+      where e.location_id = p_location_id
+    ),
+    stock_balances as (
+      select
+        p.id,
+        p.name,
+        p.unit,
+        round(coalesce(sum(m.quantity_delta), 0), 2) as balance
+      from public.stock_products p
+      left join public.stock_movements m
+        on m.product_id = p.id
+       and m.location_id = p_location_id
+      where p.is_active = true
+      group by p.id, p.name, p.unit
+    ),
+    stock_summary as (
+      select
+        count(*) filter (where balance > 0) as in_stock_count,
+        count(*) filter (where balance <= 0) as out_of_stock_count,
+        coalesce(
+          jsonb_agg(
+            jsonb_build_object(
+              'productId', id,
+              'name', name,
+              'unit', unit,
+              'balance', balance
+            )
+            order by (balance <= 0) desc, name, id
+          ),
+          '[]'::jsonb
+        ) as items
+      from stock_balances
+    ),
+    financial_events as (
+      select
+        coalesce(ie.client_recorded_at, ie.created_at) as occurred_at,
+        ie.tx_date as business_date,
+        'actual:' || ie.id::text as sort_key,
+        ie.id::text as id,
+        ie.type::text as kind,
+        coalesce(ie.number, ie.server_bill_no, ie.local_bill_no, left(ie.id::text, 8)) as number,
+        ie.title,
+        ie.type::text as direction,
+        ie.cost as amount,
+        ie.created_by_name,
+        true as affects_balance,
+        ie.type = 'expense' as operating_expense
+      from public.income_expense ie
+      where ie.location_id = p_location_id
+        and ie.record_status = 'active'
+        and ie.cost > 0
+
+      union all
+
+      select
+        mt.created_at,
+        (mt.created_at at time zone 'Asia/Bangkok')::date,
+        'branch-transfer-in:' || mt.id::text,
+        'branch-transfer-in:' || mt.id::text,
+        'transfer_in',
+        'TR-' || left(mt.id::text, 8),
+        'รับโอนเงินเข้าสาขา',
+        'income',
+        mt.net_amount_to_pay,
+        coalesce(mt.created_by_name, 'ระบบโอนเงิน'),
+        true,
+        false
+      from public.money_transfers mt
+      where mt.transfer_type = 'branch'
+        and coalesce(mt.transfer_method, 'bank') <> 'cash'
+        and mt.target_location_id = p_location_id
+        and mt.record_status <> 'deleted'
+        and mt.transfer_status in ('paid', 'overpaid', 'branch_and_transfer')
+        and mt.net_amount_to_pay > 0
+
+      union all
+
+      select
+        mt.created_at,
+        (mt.created_at at time zone 'Asia/Bangkok')::date,
+        'branch-transfer-out:' || mt.id::text,
+        'branch-transfer-out:' || mt.id::text,
+        'transfer_out',
+        'TR-' || left(mt.id::text, 8),
+        'โยกเงินไป ' || coalesce(mt.target_location_name, 'สาขาปลายทาง'),
+        'expense',
+        mt.net_amount_to_pay,
+        coalesce(mt.created_by_name, 'ระบบโอนเงิน'),
+        true,
+        false
+      from public.money_transfers mt
+      where mt.transfer_type = 'branch'
+        and coalesce(mt.transfer_method, 'bank') <> 'cash'
+        and mt.location_id = p_location_id
+        and mt.target_location_id <> mt.location_id
+        and mt.record_status <> 'deleted'
+        and mt.transfer_status in ('paid', 'overpaid', 'branch_and_transfer')
+        and mt.net_amount_to_pay > 0
+
+      union all
+
+      select
+        mt.created_at,
+        (mt.created_at at time zone 'Asia/Bangkok')::date,
+        'customer-branch-paid:' || mt.id::text,
+        'customer-branch-paid:' || mt.id::text,
+        'transfer_out',
+        'CT-' || left(mt.id::text, 8),
+        'สาขาจ่ายส่วนต่างให้ ' || coalesce(mt.customer_name, 'ลูกค้า'),
+        'expense',
+        mt.branch_paid_amount,
+        coalesce(mt.created_by_name, 'ระบบโอนเงิน'),
+        true,
+        false
+      from public.money_transfers mt
+      where mt.transfer_type = 'customer'
+        and mt.transfer_status = 'branch_and_transfer'
+        and mt.location_id = p_location_id
+        and mt.record_status <> 'deleted'
+        and mt.branch_paid_amount > 0
+
+      union all
+
+      select
+        d.sent_at,
+        (d.sent_at at time zone 'Asia/Bangkok')::date,
+        'cash-transfer-out:' || mt.id::text,
+        'cash-transfer-out:' || mt.id::text,
+        'transfer_out',
+        'CASH-' || left(mt.id::text, 8),
+        'โยกเงินสดไป ' || coalesce(mt.target_location_name, 'สาขาปลายทาง'),
+        'expense',
+        d.sent_total,
+        coalesce(mt.created_by_name, 'ระบบโอนเงิน'),
+        true,
+        false
+      from public.money_transfers mt
+      join public.money_transfer_cash_details d on d.transfer_id = mt.id
+      where mt.transfer_type = 'cash'
+        and mt.transfer_method = 'cash'
+        and mt.location_id = p_location_id
+        and mt.record_status <> 'deleted'
+        and d.sent_total > 0
+
+      union all
+
+      select
+        d.received_at,
+        (d.received_at at time zone 'Asia/Bangkok')::date,
+        'cash-transfer-in:' || mt.id::text,
+        'cash-transfer-in:' || mt.id::text,
+        'transfer_in',
+        'CASH-' || left(mt.id::text, 8),
+        'รับโอนเงินสดเข้าสาขา',
+        'income',
+        d.received_total,
+        coalesce(d.received_by_name, mt.created_by_name, 'ระบบโอนเงิน'),
+        true,
+        false
+      from public.money_transfers mt
+      join public.money_transfer_cash_details d on d.transfer_id = mt.id
+      where mt.transfer_type = 'cash'
+        and mt.transfer_method = 'cash'
+        and mt.target_location_id = p_location_id
+        and mt.record_status <> 'deleted'
+        and d.cash_status in ('received', 'mismatched', 'difference_accepted')
+        and d.received_total > 0
+
+      union all
+
+      select
+        ft.approved_at,
+        (ft.approved_at at time zone 'Asia/Bangkok')::date,
+        'withdrawal:' || ft.id::text,
+        'withdrawal:' || ft.id::text,
+        'expense',
+        'TW-' || left(ft.id::text, 8),
+        'เบิกเงิน — ' || coalesce(p.name, 'พนักงาน') ||
+          coalesce(': ' || nullif(ft.description, ''), ''),
+        'expense',
+        ft.amount,
+        coalesce(p.name, 'พนักงาน'),
+        true,
+        true
+      from public.financial_transactions ft
+      join public.profiles p on p.id = ft.profile_id
+      where ft.type = 'WITHDRAWAL'
+        and ft.status = 'APPROVED'
+        and ft.cancelled_at is null
+        and ft.expense_location_id = p_location_id
+        and ft.amount > 0
+
+      union all
+
+      select
+        ps.approved_at,
+        (ps.approved_at at time zone 'Asia/Bangkok')::date,
+        'payroll:' || ps.id::text,
+        'payroll:' || ps.id::text,
+        'expense',
+        'PS-' || left(ps.id::text, 8),
+        'เงินเดือน — ' || coalesce(p.name, 'พนักงาน') || ' — ' || ps.month,
+        'expense',
+        ps.net_pay,
+        coalesce(p.name, 'พนักงาน'),
+        true,
+        true
+      from public.payroll_slips ps
+      join public.profiles p on p.id = ps.profile_id
+      where ps.status = 'APPROVED'
+        and ps.cancelled_at is null
+        and ps.expense_location_id = p_location_id
+        and ps.net_pay > 0
+
+      union all
+
+      select
+        coalesce(b.client_recorded_at, b.created_at),
+        b.bill_date,
+        'rubber-bill:' || b.id::text,
+        'rubber-bill:' || b.id::text,
+        'rubber_bill',
+        coalesce(b.server_bill_no, nullif(b.local_bill_no, ''), nullif(b.bill_no, ''), left(b.id::text, 8)),
+        'รับซื้อยาง — ' || coalesce(nullif(b.customer_name, ''), 'ไม่ระบุลูกค้า'),
+        'expense',
+        b.net_total,
+        b.created_by_name,
+        not exists (
+          select 1
+          from public.money_transfer_items i
+          where i.source_type = 'rubber_bill'
+            and i.source_id = b.id
+        ),
+        false
+      from payable_bills b
+
+      union all
+
+      select
+        coalesce(ot.client_recorded_at, ot.created_at),
+        ot.date_in,
+        'ocr-ticket:' || ot.id::text,
+        'ocr-ticket:' || ot.id::text,
+        'rubber_bill',
+        coalesce(nullif(ot.ticket_id, ''), left(ot.id::text, 8)),
+        'รับซื้อยางจากใบชั่ง — ' || coalesce(nullif(ot.customer_name, ''), 'ไม่ระบุลูกค้า'),
+        'expense',
+        ot.total_amount,
+        ot.created_by_name,
+        not exists (
+          select 1
+          from public.money_transfer_items i
+          where i.source_type = 'ocr_ticket'
+            and i.source_id = ot.id
+        ),
+        false
+      from public.ocr_tickets ot
+      where ot.location_id = p_location_id
+        and ot.record_status = 'active'
+        and ot.total_amount > 0
+
+      union all
+
+      select
+        e.verified_at,
+        (e.verified_at at time zone 'Asia/Bangkok')::date,
+        'rubber-export:' || e.id::text,
+        'rubber-export:' || e.id::text,
+        'rubber_export',
+        e.export_no,
+        'ค่าทำงานส่งออกยาง — ' || e.export_no,
+        'expense',
+        e.work_total,
+        e.created_by_name,
+        true,
+        true
+      from public.rubber_exports e
+      where e.location_id = p_location_id
+        and e.status = 'verified'
+        and e.expense_destination = 'branch'
+        and e.work_total > 0
+    ),
+    financial_totals as (
+      select coalesce(sum(
+        case
+          when not affects_balance then 0
+          when direction = 'income' then amount
+          else -amount
+        end
+      ), 0) as net_cash_flow
+      from financial_events
+    ),
+    operating_stats as (
+      select coalesce(sum(amount), 0) as accumulated_expense
+      from financial_events
+      where operating_expense
+    ),
+    filtered_events as (
+      select *
+      from financial_events
+      where p_cursor_at is null
+         or (occurred_at, sort_key) < (p_cursor_at, p_cursor_key)
+    ),
+    numbered_events as (
+      select
+        *,
+        row_number() over (order by occurred_at desc, sort_key desc) as row_no
+      from filtered_events
+    ),
+    page as (
+      select *
+      from numbered_events
+      where row_no <= v_page_size + 1
+    )
+    select jsonb_build_object(
+      'summary', jsonb_build_object(
+        'purchaseToday', jsonb_build_object(
+          'billCount', ps.today_bill_count,
+          'netWeight', round(ps.today_net_weight, 2),
+          'paidTotal', round(ps.today_paid_total, 2)
+        ),
+        'purchase7Days', jsonb_build_object(
+          'paidTotal', round(ps.seven_day_paid_total, 2),
+          'dailyAverage', round(ps.seven_day_paid_total / 7, 2),
+          'netWeight', round(ps.seven_day_net_weight, 2),
+          'averageCostPerKg', case
+            when ps.seven_day_net_weight > 0
+              then round(ps.seven_day_paid_total / ps.seven_day_net_weight, 2)
+            else null
+          end
+        ),
+        'netCashFlow', round(ft.net_cash_flow, 2),
+        'operatingExpenseAccumulated', round(os.accumulated_expense, 2),
+        'rubberInventoryWeight', round(
+          ps.accumulated_net_weight - es.accumulated_original_weight,
+          2
+        ),
+        'waterLoss7Days', jsonb_build_object(
+          'exportCount', es.seven_day_export_count,
+          'weight', round(es.seven_day_loss_weight, 2),
+          'percent', case
+            when es.seven_day_original_weight > 0
+              then round(es.seven_day_loss_weight / es.seven_day_original_weight * 100, 2)
+            else null
+          end
+        ),
+        'stock', jsonb_build_object(
+          'inStockCount', ss.in_stock_count,
+          'outOfStockCount', ss.out_of_stock_count,
+          'items', ss.items
+        )
+      ),
+      'rows', coalesce((
+        select jsonb_agg(
+          jsonb_build_object(
+            'id', id,
+            'kind', kind,
+            'number', number,
+            'title', title,
+            'direction', direction,
+            'amount', round(amount, 2),
+            'occurredAt', occurred_at,
+            'createdByName', created_by_name
+          )
+          order by occurred_at desc, sort_key desc
+        )
+        from page
+        where row_no <= v_page_size
+      ), '[]'::jsonb),
+      'nextCursor', case
+        when (select count(*) from page) > v_page_size then (
+          select jsonb_build_object('at', occurred_at, 'key', sort_key)
+          from page
+          where row_no = v_page_size
+        )
+        else null
+      end
+    )
+    from purchase_stats ps
+    cross join export_stats es
+    cross join stock_summary ss
+    cross join financial_totals ft
+    cross join operating_stats os
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_dashboard_overview"("p_location_id" "uuid", "p_cursor_at" timestamp with time zone, "p_cursor_key" "text", "p_page_size" integer) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_dashboard_refresh_settings"() RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  settings public.dashboard_refresh_settings%rowtype;
+begin
+  perform private.dashboard_require_manager();
+
+  select *
+  into strict settings
+  from public.dashboard_refresh_settings
+  where id = true;
+
+  return jsonb_build_object(
+    'intervalMinutes', settings.interval_minutes,
+    'updatedAt', settings.updated_at,
+    'updatedByName', settings.updated_by_name
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_dashboard_refresh_settings"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_dashboard_snapshot"("p_location_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  snapshot public.dashboard_branch_snapshots%rowtype;
+begin
+  if not private.is_active_user()
+    or not public.can_access_location(p_location_id)
+  then
+    raise exception 'Location access denied';
+  end if;
+
+  select *
+  into snapshot
+  from public.dashboard_branch_snapshots s
+  where s.location_id = p_location_id;
+
+  if snapshot.location_id is null then
+    return jsonb_build_object(
+      'status', 'dirty',
+      'sourceVersion', 1,
+      'snapshotVersion', 0,
+      'summary', null,
+      'calculatedAt', null,
+      'manualRequestedAt', null,
+      'lastError', null
+    );
+  end if;
+
+  return jsonb_build_object(
+    'status', snapshot.status,
+    'sourceVersion', snapshot.source_version,
+    'snapshotVersion', snapshot.snapshot_version,
+    'summary', snapshot.summary,
+    'calculatedAt', snapshot.calculated_at,
+    'manualRequestedAt', snapshot.manual_requested_at,
+    'lastError', snapshot.last_error
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_dashboard_snapshot"("p_location_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."get_income_expense_feed"("p_location_id" "uuid", "p_from_date" "date", "p_to_date" "date", "p_cursor_date" "date" DEFAULT NULL::"date", "p_cursor_key" "text" DEFAULT NULL::"text", "p_page_size" integer DEFAULT 100) RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -4908,7 +6710,7 @@ $$;
 ALTER FUNCTION "public"."get_report_income_expense_rows"("p_report_id" "uuid") OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "public"."get_rubber_export_cutoff_options"("p_location_id" "uuid") RETURNS TABLE("report_item_id" "uuid", "bill_id" "uuid", "bill_date" "date", "bill_no" "text", "customer_name" "text", "eligibility_at" timestamp with time zone)
+CREATE OR REPLACE FUNCTION "public"."get_rubber_export_available_bills"("p_location_id" "uuid") RETURNS TABLE("report_item_id" "uuid", "bill_id" "uuid", "bill_date" "date", "bill_no" "text", "customer_name" "text", "eligibility_at" timestamp with time zone, "net_weight" numeric, "paid_amount" numeric)
     LANGUAGE "plpgsql" STABLE SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
     AS $$
@@ -4924,13 +6726,15 @@ begin
     c.bill_date,
     c.bill_no,
     c.customer_name,
-    c.eligibility_at
-  from private.rubber_export_candidates(p_location_id, 'infinity'::timestamptz) c;
+    c.eligibility_at,
+    c.net_weight,
+    c.paid_amount
+  from private.rubber_export_candidates(p_location_id, null) c;
 end;
 $$;
 
 
-ALTER FUNCTION "public"."get_rubber_export_cutoff_options"("p_location_id" "uuid") OWNER TO "postgres";
+ALTER FUNCTION "public"."get_rubber_export_available_bills"("p_location_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_stock_balance"("p_location_id" "uuid", "p_product_id" "uuid") RETURNS numeric
@@ -5219,12 +7023,11 @@ $$;
 ALTER FUNCTION "public"."prevent_locked_ocr_ticket_change"() OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_cutoff_report_item_id" "uuid") RETURNS "jsonb"
+CREATE OR REPLACE FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) RETURNS "jsonb"
     LANGUAGE "plpgsql" STABLE SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
     AS $$
 declare
-  v_cutoff_at timestamptz;
   v_item_count integer;
   v_original_weight numeric;
   v_paid_total numeric;
@@ -5234,16 +7037,10 @@ begin
     raise exception 'ไม่มีสิทธิ์สร้างรายการส่งออกของสาขานี้';
   end if;
 
-  select c.eligibility_at
-  into v_cutoff_at
-  from private.rubber_export_candidates(p_location_id, 'infinity'::timestamptz) c
-  where c.report_item_id = p_cutoff_report_item_id;
-
-  if v_cutoff_at is null then
-    raise exception 'บิล cutoff ไม่พร้อมใช้งานหรือถูกจองแล้ว';
-  end if;
-
-  perform private.validate_rubber_export_candidates(p_location_id, v_cutoff_at);
+  perform private.validate_rubber_export_selection(
+    p_location_id,
+    p_selected_report_item_ids
+  );
 
   select
     count(*)::integer,
@@ -5260,14 +7057,16 @@ begin
       'paidAmount', c.paid_amount
     ) order by c.eligibility_at, c.bill_id)
   into v_item_count, v_original_weight, v_paid_total, v_items
-  from private.rubber_export_candidates(p_location_id, v_cutoff_at) c;
+  from private.rubber_export_candidates(
+    p_location_id,
+    p_selected_report_item_ids
+  ) c;
 
   if coalesce(v_item_count, 0) = 0 then
     raise exception 'ไม่มีบิลที่พร้อมสร้างรายการส่งออก';
   end if;
 
   return jsonb_build_object(
-    'cutoffAt', v_cutoff_at,
     'itemCount', v_item_count,
     'originalWeightTotal', v_original_weight,
     'paidTotal', v_paid_total,
@@ -5278,7 +7077,62 @@ end;
 $$;
 
 
-ALTER FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_cutoff_report_item_id" "uuid") OWNER TO "postgres";
+ALTER FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."queue_dashboard_refresh"("p_location_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  location_active boolean;
+begin
+  perform private.dashboard_require_manager();
+
+  select l.is_active
+  into location_active
+  from public.locations l
+  where l.id = p_location_id;
+
+  if coalesce(location_active, false) = false then
+    raise exception 'ไม่พบสาขาที่เปิดใช้งาน';
+  end if;
+
+  insert into public.dashboard_branch_snapshots (
+    location_id,
+    status,
+    source_version,
+    manual_requested_at
+  )
+  values (
+    p_location_id,
+    'queued',
+    1,
+    now()
+  )
+  on conflict (location_id) do update
+  set status = case
+        when dashboard_branch_snapshots.status = 'running' then 'running'
+        else 'queued'
+      end,
+      source_version = case
+        when dashboard_branch_snapshots.status in ('queued', 'running')
+          then dashboard_branch_snapshots.source_version
+        else dashboard_branch_snapshots.source_version + 1
+      end,
+      manual_requested_at = case
+        when dashboard_branch_snapshots.status = 'running'
+          then dashboard_branch_snapshots.manual_requested_at
+        else now()
+      end,
+      updated_at = now();
+
+  return public.get_dashboard_snapshot(p_location_id);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."queue_dashboard_refresh"("p_location_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."receive_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") RETURNS "jsonb"
@@ -5716,8 +7570,6 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_exports" (
     "export_date" "date" NOT NULL,
     "sequence_no" integer NOT NULL,
     "location_id" "uuid" NOT NULL,
-    "cutoff_at" timestamp with time zone NOT NULL,
-    "cutoff_report_item_id" "uuid" NOT NULL,
     "status" "text" DEFAULT 'draft'::"text" NOT NULL,
     "previous_status" "text",
     "original_weight_total" numeric(14,2) NOT NULL,
@@ -5862,6 +7714,208 @@ $$;
 
 
 ALTER FUNCTION "public"."rubber_export_lock_no"("source_row" "public"."report_batches") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."save_dashboard_alert_thresholds"("p_location_id" "uuid", "p_purchase_average_min" numeric, "p_net_cash_min" numeric) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  actor_name text;
+begin
+  perform private.dashboard_require_manager();
+
+  if p_purchase_average_min < 0
+    or p_net_cash_min is null
+    or p_net_cash_min < 0
+  then
+    raise exception 'เกณฑ์แจ้งเตือนต้องไม่ติดลบ';
+  end if;
+
+  if not exists (
+    select 1 from public.locations l
+    where l.id = p_location_id and l.is_active = true
+  ) then
+    raise exception 'ไม่พบสาขาที่เปิดใช้งาน';
+  end if;
+
+  select p.name
+  into actor_name
+  from public.profiles p
+  where p.id = auth.uid();
+
+  insert into public.dashboard_alert_thresholds (
+    location_id,
+    purchase_average_min,
+    net_cash_min,
+    updated_by_user_id,
+    updated_by_name
+  )
+  values (
+    p_location_id,
+    p_purchase_average_min,
+    p_net_cash_min,
+    auth.uid(),
+    actor_name
+  )
+  on conflict (location_id) do update
+  set purchase_average_min = excluded.purchase_average_min,
+      net_cash_min = excluded.net_cash_min,
+      updated_by_user_id = excluded.updated_by_user_id,
+      updated_by_name = excluded.updated_by_name,
+      updated_at = now();
+
+  return public.get_dashboard_alert_thresholds(p_location_id);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."save_dashboard_alert_thresholds"("p_location_id" "uuid", "p_purchase_average_min" numeric, "p_net_cash_min" numeric) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."save_dashboard_manager_config"("p_location_id" "uuid", "p_interval_minutes" integer, "p_purchase_average_min" numeric, "p_net_cash_min" numeric, "p_stock_items" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  item jsonb;
+begin
+  perform private.dashboard_require_manager();
+
+  if jsonb_typeof(p_stock_items) <> 'array' then
+    raise exception 'เกณฑ์สต็อกไม่ถูกต้อง';
+  end if;
+
+  perform public.save_dashboard_refresh_interval(p_interval_minutes);
+  perform public.save_dashboard_alert_thresholds(
+    p_location_id,
+    p_purchase_average_min,
+    p_net_cash_min
+  );
+
+  for item in select value from jsonb_array_elements(p_stock_items)
+  loop
+    perform public.save_dashboard_stock_alert_threshold(
+      p_location_id,
+      (item ->> 'productId')::uuid,
+      case
+        when item -> 'minimumBalance' = 'null'::jsonb then null
+        else (item ->> 'minimumBalance')::numeric
+      end
+    );
+  end loop;
+
+  return jsonb_build_object(
+    'settings', public.get_dashboard_refresh_settings(),
+    'thresholds', public.get_dashboard_alert_thresholds(p_location_id)
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."save_dashboard_manager_config"("p_location_id" "uuid", "p_interval_minutes" integer, "p_purchase_average_min" numeric, "p_net_cash_min" numeric, "p_stock_items" "jsonb") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."save_dashboard_refresh_interval"("p_interval_minutes" integer) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  actor_name text;
+begin
+  perform private.dashboard_require_manager();
+
+  if p_interval_minutes is null
+    or p_interval_minutes < 10
+    or p_interval_minutes > 1440
+  then
+    raise exception 'รอบคำนวณต้องอยู่ระหว่าง 10 ถึง 1,440 นาที';
+  end if;
+
+  select p.name
+  into actor_name
+  from public.profiles p
+  where p.id = auth.uid();
+
+  update public.dashboard_refresh_settings
+  set interval_minutes = p_interval_minutes,
+      updated_by_user_id = auth.uid(),
+      updated_by_name = actor_name,
+      updated_at = now()
+  where id = true;
+
+  return public.get_dashboard_refresh_settings();
+end;
+$$;
+
+
+ALTER FUNCTION "public"."save_dashboard_refresh_interval"("p_interval_minutes" integer) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."save_dashboard_stock_alert_threshold"("p_location_id" "uuid", "p_product_id" "uuid", "p_minimum_balance" numeric) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  actor_name text;
+begin
+  perform private.dashboard_require_manager();
+
+  if not exists (
+    select 1 from public.locations l
+    where l.id = p_location_id and l.is_active = true
+  ) then
+    raise exception 'ไม่พบสาขาที่เปิดใช้งาน';
+  end if;
+
+  if not exists (
+    select 1 from public.stock_products p
+    where p.id = p_product_id and p.is_active = true
+  ) then
+    raise exception 'ไม่พบสินค้าที่เปิดใช้งาน';
+  end if;
+
+  if p_minimum_balance is not null and p_minimum_balance < 0 then
+    raise exception 'เกณฑ์สต็อกต้องไม่ติดลบ';
+  end if;
+
+  if p_minimum_balance is null then
+    delete from public.dashboard_stock_alert_thresholds
+    where location_id = p_location_id
+      and product_id = p_product_id;
+  else
+    select p.name
+    into actor_name
+    from public.profiles p
+    where p.id = auth.uid();
+
+    insert into public.dashboard_stock_alert_thresholds (
+      location_id,
+      product_id,
+      minimum_balance,
+      updated_by_user_id,
+      updated_by_name
+    )
+    values (
+      p_location_id,
+      p_product_id,
+      p_minimum_balance,
+      auth.uid(),
+      actor_name
+    )
+    on conflict (location_id, product_id) do update
+    set minimum_balance = excluded.minimum_balance,
+        updated_by_user_id = excluded.updated_by_user_id,
+        updated_by_name = excluded.updated_by_name,
+        updated_at = now();
+  end if;
+
+  return public.get_dashboard_alert_thresholds(p_location_id);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."save_dashboard_stock_alert_threshold"("p_location_id" "uuid", "p_product_id" "uuid", "p_minimum_balance" numeric) OWNER TO "postgres";
 
 
 CREATE TABLE IF NOT EXISTS "public"."rubber_bill_approval_settings" (
@@ -7952,6 +10006,77 @@ CREATE TABLE IF NOT EXISTS "public"."customers" (
 ALTER TABLE "public"."customers" OWNER TO "postgres";
 
 
+CREATE TABLE IF NOT EXISTS "public"."dashboard_alert_thresholds" (
+    "location_id" "uuid" NOT NULL,
+    "purchase_average_min" numeric(14,2) DEFAULT 30000,
+    "net_cash_min" numeric(14,2) DEFAULT 30000 NOT NULL,
+    "updated_by_user_id" "uuid",
+    "updated_by_name" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "dashboard_alert_thresholds_net_cash_min_check" CHECK (("net_cash_min" >= (0)::numeric)),
+    CONSTRAINT "dashboard_alert_thresholds_purchase_average_min_check" CHECK ((("purchase_average_min" IS NULL) OR ("purchase_average_min" >= (0)::numeric)))
+);
+
+
+ALTER TABLE "public"."dashboard_alert_thresholds" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."dashboard_branch_snapshots" (
+    "location_id" "uuid" NOT NULL,
+    "status" "text" DEFAULT 'dirty'::"text" NOT NULL,
+    "source_version" bigint DEFAULT 1 NOT NULL,
+    "snapshot_version" bigint DEFAULT 0 NOT NULL,
+    "claimed_version" bigint,
+    "summary" "jsonb",
+    "calculated_at" timestamp with time zone,
+    "manual_requested_at" timestamp with time zone,
+    "claimed_at" timestamp with time zone,
+    "last_error" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "dashboard_branch_snapshots_check" CHECK ((("snapshot_version" >= 0) AND ("snapshot_version" <= "source_version"))),
+    CONSTRAINT "dashboard_branch_snapshots_check1" CHECK ((("claimed_version" IS NULL) OR (("claimed_version" >= 1) AND ("claimed_version" <= "source_version")))),
+    CONSTRAINT "dashboard_branch_snapshots_check2" CHECK (((("summary" IS NULL) AND ("calculated_at" IS NULL)) OR (("summary" IS NOT NULL) AND ("calculated_at" IS NOT NULL)))),
+    CONSTRAINT "dashboard_branch_snapshots_source_version_check" CHECK (("source_version" >= 1)),
+    CONSTRAINT "dashboard_branch_snapshots_status_check" CHECK (("status" = ANY (ARRAY['dirty'::"text", 'queued'::"text", 'running'::"text", 'ready'::"text", 'failed'::"text"])))
+);
+
+
+ALTER TABLE "public"."dashboard_branch_snapshots" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."dashboard_refresh_settings" (
+    "id" boolean DEFAULT true NOT NULL,
+    "interval_minutes" integer DEFAULT 10 NOT NULL,
+    "last_rollover_date" "date" DEFAULT ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Bangkok'::"text"))::"date" NOT NULL,
+    "updated_by_user_id" "uuid",
+    "updated_by_name" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "dashboard_refresh_settings_id_check" CHECK (("id" = true)),
+    CONSTRAINT "dashboard_refresh_settings_interval_minutes_check" CHECK ((("interval_minutes" >= 10) AND ("interval_minutes" <= 1440)))
+);
+
+
+ALTER TABLE "public"."dashboard_refresh_settings" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."dashboard_stock_alert_thresholds" (
+    "location_id" "uuid" NOT NULL,
+    "product_id" "uuid" NOT NULL,
+    "minimum_balance" numeric(14,2) NOT NULL,
+    "updated_by_user_id" "uuid",
+    "updated_by_name" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "dashboard_stock_alert_thresholds_minimum_balance_check" CHECK (("minimum_balance" >= (0)::numeric))
+);
+
+
+ALTER TABLE "public"."dashboard_stock_alert_thresholds" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "public"."income_expense_approval_keywords" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "keyword" "text" NOT NULL,
@@ -8526,6 +10651,26 @@ ALTER TABLE ONLY "public"."customers"
 
 
 
+ALTER TABLE ONLY "public"."dashboard_alert_thresholds"
+    ADD CONSTRAINT "dashboard_alert_thresholds_pkey" PRIMARY KEY ("location_id");
+
+
+
+ALTER TABLE ONLY "public"."dashboard_branch_snapshots"
+    ADD CONSTRAINT "dashboard_branch_snapshots_pkey" PRIMARY KEY ("location_id");
+
+
+
+ALTER TABLE ONLY "public"."dashboard_refresh_settings"
+    ADD CONSTRAINT "dashboard_refresh_settings_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."dashboard_stock_alert_thresholds"
+    ADD CONSTRAINT "dashboard_stock_alert_thresholds_pkey" PRIMARY KEY ("location_id", "product_id");
+
+
+
 ALTER TABLE ONLY "public"."financial_transactions"
     ADD CONSTRAINT "financial_transactions_pkey" PRIMARY KEY ("id");
 
@@ -8867,6 +11012,22 @@ CREATE UNIQUE INDEX "customer_bank_accounts_only_one_primary" ON "public"."custo
 
 
 
+CREATE INDEX "dashboard_branch_snapshots_work_idx" ON "public"."dashboard_branch_snapshots" USING "btree" ("status", "updated_at", "location_id") WHERE ("status" = ANY (ARRAY['dirty'::"text", 'queued'::"text", 'failed'::"text"]));
+
+
+
+CREATE INDEX "dashboard_income_expense_money_feed_idx" ON "public"."income_expense" USING "btree" ("location_id", COALESCE("client_recorded_at", "created_at") DESC, (('actual:'::"text" || ("id")::"text")) DESC) WHERE (("record_status" = 'active'::"public"."record_status") AND ("cost" > (0)::numeric));
+
+
+
+CREATE INDEX "dashboard_ocr_money_feed_idx" ON "public"."ocr_tickets" USING "btree" ("location_id", COALESCE("client_recorded_at", "created_at") DESC, (('ocr-ticket:'::"text" || ("id")::"text")) DESC) WHERE (("record_status" = 'active'::"public"."record_status") AND ("total_amount" > (0)::numeric));
+
+
+
+CREATE INDEX "dashboard_rubber_bill_money_feed_idx" ON "public"."rubber_bills" USING "btree" ("location_id", COALESCE("client_recorded_at", "created_at") DESC, (('rubber-bill:'::"text" || ("id")::"text")) DESC) WHERE ("record_status" = 'active'::"public"."record_status");
+
+
+
 CREATE INDEX "financial_transactions_pending_digest" ON "public"."financial_transactions" USING "btree" ("id") WHERE ("status" = 'PENDING'::"public"."approval_status");
 
 
@@ -9036,6 +11197,58 @@ CREATE UNIQUE INDEX "transport_staff_bank_accounts_one_primary" ON "public"."tra
 
 
 CREATE OR REPLACE TRIGGER "assign_rubber_bill_item_sequence" BEFORE INSERT ON "public"."rubber_bill_items" FOR EACH ROW EXECUTE FUNCTION "private"."assign_rubber_bill_item_sequence"();
+
+
+
+CREATE OR REPLACE TRIGGER "dashboard_dirty_financial_transactions" AFTER INSERT OR DELETE OR UPDATE ON "public"."financial_transactions" FOR EACH ROW EXECUTE FUNCTION "private"."dashboard_dirty_location_columns"('expense_location_id');
+
+
+
+CREATE OR REPLACE TRIGGER "dashboard_dirty_income_expense" AFTER INSERT OR DELETE OR UPDATE ON "public"."income_expense" FOR EACH ROW EXECUTE FUNCTION "private"."dashboard_dirty_location_columns"('location_id');
+
+
+
+CREATE OR REPLACE TRIGGER "dashboard_dirty_money_transfer_cash_details" AFTER INSERT OR DELETE OR UPDATE ON "public"."money_transfer_cash_details" FOR EACH ROW EXECUTE FUNCTION "private"."dashboard_dirty_money_transfer_dependents"();
+
+
+
+CREATE OR REPLACE TRIGGER "dashboard_dirty_money_transfer_items" AFTER INSERT OR DELETE OR UPDATE ON "public"."money_transfer_items" FOR EACH ROW EXECUTE FUNCTION "private"."dashboard_dirty_money_transfer_dependents"();
+
+
+
+CREATE OR REPLACE TRIGGER "dashboard_dirty_money_transfers" AFTER INSERT OR DELETE OR UPDATE ON "public"."money_transfers" FOR EACH ROW EXECUTE FUNCTION "private"."dashboard_dirty_location_columns"('location_id', 'target_location_id');
+
+
+
+CREATE OR REPLACE TRIGGER "dashboard_dirty_ocr_tickets" AFTER INSERT OR DELETE OR UPDATE ON "public"."ocr_tickets" FOR EACH ROW EXECUTE FUNCTION "private"."dashboard_dirty_location_columns"('location_id');
+
+
+
+CREATE OR REPLACE TRIGGER "dashboard_dirty_payroll_slips" AFTER INSERT OR DELETE OR UPDATE ON "public"."payroll_slips" FOR EACH ROW EXECUTE FUNCTION "private"."dashboard_dirty_location_columns"('expense_location_id');
+
+
+
+CREATE OR REPLACE TRIGGER "dashboard_dirty_rubber_bill_items" AFTER INSERT OR DELETE OR UPDATE ON "public"."rubber_bill_items" FOR EACH ROW EXECUTE FUNCTION "private"."dashboard_dirty_rubber_bill_items"();
+
+
+
+CREATE OR REPLACE TRIGGER "dashboard_dirty_rubber_bills" AFTER INSERT OR DELETE OR UPDATE ON "public"."rubber_bills" FOR EACH ROW EXECUTE FUNCTION "private"."dashboard_dirty_location_columns"('location_id');
+
+
+
+CREATE OR REPLACE TRIGGER "dashboard_dirty_rubber_exports" AFTER INSERT OR DELETE OR UPDATE ON "public"."rubber_exports" FOR EACH ROW EXECUTE FUNCTION "private"."dashboard_dirty_location_columns"('location_id');
+
+
+
+CREATE OR REPLACE TRIGGER "dashboard_dirty_stock_entries" AFTER INSERT OR DELETE OR UPDATE ON "public"."stock_entries" FOR EACH ROW EXECUTE FUNCTION "private"."dashboard_dirty_location_columns"('location_id');
+
+
+
+CREATE OR REPLACE TRIGGER "dashboard_dirty_stock_products" AFTER INSERT OR DELETE OR UPDATE ON "public"."stock_products" FOR EACH STATEMENT EXECUTE FUNCTION "private"."dashboard_dirty_all_active_locations"();
+
+
+
+CREATE OR REPLACE TRIGGER "dashboard_seed_locations" AFTER INSERT OR UPDATE OF "is_active" ON "public"."locations" FOR EACH ROW EXECUTE FUNCTION "private"."dashboard_seed_active_location"();
 
 
 
@@ -9235,6 +11448,41 @@ ALTER TABLE ONLY "public"."customers"
 
 ALTER TABLE ONLY "public"."customers"
     ADD CONSTRAINT "customers_updated_by_user_id_fkey" FOREIGN KEY ("updated_by_user_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."dashboard_alert_thresholds"
+    ADD CONSTRAINT "dashboard_alert_thresholds_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."dashboard_alert_thresholds"
+    ADD CONSTRAINT "dashboard_alert_thresholds_updated_by_user_id_fkey" FOREIGN KEY ("updated_by_user_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."dashboard_branch_snapshots"
+    ADD CONSTRAINT "dashboard_branch_snapshots_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."dashboard_refresh_settings"
+    ADD CONSTRAINT "dashboard_refresh_settings_updated_by_user_id_fkey" FOREIGN KEY ("updated_by_user_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."dashboard_stock_alert_thresholds"
+    ADD CONSTRAINT "dashboard_stock_alert_thresholds_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."dashboard_stock_alert_thresholds"
+    ADD CONSTRAINT "dashboard_stock_alert_thresholds_product_id_fkey" FOREIGN KEY ("product_id") REFERENCES "public"."stock_products"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."dashboard_stock_alert_thresholds"
+    ADD CONSTRAINT "dashboard_stock_alert_thresholds_updated_by_user_id_fkey" FOREIGN KEY ("updated_by_user_id") REFERENCES "public"."profiles"("id");
 
 
 
@@ -9559,11 +11807,6 @@ ALTER TABLE ONLY "public"."rubber_exports"
 
 
 ALTER TABLE ONLY "public"."rubber_exports"
-    ADD CONSTRAINT "rubber_exports_cutoff_report_item_id_fkey" FOREIGN KEY ("cutoff_report_item_id") REFERENCES "public"."report_items"("id");
-
-
-
-ALTER TABLE ONLY "public"."rubber_exports"
     ADD CONSTRAINT "rubber_exports_deleted_by_user_id_fkey" FOREIGN KEY ("deleted_by_user_id") REFERENCES "public"."profiles"("id");
 
 
@@ -9808,6 +12051,18 @@ CREATE POLICY "customers_select_location" ON "public"."customers" FOR SELECT TO 
 
 CREATE POLICY "customers_update_location" ON "public"."customers" FOR UPDATE TO "authenticated" USING ("private"."can_access_optional_location"("default_location_id")) WITH CHECK ("private"."can_access_optional_location"("default_location_id"));
 
+
+
+ALTER TABLE "public"."dashboard_alert_thresholds" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."dashboard_branch_snapshots" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."dashboard_refresh_settings" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."dashboard_stock_alert_thresholds" ENABLE ROW LEVEL SECURITY;
 
 
 ALTER TABLE "public"."financial_transactions" ENABLE ROW LEVEL SECURITY;
@@ -10178,17 +12433,6 @@ CREATE POLICY "user_locations_update_scoped_admin" ON "public"."user_locations" 
 
 
 
-
-
-ALTER PUBLICATION "supabase_realtime" OWNER TO "postgres";
-
-
-
-
-
-
-
-
 GRANT USAGE ON SCHEMA "private" TO "authenticated";
 
 
@@ -10200,180 +12444,7 @@ GRANT USAGE ON SCHEMA "public" TO "service_role";
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+REVOKE ALL ON FUNCTION "private"."calculate_dashboard_summary"("p_location_id" "uuid") FROM PUBLIC;
 
 
 
@@ -10412,8 +12483,40 @@ GRANT ALL ON FUNCTION "private"."can_view_profile"("target_user" "uuid") TO "aut
 
 
 
+REVOKE ALL ON FUNCTION "private"."claim_dashboard_branch"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."current_user_role"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "private"."current_user_role"() TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "private"."dashboard_dirty_all_active_locations"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."dashboard_dirty_location_columns"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."dashboard_dirty_money_transfer_dependents"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."dashboard_dirty_rubber_bill_items"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."dashboard_require_manager"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."dashboard_rollover_if_needed"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."dashboard_seed_active_location"() FROM PUBLIC;
 
 
 
@@ -10427,7 +12530,15 @@ GRANT ALL ON FUNCTION "private"."is_super_admin"() TO "authenticated";
 
 
 
+REVOKE ALL ON FUNCTION "private"."mark_dashboard_dirty"("p_location_id" "uuid") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."normalize_rubber_bill_calculation_payload"("payload" "jsonb") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."rebuild_dashboard_branch"() FROM PUBLIC;
 
 
 
@@ -10514,8 +12625,8 @@ GRANT ALL ON FUNCTION "public"."create_report_batch"("p_location_id" "uuid") TO 
 
 
 
-REVOKE ALL ON FUNCTION "public"."create_rubber_export"("p_location_id" "uuid", "p_cutoff_report_item_id" "uuid") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."create_rubber_export"("p_location_id" "uuid", "p_cutoff_report_item_id" "uuid") TO "authenticated";
+REVOKE ALL ON FUNCTION "public"."create_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."create_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) TO "authenticated";
 
 
 
@@ -10609,6 +12720,36 @@ GRANT ALL ON FUNCTION "public"."get_actionable_badge_counts"() TO "authenticated
 
 
 
+REVOKE ALL ON FUNCTION "public"."get_dashboard_alert_thresholds"("p_location_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_dashboard_alert_thresholds"("p_location_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_dashboard_alerts_for_telegram"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_dashboard_alerts_for_telegram"() TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_dashboard_money_feed"("p_location_id" "uuid", "p_cursor_at" timestamp with time zone, "p_cursor_key" "text", "p_page_size" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_dashboard_money_feed"("p_location_id" "uuid", "p_cursor_at" timestamp with time zone, "p_cursor_key" "text", "p_page_size" integer) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_dashboard_overview"("p_location_id" "uuid", "p_cursor_at" timestamp with time zone, "p_cursor_key" "text", "p_page_size" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_dashboard_overview"("p_location_id" "uuid", "p_cursor_at" timestamp with time zone, "p_cursor_key" "text", "p_page_size" integer) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_dashboard_refresh_settings"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_dashboard_refresh_settings"() TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_dashboard_snapshot"("p_location_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_dashboard_snapshot"("p_location_id" "uuid") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."get_income_expense_feed"("p_location_id" "uuid", "p_from_date" "date", "p_to_date" "date", "p_cursor_date" "date", "p_cursor_key" "text", "p_page_size" integer) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_income_expense_feed"("p_location_id" "uuid", "p_from_date" "date", "p_to_date" "date", "p_cursor_date" "date", "p_cursor_key" "text", "p_page_size" integer) TO "authenticated";
 
@@ -10624,8 +12765,8 @@ GRANT ALL ON FUNCTION "public"."get_report_income_expense_rows"("p_report_id" "u
 
 
 
-REVOKE ALL ON FUNCTION "public"."get_rubber_export_cutoff_options"("p_location_id" "uuid") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."get_rubber_export_cutoff_options"("p_location_id" "uuid") TO "authenticated";
+REVOKE ALL ON FUNCTION "public"."get_rubber_export_available_bills"("p_location_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_rubber_export_available_bills"("p_location_id" "uuid") TO "authenticated";
 
 
 
@@ -10663,8 +12804,13 @@ REVOKE ALL ON FUNCTION "public"."prevent_locked_ocr_ticket_change"() FROM PUBLIC
 
 
 
-REVOKE ALL ON FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_cutoff_report_item_id" "uuid") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_cutoff_report_item_id" "uuid") TO "authenticated";
+REVOKE ALL ON FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."queue_dashboard_refresh"("p_location_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."queue_dashboard_refresh"("p_location_id" "uuid") TO "authenticated";
 
 
 
@@ -10800,6 +12946,26 @@ GRANT ALL ON FUNCTION "public"."rubber_export_lock_no"("source_row" "public"."re
 
 
 
+REVOKE ALL ON FUNCTION "public"."save_dashboard_alert_thresholds"("p_location_id" "uuid", "p_purchase_average_min" numeric, "p_net_cash_min" numeric) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."save_dashboard_alert_thresholds"("p_location_id" "uuid", "p_purchase_average_min" numeric, "p_net_cash_min" numeric) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."save_dashboard_manager_config"("p_location_id" "uuid", "p_interval_minutes" integer, "p_purchase_average_min" numeric, "p_net_cash_min" numeric, "p_stock_items" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."save_dashboard_manager_config"("p_location_id" "uuid", "p_interval_minutes" integer, "p_purchase_average_min" numeric, "p_net_cash_min" numeric, "p_stock_items" "jsonb") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."save_dashboard_refresh_interval"("p_interval_minutes" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."save_dashboard_refresh_interval"("p_interval_minutes" integer) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."save_dashboard_stock_alert_threshold"("p_location_id" "uuid", "p_product_id" "uuid", "p_minimum_balance" numeric) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."save_dashboard_stock_alert_threshold"("p_location_id" "uuid", "p_product_id" "uuid", "p_minimum_balance" numeric) TO "authenticated";
+
+
+
 GRANT ALL ON TABLE "public"."rubber_bill_approval_settings" TO "service_role";
 GRANT SELECT ON TABLE "public"."rubber_bill_approval_settings" TO "authenticated";
 
@@ -10881,27 +13047,6 @@ GRANT ALL ON FUNCTION "public"."verify_telegram_badge_dispatch_secret"("p_secret
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 GRANT ALL ON TABLE "public"."stock_products" TO "service_role";
 GRANT SELECT,INSERT,UPDATE ON TABLE "public"."stock_products" TO "authenticated";
 
@@ -10954,6 +13099,22 @@ GRANT ALL ON TABLE "public"."customer_farms" TO "service_role";
 GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."customers" TO "anon";
 GRANT ALL ON TABLE "public"."customers" TO "authenticated";
 GRANT ALL ON TABLE "public"."customers" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."dashboard_alert_thresholds" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."dashboard_branch_snapshots" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."dashboard_refresh_settings" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."dashboard_stock_alert_thresholds" TO "service_role";
 
 
 
@@ -11120,12 +13281,6 @@ GRANT ALL ON TABLE "public"."transport_staffs" TO "service_role";
 GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."user_locations" TO "anon";
 GRANT ALL ON TABLE "public"."user_locations" TO "authenticated";
 GRANT ALL ON TABLE "public"."user_locations" TO "service_role";
-
-
-
-
-
-
 
 
 

@@ -9,6 +9,8 @@ import type {
   TelegramBadgeConfig,
   TelegramBadgeKey,
 } from "@/lib/telegram-badge";
+import type { DashboardManagerConfig } from "@/types/dashboard";
+import { formatCurrency, formatNumber } from "@/lib/format";
 
 type EditableConfig = TelegramBadgeConfig & {
   botToken: string;
@@ -28,10 +30,16 @@ function parseError(payload: unknown, fallback: string) {
 
 export function TelegramBadgeConfigModal({
   onClose,
+  selectedLocationId,
 }: {
   onClose: () => void;
+  selectedLocationId: string;
 }) {
   const [config, setConfig] = useState<EditableConfig | null>(null);
+  const [dashboardConfig, setDashboardConfig] =
+    useState<DashboardManagerConfig | null>(null);
+  const [dashboardLocationId, setDashboardLocationId] =
+    useState(selectedLocationId);
   const [busyAction, setBusyAction] = useState<"save" | "test" | null>(null);
   const [loadError, setLoadError] = useState("");
 
@@ -57,6 +65,34 @@ export function TelegramBadgeConfigModal({
     };
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    setDashboardConfig(null);
+    const params = new URLSearchParams({ locationId: dashboardLocationId });
+    void fetch(`/api/lanflow/dashboard/config?${params}`, {
+      cache: "no-store",
+    })
+      .then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(parseError(payload, "โหลดเกณฑ์ Dashboard ไม่สำเร็จ"));
+        }
+        if (active) setDashboardConfig(payload);
+      })
+      .catch((error) => {
+        if (active) {
+          setLoadError(
+            error instanceof Error
+              ? error.message
+              : "โหลดเกณฑ์ Dashboard ไม่สำเร็จ",
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [dashboardLocationId]);
+
   function patchConfig(patch: Partial<EditableConfig>) {
     setConfig((current) => (current ? { ...current, ...patch } : current));
   }
@@ -71,6 +107,37 @@ export function TelegramBadgeConfigModal({
 
   async function saveConfig() {
     if (!config) throw new Error("ยังโหลดการตั้งค่าไม่สำเร็จ");
+    if (!dashboardConfig) throw new Error("ยังโหลดเกณฑ์ Dashboard ไม่สำเร็จ");
+
+    const dashboardParams = new URLSearchParams({
+      locationId: dashboardLocationId,
+    });
+    const dashboardResponse = await fetch(
+      `/api/lanflow/dashboard/config?${dashboardParams}`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          locationId: dashboardLocationId,
+          intervalMinutes: dashboardConfig.intervalMinutes,
+          purchaseAverageMin:
+            dashboardConfig.thresholds.purchaseAverageMin,
+          netCashMin: dashboardConfig.thresholds.netCashMin,
+          stockItems: dashboardConfig.thresholds.stockItems.map((item) => ({
+            productId: item.productId,
+            minimumBalance: item.minimumBalance,
+          })),
+        }),
+      },
+    );
+    const dashboardPayload = await dashboardResponse.json();
+    if (!dashboardResponse.ok) {
+      throw new Error(
+        parseError(dashboardPayload, "บันทึกเกณฑ์ Dashboard ไม่สำเร็จ"),
+      );
+    }
+    setDashboardConfig(dashboardPayload);
+
     const response = await fetch("/api/lanflow/telegram-badge/config", {
       method: "PUT",
       headers: { "content-type": "application/json" },
@@ -129,7 +196,7 @@ export function TelegramBadgeConfigModal({
   return (
     <ModalShell
       title="ตั้งค่าการแจ้งเตือน Telegram"
-      subtitle="ส่งสรุปจำนวนงานที่รอหรือค้างไปยังห้องกลางของระบบ"
+      subtitle="ส่งเฉพาะงานค้างหรือค่า Dashboard ที่ต่ำกว่าเกณฑ์"
       onClose={onClose}
     >
       {loadError ? (
@@ -224,6 +291,180 @@ export function TelegramBadgeConfigModal({
               />
             </label>
           </div>
+
+          <fieldset className="rounded-md border border-black/10 p-4">
+            <legend className="px-1 text-sm font-bold text-ink">
+              เกณฑ์ Dashboard แยกต่อสาขา
+            </legend>
+            {!dashboardConfig ? (
+              <div className="flex items-center gap-2 py-5 text-sm text-ink/55">
+                <LoaderCircle className="animate-spin" size={16} />
+                กำลังโหลดการ์ด
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <label className="block text-sm font-semibold text-ink">
+                  สาขา
+                  <select
+                    value={dashboardLocationId}
+                    onChange={(event) =>
+                      setDashboardLocationId(event.target.value)
+                    }
+                    className="focus-ring mt-1 h-10 w-full rounded-md border border-black/15 bg-white px-3 font-normal"
+                  >
+                    {dashboardConfig.locations.map((location) => (
+                      <option key={location.id} value={location.id}>
+                        {location.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div className="grid gap-3 lg:grid-cols-3">
+                  <section className="rounded-md bg-field p-3">
+                    <p className="text-xs font-bold text-ink/60">
+                      ยอดซื้อเฉลี่ย 7 วัน
+                    </p>
+                    <p className="mt-1 text-lg font-bold text-ink">
+                      {dashboardConfig.snapshot.summary
+                        ? formatCurrency(
+                            dashboardConfig.snapshot.summary.purchase7Days
+                              .dailyAverage,
+                          )
+                        : "กำลังคำนวณ"}
+                    </p>
+                    <label className="mt-2 block text-xs font-semibold">
+                      แจ้งเมื่อยอดต่ำกว่า (บาท/วัน)
+                      <input
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={
+                          dashboardConfig.thresholds.purchaseAverageMin
+                        }
+                        onChange={(event) =>
+                          setDashboardConfig((current) =>
+                            current
+                              ? {
+                                  ...current,
+                                  thresholds: {
+                                    ...current.thresholds,
+                                    purchaseAverageMin: Number(
+                                      event.target.value,
+                                    ),
+                                  },
+                                }
+                              : current,
+                          )
+                        }
+                        className="focus-ring mt-1 h-9 w-full rounded-md border border-black/15 bg-white px-2"
+                      />
+                    </label>
+                  </section>
+
+                  <section className="rounded-md bg-field p-3">
+                    <p className="text-xs font-bold text-ink/60">
+                      รับ–จ่ายสุทธิสะสม
+                    </p>
+                    <p className="mt-1 text-lg font-bold text-ink">
+                      {dashboardConfig.snapshot.summary
+                        ? formatCurrency(
+                            dashboardConfig.snapshot.summary.netCashFlow,
+                          )
+                        : "กำลังคำนวณ"}
+                    </p>
+                    <label className="mt-2 block text-xs font-semibold">
+                      แจ้งเมื่อยอดต่ำกว่า (บาท)
+                      <input
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={dashboardConfig.thresholds.netCashMin}
+                        onChange={(event) =>
+                          setDashboardConfig((current) =>
+                            current
+                              ? {
+                                  ...current,
+                                  thresholds: {
+                                    ...current.thresholds,
+                                    netCashMin: Number(event.target.value),
+                                  },
+                                }
+                              : current,
+                          )
+                        }
+                        className="focus-ring mt-1 h-9 w-full rounded-md border border-black/15 bg-white px-2"
+                      />
+                    </label>
+                  </section>
+
+                  <section className="rounded-md bg-field p-3">
+                    <p className="text-xs font-bold text-ink/60">
+                      สต็อกสินค้า
+                    </p>
+                    <div className="mt-2 max-h-40 space-y-2 overflow-y-auto">
+                      {dashboardConfig.thresholds.stockItems.map((item) => {
+                        const balance =
+                          dashboardConfig.snapshot.summary?.stock.items.find(
+                            (stockItem) =>
+                              stockItem.productId === item.productId,
+                          )?.balance;
+                        return (
+                          <label
+                            key={item.productId}
+                            className="block text-xs font-semibold"
+                          >
+                            {item.name} · ปัจจุบัน{" "}
+                            {balance == null
+                              ? "—"
+                              : `${formatNumber(balance)} ${item.unit}`}
+                            <input
+                              type="number"
+                              min={0}
+                              step="any"
+                              value={item.minimumBalance ?? ""}
+                              placeholder="ไม่แจ้ง"
+                              onChange={(event) => {
+                                const value =
+                                  event.target.value === ""
+                                    ? null
+                                    : Number(event.target.value);
+                                setDashboardConfig((current) =>
+                                  current
+                                    ? {
+                                        ...current,
+                                        thresholds: {
+                                          ...current.thresholds,
+                                          stockItems:
+                                            current.thresholds.stockItems.map(
+                                              (stockItem) =>
+                                                stockItem.productId ===
+                                                item.productId
+                                                  ? {
+                                                      ...stockItem,
+                                                      minimumBalance: value,
+                                                    }
+                                                  : stockItem,
+                                            ),
+                                        },
+                                      }
+                                    : current,
+                                );
+                              }}
+                              className="focus-ring mt-1 h-9 w-full rounded-md border border-black/15 bg-white px-2"
+                            />
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </section>
+                </div>
+                <p className="text-xs text-ink/55">
+                  ตรวจตามรอบ Telegram · สถานะปกติไม่ส่งข้อความ
+                </p>
+              </div>
+            )}
+          </fieldset>
 
           <fieldset className="rounded-md border border-black/10 p-4">
             <legend className="px-1 text-sm font-bold text-ink">

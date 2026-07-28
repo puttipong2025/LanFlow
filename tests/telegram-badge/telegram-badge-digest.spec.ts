@@ -2,8 +2,10 @@ import { expect, test, type Browser, type BrowserContext } from "@playwright/tes
 import { createClient } from "@supabase/supabase-js";
 
 import {
+  formatDashboardAlertDigest,
   formatTelegramBadgeDigest,
   TELEGRAM_BADGE_KEYS,
+  type DashboardTelegramAlert,
   type TelegramBadgeCount,
 } from "../../src/lib/telegram-badge";
 
@@ -92,6 +94,42 @@ test.describe.serial("Telegram badge digest @telegram-badge", () => {
     );
     expect(messages[0].length).toBeLessThanOrEqual(4096);
     expect(formatTelegramBadgeDigest([])).toEqual([]);
+  });
+
+  test("Dashboard formatter sends only values below each branch threshold", () => {
+    const alerts: DashboardTelegramAlert[] = [
+      {
+        locationId: "branch-a",
+        locationName: "สาขา ก",
+        key: "purchase_average_7_days",
+        label: "ยอดซื้อเฉลี่ย 7 วัน",
+        currentValue: 25_000,
+        minimumValue: 30_000,
+        unit: "บาท/วัน",
+        detail: "ต่ำกว่ายอดขั้นต่ำ",
+      },
+      {
+        locationId: "branch-a",
+        locationName: "สาขา ก",
+        key: "net_cash_accumulated",
+        label: "รับ–จ่ายสุทธิสะสม",
+        currentValue: 40_000,
+        minimumValue: 30_000,
+        unit: "บาท",
+        detail: "ต่ำกว่ายอดขั้นต่ำ",
+      },
+    ];
+
+    const messages = formatDashboardAlertDigest(
+      alerts,
+      new Date("2026-07-28T03:00:00.000Z"),
+    );
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toContain("Dashboard ต่ำกว่าเกณฑ์");
+    expect(messages[0]).toContain("ยอดซื้อเฉลี่ย 7 วัน");
+    expect(messages[0]).toContain("25,000");
+    expect(messages[0]).toContain("30,000");
+    expect(messages[0]).not.toContain("รับ–จ่ายสุทธิสะสม");
   });
 
   test("config API is manager-only and never returns the Bot Token", async ({
@@ -207,7 +245,14 @@ test.describe.serial("Telegram badge digest @telegram-badge", () => {
       });
       await expect(configButton).toBeVisible();
       await expect(managerPage.getByLabel("เลือกสาขา")).toBeVisible();
+      const configResponsePromise = managerPage.waitForResponse(
+        (response) =>
+          response.request().method() === "GET" &&
+          response.url().endsWith("/api/lanflow/telegram-badge/config"),
+      );
       await configButton.click();
+      const configResponse = await configResponsePromise;
+      expect(configResponse.ok(), await configResponse.text()).toBeTruthy();
 
       await expect(
         managerPage.getByRole("heading", {
@@ -215,6 +260,18 @@ test.describe.serial("Telegram badge digest @telegram-badge", () => {
         }),
       ).toBeVisible();
       await expect(managerPage.getByText("ระยะห่าง (นาที)")).toBeVisible();
+      await expect(
+        managerPage.getByText("เกณฑ์ Dashboard แยกต่อสาขา"),
+      ).toBeVisible();
+      await expect(
+        managerPage.getByText("ยอดซื้อเฉลี่ย 7 วัน", { exact: true }).first(),
+      ).toBeVisible();
+      await expect(
+        managerPage.getByText("รับ–จ่ายสุทธิสะสม", { exact: true }).first(),
+      ).toBeVisible();
+      await expect(
+        managerPage.getByText("สต็อกสินค้า", { exact: true }).first(),
+      ).toBeVisible();
       await expect(
         managerPage.getByRole("button", { name: "ทดสอบการส่ง" }),
       ).toBeVisible();

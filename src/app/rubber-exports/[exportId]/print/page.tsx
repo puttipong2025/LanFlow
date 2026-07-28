@@ -93,7 +93,7 @@ export default function RubberExportPrintPage() {
           <div><strong>เลขที่:</strong> {details.exportNo}</div>
           <div><strong>สาขา:</strong> {details.locationName}</div>
           <div><strong>สถานะ:</strong> {details.status === "verified" ? "ตรวจสอบแล้ว" : "ลบแล้ว"}</div>
-          <div><strong>Cutoff:</strong> {dateTime(details.cutoffAt)}</div>
+          <div><strong>จำนวนบิล:</strong> {details.itemCount}</div>
           {details.status === "deleted" && <div><strong>ลบจากสถานะ:</strong> {details.previousStatus === "verified" ? "ตรวจสอบแล้ว" : "ฉบับร่าง"}</div>}
         </div>
       </header>

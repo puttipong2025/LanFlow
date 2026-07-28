@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/server/auth";
 import {
   canManageRubberExports,
+  isUuid,
   mapRubberExportRow,
   rubberExportErrorResponse,
 } from "@/lib/server/rubber-export-response";
@@ -9,7 +10,7 @@ import {
 export const dynamic = "force-dynamic";
 
 const columns = `
-  id, export_no, location_id, cutoff_at, status, previous_status,
+  id, export_no, location_id, status, previous_status,
   original_weight_total, paid_total, average_price, current_weight,
   weight_loss_percent, work_rate, other_operating_cost, work_total,
   expense_destination, created_by_name, created_at, verified_by_name,
@@ -32,7 +33,7 @@ export async function GET(request: NextRequest) {
       .eq("location_id", locationId)
       .order("created_at", { ascending: false })
       .order("id", { ascending: false }),
-    result.supabase.rpc("get_rubber_export_cutoff_options", {
+    result.supabase.rpc("get_rubber_export_available_bills", {
       p_location_id: locationId,
     }),
   ]);
@@ -42,13 +43,15 @@ export async function GET(request: NextRequest) {
 
   return NextResponse.json({
     exports: (rows ?? []).map((row) => mapRubberExportRow(row as Record<string, any>)),
-    cutoffOptions: (options ?? []).map((row: Record<string, any>) => ({
+    availableBills: (options ?? []).map((row: Record<string, any>) => ({
       reportItemId: row.report_item_id,
       billId: row.bill_id,
       billDate: row.bill_date,
       billNo: row.bill_no,
       customerName: row.customer_name,
       eligibilityAt: row.eligibility_at,
+      netWeight: Number(row.net_weight),
+      paidAmount: Number(row.paid_amount),
     })),
   }, {
     headers: { "Cache-Control": "private, no-store, max-age=0" },
@@ -60,19 +63,25 @@ export async function POST(request: Request) {
   if (!result.ok) return result.response;
   const payload = await request.json().catch(() => null) as {
     locationId?: string;
-    cutoffReportItemId?: string;
+    selectedReportItemIds?: string[];
   } | null;
+  const selectedIds = payload?.selectedReportItemIds;
   if (
-    !payload?.locationId ||
-    !payload.cutoffReportItemId ||
-    !canManageRubberExports(result.auth, payload.locationId)
+    !isUuid(payload?.locationId)
+    || !Array.isArray(selectedIds)
+    || selectedIds.length === 0
+    || selectedIds.some((id) => !isUuid(id))
+    || new Set(selectedIds).size !== selectedIds.length
   ) {
-    return NextResponse.json({ error: "ข้อมูลหรือสิทธิ์สร้างรายการส่งออกไม่ถูกต้อง" }, { status: 403 });
+    return NextResponse.json({ error: "กรุณาเลือกบิลอย่างน้อย 1 ใบและห้ามเลือกซ้ำ" }, { status: 400 });
+  }
+  if (!canManageRubberExports(result.auth, payload.locationId)) {
+    return NextResponse.json({ error: "ไม่มีสิทธิ์สร้างรายการส่งออกของสาขานี้" }, { status: 403 });
   }
 
   const { data, error } = await result.supabase.rpc("create_rubber_export", {
     p_location_id: payload.locationId,
-    p_cutoff_report_item_id: payload.cutoffReportItemId,
+    p_selected_report_item_ids: selectedIds,
   });
   if (error) return rubberExportErrorResponse(error.message);
   return NextResponse.json(data, {

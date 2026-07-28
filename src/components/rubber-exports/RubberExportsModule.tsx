@@ -68,13 +68,13 @@ export function RubberExportsModule({
       <div className="flex flex-col gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:flex-row sm:items-center sm:justify-between sm:p-4">
         <div>
           <h2 className="text-xl font-bold text-ink">ส่งออกยาง — {selectedLocation.name}</h2>
-          <p className="mt-1 text-sm text-ink/65">เลือก cutoff จากบิลที่ล็อกในรายงาน และจองบิลทันทีเมื่อสร้างฉบับร่าง</p>
+          <p className="mt-1 text-sm text-ink/65">เลือกบิลที่ล็อกในรายงาน และจองบิลที่เลือกทันทีเมื่อสร้างฉบับร่าง</p>
         </div>
         <div className="flex w-full flex-wrap gap-2 sm:w-auto">
           <button type="button" onClick={() => void api.reload()} disabled={!online || api.loading} className="focus-ring inline-flex items-center gap-2 rounded-md bg-actionSecondary px-3 py-2 text-sm font-semibold text-white hover:bg-actionSecondary/90 disabled:opacity-50">
             <RotateCw size={16} className={api.loading ? "animate-spin" : ""} /> รีเฟรช
           </button>
-          <button type="button" onClick={() => setCreating(true)} disabled={!online || api.cutoffOptions.length === 0} className="focus-ring inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-leaf px-4 text-sm font-semibold text-white disabled:opacity-50 sm:w-auto">
+          <button type="button" onClick={() => setCreating(true)} disabled={!online || api.availableBills.length === 0} className="focus-ring inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-leaf px-4 text-sm font-semibold text-white disabled:opacity-50 sm:w-auto">
             <FilePlus2 size={16} /> สร้างรายการ
           </button>
         </div>
@@ -86,7 +86,7 @@ export function RubberExportsModule({
           {api.error}
         </div>
       )}
-      {online && !api.loading && !api.error && api.cutoffOptions.length === 0 && (
+      {online && !api.loading && !api.error && api.availableBills.length === 0 && (
         <div className="rounded-lg bg-field px-4 py-3 text-sm text-ink/65">ยังไม่มีบิลที่ล็อกจากรายงานและพร้อมส่งออก</div>
       )}
 
@@ -116,16 +116,19 @@ export function RubberExportsModule({
 
       {creating && (
         <RubberExportCreateModal
-          options={api.cutoffOptions}
+          key={api.availableBills.map((bill) => bill.reportItemId).join(",")}
+          availableBills={api.availableBills}
           onPreview={api.preview}
-          onCreate={async (cutoffReportItemId) => {
+          onCreate={async (selectedReportItemIds) => {
             try {
-              const created = await api.create(cutoffReportItemId);
+              const created = await api.create(selectedReportItemIds);
               toast.success(`สร้าง ${created.exportNo} แล้ว`);
               setCreating(false);
               await open(created.id);
             } catch (error) {
               toast.error(error instanceof Error ? error.message : "สร้างรายการส่งออกไม่สำเร็จ");
+              await api.reload();
+              throw error;
             }
           }}
           onClose={() => setCreating(false)}

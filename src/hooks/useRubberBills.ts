@@ -188,6 +188,7 @@ async function syncPendingBills(queryClient: any, ownerUserId: string, locationI
     queryClient.invalidateQueries({ queryKey: ["rubberBillApprovalMarkers", locationId] });
     queryClient.invalidateQueries({ queryKey: ["rubberBillApprovalRequests"] });
     queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
+    queryClient.invalidateQueries({ queryKey: ["dashboardOverview", locationId] });
   }
 }
 

@@ -148,7 +148,7 @@ declare
   v_definition text;
 begin
   select pg_get_functiondef(
-    'private.rubber_export_candidates(uuid,timestamp with time zone)'::regprocedure
+    'private.rubber_export_candidates(uuid,uuid[])'::regprocedure
   ) into v_definition;
 
   v_definition := replace(

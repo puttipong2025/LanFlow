@@ -18,7 +18,6 @@ export type RubberExportSummary = {
   exportNo: string;
   locationId: string;
   locationName: string;
-  cutoffAt: string;
   status: RubberExportStatus;
   previousStatus?: "draft" | "verified" | null;
   originalWeightTotal: number;
@@ -47,17 +46,18 @@ export type RubberExportDetails = RubberExportSummary & {
   items: RubberExportItem[];
 };
 
-export type RubberExportCutoffOption = {
+export type RubberExportAvailableBill = {
   reportItemId: string;
   billId: string;
   billDate: string;
   billNo: string;
   customerName: string;
   eligibilityAt: string;
+  netWeight: number;
+  paidAmount: number;
 };
 
 export type RubberExportPreview = {
-  cutoffAt: string;
   itemCount: number;
   originalWeightTotal: number;
   paidTotal: number;

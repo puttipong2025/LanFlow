@@ -1,6 +1,8 @@
 import { createClient } from "npm:@supabase/supabase-js@2.47.10";
 import {
+  formatDashboardAlertDigest,
   formatTelegramBadgeDigest,
+  type DashboardTelegramAlert,
   type TelegramBadgeCount,
   type TelegramBadgeKey,
 } from "../_shared/telegram-badge.ts";
@@ -23,6 +25,17 @@ type ClaimResult = {
 type DeliveryCredentials = {
   botToken: string | null;
   chatId: string | null;
+};
+
+type DashboardAlertRow = {
+  location_id: string;
+  branch_name: string;
+  alert_key: string;
+  metric_label: string;
+  current_value: number;
+  minimum_value: number;
+  unit: string;
+  detail: string;
 };
 
 function jsonResponse(body: unknown, status = 200) {
@@ -69,12 +82,16 @@ Deno.serve(async (request) => {
   }
 
   try {
-    const { data: countRows, error: countError } = await supabase.rpc(
-      "get_telegram_badge_counts",
-    );
-    if (countError) throw new Error("count_failed");
+    const [countResult, dashboardResult] = await Promise.all([
+      supabase.rpc("get_telegram_badge_counts"),
+      supabase.rpc("get_dashboard_alerts_for_telegram"),
+    ]);
+    if (countResult.error) throw new Error("count_failed");
+    if (dashboardResult.error) throw new Error("dashboard_alert_failed");
 
-    const counts: TelegramBadgeCount[] = (countRows as BadgeCountRow[]).map(
+    const counts: TelegramBadgeCount[] = (
+      countResult.data as BadgeCountRow[]
+    ).map(
       (row) => ({
         key: row.badge_key,
         locationId: row.location_id,
@@ -85,7 +102,22 @@ Deno.serve(async (request) => {
         sortOrder: row.sort_order,
       }),
     );
-    const messages = formatTelegramBadgeDigest(counts);
+    const dashboardAlerts: DashboardTelegramAlert[] = (
+      dashboardResult.data as DashboardAlertRow[]
+    ).map((row) => ({
+      locationId: row.location_id,
+      locationName: row.branch_name,
+      key: row.alert_key,
+      label: row.metric_label,
+      currentValue: Number(row.current_value),
+      minimumValue: Number(row.minimum_value),
+      unit: row.unit,
+      detail: row.detail,
+    }));
+    const messages = [
+      ...formatTelegramBadgeDigest(counts),
+      ...formatDashboardAlertDigest(dashboardAlerts),
+    ];
 
     if (messages.length === 0) {
       const { error } = await supabase.rpc(

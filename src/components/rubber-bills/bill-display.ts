@@ -20,6 +20,8 @@ export type RubberBillReceiptModel = {
     lineTotal: number;
   }>;
   deductions: Array<{ label: string; amount: number }>;
+  totalWeight: number;
+  deductWeight: number;
   netWeight: number;
   rubberValue: number;
   averagePrice: number;
@@ -108,6 +110,8 @@ export function buildRubberBillReceiptModel(bill: RubberBill): RubberBillReceipt
     approvalLabel: currentRevisionApprovalLabel(bill, receiptKind),
     hasZeroPrice: weighItems.some((item) => item.price === 0),
     weighItems,
+    totalWeight: bill.weight,
+    deductWeight: bill.deductWeight,
     netWeight: bill.netWeight,
     rubberValue: bill.rubberValue,
     averagePrice: bill.price,
@@ -148,9 +152,17 @@ export function formatReceiptNumber(value: number) {
   return new Intl.NumberFormat("th-TH", { maximumFractionDigits: 2 }).format(value);
 }
 
+function formatReceiptWeight(value: number) {
+  return new Intl.NumberFormat("th-TH", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
 export function renderRubberBillReceiptHtml(model: RubberBillReceiptModel) {
   const h = escapeReceiptHtml;
   const n = formatReceiptNumber;
+  const weight = formatReceiptWeight;
   const weighRows = model.weighItems.length === 0
     ? '<tr><td colspan="6" class="muted">ไม่มีรายการชั่ง</td></tr>'
     : model.weighItems.map((item) => `
@@ -184,7 +196,8 @@ ${model.hasZeroPrice ? '<div class="warning">ยังไม่กำหนด�
 <div><strong>ผู้รับผิดชอบการจ่าย:</strong> ${h(model.payerName)}</div>
 <div><strong>สถานะอนุมัติ:</strong> ${h(model.approvalLabel)}</div>
 <table><thead><tr><th>รายการ</th><th class="num">เข้า</th><th class="num">ออก</th><th class="num">ชั่งสุทธิ</th><th class="num">ราคา</th><th class="num">รวม</th></tr></thead><tbody>${weighRows}</tbody></table>
-<div class="row"><strong>น้ำหนักสุทธิ</strong><strong>${n(model.netWeight)} กก.</strong></div>
+${model.deductWeight > 0 ? `<div class="row"><span>น้ำหนักรวมก่อนหัก</span><span>${weight(model.totalWeight)} กก.</span></div><div class="row"><span>น้ำหนักหัก</span><span>${weight(model.deductWeight)} กก.</span></div>` : ""}
+<div class="row"><strong>น้ำหนักสุทธิ</strong><strong>${weight(model.netWeight)} กก.</strong></div>
 <div class="row"><span>ราคาเฉลี่ย</span><span>${n(model.averagePrice)}</span></div>
 <div class="row"><span>มูลค่ายาง</span><span>${n(model.rubberValue)}</span></div>
 <div class="totals"><strong>รายการหักเงิน</strong>${deductionRows}<div class="row"><strong>ยอดหักเงิน</strong><strong>${n(model.deductionTotal)}</strong></div></div>

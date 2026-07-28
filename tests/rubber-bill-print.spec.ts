@@ -88,14 +88,32 @@ test.describe("Rubber Bill receipt contract @rubber-bill-print", () => {
       { label: "กรด & สินค้า 1 ถัง", amount: 10 },
       { label: "หักหนี้", amount: 15 },
     ]);
+    expect(model.totalWeight).toBe(10);
+    expect(model.deductWeight).toBe(2);
+    expect(html).toContain("น้ำหนักรวมก่อนหัก");
+    expect(html).toContain("น้ำหนักหัก");
     expect(html).toContain("น้ำหนักสุทธิ");
-    expect(html).not.toContain("หักน้ำหนัก");
+    expect(html).toContain(">10.00 กก.<");
+    expect(html).toContain(">2.00 กก.<");
+    expect(html).toContain(">8.00 กก.<");
     expect(html).toContain("ยอดที่ต้องจ่ายลูกค้า");
     expect(html).not.toContain(">ยอดสุทธิ<");
     expect(html).toContain("สถานะอนุมัติ");
     expect(html).not.toContain("ที่อยู่:");
     expect(html).not.toContain("FSC");
     expect(html).not.toContain("EUDR");
+  });
+
+  test("hides pre-deduction weight rows when no weight is deducted", () => {
+    const html = renderRubberBillReceiptHtml(buildRubberBillReceiptModel(makeBill({
+      deductWeight: 0,
+      netWeight: 10,
+      rubberValue: 200,
+    })));
+
+    expect(html).not.toContain("น้ำหนักรวมก่อนหัก");
+    expect(html).not.toContain("น้ำหนักหัก");
+    expect(html).toContain("น้ำหนักสุทธิ");
   });
 
   test("uses local reference and blocks payment warning when any row price is zero", () => {
@@ -124,6 +142,8 @@ test.describe("Rubber Bill receipt contract @rubber-bill-print", () => {
     expect(model.approvalLabel).toBe("ผ่านการตรวจราคาบนเครื่อง — ไม่ต้องอนุมัติ");
     expect(html).toContain("ใบรับซื้อยางออฟไลน์");
     expect(html).toContain("ยังไม่กำหนดราคา — ห้ามจ่าย");
+    expect(html).toContain("น้ำหนักรวมก่อนหัก");
+    expect(html).toContain("น้ำหนักหัก");
 
     expect(buildRubberBillReceiptModel(makeBill({
       serverBillNo: undefined,

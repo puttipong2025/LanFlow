@@ -207,7 +207,7 @@ export function renderMoneyTransferReceiptHtml(model: MoneyTransferReceiptModel)
         <div class="row"><strong>สลิป ${index + 1}</strong><strong>${money(slip.amount)}</strong></div>
         <div class="small">วันที่ ${h(slip.transactionDateText)}</div>
         <div class="small">อ้างอิง ${h(slip.referenceNumber ?? "—")}</div>
-        <div class="small">ผู้ส่ง ${h(slip.senderName ?? "—")}</div>
+        <div class="small">ผู้จ่าย ${h(slip.senderName ?? "—")}</div>
         <div class="small">ผู้รับ ${h(slip.receiverName ?? "—")}</div>
         <div class="row small"><span>ค่าธรรมเนียม</span><span>${money(slip.fee)}</span></div>
       </div>`).join("");

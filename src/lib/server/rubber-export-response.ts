@@ -2,6 +2,12 @@ import { NextResponse } from "next/server";
 import { hasSystemManagerAccess, type AuthTokenPayload } from "@/lib/server/auth";
 import type { RubberExportSummary } from "@/types/rubber-exports";
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function isUuid(value: unknown): value is string {
+  return typeof value === "string" && UUID_PATTERN.test(value);
+}
+
 export function canManageRubberExports(auth: AuthTokenPayload, locationId: string) {
   return hasSystemManagerAccess(auth)
     || (auth.role === "admin" && auth.locationIds.includes(locationId));
@@ -13,9 +19,9 @@ export function rubberExportErrorResponse(message: string) {
   }
   if (
     message.includes("INVALID_RUBBER_BILL") ||
+    message.includes("RUBBER_EXPORT_SELECTION") ||
     message.includes("REPORT_LOCKED") ||
     message.includes("RUBBER_EXPORT_LOCKED") ||
-    message.includes("cutoff") ||
     message.includes("ถูกจอง") ||
     message.includes("ฉบับร่าง") ||
     message.includes("ตรวจสอบแล้ว") ||
@@ -42,7 +48,6 @@ export function mapRubberExportRow(row: Record<string, any>): RubberExportSummar
     exportNo: row.export_no,
     locationId: row.location_id,
     locationName: location?.name ?? "",
-    cutoffAt: row.cutoff_at,
     status: row.status,
     previousStatus: row.previous_status,
     originalWeightTotal: number(row.original_weight_total),

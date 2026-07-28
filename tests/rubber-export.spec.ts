@@ -24,7 +24,7 @@ function service() {
 }
 
 test.describe.serial("Rubber export contract @rubber-export", () => {
-  test("cutoff, reservation, derived expense, report locks, delete, and print stay source-owned", async ({ browser }) => {
+  test("explicit selection, reservation, derived expense, report locks, delete, and print stay source-owned", async ({ browser }) => {
     test.setTimeout(90_000);
     const user = await authContext(browser, "user");
     const admin = await authContext(browser, "admin");
@@ -110,16 +110,16 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       const listResponse = await admin.request.get(`/api/lanflow/rubber-exports?locationId=${locationId}`);
       expect(listResponse.ok(), await listResponse.text()).toBeTruthy();
       const list = await listResponse.json() as {
-        cutoffOptions: Array<{ reportItemId: string; billNo: string; eligibilityAt: string }>;
+        availableBills: Array<{ reportItemId: string; billNo: string; eligibilityAt: string }>;
       };
-      expect(list.cutoffOptions).toHaveLength(6);
-      const sortedCutoffs = [...list.cutoffOptions].sort((a, b) =>
+      expect(list.availableBills).toHaveLength(6);
+      const sortedBills = [...list.availableBills].sort((a, b) =>
         a.eligibilityAt.localeCompare(b.eligibilityAt)
       );
-      const cutoff = sortedCutoffs[2];
+      const selectedReportItemIds = sortedBills.slice(0, 3).map((bill) => bill.reportItemId);
 
       const previewResponse = await admin.request.post("/api/lanflow/rubber-exports/preview", {
-        data: { locationId, cutoffReportItemId: cutoff.reportItemId },
+        data: { locationId, selectedReportItemIds },
       });
       expect(previewResponse.ok(), await previewResponse.text()).toBeTruthy();
       const preview = await previewResponse.json() as {
@@ -137,10 +137,10 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
 
       const concurrent = await Promise.all([
         admin.request.post("/api/lanflow/rubber-exports", {
-          data: { locationId, cutoffReportItemId: cutoff.reportItemId },
+          data: { locationId, selectedReportItemIds },
         }),
         admin.request.post("/api/lanflow/rubber-exports", {
-          data: { locationId, cutoffReportItemId: cutoff.reportItemId },
+          data: { locationId, selectedReportItemIds },
         }),
       ]);
       expect(concurrent.map((response) => response.status()).sort()).toEqual([201, 409]);
@@ -179,15 +179,15 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
         `/api/lanflow/rubber-exports?locationId=${locationId}`
       );
       const remaining = await remainingResponse.json() as {
-        cutoffOptions: Array<{ reportItemId: string; eligibilityAt: string }>;
+        availableBills: Array<{ reportItemId: string; eligibilityAt: string }>;
       };
-      expect(remaining.cutoffOptions).toHaveLength(3);
-      const remainingCutoffs = [...remaining.cutoffOptions].sort((a, b) =>
+      expect(remaining.availableBills).toHaveLength(3);
+      const remainingBills = [...remaining.availableBills].sort((a, b) =>
         a.eligibilityAt.localeCompare(b.eligibilityAt)
       );
 
       const externalResponse = await admin.request.post("/api/lanflow/rubber-exports", {
-        data: { locationId, cutoffReportItemId: remainingCutoffs[0].reportItemId },
+        data: { locationId, selectedReportItemIds: [remainingBills[0].reportItemId] },
       });
       expect(externalResponse.status(), await externalResponse.text()).toBe(201);
       const externalExport = await externalResponse.json() as { id: string };
@@ -204,13 +204,13 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
         `/api/lanflow/rubber-exports?locationId=${locationId}`
       );
       const zeroOptions = await zeroOptionsResponse.json() as {
-        cutoffOptions: Array<{ reportItemId: string; eligibilityAt: string }>;
+        availableBills: Array<{ reportItemId: string; eligibilityAt: string }>;
       };
-      const zeroCutoff = [...zeroOptions.cutoffOptions].sort((a, b) =>
+      const zeroBill = [...zeroOptions.availableBills].sort((a, b) =>
         a.eligibilityAt.localeCompare(b.eligibilityAt)
       )[0];
       const zeroResponse = await admin.request.post("/api/lanflow/rubber-exports", {
-        data: { locationId, cutoffReportItemId: zeroCutoff.reportItemId },
+        data: { locationId, selectedReportItemIds: [zeroBill.reportItemId] },
       });
       expect(zeroResponse.status(), await zeroResponse.text()).toBe(201);
       const zeroExport = await zeroResponse.json() as { id: string };
@@ -227,13 +227,13 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
         `/api/lanflow/rubber-exports?locationId=${locationId}`
       );
       const draftOptions = await draftOptionsResponse.json() as {
-        cutoffOptions: Array<{ reportItemId: string }>;
+        availableBills: Array<{ reportItemId: string }>;
       };
-      expect(draftOptions.cutoffOptions).toHaveLength(1);
+      expect(draftOptions.availableBills).toHaveLength(1);
       const draftResponse = await admin.request.post("/api/lanflow/rubber-exports", {
         data: {
           locationId,
-          cutoffReportItemId: draftOptions.cutoffOptions[0].reportItemId,
+          selectedReportItemIds: [draftOptions.availableBills[0].reportItemId],
         },
       });
       expect(draftResponse.status(), await draftResponse.text()).toBe(201);

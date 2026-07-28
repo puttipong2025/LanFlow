@@ -148,6 +148,7 @@ async function syncPendingIncomeExpense(queryClient: ReturnType<typeof useQueryC
     isSyncing = false;
     queryClient.invalidateQueries({ queryKey: [FEED_QUERY_KEY, ownerUserId, locationId] });
     queryClient.invalidateQueries({ queryKey: [PENDING_QUERY_KEY, ownerUserId, locationId] });
+    queryClient.invalidateQueries({ queryKey: ["dashboardOverview", locationId] });
   }
 }
 

@@ -27,8 +27,6 @@ create table public.rubber_exports (
   export_date date not null,
   sequence_no integer not null check (sequence_no > 0),
   location_id uuid not null references public.locations(id),
-  cutoff_at timestamptz not null,
-  cutoff_report_item_id uuid not null references public.report_items(id),
   status text not null default 'draft' check (status in ('draft', 'verified', 'deleted')),
   previous_status text check (previous_status in ('draft', 'verified')),
   original_weight_total numeric(14,2) not null check (original_weight_total > 0),
@@ -133,7 +131,7 @@ grant all on public.rubber_exports, public.rubber_export_items to service_role;
 
 create or replace function private.rubber_export_candidates(
   p_location_id uuid,
-  p_cutoff_at timestamptz
+  p_selected_report_item_ids uuid[]
 )
 returns table (
   report_item_id uuid,
@@ -165,7 +163,10 @@ as $$
   where i.location_id = p_location_id
     and i.entity_type = 'rubber_bill'
     and i.active = true
-    and i.eligibility_at <= p_cutoff_at
+    and (
+      p_selected_report_item_ids is null
+      or i.id = any(p_selected_report_item_ids)
+    )
     and r.status = 'active'
     and b.location_id = p_location_id
     and b.record_status = 'active'
@@ -179,14 +180,16 @@ as $$
   order by i.eligibility_at, b.id;
 $$;
 
-create or replace function public.get_rubber_export_cutoff_options(p_location_id uuid)
+create or replace function public.get_rubber_export_available_bills(p_location_id uuid)
 returns table (
   report_item_id uuid,
   bill_id uuid,
   bill_date date,
   bill_no text,
   customer_name text,
-  eligibility_at timestamptz
+  eligibility_at timestamptz,
+  net_weight numeric,
+  paid_amount numeric
 )
 language plpgsql
 stable
@@ -205,14 +208,16 @@ begin
     c.bill_date,
     c.bill_no,
     c.customer_name,
-    c.eligibility_at
-  from private.rubber_export_candidates(p_location_id, 'infinity'::timestamptz) c;
+    c.eligibility_at,
+    c.net_weight,
+    c.paid_amount
+  from private.rubber_export_candidates(p_location_id, null) c;
 end;
 $$;
 
-create or replace function private.validate_rubber_export_candidates(
+create or replace function private.validate_rubber_export_selection(
   p_location_id uuid,
-  p_cutoff_at timestamptz
+  p_selected_report_item_ids uuid[]
 )
 returns void
 language plpgsql
@@ -221,11 +226,44 @@ security definer
 set search_path = public, private
 as $$
 declare
+  v_selected_count integer;
+  v_candidate_count integer;
   v_invalid text;
 begin
+  v_selected_count := coalesce(cardinality(p_selected_report_item_ids), 0);
+
+  if v_selected_count = 0 then
+    raise exception 'RUBBER_EXPORT_SELECTION_EMPTY: กรุณาเลือกบิลอย่างน้อย 1 ใบ'
+      using errcode = 'P0001';
+  end if;
+
+  if (
+    select count(distinct selected_id)
+    from unnest(p_selected_report_item_ids) selected_id
+  ) <> v_selected_count then
+    raise exception 'RUBBER_EXPORT_SELECTION_DUPLICATE: พบบิลที่เลือกซ้ำ'
+      using errcode = 'P0001';
+  end if;
+
+  select count(*)::integer
+  into v_candidate_count
+  from private.rubber_export_candidates(
+    p_location_id,
+    p_selected_report_item_ids
+  );
+
+  if v_candidate_count <> v_selected_count then
+    raise exception 'RUBBER_EXPORT_SELECTION_STALE: บิลที่เลือกบางรายการไม่พร้อมส่งออกแล้ว'
+      using errcode = 'P0001',
+            hint = 'รีเฟรชรายการบิลแล้วเลือกใหม่';
+  end if;
+
   select string_agg(c.bill_no, ', ' order by c.eligibility_at, c.bill_id)
   into v_invalid
-  from private.rubber_export_candidates(p_location_id, p_cutoff_at) c
+  from private.rubber_export_candidates(
+    p_location_id,
+    p_selected_report_item_ids
+  ) c
   where c.net_weight <= 0 or c.paid_amount <= 0;
 
   if v_invalid is not null then
@@ -238,7 +276,7 @@ $$;
 
 create or replace function public.preview_rubber_export(
   p_location_id uuid,
-  p_cutoff_report_item_id uuid
+  p_selected_report_item_ids uuid[]
 )
 returns jsonb
 language plpgsql
@@ -247,7 +285,6 @@ security definer
 set search_path = public, private
 as $$
 declare
-  v_cutoff_at timestamptz;
   v_item_count integer;
   v_original_weight numeric;
   v_paid_total numeric;
@@ -257,16 +294,10 @@ begin
     raise exception 'ไม่มีสิทธิ์สร้างรายการส่งออกของสาขานี้';
   end if;
 
-  select c.eligibility_at
-  into v_cutoff_at
-  from private.rubber_export_candidates(p_location_id, 'infinity'::timestamptz) c
-  where c.report_item_id = p_cutoff_report_item_id;
-
-  if v_cutoff_at is null then
-    raise exception 'บิล cutoff ไม่พร้อมใช้งานหรือถูกจองแล้ว';
-  end if;
-
-  perform private.validate_rubber_export_candidates(p_location_id, v_cutoff_at);
+  perform private.validate_rubber_export_selection(
+    p_location_id,
+    p_selected_report_item_ids
+  );
 
   select
     count(*)::integer,
@@ -283,14 +314,16 @@ begin
       'paidAmount', c.paid_amount
     ) order by c.eligibility_at, c.bill_id)
   into v_item_count, v_original_weight, v_paid_total, v_items
-  from private.rubber_export_candidates(p_location_id, v_cutoff_at) c;
+  from private.rubber_export_candidates(
+    p_location_id,
+    p_selected_report_item_ids
+  ) c;
 
   if coalesce(v_item_count, 0) = 0 then
     raise exception 'ไม่มีบิลที่พร้อมสร้างรายการส่งออก';
   end if;
 
   return jsonb_build_object(
-    'cutoffAt', v_cutoff_at,
     'itemCount', v_item_count,
     'originalWeightTotal', v_original_weight,
     'paidTotal', v_paid_total,
@@ -302,7 +335,7 @@ $$;
 
 create or replace function public.create_rubber_export(
   p_location_id uuid,
-  p_cutoff_report_item_id uuid
+  p_selected_report_item_ids uuid[]
 )
 returns jsonb
 language plpgsql
@@ -318,7 +351,6 @@ declare
   v_sequence_no integer;
   v_export_no text;
   v_export_id uuid;
-  v_cutoff_at timestamptz;
   v_item_count integer;
   v_original_weight numeric;
   v_paid_total numeric;
@@ -329,20 +361,17 @@ begin
 
   perform pg_advisory_xact_lock(hashtextextended('rubber-export:' || p_location_id::text, 0));
 
-  select c.eligibility_at
-  into v_cutoff_at
-  from private.rubber_export_candidates(p_location_id, 'infinity'::timestamptz) c
-  where c.report_item_id = p_cutoff_report_item_id;
-
-  if v_cutoff_at is null then
-    raise exception 'บิล cutoff ไม่พร้อมใช้งานหรือถูกจองแล้ว';
-  end if;
-
-  perform private.validate_rubber_export_candidates(p_location_id, v_cutoff_at);
+  perform private.validate_rubber_export_selection(
+    p_location_id,
+    p_selected_report_item_ids
+  );
 
   select count(*)::integer, round(sum(c.net_weight), 2), round(sum(c.paid_amount), 2)
   into v_item_count, v_original_weight, v_paid_total
-  from private.rubber_export_candidates(p_location_id, v_cutoff_at) c;
+  from private.rubber_export_candidates(
+    p_location_id,
+    p_selected_report_item_ids
+  ) c;
 
   if coalesce(v_item_count, 0) = 0 then
     raise exception 'ไม่มีบิลที่พร้อมสร้างรายการส่งออก';
@@ -369,8 +398,6 @@ begin
     export_date,
     sequence_no,
     location_id,
-    cutoff_at,
-    cutoff_report_item_id,
     original_weight_total,
     paid_total,
     average_price,
@@ -384,8 +411,6 @@ begin
     v_export_date,
     v_sequence_no,
     p_location_id,
-    v_cutoff_at,
-    p_cutoff_report_item_id,
     v_original_weight,
     v_paid_total,
     round(v_paid_total / v_original_weight, 2),
@@ -419,14 +444,16 @@ begin
     c.eligibility_at,
     c.net_weight,
     c.paid_amount
-  from private.rubber_export_candidates(p_location_id, v_cutoff_at) c;
+  from private.rubber_export_candidates(
+    p_location_id,
+    p_selected_report_item_ids
+  ) c;
 
   get diagnostics v_item_count = row_count;
 
   return jsonb_build_object(
     'id', v_export_id,
     'exportNo', v_export_no,
-    'cutoffAt', v_cutoff_at,
     'itemCount', v_item_count
   );
 end;
@@ -648,8 +675,6 @@ begin
     new.export_date,
     new.sequence_no,
     new.location_id,
-    new.cutoff_at,
-    new.cutoff_report_item_id,
     new.original_weight_total,
     new.paid_total,
     new.average_price,
@@ -660,15 +685,13 @@ begin
     old.export_date,
     old.sequence_no,
     old.location_id,
-    old.cutoff_at,
-    old.cutoff_report_item_id,
     old.original_weight_total,
     old.paid_total,
     old.average_price,
     old.created_by_user_id,
     old.created_at
   ) then
-    raise exception 'ข้อมูล cutoff และ snapshot ของรายการส่งออกแก้ไขไม่ได้';
+    raise exception 'ข้อมูลสมาชิกและ snapshot ของรายการส่งออกแก้ไขไม่ได้';
   end if;
   return new;
 end;
@@ -938,17 +961,17 @@ begin
 end;
 $$;
 
-revoke all on function public.get_rubber_export_cutoff_options(uuid),
-  public.preview_rubber_export(uuid, uuid),
-  public.create_rubber_export(uuid, uuid),
+revoke all on function public.get_rubber_export_available_bills(uuid),
+  public.preview_rubber_export(uuid, uuid[]),
+  public.create_rubber_export(uuid, uuid[]),
   public.update_rubber_export(uuid, numeric, numeric, numeric),
   public.verify_rubber_export(uuid, text),
   public.delete_rubber_export(uuid)
 from public, anon;
 
-grant execute on function public.get_rubber_export_cutoff_options(uuid),
-  public.preview_rubber_export(uuid, uuid),
-  public.create_rubber_export(uuid, uuid),
+grant execute on function public.get_rubber_export_available_bills(uuid),
+  public.preview_rubber_export(uuid, uuid[]),
+  public.create_rubber_export(uuid, uuid[]),
   public.update_rubber_export(uuid, numeric, numeric, numeric),
   public.verify_rubber_export(uuid, text),
   public.delete_rubber_export(uuid)

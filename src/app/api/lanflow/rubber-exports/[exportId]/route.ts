@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 type RouteContext = { params: Promise<{ exportId: string }> };
 
 const detailColumns = `
-  id, export_no, location_id, cutoff_at, status, previous_status,
+  id, export_no, location_id, status, previous_status,
   original_weight_total, paid_total, average_price, current_weight,
   weight_loss_percent, work_rate, other_operating_cost, work_total,
   expense_destination, created_by_name, created_by_phone, created_at,

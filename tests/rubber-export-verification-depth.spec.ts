@@ -100,7 +100,7 @@ async function createReport(context: BrowserContext, locationId: string) {
 }
 
 test.describe.serial("Rubber export verification depth @rubber-export", () => {
-  test("covers cutoff ties, cross-report selection, branch scope, invalid sources, and concurrent numbering", async ({ browser }) => {
+  test("covers explicit cross-report selection, branch scope, invalid sources, and concurrent numbering", async ({ browser }) => {
     test.setTimeout(120_000);
     const user = await authContext(browser, "user");
     const admin = await authContext(browser, "admin");
@@ -208,15 +208,15 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
       );
       expect(branchBOptionsResponse.ok(), await branchBOptionsResponse.text()).toBeTruthy();
       const branchBOptions = (await branchBOptionsResponse.json() as {
-        cutoffOptions: Array<{ reportItemId: string }>;
-      }).cutoffOptions;
+        availableBills: Array<{ reportItemId: string }>;
+      }).availableBills;
       expect(branchBOptions).toHaveLength(1);
       const [deleteBranchBReport, createBranchBExport] = await Promise.all([
         superAdmin.request.delete(`/api/lanflow/reports/${branchBReport.id}`),
         superAdmin.request.post("/api/lanflow/rubber-exports", {
           data: {
             locationId: locationB,
-            cutoffReportItemId: branchBOptions[0].reportItemId,
+            selectedReportItemIds: [branchBOptions[0].reportItemId],
           },
         }),
       ]);
@@ -257,20 +257,39 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
       );
       expect(optionsResponse.ok(), await optionsResponse.text()).toBeTruthy();
       const options = (await optionsResponse.json() as {
-        cutoffOptions: Array<{
+        availableBills: Array<{
           reportItemId: string;
           billId: string;
+          billNo: string;
           eligibilityAt: string;
         }>;
-      }).cutoffOptions;
+      }).availableBills;
       expect(options).toHaveLength(4);
-      const tieCutoff = options.find((option) => option.billId === secondTieBill);
-      expect(tieCutoff).toBeTruthy();
+      expect((await admin.request.post("/api/lanflow/rubber-exports", {
+        data: { locationId: locationA, selectedReportItemIds: [] },
+      })).status()).toBe(400);
+      expect((await admin.request.post("/api/lanflow/rubber-exports", {
+        data: {
+          locationId: locationA,
+          selectedReportItemIds: [options[0].reportItemId, options[0].reportItemId],
+        },
+      })).status()).toBe(400);
+      expect((await admin.request.post("/api/lanflow/rubber-exports/preview", {
+        data: { locationId: locationA, selectedReportItemIds: ["not-a-uuid"] },
+      })).status()).toBe(400);
+      expect((await admin.request.post("/api/lanflow/rubber-exports", {
+        data: { locationId: locationA, selectedReportItemIds: [crypto.randomUUID()] },
+      })).status()).toBe(409);
+      const selectedBills = options.filter((option) =>
+        [firstBill, firstTieBill, secondTieBill].includes(option.billId)
+      );
+      expect(selectedBills).toHaveLength(3);
+      const selectedReportItemIds = selectedBills.map((option) => option.reportItemId);
 
       const uiPage = await admin.newPage();
       await uiPage.route("**/api/lanflow/rubber-exports/preview", async (route) => {
-        const body = route.request().postDataJSON() as { cutoffReportItemId?: string };
-        if (body.cutoffReportItemId === options[0].reportItemId) {
+        const body = route.request().postDataJSON() as { selectedReportItemIds?: string[] };
+        if (body.selectedReportItemIds?.length === 1) {
           await new Promise((resolve) => setTimeout(resolve, 750));
         }
         await route.continue();
@@ -279,9 +298,16 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
       await selectAppLocation(uiPage, locationA);
       await uiPage.getByRole("button", { name: "ส่งออกยาง", exact: true }).click();
       await uiPage.getByRole("button", { name: "สร้างรายการ", exact: true }).click();
-      const cutoffSelect = uiPage.locator(".fixed.inset-0 select");
-      await cutoffSelect.selectOption(options[0].reportItemId);
-      await cutoffSelect.selectOption(tieCutoff!.reportItemId);
+      const billCheckboxes = uiPage.getByRole("checkbox");
+      await expect(billCheckboxes).toHaveCount(4);
+      await expect(uiPage.getByRole("checkbox", { checked: true })).toHaveCount(0);
+      await uiPage.getByRole("button", { name: "เลือกทั้งหมด", exact: true }).click();
+      await expect(uiPage.getByRole("checkbox", { checked: true })).toHaveCount(4);
+      await uiPage.getByRole("button", { name: "ล้างที่เลือก", exact: true }).click();
+      await expect(uiPage.getByRole("checkbox", { checked: true })).toHaveCount(0);
+      for (const bill of selectedBills) {
+        await uiPage.getByRole("checkbox", { name: `เลือกบิล ${bill.billNo}` }).check();
+      }
       const itemCountCard = uiPage.getByText("จำนวนบิล", { exact: true }).locator("..");
       await expect(itemCountCard).toContainText("3");
       await uiPage.waitForTimeout(1_000);
@@ -289,7 +315,7 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
       await uiPage.getByRole("button", { name: "ปิด" }).click();
 
       const previewResponse = await admin.request.post("/api/lanflow/rubber-exports/preview", {
-        data: { locationId: locationA, cutoffReportItemId: tieCutoff!.reportItemId },
+        data: { locationId: locationA, selectedReportItemIds },
       });
       expect(previewResponse.ok(), await previewResponse.text()).toBeTruthy();
       const preview = await previewResponse.json() as {
@@ -301,12 +327,9 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
         firstBill,
         ...[firstTieBill, secondTieBill].sort(),
       ]);
-      expect(preview.items.filter(
-        (item) => item.eligibilityAt === tieCutoff!.eligibilityAt,
-      )).toHaveLength(2);
 
       const firstExportResponse = await admin.request.post("/api/lanflow/rubber-exports", {
-        data: { locationId: locationA, cutoffReportItemId: tieCutoff!.reportItemId },
+        data: { locationId: locationA, selectedReportItemIds },
       });
       expect(firstExportResponse.status(), await firstExportResponse.text()).toBe(201);
       const firstExport = await firstExportResponse.json() as { id: string; exportNo: string };
@@ -330,16 +353,16 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
         `/api/lanflow/rubber-exports?locationId=${locationA}`,
       );
       const remaining = (await remainingResponse.json() as {
-        cutoffOptions: Array<{ reportItemId: string; billId: string }>;
-      }).cutoffOptions;
+        availableBills: Array<{ reportItemId: string; billId: string }>;
+      }).availableBills;
       expect(remaining.map((option) => option.billId)).toEqual([laterBill]);
 
       const concurrent = await Promise.all([
         admin.request.post("/api/lanflow/rubber-exports", {
-          data: { locationId: locationA, cutoffReportItemId: remaining[0].reportItemId },
+          data: { locationId: locationA, selectedReportItemIds: [remaining[0].reportItemId] },
         }),
         admin.request.post("/api/lanflow/rubber-exports", {
-          data: { locationId: locationA, cutoffReportItemId: remaining[0].reportItemId },
+          data: { locationId: locationA, selectedReportItemIds: [remaining[0].reportItemId] },
         }),
       ]);
       expect(concurrent.map((response) => response.status()).sort()).toEqual([201, 409]);
@@ -386,12 +409,12 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
         `/api/lanflow/rubber-exports?locationId=${locationA}`,
       );
       const invalidOptions = (await invalidOptionsResponse.json() as {
-        cutoffOptions: Array<{ reportItemId: string; billId: string }>;
-      }).cutoffOptions;
-      const invalidCutoff = invalidOptions.find(
+        availableBills: Array<{ reportItemId: string; billId: string }>;
+      }).availableBills;
+      const validOption = invalidOptions.find(
         (option) => option.billId === validAfterInvalidBill,
       );
-      expect(invalidCutoff).toBeTruthy();
+      expect(validOption).toBeTruthy();
       expect(invalidOptions.some((option) => option.billId === invalidBill)).toBe(false);
     } finally {
       for (const exportId of exportIds.reverse()) {
@@ -462,13 +485,13 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
         );
         expect(optionsResponse.ok(), await optionsResponse.text()).toBeTruthy();
         const options = (await optionsResponse.json() as {
-          cutoffOptions: Array<{ reportItemId: string; billId: string }>;
-        }).cutoffOptions;
-        const cutoff = options.find((option) => option.billId === billId);
-        expect(cutoff).toBeTruthy();
+          availableBills: Array<{ reportItemId: string; billId: string }>;
+        }).availableBills;
+        const selectedBill = options.find((option) => option.billId === billId);
+        expect(selectedBill).toBeTruthy();
 
         const createResponse = await admin.request.post("/api/lanflow/rubber-exports", {
-          data: { locationId, cutoffReportItemId: cutoff!.reportItemId },
+          data: { locationId, selectedReportItemIds: [selectedBill!.reportItemId] },
         });
         expect(createResponse.status(), await createResponse.text()).toBe(201);
         const created = await createResponse.json() as { id: string; exportNo: string };
@@ -674,14 +697,14 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
       );
       expect(optionsResponse.ok(), await optionsResponse.text()).toBeTruthy();
       const options = (await optionsResponse.json() as {
-        cutoffOptions: Array<{ reportItemId: string }>;
-      }).cutoffOptions;
+        availableBills: Array<{ reportItemId: string }>;
+      }).availableBills;
       expect(options).toHaveLength(60);
 
       const createResponse = await admin.request.post("/api/lanflow/rubber-exports", {
         data: {
           locationId,
-          cutoffReportItemId: options[options.length - 1].reportItemId,
+          selectedReportItemIds: options.map((option) => option.reportItemId),
         },
       });
       expect(createResponse.status(), await createResponse.text()).toBe(201);

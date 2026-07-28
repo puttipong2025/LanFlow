@@ -41,6 +41,17 @@ export type TelegramBadgeConfig = {
   updatedByName: string | null;
 };
 
+export type DashboardTelegramAlert = {
+  locationId: string;
+  locationName: string;
+  key: string;
+  label: string;
+  currentValue: number;
+  minimumValue: number;
+  unit: string;
+  detail: string;
+};
+
 const BANGKOK_TIME_ZONE = "Asia/Bangkok";
 const TELEGRAM_TEXT_LIMIT = 4096;
 const MESSAGE_TARGET_LENGTH = 3800;
@@ -106,6 +117,60 @@ export function formatTelegramBadgeDigest(
 
   if (messages.some((message) => message.length > TELEGRAM_TEXT_LIMIT)) {
     throw new Error("Telegram badge summary contains an oversized line");
+  }
+  return messages;
+}
+
+export function formatDashboardAlertDigest(
+  alerts: DashboardTelegramAlert[],
+  generatedAt = new Date(),
+) {
+  const visible = alerts
+    .filter(
+      (item) =>
+        Number.isFinite(item.currentValue) &&
+        Number.isFinite(item.minimumValue) &&
+        item.currentValue < item.minimumValue,
+    )
+    .sort(
+      (left, right) =>
+        left.locationName.localeCompare(right.locationName, "th") ||
+        left.label.localeCompare(right.label, "th") ||
+        left.key.localeCompare(right.key),
+    );
+  if (visible.length === 0) return [];
+
+  const header = `⚠️ LanFlow · Dashboard ต่ำกว่าเกณฑ์\n${generatedAtLabel(generatedAt)}`;
+  const sections: string[] = [];
+  let currentLocation = "";
+  for (const item of visible) {
+    if (item.locationName !== currentLocation) {
+      sections.push(`\n📍 ${item.locationName}`);
+      currentLocation = item.locationName;
+    }
+    sections.push(
+      [
+        `• ${item.label}`,
+        `  ปัจจุบัน ${item.currentValue.toLocaleString("th-TH")} ${item.unit}`,
+        `  ขั้นต่ำ ${item.minimumValue.toLocaleString("th-TH")} ${item.unit} · ${item.detail}`,
+      ].join("\n"),
+    );
+  }
+
+  const messages: string[] = [];
+  let current = header;
+  for (const section of sections) {
+    const candidate = `${current}\n${section}`;
+    if (candidate.length <= MESSAGE_TARGET_LENGTH) {
+      current = candidate;
+    } else {
+      messages.push(current);
+      current = `${header}\n${section}`;
+    }
+  }
+  messages.push(current);
+  if (messages.some((message) => message.length > TELEGRAM_TEXT_LIMIT)) {
+    throw new Error("Dashboard alert summary contains an oversized line");
   }
   return messages;
 }

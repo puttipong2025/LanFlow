@@ -114,6 +114,8 @@ function makeSnapshot(
         lineTotal: 200,
       }],
       deductions: [],
+      totalWeight: bill.weight,
+      deductWeight: bill.deductWeight,
       netWeight: 10,
       rubberValue: 200,
       averagePrice: 20,

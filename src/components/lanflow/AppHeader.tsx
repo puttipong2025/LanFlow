@@ -193,6 +193,7 @@ export function AppHeader({
 
       {telegramConfigOpen && (
         <TelegramBadgeConfigModal
+          selectedLocationId={selectedLocationId}
           onClose={() => setTelegramConfigOpen(false)}
         />
       )}
