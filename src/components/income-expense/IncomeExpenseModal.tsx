@@ -1,5 +1,5 @@
 import { toast } from "sonner";
-import { ReceiptText, WalletCards, WifiOff } from "lucide-react";
+import { ArrowDown, ArrowUp, ReceiptText, WalletCards, WifiOff } from "lucide-react";
 import { FormEvent, useState } from "react";
 
 import {
@@ -10,7 +10,7 @@ import {
   todayInputValue
 } from "@/lib/format";
 
-import type { IncomeExpense, Location, Profile } from "@/types";
+import type { IncomeExpense, IncomeExpenseSaleLine, Location, Profile } from "@/types";
 import { useIncomeSaleItems } from "@/hooks/useIncomeSaleItems";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { ModalShell } from "@/components/shared/ModalShell";
@@ -46,19 +46,32 @@ export function IncomeExpenseModal({
     price: number;
     cost: number;
   };
+  const initialSaleLines = transaction?.billOption === "บิลขาย"
+    ? transaction.saleLines ?? []
+    : [];
   const initialLocalBillNo = transaction?.localBillNo ?? makeLocalBillNo(selectedLocation.code, type === "income" ? "I" : "E", nextLocalSequence);
 
-  const [lines, setLines] = useState<CashLine[]>([
-    {
-      id: transaction?.clientTempId ?? makeClientTempId("cash_line"),
-      title: transaction?.title ?? "",
-      incomeSaleItemId: transaction?.incomeSaleItemId ?? null,
-      stockProductId: transaction?.stockProductId ?? null,
-      unit: Number(transaction?.unit || 0),
-      price: transaction?.price ?? 0,
-      cost: transaction?.cost ?? 0
-    }
-  ]);
+  const [lines, setLines] = useState<CashLine[]>(
+    initialSaleLines.length > 0
+      ? initialSaleLines.map((line) => ({
+          id: line.id ?? makeClientTempId("cash_line"),
+          title: line.title,
+          incomeSaleItemId: line.incomeSaleItemId,
+          stockProductId: line.stockProductId,
+          unit: line.quantity,
+          price: line.unitPrice,
+          cost: line.lineTotal,
+        }))
+      : [{
+          id: transaction?.clientTempId ?? makeClientTempId("cash_line"),
+          title: transaction?.title ?? "",
+          incomeSaleItemId: null,
+          stockProductId: null,
+          unit: Number(transaction?.unit || 0),
+          price: transaction?.price ?? 0,
+          cost: transaction?.cost ?? 0
+        }]
+  );
   const label = type === "income" ? "รายรับ" : "ค่าใช้จ่าย";
   const [billOption, setBillOption] = useState<string>(transaction?.billOption ?? (type === "income" ? "รายรับ" : "ค่าใช้จ่าย"));
   const { items: saleItems } = useIncomeSaleItems({ stockOnly: true });
@@ -93,6 +106,10 @@ export function IncomeExpenseModal({
   }
 
   function addLine() {
+    if (billOption === "บิลขาย" && lines.length >= 50) {
+      toast.error("บิลขายเพิ่มได้สูงสุด 50 รายการ");
+      return;
+    }
     setLines((current) => [
       ...current,
       { id: makeClientTempId("cash_line"), title: "", incomeSaleItemId: null, stockProductId: null, unit: 0, price: 0, cost: 0 }
@@ -103,12 +120,27 @@ export function IncomeExpenseModal({
     setLines((current) => (current.length === 1 ? current : current.filter((line) => line.id !== id)));
   }
 
+  function moveLine(id: string, offset: -1 | 1) {
+    setLines((current) => {
+      const from = current.findIndex((line) => line.id === id);
+      const to = from + offset;
+      if (from < 0 || to < 0 || to >= current.length) return current;
+      const reordered = [...current];
+      [reordered[from], reordered[to]] = [reordered[to], reordered[from]];
+      return reordered;
+    });
+  }
+
   function getLineCost(line: CashLine) {
-    if (billOption === "บิลขาย") return line.unit * line.price;
+    if (billOption === "บิลขาย") return Math.round((line.unit * line.price + Number.EPSILON) * 100) / 100;
     return line.cost;
   }
 
   function selectBillOption(option: string) {
+    if (transaction && option !== transaction.billOption) {
+      toast.error("ไม่สามารถเปลี่ยนรูปแบบของรายการที่บันทึกแล้ว");
+      return;
+    }
     if (option === "บิลขาย" && !isOnline) {
       toast.error("บิลขายใช้ได้เมื่อออนไลน์ เพราะต้องตรวจยอดสต็อกก่อน");
       return;
@@ -125,6 +157,27 @@ export function IncomeExpenseModal({
       return;
     }
 
+    const invalidSaleLine = billOption === "บิลขาย" && lines.some((line) => {
+      const touched = Boolean(
+        line.title.trim()
+        || line.incomeSaleItemId
+        || line.stockProductId
+        || line.unit
+        || line.price
+      );
+      return touched && !(
+        line.title.trim()
+        && line.incomeSaleItemId
+        && line.stockProductId
+        && line.unit > 0
+        && line.price > 0
+      );
+    });
+    if (invalidSaleLine) {
+      toast.error("กรุณากรอกสินค้า จำนวน และราคาให้ครบทุกแถวที่ใช้งาน");
+      return;
+    }
+
     const filledLines = lines.filter((line) => {
       if (billOption === "บิลขาย") {
         return line.title.trim() && line.incomeSaleItemId && line.stockProductId && line.unit > 0 && line.price > 0;
@@ -137,9 +190,59 @@ export function IncomeExpenseModal({
       return;
     }
 
-    const saleGroupId = billOption === "บิลขาย"
-      ? transaction?.saleGroupId ?? crypto.randomUUID()
-      : null;
+    if (
+      billOption === "บิลขาย"
+      && filledLines.some((line) =>
+        !Number.isInteger(line.unit)
+        || line.unit <= 0
+        || line.price <= 0
+        || Math.abs(line.price * 100 - Math.round(line.price * 100)) > 1e-7
+      )
+    ) {
+      toast.error("จำนวนสินค้าต้องเป็นจำนวนเต็มมากกว่า 0 และราคามีทศนิยมได้ไม่เกิน 2 ตำแหน่ง");
+      return;
+    }
+
+    if (billOption === "บิลขาย") {
+      const clientTempId = transaction?.clientTempId ?? makeClientTempId("cash");
+      const clientRecordedAt = transaction?.clientRecordedAt ?? makeClientRecordedAt();
+      const saleLines: IncomeExpenseSaleLine[] = filledLines.map((line, index) => ({
+        incomeSaleItemId: line.incomeSaleItemId!,
+        stockProductId: line.stockProductId!,
+        title: line.title.trim(),
+        quantity: line.unit,
+        unitPrice: line.price,
+        lineTotal: getLineCost(line),
+        sequenceNo: index + 1,
+      }));
+      onSave([{
+        id: transaction?.id ?? clientTempId,
+        clientTempId,
+        localBillNo: transaction?.localBillNo ?? initialLocalBillNo,
+        serverBillNo: transaction?.serverBillNo,
+        syncStatus: transaction?.syncStatus ?? "pending",
+        idempotencyKey: transaction?.idempotencyKey ?? makeIdempotencyKey("create", clientTempId),
+        locationId: selectedLocation.id,
+        type,
+        number: String(form.get("number") || nextNumber),
+        txDate: String(form.get("txDate") || todayInputValue()),
+        title: `บิลขาย — ${saleLines.length} รายการ`,
+        cost: saleLines.reduce((sum, line) => sum + line.lineTotal, 0),
+        billOption: "บิลขาย",
+        saleLineCount: saleLines.length,
+        saleLines,
+        createdByUserId: transaction?.createdByUserId ?? profile.id,
+        createdByName: transaction?.createdByName ?? profile.name,
+        createdByPhone: transaction?.createdByPhone ?? profile.phone,
+        clientCreatedAt: transaction?.clientCreatedAt ?? clientRecordedAt,
+        serverCreatedAt: transaction?.serverCreatedAt,
+        clientRecordedAt,
+        serverReceivedAt: transaction?.serverReceivedAt,
+        revisionNo: transaction?.revisionNo ?? 0,
+        recordStatus: transaction?.recordStatus ?? "active",
+      }]);
+      return;
+    }
 
     onSave(
       filledLines.map((line, index) => {
@@ -164,16 +267,6 @@ export function IncomeExpenseModal({
           billOption: billOption as any,
           unit: line.unit ? String(line.unit) : undefined,
           price: line.price || undefined,
-          incomeSaleItemId: billOption === "บิลขาย" ? line.incomeSaleItemId ?? null : null,
-          stockProductId: billOption === "บิลขาย" ? line.stockProductId ?? null : null,
-          stockQuantity: billOption === "บิลขาย" ? line.unit : null,
-          saleGroupId,
-          saleLineOrder: billOption === "บิลขาย"
-            ? transaction?.saleLineOrder ?? index + 1
-            : null,
-          saleExpectedLines: billOption === "บิลขาย"
-            ? transaction?.saleExpectedLines ?? filledLines.length
-            : null,
           createdByUserId: index === 0 && transaction ? transaction.createdByUserId : profile.id,
           createdByName: index === 0 && transaction ? transaction.createdByName : profile.name,
           createdByPhone: index === 0 && transaction ? transaction.createdByPhone : profile.phone,
@@ -261,11 +354,11 @@ export function IncomeExpenseModal({
                   {billOption === "บิลขาย" && <th className="px-2 py-2">จำนวน</th>}
                   {billOption === "บิลขาย" && <th className="px-2 py-2">ราคา</th>}
                   <th className="px-2 py-2">{label}</th>
-                  <th className="px-2 py-2 text-center">ลบ</th>
+                  <th className="px-2 py-2 text-center">จัดการ</th>
                 </tr>
               </thead>
               <tbody>
-                {lines.map((line) => (
+                {lines.map((line, index) => (
                   <tr key={line.id} className="border-b border-black/10">
                     <td className="px-2 py-2">
                       {billOption === "บิลขาย" ? (
@@ -298,7 +391,7 @@ export function IncomeExpenseModal({
                     </td>
                     {billOption === "บิลขาย" && (
                       <td className="px-2 py-2">
-                        <InlineNumber value={line.unit} onChange={(value) => updateLine(line.id, { unit: value })} />
+                        <InlineNumber value={line.unit} integerOnly onChange={(value) => updateLine(line.id, { unit: value })} />
                       </td>
                     )}
                     {billOption === "บิลขาย" && (
@@ -316,14 +409,40 @@ export function IncomeExpenseModal({
                       )}
                     </td>
                     <td className="px-2 py-2 text-center">
-                      <button
-                        type="button"
-                        onClick={() => removeLine(line.id)}
-                        disabled={lines.length === 1}
-                        className="rounded-md bg-rose-500 px-3 py-2 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
-                      >
-                        ลบ
-                      </button>
+                      <div className="flex justify-center gap-1">
+                        {billOption === "บิลขาย" && (
+                          <>
+                            <button
+                              type="button"
+                              aria-label={`เลื่อนรายการ ${index + 1} ขึ้น`}
+                              title="เลื่อนขึ้น"
+                              onClick={() => moveLine(line.id, -1)}
+                              disabled={index === 0}
+                              className="grid h-9 w-9 place-items-center rounded-md bg-actionSecondary text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                            >
+                              <ArrowUp size={15} />
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`เลื่อนรายการ ${index + 1} ลง`}
+                              title="เลื่อนลง"
+                              onClick={() => moveLine(line.id, 1)}
+                              disabled={index === lines.length - 1}
+                              className="grid h-9 w-9 place-items-center rounded-md bg-actionSecondary text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                            >
+                              <ArrowDown size={15} />
+                            </button>
+                          </>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => removeLine(line.id)}
+                          disabled={lines.length === 1}
+                          className="rounded-md bg-rose-500 px-3 py-2 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                        >
+                          ลบ
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

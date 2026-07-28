@@ -556,10 +556,19 @@ export function IncomeExpenseApprovalModal({
                       <td>
                         <div className="flex flex-col gap-1">
                           <span className="font-semibold text-ink">{request.title}</span>
-                          {request.matchedKeyword && (
-                            <span className="text-xs text-ink/55">พบ: {request.matchedKeyword}</span>
-                          )}
-                        </div>
+                           {request.matchedKeyword && (
+                             <span className="text-xs text-ink/55">พบ: {request.matchedKeyword}</span>
+                           )}
+                           {request.saleLines && request.saleLines.length > 0 && (
+                             <ol className="mt-1 space-y-0.5 text-xs text-ink/65">
+                               {request.saleLines.map((line) => (
+                                 <li key={`${request.id}:${line.sequenceNo}`}>
+                                   {line.sequenceNo}. {line.title} · {line.quantity} × {formatCurrency(line.unitPrice)} = {formatCurrency(line.lineTotal)}
+                                 </li>
+                               ))}
+                             </ol>
+                           )}
+                         </div>
                       </td>
                       <td className={request.txType === "income" ? "font-semibold text-leaf" : "font-semibold text-clay"}>
                         {formatCurrency(request.cost)}

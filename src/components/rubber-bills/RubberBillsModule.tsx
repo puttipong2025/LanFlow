@@ -448,11 +448,16 @@ export function RubberBillsModule({
           configuredPrice={approvalSettings?.configuredPrice}
           customers={customerOptions}
           onClose={() => setModalOpen(false)}
-          onSave={(bill) => {
-            const promise = editingBill ? updateBill(bill) : addBill(bill);
-            promise
-              .then(() => setModalOpen(false))
-              .catch((err: any) => alert(err.message || "เกิดข้อผิดพลาดในการบันทึกบิล"));
+          onSave={async (bill) => {
+            try {
+              const savedBill = await (editingBill ? updateBill(bill) : addBill(bill));
+              setModalOpen(false);
+              if (savedBill.netTotal > 0 && !savedBill.approvalPending) {
+                await handlePrint(savedBill);
+              }
+            } catch (error) {
+              alert(error instanceof Error ? error.message : "เกิดข้อผิดพลาดในการบันทึกบิล");
+            }
           }}
         />
       )}

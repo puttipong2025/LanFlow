@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { useEffect, useMemo } from "react";
 import type { IncomeExpense } from "@/types";
 import { enqueueSyncEvent, getPendingEvents, removeSyncEvent, updateSyncEvent, type SyncEvent } from "@/lib/idb-queue";
@@ -14,6 +14,17 @@ const PENDING_QUERY_KEY = "incomeExpensePending" as const;
 const PAGE_SIZE = 100;
 
 type FeedPage = { rows: IncomeExpense[]; nextCursor: string | null };
+type IncomeExpenseSyncReceipt = {
+  id: string;
+  serverBillNo: string;
+  revisionNo: number;
+  serverReceivedAt?: string;
+  title?: string;
+  cost?: number;
+  saleLineCount?: number;
+  saleLines?: IncomeExpense["saleLines"];
+};
+type IncomeExpenseSyncReceipts = Map<string, IncomeExpenseSyncReceipt>;
 
 function queuePartition(ownerUserId: string, locationId: string) {
   return { entity: ENTITY, ownerUserId, locationId };
@@ -40,12 +51,13 @@ function payloadToOptimisticRow(event: SyncEvent): IncomeExpense {
     billOption: payload.billOption,
     unit: payload.unit ?? undefined,
     price: payload.price ?? undefined,
-    incomeSaleItemId: payload.incomeSaleItemId ?? undefined,
-    stockProductId: payload.stockProductId ?? undefined,
-    stockQuantity: payload.stockQuantity ?? undefined,
-    saleGroupId: payload.saleGroupId ?? undefined,
-    saleLineOrder: payload.saleLineOrder ?? undefined,
-    saleExpectedLines: payload.saleExpectedLines ?? undefined,
+    saleLineCount: payload.saleLines?.length,
+    saleLines: payload.saleLines?.map((line: NonNullable<ReturnType<typeof buildIncomeExpensePayload>["saleLines"]>[number]) => ({
+      ...line,
+      stockProductId: "",
+      title: "",
+      lineTotal: Math.round((line.quantity * line.unitPrice + Number.EPSILON) * 100) / 100,
+    })),
     createdByUserId: payload.createdByUserId ?? "",
     createdByName: payload.createdByName ?? "",
     createdByPhone: payload.createdByPhone ?? "",
@@ -93,6 +105,24 @@ function mergeFeedWithPending(feedRows: IncomeExpense[], events: SyncEvent[]) {
   );
 }
 
+function removeFromFeedCache(
+  queryClient: ReturnType<typeof useQueryClient>,
+  ownerUserId: string,
+  locationId: string,
+  clientTempId: string
+) {
+  queryClient.setQueriesData<InfiniteData<FeedPage>>(
+    { queryKey: [FEED_QUERY_KEY, ownerUserId, locationId] },
+    (cached) => cached ? {
+      ...cached,
+      pages: cached.pages.map((page) => ({
+        ...page,
+        rows: page.rows.filter((row) => row.clientTempId !== clientTempId),
+      })),
+    } : cached
+  );
+}
+
 async function normalizeQueue(ownerUserId: string, locationId: string) {
   const grouped = new Map<string, SyncEvent[]>();
   for (const event of await getPendingEvents(queuePartition(ownerUserId, locationId))) {
@@ -113,39 +143,87 @@ async function normalizeQueue(ownerUserId: string, locationId: string) {
   }
 }
 
-let isSyncing = false;
+let activeSyncPromise: Promise<IncomeExpenseSyncReceipts> | null = null;
 
-async function syncPendingIncomeExpense(queryClient: ReturnType<typeof useQueryClient>, ownerUserId: string, locationId: string) {
-  if (isSyncing || !ownerUserId || !locationId || !navigator.onLine) return;
-  isSyncing = true;
-  try {
-    await normalizeQueue(ownerUserId, locationId);
-    const events = await getPendingEvents(queuePartition(ownerUserId, locationId));
-    const blockedIds = new Set(events.filter((event) => event.status !== "pending").map((event) => event.id));
+async function runPendingIncomeExpenseSync(
+  queryClient: ReturnType<typeof useQueryClient>,
+  ownerUserId: string,
+  locationId: string
+) {
+  const receipts: IncomeExpenseSyncReceipts = new Map();
+  await normalizeQueue(ownerUserId, locationId);
+  const events = await getPendingEvents(queuePartition(ownerUserId, locationId));
+  const blockedIds = new Set(events.filter((event) => event.status !== "pending").map((event) => event.id));
 
-    for (const event of events) {
-      if (!navigator.onLine || blockedIds.has(event.id)) continue;
-      try {
-        const response = await fetch("/api/lanflow/income-expense", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(event.payload),
-        });
-        const data = await response.json();
-        if (response.ok) await removeSyncEvent(event.queueId!);
-        else {
-          event.status = data.status === "conflict" ? "conflict" : "failed";
-          event.errorMessage = data.errorMessage || (event.status === "conflict" ? "ข้อมูลชนกัน" : "ซิงก์ไม่สำเร็จ");
-          await updateSyncEvent(event);
-          blockedIds.add(event.id);
-          if (response.status >= 500) break;
+  for (const event of events) {
+    if (!navigator.onLine || blockedIds.has(event.id)) continue;
+    try {
+      const response = await fetch("/api/lanflow/income-expense", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(event.payload),
+      });
+      const data = await response.json();
+      if (response.ok) {
+        if (event.operation === "delete") {
+          await queryClient.cancelQueries({ queryKey: [FEED_QUERY_KEY, ownerUserId, locationId] });
+          removeFromFeedCache(queryClient, ownerUserId, locationId, event.id);
+        } else if (
+          typeof data.id === "string"
+          && typeof data.serverBillNo === "string"
+          && data.serverBillNo
+          && Number.isInteger(data.revisionNo)
+        ) {
+          receipts.set(event.id, {
+            id: data.id,
+            serverBillNo: data.serverBillNo,
+            revisionNo: data.revisionNo,
+            serverReceivedAt:
+              typeof data.serverReceivedAt === "string"
+                ? data.serverReceivedAt
+                : undefined,
+            title: typeof data.title === "string" ? data.title : undefined,
+            cost: typeof data.cost === "number" ? data.cost : undefined,
+            saleLineCount: Number.isInteger(data.saleLineCount) ? data.saleLineCount : undefined,
+            saleLines: Array.isArray(data.saleLines) ? data.saleLines : undefined,
+          });
         }
-      } catch {
-        break;
+        await removeSyncEvent(event.queueId!);
       }
+      else {
+        event.status = data.status === "conflict" ? "conflict" : "failed";
+        event.errorMessage = data.errorMessage || (event.status === "conflict" ? "ข้อมูลชนกัน" : "ซิงก์ไม่สำเร็จ");
+        await updateSyncEvent(event);
+        blockedIds.add(event.id);
+        if (response.status >= 500) break;
+      }
+    } catch {
+      break;
     }
+  }
+
+  return receipts;
+}
+
+async function syncPendingIncomeExpense(
+  queryClient: ReturnType<typeof useQueryClient>,
+  ownerUserId: string,
+  locationId: string
+): Promise<IncomeExpenseSyncReceipts> {
+  if (!ownerUserId || !locationId || !navigator.onLine) return new Map();
+
+  if (activeSyncPromise) {
+    const activeReceipts = await activeSyncPromise;
+    const remainingReceipts = await syncPendingIncomeExpense(queryClient, ownerUserId, locationId);
+    return new Map([...activeReceipts, ...remainingReceipts]);
+  }
+
+  const syncPromise = runPendingIncomeExpenseSync(queryClient, ownerUserId, locationId);
+  activeSyncPromise = syncPromise;
+  try {
+    return await syncPromise;
   } finally {
-    isSyncing = false;
+    if (activeSyncPromise === syncPromise) activeSyncPromise = null;
     queryClient.invalidateQueries({ queryKey: [FEED_QUERY_KEY, ownerUserId, locationId] });
     queryClient.invalidateQueries({ queryKey: [PENDING_QUERY_KEY, ownerUserId, locationId] });
     queryClient.invalidateQueries({ queryKey: ["dashboardOverview", locationId] });
@@ -185,6 +263,45 @@ export function useIncomeExpense(locationId: string, ownerUserId: string) {
     queryClient.invalidateQueries({ queryKey: [PENDING_QUERY_KEY, ownerUserId, locationId] });
   };
 
+  async function syncTransaction(submittedTransaction: IncomeExpense): Promise<IncomeExpense> {
+    if (!navigator.onLine) throw new Error("บิลขายต้องออนไลน์จนกว่าจะซิงก์สำเร็จ");
+
+    const receipts = await syncPendingIncomeExpense(queryClient, ownerUserId, locationId);
+    const remainingEvents = (await getPendingEvents(queuePartition(ownerUserId, locationId)))
+      .filter((event) => event.id === submittedTransaction.clientTempId);
+    const failedEvent = remainingEvents.find(
+      (event) => event.status === "failed" || event.status === "conflict"
+    );
+    if (failedEvent) {
+      throw new Error(failedEvent.errorMessage || "ซิงก์บิลขายไม่สำเร็จ");
+    }
+    if (remainingEvents.length > 0) {
+      throw new Error(
+        navigator.onLine
+          ? "ซิงก์บิลขายไม่สำเร็จ กรุณาลองซิงก์อีกครั้ง"
+          : "การเชื่อมต่อขาดหายระหว่างซิงก์บิลขาย"
+      );
+    }
+
+    const receipt = receipts.get(submittedTransaction.clientTempId);
+    if (!receipt) {
+      throw new Error("ไม่พบผลการซิงก์หรือเลขบิลส่วนกลางของบิลขาย");
+    }
+    return {
+      ...submittedTransaction,
+      id: receipt.id,
+      serverBillNo: receipt.serverBillNo,
+      number: receipt.serverBillNo,
+      syncStatus: "synced",
+      revisionNo: receipt.revisionNo,
+      serverReceivedAt: receipt.serverReceivedAt,
+      title: receipt.title ?? submittedTransaction.title,
+      cost: receipt.cost ?? submittedTransaction.cost,
+      saleLineCount: receipt.saleLineCount ?? submittedTransaction.saleLineCount,
+      saleLines: receipt.saleLines ?? submittedTransaction.saleLines,
+    };
+  }
+
   useEffect(() => {
     const handleOnline = () => void syncPendingIncomeExpense(queryClient, ownerUserId, locationId);
     window.addEventListener("online", handleOnline);
@@ -217,10 +334,12 @@ export function useIncomeExpense(locationId: string, ownerUserId: string) {
       }
       return transaction;
     },
-    onSuccess: () => {
+    onSuccess: (_savedTransaction, transaction) => {
       refresh();
       queryClient.invalidateQueries({ queryKey: ["acidStock", locationId] });
-      void syncPendingIncomeExpense(queryClient, ownerUserId, locationId);
+      if (transaction.billOption !== "บิลขาย") {
+        void syncPendingIncomeExpense(queryClient, ownerUserId, locationId);
+      }
     },
   });
 
@@ -266,6 +385,7 @@ export function useIncomeExpense(locationId: string, ownerUserId: string) {
     loadMore: () => feedQuery.fetchNextPage(),
     addTransaction: saveTransaction.mutateAsync,
     updateTransaction: saveTransaction.mutateAsync,
+    syncTransaction,
     deleteTransaction: deleteTransaction.mutateAsync,
   };
 }

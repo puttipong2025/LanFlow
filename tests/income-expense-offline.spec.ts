@@ -422,8 +422,8 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
     await expect(blockedActions.nth(1)).toBeDisabled();
     await expect(blockedActions.nth(0)).toHaveAttribute('title', blockMessage);
     await expect(blockedActions.nth(1)).toHaveAttribute('title', blockMessage);
-    await expect(blockedActions.nth(0)).toHaveText('');
-    await expect(blockedActions.nth(1)).toHaveText('');
+    await expect(blockedActions.nth(0)).toHaveText('แก้ไข');
+    await expect(blockedActions.nth(1)).toHaveText('ลบ');
     expect((await readQueue(page)).filter(event => event.id === before.client_temp_id)).toHaveLength(0);
 
     await context.setOffline(false);
@@ -974,6 +974,83 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
 
     await cleanupIncomeExpense(page, incomePayload, incomePayload.clientTempId, incomeData.revisionNo);
     await cleanupIncomeExpense(page, expensePayload, expensePayload.clientTempId, expenseData.revisionNo);
+  });
+
+  test('online delete never reappears while the authoritative feed refreshes', async ({ page }) => {
+    test.setTimeout(90000);
+    await loginAndGoToIncomeExpense(page);
+
+    const marker = `E2E-DELETE-FLICKER-${Date.now()}`;
+    const row = await createIncomeOnline(page, marker, 321);
+    const createdResponse = await page.request.fetch(
+      `${supabaseUrl}/rest/v1/income_expense?title=eq.${marker}&select=client_temp_id`,
+      { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
+    );
+    expect(createdResponse.ok()).toBeTruthy();
+    const [created] = await createdResponse.json() as Array<{ client_temp_id: string }>;
+    expect(created?.client_temp_id).toBeTruthy();
+    let deleteCompleted = false;
+    let deletePostCount = 0;
+
+    await page.route('**/api/lanflow/income-expense', async (route) => {
+      if (route.request().method() !== 'POST') {
+        await route.continue();
+        return;
+      }
+      deletePostCount += 1;
+      const response = await route.fetch();
+      deleteCompleted = true;
+      await route.fulfill({ response });
+    });
+    await page.route('**/api/lanflow/income-expense/feed?**', async (route) => {
+      const response = await route.fetch();
+      if (deleteCompleted) await new Promise((resolve) => setTimeout(resolve, 750));
+      await route.fulfill({ response });
+    });
+
+    await page.evaluate((text) => {
+      const state = { values: [] as boolean[], timer: 0 };
+      const sample = () => {
+        const visible = Array.from(document.querySelectorAll('table tbody tr'))
+          .some((candidate) => candidate.textContent?.includes(text));
+        if (state.values.at(-1) !== visible) state.values.push(visible);
+      };
+      sample();
+      state.timer = window.setInterval(sample, 5);
+      (window as typeof window & { __deleteFlicker?: typeof state }).__deleteFlicker = state;
+    }, marker);
+
+    let transitions: boolean[] = [];
+    try {
+      await row.getByRole('button', { name: 'ลบ', exact: true }).click();
+      await expect.poll(() => deleteCompleted, { timeout: 10000 }).toBe(true);
+
+      await expect.poll(async () => {
+        const authoritativeRows = await fetchIncomeExpenseRows(page, created.client_temp_id, 'record_status');
+        return authoritativeRows[0]?.record_status;
+      }).toBe('deleted');
+
+      await page.waitForTimeout(2000);
+      transitions = await page.evaluate(() => {
+        const state = (window as typeof window & {
+          __deleteFlicker?: { values: boolean[]; timer: number };
+        }).__deleteFlicker;
+        if (!state) return [];
+        window.clearInterval(state.timer);
+        return state.values;
+      });
+    } finally {
+      await page.evaluate(() => {
+        const state = (window as typeof window & {
+          __deleteFlicker?: { timer: number };
+        }).__deleteFlicker;
+        if (state) window.clearInterval(state.timer);
+      }).catch(() => {});
+      await page.unrouteAll({ behavior: 'wait' });
+    }
+
+    expect(deletePostCount).toBe(1);
+    expect(transitions).toEqual([true, false]);
   });
 
   test('delete keeps record history and only soft deletes', async ({ page }) => {

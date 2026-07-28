@@ -6,6 +6,14 @@ test.use({ storageState: { cookies: [], origins: [] } });
 
 test("shares a Rubber Bill PDF and falls back to download", async ({ page }) => {
   await page.addInitScript(() => {
+    localStorage.setItem(
+      "lanflow:rubber-bill-approval-settings:v1",
+      JSON.stringify({
+        editWindowMinutes: 30,
+        configuredPrice: null,
+        cachedAt: new Date().toISOString(),
+      })
+    );
     const originalToBlob = HTMLCanvasElement.prototype.toBlob;
     HTMLCanvasElement.prototype.toBlob = function (...args) {
       window.setTimeout(() => originalToBlob.apply(this, args), 200);
@@ -31,6 +39,15 @@ test("shares a Rubber Bill PDF and falls back to download", async ({ page }) => 
       },
     });
   });
+  await page.route("**/rest/v1/rubber_bill_approval_settings*", async (route) => {
+    await route.fulfill({
+      json: {
+        id: true,
+        edit_window_minutes: 30,
+        configured_price: null,
+      },
+    });
+  });
 
   await page.goto("/login");
   await page.locator("#phone").fill(process.env.TEST_PHONE ?? "0800000000");
@@ -38,6 +55,28 @@ test("shares a Rubber Bill PDF and falls back to download", async ({ page }) => 
   await page.getByRole("button", { name: "เข้าสู่ระบบ" }).click();
   await expect(page.getByText("ออกจากระบบ")).toBeVisible({ timeout: 30_000 });
   await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
+
+  await page.getByRole("button", { name: "เพิ่มบิลยาง" }).click();
+  await page.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]')
+    .fill(`MANUAL-SHARE-${Date.now()}`);
+  await page.keyboard.press("Escape");
+  const modal = page.locator(".fixed.inset-0").last();
+  const weighRow = modal.locator("table").first().locator("tbody tr").first();
+  await weighRow.locator('input[type="number"]').nth(0).fill("1000");
+  await weighRow.locator('input[type="number"]').nth(1).fill("200");
+  await weighRow.locator('input[type="number"]').nth(3).fill("20");
+  await modal.getByRole("button", { name: "บันทึกบิล" }).click();
+  await expect.poll(() => page.evaluate(() =>
+    (window as typeof window & { sharedReceipt?: unknown }).sharedReceipt
+  )).not.toBeUndefined();
+  await page.evaluate(() => {
+    const state = window as typeof window & {
+      sharedReceipt?: unknown;
+      shareCallCount?: number;
+    };
+    state.sharedReceipt = undefined;
+    state.shareCallCount = 0;
+  });
 
   const shareButton = page.locator(
     'button[title="แชร์ PDF ใบรับซื้อยาง"]:not([disabled])'
@@ -117,3 +156,120 @@ test("shares a Rubber Bill PDF and falls back to download", async ({ page }) => 
   await mkdir(outputDir, { recursive: true });
   await download.saveAs(join(outputDir, "rubber-bill-receipt-80mm.pdf"));
 });
+
+for (const mode of ["online", "offline"] as const) {
+test(`automatically shares a payable rubber bill after an ${mode} submit`, async ({ page, context }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "lanflow:rubber-bill-approval-settings:v1",
+      JSON.stringify({
+        editWindowMinutes: 30,
+        configuredPrice: null,
+        cachedAt: new Date().toISOString(),
+      })
+    );
+    Object.defineProperty(navigator, "canShare", {
+      configurable: true,
+      value: (data: ShareData) => data.files?.[0]?.type === "application/pdf",
+    });
+    Object.defineProperty(navigator, "share", {
+      configurable: true,
+      value: async (data: ShareData) => {
+        const file = data.files?.[0];
+        (window as typeof window & {
+          autoSharedRubberReceipt?: { name: string; size: number; type: string };
+        }).autoSharedRubberReceipt = file
+          ? { name: file.name, size: file.size, type: file.type }
+          : undefined;
+      },
+    });
+  });
+  await page.route("**/rest/v1/rubber_bill_approval_settings*", async (route) => {
+    await route.fulfill({
+      json: {
+        id: true,
+        edit_window_minutes: 30,
+        configured_price: null,
+      },
+    });
+  });
+  if (mode === "online") {
+    await page.route("**/api/lanflow/rubber-bills", async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      await route.fulfill({
+        json: {
+          status: "synced",
+          id: crypto.randomUUID(),
+          serverBillNo: "SERVER-RUBBER-AUTO-1",
+          revisionNo: 1,
+          serverReceivedAt: new Date().toISOString(),
+        },
+      });
+    });
+  }
+
+  await page.goto("/login");
+  await page.locator("#phone").fill(process.env.TEST_PHONE ?? "0800000000");
+  await page.locator("#password").fill(process.env.TEST_PASSWORD ?? "password123");
+  await page.getByRole("button", { name: "เข้าสู่ระบบ" }).click();
+  await expect(page.getByText("ออกจากระบบ")).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
+  await expect(page.getByRole("button", { name: "เพิ่มบิลยาง" })).toBeVisible();
+
+  if (mode === "offline") await context.setOffline(true);
+  const marker = `AUTO-SHARE-${mode.toUpperCase()}-${Date.now()}`;
+  await page.getByRole("button", { name: "เพิ่มบิลยาง" }).click();
+  await page.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]').fill(marker);
+  await page.keyboard.press("Escape");
+  const modal = page.locator(".fixed.inset-0").last();
+  const weighRow = modal.locator("table").first().locator("tbody tr").first();
+  await weighRow.locator('input[type="number"]').nth(0).fill("1000");
+  await weighRow.locator('input[type="number"]').nth(1).fill("200");
+  await weighRow.locator('input[type="number"]').nth(3).fill("20");
+  await modal.getByRole("button", { name: "บันทึกบิล" }).click();
+
+  const waiting = page.getByRole("dialog", { name: "กำลังสร้าง PDF" });
+  await expect(waiting).toBeVisible();
+  await expect.poll(() => page.evaluate(() =>
+    (window as typeof window & {
+      autoSharedRubberReceipt?: { name: string; size: number; type: string };
+    }).autoSharedRubberReceipt
+  )).not.toBeUndefined();
+  const receipt = await page.evaluate(() =>
+    (window as typeof window & {
+      autoSharedRubberReceipt?: { name: string; size: number; type: string };
+    }).autoSharedRubberReceipt
+  );
+  expect(receipt).toMatchObject({ type: "application/pdf" });
+  if (mode === "online") {
+    expect(receipt?.name).toBe("LanFlow-rubber-bill-SERVER-RUBBER-AUTO-1-80mm.pdf");
+  } else {
+    expect(receipt?.name).toMatch(/^LanFlow-rubber-bill-.*-80mm\.pdf$/);
+  }
+  expect(receipt?.size).toBeGreaterThan(1_000);
+  await expect(waiting).toBeHidden();
+
+  if (mode === "online") return;
+  const queuedBill = await page.evaluate((customerName) => new Promise<unknown>((resolve, reject) => {
+    const request = indexedDB.open("lanflow_sync_db");
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      const transaction = db.transaction("sync_queue", "readonly");
+      const all = transaction.objectStore("sync_queue").getAll();
+      all.onsuccess = () => {
+        db.close();
+        resolve(all.result.find((event) => event.payload?.customerName === customerName));
+      };
+      all.onerror = () => {
+        db.close();
+        reject(all.error);
+      };
+    };
+  }), marker);
+  expect(queuedBill).toMatchObject({ operation: "create", status: "pending" });
+});
+}

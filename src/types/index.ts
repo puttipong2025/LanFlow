@@ -242,6 +242,7 @@ export type IncomeExpenseApprovalRequest = {
   txType: "income" | "expense";
   title: string;
   cost: number;
+  saleLines?: IncomeExpenseSaleLine[];
   requestedByName: string;
   requestedByPhone: string;
   decidedByName?: string | null;
@@ -249,6 +250,17 @@ export type IncomeExpenseApprovalRequest = {
   decidedAt?: string | null;
   decisionComment?: string | null;
   createdAt: string;
+};
+
+export type IncomeExpenseSaleLine = {
+  id?: string;
+  incomeSaleItemId: string;
+  stockProductId: string;
+  title: string;
+  quantity: number;
+  unitPrice: number;
+  lineTotal: number;
+  sequenceNo: number;
 };
 
 export type IncomeExpense = {
@@ -267,12 +279,8 @@ export type IncomeExpense = {
   billOption: IncomeBillOption | ExpenseBillOption;
   unit?: string;
   price?: number;
-  incomeSaleItemId?: string | null;
-  stockProductId?: string | null;
-  stockQuantity?: number | null;
-  saleGroupId?: string | null;
-  saleLineOrder?: number | null;
-  saleExpectedLines?: number | null;
+  saleLineCount?: number;
+  saleLines?: IncomeExpenseSaleLine[];
   createdByUserId: string;
   createdByName: string;
   createdByPhone: string;

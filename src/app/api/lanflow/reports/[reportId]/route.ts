@@ -77,7 +77,12 @@ export async function GET(request: NextRequest, context: RouteContext) {
       rowsByIds(client, "rubber_bills", "id, bill_date, server_bill_no, local_bill_no, customer_name, bill_type, net_weight, average_price, net_rubber_value, deduction_total, net_total", ids(items, "rubber_bill")),
       rowsByIds(client, "ocr_tickets", "id, date_in, ticket_id, file_name, customer_name, license_plate, weight_in, weight_out, weight_net, weight_deducted, weight_remaining, total_amount", ids(items, "ocr_ticket")),
       rowsByIds(client, "stock_entries", "id, tx_date, server_bill_no, transfer_bill_no, product_name, tx_type, quantity_delta, amount", ids(items, "acid_stock_entry")),
-      rowsByIds(client, "income_expense", "id, tx_date, server_bill_no, local_bill_no, stock_product_id, stock_quantity, cost, stock_products(name)", ids(items, "income_expense")),
+      ids(items, "income_expense").length > 0
+        ? (client as any)
+            .from("income_expense_sale_lines")
+            .select("id, income_expense_id, quantity, line_total, stock_product_id, income_expense!inner(tx_date, server_bill_no, local_bill_no), stock_products(name)")
+            .in("income_expense_id", ids(items, "income_expense"))
+        : Promise.resolve({ data: [], error: null }),
       ids(items, "rubber_bill").length > 0
         ? (client as any)
             .from("rubber_bill_items")
@@ -114,6 +119,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
 
     if (ledgerResult.error) throw new Error(ledgerResult.error.message);
     if (latestResult.error) throw new Error(latestResult.error.message);
+    if (stockIncome.error) throw new Error(stockIncome.error.message);
     if (stockRubberResult.error) throw new Error(stockRubberResult.error.message);
     if (stockBalanceResult.error) throw new Error(stockBalanceResult.error.message);
 
@@ -190,17 +196,18 @@ export async function GET(request: NextRequest, context: RouteContext) {
           quantity: number(row.quantity_delta),
           amount: number(row.amount),
         })),
-        ...stockIncome
-          .filter((row) => row.stock_product_id && number(row.stock_quantity) > 0)
+        ...((stockIncome.data ?? []) as Array<Record<string, any>>)
+          .filter((row) => row.stock_product_id && number(row.quantity) > 0)
           .map((row) => {
+            const bill = Array.isArray(row.income_expense) ? row.income_expense[0] : row.income_expense;
             const product = Array.isArray(row.stock_products) ? row.stock_products[0] : row.stock_products;
             return {
-              date: datePart(row.tx_date),
-              number: row.server_bill_no ?? row.local_bill_no ?? "",
+              date: datePart(bill?.tx_date),
+              number: bill?.server_bill_no ?? bill?.local_bill_no ?? "",
               product: product?.name ?? "",
               type: "ขายสินค้า",
-              quantity: -Math.abs(number(row.stock_quantity)),
-              amount: number(row.cost),
+              quantity: -Math.abs(number(row.quantity)),
+              amount: number(row.line_total),
             };
           }),
         ...((stockRubberResult.data ?? []) as Array<Record<string, any>>).map((row) => {

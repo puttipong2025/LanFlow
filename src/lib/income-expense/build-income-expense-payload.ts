@@ -1,4 +1,15 @@
-import type { IncomeExpense, QueueOperation, IncomeBillOption, ExpenseBillOption } from "@/types";
+import type {
+  ExpenseBillOption,
+  IncomeBillOption,
+  IncomeExpense,
+  IncomeExpenseSaleLine,
+  QueueOperation,
+} from "@/types";
+
+export type IncomeExpenseSaleLinePayload = Pick<
+  IncomeExpenseSaleLine,
+  "incomeSaleItemId" | "quantity" | "unitPrice" | "sequenceNo"
+>;
 
 export type IncomeExpenseSyncPayload = {
   operation: QueueOperation;
@@ -15,12 +26,7 @@ export type IncomeExpenseSyncPayload = {
   billOption: IncomeBillOption | ExpenseBillOption;
   unit?: string | null;
   price?: number | null;
-  incomeSaleItemId?: string | null;
-  stockProductId?: string | null;
-  stockQuantity?: number | null;
-  saleGroupId?: string | null;
-  saleLineOrder?: number | null;
-  saleExpectedLines?: number | null;
+  saleLines?: IncomeExpenseSaleLinePayload[];
   clientRecordedAt: string;
   clientCreatedAt: string;
   createdByUserId?: string;
@@ -50,14 +56,16 @@ export function buildIncomeExpensePayload(
     title: tx.title,
     cost: tx.cost,
     billOption: tx.billOption,
-    unit: tx.billOption === "บิลขาย" ? (tx.unit ?? null) : null,
-    price: tx.billOption === "บิลขาย" ? (tx.price ?? null) : null,
-    incomeSaleItemId: tx.billOption === "บิลขาย" ? (tx.incomeSaleItemId ?? null) : null,
-    stockProductId: tx.billOption === "บิลขาย" ? (tx.stockProductId ?? null) : null,
-    stockQuantity: tx.billOption === "บิลขาย" ? (tx.stockQuantity ?? Number(tx.unit ?? 0)) : null,
-    saleGroupId: tx.billOption === "บิลขาย" ? (tx.saleGroupId ?? null) : null,
-    saleLineOrder: tx.billOption === "บิลขาย" ? (tx.saleLineOrder ?? null) : null,
-    saleExpectedLines: tx.billOption === "บิลขาย" ? (tx.saleExpectedLines ?? null) : null,
+    unit: null,
+    price: null,
+    saleLines: tx.billOption === "บิลขาย"
+      ? (tx.saleLines ?? []).map((line) => ({
+          incomeSaleItemId: line.incomeSaleItemId,
+          quantity: line.quantity,
+          unitPrice: line.unitPrice,
+          sequenceNo: line.sequenceNo,
+        }))
+      : undefined,
     clientRecordedAt: tx.clientRecordedAt,
     clientCreatedAt: tx.clientCreatedAt,
     createdByUserId: tx.createdByUserId,

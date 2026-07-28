@@ -1,12 +1,5 @@
 import type { IncomeExpense, Location } from "@/types";
 
-export type SaleReceiptGroup = {
-  groupId: string;
-  lines: IncomeExpense[];
-  leaderId: string;
-  expectedLines: number;
-};
-
 export type SaleReceiptModel = {
   branchName: string;
   referenceNo: string;
@@ -21,67 +14,32 @@ export type SaleReceiptModel = {
   total: number;
 };
 
-export function saleReceiptGroupKey(transaction: IncomeExpense) {
-  return `${transaction.locationId}:${transaction.saleGroupId ?? `single:${transaction.clientTempId}`}`;
-}
-
-export function buildSaleReceiptGroups(transactions: IncomeExpense[]) {
-  const grouped = new Map<string, IncomeExpense[]>();
-  for (const transaction of transactions) {
-    if (transaction.billOption !== "บิลขาย") continue;
-    const key = saleReceiptGroupKey(transaction);
-    const lines = grouped.get(key) ?? [];
-    lines.push(transaction);
-    grouped.set(key, lines);
-  }
-
-  return new Map(
-    Array.from(grouped, ([groupId, lines]): [string, SaleReceiptGroup] => {
-      const sorted = [...lines].sort(
-        (left, right) =>
-          (left.saleLineOrder ?? Number.MAX_SAFE_INTEGER)
-          - (right.saleLineOrder ?? Number.MAX_SAFE_INTEGER)
-          || left.clientTempId.localeCompare(right.clientTempId)
-      );
-      return [groupId, {
-        groupId: sorted[0].saleGroupId ?? sorted[0].clientTempId,
-        lines: sorted,
-        leaderId: sorted[0].id,
-        expectedLines: sorted[0].saleExpectedLines ?? 1,
-      }];
-    })
-  );
-}
-
 export function getSaleReceiptShareBlockReason(
-  group: SaleReceiptGroup | undefined,
+  transaction: IncomeExpense | undefined,
   online: boolean,
 ) {
   if (!online) return "แชร์ PDF บิลขายได้เมื่อออนไลน์";
-  if (!group || group.expectedLines < 1) return "ข้อมูลกลุ่มบิลขายไม่ครบ";
-  const hasStoredGroup = group.lines.some((line) => Boolean(line.saleGroupId));
+  if (!transaction || transaction.billOption !== "บิลขาย") return "ไม่พบข้อมูลบิลขาย";
+  if (transaction.syncStatus === "failed" || transaction.syncStatus === "conflict") {
+    return "บิลขายซิงก์ไม่สำเร็จ กรุณาใช้ปุ่มลองซิงก์อีกครั้ง";
+  }
+  if (transaction.syncStatus !== "synced" || !transaction.serverBillNo) {
+    return "กำลังรอให้บิลขายซิงก์สำเร็จ";
+  }
   if (
-    hasStoredGroup
-    && group.lines.some((line) => line.saleExpectedLines !== group.expectedLines)
+    !transaction.saleLines
+    || transaction.saleLines.length < 1
+    || transaction.saleLines.length > 50
+    || transaction.saleLines.length !== transaction.saleLineCount
   ) {
-    return "จำนวนรายการในกลุ่มบิลขายไม่สอดคล้องกัน";
-  }
-  if (group.lines.length !== group.expectedLines) {
-    return `รอโหลดหรือซิงก์รายการบิลขายให้ครบ ${group.expectedLines} รายการ`;
-  }
-  if (group.lines.some((line) => line.syncStatus === "failed" || line.syncStatus === "conflict")) {
-    return "มีรายการซิงก์ไม่สำเร็จ กรุณาใช้ปุ่มลองซิงก์อีกครั้งในแถวนั้น";
-  }
-  if (group.lines.some((line) => line.syncStatus !== "synced" || !line.serverBillNo)) {
-    return "กำลังรอให้ทุกรายการในบิลขายซิงก์สำเร็จ";
+    return "ข้อมูลรายการบิลขายไม่ครบ";
   }
   if (
-    hasStoredGroup
-    && (
-      group.lines.some((line) =>
-        !Number.isInteger(line.saleLineOrder) || Number(line.saleLineOrder) < 1
-      )
-      || new Set(group.lines.map((line) => line.saleLineOrder)).size !== group.lines.length
+    transaction.saleLines.some((line, index) =>
+      line.sequenceNo !== index + 1
+      || !Number.isInteger(line.quantity)
+      || line.quantity <= 0
+      || line.unitPrice <= 0
     )
   ) {
     return "ลำดับรายการบิลขายไม่ถูกต้อง";
@@ -117,27 +75,22 @@ function formatSaleDate(value: string) {
 }
 
 export function buildSaleReceiptModel(
-  group: SaleReceiptGroup,
+  transaction: IncomeExpense,
   location: Location,
 ): SaleReceiptModel {
-  const first = group.lines[0];
-  const lines = group.lines.map((line) => {
-    const quantity = Number(line.stockQuantity ?? line.unit ?? 0);
-    const unitPrice = Number(line.price ?? 0);
-    return {
-      title: line.title,
-      quantity,
-      unitPrice,
-      total: quantity * unitPrice,
-    };
-  });
+  const lines = (transaction.saleLines ?? []).map((line) => ({
+    title: line.title,
+    quantity: line.quantity,
+    unitPrice: line.unitPrice,
+    total: line.lineTotal,
+  }));
   return {
     branchName: location.name,
-    referenceNo: first.serverBillNo ?? first.localBillNo,
-    txDateText: formatSaleDate(first.txDate),
-    createdByName: first.createdByName,
+    referenceNo: transaction.serverBillNo ?? transaction.localBillNo,
+    txDateText: formatSaleDate(transaction.txDate),
+    createdByName: transaction.createdByName,
     lines,
-    total: lines.reduce((sum, line) => sum + line.total, 0),
+    total: transaction.cost,
   };
 }
 

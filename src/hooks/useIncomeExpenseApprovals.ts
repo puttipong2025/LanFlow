@@ -142,6 +142,9 @@ export function useIncomeExpenseApprovals(options: {
         txType: row.tx_type,
         title: row.title,
         cost: Number(row.cost),
+        saleLines: Array.isArray(row.requested_payload?.saleLines)
+          ? row.requested_payload.saleLines
+          : undefined,
         requestedByName: row.requested_by_name,
         requestedByPhone: row.requested_by_phone,
         decidedByName: row.decided_by_name,
@@ -365,7 +368,7 @@ export function useIncomeExpenseApprovals(options: {
 
   async function submitForApprovalIfNeeded(
     transaction: IncomeExpense,
-    operation: Exclude<QueueOperation, "delete">
+    operation: QueueOperation
   ): Promise<ApprovalSubmitResult> {
     const localRequiresApproval =
       keywordsQuery.data?.some(keyword => keywordMatches(keyword, transaction)) ||

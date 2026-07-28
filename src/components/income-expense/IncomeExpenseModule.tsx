@@ -1,6 +1,6 @@
-import { ArrowRightLeft, Edit3, ExternalLink, Plus, Settings, Share2, Trash2 } from "lucide-react";
+import { ArrowRightLeft, Edit3, ExternalLink, Eye, Plus, Settings, Share2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { formatCurrency } from "@/lib/format";
@@ -15,11 +15,9 @@ import { getOfflineSyncedActionBlockReason } from "@/lib/record-action-locks";
 import { canAccessSourceLocation, canManageSystemFeatures } from "@/lib/permissions";
 import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
 import {
-  buildSaleReceiptGroups,
   buildSaleReceiptModel,
   getSaleReceiptShareBlockReason,
   renderSaleReceiptHtml,
-  saleReceiptGroupKey,
 } from "@/lib/income-expense/sale-receipt";
 import { receiptPdfFilename } from "@/lib/rubber-bills/print-receipt";
 import {
@@ -37,6 +35,7 @@ import { getIncomeExpenseDisplayNo } from "./income-expense-display";
 import { IncomeExpenseApprovalModal } from "./IncomeExpenseApprovalModal";
 import { IncomeExpenseModal } from "./IncomeExpenseModal";
 import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
+import { ModalShell } from "@/components/shared/ModalShell";
 
 function BranchTransferModeSelector({
   mode,
@@ -108,6 +107,7 @@ export function IncomeExpenseModule({
     transactions,
     addTransaction,
     updateTransaction,
+    syncTransaction,
     deleteTransaction,
     hasMore,
     isLoadingMore,
@@ -131,14 +131,11 @@ export function IncomeExpenseModule({
   const pendingCashReceipts = cashTransfers.transfers.filter((transfer) => transfer.targetLocationId === selectedLocation.id && transfer.status === "pending_receipt");
   const { retrySyncEvent, isRetrying } = usePerRecordSyncRetry(selectedLocation.id, profile.id);
   const ledgerTransactions = transactions;
-  const saleGroups = useMemo(
-    () => buildSaleReceiptGroups(ledgerTransactions),
-    [ledgerTransactions]
-  );
   const nextNumber = String(ledgerTransactions.length + 1);
   const [modalOpen, setModalOpen] = useState(false);
   const [modalType, setModalType] = useState<"income" | "expense">("income");
   const [editingTransaction, setEditingTransaction] = useState<IncomeExpense | null>(null);
+  const [viewingSaleBill, setViewingSaleBill] = useState<IncomeExpense | null>(null);
   const [approvalModalOpen, setApprovalModalOpen] = useState(false);
   const [branchTransferModalOpen, setBranchTransferModalOpen] = useState(false);
   const [branchTransferMode, setBranchTransferMode] = useState<"cash" | "bank">("cash");
@@ -160,15 +157,50 @@ export function IncomeExpenseModule({
     setModalOpen(true);
   }
 
-  function openEdit(transaction: IncomeExpense) {
+  async function loadSaleBillDetails(transaction: IncomeExpense) {
+    if (transaction.billOption !== "บิลขาย" || transaction.saleLines) return transaction;
+    const response = await fetch(`/api/lanflow/income-expense/${transaction.id}`);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.error ?? "โหลดรายการบิลขายไม่สำเร็จ");
+    }
+    return {
+      ...transaction,
+      title: data.title ?? transaction.title,
+      cost: typeof data.cost === "number" ? data.cost : transaction.cost,
+      serverBillNo: data.serverBillNo ?? transaction.serverBillNo,
+      number: data.serverBillNo ?? transaction.number,
+      txDate: data.txDate ?? transaction.txDate,
+      createdByName: data.createdByName ?? transaction.createdByName,
+      revisionNo: Number.isInteger(data.revisionNo) ? data.revisionNo : transaction.revisionNo,
+      reportLockNo: data.reportLockNo ?? transaction.reportLockNo,
+      saleLineCount: data.saleLineCount,
+      saleLines: data.saleLines,
+    } satisfies IncomeExpense;
+  }
+
+  async function openSaleDetails(transaction: IncomeExpense) {
+    try {
+      setViewingSaleBill(await loadSaleBillDetails(transaction));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "โหลดรายการบิลขายไม่สำเร็จ");
+    }
+  }
+
+  async function openEdit(transaction: IncomeExpense) {
     const blockReason = getActionBlockReason(transaction);
     if (blockReason) {
       toast.error(blockReason);
       return;
     }
-    setModalType(transaction.type);
-    setEditingTransaction(transaction);
-    setModalOpen(true);
+    try {
+      const detailedTransaction = await loadSaleBillDetails(transaction);
+      setModalType(detailedTransaction.type);
+      setEditingTransaction(detailedTransaction);
+      setModalOpen(true);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "โหลดรายการบิลขายไม่สำเร็จ");
+    }
   }
 
   function getActionBlockReason(transaction: IncomeExpense) {
@@ -206,6 +238,11 @@ export function IncomeExpenseModule({
     }
     if (window.confirm(`ลบรายการ ${transaction.number} ใช่ไหม?`)) {
       try {
+        const approvalResult = await submitForApprovalIfNeeded(transaction, "delete");
+        if (approvalResult.requiresApproval) {
+          toast.info("ส่งคำขอลบบิลเพื่อรออนุมัติแล้ว");
+          return;
+        }
         await deleteTransaction({
           clientTempId: transaction.clientTempId,
           deletedByName: profile.name,
@@ -226,27 +263,122 @@ export function IncomeExpenseModule({
     }
   }
 
+  function saleReceiptDocument(transaction: IncomeExpense) {
+    const referenceNo = transaction.serverBillNo;
+    if (!referenceNo) throw new Error("บิลขายยังไม่มีเลขบิลส่วนกลาง");
+    return {
+      html: renderSaleReceiptHtml(buildSaleReceiptModel(transaction, selectedLocation)),
+      filename: receiptPdfFilename("LanFlow-sale-bill", referenceNo),
+    };
+  }
+
+  function showSaleReceiptDelivery(delivery: "shared" | "downloaded" | "cancelled") {
+    if (delivery === "shared") toast.success("แชร์ PDF บิลขายแล้ว");
+    if (delivery === "downloaded") {
+      toast.success("แชร์บนอุปกรณ์นี้ไม่ได้ จึงดาวน์โหลด PDF แทน");
+    }
+  }
+
+  function abortShare() {
+    const error = new Error("ยกเลิกการรอแชร์ PDF");
+    error.name = "AbortError";
+    return error;
+  }
+
+  async function persistSubmittedTransactions(submittedTransactions: IncomeExpense[]) {
+    let pendingApprovalCount = 0;
+    const persistedTransactions: IncomeExpense[] = [];
+    let persistError: unknown;
+
+    for (const [index, transaction] of submittedTransactions.entries()) {
+      try {
+        const isSyncedRecord =
+          Boolean(transaction.serverBillNo)
+          || transaction.id !== transaction.clientTempId;
+        const operation =
+          editingTransaction && index === 0 && isSyncedRecord ? "update" : "create";
+        const approvalResult = await submitForApprovalIfNeeded(transaction, operation);
+
+        if (approvalResult.requiresApproval) {
+          pendingApprovalCount += 1;
+          continue;
+        }
+
+        persistedTransactions.push(
+          operation === "update"
+            ? await updateTransaction(transaction)
+            : await addTransaction(transaction)
+        );
+      } catch (error) {
+        persistError = error;
+        break;
+      }
+    }
+
+    return { pendingApprovalCount, persistedTransactions, persistError };
+  }
+
+  function showPersistSummary(
+    pendingApprovalCount: number,
+    persistedCount: number
+  ) {
+    if (pendingApprovalCount > 0) {
+      toast.info(`ส่งคำขออนุมัติ ${pendingApprovalCount} รายการแล้ว`);
+    }
+    if (persistedCount > 0 && pendingApprovalCount > 0) {
+      toast.success(`บันทึกรายการที่ไม่ต้องอนุมัติ ${persistedCount} รายการแล้ว`);
+    }
+  }
+
   async function shareSaleReceipt(transaction: IncomeExpense) {
-    const group = saleGroups.get(saleReceiptGroupKey(transaction));
-    const blockReason = getSaleReceiptShareBlockReason(group, isOnline)
-      ?? (pdfShare.busy ? "กำลังสร้าง PDF" : null);
-    if (blockReason || !group) {
-      toast.error(blockReason ?? "ไม่พบกลุ่มบิลขาย");
+    try {
+      const detailedTransaction = await loadSaleBillDetails(transaction);
+      const blockReason = getSaleReceiptShareBlockReason(detailedTransaction, isOnline)
+        ?? (pdfShare.busy ? "กำลังสร้าง PDF" : null);
+      if (blockReason) {
+        toast.error(blockReason);
+        return;
+      }
+      const delivery = await pdfShare.sharePdf(() => saleReceiptDocument(detailedTransaction));
+      showSaleReceiptDelivery(delivery);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "สร้าง PDF บิลขายไม่สำเร็จ");
+    }
+  }
+
+  async function submitAndShareSaleReceipt(
+    submittedTransactions: IncomeExpense[]
+  ) {
+    if (pdfShare.busy) {
+      toast.error("กำลังสร้าง PDF อื่นอยู่ กรุณารอสักครู่");
       return;
     }
 
+    setModalOpen(false);
+
     try {
-      const delivery = await pdfShare.sharePdf(() => {
-        const referenceNo = group.lines[0].serverBillNo ?? group.lines[0].localBillNo;
-        return {
-          html: renderSaleReceiptHtml(buildSaleReceiptModel(group, selectedLocation)),
-          filename: receiptPdfFilename("LanFlow-sale-bill", referenceNo),
-        };
+      const delivery = await pdfShare.sharePdf(async (signal) => {
+        const { pendingApprovalCount, persistedTransactions, persistError } =
+          await persistSubmittedTransactions(submittedTransactions);
+        showPersistSummary(pendingApprovalCount, persistedTransactions.length);
+
+        const syncedTransaction = persistedTransactions[0]
+          ? await syncTransaction(persistedTransactions[0])
+          : undefined;
+
+        if (persistError) throw persistError;
+        if (pendingApprovalCount > 0 || signal.aborted) throw abortShare();
+
+        const blockReason = getSaleReceiptShareBlockReason(syncedTransaction, true);
+        if (blockReason || !syncedTransaction) {
+          throw new Error(blockReason ?? "ไม่พบบิลขายหลังซิงก์");
+        }
+
+        return saleReceiptDocument(syncedTransaction);
       });
-      if (delivery === "shared") toast.success("แชร์ PDF บิลขายแล้ว");
-      if (delivery === "downloaded") toast.success("แชร์บนอุปกรณ์นี้ไม่ได้ จึงดาวน์โหลด PDF แทน");
+      showSaleReceiptDelivery(delivery);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "สร้าง PDF บิลขายไม่สำเร็จ");
+      toast.error(error instanceof Error ? error.message : "บันทึกหรือซิงก์บิลขายไม่สำเร็จ");
     }
   }
 
@@ -412,15 +544,15 @@ export function IncomeExpenseModule({
               {visibleTransactions.map((transaction) => {
                 const actionBlockReason = getActionBlockReason(transaction);
                 const actionsDisabled = Boolean(actionBlockReason);
-                const saleGroup = transaction.billOption === "บิลขาย"
-                  ? saleGroups.get(saleReceiptGroupKey(transaction))
-                  : undefined;
-                const isSaleGroupLeader = Boolean(
-                  saleGroup && saleGroup.leaderId === transaction.id
-                );
-                const saleShareBlockReason = isSaleGroupLeader
-                  ? getSaleReceiptShareBlockReason(saleGroup, isOnline)
-                    ?? (pdfShare.busy ? "กำลังสร้าง PDF" : null)
+                const isSaleBill = transaction.billOption === "บิลขาย";
+                const saleShareBlockReason = isSaleBill
+                  ? !isOnline
+                    ? "แชร์ PDF บิลขายได้เมื่อออนไลน์"
+                    : transaction.syncStatus !== "synced" || !transaction.serverBillNo
+                      ? "กำลังรอให้บิลขายซิงก์สำเร็จ"
+                      : pdfShare.busy
+                        ? "กำลังสร้าง PDF"
+                        : null
                   : null;
                 const sourceLocationId = transaction.relationSourceLocationId ?? transaction.locationId;
                 const cashTransferId = transaction.relationSourceId?.startsWith("cash:") ? transaction.relationSourceId.slice(5) : null;
@@ -537,9 +669,16 @@ export function IncomeExpenseModule({
                           <Share2 size={16} />
                         </IconButton>
                       ) : (
-                        <IconButton label={actionBlockReason ?? "แก้ไข"} visibleLabel="แก้ไข" onClick={() => openEdit(transaction)} tone="amber" disabled={actionsDisabled}>
-                          <Edit3 size={16} />
-                        </IconButton>
+                        <>
+                          {isSaleBill && (
+                            <IconButton label="ดูรายละเอียดบิลขาย" visibleLabel="ดู" onClick={() => void openSaleDetails(transaction)} tone="actionSecondary">
+                              <Eye size={16} />
+                            </IconButton>
+                          )}
+                          <IconButton label={actionBlockReason ?? "แก้ไข"} visibleLabel="แก้ไข" onClick={() => void openEdit(transaction)} tone="amber" disabled={actionsDisabled}>
+                            <Edit3 size={16} />
+                          </IconButton>
+                        </>
                       )}
                       {cashTransferId ? (
                         <IconButton
@@ -556,7 +695,7 @@ export function IncomeExpenseModule({
                           <Trash2 size={16} />
                         </IconButton>
                       )}
-                      {isSaleGroupLeader && (
+                      {isSaleBill && (
                         <button
                           type="button"
                           onClick={() => void shareSaleReceipt(transaction)}
@@ -631,40 +770,67 @@ export function IncomeExpenseModule({
           nextLocalSequence={transactions.length + 1}
           onClose={() => setModalOpen(false)}
           onSave={async (savedTransactions) => {
+            const isSaleSubmission =
+              savedTransactions.length > 0
+              && savedTransactions.every(
+                (transaction) => transaction.billOption === "บิลขาย"
+              );
+            if (isSaleSubmission) {
+              await submitAndShareSaleReceipt(savedTransactions);
+              return;
+            }
+
             try {
-              let pendingApprovalCount = 0;
-              let savedCount = 0;
-
-              for (const [index, tx] of savedTransactions.entries()) {
-                const isSyncedRecord = Boolean(tx.serverBillNo) || tx.id !== tx.clientTempId;
-                const operation = editingTransaction && index === 0 && isSyncedRecord ? "update" : "create";
-                const approvalResult = await submitForApprovalIfNeeded(tx, operation);
-
-                if (approvalResult.requiresApproval) {
-                  pendingApprovalCount += 1;
-                  continue;
-                }
-
-                if (operation === "update") {
-                  await updateTransaction(tx);
-                } else {
-                  await addTransaction(tx);
-                }
-                savedCount += 1;
-              }
-
+              const { pendingApprovalCount, persistedTransactions, persistError } =
+                await persistSubmittedTransactions(savedTransactions);
+              if (persistError) throw persistError;
               setModalOpen(false);
-              if (pendingApprovalCount > 0) {
-                toast.info(`ส่งคำขออนุมัติ ${pendingApprovalCount} รายการแล้ว`);
-              }
-              if (savedCount > 0 && pendingApprovalCount > 0) {
-                toast.success(`บันทึกรายการที่ไม่ต้องอนุมัติ ${savedCount} รายการแล้ว`);
-              }
+              showPersistSummary(pendingApprovalCount, persistedTransactions.length);
             } catch (error) {
               toast.error(error instanceof Error ? error.message : "บันทึกรายการไม่สำเร็จ");
             }
           }}
         />
+      )}
+
+      {viewingSaleBill && (
+        <ModalShell
+          title={`รายละเอียด ${viewingSaleBill.serverBillNo ?? viewingSaleBill.localBillNo}`}
+          subtitle={`${viewingSaleBill.title} · ${viewingSaleBill.txDate}`}
+          onClose={() => setViewingSaleBill(null)}
+          size="wide"
+        >
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[680px] border-collapse text-sm">
+              <thead>
+                <tr className="border-b border-black/10 text-left text-ink/60">
+                  <th className="py-2">ลำดับ</th>
+                  <th>สินค้า</th>
+                  <th className="text-right">จำนวน</th>
+                  <th className="text-right">ราคา/หน่วย</th>
+                  <th className="text-right">รวม</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(viewingSaleBill.saleLines ?? []).map((line) => (
+                  <tr key={line.id ?? line.sequenceNo} className="border-b border-black/5">
+                    <td className="py-3">{line.sequenceNo}</td>
+                    <td className="font-semibold text-ink">{line.title}</td>
+                    <td className="text-right">{line.quantity}</td>
+                    <td className="text-right">{formatCurrency(line.unitPrice)}</td>
+                    <td className="text-right font-semibold">{formatCurrency(line.lineTotal)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="font-bold text-ink">
+                  <td colSpan={4} className="py-3 text-right">ยอดรวม</td>
+                  <td className="text-right">{formatCurrency(viewingSaleBill.cost)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </ModalShell>
       )}
 
       {branchTransferModalOpen && (

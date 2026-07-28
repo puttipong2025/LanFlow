@@ -64,21 +64,37 @@ export async function GET(request: NextRequest) {
     .map((row) => row.id);
 
   if (directIds.length > 0) {
-    const { data: locks, error: lockError } = await result.supabase
+    const [{ data: locks, error: lockError }, { data: saleLines, error: saleLineError }] = await Promise.all([
+      result.supabase
       .from("income_expense")
-      .select("id, report_lock_no, sale_group_id, sale_line_order, sale_expected_lines")
-      .in("id", directIds);
+      .select("id, report_lock_no")
+      .in("id", directIds),
+      result.supabase
+        .from("income_expense_sale_lines")
+        .select("income_expense_id")
+        .in("income_expense_id", directIds),
+    ]);
     if (lockError) {
       console.error("Income/Expense report lock error:", lockError.message);
       return NextResponse.json({ error: "โหลดสถานะล็อกรายงานไม่สำเร็จ" }, { status: 500 });
+    }
+    if (saleLineError) {
+      console.error("Income/Expense sale line count error:", saleLineError.message);
+      return NextResponse.json({ error: "โหลดจำนวนรายการบิลขายไม่สำเร็จ" }, { status: 500 });
+    }
+
+    const saleLineCountById = new Map<string, number>();
+    for (const line of saleLines ?? []) {
+      saleLineCountById.set(
+        line.income_expense_id,
+        (saleLineCountById.get(line.income_expense_id) ?? 0) + 1
+      );
     }
 
     const metadataById = new Map(
       (locks ?? []).map((row) => [row.id, {
         reportLockNo: row.report_lock_no as string | null,
-        saleGroupId: row.sale_group_id as string | null,
-        saleLineOrder: row.sale_line_order as number | null,
-        saleExpectedLines: row.sale_expected_lines as number | null,
+        saleLineCount: saleLineCountById.get(row.id),
       }])
     );
     payload.rows = payload.rows.map((row) => {
@@ -86,9 +102,7 @@ export async function GET(request: NextRequest) {
       if (!metadata) return row;
       return {
         ...row,
-        saleGroupId: metadata.saleGroupId,
-        saleLineOrder: metadata.saleLineOrder,
-        saleExpectedLines: metadata.saleExpectedLines,
+        saleLineCount: metadata.saleLineCount,
         ...(metadata.reportLockNo && {
           reportLockNo: metadata.reportLockNo,
           relationLockReason: `ล็อกโดยรายงาน ${metadata.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`,
