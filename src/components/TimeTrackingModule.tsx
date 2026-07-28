@@ -779,7 +779,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
                   <td className="py-3">
                     <div className="flex items-center gap-2">
                       <span>{formatCurrency(user.daily_wage || 0)}</span>
-                      <button onClick={() => editWage(user.id, user.daily_wage || 0)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded-md bg-river px-2 py-1 text-xs font-semibold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-40">แก้ไข</button>
+                      <button onClick={() => editWage(user.id, user.daily_wage || 0)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded-md bg-amber px-2 py-1 text-xs font-semibold text-white hover:bg-amber/90 disabled:cursor-not-allowed disabled:opacity-40">แก้ไข</button>
                     </div>
                   </td>
                   <td className="py-3">
