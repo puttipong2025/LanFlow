@@ -74,7 +74,7 @@ export function RubberBillsTable({
                       aria-label={actionBlockReason ?? "ดู"}
                       disabled={actionsDisabled}
                       onClick={() => onEdit(bill)}
-                      className={`inline-flex h-10 items-center gap-1.5 rounded-md bg-river px-3 text-sm font-semibold text-white ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
+                      className={`focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-river px-3 text-sm font-semibold text-white shadow-sm hover:bg-river/90 ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
                     >
                       <Eye size={16} />
                       ดู
@@ -85,9 +85,10 @@ export function RubberBillsTable({
                       aria-label={actionBlockReason ?? "ลบ"}
                       disabled={actionsDisabled}
                       onClick={() => onDelete(bill)}
-                      className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-clay text-white ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
+                      className={`focus-ring inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-md bg-danger px-3 text-sm font-semibold text-white shadow-sm hover:bg-danger/90 ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
                     >
                       <Trash2 size={16} />
+                      ลบ
                     </button>
                     <button
                       type="button"
@@ -95,9 +96,10 @@ export function RubberBillsTable({
                       aria-label={actionBlockReason ?? "แก้ไข"}
                       disabled={actionsDisabled}
                       onClick={() => onEdit(bill)}
-                      className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-amber text-white ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
+                      className={`focus-ring inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-md bg-amber px-3 text-sm font-semibold text-white shadow-sm hover:bg-amber/90 ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
                     >
                       <Edit3 size={16} />
+                      แก้ไข
                     </button>
                     <button
                       type="button"

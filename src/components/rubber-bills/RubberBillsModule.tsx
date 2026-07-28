@@ -143,8 +143,8 @@ export function RubberBillsModule({
     markers: approvalMarkers,
   } = useRubberBillApprovals({
     locationId: selectedLocation.id,
-    includeRequests: canManageApprovals,
   });
+  const pendingApprovalCount = approvalMarkers.length;
   const { bills, addBill, updateBill, deleteBill } = useRubberBills(
     selectedLocation.id,
     profile.id,
@@ -153,6 +153,9 @@ export function RubberBillsModule({
   const { customers, isLoading: customersLoading, error: customersError } = useCustomers();
   const { transfers } = useMoneyTransfers(selectedLocation.id);
   const isOnline = useOnlineStatus();
+  const approvalButtonLabel = isOnline && pendingApprovalCount > 0
+    ? `ตั้งค่าและอนุมัติบิลยาง รออนุมัติ ${pendingApprovalCount} รายการ`
+    : "ตั้งค่าและอนุมัติบิลยาง";
   const { retrySyncEvent, isRetrying } = usePerRecordSyncRetry(selectedLocation.id, profile.id);
   const [deviceId] = useState(getDeviceId);
   const [cachedCustomers, setCachedCustomers] = useState<WeighingQueueCustomer[]>(() => (
@@ -364,7 +367,7 @@ export function RubberBillsModule({
           <button
             type="button"
             onClick={() => setAppointmentModalOpen(true)}
-            className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-amber px-3 text-sm font-semibold text-white hover:bg-amber/90"
+            className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-yellow-700 px-3 text-sm font-semibold text-white shadow-sm hover:bg-yellow-800"
           >
             <Clock3 size={17} />
             จับเวลา
@@ -373,10 +376,20 @@ export function RubberBillsModule({
             <button
               type="button"
               onClick={() => setApprovalModalOpen(true)}
+              aria-label={approvalButtonLabel}
+              title={approvalButtonLabel}
               className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-settings px-3 text-sm font-semibold text-white hover:bg-settings/90"
             >
               <Settings size={18} />
               ตั้งค่าและอนุมัติบิลยาง
+              {isOnline && pendingApprovalCount > 0 && (
+                <span
+                  aria-hidden="true"
+                  className="min-w-5 rounded-full bg-amber px-1.5 py-0.5 text-center text-[10px] font-extrabold leading-none text-white"
+                >
+                  {pendingApprovalCount > 99 ? "99+" : pendingApprovalCount}
+                </span>
+              )}
             </button>
           )}
           <button

@@ -101,7 +101,7 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
   test.describe('1.1 Super Admin Approval Workflow @approval', () => {
     test.use({ storageState: 'playwright/.auth/super_admin.json' });
 
-    test('Super Admin: shows pending approval count only on the module nav', async ({ page }) => {
+    test('Super Admin: shows pending approval count on the module nav and approval button', async ({ page }) => {
       await page.goto('/');
       await page.click('button:has-text("รับ-จ่าย")');
       await expect(page.locator('button:has-text("เพิ่มรายจ่าย")')).toBeVisible({ timeout: 10000 });
@@ -120,14 +120,18 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
           name: /^รับ-จ่าย มีงานที่จัดการได้ [1-9]\d* รายการ$/,
         }),
       ).toBeVisible();
-      await expect(approvalButton.locator('[aria-label^="รออนุมัติ "]')).toHaveCount(0);
+      await expect(approvalButton).toHaveAccessibleName(
+        /^ตั้งค่าและอนุมัติรับ-จ่าย รออนุมัติ [1-9]\d* รายการ$/,
+      );
 
       await approvalButton.click();
       const approvalModal = page.locator('.fixed.inset-0').last();
       const requestRow = approvalModal.locator('tr', { hasText: marker }).first();
       await expect(requestRow).toBeVisible();
-      page.once('dialog', dialog => dialog.accept('badge test cleanup'));
       await requestRow.locator('button[title="ปฏิเสธ"]').click();
+      const rejectDialog = page.getByRole('heading', { name: 'ปฏิเสธรายการ' }).locator('..');
+      await rejectDialog.getByLabel('เหตุผลที่ปฏิเสธ (ไม่บังคับ)').fill('badge test cleanup');
+      await rejectDialog.getByRole('button', { name: 'ยืนยัน' }).click();
       await expect(page.getByText('ปฏิเสธรายการแล้ว')).toBeVisible();
       await approvalModal.locator('button[aria-label="ปิด"]').first().click();
     });
@@ -170,9 +174,10 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       // Reject the second one
       const rejectRow = approvalModal.locator('tr', { hasText: rejectMarker }).first();
       await expect(rejectRow).toBeVisible();
-      page.once("dialog", dialog => dialog.accept("ทดสอบปฏิเสธ"));
       await rejectRow.locator('button[title="ปฏิเสธ"]').first().click();
-
+      const rejectDialog = page.getByRole('heading', { name: 'ปฏิเสธรายการ' }).locator('..');
+      await rejectDialog.getByLabel('เหตุผลที่ปฏิเสธ (ไม่บังคับ)').fill('ทดสอบปฏิเสธ');
+      await rejectDialog.getByRole('button', { name: 'ยืนยัน' }).click();
       await expect(page.getByText("ปฏิเสธรายการแล้ว")).toBeVisible();
       await approvalModal.locator('button[aria-label="ปิด"]').first().click();
       await expect(approvalModal).toBeHidden();

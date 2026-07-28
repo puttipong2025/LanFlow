@@ -31,6 +31,7 @@ export function RubberExportsModule({
   const [creating, setCreating] = useState(false);
   const [details, setDetails] = useState<RubberExportDetails | null>(null);
   const canVerifyOrDelete = canManageSystemFeatures(profile);
+  const draftCount = api.exports.filter((row) => row.status === "draft").length;
   const visibleRows = useMemo(() => api.exports.filter((row) => {
     if (filter === "all") return true;
     if (filter === "active") return row.status !== "deleted";
@@ -98,8 +99,27 @@ export function RubberExportsModule({
           ["deleted", "ลบแล้ว"],
           ["all", "ทั้งหมด"],
         ] as Array<[Filter, string]>).map(([value, label]) => (
-          <button key={value} type="button" onClick={() => setFilter(value)} className={`focus-ring rounded-md px-3 py-1.5 text-sm font-semibold text-white ${filter === value ? "bg-leaf" : "bg-actionSecondary hover:bg-actionSecondary/90"}`}>
+          <button
+            key={value}
+            type="button"
+            onClick={() => setFilter(value)}
+            aria-label={value === "draft" && online && draftCount > 0
+              ? `ฉบับร่าง ${draftCount} รายการ`
+              : label}
+            title={value === "draft" && online && draftCount > 0
+              ? `ฉบับร่าง ${draftCount} รายการ`
+              : label}
+            className={`focus-ring inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-semibold text-white ${filter === value ? "bg-leaf" : "bg-actionSecondary hover:bg-actionSecondary/90"}`}
+          >
             {label}
+            {value === "draft" && online && draftCount > 0 && (
+              <span
+                aria-hidden="true"
+                className="min-w-5 rounded-full bg-amber px-1.5 py-0.5 text-center text-[10px] font-extrabold leading-none text-white"
+              >
+                {draftCount > 99 ? "99+" : draftCount}
+              </span>
+            )}
           </button>
         ))}
       </div>

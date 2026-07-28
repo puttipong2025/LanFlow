@@ -293,8 +293,8 @@ export function LanFlowApp() {
   }
 
   return (
-    <main className="min-h-screen">
-      <section className="border-b border-black/10 bg-white/85">
+    <main className="min-h-screen bg-sand">
+      <section className="border-b border-mint bg-white shadow-sm">
         <AppHeader
           profile={profile}
           locations={locations}
@@ -313,7 +313,7 @@ export function LanFlowApp() {
         />
       </section>
 
-      <section className={`mx-auto w-full px-3 py-4 sm:px-4 sm:py-5 ${activeTab === "rubber" || activeTab === "rubber-export" ? "max-w-[1800px]" : "max-w-7xl"}`}>
+      <section className={`mx-auto w-full px-3 py-5 sm:px-4 sm:py-6 ${activeTab === "rubber" || activeTab === "rubber-export" ? "max-w-[1800px]" : "max-w-7xl"}`}>
         {activeTab === "dashboard" && (
           <Dashboard
             selectedLocation={selectedLocation}

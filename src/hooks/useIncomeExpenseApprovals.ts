@@ -58,11 +58,18 @@ function settingsMatch(settings: IncomeExpenseApprovalSettings | undefined, tx: 
   return appliesToType(settings.appliesTo, tx.type) && tx.cost >= settings.approvalMinAmount;
 }
 
-export function useIncomeExpenseApprovals(options: { includeRequests?: boolean; includePendingCount?: boolean } = {}) {
+export function useIncomeExpenseApprovals(options: {
+  includeRequests?: boolean;
+  includePendingCount?: boolean;
+  requestsLocationId?: string;
+  pendingLocationId?: string;
+} = {}) {
   const supabase = createSupabaseBrowserClient();
   const queryClient = useQueryClient();
   const includeRequests = options.includeRequests ?? false;
   const includePendingCount = options.includePendingCount ?? includeRequests;
+  const requestsLocationId = options.requestsLocationId;
+  const pendingLocationId = options.pendingLocationId;
 
   const keywordsQuery = useQuery({
     queryKey: [KEYWORDS_KEY],
@@ -110,12 +117,16 @@ export function useIncomeExpenseApprovals(options: { includeRequests?: boolean; 
   });
 
   const requestsQuery = useQuery({
-    queryKey: [REQUESTS_KEY],
+    queryKey: [REQUESTS_KEY, "requests", requestsLocationId ?? "all"],
     enabled: includeRequests,
     queryFn: async () => {
-      const { data, error } = await supabase
+      let query = supabase
         .from("income_expense_approval_requests")
-        .select("*")
+        .select("*");
+      if (requestsLocationId) {
+        query = query.eq("location_id", requestsLocationId);
+      }
+      const { data, error } = await query
         .order("created_at", { ascending: false })
         .limit(80);
 
@@ -143,12 +154,20 @@ export function useIncomeExpenseApprovals(options: { includeRequests?: boolean; 
   });
 
   const cashDeleteRequestsQuery = useQuery({
-    queryKey: [REQUESTS_KEY, "cashTransferDeletes"],
+    queryKey: [
+      REQUESTS_KEY,
+      "cashTransferDeletes",
+      requestsLocationId ?? "all",
+    ],
     enabled: includeRequests,
     queryFn: async () => {
-      const { data, error } = await supabase
+      let query = supabase
         .from("cash_transfer_delete_requests")
-        .select("*")
+        .select("*");
+      if (requestsLocationId) {
+        query = query.eq("source_location_id", requestsLocationId);
+      }
+      const { data, error } = await query
         .order("created_at", { ascending: false })
         .limit(80);
 
@@ -179,18 +198,24 @@ export function useIncomeExpenseApprovals(options: { includeRequests?: boolean; 
   });
 
   const pendingCountQuery = useQuery({
-    queryKey: [REQUESTS_KEY, "pendingCount"],
+    queryKey: [REQUESTS_KEY, "pendingCount", pendingLocationId ?? "all"],
     enabled: includePendingCount,
     queryFn: async () => {
+      let incomeExpenseQuery = supabase
+        .from("income_expense_approval_requests")
+        .select("id", { count: "exact", head: true })
+        .eq("request_status", "pending");
+      let cashTransferQuery = supabase
+        .from("cash_transfer_delete_requests")
+        .select("id", { count: "exact", head: true })
+        .eq("request_status", "pending");
+      if (pendingLocationId) {
+        incomeExpenseQuery = incomeExpenseQuery.eq("location_id", pendingLocationId);
+        cashTransferQuery = cashTransferQuery.eq("source_location_id", pendingLocationId);
+      }
       const [incomeExpense, cashTransfer] = await Promise.all([
-        supabase
-          .from("income_expense_approval_requests")
-          .select("id", { count: "exact", head: true })
-          .eq("request_status", "pending"),
-        supabase
-          .from("cash_transfer_delete_requests")
-          .select("id", { count: "exact", head: true })
-          .eq("request_status", "pending"),
+        incomeExpenseQuery,
+        cashTransferQuery,
       ]);
 
       if (incomeExpense.error) throw new Error(incomeExpense.error.message || JSON.stringify(incomeExpense.error));

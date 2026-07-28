@@ -569,7 +569,7 @@ export function RubberBillModal({
         <div className="modal-actions flex justify-center border-t border-black/10 p-4">
           <button className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-commit px-5 font-semibold text-white hover:bg-commit/90">
             <Save size={18} />
-            Submit
+            บันทึกบิล
           </button>
         </div>
       </form>

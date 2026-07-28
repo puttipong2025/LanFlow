@@ -1,5 +1,6 @@
 import { expect, test, type Browser, type BrowserContext } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
+import { selectAppLocation } from "./helpers/select-app-location";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -24,6 +25,77 @@ function service() {
 }
 
 test.describe.serial("Rubber export contract @rubber-export", () => {
+  test("draft filter badge is branch-scoped and disappears after refresh", async ({ browser }) => {
+    const context = await authContext(browser, "super_admin");
+    const db = service();
+    const locationIds = [crypto.randomUUID(), crypto.randomUUID()];
+    const exportIds = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+
+    try {
+      const me = await profile(context);
+      expect((await db.from("locations").insert(locationIds.map((id, index) => ({
+        id,
+        name: `สาขา Draft Badge ${index + 1} ${id.slice(0, 6)}`,
+        code: `DB${id.slice(0, 6)}`,
+        is_active: true,
+      })))).error).toBeNull();
+      expect((await db.from("user_locations").insert(
+        locationIds.map((locationId) => ({ user_id: me.id, location_id: locationId })),
+      )).error).toBeNull();
+      expect((await db.from("rubber_exports").insert(exportIds.map((id, index) => ({
+        id,
+        export_no: `REX-BADGE-${id.slice(0, 8)}`,
+        export_date: "2026-07-29",
+        sequence_no: index + 900,
+        location_id: index === 0 ? locationIds[0] : locationIds[1],
+        status: "draft",
+        original_weight_total: 100,
+        paid_total: 1000,
+        average_price: 10,
+        created_by_user_id: me.id,
+        created_by_name: me.name,
+        created_by_phone: me.phone,
+      })))).error).toBeNull();
+
+      const page = await context.newPage();
+      await page.goto("/");
+      await selectAppLocation(page, locationIds[0]);
+      await page.getByRole("button", { name: /^ส่งออกยาง/ }).click();
+      await expect(page.getByRole("button", {
+        name: "ฉบับร่าง 1 รายการ",
+      })).toBeVisible({ timeout: 15_000 });
+      await expect(page.getByRole("button", { name: "ใช้งาน", exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: "ตรวจสอบแล้ว", exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: "ลบแล้ว", exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: "ทั้งหมด", exact: true })).toBeVisible();
+
+      await selectAppLocation(page, locationIds[1]);
+      const secondBranchDraftButton = page.getByRole("button", {
+        name: "ฉบับร่าง 2 รายการ",
+      });
+      await expect(secondBranchDraftButton).toBeVisible();
+      await page.setViewportSize({ width: 390, height: 844 });
+      const draftButtonBox = await secondBranchDraftButton.boundingBox();
+      expect(draftButtonBox).not.toBeNull();
+      expect(draftButtonBox!.x).toBeGreaterThanOrEqual(0);
+      expect(draftButtonBox!.x + draftButtonBox!.width).toBeLessThanOrEqual(390);
+      await page.setViewportSize({ width: 1280, height: 720 });
+
+      await selectAppLocation(page, locationIds[0]);
+      expect((await db.from("rubber_exports").delete().eq("id", exportIds[0])).error).toBeNull();
+      await page.getByRole("button", { name: "รีเฟรช" }).click();
+      await expect(page.getByRole("button", {
+        name: "ฉบับร่าง",
+        exact: true,
+      })).toBeVisible();
+    } finally {
+      await db.from("rubber_exports").delete().in("id", exportIds);
+      await db.from("user_locations").delete().in("location_id", locationIds);
+      await db.from("locations").delete().in("id", locationIds);
+      await context.close();
+    }
+  });
+
   test("explicit selection, reservation, derived expense, report locks, delete, and print stay source-owned", async ({ browser }) => {
     test.setTimeout(90_000);
     const user = await authContext(browser, "user");

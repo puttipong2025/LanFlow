@@ -246,3 +246,226 @@ test("branch selector stays usable inside a mobile viewport", async ({ browser }
     await context.close();
   }
 });
+
+test("approval buttons and modal counts follow the selected branch", async ({ browser }) => {
+  test.skip(!serviceRoleKey, "Supabase service role key is required");
+  const service = createClient(supabaseUrl, serviceRoleKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const context = await browser.newContext({
+    storageState: "playwright/.auth/super_admin.json",
+  });
+  const locationIds = [crypto.randomUUID(), crypto.randomUUID()];
+  const incomeRequestIds = Array.from({ length: 101 }, () => crypto.randomUUID());
+  const rubberRequestIds = [
+    crypto.randomUUID(),
+    crypto.randomUUID(),
+    crypto.randomUUID(),
+  ];
+
+  try {
+    const meResponse = await context.request.get("/api/auth/me");
+    expect(meResponse.ok()).toBeTruthy();
+    const me = (await meResponse.json() as {
+      profile: { id: string; name: string; phone: string };
+    }).profile;
+    const { data: requester, error: requesterError } = await service
+      .from("profiles")
+      .select("id, name, phone")
+      .neq("id", me.id)
+      .limit(1)
+      .single();
+    expect(requesterError).toBeNull();
+
+    expect((await service.from("locations").insert(locationIds.map((id, index) => ({
+      id,
+      name: `สาขา Badge ${index + 1} ${id.slice(0, 6)}`,
+      code: `BG${id.slice(0, 6)}`,
+      is_active: true,
+    })))).error).toBeNull();
+    expect((await service.from("user_locations").insert(
+      locationIds.map((locationId) => ({ user_id: me.id, location_id: locationId })),
+    )).error).toBeNull();
+
+    expect((await service.from("income_expense_approval_requests").insert(
+      incomeRequestIds.map((id, index) => {
+        const locationId = index === 0 ? locationIds[0] : locationIds[1];
+        return {
+          id,
+          request_status: "pending",
+          requested_operation: "create",
+          request_idempotency_key: `approval-button:${id}`,
+          requested_payload: {
+            operation: "create",
+            expectedRevisionNo: 0,
+            clientTempId: id,
+            idempotencyKey: `approval-button:${id}`,
+            locationId,
+          },
+          matched_reason: "amount_threshold",
+          location_id: locationId,
+          tx_type: "expense",
+          title: `คำขอรับจ่าย Badge ${index + 1}`,
+          cost: 100 + index,
+          requested_by_user_id: requester!.id,
+          requested_by_name: requester!.name,
+          requested_by_phone: requester!.phone,
+        };
+      }),
+    )).error).toBeNull();
+
+    expect((await service.from("rubber_bill_approval_requests").insert(
+      rubberRequestIds.map((id, index) => {
+        const locationId = index === 0 ? locationIds[0] : locationIds[1];
+        return {
+          id,
+          operation: "create",
+          request_status: "pending",
+          location_id: locationId,
+          client_temp_id: id,
+          idempotency_key: `rubber-approval-button:${id}`,
+          base_revision_no: 0,
+          matched_reasons: ["price"],
+          configured_price_snapshot: 20,
+          edit_window_minutes_snapshot: 30,
+          proposed_payload: {
+            customerName: `คำขอบิลยาง Badge ${index + 1}`,
+            billDate: "2026-07-29",
+            netTotal: 100 + index,
+            items: [],
+          },
+          requested_by_user_id: requester!.id,
+          requested_by_name: requester!.name,
+          requested_by_phone: requester!.phone,
+        };
+      }),
+    )).error).toBeNull();
+    const [rubberPending, incomePending, cashDeletePending] = await Promise.all([
+      service
+        .from("rubber_bill_approval_requests")
+        .select("id", { count: "exact", head: true })
+        .eq("request_status", "pending"),
+      service
+        .from("income_expense_approval_requests")
+        .select("id", { count: "exact", head: true })
+        .eq("request_status", "pending"),
+      service
+        .from("cash_transfer_delete_requests")
+        .select("id", { count: "exact", head: true })
+        .eq("request_status", "pending"),
+    ]);
+    expect(rubberPending.error).toBeNull();
+    expect(incomePending.error).toBeNull();
+    expect(cashDeletePending.error).toBeNull();
+    const allRubberPendingCount = rubberPending.count ?? 0;
+    const allIncomePendingCount = (incomePending.count ?? 0) + (cashDeletePending.count ?? 0);
+
+    const page = await context.newPage();
+    await page.goto("/");
+    await selectAppLocation(page, locationIds[0]);
+
+    await page.getByRole("button", { name: /^บิลยาง/ }).click();
+    let approvalButton = page.getByRole("button", {
+      name: "ตั้งค่าและอนุมัติบิลยาง รออนุมัติ 1 รายการ",
+    });
+    await expect(approvalButton).toBeVisible({ timeout: 15_000 });
+    await approvalButton.click();
+    let approvalModal = page.locator(".fixed.inset-0").last();
+    let locationFilter = approvalModal.getByRole("combobox", { name: "สาขา", exact: true });
+    await expect(locationFilter).toHaveValue(locationIds[0]);
+    await expect(approvalModal.getByText("รออนุมัติ 1 รายการ", { exact: true })).toBeVisible();
+    await locationFilter.selectOption("all");
+    await expect(approvalModal.getByText(
+      `รออนุมัติ ${allRubberPendingCount} รายการ`,
+      { exact: true },
+    )).toBeVisible();
+    await approvalModal.getByLabel("ปิด", { exact: true }).click();
+
+    await selectAppLocation(page, locationIds[1]);
+    const secondBranchRubberButton = page.getByRole("button", {
+      name: "ตั้งค่าและอนุมัติบิลยาง รออนุมัติ 2 รายการ",
+    });
+    await expect(secondBranchRubberButton).toBeVisible();
+    await page.setViewportSize({ width: 390, height: 844 });
+    const rubberButtonBox = await secondBranchRubberButton.boundingBox();
+    expect(rubberButtonBox).not.toBeNull();
+    expect(rubberButtonBox!.x).toBeGreaterThanOrEqual(0);
+    expect(rubberButtonBox!.x + rubberButtonBox!.width).toBeLessThanOrEqual(390);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await selectAppLocation(page, locationIds[0]);
+    approvalButton = page.getByRole("button", {
+      name: "ตั้งค่าและอนุมัติบิลยาง รออนุมัติ 1 รายการ",
+    });
+    await approvalButton.click();
+    approvalModal = page.locator(".fixed.inset-0").last();
+    const rubberRequest = approvalModal.locator("article", {
+      hasText: "คำขอบิลยาง Badge 1",
+    });
+    page.once("dialog", (dialog) => dialog.accept());
+    await rubberRequest.getByRole("button", { name: "ลบถาวร" }).click();
+    await expect(page.getByText("ลบคำขอถาวรแล้ว")).toBeVisible({ timeout: 15_000 });
+    await expect(approvalModal.getByText("รออนุมัติ 0 รายการ", { exact: true })).toBeVisible();
+    await approvalModal.getByLabel("ปิด", { exact: true }).click();
+    await expect(page.getByRole("button", {
+      name: "ตั้งค่าและอนุมัติบิลยาง",
+      exact: true,
+    })).toBeVisible();
+
+    await page.getByRole("button", { name: /^รับ-จ่าย/ }).click();
+    approvalButton = page.getByRole("button", {
+      name: "ตั้งค่าและอนุมัติรับ-จ่าย รออนุมัติ 1 รายการ",
+    });
+    await expect(approvalButton).toBeVisible({ timeout: 15_000 });
+    await approvalButton.click();
+    approvalModal = page.locator(".fixed.inset-0").last();
+    locationFilter = approvalModal.getByRole("combobox", { name: "สาขา", exact: true });
+    await expect(locationFilter).toHaveValue(locationIds[0]);
+    await expect(approvalModal.getByText("คำขอรออนุมัติ 1 รายการ", { exact: true })).toBeVisible();
+    await locationFilter.selectOption("all");
+    await expect(approvalModal.getByText(
+      `คำขอรออนุมัติ ${allIncomePendingCount} รายการ`,
+      { exact: true },
+    )).toBeVisible();
+    await locationFilter.selectOption(locationIds[0]);
+    const incomeRequest = approvalModal.locator("tbody tr", {
+      hasText: "คำขอรับจ่าย Badge 1",
+    });
+    await incomeRequest.getByRole("button", { name: "ปฏิเสธ" }).click();
+    const rejectDialog = page.getByRole("heading", { name: "ปฏิเสธรายการ" }).locator("..");
+    await rejectDialog.getByLabel("เหตุผลที่ปฏิเสธ (ไม่บังคับ)").fill("ทดสอบลด Badge");
+    await rejectDialog.getByRole("button", { name: "ยืนยัน" }).click();
+    await expect(page.getByText("ปฏิเสธรายการแล้ว")).toBeVisible({ timeout: 15_000 });
+    await expect(approvalModal.getByText("คำขอรออนุมัติ 0 รายการ", { exact: true })).toBeVisible();
+    await approvalModal.getByLabel("ปิด", { exact: true }).click();
+    await expect(page.getByRole("button", {
+      name: "ตั้งค่าและอนุมัติรับ-จ่าย",
+      exact: true,
+    })).toBeVisible();
+
+    await selectAppLocation(page, locationIds[1]);
+    const cappedApprovalButton = page.getByRole("button", {
+      name: "ตั้งค่าและอนุมัติรับ-จ่าย รออนุมัติ 100 รายการ",
+    });
+    await expect(cappedApprovalButton).toBeVisible();
+    await expect(cappedApprovalButton.locator("span")).toHaveText("99+");
+    await page.setViewportSize({ width: 390, height: 844 });
+    const incomeButtonBox = await cappedApprovalButton.boundingBox();
+    expect(incomeButtonBox).not.toBeNull();
+    expect(incomeButtonBox!.x).toBeGreaterThanOrEqual(0);
+    expect(incomeButtonBox!.x + incomeButtonBox!.width).toBeLessThanOrEqual(390);
+    await page.context().setOffline(true);
+    await page.evaluate(() => window.dispatchEvent(new Event("offline")));
+    await expect.poll(() => page.evaluate(() => navigator.onLine)).toBe(false);
+    await expect(page.getByRole("button", {
+      name: "ตั้งค่าและอนุมัติรับ-จ่าย",
+      exact: true,
+    })).toBeVisible();
+    await page.context().setOffline(false);
+  } finally {
+    await service.from("rubber_bill_approval_requests").delete().in("id", rubberRequestIds);
+    await service.from("income_expense_approval_requests").delete().in("id", incomeRequestIds);
+    await service.from("user_locations").delete().in("location_id", locationIds);
+    await service.from("locations").delete().in("id", locationIds);
+    await context.close();
+  }
+});

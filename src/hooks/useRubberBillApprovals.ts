@@ -46,9 +46,15 @@ function mapRequest(row: any): RubberBillApprovalRequest {
 export function useRubberBillApprovals({
   locationId,
   includeRequests = false,
+  includePendingCount = includeRequests,
+  requestsLocationId,
+  pendingLocationId,
 }: {
   locationId: string;
   includeRequests?: boolean;
+  includePendingCount?: boolean;
+  requestsLocationId?: string;
+  pendingLocationId?: string;
 }) {
   const supabase = createSupabaseBrowserClient();
   const queryClient = useQueryClient();
@@ -107,17 +113,46 @@ export function useRubberBillApprovals({
   }, [settingsQuery.data]);
 
   const requestsQuery = useQuery({
-    queryKey: [RUBBER_BILL_APPROVAL_REQUESTS_KEY],
+    queryKey: [
+      RUBBER_BILL_APPROVAL_REQUESTS_KEY,
+      "requests",
+      requestsLocationId ?? "all",
+    ],
     enabled: includeRequests,
     queryFn: async (): Promise<RubberBillApprovalRequest[]> => {
-      const { data, error } = await supabase
+      let query = supabase
         .from("rubber_bill_approval_requests")
-        .select("*")
+        .select("*");
+      if (requestsLocationId) {
+        query = query.eq("location_id", requestsLocationId);
+      }
+      const { data, error } = await query
         .order("requested_at", { ascending: false })
         .limit(100);
 
       if (error) throw new Error(error.message || JSON.stringify(error));
       return (data ?? []).map(mapRequest);
+    },
+  });
+
+  const pendingCountQuery = useQuery({
+    queryKey: [
+      RUBBER_BILL_APPROVAL_REQUESTS_KEY,
+      "pendingCount",
+      pendingLocationId ?? "all",
+    ],
+    enabled: includePendingCount,
+    queryFn: async () => {
+      let query = supabase
+        .from("rubber_bill_approval_requests")
+        .select("id", { count: "exact", head: true })
+        .eq("request_status", "pending");
+      if (pendingLocationId) {
+        query = query.eq("location_id", pendingLocationId);
+      }
+      const { count, error } = await query;
+      if (error) throw new Error(error.message || JSON.stringify(error));
+      return count ?? 0;
     },
   });
 
@@ -184,17 +219,17 @@ export function useRubberBillApprovals({
     hasCachedSettings: cachedSettings !== null,
     markers: markersQuery.data ?? [],
     requests: requestsQuery.data ?? [],
-    pendingCount: (requestsQuery.data ?? []).filter(
-      (request) => request.requestStatus === "pending"
-    ).length,
+    pendingCount: pendingCountQuery.data ?? 0,
     isLoading:
       settingsQuery.isLoading ||
       markersQuery.isLoading ||
-      (includeRequests && requestsQuery.isLoading),
+      (includeRequests && requestsQuery.isLoading) ||
+      (includePendingCount && pendingCountQuery.isLoading),
     error:
       settingsQuery.error ??
       markersQuery.error ??
-      (includeRequests ? requestsQuery.error : null),
+      (includeRequests ? requestsQuery.error : null) ??
+      (includePendingCount ? pendingCountQuery.error : null),
     saveSettings: saveSettingsMutation.mutateAsync,
     approveRequest: approveMutation.mutateAsync,
     deleteRequest: deleteMutation.mutateAsync,

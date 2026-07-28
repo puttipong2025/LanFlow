@@ -110,8 +110,8 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
     const shareButton = sourceRow.locator('button[aria-label*="แชร์ PDF รายละเอียดเงินสด"]');
     const deleteButton = sourceRow.locator('button[aria-label="ลบรายการโยกเงิน"]');
     await expect(shareButton).toBeEnabled();
-    await expect(shareButton).toHaveClass(/bg-amber/);
-    await expect(deleteButton).toHaveClass(/bg-clay/);
+    await expect(shareButton).toHaveClass(/bg-actionSecondary/);
+    await expect(deleteButton).toHaveClass(/bg-danger/);
     const openSourceButton = sourceRow.locator('button[aria-label="เปิดรายการต้นทาง"]');
     await expect(openSourceButton).toHaveClass(/text-xs/);
     await expect(openSourceButton).toHaveClass(/shrink-0/);
@@ -127,7 +127,7 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
     await setOnline(page, true);
     await selectAppLocation(page, targetLocationId!);
     await expect(page.locator('button:has-text("รอรับเงิน")')).toBeVisible({ timeout: 10000 });
-    await page.locator("section", { hasText: "คิวรอตรวจรับเงินสด" }).locator("button", { hasText: "฿123" }).click();
+    await page.locator(`button[data-transfer-id="${transfer!.id}"]`).click();
     const receiptModal = page.locator(".fixed.inset-0").last();
     await expect(receiptModal.locator("input")).toHaveCount(9);
     for (const input of await receiptModal.locator("input").all()) await expect(input).toHaveValue("0");

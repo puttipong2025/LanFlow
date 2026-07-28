@@ -55,20 +55,26 @@ export function RubberBillApprovalModal({
   locationId: string;
   onClose: () => void;
 }) {
+  const [locationFilter, setLocationFilter] = useState(locationId);
   const {
     settings,
     requests,
+    pendingCount,
     isLoading,
     error,
     saveSettings,
     approveRequest,
     deleteRequest,
-  } = useRubberBillApprovals({ locationId, includeRequests: true });
+  } = useRubberBillApprovals({
+    locationId,
+    includeRequests: true,
+    requestsLocationId: locationFilter === "all" ? undefined : locationFilter,
+    pendingLocationId: locationFilter === "all" ? undefined : locationFilter,
+  });
   const { locations } = useLocations();
   const [minutes, setMinutes] = useState("30");
   const [price, setPrice] = useState("");
   const [statusFilter, setStatusFilter] = useState<RubberBillApprovalStatus>("pending");
-  const [locationFilter, setLocationFilter] = useState("all");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -78,6 +84,10 @@ export function RubberBillApprovalModal({
     setPrice(settings.configuredPrice == null ? "" : String(settings.configuredPrice));
   }, [settings]);
 
+  useEffect(() => {
+    setLocationFilter(locationId);
+  }, [locationId]);
+
   const locationNames = useMemo(
     () => new Map(locations.map((location) => [location.id, location.name])),
     [locations]
@@ -86,7 +96,6 @@ export function RubberBillApprovalModal({
     request.requestStatus === statusFilter &&
     (locationFilter === "all" || request.locationId === locationFilter)
   ));
-
   async function handleSaveSettings(event: React.FormEvent) {
     event.preventDefault();
     const parsedMinutes = Number(minutes);
@@ -148,7 +157,7 @@ export function RubberBillApprovalModal({
   return (
     <ModalShell
       title="ตั้งค่าและอนุมัติบิลยาง"
-      subtitle={`รออนุมัติ ${requests.filter((request) => request.requestStatus === "pending").length} รายการ`}
+      subtitle={`รออนุมัติ ${pendingCount} รายการ`}
       onClose={onClose}
       size="wide"
     >

@@ -29,7 +29,7 @@ export function NavigationTabs({
   } = getOcrActionState(ocrUploadItems);
 
   return (
-    <nav className="mx-auto flex w-full max-w-7xl flex-wrap gap-2 px-3 pb-3 sm:px-4">
+    <nav className="mx-auto flex w-full max-w-7xl gap-2 overflow-x-auto px-3 pb-4 sm:flex-wrap sm:overflow-visible sm:px-4">
       {tabs.filter(tab => {
         if (tab.id === "admin") return canManageSystemFeatures(profile) || ["super_admin", "admin"].includes(profile.role);
         if (tab.id === "money-transfer") return canUseMoneyTransfer(profile);
@@ -53,12 +53,13 @@ export function NavigationTabs({
             disabled={isOfflineBlocked}
             title={offlineBlockMessage ?? tab.label}
             aria-label={badgeCount > 0 ? `${tab.label} มีงานที่จัดการได้ ${badgeCount} รายการ` : tab.label}
-            className={`focus-ring relative flex h-10 shrink-0 items-center gap-2 rounded-md px-3 text-sm font-semibold ${
+            aria-pressed={active}
+            className={`focus-ring relative flex h-10 shrink-0 items-center gap-2 rounded-lg border px-3 text-sm font-semibold shadow-sm ${
               isOfflineBlocked
-                ? "cursor-not-allowed bg-slate-200 text-ink/45"
+                ? "cursor-not-allowed border-black/5 bg-field text-ink/40 shadow-none"
                 : active
-                  ? "bg-leaf text-white"
-                  : "bg-actionSecondary text-white hover:bg-actionSecondary/90"
+                  ? "border-leaf bg-leaf text-white"
+                  : "border-mint bg-white text-ink/75 hover:border-leaf/30 hover:bg-mint/40 hover:text-ink"
             }`}
           >
             <Icon size={17} />

@@ -145,7 +145,7 @@ export function Dashboard({
 
   if (!online) {
     return (
-      <section className="rounded-md border border-amber/30 bg-white p-6 text-center shadow-panel">
+      <section className="rounded-xl border border-amber/30 bg-white p-6 text-center shadow-panel">
         <h2 className="text-lg font-bold text-ink">ภาพรวม · {selectedLocation.name}</h2>
         <p className="mt-2 text-sm font-semibold text-amber">
           ต้องออนไลน์เพื่อดูภาพรวมล่าสุด
@@ -156,7 +156,7 @@ export function Dashboard({
 
   if (snapshot.isLoading && !snapshot.data) {
     return (
-      <section className="rounded-md border border-black/10 bg-white p-6 text-center shadow-panel">
+      <section className="rounded-xl border border-mint/80 bg-white p-6 text-center shadow-panel">
         <p className="text-sm font-semibold text-ink/60">กำลังโหลดภาพรวม...</p>
       </section>
     );
@@ -164,12 +164,12 @@ export function Dashboard({
 
   if (snapshot.isError || !snapshot.data) {
     return (
-      <section className="rounded-md border border-danger/20 bg-white p-6 text-center shadow-panel">
+      <section className="rounded-xl border border-danger/20 bg-white p-6 text-center shadow-panel">
         <p className="text-sm font-semibold text-danger">โหลดข้อมูลภาพรวมไม่สำเร็จ</p>
         <button
           type="button"
           onClick={() => snapshot.refetch()}
-          className="focus-ring mt-3 rounded-md bg-ink px-3 py-2 text-sm font-semibold text-white"
+          className="focus-ring mt-3 rounded-lg bg-actionSecondary px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-actionSecondary/90"
         >
           ลองใหม่
         </button>
@@ -183,7 +183,7 @@ export function Dashboard({
   const visibleRows = feed.isPlaceholderData ? [] : rows;
   if (!summary) {
     return (
-      <section className="rounded-md border border-black/10 bg-white p-6 text-center shadow-panel">
+      <section className="rounded-xl border border-mint/80 bg-white p-6 text-center shadow-panel">
         <LoaderCircle className="mx-auto animate-spin text-leaf" size={22} />
         <h2 className="mt-3 text-lg font-bold text-ink">
           กำลังเตรียม Dashboard · {selectedLocation.name}
@@ -204,7 +204,7 @@ export function Dashboard({
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-xl font-bold text-ink">ภาพรวม · {selectedLocation.name}</h1>
+        <h1 className="text-balance text-2xl font-bold text-ink">ภาพรวม · {selectedLocation.name}</h1>
         <p className="mt-1 text-sm text-ink/55">
           ผลคำนวณล่าสุด{" "}
           {snapshot.data.calculatedAt
@@ -217,7 +217,7 @@ export function Dashboard({
       </div>
 
       {canManageDashboard && managerConfig && (
-        <section className="flex flex-wrap items-end gap-3 rounded-md border border-black/10 bg-white p-4 shadow-panel">
+        <section className="flex flex-wrap items-end gap-3 rounded-xl border border-mint/80 bg-white p-4 shadow-panel">
           <label className="text-sm font-semibold text-ink">
             รอบคำนวณกลางทั้งระบบ (นาที)
             <input
@@ -243,7 +243,7 @@ export function Dashboard({
             type="button"
             onClick={saveRefreshInterval}
             disabled={managerBusy !== null}
-            className="focus-ring flex h-10 items-center gap-2 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white disabled:opacity-50"
+            className="focus-ring flex h-10 items-center gap-2 rounded-lg bg-commit px-3 text-sm font-semibold text-white shadow-sm hover:bg-commit/90 disabled:opacity-50"
           >
             {managerBusy === "save" ? (
               <LoaderCircle className="animate-spin" size={16} />
@@ -260,7 +260,7 @@ export function Dashboard({
               snapshot.data.status === "queued" ||
               snapshot.data.status === "running"
             }
-            className="focus-ring flex h-10 items-center gap-2 rounded-md bg-commit px-3 text-sm font-semibold text-white disabled:opacity-50"
+            className="focus-ring flex h-10 items-center gap-2 rounded-lg bg-settings px-3 text-sm font-semibold text-white shadow-sm hover:bg-settings/90 disabled:opacity-50"
           >
             {managerBusy === "refresh" ? (
               <LoaderCircle className="animate-spin" size={16} />
@@ -343,7 +343,7 @@ export function Dashboard({
         </Metric>
       </div>
 
-      <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel">
+      <section className="rounded-xl border border-mint/80 bg-white p-4 shadow-panel">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-lg font-bold text-ink">รายการเงินล่าสุด</h2>
@@ -398,7 +398,7 @@ export function Dashboard({
             type="button"
             disabled={cursorHistory.length === 1 || feed.isFetching}
             onClick={() => setCursorHistory((history) => history.slice(0, -1))}
-            className="focus-ring rounded-md border border-black/10 px-3 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"
+            className="focus-ring rounded-lg border border-actionSecondary/25 bg-white px-3 py-2 text-sm font-semibold text-actionSecondary hover:bg-field disabled:cursor-not-allowed disabled:opacity-40"
           >
             ย้อนกลับ
           </button>
@@ -406,7 +406,7 @@ export function Dashboard({
             type="button"
             disabled={!nextCursor || feed.isFetching}
             onClick={() => nextCursor && setCursorHistory((history) => [...history, nextCursor])}
-            className="focus-ring rounded-md bg-ink px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
+            className="focus-ring rounded-lg bg-actionSecondary px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-40"
           >
             หน้าถัดไป
           </button>

@@ -116,8 +116,15 @@ export function IncomeExpenseModule({
   const isOnline = useOnlineStatus();
   const canManageSystem = canManageSystemFeatures(profile);
   const {
+    pendingCount: pendingApprovalCount,
     submitForApprovalIfNeeded,
-  } = useIncomeExpenseApprovals();
+  } = useIncomeExpenseApprovals({
+    includePendingCount: canManageSystem,
+    pendingLocationId: selectedLocation.id,
+  });
+  const approvalButtonLabel = isOnline && pendingApprovalCount > 0
+    ? `ตั้งค่าและอนุมัติรับ-จ่าย รออนุมัติ ${pendingApprovalCount} รายการ`
+    : "ตั้งค่าและอนุมัติรับ-จ่าย";
   const { addTransfer } = useMoneyTransfers(selectedLocation.id, { enabled: canCreateMoneyTransfer });
   const cashTransfers = useCashBranchTransfers(selectedLocation.id);
   const { locations } = useLocations();
@@ -356,11 +363,20 @@ export function IncomeExpenseModule({
                 setApprovalModalOpen(true);
               }}
               disabled={!isOnline}
-              title={isOnline ? "ตั้งค่าและอนุมัติรับ-จ่าย" : "ตั้งค่าและอนุมัติรับ-จ่ายใช้ได้เมื่อออนไลน์เท่านั้น"}
+              aria-label={approvalButtonLabel}
+              title={isOnline ? approvalButtonLabel : "ตั้งค่าและอนุมัติรับ-จ่ายใช้ได้เมื่อออนไลน์เท่านั้น"}
               className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-settings px-3 text-sm font-semibold text-white hover:bg-settings/90 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               <Settings size={18} />
               ตั้งค่าและอนุมัติรับ-จ่าย
+              {isOnline && pendingApprovalCount > 0 && (
+                <span
+                  aria-hidden="true"
+                  className="min-w-5 rounded-full bg-amber px-1.5 py-0.5 text-center text-[10px] font-extrabold leading-none text-white"
+                >
+                  {pendingApprovalCount > 99 ? "99+" : pendingApprovalCount}
+                </span>
+              )}
             </button>
           )}
         </div>
@@ -370,7 +386,7 @@ export function IncomeExpenseModule({
         <section className="rounded-md border border-amber/40 bg-amber/10 p-3">
           <h3 className="font-bold text-ink">คิวรอตรวจรับเงินสด</h3>
           <div className="mt-2 space-y-2">
-            {pendingCashReceipts.map((transfer) => <button key={transfer.id} type="button" disabled={!isOnline} onClick={() => setCashReceiptId(transfer.id)} className="flex w-full items-center justify-between rounded bg-amber px-3 py-2 text-left text-sm text-white hover:bg-amber/90 disabled:opacity-60"><span>จาก {transfer.createdByName} · {formatCurrency(transfer.sentTotal)}</span><span className="font-semibold">ตรวจรับ</span></button>)}
+            {pendingCashReceipts.map((transfer) => <button key={transfer.id} type="button" data-transfer-id={transfer.id} disabled={!isOnline} onClick={() => setCashReceiptId(transfer.id)} className="flex w-full items-center justify-between rounded bg-amber px-3 py-2 text-left text-sm text-white hover:bg-amber/90 disabled:opacity-60"><span>จาก {transfer.createdByName} · {formatCurrency(transfer.sentTotal)}</span><span className="font-semibold">ตรวจรับ</span></button>)}
           </div>
         </section>
       )}
@@ -513,28 +529,30 @@ export function IncomeExpenseModule({
                       {cashTransferId ? (
                         <IconButton
                           label={!cashTransfer ? "กำลังโหลดรายละเอียดเงินสด" : pdfShare.busy ? "กำลังสร้าง PDF" : "แชร์ PDF รายละเอียดเงินสด 80 มม."}
+                          visibleLabel="แชร์ PDF"
                           onClick={() => { if (cashTransfer) void shareCashTransfer(cashTransfer); }}
-                          tone="amber"
+                          tone="actionSecondary"
                           disabled={!cashTransfer || pdfShare.busy}
                         >
                           <Share2 size={16} />
                         </IconButton>
                       ) : (
-                        <IconButton label={actionBlockReason ?? "แก้ไข"} onClick={() => openEdit(transaction)} tone="amber" disabled={actionsDisabled}>
+                        <IconButton label={actionBlockReason ?? "แก้ไข"} visibleLabel="แก้ไข" onClick={() => openEdit(transaction)} tone="amber" disabled={actionsDisabled}>
                           <Edit3 size={16} />
                         </IconButton>
                       )}
                       {cashTransferId ? (
                         <IconButton
                           label={cashDeleteReason ?? "ลบรายการโยกเงิน"}
+                          visibleLabel="ลบ"
                           onClick={() => { if (cashTransfer) void confirmCashDelete(cashTransfer); }}
-                          tone="clay"
+                          tone="danger"
                           disabled={!cashTransfer || Boolean(cashDeleteReason) || cashTransfers.remove.isPending}
                         >
                           <Trash2 size={16} />
                         </IconButton>
                       ) : (
-                        <IconButton label={actionBlockReason ?? "ลบ"} onClick={() => void confirmDelete(transaction)} tone="clay" disabled={actionsDisabled}>
+                        <IconButton label={actionBlockReason ?? "ลบ"} visibleLabel="ลบ" onClick={() => void confirmDelete(transaction)} tone="danger" disabled={actionsDisabled}>
                           <Trash2 size={16} />
                         </IconButton>
                       )}
@@ -679,7 +697,10 @@ export function IncomeExpenseModule({
       <SharePdfWaitingModal open={pdfShare.waiting} onCancel={pdfShare.cancel} />
 
       {approvalModalOpen && (
-        <IncomeExpenseApprovalModal onClose={() => setApprovalModalOpen(false)} />
+        <IncomeExpenseApprovalModal
+          initialLocationId={selectedLocation.id}
+          onClose={() => setApprovalModalOpen(false)}
+        />
       )}
     </section>
   );

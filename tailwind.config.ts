@@ -22,8 +22,12 @@ const config: Config = {
         stockMove: "#a85f2b",
         sand: "#f9faf9",
       },
+      borderRadius: {
+        md: "0.625rem",
+        lg: "0.875rem",
+      },
       boxShadow: {
-        panel: "0 4px 16px rgba(32, 48, 40, 0.08)"
+        panel: "0 1px 2px rgba(32, 48, 40, 0.04), 0 10px 28px rgba(32, 48, 40, 0.07)",
       }
     }
   },

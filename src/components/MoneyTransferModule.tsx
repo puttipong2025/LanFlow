@@ -415,7 +415,7 @@ export function MoneyTransferModule({
                           type="button"
                           onClick={() => handleEdit(t)}
                           disabled={!online || Boolean(t.reportLockNo)}
-                          className="inline-flex h-10 items-center gap-1.5 rounded-md bg-river px-3 text-xs font-semibold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-40"
+                          className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-amber px-3 text-xs font-semibold text-white shadow-sm hover:bg-amber/90 disabled:cursor-not-allowed disabled:opacity-40"
                           title={t.reportLockNo ? `ล็อกโดยรายงาน ${t.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน` : online ? "แก้ไข" : offlineMessage}
                         >
                           <Edit3 size={14} />

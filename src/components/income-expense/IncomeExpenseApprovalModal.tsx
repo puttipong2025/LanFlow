@@ -55,20 +55,36 @@ function formatDateTime(value: string) {
   }).format(date);
 }
 
-export function IncomeExpenseApprovalModal({ onClose }: { onClose: () => void }) {
+export function IncomeExpenseApprovalModal({
+  initialLocationId,
+  onClose,
+}: {
+  initialLocationId: string;
+  onClose: () => void;
+}) {
   const { requestInput, inputDialog } = useInputDialog();
+  const [requestLocationFilter, setRequestLocationFilter] = useState(initialLocationId);
   const {
     keywords,
     settings,
     requests,
     cashDeleteRequests,
+    pendingCount,
     isLoading,
     addKeyword,
     disableKeyword,
     saveSettings,
     decideRequest,
     decideCashDeleteRequest,
-  } = useIncomeExpenseApprovals({ includeRequests: true });
+  } = useIncomeExpenseApprovals({
+    includeRequests: true,
+    requestsLocationId: requestLocationFilter === "all"
+      ? undefined
+      : requestLocationFilter,
+    pendingLocationId: requestLocationFilter === "all"
+      ? undefined
+      : requestLocationFilter,
+  });
   const { locations } = useLocations();
 
   const [keyword, setKeyword] = useState("");
@@ -81,7 +97,6 @@ export function IncomeExpenseApprovalModal({ onClose }: { onClose: () => void })
   const [isAdding, setIsAdding] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [decidingId, setDecidingId] = useState<string | null>(null);
-  const [requestLocationFilter, setRequestLocationFilter] = useState("all");
 
   useEffect(() => {
     if (!settings) return;
@@ -89,6 +104,10 @@ export function IncomeExpenseApprovalModal({ onClose }: { onClose: () => void })
     setSettingsMinAmount(settings.approvalMinAmount != null ? String(settings.approvalMinAmount) : "");
     setCashDeleteRequiresApproval(settings.cashTransferDeleteRequiresApproval);
   }, [settings]);
+
+  useEffect(() => {
+    setRequestLocationFilter(initialLocationId);
+  }, [initialLocationId]);
 
   const locationNameById = useMemo(
     () => new Map(locations.map((location) => [location.id, location.name])),
@@ -107,12 +126,6 @@ export function IncomeExpenseApprovalModal({ onClose }: { onClose: () => void })
       ? cashDeleteRequests
       : cashDeleteRequests.filter((request) => request.sourceLocationId === requestLocationFilter),
     [cashDeleteRequests, requestLocationFilter],
-  );
-
-  const pendingCount = useMemo(
-    () => filteredRequests.filter((request) => request.requestStatus === "pending").length
-      + filteredCashDeleteRequests.filter((request) => request.requestStatus === "pending").length,
-    [filteredCashDeleteRequests, filteredRequests]
   );
 
   async function handleSaveSettings(event: React.FormEvent) {

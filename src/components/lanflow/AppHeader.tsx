@@ -61,15 +61,15 @@ export function AppHeader({
 
   return (
     <>
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-3 px-3 py-3 sm:px-4 sm:py-4 lg:flex-row lg:items-center lg:justify-between">
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-3 py-4 sm:px-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <div className="flex items-center gap-3">
-            <div className="grid h-11 w-11 place-items-center rounded-md bg-leaf text-lg font-bold text-white">
+            <div className="grid size-11 place-items-center rounded-xl bg-leaf text-lg font-bold text-white shadow-sm">
               LF
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-ink">LanFlow</h1>
-              <p className="text-sm text-ink/65">{profile.name} · {profile.phone}</p>
+              <h1 className="text-balance text-2xl font-bold text-ink">LanFlow</h1>
+              <p className="text-pretty text-sm text-ink/60">{profile.name} · {profile.phone}</p>
             </div>
           </div>
         </div>
@@ -91,7 +91,7 @@ export function AppHeader({
                 setLocationMenuOpen(true);
                 focusLocationOption(event.key === "ArrowDown" ? 0 : accessibleLocations.length - 1);
               }}
-              className="focus-ring flex h-10 w-full min-w-0 items-center gap-2 rounded-md border border-black/10 bg-white px-3 text-left shadow-sm transition hover:border-leaf/35 hover:bg-mint/40"
+              className="focus-ring flex h-10 w-full min-w-0 items-center gap-2 rounded-lg border border-mint bg-white px-3 text-left shadow-sm transition hover:border-leaf/35 hover:bg-mint/35"
             >
               <Building2 size={18} className="shrink-0 text-leaf" />
               <span className="min-w-0 flex-1 truncate text-sm font-semibold text-ink">
@@ -110,7 +110,7 @@ export function AppHeader({
                 id="location-selector-listbox"
                 role="listbox"
                 aria-label="สาขาที่เข้าถึงได้"
-                className="absolute left-0 right-0 top-full z-40 mt-2 max-h-72 overflow-y-auto rounded-lg border border-black/10 bg-white p-1.5 shadow-xl"
+                className="absolute left-0 right-0 top-full z-40 mt-2 max-h-72 overflow-y-auto rounded-xl border border-mint bg-white p-1.5 shadow-xl"
               >
                 {accessibleLocations.map((location, index) => {
                   const active = location.id === selectedLocationId;
@@ -146,7 +146,7 @@ export function AppHeader({
                         event.preventDefault();
                         focusLocationOption(nextIndex);
                       }}
-                      className={`focus-ring flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm transition ${
+                      className={`focus-ring flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm transition ${
                         active ? "bg-leaf text-white" : "text-ink hover:bg-mint"
                       }`}
                     >
@@ -170,7 +170,7 @@ export function AppHeader({
             <button
               type="button"
               onClick={() => setTelegramConfigOpen(true)}
-              className="focus-ring flex items-center justify-center gap-1.5 rounded-md bg-telegram px-3 py-2 text-sm font-semibold text-white transition-colors hover:bg-telegram/90"
+              className="focus-ring flex items-center justify-center gap-1.5 rounded-lg bg-telegram px-3 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-telegram/90"
               title="ตั้งค่าการแจ้งเตือน Telegram"
               aria-label="ตั้งค่าการแจ้งเตือน Telegram"
             >
@@ -182,7 +182,7 @@ export function AppHeader({
           <button
             type="button"
             onClick={onLogout}
-            className="focus-ring flex items-center gap-1.5 rounded-md bg-danger px-3 py-2 text-sm font-semibold text-white transition-colors hover:bg-danger/90"
+            className="focus-ring flex items-center justify-center gap-1.5 rounded-lg bg-danger px-3 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-danger/90"
             title="ออกจากระบบ"
           >
             <LogOut size={16} />
