@@ -1,0 +1,4 @@
+interface:
+  display_name: "Supabase Public Replacement"
+  short_description: "แทนที่ public บน Cloud โดยรักษา Auth"
+  default_prompt: "Use $supabase-replace-public to back up Auth, replace the Supabase Cloud public schema and local master data, then verify hashes and RLS safely."
