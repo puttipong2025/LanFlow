@@ -34,5 +34,9 @@ public/swe-worker-*.js.map
 
 test-results/
 playwright-report/
+playwright/.auth/*.json
 test-failed-*.png
 page.html
+
+# Production database backups stay local and must never be committed.
+supabase/cloud-backups/
