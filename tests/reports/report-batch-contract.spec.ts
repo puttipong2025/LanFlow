@@ -53,6 +53,52 @@ function service() {
   });
 }
 
+async function findActiveLocation(
+  admin: ReturnType<typeof service>,
+  locationIds: string[],
+) {
+  const { data, error } = await admin
+    .from("locations")
+    .select("id")
+    .in("id", locationIds)
+    .eq("is_active", true)
+    .limit(1)
+    .single();
+  expect(error).toBeNull();
+  return data!.id;
+}
+
+async function activateAlternateLocation(
+  admin: ReturnType<typeof service>,
+  excludedLocationId: string,
+  allowedLocationIds?: string[],
+) {
+  let query = admin
+    .from("locations")
+    .select("id, is_active")
+    .neq("id", excludedLocationId)
+    .order("created_at", { ascending: true })
+    .limit(1);
+  if (allowedLocationIds) query = query.in("id", allowedLocationIds);
+
+  const { data, error } = await query.single();
+  expect(error).toBeNull();
+  if (!data!.is_active) {
+    expect((await admin.from("locations").update({ is_active: true }).eq("id", data!.id)).error)
+      .toBeNull();
+  }
+
+  return {
+    id: data!.id,
+    restore: async () => {
+      if (!data!.is_active) {
+        expect((await admin.from("locations").update({ is_active: false }).eq("id", data!.id)).error)
+          .toBeNull();
+      }
+    },
+  };
+}
+
 async function addIncomeExpense(
   admin: ReturnType<typeof service>,
   locationId: string,
@@ -578,15 +624,8 @@ test.describe.serial("Report batch contract @report-batch", () => {
     const db = service();
     const actor = await profile(superAdmin);
     const adminActor = await profile(admin);
-    const locationId = adminActor.locationIds[0];
-    const { data: otherLocation, error: otherLocationError } = await db
-      .from("locations")
-      .select("id")
-      .eq("is_active", true)
-      .neq("id", locationId)
-      .limit(1)
-      .single();
-    expect(otherLocationError).toBeNull();
+    const locationId = await findActiveLocation(db, adminActor.locationIds);
+    const otherLocation = await activateAlternateLocation(db, locationId);
     const incomeId = await addIncomeExpense(db, locationId, actor, "ตัวค้ำสำหรับงานบิลยางค้าง");
     const rubberId = await addRubberBill(db, locationId, actor, [20]);
     const createRequestId = crypto.randomUUID();
@@ -639,7 +678,7 @@ test.describe.serial("Report batch contract @report-batch", () => {
       expect((await db.from("rubber_bill_approval_requests").insert({
         ...requestBase,
         id: otherBranchRequestId,
-        location_id: otherLocation!.id,
+        location_id: otherLocation.id,
         operation: "create",
         client_temp_id: otherBranchRequestId,
         idempotency_key: `report-other-branch:${otherBranchRequestId}`,
@@ -698,6 +737,7 @@ test.describe.serial("Report batch contract @report-batch", () => {
         ]);
       await db.from("rubber_bills").delete().eq("id", rubberId);
       await db.from("income_expense").delete().eq("id", incomeId);
+      await otherLocation.restore();
       await admin.close();
       await superAdmin.close();
     }
@@ -911,11 +951,17 @@ test.describe.serial("Report batch contract @report-batch", () => {
     const transferId = crypto.randomUUID();
     let sourceReportId: string | null = null;
     let targetReportId: string | null = null;
+    let restoreAlternateLocation: (() => Promise<void>) | null = null;
     try {
       const actor = await profile(superAdmin);
-      const [sourceLocationId, targetLocationId] = actor.locationIds;
-      expect(sourceLocationId).toBeTruthy();
-      expect(targetLocationId).toBeTruthy();
+      const sourceLocationId = await findActiveLocation(db, actor.locationIds);
+      const targetLocation = await activateAlternateLocation(
+        db,
+        sourceLocationId,
+        actor.locationIds,
+      );
+      const targetLocationId = targetLocation.id;
+      restoreAlternateLocation = targetLocation.restore;
 
       const create = await superAdmin.request.post("/api/lanflow/cash-branch-transfers", {
         data: {
@@ -990,6 +1036,7 @@ test.describe.serial("Report batch contract @report-batch", () => {
       if (targetReportId) await deleteReport(superAdmin, targetReportId);
       if (sourceReportId) await deleteReport(superAdmin, sourceReportId);
       await db.from("money_transfers").delete().eq("id", transferId);
+      await restoreAlternateLocation?.();
       await superAdmin.close();
     }
   });

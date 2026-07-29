@@ -9045,7 +9045,7 @@ ALTER FUNCTION "public"."sync_income_expense_core"("payload" "jsonb") OWNER TO "
 
 
 CREATE OR REPLACE FUNCTION "public"."sync_money_transfer_item_source_fks"() RETURNS "trigger"
-    LANGUAGE "plpgsql"
+    LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
 declare

@@ -21,12 +21,24 @@ test(`shows all Rubber Bill errors without moving focus and restores blank numer
   const weighRow = modal.locator("table").first().locator("tbody tr").first();
   const editableZero = weighRow.locator('input[type="number"]').nth(0);
   const readOnlyZero = weighRow.locator('input[type="number"]').nth(2);
+  const deductWeight = modal.getByLabel("หักน้ำหนักยาง (กก.)");
 
   await editableZero.focus();
+  await expect(editableZero).toHaveValue("");
+  await editableZero.fill("12");
+  await editableZero.fill("");
   await expect(editableZero).toHaveValue("");
   await readOnlyZero.focus();
   await expect(editableZero).toHaveValue("0");
   await expect(readOnlyZero).toHaveValue("0");
+
+  await deductWeight.focus();
+  await expect(deductWeight).toHaveValue("");
+  await deductWeight.fill("12");
+  await deductWeight.fill("");
+  await expect(deductWeight).toHaveValue("");
+  await readOnlyZero.focus();
+  await expect(deductWeight).toHaveValue("0");
 
   const saveButton = modal.getByRole("button", { name: "บันทึกบิล" });
   await saveButton.focus();

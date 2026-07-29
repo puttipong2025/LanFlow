@@ -1,8 +1,4 @@
-function clearIfZero(event: React.FocusEvent<HTMLInputElement>) {
-  if (parseFloat(event.currentTarget.value) === 0) {
-    event.currentTarget.value = "";
-  }
-}
+import { useState } from "react";
 
 function restoreZeroIfBlank(event: React.FocusEvent<HTMLInputElement>) {
   if (event.currentTarget.value.trim() === "") {
@@ -22,23 +18,34 @@ export function NumberField({
   readOnly?: boolean;
 }) {
   const isReadOnly = readOnly || !onChange;
+  const [isBlankWhileEditing, setIsBlankWhileEditing] = useState(false);
 
   return (
     <label className="block">
       <span className="mb-1 block text-sm font-semibold text-ink/70">{label}</span>
       <input
         type="number"
-        value={Number.isFinite(value) ? value : 0}
+        value={!isReadOnly && isBlankWhileEditing ? "" : Number.isFinite(value) ? value : 0}
         readOnly={isReadOnly}
         onFocus={(event) => {
-          if (!isReadOnly) clearIfZero(event);
+          if (!isReadOnly && parseFloat(event.currentTarget.value) === 0) {
+            setIsBlankWhileEditing(true);
+          }
         }}
         onBlur={(event) => {
           if (isReadOnly) return;
+          setIsBlankWhileEditing(false);
           restoreZeroIfBlank(event);
           onChange?.(Number(event.currentTarget.value || 0));
         }}
-        onChange={(event) => onChange?.(Number(event.target.value || 0))}
+        onChange={(event) => {
+          if (event.target.value === "") {
+            setIsBlankWhileEditing(true);
+            return;
+          }
+          setIsBlankWhileEditing(false);
+          onChange?.(Number(event.target.value));
+        }}
         className="focus-ring h-11 w-full rounded-md border border-black/10 bg-white px-3 read-only:bg-slate-100 read-only:text-ink/70"
       />
     </label>

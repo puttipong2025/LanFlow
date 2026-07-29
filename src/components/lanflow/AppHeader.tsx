@@ -29,7 +29,9 @@ export function AppHeader({
   const locationMenuRef = useRef<HTMLDivElement>(null);
   const locationButtonRef = useRef<HTMLButtonElement>(null);
   const accessibleLocations = useMemo(
-    () => locations.filter((location) => profile.locationIds.includes(location.id)),
+    () => locations.filter(
+      (location) => location.active && profile.locationIds.includes(location.id)
+    ),
     [locations, profile.locationIds],
   );
   const selectedLocation = accessibleLocations.find((location) => location.id === selectedLocationId);

@@ -61,9 +61,9 @@ test.describe("last location preference", () => {
 
   test("uses the preferred accessible location and falls back when access is gone", () => {
     const locations = [
-      { id: "location-a" },
-      { id: "location-b" },
-      { id: "location-c" },
+      { id: "location-a", active: true },
+      { id: "location-b", active: true },
+      { id: "location-c", active: true },
     ];
 
     expect(resolveSelectedLocationId(locations, ["location-a", "location-b"], "location-b"))
@@ -71,5 +71,18 @@ test.describe("last location preference", () => {
     expect(resolveSelectedLocationId(locations, ["location-a"], "location-b"))
       .toBe("location-a");
     expect(resolveSelectedLocationId(locations, [], "location-b")).toBe("");
+  });
+
+  test("does not restore or fall back to an inactive location", () => {
+    const locations = [
+      { id: "retired-location", active: false },
+      { id: "chanauman", active: true },
+    ];
+
+    expect(resolveSelectedLocationId(
+      locations,
+      ["retired-location", "chanauman"],
+      "retired-location",
+    )).toBe("chanauman");
   });
 });

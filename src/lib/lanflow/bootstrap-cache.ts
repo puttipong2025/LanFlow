@@ -27,12 +27,14 @@ export function readLastLocationPreference(userId: string) {
 }
 
 export function resolveSelectedLocationId(
-  locations: Array<Pick<Location, "id">>,
+  locations: Array<Pick<Location, "id" | "active">>,
   allowedLocationIds: string[],
   preferredLocationId: string | null,
 ) {
   const allowed = new Set(allowedLocationIds);
-  const accessibleLocations = locations.filter((location) => allowed.has(location.id));
+  const accessibleLocations = locations.filter(
+    (location) => location.active && allowed.has(location.id)
+  );
   const preferredLocation = accessibleLocations.find(
     (location) => location.id === preferredLocationId
   );
@@ -56,7 +58,9 @@ export function readBootstrapCache(userId: string): BootstrapCacheData | null {
     if (!Array.isArray(parsed.locations) || parsed.locations.length === 0) return null;
     
     // Only keep locations the user has access to
-    const allowedLocations = parsed.locations.filter((l: any) => parsed.profile.locationIds.includes(l.id));
+    const allowedLocations = parsed.locations.filter(
+      (l: any) => l.active === true && parsed.profile.locationIds.includes(l.id)
+    );
     if (allowedLocations.length === 0) return null;
 
     // Fallback selectedLocationId if invalid

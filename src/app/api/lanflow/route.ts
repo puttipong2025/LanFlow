@@ -10,7 +10,11 @@ export async function GET(request: NextRequest) {
   try {
     const userId = result.auth.sub;
     const [locationsResult, profileResult, assignmentsResult] = await Promise.all([
-      result.supabase.from("locations").select("*").order("created_at", { ascending: true }),
+      result.supabase
+        .from("locations")
+        .select("*")
+        .eq("is_active", true)
+        .order("created_at", { ascending: true }),
       result.supabase.from("profiles").select("id, phone, name, role, is_active, can_access_super_admin_features, can_access_money_transfer").eq("id", userId).single(),
       result.supabase.from("user_locations").select("location_id").eq("user_id", userId),
     ]);

@@ -1,10 +1,5 @@
 import { toast } from "sonner";
-
-function clearIfZero(event: React.FocusEvent<HTMLInputElement>) {
-  if (parseFloat(event.currentTarget.value) === 0) {
-    event.currentTarget.value = "";
-  }
-}
+import { useState } from "react";
 
 function restoreZeroIfBlank(event: React.FocusEvent<HTMLInputElement>) {
   if (event.currentTarget.value.trim() === "") {
@@ -63,6 +58,7 @@ export function InlineNumber({
   ariaLabel?: string;
 }) {
   const isReadOnly = readOnly || !onChange;
+  const [isBlankWhileEditing, setIsBlankWhileEditing] = useState(false);
 
   return (
     <input
@@ -71,13 +67,20 @@ export function InlineNumber({
       inputMode={integerOnly ? "numeric" : "decimal"}
       min={integerOnly ? 0 : undefined}
       step={integerOnly ? 1 : "any"}
-      value={value === "" ? "" : Number.isFinite(value) ? value : 0}
+      value={
+        !isReadOnly && isBlankWhileEditing
+          ? ""
+          : value === "" ? "" : Number.isFinite(value) ? value : 0
+      }
       readOnly={isReadOnly}
       onFocus={(event) => {
-        if (!isReadOnly) clearIfZero(event);
+        if (!isReadOnly && parseFloat(event.currentTarget.value) === 0) {
+          setIsBlankWhileEditing(true);
+        }
       }}
       onBlur={(event) => {
         if (isReadOnly) return;
+        setIsBlankWhileEditing(false);
         if (decimalOnBlur) {
           enforceDecimalInput(event, onChange);
           return;
@@ -92,7 +95,12 @@ export function InlineNumber({
         if (integerOnly && value !== event.currentTarget.value) {
           event.currentTarget.value = value;
         }
-        onChange?.(Number(value || 0));
+        if (value === "") {
+          setIsBlankWhileEditing(true);
+          return;
+        }
+        setIsBlankWhileEditing(false);
+        onChange?.(Number(value));
       }}
       className={
         compact

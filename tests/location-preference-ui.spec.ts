@@ -17,7 +17,28 @@ test.describe("last location preference", () => {
     const accessibleLocations = data.locations.filter((location) =>
       data.profile.locationIds.includes(location.id)
     );
-    expect(accessibleLocations.length).toBeGreaterThan(1);
+    expect(accessibleLocations.length).toBeGreaterThan(0);
+
+    if (accessibleLocations.length === 1) {
+      const onlyLocationId = accessibleLocations[0].id;
+
+      await page.goto("/");
+      await expect(page.getByLabel(/^เลือกสาขา/)).toBeVisible({ timeout: 15_000 });
+      await expect.poll(() => selectedAppLocationId(page)).toBe(onlyLocationId);
+
+      await page.evaluate(
+        ({ userId }) => localStorage.setItem(
+          `lanflow:last-location:${userId}`,
+          "retired-location",
+        ),
+        { userId: data.profile.id },
+      );
+      await page.reload();
+
+      await expect.poll(() => selectedAppLocationId(page)).toBe(onlyLocationId);
+      return;
+    }
+
     const targetLocationId = accessibleLocations[accessibleLocations.length - 1].id;
 
     await page.goto("/");

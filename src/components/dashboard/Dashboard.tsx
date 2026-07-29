@@ -143,6 +143,65 @@ export function Dashboard({
     }
   }
 
+  const managerControls = canManageDashboard && managerConfig && (
+    <section className="flex flex-wrap items-end gap-3 rounded-xl border border-mint/80 bg-white p-4 shadow-panel">
+      <label className="text-sm font-semibold text-ink">
+        รอบคำนวณกลางทั้งระบบ (นาที)
+        <input
+          type="number"
+          min={10}
+          max={1440}
+          step={1}
+          value={managerConfig.intervalMinutes}
+          onChange={(event) =>
+            setManagerConfig((current) =>
+              current
+                ? {
+                    ...current,
+                    intervalMinutes: Number(event.target.value),
+                  }
+                : current,
+            )
+          }
+          className="focus-ring mt-1 block h-10 w-40 rounded-md border border-black/15 px-3"
+        />
+      </label>
+      <button
+        type="button"
+        onClick={saveRefreshInterval}
+        disabled={managerBusy !== null}
+        className="focus-ring flex h-10 items-center gap-2 rounded-lg bg-commit px-3 text-sm font-semibold text-white shadow-sm hover:bg-commit/90 disabled:opacity-50"
+      >
+        {managerBusy === "save" ? (
+          <LoaderCircle className="animate-spin" size={16} />
+        ) : (
+          <Save size={16} />
+        )}
+        บันทึกรอบ
+      </button>
+      <button
+        type="button"
+        onClick={requestRefresh}
+        disabled={
+          managerBusy !== null ||
+          snapshot.data?.status === "queued" ||
+          snapshot.data?.status === "running"
+        }
+        className="focus-ring flex h-10 items-center gap-2 rounded-lg bg-settings px-3 text-sm font-semibold text-white shadow-sm hover:bg-settings/90 disabled:opacity-50"
+      >
+        {managerBusy === "refresh" ? (
+          <LoaderCircle className="animate-spin" size={16} />
+        ) : (
+          <RefreshCw size={16} />
+        )}
+        คำนวณสาขานี้ใหม่
+      </button>
+      <p className="text-xs text-ink/50">
+        ต่ำสุด 10 นาที · ปุ่มนี้เข้าคิวทันทีและไม่สร้างประวัติผล
+      </p>
+    </section>
+  );
+
   if (!online) {
     return (
       <section className="rounded-xl border border-amber/30 bg-white p-6 text-center shadow-panel">
@@ -183,15 +242,24 @@ export function Dashboard({
   const visibleRows = feed.isPlaceholderData ? [] : rows;
   if (!summary) {
     return (
-      <section className="rounded-xl border border-mint/80 bg-white p-6 text-center shadow-panel">
-        <LoaderCircle className="mx-auto animate-spin text-leaf" size={22} />
-        <h2 className="mt-3 text-lg font-bold text-ink">
-          กำลังเตรียม Dashboard · {selectedLocation.name}
-        </h2>
-        <p className="mt-1 text-sm text-ink/55">
-          ระบบจะเก็บผลสำเร็จล่าสุดไว้หนึ่งชุดต่อสาขา
-        </p>
-      </section>
+      <div className="space-y-5">
+        <section className="rounded-xl border border-mint/80 bg-white p-6 text-center shadow-panel">
+          <LoaderCircle className="mx-auto animate-spin text-leaf" size={22} />
+          <h2 className="mt-3 text-lg font-bold text-ink">
+            กำลังเตรียม Dashboard · {selectedLocation.name}
+          </h2>
+          <p className="mt-1 text-sm text-ink/55">
+            ระบบจะเก็บผลสำเร็จล่าสุดไว้หนึ่งชุดต่อสาขา · สถานะ{" "}
+            {snapshot.data.status}
+          </p>
+          {snapshot.data.lastError && (
+            <p className="mt-2 text-sm font-semibold text-danger">
+              {snapshot.data.lastError}
+            </p>
+          )}
+        </section>
+        {managerControls}
+      </div>
     );
   }
   const waterLossValue = summary.waterLoss7Days.percent == null
@@ -216,64 +284,7 @@ export function Dashboard({
         </p>
       </div>
 
-      {canManageDashboard && managerConfig && (
-        <section className="flex flex-wrap items-end gap-3 rounded-xl border border-mint/80 bg-white p-4 shadow-panel">
-          <label className="text-sm font-semibold text-ink">
-            รอบคำนวณกลางทั้งระบบ (นาที)
-            <input
-              type="number"
-              min={10}
-              max={1440}
-              step={1}
-              value={managerConfig.intervalMinutes}
-              onChange={(event) =>
-                setManagerConfig((current) =>
-                  current
-                    ? {
-                        ...current,
-                        intervalMinutes: Number(event.target.value),
-                      }
-                    : current,
-                )
-              }
-              className="focus-ring mt-1 block h-10 w-40 rounded-md border border-black/15 px-3"
-            />
-          </label>
-          <button
-            type="button"
-            onClick={saveRefreshInterval}
-            disabled={managerBusy !== null}
-            className="focus-ring flex h-10 items-center gap-2 rounded-lg bg-commit px-3 text-sm font-semibold text-white shadow-sm hover:bg-commit/90 disabled:opacity-50"
-          >
-            {managerBusy === "save" ? (
-              <LoaderCircle className="animate-spin" size={16} />
-            ) : (
-              <Save size={16} />
-            )}
-            บันทึกรอบ
-          </button>
-          <button
-            type="button"
-            onClick={requestRefresh}
-            disabled={
-              managerBusy !== null ||
-              snapshot.data.status === "queued" ||
-              snapshot.data.status === "running"
-            }
-            className="focus-ring flex h-10 items-center gap-2 rounded-lg bg-settings px-3 text-sm font-semibold text-white shadow-sm hover:bg-settings/90 disabled:opacity-50"
-          >
-            {managerBusy === "refresh" ? (
-              <LoaderCircle className="animate-spin" size={16} />
-            ) : (
-              <RefreshCw size={16} />
-            )}
-            คำนวณสาขานี้ใหม่
-          </button>
-          <p className="text-xs text-ink/50">
-            ต่ำสุด 10 นาที · ปุ่มนี้เข้าคิวทันทีและไม่สร้างประวัติผล
-          </p>
-        </section>
-      )}
+      {managerControls}
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Metric

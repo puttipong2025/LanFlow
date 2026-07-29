@@ -23,11 +23,15 @@ export function useDashboardSnapshot(locationId: string, online: boolean) {
       await assertApiResponse(response);
       return response.json() as Promise<DashboardSnapshot>;
     },
-    refetchInterval: (query) =>
-      query.state.data?.status === "queued" ||
-      query.state.data?.status === "running"
-        ? 5_000
-        : false,
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (!data) return false;
+      const shouldPoll =
+        !data.summary ||
+        data.status === "queued" ||
+        data.status === "running";
+      return shouldPoll ? 5_000 : false;
+    },
     retry: 1,
   });
 }
