@@ -74,7 +74,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
       ledgerResult,
       latestResult,
     ] = await Promise.all([
-      rowsByIds(client, "rubber_bills", "id, bill_date, server_bill_no, local_bill_no, customer_name, bill_type, net_weight, average_price, net_rubber_value, deduction_total, net_total", ids(items, "rubber_bill")),
+      rowsByIds(client, "rubber_bills", "id, bill_date, server_bill_no, local_bill_no, customer_name, bill_type, net_weight, average_price, net_rubber_value, deduction_total, net_total, customers(class)", ids(items, "rubber_bill")),
       rowsByIds(client, "ocr_tickets", "id, date_in, ticket_id, file_name, customer_name, license_plate, weight_in, weight_out, weight_net, weight_deducted, weight_remaining, total_amount", ids(items, "ocr_ticket")),
       rowsByIds(client, "stock_entries", "id, tx_date, server_bill_no, transfer_bill_no, product_name, tx_type, quantity_delta, amount", ids(items, "acid_stock_entry")),
       ids(items, "income_expense").length > 0
@@ -157,17 +157,21 @@ export async function GET(request: NextRequest, context: RouteContext) {
 
     const details: ReportDetails = {
       report,
-      rubberBills: rubber.map((row) => ({
-        date: datePart(row.bill_date),
-        number: row.server_bill_no ?? row.local_bill_no ?? "",
-        customer: row.customer_name ?? "",
-        billType: row.bill_type ?? "",
-        netWeight: number(row.net_weight),
-        averagePrice: number(row.average_price),
-        rubberValue: number(row.net_rubber_value),
-        deduction: number(row.deduction_total),
-        net: number(row.net_total),
-      })),
+      rubberBills: rubber.map((row) => {
+        const customer = Array.isArray(row.customers) ? row.customers[0] : row.customers;
+        return {
+          date: datePart(row.bill_date),
+          number: row.server_bill_no ?? row.local_bill_no ?? "",
+          customer: row.customer_name ?? "",
+          customerGroup: customer?.class === "สาขาใหญ่จ่าย" ? "trader" : "farmer",
+          billType: row.bill_type ?? "",
+          netWeight: number(row.net_weight),
+          averagePrice: number(row.average_price),
+          rubberValue: number(row.net_rubber_value),
+          deduction: number(row.deduction_total),
+          net: number(row.net_total),
+        };
+      }),
       ocrTickets: ocr.map((row) => ({
         date: datePart(row.date_in),
         number: row.ticket_id ?? row.file_name ?? "",

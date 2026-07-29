@@ -40,6 +40,28 @@ function EmptyRow({ columns }: { columns: number }) {
   return <tr><td colSpan={columns} className="empty">ไม่มีรายการ</td></tr>;
 }
 
+type RubberBillRow = ReportDetails["rubberBills"][number];
+
+function RubberBillTable({ rows }: { rows: RubberBillRow[] }) {
+  const totals = rows.reduce((sum, row) => ({
+    weight: sum.weight + row.netWeight,
+    value: sum.value + row.rubberValue,
+    deduction: sum.deduction + row.deduction,
+    net: sum.net + row.net,
+  }), { weight: 0, value: 0, deduction: 0, net: 0 });
+
+  return (
+    <table className="report-table">
+      <thead><tr><th>วันที่</th><th>เลขที่</th><th>ลูกค้า</th><th>ประเภท</th><th className="num">น้ำหนักสุทธิ</th><th className="num">ราคาเฉลี่ย</th><th className="num">มูลค่ายาง</th><th className="num">ยอดหักเงิน</th><th className="num">ยอดที่ต้องจ่าย</th></tr></thead>
+      <tbody>
+        {rows.length === 0 && <EmptyRow columns={9} />}
+        {rows.map((row, index) => <tr key={`${row.number}-${index}`}><td>{thaiDate(row.date)}</td><td>{row.number}</td><td>{row.customer}</td><td>{row.billType}</td><td className="num">{quantity(row.netWeight)}</td><td className="num">{money(row.averagePrice)}</td><td className="num">{money(row.rubberValue)}</td><td className="num">{money(row.deduction)}</td><td className="num">{wholeMoney(row.net)}</td></tr>)}
+      </tbody>
+      <tfoot><tr><td colSpan={4}>รวม</td><td className="num">{quantity(totals.weight)}</td><td className="num">{money(totals.weight > 0 ? totals.value / totals.weight : 0)}</td><td className="num">{money(totals.value)}</td><td className="num">{money(totals.deduction)}</td><td className="num">{wholeMoney(totals.net)}</td></tr></tfoot>
+    </table>
+  );
+}
+
 export default function ReportPrintPage() {
   const params = useParams<{ reportId: string }>();
   const [details, setDetails] = useState<ReportDetails | null>(null);
@@ -76,10 +98,6 @@ export default function ReportPrintPage() {
     const income = details.incomeExpense.filter((row) => row.type === "income").reduce((sum, row) => sum + row.amount, 0);
     const expense = details.incomeExpense.filter((row) => row.type === "expense").reduce((sum, row) => sum + row.amount, 0);
     return {
-      rubberWeight: details.rubberBills.reduce((sum, row) => sum + row.netWeight, 0),
-      rubberValue: details.rubberBills.reduce((sum, row) => sum + row.rubberValue, 0),
-      rubberDeduction: details.rubberBills.reduce((sum, row) => sum + row.deduction, 0),
-      rubberNet: details.rubberBills.reduce((sum, row) => sum + row.net, 0),
       ocrNet: details.ocrTickets.reduce((sum, row) => sum + row.weightNet, 0),
       ocrRemaining: details.ocrTickets.reduce((sum, row) => sum + row.weightRemaining, 0),
       ocrAmount: details.ocrTickets.reduce((sum, row) => sum + row.amount, 0),
@@ -97,6 +115,8 @@ export default function ReportPrintPage() {
       branchPaid: details.bankTransfers.reduce((sum, row) => sum + row.branchPaid, 0),
     };
   }, [details]);
+  const traderRubberBills = details?.rubberBills.filter((row) => row.customerGroup === "trader") ?? [];
+  const farmerRubberBills = details?.rubberBills.filter((row) => row.customerGroup === "farmer") ?? [];
 
   if (error) return <main className="p-8 text-center text-red-700">{error}</main>;
   if (!details || !totals) return <main className="p-8 text-center">กำลังโหลดรายงาน...</main>;
@@ -119,6 +139,8 @@ export default function ReportPrintPage() {
         .report-meta { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px 16px; margin-top: 8px; font-size: 12px; }
         .report-section { margin-top: 16px; }
         .report-section h2 { margin: 0 0 6px; font-size: 16px; }
+        .rubber-group + .rubber-group { margin-top: 10px; }
+        .rubber-group h3 { margin: 0 0 5px; font-size: 13px; }
         .report-table { width: 100%; border-collapse: collapse; font-size: 10px; }
         .report-table th, .report-table td { border: 1px solid #6c786f; padding: 4px 5px; vertical-align: top; }
         .report-table th { background: #dcebdd; text-align: left; }
@@ -153,14 +175,14 @@ export default function ReportPrintPage() {
 
       <section className="report-section">
         <h2>1. บิลยาง</h2>
-        <table className="report-table">
-          <thead><tr><th>วันที่</th><th>เลขที่</th><th>ลูกค้า</th><th>ประเภท</th><th className="num">น้ำหนักสุทธิ</th><th className="num">ราคาเฉลี่ย</th><th className="num">มูลค่ายาง</th><th className="num">ยอดหักเงิน</th><th className="num">ยอดที่ต้องจ่าย</th></tr></thead>
-          <tbody>
-            {details.rubberBills.length === 0 && <EmptyRow columns={9} />}
-            {details.rubberBills.map((row, index) => <tr key={`${row.number}-${index}`}><td>{thaiDate(row.date)}</td><td>{row.number}</td><td>{row.customer}</td><td>{row.billType}</td><td className="num">{quantity(row.netWeight)}</td><td className="num">{money(row.averagePrice)}</td><td className="num">{money(row.rubberValue)}</td><td className="num">{money(row.deduction)}</td><td className="num">{wholeMoney(row.net)}</td></tr>)}
-          </tbody>
-          <tfoot><tr><td colSpan={4}>รวม</td><td className="num">{quantity(totals.rubberWeight)}</td><td className="num">{money(totals.rubberWeight > 0 ? totals.rubberValue / totals.rubberWeight : 0)}</td><td className="num">{money(totals.rubberValue)}</td><td className="num">{money(totals.rubberDeduction)}</td><td className="num">{wholeMoney(totals.rubberNet)}</td></tr></tfoot>
-        </table>
+        <div className="rubber-group">
+          <h3>1.1 ผู้ค้าขาย</h3>
+          <RubberBillTable rows={traderRubberBills} />
+        </div>
+        <div className="rubber-group">
+          <h3>1.2 ชาวสวน</h3>
+          <RubberBillTable rows={farmerRubberBills} />
+        </div>
       </section>
 
       <section className="report-section">

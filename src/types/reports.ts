@@ -27,6 +27,7 @@ export type ReportDetails = {
     date: string;
     number: string;
     customer: string;
+    customerGroup: "trader" | "farmer";
     billType: string;
     netWeight: number;
     averagePrice: number;

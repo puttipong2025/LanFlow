@@ -1,6 +1,7 @@
 import { expect, test, type Browser, type BrowserContext } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 import { selectAppLocation } from "../helpers/select-app-location";
+import type { ReportDetails } from "@/types/reports";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -288,6 +289,90 @@ test.describe.serial("Report batch contract @report-batch", () => {
     } finally {
       await db.from("locations").delete().eq("id", emptyLocationId);
       await Promise.all([user.close(), adminContext.close(), superAdmin.close()]);
+    }
+  });
+
+  test("rubber bill groups follow the current customer class and default to farmer", async ({ browser }) => {
+    const adminContext = await authContext(browser, "admin");
+    const superAdmin = await authContext(browser, "super_admin");
+    const db = service();
+    const customerIds = [crypto.randomUUID(), crypto.randomUUID()];
+    const billIds: string[] = [];
+    let reportId: string | null = null;
+
+    try {
+      const actor = await profile(adminContext);
+      const locationId = actor.locationIds[0];
+      const marker = crypto.randomUUID().slice(0, 8);
+      const traderName = `ผู้ค้าขายรายงาน ${marker}`;
+      const farmerName = `ชาวสวนรายงาน ${marker}`;
+      const fallbackName = `ชาวสวนไม่มีทะเบียน ${marker}`;
+
+      const { error: customerError } = await db.from("customers").insert([
+        {
+          id: customerIds[0],
+          client_temp_id: customerIds[0],
+          idempotency_key: `report-customer:${customerIds[0]}`,
+          class: "สาขาใหญ่จ่าย",
+          main_name: traderName,
+          default_location_id: locationId,
+          created_by_user_id: actor.id,
+          created_by_name: actor.name,
+          created_by_phone: actor.phone,
+        },
+        {
+          id: customerIds[1],
+          client_temp_id: customerIds[1],
+          idempotency_key: `report-customer:${customerIds[1]}`,
+          class: "สาขานี้จ่าย",
+          main_name: farmerName,
+          default_location_id: locationId,
+          created_by_user_id: actor.id,
+          created_by_name: actor.name,
+          created_by_phone: actor.phone,
+        },
+      ]);
+      expect(customerError).toBeNull();
+
+      billIds.push(
+        await addRubberBill(db, locationId, actor, [20]),
+        await addRubberBill(db, locationId, actor, [21]),
+        await addRubberBill(db, locationId, actor, [22])
+      );
+      const billCustomers = [
+        { id: billIds[0], customer_id: customerIds[0], customer_name: traderName },
+        { id: billIds[1], customer_id: customerIds[1], customer_name: farmerName },
+        { id: billIds[2], customer_id: null, customer_name: fallbackName },
+      ];
+      for (const bill of billCustomers) {
+        const { error } = await db.from("rubber_bills")
+          .update({ customer_id: bill.customer_id, customer_name: bill.customer_name })
+          .eq("id", bill.id);
+        expect(error).toBeNull();
+      }
+
+      reportId = (await createReport(adminContext, locationId)).id;
+      const firstResponse = await adminContext.request.get(`/api/lanflow/reports/${reportId}`);
+      expect(firstResponse.ok(), await firstResponse.text()).toBeTruthy();
+      const first = await firstResponse.json() as ReportDetails;
+      const firstGroups = new Map(first.rubberBills.map((bill) => [bill.customer, bill.customerGroup]));
+      expect(firstGroups.get(traderName)).toBe("trader");
+      expect(firstGroups.get(farmerName)).toBe("farmer");
+      expect(firstGroups.get(fallbackName)).toBe("farmer");
+
+      expect((await db.from("customers")
+        .update({ class: "สาขานี้จ่าย" })
+        .eq("id", customerIds[0])).error).toBeNull();
+      const updatedResponse = await adminContext.request.get(`/api/lanflow/reports/${reportId}`);
+      expect(updatedResponse.ok(), await updatedResponse.text()).toBeTruthy();
+      const updated = await updatedResponse.json() as ReportDetails;
+      const updatedTrader = updated.rubberBills.find((bill) => bill.customer === traderName);
+      expect(updatedTrader?.customerGroup).toBe("farmer");
+    } finally {
+      if (reportId) await deleteReport(superAdmin, reportId);
+      if (billIds.length > 0) await db.from("rubber_bills").delete().in("id", billIds);
+      await db.from("customers").delete().in("id", customerIds);
+      await Promise.all([adminContext.close(), superAdmin.close()]);
     }
   });
 

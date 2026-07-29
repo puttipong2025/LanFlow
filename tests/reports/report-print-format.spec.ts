@@ -20,6 +20,7 @@ test("prints rubber payable as whole baht while preserving two-decimal money fie
       date: "2026-07-27",
       number: "RB-FORMAT-TEST",
       customer: "ลูกค้าทดสอบ",
+      customerGroup: "farmer",
       billType: "ชั่ง",
       netWeight: 90.12,
       averagePrice: 28.55,
@@ -52,12 +53,19 @@ test("prints rubber payable as whole baht while preserving two-decimal money fie
     const rubberSection = page.locator("section").filter({
       has: page.getByRole("heading", { name: "1. บิลยาง" }),
     });
-    await expect(rubberSection).toContainText("90.12");
-    await expect(rubberSection).toContainText("28.55");
-    await expect(rubberSection).toContainText("2,572.11");
-    await expect(rubberSection.getByRole("row").nth(1)).toContainText("2,572");
-    await expect(rubberSection.getByRole("row").nth(1)).not.toContainText("2,572.00");
-    await expect(rubberSection.getByRole("row").last()).not.toContainText("2,572.00");
+    const traderGroup = rubberSection.locator(".rubber-group").filter({
+      has: page.getByRole("heading", { name: "1.1 ผู้ค้าขาย" }),
+    });
+    const farmerGroup = rubberSection.locator(".rubber-group").filter({
+      has: page.getByRole("heading", { name: "1.2 ชาวสวน" }),
+    });
+    await expect(traderGroup).toContainText("ไม่มีรายการ");
+    await expect(farmerGroup).toContainText("90.12");
+    await expect(farmerGroup).toContainText("28.55");
+    await expect(farmerGroup).toContainText("2,572.11");
+    await expect(farmerGroup.getByRole("row").nth(1)).toContainText("2,572");
+    await expect(farmerGroup.getByRole("row").nth(1)).not.toContainText("2,572.00");
+    await expect(farmerGroup.getByRole("row").last()).not.toContainText("2,572.00");
   } finally {
     await context.close();
   }
