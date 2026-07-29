@@ -22,7 +22,7 @@ function bangkokTimestamp(date: string, hour: number, second = 0) {
 test.describe("Dashboard overview @dashboard", () => {
   test.use({ storageState: "playwright/.auth/user.json" });
 
-  test("renders the new cards and hides all figures offline", async ({ page }) => {
+  test("renders the new cards and falls back to Rubber Bills offline", async ({ page }) => {
     await page.goto("/");
 
     await expect(page.getByRole("heading", { name: /ภาพรวม ·/ })).toBeVisible({ timeout: 15_000 });
@@ -44,10 +44,73 @@ test.describe("Dashboard overview @dashboard", () => {
     await expect(page.getByRole("button", { name: "หน้าถัดไป" })).toBeVisible();
     await expect(page.getByRole("heading", { name: /บิลยาง ·/ })).toHaveCount(0);
 
+    await page.getByRole("button", { name: "ออกจากระบบ", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "ยืนยันออกจากระบบ?" })).toBeVisible();
+    await expect(page.getByText("คุณต้องการออกจากบัญชีนี้หรือไม่", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "ยกเลิก", exact: true }).click();
+    await expect(page.getByRole("heading", { name: /ภาพรวม ·/ })).toBeVisible();
+
+    await page.getByRole("button", { name: "ออกจากระบบ", exact: true }).click();
     await page.context().setOffline(true);
-    await expect(page.getByText("ต้องออนไลน์เพื่อดูภาพรวมล่าสุด", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "ออกจากระบบ", exact: true }).last().click();
+    await expect(
+      page.getByRole("heading", { name: "ออกจากระบบได้เมื่อออนไลน์เท่านั้น" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "ตกลง", exact: true }).click();
+    await expect(page.getByRole("heading", { name: /บิลยาง ·/ })).toBeVisible();
     await expect(page.getByRole("heading", { name: "รายการเงินล่าสุด" })).toHaveCount(0);
+    for (const label of ["ภาพรวม", "สต็อกสินค้า", "ลูกค้า", "ขนส่งและพนักงาน"]) {
+      await expect(page.getByRole("button", { name: label, exact: true })).toBeDisabled();
+    }
+    await expect(
+      page.getByRole("button", { name: "ออกจากระบบได้เมื่อออนไลน์เท่านั้น" }),
+    ).toBeDisabled();
     await page.context().setOffline(false);
+  });
+
+  test("logs out only after confirmation", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: /ภาพรวม ·/ })).toBeVisible({
+      timeout: 15_000,
+    });
+
+    await page.getByRole("button", { name: "ออกจากระบบ", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "ยืนยันออกจากระบบ?" })).toBeVisible();
+    await page.getByRole("button", { name: "ออกจากระบบ", exact: true }).last().click();
+
+    await expect(page.getByRole("button", { name: "เข้าสู่ระบบ" })).toBeVisible({
+      timeout: 10_000,
+    });
+  });
+
+  test("keeps the current session and cache when Supabase sign-out fails", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: /ภาพรวม ·/ })).toBeVisible({
+      timeout: 15_000,
+    });
+    const cachedUserId = await page.evaluate(() =>
+      localStorage.getItem("lanflow:last-auth-user")
+    );
+    expect(cachedUserId).toBeTruthy();
+    await page.route("**/auth/v1/logout**", (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ message: "forced sign-out failure" }),
+      })
+    );
+
+    await page.getByRole("button", { name: "ออกจากระบบ", exact: true }).click();
+    await page.getByRole("button", { name: "ออกจากระบบ", exact: true }).last().click();
+
+    await expect(
+      page.getByRole("heading", { name: "ออกจากระบบไม่สำเร็จ" })
+    ).toBeVisible();
+    await page.getByRole("button", { name: "ตกลง", exact: true }).click();
+    await expect(page.getByRole("heading", { name: /ภาพรวม ·/ })).toBeVisible();
+    await expect.poll(() =>
+      page.evaluate(() => localStorage.getItem("lanflow:last-auth-user"))
+    ).toBe(cachedUserId);
   });
 
   test("calculates the agreed metrics and paginates individual money rows", async ({ request }) => {

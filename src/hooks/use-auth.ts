@@ -279,10 +279,11 @@ export function useAuth(initialProfile: Profile | null = null): AuthState {
   }, []);
 
   const logout = useCallback(async () => {
-    clearOfflineAuthCache();
-
     const supabase = createSupabaseBrowserClient();
-    await supabase.auth.signOut();
+    const { error } = await supabase.auth.signOut();
+    if (error) throw error;
+
+    clearOfflineAuthCache();
     setProfile(null);
     setMode("signed_out");
     setOfflineUntil(null);

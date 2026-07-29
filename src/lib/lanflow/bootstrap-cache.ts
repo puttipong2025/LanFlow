@@ -6,6 +6,39 @@ type BootstrapCacheData = {
   selectedLocationId: string;
 };
 
+function lastLocationPreferenceKey(userId: string) {
+  return `lanflow:last-location:${userId}`;
+}
+
+export function writeLastLocationPreference(userId: string, locationId: string) {
+  if (!userId || !locationId) return;
+  try {
+    localStorage.setItem(lastLocationPreferenceKey(userId), locationId);
+  } catch { /* skip */ }
+}
+
+export function readLastLocationPreference(userId: string) {
+  if (!userId) return null;
+  try {
+    return localStorage.getItem(lastLocationPreferenceKey(userId));
+  } catch {
+    return null;
+  }
+}
+
+export function resolveSelectedLocationId(
+  locations: Array<Pick<Location, "id">>,
+  allowedLocationIds: string[],
+  preferredLocationId: string | null,
+) {
+  const allowed = new Set(allowedLocationIds);
+  const accessibleLocations = locations.filter((location) => allowed.has(location.id));
+  const preferredLocation = accessibleLocations.find(
+    (location) => location.id === preferredLocationId
+  );
+  return preferredLocation?.id ?? accessibleLocations[0]?.id ?? "";
+}
+
 export function writeBootstrapCache(userId: string, data: BootstrapCacheData) {
   try {
     localStorage.setItem(`lanflow_bootstrap_cache:${userId}`, JSON.stringify(data));

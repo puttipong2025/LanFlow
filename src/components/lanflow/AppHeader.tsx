@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { BellRing, Building2, Check, ChevronDown, LogOut } from "lucide-react";
+import { BellRing, Building2, Check, ChevronDown } from "lucide-react";
 import type { Location, Profile } from "@/types";
 import { canManageSystemFeatures } from "@/lib/permissions";
 import { TelegramBadgeConfigModal } from "@/components/lanflow/TelegramBadgeConfigModal";
+import { LogoutButton } from "@/components/lanflow/LogoutButton";
 
 export function AppHeader({
   profile,
@@ -12,14 +13,16 @@ export function AppHeader({
   selectedLocationId,
   locationBadgeTotals,
   onLocationChange,
-  onLogout
+  onLogout,
+  online,
 }: {
   profile: Profile;
   locations: Location[];
   selectedLocationId: string;
   locationBadgeTotals: Record<string, number>;
   onLocationChange: (locationId: string) => void;
-  onLogout: () => void;
+  onLogout: () => void | Promise<void>;
+  online: boolean;
 }) {
   const [telegramConfigOpen, setTelegramConfigOpen] = useState(false);
   const [locationMenuOpen, setLocationMenuOpen] = useState(false);
@@ -179,15 +182,7 @@ export function AppHeader({
             </button>
           )}
 
-          <button
-            type="button"
-            onClick={onLogout}
-            className="focus-ring flex items-center justify-center gap-1.5 rounded-lg bg-danger px-3 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-danger/90"
-            title="ออกจากระบบ"
-          >
-            <LogOut size={16} />
-            <span>ออกจากระบบ</span>
-          </button>
+          <LogoutButton online={online} onLogout={onLogout} />
         </div>
       </div>
 

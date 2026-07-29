@@ -1,6 +1,6 @@
 "use client";
 
-import { ShieldCheck, LogOut } from "lucide-react";
+import { ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import { useEffect, useMemo, useState } from "react";
 import { useAuthContext } from "@/components/AuthProvider";
@@ -18,7 +18,13 @@ import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { useIncomeExpense } from "@/hooks/useIncomeExpense";
 import { useActionableBadges } from "@/hooks/useActionableBadges";
 
-import { writeBootstrapCache, readBootstrapCache } from "@/lib/lanflow/bootstrap-cache";
+import {
+  readBootstrapCache,
+  readLastLocationPreference,
+  resolveSelectedLocationId,
+  writeBootstrapCache,
+  writeLastLocationPreference,
+} from "@/lib/lanflow/bootstrap-cache";
 import { type Tab } from "@/components/lanflow/tabs";
 import { Dashboard } from "@/components/dashboard/Dashboard";
 import { RubberBillsModule } from "@/components/rubber-bills/RubberBillsModule";
@@ -28,13 +34,18 @@ import { ReportsModule } from "@/components/reports/ReportsModule";
 import { RubberExportsModule } from "@/components/rubber-exports/RubberExportsModule";
 import { AppHeader } from "@/components/lanflow/AppHeader";
 import { NavigationTabs } from "@/components/lanflow/NavigationTabs";
+import { LogoutButton } from "@/components/lanflow/LogoutButton";
 import {
   canAccessSourceLocation,
   canManageSystemFeatures,
   canUseMoneyTransfer,
   canUseReports,
 } from "@/lib/permissions";
-import { getOfflineTabBlockMessage, isTabBlockedOffline } from "@/lib/offline-module-policy";
+import {
+  getOfflineTabBlockMessage,
+  isTabBlockedOffline,
+  OFFLINE_FALLBACK_TAB,
+} from "@/lib/offline-module-policy";
 import { getOcrActionState } from "@/lib/ocr-action-state";
 
 export function LanFlowApp() {
@@ -65,7 +76,8 @@ export function LanFlowApp() {
     locationId: string;
   } | null>(null);
   const [ocrUploadItems, setOcrUploadItems] = useState<UploadItem[]>([]);
-  const [online, setOnline] = useState(true);
+  const [online, setOnline] = useState(false);
+  const [connectivityKnown, setConnectivityKnown] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
 
   useEffect(() => {
@@ -84,7 +96,11 @@ export function LanFlowApp() {
         if (cached) {
           setLocations(cached.locations);
           setProfile(cached.profile);
-          setSelectedLocationId(cached.selectedLocationId);
+          setSelectedLocationId(resolveSelectedLocationId(
+            cached.locations,
+            cached.profile.locationIds,
+            readLastLocationPreference(authProfileId) ?? cached.selectedLocationId,
+          ));
         }
         setIsLoaded(true);
         return;
@@ -99,7 +115,11 @@ export function LanFlowApp() {
         setLocations(data.locations);
         setProfile(data.profile);
         
-        const locId = data.profile.locationIds[0] ?? data.locations[0]?.id ?? "";
+        const locId = resolveSelectedLocationId(
+          data.locations,
+          data.profile.locationIds,
+          readLastLocationPreference(authProfileId),
+        );
         setSelectedLocationId(locId);
 
         writeBootstrapCache(authProfileId, {
@@ -124,7 +144,10 @@ export function LanFlowApp() {
   }, [authProfileId]);
 
   useEffect(() => {
-    const syncOnlineState = () => setOnline(navigator.onLine);
+    const syncOnlineState = () => {
+      setOnline(navigator.onLine);
+      setConnectivityKnown(true);
+    };
     syncOnlineState();
     window.addEventListener("online", syncOnlineState);
     window.addEventListener("offline", syncOnlineState);
@@ -151,15 +174,17 @@ export function LanFlowApp() {
   }, [activeTab, canAccessReports]);
 
   useEffect(() => {
+    if (!connectivityKnown) return;
     if (!isTabBlockedOffline(activeTab, online)) return;
     const message = getOfflineTabBlockMessage(activeTab);
     if (message) toast.error(message);
-    setActiveTab("dashboard");
-  }, [activeTab, online]);
+    setActiveTab(OFFLINE_FALLBACK_TAB);
+  }, [activeTab, connectivityKnown, online]);
 
   // Persist selected location on change
   useEffect(() => {
     if (authProfileId && isLoaded && locations.length > 0) {
+      writeLastLocationPreference(authProfileId, selectedLocationId);
       writeBootstrapCache(authProfileId, {
         locations,
         profile,
@@ -216,13 +241,11 @@ export function LanFlowApp() {
           บัญชีของคุณยังไม่ได้รับการกำหนดสาขา<br />
           กรุณาติดต่อผู้ดูแลระบบเพื่อกำหนดสาขาให้คุณ
         </p>
-        <button
-          onClick={auth.logout}
-          className="focus-ring mt-6 flex items-center gap-2 rounded-md bg-danger px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-danger/90"
-        >
-          <LogOut size={16} />
-          ออกจากระบบ
-        </button>
+        <LogoutButton
+          online={online}
+          onLogout={auth.logout}
+          className="mt-6 px-4"
+        />
       </div>
     );
   }
@@ -302,6 +325,7 @@ export function LanFlowApp() {
           locationBadgeTotals={locationBadgeTotals}
           onLocationChange={setSelectedLocationId}
           onLogout={auth.logout}
+          online={online}
         />
         <NavigationTabs
           activeTab={activeTab}

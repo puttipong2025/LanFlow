@@ -40,6 +40,8 @@ test.describe('Offline Auth Cache Clearance', () => {
 
     // Logout
     await page.click('button:has-text("ออกจากระบบ")');
+    await expect(page.getByRole('heading', { name: 'ยืนยันออกจากระบบ?' })).toBeVisible();
+    await page.getByRole('button', { name: 'ออกจากระบบ', exact: true }).last().click();
     await expect(page.locator('text=เข้าสู่ระบบ')).toBeVisible({ timeout: 10000 });
 
     // Verify localStorage cleared
