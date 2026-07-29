@@ -52,7 +52,13 @@ async function ensureTestUser() {
     }
 
     await admin.from('profiles').upsert({
-      id: u.id, phone: u.phone, name: `LanFlow ${u.role}`, role: u.role, is_active: true, password_hash: null,
+      id: u.id,
+      phone: u.phone,
+      name: `LanFlow ${u.role}`,
+      role: u.role,
+      is_active: true,
+      password_hash: null,
+      can_access_super_admin_features: u.role === 'super_admin',
     }, { onConflict: 'id' });
 
     // Ensure users have access to locations in user_locations
