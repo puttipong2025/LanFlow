@@ -21,15 +21,15 @@ export function SharePdfWaitingModal({
           <div className="flex items-center gap-3">
             <LoaderCircle className="animate-spin text-river" size={24} />
             <div>
-              <h2 id="share-pdf-waiting-title" className="font-bold text-ink">กำลังสร้าง PDF</h2>
-              <p className="text-sm text-ink/60">กรุณารอสักครู่</p>
+              <h2 id="share-pdf-waiting-title" className="text-balance font-bold text-ink">กำลังสร้าง PDF</h2>
+              <p className="text-pretty text-sm text-ink/60">กรุณารอสักครู่</p>
             </div>
           </div>
           <button
             type="button"
             aria-label="ปิดหน้าต่างรอแชร์ PDF"
             onClick={onCancel}
-            className="focus-ring grid h-9 w-9 place-items-center rounded-md bg-actionSecondary text-white"
+            className="focus-ring grid size-9 place-items-center rounded-md bg-actionSecondary text-white"
           >
             <X size={17} />
           </button>

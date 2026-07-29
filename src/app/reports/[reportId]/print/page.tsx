@@ -5,50 +5,24 @@ import { useParams } from "next/navigation";
 import { Printer } from "lucide-react";
 import type { ReportDetails } from "@/types/reports";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
-
-function money(value: number) {
-  return value.toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-function wholeMoney(value: number) {
-  return value.toLocaleString("th-TH", { maximumFractionDigits: 0 });
-}
-
-function quantity(value: number) {
-  return value.toLocaleString("th-TH", { maximumFractionDigits: 2 });
-}
-
-function thaiDate(value: string) {
-  if (!value) return "-";
-  return new Intl.DateTimeFormat("th-TH", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "Asia/Bangkok",
-  }).format(new Date(`${value}T00:00:00+07:00`));
-}
-
-function thaiDateTime(value: string) {
-  return new Intl.DateTimeFormat("th-TH", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "Asia/Bangkok",
-  }).format(new Date(value));
-}
+import {
+  buildReportPresentation,
+  formatMoney as money,
+  formatQuantity as quantity,
+  formatThaiDate as thaiDate,
+  formatThaiDateTime as thaiDateTime,
+  formatWholeMoney as wholeMoney,
+  reportStatusLabel,
+  rubberBillTotals,
+  type RubberBillRow,
+} from "@/lib/reports/report-presentation";
 
 function EmptyRow({ columns }: { columns: number }) {
   return <tr><td colSpan={columns} className="empty">ไม่มีรายการ</td></tr>;
 }
 
-type RubberBillRow = ReportDetails["rubberBills"][number];
-
 function RubberBillTable({ rows }: { rows: RubberBillRow[] }) {
-  const totals = rows.reduce((sum, row) => ({
-    weight: sum.weight + row.netWeight,
-    value: sum.value + row.rubberValue,
-    deduction: sum.deduction + row.deduction,
-    net: sum.net + row.net,
-  }), { weight: 0, value: 0, deduction: 0, net: 0 });
+  const totals = rubberBillTotals(rows);
 
   return (
     <table className="report-table">
@@ -93,33 +67,14 @@ export default function ReportPrintPage() {
     return () => window.clearTimeout(timer);
   }, [details]);
 
-  const totals = useMemo(() => {
-    if (!details) return null;
-    const income = details.incomeExpense.filter((row) => row.type === "income").reduce((sum, row) => sum + row.amount, 0);
-    const expense = details.incomeExpense.filter((row) => row.type === "expense").reduce((sum, row) => sum + row.amount, 0);
-    return {
-      ocrNet: details.ocrTickets.reduce((sum, row) => sum + row.weightNet, 0),
-      ocrRemaining: details.ocrTickets.reduce((sum, row) => sum + row.weightRemaining, 0),
-      ocrAmount: details.ocrTickets.reduce((sum, row) => sum + row.amount, 0),
-      income,
-      expense,
-      balance: income - expense,
-      stockQuantity: details.stock.reduce((sum, row) => sum + row.quantity, 0),
-      stockAmount: details.stock.reduce((sum, row) => sum + row.amount, 0),
-      payrollAmount: details.timePayroll.reduce((sum, row) => sum + (row.amount ?? 0), 0),
-      workHours: details.timePayroll.filter((row) => row.category === "เวลาทำงาน").reduce((sum, row) => sum + (row.quantity ?? 0), 0),
-      leaveDays: details.timePayroll.filter((row) => row.category === "ลา").reduce((sum, row) => sum + (row.quantity ?? 0), 0),
-      transferAmount: details.bankTransfers.reduce((sum, row) => sum + row.amount, 0),
-      slipAmount: details.bankTransfers.reduce((sum, row) => sum + row.slipAmount, 0),
-      fee: details.bankTransfers.reduce((sum, row) => sum + row.fee, 0),
-      branchPaid: details.bankTransfers.reduce((sum, row) => sum + row.branchPaid, 0),
-    };
-  }, [details]);
-  const traderRubberBills = details?.rubberBills.filter((row) => row.customerGroup === "trader") ?? [];
-  const farmerRubberBills = details?.rubberBills.filter((row) => row.customerGroup === "farmer") ?? [];
+  const presentation = useMemo(
+    () => details ? buildReportPresentation(details) : null,
+    [details]
+  );
 
-  if (error) return <main className="p-8 text-center text-red-700">{error}</main>;
-  if (!details || !totals) return <main className="p-8 text-center">กำลังโหลดรายงาน...</main>;
+  if (error) return <main className="p-8 text-center text-pretty text-red-700">{error}</main>;
+  if (!details || !presentation) return <main className="p-8 text-center text-pretty">กำลังโหลดรายงาน...</main>;
+  const { farmerRubberBills, incomeExpense, totals, traderRubberBills } = presentation;
 
   return (
     <main className="report-page">
@@ -135,19 +90,21 @@ export default function ReportPrintPage() {
         }
         .report-page { margin: 0 auto; max-width: 1500px; padding: 20px; color: #14251c; font-family: Arial, "Noto Sans Thai", sans-serif; }
         .report-header { border-bottom: 2px solid #14251c; padding-bottom: 10px; }
-        .report-header h1 { margin: 0; font-size: 22px; }
-        .report-meta { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px 16px; margin-top: 8px; font-size: 12px; }
+        .report-header h1 { margin: 0; font-size: 18pt; text-wrap: balance; }
+        .report-meta { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px 16px; margin-top: 8px; font-size: 11pt; }
         .report-section { margin-top: 16px; }
-        .report-section h2 { margin: 0 0 6px; font-size: 16px; }
+        .report-section h2 { margin: 0 0 6px; font-size: 13pt; text-wrap: balance; }
         .rubber-group + .rubber-group { margin-top: 10px; }
-        .rubber-group h3 { margin: 0 0 5px; font-size: 13px; }
-        .report-table { width: 100%; border-collapse: collapse; font-size: 10px; }
+        .rubber-group h3 { margin: 0 0 5px; font-size: 13pt; text-wrap: balance; }
+        .report-table { width: 100%; border-collapse: collapse; font-size: 10pt; font-variant-numeric: tabular-nums; }
         .report-table th, .report-table td { border: 1px solid #6c786f; padding: 4px 5px; vertical-align: top; }
         .report-table th { background: #dcebdd; text-align: left; }
         .report-table .num { text-align: right; white-space: nowrap; }
-        .report-table tfoot td { background: #f1f5f2; font-weight: 700; }
+        .report-table tfoot td { background: #f1f5f2; font-size: 13pt; font-weight: 700; }
+        .report-table tfoot .net-balance { background: #dcebdd; font-size: 15pt; text-align: right; }
         .empty { padding: 12px !important; text-align: center; color: #647067; }
         .summary-grid { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 12px; }
+        .stock-balance { margin-top: 8px; font-size: 13pt; font-weight: 700; text-align: right; }
         .deleted { color: #a12626; font-weight: 700; }
       `}</style>
 
@@ -169,7 +126,7 @@ export default function ReportPrintPage() {
           <div><strong>ผู้สร้าง:</strong> {details.report.createdByName}</div>
           <div><strong>สร้างเมื่อ:</strong> {thaiDateTime(details.report.createdAt)}</div>
           <div><strong>จำนวน source:</strong> {details.report.itemCount.toLocaleString("th-TH")}</div>
-          <div><strong>สถานะ:</strong> <span className={details.report.status === "deleted" ? "deleted" : ""}>{details.report.status === "active" ? "ใช้งาน" : "ลบแล้ว (สำเนา)"}</span></div>
+          <div><strong>สถานะ:</strong> <span className={details.report.status === "deleted" ? "deleted" : ""}>{reportStatusLabel(details.report)}</span></div>
         </div>
       </header>
 
@@ -200,12 +157,15 @@ export default function ReportPrintPage() {
       <section className="report-section">
         <h2>3. รับ–จ่ายรวม</h2>
         <table className="report-table">
-          <thead><tr><th>วันที่</th><th>เลขที่</th><th>ประเภท</th><th>รายการ</th><th className="num">จำนวนเงิน</th></tr></thead>
+          <thead><tr><th>วันที่</th><th>เลขที่</th><th>รายการ</th><th className="num">รายรับ</th><th className="num">รายจ่าย</th></tr></thead>
           <tbody>
-            {details.incomeExpense.length === 0 && <EmptyRow columns={5} />}
-            {details.incomeExpense.map((row, index) => <tr key={`${row.number}-${index}`}><td>{thaiDate(row.date)}</td><td>{row.number}</td><td>{row.type === "income" ? "รายรับ" : "รายจ่าย"}</td><td>{row.title}</td><td className="num">{money(row.amount)}</td></tr>)}
+            {incomeExpense.length === 0 && <EmptyRow columns={5} />}
+            {incomeExpense.map((row, index) => <tr key={`${row.number}-${index}`}><td>{thaiDate(row.date)}</td><td>{row.number}</td><td>{row.title}</td><td className="num">{row.income === null ? "" : money(row.income)}</td><td className="num">{row.expense === null ? "" : money(row.expense)}</td></tr>)}
           </tbody>
-          <tfoot><tr><td colSpan={5}><div className="summary-grid"><span>รายรับรวม {money(totals.income)}</span><span>รายจ่ายรวม {money(totals.expense)}</span><span>ยอดคงเหลือสุทธิ {money(totals.balance)}</span></div></td></tr></tfoot>
+          <tfoot>
+            <tr><td colSpan={3}>รวม</td><td className="num">{money(totals.income)}</td><td className="num">{money(totals.expense)}</td></tr>
+            <tr><td colSpan={5} className="net-balance">ยอดคงเหลือสุทธิ {money(totals.balance)}</td></tr>
+          </tfoot>
         </table>
       </section>
 
@@ -219,7 +179,7 @@ export default function ReportPrintPage() {
           </tbody>
           <tfoot><tr><td colSpan={4}>รวมการเคลื่อนไหว</td><td className="num">{quantity(totals.stockQuantity)}</td><td className="num">{money(totals.stockAmount)}</td></tr></tfoot>
         </table>
-        <div className="mt-2 text-right text-xs font-semibold">
+        <div className="stock-balance">
           ยอดคงเหลือ ณ cutoff: {details.stockBalances.length === 0
             ? "ไม่มีรายการ"
             : details.stockBalances.map((row) => `${row.product} ${quantity(row.quantity)}`).join(" · ")}

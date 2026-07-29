@@ -1,12 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { FilePlus2, Loader2, Printer, RotateCw, Trash2 } from "lucide-react";
+import { FilePlus2, Loader2, RotateCw, Share2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import type { Location, Profile } from "@/types";
-import type { ReportSummary } from "@/types/reports";
+import type { ReportDetails, ReportSummary } from "@/types/reports";
 import { ApiResponseError, assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { canManageSystemFeatures } from "@/lib/permissions";
+import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
+import { useSharePdf } from "@/hooks/useSharePdf";
+import { createReportPdfFile } from "@/lib/reports/report-pdf";
+import { reportShareTitle } from "@/lib/reports/report-presentation";
 
 function dateTime(value: string) {
   return new Intl.DateTimeFormat("th-TH", {
@@ -44,6 +48,8 @@ export function ReportsModule({
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [sharingId, setSharingId] = useState<string | null>(null);
+  const pdfShare = useSharePdf();
   const canDelete = canManageSystemFeatures(profile);
 
   const loadReports = useCallback(async () => {
@@ -91,7 +97,6 @@ export function ReportsModule({
       const created = await response.json() as { id: string; reportNo: string };
       toast.success(`สร้าง ${created.reportNo} แล้ว`);
       await loadReports();
-      window.open(`/reports/${created.id}/print`, "_blank", "noopener,noreferrer");
     } catch (error) {
       if (
         error instanceof ApiResponseError
@@ -104,6 +109,34 @@ export function ReportsModule({
       }
     } finally {
       setCreating(false);
+    }
+  }
+
+  async function shareReport(report: ReportSummary) {
+    if (!online || pdfShare.busy) return;
+    setSharingId(report.id);
+    try {
+      const delivery = await pdfShare.sharePdfFile(async (signal) => {
+        const response = await authFetch(`/api/lanflow/reports/${report.id}`, {
+          cache: "no-store",
+          signal,
+        });
+        await assertApiResponse(response);
+        const details = await response.json() as ReportDetails;
+        return {
+          file: await createReportPdfFile(details, signal),
+          title: reportShareTitle(details.report),
+        };
+      });
+      if (delivery === "shared") {
+        toast.success(`แชร์ ${report.reportNo} แล้ว`);
+      } else if (delivery === "downloaded") {
+        toast.info("อุปกรณ์นี้แชร์ไฟล์ไม่ได้ จึงดาวน์โหลด PDF แทนแล้ว");
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "สร้าง PDF รายงานไม่สำเร็จ");
+    } finally {
+      setSharingId(null);
     }
   }
 
@@ -126,11 +159,12 @@ export function ReportsModule({
   }
 
   return (
+    <>
     <section className="space-y-4">
       <div className="flex flex-col gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:flex-row sm:items-center sm:justify-between sm:p-4">
         <div>
-          <h2 className="text-xl font-bold text-ink">ชุดรายงาน — {selectedLocation.name}</h2>
-          <p className="mt-1 text-sm text-ink/65">
+          <h2 className="text-balance text-xl font-bold text-ink">ชุดรายงาน — {selectedLocation.name}</h2>
+          <p className="mt-1 text-pretty text-sm text-ink/65">
             เมื่อสร้างสำเร็จ รายการทั้งหมดใน cutoff จะถูกล็อกทันที แม้ปิดหน้าพิมพ์
           </p>
         </div>
@@ -164,7 +198,7 @@ export function ReportsModule({
 
       <div className="overflow-hidden rounded-xl bg-white shadow-sm">
         <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
+          <table className="min-w-full text-sm tabular-nums">
             <thead className="bg-mint/60 text-left text-ink">
               <tr>
                 <th className="px-4 py-3">เลขรายงาน</th>
@@ -193,15 +227,18 @@ export function ReportsModule({
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-2">
-                      <a
-                        href={`/reports/${report.id}/print`}
-                        target="_blank"
-                        rel="noreferrer"
+                      <button
+                        type="button"
+                        onClick={() => void shareReport(report)}
+                        disabled={!online || pdfShare.busy}
+                        aria-label={`แชร์ PDF รายงาน ${report.reportNo}`}
                         className="focus-ring inline-flex items-center gap-1 rounded-md bg-river px-3 py-1.5 font-semibold text-white"
                       >
-                        <Printer size={15} />
-                        ดู/พิมพ์
-                      </a>
+                        {sharingId === report.id
+                          ? <Loader2 size={15} className="animate-spin" />
+                          : <Share2 size={15} />}
+                        {sharingId === report.id ? "กำลังสร้าง PDF" : "แชร์ PDF"}
+                      </button>
                       {canDelete && report.status === "active" && report.isLatestActive && (
                         <button
                           type="button"
@@ -227,5 +264,7 @@ export function ReportsModule({
         </div>
       </div>
     </section>
+    <SharePdfWaitingModal open={pdfShare.waiting} onCancel={pdfShare.cancel} />
+    </>
   );
 }
