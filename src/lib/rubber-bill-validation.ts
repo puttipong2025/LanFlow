@@ -43,84 +43,92 @@ export function validateRubberBillDraft(draft: {
   const errors: string[] = [];
 
   if (!draft.customerName.trim()) {
-    errors.push("กรุณาระบุชื่อลูกค้า");
+    errors.push("ชื่อลูกค้า: กรุณาระบุข้อมูล");
   }
 
   const activeWeighItems = draft.weighItems;
   if (activeWeighItems.length === 0) {
-    errors.push("ต้องมีรายการชั่งน้ำหนักอย่างน้อย 1 รายการ");
+    errors.push("ชั่งสินค้า: ต้องมีรายการชั่งอย่างน้อย 1 รายการ");
   }
 
   activeWeighItems.forEach((item, index) => {
-    if (item.inWeight < 0 || item.outWeight < 0) {
-      errors.push(`รายการชั่งที่ ${index + 1}: น้ำหนักต้องไม่ติดลบ`);
+    const row = `รายการชั่งที่ ${index + 1}`;
+    if (item.inWeight < 0) {
+      errors.push(`${row}: น้ำหนักเข้าต้องไม่ติดลบ`);
+    }
+    if (item.outWeight < 0) {
+      errors.push(`${row}: น้ำหนักออกต้องไม่ติดลบ`);
     }
     if (item.inWeight <= item.outWeight) {
-      errors.push(`รายการชั่งที่ ${index + 1}: น้ำหนักเข้าต้องมากกว่าน้ำหนักออก`);
+      errors.push(`${row}: น้ำหนักเข้าต้องมากกว่าน้ำหนักออก`);
     }
     if (item.netWeight <= 0) {
-      errors.push(`รายการชั่งที่ ${index + 1}: น้ำหนักสุทธิต้องมากกว่า 0`);
+      errors.push(`${row}: น้ำหนักชั่งสุทธิต้องมากกว่า 0`);
     }
-    if (
-      !hasAtMostTwoDecimalPlaces(item.inWeight)
-      || !hasAtMostTwoDecimalPlaces(item.outWeight)
-      || !hasAtMostTwoDecimalPlaces(item.netWeight)
-    ) {
-      errors.push(`รายการชั่งที่ ${index + 1}: น้ำหนักต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง`);
+    if (!hasAtMostTwoDecimalPlaces(item.inWeight)) {
+      errors.push(`${row}: น้ำหนักเข้าต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง`);
+    }
+    if (!hasAtMostTwoDecimalPlaces(item.outWeight)) {
+      errors.push(`${row}: น้ำหนักออกต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง`);
+    }
+    if (!hasAtMostTwoDecimalPlaces(item.netWeight)) {
+      errors.push(`${row}: น้ำหนักชั่งสุทธิต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง`);
     }
     if (item.price < 0) {
-      errors.push(`รายการชั่งที่ ${index + 1}: ราคาต้องไม่ติดลบ`);
+      errors.push(`${row}: ราคาสินค้าต้องไม่ติดลบ`);
     }
     if (Math.abs(item.price * 100 - Math.round(item.price * 100)) > 1e-9) {
-      errors.push(`รายการชั่งที่ ${index + 1}: ราคาต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง`);
+      errors.push(`${row}: ราคาสินค้าต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง`);
     }
   });
 
   if (!hasAtMostTwoDecimalPlaces(draft.deductWeight)) {
-    errors.push("น้ำหนักที่หักต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง");
+    errors.push("หักน้ำหนักยาง (กก.): ต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง");
   }
   if (draft.deductWeight < 0) {
-    errors.push("น้ำหนักที่หักต้องไม่ติดลบ");
+    errors.push("หักน้ำหนักยาง (กก.): ต้องไม่ติดลบ");
   }
   if (draft.totalWeight > 0 && draft.deductWeight >= draft.totalWeight) {
-    errors.push("น้ำหนักที่หักต้องน้อยกว่าน้ำหนักรวม");
+    errors.push("หักน้ำหนักยาง (กก.): ต้องน้อยกว่าน้ำหนักรวม");
   }
 
   draft.acidItems.forEach((item, index) => {
+    const row = `รายการหักสินค้าที่ ${index + 1}`;
     if (!item.name.trim()) {
-      errors.push(`รายการหักสินค้าที่ ${index + 1}: ต้องระบุชื่อ`);
+      errors.push(`${row}: รายการหักต้องระบุชื่อสินค้า`);
     }
     if (!item.stockProductId) {
-      errors.push(`รายการหักสินค้าที่ ${index + 1}: ต้องเลือกสินค้าในสต็อก`);
+      errors.push(`${row}: รายการหักต้องเลือกสินค้าในสต็อก`);
     }
     if (item.quantity <= 0) {
-      errors.push(`รายการหักสินค้าที่ ${index + 1}: จำนวนต้องมากกว่า 0`);
+      errors.push(`${row}: จำนวนต้องมากกว่า 0`);
     }
     if (item.unitPrice < 0) {
-      errors.push(`รายการหักสินค้าที่ ${index + 1}: ราคาต้องไม่ติดลบ`);
+      errors.push(`${row}: ราคาต่อหน่วยต้องไม่ติดลบ`);
     }
-    if (
-      !hasAtMostTwoDecimalPlaces(item.quantity)
-      || !hasAtMostTwoDecimalPlaces(item.unitPrice)
-    ) {
-      errors.push(`รายการหักสินค้าที่ ${index + 1}: จำนวนและราคาต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง`);
+    if (!hasAtMostTwoDecimalPlaces(item.quantity)) {
+      errors.push(`${row}: จำนวนต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง`);
+    }
+    if (!hasAtMostTwoDecimalPlaces(item.unitPrice)) {
+      errors.push(`${row}: ราคาต่อหน่วยต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง`);
     }
   });
 
   draft.debtItems.forEach((item, index) => {
+    const row = `รายการหักหนี้ที่ ${index + 1}`;
     if (!item.title.trim()) {
-      errors.push(`รายการหักหนี้ที่ ${index + 1}: ต้องระบุชื่อรายการ`);
+      errors.push(`${row}: รายการหนี้ต้องระบุข้อมูล`);
     }
     if (item.amount <= 0) {
-      errors.push(`รายการหักหนี้ที่ ${index + 1}: จำนวนเงินต้องมากกว่า 0`);
+      errors.push(`${row}: ยอดเงินต้องมากกว่า 0`);
     }
     if (!hasAtMostTwoDecimalPlaces(item.amount)) {
-      errors.push(`รายการหักหนี้ที่ ${index + 1}: จำนวนเงินต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง`);
+      errors.push(`${row}: ยอดเงินต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง`);
     }
   });
 
   if (draft.netTotal < 0) {
-    errors.push("ยอดเงินสุทธิไม่สามารถติดลบได้");
+    errors.push("ยอดที่ต้องจ่ายลูกค้า (บาท): ต้องไม่ติดลบ");
   }
 
   return errors;

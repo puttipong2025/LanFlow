@@ -188,6 +188,8 @@ table { width: 100%; border-collapse: collapse; margin: 6px 0; } th, td { border
 .totals { border-top: 1px solid #000; padding-top: 4px; }
 .payable { margin-top: 5px; border: 2px solid #000; padding: 5px 3px; font-size: 15px; font-weight: 800; }
 .words { margin-top: 5px; text-align: center; font-weight: 700; overflow-wrap: anywhere; } .signature { margin-top: 14px; display: flex; justify-content: space-between; gap: 12px; text-align: center; }
+.stamp-space { height: 40mm; }
+.thank-you { margin: 0 0 3mm; text-align: center; font-weight: 700; }
 </style></head><body>
 <h1>${h(title)}</h1>
 ${model.hasZeroPrice ? '<div class="warning">ยังไม่กำหนดราคา — ห้ามจ่าย</div>' : ""}
@@ -204,5 +206,7 @@ ${model.deductWeight > 0 ? `<div class="row"><span>น้ำหนักรว�
 <div class="row payable"><span>ยอดที่ต้องจ่ายลูกค้า</span><span>${n(model.netTotal)} บาท</span></div>
 <div class="words">(${h(model.netTotalText)})</div>
 <div class="signature"><div>________________<br>ผู้ขาย</div><div>________________<br>ผู้รับซื้อ</div></div>
+<div class="stamp-space" aria-hidden="true"></div>
+<div class="thank-you">ขอบคุณที่ใช้บริการค่ะ</div>
 </body></html>`;
 }

@@ -1,6 +1,6 @@
 import { toast } from "sonner";
 import { Save, WifiOff } from "lucide-react";
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   makeClientRecordedAt,
@@ -70,8 +70,14 @@ export function RubberBillModal({
   const [debtItems, setDebtItems] = useState<RubberDebtItem[]>(() => bill?.debtItems ?? (bill?.debtItem ? [bill.debtItem] : []));
   const [weightDeduct, setWeightDeduct] = useState(bill?.deductWeight ?? 0);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
+  const validationSummaryRef = useRef<HTMLDivElement>(null);
   const { products: stockProducts } = useAcidProducts();
   const isOnline = useOnlineStatus();
+
+  useEffect(() => {
+    if (validationErrors.length === 0) return;
+    validationSummaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [validationErrors]);
 
   // Autocomplete customer lookup states
   const [customerSearch, setCustomerSearch] = useState(bill?.customerName ?? "");
@@ -216,7 +222,9 @@ export function RubberBillModal({
 
     if (errors.length > 0) {
       setValidationErrors(errors);
-      toast.error("ข้อมูลไม่ถูกต้อง กรุณาแก้ไขข้อผิดพลาด");
+      toast.error(`พบข้อมูลที่ต้องแก้ไข ${errors.length} จุด`, {
+        description: errors[0]
+      });
       return;
     }
     
@@ -279,7 +287,12 @@ export function RubberBillModal({
     >
       <form onSubmit={handleSubmit} className="space-y-0" noValidate>
         {validationErrors.length > 0 && (
-          <div className="bg-red-50 p-4 border-b border-red-200">
+          <div
+            ref={validationSummaryRef}
+            role="alert"
+            aria-live="assertive"
+            className="border-b border-red-200 bg-red-50 p-4"
+          >
             <h4 className="text-red-800 font-bold mb-2">ไม่สามารถบันทึกได้เนื่องจาก:</h4>
             <ul className="list-disc pl-5 text-sm text-red-700 space-y-1">
               {validationErrors.map((err, i) => (
@@ -401,8 +414,8 @@ export function RubberBillModal({
                     <td className="py-2">
                       <input
                         value={item.label}
-                        onChange={(event) => updateWeighItem(item.id, { label: event.target.value })}
-                        className="focus-ring h-10 w-20 rounded-md border border-black/10 bg-white px-2"
+                        readOnly
+                        className="focus-ring h-10 w-20 rounded-md border border-black/10 bg-white px-2 read-only:bg-slate-100 read-only:text-ink/70"
                       />
                     </td>
                     <td><InlineNumber value={item.inWeight} onChange={(value) => updateWeighItem(item.id, { inWeight: value })} /></td>
@@ -482,8 +495,8 @@ export function RubberBillModal({
                     <td>
                       <input
                         value={item.unit}
-                        onChange={(event) => updateStockDeductionItem(item.id, { unit: event.target.value })}
-                        className="focus-ring h-10 w-20 rounded-md border border-black/10 bg-white px-2"
+                        readOnly
+                        className="focus-ring h-10 w-20 rounded-md border border-black/10 bg-white px-2 read-only:bg-slate-100 read-only:text-ink/70"
                       />
                     </td>
                     <td><InlineNumber value={item.unitPrice} onChange={(value) => updateStockDeductionItem(item.id, { unitPrice: value })} /></td>
@@ -532,8 +545,8 @@ export function RubberBillModal({
                     <td className="py-2">
                       <input
                         value={item.title}
-                        onChange={(event) => updateDebtItem(item.id, { title: event.target.value })}
-                        className="focus-ring h-10 w-full rounded-md border border-black/10 bg-white px-3"
+                        readOnly
+                        className="focus-ring h-10 w-full rounded-md border border-black/10 bg-white px-3 read-only:bg-slate-100 read-only:text-ink/70"
                       />
                     </td>
                     <td className="text-center">—</td>

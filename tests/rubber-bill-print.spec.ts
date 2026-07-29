@@ -104,6 +104,28 @@ test.describe("Rubber Bill receipt contract @rubber-bill-print", () => {
     expect(html).not.toContain("EUDR");
   });
 
+  test("leaves a 40mm stamp area before the final thank-you message", () => {
+    const syncedHtml = renderRubberBillReceiptHtml(buildRubberBillReceiptModel(makeBill()));
+    const offlineHtml = renderRubberBillReceiptHtml(buildRubberBillReceiptModel(makeBill({
+      serverBillNo: undefined,
+      syncStatus: "pending",
+    })));
+
+    for (const html of [syncedHtml, offlineHtml]) {
+      expect(html).toContain(".stamp-space { height: 40mm; }");
+      expect(html).toContain(".thank-you {");
+      expect(html).toContain("text-align: center;");
+      expect(html).toContain("font-weight: 700;");
+      expect(html).toContain(
+        '<div class="signature"><div>________________<br>ผู้ขาย</div><div>________________<br>ผู้รับซื้อ</div></div>\n'
+        + '<div class="stamp-space" aria-hidden="true"></div>\n'
+        + '<div class="thank-you">ขอบคุณที่ใช้บริการค่ะ</div>\n'
+        + "</body>"
+      );
+      expect(html.match(/ขอบคุณที่ใช้บริการค่ะ/g)).toHaveLength(1);
+    }
+  });
+
   test("hides pre-deduction weight rows when no weight is deducted", () => {
     const html = renderRubberBillReceiptHtml(buildRubberBillReceiptModel(makeBill({
       deductWeight: 0,
