@@ -15,9 +15,20 @@ export function AdminModule({
 }: {
   locations: Location[];
   profile: Profile;
-  onAddLocation: (name: string) => void;
+  onAddLocation: (request: {
+    name: string;
+    code: string;
+    requestId: string;
+  }) => Promise<boolean>;
 }) {
   const [name, setName] = useState("");
+  const [code, setCode] = useState("");
+  const [addingLocation, setAddingLocation] = useState(false);
+  const [pendingLocationRequest, setPendingLocationRequest] = useState<{
+    name: string;
+    code: string;
+    requestId: string;
+  } | null>(null);
   const [users, setUsers] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
   const [creatingUser, setCreatingUser] = useState(false);
@@ -30,6 +41,52 @@ export function AdminModule({
   });
   const canManageSystem = canManageSystemFeatures(profile);
   const canManagePermissions = canManageFeatureAccess(profile);
+
+  async function handleAddLocation(event: React.FormEvent) {
+    event.preventDefault();
+    const normalizedName = name.trim().replace(/\s+/g, " ");
+    const normalizedCode = code.trim().toUpperCase();
+
+    if (!normalizedName) {
+      toast.error("กรุณากรอกชื่อสาขา");
+      return;
+    }
+    if (!/^[A-Z0-9]{2,8}$/.test(normalizedCode)) {
+      toast.error("รหัสสาขาต้องเป็น A–Z หรือ 0–9 จำนวน 2–8 ตัว");
+      return;
+    }
+
+    const confirmation = await appSwal.fire({
+      title: "ยืนยันเพิ่มสาขา?",
+      text: `${normalizedName} · ${normalizedCode} — รหัสสาขาจะเปลี่ยนภายหลังไม่ได้`,
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonText: "ยืนยันเพิ่มสาขา",
+      cancelButtonText: "ยกเลิก",
+    });
+    if (!confirmation.isConfirmed) return;
+
+    const request =
+      pendingLocationRequest?.name === normalizedName &&
+      pendingLocationRequest.code === normalizedCode
+        ? pendingLocationRequest
+        : {
+            name: normalizedName,
+            code: normalizedCode,
+            requestId: crypto.randomUUID(),
+          };
+    setPendingLocationRequest(request);
+    setAddingLocation(true);
+    try {
+      if (await onAddLocation(request)) {
+        setName("");
+        setCode("");
+        setPendingLocationRequest(null);
+      }
+    } finally {
+      setAddingLocation(false);
+    }
+  }
 
   async function loadUsers() {
     try {
@@ -243,21 +300,36 @@ export function AdminModule({
         <h2 className="mt-8 mb-4 text-lg font-bold text-ink">สาขาทั้งหมด</h2>
         {canManageSystem && (
           <form
-            className="mb-4 flex flex-col gap-3 sm:flex-row"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (name.trim()) onAddLocation(name.trim());
-              setName("");
-            }}
+            className="mb-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_9rem_auto]"
+            onSubmit={handleAddLocation}
           >
             <input
               className="focus-ring h-11 flex-1 rounded-md border border-black/10 px-3"
               value={name}
               onChange={(event) => setName(event.target.value)}
               placeholder="ชื่อสาขาใหม่"
+              maxLength={100}
+              disabled={addingLocation}
+              required
             />
-            <button className="focus-ring h-11 rounded-md bg-leaf px-4 font-semibold text-white">
-              เพิ่มสาขา
+            <input
+              className="focus-ring h-11 rounded-md border border-black/10 px-3 font-mono uppercase"
+              value={code}
+              onChange={(event) => setCode(event.target.value.toUpperCase())}
+              placeholder="รหัสสาขา"
+              aria-label="รหัสสาขาใหม่"
+              minLength={2}
+              maxLength={8}
+              pattern="[A-Z0-9]{2,8}"
+              disabled={addingLocation}
+              required
+            />
+            <button
+              className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-leaf px-4 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={addingLocation}
+            >
+              {addingLocation && <Loader2 size={16} className="animate-spin" />}
+              {addingLocation ? "กำลังเพิ่ม..." : "เพิ่มสาขา"}
             </button>
           </form>
         )}

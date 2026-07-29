@@ -250,23 +250,42 @@ export function LanFlowApp() {
     );
   }
 
-  async function addLocation(name: string) {
+  async function addLocation(request: {
+    name: string;
+    code: string;
+    requestId: string;
+  }) {
     try {
       const response = await authFetch("/api/lanflow/admin/locations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name })
+        body: JSON.stringify(request),
       });
-      const data = await response.json();
-      if (!response.ok) {
-        console.error("Failed to add location:", data.error);
-        return;
-      }
+      await assertApiResponse(response);
+      const data = await response.json() as { location: Location };
       const newLoc = data.location;
-      setLocations((current) => [...current, newLoc]);
-      setProfile((current) => ({ ...current, locationIds: [...current.locationIds, newLoc.id] }));
+      setLocations((current) =>
+        current.some((location) => location.id === newLoc.id)
+          ? current
+          : [...current, newLoc]
+      );
+      setProfile((current) => ({
+        ...current,
+        locationIds: current.locationIds.includes(newLoc.id)
+          ? current.locationIds
+          : [...current.locationIds, newLoc.id],
+      }));
+      setSelectedLocationId(newLoc.id);
+      toast.success(
+        "เพิ่มสาขาแล้ว · ตั้งค่าเกณฑ์ผ่านปุ่ม Telegram เพื่อเริ่ม Dashboard alert",
+      );
+      return true;
     } catch (error) {
       console.error("Add location error:", error);
+      toast.error(
+        error instanceof Error ? error.message : "เพิ่มสาขาไม่สำเร็จ",
+      );
+      return false;
     }
   }
 
