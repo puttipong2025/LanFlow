@@ -1,4 +1,5 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
+import { isDeviceOnline, subscribeConnectivity } from "@/lib/connectivity";
 import { useEffect, useMemo } from "react";
 import type { IncomeExpense } from "@/types";
 import { enqueueSyncEvent, getPendingEvents, removeSyncEvent, updateSyncEvent, type SyncEvent } from "@/lib/idb-queue";
@@ -7,6 +8,8 @@ import { buildIncomeExpensePayload } from "@/lib/income-expense/build-income-exp
 import { OFFLINE_SYNCED_ACTION_MESSAGE } from "@/lib/record-action-locks";
 import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
 import { bangkokDateWindow } from "@/lib/bangkok-date";
+import { authFetch } from "@/lib/auth-fetch";
+import { isRetryableSyncResponse } from "@/lib/sync-response";
 
 const ENTITY = "income_expense" as const;
 const FEED_QUERY_KEY = INCOME_EXPENSE_FEED_QUERY_KEY;
@@ -158,7 +161,7 @@ async function runPendingIncomeExpenseSync(
   for (const event of events) {
     if (!navigator.onLine || blockedIds.has(event.id)) continue;
     try {
-      const response = await fetch("/api/lanflow/income-expense", {
+      const response = await authFetch("/api/lanflow/income-expense", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(event.payload),
@@ -190,12 +193,14 @@ async function runPendingIncomeExpenseSync(
         }
         await removeSyncEvent(event.queueId!);
       }
+      else if (isRetryableSyncResponse(response.status)) {
+        break;
+      }
       else {
         event.status = data.status === "conflict" ? "conflict" : "failed";
         event.errorMessage = data.errorMessage || (event.status === "conflict" ? "ข้อมูลชนกัน" : "ซิงก์ไม่สำเร็จ");
         await updateSyncEvent(event);
         blockedIds.add(event.id);
-        if (response.status >= 500) break;
       }
     } catch {
       break;
@@ -237,11 +242,11 @@ export function useIncomeExpense(locationId: string, ownerUserId: string) {
     queryKey: [FEED_QUERY_KEY, ownerUserId, locationId, dateWindow.from, dateWindow.to],
     initialPageParam: null as string | null,
     enabled: !!locationId && !!ownerUserId,
-    queryFn: async ({ pageParam }): Promise<FeedPage> => {
+    queryFn: async ({ pageParam, signal }): Promise<FeedPage> => {
       if (!navigator.onLine) return { rows: [], nextCursor: null };
       const params = new URLSearchParams({ locationId, from: dateWindow.from, to: dateWindow.to, pageSize: String(PAGE_SIZE) });
       if (pageParam) params.set("cursor", pageParam);
-      const response = await fetch(`/api/lanflow/income-expense/feed?${params}`);
+      const response = await authFetch(`/api/lanflow/income-expense/feed?${params}`, { signal });
       if (!response.ok) throw new Error("โหลดรายการรับ-จ่ายไม่สำเร็จ");
       return response.json();
     },
@@ -303,10 +308,14 @@ export function useIncomeExpense(locationId: string, ownerUserId: string) {
   }
 
   useEffect(() => {
-    const handleOnline = () => void syncPendingIncomeExpense(queryClient, ownerUserId, locationId);
-    window.addEventListener("online", handleOnline);
-    if (navigator.onLine) handleOnline();
-    return () => window.removeEventListener("online", handleOnline);
+    const handleConnectivity = () => {
+      if (isDeviceOnline()) {
+        void syncPendingIncomeExpense(queryClient, ownerUserId, locationId);
+      }
+    };
+    const unsubscribe = subscribeConnectivity(handleConnectivity);
+    if (isDeviceOnline()) handleConnectivity();
+    return unsubscribe;
   }, [queryClient, ownerUserId, locationId]);
 
   const saveTransaction = useMutation({

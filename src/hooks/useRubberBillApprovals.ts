@@ -7,6 +7,7 @@ import {
   saveRubberBillApprovalSettingsCache,
 } from "@/lib/rubber-bills/approval";
 import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
+import { authFetch } from "@/lib/auth-fetch";
 import type {
   RubberBillApprovalMarker,
   RubberBillApprovalReason,
@@ -168,7 +169,7 @@ export function useRubberBillApprovals({
 
   const saveSettingsMutation = useMutation({
     mutationFn: async (settings: Pick<RubberBillApprovalSettings, "editWindowMinutes" | "configuredPrice">) => {
-      const response = await fetch("/api/lanflow/rubber-bills/approval-settings", {
+      const response = await authFetch("/api/lanflow/rubber-bills/approval-settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(settings),
@@ -186,7 +187,7 @@ export function useRubberBillApprovals({
 
   const approveMutation = useMutation({
     mutationFn: async (id: string) => {
-      const response = await fetch(
+      const response = await authFetch(
         `/api/lanflow/rubber-bills/approval-requests/${id}/approve`,
         { method: "POST" }
       );
@@ -201,7 +202,7 @@ export function useRubberBillApprovals({
 
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
-      const response = await fetch(
+      const response = await authFetch(
         `/api/lanflow/rubber-bills/approval-requests/${id}`,
         { method: "DELETE" }
       );

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { selectFirstAccessibleOption } from '../helpers/select-app-location';
 
 test.use({ storageState: 'playwright/.auth/super_admin.json' });
 
@@ -49,7 +50,7 @@ test.describe.serial('Income/Expense: Branch Transfer & Approval Offline Rules',
     await expect(modal.locator('button:has-text("เพิ่มเอง")')).toBeVisible();
 
     // Select target location to try enabling save button
-    await modal.locator('select').first().selectOption({ index: 1 });
+    await selectFirstAccessibleOption(page, modal.locator('select').first());
 
     // Try adding a slip manually to satisfy all form requirements
     await modal.locator('button:has-text("เพิ่มเอง")').click();

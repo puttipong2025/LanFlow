@@ -1,4 +1,4 @@
-import { Eye, Printer, Trash2 } from "lucide-react";
+import { Eye, Loader2, Share2, Trash2 } from "lucide-react";
 import type { RubberExportSummary, RubberExportStatus } from "@/types/rubber-exports";
 
 const statusLabel: Record<RubberExportStatus, string> = {
@@ -18,13 +18,19 @@ export function RubberExportTable({
   rows,
   loading,
   canDelete,
+  shareBusy,
+  sharingId,
   onOpen,
+  onShare,
   onDelete,
 }: {
   rows: RubberExportSummary[];
   loading: boolean;
   canDelete: boolean;
+  shareBusy: boolean;
+  sharingId: string | null;
   onOpen: (id: string) => void;
+  onShare: (row: RubberExportSummary) => void;
   onDelete: (row: RubberExportSummary) => void;
 }) {
   return (
@@ -66,14 +72,18 @@ export function RubberExportTable({
                     <Eye size={15} /> ดู
                   </button>
                   {(row.status === "verified" || row.status === "deleted") && (
-                    <a
-                      href={`/rubber-exports/${row.id}/print`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="focus-ring inline-flex items-center gap-1 rounded-md bg-ink px-3 py-1.5 font-semibold text-white"
+                    <button
+                      type="button"
+                      onClick={() => onShare(row)}
+                      disabled={shareBusy}
+                      aria-label={`แชร์ PDF รายการส่งออกยาง ${row.exportNo}`}
+                      className="focus-ring inline-flex items-center gap-1 rounded-md bg-ink px-3 py-1.5 font-semibold text-white disabled:opacity-50"
                     >
-                      <Printer size={15} /> พิมพ์
-                    </a>
+                      {sharingId === row.id
+                        ? <Loader2 size={15} className="animate-spin" />
+                        : <Share2 size={15} />}
+                      {sharingId === row.id ? "กำลังสร้าง PDF" : "แชร์ PDF"}
+                    </button>
                   )}
                   {canDelete && row.status !== "deleted" && (
                     <button
@@ -98,4 +108,3 @@ export function RubberExportTable({
     </div>
   );
 }
-

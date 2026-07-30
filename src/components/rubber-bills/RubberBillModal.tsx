@@ -13,6 +13,7 @@ import { validateRubberBillDraft } from "@/lib/rubber-bill-validation";
 import { calculateRubberBill } from "@/lib/rubber-bills/calculations";
 import { useAcidProducts } from "@/hooks/useAcidProducts";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
+import { usePersistentFormDraft } from "@/hooks/usePersistentFormDraft";
 
 import type { Location, Profile, RubberBill } from "@/types";
 import { ModalShell } from "@/components/shared/ModalShell";
@@ -24,6 +25,16 @@ import { InlineNumber } from "@/components/shared/InlineNumber";
 type RubberWeighItem = NonNullable<RubberBill["weighItems"]>[number];
 type RubberStockDeductionItem = NonNullable<RubberBill["acidItems"]>[number];
 type RubberDebtItem = NonNullable<RubberBill["debtItems"]>[number];
+type RubberBillFormDraft = {
+  billDate: string;
+  customerSearch: string;
+  selectedCustomerId: string | null;
+  memberStatus: string;
+  weighItems: RubberWeighItem[];
+  stockDeductionItems: RubberStockDeductionItem[];
+  debtItems: RubberDebtItem[];
+  weightDeduct: number;
+};
 export type RubberBillCustomerOption = {
   id: string;
   mainName: string;
@@ -46,7 +57,7 @@ export function RubberBillModal({
   configuredPrice?: number | null;
   customers: RubberBillCustomerOption[];
   onClose: () => void;
-  onSave: (bill: RubberBill) => void;
+  onSave: (bill: RubberBill) => boolean | void | Promise<boolean | void>;
 }) {
   const [draftClientTempId] = useState(() => bill?.clientTempId ?? makeClientTempId("rubber"));
   const initialLocalBillNo = bill?.localBillNo ?? makeLocalBillNo(selectedLocation.code, "R", draftClientTempId);
@@ -69,6 +80,7 @@ export function RubberBillModal({
   const [stockDeductionItems, setStockDeductionItems] = useState<RubberStockDeductionItem[]>(() => bill?.acidItems ?? []);
   const [debtItems, setDebtItems] = useState<RubberDebtItem[]>(() => bill?.debtItems ?? (bill?.debtItem ? [bill.debtItem] : []));
   const [weightDeduct, setWeightDeduct] = useState(bill?.deductWeight ?? 0);
+  const [billDate, setBillDate] = useState(bill?.billDate ?? todayInputValue());
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const validationSummaryRef = useRef<HTMLDivElement>(null);
   const { products: stockProducts } = useAcidProducts();
@@ -87,6 +99,48 @@ export function RubberBillModal({
     if (!bill?.customerName) return "ไม่เป็นสมาชิก";
     const found = customers.some(c => c.mainName === bill.customerName);
     return found ? "สมาชิก" : "ไม่เป็นสมาชิก";
+  });
+  const draftValue = useMemo<RubberBillFormDraft>(() => ({
+    billDate,
+    customerSearch,
+    selectedCustomerId,
+    memberStatus,
+    weighItems,
+    stockDeductionItems,
+    debtItems,
+    weightDeduct,
+  }), [
+    billDate,
+    customerSearch,
+    debtItems,
+    memberStatus,
+    selectedCustomerId,
+    stockDeductionItems,
+    weighItems,
+    weightDeduct,
+  ]);
+  const { clearDraft } = usePersistentFormDraft({
+    partition: {
+      ownerUserId: profile.id,
+      locationId: selectedLocation.id,
+      formType: "rubber-bill",
+    },
+    enabled: !bill,
+    value: draftValue,
+    onRestore: (draft) => {
+      setBillDate(draft.billDate || todayInputValue());
+      setCustomerSearch(draft.customerSearch ?? "");
+      setSelectedCustomerId(draft.selectedCustomerId ?? null);
+      setMemberStatus(draft.memberStatus || "ไม่เป็นสมาชิก");
+      if (Array.isArray(draft.weighItems) && draft.weighItems.length > 0) {
+        setWeighItems(draft.weighItems);
+      }
+      if (Array.isArray(draft.stockDeductionItems)) {
+        setStockDeductionItems(draft.stockDeductionItems);
+      }
+      if (Array.isArray(draft.debtItems)) setDebtItems(draft.debtItems);
+      if (Number.isFinite(draft.weightDeduct)) setWeightDeduct(draft.weightDeduct);
+    },
   });
 
   const matchingCustomers = useMemo(() => {
@@ -203,7 +257,7 @@ export function RubberBillModal({
     setDebtItems((current) => current.filter((item) => item.id !== id));
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (stockDeductionItems.length > 0 && !isOnline) {
       toast.error("หักสินค้าใช้ได้เมื่อออนไลน์ เพราะต้องตรวจยอดสต็อกก่อนบันทึก");
@@ -234,7 +288,7 @@ export function RubberBillModal({
     const clientTempId = bill?.clientTempId ?? draftClientTempId;
     const clientRecordedAt = bill?.clientRecordedAt ?? makeClientRecordedAt();
     const localBillNo = String(form.get("billNo") || initialLocalBillNo);
-    onSave({
+    const saved = await onSave({
       id: bill?.id ?? clientTempId,
       clientTempId,
       localBillNo,
@@ -243,7 +297,7 @@ export function RubberBillModal({
       idempotencyKey: bill?.idempotencyKey ?? makeIdempotencyKey("create", clientTempId),
       locationId: selectedLocation.id,
       billNo: bill?.serverBillNo ?? localBillNo,
-      billDate: String(form.get("billDate") || todayInputValue()),
+      billDate,
       customerId: selectedCustomerId,
       customerName: customerSearch,
       billType: String(form.get("billType") || "บิลเครื่องชั่งเล็ก"),
@@ -275,6 +329,30 @@ export function RubberBillModal({
       revisionNo: bill?.revisionNo ?? 0,
       recordStatus: bill?.recordStatus ?? "active"
     });
+    if (saved !== false && !bill) await clearDraft();
+  }
+
+  async function handleClose() {
+    if (bill) {
+      onClose();
+      return;
+    }
+    const hasDraftContent = Boolean(
+      customerSearch.trim()
+      || weightDeduct
+      || stockDeductionItems.length
+      || debtItems.length
+      || weighItems.some((item) =>
+        item.inWeight || item.outWeight || item.netWeight || item.price
+      )
+      || billDate !== todayInputValue()
+    );
+    if (
+      hasDraftContent
+      && !confirm("ยกเลิกและลบแบบร่างบิลยางนี้ใช่หรือไม่?")
+    ) return;
+    await clearDraft();
+    onClose();
   }
 
 
@@ -282,7 +360,7 @@ export function RubberBillModal({
     <ModalShell
       title={bill ? "แก้ไขบิลเครื่องชั่งเล็ก" : "บิลเครื่องชั่งเล็ก"}
       subtitle={selectedLocation.name}
-      onClose={onClose}
+      onClose={() => void handleClose()}
       size="wide"
     >
       <form onSubmit={handleSubmit} className="space-y-0" noValidate>
@@ -305,7 +383,14 @@ export function RubberBillModal({
           <h3 className="mb-4 font-bold text-ink">ข้อมูลลูกค้า</h3>
           <div className="grid gap-4 md:grid-cols-2">
             <Field label="เลขบิลชั่วคราว" name="billNo" defaultValue={bill?.localBillNo ?? initialLocalBillNo} required readOnly />
-            <Field label="วันที่" name="billDate" type="date" defaultValue={bill?.billDate ?? todayInputValue()} required />
+            <Field
+              label="วันที่"
+              name="billDate"
+              type="date"
+              value={billDate}
+              onChange={(event) => setBillDate(event.target.value)}
+              required
+            />
 
             <div className="text-center md:col-span-1">
               <p className="mb-2 text-sm font-bold text-ink">สถานะสมาชิก</p>

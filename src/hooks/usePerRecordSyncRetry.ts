@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { getPendingEvents, removeSyncEvent, updateSyncEvent, type SyncEntity } from "@/lib/idb-queue";
 
 import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
+import { authFetch } from "@/lib/auth-fetch";
 function endpointFor(entity: SyncEntity) {
   return entity === "income_expense" ? "/api/lanflow/income-expense" : "/api/lanflow/rubber-bills";
 }
@@ -20,7 +21,7 @@ export function usePerRecordSyncRetry(locationId: string, ownerUserId: string) {
       if (!event) throw new Error("ไม่พบรายการที่ซิงก์ไม่สำเร็จ");
 
       try {
-        const response = await fetch(endpointFor(entity), {
+        const response = await authFetch(endpointFor(entity), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(event.payload),

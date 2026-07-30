@@ -14,6 +14,7 @@ import {
   useDashboardSnapshot,
 } from "@/hooks/useDashboardOverview";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
+import { isNetworkCancellation } from "@/lib/network-abort";
 import { Metric } from "./Metric";
 
 const KIND_LABELS: Record<string, string> = {
@@ -115,9 +116,11 @@ export function Dashboard({
       setManagerConfig(await response.json());
       toast.success("บันทึกรอบคำนวณ Dashboard แล้ว");
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "บันทึกรอบคำนวณไม่สำเร็จ",
-      );
+      if (!isNetworkCancellation(error)) {
+        toast.error(
+          error instanceof Error ? error.message : "บันทึกรอบคำนวณไม่สำเร็จ",
+        );
+      }
     } finally {
       setManagerBusy(null);
     }
@@ -135,9 +138,11 @@ export function Dashboard({
       await snapshot.refetch();
       toast.success("เข้าคิวคำนวณ Dashboard ใหม่แล้ว");
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "สั่งคำนวณใหม่ไม่สำเร็จ",
-      );
+      if (!isNetworkCancellation(error)) {
+        toast.error(
+          error instanceof Error ? error.message : "สั่งคำนวณใหม่ไม่สำเร็จ",
+        );
+      }
     } finally {
       setManagerBusy(null);
     }

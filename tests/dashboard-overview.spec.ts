@@ -69,6 +69,9 @@ test.describe("Dashboard overview @dashboard", () => {
   });
 
   test("logs out only after confirmation", async ({ page }) => {
+    await page.route("**/auth/v1/logout**", (route) =>
+      route.fulfill({ status: 204, body: "" })
+    );
     await page.goto("/");
     await expect(page.getByRole("heading", { name: /ภาพรวม ·/ })).toBeVisible({
       timeout: 15_000,

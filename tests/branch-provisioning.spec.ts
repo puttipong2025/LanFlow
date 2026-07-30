@@ -270,11 +270,23 @@ test.describe.serial("safe branch provisioning", () => {
         .getByRole("button", { name: "ยืนยันเพิ่มสาขา", exact: true })
         .click();
       const response = await responsePromise;
-      expect(response.ok(), await response.text()).toBeTruthy();
-      const body = await response.json() as {
-        location: { id: string };
-      };
-      locationId = body.location.id;
+      expect(response.ok()).toBeTruthy();
+      await expect.poll(async () => {
+        const result = await service()
+          .from("locations")
+          .select("id")
+          .eq("code", code)
+          .maybeSingle();
+        expect(result.error).toBeNull();
+        return result.data?.id ?? "";
+      }).not.toBe("");
+      const created = await service()
+        .from("locations")
+        .select("id")
+        .eq("code", code)
+        .single();
+      expect(created.error).toBeNull();
+      locationId = created.data!.id;
 
       await expect.poll(() => selectedAppLocationId(page)).toBe(locationId);
       await expect(

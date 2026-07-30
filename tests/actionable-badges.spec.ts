@@ -32,8 +32,9 @@ test("actionable badges are authenticated, branch-scoped, and exclude finished w
 
   const { data: assignment, error: assignmentError } = await service
     .from("user_locations")
-    .select("location_id")
+    .select("location_id, locations!inner(is_active)")
     .eq("user_id", signIn.data.user!.id)
+    .eq("locations.is_active", true)
     .limit(1)
     .single();
   expect(assignmentError).toBeNull();
@@ -104,8 +105,9 @@ test("admin badge counts only time-tracking work the admin can approve", async (
   const userId = "00000000-0000-4000-8000-000000000003";
   const { data: assignment, error: assignmentError } = await service
     .from("user_locations")
-    .select("location_id")
+    .select("location_id, locations!inner(is_active)")
     .eq("user_id", adminId)
+    .eq("locations.is_active", true)
     .limit(1)
     .single();
   expect(assignmentError).toBeNull();

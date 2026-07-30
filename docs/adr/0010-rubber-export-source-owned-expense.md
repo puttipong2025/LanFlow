@@ -14,5 +14,8 @@ The accepted design is implemented by migration
 `20260724010000_rubber_exports.sql`. Income/Expense and Report Batch read
 directly from `rubber_exports`; no `income_expense` row is created. The
 application exposes authenticated endpoints under
-`/api/lanflow/rubber-exports` and a snapshot-backed print route at
-`/rubber-exports/[exportId]/print`.
+`/api/lanflow/rubber-exports`. Verified and deleted evidence is generated as a
+searchable A4 landscape PDF in the browser after a fresh detail fetch. The
+table and detail modal share the same direct Web Share/download-fallback
+workflow, and the former `/rubber-exports/[exportId]/print` route is removed.
+Generated files remain in memory and are not uploaded or persisted.

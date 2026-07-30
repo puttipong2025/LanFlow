@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { authFetchJson, assertApiResponse } from "@/lib/auth-fetch";
+import { authFetch, authFetchJson, assertApiResponse } from "@/lib/auth-fetch";
 import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
 import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import type { CashBranchTransfer, CashDenominationCounts } from "@/types";
@@ -23,8 +23,10 @@ const mapTransfer = (row: any): CashBranchTransfer => {
   };
 };
 
-async function request(url: string, method: string, body?: unknown) {
-  const response = body === undefined ? await fetch(url, { credentials: "same-origin", method }) : await authFetchJson(url, method, body);
+async function request(url: string, method: string, body?: unknown, signal?: AbortSignal) {
+  const response = body === undefined
+    ? await authFetch(url, { method, signal })
+    : await authFetchJson(url, method, body, { signal });
   await assertApiResponse(response);
   return response.json();
 }
@@ -36,8 +38,8 @@ export function useCashBranchTransfers(locationId: string) {
     client.invalidateQueries({ queryKey: [INCOME_EXPENSE_FEED_QUERY_KEY] });
     client.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
   };
-  const query = useQuery({ queryKey: [...KEYS, locationId], enabled: !!locationId, refetchInterval: 15000, queryFn: async () => {
-    const data = await request(`/api/lanflow/cash-branch-transfers?locationId=${encodeURIComponent(locationId)}`, "GET");
+  const query = useQuery({ queryKey: [...KEYS, locationId], enabled: !!locationId, refetchInterval: 15000, queryFn: async ({ signal }) => {
+    const data = await request(`/api/lanflow/cash-branch-transfers?locationId=${encodeURIComponent(locationId)}`, "GET", undefined, signal);
     return (data.transfers ?? []).map(mapTransfer) as CashBranchTransfer[];
   }});
   const create = useMutation({ mutationFn: (payload: unknown) => request("/api/lanflow/cash-branch-transfers", "POST", payload), onSuccess: refresh });

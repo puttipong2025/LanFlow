@@ -1,8 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Profile } from "@/types";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { isDeviceOnline } from "@/lib/connectivity";
+import { useOnlineStatus } from "@/hooks/useOnlineStatus";
+import { authFetch } from "@/lib/auth-fetch";
 
 const LAST_USER_KEY = "lanflow:last-auth-user";
 export const OFFLINE_AUTH_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -79,6 +82,7 @@ function offlineDeadline(cache: CachedProfile | null) {
 }
 
 export function useAuth(initialProfile: Profile | null = null): AuthState {
+  const online = useOnlineStatus();
   // Check if we are hydrating from stale PWA HTML
   const isBrowser = typeof window !== "undefined";
   const initProf = (() => {
@@ -86,7 +90,7 @@ export function useAuth(initialProfile: Profile | null = null): AuthState {
       const lastUser = window.localStorage.getItem(LAST_USER_KEY);
       if (!lastUser || lastUser !== initialProfile.id) return null;
       // Offline: don't trust initialProfile — let applyOfflineCache() validate expiry
-      if (!navigator.onLine) return null;
+      if (!isDeviceOnline()) return null;
     }
     return initialProfile;
   })();
@@ -95,6 +99,7 @@ export function useAuth(initialProfile: Profile | null = null): AuthState {
   const [isLoading, setIsLoading] = useState(initProf === null);
   const [mode, setMode] = useState<AuthMode>(initProf ? "online" : "signed_out");
   const [offlineUntil, setOfflineUntil] = useState<string | null>(null);
+  const connectivityTransitionReady = useRef(false);
 
 
   const applyOfflineCache = useCallback(() => {
@@ -109,7 +114,7 @@ export function useAuth(initialProfile: Profile | null = null): AuthState {
 
   const refreshProfile = useCallback(async () => {
     try {
-      const response = await fetch("/api/auth/me", {
+      const response = await authFetch("/api/auth/me", {
         cache: "no-store",
         credentials: "same-origin"
       });
@@ -162,7 +167,7 @@ export function useAuth(initialProfile: Profile | null = null): AuthState {
         }
       }
 
-      if (!navigator.onLine) {
+      if (!isDeviceOnline()) {
         if (active) {
           const restored = applyOfflineCache();
           if (!restored) {
@@ -205,29 +210,29 @@ export function useAuth(initialProfile: Profile | null = null): AuthState {
       }
     });
 
-    const handleOnline = () => {
-      void refreshOrSignOut();
-    };
-    const handleOffline = () => {
-      const restored = applyOfflineCache();
-      if (!restored) {
-        clearOfflineAuthCache();
-        setProfile(null);
-        setMode("signed_out");
-        setOfflineUntil(null);
-      }
-    };
-
-    window.addEventListener("online", handleOnline);
-    window.addEventListener("offline", handleOffline);
-
     return () => {
       active = false;
       listener.subscription.unsubscribe();
-      window.removeEventListener("online", handleOnline);
-      window.removeEventListener("offline", handleOffline);
     };
   }, [applyOfflineCache, initialProfile, refreshProfile, refreshOrSignOut]);
+
+  useEffect(() => {
+    if (!connectivityTransitionReady.current) {
+      connectivityTransitionReady.current = true;
+      return;
+    }
+    if (online) {
+      void refreshOrSignOut();
+      return;
+    }
+    const restored = applyOfflineCache();
+    if (!restored) {
+      clearOfflineAuthCache();
+      setProfile(null);
+      setMode("signed_out");
+      setOfflineUntil(null);
+    }
+  }, [applyOfflineCache, online, refreshOrSignOut]);
 
   const login = useCallback(async (rawPhone: string, password: string) => {
     try {
@@ -250,7 +255,7 @@ export function useAuth(initialProfile: Profile | null = null): AuthState {
         };
       }
 
-      const response = await fetch("/api/auth/me", {
+      const response = await authFetch("/api/auth/me", {
         cache: "no-store",
         credentials: "same-origin"
       });

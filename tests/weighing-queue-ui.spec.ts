@@ -113,7 +113,9 @@ test("reloads offline with cached customers and the device-local queue", async (
   await expect(billCustomerInput).toHaveValue("ลูกค้าแคชทดสอบ");
   await expect(page.getByRole("radio", { name: "สาขาใหญ่จ่าย" })).toHaveCount(0);
   await expect(page.getByText("สวนออฟไลน์")).toHaveCount(0);
+  page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "ปิด" }).click();
+  await expect(page.getByRole("heading", { name: "บิลเครื่องชั่งเล็ก" })).toBeHidden();
 
   await page.getByRole("button", { name: "บัตรคิว", exact: true }).click();
   await page.locator('input[type="time"]').fill("16:00");

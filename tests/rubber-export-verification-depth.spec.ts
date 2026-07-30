@@ -617,7 +617,7 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
     }
   });
 
-  test("prints immutable snapshots across multiple A4 pages with audit and watermark", async ({ browser }) => {
+  test("keeps immutable detail snapshots after verification and deletion", async ({ browser }) => {
     test.setTimeout(120_000);
     const admin = await authContext(browser, "admin");
     const superAdmin = await authContext(browser, "super_admin");
@@ -722,13 +722,6 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
       );
       expect(verifyResponse.ok(), await verifyResponse.text()).toBeTruthy();
 
-      const printPage = await superAdmin.newPage();
-      await printPage.addInitScript(() => { window.print = () => undefined; });
-      await printPage.goto(`/rubber-exports/${created.id}/print`);
-      await expect(printPage.getByText(created.exportNo)).toBeVisible();
-      await expect(printPage.locator(".watermark")).toHaveCount(0);
-      await expect(printPage.getByText(originalFirstBillNo)).toBeVisible();
-
       const deleteResponse = await superAdmin.request.delete(
         `/api/lanflow/rubber-exports/${created.id}`,
       );
@@ -773,44 +766,6 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
         netWeight: 90,
       }));
       expect(details.items.some((item) => item.billNo === mutatedBillNo)).toBeFalsy();
-
-      await printPage.goto(`/rubber-exports/${created.id}/print`);
-      await expect(printPage.getByText(created.exportNo)).toBeVisible();
-      await expect(printPage.getByText(originalFirstBillNo)).toBeVisible();
-      await expect(printPage.getByText(originalFirstCustomer)).toBeVisible();
-      await expect(printPage.getByText(mutatedBillNo)).toHaveCount(0);
-      await expect(printPage.getByText(mutatedCustomer)).toHaveCount(0);
-      await expect(printPage.locator(".watermark")).toHaveText("ลบแล้ว");
-      await expect(printPage.getByText("ลบจากสถานะ:", { exact: true })).toBeVisible();
-      await expect(printPage.getByText("ผู้ตรวจสอบ:", { exact: true })).toBeVisible();
-      await expect(printPage.getByText("ผู้ลบ:", { exact: true })).toBeVisible();
-
-      await printPage.emulateMedia({ media: "print" });
-      const printStyles = await printPage.evaluate(() => {
-        const root = document.querySelector(".export-print");
-        const header = document.querySelector("thead");
-        const row = document.querySelector("tbody tr");
-        const watermark = document.querySelector(".watermark");
-        return {
-          fontFamily: root ? getComputedStyle(root).fontFamily : "",
-          headerDisplay: header ? getComputedStyle(header).display : "",
-          rowBreakInside: row ? getComputedStyle(row).breakInside : "",
-          rowPageBreakInside: row ? getComputedStyle(row).pageBreakInside : "",
-          watermarkPosition: watermark ? getComputedStyle(watermark).position : "",
-        };
-      });
-      expect(printStyles.fontFamily).toContain("Noto Sans Thai");
-      expect(printStyles.headerDisplay).toBe("table-header-group");
-      expect([printStyles.rowBreakInside, printStyles.rowPageBreakInside]).toContain("avoid");
-      expect(printStyles.watermarkPosition).toBe("fixed");
-
-      const pdf = await printPage.pdf({
-        format: "A4",
-        landscape: true,
-        printBackground: true,
-      });
-      const pageCount = pdf.toString("latin1").match(/\/Type\s*\/Page\b/g)?.length ?? 0;
-      expect(pageCount).toBeGreaterThan(1);
     } finally {
       if (exportId) {
         await superAdmin.request.delete(`/api/lanflow/rubber-exports/${exportId}`);

@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { AcidStockMovement } from "@/types";
 import { STOCK_ENTRY_APPROVAL_REQUESTS_KEY } from "@/hooks/useStockEntryApprovals";
+import { authFetch } from "@/lib/auth-fetch";
 
 const QUERY_KEY = "stock";
 
@@ -29,7 +30,7 @@ function mapMovement(row: any): AcidStockMovement {
 }
 
 async function postStock(payload: Record<string, unknown>) {
-  const response = await fetch("/api/lanflow/acid-stock", {
+  const response = await authFetch("/api/lanflow/acid-stock", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -55,7 +56,7 @@ async function postStockEntryDeleteRequest(input: { stockEntryId: string }) {
     throw new Error("ลบรายการสต็อกต้องออนไลน์ก่อน");
   }
 
-  const response = await fetch("/api/lanflow/stock-entry-approval-requests", {
+  const response = await authFetch("/api/lanflow/stock-entry-approval-requests", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

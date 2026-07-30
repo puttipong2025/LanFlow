@@ -1114,6 +1114,22 @@ declare
   changed boolean := false;
   next_version bigint := pg_catalog.txid_current();
 begin
+  insert into public.dashboard_refresh_settings (id)
+  values (true)
+  on conflict (id) do nothing;
+
+  insert into public.dashboard_branch_snapshots (location_id)
+  select l.id
+  from public.locations l
+  where l.is_active = true
+  on conflict (location_id) do nothing;
+
+  insert into public.dashboard_alert_thresholds (location_id)
+  select l.id
+  from public.locations l
+  where l.is_active = true
+  on conflict (location_id) do nothing;
+
   update public.dashboard_refresh_settings
   set last_rollover_date = today,
       updated_at = now()
@@ -1125,15 +1141,7 @@ begin
     return false;
   end if;
 
-  insert into public.dashboard_branch_snapshots (
-    location_id,
-    status,
-    source_version
-  )
-  select l.id, 'dirty', next_version
-  from public.locations l
-  where l.is_active = true
-  on conflict (location_id) do update
+  update public.dashboard_branch_snapshots
   set status = case
         when dashboard_branch_snapshots.status in ('queued', 'running')
           then dashboard_branch_snapshots.status
@@ -1141,9 +1149,14 @@ begin
       end,
       source_version = greatest(
         dashboard_branch_snapshots.source_version + 1,
-        excluded.source_version
+        next_version
       ),
-      updated_at = now();
+      updated_at = now()
+  where location_id in (
+    select l.id
+    from public.locations l
+    where l.is_active = true
+  );
 
   return true;
 end;
@@ -1838,6 +1851,23 @@ $$;
 ALTER FUNCTION "private"."prevent_hard_delete_of_linked_time_tracking_source"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."prevent_location_code_change"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO ''
+    AS $$
+begin
+  if old.code is distinct from new.code then
+    raise exception 'BRANCH_CODE_IMMUTABLE'
+      using errcode = 'P0001';
+  end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."prevent_location_code_change"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."raise_report_lock"("p_report_no" "text") RETURNS "void"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -1919,6 +1949,184 @@ $$;
 
 
 ALTER FUNCTION "private"."rebuild_dashboard_branch"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."report_income_expense_period_rows"("p_report_id" "uuid") RETURNS TABLE("tx_date" "date", "number" "text", "entry_type" "text", "title" "text", "amount" numeric, "sort_key" "text")
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+  select
+    e.tx_date,
+    coalesce(e.number, e.server_bill_no, e.local_bill_no),
+    e.type::text,
+    e.title,
+    e.cost,
+    '10-' || e.id::text
+  from public.report_items i
+  join public.income_expense e on e.id = i.entity_id
+  where i.report_id = p_report_id
+    and i.entity_type = 'income_expense'
+
+  union all
+
+  select
+    b.bill_date,
+    'RB-' || to_char(b.bill_date, 'YYMMDD'),
+    'expense',
+    'จ่ายค่ายางจากบิลยาง ' || count(*)::text || ' ใบ',
+    sum(b.net_total),
+    '20-' || b.bill_date::text
+  from public.report_items i
+  join public.rubber_bills b on b.id = i.entity_id
+  where i.report_id = p_report_id
+    and i.entity_type = 'rubber_bill'
+    and b.net_total > 0
+    and not exists (
+      select 1
+      from public.money_transfer_items mi
+      where mi.source_type = 'rubber_bill'
+        and mi.source_id = b.id
+    )
+  group by b.bill_date
+
+  union all
+
+  select
+    o.date_in,
+    'OCR-' || to_char(o.date_in, 'YYMMDD'),
+    'expense',
+    'จ่ายค่ายางจาก OCR บิลยาง ' || count(*)::text || ' ใบ',
+    sum(o.total_amount),
+    '30-' || o.date_in::text
+  from public.report_items i
+  join public.ocr_tickets o on o.id = i.entity_id
+  where i.report_id = p_report_id
+    and i.entity_type = 'ocr_ticket'
+    and o.total_amount > 0
+    and not exists (
+      select 1
+      from public.money_transfer_items mi
+      where mi.source_type = 'ocr_ticket'
+        and mi.source_id = o.id
+    )
+  group by o.date_in
+
+  union all
+
+  select
+    (coalesce(m.server_received_at, m.updated_at, m.created_at) at time zone 'Asia/Bangkok')::date,
+    'TR-' || left(m.id::text, 8),
+    'expense',
+    'โยกเงินไป ' || coalesce(m.target_location_name, 'สาขาปลายทาง'),
+    m.net_amount_to_pay,
+    '40-' || m.id::text
+  from public.report_items i
+  join public.money_transfers m on m.id = i.entity_id
+  where i.report_id = p_report_id
+    and i.entity_type = 'bank_transfer_source'
+    and m.transfer_type = 'branch'
+    and m.location_id <> m.target_location_id
+    and m.net_amount_to_pay > 0
+
+  union all
+
+  select
+    (coalesce(m.server_received_at, m.updated_at, m.created_at) at time zone 'Asia/Bangkok')::date,
+    'CT-' || left(m.id::text, 8),
+    'expense',
+    'สาขาจ่ายส่วนต่างให้ ' || coalesce(m.customer_name, 'ลูกค้า'),
+    m.branch_paid_amount,
+    '41-' || m.id::text
+  from public.report_items i
+  join public.money_transfers m on m.id = i.entity_id
+  where i.report_id = p_report_id
+    and i.entity_type = 'bank_transfer_source'
+    and m.transfer_type = 'customer'
+    and m.transfer_status = 'branch_and_transfer'
+    and m.branch_paid_amount > 0
+
+  union all
+
+  select
+    (coalesce(m.server_received_at, m.updated_at, m.created_at) at time zone 'Asia/Bangkok')::date,
+    'TR-' || left(m.id::text, 8),
+    'income',
+    'รับโอนจากสาขาต้นทาง',
+    m.net_amount_to_pay,
+    '42-' || m.id::text
+  from public.report_items i
+  join public.money_transfers m on m.id = i.entity_id
+  where i.report_id = p_report_id
+    and i.entity_type = 'bank_transfer_target'
+    and m.net_amount_to_pay > 0
+
+  union all
+
+  select
+    (d.sent_at at time zone 'Asia/Bangkok')::date,
+    'CASH-' || left(m.id::text, 8),
+    'expense',
+    'โยกเงินสดไป ' || coalesce(m.target_location_name, 'สาขาปลายทาง'),
+    d.sent_total,
+    '50-' || m.id::text
+  from public.report_items i
+  join public.money_transfers m on m.id = i.entity_id
+  join public.money_transfer_cash_details d on d.transfer_id = m.id
+  where i.report_id = p_report_id
+    and i.entity_type = 'cash_transfer_sent'
+
+  union all
+
+  select
+    (d.received_at at time zone 'Asia/Bangkok')::date,
+    'CASH-' || left(m.id::text, 8),
+    'income',
+    'รับเงินสดจากสาขาต้นทาง',
+    d.received_total,
+    '51-' || m.id::text
+  from public.report_items i
+  join public.money_transfers m on m.id = i.entity_id
+  join public.money_transfer_cash_details d on d.transfer_id = m.id
+  where i.report_id = p_report_id
+    and i.entity_type = 'cash_transfer_received'
+
+  union all
+
+  select
+    (f.approved_at at time zone 'Asia/Bangkok')::date,
+    'TW-' || left(f.id::text, 8),
+    'expense',
+    'เบิกเงิน — ' || coalesce(p.name, 'พนักงาน') ||
+      coalesce(': ' || nullif(f.description, ''), ''),
+    f.amount,
+    '60-' || f.id::text
+  from public.report_items i
+  join public.financial_transactions f on f.id = i.entity_id
+  join public.profiles p on p.id = f.profile_id
+  where i.report_id = p_report_id
+    and i.entity_type = 'financial_transaction'
+    and f.type = 'WITHDRAWAL'
+    and f.amount > 0
+
+  union all
+
+  select
+    (p.approved_at at time zone 'Asia/Bangkok')::date,
+    'PS-' || left(p.id::text, 8),
+    'expense',
+    'เงินเดือน — ' || coalesce(profile.name, 'พนักงาน') || ' — ' || p.month,
+    p.net_pay,
+    '61-' || p.id::text
+  from public.report_items i
+  join public.payroll_slips p on p.id = i.entity_id
+  join public.profiles profile on profile.id = p.profile_id
+  where i.report_id = p_report_id
+    and i.entity_type = 'payroll_slip'
+    and p.net_pay > 0;
+$$;
+
+
+ALTER FUNCTION "private"."report_income_expense_period_rows"("p_report_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."reportable_items"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) RETURNS TABLE("entity_type" "text", "entity_id" "uuid", "eligibility_at" timestamp with time zone)
@@ -3440,6 +3648,9 @@ declare
   v_report_id uuid;
   v_report_no text;
   v_item_count integer;
+  v_previous_report_id uuid;
+  v_opening_balance numeric := 0;
+  v_period_balance numeric := 0;
 begin
   if p_location_id is null or not private.can_manage_reports(p_location_id) then
     raise exception 'ไม่มีสิทธิ์สร้างรายงานของสาขานี้';
@@ -3459,6 +3670,14 @@ begin
   from public.profiles p
   where p.id = v_actor_id;
 
+  select b.id, b.closing_balance
+  into v_previous_report_id, v_opening_balance
+  from public.report_batches b
+  where b.location_id = p_location_id
+    and b.status = 'active'
+  order by b.created_at desc, b.id desc
+  limit 1;
+
   v_report_date := (v_cutoff_at at time zone 'Asia/Bangkok')::date;
 
   select coalesce(max(b.sequence_no), 0) + 1
@@ -3477,6 +3696,8 @@ begin
     sequence_no,
     location_id,
     cutoff_at,
+    previous_report_id,
+    opening_balance,
     created_by_user_id,
     created_by_name,
     created_by_phone
@@ -3487,6 +3708,8 @@ begin
     v_sequence_no,
     p_location_id,
     v_cutoff_at,
+    v_previous_report_id,
+    coalesce(v_opening_balance, 0),
     v_actor_id,
     coalesce(v_actor_name, ''),
     coalesce(v_actor_phone, '')
@@ -3514,6 +3737,16 @@ begin
   if v_item_count = 0 then
     raise exception 'ไม่มีรายการที่พร้อมออกรายงาน';
   end if;
+
+  select coalesce(sum(
+    case when r.entry_type = 'income' then r.amount else -r.amount end
+  ), 0)
+  into v_period_balance
+  from private.report_income_expense_period_rows(v_report_id) r;
+
+  update public.report_batches
+  set closing_balance = coalesce(v_opening_balance, 0) + v_period_balance
+  where id = v_report_id;
 
   return jsonb_build_object(
     'id', v_report_id,
@@ -5589,6 +5822,7 @@ CREATE OR REPLACE FUNCTION "public"."get_dashboard_alerts_for_telegram"() RETURN
     join public.dashboard_branch_snapshots s on s.location_id = l.id
     join public.dashboard_alert_thresholds t on t.location_id = l.id
     where l.is_active = true
+      and t.is_configured = true
       and s.summary is not null
       and s.calculated_at is not null
   ),
@@ -6989,207 +7223,50 @@ CREATE OR REPLACE FUNCTION "public"."get_report_income_expense_rows"("p_report_i
     SET "search_path" TO 'public', 'private'
     AS $$
 declare
-  v_location_id uuid;
+  v_report public.report_batches%rowtype;
 begin
-  select b.location_id
-  into v_location_id
+  select b.*
+  into v_report
   from public.report_batches b
   where b.id = p_report_id;
 
-  if v_location_id is null or not private.can_manage_reports(v_location_id) then
+  if v_report.id is null or not private.can_manage_reports(v_report.location_id) then
     raise exception 'ไม่มีสิทธิ์ดูรายงานนี้';
   end if;
 
   return query
   with rows as (
     select
-      e.tx_date,
-      coalesce(e.number, e.server_bill_no, e.local_bill_no) as number,
-      e.type::text as entry_type,
-      e.title,
-      e.cost as amount,
-      '10-' || e.id::text as sort_key
-    from public.report_items i
-    join public.income_expense e on e.id = i.entity_id
-    where i.report_id = p_report_id
-      and i.entity_type = 'income_expense'
+      0 as row_order,
+      (previous.cutoff_at at time zone 'Asia/Bangkok')::date as tx_date,
+      previous.report_no as number,
+      case when v_report.opening_balance >= 0 then 'income' else 'expense' end as entry_type,
+      'ยอดยกมา'::text as title,
+      abs(v_report.opening_balance) as amount,
+      '00-opening-balance'::text as sort_key
+    from public.report_batches previous
+    where previous.id = v_report.previous_report_id
 
     union all
 
     select
-      b.bill_date,
-      'RB-' || to_char(b.bill_date, 'YYMMDD'),
-      'expense',
-      'จ่ายค่ายางจากบิลยาง ' || count(*)::text || ' ใบ',
-      sum(b.net_total),
-      '20-' || b.bill_date::text
-    from public.report_items i
-    join public.rubber_bills b on b.id = i.entity_id
-    where i.report_id = p_report_id
-      and i.entity_type = 'rubber_bill'
-      and b.net_total > 0
-      and not exists (
-        select 1
-        from public.money_transfer_items mi
-        where mi.source_type = 'rubber_bill'
-          and mi.source_id = b.id
-      )
-    group by b.bill_date
-
-    union all
-
-    select
-      o.date_in,
-      'OCR-' || to_char(o.date_in, 'YYMMDD'),
-      'expense',
-      'จ่ายค่ายางจาก OCR บิลยาง ' || count(*)::text || ' ใบ',
-      sum(o.total_amount),
-      '30-' || o.date_in::text
-    from public.report_items i
-    join public.ocr_tickets o on o.id = i.entity_id
-    where i.report_id = p_report_id
-      and i.entity_type = 'ocr_ticket'
-      and o.total_amount > 0
-      and not exists (
-        select 1
-        from public.money_transfer_items mi
-        where mi.source_type = 'ocr_ticket'
-          and mi.source_id = o.id
-      )
-    group by o.date_in
-
-    union all
-
-    select
-      (coalesce(m.server_received_at, m.updated_at, m.created_at) at time zone 'Asia/Bangkok')::date,
-      'TR-' || left(m.id::text, 8),
-      'expense',
-      'โยกเงินไป ' || coalesce(m.target_location_name, 'สาขาปลายทาง'),
-      m.net_amount_to_pay,
-      '40-' || m.id::text
-    from public.report_items i
-    join public.money_transfers m on m.id = i.entity_id
-    where i.report_id = p_report_id
-      and i.entity_type = 'bank_transfer_source'
-      and m.transfer_type = 'branch'
-      and m.location_id <> m.target_location_id
-      and m.net_amount_to_pay > 0
-
-    union all
-
-    select
-      (coalesce(m.server_received_at, m.updated_at, m.created_at) at time zone 'Asia/Bangkok')::date,
-      'CT-' || left(m.id::text, 8),
-      'expense',
-      'สาขาจ่ายส่วนต่างให้ ' || coalesce(m.customer_name, 'ลูกค้า'),
-      m.branch_paid_amount,
-      '41-' || m.id::text
-    from public.report_items i
-    join public.money_transfers m on m.id = i.entity_id
-    where i.report_id = p_report_id
-      and i.entity_type = 'bank_transfer_source'
-      and m.transfer_type = 'customer'
-      and m.transfer_status = 'branch_and_transfer'
-      and m.branch_paid_amount > 0
-
-    union all
-
-    select
-      (coalesce(m.server_received_at, m.updated_at, m.created_at) at time zone 'Asia/Bangkok')::date,
-      'TR-' || left(m.id::text, 8),
-      'income',
-      'รับโอนจากสาขาต้นทาง',
-      m.net_amount_to_pay,
-      '42-' || m.id::text
-    from public.report_items i
-    join public.money_transfers m on m.id = i.entity_id
-    where i.report_id = p_report_id
-      and i.entity_type = 'bank_transfer_target'
-      and m.net_amount_to_pay > 0
-
-    union all
-
-    select
-      (d.sent_at at time zone 'Asia/Bangkok')::date,
-      'CASH-' || left(m.id::text, 8),
-      'expense',
-      'โยกเงินสดไป ' || coalesce(m.target_location_name, 'สาขาปลายทาง'),
-      d.sent_total,
-      '50-' || m.id::text
-    from public.report_items i
-    join public.money_transfers m on m.id = i.entity_id
-    join public.money_transfer_cash_details d on d.transfer_id = m.id
-    where i.report_id = p_report_id
-      and i.entity_type = 'cash_transfer_sent'
-
-    union all
-
-    select
-      (d.received_at at time zone 'Asia/Bangkok')::date,
-      'CASH-' || left(m.id::text, 8),
-      'income',
-      'รับเงินสดจากสาขาต้นทาง',
-      d.received_total,
-      '51-' || m.id::text
-    from public.report_items i
-    join public.money_transfers m on m.id = i.entity_id
-    join public.money_transfer_cash_details d on d.transfer_id = m.id
-    where i.report_id = p_report_id
-      and i.entity_type = 'cash_transfer_received'
-
-    union all
-
-    select
-      (e.verified_at at time zone 'Asia/Bangkok')::date,
-      e.export_no,
-      'expense',
-      'ค่าทำงานส่งออกยาง — ' || e.export_no,
-      e.work_total,
-      '55-' || e.id::text
-    from public.report_items i
-    join public.rubber_exports e on e.id = i.entity_id
-    where i.report_id = p_report_id
-      and i.entity_type = 'rubber_export'
-      and e.work_total > 0
-
-
-    union all
-
-    select
-      (f.approved_at at time zone 'Asia/Bangkok')::date,
-      'TW-' || left(f.id::text, 8),
-      'expense',
-      'เบิกเงิน — ' || coalesce(p.name, 'พนักงาน') ||
-        coalesce(': ' || nullif(f.description, ''), ''),
-      f.amount,
-      '60-' || f.id::text
-    from public.report_items i
-    join public.financial_transactions f on f.id = i.entity_id
-    join public.profiles p on p.id = f.profile_id
-    where i.report_id = p_report_id
-      and i.entity_type = 'financial_transaction'
-      and f.type = 'WITHDRAWAL'
-      and f.amount > 0
-
-    union all
-
-    select
-      (p.approved_at at time zone 'Asia/Bangkok')::date,
-      'PS-' || left(p.id::text, 8),
-      'expense',
-      'เงินเดือน — ' || coalesce(profile.name, 'พนักงาน') || ' — ' || p.month,
-      p.net_pay,
-      '61-' || p.id::text
-    from public.report_items i
-    join public.payroll_slips p on p.id = i.entity_id
-    join public.profiles profile on profile.id = p.profile_id
-    where i.report_id = p_report_id
-      and i.entity_type = 'payroll_slip'
-      and p.net_pay > 0
+      1,
+      period.tx_date,
+      period.number,
+      period.entry_type,
+      period.title,
+      period.amount,
+      period.sort_key
+    from private.report_income_expense_period_rows(p_report_id) period
   )
-  select r.tx_date, r.number, r.entry_type, r.title, r.amount
-  from rows r
-  order by r.tx_date, r.sort_key;
+  select
+    rows.tx_date,
+    rows.number,
+    rows.entry_type,
+    rows.title,
+    rows.amount
+  from rows
+  order by rows.row_order, rows.tx_date, rows.sort_key;
 end;
 $$;
 
@@ -7565,6 +7642,117 @@ $$;
 
 
 ALTER FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."provision_location"("p_request_id" "uuid", "p_name" "text", "p_code" "text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $_$
+declare
+  normalized_name text :=
+    pg_catalog.regexp_replace(
+      pg_catalog.btrim(coalesce(p_name, '')),
+      '[[:space:]]+',
+      ' ',
+      'g'
+    );
+  normalized_code text :=
+    pg_catalog.upper(pg_catalog.btrim(coalesce(p_code, '')));
+  location public.locations%rowtype;
+  replayed boolean := false;
+begin
+  if not private.is_active_user()
+    or not private.can_access_super_admin_features()
+  then
+    raise exception 'BRANCH_FORBIDDEN'
+      using errcode = '42501';
+  end if;
+
+  if p_request_id is null then
+    raise exception 'BRANCH_REQUEST_ID_REQUIRED'
+      using errcode = '22023';
+  end if;
+
+  if normalized_name = '' or char_length(normalized_name) > 100 then
+    raise exception 'BRANCH_NAME_INVALID'
+      using errcode = '22023';
+  end if;
+
+  if normalized_code !~ '^[A-Z0-9]{2,8}$' then
+    raise exception 'BRANCH_CODE_INVALID'
+      using errcode = '22023';
+  end if;
+
+  select l.*
+  into location
+  from public.locations l
+  where l.provision_request_id = p_request_id;
+
+  if found then
+    replayed := true;
+  else
+    insert into public.locations (
+      name,
+      code,
+      is_active,
+      created_by,
+      provision_request_id
+    )
+    values (
+      normalized_name,
+      normalized_code,
+      true,
+      auth.uid(),
+      p_request_id
+    )
+    on conflict (provision_request_id) do nothing
+    returning * into location;
+
+    if not found then
+      select l.*
+      into strict location
+      from public.locations l
+      where l.provision_request_id = p_request_id;
+      replayed := true;
+    else
+      insert into public.user_locations (
+        user_id,
+        location_id,
+        assigned_by,
+        is_primary
+      )
+      values (
+        auth.uid(),
+        location.id,
+        auth.uid(),
+        false
+      );
+    end if;
+  end if;
+
+  if location.created_by is distinct from auth.uid()
+    or location.name is distinct from normalized_name
+    or location.code is distinct from normalized_code
+  then
+    raise exception 'BRANCH_IDEMPOTENCY_CONFLICT'
+      using errcode = 'P0001';
+  end if;
+
+  return jsonb_build_object(
+    'location',
+    jsonb_build_object(
+      'id', location.id,
+      'name', location.name,
+      'code', location.code,
+      'active', location.is_active
+    ),
+    'replayed', replayed
+  );
+end;
+$_$;
+
+
+ALTER FUNCTION "public"."provision_location"("p_request_id" "uuid", "p_name" "text", "p_code" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."queue_dashboard_refresh"("p_location_id" "uuid") RETURNS "jsonb"
@@ -8180,6 +8368,9 @@ CREATE TABLE IF NOT EXISTS "public"."report_batches" (
     "deleted_by_user_id" "uuid",
     "deleted_by_name" "text",
     "deleted_by_phone" "text",
+    "previous_report_id" "uuid",
+    "opening_balance" numeric DEFAULT 0 NOT NULL,
+    "closing_balance" numeric DEFAULT 0 NOT NULL,
     CONSTRAINT "report_batches_sequence_no_check" CHECK (("sequence_no" > 0)),
     CONSTRAINT "report_batches_status_check" CHECK (("status" = ANY (ARRAY['active'::"text", 'deleted'::"text"])))
 );
@@ -8232,20 +8423,23 @@ begin
     purchase_average_min,
     net_cash_min,
     updated_by_user_id,
-    updated_by_name
+    updated_by_name,
+    is_configured
   )
   values (
     p_location_id,
     p_purchase_average_min,
     p_net_cash_min,
     auth.uid(),
-    actor_name
+    actor_name,
+    true
   )
   on conflict (location_id) do update
   set purchase_average_min = excluded.purchase_average_min,
       net_cash_min = excluded.net_cash_min,
       updated_by_user_id = excluded.updated_by_user_id,
       updated_by_name = excluded.updated_by_name,
+      is_configured = true,
       updated_at = now();
 
   return public.get_dashboard_alert_thresholds(p_location_id);
@@ -10399,6 +10593,7 @@ CREATE TABLE IF NOT EXISTS "public"."dashboard_alert_thresholds" (
     "updated_by_name" "text",
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "is_configured" boolean DEFAULT false NOT NULL,
     CONSTRAINT "dashboard_alert_thresholds_net_cash_min_check" CHECK (("net_cash_min" >= (0)::numeric)),
     CONSTRAINT "dashboard_alert_thresholds_purchase_average_min_check" CHECK ((("purchase_average_min" IS NULL) OR ("purchase_average_min" >= (0)::numeric)))
 );
@@ -10564,7 +10759,8 @@ CREATE TABLE IF NOT EXISTS "public"."locations" (
     "is_active" boolean DEFAULT true NOT NULL,
     "created_by" "uuid",
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "provision_request_id" "uuid"
 );
 
 
@@ -11136,6 +11332,11 @@ ALTER TABLE ONLY "public"."locations"
 
 
 
+ALTER TABLE ONLY "public"."locations"
+    ADD CONSTRAINT "locations_provision_request_id_key" UNIQUE ("provision_request_id");
+
+
+
 ALTER TABLE ONLY "public"."money_transfer_cash_details"
     ADD CONSTRAINT "money_transfer_cash_details_pkey" PRIMARY KEY ("transfer_id");
 
@@ -11471,6 +11672,10 @@ CREATE INDEX "leave_requests_pending_digest" ON "public"."leave_requests" USING 
 
 
 
+CREATE UNIQUE INDEX "locations_code_case_insensitive_key" ON "public"."locations" USING "btree" ("upper"("code")) WHERE ("code" IS NOT NULL);
+
+
+
 CREATE INDEX "money_transfer_cash_details_status_idx" ON "public"."money_transfer_cash_details" USING "btree" ("cash_status", "sent_at" DESC);
 
 
@@ -11684,6 +11889,10 @@ CREATE OR REPLACE TRIGGER "handle_updated_at" BEFORE UPDATE ON "public"."time_se
 
 
 CREATE OR REPLACE TRIGGER "income_expense_lock_location" BEFORE UPDATE ON "public"."income_expense" FOR EACH ROW EXECUTE FUNCTION "public"."prevent_location_change"();
+
+
+
+CREATE OR REPLACE TRIGGER "locations_code_immutable" BEFORE UPDATE OF "code" ON "public"."locations" FOR EACH ROW EXECUTE FUNCTION "private"."prevent_location_code_change"();
 
 
 
@@ -12127,6 +12336,11 @@ ALTER TABLE ONLY "public"."report_batches"
 
 ALTER TABLE ONLY "public"."report_batches"
     ADD CONSTRAINT "report_batches_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id");
+
+
+
+ALTER TABLE ONLY "public"."report_batches"
+    ADD CONSTRAINT "report_batches_previous_report_id_fkey" FOREIGN KEY ("previous_report_id") REFERENCES "public"."report_batches"("id");
 
 
 
@@ -12965,7 +13179,15 @@ REVOKE ALL ON FUNCTION "private"."normalize_rubber_bill_calculation_payload"("pa
 
 
 
+REVOKE ALL ON FUNCTION "private"."prevent_location_code_change"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."rebuild_dashboard_branch"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."report_income_expense_period_rows"("p_report_id" "uuid") FROM PUBLIC;
 
 
 
@@ -13237,6 +13459,11 @@ REVOKE ALL ON FUNCTION "public"."prevent_locked_ocr_ticket_change"() FROM PUBLIC
 
 REVOKE ALL ON FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."provision_location"("p_request_id" "uuid", "p_name" "text", "p_code" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."provision_location"("p_request_id" "uuid", "p_name" "text", "p_code" "text") TO "authenticated";
 
 
 

@@ -2,7 +2,7 @@
 
 ## Goal
 
-Create an online-only branch-scoped module that groups explicitly selected report-locked rubber bills, preserves bill snapshots, calculates weight loss and work expense, exposes a verified source-linked expense, participates in Report Batch locks, and prints verified or deleted evidence.
+Create an online-only branch-scoped module that groups explicitly selected report-locked rubber bills, preserves bill snapshots, calculates weight loss and work expense, exposes a verified source-linked expense, participates in Report Batch locks, and shares verified or deleted evidence as a searchable PDF.
 
 ## Source Ownership
 
@@ -50,7 +50,7 @@ Only a super admin or delegated system manager can soft-delete an export.
 - If an active report item references the export, deletion is blocked and returns the locking report number.
 - Successful deletion records the previous status, actor, and server time.
 - Active item reservations expire, allowing source reports to be deleted and bills to become eligible again after reporting.
-- Deleted rows remain printable from stored snapshots.
+- Deleted rows remain shareable as PDF evidence from stored snapshots.
 
 ## Calculations
 
@@ -85,7 +85,7 @@ Display contract:
 - relation source ID: export UUID
 - read-only with a `ดูรายการส่งออกยาง` source action
 
-Zero-value and external-payment exports remain valid and printable but do not appear in the feed or reports.
+Zero-value and external-payment exports remain valid and shareable but do not appear in the feed or reports.
 
 ## Report Integration And Locks
 
@@ -119,7 +119,7 @@ The server repeats every lock check inside the write transaction.
 | Preview/create/edit draft | Yes | Yes | No |
 | Verify | No | Yes | No |
 | Soft delete | No | Yes | No |
-| Print verified/deleted | Yes, assigned branch | Yes | No |
+| Share PDF for verified/deleted | Yes, assigned branch | Yes | No |
 
 UI guards are for experience only. API routes and security-definer RPCs recheck active user, role, delegated access, and branch scope.
 
@@ -180,9 +180,9 @@ RPC transactions own:
 - relation-lock checks
 - idempotent equivalent verify/delete retries
 
-## Print Contract
+## Direct PDF Share Contract
 
-Print is available for `verified` and `deleted` rows only.
+`แชร์ PDF` is available from both the table and detail modal for `verified` and `deleted` rows only. Every click fetches fresh detail data, validates the status, creates one in-memory A4 landscape `File`, and hands it to Web Share with a human-readable title. If file sharing is unsupported, the same file is downloaded through a temporary object URL which is then revoked. The workflow does not upload or persist a PDF and does not add an offline queue.
 
 The document includes:
 
@@ -193,7 +193,9 @@ The document includes:
 - creator and verifier audit
 - deletion watermark, previous status, deleter, and deletion time when deleted
 
-A draft deleted before completion prints missing values as `—`.
+A draft deleted before completion shows missing values as `—`. The PDF embeds local Noto Sans Thai fonts and `ActualText`, repeats table headers after page breaks, keeps each bill row together, and adds `{REX number} · หน้า X/Y`. Its filename includes the export number and `createdAt` formatted in `Asia/Bangkok`.
+
+The former `/rubber-exports/[exportId]/print` route is removed. Old bookmarks return 404 rather than opening a print dialog or redirecting.
 
 ## Test Matrix
 
@@ -217,13 +219,14 @@ A draft deleted before completion prints missing values as `—`.
 - report item references the export source
 - deleting a report expires its export reference
 
-### UI and print
+### UI and PDF share
 
 - selected-set preview matches the created item set
 - verification controls and disabled reasons match permissions and form state
 - source navigation opens the export
-- verified, deleted-verified, and deleted-draft print contracts render
-- multi-page print preserves headers and deletion watermark
+- verified, deleted-verified, and deleted-draft PDF contracts render; active drafts have no share action
+- table and modal share paths both refetch detail and recover after success, cancel, fallback, or error
+- multi-page PDF preserves repeated headers, row boundaries, deletion watermark, searchable Thai text, and page footers
 
 ## Verification Commands
 
@@ -233,6 +236,7 @@ npx.cmd supabase db lint --local
 npx.cmd tsc --noEmit
 npm.cmd run build
 npx.cmd playwright test --project=chromium tests/rubber-export.spec.ts
+npx.cmd playwright test --project=chromium tests/rubber-export-presentation.spec.ts tests/rubber-export-share-pdf.spec.ts
 git diff --check
 ```
 
@@ -248,7 +252,9 @@ git diff --check
   - `verify_rubber_export`
   - `delete_rubber_export`
 - API base: `/api/lanflow/rubber-exports`
-- Print route: `/rubber-exports/[exportId]/print`
+- PDF renderer: `src/lib/rubber-exports/rubber-export-pdf.ts`
+- Shared PDF mechanics: `src/lib/pdf/searchable-a4.ts`
+- UI delivery: direct Web Share with download fallback; no Rubber Export print route
 
 Verified on 2026-07-28:
 

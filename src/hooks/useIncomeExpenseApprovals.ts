@@ -3,6 +3,7 @@ import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { buildIncomeExpensePayload } from "@/lib/income-expense/build-income-expense-payload";
 import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
 import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
+import { authFetch } from "@/lib/auth-fetch";
 import type {
   CashTransferDeleteRequest,
   IncomeExpense,
@@ -318,7 +319,7 @@ export function useIncomeExpenseApprovals(options: {
 
   const decideRequestMutation = useMutation({
     mutationFn: async ({ id, decision, comment }: { id: string; decision: "approved" | "rejected"; comment?: string }) => {
-      const response = await fetch(`/api/lanflow/income-expense/approval-requests/${id}/decide`, {
+      const response = await authFetch(`/api/lanflow/income-expense/approval-requests/${id}/decide`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ decision, comment }),
@@ -343,7 +344,7 @@ export function useIncomeExpenseApprovals(options: {
 
   const decideCashDeleteRequestMutation = useMutation({
     mutationFn: async ({ id, decision, comment }: { id: string; decision: "approved" | "rejected"; comment?: string }) => {
-      const response = await fetch(`/api/lanflow/cash-branch-transfers/delete-requests/${id}/decide`, {
+      const response = await authFetch(`/api/lanflow/cash-branch-transfers/delete-requests/${id}/decide`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ decision, comment }),
@@ -383,7 +384,7 @@ export function useIncomeExpenseApprovals(options: {
 
     const payload = buildIncomeExpensePayload(transaction, operation);
 
-    const response = await fetch("/api/lanflow/income-expense/approval-requests", {
+    const response = await authFetch("/api/lanflow/income-expense/approval-requests", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),

@@ -50,8 +50,9 @@ export async function requireAuth(_request?: Request): Promise<AuthResult> {
         .maybeSingle(),
       supabase
         .from("user_locations")
-        .select("location_id")
+        .select("location_id, locations!inner(is_active)")
         .eq("user_id", userId)
+        .eq("locations.is_active", true)
     ]);
 
   if (

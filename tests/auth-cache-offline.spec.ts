@@ -29,7 +29,7 @@ test.describe('Offline Auth Cache Clearance', () => {
     await page.fill('input[type="password"]', password);
     await page.click('button:has-text("เข้าสู่ระบบ")');
 
-    await expect(page.locator('text=ภาพรวม')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole('button', { name: 'ภาพรวม', exact: true })).toBeVisible({ timeout: 15000 });
     await waitForServiceWorkerControl(page);
 
     // Verify localStorage has auth cache
@@ -72,7 +72,7 @@ test.describe('Offline Auth Cache Clearance', () => {
     await page.fill('input[type="tel"]', phone);
     await page.fill('input[type="password"]', password);
     await page.click('button:has-text("เข้าสู่ระบบ")');
-    await expect(page.locator('text=ภาพรวม')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole('button', { name: 'ภาพรวม', exact: true })).toBeVisible({ timeout: 15000 });
     await waitForServiceWorkerControl(page);
 
     // 2. Expire the offline cache by setting validatedAt to 8 days ago

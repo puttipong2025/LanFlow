@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { isDeviceOnline, subscribeConnectivity } from "@/lib/connectivity";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { RubberBill } from "@/types";
 import {
@@ -9,11 +10,14 @@ import {
   pruneRubberBillReceiptSnapshots,
   putRubberBillReceiptSnapshot,
   removeSyncEvent,
+  type SyncEvent,
 } from "@/lib/idb-queue";
 import { useEffect } from "react";
 import { toast } from "sonner";
 import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import { OFFLINE_SYNCED_ACTION_MESSAGE } from "@/lib/record-action-locks";
+import { authFetch } from "@/lib/auth-fetch";
+import { isRetryableSyncResponse } from "@/lib/sync-response";
 import {
   assertOfflineRubberBillPriceAllowed,
   isRubberBillPriceApprovalRequired,
@@ -149,7 +153,7 @@ async function syncPendingBills(queryClient: any, ownerUserId: string, locationI
       if (blockedIds.has(event.id)) continue;
 
       try {
-        const response = await fetch("/api/lanflow/rubber-bills", {
+        const response = await authFetch("/api/lanflow/rubber-bills", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(event.payload)
@@ -163,7 +167,9 @@ async function syncPendingBills(queryClient: any, ownerUserId: string, locationI
           }
           // Success -> remove from queue
           await removeSyncEvent(event.queueId!);
-        } else if (!response.ok) {
+        } else if (isRetryableSyncResponse(response.status)) {
+          break;
+        } else {
           // Use RPC-level status to distinguish conflict from failed
           const isConflict = data.status === "conflict";
           const eventStatus = isConflict ? "conflict" : "failed";
@@ -173,9 +179,6 @@ async function syncPendingBills(queryClient: any, ownerUserId: string, locationI
           event.errorMessage = data.errorMessage || (isConflict ? "ข้อมูลชนกัน" : "ซิงก์ไม่สำเร็จ");
           await import("@/lib/idb-queue").then(m => m.updateSyncEvent(event));
           blockedIds.add(event.id);
-          
-          // For server errors (500), stop syncing entirely to retry later
-          if (response.status >= 500) break;
         }
       } catch (err) {
         console.error("Network error during sync", err);
@@ -231,15 +234,19 @@ export function useRubberBills(
 
   // Trigger sync when coming online or on mount if already online
   useEffect(() => {
-    const handleOnline = () => syncPendingBills(queryClient, ownerUserId, locationId);
-    window.addEventListener("online", handleOnline);
+    const handleConnectivity = () => {
+      if (isDeviceOnline()) {
+        void syncPendingBills(queryClient, ownerUserId, locationId);
+      }
+    };
+    const unsubscribe = subscribeConnectivity(handleConnectivity);
 
     // Auto sync on mount if already online (e.g. app reopened while connected)
-    if (navigator.onLine) {
-      syncPendingBills(queryClient, ownerUserId, locationId);
+    if (isDeviceOnline()) {
+      void syncPendingBills(queryClient, ownerUserId, locationId);
     }
 
-    return () => window.removeEventListener("online", handleOnline);
+    return unsubscribe;
   }, [queryClient, ownerUserId, locationId]);
 
   const query = useQuery({
@@ -556,34 +563,6 @@ export function useRubberBills(
       const existingEvents = await getPendingEvents(queuePartition(ownerUserId, locationId));
       const clientEvents = existingEvents.filter(e => e.id === bill.clientTempId);
 
-      if (isOnline && clientEvents.length === 0) {
-        const response = await fetch("/api/lanflow/rubber-bills", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error(data.errorMessage || "บันทึกบิลไม่สำเร็จ");
-        }
-        return {
-          ...bill,
-          id: data.id ?? bill.id,
-          serverBillNo: data.serverBillNo ?? bill.serverBillNo,
-          billNo: data.serverBillNo ?? bill.billNo,
-          syncStatus: data.status === "synced" ? "synced" as const : "pending" as const,
-          revisionNo: data.revisionNo ?? bill.revisionNo,
-          serverReceivedAt: data.serverReceivedAt ?? bill.serverReceivedAt,
-          configuredPriceSnapshot:
-            operation === "create"
-              ? approvalSettings?.configuredPrice ?? null
-              : bill.configuredPriceSnapshot,
-          approvalPending: data.status === "pending_approval",
-          approvalRequestId: data.requestId,
-          approvalOperation: data.operation,
-        };
-      }
-
       if (clientEvents.some(e => e.status === "conflict" || e.status === "failed")) {
         throw new Error("ไม่สามารถบันทึกได้ กรุณาแก้ไขข้อมูลที่ขัดแย้ง หรือลองซิงก์ใหม่อีกครั้ง");
       }
@@ -598,6 +577,7 @@ export function useRubberBills(
 
       let keeper: typeof clientEvents[0] | undefined;
       let toDelete: typeof clientEvents = [];
+      let newlyQueuedEvent: SyncEvent | undefined;
 
       if (pendingCreates.length > 0) {
         keeper = pendingCreates[0]; // oldest create
@@ -628,7 +608,7 @@ export function useRubberBills(
           await mLib.updateSyncEvent(keeper);
         }
       } else {
-        await enqueueSyncEvent({
+        const event: Omit<SyncEvent, "queueId"> = {
           id: bill.clientTempId,
           entity: "rubber_bills",
           ownerUserId,
@@ -637,11 +617,56 @@ export function useRubberBills(
           payload,
           timestamp: Date.now(),
           status: "pending"
-        });
+        };
+        const queueId = await enqueueSyncEvent(event);
+        newlyQueuedEvent = { ...event, queueId };
+      }
+
+      if (isOnline && clientEvents.length === 0 && newlyQueuedEvent) {
+        try {
+          const response = await authFetch("/api/lanflow/rubber-bills", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            if (isRetryableSyncResponse(response.status)) {
+              throw new Error(data.errorMessage || "ระบบไม่พร้อมใช้งานชั่วคราว");
+            }
+            const isConflict = data.status === "conflict";
+            newlyQueuedEvent.status = isConflict ? "conflict" : "failed";
+            newlyQueuedEvent.errorMessage =
+              data.errorMessage || (isConflict ? "ข้อมูลชนกัน" : "ซิงก์ไม่สำเร็จ");
+            await mLib.updateSyncEvent(newlyQueuedEvent);
+            throw new Error(data.errorMessage || "บันทึกบิลไม่สำเร็จ");
+          }
+          await mLib.removeSyncEvent(newlyQueuedEvent.queueId!);
+          return {
+            ...bill,
+            id: data.id ?? bill.id,
+            serverBillNo: data.serverBillNo ?? bill.serverBillNo,
+            billNo: data.serverBillNo ?? bill.billNo,
+            syncStatus: data.status === "synced" ? "synced" as const : "pending" as const,
+            revisionNo: data.revisionNo ?? bill.revisionNo,
+            serverReceivedAt: data.serverReceivedAt ?? bill.serverReceivedAt,
+            configuredPriceSnapshot:
+              operation === "create"
+                ? approvalSettings?.configuredPrice ?? null
+                : bill.configuredPriceSnapshot,
+            approvalPending: data.status === "pending_approval",
+            approvalRequestId: data.requestId,
+            approvalOperation: data.operation,
+          };
+        } catch (error) {
+          if (newlyQueuedEvent.status !== "pending") throw error;
+          console.error("Network error while saving rubber bill", error);
+        }
       }
       
       return {
         ...bill,
+        syncStatus: "pending" as const,
         configuredPriceSnapshot:
           operation === "create"
             ? approvalSettings?.configuredPrice ?? null
@@ -732,24 +757,7 @@ export function useRubberBills(
         idempotencyKey: `delete:${clientTempId}:${targetRev}`
       };
 
-      if (typeof navigator === "undefined" || navigator.onLine) {
-        const response = await fetch("/api/lanflow/rubber-bills", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error(data.errorMessage || "ลบบิลไม่สำเร็จ");
-        }
-        return {
-          clientTempId,
-          coalesced: false,
-          approvalPending: data.status === "pending_approval",
-        };
-      }
-
-      await enqueueSyncEvent({
+      const event: Omit<SyncEvent, "queueId"> = {
         id: clientTempId,
         entity: "rubber_bills",
         ownerUserId,
@@ -758,7 +766,41 @@ export function useRubberBills(
         payload,
         timestamp: Date.now(),
         status: "pending"
-      });
+      };
+      const queueId = await enqueueSyncEvent(event);
+      const queuedEvent: SyncEvent = { ...event, queueId };
+
+      if (typeof navigator === "undefined" || navigator.onLine) {
+        try {
+          const response = await authFetch("/api/lanflow/rubber-bills", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            if (isRetryableSyncResponse(response.status)) {
+              throw new Error(data.errorMessage || "ระบบไม่พร้อมใช้งานชั่วคราว");
+            }
+            const isConflict = data.status === "conflict";
+            queuedEvent.status = isConflict ? "conflict" : "failed";
+            queuedEvent.errorMessage =
+              data.errorMessage || (isConflict ? "ข้อมูลชนกัน" : "ซิงก์ไม่สำเร็จ");
+            await mLib.updateSyncEvent(queuedEvent);
+            throw new Error(data.errorMessage || "ลบบิลไม่สำเร็จ");
+          }
+          await mLib.removeSyncEvent(queueId);
+          return {
+            clientTempId,
+            coalesced: false,
+            approvalPending: data.status === "pending_approval",
+          };
+        } catch (error) {
+          if (queuedEvent.status !== "pending") throw error;
+          console.error("Network error while deleting rubber bill", error);
+        }
+      }
+
       return { clientTempId, coalesced: false, approvalPending: false };
     },
     onSuccess: (data) => {

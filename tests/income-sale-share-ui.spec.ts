@@ -123,7 +123,7 @@ test("shows one read-only share action for one synced sale parent", async ({ pag
     await page.getByRole("button", { name: "ดูรายละเอียดบิลขาย" }).click();
     await expect(page.getByRole("heading", { name: `รายละเอียด ${referenceNo}` })).toBeVisible();
     await expect(page.locator("table").filter({ hasText: "ราคา/หน่วย" }).locator("tbody tr")).toHaveCount(2);
-    await page.getByRole("button", { name: "ปิด" }).click();
+    await page.getByRole("button", { name: "ปิด", exact: true }).click();
 
     const before = await service.from("income_expense")
       .select("revision_no,updated_at")

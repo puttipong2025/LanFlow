@@ -15,6 +15,8 @@ export function Field({
   name,
   type = "text",
   defaultValue,
+  value,
+  onChange,
   required,
   readOnly = false,
   placeholder
@@ -23,6 +25,8 @@ export function Field({
   name: string;
   type?: string;
   defaultValue?: string;
+  value?: string;
+  onChange?: React.ChangeEventHandler<HTMLInputElement>;
   required?: boolean;
   readOnly?: boolean;
   placeholder?: string;
@@ -33,7 +37,9 @@ export function Field({
       <input
         name={name}
         type={type}
-        defaultValue={type === "number" ? defaultValue ?? "0" : defaultValue}
+        {...(value === undefined
+          ? { defaultValue: type === "number" ? defaultValue ?? "0" : defaultValue }
+          : { value, onChange })}
         required={required}
         readOnly={readOnly}
         placeholder={placeholder}

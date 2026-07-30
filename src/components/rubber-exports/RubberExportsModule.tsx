@@ -7,9 +7,13 @@ import type { Location, Profile } from "@/types";
 import type { RubberExportDetails, RubberExportStatus, RubberExportSummary } from "@/types/rubber-exports";
 import { canManageSystemFeatures } from "@/lib/permissions";
 import { useRubberExports } from "@/hooks/useRubberExports";
+import { useSharePdf } from "@/hooks/useSharePdf";
+import { createRubberExportPdfFile } from "@/lib/rubber-exports/rubber-export-pdf";
+import { rubberExportShareTitle } from "@/lib/rubber-exports/rubber-export-presentation";
 import { RubberExportCreateModal } from "@/components/rubber-exports/RubberExportCreateModal";
 import { RubberExportDetailModal } from "@/components/rubber-exports/RubberExportDetailModal";
 import { RubberExportTable } from "@/components/rubber-exports/RubberExportTable";
+import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
 
 type Filter = "active" | RubberExportStatus | "all";
 
@@ -30,6 +34,8 @@ export function RubberExportsModule({
   const [filter, setFilter] = useState<Filter>("active");
   const [creating, setCreating] = useState(false);
   const [details, setDetails] = useState<RubberExportDetails | null>(null);
+  const [sharingId, setSharingId] = useState<string | null>(null);
+  const pdfShare = useSharePdf();
   const canVerifyOrDelete = canManageSystemFeatures(profile);
   const draftCount = api.exports.filter((row) => row.status === "draft").length;
   const visibleRows = useMemo(() => api.exports.filter((row) => {
@@ -61,6 +67,32 @@ export function RubberExportsModule({
       if (details?.id === row.id) setDetails(null);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "ลบรายการส่งออกไม่สำเร็จ");
+    }
+  }
+
+  async function share(row: Pick<RubberExportSummary, "id" | "exportNo">) {
+    if (!online || pdfShare.busy) return;
+    setSharingId(row.id);
+    try {
+      const delivery = await pdfShare.sharePdfFile(async (signal) => {
+        const freshDetails = await api.details(row.id, signal);
+        if (freshDetails.status === "draft") {
+          throw new Error("แชร์ PDF ได้เฉพาะรายการตรวจสอบแล้วหรือลบแล้ว");
+        }
+        return {
+          file: await createRubberExportPdfFile(freshDetails, signal),
+          title: rubberExportShareTitle(freshDetails),
+        };
+      });
+      if (delivery === "shared") {
+        toast.success(`แชร์ ${row.exportNo} แล้ว`);
+      } else if (delivery === "downloaded") {
+        toast.info("อุปกรณ์นี้แชร์ไฟล์ไม่ได้ จึงดาวน์โหลด PDF แทนแล้ว");
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "สร้าง PDF รายการส่งออกยางไม่สำเร็จ");
+    } finally {
+      setSharingId(null);
     }
   }
 
@@ -129,7 +161,10 @@ export function RubberExportsModule({
           rows={visibleRows}
           loading={api.loading}
           canDelete={canVerifyOrDelete}
+          shareBusy={pdfShare.busy}
+          sharingId={sharingId}
           onOpen={(id) => void open(id)}
+          onShare={(row) => void share(row)}
           onDelete={(row) => void remove(row)}
         />
       </div>
@@ -160,6 +195,8 @@ export function RubberExportsModule({
           key={details.id}
           details={details}
           canVerify={canVerifyOrDelete}
+          shareBusy={pdfShare.busy}
+          sharing={sharingId === details.id}
           onSave={async (values) => {
             try {
               await api.update(details.id, values);
@@ -181,9 +218,12 @@ export function RubberExportsModule({
               throw error;
             }
           }}
+          onShare={() => void share(details)}
           onClose={() => setDetails(null)}
         />
       )}
+
+      <SharePdfWaitingModal open={pdfShare.waiting} onCancel={pdfShare.cancel} />
     </section>
   );
 }

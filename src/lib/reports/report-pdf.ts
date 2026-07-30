@@ -11,160 +11,35 @@ import {
   rubberBillTotals,
   type RubberBillRow,
 } from "@/lib/reports/report-presentation";
+import {
+  A4_LANDSCAPE,
+  PDF_PALETTE,
+  applyTextStyle,
+  createSearchableA4PdfFile,
+  drawActualText,
+  drawPageFooters,
+  drawRow,
+  drawTable,
+  ensureSpace,
+  rowHeight,
+  type PdfAlignment as Alignment,
+  type PdfCell,
+  type PdfDocument,
+  type PdfState,
+} from "@/lib/pdf/searchable-a4";
 
-const PAGE_WIDTH = 841.89;
-const PAGE_HEIGHT = 595.28;
-const PAGE_LEFT = 24;
-const PAGE_TOP = 24;
-const PAGE_BOTTOM = PAGE_HEIGHT - 34;
-const TABLE_WIDTH = PAGE_WIDTH - (PAGE_LEFT * 2);
-const CELL_PADDING_X = 4;
-const CELL_PADDING_Y = 3;
+const PAGE_WIDTH = A4_LANDSCAPE.width;
+const PAGE_LEFT = A4_LANDSCAPE.left;
+const PAGE_TOP = A4_LANDSCAPE.top;
+const TABLE_WIDTH = A4_LANDSCAPE.tableWidth;
 
-const DARK_GREEN = "#173B2A";
-const MINT = "#DDEFE3";
-const PALE_GREEN = "#EFF6F1";
-const BORDER = "#718078";
-const MUTED = "#53645A";
-const DELETED = "#A12626";
-const WHITE = "#FFFFFF";
-
-type PdfDocument = PDFKit.PDFDocument;
-type Alignment = "left" | "right" | "center";
-
-type PdfCell = {
-  text: string;
-  align?: Alignment;
-  bold?: boolean;
-  fontSize?: number;
-  fill?: string;
-  color?: string;
-  colSpan?: number;
-};
-
-type PdfState = {
-  doc: PdfDocument;
-  y: number;
-};
-
-function fontName(bold = false) {
-  return bold ? "NotoSansThaiBold" : "NotoSansThai";
-}
-
-function applyTextStyle(doc: PdfDocument, cell: PdfCell) {
-  doc
-    .font(fontName(cell.bold))
-    .fontSize(cell.fontSize ?? 10)
-    .fillColor(cell.color ?? DARK_GREEN);
-}
-
-function drawActualText(
-  doc: PdfDocument,
-  text: string,
-  x: number,
-  y: number,
-  options: PDFKit.Mixins.TextOptions,
-) {
-  doc.markContent("Span", { actual: text, lang: "th-TH" });
-  doc.text(text, x, y, options);
-  doc.endMarkedContent();
-}
-
-function cellWidth(widths: number[], index: number, span: number) {
-  return widths.slice(index, index + span).reduce((sum, width) => sum + width, 0);
-}
-
-function rowHeight(doc: PdfDocument, row: PdfCell[], widths: number[]) {
-  let column = 0;
-  let height = 0;
-  for (const cell of row) {
-    const span = cell.colSpan ?? 1;
-    const width = cellWidth(widths, column, span) - (CELL_PADDING_X * 2);
-    applyTextStyle(doc, cell);
-    height = Math.max(
-      height,
-      doc.heightOfString(cell.text || " ", {
-        width,
-        lineGap: 0,
-        align: cell.align ?? "left",
-      }) + (CELL_PADDING_Y * 2),
-    );
-    column += span;
-  }
-  return Math.max(height, 22);
-}
-
-function drawRow(
-  doc: PdfDocument,
-  row: PdfCell[],
-  widths: number[],
-  y: number,
-  height: number,
-) {
-  let x = PAGE_LEFT;
-  let column = 0;
-  for (const cell of row) {
-    const span = cell.colSpan ?? 1;
-    const width = cellWidth(widths, column, span);
-    doc
-      .save()
-      .rect(x, y, width, height)
-      .fillAndStroke(cell.fill ?? WHITE, BORDER)
-      .restore();
-    applyTextStyle(doc, cell);
-    drawActualText(doc, cell.text, x + CELL_PADDING_X, y + CELL_PADDING_Y, {
-      width: width - (CELL_PADDING_X * 2),
-      height: height - (CELL_PADDING_Y * 2),
-      lineGap: 0,
-      align: cell.align ?? "left",
-    });
-    x += width;
-    column += span;
-  }
-}
-
-function addPage(state: PdfState) {
-  state.doc.addPage({ size: "A4", layout: "landscape", margins: {
-    top: PAGE_TOP,
-    left: PAGE_LEFT,
-    right: PAGE_LEFT,
-    bottom: 34,
-  } });
-  state.y = PAGE_TOP;
-}
-
-function ensureSpace(state: PdfState, height: number) {
-  if (state.y + height <= PAGE_BOTTOM) return;
-  addPage(state);
-}
-
-function drawTable(
-  state: PdfState,
-  widths: number[],
-  header: PdfCell[],
-  rows: PdfCell[][],
-) {
-  const headerHeight = rowHeight(state.doc, header, widths);
-  const firstRowHeight = rows.length > 0 ? rowHeight(state.doc, rows[0], widths) : 22;
-  if (state.y + headerHeight + firstRowHeight > PAGE_BOTTOM) addPage(state);
-
-  const drawHeader = () => {
-    drawRow(state.doc, header, widths, state.y, headerHeight);
-    state.y += headerHeight;
-  };
-  drawHeader();
-
-  for (const row of rows) {
-    const height = rowHeight(state.doc, row, widths);
-    if (state.y + height > PAGE_BOTTOM) {
-      addPage(state);
-      drawHeader();
-    }
-    drawRow(state.doc, row, widths, state.y, height);
-    state.y += height;
-  }
-  state.y += 8;
-}
+const {
+  darkGreen: DARK_GREEN,
+  mint: MINT,
+  paleGreen: PALE_GREEN,
+  muted: MUTED,
+  deleted: DELETED,
+} = PDF_PALETTE;
 
 function drawSectionTitle(state: PdfState, text: string) {
   ensureSpace(state, 54);
@@ -486,110 +361,15 @@ function drawReportContent(doc: PdfDocument, details: ReportDetails) {
   ], transferRows);
 }
 
-function drawFooters(doc: PdfDocument, reportNo: string) {
-  const range = doc.bufferedPageRange();
-  for (let index = 0; index < range.count; index += 1) {
-    doc.switchToPage(range.start + index);
-    const text = `${reportNo} · หน้า ${index + 1}/${range.count}`;
-    applyTextStyle(doc, { text, fontSize: 9, color: MUTED });
-    drawActualText(doc, text, PAGE_LEFT, PAGE_HEIGHT - 24, {
-      width: TABLE_WIDTH,
-      height: 14,
-      align: "right",
-      lineBreak: false,
-    });
-  }
-}
-
-async function loadFontBuffers(signal: AbortSignal) {
-  const [regularResponse, boldResponse] = await Promise.all([
-    fetch("/fonts/NotoSansThai-Regular.ttf", { signal, cache: "force-cache" }),
-    fetch("/fonts/NotoSansThai-Bold.ttf", { signal, cache: "force-cache" }),
-  ]);
-  if (!regularResponse.ok || !boldResponse.ok) {
-    throw new Error("โหลดฟอนต์ภาษาไทยสำหรับ PDF ไม่สำเร็จ");
-  }
-  const [regular, bold] = await Promise.all([
-    regularResponse.arrayBuffer(),
-    boldResponse.arrayBuffer(),
-  ]);
-  return {
-    regular: new Uint8Array(regular),
-    bold: new Uint8Array(bold),
-  };
-}
-
-function abortError() {
-  return new DOMException("ยกเลิกการสร้าง PDF", "AbortError");
-}
-
 export async function createReportPdfFile(details: ReportDetails, signal: AbortSignal) {
-  signal.throwIfAborted();
-  const [{ default: PDFDocument }, fonts] = await Promise.all([
-    import("pdfkit/js/pdfkit.standalone"),
-    loadFontBuffers(signal),
-  ]);
-  signal.throwIfAborted();
-
-  const doc = new PDFDocument({
-    size: "A4",
-    layout: "landscape",
-    bufferPages: true,
-    compress: true,
-    tagged: true,
-    lang: "th-TH",
-    info: {
-      Title: `รายงาน LanFlow ${details.report.reportNo}`,
-      Subject: `ชุดรายงาน ${details.report.locationName}`,
-      Author: "LanFlow",
-    },
-    margins: {
-      top: PAGE_TOP,
-      left: PAGE_LEFT,
-      right: PAGE_LEFT,
-      bottom: 34,
-    },
-  });
-  doc.registerFont("NotoSansThai", fonts.regular as unknown as Buffer);
-  doc.registerFont("NotoSansThaiBold", fonts.bold as unknown as Buffer);
-
-  const chunks: Uint8Array[] = [];
-  const blob = await new Promise<Blob>((resolve, reject) => {
-    let settled = false;
-    const onAbort = () => {
-      settled = true;
-      reject(abortError());
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    doc.on("data", (chunk: Uint8Array) => chunks.push(chunk));
-    doc.on("error", (error: Error) => {
-      signal.removeEventListener("abort", onAbort);
-      if (settled) return;
-      settled = true;
-      reject(error);
-    });
-    doc.on("end", () => {
-      signal.removeEventListener("abort", onAbort);
-      if (settled) return;
-      settled = true;
-      const parts = chunks.map((chunk) => chunk.slice().buffer as ArrayBuffer);
-      resolve(new Blob(parts, { type: "application/pdf" }));
-    });
-
-    try {
+  return createSearchableA4PdfFile({
+    filename: reportPdfFilename(details.report),
+    title: `รายงาน LanFlow ${details.report.reportNo}`,
+    subject: `ชุดรายงาน ${details.report.locationName}`,
+    signal,
+    render(doc) {
       drawReportContent(doc, details);
-      drawFooters(doc, details.report.reportNo);
-      doc.end();
-    } catch (error) {
-      signal.removeEventListener("abort", onAbort);
-      settled = true;
-      reject(error);
-    }
-  });
-  signal.throwIfAborted();
-
-  return new File([blob], reportPdfFilename(details.report), {
-    type: "application/pdf",
-    lastModified: Date.now(),
+      drawPageFooters(doc, details.report.reportNo);
+    },
   });
 }

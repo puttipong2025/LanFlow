@@ -14,9 +14,16 @@ import type { AcidProduct, AcidStockMovement, IncomeSaleItem, Location, Profile,
 import { ModalShell } from "@/components/shared/ModalShell";
 import { Field } from "@/components/shared/Field";
 import { NumberField } from "@/components/shared/NumberField";
+import { isNetworkCancellation } from "@/lib/network-abort";
 
 function todayInputValue() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function showActionError(error: unknown, fallback: string) {
+  if (!isNetworkCancellation(error)) {
+    toast.error(error instanceof Error ? error.message : fallback);
+  }
 }
 
 function movementLabel(movement: AcidStockMovement) {
@@ -113,7 +120,7 @@ function ReceiveModal({
       toast.success("รับเข้าสต็อกแล้ว");
       onClose();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "รับเข้าสต็อกไม่สำเร็จ");
+      showActionError(error, "รับเข้าสต็อกไม่สำเร็จ");
     }
   }
 
@@ -197,7 +204,7 @@ function TransferModal({
       toast.success("ย้ายสต็อกแล้ว");
       onClose();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "ย้ายสต็อกไม่สำเร็จ");
+      showActionError(error, "ย้ายสต็อกไม่สำเร็จ");
     }
   }
 
@@ -332,7 +339,7 @@ function ProductModal({
         toast.success("ปิดขายในบิลขายแล้ว");
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "อัปเดตสถานะขายไม่สำเร็จ");
+      showActionError(error, "อัปเดตสถานะขายไม่สำเร็จ");
     } finally {
       setChangingProductId(null);
     }
@@ -351,7 +358,7 @@ function ProductModal({
       await onDeleteProduct({ productId: product.id });
       toast.success("ส่งคำขอลบสินค้าแล้ว รอผู้จัดการระบบอนุมัติ");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "ส่งคำขอลบสินค้าไม่สำเร็จ");
+      showActionError(error, "ส่งคำขอลบสินค้าไม่สำเร็จ");
     } finally {
       setChangingProductId(null);
     }
@@ -376,7 +383,7 @@ function ProductModal({
       setUnit("ชิ้น");
       setCreateSaleItem(true);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "เพิ่มสินค้าไม่สำเร็จ");
+      showActionError(error, "เพิ่มสินค้าไม่สำเร็จ");
     } finally {
       setIsSaving(false);
     }
@@ -601,7 +608,7 @@ export function AcidStockModule({
       }
       toast.success(`ซิงก์รายการสำเร็จ ${result.synced.toLocaleString("th-TH")} รายการ`);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "ซิงก์รายการไม่สำเร็จ");
+      showActionError(error, "ซิงก์รายการไม่สำเร็จ");
     }
   }
 
@@ -628,7 +635,7 @@ export function AcidStockModule({
       await deleteStockEntry({ stockEntryId: movement.sourceId });
       toast.success("ส่งคำขอลบรายการสต็อกแล้ว รอผู้จัดการระบบอนุมัติ");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "ส่งคำขอลบรายการสต็อกไม่สำเร็จ");
+      showActionError(error, "ส่งคำขอลบรายการสต็อกไม่สำเร็จ");
     }
   }
 
@@ -646,7 +653,7 @@ export function AcidStockModule({
       }
       toast.success(decision === "approved" ? "อนุมัติคำขอแล้ว" : "ปฏิเสธคำขอแล้ว");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "ดำเนินการคำขอไม่สำเร็จ");
+      showActionError(error, "ดำเนินการคำขอไม่สำเร็จ");
     }
   }
 

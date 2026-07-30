@@ -34,16 +34,21 @@ export default defineConfig({
   },
   projects: isPwa ? [
     {
+      name: 'setup',
+      testMatch: /global\.setup\.ts/,
+    },
+    {
       // Production-mode tests: uses `npm start` with PWA/SW enabled
       // Run with: PW_PROJECT=pwa npx playwright test --project=chromium-pwa
-      // Requires: npm run build first
       name: 'chromium-pwa',
       use: { ...devices['Desktop Chrome'] },
+      dependencies: ['setup'],
       testMatch: [
         '**/rubber-bills-pwa.spec.ts',
         '**/income-expense-pwa.spec.ts',
         '**/auth-cache-offline.spec.ts',
         '**/weighing-queue-ui.spec.ts',
+        '**/pwa-connectivity-matrix.spec.ts',
       ],
     }
   ] : [
@@ -56,16 +61,21 @@ export default defineConfig({
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
       dependencies: ['setup'],
-      testIgnore: ['**/rubber-bills-pwa.spec.ts', '**/income-expense-pwa.spec.ts'],
+      testIgnore: [
+        '**/rubber-bills-pwa.spec.ts',
+        '**/income-expense-pwa.spec.ts',
+        '**/pwa-connectivity-matrix.spec.ts',
+        '**/seed-*.spec.ts',
+      ],
     }
   ],
   webServer: isPwa
     ? {
-        command: 'node node_modules/next/dist/bin/next start -p 3001',
+        command: 'node --env-file=.env.local node_modules/next/dist/bin/next build && node --env-file=.env.local node_modules/next/dist/bin/next start -p 3001',
         url: 'http://127.0.0.1:3001',
         reuseExistingServer: false,
         gracefulShutdown: { signal: 'SIGINT', timeout: 1000 },
-        timeout: 30 * 1000,
+        timeout: 180 * 1000,
       }
     : {
         command: 'node node_modules/next/dist/bin/next dev -p 3000',

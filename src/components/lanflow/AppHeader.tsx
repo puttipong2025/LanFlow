@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { BellRing, Building2, Check, ChevronDown } from "lucide-react";
+import { BellRing, Building2, Check, ChevronDown, Wifi, WifiOff } from "lucide-react";
 import type { Location, Profile } from "@/types";
 import { canManageSystemFeatures } from "@/lib/permissions";
 import { TelegramBadgeConfigModal } from "@/components/lanflow/TelegramBadgeConfigModal";
@@ -15,6 +15,7 @@ export function AppHeader({
   onLocationChange,
   onLogout,
   online,
+  serviceUnavailable,
 }: {
   profile: Profile;
   locations: Location[];
@@ -23,6 +24,7 @@ export function AppHeader({
   onLocationChange: (locationId: string) => void;
   onLogout: () => void | Promise<void>;
   online: boolean;
+  serviceUnavailable: boolean;
 }) {
   const [telegramConfigOpen, setTelegramConfigOpen] = useState(false);
   const [locationMenuOpen, setLocationMenuOpen] = useState(false);
@@ -64,6 +66,10 @@ export function AppHeader({
     };
   }, [locationMenuOpen]);
 
+  useEffect(() => {
+    if (!online) setLocationMenuOpen(false);
+  }, [online]);
+
   return (
     <>
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-3 py-4 sm:px-4 lg:flex-row lg:items-center lg:justify-between">
@@ -80,6 +86,18 @@ export function AppHeader({
         </div>
 
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <span
+            role="status"
+            aria-live="polite"
+            className={`inline-flex h-10 items-center justify-center gap-1.5 rounded-lg px-3 text-sm font-bold ${
+              online
+                ? "bg-leaf/10 text-leaf"
+                : "bg-amber/15 text-amber-800"
+            }`}
+          >
+            {online ? <Wifi size={16} /> : <WifiOff size={16} />}
+            {online ? "ออนไลน์" : "ไม่มีอินเทอร์เน็ต"}
+          </span>
           <div ref={locationMenuRef} className="relative min-w-0 sm:min-w-64">
             <button
               ref={locationButtonRef}
@@ -89,6 +107,8 @@ export function AppHeader({
               aria-haspopup="listbox"
               aria-controls="location-selector-listbox"
               aria-expanded={locationMenuOpen}
+              aria-disabled={!online}
+              disabled={!online}
               onClick={() => setLocationMenuOpen((open) => !open)}
               onKeyDown={(event) => {
                 if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
@@ -96,7 +116,7 @@ export function AppHeader({
                 setLocationMenuOpen(true);
                 focusLocationOption(event.key === "ArrowDown" ? 0 : accessibleLocations.length - 1);
               }}
-              className="focus-ring flex h-10 w-full min-w-0 items-center gap-2 rounded-lg border border-mint bg-white px-3 text-left shadow-sm transition hover:border-leaf/35 hover:bg-mint/35"
+              className="focus-ring flex h-10 w-full min-w-0 items-center gap-2 rounded-lg border border-mint bg-white px-3 text-left shadow-sm transition hover:border-leaf/35 hover:bg-mint/35 disabled:cursor-not-allowed disabled:bg-mint/30 disabled:opacity-65 disabled:hover:border-mint"
             >
               <Building2 size={18} className="shrink-0 text-leaf" />
               <span className="min-w-0 flex-1 truncate text-sm font-semibold text-ink">
@@ -187,6 +207,14 @@ export function AppHeader({
           <LogoutButton online={online} onLogout={onLogout} />
         </div>
       </div>
+      {online && serviceUnavailable && (
+        <p
+          role="status"
+          className="border-t border-amber/20 bg-amber/10 px-4 py-2 text-center text-sm font-semibold text-amber-900"
+        >
+          เชื่อมต่อระบบไม่ได้ กำลังแสดงข้อมูลล่าสุด
+        </p>
+      )}
 
       {telegramConfigOpen && (
         <TelegramBadgeConfigModal

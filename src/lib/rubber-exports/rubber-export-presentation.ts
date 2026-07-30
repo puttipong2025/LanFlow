@@ -1,0 +1,111 @@
+import type { RubberExportDetails } from "@/types/rubber-exports";
+
+const BANGKOK_TIME_ZONE = "Asia/Bangkok";
+const MISSING_VALUE = "—";
+
+export function formatRubberExportNumber(value: number | null | undefined) {
+  if (value == null) return MISSING_VALUE;
+  return value.toLocaleString("th-TH", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+export function formatRubberExportDate(value: string | null | undefined) {
+  if (!value) return MISSING_VALUE;
+  return new Intl.DateTimeFormat("th-TH", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    timeZone: BANGKOK_TIME_ZONE,
+  }).format(new Date(`${value}T00:00:00+07:00`));
+}
+
+export function formatRubberExportDateTime(value: string | null | undefined) {
+  if (!value) return MISSING_VALUE;
+  return new Intl.DateTimeFormat("th-TH", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: BANGKOK_TIME_ZONE,
+  }).format(new Date(value));
+}
+
+function formatBangkokFileTimestamp(value: string) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    timeZone: BANGKOK_TIME_ZONE,
+  }).formatToParts(new Date(value));
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((item) => item.type === type)?.value ?? "";
+  return `${part("year")}${part("month")}${part("day")}-${part("hour")}${part("minute")}`;
+}
+
+function sanitizeFilenamePart(value: string) {
+  return value
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^\.+|\.+$/g, "")
+    .slice(0, 80) || "rubber-export";
+}
+
+export function rubberExportPdfFilename(details: RubberExportDetails) {
+  return `LanFlow-rubber-export-${sanitizeFilenamePart(details.exportNo)}-${formatBangkokFileTimestamp(details.createdAt)}-A4-landscape.pdf`;
+}
+
+export function rubberExportShareTitle(details: RubberExportDetails) {
+  return `รายการส่งออกยาง ${details.exportNo} · ${details.locationName} · ${formatRubberExportDateTime(details.createdAt)}`;
+}
+
+export function rubberExportStatusLabel(details: RubberExportDetails) {
+  return details.status === "verified" ? "ตรวจสอบแล้ว" : "ลบแล้ว (สำเนา)";
+}
+
+export function rubberExportPreviousStatusLabel(details: RubberExportDetails) {
+  if (details.previousStatus === "verified") return "ตรวจสอบแล้ว";
+  if (details.previousStatus === "draft") return "ฉบับร่าง";
+  return MISSING_VALUE;
+}
+
+export function buildRubberExportPresentation(details: RubberExportDetails) {
+  return {
+    status: rubberExportStatusLabel(details),
+    previousStatus: rubberExportPreviousStatusLabel(details),
+    summary: [
+      ["น้ำหนักสุทธิรวม", `${formatRubberExportNumber(details.originalWeightTotal)} กก.`],
+      ["ยอดจ่ายจริงรวม", `฿${formatRubberExportNumber(details.paidTotal)}`],
+      ["ต้นทุนซื้อเฉลี่ย", `฿${formatRubberExportNumber(details.averagePrice)}/กก.`],
+      ["น้ำหนักปัจจุบัน", details.currentWeight == null
+        ? MISSING_VALUE
+        : `${formatRubberExportNumber(details.currentWeight)} กก.`],
+      ["น้ำหนักหาย", details.weightLossPercent == null
+        ? MISSING_VALUE
+        : `${formatRubberExportNumber(details.weightLossPercent)}%`],
+      ["ค่าทำงานต่อกิโลกรัม", details.workRate == null
+        ? MISSING_VALUE
+        : `฿${formatRubberExportNumber(details.workRate)}`],
+      ["ค่าดำเนินการอื่น", `฿${formatRubberExportNumber(details.otherOperatingCost)}`],
+      ["ยอดค่าทำงานรวม", details.workTotal == null
+        ? MISSING_VALUE
+        : `฿${formatRubberExportNumber(details.workTotal)}`],
+    ] as const,
+    items: details.items.map((item) => ({
+      ...item,
+      billDateText: formatRubberExportDate(item.billDate),
+      eligibilityAtText: formatRubberExportDateTime(item.eligibilityAt),
+      netWeightText: formatRubberExportNumber(item.netWeight),
+      paidAmountText: formatRubberExportNumber(item.paidAmount),
+    })),
+    audit: {
+      created: `${details.createdByName || MISSING_VALUE}\n${formatRubberExportDateTime(details.createdAt)}`,
+      verified: `${details.verifiedByName || MISSING_VALUE}\n${formatRubberExportDateTime(details.verifiedAt)}`,
+      deleted: `${details.deletedByName || MISSING_VALUE}\n${formatRubberExportDateTime(details.deletedAt)}`,
+    },
+  };
+}

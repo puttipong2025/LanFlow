@@ -1,5 +1,6 @@
 import { test, expect, Page } from '@playwright/test';
 import { assertRubberBillDeleteAllowed } from '../src/hooks/useRubberBills';
+import { selectedAppLocationId } from './helpers/select-app-location';
 
 const testUserId = process.env.TEST_USER_ID || '00000000-0000-4000-8000-000000000001';
 const localSupabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://127.0.0.1:54321';
@@ -40,6 +41,33 @@ async function readQueue(page: Page): Promise<any[]> {
   });
 }
 
+async function clearQueue(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    return new Promise<void>((resolve, reject) => {
+      const req = indexedDB.open('lanflow_sync_db');
+      req.onerror = () => reject(req.error);
+      req.onsuccess = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('sync_queue')) {
+          db.close();
+          resolve();
+          return;
+        }
+        const tx = db.transaction('sync_queue', 'readwrite');
+        tx.objectStore('sync_queue').clear();
+        tx.oncomplete = () => {
+          db.close();
+          resolve();
+        };
+        tx.onerror = () => {
+          db.close();
+          reject(tx.error);
+        };
+      };
+    });
+  });
+}
+
 async function createBillOnline(page: Page, marker: string) {
   const phone = process.env.TEST_PHONE || '0800000000';
   const password = process.env.TEST_PASSWORD || 'password123';
@@ -66,10 +94,70 @@ async function createBillOnline(page: Page, marker: string) {
   await weighRow.locator('input[type="number"]').nth(1).fill('200');
   await weighRow.locator('input[type="number"]').nth(3).fill('25.5');
 
-  await page.click('button:has-text("Submit")');
+  await modal.getByRole('button', { name: 'บันทึกบิล', exact: true }).click();
   await expect(page.locator('h2:has-text("บิลเครื่องชั่งเล็ก")')).toBeHidden({ timeout: 10000 });
   const row = page.locator('table tbody tr', { hasText: marker }).first();
   await expect(row.locator('span:has-text("ซิงก์แล้ว")')).toBeVisible({ timeout: 20000 });
+}
+
+async function createSyncedBillFromAuthenticatedApp(page: Page, marker: string) {
+  await page.click('button:has-text("บิลยาง")');
+  await expect(page.locator('button:has-text("เพิ่มบิลยาง")')).toBeVisible();
+  await waitForRubberApprovalSettings(page);
+  await page.click('button:has-text("เพิ่มบิลยาง")');
+
+  const modal = page.locator('.fixed.inset-0').last();
+  await modal.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]').fill(marker);
+  await page.keyboard.press('Escape');
+  const weighRow = modal.locator('table').first().locator('tbody tr').first();
+  await weighRow.locator('input[type="number"]').nth(0).fill('1000');
+  await weighRow.locator('input[type="number"]').nth(1).fill('200');
+  await weighRow.locator('input[type="number"]').nth(3).fill('25.5');
+  await modal.getByRole('button', { name: 'บันทึกบิล', exact: true }).click();
+  await expect(modal).toBeHidden({ timeout: 20000 });
+
+  const row = page.locator('table tbody tr', { hasText: marker }).first();
+  await expect(row.locator('span:has-text("ซิงก์แล้ว")')).toBeVisible({ timeout: 20000 });
+  return row;
+}
+
+async function waitForRubberApprovalSettings(page: Page) {
+  await page.getByRole('button', { name: /^ตั้งค่าและอนุมัติบิลยาง/ }).click();
+  const modal = page.locator('.fixed.inset-0').last();
+  await expect(modal.getByLabel('เวลาแก้ไขได้ (นาที)')).toHaveValue('30');
+  await modal.getByRole('button', { name: 'ปิด', exact: true }).click();
+  await expect(modal).toBeHidden();
+}
+
+async function cleanupRubberBillByCustomerName(page: Page, customerName: string) {
+  const response = await page.request.get(
+    `${localSupabaseUrl}/rest/v1/rubber_bills?customer_name=eq.${encodeURIComponent(customerName)}&select=client_temp_id,revision_no,location_id,record_status`,
+    {
+      headers: {
+        apikey: localServiceRoleKey,
+        Authorization: `Bearer ${localServiceRoleKey}`,
+      },
+    }
+  );
+  if (!response.ok()) return;
+  const rows = await response.json() as Array<{
+    client_temp_id: string;
+    revision_no: number;
+    location_id: string;
+    record_status: string;
+  }>;
+  const row = rows.find((candidate) => candidate.record_status === 'active');
+  if (!row) return;
+  await page.request.post('/api/lanflow/rubber-bills', {
+    data: {
+      operation: 'delete',
+      clientTempId: row.client_temp_id,
+      idempotencyKey: `delete:${row.client_temp_id}:${row.revision_no}`,
+      expectedRevisionNo: row.revision_no,
+      recordStatus: 'deleted',
+      locationId: row.location_id,
+    },
+  });
 }
 
 test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
@@ -98,13 +186,231 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
       }));
     });
     await page.goto('/');
-    await page.evaluate(async () => {
-      return new Promise<void>((resolve, reject) => {
-        const req = indexedDB.deleteDatabase('lanflow_sync_db');
-        req.onsuccess = () => resolve();
-        req.onerror = () => reject(req.error);
-        req.onblocked = () => resolve();
+    await clearQueue(page);
+  });
+
+  test.describe('queue-first online network failure', () => {
+    test.describe.configure({ timeout: 90000 });
+    test.use({ storageState: 'playwright/.auth/super_admin.json' });
+
+    test('keeps an online create in the pending queue when the request fails', async ({ page }) => {
+      test.setTimeout(60000);
+      const networkFailureMarker = `E2E-NETWORK-FAIL-${Date.now()}`;
+      const dialogMessages: string[] = [];
+      page.on('dialog', dialog => {
+        dialogMessages.push(dialog.message());
+        void dialog.accept();
       });
+
+      await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+      await page.click('button:has-text("บิลยาง")');
+      await waitForRubberApprovalSettings(page);
+      await page.click('button:has-text("เพิ่มบิลยาง")');
+
+      let interceptedPost = false;
+      await page.route('**/api/lanflow/rubber-bills', async (route) => {
+        if (route.request().method() !== 'POST') {
+          await route.continue();
+          return;
+        }
+        await route.abort('failed');
+        interceptedPost = true;
+      });
+
+      const modal = page.locator('.fixed.inset-0').last();
+      await modal.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]').fill(networkFailureMarker);
+      await page.keyboard.press('Escape');
+      const weighRow = modal.locator('table').first().locator('tbody tr').first();
+      await weighRow.locator('input[type="number"]').nth(0).fill('1000');
+      await weighRow.locator('input[type="number"]').nth(1).fill('200');
+      await weighRow.locator('input[type="number"]').nth(3).fill('25.5');
+      expect(await page.evaluate(() => navigator.onLine)).toBe(true);
+      await modal.getByRole('button', { name: 'บันทึกบิล', exact: true }).click();
+
+      await expect.poll(() => interceptedPost || dialogMessages.length > 0).toBe(true);
+      expect(dialogMessages).toEqual([]);
+      expect(await page.evaluate(() => navigator.onLine)).toBe(true);
+      const queueAfterFailure = await readQueue(page);
+      expect(queueAfterFailure.some((event) =>
+        event.entity === 'rubber_bills'
+        && event.operation === 'create'
+        && event.status === 'pending'
+        && event.payload?.customerName === networkFailureMarker
+      )).toBe(true);
+    });
+
+    test('keeps an online create pending when the API returns a transient 503', async ({ page }) => {
+      test.setTimeout(60000);
+      const transientMarker = `E2E-503-PENDING-${Date.now()}`;
+      page.on('dialog', dialog => void dialog.accept());
+
+      await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+      await page.click('button:has-text("บิลยาง")');
+      await waitForRubberApprovalSettings(page);
+      await page.click('button:has-text("เพิ่มบิลยาง")');
+
+      await page.route('**/api/lanflow/rubber-bills', async (route) => {
+        if (route.request().method() !== 'POST') {
+          await route.continue();
+          return;
+        }
+        await route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ errorMessage: 'temporary outage' }),
+        });
+      });
+
+      const modal = page.locator('.fixed.inset-0').last();
+      await modal.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]').fill(transientMarker);
+      await page.keyboard.press('Escape');
+      const weighRow = modal.locator('table').first().locator('tbody tr').first();
+      await weighRow.locator('input[type="number"]').nth(0).fill('1000');
+      await weighRow.locator('input[type="number"]').nth(1).fill('200');
+      await weighRow.locator('input[type="number"]').nth(3).fill('25.5');
+      await modal.getByRole('button', { name: 'บันทึกบิล', exact: true }).click();
+
+      await expect(modal).toBeHidden();
+      const queueAfterFailure = await readQueue(page);
+      expect(queueAfterFailure.some((event) =>
+        event.entity === 'rubber_bills'
+        && event.operation === 'create'
+        && event.status === 'pending'
+        && event.payload?.customerName === transientMarker
+      )).toBe(true);
+    });
+
+    test('keeps an online update in the pending queue when the request fails', async ({ page }) => {
+      test.setTimeout(90000);
+      const networkFailureMarker = `E2E-UPDATE-FAIL-${Date.now()}`;
+      page.on('dialog', dialog => dialog.accept());
+
+      try {
+        const row = await createSyncedBillFromAuthenticatedApp(page, networkFailureMarker);
+        await row.getByRole('button', { name: 'แก้ไข', exact: true }).click();
+        const modal = page.locator('.fixed.inset-0').last();
+        const weighRow = modal.locator('table').first().locator('tbody tr').first();
+        await weighRow.locator('input[type="number"]').nth(3).fill('26');
+
+        let postAttempts = 0;
+        await page.route('**/api/lanflow/rubber-bills', async (route) => {
+          if (route.request().method() !== 'POST') {
+            await route.continue();
+            return;
+          }
+          postAttempts += 1;
+          await route.abort('failed');
+        });
+
+        await modal.getByRole('button', { name: 'บันทึกบิล', exact: true }).click();
+        await expect.poll(() => postAttempts).toBeGreaterThan(0);
+        await expect(modal).toBeHidden();
+        await expect(row.locator('span:has-text("รอซิงก์")')).toBeVisible();
+        const queueAfterFailure = await readQueue(page);
+        expect(queueAfterFailure.some((event) =>
+          event.entity === 'rubber_bills'
+          && event.operation === 'update'
+          && event.status === 'pending'
+          && event.payload?.customerName === networkFailureMarker
+        )).toBe(true);
+      } finally {
+        await page.unroute('**/api/lanflow/rubber-bills');
+        await cleanupRubberBillByCustomerName(page, networkFailureMarker);
+      }
+    });
+
+    test('keeps an online delete in the pending queue when the request fails', async ({ page }) => {
+      test.setTimeout(90000);
+      const networkFailureMarker = `E2E-DELETE-FAIL-${Date.now()}`;
+      page.on('dialog', dialog => dialog.accept());
+
+      try {
+        const row = await createSyncedBillFromAuthenticatedApp(page, networkFailureMarker);
+        let postAttempts = 0;
+        await page.route('**/api/lanflow/rubber-bills', async (route) => {
+          if (route.request().method() !== 'POST') {
+            await route.continue();
+            return;
+          }
+          postAttempts += 1;
+          await route.abort('failed');
+        });
+
+        await row.getByRole('button', { name: 'ลบ', exact: true }).click();
+        await expect.poll(() => postAttempts).toBeGreaterThan(0);
+        const queueAfterFailure = await readQueue(page);
+        expect(queueAfterFailure.some((event) =>
+          event.entity === 'rubber_bills'
+          && event.operation === 'delete'
+          && event.status === 'pending'
+          && event.payload?.customerName === networkFailureMarker
+        )).toBe(true);
+      } finally {
+        await page.unroute('**/api/lanflow/rubber-bills');
+        await cleanupRubberBillByCustomerName(page, networkFailureMarker);
+      }
+    });
+
+    test('replays exactly once when the server commits but the response is lost', async ({ page }) => {
+      test.setTimeout(90000);
+      const responseLossMarker = `E2E-RESPONSE-LOSS-${Date.now()}`;
+      page.on('dialog', dialog => dialog.accept());
+
+      try {
+        await page.click('button:has-text("บิลยาง")');
+        await waitForRubberApprovalSettings(page);
+        await page.click('button:has-text("เพิ่มบิลยาง")');
+
+        let postAttempts = 0;
+        let committedStatus = 0;
+        await page.route('**/api/lanflow/rubber-bills', async (route) => {
+          if (route.request().method() !== 'POST') {
+            await route.continue();
+            return;
+          }
+          postAttempts += 1;
+          if (postAttempts === 1) {
+            const committedResponse = await route.fetch();
+            committedStatus = committedResponse.status();
+            await route.abort('failed');
+            return;
+          }
+          await route.continue();
+        });
+
+        const modal = page.locator('.fixed.inset-0').last();
+        await modal.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]').fill(responseLossMarker);
+        await page.keyboard.press('Escape');
+        const weighRow = modal.locator('table').first().locator('tbody tr').first();
+        await weighRow.locator('input[type="number"]').nth(0).fill('1000');
+        await weighRow.locator('input[type="number"]').nth(1).fill('200');
+        await weighRow.locator('input[type="number"]').nth(3).fill('25.5');
+        await modal.getByRole('button', { name: 'บันทึกบิล', exact: true }).click();
+
+        await expect.poll(() => committedStatus).toBe(200);
+        await expect.poll(() => postAttempts).toBeGreaterThanOrEqual(2);
+        await expect(modal).toBeHidden();
+        await expect.poll(async () => {
+          const queue = await readQueue(page);
+          return queue.some((event) => event.payload?.customerName === responseLossMarker);
+        }).toBe(false);
+
+        const response = await page.request.get(
+          `${localSupabaseUrl}/rest/v1/rubber_bills?customer_name=eq.${encodeURIComponent(responseLossMarker)}&select=id,record_status`,
+          {
+            headers: {
+              apikey: localServiceRoleKey,
+              Authorization: `Bearer ${localServiceRoleKey}`,
+            },
+          }
+        );
+        expect(response.ok()).toBe(true);
+        const rows = await response.json() as Array<{ id: string; record_status: string }>;
+        expect(rows.filter((row) => row.record_status === 'active')).toHaveLength(1);
+      } finally {
+        await page.unroute('**/api/lanflow/rubber-bills');
+        await cleanupRubberBillByCustomerName(page, responseLossMarker);
+      }
     });
   });
 
@@ -149,7 +455,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     await weighRow.locator('input[type="number"]').nth(1).fill('200');
     await weighRow.locator('input[type="number"]').nth(3).fill('19.5');
 
-    await page.click('button:has-text("Submit")');
+    await modal.getByRole('button', { name: 'บันทึกบิล', exact: true }).click();
     await expect(page.locator('h2:has-text("บิลเครื่องชั่งเล็ก")')).toBeHidden({ timeout: 10000 });
 
     // Assert: UI shows "รอซิงก์" (pending)
@@ -176,15 +482,15 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     const deleteAction = createdRow.locator('button[title="ลบ"]');
     await expect(editAction).toHaveAttribute('aria-label', 'แก้ไข');
     await expect(deleteAction).toHaveAttribute('aria-label', 'ลบ');
-    await expect(editAction).toHaveText('');
-    await expect(deleteAction).toHaveText('');
+    await expect(editAction).toHaveText('แก้ไข');
+    await expect(deleteAction).toHaveText('ลบ');
     await editAction.click();
     await expect(page.locator('h2:has-text("แก้ไขบิลเครื่องชั่งเล็ก")')).toBeVisible();
     
     const editModal = page.locator('.fixed.inset-0').last();
     const editWeighRow = editModal.locator('table').first().locator('tbody tr').first();
     await editWeighRow.locator('input[type="number"]').nth(3).fill('19.75');
-    await page.click('button:has-text("Submit")');
+    await editModal.getByRole('button', { name: 'บันทึกบิล', exact: true }).click();
     await expect(page.locator('h2:has-text("แก้ไขบิลเครื่องชั่งเล็ก")')).toBeHidden({ timeout: 10000 });
     await expect(createdRow.locator('td').nth(5)).toHaveText(payerName);
 
@@ -207,7 +513,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     await deleteWeighRow.locator('input[type="number"]').nth(0).fill('500');
     await deleteWeighRow.locator('input[type="number"]').nth(1).fill('100');
     await deleteWeighRow.locator('input[type="number"]').nth(3).fill('18.5');
-    await page.click('button:has-text("Submit")');
+    await deleteModal.getByRole('button', { name: 'บันทึกบิล', exact: true }).click();
     await expect(page.locator('h2:has-text("บิลเครื่องชั่งเล็ก")')).toBeHidden({ timeout: 10000 });
 
     const deleteRow = page.locator('table tbody tr', { hasText: markerDelete }).first();
@@ -390,7 +696,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
       await weighRow.locator('input[type="number"]').nth(0).fill('100');
       await weighRow.locator('input[type="number"]').nth(1).fill('20');
       await weighRow.locator('input[type="number"]').nth(3).fill('1');
-      await page.click('button:has-text("Submit")');
+      await modal.getByRole('button', { name: 'บันทึกบิล', exact: true }).click();
       await expect(modal).toBeHidden({ timeout: 10000 });
 
       const pendingRow = page.locator('table tbody tr', { hasText: marker }).first();
@@ -442,10 +748,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     await expect(page.locator('button:has-text("เพิ่มบิลยาง")')).toBeVisible();
 
     // 2. Get locationId from the logged-in user's profile
-    const meRes = await page.request.fetch('/api/auth/me', { headers: { Accept: 'application/json' } });
-    expect(meRes.ok()).toBeTruthy();
-    const meData = await meRes.json();
-    const locationId = meData.profile?.locationIds?.[0];
+    const locationId = await selectedAppLocationId(page);
     expect(locationId).toBeDefined();
 
     // 3. Go offline
@@ -566,10 +869,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     await expect(page.locator('button:has-text("เพิ่มบิลยาง")')).toBeVisible();
 
     // 2. Get locationId from the logged-in user's profile
-    const meRes = await page.request.fetch('/api/auth/me', { headers: { Accept: 'application/json' } });
-    expect(meRes.ok()).toBeTruthy();
-    const meData = await meRes.json();
-    const locationId = meData.profile?.locationIds?.[0];
+    const locationId = await selectedAppLocationId(page);
     expect(locationId).toBeDefined();
 
     // 3. Go offline

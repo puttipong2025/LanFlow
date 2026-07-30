@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { StockProductApprovalRequest } from "@/types";
 import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
+import { authFetch } from "@/lib/auth-fetch";
 
 const REQUESTS_KEY = "stockProductApprovalRequests";
 
@@ -46,7 +47,7 @@ export function useStockProductApprovals(options: { includeRequests?: boolean } 
 
   const decideRequestMutation = useMutation({
     mutationFn: async ({ id, decision, comment }: { id: string; decision: "approved" | "rejected"; comment?: string }) => {
-      const response = await fetch(`/api/lanflow/stock-product-approval-requests/${id}/decide`, {
+      const response = await authFetch(`/api/lanflow/stock-product-approval-requests/${id}/decide`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ decision, comment }),

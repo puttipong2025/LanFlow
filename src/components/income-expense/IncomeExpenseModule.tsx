@@ -20,6 +20,7 @@ import {
   renderSaleReceiptHtml,
 } from "@/lib/income-expense/sale-receipt";
 import { receiptPdfFilename } from "@/lib/rubber-bills/print-receipt";
+import { authFetch } from "@/lib/auth-fetch";
 import {
   cashTransferReference,
   renderCashTransferReceiptHtml,
@@ -159,7 +160,7 @@ export function IncomeExpenseModule({
 
   async function loadSaleBillDetails(transaction: IncomeExpense) {
     if (transaction.billOption !== "บิลขาย" || transaction.saleLines) return transaction;
-    const response = await fetch(`/api/lanflow/income-expense/${transaction.id}`);
+    const response = await authFetch(`/api/lanflow/income-expense/${transaction.id}`);
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new Error(data.error ?? "โหลดรายการบิลขายไม่สำเร็จ");
@@ -351,15 +352,18 @@ export function IncomeExpenseModule({
   ) {
     if (pdfShare.busy) {
       toast.error("กำลังสร้าง PDF อื่นอยู่ กรุณารอสักครู่");
-      return;
+      return false;
     }
 
     setModalOpen(false);
+    let persistenceSucceeded = false;
 
     try {
       const delivery = await pdfShare.sharePdf(async (signal) => {
         const { pendingApprovalCount, persistedTransactions, persistError } =
           await persistSubmittedTransactions(submittedTransactions);
+        persistenceSucceeded = !persistError
+          && pendingApprovalCount + persistedTransactions.length === submittedTransactions.length;
         showPersistSummary(pendingApprovalCount, persistedTransactions.length);
 
         const syncedTransaction = persistedTransactions[0]
@@ -377,8 +381,10 @@ export function IncomeExpenseModule({
         return saleReceiptDocument(syncedTransaction);
       });
       showSaleReceiptDelivery(delivery);
+      return true;
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "บันทึกหรือซิงก์บิลขายไม่สำเร็จ");
+      return persistenceSucceeded;
     }
   }
 
@@ -776,8 +782,7 @@ export function IncomeExpenseModule({
                 (transaction) => transaction.billOption === "บิลขาย"
               );
             if (isSaleSubmission) {
-              await submitAndShareSaleReceipt(savedTransactions);
-              return;
+              return submitAndShareSaleReceipt(savedTransactions);
             }
 
             try {
@@ -786,8 +791,10 @@ export function IncomeExpenseModule({
               if (persistError) throw persistError;
               setModalOpen(false);
               showPersistSummary(pendingApprovalCount, persistedTransactions.length);
+              return true;
             } catch (error) {
               toast.error(error instanceof Error ? error.message : "บันทึกรายการไม่สำเร็จ");
+              return false;
             }
           }}
         />

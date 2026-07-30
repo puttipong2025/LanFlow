@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { AcidProduct } from "@/types";
 import { STOCK_PRODUCT_APPROVAL_REQUESTS_KEY } from "@/hooks/useStockProductApprovals";
+import { authFetch } from "@/lib/auth-fetch";
 
 const QUERY_KEY = "stockProducts";
 
@@ -29,7 +30,7 @@ async function postStockProduct(input: { name: string; unit: string; createSaleI
     throw new Error("เพิ่มสินค้าต้องออนไลน์ก่อน");
   }
 
-  const response = await fetch("/api/lanflow/stock-product-approval-requests", {
+  const response = await authFetch("/api/lanflow/stock-product-approval-requests", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -55,7 +56,7 @@ async function postStockProductDelete(input: { productId: string }) {
     throw new Error("ลบสินค้าต้องออนไลน์ก่อน");
   }
 
-  const response = await fetch("/api/lanflow/stock-product-approval-requests", {
+  const response = await authFetch("/api/lanflow/stock-product-approval-requests", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

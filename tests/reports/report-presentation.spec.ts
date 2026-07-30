@@ -62,6 +62,7 @@ function reportDetails(): ReportDetails {
       amount: 12_000,
     }],
     incomeExpense: [
+      { date: "2026-07-28", number: "RPT-OPENING", type: "income", title: "ยอดยกมา", amount: 5_000 },
       { date: "2026-07-29", number: "INC-001", type: "income", title: "รับเงิน", amount: 10_000 },
       { date: "2026-07-29", number: "EXP-001", type: "expense", title: "จ่ายเงิน", amount: 2_500 },
     ],
@@ -100,13 +101,14 @@ test("builds shared report groups, split ledger columns and totals", () => {
   expect(presentation.traderRubberBills.map((row) => row.number)).toEqual(["RB-TRADER"]);
   expect(presentation.farmerRubberBills.map((row) => row.number)).toEqual(["RB-FARMER"]);
   expect(presentation.incomeExpense).toMatchObject([
+    { number: "RPT-OPENING", title: "ยอดยกมา", income: 5_000, expense: null },
     { number: "INC-001", income: 10_000, expense: null },
     { number: "EXP-001", income: null, expense: 2_500 },
   ]);
   expect(presentation.totals).toMatchObject({
-    income: 10_000,
+    income: 15_000,
     expense: 2_500,
-    balance: 7_500,
+    balance: 12_500,
     ocrNet: 400,
     ocrRemaining: 380,
     stockQuantity: 20,

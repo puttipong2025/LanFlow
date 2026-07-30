@@ -1,6 +1,7 @@
 import { expect, test, type Browser, type BrowserContext } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 import { assertOfflineRubberBillPriceAllowed } from "../../src/lib/rubber-bills/approval";
+import { selectedAppLocationId } from "../helpers/select-app-location";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -502,17 +503,23 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
     let requestId: string | undefined;
 
     try {
-      const userProfile = await profile(user);
-      const locationId = userProfile.locationIds[0];
+      const [userProfile, adminProfile] = await Promise.all([
+        profile(user),
+        profile(admin),
+      ]);
+      const locationId = userProfile.locationIds.find((id) =>
+        adminProfile.locationIds.includes(id)
+      );
+      expect(locationId).toBeTruthy();
       expect((await saveSettings(superAdmin, 0, 20)).ok()).toBeTruthy();
 
-      const createPayload = billPayload({ locationId, price: 20 });
+      const createPayload = billPayload({ locationId: locationId!, price: 20 });
       const created = await syncBill(user, createPayload);
       expect(created.body.status).toBe("synced");
       billId = created.body.id;
 
       const updatePayload = billPayload({
-        locationId,
+        locationId: locationId!,
         clientTempId: createPayload.clientTempId,
         operation: "update",
         expectedRevisionNo: created.body.revisionNo,
@@ -536,7 +543,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         id: transferId,
         client_temp_id: transferId,
         idempotency_key: `approval-transfer:${transferId}`,
-        location_id: locationId,
+        location_id: locationId!,
         customer_name: "ทดสอบ",
         net_amount_to_pay: 200,
       })).error).toBeNull();
@@ -550,7 +557,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       expect(blockedTransfer.error?.message).toContain("กำลังรออนุมัติ");
 
       const report = await admin.request.post("/api/lanflow/reports", {
-        data: { locationId },
+        data: { locationId: locationId! },
       });
       const reportBody = await report.json() as { error?: string; errorGroups?: string[] };
       expect(report.status(), reportBody.error).toBe(409);
@@ -566,7 +573,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         .single()).data?.customer_name).toBe("ชื่อใหม่ที่ยังไม่ควรถูกใช้");
 
       const secondReport = await admin.request.post("/api/lanflow/reports", {
-        data: { locationId },
+        data: { locationId: locationId! },
       });
       const secondReportBody = await secondReport.json() as { id?: string; error?: string };
       expect(secondReport.status(), secondReportBody.error).toBe(201);
@@ -579,7 +586,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         .maybeSingle()).data).not.toBeNull();
 
       const reportedUpdate = billPayload({
-        locationId,
+        locationId: locationId!,
         clientTempId: createPayload.clientTempId,
         operation: "update",
         expectedRevisionNo: 2,
@@ -740,14 +747,17 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
   test("approval UI derives the payable total from items instead of client summary fields", async ({ browser }) => {
     const context = await authContext(browser, "super_admin");
     const db = service();
-    const me = await profile(context);
     const customerName = `ApprovalCalc-${Date.now()}`;
     let requestId: string | undefined;
 
     try {
+      const page = await context.newPage();
+      await page.goto("/");
+      const locationId = await selectedAppLocationId(page);
+      expect(locationId).toBeTruthy();
       expect((await saveSettings(context, 30, 20)).ok()).toBeTruthy();
       const payload: any = billPayload({
-        locationId: me.locationIds[0],
+        locationId: locationId!,
         price: 20.5,
         configuredPriceSnapshot: 20,
         customerName,
@@ -772,8 +782,6 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         netTotal: 205,
       }));
 
-      const page = await context.newPage();
-      await page.goto("/");
       await page.getByRole("button", { name: "บิลยาง" }).click();
       await page.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ }).click();
       const requestCard = page.locator("article", { hasText: customerName });

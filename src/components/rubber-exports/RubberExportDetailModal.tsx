@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Loader2, Printer } from "lucide-react";
+import { Loader2, Share2 } from "lucide-react";
 import { ModalShell } from "@/components/shared/ModalShell";
 import {
   calculateWeightLossPercent,
@@ -29,12 +29,17 @@ function nullableNumber(value: string) {
 export function RubberExportDetailModal({
   details,
   canVerify,
+  shareBusy,
+  sharing,
   onSave,
   onVerify,
+  onShare,
   onClose,
 }: {
   details: RubberExportDetails;
   canVerify: boolean;
+  shareBusy: boolean;
+  sharing: boolean;
   onSave: (values: {
     currentWeight: number | null;
     workRate: number | null;
@@ -45,6 +50,7 @@ export function RubberExportDetailModal({
     workRate: number | null;
     otherOperatingCost: number;
   }) => Promise<void>;
+  onShare: () => void;
   onClose: () => void;
 }) {
   const [currentWeight, setCurrentWeight] = useState<number | null>(details.currentWeight ?? null);
@@ -165,14 +171,18 @@ export function RubberExportDetailModal({
 
         <div className="modal-actions flex flex-wrap justify-end gap-2">
           {(details.status === "verified" || details.status === "deleted") && (
-            <a
-              href={`/rubber-exports/${details.id}/print`}
-              target="_blank"
-              rel="noreferrer"
-              className="focus-ring inline-flex items-center gap-2 rounded-md bg-ink px-4 py-2 font-semibold text-white"
+            <button
+              type="button"
+              onClick={onShare}
+              disabled={shareBusy}
+              aria-label={`แชร์ PDF รายการส่งออกยาง ${details.exportNo}`}
+              className="focus-ring inline-flex items-center gap-2 rounded-md bg-ink px-4 py-2 font-semibold text-white disabled:opacity-50"
             >
-              <Printer size={16} /> ดู/พิมพ์
-            </a>
+              {sharing
+                ? <Loader2 size={16} className="animate-spin" />
+                : <Share2 size={16} />}
+              {sharing ? "กำลังสร้าง PDF" : "แชร์ PDF"}
+            </button>
           )}
           {isDraft && (
             <button

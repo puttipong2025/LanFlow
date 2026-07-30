@@ -104,19 +104,20 @@ test.describe.serial("Cash branch transfer contract @cash-transfer-contract", ()
         profile(admin.request),
         profile(superAdmin.request),
       ]);
-      const sourceLocationId = userProfile.locationIds[0];
+      const sourceLocationId = userProfile.locationIds.find((id) =>
+        adminProfile.locationIds.includes(id)
+      );
       const targetLocationId = superProfile.locationIds.find((id) => !userProfile.locationIds.includes(id));
       expect(sourceLocationId).toBeTruthy();
       expect(targetLocationId).toBeTruthy();
-      expect(adminProfile.locationIds).toContain(sourceLocationId);
 
       const deniedCreate = await user.request.post("/api/lanflow/cash-branch-transfers", {
-        data: createPayload(targetLocationId!, sourceLocationId),
+        data: createPayload(targetLocationId!, sourceLocationId!),
       });
       expect(deniedCreate.status()).toBe(403);
 
       for (const [context, actor] of [[user, userProfile], [admin, adminProfile], [superAdmin, superProfile]] as const) {
-        const transferId = await createTransfer(context.request, sourceLocationId, targetLocationId!);
+        const transferId = await createTransfer(context.request, sourceLocationId!, targetLocationId!);
         const detail = await superAdmin.request.get(`/api/lanflow/cash-branch-transfers/${transferId}`);
         expect(detail.ok()).toBeTruthy();
         const row = (await detail.json()).transfer;
@@ -126,7 +127,7 @@ test.describe.serial("Cash branch transfer contract @cash-transfer-contract", ()
         await deleteTransfer(superAdmin.request, transferId);
       }
 
-      const guardedId = await createTransfer(user.request, sourceLocationId, targetLocationId!);
+      const guardedId = await createTransfer(user.request, sourceLocationId!, targetLocationId!);
       const deniedReceive = await user.request.post(`/api/lanflow/cash-branch-transfers/${guardedId}/receive`, {
         data: { received: { ...zeroCounts, banknote20: 1 } },
       });

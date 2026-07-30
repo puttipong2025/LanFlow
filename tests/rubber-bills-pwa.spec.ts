@@ -46,6 +46,31 @@ async function readQueue(page: Page): Promise<any[]> {
   });
 }
 
+async function clearQueue(page: Page): Promise<void> {
+  await page.evaluate(() => new Promise<void>((resolve, reject) => {
+    const request = indexedDB.open('lanflow_sync_db');
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains('sync_queue')) {
+        db.close();
+        resolve();
+        return;
+      }
+      const transaction = db.transaction('sync_queue', 'readwrite');
+      transaction.objectStore('sync_queue').clear();
+      transaction.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      transaction.onerror = () => {
+        db.close();
+        reject(transaction.error);
+      };
+    };
+  }));
+}
+
 async function readReceiptSnapshots(page: Page): Promise<any[]> {
   return page.evaluate(() => new Promise<any[]>((resolve, reject) => {
     const request = indexedDB.open('lanflow_sync_db');
@@ -117,14 +142,7 @@ test.describe('PWA Offline Reload', () => {
       }));
     });
     await page.goto('/');
-    await page.evaluate(async () => {
-      return new Promise<void>((resolve, reject) => {
-        const req = indexedDB.deleteDatabase('lanflow_sync_db');
-        req.onsuccess = () => resolve();
-        req.onerror = () => reject(req.error);
-        req.onblocked = () => resolve();
-      });
-    });
+    await clearQueue(page);
   });
 
   test('should preserve IDB queue across offline page reload and sync after reconnect', async ({ page, context }) => {
@@ -160,7 +178,7 @@ test.describe('PWA Offline Reload', () => {
     await syncedWeighRow.locator('input[type="number"]').nth(0).fill('1000');
     await syncedWeighRow.locator('input[type="number"]').nth(1).fill('200');
     await syncedWeighRow.locator('input[type="number"]').nth(3).fill('20.00');
-    await page.click('button:has-text("Submit")');
+    await syncedModal.getByRole('button', { name: 'บันทึกบิล', exact: true }).click();
 
     const syncedRow = page.locator('table tbody tr', { hasText: syncedMarker }).first();
     await expect(syncedRow).toBeVisible({ timeout: 10000 });
@@ -196,7 +214,7 @@ test.describe('PWA Offline Reload', () => {
     await weighRow.locator('input[type="number"]').nth(0).fill('1000');
     await weighRow.locator('input[type="number"]').nth(1).fill('200');
     await weighRow.locator('input[type="number"]').nth(3).fill('25.5');
-    await page.click('button:has-text("Submit")');
+    await modal.getByRole('button', { name: 'บันทึกบิล', exact: true }).click();
     await expect(page.locator('h2:has-text("บิลเครื่องชั่งเล็ก")')).toBeHidden({ timeout: 10000 });
 
     // Verify bill is in IDB queue before reload
@@ -232,7 +250,7 @@ test.describe('PWA Offline Reload', () => {
     expect(eventAfterReload.operation).toBe('create');
     expect(eventAfterReload.status).toBe('pending');
 
-    // Both offline PDF downloads must work without any network request or mutation.
+    // Both offline PDF downloads must work without rubber-bill network work or queue mutation.
     await page.waitForTimeout(1000);
     const printRequests: string[] = [];
     let capturePrintRequests = false;
@@ -258,7 +276,22 @@ test.describe('PWA Offline Reload', () => {
     await expect(page.locator('iframe[aria-hidden="true"]')).toHaveCount(0);
     await page.waitForTimeout(200);
     capturePrintRequests = false;
-    expect(printRequests).toEqual([]);
+    const printRelevantRequests = printRequests.filter((request) =>
+      !request.startsWith('GET ')
+      || request.includes('/api/lanflow/rubber-bills')
+      || request.includes('/rest/v1/rubber_bills')
+      || request.includes('/rest/v1/rubber_bill_items')
+    );
+    expect(printRelevantRequests).toEqual([]);
+    const queueAfterPrint = await readQueue(page);
+    expect(queueAfterPrint.find((event) => event.queueId === eventAfterReload.queueId)).toMatchObject({
+      id: eventAfterReload.id,
+      operation: 'create',
+      status: 'pending',
+      payload: {
+        customerName: pwaMarker,
+      },
+    });
 
     // A synced row without its receipt snapshot must ask to reconnect instead of rebuilding from network.
     const cachedSnapshots = await readReceiptSnapshots(page);

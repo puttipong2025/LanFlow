@@ -252,7 +252,7 @@ test.describe.serial("Telegram badge digest @telegram-badge", () => {
       );
       await configButton.click();
       const configResponse = await configResponsePromise;
-      expect(configResponse.ok(), await configResponse.text()).toBeTruthy();
+      expect(configResponse.ok()).toBeTruthy();
 
       await expect(
         managerPage.getByRole("heading", {

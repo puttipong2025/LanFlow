@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { getPendingEvents, removeSyncEvent, updateSyncEvent, type SyncEvent } from "@/lib/idb-queue";
+import { authFetch } from "@/lib/auth-fetch";
 
 type StockSyncEntity = "income_expense" | "rubber_bills";
 
@@ -70,7 +71,7 @@ async function retryStockSyncEvents(locationId: string, ownerUserId: string, que
     attempted += 1;
 
     try {
-      const response = await fetch(stockEventEndpoint(event.entity as StockSyncEntity), {
+      const response = await authFetch(stockEventEndpoint(event.entity as StockSyncEntity), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(event.payload),

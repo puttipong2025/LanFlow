@@ -1,6 +1,6 @@
 import { test, expect, Page } from '@playwright/test';
 import { createClient } from '@supabase/supabase-js';
-import { selectAppLocation } from './helpers/select-app-location';
+import { selectAppLocation, selectedAppLocationId } from './helpers/select-app-location';
 
 /** Read all events from IndexedDB sync_queue */
 async function readQueue(page: Page): Promise<any[]> {
@@ -167,10 +167,7 @@ async function createIncomeOnline(page: Page, title: string, cost: number) {
 }
 
 async function getPrimaryLocationId(page: Page) {
-  const res = await page.request.get('/api/auth/me');
-  expect(res.ok()).toBeTruthy();
-  const data = await res.json();
-  const locationId = data.profile?.locationIds?.[0];
+  const locationId = await selectedAppLocationId(page);
   expect(locationId).toBeTruthy();
   return locationId as string;
 }
@@ -185,10 +182,15 @@ async function getCurrentUserId(page: Page) {
 }
 
 async function getAccessibleLocationIds(page: Page) {
-  const res = await page.request.get('/api/auth/me');
+  const res = await page.request.get('/api/lanflow');
   expect(res.ok()).toBeTruthy();
-  const data = await res.json();
-  return (data.profile?.locationIds ?? []) as string[];
+  const data = await res.json() as {
+    locations: Array<{ id: string }>;
+    profile: { locationIds: string[] };
+  };
+  return data.locations
+    .filter((location) => data.profile.locationIds.includes(location.id))
+    .map((location) => location.id);
 }
 
 async function selectHeaderLocation(page: Page, locationId: string) {
@@ -820,8 +822,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
     test.skip(locationIds.length < 2, 'requires a test user with access to at least two locations');
 
     const [sourceLocationId, targetLocationId] = locationIds;
-    await selectHeaderLocation(page, sourceLocationId);
-
+    await selectHeaderLocation(page, targetLocationId);
     await context.setOffline(true);
     const marker = `E2E-XBRANCH-${Date.now()}`;
     const payload = await buildIncomeExpensePayload(page, {
@@ -836,9 +837,6 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
       timestamp: Date.now(),
       status: 'pending',
     });
-
-    await selectHeaderLocation(page, targetLocationId);
-    await page.waitForTimeout(1000);
 
     await expect(page.locator('table tbody tr', { hasText: marker })).toHaveCount(0);
     await context.setOffline(false);

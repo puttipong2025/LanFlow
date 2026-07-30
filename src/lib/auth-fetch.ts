@@ -1,5 +1,7 @@
 "use client";
 
+import { abortableFetch } from "@/lib/network-abort";
+
 export class ApiResponseError extends Error {
   constructor(
     public readonly status: number,
@@ -11,7 +13,7 @@ export class ApiResponseError extends Error {
 }
 
 export function authFetch(url: string, init?: RequestInit): Promise<Response> {
-  return fetch(url, {
+  return abortableFetch(url, {
     ...init,
     credentials: "same-origin"
   });

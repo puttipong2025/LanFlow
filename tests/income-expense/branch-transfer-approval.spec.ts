@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { selectAppLocation, selectAppLocationByIndex } from '../helpers/select-app-location';
+import { selectAppLocation, selectFirstAccessibleOption } from '../helpers/select-app-location';
 
 async function ensureLoggedIn(page: import("@playwright/test").Page, role: "admin" | "super_admin") {
   await page.goto("/");
@@ -231,7 +231,7 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
 
       // Select target location (pick index 1 which should be another branch)
       const targetSelect = modal.locator('select').first();
-      await targetSelect.selectOption({ index: 1 });
+      const targetLocationId = await selectFirstAccessibleOption(page, targetSelect);
 
       // Click เพิ่มเอง
       await modal.locator('button:has-text("เพิ่มเอง")').click();
@@ -252,7 +252,7 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
 
       // Switch to the target branch via Header location selector
       // In super_admin, we should be able to select the location
-      await selectAppLocationByIndex(page, 1);
+      await selectAppLocation(page, targetLocationId);
       
       // Wait for table to load
       await page.waitForTimeout(2000);
@@ -277,7 +277,7 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       await page.click('button:has-text("รับ-จ่าย")');
       await page.click('button:has-text("โยกเงินไปสาขาอื่น")');
       const modal = page.locator('.fixed.inset-0').last();
-      await modal.getByLabel('สาขาปลายทาง').selectOption({ index: 1 });
+      await selectFirstAccessibleOption(page, modal.getByLabel('สาขาปลายทาง'));
       const values = ['1', '0', '0', '0', '0', '0', '0', '0', '1'];
       for (const [index, input] of (await modal.locator('input').all()).entries()) await input.fill(values[index]);
       await modal.locator('button:has-text("บันทึก")').click();
@@ -292,8 +292,7 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       await page.click('button:has-text("โยกเงินไปสาขาอื่น")');
       const createModal = page.locator('.fixed.inset-0').last();
       const targetSelect = createModal.getByLabel('สาขาปลายทาง');
-      const targetLocationId = await targetSelect.locator('option').nth(1).getAttribute('value');
-      await targetSelect.selectOption({ index: 1 });
+      const targetLocationId = await selectFirstAccessibleOption(page, targetSelect);
       for (const input of await createModal.locator('input').all()) await input.fill('0');
       await createModal.getByLabel('แบงค์ 20').fill('1');
       await createModal.locator('button:has-text("บันทึก")').click();
@@ -318,8 +317,7 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       await page.click('button:has-text("โยกเงินไปสาขาอื่น")');
       const createModal = page.locator('.fixed.inset-0').last();
       const targetSelect = createModal.getByLabel('สาขาปลายทาง');
-      const targetLocationId = await targetSelect.locator('option').nth(1).getAttribute('value');
-      await targetSelect.selectOption({ index: 1 });
+      const targetLocationId = await selectFirstAccessibleOption(page, targetSelect);
       for (const input of await createModal.locator('input').all()) await input.fill('0');
       await createModal.getByLabel('แบงค์ 20').fill('1');
       await createModal.locator('button:has-text("บันทึก")').click();

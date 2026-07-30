@@ -1,5 +1,9 @@
 import { expect, test } from "@playwright/test";
-import { selectAppLocation, selectedAppLocationId } from "../helpers/select-app-location";
+import {
+  selectAppLocation,
+  selectedAppLocationId,
+  selectFirstAccessibleOption,
+} from "../helpers/select-app-location";
 
 test.use({ storageState: "playwright/.auth/super_admin.json" });
 
@@ -81,9 +85,7 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
     await expect(createModal.getByText("โยกเงินไปสาขาอื่น (เงินสด)")).toBeVisible();
 
     const targetSelect = createModal.getByLabel("สาขาปลายทาง");
-    const targetLocationId = await targetSelect.locator("option").nth(1).getAttribute("value");
-    expect(targetLocationId).toBeTruthy();
-    await targetSelect.selectOption(targetLocationId!);
+    const targetLocationId = await selectFirstAccessibleOption(page, targetSelect);
     await expect(createModal.locator("input")).toHaveCount(9);
     for (const input of await createModal.locator("input").all()) await expect(input).toHaveValue("");
     const createBanknote1000Input = createModal.getByLabel("แบงค์ 1,000");
@@ -151,7 +153,7 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
       page.waitForResponse((response) => response.url().includes("/receive") && response.request().method() === "POST"),
       receiptButton.click(),
     ]);
-    expect(receiptResponse.ok(), await receiptResponse.text()).toBeTruthy();
+    expect(receiptResponse.ok()).toBeTruthy();
     await expect(page.getByText("ยืนยันรับเงินและบันทึกผลต่างแล้ว")).toBeVisible();
     const receivedRow = page.locator("table tbody tr", { hasText: displayNo });
     await expect(receivedRow).toContainText("รับเงินแล้ว");
@@ -174,8 +176,7 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
       ),
       sourceReceivedRow.locator('button[aria-label="ลบรายการโยกเงิน"]').click(),
     ]);
-    const deleteResult = await deleteResponse.json() as { status: string; requestId: string };
-    expect(deleteResult.status).toBe("pending_approval");
+    expect(deleteResponse.ok()).toBeTruthy();
     await expect(page.getByText("ส่งคำขอลบไปที่ ตั้งค่าและอนุมัติรับ-จ่าย แล้ว")).toBeVisible();
     await page.getByRole("button", { name: /ตั้งค่าและอนุมัติรับ-จ่าย/ }).click();
     const approvalModal = page.locator(".fixed.inset-0").last();
@@ -199,9 +200,8 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
       await sourcePage.click('button:has-text("โยกเงินไปสาขาอื่น")');
       const createModal = sourcePage.locator(".fixed.inset-0").last();
       const targetSelect = createModal.getByLabel("สาขาปลายทาง");
-      const targetLocationId = await targetSelect.locator("option").nth(1).getAttribute("value");
-      await targetSelect.selectOption(targetLocationId!);
-      await selectAppLocation(targetPage, targetLocationId!);
+      const targetLocationId = await selectFirstAccessibleOption(sourcePage, targetSelect);
+      await selectAppLocation(targetPage, targetLocationId);
       const marker = `cash-refresh-${Date.now()}`;
       await createModal.locator('textarea[placeholder="หมายเหตุ (ไม่บังคับ)"]').fill(marker);
       await fillCashCounts(createModal, "0");

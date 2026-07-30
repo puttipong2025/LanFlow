@@ -96,7 +96,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
     }
   });
 
-  test("explicit selection, reservation, derived expense, report locks, delete, and print stay source-owned", async ({ browser }) => {
+  test("explicit selection, reservation, derived expense, report locks, delete, and detail snapshots stay source-owned", async ({ browser }) => {
     test.setTimeout(90_000);
     const user = await authContext(browser, "user");
     const admin = await authContext(browser, "admin");
@@ -367,20 +367,30 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       expect((await superAdmin.request.delete(`/api/lanflow/reports/${sourceReport.id}`)).ok()).toBeTruthy();
       sourceReportId = null;
 
-      const page = await superAdmin.newPage();
-      await page.addInitScript(() => { window.print = () => undefined; });
-      await page.goto(`/rubber-exports/${created.id}/print`);
-      await expect(page.getByText(created.exportNo)).toBeVisible();
-      await expect(page.getByText("ลบแล้ว", { exact: true })).toBeVisible();
-      await expect(page.getByText("540.00 กก.")).toBeVisible();
-      await expect(page.getByText("฿1,100.00")).toBeVisible();
+      const deletedVerifiedResponse = await superAdmin.request.get(
+        `/api/lanflow/rubber-exports/${created.id}`,
+      );
+      expect(deletedVerifiedResponse.ok(), await deletedVerifiedResponse.text()).toBeTruthy();
+      expect(await deletedVerifiedResponse.json()).toMatchObject({
+        exportNo: created.exportNo,
+        status: "deleted",
+        previousStatus: "verified",
+        currentWeight: 540,
+        workTotal: 1100,
+      });
 
-      const draftPage = await superAdmin.newPage();
-      await draftPage.addInitScript(() => { window.print = () => undefined; });
-      await draftPage.goto(`/rubber-exports/${deletedDraft.id}/print`);
-      await expect(draftPage.getByText(deletedDraft.exportNo)).toBeVisible();
-      await expect(draftPage.getByText("ลบจากสถานะ: ฉบับร่าง")).toBeVisible();
-      await expect(draftPage.getByText("— กก.")).toBeVisible();
+      const deletedDraftResponse = await superAdmin.request.get(
+        `/api/lanflow/rubber-exports/${deletedDraft.id}`,
+      );
+      expect(deletedDraftResponse.ok(), await deletedDraftResponse.text()).toBeTruthy();
+      expect(await deletedDraftResponse.json()).toMatchObject({
+        exportNo: deletedDraft.exportNo,
+        status: "deleted",
+        previousStatus: "draft",
+        currentWeight: null,
+        workRate: null,
+        workTotal: null,
+      });
     } finally {
       if (expenseReportId) await superAdmin.request.delete(`/api/lanflow/reports/${expenseReportId}`);
       for (const id of exportIds) {

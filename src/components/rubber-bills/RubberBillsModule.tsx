@@ -178,7 +178,7 @@ export function RubberBillsModule({
   }, [initialSearch, onInitialSearchHandled]);
 
   useEffect(() => {
-    if (customersLoading || customersError) return;
+    if (!isOnline || customersLoading || customersError) return;
     try {
       const snapshot = customers.map((customer) => ({
         id: customer.id,
@@ -192,7 +192,7 @@ export function RubberBillsModule({
     } catch {
       // Both forms still accept manually entered names when local storage is unavailable.
     }
-  }, [customers, customersError, customersLoading, deviceId]);
+  }, [customers, customersError, customersLoading, deviceId, isOnline]);
 
   const liveCustomerOptions: RubberBillCustomerOption[] = customers.map((customer) => ({
     id: customer.id,
@@ -453,10 +453,12 @@ export function RubberBillsModule({
               const savedBill = await (editingBill ? updateBill(bill) : addBill(bill));
               setModalOpen(false);
               if (savedBill.netTotal > 0 && !savedBill.approvalPending) {
-                await handlePrint(savedBill);
+                void handlePrint(savedBill);
               }
+              return true;
             } catch (error) {
               alert(error instanceof Error ? error.message : "เกิดข้อผิดพลาดในการบันทึกบิล");
+              return false;
             }
           }}
         />

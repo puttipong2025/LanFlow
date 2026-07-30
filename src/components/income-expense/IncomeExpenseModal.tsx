@@ -1,6 +1,6 @@
 import { toast } from "sonner";
 import { ArrowDown, ArrowUp, ReceiptText, WalletCards, WifiOff } from "lucide-react";
-import { FormEvent, useState } from "react";
+import { FormEvent, useMemo, useState } from "react";
 
 import {
   makeClientRecordedAt,
@@ -13,6 +13,7 @@ import {
 import type { IncomeExpense, IncomeExpenseSaleLine, Location, Profile } from "@/types";
 import { useIncomeSaleItems } from "@/hooks/useIncomeSaleItems";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
+import { usePersistentFormDraft } from "@/hooks/usePersistentFormDraft";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { Field } from "@/components/shared/Field";
 import { InlineNumber } from "@/components/shared/InlineNumber";
@@ -35,7 +36,9 @@ export function IncomeExpenseModal({
   nextNumber: string;
   nextLocalSequence: number;
   onClose: () => void;
-  onSave: (transactions: IncomeExpense[]) => void;
+  onSave: (
+    transactions: IncomeExpense[]
+  ) => boolean | void | Promise<boolean | void>;
 }) {
   type CashLine = {
     id: string;
@@ -72,6 +75,7 @@ export function IncomeExpenseModal({
           cost: transaction?.cost ?? 0
         }]
   );
+  const [txDate, setTxDate] = useState(transaction?.txDate ?? todayInputValue());
   const label = type === "income" ? "รายรับ" : "ค่าใช้จ่าย";
   const [billOption, setBillOption] = useState<string>(transaction?.billOption ?? (type === "income" ? "รายรับ" : "ค่าใช้จ่าย"));
   const { items: saleItems } = useIncomeSaleItems({ stockOnly: true });
@@ -100,6 +104,27 @@ export function IncomeExpenseModal({
           icon: WalletCards
         }
       ];
+  const draftValue = useMemo(() => ({
+    txDate,
+    billOption,
+    lines,
+  }), [billOption, lines, txDate]);
+  const { clearDraft } = usePersistentFormDraft({
+    partition: {
+      ownerUserId: profile.id,
+      locationId: selectedLocation.id,
+      formType: type,
+    },
+    enabled: !transaction,
+    value: draftValue,
+    onRestore: (draft) => {
+      setTxDate(draft.txDate || todayInputValue());
+      setBillOption(draft.billOption || (type === "income" ? "รายรับ" : "ค่าใช้จ่าย"));
+      if (Array.isArray(draft.lines) && draft.lines.length > 0) {
+        setLines(draft.lines);
+      }
+    },
+  });
 
   function updateLine(id: string, patch: Partial<Omit<CashLine, "id">>) {
     setLines((current) => current.map((line) => (line.id === id ? { ...line, ...patch } : line)));
@@ -149,7 +174,7 @@ export function IncomeExpenseModal({
     setBillOption(option);
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     if (billOption === "บิลขาย" && !isOnline) {
@@ -215,7 +240,7 @@ export function IncomeExpenseModal({
         lineTotal: getLineCost(line),
         sequenceNo: index + 1,
       }));
-      onSave([{
+      const saved = await onSave([{
         id: transaction?.id ?? clientTempId,
         clientTempId,
         localBillNo: transaction?.localBillNo ?? initialLocalBillNo,
@@ -225,7 +250,7 @@ export function IncomeExpenseModal({
         locationId: selectedLocation.id,
         type,
         number: String(form.get("number") || nextNumber),
-        txDate: String(form.get("txDate") || todayInputValue()),
+        txDate,
         title: `บิลขาย — ${saleLines.length} รายการ`,
         cost: saleLines.reduce((sum, line) => sum + line.lineTotal, 0),
         billOption: "บิลขาย",
@@ -241,10 +266,11 @@ export function IncomeExpenseModal({
         revisionNo: transaction?.revisionNo ?? 0,
         recordStatus: transaction?.recordStatus ?? "active",
       }]);
+      if (saved !== false && !transaction) await clearDraft();
       return;
     }
 
-    onSave(
+    const saved = await onSave(
       filledLines.map((line, index) => {
         const clientTempId = index === 0 && transaction ? transaction.clientTempId : makeClientTempId("cash");
         const clientRecordedAt = index === 0 && transaction ? transaction.clientRecordedAt : makeClientRecordedAt();
@@ -261,7 +287,7 @@ export function IncomeExpenseModal({
           locationId: selectedLocation.id,
           type,
           number: String(form.get("number") || nextNumber),
-          txDate: String(form.get("txDate") || todayInputValue()),
+          txDate,
           title: line.title.trim() || `${label} ${index + 1}`,
           cost: getLineCost(line),
           billOption: billOption as any,
@@ -279,13 +305,40 @@ export function IncomeExpenseModal({
         };
       })
     );
+    if (saved !== false && !transaction) await clearDraft();
+  }
+
+  async function handleClose() {
+    if (transaction) {
+      onClose();
+      return;
+    }
+    const defaultOption = type === "income" ? "รายรับ" : "ค่าใช้จ่าย";
+    const hasDraftContent = Boolean(
+      txDate !== todayInputValue()
+      || billOption !== defaultOption
+      || lines.some((line) =>
+        line.title.trim()
+        || line.incomeSaleItemId
+        || line.stockProductId
+        || line.unit
+        || line.price
+        || line.cost
+      )
+    );
+    if (
+      hasDraftContent
+      && !confirm(`ยกเลิกและลบแบบร่าง${type === "income" ? "รายรับ" : "รายจ่าย"}นี้ใช่หรือไม่?`)
+    ) return;
+    await clearDraft();
+    onClose();
   }
 
   return (
     <ModalShell
       title="เพิ่ม/แก้ไข บิลเงินสด"
       subtitle={selectedLocation.name}
-      onClose={onClose}
+      onClose={() => void handleClose()}
       size="wide"
     >
       <form onSubmit={handleSubmit} className="space-y-0">
@@ -295,7 +348,14 @@ export function IncomeExpenseModal({
           <div className="grid gap-4 md:grid-cols-3">
             <Field label="เลขบิลชั่วคราว" name="localBillNo" defaultValue={transaction?.localBillNo ?? initialLocalBillNo} required readOnly />
             <Field label="เลขที่" name="number" defaultValue={transaction?.number ?? nextNumber} required readOnly />
-            <Field label="วันที่" name="txDate" type="date" defaultValue={transaction?.txDate ?? todayInputValue()} required />
+            <Field
+              label="วันที่"
+              name="txDate"
+              type="date"
+              value={txDate}
+              onChange={(event) => setTxDate(event.target.value)}
+              required
+            />
           </div>
         </section>
 
@@ -471,7 +531,7 @@ export function IncomeExpenseModal({
         )}
 
         <div className="modal-actions flex justify-end border-t border-black/10 p-4">
-          <button type="button" onClick={onClose} className="focus-ring h-11 rounded-md bg-actionSecondary px-4 font-semibold text-white hover:bg-actionSecondary/90">
+          <button type="button" onClick={() => void handleClose()} className="focus-ring h-11 rounded-md bg-actionSecondary px-4 font-semibold text-white hover:bg-actionSecondary/90">
             ยกเลิก
           </button>
         </div>

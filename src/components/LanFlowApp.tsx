@@ -47,6 +47,9 @@ import {
   OFFLINE_FALLBACK_TAB,
 } from "@/lib/offline-module-policy";
 import { getOcrActionState } from "@/lib/ocr-action-state";
+import { isDeviceOnline } from "@/lib/connectivity";
+import { useOnlineStatus } from "@/hooks/useOnlineStatus";
+import { useServiceUnavailable } from "@/lib/service-health";
 
 export function LanFlowApp() {
   const auth = useAuthContext();
@@ -76,22 +79,21 @@ export function LanFlowApp() {
     locationId: string;
   } | null>(null);
   const [ocrUploadItems, setOcrUploadItems] = useState<UploadItem[]>([]);
-  const [online, setOnline] = useState(false);
-  const [connectivityKnown, setConnectivityKnown] = useState(false);
+  const online = useOnlineStatus();
   const [isLoaded, setIsLoaded] = useState(false);
+  const serviceUnavailable = useServiceUnavailable();
 
   useEffect(() => {
     let ignore = false;
 
     async function loadDatabaseData() {
       setIsLoaded(false);
-
       if (!authProfileId) {
         setIsLoaded(true);
         return;
       }
 
-      if (!navigator.onLine) {
+      if (!isDeviceOnline()) {
         const cached = readBootstrapCache(authProfileId);
         if (cached) {
           setLocations(cached.locations);
@@ -99,7 +101,7 @@ export function LanFlowApp() {
           setSelectedLocationId(resolveSelectedLocationId(
             cached.locations,
             cached.profile.locationIds,
-            readLastLocationPreference(authProfileId) ?? cached.selectedLocationId,
+            cached.selectedLocationId,
           ));
         }
         setIsLoaded(true);
@@ -120,17 +122,38 @@ export function LanFlowApp() {
           data.profile.locationIds,
           readLastLocationPreference(authProfileId),
         );
-        setSelectedLocationId(locId);
+        setSelectedLocationId((currentLocationId) =>
+          currentLocationId !== locId && !isDeviceOnline()
+            ? currentLocationId
+            : locId
+        );
 
-        writeBootstrapCache(authProfileId, {
-          locations: data.locations,
-          profile: data.profile,
-          selectedLocationId: locId
-        });
+        if (isDeviceOnline()) {
+          writeBootstrapCache(authProfileId, {
+            locations: data.locations,
+            profile: data.profile,
+            selectedLocationId: locId
+          });
+        }
 
 
       } catch (error) {
         console.error("LanFlow database load failed", error);
+        const cached = readBootstrapCache(authProfileId);
+        if (cached && !ignore) {
+          setLocations(cached.locations);
+          setProfile(cached.profile);
+          const cachedLocationId = resolveSelectedLocationId(
+            cached.locations,
+            cached.profile.locationIds,
+            readLastLocationPreference(authProfileId) ?? cached.selectedLocationId,
+          );
+          setSelectedLocationId((currentLocationId) =>
+            currentLocationId !== cachedLocationId && !isDeviceOnline()
+              ? currentLocationId
+              : cachedLocationId
+          );
+        }
       } finally {
         if (!ignore) setIsLoaded(true);
       }
@@ -142,20 +165,6 @@ export function LanFlowApp() {
       ignore = true;
     };
   }, [authProfileId]);
-
-  useEffect(() => {
-    const syncOnlineState = () => {
-      setOnline(navigator.onLine);
-      setConnectivityKnown(true);
-    };
-    syncOnlineState();
-    window.addEventListener("online", syncOnlineState);
-    window.addEventListener("offline", syncOnlineState);
-    return () => {
-      window.removeEventListener("online", syncOnlineState);
-      window.removeEventListener("offline", syncOnlineState);
-    };
-  }, []);
 
   const canAccessMoneyTransfer = canUseMoneyTransfer(profile);
   const canAccessReports = canUseReports(profile);
@@ -174,16 +183,15 @@ export function LanFlowApp() {
   }, [activeTab, canAccessReports]);
 
   useEffect(() => {
-    if (!connectivityKnown) return;
     if (!isTabBlockedOffline(activeTab, online)) return;
     const message = getOfflineTabBlockMessage(activeTab);
     if (message) toast.error(message);
     setActiveTab(OFFLINE_FALLBACK_TAB);
-  }, [activeTab, connectivityKnown, online]);
+  }, [activeTab, online]);
 
   // Persist selected location on change
   useEffect(() => {
-    if (authProfileId && isLoaded && locations.length > 0) {
+    if (online && authProfileId && isLoaded && locations.length > 0) {
       writeLastLocationPreference(authProfileId, selectedLocationId);
       writeBootstrapCache(authProfileId, {
         locations,
@@ -191,7 +199,7 @@ export function LanFlowApp() {
         selectedLocationId
       });
     }
-  }, [selectedLocationId, locations, profile, authProfileId, isLoaded]);
+  }, [selectedLocationId, locations, profile, authProfileId, isLoaded, online]);
 
   useRubberBills(selectedLocationId, queueOwnerUserId);
   useIncomeExpense(selectedLocationId, queueOwnerUserId);
@@ -275,7 +283,7 @@ export function LanFlowApp() {
           ? current.locationIds
           : [...current.locationIds, newLoc.id],
       }));
-      setSelectedLocationId(newLoc.id);
+      changeSelectedLocation(newLoc.id);
       toast.success(
         "เพิ่มสาขาแล้ว · ตั้งค่าเกณฑ์ผ่านปุ่ม Telegram เพื่อเริ่ม Dashboard alert",
       );
@@ -293,6 +301,12 @@ export function LanFlowApp() {
     return canAccessSourceLocation(profile, locationId);
   }
 
+  function changeSelectedLocation(locationId: string) {
+    if (locationId !== selectedLocationId && !isDeviceOnline()) return false;
+    setSelectedLocationId(locationId);
+    return true;
+  }
+
   function openMoneyTransferSource(transferId: string, locationId: string) {
     if (!online) {
       toast.error("โมดูลโอนเงินใช้ได้เมื่อออนไลน์เท่านั้น");
@@ -300,14 +314,14 @@ export function LanFlowApp() {
     }
     if (!canAccessMoneyTransfer) return;
     if (!canOpenSourceLocation(locationId)) return;
-    setSelectedLocationId(locationId);
+    if (!changeSelectedLocation(locationId)) return;
     setPendingMoneyTransferSource({ transferId, locationId });
     setActiveTab("money-transfer");
   }
 
   function openRubberBillSource(locationId: string, billDate?: string) {
     if (!canOpenSourceLocation(locationId)) return;
-    setSelectedLocationId(locationId);
+    if (!changeSelectedLocation(locationId)) return;
     setPendingRubberBillSource({ locationId, billDate });
     setActiveTab("rubber");
   }
@@ -318,7 +332,7 @@ export function LanFlowApp() {
       return;
     }
     if (!canOpenSourceLocation(locationId)) return;
-    setSelectedLocationId(locationId);
+    if (!changeSelectedLocation(locationId)) return;
     setPendingOcrTicketSource({ locationId, ticketDate });
     setActiveTab("ocr");
   }
@@ -329,7 +343,7 @@ export function LanFlowApp() {
       return;
     }
     if (!canAccessReports || !canOpenSourceLocation(locationId)) return;
-    setSelectedLocationId(locationId);
+    if (!changeSelectedLocation(locationId)) return;
     setPendingRubberExportSource({ exportId, locationId });
     setActiveTab("rubber-export");
   }
@@ -342,9 +356,10 @@ export function LanFlowApp() {
           locations={locations}
           selectedLocationId={selectedLocationId}
           locationBadgeTotals={locationBadgeTotals}
-          onLocationChange={setSelectedLocationId}
+          onLocationChange={changeSelectedLocation}
           onLogout={auth.logout}
           online={online}
+          serviceUnavailable={serviceUnavailable}
         />
         <NavigationTabs
           activeTab={activeTab}

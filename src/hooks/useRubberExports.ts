@@ -78,9 +78,10 @@ export function useRubberExports(locationId: string, online: boolean) {
     return created;
   }
 
-  async function details(exportId: string) {
+  async function details(exportId: string, signal?: AbortSignal) {
     const response = await authFetch(`/api/lanflow/rubber-exports/${exportId}`, {
       cache: "no-store",
+      signal,
     });
     await assertApiResponse(response);
     return response.json() as Promise<RubberExportDetails>;

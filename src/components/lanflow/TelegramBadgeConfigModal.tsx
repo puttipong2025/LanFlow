@@ -11,6 +11,8 @@ import type {
 } from "@/lib/telegram-badge";
 import type { DashboardManagerConfig } from "@/types/dashboard";
 import { formatCurrency, formatNumber } from "@/lib/format";
+import { authFetch } from "@/lib/auth-fetch";
+import { isNetworkCancellation } from "@/lib/network-abort";
 
 type EditableConfig = TelegramBadgeConfig & {
   botToken: string;
@@ -45,7 +47,7 @@ export function TelegramBadgeConfigModal({
 
   useEffect(() => {
     let active = true;
-    void fetch("/api/lanflow/telegram-badge/config", { cache: "no-store" })
+    void authFetch("/api/lanflow/telegram-badge/config", { cache: "no-store" })
       .then(async (response) => {
         const payload = await response.json();
         if (!response.ok) {
@@ -69,7 +71,7 @@ export function TelegramBadgeConfigModal({
     let active = true;
     setDashboardConfig(null);
     const params = new URLSearchParams({ locationId: dashboardLocationId });
-    void fetch(`/api/lanflow/dashboard/config?${params}`, {
+    void authFetch(`/api/lanflow/dashboard/config?${params}`, {
       cache: "no-store",
     })
       .then(async (response) => {
@@ -112,7 +114,7 @@ export function TelegramBadgeConfigModal({
     const dashboardParams = new URLSearchParams({
       locationId: dashboardLocationId,
     });
-    const dashboardResponse = await fetch(
+    const dashboardResponse = await authFetch(
       `/api/lanflow/dashboard/config?${dashboardParams}`,
       {
         method: "PUT",
@@ -138,7 +140,7 @@ export function TelegramBadgeConfigModal({
     }
     setDashboardConfig(dashboardPayload);
 
-    const response = await fetch("/api/lanflow/telegram-badge/config", {
+    const response = await authFetch("/api/lanflow/telegram-badge/config", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -164,9 +166,11 @@ export function TelegramBadgeConfigModal({
       await saveConfig();
       toast.success("บันทึกการแจ้งเตือน Telegram แล้ว");
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "บันทึกการตั้งค่าไม่สำเร็จ",
-      );
+      if (!isNetworkCancellation(error)) {
+        toast.error(
+          error instanceof Error ? error.message : "บันทึกการตั้งค่าไม่สำเร็จ",
+        );
+      }
     } finally {
       setBusyAction(null);
     }
@@ -176,7 +180,7 @@ export function TelegramBadgeConfigModal({
     setBusyAction("test");
     try {
       await saveConfig();
-      const response = await fetch("/api/lanflow/telegram-badge/test", {
+      const response = await authFetch("/api/lanflow/telegram-badge/test", {
         method: "POST",
       });
       const payload = await response.json();
@@ -185,9 +189,11 @@ export function TelegramBadgeConfigModal({
       }
       toast.success("ส่งข้อความทดสอบแล้ว");
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "ส่งข้อความทดสอบไม่สำเร็จ",
-      );
+      if (!isNetworkCancellation(error)) {
+        toast.error(
+          error instanceof Error ? error.message : "ส่งข้อความทดสอบไม่สำเร็จ",
+        );
+      }
     } finally {
       setBusyAction(null);
     }

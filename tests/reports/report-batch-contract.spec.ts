@@ -104,10 +104,12 @@ async function addIncomeExpense(
   locationId: string,
   actor: { id: string; name: string; phone: string },
   title: string,
-  serverReceivedAt: string | null = new Date().toISOString()
+  serverReceivedAt: string | null = new Date().toISOString(),
+  entry: { type?: "income" | "expense"; cost?: number } = {},
 ) {
   const id = crypto.randomUUID();
   const number = `RPT-T-${id.slice(0, 8)}`;
+  const type = entry.type ?? "income";
   const { error } = await admin.from("income_expense").insert({
     id,
     client_temp_id: id,
@@ -117,12 +119,12 @@ async function addIncomeExpense(
     sync_status: "synced",
     record_status: "active",
     location_id: locationId,
-    type: "income",
+    type,
     number,
     tx_date: new Date().toISOString().slice(0, 10),
     title,
-    cost: 1250,
-    bill_option: "รายรับ",
+    cost: entry.cost ?? 1250,
+    bill_option: type === "income" ? "รายรับ" : "ค่าใช้จ่าย",
     server_received_at: serverReceivedAt,
     revision_no: 0,
     created_by_user_id: actor.id,
@@ -131,6 +133,15 @@ async function addIncomeExpense(
   });
   expect(error).toBeNull();
   return id;
+}
+
+function bangkokDate(value: string) {
+  return new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: "Asia/Bangkok",
+  }).format(new Date(value));
 }
 
 async function addIncomeExpenses(
@@ -289,7 +300,14 @@ test.describe.serial("Report batch contract @report-batch", () => {
       const firstDetails = await adminContext.request.get(`/api/lanflow/reports/${first.id}`);
       expect(firstDetails.ok(), await firstDetails.text()).toBeTruthy();
       const firstBody = await firstDetails.json() as {
-        incomeExpense: Array<Record<string, unknown>>;
+        report: { cutoffAt: string };
+        incomeExpense: Array<{
+          date: string;
+          number: string;
+          type: "income" | "expense";
+          title: string;
+          amount: number;
+        }>;
       };
       expect(firstBody.incomeExpense).toContainEqual(expect.objectContaining({
         type: "income",
@@ -305,6 +323,28 @@ test.describe.serial("Report batch contract @report-batch", () => {
       }).eq("id", futureSourceId)).error).toBeNull();
       const second = await createReport(adminContext, locationId);
       expect(Number(second.reportNo.slice(-3))).toBe(firstSequence + 1);
+      const firstBalance = firstBody.incomeExpense.reduce(
+        (balance, row) => balance + (row.type === "income" ? row.amount : -row.amount),
+        0,
+      );
+      const secondDetails = await adminContext.request.get(`/api/lanflow/reports/${second.id}`);
+      expect(secondDetails.ok(), await secondDetails.text()).toBeTruthy();
+      const secondBody = await secondDetails.json() as {
+        incomeExpense: Array<{
+          date: string;
+          number: string;
+          type: "income" | "expense";
+          title: string;
+          amount: number;
+        }>;
+      };
+      expect(secondBody.incomeExpense[0]).toEqual({
+        date: bangkokDate(firstBody.report.cutoffAt),
+        number: first.reportNo,
+        type: firstBalance >= 0 ? "income" : "expense",
+        title: "ยอดยกมา",
+        amount: Math.abs(firstBalance),
+      });
 
       const oldDelete = await deleteReport(superAdmin, first.id);
       expect(oldDelete.status()).toBe(409);
@@ -335,6 +375,93 @@ test.describe.serial("Report batch contract @report-batch", () => {
     } finally {
       await db.from("locations").delete().eq("id", emptyLocationId);
       await Promise.all([user.close(), adminContext.close(), superAdmin.close()]);
+    }
+  });
+
+  test("first report has no carry row and signed balances carry in the matching column", async ({ browser }) => {
+    const superAdmin = await authContext(browser, "super_admin");
+    const db = service();
+    const actor = await profile(superAdmin);
+    const locationId = crypto.randomUUID();
+    const sourceIds: string[] = [];
+    const reportIds: string[] = [];
+
+    try {
+      expect((await db.from("locations").insert({
+        id: locationId,
+        name: `สาขาทดสอบยอดยกมา ${locationId.slice(0, 8)}`,
+        code: `OB${locationId.slice(0, 6)}`,
+        is_active: true,
+      })).error).toBeNull();
+
+      sourceIds.push(await addIncomeExpense(
+        db,
+        locationId,
+        actor,
+        "รายรับสำหรับยอดยกมาบวก",
+        new Date().toISOString(),
+        { type: "income", cost: 5000 },
+      ));
+      const first = await createReport(superAdmin, locationId);
+      reportIds.push(first.id);
+      const firstResponse = await superAdmin.request.get(`/api/lanflow/reports/${first.id}`);
+      expect(firstResponse.ok(), await firstResponse.text()).toBeTruthy();
+      const firstDetails = await firstResponse.json() as ReportDetails;
+      expect(firstDetails.incomeExpense.map((row) => row.title)).not.toContain("ยอดยกมา");
+
+      sourceIds.push(await addIncomeExpense(
+        db,
+        locationId,
+        actor,
+        "รายจ่ายทำให้ยอดติดลบ",
+        new Date().toISOString(),
+        { type: "expense", cost: 7000 },
+      ));
+      const second = await createReport(superAdmin, locationId);
+      reportIds.push(second.id);
+      const secondResponse = await superAdmin.request.get(`/api/lanflow/reports/${second.id}`);
+      expect(secondResponse.ok(), await secondResponse.text()).toBeTruthy();
+      const secondDetails = await secondResponse.json() as ReportDetails;
+
+      expect(secondDetails.incomeExpense[0]).toEqual({
+        date: bangkokDate(firstDetails.report.cutoffAt),
+        number: first.reportNo,
+        type: "income",
+        title: "ยอดยกมา",
+        amount: 5000,
+      });
+
+      sourceIds.push(await addIncomeExpense(
+        db,
+        locationId,
+        actor,
+        "รายรับหลังยอดติดลบ",
+        new Date().toISOString(),
+        { type: "income", cost: 1000 },
+      ));
+      const third = await createReport(superAdmin, locationId);
+      reportIds.push(third.id);
+      const thirdResponse = await superAdmin.request.get(`/api/lanflow/reports/${third.id}`);
+      expect(thirdResponse.ok(), await thirdResponse.text()).toBeTruthy();
+      const thirdDetails = await thirdResponse.json() as ReportDetails;
+
+      expect(thirdDetails.incomeExpense[0]).toEqual({
+        date: bangkokDate(secondDetails.report.cutoffAt),
+        number: second.reportNo,
+        type: "expense",
+        title: "ยอดยกมา",
+        amount: 2000,
+      });
+    } finally {
+      for (const reportId of reportIds.reverse()) {
+        const response = await deleteReport(superAdmin, reportId);
+        expect(response.ok(), await response.text()).toBeTruthy();
+      }
+      if (sourceIds.length > 0) {
+        await db.from("income_expense").delete().in("id", sourceIds);
+      }
+      await db.from("locations").delete().eq("id", locationId);
+      await superAdmin.close();
     }
   });
 
