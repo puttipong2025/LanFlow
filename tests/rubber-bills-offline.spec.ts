@@ -122,10 +122,11 @@ async function createSyncedBillFromAuthenticatedApp(page: Page, marker: string) 
 }
 
 async function waitForRubberApprovalSettings(page: Page) {
-  await expect.poll(() => page.evaluate(() => {
-    const raw = localStorage.getItem('lanflow:rubber-bill-approval-settings:v1');
-    return raw ? JSON.parse(raw).editWindowMinutes : null;
-  })).toBe(30);
+  await page.getByRole('button', { name: /^ตั้งค่าและอนุมัติบิลยาง/ }).click();
+  const modal = page.locator('.fixed.inset-0').last();
+  await expect(modal.getByLabel('เวลาแก้ไขได้ (นาที)')).toHaveValue('30');
+  await modal.getByRole('button', { name: 'ปิด', exact: true }).click();
+  await expect(modal).toBeHidden();
 }
 
 async function cleanupRubberBillByCustomerName(page: Page, customerName: string) {

@@ -744,7 +744,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
     }
   });
 
-  test("approval request derives the payable total from items instead of client summary fields", async ({ browser }) => {
+  test("approval UI derives the payable total from items instead of client summary fields", async ({ browser }) => {
     const context = await authContext(browser, "super_admin");
     const db = service();
     const customerName = `ApprovalCalc-${Date.now()}`;
@@ -782,6 +782,11 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         netTotal: 205,
       }));
 
+      await page.getByRole("button", { name: "บิลยาง" }).click();
+      await page.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ }).click();
+      const requestCard = page.locator("article", { hasText: customerName });
+      await expect(requestCard).toBeVisible();
+      await expect(requestCard).toContainText("ยอดสุทธิ: 205");
     } finally {
       if (requestId) {
         await db.from("rubber_bill_approval_requests").delete().eq("id", requestId);
@@ -790,7 +795,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
     }
   });
 
-  test("hides the settings and approval entry point for every role", async ({ browser }) => {
+  test("only system managers see the approval entry point and it is disabled offline", async ({ browser }) => {
     const user = await authContext(browser, "user");
     const superAdmin = await authContext(browser, "super_admin");
 
@@ -808,9 +813,32 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       await expect(
         userPage.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ })
       ).toHaveCount(0);
+      const managerButton = superPage.getByRole("button", {
+        name: /ตั้งค่าและอนุมัติบิลยาง/,
+      });
+      await expect(managerButton).toBeVisible();
+      await expect(managerButton).toBeEnabled();
+
+      await superAdmin.setOffline(true);
+      await superPage.evaluate(() => window.dispatchEvent(new Event("offline")));
+      await expect(managerButton).toBeDisabled();
+      await expect(managerButton).toHaveAttribute(
+        "title",
+        "ตั้งค่าและอนุมัติบิลยางใช้ได้เมื่อออนไลน์เท่านั้น",
+      );
+      await managerButton.dispatchEvent("click");
       await expect(
-        superPage.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ })
+        superPage.getByRole("heading", { name: "ตั้งค่าและอนุมัติบิลยาง" })
       ).toHaveCount(0);
+
+      await superAdmin.setOffline(false);
+      await superPage.evaluate(() => window.dispatchEvent(new Event("online")));
+      await expect(managerButton).toBeEnabled();
+      await managerButton.click();
+      await expect(superPage.getByText("เกณฑ์อนุมัติ")).toBeVisible();
+      await expect(superPage.getByLabel("เวลาแก้ไขได้ (นาที)")).toBeVisible();
+      await expect(superPage.getByLabel("ราคายางที่กำหนด")).toBeVisible();
+      await expect(superPage.getByText("คำขอบิลยาง")).toBeVisible();
     } finally {
       await Promise.all([user.close(), superAdmin.close()]);
     }

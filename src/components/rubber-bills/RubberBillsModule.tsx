@@ -1,4 +1,4 @@
-import { Clock3, Plus, Ticket } from "lucide-react";
+import { Clock3, Plus, Settings, Ticket } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -8,6 +8,7 @@ import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { usePerRecordSyncRetry } from "@/hooks/usePerRecordSyncRetry";
 import { useRubberBillApprovals } from "@/hooks/useRubberBillApprovals";
+import { canManageSystemFeatures } from "@/lib/permissions";
 import {
   getOfflineSyncedActionBlockReason,
   RUBBER_BILL_TRANSFER_LOCK_MESSAGE
@@ -15,6 +16,7 @@ import {
 import type { Location, Profile, RubberBill, RubberBillApprovalMarker } from "@/types";
 import { RubberBillsTable } from "./RubberBillsTable";
 import { RubberBillModal, type RubberBillCustomerOption } from "./RubberBillModal";
+import { RubberBillApprovalModal } from "./RubberBillApprovalModal";
 import { WeighingAppointmentModal } from "./WeighingAppointmentModal";
 import { WeighingQueueModal } from "./WeighingQueueModal";
 import {
@@ -135,12 +137,14 @@ export function RubberBillsModule({
   onInitialSearchHandled?: () => void;
 }) {
   const pdfShare = useSharePdf();
+  const canManageApprovals = canManageSystemFeatures(profile);
   const {
     settings: approvalSettings,
     markers: approvalMarkers,
   } = useRubberBillApprovals({
     locationId: selectedLocation.id,
   });
+  const pendingApprovalCount = approvalMarkers.length;
   const { bills, addBill, updateBill, deleteBill } = useRubberBills(
     selectedLocation.id,
     profile.id,
@@ -149,6 +153,9 @@ export function RubberBillsModule({
   const { customers, isLoading: customersLoading, error: customersError } = useCustomers();
   const { transfers } = useMoneyTransfers(selectedLocation.id);
   const isOnline = useOnlineStatus();
+  const approvalButtonLabel = isOnline && pendingApprovalCount > 0
+    ? `ตั้งค่าและอนุมัติบิลยาง รออนุมัติ ${pendingApprovalCount} รายการ`
+    : "ตั้งค่าและอนุมัติบิลยาง";
   const { retrySyncEvent, isRetrying } = usePerRecordSyncRetry(selectedLocation.id, profile.id);
   const [deviceId] = useState(getDeviceId);
   const [cachedCustomers, setCachedCustomers] = useState<WeighingQueueCustomer[]>(() => (
@@ -157,6 +164,7 @@ export function RubberBillsModule({
   const [modalOpen, setModalOpen] = useState(false);
   const [queueModalOpen, setQueueModalOpen] = useState(false);
   const [appointmentModalOpen, setAppointmentModalOpen] = useState(false);
+  const [approvalModalOpen, setApprovalModalOpen] = useState(false);
   const [editingBill, setEditingBill] = useState<RubberBill | null>(null);
   const [pageSize, setPageSize] = useState(10);
   const [search, setSearch] = useState("");
@@ -364,6 +372,33 @@ export function RubberBillsModule({
             <Clock3 size={17} />
             จับเวลา
           </button>
+          {canManageApprovals && (
+            <button
+              type="button"
+              onClick={() => {
+                if (!isOnline) {
+                  toast.error("ตั้งค่าและอนุมัติบิลยางใช้ได้เมื่อออนไลน์เท่านั้น");
+                  return;
+                }
+                setApprovalModalOpen(true);
+              }}
+              disabled={!isOnline}
+              aria-label={approvalButtonLabel}
+              title={isOnline ? approvalButtonLabel : "ตั้งค่าและอนุมัติบิลยางใช้ได้เมื่อออนไลน์เท่านั้น"}
+              className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-settings px-3 text-sm font-semibold text-white hover:bg-settings/90 disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              <Settings size={18} />
+              ตั้งค่าและอนุมัติบิลยาง
+              {isOnline && pendingApprovalCount > 0 && (
+                <span
+                  aria-hidden="true"
+                  className="min-w-5 rounded-full bg-amber px-1.5 py-0.5 text-center text-[10px] font-extrabold leading-none text-white"
+                >
+                  {pendingApprovalCount > 99 ? "99+" : pendingApprovalCount}
+                </span>
+              )}
+            </button>
+          )}
           <button
             type="button"
             onClick={openAdd}
@@ -451,6 +486,12 @@ export function RubberBillsModule({
         />
       )}
 
+      {approvalModalOpen && (
+        <RubberBillApprovalModal
+          locationId={selectedLocation.id}
+          onClose={() => setApprovalModalOpen(false)}
+        />
+      )}
       <SharePdfWaitingModal open={pdfShare.waiting} onCancel={pdfShare.cancel} />
     </section>
   );
