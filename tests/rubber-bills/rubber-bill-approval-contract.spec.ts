@@ -744,7 +744,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
     }
   });
 
-  test("approval UI derives the payable total from items instead of client summary fields", async ({ browser }) => {
+  test("approval request derives the payable total from items instead of client summary fields", async ({ browser }) => {
     const context = await authContext(browser, "super_admin");
     const db = service();
     const customerName = `ApprovalCalc-${Date.now()}`;
@@ -782,11 +782,6 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         netTotal: 205,
       }));
 
-      await page.getByRole("button", { name: "บิลยาง" }).click();
-      await page.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ }).click();
-      const requestCard = page.locator("article", { hasText: customerName });
-      await expect(requestCard).toBeVisible();
-      await expect(requestCard).toContainText("ยอดสุทธิ: 205");
     } finally {
       if (requestId) {
         await db.from("rubber_bill_approval_requests").delete().eq("id", requestId);
@@ -795,7 +790,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
     }
   });
 
-  test("only system managers see the simple settings and approval modal", async ({ browser }) => {
+  test("hides the settings and approval entry point for every role", async ({ browser }) => {
     const user = await authContext(browser, "user");
     const superAdmin = await authContext(browser, "super_admin");
 
@@ -812,19 +807,10 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
 
       await expect(
         userPage.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ })
-      ).toBeHidden();
-      const managerButton = superPage.getByRole("button", {
-        name: /ตั้งค่าและอนุมัติบิลยาง/,
-      });
-      await expect(managerButton).toBeVisible();
-      await managerButton.click();
-
-      await expect(superPage.getByText("เกณฑ์อนุมัติ")).toBeVisible();
-      await expect(superPage.getByLabel("เวลาแก้ไขได้ (นาที)")).toBeVisible();
-      await expect(superPage.getByLabel("ราคายางที่กำหนด")).toBeVisible();
-      await expect(superPage.getByText("คำขอบิลยาง")).toBeVisible();
-      await expect(superPage.getByRole("option", { name: "รออนุมัติ" })).toBeAttached();
-      await expect(superPage.getByRole("option", { name: "อนุมัติแล้ว" })).toBeAttached();
+      ).toHaveCount(0);
+      await expect(
+        superPage.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ })
+      ).toHaveCount(0);
     } finally {
       await Promise.all([user.close(), superAdmin.close()]);
     }
