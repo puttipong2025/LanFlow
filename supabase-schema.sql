@@ -745,7 +745,12 @@ CREATE OR REPLACE FUNCTION "private"."can_assign_time_tracking_expense_location"
     AS $$
   select private.is_time_payroll_manager()
     and target_location is not null
-    and exists (select 1 from public.locations l where l.id = target_location and l.is_active = true)
+    and exists (
+      select 1
+      from public.locations l
+      where l.id = target_location
+        and l.is_active = true
+    )
 $$;
 
 
@@ -9764,7 +9769,6 @@ declare
   v_expected_revision integer;
   v_client_temp_id text;
   v_location_id uuid;
-  v_record_status record_status;
   v_idempotency_key text;
 
   v_row_id uuid;
@@ -9830,7 +9834,7 @@ begin
   v_expected_revision := (payload->>'expectedRevisionNo')::integer;
   v_client_temp_id := payload->>'clientTempId';
   v_location_id := (payload->>'locationId')::uuid;
-  v_record_status := (payload->>'recordStatus')::record_status;
+  perform (payload->>'recordStatus')::record_status;
   v_idempotency_key := payload->>'idempotencyKey';
   v_type := payload->>'type';
   v_bill_option := payload->>'billOption';
@@ -10460,7 +10464,6 @@ declare
   v_expected_revision integer;
   v_client_temp_id text;
   v_location_id uuid;
-  v_record_status record_status;
   v_idempotency_key text;
   v_customer_id uuid;
   v_deduct_weight numeric;
@@ -10505,7 +10508,7 @@ begin
   v_expected_revision := (payload->>'expectedRevisionNo')::integer;
   v_client_temp_id := payload->>'clientTempId';
   v_location_id := (payload->>'locationId')::uuid;
-  v_record_status := (payload->>'recordStatus')::record_status;
+  perform (payload->>'recordStatus')::record_status;
   v_idempotency_key := payload->>'idempotencyKey';
 
   if v_operation in ('create', 'update') then
@@ -10571,31 +10574,19 @@ begin
   end if;
 
   if v_operation in ('create', 'update') then
-    create temporary table if not exists pg_temp._acid_stock_delta (
-      product_id uuid primary key,
-      old_qty numeric not null default 0,
-      new_qty numeric not null default 0
-    ) on commit drop;
-    truncate table pg_temp._acid_stock_delta;
-
-    if v_bill_id is not null and v_existing_record_status = 'active' then
-      insert into pg_temp._acid_stock_delta (product_id, old_qty)
-      select stock_product_id, sum(quantity)
-      from public.rubber_bill_items
-      where bill_id = v_bill_id
-        and item_type in ('acid', 'stock_deduction')
-        and stock_product_id is not null
-      group by stock_product_id;
-    end if;
-
-    for v_item in select * from jsonb_array_elements(coalesce(payload->'items', '[]'::jsonb))
+    for v_item in
+      select *
+      from jsonb_array_elements(coalesce(payload->'items', '[]'::jsonb))
     loop
       if v_item->>'itemType' in ('acid', 'stock_deduction') then
         v_stock_product_id := nullif(v_item->>'stockProductId', '')::uuid;
         v_stock_quantity := nullif(v_item->>'quantity', '')::numeric;
 
         if v_stock_product_id is null or coalesce(v_stock_quantity, 0) <= 0 then
-          return jsonb_build_object('status', 'failed', 'errorMessage', 'รายการหักสินค้าต้องเลือกสินค้าในสต็อกและระบุจำนวน');
+          return jsonb_build_object(
+            'status', 'failed',
+            'errorMessage', 'รายการหักสินค้าต้องเลือกสินค้าในสต็อกและระบุจำนวน'
+          );
         end if;
 
         if not exists (
@@ -10604,26 +10595,58 @@ begin
           where id = v_stock_product_id
             and is_active = true
         ) then
-          return jsonb_build_object('status', 'failed', 'errorMessage', 'ไม่พบสินค้าในสต็อกสำหรับรายการหักสินค้า');
+          return jsonb_build_object(
+            'status', 'failed',
+            'errorMessage', 'ไม่พบสินค้าในสต็อกสำหรับรายการหักสินค้า'
+          );
         end if;
-
-        insert into pg_temp._acid_stock_delta (product_id, new_qty)
-        values (v_stock_product_id, v_stock_quantity)
-        on conflict (product_id) do update
-          set new_qty = pg_temp._acid_stock_delta.new_qty + excluded.new_qty;
       end if;
     end loop;
 
-    for v_stock_row in select * from pg_temp._acid_stock_delta
+    for v_stock_row in
+      with old_stock as (
+        select
+          stock_product_id as product_id,
+          sum(quantity) as old_qty
+        from public.rubber_bill_items
+        where v_bill_id is not null
+          and v_existing_record_status = 'active'
+          and bill_id = v_bill_id
+          and item_type in ('acid', 'stock_deduction')
+          and stock_product_id is not null
+        group by stock_product_id
+      ),
+      new_stock as (
+        select
+          nullif(item->>'stockProductId', '')::uuid as product_id,
+          sum(nullif(item->>'quantity', '')::numeric) as new_qty
+        from jsonb_array_elements(coalesce(payload->'items', '[]'::jsonb)) as item
+        where item->>'itemType' in ('acid', 'stock_deduction')
+        group by nullif(item->>'stockProductId', '')::uuid
+      )
+      select
+        coalesce(old_stock.product_id, new_stock.product_id) as product_id,
+        coalesce(old_stock.old_qty, 0) as old_qty,
+        coalesce(new_stock.new_qty, 0) as new_qty
+      from old_stock
+      full join new_stock using (product_id)
+      order by product_id
     loop
       perform pg_advisory_xact_lock(
         hashtext('acid-stock:' || v_location_id::text || ':' || v_stock_row.product_id::text)
       );
-      v_current_balance := public.get_acid_stock_balance(v_location_id, v_stock_row.product_id);
-      v_projected_balance := v_current_balance + v_stock_row.old_qty - v_stock_row.new_qty;
+      v_current_balance := public.get_acid_stock_balance(
+        v_location_id,
+        v_stock_row.product_id
+      );
+      v_projected_balance :=
+        v_current_balance + v_stock_row.old_qty - v_stock_row.new_qty;
 
       if v_projected_balance < 0 then
-        return jsonb_build_object('status', 'failed', 'errorMessage', 'สต็อกสินค้าไม่พอสำหรับรายการหักสินค้าในบิลยาง');
+        return jsonb_build_object(
+          'status', 'failed',
+          'errorMessage', 'สต็อกสินค้าไม่พอสำหรับรายการหักสินค้าในบิลยาง'
+        );
       end if;
     end loop;
   end if;
