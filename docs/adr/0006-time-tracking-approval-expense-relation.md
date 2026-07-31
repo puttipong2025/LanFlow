@@ -1,11 +1,13 @@
 # ADR-0006: Approved Withdrawals and Payroll Slips Become Source-Linked Branch Expenses
 
-- Status: Accepted (implementation in progress; verification incomplete)
+- Status: Accepted; leave, approver scope, and permanent-delete details superseded by ADR-0027
 - Date: 2026-07-20
 - Owners: LanFlow team
 - Decision scope: Time Tracking approval, branch expense assignment, Income/Expense feed, Relation Locks
 
 ## Context
+
+> Update 2026-07-31: ADR-0027 removes the leave workflow, makes Time/Payroll manager capability equivalent to super admin within this module, and permits source-owned permanent deletion under payroll/report locks. The source-linked expense and net-pay rules below remain in force.
 
 Time Tracking currently approves pending financial transactions, leave requests, and payroll slips through `src/app/api/lanflow/time-tracking/admin/route.ts`. Approval changes the source status but does not assign the cash outflow to a LanFlow branch or expose it in the Income/Expense feed.
 

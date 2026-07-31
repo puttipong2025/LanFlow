@@ -77,15 +77,6 @@ CREATE TYPE "public"."financial_transaction_type" AS ENUM (
 ALTER TYPE "public"."financial_transaction_type" OWNER TO "postgres";
 
 
-CREATE TYPE "public"."leave_request_type" AS ENUM (
-    'FULL_DAY',
-    'HALF_DAY'
-);
-
-
-ALTER TYPE "public"."leave_request_type" OWNER TO "postgres";
-
-
 CREATE TYPE "public"."record_status" AS ENUM (
     'active',
     'deleted',
@@ -178,6 +169,181 @@ $$;
 
 
 ALTER FUNCTION "private"."active_transfer_report_no"("p_transfer_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."apply_time_tracking_deductions"("p_profile_id" "uuid", "p_through_month" "date") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_month date;
+  v_first_month date;
+  v_through_month date := date_trunc('month', p_through_month)::date;
+  v_current_month date := date_trunc(
+    'month',
+    (now() at time zone 'Asia/Bangkok')::date
+  )::date;
+  v_daily_wage numeric;
+  v_gross numeric;
+  v_used numeric;
+  v_available numeric;
+  v_amount numeric;
+  v_total numeric := 0;
+  v_parent record;
+  v_child_type public.financial_transaction_type;
+  v_comment text;
+begin
+  perform pg_advisory_xact_lock(hashtextextended('time-tracking:' || p_profile_id::text, 0));
+
+  if v_through_month > v_current_month then
+    v_through_month := v_current_month;
+  end if;
+
+  select p.daily_wage
+  into v_daily_wage
+  from public.profiles p
+  where p.id = p_profile_id
+    and p.is_active = true;
+
+  if not found or coalesce(v_daily_wage, 0) <= 0 then
+    return jsonb_build_object('deducted', 0);
+  end if;
+
+  select min(date_trunc('month', ft.effective_date)::date)
+  into v_first_month
+  from public.financial_transactions ft
+  where ft.profile_id = p_profile_id
+    and ft.type in ('DEBT', 'WITHDRAWAL')
+    and ft.status = 'APPROVED'
+    and ft.remaining_amount > 0
+    and ft.effective_date < (v_through_month + interval '1 month')::date;
+
+  if v_first_month is null then
+    return jsonb_build_object('deducted', 0);
+  end if;
+
+  for v_month in
+    select generate_series(
+      v_first_month::timestamp,
+      v_through_month::timestamp,
+      interval '1 month'
+    )::date
+  loop
+    if exists (
+      select 1
+      from public.payroll_slips ps
+      where ps.profile_id = p_profile_id
+        and ps.month = to_char(v_month, 'YYYY-MM')
+    ) then
+      continue;
+    end if;
+
+    v_gross := public.calculate_paid_work_days(
+      p_profile_id,
+      v_month::timestamp at time zone 'Asia/Bangkok',
+      (v_month + interval '1 month')::timestamp at time zone 'Asia/Bangkok'
+    ) * v_daily_wage;
+
+    select coalesce(sum(ft.amount), 0)
+    into v_used
+    from public.financial_transactions ft
+    where ft.profile_id = p_profile_id
+      and ft.status = 'APPROVED'
+      and ft.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
+      and ft.applied_month = v_month;
+
+    v_available := greatest(trunc(v_gross - v_used, 2), 0);
+    if v_available <= 0 then
+      continue;
+    end if;
+
+    for v_parent in
+      select ft.*
+      from public.financial_transactions ft
+      where ft.profile_id = p_profile_id
+        and ft.type in ('DEBT', 'WITHDRAWAL')
+        and ft.status = 'APPROVED'
+        and ft.remaining_amount > 0
+        and ft.effective_date < (v_month + interval '1 month')::date
+      order by ft.effective_date, ft.created_at, ft.id
+      for update
+    loop
+      exit when v_available <= 0;
+
+      v_amount := trunc(least(v_parent.remaining_amount, v_available), 2);
+      if v_amount <= 0 then
+        continue;
+      end if;
+
+      if v_parent.type = 'DEBT' then
+        v_child_type := 'DEBT_DEDUCTION';
+        v_comment := 'หักหนี้อัตโนมัติ';
+      else
+        v_child_type := 'WITHDRAWAL_DEDUCTION';
+        v_comment := 'หักยอดเบิกเงินอัตโนมัติ';
+      end if;
+
+      update public.financial_transactions
+      set remaining_amount = greatest(remaining_amount - v_amount, 0)
+      where id = v_parent.id;
+
+      insert into public.financial_transactions (
+        profile_id,
+        type,
+        amount,
+        status,
+        parent_debt_id,
+        applied_month,
+        admin_comment,
+        approved_by,
+        approved_at
+      )
+      values (
+        p_profile_id,
+        v_child_type,
+        v_amount,
+        'APPROVED',
+        v_parent.id,
+        v_month,
+        v_comment,
+        v_parent.approved_by,
+        now()
+      );
+
+      insert into public.time_tracking_audit_logs (
+        admin_id,
+        action,
+        target_table,
+        record_id,
+        new_data,
+        comment
+      )
+      values (
+        coalesce(v_parent.approved_by, p_profile_id),
+        'AUTO_DEDUCTION',
+        'financial_transactions',
+        v_parent.id,
+        jsonb_build_object(
+          'deducted_amount', v_amount,
+          'remaining_amount', greatest(v_parent.remaining_amount - v_amount, 0),
+          'type', v_child_type,
+          'applied_month', v_month
+        ),
+        v_comment
+      );
+
+      v_parent.remaining_amount := greatest(v_parent.remaining_amount - v_amount, 0);
+      v_available := trunc(v_available - v_amount, 2);
+      v_total := v_total + v_amount;
+    end loop;
+  end loop;
+
+  return jsonb_build_object('deducted', v_total);
+end;
+$$;
+
+
+ALTER FUNCTION "private"."apply_time_tracking_deductions"("p_profile_id" "uuid", "p_through_month" "date") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."assign_rubber_bill_item_sequence"() RETURNS "trigger"
@@ -560,19 +726,12 @@ CREATE OR REPLACE FUNCTION "private"."can_approve_time_tracking_profile"("target
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
-  select private.is_active_user()
-    and (
-      private.current_user_role() = 'super_admin'
-      or (
-        private.current_user_role() = 'admin'
-        and exists (
-          select 1
-          from public.profiles p
-          where p.id = target_profile_id
-            and p.role = 'user'
-            and p.is_active = true
-        )
-      )
+  select private.is_time_payroll_manager()
+    and exists (
+      select 1
+      from public.profiles p
+      where p.id = target_profile_id
+        and p.is_active = true
     )
 $$;
 
@@ -584,16 +743,9 @@ CREATE OR REPLACE FUNCTION "private"."can_assign_time_tracking_expense_location"
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
-  select private.is_active_user()
+  select private.is_time_payroll_manager()
     and target_location is not null
-    and exists (
-      select 1
-      from public.user_locations ul
-      join public.locations l on l.id = ul.location_id
-      where ul.user_id = auth.uid()
-        and ul.location_id = target_location
-        and l.is_active = true
-    )
+    and exists (select 1 from public.locations l where l.id = target_location and l.is_active = true)
 $$;
 
 
@@ -1583,6 +1735,18 @@ $$;
 
 
 ALTER FUNCTION "private"."is_super_admin"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."is_time_payroll_manager"() RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select private.is_active_user()
+    and private.can_access_super_admin_features()
+$$;
+
+
+ALTER FUNCTION "private"."is_time_payroll_manager"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."mark_dashboard_dirty"("p_location_id" "uuid") RETURNS "void"
@@ -2957,13 +3121,22 @@ ALTER FUNCTION "public"."approve_rubber_bill_approval_request"("p_request_id" "u
 
 CREATE OR REPLACE FUNCTION "public"."calculate_paid_work_days"("p_profile_id" "uuid", "p_period_start" timestamp with time zone, "p_period_end" timestamp with time zone DEFAULT NULL::timestamp with time zone) RETURNS numeric
     LANGUAGE "sql" STABLE
+    SET "search_path" TO ''
     AS $$
-  select coalesce(sum(public.calculate_time_segment_paid_days(start_time, end_time)), 0)
-  from public.time_segments
-  where profile_id = p_profile_id
-    and end_time is not null
-    and start_time >= p_period_start
-    and (p_period_end is null or start_time < p_period_end);
+  select coalesce(sum(
+    public.calculate_time_segment_paid_days(
+      greatest(s.start_time, p_period_start),
+      least(
+        s.end_time,
+        coalesce(p_period_end, s.end_time)
+      )
+    )
+  ), 0)
+  from public.time_segments s
+  where s.profile_id = p_profile_id
+    and s.end_time is not null
+    and s.end_time > p_period_start
+    and (p_period_end is null or s.start_time < p_period_end)
 $$;
 
 
@@ -4376,6 +4549,356 @@ $$;
 ALTER FUNCTION "public"."create_stock_product_with_sale_item"("payload" "jsonb") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."create_time_tracking_payroll_slip"("p_profile_id" "uuid", "p_month" "text", "p_auto_start_next_month" boolean DEFAULT true) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $_$
+declare
+  v_actor_id uuid := auth.uid();
+  v_month date;
+  v_next_month date;
+  v_current_month date := date_trunc(
+    'month',
+    (now() at time zone 'Asia/Bangkok')::date
+  )::date;
+  v_scan_month date;
+  v_first_segment_month date;
+  v_active_segment public.time_segments%rowtype;
+  v_was_running boolean := false;
+  v_daily_wage numeric;
+  v_total_days numeric;
+  v_gross numeric;
+  v_deductions numeric;
+  v_net numeric;
+  v_segments jsonb;
+  v_transactions jsonb;
+  v_slip public.payroll_slips%rowtype;
+  v_blocker record;
+begin
+  if v_actor_id is null or not private.can_approve_time_tracking_profile(p_profile_id) then
+    raise exception 'Forbidden';
+  end if;
+  if p_month !~ '^[0-9]{4}-[0-9]{2}$' then
+    raise exception 'INVALID_MONTH';
+  end if;
+
+  begin
+    v_month := (p_month || '-01')::date;
+  exception when others then
+    raise exception 'INVALID_MONTH';
+  end;
+  if to_char(v_month, 'YYYY-MM') <> p_month or v_month > v_current_month then
+    raise exception 'INVALID_MONTH';
+  end if;
+  v_next_month := (v_month + interval '1 month')::date;
+
+  perform pg_advisory_xact_lock(hashtextextended('time-tracking:' || p_profile_id::text, 0));
+
+  if exists (
+    select 1 from public.payroll_slips ps
+    where ps.profile_id = p_profile_id and ps.month = p_month
+  ) then
+    raise exception 'MONTH_CLOSED:%', p_month;
+  end if;
+
+  select ft.id, ft.type::text type, ft.effective_date
+  into v_blocker
+  from public.financial_transactions ft
+  where ft.profile_id = p_profile_id
+    and ft.type in ('DEBT', 'WITHDRAWAL')
+    and ft.status = 'PENDING'
+    and ft.effective_date < v_next_month
+  order by ft.effective_date, ft.created_at, ft.id
+  limit 1;
+  if found then
+    raise exception 'PENDING_BLOCKER:%:%:%',
+      v_blocker.type,
+      v_blocker.id,
+      to_char(v_blocker.effective_date, 'YYYY-MM');
+  end if;
+
+  select min(date_trunc('month', s.start_time at time zone 'Asia/Bangkok')::date)
+  into v_first_segment_month
+  from public.time_segments s
+  where s.profile_id = p_profile_id;
+
+  if v_first_segment_month is not null then
+    for v_scan_month in
+      select generate_series(
+        v_first_segment_month::timestamp,
+        (v_month - interval '1 month')::timestamp,
+        interval '1 month'
+      )::date
+    loop
+      if not exists (
+        select 1 from public.payroll_slips ps
+        where ps.profile_id = p_profile_id
+          and ps.month = to_char(v_scan_month, 'YYYY-MM')
+      ) and public.calculate_paid_work_days(
+        p_profile_id,
+        v_scan_month::timestamp at time zone 'Asia/Bangkok',
+        (v_scan_month + interval '1 month')::timestamp at time zone 'Asia/Bangkok'
+      ) > 0 then
+        raise exception 'OLDER_WORK_MONTH:%', to_char(v_scan_month, 'YYYY-MM');
+      end if;
+    end loop;
+  end if;
+
+  if v_month = v_current_month then
+    select * into v_active_segment
+    from public.time_segments s
+    where s.profile_id = p_profile_id and s.end_time is null
+    for update;
+    if found then
+      v_was_running := true;
+      update public.time_segments
+      set end_time = now()
+      where id = v_active_segment.id;
+    end if;
+  end if;
+
+  v_total_days := public.calculate_paid_work_days(
+    p_profile_id,
+    v_month::timestamp at time zone 'Asia/Bangkok',
+    v_next_month::timestamp at time zone 'Asia/Bangkok'
+  );
+
+  if v_month < v_current_month and v_total_days <= 0 then
+    raise exception 'NO_WORK_MONTH:%', p_month;
+  end if;
+
+  perform private.apply_time_tracking_deductions(p_profile_id, v_month);
+
+  select p.daily_wage into v_daily_wage
+  from public.profiles p
+  where p.id = p_profile_id;
+  if not found then raise exception 'PROFILE_NOT_FOUND'; end if;
+
+  v_gross := trunc(v_total_days * v_daily_wage, 2);
+  select coalesce(sum(ft.amount), 0)
+  into v_deductions
+  from public.financial_transactions ft
+  where ft.profile_id = p_profile_id
+    and ft.status = 'APPROVED'
+    and ft.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
+    and ft.applied_month = v_month;
+  v_net := greatest(trunc(v_gross - v_deductions, 2), 0);
+
+  select coalesce(jsonb_agg(to_jsonb(s) order by s.start_time), '[]'::jsonb)
+  into v_segments
+  from public.time_segments s
+  where s.profile_id = p_profile_id
+    and s.end_time is not null
+    and s.end_time > (v_month::timestamp at time zone 'Asia/Bangkok')
+    and s.start_time < (v_next_month::timestamp at time zone 'Asia/Bangkok');
+
+  select coalesce(jsonb_agg(to_jsonb(ft) order by ft.created_at, ft.id), '[]'::jsonb)
+  into v_transactions
+  from public.financial_transactions ft
+  where ft.profile_id = p_profile_id
+    and (
+      (
+        ft.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
+        and ft.applied_month = v_month
+      )
+      or
+      (
+        ft.type in ('DEBT', 'WITHDRAWAL')
+        and ft.effective_date >= v_month
+        and ft.effective_date < v_next_month
+      )
+    );
+
+  insert into public.payroll_slips (
+    profile_id,
+    month,
+    gross_pay,
+    total_deductions,
+    net_pay,
+    total_days,
+    daily_wage,
+    slip_data,
+    status,
+    created_by
+  )
+  values (
+    p_profile_id,
+    p_month,
+    v_gross,
+    v_deductions,
+    v_net,
+    v_total_days,
+    v_daily_wage,
+    jsonb_build_object(
+      'segments', v_segments,
+      'transactions', v_transactions,
+      'lockedAt', now()
+    ),
+    'PENDING',
+    v_actor_id
+  )
+  returning * into v_slip;
+
+  if v_month = v_current_month and v_was_running and p_auto_start_next_month then
+    insert into public.time_tracking_resume_schedules (
+      profile_id,
+      payroll_slip_id,
+      resume_at,
+      created_by
+    )
+    values (
+      p_profile_id,
+      v_slip.id,
+      v_next_month::timestamp at time zone 'Asia/Bangkok',
+      v_actor_id
+    )
+    on conflict (profile_id) do update
+    set
+      payroll_slip_id = excluded.payroll_slip_id,
+      resume_at = excluded.resume_at,
+      created_by = excluded.created_by,
+      created_at = now();
+  else
+    delete from public.time_tracking_resume_schedules
+    where profile_id = p_profile_id;
+  end if;
+
+  insert into public.time_tracking_audit_logs (
+    admin_id, action, target_table, record_id, new_data, comment
+  )
+  values (
+    v_actor_id,
+    'CREATE_PAYROLL_SLIP',
+    'payroll_slips',
+    v_slip.id,
+    to_jsonb(v_slip) || jsonb_build_object(
+      'was_running', v_was_running,
+      'auto_start_next_month', v_month = v_current_month
+        and v_was_running
+        and p_auto_start_next_month
+    ),
+    'สร้างสลิปเดือน ' || p_month
+  );
+
+  return to_jsonb(v_slip) || jsonb_build_object(
+    'auto_start_scheduled',
+    v_month = v_current_month and v_was_running and p_auto_start_next_month
+  );
+end;
+$_$;
+
+
+ALTER FUNCTION "public"."create_time_tracking_payroll_slip"("p_profile_id" "uuid", "p_month" "text", "p_auto_start_next_month" boolean) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."create_time_tracking_transaction"("p_profile_id" "uuid", "p_type" "text", "p_amount" numeric, "p_effective_date" "date", "p_description" "text" DEFAULT NULL::"text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_actor_id uuid := auth.uid();
+  v_is_manager boolean;
+  v_id uuid;
+  v_comment text;
+  v_actor_name text;
+  v_bangkok_today date := (now() at time zone 'Asia/Bangkok')::date;
+begin
+  if v_actor_id is null or not private.is_active_user() then
+    raise exception 'Authentication required';
+  end if;
+
+  v_is_manager := private.is_time_payroll_manager();
+  if p_type not in ('DEBT', 'WITHDRAWAL') then
+    raise exception 'INVALID_TRANSACTION_TYPE';
+  end if;
+  if p_amount is null or p_amount <= 0 then
+    raise exception 'INVALID_AMOUNT';
+  end if;
+  if p_effective_date is null or p_effective_date > v_bangkok_today then
+    raise exception 'FUTURE_EFFECTIVE_DATE';
+  end if;
+  if p_type = 'DEBT' and not v_is_manager then
+    raise exception 'Forbidden';
+  end if;
+  if p_type = 'WITHDRAWAL' and p_profile_id <> v_actor_id and not v_is_manager then
+    raise exception 'Forbidden';
+  end if;
+  if p_type = 'DEBT' and nullif(btrim(coalesce(p_description, '')), '') is null then
+    raise exception 'DESCRIPTION_REQUIRED';
+  end if;
+  if not exists (
+    select 1 from public.profiles p
+    where p.id = p_profile_id and p.is_active = true
+  ) then
+    raise exception 'PROFILE_NOT_FOUND';
+  end if;
+  if exists (
+    select 1
+    from public.payroll_slips ps
+    where ps.profile_id = p_profile_id
+      and ps.month = to_char(p_effective_date, 'YYYY-MM')
+  ) then
+    raise exception 'MONTH_CLOSED:%', to_char(p_effective_date, 'YYYY-MM');
+  end if;
+
+  select p.name into v_actor_name from public.profiles p where p.id = v_actor_id;
+  v_comment := case
+    when v_actor_id = p_profile_id and p_type = 'WITHDRAWAL' then null
+    when p_type = 'DEBT' then 'สร้างหนี้สินโดย: ' || coalesce(v_actor_name, 'ผู้จัดการ')
+    else 'ยื่นแทนโดยผู้จัดการ: ' || coalesce(v_actor_name, 'ผู้จัดการ')
+  end;
+
+  insert into public.financial_transactions (
+    profile_id,
+    type,
+    amount,
+    effective_date,
+    due_date,
+    description,
+    admin_comment
+  )
+  values (
+    p_profile_id,
+    p_type::public.financial_transaction_type,
+    trunc(p_amount, 2),
+    p_effective_date,
+    case when p_type = 'DEBT' then p_effective_date else null end,
+    nullif(btrim(coalesce(p_description, '')), ''),
+    v_comment
+  )
+  returning id into v_id;
+
+  insert into public.time_tracking_audit_logs (
+    admin_id,
+    action,
+    target_table,
+    record_id,
+    new_data,
+    comment
+  )
+  values (
+    v_actor_id,
+    case when p_type = 'DEBT' then 'CREATE_DEBT' else 'REQUEST_WITHDRAWAL' end,
+    'financial_transactions',
+    v_id,
+    jsonb_build_object(
+      'profile_id', p_profile_id,
+      'type', p_type,
+      'amount', trunc(p_amount, 2),
+      'effective_date', p_effective_date,
+      'description', nullif(btrim(coalesce(p_description, '')), '')
+    ),
+    v_comment
+  );
+
+  return jsonb_build_object('id', v_id, 'status', 'pending');
+end;
+$$;
+
+
+ALTER FUNCTION "public"."create_time_tracking_transaction"("p_profile_id" "uuid", "p_type" "text", "p_amount" numeric, "p_effective_date" "date", "p_description" "text") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."current_profile_id"() RETURNS "uuid"
     LANGUAGE "sql" STABLE
     SET "search_path" TO ''
@@ -4385,6 +4908,55 @@ $$;
 
 
 ALTER FUNCTION "public"."current_profile_id"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."cutoff_time_tracking"("p_profile_id" "uuid", "p_cutoff_time" timestamp with time zone) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_actor_id uuid := auth.uid();
+  v_segment public.time_segments%rowtype;
+begin
+  if v_actor_id is null or not private.can_approve_time_tracking_profile(p_profile_id) then
+    raise exception 'Forbidden';
+  end if;
+  if p_cutoff_time is null or p_cutoff_time > now() + interval '5 minutes' then
+    raise exception 'INVALID_CUTOFF_TIME';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended('time-tracking:' || p_profile_id::text, 0));
+  select * into v_segment
+  from public.time_segments s
+  where s.profile_id = p_profile_id and s.end_time is null
+  for update;
+
+  if not found or p_cutoff_time <= v_segment.start_time then
+    return jsonb_build_object('status', 'unchanged');
+  end if;
+
+  update public.time_segments set end_time = p_cutoff_time where id = v_segment.id;
+  insert into public.time_segments(profile_id, start_time)
+  values (p_profile_id, p_cutoff_time);
+
+  insert into public.time_tracking_audit_logs (
+    admin_id, action, target_table, record_id, new_data, comment
+  )
+  values (
+    v_actor_id,
+    'CUTOFF_TRACKING',
+    'time_segments',
+    p_profile_id,
+    jsonb_build_object('cutoff_time', p_cutoff_time),
+    'Auto split at 15:00'
+  );
+
+  return jsonb_build_object('status', 'split');
+end;
+$$;
+
+
+ALTER FUNCTION "public"."cutoff_time_tracking"("p_profile_id" "uuid", "p_cutoff_time" timestamp with time zone) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."decide_cash_transfer_delete_request"("p_request_id" "uuid", "p_decision" "text", "p_comment" "text" DEFAULT NULL::"text") RETURNS "jsonb"
@@ -4847,11 +5419,14 @@ CREATE OR REPLACE FUNCTION "public"."decide_time_tracking_approval"("p_source_ty
     AS $$
 declare
   v_actor_id uuid := auth.uid();
-  v_actor_role text;
   v_tx public.financial_transactions%rowtype;
   v_slip public.payroll_slips%rowtype;
   v_old_data jsonb;
   v_requires_expense_location boolean := false;
+  v_current_month date := date_trunc(
+    'month',
+    (now() at time zone 'Asia/Bangkok')::date
+  )::date;
 begin
   if v_actor_id is null or not private.is_active_user() then
     raise exception 'Authentication required';
@@ -4863,13 +5438,32 @@ begin
     raise exception 'Invalid approval decision';
   end if;
 
-  select role::text into v_actor_role from public.profiles where id = v_actor_id;
-
   if p_source_type = 'transaction' then
-    select * into v_tx from public.financial_transactions where id = p_source_id for update;
-    if not found then raise exception 'Transaction not found'; end if;
-    if not private.can_approve_time_tracking_profile(v_tx.profile_id) then raise exception 'Forbidden'; end if;
-    if v_tx.type = 'DEBT' and v_actor_role <> 'super_admin' then raise exception 'Only super_admin can approve debts'; end if;
+    select * into v_tx
+    from public.financial_transactions
+    where id = p_source_id;
+    if not found or v_tx.type not in ('DEBT', 'WITHDRAWAL') then
+      raise exception 'Transaction not found';
+    end if;
+    if not private.can_approve_time_tracking_profile(v_tx.profile_id) then
+      raise exception 'Forbidden';
+    end if;
+
+    perform pg_advisory_xact_lock(hashtextextended('time-tracking:' || v_tx.profile_id::text, 0));
+    select * into v_tx
+    from public.financial_transactions
+    where id = p_source_id
+    for update;
+    if not found or v_tx.type not in ('DEBT', 'WITHDRAWAL') then
+      raise exception 'Transaction not found';
+    end if;
+    if exists (
+      select 1 from public.payroll_slips ps
+      where ps.profile_id = v_tx.profile_id
+        and ps.month = to_char(v_tx.effective_date, 'YYYY-MM')
+    ) then
+      raise exception 'MONTH_CLOSED:%', to_char(v_tx.effective_date, 'YYYY-MM');
+    end if;
 
     v_requires_expense_location := p_decision = 'APPROVED' and v_tx.type = 'WITHDRAWAL';
     if v_tx.status <> 'PENDING' then
@@ -4877,14 +5471,22 @@ begin
         and (
           not v_requires_expense_location
           or v_tx.expense_location_id = p_expense_location_id
-        ) then
-        return jsonb_build_object('status', lower(p_decision), 'idempotent', true, 'sourceType', p_source_type, 'sourceId', p_source_id);
+        )
+      then
+        return jsonb_build_object(
+          'status', lower(p_decision),
+          'idempotent', true,
+          'sourceType', p_source_type,
+          'sourceId', p_source_id
+        );
       end if;
       raise exception 'Approval has already been decided';
     end if;
 
     if v_requires_expense_location then
-      if p_expense_location_id is null or not private.can_assign_time_tracking_expense_location(p_expense_location_id) then
+      if p_expense_location_id is null
+        or not private.can_assign_time_tracking_expense_location(p_expense_location_id)
+      then
         raise exception 'Expense location access denied';
       end if;
     elsif p_expense_location_id is not null then
@@ -4895,35 +5497,57 @@ begin
     if p_decision = 'APPROVED' then
       perform set_config('app.time_tracking_expense_rpc', 'true', true);
       update public.financial_transactions
-      set status = 'APPROVED',
-          admin_comment = coalesce(p_comment, ''),
-          approved_by = v_actor_id,
-          approved_at = now(),
-          expense_location_id = case when v_requires_expense_location then p_expense_location_id else null end,
-          remaining_amount = case when v_tx.type in ('DEBT', 'WITHDRAWAL') then v_tx.amount else v_tx.remaining_amount end
+      set
+        status = 'APPROVED',
+        admin_comment = coalesce(p_comment, ''),
+        approved_by = v_actor_id,
+        approved_at = now(),
+        expense_location_id = case
+          when v_requires_expense_location then p_expense_location_id
+          else null
+        end,
+        remaining_amount = amount
       where id = v_tx.id;
+
+      perform private.apply_time_tracking_deductions(v_tx.profile_id, v_current_month);
     else
       update public.financial_transactions
-      set status = 'REJECTED', admin_comment = coalesce(p_comment, ''), approved_by = v_actor_id
+      set
+        status = 'REJECTED',
+        admin_comment = coalesce(p_comment, ''),
+        approved_by = v_actor_id
       where id = v_tx.id;
     end if;
 
-    insert into public.time_tracking_audit_logs (admin_id, action, target_table, record_id, old_data, new_data, comment)
+    insert into public.time_tracking_audit_logs (
+      admin_id, action, target_table, record_id, old_data, new_data, comment
+    )
     values (
       v_actor_id,
       'DECIDE_TRANSACTION_APPROVAL',
       'financial_transactions',
       v_tx.id,
       v_old_data,
-      jsonb_build_object('decision', p_decision, 'expenseLocationId', p_expense_location_id),
+      jsonb_build_object(
+        'decision', p_decision,
+        'expenseLocationId', p_expense_location_id
+      ),
       coalesce(p_comment, '')
     );
-
   else
-    select * into v_slip from public.payroll_slips where id = p_source_id for update;
+    select * into v_slip
+    from public.payroll_slips
+    where id = p_source_id;
     if not found then raise exception 'Payroll slip not found'; end if;
-    if not private.can_approve_time_tracking_profile(v_slip.profile_id) then raise exception 'Forbidden'; end if;
-    if v_slip.created_by = v_actor_id and v_actor_role <> 'super_admin' then raise exception 'Cannot approve your own slip'; end if;
+    if not private.can_approve_time_tracking_profile(v_slip.profile_id) then
+      raise exception 'Forbidden';
+    end if;
+    perform pg_advisory_xact_lock(hashtextextended('time-tracking:' || v_slip.profile_id::text, 0));
+    select * into v_slip
+    from public.payroll_slips
+    where id = p_source_id
+    for update;
+    if not found then raise exception 'Payroll slip not found'; end if;
 
     v_requires_expense_location := p_decision = 'APPROVED' and v_slip.net_pay > 0;
     if v_slip.status <> 'PENDING' then
@@ -4931,14 +5555,22 @@ begin
         and (
           not v_requires_expense_location
           or v_slip.expense_location_id = p_expense_location_id
-        ) then
-        return jsonb_build_object('status', lower(p_decision), 'idempotent', true, 'sourceType', p_source_type, 'sourceId', p_source_id);
+        )
+      then
+        return jsonb_build_object(
+          'status', lower(p_decision),
+          'idempotent', true,
+          'sourceType', p_source_type,
+          'sourceId', p_source_id
+        );
       end if;
       raise exception 'Approval has already been decided';
     end if;
 
     if v_requires_expense_location then
-      if p_expense_location_id is null or not private.can_assign_time_tracking_expense_location(p_expense_location_id) then
+      if p_expense_location_id is null
+        or not private.can_assign_time_tracking_expense_location(p_expense_location_id)
+      then
         raise exception 'Expense location access denied';
       end if;
     elsif p_expense_location_id is not null then
@@ -4949,31 +5581,48 @@ begin
     if p_decision = 'APPROVED' then
       perform set_config('app.time_tracking_expense_rpc', 'true', true);
       update public.payroll_slips
-      set status = 'APPROVED',
-          admin_comment = coalesce(p_comment, ''),
-          approved_by = v_actor_id,
-          approved_at = now(),
-          expense_location_id = case when v_requires_expense_location then p_expense_location_id else null end
+      set
+        status = 'APPROVED',
+        admin_comment = coalesce(p_comment, ''),
+        approved_by = v_actor_id,
+        approved_at = now(),
+        expense_location_id = case
+          when v_requires_expense_location then p_expense_location_id
+          else null
+        end
       where id = v_slip.id;
     else
       update public.payroll_slips
-      set status = 'REJECTED', admin_comment = coalesce(p_comment, ''), approved_by = v_actor_id
+      set
+        status = 'REJECTED',
+        admin_comment = coalesce(p_comment, ''),
+        approved_by = v_actor_id
       where id = v_slip.id;
     end if;
 
-    insert into public.time_tracking_audit_logs (admin_id, action, target_table, record_id, old_data, new_data, comment)
+    insert into public.time_tracking_audit_logs (
+      admin_id, action, target_table, record_id, old_data, new_data, comment
+    )
     values (
       v_actor_id,
       'DECIDE_PAYROLL_SLIP_APPROVAL',
       'payroll_slips',
       v_slip.id,
       v_old_data,
-      jsonb_build_object('decision', p_decision, 'expenseLocationId', p_expense_location_id),
+      jsonb_build_object(
+        'decision', p_decision,
+        'expenseLocationId', p_expense_location_id
+      ),
       coalesce(p_comment, '')
     );
   end if;
 
-  return jsonb_build_object('status', lower(p_decision), 'idempotent', false, 'sourceType', p_source_type, 'sourceId', p_source_id);
+  return jsonb_build_object(
+    'status', lower(p_decision),
+    'idempotent', false,
+    'sourceType', p_source_type,
+    'sourceId', p_source_id
+  );
 end;
 $$;
 
@@ -4983,90 +5632,23 @@ ALTER FUNCTION "public"."decide_time_tracking_approval"("p_source_type" "text", 
 
 CREATE OR REPLACE FUNCTION "public"."deduct_debts_daily"() RETURNS "void"
     LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
     AS $$
 declare
-  v_debt record;
-  v_user_wage numeric;
-  v_current_month_start timestamp with time zone;
-  v_total_days numeric;
-  v_gross_pay numeric;
-  v_deduct_amount numeric;
-  v_today date;
-  v_deduction_type text;
-  v_comment text;
+  v_profile_id uuid;
+  v_current_month date := date_trunc(
+    'month',
+    (now() at time zone 'Asia/Bangkok')::date
+  )::date;
 begin
-  v_today := current_date;
-  v_current_month_start := date_trunc('month', current_timestamp at time zone 'Asia/Bangkok') at time zone 'Asia/Bangkok';
-
-  for v_debt in
-    select id, profile_id, remaining_amount, due_date, created_at, type
-    from public.financial_transactions
-    where type in ('DEBT', 'WITHDRAWAL')
-      and status = 'APPROVED'
-      and remaining_amount > 0
+  for v_profile_id in
+    select distinct ft.profile_id
+    from public.financial_transactions ft
+    where ft.type in ('DEBT', 'WITHDRAWAL')
+      and ft.status = 'APPROVED'
+      and ft.remaining_amount > 0
   loop
-    if v_debt.type = 'DEBT' and v_debt.due_date is not null and v_debt.due_date > v_today then
-      continue;
-    end if;
-
-    select daily_wage into v_user_wage from public.profiles where id = v_debt.profile_id;
-
-    if v_user_wage is null or v_user_wage <= 0 then
-      continue;
-    end if;
-
-    v_total_days := public.calculate_paid_work_days(v_debt.profile_id, v_current_month_start, null);
-    v_gross_pay := v_total_days * v_user_wage;
-
-    declare
-      v_already_used numeric;
-      v_remaining_balance numeric;
-    begin
-      select coalesce(sum(amount), 0) into v_already_used
-      from public.financial_transactions
-      where profile_id = v_debt.profile_id
-        and status = 'APPROVED'
-        and type in ('WITHDRAWAL_DEDUCTION', 'DEBT_DEDUCTION', 'SALARY')
-        and created_at >= v_current_month_start;
-
-      v_remaining_balance := v_gross_pay - v_already_used;
-
-      if v_remaining_balance <= 0 then
-        continue;
-      end if;
-
-      v_deduct_amount := least(v_debt.remaining_amount, v_remaining_balance);
-      v_deduct_amount := trunc(v_deduct_amount, 2);
-
-      if v_deduct_amount <= 0 then
-        continue;
-      end if;
-
-      update public.financial_transactions
-      set remaining_amount = remaining_amount - v_deduct_amount
-      where id = v_debt.id;
-
-      if v_debt.type = 'DEBT' then
-        v_deduction_type := 'DEBT_DEDUCTION';
-        v_comment := 'หักหนี้อัตโนมัติประจำวัน';
-      else
-        v_deduction_type := 'WITHDRAWAL_DEDUCTION';
-        v_comment := 'หักยอดเบิกเงินอัตโนมัติประจำวัน';
-      end if;
-
-      insert into public.financial_transactions (profile_id, type, amount, status, parent_debt_id, admin_comment)
-      values (v_debt.profile_id, v_deduction_type::financial_transaction_type, v_deduct_amount, 'APPROVED', v_debt.id, v_comment);
-
-      insert into public.time_tracking_audit_logs (admin_id, action, target_table, record_id, new_data, comment)
-      values (
-        v_debt.profile_id,
-        'AUTO_DEDUCTION',
-        'financial_transactions',
-        v_debt.id,
-        jsonb_build_object('deducted_amount', v_deduct_amount, 'remaining_amount', v_debt.remaining_amount - v_deduct_amount, 'type', v_deduction_type),
-        v_comment
-      );
-    end;
+    perform private.apply_time_tracking_deductions(v_profile_id, v_current_month);
   end loop;
 end;
 $$;
@@ -5412,9 +5994,10 @@ CREATE OR REPLACE FUNCTION "public"."delete_time_tracking_source_permanently"("p
     AS $$
 declare
   v_actor_id uuid := auth.uid();
-  v_actor_role text;
+  v_is_manager boolean;
   v_tx public.financial_transactions%rowtype;
   v_slip public.payroll_slips%rowtype;
+  v_blocked_month text;
 begin
   if v_actor_id is null or not private.is_active_user() then
     raise exception 'Authentication required';
@@ -5422,64 +6005,95 @@ begin
   if p_source_type not in ('transaction', 'payroll_slip') then
     raise exception 'Invalid deletion source';
   end if;
-
-  select role::text into v_actor_role from public.profiles where id = v_actor_id;
+  v_is_manager := private.is_time_payroll_manager();
 
   if p_source_type = 'transaction' then
-    select * into v_tx from public.financial_transactions where id = p_source_id for update;
+    select * into v_tx
+    from public.financial_transactions
+    where id = p_source_id;
     if not found or v_tx.type not in ('DEBT', 'WITHDRAWAL') then
       raise exception 'Transaction not found';
     end if;
 
-    if v_tx.status = 'APPROVED' and v_tx.type = 'WITHDRAWAL' and v_tx.expense_location_id is not null then
-      if not private.can_approve_time_tracking_profile(v_tx.profile_id) then
-        raise exception 'Forbidden';
-      end if;
-    elsif v_tx.status = 'APPROVED' and v_actor_role <> 'super_admin' then
-      raise exception 'Only super_admin can delete approved records';
-    elsif v_actor_role <> 'super_admin' and v_tx.profile_id <> v_actor_id then
+    if v_tx.status = 'PENDING'
+      and v_tx.type = 'WITHDRAWAL'
+      and v_tx.profile_id = v_actor_id
+    then
+      null;
+    elsif not v_is_manager then
       raise exception 'Forbidden';
     end if;
 
-    if exists (
-      select 1
-      from public.payroll_slips
-      where profile_id = v_tx.profile_id
-        and month = to_char(v_tx.created_at, 'YYYY-MM')
-    ) then
-      raise exception 'ไม่สามารถลบได้เนื่องจากมีการออกสลิปเงินเดือนของเดือนนี้ไปแล้ว โปรดลบสลิปเงินเดือนก่อน';
+    perform pg_advisory_xact_lock(hashtextextended('time-tracking:' || v_tx.profile_id::text, 0));
+    select * into v_tx
+    from public.financial_transactions
+    where id = p_source_id
+    for update;
+    if not found or v_tx.type not in ('DEBT', 'WITHDRAWAL') then
+      raise exception 'Transaction not found';
+    end if;
+
+    select ps.month into v_blocked_month
+    from public.payroll_slips ps
+    where ps.profile_id = v_tx.profile_id
+      and (
+        ps.month = to_char(v_tx.effective_date, 'YYYY-MM')
+        or exists (
+          select 1
+          from public.financial_transactions child
+          where child.parent_debt_id = v_tx.id
+            and child.applied_month is not null
+            and ps.month = to_char(child.applied_month, 'YYYY-MM')
+        )
+      )
+    order by ps.month
+    limit 1;
+    if v_blocked_month is not null then
+      raise exception 'MONTH_CLOSED:%', v_blocked_month;
     end if;
 
     delete from public.time_tracking_audit_logs
     where target_table = 'financial_transactions'
       and (
         record_id = v_tx.id
-        or record_id in (select id from public.financial_transactions where parent_debt_id = v_tx.id)
+        or record_id in (
+          select id
+          from public.financial_transactions
+          where parent_debt_id = v_tx.id
+        )
       );
 
     perform set_config('app.time_tracking_permanent_delete_rpc', 'true', true);
     delete from public.financial_transactions where parent_debt_id = v_tx.id;
     delete from public.financial_transactions where id = v_tx.id;
   else
-    select * into v_slip from public.payroll_slips where id = p_source_id for update;
-    if not found then
-      raise exception 'Payroll slip not found';
-    end if;
+    if not v_is_manager then raise exception 'Forbidden'; end if;
 
-    if v_slip.status = 'APPROVED' and v_slip.net_pay > 0 and v_slip.expense_location_id is not null then
-      if not private.can_approve_time_tracking_profile(v_slip.profile_id) then
-        raise exception 'Forbidden';
-      end if;
-    else
-      if not private.can_approve_time_tracking_profile(v_slip.profile_id) then
-        raise exception 'Forbidden';
-      end if;
-      if date_trunc('month', v_slip.created_at) <> date_trunc('month', now()) then
-        raise exception 'Cannot delete slips from previous months';
-      end if;
-      if v_slip.status = 'APPROVED' and v_actor_role <> 'super_admin' then
-        raise exception 'Only super_admin can delete approved records';
-      end if;
+    select * into v_slip
+    from public.payroll_slips
+    where id = p_source_id;
+    if not found then raise exception 'Payroll slip not found'; end if;
+    if not private.can_approve_time_tracking_profile(v_slip.profile_id) then
+      raise exception 'Forbidden';
+    end if;
+    perform pg_advisory_xact_lock(hashtextextended('time-tracking:' || v_slip.profile_id::text, 0));
+    select * into v_slip
+    from public.payroll_slips
+    where id = p_source_id
+    for update;
+    if not found then raise exception 'Payroll slip not found'; end if;
+
+    if exists (
+      select 1
+      from public.payroll_slips newer
+      where newer.profile_id = v_slip.profile_id
+        and newer.month > v_slip.month
+    ) then
+      select min(newer.month) into v_blocked_month
+      from public.payroll_slips newer
+      where newer.profile_id = v_slip.profile_id
+        and newer.month > v_slip.month;
+      raise exception 'DELETE_NEWER_SLIP_FIRST:%', v_blocked_month;
     end if;
 
     delete from public.time_tracking_audit_logs
@@ -5489,7 +6103,11 @@ begin
     delete from public.payroll_slips where id = v_slip.id;
   end if;
 
-  return jsonb_build_object('status', 'deleted', 'sourceType', p_source_type, 'sourceId', p_source_id);
+  return jsonb_build_object(
+    'status', 'deleted',
+    'sourceType', p_source_type,
+    'sourceId', p_source_id
+  );
 end;
 $$;
 
@@ -5579,9 +6197,7 @@ declare
   v_can_manage_system boolean;
   v_can_use_money_transfer boolean;
 begin
-  if v_user_id is null then
-    raise exception 'Authentication required';
-  end if;
+  if v_user_id is null then raise exception 'Authentication required'; end if;
 
   select
     p.role,
@@ -5591,12 +6207,8 @@ begin
       or p.can_access_money_transfer = true
   into v_role, v_can_manage_system, v_can_use_money_transfer
   from public.profiles p
-  where p.id = v_user_id
-    and p.is_active = true;
-
-  if v_role is null then
-    raise exception 'Inactive profile';
-  end if;
+  where p.id = v_user_id and p.is_active = true;
+  if v_role is null then raise exception 'Inactive profile'; end if;
 
   return query
   with accessible_locations as (
@@ -5606,48 +6218,35 @@ begin
     where ul.user_id = v_user_id
   ),
   counts as (
-    select
-      al.location_id,
-      'rubber'::text module_id,
-      count(*)::bigint item_count
+    select al.location_id, 'rubber'::text module_id, count(*)::bigint item_count
     from accessible_locations al
     cross join lateral private.rubber_bill_report_blockers(al.location_id, now()) b
     where v_can_manage_system or b.blocker_type = 'zero_price'
     group by al.location_id
 
     union all
-
-    select
-      t.target_location_id,
-      'cash',
-      count(*)::bigint
+    select t.target_location_id, 'cash', count(*)::bigint
     from public.money_transfer_cash_details d
     join public.money_transfers t on t.id = d.transfer_id
     join accessible_locations al on al.location_id = t.target_location_id
-    where d.cash_status = 'pending_receipt'
-      and t.record_status <> 'deleted'
+    where d.cash_status = 'pending_receipt' and t.record_status <> 'deleted'
     group by t.target_location_id
 
     union all
-
     select r.location_id, 'cash', count(*)::bigint
     from public.income_expense_approval_requests r
     join accessible_locations al on al.location_id = r.location_id
-    where v_can_manage_system
-      and r.request_status = 'pending'
+    where v_can_manage_system and r.request_status = 'pending'
     group by r.location_id
 
     union all
-
     select r.source_location_id, 'cash', count(*)::bigint
     from public.cash_transfer_delete_requests r
     join accessible_locations al on al.location_id = r.source_location_id
-    where v_can_manage_system
-      and r.request_status = 'pending'
+    where v_can_manage_system and r.request_status = 'pending'
     group by r.source_location_id
 
     union all
-
     select t.location_id, 'money-transfer', count(*)::bigint
     from public.money_transfers t
     join accessible_locations al on al.location_id = t.location_id
@@ -5658,74 +6257,38 @@ begin
     group by t.location_id
 
     union all
-
     select r.location_id, 'acid-stock', count(*)::bigint
     from public.stock_entry_approval_requests r
     join accessible_locations al on al.location_id = r.location_id
-    where v_can_manage_system
-      and r.request_status = 'pending'
+    where v_can_manage_system and r.request_status = 'pending'
     group by r.location_id
 
     union all
-
     select al.location_id, 'acid-stock', count(r.id)::bigint
     from accessible_locations al
     cross join public.stock_product_approval_requests r
-    where v_can_manage_system
-      and r.request_status = 'pending'
+    where v_can_manage_system and r.request_status = 'pending'
     group by al.location_id
 
     union all
-
     select al.location_id, 'time-tracking', count(requests.id)::bigint
     from accessible_locations al
     cross join (
       select ft.id
       from public.financial_transactions ft
-      join public.profiles p on p.id = ft.profile_id
-      where ft.status = 'PENDING'
-        and (
-          v_role = 'super_admin'
-          or (
-            v_role = 'admin'
-            and ft.type = 'WITHDRAWAL'
-            and p.role = 'user'
-            and p.is_active
-          )
-        )
-      union all
-      select lr.id
-      from public.leave_requests lr
-      join public.profiles p on p.id = lr.profile_id
-      where lr.status = 'PENDING'
-        and (
-          v_role = 'super_admin'
-          or (v_role = 'admin' and p.role = 'user' and p.is_active)
-        )
+      where v_can_manage_system and ft.status = 'PENDING'
       union all
       select ps.id
       from public.payroll_slips ps
-      join public.profiles p on p.id = ps.profile_id
-      where ps.status = 'PENDING'
-        and (
-          v_role = 'super_admin'
-          or (
-            v_role = 'admin'
-            and p.role = 'user'
-            and p.is_active
-            and ps.created_by is distinct from v_user_id
-          )
-        )
+      where v_can_manage_system and ps.status = 'PENDING'
     ) requests
     group by al.location_id
 
     union all
-
     select e.location_id, 'rubber-export', count(*)::bigint
     from public.rubber_exports e
     join accessible_locations al on al.location_id = e.location_id
-    where (v_can_manage_system or v_role = 'admin')
-      and e.status = 'draft'
+    where (v_can_manage_system or v_role = 'admin') and e.status = 'draft'
     group by e.location_id
   )
   select c.location_id, c.module_id, sum(c.item_count)::bigint
@@ -7398,8 +7961,7 @@ CREATE OR REPLACE FUNCTION "public"."get_telegram_badge_counts"() RETURNS TABLE(
     from public.money_transfer_cash_details d
     join public.money_transfers t on t.id = d.transfer_id
     left join public.locations l on l.id = t.target_location_id
-    where d.cash_status = 'pending_receipt'
-      and t.record_status <> 'deleted'
+    where d.cash_status = 'pending_receipt' and t.record_status <> 'deleted'
     group by t.target_location_id, coalesce(l.name, 'ส่วนกลาง')
 
     union all
@@ -7408,8 +7970,7 @@ CREATE OR REPLACE FUNCTION "public"."get_telegram_badge_counts"() RETURNS TABLE(
     from public.money_transfer_cash_details d
     join public.money_transfers t on t.id = d.transfer_id
     left join public.locations l on l.id = t.target_location_id
-    where d.cash_status = 'mismatched'
-      and t.record_status <> 'deleted'
+    where d.cash_status = 'mismatched' and t.record_status <> 'deleted'
     group by t.target_location_id, coalesce(l.name, 'ส่วนกลาง')
 
     union all
@@ -7448,8 +8009,6 @@ CREATE OR REPLACE FUNCTION "public"."get_telegram_badge_counts"() RETURNS TABLE(
     from (
       select id from public.financial_transactions where status = 'PENDING'
       union all
-      select id from public.leave_requests where status = 'PENDING'
-      union all
       select id from public.payroll_slips where status = 'PENDING'
     ) requests
     having count(*) > 0
@@ -7471,7 +8030,7 @@ CREATE OR REPLACE FUNCTION "public"."get_telegram_badge_counts"() RETURNS TABLE(
   order by
     case when p.branch_name = 'ส่วนกลาง' then 1 else 0 end,
     p.branch_name,
-    e.sort_order;
+    e.sort_order
 $$;
 
 
@@ -7881,6 +8440,115 @@ $$;
 
 ALTER FUNCTION "public"."receive_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") OWNER TO "postgres";
 
+
+CREATE OR REPLACE FUNCTION "public"."replace_time_tracking_segments"("p_profile_id" "uuid", "p_selections" "jsonb", "p_full_snapshot" "jsonb" DEFAULT '{}'::"jsonb", "p_comment" "text" DEFAULT NULL::"text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_actor_id uuid := auth.uid();
+  v_item jsonb;
+  v_date date;
+  v_work_type text;
+  v_start timestamptz;
+  v_end timestamptz;
+  v_old jsonb := '[]'::jsonb;
+  v_new jsonb := '[]'::jsonb;
+  v_inserted public.time_segments%rowtype;
+begin
+  if v_actor_id is null or not private.can_approve_time_tracking_profile(p_profile_id) then
+    raise exception 'Forbidden';
+  end if;
+  if jsonb_typeof(p_selections) <> 'array' then
+    raise exception 'INVALID_SELECTIONS';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended('time-tracking:' || p_profile_id::text, 0));
+
+  for v_item in select value from jsonb_array_elements(p_selections)
+  loop
+    v_date := (v_item->>'date')::date;
+    v_work_type := v_item->>'work_type';
+    if v_date is null
+      or v_date > (now() at time zone 'Asia/Bangkok')::date
+      or v_work_type not in ('FULL_DAY', 'HALF_DAY', 'NONE')
+    then
+      raise exception 'INVALID_SELECTION';
+    end if;
+    if exists (
+      select 1 from public.payroll_slips ps
+      where ps.profile_id = p_profile_id
+        and ps.month = to_char(v_date, 'YYYY-MM')
+    ) then
+      raise exception 'MONTH_CLOSED:%', to_char(v_date, 'YYYY-MM');
+    end if;
+    if exists (
+      select 1
+      from public.financial_transactions ft
+      where ft.profile_id = p_profile_id
+        and ft.status = 'APPROVED'
+        and ft.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
+        and ft.applied_month = date_trunc('month', v_date)::date
+    ) then
+      raise exception 'DEDUCTION_LOCKED:%', to_char(v_date, 'YYYY-MM');
+    end if;
+
+    v_start := v_date::timestamp at time zone 'Asia/Bangkok';
+    v_end := (v_date + 1)::timestamp at time zone 'Asia/Bangkok';
+
+    select v_old || coalesce(jsonb_agg(to_jsonb(s)), '[]'::jsonb)
+    into v_old
+    from public.time_segments s
+    where s.profile_id = p_profile_id
+      and s.start_time >= v_start
+      and s.start_time < v_end;
+
+    delete from public.time_segments s
+    where s.profile_id = p_profile_id
+      and s.start_time >= v_start
+      and s.start_time < v_end;
+
+    if v_work_type <> 'NONE' then
+      insert into public.time_segments(profile_id, start_time, end_time)
+      values (
+        p_profile_id,
+        (v_date::text || ' 08:00:00')::timestamp at time zone 'Asia/Bangkok',
+        (
+          v_date::text
+          || case when v_work_type = 'HALF_DAY' then ' 12:00:00' else ' 16:00:00' end
+        )::timestamp at time zone 'Asia/Bangkok'
+      )
+      returning * into v_inserted;
+      v_new := v_new || jsonb_build_array(to_jsonb(v_inserted));
+    end if;
+  end loop;
+
+  insert into public.time_tracking_audit_logs (
+    admin_id,
+    action,
+    target_table,
+    record_id,
+    old_data,
+    new_data,
+    comment
+  )
+  values (
+    v_actor_id,
+    'BULK_UPDATE_SEGMENTS',
+    'time_segments',
+    p_profile_id,
+    jsonb_build_object('segments', v_old),
+    jsonb_build_object('segments', v_new, 'selections', p_selections, 'full_snapshot', p_full_snapshot),
+    p_comment
+  );
+
+  return jsonb_build_object('status', 'updated');
+end;
+$$;
+
+
+ALTER FUNCTION "public"."replace_time_tracking_segments"("p_profile_id" "uuid", "p_selections" "jsonb", "p_full_snapshot" "jsonb", "p_comment" "text") OWNER TO "postgres";
+
 SET default_tablespace = '';
 
 SET default_table_access_method = "heap";
@@ -7904,7 +8572,11 @@ CREATE TABLE IF NOT EXISTS "public"."financial_transactions" (
     "approved_at" timestamp with time zone,
     "cancelled_at" timestamp with time zone,
     "cancelled_by" "uuid",
-    "cancel_reason" "text"
+    "cancel_reason" "text",
+    "effective_date" "date",
+    "applied_month" "date",
+    CONSTRAINT "financial_transactions_applied_month_shape" CHECK (((("type" = ANY (ARRAY['DEBT_DEDUCTION'::"public"."financial_transaction_type", 'WITHDRAWAL_DEDUCTION'::"public"."financial_transaction_type"])) AND ("applied_month" IS NOT NULL) AND ("applied_month" = ("date_trunc"('month'::"text", ("applied_month")::timestamp with time zone))::"date")) OR (("type" <> ALL (ARRAY['DEBT_DEDUCTION'::"public"."financial_transaction_type", 'WITHDRAWAL_DEDUCTION'::"public"."financial_transaction_type"])) AND ("applied_month" IS NULL)))),
+    CONSTRAINT "financial_transactions_effective_date_shape" CHECK (((("type" = ANY (ARRAY['DEBT'::"public"."financial_transaction_type", 'WITHDRAWAL'::"public"."financial_transaction_type"])) AND ("effective_date" IS NOT NULL)) OR ("type" <> ALL (ARRAY['DEBT'::"public"."financial_transaction_type", 'WITHDRAWAL'::"public"."financial_transaction_type"]))))
 );
 
 
@@ -7969,32 +8641,6 @@ CREATE OR REPLACE FUNCTION "public"."report_lock_no"("source_row" "public"."inco
 
 
 ALTER FUNCTION "public"."report_lock_no"("source_row" "public"."income_expense") OWNER TO "postgres";
-
-
-CREATE TABLE IF NOT EXISTS "public"."leave_requests" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "profile_id" "uuid" NOT NULL,
-    "start_date" "date" NOT NULL,
-    "end_date" "date" NOT NULL,
-    "type" "public"."leave_request_type" DEFAULT 'FULL_DAY'::"public"."leave_request_type" NOT NULL,
-    "status" "public"."approval_status" DEFAULT 'PENDING'::"public"."approval_status" NOT NULL,
-    "admin_comment" "text",
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "approved_by" "uuid"
-);
-
-
-ALTER TABLE "public"."leave_requests" OWNER TO "postgres";
-
-
-CREATE OR REPLACE FUNCTION "public"."report_lock_no"("source_row" "public"."leave_requests") RETURNS "text"
-    LANGUAGE "sql" STABLE SECURITY DEFINER
-    SET "search_path" TO 'public', 'private'
-    AS $$ select private.active_report_no('leave_request', source_row.id); $$;
-
-
-ALTER FUNCTION "public"."report_lock_no"("source_row" "public"."leave_requests") OWNER TO "postgres";
 
 
 CREATE TABLE IF NOT EXISTS "public"."money_transfers" (
@@ -8388,6 +9034,133 @@ $$;
 
 
 ALTER FUNCTION "public"."rubber_export_lock_no"("source_row" "public"."report_batches") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."run_time_tracking_auto_start"() RETURNS integer
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_schedule record;
+  v_started integer := 0;
+begin
+  for v_schedule in
+    select rs.*
+    from public.time_tracking_resume_schedules rs
+    join public.profiles p on p.id = rs.profile_id and p.is_active = true
+    where rs.resume_at <= now()
+    order by rs.resume_at, rs.profile_id
+    for update of rs skip locked
+  loop
+    perform pg_advisory_xact_lock(hashtextextended('time-tracking:' || v_schedule.profile_id::text, 0));
+
+    if not exists (
+      select 1
+      from public.time_segments s
+      where s.profile_id = v_schedule.profile_id
+        and s.end_time is null
+    ) and not exists (
+      select 1
+      from public.payroll_slips ps
+      where ps.profile_id = v_schedule.profile_id
+        and ps.month = to_char(now() at time zone 'Asia/Bangkok', 'YYYY-MM')
+    ) then
+      insert into public.time_segments(profile_id, start_time)
+      values (v_schedule.profile_id, v_schedule.resume_at);
+
+      insert into public.time_tracking_audit_logs (
+        admin_id, action, target_table, record_id, new_data, comment
+      )
+      values (
+        v_schedule.created_by,
+        'AUTO_START_NEXT_MONTH',
+        'time_segments',
+        v_schedule.profile_id,
+        jsonb_build_object(
+          'start_time', v_schedule.resume_at,
+          'payroll_slip_id', v_schedule.payroll_slip_id
+        ),
+        'เริ่มนับเวลาอัตโนมัติหลังปิดเดือน'
+      );
+      v_started := v_started + 1;
+    end if;
+
+    delete from public.time_tracking_resume_schedules
+    where profile_id = v_schedule.profile_id;
+  end loop;
+
+  return v_started;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."run_time_tracking_auto_start"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."run_time_tracking_daily_cutoff"() RETURNS integer
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_segment record;
+  v_cutoff timestamptz := (
+    (now() at time zone 'Asia/Bangkok')::date::text || ' 15:00:00'
+  )::timestamp at time zone 'Asia/Bangkok';
+  v_count integer := 0;
+begin
+  if now() < v_cutoff then
+    return 0;
+  end if;
+
+  for v_segment in
+    select s.id, s.profile_id
+    from public.time_segments s
+    join public.profiles p on p.id = s.profile_id and p.is_active = true
+    where s.end_time is null
+      and s.start_time < v_cutoff
+    order by s.profile_id
+  loop
+    perform pg_advisory_xact_lock(hashtextextended('time-tracking:' || v_segment.profile_id::text, 0));
+
+    update public.time_segments
+    set end_time = v_cutoff
+    where id = v_segment.id
+      and end_time is null
+      and start_time < v_cutoff;
+    if not found then
+      continue;
+    end if;
+
+    if not exists (
+      select 1
+      from public.payroll_slips ps
+      where ps.profile_id = v_segment.profile_id
+        and ps.month = to_char(v_cutoff at time zone 'Asia/Bangkok', 'YYYY-MM')
+    ) then
+      insert into public.time_segments(profile_id, start_time)
+      values (v_segment.profile_id, v_cutoff);
+    end if;
+
+    insert into public.time_tracking_audit_logs (
+      admin_id, action, target_table, record_id, new_data, comment
+    )
+    values (
+      v_segment.profile_id,
+      'SYSTEM_DAILY_CUTOFF',
+      'time_segments',
+      v_segment.profile_id,
+      jsonb_build_object('cutoff_time', v_cutoff),
+      'ตัดรอบอัตโนมัติ 15:00 น.'
+    );
+    v_count := v_count + 1;
+  end loop;
+
+  return v_count;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."run_time_tracking_daily_cutoff"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."save_dashboard_alert_thresholds"("p_location_id" "uuid", "p_purchase_average_min" numeric, "p_net_cash_min" numeric) RETURNS "jsonb"
@@ -8798,6 +9571,67 @@ $$;
 
 
 ALTER FUNCTION "public"."save_telegram_badge_config"("payload" "jsonb") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."set_time_tracking_status"("p_profile_id" "uuid", "p_status" "text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_actor_id uuid := auth.uid();
+  v_segment_id uuid;
+  v_now timestamptz := now();
+  v_current_month text := to_char(now() at time zone 'Asia/Bangkok', 'YYYY-MM');
+begin
+  if v_actor_id is null or not private.can_approve_time_tracking_profile(p_profile_id) then
+    raise exception 'Forbidden';
+  end if;
+  if p_status not in ('RUNNING', 'PAUSED') then
+    raise exception 'INVALID_TRACKING_STATUS';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended('time-tracking:' || p_profile_id::text, 0));
+  select s.id into v_segment_id
+  from public.time_segments s
+  where s.profile_id = p_profile_id and s.end_time is null
+  for update;
+
+  if p_status = 'RUNNING' then
+    if exists (
+      select 1 from public.payroll_slips ps
+      where ps.profile_id = p_profile_id and ps.month = v_current_month
+    ) then
+      raise exception 'MONTH_CLOSED:%', v_current_month;
+    end if;
+    if v_segment_id is null then
+      insert into public.time_segments(profile_id, start_time)
+      values (p_profile_id, v_now)
+      returning id into v_segment_id;
+    end if;
+  else
+    if v_segment_id is not null then
+      update public.time_segments set end_time = v_now where id = v_segment_id;
+    end if;
+    delete from public.time_tracking_resume_schedules where profile_id = p_profile_id;
+  end if;
+
+  insert into public.time_tracking_audit_logs (
+    admin_id, action, target_table, record_id, new_data
+  )
+  values (
+    v_actor_id,
+    'TOGGLE_TRACKING',
+    'time_segments',
+    p_profile_id,
+    jsonb_build_object('status', p_status, 'server_time', v_now)
+  );
+
+  return jsonb_build_object('status', lower(p_status), 'segmentId', v_segment_id);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."set_time_tracking_status"("p_profile_id" "uuid", "p_status" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."sync_acid_stock_entry"("payload" "jsonb") RETURNS "jsonb"
@@ -10175,6 +11009,66 @@ $$;
 ALTER FUNCTION "public"."update_rubber_export"("p_export_id" "uuid", "p_current_weight" numeric, "p_work_rate" numeric, "p_other_operating_cost" numeric) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."update_time_tracking_wage"("p_profile_id" "uuid", "p_daily_wage" numeric) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_actor_id uuid := auth.uid();
+  v_old_wage numeric;
+begin
+  if v_actor_id is null or not private.can_approve_time_tracking_profile(p_profile_id) then
+    raise exception 'Forbidden';
+  end if;
+  if p_daily_wage is null or p_daily_wage < 0 then
+    raise exception 'INVALID_WAGE';
+  end if;
+
+  select p.daily_wage into v_old_wage
+  from public.profiles p
+  where p.id = p_profile_id
+  for update;
+  if not found then raise exception 'PROFILE_NOT_FOUND'; end if;
+  if exists (
+    select 1
+    from public.financial_transactions ft
+    where ft.profile_id = p_profile_id
+      and ft.status = 'APPROVED'
+      and ft.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
+      and not exists (
+        select 1
+        from public.payroll_slips ps
+        where ps.profile_id = p_profile_id
+          and ps.month = to_char(ft.applied_month, 'YYYY-MM')
+      )
+  ) then
+    raise exception 'DEDUCTION_WAGE_LOCKED';
+  end if;
+
+  update public.profiles
+  set daily_wage = trunc(p_daily_wage, 2)
+  where id = p_profile_id;
+
+  insert into public.time_tracking_audit_logs (
+    admin_id, action, target_table, record_id, old_data, new_data
+  )
+  values (
+    v_actor_id,
+    'UPDATE_WAGE',
+    'profiles',
+    p_profile_id,
+    jsonb_build_object('daily_wage', v_old_wage),
+    jsonb_build_object('daily_wage', trunc(p_daily_wage, 2))
+  );
+
+  return jsonb_build_object('dailyWage', trunc(p_daily_wage, 2));
+end;
+$$;
+
+
+ALTER FUNCTION "public"."update_time_tracking_wage"("p_profile_id" "uuid", "p_daily_wage" numeric) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."validate_stock_non_negative_after_entry_delete"("p_location_id" "uuid", "p_product_id" "uuid", "p_deleted_entry_ids" "uuid"[]) RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public'
@@ -11117,6 +12011,18 @@ CREATE TABLE IF NOT EXISTS "public"."time_tracking_audit_logs" (
 ALTER TABLE "public"."time_tracking_audit_logs" OWNER TO "postgres";
 
 
+CREATE TABLE IF NOT EXISTS "public"."time_tracking_resume_schedules" (
+    "profile_id" "uuid" NOT NULL,
+    "payroll_slip_id" "uuid" NOT NULL,
+    "resume_at" timestamp with time zone NOT NULL,
+    "created_by" "uuid" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL
+);
+
+
+ALTER TABLE "public"."time_tracking_resume_schedules" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "public"."transport_staff_bank_accounts" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "staff_id" "uuid" NOT NULL,
@@ -11309,11 +12215,6 @@ ALTER TABLE ONLY "public"."income_expense_sale_lines"
 
 ALTER TABLE ONLY "public"."income_sale_items"
     ADD CONSTRAINT "income_sale_items_pkey" PRIMARY KEY ("id");
-
-
-
-ALTER TABLE ONLY "public"."leave_requests"
-    ADD CONSTRAINT "leave_requests_pkey" PRIMARY KEY ("id");
 
 
 
@@ -11557,6 +12458,16 @@ ALTER TABLE ONLY "public"."time_tracking_audit_logs"
 
 
 
+ALTER TABLE ONLY "public"."time_tracking_resume_schedules"
+    ADD CONSTRAINT "time_tracking_resume_schedules_payroll_slip_id_key" UNIQUE ("payroll_slip_id");
+
+
+
+ALTER TABLE ONLY "public"."time_tracking_resume_schedules"
+    ADD CONSTRAINT "time_tracking_resume_schedules_pkey" PRIMARY KEY ("profile_id");
+
+
+
 ALTER TABLE ONLY "public"."transport_staff_bank_accounts"
     ADD CONSTRAINT "transport_staff_bank_accounts_pkey" PRIMARY KEY ("id");
 
@@ -11624,7 +12535,19 @@ CREATE INDEX "dashboard_rubber_bill_money_feed_idx" ON "public"."rubber_bills" U
 
 
 
+CREATE INDEX "financial_transactions_deduction_month" ON "public"."financial_transactions" USING "btree" ("profile_id", "applied_month", "parent_debt_id") WHERE (("type" = ANY (ARRAY['DEBT_DEDUCTION'::"public"."financial_transaction_type", 'WITHDRAWAL_DEDUCTION'::"public"."financial_transaction_type"])) AND ("status" = 'APPROVED'::"public"."approval_status"));
+
+
+
+CREATE INDEX "financial_transactions_outstanding_queue" ON "public"."financial_transactions" USING "btree" ("profile_id", "effective_date", "created_at", "id") WHERE (("type" = ANY (ARRAY['DEBT'::"public"."financial_transaction_type", 'WITHDRAWAL'::"public"."financial_transaction_type"])) AND ("status" = 'APPROVED'::"public"."approval_status") AND ("remaining_amount" > (0)::numeric));
+
+
+
 CREATE INDEX "financial_transactions_pending_digest" ON "public"."financial_transactions" USING "btree" ("id") WHERE ("status" = 'PENDING'::"public"."approval_status");
+
+
+
+CREATE INDEX "financial_transactions_pending_effective_date" ON "public"."financial_transactions" USING "btree" ("profile_id", "effective_date") WHERE (("type" = ANY (ARRAY['DEBT'::"public"."financial_transaction_type", 'WITHDRAWAL'::"public"."financial_transaction_type"])) AND ("status" = 'PENDING'::"public"."approval_status"));
 
 
 
@@ -11665,10 +12588,6 @@ CREATE INDEX "income_expense_sale_lines_stock_idx" ON "public"."income_expense_s
 
 
 CREATE UNIQUE INDEX "income_sale_items_name_active_idx" ON "public"."income_sale_items" USING "btree" ("lower"(TRIM(BOTH FROM "name"))) WHERE ("is_active" = true);
-
-
-
-CREATE INDEX "leave_requests_pending_digest" ON "public"."leave_requests" USING "btree" ("id") WHERE ("status" = 'PENDING'::"public"."approval_status");
 
 
 
@@ -11796,6 +12715,14 @@ CREATE INDEX "stock_product_approval_requests_status_created_idx" ON "public"."s
 
 
 
+CREATE UNIQUE INDEX "time_segments_one_active_per_profile" ON "public"."time_segments" USING "btree" ("profile_id") WHERE ("end_time" IS NULL);
+
+
+
+CREATE INDEX "time_tracking_resume_schedules_due" ON "public"."time_tracking_resume_schedules" USING "btree" ("resume_at");
+
+
+
 CREATE UNIQUE INDEX "transport_staff_bank_accounts_one_primary" ON "public"."transport_staff_bank_accounts" USING "btree" ("staff_id") WHERE ("is_primary" = true);
 
 
@@ -11876,10 +12803,6 @@ CREATE OR REPLACE TRIGGER "handle_updated_at" BEFORE UPDATE ON "public"."financi
 
 
 
-CREATE OR REPLACE TRIGGER "handle_updated_at" BEFORE UPDATE ON "public"."leave_requests" FOR EACH ROW EXECUTE FUNCTION "extensions"."moddatetime"('updated_at');
-
-
-
 CREATE OR REPLACE TRIGGER "handle_updated_at" BEFORE UPDATE ON "public"."payroll_slips" FOR EACH ROW EXECUTE FUNCTION "extensions"."moddatetime"('updated_at');
 
 
@@ -11929,10 +12852,6 @@ CREATE OR REPLACE TRIGGER "report_lock_financial_transactions" BEFORE DELETE OR 
 
 
 CREATE OR REPLACE TRIGGER "report_lock_income_expense" BEFORE DELETE OR UPDATE ON "public"."income_expense" FOR EACH ROW EXECUTE FUNCTION "private"."guard_reported_entity"('income_expense');
-
-
-
-CREATE OR REPLACE TRIGGER "report_lock_leave_requests" BEFORE DELETE OR UPDATE ON "public"."leave_requests" FOR EACH ROW EXECUTE FUNCTION "private"."guard_reported_entity"('leave_request');
 
 
 
@@ -12211,16 +13130,6 @@ ALTER TABLE ONLY "public"."income_sale_items"
 
 ALTER TABLE ONLY "public"."income_sale_items"
     ADD CONSTRAINT "income_sale_items_stock_product_id_fkey" FOREIGN KEY ("stock_product_id") REFERENCES "public"."stock_products"("id");
-
-
-
-ALTER TABLE ONLY "public"."leave_requests"
-    ADD CONSTRAINT "leave_requests_approved_by_fkey" FOREIGN KEY ("approved_by") REFERENCES "public"."profiles"("id");
-
-
-
-ALTER TABLE ONLY "public"."leave_requests"
-    ADD CONSTRAINT "leave_requests_profile_id_fkey" FOREIGN KEY ("profile_id") REFERENCES "public"."profiles"("id");
 
 
 
@@ -12509,6 +13418,21 @@ ALTER TABLE ONLY "public"."time_tracking_audit_logs"
 
 
 
+ALTER TABLE ONLY "public"."time_tracking_resume_schedules"
+    ADD CONSTRAINT "time_tracking_resume_schedules_created_by_fkey" FOREIGN KEY ("created_by") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."time_tracking_resume_schedules"
+    ADD CONSTRAINT "time_tracking_resume_schedules_payroll_slip_id_fkey" FOREIGN KEY ("payroll_slip_id") REFERENCES "public"."payroll_slips"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."time_tracking_resume_schedules"
+    ADD CONSTRAINT "time_tracking_resume_schedules_profile_id_fkey" FOREIGN KEY ("profile_id") REFERENCES "public"."profiles"("id") ON DELETE CASCADE;
+
+
+
 ALTER TABLE ONLY "public"."transport_staff_bank_accounts"
     ADD CONSTRAINT "transport_staff_bank_accounts_staff_id_fkey" FOREIGN KEY ("staff_id") REFERENCES "public"."transport_staffs"("id") ON DELETE CASCADE;
 
@@ -12696,7 +13620,7 @@ ALTER TABLE "public"."dashboard_stock_alert_thresholds" ENABLE ROW LEVEL SECURIT
 ALTER TABLE "public"."financial_transactions" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "financial_transactions_all" ON "public"."financial_transactions" TO "authenticated" USING (true);
+CREATE POLICY "financial_transactions_read_self_or_manager" ON "public"."financial_transactions" FOR SELECT TO "authenticated" USING ((("profile_id" = "auth"."uid"()) OR "private"."is_time_payroll_manager"()));
 
 
 
@@ -12746,13 +13670,6 @@ CREATE POLICY "income_expense_select_location_scope" ON "public"."income_expense
 
 
 ALTER TABLE "public"."income_sale_items" ENABLE ROW LEVEL SECURITY;
-
-
-ALTER TABLE "public"."leave_requests" ENABLE ROW LEVEL SECURITY;
-
-
-CREATE POLICY "leave_requests_all" ON "public"."leave_requests" TO "authenticated" USING (true);
-
 
 
 ALTER TABLE "public"."locations" ENABLE ROW LEVEL SECURITY;
@@ -12868,7 +13785,7 @@ CREATE POLICY "ocr_tickets_location_scope" ON "public"."ocr_tickets" TO "authent
 ALTER TABLE "public"."payroll_slips" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "payroll_slips_all" ON "public"."payroll_slips" TO "authenticated" USING (true);
+CREATE POLICY "payroll_slips_read_self_or_manager" ON "public"."payroll_slips" FOR SELECT TO "authenticated" USING ((("profile_id" = "auth"."uid"()) OR "private"."is_time_payroll_manager"()));
 
 
 
@@ -12978,14 +13895,21 @@ ALTER TABLE "public"."telegram_badge_settings" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."time_segments" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "time_segments_all" ON "public"."time_segments" TO "authenticated" USING (true);
+CREATE POLICY "time_segments_read_self_or_manager" ON "public"."time_segments" FOR SELECT TO "authenticated" USING ((("profile_id" = "auth"."uid"()) OR "private"."is_time_payroll_manager"()));
 
 
 
 ALTER TABLE "public"."time_tracking_audit_logs" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "time_tracking_audit_logs_all" ON "public"."time_tracking_audit_logs" TO "authenticated" USING (true);
+CREATE POLICY "time_tracking_audit_logs_read_manager" ON "public"."time_tracking_audit_logs" FOR SELECT TO "authenticated" USING ("private"."is_time_payroll_manager"());
+
+
+
+ALTER TABLE "public"."time_tracking_resume_schedules" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "time_tracking_resume_schedules_read_self_or_manager" ON "public"."time_tracking_resume_schedules" FOR SELECT TO "authenticated" USING ((("profile_id" = "auth"."uid"()) OR "private"."is_time_payroll_manager"()));
 
 
 
@@ -13081,6 +14005,10 @@ GRANT USAGE ON SCHEMA "public" TO "service_role";
 
 
 
+REVOKE ALL ON FUNCTION "private"."apply_time_tracking_deductions"("p_profile_id" "uuid", "p_through_month" "date") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."calculate_dashboard_summary"("p_location_id" "uuid") FROM PUBLIC;
 
 
@@ -13164,6 +14092,11 @@ GRANT ALL ON FUNCTION "private"."is_active_user"() TO "authenticated";
 
 REVOKE ALL ON FUNCTION "private"."is_super_admin"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "private"."is_super_admin"() TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "private"."is_time_payroll_manager"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "private"."is_time_payroll_manager"() TO "authenticated";
 
 
 
@@ -13298,8 +14231,23 @@ GRANT ALL ON FUNCTION "public"."create_stock_product_with_sale_item"("payload" "
 
 
 
+REVOKE ALL ON FUNCTION "public"."create_time_tracking_payroll_slip"("p_profile_id" "uuid", "p_month" "text", "p_auto_start_next_month" boolean) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."create_time_tracking_payroll_slip"("p_profile_id" "uuid", "p_month" "text", "p_auto_start_next_month" boolean) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."create_time_tracking_transaction"("p_profile_id" "uuid", "p_type" "text", "p_amount" numeric, "p_effective_date" "date", "p_description" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."create_time_tracking_transaction"("p_profile_id" "uuid", "p_type" "text", "p_amount" numeric, "p_effective_date" "date", "p_description" "text") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."current_profile_id"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."current_profile_id"() TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."cutoff_time_tracking"("p_profile_id" "uuid", "p_cutoff_time" timestamp with time zone) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."cutoff_time_tracking"("p_profile_id" "uuid", "p_cutoff_time" timestamp with time zone) TO "authenticated";
 
 
 
@@ -13325,6 +14273,10 @@ GRANT ALL ON FUNCTION "public"."decide_stock_product_approval_request"("p_reques
 
 REVOKE ALL ON FUNCTION "public"."decide_time_tracking_approval"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text", "p_expense_location_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."decide_time_tracking_approval"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text", "p_expense_location_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."deduct_debts_daily"() FROM PUBLIC;
 
 
 
@@ -13477,9 +14429,13 @@ GRANT ALL ON FUNCTION "public"."receive_cash_branch_transfer"("p_transfer_id" "u
 
 
 
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."financial_transactions" TO "anon";
-GRANT ALL ON TABLE "public"."financial_transactions" TO "authenticated";
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."financial_transactions" TO "service_role";
+REVOKE ALL ON FUNCTION "public"."replace_time_tracking_segments"("p_profile_id" "uuid", "p_selections" "jsonb", "p_full_snapshot" "jsonb", "p_comment" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."replace_time_tracking_segments"("p_profile_id" "uuid", "p_selections" "jsonb", "p_full_snapshot" "jsonb", "p_comment" "text") TO "authenticated";
+
+
+
+GRANT ALL ON TABLE "public"."financial_transactions" TO "service_role";
+GRANT SELECT ON TABLE "public"."financial_transactions" TO "authenticated";
 
 
 
@@ -13497,18 +14453,6 @@ GRANT SELECT ON TABLE "public"."income_expense" TO "authenticated";
 REVOKE ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."income_expense") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."income_expense") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."income_expense") TO "service_role";
-
-
-
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."leave_requests" TO "anon";
-GRANT ALL ON TABLE "public"."leave_requests" TO "authenticated";
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."leave_requests" TO "service_role";
-
-
-
-REVOKE ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."leave_requests") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."leave_requests") TO "authenticated";
-GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."leave_requests") TO "service_role";
 
 
 
@@ -13536,9 +14480,8 @@ GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."ocr_ticke
 
 
 
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."payroll_slips" TO "anon";
-GRANT ALL ON TABLE "public"."payroll_slips" TO "authenticated";
 GRANT ALL ON TABLE "public"."payroll_slips" TO "service_role";
+GRANT SELECT ON TABLE "public"."payroll_slips" TO "authenticated";
 
 
 
@@ -13581,9 +14524,8 @@ GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."stock_ent
 
 
 
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."time_segments" TO "anon";
-GRANT ALL ON TABLE "public"."time_segments" TO "authenticated";
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."time_segments" TO "service_role";
+GRANT ALL ON TABLE "public"."time_segments" TO "service_role";
+GRANT SELECT ON TABLE "public"."time_segments" TO "authenticated";
 
 
 
@@ -13601,6 +14543,14 @@ GRANT SELECT ON TABLE "public"."report_batches" TO "authenticated";
 REVOKE ALL ON FUNCTION "public"."rubber_export_lock_no"("source_row" "public"."report_batches") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."rubber_export_lock_no"("source_row" "public"."report_batches") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."rubber_export_lock_no"("source_row" "public"."report_batches") TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."run_time_tracking_auto_start"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "public"."run_time_tracking_daily_cutoff"() FROM PUBLIC;
 
 
 
@@ -13636,6 +14586,11 @@ GRANT ALL ON FUNCTION "public"."save_rubber_bill_approval_settings"("p_edit_wind
 
 REVOKE ALL ON FUNCTION "public"."save_telegram_badge_config"("payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."save_telegram_badge_config"("payload" "jsonb") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."set_time_tracking_status"("p_profile_id" "uuid", "p_status" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."set_time_tracking_status"("p_profile_id" "uuid", "p_status" "text") TO "authenticated";
 
 
 
@@ -13688,6 +14643,11 @@ GRANT ALL ON FUNCTION "public"."update_cash_branch_transfer"("p_transfer_id" "uu
 
 REVOKE ALL ON FUNCTION "public"."update_rubber_export"("p_export_id" "uuid", "p_current_weight" numeric, "p_work_rate" numeric, "p_other_operating_cost" numeric) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."update_rubber_export"("p_export_id" "uuid", "p_current_weight" numeric, "p_work_rate" numeric, "p_other_operating_cost" numeric) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."update_time_tracking_wage"("p_profile_id" "uuid", "p_daily_wage" numeric) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."update_time_tracking_wage"("p_profile_id" "uuid", "p_daily_wage" numeric) TO "authenticated";
 
 
 
@@ -13911,9 +14871,13 @@ GRANT SELECT ON TABLE "public"."telegram_badge_settings" TO "authenticated";
 
 
 
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."time_tracking_audit_logs" TO "anon";
-GRANT ALL ON TABLE "public"."time_tracking_audit_logs" TO "authenticated";
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."time_tracking_audit_logs" TO "service_role";
+GRANT ALL ON TABLE "public"."time_tracking_audit_logs" TO "service_role";
+GRANT SELECT ON TABLE "public"."time_tracking_audit_logs" TO "authenticated";
+
+
+
+GRANT ALL ON TABLE "public"."time_tracking_resume_schedules" TO "service_role";
+GRANT SELECT ON TABLE "public"."time_tracking_resume_schedules" TO "authenticated";
 
 
 

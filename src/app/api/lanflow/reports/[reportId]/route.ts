@@ -67,7 +67,6 @@ export async function GET(request: NextRequest, context: RouteContext) {
       stockRubberResult,
       stockBalanceResult,
       segments,
-      leave,
       financial,
       payroll,
       bank,
@@ -96,7 +95,6 @@ export async function GET(request: NextRequest, context: RouteContext) {
         .eq("location_id", header.location_id)
         .lte("created_at", header.cutoff_at),
       rowsByIds(client, "time_segments", "id, profile_id, start_time, end_time", ids(items, "time_segment")),
-      rowsByIds(client, "leave_requests", "id, profile_id, start_date, end_date, type, updated_at", ids(items, "leave_request")),
       rowsByIds(client, "financial_transactions", "id, profile_id, type, amount, description, approved_at, updated_at", ids(items, "financial_transaction")),
       rowsByIds(client, "payroll_slips", "id, profile_id, month, gross_pay, total_deductions, net_pay, approved_at, updated_at", ids(items, "payroll_slip")),
       rowsByIds(
@@ -125,7 +123,6 @@ export async function GET(request: NextRequest, context: RouteContext) {
 
     const profileIds = [...new Set([
       ...segments.map((row) => row.profile_id),
-      ...leave.map((row) => row.profile_id),
       ...financial.map((row) => row.profile_id),
       ...payroll.map((row) => row.profile_id),
     ].filter(Boolean))];
@@ -242,15 +239,6 @@ export async function GET(request: NextRequest, context: RouteContext) {
           employee: profileName.get(row.profile_id) ?? "",
           detail: `${row.start_time} – ${row.end_time}`,
           quantity: Math.max(0, (new Date(row.end_time).getTime() - new Date(row.start_time).getTime()) / 3_600_000),
-          amount: null,
-        })),
-        ...leave.map((row) => ({
-          date: datePart(row.start_date),
-          number: `LV-${row.id.slice(0, 8)}`,
-          category: "ลา",
-          employee: profileName.get(row.profile_id) ?? "",
-          detail: `${row.type}: ${row.start_date} – ${row.end_date}`,
-          quantity: Math.max(1, Math.floor((new Date(row.end_date).getTime() - new Date(row.start_date).getTime()) / 86_400_000) + 1),
           amount: null,
         })),
         ...financial.map((row) => ({

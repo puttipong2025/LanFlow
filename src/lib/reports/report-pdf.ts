@@ -313,7 +313,7 @@ function drawReportContent(doc: PdfDocument, details: ReportDetails) {
       data(row.amount === null ? "-" : formatMoney(row.amount), "right"),
     ]);
   payrollRows.push([total(
-    `เวลาทำงาน ${formatQuantity(totals.workHours)} ชม.   วันลา ${formatQuantity(totals.leaveDays)} วัน   ธุรกรรม/เงินเดือน ${formatMoney(totals.payrollAmount)}`,
+    `เวลาทำงาน ${formatQuantity(totals.workHours)} ชม.   ธุรกรรม/เงินเดือน ${formatMoney(totals.payrollAmount)}`,
     "right",
     7,
   )]);

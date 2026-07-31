@@ -109,9 +109,6 @@ export function buildReportPresentation(details: ReportDetails) {
       workHours: details.timePayroll
         .filter((row) => row.category === "เวลาทำงาน")
         .reduce((sum, row) => sum + (row.quantity ?? 0), 0),
-      leaveDays: details.timePayroll
-        .filter((row) => row.category === "ลา")
-        .reduce((sum, row) => sum + (row.quantity ?? 0), 0),
       transferAmount: details.bankTransfers.reduce((sum, row) => sum + row.amount, 0),
       slipAmount: details.bankTransfers.reduce((sum, row) => sum + row.slipAmount, 0),
       fee: details.bankTransfers.reduce((sum, row) => sum + row.fee, 0),

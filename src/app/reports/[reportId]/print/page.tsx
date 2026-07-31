@@ -194,7 +194,7 @@ export default function ReportPrintPage() {
             {details.timePayroll.length === 0 && <EmptyRow columns={7} />}
             {details.timePayroll.map((row, index) => <tr key={`${row.number}-${index}`}><td>{thaiDate(row.date)}</td><td>{row.number}</td><td>{row.category}</td><td>{row.employee}</td><td>{row.detail}</td><td className="num">{row.quantity === null ? "-" : quantity(row.quantity)}</td><td className="num">{row.amount === null ? "-" : money(row.amount)}</td></tr>)}
           </tbody>
-          <tfoot><tr><td colSpan={7}><div className="summary-grid"><span>เวลาทำงาน {quantity(totals.workHours)} ชม.</span><span>วันลา {quantity(totals.leaveDays)} วัน</span><span>ธุรกรรม/เงินเดือน {money(totals.payrollAmount)}</span></div></td></tr></tfoot>
+          <tfoot><tr><td colSpan={7}><div className="summary-grid"><span>เวลาทำงาน {quantity(totals.workHours)} ชม.</span><span>ธุรกรรม/เงินเดือน {money(totals.payrollAmount)}</span></div></td></tr></tfoot>
         </table>
       </section>
 

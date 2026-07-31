@@ -86,7 +86,7 @@ test("actionable badges are authenticated, branch-scoped, and exclude finished w
   }
 });
 
-test("admin badge counts only time-tracking work the admin can approve", async () => {
+test("normal admin gets no time-tracking manager badge; capability manager gets all pending work", async () => {
   test.skip(!serviceRoleKey || !publishableKey, "Supabase test keys are required");
 
   const service = createClient(supabaseUrl, serviceRoleKey, {
@@ -123,15 +123,31 @@ test("admin badge counts only time-tracking work the admin can approve", async (
     return Number(row?.item_count ?? 0);
   };
   const baseline = await readTimeCount();
+  expect((await service
+    .from("profiles")
+    .update({ can_access_super_admin_features: true })
+    .eq("id", adminId)).error).toBeNull();
+  const managerBaseline = await readTimeCount();
+  expect((await service
+    .from("profiles")
+    .update({ can_access_super_admin_features: false })
+    .eq("id", adminId)).error).toBeNull();
   const ownRequestId = crypto.randomUUID();
   const userRequestId = crypto.randomUUID();
 
-  const inserted = await admin.from("financial_transactions").insert([
+  const effectiveDate = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Bangkok",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+  const inserted = await service.from("financial_transactions").insert([
     {
       id: ownRequestId,
       profile_id: adminId,
       type: "WITHDRAWAL",
       amount: 100,
+      effective_date: effectiveDate,
       description: "รายการ admin ที่อนุมัติเองไม่ได้",
     },
     {
@@ -139,18 +155,28 @@ test("admin badge counts only time-tracking work the admin can approve", async (
       profile_id: userId,
       type: "WITHDRAWAL",
       amount: 100,
+      effective_date: effectiveDate,
       description: "รายการ user ที่ admin อนุมัติได้",
     },
   ]);
   expect(inserted.error).toBeNull();
 
   try {
-    expect(await readTimeCount()).toBe(baseline + 1);
+    expect(await readTimeCount()).toBe(baseline);
+    expect((await service
+      .from("profiles")
+      .update({ can_access_super_admin_features: true })
+      .eq("id", adminId)).error).toBeNull();
+    expect(await readTimeCount()).toBe(managerBaseline + 2);
   } finally {
-    await admin
+    await service
       .from("financial_transactions")
       .delete()
       .in("id", [ownRequestId, userRequestId]);
+    await service
+      .from("profiles")
+      .update({ can_access_super_admin_features: false })
+      .eq("id", adminId);
   }
 });
 

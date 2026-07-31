@@ -6,10 +6,11 @@ type InputDialogOptions = {
   title: string;
   label: string;
   initialValue?: string;
-  inputType?: "text" | "number" | "month";
+  inputType?: "text" | "number" | "month" | "date";
   multiline?: boolean;
   required?: boolean;
-  min?: number;
+  min?: number | string;
+  max?: number | string;
   step?: number;
   submitLabel?: string;
 };
@@ -71,6 +72,7 @@ export function useInputDialog() {
             required={dialog.required}
             type={dialog.inputType ?? "text"}
             min={dialog.min}
+            max={dialog.max}
             step={dialog.step}
             value={value}
             onChange={(event) => setValue(event.target.value)}

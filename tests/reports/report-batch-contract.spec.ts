@@ -1188,7 +1188,7 @@ test.describe.serial("Report batch contract @report-batch", () => {
       expect((await superAdmin.request.post("/api/lanflow/time-tracking/admin", {
         data: {
           action: "ADMIN_REQUEST_WITHDRAWAL",
-          payload: { user_id: employee!.id, amount },
+          payload: { user_id: employee!.id, amount, effective_date: bangkokDate(new Date().toISOString()) },
         },
       })).ok()).toBeTruthy();
 

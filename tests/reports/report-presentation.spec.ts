@@ -77,7 +77,6 @@ function reportDetails(): ReportDetails {
     stockBalances: [{ product: "ปุ๋ย", quantity: 20 }],
     timePayroll: [
       { date: "2026-07-29", number: "TM-001", category: "เวลาทำงาน", employee: "หนึ่ง", detail: "", quantity: 8, amount: null },
-      { date: "2026-07-29", number: "LV-001", category: "ลา", employee: "สอง", detail: "", quantity: 1, amount: null },
       { date: "2026-07-29", number: "PY-001", category: "เงินเดือน", employee: "สาม", detail: "", quantity: null, amount: 500 },
     ],
     bankTransfers: [{
@@ -113,7 +112,6 @@ test("builds shared report groups, split ledger columns and totals", () => {
     ocrRemaining: 380,
     stockQuantity: 20,
     workHours: 8,
-    leaveDays: 1,
     payrollAmount: 500,
     transferAmount: 5_000,
     fee: 10,

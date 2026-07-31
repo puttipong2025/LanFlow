@@ -10,6 +10,7 @@ import { Location, Profile } from "@/types";
 import { useInputDialog } from "@/hooks/useInputDialog";
 import { ExpenseLocationChangeModal } from "./time-tracking/ExpenseLocationChangeModal";
 import { ExpenseLocationApprovalModal } from "./time-tracking/ExpenseLocationApprovalModal";
+import { canManageSystemFeatures } from "@/lib/permissions";
 
 interface TimeTrackingModuleProps {
   profile: Profile;
@@ -18,7 +19,16 @@ interface TimeTrackingModuleProps {
 }
 
 const TIME_TRACKING_OFFLINE_MESSAGE = "เวลาและเงินเดือนใช้ได้เมื่อออนไลน์เท่านั้น";
-type ApprovalType = 'TRANSACTION' | 'LEAVE' | 'SLIP';
+type ApprovalType = 'TRANSACTION' | 'SLIP';
+
+function bangkokToday() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Bangkok",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
 
 function reportLockReason(item: { report_lock_no?: string | null }) {
   return item.report_lock_no
@@ -27,16 +37,15 @@ function reportLockReason(item: { report_lock_no?: string | null }) {
 }
 
 export function TimeTrackingModule({ profile, online, locations }: TimeTrackingModuleProps) {
-  const isAdmin = profile.role === "admin" || profile.role === "super_admin";
-
-  if (isAdmin) {
+  if (canManageSystemFeatures(profile)) {
     return <AdminTimeTracking profile={profile} online={online} locations={locations} />;
   }
 
   return <UserTimeTracking profile={profile} online={online} />;
 }
 
-function UserTimeTracking({ profile, targetUserId, online, expenseLocations = [], onApprove }: { profile: Profile, targetUserId?: string, online: boolean, expenseLocations?: Location[], onApprove?: (type: ApprovalType, item: any) => void }) {
+function UserTimeTracking({ profile, targetUserId, online, expenseLocations = [], onApprove, onReject }: { profile: Profile, targetUserId?: string, online: boolean, expenseLocations?: Location[], onApprove?: (type: ApprovalType, item: any) => void, onReject?: (type: ApprovalType, item: any) => void }) {
+  const queryClient = useQueryClient();
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -46,12 +55,15 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
 
   // Debt Modal State
   const [isDebtModalOpen, setIsDebtModalOpen] = useState(false);
-  const [debtDueDate, setDebtDueDate] = useState(new Date().toISOString().split('T')[0]);
+  const [debtDueDate, setDebtDueDate] = useState(bangkokToday());
   const [debtDescription, setDebtDescription] = useState("");
   const [debtAmount, setDebtAmount] = useState("");
 
   const isRunning = data?.timeTracking?.status === 'RUNNING';
   const startTimeStr = data?.timeTracking?.start_time;
+  const resumeSchedule = data?.timeTracking?.resume_schedule;
+  const canManageTime = canManageSystemFeatures(profile);
+  const managedUserId = targetUserId || profile.id;
 
   const loadData = useCallback(async () => {
     try {
@@ -93,27 +105,13 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
       if (diff <= 0) {
         setTimeLeft(0);
         clearInterval(interval);
-
-        // Call CUTOFF API
-        try {
-          const endpoint = targetUserId ? "/api/lanflow/time-tracking/admin" : "/api/lanflow/time-tracking/user";
-          const payload = targetUserId ? { user_id: targetUserId, cutoff_time: targetDate.toISOString() } : { cutoff_time: targetDate.toISOString() };
-          await authFetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'CUTOFF_TRACKING', payload })
-          });
-          window.location.reload();
-        } catch (e) {
-          console.error(e);
-        }
       } else {
         setTimeLeft(Math.floor(diff / 1000));
       }
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [isRunning, startTimeStr, targetUserId]);
+  }, [isRunning, startTimeStr]);
 
   async function toggleRealTimeTracking() {
     if (!online) {
@@ -134,15 +132,13 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
 
     setSaving(true);
     try {
-      const endpoint = targetUserId ? "/api/lanflow/time-tracking/admin" : "/api/lanflow/time-tracking/user";
-      const payload = targetUserId
-        ? { user_id: targetUserId, status: isRunning ? 'PAUSED' : 'RUNNING' }
-        : { status: isRunning ? 'PAUSED' : 'RUNNING' };
-
-      await authFetch(endpoint, {
+      await authFetch("/api/lanflow/time-tracking/admin", {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'TOGGLE_TRACKING', payload })
+        body: JSON.stringify({
+          action: 'TOGGLE_TRACKING',
+          payload: { user_id: managedUserId, status: isRunning ? 'PAUSED' : 'RUNNING' },
+        })
       });
       await loadData();
     } catch (e) {
@@ -167,16 +163,20 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
 
     setSaving(true);
     try {
-      const res = await authFetch("/api/lanflow/time-tracking/admin", {
+      const res = await authFetch(
+        canManageTime ? "/api/lanflow/time-tracking/admin" : "/api/lanflow/time-tracking/user",
+        {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "DELETE_TRANSACTION", payload: { transaction_id: tx.id } })
-      });
+        },
+      );
       if (!res.ok) {
          const json = await res.json();
          alert(json.error || "ไม่สามารถลบรายการได้");
       } else {
          alert("ลบรายการสำเร็จ");
-         loadData();
+         await loadData();
+         void queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
       }
     } catch (e) {
       alert("เกิดข้อผิดพลาด");
@@ -226,9 +226,7 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
 
   if (loading) return <div>กำลังโหลดข้อมูล...</div>;
 
-  const regularTransactions = data?.transactions?.filter((t: any) => t.status !== 'REJECTED' && t.type !== 'DEBT' && t.type !== 'WITHDRAWAL') || [];
   const debtTransactions = data?.transactions?.filter((t: any) => t.status !== 'REJECTED' && (t.type === 'DEBT' || t.type === 'WITHDRAWAL')) || [];
-  const leaveRequests = data?.leaveRequests?.filter((request: any) => request.status !== 'REJECTED') || [];
 
   return (
     <div className={`flex flex-col gap-6 p-4 ${targetUserId ? 'bg-mint/35 rounded-2xl border border-black/5 shadow-inner' : ''}`}>
@@ -241,7 +239,11 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
             <h3 className="font-semibold text-ink/70">สถานะเวลาทำงานปัจจุบัน</h3>
             <div className="flex items-center gap-2 mt-2">
               <span className={`px-2 py-1 rounded-md text-sm font-bold flex items-center gap-1 ${isRunning ? 'bg-leaf/20 text-leaf' : 'bg-amber/20 text-amber'}`}>
-                {isRunning ? <><PlayCircle size={16} /> กำลังทำงาน</> : <><PauseCircle size={16} /> หยุดพัก</>}
+                {isRunning
+                  ? <><PlayCircle size={16} /> กำลังทำงาน</>
+                  : resumeSchedule
+                    ? <><Clock size={16} /> รอเริ่มอัตโนมัติเดือนใหม่</>
+                    : <><PauseCircle size={16} /> ผู้จัดการหยุดงาน</>}
               </span>
               {isRunning && startTimeStr && (
                 <span className="text-xs text-ink/60">เริ่มเมื่อ: {new Date(startTimeStr).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}</span>
@@ -258,7 +260,7 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
             )}
           </div>
 
-          <button
+          {canManageTime && <button
             onClick={toggleRealTimeTracking}
             disabled={saving || !online}
             title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE}
@@ -267,7 +269,7 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
             }`}
           >
             {isRunning ? <><PauseCircle size={18} /> หยุดงาน</> : <><PlayCircle size={18} /> เริ่มนับเวลา</>}
-          </button>
+          </button>}
         </div>
         <div className="bg-white p-4 rounded-xl border border-black/10 shadow-sm flex flex-col justify-between overflow-x-auto">
           <div>
@@ -324,98 +326,45 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
               step: 0.01,
             });
             if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) return;
-
-            const endpoint = targetUserId ? "/api/lanflow/time-tracking/admin" : "/api/lanflow/time-tracking/user";
-            const action = targetUserId ? "ADMIN_REQUEST_WITHDRAWAL" : "REQUEST_WITHDRAWAL";
-            const payload = targetUserId
-              ? { user_id: targetUserId, amount: Number(amount) }
-              : { amount: Number(amount) };
-
-            await authFetch(endpoint, {
-              method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action, payload })
+            const effectiveDate = await requestInput({
+              title: "เลือกวันที่รายการ",
+              label: "วันที่เบิก (ห้ามเกินวันนี้ และเดือนต้องยังไม่มีสลิป)",
+              inputType: "date",
+              initialValue: bangkokToday(),
+              required: true,
+              max: bangkokToday(),
             });
-            await loadData();
+            if (!effectiveDate) return;
+
+            const endpoint = canManageTime ? "/api/lanflow/time-tracking/admin" : "/api/lanflow/time-tracking/user";
+            const action = canManageTime ? "ADMIN_REQUEST_WITHDRAWAL" : "REQUEST_WITHDRAWAL";
+            const payload = canManageTime
+              ? { user_id: managedUserId, amount: Number(amount), effective_date: effectiveDate }
+              : { amount: Number(amount), effective_date: effectiveDate };
+
+            setSaving(true);
+            try {
+              const response = await authFetch(endpoint, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action, payload })
+              });
+              if (!response.ok) {
+                const json = await response.json().catch(() => null);
+                alert(json?.error || "ไม่สามารถสร้างรายการเบิกได้");
+                return;
+              }
+              await loadData();
+              void queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
+            } finally {
+              setSaving(false);
+            }
           }}
-          disabled={!online}
+          disabled={saving || !online}
           title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE}
           className="bg-amber px-4 py-2 rounded-md font-semibold text-white hover:bg-amber/80 shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
         >
           {targetUserId ? 'ขอเบิกเงินแทน' : 'ขอเบิกเงินล่วงหน้า'}
         </button>
-      </div>
-
-      <div className="bg-white p-4 rounded-xl border border-black/10 shadow-sm mt-4">
-        <h3 className="font-semibold text-ink/70 mb-4">ประวัติหักเงิน</h3>
-        {leaveRequests.length === 0 && regularTransactions.length === 0 ? (
-          <p className="text-sm text-ink/50">ไม่มีประวัติ</p>
-        ) : (
-          <ul className="divide-y divide-black/5">
-             {regularTransactions.map((t: any) => (
-                <li key={t.id} className="py-3 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 border-b border-black/5 last:border-0">
-                  <div className="flex flex-col">
-                    <span>
-                      {t.type === 'DEBT' ? 'สร้างหนี้สิน' : t.type === 'DEBT_DEDUCTION' ? 'หักหนี้อัตโนมัติ' : t.type === 'WITHDRAWAL_DEDUCTION' ? 'หักยอดเบิกเงินอัตโนมัติ' : t.type === 'SALARY' ? 'รับค่าแรง' : 'เบิกเงิน'}{' '}
-                      <strong>{formatCurrency(t.amount)}</strong>
-                    </span>
-                    {t.description && <span className="text-sm text-ink/70 mt-1">{t.description}</span>}
-                    {t.due_date && <span className="text-xs text-clay mt-1">กำหนดชำระ: {new Date(t.due_date).toLocaleDateString('th-TH')}</span>}
-                    <span className="text-xs text-ink/50 mt-1">วันที่ขอ: {t.created_at ? new Date(t.created_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-'}</span>
-                    {t.status === 'APPROVED' && (
-                      <span className="text-xs text-ink/50">วันที่อนุมัติ: {t.updated_at ? new Date(t.updated_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : (t.created_at ? new Date(t.created_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-')}</span>
-                    )}
-                    {t.admin_comment?.startsWith("ระบบอัตโนมัติ:") && (
-                      <span className="text-xs text-amber mt-1 font-bold">{t.admin_comment}</span>
-                    )}
-                    {t.admin_comment?.startsWith("ยื่นแทนโดย") && (
-                      <span className="text-xs text-river mt-1">{t.admin_comment}</span>
-                    )}
-                    {t.approver?.name && (
-                      <span className="text-xs text-leaf mt-1">ผู้ทำรายการ: {t.approver.name}</span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2 self-start sm:self-center">
-                    <span className={`text-xs font-bold px-2 py-1 rounded-md ${t.status === 'APPROVED' ? 'bg-success/15 text-success' : 'bg-ink/10 text-ink'}`}>{t.status}</span>
-                    {targetUserId && t.status === 'PENDING' && onApprove && (profile.role === 'super_admin' || t.type === 'WITHDRAWAL') && (
-                      <button onClick={() => onApprove('TRANSACTION', t)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded bg-success px-3 py-1 font-bold text-white hover:bg-success/90 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
-                    )}
-                    {t.type === 'WITHDRAWAL' && t.status === 'APPROVED' && !t.cancelled_at && (profile.role === 'admin' || profile.role === 'super_admin') && (
-                      <button onClick={() => changeWithdrawalExpenseLocation(t)} disabled={saving || !online || expenseLocations.length === 0 || Boolean(t.report_lock_no)} title={reportLockReason(t) ?? undefined} className="rounded-md bg-river px-3 py-1 text-sm font-semibold text-white hover:bg-river/90 disabled:opacity-40">เปลี่ยนสาขาค่าใช้จ่าย</button>
-                    )}
-                    {(profile.role === 'super_admin' || (profile.role === 'admin' && !targetUserId && t.status !== 'APPROVED')) && (t.type === 'DEBT' || t.type === 'WITHDRAWAL') && (
-                      <button onClick={() => handleDeleteTransaction(t)} disabled={saving || !online || Boolean(t.report_lock_no)} title={reportLockReason(t) ?? (online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE)} className="inline-flex h-10 items-center gap-1 rounded-md bg-danger px-2 text-sm font-semibold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-40">
-                        <XCircle size={18} />
-                        ลบ
-                      </button>
-                    )}
-                  </div>
-                </li>
-             ))}
-              {leaveRequests.map((r: any) => (
-                <li key={r.id} className="py-3 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 border-b border-black/5 last:border-0">
-                  <div className="flex flex-col">
-                    <span>ลางาน ({r.type}) <strong>{r.start_date}</strong></span>
-                    <span className="text-xs text-ink/50 mt-1">วันที่ขอ: {r.created_at ? new Date(r.created_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-'}</span>
-                    {r.status === 'APPROVED' && (
-                      <span className="text-xs text-ink/50">วันที่อนุมัติ: {r.updated_at ? new Date(r.updated_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : (r.created_at ? new Date(r.created_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-')}</span>
-                    )}
-                    {r.admin_comment?.startsWith("ยื่นแทนโดย") && (
-                      <span className="text-xs text-river mt-1">{r.admin_comment}</span>
-                    )}
-                    {r.approver?.name && (
-                      <span className="text-xs text-leaf mt-1">ผู้ทำรายการ: {r.approver.name}</span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2 self-start sm:self-center">
-                    <span className={`text-xs font-bold px-2 py-1 rounded-md ${r.status === 'APPROVED' ? 'bg-success/15 text-success' : 'bg-ink/10 text-ink'}`}>{r.status}</span>
-                    {targetUserId && r.status === 'PENDING' && onApprove && (
-                      <button onClick={() => onApprove('LEAVE', r)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded bg-success px-3 py-1 font-bold text-white hover:bg-success/90 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
-                    )}
-                  </div>
-                </li>
-             ))}
-          </ul>
-        )}
       </div>
 
       <div className="bg-white p-4 rounded-xl border border-clay/30 shadow-sm mt-4">
@@ -432,7 +381,17 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
                       {formatCurrency(t.amount)}
                     </span>
                     {t.description && <span className="text-sm text-ink/70 mt-1">{t.description}</span>}
-                    {t.type === 'DEBT' && t.due_date && <span className="text-xs text-clay mt-1 font-semibold">กำหนดชำระ: {new Date(t.due_date).toLocaleDateString('th-TH')}</span>}
+                    {t.effective_date && <span className="text-xs text-clay mt-1 font-semibold">วันที่รายการ: {new Date(`${t.effective_date}T00:00:00+07:00`).toLocaleDateString('th-TH')}</span>}
+                    {t.status === 'APPROVED' && Number(t.remaining_amount || 0) > 0 && (
+                      <span className="text-xs text-amber mt-1 font-semibold">ยอดค้างยกไปเดือนถัดไป: {formatCurrency(t.remaining_amount)}</span>
+                    )}
+                    {data?.deductions
+                      ?.filter((deduction: any) => deduction.parent_debt_id === t.id)
+                      .map((deduction: any) => (
+                        <span key={deduction.id} className="text-xs text-leaf mt-1">
+                          หักแล้ว {formatCurrency(deduction.amount)} ในเดือน {deduction.applied_month?.slice(0, 7)}
+                        </span>
+                      ))}
                     <span className="text-xs text-ink/50 mt-1">วันที่ทำรายการ: {t.created_at ? new Date(t.created_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-'}</span>
                     {t.status === 'APPROVED' && (
                       <span className="text-xs text-ink/50">วันที่อนุมัติ: {t.updated_at ? new Date(t.updated_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : (t.created_at ? new Date(t.created_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-')}</span>
@@ -449,10 +408,16 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
                   </div>
                   <div className="flex items-center gap-2 self-start sm:self-center">
                     <span className={`text-xs font-bold px-2 py-1 rounded-md ${t.status === 'APPROVED' ? 'bg-success/15 text-success' : 'bg-ink/10 text-ink'}`}>{t.status}</span>
-                    {targetUserId && t.status === 'PENDING' && onApprove && (profile.role === 'super_admin' || t.type === 'WITHDRAWAL') && (
+                    {canManageTime && t.status === 'PENDING' && onApprove && (
                       <button onClick={() => onApprove('TRANSACTION', t)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded bg-success px-3 py-1 font-bold text-white hover:bg-success/90 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
                     )}
-                    {(profile.role === 'super_admin' || (profile.role === 'admin' && !targetUserId && t.status !== 'APPROVED')) && (t.type === 'DEBT' || t.type === 'WITHDRAWAL') && (
+                    {canManageTime && t.status === 'PENDING' && onReject && (
+                      <button onClick={() => onReject('TRANSACTION', t)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded bg-danger px-3 py-1 font-bold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-50">ปฏิเสธ</button>
+                    )}
+                    {canManageTime && t.type === 'WITHDRAWAL' && t.status === 'APPROVED' && (
+                      <button onClick={() => changeWithdrawalExpenseLocation(t)} disabled={saving || !online || expenseLocations.length === 0 || Boolean(t.report_lock_no)} title={reportLockReason(t) ?? undefined} className="rounded-md bg-river px-3 py-1 text-sm font-semibold text-white hover:bg-river/90 disabled:opacity-40">เปลี่ยนสาขาค่าใช้จ่าย</button>
+                    )}
+                    {(canManageTime || (!targetUserId && t.type === 'WITHDRAWAL' && t.status === 'PENDING')) && (
                       <button onClick={() => handleDeleteTransaction(t)} disabled={saving || !online || Boolean(t.report_lock_no)} title={reportLockReason(t) ?? (online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE)} className="inline-flex h-10 items-center gap-1 rounded-md bg-danger px-2 text-sm font-semibold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-40">
                         <XCircle size={18} />
                         ลบ
@@ -461,6 +426,30 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
                   </div>
                 </li>
              ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="bg-white p-4 rounded-xl border border-black/10 shadow-sm">
+        <h3 className="font-semibold text-ink/70 mb-4">สลิปเงินเดือน</h3>
+        {!data?.slips?.length ? (
+          <p className="text-sm text-ink/50">ยังไม่มีสลิปเงินเดือน</p>
+        ) : (
+          <ul className="divide-y divide-black/5">
+            {data.slips.map((slip: any) => (
+              <li key={slip.id} className="flex flex-col gap-1 py-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="font-semibold">เดือน {slip.month} · สุทธิ {formatCurrency(slip.net_pay)}</p>
+                  <p className="text-xs text-ink/55">ขั้นต้น {formatCurrency(slip.gross_pay)} · หัก {formatCurrency(slip.total_deductions)} · {slip.status}</p>
+                </div>
+                <button
+                  onClick={() => window.open(`/slip/${slip.id}`, "_blank")}
+                  className="self-start rounded-md bg-river px-3 py-1.5 text-sm font-bold text-white hover:bg-river/90"
+                >
+                  ดูสลิป
+                </button>
+              </li>
+            ))}
           </ul>
         )}
       </div>
@@ -477,13 +466,12 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
             </div>
             <div className="p-4 flex flex-col gap-4">
               <div>
-                <label className="block text-sm font-semibold text-ink/70 mb-1">วันที่ค้างชำระ</label>
+                <label className="block text-sm font-semibold text-ink/70 mb-1">วันที่รายการ</label>
                 <input
                   type="date"
                   value={debtDueDate}
                   onChange={(e) => setDebtDueDate(e.target.value)}
-                  min={new Date(new Date().getFullYear(), new Date().getMonth(), 1).toLocaleString('sv').split(' ')[0]}
-                  max={new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).toLocaleString('sv').split(' ')[0]}
+                  max={bangkokToday()}
                   className="w-full p-2 border border-black/20 rounded-md"
                 />
               </div>
@@ -523,10 +511,8 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
                     alert(TIME_TRACKING_OFFLINE_MESSAGE);
                     return;
                   }
-                  const selectedDate = new Date(debtDueDate);
-                  const now = new Date();
-                  if (selectedDate.getMonth() !== now.getMonth() || selectedDate.getFullYear() !== now.getFullYear()) {
-                    alert("กรุณาเลือกวันที่ค้างชำระให้อยู่ในเดือนปัจจุบันเท่านั้น");
+                  if (debtDueDate > bangkokToday()) {
+                    alert("วันที่รายการต้องไม่เกินวันปัจจุบัน");
                     return;
                   }
 
@@ -534,7 +520,7 @@ function UserTimeTracking({ profile, targetUserId, online, expenseLocations = []
                   try {
                     const res = await authFetch("/api/lanflow/time-tracking/admin", {
                       method: "POST", headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ action: "CREATE_DEBT", payload: { user_id: targetUserId, amount: Number(debtAmount), due_date: debtDueDate, description: debtDescription } })
+                      body: JSON.stringify({ action: "CREATE_DEBT", payload: { user_id: managedUserId, amount: Number(debtAmount), effective_date: debtDueDate, description: debtDescription } })
                     });
                     if (res.ok) {
                       setIsDebtModalOpen(false);
@@ -586,8 +572,8 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
     onSuccess?: () => void;
   } | null>(null);
   const expenseLocations = useMemo(
-    () => locations.filter((location) => location.active && profile.locationIds.includes(location.id)),
-    [locations, profile.locationIds],
+    () => locations.filter((location) => location.active),
+    [locations],
   );
 
   async function load() {
@@ -612,7 +598,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
   async function submitApproval(
     type: ApprovalType,
     id: string,
-    status: 'APPROVED',
+    status: 'APPROVED' | 'REJECTED',
     expenseLocationId?: string,
     providedComment?: string,
   ) {
@@ -633,12 +619,10 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        action: type === 'TRANSACTION' ? 'APPROVE_TRANSACTION' : type === 'LEAVE' ? 'APPROVE_LEAVE' : 'APPROVE_PAYROLL_SLIP',
+        action: type === 'TRANSACTION' ? 'APPROVE_TRANSACTION' : 'APPROVE_PAYROLL_SLIP',
         payload: type === 'TRANSACTION'
           ? { transaction_id: id, status, admin_comment: comment, expense_location_id: expenseLocationId }
-          : type === 'LEAVE'
-            ? { request_id: id, status, admin_comment: comment }
-            : { slip_id: id, status, admin_comment: comment, expense_location_id: expenseLocationId }
+          : { slip_id: id, status, admin_comment: comment, expense_location_id: expenseLocationId }
       })
     });
     if (!res.ok) {
@@ -718,7 +702,20 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
     <div className="flex flex-col gap-6">
       {/* Admin's Personal Dashboard */}
       <div className="bg-sand/30 border-b border-black/10 pb-6 shadow-inner">
-        <UserTimeTracking profile={profile} online={online} expenseLocations={expenseLocations} />
+        <UserTimeTracking
+          profile={profile}
+          online={online}
+          expenseLocations={expenseLocations}
+          onApprove={(type, item) => handleApprove(
+            type,
+            item.id,
+            type === 'TRANSACTION' && item.type === 'WITHDRAWAL'
+              ? { title: `เบิกเงินของตนเอง`, amount: Number(item.amount) }
+              : undefined,
+            () => load(),
+          )}
+          onReject={(type, item) => void submitApproval(type, item.id, 'REJECTED')}
+        />
       </div>
 
       <div className="flex flex-col gap-6 p-4">
@@ -765,10 +762,15 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
           <tbody className="divide-y divide-black/5">
              {data?.users?.map((user: any) => {
                const activeSegment = user.time_segments?.find((s: any) => !s.end_time);
-               const status = activeSegment ? 'RUNNING' : 'PAUSED';
+               const status = activeSegment
+                 ? 'RUNNING'
+                 : user.resume_schedule
+                   ? 'AUTO_START_PENDING'
+                   : user.current_month_closed
+                     ? 'MONTH_CLOSED'
+                     : 'MANAGER_PAUSED';
                const debtRemainingAmount = Number(user.debt_remaining_amount || 0);
-               const dashboardPendingCount = pendingCountForUser(data?.pendingTransactions, user.id)
-                 + pendingCountForUser(data?.pendingLeaves, user.id);
+               const dashboardPendingCount = pendingCountForUser(data?.pendingTransactions, user.id);
                const payrollPendingCount = pendingCountForUser(data?.pendingSlips, user.id);
                return (
                 <tr key={user.id} className={`hover:bg-sand/30 ${user.is_active === false ? 'opacity-70 bg-red-50/50' : ''}`}>
@@ -783,8 +785,14 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
                     </div>
                   </td>
                   <td className="py-3">
-                    <span className={`px-2 py-1 rounded text-xs font-bold ${status === 'RUNNING' ? 'bg-leaf/20 text-leaf' : 'bg-amber/20 text-amber'}`}>
-                      {status}
+                    <span className={`px-2 py-1 rounded text-xs font-bold ${status === 'RUNNING' ? 'bg-leaf/20 text-leaf' : status === 'MONTH_CLOSED' ? 'bg-river/15 text-river' : 'bg-amber/20 text-amber'}`}>
+                      {status === 'RUNNING'
+                        ? 'กำลังนับเวลา'
+                        : status === 'AUTO_START_PENDING'
+                          ? 'รอเริ่มอัตโนมัติเดือนใหม่'
+                          : status === 'MONTH_CLOSED'
+                            ? 'เดือนปิด'
+                            : 'ผู้จัดการหยุดงาน'}
                     </span>
                   </td>
                   <td className="py-3">
@@ -848,6 +856,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
                   : undefined,
                 () => load(),
               )}
+              onReject={(type, item) => void submitApproval(type, item.id, 'REJECTED')}
             />
           </div>
         </div>
@@ -863,9 +872,9 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
       {payrollUser && (
         <PayrollModal
           user={payrollUser}
-          profile={profile}
           online={online}
           onApprove={(slip) => handleApprove('SLIP', slip.id, Number(slip.net_pay) > 0 ? { title: `เงินเดือนของ ${payrollUser.name} เดือน ${slip.month}`, amount: Number(slip.net_pay) } : undefined, () => load())}
+          onReject={(slip) => void submitApproval('SLIP', slip.id, 'REJECTED')}
           onClose={() => setPayrollUser(null)}
           onRefresh={() => load()}
         />
@@ -923,25 +932,13 @@ function ManageTimeModal({ user, admins, online, onClose, onSuccess, onRefresh }
       if (diff <= 0) {
         setTimeLeft(0);
         clearInterval(interval);
-
-        // Call CUTOFF API
-        try {
-          await authFetch("/api/lanflow/time-tracking/admin", {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'CUTOFF_TRACKING', payload: { user_id: user.id, cutoff_time: targetDate.toISOString() } })
-          });
-          onRefresh();
-        } catch (e) {
-          console.error(e);
-        }
       } else {
         setTimeLeft(Math.floor(diff / 1000));
       }
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [activeSegment, user.id, onRefresh]);
+  }, [activeSegment]);
 
   async function toggleRealTimeTracking() {
     if (!online) {
@@ -1429,11 +1426,15 @@ function AuditLogsModal({ adminId, adminName, onClose }: { adminId: string, admi
   )
 }
 
-function PayrollModal({ user, profile, online, onApprove, onClose, onRefresh }: { user: any, profile: Profile, online: boolean, onApprove: (slip: any) => void, onClose: () => void, onRefresh: () => void }) {
+function PayrollModal({ user, online, onApprove, onReject, onClose, onRefresh }: { user: any, online: boolean, onApprove: (slip: any) => void, onReject: (slip: any) => void, onClose: () => void, onRefresh: () => void }) {
   const [slips, setSlips] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [createFormOpen, setCreateFormOpen] = useState(false);
+  const [createMonth, setCreateMonth] = useState(bangkokToday().slice(0, 7));
+  const [autoStartNextMonth, setAutoStartNextMonth] = useState(true);
   const { requestInput, inputDialog } = useInputDialog();
+  const userIsRunning = Boolean(user.time_segments?.some((segment: any) => !segment.end_time));
 
   const loadSlips = useCallback(async () => {
     setLoading(true);
@@ -1456,30 +1457,38 @@ function PayrollModal({ user, profile, online, onApprove, onClose, onRefresh }: 
     void loadSlips();
   }, [loadSlips]);
 
-  async function createSlip() {
+  function openCreateSlip() {
     if (!online) {
       alert(TIME_TRACKING_OFFLINE_MESSAGE);
       return;
     }
-    const month = await requestInput({
-      title: "สร้างสลิปเงินเดือน",
-      label: "เดือน",
-      initialValue: new Date().toISOString().slice(0, 7),
-      inputType: "month",
-      required: true,
-    });
-    if (!month) return;
+    setCreateMonth(bangkokToday().slice(0, 7));
+    setAutoStartNextMonth(userIsRunning);
+    setCreateFormOpen(true);
+  }
 
+  async function createSlip() {
+    if (!createMonth) return;
     setSaving(true);
     try {
       const res = await authFetch("/api/lanflow/time-tracking/admin", {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'CREATE_PAYROLL_SLIP', payload: { user_id: user.id, month } })
+        body: JSON.stringify({
+          action: 'CREATE_PAYROLL_SLIP',
+          payload: {
+            user_id: user.id,
+            month: createMonth,
+            auto_start_next_month: createMonth === bangkokToday().slice(0, 7)
+              && userIsRunning
+              && autoStartNextMonth,
+          },
+        })
       });
       if (res.ok) {
+        setCreateFormOpen(false);
         alert("สร้างสลิปเงินเดือนสำเร็จ");
-        loadSlips();
+        void loadSlips();
         onRefresh();
       } else {
         const json = await res.json();
@@ -1537,7 +1546,7 @@ function PayrollModal({ user, profile, online, onApprove, onClose, onRefresh }: 
             <h2 className="text-2xl font-bold text-ink flex items-center gap-2">สลิปเงินเดือนของ {user.name}</h2>
           </div>
           <button
-            onClick={createSlip}
+            onClick={openCreateSlip}
             disabled={saving || !online}
             title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE}
             className="bg-leaf text-white px-4 py-2 rounded-lg font-bold shadow-sm hover:bg-leaf/80 disabled:cursor-not-allowed disabled:opacity-50"
@@ -1553,9 +1562,8 @@ function PayrollModal({ user, profile, online, onApprove, onClose, onRefresh }: 
              <div className="text-ink/50">ไม่มีประวัติการทำสลิปเงินเดือน</div>
           ) : (
             <ul className="divide-y divide-black/5 bg-white border border-black/10 rounded-xl overflow-hidden shadow-sm">
-                {slips.filter((slip: any) => slip.status !== 'REJECTED').map((slip: any) => {
-                  const canDelete = (profile.role === 'super_admin' || slip.status !== 'APPROVED') && !slip.cancelled_at && new Date(slip.created_at).getMonth() === new Date().getMonth() && new Date(slip.created_at).getFullYear() === new Date().getFullYear();
-                 const canApprove = slip.created_by !== profile.id || profile.role === 'super_admin';
+                {slips.map((slip: any) => {
+                  const canDelete = !slip.cancelled_at;
 
                  return (
                   <li key={slip.id} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -1585,8 +1593,11 @@ function PayrollModal({ user, profile, online, onApprove, onClose, onRefresh }: 
                         ดูสลิป
                       </button>
 
-                       {slip.status === 'PENDING' && canApprove && (
-                        <button onClick={() => onApprove(slip)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-success text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-success/85 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
+                       {slip.status === 'PENDING' && (
+                         <button onClick={() => onApprove(slip)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-success text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-success/85 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
+                       )}
+                       {slip.status === 'PENDING' && (
+                         <button onClick={() => onReject(slip)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-danger text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-danger/85 disabled:cursor-not-allowed disabled:opacity-50">ปฏิเสธ</button>
                        )}
 
                       {canDelete && (
@@ -1602,6 +1613,39 @@ function PayrollModal({ user, profile, online, onApprove, onClose, onRefresh }: 
           )}
         </div>
       </div>
+      {createFormOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl">
+            <h3 className="text-lg font-bold text-ink">สร้างสลิปเงินเดือน</h3>
+            <label className="mt-4 block text-sm font-semibold text-ink">เดือน</label>
+            <input
+              type="month"
+              value={createMonth}
+              max={bangkokToday().slice(0, 7)}
+              onChange={(event) => setCreateMonth(event.target.value)}
+              className="mt-2 w-full rounded-md border border-black/15 px-3 py-2"
+            />
+            <p className="mt-3 rounded-md bg-amber/10 p-3 text-sm text-ink/75">
+              ระบบจะตรวจเดือนทำงานเก่าสุด รายการรออนุมัติ และปิดเดือนนี้ทันทีหลังสร้างสลิป
+            </p>
+            {createMonth === bangkokToday().slice(0, 7) && userIsRunning && (
+              <label className="mt-4 flex items-start gap-3 text-sm text-ink">
+                <input
+                  type="checkbox"
+                  checked={autoStartNextMonth}
+                  onChange={(event) => setAutoStartNextMonth(event.target.checked)}
+                  className="mt-1"
+                />
+                <span>เริ่มนับเวลาให้อัตโนมัติเมื่อขึ้นวันที่ 1 เวลา 00:00 น. (ปิดเวลาเดิมเพื่อออกสลิปก่อน)</span>
+              </label>
+            )}
+            <div className="mt-6 flex justify-end gap-3">
+              <button onClick={() => setCreateFormOpen(false)} className="rounded-md bg-actionSecondary px-4 py-2 font-semibold text-white">ยกเลิก</button>
+              <button onClick={() => void createSlip()} disabled={saving || !createMonth} className="rounded-md bg-success px-4 py-2 font-bold text-white disabled:opacity-50">ยืนยันสร้างสลิป</button>
+            </div>
+          </div>
+        </div>
+      )}
       {inputDialog}
     </div>
   )

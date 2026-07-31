@@ -19,7 +19,7 @@ const REPORT_ERROR_GROUPS = [
   },
   {
     label: "เวลาและเงินเดือน",
-    keywords: ["time_segment", "leave_request", "financial_transaction", "payroll_slip", "เงินเดือน"],
+    keywords: ["time_segment", "financial_transaction", "payroll_slip", "เงินเดือน"],
   },
   {
     label: "โอนเงิน",

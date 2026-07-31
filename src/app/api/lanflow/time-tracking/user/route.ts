@@ -1,149 +1,208 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/server/auth";
-import { calculatePaidWorkDays } from "@/lib/time-tracking/pay";
 
 export const dynamic = "force-dynamic";
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function rpcErrorStatus(message: string) {
+  if (/Forbidden|access denied/i.test(message)) return 403;
+  if (/MONTH_CLOSED|REPORT_LOCKED|already been decided/i.test(message)) return 409;
+  return 400;
+}
+
+function rpcErrorMessage(message: string) {
+  const closedMonth = message.match(/MONTH_CLOSED:([0-9]{4}-[0-9]{2})/)?.[1];
+  if (closedMonth) return `เดือน ${closedMonth} มีสลิปเงินเดือนแล้ว กรุณาลบสลิปก่อน`;
+  if (/FUTURE_EFFECTIVE_DATE/i.test(message)) return "วันที่รายการต้องไม่เกินวันปัจจุบัน";
+  if (/INVALID_AMOUNT/i.test(message)) return "จำนวนเงินต้องมากกว่า 0";
+  if (/PENDING_ONLY/i.test(message)) return "ลบได้เฉพาะรายการที่ยังรออนุมัติ";
+  if (/Forbidden/i.test(message)) return "คุณไม่มีสิทธิ์ทำรายการนี้";
+  return "ไม่สามารถทำรายการได้ กรุณาลองใหม่";
+}
+
+function rpcFailure(error: { message: string }) {
+  return NextResponse.json(
+    { error: rpcErrorMessage(error.message) },
+    { status: rpcErrorStatus(error.message) },
+  );
+}
+
+function bangkokMonthBounds() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Bangkok",
+    year: "numeric",
+    month: "2-digit",
+  }).formatToParts(new Date());
+  const year = Number(parts.find((part) => part.type === "year")?.value);
+  const month = Number(parts.find((part) => part.type === "month")?.value);
+  const start = `${year}-${String(month).padStart(2, "0")}-01T00:00:00+07:00`;
+  const nextYear = month === 12 ? year + 1 : year;
+  const nextMonth = month === 12 ? 1 : month + 1;
+  const end = `${nextYear}-${String(nextMonth).padStart(2, "0")}-01T00:00:00+07:00`;
+  return { start, end, month: `${year}-${String(month).padStart(2, "0")}` };
+}
 
 export async function GET(request: NextRequest) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
-  
-  let targetUserId = result.auth.sub;
-  const supabase = result.supabase;
 
-  const url = new URL(request.url);
-  const requestedUserId = url.searchParams.get("userId");
-  
-  if (requestedUserId && requestedUserId !== targetUserId) {
-    const { data: profile } = await supabase.from("profiles").select("role").eq("id", targetUserId).single();
-    if (profile?.role === 'super_admin' || profile?.role === 'admin') {
-      targetUserId = requestedUserId;
-    } else {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
-    }
+  const requestedUserId = new URL(request.url).searchParams.get("userId");
+  const targetUserId = requestedUserId || result.auth.sub;
+  if (
+    !UUID_PATTERN.test(targetUserId)
+    || (targetUserId !== result.auth.sub && !result.auth.canAccessSystemManager)
+  ) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
   }
 
   try {
-    const now = new Date();
-    // Start of month in local time (Asia/Bangkok), let's simplify to start of current month UTC for now, or just build the string
-    // e.g. "2026-06-01T00:00:00+07:00"
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toLocaleString('sv').replace(' ', 'T') + '+07:00';
-    
-    // We need profile to get daily_wage
-    const profilePromise = supabase.from("profiles").select("daily_wage").eq("id", targetUserId).single();
-    const segmentsPromise = supabase.from("time_segments").select("start_time, end_time, report_lock_no").eq("profile_id", targetUserId).not("end_time", "is", null).gte("start_time", startOfMonth);
-    const approvedTxPromise = supabase.from("financial_transactions").select("amount, type").eq("profile_id", targetUserId).eq("status", "APPROVED").gte("created_at", startOfMonth).in("type", ["WITHDRAWAL_DEDUCTION", "DEBT_DEDUCTION", "SALARY"]);
-    const activeDebtsPromise = supabase.from("financial_transactions").select("*, report_lock_no").eq("profile_id", targetUserId).in("type", ["DEBT", "WITHDRAWAL"]).eq("status", "APPROVED").gt("remaining_amount", 0);
-
-    const [timeTracking, leaveRequests, transactions, profileRes, segmentsRes, approvedTxRes, activeDebtsRes] = await Promise.all([
-      supabase.from("time_segments").select("*, report_lock_no").eq("profile_id", targetUserId).is("end_time", null).maybeSingle(),
-      supabase.from("leave_requests").select("*, report_lock_no, approver:profiles!leave_requests_approved_by_fkey(name)").eq("profile_id", targetUserId).order("created_at", { ascending: false }).limit(10),
-      supabase.from("financial_transactions").select("*, report_lock_no, approver:profiles!financial_transactions_approved_by_fkey(name)").eq("profile_id", targetUserId).order("created_at", { ascending: false }).limit(20),
-      profilePromise,
-      segmentsPromise,
-      approvedTxPromise,
-      activeDebtsPromise
+    const { start, end, month } = bangkokMonthBounds();
+    const supabase = result.supabase;
+    const [
+      activeSegment,
+      transactions,
+      profile,
+      paidDays,
+      activeDebts,
+      deductions,
+      slips,
+      resumeSchedule,
+    ] = await Promise.all([
+      supabase
+        .from("time_segments")
+        .select("id, start_time, end_time, report_lock_no")
+        .eq("profile_id", targetUserId)
+        .is("end_time", null)
+        .maybeSingle(),
+      supabase
+        .from("financial_transactions")
+        .select("*, report_lock_no, approver:profiles!financial_transactions_approved_by_fkey(name)")
+        .eq("profile_id", targetUserId)
+        .in("type", ["DEBT", "WITHDRAWAL"])
+        .order("effective_date", { ascending: false })
+        .order("created_at", { ascending: false })
+        .limit(50),
+      supabase.from("profiles").select("daily_wage").eq("id", targetUserId).single(),
+      supabase.rpc("calculate_paid_work_days", {
+        p_profile_id: targetUserId,
+        p_period_start: start,
+        p_period_end: end,
+      }),
+      supabase
+        .from("financial_transactions")
+        .select("id, type, amount, remaining_amount, effective_date, created_at, description")
+        .eq("profile_id", targetUserId)
+        .in("type", ["DEBT", "WITHDRAWAL"])
+        .eq("status", "APPROVED")
+        .gt("remaining_amount", 0)
+        .order("effective_date", { ascending: true })
+        .order("created_at", { ascending: true }),
+      supabase
+        .from("financial_transactions")
+        .select("id, type, amount, parent_debt_id, applied_month, created_at")
+        .eq("profile_id", targetUserId)
+        .eq("status", "APPROVED")
+        .in("type", ["WITHDRAWAL_DEDUCTION", "DEBT_DEDUCTION"])
+        .order("applied_month", { ascending: false })
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("payroll_slips")
+        .select("*, report_lock_no, approver:profiles!payroll_slips_approved_by_fkey(name)")
+        .eq("profile_id", targetUserId)
+        .order("month", { ascending: false }),
+      supabase
+        .from("time_tracking_resume_schedules")
+        .select("profile_id, payroll_slip_id, resume_at")
+        .eq("profile_id", targetUserId)
+        .maybeSingle(),
     ]);
 
-    const totalDays = calculatePaidWorkDays(segmentsRes.data);
-    const grossPay = totalDays * (profileRes.data?.daily_wage || 0);
+    for (const response of [
+      activeSegment,
+      transactions,
+      profile,
+      paidDays,
+      activeDebts,
+      deductions,
+      slips,
+      resumeSchedule,
+    ]) {
+      if (response.error) throw response.error;
+    }
 
-    let usedThisMonth = 0;
-    approvedTxRes.data?.forEach((tx: any) => {
-      usedThisMonth += Number(tx.amount || 0);
-    });
-
-    let totalDebt = 0;
-    activeDebtsRes.data?.forEach((d: any) => {
-      totalDebt += Number(d.remaining_amount || 0);
-    });
-
-    // remainingBalance = grossPay - usedThisMonth
-    const remainingBalance = grossPay - usedThisMonth;
+    const totalDays = Number(paidDays.data || 0);
+    const grossPay = totalDays * Number(profile.data?.daily_wage || 0);
+    const usedThisMonth = (deductions.data || []).reduce(
+      (sum, transaction) => transaction.applied_month === `${month}-01`
+        ? sum + Number(transaction.amount || 0)
+        : sum,
+      0,
+    );
+    const totalDebt = (activeDebts.data || []).reduce(
+      (sum, transaction) => sum + Number(transaction.remaining_amount || 0),
+      0,
+    );
 
     return NextResponse.json({
-      timeTracking: { 
-        status: timeTracking.data ? 'RUNNING' : 'PAUSED',
-        start_time: timeTracking.data?.start_time || null
+      timeTracking: {
+        status: activeSegment.data ? "RUNNING" : "PAUSED",
+        start_time: activeSegment.data?.start_time || null,
+        resume_schedule: resumeSchedule.data || null,
       },
       wageInfo: {
         totalDays,
         grossPay,
-        remainingBalance,
-        totalDebt
+        remainingBalance: Math.max(grossPay - usedThisMonth, 0),
+        totalDebt,
       },
-      debts: activeDebtsRes.data || [],
-      leaveRequests: leaveRequests.data || [],
-      transactions: transactions.data || []
+      debts: activeDebts.data || [],
+      transactions: transactions.data || [],
+      deductions: deductions.data || [],
+      slips: slips.data || [],
     });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
 
 export async function POST(request: NextRequest) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
-  
-  const userId = result.auth.sub;
-  const supabase = result.supabase;
+
   const body = await request.json();
+  const payload = body?.payload || {};
+  const supabase = result.supabase;
 
-  try {
-    if (body.action === 'REQUEST_LEAVE') {
-      const { start_date, end_date, type } = body.payload;
-      const { error } = await supabase.from('leave_requests').insert({
-        profile_id: userId, start_date, end_date, type
-      });
-      if (error) throw error;
-      return NextResponse.json({ success: true });
+  if (body.action === "REQUEST_WITHDRAWAL") {
+    const { amount, effective_date } = payload;
+    if (typeof amount !== "number" || typeof effective_date !== "string") {
+      return NextResponse.json({ error: "ข้อมูลรายการไม่ถูกต้อง" }, { status: 400 });
     }
-    
-    if (body.action === 'REQUEST_WITHDRAWAL') {
-      const { amount } = body.payload;
-      if (typeof amount !== 'number' || amount <= 0) {
-        return NextResponse.json({ error: "Invalid amount" }, { status: 400 });
-      }
-      
-      const { error } = await supabase.from('financial_transactions').insert({
-        profile_id: userId, type: 'WITHDRAWAL', amount
-      });
-      if (error) throw error;
-      return NextResponse.json({ success: true });
-    }
-
-    if (body.action === 'TOGGLE_TRACKING') {
-      const { status } = body.payload;
-      
-      if (status === 'RUNNING') {
-        const { data: active } = await supabase.from("time_segments").select("id").eq("profile_id", userId).is("end_time", null).maybeSingle();
-        if (!active) {
-          await supabase.from("time_segments").insert({ profile_id: userId, start_time: new Date().toISOString() });
-          await supabase.from('time_tracking_audit_logs').insert({ admin_id: userId, action: 'SELF_TOGGLE_TRACKING', target_table: 'time_segments', record_id: userId, new_data: { status: 'RUNNING' }});
-        }
-      } else {
-        await supabase.from("time_segments").update({ end_time: new Date().toISOString() }).eq("profile_id", userId).is("end_time", null);
-        await supabase.from('time_tracking_audit_logs').insert({ admin_id: userId, action: 'SELF_TOGGLE_TRACKING', target_table: 'time_segments', record_id: userId, new_data: { status: 'PAUSED' }});
-      }
-      return NextResponse.json({ success: true });
-    }
-
-    if (body.action === 'CUTOFF_TRACKING') {
-      const { cutoff_time } = body.payload;
-      
-      await supabase.from("time_segments").update({ end_time: cutoff_time }).eq("profile_id", userId).is("end_time", null);
-      await supabase.from("time_segments").insert({ profile_id: userId, start_time: cutoff_time });
-      
-      await supabase.from('time_tracking_audit_logs').insert({
-        admin_id: userId, action: 'SELF_CUTOFF_TRACKING', target_table: 'time_segments',
-        record_id: userId, new_data: { cutoff_time }, comment: 'Auto split at 15:00'
-      });
-      
-      return NextResponse.json({ success: true });
-    }
-
-    return NextResponse.json({ error: "Invalid action" }, { status: 400 });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    const { data, error } = await supabase.rpc("create_time_tracking_transaction", {
+      p_profile_id: result.auth.sub,
+      p_type: "WITHDRAWAL",
+      p_amount: amount,
+      p_effective_date: effective_date,
+      p_description: null,
+    });
+    if (error) return rpcFailure(error);
+    return NextResponse.json({ success: true, result: data });
   }
+
+  if (body.action === "DELETE_TRANSACTION") {
+    const { transaction_id } = payload;
+    if (typeof transaction_id !== "string" || !UUID_PATTERN.test(transaction_id)) {
+      return NextResponse.json({ error: "รหัสรายการไม่ถูกต้อง" }, { status: 400 });
+    }
+    const { data, error } = await supabase.rpc("delete_time_tracking_source_permanently", {
+      p_source_type: "transaction",
+      p_source_id: transaction_id,
+    });
+    if (error) return rpcFailure(error);
+    return NextResponse.json({ success: true, deleted: true, result: data });
+  }
+
+  return NextResponse.json({ error: "Invalid action" }, { status: 400 });
 }
