@@ -10,6 +10,30 @@ begin
     return;
   end if;
 
+  -- Fresh migration replay has the legacy ป่ากุงใหญ่ location before seed.sql runs.
+  -- Ensure the canonical location exists so this migration can complete.
+  if not exists (
+    select 1
+    from public.locations
+    where name = 'ชานุมาน'
+  ) then
+    insert into public.locations (
+      id,
+      name,
+      code,
+      is_active,
+      created_by
+    )
+    values (
+      '00000000-0000-4000-8000-000000000102',
+      'ชานุมาน',
+      'CNM',
+      true,
+      '00000000-0000-4000-8000-000000000001'
+    )
+    on conflict (id) do nothing;
+  end if;
+
   if not exists (
     select 1
     from public.locations
