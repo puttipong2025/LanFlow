@@ -1,11 +1,42 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { BellRing, Building2, Check, ChevronDown, Wifi, WifiOff } from "lucide-react";
+import { BellRing, Building2, Check, ChevronDown, Clock3, Wifi, WifiOff } from "lucide-react";
 import type { Location, Profile } from "@/types";
 import { canManageSystemFeatures } from "@/lib/permissions";
 import { TelegramBadgeConfigModal } from "@/components/lanflow/TelegramBadgeConfigModal";
 import { LogoutButton } from "@/components/lanflow/LogoutButton";
+import { useDashboardBranchSummaries } from "@/hooks/useDashboardOverview";
+import { formatCurrency, formatNumber } from "@/lib/format";
+import type { DashboardBranchCashStatus } from "@/types/dashboard";
+
+const CASH_STATUS_LABELS: Record<DashboardBranchCashStatus, string> = {
+  low: "ต่ำกว่าเกณฑ์",
+  normal: "ปกติ",
+  unconfigured: "ยังไม่ตั้งเกณฑ์",
+  no_data: "ยังไม่มีข้อมูลภาพรวม",
+};
+
+function cashStatusColor(status?: DashboardBranchCashStatus) {
+  if (status === "low") return "text-danger";
+  if (status === "normal") return "text-success";
+  return "text-ink/55";
+}
+
+function cashStatusDot(status?: DashboardBranchCashStatus) {
+  if (status === "low") return "bg-danger";
+  if (status === "normal") return "bg-success";
+  return "bg-ink/30";
+}
+
+function formatCalculatedAt(value: string | null) {
+  if (!value) return "ไม่ทราบเวลาข้อมูลล่าสุด";
+  return new Intl.DateTimeFormat("th-TH", {
+    dateStyle: "short",
+    timeStyle: "short",
+    timeZone: "Asia/Bangkok",
+  }).format(new Date(value));
+}
 
 export function AppHeader({
   profile,
@@ -30,14 +61,26 @@ export function AppHeader({
   const [locationMenuOpen, setLocationMenuOpen] = useState(false);
   const locationMenuRef = useRef<HTMLDivElement>(null);
   const locationButtonRef = useRef<HTMLButtonElement>(null);
+  const branchSummaries = useDashboardBranchSummaries(profile.id, online);
+  const { refetch: refetchBranchSummaries } = branchSummaries;
   const accessibleLocations = useMemo(
     () => locations.filter(
       (location) => location.active && profile.locationIds.includes(location.id)
     ),
     [locations, profile.locationIds],
   );
+  const branchSummaryByLocation = useMemo(
+    () => new Map(
+      (branchSummaries.data ?? []).map((summary) => [summary.locationId, summary]),
+    ),
+    [branchSummaries.data],
+  );
   const selectedLocation = accessibleLocations.find((location) => location.id === selectedLocationId);
   const selectedBadgeTotal = locationBadgeTotals[selectedLocationId] ?? 0;
+  const selectedBranchSummary = branchSummaryByLocation.get(selectedLocationId);
+  const selectedCashStatusLabel = selectedBranchSummary
+    ? CASH_STATUS_LABELS[selectedBranchSummary.cashStatus]
+    : null;
 
   function focusLocationOption(index: number) {
     requestAnimationFrame(() => {
@@ -69,6 +112,10 @@ export function AppHeader({
   useEffect(() => {
     if (!online) setLocationMenuOpen(false);
   }, [online]);
+
+  useEffect(() => {
+    if (locationMenuOpen && online) void refetchBranchSummaries();
+  }, [locationMenuOpen, online, refetchBranchSummaries]);
 
   return (
     <>
@@ -103,7 +150,8 @@ export function AppHeader({
               ref={locationButtonRef}
               type="button"
               data-location-id={selectedLocationId}
-              aria-label={`เลือกสาขา${selectedBadgeTotal > 0 ? ` มีงาน ${selectedBadgeTotal} รายการ` : ""}`}
+              data-cash-status={selectedBranchSummary?.cashStatus ?? "unknown"}
+              aria-label={`เลือกสาขา${selectedBadgeTotal > 0 ? ` มีงาน ${selectedBadgeTotal} รายการ` : ""}${selectedCashStatusLabel ? ` สถานะ${selectedCashStatusLabel}` : ""}`}
               aria-haspopup="listbox"
               aria-controls="location-selector-listbox"
               aria-expanded={locationMenuOpen}
@@ -122,6 +170,10 @@ export function AppHeader({
               <span className="min-w-0 flex-1 truncate text-sm font-semibold text-ink">
                 {selectedLocation?.name ?? "เลือกสาขา"}
               </span>
+              <span
+                aria-hidden="true"
+                className={`size-2 shrink-0 rounded-full ${cashStatusDot(selectedBranchSummary?.cashStatus)}`}
+              />
               {selectedBadgeTotal > 0 && (
                 <span className="min-w-6 rounded-full bg-amber px-1.5 py-0.5 text-center text-[11px] font-extrabold leading-none text-white">
                   {selectedBadgeTotal > 99 ? "99+" : selectedBadgeTotal}
@@ -135,17 +187,31 @@ export function AppHeader({
                 id="location-selector-listbox"
                 role="listbox"
                 aria-label="สาขาที่เข้าถึงได้"
-                className="absolute left-0 right-0 top-full z-40 mt-2 max-h-72 overflow-y-auto rounded-xl border border-mint bg-white p-1.5 shadow-xl"
+                className="absolute right-0 top-full z-40 mt-2 max-h-72 w-[min(22.5rem,calc(100vw-1.5rem))] overflow-y-auto rounded-xl border border-mint bg-white p-1.5 shadow-xl"
               >
                 {accessibleLocations.map((location, index) => {
                   const active = location.id === selectedLocationId;
                   const badgeTotal = locationBadgeTotals[location.id] ?? 0;
+                  const branchSummary = branchSummaryByLocation.get(location.id);
+                  const cashStatus = branchSummary?.cashStatus;
+                  const statusLabel = branchSummary
+                    ? CASH_STATUS_LABELS[branchSummary.cashStatus]
+                    : branchSummaries.isPending
+                      ? "กำลังโหลดข้อมูลภาพรวม"
+                      : branchSummaries.isError
+                        ? "โหลดข้อมูลไม่ได้"
+                        : "ยังไม่มีข้อมูลภาพรวม";
+                  const dataIsStale = Boolean(
+                    branchSummary?.summary &&
+                    (branchSummary.snapshotStatus !== "ready" || branchSummaries.isError),
+                  );
                   return (
                     <button
                       key={location.id}
                       type="button"
                       role="option"
                       data-location-id={location.id}
+                      data-cash-status={cashStatus ?? "unknown"}
                       aria-selected={active}
                       onClick={() => {
                         onLocationChange(location.id);
@@ -171,19 +237,80 @@ export function AppHeader({
                         event.preventDefault();
                         focusLocationOption(nextIndex);
                       }}
-                      className={`focus-ring flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm transition ${
-                        active ? "bg-leaf text-white" : "text-ink hover:bg-mint"
+                      className={`focus-ring flex w-full items-start gap-2 rounded-lg px-3 py-2.5 text-left text-sm text-ink transition ${
+                        active ? "bg-mint/70" : "hover:bg-mint/55"
                       }`}
                     >
-                      <Check size={15} className={active ? "opacity-100" : "opacity-0"} />
-                      <span className="min-w-0 flex-1 truncate font-semibold">{location.name}</span>
-                      {badgeTotal > 0 && (
-                        <span className={`min-w-6 rounded-full px-1.5 py-0.5 text-center text-[11px] font-extrabold leading-none ${
-                          active ? "bg-white text-leaf" : "bg-amber text-white"
-                        }`}>
-                          {badgeTotal > 99 ? "99+" : badgeTotal}
+                      <Check size={15} className={`mt-0.5 ${active ? "opacity-100 text-leaf" : "opacity-0"}`} />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex min-w-0 items-start gap-2">
+                          <span className="min-w-0 flex-1 truncate font-semibold">{location.name}</span>
+                          {badgeTotal > 0 && (
+                            <span data-branch-badge className={`min-w-6 shrink-0 rounded-full px-1.5 py-0.5 text-center text-[11px] font-extrabold leading-none ${
+                              active ? "bg-white text-leaf" : "bg-amber text-white"
+                            }`}>
+                              {badgeTotal > 99 ? "99+" : badgeTotal}
+                            </span>
+                          )}
                         </span>
-                      )}
+
+                        {branchSummary?.summary ? (
+                          <span className="mt-1.5 block space-y-1 text-xs">
+                            <span className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+                              <span className={`font-semibold ${cashStatusColor(cashStatus)}`}>
+                                รับ–จ่ายสุทธิ {formatCurrency(branchSummary.summary.netCashFlow)}
+                              </span>
+                              <span className={`rounded-full px-2 py-0.5 font-semibold ${
+                                cashStatus === "low"
+                                  ? "bg-danger/10 text-danger"
+                                  : cashStatus === "normal"
+                                    ? "bg-success/10 text-success"
+                                    : "bg-ink/5 text-ink/55"
+                              }`}>
+                                {statusLabel}
+                              </span>
+                            </span>
+                            <span className="block font-semibold text-ink/75">
+                              นน.ยางคงเหลือ {formatNumber(branchSummary.summary.rubberInventoryWeight)} กก.
+                            </span>
+                            <span className="flex items-baseline justify-between gap-2 font-semibold text-ink/75">
+                              <span>ซื้อยางวันนี้</span>
+                              <span>{formatCurrency(branchSummary.summary.purchaseToday.paidTotal)}</span>
+                            </span>
+                            <span className="flex items-center gap-1 text-[11px] text-ink/50">
+                              <span>
+                                {formatNumber(branchSummary.summary.purchaseToday.billCount)} บิล · {formatNumber(branchSummary.summary.purchaseToday.netWeight)} กก.
+                              </span>
+                              {dataIsStale && (
+                                <span
+                                  role="img"
+                                  aria-label={`ข้อมูลไม่สด ข้อมูลล่าสุด ${formatCalculatedAt(branchSummary.calculatedAt)}`}
+                                  title={`ข้อมูลล่าสุด ${formatCalculatedAt(branchSummary.calculatedAt)}`}
+                                  className="inline-flex items-center"
+                                >
+                                  <Clock3 size={12} />
+                                </span>
+                              )}
+                            </span>
+                          </span>
+                        ) : branchSummaries.isPending ? (
+                          <span className="mt-1.5 block text-xs text-ink/45">{statusLabel}</span>
+                        ) : (
+                          <span className="mt-1.5 block space-y-1 text-xs text-ink/50">
+                            <span className="flex flex-wrap items-center justify-between gap-2">
+                              <span>รับ–จ่ายสุทธิ —</span>
+                              <span className="rounded-full bg-ink/5 px-2 py-0.5 font-semibold">
+                                {statusLabel}
+                              </span>
+                            </span>
+                            <span className="block">นน.ยางคงเหลือ —</span>
+                            <span className="flex justify-between gap-2">
+                              <span>ซื้อยางวันนี้</span>
+                              <span>—</span>
+                            </span>
+                          </span>
+                        )}
+                      </span>
                     </button>
                   );
                 })}
@@ -219,6 +346,7 @@ export function AppHeader({
       {telegramConfigOpen && (
         <TelegramBadgeConfigModal
           selectedLocationId={selectedLocationId}
+          onDashboardConfigSaved={() => void refetchBranchSummaries()}
           onClose={() => setTelegramConfigOpen(false)}
         />
       )}

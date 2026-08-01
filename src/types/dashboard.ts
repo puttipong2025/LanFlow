@@ -64,6 +64,23 @@ export type DashboardOverview = DashboardMoneyFeed & {
   summary: DashboardSummary;
 };
 
+export type DashboardBranchCashStatus =
+  | "low"
+  | "normal"
+  | "unconfigured"
+  | "no_data";
+
+export type DashboardBranchSummary = {
+  locationId: string;
+  snapshotStatus: DashboardSnapshot["status"] | null;
+  calculatedAt: string | null;
+  cashStatus: DashboardBranchCashStatus;
+  summary: Pick<
+    DashboardSummary,
+    "netCashFlow" | "rubberInventoryWeight" | "purchaseToday"
+  > | null;
+};
+
 export type DashboardStockThreshold = {
   productId: string;
   name: string;

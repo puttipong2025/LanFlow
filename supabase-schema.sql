@@ -6646,6 +6646,57 @@ $$;
 ALTER FUNCTION "public"."get_dashboard_alerts_for_telegram"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."get_dashboard_branch_summaries"() RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  payload jsonb;
+begin
+  if not private.is_active_user() then
+    raise exception 'Access denied';
+  end if;
+
+  select coalesce(
+    jsonb_agg(
+      jsonb_build_object(
+        'locationId', l.id,
+        'snapshotStatus', s.status,
+        'calculatedAt', s.calculated_at,
+        'cashStatus', case
+          when s.summary is null then 'no_data'
+          when coalesce(t.is_configured, false) = false then 'unconfigured'
+          when (s.summary ->> 'netCashFlow')::numeric < t.net_cash_min then 'low'
+          else 'normal'
+        end,
+        'summary', case
+          when s.summary is null then null
+          else jsonb_build_object(
+            'netCashFlow', s.summary -> 'netCashFlow',
+            'rubberInventoryWeight', s.summary -> 'rubberInventoryWeight',
+            'purchaseToday', s.summary -> 'purchaseToday'
+          )
+        end
+      )
+      order by l.created_at, l.id
+    ),
+    '[]'::jsonb
+  )
+  into payload
+  from public.locations l
+  left join public.dashboard_branch_snapshots s on s.location_id = l.id
+  left join public.dashboard_alert_thresholds t on t.location_id = l.id
+  where l.is_active = true
+    and public.can_access_location(l.id);
+
+  return payload;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_dashboard_branch_summaries"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."get_dashboard_money_feed"("p_location_id" "uuid", "p_cursor_at" timestamp with time zone DEFAULT NULL::timestamp with time zone, "p_cursor_key" "text" DEFAULT NULL::"text", "p_page_size" integer DEFAULT 10) RETURNS "jsonb"
     LANGUAGE "plpgsql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -14731,6 +14782,11 @@ GRANT ALL ON FUNCTION "public"."get_dashboard_alert_thresholds"("p_location_id" 
 
 REVOKE ALL ON FUNCTION "public"."get_dashboard_alerts_for_telegram"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_dashboard_alerts_for_telegram"() TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_dashboard_branch_summaries"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_dashboard_branch_summaries"() TO "authenticated";
 
 
 

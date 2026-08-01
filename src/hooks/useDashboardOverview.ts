@@ -3,12 +3,32 @@
 import { useQuery } from "@tanstack/react-query";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import type {
+  DashboardBranchSummary,
   DashboardMoneyFeed,
   DashboardSnapshot,
 } from "@/types/dashboard";
 
+export const DASHBOARD_BRANCH_SUMMARIES_QUERY_KEY = "dashboardBranchSummaries";
 export const DASHBOARD_SNAPSHOT_QUERY_KEY = "dashboardSnapshot";
 export const DASHBOARD_MONEY_FEED_QUERY_KEY = "dashboardMoneyFeed";
+
+export function useDashboardBranchSummaries(ownerUserId: string, online: boolean) {
+  return useQuery({
+    queryKey: [DASHBOARD_BRANCH_SUMMARIES_QUERY_KEY, ownerUserId],
+    enabled: Boolean(ownerUserId) && online,
+    queryFn: async ({ signal }) => {
+      const response = await authFetch(
+        "/api/lanflow/dashboard/branch-summaries",
+        { cache: "no-store", signal },
+      );
+      await assertApiResponse(response);
+      return response.json() as Promise<DashboardBranchSummary[]>;
+    },
+    staleTime: Number.POSITIVE_INFINITY,
+    refetchOnReconnect: "always",
+    retry: 1,
+  });
+}
 
 export function useDashboardSnapshot(locationId: string, online: boolean) {
   return useQuery({

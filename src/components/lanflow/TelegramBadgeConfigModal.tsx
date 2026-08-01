@@ -32,9 +32,11 @@ function parseError(payload: unknown, fallback: string) {
 
 export function TelegramBadgeConfigModal({
   onClose,
+  onDashboardConfigSaved,
   selectedLocationId,
 }: {
   onClose: () => void;
+  onDashboardConfigSaved: () => void;
   selectedLocationId: string;
 }) {
   const [config, setConfig] = useState<EditableConfig | null>(null);
@@ -139,6 +141,7 @@ export function TelegramBadgeConfigModal({
       );
     }
     setDashboardConfig(dashboardPayload);
+    onDashboardConfigSaved();
 
     const response = await authFetch("/api/lanflow/telegram-badge/config", {
       method: "PUT",

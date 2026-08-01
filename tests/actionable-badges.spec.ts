@@ -232,8 +232,9 @@ test("module nav and branch selector show the same actionable branch work", asyn
     await expect(page.getByRole("listbox", { name: "สาขาที่เข้าถึงได้" }))
       .toBeVisible();
     await expect(
-      page.locator(`[role="option"][data-location-id="${location!.id}"] span`)
-        .last(),
+      page.locator(
+        `[role="option"][data-location-id="${location!.id}"] [data-branch-badge]`,
+      ),
     ).toHaveText(/^[1-9]\d*$|^99\+$/);
     await page.keyboard.press("Escape");
     await expect(page.getByRole("listbox", { name: "สาขาที่เข้าถึงได้" }))
