@@ -177,7 +177,7 @@ export function AdminModule({
     const actionText = nextAccess ? "เปิดสิทธิ์ผู้จัดการระบบ" : "ปิดสิทธิ์ผู้จัดการระบบ";
     const result = await appSwal.fire({
       title: `${actionText}?`,
-      text: "สิทธิ์นี้รวมตั้งค่าอนุมัติ เพิ่มสินค้า/สต็อกสินค้า โอนเงิน และงานผู้ดูแลส่วนใหญ่ แต่ไม่รวมการให้สิทธิ์นี้ต่อหรือแก้ role ของ super_admin",
+      text: "สิทธิ์นี้รวมตั้งค่าอนุมัติ เพิ่มสินค้า/สต็อกสินค้า และงานผู้ดูแลส่วนใหญ่ แต่ไม่รวมการให้สิทธิ์นี้ต่อหรือแก้ role ของ super_admin",
       icon: "warning",
       showCancelButton: true,
       confirmButtonText: "ยืนยัน",
@@ -202,6 +202,44 @@ export function AdminModule({
     } catch (error) {
       console.error(error);
       toast.error("อัปเดตสิทธิ์ผู้จัดการระบบไม่สำเร็จ");
+    }
+  }
+
+  async function handleToggleMoneyTransferAccess(userId: string, currentAccess: boolean) {
+    if (!canManageSystem) {
+      toast.error("เฉพาะ super_admin หรือผู้จัดการระบบเท่านั้นที่กำหนดสิทธิ์โอนเงินได้");
+      return;
+    }
+
+    const nextAccess = !currentAccess;
+    const actionText = nextAccess ? "เปิดสิทธิ์โอนเงิน" : "ปิดสิทธิ์โอนเงิน";
+    const result = await appSwal.fire({
+      title: `${actionText}?`,
+      text: "สิทธิ์นี้ใช้ได้ครบภายในสาขาที่บัญชีได้รับมอบหมาย",
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonText: "ยืนยัน",
+      confirmButtonColor: nextAccess ? "#2f6b4f" : "#ef4444"
+    });
+    if (!result.isConfirmed) return;
+
+    try {
+      const res = await authFetch(`/api/lanflow/admin/users/${userId}/money-transfer-access`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ canAccessMoneyTransfer: nextAccess })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || "อัปเดตสิทธิ์โอนเงินไม่สำเร็จ");
+        return;
+      }
+
+      toast.success(`${actionText}สำเร็จ`);
+      loadUsers();
+    } catch (error) {
+      console.error(error);
+      toast.error("อัปเดตสิทธิ์โอนเงินไม่สำเร็จ");
     }
   }
 
@@ -425,7 +463,7 @@ export function AdminModule({
             {users
               .filter(user => canManagePermissions || user.role !== "super_admin")
               .map((user) => (
-              <div key={user.id} className="rounded-md border border-black/10 p-3">
+              <div key={user.id} data-user-id={user.id} className="rounded-md border border-black/10 p-3">
                 <div className="flex items-start justify-between">
                   <div>
                     <h3 className="font-bold text-ink flex items-center gap-2">
@@ -436,6 +474,11 @@ export function AdminModule({
                         <span className="inline-flex items-center gap-1 text-xs bg-river/10 text-river px-1.5 py-0.5 rounded border border-river/20">
                           <ShieldCheck size={12} />
                           ผู้จัดการระบบ
+                        </span>
+                      )}
+                      {user.role !== 'super_admin' && user.canAccessSystemManager !== true && user.canAccessMoneyTransfer === true && (
+                        <span className="text-xs bg-river/10 text-river px-1.5 py-0.5 rounded border border-river/20">
+                          โอนเงิน
                         </span>
                       )}
                       {user.isActive === false && <span className="text-xs bg-red-100 text-red-700 px-1.5 py-0.5 rounded border border-red-200">ถูกระงับการใช้งาน</span>}
@@ -479,6 +522,18 @@ export function AdminModule({
                         }`}
                       >
                         {user.canAccessSystemManager === true ? 'ปิดสิทธิ์ผู้จัดการระบบ' : 'เปิดสิทธิ์ผู้จัดการระบบ'}
+                      </button>
+                    )}
+                    {user.role !== 'super_admin' && user.canAccessSystemManager !== true && canManageSystem && (
+                      <button
+                        onClick={() => handleToggleMoneyTransferAccess(user.id, user.canAccessMoneyTransfer === true)}
+                        className={`text-xs px-2 py-1 rounded border transition-colors ${
+                          user.canAccessMoneyTransfer === true
+                            ? 'border-clay bg-clay text-white hover:bg-clay/90'
+                            : 'border-river bg-river text-white hover:bg-river/90'
+                        }`}
+                      >
+                        {user.canAccessMoneyTransfer === true ? 'ปิดสิทธิ์โอนเงิน' : 'เปิดสิทธิ์โอนเงิน'}
                       </button>
                     )}
                   </div>

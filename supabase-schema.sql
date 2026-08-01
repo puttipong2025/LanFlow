@@ -682,6 +682,14 @@ CREATE OR REPLACE FUNCTION "private"."can_access_money_transfer_module"() RETURN
     SET "search_path" TO ''
     AS $$
   select private.can_access_super_admin_features()
+    or exists (
+      select 1
+      from public.profiles p
+      where p.id = auth.uid()
+        and p.is_active = true
+        and p.role in ('user', 'admin')
+        and p.can_access_money_transfer = true
+    )
 $$;
 
 

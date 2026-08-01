@@ -23,7 +23,7 @@ export async function PATCH(
     const admin = createSupabaseAdminClient();
     const { data: targetUser, error: targetError } = await admin
       .from("profiles")
-      .select("role")
+      .select("role, can_access_money_transfer")
       .eq("id", userId)
       .maybeSingle();
 
@@ -43,7 +43,6 @@ export async function PATCH(
       .from("profiles")
       .update({
         can_access_super_admin_features: body.canAccessSystemManager,
-        can_access_money_transfer: body.canAccessSystemManager,
         updated_at: new Date().toISOString(),
       })
       .eq("id", userId);
@@ -53,7 +52,8 @@ export async function PATCH(
     return NextResponse.json({
       success: true,
       canAccessSystemManager: body.canAccessSystemManager,
-      canAccessMoneyTransfer: body.canAccessSystemManager,
+      canAccessMoneyTransfer:
+        body.canAccessSystemManager || targetUser.can_access_money_transfer === true,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not update system manager access";
