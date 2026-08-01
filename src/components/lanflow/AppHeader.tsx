@@ -273,9 +273,8 @@ export function AppHeader({
                             <span className="block font-semibold text-ink/75">
                               นน.ยางคงเหลือ {formatNumber(branchSummary.summary.rubberInventoryWeight)} กก.
                             </span>
-                            <span className="flex items-baseline justify-between gap-2 font-semibold text-ink/75">
-                              <span>ซื้อยางวันนี้</span>
-                              <span>{formatCurrency(branchSummary.summary.purchaseToday.paidTotal)}</span>
+                            <span className="block font-semibold text-ink/75">
+                              ซื้อยางวันนี้ {formatCurrency(branchSummary.summary.purchaseToday.paidTotal)}
                             </span>
                             <span className="flex items-center gap-1 text-[11px] text-ink/50">
                               <span>

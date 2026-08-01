@@ -75,8 +75,7 @@ test.describe("branch selector overview", () => {
     await expect(option.locator(".text-danger").filter({ hasText: "รับ–จ่ายสุทธิ" }))
       .toBeVisible();
     await expect(option).toContainText("นน.ยางคงเหลือ 18,420 กก.");
-    await expect(option).toContainText("ซื้อยางวันนี้");
-    await expect(option).toContainText("฿289,239");
+    await expect(option).toContainText("ซื้อยางวันนี้ ฿289,239");
     await expect(option).toContainText("30 บิล · 7,959 กก.");
   });
 
