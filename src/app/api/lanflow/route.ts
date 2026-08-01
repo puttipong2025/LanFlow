@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
         .select("*")
         .eq("is_active", true)
         .order("created_at", { ascending: true }),
-      result.supabase.from("profiles").select("id, phone, name, role, is_active, can_access_super_admin_features, can_access_money_transfer").eq("id", userId).single(),
+      result.supabase.from("profiles").select("id, phone, name, role, is_active, can_access_super_admin_features, can_access_money_transfer, can_manage_time_payroll").eq("id", userId).single(),
     ]);
 
     if (locationsResult.error) throw locationsResult.error;
@@ -42,7 +42,12 @@ export async function GET(request: NextRequest) {
       canAccessMoneyTransfer:
         profileResult.data.role === "super_admin" ||
         profileResult.data.can_access_super_admin_features === true ||
-        profileResult.data.can_access_money_transfer === true
+        profileResult.data.can_access_money_transfer === true,
+      canManageTimePayroll:
+        profileResult.data.role === "super_admin" ||
+        profileResult.data.can_access_super_admin_features === true ||
+        profileResult.data.can_manage_time_payroll === true,
+      primaryLocationId: result.auth.primaryLocationId
     };
 
     return NextResponse.json({ locations, profile });

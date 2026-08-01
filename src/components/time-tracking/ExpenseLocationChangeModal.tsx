@@ -4,16 +4,32 @@ import { useState } from "react";
 
 import type { Location } from "@/types";
 
+const CENTRAL_OUTSIDE = "__central_outside_system__";
+
 export function ExpenseLocationChangeModal({
   locations,
+  primaryLocationId,
+  currentLocationId,
   onClose,
   onSubmit,
 }: {
   locations: Location[];
+  primaryLocationId?: string | null;
+  currentLocationId?: string | null;
   onClose: () => void;
-  onSubmit: (locationId: string, comment: string) => Promise<boolean>;
+  onSubmit: (locationId: string | null, comment: string) => Promise<boolean>;
 }) {
-  const [locationId, setLocationId] = useState(locations.length === 1 ? locations[0]?.id ?? "" : "");
+  const orderedLocations = [...locations].sort((a, b) =>
+    a.id === primaryLocationId ? -1 : b.id === primaryLocationId ? 1 : 0
+  );
+  const initialLocationId = currentLocationId === null
+    ? CENTRAL_OUTSIDE
+    : currentLocationId && locations.some((item) => item.id === currentLocationId)
+      ? currentLocationId
+      : primaryLocationId && locations.some((item) => item.id === primaryLocationId)
+        ? primaryLocationId
+        : locations[0]?.id ?? CENTRAL_OUTSIDE;
+  const [locationId, setLocationId] = useState(initialLocationId);
   const [comment, setComment] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -21,7 +37,7 @@ export function ExpenseLocationChangeModal({
     if (!locationId) return;
     setSaving(true);
     try {
-      await onSubmit(locationId, comment);
+      await onSubmit(locationId === CENTRAL_OUTSIDE ? null : locationId, comment);
     } finally {
       setSaving(false);
     }
@@ -30,9 +46,9 @@ export function ExpenseLocationChangeModal({
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4">
       <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl">
-        <h2 className="text-lg font-bold text-ink">เปลี่ยนสาขาค่าใช้จ่าย</h2>
+        <h2 className="text-lg font-bold text-ink">เปลี่ยนวิธีจ่าย</h2>
         <label className="mt-5 block text-sm font-semibold text-ink" htmlFor="change-expense-location">
-          สาขาค่าใช้จ่ายใหม่
+          วิธีจ่ายใหม่
         </label>
         <select
           id="change-expense-location"
@@ -41,10 +57,10 @@ export function ExpenseLocationChangeModal({
           onChange={(event) => setLocationId(event.target.value)}
           className="mt-2 w-full rounded-md border border-black/15 bg-white px-3 py-2"
         >
-          {locations.length > 1 && <option value="" disabled>เลือกสาขา</option>}
-          {locations.map((location) => (
-            <option key={location.id} value={location.id}>{location.name}</option>
+          {orderedLocations.map((location) => (
+            <option key={location.id} value={location.id}>{location.name}{location.id === primaryLocationId ? " (สาขาหลัก)" : ""}</option>
           ))}
+          <option value={CENTRAL_OUTSIDE}>ส่วนกลางจ่าย (จ่ายนอกระบบ)</option>
         </select>
         <label className="mt-4 block text-sm font-semibold text-ink" htmlFor="change-expense-comment">
           หมายเหตุ (ถ้ามี)

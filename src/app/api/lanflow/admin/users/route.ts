@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
     // Fetch all profiles
     const { data: profiles, error: profilesError } = await supabase
       .from("profiles")
-      .select("id, name, phone, role, is_active, can_access_super_admin_features, can_access_money_transfer")
+      .select("id, name, phone, role, is_active, can_access_super_admin_features, can_access_money_transfer, can_manage_time_payroll")
       .order("created_at", { ascending: true });
 
     if (profilesError) throw profilesError;
@@ -22,7 +22,7 @@ export async function GET(request: NextRequest) {
     // Fetch user_locations mapping
     const { data: userLocations, error: ulError } = await supabase
       .from("user_locations")
-      .select("user_id, location_id");
+      .select("user_id, location_id, is_primary");
 
     if (ulError) throw ulError;
 
@@ -43,11 +43,16 @@ export async function GET(request: NextRequest) {
       role: p.role,
       isActive: p.is_active,
       locationIds: locationMap.get(p.id) || [],
+      primaryLocationId: userLocations.find((ul) => ul.user_id === p.id && ul.is_primary === true)?.location_id ?? null,
       canAccessSystemManager: p.role === "super_admin" || p.can_access_super_admin_features === true,
       canAccessMoneyTransfer:
         p.role === "super_admin" ||
         p.can_access_super_admin_features === true ||
         p.can_access_money_transfer === true,
+      canManageTimePayroll:
+        p.role === "super_admin" ||
+        p.can_access_super_admin_features === true ||
+        p.can_manage_time_payroll === true,
     }));
 
     return NextResponse.json({ users: result });
@@ -144,7 +149,9 @@ export async function POST(request: NextRequest) {
           role,
           locationIds,
           canAccessSystemManager: false,
-          canAccessMoneyTransfer: false
+          canAccessMoneyTransfer: false,
+          canManageTimePayroll: false,
+          primaryLocationId: locationIds[0] ?? null
         }
       },
       { status: 201 }

@@ -9,8 +9,10 @@ export type AuthTokenPayload = {
   name: string;
   role: AppRole;
   locationIds: string[];
+  primaryLocationId: string | null;
   canAccessSystemManager: boolean;
   canAccessMoneyTransfer: boolean;
+  canManageTimePayroll: boolean;
 };
 
 type AuthSuccess = {
@@ -45,12 +47,12 @@ export async function requireAuth(_request?: Request): Promise<AuthResult> {
     await Promise.all([
       supabase
         .from("profiles")
-        .select("id, phone, name, role, is_active, can_access_super_admin_features, can_access_money_transfer")
+        .select("id, phone, name, role, is_active, can_access_super_admin_features, can_access_money_transfer, can_manage_time_payroll")
         .eq("id", userId)
         .maybeSingle(),
       supabase
         .from("user_locations")
-        .select("location_id, locations!inner(is_active)")
+        .select("location_id, is_primary, locations!inner(is_active)")
         .eq("user_id", userId)
         .eq("locations.is_active", true)
     ]);
@@ -78,11 +80,17 @@ export async function requireAuth(_request?: Request): Promise<AuthResult> {
       name: profile.name,
       role: profile.role as AppRole,
       locationIds: (assignments ?? []).map((item) => item.location_id as string),
+      primaryLocationId:
+        (assignments ?? []).find((item) => item.is_primary === true)?.location_id as string | undefined ?? null,
       canAccessSystemManager: profile.role === "super_admin" || profile.can_access_super_admin_features === true,
       canAccessMoneyTransfer:
         profile.role === "super_admin" ||
         profile.can_access_super_admin_features === true ||
-        profile.can_access_money_transfer === true
+        profile.can_access_money_transfer === true,
+      canManageTimePayroll:
+        profile.role === "super_admin" ||
+        profile.can_access_super_admin_features === true ||
+        profile.can_manage_time_payroll === true
     },
     supabase
   };

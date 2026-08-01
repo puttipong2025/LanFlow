@@ -18,8 +18,10 @@ export type Profile = {
   role: AppRole;
   isActive: boolean;
   locationIds: string[];
+  primaryLocationId?: string | null;
   canAccessSystemManager?: boolean;
   canAccessMoneyTransfer?: boolean;
+  canManageTimePayroll?: boolean;
 };
 
 export type RubberBill = {

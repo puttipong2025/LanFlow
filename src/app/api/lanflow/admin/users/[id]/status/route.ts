@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { hasSystemManagerAccess, requireRoleOrSystemManager } from "@/lib/server/auth";
+import { requireSystemManager } from "@/lib/server/auth";
 import { createSupabaseAdminClient } from "@/lib/server/supabase-admin";
 
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const adminCheck = await requireRoleOrSystemManager(request, ["super_admin", "admin"]);
+  const adminCheck = await requireSystemManager(request);
   if (!adminCheck.ok) return adminCheck.response;
 
   try {
@@ -42,10 +42,6 @@ export async function PATCH(
     if (targetUser.role === "super_admin") {
       return NextResponse.json({ error: "Cannot change status of super_admin" }, { status: 403 });
     }
-    if (targetUser.role === "admin" && !hasSystemManagerAccess(adminCheck.auth)) {
-      return NextResponse.json({ error: "Only system managers can change admin status" }, { status: 403 });
-    }
-
     const { error } = await admin
       .from("profiles")
       .update({ is_active: body.isActive })

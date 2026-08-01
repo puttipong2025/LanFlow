@@ -51,7 +51,7 @@ export async function GET(request: NextRequest) {
   const targetUserId = requestedUserId || result.auth.sub;
   if (
     !UUID_PATTERN.test(targetUserId)
-    || (targetUserId !== result.auth.sub && !result.auth.canAccessSystemManager)
+    || (targetUserId !== result.auth.sub && !result.auth.canManageTimePayroll)
   ) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
   }

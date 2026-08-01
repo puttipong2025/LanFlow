@@ -117,6 +117,32 @@ test.describe("Time Tracking branch expense @time-tracking", () => {
         cost: amount,
       }));
 
+      const changedToCentral = await request.post("/api/lanflow/time-tracking/admin", { data: {
+        action: "CHANGE_EXPENSE_LOCATION",
+        payload: {
+          source_type: "transaction",
+          source_id: sourceId,
+          expense_location_id: null,
+          admin_comment: "",
+        },
+      } });
+      expect(changedToCentral.ok(), await changedToCentral.text()).toBeTruthy();
+      const centralFeed = await request.get(
+        `/api/lanflow/income-expense/feed?locationId=${locationId}&from=${bangkokDate()}&to=${bangkokDate()}`,
+      );
+      const centralRows = (await centralFeed.json()).rows as Array<{ relationSourceId?: string }>;
+      expect(centralRows.some((row) => row.relationSourceId === sourceId)).toBeFalsy();
+
+      const changedBackToBranch = await request.post("/api/lanflow/time-tracking/admin", { data: {
+        action: "CHANGE_EXPENSE_LOCATION",
+        payload: {
+          source_type: "transaction",
+          source_id: sourceId,
+          expense_location_id: locationId,
+        },
+      } });
+      expect(changedBackToBranch.ok(), await changedBackToBranch.text()).toBeTruthy();
+
       const deleted = await request.post("/api/lanflow/time-tracking/admin", { data: {
         action: "DELETE_TRANSACTION",
         payload: { transaction_id: sourceId },
@@ -180,6 +206,138 @@ test.describe("Time Tracking branch expense @time-tracking", () => {
       await deleteEmployee(employeeId);
     }
   });
+
+  test("positive payroll can move between central outside payment and a branch expense", async ({ request }) => {
+    const employeeId = await createEmployee("7");
+    try {
+      const workDate = bangkokDate();
+      const month = workDate.slice(0, 7);
+      const work = await request.post("/api/lanflow/time-tracking/admin", { data: {
+        action: "ADD_BULK_SEGMENTS",
+        payload: {
+          user_id: employeeId,
+          selections: [{ date: workDate, work_type: "FULL_DAY" }],
+          full_snapshot: { [workDate]: "FULL_DAY" },
+          admin_comment: "ทดสอบเงินเดือนยอดบวก",
+        },
+      } });
+      expect(work.ok(), await work.text()).toBeTruthy();
+
+      const created = await request.post("/api/lanflow/time-tracking/admin", { data: {
+        action: "CREATE_PAYROLL_SLIP",
+        payload: { user_id: employeeId, month, auto_start_next_month: false },
+      } });
+      expect(created.ok(), await created.text()).toBeTruthy();
+      const slip = (await created.json()).slip as { id: string; net_pay: number };
+      expect(Number(slip.net_pay)).toBeGreaterThan(0);
+
+      const approved = await request.post("/api/lanflow/time-tracking/admin", { data: {
+        action: "APPROVE_PAYROLL_SLIP",
+        payload: {
+          slip_id: slip.id,
+          status: "APPROVED",
+          expense_location_id: null,
+          admin_comment: "",
+        },
+      } });
+      expect(approved.ok(), await approved.text()).toBeTruthy();
+
+      const me = await (await request.get("/api/auth/me")).json() as {
+        profile: { locationIds: string[] };
+      };
+      for (const locationId of me.profile.locationIds) {
+        const feed = await request.get(
+          `/api/lanflow/income-expense/feed?locationId=${locationId}&from=${workDate}&to=${workDate}`,
+        );
+        expect(feed.ok()).toBeTruthy();
+        const rows = (await feed.json()).rows as Array<{ relationSourceId?: string }>;
+        expect(rows.some((row) => row.relationSourceId === slip.id)).toBeFalsy();
+      }
+
+      const branchId = me.profile.locationIds[0];
+      expect(branchId).toBeTruthy();
+      const changedToBranch = await request.post("/api/lanflow/time-tracking/admin", { data: {
+        action: "CHANGE_EXPENSE_LOCATION",
+        payload: {
+          source_type: "payroll_slip",
+          source_id: slip.id,
+          expense_location_id: branchId,
+          admin_comment: "",
+        },
+      } });
+      expect(changedToBranch.ok(), await changedToBranch.text()).toBeTruthy();
+      const branchFeed = await request.get(
+        `/api/lanflow/income-expense/feed?locationId=${branchId}&from=${workDate}&to=${workDate}`,
+      );
+      const branchRows = (await branchFeed.json()).rows as Array<{ relationSourceId?: string; relationSourceType?: string }>;
+      expect(branchRows).toContainEqual(expect.objectContaining({
+        relationSourceId: slip.id,
+        relationSourceType: "payroll_slip",
+      }));
+
+      const changedBackToCentral = await request.post("/api/lanflow/time-tracking/admin", { data: {
+        action: "CHANGE_EXPENSE_LOCATION",
+        payload: {
+          source_type: "payroll_slip",
+          source_id: slip.id,
+          expense_location_id: null,
+        },
+      } });
+      expect(changedBackToCentral.ok(), await changedBackToCentral.text()).toBeTruthy();
+    } finally {
+      await deleteEmployee(employeeId);
+    }
+  });
+
+  test("approves a withdrawal as an outside-system central payment without deriving an expense", async ({ request }) => {
+    const employeeId = await createEmployee("6");
+    try {
+      const created = await request.post("/api/lanflow/time-tracking/admin", { data: {
+        action: "ADMIN_REQUEST_WITHDRAWAL",
+        payload: {
+          user_id: employeeId,
+          amount: 321,
+          effective_date: bangkokDate(),
+        },
+      } });
+      expect(created.ok()).toBeTruthy();
+      const sourceId = ((await created.json()).result as { id: string }).id;
+
+      const approved = await request.post("/api/lanflow/time-tracking/admin", { data: {
+        action: "APPROVE_TRANSACTION",
+        payload: {
+          transaction_id: sourceId,
+          status: "APPROVED",
+          expense_location_id: null,
+          admin_comment: "",
+        },
+      } });
+      expect(approved.ok(), await approved.text()).toBeTruthy();
+
+      const service = serviceClient();
+      const stored = await service
+        .from("financial_transactions")
+        .select("status, expense_location_id")
+        .eq("id", sourceId)
+        .single();
+      expect(stored.error).toBeNull();
+      expect(stored.data).toEqual({ status: "APPROVED", expense_location_id: null });
+
+      const me = await (await request.get("/api/auth/me")).json() as {
+        profile: { locationIds: string[] };
+      };
+      for (const locationId of me.profile.locationIds) {
+        const feed = await request.get(
+          `/api/lanflow/income-expense/feed?locationId=${locationId}&from=${bangkokDate()}&to=${bangkokDate()}`,
+        );
+        expect(feed.ok()).toBeTruthy();
+        const rows = (await feed.json()).rows as Array<{ relationSourceId?: string }>;
+        expect(rows.some((row) => row.relationSourceId === sourceId)).toBeFalsy();
+      }
+    } finally {
+      await deleteEmployee(employeeId);
+    }
+  });
 });
 
 test.describe("Time Tracking permission matrix @time-tracking", () => {
@@ -218,7 +376,7 @@ test.describe("Time Tracking permission matrix @time-tracking", () => {
     });
     try {
       const dashboard = await managerRequest.get("/api/lanflow/time-tracking/admin");
-      expect(dashboard.ok()).toBeTruthy();
+      expect(dashboard.ok(), await dashboard.text()).toBeTruthy();
 
       const allLocations = await service
         .from("locations")

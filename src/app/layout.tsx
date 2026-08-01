@@ -29,6 +29,8 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
     locationIds: authResult.auth.locationIds,
     canAccessSystemManager: authResult.auth.canAccessSystemManager,
     canAccessMoneyTransfer: authResult.auth.canAccessMoneyTransfer,
+    canManageTimePayroll: authResult.auth.canManageTimePayroll,
+    primaryLocationId: authResult.auth.primaryLocationId,
     isActive: true,
   } : null;
 

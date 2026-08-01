@@ -16,7 +16,9 @@ export async function GET(request: NextRequest) {
         role: result.auth.role,
         locationIds: result.auth.locationIds,
         canAccessSystemManager: result.auth.canAccessSystemManager,
-        canAccessMoneyTransfer: result.auth.canAccessMoneyTransfer
+        canAccessMoneyTransfer: result.auth.canAccessMoneyTransfer,
+        canManageTimePayroll: result.auth.canManageTimePayroll,
+        primaryLocationId: result.auth.primaryLocationId
       }
     });
   } catch (error) {

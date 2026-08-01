@@ -105,7 +105,6 @@ async function ensureTestUser() {
     user_id: testUserId,
     location_id: locations[0].id,
     assigned_by: testUserId,
-    is_primary: true,
   }, { onConflict: 'user_id,location_id' });
   if (assignmentError) throw assignmentError;
 }

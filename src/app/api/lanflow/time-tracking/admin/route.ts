@@ -74,7 +74,7 @@ function bangkokCurrentMonth() {
 export async function GET(request: NextRequest) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
-  if (!result.auth.canAccessSystemManager) {
+  if (!result.auth.canManageTimePayroll) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
   }
 
@@ -86,21 +86,23 @@ export async function GET(request: NextRequest) {
       managersResult,
       schedulesResult,
       currentSlipsResult,
+      paymentLocationsResult,
     ] = await Promise.all([
       result.supabase.from("profiles").select(`
-        id, name, phone, daily_wage, role, is_active,
+        id, name, phone, daily_wage, role, is_active, can_access_super_admin_features,
+        user_locations!user_locations_user_id_fkey(location_id, is_primary, locations!inner(is_active)),
         time_segments(id, start_time, end_time, report_lock_no)
       `),
       result.supabase
         .from("financial_transactions")
-        .select("id, profile_id, amount, effective_date, created_at, type, description, profiles!inner!financial_transactions_profile_id_fkey(name, role)")
+        .select("id, profile_id, amount, effective_date, created_at, type, description, profiles!financial_transactions_profile_id_fkey!inner(name, role)")
         .eq("status", "PENDING")
         .in("type", ["DEBT", "WITHDRAWAL"])
         .order("effective_date", { ascending: true })
         .order("created_at", { ascending: true }),
       result.supabase
         .from("payroll_slips")
-        .select("id, profile_id, month, net_pay, created_at, profiles!inner!payroll_slips_profile_id_fkey(name, role)")
+        .select("id, profile_id, month, net_pay, created_at, profiles!payroll_slips_profile_id_fkey!inner(name, role)")
         .eq("status", "PENDING"),
       result.supabase
         .from("profiles")
@@ -113,6 +115,7 @@ export async function GET(request: NextRequest) {
         .from("payroll_slips")
         .select("profile_id")
         .eq("month", bangkokCurrentMonth()),
+      result.supabase.rpc("get_time_payroll_payment_locations"),
     ]);
 
     if (usersResult.error) throw usersResult.error;
@@ -121,9 +124,24 @@ export async function GET(request: NextRequest) {
     if (managersResult.error) throw managersResult.error;
     if (schedulesResult.error) throw schedulesResult.error;
     if (currentSlipsResult.error) throw currentSlipsResult.error;
+    if (paymentLocationsResult.error) throw paymentLocationsResult.error;
 
-    const users = usersResult.data || [];
+    const users = (usersResult.data || []).filter((user) => {
+      if (result.auth.canAccessSystemManager) return true;
+      const primary = user.user_locations?.find((assignment) => {
+        const linkedLocations = Array.isArray(assignment.locations)
+          ? assignment.locations
+          : [assignment.locations];
+        return assignment.is_primary === true
+          && linkedLocations.some((location) => location?.is_active === true);
+      });
+      return ["user", "admin"].includes(user.role)
+        && user.can_access_super_admin_features !== true
+        && !!primary
+        && result.auth.locationIds.includes(primary.location_id);
+    });
     const userIds = users.map((user) => user.id);
+    const allowedUserIds = new Set(userIds);
     const debtTotals = new Map<string, number>();
 
     if (userIds.length > 0) {
@@ -154,18 +172,26 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       users: users.map((user) => ({
         ...user,
+        primary_location_id:
+          user.user_locations?.find((assignment) => assignment.is_primary === true)?.location_id ?? null,
+        user_locations: undefined,
         debt_remaining_amount: debtTotals.get(user.id) || 0,
         resume_schedule: schedules.get(user.id) || null,
         current_month_closed: currentClosedProfiles.has(user.id),
       })),
-      pendingTransactions: pendingTransactionsResult.data || [],
-      pendingSlips: pendingSlipsResult.data || [],
-      admins: (managersResult.data || [])
+      pendingTransactions: (pendingTransactionsResult.data || []).filter((item) => allowedUserIds.has(item.profile_id)),
+      pendingSlips: (pendingSlipsResult.data || []).filter((item) => allowedUserIds.has(item.profile_id)),
+      admins: result.auth.canAccessSystemManager ? (managersResult.data || [])
         .filter((profile) => profile.role === "super_admin" || profile.can_access_super_admin_features === true)
-        .map(({ id, name }) => ({ id, name })),
+        .map(({ id, name }) => ({ id, name })) : [{ id: result.auth.sub, name: result.auth.name }],
+      paymentLocations: paymentLocationsResult.data || [],
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown error";
+    const message = error instanceof Error
+      ? error.message
+      : typeof error === "object" && error && "message" in error
+        ? String(error.message)
+        : "Unknown error";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
@@ -173,7 +199,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
-  if (!result.auth.canAccessSystemManager) {
+  if (!result.auth.canManageTimePayroll) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
   }
 
@@ -262,7 +288,7 @@ export async function POST(request: NextRequest) {
       if (
         !isUuid(sourceId)
         || !["APPROVED", "REJECTED"].includes(status)
-        || (expense_location_id && !isUuid(expense_location_id))
+        || (expense_location_id !== null && expense_location_id !== undefined && !isUuid(expense_location_id))
       ) {
         return NextResponse.json({ error: "ข้อมูลการอนุมัติไม่ถูกต้อง" }, { status: 400 });
       }
@@ -271,7 +297,7 @@ export async function POST(request: NextRequest) {
         p_source_id: sourceId,
         p_decision: status,
         p_comment: admin_comment || null,
-        p_expense_location_id: expense_location_id || null,
+        p_expense_location_id: expense_location_id ?? null,
       });
       if (error) return rpcFailure(error);
       return NextResponse.json({ success: true, result: data });
@@ -282,7 +308,7 @@ export async function POST(request: NextRequest) {
       if (
         !["transaction", "payroll_slip"].includes(source_type)
         || !isUuid(source_id)
-        || !isUuid(expense_location_id)
+        || (expense_location_id !== null && !isUuid(expense_location_id))
       ) {
         return NextResponse.json({ error: "ข้อมูลการเปลี่ยนสาขาไม่ถูกต้อง" }, { status: 400 });
       }

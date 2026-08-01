@@ -1,5 +1,27 @@
 import { NextRequest, NextResponse } from "next/server";
-import { hasSystemManagerAccess, requireRoleOrSystemManager } from "@/lib/server/auth";
+import { hasSystemManagerAccess, requireRoleOrSystemManager, requireSystemManager } from "@/lib/server/auth";
+
+export async function PATCH(request: NextRequest) {
+  const manager = await requireSystemManager(request);
+  if (!manager.ok) return manager.response;
+
+  try {
+    const { userId, locationId } = await request.json();
+    if (!userId || !locationId) {
+      return NextResponse.json({ error: "Missing userId or locationId" }, { status: 400 });
+    }
+
+    const { data, error } = await manager.supabase.rpc("set_user_primary_location", {
+      p_user_id: userId,
+      p_location_id: locationId,
+    });
+    if (error) throw error;
+    return NextResponse.json({ success: true, result: data });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not change primary location";
+    return NextResponse.json({ error: message }, { status: 400 });
+  }
+}
 
 export async function POST(request: NextRequest) {
   const adminCheck = await requireRoleOrSystemManager(request, ["super_admin", "admin"]);
@@ -61,6 +83,7 @@ export async function DELETE(request: NextRequest) {
     const url = new URL(request.url);
     const userId = url.searchParams.get("userId");
     const locationId = url.searchParams.get("locationId");
+    const replacementLocationId = url.searchParams.get("replacementLocationId");
 
     if (!userId || !locationId) {
       return NextResponse.json({ error: "Missing userId or locationId" }, { status: 400 });
@@ -75,6 +98,39 @@ export async function DELETE(request: NextRequest) {
     }
     if (targetUser?.role === 'admin' && !hasSystemManagerAccess(adminCheck.auth)) {
       return NextResponse.json({ error: "Only system managers can modify admin locations" }, { status: 403 });
+    }
+
+    const { data: assignments, error: assignmentError } = await supabase
+      .from("user_locations")
+      .select("location_id, is_primary")
+      .eq("user_id", userId);
+    if (assignmentError) throw assignmentError;
+
+    const selected = assignments?.find((assignment) => assignment.location_id === locationId);
+    if (!selected) return NextResponse.json({ success: true });
+    const requiresReplacement = selected.is_primary === true && (assignments?.length ?? 0) > 1;
+
+    if (requiresReplacement && !hasSystemManagerAccess(adminCheck.auth)) {
+      return NextResponse.json(
+        { error: "สาขาหลักต้องให้ superadmin หรือผู้จัดการระบบเลือกสาขาหลักใหม่ก่อนลบ" },
+        { status: 403 }
+      );
+    }
+    if (requiresReplacement && !replacementLocationId) {
+      return NextResponse.json(
+        { error: "กรุณาเลือกสาขาหลักใหม่" },
+        { status: 409 }
+      );
+    }
+
+    if (hasSystemManagerAccess(adminCheck.auth)) {
+      const { error: rpcError } = await supabase.rpc("remove_user_location_with_primary_replacement", {
+        p_user_id: userId,
+        p_location_id: locationId,
+        p_replacement_location_id: replacementLocationId,
+      });
+      if (rpcError) throw rpcError;
+      return NextResponse.json({ success: true });
     }
 
     const { error: deleteError } = await supabase

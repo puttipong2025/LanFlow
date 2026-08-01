@@ -135,7 +135,7 @@ export function AdminModule({
   }
 
   async function handleToggleStatus(userId: string, currentStatus: boolean) {
-    if (!canManageSystem && !["super_admin", "admin"].includes(profile.role)) return;
+    if (!canManageSystem) return;
 
     const actionText = currentStatus ? "ระงับการใช้งาน" : "กู้คืนการใช้งาน";
     const result = await appSwal.fire({
@@ -243,6 +243,31 @@ export function AdminModule({
     }
   }
 
+  async function handleToggleTimePayrollAccess(userId: string, currentAccess: boolean) {
+    if (!canManageSystem) return;
+    const nextAccess = !currentAccess;
+    const actionText = nextAccess ? "เปิดสิทธิ์เวลาและเงินเดือน" : "ปิดสิทธิ์เวลาและเงินเดือน";
+    const result = await appSwal.fire({
+      title: `${actionText}?`,
+      text: "สิทธิ์นี้ใช้จัดการพนักงานที่มีสาขาหลักอยู่ในสาขาที่บัญชีนี้ดูแล",
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonText: "ยืนยัน",
+      confirmButtonColor: nextAccess ? "#2f6b4f" : "#ef4444",
+    });
+    if (!result.isConfirmed) return;
+
+    const res = await authFetch(`/api/lanflow/admin/users/${userId}/time-payroll-access`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ canManageTimePayroll: nextAccess }),
+    });
+    const data = await res.json();
+    if (!res.ok) return toast.error(data.error || "อัปเดตสิทธิ์เวลาและเงินเดือนไม่สำเร็จ");
+    toast.success(`${actionText}สำเร็จ`);
+    await loadUsers();
+  }
+
   async function handleCreateUser(event: React.FormEvent) {
     event.preventDefault();
     if (!canManageSystem && !["super_admin", "admin"].includes(profile.role)) return;
@@ -300,11 +325,50 @@ export function AdminModule({
     }
   }
 
-  async function handleRemoveLocationFromUser(userId: string, locationId: string) {
+  async function handleSetPrimaryLocation(userId: string, locationId: string) {
+    const res = await authFetch("/api/lanflow/admin/user-locations", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId, locationId }),
+    });
+    const data = await res.json();
+    if (!res.ok) return toast.error(data.error || "เปลี่ยนสาขาหลักไม่สำเร็จ");
+    toast.success("เปลี่ยนสาขาหลักแล้ว");
+    await loadUsers();
+  }
+
+  async function handleRemoveLocationFromUser(user: Profile, locationId: string) {
+    let replacementLocationId: string | undefined;
+    if (user.primaryLocationId === locationId && user.locationIds.length > 1) {
+      if (!canManageSystem) {
+        toast.error("เฉพาะ superadmin หรือผู้จัดการระบบเท่านั้นที่เปลี่ยนสาขาหลักได้");
+        return;
+      }
+      const choices = user.locationIds
+        .filter((id) => id !== locationId)
+        .reduce<Record<string, string>>((result, id) => {
+          result[id] = locations.find((location) => location.id === id)?.name ?? id;
+          return result;
+        }, {});
+      const replacement = await appSwal.fire({
+        title: "เลือกสาขาหลักใหม่",
+        text: "ต้องเลือกสาขาหลักใหม่ก่อนลบสาขาหลักเดิม",
+        input: "select",
+        inputOptions: choices,
+        inputPlaceholder: "เลือกสาขาหลักใหม่",
+        showCancelButton: true,
+        confirmButtonText: "เลือกและลบ",
+        inputValidator: (value) => value ? undefined : "กรุณาเลือกสาขาหลักใหม่",
+      });
+      if (!replacement.isConfirmed) return;
+      replacementLocationId = replacement.value;
+    }
     const result = await appSwal.fire({ title: 'Remove Branch?', text: "Are you sure you want to remove this branch from the user?", icon: 'warning', showCancelButton: true, confirmButtonText: 'Yes, remove it', confirmButtonColor: '#ef4444' });
     if (!result.isConfirmed) return;
     try {
-      const res = await authFetch(`/api/lanflow/admin/user-locations?userId=${userId}&locationId=${locationId}`, {
+      const params = new URLSearchParams({ userId: user.id, locationId });
+      if (replacementLocationId) params.set("replacementLocationId", replacementLocationId);
+      const res = await authFetch(`/api/lanflow/admin/user-locations?${params}`, {
         method: "DELETE"
       });
       if (res.ok) {
@@ -481,6 +545,11 @@ export function AdminModule({
                           โอนเงิน
                         </span>
                       )}
+                      {user.role !== 'super_admin' && user.canAccessSystemManager !== true && user.canManageTimePayroll === true && (
+                        <span className="text-xs bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded border border-amber-200">
+                          เวลาและเงินเดือน
+                        </span>
+                      )}
                       {user.isActive === false && <span className="text-xs bg-red-100 text-red-700 px-1.5 py-0.5 rounded border border-red-200">ถูกระงับการใช้งาน</span>}
                     </h3>
                     <p className="text-sm text-ink/70">{user.phone}</p>
@@ -500,7 +569,7 @@ export function AdminModule({
                         {user.role === 'admin' ? 'ลดสิทธิ์เป็น User' : 'เลื่อนเป็น Admin'}
                       </button>
                     )}
-                    {user.role !== 'super_admin' && user.id !== profile.id && (canManageSystem || profile.role === 'admin') && (
+                    {user.role !== 'super_admin' && user.id !== profile.id && canManageSystem && (
                       <button 
                         onClick={() => handleToggleStatus(user.id, user.isActive !== false)}
                         className={`text-xs px-2 py-1 rounded border transition-colors ${
@@ -536,6 +605,18 @@ export function AdminModule({
                         {user.canAccessMoneyTransfer === true ? 'ปิดสิทธิ์โอนเงิน' : 'เปิดสิทธิ์โอนเงิน'}
                       </button>
                     )}
+                    {user.role !== 'super_admin' && user.canAccessSystemManager !== true && canManageSystem && (
+                      <button
+                        onClick={() => handleToggleTimePayrollAccess(user.id, user.canManageTimePayroll === true)}
+                        className={`text-xs px-2 py-1 rounded border transition-colors ${
+                          user.canManageTimePayroll === true
+                            ? 'border-clay bg-clay text-white hover:bg-clay/90'
+                            : 'border-river bg-river text-white hover:bg-river/90'
+                        }`}
+                      >
+                        {user.canManageTimePayroll === true ? 'ปิดสิทธิ์เวลาและเงินเดือน' : 'เปิดสิทธิ์เวลาและเงินเดือน'}
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -549,9 +630,22 @@ export function AdminModule({
                         <span key={locId} className="inline-flex items-center gap-1 bg-river/10 text-river border border-river/20 rounded px-2 py-1 text-sm">
                           <Building2 size={14} />
                           {loc.name}
+                          {user.primaryLocationId === locId && (
+                            <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-semibold text-amber-800">
+                              สาขาหลัก
+                            </span>
+                          )}
+                          {canManageSystem && user.primaryLocationId !== locId && (
+                            <button
+                              onClick={() => handleSetPrimaryLocation(user.id, loc.id)}
+                              className="ml-1 rounded border border-river/30 bg-white px-2 py-1 text-xs text-river hover:bg-river/10"
+                            >
+                              ตั้งเป็นสาขาหลัก
+                            </button>
+                          )}
                           {user.role !== 'super_admin' && (canManageSystem || user.role !== 'admin') && (
                             <button 
-                              onClick={() => handleRemoveLocationFromUser(user.id, loc.id)}
+                              onClick={() => handleRemoveLocationFromUser(user, loc.id)}
                               className="ml-1 rounded bg-clay px-2 py-1 text-white transition-colors hover:bg-clay/90"
                               title="ลบสิทธิ์สาขา"
                             >

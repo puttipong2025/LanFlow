@@ -356,6 +356,16 @@ offline queue อยู่ที่ `src/lib/idb-queue.ts`:
 - ฝั่ง database มี helper `public.calculate_time_segment_paid_days(start_time, end_time)` และ `public.calculate_paid_work_days(profile_id, period_start, period_end)` เพื่อให้ job/RPC อย่าง `deduct_debts_daily()` ใช้สูตรเดียวกับ API
 - client countdown ที่ split ที่ `15:00` เป็น UX helper เท่านั้น ไม่ใช่ source of truth; server/API/DB ต้องคำนวณค่าแรงซ้ำจาก `time_segments`
 
+### Time/Payroll Delegated Management
+
+- `profiles.can_manage_time_payroll` ให้ `user` และ `admin` ใช้ manager workflow ของโมดูลนี้เท่ากันโดยไม่เปลี่ยน role หรือสิทธิ์โมดูลอื่น; `super_admin` และ `can_access_super_admin_features` ได้สิทธิ์ส่วนกลางอัตโนมัติ
+- `user_locations.is_primary` เป็นขอบเขตเจ้าของข้อมูลเวลา/เงินเดือนเพียงจุดเดียว ผู้ได้รับมอบสิทธิ์เห็นเฉพาะเป้าหมาย active ที่สาขาหลักอยู่ในสาขา active ของตน ส่วนบัญชีไม่มีสาขา, `super_admin`, และผู้จัดการระบบไม่อยู่ใน delegated scope
+- trigger บังคับสาขาแรกเป็นสาขาหลัก และ deferred constraint บังคับหนึ่งสาขาหลักเมื่อยังมี assignment; RPC เปลี่ยนสาขาหลักและลบพร้อมสาขาทดแทนทำแบบ atomic/audited
+- API/RPC/RLS ตรวจ target scope ซ้ำ จึงเพิกถอนสิทธิ์หรือย้ายสาขาหลักได้ทันทีโดยไม่พึ่ง UI cache
+- RPC `get_time_payroll_payment_locations()` เปิดรายชื่อสาขา active ทั้งหมดเฉพาะใน manager workflow นี้ โดยไม่ขยายสิทธิ์อ่านสาขาของโมดูลอื่น
+- การอนุมัติรายการเบิกหรือเงินเดือนยอดบวกใช้ `expense_location_id`: UUID สร้าง derived expense ของสาขานั้น ส่วน `null` คือ `ส่วนกลางจ่าย (จ่ายนอกระบบ)` และไม่สร้าง derived row; แก้การเลือกได้จนกว่า report lock เดิมจะล็อก source
+- ปุ่มและ API ระงับ/กู้คืนบัญชีตรวจ `requireSystemManager`; ผู้จัดการระบบห้ามระงับตนเองหรือ `super_admin`
+
 ### Income/Expense Approval Workflow
 
 โมดูลรายรับ-รายจ่ายมี approval gate เพิ่มสำหรับรายการที่ `super_admin` ต้องตรวจสอบก่อนเข้าตารางจริง:
@@ -398,7 +408,7 @@ offline queue อยู่ที่ `src/lib/idb-queue.ts`:
 - **Income/Expense**: Full Offline สำหรับ create/update/delete, PWA reload, RPC atomic sync
 - **OCR Tickets**: online-first; เป็น source ของ derived expense รายวันใน Income/Expense สำหรับ OCR บิลยางที่ยังไม่ถูกเลือกไปโอนเงิน และถูก relation lock เมื่ออยู่ใน `money_transfer_items.source_type = 'ocr_ticket'`
 - **Money Transfer**: online-first; เป็น source ของ derived rows ใน Income/Expense สำหรับโอนเงินสาขาขาเข้า/ขาออก, รายการสำนักงานใหญ่/CEO โอนให้สาขา, และโอนลูกค้าสถานะ `โอน+สาขาจ่าย`; `money_transfer_items` เป็นตัวตัดบิลยางและ OCR ticket ออกจาก derived expense รายวัน; เข้าเมนูและเขียนข้อมูลได้เฉพาะ `super_admin` หรือ user/admin ที่ `super_admin` เปิด `can_access_super_admin_features`
-- **Time Tracking**: มี online state และ badge/status แต่ไม่ได้เป็น offline-first core flow เท่า Rubber Bills และ Income/Expense; ค่าแรงคำนวณจาก `time_segments` ผ่าน cutoff `15:00` (`Asia/Bangkok`) โดยใช้ helper กลางทั้งฝั่ง API และ DB
+- **Time Tracking**: online-first; ค่าแรงคำนวณจาก `time_segments` ผ่าน cutoff `15:00` (`Asia/Bangkok`) โดยใช้ helperกลางทั้งฝั่ง API และ DB; รองรับสิทธิ์เฉพาะโมดูลตามสาขาหลักและส่วนกลางจ่ายแบบไม่สร้าง derived expense
 
 ### เปรียบเทียบ Offline-First: Rubber Bills vs Income/Expense
 

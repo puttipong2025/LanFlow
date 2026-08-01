@@ -346,6 +346,30 @@ $$;
 ALTER FUNCTION "private"."apply_time_tracking_deductions"("p_profile_id" "uuid", "p_through_month" "date") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."assert_user_primary_location"("target_user_id" "uuid") RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_assignment_count integer;
+  v_primary_count integer;
+begin
+  if target_user_id is null then return; end if;
+  select count(*), count(*) filter (where ul.is_primary)
+  into v_assignment_count, v_primary_count
+  from public.user_locations ul
+  where ul.user_id = target_user_id;
+
+  if v_assignment_count > 0 and v_primary_count <> 1 then
+    raise exception 'PRIMARY_LOCATION_REQUIRED';
+  end if;
+end
+$$;
+
+
+ALTER FUNCTION "private"."assert_user_primary_location"("target_user_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."assign_rubber_bill_item_sequence"() RETURNS "trigger"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -734,13 +758,7 @@ CREATE OR REPLACE FUNCTION "private"."can_approve_time_tracking_profile"("target
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
-  select private.is_time_payroll_manager()
-    and exists (
-      select 1
-      from public.profiles p
-      where p.id = target_profile_id
-        and p.is_active = true
-    )
+  select private.can_manage_time_payroll_profile(target_profile_id)
 $$;
 
 
@@ -751,13 +769,11 @@ CREATE OR REPLACE FUNCTION "private"."can_assign_time_tracking_expense_location"
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
-  select private.is_time_payroll_manager()
+  select private.has_time_payroll_manager_access()
     and target_location is not null
     and exists (
-      select 1
-      from public.locations l
-      where l.id = target_location
-        and l.is_active = true
+      select 1 from public.locations l
+      where l.id = target_location and l.is_active = true
     )
 $$;
 
@@ -852,6 +868,48 @@ $$;
 ALTER FUNCTION "private"."can_manage_reports"("p_location_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."can_manage_time_payroll_profile"("target_profile_id" "uuid") RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select private.is_active_user()
+    and exists (
+      select 1
+      from public.profiles target
+      where target.id = target_profile_id
+        and target.is_active = true
+        and (
+          private.can_access_super_admin_features()
+          or (
+            target.role in ('user', 'admin')
+            and target.can_access_super_admin_features = false
+            and exists (
+              select 1
+              from public.user_locations target_primary
+              join public.locations target_location
+                on target_location.id = target_primary.location_id
+               and target_location.is_active = true
+              join public.user_locations actor_location
+                on actor_location.location_id = target_primary.location_id
+               and actor_location.user_id = auth.uid()
+              where target_primary.user_id = target_profile_id
+                and target_primary.is_primary = true
+            )
+            and exists (
+              select 1 from public.profiles actor
+              where actor.id = auth.uid()
+                and actor.role in ('user', 'admin')
+                and actor.can_manage_time_payroll = true
+            )
+          )
+        )
+    )
+$$;
+
+
+ALTER FUNCTION "private"."can_manage_time_payroll_profile"("target_profile_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."can_view_profile"("target_user" "uuid") RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -860,15 +918,14 @@ CREATE OR REPLACE FUNCTION "private"."can_view_profile"("target_user" "uuid") RE
     and (
       target_user = auth.uid()
       or private.can_access_super_admin_features()
+      or private.can_manage_time_payroll_profile(target_user)
       or (
         private.current_user_role() = 'admin'
         and exists (
           select 1
           from public.user_locations mine
-          join public.user_locations theirs
-            on theirs.location_id = mine.location_id
-          where mine.user_id = auth.uid()
-            and theirs.user_id = target_user
+          join public.user_locations theirs on theirs.location_id = mine.location_id
+          where mine.user_id = auth.uid() and theirs.user_id = target_user
         )
       )
     )
@@ -1351,6 +1408,25 @@ $$;
 ALTER FUNCTION "private"."dashboard_seed_active_location"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."default_first_user_location_primary"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  perform pg_advisory_xact_lock(hashtextextended('user-locations:' || new.user_id::text, 0));
+  if not new.is_primary and not exists (
+    select 1 from public.user_locations ul where ul.user_id = new.user_id
+  ) then
+    new.is_primary := true;
+  end if;
+  return new;
+end
+$$;
+
+
+ALTER FUNCTION "private"."default_first_user_location_primary"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."enforce_time_tracking_expense_relation"() RETURNS "trigger"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -1363,7 +1439,6 @@ begin
       and new.status = 'APPROVED'
       and new.type = 'WITHDRAWAL' then
       if not v_rpc_write
-        or new.expense_location_id is null
         or new.approved_at is null
         or new.cancelled_at is not null then
         raise exception 'Withdrawal approval must use the time tracking approval RPC';
@@ -1386,7 +1461,6 @@ begin
     if old.status <> 'APPROVED' and new.status = 'APPROVED' then
       if not v_rpc_write
         or new.approved_at is null
-        or (new.net_pay > 0 and new.expense_location_id is null)
         or new.cancelled_at is not null then
         raise exception 'Payroll approval must use the time tracking approval RPC';
       end if;
@@ -1410,6 +1484,23 @@ $$;
 
 
 ALTER FUNCTION "private"."enforce_time_tracking_expense_relation"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."enforce_user_primary_location"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if tg_op = 'UPDATE' and old.user_id is distinct from new.user_id then
+    perform private.assert_user_primary_location(old.user_id);
+  end if;
+  perform private.assert_user_primary_location(coalesce(new.user_id, old.user_id));
+  return null;
+end
+$$;
+
+
+ALTER FUNCTION "private"."enforce_user_primary_location"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."guard_approved_rubber_bill_request_history"() RETURNS "trigger"
@@ -1723,6 +1814,26 @@ $$;
 ALTER FUNCTION "private"."guard_rubber_export_state"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."has_time_payroll_manager_access"() RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select private.is_active_user()
+    and (
+      private.can_access_super_admin_features()
+      or exists (
+        select 1 from public.profiles p
+        where p.id = auth.uid()
+          and p.role in ('user', 'admin')
+          and p.can_manage_time_payroll = true
+      )
+    )
+$$;
+
+
+ALTER FUNCTION "private"."has_time_payroll_manager_access"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."is_active_user"() RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -1754,8 +1865,7 @@ CREATE OR REPLACE FUNCTION "private"."is_time_payroll_manager"() RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
-  select private.is_active_user()
-    and private.can_access_super_admin_features()
+  select private.has_time_payroll_manager_access()
 $$;
 
 
@@ -2006,18 +2116,18 @@ begin
     return old;
   end if;
 
-  if tg_table_name = 'financial_transactions'
-    and old.type = 'WITHDRAWAL'
-    and old.status = 'APPROVED'
-    and old.expense_location_id is not null then
-    raise exception 'Approved withdrawal must be permanently deleted through the time tracking RPC';
-  end if;
-
-  if tg_table_name = 'payroll_slips'
-    and old.status = 'APPROVED'
-    and old.net_pay > 0
-    and old.expense_location_id is not null then
-    raise exception 'Approved payroll slip must be permanently deleted through the time tracking RPC';
+  if tg_table_name = 'financial_transactions' then
+    if old.type = 'WITHDRAWAL'
+      and old.status = 'APPROVED'
+      and old.expense_location_id is not null then
+      raise exception 'Approved withdrawal must be permanently deleted through the time tracking RPC';
+    end if;
+  elsif tg_table_name = 'payroll_slips' then
+    if old.status = 'APPROVED'
+      and old.net_pay > 0
+      and old.expense_location_id is not null then
+      raise exception 'Approved payroll slip must be permanently deleted through the time tracking RPC';
+    end if;
   end if;
 
   return old;
@@ -3268,42 +3378,112 @@ declare
   v_slip public.payroll_slips%rowtype;
   v_old_location_id uuid;
 begin
-  if v_actor_id is null or not private.is_active_user() then raise exception 'Authentication required'; end if;
-  if p_source_type not in ('transaction', 'payroll_slip') or p_expense_location_id is null then raise exception 'Invalid expense source'; end if;
-  if not private.can_assign_time_tracking_expense_location(p_expense_location_id) then raise exception 'New expense location access denied'; end if;
-
-  if p_source_type = 'transaction' then
-    select * into v_tx from public.financial_transactions where id = p_source_id for update;
-    if not found or v_tx.type <> 'WITHDRAWAL' or v_tx.status <> 'APPROVED' or v_tx.cancelled_at is not null or v_tx.expense_location_id is null then
-      raise exception 'Active withdrawal expense not found';
-    end if;
-    if not private.can_approve_time_tracking_profile(v_tx.profile_id) or not private.can_assign_time_tracking_expense_location(v_tx.expense_location_id) then
-      raise exception 'Expense location access denied';
-    end if;
-    v_old_location_id := v_tx.expense_location_id;
-    if v_old_location_id = p_expense_location_id then return jsonb_build_object('status', 'unchanged'); end if;
-    perform set_config('app.time_tracking_expense_rpc', 'true', true);
-    update public.financial_transactions set expense_location_id = p_expense_location_id where id = v_tx.id;
-    insert into public.time_tracking_audit_logs (admin_id, action, target_table, record_id, old_data, new_data, comment)
-    values (v_actor_id, 'CHANGE_TRANSACTION_EXPENSE_LOCATION', 'financial_transactions', v_tx.id, jsonb_build_object('expenseLocationId', v_old_location_id), jsonb_build_object('expenseLocationId', p_expense_location_id), coalesce(p_comment, ''));
-  else
-    select * into v_slip from public.payroll_slips where id = p_source_id for update;
-    if not found or v_slip.status <> 'APPROVED' or v_slip.net_pay <= 0 or v_slip.cancelled_at is not null or v_slip.expense_location_id is null then
-      raise exception 'Active payroll expense not found';
-    end if;
-    if not private.can_approve_time_tracking_profile(v_slip.profile_id) or not private.can_assign_time_tracking_expense_location(v_slip.expense_location_id) then
-      raise exception 'Expense location access denied';
-    end if;
-    v_old_location_id := v_slip.expense_location_id;
-    if v_old_location_id = p_expense_location_id then return jsonb_build_object('status', 'unchanged'); end if;
-    perform set_config('app.time_tracking_expense_rpc', 'true', true);
-    update public.payroll_slips set expense_location_id = p_expense_location_id where id = v_slip.id;
-    insert into public.time_tracking_audit_logs (admin_id, action, target_table, record_id, old_data, new_data, comment)
-    values (v_actor_id, 'CHANGE_PAYROLL_EXPENSE_LOCATION', 'payroll_slips', v_slip.id, jsonb_build_object('expenseLocationId', v_old_location_id), jsonb_build_object('expenseLocationId', p_expense_location_id), coalesce(p_comment, ''));
+  if v_actor_id is null or not private.is_active_user() then
+    raise exception 'Authentication required';
+  end if;
+  if p_source_type not in ('transaction', 'payroll_slip') then
+    raise exception 'Invalid expense source';
+  end if;
+  if p_expense_location_id is not null
+    and not private.can_assign_time_tracking_expense_location(p_expense_location_id)
+  then
+    raise exception 'New expense location access denied';
   end if;
 
-  return jsonb_build_object('status', 'updated', 'oldExpenseLocationId', v_old_location_id, 'expenseLocationId', p_expense_location_id);
-end;
+  if p_source_type = 'transaction' then
+    select * into v_tx
+    from public.financial_transactions
+    where id = p_source_id
+    for update;
+    if not found
+      or v_tx.type <> 'WITHDRAWAL'
+      or v_tx.status <> 'APPROVED'
+      or v_tx.cancelled_at is not null
+    then
+      raise exception 'Active withdrawal expense not found';
+    end if;
+    if not private.can_manage_time_payroll_profile(v_tx.profile_id) then
+      raise exception 'Expense location access denied';
+    end if;
+
+    v_old_location_id := v_tx.expense_location_id;
+    if v_old_location_id is not distinct from p_expense_location_id then
+      return jsonb_build_object('status', 'unchanged');
+    end if;
+
+    perform set_config('app.time_tracking_expense_rpc', 'true', true);
+    update public.financial_transactions
+    set expense_location_id = p_expense_location_id
+    where id = v_tx.id;
+
+    insert into public.time_tracking_audit_logs (
+      admin_id, action, target_table, record_id, old_data, new_data, comment
+    ) values (
+      v_actor_id,
+      'CHANGE_TRANSACTION_EXPENSE_LOCATION',
+      'financial_transactions',
+      v_tx.id,
+      jsonb_build_object(
+        'expenseLocationId', v_old_location_id,
+        'paymentMethod', case when v_old_location_id is null then 'CENTRAL_OUTSIDE_SYSTEM' else 'BRANCH' end
+      ),
+      jsonb_build_object(
+        'expenseLocationId', p_expense_location_id,
+        'paymentMethod', case when p_expense_location_id is null then 'CENTRAL_OUTSIDE_SYSTEM' else 'BRANCH' end
+      ),
+      coalesce(p_comment, '')
+    );
+  else
+    select * into v_slip
+    from public.payroll_slips
+    where id = p_source_id
+    for update;
+    if not found
+      or v_slip.status <> 'APPROVED'
+      or v_slip.net_pay <= 0
+      or v_slip.cancelled_at is not null
+    then
+      raise exception 'Active payroll expense not found';
+    end if;
+    if not private.can_manage_time_payroll_profile(v_slip.profile_id) then
+      raise exception 'Expense location access denied';
+    end if;
+
+    v_old_location_id := v_slip.expense_location_id;
+    if v_old_location_id is not distinct from p_expense_location_id then
+      return jsonb_build_object('status', 'unchanged');
+    end if;
+
+    perform set_config('app.time_tracking_expense_rpc', 'true', true);
+    update public.payroll_slips
+    set expense_location_id = p_expense_location_id
+    where id = v_slip.id;
+
+    insert into public.time_tracking_audit_logs (
+      admin_id, action, target_table, record_id, old_data, new_data, comment
+    ) values (
+      v_actor_id,
+      'CHANGE_PAYROLL_EXPENSE_LOCATION',
+      'payroll_slips',
+      v_slip.id,
+      jsonb_build_object(
+        'expenseLocationId', v_old_location_id,
+        'paymentMethod', case when v_old_location_id is null then 'CENTRAL_OUTSIDE_SYSTEM' else 'BRANCH' end
+      ),
+      jsonb_build_object(
+        'expenseLocationId', p_expense_location_id,
+        'paymentMethod', case when p_expense_location_id is null then 'CENTRAL_OUTSIDE_SYSTEM' else 'BRANCH' end
+      ),
+      coalesce(p_comment, '')
+    );
+  end if;
+
+  return jsonb_build_object(
+    'status', 'updated',
+    'oldExpenseLocationId', v_old_location_id,
+    'expenseLocationId', p_expense_location_id
+  );
+end
 $$;
 
 
@@ -4810,7 +4990,6 @@ CREATE OR REPLACE FUNCTION "public"."create_time_tracking_transaction"("p_profil
     AS $$
 declare
   v_actor_id uuid := auth.uid();
-  v_is_manager boolean;
   v_id uuid;
   v_comment text;
   v_actor_name text;
@@ -4819,8 +4998,6 @@ begin
   if v_actor_id is null or not private.is_active_user() then
     raise exception 'Authentication required';
   end if;
-
-  v_is_manager := private.is_time_payroll_manager();
   if p_type not in ('DEBT', 'WITHDRAWAL') then
     raise exception 'INVALID_TRANSACTION_TYPE';
   end if;
@@ -4830,10 +5007,13 @@ begin
   if p_effective_date is null or p_effective_date > v_bangkok_today then
     raise exception 'FUTURE_EFFECTIVE_DATE';
   end if;
-  if p_type = 'DEBT' and not v_is_manager then
+  if p_type = 'DEBT' and not private.can_manage_time_payroll_profile(p_profile_id) then
     raise exception 'Forbidden';
   end if;
-  if p_type = 'WITHDRAWAL' and p_profile_id <> v_actor_id and not v_is_manager then
+  if p_type = 'WITHDRAWAL'
+    and p_profile_id <> v_actor_id
+    and not private.can_manage_time_payroll_profile(p_profile_id)
+  then
     raise exception 'Forbidden';
   end if;
   if p_type = 'DEBT' and nullif(btrim(coalesce(p_description, '')), '') is null then
@@ -4846,8 +5026,7 @@ begin
     raise exception 'PROFILE_NOT_FOUND';
   end if;
   if exists (
-    select 1
-    from public.payroll_slips ps
+    select 1 from public.payroll_slips ps
     where ps.profile_id = p_profile_id
       and ps.month = to_char(p_effective_date, 'YYYY-MM')
   ) then
@@ -4862,15 +5041,8 @@ begin
   end;
 
   insert into public.financial_transactions (
-    profile_id,
-    type,
-    amount,
-    effective_date,
-    due_date,
-    description,
-    admin_comment
-  )
-  values (
+    profile_id, type, amount, effective_date, due_date, description, admin_comment
+  ) values (
     p_profile_id,
     p_type::public.financial_transaction_type,
     trunc(p_amount, 2),
@@ -4878,18 +5050,11 @@ begin
     case when p_type = 'DEBT' then p_effective_date else null end,
     nullif(btrim(coalesce(p_description, '')), ''),
     v_comment
-  )
-  returning id into v_id;
+  ) returning id into v_id;
 
   insert into public.time_tracking_audit_logs (
-    admin_id,
-    action,
-    target_table,
-    record_id,
-    new_data,
-    comment
-  )
-  values (
+    admin_id, action, target_table, record_id, new_data, comment
+  ) values (
     v_actor_id,
     case when p_type = 'DEBT' then 'CREATE_DEBT' else 'REQUEST_WITHDRAWAL' end,
     'financial_transactions',
@@ -4905,7 +5070,7 @@ begin
   );
 
   return jsonb_build_object('id', v_id, 'status', 'pending');
-end;
+end
 $$;
 
 
@@ -5435,7 +5600,7 @@ declare
   v_tx public.financial_transactions%rowtype;
   v_slip public.payroll_slips%rowtype;
   v_old_data jsonb;
-  v_requires_expense_location boolean := false;
+  v_requires_payment_choice boolean := false;
   v_current_month date := date_trunc(
     'month',
     (now() at time zone 'Asia/Bangkok')::date
@@ -5458,7 +5623,7 @@ begin
     if not found or v_tx.type not in ('DEBT', 'WITHDRAWAL') then
       raise exception 'Transaction not found';
     end if;
-    if not private.can_approve_time_tracking_profile(v_tx.profile_id) then
+    if not private.can_manage_time_payroll_profile(v_tx.profile_id) then
       raise exception 'Forbidden';
     end if;
 
@@ -5478,12 +5643,12 @@ begin
       raise exception 'MONTH_CLOSED:%', to_char(v_tx.effective_date, 'YYYY-MM');
     end if;
 
-    v_requires_expense_location := p_decision = 'APPROVED' and v_tx.type = 'WITHDRAWAL';
+    v_requires_payment_choice := p_decision = 'APPROVED' and v_tx.type = 'WITHDRAWAL';
     if v_tx.status <> 'PENDING' then
       if v_tx.status = p_decision::public.approval_status
         and (
-          not v_requires_expense_location
-          or v_tx.expense_location_id = p_expense_location_id
+          not v_requires_payment_choice
+          or v_tx.expense_location_id is not distinct from p_expense_location_id
         )
       then
         return jsonb_build_object(
@@ -5496,9 +5661,9 @@ begin
       raise exception 'Approval has already been decided';
     end if;
 
-    if v_requires_expense_location then
-      if p_expense_location_id is null
-        or not private.can_assign_time_tracking_expense_location(p_expense_location_id)
+    if v_requires_payment_choice then
+      if p_expense_location_id is not null
+        and not private.can_assign_time_tracking_expense_location(p_expense_location_id)
       then
         raise exception 'Expense location access denied';
       end if;
@@ -5516,7 +5681,7 @@ begin
         approved_by = v_actor_id,
         approved_at = now(),
         expense_location_id = case
-          when v_requires_expense_location then p_expense_location_id
+          when v_requires_payment_choice then p_expense_location_id
           else null
         end,
         remaining_amount = amount
@@ -5534,8 +5699,7 @@ begin
 
     insert into public.time_tracking_audit_logs (
       admin_id, action, target_table, record_id, old_data, new_data, comment
-    )
-    values (
+    ) values (
       v_actor_id,
       'DECIDE_TRANSACTION_APPROVAL',
       'financial_transactions',
@@ -5543,7 +5707,12 @@ begin
       v_old_data,
       jsonb_build_object(
         'decision', p_decision,
-        'expenseLocationId', p_expense_location_id
+        'expenseLocationId', p_expense_location_id,
+        'paymentMethod', case
+          when v_requires_payment_choice and p_expense_location_id is null then 'CENTRAL_OUTSIDE_SYSTEM'
+          when v_requires_payment_choice then 'BRANCH'
+          else null
+        end
       ),
       coalesce(p_comment, '')
     );
@@ -5552,9 +5721,10 @@ begin
     from public.payroll_slips
     where id = p_source_id;
     if not found then raise exception 'Payroll slip not found'; end if;
-    if not private.can_approve_time_tracking_profile(v_slip.profile_id) then
+    if not private.can_manage_time_payroll_profile(v_slip.profile_id) then
       raise exception 'Forbidden';
     end if;
+
     perform pg_advisory_xact_lock(hashtextextended('time-tracking:' || v_slip.profile_id::text, 0));
     select * into v_slip
     from public.payroll_slips
@@ -5562,12 +5732,12 @@ begin
     for update;
     if not found then raise exception 'Payroll slip not found'; end if;
 
-    v_requires_expense_location := p_decision = 'APPROVED' and v_slip.net_pay > 0;
+    v_requires_payment_choice := p_decision = 'APPROVED' and v_slip.net_pay > 0;
     if v_slip.status <> 'PENDING' then
       if v_slip.status = p_decision::public.approval_status
         and (
-          not v_requires_expense_location
-          or v_slip.expense_location_id = p_expense_location_id
+          not v_requires_payment_choice
+          or v_slip.expense_location_id is not distinct from p_expense_location_id
         )
       then
         return jsonb_build_object(
@@ -5580,9 +5750,9 @@ begin
       raise exception 'Approval has already been decided';
     end if;
 
-    if v_requires_expense_location then
-      if p_expense_location_id is null
-        or not private.can_assign_time_tracking_expense_location(p_expense_location_id)
+    if v_requires_payment_choice then
+      if p_expense_location_id is not null
+        and not private.can_assign_time_tracking_expense_location(p_expense_location_id)
       then
         raise exception 'Expense location access denied';
       end if;
@@ -5600,7 +5770,7 @@ begin
         approved_by = v_actor_id,
         approved_at = now(),
         expense_location_id = case
-          when v_requires_expense_location then p_expense_location_id
+          when v_requires_payment_choice then p_expense_location_id
           else null
         end
       where id = v_slip.id;
@@ -5615,8 +5785,7 @@ begin
 
     insert into public.time_tracking_audit_logs (
       admin_id, action, target_table, record_id, old_data, new_data, comment
-    )
-    values (
+    ) values (
       v_actor_id,
       'DECIDE_PAYROLL_SLIP_APPROVAL',
       'payroll_slips',
@@ -5624,7 +5793,12 @@ begin
       v_old_data,
       jsonb_build_object(
         'decision', p_decision,
-        'expenseLocationId', p_expense_location_id
+        'expenseLocationId', p_expense_location_id,
+        'paymentMethod', case
+          when v_requires_payment_choice and p_expense_location_id is null then 'CENTRAL_OUTSIDE_SYSTEM'
+          when v_requires_payment_choice then 'BRANCH'
+          else null
+        end
       ),
       coalesce(p_comment, '')
     );
@@ -5636,7 +5810,7 @@ begin
     'sourceType', p_source_type,
     'sourceId', p_source_id
   );
-end;
+end
 $$;
 
 
@@ -6007,7 +6181,6 @@ CREATE OR REPLACE FUNCTION "public"."delete_time_tracking_source_permanently"("p
     AS $$
 declare
   v_actor_id uuid := auth.uid();
-  v_is_manager boolean;
   v_tx public.financial_transactions%rowtype;
   v_slip public.payroll_slips%rowtype;
   v_blocked_month text;
@@ -6018,7 +6191,6 @@ begin
   if p_source_type not in ('transaction', 'payroll_slip') then
     raise exception 'Invalid deletion source';
   end if;
-  v_is_manager := private.is_time_payroll_manager();
 
   if p_source_type = 'transaction' then
     select * into v_tx
@@ -6033,7 +6205,7 @@ begin
       and v_tx.profile_id = v_actor_id
     then
       null;
-    elsif not v_is_manager then
+    elsif not private.can_manage_time_payroll_profile(v_tx.profile_id) then
       raise exception 'Forbidden';
     end if;
 
@@ -6070,9 +6242,7 @@ begin
       and (
         record_id = v_tx.id
         or record_id in (
-          select id
-          from public.financial_transactions
-          where parent_debt_id = v_tx.id
+          select id from public.financial_transactions where parent_debt_id = v_tx.id
         )
       );
 
@@ -6080,15 +6250,14 @@ begin
     delete from public.financial_transactions where parent_debt_id = v_tx.id;
     delete from public.financial_transactions where id = v_tx.id;
   else
-    if not v_is_manager then raise exception 'Forbidden'; end if;
-
     select * into v_slip
     from public.payroll_slips
     where id = p_source_id;
     if not found then raise exception 'Payroll slip not found'; end if;
-    if not private.can_approve_time_tracking_profile(v_slip.profile_id) then
+    if not private.can_manage_time_payroll_profile(v_slip.profile_id) then
       raise exception 'Forbidden';
     end if;
+
     perform pg_advisory_xact_lock(hashtextextended('time-tracking:' || v_slip.profile_id::text, 0));
     select * into v_slip
     from public.payroll_slips
@@ -6099,13 +6268,11 @@ begin
     if exists (
       select 1
       from public.payroll_slips newer
-      where newer.profile_id = v_slip.profile_id
-        and newer.month > v_slip.month
+      where newer.profile_id = v_slip.profile_id and newer.month > v_slip.month
     ) then
       select min(newer.month) into v_blocked_month
       from public.payroll_slips newer
-      where newer.profile_id = v_slip.profile_id
-        and newer.month > v_slip.month;
+      where newer.profile_id = v_slip.profile_id and newer.month > v_slip.month;
       raise exception 'DELETE_NEWER_SLIP_FIRST:%', v_blocked_month;
     end if;
 
@@ -6121,7 +6288,7 @@ begin
     'sourceType', p_source_type,
     'sourceId', p_source_id
   );
-end;
+end
 $$;
 
 
@@ -6209,6 +6376,7 @@ declare
   v_role text;
   v_can_manage_system boolean;
   v_can_use_money_transfer boolean;
+  v_can_manage_time_payroll boolean;
 begin
   if v_user_id is null then raise exception 'Authentication required'; end if;
 
@@ -6217,8 +6385,11 @@ begin
     p.role = 'super_admin' or p.can_access_super_admin_features = true,
     p.role = 'super_admin'
       or p.can_access_super_admin_features = true
-      or p.can_access_money_transfer = true
-  into v_role, v_can_manage_system, v_can_use_money_transfer
+      or p.can_access_money_transfer = true,
+    p.role = 'super_admin'
+      or p.can_access_super_admin_features = true
+      or p.can_manage_time_payroll = true
+  into v_role, v_can_manage_system, v_can_use_money_transfer, v_can_manage_time_payroll
   from public.profiles p
   where p.id = v_user_id and p.is_active = true;
   if v_role is null then raise exception 'Inactive profile'; end if;
@@ -6229,6 +6400,15 @@ begin
     from public.user_locations ul
     join public.locations l on l.id = ul.location_id and l.is_active = true
     where ul.user_id = v_user_id
+  ),
+  scoped_time_requests as (
+    select ft.id, ft.profile_id
+    from public.financial_transactions ft
+    where ft.status = 'PENDING'
+    union all
+    select ps.id, ps.profile_id
+    from public.payroll_slips ps
+    where ps.status = 'PENDING'
   ),
   counts as (
     select al.location_id, 'rubber'::text module_id, count(*)::bigint item_count
@@ -6286,16 +6466,21 @@ begin
     union all
     select al.location_id, 'time-tracking', count(requests.id)::bigint
     from accessible_locations al
-    cross join (
-      select ft.id
-      from public.financial_transactions ft
-      where v_can_manage_system and ft.status = 'PENDING'
-      union all
-      select ps.id
-      from public.payroll_slips ps
-      where v_can_manage_system and ps.status = 'PENDING'
-    ) requests
+    cross join scoped_time_requests requests
+    where v_can_manage_system
     group by al.location_id
+
+    union all
+    select target_primary.location_id, 'time-tracking', count(requests.id)::bigint
+    from scoped_time_requests requests
+    join public.user_locations target_primary
+      on target_primary.user_id = requests.profile_id
+     and target_primary.is_primary = true
+    join accessible_locations al on al.location_id = target_primary.location_id
+    where not v_can_manage_system
+      and v_can_manage_time_payroll
+      and private.can_manage_time_payroll_profile(requests.profile_id)
+    group by target_primary.location_id
 
     union all
     select e.location_id, 'rubber-export', count(*)::bigint
@@ -6309,7 +6494,7 @@ begin
   where c.item_count > 0
   group by c.location_id, c.module_id
   order by c.location_id, c.module_id;
-end;
+end
 $$;
 
 
@@ -8076,6 +8261,21 @@ $$;
 ALTER FUNCTION "public"."get_telegram_badge_delivery_credentials"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."get_time_payroll_payment_locations"() RETURNS TABLE("id" "uuid", "name" "text", "code" "text", "active" boolean)
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select l.id, l.name, l.code, l.is_active
+  from public.locations l
+  where private.has_time_payroll_manager_access()
+    and l.is_active = true
+  order by l.created_at, l.id
+$$;
+
+
+ALTER FUNCTION "public"."get_time_payroll_payment_locations"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."is_super_admin"() RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -8452,6 +8652,86 @@ $$;
 
 
 ALTER FUNCTION "public"."receive_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."remove_user_location_with_primary_replacement"("p_user_id" "uuid", "p_location_id" "uuid", "p_replacement_location_id" "uuid" DEFAULT NULL::"uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_actor_id uuid := auth.uid();
+  v_was_primary boolean;
+  v_remaining_count integer;
+begin
+  if v_actor_id is null or not private.can_access_super_admin_features() then
+    raise exception 'Forbidden';
+  end if;
+  if exists (
+    select 1 from public.profiles p where p.id = p_user_id and p.role = 'super_admin'
+  ) then
+    raise exception 'Cannot modify super_admin locations';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended('user-locations:' || p_user_id::text, 0));
+  select ul.is_primary into v_was_primary
+  from public.user_locations ul
+  where ul.user_id = p_user_id and ul.location_id = p_location_id
+  for update;
+  if not found then return jsonb_build_object('status', 'unchanged'); end if;
+
+  select count(*) into v_remaining_count
+  from public.user_locations ul
+  where ul.user_id = p_user_id and ul.location_id <> p_location_id;
+
+  if v_was_primary and v_remaining_count > 0 then
+    if p_replacement_location_id is null
+      or p_replacement_location_id = p_location_id
+      or not exists (
+        select 1 from public.user_locations ul
+        where ul.user_id = p_user_id
+          and ul.location_id = p_replacement_location_id
+      )
+    then
+      raise exception 'REPLACEMENT_PRIMARY_REQUIRED';
+    end if;
+
+    update public.user_locations
+    set is_primary = false
+    where user_id = p_user_id and location_id = p_location_id;
+
+    update public.user_locations
+    set is_primary = true
+    where user_id = p_user_id and location_id = p_replacement_location_id;
+  elsif p_replacement_location_id is not null then
+    raise exception 'REPLACEMENT_PRIMARY_NOT_ALLOWED';
+  end if;
+
+  delete from public.user_locations
+  where user_id = p_user_id and location_id = p_location_id;
+
+  if v_was_primary then
+    insert into public.time_tracking_audit_logs (
+      admin_id, action, target_table, record_id, old_data, new_data, comment
+    ) values (
+      v_actor_id,
+      'REMOVE_PRIMARY_LOCATION',
+      'profiles',
+      p_user_id,
+      jsonb_build_object('primaryLocationId', p_location_id),
+      jsonb_build_object('primaryLocationId', p_replacement_location_id),
+      ''
+    );
+  end if;
+
+  return jsonb_build_object(
+    'status', 'deleted',
+    'primaryLocationId', case when v_was_primary then p_replacement_location_id else null end
+  );
+end
+$$;
+
+
+ALTER FUNCTION "public"."remove_user_location_with_primary_replacement"("p_user_id" "uuid", "p_location_id" "uuid", "p_replacement_location_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."replace_time_tracking_segments"("p_profile_id" "uuid", "p_selections" "jsonb", "p_full_snapshot" "jsonb" DEFAULT '{}'::"jsonb", "p_comment" "text" DEFAULT NULL::"text") RETURNS "jsonb"
@@ -9645,6 +9925,71 @@ $$;
 
 
 ALTER FUNCTION "public"."set_time_tracking_status"("p_profile_id" "uuid", "p_status" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."set_user_primary_location"("p_user_id" "uuid", "p_location_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_actor_id uuid := auth.uid();
+  v_old_location_id uuid;
+begin
+  if v_actor_id is null or not private.can_access_super_admin_features() then
+    raise exception 'Forbidden';
+  end if;
+  if exists (
+    select 1 from public.profiles p where p.id = p_user_id and p.role = 'super_admin'
+  ) then
+    raise exception 'Cannot modify super_admin locations';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended('user-locations:' || p_user_id::text, 0));
+  if not exists (
+    select 1 from public.user_locations ul
+    where ul.user_id = p_user_id and ul.location_id = p_location_id
+  ) then
+    raise exception 'LOCATION_NOT_ASSIGNED';
+  end if;
+
+  select ul.location_id into v_old_location_id
+  from public.user_locations ul
+  where ul.user_id = p_user_id and ul.is_primary = true;
+
+  if v_old_location_id = p_location_id then
+    return jsonb_build_object('status', 'unchanged', 'primaryLocationId', p_location_id);
+  end if;
+
+  update public.user_locations
+  set is_primary = false
+  where user_id = p_user_id and is_primary = true;
+
+  update public.user_locations
+  set is_primary = true
+  where user_id = p_user_id and location_id = p_location_id;
+
+  insert into public.time_tracking_audit_logs (
+    admin_id, action, target_table, record_id, old_data, new_data, comment
+  ) values (
+    v_actor_id,
+    'CHANGE_PRIMARY_LOCATION',
+    'profiles',
+    p_user_id,
+    jsonb_build_object('primaryLocationId', v_old_location_id),
+    jsonb_build_object('primaryLocationId', p_location_id),
+    ''
+  );
+
+  return jsonb_build_object(
+    'status', 'updated',
+    'oldPrimaryLocationId', v_old_location_id,
+    'primaryLocationId', p_location_id
+  );
+end
+$$;
+
+
+ALTER FUNCTION "public"."set_user_primary_location"("p_user_id" "uuid", "p_location_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."sync_acid_stock_entry"("payload" "jsonb") RETURNS "jsonb"
@@ -11812,7 +12157,8 @@ CREATE TABLE IF NOT EXISTS "public"."profiles" (
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "daily_wage" numeric DEFAULT 0 NOT NULL,
     "can_access_money_transfer" boolean DEFAULT false NOT NULL,
-    "can_access_super_admin_features" boolean DEFAULT false NOT NULL
+    "can_access_super_admin_features" boolean DEFAULT false NOT NULL,
+    "can_manage_time_payroll" boolean DEFAULT false NOT NULL
 );
 
 
@@ -12195,7 +12541,7 @@ ALTER TABLE ONLY "public"."financial_transactions"
 
 
 ALTER TABLE "public"."financial_transactions"
-    ADD CONSTRAINT "financial_transactions_withdrawal_expense_assignment" CHECK ((("type" <> 'WITHDRAWAL'::"public"."financial_transaction_type") OR ("status" <> 'APPROVED'::"public"."approval_status") OR ("cancelled_at" IS NOT NULL) OR (("expense_location_id" IS NOT NULL) AND ("approved_at" IS NOT NULL)))) NOT VALID;
+    ADD CONSTRAINT "financial_transactions_withdrawal_expense_assignment" CHECK ((("type" <> 'WITHDRAWAL'::"public"."financial_transaction_type") OR ("status" <> 'APPROVED'::"public"."approval_status") OR ("cancelled_at" IS NOT NULL) OR ("approved_at" IS NOT NULL))) NOT VALID;
 
 
 
@@ -12315,7 +12661,7 @@ ALTER TABLE ONLY "public"."ocr_tickets"
 
 
 ALTER TABLE "public"."payroll_slips"
-    ADD CONSTRAINT "payroll_slips_expense_assignment" CHECK ((("status" <> 'APPROVED'::"public"."approval_status") OR ("cancelled_at" IS NOT NULL) OR ("net_pay" <= (0)::numeric) OR (("expense_location_id" IS NOT NULL) AND ("approved_at" IS NOT NULL)))) NOT VALID;
+    ADD CONSTRAINT "payroll_slips_expense_assignment" CHECK ((("status" <> 'APPROVED'::"public"."approval_status") OR ("cancelled_at" IS NOT NULL) OR ("net_pay" <= (0)::numeric) OR ("approved_at" IS NOT NULL))) NOT VALID;
 
 
 
@@ -12758,6 +13104,10 @@ CREATE UNIQUE INDEX "transport_staff_bank_accounts_one_primary" ON "public"."tra
 
 
 
+CREATE UNIQUE INDEX "user_locations_one_primary_per_user" ON "public"."user_locations" USING "btree" ("user_id") WHERE ("is_primary" = true);
+
+
+
 CREATE OR REPLACE TRIGGER "assign_rubber_bill_item_sequence" BEFORE INSERT ON "public"."rubber_bill_items" FOR EACH ROW EXECUTE FUNCTION "private"."assign_rubber_bill_item_sequence"();
 
 
@@ -12814,11 +13164,19 @@ CREATE OR REPLACE TRIGGER "dashboard_seed_locations" AFTER INSERT OR UPDATE OF "
 
 
 
+CREATE OR REPLACE TRIGGER "default_first_user_location_primary" BEFORE INSERT ON "public"."user_locations" FOR EACH ROW EXECUTE FUNCTION "private"."default_first_user_location_primary"();
+
+
+
 CREATE OR REPLACE TRIGGER "enforce_financial_transaction_expense_relation" BEFORE UPDATE ON "public"."financial_transactions" FOR EACH ROW EXECUTE FUNCTION "private"."enforce_time_tracking_expense_relation"();
 
 
 
 CREATE OR REPLACE TRIGGER "enforce_payroll_slip_expense_relation" BEFORE UPDATE ON "public"."payroll_slips" FOR EACH ROW EXECUTE FUNCTION "private"."enforce_time_tracking_expense_relation"();
+
+
+
+CREATE CONSTRAINT TRIGGER "enforce_user_primary_location" AFTER INSERT OR DELETE OR UPDATE ON "public"."user_locations" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "private"."enforce_user_primary_location"();
 
 
 
@@ -13651,7 +14009,7 @@ ALTER TABLE "public"."dashboard_stock_alert_thresholds" ENABLE ROW LEVEL SECURIT
 ALTER TABLE "public"."financial_transactions" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "financial_transactions_read_self_or_manager" ON "public"."financial_transactions" FOR SELECT TO "authenticated" USING ((("profile_id" = "auth"."uid"()) OR "private"."is_time_payroll_manager"()));
+CREATE POLICY "financial_transactions_read_self_or_manager" ON "public"."financial_transactions" FOR SELECT TO "authenticated" USING ((("profile_id" = "auth"."uid"()) OR "private"."can_manage_time_payroll_profile"("profile_id")));
 
 
 
@@ -13816,7 +14174,7 @@ CREATE POLICY "ocr_tickets_location_scope" ON "public"."ocr_tickets" TO "authent
 ALTER TABLE "public"."payroll_slips" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "payroll_slips_read_self_or_manager" ON "public"."payroll_slips" FOR SELECT TO "authenticated" USING ((("profile_id" = "auth"."uid"()) OR "private"."is_time_payroll_manager"()));
+CREATE POLICY "payroll_slips_read_self_or_manager" ON "public"."payroll_slips" FOR SELECT TO "authenticated" USING ((("profile_id" = "auth"."uid"()) OR "private"."can_manage_time_payroll_profile"("profile_id")));
 
 
 
@@ -13926,21 +14284,21 @@ ALTER TABLE "public"."telegram_badge_settings" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."time_segments" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "time_segments_read_self_or_manager" ON "public"."time_segments" FOR SELECT TO "authenticated" USING ((("profile_id" = "auth"."uid"()) OR "private"."is_time_payroll_manager"()));
+CREATE POLICY "time_segments_read_self_or_manager" ON "public"."time_segments" FOR SELECT TO "authenticated" USING ((("profile_id" = "auth"."uid"()) OR "private"."can_manage_time_payroll_profile"("profile_id")));
 
 
 
 ALTER TABLE "public"."time_tracking_audit_logs" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "time_tracking_audit_logs_read_manager" ON "public"."time_tracking_audit_logs" FOR SELECT TO "authenticated" USING ("private"."is_time_payroll_manager"());
+CREATE POLICY "time_tracking_audit_logs_read_manager" ON "public"."time_tracking_audit_logs" FOR SELECT TO "authenticated" USING (("private"."can_access_super_admin_features"() OR ("private"."has_time_payroll_manager_access"() AND ("admin_id" = "auth"."uid"()))));
 
 
 
 ALTER TABLE "public"."time_tracking_resume_schedules" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "time_tracking_resume_schedules_read_self_or_manager" ON "public"."time_tracking_resume_schedules" FOR SELECT TO "authenticated" USING ((("profile_id" = "auth"."uid"()) OR "private"."is_time_payroll_manager"()));
+CREATE POLICY "time_tracking_resume_schedules_read_self_or_manager" ON "public"."time_tracking_resume_schedules" FOR SELECT TO "authenticated" USING ((("profile_id" = "auth"."uid"()) OR "private"."can_manage_time_payroll_profile"("profile_id")));
 
 
 
@@ -14074,6 +14432,11 @@ GRANT ALL ON FUNCTION "private"."can_manage_profile"("target_user" "uuid") TO "a
 
 
 
+REVOKE ALL ON FUNCTION "private"."can_manage_time_payroll_profile"("target_profile_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "private"."can_manage_time_payroll_profile"("target_profile_id" "uuid") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "private"."can_view_profile"("target_user" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "private"."can_view_profile"("target_user" "uuid") TO "authenticated";
 
@@ -14113,6 +14476,11 @@ REVOKE ALL ON FUNCTION "private"."dashboard_rollover_if_needed"() FROM PUBLIC;
 
 
 REVOKE ALL ON FUNCTION "private"."dashboard_seed_active_location"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."has_time_payroll_manager_access"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "private"."has_time_payroll_manager_access"() TO "authenticated";
 
 
 
@@ -14426,6 +14794,11 @@ GRANT ALL ON FUNCTION "public"."get_telegram_badge_delivery_credentials"() TO "s
 
 
 
+REVOKE ALL ON FUNCTION "public"."get_time_payroll_payment_locations"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_time_payroll_payment_locations"() TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."is_super_admin"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."is_super_admin"() TO "authenticated";
 
@@ -14457,6 +14830,11 @@ GRANT ALL ON FUNCTION "public"."queue_dashboard_refresh"("p_location_id" "uuid")
 
 REVOKE ALL ON FUNCTION "public"."receive_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."receive_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."remove_user_location_with_primary_replacement"("p_user_id" "uuid", "p_location_id" "uuid", "p_replacement_location_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."remove_user_location_with_primary_replacement"("p_user_id" "uuid", "p_location_id" "uuid", "p_replacement_location_id" "uuid") TO "authenticated";
 
 
 
@@ -14622,6 +15000,11 @@ GRANT ALL ON FUNCTION "public"."save_telegram_badge_config"("payload" "jsonb") T
 
 REVOKE ALL ON FUNCTION "public"."set_time_tracking_status"("p_profile_id" "uuid", "p_status" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."set_time_tracking_status"("p_profile_id" "uuid", "p_status" "text") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."set_user_primary_location"("p_user_id" "uuid", "p_location_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."set_user_primary_location"("p_user_id" "uuid", "p_location_id" "uuid") TO "authenticated";
 
 
 
@@ -14858,6 +15241,10 @@ GRANT SELECT("can_access_money_transfer"),UPDATE("can_access_money_transfer") ON
 
 
 GRANT SELECT("can_access_super_admin_features"),UPDATE("can_access_super_admin_features") ON TABLE "public"."profiles" TO "authenticated";
+
+
+
+GRANT SELECT("can_manage_time_payroll") ON TABLE "public"."profiles" TO "authenticated";
 
 
 
