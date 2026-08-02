@@ -1,16 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { CircleDollarSign, FilePlus2, Loader2, RotateCw, Share2, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { CircleDollarSign, Eye, FilePlus2, Loader2, RotateCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import type { Location, Profile } from "@/types";
 import type { ReportDetails, ReportSummary } from "@/types/reports";
 import { ApiResponseError, assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { canManageSystemFeatures } from "@/lib/permissions";
-import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
-import { useSharePdf } from "@/hooks/useSharePdf";
-import { createReportPdfFile } from "@/lib/reports/report-pdf";
-import { reportShareTitle } from "@/lib/reports/report-presentation";
+import { ReportPreviewModal } from "@/components/reports/ReportPreviewModal";
 
 function dateTime(value: string) {
   return new Intl.DateTimeFormat("th-TH", {
@@ -50,8 +47,10 @@ export function ReportsModule({
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [sharingId, setSharingId] = useState<string | null>(null);
-  const pdfShare = useSharePdf();
+  const [previewReport, setPreviewReport] = useState<ReportSummary | null>(null);
+  const [previewDetails, setPreviewDetails] = useState<ReportDetails | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const previewController = useRef<AbortController | null>(null);
   const canDelete = canManageSystemFeatures(profile);
 
   const loadReports = useCallback(async () => {
@@ -75,6 +74,43 @@ export function ReportsModule({
   useEffect(() => {
     void loadReports();
   }, [loadReports]);
+
+  useEffect(() => () => previewController.current?.abort(), []);
+
+  async function openReportPreview(report: ReportSummary) {
+    if (!online) return;
+    previewController.current?.abort();
+    const controller = new AbortController();
+    previewController.current = controller;
+    setPreviewReport(report);
+    setPreviewDetails(null);
+    setPreviewError(null);
+
+    try {
+      const response = await authFetch(`/api/lanflow/reports/${report.id}`, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      await assertApiResponse(response);
+      const details = await response.json() as ReportDetails;
+      if (previewController.current === controller) setPreviewDetails(details);
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") return;
+      if (previewController.current === controller) {
+        setPreviewError(error instanceof Error ? error.message : "โหลดรายละเอียดรายงานไม่สำเร็จ");
+      }
+    } finally {
+      if (previewController.current === controller) previewController.current = null;
+    }
+  }
+
+  function closeReportPreview() {
+    previewController.current?.abort();
+    previewController.current = null;
+    setPreviewReport(null);
+    setPreviewDetails(null);
+    setPreviewError(null);
+  }
 
   async function createReport() {
     if (!online || creating) return;
@@ -111,34 +147,6 @@ export function ReportsModule({
       }
     } finally {
       setCreating(false);
-    }
-  }
-
-  async function shareReport(report: ReportSummary) {
-    if (!online || pdfShare.busy) return;
-    setSharingId(report.id);
-    try {
-      const delivery = await pdfShare.sharePdfFile(async (signal) => {
-        const response = await authFetch(`/api/lanflow/reports/${report.id}`, {
-          cache: "no-store",
-          signal,
-        });
-        await assertApiResponse(response);
-        const details = await response.json() as ReportDetails;
-        return {
-          file: await createReportPdfFile(details, signal),
-          title: reportShareTitle(details.report),
-        };
-      });
-      if (delivery === "shared") {
-        toast.success(`แชร์ ${report.reportNo} แล้ว`);
-      } else if (delivery === "downloaded") {
-        toast.info("อุปกรณ์นี้แชร์ไฟล์ไม่ได้ จึงดาวน์โหลด PDF แทนแล้ว");
-      }
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "สร้าง PDF รายงานไม่สำเร็จ");
-    } finally {
-      setSharingId(null);
     }
   }
 
@@ -232,15 +240,13 @@ export function ReportsModule({
                     <div className="flex justify-end gap-2">
                       <button
                         type="button"
-                        onClick={() => void shareReport(report)}
-                        disabled={!online || pdfShare.busy}
-                        aria-label={`แชร์ PDF รายงาน ${report.reportNo}`}
+                        onClick={() => void openReportPreview(report)}
+                        disabled={!online}
+                        aria-label={`ดูรายงาน ${report.reportNo}`}
                         className="focus-ring inline-flex items-center gap-1 rounded-md bg-river px-3 py-1.5 font-semibold text-white"
                       >
-                        {sharingId === report.id
-                          ? <Loader2 size={15} className="animate-spin" />
-                          : <Share2 size={15} />}
-                        {sharingId === report.id ? "กำลังสร้าง PDF" : "แชร์ PDF"}
+                        <Eye size={15} />
+                        ดูรายงาน
                       </button>
                       {canDelete && report.status === "active" && report.hasCashCount && report.cashCountId && onOpenCashCount && (
                         <button type="button" onClick={() => onOpenCashCount(report.cashCountId!)} className="focus-ring inline-flex items-center gap-1 rounded-md bg-actionSecondary px-3 py-1.5 font-semibold text-white"><CircleDollarSign size={15} />เปิดผลนับ</button>
@@ -270,7 +276,15 @@ export function ReportsModule({
         </div>
       </div>
     </section>
-    <SharePdfWaitingModal open={pdfShare.waiting} onCancel={pdfShare.cancel} />
+    {previewReport && (
+      <ReportPreviewModal
+        report={previewReport}
+        details={previewDetails}
+        error={previewError}
+        online={online}
+        onClose={closeReportPreview}
+      />
+    )}
     </>
   );
 }
