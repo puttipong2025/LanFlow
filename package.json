@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "verify": "npm run typecheck && npm run build",
+    "verify": "npm run typecheck && npm run build && node scripts/check-service-worker.mjs",
     "deploy:check": "node scripts/check-deployment-env.mjs && npm run verify",
     "baseline:income-expense": "node scripts/measure-income-expense-baseline.mjs",
     "baseline:offline-sync": "npm run build && node scripts/measure-offline-sync-baseline.mjs",

@@ -8,14 +8,23 @@ const withPWA = withPWAInit({
   cacheOnFrontEndNav: true,
   aggressiveFrontEndNavCaching: true,
   reloadOnOnline: false,
-  fallbacks: {
-    document: "/offline.html",
-  },
+  dynamicStartUrl: false,
   workboxOptions: {
     skipWaiting: true,
     clientsClaim: true,
     // Don't cache API requests with Cache First — use proper strategies
     runtimeCaching: [
+      {
+        // Keep authenticated documents out of the shared service-worker cache.
+        // Workbox serves the precached offline page only when navigation fails.
+        urlPattern: ({ request }) => request.mode === "navigate",
+        handler: "NetworkOnly",
+        options: {
+          precacheFallback: {
+            fallbackURL: "/offline.html",
+          },
+        },
+      },
       {
         // Never cache authenticated API responses in the shared service-worker
         // cache. Offline data is stored in a user-partitioned workspace instead.
