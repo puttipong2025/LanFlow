@@ -127,6 +127,9 @@ export default function ReportPrintPage() {
           <div><strong>สร้างเมื่อ:</strong> {thaiDateTime(details.report.createdAt)}</div>
           <div><strong>จำนวน source:</strong> {details.report.itemCount.toLocaleString("th-TH")}</div>
           <div><strong>สถานะ:</strong> <span className={details.report.status === "deleted" ? "deleted" : ""}>{reportStatusLabel(details.report)}</span></div>
+          <div><strong>ผลตรวจนับ:</strong> {details.report.hasCashCount ? "มีผลตรวจนับเงินสด" : "ไม่มีผลตรวจนับเงินสด"}</div>
+          {details.report.hasCashCount && <div><strong>ผู้ตรวจนับ:</strong> {details.report.cashCountCheckerName ?? "-"}</div>}
+          {details.report.hasCashCount && <div><strong>ตรวจนับเมื่อ:</strong> {details.report.cashCountSubmittedAt ? thaiDateTime(details.report.cashCountSubmittedAt) : "-"}</div>}
         </div>
       </header>
 

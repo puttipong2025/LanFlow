@@ -27,7 +27,7 @@ export async function GET(request: NextRequest) {
 
   const { data, error } = await result.supabase
     .from("report_batches")
-    .select("id, report_no, location_id, cutoff_at, status, created_by_name, created_at, deleted_at, rubber_export_lock_no, report_items(count), locations(name)")
+    .select("id, report_no, location_id, cutoff_at, status, created_by_name, created_at, deleted_at, rubber_export_lock_no, has_cash_count, cash_count_link_id, cash_count_checker_name, cash_count_submitted_at, report_items(count), locations(name)")
     .eq("location_id", locationId)
     .order("created_at", { ascending: false })
     .order("id", { ascending: false });
@@ -51,6 +51,10 @@ export async function GET(request: NextRequest) {
       itemCount: Number(count ?? 0),
       isLatestActive: row.id === latestActiveId,
       rubberExportLockNo: row.rubber_export_lock_no,
+      hasCashCount: row.has_cash_count === true,
+      cashCountId: row.cash_count_link_id,
+      cashCountCheckerName: row.cash_count_checker_name,
+      cashCountSubmittedAt: row.cash_count_submitted_at,
     };
   });
 
@@ -77,7 +81,7 @@ export async function POST(request: Request) {
       .filter(Boolean)
       .join("\n");
     const response = reportCreateErrorResponse(diagnostic);
-    if (response.status !== 403 && !diagnostic.includes("ไม่มีรายการ")) {
+    if (response.status !== 403 && !diagnostic.includes("ไม่มีรายการ") && !diagnostic.includes("CASH_COUNT_ACTIVE")) {
       console.error("create_report_batch failed", {
         locationId,
         code: error.code,

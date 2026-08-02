@@ -1,4 +1,4 @@
-import { Loader2, WifiOff } from "lucide-react";
+import { Link2, Loader2, WifiOff } from "lucide-react";
 import { type Tab, tabs } from "@/components/lanflow/tabs";
 import type { Profile } from "@/types";
 import type { UploadItem } from "@/components/OcrTicketUpload";
@@ -44,6 +44,12 @@ export function NavigationTabs({
           : 0;
         const offlineBlockMessage = online ? null : getOfflineTabBlockMessage(tab.id);
         const isOfflineBlocked = Boolean(offlineBlockMessage);
+        const isReportPair = tab.id === "reports" || tab.id === "cash-count";
+        const relationTitle = tab.id === "reports"
+          ? "เชื่อมกับโมดูลนับเงิน"
+          : tab.id === "cash-count"
+            ? "เชื่อมกับโมดูลรายงาน"
+            : null;
 
         return (
           <button
@@ -51,7 +57,7 @@ export function NavigationTabs({
             type="button"
             onClick={() => onTabChange(tab.id)}
             disabled={isOfflineBlocked}
-            title={offlineBlockMessage ?? tab.label}
+            title={offlineBlockMessage ?? (relationTitle ? `${tab.label} · ${relationTitle}` : tab.label)}
             aria-label={badgeCount > 0 ? `${tab.label} มีงานที่จัดการได้ ${badgeCount} รายการ` : tab.label}
             aria-pressed={active}
             className={`focus-ring relative flex h-10 shrink-0 items-center gap-2 rounded-lg border px-3 text-sm font-semibold shadow-sm ${
@@ -59,11 +65,20 @@ export function NavigationTabs({
                 ? "cursor-not-allowed border-black/5 bg-field text-ink/40 shadow-none"
                 : active
                   ? "border-leaf bg-leaf text-white"
-                  : "border-mint bg-white text-ink/75 hover:border-leaf/30 hover:bg-mint/40 hover:text-ink"
+                  : isReportPair
+                    ? "border-leaf/25 bg-mint/30 text-ink/80 hover:border-leaf/40 hover:bg-mint/50 hover:text-leaf"
+                    : "border-mint bg-white text-ink/75 hover:border-leaf/30 hover:bg-mint/40 hover:text-ink"
             }`}
           >
             <Icon size={17} />
             {tab.label}
+            {isReportPair && (
+              <Link2
+                size={12}
+                aria-hidden="true"
+                className={active ? "text-white/80" : "text-leaf/65"}
+              />
+            )}
             {isOfflineBlocked && <WifiOff size={13} />}
             {online && isOcrTab && ocrProcessing > 0 && (
               <span title="กำลังประมวลผล OCR" aria-label="กำลังประมวลผล OCR">

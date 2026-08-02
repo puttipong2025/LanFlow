@@ -28,6 +28,9 @@ export function longReportDetails(): ReportDetails {
       deletedAt: "2026-07-29T09:00:00.000Z",
       itemCount: 80,
       isLatestActive: false,
+      hasCashCount: true,
+      cashCountCheckerName: "ผู้ตรวจนับทดสอบ",
+      cashCountSubmittedAt: "2026-07-29T08:03:00.000Z",
     },
     rubberBills: [
       {

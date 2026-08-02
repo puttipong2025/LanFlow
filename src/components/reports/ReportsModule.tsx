@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { FilePlus2, Loader2, RotateCw, Share2, Trash2 } from "lucide-react";
+import { CircleDollarSign, FilePlus2, Loader2, RotateCw, Share2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import type { Location, Profile } from "@/types";
 import type { ReportDetails, ReportSummary } from "@/types/reports";
@@ -39,10 +39,12 @@ export function ReportsModule({
   selectedLocation,
   profile,
   online,
+  onOpenCashCount,
 }: {
   selectedLocation: Location;
   profile: Profile;
   online: boolean;
+  onOpenCashCount?: (countId: string) => void;
 }) {
   const [reports, setReports] = useState<ReportSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -223,7 +225,8 @@ export function ReportsModule({
                   <td className="px-4 py-3">{report.createdByName}</td>
                   <td className="px-4 py-3 text-right">{report.itemCount.toLocaleString("th-TH")}</td>
                   <td className="px-4 py-3">
-                    {report.status === "active" ? "ใช้งาน" : `ลบแล้ว${report.deletedAt ? ` ${dateTime(report.deletedAt)}` : ""}`}
+                    <div>{report.status === "active" ? "ใช้งาน" : `ลบแล้ว${report.deletedAt ? ` ${dateTime(report.deletedAt)}` : ""}`}</div>
+                    <div className="mt-1 text-xs font-semibold text-ink/60">{report.hasCashCount ? "มีผลตรวจนับเงินสด" : "ไม่มีผลตรวจนับเงินสด"}</div>
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-2">
@@ -239,7 +242,10 @@ export function ReportsModule({
                           : <Share2 size={15} />}
                         {sharingId === report.id ? "กำลังสร้าง PDF" : "แชร์ PDF"}
                       </button>
-                      {canDelete && report.status === "active" && report.isLatestActive && (
+                      {canDelete && report.status === "active" && report.hasCashCount && report.cashCountId && onOpenCashCount && (
+                        <button type="button" onClick={() => onOpenCashCount(report.cashCountId!)} className="focus-ring inline-flex items-center gap-1 rounded-md bg-actionSecondary px-3 py-1.5 font-semibold text-white"><CircleDollarSign size={15} />เปิดผลนับ</button>
+                      )}
+                      {canDelete && report.status === "active" && report.isLatestActive && !report.hasCashCount && (
                         <button
                           type="button"
                           onClick={() => void deleteReport(report)}

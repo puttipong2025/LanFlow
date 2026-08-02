@@ -155,6 +155,10 @@ test("downloads an actual multi-page PDF when file sharing is unsupported", asyn
   expect(inspection.texts.join("\n")).not.toContain("\u0000");
   const allText = inspection.actualTexts.join("\n");
   expect(allText).toContain("ลบแล้ว (สำเนา)");
+  expect(allText).toContain("มีผลตรวจนับเงินสด");
+  expect(allText).toContain("ผู้ตรวจนับทดสอบ");
+  expect(allText).not.toContain("คะแนนพิรุธ");
+  expect(allText).not.toContain("ความเชื่อมั่น");
   expect(allText).toContain("1.1 ผู้ค้าขาย");
   expect(allText).toContain("1.2 ชาวสวน");
   expect(allText).toContain("2. อ่านใบชั่ง");

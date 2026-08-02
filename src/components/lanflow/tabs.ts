@@ -1,6 +1,7 @@
 import {
   ArrowDownUp,
   Banknote,
+  CircleDollarSign,
   ClipboardList,
   FileImage,
   Package,
@@ -12,7 +13,7 @@ import {
   Clock
 } from "lucide-react";
 
-export type Tab = "dashboard" | "rubber" | "rubber-export" | "cash" | "acid-stock" | "customers" | "transport" | "money-transfer" | "ocr" | "reports" | "admin" | "time-tracking";
+export type Tab = "dashboard" | "rubber" | "rubber-export" | "cash" | "cash-count" | "acid-stock" | "customers" | "transport" | "money-transfer" | "ocr" | "reports" | "admin" | "time-tracking";
 
 export const tabs: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: number }> }> = [
   { id: "dashboard", label: "ภาพรวม", icon: ClipboardList },
@@ -26,5 +27,6 @@ export const tabs: Array<{ id: Tab; label: string; icon: React.ComponentType<{ s
   { id: "ocr", label: "อ่านใบชั่ง", icon: FileImage },
   { id: "time-tracking", label: "เวลาและเงินเดือน", icon: Clock },
   { id: "reports", label: "รายงาน", icon: Printer },
+  { id: "cash-count", label: "นับเงิน", icon: CircleDollarSign },
   { id: "admin", label: "Admin", icon: ShieldCheck }
 ];

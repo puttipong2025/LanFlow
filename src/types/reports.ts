@@ -11,6 +11,10 @@ export type ReportSummary = {
   itemCount: number;
   isLatestActive: boolean;
   rubberExportLockNo?: string | null;
+  hasCashCount?: boolean;
+  cashCountId?: string | null;
+  cashCountCheckerName?: string | null;
+  cashCountSubmittedAt?: string | null;
 };
 
 export type ReportLedgerRow = {

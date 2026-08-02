@@ -554,13 +554,14 @@ test.describe.serial("Report batch contract @report-batch", () => {
     const superAdmin = await authContext(browser, "super_admin");
     const db = service();
     const adminProfile = await profile(adminContext);
-    const superProfile = await profile(superAdmin);
-    const foreignLocationId = superProfile.locationIds.find((id) => !adminProfile.locationIds.includes(id));
-    expect(foreignLocationId).toBeTruthy();
+    const alternateLocation = await activateAlternateLocation(db, adminProfile.locationIds[0]);
 
     let managerReportId: string | null = null;
     let managerSourceId: string | null = null;
     try {
+      const superProfile = await profile(superAdmin);
+      const foreignLocationId = alternateLocation.id;
+      expect(superProfile.locationIds).toContain(foreignLocationId);
       expect((await adminContext.request.get(`/api/lanflow/reports?locationId=${foreignLocationId}`)).status()).toBe(403);
       expect((await db.from("profiles").update({ can_access_super_admin_features: true }).eq("id", adminProfile.id)).error).toBeNull();
 
@@ -637,6 +638,7 @@ test.describe.serial("Report batch contract @report-batch", () => {
       if (managerReportId) await deleteReport(adminContext, managerReportId);
       if (managerSourceId) await db.from("income_expense").delete().eq("id", managerSourceId);
       await db.from("profiles").update({ can_access_super_admin_features: false }).eq("id", adminProfile.id);
+      await alternateLocation.restore();
       await Promise.all([adminContext.close(), superAdmin.close()]);
     }
   });

@@ -15,6 +15,9 @@ test("prints rubber payable as whole baht while preserving two-decimal money fie
       deletedAt: null,
       itemCount: 1,
       isLatestActive: true,
+      hasCashCount: true,
+      cashCountCheckerName: "ผู้ตรวจนับทดสอบ",
+      cashCountSubmittedAt: "2026-07-27T00:01:00.000Z",
     },
     rubberBills: [{
       date: "2026-07-27",
@@ -49,6 +52,9 @@ test("prints rubber payable as whole baht while preserving two-decimal money fie
     );
 
     await page.goto("/reports/report-format-test/print");
+    await expect(page.getByText(/ผลตรวจนับ: มีผลตรวจนับเงินสด/)).toBeVisible();
+    await expect(page.getByText(/ผู้ตรวจนับ: ผู้ตรวจนับทดสอบ/)).toBeVisible();
+    await expect(page.getByText("คะแนนพิรุธ")).toHaveCount(0);
 
     const rubberSection = page.locator("section").filter({
       has: page.getByRole("heading", { name: "1. บิลยาง" }),

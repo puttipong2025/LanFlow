@@ -2,7 +2,7 @@
 
 import { ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuthContext } from "@/components/AuthProvider";
 
 import type { Location, Profile } from "@/types";
@@ -32,6 +32,7 @@ import { IncomeExpenseModule } from "@/components/income-expense/IncomeExpenseMo
 import { AcidStockModule } from "@/components/acid-stock/AcidStockModule";
 import { ReportsModule } from "@/components/reports/ReportsModule";
 import { RubberExportsModule } from "@/components/rubber-exports/RubberExportsModule";
+import { CashCountModule } from "@/components/cash-counts/CashCountModule";
 import { AppHeader } from "@/components/lanflow/AppHeader";
 import { NavigationTabs } from "@/components/lanflow/NavigationTabs";
 import { LogoutButton } from "@/components/lanflow/LogoutButton";
@@ -78,6 +79,8 @@ export function LanFlowApp() {
     exportId: string;
     locationId: string;
   } | null>(null);
+  const [pendingCashCountId, setPendingCashCountId] = useState<string | null>(null);
+  const handleInitialCashCountHandled = useCallback(() => setPendingCashCountId(null), []);
   const [ocrUploadItems, setOcrUploadItems] = useState<UploadItem[]>([]);
   const online = useOnlineStatus();
   const [isLoaded, setIsLoaded] = useState(false);
@@ -450,6 +453,15 @@ export function LanFlowApp() {
             onOpenTimeTrackingSource={() => setActiveTab("time-tracking")}
           />
         )}
+        {activeTab === "cash-count" && (
+          <CashCountModule
+            selectedLocation={selectedLocation}
+            profile={profile}
+            online={online}
+            initialCountId={pendingCashCountId}
+            onInitialCountHandled={handleInitialCashCountHandled}
+          />
+        )}
         {activeTab === "acid-stock" && (
           <AcidStockModule
             selectedLocation={selectedLocation}
@@ -466,6 +478,10 @@ export function LanFlowApp() {
             selectedLocation={selectedLocation}
             profile={profile}
             online={online}
+            onOpenCashCount={(countId) => {
+              setPendingCashCountId(countId);
+              setActiveTab("cash-count");
+            }}
           />
         )}
         {activeTab === "admin" && (

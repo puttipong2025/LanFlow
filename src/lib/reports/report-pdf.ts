@@ -138,6 +138,11 @@ function drawReportHeader(state: PdfState, details: ReportDetails) {
     `สร้างเมื่อ: ${formatThaiDateTime(details.report.createdAt)}`,
     `จำนวน source: ${details.report.itemCount.toLocaleString("th-TH")}`,
     `สถานะ: ${reportStatusLabel(details.report)}`,
+    details.report.hasCashCount ? "ผลตรวจนับ: มีผลตรวจนับเงินสด" : "ผลตรวจนับ: ไม่มีผลตรวจนับเงินสด",
+    ...(details.report.hasCashCount ? [
+      `ผู้ตรวจนับ: ${details.report.cashCountCheckerName ?? "-"}`,
+      `ตรวจนับเมื่อ: ${details.report.cashCountSubmittedAt ? formatThaiDateTime(details.report.cashCountSubmittedAt) : "-"}`,
+    ] : []),
   ];
   const width = TABLE_WIDTH / 4;
   metadata.forEach((text, index) => {
@@ -155,7 +160,7 @@ function drawReportHeader(state: PdfState, details: ReportDetails) {
       height: 19,
     });
   });
-  state.y += 44;
+  state.y += Math.ceil(metadata.length / 4) * 20 + 4;
   doc
     .save()
     .moveTo(PAGE_LEFT, state.y)

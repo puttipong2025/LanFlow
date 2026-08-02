@@ -43,7 +43,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
   const { reportId } = await context.params;
   const { data: header, error: headerError } = await result.supabase
     .from("report_batches")
-    .select("id, report_no, location_id, cutoff_at, status, created_by_name, created_at, deleted_at, locations(name)")
+    .select("id, report_no, location_id, cutoff_at, status, created_by_name, created_at, deleted_at, has_cash_count, cash_count_link_id, cash_count_checker_name, cash_count_submitted_at, locations(name)")
     .eq("id", reportId)
     .maybeSingle();
   if (headerError) return reportErrorResponse(headerError.message);
@@ -145,6 +145,10 @@ export async function GET(request: NextRequest, context: RouteContext) {
       deletedAt: header.deleted_at,
       itemCount: items.length,
       isLatestActive: latestResult.data?.id === header.id,
+      hasCashCount: header.has_cash_count === true,
+      cashCountId: header.cash_count_link_id,
+      cashCountCheckerName: header.cash_count_checker_name,
+      cashCountSubmittedAt: header.cash_count_submitted_at,
     } as ReportDetails["report"];
 
     const directionById = new Map<string, "out" | "in">([

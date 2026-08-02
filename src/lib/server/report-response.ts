@@ -46,6 +46,8 @@ export function reportErrorResponse(message: string) {
     message.includes("REPORT_LOCKED") ||
     message.includes("RUBBER_BILL_PENDING") ||
     message.includes("RUBBER_EXPORT_LOCKED") ||
+    message.includes("CASH_COUNT_ACTIVE") ||
+    message.includes("CASH_COUNT_LINKED") ||
     message.includes("active")
   ) {
     return NextResponse.json({ error: message }, { status: 409 });
@@ -58,6 +60,7 @@ export function reportCreateErrorResponse(message: string) {
     message.includes("ไม่มีสิทธิ์")
     || message.includes("access denied")
     || message.includes("ไม่มีรายการ")
+    || message.includes("CASH_COUNT_ACTIVE")
   ) {
     return reportErrorResponse(message);
   }
