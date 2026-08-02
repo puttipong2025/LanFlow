@@ -55,6 +55,10 @@ export type DashboardSnapshot = {
   lastError: string | null;
 };
 
+export type DashboardRefreshRequest = DashboardSnapshot & {
+  requestedVersion: number;
+};
+
 export type DashboardMoneyFeed = {
   rows: DashboardRow[];
   nextCursor: string | null;

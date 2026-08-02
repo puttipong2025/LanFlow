@@ -383,6 +383,9 @@ deno_version = 2
 [functions.telegram-badge-dispatch]
 verify_jwt = false
 
+[functions.dashboard-refresh]
+verify_jwt = true
+
 # [edge_runtime.secrets]
 # secret_key = "env(SECRET_VALUE)"
 

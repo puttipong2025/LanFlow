@@ -127,6 +127,7 @@ export async function GET(request: NextRequest) {
     if (paymentLocationsResult.error) throw paymentLocationsResult.error;
 
     const users = (usersResult.data || []).filter((user) => {
+      if (user.id === result.auth.sub) return true;
       if (result.auth.canAccessSystemManager) return true;
       const primary = user.user_locations?.find((assignment) => {
         const linkedLocations = Array.isArray(assignment.locations)

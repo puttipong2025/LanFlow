@@ -4,6 +4,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const password = process.env.TEST_PASSWORD || "password123";
+const superAdminId = "00000000-0000-4000-8000-000000000001";
 const adminId = "00000000-0000-4000-8000-000000000002";
 const userId = "00000000-0000-4000-8000-000000000003";
 let temporaryLocationId: string | null = null;
@@ -82,6 +83,121 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
   test.afterAll(async () => {
     if (temporaryLocationId) {
       await serviceClient().from("locations").delete().eq("id", temporaryLocationId);
+    }
+  });
+
+  test("delegated manager without a branch keeps a self-service row", async ({ browser }) => {
+    test.setTimeout(60_000);
+    const service = serviceClient();
+    const originalProfile = await service
+      .from("profiles")
+      .select("can_manage_time_payroll")
+      .eq("id", userId)
+      .single();
+    const originalAssignments = await service
+      .from("user_locations")
+      .select("location_id, is_primary")
+      .eq("user_id", userId);
+    expect(originalProfile.error).toBeNull();
+    expect(originalAssignments.error).toBeNull();
+
+    const context = await browser.newContext({ storageState: "playwright/.auth/user.json" });
+    try {
+      expect((await service.from("profiles").update({ can_manage_time_payroll: true }).eq("id", userId)).error).toBeNull();
+      expect((await service.from("user_locations").delete().eq("user_id", userId)).error).toBeNull();
+
+      const response = await context.request.get("/api/lanflow/time-tracking/admin");
+      expect(response.ok(), await response.text()).toBeTruthy();
+      const users = (await response.json()).users as Array<{ id: string; primary_location_id: string | null }>;
+      expect(users.find((profile) => profile.id === userId)?.primary_location_id).toBeNull();
+
+      const bootstrapResponse = await context.request.get("/api/lanflow");
+      expect(bootstrapResponse.ok(), await bootstrapResponse.text()).toBeTruthy();
+      const bootstrap = await bootstrapResponse.json();
+      expect(bootstrap.profile.canManageTimePayroll).toBe(true);
+      expect(bootstrap.profile.locationIds).toEqual([]);
+
+      const page = await context.newPage();
+      await page.goto("/");
+      await expect(page.getByText("ไม่มีสาขาหลัก · ใช้บริการตนเองเท่านั้น", { exact: true })).toBeVisible();
+
+      const selfRow = page.locator('[data-time-payroll-self="true"]');
+      await expect(selfRow).toBeVisible();
+      await expect(selfRow.getByText("ของตนเอง", { exact: true })).toBeVisible();
+      await expect(selfRow.getByRole("button", { name: "แก้ไข" })).toHaveCount(0);
+      await expect(selfRow.getByRole("button", { name: "คลิกเพื่อติ๊กเลือกวันทำงาน" })).toHaveCount(0);
+      await expect(selfRow.getByRole("button", { name: "คำนวณเงินเดือน" })).toHaveCount(0);
+
+      await selfRow.getByRole("button", { name: "ดู Dashboard" }).click();
+      const dialog = page.getByRole("dialog", { name: "ข้อมูลของตนเอง" });
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByRole("button", { name: "ขอเบิกเงินตนเอง" })).toBeVisible();
+      await expect(dialog.getByRole("button", { name: /เริ่มนับเวลา|หยุดงาน/ })).toHaveCount(0);
+      await expect(dialog.getByRole("button", { name: "สร้างหนี้สินเพิ่ม" })).toHaveCount(0);
+    } finally {
+      await service.from("user_locations").delete().eq("user_id", userId);
+      if ((originalAssignments.data?.length ?? 0) > 0) {
+        await service.from("user_locations").insert(originalAssignments.data!.map((assignment) => ({
+          user_id: userId,
+          location_id: assignment.location_id,
+          is_primary: assignment.is_primary,
+        })));
+      }
+      await service.from("profiles").update({
+        can_manage_time_payroll: originalProfile.data?.can_manage_time_payroll ?? false,
+      }).eq("id", userId);
+      await context.close().catch(() => undefined);
+    }
+  });
+
+  test("manager has one highlighted self row and an immediate loading modal", async ({ browser }) => {
+    test.setTimeout(60_000);
+    const context = await browser.newContext({ storageState: "playwright/.auth/super_admin.json" });
+    const page = await context.newPage();
+    let implicitSelfRequests = 0;
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname === "/api/lanflow/time-tracking/user" && !url.searchParams.has("userId")) {
+        implicitSelfRequests += 1;
+      }
+    });
+    let releaseDashboard!: () => void;
+    const dashboardGate = new Promise<void>((resolve) => {
+      releaseDashboard = resolve;
+    });
+
+    await page.route(`**/api/lanflow/time-tracking/user?userId=${superAdminId}`, async (route) => {
+      await dashboardGate;
+      await route.continue();
+    });
+
+    try {
+      await page.goto("/");
+      await page.getByRole("button", { name: "เวลาและเงินเดือน" }).click();
+
+      const firstRow = page.locator("tbody tr").first();
+      await expect(firstRow).toBeVisible();
+      expect(implicitSelfRequests).toBe(0);
+      await expect(page.getByRole("heading", { name: "ระบบเวลาและเงินเดือน (ของตนเอง)" })).toHaveCount(0);
+      await expect(firstRow).toHaveAttribute("data-time-payroll-self", "true");
+      await expect(firstRow.getByText("ของตนเอง", { exact: true })).toBeVisible();
+      await expect(firstRow.getByRole("button", { name: "แก้ไข" })).toBeVisible();
+      await expect(firstRow.getByRole("button", { name: "คลิกเพื่อติ๊กเลือกวันทำงาน" })).toBeVisible();
+      await expect(firstRow.getByRole("button", { name: "คำนวณเงินเดือน" })).toBeVisible();
+
+      await firstRow.getByRole("button", { name: "ดู Dashboard" }).click();
+      const dialog = page.getByRole("dialog", { name: "ข้อมูลของตนเอง" });
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByRole("status", { name: "กำลังโหลดข้อมูล..." })).toBeVisible();
+
+      releaseDashboard();
+      await expect(dialog.getByRole("button", { name: "ขอเบิกเงินตนเอง" })).toBeVisible();
+      await expect(dialog.getByRole("button", { name: /เริ่มนับเวลา|หยุดงาน/ })).toBeVisible();
+      await expect(dialog.getByRole("button", { name: "สร้างหนี้สินเพิ่ม" })).toBeVisible();
+      await expect(dialog.getByText("ผู้จัดการหยุดงาน", { exact: true })).toHaveCount(0);
+    } finally {
+      releaseDashboard();
+      await context.close();
     }
   });
 

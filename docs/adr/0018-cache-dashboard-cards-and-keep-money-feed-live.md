@@ -6,6 +6,11 @@ Accepted on 2026-07-28. Implementation must use a forward-only migration after
 `20260728010000_dashboard_overview.sql`; that migration is already installed in
 the local database and must not be rewritten.
 
+The manual-refresh timing and authorization parts of this decision are
+superseded by [ADR 0029](./0029-wake-manual-dashboard-refresh-immediately.md).
+The cached read model, global automatic interval, state machine, and cron
+fallback remain in force.
+
 ## Intent
 
 Dashboard card values are calculated in PostgreSQL outside the page request and

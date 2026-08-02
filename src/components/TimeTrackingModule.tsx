@@ -11,6 +11,7 @@ import { useInputDialog } from "@/hooks/useInputDialog";
 import { ExpenseLocationChangeModal } from "./time-tracking/ExpenseLocationChangeModal";
 import { ExpenseLocationApprovalModal } from "./time-tracking/ExpenseLocationApprovalModal";
 import { canManageTimePayroll } from "@/lib/permissions";
+import { ModalShell } from "@/components/shared/ModalShell";
 
 interface TimeTrackingModuleProps {
   profile: Profile;
@@ -44,10 +45,11 @@ export function TimeTrackingModule({ profile, online, locations }: TimeTrackingM
   return <UserTimeTracking profile={profile} online={online} />;
 }
 
-function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, online, expenseLocations = [], onApprove, onReject }: { profile: Profile, targetUserId?: string, targetPrimaryLocationId?: string | null, online: boolean, expenseLocations?: Location[], onApprove?: (type: ApprovalType, item: any) => void, onReject?: (type: ApprovalType, item: any) => void }) {
+function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, online, expenseLocations = [], hideHeading = false, allowManagerActions, onApprove, onReject }: { profile: Profile, targetUserId?: string, targetPrimaryLocationId?: string | null, online: boolean, expenseLocations?: Location[], hideHeading?: boolean, allowManagerActions?: boolean, onApprove?: (type: ApprovalType, item: any) => void, onReject?: (type: ApprovalType, item: any) => void }) {
   const queryClient = useQueryClient();
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
   const [pendingExpenseLocationTx, setPendingExpenseLocationTx] = useState<any>(null);
@@ -62,19 +64,22 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
   const isRunning = data?.timeTracking?.status === 'RUNNING';
   const startTimeStr = data?.timeTracking?.start_time;
   const resumeSchedule = data?.timeTracking?.resume_schedule;
-  const canManageTime = canManageTimePayroll(profile);
   const managedUserId = targetUserId || profile.id;
+  const isSelf = managedUserId === profile.id;
+  const canManageTime = allowManagerActions ?? canManageTimePayroll(profile);
+  const withdrawalActionText = isSelf ? "ขอเบิกเงินตนเอง" : "ขอเบิกเงินแทน";
 
   const loadData = useCallback(async () => {
+    setLoadError(null);
     try {
       const url = targetUserId ? `/api/lanflow/time-tracking/user?userId=${targetUserId}` : "/api/lanflow/time-tracking/user";
       const res = await authFetch(url);
-      if (res.ok) {
-        const json = await res.json();
-        setData(json);
-      }
+      if (!res.ok) throw new Error("โหลดข้อมูลเวลาและเงินเดือนไม่สำเร็จ");
+      const json = await res.json();
+      setData(json);
     } catch (err) {
       console.error("Failed to load user time tracking:", err);
+      setLoadError("โหลดข้อมูลเวลาและเงินเดือนไม่สำเร็จ");
     } finally {
       setLoading(false);
     }
@@ -224,15 +229,36 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
     }
   }
 
-  if (loading) return <div>กำลังโหลดข้อมูล...</div>;
+  if (loading) return (
+    <div role="status" aria-label="กำลังโหลดข้อมูล..." aria-busy="true" className="space-y-5 p-1">
+      <p className="text-pretty text-sm font-semibold text-ink/65">กำลังโหลดข้อมูล...</p>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2" aria-hidden="true">
+        <div className="h-28 animate-pulse rounded-xl bg-mint/60 motion-reduce:animate-none" />
+        <div className="h-28 animate-pulse rounded-xl bg-mint/60 motion-reduce:animate-none" />
+      </div>
+      <div className="h-28 animate-pulse rounded-xl bg-mint/45 motion-reduce:animate-none" aria-hidden="true" />
+      <div className="h-24 animate-pulse rounded-xl bg-mint/45 motion-reduce:animate-none" aria-hidden="true" />
+    </div>
+  );
+
+  if (loadError) return (
+    <div role="alert" className="rounded-xl border border-danger/25 bg-danger/5 p-4">
+      <p className="text-pretty text-sm font-semibold text-danger">{loadError}</p>
+      <button type="button" onClick={() => { setLoading(true); void loadData(); }} className="focus-ring mt-3 rounded-lg bg-river px-4 py-2 text-sm font-semibold text-white hover:bg-river/90">
+        โหลดอีกครั้ง
+      </button>
+    </div>
+  );
 
   const debtTransactions = data?.transactions?.filter((t: any) => t.status !== 'REJECTED' && (t.type === 'DEBT' || t.type === 'WITHDRAWAL')) || [];
 
   return (
     <div className={`flex flex-col gap-6 p-4 ${targetUserId ? 'bg-mint/35 rounded-2xl border border-black/5 shadow-inner' : ''}`}>
-      <h2 className="text-xl font-bold text-ink flex items-center gap-2">
-        <UserCircle /> {targetUserId ? "ข้อมูลของพนักงาน" : "ระบบเวลาและเงินเดือน (ของตนเอง)"}
-      </h2>
+      {!hideHeading && (
+        <h2 className="flex items-center gap-2 text-balance text-xl font-bold text-ink">
+          <UserCircle /> {targetUserId ? "ข้อมูลของพนักงาน" : "ระบบเวลาและเงินเดือน (ของตนเอง)"}
+        </h2>
+      )}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div className="bg-white p-4 rounded-xl border border-black/10 shadow-sm flex flex-col justify-between">
           <div>
@@ -243,7 +269,7 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
                   ? <><PlayCircle size={16} /> กำลังทำงาน</>
                   : resumeSchedule
                     ? <><Clock size={16} /> รอเริ่มอัตโนมัติเดือนใหม่</>
-                    : <><PauseCircle size={16} /> ผู้จัดการหยุดงาน</>}
+                    : <><PauseCircle size={16} /> หยุดงาน</>}
               </span>
               {isRunning && startTimeStr && (
                 <span className="text-xs text-ink/60">เริ่มเมื่อ: {new Date(startTimeStr).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}</span>
@@ -290,7 +316,7 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
               </p>
             </div>
 
-            {targetUserId && (
+            {targetUserId && canManageTime && (
               <button
                 onClick={() => {
                   if (!online) {
@@ -318,7 +344,7 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
               return;
             }
             const amount = await requestInput({
-              title: targetUserId ? "ขอเบิกเงินแทน" : "ขอเบิกเงินล่วงหน้า",
+              title: withdrawalActionText,
               label: "ยอดเงินที่ต้องการเบิก (บาท)",
               inputType: "number",
               required: true,
@@ -363,7 +389,7 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
           title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE}
           className="bg-amber px-4 py-2 rounded-md font-semibold text-white hover:bg-amber/80 shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {targetUserId ? 'ขอเบิกเงินแทน' : 'ขอเบิกเงินล่วงหน้า'}
+          {withdrawalActionText}
         </button>
       </div>
 
@@ -420,7 +446,7 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
                     {canManageTime && t.type === 'WITHDRAWAL' && t.status === 'APPROVED' && (
                       <button onClick={() => changeWithdrawalExpenseLocation(t)} disabled={saving || !online || Boolean(t.report_lock_no)} title={reportLockReason(t) ?? undefined} className="rounded-md bg-river px-3 py-1 text-sm font-semibold text-white hover:bg-river/90 disabled:opacity-40">เปลี่ยนวิธีจ่าย</button>
                     )}
-                    {(canManageTime || (!targetUserId && t.type === 'WITHDRAWAL' && t.status === 'PENDING')) && (
+                    {(canManageTime || (isSelf && t.type === 'WITHDRAWAL' && t.status === 'PENDING')) && (
                       <button onClick={() => handleDeleteTransaction(t)} disabled={saving || !online || Boolean(t.report_lock_no)} title={reportLockReason(t) ?? (online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE)} className="inline-flex h-10 items-center gap-1 rounded-md bg-danger px-2 text-sm font-semibold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-40">
                         <XCircle size={18} />
                         ลบ
@@ -734,26 +760,15 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
 
   if (loading) return <div>กำลังโหลดข้อมูล...</div>;
 
+  const users = [...(data?.users || [])].sort((left: any, right: any) => {
+    if (left.id === profile.id) return -1;
+    if (right.id === profile.id) return 1;
+    return 0;
+  });
+  const dashboardUser = users.find((user: any) => user.id === viewDashboardUserId);
+
   return (
     <div className="flex flex-col gap-6">
-      {/* Admin's Personal Dashboard */}
-      <div className="bg-sand/30 border-b border-black/10 pb-6 shadow-inner">
-        <UserTimeTracking
-          profile={profile}
-          online={online}
-          expenseLocations={expenseLocations}
-          onApprove={(type, item) => handleApprove(
-            type,
-            item.id,
-            type === 'TRANSACTION' && item.type === 'WITHDRAWAL'
-              ? { title: `เบิกเงินของตนเอง`, amount: Number(item.amount), primaryLocationId: profile.primaryLocationId }
-              : undefined,
-            () => load(),
-          )}
-          onReject={(type, item) => void submitApproval(type, item.id, 'REJECTED')}
-        />
-      </div>
-
       <div className="flex flex-col gap-6 p-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <h2 className="text-xl font-bold text-ink flex items-center gap-2">
@@ -796,7 +811,9 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
             </tr>
           </thead>
           <tbody className="divide-y divide-black/5">
-             {data?.users?.map((user: any) => {
+             {users.map((user: any) => {
+               const isSelf = user.id === profile.id;
+               const canManageRow = !isSelf || Boolean(user.primary_location_id);
                const activeSegment = user.time_segments?.find((s: any) => !s.end_time);
                const status = activeSegment
                  ? 'RUNNING'
@@ -809,15 +826,21 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
                const dashboardPendingCount = pendingCountForUser(data?.pendingTransactions, user.id);
                const payrollPendingCount = pendingCountForUser(data?.pendingSlips, user.id);
                return (
-                <tr key={user.id} className={`hover:bg-sand/30 ${user.is_active === false ? 'opacity-70 bg-red-50/50' : ''}`}>
+                <tr
+                  key={user.id}
+                  data-user-id={user.id}
+                  data-time-payroll-self={isSelf ? "true" : undefined}
+                  className={`hover:bg-sand/30 data-[time-payroll-self=true]:bg-mint/35 ${user.is_active === false ? 'opacity-70 bg-red-50/50' : ''}`}
+                >
                   <td className="py-3">
                     {user.name}
+                    {isSelf && <span className="ml-2 rounded border border-leaf/20 bg-mint px-1.5 py-0.5 text-xs font-semibold text-leaf">ของตนเอง</span>}
                     {user.is_active === false && <span className="ml-2 text-xs bg-red-100 text-red-700 px-1.5 py-0.5 rounded border border-red-200">ถูกระงับ</span>}
                   </td>
                   <td className="py-3">
                     <div className="flex items-center gap-2">
                       <span>{formatCurrency(user.daily_wage || 0)}</span>
-                      <button onClick={() => editWage(user.id, user.daily_wage || 0)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded-md bg-amber px-2 py-1 text-xs font-semibold text-white hover:bg-amber/90 disabled:cursor-not-allowed disabled:opacity-40">แก้ไข</button>
+                      {canManageRow && <button onClick={() => editWage(user.id, user.daily_wage || 0)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded-md bg-amber px-2 py-1 text-xs font-semibold text-white hover:bg-amber/90 disabled:cursor-not-allowed disabled:opacity-40">แก้ไข</button>}
                     </div>
                   </td>
                   <td className="py-3">
@@ -828,19 +851,19 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
                           ? 'รอเริ่มอัตโนมัติเดือนใหม่'
                           : status === 'MONTH_CLOSED'
                             ? 'เดือนปิด'
-                            : 'ผู้จัดการหยุดงาน'}
+                            : 'หยุดงาน'}
                     </span>
                   </td>
                   <td className="py-3">
-                    <button onClick={() => {
-                      if (!online) {
+                     {canManageRow ? <button onClick={() => {
+                       if (!online) {
                         alert(TIME_TRACKING_OFFLINE_MESSAGE);
                         return;
                       }
                       setManageTimeUser(user);
                     }} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-river text-white px-3 py-1 rounded text-xs hover:bg-river/80 font-bold border border-black/10 shadow-sm disabled:cursor-not-allowed disabled:opacity-50">
-                      คลิกเพื่อติ๊กเลือกวันทำงาน
-                    </button>
+                       คลิกเพื่อติ๊กเลือกวันทำงาน
+                     </button> : <span className="text-xs text-ink/45">—</span>}
                   </td>
                   <td className="py-3">
                      <button onClick={() => setViewDashboardUserId(user.id)} className="inline-flex items-center gap-1 rounded bg-river px-3 py-1 text-xs font-bold text-white hover:bg-river/90">
@@ -852,10 +875,10 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
                      <span className="text-clay font-bold">{formatCurrency(debtRemainingAmount)}</span>
                   </td>
                   <td className="py-3">
-                    <button onClick={() => openPayroll(user)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-leaf text-white px-3 py-1 rounded text-xs hover:bg-leaf/80 font-bold shadow-sm disabled:cursor-not-allowed disabled:opacity-50 inline-flex items-center gap-1">
-                      คำนวณเงินเดือน
-                      {payrollPendingCount > 0 && <span className="min-w-4 rounded-full bg-white px-1.5 py-0.5 text-[10px] text-leaf">{payrollPendingCount}</span>}
-                    </button>
+                     {canManageRow ? <button onClick={() => openPayroll(user)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-leaf text-white px-3 py-1 rounded text-xs hover:bg-leaf/80 font-bold shadow-sm disabled:cursor-not-allowed disabled:opacity-50 inline-flex items-center gap-1">
+                       คำนวณเงินเดือน
+                       {payrollPendingCount > 0 && <span className="min-w-4 rounded-full bg-white px-1.5 py-0.5 text-[10px] text-leaf">{payrollPendingCount}</span>}
+                     </button> : <span className="text-xs text-ink/45">—</span>}
                   </td>
                 </tr>
               )
@@ -875,28 +898,31 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
         />
       )}
 
-      {viewDashboardUserId && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
-          <div className="bg-sand rounded-xl w-full max-w-4xl max-h-[90vh] overflow-y-auto relative shadow-2xl">
-            <button onClick={() => setViewDashboardUserId(null)} className="absolute right-4 top-4 inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white shadow-sm hover:bg-actionSecondary/90"><XCircle size={20} />ปิด</button>
-            <UserTimeTracking
-              profile={profile}
-              targetUserId={viewDashboardUserId}
-              targetPrimaryLocationId={data?.users?.find((user: any) => user.id === viewDashboardUserId)?.primary_location_id ?? null}
-              online={online}
-              expenseLocations={expenseLocations}
-              onApprove={(type, item) => handleApprove(
-                type,
-                item.id,
-                type === 'TRANSACTION' && item.type === 'WITHDRAWAL'
-                  ? { title: `เบิกเงินของ ${item.profiles?.name || 'พนักงาน'}`, amount: Number(item.amount), primaryLocationId: data?.users?.find((user: any) => user.id === viewDashboardUserId)?.primary_location_id ?? null }
-                  : undefined,
-                () => load(),
-              )}
-              onReject={(type, item) => void submitApproval(type, item.id, 'REJECTED')}
-            />
-          </div>
-        </div>
+      {viewDashboardUserId && dashboardUser && (
+        <ModalShell
+          title={dashboardUser.id === profile.id ? "ข้อมูลของตนเอง" : "ข้อมูลของพนักงาน"}
+          subtitle={dashboardUser.name}
+          onClose={() => setViewDashboardUserId(null)}
+        >
+          <UserTimeTracking
+            profile={profile}
+            targetUserId={viewDashboardUserId}
+            targetPrimaryLocationId={dashboardUser.primary_location_id ?? null}
+            online={online}
+            expenseLocations={expenseLocations}
+            hideHeading
+            allowManagerActions={dashboardUser.id !== profile.id || Boolean(dashboardUser.primary_location_id)}
+            onApprove={(type, item) => handleApprove(
+              type,
+              item.id,
+              type === 'TRANSACTION' && item.type === 'WITHDRAWAL'
+                ? { title: dashboardUser.id === profile.id ? "เบิกเงินของตนเอง" : `เบิกเงินของ ${item.profiles?.name || 'พนักงาน'}`, amount: Number(item.amount), primaryLocationId: dashboardUser.primary_location_id ?? null }
+                : undefined,
+              () => load(),
+            )}
+            onReject={(type, item) => void submitApproval(type, item.id, 'REJECTED')}
+          />
+        </ModalShell>
       )}
 
       {viewAuditLogsAdminId && (

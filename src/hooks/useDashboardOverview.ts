@@ -30,7 +30,11 @@ export function useDashboardBranchSummaries(ownerUserId: string, online: boolean
   });
 }
 
-export function useDashboardSnapshot(locationId: string, online: boolean) {
+export function useDashboardSnapshot(
+  locationId: string,
+  online: boolean,
+  requestedVersion: number | null = null,
+) {
   return useQuery({
     queryKey: [DASHBOARD_SNAPSHOT_QUERY_KEY, locationId],
     enabled: Boolean(locationId) && online,
@@ -49,8 +53,11 @@ export function useDashboardSnapshot(locationId: string, online: boolean) {
       const shouldPoll =
         !data.summary ||
         data.status === "queued" ||
-        data.status === "running";
-      return shouldPoll ? 5_000 : false;
+        data.status === "running" ||
+        (requestedVersion !== null &&
+          data.snapshotVersion < requestedVersion &&
+          data.status !== "failed");
+      return shouldPoll ? (requestedVersion === null ? 5_000 : 1_000) : false;
     },
     retry: 1,
   });

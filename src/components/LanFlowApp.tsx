@@ -39,6 +39,7 @@ import { LogoutButton } from "@/components/lanflow/LogoutButton";
 import {
   canAccessSourceLocation,
   canManageSystemFeatures,
+  canManageTimePayroll,
   canUseMoneyTransfer,
   canUseReports,
 } from "@/lib/permissions";
@@ -241,6 +242,29 @@ export function LanFlowApp() {
     );
   }
 
+  if (profile.locationIds.length === 0 && canManageTimePayroll(profile)) {
+    return (
+      <main className="min-h-screen bg-sand">
+        <section className="border-b border-mint bg-white shadow-sm">
+          <div className="mx-auto flex w-full max-w-7xl items-center justify-between gap-4 px-4 py-4">
+            <div>
+              <h1 className="text-balance text-xl font-bold text-ink">เวลาและเงินเดือน</h1>
+              <p className="text-pretty text-sm text-ink/60">
+                {canManageSystemFeatures(profile)
+                  ? "ไม่มีสาขาหลัก · ใช้เครื่องมือเวลาและเงินเดือนตามสิทธิ์ส่วนกลาง"
+                  : "ไม่มีสาขาหลัก · ใช้บริการตนเองเท่านั้น"}
+              </p>
+            </div>
+            <LogoutButton online={online} onLogout={auth.logout} />
+          </div>
+        </section>
+        <section className="mx-auto w-full max-w-7xl px-3 py-5 sm:px-4 sm:py-6">
+          <TimeTrackingModule profile={profile} online={online} locations={[]} />
+        </section>
+      </main>
+    );
+  }
+
   if (locations.length === 0 || !selectedLocationId) {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center bg-sand p-4 text-center">
@@ -379,7 +403,10 @@ export function LanFlowApp() {
           <Dashboard
             selectedLocation={selectedLocation}
             online={online}
-            canManageDashboard={canManageSystemFeatures(profile)}
+            canConfigureDashboard={canManageSystemFeatures(profile)}
+            canRequestDashboardRefresh={
+              canManageSystemFeatures(profile) || profile.role === "admin"
+            }
           />
         )}
         {activeTab === "rubber" && (

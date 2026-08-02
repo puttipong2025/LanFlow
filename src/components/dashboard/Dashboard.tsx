@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import type { Location } from "@/types";
 import type {
   DashboardManagerConfig,
+  DashboardRefreshRequest,
   DashboardRow,
 } from "@/types/dashboard";
 import { formatCurrency, formatNumber } from "@/lib/format";
@@ -45,11 +46,13 @@ function rowKind(row: DashboardRow) {
 export function Dashboard({
   selectedLocation,
   online,
-  canManageDashboard,
+  canConfigureDashboard,
+  canRequestDashboardRefresh,
 }: {
   selectedLocation: Location;
   online: boolean;
-  canManageDashboard: boolean;
+  canConfigureDashboard: boolean;
+  canRequestDashboardRefresh: boolean;
 }) {
   const [cursorHistory, setCursorHistory] = useState<Array<string | null>>([null]);
   const [managerConfig, setManagerConfig] =
@@ -57,16 +60,37 @@ export function Dashboard({
   const [managerBusy, setManagerBusy] = useState<"save" | "refresh" | null>(
     null,
   );
+  const [manualRequest, setManualRequest] = useState<{
+    locationId: string;
+    requestedVersion: number;
+    requestedAt: number;
+  } | null>(null);
+  const [manualLongRunning, setManualLongRunning] = useState(false);
+  const [manualRefreshError, setManualRefreshError] = useState<string | null>(
+    null,
+  );
   const cursor = cursorHistory[cursorHistory.length - 1];
-  const snapshot = useDashboardSnapshot(selectedLocation.id, online);
+  const requestedVersion =
+    manualRequest?.locationId === selectedLocation.id
+      ? manualRequest.requestedVersion
+      : null;
+  const snapshot = useDashboardSnapshot(
+    selectedLocation.id,
+    online,
+    requestedVersion,
+  );
   const feed = useDashboardMoneyFeed(selectedLocation.id, online, cursor);
 
   useEffect(() => {
     setCursorHistory([null]);
+    setManualRequest(null);
+    setManualLongRunning(false);
+    setManualRefreshError(null);
+    setManagerBusy((current) => current === "refresh" ? null : current);
   }, [selectedLocation.id]);
 
   useEffect(() => {
-    if (!online || !canManageDashboard) {
+    if (!online || !canConfigureDashboard) {
       setManagerConfig(null);
       return;
     }
@@ -88,7 +112,44 @@ export function Dashboard({
     return () => {
       active = false;
     };
-  }, [canManageDashboard, online, selectedLocation.id]);
+  }, [canConfigureDashboard, online, selectedLocation.id]);
+
+  useEffect(() => {
+    if (!manualRequest || manualRequest.locationId !== selectedLocation.id) {
+      return;
+    }
+    const waitMs = 120_000 - (Date.now() - manualRequest.requestedAt);
+    if (waitMs <= 0) {
+      setManualLongRunning(true);
+      return;
+    }
+    const timeout = window.setTimeout(() => setManualLongRunning(true), waitMs);
+    return () => window.clearTimeout(timeout);
+  }, [manualRequest, selectedLocation.id]);
+
+  useEffect(() => {
+    if (
+      !manualRequest ||
+      manualRequest.locationId !== selectedLocation.id ||
+      !snapshot.data
+    ) {
+      return;
+    }
+    if (snapshot.data.snapshotVersion >= manualRequest.requestedVersion) {
+      toast.success("คำนวณ Dashboard ใหม่สำเร็จแล้ว");
+      setManualRequest(null);
+      setManualLongRunning(false);
+      setManualRefreshError(null);
+      setManagerBusy((current) => current === "refresh" ? null : current);
+      return;
+    }
+    if (snapshot.data.status === "failed") {
+      toast.error(snapshot.data.lastError || "คำนวณ Dashboard ไม่สำเร็จ");
+      setManualRequest(null);
+      setManualLongRunning(false);
+      setManagerBusy((current) => current === "refresh" ? null : current);
+    }
+  }, [manualRequest, selectedLocation.id, snapshot.data]);
 
   async function saveRefreshInterval() {
     if (!managerConfig) return;
@@ -128,6 +189,9 @@ export function Dashboard({
 
   async function requestRefresh() {
     setManagerBusy("refresh");
+    setManualLongRunning(false);
+    setManualRefreshError(null);
+    let accepted = false;
     try {
       const response = await authFetch("/api/lanflow/dashboard/refresh", {
         method: "POST",
@@ -135,74 +199,116 @@ export function Dashboard({
         body: JSON.stringify({ locationId: selectedLocation.id }),
       });
       await assertApiResponse(response);
+      const refresh = await response.json() as DashboardRefreshRequest;
+      if (
+        !Number.isSafeInteger(refresh.requestedVersion) ||
+        refresh.requestedVersion < 1
+      ) {
+        throw new Error("ระบบไม่ได้ส่งรุ่นข้อมูลที่ต้องคำนวณกลับมา");
+      }
+      accepted = true;
+      setManualRequest({
+        locationId: selectedLocation.id,
+        requestedVersion: refresh.requestedVersion,
+        requestedAt: Date.now(),
+      });
       await snapshot.refetch();
-      toast.success("เข้าคิวคำนวณ Dashboard ใหม่แล้ว");
     } catch (error) {
       if (!isNetworkCancellation(error)) {
-        toast.error(
-          error instanceof Error ? error.message : "สั่งคำนวณใหม่ไม่สำเร็จ",
-        );
+        const message =
+          error instanceof Error ? error.message : "สั่งคำนวณใหม่ไม่สำเร็จ";
+        setManualRefreshError(message);
+        toast.error(message);
       }
     } finally {
-      setManagerBusy(null);
+      if (!accepted) setManagerBusy(null);
     }
   }
 
-  const managerControls = canManageDashboard && managerConfig && (
+  const refreshWorking =
+    managerBusy === "refresh" ||
+    snapshot.data?.status === "queued" ||
+    snapshot.data?.status === "running";
+  const dashboardControls =
+    (canConfigureDashboard || canRequestDashboardRefresh) && (
     <section className="flex flex-wrap items-end gap-3 rounded-xl border border-mint/80 bg-white p-4 shadow-panel">
-      <label className="text-sm font-semibold text-ink">
-        รอบคำนวณกลางทั้งระบบ (นาที)
-        <input
-          type="number"
-          min={10}
-          max={1440}
-          step={1}
-          value={managerConfig.intervalMinutes}
-          onChange={(event) =>
-            setManagerConfig((current) =>
-              current
-                ? {
-                    ...current,
-                    intervalMinutes: Number(event.target.value),
-                  }
-                : current,
-            )
-          }
-          className="focus-ring mt-1 block h-10 w-40 rounded-md border border-black/15 px-3"
-        />
-      </label>
-      <button
-        type="button"
-        onClick={saveRefreshInterval}
-        disabled={managerBusy !== null}
-        className="focus-ring flex h-10 items-center gap-2 rounded-lg bg-commit px-3 text-sm font-semibold text-white shadow-sm hover:bg-commit/90 disabled:opacity-50"
+      {canConfigureDashboard && managerConfig && (
+        <>
+          <label className="text-sm font-semibold text-ink">
+            รอบคำนวณกลางทั้งระบบ (นาที)
+            <input
+              type="number"
+              min={10}
+              max={1440}
+              step={1}
+              value={managerConfig.intervalMinutes}
+              onChange={(event) =>
+                setManagerConfig((current) =>
+                  current
+                    ? {
+                        ...current,
+                        intervalMinutes: Number(event.target.value),
+                      }
+                    : current,
+                )
+              }
+              className="focus-ring mt-1 block h-10 w-40 rounded-md border border-black/15 px-3"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={saveRefreshInterval}
+            disabled={managerBusy !== null}
+            className="focus-ring flex h-10 items-center gap-2 rounded-lg bg-commit px-3 text-sm font-semibold text-white shadow-sm hover:bg-commit/90 disabled:opacity-50"
+          >
+            {managerBusy === "save" ? (
+              <LoaderCircle className="animate-spin" size={16} />
+            ) : (
+              <Save size={16} />
+            )}
+            บันทึกรอบ
+          </button>
+        </>
+      )}
+      {canRequestDashboardRefresh && (
+        <button
+          type="button"
+          onClick={requestRefresh}
+          disabled={managerBusy !== null || refreshWorking}
+          aria-describedby="dashboard-refresh-status"
+          className="focus-ring flex h-10 items-center gap-2 rounded-lg bg-settings px-3 text-sm font-semibold text-white shadow-sm hover:bg-settings/90 disabled:opacity-50"
+        >
+          {refreshWorking ? (
+            <LoaderCircle className="animate-spin" size={16} aria-hidden="true" />
+          ) : (
+            <RefreshCw size={16} aria-hidden="true" />
+          )}
+          {refreshWorking ? "กำลังคำนวณ…" : "คำนวณสาขานี้ใหม่"}
+        </button>
+      )}
+      <p
+        id="dashboard-refresh-status"
+        role="status"
+        aria-live="polite"
+        className={`text-pretty text-xs ${
+          manualRefreshError || snapshot.data?.status === "failed"
+            ? "font-semibold text-danger"
+            : "text-ink/50"
+        }`}
       >
-        {managerBusy === "save" ? (
-          <LoaderCircle className="animate-spin" size={16} />
-        ) : (
-          <Save size={16} />
-        )}
-        บันทึกรอบ
-      </button>
-      <button
-        type="button"
-        onClick={requestRefresh}
-        disabled={
-          managerBusy !== null ||
-          snapshot.data?.status === "queued" ||
-          snapshot.data?.status === "running"
-        }
-        className="focus-ring flex h-10 items-center gap-2 rounded-lg bg-settings px-3 text-sm font-semibold text-white shadow-sm hover:bg-settings/90 disabled:opacity-50"
-      >
-        {managerBusy === "refresh" ? (
-          <LoaderCircle className="animate-spin" size={16} />
-        ) : (
-          <RefreshCw size={16} />
-        )}
-        คำนวณสาขานี้ใหม่
-      </button>
-      <p className="text-xs text-ink/50">
-        ต่ำสุด 10 นาที · ปุ่มนี้เข้าคิวทันทีและไม่สร้างประวัติผล
+        {manualRefreshError
+          ? manualRefreshError
+          : snapshot.data?.status === "failed"
+            ? snapshot.data.lastError || "คำนวณ Dashboard ไม่สำเร็จ"
+            : manualLongRunning
+          ? "ใช้เวลานานกว่าปกติ ระบบยังคำนวณอยู่"
+          : snapshot.data?.status === "queued"
+            ? "รอเริ่มคำนวณสาขานี้…"
+            : snapshot.data?.status === "running"
+              ? "กำลังสร้างผลคำนวณล่าสุดของสาขานี้…"
+              : canConfigureDashboard
+                ? "รอบกลางต่ำสุด 10 นาที · ปุ่มนี้เริ่มคำนวณสาขาที่เลือกทันที"
+                : "Admin คำนวณใหม่ได้เฉพาะสาขาที่ได้รับมอบหมาย"}
       </p>
     </section>
   );
@@ -263,7 +369,7 @@ export function Dashboard({
             </p>
           )}
         </section>
-        {managerControls}
+        {dashboardControls}
       </div>
     );
   }
@@ -289,7 +395,7 @@ export function Dashboard({
         </p>
       </div>
 
-      {managerControls}
+      {dashboardControls}
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Metric

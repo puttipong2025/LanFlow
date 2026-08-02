@@ -910,6 +910,48 @@ $$;
 ALTER FUNCTION "private"."can_manage_time_payroll_profile"("target_profile_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."can_request_dashboard_refresh"("p_location_id" "uuid") RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select private.is_active_user()
+    and exists (
+      select 1
+      from public.locations l
+      where l.id = p_location_id
+        and l.is_active = true
+    )
+    and (
+      private.can_access_super_admin_features()
+      or (
+        private.current_user_role() = 'admin'
+        and private.can_access_location(p_location_id)
+      )
+    )
+$$;
+
+
+ALTER FUNCTION "private"."can_request_dashboard_refresh"("p_location_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."can_use_cash_count"("p_location_id" "uuid") RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+  select private.is_active_user()
+    and (
+      public.can_access_super_admin_features()
+      or (
+        private.current_user_role() in ('user', 'admin')
+        and private.can_access_location(p_location_id)
+      )
+    );
+$$;
+
+
+ALTER FUNCTION "private"."can_use_cash_count"("p_location_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."can_view_profile"("target_user" "uuid") RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -933,6 +975,265 @@ $$;
 
 
 ALTER FUNCTION "private"."can_view_profile"("target_user" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."cash_array_to_json"("p_counts" bigint[]) RETURNS "jsonb"
+    LANGUAGE "sql" IMMUTABLE
+    SET "search_path" TO 'public', 'private'
+    AS $$
+  select jsonb_build_object(
+    '1', p_counts[9], '2', p_counts[8], '5', p_counts[7],
+    '10', p_counts[6], '20', p_counts[5], '50', p_counts[4],
+    '100', p_counts[3], '500', p_counts[2], '1000', p_counts[1]
+  );
+$$;
+
+
+ALTER FUNCTION "private"."cash_array_to_json"("p_counts" bigint[]) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."cash_change_counts"("p_amount" bigint) RETURNS bigint[]
+    LANGUAGE "plpgsql" IMMUTABLE
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_denoms constant bigint[] := array[1000,500,100,50,20,10,5,2,1];
+  v_counts bigint[] := array_fill(0::bigint, array[9]);
+  v_remaining bigint := p_amount;
+  v_i integer;
+begin
+  if p_amount < 0 then return null; end if;
+  for v_i in 1..9 loop
+    v_counts[v_i] := v_remaining / v_denoms[v_i];
+    v_remaining := v_remaining % v_denoms[v_i];
+  end loop;
+  return v_counts;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."cash_change_counts"("p_amount" bigint) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."cash_count_counts_valid"("p_counts" "jsonb") RETURNS boolean
+    LANGUAGE "sql" IMMUTABLE
+    SET "search_path" TO 'public', 'private'
+    AS $_$
+  select jsonb_typeof(p_counts) = 'object'
+    and (select array_agg(key order by key) from jsonb_object_keys(p_counts) key)
+      = array['1','10','100','1000','2','20','5','50','500']::text[]
+    and not exists (
+      select 1
+      from jsonb_each_text(p_counts) item
+      where item.value !~ '^\d+$'
+        or item.value::numeric > 10000000
+    );
+$_$;
+
+
+ALTER FUNCTION "private"."cash_count_counts_valid"("p_counts" "jsonb") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."cash_count_difference_valid"("p_counts" "jsonb") RETURNS boolean
+    LANGUAGE "sql" IMMUTABLE
+    SET "search_path" TO 'public', 'private'
+    AS $_$
+  select jsonb_typeof(p_counts) = 'object'
+    and (select array_agg(key order by key) from jsonb_object_keys(p_counts) key)
+      = array['1','10','100','1000','2','20','5','50','500']::text[]
+    and not exists (
+      select 1 from jsonb_each_text(p_counts) item
+      where item.value !~ '^-?\d+$'
+    );
+$_$;
+
+
+ALTER FUNCTION "private"."cash_count_difference_valid"("p_counts" "jsonb") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."cash_count_events"("p_location_id" "uuid", "p_after_cutoff" timestamp with time zone, "p_to_cutoff" timestamp with time zone) RETURNS TABLE("occurred_at" timestamp with time zone, "event_kind" "text", "amount" numeric, "counts" "jsonb", "reference" "jsonb")
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+  with eligible_items as (
+    select i.entity_type, i.entity_id, i.eligibility_at
+    from public.report_items i
+    join public.report_batches b on b.id = i.report_id
+    where b.location_id = p_location_id
+      and b.status = 'active'
+      and i.active = true
+      and i.eligibility_at > p_after_cutoff
+      and i.eligibility_at <= p_to_cutoff
+  )
+  select i.eligibility_at, e.type::text, e.cost, null::jsonb,
+    jsonb_build_object('source', 'income_expense', 'id', e.id, 'label', e.title, 'amount', e.cost)
+  from eligible_items i join public.income_expense e on e.id = i.entity_id
+  where i.entity_type = 'income_expense' and e.cost > 0
+
+  union all
+  select i.eligibility_at, 'expense', b.net_total, null::jsonb,
+    jsonb_build_object('source', 'rubber_bill', 'id', b.id, 'label', coalesce(b.server_bill_no, b.local_bill_no), 'amount', b.net_total)
+  from eligible_items i join public.rubber_bills b on b.id = i.entity_id
+  where i.entity_type = 'rubber_bill' and b.net_total > 0
+    and not exists (select 1 from public.money_transfer_items m where m.source_type = 'rubber_bill' and m.source_id = b.id and m.created_at <= p_to_cutoff)
+
+  union all
+  select i.eligibility_at, 'expense', o.total_amount, null::jsonb,
+    jsonb_build_object('source', 'ocr_ticket', 'id', o.id, 'label', coalesce(o.ticket_id, o.file_name), 'amount', o.total_amount)
+  from eligible_items i join public.ocr_tickets o on o.id = i.entity_id
+  where i.entity_type = 'ocr_ticket' and o.total_amount > 0
+    and not exists (select 1 from public.money_transfer_items m where m.source_type = 'ocr_ticket' and m.source_id = o.id and m.created_at <= p_to_cutoff)
+
+  union all
+  select i.eligibility_at, 'expense', e.work_total, null::jsonb,
+    jsonb_build_object('source', 'rubber_export', 'id', e.id, 'label', e.export_no, 'amount', e.work_total)
+  from eligible_items i join public.rubber_exports e on e.id = i.entity_id
+  where i.entity_type = 'rubber_export' and e.work_total > 0
+
+  union all
+  select i.eligibility_at, 'expense', f.amount, null::jsonb,
+    jsonb_build_object('source', 'financial_transaction', 'id', f.id, 'label', coalesce(f.description, 'เบิกเงิน'), 'amount', f.amount)
+  from eligible_items i join public.financial_transactions f on f.id = i.entity_id
+  where i.entity_type = 'financial_transaction' and f.type = 'WITHDRAWAL' and f.amount > 0
+
+  union all
+  select i.eligibility_at, 'expense', p.net_pay, null::jsonb,
+    jsonb_build_object('source', 'payroll_slip', 'id', p.id, 'label', p.month, 'amount', p.net_pay)
+  from eligible_items i join public.payroll_slips p on p.id = i.entity_id
+  where i.entity_type = 'payroll_slip' and p.net_pay > 0
+
+  union all
+  select i.eligibility_at, 'expense', m.branch_paid_amount, null::jsonb,
+    jsonb_build_object('source', 'branch_paid', 'id', m.id, 'label', coalesce(m.customer_name, 'ลูกค้า'), 'amount', m.branch_paid_amount)
+  from eligible_items i join public.money_transfers m on m.id = i.entity_id
+  where i.entity_type = 'bank_transfer_source'
+    and m.transfer_type = 'customer' and m.transfer_status = 'branch_and_transfer' and m.branch_paid_amount > 0
+
+  union all
+  select i.eligibility_at, 'known_out', d.sent_total,
+    jsonb_build_object(
+      '1', d.sent_coin_1_count, '2', d.sent_coin_2_count, '5', d.sent_coin_5_count,
+      '10', d.sent_coin_10_count, '20', d.sent_banknote_20_count, '50', d.sent_banknote_50_count,
+      '100', d.sent_banknote_100_count, '500', d.sent_banknote_500_count, '1000', d.sent_banknote_1000_count
+    ), jsonb_build_object('source', 'cash_transfer_sent', 'id', m.id, 'label', coalesce(m.target_location_name, 'สาขาปลายทาง'), 'amount', d.sent_total)
+  from eligible_items i
+  join public.money_transfers m on m.id = i.entity_id
+  join public.money_transfer_cash_details d on d.transfer_id = m.id
+  where i.entity_type = 'cash_transfer_sent'
+
+  union all
+  select i.eligibility_at, 'known_in', d.received_total,
+    jsonb_build_object(
+      '1', d.received_coin_1_count, '2', d.received_coin_2_count, '5', d.received_coin_5_count,
+      '10', d.received_coin_10_count, '20', d.received_banknote_20_count, '50', d.received_banknote_50_count,
+      '100', d.received_banknote_100_count, '500', d.received_banknote_500_count, '1000', d.received_banknote_1000_count
+    ), jsonb_build_object('source', 'cash_transfer_received', 'id', m.id, 'label', 'รับเงินสดจากสาขาต้นทาง', 'amount', d.received_total)
+  from eligible_items i
+  join public.money_transfers m on m.id = i.entity_id
+  join public.money_transfer_cash_details d on d.transfer_id = m.id
+  where i.entity_type = 'cash_transfer_received'
+
+  union all
+  select mi.created_at, 'income', mi.amount, null::jsonb,
+    jsonb_build_object('source', 'late_bank_transfer_adjustment', 'id', mi.id, 'label', 'ปรับคืนเงินสดจากบิลที่เลือกโอนภายหลัง', 'amount', mi.amount)
+  from public.money_transfer_items mi
+  join public.money_transfers mt on mt.id = mi.transfer_id
+  where mt.location_id = p_location_id
+    and mt.transfer_method = 'bank'
+    and mt.record_status = 'active'
+    and mi.created_at > p_after_cutoff and mi.created_at <= p_to_cutoff
+    and exists (
+      select 1 from public.report_items prior_i
+      join public.report_batches prior_b on prior_b.id = prior_i.report_id
+      where prior_i.entity_type = mi.source_type and prior_i.entity_id = mi.source_id
+        and prior_i.active = true and prior_b.status = 'active'
+        and prior_b.location_id = p_location_id and prior_i.eligibility_at <= p_after_cutoff
+    );
+$$;
+
+
+ALTER FUNCTION "private"."cash_count_events"("p_location_id" "uuid", "p_after_cutoff" timestamp with time zone, "p_to_cutoff" timestamp with time zone) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."cash_count_total"("p_counts" "jsonb") RETURNS numeric
+    LANGUAGE "sql" IMMUTABLE
+    SET "search_path" TO 'public', 'private'
+    AS $$
+  select coalesce(sum(item.key::numeric * item.value::numeric), 0)
+  from jsonb_each_text(p_counts) item;
+$$;
+
+
+ALTER FUNCTION "private"."cash_count_total"("p_counts" "jsonb") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."cash_exact_take"("p_available" bigint[], "p_target" bigint, "p_position" integer DEFAULT 1) RETURNS bigint[]
+    LANGUAGE "plpgsql" IMMUTABLE
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_denoms constant bigint[] := array[1000,500,100,50,20,10,5,2,1];
+  v_result bigint[];
+  v_take bigint;
+  v_max_take bigint;
+  v_min_take bigint;
+  v_suffix_total bigint := 0;
+  v_i integer;
+  v_attempts integer := 0;
+begin
+  if p_target < 0 or p_position > 9 then return null; end if;
+  if p_position = 9 then
+    if p_target <= p_available[9] then
+      v_result := array_fill(0::bigint, array[9]);
+      v_result[9] := p_target;
+      return v_result;
+    end if;
+    return null;
+  end if;
+
+  for v_i in (p_position + 1)..9 loop
+    v_suffix_total := v_suffix_total + p_available[v_i] * v_denoms[v_i];
+  end loop;
+  v_max_take := least(p_available[p_position], p_target / v_denoms[p_position]);
+  v_min_take := greatest(0, ceil(greatest(0, p_target - v_suffix_total)::numeric / v_denoms[p_position])::bigint);
+
+  if v_min_take > v_max_take then return null; end if;
+  for v_take in reverse v_max_take..v_min_take loop
+    v_attempts := v_attempts + 1;
+    exit when v_attempts > 256;
+    v_result := private.cash_exact_take(
+      p_available,
+      p_target - v_take * v_denoms[p_position],
+      p_position + 1
+    );
+    if v_result is not null then
+      v_result[p_position] := v_take;
+      return v_result;
+    end if;
+  end loop;
+  return null;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."cash_exact_take"("p_available" bigint[], "p_target" bigint, "p_position" integer) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."cash_json_to_array"("p_counts" "jsonb") RETURNS bigint[]
+    LANGUAGE "sql" IMMUTABLE
+    SET "search_path" TO 'public', 'private'
+    AS $$
+  select array[
+    (p_counts->>'1000')::bigint, (p_counts->>'500')::bigint,
+    (p_counts->>'100')::bigint, (p_counts->>'50')::bigint,
+    (p_counts->>'20')::bigint, (p_counts->>'10')::bigint,
+    (p_counts->>'5')::bigint, (p_counts->>'2')::bigint,
+    (p_counts->>'1')::bigint
+  ];
+$$;
+
+
+ALTER FUNCTION "private"."cash_json_to_array"("p_counts" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."cash_transfer_counts"("payload" "jsonb", "prefix" "text") RETURNS integer[]
@@ -1027,6 +1328,72 @@ $$;
 
 
 ALTER FUNCTION "private"."claim_dashboard_branch"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."create_report_batch_at"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone, "p_actor_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_actor_name text;
+  v_actor_phone text;
+  v_report_date date;
+  v_sequence_no integer;
+  v_report_id uuid;
+  v_report_no text;
+  v_item_count integer;
+  v_previous_report_id uuid;
+  v_opening_balance numeric := 0;
+  v_period_balance numeric := 0;
+begin
+  if exists (select 1 from private.rubber_bill_report_blockers(p_location_id, p_cutoff_at)) then
+    raise exception 'RUBBER_BILL_PENDING: ยังมีงานบิลยางที่ต้องจัดการก่อนสร้างรายงาน';
+  end if;
+
+  select p.name, p.phone into v_actor_name, v_actor_phone
+  from public.profiles p where p.id = p_actor_id;
+
+  select b.id, b.closing_balance into v_previous_report_id, v_opening_balance
+  from public.report_batches b
+  where b.location_id = p_location_id and b.status = 'active'
+  order by b.created_at desc, b.id desc limit 1;
+
+  v_report_date := (p_cutoff_at at time zone 'Asia/Bangkok')::date;
+  select coalesce(max(b.sequence_no), 0) + 1 into v_sequence_no
+  from public.report_batches b
+  where b.location_id = p_location_id and b.report_date = v_report_date;
+  v_report_no := 'RPT-' || to_char(v_report_date, 'YYYYMMDD') || '-' || lpad(v_sequence_no::text, 3, '0');
+
+  insert into public.report_batches (
+    report_no, report_date, sequence_no, location_id, cutoff_at,
+    previous_report_id, opening_balance, created_by_user_id,
+    created_by_name, created_by_phone
+  ) values (
+    v_report_no, v_report_date, v_sequence_no, p_location_id, p_cutoff_at,
+    v_previous_report_id, coalesce(v_opening_balance, 0), p_actor_id,
+    coalesce(v_actor_name, ''), coalesce(v_actor_phone, '')
+  ) returning id into v_report_id;
+
+  insert into public.report_items (report_id, location_id, entity_type, entity_id, eligibility_at)
+  select v_report_id, p_location_id, r.entity_type, r.entity_id, r.eligibility_at
+  from private.reportable_items(p_location_id, p_cutoff_at) r
+  on conflict do nothing;
+  get diagnostics v_item_count = row_count;
+  if v_item_count = 0 then raise exception 'ไม่มีรายการที่พร้อมออกรายงาน'; end if;
+
+  select coalesce(sum(case when r.entry_type = 'income' then r.amount else -r.amount end), 0)
+  into v_period_balance from private.report_income_expense_period_rows(v_report_id) r;
+  update public.report_batches
+  set closing_balance = coalesce(v_opening_balance, 0) + v_period_balance
+  where id = v_report_id;
+
+  return jsonb_build_object('id', v_report_id, 'reportNo', v_report_no,
+    'cutoffAt', p_cutoff_at, 'itemCount', v_item_count);
+end;
+$$;
+
+
+ALTER FUNCTION "private"."create_report_batch_at"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone, "p_actor_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."current_rubber_bill_payload"("p_bill_id" "uuid") RETURNS "jsonb"
@@ -1325,6 +1692,21 @@ $$;
 
 
 ALTER FUNCTION "private"."dashboard_require_manager"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."dashboard_require_refresh_access"("p_location_id" "uuid") RETURNS "void"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if not private.can_request_dashboard_refresh(p_location_id) then
+    raise exception 'ไม่มีสิทธิ์คำนวณ Dashboard สำหรับสาขานี้';
+  end if;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."dashboard_require_refresh_access"("p_location_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."dashboard_rollover_if_needed"() RETURNS boolean
@@ -2177,14 +2559,7 @@ CREATE OR REPLACE FUNCTION "private"."rebuild_dashboard_branch"() RETURNS "uuid"
 declare
   branch_id uuid;
   claim_version bigint;
-  next_summary jsonb;
 begin
-  if not pg_catalog.pg_try_advisory_xact_lock(
-    pg_catalog.hashtext('lanflow-dashboard-rebuild')
-  ) then
-    return null;
-  end if;
-
   select snapshot.location_id, snapshot.claimed_version
   into branch_id, claim_version
   from public.dashboard_branch_snapshots snapshot
@@ -2199,15 +2574,54 @@ begin
     return null;
   end if;
 
+  return private.rebuild_dashboard_branch_target(branch_id, claim_version);
+end;
+$$;
+
+
+ALTER FUNCTION "private"."rebuild_dashboard_branch"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."rebuild_dashboard_branch_target"("p_location_id" "uuid", "p_claimed_version" bigint) RETURNS "uuid"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  next_summary jsonb;
+begin
+  if p_location_id is null or p_claimed_version is null then
+    return null;
+  end if;
+
+  if not pg_catalog.pg_try_advisory_xact_lock(
+    pg_catalog.hashtext('lanflow-dashboard-rebuild'),
+    pg_catalog.hashtext(p_location_id::text)
+  ) then
+    return null;
+  end if;
+
+  if not exists (
+    select 1
+    from public.dashboard_branch_snapshots snapshot
+    join public.locations l
+      on l.id = snapshot.location_id
+     and l.is_active = true
+    where snapshot.location_id = p_location_id
+      and snapshot.status = 'running'
+      and snapshot.claimed_version = p_claimed_version
+  ) then
+    return null;
+  end if;
+
   begin
-    next_summary := private.calculate_dashboard_summary(branch_id);
+    next_summary := private.calculate_dashboard_summary(p_location_id);
 
     update public.dashboard_branch_snapshots
     set summary = next_summary,
         calculated_at = now(),
-        snapshot_version = claim_version,
+        snapshot_version = p_claimed_version,
         status = case
-          when source_version = claim_version then 'ready'
+          when source_version = p_claimed_version then 'ready'
           else 'dirty'
         end,
         claimed_version = null,
@@ -2215,9 +2629,9 @@ begin
         manual_requested_at = null,
         last_error = null,
         updated_at = now()
-    where location_id = branch_id
+    where location_id = p_location_id
       and status = 'running'
-      and claimed_version = claim_version;
+      and claimed_version = p_claimed_version;
   exception when others then
     update public.dashboard_branch_snapshots
     set status = 'failed',
@@ -2225,17 +2639,17 @@ begin
         claimed_at = null,
         last_error = 'คำนวณ Dashboard ไม่สำเร็จ',
         updated_at = now()
-    where location_id = branch_id
+    where location_id = p_location_id
       and status = 'running'
-      and claimed_version = claim_version;
+      and claimed_version = p_claimed_version;
   end;
 
-  return branch_id;
+  return p_location_id;
 end;
 $$;
 
 
-ALTER FUNCTION "private"."rebuild_dashboard_branch"() OWNER TO "postgres";
+ALTER FUNCTION "private"."rebuild_dashboard_branch_target"("p_location_id" "uuid", "p_claimed_version" bigint) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."report_income_expense_period_rows"("p_report_id" "uuid") RETURNS TABLE("tx_date" "date", "number" "text", "entry_type" "text", "title" "text", "amount" numeric, "sort_key" "text")
@@ -3328,6 +3742,36 @@ $$;
 ALTER FUNCTION "public"."can_access_super_admin_features"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."cancel_cash_count_session"("p_session_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_now timestamptz := clock_timestamp();
+  v_session public.cash_count_sessions%rowtype;
+begin
+  select * into v_session from public.cash_count_sessions where id = p_session_id for update;
+  if v_session.id is null or not private.can_use_cash_count(v_session.location_id) then
+    raise exception 'ไม่พบช่วงตรวจนับหรือไม่มีสิทธิ์';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended(v_session.location_id::text, 0));
+  if v_session.status <> 'active' then raise exception 'ช่วงตรวจนับนี้สิ้นสุดแล้ว'; end if;
+  if v_session.expires_at <= v_now then
+    update public.cash_count_sessions set status = 'expired', ended_at = v_now where id = p_session_id;
+    raise exception 'ช่วงตรวจนับหมดเวลาแล้ว กรุณาเริ่มใหม่';
+  end if;
+  if v_session.started_by_user_id <> auth.uid() then
+    raise exception 'เฉพาะผู้เริ่มตรวจนับเท่านั้นที่ยกเลิกได้';
+  end if;
+  update public.cash_count_sessions set status = 'cancelled', ended_at = v_now where id = p_session_id;
+  return jsonb_build_object('id', p_session_id, 'status', 'cancelled');
+end;
+$$;
+
+
+ALTER FUNCTION "public"."cancel_cash_count_session"("p_session_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."cancel_time_tracking_expense_source"("p_source_type" "text", "p_source_id" "uuid", "p_reason" "text" DEFAULT NULL::"text") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -3366,6 +3810,73 @@ $$;
 
 
 ALTER FUNCTION "public"."cancel_time_tracking_expense_source"("p_source_type" "text", "p_source_id" "uuid", "p_reason" "text") OWNER TO "postgres";
+
+SET default_tablespace = '';
+
+SET default_table_access_method = "heap";
+
+
+CREATE TABLE IF NOT EXISTS "public"."report_batches" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "report_no" "text" NOT NULL,
+    "report_date" "date" NOT NULL,
+    "sequence_no" integer NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "cutoff_at" timestamp with time zone NOT NULL,
+    "status" "text" DEFAULT 'active'::"text" NOT NULL,
+    "created_by_user_id" "uuid" NOT NULL,
+    "created_by_name" "text" NOT NULL,
+    "created_by_phone" "text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "deleted_at" timestamp with time zone,
+    "deleted_by_user_id" "uuid",
+    "deleted_by_name" "text",
+    "deleted_by_phone" "text",
+    "previous_report_id" "uuid",
+    "opening_balance" numeric DEFAULT 0 NOT NULL,
+    "closing_balance" numeric DEFAULT 0 NOT NULL,
+    CONSTRAINT "report_batches_sequence_no_check" CHECK (("sequence_no" > 0)),
+    CONSTRAINT "report_batches_status_check" CHECK (("status" = ANY (ARRAY['active'::"text", 'deleted'::"text"])))
+);
+
+
+ALTER TABLE "public"."report_batches" OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."cash_count_checker_name"("source_row" "public"."report_batches") RETURNS "text"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+  select case when private.can_manage_reports(source_row.location_id) then
+    (select c.created_by_name from public.cash_counts c where c.report_id=source_row.id) end;
+$$;
+
+
+ALTER FUNCTION "public"."cash_count_checker_name"("source_row" "public"."report_batches") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."cash_count_link_id"("source_row" "public"."report_batches") RETURNS "uuid"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+  select case when private.can_delete_reports() then
+    (select c.id from public.cash_counts c where c.report_id=source_row.id and c.status='active') end;
+$$;
+
+
+ALTER FUNCTION "public"."cash_count_link_id"("source_row" "public"."report_batches") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."cash_count_submitted_at"("source_row" "public"."report_batches") RETURNS timestamp with time zone
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+  select case when private.can_manage_reports(source_row.location_id) then
+    (select c.created_at from public.cash_counts c where c.report_id=source_row.id) end;
+$$;
+
+
+ALTER FUNCTION "public"."cash_count_submitted_at"("source_row" "public"."report_batches") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."change_time_tracking_expense_location"("p_source_type" "text", "p_source_id" "uuid", "p_expense_location_id" "uuid", "p_comment" "text" DEFAULT NULL::"text") RETURNS "jsonb"
@@ -3488,6 +3999,50 @@ $$;
 
 
 ALTER FUNCTION "public"."change_time_tracking_expense_location"("p_source_type" "text", "p_source_id" "uuid", "p_expense_location_id" "uuid", "p_comment" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."claim_dashboard_refresh_now"("p_location_id" "uuid", "p_requested_version" bigint) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  snapshot public.dashboard_branch_snapshots%rowtype;
+begin
+  perform private.dashboard_require_refresh_access(p_location_id);
+
+  if p_requested_version is null or p_requested_version < 1 then
+    raise exception 'Requested Dashboard version is invalid';
+  end if;
+
+  select current_snapshot.*
+  into strict snapshot
+  from public.dashboard_branch_snapshots current_snapshot
+  where current_snapshot.location_id = p_location_id
+  for update;
+
+  if snapshot.snapshot_version < p_requested_version
+    and snapshot.status <> 'running'
+  then
+    update public.dashboard_branch_snapshots
+    set status = 'running',
+        claimed_version = source_version,
+        claimed_at = now(),
+        last_error = null,
+        updated_at = now()
+    where location_id = p_location_id
+    returning * into snapshot;
+  end if;
+
+  return public.get_dashboard_snapshot(p_location_id)
+    || jsonb_build_object(
+      'requestedVersion', p_requested_version,
+      'claimedVersion', snapshot.claimed_version
+    );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."claim_dashboard_refresh_now"("p_location_id" "uuid", "p_requested_version" bigint) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."claim_telegram_badge_dispatch"() RETURNS "jsonb"
@@ -4005,121 +4560,19 @@ CREATE OR REPLACE FUNCTION "public"."create_report_batch"("p_location_id" "uuid"
     SET "search_path" TO 'public', 'private'
     AS $$
 declare
-  v_actor_id uuid := auth.uid();
-  v_actor_name text;
-  v_actor_phone text;
   v_cutoff_at timestamptz := clock_timestamp();
-  v_report_date date;
-  v_sequence_no integer;
-  v_report_id uuid;
-  v_report_no text;
-  v_item_count integer;
-  v_previous_report_id uuid;
-  v_opening_balance numeric := 0;
-  v_period_balance numeric := 0;
 begin
   if p_location_id is null or not private.can_manage_reports(p_location_id) then
     raise exception 'ไม่มีสิทธิ์สร้างรายงานของสาขานี้';
   end if;
-
   perform pg_advisory_xact_lock(hashtextextended(p_location_id::text, 0));
-
   if exists (
-    select 1
-    from private.rubber_bill_report_blockers(p_location_id, v_cutoff_at)
+    select 1 from public.cash_count_sessions s
+    where s.location_id = p_location_id and s.status = 'active' and s.expires_at > v_cutoff_at
   ) then
-    raise exception 'RUBBER_BILL_PENDING: ยังมีงานบิลยางที่ต้องจัดการก่อนสร้างรายงาน';
+    raise exception 'CASH_COUNT_ACTIVE: มีการตรวจนับเงินสดของสาขานี้อยู่ กรุณารอให้ส่งผล ยกเลิก หรือหมดเวลา';
   end if;
-
-  select p.name, p.phone
-  into v_actor_name, v_actor_phone
-  from public.profiles p
-  where p.id = v_actor_id;
-
-  select b.id, b.closing_balance
-  into v_previous_report_id, v_opening_balance
-  from public.report_batches b
-  where b.location_id = p_location_id
-    and b.status = 'active'
-  order by b.created_at desc, b.id desc
-  limit 1;
-
-  v_report_date := (v_cutoff_at at time zone 'Asia/Bangkok')::date;
-
-  select coalesce(max(b.sequence_no), 0) + 1
-  into v_sequence_no
-  from public.report_batches b
-  where b.location_id = p_location_id
-    and b.report_date = v_report_date;
-
-  v_report_no :=
-    'RPT-' || to_char(v_report_date, 'YYYYMMDD') || '-' ||
-    lpad(v_sequence_no::text, 3, '0');
-
-  insert into public.report_batches (
-    report_no,
-    report_date,
-    sequence_no,
-    location_id,
-    cutoff_at,
-    previous_report_id,
-    opening_balance,
-    created_by_user_id,
-    created_by_name,
-    created_by_phone
-  )
-  values (
-    v_report_no,
-    v_report_date,
-    v_sequence_no,
-    p_location_id,
-    v_cutoff_at,
-    v_previous_report_id,
-    coalesce(v_opening_balance, 0),
-    v_actor_id,
-    coalesce(v_actor_name, ''),
-    coalesce(v_actor_phone, '')
-  )
-  returning id into v_report_id;
-
-  insert into public.report_items (
-    report_id,
-    location_id,
-    entity_type,
-    entity_id,
-    eligibility_at
-  )
-  select
-    v_report_id,
-    p_location_id,
-    r.entity_type,
-    r.entity_id,
-    r.eligibility_at
-  from private.reportable_items(p_location_id, v_cutoff_at) r
-  on conflict do nothing;
-
-  get diagnostics v_item_count = row_count;
-
-  if v_item_count = 0 then
-    raise exception 'ไม่มีรายการที่พร้อมออกรายงาน';
-  end if;
-
-  select coalesce(sum(
-    case when r.entry_type = 'income' then r.amount else -r.amount end
-  ), 0)
-  into v_period_balance
-  from private.report_income_expense_period_rows(v_report_id) r;
-
-  update public.report_batches
-  set closing_balance = coalesce(v_opening_balance, 0) + v_period_balance
-  where id = v_report_id;
-
-  return jsonb_build_object(
-    'id', v_report_id,
-    'reportNo', v_report_no,
-    'cutoffAt', v_cutoff_at,
-    'itemCount', v_item_count
-  );
+  return private.create_report_batch_at(p_location_id, v_cutoff_at, auth.uid());
 end;
 $$;
 
@@ -5975,6 +6428,51 @@ $$;
 ALTER FUNCTION "public"."delete_cash_branch_transfer"("p_transfer_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."delete_cash_count"("p_cash_count_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_count public.cash_counts%rowtype;
+  v_report public.report_batches%rowtype;
+  v_actor record;
+  v_now timestamptz := clock_timestamp();
+  v_export_no text;
+begin
+  if not private.can_delete_reports() then
+    raise exception 'เฉพาะ super_admin หรือผู้จัดการระบบเท่านั้นที่ลบผลตรวจนับได้';
+  end if;
+  select * into v_count from public.cash_counts where id = p_cash_count_id for update;
+  if v_count.id is null or v_count.status <> 'active' then raise exception 'ไม่พบผลตรวจนับ active'; end if;
+  perform pg_advisory_xact_lock(hashtextextended(v_count.location_id::text, 0));
+  perform pg_advisory_xact_lock(hashtextextended('rubber-export:' || v_count.location_id::text, 0));
+  select * into v_report from public.report_batches where id = v_count.report_id for update;
+  if v_report.id is null or v_report.status <> 'active' then raise exception 'รายงานของผลตรวจนับไม่อยู่ในสถานะ active'; end if;
+  if exists (
+    select 1 from public.report_batches newer
+    where newer.location_id = v_count.location_id and newer.status = 'active'
+      and (newer.created_at, newer.id) > (v_report.created_at, v_report.id)
+  ) then raise exception 'ลบได้เฉพาะชุดตรวจนับและรายงาน active ล่าสุดของสาขา'; end if;
+  v_export_no := private.active_rubber_export_no_for_report(v_report.id);
+  if v_export_no is not null then
+    raise exception 'RUBBER_EXPORT_LOCKED:%', v_export_no using hint = 'ลบรายการส่งออกยางก่อนจึงจะลบชุดตรวจนับได้';
+  end if;
+  select p.name, p.phone into v_actor from public.profiles p where p.id = auth.uid();
+  update public.cash_counts set status = 'deleted', deleted_at = v_now,
+    deleted_by_user_id = auth.uid(), deleted_by_name = coalesce(v_actor.name,''), deleted_by_phone = coalesce(v_actor.phone,'')
+  where id = v_count.id;
+  update public.report_batches set status = 'deleted', deleted_at = v_now,
+    deleted_by_user_id = auth.uid(), deleted_by_name = coalesce(v_actor.name,''), deleted_by_phone = coalesce(v_actor.phone,'')
+  where id = v_report.id;
+  update public.report_items set active = false where report_id = v_report.id and active = true;
+  return jsonb_build_object('id', v_count.id, 'reportId', v_report.id, 'reportNo', v_report.report_no, 'status', 'deleted');
+end;
+$$;
+
+
+ALTER FUNCTION "public"."delete_cash_count"("p_cash_count_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."delete_income_sale_item"("item_id" "uuid") RETURNS "void"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public'
@@ -6020,67 +6518,29 @@ CREATE OR REPLACE FUNCTION "public"."delete_report_batch"("p_report_id" "uuid") 
 declare
   v_report public.report_batches%rowtype;
   v_export_no text;
-  v_actor_name text;
-  v_actor_phone text;
+  v_actor record;
 begin
-  if not private.can_delete_reports() then
-    raise exception 'เฉพาะ super_admin หรือผู้จัดการระบบเท่านั้นที่ลบรายงานได้';
+  if not private.can_delete_reports() then raise exception 'เฉพาะ super_admin หรือผู้จัดการระบบเท่านั้นที่ลบรายงานได้'; end if;
+  if exists (select 1 from public.cash_counts c where c.report_id = p_report_id and c.status = 'active') then
+    raise exception 'CASH_COUNT_LINKED: รายงานนี้มีผลตรวจนับเงินสด กรุณาลบจากโมดูลนับเงิน';
   end if;
-
-  select *
-  into v_report
-  from public.report_batches
-  where id = p_report_id
-  for update;
-
-  if v_report.id is null or v_report.status <> 'active' then
-    raise exception 'ไม่พบรายงาน active';
-  end if;
-
-  perform pg_advisory_xact_lock(
-    hashtextextended('rubber-export:' || v_report.location_id::text, 0)
-  );
-
+  select * into v_report from public.report_batches where id = p_report_id for update;
+  if v_report.id is null or v_report.status <> 'active' then raise exception 'ไม่พบรายงาน active'; end if;
+  perform pg_advisory_xact_lock(hashtextextended('rubber-export:' || v_report.location_id::text, 0));
   if exists (
-    select 1
-    from public.report_batches newer
-    where newer.location_id = v_report.location_id
-      and newer.status = 'active'
-      and (newer.created_at, newer.id) > (v_report.created_at, v_report.id)
-  ) then
-    raise exception 'ลบได้เฉพาะรายงาน active ล่าสุดของสาขา';
-  end if;
-
+    select 1 from public.report_batches newer where newer.location_id = v_report.location_id
+      and newer.status = 'active' and (newer.created_at,newer.id) > (v_report.created_at,v_report.id)
+  ) then raise exception 'ลบได้เฉพาะรายงาน active ล่าสุดของสาขา'; end if;
   v_export_no := private.active_rubber_export_no_for_report(p_report_id);
   if v_export_no is not null then
-    raise exception 'RUBBER_EXPORT_LOCKED:%', v_export_no
-      using errcode = 'P0001',
-            hint = 'ลบรายการส่งออกยางก่อนจึงจะลบรายงานได้';
+    raise exception 'RUBBER_EXPORT_LOCKED:%', v_export_no using hint = 'ลบรายการส่งออกยางก่อนจึงจะลบรายงานได้';
   end if;
-
-  select p.name, p.phone
-  into v_actor_name, v_actor_phone
-  from public.profiles p
-  where p.id = auth.uid();
-
-  update public.report_batches
-  set status = 'deleted',
-      deleted_at = clock_timestamp(),
-      deleted_by_user_id = auth.uid(),
-      deleted_by_name = coalesce(v_actor_name, ''),
-      deleted_by_phone = coalesce(v_actor_phone, '')
-  where id = p_report_id;
-
-  update public.report_items
-  set active = false
-  where report_id = p_report_id
-    and active = true;
-
-  return jsonb_build_object(
-    'id', p_report_id,
-    'reportNo', v_report.report_no,
-    'status', 'deleted'
-  );
+  select p.name,p.phone into v_actor from public.profiles p where p.id=auth.uid();
+  update public.report_batches set status='deleted', deleted_at=clock_timestamp(),
+    deleted_by_user_id=auth.uid(), deleted_by_name=coalesce(v_actor.name,''), deleted_by_phone=coalesce(v_actor.phone,'')
+  where id=p_report_id;
+  update public.report_items set active=false where report_id=p_report_id and active=true;
+  return jsonb_build_object('id',p_report_id,'reportNo',v_report.report_no,'status','deleted');
 end;
 $$;
 
@@ -6499,6 +6959,42 @@ $$;
 
 
 ALTER FUNCTION "public"."get_actionable_badge_counts"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_cash_count_session"("p_location_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_now timestamptz := clock_timestamp();
+  v_session public.cash_count_sessions%rowtype;
+begin
+  if not private.can_use_cash_count(p_location_id) then
+    raise exception 'ไม่มีสิทธิ์ตรวจนับเงินสดของสาขานี้';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended(p_location_id::text, 0));
+  update public.cash_count_sessions
+  set status = 'expired', ended_at = v_now
+  where location_id = p_location_id and status = 'active' and expires_at <= v_now;
+
+  select * into v_session from public.cash_count_sessions
+  where location_id = p_location_id and status = 'active'
+  order by started_at desc, id desc limit 1;
+  if v_session.id is null then return jsonb_build_object('session', null); end if;
+  return jsonb_build_object('session', jsonb_build_object(
+    'id', v_session.id,
+    'locationId', v_session.location_id,
+    'cutoffAt', v_session.cutoff_at,
+    'expiresAt', v_session.expires_at,
+    'startedAt', v_session.started_at,
+    'startedByName', v_session.started_by_name,
+    'isOwner', v_session.started_by_user_id = auth.uid()
+  ));
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_cash_count_session"("p_location_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_dashboard_alert_thresholds"("p_location_id" "uuid") RETURNS "jsonb"
@@ -8327,6 +8823,18 @@ $$;
 ALTER FUNCTION "public"."get_time_payroll_payment_locations"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."has_cash_count"("source_row" "public"."report_batches") RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+  select exists (select 1 from public.cash_counts c where c.report_id=source_row.id)
+    and private.can_manage_reports(source_row.location_id);
+$$;
+
+
+ALTER FUNCTION "public"."has_cash_count"("source_row" "public"."report_batches") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."is_super_admin"() RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -8583,18 +9091,9 @@ CREATE OR REPLACE FUNCTION "public"."queue_dashboard_refresh"("p_location_id" "u
     SET "search_path" TO ''
     AS $$
 declare
-  location_active boolean;
+  requested_version bigint;
 begin
-  perform private.dashboard_require_manager();
-
-  select l.is_active
-  into location_active
-  from public.locations l
-  where l.id = p_location_id;
-
-  if coalesce(location_active, false) = false then
-    raise exception 'ไม่พบสาขาที่เปิดใช้งาน';
-  end if;
+  perform private.dashboard_require_refresh_access(p_location_id);
 
   insert into public.dashboard_branch_snapshots (
     location_id,
@@ -8618,19 +9117,41 @@ begin
           then dashboard_branch_snapshots.source_version
         else dashboard_branch_snapshots.source_version + 1
       end,
-      manual_requested_at = case
-        when dashboard_branch_snapshots.status = 'running'
-          then dashboard_branch_snapshots.manual_requested_at
-        else now()
-      end,
-      updated_at = now();
+      manual_requested_at = now(),
+      updated_at = now()
+  returning source_version into requested_version;
+
+  return public.get_dashboard_snapshot(p_location_id)
+    || jsonb_build_object('requestedVersion', requested_version);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."queue_dashboard_refresh"("p_location_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."rebuild_dashboard_refresh_now"("p_location_id" "uuid", "p_claimed_version" bigint) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  perform private.dashboard_require_refresh_access(p_location_id);
+
+  if p_claimed_version is null or p_claimed_version < 1 then
+    raise exception 'Claimed Dashboard version is invalid';
+  end if;
+
+  perform private.rebuild_dashboard_branch_target(
+    p_location_id,
+    p_claimed_version
+  );
 
   return public.get_dashboard_snapshot(p_location_id);
 end;
 $$;
 
 
-ALTER FUNCTION "public"."queue_dashboard_refresh"("p_location_id" "uuid") OWNER TO "postgres";
+ALTER FUNCTION "public"."rebuild_dashboard_refresh_now"("p_location_id" "uuid", "p_claimed_version" bigint) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."receive_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") RETURNS "jsonb"
@@ -8892,10 +9413,6 @@ $$;
 
 
 ALTER FUNCTION "public"."replace_time_tracking_segments"("p_profile_id" "uuid", "p_selections" "jsonb", "p_full_snapshot" "jsonb", "p_comment" "text") OWNER TO "postgres";
-
-SET default_tablespace = '';
-
-SET default_table_access_method = "heap";
 
 
 CREATE TABLE IF NOT EXISTS "public"."financial_transactions" (
@@ -9340,33 +9857,6 @@ CREATE OR REPLACE FUNCTION "public"."report_lock_no"("source_row" "public"."time
 
 
 ALTER FUNCTION "public"."report_lock_no"("source_row" "public"."time_segments") OWNER TO "postgres";
-
-
-CREATE TABLE IF NOT EXISTS "public"."report_batches" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "report_no" "text" NOT NULL,
-    "report_date" "date" NOT NULL,
-    "sequence_no" integer NOT NULL,
-    "location_id" "uuid" NOT NULL,
-    "cutoff_at" timestamp with time zone NOT NULL,
-    "status" "text" DEFAULT 'active'::"text" NOT NULL,
-    "created_by_user_id" "uuid" NOT NULL,
-    "created_by_name" "text" NOT NULL,
-    "created_by_phone" "text" NOT NULL,
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "deleted_at" timestamp with time zone,
-    "deleted_by_user_id" "uuid",
-    "deleted_by_name" "text",
-    "deleted_by_phone" "text",
-    "previous_report_id" "uuid",
-    "opening_balance" numeric DEFAULT 0 NOT NULL,
-    "closing_balance" numeric DEFAULT 0 NOT NULL,
-    CONSTRAINT "report_batches_sequence_no_check" CHECK (("sequence_no" > 0)),
-    CONSTRAINT "report_batches_status_check" CHECK (("status" = ANY (ARRAY['active'::"text", 'deleted'::"text"])))
-);
-
-
-ALTER TABLE "public"."report_batches" OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."rubber_export_lock_no"("source_row" "public"."report_batches") RETURNS "text"
@@ -10041,6 +10531,284 @@ $$;
 
 
 ALTER FUNCTION "public"."set_user_primary_location"("p_user_id" "uuid", "p_location_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."start_cash_count_session"("p_location_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_now timestamptz := clock_timestamp();
+  v_actor record;
+  v_session public.cash_count_sessions%rowtype;
+begin
+  if not private.can_use_cash_count(p_location_id) then
+    raise exception 'ไม่มีสิทธิ์ตรวจนับเงินสดของสาขานี้';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended(p_location_id::text, 0));
+  update public.cash_count_sessions set status = 'expired', ended_at = v_now
+  where location_id = p_location_id and status = 'active' and expires_at <= v_now;
+
+  select * into v_session from public.cash_count_sessions
+  where location_id = p_location_id and status = 'active' limit 1;
+  if v_session.id is not null then
+    raise exception 'CASH_COUNT_ACTIVE: มีผู้ตรวจนับเงินสดของสาขานี้อยู่แล้ว';
+  end if;
+  if exists (select 1 from private.rubber_bill_report_blockers(p_location_id, v_now)) then
+    raise exception 'RUBBER_BILL_PENDING: ยังมีงานบิลยางที่ต้องจัดการก่อนเริ่มตรวจนับ';
+  end if;
+  if not exists (select 1 from private.reportable_items(p_location_id, v_now)) then
+    raise exception 'ไม่มีรายการที่พร้อมออกรายงาน';
+  end if;
+
+  select p.name, p.phone into v_actor from public.profiles p where p.id = auth.uid();
+  insert into public.cash_count_sessions (
+    location_id, cutoff_at, expires_at, started_by_user_id, started_by_name, started_by_phone, started_at
+  ) values (
+    p_location_id, v_now, v_now + interval '30 minutes', auth.uid(),
+    coalesce(v_actor.name, ''), coalesce(v_actor.phone, ''), v_now
+  ) returning * into v_session;
+  return jsonb_build_object('session', jsonb_build_object(
+    'id', v_session.id, 'locationId', v_session.location_id,
+    'cutoffAt', v_session.cutoff_at, 'expiresAt', v_session.expires_at,
+    'startedAt', v_session.started_at, 'startedByName', v_session.started_by_name,
+    'isOwner', true
+  ));
+end;
+$$;
+
+
+ALTER FUNCTION "public"."start_cash_count_session"("p_location_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."submit_cash_count"("p_session_id" "uuid", "p_actual_counts" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_now timestamptz := clock_timestamp();
+  v_session public.cash_count_sessions%rowtype;
+  v_previous public.cash_counts%rowtype;
+  v_actor record;
+  v_report jsonb;
+  v_count_id uuid;
+  v_actual_total numeric;
+  v_expected_total numeric;
+  v_expected bigint[];
+  v_actual bigint[];
+  v_take bigint[];
+  v_event record;
+  v_event_counts bigint[];
+  v_target bigint;
+  v_i integer;
+  v_difference jsonb;
+  v_difference_total numeric;
+  v_positive_value numeric := 0;
+  v_churn_value numeric := 0;
+  v_total_component integer;
+  v_denom_component integer;
+  v_pattern_component integer;
+  v_score integer;
+  v_confidence integer := 100;
+  v_status text;
+  v_formula text := 'cash-v1';
+  v_high_conf_history integer := 0;
+  v_pattern_baseline numeric := 0;
+  v_simulated_count integer := 0;
+  v_unknown_count integer := 0;
+  v_allocation_failures integer := 0;
+  v_fractional_count integer := 0;
+  v_change_count integer := 0;
+  v_change_amount bigint := 0;
+  v_delta bigint;
+  v_available_total bigint;
+  v_change bigint[];
+  v_highlights jsonb := '[]'::jsonb;
+  v_limitations jsonb := '[]'::jsonb;
+  v_references jsonb := '[]'::jsonb;
+begin
+  if not private.cash_count_counts_valid(p_actual_counts) then
+    raise exception 'จำนวนเงินสดต้องมีครบ 9 ชนิดและเป็นจำนวนเต็มตั้งแต่ 0';
+  end if;
+  select * into v_session from public.cash_count_sessions where id = p_session_id for update;
+  if v_session.id is null or not private.can_use_cash_count(v_session.location_id) then
+    raise exception 'ไม่พบช่วงตรวจนับหรือไม่มีสิทธิ์';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended(v_session.location_id::text, 0));
+  if v_session.status <> 'active' then raise exception 'ช่วงตรวจนับนี้สิ้นสุดแล้ว'; end if;
+  if v_session.started_by_user_id <> auth.uid() then
+    raise exception 'เฉพาะผู้เริ่มตรวจนับเท่านั้นที่ส่งผลได้';
+  end if;
+  if v_session.expires_at <= v_now then
+    update public.cash_count_sessions set status = 'expired', ended_at = v_now where id = p_session_id;
+    raise exception 'ช่วงตรวจนับหมดเวลาแล้ว กรุณาเริ่มใหม่';
+  end if;
+
+  select * into v_previous from public.cash_counts c
+  where c.location_id = v_session.location_id and c.status = 'active'
+  order by c.created_at desc, c.id desc limit 1;
+  select p.name, p.phone into v_actor from public.profiles p where p.id = auth.uid();
+  v_report := private.create_report_batch_at(v_session.location_id, v_session.cutoff_at, auth.uid());
+  v_actual := private.cash_json_to_array(p_actual_counts);
+  v_actual_total := private.cash_count_total(p_actual_counts);
+
+  if v_previous.id is null then
+    insert into public.cash_counts (
+      session_id, report_id, location_id, cutoff_at,
+      actual_counts, actual_total, expected_counts, expected_total,
+      difference_counts, difference_total, formula_version, evidence,
+      created_by_user_id, created_by_name, created_by_phone, created_at
+    ) values (
+      v_session.id, (v_report->>'id')::uuid, v_session.location_id, v_session.cutoff_at,
+      p_actual_counts, v_actual_total, p_actual_counts, v_actual_total,
+      jsonb_build_object('1',0,'2',0,'5',0,'10',0,'20',0,'50',0,'100',0,'500',0,'1000',0),
+      0, 'cash-v1-baseline',
+      jsonb_build_object(
+        'highlights', jsonb_build_array('รอบแรกใช้จำนวนที่นับเป็นฐานสำหรับรอบถัดไป'),
+        'limitations', jsonb_build_array('ยังไม่มีฐานก่อนหน้าจึงไม่คำนวณคะแนนหรือความเชื่อมั่น'),
+        'references', '[]'::jsonb,
+        'components', jsonb_build_object('total', null, 'denomination', null, 'pattern', null)
+      ), auth.uid(), coalesce(v_actor.name,''), coalesce(v_actor.phone,''), v_now
+    ) returning id into v_count_id;
+  else
+    v_expected := private.cash_json_to_array(v_previous.actual_counts);
+    v_expected_total := v_previous.actual_total;
+
+    for v_event in
+      select * from private.cash_count_events(v_session.location_id, v_previous.cutoff_at, v_session.cutoff_at)
+      order by occurred_at, (reference->>'id')
+    loop
+      v_references := v_references || jsonb_build_array(v_event.reference || jsonb_build_object('kind', v_event.event_kind, 'occurredAt', v_event.occurred_at));
+      if v_event.event_kind = 'known_in' then
+        v_event_counts := private.cash_json_to_array(v_event.counts);
+        for v_i in 1..9 loop v_expected[v_i] := v_expected[v_i] + v_event_counts[v_i]; end loop;
+        v_expected_total := v_expected_total + v_event.amount;
+      elsif v_event.event_kind = 'known_out' then
+        v_event_counts := private.cash_json_to_array(v_event.counts);
+        for v_i in 1..9 loop
+          if v_expected[v_i] < v_event_counts[v_i] then v_allocation_failures := v_allocation_failures + 1; end if;
+          v_expected[v_i] := greatest(0, v_expected[v_i] - v_event_counts[v_i]);
+        end loop;
+        v_expected_total := v_expected_total - v_event.amount;
+      elsif v_event.event_kind = 'expense' then
+        v_target := round(v_event.amount)::bigint;
+        if v_event.amount <> v_target then v_fractional_count := v_fractional_count + 1; end if;
+        v_take := private.cash_exact_take(v_expected, v_target);
+        v_simulated_count := v_simulated_count + 1;
+        if v_take is null then
+          v_available_total := 0;
+          for v_i in 1..9 loop
+            v_available_total := v_available_total + v_expected[v_i] * (array[1000,500,100,50,20,10,5,2,1]::bigint[])[v_i];
+          end loop;
+          if v_available_total >= v_target then
+            for v_delta in 1..least(999, v_available_total - v_target) loop
+              v_take := private.cash_exact_take(v_expected, v_target + v_delta);
+              exit when v_take is not null;
+            end loop;
+          end if;
+          if v_take is null then
+            v_allocation_failures := v_allocation_failures + 1;
+          else
+            v_change := private.cash_change_counts(v_delta);
+            for v_i in 1..9 loop v_expected[v_i] := v_expected[v_i] - v_take[v_i] + v_change[v_i]; end loop;
+            v_change_count := v_change_count + 1;
+            v_change_amount := v_change_amount + v_delta;
+          end if;
+        else
+          for v_i in 1..9 loop v_expected[v_i] := v_expected[v_i] - v_take[v_i]; end loop;
+        end if;
+        v_expected_total := v_expected_total - v_event.amount;
+      elsif v_event.event_kind = 'income' then
+        v_expected_total := v_expected_total + v_event.amount;
+        v_unknown_count := v_unknown_count + 1;
+      end if;
+    end loop;
+
+    v_difference := jsonb_build_object(
+      '1000', v_actual[1]-v_expected[1], '500', v_actual[2]-v_expected[2],
+      '100', v_actual[3]-v_expected[3], '50', v_actual[4]-v_expected[4],
+      '20', v_actual[5]-v_expected[5], '10', v_actual[6]-v_expected[6],
+      '5', v_actual[7]-v_expected[7], '2', v_actual[8]-v_expected[8],
+      '1', v_actual[9]-v_expected[9]
+    );
+    v_difference_total := v_actual_total - v_expected_total;
+    for v_i in 1..9 loop
+      v_churn_value := v_churn_value + abs(v_actual[v_i]-v_expected[v_i]) * (array[1000,500,100,50,20,10,5,2,1]::bigint[])[v_i];
+      if v_actual[v_i] > v_expected[v_i] then
+        v_positive_value := v_positive_value + (v_actual[v_i]-v_expected[v_i]) * (array[1000,500,100,50,20,10,5,2,1]::bigint[])[v_i];
+      end if;
+    end loop;
+    v_total_component := least(70, round(abs(v_difference_total) / greatest(abs(v_expected_total) * 0.05, 500) * 70)::integer);
+    v_denom_component := least(20, round(v_positive_value / greatest(abs(v_expected_total) * 0.10, 500) * 20)::integer);
+    v_pattern_component := least(10, round(greatest(0, v_churn_value - abs(v_difference_total)) / greatest(abs(v_expected_total) * 0.20, 1000) * 10)::integer);
+
+    select count(*), coalesce(avg((c.evidence->'components'->>'pattern')::numeric), 0)
+    into v_high_conf_history, v_pattern_baseline from public.cash_counts c
+    where c.location_id = v_session.location_id and c.status = 'active' and c.confidence >= 80;
+    if v_high_conf_history >= 10 then
+      v_pattern_component := least(10, round(greatest(0, v_pattern_component - v_pattern_baseline * 0.5))::integer);
+      v_formula := 'cash-v1-adaptive';
+    end if;
+    v_score := least(100, v_total_component + v_denom_component + v_pattern_component);
+    v_confidence := greatest(0,
+      100 - least(30, v_simulated_count * 3) - least(30, v_unknown_count * 10)
+      - least(36, v_change_count * 12) - least(50, v_allocation_failures * 20)
+      - least(20, v_fractional_count * 5)
+    );
+    v_status := case
+      when v_confidence < 50 then 'insufficient_data'
+      when v_score < 25 then 'normal'
+      when v_score < 60 then 'review'
+      else 'high_anomaly'
+    end;
+
+    if v_difference_total <> 0 then
+      v_highlights := v_highlights || jsonb_build_array(format('ยอดเงินจริงต่างจากยอดคาดการณ์ %s บาท', to_char(abs(v_difference_total), 'FM999G999G999G990D00')));
+    end if;
+    if v_positive_value > 0 and jsonb_array_length(v_highlights) < 3 then
+      v_highlights := v_highlights || jsonb_build_array(format('พบเงินบางชนิดเพิ่มจากแบบจำลองรวม %s บาท', to_char(v_positive_value, 'FM999G999G999G990D00')));
+    end if;
+    if v_pattern_component > 0 and jsonb_array_length(v_highlights) < 3 then
+      v_highlights := v_highlights || jsonb_build_array('สัดส่วนชนิดเงินเปลี่ยนจากลำดับจ่ายที่จำลองไว้');
+    end if;
+    if jsonb_array_length(v_highlights) = 0 then
+      v_highlights := jsonb_build_array('ยอดรวมและชนิดเงินสอดคล้องกับข้อมูลที่คำนวณได้');
+    end if;
+    if v_simulated_count > 0 then v_limitations := v_limitations || jsonb_build_array(format('จำลองการจ่ายเงินสด %s รายการจากชนิดเงินตั้งต้น', v_simulated_count)); end if;
+    if v_change_count > 0 then v_limitations := v_limitations || jsonb_build_array(format('จำลองรับเงินทอน %s ครั้ง รวม %s บาท', v_change_count, v_change_amount)); end if;
+    if v_unknown_count > 0 then v_limitations := v_limitations || jsonb_build_array(format('มีเงินสดเข้า %s รายการที่ไม่ทราบชนิดเงิน', v_unknown_count)); end if;
+    if v_allocation_failures > 0 then v_limitations := v_limitations || jsonb_build_array(format('จัดชนิดเงินให้ตรงยอดไม่ได้ %s จุด', v_allocation_failures)); end if;
+    if v_fractional_count > 0 then v_limitations := v_limitations || jsonb_build_array(format('มี %s รายการที่ต้องปัดเป็นบาทเพื่อจำลองชนิดเงิน', v_fractional_count)); end if;
+    if jsonb_array_length(v_limitations) = 0 then v_limitations := jsonb_build_array('ไม่พบข้อจำกัดสำคัญของข้อมูลรอบนี้'); end if;
+
+    insert into public.cash_counts (
+      session_id, report_id, location_id, previous_cash_count_id, cutoff_at,
+      actual_counts, actual_total, expected_counts, expected_total,
+      difference_counts, difference_total, anomaly_score, confidence, analysis_status,
+      formula_version, evidence, created_by_user_id, created_by_name, created_by_phone, created_at
+    ) values (
+      v_session.id, (v_report->>'id')::uuid, v_session.location_id, v_previous.id, v_session.cutoff_at,
+      p_actual_counts, v_actual_total, private.cash_array_to_json(v_expected), v_expected_total,
+      v_difference, v_difference_total, v_score, v_confidence, v_status, v_formula,
+      jsonb_build_object(
+        'highlights', v_highlights, 'limitations', v_limitations, 'references', v_references,
+        'components', jsonb_build_object('total',v_total_component,'denomination',v_denom_component,'pattern',v_pattern_component),
+        'adaptiveHistoryCount', v_high_conf_history, 'adaptivePatternBaseline', v_pattern_baseline
+      ), auth.uid(), coalesce(v_actor.name,''), coalesce(v_actor.phone,''), v_now
+    ) returning id into v_count_id;
+  end if;
+
+  update public.cash_count_sessions set status = 'submitted', ended_at = v_now where id = v_session.id;
+  return jsonb_build_object(
+    'id', v_count_id, 'reportId', v_report->>'id', 'reportNo', v_report->>'reportNo',
+    'cutoffAt', v_session.cutoff_at, 'submittedAt', v_now,
+    'countedByName', coalesce(v_actor.name,''), 'actualCounts', p_actual_counts, 'actualTotal', v_actual_total
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."submit_cash_count"("p_session_id" "uuid", "p_actual_counts" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."sync_acid_stock_entry"("payload" "jsonb") RETURNS "jsonb"
@@ -11799,6 +12567,70 @@ UNION ALL
 ALTER VIEW "public"."acid_stock_movements" OWNER TO "postgres";
 
 
+CREATE TABLE IF NOT EXISTS "public"."cash_count_sessions" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "cutoff_at" timestamp with time zone NOT NULL,
+    "expires_at" timestamp with time zone NOT NULL,
+    "status" "text" DEFAULT 'active'::"text" NOT NULL,
+    "started_by_user_id" "uuid" NOT NULL,
+    "started_by_name" "text" NOT NULL,
+    "started_by_phone" "text" NOT NULL,
+    "started_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "ended_at" timestamp with time zone,
+    CONSTRAINT "cash_count_sessions_check" CHECK (("expires_at" = ("cutoff_at" + '00:30:00'::interval))),
+    CONSTRAINT "cash_count_sessions_check1" CHECK (((("status" = 'active'::"text") AND ("ended_at" IS NULL)) OR (("status" <> 'active'::"text") AND ("ended_at" IS NOT NULL)))),
+    CONSTRAINT "cash_count_sessions_status_check" CHECK (("status" = ANY (ARRAY['active'::"text", 'submitted'::"text", 'cancelled'::"text", 'expired'::"text"])))
+);
+
+
+ALTER TABLE "public"."cash_count_sessions" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."cash_counts" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "session_id" "uuid" NOT NULL,
+    "report_id" "uuid" NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "previous_cash_count_id" "uuid",
+    "cutoff_at" timestamp with time zone NOT NULL,
+    "actual_counts" "jsonb" NOT NULL,
+    "actual_total" numeric(14,2) NOT NULL,
+    "expected_counts" "jsonb" NOT NULL,
+    "expected_total" numeric(14,2) NOT NULL,
+    "difference_counts" "jsonb" NOT NULL,
+    "difference_total" numeric(14,2) NOT NULL,
+    "anomaly_score" integer,
+    "confidence" integer,
+    "analysis_status" "text",
+    "formula_version" "text" NOT NULL,
+    "evidence" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
+    "status" "text" DEFAULT 'active'::"text" NOT NULL,
+    "created_by_user_id" "uuid" NOT NULL,
+    "created_by_name" "text" NOT NULL,
+    "created_by_phone" "text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "deleted_by_user_id" "uuid",
+    "deleted_by_name" "text",
+    "deleted_by_phone" "text",
+    "deleted_at" timestamp with time zone,
+    CONSTRAINT "cash_counts_actual_matches_counts" CHECK (("actual_total" = "private"."cash_count_total"("actual_counts"))),
+    CONSTRAINT "cash_counts_actual_shape" CHECK ("private"."cash_count_counts_valid"("actual_counts")),
+    CONSTRAINT "cash_counts_actual_total_check" CHECK (("actual_total" >= (0)::numeric)),
+    CONSTRAINT "cash_counts_analysis_status_check" CHECK (("analysis_status" = ANY (ARRAY['insufficient_data'::"text", 'normal'::"text", 'review'::"text", 'high_anomaly'::"text"]))),
+    CONSTRAINT "cash_counts_anomaly_score_check" CHECK ((("anomaly_score" >= 0) AND ("anomaly_score" <= 100))),
+    CONSTRAINT "cash_counts_check" CHECK (((("previous_cash_count_id" IS NULL) AND ("anomaly_score" IS NULL) AND ("confidence" IS NULL) AND ("analysis_status" IS NULL)) OR (("previous_cash_count_id" IS NOT NULL) AND ("anomaly_score" IS NOT NULL) AND ("confidence" IS NOT NULL) AND ("analysis_status" IS NOT NULL)))),
+    CONSTRAINT "cash_counts_check1" CHECK (((("status" = 'active'::"text") AND ("deleted_at" IS NULL) AND ("deleted_by_user_id" IS NULL)) OR (("status" = 'deleted'::"text") AND ("deleted_at" IS NOT NULL) AND ("deleted_by_user_id" IS NOT NULL)))),
+    CONSTRAINT "cash_counts_confidence_check" CHECK ((("confidence" >= 0) AND ("confidence" <= 100))),
+    CONSTRAINT "cash_counts_difference_shape" CHECK ("private"."cash_count_difference_valid"("difference_counts")),
+    CONSTRAINT "cash_counts_expected_shape" CHECK ("private"."cash_count_counts_valid"("expected_counts")),
+    CONSTRAINT "cash_counts_status_check" CHECK (("status" = ANY (ARRAY['active'::"text", 'deleted'::"text"])))
+);
+
+
+ALTER TABLE "public"."cash_counts" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "public"."cash_transfer_delete_requests" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "transfer_id" "uuid",
@@ -12531,6 +13363,26 @@ ALTER TABLE ONLY "public"."stock_products"
 
 
 
+ALTER TABLE ONLY "public"."cash_count_sessions"
+    ADD CONSTRAINT "cash_count_sessions_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."cash_counts"
+    ADD CONSTRAINT "cash_counts_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."cash_counts"
+    ADD CONSTRAINT "cash_counts_report_id_key" UNIQUE ("report_id");
+
+
+
+ALTER TABLE ONLY "public"."cash_counts"
+    ADD CONSTRAINT "cash_counts_session_id_key" UNIQUE ("session_id");
+
+
+
 ALTER TABLE ONLY "public"."cash_transfer_delete_requests"
     ADD CONSTRAINT "cash_transfer_delete_requests_pkey" PRIMARY KEY ("id");
 
@@ -12928,6 +13780,18 @@ ALTER TABLE ONLY "public"."user_locations"
 
 ALTER TABLE ONLY "public"."user_locations"
     ADD CONSTRAINT "user_locations_user_id_location_id_key" UNIQUE ("user_id", "location_id");
+
+
+
+CREATE INDEX "cash_count_sessions_location_history" ON "public"."cash_count_sessions" USING "btree" ("location_id", "started_at" DESC, "id" DESC);
+
+
+
+CREATE UNIQUE INDEX "cash_count_sessions_one_active_location" ON "public"."cash_count_sessions" USING "btree" ("location_id") WHERE ("status" = 'active'::"text");
+
+
+
+CREATE INDEX "cash_counts_location_history" ON "public"."cash_counts" USING "btree" ("location_id", "created_at" DESC, "id" DESC);
 
 
 
@@ -13360,6 +14224,46 @@ ALTER TABLE ONLY "public"."stock_entries"
 
 ALTER TABLE ONLY "public"."stock_entries"
     ADD CONSTRAINT "acid_stock_entries_product_id_fkey" FOREIGN KEY ("product_id") REFERENCES "public"."stock_products"("id");
+
+
+
+ALTER TABLE ONLY "public"."cash_count_sessions"
+    ADD CONSTRAINT "cash_count_sessions_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id");
+
+
+
+ALTER TABLE ONLY "public"."cash_count_sessions"
+    ADD CONSTRAINT "cash_count_sessions_started_by_user_id_fkey" FOREIGN KEY ("started_by_user_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."cash_counts"
+    ADD CONSTRAINT "cash_counts_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."cash_counts"
+    ADD CONSTRAINT "cash_counts_deleted_by_user_id_fkey" FOREIGN KEY ("deleted_by_user_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."cash_counts"
+    ADD CONSTRAINT "cash_counts_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id");
+
+
+
+ALTER TABLE ONLY "public"."cash_counts"
+    ADD CONSTRAINT "cash_counts_previous_cash_count_id_fkey" FOREIGN KEY ("previous_cash_count_id") REFERENCES "public"."cash_counts"("id");
+
+
+
+ALTER TABLE ONLY "public"."cash_counts"
+    ADD CONSTRAINT "cash_counts_report_id_fkey" FOREIGN KEY ("report_id") REFERENCES "public"."report_batches"("id");
+
+
+
+ALTER TABLE ONLY "public"."cash_counts"
+    ADD CONSTRAINT "cash_counts_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "public"."cash_count_sessions"("id");
 
 
 
@@ -13958,6 +14862,10 @@ CREATE POLICY "active users read rubber bill approval settings" ON "public"."rub
 
 
 
+CREATE POLICY "cash counts manager select" ON "public"."cash_counts" FOR SELECT TO "authenticated" USING ("private"."can_delete_reports"());
+
+
+
 CREATE POLICY "cash details source or target select" ON "public"."money_transfer_cash_details" FOR SELECT TO "authenticated" USING ((EXISTS ( SELECT 1
    FROM "public"."money_transfers" "t"
   WHERE (("t"."id" = "money_transfer_cash_details"."transfer_id") AND ("private"."can_access_location"("t"."location_id") OR "private"."can_access_location"("t"."target_location_id"))))));
@@ -13966,6 +14874,12 @@ CREATE POLICY "cash details source or target select" ON "public"."money_transfer
 
 CREATE POLICY "cash transfer delete requests read" ON "public"."cash_transfer_delete_requests" FOR SELECT TO "authenticated" USING (("private"."can_access_super_admin_features"() OR ("requested_by_user_id" = "auth"."uid"()) OR "private"."can_access_location"("source_location_id")));
 
+
+
+ALTER TABLE "public"."cash_count_sessions" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."cash_counts" ENABLE ROW LEVEL SECURITY;
 
 
 ALTER TABLE "public"."cash_transfer_delete_requests" ENABLE ROW LEVEL SECURITY;
@@ -14488,12 +15402,56 @@ GRANT ALL ON FUNCTION "private"."can_manage_time_payroll_profile"("target_profil
 
 
 
+REVOKE ALL ON FUNCTION "private"."can_request_dashboard_refresh"("p_location_id" "uuid") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."can_use_cash_count"("p_location_id" "uuid") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."can_view_profile"("target_user" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "private"."can_view_profile"("target_user" "uuid") TO "authenticated";
 
 
 
+REVOKE ALL ON FUNCTION "private"."cash_array_to_json"("p_counts" bigint[]) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."cash_change_counts"("p_amount" bigint) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."cash_count_counts_valid"("p_counts" "jsonb") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."cash_count_difference_valid"("p_counts" "jsonb") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."cash_count_events"("p_location_id" "uuid", "p_after_cutoff" timestamp with time zone, "p_to_cutoff" timestamp with time zone) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."cash_count_total"("p_counts" "jsonb") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."cash_exact_take"("p_available" bigint[], "p_target" bigint, "p_position" integer) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."cash_json_to_array"("p_counts" "jsonb") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."claim_dashboard_branch"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."create_report_batch_at"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone, "p_actor_id" "uuid") FROM PUBLIC;
 
 
 
@@ -14519,6 +15477,10 @@ REVOKE ALL ON FUNCTION "private"."dashboard_dirty_rubber_bill_items"() FROM PUBL
 
 
 REVOKE ALL ON FUNCTION "private"."dashboard_require_manager"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."dashboard_require_refresh_access"("p_location_id" "uuid") FROM PUBLIC;
 
 
 
@@ -14567,6 +15529,10 @@ REVOKE ALL ON FUNCTION "private"."prevent_location_code_change"() FROM PUBLIC;
 
 
 REVOKE ALL ON FUNCTION "private"."rebuild_dashboard_branch"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."rebuild_dashboard_branch_target"("p_location_id" "uuid", "p_claimed_version" bigint) FROM PUBLIC;
 
 
 
@@ -14621,13 +15587,47 @@ GRANT ALL ON FUNCTION "public"."can_access_super_admin_features"() TO "authentic
 
 
 
+REVOKE ALL ON FUNCTION "public"."cancel_cash_count_session"("p_session_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."cancel_cash_count_session"("p_session_id" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."cancel_cash_count_session"("p_session_id" "uuid") TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."cancel_time_tracking_expense_source"("p_source_type" "text", "p_source_id" "uuid", "p_reason" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."cancel_time_tracking_expense_source"("p_source_type" "text", "p_source_id" "uuid", "p_reason" "text") TO "authenticated";
 
 
 
+GRANT ALL ON TABLE "public"."report_batches" TO "service_role";
+GRANT SELECT ON TABLE "public"."report_batches" TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."cash_count_checker_name"("source_row" "public"."report_batches") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."cash_count_checker_name"("source_row" "public"."report_batches") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."cash_count_checker_name"("source_row" "public"."report_batches") TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."cash_count_link_id"("source_row" "public"."report_batches") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."cash_count_link_id"("source_row" "public"."report_batches") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."cash_count_link_id"("source_row" "public"."report_batches") TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."cash_count_submitted_at"("source_row" "public"."report_batches") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."cash_count_submitted_at"("source_row" "public"."report_batches") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."cash_count_submitted_at"("source_row" "public"."report_batches") TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."change_time_tracking_expense_location"("p_source_type" "text", "p_source_id" "uuid", "p_expense_location_id" "uuid", "p_comment" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."change_time_tracking_expense_location"("p_source_type" "text", "p_source_id" "uuid", "p_expense_location_id" "uuid", "p_comment" "text") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."claim_dashboard_refresh_now"("p_location_id" "uuid", "p_requested_version" bigint) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."claim_dashboard_refresh_now"("p_location_id" "uuid", "p_requested_version" bigint) TO "authenticated";
 
 
 
@@ -14735,6 +15735,12 @@ GRANT ALL ON FUNCTION "public"."delete_cash_branch_transfer"("p_transfer_id" "uu
 
 
 
+REVOKE ALL ON FUNCTION "public"."delete_cash_count"("p_cash_count_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."delete_cash_count"("p_cash_count_id" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."delete_cash_count"("p_cash_count_id" "uuid") TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."delete_income_sale_item"("item_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."delete_income_sale_item"("item_id" "uuid") TO "authenticated";
 
@@ -14772,6 +15778,12 @@ GRANT ALL ON FUNCTION "public"."get_acid_stock_balance"("p_location_id" "uuid", 
 
 REVOKE ALL ON FUNCTION "public"."get_actionable_badge_counts"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_actionable_badge_counts"() TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_cash_count_session"("p_location_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_cash_count_session"("p_location_id" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."get_cash_count_session"("p_location_id" "uuid") TO "service_role";
 
 
 
@@ -14855,6 +15867,12 @@ GRANT ALL ON FUNCTION "public"."get_time_payroll_payment_locations"() TO "authen
 
 
 
+REVOKE ALL ON FUNCTION "public"."has_cash_count"("source_row" "public"."report_batches") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."has_cash_count"("source_row" "public"."report_batches") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."has_cash_count"("source_row" "public"."report_batches") TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."is_super_admin"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."is_super_admin"() TO "authenticated";
 
@@ -14881,6 +15899,11 @@ GRANT ALL ON FUNCTION "public"."provision_location"("p_request_id" "uuid", "p_na
 
 REVOKE ALL ON FUNCTION "public"."queue_dashboard_refresh"("p_location_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."queue_dashboard_refresh"("p_location_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."rebuild_dashboard_refresh_now"("p_location_id" "uuid", "p_claimed_version" bigint) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."rebuild_dashboard_refresh_now"("p_location_id" "uuid", "p_claimed_version" bigint) TO "authenticated";
 
 
 
@@ -15000,11 +16023,6 @@ GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."time_segm
 
 
 
-GRANT ALL ON TABLE "public"."report_batches" TO "service_role";
-GRANT SELECT ON TABLE "public"."report_batches" TO "authenticated";
-
-
-
 REVOKE ALL ON FUNCTION "public"."rubber_export_lock_no"("source_row" "public"."report_batches") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."rubber_export_lock_no"("source_row" "public"."report_batches") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."rubber_export_lock_no"("source_row" "public"."report_batches") TO "service_role";
@@ -15061,6 +16079,18 @@ GRANT ALL ON FUNCTION "public"."set_time_tracking_status"("p_profile_id" "uuid",
 
 REVOKE ALL ON FUNCTION "public"."set_user_primary_location"("p_user_id" "uuid", "p_location_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."set_user_primary_location"("p_user_id" "uuid", "p_location_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."start_cash_count_session"("p_location_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."start_cash_count_session"("p_location_id" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."start_cash_count_session"("p_location_id" "uuid") TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."submit_cash_count"("p_session_id" "uuid", "p_actual_counts" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."submit_cash_count"("p_session_id" "uuid", "p_actual_counts" "jsonb") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."submit_cash_count"("p_session_id" "uuid", "p_actual_counts" "jsonb") TO "service_role";
 
 
 
@@ -15163,6 +16193,15 @@ GRANT SELECT ON TABLE "public"."rubber_bill_items" TO "authenticated";
 GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."acid_stock_movements" TO "anon";
 GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."acid_stock_movements" TO "authenticated";
 GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."acid_stock_movements" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."cash_count_sessions" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."cash_counts" TO "service_role";
+GRANT SELECT ON TABLE "public"."cash_counts" TO "authenticated";
 
 
 

@@ -355,7 +355,7 @@ test.describe("Time Tracking permission matrix @time-tracking", () => {
       await expect(page.getByRole("heading", { name: "ระบบเวลาและเงินเดือน (ของตนเอง)" })).toBeVisible();
       await expect(page.getByRole("button", { name: "เริ่มนับเวลา" })).toHaveCount(0);
       await expect(page.getByRole("button", { name: "หยุดงาน" })).toHaveCount(0);
-      await expect(page.getByRole("button", { name: "ขอเบิกเงินล่วงหน้า" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "ขอเบิกเงินตนเอง" })).toBeVisible();
     } finally {
       await context.close();
     }
