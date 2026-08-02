@@ -12,6 +12,7 @@ import { ExpenseLocationChangeModal } from "./time-tracking/ExpenseLocationChang
 import { ExpenseLocationApprovalModal } from "./time-tracking/ExpenseLocationApprovalModal";
 import { canManageTimePayroll } from "@/lib/permissions";
 import { ModalShell } from "@/components/shared/ModalShell";
+import { SlipPreviewModal } from "./time-tracking/SlipPreviewModal";
 
 interface TimeTrackingModuleProps {
   profile: Profile;
@@ -53,6 +54,7 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
   const [saving, setSaving] = useState(false);
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
   const [pendingExpenseLocationTx, setPendingExpenseLocationTx] = useState<any>(null);
+  const [previewSource, setPreviewSource] = useState<{ type: "withdrawal" | "payroll"; id: string } | null>(null);
   const { requestInput, inputDialog } = useInputDialog();
 
   // Debt Modal State
@@ -437,6 +439,17 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
                   </div>
                   <div className="flex items-center gap-2 self-start sm:self-center">
                     <span className={`text-xs font-bold px-2 py-1 rounded-md ${t.status === 'APPROVED' ? 'bg-success/15 text-success' : 'bg-ink/10 text-ink'}`}>{t.status}</span>
+                    {t.type === 'WITHDRAWAL' && (t.status === 'PENDING' || t.status === 'APPROVED') && (
+                      <button
+                        type="button"
+                        onClick={() => setPreviewSource({ type: "withdrawal", id: t.id })}
+                        disabled={!online}
+                        title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE}
+                        className="focus-ring rounded-md bg-river px-3 py-1.5 text-sm font-semibold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        ดูสลิป
+                      </button>
+                    )}
                     {canManageTime && t.status === 'PENDING' && onApprove && (
                       <button onClick={() => onApprove('TRANSACTION', t)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded bg-success px-3 py-1 font-bold text-white hover:bg-success/90 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
                     )}
@@ -471,12 +484,17 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
                   <p className="font-semibold">เดือน {slip.month} · สุทธิ {formatCurrency(slip.net_pay)}</p>
                   <p className="text-xs text-ink/55">ขั้นต้น {formatCurrency(slip.gross_pay)} · หัก {formatCurrency(slip.total_deductions)} · {slip.status}</p>
                 </div>
-                <button
-                  onClick={() => window.open(`/slip/${slip.id}`, "_blank")}
-                  className="self-start rounded-md bg-river px-3 py-1.5 text-sm font-bold text-white hover:bg-river/90"
-                >
-                  ดูสลิป
-                </button>
+                {!slip.cancelled_at && (slip.status === 'PENDING' || slip.status === 'APPROVED') && (
+                  <button
+                    type="button"
+                    onClick={() => setPreviewSource({ type: "payroll", id: slip.id })}
+                    disabled={!online}
+                    title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE}
+                    className="focus-ring self-start rounded-md bg-river px-3 py-1.5 text-sm font-semibold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    ดูสลิป
+                  </button>
+                )}
               </li>
             ))}
           </ul>
@@ -579,6 +597,14 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
           currentLocationId={pendingExpenseLocationTx.expense_location_id ?? null}
           onClose={() => setPendingExpenseLocationTx(null)}
           onSubmit={submitWithdrawalExpenseLocation}
+        />
+      )}
+      {previewSource && (
+        <SlipPreviewModal
+          sourceType={previewSource.type}
+          sourceId={previewSource.id}
+          online={online}
+          onClose={() => setPreviewSource(null)}
         />
       )}
       {inputDialog}
@@ -1512,6 +1538,7 @@ function PayrollModal({ user, online, onApprove, onReject, onChangePayment, onCl
   const [createFormOpen, setCreateFormOpen] = useState(false);
   const [createMonth, setCreateMonth] = useState(bangkokToday().slice(0, 7));
   const [autoStartNextMonth, setAutoStartNextMonth] = useState(true);
+  const [previewSlipId, setPreviewSlipId] = useState<string | null>(null);
   const { requestInput, inputDialog } = useInputDialog();
   const userIsRunning = Boolean(user.time_segments?.some((segment: any) => !segment.end_time));
 
@@ -1666,12 +1693,17 @@ function PayrollModal({ user, online, onApprove, onReject, onChangePayment, onCl
                         {slip.status}
                       </span>
 
-                      <button
-                        onClick={() => window.open(`/slip/${slip.id}`, '_blank')}
-                        className="rounded-md bg-river px-3 py-1.5 text-sm font-bold text-white hover:bg-river/90"
-                      >
-                        ดูสลิป
-                      </button>
+                      {!slip.cancelled_at && (slip.status === 'PENDING' || slip.status === 'APPROVED') && (
+                        <button
+                          type="button"
+                          onClick={() => setPreviewSlipId(slip.id)}
+                          disabled={!online}
+                          title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE}
+                          className="focus-ring rounded-md bg-river px-3 py-1.5 text-sm font-semibold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          ดูสลิป
+                        </button>
+                      )}
 
                        {slip.status === 'PENDING' && (
                          <button onClick={() => onApprove(slip)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-success text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-success/85 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
@@ -1728,6 +1760,14 @@ function PayrollModal({ user, online, onApprove, onReject, onChangePayment, onCl
             </div>
           </div>
         </div>
+      )}
+      {previewSlipId && (
+        <SlipPreviewModal
+          sourceType="payroll"
+          sourceId={previewSlipId}
+          online={online}
+          onClose={() => setPreviewSlipId(null)}
+        />
       )}
       {inputDialog}
     </div>

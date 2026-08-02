@@ -2,31 +2,39 @@
 
 import { useId } from "react";
 import { X } from "lucide-react";
+import { cn } from "@/lib/cn";
 
 export function ModalShell({
   title,
   subtitle,
   onClose,
   size = "normal",
+  mobileFullScreen = false,
   children
 }: {
   title: string;
   subtitle?: string;
   onClose: () => void;
   size?: "normal" | "wide";
+  mobileFullScreen?: boolean;
   children: React.ReactNode;
 }) {
   const titleId = useId();
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-ink/50 p-2 sm:p-6">
+    <div className={cn(
+      "fixed inset-0 z-50 flex items-start justify-center bg-ink/50 p-2 sm:p-6",
+      mobileFullScreen && "p-0",
+    )}>
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className={`flex max-h-[calc(100dvh-16px)] w-full flex-col overflow-hidden rounded-xl border border-white/80 bg-white shadow-2xl sm:mt-4 sm:max-h-[calc(100dvh-48px)] ${
-          size === "wide" ? "max-w-6xl" : "max-w-4xl"
-        }`}
+        className={cn(
+          "flex max-h-[calc(100dvh-16px)] w-full flex-col overflow-hidden rounded-xl border border-white/80 bg-white shadow-2xl sm:mt-4 sm:max-h-[calc(100dvh-48px)]",
+          size === "wide" ? "max-w-6xl" : "max-w-4xl",
+          mobileFullScreen && "h-dvh max-h-dvh rounded-none border-0 sm:h-auto sm:max-h-[calc(100dvh-48px)] sm:rounded-xl sm:border",
+        )}
       >
         <div className="flex shrink-0 items-start justify-between gap-3 border-b border-mint bg-sand px-3 py-3 sm:px-4">
           <div>

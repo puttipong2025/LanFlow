@@ -7,6 +7,15 @@ export const A4_LANDSCAPE = {
   tableWidth: 841.89 - 48,
 } as const;
 
+export const A4_PORTRAIT = {
+  width: 595.28,
+  height: 841.89,
+  left: 32,
+  top: 32,
+  bottom: 841.89 - 40,
+  contentWidth: 595.28 - 64,
+} as const;
+
 export const PDF_PALETTE = {
   darkGreen: "#173B2A",
   mint: "#DDEFE3",
@@ -213,12 +222,14 @@ export async function createSearchableA4PdfFile({
   title,
   subject,
   signal,
+  layout = "landscape",
   render,
 }: {
   filename: string;
   title: string;
   subject: string;
   signal: AbortSignal;
+  layout?: "landscape" | "portrait";
   render: (doc: PdfDocument) => void;
 }) {
   signal.throwIfAborted();
@@ -230,7 +241,7 @@ export async function createSearchableA4PdfFile({
 
   const doc = new PDFDocument({
     size: "A4",
-    layout: "landscape",
+    layout,
     bufferPages: true,
     compress: true,
     tagged: true,
@@ -241,10 +252,10 @@ export async function createSearchableA4PdfFile({
       Author: "LanFlow",
     },
     margins: {
-      top: A4_LANDSCAPE.top,
-      left: A4_LANDSCAPE.left,
-      right: A4_LANDSCAPE.left,
-      bottom: 34,
+      top: layout === "portrait" ? A4_PORTRAIT.top : A4_LANDSCAPE.top,
+      left: layout === "portrait" ? A4_PORTRAIT.left : A4_LANDSCAPE.left,
+      right: layout === "portrait" ? A4_PORTRAIT.left : A4_LANDSCAPE.left,
+      bottom: layout === "portrait" ? 40 : 34,
     },
   });
   doc.registerFont("NotoSansThai", fonts.regular as unknown as Buffer);

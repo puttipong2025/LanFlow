@@ -23,13 +23,15 @@
     "@supabase/supabase-js": "^2.47.10",
     "@tanstack/react-query": "^5.101.1",
     "@tanstack/react-query-devtools": "^5.101.1",
+    "clsx": "^2.1.1",
     "lucide-react": "^0.468.0",
     "next": "^15.1.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "sonner": "^2.0.7",
     "sweetalert2": "^11.26.25",
-    "sweetalert2-react-content": "^5.1.2"
+    "sweetalert2-react-content": "^5.1.2",
+    "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
