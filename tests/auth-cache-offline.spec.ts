@@ -13,11 +13,39 @@ async function waitForServiceWorkerControl(page: Page) {
   }).toBe(true);
 }
 
+async function waitForAuthenticatedAppShell(page: Page) {
+  await expect.poll(() => page.evaluate(async () => {
+    const cache = await window.caches.open('lanflow-start-url');
+    return Boolean(await cache.match('/'));
+  }), {
+    message: 'Authenticated app shell was not cached before navigation changed',
+    timeout: 10000,
+  }).toBe(true);
+}
+
 test.describe('Offline Auth Cache Clearance', () => {
   test.skip(process.env.PW_PROJECT !== 'pwa', 'Offline routing relies on PWA service worker');
 
   test.afterEach(async ({ context }) => {
     await context.setOffline(false).catch(() => {});
+  });
+
+  test('should not reload-loop after the service worker controls an authenticated root page', async ({ page }) => {
+    const phone = process.env.TEST_PHONE || '0800000000';
+    const password = process.env.TEST_PASSWORD || 'password123';
+
+    await page.goto('/login');
+    await page.fill('input[type="tel"]', phone);
+    await page.fill('input[type="password"]', password);
+    await page.click('button:has-text("เข้าสู่ระบบ")');
+    await expect(page.getByRole('button', { name: 'ภาพรวม', exact: true })).toBeVisible({ timeout: 15000 });
+    await waitForServiceWorkerControl(page);
+    await waitForAuthenticatedAppShell(page);
+
+    await page.reload({ waitUntil: 'domcontentloaded' });
+
+    await expect(page).toHaveURL('/');
+    await expect(page.getByRole('button', { name: 'ภาพรวม', exact: true })).toBeVisible({ timeout: 15000 });
   });
 
   test('should not restore profile if offline after logout', async ({ page, context }) => {
@@ -31,6 +59,7 @@ test.describe('Offline Auth Cache Clearance', () => {
 
     await expect(page.getByRole('button', { name: 'ภาพรวม', exact: true })).toBeVisible({ timeout: 15000 });
     await waitForServiceWorkerControl(page);
+    await waitForAuthenticatedAppShell(page);
 
     // Verify localStorage has auth cache
     const hasCache = await page.evaluate(() => {
@@ -74,6 +103,7 @@ test.describe('Offline Auth Cache Clearance', () => {
     await page.click('button:has-text("เข้าสู่ระบบ")');
     await expect(page.getByRole('button', { name: 'ภาพรวม', exact: true })).toBeVisible({ timeout: 15000 });
     await waitForServiceWorkerControl(page);
+    await waitForAuthenticatedAppShell(page);
 
     // 2. Expire the offline cache by setting validatedAt to 8 days ago
     const cacheExpired = await page.evaluate(() => {

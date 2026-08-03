@@ -8,12 +8,32 @@ const withPWA = withPWAInit({
   cacheOnFrontEndNav: true,
   aggressiveFrontEndNavCaching: true,
   reloadOnOnline: false,
+  cacheStartUrl: false,
   dynamicStartUrl: false,
   workboxOptions: {
     skipWaiting: true,
     clientsClaim: true,
     // Don't cache API requests with Cache First — use proper strategies
     runtimeCaching: [
+      {
+        // Cache the authenticated app shell only after a successful, non-redirected
+        // navigation. Anonymous redirects to /login must never become the '/' shell.
+        urlPattern: ({ request, url }) =>
+          request.mode === "navigate" && url.pathname === "/",
+        handler: "NetworkFirst",
+        options: {
+          cacheName: "lanflow-start-url",
+          plugins: [
+            {
+              cacheWillUpdate: ({ response }) =>
+                Promise.resolve(response.redirected ? null : response),
+            },
+          ],
+          precacheFallback: {
+            fallbackURL: "/offline.html",
+          },
+        },
+      },
       {
         // Keep authenticated documents out of the shared service-worker cache.
         // Workbox serves the precached offline page only when navigation fails.
