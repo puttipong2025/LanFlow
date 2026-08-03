@@ -5,19 +5,23 @@ import { LanFlowApp } from "@/components/LanFlowApp";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 import { Loader2 } from "lucide-react";
+import { cacheAuthenticatedAppShell } from "@/lib/pwa-app-shell";
 
 export default function Home() {
   const { isAuthenticated, isLoading } = useAuthContext();
   const router = useRouter();
 
   useEffect(() => {
-    if (!isLoading && !isAuthenticated) {
-      if (typeof navigator !== "undefined" && !navigator.onLine) {
-        // Prevent hard navigation to /login which causes dinosaur page
-        return;
-      }
-      router.replace("/login");
+    if (isLoading) return;
+    if (isAuthenticated) {
+      void cacheAuthenticatedAppShell();
+      return;
     }
+    if (typeof navigator !== "undefined" && !navigator.onLine) {
+      // Prevent hard navigation to /login which causes dinosaur page
+      return;
+    }
+    router.replace("/login");
   }, [isLoading, isAuthenticated, router]);
 
   if (isLoading) {

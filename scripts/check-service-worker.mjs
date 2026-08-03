@@ -11,8 +11,15 @@ const unresolved = helpers.filter((helper) => {
   return !new RegExp(`function\\s+${escaped}|(?:var|let|const)\\s+${escaped}`).test(source);
 });
 
+const precachesAuthenticatedStartUrl =
+  /\{\s*url\s*:\s*["']\/["']\s*,\s*revision\s*:/.test(source);
+
 if (unresolved.length > 0) {
   throw new Error(`Generated service worker references undefined helpers: ${unresolved.join(", ")}`);
 }
 
-console.log("Service worker helper check passed.");
+if (precachesAuthenticatedStartUrl) {
+  throw new Error("Generated service worker must not precache the authenticated start URL '/'");
+}
+
+console.log("Service worker checks passed.");
