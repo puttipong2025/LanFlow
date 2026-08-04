@@ -56,6 +56,12 @@ test("paginates pending transfers and runs the automatic merge from the pending 
     await selectAppLocation(page, locationId);
     await page.getByRole("button", { name: /^โอนเงิน/ }).click();
     await expect(page.getByRole("button", { name: /^รอโอน/ })).toHaveAttribute("aria-pressed", "true");
+    for (const label of ["ทั้งหมด", "รอโอน", "ค้างจ่าย", "จ่ายล่วงหน้า", "จ่ายครบ", "ชำระเกิน", "โอน+สาขาจ่าย", "ยกเลิก"]) {
+      await expect(page.getByRole("button", { name: label }).locator("span"))
+        .toHaveClass(/bg-amber/);
+      await expect(page.getByRole("button", { name: label }).locator("span"))
+        .toHaveClass(/text-white/);
+    }
     await expect(page.locator("tbody tr[data-transfer-id]")).toHaveCount(20);
     await page.getByRole("button", { name: "ถัดไป" }).click();
     await expect(page.getByText(/หน้า 2\//)).toBeVisible();

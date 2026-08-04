@@ -492,7 +492,7 @@ export function MoneyTransferModule({
               )}
             >
               {label}
-              <span className="min-w-5 rounded-full bg-white/20 px-1.5 py-0.5 text-center text-[10px] font-extrabold leading-none">
+              <span className="min-w-5 rounded-full bg-amber px-1.5 py-0.5 text-center text-[10px] font-extrabold leading-none text-white">
                 {statusCounts.get(value) ?? 0}
               </span>
             </button>
@@ -531,7 +531,7 @@ export function MoneyTransferModule({
                   <th className="px-3 py-3">ปลายทาง</th>
                   <th className="px-3 py-3">บัญชีธนาคาร</th>
                   <th className="px-3 py-3 text-right">ยอดที่ต้องจ่าย</th>
-                  <th className="px-3 py-3 text-right">ยอดจ่ายจริง</th>
+                  <th className="px-3 py-3 text-right">ยอดรวมสลิป</th>
                   <th className="px-3 py-3 text-center">สลิป</th>
                   <th className="px-3 py-3 text-center">รายการ</th>
                   <th className="px-3 py-3">สถานะ</th>

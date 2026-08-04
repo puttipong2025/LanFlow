@@ -241,6 +241,7 @@ test("shares a completed transfer PDF and leaves transfer data unchanged", async
     await expect(partialRow).toBeVisible();
     await expect(advanceRow).toBeVisible();
     await expect(page.getByRole("columnheader", { name: "บัญชีธนาคาร" })).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: "ยอดรวมสลิป" })).toBeVisible();
     await expect(advanceRow).toContainText("฿500.00");
     await expect(paidRow).toContainText("ธนาคารทดสอบ");
     await expect(paidRow).toContainText("1234567890");
