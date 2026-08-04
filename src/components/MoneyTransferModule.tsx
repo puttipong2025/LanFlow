@@ -360,16 +360,7 @@ export function MoneyTransferModule({
       )}
 
       {/* Header */}
-      <div className="flex flex-col gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:flex-row sm:items-center sm:justify-between sm:p-4">
-        <div>
-          <h2 className="text-xl font-bold text-ink">
-            <ArrowDownUp size={22} className="mr-2 inline-block text-river" />
-            ระบบโอนเงิน
-          </h2>
-          <p className="mt-1 text-sm text-ink/60">
-            สร้างรายการโอนเงินจากบิลยางและใบชั่ง พร้อมอัปโหลดสลิป
-          </p>
-        </div>
+      <div className="flex flex-col gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:flex-row sm:items-center sm:justify-start sm:p-4">
         {!activeFormType && (
           <div className="relative w-full sm:w-auto">
             <button
@@ -388,7 +379,7 @@ export function MoneyTransferModule({
               {online ? <Plus size={16} /> : <WifiOff size={16} />} สร้างรายการโอน
             </button>
             {showTypeSelector && (
-              <div className="absolute right-0 top-full z-20 mt-2 w-56 rounded-lg border border-black/10 bg-white py-1 shadow-xl">
+              <div className="absolute left-0 top-full z-20 mt-2 w-56 rounded-lg border border-black/10 bg-white py-1 shadow-xl">
                 <button type="button" onClick={() => { setActiveFormType('customer'); setShowTypeSelector(false); setEditTransfer(null); }} className="focus-ring w-full bg-actionSecondary px-4 py-2.5 text-left text-sm font-semibold text-white transition-colors hover:bg-leaf focus:bg-leaf">💰 โอนให้ลูกค้า</button>
                 <button type="button" onClick={() => { setActiveFormType('transport'); setShowTypeSelector(false); setEditTransfer(null); }} className="focus-ring w-full bg-actionSecondary px-4 py-2.5 text-left text-sm font-semibold text-white transition-colors hover:bg-leaf focus:bg-leaf">🚛 จ่ายค่าขนส่ง</button>
                 <button type="button" onClick={() => { setActiveFormType('branch'); setShowTypeSelector(false); setEditTransfer(null); }} className="focus-ring w-full bg-actionSecondary px-4 py-2.5 text-left text-sm font-semibold text-white transition-colors hover:bg-leaf focus:bg-leaf">🏢 โอนให้สาขา</button>
@@ -396,6 +387,15 @@ export function MoneyTransferModule({
             )}
           </div>
         )}
+        <div>
+          <h2 className="text-xl font-bold text-ink">
+            <ArrowDownUp size={22} className="mr-2 inline-block text-river" />
+            ระบบโอนเงิน
+          </h2>
+          <p className="mt-1 text-sm text-ink/60">
+            สร้างรายการโอนเงินจากบิลยางและใบชั่ง พร้อมอัปโหลดสลิป
+          </p>
+        </div>
       </div>
 
       {/* Forms */}

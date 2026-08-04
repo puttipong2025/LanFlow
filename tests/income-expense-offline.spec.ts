@@ -973,6 +973,103 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
     await cleanupIncomeExpense(page, expensePayload, expensePayload.clientTempId, expenseData.revisionNo);
   });
 
+  for (const type of ['income', 'expense'] as const) {
+    test(`online create ${type} never disappears while the authoritative feed refreshes`, async ({ page }) => {
+      test.setTimeout(90000);
+      await loginAndGoToIncomeExpense(page);
+
+      const marker = `E2E-CREATE-${type.toUpperCase()}-FLICKER-${Date.now()}`;
+      const addLabel = type === 'income' ? 'เพิ่มรายรับ' : 'เพิ่มรายจ่าย';
+      let submitStarted = false;
+      let createCompleted = false;
+      let createPostCount = 0;
+      let createPayload: any;
+
+      await page.route('**/api/lanflow/income-expense', async (route) => {
+        if (route.request().method() !== 'POST') {
+          await route.continue();
+          return;
+        }
+        createPostCount += 1;
+        createPayload = route.request().postDataJSON();
+        const response = await route.fetch();
+        createCompleted = true;
+        await route.fulfill({ response });
+      });
+      await page.route('**/api/lanflow/income-expense/feed?**', async (route) => {
+        const response = await route.fetch();
+        if (submitStarted) {
+          await expect.poll(() => createCompleted, { timeout: 3000 }).toBe(true);
+          await new Promise((resolve) => setTimeout(resolve, 750));
+        }
+        await route.fulfill({ response });
+      });
+
+      await page.getByRole('button', { name: addLabel, exact: true }).click();
+      const modal = page.locator('.fixed.inset-0').last();
+      await modal.locator('table tbody tr').first().locator('input').first().fill(marker);
+      await modal.locator('table tbody tr').first().locator('input[type="number"]').first().fill('321');
+
+      await page.evaluate((text) => {
+        const state = { values: [] as boolean[], timer: 0 };
+        const sample = () => {
+          const visible = Array.from(document.querySelectorAll('table tbody tr'))
+            .some((candidate) => candidate.textContent?.includes(text));
+          if (state.values.at(-1) !== visible) state.values.push(visible);
+        };
+        sample();
+        state.timer = window.setInterval(sample, 5);
+        (window as typeof window & { __createFlicker?: typeof state }).__createFlicker = state;
+      }, marker);
+
+      let transitions: boolean[] = [];
+      try {
+        submitStarted = true;
+        await modal.getByRole('button', { name: 'บันทึกบิล' }).click();
+        await expect(modal).toBeHidden({ timeout: 10000 });
+        await expect.poll(() => createCompleted, { timeout: 10000 }).toBe(true);
+
+        const row = page.locator('table tbody tr', { hasText: marker }).first();
+        await expect(row.locator('span:has-text("ซิงก์แล้ว")')).toBeVisible({ timeout: 20000 });
+        await page.waitForTimeout(2000);
+        await expect(page.locator('table tbody tr', { hasText: marker })).toHaveCount(1);
+        await expect.poll(async () => (
+          (await readQueue(page)).filter((event) => event.id === createPayload?.clientTempId).length
+        )).toBe(0);
+        transitions = await page.evaluate(() => {
+          const state = (window as typeof window & {
+            __createFlicker?: { values: boolean[]; timer: number };
+          }).__createFlicker;
+          if (!state) return [];
+          window.clearInterval(state.timer);
+          return state.values;
+        });
+      } finally {
+        await page.evaluate(() => {
+          const state = (window as typeof window & {
+            __createFlicker?: { timer: number };
+          }).__createFlicker;
+          if (state) window.clearInterval(state.timer);
+        }).catch(() => {});
+        await page.unrouteAll({ behavior: 'wait' });
+
+        if (createPayload?.clientTempId) {
+          const dbCheck = await page.request.fetch(
+            `${supabaseUrl}/rest/v1/income_expense?client_temp_id=eq.${createPayload.clientTempId}&select=revision_no`,
+            { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
+          );
+          const [dbRow] = await dbCheck.json() as Array<{ revision_no: number }>;
+          if (dbRow) {
+            await cleanupIncomeExpense(page, createPayload, createPayload.clientTempId, dbRow.revision_no);
+          }
+        }
+      }
+
+      expect(createPostCount).toBe(1);
+      expect(transitions).toEqual([false, true]);
+    });
+  }
+
   test('online delete never reappears while the authoritative feed refreshes', async ({ page }) => {
     test.setTimeout(90000);
     await loginAndGoToIncomeExpense(page);

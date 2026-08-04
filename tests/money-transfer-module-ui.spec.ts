@@ -55,6 +55,15 @@ test("paginates pending transfers and runs the automatic merge from the pending 
     await page.goto("/");
     await selectAppLocation(page, locationId);
     await page.getByRole("button", { name: /^โอนเงิน/ }).click();
+    const createTransferButton = page.getByRole("button", { name: /^สร้างรายการโอน/ });
+    const moduleHeading = page.getByRole("heading", { name: "ระบบโอนเงิน" });
+    const [createButtonBox, headingBox] = await Promise.all([
+      createTransferButton.boundingBox(),
+      moduleHeading.boundingBox(),
+    ]);
+    expect(createButtonBox).not.toBeNull();
+    expect(headingBox).not.toBeNull();
+    expect(createButtonBox!.x).toBeLessThan(headingBox!.x);
     await expect(page.getByRole("button", { name: /^รอโอน/ })).toHaveAttribute("aria-pressed", "true");
     for (const label of ["ทั้งหมด", "รอโอน", "ค้างจ่าย", "จ่ายล่วงหน้า", "จ่ายครบ", "ชำระเกิน", "โอน+สาขาจ่าย", "ยกเลิก"]) {
       await expect(page.getByRole("button", { name: label }).locator("span"))

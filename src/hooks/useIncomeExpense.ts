@@ -126,6 +126,57 @@ function removeFromFeedCache(
   );
 }
 
+function upsertSyncedIntoFeedCache(
+  queryClient: ReturnType<typeof useQueryClient>,
+  ownerUserId: string,
+  locationId: string,
+  event: SyncEvent,
+  receipt: IncomeExpenseSyncReceipt
+) {
+  const optimistic = payloadToOptimisticRow(event);
+  queryClient.setQueriesData<InfiniteData<FeedPage>>(
+    { queryKey: [FEED_QUERY_KEY, ownerUserId, locationId] },
+    (cached) => {
+      const existing = cached?.pages
+        .flatMap((page) => page.rows)
+        .find((row) => row.clientTempId === event.id);
+      const synced: IncomeExpense = {
+        ...existing,
+        ...optimistic,
+        id: receipt.id,
+        serverBillNo: receipt.serverBillNo,
+        number: receipt.serverBillNo,
+        syncStatus: "synced",
+        revisionNo: receipt.revisionNo,
+        serverReceivedAt: receipt.serverReceivedAt,
+        title: receipt.title ?? optimistic.title,
+        cost: receipt.cost ?? optimistic.cost,
+        saleLineCount: receipt.saleLineCount ?? optimistic.saleLineCount,
+        saleLines: receipt.saleLines ?? optimistic.saleLines,
+        syncErrorMessage: undefined,
+      };
+
+      if (!cached || cached.pages.length === 0) {
+        return {
+          pages: [{ rows: [synced], nextCursor: null }],
+          pageParams: [null],
+        };
+      }
+
+      return {
+        ...cached,
+        pages: cached.pages.map((page, index) => {
+          const rows = page.rows.filter((row) => row.clientTempId !== event.id);
+          return {
+            ...page,
+            rows: index === 0 ? [synced, ...rows] : rows,
+          };
+        }),
+      };
+    }
+  );
+}
+
 async function normalizeQueue(ownerUserId: string, locationId: string) {
   const grouped = new Map<string, SyncEvent[]>();
   for (const event of await getPendingEvents(queuePartition(ownerUserId, locationId))) {
@@ -177,7 +228,7 @@ async function runPendingIncomeExpenseSync(
           && data.serverBillNo
           && Number.isInteger(data.revisionNo)
         ) {
-          receipts.set(event.id, {
+          const receipt: IncomeExpenseSyncReceipt = {
             id: data.id,
             serverBillNo: data.serverBillNo,
             revisionNo: data.revisionNo,
@@ -189,7 +240,10 @@ async function runPendingIncomeExpenseSync(
             cost: typeof data.cost === "number" ? data.cost : undefined,
             saleLineCount: Number.isInteger(data.saleLineCount) ? data.saleLineCount : undefined,
             saleLines: Array.isArray(data.saleLines) ? data.saleLines : undefined,
-          });
+          };
+          receipts.set(event.id, receipt);
+          await queryClient.cancelQueries({ queryKey: [FEED_QUERY_KEY, ownerUserId, locationId] });
+          upsertSyncedIntoFeedCache(queryClient, ownerUserId, locationId, event, receipt);
         }
         await removeSyncEvent(event.queueId!);
       }
