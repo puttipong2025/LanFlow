@@ -360,7 +360,16 @@ export function MoneyTransferModule({
       )}
 
       {/* Header */}
-      <div className="flex flex-col gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:flex-row sm:items-center sm:justify-start sm:p-4">
+      <div className="flex flex-col items-start gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:p-4">
+        <div>
+          <h2 className="text-balance text-xl font-bold text-ink">
+            <ArrowDownUp size={22} className="mr-2 inline-block text-river" />
+            ระบบโอนเงิน
+          </h2>
+          <p className="mt-1 text-pretty text-sm text-ink/60">
+            สร้างรายการโอนเงินจากบิลยางและใบชั่ง พร้อมอัปโหลดสลิป
+          </p>
+        </div>
         {!activeFormType && (
           <div className="relative w-full sm:w-auto">
             <button
@@ -387,15 +396,6 @@ export function MoneyTransferModule({
             )}
           </div>
         )}
-        <div>
-          <h2 className="text-xl font-bold text-ink">
-            <ArrowDownUp size={22} className="mr-2 inline-block text-river" />
-            ระบบโอนเงิน
-          </h2>
-          <p className="mt-1 text-sm text-ink/60">
-            สร้างรายการโอนเงินจากบิลยางและใบชั่ง พร้อมอัปโหลดสลิป
-          </p>
-        </div>
       </div>
 
       {/* Forms */}

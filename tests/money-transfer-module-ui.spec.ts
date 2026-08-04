@@ -56,14 +56,14 @@ test("paginates pending transfers and runs the automatic merge from the pending 
     await selectAppLocation(page, locationId);
     await page.getByRole("button", { name: /^โอนเงิน/ }).click();
     const createTransferButton = page.getByRole("button", { name: /^สร้างรายการโอน/ });
-    const moduleHeading = page.getByRole("heading", { name: "ระบบโอนเงิน" });
-    const [createButtonBox, headingBox] = await Promise.all([
+    const moduleDescription = page.getByText("สร้างรายการโอนเงินจากบิลยางและใบชั่ง พร้อมอัปโหลดสลิป", { exact: true });
+    const [createButtonBox, descriptionBox] = await Promise.all([
       createTransferButton.boundingBox(),
-      moduleHeading.boundingBox(),
+      moduleDescription.boundingBox(),
     ]);
     expect(createButtonBox).not.toBeNull();
-    expect(headingBox).not.toBeNull();
-    expect(createButtonBox!.x).toBeLessThan(headingBox!.x);
+    expect(descriptionBox).not.toBeNull();
+    expect(createButtonBox!.y).toBeGreaterThan(descriptionBox!.y + descriptionBox!.height);
     await expect(page.getByRole("button", { name: /^รอโอน/ })).toHaveAttribute("aria-pressed", "true");
     for (const label of ["ทั้งหมด", "รอโอน", "ค้างจ่าย", "จ่ายล่วงหน้า", "จ่ายครบ", "ชำระเกิน", "โอน+สาขาจ่าย", "ยกเลิก"]) {
       await expect(page.getByRole("button", { name: label }).locator("span"))
