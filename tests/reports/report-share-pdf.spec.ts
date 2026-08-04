@@ -93,6 +93,54 @@ test("shares a searchable report File with a human-readable title", async ({ pag
   await expect(preview).toBeVisible();
 });
 
+test("recovers from a stale non-font response in the PDF font cache", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "canShare", {
+      configurable: true,
+      value: () => true,
+    });
+    Object.defineProperty(navigator, "share", {
+      configurable: true,
+      value: async () => undefined,
+    });
+  });
+  await page.route("**/fonts/NotoSansThai-Regular.ttf", (route) => route.fulfill({
+    status: 200,
+    contentType: "text/html; charset=utf-8",
+    body: "<!doctype html><title>stale app shell</title>",
+  }));
+  await openReports(page);
+  const preview = await openPreview(page);
+
+  await preview.getByRole("button", { name: "แชร์ PDF" }).click();
+
+  await expect(page.getByText(`แชร์ ${details.report.reportNo} แล้ว`)).toBeVisible();
+  await expect(page.getByText("Unknown font format", { exact: true })).toHaveCount(0);
+  await expect(preview.getByRole("button", { name: "แชร์ PDF" })).toBeEnabled();
+});
+
+test("shows a useful error when both PDF font responses are invalid", async ({ page }) => {
+  await page.route(
+    (url) => url.pathname.startsWith("/fonts/") && url.pathname.endsWith(".ttf"),
+    (route) => route.fulfill({
+      status: 200,
+      contentType: "text/html; charset=utf-8",
+      body: "<!doctype html><title>invalid font response</title>",
+    }),
+  );
+  await openReports(page);
+  const preview = await openPreview(page);
+
+  await preview.getByRole("button", { name: "แชร์ PDF" }).click();
+
+  await expect(page.getByText(
+    "โหลดฟอนต์ภาษาไทยสำหรับ PDF ไม่สำเร็จ กรุณาลองใหม่",
+    { exact: true },
+  )).toBeVisible();
+  await expect(page.getByText("Unknown font format", { exact: true })).toHaveCount(0);
+  await expect(preview.getByRole("button", { name: "แชร์ PDF" })).toBeEnabled();
+});
+
 test("cancels font loading and restores the report action", async ({ page }) => {
   await page.route("**/fonts/NotoSansThai-Regular.ttf", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 1_500));
