@@ -195,22 +195,59 @@ export function drawPageFooters(doc: PdfDocument, documentNo: string) {
   }
 }
 
-async function loadFontBuffers(signal: AbortSignal) {
-  const [regularResponse, boldResponse] = await Promise.all([
-    fetch("/fonts/NotoSansThai-Regular.ttf", { signal, cache: "force-cache" }),
-    fetch("/fonts/NotoSansThai-Bold.ttf", { signal, cache: "force-cache" }),
-  ]);
-  if (!regularResponse.ok || !boldResponse.ok) {
-    throw new Error("โหลดฟอนต์ภาษาไทยสำหรับ PDF ไม่สำเร็จ");
+const PDF_FONT_ASSETS = {
+  regular: {
+    url: "/fonts/NotoSansThai-Regular.ttf",
+    revision: "93659869b8ec5b7f78f14fa75d92575d",
+  },
+  bold: {
+    url: "/fonts/NotoSansThai-Bold.ttf",
+    revision: "4d3d19d16835fa81c3c4251858815e97",
+  },
+} as const;
+
+function isSupportedFont(bytes: Uint8Array) {
+  if (bytes.length < 4) return false;
+  const signature = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]);
+  return (
+    (bytes[0] === 0x00 && bytes[1] === 0x01 && bytes[2] === 0x00 && bytes[3] === 0x00)
+    || signature === "OTTO"
+    || signature === "true"
+    || signature === "typ1"
+    || signature === "wOFF"
+    || signature === "wOF2"
+  );
+}
+
+async function fetchFontBuffer(
+  asset: (typeof PDF_FONT_ASSETS)[keyof typeof PDF_FONT_ASSETS],
+  signal: AbortSignal,
+) {
+  const attempts: Array<{ url: string; cache: RequestCache }> = [
+    { url: asset.url, cache: "force-cache" },
+    { url: `${asset.url}?v=${asset.revision}`, cache: "reload" },
+  ];
+
+  for (const attempt of attempts) {
+    try {
+      const response = await fetch(attempt.url, { signal, cache: attempt.cache });
+      if (!response.ok) continue;
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (isSupportedFont(bytes)) return bytes;
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") throw error;
+    }
   }
+
+  throw new Error("โหลดฟอนต์ภาษาไทยสำหรับ PDF ไม่สำเร็จ กรุณาลองใหม่");
+}
+
+async function loadFontBuffers(signal: AbortSignal) {
   const [regular, bold] = await Promise.all([
-    regularResponse.arrayBuffer(),
-    boldResponse.arrayBuffer(),
+    fetchFontBuffer(PDF_FONT_ASSETS.regular, signal),
+    fetchFontBuffer(PDF_FONT_ASSETS.bold, signal),
   ]);
-  return {
-    regular: new Uint8Array(regular),
-    bold: new Uint8Array(bold),
-  };
+  return { regular, bold };
 }
 
 function abortError() {

@@ -6,7 +6,8 @@ const PUBLIC_PATHS = [
   "/offline.html",
   "/manifest.json",
   "/sw.js",
-  "/icons"
+  "/icons",
+  "/fonts/",
 ];
 
 function isPublicPath(pathname: string): boolean {
@@ -18,7 +19,8 @@ function isStaticAsset(pathname: string): boolean {
     pathname.startsWith("/_next/") ||
     pathname.startsWith("/swe-worker") ||
     pathname.startsWith("/fallback") ||
-    pathname.startsWith("/workbox")
+    pathname.startsWith("/workbox") ||
+    pathname.startsWith("/fonts/")
   );
 }
 
@@ -44,6 +46,6 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon\\.ico|icons|manifest\\.json|sw\\.js|swe-worker|workbox|fallback|offline\\.html).*)"
+    "/((?!_next/static|_next/image|favicon\\.ico|icons|fonts|manifest\\.json|sw\\.js|swe-worker|workbox|fallback|offline\\.html).*)"
   ]
 };
