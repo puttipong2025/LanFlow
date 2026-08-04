@@ -171,7 +171,7 @@ export function ReportsModule({
   return (
     <>
     <section className="space-y-4">
-      <div className="flex flex-col gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:flex-row sm:items-center sm:justify-between sm:p-4">
+      <div className="flex flex-col items-start gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:p-4">
         <div>
           <h2 className="text-balance text-xl font-bold text-ink">ชุดรายงาน — {selectedLocation.name}</h2>
           <p className="mt-1 text-pretty text-sm text-ink/65">

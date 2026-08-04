@@ -169,7 +169,7 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
   return (
     <section className="space-y-4 tabular-nums">
       <div className="rounded-xl border border-black/10 bg-white p-4 shadow-panel sm:p-5">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex flex-col items-start gap-3">
           <div><h2 className="text-balance text-xl font-bold text-ink">นับเงิน — {selectedLocation.name}</h2><p className="mt-1 text-pretty text-sm text-ink/65">นับแบบไม่แสดงยอดคาดการณ์ รายการที่เกิดหลังเวลาเริ่มจะเข้ารอบถัดไป</p></div>
           <button type="button" onClick={() => void loadSession()} disabled={!online || loading} className="focus-ring inline-flex items-center justify-center gap-2 rounded-md bg-actionSecondary px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"><RotateCw size={16} className={loading ? "animate-spin" : ""} />รีเฟรช</button>
         </div>

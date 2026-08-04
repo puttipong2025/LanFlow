@@ -444,10 +444,10 @@ export function IncomeExpenseModule({
 
   return (
     <section className="space-y-4">
-      <div className="flex flex-col gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:p-4 lg:flex-row lg:items-center lg:justify-between">
+      <div className="flex flex-col items-start gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:p-4">
         <div>
-          <h2 className="text-lg font-bold text-ink">CRUD รายรับ-รายจ่าย · {selectedLocation.name}</h2>
-          <p className="text-sm text-ink/60">เพิ่มผ่าน modal และจัดการรายการจากตาราง</p>
+          <h2 className="text-balance text-lg font-bold text-ink">CRUD รายรับ-รายจ่าย · {selectedLocation.name}</h2>
+          <p className="text-pretty text-sm text-ink/60">เพิ่มผ่าน modal และจัดการรายการจากตาราง</p>
           <input
             type="search"
             value={search}
@@ -456,7 +456,7 @@ export function IncomeExpenseModule({
             className="mt-3 h-9 w-full max-w-xs rounded-md border border-black/15 px-3 text-sm"
           />
         </div>
-        <div className="flex flex-wrap gap-2 sm:justify-end">
+        <div className="flex w-full flex-wrap gap-2 sm:w-auto">
           <button
             type="button"
             onClick={() => openAdd("income")}

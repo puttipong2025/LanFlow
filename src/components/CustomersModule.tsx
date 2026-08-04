@@ -116,13 +116,13 @@ export function CustomersModule({ online }: { online: boolean }) {
   return (
     <div className="space-y-4">
       {/* Header section with Premium design */}
-      <div className="flex flex-col gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:flex-row sm:items-center sm:justify-between sm:p-4">
+      <div className="flex flex-col items-start gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:p-4">
         <div>
-          <h2 className="text-xl font-bold text-ink flex items-center gap-2">
+          <h2 className="flex text-balance items-center gap-2 text-xl font-bold text-ink">
             <Users className="text-leaf" size={24} />
             จัดการรายชื่อลูกค้า (สมาชิก FSC)
           </h2>
-          <p className="text-sm text-ink/65">จัดการและสืบค้นข้อมูลรายชื่อสมาชิกชาวสวนและผู้ค้าขายยางพารา</p>
+          <p className="text-pretty text-sm text-ink/65">จัดการและสืบค้นข้อมูลรายชื่อสมาชิกชาวสวนและผู้ค้าขายยางพารา</p>
         </div>
         <button
           type="button"

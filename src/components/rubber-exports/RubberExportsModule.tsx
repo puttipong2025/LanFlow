@@ -98,10 +98,10 @@ export function RubberExportsModule({
 
   return (
     <section className="space-y-4">
-      <div className="flex flex-col gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:flex-row sm:items-center sm:justify-between sm:p-4">
+      <div className="flex flex-col items-start gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:p-4">
         <div>
-          <h2 className="text-xl font-bold text-ink">ส่งออกยาง — {selectedLocation.name}</h2>
-          <p className="mt-1 text-sm text-ink/65">เลือกบิลที่ล็อกในรายงาน และจองบิลที่เลือกทันทีเมื่อสร้างฉบับร่าง</p>
+          <h2 className="text-balance text-xl font-bold text-ink">ส่งออกยาง — {selectedLocation.name}</h2>
+          <p className="mt-1 text-pretty text-sm text-ink/65">เลือกบิลที่ล็อกในรายงาน และจองบิลที่เลือกทันทีเมื่อสร้างฉบับร่าง</p>
         </div>
         <div className="flex w-full flex-wrap gap-2 sm:w-auto">
           <button type="button" onClick={() => void api.reload()} disabled={!online || api.loading} className="focus-ring inline-flex items-center gap-2 rounded-md bg-actionSecondary px-3 py-2 text-sm font-semibold text-white hover:bg-actionSecondary/90 disabled:opacity-50">

@@ -350,12 +350,12 @@ export function RubberBillsModule({
 
   return (
     <section className="space-y-4">
-      <div className="flex flex-col gap-3 rounded-md border border-black/10 bg-white p-4 shadow-panel sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col items-start gap-3 rounded-md border border-black/10 bg-white p-4 shadow-panel">
         <div>
-          <h2 className="text-lg font-bold text-ink">CRUD บิลยาง · {selectedLocation.name}</h2>
-          <p className="text-sm text-ink/60">เพิ่ม แก้ไข ลบ และตรวจรายการบิลของสาขาที่เลือก</p>
+          <h2 className="text-balance text-lg font-bold text-ink">CRUD บิลยาง · {selectedLocation.name}</h2>
+          <p className="text-pretty text-sm text-ink/60">เพิ่ม แก้ไข ลบ และตรวจรายการบิลของสาขาที่เลือก</p>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex w-full flex-wrap gap-2 sm:w-auto">
           <button
             type="button"
             onClick={() => setQueueModalOpen(true)}

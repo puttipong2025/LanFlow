@@ -406,13 +406,13 @@ export function OcrTicketUpload({
       )}
 
       {/* Header */}
-      <div className="flex flex-col gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:flex-row sm:items-center sm:justify-between sm:p-4">
+      <div className="flex flex-col items-start gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:p-4">
         <div>
-          <h2 className="text-xl font-bold text-ink">
+          <h2 className="text-balance text-xl font-bold text-ink">
             <FileImage size={22} className="mr-2 inline-block text-leaf" />
             อ่านใบชั่ง (OCR)
           </h2>
-          <p className="mt-1 text-sm text-ink/60">
+          <p className="mt-1 text-pretty text-sm text-ink/60">
             อัปโหลดรูปใบชั่งน้ำหนัก — เลือกได้หลายไฟล์พร้อมกัน
             {!online && (
               <span className="ml-2 inline-flex items-center gap-1 text-clay">
