@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useRef, useState } from "react";
-import { Banknote, CheckCircle2, Save, Upload, X, Loader2, Plus } from "lucide-react";
+import { CheckCircle2, Save, Upload, Loader2, Plus } from "lucide-react";
 import Swal from "sweetalert2";
 import { useAuth } from "@/hooks/use-auth";
 import { authFetch } from "@/lib/auth-fetch";
@@ -9,6 +9,7 @@ import type { MoneyTransfer, MoneyTransferSlip } from "@/types";
 import { useLocations } from "@/hooks/useLocations";
 import { SlipRow, type OcrSlipResult } from "./SlipRow";
 import { formatCurrency } from "@/lib/format";
+import { deriveMoneyTransferStatus, sumMoneyTransferSlips } from "@/lib/money-transfers/state";
 
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 
@@ -119,11 +120,14 @@ export function BranchTransferForm({
   }, []);
 
   const totalFromSlips = useMemo(
-    () => slips.reduce((sum, s) => sum + s.amount, 0),
+    () => sumMoneyTransferSlips(slips),
     [slips]
   );
 
-  const computedStatus = slips.length > 0 ? "paid" : "pending";
+  const computedStatus = deriveMoneyTransferStatus({
+    amountDue: totalFromSlips,
+    amountPaid: totalFromSlips,
+  });
 
   const handleSubmit = useCallback(() => {
     if (!isOnline) {
@@ -208,22 +212,10 @@ export function BranchTransferForm({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   return (
-    <div className="flex max-h-[85vh] flex-col rounded-lg bg-white shadow-2xl overflow-hidden">
-      <div className="flex flex-shrink-0 items-center justify-between border-b border-black/5 p-4">
-        <h3 className="flex items-center gap-2 text-lg font-bold text-ink">
-          <Banknote className="text-river" />
-          {isHeadOfficeTransfer
-            ? (isEdit ? "แก้ไขรายการโอนเงิน (ให้สาขา)" : "สร้างรายการโอนเงินใหม่ (ให้สาขา)")
-            : (isEdit ? "แก้ไขรายการโอนเงิน (ระหว่างสาขา)" : "สร้างรายการโอนเงินใหม่ (ระหว่างสาขา)")}
-        </h3>
-        <button onClick={onCancel} className="inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white hover:bg-actionSecondary/90">
-          <X size={20} />
-          ปิด
-        </button>
-      </div>
+    <div className="space-y-6">
       {modeSelector}
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-6">
+      <div className="space-y-6">
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="rounded-lg border border-black/5 bg-field/40 p-3 overflow-visible">
             <p className="text-xs font-semibold text-ink/50">

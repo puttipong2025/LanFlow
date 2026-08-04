@@ -3,8 +3,21 @@ import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { MoneyTransfer, MoneyTransferSlip, MoneyTransferItem } from "@/types";
 import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
 import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
+import {
+  DASHBOARD_BRANCH_SUMMARIES_QUERY_KEY,
+  DASHBOARD_MONEY_FEED_QUERY_KEY,
+  DASHBOARD_SNAPSHOT_QUERY_KEY,
+} from "@/hooks/useDashboardOverview";
 
 type MoneyTransferClient = ReturnType<typeof createSupabaseBrowserClient>;
+
+export type MergePendingMoneyTransfersResult = {
+  mergedGroupCount: number;
+  mergedTransferCount: number;
+  deletedTransferCount: number;
+  skippedTransferCount: number;
+  survivorIds: string[];
+};
 
 type StoredTransferItem = {
   id: string;
@@ -300,6 +313,24 @@ export function useMoneyTransfers(locationId: string, options: { enabled?: boole
     }
   });
 
+  const mergePendingTransfers = useMutation({
+    mutationFn: async (): Promise<MergePendingMoneyTransfersResult> => {
+      const { data, error } = await supabase.rpc("merge_pending_money_transfers", {
+        p_location_id: locationId,
+      });
+      if (error) throw new Error(error.message || "รวมรายการรอโอนไม่สำเร็จ");
+      return data as MergePendingMoneyTransfersResult;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["moneyTransfers"] });
+      queryClient.invalidateQueries({ queryKey: [INCOME_EXPENSE_FEED_QUERY_KEY] });
+      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
+      queryClient.invalidateQueries({ queryKey: [DASHBOARD_BRANCH_SUMMARIES_QUERY_KEY] });
+      queryClient.invalidateQueries({ queryKey: [DASHBOARD_SNAPSHOT_QUERY_KEY] });
+      queryClient.invalidateQueries({ queryKey: [DASHBOARD_MONEY_FEED_QUERY_KEY] });
+    },
+  });
+
   async function getReceiptSourceDetails(transferId: string): Promise<MoneyTransferItem[]> {
     const { data, error } = await supabase.rpc(
       "get_money_transfer_receipt_source_details",
@@ -332,6 +363,7 @@ export function useMoneyTransfers(locationId: string, options: { enabled?: boole
     addTransfer,
     updateTransfer,
     deleteTransfer,
+    mergePendingTransfers,
     getReceiptSourceDetails,
   };
 }

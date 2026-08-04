@@ -1,10 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { UserCheck, UserX } from "lucide-react";
+import { Eye, EyeOff, UserCheck, UserX } from "lucide-react";
 import type { MoneyTransferItem, OcrTicket, RubberBill } from "@/types";
 import { getRubberBillTransferBlockReason } from "@/lib/rubber-bill-validation";
 import { formatCurrency } from "@/lib/format";
+import { cn } from "@/lib/cn";
 
 export function getOcrTransferAmount(ticket: Pick<OcrTicket, "totalAmount" | "moneyDeducted">) {
   return (ticket.totalAmount ?? 0) - (ticket.moneyDeducted ?? 0);
@@ -26,27 +27,49 @@ export function ItemPicker({
   onDeselect: (sourceId: string) => void;
 }) {
   const [tab, setTab] = useState<"rubber" | "ocr">("rubber");
+  const [hideReportLocked, setHideReportLocked] = useState(false);
   const selectedSourceIds = new Set(selectedItems.map((i) => i.sourceId));
 
-  const activeBills = bills.filter((b) => b.recordStatus !== "deleted");
-  const activeTickets = ocrTickets.filter((t) => t.recordStatus !== "deleted");
+  const activeBills = bills.filter((b) => (
+    b.recordStatus !== "deleted" && (!hideReportLocked || !b.reportLockNo)
+  ));
+  const activeTickets = ocrTickets.filter((t) => (
+    t.recordStatus !== "deleted" && (!hideReportLocked || !t.reportLockNo)
+  ));
 
   return (
     <div className="rounded-lg border border-leaf/20 bg-leaf/5 p-3">
-      <div className="mb-3 flex gap-2">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setTab("rubber")}
+            className={cn(
+              "focus-ring rounded-md px-3 py-1.5 text-sm font-semibold text-white",
+              tab === "rubber" ? "bg-leaf" : "bg-actionSecondary hover:bg-actionSecondary/90",
+            )}
+          >
+            บิลยาง ({activeBills.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("ocr")}
+            className={cn(
+              "focus-ring rounded-md px-3 py-1.5 text-sm font-semibold text-white",
+              tab === "ocr" ? "bg-river" : "bg-actionSecondary hover:bg-actionSecondary/90",
+            )}
+          >
+            ใบชั่ง ({activeTickets.length})
+          </button>
+        </div>
         <button
           type="button"
-          onClick={() => setTab("rubber")}
-          className={`rounded-md px-3 py-1.5 text-sm font-semibold text-white ${tab === "rubber" ? "bg-leaf" : "bg-actionSecondary hover:bg-actionSecondary/90"}`}
+          aria-pressed={hideReportLocked}
+          onClick={() => setHideReportLocked((current) => !current)}
+          className="focus-ring flex items-center gap-1.5 rounded-md bg-leaf px-3 py-2 text-sm font-semibold text-white hover:bg-leaf/90"
         >
-          บิลยาง ({activeBills.length})
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab("ocr")}
-          className={`rounded-md px-3 py-1.5 text-sm font-semibold text-white ${tab === "ocr" ? "bg-river" : "bg-actionSecondary hover:bg-actionSecondary/90"}`}
-        >
-          ใบชั่ง ({activeTickets.length})
+          {hideReportLocked ? <Eye size={16} /> : <EyeOff size={16} />}
+          {hideReportLocked ? "แสดงรายการที่ล็อกแล้ว" : "ซ่อนรายการที่ล็อกแล้ว"}
         </button>
       </div>
 
@@ -87,7 +110,7 @@ export function ItemPicker({
                   : undefined;
 
                 return (
-                  <tr key={bill.id} className={`border-b border-black/5 ${disabled && !alreadySelected ? "opacity-50" : ""}`}>
+                  <tr key={bill.id} className={cn("border-b border-black/5", disabled && !alreadySelected && "opacity-50")}>
                     <td className="px-3 py-2">
                       {alreadySelected ? (
                         <button type="button" onClick={() => onDeselect(bill.id)} disabled={Boolean(reportLockReason)} title={reportLockReason} className="rounded bg-leaf px-2 py-0.5 text-xs font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
@@ -158,7 +181,7 @@ export function ItemPicker({
                   : undefined;
 
                 return (
-                  <tr key={ticket.id} className={`border-b border-black/5 ${disabled && !alreadySelected ? "opacity-50" : ""}`}>
+                  <tr key={ticket.id} className={cn("border-b border-black/5", disabled && !alreadySelected && "opacity-50")}>
                     <td className="px-3 py-2">
                       {alreadySelected ? (
                         <button type="button" onClick={() => onDeselect(ticket.id)} disabled={Boolean(reportLockReason)} title={reportLockReason} className="rounded bg-river px-2 py-0.5 text-xs font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300">

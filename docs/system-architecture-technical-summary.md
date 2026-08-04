@@ -407,7 +407,7 @@ offline queue อยู่ที่ `src/lib/idb-queue.ts`:
 - **Auth / Bootstrap**: รองรับ offline auth cache และ branch bootstrap cache
 - **Income/Expense**: Full Offline สำหรับ create/update/delete, PWA reload, RPC atomic sync
 - **OCR Tickets**: online-first; เป็น source ของ derived expense รายวันใน Income/Expense สำหรับ OCR บิลยางที่ยังไม่ถูกเลือกไปโอนเงิน และถูก relation lock เมื่ออยู่ใน `money_transfer_items.source_type = 'ocr_ticket'`
-- **Money Transfer**: online-first; เป็น source ของ derived rows ใน Income/Expense สำหรับโอนเงินสาขาขาเข้า/ขาออก, รายการสำนักงานใหญ่/CEO โอนให้สาขา, และโอนลูกค้าสถานะ `โอน+สาขาจ่าย`; `money_transfer_items` เป็นตัวตัดบิลยางและ OCR ticket ออกจาก derived expense รายวัน; เข้าเมนูและเขียนข้อมูลได้เฉพาะ `super_admin` หรือ user/admin ที่ `super_admin` เปิด `can_access_super_admin_features`
+- **Money Transfer**: online-first; เป็น source ของ derived rows ใน Income/Expense สำหรับโอนเงินสาขาขาเข้า/ขาออก, รายการสำนักงานใหญ่/CEO โอนให้สาขา, และโอนลูกค้าสถานะ `โอน+สาขาจ่าย`; `money_transfer_items` เป็นตัวตัดบิลยางและ OCR ticket ออกจาก derived expense รายวัน; ฟอร์มลูกค้า/รถขนส่ง/สาขาเปิดผ่าน `ModalShell`; ตารางเริ่มที่ filter `pending`, แสดง 20 รายการต่อหน้า และแยก `net_amount_to_pay` ออกจากผลรวม `money_transfer_slips.amount`; เข้าเมนูและเขียนข้อมูลได้เฉพาะผู้มีสิทธิ์โมดูลโอนเงิน
 - **Time Tracking**: online-first; ค่าแรงคำนวณจาก `time_segments` ผ่าน cutoff `15:00` (`Asia/Bangkok`) โดยใช้ helperกลางทั้งฝั่ง API และ DB; รองรับสิทธิ์เฉพาะโมดูลตามสาขาหลักและส่วนกลางจ่ายแบบไม่สร้าง derived expense
 
 ### เปรียบเทียบ Offline-First: Rubber Bills vs Income/Expense
@@ -581,6 +581,8 @@ Rubber Bills และ Income/Expense เป็น module data-entry ที่�
 - รายจ่ายรวมรายวันจากบิลยางที่ยังไม่อยู่ใน `money_transfer_items` เป็น derived row จาก `rubber_bills` ไม่ใช่ row จริงที่ผู้ใช้แก้ใน `income_expense`
 - รายจ่ายรวมรายวันจาก OCR บิลยางที่ยังไม่อยู่ใน `money_transfer_items` เป็น derived row จาก `ocr_tickets` ไม่ใช่ row จริงที่ผู้ใช้แก้ใน `income_expense`
 - รายจ่ายส่วน `โอน+สาขาจ่าย` ของโอนเงินลูกค้าเป็น derived row จาก `money_transfers.branch_paid_amount`
+- `public.merge_pending_money_transfers(location_id)` รวมรายการลูกค้าแบบ bank ที่ `active + synced + pending` ใน transaction เดียว แยกกลุ่มด้วย `customer_id + account_number`, เก็บ parent เก่าสุดตาม `created_at, id`, ย้าย `money_transfer_items`, คำนวณ `net_amount_to_pay` ใหม่ และ soft-delete parent ที่เหลือ โดยไม่สร้าง table/column หรือ parent ใหม่
+- RPC รวมรายการต้องปฏิเสธรายการที่มีสลิป, parent ที่อยู่ในรายงาน, หรือต้นทางที่อยู่ในรายงาน; trigger `report_lock_money_transfers` และ `report_lock_money_transfer_items` ยังตรวจซ้ำระหว่าง mutation และไม่มีขั้นตอนปลด Report Lock ชั่วคราว
 - derived row ในรับ-จ่ายต้อง disable edit/delete พร้อมข้อความไทยชัดเจน และต้องแก้จากโมดูลต้นทางเท่านั้น
 - ปุ่มเปิดต้นทางของ locked row แสดงเฉพาะผู้ใช้ที่มีสิทธิ์สาขาต้นทาง, `super_admin`, หรือผู้มีสิทธิ์ผู้จัดการระบบ; ห้ามบังคับสลับไปสาขาที่ผู้ใช้ไม่มีสิทธิ์
 - ถ้าต้องการให้ Income/Expense เป็น source item ใน `money_transfer_items` ในอนาคต ต้องเพิ่ม `source_type = 'income_expense'` แบบ explicit พร้อม migration, RLS, และ tests แยก

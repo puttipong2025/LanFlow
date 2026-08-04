@@ -1,6 +1,6 @@
 "use client";
 
-import { useId } from "react";
+import { useEffect, useId } from "react";
 import { X } from "lucide-react";
 import { cn } from "@/lib/cn";
 
@@ -10,6 +10,7 @@ export function ModalShell({
   onClose,
   size = "normal",
   mobileFullScreen = false,
+  closeOnEscape = false,
   children
 }: {
   title: string;
@@ -17,9 +18,19 @@ export function ModalShell({
   onClose: () => void;
   size?: "normal" | "wide";
   mobileFullScreen?: boolean;
+  closeOnEscape?: boolean;
   children: React.ReactNode;
 }) {
   const titleId = useId();
+
+  useEffect(() => {
+    if (!closeOnEscape) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [closeOnEscape, onClose]);
 
   return (
     <div className={cn(

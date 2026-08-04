@@ -1048,6 +1048,7 @@ test.describe.serial("Report batch contract @report-batch", () => {
       await page.goto("/");
       await selectAppLocation(page, locationId);
       await page.getByRole("button", { name: /^โอนเงิน/ }).click();
+      await page.getByRole("button", { name: /^ค้างจ่าย/ }).click();
 
       const transferRow = page.getByRole("row").filter({ hasText: customerName });
       await expect(transferRow).toContainText("ค้างจ่าย");

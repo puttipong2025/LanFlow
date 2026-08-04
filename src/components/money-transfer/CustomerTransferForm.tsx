@@ -8,7 +8,6 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
-  CreditCard,
   FileImage,
   Loader2,
   Plus,
@@ -16,7 +15,6 @@ import {
   Trash2,
   Upload,
   UserCheck,
-  X,
 } from "lucide-react";
 import Swal from "sweetalert2";
 import type {
@@ -32,6 +30,7 @@ import { formatCurrency } from "@/lib/format";
 import { authFetch } from "@/lib/auth-fetch";
 import { SlipRow, type OcrSlipResult } from "./SlipRow";
 import { ItemPicker } from "./ItemPicker";
+import { deriveMoneyTransferStatus, sumMoneyTransferSlips } from "@/lib/money-transfers/state";
 
 export function CustomerTransferForm({
   locationId,
@@ -79,7 +78,7 @@ export function CustomerTransferForm({
     [selectedItems]
   );
   const totalFromSlips = useMemo(
-    () => slips.reduce((sum, s) => sum + s.amount, 0),
+    () => sumMoneyTransferSlips(slips),
     [slips]
   );
   const [isBranchPayingRemaining, setIsBranchPayingRemaining] = useState(
@@ -103,17 +102,11 @@ export function CustomerTransferForm({
     setIsBranchPayingRemaining(editTransfer?.transferStatus === "branch_and_transfer");
   }, [slips, editTransfer?.transferStatus]);
 
-  const computedStatus = useMemo(() => {
-    if (totalFromSlips === 0) return "pending"; // รอโอน
-    if (totalFromItems === 0 && totalFromSlips > 0) return "advance_payment"; // จ่ายล่วงหน้า
-    const diff = totalFromItems - totalFromSlips;
-    if (Math.abs(diff) < 0.01) return "paid"; // จ่ายครบ
-    if (diff > 0.01) {
-      if (isBranchPayingRemaining) return "branch_and_transfer"; // โอน+สาขาจ่าย
-      return "partial"; // ค้างจ่าย
-    }
-    return "overpaid"; // ชำระเกิน
-  }, [totalFromSlips, totalFromItems, isBranchPayingRemaining]);
+  const computedStatus = useMemo(() => deriveMoneyTransferStatus({
+    amountDue: totalFromItems,
+    amountPaid: totalFromSlips,
+    branchPaysRemaining: isBranchPayingRemaining,
+  }), [totalFromSlips, totalFromItems, isBranchPayingRemaining]);
 
   // Customer info from selected items or manual selection
   const customerNameFromItems = selectedItems.length > 0 ? selectedItems[0].customerName : null;
@@ -315,19 +308,7 @@ export function CustomerTransferForm({
   ]);
 
   return (
-    <div className="space-y-5 rounded-xl border border-river/20 bg-white p-5 shadow-panel">
-      {/* ── Parent Info ── */}
-      <div className="flex items-center justify-between">
-        <h3 className="text-lg font-bold text-ink">
-          <CreditCard size={18} className="mr-2 inline-block text-river" />
-          {isEdit ? "แก้ไขรายการโอนเงิน" : "สร้างรายการโอนเงินใหม่"}
-        </h3>
-        <button type="button" onClick={onCancel} className="inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white hover:bg-actionSecondary/90">
-          <X size={18} />
-          ปิด
-        </button>
-      </div>
-
+    <div className="space-y-5">
       {/* Parent summary */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div className="rounded-lg border border-black/5 bg-field/40 p-3 overflow-visible relative">

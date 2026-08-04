@@ -31,6 +31,8 @@ test("shares a completed transfer PDF and leaves transfer data unchanged", async
 
   const paidId = crypto.randomUUID();
   const pendingId = crypto.randomUUID();
+  const partialId = crypto.randomUUID();
+  const advanceId = crypto.randomUUID();
   const sourceId = crypto.randomUUID();
   const marker = `print-ui-${paidId.slice(0, 8)}`;
 
@@ -49,6 +51,14 @@ test("shares a completed transfer PDF and leaves transfer data unchanged", async
           }).sharedTransferReceipt = file
             ? { name: file.name, size: file.size, type: file.type }
             : undefined;
+        },
+      });
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {
+          writeText: async (value: string) => {
+            (window as typeof window & { copiedText?: string }).copiedText = value;
+          },
         },
       });
     });
@@ -119,6 +129,32 @@ test("shares a completed transfer PDF and leaves transfer data unchanged", async
         created_by_name: me.profile.name,
         created_by_phone: me.profile.phone,
       },
+      {
+        id: partialId,
+        client_temp_id: `client-${partialId}`,
+        idempotency_key: `test:${partialId}`,
+        location_id: locationId,
+        customer_name: `${marker}-partial`,
+        net_amount_to_pay: 1000,
+        transfer_type: "customer",
+        transfer_status: "partial",
+        created_by_user_id: me.profile.id,
+        created_by_name: me.profile.name,
+        created_by_phone: me.profile.phone,
+      },
+      {
+        id: advanceId,
+        client_temp_id: `client-${advanceId}`,
+        idempotency_key: `test:${advanceId}`,
+        location_id: locationId,
+        customer_name: `${marker}-advance`,
+        net_amount_to_pay: 0,
+        transfer_type: "customer",
+        transfer_status: "advance_payment",
+        created_by_user_id: me.profile.id,
+        created_by_name: me.profile.name,
+        created_by_phone: me.profile.phone,
+      },
     ]);
     expect(inserted.error).toBeNull();
 
@@ -153,9 +189,27 @@ test("shares a completed transfer PDF and leaves transfer data unchanged", async
         customer_name: "ลูกค้าต้นทาง",
         amount: 1200,
       }),
+      admin.from("money_transfer_slips").insert({
+        transfer_id: partialId,
+        amount: 400,
+        fee: 0,
+        reference_number: `${marker}-partial`,
+        transaction_date: "2026-07-25T07:30:00.000Z",
+        sort_order: 1,
+      }),
+      admin.from("money_transfer_slips").insert({
+        transfer_id: advanceId,
+        amount: 500,
+        fee: 0,
+        reference_number: `${marker}-advance`,
+        transaction_date: "2026-07-25T08:00:00.000Z",
+        sort_order: 1,
+      }),
     ]);
     expect(children[0].error).toBeNull();
     expect(children[1].error).toBeNull();
+    expect(children[2].error).toBeNull();
+    expect(children[3].error).toBeNull();
     const sourceRelation = await admin
       .from("money_transfer_items")
       .select("rubber_bill_id,ocr_ticket_id")
@@ -176,11 +230,54 @@ test("shares a completed transfer PDF and leaves transfer data unchanged", async
     await page.goto("/");
     await selectAppLocation(page, locationId);
     await page.getByRole("button", { name: /^โอนเงิน/ }).click();
+    await page.getByRole("button", { name: /^ทั้งหมด/ }).click();
 
     const paidRow = page.locator(`[data-transfer-id="${paidId}"]`);
     const pendingRow = page.locator(`[data-transfer-id="${pendingId}"]`);
+    const partialRow = page.locator(`[data-transfer-id="${partialId}"]`);
+    const advanceRow = page.locator(`[data-transfer-id="${advanceId}"]`);
     await expect(paidRow).toBeVisible({ timeout: 15_000 });
     await expect(pendingRow).toBeVisible();
+    await expect(partialRow).toBeVisible();
+    await expect(advanceRow).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: "บัญชีธนาคาร" })).toBeVisible();
+    await expect(advanceRow).toContainText("฿500.00");
+    await expect(paidRow).toContainText("ธนาคารทดสอบ");
+    await expect(paidRow).toContainText("1234567890");
+    await expect(paidRow).toContainText("ผู้รับทดสอบ");
+
+    await paidRow.getByRole("button", { name: "คัดลอกเลขบัญชี 1234567890" }).click();
+    await expect.poll(() => page.evaluate(() =>
+      (window as typeof window & { copiedText?: string }).copiedText
+    )).toBe("1234567890");
+    await expect(page.getByText("คัดลอกเลขบัญชีแล้ว")).toBeVisible();
+
+    const paidAmountCopy = paidRow.getByRole("button", { name: "คัดลอกยอด 1,200.00 บาท" });
+    await expect(paidAmountCopy).toBeDisabled();
+    await expect(paidAmountCopy).toHaveAttribute("title", "คัดลอกยอดได้เฉพาะรายการรอโอนหรือค้างจ่าย");
+    await expect(advanceRow.getByRole("button", { name: "คัดลอกยอด 0.00 บาท" })).toBeDisabled();
+
+    await pendingRow.getByRole("button", { name: "คัดลอกยอด 500.00 บาท" }).click();
+    await expect.poll(() => page.evaluate(() =>
+      (window as typeof window & { copiedText?: string }).copiedText
+    )).toBe("500.00");
+    await expect(page.getByText("คัดลอกยอด 500.00 บาทแล้ว")).toBeVisible();
+
+    await expect(partialRow).toContainText("คงเหลือ ฿600.00");
+    await partialRow.getByRole("button", { name: "คัดลอกยอด 600.00 บาท" }).click();
+    await expect.poll(() => page.evaluate(() =>
+      (window as typeof window & { copiedText?: string }).copiedText
+    )).toBe("600.00");
+    await expect(page.getByText("คัดลอกยอด 600.00 บาทแล้ว")).toBeVisible();
+
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText: async () => { throw new Error("permission denied"); } },
+      });
+    });
+    await paidRow.getByRole("button", { name: "คัดลอกเลขบัญชี 1234567890" }).click();
+    await expect(page.getByText("คัดลอกไม่สำเร็จ กรุณาลองใหม่")).toBeVisible();
 
     const paidShare = paidRow.getByRole("button", { name: `แชร์ PDF รายการโอนเงิน ${paidId.replaceAll("-", "").slice(0, 8).toUpperCase()}` });
     const pendingShare = pendingRow.getByRole("button", { name: /แชร์ PDF รายการโอนเงิน/ });
@@ -246,8 +343,20 @@ test("shares a completed transfer PDF and leaves transfer data unchanged", async
       .single();
     expect(after.error).toBeNull();
     expect(after.data).toEqual(before.data);
+
+    await page.getByRole("button", { name: /^สร้างรายการโอน/ }).click();
+    await page.getByRole("button", { name: /โอนให้ลูกค้า/ }).click();
+    const transferDialog = page.getByRole("dialog");
+    await expect(transferDialog.getByRole("heading", { name: "สร้างรายการโอนเงินใหม่" })).toBeVisible();
+    await transferDialog.getByRole("button", { name: "เลือกบิลยาง / ใบชั่ง" }).click();
+    const reportLockToggle = transferDialog.getByRole("button", { name: "ซ่อนรายการที่ล็อกแล้ว" });
+    await expect(reportLockToggle).toHaveAttribute("aria-pressed", "false");
+    await reportLockToggle.click();
+    await expect(transferDialog.getByRole("button", { name: "แสดงรายการที่ล็อกแล้ว" })).toHaveAttribute("aria-pressed", "true");
+    await page.keyboard.press("Escape");
+    await expect(transferDialog).toBeHidden();
   } finally {
-    await admin.from("money_transfers").delete().in("id", [paidId, pendingId]);
+    await admin.from("money_transfers").delete().in("id", [paidId, pendingId, partialId, advanceId]);
     await admin.from("rubber_bills").delete().eq("id", sourceId);
   }
 });

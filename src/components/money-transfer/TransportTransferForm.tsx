@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, Banknote, CheckCircle2, Copy, Save, Upload, X, Loader2, Plus } from "lucide-react";
+import { AlertCircle, CheckCircle2, Copy, Save, Upload, Loader2, Plus } from "lucide-react";
 import Swal from "sweetalert2";
 import { useAuth } from "@/hooks/use-auth";
 import { authFetch } from "@/lib/auth-fetch";
@@ -9,6 +9,7 @@ import type { MoneyTransfer, MoneyTransferSlip } from "@/types";
 import { useTransportStaffs } from "@/hooks/useTransportStaffs";
 import { SlipRow, type OcrSlipResult } from "./SlipRow";
 import { formatCurrency } from "@/lib/format";
+import { deriveMoneyTransferStatus, sumMoneyTransferSlips } from "@/lib/money-transfers/state";
 
 export function TransportTransferForm({
   locationId,
@@ -174,7 +175,7 @@ export function TransportTransferForm({
   }, []);
 
   const totalFromSlips = useMemo(
-    () => slips.reduce((sum, s) => sum + s.amount, 0),
+    () => sumMoneyTransferSlips(slips),
     [slips]
   );
   
@@ -186,17 +187,11 @@ export function TransportTransferForm({
     setIsBranchPayingRemaining(editTransfer?.transferStatus === "branch_and_transfer");
   }, [slips, editTransfer?.transferStatus]);
 
-  const computedStatus = useMemo(() => {
-    if (totalFromSlips === 0) return "pending"; 
-    if (totalCost === 0 && totalFromSlips > 0) return "advance_payment"; 
-    const diff = totalCost - totalFromSlips;
-    if (Math.abs(diff) < 0.01) return "paid"; 
-    if (diff > 0.01) {
-      if (isBranchPayingRemaining) return "branch_and_transfer"; 
-      return "partial"; 
-    }
-    return "overpaid"; 
-  }, [totalFromSlips, totalCost, isBranchPayingRemaining]);
+  const computedStatus = useMemo(() => deriveMoneyTransferStatus({
+    amountDue: totalCost,
+    amountPaid: totalFromSlips,
+    branchPaysRemaining: isBranchPayingRemaining,
+  }), [totalFromSlips, totalCost, isBranchPayingRemaining]);
 
   const slipAmountMatch = Math.abs(totalCost - totalFromSlips) < 0.01;
 
@@ -270,19 +265,7 @@ export function TransportTransferForm({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   return (
-    <div className="flex max-h-[85vh] flex-col rounded-lg bg-white shadow-2xl overflow-hidden">
-      <div className="flex flex-shrink-0 items-center justify-between border-b border-black/5 p-4">
-        <h3 className="flex items-center gap-2 text-lg font-bold text-ink">
-          <Banknote className="text-river" />
-          {isEdit ? "แก้ไขรายการโอนเงิน (รถขนส่ง)" : "สร้างรายการโอนเงินใหม่ (รถขนส่ง)"}
-        </h3>
-        <button onClick={onCancel} className="inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white hover:bg-actionSecondary/90">
-          <X size={20} />
-          ปิด
-        </button>
-      </div>
-
-      <div className="flex-1 overflow-y-auto p-4 space-y-6">
+    <div className="space-y-6">
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <div className="rounded-lg border border-black/5 bg-field/40 p-3 overflow-visible">
             <p className="text-xs font-semibold text-ink/50">รถขนส่ง</p>
@@ -436,8 +419,6 @@ export function TransportTransferForm({
             </p>
           )}
         </div>
-      </div>
-      
       <div className="flex flex-shrink-0 items-center justify-between border-t border-black/5 p-4">
         <button type="button" onClick={onCancel} className="focus-ring rounded-md bg-actionSecondary px-4 py-2 text-sm font-semibold text-white hover:bg-actionSecondary/90">ยกเลิก</button>
         <button

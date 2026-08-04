@@ -87,11 +87,22 @@ test.describe("Income/Expense feed correctness @income-expense-feed", () => {
     const admin = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
     const { data: locations, error: locationsError } = await admin.from("locations").select("id").eq("is_active", true);
     expect(locationsError).toBeNull();
-    const inaccessibleLocationId = locations?.find((location) => !me.profile.locationIds.includes(location.id))?.id;
-    expect(inaccessibleLocationId, "the test fixture must have a branch unavailable to a normal user").toBeTruthy();
+    let temporaryLocationId: string | null = null;
+    let inaccessibleLocationId = locations?.find((location) => !me.profile.locationIds.includes(location.id))?.id;
+    if (!inaccessibleLocationId) {
+      temporaryLocationId = crypto.randomUUID();
+      inaccessibleLocationId = temporaryLocationId;
+      expect((await admin.from("locations").insert({
+        id: temporaryLocationId,
+        name: `Income feed inaccessible ${temporaryLocationId.slice(0, 8)}`,
+        code: `IF-${temporaryLocationId.slice(0, 5)}`,
+        is_active: true,
+      })).error).toBeNull();
+    }
 
-    const denied = await request.get(`/api/lanflow/income-expense/feed?locationId=${inaccessibleLocationId}&from=${startDate()}&to=${today()}`);
-    expect(denied.status()).toBe(403);
+    try {
+      const denied = await request.get(`/api/lanflow/income-expense/feed?locationId=${inaccessibleLocationId}&from=${startDate()}&to=${today()}`);
+      expect(denied.status()).toBe(403);
 
     const feed = await fetchAllFeed(request, locationId);
     const feedActual = feed.filter((row) => !row.relationSourceType);
@@ -149,7 +160,12 @@ test.describe("Income/Expense feed correctness @income-expense-feed", () => {
         && weighItems.every((item) => Number(item.price) > 0)
         && !usedRubberIds.has(row.id);
     }).map((row) => ({ date: row.bill_date, amount: row.net_total }))));
-    expect(Object.fromEntries(feedOcr.map((row) => [row.relationSourceId, Number(row.cost)]))).toEqual(dailyTotals((ocrResult.data ?? []).filter((row) => !usedOcrIds.has(row.id)).map((row) => ({ date: row.date_in, amount: row.total_amount }))));
+      expect(Object.fromEntries(feedOcr.map((row) => [row.relationSourceId, Number(row.cost)]))).toEqual(dailyTotals((ocrResult.data ?? []).filter((row) => !usedOcrIds.has(row.id)).map((row) => ({ date: row.date_in, amount: row.total_amount }))));
+    } finally {
+      if (temporaryLocationId) {
+        await admin.from("locations").delete().eq("id", temporaryLocationId);
+      }
+    }
   });
 
   test("paginates pageSize=1 without duplicate or missing fixture rows", async ({ request }) => {
