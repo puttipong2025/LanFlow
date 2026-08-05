@@ -27,12 +27,13 @@ function service() {
 test.describe.serial("Rubber export contract @rubber-export", () => {
   test("draft filter badge is branch-scoped and disappears after refresh", async ({ browser }) => {
     const context = await authContext(browser, "super_admin");
+    const adminContext = await authContext(browser, "admin");
     const db = service();
     const locationIds = [crypto.randomUUID(), crypto.randomUUID()];
-    const exportIds = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+    const exportIds = Array.from({ length: 6 }, () => crypto.randomUUID());
 
     try {
-      const me = await profile(context);
+      const [me, adminMe] = await Promise.all([profile(context), profile(adminContext)]);
       expect((await db.from("locations").insert(locationIds.map((id, index) => ({
         id,
         name: `สาขา Draft Badge ${index + 1} ${id.slice(0, 6)}`,
@@ -40,9 +41,13 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
         is_active: true,
       })))).error).toBeNull();
       expect((await db.from("user_locations").insert(
-        locationIds.map((locationId) => ({ user_id: me.id, location_id: locationId })),
+        [
+          ...locationIds.map((locationId) => ({ user_id: me.id, location_id: locationId })),
+          { user_id: adminMe.id, location_id: locationIds[0] },
+        ],
       )).error).toBeNull();
       expect((await db.from("rubber_exports").insert(exportIds.map((id, index) => ({
+        ...(index < 3 ? {
         id,
         export_no: `REX-BADGE-${id.slice(0, 8)}`,
         export_date: "2026-07-29",
@@ -52,9 +57,73 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
         original_weight_total: 100,
         paid_total: 1000,
         average_price: 10,
+        other_operating_cost: 0,
         created_by_user_id: me.id,
         created_by_name: me.name,
         created_by_phone: me.phone,
+        created_at: index === 0
+          ? "2026-08-03T01:00:00.000Z"
+          : `2026-08-0${index + 1}T01:00:00.000Z`,
+        } : index === 3 ? {
+          id,
+          export_no: `REX-BADGE-${id.slice(0, 8)}`,
+          export_date: "2026-07-29",
+          sequence_no: index + 900,
+          location_id: locationIds[0],
+          status: "draft",
+          original_weight_total: 100,
+          paid_total: 1000,
+          average_price: 10,
+          other_operating_cost: 0,
+          created_by_user_id: me.id,
+          created_by_name: me.name,
+          created_by_phone: me.phone,
+          created_at: "2026-08-01T01:00:00.000Z",
+        } : index === 4 ? {
+          id,
+          export_no: `REX-BADGE-${id.slice(0, 8)}`,
+          export_date: "2026-07-29",
+          sequence_no: index + 900,
+          location_id: locationIds[0],
+          status: "verified",
+          original_weight_total: 100,
+          paid_total: 1000,
+          average_price: 10,
+          other_operating_cost: 0,
+          current_weight: 90,
+          weight_loss_percent: 10,
+          work_rate: 1,
+          work_total: 90,
+          expense_destination: "external",
+          created_by_user_id: me.id,
+          created_by_name: me.name,
+          created_by_phone: me.phone,
+          created_at: "2026-08-02T01:00:00.000Z",
+          verified_by_user_id: me.id,
+          verified_by_name: me.name,
+          verified_by_phone: me.phone,
+          verified_at: "2026-08-02T02:00:00.000Z",
+        } : {
+          id,
+          export_no: `REX-BADGE-${id.slice(0, 8)}`,
+          export_date: "2026-07-29",
+          sequence_no: index + 900,
+          location_id: locationIds[0],
+          status: "deleted",
+          previous_status: "draft",
+          original_weight_total: 100,
+          paid_total: 1000,
+          average_price: 10,
+          other_operating_cost: 0,
+          created_by_user_id: me.id,
+          created_by_name: me.name,
+          created_by_phone: me.phone,
+          created_at: "2026-08-04T01:00:00.000Z",
+          deleted_by_user_id: me.id,
+          deleted_by_name: me.name,
+          deleted_by_phone: me.phone,
+          deleted_at: "2026-08-04T02:00:00.000Z",
+        }),
       })))).error).toBeNull();
 
       const page = await context.newPage();
@@ -62,12 +131,33 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await selectAppLocation(page, locationIds[0]);
       await page.getByRole("button", { name: /^ส่งออกยาง/ }).click();
       await expect(page.getByRole("button", {
-        name: "ฉบับร่าง 1 รายการ",
+        name: "ฉบับร่าง 2 รายการ",
       })).toBeVisible({ timeout: 15_000 });
-      await expect(page.getByRole("button", { name: "ใช้งาน", exact: true })).toBeVisible();
-      await expect(page.getByRole("button", { name: "ตรวจสอบแล้ว", exact: true })).toBeVisible();
-      await expect(page.getByRole("button", { name: "ลบแล้ว", exact: true })).toBeVisible();
-      await expect(page.getByRole("button", { name: "ทั้งหมด", exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: "ใช้งาน 3 รายการ" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "ตรวจสอบแล้ว 1 รายการ" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "ลบแล้ว 1 รายการ" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "ทั้งหมด 4 รายการ" })).toBeVisible();
+      const activeRows = page.locator("table").first().locator("tbody > tr");
+      await expect(activeRows).toHaveCount(3);
+      await expect(activeRows.nth(0)).toContainText(`REX-BADGE-${exportIds[3].slice(0, 8)}`);
+      await expect(activeRows.nth(1)).toContainText(`REX-BADGE-${exportIds[0].slice(0, 8)}`);
+      await expect(activeRows.nth(2)).toContainText(`REX-BADGE-${exportIds[4].slice(0, 8)}`);
+      await page.getByRole("button", { name: "เปิดตรวจสอบ" }).first().click();
+      const auditSection = page.getByRole("heading", { name: "ประวัติรายการ" }).locator("..");
+      await expect(auditSection).toBeVisible();
+      await expect(auditSection.getByText(me.name, { exact: false })).toBeVisible();
+      await page.getByRole("button", { name: "ปิด", exact: true }).click();
+
+      const adminPage = await adminContext.newPage();
+      await adminPage.goto("/");
+      await selectAppLocation(adminPage, locationIds[0]);
+      await adminPage.getByRole("button", { name: /^ส่งออกยาง/ }).click();
+      await expect(adminPage.getByRole("button", { name: "รอผู้รับรอง" }).first()).toBeDisabled();
+      await adminPage.getByRole("button", { name: `ดูรายละเอียด REX-BADGE-${exportIds[0].slice(0, 8)}` }).click();
+      await expect(adminPage.getByText("รอ super_admin หรือผู้มีสิทธิ์จัดการระบบตรวจสอบรายการ")).toBeVisible();
+      await adminPage.getByRole("button", { name: "ปิด", exact: true }).click();
+      await adminPage.getByRole("button", { name: "ไปหน้ารายงาน" }).click();
+      await expect(adminPage.getByRole("heading", { name: /^ชุดรายงาน/ })).toBeVisible();
 
       await selectAppLocation(page, locationIds[1]);
       const secondBranchDraftButton = page.getByRole("button", {
@@ -85,14 +175,14 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       expect((await db.from("rubber_exports").delete().eq("id", exportIds[0])).error).toBeNull();
       await page.getByRole("button", { name: "รีเฟรช" }).click();
       await expect(page.getByRole("button", {
-        name: "ฉบับร่าง",
-        exact: true,
+        name: "ฉบับร่าง 1 รายการ",
       })).toBeVisible();
     } finally {
       await db.from("rubber_exports").delete().in("id", exportIds);
       await db.from("user_locations").delete().in("location_id", locationIds);
       await db.from("locations").delete().in("id", locationIds);
       await context.close();
+      await adminContext.close();
     }
   });
 
@@ -231,13 +321,34 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
         data: { currentWeight: 500, workRate: 2, otherOperatingCost: 100 },
       })).ok()).toBeTruthy();
       expect((await admin.request.post(`/api/lanflow/rubber-exports/${created.id}/verify`, {
-        data: { expenseDestination: "branch" },
+        data: {
+          currentWeight: 500,
+          workRate: 2,
+          otherOperatingCost: 100,
+          expenseDestination: "branch",
+        },
       })).status()).toBe(403);
-      expect((await admin.request.patch(`/api/lanflow/rubber-exports/${created.id}`, {
-        data: { currentWeight: 541, workRate: 2, otherOperatingCost: 100 },
+      expect((await superAdmin.request.post(`/api/lanflow/rubber-exports/${created.id}/verify`, {
+        data: {
+          currentWeight: 541,
+          workRate: 2,
+          otherOperatingCost: 100,
+          expenseDestination: "branch",
+        },
       })).status()).toBe(409);
+      const afterRejectedVerify = await admin.request.get(`/api/lanflow/rubber-exports/${created.id}`);
+      expect(await afterRejectedVerify.json()).toMatchObject({
+        status: "draft",
+        currentWeight: 500,
+        workTotal: 1100,
+      });
       const verified = await superAdmin.request.post(`/api/lanflow/rubber-exports/${created.id}/verify`, {
-        data: { expenseDestination: "branch" },
+        data: {
+          currentWeight: 500,
+          workRate: 2,
+          otherOperatingCost: 100,
+          expenseDestination: "branch",
+        },
       });
       expect(verified.ok(), await verified.text()).toBeTruthy();
       expect((await admin.request.patch(`/api/lanflow/rubber-exports/${created.id}`, {
@@ -264,12 +375,9 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       expect(externalResponse.status(), await externalResponse.text()).toBe(201);
       const externalExport = await externalResponse.json() as { id: string };
       exportIds.push(externalExport.id);
-      expect((await admin.request.patch(`/api/lanflow/rubber-exports/${externalExport.id}`, {
-        data: { currentWeight: 350, workRate: 1, otherOperatingCost: 10 },
-      })).ok()).toBeTruthy();
       expect((await superAdmin.request.post(
         `/api/lanflow/rubber-exports/${externalExport.id}/verify`,
-        { data: { expenseDestination: "external" } }
+        { data: { currentWeight: 350, workRate: 1, otherOperatingCost: 10, expenseDestination: "external" } }
       )).ok()).toBeTruthy();
 
       const zeroOptionsResponse = await admin.request.get(
@@ -287,13 +395,26 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       expect(zeroResponse.status(), await zeroResponse.text()).toBe(201);
       const zeroExport = await zeroResponse.json() as { id: string };
       exportIds.push(zeroExport.id);
-      expect((await admin.request.patch(`/api/lanflow/rubber-exports/${zeroExport.id}`, {
-        data: { currentWeight: 400, workRate: 0, otherOperatingCost: 0 },
-      })).ok()).toBeTruthy();
-      expect((await superAdmin.request.post(
-        `/api/lanflow/rubber-exports/${zeroExport.id}/verify`,
-        { data: { expenseDestination: "branch" } }
-      )).ok()).toBeTruthy();
+      const concurrentVerification = await Promise.all([
+        superAdmin.request.post(`/api/lanflow/rubber-exports/${zeroExport.id}/verify`, {
+          data: { currentWeight: 400, workRate: 0, otherOperatingCost: 0, expenseDestination: "branch" },
+        }),
+        superAdmin.request.post(`/api/lanflow/rubber-exports/${zeroExport.id}/verify`, {
+          data: { currentWeight: 390, workRate: 0, otherOperatingCost: 0, expenseDestination: "branch" },
+        }),
+      ]);
+      expect(concurrentVerification.map((response) => response.status()).sort()).toEqual([200, 409]);
+      const zeroDetailsResponse = await admin.request.get(`/api/lanflow/rubber-exports/${zeroExport.id}`);
+      const zeroDetails = await zeroDetailsResponse.json() as {
+        status: string;
+        currentWeight: number;
+        workRate: number;
+        workTotal: number;
+      };
+      expect(zeroDetails.status).toBe("verified");
+      expect([390, 400]).toContain(zeroDetails.currentWeight);
+      expect(zeroDetails.workRate).toBe(0);
+      expect(zeroDetails.workTotal).toBe(0);
 
       const draftOptionsResponse = await admin.request.get(
         `/api/lanflow/rubber-exports?locationId=${locationId}`
@@ -346,6 +467,17 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
         number: created.exportNo,
         amount: 1100,
       }));
+      const { data: expenseReportBalance, error: expenseReportBalanceError } = await db
+        .from("report_batches")
+        .select("previous_report_id, opening_balance, closing_balance")
+        .eq("id", expenseReport.id)
+        .single();
+      expect(expenseReportBalanceError).toBeNull();
+      expect(expenseReportBalance?.previous_report_id).toBe(sourceReport.id);
+      expect(
+        Number(expenseReportBalance?.closing_balance)
+          - Number(expenseReportBalance?.opening_balance)
+      ).toBe(-1100);
 
       const lockedExportDelete = await superAdmin.request.delete(`/api/lanflow/rubber-exports/${created.id}`);
       expect(lockedExportDelete.status()).toBe(409);
@@ -371,13 +503,17 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
         `/api/lanflow/rubber-exports/${created.id}`,
       );
       expect(deletedVerifiedResponse.ok(), await deletedVerifiedResponse.text()).toBeTruthy();
-      expect(await deletedVerifiedResponse.json()).toMatchObject({
+      const deletedVerifiedDetails = await deletedVerifiedResponse.json();
+      expect(deletedVerifiedDetails).toMatchObject({
         exportNo: created.exportNo,
         status: "deleted",
         previousStatus: "verified",
-        currentWeight: 540,
+        currentWeight: 500,
         workTotal: 1100,
       });
+      expect(deletedVerifiedDetails).not.toHaveProperty("createdByPhone");
+      expect(deletedVerifiedDetails).not.toHaveProperty("verifiedByPhone");
+      expect(deletedVerifiedDetails).not.toHaveProperty("deletedByPhone");
 
       const deletedDraftResponse = await superAdmin.request.get(
         `/api/lanflow/rubber-exports/${deletedDraft.id}`,

@@ -2552,6 +2552,47 @@ $$;
 ALTER FUNCTION "private"."raise_report_lock"("p_report_no" "text") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."rebuild_active_report_balance_chain"("p_location_id" "uuid") RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_report record;
+  v_previous_report_id uuid;
+  v_running_balance numeric := 0;
+  v_period_balance numeric;
+begin
+  perform pg_advisory_xact_lock(hashtextextended(p_location_id::text, 0));
+
+  for v_report in
+    select b.id
+    from public.report_batches b
+    where b.location_id = p_location_id
+      and b.status = 'active'
+    order by b.created_at, b.id
+  loop
+    select coalesce(sum(
+      case when r.entry_type = 'income' then r.amount else -r.amount end
+    ), 0)
+    into v_period_balance
+    from private.report_income_expense_period_rows(v_report.id) r;
+
+    update public.report_batches
+    set previous_report_id = v_previous_report_id,
+        opening_balance = v_running_balance,
+        closing_balance = v_running_balance + v_period_balance
+    where id = v_report.id;
+
+    v_previous_report_id := v_report.id;
+    v_running_balance := v_running_balance + v_period_balance;
+  end loop;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."rebuild_active_report_balance_chain"("p_location_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."rebuild_dashboard_branch"() RETURNS "uuid"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -2790,6 +2831,22 @@ CREATE OR REPLACE FUNCTION "private"."report_income_expense_period_rows"("p_repo
   join public.money_transfer_cash_details d on d.transfer_id = m.id
   where i.report_id = p_report_id
     and i.entity_type = 'cash_transfer_received'
+
+  union all
+
+  select
+    (e.verified_at at time zone 'Asia/Bangkok')::date,
+    e.export_no,
+    'expense',
+    'ค่าทำงานส่งออกยาง — ' || e.export_no,
+    e.work_total,
+    '55-' || e.id::text
+  from public.report_items i
+  join public.rubber_exports e on e.id = i.entity_id
+  where i.report_id = p_report_id
+    and i.entity_type = 'rubber_export'
+    and e.work_total > 0
+
 
   union all
 
@@ -12540,7 +12597,7 @@ $$;
 ALTER FUNCTION "public"."validate_stock_non_negative_after_entry_delete"("p_location_id" "uuid", "p_product_id" "uuid", "p_deleted_entry_ids" "uuid"[]) OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "public"."verify_rubber_export"("p_export_id" "uuid", "p_expense_destination" "text") RETURNS "jsonb"
+CREATE OR REPLACE FUNCTION "public"."verify_rubber_export_atomic"("p_export_id" "uuid", "p_current_weight" numeric, "p_work_rate" numeric, "p_other_operating_cost" numeric, "p_expense_destination" "text") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
     AS $$
@@ -12567,16 +12624,29 @@ begin
     raise exception 'ไม่พบรายการส่งออก';
   end if;
   if v_export.status = 'verified' then
-    if v_export.expense_destination = p_expense_destination then
+    if v_export.current_weight is not distinct from p_current_weight
+      and v_export.work_rate is not distinct from p_work_rate
+      and v_export.other_operating_cost is not distinct from p_other_operating_cost
+      and v_export.expense_destination = p_expense_destination
+    then
       return jsonb_build_object('id', p_export_id, 'status', 'verified');
     end if;
-    raise exception 'รายการนี้ตรวจสอบแล้วด้วยปลายทางค่าใช้จ่ายอื่น';
+    raise exception 'รายการนี้ตรวจสอบแล้วด้วยข้อมูลอื่น';
   end if;
   if v_export.status <> 'draft' then
     raise exception 'ตรวจสอบได้เฉพาะรายการฉบับร่าง';
   end if;
-  if v_export.current_weight is null or v_export.work_rate is null then
-    raise exception 'กรุณากรอกน้ำหนักปัจจุบันและค่าทำงานก่อนตรวจสอบ';
+  if p_current_weight is null
+    or p_current_weight <= 0
+    or p_current_weight > v_export.original_weight_total
+  then
+    raise exception 'น้ำหนักปัจจุบันต้องมากกว่า 0 และไม่เกินน้ำหนักเดิม';
+  end if;
+  if p_work_rate is null or p_work_rate < 0 then
+    raise exception 'ค่าทำงานต้องไม่น้อยกว่า 0';
+  end if;
+  if p_other_operating_cost is null or p_other_operating_cost < 0 then
+    raise exception 'ค่าใช้จ่ายอื่นต้องไม่น้อยกว่า 0';
   end if;
 
   select p.name, p.phone
@@ -12585,13 +12655,16 @@ begin
   where p.id = auth.uid();
 
   update public.rubber_exports
-  set status = 'verified',
-      expense_destination = p_expense_destination,
+  set current_weight = p_current_weight,
+      work_rate = p_work_rate,
+      other_operating_cost = p_other_operating_cost,
       weight_loss_percent = round(
-        (original_weight_total - current_weight) / original_weight_total * 100,
+        (original_weight_total - p_current_weight) / original_weight_total * 100,
         2
       ),
-      work_total = round(current_weight * work_rate + other_operating_cost, 2),
+      work_total = round(p_current_weight * p_work_rate + p_other_operating_cost, 2),
+      expense_destination = p_expense_destination,
+      status = 'verified',
       verified_by_user_id = auth.uid(),
       verified_by_name = coalesce(v_actor_name, ''),
       verified_by_phone = coalesce(v_actor_phone, ''),
@@ -12607,7 +12680,7 @@ end;
 $$;
 
 
-ALTER FUNCTION "public"."verify_rubber_export"("p_export_id" "uuid", "p_expense_destination" "text") OWNER TO "postgres";
+ALTER FUNCTION "public"."verify_rubber_export_atomic"("p_export_id" "uuid", "p_current_weight" numeric, "p_work_rate" numeric, "p_other_operating_cost" numeric, "p_expense_destination" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."verify_telegram_badge_dispatch_secret"("p_secret" "text") RETURNS boolean
@@ -15762,6 +15835,10 @@ REVOKE ALL ON FUNCTION "private"."prevent_location_code_change"() FROM PUBLIC;
 
 
 
+REVOKE ALL ON FUNCTION "private"."rebuild_active_report_balance_chain"("p_location_id" "uuid") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."rebuild_dashboard_branch"() FROM PUBLIC;
 
 
@@ -16407,8 +16484,8 @@ REVOKE ALL ON FUNCTION "public"."validate_stock_non_negative_after_entry_delete"
 
 
 
-REVOKE ALL ON FUNCTION "public"."verify_rubber_export"("p_export_id" "uuid", "p_expense_destination" "text") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."verify_rubber_export"("p_export_id" "uuid", "p_expense_destination" "text") TO "authenticated";
+REVOKE ALL ON FUNCTION "public"."verify_rubber_export_atomic"("p_export_id" "uuid", "p_current_weight" numeric, "p_work_rate" numeric, "p_other_operating_cost" numeric, "p_expense_destination" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."verify_rubber_export_atomic"("p_export_id" "uuid", "p_current_weight" numeric, "p_work_rate" numeric, "p_other_operating_cost" numeric, "p_expense_destination" "text") TO "authenticated";
 
 
 

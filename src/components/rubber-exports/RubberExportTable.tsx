@@ -1,4 +1,5 @@
-import { Eye, Loader2, Share2, Trash2 } from "lucide-react";
+import { Clock3, Eye, Loader2, PackageCheck, Share2, Trash2 } from "lucide-react";
+import { cn } from "@/lib/cn";
 import type { RubberExportSummary, RubberExportStatus } from "@/types/rubber-exports";
 
 const statusLabel: Record<RubberExportStatus, string> = {
@@ -18,6 +19,7 @@ export function RubberExportTable({
   rows,
   loading,
   canDelete,
+  canVerify,
   shareBusy,
   sharingId,
   onOpen,
@@ -27,6 +29,7 @@ export function RubberExportTable({
   rows: RubberExportSummary[];
   loading: boolean;
   canDelete: boolean;
+  canVerify: boolean;
   shareBusy: boolean;
   sharingId: string | null;
   onOpen: (id: string) => void;
@@ -55,13 +58,31 @@ export function RubberExportTable({
             <tr><td colSpan={7} className="px-4 py-8 text-center text-ink/60">ยังไม่มีรายการส่งออกยาง</td></tr>
           )}
           {!loading && rows.map((row) => (
-            <tr key={row.id} className={row.status === "deleted" ? "bg-slate-50 text-ink/50" : ""}>
+            <tr key={row.id} className={cn(row.status === "deleted" && "bg-slate-50 text-ink/50")}>
               <td className="px-4 py-3">
                 <div className="flex items-center gap-1.5 whitespace-nowrap">
-                  <button type="button" onClick={() => onOpen(row.id)} title="ดูรายละเอียด" aria-label="ดูรายละเอียด"
-                    className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-river text-white">
+                  <button type="button" onClick={() => onOpen(row.id)} title="ดูรายละเอียด" aria-label={`ดูรายละเอียด ${row.exportNo}`}
+                    className="focus-ring inline-flex size-10 items-center justify-center rounded-md bg-river text-white">
                     <Eye size={17} />
                   </button>
+                  {row.status === "draft" && (canVerify ? (
+                    <button
+                      type="button"
+                      onClick={() => onOpen(row.id)}
+                      className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-leaf px-3 font-semibold text-white"
+                    >
+                      <PackageCheck size={16} /> เปิดตรวจสอบ
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled
+                      title="รอ super_admin หรือผู้มีสิทธิ์จัดการระบบตรวจสอบรายการ"
+                      className="inline-flex h-10 cursor-not-allowed items-center gap-1.5 rounded-md bg-slate-200 px-3 font-semibold text-ink/60"
+                    >
+                      <Clock3 size={16} /> รอผู้รับรอง
+                    </button>
+                  ))}
                   {(row.status === "verified" || row.status === "deleted") && (
                     <button type="button" onClick={() => onShare(row)} disabled={shareBusy}
                       title={`แชร์ PDF รายการส่งออกยาง ${row.exportNo}`} aria-label={`แชร์ PDF รายการส่งออกยาง ${row.exportNo}`}
@@ -80,12 +101,12 @@ export function RubberExportTable({
                   )}
                 </div>
               </td>
-              <td className="px-4 py-3 font-semibold">{row.exportNo}</td>
+              <td className="px-4 py-3 font-semibold tabular-nums">{row.exportNo}</td>
               <td className="px-4 py-3">{statusLabel[row.status]}</td>
-              <td className="px-4 py-3 text-right">{row.itemCount.toLocaleString("th-TH")}</td>
-              <td className="px-4 py-3 text-right">{number(row.originalWeightTotal)}</td>
-              <td className="px-4 py-3 text-right">{number(row.currentWeight)}</td>
-              <td className="px-4 py-3 text-right">{number(row.workTotal)}</td>
+              <td className="px-4 py-3 text-right tabular-nums">{row.itemCount.toLocaleString("th-TH")}</td>
+              <td className="px-4 py-3 text-right tabular-nums">{number(row.originalWeightTotal)}</td>
+              <td className="px-4 py-3 text-right tabular-nums">{number(row.currentWeight)}</td>
+              <td className="px-4 py-3 text-right tabular-nums">{number(row.workTotal)}</td>
             </tr>
           ))}
         </tbody>

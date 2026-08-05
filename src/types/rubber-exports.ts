@@ -40,9 +40,6 @@ export type RubberExportSummary = {
 };
 
 export type RubberExportDetails = RubberExportSummary & {
-  createdByPhone: string;
-  verifiedByPhone?: string | null;
-  deletedByPhone?: string | null;
   items: RubberExportItem[];
 };
 

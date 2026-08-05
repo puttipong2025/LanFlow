@@ -498,14 +498,9 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
         const cost = 80 * index + 5;
         exports.push({ ...created, cost });
 
-        const updateResponse = await admin.request.patch(
-          `/api/lanflow/rubber-exports/${created.id}`,
-          { data: { currentWeight: 80, workRate: index, otherOperatingCost: 5 } },
-        );
-        expect(updateResponse.ok(), await updateResponse.text()).toBeTruthy();
         const verifyResponse = await superAdmin.request.post(
           `/api/lanflow/rubber-exports/${created.id}/verify`,
-          { data: { expenseDestination: "branch" } },
+          { data: { currentWeight: 80, workRate: index, otherOperatingCost: 5, expenseDestination: "branch" } },
         );
         expect(verifyResponse.ok(), await verifyResponse.text()).toBeTruthy();
       }
@@ -711,14 +706,9 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
       const created = await createResponse.json() as { id: string; exportNo: string };
       exportId = created.id;
 
-      const updateResponse = await admin.request.patch(
-        `/api/lanflow/rubber-exports/${created.id}`,
-        { data: { currentWeight: 5000, workRate: 1, otherOperatingCost: 5 } },
-      );
-      expect(updateResponse.ok(), await updateResponse.text()).toBeTruthy();
       const verifyResponse = await superAdmin.request.post(
         `/api/lanflow/rubber-exports/${created.id}/verify`,
-        { data: { expenseDestination: "external" } },
+        { data: { currentWeight: 5000, workRate: 1, otherOperatingCost: 5, expenseDestination: "external" } },
       );
       expect(verifyResponse.ok(), await verifyResponse.text()).toBeTruthy();
 

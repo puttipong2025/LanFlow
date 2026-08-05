@@ -11,6 +11,7 @@ export function ModalShell({
   size = "normal",
   mobileFullScreen = false,
   closeOnEscape = false,
+  role = "dialog",
   children
 }: {
   title: string;
@@ -19,6 +20,7 @@ export function ModalShell({
   size?: "normal" | "wide";
   mobileFullScreen?: boolean;
   closeOnEscape?: boolean;
+  role?: "dialog" | "alertdialog";
   children: React.ReactNode;
 }) {
   const titleId = useId();
@@ -38,7 +40,7 @@ export function ModalShell({
       mobileFullScreen && "p-0 pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] sm:p-6",
     )}>
       <div
-        role="dialog"
+        role={role}
         aria-modal="true"
         aria-labelledby={titleId}
         className={cn(

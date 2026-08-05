@@ -104,7 +104,7 @@ test("shares fresh details from both table and modal with filename and title", a
     (window as typeof window & { __rubberExportShares?: unknown[] }).__rubberExportShares?.length
   )).toBe(1);
 
-  await tableRow.getByRole("button", { name: "ดู", exact: true }).click();
+  await tableRow.getByRole("button", { name: `ดูรายละเอียด ${verified.exportNo}` }).click();
   await expect(page.getByRole("heading", {
     name: verified.exportNo,
     level: 2,
@@ -141,7 +141,7 @@ test("shows share only for verified and deleted statuses", async ({ page }) => {
   await expect(page.locator("tr").filter({ hasText: verified.exportNo })
     .getByRole("button", { name: /แชร์ PDF/ })).toBeVisible();
 
-  await page.getByRole("button", { name: "ลบแล้ว", exact: true }).click();
+  await page.getByRole("button", { name: "ลบแล้ว 2 รายการ" }).click();
   await expect(page.locator("tr").filter({ hasText: deletedVerified.exportNo })
     .getByRole("button", { name: /แชร์ PDF/ })).toBeVisible();
   await expect(page.locator("tr").filter({ hasText: deletedDraft.exportNo })
@@ -162,7 +162,7 @@ test("downloads a searchable multi-page deleted copy when file sharing is unsupp
     });
   });
   await openRubberExports(page);
-  await page.getByRole("button", { name: "ลบแล้ว", exact: true }).click();
+  await page.getByRole("button", { name: "ลบแล้ว 2 รายการ" }).click();
 
   const downloadPromise = page.waitForEvent("download");
   await page.locator("tr").filter({ hasText: deletedVerified.exportNo })

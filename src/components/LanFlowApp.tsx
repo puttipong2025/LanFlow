@@ -432,6 +432,7 @@ export function LanFlowApp() {
                 : null
             }
             onInitialExportHandled={() => setPendingRubberExportSource(null)}
+            onOpenReports={() => setActiveTab("reports")}
           />
         )}
         {activeTab === "customers" && (

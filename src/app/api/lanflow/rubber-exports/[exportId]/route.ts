@@ -13,9 +13,9 @@ const detailColumns = `
   id, export_no, location_id, status, previous_status,
   original_weight_total, paid_total, average_price, current_weight,
   weight_loss_percent, work_rate, other_operating_cost, work_total,
-  expense_destination, created_by_name, created_by_phone, created_at,
-  verified_by_name, verified_by_phone, verified_at, deleted_by_name,
-  deleted_by_phone, deleted_at, report_lock_no, locations(name),
+  expense_destination, created_by_name, created_at,
+  verified_by_name, verified_at, deleted_by_name,
+  deleted_at, report_lock_no, locations(name),
   rubber_export_items(
     id, source_report_item_id, source_bill_id, bill_date, bill_no,
     customer_name, eligibility_at, net_weight, paid_amount
@@ -40,9 +40,6 @@ export async function GET(request: NextRequest, context: RouteContext) {
   } as Record<string, any>);
   return NextResponse.json({
     ...summary,
-    createdByPhone: row.created_by_phone,
-    verifiedByPhone: row.verified_by_phone,
-    deletedByPhone: row.deleted_by_phone,
     items: row.rubber_export_items
       .map((item) => ({
         id: item.id,

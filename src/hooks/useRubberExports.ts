@@ -104,11 +104,19 @@ export function useRubberExports(locationId: string, online: boolean) {
     await reload();
   }
 
-  async function verify(exportId: string, expenseDestination: RubberExportExpenseDestination) {
+  async function verify(
+    exportId: string,
+    expenseDestination: RubberExportExpenseDestination,
+    values: {
+      currentWeight: number;
+      workRate: number;
+      otherOperatingCost: number;
+    }
+  ) {
     const response = await authFetch(`/api/lanflow/rubber-exports/${exportId}/verify`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ expenseDestination }),
+      body: JSON.stringify({ expenseDestination, ...values }),
     });
     await assertApiResponse(response);
     await reloadWithBadges();
