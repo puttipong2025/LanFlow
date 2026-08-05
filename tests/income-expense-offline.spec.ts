@@ -1,6 +1,7 @@
 import { test, expect, Page } from '@playwright/test';
 import { createClient } from '@supabase/supabase-js';
 import { selectAppLocation, selectedAppLocationId } from './helpers/select-app-location';
+import { bangkokDateString } from '../src/lib/bangkok-date';
 
 /** Read all events from IndexedDB sync_queue */
 async function readQueue(page: Page): Promise<any[]> {
@@ -198,7 +199,7 @@ async function selectHeaderLocation(page: Page, locationId: string) {
 
 async function buildIncomeExpensePayload(page: Page, overrides: Record<string, any> = {}) {
   const clientTempId = overrides.clientTempId ?? crypto.randomUUID();
-  const txDate = overrides.txDate ?? new Date().toISOString().slice(0, 10);
+  const txDate = overrides.txDate ?? bangkokDateString();
   const type = overrides.type ?? 'income';
   const billOption = overrides.billOption ?? (type === 'expense' ? 'ค่าใช้จ่าย' : 'รายรับ');
   const revisionNo = overrides.expectedRevisionNo ?? 0;
@@ -899,7 +900,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
 
     const marker = `E2E-CONCURRENT-${Date.now()}`;
     const locationId = await getPrimaryLocationId(page);
-    const txDate = new Date().toISOString().slice(0, 10);
+    const txDate = bangkokDateString();
     const payloadA = await buildIncomeExpensePayload(page, {
       locationId,
       txDate,
@@ -938,7 +939,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
 
     const marker = `E2E-SEQUENCE-${Date.now()}`;
     const locationId = await getPrimaryLocationId(page);
-    const txDate = new Date().toISOString().slice(0, 10);
+    const txDate = bangkokDateString();
     const incomePayload = await buildIncomeExpensePayload(page, {
       locationId,
       txDate,

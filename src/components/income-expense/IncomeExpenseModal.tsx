@@ -26,6 +26,7 @@ export function IncomeExpenseModal({
   transaction,
   nextNumber,
   nextLocalSequence,
+  nonCurrentDateRequiresApproval = false,
   onClose,
   onSave
 }: {
@@ -35,6 +36,7 @@ export function IncomeExpenseModal({
   transaction: IncomeExpense | null;
   nextNumber: string;
   nextLocalSequence: number;
+  nonCurrentDateRequiresApproval?: boolean;
   onClose: () => void;
   onSave: (
     transactions: IncomeExpense[]
@@ -76,6 +78,8 @@ export function IncomeExpenseModal({
         }]
   );
   const [txDate, setTxDate] = useState(transaction?.txDate ?? todayInputValue());
+  const requiresNonCurrentDateApproval =
+    nonCurrentDateRequiresApproval && txDate !== todayInputValue();
   const label = type === "income" ? "รายรับ" : "ค่าใช้จ่าย";
   const [billOption, setBillOption] = useState<string>(transaction?.billOption ?? (type === "income" ? "รายรับ" : "ค่าใช้จ่าย"));
   const { items: saleItems } = useIncomeSaleItems({ stockOnly: true });
@@ -356,6 +360,11 @@ export function IncomeExpenseModal({
               onChange={(event) => setTxDate(event.target.value)}
               required
             />
+            {requiresNonCurrentDateApproval && (
+              <p role="status" className="md:col-span-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                วันที่รายการไม่ใช่วันปัจจุบัน — รายการนี้จะถูกส่งขออนุมัติ
+              </p>
+            )}
           </div>
         </section>
 
@@ -378,7 +387,7 @@ export function IncomeExpenseModal({
                     blocked
                       ? "cursor-not-allowed border-amber bg-amber text-white opacity-50"
                       : active
-                      ? "border-leaf bg-leaf text-white shadow-sm"
+                      ? "border-leaf bg-clay text-white shadow-sm"
                       : "border-actionSecondary bg-actionSecondary text-white hover:bg-actionSecondary/90"
                   }`}
                 >
@@ -514,7 +523,7 @@ export function IncomeExpenseModal({
               เพิ่มรายการ
             </button>
             <button className="focus-ring rounded-md bg-commit px-4 py-2 text-sm font-bold text-white hover:bg-commit/90">
-              บันทึกบิล
+              {requiresNonCurrentDateApproval ? "ส่งขออนุมัติ" : "บันทึกบิล"}
             </button>
           </div>
         </section>

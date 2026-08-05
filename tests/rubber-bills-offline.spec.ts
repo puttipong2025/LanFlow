@@ -1,6 +1,7 @@
 import { test, expect, Page } from '@playwright/test';
 import { assertRubberBillDeleteAllowed } from '../src/hooks/useRubberBills';
 import { selectedAppLocationId } from './helpers/select-app-location';
+import { bangkokDateString } from '../src/lib/bangkok-date';
 
 const testUserId = process.env.TEST_USER_ID || '00000000-0000-4000-8000-000000000001';
 const localSupabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://127.0.0.1:54321';
@@ -768,7 +769,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
         locationId,
         recordStatus: 'active',
         localBillNo: `TEMP-${clientTempId.slice(0, 8)}`,
-        billDate: now.split('T')[0],
+        billDate: bangkokDateString(new Date(now)),
         customerName: marker,
         configuredPriceSnapshot: null,
         weight: 800,
@@ -889,7 +890,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
         locationId,
         recordStatus: 'active',
         localBillNo: `TEMP-${clientTempId.slice(0, 8)}`,
-        billDate: now.split('T')[0],
+        billDate: bangkokDateString(new Date(now)),
         customerName: marker,
         configuredPriceSnapshot: null,
         weight: 800,
@@ -1009,7 +1010,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
         locationId,
         recordStatus: 'deleted',
         localBillNo: `TEMP-${freshId.slice(0, 8)}`,
-        billDate: new Date().toISOString().split('T')[0],
+        billDate: bangkokDateString(),
         customerName: `${marker}-Updated`,
         configuredPriceSnapshot: null,
         weight: 900,

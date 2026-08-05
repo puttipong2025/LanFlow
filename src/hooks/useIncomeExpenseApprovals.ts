@@ -1,9 +1,16 @@
+import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { buildIncomeExpensePayload } from "@/lib/income-expense/build-income-expense-payload";
 import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
 import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import { authFetch } from "@/lib/auth-fetch";
+import { bangkokDateString } from "@/lib/bangkok-date";
+import {
+  assertOfflineIncomeExpenseDateAllowed,
+  loadIncomeExpenseApprovalSettingsCache,
+  saveIncomeExpenseApprovalSettingsCache,
+} from "@/lib/income-expense/approval-cache";
 import type {
   CashTransferDeleteRequest,
   IncomeExpense,
@@ -30,12 +37,13 @@ type SettingsInput = {
   appliesTo: IncomeExpenseApprovalAppliesTo;
   approvalMinAmount?: number | null;
   cashTransferDeleteRequiresApproval: boolean;
+  nonCurrentDateRequiresApproval: boolean;
 };
 
 type ApprovalSubmitResult = {
   requiresApproval: boolean;
   requestId?: string;
-  matchedReason?: string;
+  matchedReasons?: string[];
   matchedKeyword?: string | null;
 };
 
@@ -57,6 +65,20 @@ function keywordMatches(keyword: IncomeExpenseApprovalKeyword, tx: IncomeExpense
 function settingsMatch(settings: IncomeExpenseApprovalSettings | undefined, tx: IncomeExpense) {
   if (settings?.approvalMinAmount == null) return false;
   return appliesToType(settings.appliesTo, tx.type) && tx.cost >= settings.approvalMinAmount;
+}
+
+export function getIncomeExpenseApprovalReasons(
+  keywords: IncomeExpenseApprovalKeyword[],
+  settings: IncomeExpenseApprovalSettings | undefined,
+  tx: IncomeExpense,
+) {
+  const reasons: Array<"keyword" | "amount_threshold" | "non_current_date"> = [];
+  if (keywords.some((keyword) => keywordMatches(keyword, tx))) reasons.push("keyword");
+  if (settingsMatch(settings, tx)) reasons.push("amount_threshold");
+  if (settings?.nonCurrentDateRequiresApproval && tx.txDate !== bangkokDateString()) {
+    reasons.push("non_current_date");
+  }
+  return reasons;
 }
 
 export function useIncomeExpenseApprovals(options: {
@@ -111,6 +133,7 @@ export function useIncomeExpenseApprovals(options: {
         appliesTo: data?.applies_to ?? "both",
         approvalMinAmount: data?.approval_min_amount != null ? Number(data.approval_min_amount) : null,
         cashTransferDeleteRequiresApproval: data?.cash_transfer_delete_requires_approval ?? true,
+        nonCurrentDateRequiresApproval: data?.non_current_date_requires_approval ?? false,
         updatedByName: data?.updated_by_name,
         updatedByPhone: data?.updated_by_phone,
       } satisfies IncomeExpenseApprovalSettings;
@@ -138,7 +161,7 @@ export function useIncomeExpenseApprovals(options: {
         requestStatus: row.request_status,
         requestedOperation: row.requested_operation,
         matchedKeyword: row.matched_keyword,
-        matchedReason: row.matched_reason,
+        matchedReasons: row.matched_reasons,
         locationId: row.location_id,
         txType: row.tx_type,
         title: row.title,
@@ -156,6 +179,11 @@ export function useIncomeExpenseApprovals(options: {
       }));
     },
   });
+
+  useEffect(() => {
+    if (!settingsQuery.data) return;
+    saveIncomeExpenseApprovalSettingsCache(settingsQuery.data.nonCurrentDateRequiresApproval);
+  }, [settingsQuery.data]);
 
   const cashDeleteRequestsQuery = useQuery({
     queryKey: [
@@ -304,6 +332,7 @@ export function useIncomeExpenseApprovals(options: {
         applies_to: input.appliesTo,
         approval_min_amount: input.approvalMinAmount ?? null,
         cash_transfer_delete_requires_approval: input.cashTransferDeleteRequiresApproval,
+        non_current_date_requires_approval: input.nonCurrentDateRequiresApproval,
         updated_by_user_id: session?.user?.id,
         updated_by_name: updatedByName,
         updated_by_phone: updatedByPhone,
@@ -371,11 +400,19 @@ export function useIncomeExpenseApprovals(options: {
     transaction: IncomeExpense,
     operation: QueueOperation
   ): Promise<ApprovalSubmitResult> {
-    const localRequiresApproval =
-      keywordsQuery.data?.some(keyword => keywordMatches(keyword, transaction)) ||
-      settingsMatch(settingsQuery.data, transaction);
+    const localReasons = getIncomeExpenseApprovalReasons(
+      keywordsQuery.data ?? [],
+      settingsQuery.data,
+      transaction,
+    );
+    const localRequiresApproval = localReasons.length > 0;
 
     if (typeof navigator !== "undefined" && !navigator.onLine) {
+      assertOfflineIncomeExpenseDateAllowed(
+        transaction.txDate,
+        loadIncomeExpenseApprovalSettingsCache(),
+        false,
+      );
       if (localRequiresApproval) {
         throw new Error("รายการนี้ต้องรออนุมัติ ต้องออนไลน์ก่อนบันทึก");
       }
@@ -401,7 +438,7 @@ export function useIncomeExpenseApprovals(options: {
       return {
         requiresApproval: true,
         requestId: data.requestId,
-        matchedReason: data.matchedReason,
+        matchedReasons: data.matchedReasons,
         matchedKeyword: data.matchedKeyword,
       };
     }

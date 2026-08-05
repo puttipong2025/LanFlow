@@ -1,6 +1,7 @@
 import { expect, test, type Browser, type BrowserContext } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 import { assertOfflineRubberBillPriceAllowed } from "../../src/lib/rubber-bills/approval";
+import { bangkokDateString } from "../../src/lib/bangkok-date";
 import { selectedAppLocationId } from "../helpers/select-app-location";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
@@ -37,6 +38,7 @@ function billPayload({
   prices,
   configuredPriceSnapshot = 20,
   customerName = "ลูกค้าทดสอบอนุมัติบิลยาง",
+  billType = "บิลเครื่องชั่งเล็ก",
   stockDeduction,
 }: {
   locationId: string;
@@ -47,6 +49,7 @@ function billPayload({
   prices?: number[];
   configuredPriceSnapshot?: number | null;
   customerName?: string;
+  billType?: string;
   stockDeduction?: { productId: string; quantity: number; unitPrice: number };
 }) {
   const now = new Date().toISOString();
@@ -61,11 +64,11 @@ function billPayload({
     locationId,
     recordStatus: operation === "delete" ? "deleted" : "active",
     localBillNo: `APP-${clientTempId.slice(0, 8)}`,
-    billDate: now.slice(0, 10),
+    billDate: bangkokDateString(),
     customerId: null,
     customerName,
     configuredPriceSnapshot,
-    billType: "บิลเครื่องชั่งเล็ก",
+    billType,
     deductWeight: 0,
     weight,
     rubberValue,
@@ -129,19 +132,150 @@ async function saveSettings(
 
 test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () => {
   test("offline cached-price guard blocks only values above the cached cap", () => {
-    const cap20 = { editWindowMinutes: 30, configuredPrice: 20 };
-    const cap0 = { editWindowMinutes: 30, configuredPrice: 0 };
-    const noCap = { editWindowMinutes: 30, configuredPrice: null };
-    expect(() => assertOfflineRubberBillPriceAllowed([0, 19.99, 20], cap20, false)).not.toThrow();
-    expect(() => assertOfflineRubberBillPriceAllowed([20.5], noCap, false)).not.toThrow();
-    expect(() => assertOfflineRubberBillPriceAllowed([20.5], cap20, true)).not.toThrow();
-    expect(() => assertOfflineRubberBillPriceAllowed([20, 20.5], cap20, false))
+    const today = bangkokDateString();
+    const cap20 = { editWindowMinutes: 30, configuredPrice: 20, nonCurrentDateRequiresApproval: false };
+    const cap0 = { editWindowMinutes: 30, configuredPrice: 0, nonCurrentDateRequiresApproval: false };
+    const noCap = { editWindowMinutes: 30, configuredPrice: null, nonCurrentDateRequiresApproval: false };
+    expect(() => assertOfflineRubberBillPriceAllowed([0, 19.99, 20], today, cap20, false)).not.toThrow();
+    expect(() => assertOfflineRubberBillPriceAllowed([20.5], today, noCap, false)).not.toThrow();
+    expect(() => assertOfflineRubberBillPriceAllowed([20.5], today, cap20, true)).not.toThrow();
+    expect(() => assertOfflineRubberBillPriceAllowed([20, 20.5], today, cap20, false))
       .toThrow("ต้องออนไลน์เพื่อส่งคำขออนุมัติ");
-    expect(() => assertOfflineRubberBillPriceAllowed([0], cap0, false)).not.toThrow();
-    expect(() => assertOfflineRubberBillPriceAllowed([0.01], cap0, false))
+    expect(() => assertOfflineRubberBillPriceAllowed([0], today, cap0, false)).not.toThrow();
+    expect(() => assertOfflineRubberBillPriceAllowed([0.01], today, cap0, false))
       .toThrow("ต้องออนไลน์เพื่อส่งคำขออนุมัติ");
-    expect(() => assertOfflineRubberBillPriceAllowed([0], null, false))
+    expect(() => assertOfflineRubberBillPriceAllowed([0], today, null, false))
       .toThrow("ยังไม่เคยโหลดกติกาอนุมัติ");
+  });
+
+  test("server gates a non-current create and approval preserves billDate", async ({ browser }) => {
+    const superAdmin = await authContext(browser, "super_admin");
+    const db = service();
+    const locationId = (await profile(superAdmin)).locationIds[0];
+    const clientTempId = crypto.randomUUID();
+    const date = new Date(`${bangkokDateString()}T00:00:00.000Z`);
+    date.setUTCDate(date.getUTCDate() - 1);
+    const billDate = date.toISOString().slice(0, 10);
+    const payload = { ...billPayload({ locationId, clientTempId, configuredPriceSnapshot: null }), billDate };
+    let requestId: string | null = null;
+
+    try {
+      const settings = await superAdmin.request.put("/api/lanflow/rubber-bills/approval-settings", {
+        data: { editWindowMinutes: 30, configuredPrice: null, nonCurrentDateRequiresApproval: true },
+      });
+      expect(settings.ok()).toBeTruthy();
+      const oldClientSettings = await superAdmin.request.put("/api/lanflow/rubber-bills/approval-settings", {
+        data: { editWindowMinutes: 30, configuredPrice: null },
+      });
+      expect(oldClientSettings.ok()).toBeTruthy();
+
+      const pending = await syncBill(superAdmin, payload);
+      expect(pending.response.ok()).toBeTruthy();
+      expect(pending.body.status).toBe("pending_approval");
+      expect(pending.body.matchedReasons).toContain("non_current_date");
+      requestId = pending.body.requestId ?? null;
+      expect(requestId).toBeTruthy();
+      expect((await db.from("rubber_bills").select("id").eq("client_temp_id", clientTempId)).data).toHaveLength(0);
+
+      const approval = await superAdmin.request.post(`/api/lanflow/rubber-bills/approval-requests/${requestId}/approve`);
+      expect(approval.ok()).toBeTruthy();
+      const created = await db.from("rubber_bills").select("bill_date").eq("client_temp_id", clientTempId).single();
+      expect(created.error).toBeNull();
+      expect(created.data?.bill_date).toBe(billDate);
+    } finally {
+      if (requestId) await db.from("rubber_bill_approval_requests").delete().eq("id", requestId);
+      await db.from("rubber_bills").delete().eq("client_temp_id", clientTempId);
+      await superAdmin.request.put("/api/lanflow/rubber-bills/approval-settings", {
+        data: { editWindowMinutes: 30, configuredPrice: null, nonCurrentDateRequiresApproval: false },
+      });
+      await superAdmin.close();
+    }
+  });
+
+  test("non-current update uses the proposed date and delete uses the persisted date", async ({ browser }) => {
+    const superAdmin = await authContext(browser, "super_admin");
+    const db = service();
+    const locationId = (await profile(superAdmin)).locationIds[0];
+    const clientTempId = crypto.randomUUID();
+    const billType = `ทดสอบอนุมัติวันที่-${clientTempId}`;
+    const createPayload = billPayload({
+      locationId,
+      clientTempId,
+      configuredPriceSnapshot: null,
+      billType,
+    });
+    let updateRequestId: string | null = null;
+    let deleteRequestId: string | null = null;
+
+    try {
+      expect((await superAdmin.request.put("/api/lanflow/rubber-bills/approval-settings", {
+        data: { editWindowMinutes: 1440, configuredPrice: null, nonCurrentDateRequiresApproval: false },
+      })).ok()).toBeTruthy();
+      const created = await syncBill(superAdmin, createPayload);
+      expect(created.body.status).toBe("synced");
+
+      expect((await superAdmin.request.put("/api/lanflow/rubber-bills/approval-settings", {
+        data: { editWindowMinutes: 1440, configuredPrice: null, nonCurrentDateRequiresApproval: true },
+      })).ok()).toBeTruthy();
+      const date = new Date(`${bangkokDateString()}T00:00:00.000Z`);
+      date.setUTCDate(date.getUTCDate() - 1);
+      const pastDate = date.toISOString().slice(0, 10);
+      const updatePayload = {
+        ...billPayload({
+          locationId,
+          clientTempId,
+          operation: "update",
+          expectedRevisionNo: created.body.revisionNo,
+          configuredPriceSnapshot: null,
+          billType,
+        }),
+        billDate: pastDate,
+      };
+      const pendingUpdate = await syncBill(superAdmin, updatePayload);
+      expect(pendingUpdate.body.status).toBe("pending_approval");
+      expect(pendingUpdate.body.matchedReasons).toEqual(["non_current_date"]);
+      updateRequestId = pendingUpdate.body.requestId ?? null;
+
+      const unchanged = await db.from("rubber_bills").select("bill_date,revision_no").eq("client_temp_id", clientTempId).single();
+      expect(unchanged.data?.bill_date).toBe(bangkokDateString());
+      expect(unchanged.data?.revision_no).toBe(created.body.revisionNo);
+
+      const approved = await superAdmin.request.post(
+        `/api/lanflow/rubber-bills/approval-requests/${updateRequestId}/approve`
+      );
+      expect(approved.ok(), await approved.text()).toBeTruthy();
+      const updated = await db.from("rubber_bills").select("bill_date,revision_no").eq("client_temp_id", clientTempId).single();
+      expect(updated.data?.bill_date).toBe(pastDate);
+
+      const deletePayload = {
+        ...billPayload({
+          locationId,
+          clientTempId,
+          operation: "delete",
+          expectedRevisionNo: updated.data!.revision_no,
+          configuredPriceSnapshot: null,
+          billType,
+        }),
+        billDate: bangkokDateString(),
+      };
+      const pendingDelete = await syncBill(superAdmin, deletePayload);
+      expect(pendingDelete.body.status).toBe("pending_approval");
+      expect(pendingDelete.body.matchedReasons).toEqual(["non_current_date"]);
+      deleteRequestId = pendingDelete.body.requestId ?? null;
+
+      expect((await superAdmin.request.delete(
+        `/api/lanflow/rubber-bills/approval-requests/${deleteRequestId}`
+      )).ok()).toBeTruthy();
+      const retained = await db.from("rubber_bills").select("record_status,bill_date").eq("client_temp_id", clientTempId).single();
+      expect(retained.data).toMatchObject({ record_status: "active", bill_date: pastDate });
+    } finally {
+      if (deleteRequestId) await db.from("rubber_bill_approval_requests").delete().eq("id", deleteRequestId);
+      await db.from("rubber_bills").delete().eq("client_temp_id", clientTempId);
+      await superAdmin.request.put("/api/lanflow/rubber-bills/approval-settings", {
+        data: { editWindowMinutes: 30, configuredPrice: null, nonCurrentDateRequiresApproval: false },
+      });
+      await superAdmin.close();
+    }
   });
 
   test("server recalculates every summary value from the item inputs", async ({ browser }) => {
@@ -630,7 +764,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       const userProfile = await profile(user);
       const locationId = userProfile.locationIds[0];
       const productName = `สินค้าทดสอบหักบิล-${productId.slice(0, 8)}`;
-      const today = new Date().toISOString().slice(0, 10);
+      const today = bangkokDateString();
 
       expect((await saveSettings(superAdmin, 30, 20)).ok()).toBeTruthy();
       expect((await db.from("stock_products").insert({

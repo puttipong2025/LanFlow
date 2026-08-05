@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Clock, UserCircle, PlayCircle, PauseCircle, XCircle, ChevronLeft, ChevronRight } from "lucide-react";
+import { CalendarCheck, Clock, UserCircle, PlayCircle, PauseCircle, XCircle, ChevronLeft, ChevronRight } from "lucide-react";
 import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import { formatCurrency } from "@/lib/format";
 import { authFetch } from "@/lib/auth-fetch";
@@ -13,6 +13,13 @@ import { ExpenseLocationApprovalModal } from "./time-tracking/ExpenseLocationApp
 import { canManageTimePayroll } from "@/lib/permissions";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { SlipPreviewModal } from "./time-tracking/SlipPreviewModal";
+import {
+  bangkokDateString,
+  formatBangkokDateTime,
+  formatBangkokTime,
+  isAtOrAfterBangkokHour,
+  nextBangkokCutoff,
+} from "@/lib/bangkok-date";
 
 interface TimeTrackingModuleProps {
   profile: Profile;
@@ -24,12 +31,7 @@ const TIME_TRACKING_OFFLINE_MESSAGE = "เวลาและเงินเด�
 type ApprovalType = 'TRANSACTION' | 'SLIP';
 
 function bangkokToday() {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Bangkok",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date());
+  return bangkokDateString();
 }
 
 function reportLockReason(item: { report_lock_no?: string | null }) {
@@ -99,13 +101,7 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
 
     const interval = setInterval(async () => {
       const now = new Date();
-      const startTime = new Date(startTimeStr);
-      let targetDate = new Date(startTime);
-      targetDate.setHours(15, 0, 0, 0);
-
-      if (startTime.getTime() >= targetDate.getTime()) {
-         targetDate.setDate(targetDate.getDate() + 1);
-      }
+      const targetDate = nextBangkokCutoff(startTimeStr);
 
       const diff = targetDate.getTime() - now.getTime();
 
@@ -127,10 +123,7 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
     }
     if (!isRunning) {
       const now = new Date();
-      const target15 = new Date(now);
-      target15.setHours(15, 0, 0, 0);
-
-      if (now.getTime() >= target15.getTime()) {
+      if (isAtOrAfterBangkokHour(now, 15)) {
         if (!confirm("เลยเวลา 15:00 น. แล้ว\nการเริ่มนับเวลาตอนนี้ จะถูกนับไปรวมกับ 15:00 ของวันพรุ่งนี้\n\nยืนยันการเริ่มนับเวลาหรือไม่?")) {
           return;
         }
@@ -274,7 +267,7 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
                     : <><PauseCircle size={16} /> หยุดงาน</>}
               </span>
               {isRunning && startTimeStr && (
-                <span className="text-xs text-ink/60">เริ่มเมื่อ: {new Date(startTimeStr).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}</span>
+                <span className="text-xs text-ink/60">เริ่มเมื่อ: {formatBangkokTime(startTimeStr)}</span>
               )}
             </div>
 
@@ -409,7 +402,7 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
                       {formatCurrency(t.amount)}
                     </span>
                     {t.description && <span className="text-sm text-ink/70 mt-1">{t.description}</span>}
-                    {t.effective_date && <span className="text-xs text-clay mt-1 font-semibold">วันที่รายการ: {new Date(`${t.effective_date}T00:00:00+07:00`).toLocaleDateString('th-TH')}</span>}
+                    {t.effective_date && <span className="text-xs text-clay mt-1 font-semibold">วันที่รายการ: {new Date(`${t.effective_date}T00:00:00+07:00`).toLocaleDateString('th-TH', { timeZone: 'Asia/Bangkok' })}</span>}
                     {t.status === 'APPROVED' && Number(t.remaining_amount || 0) > 0 && (
                       <span className="text-xs text-amber mt-1 font-semibold">ยอดค้างยกไปเดือนถัดไป: {formatCurrency(t.remaining_amount)}</span>
                     )}
@@ -420,9 +413,9 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
                           หักแล้ว {formatCurrency(deduction.amount)} ในเดือน {deduction.applied_month?.slice(0, 7)}
                         </span>
                       ))}
-                    <span className="text-xs text-ink/50 mt-1">วันที่ทำรายการ: {t.created_at ? new Date(t.created_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-'}</span>
+                    <span className="text-xs text-ink/50 mt-1">วันที่ทำรายการ: {t.created_at ? formatBangkokDateTime(t.created_at) : '-'}</span>
                     {t.status === 'APPROVED' && (
-                      <span className="text-xs text-ink/50">วันที่อนุมัติ: {t.updated_at ? new Date(t.updated_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : (t.created_at ? new Date(t.created_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-')}</span>
+                      <span className="text-xs text-ink/50">วันที่อนุมัติ: {t.updated_at ? formatBangkokDateTime(t.updated_at) : (t.created_at ? formatBangkokDateTime(t.created_at) : '-')}</span>
                     )}
                     {t.type === 'WITHDRAWAL' && t.status === 'APPROVED' && !t.expense_location_id && (
                       <span className="text-xs font-semibold text-river">ส่วนกลางจ่าย (จ่ายนอกระบบ)</span>
@@ -827,10 +820,10 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
         <table className="w-full text-left text-sm whitespace-nowrap">
           <thead>
             <tr className="border-b border-black/10 text-ink/65">
+              <th className="pb-3 font-semibold">จัดการ</th>
               <th className="pb-3 font-semibold">พนักงาน</th>
               <th className="pb-3 font-semibold">ค่าแรง/วัน</th>
               <th className="pb-3 font-semibold">สถานะ</th>
-              <th className="pb-3 font-semibold">จัดการเวลา</th>
               <th className="pb-3 font-semibold">แดชบอร์ด</th>
               <th className="pb-3 font-semibold">หนี้สิน</th>
               <th className="pb-3 font-semibold">สรุปสิ้นเดือน</th>
@@ -858,6 +851,18 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
                   data-time-payroll-self={isSelf ? "true" : undefined}
                   className={`hover:bg-sand/30 data-[time-payroll-self=true]:bg-mint/35 ${user.is_active === false ? 'opacity-70 bg-red-50/50' : ''}`}
                 >
+                  <td className="py-3 pr-3">
+                    {canManageRow ? (
+                      <button onClick={() => {
+                        if (!online) { alert(TIME_TRACKING_OFFLINE_MESSAGE); return; }
+                        setManageTimeUser(user);
+                      }} disabled={!online} title={online ? "เลือกวันทำงาน" : TIME_TRACKING_OFFLINE_MESSAGE}
+                        aria-label={online ? "เลือกวันทำงาน" : TIME_TRACKING_OFFLINE_MESSAGE}
+                        className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-river text-white disabled:cursor-not-allowed disabled:opacity-50">
+                        <CalendarCheck size={17} />
+                      </button>
+                    ) : <span className="text-xs text-ink/45">—</span>}
+                  </td>
                   <td className="py-3">
                     {user.name}
                     {isSelf && <span className="ml-2 rounded border border-leaf/20 bg-mint px-1.5 py-0.5 text-xs font-semibold text-leaf">ของตนเอง</span>}
@@ -879,17 +884,6 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
                             ? 'เดือนปิด'
                             : 'หยุดงาน'}
                     </span>
-                  </td>
-                  <td className="py-3">
-                     {canManageRow ? <button onClick={() => {
-                       if (!online) {
-                        alert(TIME_TRACKING_OFFLINE_MESSAGE);
-                        return;
-                      }
-                      setManageTimeUser(user);
-                    }} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-river text-white px-3 py-1 rounded text-xs hover:bg-river/80 font-bold border border-black/10 shadow-sm disabled:cursor-not-allowed disabled:opacity-50">
-                       คลิกเพื่อติ๊กเลือกวันทำงาน
-                     </button> : <span className="text-xs text-ink/45">—</span>}
                   </td>
                   <td className="py-3">
                      <button onClick={() => setViewDashboardUserId(user.id)} className="inline-flex items-center gap-1 rounded bg-river px-3 py-1 text-xs font-bold text-white hover:bg-river/90">
@@ -1024,13 +1018,7 @@ function ManageTimeModal({ user, admins, online, onClose, onSuccess, onRefresh }
 
     const interval = setInterval(async () => {
       const now = new Date();
-      const startTime = new Date(activeSegment.start_time);
-      let targetDate = new Date(startTime);
-      targetDate.setHours(15, 0, 0, 0);
-
-      if (startTime.getTime() >= targetDate.getTime()) {
-         targetDate.setDate(targetDate.getDate() + 1);
-      }
+      const targetDate = nextBangkokCutoff(activeSegment.start_time);
 
       const diff = targetDate.getTime() - now.getTime();
 
@@ -1054,10 +1042,7 @@ function ManageTimeModal({ user, admins, online, onClose, onSuccess, onRefresh }
 
     if (!isRunning) {
       const now = new Date();
-      const target15 = new Date(now);
-      target15.setHours(15, 0, 0, 0);
-
-      if (now.getTime() >= target15.getTime()) {
+      if (isAtOrAfterBangkokHour(now, 15)) {
         if (!confirm("เลยเวลา 15:00 น. แล้ว\nการเริ่มนับเวลาตอนนี้ จะถูกนับไปรวมกับ 15:00 ของวันพรุ่งนี้\n\nยืนยันการเริ่มนับเวลาหรือไม่?")) {
           return;
         }
@@ -1116,20 +1101,21 @@ function ManageTimeModal({ user, admins, online, onClose, onSuccess, onRefresh }
 
   const initialDates = useMemo(() => {
     const initial: Record<string, 'FULL_DAY' | 'HALF_DAY'> = {};
-    const now = new Date();
+    const currentMonth = bangkokToday().slice(0, 7);
+    const [currentYear, currentMonthNumber] = currentMonth.split("-").map(Number);
 
     // Build prefixes for current month and previous month
     const prefixes: string[] = [];
     for (let offset = 0; offset >= -1; offset--) {
-      const d = new Date(now.getFullYear(), now.getMonth() + offset, 1);
-      const m = String(d.getMonth() + 1).padStart(2, '0');
-      const y = String(d.getFullYear());
+      const d = new Date(Date.UTC(currentYear, currentMonthNumber - 1 + offset, 1));
+      const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const y = String(d.getUTCFullYear());
       prefixes.push(`${y}-${m}-`);
     }
 
     user.time_segments?.forEach((s: any) => {
       if (!s.end_time) return;
-      const d = s.start_time.split('T')[0];
+      const d = bangkokDateString(new Date(s.start_time));
       if (prefixes.some(p => d.startsWith(p))) {
         const start = new Date(s.start_time).getTime();
         const end = new Date(s.end_time).getTime();
@@ -1147,19 +1133,19 @@ function ManageTimeModal({ user, admins, online, onClose, onSuccess, onRefresh }
   }, [initialDates, loadHistory, loadLockedDates]);
 
   const viewDate = useMemo(() => {
-    const now = new Date();
-    return new Date(now.getFullYear(), now.getMonth() + viewMonth, 1);
+    const [year, month] = bangkokToday().slice(0, 7).split("-").map(Number);
+    return new Date(Date.UTC(year, month - 1 + viewMonth, 1));
   }, [viewMonth]);
 
   const days = useMemo(() => {
-    const now = new Date();
-    const targetMonth = viewDate.getMonth();
-    const targetYear = viewDate.getFullYear();
-    const daysInMonth = new Date(targetYear, targetMonth + 1, 0).getDate();
+    const today = bangkokToday();
+    const targetMonth = viewDate.getUTCMonth();
+    const targetYear = viewDate.getUTCFullYear();
+    const daysInMonth = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
 
     // For current month: only show up to today. For past months: show all days.
-    const isCurrentMonth = targetMonth === now.getMonth() && targetYear === now.getFullYear();
-    const maxDay = isCurrentMonth ? now.getDate() : daysInMonth;
+    const isCurrentMonth = `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}` === today.slice(0, 7);
+    const maxDay = isCurrentMonth ? Number(today.slice(8, 10)) : daysInMonth;
 
     const result = [];
     for (let d = 1; d <= maxDay; d++) {
@@ -1313,7 +1299,7 @@ function ManageTimeModal({ user, admins, online, onClose, onSuccess, onRefresh }
             </div>
             {activeSegment && (
               <div className="text-xs text-ink/60 mt-1">
-                เริ่มเมื่อ: {new Date(activeSegment.start_time).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' })}
+                เริ่มเมื่อ: {formatBangkokDateTime(activeSegment.start_time)}
               </div>
             )}
             {activeSegment && timeLeft !== null && (
@@ -1349,7 +1335,7 @@ function ManageTimeModal({ user, admins, online, onClose, onSuccess, onRefresh }
             <ChevronLeft size={14} /> เดือนก่อน
           </button>
           <span className="text-sm font-bold text-ink">
-            {viewDate.toLocaleString('th-TH', { month: 'long', year: 'numeric' })}
+            {viewDate.toLocaleString('th-TH', { month: 'long', year: 'numeric', timeZone: 'UTC' })}
           </span>
           <button
             onClick={() => setViewMonth(0)}
@@ -1438,7 +1424,7 @@ function ManageTimeModal({ user, admins, online, onClose, onSuccess, onRefresh }
                 <li key={h.id} className={`flex justify-between items-center p-2 rounded gap-3 ${isMatching ? 'bg-black/5' : 'bg-sand'}`}>
                   <div className="flex flex-col min-w-0 flex-1">
                     <span className={`font-semibold truncate ${isMatching ? 'text-ink/50' : 'text-ink'}`}>
-                      {new Date(h.created_at).toLocaleString('th-TH')} <span className="text-river">({adminName})</span>
+                      {formatBangkokDateTime(h.created_at)} <span className="text-river">({adminName})</span>
                     </span>
                     <span className="text-ink/60 truncate">ทำงาน {activeDaysCount} วัน</span>
                   </div>
@@ -1515,7 +1501,7 @@ function AuditLogsModal({ adminId, adminName, onClose }: { adminId: string, admi
               <tbody className="divide-y divide-black/5">
                 {logs.map(log => (
                   <tr key={log.id} className="hover:bg-sand/30">
-                    <td className="py-3">{new Date(log.created_at).toLocaleString('th-TH')}</td>
+                    <td className="py-3">{formatBangkokDateTime(log.created_at)}</td>
                     <td className="py-3 font-bold text-river">{log.action}</td>
                     <td className="py-3 text-[11px] text-ink/60 max-w-[150px] truncate" title={JSON.stringify(log.old_data)}>{JSON.stringify(log.old_data) || '-'}</td>
                     <td className="py-3 text-[11px] text-ink/60 max-w-[150px] truncate" title={JSON.stringify(log.new_data)}>{JSON.stringify(log.new_data)}</td>
@@ -1681,7 +1667,7 @@ function PayrollModal({ user, online, onApprove, onReject, onChangePayment, onCl
                         <span>ยอดสุทธิ: <strong className={slip.net_pay < 0 ? 'text-clay' : 'text-leaf'}>{formatCurrency(slip.net_pay)}</strong></span>
                       </div>
 
-                       <span className="text-xs text-ink/50 mt-1">สร้างเมื่อ: {new Date(slip.created_at).toLocaleString('th-TH')}</span>
+                       <span className="text-xs text-ink/50 mt-1">สร้างเมื่อ: {formatBangkokDateTime(slip.created_at)}</span>
                        {Number(slip.net_pay) <= 0 && <span className="text-xs text-ink/55 mt-1">อนุมัติได้ แต่จะไม่สร้างค่าใช้จ่าย</span>}
                        {slip.status === 'APPROVED' && Number(slip.net_pay) > 0 && !slip.expense_location_id && <span className="text-xs font-semibold text-river mt-1">ส่วนกลางจ่าย (จ่ายนอกระบบ)</span>}
                        {slip.admin_comment && <span className="text-xs text-river mt-1">หมายเหตุ: {slip.admin_comment}</span>}

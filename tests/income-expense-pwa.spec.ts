@@ -1,5 +1,6 @@
 import { test, expect, Page } from '@playwright/test';
 import { createClient } from '@supabase/supabase-js';
+import { bangkokDateString } from '../src/lib/bangkok-date';
 
 async function readQueue(page: Page): Promise<any[]> {
   await page.waitForLoadState('domcontentloaded');
@@ -225,5 +226,57 @@ test.describe('Income/Expense PWA Offline Reload', () => {
     expect(dbRows.length).toBe(1);
 
     await cleanupIncomeExpense(page, eventBeforeReload.payload, eventBeforeReload.id, dbRows[0].revision_no);
+  });
+
+  test('blocks a non-current date offline after this device loads the enabled checkbox', async ({ page, context }) => {
+    test.setTimeout(120000);
+    const admin = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const original = await admin.from('income_expense_approval_settings').select('*').eq('id', true).single();
+    expect(original.error).toBeNull();
+    const marker = `PWA-DATE-GUARD-${Date.now()}`;
+    const past = new Date(`${bangkokDateString()}T00:00:00.000Z`);
+    past.setUTCDate(past.getUTCDate() - 1);
+
+    try {
+      expect((await admin.from('income_expense_approval_settings').update({
+        non_current_date_requires_approval: true,
+      }).eq('id', true)).error).toBeNull();
+
+      await page.goto('/login');
+      await page.fill('input[type="tel"]', phone);
+      await page.fill('input[type="password"]', password);
+      await page.click('button:has-text("เข้าสู่ระบบ")');
+      await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+      await page.click('button:has-text("รับ-จ่าย")');
+      await expect(page.locator('button:has-text("เพิ่มรายรับ")')).toBeVisible({ timeout: 10000 });
+      await expect.poll(() => page.evaluate(() => {
+        const value = localStorage.getItem('lanflow:income-expense-approval-settings:v1');
+        return value ? JSON.parse(value).nonCurrentDateRequiresApproval : null;
+      })).toBe(true);
+
+      await context.setOffline(true);
+      await page.click('button:has-text("เพิ่มรายรับ")');
+      const modal = page.locator('.fixed.inset-0').last();
+      await modal.getByLabel('วันที่').fill(past.toISOString().slice(0, 10));
+      await modal.locator('table tbody tr').first().locator('input').first().fill(marker);
+      await modal.locator('table tbody tr').first().locator('input[type="number"]').first().fill('100');
+      await modal.getByRole('button', { name: 'ส่งขออนุมัติ' }).click();
+
+      await expect(page.getByText('รายการต่างจากวันปัจจุบัน ต้องออนไลน์เพื่อส่งคำขออนุมัติ')).toBeVisible();
+      await expect(modal).toBeVisible();
+      expect((await readQueue(page)).some((event) => event.payload?.title === marker)).toBe(false);
+    } finally {
+      await context.setOffline(false).catch(() => {});
+      if (original.data) {
+        await admin.from('income_expense_approval_settings').update({
+          applies_to: original.data.applies_to,
+          approval_min_amount: original.data.approval_min_amount,
+          cash_transfer_delete_requires_approval: original.data.cash_transfer_delete_requires_approval,
+          non_current_date_requires_approval: original.data.non_current_date_requires_approval,
+        }).eq('id', true);
+      }
+    }
   });
 });

@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext, type Browser, type BrowserContext } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
+import { bangkokDateString } from "../../src/lib/bangkok-date";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -247,8 +248,10 @@ test.describe.serial("Cash branch transfer contract @cash-transfer-contract", ()
         .single();
       expect(sourceLocationError).toBeNull();
       const transferId = await createTransfer(superAdmin.request, sourceLocationId, targetLocationId, 2);
-      const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-      const today = new Date().toISOString().slice(0, 10);
+      const today = bangkokDateString();
+      const yesterdayDate = new Date(`${today}T00:00:00.000Z`);
+      yesterdayDate.setUTCDate(yesterdayDate.getUTCDate() - 1);
+      const yesterday = yesterdayDate.toISOString().slice(0, 10);
       expect((await service.from("money_transfer_cash_details").update({ sent_at: `${yesterday}T05:00:00.000Z` }).eq("transfer_id", transferId)).error).toBeNull();
 
       const sourceFeed = await superAdmin.request.get(`/api/lanflow/income-expense/feed?locationId=${sourceLocationId}&from=${yesterday}&to=${yesterday}`);

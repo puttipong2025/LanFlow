@@ -8,17 +8,14 @@ import { useIncomeSaleItems } from "@/hooks/useIncomeSaleItems";
 import { useStockEntryApprovals } from "@/hooks/useStockEntryApprovals";
 import { useStockProductApprovals } from "@/hooks/useStockProductApprovals";
 import { useStockSyncRetry } from "@/hooks/useStockSyncRetry";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency, todayInputValue } from "@/lib/format";
 import { canManageSystemFeatures } from "@/lib/permissions";
 import type { AcidProduct, AcidStockMovement, IncomeSaleItem, Location, Profile, StockEntryApprovalRequest, StockProductApprovalRequest } from "@/types";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { Field } from "@/components/shared/Field";
 import { NumberField } from "@/components/shared/NumberField";
 import { isNetworkCancellation } from "@/lib/network-abort";
-
-function todayInputValue() {
-  return new Date().toISOString().slice(0, 10);
-}
+import { formatBangkokDateTime } from "@/lib/bangkok-date";
 
 function showActionError(error: unknown, fallback: string) {
   if (!isNetworkCancellation(error)) {
@@ -720,11 +717,11 @@ export function AcidStockModule({
             <table className="w-full min-w-[860px] border-collapse text-sm">
               <thead>
                 <tr className="border-b border-black/10 text-left text-ink/60">
+                  <th className="py-2">จัดการ</th>
                   <th className="py-2">วันที่</th>
                   <th>ประเภท</th>
                   <th>สินค้า</th>
                   <th>ผู้ขอ</th>
-                  <th className="text-right">จัดการ</th>
                 </tr>
               </thead>
               <tbody>
@@ -739,7 +736,23 @@ export function AcidStockModule({
                 ) : (
                   pendingApprovalRequests.map((approval) => (
                     <tr key={`${approval.kind}:${approval.id}`} className="border-b border-black/5">
-                      <td className="py-3">{new Date(approval.createdAt).toLocaleString("th-TH")}</td>
+                      <td className="py-3 pr-3">
+                        {canManageSystem ? (
+                          <div className="flex gap-1.5 whitespace-nowrap">
+                            <button type="button" onClick={() => handleDecideApproval(approval, "approved")} disabled={!online}
+                              className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-success text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                              title={online ? "อนุมัติ" : "อนุมัติได้เมื่อออนไลน์"} aria-label={online ? "อนุมัติ" : "อนุมัติได้เมื่อออนไลน์"}>
+                              <Check size={17} />
+                            </button>
+                            <button type="button" onClick={() => handleDecideApproval(approval, "rejected")} disabled={!online}
+                              className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-clay text-white hover:bg-clay/90 disabled:cursor-not-allowed disabled:bg-slate-300"
+                              title={online ? "ปฏิเสธ" : "ปฏิเสธได้เมื่อออนไลน์"} aria-label={online ? "ปฏิเสธ" : "ปฏิเสธได้เมื่อออนไลน์"}>
+                              <X size={17} />
+                            </button>
+                          </div>
+                        ) : <span className="text-xs font-semibold text-ink/50">รอผู้จัดการระบบ</span>}
+                      </td>
+                      <td className="py-3">{formatBangkokDateTime(approval.createdAt)}</td>
                       <td>
                         <span className="rounded-full bg-ink/10 px-2 py-1 text-xs font-bold text-ink/70">
                           {approval.typeLabel}
@@ -747,32 +760,6 @@ export function AcidStockModule({
                       </td>
                       <td className="font-semibold text-ink">{approval.detail}</td>
                       <td>{approval.requestedByName || "ระบบ"} {approval.requestedByPhone ? `• ${approval.requestedByPhone}` : ""}</td>
-                      <td className="text-right">
-                        {canManageSystem ? (
-                          <div className="flex justify-end gap-2">
-                            <button
-                              type="button"
-                              onClick={() => handleDecideApproval(approval, "approved")}
-                              disabled={!online}
-                              className="focus-ring inline-flex h-10 items-center gap-1 rounded-md bg-success px-3 text-xs font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
-                            >
-                              <Check size={14} />
-                              อนุมัติ
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDecideApproval(approval, "rejected")}
-                              disabled={!online}
-                              className="focus-ring inline-flex h-9 items-center gap-1 rounded-md bg-clay px-3 text-xs font-bold text-white hover:bg-clay/90 disabled:cursor-not-allowed disabled:bg-slate-300"
-                            >
-                              <X size={14} />
-                              ปฏิเสธ
-                            </button>
-                          </div>
-                        ) : (
-                          <span className="text-xs font-semibold text-ink/50">รอผู้จัดการระบบ</span>
-                        )}
-                      </td>
                     </tr>
                   ))
                 )}
@@ -797,6 +784,7 @@ export function AcidStockModule({
           <table className="w-full min-w-[1220px] border-collapse text-sm">
             <thead>
               <tr className="border-b border-black/10 text-left text-ink/60">
+                <th className="py-2">จัดการ</th>
                 <th className="py-2">วันที่</th>
                 <th>เลขบิล</th>
                 <th>สินค้า</th>
@@ -805,7 +793,6 @@ export function AcidStockModule({
                 <th className="text-right">ยอดเงิน</th>
                 <th>ผู้บันทึก</th>
                 <th>สถานะ</th>
-                <th className="text-right">จัดการ</th>
               </tr>
             </thead>
             <tbody>
@@ -820,6 +807,21 @@ export function AcidStockModule({
               ) : (
                 movements.map((movement) => (
                   <tr key={movement.movementId} className="border-b border-black/5 hover:bg-field/50">
+                    <td className="py-3 pr-3">
+                      {movement.sourceType !== "stock_entry" ? (
+                        <span className="text-xs font-semibold text-ink/40">-</span>
+                      ) : movement.txType === "transfer_in" ? (
+                        <span className="text-xs font-semibold text-ink/50" title="ลบจากฝั่งย้ายออก">-</span>
+                      ) : (
+                        <button type="button" onClick={() => handleDeleteStockMovement(movement)}
+                          disabled={!online || Boolean(movement.reportLockNo)}
+                          title={movement.reportLockNo ? `ล็อกโดยรายงาน ${movement.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน` : online ? "ส่งคำขอลบรายการสต็อก" : "ลบรายการสต็อกได้เมื่อออนไลน์เท่านั้น"}
+                          aria-label={movement.reportLockNo ? `ล็อกโดยรายงาน ${movement.reportLockNo}` : "ลบรายการสต็อก"}
+                          className="focus-ring inline-flex h-10 items-center gap-1 rounded-md bg-clay px-3 text-xs font-bold text-white hover:bg-clay/90 disabled:cursor-not-allowed disabled:bg-slate-300">
+                          <Trash2 size={16} /> ลบ
+                        </button>
+                      )}
+                    </td>
                     <td className="py-3">{movement.txDate}</td>
                     <td className="font-semibold">{movement.displayBillNo}</td>
                     <td>{movement.productName}</td>
@@ -840,26 +842,6 @@ export function AcidStockModule({
                           <X size={12} className="rotate-45" />
                           รายการสต็อก
                         </span>
-                      )}
-                    </td>
-                    <td className="text-right">
-                      {movement.sourceType !== "stock_entry" ? (
-                        <span className="text-xs font-semibold text-ink/40">-</span>
-                      ) : movement.txType === "transfer_in" ? (
-                        <span className="text-xs font-semibold text-ink/50">ลบจากฝั่งย้ายออก</span>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteStockMovement(movement)}
-                          disabled={!online || Boolean(movement.reportLockNo)}
-                          title={movement.reportLockNo
-                            ? `ล็อกโดยรายงาน ${movement.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`
-                            : online ? undefined : "ลบรายการสต็อกได้เมื่อออนไลน์เท่านั้น"}
-                          className="focus-ring inline-flex h-9 items-center gap-1 rounded-md bg-clay px-3 text-xs font-bold text-white hover:bg-clay/90 disabled:cursor-not-allowed disabled:bg-slate-300"
-                        >
-                          <Trash2 size={14} />
-                          ขอลบ
-                        </button>
                       )}
                     </td>
                   </tr>

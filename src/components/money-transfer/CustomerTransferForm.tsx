@@ -29,6 +29,8 @@ import type {
 import { formatCurrency } from "@/lib/format";
 import { authFetch } from "@/lib/auth-fetch";
 import { SlipRow, type OcrSlipResult } from "./SlipRow";
+import { normalizeBangkokDateTime } from "@/lib/bangkok-date";
+import { formatBangkokDateTime } from "@/lib/bangkok-date";
 import { ItemPicker } from "./ItemPicker";
 import { deriveMoneyTransferStatus, sumMoneyTransferSlips } from "@/lib/money-transfers/state";
 
@@ -191,7 +193,7 @@ export function CustomerTransferForm({
             fee: result.fee ?? 0,
             senderName: result.sender_name ?? null,
             receiverName: result.receiver_name ?? null,
-            transactionDate: result.transaction_date ?? null,
+            transactionDate: normalizeBangkokDateTime(result.transaction_date),
             slipImageUrl: null,
             sortOrder: slips.length,
           };
@@ -395,7 +397,7 @@ export function CustomerTransferForm({
         <div className="rounded-lg border border-black/5 bg-field/40 p-3">
           <p className="text-xs font-semibold text-ink/50">วันเวลาสร้าง</p>
           <p className="mt-1 text-sm font-semibold text-ink">
-            {new Date().toLocaleString("th-TH", { dateStyle: "short", timeStyle: "short" })}
+            {formatBangkokDateTime(new Date())}
           </p>
         </div>
       </div>

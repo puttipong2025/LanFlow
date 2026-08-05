@@ -226,7 +226,7 @@ export function useRubberBills(
   ownerUserId: string,
   approvalSettings?: Pick<
     RubberBillApprovalSettings,
-    "editWindowMinutes" | "configuredPrice"
+    "editWindowMinutes" | "configuredPrice" | "nonCurrentDateRequiresApproval"
   > | null
 ) {
   const supabase = createSupabaseBrowserClient();
@@ -549,6 +549,7 @@ export function useRubberBills(
         }
         assertOfflineRubberBillPriceAllowed(
           (bill.weighItems ?? []).map((item) => item.price),
+          bill.billDate,
           approvalSettings,
           navigator.onLine
         );

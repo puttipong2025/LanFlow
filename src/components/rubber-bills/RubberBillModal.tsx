@@ -47,6 +47,7 @@ export function RubberBillModal({
   profile,
   bill,
   configuredPrice,
+  nonCurrentDateRequiresApproval = false,
   customers,
   onClose,
   onSave
@@ -55,6 +56,7 @@ export function RubberBillModal({
   profile: Profile;
   bill: RubberBill | null;
   configuredPrice?: number | null;
+  nonCurrentDateRequiresApproval?: boolean;
   customers: RubberBillCustomerOption[];
   onClose: () => void;
   onSave: (bill: RubberBill) => boolean | void | Promise<boolean | void>;
@@ -80,6 +82,7 @@ export function RubberBillModal({
   const [stockDeductionItems, setStockDeductionItems] = useState<RubberStockDeductionItem[]>(() => bill?.acidItems ?? []);
   const [debtItems, setDebtItems] = useState<RubberDebtItem[]>(() => bill?.debtItems ?? (bill?.debtItem ? [bill.debtItem] : []));
   const [weightDeduct, setWeightDeduct] = useState(bill?.deductWeight ?? 0);
+  const [isWeightDeductOpen, setIsWeightDeductOpen] = useState(() => (bill?.deductWeight ?? 0) !== 0);
   const [billDate, setBillDate] = useState(bill?.billDate ?? todayInputValue());
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const validationSummaryRef = useRef<HTMLDivElement>(null);
@@ -139,7 +142,10 @@ export function RubberBillModal({
         setStockDeductionItems(draft.stockDeductionItems);
       }
       if (Array.isArray(draft.debtItems)) setDebtItems(draft.debtItems);
-      if (Number.isFinite(draft.weightDeduct)) setWeightDeduct(draft.weightDeduct);
+      if (Number.isFinite(draft.weightDeduct)) {
+        setWeightDeduct(draft.weightDeduct);
+        setIsWeightDeductOpen(draft.weightDeduct !== 0);
+      }
     },
   });
 
@@ -172,6 +178,8 @@ export function RubberBillModal({
     hasPriceChange &&
     configuredPrice != null &&
     weighItems.some((item) => Math.round(item.price * 100) > Math.round(configuredPrice * 100));
+  const requiresNonCurrentDateApproval =
+    nonCurrentDateRequiresApproval && billDate !== todayInputValue();
 
   function updateWeighItem(id: string, patch: Partial<Omit<RubberWeighItem, "id">>) {
     setWeighItems((current) =>
@@ -391,6 +399,11 @@ export function RubberBillModal({
               onChange={(event) => setBillDate(event.target.value)}
               required
             />
+            {requiresNonCurrentDateApproval && (
+              <p role="status" className="md:col-span-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                วันที่บิลไม่ใช่วันปัจจุบัน — รายการนี้จะถูกส่งขออนุมัติ
+              </p>
+            )}
 
             <div className="text-center md:col-span-1">
               <p className="mb-2 text-sm font-bold text-ink">สถานะสมาชิก</p>
@@ -533,9 +546,6 @@ export function RubberBillModal({
             <button type="button" onClick={addWeighItem} className="rounded-md bg-leaf px-4 py-2 text-sm font-bold text-white">
               เพิ่มรายการชั่ง
             </button>
-            <div className="w-32">
-              <NumberField label="หักน้ำหนักยาง (กก.)" value={weightDeduct} onChange={setWeightDeduct} />
-            </div>
           </div>
         </section>
 
@@ -657,6 +667,32 @@ export function RubberBillModal({
         </section>
 
         <section className="grid gap-3 p-3 sm:w-48 sm:p-4">
+          <button
+            type="button"
+            aria-expanded={isWeightDeductOpen}
+            aria-controls="rubber-weight-deduction-field"
+            onClick={() => {
+              if (isWeightDeductOpen) {
+                setWeightDeduct(0);
+                setIsWeightDeductOpen(false);
+                return;
+              }
+              setIsWeightDeductOpen(true);
+            }}
+            className="focus-ring h-11 w-full rounded-md border border-black/10 bg-white px-3 text-sm font-semibold text-ink hover:bg-slate-50"
+          >
+            {isWeightDeductOpen ? "ยกเลิกหักน้ำหนัก" : "หักน้ำหนักยาง"}
+          </button>
+          {isWeightDeductOpen && (
+            <div id="rubber-weight-deduction-field">
+              <NumberField
+                label="หักน้ำหนักยาง (กก.)"
+                value={weightDeduct}
+                onChange={setWeightDeduct}
+                autoFocus={weightDeduct === 0}
+              />
+            </div>
+          )}
           <NumberField label="น้ำหนักสุทธิ (กก.)" value={calculation.netWeight} readOnly />
           <NumberField label="ราคาเฉลี่ย (บาท/กก.)" value={calculation.averagePrice} readOnly />
           <NumberField label="มูลค่ายาง (บาท)" value={calculation.rubberValue} readOnly />
@@ -667,7 +703,7 @@ export function RubberBillModal({
         <div className="modal-actions flex justify-center border-t border-black/10 p-4">
           <button className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-commit px-5 font-semibold text-white hover:bg-commit/90">
             <Save size={18} />
-            บันทึกบิล
+            {requiresNonCurrentDateApproval || exceedsConfiguredPrice ? "ส่งขออนุมัติ" : "บันทึกบิล"}
           </button>
         </div>
       </form>

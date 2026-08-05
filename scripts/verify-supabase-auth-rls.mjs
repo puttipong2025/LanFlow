@@ -125,7 +125,7 @@ try {
     location_id: locations[0].id,
     type: "expense",
     number: `RLS-${suffix}`,
-    tx_date: new Date().toISOString().slice(0, 10),
+    tx_date: new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Bangkok' }),
     title: "RLS verification",
     cost: 1,
     created_by_user_id: users[0].id,

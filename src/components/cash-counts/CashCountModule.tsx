@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Banknote, Loader2, RotateCw, Trash2, X } from "lucide-react";
+import { Banknote, Eye, Loader2, RotateCw, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import type { Location, Profile } from "@/types";
 import { CASH_DENOMINATIONS, type CashCountDetail, type CashCountReceipt, type CashCountSession, type CashCountSummary, type CashDenomination } from "@/types/cash-counts";
@@ -182,7 +182,39 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
         : <div className="mt-5"><div className="flex flex-wrap items-center justify-between gap-2 text-sm"><span className="font-semibold text-ink">Cutoff {dateTime(session.cutoffAt)}</span><span className="rounded-md bg-amber/20 px-3 py-1 font-bold text-amber-900">เหลือ {Math.floor(secondsLeft / 60)}:{String(secondsLeft % 60).padStart(2, "0")} นาที</span></div><div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">{CASH_DENOMINATIONS.map((d) => <label key={d} className="rounded-lg border border-black/10 bg-field p-3"><span className="text-sm font-semibold text-ink">{d >= 20 ? "ธนบัตร" : "เหรียญ"} {d} บาท</span><div className="mt-2"><InlineNumber value={values[d]} integerOnly ariaLabel={`จำนวนเงินชนิด ${d} บาท`} onChange={(value) => setValues((current) => ({ ...current, [d]: value }))} /></div></label>)}</div><div className="mt-4 flex flex-col gap-3 rounded-lg bg-mint/45 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-sm text-ink/60">ยอดรวมที่กรอก</div><div className="text-2xl font-bold text-ink">{money(actualTotal)} บาท</div></div><div className="flex gap-2"><button type="button" onClick={() => setConfirmMode("cancel")} className="focus-ring inline-flex items-center gap-1 rounded-md border border-clay px-4 py-2 font-semibold text-clay"><X size={16} />ยกเลิก</button><button type="button" onClick={() => setConfirmMode("submit")} disabled={!complete || working} className="focus-ring rounded-md bg-leaf px-5 py-2 font-semibold text-white disabled:opacity-50">ยืนยันและส่งผล</button></div></div>{!complete && <p className="mt-2 text-sm text-clay">กรุณากรอกครบทั้ง 9 ชนิด รวมถึงระบุ 0 อย่างชัดเจน</p>}</div>}
       </div>
 
-      {manager && <div className="rounded-xl bg-white shadow-sm"><div className="flex items-center justify-between border-b border-black/5 p-4"><div><h3 className="font-bold text-ink">ประวัติผลตรวจนับสาขานี้</h3><p className="text-sm text-ink/60">แสดงทีละสาขาตามตัวเลือกหลักของแอป</p></div></div><div className="overflow-x-auto"><table className="min-w-full text-sm"><thead className="bg-mint/50 text-left"><tr><th className="px-4 py-3">รายงาน</th><th className="px-4 py-3">ผู้ตรวจ</th><th className="px-4 py-3 text-right">จริง / คาดการณ์</th><th className="px-4 py-3">ผลวิเคราะห์</th><th className="px-4 py-3 text-right">การทำงาน</th></tr></thead><tbody className="divide-y divide-black/5">{history.length === 0 && <tr><td colSpan={5} className="px-4 py-7 text-center text-ink/55">ยังไม่มีผลตรวจนับ</td></tr>}{history.map((item) => <tr key={item.id} className={item.status === "deleted" ? "bg-slate-50 text-ink/45" : ""}><td className="px-4 py-3"><div className="font-semibold">{item.reportNo}</div><div className="text-xs">{dateTime(item.createdAt)}</div></td><td className="px-4 py-3">{item.createdByName}</td><td className="px-4 py-3 text-right">{money(item.actualTotal)} / {money(item.expectedTotal)}</td><td className="px-4 py-3">{statusLabel(item.analysisStatus)}{item.anomalyScore != null && <div className="text-xs">คะแนน {item.anomalyScore} · มั่นใจ {item.confidence}</div>}</td><td className="px-4 py-3"><div className="flex justify-end gap-2"><button type="button" onClick={() => void loadDetail(item.id).catch((error) => toast.error(error instanceof Error ? error.message : "โหลดรายละเอียดไม่สำเร็จ"))} className="focus-ring rounded-md bg-river px-3 py-1.5 font-semibold text-white">ดูรายละเอียด</button>{item.status === "active" && history.find((candidate) => candidate.status === "active")?.id === item.id && <button type="button" onClick={() => { setDeleteTarget(item); setConfirmMode("delete"); }} className="focus-ring inline-flex items-center gap-1 rounded-md bg-clay px-3 py-1.5 font-semibold text-white"><Trash2 size={14} />ลบชุดล่าสุด</button>}</div></td></tr>)}</tbody></table></div></div>}
+      {manager && (
+        <div className="rounded-xl bg-white shadow-sm">
+          <div className="flex items-center justify-between border-b border-black/5 p-4">
+            <div><h3 className="font-bold text-ink">ประวัติผลตรวจนับสาขานี้</h3><p className="text-sm text-ink/60">แสดงทีละสาขาตามตัวเลือกหลักของแอป</p></div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-mint/50 text-left"><tr><th className="px-4 py-3">จัดการ</th><th className="px-4 py-3">รายงาน</th><th className="px-4 py-3">ผู้ตรวจ</th><th className="px-4 py-3 text-right">จริง / คาดการณ์</th><th className="px-4 py-3">ผลวิเคราะห์</th></tr></thead>
+              <tbody className="divide-y divide-black/5">
+                {history.length === 0 && <tr><td colSpan={5} className="px-4 py-7 text-center text-ink/55">ยังไม่มีผลตรวจนับ</td></tr>}
+                {history.map((item) => (
+                  <tr key={item.id} className={item.status === "deleted" ? "bg-slate-50 text-ink/45" : ""}>
+                    <td className="px-4 py-3"><div className="flex gap-1.5 whitespace-nowrap">
+                      <button type="button" onClick={() => void loadDetail(item.id).catch((error) => toast.error(error instanceof Error ? error.message : "โหลดรายละเอียดไม่สำเร็จ"))}
+                        title="ดูรายละเอียด" aria-label="ดูรายละเอียด"
+                        className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-river text-white"><Eye size={17} /></button>
+                      {item.status === "active" && history.find((candidate) => candidate.status === "active")?.id === item.id && (
+                        <button type="button" onClick={() => { setDeleteTarget(item); setConfirmMode("delete"); }}
+                          title="ลบชุดล่าสุด" aria-label="ลบชุดล่าสุด"
+                          className="focus-ring inline-flex h-10 items-center gap-1 rounded-md bg-clay px-3 font-semibold text-white"><Trash2 size={16} />ลบ</button>
+                      )}
+                    </div></td>
+                    <td className="px-4 py-3"><div className="font-semibold">{item.reportNo}</div><div className="text-xs">{dateTime(item.createdAt)}</div></td>
+                    <td className="px-4 py-3">{item.createdByName}</td>
+                    <td className="px-4 py-3 text-right">{money(item.actualTotal)} / {money(item.expectedTotal)}</td>
+                    <td className="px-4 py-3">{statusLabel(item.analysisStatus)}{item.anomalyScore != null && <div className="text-xs">คะแนน {item.anomalyScore} · มั่นใจ {item.confidence}</div>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {manager && detail && <div className="rounded-xl border border-black/10 bg-white p-4 shadow-panel sm:p-5"><div className="flex items-start justify-between gap-3"><div><h3 className="text-balance text-lg font-bold text-ink">รายละเอียด {detail.reportNo}</h3><p className="mt-1 text-sm text-ink/60">สูตร {detail.formulaVersion} · {statusLabel(detail.analysisStatus)}</p></div><button type="button" onClick={() => setDetail(null)} aria-label="ปิดรายละเอียด" className="focus-ring rounded-md p-2 text-ink/60"><X size={18} /></button></div><div className="mt-4 grid gap-3 sm:grid-cols-3"><div className="rounded-lg bg-field p-3"><div className="text-xs text-ink/55">ยอดจริง</div><div className="text-lg font-bold">{money(detail.actualTotal)}</div></div><div className="rounded-lg bg-field p-3"><div className="text-xs text-ink/55">ยอดคาดการณ์</div><div className="text-lg font-bold">{money(detail.expectedTotal)}</div></div><div className="rounded-lg bg-field p-3"><div className="text-xs text-ink/55">ส่วนต่าง</div><div className="text-lg font-bold">{money(detail.differenceTotal)}</div></div></div><div className="mt-4 grid grid-cols-3 gap-2 sm:grid-cols-9">{CASH_DENOMINATIONS.map((d) => <div key={d} className="rounded-md border border-black/5 p-2 text-center"><div className="text-xs text-ink/50">฿{d}</div><div className="font-bold">{detail.actualCounts[String(d)]}</div><div className="text-xs text-ink/55">คาด {detail.expectedCounts[String(d)]}</div></div>)}</div><div className="mt-5 grid gap-4 lg:grid-cols-2"><div><h4 className="font-bold text-ink">ประเด็นสำคัญ</h4><ul className="mt-2 space-y-1 text-sm text-ink/75">{detail.evidence.highlights?.map((item) => <li key={item}>• {item}</li>)}</ul></div><div><h4 className="font-bold text-ink">ข้อจำกัดการคำนวณ</h4><ul className="mt-2 space-y-1 text-sm text-ink/75">{detail.evidence.limitations?.map((item) => <li key={item}>• {item}</li>)}</ul></div></div><details className="mt-5 rounded-lg border border-black/10 p-3"><summary className="cursor-pointer font-semibold text-ink">รายการอ้างอิง ({detail.evidence.references?.length ?? 0})</summary><div className="mt-3 space-y-2 text-sm text-ink/70">{detail.evidence.references?.map((item, index) => <div key={`${String(item.id ?? "ref")}-${index}`} className="rounded-md bg-field p-2">{String(item.label ?? item.source ?? "รายการ")} · {money(Number(item.amount ?? 0))} บาท</div>)}</div></details></div>}
 

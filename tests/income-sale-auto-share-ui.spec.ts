@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { selectAppLocation } from "./helpers/select-app-location";
+import { bangkokDateString } from "../src/lib/bangkok-date";
 
 test.use({ storageState: { cookies: [], origins: [] } });
 
@@ -223,7 +224,7 @@ test("waits for an edited sale line to sync and keeps the server bill number on 
   const serverBillNo = "SERVER-EDIT-1001";
   const clientTempId = crypto.randomUUID();
   const rowId = crypto.randomUUID();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = bangkokDateString();
   let releaseSync!: () => void;
   const syncGate = new Promise<void>((resolve) => {
     releaseSync = resolve;

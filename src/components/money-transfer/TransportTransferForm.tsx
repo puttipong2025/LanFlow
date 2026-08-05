@@ -8,6 +8,7 @@ import { authFetch } from "@/lib/auth-fetch";
 import type { MoneyTransfer, MoneyTransferSlip } from "@/types";
 import { useTransportStaffs } from "@/hooks/useTransportStaffs";
 import { SlipRow, type OcrSlipResult } from "./SlipRow";
+import { normalizeBangkokDateTime } from "@/lib/bangkok-date";
 import { formatCurrency } from "@/lib/format";
 import { deriveMoneyTransferStatus, sumMoneyTransferSlips } from "@/lib/money-transfers/state";
 
@@ -128,7 +129,7 @@ export function TransportTransferForm({
             fee: result.fee ?? 0,
             senderName: result.sender_name ?? null,
             receiverName: result.receiver_name ?? null,
-            transactionDate: result.transaction_date ?? null,
+            transactionDate: normalizeBangkokDateTime(result.transaction_date),
             slipImageUrl: null,
             sortOrder: slips.length,
           };

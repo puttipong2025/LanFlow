@@ -74,6 +74,7 @@ export function useRubberBillApprovals({
       return {
         editWindowMinutes: data?.edit_window_minutes ?? 30,
         configuredPrice: data?.configured_price == null ? null : Number(data.configured_price),
+        nonCurrentDateRequiresApproval: data?.non_current_date_requires_approval ?? false,
         updatedByName: data?.updated_by_name,
         updatedByPhone: data?.updated_by_phone,
         updatedAt: data?.updated_at,
@@ -109,6 +110,7 @@ export function useRubberBillApprovals({
     setCachedSettings({
       editWindowMinutes: settingsQuery.data.editWindowMinutes,
       configuredPrice: settingsQuery.data.configuredPrice,
+      nonCurrentDateRequiresApproval: settingsQuery.data.nonCurrentDateRequiresApproval,
       cachedAt: new Date().toISOString(),
     });
   }, [settingsQuery.data]);
@@ -168,7 +170,7 @@ export function useRubberBillApprovals({
   }
 
   const saveSettingsMutation = useMutation({
-    mutationFn: async (settings: Pick<RubberBillApprovalSettings, "editWindowMinutes" | "configuredPrice">) => {
+    mutationFn: async (settings: Pick<RubberBillApprovalSettings, "editWindowMinutes" | "configuredPrice" | "nonCurrentDateRequiresApproval">) => {
       const response = await authFetch("/api/lanflow/rubber-bills/approval-settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },

@@ -2,6 +2,7 @@ import { expect, test, type Browser, type BrowserContext } from "@playwright/tes
 import { createClient } from "@supabase/supabase-js";
 import { selectAppLocation } from "../helpers/select-app-location";
 import type { ReportDetails } from "@/types/reports";
+import { bangkokDateString } from "../../src/lib/bangkok-date";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -121,7 +122,7 @@ async function addIncomeExpense(
     location_id: locationId,
     type,
     number,
-    tx_date: new Date().toISOString().slice(0, 10),
+    tx_date: bangkokDateString(),
     title,
     cost: entry.cost ?? 1250,
     bill_option: type === "income" ? "รายรับ" : "ค่าใช้จ่าย",
@@ -165,7 +166,7 @@ async function addIncomeExpenses(
       location_id: locationId,
       type: index % 2 === 0 ? "income" : "expense",
       number,
-      tx_date: now.toISOString().slice(0, 10),
+      tx_date: bangkokDateString(now),
       title: `รายการภาษาไทยสำหรับทดสอบหลายหน้า ${index + 1}`,
       cost: 100 + index,
       bill_option: index % 2 === 0 ? "รายรับ" : "ค่าใช้จ่าย",
@@ -185,7 +186,7 @@ async function addRubberBill(
   locationId: string,
   actor: { id: string; name: string; phone: string },
   prices: number[],
-  billDate = new Date().toISOString().slice(0, 10)
+  billDate = bangkokDateString()
 ) {
   const id = crypto.randomUUID();
   const number = `RB-PAY-${id.slice(0, 8)}`;
@@ -954,7 +955,7 @@ test.describe.serial("Report batch contract @report-batch", () => {
         record_status: "active",
         location_id: locationId,
         bill_no: rubberNumber,
-        bill_date: new Date().toISOString().slice(0, 10),
+        bill_date: bangkokDateString(),
         customer_name: customerName,
         bill_type: "weighing",
         weight: 10,
@@ -1008,7 +1009,7 @@ test.describe.serial("Report batch contract @report-batch", () => {
         id: slipId,
         transfer_id: transferId,
         amount: 40,
-        transaction_date: new Date().toISOString().slice(0, 10),
+        transaction_date: bangkokDateString(),
         sort_order: 0,
       })).error).toBeNull();
 

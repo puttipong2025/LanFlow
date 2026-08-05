@@ -29,7 +29,7 @@ const matchModeLabels: Record<IncomeExpenseApprovalMatchMode, string> = {
 const reasonLabels: Record<IncomeExpenseApprovalReason, string> = {
   keyword: "ข้อความที่กำหนด",
   amount_threshold: "ยอดถึงเกณฑ์",
-  keyword_and_amount: "ข้อความและยอดถึงเกณฑ์",
+  non_current_date: "วันที่ไม่ใช่วันปัจจุบัน",
 };
 
 const statusLabels: Record<IncomeExpenseApprovalStatus, string> = {
@@ -94,6 +94,7 @@ export function IncomeExpenseApprovalModal({
   const [settingsAppliesTo, setSettingsAppliesTo] = useState<IncomeExpenseApprovalAppliesTo>("both");
   const [settingsMinAmount, setSettingsMinAmount] = useState("");
   const [cashDeleteRequiresApproval, setCashDeleteRequiresApproval] = useState(true);
+  const [nonCurrentDateRequiresApproval, setNonCurrentDateRequiresApproval] = useState(false);
   const [isAdding, setIsAdding] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [decidingId, setDecidingId] = useState<string | null>(null);
@@ -103,6 +104,7 @@ export function IncomeExpenseApprovalModal({
     setSettingsAppliesTo(settings.appliesTo);
     setSettingsMinAmount(settings.approvalMinAmount != null ? String(settings.approvalMinAmount) : "");
     setCashDeleteRequiresApproval(settings.cashTransferDeleteRequiresApproval);
+    setNonCurrentDateRequiresApproval(settings.nonCurrentDateRequiresApproval);
   }, [settings]);
 
   useEffect(() => {
@@ -143,6 +145,7 @@ export function IncomeExpenseApprovalModal({
         appliesTo: settingsAppliesTo,
         approvalMinAmount,
         cashTransferDeleteRequiresApproval: cashDeleteRequiresApproval,
+        nonCurrentDateRequiresApproval,
       });
       toast.success("บันทึกการตั้งค่าอนุมัติแล้ว");
     } catch (error) {
@@ -305,6 +308,18 @@ export function IncomeExpenseApprovalModal({
           <label className="mt-4 flex items-start gap-3 rounded-md bg-field/55 p-3 text-sm text-ink">
             <input
               type="checkbox"
+              checked={nonCurrentDateRequiresApproval}
+              onChange={(event) => setNonCurrentDateRequiresApproval(event.target.checked)}
+              className="mt-0.5 h-4 w-4 accent-river"
+            />
+            <span>
+              <strong className="block">ขออนุมัติเมื่อวันที่รับ–จ่ายไม่ใช่วันปัจจุบัน</strong>
+              <span className="text-ink/60">ตรวจทั้งวันย้อนหลังและวันล่วงหน้าตามเวลาไทย</span>
+            </span>
+          </label>
+          <label className="mt-3 flex items-start gap-3 rounded-md bg-field/55 p-3 text-sm text-ink">
+            <input
+              type="checkbox"
               checked={cashDeleteRequiresApproval}
               onChange={(event) => setCashDeleteRequiresApproval(event.target.checked)}
               className="mt-0.5 h-4 w-4 accent-river"
@@ -459,6 +474,7 @@ export function IncomeExpenseApprovalModal({
             <table className="w-full min-w-[1080px] border-collapse text-sm">
               <thead>
                 <tr className="border-b border-black/10 text-left text-ink/60">
+                  <th className="py-2">จัดการ</th>
                   <th className="py-2">สถานะ</th>
                   <th>ประเภท</th>
                   <th>สาขา</th>
@@ -467,7 +483,6 @@ export function IncomeExpenseApprovalModal({
                   <th>เหตุผล</th>
                   <th>ผู้ขอ</th>
                   <th>วันที่</th>
-                  <th className="text-right">Action</th>
                 </tr>
               </thead>
               <tbody>
@@ -487,6 +502,24 @@ export function IncomeExpenseApprovalModal({
                   <>
                   {filteredCashDeleteRequests.map((request) => (
                     <tr key={`cash-delete:${request.id}`} className="border-b border-black/5">
+                      <td className="py-3 pr-3">
+                        {request.requestStatus === "pending" && (
+                          <div className="flex gap-1.5 whitespace-nowrap">
+                            <button type="button" disabled={decidingId === request.id}
+                              onClick={() => void handleCashDeleteDecision(request.id, "approved")}
+                              className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-success text-white disabled:opacity-50"
+                              title="อนุมัติการลบ" aria-label="อนุมัติการลบ">
+                              <Check size={17} />
+                            </button>
+                            <button type="button" disabled={decidingId === request.id}
+                              onClick={() => void handleCashDeleteDecision(request.id, "rejected")}
+                              className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-clay text-white disabled:opacity-50"
+                              title="ปฏิเสธการลบ" aria-label="ปฏิเสธการลบ">
+                              <X size={17} />
+                            </button>
+                          </div>
+                        )}
+                      </td>
                       <td className="py-3">
                         <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${
                           request.requestStatus === "pending"
@@ -510,36 +543,26 @@ export function IncomeExpenseApprovalModal({
                       <td>ลบหลังปลายทางตรวจรับ</td>
                       <td>{request.requestedByName} · {request.requestedByPhone}</td>
                       <td>{formatDateTime(request.createdAt)}</td>
-                      <td className="text-right">
-                        {request.requestStatus === "pending" && (
-                          <div className="flex justify-end gap-2">
-                            <button
-                              type="button"
-                              disabled={decidingId === request.id}
-                              onClick={() => void handleCashDeleteDecision(request.id, "approved")}
-                              className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-success px-3 text-sm font-semibold text-white disabled:opacity-50"
-                              title="อนุมัติการลบ"
-                            >
-                              <Check size={16} />
-                              อนุมัติ
-                            </button>
-                            <button
-                              type="button"
-                              disabled={decidingId === request.id}
-                              onClick={() => void handleCashDeleteDecision(request.id, "rejected")}
-                              className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-clay px-3 text-sm font-semibold text-white disabled:opacity-50"
-                              title="ปฏิเสธการลบ"
-                            >
-                              <X size={16} />
-                              ปฏิเสธ
-                            </button>
-                          </div>
-                        )}
-                      </td>
                     </tr>
                   ))}
                   {filteredRequests.map((request) => (
                     <tr key={request.id} className="border-b border-black/5">
+                      <td className="py-3 pr-3">
+                        {request.requestStatus === "pending" && (
+                          <div className="flex gap-1.5 whitespace-nowrap">
+                            <button type="button" disabled={decidingId === request.id} onClick={() => void handleApprove(request.id)}
+                              className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-success text-white disabled:opacity-50"
+                              title="อนุมัติ" aria-label="อนุมัติ">
+                              <Check size={17} />
+                            </button>
+                            <button type="button" disabled={decidingId === request.id} onClick={() => void handleReject(request.id)}
+                              className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-clay text-white disabled:opacity-50"
+                              title="ปฏิเสธ" aria-label="ปฏิเสธ">
+                              <X size={17} />
+                            </button>
+                          </div>
+                        )}
+                      </td>
                       <td className="py-3">
                         <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${
                           request.requestStatus === "pending"
@@ -573,35 +596,9 @@ export function IncomeExpenseApprovalModal({
                       <td className={request.txType === "income" ? "font-semibold text-leaf" : "font-semibold text-clay"}>
                         {formatCurrency(request.cost)}
                       </td>
-                      <td>{reasonLabels[request.matchedReason]}</td>
+                      <td>{request.matchedReasons.map((reason) => reasonLabels[reason]).join(" · ")}</td>
                       <td>{request.requestedByName} · {request.requestedByPhone}</td>
                       <td>{formatDateTime(request.createdAt)}</td>
-                      <td className="text-right">
-                        {request.requestStatus === "pending" && (
-                          <div className="flex justify-end gap-2">
-                            <button
-                              type="button"
-                              disabled={decidingId === request.id}
-                              onClick={() => void handleApprove(request.id)}
-                              className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-success px-3 text-sm font-semibold text-white disabled:opacity-50"
-                              title="อนุมัติ"
-                            >
-                              <Check size={16} />
-                              อนุมัติ
-                            </button>
-                            <button
-                              type="button"
-                              disabled={decidingId === request.id}
-                              onClick={() => void handleReject(request.id)}
-                              className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-clay px-3 text-sm font-semibold text-white disabled:opacity-50"
-                              title="ปฏิเสธ"
-                            >
-                              <X size={16} />
-                              ปฏิเสธ
-                            </button>
-                          </div>
-                        )}
-                      </td>
                     </tr>
                   ))}
                   </>

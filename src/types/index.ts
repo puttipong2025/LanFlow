@@ -98,12 +98,13 @@ export type RubberBill = {
 };
 
 export type RubberBillApprovalOperation = "create" | "update" | "delete";
-export type RubberBillApprovalReason = "price" | "time";
+export type RubberBillApprovalReason = "price" | "time" | "non_current_date";
 export type RubberBillApprovalStatus = "pending" | "approved";
 
 export type RubberBillApprovalSettings = {
   editWindowMinutes: number;
   configuredPrice: number | null;
+  nonCurrentDateRequiresApproval: boolean;
   updatedByName?: string | null;
   updatedByPhone?: string | null;
   updatedAt?: string;
@@ -212,12 +213,13 @@ export type StockEntryApprovalRequest = {
 export type IncomeExpenseApprovalAppliesTo = "income" | "expense" | "both";
 export type IncomeExpenseApprovalMatchMode = "contains" | "exact";
 export type IncomeExpenseApprovalStatus = "pending" | "approved" | "rejected" | "cancelled";
-export type IncomeExpenseApprovalReason = "keyword" | "amount_threshold" | "keyword_and_amount";
+export type IncomeExpenseApprovalReason = "keyword" | "amount_threshold" | "non_current_date";
 
 export type IncomeExpenseApprovalSettings = {
   appliesTo: IncomeExpenseApprovalAppliesTo;
   approvalMinAmount?: number | null;
   cashTransferDeleteRequiresApproval: boolean;
+  nonCurrentDateRequiresApproval: boolean;
   updatedByName?: string | null;
   updatedByPhone?: string | null;
 };
@@ -239,7 +241,7 @@ export type IncomeExpenseApprovalRequest = {
   requestStatus: IncomeExpenseApprovalStatus;
   requestedOperation: QueueOperation;
   matchedKeyword?: string | null;
-  matchedReason: IncomeExpenseApprovalReason;
+  matchedReasons: IncomeExpenseApprovalReason[];
   locationId: string;
   txType: "income" | "expense";
   title: string;

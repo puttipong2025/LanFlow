@@ -1,4 +1,4 @@
-import { ArrowRightLeft, Edit3, ExternalLink, Eye, Plus, Settings, Share2, Trash2 } from "lucide-react";
+import { ArrowRightLeft, Edit3, ExternalLink, Eye, Plus, RefreshCw, Settings, Share2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -10,6 +10,7 @@ import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
 import { useCashBranchTransfers } from "@/hooks/useCashBranchTransfers";
 import { useLocations } from "@/hooks/useLocations";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
+import { bangkokDateString } from "@/lib/bangkok-date";
 import { usePerRecordSyncRetry } from "@/hooks/usePerRecordSyncRetry";
 import { getOfflineSyncedActionBlockReason } from "@/lib/record-action-locks";
 import { canAccessSourceLocation, canManageSystemFeatures } from "@/lib/permissions";
@@ -118,6 +119,7 @@ export function IncomeExpenseModule({
   const canManageSystem = canManageSystemFeatures(profile);
   const {
     pendingCount: pendingApprovalCount,
+    settings: approvalSettings,
     submitForApprovalIfNeeded,
   } = useIncomeExpenseApprovals({
     includePendingCount: canManageSystem,
@@ -237,7 +239,11 @@ export function IncomeExpenseModule({
       toast.error(blockReason);
       return;
     }
-    if (window.confirm(`ลบรายการ ${transaction.number} ใช่ไหม?`)) {
+    const dateApprovalNotice = approvalSettings?.nonCurrentDateRequiresApproval
+      && transaction.txDate !== bangkokDateString()
+      ? "\nรายการต่างวันจะถูกส่งขออนุมัติก่อนลบ"
+      : "";
+    if (window.confirm(`ลบรายการ ${transaction.number} ใช่ไหม?${dateApprovalNotice}`)) {
       try {
         const approvalResult = await submitForApprovalIfNeeded(transaction, "delete");
         if (approvalResult.requiresApproval) {
@@ -534,6 +540,7 @@ export function IncomeExpenseModule({
           <table className="w-full min-w-[1020px] border-collapse text-sm">
             <thead>
               <tr className="border-b border-black/10 text-left text-ink/60">
+                <th className="py-2">จัดการ</th>
                 <th className="py-2">เลขที่</th>
                 <th>เลขบิล</th>
                 <th>วันที่</th>
@@ -543,7 +550,6 @@ export function IncomeExpenseModule({
                 <th>จำนวนเงิน</th>
                 <th>ผู้บันทึก</th>
                 <th>Sync</th>
-                <th className="text-center">Action</th>
               </tr>
             </thead>
             <tbody>
@@ -631,6 +637,59 @@ export function IncomeExpenseModule({
 
                 return (
                 <tr key={transaction.id} className="border-b border-black/5 hover:bg-field/50">
+                  <td className="py-3 pr-3">
+                    <div className="flex items-center gap-1.5 whitespace-nowrap">
+                      {canOpenSource && (
+                        <button type="button" title={openSourceLabel} aria-label={openSourceLabel} onClick={openRelationSource}
+                          className="focus-ring inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-river text-white hover:bg-river/90">
+                          <ExternalLink size={17} />
+                        </button>
+                      )}
+                      {isSaleBill && !cashTransferId && (
+                        <IconButton label="ดูรายละเอียดบิลขาย" onClick={() => void openSaleDetails(transaction)} tone="actionSecondary">
+                          <Eye size={17} />
+                        </IconButton>
+                      )}
+                      {cashTransferId && (
+                        <IconButton label={!cashTransfer ? "กำลังโหลดรายละเอียดเงินสด" : pdfShare.busy ? "กำลังสร้าง PDF" : "แชร์ PDF รายละเอียดเงินสด 80 มม."}
+                          visibleLabel="แชร์ PDF" onClick={() => { if (cashTransfer) void shareCashTransfer(cashTransfer); }}
+                          tone="actionSecondary" disabled={!cashTransfer || pdfShare.busy}>
+                          <Share2 size={16} />
+                        </IconButton>
+                      )}
+                      {isSaleBill && !cashTransferId && (
+                        <button type="button" onClick={() => void shareSaleReceipt(transaction)} disabled={Boolean(saleShareBlockReason)}
+                          title={saleShareBlockReason ?? "แชร์ PDF บิลขาย 80 มม."}
+                          aria-label={`แชร์ PDF บิลขาย ${transaction.serverBillNo ?? transaction.localBillNo}`}
+                          className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-40">
+                          <Share2 size={16} /> แชร์ PDF
+                        </button>
+                      )}
+                      {!cashTransferId && (
+                        <IconButton label={actionBlockReason ?? "แก้ไข"} visibleLabel="แก้" onClick={() => void openEdit(transaction)} tone="amber" disabled={actionsDisabled}>
+                          <Edit3 size={16} />
+                        </IconButton>
+                      )}
+                      {cashTransferId ? (
+                        <IconButton label={cashDeleteReason ?? "ลบรายการโยกเงิน"} visibleLabel="ลบ"
+                          onClick={() => { if (cashTransfer) void confirmCashDelete(cashTransfer); }} tone="danger"
+                          disabled={!cashTransfer || Boolean(cashDeleteReason) || cashTransfers.remove.isPending}>
+                          <Trash2 size={16} />
+                        </IconButton>
+                      ) : (
+                        <IconButton label={actionBlockReason ?? "ลบ"} visibleLabel="ลบ" onClick={() => void confirmDelete(transaction)} tone="danger" disabled={actionsDisabled}>
+                          <Trash2 size={16} />
+                        </IconButton>
+                      )}
+                      {transaction.syncStatus === "failed" && (
+                        <button type="button" onClick={() => void retryFailedSync(transaction)} disabled={!isOnline || isRetrying}
+                          title="ลองซิงก์อีกครั้ง" aria-label="ลองซิงก์อีกครั้ง"
+                          className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-river text-white disabled:cursor-not-allowed disabled:bg-slate-300">
+                          <RefreshCw size={16} />
+                        </button>
+                      )}
+                    </div>
+                  </td>
                   <td className="py-3 font-semibold">{getIncomeExpenseDisplayNo(transaction)}</td>
                   <td className="text-xs text-ink/55">
                     <div className="flex flex-col gap-0.5">
@@ -662,82 +721,6 @@ export function IncomeExpenseModule({
                   </td>
                   <td>{transaction.createdByName} · {transaction.createdByPhone}</td>
                   <td><SyncStatusBadge status={transaction.syncStatus} errorMessage={transaction.syncErrorMessage} /></td>
-                  <td>
-                    <div className="flex items-center justify-center gap-1.5 whitespace-nowrap">
-                      {cashTransferId ? (
-                        <IconButton
-                          label={!cashTransfer ? "กำลังโหลดรายละเอียดเงินสด" : pdfShare.busy ? "กำลังสร้าง PDF" : "แชร์ PDF รายละเอียดเงินสด 80 มม."}
-                          visibleLabel="แชร์ PDF"
-                          onClick={() => { if (cashTransfer) void shareCashTransfer(cashTransfer); }}
-                          tone="actionSecondary"
-                          disabled={!cashTransfer || pdfShare.busy}
-                        >
-                          <Share2 size={16} />
-                        </IconButton>
-                      ) : (
-                        <>
-                          {isSaleBill && (
-                            <IconButton label="ดูรายละเอียดบิลขาย" visibleLabel="ดู" onClick={() => void openSaleDetails(transaction)} tone="actionSecondary">
-                              <Eye size={16} />
-                            </IconButton>
-                          )}
-                          <IconButton label={actionBlockReason ?? "แก้ไข"} visibleLabel="แก้ไข" onClick={() => void openEdit(transaction)} tone="amber" disabled={actionsDisabled}>
-                            <Edit3 size={16} />
-                          </IconButton>
-                        </>
-                      )}
-                      {cashTransferId ? (
-                        <IconButton
-                          label={cashDeleteReason ?? "ลบรายการโยกเงิน"}
-                          visibleLabel="ลบ"
-                          onClick={() => { if (cashTransfer) void confirmCashDelete(cashTransfer); }}
-                          tone="danger"
-                          disabled={!cashTransfer || Boolean(cashDeleteReason) || cashTransfers.remove.isPending}
-                        >
-                          <Trash2 size={16} />
-                        </IconButton>
-                      ) : (
-                        <IconButton label={actionBlockReason ?? "ลบ"} visibleLabel="ลบ" onClick={() => void confirmDelete(transaction)} tone="danger" disabled={actionsDisabled}>
-                          <Trash2 size={16} />
-                        </IconButton>
-                      )}
-                      {isSaleBill && (
-                        <button
-                          type="button"
-                          onClick={() => void shareSaleReceipt(transaction)}
-                          disabled={Boolean(saleShareBlockReason)}
-                          title={saleShareBlockReason ?? "แชร์ PDF บิลขาย 80 มม."}
-                          aria-label={`แชร์ PDF บิลขาย ${transaction.serverBillNo ?? transaction.localBillNo}`}
-                          className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          <Share2 size={16} />
-                          แชร์ PDF
-                        </button>
-                      )}
-                      {transaction.syncStatus === "failed" && (
-                        <button
-                          type="button"
-                          onClick={() => void retryFailedSync(transaction)}
-                          disabled={!isOnline || isRetrying}
-                          className="rounded-md bg-river px-2 py-1 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
-                        >
-                          ลองซิงก์อีกครั้ง
-                        </button>
-                      )}
-                      {canOpenSource && (
-                        <button
-                          type="button"
-                          title={openSourceLabel}
-                          aria-label={openSourceLabel}
-                          onClick={openRelationSource}
-                          className="focus-ring inline-flex h-9 shrink-0 items-center gap-1 rounded-md bg-river px-2 text-xs font-semibold text-white hover:bg-river/90"
-                        >
-                          <ExternalLink size={16} />
-                          {openSourceLabel}
-                        </button>
-                      )}
-                    </div>
-                  </td>
                 </tr>
                 );
               })}
@@ -774,6 +757,7 @@ export function IncomeExpenseModule({
           transaction={editingTransaction}
           nextNumber={nextNumber}
           nextLocalSequence={transactions.length + 1}
+          nonCurrentDateRequiresApproval={approvalSettings?.nonCurrentDateRequiresApproval}
           onClose={() => setModalOpen(false)}
           onSave={async (savedTransactions) => {
             const isSaleSubmission =

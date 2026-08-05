@@ -3105,6 +3105,38 @@ $$;
 ALTER FUNCTION "private"."rubber_export_candidates"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."sync_income_expense_dispatch_20260805020000"("payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_existing_bill_option text;
+begin
+  if payload->>'operation' in ('update', 'delete') then
+    select bill_option
+      into v_existing_bill_option
+    from public.income_expense
+    where client_temp_id = payload->>'clientTempId';
+  end if;
+
+  if payload->>'billOption' = 'บิลขาย' or v_existing_bill_option = 'บิลขาย' then
+    return private.sync_income_sale_bill(payload);
+  end if;
+  if jsonb_typeof(payload->'saleLines') = 'array'
+     and jsonb_array_length(payload->'saleLines') > 0 then
+    return jsonb_build_object(
+      'status', 'failed',
+      'errorMessage', 'รายการที่ไม่ใช่บิลขายต้องไม่มีรายการสินค้า'
+    );
+  end if;
+  return public.sync_income_expense_core(payload);
+end;
+$$;
+
+
+ALTER FUNCTION "private"."sync_income_expense_dispatch_20260805020000"("payload" "jsonb") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."sync_income_sale_bill"("payload" "jsonb") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -3461,6 +3493,322 @@ $$;
 
 
 ALTER FUNCTION "private"."sync_income_sale_bill"("payload" "jsonb") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."sync_rubber_bill_approval_20260805020000"("payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_operation text := payload->>'operation';
+  v_client_temp_id text := payload->>'clientTempId';
+  v_location_id uuid;
+  v_idempotency_key text := payload->>'idempotencyKey';
+  v_expected_revision integer;
+  v_bill public.rubber_bills%rowtype;
+  v_settings public.rubber_bill_approval_settings%rowtype;
+  v_original_payload jsonb;
+  v_current_prices jsonb := '[]'::jsonb;
+  v_proposed_prices jsonb := '[]'::jsonb;
+  v_price numeric;
+  v_price_scale integer;
+  v_price_cap numeric;
+  v_has_exceeded_cap boolean := false;
+  v_reasons text[] := case when payload->>'forceNonCurrentDateApproval' = 'true' then array['non_current_date']::text[] else array[]::text[] end;
+  v_request_id uuid;
+  v_existing_request_status text;
+  v_existing_created_bill_id uuid;
+  v_actor_name text;
+  v_actor_phone text;
+  v_report_no text;
+begin
+  if not coalesce(private.is_active_user(), false) then
+    return jsonb_build_object('status', 'failed', 'errorMessage', 'Unauthorized or inactive user');
+  end if;
+
+  if v_operation not in ('create', 'update', 'delete') then
+    return jsonb_build_object('status', 'failed', 'errorMessage', 'Invalid operation');
+  end if;
+
+  begin
+    v_location_id := (payload->>'locationId')::uuid;
+    v_expected_revision := coalesce((payload->>'expectedRevisionNo')::integer, 0);
+  exception when others then
+    return jsonb_build_object('status', 'failed', 'errorMessage', 'Invalid approval payload');
+  end;
+
+  if coalesce(v_client_temp_id, '') = ''
+     or coalesce(v_idempotency_key, '') = ''
+     or not public.can_access_location(v_location_id) then
+    return jsonb_build_object('status', 'failed', 'errorMessage', 'Location access denied or invalid identity');
+  end if;
+
+  payload := private.normalize_rubber_bill_calculation_payload(payload);
+
+  perform pg_advisory_xact_lock(hashtextextended(v_location_id::text, 0));
+
+  select name, phone
+    into v_actor_name, v_actor_phone
+  from public.profiles
+  where id = auth.uid();
+
+  select *
+    into v_settings
+  from public.rubber_bill_approval_settings
+  where id = true;
+
+  if v_operation = 'create' then
+    if not (payload ? 'configuredPriceSnapshot') then
+      return jsonb_build_object(
+        'status', 'failed',
+        'errorMessage', 'configuredPriceSnapshot is required for create'
+      );
+    end if;
+
+    if jsonb_typeof(payload->'configuredPriceSnapshot') = 'null' then
+      v_price_cap := null;
+    elsif jsonb_typeof(payload->'configuredPriceSnapshot') = 'number' then
+      begin
+        v_price_cap := (payload->>'configuredPriceSnapshot')::numeric;
+      exception when others then
+        return jsonb_build_object(
+          'status', 'failed',
+          'errorMessage', 'configuredPriceSnapshot must be numeric or null'
+        );
+      end;
+
+      if v_price_cap < 0 or scale(v_price_cap) > 2 then
+        return jsonb_build_object(
+          'status', 'failed',
+          'errorMessage', 'configuredPriceSnapshot must be non-negative with at most 2 decimal places'
+        );
+      end if;
+    else
+      return jsonb_build_object(
+        'status', 'failed',
+        'errorMessage', 'configuredPriceSnapshot must be numeric or null'
+      );
+    end if;
+  else
+    v_price_cap := v_settings.configured_price;
+  end if;
+
+  if v_operation in ('create', 'update') then
+    for v_price, v_price_scale in
+      select (item->>'unitPrice')::numeric, scale((item->>'unitPrice')::numeric)
+      from jsonb_array_elements(coalesce(payload->'items', '[]'::jsonb)) item
+      where item->>'itemType' = 'weigh'
+    loop
+      if v_price < 0 or v_price_scale > 2 then
+        return jsonb_build_object(
+          'status', 'failed',
+          'errorMessage', 'ราคายางต้องไม่ติดลบและมีทศนิยมไม่เกิน 2 ตำแหน่ง'
+        );
+      end if;
+      if v_price_cap is not null and v_price > v_price_cap then
+        v_has_exceeded_cap := true;
+      end if;
+    end loop;
+
+    select coalesce(
+      jsonb_agg((item->>'unitPrice')::numeric order by (item->>'sequenceNo')::integer),
+      '[]'::jsonb
+    )
+      into v_proposed_prices
+    from jsonb_array_elements(coalesce(payload->'items', '[]'::jsonb)) item
+    where item->>'itemType' = 'weigh';
+  end if;
+
+  if v_operation = 'create' then
+    perform pg_advisory_xact_lock(hashtext('rubber-bill-create:' || v_client_temp_id));
+
+    select id, request_status, created_bill_id
+      into v_request_id, v_existing_request_status, v_existing_created_bill_id
+    from public.rubber_bill_approval_requests
+    where idempotency_key = v_idempotency_key;
+
+    if v_request_id is not null then
+      if v_existing_request_status = 'approved' and v_existing_created_bill_id is not null then
+        select *
+          into v_bill
+        from public.rubber_bills
+        where id = v_existing_created_bill_id;
+        return jsonb_build_object(
+          'status', 'synced',
+          'id', v_bill.id,
+          'serverBillNo', v_bill.server_bill_no,
+          'revisionNo', v_bill.revision_no,
+          'serverReceivedAt', v_bill.server_received_at
+        );
+      end if;
+      return jsonb_build_object(
+        'status', 'pending_approval',
+        'requestId', v_request_id,
+        'operation', v_operation,
+        'clientTempId', v_client_temp_id
+      );
+    end if;
+
+    if cardinality(v_reasons) = 0 and (v_price_cap is null or not v_has_exceeded_cap) then
+      return public.sync_rubber_bill_core_20260725010000(payload);
+    end if;
+
+    v_reasons := array_append(v_reasons, 'price');
+  else
+    select *
+      into v_bill
+    from public.rubber_bills
+    where client_temp_id = v_client_temp_id
+    for update;
+
+    if v_bill.id is null then
+      return jsonb_build_object('status', 'failed', 'errorMessage', 'Cannot update or delete non-existent record');
+    end if;
+
+    perform pg_advisory_xact_lock(hashtext('rubber-bill-approval:' || v_bill.id::text));
+
+    if v_bill.location_id <> v_location_id then
+      return jsonb_build_object('status', 'failed', 'errorMessage', 'Location mismatch');
+    end if;
+
+    if v_bill.idempotency_key = v_idempotency_key then
+      return jsonb_build_object(
+        'status', 'synced',
+        'id', v_bill.id,
+        'serverBillNo', v_bill.server_bill_no,
+        'revisionNo', v_bill.revision_no,
+        'serverReceivedAt', v_bill.server_received_at
+      );
+    end if;
+
+    if v_bill.revision_no <> v_expected_revision then
+      return jsonb_build_object('status', 'conflict', 'errorMessage', 'Revision mismatch');
+    end if;
+
+    select id
+      into v_request_id
+    from public.rubber_bill_approval_requests
+    where bill_id = v_bill.id
+      and request_status = 'pending';
+
+    if v_request_id is not null then
+      return jsonb_build_object(
+        'status', 'pending_approval',
+        'requestId', v_request_id,
+        'operation', v_operation,
+        'clientTempId', v_client_temp_id
+      );
+    end if;
+
+    v_report_no := private.active_report_no('rubber_bill', v_bill.id);
+    if v_report_no is not null then
+      return jsonb_build_object(
+        'status', 'failed',
+        'errorMessage', 'บิลอยู่ในรายงาน ' || v_report_no || ' แล้ว จึงสร้างคำขอไม่ได้'
+      );
+    end if;
+
+    if private.rubber_bill_has_active_transfer(v_bill.id) then
+      return jsonb_build_object(
+        'status', 'failed',
+        'errorMessage', 'บิลอยู่ในรายการโอนเงินแล้ว จึงสร้างคำขอไม่ได้'
+      );
+    end if;
+
+    if clock_timestamp() >= v_bill.created_at + make_interval(mins => v_settings.edit_window_minutes) then
+      v_reasons := array_append(v_reasons, 'time');
+    end if;
+
+    if v_operation = 'update' and v_price_cap is not null then
+      select coalesce(jsonb_agg(i.price order by i.sequence_no), '[]'::jsonb)
+        into v_current_prices
+      from public.rubber_bill_items i
+      where i.bill_id = v_bill.id
+        and i.item_type = 'weigh';
+
+      if v_current_prices is distinct from v_proposed_prices and v_has_exceeded_cap then
+        v_reasons := array_append(v_reasons, 'price');
+      end if;
+    end if;
+
+    if cardinality(v_reasons) = 0 then
+      return public.sync_rubber_bill_core_20260725010000(payload);
+    end if;
+
+    v_original_payload := private.current_rubber_bill_payload(v_bill.id);
+  end if;
+
+  insert into public.rubber_bill_approval_requests (
+    operation,
+    bill_id,
+    location_id,
+    client_temp_id,
+    idempotency_key,
+    base_revision_no,
+    matched_reasons,
+    configured_price_snapshot,
+    edit_window_minutes_snapshot,
+    original_payload,
+    proposed_payload,
+    requested_by_user_id,
+    requested_by_name,
+    requested_by_phone
+  )
+  values (
+    v_operation,
+    v_bill.id,
+    v_location_id,
+    v_client_temp_id,
+    v_idempotency_key,
+    v_expected_revision,
+    v_reasons,
+    v_price_cap,
+    v_settings.edit_window_minutes,
+    v_original_payload,
+    payload,
+    auth.uid(),
+    coalesce(v_actor_name, ''),
+    coalesce(v_actor_phone, '')
+  )
+  returning id into v_request_id;
+
+  return jsonb_build_object(
+    'status', 'pending_approval',
+    'requestId', v_request_id,
+    'operation', v_operation,
+    'clientTempId', v_client_temp_id,
+    'matchedReasons', to_jsonb(v_reasons)
+  );
+exception
+  when unique_violation then
+    select id
+      into v_request_id
+    from public.rubber_bill_approval_requests
+    where request_status = 'pending'
+      and (
+        idempotency_key = v_idempotency_key
+        or bill_id = v_bill.id
+        or (operation = 'create' and client_temp_id = v_client_temp_id)
+      )
+    order by requested_at desc
+    limit 1;
+
+    if v_request_id is not null then
+      return jsonb_build_object(
+        'status', 'pending_approval',
+        'requestId', v_request_id,
+        'operation', v_operation,
+        'clientTempId', v_client_temp_id
+      );
+    end if;
+    return jsonb_build_object('status', 'failed', 'errorMessage', sqlerrm);
+  when others then
+    return jsonb_build_object('status', 'failed', 'errorMessage', sqlerrm);
+end;
+$$;
+
+
+ALTER FUNCTION "private"."sync_rubber_bill_approval_20260805020000"("payload" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."telegram_badge_latest_slot"("p_now" timestamp with time zone, "p_start_time" time without time zone, "p_end_time" time without time zone, "p_interval_minutes" integer) RETURNS timestamp with time zone
@@ -4311,7 +4659,9 @@ declare
   v_user_name text;
   v_user_phone text;
   v_request_id uuid;
-  v_reason text;
+  v_reasons text[] := array[]::text[];
+  v_business_date date;
+  v_non_current_date_requires_approval boolean;
   v_sale_lines_json jsonb;
 begin
   if not coalesce(private.is_active_user(), false) then
@@ -4496,23 +4846,34 @@ begin
   order by length(setting.keyword) desc, setting.created_at
   limit 1;
 
-  select approval_min_amount, applies_to
-    into v_threshold, v_threshold_scope
+  select approval_min_amount, applies_to, non_current_date_requires_approval
+    into v_threshold, v_threshold_scope, v_non_current_date_requires_approval
   from public.income_expense_approval_settings
   where id = true;
   v_amount_match := v_threshold is not null
     and v_cost >= v_threshold
     and coalesce(v_threshold_scope, 'both') in (v_type, 'both');
 
-  if v_keyword_id is null and not v_amount_match then
+  if v_keyword_id is not null then
+    v_reasons := array_append(v_reasons, 'keyword');
+  end if;
+  if v_amount_match then
+    v_reasons := array_append(v_reasons, 'amount_threshold');
+  end if;
+  begin
+    v_business_date := case when v_operation = 'delete'
+      then v_existing.tx_date
+      else (payload->>'txDate')::date end;
+  exception when others then
+    return jsonb_build_object('status', 'failed', 'errorMessage', 'วันที่รายการไม่ถูกต้อง');
+  end;
+  if coalesce(v_non_current_date_requires_approval, false)
+     and v_business_date is distinct from (clock_timestamp() at time zone 'Asia/Bangkok')::date then
+    v_reasons := array_append(v_reasons, 'non_current_date');
+  end if;
+  if cardinality(v_reasons) = 0 then
     return jsonb_build_object('status', 'no_approval');
   end if;
-
-  v_reason := case
-    when v_keyword_id is not null and v_amount_match then 'keyword_and_amount'
-    when v_amount_match then 'amount_threshold'
-    else 'keyword'
-  end;
   v_request_key := v_base_request_key;
   if exists (
     select 1 from public.income_expense_approval_requests
@@ -4529,12 +4890,12 @@ begin
 
   insert into public.income_expense_approval_requests (
     requested_operation, request_idempotency_key, requested_payload,
-    source_income_expense_id, matched_keyword_id, matched_keyword, matched_reason,
+    source_income_expense_id, matched_keyword_id, matched_keyword, matched_reasons,
     location_id, tx_type, title, cost,
     requested_by_user_id, requested_by_name, requested_by_phone
   ) values (
     v_operation, v_request_key, payload,
-    v_existing.id, v_keyword_id, v_keyword, v_reason,
+    v_existing.id, v_keyword_id, v_keyword, v_reasons,
     v_location_id, v_type, v_title, v_cost,
     v_user_id, coalesce(v_user_name, ''), coalesce(v_user_phone, '')
   )
@@ -4543,7 +4904,7 @@ begin
   return jsonb_build_object(
     'status', 'pending',
     'requestId', v_request_id,
-    'matchedReason', v_reason,
+    'matchedReasons', to_jsonb(v_reasons),
     'matchedKeyword', v_keyword
   );
 exception when others then
@@ -8135,13 +8496,13 @@ begin
 
       union all
 
-      select mt.created_at::date, 'transfer-income:' || mt.id::text,
+      select (mt.created_at at time zone 'Asia/Bangkok')::date, 'transfer-income:' || mt.id::text,
         jsonb_build_object(
           'id', 'money-transfer-income:' || mt.id, 'clientTempId', 'money-transfer-income:' || mt.id,
           'localBillNo', 'TR-' || left(mt.id::text, 8), 'serverBillNo', 'TR-' || left(mt.id::text, 8),
           'idempotencyKey', 'money-transfer:' || mt.id, 'locationId', mt.target_location_id,
           'syncStatus', 'synced', 'recordStatus', 'active', 'type', 'income',
-          'number', 'TR-' || left(mt.id::text, 8), 'txDate', mt.created_at::date,
+          'number', 'TR-' || left(mt.id::text, 8), 'txDate', (mt.created_at at time zone 'Asia/Bangkok')::date,
           'title', 'รับโอนจาก สาขาต้นทาง', 'cost', mt.net_amount_to_pay, 'billOption', 'รายรับ',
           'clientRecordedAt', mt.created_at, 'clientCreatedAt', mt.created_at,
           'serverReceivedAt', mt.updated_at, 'revisionNo', mt.revision_no,
@@ -8154,17 +8515,17 @@ begin
       from public.money_transfers mt
       where mt.transfer_type = 'branch' and mt.target_location_id = p_location_id
         and mt.record_status <> 'deleted' and mt.transfer_status <> 'cancelled'
-        and mt.net_amount_to_pay > 0 and mt.created_at::date between p_from_date and p_to_date
+        and mt.net_amount_to_pay > 0 and (mt.created_at at time zone 'Asia/Bangkok')::date between p_from_date and p_to_date
 
       union all
 
-      select mt.created_at::date, 'transfer-expense:' || mt.id::text,
+      select (mt.created_at at time zone 'Asia/Bangkok')::date, 'transfer-expense:' || mt.id::text,
         jsonb_build_object(
           'id', 'money-transfer-branch-expense:' || mt.id, 'clientTempId', 'money-transfer-branch-expense:' || mt.id,
           'localBillNo', 'TR-' || left(mt.id::text, 8), 'serverBillNo', 'TR-' || left(mt.id::text, 8),
           'idempotencyKey', 'money-transfer-branch-expense:' || mt.id, 'locationId', mt.location_id,
           'syncStatus', 'synced', 'recordStatus', 'active', 'type', 'expense',
-          'number', 'TR-' || left(mt.id::text, 8), 'txDate', mt.created_at::date,
+          'number', 'TR-' || left(mt.id::text, 8), 'txDate', (mt.created_at at time zone 'Asia/Bangkok')::date,
           'title', 'โยกเงินไป ' || coalesce(mt.target_location_name, 'สาขาปลายทาง'),
           'cost', mt.net_amount_to_pay, 'billOption', 'ค่าใช้จ่าย',
           'clientRecordedAt', mt.created_at, 'clientCreatedAt', mt.created_at,
@@ -8179,7 +8540,7 @@ begin
       where mt.transfer_type = 'branch' and mt.location_id = p_location_id
         and mt.target_location_id <> mt.location_id and mt.record_status <> 'deleted'
         and mt.transfer_status <> 'cancelled' and mt.net_amount_to_pay > 0
-        and mt.created_at::date between p_from_date and p_to_date
+        and (mt.created_at at time zone 'Asia/Bangkok')::date between p_from_date and p_to_date
 
       union all
 
@@ -8245,13 +8606,13 @@ begin
 
       union all
 
-      select mt.created_at::date, 'customer-transfer-expense:' || mt.id::text,
+      select (mt.created_at at time zone 'Asia/Bangkok')::date, 'customer-transfer-expense:' || mt.id::text,
         jsonb_build_object(
           'id', 'money-transfer-branch-paid-expense:' || mt.id, 'clientTempId', 'money-transfer-branch-paid-expense:' || mt.id,
           'localBillNo', 'CT-' || left(mt.id::text, 8), 'serverBillNo', 'CT-' || left(mt.id::text, 8),
           'idempotencyKey', 'money-transfer-branch-paid:' || mt.id, 'locationId', mt.location_id,
           'syncStatus', 'synced', 'recordStatus', 'active', 'type', 'expense',
-          'number', 'CT-' || left(mt.id::text, 8), 'txDate', mt.created_at::date,
+          'number', 'CT-' || left(mt.id::text, 8), 'txDate', (mt.created_at at time zone 'Asia/Bangkok')::date,
           'title', 'สาขาจ่ายส่วนต่างให้ ' || coalesce(mt.customer_name, 'ลูกค้า'),
           'cost', mt.branch_paid_amount, 'billOption', 'ค่าใช้จ่าย',
           'clientRecordedAt', mt.created_at, 'clientCreatedAt', mt.created_at,
@@ -8265,7 +8626,7 @@ begin
       from public.money_transfers mt
       where mt.transfer_type = 'customer' and mt.transfer_status = 'branch_and_transfer'
         and mt.location_id = p_location_id and mt.record_status <> 'deleted'
-        and mt.branch_paid_amount > 0 and mt.created_at::date between p_from_date and p_to_date
+        and mt.branch_paid_amount > 0 and (mt.created_at at time zone 'Asia/Bangkok')::date between p_from_date and p_to_date
 
       union all
 
@@ -10341,6 +10702,7 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_bill_approval_settings" (
     "updated_by_name" "text",
     "updated_by_phone" "text",
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "non_current_date_requires_approval" boolean DEFAULT false NOT NULL,
     CONSTRAINT "rubber_bill_approval_settings_configured_price_check" CHECK ((("configured_price" IS NULL) OR ("configured_price" >= (0)::numeric))),
     CONSTRAINT "rubber_bill_approval_settings_edit_window_minutes_check" CHECK (("edit_window_minutes" >= 0)),
     CONSTRAINT "rubber_bill_approval_settings_id_check" CHECK (("id" = true))
@@ -10351,6 +10713,21 @@ ALTER TABLE "public"."rubber_bill_approval_settings" OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."save_rubber_bill_approval_settings"("p_edit_window_minutes" integer, "p_configured_price" numeric) RETURNS "public"."rubber_bill_approval_settings"
+    LANGUAGE "sql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+  select public.save_rubber_bill_approval_settings(
+    p_edit_window_minutes,
+    p_configured_price,
+    coalesce((select non_current_date_requires_approval from public.rubber_bill_approval_settings where id = true), false)
+  );
+$$;
+
+
+ALTER FUNCTION "public"."save_rubber_bill_approval_settings"("p_edit_window_minutes" integer, "p_configured_price" numeric) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."save_rubber_bill_approval_settings"("p_edit_window_minutes" integer, "p_configured_price" numeric, "p_non_current_date_requires_approval" boolean) RETURNS "public"."rubber_bill_approval_settings"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
     AS $$
@@ -10376,6 +10753,7 @@ begin
   update public.rubber_bill_approval_settings
   set edit_window_minutes = p_edit_window_minutes,
       configured_price = p_configured_price,
+      non_current_date_requires_approval = coalesce(p_non_current_date_requires_approval, false),
       updated_by_user_id = auth.uid(),
       updated_by_name = coalesce(v_actor_name, ''),
       updated_by_phone = coalesce(v_actor_phone, ''),
@@ -10388,7 +10766,7 @@ end;
 $$;
 
 
-ALTER FUNCTION "public"."save_rubber_bill_approval_settings"("p_edit_window_minutes" integer, "p_configured_price" numeric) OWNER TO "postgres";
+ALTER FUNCTION "public"."save_rubber_bill_approval_settings"("p_edit_window_minutes" integer, "p_configured_price" numeric, "p_non_current_date_requires_approval" boolean) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."save_telegram_badge_config"("payload" "jsonb") RETURNS "jsonb"
@@ -11036,26 +11414,25 @@ CREATE OR REPLACE FUNCTION "public"."sync_income_expense"("payload" "jsonb") RET
     SET "search_path" TO 'public', 'private'
     AS $$
 declare
-  v_existing_bill_option text;
+  v_approval jsonb;
 begin
-  if payload->>'operation' in ('update', 'delete') then
-    select bill_option
-      into v_existing_bill_option
-    from public.income_expense
-    where client_temp_id = payload->>'clientTempId';
+  if coalesce(current_setting('app.bypass_income_expense_approval', true), 'false') = 'true' then
+    return private.sync_income_expense_dispatch_20260805020000(payload);
   end if;
 
-  if payload->>'billOption' = 'บิลขาย' or v_existing_bill_option = 'บิลขาย' then
-    return private.sync_income_sale_bill(payload);
+  v_approval := public.create_income_expense_approval_request(payload);
+  if v_approval->>'status' = 'no_approval' then
+    return private.sync_income_expense_dispatch_20260805020000(payload);
   end if;
-  if jsonb_typeof(payload->'saleLines') = 'array'
-     and jsonb_array_length(payload->'saleLines') > 0 then
+  if v_approval->>'status' = 'pending' then
     return jsonb_build_object(
-      'status', 'failed',
-      'errorMessage', 'รายการที่ไม่ใช่บิลขายต้องไม่มีรายการสินค้า'
+      'status', 'pending_approval',
+      'requestId', v_approval->>'requestId',
+      'matchedReasons', coalesce(v_approval->'matchedReasons', '[]'::jsonb),
+      'errorMessage', 'รายการนี้ต้องรออนุมัติ'
     );
   end if;
-  return public.sync_income_expense_core(payload);
+  return v_approval;
 end;
 $$;
 
@@ -11448,309 +11825,32 @@ CREATE OR REPLACE FUNCTION "public"."sync_rubber_bill"("payload" "jsonb") RETURN
     AS $$
 declare
   v_operation text := payload->>'operation';
-  v_client_temp_id text := payload->>'clientTempId';
-  v_location_id uuid;
-  v_idempotency_key text := payload->>'idempotencyKey';
-  v_expected_revision integer;
-  v_bill public.rubber_bills%rowtype;
-  v_settings public.rubber_bill_approval_settings%rowtype;
-  v_original_payload jsonb;
-  v_current_prices jsonb := '[]'::jsonb;
-  v_proposed_prices jsonb := '[]'::jsonb;
-  v_price numeric;
-  v_price_scale integer;
-  v_price_cap numeric;
-  v_has_exceeded_cap boolean := false;
-  v_reasons text[] := array[]::text[];
-  v_request_id uuid;
-  v_existing_request_status text;
-  v_existing_created_bill_id uuid;
-  v_actor_name text;
-  v_actor_phone text;
-  v_report_no text;
+  v_business_date date;
+  v_requires_approval boolean := false;
 begin
-  if not coalesce(private.is_active_user(), false) then
-    return jsonb_build_object('status', 'failed', 'errorMessage', 'Unauthorized or inactive user');
-  end if;
-
-  if v_operation not in ('create', 'update', 'delete') then
-    return jsonb_build_object('status', 'failed', 'errorMessage', 'Invalid operation');
-  end if;
-
   begin
-    v_location_id := (payload->>'locationId')::uuid;
-    v_expected_revision := coalesce((payload->>'expectedRevisionNo')::integer, 0);
+    if v_operation = 'delete' then
+      select bill_date into v_business_date
+      from public.rubber_bills
+      where client_temp_id = payload->>'clientTempId';
+    elsif v_operation in ('create', 'update') then
+      v_business_date := (payload->>'billDate')::date;
+    end if;
   exception when others then
-    return jsonb_build_object('status', 'failed', 'errorMessage', 'Invalid approval payload');
+    return jsonb_build_object('status', 'failed', 'errorMessage', 'วันที่บิลไม่ถูกต้อง');
   end;
 
-  if coalesce(v_client_temp_id, '') = ''
-     or coalesce(v_idempotency_key, '') = ''
-     or not public.can_access_location(v_location_id) then
-    return jsonb_build_object('status', 'failed', 'errorMessage', 'Location access denied or invalid identity');
-  end if;
-
-  payload := private.normalize_rubber_bill_calculation_payload(payload);
-
-  perform pg_advisory_xact_lock(hashtextextended(v_location_id::text, 0));
-
-  select name, phone
-    into v_actor_name, v_actor_phone
-  from public.profiles
-  where id = auth.uid();
-
-  select *
-    into v_settings
+  select coalesce(non_current_date_requires_approval, false)
+    into v_requires_approval
   from public.rubber_bill_approval_settings
   where id = true;
 
-  if v_operation = 'create' then
-    if not (payload ? 'configuredPriceSnapshot') then
-      return jsonb_build_object(
-        'status', 'failed',
-        'errorMessage', 'configuredPriceSnapshot is required for create'
-      );
-    end if;
-
-    if jsonb_typeof(payload->'configuredPriceSnapshot') = 'null' then
-      v_price_cap := null;
-    elsif jsonb_typeof(payload->'configuredPriceSnapshot') = 'number' then
-      begin
-        v_price_cap := (payload->>'configuredPriceSnapshot')::numeric;
-      exception when others then
-        return jsonb_build_object(
-          'status', 'failed',
-          'errorMessage', 'configuredPriceSnapshot must be numeric or null'
-        );
-      end;
-
-      if v_price_cap < 0 or scale(v_price_cap) > 2 then
-        return jsonb_build_object(
-          'status', 'failed',
-          'errorMessage', 'configuredPriceSnapshot must be non-negative with at most 2 decimal places'
-        );
-      end if;
-    else
-      return jsonb_build_object(
-        'status', 'failed',
-        'errorMessage', 'configuredPriceSnapshot must be numeric or null'
-      );
-    end if;
-  else
-    v_price_cap := v_settings.configured_price;
+  if v_requires_approval
+     and v_business_date is distinct from (clock_timestamp() at time zone 'Asia/Bangkok')::date then
+    payload := payload || jsonb_build_object('forceNonCurrentDateApproval', true);
   end if;
 
-  if v_operation in ('create', 'update') then
-    for v_price, v_price_scale in
-      select (item->>'unitPrice')::numeric, scale((item->>'unitPrice')::numeric)
-      from jsonb_array_elements(coalesce(payload->'items', '[]'::jsonb)) item
-      where item->>'itemType' = 'weigh'
-    loop
-      if v_price < 0 or v_price_scale > 2 then
-        return jsonb_build_object(
-          'status', 'failed',
-          'errorMessage', 'ราคายางต้องไม่ติดลบและมีทศนิยมไม่เกิน 2 ตำแหน่ง'
-        );
-      end if;
-      if v_price_cap is not null and v_price > v_price_cap then
-        v_has_exceeded_cap := true;
-      end if;
-    end loop;
-
-    select coalesce(
-      jsonb_agg((item->>'unitPrice')::numeric order by (item->>'sequenceNo')::integer),
-      '[]'::jsonb
-    )
-      into v_proposed_prices
-    from jsonb_array_elements(coalesce(payload->'items', '[]'::jsonb)) item
-    where item->>'itemType' = 'weigh';
-  end if;
-
-  if v_operation = 'create' then
-    perform pg_advisory_xact_lock(hashtext('rubber-bill-create:' || v_client_temp_id));
-
-    select id, request_status, created_bill_id
-      into v_request_id, v_existing_request_status, v_existing_created_bill_id
-    from public.rubber_bill_approval_requests
-    where idempotency_key = v_idempotency_key;
-
-    if v_request_id is not null then
-      if v_existing_request_status = 'approved' and v_existing_created_bill_id is not null then
-        select *
-          into v_bill
-        from public.rubber_bills
-        where id = v_existing_created_bill_id;
-        return jsonb_build_object(
-          'status', 'synced',
-          'id', v_bill.id,
-          'serverBillNo', v_bill.server_bill_no,
-          'revisionNo', v_bill.revision_no,
-          'serverReceivedAt', v_bill.server_received_at
-        );
-      end if;
-      return jsonb_build_object(
-        'status', 'pending_approval',
-        'requestId', v_request_id,
-        'operation', v_operation,
-        'clientTempId', v_client_temp_id
-      );
-    end if;
-
-    if v_price_cap is null or not v_has_exceeded_cap then
-      return public.sync_rubber_bill_core_20260725010000(payload);
-    end if;
-
-    v_reasons := array_append(v_reasons, 'price');
-  else
-    select *
-      into v_bill
-    from public.rubber_bills
-    where client_temp_id = v_client_temp_id
-    for update;
-
-    if v_bill.id is null then
-      return jsonb_build_object('status', 'failed', 'errorMessage', 'Cannot update or delete non-existent record');
-    end if;
-
-    perform pg_advisory_xact_lock(hashtext('rubber-bill-approval:' || v_bill.id::text));
-
-    if v_bill.location_id <> v_location_id then
-      return jsonb_build_object('status', 'failed', 'errorMessage', 'Location mismatch');
-    end if;
-
-    if v_bill.idempotency_key = v_idempotency_key then
-      return jsonb_build_object(
-        'status', 'synced',
-        'id', v_bill.id,
-        'serverBillNo', v_bill.server_bill_no,
-        'revisionNo', v_bill.revision_no,
-        'serverReceivedAt', v_bill.server_received_at
-      );
-    end if;
-
-    if v_bill.revision_no <> v_expected_revision then
-      return jsonb_build_object('status', 'conflict', 'errorMessage', 'Revision mismatch');
-    end if;
-
-    select id
-      into v_request_id
-    from public.rubber_bill_approval_requests
-    where bill_id = v_bill.id
-      and request_status = 'pending';
-
-    if v_request_id is not null then
-      return jsonb_build_object(
-        'status', 'pending_approval',
-        'requestId', v_request_id,
-        'operation', v_operation,
-        'clientTempId', v_client_temp_id
-      );
-    end if;
-
-    v_report_no := private.active_report_no('rubber_bill', v_bill.id);
-    if v_report_no is not null then
-      return jsonb_build_object(
-        'status', 'failed',
-        'errorMessage', 'บิลอยู่ในรายงาน ' || v_report_no || ' แล้ว จึงสร้างคำขอไม่ได้'
-      );
-    end if;
-
-    if private.rubber_bill_has_active_transfer(v_bill.id) then
-      return jsonb_build_object(
-        'status', 'failed',
-        'errorMessage', 'บิลอยู่ในรายการโอนเงินแล้ว จึงสร้างคำขอไม่ได้'
-      );
-    end if;
-
-    if clock_timestamp() >= v_bill.created_at + make_interval(mins => v_settings.edit_window_minutes) then
-      v_reasons := array_append(v_reasons, 'time');
-    end if;
-
-    if v_operation = 'update' and v_price_cap is not null then
-      select coalesce(jsonb_agg(i.price order by i.sequence_no), '[]'::jsonb)
-        into v_current_prices
-      from public.rubber_bill_items i
-      where i.bill_id = v_bill.id
-        and i.item_type = 'weigh';
-
-      if v_current_prices is distinct from v_proposed_prices and v_has_exceeded_cap then
-        v_reasons := array_append(v_reasons, 'price');
-      end if;
-    end if;
-
-    if cardinality(v_reasons) = 0 then
-      return public.sync_rubber_bill_core_20260725010000(payload);
-    end if;
-
-    v_original_payload := private.current_rubber_bill_payload(v_bill.id);
-  end if;
-
-  insert into public.rubber_bill_approval_requests (
-    operation,
-    bill_id,
-    location_id,
-    client_temp_id,
-    idempotency_key,
-    base_revision_no,
-    matched_reasons,
-    configured_price_snapshot,
-    edit_window_minutes_snapshot,
-    original_payload,
-    proposed_payload,
-    requested_by_user_id,
-    requested_by_name,
-    requested_by_phone
-  )
-  values (
-    v_operation,
-    v_bill.id,
-    v_location_id,
-    v_client_temp_id,
-    v_idempotency_key,
-    v_expected_revision,
-    v_reasons,
-    v_price_cap,
-    v_settings.edit_window_minutes,
-    v_original_payload,
-    payload,
-    auth.uid(),
-    coalesce(v_actor_name, ''),
-    coalesce(v_actor_phone, '')
-  )
-  returning id into v_request_id;
-
-  return jsonb_build_object(
-    'status', 'pending_approval',
-    'requestId', v_request_id,
-    'operation', v_operation,
-    'clientTempId', v_client_temp_id,
-    'matchedReasons', to_jsonb(v_reasons)
-  );
-exception
-  when unique_violation then
-    select id
-      into v_request_id
-    from public.rubber_bill_approval_requests
-    where request_status = 'pending'
-      and (
-        idempotency_key = v_idempotency_key
-        or bill_id = v_bill.id
-        or (operation = 'create' and client_temp_id = v_client_temp_id)
-      )
-    order by requested_at desc
-    limit 1;
-
-    if v_request_id is not null then
-      return jsonb_build_object(
-        'status', 'pending_approval',
-        'requestId', v_request_id,
-        'operation', v_operation,
-        'clientTempId', v_client_temp_id
-      );
-    end if;
-    return jsonb_build_object('status', 'failed', 'errorMessage', sqlerrm);
-  when others then
-    return jsonb_build_object('status', 'failed', 'errorMessage', sqlerrm);
+  return private.sync_rubber_bill_approval_20260805020000(payload);
 end;
 $$;
 
@@ -12973,7 +13073,7 @@ CREATE TABLE IF NOT EXISTS "public"."income_expense_approval_requests" (
     "approved_income_expense_id" "uuid",
     "matched_keyword_id" "uuid",
     "matched_keyword" "text",
-    "matched_reason" "text" DEFAULT 'keyword'::"text" NOT NULL,
+    "matched_reasons" "text"[] NOT NULL,
     "location_id" "uuid" NOT NULL,
     "tx_type" "text" NOT NULL,
     "title" "text" NOT NULL,
@@ -12988,7 +13088,7 @@ CREATE TABLE IF NOT EXISTS "public"."income_expense_approval_requests" (
     "decision_comment" "text",
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    CONSTRAINT "income_expense_approval_requests_matched_reason_check" CHECK (("matched_reason" = ANY (ARRAY['keyword'::"text", 'amount_threshold'::"text", 'keyword_and_amount'::"text"]))),
+    CONSTRAINT "income_expense_approval_requests_matched_reasons_check" CHECK ((("cardinality"("matched_reasons") > 0) AND ("matched_reasons" <@ ARRAY['keyword'::"text", 'amount_threshold'::"text", 'non_current_date'::"text"]))),
     CONSTRAINT "income_expense_approval_requests_request_status_check" CHECK (("request_status" = ANY (ARRAY['pending'::"text", 'approved'::"text", 'rejected'::"text", 'cancelled'::"text"]))),
     CONSTRAINT "income_expense_approval_requests_requested_operation_check" CHECK (("requested_operation" = ANY (ARRAY['create'::"text", 'update'::"text", 'delete'::"text"]))),
     CONSTRAINT "income_expense_approval_requests_tx_type_check" CHECK (("tx_type" = ANY (ARRAY['income'::"text", 'expense'::"text"])))
@@ -13008,6 +13108,7 @@ CREATE TABLE IF NOT EXISTS "public"."income_expense_approval_settings" (
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "cash_transfer_delete_requires_approval" boolean DEFAULT true NOT NULL,
+    "non_current_date_requires_approval" boolean DEFAULT false NOT NULL,
     CONSTRAINT "income_expense_approval_settings_applies_to_check" CHECK (("applies_to" = ANY (ARRAY['income'::"text", 'expense'::"text", 'both'::"text"]))),
     CONSTRAINT "income_expense_approval_settings_id_check" CHECK ("id")
 );
@@ -13221,7 +13322,7 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_bill_approval_requests" (
     CONSTRAINT "rubber_bill_approval_decision_shape" CHECK (((("request_status" = 'pending'::"text") AND ("approved_by_user_id" IS NULL) AND ("approved_at" IS NULL)) OR (("request_status" = 'approved'::"text") AND ("approved_by_user_id" IS NOT NULL) AND ("approved_at" IS NOT NULL)))),
     CONSTRAINT "rubber_bill_approval_request_shape" CHECK (((("operation" = 'create'::"text") AND ("bill_id" IS NULL) AND ("original_payload" IS NULL)) OR (("operation" = ANY (ARRAY['update'::"text", 'delete'::"text"])) AND ("bill_id" IS NOT NULL) AND ("original_payload" IS NOT NULL)))),
     CONSTRAINT "rubber_bill_approval_requests_edit_window_snapshot_check" CHECK (("edit_window_minutes_snapshot" >= 0)),
-    CONSTRAINT "rubber_bill_approval_requests_matched_reasons_check" CHECK (("cardinality"("matched_reasons") > 0)),
+    CONSTRAINT "rubber_bill_approval_requests_matched_reasons_check" CHECK ((("cardinality"("matched_reasons") > 0) AND ("matched_reasons" <@ ARRAY['price'::"text", 'time'::"text", 'non_current_date'::"text"]))),
     CONSTRAINT "rubber_bill_approval_requests_operation_check" CHECK (("operation" = ANY (ARRAY['create'::"text", 'update'::"text", 'delete'::"text"]))),
     CONSTRAINT "rubber_bill_approval_requests_request_status_check" CHECK (("request_status" = ANY (ARRAY['pending'::"text", 'approved'::"text"])))
 );
@@ -15679,7 +15780,15 @@ REVOKE ALL ON FUNCTION "private"."rubber_bill_report_blockers"("p_location_id" "
 
 
 
+REVOKE ALL ON FUNCTION "private"."sync_income_expense_dispatch_20260805020000"("payload" "jsonb") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."sync_income_sale_bill"("payload" "jsonb") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."sync_rubber_bill_approval_20260805020000"("payload" "jsonb") FROM PUBLIC;
 
 
 
@@ -16200,6 +16309,11 @@ GRANT SELECT ON TABLE "public"."rubber_bill_approval_settings" TO "authenticated
 
 REVOKE ALL ON FUNCTION "public"."save_rubber_bill_approval_settings"("p_edit_window_minutes" integer, "p_configured_price" numeric) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."save_rubber_bill_approval_settings"("p_edit_window_minutes" integer, "p_configured_price" numeric) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."save_rubber_bill_approval_settings"("p_edit_window_minutes" integer, "p_configured_price" numeric, "p_non_current_date_requires_approval" boolean) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."save_rubber_bill_approval_settings"("p_edit_window_minutes" integer, "p_configured_price" numeric, "p_non_current_date_requires_approval" boolean) TO "authenticated";
 
 
 

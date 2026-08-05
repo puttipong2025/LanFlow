@@ -39,6 +39,8 @@ export async function POST(request: Request) {
 
     if (status === "synced") {
       return NextResponse.json(data, { status: 200 });
+    } else if (status === "pending_approval") {
+      return NextResponse.json(data, { status: 202 });
     } else if (status === "failed") {
       return NextResponse.json(data, { status: 400 });
     } else if (status === "conflict") {

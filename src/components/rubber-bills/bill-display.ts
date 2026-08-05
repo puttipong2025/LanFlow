@@ -1,6 +1,7 @@
 import { thaiBahtText } from "@/lib/thai-baht-text";
 import { multiplyMoneyHalfUp } from "@/lib/rubber-bills/calculations";
 import type { RubberBill } from "@/types";
+import { formatBangkokDateTime } from "@/lib/bangkok-date";
 
 export type RubberBillReceiptModel = {
   receiptKind: "offline" | "synced";
@@ -33,7 +34,7 @@ export type RubberBillReceiptModel = {
 export function formatBillTimestamp(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return `${date.toLocaleDateString("th-TH")} ${date.toLocaleTimeString("th-TH", { hour12: false })}`;
+  return formatBangkokDateTime(date);
 }
 
 export function getDisplayBillNo(bill: RubberBill) {

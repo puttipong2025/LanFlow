@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { expect, test } from "@playwright/test";
+import { bangkokDateString } from "../../src/lib/bangkok-date";
 
 test.use({ storageState: "playwright/.auth/super_admin.json" });
 
@@ -50,7 +51,7 @@ test("creates, replays, updates, and deletes one sale parent atomically", async 
     .map(() => crypto.randomUUID());
   const approvalKeywordId = crypto.randomUUID();
   let approvalRequestId: string | null = null;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = bangkokDateString();
   const now = new Date().toISOString();
   const saleLines = [
     { incomeSaleItemId: first.id, quantity: 2, unitPrice: 10.125, sequenceNo: 99 },
@@ -212,17 +213,14 @@ test("creates, replays, updates, and deletes one sale parent atomically", async 
       deletedByPhone: profile.data!.phone,
     };
 
-    const blockedDelete = await authenticated.rpc("sync_income_expense", {
-      payload: deletePayload,
-    });
-    expect(blockedDelete.error).toBeNull();
-    expect(blockedDelete.data).toMatchObject({ status: "conflict" });
-
-    const requestedDelete = await authenticated.rpc("create_income_expense_approval_request", {
+    const requestedDelete = await authenticated.rpc("sync_income_expense", {
       payload: deletePayload,
     });
     expect(requestedDelete.error).toBeNull();
-    expect(requestedDelete.data).toMatchObject({ status: "pending" });
+    expect(requestedDelete.data).toMatchObject({
+      status: "pending_approval",
+      matchedReasons: ["keyword"],
+    });
     approvalRequestId = (requestedDelete.data as any).requestId;
     const storedRequest = await service
       .from("income_expense_approval_requests")

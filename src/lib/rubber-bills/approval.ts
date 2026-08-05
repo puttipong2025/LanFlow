@@ -1,10 +1,11 @@
 import type { RubberBillApprovalSettings } from "@/types";
+import { bangkokDateString } from "@/lib/bangkok-date";
 
-const CACHE_KEY = "lanflow:rubber-bill-approval-settings:v1";
+const CACHE_KEY = "lanflow:rubber-bill-approval-settings:v2";
 
 export type CachedRubberBillApprovalSettings = Pick<
   RubberBillApprovalSettings,
-  "editWindowMinutes" | "configuredPrice"
+  "editWindowMinutes" | "configuredPrice" | "nonCurrentDateRequiresApproval"
 > & {
   cachedAt: string;
 };
@@ -24,12 +25,20 @@ export function isRubberBillPriceApprovalRequired(
 
 export function assertOfflineRubberBillPriceAllowed(
   prices: number[],
-  settings: Pick<RubberBillApprovalSettings, "editWindowMinutes" | "configuredPrice"> | null,
-  isOnline: boolean
+  billDate: string,
+  settings: Pick<RubberBillApprovalSettings, "editWindowMinutes" | "configuredPrice" | "nonCurrentDateRequiresApproval"> | null,
+  isOnline: boolean,
 ) {
   if (isOnline) return;
+  const isNonCurrentDate = billDate !== bangkokDateString();
   if (!settings) {
+    if (!isNonCurrentDate) {
+      throw new Error("เครื่องนี้ยังไม่เคยโหลดกติกาอนุมัติ กรุณาออนไลน์ก่อนสร้างบิล");
+    }
     throw new Error("เครื่องนี้ยังไม่เคยโหลดกติกาอนุมัติ กรุณาออนไลน์ก่อนสร้างบิล");
+  }
+  if (isNonCurrentDate && settings.nonCurrentDateRequiresApproval) {
+    throw new Error("บิลต่างจากวันปัจจุบัน ต้องออนไลน์เพื่อส่งคำขออนุมัติ");
   }
   if (isRubberBillPriceApprovalRequired(prices, settings.configuredPrice)) {
     throw new Error("ราคาบิลสูงกว่าราคายางที่กำหนด ต้องออนไลน์เพื่อส่งคำขออนุมัติ");
@@ -37,7 +46,7 @@ export function assertOfflineRubberBillPriceAllowed(
 }
 
 export function saveRubberBillApprovalSettingsCache(
-  settings: Pick<RubberBillApprovalSettings, "editWindowMinutes" | "configuredPrice">,
+  settings: Pick<RubberBillApprovalSettings, "editWindowMinutes" | "configuredPrice" | "nonCurrentDateRequiresApproval">,
   cachedAt = new Date(),
   storage = browserStorage()
 ) {
@@ -45,6 +54,7 @@ export function saveRubberBillApprovalSettingsCache(
   const cache: CachedRubberBillApprovalSettings = {
     editWindowMinutes: settings.editWindowMinutes,
     configuredPrice: settings.configuredPrice,
+    nonCurrentDateRequiresApproval: settings.nonCurrentDateRequiresApproval,
     cachedAt: cachedAt.toISOString(),
   };
   storage.setItem(CACHE_KEY, JSON.stringify(cache));
@@ -69,6 +79,7 @@ export function loadRubberBillApprovalSettingsCache(
         )
       )
       || typeof parsed.cachedAt !== "string"
+      || typeof parsed.nonCurrentDateRequiresApproval !== "boolean"
     ) {
       return null;
     }

@@ -8,7 +8,8 @@ import {
   Home, ShieldCheck, Check, X, Users, Copy, Star
 } from "lucide-react";
 import type { Customer, CustomerContact, CustomerBankAccount, CustomerFarm } from "@/types";
-import { makeClientTempId, makeIdempotencyKey } from "@/lib/format";
+import { makeClientTempId, makeIdempotencyKey, todayInputValue } from "@/lib/format";
+import { bangkokBuddhistYear } from "@/lib/bangkok-date";
 import { useCustomers } from "@/hooks/useCustomers";
 import { Loader2 } from "lucide-react";
 
@@ -207,6 +208,7 @@ export function CustomersModule({ online }: { online: boolean }) {
           <table className="w-full min-w-[1000px] border-collapse text-sm">
             <thead>
               <tr className="border-b border-black/10 bg-slate-50 text-left text-ink/75 font-semibold">
+                <th className="px-4 py-3">จัดการ</th>
                 <th className="px-4 py-3">รหัสสมาชิก</th>
                 <th className="px-4 py-3">ชื่อหลัก</th>
                 <th className="px-4 py-3">ประเภทชำระเงิน</th>
@@ -214,12 +216,27 @@ export function CustomersModule({ online }: { online: boolean }) {
                 <th className="px-4 py-3">บัญชีธนาคาร</th>
                 <th className="px-4 py-3">เบอร์โทรศัพท์</th>
                 <th className="px-4 py-3 text-center">FSC</th>
-                <th className="px-4 py-3 text-center">จัดการ</th>
               </tr>
             </thead>
             <tbody>
               {visibleCustomers.map((cust) => (
                 <tr key={cust.id} className="border-b border-black/5 hover:bg-slate-50/50 transition-colors">
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-1.5 whitespace-nowrap">
+                      <button type="button" onClick={() => openEdit(cust)} disabled={!online}
+                        title={online ? "แก้ไขข้อมูลลูกค้า" : "แก้ไขลูกค้าใช้ได้เมื่อออนไลน์เท่านั้น"}
+                        aria-label={online ? "แก้ไขข้อมูลลูกค้า" : "แก้ไขลูกค้าใช้ได้เมื่อออนไลน์เท่านั้น"}
+                        className="inline-flex h-10 items-center gap-1.5 rounded-md bg-amber px-3 text-sm font-semibold text-white hover:bg-amber/90 disabled:cursor-not-allowed disabled:opacity-45">
+                        <Edit3 size={16} /> แก้
+                      </button>
+                      <button type="button" onClick={() => confirmDelete(cust)} disabled={!online}
+                        title={online ? "ลบข้อมูลลูกค้า" : "ลบลูกค้าใช้ได้เมื่อออนไลน์เท่านั้น"}
+                        aria-label={online ? "ลบข้อมูลลูกค้า" : "ลบลูกค้าใช้ได้เมื่อออนไลน์เท่านั้น"}
+                        className="inline-flex h-10 items-center gap-1.5 rounded-md bg-clay px-3 text-sm font-semibold text-white hover:bg-clay/90 disabled:cursor-not-allowed disabled:opacity-45">
+                        <Trash2 size={16} /> ลบ
+                      </button>
+                    </div>
+                  </td>
                   {/* รหัสสมาชิก */}
                   <td className="px-4 py-3 font-semibold text-leaf">
                     {cust.legacyMemberId || cust.clientTempId?.slice(-6) || "ทั่วไป"}
@@ -317,31 +334,6 @@ export function CustomersModule({ online }: { online: boolean }) {
                     </span>
                   </td>
 
-                  {/* Action buttons */}
-                  <td className="px-4 py-3 text-center">
-                    <div className="flex items-center justify-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => openEdit(cust)}
-                        disabled={!online}
-                        title={online ? "แก้ไขข้อมูลลูกค้า" : "แก้ไขลูกค้าใช้ได้เมื่อออนไลน์เท่านั้น"}
-                        className="inline-flex h-10 items-center gap-1.5 rounded-md bg-amber px-3 text-sm font-semibold text-white transition-colors hover:bg-amber/90 disabled:cursor-not-allowed disabled:opacity-45"
-                      >
-                        <Edit3 size={15} />
-                        แก้ไข
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => confirmDelete(cust)}
-                        disabled={!online}
-                        title={online ? "ลบข้อมูลลูกค้า" : "ลบลูกค้าใช้ได้เมื่อออนไลน์เท่านั้น"}
-                        className="inline-flex h-10 items-center gap-1.5 rounded-md bg-clay px-3 text-sm font-semibold text-white transition-colors hover:bg-clay/90 disabled:cursor-not-allowed disabled:opacity-45"
-                      >
-                        <Trash2 size={15} />
-                        ลบ
-                      </button>
-                    </div>
-                  </td>
                 </tr>
               ))}
               {visibleCustomers.length === 0 && (
@@ -442,7 +434,7 @@ function CustomerModal({
     if (customer?.legacyMemberId) return customer.legacyMemberId;
     
     // Auto-generate for new customer
-    const beYear = new Date().getFullYear() + 543;
+    const beYear = bangkokBuddhistYear();
     const prefix = beYear.toString().slice(-2); // e.g. "69" for 2569
     
     let maxNum = 0;
@@ -571,7 +563,7 @@ function CustomerModal({
       class: customerClass,
       mainName: mainName.trim(),
       fscStatus,
-      startingPointsDate: customer?.startingPointsDate ?? new Date().toISOString().split("T")[0],
+      startingPointsDate: customer?.startingPointsDate ?? todayInputValue(),
       defaultLocationId: customer?.defaultLocationId ?? undefined,
       syncStatus: customer?.syncStatus ?? "pending",
       idempotencyKey: customer?.idempotencyKey ?? makeIdempotencyKey("create", clientTempId),

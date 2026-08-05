@@ -43,7 +43,7 @@ export function RubberBillsTable({
         <table className="w-full min-w-[1320px] border-collapse text-sm">
           <thead>
             <tr className="whitespace-nowrap border-b border-black/20 text-left text-ink">
-              <th className="py-2">การทำงาน</th>
+              <th className="py-2">จัดการ</th>
               <th>เลขที่บิล</th>
               <th>วันที่ออกบิล</th>
               <th>TimestampBill</th>
@@ -67,52 +67,37 @@ export function RubberBillsTable({
               return (
               <tr key={bill.id} className="whitespace-nowrap border-b border-black/10 hover:bg-field/50">
                 <td className="py-3">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5 whitespace-nowrap">
                     <button
                       type="button"
-                      title={actionBlockReason ?? "ดู"}
-                      aria-label={actionBlockReason ?? "ดู"}
+                       title={actionBlockReason ?? "ดูรายละเอียด"}
+                       aria-label={actionBlockReason ?? "ดูรายละเอียด"}
                       disabled={actionsDisabled}
                       onClick={() => onEdit(bill)}
-                      className={`focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-river px-3 text-sm font-semibold text-white shadow-sm hover:bg-river/90 ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
+                       className={`focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-river text-white shadow-sm hover:bg-river/90 ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
                     >
-                      <Eye size={16} />
-                      ดู
+                       <Eye size={17} />
+                    </button>
+                    <button type="button" title={printBlockReason ?? "แชร์ PDF ใบรับซื้อยาง"} aria-label={printBlockReason ?? "แชร์ PDF ใบรับซื้อยาง"}
+                      disabled={Boolean(printBlockReason)} onClick={() => onPrint(bill)}
+                      className={`inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white hover:bg-actionSecondary/90 ${printBlockReason ? "cursor-not-allowed opacity-45" : ""}`}>
+                      <Share2 size={16} /> แชร์ PDF
                     </button>
                     <button
                       type="button"
-                      title={actionBlockReason ?? "ลบ"}
-                      aria-label={actionBlockReason ?? "ลบ"}
-                      disabled={actionsDisabled}
-                      onClick={() => onDelete(bill)}
-                      className={`focus-ring inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-md bg-danger px-3 text-sm font-semibold text-white shadow-sm hover:bg-danger/90 ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
-                    >
-                      <Trash2 size={16} />
-                      ลบ
-                    </button>
-                    <button
-                      type="button"
-                      title={actionBlockReason ?? "แก้ไข"}
-                      aria-label={actionBlockReason ?? "แก้ไข"}
+                       title={actionBlockReason ?? "แก้ไข"}
+                       aria-label={actionBlockReason ?? "แก้ไข"}
                       disabled={actionsDisabled}
                       onClick={() => onEdit(bill)}
                       className={`focus-ring inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-md bg-amber px-3 text-sm font-semibold text-white shadow-sm hover:bg-amber/90 ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
                     >
                       <Edit3 size={16} />
-                      แก้ไข
+                       แก้
                     </button>
-                    <button
-                      type="button"
-                      title={printBlockReason ?? "แชร์ PDF ใบรับซื้อยาง"}
-                      aria-label={printBlockReason ?? "แชร์ PDF ใบรับซื้อยาง"}
-                      disabled={Boolean(printBlockReason)}
-                      onClick={() => onPrint(bill)}
-                      className={`inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white hover:bg-actionSecondary/90 ${
-                        printBlockReason ? "cursor-not-allowed opacity-45" : ""
-                      }`}
-                    >
-                      <Share2 size={16} />
-                      แชร์ PDF
+                    <button type="button" title={actionBlockReason ?? "ลบ"} aria-label={actionBlockReason ?? "ลบ"}
+                      disabled={actionsDisabled} onClick={() => onDelete(bill)}
+                      className={`focus-ring inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-md bg-danger px-3 text-sm font-semibold text-white shadow-sm hover:bg-danger/90 ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}>
+                      <Trash2 size={16} /> ลบ
                     </button>
                     {bill.syncStatus === "failed" && (
                       <button
@@ -133,11 +118,19 @@ export function RubberBillsTable({
                     {bill.approvalPending && (
                       <span
                         className="w-fit rounded-full bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-800"
-                        title={bill.approvalReasons?.map((reason) => reason === "price" ? "ราคาเกินเพดาน" : "พ้นเวลาที่กำหนด").join(", ")}
+                        title={bill.approvalReasons?.map((reason) => {
+                          if (reason === "price") return "ราคาเกินเพดาน";
+                          if (reason === "non_current_date") return "วันที่ไม่ใช่วันปัจจุบัน";
+                          return "พ้นเวลาที่กำหนด";
+                        }).join(", ")}
                       >
                         รออนุมัติ{bill.approvalOperation === "create" ? "สร้างบิล" : ""}
                         {bill.approvalReasons?.length
-                          ? ` · ${bill.approvalReasons.map((reason) => reason === "price" ? "ราคา" : "เวลา").join("+")}`
+                          ? ` · ${bill.approvalReasons.map((reason) => {
+                            if (reason === "price") return "ราคา";
+                            if (reason === "non_current_date") return "วันที่";
+                            return "เวลา";
+                          }).join("+")}`
                           : ""}
                       </span>
                     )}

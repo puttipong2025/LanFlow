@@ -13,6 +13,11 @@ export async function PUT(request: NextRequest) {
       body?.configuredPrice === null || body?.configuredPrice === ""
         ? null
         : Number(body?.configuredPrice);
+    const hasNonCurrentDateSetting = Object.prototype.hasOwnProperty.call(
+      body ?? {},
+      "nonCurrentDateRequiresApproval"
+    );
+    const nonCurrentDateRequiresApproval = body?.nonCurrentDateRequiresApproval === true;
 
     if (!Number.isInteger(editWindowMinutes) || editWindowMinutes < 0) {
       return NextResponse.json(
@@ -33,12 +38,19 @@ export async function PUT(request: NextRequest) {
       );
     }
 
+    const rpcArgs = hasNonCurrentDateSetting
+      ? {
+          p_edit_window_minutes: editWindowMinutes,
+          p_configured_price: configuredPrice,
+          p_non_current_date_requires_approval: nonCurrentDateRequiresApproval,
+        }
+      : {
+          p_edit_window_minutes: editWindowMinutes,
+          p_configured_price: configuredPrice,
+        };
     const { data, error } = await authCheck.supabase.rpc(
       "save_rubber_bill_approval_settings",
-      {
-        p_edit_window_minutes: editWindowMinutes,
-        p_configured_price: configuredPrice,
-      }
+      rpcArgs
     );
 
     if (error) {

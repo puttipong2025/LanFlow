@@ -13,6 +13,7 @@ import type { DashboardManagerConfig } from "@/types/dashboard";
 import { formatCurrency, formatNumber } from "@/lib/format";
 import { authFetch } from "@/lib/auth-fetch";
 import { isNetworkCancellation } from "@/lib/network-abort";
+import { formatBangkokDateTime } from "@/lib/bangkok-date";
 
 type EditableConfig = TelegramBadgeConfig & {
   botToken: string;
@@ -512,7 +513,7 @@ export function TelegramBadgeConfigModal({
                 <dt className="font-semibold text-ink/80">ส่งสำเร็จล่าสุด</dt>
                 <dd>
                   {config.lastSuccessAt
-                    ? new Date(config.lastSuccessAt).toLocaleString("th-TH")
+                    ? formatBangkokDateTime(config.lastSuccessAt)
                     : "ยังไม่มี"}
                 </dd>
               </div>
@@ -520,7 +521,7 @@ export function TelegramBadgeConfigModal({
                 <dt className="font-semibold text-ink/80">ตรวจล่าสุด</dt>
                 <dd>
                   {config.lastAttemptAt
-                    ? new Date(config.lastAttemptAt).toLocaleString("th-TH")
+                    ? formatBangkokDateTime(config.lastAttemptAt)
                     : "ยังไม่มี"}
                 </dd>
               </div>

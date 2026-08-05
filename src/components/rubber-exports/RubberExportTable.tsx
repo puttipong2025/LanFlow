@@ -38,13 +38,13 @@ export function RubberExportTable({
       <table className="min-w-full text-sm">
         <thead className="bg-mint/60 text-left text-ink">
           <tr>
+            <th className="px-4 py-3">จัดการ</th>
             <th className="px-4 py-3">เลขที่</th>
             <th className="px-4 py-3">สถานะ</th>
             <th className="px-4 py-3 text-right">บิล</th>
             <th className="px-4 py-3 text-right">น้ำหนักเดิม</th>
             <th className="px-4 py-3 text-right">น้ำหนักปัจจุบัน</th>
             <th className="px-4 py-3 text-right">ยอดค่าทำงาน</th>
-            <th className="px-4 py-3 text-right">การทำงาน</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-black/5">
@@ -56,51 +56,36 @@ export function RubberExportTable({
           )}
           {!loading && rows.map((row) => (
             <tr key={row.id} className={row.status === "deleted" ? "bg-slate-50 text-ink/50" : ""}>
+              <td className="px-4 py-3">
+                <div className="flex items-center gap-1.5 whitespace-nowrap">
+                  <button type="button" onClick={() => onOpen(row.id)} title="ดูรายละเอียด" aria-label="ดูรายละเอียด"
+                    className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-river text-white">
+                    <Eye size={17} />
+                  </button>
+                  {(row.status === "verified" || row.status === "deleted") && (
+                    <button type="button" onClick={() => onShare(row)} disabled={shareBusy}
+                      title={`แชร์ PDF รายการส่งออกยาง ${row.exportNo}`} aria-label={`แชร์ PDF รายการส่งออกยาง ${row.exportNo}`}
+                      className="focus-ring inline-flex h-10 items-center gap-1 rounded-md bg-ink px-3 font-semibold text-white disabled:opacity-50">
+                      {sharingId === row.id ? <Loader2 size={16} className="animate-spin" /> : <Share2 size={16} />}
+                      {sharingId === row.id ? "กำลังสร้าง PDF" : "แชร์ PDF"}
+                    </button>
+                  )}
+                  {canDelete && row.status !== "deleted" && (
+                    <button type="button" onClick={() => onDelete(row)} disabled={Boolean(row.reportLockNo)}
+                      title={row.reportLockNo ? `ต้องลบรายงาน ${row.reportLockNo} ก่อน` : "ลบรายการส่งออกยาง"}
+                      aria-label={row.reportLockNo ? `ต้องลบรายงาน ${row.reportLockNo} ก่อน` : "ลบรายการส่งออกยาง"}
+                      className="focus-ring inline-flex h-10 items-center gap-1 rounded-md bg-clay px-3 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45">
+                      <Trash2 size={16} /> ลบ
+                    </button>
+                  )}
+                </div>
+              </td>
               <td className="px-4 py-3 font-semibold">{row.exportNo}</td>
               <td className="px-4 py-3">{statusLabel[row.status]}</td>
               <td className="px-4 py-3 text-right">{row.itemCount.toLocaleString("th-TH")}</td>
               <td className="px-4 py-3 text-right">{number(row.originalWeightTotal)}</td>
               <td className="px-4 py-3 text-right">{number(row.currentWeight)}</td>
               <td className="px-4 py-3 text-right">{number(row.workTotal)}</td>
-              <td className="px-4 py-3">
-                <div className="flex justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => onOpen(row.id)}
-                    className="focus-ring inline-flex items-center gap-1 rounded-md bg-river px-3 py-1.5 font-semibold text-white"
-                  >
-                    <Eye size={15} /> ดู
-                  </button>
-                  {(row.status === "verified" || row.status === "deleted") && (
-                    <button
-                      type="button"
-                      onClick={() => onShare(row)}
-                      disabled={shareBusy}
-                      aria-label={`แชร์ PDF รายการส่งออกยาง ${row.exportNo}`}
-                      className="focus-ring inline-flex items-center gap-1 rounded-md bg-ink px-3 py-1.5 font-semibold text-white disabled:opacity-50"
-                    >
-                      {sharingId === row.id
-                        ? <Loader2 size={15} className="animate-spin" />
-                        : <Share2 size={15} />}
-                      {sharingId === row.id ? "กำลังสร้าง PDF" : "แชร์ PDF"}
-                    </button>
-                  )}
-                  {canDelete && row.status !== "deleted" && (
-                    <button
-                      type="button"
-                      onClick={() => onDelete(row)}
-                      disabled={Boolean(row.reportLockNo)}
-                      title={row.reportLockNo
-                        ? `ต้องลบรายงาน ${row.reportLockNo} ก่อน`
-                        : "ลบรายการส่งออกยาง"}
-                      className="focus-ring inline-flex items-center gap-1 rounded-md bg-clay px-3 py-1.5 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45"
-                    >
-                      <Trash2 size={15} />
-                      {row.reportLockNo ? `ล็อกโดย ${row.reportLockNo}` : "ลบ"}
-                    </button>
-                  )}
-                </div>
-              </td>
             </tr>
           ))}
         </tbody>

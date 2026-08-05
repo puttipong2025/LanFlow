@@ -1,5 +1,6 @@
 import { expect, test, type Browser, type BrowserContext } from "@playwright/test";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { bangkokDateString } from "../src/lib/bangkok-date";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
 const publishableKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
@@ -409,7 +410,7 @@ test.describe.serial("Money Transfer account access @money-transfer-access", () 
         transfer_status: "paid",
       })).error).toBeNull();
 
-      const date = new Date().toISOString().slice(0, 10);
+      const date = bangkokDateString();
       const response = await user.request.get(
         `/api/lanflow/income-expense/feed?locationId=${locationId}&from=${date}&to=${date}&pageSize=100`,
       );

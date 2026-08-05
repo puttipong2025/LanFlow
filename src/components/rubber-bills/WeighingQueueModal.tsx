@@ -387,11 +387,11 @@ export function WeighingQueueModal({
               <table aria-label="ตารางคิวชั่ง" className="w-full min-w-[760px] text-sm">
                 <thead className="bg-field text-left text-xs font-bold uppercase tracking-wide text-ink/55">
                   <tr>
+                    <th className="w-52 px-3 py-3">จัดการ</th>
                     <th className="w-24 px-3 py-3 text-center">ลำดับ</th>
                     <th className="w-20 px-3 py-3 text-center">คิว</th>
                     <th className="px-3 py-3">ชื่อลูกค้า</th>
                     <th className="w-56 px-3 py-3">สถานะ</th>
-                    <th className="w-36 px-3 py-3 text-right">จัดการ</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -404,6 +404,20 @@ export function WeighingQueueModal({
                     );
                     return (
                       <tr key={item.id} className="border-t border-black/5 transition hover:bg-field/60">
+                        <td className="px-3 py-3">
+                          <div className="flex gap-1.5 whitespace-nowrap">
+                            <button type="button" aria-label={`แชร์ PDF บัตรคิว ${queueNumber}`} title={`แชร์ PDF บัตรคิว ${queueNumber}`}
+                              disabled={pdfShare.busy} onClick={() => void shareItem(item, queueNumber)}
+                              className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-xl bg-river px-3 font-bold text-white disabled:cursor-wait disabled:opacity-50">
+                              <Share2 size={16} /> {sharingId === item.id ? "กำลังสร้าง PDF" : "แชร์ PDF"}
+                            </button>
+                            <button type="button" aria-label={`ลบคิว ${queueNumber}`} title={`ลบคิว ${queueNumber}`}
+                              onClick={() => deleteItem(item, queueNumber)}
+                              className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-clay px-3 text-sm font-semibold text-white hover:bg-clay/90">
+                              <Trash2 size={17} /> ลบ
+                            </button>
+                          </div>
+                        </td>
                         <td className="px-3 py-3 text-center">
                           <div className="flex justify-center gap-1">
                             <button
@@ -450,29 +464,6 @@ export function WeighingQueueModal({
                           ) : (
                             <span className="text-xs font-semibold text-ink/40">ยังไม่แชร์</span>
                           )}
-                        </td>
-                        <td className="px-3 py-3">
-                          <div className="flex justify-end gap-2">
-                            <button
-                              type="button"
-                              aria-label={`แชร์ PDF บัตรคิว ${queueNumber}`}
-                              disabled={pdfShare.busy}
-                              onClick={() => void shareItem(item, queueNumber)}
-                              className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-xl bg-river px-3 font-bold text-white disabled:cursor-wait disabled:opacity-50"
-                            >
-                              <Share2 size={16} />
-                              {sharingId === item.id ? "กำลังสร้าง PDF" : "แชร์ PDF"}
-                            </button>
-                            <button
-                              type="button"
-                              aria-label={`ลบคิว ${queueNumber}`}
-                              onClick={() => deleteItem(item, queueNumber)}
-                              className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-clay px-3 text-sm font-semibold text-white hover:bg-clay/90"
-                            >
-                              <Trash2 size={17} />
-                              ลบ
-                            </button>
-                          </div>
                         </td>
                       </tr>
                     );

@@ -27,7 +27,7 @@ test.describe("Rubber Bill approval settings cache", () => {
   test("retains an explicit null cap without expiry", () => {
     const storage = memoryStorage();
     saveRubberBillApprovalSettingsCache(
-      { editWindowMinutes: 30, configuredPrice: null },
+      { editWindowMinutes: 30, configuredPrice: null, nonCurrentDateRequiresApproval: false },
       new Date("2020-01-01T00:00:00.000Z"),
       storage
     );
@@ -35,6 +35,7 @@ test.describe("Rubber Bill approval settings cache", () => {
     expect(loadRubberBillApprovalSettingsCache(storage)).toEqual({
       editWindowMinutes: 30,
       configuredPrice: null,
+      nonCurrentDateRequiresApproval: false,
       cachedAt: "2020-01-01T00:00:00.000Z",
     });
   });
@@ -42,12 +43,12 @@ test.describe("Rubber Bill approval settings cache", () => {
   test("overwrites the prior snapshot and accepts a zero cap", () => {
     const storage = memoryStorage();
     saveRubberBillApprovalSettingsCache(
-      { editWindowMinutes: 30, configuredPrice: 20 },
+      { editWindowMinutes: 30, configuredPrice: 20, nonCurrentDateRequiresApproval: false },
       new Date("2026-07-25T00:00:00.000Z"),
       storage
     );
     saveRubberBillApprovalSettingsCache(
-      { editWindowMinutes: 0, configuredPrice: 0 },
+      { editWindowMinutes: 0, configuredPrice: 0, nonCurrentDateRequiresApproval: true },
       new Date("2026-07-25T01:00:00.000Z"),
       storage
     );
@@ -55,6 +56,7 @@ test.describe("Rubber Bill approval settings cache", () => {
     expect(loadRubberBillApprovalSettingsCache(storage)).toEqual({
       editWindowMinutes: 0,
       configuredPrice: 0,
+      nonCurrentDateRequiresApproval: true,
       cachedAt: "2026-07-25T01:00:00.000Z",
     });
   });

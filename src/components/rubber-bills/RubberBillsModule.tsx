@@ -6,6 +6,7 @@ import { useRubberBills } from "@/hooks/useRubberBills";
 import { useCustomers } from "@/hooks/useCustomers";
 import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
+import { bangkokDateString } from "@/lib/bangkok-date";
 import { usePerRecordSyncRetry } from "@/hooks/usePerRecordSyncRetry";
 import { useRubberBillApprovals } from "@/hooks/useRubberBillApprovals";
 import { canManageSystemFeatures } from "@/lib/permissions";
@@ -323,7 +324,11 @@ export function RubberBillsModule({
       toast.error(blockReason);
       return;
     }
-    if (confirm("ต้องการลบบิลนี้ใช่หรือไม่?")) {
+    const dateApprovalNotice = approvalSettings?.nonCurrentDateRequiresApproval
+      && bill.billDate !== bangkokDateString()
+      ? "\nรายการต่างวันจะถูกส่งขออนุมัติก่อนลบ"
+      : "";
+    if (confirm(`ต้องการลบบิลนี้ใช่หรือไม่?${dateApprovalNotice}`)) {
       deleteBill({ id: bill.id, clientTempId: bill.clientTempId, deletedByName: profile.name, deletedByPhone: profile.phone, revisionNo: bill.revisionNo })
         .catch((err) => alert(err.message));
     }
@@ -453,6 +458,7 @@ export function RubberBillsModule({
           profile={profile}
           bill={editingBill}
           configuredPrice={approvalSettings?.configuredPrice}
+          nonCurrentDateRequiresApproval={approvalSettings?.nonCurrentDateRequiresApproval}
           customers={customerOptions}
           onClose={() => setModalOpen(false)}
           onSave={async (bill) => {

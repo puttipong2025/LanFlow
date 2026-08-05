@@ -11,6 +11,7 @@ import type {
   RubberBillApprovalRequest,
   RubberBillApprovalStatus,
 } from "@/types";
+import { formatBangkokDateTime } from "@/lib/bangkok-date";
 
 const operationLabels: Record<RubberBillApprovalOperation, string> = {
   create: "สร้างบิล",
@@ -21,13 +22,11 @@ const operationLabels: Record<RubberBillApprovalOperation, string> = {
 const reasonLabels: Record<RubberBillApprovalReason, string> = {
   price: "ราคาเกินเพดาน",
   time: "พ้นเวลาที่กำหนด",
+  non_current_date: "วันที่ไม่ใช่วันปัจจุบัน",
 };
 
 function formatDateTime(value: string) {
-  return new Intl.DateTimeFormat("th-TH", {
-    dateStyle: "short",
-    timeStyle: "short",
-  }).format(new Date(value));
+  return formatBangkokDateTime(value);
 }
 
 function payloadSummary(payload: Record<string, unknown> | null) {
@@ -74,6 +73,7 @@ export function RubberBillApprovalModal({
   const { locations } = useLocations();
   const [minutes, setMinutes] = useState("30");
   const [price, setPrice] = useState("");
+  const [nonCurrentDateRequiresApproval, setNonCurrentDateRequiresApproval] = useState(false);
   const [statusFilter, setStatusFilter] = useState<RubberBillApprovalStatus>("pending");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -82,6 +82,7 @@ export function RubberBillApprovalModal({
     if (!settings) return;
     setMinutes(String(settings.editWindowMinutes));
     setPrice(settings.configuredPrice == null ? "" : String(settings.configuredPrice));
+    setNonCurrentDateRequiresApproval(settings.nonCurrentDateRequiresApproval);
   }, [settings]);
 
   useEffect(() => {
@@ -119,6 +120,7 @@ export function RubberBillApprovalModal({
       await saveSettings({
         editWindowMinutes: parsedMinutes,
         configuredPrice: parsedPrice,
+        nonCurrentDateRequiresApproval,
       });
       toast.success("บันทึกการตั้งค่าแล้ว");
     } catch (error) {
@@ -198,6 +200,18 @@ export function RubberBillApprovalModal({
               บันทึก
             </button>
           </div>
+          <label className="mt-4 flex items-start gap-3 rounded-md bg-field/55 p-3 text-sm text-ink">
+            <input
+              type="checkbox"
+              checked={nonCurrentDateRequiresApproval}
+              onChange={(event) => setNonCurrentDateRequiresApproval(event.target.checked)}
+              className="mt-0.5 h-4 w-4 accent-river"
+            />
+            <span>
+              <strong className="block">ขออนุมัติเมื่อวันที่บิลไม่ใช่วันปัจจุบัน</strong>
+              <span className="text-ink/60">ตรวจทั้งวันย้อนหลังและวันล่วงหน้าตามเวลาไทย</span>
+            </span>
+          </label>
         </form>
 
         <section className="rounded-md border border-black/10 p-4">
@@ -264,24 +278,27 @@ export function RubberBillApprovalModal({
                     </p>
                   </div>
                   {request.requestStatus === "pending" && (
-                    <div className="flex gap-2">
+                    <div className="flex gap-1.5 whitespace-nowrap">
                       <button
                         type="button"
                         disabled={busyId === request.id}
                         onClick={() => void handleApprove(request)}
-                        className="focus-ring flex h-10 items-center gap-2 rounded-md bg-success px-3 font-bold text-white disabled:opacity-50"
+                        className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-success text-white disabled:opacity-50"
+                        title="อนุมัติ"
+                        aria-label="อนุมัติ"
                       >
-                        <Check size={16} />
-                        อนุมัติ
+                        <Check size={17} />
                       </button>
                       <button
                         type="button"
                         disabled={busyId === request.id}
                         onClick={() => void handleDelete(request)}
-                        className="focus-ring flex h-9 items-center gap-2 rounded-md bg-rose-600 px-3 font-bold text-white disabled:opacity-50"
+                        className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-rose-600 px-3 font-bold text-white disabled:opacity-50"
+                        title="ลบคำขอถาวร"
+                        aria-label="ลบคำขอถาวร"
                       >
                         <Trash2 size={16} />
-                        ลบถาวร
+                        ลบ
                       </button>
                     </div>
                   )}

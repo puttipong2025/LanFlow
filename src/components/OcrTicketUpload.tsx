@@ -23,6 +23,7 @@ import {
 import type { OcrTicket, Customer } from "@/types";
 import { authFetch } from "@/lib/auth-fetch";
 import { OCR_TICKET_TRANSFER_LOCK_MESSAGE } from "@/lib/record-action-locks";
+import { bangkokDateString } from "@/lib/bangkok-date";
 
 /* ── OCR API Result ── */
 type OcrApiResult = {
@@ -354,7 +355,7 @@ export function OcrTicketUpload({
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `ocr-results-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `ocr-results-${bangkokDateString()}.json`;
     a.click();
     URL.revokeObjectURL(url);
   }, [ocrTickets]);
@@ -534,6 +535,7 @@ export function OcrTicketUpload({
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-black/5 bg-field/30 text-left text-xs font-bold uppercase tracking-wider text-ink/50">
+                  <th className="px-3 py-3">จัดการ</th>
                   <th className="px-3 py-3">#</th>
                   <th className="px-3 py-3">เลขที่</th>
                   <th className="px-3 py-3">ทะเบียน</th>
@@ -547,7 +549,6 @@ export function OcrTicketUpload({
                   <th className="px-3 py-3 text-right">เงิน</th>
                   <th className="px-3 py-3 text-center">สถานะ</th>
                   <th className="px-3 py-3 text-center">รูป</th>
-                  <th className="px-3 py-3 text-center">จัดการ</th>
                 </tr>
               </thead>
               <tbody>
@@ -568,6 +569,20 @@ export function OcrTicketUpload({
                   
                   return (
                   <tr key={ticket.id} className={`border-b border-black/5 transition-colors ${isNegative ? 'bg-red-50 hover:bg-red-100' : 'hover:bg-mint/20'}`}>
+                    <td className="px-3 py-2.5">
+                      <div className="flex items-center gap-1 whitespace-nowrap">
+                        <button type="button" onClick={() => setEditTicket(ticket)} disabled={actionsDisabled}
+                          className={`inline-flex h-10 items-center gap-1.5 rounded-md bg-amber px-3 text-xs font-semibold text-white ${actionsDisabled ? "cursor-not-allowed opacity-40" : "hover:bg-amber/90"}`}
+                          title={actionBlockReason ?? "แก้ไข"} aria-label={actionBlockReason ?? "แก้ไข"}>
+                          <Edit3 size={16} /> แก้
+                        </button>
+                        <button type="button" onClick={() => setDeleteConfirmId(ticket.id)} disabled={actionsDisabled}
+                          className={`inline-flex h-10 items-center gap-1.5 rounded-md bg-clay px-3 text-xs font-semibold text-white ${actionsDisabled ? "cursor-not-allowed opacity-40" : "hover:bg-clay/90"}`}
+                          title={actionBlockReason ?? "ลบ"} aria-label={actionBlockReason ?? "ลบ"}>
+                          <Trash2 size={16} /> ลบ
+                        </button>
+                      </div>
+                    </td>
                     <td className="px-3 py-2.5 font-mono text-ink/40">{idx + 1}</td>
                     <td className="px-3 py-2.5 font-semibold text-ink">{ticket.ticketId ?? "—"}</td>
                     <td className="px-3 py-2.5">{ticket.licensePlate ?? "—"}</td>
@@ -613,24 +628,6 @@ export function OcrTicketUpload({
                       ) : (
                         <span className="text-xs text-ink/30">—</span>
                       )}
-                    </td>
-                    <td className="px-3 py-2.5 text-center">
-                      <div className="flex items-center justify-center gap-1">
-                        <button type="button" onClick={() => setEditTicket(ticket)}
-                          disabled={actionsDisabled}
-                          className={`inline-flex h-10 items-center gap-1.5 rounded-md bg-amber px-3 text-xs font-semibold text-white ${actionsDisabled ? "cursor-not-allowed opacity-40" : "hover:bg-amber/90"}`}
-                          title={actionBlockReason ?? "แก้ไข"}>
-                          <Edit3 size={14} />
-                          แก้ไข
-                        </button>
-                        <button type="button" onClick={() => setDeleteConfirmId(ticket.id)}
-                          disabled={actionsDisabled}
-                          className={`inline-flex h-10 items-center gap-1.5 rounded-md bg-clay px-3 text-xs font-semibold text-white ${actionsDisabled ? "cursor-not-allowed opacity-40" : "hover:bg-clay/90"}`}
-                          title={actionBlockReason ?? "ลบ"}>
-                          <Trash2 size={14} />
-                          ลบ
-                        </button>
-                      </div>
                     </td>
                   </tr>
                   );

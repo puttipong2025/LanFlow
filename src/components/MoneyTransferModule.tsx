@@ -16,6 +16,7 @@ import {
   WifiOff,
 } from "lucide-react";
 import type { Location, MoneyTransfer, Profile } from "@/types";
+import { formatBangkokDateTime } from "@/lib/bangkok-date";
 
 import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
 import { useRubberBills } from "@/hooks/useRubberBills";
@@ -525,7 +526,7 @@ export function MoneyTransferModule({
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-black/5 bg-field/30 text-left text-xs font-bold uppercase tracking-wider text-ink/50">
-                  <th className="px-3 py-3 text-center">จัดการ</th>
+                  <th className="px-3 py-3">จัดการ</th>
                   <th className="px-3 py-3">#</th>
                   <th className="px-3 py-3">ประเภท</th>
                   <th className="px-3 py-3">ปลายทาง</th>
@@ -549,8 +550,8 @@ export function MoneyTransferModule({
 
                   return (
                   <tr key={t.id} data-transfer-id={t.id} className="border-b border-black/5 transition-colors hover:bg-mint/20">
-                    <td className="px-3 py-2.5 text-center">
-                      <div className="flex items-center justify-center gap-1">
+                    <td className="px-3 py-2.5">
+                      <div className="flex items-center gap-1 whitespace-nowrap">
                         <button
                           type="button"
                           onClick={() => void handleShare(t)}
@@ -569,8 +570,8 @@ export function MoneyTransferModule({
                           className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-amber px-3 text-xs font-semibold text-white shadow-sm hover:bg-amber/90 disabled:cursor-not-allowed disabled:opacity-40"
                           title={t.reportLockNo ? `ล็อกโดยรายงาน ${t.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน` : online ? "แก้ไข" : offlineMessage}
                         >
-                          <Edit3 size={14} />
-                          แก้ไข
+                          <Edit3 size={16} />
+                          แก้
                         </button>
                         <button
                           type="button"
@@ -667,7 +668,7 @@ export function MoneyTransferModule({
                     </td>
                     <td className="px-3 py-2.5 text-sm text-ink/60">{t.createdByName ?? "—"}</td>
                     <td className="px-3 py-2.5 text-sm text-ink/60">
-                      {t.createdAt ? new Date(t.createdAt).toLocaleString("th-TH", { dateStyle: "short", timeStyle: "short" }) : "—"}
+                      {t.createdAt ? formatBangkokDateTime(t.createdAt) : "—"}
                     </td>
                   </tr>
                   );

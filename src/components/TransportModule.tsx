@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import type { TransportStaff, TransportStaffPlate, CustomerContact, CustomerBankAccount } from "@/types";
 import { makeClientTempId, makeIdempotencyKey } from "@/lib/format";
+import { bangkokBuddhistYear } from "@/lib/bangkok-date";
 
 import { useTransportStaffs } from "@/hooks/useTransportStaffs";
 
@@ -144,17 +145,33 @@ export function TransportModule({ locationId, online }: { locationId: string; on
           <table className="w-full min-w-[900px] border-collapse text-sm">
             <thead>
               <tr className="border-b border-black/10 bg-slate-50 text-left text-ink/75 font-semibold">
+                <th className="px-4 py-3">จัดการ</th>
                 <th className="px-4 py-3">รหัสสมาชิก</th>
                 <th className="px-4 py-3">ชื่อหลัก</th>
                 <th className="px-4 py-3">ทะเบียนรถ</th>
                 <th className="px-4 py-3">บัญชีธนาคาร</th>
                 <th className="px-4 py-3">เบอร์โทรศัพท์</th>
-                <th className="px-4 py-3 text-center">จัดการ</th>
               </tr>
             </thead>
             <tbody>
               {visibleStaffs.map((v) => (
                 <tr key={v.id} className="border-b border-black/5 hover:bg-slate-50/50 transition-colors">
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-1.5 whitespace-nowrap">
+                      <button type="button" onClick={() => openEdit(v)} disabled={!online}
+                        title={online ? "แก้ไข" : "แก้ไขใช้ได้เมื่อออนไลน์เท่านั้น"}
+                        aria-label={online ? "แก้ไข" : "แก้ไขใช้ได้เมื่อออนไลน์เท่านั้น"}
+                        className="inline-flex h-10 items-center gap-1.5 rounded-md bg-amber px-3 text-sm font-semibold text-white hover:bg-amber/90 disabled:cursor-not-allowed disabled:opacity-45">
+                        <Edit3 size={16} /> แก้
+                      </button>
+                      <button type="button" onClick={() => confirmDelete(v)} disabled={!online}
+                        title={online ? "ลบ" : "ลบใช้ได้เมื่อออนไลน์เท่านั้น"}
+                        aria-label={online ? "ลบ" : "ลบใช้ได้เมื่อออนไลน์เท่านั้น"}
+                        className="inline-flex h-10 items-center gap-1.5 rounded-md bg-clay px-3 text-sm font-semibold text-white hover:bg-clay/90 disabled:cursor-not-allowed disabled:opacity-45">
+                        <Trash2 size={16} /> ลบ
+                      </button>
+                    </div>
+                  </td>
                   <td className="px-4 py-3 font-semibold text-indigo-600">
                     {v.legacyMemberId || v.clientTempId?.slice(-6) || "—"}
                   </td>
@@ -228,31 +245,6 @@ export function TransportModule({ locationId, online }: { locationId: string; on
                     )}
                   </td>
 
-                  {/* Actions */}
-                  <td className="px-4 py-3 text-center">
-                    <div className="flex items-center justify-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => openEdit(v)}
-                        disabled={!online}
-                        title={online ? "แก้ไข" : "แก้ไขใช้ได้เมื่อออนไลน์เท่านั้น"}
-                        className="inline-flex h-10 items-center gap-1.5 rounded-md bg-amber px-3 text-sm font-semibold text-white transition-colors hover:bg-amber/90 disabled:cursor-not-allowed disabled:opacity-45"
-                      >
-                        <Edit3 size={15} />
-                        แก้ไข
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => confirmDelete(v)}
-                        disabled={!online}
-                        title={online ? "ลบ" : "ลบใช้ได้เมื่อออนไลน์เท่านั้น"}
-                        className="inline-flex h-10 items-center gap-1.5 rounded-md bg-clay px-3 text-sm font-semibold text-white transition-colors hover:bg-clay/90 disabled:cursor-not-allowed disabled:opacity-45"
-                      >
-                        <Trash2 size={15} />
-                        ลบ
-                      </button>
-                    </div>
-                  </td>
                 </tr>
               ))}
               {isLoading ? (
@@ -364,7 +356,7 @@ function TransportModal({ staff, allStaffs, locationId, online, onClose, onSave 
 
   const initialLegacyMemberId = useMemo(() => {
     if (staff?.legacyMemberId) return staff.legacyMemberId;
-    const beYear = new Date().getFullYear() + 543;
+    const beYear = bangkokBuddhistYear();
     const prefix = beYear.toString().slice(-2);
     let maxNum = 0;
     allStaffs.forEach(v => {

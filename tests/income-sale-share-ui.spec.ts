@@ -4,6 +4,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
 import { selectAppLocation } from "./helpers/select-app-location";
+import { bangkokDateString } from "../src/lib/bangkok-date";
 
 test.use({ storageState: { cookies: [], origins: [] } });
 
@@ -56,7 +57,7 @@ test("shows one read-only share action for one synced sale parent", async ({ pag
 
   const clientTempId = crypto.randomUUID();
   const referenceNo = `SALE${clientTempId.replaceAll("-", "").slice(0, 8).toUpperCase()}`;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = bangkokDateString();
 
   try {
     const inserted = await service.from("income_expense").insert({

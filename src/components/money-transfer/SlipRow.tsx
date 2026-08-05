@@ -3,6 +3,7 @@
 import { Trash2 } from "lucide-react";
 import type { MoneyTransferSlip } from "@/types";
 import { InlineNumber } from "@/components/shared/InlineNumber";
+import { bangkokDateTimeLocalValue, bangkokWallClockToUtcIso } from "@/lib/bangkok-date";
 
 export type OcrSlipResult = {
   amount: number | null;
@@ -88,8 +89,8 @@ export function SlipRow({
           </span>
           <input
             type="datetime-local"
-            value={slip.transactionDate?.slice(0, 16) ?? ""}
-            onChange={(e) => onUpdate(slip.id, "transactionDate", e.target.value ? new Date(e.target.value).toISOString() : null)}
+            value={slip.transactionDate ? bangkokDateTimeLocalValue(slip.transactionDate) : ""}
+            onChange={(e) => onUpdate(slip.id, "transactionDate", e.target.value ? bangkokWallClockToUtcIso(e.target.value) : null)}
             className={`focus-ring h-9 w-full rounded-md border bg-white px-3 text-sm ${
               !slip.transactionDate ? "border-clay ring-1 ring-clay/20" : "border-black/10"
             }`}

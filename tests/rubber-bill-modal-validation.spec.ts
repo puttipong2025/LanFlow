@@ -4,6 +4,7 @@ test.use({ storageState: { cookies: [], origins: [] } });
 
 for (const viewport of [
   { name: "desktop", width: 1280, height: 720 },
+  { name: "tablet", width: 768, height: 1024 },
   { name: "mobile", width: 393, height: 852 },
 ]) {
 test(`shows all Rubber Bill errors without moving focus and restores blank numeric inputs to zero on ${viewport.name}`, async ({ page }) => {
@@ -21,7 +22,16 @@ test(`shows all Rubber Bill errors without moving focus and restores blank numer
   const weighRow = modal.locator("table").first().locator("tbody tr").first();
   const editableZero = weighRow.locator('input[type="number"]').nth(0);
   const readOnlyZero = weighRow.locator('input[type="number"]').nth(2);
+  const deductWeightToggle = modal.locator('button[aria-controls="rubber-weight-deduction-field"]');
+
+  await expect(modal.getByLabel("หักน้ำหนักยาง (กก.)")).toHaveCount(0);
+  await expect(deductWeightToggle).toHaveAttribute("aria-expanded", "false");
+  await deductWeightToggle.click();
+
   const deductWeight = modal.getByLabel("หักน้ำหนักยาง (กก.)");
+  await expect(deductWeight).toBeFocused();
+  await expect(deductWeightToggle).toHaveAccessibleName("ยกเลิกหักน้ำหนัก");
+  await expect(deductWeightToggle).toHaveAttribute("aria-expanded", "true");
 
   await editableZero.focus();
   await expect(editableZero).toHaveValue("");
@@ -39,6 +49,18 @@ test(`shows all Rubber Bill errors without moving focus and restores blank numer
   await expect(deductWeight).toHaveValue("");
   await readOnlyZero.focus();
   await expect(deductWeight).toHaveValue("0");
+
+  await deductWeight.fill("12");
+  await deductWeightToggle.click();
+  await expect(deductWeightToggle).toBeFocused();
+  await expect(modal.getByLabel("หักน้ำหนักยาง (กก.)")).toHaveCount(0);
+  await expect(deductWeightToggle).toHaveAccessibleName("หักน้ำหนักยาง");
+  await deductWeightToggle.click();
+  const reopenedDeductWeight = modal.getByLabel("หักน้ำหนักยาง (กก.)");
+  await expect(reopenedDeductWeight).toBeFocused();
+  await expect(reopenedDeductWeight).toHaveValue("");
+  await readOnlyZero.focus();
+  await expect(reopenedDeductWeight).toHaveValue("0");
 
   const saveButton = modal.getByRole("button", { name: "บันทึกบิล" });
   await saveButton.focus();

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, requireSystemManager } from "@/lib/server/auth";
 import { reportErrorResponse } from "@/lib/server/report-response";
 import type { ReportDetails } from "@/types/reports";
+import { reportDatePart } from "@/lib/reports/report-date";
 
 export const dynamic = "force-dynamic";
 
@@ -18,7 +19,7 @@ function number(value: unknown) {
 }
 
 function datePart(value: unknown) {
-  return typeof value === "string" ? value.slice(0, 10) : "";
+  return reportDatePart(value);
 }
 
 async function rowsByIds(

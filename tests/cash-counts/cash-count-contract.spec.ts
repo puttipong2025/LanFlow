@@ -1,6 +1,7 @@
 import { expect, test, type Browser, type BrowserContext } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 import { selectAppLocation } from "../helpers/select-app-location";
+import { bangkokDateString } from "../../src/lib/bangkok-date";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -24,7 +25,7 @@ async function addIncome(locationId: string, actorId: string, title: string, typ
   const { error } = await db.from("income_expense").insert({
     id, client_temp_id: id, local_bill_no: number, server_bill_no: number,
     idempotency_key: `cash-count:${id}`, sync_status: "synced", record_status: "active",
-    location_id: locationId, type, number, tx_date: new Date().toISOString().slice(0, 10),
+    location_id: locationId, type, number, tx_date: bangkokDateString(),
     title, cost, bill_option: type === "income" ? "รายรับ" : "ค่าใช้จ่าย", server_received_at: new Date().toISOString(), revision_no: 0,
     created_by_user_id: actorId, created_by_name: actor?.name ?? "", created_by_phone: actor?.phone ?? "",
   });

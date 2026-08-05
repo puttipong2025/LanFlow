@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 import { selectAppLocation } from "./helpers/select-app-location";
+import { bangkokDateString } from "../src/lib/bangkok-date";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -23,7 +24,7 @@ test("edits the OCR product amount and persists the corrected value @ocr-ticket-
   const locationId = profile.locationIds[0];
   const id = crypto.randomUUID();
   const marker = `OCR-EDIT-${Date.now()}`;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = bangkokDateString();
 
   const { error: insertError } = await service.from("ocr_tickets").insert({
     id,

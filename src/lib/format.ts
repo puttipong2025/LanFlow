@@ -13,7 +13,7 @@ export function formatNumber(value: number) {
 }
 
 export function todayInputValue() {
-  return new Date().toISOString().slice(0, 10);
+  return bangkokDateString();
 }
 
 export function compactDate(value = new Date()) {
@@ -58,3 +58,4 @@ export function makeClientRecordedAt() {
 export function makeSimulatedServerBillNo(sequence: number) {
   return `${compactDate()}-${String(sequence).padStart(3, "0")}`;
 }
+import { bangkokDateString } from "@/lib/bangkok-date";

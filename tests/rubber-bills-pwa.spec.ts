@@ -1,6 +1,8 @@
 import { test, expect, Page } from '@playwright/test';
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { createClient } from '@supabase/supabase-js';
+import { bangkokDateString } from '../src/lib/bangkok-date';
 
 const localSupabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://127.0.0.1:54321';
 const localServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
@@ -130,14 +132,19 @@ test.describe('PWA Offline Reload', () => {
           Authorization: `Bearer ${localServiceRoleKey}`,
           Prefer: 'return=minimal',
         },
-        data: { edit_window_minutes: 30, configured_price: null },
+        data: {
+          edit_window_minutes: 30,
+          configured_price: null,
+          non_current_date_requires_approval: false,
+        },
       }
     );
     expect(resetApprovalSetting.ok()).toBeTruthy();
     await page.addInitScript(() => {
-      localStorage.setItem("lanflow:rubber-bill-approval-settings:v1", JSON.stringify({
+      localStorage.setItem("lanflow:rubber-bill-approval-settings:v2", JSON.stringify({
         editWindowMinutes: 30,
         configuredPrice: null,
+        nonCurrentDateRequiresApproval: false,
         cachedAt: new Date().toISOString(),
       }));
     });
@@ -210,6 +217,14 @@ test.describe('PWA Offline Reload', () => {
     await page.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]').fill(pwaMarker);
     await page.keyboard.press('Escape');
     const modal = page.locator('.fixed.inset-0').last();
+    const deductWeightToggle = modal.locator('button[aria-controls="rubber-weight-deduction-field"]');
+    await expect(modal.getByLabel('หักน้ำหนักยาง (กก.)')).toHaveCount(0);
+    await deductWeightToggle.click();
+    await expect(modal.getByLabel('หักน้ำหนักยาง (กก.)')).toBeFocused();
+    await modal.getByLabel('หักน้ำหนักยาง (กก.)').fill('12');
+    await deductWeightToggle.click();
+    await expect(deductWeightToggle).toBeFocused();
+    await expect(modal.getByLabel('หักน้ำหนักยาง (กก.)')).toHaveCount(0);
     const weighRow = modal.locator('table').first().locator('tbody tr').first();
     await weighRow.locator('input[type="number"]').nth(0).fill('1000');
     await weighRow.locator('input[type="number"]').nth(1).fill('200');
@@ -349,5 +364,58 @@ test.describe('PWA Offline Reload', () => {
       locationId: cachedSyncedSnapshot.locationId,
     };
     await page.request.post('/api/lanflow/rubber-bills', { data: syncedCleanup });
+  });
+
+  test('blocks a non-current bill offline after this device loads the enabled checkbox', async ({ page, context }) => {
+    test.setTimeout(120000);
+    const admin = createClient(localSupabaseUrl, localServiceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const updateSetting = (enabled: boolean) => admin
+      .from('rubber_bill_approval_settings')
+      .update({ non_current_date_requires_approval: enabled })
+      .eq('id', true);
+    const marker = `PWA-RUBBER-DATE-${Date.now()}`;
+    const past = new Date(`${bangkokDateString()}T00:00:00.000Z`);
+    past.setUTCDate(past.getUTCDate() - 1);
+
+    try {
+      expect((await updateSetting(true)).error).toBeNull();
+      await page.goto('/login');
+      await page.fill('input[type="tel"]', phone);
+      await page.fill('input[type="password"]', password);
+      await page.click('button:has-text("เข้าสู่ระบบ")');
+      await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+      await page.click('button:has-text("บิลยาง")');
+      await expect(page.locator('button:has-text("เพิ่มบิลยาง")')).toBeVisible();
+      await expect.poll(() => page.evaluate(() => {
+        const value = localStorage.getItem('lanflow:rubber-bill-approval-settings:v2');
+        return value ? JSON.parse(value).nonCurrentDateRequiresApproval : null;
+      })).toBe(true);
+
+      await context.setOffline(true);
+      await page.click('button:has-text("เพิ่มบิลยาง")');
+      const modal = page.locator('.fixed.inset-0').last();
+      await modal.getByLabel('วันที่').fill(past.toISOString().slice(0, 10));
+      await page.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]').fill(marker);
+      await page.keyboard.press('Escape');
+      const weighRow = modal.locator('table').first().locator('tbody tr').first();
+      await weighRow.locator('input[type="number"]').nth(0).fill('1000');
+      await weighRow.locator('input[type="number"]').nth(1).fill('200');
+      await weighRow.locator('input[type="number"]').nth(3).fill('20');
+      let dialogMessage = '';
+      page.once('dialog', async (dialog) => {
+        dialogMessage = dialog.message();
+        await dialog.dismiss();
+      });
+      await modal.getByRole('button', { name: 'ส่งขออนุมัติ' }).click();
+      expect(dialogMessage).toBe('บิลต่างจากวันปัจจุบัน ต้องออนไลน์เพื่อส่งคำขออนุมัติ');
+
+      await expect(modal).toBeVisible();
+      expect((await readQueue(page)).some((event) => event.payload?.customerName === marker)).toBe(false);
+    } finally {
+      await context.setOffline(false).catch(() => {});
+      expect((await updateSetting(false)).error).toBeNull();
+    }
   });
 });

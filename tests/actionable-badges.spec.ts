@@ -277,6 +277,7 @@ test("branch selector stays usable inside a mobile viewport", async ({ browser }
 });
 
 test("approval buttons and modal counts follow the selected branch", async ({ browser }) => {
+  test.setTimeout(150_000);
   test.skip(!serviceRoleKey, "Supabase service role key is required");
   const service = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
@@ -331,7 +332,7 @@ test("approval buttons and modal counts follow the selected branch", async ({ br
             idempotencyKey: `approval-button:${id}`,
             locationId,
           },
-          matched_reason: "amount_threshold",
+          matched_reasons: ["amount_threshold"],
           location_id: locationId,
           tx_type: "expense",
           title: `คำขอรับจ่าย Badge ${index + 1}`,

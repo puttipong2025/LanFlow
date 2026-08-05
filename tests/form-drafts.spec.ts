@@ -59,6 +59,8 @@ test.describe("persistent form drafts", () => {
     await weighRow.locator('input[type="number"]').nth(0).fill("1250");
     await weighRow.locator('input[type="number"]').nth(1).fill("250");
     await weighRow.locator('input[type="number"]').nth(3).fill("27.5");
+    await modal.getByRole("button", { name: "หักน้ำหนักยาง", exact: true }).click();
+    await modal.getByLabel("หักน้ำหนักยาง (กก.)").fill("12");
     await page.waitForTimeout(500);
 
     const locationId = await page.getByLabel(/^เลือกสาขา/).getAttribute("data-location-id");
@@ -77,6 +79,7 @@ test.describe("persistent form drafts", () => {
       && draft.formType === "rubber-bill"
     );
     expect(ownDraft).toBeTruthy();
+    expect(ownDraft?.data.weightDeduct).toBe(12);
     await page.evaluate(
       ({ draft, currentUserId, currentLocationId }) => new Promise<void>((resolve, reject) => {
         const request = indexedDB.open("lanflow_form_drafts_db");
@@ -121,6 +124,10 @@ test.describe("persistent form drafts", () => {
     await expect(restoredWeighRow.locator('input[type="number"]').nth(0)).toHaveValue("1250");
     await expect(restoredWeighRow.locator('input[type="number"]').nth(1)).toHaveValue("250");
     await expect(restoredWeighRow.locator('input[type="number"]').nth(3)).toHaveValue("27.5");
+    await expect(restoredModal.getByLabel("หักน้ำหนักยาง (กก.)")).toHaveValue("12");
+    await expect(restoredModal.getByLabel("หักน้ำหนักยาง (กก.)")).not.toBeFocused();
+    await expect(restoredModal.locator('button[aria-controls="rubber-weight-deduction-field"]'))
+      .toHaveAccessibleName("ยกเลิกหักน้ำหนัก");
 
     await expect.poll(() => readFormDrafts(page)).toContainEqual(expect.objectContaining({
       ownerUserId: data.profile.id,

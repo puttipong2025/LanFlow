@@ -10,12 +10,14 @@ export function NumberField({
   label,
   value,
   onChange,
-  readOnly = false
+  readOnly = false,
+  autoFocus = false
 }: {
   label: string;
   value: number;
   onChange?: (value: number) => void;
   readOnly?: boolean;
+  autoFocus?: boolean;
 }) {
   const isReadOnly = readOnly || !onChange;
   const [isBlankWhileEditing, setIsBlankWhileEditing] = useState(false);
@@ -25,6 +27,7 @@ export function NumberField({
       <span className="mb-1 block text-sm font-semibold text-ink/70">{label}</span>
       <input
         type="number"
+        autoFocus={autoFocus}
         value={!isReadOnly && isBlankWhileEditing ? "" : Number.isFinite(value) ? value : 0}
         readOnly={isReadOnly}
         onFocus={(event) => {

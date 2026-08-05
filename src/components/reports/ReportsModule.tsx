@@ -211,12 +211,12 @@ export function ReportsModule({
           <table className="min-w-full text-sm tabular-nums">
             <thead className="bg-mint/60 text-left text-ink">
               <tr>
+                <th className="px-4 py-3">จัดการ</th>
                 <th className="px-4 py-3">เลขรายงาน</th>
                 <th className="px-4 py-3">Cutoff</th>
                 <th className="px-4 py-3">ผู้สร้าง</th>
                 <th className="px-4 py-3 text-right">จำนวนรายการ</th>
                 <th className="px-4 py-3">สถานะ</th>
-                <th className="px-4 py-3 text-right">การทำงาน</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-black/5">
@@ -228,6 +228,31 @@ export function ReportsModule({
               )}
               {!loading && reports.map((report) => (
                 <tr key={report.id} className={report.status === "deleted" ? "bg-slate-50 text-ink/50" : ""}>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-1.5 whitespace-nowrap">
+                      <button type="button" onClick={() => void openReportPreview(report)} disabled={!online}
+                        title={!online ? "ดูรายงานได้เมื่อออนไลน์" : `ดูรายงาน ${report.reportNo}`}
+                        aria-label={!online ? "ดูรายงานได้เมื่อออนไลน์" : `ดูรายงาน ${report.reportNo}`}
+                        className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-river text-white disabled:opacity-45">
+                        <Eye size={17} />
+                      </button>
+                      {canDelete && report.status === "active" && report.hasCashCount && report.cashCountId && onOpenCashCount && (
+                        <button type="button" onClick={() => onOpenCashCount(report.cashCountId!)} title="เปิดผลตรวจนับ" aria-label="เปิดผลตรวจนับ"
+                          className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-actionSecondary text-white">
+                          <CircleDollarSign size={17} />
+                        </button>
+                      )}
+                      {canDelete && report.status === "active" && report.isLatestActive && !report.hasCashCount && (
+                        <button type="button" onClick={() => void deleteReport(report)}
+                          disabled={deletingId === report.id || Boolean(report.rubberExportLockNo)}
+                          title={report.rubberExportLockNo ? `ต้องลบรายการส่งออกยาง ${report.rubberExportLockNo} ก่อน` : "ลบรายงานล่าสุดเพื่อปลดล็อกรายการ"}
+                          aria-label={report.rubberExportLockNo ? `ต้องลบรายการส่งออกยาง ${report.rubberExportLockNo} ก่อน` : "ลบรายงานล่าสุดเพื่อปลดล็อกรายการ"}
+                          className="focus-ring inline-flex h-10 items-center gap-1 rounded-md bg-clay px-3 font-semibold text-white disabled:opacity-50">
+                          {deletingId === report.id ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />} ลบ
+                        </button>
+                      )}
+                    </div>
+                  </td>
                   <td className="px-4 py-3 font-semibold">{report.reportNo}</td>
                   <td className="whitespace-nowrap px-4 py-3">{dateTime(report.cutoffAt)}</td>
                   <td className="px-4 py-3">{report.createdByName}</td>
@@ -235,39 +260,6 @@ export function ReportsModule({
                   <td className="px-4 py-3">
                     <div>{report.status === "active" ? "ใช้งาน" : `ลบแล้ว${report.deletedAt ? ` ${dateTime(report.deletedAt)}` : ""}`}</div>
                     <div className="mt-1 text-xs font-semibold text-ink/60">{report.hasCashCount ? "มีผลตรวจนับเงินสด" : "ไม่มีผลตรวจนับเงินสด"}</div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void openReportPreview(report)}
-                        disabled={!online}
-                        aria-label={`ดูรายงาน ${report.reportNo}`}
-                        className="focus-ring inline-flex items-center gap-1 rounded-md bg-river px-3 py-1.5 font-semibold text-white"
-                      >
-                        <Eye size={15} />
-                        ดูรายงาน
-                      </button>
-                      {canDelete && report.status === "active" && report.hasCashCount && report.cashCountId && onOpenCashCount && (
-                        <button type="button" onClick={() => onOpenCashCount(report.cashCountId!)} className="focus-ring inline-flex items-center gap-1 rounded-md bg-actionSecondary px-3 py-1.5 font-semibold text-white"><CircleDollarSign size={15} />เปิดผลนับ</button>
-                      )}
-                      {canDelete && report.status === "active" && report.isLatestActive && !report.hasCashCount && (
-                        <button
-                          type="button"
-                          onClick={() => void deleteReport(report)}
-                          disabled={deletingId === report.id || Boolean(report.rubberExportLockNo)}
-                          title={report.rubberExportLockNo
-                            ? `ต้องลบรายการส่งออกยาง ${report.rubberExportLockNo} ก่อน`
-                            : "ลบรายงานล่าสุดเพื่อปลดล็อกรายการ"}
-                          className="focus-ring inline-flex items-center gap-1 rounded-md bg-clay px-3 py-1.5 font-semibold text-white disabled:opacity-50"
-                        >
-                          {deletingId === report.id
-                            ? <Loader2 size={15} className="animate-spin" />
-                            : <Trash2 size={15} />}
-                          {report.rubberExportLockNo ? `ล็อกโดย ${report.rubberExportLockNo}` : "ลบ"}
-                        </button>
-                      )}
-                    </div>
                   </td>
                 </tr>
               ))}
