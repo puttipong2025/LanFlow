@@ -172,7 +172,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       const pending = await syncBill(superAdmin, payload);
       expect(pending.response.ok()).toBeTruthy();
       expect(pending.body.status).toBe("pending_approval");
-      expect(pending.body.matchedReasons).toContain("non_current_date");
+      expect(pending.body.matchedReasons).toEqual(["non_current_date"]);
       requestId = pending.body.requestId ?? null;
       expect(requestId).toBeTruthy();
       expect((await db.from("rubber_bills").select("id").eq("client_temp_id", clientTempId)).data).toHaveLength(0);

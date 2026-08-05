@@ -3649,11 +3649,13 @@ begin
       );
     end if;
 
-    if cardinality(v_reasons) = 0 and (v_price_cap is null or not v_has_exceeded_cap) then
-      return public.sync_rubber_bill_core_20260725010000(payload);
+    if v_price_cap is not null and v_has_exceeded_cap then
+      v_reasons := array_append(v_reasons, 'price');
     end if;
 
-    v_reasons := array_append(v_reasons, 'price');
+    if cardinality(v_reasons) = 0 then
+      return public.sync_rubber_bill_core_20260725010000(payload);
+    end if;
   else
     select *
       into v_bill
