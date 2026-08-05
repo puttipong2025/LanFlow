@@ -679,7 +679,7 @@ export function RubberBillModal({
               }
               setIsWeightDeductOpen(true);
             }}
-            className="focus-ring h-11 w-full rounded-md border border-black/10 bg-white px-3 text-sm font-semibold text-ink hover:bg-slate-50"
+            className="focus-ring h-11 w-fit rounded-md bg-clay px-3 text-sm font-semibold text-white hover:bg-clay/90"
           >
             {isWeightDeductOpen ? "ยกเลิกหักน้ำหนัก" : "หักน้ำหนักยาง"}
           </button>

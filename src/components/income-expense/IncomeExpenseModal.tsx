@@ -387,7 +387,7 @@ export function IncomeExpenseModal({
                     blocked
                       ? "cursor-not-allowed border-amber bg-amber text-white opacity-50"
                       : active
-                      ? "border-leaf bg-clay text-white shadow-sm"
+                      ? "border-leaf bg-leaf text-white shadow-sm"
                       : "border-actionSecondary bg-actionSecondary text-white hover:bg-actionSecondary/90"
                   }`}
                 >
