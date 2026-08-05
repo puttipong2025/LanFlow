@@ -38,15 +38,17 @@ test("creates, replays, updates, and deletes one sale parent atomically", async 
     .not("stock_product_id", "is", null)
     .limit(2);
   expect(saleItems.error).toBeNull();
-  expect(saleItems.data?.length).toBeGreaterThan(0);
+  expect(saleItems.data?.length).toBeGreaterThan(1);
 
   const first = saleItems.data![0];
-  const second = first;
+  const second = saleItems.data![1];
   const locationId = userLocation.data!.location_id as string;
   const clientTempId = crypto.randomUUID();
   const rejectedClientId = crypto.randomUUID();
   const tooManyClientId = crypto.randomUUID();
   const noStockClientId = crypto.randomUUID();
+  const unauthorizedClientId = crypto.randomUUID();
+  const concurrentClientIds = [crypto.randomUUID(), crypto.randomUUID()];
   const stockEntryIds = [...new Set([first.stock_product_id, second.stock_product_id])]
     .map(() => crypto.randomUUID());
   const approvalKeywordId = crypto.randomUUID();
@@ -128,19 +130,74 @@ test("creates, replays, updates, and deletes one sale parent atomically", async 
         ...payload,
         clientTempId: noStockClientId,
         idempotencyKey: `create:${noStockClientId}:0`,
-        saleLines: [{
-          incomeSaleItemId: first.id,
-          quantity: 101,
-          unitPrice: 1,
-          sequenceNo: 1,
-        }],
+        saleLines: [
+          { incomeSaleItemId: first.id, quantity: 60, unitPrice: 1, sequenceNo: 1 },
+          { incomeSaleItemId: first.id, quantity: 41, unitPrice: 1, sequenceNo: 2 },
+          { incomeSaleItemId: second.id, quantity: 102, unitPrice: 1, sequenceNo: 3 },
+        ],
       },
     });
     expect(insufficientStock.error).toBeNull();
     expect(insufficientStock.data).toMatchObject({
       status: "failed",
-      errorMessage: "สต็อกสินค้าไม่พอสำหรับบิลขาย",
+      errorCode: "STOCK_SHORTAGE",
+      errorMessage: "สินค้าในสต็อกไม่พอสำหรับบิลขาย",
+      stockShortages: expect.arrayContaining([
+        { productId: first.stock_product_id, productName: expect.any(String), requestedQuantity: 101, availableQuantity: 100 },
+        { productId: second.stock_product_id, productName: expect.any(String), requestedQuantity: 102, availableQuantity: 100 },
+      ]),
     });
+    const rejectedParent = await service
+      .from("income_expense")
+      .select("id", { count: "exact", head: true })
+      .eq("client_temp_id", noStockClientId);
+    expect(rejectedParent.count).toBe(0);
+
+    const unauthorized = await authenticated.rpc("sync_income_expense", {
+      payload: {
+        ...payload,
+        clientTempId: unauthorizedClientId,
+        idempotencyKey: `create:${unauthorizedClientId}:0`,
+        locationId: crypto.randomUUID(),
+        saleLines: [{ incomeSaleItemId: first.id, quantity: 101, unitPrice: 1, sequenceNo: 1 }],
+      },
+    });
+    expect(unauthorized.error).toBeNull();
+    expect(unauthorized.data).toMatchObject({ status: "failed", errorMessage: "Location access denied" });
+    expect(unauthorized.data).not.toHaveProperty("stockShortages");
+
+    const concurrentResults = await Promise.all(concurrentClientIds.map((concurrentClientId) => (
+      authenticated.rpc("sync_income_expense", {
+        payload: {
+          ...payload,
+          clientTempId: concurrentClientId,
+          idempotencyKey: `create:${concurrentClientId}:0`,
+          saleLines: [{ incomeSaleItemId: first.id, quantity: 60, unitPrice: 1, sequenceNo: 1 }],
+        },
+      })
+    )));
+    expect(concurrentResults.every((result) => result.error === null)).toBe(true);
+    expect(concurrentResults.map((result) => (result.data as any).status).sort()).toEqual(["failed", "synced"]);
+    expect(concurrentResults.find((result) => (result.data as any).status === "failed")?.data).toMatchObject({
+      errorCode: "STOCK_SHORTAGE",
+      stockShortages: [{
+        productId: first.stock_product_id,
+        requestedQuantity: 60,
+        availableQuantity: 40,
+      }],
+    });
+
+    const keyword = await service.from("income_expense_approval_keywords").insert({
+      id: approvalKeywordId,
+      keyword: first.name,
+      match_mode: "exact",
+      applies_to: "income",
+      is_active: true,
+      created_by_user_id: userId,
+      created_by_name: profile.data!.name,
+      created_by_phone: profile.data!.phone,
+    });
+    expect(keyword.error).toBeNull();
 
     const validPayload = { ...payload, saleLines: validLines };
     const created = await authenticated.rpc("sync_income_expense", { payload: validPayload });
@@ -192,17 +249,6 @@ test("creates, replays, updates, and deletes one sale parent atomically", async 
     expect(updated.error).toBeNull();
     expect(updated.data).toMatchObject({ status: "synced", cost: 40.52, saleLineCount: 1 });
 
-    const keyword = await service.from("income_expense_approval_keywords").insert({
-      id: approvalKeywordId,
-      keyword: first.name,
-      match_mode: "exact",
-      applies_to: "income",
-      is_active: true,
-      created_by_user_id: userId,
-      created_by_name: profile.data!.name,
-      created_by_phone: profile.data!.phone,
-    });
-    expect(keyword.error).toBeNull();
     const deletePayload = {
       ...updatedPayload,
       operation: "delete",
@@ -248,12 +294,23 @@ test("creates, replays, updates, and deletes one sale parent atomically", async 
     const deletedParent = await service.from("income_expense").select("record_status").eq("client_temp_id", clientTempId).single();
     expect(deletedParent.data?.record_status).toBe("deleted");
   } finally {
-    await service.from("income_expense").delete().in("client_temp_id", [
+    const cleanupClientIds = [
       clientTempId,
       rejectedClientId,
       tooManyClientId,
       noStockClientId,
-    ]);
+      unauthorizedClientId,
+      ...concurrentClientIds,
+    ];
+    const cleanupParents = await service
+      .from("income_expense")
+      .select("id")
+      .in("client_temp_id", cleanupClientIds);
+    const cleanupParentIds = cleanupParents.data?.map((row) => row.id) ?? [];
+    if (cleanupParentIds.length > 0) {
+      await service.from("acid_stock_movements").delete().in("source_id", cleanupParentIds);
+    }
+    await service.from("income_expense").delete().in("client_temp_id", cleanupClientIds);
     if (approvalRequestId) {
       await service.from("income_expense_approval_requests").delete().eq("id", approvalRequestId);
     }

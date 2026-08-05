@@ -127,26 +127,75 @@ async function fillSaleLine(
   await row.locator('input[type="number"]').nth(1).fill(priceValue);
 }
 
-test("opens the waiting dialog immediately and shares after one whole-bill sync", async ({ page }) => {
+test("keeps one sale command in flight and preserves the modal until sync succeeds", async ({ page }) => {
   await installShareMock(page);
 
-  let releaseApproval!: () => void;
-  const approvalGate = new Promise<void>((resolve) => {
-    releaseApproval = resolve;
-  });
   let releaseSync!: () => void;
   const syncGate = new Promise<void>((resolve) => {
     releaseSync = resolve;
   });
-  let approvalStarted = false;
-  let syncStarted = false;
+  let approvalCount = 0;
   let syncCount = 0;
 
   await page.route("**/api/lanflow/income-expense/approval-requests", async (route) => {
-    approvalStarted = true;
-    await approvalGate;
+    approvalCount += 1;
     await route.fulfill({ json: { status: "no_approval" } });
   });
+  await page.route("**/api/lanflow/income-expense", async (route) => {
+    syncCount += 1;
+    await syncGate;
+    await route.fulfill({
+      json: {
+        status: "synced",
+        id: crypto.randomUUID(),
+        serverBillNo: "SERVER-SALE-SINGLE-FLIGHT",
+        revisionNo: 1,
+        serverReceivedAt: new Date().toISOString(),
+        title: "บิลขาย — 1 รายการ",
+        cost: 25,
+        saleLineCount: 1,
+        saleLines: [{
+          id: crypto.randomUUID(),
+          incomeSaleItemId: crypto.randomUUID(),
+          stockProductId: crypto.randomUUID(),
+          title: "สินค้า",
+          quantity: 1,
+          unitPrice: 25,
+          lineTotal: 25,
+          sequenceNo: 1,
+        }],
+      },
+    });
+  });
+
+  await loginAndOpenIncomeExpense(page);
+  await page.getByRole("button", { name: "เพิ่มรายรับ" }).click();
+  const modal = incomeExpenseModal(page);
+  await modal.getByRole("button", { name: /บิลขาย/ }).click();
+  await fillSaleLine(modal, 0, "1", "25");
+
+  await modal.getByRole("button", { name: "บันทึกบิล" }).click();
+  await expect.poll(() => syncCount).toBe(1);
+  await expect(modal).toBeVisible();
+  const savingButton = modal.getByRole("button", { name: "กำลังบันทึก..." });
+  await expect(savingButton).toBeDisabled();
+  await expect(modal.getByRole("button", { name: "ปิด" })).toBeDisabled();
+  await savingButton.evaluate((button: HTMLButtonElement) => button.click());
+  expect(approvalCount).toBe(0);
+  await expect(modal).toBeVisible();
+  releaseSync();
+  await expect(modal).toBeHidden();
+});
+
+test("opens the PDF window only after one whole-bill sync succeeds", async ({ page }) => {
+  await installShareMock(page);
+
+  let releaseSync!: () => void;
+  const syncGate = new Promise<void>((resolve) => {
+    releaseSync = resolve;
+  });
+  let syncStarted = false;
+  let syncCount = 0;
   await page.route("**/api/lanflow/income-expense", async (route) => {
     syncStarted = true;
     await syncGate;
@@ -197,13 +246,9 @@ test("opens the waiting dialog immediately and shares after one whole-bill sync"
   await modal.getByRole("button", { name: "บันทึกบิล" }).click();
 
   const waiting = page.getByRole("dialog", { name: "กำลังสร้าง PDF" });
-  await expect(waiting).toBeVisible();
-  await expect.poll(() => approvalStarted).toBe(true);
-  expect(await sharedReceipts(page)).toEqual([]);
-
-  releaseApproval();
   await expect.poll(() => syncStarted).toBe(true);
-  await expect(waiting).toBeVisible();
+  await expect(waiting).toBeHidden();
+  await expect(modal).toBeVisible();
   expect(await sharedReceipts(page)).toEqual([]);
 
   releaseSync();
@@ -278,9 +323,6 @@ test("waits for an edited sale line to sync and keeps the server bill number on 
       },
     });
   });
-  await page.route("**/api/lanflow/income-expense/approval-requests", async (route) => {
-    await route.fulfill({ json: { status: "no_approval" } });
-  });
   await page.route("**/api/lanflow/income-expense", async (route) => {
     syncStarted = true;
     await syncGate;
@@ -317,8 +359,9 @@ test("waits for an edited sale line to sync and keeps the server bill number on 
   await modal.getByRole("button", { name: "บันทึกบิล" }).click();
 
   const waiting = page.getByRole("dialog", { name: "กำลังสร้าง PDF" });
-  await expect(waiting).toBeVisible();
   await expect.poll(() => syncStarted).toBe(true);
+  await expect(waiting).toBeHidden();
+  await expect(modal).toBeVisible();
   expect(await sharedReceipts(page)).toEqual([]);
 
   releaseSync();
@@ -328,19 +371,49 @@ test("waits for an edited sale line to sync and keeps the server bill number on 
   );
 });
 
-test("closes the waiting dialog and reports a sync failure without sharing or removing the queued sale", async ({ page }) => {
+test("shows every stock shortage, preserves the modal, and removes the rejected queue event", async ({ page }) => {
   await installShareMock(page);
+  const submittedClientIds: string[] = [];
 
-  await page.route("**/api/lanflow/income-expense/approval-requests", async (route) => {
-    await route.fulfill({ json: { status: "no_approval" } });
-  });
   await page.route("**/api/lanflow/income-expense", async (route) => {
+    const payload = route.request().postDataJSON();
+    submittedClientIds.push(payload.clientTempId);
     await new Promise((resolve) => setTimeout(resolve, 200));
+    if (submittedClientIds.length > 1) {
+      await route.fulfill({
+        json: {
+          status: "synced",
+          id: crypto.randomUUID(),
+          serverBillNo: "SERVER-RETRY-SAME-ID",
+          revisionNo: 1,
+          serverReceivedAt: new Date().toISOString(),
+          title: "บิลขาย — 1 รายการ",
+          cost: 50,
+          saleLineCount: 1,
+          saleLines: [{
+            id: crypto.randomUUID(),
+            incomeSaleItemId: crypto.randomUUID(),
+            stockProductId: crypto.randomUUID(),
+            title: "สินค้า",
+            quantity: 2,
+            unitPrice: 25,
+            lineTotal: 50,
+            sequenceNo: 1,
+          }],
+        },
+      });
+      return;
+    }
     await route.fulfill({
       status: 400,
       json: {
         status: "failed",
-        errorMessage: "สต็อกสินค้าไม่พอสำหรับบิลขาย",
+        errorCode: "STOCK_SHORTAGE",
+        errorMessage: "สินค้าในสต็อกไม่พอสำหรับบิลขาย",
+        stockShortages: [
+          { productId: crypto.randomUUID(), productName: "น้ำกรด A", requestedQuantity: 2, availableQuantity: 1 },
+          { productId: crypto.randomUUID(), productName: "ถุง B", requestedQuantity: 5, availableQuantity: 0 },
+        ],
       },
     });
   });
@@ -352,24 +425,20 @@ test("closes the waiting dialog and reports a sync failure without sharing or re
   await fillSaleLine(modal, 0, "2", "25");
   await modal.getByRole("button", { name: "บันทึกบิล" }).click();
 
-  const waiting = page.getByRole("dialog", { name: "กำลังสร้าง PDF" });
-  await expect(waiting).toBeVisible();
-  await expect(
-    page.getByLabel("Notifications alt+T")
-      .getByText("สต็อกสินค้าไม่พอสำหรับบิลขาย")
-  ).toBeVisible();
-  await expect(waiting).toBeHidden();
+  const shortageAlert = page.getByRole("dialog", { name: "สินค้าในสต็อกไม่พอ" });
+  await expect(shortageAlert).toContainText("น้ำกรด A: ขอ 2 · คงเหลือ 1");
+  await expect(shortageAlert).toContainText("ถุง B: ขอ 5 · คงเหลือ 0");
   expect(await sharedReceipts(page)).toEqual([]);
-
-  const queue = await readQueue(page);
-  expect(queue).toHaveLength(1);
-  expect(queue[0]).toMatchObject({
-    status: "failed",
-    errorMessage: "สต็อกสินค้าไม่พอสำหรับบิลขาย",
-  });
+  await expect.poll(async () => (await readQueue(page)).length).toBe(0);
+  await shortageAlert.getByRole("button", { name: "ตกลง" }).click();
+  await expect(modal).toBeVisible();
+  await modal.getByRole("button", { name: "บันทึกบิล" }).click();
+  await expect(modal).toBeHidden();
+  expect(submittedClientIds).toHaveLength(2);
+  expect(submittedClientIds[1]).toBe(submittedClientIds[0]);
 });
 
-test("cancel hides only the wait/share flow while the submitted sale still finishes syncing", async ({ page }) => {
+test("labels the post-save PDF action as closing a saved bill window", async ({ page }) => {
   await installShareMock(page);
 
   let releaseSync!: () => void;
@@ -378,9 +447,6 @@ test("cancel hides only the wait/share flow while the submitted sale still finis
   });
   let syncStarted = false;
 
-  await page.route("**/api/lanflow/income-expense/approval-requests", async (route) => {
-    await route.fulfill({ json: { status: "no_approval" } });
-  });
   await page.route("**/api/lanflow/income-expense", async (route) => {
     syncStarted = true;
     await syncGate;
@@ -416,41 +482,26 @@ test("cancel hides only the wait/share flow while the submitted sale still finis
   await modal.getByRole("button", { name: "บันทึกบิล" }).click();
 
   const waiting = page.getByRole("dialog", { name: "กำลังสร้าง PDF" });
-  await expect(waiting).toBeVisible();
   await expect.poll(() => syncStarted).toBe(true);
-  await waiting.getByRole("button", { name: "ยกเลิก" }).click();
   await expect(waiting).toBeHidden();
+  await expect(modal).toBeVisible();
 
   releaseSync();
+  await Promise.all([
+    expect(waiting).toContainText("บิลบันทึกแล้ว กรุณารอสักครู่"),
+    expect(waiting.getByRole("button", { name: "ปิดหน้าต่าง", exact: true })).toBeVisible(),
+  ]);
+  await expect(waiting).toBeHidden();
+  await expect(modal).toBeHidden();
   await expect.poll(async () => (await readQueue(page)).length).toBe(0);
-  expect(await sharedReceipts(page)).toEqual([]);
 });
 
-test("does not enqueue or sync any partial line when whole-bill approval fails", async ({ page }) => {
+test("lets the user remove a legacy failed sale that never reached the server", async ({ page }) => {
   await installShareMock(page);
-
-  let releaseApproval!: () => void;
-  const approvalGate = new Promise<void>((resolve) => {
-    releaseApproval = resolve;
-  });
-  let syncCount = 0;
-  await page.route("**/api/lanflow/income-expense/approval-requests", async (route) => {
-    await approvalGate;
-    await route.fulfill({
-      status: 500,
-      json: { errorMessage: "ตรวจอนุมัติทั้งบิลไม่สำเร็จ" },
-    });
-  });
   await page.route("**/api/lanflow/income-expense", async (route) => {
-    syncCount += 1;
     await route.fulfill({
-      json: {
-        status: "synced",
-        id: crypto.randomUUID(),
-        serverBillNo: "SERVER-SHOULD-NOT-RUN",
-        revisionNo: 1,
-        serverReceivedAt: new Date().toISOString(),
-      },
+      status: 400,
+      json: { status: "failed", errorMessage: "บิลค้างทดสอบ" },
     });
   });
 
@@ -459,19 +510,18 @@ test("does not enqueue or sync any partial line when whole-bill approval fails",
   const modal = incomeExpenseModal(page);
   await modal.getByRole("button", { name: /บิลขาย/ }).click();
   await fillSaleLine(modal, 0, "1", "25");
-  await modal.getByRole("button", { name: "เพิ่มรายการ" }).click();
-  await fillSaleLine(modal, 1, "1", "25");
   await modal.getByRole("button", { name: "บันทึกบิล" }).click();
+  await expect.poll(async () => (await readQueue(page))[0]?.status).toBe("failed");
+  await expect(modal).toBeVisible();
 
-  const waiting = page.getByRole("dialog", { name: "กำลังสร้าง PDF" });
-  await expect(waiting).toBeVisible();
-  releaseApproval();
-  await expect(
-    page.getByLabel("Notifications alt+T")
-      .getByText("ตรวจอนุมัติทั้งบิลไม่สำเร็จ")
-  ).toBeVisible();
-  await expect(waiting).toBeHidden();
-  await expect.poll(() => syncCount).toBe(0);
+  page.once("dialog", (dialog) => dialog.accept());
+  await modal.getByRole("button", { name: /ปิด/ }).click();
+  await expect(modal).toBeHidden();
+
+  const discardButton = page.getByRole("button", { name: "ลบรายการค้าง" });
+  await expect(discardButton).toBeVisible();
+  page.once("dialog", (dialog) => dialog.accept());
+  await discardButton.click();
   await expect.poll(async () => (await readQueue(page)).length).toBe(0);
-  expect(await sharedReceipts(page)).toEqual([]);
+  await expect(discardButton).toBeHidden();
 });

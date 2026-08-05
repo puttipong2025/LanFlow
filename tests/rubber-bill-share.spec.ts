@@ -4,6 +4,127 @@ import { join } from "node:path";
 
 test.use({ storageState: { cookies: [], origins: [] } });
 
+test("locks the Rubber Bill modal and sends one request during rapid submit", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "lanflow:rubber-bill-approval-settings:v1",
+      JSON.stringify({
+        editWindowMinutes: 30,
+        configuredPrice: null,
+        cachedAt: new Date().toISOString(),
+      })
+    );
+  });
+  await page.route("**/rest/v1/rubber_bill_approval_settings*", async (route) => {
+    await route.fulfill({
+      json: { id: true, edit_window_minutes: 30, configured_price: null },
+    });
+  });
+
+  let releaseSave!: () => void;
+  const saveGate = new Promise<void>((resolve) => {
+    releaseSave = resolve;
+  });
+  let saveCount = 0;
+  await page.route("**/api/lanflow/rubber-bills", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    saveCount += 1;
+    await saveGate;
+    await route.fulfill({
+      json: {
+        status: "synced",
+        id: crypto.randomUUID(),
+        serverBillNo: "SERVER-RUBBER-SINGLE-FLIGHT",
+        revisionNo: 1,
+        serverReceivedAt: new Date().toISOString(),
+      },
+    });
+  });
+
+  await page.goto("/login");
+  await page.locator("#phone").fill(process.env.TEST_PHONE ?? "0800000000");
+  await page.locator("#password").fill(process.env.TEST_PASSWORD ?? "password123");
+  await page.getByRole("button", { name: "เข้าสู่ระบบ" }).click();
+  await expect(page.getByText("ออกจากระบบ")).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
+  await page.getByRole("button", { name: "เพิ่มบิลยาง" }).click();
+
+  const modal = page.locator(".fixed.inset-0").last();
+  await modal.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]')
+    .fill(`SINGLE-FLIGHT-${Date.now()}`);
+  await page.keyboard.press("Escape");
+  const weighRow = modal.locator("table").first().locator("tbody tr").first();
+  await weighRow.locator('input[type="number"]').nth(0).fill("1000");
+  await weighRow.locator('input[type="number"]').nth(1).fill("200");
+  await weighRow.locator('input[type="number"]').nth(3).fill("20");
+
+  await modal.getByRole("button", { name: "บันทึกบิล" }).click();
+  await expect.poll(() => saveCount).toBe(1);
+  await expect(modal).toBeVisible();
+  const savingButton = modal.getByRole("button", { name: "กำลังบันทึก..." });
+  await expect(savingButton).toBeDisabled();
+  await expect(modal.getByRole("button", { name: "ปิด" })).toBeDisabled();
+  await savingButton.evaluate((button: HTMLButtonElement) => button.click());
+  expect(saveCount).toBe(1);
+
+  releaseSave();
+  await expect(modal).toBeHidden();
+});
+
+test("removes every stock deduction after shortage confirmation and saves the rubber bill", async ({ page }) => {
+  let submittedPayload: any;
+  await page.route("**/api/lanflow/rubber-bills", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    submittedPayload = route.request().postDataJSON();
+    await route.fulfill({
+      json: {
+        status: "synced",
+        id: crypto.randomUUID(),
+        serverBillNo: "SERVER-RUBBER-NO-STOCK-DEDUCTION",
+        revisionNo: 1,
+        serverReceivedAt: new Date().toISOString(),
+      },
+    });
+  });
+
+  await page.goto("/login");
+  await page.locator("#phone").fill(process.env.TEST_PHONE ?? "0800000000");
+  await page.locator("#password").fill(process.env.TEST_PASSWORD ?? "password123");
+  await page.getByRole("button", { name: "เข้าสู่ระบบ" }).click();
+  await expect(page.getByText("ออกจากระบบ")).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
+  await page.getByRole("button", { name: "เพิ่มบิลยาง" }).click();
+
+  const modal = page.locator(".fixed.inset-0").last();
+  await modal.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]')
+    .fill(`RUBBER-SHORTAGE-${Date.now()}`);
+  await page.keyboard.press("Escape");
+  const weighRow = modal.locator("table").first().locator("tbody tr").first();
+  await weighRow.locator('input[type="number"]').nth(0).fill("1000");
+  await weighRow.locator('input[type="number"]').nth(1).fill("200");
+  await weighRow.locator('input[type="number"]').nth(3).fill("20");
+
+  await modal.getByRole("button", { name: "เพิ่มรายการหักสินค้า" }).click();
+  const stockRow = modal.locator("section").filter({ hasText: "หักสินค้า" })
+    .locator("tbody tr").first();
+  await expect.poll(() => stockRow.locator("select option").count()).toBeGreaterThan(1);
+  const productId = await stockRow.locator("select option").nth(1).getAttribute("value");
+  await stockRow.locator("select").selectOption(productId!);
+  await stockRow.locator('input[type="number"]').nth(0).fill("1000000000");
+
+  await modal.getByRole("button", { name: "บันทึกบิล" }).click();
+  const shortageAlert = page.getByRole("dialog", { name: "สินค้าในสต็อกไม่พอ" });
+  await expect(shortageAlert).toBeVisible();
+  await shortageAlert.getByRole("button", { name: "ยืนยันและลบรายการหักสินค้าทั้งหมด" }).click();
+
+  await expect.poll(() => submittedPayload).toBeTruthy();
+  expect(submittedPayload.acidPackCount).toBe(0);
+  expect(submittedPayload.items.filter((item: any) => item.itemType === "stock_deduction")).toEqual([]);
+});
+
 test("shares a Rubber Bill PDF and falls back to download", async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem(
@@ -109,7 +230,7 @@ test("shares a Rubber Bill PDF and falls back to download", async ({ page }) => 
   await shareButton.click();
   const waitingDialog = page.getByRole("dialog", { name: "กำลังสร้าง PDF" });
   await expect(waitingDialog).toBeVisible();
-  await waitingDialog.getByRole("button", { name: "ยกเลิก" }).click();
+  await waitingDialog.getByRole("button", { name: "ปิดหน้าต่าง", exact: true }).click();
   await expect(waitingDialog).toBeHidden();
   await page.waitForTimeout(300);
   expect(await page.evaluate(() =>

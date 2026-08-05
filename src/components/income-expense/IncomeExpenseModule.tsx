@@ -1,11 +1,11 @@
 import { ArrowRightLeft, Edit3, ExternalLink, Eye, Plus, RefreshCw, Settings, Share2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { formatCurrency } from "@/lib/format";
-import { useIncomeExpense } from "@/hooks/useIncomeExpense";
-import { useIncomeExpenseApprovals } from "@/hooks/useIncomeExpenseApprovals";
+import { IncomeExpenseStockShortageError, useIncomeExpense } from "@/hooks/useIncomeExpense";
+import { getIncomeExpenseApprovalReasons, useIncomeExpenseApprovals } from "@/hooks/useIncomeExpenseApprovals";
 import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
 import { useCashBranchTransfers } from "@/hooks/useCashBranchTransfers";
 import { useLocations } from "@/hooks/useLocations";
@@ -28,7 +28,7 @@ import {
 } from "@/lib/cash-branch-transfer-receipt";
 import { useSharePdf } from "@/hooks/useSharePdf";
 
-import type { CashBranchTransfer, IncomeExpense, Location, MoneyTransfer, Profile } from "@/types";
+import type { CashBranchTransfer, IncomeExpense, IncomeExpenseApprovalMarker, Location, MoneyTransfer, Profile } from "@/types";
 import { IconButton } from "@/components/shared/IconButton";
 import { SyncStatusBadge } from "@/components/shared/SyncStatusBadge";
 import { BranchTransferForm } from "@/components/money-transfer/BranchTransferForm";
@@ -38,6 +38,40 @@ import { IncomeExpenseApprovalModal } from "./IncomeExpenseApprovalModal";
 import { IncomeExpenseModal } from "./IncomeExpenseModal";
 import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
 import { ModalShell } from "@/components/shared/ModalShell";
+import { appSwal, runBlockingAction } from "@/lib/swal";
+
+function pendingIncomeExpense(marker: IncomeExpenseApprovalMarker): IncomeExpense | null {
+  const payload = marker.requestedPayload;
+  if (payload.billOption === "บิลขาย" && marker.operation !== "delete") return null;
+  const clientTempId = marker.clientTempId;
+  return {
+    id: `approval:${marker.requestId}`,
+    clientTempId,
+    localBillNo: String(payload.localBillNo ?? "รอเลขบิล"),
+    syncStatus: "synced",
+    idempotencyKey: String(payload.idempotencyKey ?? marker.requestId),
+    locationId: String(payload.locationId ?? marker.locationId),
+    type: payload.type === "expense" || marker.txType === "expense" ? "expense" : "income",
+    number: String(payload.number ?? "รออนุมัติ"),
+    txDate: String(payload.txDate ?? ""),
+    title: String(payload.title ?? marker.title),
+    cost: Number(payload.cost ?? marker.cost),
+    billOption: payload.billOption === "ค่าใช้จ่าย" || marker.txType === "expense" ? "ค่าใช้จ่าย" : "รายรับ",
+    unit: payload.unit == null ? undefined : String(payload.unit),
+    price: payload.price == null ? undefined : Number(payload.price),
+    createdByUserId: String(payload.createdByUserId ?? ""),
+    createdByName: String(payload.createdByName ?? ""),
+    createdByPhone: String(payload.createdByPhone ?? ""),
+    clientCreatedAt: String(payload.clientCreatedAt ?? marker.createdAt),
+    clientRecordedAt: String(payload.clientRecordedAt ?? marker.createdAt),
+    revisionNo: 0,
+    recordStatus: "active",
+    approvalPending: true,
+    approvalRequestId: marker.requestId,
+    approvalOperation: marker.operation,
+    approvalReasons: marker.matchedReasons,
+  };
+}
 
 function BranchTransferModeSelector({
   mode,
@@ -111,6 +145,7 @@ export function IncomeExpenseModule({
     updateTransaction,
     syncTransaction,
     deleteTransaction,
+    discardFailedTransaction,
     hasMore,
     isLoadingMore,
     loadMore,
@@ -118,12 +153,16 @@ export function IncomeExpenseModule({
   const isOnline = useOnlineStatus();
   const canManageSystem = canManageSystemFeatures(profile);
   const {
+    keywords: approvalKeywords,
+    markers: approvalMarkers,
     pendingCount: pendingApprovalCount,
     settings: approvalSettings,
     submitForApprovalIfNeeded,
   } = useIncomeExpenseApprovals({
     includePendingCount: canManageSystem,
     pendingLocationId: selectedLocation.id,
+    includeMarkers: true,
+    markersLocationId: selectedLocation.id,
   });
   const approvalButtonLabel = isOnline && pendingApprovalCount > 0
     ? `ตั้งค่าและอนุมัติรับ-จ่าย รออนุมัติ ${pendingApprovalCount} รายการ`
@@ -133,13 +172,51 @@ export function IncomeExpenseModule({
   const { locations } = useLocations();
   const pendingCashReceipts = cashTransfers.transfers.filter((transfer) => transfer.targetLocationId === selectedLocation.id && transfer.status === "pending_receipt");
   const { retrySyncEvent, isRetrying } = usePerRecordSyncRetry(selectedLocation.id, profile.id);
-  const ledgerTransactions = transactions;
-  const nextNumber = String(ledgerTransactions.length + 1);
+  const ledgerTransactions = useMemo(() => {
+    const markersByRecord = new Map<string, IncomeExpenseApprovalMarker>();
+    for (const marker of approvalMarkers) {
+      if (marker.operation === "create") continue;
+      if (marker.requestedPayload.billOption === "บิลขาย" && marker.operation !== "delete") continue;
+      if (marker.sourceIncomeExpenseId && !markersByRecord.has(`id:${marker.sourceIncomeExpenseId}`)) {
+        markersByRecord.set(`id:${marker.sourceIncomeExpenseId}`, marker);
+      }
+      if (!markersByRecord.has(`client:${marker.clientTempId}`)) {
+        markersByRecord.set(`client:${marker.clientTempId}`, marker);
+      }
+    }
+    const marked = transactions.map((transaction) => {
+      const marker = markersByRecord.get(`id:${transaction.id}`)
+        ?? markersByRecord.get(`client:${transaction.clientTempId}`);
+      if (!marker) return transaction;
+      return {
+        ...transaction,
+        approvalPending: true,
+        approvalRequestId: marker.requestId,
+        approvalOperation: marker.operation,
+        approvalReasons: marker.matchedReasons,
+      };
+    });
+    const representedRequests = new Set(marked.flatMap((transaction) => (
+      transaction.approvalRequestId ? [transaction.approvalRequestId] : []
+    )));
+    const pendingRows = new Map<string, IncomeExpense>();
+    for (const marker of approvalMarkers) {
+      if (representedRequests.has(marker.requestId)) continue;
+      const pending = pendingIncomeExpense(marker);
+      if (pending && !pendingRows.has(pending.clientTempId)) {
+        pendingRows.set(pending.clientTempId, pending);
+      }
+    }
+    return [...pendingRows.values(), ...marked];
+  }, [approvalMarkers, transactions]);
+  const nextNumber = String(transactions.length + 1);
   const [modalOpen, setModalOpen] = useState(false);
   const [modalType, setModalType] = useState<"income" | "expense">("income");
   const [editingTransaction, setEditingTransaction] = useState<IncomeExpense | null>(null);
   const [viewingSaleBill, setViewingSaleBill] = useState<IncomeExpense | null>(null);
   const [approvalModalOpen, setApprovalModalOpen] = useState(false);
+  const [deletingTransactionId, setDeletingTransactionId] = useState<string | null>(null);
+  const [deletingCashTransferId, setDeletingCashTransferId] = useState<string | null>(null);
   const [branchTransferModalOpen, setBranchTransferModalOpen] = useState(false);
   const [branchTransferMode, setBranchTransferMode] = useState<"cash" | "bank">("cash");
   const [cashReceiptId, setCashReceiptId] = useState<string | null>(null);
@@ -207,6 +284,7 @@ export function IncomeExpenseModule({
   }
 
   function getActionBlockReason(transaction: IncomeExpense) {
+    if (transaction.approvalPending) return "รายการนี้กำลังรออนุมัติการเปลี่ยนแปลง";
     if (transaction.relationLockReason) return transaction.relationLockReason;
     return getOfflineSyncedActionBlockReason(transaction, isOnline);
   }
@@ -234,6 +312,7 @@ export function IncomeExpenseModule({
   }
 
   async function confirmDelete(transaction: IncomeExpense) {
+    if (deletingTransactionId) return;
     const blockReason = getActionBlockReason(transaction);
     if (blockReason) {
       toast.error(blockReason);
@@ -244,19 +323,32 @@ export function IncomeExpenseModule({
       ? "\nรายการต่างวันจะถูกส่งขออนุมัติก่อนลบ"
       : "";
     if (window.confirm(`ลบรายการ ${transaction.number} ใช่ไหม?${dateApprovalNotice}`)) {
+      const likelyNeedsApproval = getIncomeExpenseApprovalReasons(
+        approvalKeywords,
+        approvalSettings,
+        transaction,
+      ).length > 0;
+      setDeletingTransactionId(transaction.clientTempId);
       try {
-        const approvalResult = await submitForApprovalIfNeeded(transaction, "delete");
-        if (approvalResult.requiresApproval) {
-          toast.info("ส่งคำขอลบบิลเพื่อรออนุมัติแล้ว");
-          return;
-        }
-        await deleteTransaction({
-          clientTempId: transaction.clientTempId,
-          deletedByName: profile.name,
-          deletedByPhone: profile.phone,
-        });
+        await runBlockingAction(
+          likelyNeedsApproval ? "กำลังส่งคำขอลบ..." : "กำลังลบรายการ...",
+          async () => {
+            const approvalResult = await submitForApprovalIfNeeded(transaction, "delete");
+            if (approvalResult.requiresApproval) {
+              toast.info("ส่งคำขอลบบิลเพื่อรออนุมัติแล้ว");
+              return;
+            }
+            await deleteTransaction({
+              clientTempId: transaction.clientTempId,
+              deletedByName: profile.name,
+              deletedByPhone: profile.phone,
+            });
+          },
+        );
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "ลบรายการไม่สำเร็จ");
+      } finally {
+        setDeletingTransactionId(null);
       }
     }
   }
@@ -267,6 +359,22 @@ export function IncomeExpenseModule({
       toast.success("ซิงก์รายการสำเร็จ");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "ซิงก์รายการไม่สำเร็จ");
+    }
+  }
+
+  async function confirmDiscardFailed(transaction: IncomeExpense) {
+    if (deletingTransactionId) return;
+    if (!window.confirm(`ลบรายการค้าง ${transaction.localBillNo} ออกจากเครื่องนี้ใช่ไหม?`)) return;
+    setDeletingTransactionId(transaction.clientTempId);
+    try {
+      await runBlockingAction("กำลังลบรายการ...", () => (
+        discardFailedTransaction(transaction.clientTempId)
+      ));
+      toast.success("ลบรายการค้างแล้ว");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "ลบรายการค้างไม่สำเร็จ");
+    } finally {
+      setDeletingTransactionId(null);
     }
   }
 
@@ -284,12 +392,6 @@ export function IncomeExpenseModule({
     if (delivery === "downloaded") {
       toast.success("แชร์บนอุปกรณ์นี้ไม่ได้ จึงดาวน์โหลด PDF แทน");
     }
-  }
-
-  function abortShare() {
-    const error = new Error("ยกเลิกการรอแชร์ PDF");
-    error.name = "AbortError";
-    return error;
   }
 
   async function persistSubmittedTransactions(submittedTransactions: IncomeExpense[]) {
@@ -361,36 +463,45 @@ export function IncomeExpenseModule({
       return false;
     }
 
-    setModalOpen(false);
-    let persistenceSucceeded = false;
-
     try {
-      const delivery = await pdfShare.sharePdf(async (signal) => {
-        const { pendingApprovalCount, persistedTransactions, persistError } =
-          await persistSubmittedTransactions(submittedTransactions);
-        persistenceSucceeded = !persistError
-          && pendingApprovalCount + persistedTransactions.length === submittedTransactions.length;
-        showPersistSummary(pendingApprovalCount, persistedTransactions.length);
+      const { pendingApprovalCount, persistedTransactions, persistError } =
+        await persistSubmittedTransactions(submittedTransactions);
+      showPersistSummary(pendingApprovalCount, persistedTransactions.length);
+      if (persistError) throw persistError;
 
-        const syncedTransaction = persistedTransactions[0]
-          ? await syncTransaction(persistedTransactions[0])
-          : undefined;
+      const syncedTransaction = persistedTransactions[0]
+        ? await syncTransaction(persistedTransactions[0])
+        : undefined;
+      const blockReason = getSaleReceiptShareBlockReason(syncedTransaction, true);
+      if (blockReason || !syncedTransaction) {
+        throw new Error(blockReason ?? "ไม่พบบิลขายหลังซิงก์");
+      }
 
-        if (persistError) throw persistError;
-        if (pendingApprovalCount > 0 || signal.aborted) throw abortShare();
-
-        const blockReason = getSaleReceiptShareBlockReason(syncedTransaction, true);
-        if (blockReason || !syncedTransaction) {
-          throw new Error(blockReason ?? "ไม่พบบิลขายหลังซิงก์");
-        }
-
-        return saleReceiptDocument(syncedTransaction);
-      });
-      showSaleReceiptDelivery(delivery);
+      setModalOpen(false);
+      try {
+        const delivery = await pdfShare.sharePdf(() => saleReceiptDocument(syncedTransaction));
+        showSaleReceiptDelivery(delivery);
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "สร้าง PDF บิลขายไม่สำเร็จ");
+      }
       return true;
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "บันทึกหรือซิงก์บิลขายไม่สำเร็จ");
-      return persistenceSucceeded;
+      if (error instanceof IncomeExpenseStockShortageError) {
+        await appSwal.fire({
+          title: "สินค้าในสต็อกไม่พอ",
+          text: error.shortages.length > 0
+            ? error.shortages.map((item) => (
+                `${item.productName}: ขอ ${item.requestedQuantity} · คงเหลือ ${item.availableQuantity}`
+              )).join("\n")
+            : "สินค้าอย่างน้อยหนึ่งรายการมีจำนวนไม่พอ",
+          icon: "warning",
+          confirmButtonText: "ตกลง",
+          customClass: { htmlContainer: "whitespace-pre-line text-left text-pretty" },
+        });
+      } else {
+        toast.error(error instanceof Error ? error.message : "บันทึกหรือซิงก์บิลขายไม่สำเร็จ");
+      }
+      return false;
     }
   }
 
@@ -426,6 +537,7 @@ export function IncomeExpenseModule({
   }
 
   async function confirmCashDelete(transfer: CashBranchTransfer) {
+    if (deletingCashTransferId) return;
     const blockReason = cashDeleteBlockReason(transfer);
     if (blockReason) {
       toast.error(blockReason);
@@ -436,8 +548,14 @@ export function IncomeExpenseModule({
       : "ลบรายการโยกเงินนี้ถาวรใช่ไหม?";
     if (!window.confirm(warning)) return;
 
+    setDeletingCashTransferId(transfer.id);
     try {
-      const result = await cashTransfers.remove.mutateAsync(transfer.id);
+      const result = await runBlockingAction(
+        transfer.status === "received" && approvalSettings?.cashTransferDeleteRequiresApproval
+          ? "กำลังส่งคำขอลบ..."
+          : "กำลังลบรายการ...",
+        () => cashTransfers.remove.mutateAsync(transfer.id),
+      );
       if (result.status === "pending_approval") {
         toast.info("ส่งคำขอลบไปที่ ตั้งค่าและอนุมัติรับ-จ่าย แล้ว");
       } else {
@@ -445,6 +563,8 @@ export function IncomeExpenseModule({
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "ลบรายการโยกเงินไม่สำเร็จ");
+    } finally {
+      setDeletingCashTransferId(null);
     }
   }
 
@@ -555,8 +675,11 @@ export function IncomeExpenseModule({
             <tbody>
               {visibleTransactions.map((transaction) => {
                 const actionBlockReason = getActionBlockReason(transaction);
-                const actionsDisabled = Boolean(actionBlockReason);
+                const deleting = deletingTransactionId === transaction.clientTempId;
+                const actionsDisabled = Boolean(actionBlockReason) || deleting;
+                const actionTitle = deleting ? "กำลังลบรายการ..." : actionBlockReason;
                 const isSaleBill = transaction.billOption === "บิลขาย";
+                const canDiscardFailed = transaction.syncStatus === "failed" && !transaction.serverBillNo;
                 const saleShareBlockReason = isSaleBill
                   ? !isOnline
                     ? "แชร์ PDF บิลขายได้เมื่อออนไลน์"
@@ -666,18 +789,28 @@ export function IncomeExpenseModule({
                         </button>
                       )}
                       {!cashTransferId && (
-                        <IconButton label={actionBlockReason ?? "แก้ไข"} visibleLabel="แก้" onClick={() => void openEdit(transaction)} tone="amber" disabled={actionsDisabled}>
+                        <IconButton label={actionTitle ?? "แก้ไข"} visibleLabel="แก้" onClick={() => void openEdit(transaction)} tone="amber" disabled={actionsDisabled}>
                           <Edit3 size={16} />
                         </IconButton>
                       )}
                       {cashTransferId ? (
                         <IconButton label={cashDeleteReason ?? "ลบรายการโยกเงิน"} visibleLabel="ลบ"
                           onClick={() => { if (cashTransfer) void confirmCashDelete(cashTransfer); }} tone="danger"
-                          disabled={!cashTransfer || Boolean(cashDeleteReason) || cashTransfers.remove.isPending}>
+                          disabled={!cashTransfer || Boolean(cashDeleteReason) || deletingCashTransferId === cashTransfer.id}>
+                          <Trash2 size={16} />
+                        </IconButton>
+                      ) : canDiscardFailed ? (
+                        <IconButton
+                          label={deleting ? "กำลังลบรายการ..." : "ลบรายการค้าง"}
+                          visibleLabel="ลบรายการค้าง"
+                          onClick={() => void confirmDiscardFailed(transaction)}
+                          tone="danger"
+                          disabled={deleting}
+                        >
                           <Trash2 size={16} />
                         </IconButton>
                       ) : (
-                        <IconButton label={actionBlockReason ?? "ลบ"} visibleLabel="ลบ" onClick={() => void confirmDelete(transaction)} tone="danger" disabled={actionsDisabled}>
+                        <IconButton label={actionTitle ?? "ลบ"} visibleLabel="ลบ" onClick={() => void confirmDelete(transaction)} tone="danger" disabled={actionsDisabled}>
                           <Trash2 size={16} />
                         </IconButton>
                       )}
@@ -690,7 +823,23 @@ export function IncomeExpenseModule({
                       )}
                     </div>
                   </td>
-                  <td className="py-3 font-semibold">{getIncomeExpenseDisplayNo(transaction)}</td>
+                  <td className="py-3 font-semibold">
+                    <div className="flex flex-col gap-1">
+                      <span>{getIncomeExpenseDisplayNo(transaction)}</span>
+                      {transaction.approvalPending && (
+                        <span
+                          className="w-fit rounded-full bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-800"
+                          title={transaction.approvalReasons?.map((reason) => {
+                            if (reason === "keyword") return "ตรงคำที่กำหนด";
+                            if (reason === "amount_threshold") return "ยอดถึงเกณฑ์";
+                            return "วันที่ไม่ใช่วันปัจจุบัน";
+                          }).join(", ")}
+                        >
+                          รออนุมัติ{transaction.approvalOperation === "create" ? "สร้าง" : transaction.approvalOperation === "update" ? "แก้ไข" : "ลบ"}
+                        </span>
+                      )}
+                    </div>
+                  </td>
                   <td className="text-xs text-ink/55">
                     <div className="flex flex-col gap-0.5">
                       <span>{getIncomeExpenseDisplayNo(transaction)}</span>
@@ -720,7 +869,13 @@ export function IncomeExpenseModule({
                     {transaction.type === "income" ? "+" : "-"}{formatCurrency(transaction.cost)}
                   </td>
                   <td>{transaction.createdByName} · {transaction.createdByPhone}</td>
-                  <td><SyncStatusBadge status={transaction.syncStatus} errorMessage={transaction.syncErrorMessage} /></td>
+                  <td>
+                    {transaction.approvalPending ? (
+                      <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-amber-800">รออนุมัติ</span>
+                    ) : (
+                      <SyncStatusBadge status={transaction.syncStatus} errorMessage={transaction.syncErrorMessage} />
+                    )}
+                  </td>
                 </tr>
                 );
               })}

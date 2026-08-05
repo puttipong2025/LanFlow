@@ -165,7 +165,7 @@ export function useRubberBillApprovals({
     void queryClient.invalidateQueries({ queryKey: ["rubberBills"] });
     void queryClient.invalidateQueries({ queryKey: ["moneyTransfers"] });
     void queryClient.invalidateQueries({ queryKey: ["incomeExpense"] });
-    void queryClient.invalidateQueries({ queryKey: ["acidStock"] });
+    void queryClient.invalidateQueries({ queryKey: ["stock"] });
     void queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
   }
 

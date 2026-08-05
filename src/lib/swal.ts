@@ -11,4 +11,19 @@ export const appSwal = MySwal.mixin({
   buttonsStyling: false
 });
 
+export async function runBlockingAction<T>(title: string, action: () => Promise<T>) {
+  void appSwal.fire({
+    title,
+    allowEscapeKey: false,
+    allowOutsideClick: false,
+    showConfirmButton: false,
+    didOpen: () => appSwal.showLoading(),
+  });
+  try {
+    return await action();
+  } finally {
+    appSwal.close();
+  }
+}
+
 export default appSwal;

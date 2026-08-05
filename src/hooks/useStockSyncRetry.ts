@@ -110,14 +110,12 @@ async function retryStockSyncEvents(locationId: string, ownerUserId: string, que
       };
     } finally {
       queryClient.invalidateQueries({ queryKey: ["stock", locationId] });
-      queryClient.invalidateQueries({ queryKey: ["acidStock", locationId] });
       queryClient.invalidateQueries({ queryKey: ["incomeExpense", locationId] });
       queryClient.invalidateQueries({ queryKey: ["rubberBills", locationId] });
     }
   }
 
   queryClient.invalidateQueries({ queryKey: ["stock", locationId] });
-  queryClient.invalidateQueries({ queryKey: ["acidStock", locationId] });
   queryClient.invalidateQueries({ queryKey: ["incomeExpense", locationId] });
   queryClient.invalidateQueries({ queryKey: ["rubberBills", locationId] });
 

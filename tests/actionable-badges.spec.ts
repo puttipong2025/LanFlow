@@ -432,7 +432,7 @@ test("approval buttons and modal counts follow the selected branch", async ({ br
       hasText: "คำขอบิลยาง Badge 1",
     });
     page.once("dialog", (dialog) => dialog.accept());
-    await rubberRequest.getByRole("button", { name: "ลบถาวร" }).click();
+    await rubberRequest.getByRole("button", { name: "ลบคำขอถาวร" }).click();
     await expect(page.getByText("ลบคำขอถาวรแล้ว")).toBeVisible({ timeout: 15_000 });
     await expect(approvalModal.getByText("รออนุมัติ 0 รายการ", { exact: true })).toBeVisible();
     await approvalModal.getByLabel("ปิด", { exact: true }).click();
@@ -446,6 +446,10 @@ test("approval buttons and modal counts follow the selected branch", async ({ br
       name: "ตั้งค่าและอนุมัติรับ-จ่าย รออนุมัติ 1 รายการ",
     });
     await expect(approvalButton).toBeVisible({ timeout: 15_000 });
+    const pendingIncomeRow = page.locator("tbody tr", { hasText: "คำขอรับจ่าย Badge 1" });
+    await expect(pendingIncomeRow).toBeVisible();
+    await expect(pendingIncomeRow.getByText("รออนุมัติสร้าง", { exact: true })).toBeVisible();
+    await expect(pendingIncomeRow.getByRole("button", { name: /กำลังรออนุมัติ/ }).first()).toBeDisabled();
     await approvalButton.click();
     approvalModal = page.locator(".fixed.inset-0").last();
     locationFilter = approvalModal.getByRole("combobox", { name: "สาขา", exact: true });

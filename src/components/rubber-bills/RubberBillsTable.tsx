@@ -14,6 +14,7 @@ export type RubberBillsTableProps = {
   onPrint: (bill: RubberBill) => void;
   onRetry: (bill: RubberBill) => void;
   retryDisabled: boolean;
+  deletingBillId?: string | null;
   getActionBlockReason?: (bill: RubberBill) => string | null;
   getPrintBlockReason?: (bill: RubberBill) => string | null;
 };
@@ -28,6 +29,7 @@ export function RubberBillsTable({
   onPrint,
   onRetry,
   retryDisabled,
+  deletingBillId,
   getActionBlockReason,
   getPrintBlockReason
 }: RubberBillsTableProps) {
@@ -61,7 +63,9 @@ export function RubberBillsTable({
           <tbody>
             {visibleBills.map((bill) => {
               const actionBlockReason = getActionBlockReason?.(bill) ?? null;
-              const actionsDisabled = Boolean(actionBlockReason);
+              const deleting = deletingBillId === bill.id;
+              const actionsDisabled = Boolean(actionBlockReason) || deleting;
+              const actionTitle = deleting ? "กำลังลบรายการ..." : actionBlockReason;
               const printBlockReason = getPrintBlockReason?.(bill) ?? null;
 
               return (
@@ -70,8 +74,8 @@ export function RubberBillsTable({
                   <div className="flex items-center gap-1.5 whitespace-nowrap">
                     <button
                       type="button"
-                       title={actionBlockReason ?? "ดูรายละเอียด"}
-                       aria-label={actionBlockReason ?? "ดูรายละเอียด"}
+                       title={actionTitle ?? "ดูรายละเอียด"}
+                       aria-label={actionTitle ?? "ดูรายละเอียด"}
                       disabled={actionsDisabled}
                       onClick={() => onEdit(bill)}
                        className={`focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-river text-white shadow-sm hover:bg-river/90 ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
@@ -85,8 +89,8 @@ export function RubberBillsTable({
                     </button>
                     <button
                       type="button"
-                       title={actionBlockReason ?? "แก้ไข"}
-                       aria-label={actionBlockReason ?? "แก้ไข"}
+                       title={actionTitle ?? "แก้ไข"}
+                       aria-label={actionTitle ?? "แก้ไข"}
                       disabled={actionsDisabled}
                       onClick={() => onEdit(bill)}
                       className={`focus-ring inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-md bg-amber px-3 text-sm font-semibold text-white shadow-sm hover:bg-amber/90 ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
@@ -94,7 +98,7 @@ export function RubberBillsTable({
                       <Edit3 size={16} />
                        แก้
                     </button>
-                    <button type="button" title={actionBlockReason ?? "ลบ"} aria-label={actionBlockReason ?? "ลบ"}
+                    <button type="button" title={actionTitle ?? "ลบ"} aria-label={actionTitle ?? "ลบ"}
                       disabled={actionsDisabled} onClick={() => onDelete(bill)}
                       className={`focus-ring inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-md bg-danger px-3 text-sm font-semibold text-white shadow-sm hover:bg-danger/90 ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}>
                       <Trash2 size={16} /> ลบ

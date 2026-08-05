@@ -16,6 +16,7 @@ import type {
   IncomeExpense,
   IncomeExpenseApprovalAppliesTo,
   IncomeExpenseApprovalKeyword,
+  IncomeExpenseApprovalMarker,
   IncomeExpenseApprovalMatchMode,
   IncomeExpenseApprovalRequest,
   IncomeExpenseApprovalSettings,
@@ -84,15 +85,19 @@ export function getIncomeExpenseApprovalReasons(
 export function useIncomeExpenseApprovals(options: {
   includeRequests?: boolean;
   includePendingCount?: boolean;
+  includeMarkers?: boolean;
   requestsLocationId?: string;
   pendingLocationId?: string;
+  markersLocationId?: string;
 } = {}) {
   const supabase = createSupabaseBrowserClient();
   const queryClient = useQueryClient();
   const includeRequests = options.includeRequests ?? false;
   const includePendingCount = options.includePendingCount ?? includeRequests;
+  const includeMarkers = options.includeMarkers ?? false;
   const requestsLocationId = options.requestsLocationId;
   const pendingLocationId = options.pendingLocationId;
+  const markersLocationId = options.markersLocationId;
 
   const keywordsQuery = useQuery({
     queryKey: [KEYWORDS_KEY],
@@ -177,6 +182,40 @@ export function useIncomeExpenseApprovals(options: {
         decisionComment: row.decision_comment,
         createdAt: row.created_at,
       }));
+    },
+  });
+
+  const markersQuery = useQuery({
+    queryKey: [REQUESTS_KEY, "markers", markersLocationId ?? "none"],
+    enabled: includeMarkers && Boolean(markersLocationId),
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("income_expense_approval_requests")
+        .select("id, source_income_expense_id, requested_operation, requested_payload, matched_reasons, location_id, tx_type, title, cost, created_at")
+        .eq("location_id", markersLocationId!)
+        .eq("request_status", "pending")
+        .order("created_at", { ascending: false })
+        .limit(100);
+
+      if (error) throw new Error(error.message || JSON.stringify(error));
+
+      return (data || []).flatMap((row: any): IncomeExpenseApprovalMarker[] => {
+        const clientTempId = row.requested_payload?.clientTempId;
+        if (typeof clientTempId !== "string" || !clientTempId) return [];
+        return [{
+          requestId: row.id,
+          sourceIncomeExpenseId: row.source_income_expense_id,
+          clientTempId,
+          operation: row.requested_operation,
+          matchedReasons: row.matched_reasons ?? [],
+          requestedPayload: row.requested_payload ?? {},
+          locationId: row.location_id,
+          txType: row.tx_type,
+          title: row.title,
+          cost: Number(row.cost),
+          createdAt: row.created_at,
+        }];
+      });
     },
   });
 
@@ -367,7 +406,7 @@ export function useIncomeExpenseApprovals(options: {
         queryClient.invalidateQueries({ queryKey: [INCOME_EXPENSE_FEED_QUERY_KEY] }),
         queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
       ]);
-      queryClient.invalidateQueries({ queryKey: ["acidStock"] });
+      queryClient.invalidateQueries({ queryKey: ["stock"] });
     },
   });
 
@@ -400,6 +439,10 @@ export function useIncomeExpenseApprovals(options: {
     transaction: IncomeExpense,
     operation: QueueOperation
   ): Promise<ApprovalSubmitResult> {
+    if (transaction.billOption === "บิลขาย" && operation !== "delete") {
+      return { requiresApproval: false };
+    }
+
     const localReasons = getIncomeExpenseApprovalReasons(
       keywordsQuery.data ?? [],
       settingsQuery.data,
@@ -450,6 +493,7 @@ export function useIncomeExpenseApprovals(options: {
     keywords: keywordsQuery.data || [],
     settings: settingsQuery.data,
     requests: requestsQuery.data || [],
+    markers: markersQuery.data || [],
     cashDeleteRequests: cashDeleteRequestsQuery.data || [],
     pendingCount: pendingCountQuery.data ?? 0,
     isLoading:
@@ -457,6 +501,7 @@ export function useIncomeExpenseApprovals(options: {
       settingsQuery.isLoading ||
       (includeRequests && requestsQuery.isLoading) ||
       (includeRequests && cashDeleteRequestsQuery.isLoading) ||
+      (includeMarkers && markersQuery.isLoading) ||
       (includePendingCount && pendingCountQuery.isLoading),
     addKeyword: addKeywordMutation.mutateAsync,
     disableKeyword: disableKeywordMutation.mutateAsync,

@@ -1,6 +1,6 @@
 import { toast } from "sonner";
 import { ArrowDown, ArrowUp, ReceiptText, WalletCards, WifiOff } from "lucide-react";
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useMemo, useRef, useState } from "react";
 
 import {
   makeClientRecordedAt,
@@ -55,6 +55,8 @@ export function IncomeExpenseModal({
     ? transaction.saleLines ?? []
     : [];
   const initialLocalBillNo = transaction?.localBillNo ?? makeLocalBillNo(selectedLocation.code, type === "income" ? "I" : "E", nextLocalSequence);
+  const [draftClientTempId] = useState(() => transaction?.clientTempId ?? makeClientTempId("cash"));
+  const [draftClientRecordedAt] = useState(() => transaction?.clientRecordedAt ?? makeClientRecordedAt());
 
   const [lines, setLines] = useState<CashLine[]>(
     initialSaleLines.length > 0
@@ -82,6 +84,9 @@ export function IncomeExpenseModal({
     nonCurrentDateRequiresApproval && txDate !== todayInputValue();
   const label = type === "income" ? "รายรับ" : "ค่าใช้จ่าย";
   const [billOption, setBillOption] = useState<string>(transaction?.billOption ?? (type === "income" ? "รายรับ" : "ค่าใช้จ่าย"));
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submitLockRef = useRef(false);
+  const submitRequiresApproval = requiresNonCurrentDateApproval && billOption !== "บิลขาย";
   const { items: saleItems } = useIncomeSaleItems({ stockOnly: true });
   const isOnline = useOnlineStatus();
   const billOptions = type === "income"
@@ -178,9 +183,7 @@ export function IncomeExpenseModal({
     setBillOption(option);
   }
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
+  async function submitForm(form: FormData) {
     if (billOption === "บิลขาย" && !isOnline) {
       toast.error("บิลขายใช้ได้เมื่อออนไลน์ เพราะต้องตรวจยอดสต็อกก่อนบันทึก");
       return;
@@ -233,8 +236,8 @@ export function IncomeExpenseModal({
     }
 
     if (billOption === "บิลขาย") {
-      const clientTempId = transaction?.clientTempId ?? makeClientTempId("cash");
-      const clientRecordedAt = transaction?.clientRecordedAt ?? makeClientRecordedAt();
+      const clientTempId = draftClientTempId;
+      const clientRecordedAt = draftClientRecordedAt;
       const saleLines: IncomeExpenseSaleLine[] = filledLines.map((line, index) => ({
         incomeSaleItemId: line.incomeSaleItemId!,
         stockProductId: line.stockProductId!,
@@ -312,7 +315,21 @@ export function IncomeExpenseModal({
     if (saved !== false && !transaction) await clearDraft();
   }
 
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (submitLockRef.current) return;
+    submitLockRef.current = true;
+    setIsSubmitting(true);
+    try {
+      await submitForm(new FormData(event.currentTarget));
+    } finally {
+      submitLockRef.current = false;
+      setIsSubmitting(false);
+    }
+  }
+
   async function handleClose() {
+    if (submitLockRef.current) return;
     if (transaction) {
       onClose();
       return;
@@ -343,6 +360,7 @@ export function IncomeExpenseModal({
       title="เพิ่ม/แก้ไข บิลเงินสด"
       subtitle={selectedLocation.name}
       onClose={() => void handleClose()}
+      closeDisabled={isSubmitting}
       size="wide"
     >
       <form onSubmit={handleSubmit} className="space-y-0">
@@ -360,7 +378,7 @@ export function IncomeExpenseModal({
               onChange={(event) => setTxDate(event.target.value)}
               required
             />
-            {requiresNonCurrentDateApproval && (
+            {submitRequiresApproval && (
               <p role="status" className="md:col-span-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
                 วันที่รายการไม่ใช่วันปัจจุบัน — รายการนี้จะถูกส่งขออนุมัติ
               </p>
@@ -522,8 +540,11 @@ export function IncomeExpenseModal({
             <button type="button" onClick={addLine} className="rounded-md bg-leaf px-4 py-2 text-sm font-bold text-white">
               เพิ่มรายการ
             </button>
-            <button className="focus-ring rounded-md bg-commit px-4 py-2 text-sm font-bold text-white hover:bg-commit/90">
-              {requiresNonCurrentDateApproval ? "ส่งขออนุมัติ" : "บันทึกบิล"}
+            <button
+              disabled={isSubmitting}
+              className="focus-ring rounded-md bg-commit px-4 py-2 text-sm font-bold text-white hover:bg-commit/90 disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              {isSubmitting ? "กำลังบันทึก..." : submitRequiresApproval ? "ส่งขออนุมัติ" : "บันทึกบิล"}
             </button>
           </div>
         </section>
@@ -540,7 +561,12 @@ export function IncomeExpenseModal({
         )}
 
         <div className="modal-actions flex justify-end border-t border-black/10 p-4">
-          <button type="button" onClick={() => void handleClose()} className="focus-ring h-11 rounded-md bg-actionSecondary px-4 font-semibold text-white hover:bg-actionSecondary/90">
+          <button
+            type="button"
+            onClick={() => void handleClose()}
+            disabled={isSubmitting}
+            className="focus-ring h-11 rounded-md bg-actionSecondary px-4 font-semibold text-white hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-45"
+          >
             ยกเลิก
           </button>
         </div>

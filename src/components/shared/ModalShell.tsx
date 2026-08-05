@@ -11,6 +11,7 @@ export function ModalShell({
   size = "normal",
   mobileFullScreen = false,
   closeOnEscape = false,
+  closeDisabled = false,
   role = "dialog",
   children
 }: {
@@ -20,19 +21,20 @@ export function ModalShell({
   size?: "normal" | "wide";
   mobileFullScreen?: boolean;
   closeOnEscape?: boolean;
+  closeDisabled?: boolean;
   role?: "dialog" | "alertdialog";
   children: React.ReactNode;
 }) {
   const titleId = useId();
 
   useEffect(() => {
-    if (!closeOnEscape) return;
+    if (!closeOnEscape || closeDisabled) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [closeOnEscape, onClose]);
+  }, [closeDisabled, closeOnEscape, onClose]);
 
   return (
     <div className={cn(
@@ -56,9 +58,10 @@ export function ModalShell({
           </div>
           <button
             type="button"
-            aria-label="ปิด"
+            aria-label={closeDisabled ? "กำลังดำเนินการ ไม่สามารถปิดได้" : "ปิด"}
             onClick={onClose}
-            className="focus-ring inline-flex h-10 shrink-0 items-center gap-1.5 rounded-lg bg-actionSecondary px-3 text-sm font-semibold text-white shadow-sm hover:bg-actionSecondary/90"
+            disabled={closeDisabled}
+            className="focus-ring inline-flex h-10 shrink-0 items-center gap-1.5 rounded-lg bg-actionSecondary px-3 text-sm font-semibold text-white shadow-sm hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-45"
           >
             <X size={17} />
             ปิด

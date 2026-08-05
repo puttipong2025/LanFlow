@@ -12,8 +12,10 @@ import {
 import { validateRubberBillDraft } from "@/lib/rubber-bill-validation";
 import { calculateRubberBill } from "@/lib/rubber-bills/calculations";
 import { useAcidProducts } from "@/hooks/useAcidProducts";
+import { useAcidStock } from "@/hooks/useAcidStock";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { usePersistentFormDraft } from "@/hooks/usePersistentFormDraft";
+import { appSwal } from "@/lib/swal";
 
 import type { Location, Profile, RubberBill } from "@/types";
 import { ModalShell } from "@/components/shared/ModalShell";
@@ -85,8 +87,11 @@ export function RubberBillModal({
   const [isWeightDeductOpen, setIsWeightDeductOpen] = useState(() => (bill?.deductWeight ?? 0) !== 0);
   const [billDate, setBillDate] = useState(bill?.billDate ?? todayInputValue());
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submitLockRef = useRef(false);
   const validationSummaryRef = useRef<HTMLDivElement>(null);
   const { products: stockProducts } = useAcidProducts();
+  const { movements: stockMovements, isLoading: isStockLoading, isError: isStockError } = useAcidStock(selectedLocation.id);
   const isOnline = useOnlineStatus();
 
   useEffect(() => {
@@ -265,34 +270,101 @@ export function RubberBillModal({
     setDebtItems((current) => current.filter((item) => item.id !== id));
   }
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function submitForm(formElement: HTMLFormElement) {
     if (stockDeductionItems.length > 0 && !isOnline) {
       toast.error("หักสินค้าใช้ได้เมื่อออนไลน์ เพราะต้องตรวจยอดสต็อกก่อนบันทึก");
       return;
     }
 
+    let submittedStockItems = stockDeductionItems;
+    if (stockDeductionItems.length > 0) {
+      if (isStockLoading) {
+        toast.error("กำลังโหลดยอดสต็อก กรุณารอสักครู่แล้วบันทึกอีกครั้ง");
+        return;
+      }
+      if (isStockError) {
+        toast.error("ตรวจยอดสต็อกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง");
+        return;
+      }
+
+      const balanceByProduct = new Map<string, number>();
+      for (const movement of stockMovements) {
+        balanceByProduct.set(
+          movement.productId,
+          (balanceByProduct.get(movement.productId) ?? 0) + movement.quantityDelta,
+        );
+      }
+      const oldQuantityByProduct = new Map<string, number>();
+      for (const item of bill?.acidItems ?? []) {
+        oldQuantityByProduct.set(
+          item.stockProductId,
+          (oldQuantityByProduct.get(item.stockProductId) ?? 0) + item.quantity,
+        );
+      }
+      const requestedByProduct = new Map<string, { name: string; quantity: number }>();
+      for (const item of stockDeductionItems) {
+        const requested = requestedByProduct.get(item.stockProductId);
+        requestedByProduct.set(item.stockProductId, {
+          name: item.name,
+          quantity: (requested?.quantity ?? 0) + item.quantity,
+        });
+      }
+      const shortages = [...requestedByProduct.entries()].flatMap(([productId, requested]) => {
+        const available = (balanceByProduct.get(productId) ?? 0)
+          + (oldQuantityByProduct.get(productId) ?? 0);
+        return requested.quantity > available
+          ? [{ ...requested, available: Math.max(available, 0) }]
+          : [];
+      });
+
+      if (shortages.length > 0) {
+        const result = await appSwal.fire({
+          title: "สินค้าในสต็อกไม่พอ",
+          text: shortages
+            .map((item) => `${item.name}: ต้องการ ${item.quantity} · คงเหลือ ${item.available}`)
+            .join("\n"),
+          icon: "warning",
+          showCancelButton: true,
+          confirmButtonText: "ยืนยันและลบรายการหักสินค้าทั้งหมด",
+          cancelButtonText: "ยกเลิก",
+          customClass: { htmlContainer: "whitespace-pre-line text-left text-pretty" },
+        });
+        if (!result.isConfirmed) return;
+        submittedStockItems = [];
+        setStockDeductionItems([]);
+      }
+    }
+
+    const submitCalculation = submittedStockItems === stockDeductionItems
+      ? calculation
+      : calculateRubberBill({
+          weighItems,
+          deductWeight: weightDeduct,
+          stockDeductionItems: submittedStockItems,
+          debtItems,
+        });
+
     const errors = validateRubberBillDraft({
       customerName: customerSearch,
       weighItems,
       deductWeight: weightDeduct,
-      totalWeight: calculation.totalWeight,
-      acidItems: stockDeductionItems,
+      totalWeight: submitCalculation.totalWeight,
+      acidItems: submittedStockItems,
       debtItems,
-      netTotal: calculation.netTotal
+      netTotal: submitCalculation.netTotal,
     });
 
     if (errors.length > 0) {
       setValidationErrors(errors);
       toast.error(`พบข้อมูลที่ต้องแก้ไข ${errors.length} จุด`, {
-        description: errors[0]
+        description: errors[0],
       });
       return;
     }
-    
+
     setValidationErrors([]);
 
-    const form = new FormData(event.currentTarget);
+    const form = new FormData(formElement);
     const clientTempId = bill?.clientTempId ?? draftClientTempId;
     const clientRecordedAt = bill?.clientRecordedAt ?? makeClientRecordedAt();
     const localBillNo = String(form.get("billNo") || initialLocalBillNo);
@@ -310,21 +382,21 @@ export function RubberBillModal({
       customerName: customerSearch,
       billType: String(form.get("billType") || "บิลเครื่องชั่งเล็ก"),
       deductWeight: weightDeduct,
-      weight: calculation.totalWeight,
-      netWeight: calculation.netWeight,
-      weighValueTotal: calculation.weighValueTotal,
-      rubberValue: calculation.rubberValue,
-      price: calculation.averagePrice,
-      deductionTotal: calculation.deductionTotal,
-      payableBeforeRounding: calculation.payableBeforeRounding,
-      netTotal: calculation.netTotal,
-      acidPackCount: stockDeductionItems.reduce((sum, item) => sum + item.quantity, 0),
+      weight: submitCalculation.totalWeight,
+      netWeight: submitCalculation.netWeight,
+      weighValueTotal: submitCalculation.weighValueTotal,
+      rubberValue: submitCalculation.rubberValue,
+      price: submitCalculation.averagePrice,
+      deductionTotal: submitCalculation.deductionTotal,
+      payableBeforeRounding: submitCalculation.payableBeforeRounding,
+      netTotal: submitCalculation.netTotal,
+      acidPackCount: submittedStockItems.reduce((sum, item) => sum + item.quantity, 0),
       configuredPriceSnapshot: bill?.configuredPriceSnapshot ?? configuredPrice ?? null,
       approvalState: bill?.approvalState ?? "not_required",
       approvalApprovedByName: bill?.approvalApprovedByName ?? null,
       approvalRevisionNo: bill?.approvalRevisionNo ?? null,
       weighItems,
-      acidItems: stockDeductionItems,
+      acidItems: submittedStockItems,
       debtItem: debtItems[0],
       debtItems,
       createdByUserId: bill?.createdByUserId ?? profile.id,
@@ -335,12 +407,27 @@ export function RubberBillModal({
       clientRecordedAt,
       serverReceivedAt: bill?.serverReceivedAt,
       revisionNo: bill?.revisionNo ?? 0,
-      recordStatus: bill?.recordStatus ?? "active"
+      recordStatus: bill?.recordStatus ?? "active",
     });
     if (saved !== false && !bill) await clearDraft();
   }
 
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (submitLockRef.current) return;
+    const formElement = event.currentTarget;
+    submitLockRef.current = true;
+    setIsSubmitting(true);
+    try {
+      await submitForm(formElement);
+    } finally {
+      submitLockRef.current = false;
+      setIsSubmitting(false);
+    }
+  }
+
   async function handleClose() {
+    if (submitLockRef.current) return;
     if (bill) {
       onClose();
       return;
@@ -369,6 +456,7 @@ export function RubberBillModal({
       title={bill ? "แก้ไขบิลเครื่องชั่งเล็ก" : "บิลเครื่องชั่งเล็ก"}
       subtitle={selectedLocation.name}
       onClose={() => void handleClose()}
+      closeDisabled={isSubmitting}
       size="wide"
     >
       <form onSubmit={handleSubmit} className="space-y-0" noValidate>
@@ -701,9 +789,16 @@ export function RubberBillModal({
         </section>
 
         <div className="modal-actions flex justify-center border-t border-black/10 p-4">
-          <button className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-commit px-5 font-semibold text-white hover:bg-commit/90">
+          <button
+            disabled={isSubmitting}
+            className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-commit px-5 font-semibold text-white hover:bg-commit/90 disabled:cursor-not-allowed disabled:opacity-45"
+          >
             <Save size={18} />
-            {requiresNonCurrentDateApproval || exceedsConfiguredPrice ? "ส่งขออนุมัติ" : "บันทึกบิล"}
+            {isSubmitting
+              ? "กำลังบันทึก..."
+              : requiresNonCurrentDateApproval || exceedsConfiguredPrice
+                ? "ส่งขออนุมัติ"
+                : "บันทึกบิล"}
           </button>
         </div>
       </form>

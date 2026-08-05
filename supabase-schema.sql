@@ -1330,6 +1330,289 @@ $$;
 ALTER FUNCTION "private"."claim_dashboard_branch"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."create_income_expense_approval_request_20260805080000"("payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_operation text := payload->>'operation';
+  v_base_request_key text := payload->>'idempotencyKey';
+  v_request_key text;
+  v_location_id uuid := nullif(payload->>'locationId', '')::uuid;
+  v_type text := payload->>'type';
+  v_bill_option text := payload->>'billOption';
+  v_title text;
+  v_cost numeric;
+  v_existing public.income_expense%rowtype;
+  v_line_count integer;
+  v_keyword_id uuid;
+  v_keyword text;
+  v_amount_match boolean;
+  v_threshold numeric;
+  v_threshold_scope text;
+  v_existing_id uuid;
+  v_existing_status text;
+  v_user_id uuid;
+  v_user_name text;
+  v_user_phone text;
+  v_request_id uuid;
+  v_reasons text[] := array[]::text[];
+  v_business_date date;
+  v_non_current_date_requires_approval boolean;
+  v_sale_lines_json jsonb;
+begin
+  if not coalesce(private.is_active_user(), false) then
+    return jsonb_build_object('status', 'failed', 'errorMessage', 'Unauthorized or inactive user');
+  end if;
+  if v_operation not in ('create', 'update', 'delete') then
+    return jsonb_build_object('status', 'failed', 'errorMessage', 'Invalid operation');
+  end if;
+  if coalesce(v_base_request_key, '') = '' then
+    return jsonb_build_object('status', 'failed', 'errorMessage', 'Missing idempotency key');
+  end if;
+
+  if v_operation in ('update', 'delete') then
+    select *
+      into v_existing
+    from public.income_expense
+    where client_temp_id = payload->>'clientTempId';
+    if v_existing.id is null then
+      return jsonb_build_object('status', 'failed', 'errorMessage', 'ไม่พบรายการรับ-จ่าย');
+    end if;
+    if v_existing.record_status <> 'active' then
+      return jsonb_build_object('status', 'conflict', 'errorMessage', 'รายการนี้ถูกลบแล้ว');
+    end if;
+    if v_location_id is distinct from v_existing.location_id then
+      return jsonb_build_object('status', 'failed', 'errorMessage', 'ไม่สามารถย้ายรายการรับ-จ่ายข้ามสาขาได้');
+    end if;
+    if v_operation = 'update' and v_bill_option is distinct from v_existing.bill_option then
+      return jsonb_build_object('status', 'failed', 'errorMessage', 'ไม่สามารถเปลี่ยนรูปแบบของรายการที่บันทึกแล้ว');
+    end if;
+    v_location_id := v_existing.location_id;
+    v_type := v_existing.type::text;
+    if v_operation = 'delete' then
+      v_bill_option := v_existing.bill_option;
+    end if;
+  end if;
+
+  if not public.can_access_location(v_location_id) then
+    return jsonb_build_object('status', 'failed', 'errorMessage', 'Location access denied');
+  end if;
+
+  if v_bill_option = 'บิลขาย' then
+    if v_operation = 'delete' then
+      select
+        count(*)::integer,
+        coalesce(sum(line.line_total), 0),
+        coalesce(jsonb_agg(jsonb_build_object(
+          'id', line.id,
+          'incomeSaleItemId', line.income_sale_item_id,
+          'stockProductId', line.stock_product_id,
+          'title', line.title,
+          'quantity', line.quantity,
+          'unitPrice', line.unit_price,
+          'lineTotal', line.line_total,
+          'sequenceNo', line.sequence_no
+        ) order by line.sequence_no), '[]'::jsonb)
+        into v_line_count, v_cost, v_sale_lines_json
+      from public.income_expense_sale_lines line
+      where line.income_expense_id = v_existing.id;
+    else
+      if jsonb_typeof(payload->'saleLines') <> 'array' then
+        return jsonb_build_object('status', 'failed', 'errorMessage', 'บิลขายต้องมีรายการสินค้า');
+      end if;
+      v_line_count := jsonb_array_length(payload->'saleLines');
+      if v_line_count < 1 or v_line_count > 50 then
+        return jsonb_build_object('status', 'failed', 'errorMessage', 'บิลขายต้องมี 1 ถึง 50 รายการ');
+      end if;
+      if (select count(*) from private.normalize_income_sale_lines(payload)) <> v_line_count then
+        return jsonb_build_object('status', 'failed', 'errorMessage', 'รายการบิลขายไม่ตรงกับสินค้าที่เปิดใช้งาน');
+      end if;
+      if exists (
+        select 1 from private.normalize_income_sale_lines(payload)
+        where quantity <= 0
+           or quantity <> trunc(quantity)
+           or unit_price <= 0
+           or unit_price <> round(unit_price, 2)
+      ) then
+        return jsonb_build_object('status', 'failed', 'errorMessage', 'จำนวนต้องเป็นจำนวนเต็มมากกว่า 0 และราคามีทศนิยมไม่เกิน 2 ตำแหน่ง');
+      end if;
+      select
+        count(*)::integer,
+        coalesce(sum(line.line_total), 0),
+        coalesce(jsonb_agg(jsonb_build_object(
+          'incomeSaleItemId', line.income_sale_item_id,
+          'stockProductId', line.stock_product_id,
+          'title', line.title,
+          'quantity', line.quantity,
+          'unitPrice', line.unit_price,
+          'lineTotal', line.line_total,
+          'sequenceNo', line.sequence_no
+        ) order by line.sequence_no), '[]'::jsonb)
+        into v_line_count, v_cost, v_sale_lines_json
+      from private.normalize_income_sale_lines(payload) line;
+    end if;
+    v_title := 'บิลขาย — ' || v_line_count::text || ' รายการ';
+    v_type := 'income';
+    payload := payload || jsonb_build_object(
+      'locationId', v_location_id,
+      'type', v_type,
+      'billOption', 'บิลขาย',
+      'title', v_title,
+      'cost', v_cost,
+      'saleLines', v_sale_lines_json
+    );
+  elsif v_operation = 'delete' then
+    v_title := v_existing.title;
+    v_cost := v_existing.cost;
+    payload := payload || jsonb_build_object(
+      'locationId', v_location_id,
+      'type', v_type,
+      'billOption', v_existing.bill_option,
+      'title', v_title,
+      'cost', v_cost
+    );
+  else
+    v_title := trim(coalesce(payload->>'title', ''));
+    v_cost := nullif(payload->>'cost', '')::numeric;
+  end if;
+
+  if v_type not in ('income', 'expense') or v_title = '' or coalesce(v_cost, 0) <= 0 then
+    return jsonb_build_object('status', 'failed', 'errorMessage', 'ข้อมูลรายการหรือยอดเงินไม่ถูกต้อง');
+  end if;
+
+  select id, request_status
+    into v_existing_id, v_existing_status
+  from public.income_expense_approval_requests
+  where requested_payload->>'idempotencyKey' = v_base_request_key
+    and request_status in ('pending', 'approved')
+  order by created_at desc
+  limit 1;
+  if v_existing_id is not null then
+    return jsonb_build_object(
+      'status', 'pending',
+      'requestId', v_existing_id,
+      'requestStatus', v_existing_status
+    );
+  end if;
+
+  select setting.id, setting.keyword
+    into v_keyword_id, v_keyword
+  from public.income_expense_approval_keywords setting
+  where setting.is_active = true
+    and setting.deleted_at is null
+    and setting.applies_to in (v_type, 'both')
+    and (setting.approval_min_amount is null or v_cost >= setting.approval_min_amount)
+    and (
+      (
+        v_bill_option = 'บิลขาย'
+        and (
+          (
+            v_operation = 'delete'
+            and exists (
+              select 1
+              from public.income_expense_sale_lines line
+              where line.income_expense_id = v_existing.id
+                and (
+                  (setting.match_mode = 'exact' and lower(trim(line.title)) = lower(trim(setting.keyword)))
+                  or (setting.match_mode = 'contains' and position(lower(trim(setting.keyword)) in lower(trim(line.title))) > 0)
+                )
+            )
+          )
+          or
+          (
+            v_operation <> 'delete'
+            and exists (
+              select 1
+              from private.normalize_income_sale_lines(payload) line
+              where (setting.match_mode = 'exact' and lower(trim(line.title)) = lower(trim(setting.keyword)))
+                 or (setting.match_mode = 'contains' and position(lower(trim(setting.keyword)) in lower(trim(line.title))) > 0)
+            )
+          )
+        )
+      )
+      or
+      (
+        v_bill_option <> 'บิลขาย'
+        and (
+          (setting.match_mode = 'exact' and lower(trim(v_title)) = lower(trim(setting.keyword)))
+          or (setting.match_mode = 'contains' and position(lower(trim(setting.keyword)) in lower(trim(v_title))) > 0)
+        )
+      )
+    )
+  order by length(setting.keyword) desc, setting.created_at
+  limit 1;
+
+  select approval_min_amount, applies_to, non_current_date_requires_approval
+    into v_threshold, v_threshold_scope, v_non_current_date_requires_approval
+  from public.income_expense_approval_settings
+  where id = true;
+  v_amount_match := v_threshold is not null
+    and v_cost >= v_threshold
+    and coalesce(v_threshold_scope, 'both') in (v_type, 'both');
+
+  if v_keyword_id is not null then
+    v_reasons := array_append(v_reasons, 'keyword');
+  end if;
+  if v_amount_match then
+    v_reasons := array_append(v_reasons, 'amount_threshold');
+  end if;
+  begin
+    v_business_date := case when v_operation = 'delete'
+      then v_existing.tx_date
+      else (payload->>'txDate')::date end;
+  exception when others then
+    return jsonb_build_object('status', 'failed', 'errorMessage', 'วันที่รายการไม่ถูกต้อง');
+  end;
+  if coalesce(v_non_current_date_requires_approval, false)
+     and v_business_date is distinct from (clock_timestamp() at time zone 'Asia/Bangkok')::date then
+    v_reasons := array_append(v_reasons, 'non_current_date');
+  end if;
+  if cardinality(v_reasons) = 0 then
+    return jsonb_build_object('status', 'no_approval');
+  end if;
+  v_request_key := v_base_request_key;
+  if exists (
+    select 1 from public.income_expense_approval_requests
+    where request_idempotency_key = v_request_key
+  ) then
+    v_request_key := v_base_request_key || ':retry:' || gen_random_uuid()::text;
+  end if;
+
+  v_user_id := auth.uid();
+  select name, phone
+    into v_user_name, v_user_phone
+  from public.profiles
+  where id = v_user_id;
+
+  insert into public.income_expense_approval_requests (
+    requested_operation, request_idempotency_key, requested_payload,
+    source_income_expense_id, matched_keyword_id, matched_keyword, matched_reasons,
+    location_id, tx_type, title, cost,
+    requested_by_user_id, requested_by_name, requested_by_phone
+  ) values (
+    v_operation, v_request_key, payload,
+    v_existing.id, v_keyword_id, v_keyword, v_reasons,
+    v_location_id, v_type, v_title, v_cost,
+    v_user_id, coalesce(v_user_name, ''), coalesce(v_user_phone, '')
+  )
+  returning id into v_request_id;
+
+  return jsonb_build_object(
+    'status', 'pending',
+    'requestId', v_request_id,
+    'matchedReasons', to_jsonb(v_reasons),
+    'matchedKeyword', v_keyword
+  );
+exception when others then
+  return jsonb_build_object('status', 'failed', 'errorMessage', sqlerrm);
+end;
+$$;
+
+
+ALTER FUNCTION "private"."create_income_expense_approval_request_20260805080000"("payload" "jsonb") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."create_report_batch_at"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone, "p_actor_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -2487,6 +2770,87 @@ ALTER FUNCTION "private"."normalize_rubber_bill_calculation_payload"("payload" "
 
 COMMENT ON FUNCTION "private"."normalize_rubber_bill_calculation_payload"("payload" "jsonb") IS 'Recalculates Rubber Bill source values from item inputs using the same fixed two-decimal contract as the offline browser.';
 
+
+
+CREATE OR REPLACE FUNCTION "private"."preflight_income_sale_stock"("payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_location_id uuid := nullif(payload->>'locationId', '')::uuid;
+  v_existing public.income_expense%rowtype;
+  v_product record;
+  v_current_balance numeric;
+  v_old_quantity numeric;
+  v_new_quantity numeric;
+  v_available numeric;
+  v_shortages jsonb := '[]'::jsonb;
+begin
+  select * into v_existing
+  from public.income_expense
+  where client_temp_id = payload->>'clientTempId';
+
+  -- An already-committed retry must return the original bill, even if stock has
+  -- changed since that commit.
+  if v_existing.id is not null
+     and v_existing.idempotency_key = payload->>'idempotencyKey' then
+    return jsonb_build_object('status', 'ok');
+  end if;
+
+  for v_product in
+    select products.product_id, product.name
+    from (
+      select distinct line.stock_product_id as product_id
+      from private.normalize_income_sale_lines(payload) line
+      union
+      select distinct line.stock_product_id
+      from public.income_expense_sale_lines line
+      where line.income_expense_id = v_existing.id
+    ) products
+    join public.stock_products product on product.id = products.product_id
+    order by products.product_id
+  loop
+    perform pg_advisory_xact_lock(
+      hashtext('acid-stock:' || v_location_id::text || ':' || v_product.product_id::text)
+    );
+
+    v_current_balance := public.get_stock_balance(v_location_id, v_product.product_id);
+    select coalesce(sum(quantity), 0) into v_old_quantity
+    from public.income_expense_sale_lines
+    where income_expense_id = v_existing.id
+      and stock_product_id = v_product.product_id;
+    select coalesce(sum(quantity), 0) into v_new_quantity
+    from private.normalize_income_sale_lines(payload)
+    where stock_product_id = v_product.product_id;
+
+    v_available := v_current_balance + v_old_quantity;
+    if v_new_quantity > v_available then
+      v_shortages := v_shortages || jsonb_build_array(jsonb_build_object(
+        'productId', v_product.product_id,
+        'productName', v_product.name,
+        'requestedQuantity', v_new_quantity,
+        'availableQuantity', greatest(v_available, 0)
+      ));
+    end if;
+  end loop;
+
+  if jsonb_array_length(v_shortages) > 0 then
+    return jsonb_build_object(
+      'status', 'failed',
+      'errorCode', 'STOCK_SHORTAGE',
+      'errorMessage', 'สินค้าในสต็อกไม่พอสำหรับบิลขาย',
+      'stockShortages', v_shortages
+    );
+  end if;
+
+  return jsonb_build_object('status', 'ok');
+exception when others then
+  return jsonb_build_object('status', 'failed', 'errorMessage', sqlerrm);
+end;
+$$;
+
+
+ALTER FUNCTION "private"."preflight_income_sale_stock"("payload" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."prevent_hard_delete_of_linked_time_tracking_source"() RETURNS "trigger"
@@ -4697,275 +5061,22 @@ CREATE OR REPLACE FUNCTION "public"."create_income_expense_approval_request"("pa
     SET "search_path" TO 'public', 'private'
     AS $$
 declare
-  v_operation text := payload->>'operation';
-  v_base_request_key text := payload->>'idempotencyKey';
-  v_request_key text;
   v_location_id uuid := nullif(payload->>'locationId', '')::uuid;
-  v_type text := payload->>'type';
-  v_bill_option text := payload->>'billOption';
-  v_title text;
-  v_cost numeric;
-  v_existing public.income_expense%rowtype;
-  v_line_count integer;
-  v_keyword_id uuid;
-  v_keyword text;
-  v_amount_match boolean;
-  v_threshold numeric;
-  v_threshold_scope text;
-  v_existing_id uuid;
-  v_existing_status text;
-  v_user_id uuid;
-  v_user_name text;
-  v_user_phone text;
-  v_request_id uuid;
-  v_reasons text[] := array[]::text[];
-  v_business_date date;
-  v_non_current_date_requires_approval boolean;
-  v_sale_lines_json jsonb;
 begin
-  if not coalesce(private.is_active_user(), false) then
-    return jsonb_build_object('status', 'failed', 'errorMessage', 'Unauthorized or inactive user');
-  end if;
-  if v_operation not in ('create', 'update', 'delete') then
-    return jsonb_build_object('status', 'failed', 'errorMessage', 'Invalid operation');
-  end if;
-  if coalesce(v_base_request_key, '') = '' then
-    return jsonb_build_object('status', 'failed', 'errorMessage', 'Missing idempotency key');
-  end if;
-
-  if v_operation in ('update', 'delete') then
-    select *
-      into v_existing
-    from public.income_expense
-    where client_temp_id = payload->>'clientTempId';
-    if v_existing.id is null then
-      return jsonb_build_object('status', 'failed', 'errorMessage', 'ไม่พบรายการรับ-จ่าย');
+  if payload->>'billOption' = 'บิลขาย'
+     and payload->>'operation' in ('create', 'update') then
+    if not coalesce(private.is_active_user(), false) then
+      return jsonb_build_object('status', 'failed', 'errorMessage', 'Unauthorized or inactive user');
     end if;
-    if v_existing.record_status <> 'active' then
-      return jsonb_build_object('status', 'conflict', 'errorMessage', 'รายการนี้ถูกลบแล้ว');
+    if v_location_id is null
+       or not exists (select 1 from public.locations where id = v_location_id)
+       or not public.can_access_location(v_location_id) then
+      return jsonb_build_object('status', 'failed', 'errorMessage', 'Location access denied');
     end if;
-    if v_location_id is distinct from v_existing.location_id then
-      return jsonb_build_object('status', 'failed', 'errorMessage', 'ไม่สามารถย้ายรายการรับ-จ่ายข้ามสาขาได้');
-    end if;
-    if v_operation = 'update' and v_bill_option is distinct from v_existing.bill_option then
-      return jsonb_build_object('status', 'failed', 'errorMessage', 'ไม่สามารถเปลี่ยนรูปแบบของรายการที่บันทึกแล้ว');
-    end if;
-    v_location_id := v_existing.location_id;
-    v_type := v_existing.type::text;
-    if v_operation = 'delete' then
-      v_bill_option := v_existing.bill_option;
-    end if;
-  end if;
-
-  if not public.can_access_location(v_location_id) then
-    return jsonb_build_object('status', 'failed', 'errorMessage', 'Location access denied');
-  end if;
-
-  if v_bill_option = 'บิลขาย' then
-    if v_operation = 'delete' then
-      select
-        count(*)::integer,
-        coalesce(sum(line.line_total), 0),
-        coalesce(jsonb_agg(jsonb_build_object(
-          'id', line.id,
-          'incomeSaleItemId', line.income_sale_item_id,
-          'stockProductId', line.stock_product_id,
-          'title', line.title,
-          'quantity', line.quantity,
-          'unitPrice', line.unit_price,
-          'lineTotal', line.line_total,
-          'sequenceNo', line.sequence_no
-        ) order by line.sequence_no), '[]'::jsonb)
-        into v_line_count, v_cost, v_sale_lines_json
-      from public.income_expense_sale_lines line
-      where line.income_expense_id = v_existing.id;
-    else
-      if jsonb_typeof(payload->'saleLines') <> 'array' then
-        return jsonb_build_object('status', 'failed', 'errorMessage', 'บิลขายต้องมีรายการสินค้า');
-      end if;
-      v_line_count := jsonb_array_length(payload->'saleLines');
-      if v_line_count < 1 or v_line_count > 50 then
-        return jsonb_build_object('status', 'failed', 'errorMessage', 'บิลขายต้องมี 1 ถึง 50 รายการ');
-      end if;
-      if (select count(*) from private.normalize_income_sale_lines(payload)) <> v_line_count then
-        return jsonb_build_object('status', 'failed', 'errorMessage', 'รายการบิลขายไม่ตรงกับสินค้าที่เปิดใช้งาน');
-      end if;
-      if exists (
-        select 1 from private.normalize_income_sale_lines(payload)
-        where quantity <= 0
-           or quantity <> trunc(quantity)
-           or unit_price <= 0
-           or unit_price <> round(unit_price, 2)
-      ) then
-        return jsonb_build_object('status', 'failed', 'errorMessage', 'จำนวนต้องเป็นจำนวนเต็มมากกว่า 0 และราคามีทศนิยมไม่เกิน 2 ตำแหน่ง');
-      end if;
-      select
-        count(*)::integer,
-        coalesce(sum(line.line_total), 0),
-        coalesce(jsonb_agg(jsonb_build_object(
-          'incomeSaleItemId', line.income_sale_item_id,
-          'stockProductId', line.stock_product_id,
-          'title', line.title,
-          'quantity', line.quantity,
-          'unitPrice', line.unit_price,
-          'lineTotal', line.line_total,
-          'sequenceNo', line.sequence_no
-        ) order by line.sequence_no), '[]'::jsonb)
-        into v_line_count, v_cost, v_sale_lines_json
-      from private.normalize_income_sale_lines(payload) line;
-    end if;
-    v_title := 'บิลขาย — ' || v_line_count::text || ' รายการ';
-    v_type := 'income';
-    payload := payload || jsonb_build_object(
-      'locationId', v_location_id,
-      'type', v_type,
-      'billOption', 'บิลขาย',
-      'title', v_title,
-      'cost', v_cost,
-      'saleLines', v_sale_lines_json
-    );
-  elsif v_operation = 'delete' then
-    v_title := v_existing.title;
-    v_cost := v_existing.cost;
-    payload := payload || jsonb_build_object(
-      'locationId', v_location_id,
-      'type', v_type,
-      'billOption', v_existing.bill_option,
-      'title', v_title,
-      'cost', v_cost
-    );
-  else
-    v_title := trim(coalesce(payload->>'title', ''));
-    v_cost := nullif(payload->>'cost', '')::numeric;
-  end if;
-
-  if v_type not in ('income', 'expense') or v_title = '' or coalesce(v_cost, 0) <= 0 then
-    return jsonb_build_object('status', 'failed', 'errorMessage', 'ข้อมูลรายการหรือยอดเงินไม่ถูกต้อง');
-  end if;
-
-  select id, request_status
-    into v_existing_id, v_existing_status
-  from public.income_expense_approval_requests
-  where requested_payload->>'idempotencyKey' = v_base_request_key
-    and request_status in ('pending', 'approved')
-  order by created_at desc
-  limit 1;
-  if v_existing_id is not null then
-    return jsonb_build_object(
-      'status', 'pending',
-      'requestId', v_existing_id,
-      'requestStatus', v_existing_status
-    );
-  end if;
-
-  select setting.id, setting.keyword
-    into v_keyword_id, v_keyword
-  from public.income_expense_approval_keywords setting
-  where setting.is_active = true
-    and setting.deleted_at is null
-    and setting.applies_to in (v_type, 'both')
-    and (setting.approval_min_amount is null or v_cost >= setting.approval_min_amount)
-    and (
-      (
-        v_bill_option = 'บิลขาย'
-        and (
-          (
-            v_operation = 'delete'
-            and exists (
-              select 1
-              from public.income_expense_sale_lines line
-              where line.income_expense_id = v_existing.id
-                and (
-                  (setting.match_mode = 'exact' and lower(trim(line.title)) = lower(trim(setting.keyword)))
-                  or (setting.match_mode = 'contains' and position(lower(trim(setting.keyword)) in lower(trim(line.title))) > 0)
-                )
-            )
-          )
-          or
-          (
-            v_operation <> 'delete'
-            and exists (
-              select 1
-              from private.normalize_income_sale_lines(payload) line
-              where (setting.match_mode = 'exact' and lower(trim(line.title)) = lower(trim(setting.keyword)))
-                 or (setting.match_mode = 'contains' and position(lower(trim(setting.keyword)) in lower(trim(line.title))) > 0)
-            )
-          )
-        )
-      )
-      or
-      (
-        v_bill_option <> 'บิลขาย'
-        and (
-          (setting.match_mode = 'exact' and lower(trim(v_title)) = lower(trim(setting.keyword)))
-          or (setting.match_mode = 'contains' and position(lower(trim(setting.keyword)) in lower(trim(v_title))) > 0)
-        )
-      )
-    )
-  order by length(setting.keyword) desc, setting.created_at
-  limit 1;
-
-  select approval_min_amount, applies_to, non_current_date_requires_approval
-    into v_threshold, v_threshold_scope, v_non_current_date_requires_approval
-  from public.income_expense_approval_settings
-  where id = true;
-  v_amount_match := v_threshold is not null
-    and v_cost >= v_threshold
-    and coalesce(v_threshold_scope, 'both') in (v_type, 'both');
-
-  if v_keyword_id is not null then
-    v_reasons := array_append(v_reasons, 'keyword');
-  end if;
-  if v_amount_match then
-    v_reasons := array_append(v_reasons, 'amount_threshold');
-  end if;
-  begin
-    v_business_date := case when v_operation = 'delete'
-      then v_existing.tx_date
-      else (payload->>'txDate')::date end;
-  exception when others then
-    return jsonb_build_object('status', 'failed', 'errorMessage', 'วันที่รายการไม่ถูกต้อง');
-  end;
-  if coalesce(v_non_current_date_requires_approval, false)
-     and v_business_date is distinct from (clock_timestamp() at time zone 'Asia/Bangkok')::date then
-    v_reasons := array_append(v_reasons, 'non_current_date');
-  end if;
-  if cardinality(v_reasons) = 0 then
     return jsonb_build_object('status', 'no_approval');
   end if;
-  v_request_key := v_base_request_key;
-  if exists (
-    select 1 from public.income_expense_approval_requests
-    where request_idempotency_key = v_request_key
-  ) then
-    v_request_key := v_base_request_key || ':retry:' || gen_random_uuid()::text;
-  end if;
 
-  v_user_id := auth.uid();
-  select name, phone
-    into v_user_name, v_user_phone
-  from public.profiles
-  where id = v_user_id;
-
-  insert into public.income_expense_approval_requests (
-    requested_operation, request_idempotency_key, requested_payload,
-    source_income_expense_id, matched_keyword_id, matched_keyword, matched_reasons,
-    location_id, tx_type, title, cost,
-    requested_by_user_id, requested_by_name, requested_by_phone
-  ) values (
-    v_operation, v_request_key, payload,
-    v_existing.id, v_keyword_id, v_keyword, v_reasons,
-    v_location_id, v_type, v_title, v_cost,
-    v_user_id, coalesce(v_user_name, ''), coalesce(v_user_phone, '')
-  )
-  returning id into v_request_id;
-
-  return jsonb_build_object(
-    'status', 'pending',
-    'requestId', v_request_id,
-    'matchedReasons', to_jsonb(v_reasons),
-    'matchedKeyword', v_keyword
-  );
+  return private.create_income_expense_approval_request_20260805080000(payload);
 exception when others then
   return jsonb_build_object('status', 'failed', 'errorMessage', sqlerrm);
 end;
@@ -11474,8 +11585,24 @@ CREATE OR REPLACE FUNCTION "public"."sync_income_expense"("payload" "jsonb") RET
     AS $$
 declare
   v_approval jsonb;
+  v_stock_result jsonb;
 begin
   if coalesce(current_setting('app.bypass_income_expense_approval', true), 'false') = 'true' then
+    return private.sync_income_expense_dispatch_20260805020000(payload);
+  end if;
+
+  if payload->>'billOption' = 'บิลขาย'
+     and payload->>'operation' in ('create', 'update') then
+    v_approval := public.create_income_expense_approval_request(payload);
+    if v_approval->>'status' <> 'no_approval' then
+      return v_approval;
+    end if;
+
+    v_stock_result := private.preflight_income_sale_stock(payload);
+    if v_stock_result->>'status' <> 'ok' then
+      return v_stock_result;
+    end if;
+    perform set_config('app.bypass_income_expense_approval', 'true', true);
     return private.sync_income_expense_dispatch_20260805020000(payload);
   end if;
 
@@ -15758,6 +15885,10 @@ REVOKE ALL ON FUNCTION "private"."claim_dashboard_branch"() FROM PUBLIC;
 
 
 
+REVOKE ALL ON FUNCTION "private"."create_income_expense_approval_request_20260805080000"("payload" "jsonb") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."create_report_batch_at"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone, "p_actor_id" "uuid") FROM PUBLIC;
 
 
@@ -15828,6 +15959,10 @@ REVOKE ALL ON FUNCTION "private"."normalize_income_sale_lines"("payload" "jsonb"
 
 
 REVOKE ALL ON FUNCTION "private"."normalize_rubber_bill_calculation_payload"("payload" "jsonb") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."preflight_income_sale_stock"("payload" "jsonb") FROM PUBLIC;
 
 
 

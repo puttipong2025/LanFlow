@@ -22,12 +22,12 @@ export function SharePdfWaitingModal({
             <LoaderCircle className="animate-spin text-river" size={24} />
             <div>
               <h2 id="share-pdf-waiting-title" className="text-balance font-bold text-ink">กำลังสร้าง PDF</h2>
-              <p className="text-pretty text-sm text-ink/60">กรุณารอสักครู่</p>
+              <p className="text-pretty text-sm text-ink/60">บิลบันทึกแล้ว กรุณารอสักครู่</p>
             </div>
           </div>
           <button
             type="button"
-            aria-label="ปิดหน้าต่างรอแชร์ PDF"
+            aria-label="ปิดหน้าต่างสร้าง PDF"
             onClick={onCancel}
             className="focus-ring grid size-9 place-items-center rounded-md bg-actionSecondary text-white"
           >
@@ -39,7 +39,7 @@ export function SharePdfWaitingModal({
           onClick={onCancel}
           className="focus-ring mt-5 h-10 w-full rounded-md bg-actionSecondary px-4 text-sm font-semibold text-white hover:bg-actionSecondary/90"
         >
-          ยกเลิก
+          ปิดหน้าต่าง
         </button>
       </div>
     </div>

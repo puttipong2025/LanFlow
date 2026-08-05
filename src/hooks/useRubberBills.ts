@@ -698,7 +698,7 @@ export function useRubberBills(
       queryClient.invalidateQueries({ queryKey: ["rubberBillApprovalMarkers", locationId] });
       queryClient.invalidateQueries({ queryKey: ["rubberBillApprovalRequests"] });
       queryClient.invalidateQueries({ queryKey: ["incomeExpense", locationId] });
-      queryClient.invalidateQueries({ queryKey: ["acidStock", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["stock", locationId] });
       queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
       syncPendingBills(queryClient, ownerUserId, locationId);
     }
@@ -821,7 +821,7 @@ export function useRubberBills(
       queryClient.invalidateQueries({ queryKey: ["rubberBillApprovalMarkers", locationId] });
       queryClient.invalidateQueries({ queryKey: ["rubberBillApprovalRequests"] });
       queryClient.invalidateQueries({ queryKey: ["incomeExpense", locationId] });
-      queryClient.invalidateQueries({ queryKey: ["acidStock", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["stock", locationId] });
       queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
       syncPendingBills(queryClient, ownerUserId, locationId);
     }

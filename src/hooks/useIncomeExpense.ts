@@ -27,7 +27,28 @@ type IncomeExpenseSyncReceipt = {
   saleLineCount?: number;
   saleLines?: IncomeExpense["saleLines"];
 };
-type IncomeExpenseSyncReceipts = Map<string, IncomeExpenseSyncReceipt>;
+export type IncomeExpenseStockShortage = {
+  productId: string;
+  productName: string;
+  requestedQuantity: number;
+  availableQuantity: number;
+};
+
+export class IncomeExpenseStockShortageError extends Error {
+  constructor(public readonly shortages: IncomeExpenseStockShortage[]) {
+    super("สินค้าในสต็อกไม่พอสำหรับบิลขาย");
+    this.name = "IncomeExpenseStockShortageError";
+  }
+}
+
+type IncomeExpenseSyncRejection = {
+  errorCode: "STOCK_SHORTAGE";
+  shortages: IncomeExpenseStockShortage[];
+};
+type IncomeExpenseSyncResult = {
+  receipts: Map<string, IncomeExpenseSyncReceipt>;
+  rejections: Map<string, IncomeExpenseSyncRejection>;
+};
 
 function queuePartition(ownerUserId: string, locationId: string) {
   return { entity: ENTITY, ownerUserId, locationId };
@@ -197,14 +218,15 @@ async function normalizeQueue(ownerUserId: string, locationId: string) {
   }
 }
 
-let activeSyncPromise: Promise<IncomeExpenseSyncReceipts> | null = null;
+let activeSyncPromise: Promise<IncomeExpenseSyncResult> | null = null;
 
 async function runPendingIncomeExpenseSync(
   queryClient: ReturnType<typeof useQueryClient>,
   ownerUserId: string,
   locationId: string
 ) {
-  const receipts: IncomeExpenseSyncReceipts = new Map();
+  const receipts = new Map<string, IncomeExpenseSyncReceipt>();
+  const rejections = new Map<string, IncomeExpenseSyncRejection>();
   await normalizeQueue(ownerUserId, locationId);
   const events = await getPendingEvents(queuePartition(ownerUserId, locationId));
   const blockedIds = new Set(events.filter((event) => event.status !== "pending").map((event) => event.id));
@@ -251,6 +273,25 @@ async function runPendingIncomeExpenseSync(
         break;
       }
       else {
+        if (
+          data.errorCode === "STOCK_SHORTAGE"
+          && event.payload.billOption === "บิลขาย"
+          && event.operation !== "delete"
+        ) {
+          const shortages = Array.isArray(data.stockShortages)
+            ? data.stockShortages.filter((item: unknown): item is IncomeExpenseStockShortage => {
+                if (!item || typeof item !== "object") return false;
+                const row = item as Record<string, unknown>;
+                return typeof row.productId === "string"
+                  && typeof row.productName === "string"
+                  && typeof row.requestedQuantity === "number"
+                  && typeof row.availableQuantity === "number";
+              })
+            : [];
+          rejections.set(event.id, { errorCode: "STOCK_SHORTAGE", shortages });
+          await removeSyncEvent(event.queueId!);
+          continue;
+        }
         event.status = data.status === "conflict" ? "conflict" : "failed";
         event.errorMessage = data.errorMessage || (event.status === "conflict" ? "ข้อมูลชนกัน" : "ซิงก์ไม่สำเร็จ");
         await updateSyncEvent(event);
@@ -261,20 +302,25 @@ async function runPendingIncomeExpenseSync(
     }
   }
 
-  return receipts;
+  return { receipts, rejections };
 }
 
 async function syncPendingIncomeExpense(
   queryClient: ReturnType<typeof useQueryClient>,
   ownerUserId: string,
   locationId: string
-): Promise<IncomeExpenseSyncReceipts> {
-  if (!ownerUserId || !locationId || !navigator.onLine) return new Map();
+): Promise<IncomeExpenseSyncResult> {
+  if (!ownerUserId || !locationId || !navigator.onLine) {
+    return { receipts: new Map(), rejections: new Map() };
+  }
 
   if (activeSyncPromise) {
-    const activeReceipts = await activeSyncPromise;
-    const remainingReceipts = await syncPendingIncomeExpense(queryClient, ownerUserId, locationId);
-    return new Map([...activeReceipts, ...remainingReceipts]);
+    const activeResult = await activeSyncPromise;
+    const remainingResult = await syncPendingIncomeExpense(queryClient, ownerUserId, locationId);
+    return {
+      receipts: new Map([...activeResult.receipts, ...remainingResult.receipts]),
+      rejections: new Map([...activeResult.rejections, ...remainingResult.rejections]),
+    };
   }
 
   const syncPromise = runPendingIncomeExpenseSync(queryClient, ownerUserId, locationId);
@@ -325,7 +371,11 @@ export function useIncomeExpense(locationId: string, ownerUserId: string) {
   async function syncTransaction(submittedTransaction: IncomeExpense): Promise<IncomeExpense> {
     if (!navigator.onLine) throw new Error("บิลขายต้องออนไลน์จนกว่าจะซิงก์สำเร็จ");
 
-    const receipts = await syncPendingIncomeExpense(queryClient, ownerUserId, locationId);
+    const syncResult = await syncPendingIncomeExpense(queryClient, ownerUserId, locationId);
+    const rejection = syncResult.rejections.get(submittedTransaction.clientTempId);
+    if (rejection?.errorCode === "STOCK_SHORTAGE") {
+      throw new IncomeExpenseStockShortageError(rejection.shortages);
+    }
     const remainingEvents = (await getPendingEvents(queuePartition(ownerUserId, locationId)))
       .filter((event) => event.id === submittedTransaction.clientTempId);
     const failedEvent = remainingEvents.find(
@@ -342,7 +392,7 @@ export function useIncomeExpense(locationId: string, ownerUserId: string) {
       );
     }
 
-    const receipt = receipts.get(submittedTransaction.clientTempId);
+    const receipt = syncResult.receipts.get(submittedTransaction.clientTempId);
     if (!receipt) {
       throw new Error("ไม่พบผลการซิงก์หรือเลขบิลส่วนกลางของบิลขาย");
     }
@@ -399,7 +449,7 @@ export function useIncomeExpense(locationId: string, ownerUserId: string) {
     },
     onSuccess: (_savedTransaction, transaction) => {
       refresh();
-      queryClient.invalidateQueries({ queryKey: ["acidStock", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["stock", locationId] });
       if (transaction.billOption !== "บิลขาย") {
         void syncPendingIncomeExpense(queryClient, ownerUserId, locationId);
       }
@@ -434,10 +484,25 @@ export function useIncomeExpense(locationId: string, ownerUserId: string) {
     },
     onSuccess: () => {
       refresh();
-      queryClient.invalidateQueries({ queryKey: ["acidStock", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["stock", locationId] });
       void syncPendingIncomeExpense(queryClient, ownerUserId, locationId);
     },
   });
+
+  async function discardFailedTransaction(clientTempId: string) {
+    const events = await getPendingEvents(queuePartition(ownerUserId, locationId));
+    const discardable = events.filter((event) => (
+      event.id === clientTempId
+      && event.operation === "create"
+      && event.status === "failed"
+    ));
+    if (discardable.length === 0) {
+      throw new Error("รายการนี้ไม่ใช่บิลค้างที่ลบได้");
+    }
+    for (const event of discardable) await removeSyncEvent(event.queueId!);
+    removeFromFeedCache(queryClient, ownerUserId, locationId, clientTempId);
+    refresh();
+  }
 
   return {
     transactions,
@@ -450,5 +515,6 @@ export function useIncomeExpense(locationId: string, ownerUserId: string) {
     updateTransaction: saveTransaction.mutateAsync,
     syncTransaction,
     deleteTransaction: deleteTransaction.mutateAsync,
+    discardFailedTransaction,
   };
 }

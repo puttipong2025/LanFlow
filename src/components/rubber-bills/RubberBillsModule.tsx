@@ -38,6 +38,7 @@ import {
   type WeighingQueueCustomer,
 } from "@/lib/rubber-bills/weighing-queue";
 import { calculateRubberBill } from "@/lib/rubber-bills/calculations";
+import { runBlockingAction } from "@/lib/swal";
 
 function pendingCreateBill(marker: RubberBillApprovalMarker): RubberBill | null {
   const payload = marker.proposedCreatePayload;
@@ -167,6 +168,7 @@ export function RubberBillsModule({
   const [appointmentModalOpen, setAppointmentModalOpen] = useState(false);
   const [approvalModalOpen, setApprovalModalOpen] = useState(false);
   const [editingBill, setEditingBill] = useState<RubberBill | null>(null);
+  const [deletingBillId, setDeletingBillId] = useState<string | null>(null);
   const [pageSize, setPageSize] = useState(10);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
@@ -318,7 +320,8 @@ export function RubberBillsModule({
     setModalOpen(true);
   }
 
-  function confirmDelete(bill: RubberBill) {
+  async function confirmDelete(bill: RubberBill) {
+    if (deletingBillId) return;
     const blockReason = getActionBlockReason(bill);
     if (blockReason) {
       toast.error(blockReason);
@@ -329,8 +332,30 @@ export function RubberBillsModule({
       ? "\nรายการต่างวันจะถูกส่งขออนุมัติก่อนลบ"
       : "";
     if (confirm(`ต้องการลบบิลนี้ใช่หรือไม่?${dateApprovalNotice}`)) {
-      deleteBill({ id: bill.id, clientTempId: bill.clientTempId, deletedByName: profile.name, deletedByPhone: profile.phone, revisionNo: bill.revisionNo })
-        .catch((err) => alert(err.message));
+      const elapsedMinutes = bill.serverCreatedAt
+        ? (Date.now() - new Date(bill.serverCreatedAt).getTime()) / 60_000
+        : 0;
+      const likelyNeedsApproval = Boolean(
+        (approvalSettings?.nonCurrentDateRequiresApproval && bill.billDate !== bangkokDateString())
+        || (approvalSettings && elapsedMinutes > approvalSettings.editWindowMinutes)
+      );
+      setDeletingBillId(bill.id);
+      try {
+        await runBlockingAction(
+          likelyNeedsApproval ? "กำลังส่งคำขอลบ..." : "กำลังลบรายการ...",
+          () => deleteBill({
+            id: bill.id,
+            clientTempId: bill.clientTempId,
+            deletedByName: profile.name,
+            deletedByPhone: profile.phone,
+            revisionNo: bill.revisionNo,
+          }),
+        );
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "ลบบิลยางไม่สำเร็จ");
+      } finally {
+        setDeletingBillId(null);
+      }
     }
   }
 
@@ -444,6 +469,7 @@ export function RubberBillsModule({
           onPageChange={setPage}
           onEdit={openEdit}
           onDelete={confirmDelete}
+          deletingBillId={deletingBillId}
           onPrint={handlePrint}
           getActionBlockReason={getActionBlockReason}
           getPrintBlockReason={getPrintBlockReason}

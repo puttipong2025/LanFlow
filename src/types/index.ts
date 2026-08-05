@@ -256,6 +256,20 @@ export type IncomeExpenseApprovalRequest = {
   createdAt: string;
 };
 
+export type IncomeExpenseApprovalMarker = {
+  requestId: string;
+  sourceIncomeExpenseId?: string | null;
+  clientTempId: string;
+  operation: QueueOperation;
+  matchedReasons: IncomeExpenseApprovalReason[];
+  requestedPayload: Record<string, any>;
+  locationId: string;
+  txType: "income" | "expense";
+  title: string;
+  cost: number;
+  createdAt: string;
+};
+
 export type IncomeExpenseSaleLine = {
   id?: string;
   incomeSaleItemId: string;
@@ -305,6 +319,10 @@ export type IncomeExpense = {
   relationLockReason?: string;
   relationLabel?: string;
   reportLockNo?: string | null;
+  approvalPending?: boolean;
+  approvalRequestId?: string;
+  approvalOperation?: QueueOperation;
+  approvalReasons?: IncomeExpenseApprovalReason[];
 };
 
 export type AcidStockSourceType = "stock_entry" | "income_sale" | "rubber_bill_acid" | "rubber_bill_stock_deduction";
