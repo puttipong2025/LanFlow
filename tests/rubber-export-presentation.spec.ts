@@ -20,7 +20,7 @@ test("formats a verified Rubber Export for an A4 PDF in Bangkok time", () => {
     ["น้ำหนักหาย", "2.64%"],
     ["ค่าทำงานต่อกิโลกรัม", "฿1.50"],
     ["ค่าดำเนินการอื่น", "฿120.00"],
-    ["ยอดค่าทำงานรวม", "฿562.50"],
+    ["ยอดค่าทำงานรวม", "฿574.50"],
   ]);
   expect(rubberExportPdfFilename(details)).toBe(
     "LanFlow-rubber-export-REX-20260729-004-20260729-1504-A4-landscape.pdf",

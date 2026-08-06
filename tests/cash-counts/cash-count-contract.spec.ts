@@ -114,7 +114,7 @@ test.describe.serial("cash count aggregate contract", () => {
     await selectAppLocation(managerPage, locationId);
     await managerPage.getByRole("button", { name: "รายงาน", exact: true }).click();
     await expect(managerPage.getByText("มีผลตรวจนับเงินสด", { exact: true })).toBeVisible();
-    await managerPage.getByRole("button", { name: "เปิดผลนับ" }).click();
+    await managerPage.getByRole("button", { name: "เปิดผลตรวจนับ", exact: true }).click();
     await expect(managerPage.getByRole("heading", { name: `รายละเอียด ${receipt.reportNo}` })).toBeVisible();
     expect(detailRequestCount).toBe(1);
     await managerPage.close();
@@ -193,9 +193,13 @@ test.describe.serial("cash count aggregate contract", () => {
     expect(detailResponse.ok()).toBe(true);
     const detail = await detailResponse.json();
     expect(detail).toMatchObject({ expectedTotal: 900, differenceTotal: 100, formulaVersion: "cash-v1" });
+    expect(detail.expectedCounts).toEqual({ "1": 0, "2": 0, "5": 0, "10": 0, "20": 0, "50": 0, "100": 4, "500": 1, "1000": 0 });
+    expect(detail.differenceCounts).toEqual({ "1": 0, "2": 0, "5": 0, "10": 0, "20": 0, "50": 0, "100": -4, "500": -1, "1000": 1 });
+    expect(detail).toMatchObject({ anomalyScore: 44, confidence: 85, analysisStatus: "review" });
+    expect(detail.evidence.components).toEqual({ total: 14, denomination: 20, pattern: 10 });
+    expect(detail.evidence.limitations).toContain("จำลองรับเงินทอน 1 ครั้ง รวม 900 บาท");
     expect(detail.anomalyScore).toBeGreaterThan(0);
     expect(detail.confidence).toBeLessThan(100);
-    expect(detail.evidence.components.total).toBeGreaterThan(detail.evidence.components.denomination);
     expect(detail.evidence.highlights.length).toBeGreaterThan(0);
     expect(detail.evidence.limitations.length).toBeGreaterThan(0);
     expect(detail.evidence.limitations.some((item: string) => item.includes("เงินทอน"))).toBe(true);

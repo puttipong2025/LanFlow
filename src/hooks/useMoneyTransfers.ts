@@ -5,7 +5,7 @@ import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
 import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import {
   DASHBOARD_BRANCH_SUMMARIES_QUERY_KEY,
-  DASHBOARD_MONEY_FEED_QUERY_KEY,
+  DASHBOARD_MONEY_HISTORY_QUERY_KEY,
   DASHBOARD_SNAPSHOT_QUERY_KEY,
 } from "@/hooks/useDashboardOverview";
 
@@ -327,7 +327,7 @@ export function useMoneyTransfers(locationId: string, options: { enabled?: boole
       queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
       queryClient.invalidateQueries({ queryKey: [DASHBOARD_BRANCH_SUMMARIES_QUERY_KEY] });
       queryClient.invalidateQueries({ queryKey: [DASHBOARD_SNAPSHOT_QUERY_KEY] });
-      queryClient.invalidateQueries({ queryKey: [DASHBOARD_MONEY_FEED_QUERY_KEY] });
+      queryClient.invalidateQueries({ queryKey: [DASHBOARD_MONEY_HISTORY_QUERY_KEY] });
     },
   });
 

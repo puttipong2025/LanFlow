@@ -76,8 +76,8 @@ export function RubberExportDetailModal({
   const isDraft = details.status === "draft";
   const weightValid = isValidCurrentWeight(details.originalWeightTotal, currentWeight);
   const workTotal = useMemo(
-    () => calculateWorkTotal(currentWeight, workRate, otherCost),
-    [currentWeight, workRate, otherCost]
+    () => calculateWorkTotal(details.originalWeightTotal, workRate, otherCost),
+    [details.originalWeightTotal, workRate, otherCost]
   );
   const lossPercent = useMemo(
     () => currentWeight === null
@@ -164,6 +164,10 @@ export function RubberExportDetailModal({
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">น้ำหนักหาย</div><div className="font-bold tabular-nums">{number(lossPercent)}%</div></div>
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ยอดค่าทำงาน</div><div className="font-bold tabular-nums">฿{number(workTotal)}</div></div>
         </div>
+
+        <p className="text-xs text-ink/55">
+          ยอดค่าทำงาน = น้ำหนักสุทธิรวม × ค่าทำงาน/กก. + ค่าดำเนินการอื่น
+        </p>
 
         {currentWeight !== null && !weightValid && (
           <p className="text-sm font-semibold text-red-600">

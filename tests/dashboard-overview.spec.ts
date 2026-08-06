@@ -39,9 +39,13 @@ test.describe("Dashboard overview @dashboard", () => {
       await expect(page.getByText(label, { exact: true }).last()).toBeVisible();
     }
     await expect(page.getByText(/^สูตร:/)).toHaveCount(8);
-    await expect(page.getByRole("heading", { name: "รายการเงินล่าสุด" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "ย้อนกลับ" })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "หน้าถัดไป" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "ประวัติรายการเงินล่าสุด" })).toBeVisible();
+    for (const action of ["แสดงทั้งหมด", "เพิ่มใหม่", "แก้ไข", "ลบ"]) {
+      await expect(page.getByRole("button", { name: new RegExp(`^${action}\\s+\\d+$`) })).toBeVisible();
+    }
+    await expect(page.getByLabel("วันที่เกิดเหตุการณ์")).toBeVisible();
+    await expect(page.getByRole("button", { name: /วันที่ล่าสุด/ })).toBeDisabled();
+    await expect(page.getByRole("button", { name: /วันที่ย้อนหลัง/ })).toBeVisible();
     await expect(page.getByRole("heading", { name: /บิลยาง ·/ })).toHaveCount(0);
 
     await page.getByRole("button", { name: "ออกจากระบบ", exact: true }).click();
@@ -58,7 +62,7 @@ test.describe("Dashboard overview @dashboard", () => {
     ).toBeVisible();
     await page.getByRole("button", { name: "ตกลง", exact: true }).click();
     await expect(page.getByRole("heading", { name: /บิลยาง ·/ })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "รายการเงินล่าสุด" })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "ประวัติรายการเงินล่าสุด" })).toHaveCount(0);
     for (const label of ["ภาพรวม", "สต็อกสินค้า", "ลูกค้า", "ขนส่งและพนักงาน"]) {
       await expect(page.getByRole("button", { name: label, exact: true })).toBeDisabled();
     }
@@ -325,7 +329,7 @@ test.describe("Dashboard overview @dashboard", () => {
           weight_loss_percent: 10,
           work_rate: 2,
           other_operating_cost: 10,
-          work_total: 100,
+          work_total: 110,
           expense_destination: "branch",
           created_by_user_id: me.profile.id,
           created_by_name: me.profile.name,
@@ -394,8 +398,8 @@ test.describe("Dashboard overview @dashboard", () => {
         netWeight: 300,
         averageCostPerKg: 13.33,
       });
-      expect(firstPage.summary.netCashFlow).toBe(1410);
-      expect(firstPage.summary.operatingExpenseAccumulated).toBe(1100);
+      expect(firstPage.summary.netCashFlow).toBe(1400);
+      expect(firstPage.summary.operatingExpenseAccumulated).toBe(1110);
       expect(firstPage.summary.rubberInventoryWeight).toBe(250);
       expect(firstPage.summary.waterLoss7Days).toEqual({
         exportCount: 2,
@@ -425,6 +429,96 @@ test.describe("Dashboard overview @dashboard", () => {
         expect.arrayContaining([`${marker}-RB-1`, `${marker}-RB-2`, `${marker}-RB-3`])
       );
       expect(allRows.some((row) => row.number === `TR-${transferIds[1].slice(0, 8)}`)).toBeFalsy();
+
+      expect((await request.get(
+        `/api/lanflow/dashboard/feed?locationId=${locationId}&date=not-a-date`,
+      )).status()).toBe(400);
+      expect((await request.get(
+        `/api/lanflow/dashboard/feed?locationId=${locationId}&date=2026-02-31`,
+      )).status()).toBe(400);
+      expect((await request.get(
+        `/api/lanflow/dashboard/feed?locationId=${locationId}&date=${shiftDate(today, -15)}`,
+      )).status()).toBe(400);
+
+      const historyResponse = await request.get(
+        `/api/lanflow/dashboard/feed?locationId=${locationId}&date=${today}`,
+      );
+      expect(historyResponse.ok(), await historyResponse.text()).toBeTruthy();
+      const firstHistoryPage = await historyResponse.json() as {
+        selectedDate: string;
+        counts: { all: number; create: number; update: number; delete: number };
+        rows: Array<{ id: string; action: string }>;
+        nextCursor: string | null;
+      };
+      expect(firstHistoryPage.selectedDate).toBe(today);
+      expect(firstHistoryPage.counts).toEqual({
+        all: 18,
+        create: 18,
+        update: 0,
+        delete: 0,
+      });
+      expect(firstHistoryPage.rows).toHaveLength(10);
+      expect(firstHistoryPage.nextCursor).toBeTruthy();
+
+      const secondHistoryResponse = await request.get(
+        `/api/lanflow/dashboard/feed?locationId=${locationId}&date=${today}&cursor=${encodeURIComponent(firstHistoryPage.nextCursor!)}`,
+      );
+      expect(secondHistoryResponse.ok(), await secondHistoryResponse.text()).toBeTruthy();
+      const secondHistoryPage = await secondHistoryResponse.json() as {
+        rows: Array<{ id: string }>;
+        nextCursor: string | null;
+      };
+      expect(secondHistoryPage.rows).toHaveLength(8);
+      expect(new Set([
+        ...firstHistoryPage.rows.map((row) => row.id),
+        ...secondHistoryPage.rows.map((row) => row.id),
+      ]).size).toBe(18);
+
+      expect((await db.from("income_expense").update({ cost: 701 })
+        .eq("id", incomeExpenseIds[0])).error).toBeNull();
+      expect((await db.from("income_expense").update({ updated_at: new Date().toISOString() })
+        .eq("id", incomeExpenseIds[0])).error).toBeNull();
+      expect((await db.from("rubber_exports").update({
+        status: "deleted",
+        previous_status: "verified",
+        deleted_by_user_id: me.profile.id,
+        deleted_by_name: me.profile.name,
+        deleted_by_phone: me.profile.phone,
+        deleted_at: new Date().toISOString(),
+      }).eq("id", exportIds[0])).error).toBeNull();
+
+      const changedHistoryResponse = await request.get(
+        `/api/lanflow/dashboard/feed?locationId=${locationId}&date=${today}`,
+      );
+      expect(changedHistoryResponse.ok(), await changedHistoryResponse.text()).toBeTruthy();
+      const changedHistory = await changedHistoryResponse.json() as {
+        counts: { all: number; create: number; update: number; delete: number };
+        rows: Array<{ kind: string; number: string; action: string; amount: number }>;
+      };
+      expect(changedHistory.counts).toEqual({
+        all: 20,
+        create: 18,
+        update: 1,
+        delete: 1,
+      });
+      expect(changedHistory.rows).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: "rubber_export", action: "delete", amount: 110 }),
+        expect.objectContaining({ number: `${marker}-IE-1`, action: "update", amount: 701 }),
+      ]));
+
+      const deleteOnlyResponse = await request.get(
+        `/api/lanflow/dashboard/feed?locationId=${locationId}&date=${today}&action=delete`,
+      );
+      expect(deleteOnlyResponse.ok(), await deleteOnlyResponse.text()).toBeTruthy();
+      const deleteOnly = await deleteOnlyResponse.json() as {
+        counts: { all: number; delete: number };
+        rows: Array<{ action: string; kind: string }>;
+      };
+      expect(deleteOnly.counts.all).toBe(20);
+      expect(deleteOnly.counts.delete).toBe(1);
+      expect(deleteOnly.rows).toEqual([
+        expect.objectContaining({ action: "delete", kind: "rubber_export" }),
+      ]);
     } finally {
       await db.from("rubber_exports").delete().in("id", exportIds);
       await db.from("report_items").delete().eq("id", reportItemId);

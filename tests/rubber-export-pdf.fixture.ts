@@ -28,7 +28,7 @@ export function rubberExportDetails(
     weightLossPercent: 2.640264,
     workRate: 1.5,
     otherOperatingCost: 120,
-    workTotal: 562.5,
+    workTotal: 574.5,
     expenseDestination: "branch",
     createdByName: "ผู้สร้างทดสอบ",
     createdAt: "2026-07-29T08:04:00.000Z",

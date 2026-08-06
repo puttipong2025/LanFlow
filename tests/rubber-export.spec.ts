@@ -93,7 +93,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
           current_weight: 90,
           weight_loss_percent: 10,
           work_rate: 1,
-          work_total: 90,
+          work_total: 100,
           expense_destination: "external",
           created_by_user_id: me.id,
           created_by_name: me.name,
@@ -340,7 +340,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       expect(await afterRejectedVerify.json()).toMatchObject({
         status: "draft",
         currentWeight: 500,
-        workTotal: 1100,
+        workTotal: 1180,
       });
       const verified = await superAdmin.request.post(`/api/lanflow/rubber-exports/${created.id}/verify`, {
         data: {
@@ -446,7 +446,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       expect(feed.rows).toContainEqual(expect.objectContaining({
         relationSourceType: "rubber_export",
         relationSourceId: created.id,
-        cost: 1100,
+        cost: 1180,
         title: `ค่าทำงานส่งออกยาง — ${created.exportNo}`,
       }));
       expect(feed.rows.some((row) => row.relationSourceId === externalExport.id)).toBeFalsy();
@@ -465,7 +465,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       };
       expect(reportDetails.incomeExpense).toContainEqual(expect.objectContaining({
         number: created.exportNo,
-        amount: 1100,
+        amount: 1180,
       }));
       const { data: expenseReportBalance, error: expenseReportBalanceError } = await db
         .from("report_batches")
@@ -477,7 +477,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       expect(
         Number(expenseReportBalance?.closing_balance)
           - Number(expenseReportBalance?.opening_balance)
-      ).toBe(-1100);
+      ).toBe(-1180);
 
       const lockedExportDelete = await superAdmin.request.delete(`/api/lanflow/rubber-exports/${created.id}`);
       expect(lockedExportDelete.status()).toBe(409);
@@ -509,7 +509,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
         status: "deleted",
         previousStatus: "verified",
         currentWeight: 500,
-        workTotal: 1100,
+        workTotal: 1180,
       });
       expect(deletedVerifiedDetails).not.toHaveProperty("createdByPhone");
       expect(deletedVerifiedDetails).not.toHaveProperty("verifiedByPhone");

@@ -277,7 +277,15 @@ test.describe("Dashboard immediate refresh UI", () => {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ rows: [], nextCursor: null }),
+        body: JSON.stringify({
+          selectedDate: "2026-08-02",
+          availableFrom: "2026-07-19",
+          availableTo: "2026-08-02",
+          counts: { all: 0, create: 0, update: 0, delete: 0 },
+          latestAt: null,
+          rows: [],
+          nextCursor: null,
+        }),
       }),
     );
     await page.route("**/api/lanflow/dashboard/snapshot**", (route) => {
@@ -344,7 +352,15 @@ test.describe("Dashboard immediate refresh UI", () => {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ rows: [], nextCursor: null }),
+        body: JSON.stringify({
+          selectedDate: "2026-08-02",
+          availableFrom: "2026-07-19",
+          availableTo: "2026-08-02",
+          counts: { all: 0, create: 0, update: 0, delete: 0 },
+          latestAt: null,
+          rows: [],
+          nextCursor: null,
+        }),
       }),
     );
     await page.route("**/api/lanflow/dashboard/snapshot**", (route) =>
@@ -397,7 +413,15 @@ test.describe("Dashboard immediate refresh UI", () => {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ rows: [], nextCursor: null }),
+        body: JSON.stringify({
+          selectedDate: "2026-08-02",
+          availableFrom: "2026-07-19",
+          availableTo: "2026-08-02",
+          counts: { all: 0, create: 0, update: 0, delete: 0 },
+          latestAt: null,
+          rows: [],
+          nextCursor: null,
+        }),
       }),
     );
     await page.route("**/api/lanflow/dashboard/snapshot**", (route) =>

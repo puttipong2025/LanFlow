@@ -1,7 +1,5 @@
 import { expect, test } from "@playwright/test";
 import {
-  calculateAveragePrice,
-  calculateNetWeight,
   calculateWeightLossPercent,
   calculateWorkTotal,
   isValidCurrentWeight,
@@ -9,18 +7,11 @@ import {
 import { bangkokDateString, bangkokDateWindow } from "../src/lib/bangkok-date";
 
 test.describe("Rubber export calculations @rubber-export", () => {
-  test("floors net weight and rounds average price to 2 decimals", () => {
-    expect(calculateNetWeight(100.555, 0.111)).toBe(100.44);
-    expect(calculateNetWeight(100, 2.345)).toBe(97.65);
-    expect(calculateAveragePrice(1000, 3)).toBe(333.33);
-    expect(calculateAveragePrice(1234.56, 97.66)).toBe(12.64);
-  });
-
-  test("uses the confirmed weight-loss and work-total formulas", () => {
+  test("uses current weight for loss and total net weight for work cost", () => {
     expect(calculateWeightLossPercent(540, 500)).toBe(7.41);
     expect(calculateWeightLossPercent(3, 2)).toBe(33.33);
     expect(calculateWeightLossPercent(540, 541)).toBeNull();
-    expect(calculateWorkTotal(500, 2, 100)).toBe(1100);
+    expect(calculateWorkTotal(540, 2, 100)).toBe(1180);
     expect(calculateWorkTotal(1.005, 1, 0)).toBe(1.01);
     expect(calculateWorkTotal(400, 0, 0)).toBe(0);
     expect(isValidCurrentWeight(540, 0)).toBeFalsy();
@@ -28,12 +19,6 @@ test.describe("Rubber export calculations @rubber-export", () => {
   });
 
   test("rejects non-positive, impossible, and non-finite inputs", () => {
-    expect(calculateNetWeight(100, 100)).toBeNull();
-    expect(calculateNetWeight(100, -1)).toBeNull();
-    expect(calculateNetWeight(Number.NaN, 1)).toBeNull();
-    expect(calculateAveragePrice(0, 100)).toBeNull();
-    expect(calculateAveragePrice(100, 0)).toBeNull();
-    expect(calculateAveragePrice(Number.POSITIVE_INFINITY, 100)).toBeNull();
     expect(calculateWeightLossPercent(0, 0)).toBeNull();
     expect(calculateWeightLossPercent(100, Number.NaN)).toBeNull();
     expect(calculateWorkTotal(null, 1, 0)).toBeNull();

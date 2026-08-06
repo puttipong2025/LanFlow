@@ -6,12 +6,13 @@ import { toast } from "sonner";
 import type { Location } from "@/types";
 import type {
   DashboardManagerConfig,
+  DashboardMoneyHistoryAction,
+  DashboardMoneyHistoryRow,
   DashboardRefreshRequest,
-  DashboardRow,
 } from "@/types/dashboard";
 import { formatCurrency, formatNumber } from "@/lib/format";
 import {
-  useDashboardMoneyFeed,
+  useDashboardMoneyHistory,
   useDashboardSnapshot,
 } from "@/hooks/useDashboardOverview";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
@@ -39,9 +40,25 @@ function perKg(value: number | null) {
   return value == null ? "ไม่มีข้อมูล" : `${formatNumber(value)} บาท/กก.`;
 }
 
-function rowKind(row: DashboardRow) {
+function rowKind(row: DashboardMoneyHistoryRow) {
   return KIND_LABELS[row.kind] ?? (row.direction === "income" ? "รายรับ" : "รายจ่าย");
 }
+
+const ACTION_LABELS: Record<Exclude<DashboardMoneyHistoryAction, "all">, string> = {
+  create: "เพิ่มใหม่",
+  update: "แก้ไข",
+  delete: "ลบ",
+};
+
+const ACTION_FILTERS: Array<{
+  value: DashboardMoneyHistoryAction;
+  label: string;
+}> = [
+  { value: "all", label: "แสดงทั้งหมด" },
+  { value: "create", label: "เพิ่มใหม่" },
+  { value: "update", label: "แก้ไข" },
+  { value: "delete", label: "ลบ" },
+];
 
 export function Dashboard({
   selectedLocation,
@@ -55,6 +72,9 @@ export function Dashboard({
   canRequestDashboardRefresh: boolean;
 }) {
   const [cursorHistory, setCursorHistory] = useState<Array<string | null>>([null]);
+  const [historyDate, setHistoryDate] = useState<string | null>(null);
+  const [historyAction, setHistoryAction] =
+    useState<DashboardMoneyHistoryAction>("all");
   const [managerConfig, setManagerConfig] =
     useState<DashboardManagerConfig | null>(null);
   const [managerBusy, setManagerBusy] = useState<"save" | "refresh" | null>(
@@ -79,10 +99,18 @@ export function Dashboard({
     online,
     requestedVersion,
   );
-  const feed = useDashboardMoneyFeed(selectedLocation.id, online, cursor);
+  const history = useDashboardMoneyHistory(
+    selectedLocation.id,
+    online,
+    historyDate,
+    historyAction,
+    cursor,
+  );
 
   useEffect(() => {
     setCursorHistory([null]);
+    setHistoryDate(null);
+    setHistoryAction("all");
     setManualRequest(null);
     setManualLongRunning(false);
     setManualRefreshError(null);
@@ -348,9 +376,8 @@ export function Dashboard({
   }
 
   const summary = snapshot.data.summary;
-  const rows = feed.data?.rows ?? [];
-  const nextCursor = feed.data?.nextCursor ?? null;
-  const visibleRows = feed.isPlaceholderData ? [] : rows;
+  const nextCursor = history.data?.nextCursor ?? null;
+  const visibleRows = history.isPlaceholderData ? [] : history.data?.rows ?? [];
   if (!summary) {
     return (
       <div className="space-y-5">
@@ -468,36 +495,95 @@ export function Dashboard({
       <section className="rounded-xl border border-mint/80 bg-white p-4 shadow-panel">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="text-lg font-bold text-ink">รายการเงินล่าสุด</h2>
-            <p className="text-sm text-ink/50">หน้า {cursorHistory.length} · 10 รายการต่อหน้า</p>
+            <h2 className="text-lg font-bold text-ink">ประวัติรายการเงินล่าสุด</h2>
+            <p className="text-sm text-ink/50">
+              หน้า {cursorHistory.length} · 10 เหตุการณ์ต่อหน้า · เก็บย้อนหลัง 15 วัน
+            </p>
           </div>
-          {feed.isFetching && <span className="text-xs font-semibold text-ink/50">กำลังโหลด...</span>}
+          <label className="text-sm font-semibold text-ink/70">
+            วันที่เกิดเหตุการณ์
+            <input
+              type="date"
+              value={historyDate ?? history.data?.selectedDate ?? ""}
+              min={history.data?.availableFrom}
+              max={history.data?.availableTo}
+              onChange={(event) => {
+                setHistoryDate(event.target.value || null);
+                setCursorHistory([null]);
+              }}
+              className="focus-ring ml-2 h-9 rounded-md border border-black/15 bg-white px-2 text-sm text-ink"
+            />
+          </label>
+        </div>
+
+        <div className="mb-4 flex flex-wrap items-center gap-2" aria-label="กรอง action รายการเงิน">
+          {ACTION_FILTERS.map((filter) => {
+            const active = historyAction === filter.value;
+            return (
+              <button
+                key={filter.value}
+                type="button"
+                aria-pressed={active}
+                onClick={() => {
+                  setHistoryAction(filter.value);
+                  setCursorHistory([null]);
+                }}
+                className={`focus-ring inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-semibold transition-colors ${
+                  active
+                    ? "bg-actionSecondary text-white hover:bg-actionSecondary/90"
+                    : "border border-actionSecondary/20 bg-white text-actionSecondary hover:bg-field"
+                }`}
+              >
+                {filter.label}
+                <span
+                  className={`min-w-6 rounded-full px-1.5 py-0.5 text-center text-xs ${
+                    active ? "bg-white/20 text-white" : "bg-field text-ink/70"
+                  }`}
+                >
+                  {history.data?.counts[filter.value] ?? 0}
+                </span>
+              </button>
+            );
+          })}
+          {history.isFetching && (
+            <span role="status" className="text-xs font-semibold text-ink/50">
+              กำลังโหลด...
+            </span>
+          )}
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[900px] border-collapse text-sm">
+          <table className="w-full min-w-[1040px] border-collapse text-sm">
             <thead>
               <tr className="border-b border-black/10 text-left text-ink/60">
                 <th className="py-2 pr-3">วันเวลา</th>
+                <th className="pr-3">Action</th>
                 <th className="pr-3">ประเภท</th>
                 <th className="pr-3">เลขรายการ</th>
                 <th className="pr-3">รายละเอียด</th>
                 <th className="pr-3 text-right">จำนวนเงิน</th>
-                <th>ผู้บันทึก</th>
+                <th>ผู้ดำเนินการ</th>
               </tr>
             </thead>
             <tbody>
-              {feed.isLoading || feed.isPlaceholderData ? (
+              {history.isLoading || history.isPlaceholderData ? (
                 <tr>
-                  <td colSpan={6} className="py-8 text-center text-ink/50">กำลังโหลดรายการ...</td>
+                  <td colSpan={7} className="py-8 text-center text-ink/50">กำลังโหลดรายการ...</td>
                 </tr>
               ) : visibleRows.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-8 text-center text-ink/50">ยังไม่มีรายการเงิน</td>
+                  <td colSpan={7} className="py-8 text-center text-ink/50">
+                    ยังไม่มีเหตุการณ์เงินในวันที่เลือก
+                  </td>
                 </tr>
               ) : visibleRows.map((row) => (
                 <tr key={row.id} className="border-b border-black/5">
                   <td className="whitespace-nowrap py-3 pr-3">{formatOccurredAt(row.occurredAt)}</td>
+                  <td className="pr-3">
+                    <span className="rounded-full bg-actionSecondary/10 px-2 py-1 text-xs font-semibold text-actionSecondary">
+                      {ACTION_LABELS[row.action]}
+                    </span>
+                  </td>
                   <td className="pr-3">
                     <span className="rounded-full bg-field px-2 py-1 text-xs font-semibold">
                       {rowKind(row)}
@@ -508,29 +594,31 @@ export function Dashboard({
                   <td className={`whitespace-nowrap pr-3 text-right font-semibold ${row.direction === "income" ? "text-leaf" : "text-clay"}`}>
                     {row.direction === "income" ? "+" : "-"}{formatCurrency(row.amount)}
                   </td>
-                  <td className="whitespace-nowrap">{row.createdByName || "ระบบ"}</td>
+                  <td className="whitespace-nowrap">{row.actorName || "ระบบ"}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
 
-        <div className="mt-4 flex justify-end gap-2">
+        <div className="mt-4 flex flex-wrap justify-end gap-2">
           <button
             type="button"
-            disabled={cursorHistory.length === 1 || feed.isFetching}
-            onClick={() => setCursorHistory((history) => history.slice(0, -1))}
+            disabled={cursorHistory.length === 1 || history.isFetching}
+            onClick={() => setCursorHistory([null])}
             className="focus-ring rounded-lg border border-actionSecondary/25 bg-white px-3 py-2 text-sm font-semibold text-actionSecondary hover:bg-field disabled:cursor-not-allowed disabled:opacity-40"
           >
-            ย้อนกลับ
+            วันที่ล่าสุด · {history.data?.latestAt ? formatOccurredAt(history.data.latestAt) : "—"}
           </button>
           <button
             type="button"
-            disabled={!nextCursor || feed.isFetching}
+            disabled={!nextCursor || history.isFetching}
             onClick={() => nextCursor && setCursorHistory((history) => [...history, nextCursor])}
             className="focus-ring rounded-lg bg-actionSecondary px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            หน้าถัดไป
+            วันที่ย้อนหลัง · ก่อน {visibleRows.length > 0
+              ? formatOccurredAt(visibleRows[visibleRows.length - 1].occurredAt)
+              : "—"}
           </button>
         </div>
       </section>

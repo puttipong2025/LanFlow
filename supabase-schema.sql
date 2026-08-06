@@ -171,6 +171,54 @@ $$;
 ALTER FUNCTION "private"."active_transfer_report_no"("p_transfer_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."append_dashboard_money_event"("p_source_type" "text", "p_source_id" "uuid", "p_action" "text", "p_payload" "jsonb", "p_actor_user_id" "uuid" DEFAULT NULL::"uuid", "p_actor_name" "text" DEFAULT NULL::"text") RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_actor_id uuid := coalesce(auth.uid(), p_actor_user_id, nullif(p_payload->>'actorUserId', '')::uuid);
+  v_actor_name text;
+  v_occurred_at timestamptz := clock_timestamp();
+begin
+  if v_actor_id is not null then
+    select name into v_actor_name
+    from public.profiles
+    where id = v_actor_id;
+  end if;
+
+  v_actor_name := coalesce(
+    nullif(v_actor_name, ''),
+    nullif(p_actor_name, ''),
+    nullif(p_payload->>'actorName', ''),
+    'ระบบ'
+  );
+
+  insert into public.dashboard_money_events (
+    location_id, source_type, source_id, event_key, action, kind, number,
+    title, direction, amount, actor_user_id, actor_name, occurred_at, event_date
+  ) values (
+    (p_payload->>'locationId')::uuid,
+    p_source_type,
+    p_source_id,
+    p_payload->>'eventKey',
+    p_action,
+    p_payload->>'kind',
+    p_payload->>'number',
+    p_payload->>'title',
+    p_payload->>'direction',
+    (p_payload->>'amount')::numeric,
+    v_actor_id,
+    v_actor_name,
+    v_occurred_at,
+    (v_occurred_at at time zone 'Asia/Bangkok')::date
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "private"."append_dashboard_money_event"("p_source_type" "text", "p_source_id" "uuid", "p_action" "text", "p_payload" "jsonb", "p_actor_user_id" "uuid", "p_actor_name" "text") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."apply_time_tracking_deductions"("p_profile_id" "uuid", "p_through_month" "date") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -977,6 +1025,150 @@ $$;
 ALTER FUNCTION "private"."can_view_profile"("target_user" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."capture_dashboard_money_source"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_source_type text;
+  v_source_id uuid;
+  v_actor_user_id uuid;
+  v_actor_name text;
+  v_new jsonb := case when tg_op = 'DELETE' then '{}'::jsonb else to_jsonb(new) end;
+  v_old jsonb := case when tg_op = 'INSERT' then '{}'::jsonb else to_jsonb(old) end;
+begin
+  if tg_table_name = 'income_expense' then
+    v_source_type := 'income_expense';
+    v_source_id := coalesce(v_new->>'id', v_old->>'id')::uuid;
+    if tg_op = 'UPDATE' and v_new->>'record_status' = 'deleted' then
+      v_actor_name := v_new->>'deleted_by_name';
+    else
+      v_actor_user_id := coalesce(
+        nullif(v_new->>'created_by_user_id', '')::uuid,
+        nullif(v_old->>'created_by_user_id', '')::uuid
+      );
+      v_actor_name := coalesce(v_new->>'created_by_name', v_old->>'created_by_name');
+    end if;
+  elsif tg_table_name = 'income_expense_sale_lines' then
+    v_source_type := 'income_expense';
+    v_source_id := coalesce(
+      v_new->>'income_expense_id', v_old->>'income_expense_id'
+    )::uuid;
+  elsif tg_table_name = 'rubber_bills' then
+    v_source_type := 'rubber_bill';
+    v_source_id := coalesce(v_new->>'id', v_old->>'id')::uuid;
+    if tg_op = 'UPDATE' and v_new->>'record_status' = 'deleted' then
+      v_actor_name := v_new->>'deleted_by_name';
+    else
+      v_actor_user_id := coalesce(
+        nullif(v_new->>'created_by_user_id', '')::uuid,
+        nullif(v_old->>'created_by_user_id', '')::uuid
+      );
+      v_actor_name := coalesce(v_new->>'created_by_name', v_old->>'created_by_name');
+    end if;
+  elsif tg_table_name = 'rubber_bill_items' then
+    v_source_type := 'rubber_bill';
+    v_source_id := coalesce(v_new->>'bill_id', v_old->>'bill_id')::uuid;
+  elsif tg_table_name = 'money_transfers' then
+    v_source_id := coalesce(v_new->>'id', v_old->>'id')::uuid;
+    v_actor_user_id := coalesce(
+      nullif(v_new->>'created_by_user_id', '')::uuid,
+      nullif(v_old->>'created_by_user_id', '')::uuid
+    );
+    v_actor_name := case
+      when tg_op = 'UPDATE' and v_new->>'record_status' = 'deleted'
+        then v_new->>'deleted_by_name'
+      else coalesce(v_new->>'created_by_name', v_old->>'created_by_name')
+    end;
+    perform private.reconcile_dashboard_money_source(
+      'money_transfer', v_source_id, v_actor_user_id, v_actor_name
+    );
+    perform private.reconcile_dashboard_money_source(
+      'cash_transfer', v_source_id, v_actor_user_id, v_actor_name
+    );
+    if tg_op = 'DELETE' then return old; end if;
+    return new;
+  elsif tg_table_name = 'money_transfer_cash_details' then
+    v_source_type := 'cash_transfer';
+    v_source_id := coalesce(v_new->>'transfer_id', v_old->>'transfer_id')::uuid;
+    v_actor_user_id := coalesce(
+      nullif(v_new->>'received_by_user_id', '')::uuid,
+      nullif(v_old->>'received_by_user_id', '')::uuid
+    );
+    v_actor_name := coalesce(v_new->>'received_by_name', v_old->>'received_by_name');
+  elsif tg_table_name = 'financial_transactions' then
+    v_source_type := 'withdrawal';
+    v_source_id := coalesce(v_new->>'id', v_old->>'id')::uuid;
+    v_actor_user_id := case
+      when tg_op = 'UPDATE' and v_new->>'cancelled_at' is not null
+        then nullif(v_new->>'cancelled_by', '')::uuid
+      else coalesce(
+        nullif(v_new->>'approved_by', '')::uuid,
+        nullif(v_old->>'approved_by', '')::uuid
+      )
+    end;
+  elsif tg_table_name = 'payroll_slips' then
+    v_source_type := 'payroll_slip';
+    v_source_id := coalesce(v_new->>'id', v_old->>'id')::uuid;
+    v_actor_user_id := case
+      when tg_op = 'UPDATE' and v_new->>'cancelled_at' is not null
+        then nullif(v_new->>'cancelled_by', '')::uuid
+      else coalesce(
+        nullif(v_new->>'approved_by', '')::uuid,
+        nullif(v_old->>'approved_by', '')::uuid,
+        nullif(v_new->>'created_by', '')::uuid,
+        nullif(v_old->>'created_by', '')::uuid
+      )
+    end;
+  elsif tg_table_name = 'ocr_tickets' then
+    v_source_type := 'ocr_ticket';
+    v_source_id := coalesce(v_new->>'id', v_old->>'id')::uuid;
+    if tg_op = 'UPDATE' and v_new->>'record_status' = 'deleted' then
+      v_actor_name := v_new->>'deleted_by_name';
+    else
+      v_actor_user_id := coalesce(
+        nullif(v_new->>'created_by_user_id', '')::uuid,
+        nullif(v_old->>'created_by_user_id', '')::uuid
+      );
+      v_actor_name := coalesce(v_new->>'created_by_name', v_old->>'created_by_name');
+    end if;
+  elsif tg_table_name = 'rubber_exports' then
+    v_source_type := 'rubber_export';
+    v_source_id := coalesce(v_new->>'id', v_old->>'id')::uuid;
+    if (tg_op = 'DELETE') or (tg_op = 'UPDATE' and v_new->>'deleted_at' is not null) then
+      v_actor_user_id := coalesce(
+        nullif(v_new->>'deleted_by_user_id', '')::uuid,
+        nullif(v_old->>'deleted_by_user_id', '')::uuid
+      );
+      v_actor_name := coalesce(v_new->>'deleted_by_name', v_old->>'deleted_by_name');
+    else
+      v_actor_user_id := coalesce(
+        nullif(v_new->>'verified_by_user_id', '')::uuid,
+        nullif(v_old->>'verified_by_user_id', '')::uuid,
+        nullif(v_new->>'created_by_user_id', '')::uuid,
+        nullif(v_old->>'created_by_user_id', '')::uuid
+      );
+      v_actor_name := coalesce(
+        v_new->>'verified_by_name', v_old->>'verified_by_name',
+        v_new->>'created_by_name', v_old->>'created_by_name'
+      );
+    end if;
+  else
+    raise exception 'Unsupported money event source table: %', tg_table_name;
+  end if;
+
+  perform private.reconcile_dashboard_money_source(
+    v_source_type, v_source_id, v_actor_user_id, v_actor_name
+  );
+  if tg_op = 'DELETE' then return old; end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."capture_dashboard_money_source"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."cash_array_to_json"("p_counts" bigint[]) RETURNS "jsonb"
     LANGUAGE "sql" IMMUTABLE
     SET "search_path" TO 'public', 'private'
@@ -1000,7 +1192,6 @@ declare
   v_denoms constant bigint[] := array[1000,500,100,50,20,10,5,2,1];
   v_counts bigint[] := array_fill(0::bigint, array[9]);
   v_remaining bigint := p_amount;
-  v_i integer;
 begin
   if p_amount < 0 then return null; end if;
   for v_i in 1..9 loop
@@ -1174,11 +1365,9 @@ CREATE OR REPLACE FUNCTION "private"."cash_exact_take"("p_available" bigint[], "
 declare
   v_denoms constant bigint[] := array[1000,500,100,50,20,10,5,2,1];
   v_result bigint[];
-  v_take bigint;
   v_max_take bigint;
   v_min_take bigint;
   v_suffix_total bigint := 0;
-  v_i integer;
   v_attempts integer := 0;
 begin
   if p_target < 0 or p_position > 9 then return null; end if;
@@ -1958,6 +2147,451 @@ $$;
 
 
 ALTER FUNCTION "private"."dashboard_dirty_rubber_bill_items"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."dashboard_money_event_entry"("p_event_key" "text", "p_location_id" "uuid", "p_kind" "text", "p_number" "text", "p_title" "text", "p_direction" "text", "p_amount" numeric, "p_fingerprint" "jsonb", "p_actor_user_id" "uuid" DEFAULT NULL::"uuid", "p_actor_name" "text" DEFAULT NULL::"text") RETURNS "jsonb"
+    LANGUAGE "sql" IMMUTABLE
+    SET "search_path" TO ''
+    AS $$
+  select jsonb_build_object(
+    'eventKey', p_event_key,
+    'locationId', p_location_id,
+    'kind', p_kind,
+    'number', coalesce(nullif(p_number, ''), '—'),
+    'title', coalesce(nullif(p_title, ''), 'ไม่ระบุรายละเอียด'),
+    'direction', p_direction,
+    'amount', greatest(coalesce(p_amount, 0), 0),
+    'fingerprint', md5(coalesce(p_fingerprint, '{}'::jsonb)::text),
+    'actorUserId', p_actor_user_id,
+    'actorName', p_actor_name
+  );
+$$;
+
+
+ALTER FUNCTION "private"."dashboard_money_event_entry"("p_event_key" "text", "p_location_id" "uuid", "p_kind" "text", "p_number" "text", "p_title" "text", "p_direction" "text", "p_amount" numeric, "p_fingerprint" "jsonb", "p_actor_user_id" "uuid", "p_actor_name" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."dashboard_money_source_entries"("p_source_type" "text", "p_source_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_entries jsonb := '[]'::jsonb;
+  v_row record;
+  v_children jsonb := '[]'::jsonb;
+begin
+  if p_source_type = 'income_expense' then
+    select * into v_row
+    from public.income_expense
+    where id = p_source_id;
+
+    if not found or v_row.record_status <> 'active' or v_row.cost <= 0 then
+      return v_entries;
+    end if;
+
+    select coalesce(jsonb_agg(
+      jsonb_build_object(
+        'id', line.id,
+        'incomeSaleItemId', line.income_sale_item_id,
+        'stockProductId', line.stock_product_id,
+        'title', line.title,
+        'quantity', line.quantity,
+        'unitPrice', line.unit_price,
+        'lineTotal', line.line_total,
+        'sequenceNo', line.sequence_no
+      ) order by line.sequence_no, line.id
+    ), '[]'::jsonb)
+    into v_children
+    from public.income_expense_sale_lines line
+    where line.income_expense_id = p_source_id;
+
+    return jsonb_build_array(private.dashboard_money_event_entry(
+      'income-expense:' || v_row.id::text,
+      v_row.location_id,
+      v_row.type::text,
+      coalesce(v_row.number, v_row.server_bill_no, v_row.local_bill_no, left(v_row.id::text, 8)),
+      v_row.title,
+      v_row.type::text,
+      v_row.cost,
+      jsonb_build_object(
+        'type', v_row.type,
+        'number', v_row.number,
+        'serverBillNo', v_row.server_bill_no,
+        'localBillNo', v_row.local_bill_no,
+        'txDate', v_row.tx_date,
+        'title', v_row.title,
+        'cost', v_row.cost,
+        'billOption', v_row.bill_option,
+        'unit', v_row.unit,
+        'price', v_row.price,
+        'saleLines', v_children
+      ),
+      v_row.created_by_user_id,
+      v_row.created_by_name
+    ));
+  elsif p_source_type = 'rubber_bill' then
+    select * into v_row
+    from public.rubber_bills
+    where id = p_source_id;
+
+    if not found or not private.rubber_bill_is_payable(p_source_id) then
+      return v_entries;
+    end if;
+
+    select coalesce(jsonb_agg(
+      jsonb_build_object(
+        'id', item.id,
+        'type', item.item_type,
+        'description', item.description,
+        'weightIn', item.weight_in,
+        'weightOut', item.weight_out,
+        'netWeight', item.net_weight,
+        'quantity', item.quantity,
+        'unit', item.unit,
+        'price', item.price,
+        'total', item.total,
+        'stockProductId', item.stock_product_id,
+        'sequenceNo', item.sequence_no
+      ) order by item.sequence_no, item.id
+    ), '[]'::jsonb)
+    into v_children
+    from public.rubber_bill_items item
+    where item.bill_id = p_source_id;
+
+    return jsonb_build_array(private.dashboard_money_event_entry(
+      'rubber-bill:' || v_row.id::text,
+      v_row.location_id,
+      'rubber_bill',
+      coalesce(v_row.server_bill_no, nullif(v_row.local_bill_no, ''), nullif(v_row.bill_no, ''), left(v_row.id::text, 8)),
+      'รับซื้อยาง — ' || coalesce(nullif(v_row.customer_name, ''), 'ไม่ระบุลูกค้า'),
+      'expense',
+      v_row.net_total,
+      jsonb_build_object(
+        'serverBillNo', v_row.server_bill_no,
+        'localBillNo', v_row.local_bill_no,
+        'billNo', v_row.bill_no,
+        'billDate', v_row.bill_date,
+        'customerId', v_row.customer_id,
+        'customerName', v_row.customer_name,
+        'billType', v_row.bill_type,
+        'deductWeight', v_row.deduct_weight,
+        'weight', v_row.weight,
+        'netWeight', v_row.net_weight,
+        'averagePrice', v_row.average_price,
+        'deductionTotal', v_row.deduction_total,
+        'netTotal', v_row.net_total,
+        'items', v_children
+      ),
+      v_row.created_by_user_id,
+      v_row.created_by_name
+    ));
+  elsif p_source_type = 'money_transfer' then
+    select coalesce(jsonb_agg(entry order by entry->>'eventKey'), '[]'::jsonb)
+    into v_entries
+    from (
+      select private.dashboard_money_event_entry(
+        'branch-transfer-in:' || mt.id::text,
+        mt.target_location_id,
+        'transfer_in',
+        'TR-' || left(mt.id::text, 8),
+        'รับโอนเงินเข้าสาขา',
+        'income',
+        mt.net_amount_to_pay,
+        jsonb_build_object(
+          'transferType', mt.transfer_type,
+          'transferMethod', mt.transfer_method,
+          'transferStatus', mt.transfer_status,
+          'amount', mt.net_amount_to_pay,
+          'sourceLocationId', mt.location_id,
+          'targetLocationId', mt.target_location_id,
+          'targetLocationName', mt.target_location_name
+        ),
+        mt.created_by_user_id,
+        mt.created_by_name
+      ) as entry
+      from public.money_transfers mt
+      where mt.id = p_source_id
+        and mt.transfer_type = 'branch'
+        and coalesce(mt.transfer_method, 'bank') <> 'cash'
+        and mt.record_status <> 'deleted'
+        and mt.transfer_status in ('paid', 'overpaid', 'branch_and_transfer')
+        and mt.net_amount_to_pay > 0
+
+      union all
+
+      select private.dashboard_money_event_entry(
+        'branch-transfer-out:' || mt.id::text,
+        mt.location_id,
+        'transfer_out',
+        'TR-' || left(mt.id::text, 8),
+        'โยกเงินไป ' || coalesce(mt.target_location_name, 'สาขาปลายทาง'),
+        'expense',
+        mt.net_amount_to_pay,
+        jsonb_build_object(
+          'transferType', mt.transfer_type,
+          'transferMethod', mt.transfer_method,
+          'transferStatus', mt.transfer_status,
+          'amount', mt.net_amount_to_pay,
+          'sourceLocationId', mt.location_id,
+          'targetLocationId', mt.target_location_id,
+          'targetLocationName', mt.target_location_name
+        ),
+        mt.created_by_user_id,
+        mt.created_by_name
+      ) as entry
+      from public.money_transfers mt
+      where mt.id = p_source_id
+        and mt.transfer_type = 'branch'
+        and coalesce(mt.transfer_method, 'bank') <> 'cash'
+        and mt.location_id <> mt.target_location_id
+        and mt.record_status <> 'deleted'
+        and mt.transfer_status in ('paid', 'overpaid', 'branch_and_transfer')
+        and mt.net_amount_to_pay > 0
+
+      union all
+
+      select private.dashboard_money_event_entry(
+        'customer-branch-paid:' || mt.id::text,
+        mt.location_id,
+        'transfer_out',
+        'CT-' || left(mt.id::text, 8),
+        'สาขาจ่ายส่วนต่างให้ ' || coalesce(mt.customer_name, 'ลูกค้า'),
+        'expense',
+        mt.branch_paid_amount,
+        jsonb_build_object(
+          'transferType', mt.transfer_type,
+          'transferMethod', mt.transfer_method,
+          'transferStatus', mt.transfer_status,
+          'branchPaidAmount', mt.branch_paid_amount,
+          'customerId', mt.customer_id,
+          'customerName', mt.customer_name,
+          'locationId', mt.location_id
+        ),
+        mt.created_by_user_id,
+        mt.created_by_name
+      ) as entry
+      from public.money_transfers mt
+      where mt.id = p_source_id
+        and mt.transfer_type = 'customer'
+        and mt.transfer_status = 'branch_and_transfer'
+        and mt.record_status <> 'deleted'
+        and mt.branch_paid_amount > 0
+    ) candidates;
+
+    return v_entries;
+  elsif p_source_type = 'cash_transfer' then
+    select coalesce(jsonb_agg(entry order by entry->>'eventKey'), '[]'::jsonb)
+    into v_entries
+    from (
+      select private.dashboard_money_event_entry(
+        'cash-transfer-out:' || mt.id::text,
+        mt.location_id,
+        'transfer_out',
+        'CASH-' || left(mt.id::text, 8),
+        'โยกเงินสดไป ' || coalesce(mt.target_location_name, 'สาขาปลายทาง'),
+        'expense',
+        d.sent_total,
+        jsonb_build_object(
+          'parent', to_jsonb(mt) - array[
+            'sync_status', 'revision_no', 'client_recorded_at', 'server_received_at',
+            'created_at', 'updated_at', 'deleted_at', 'deleted_by_name', 'deleted_by_phone'
+          ],
+          'cash', to_jsonb(d) - array['created_at', 'updated_at']
+        ),
+        mt.created_by_user_id,
+        mt.created_by_name
+      ) as entry
+      from public.money_transfers mt
+      join public.money_transfer_cash_details d on d.transfer_id = mt.id
+      where mt.id = p_source_id
+        and mt.transfer_type = 'cash'
+        and mt.transfer_method = 'cash'
+        and mt.record_status <> 'deleted'
+        and d.sent_total > 0
+
+      union all
+
+      select private.dashboard_money_event_entry(
+        'cash-transfer-in:' || mt.id::text,
+        mt.target_location_id,
+        'transfer_in',
+        'CASH-' || left(mt.id::text, 8),
+        'รับโอนเงินสดเข้าสาขา',
+        'income',
+        d.received_total,
+        jsonb_build_object(
+          'parent', to_jsonb(mt) - array[
+            'sync_status', 'revision_no', 'client_recorded_at', 'server_received_at',
+            'created_at', 'updated_at', 'deleted_at', 'deleted_by_name', 'deleted_by_phone'
+          ],
+          'cash', to_jsonb(d) - array['created_at', 'updated_at']
+        ),
+        coalesce(d.received_by_user_id, mt.created_by_user_id),
+        coalesce(d.received_by_name, mt.created_by_name)
+      ) as entry
+      from public.money_transfers mt
+      join public.money_transfer_cash_details d on d.transfer_id = mt.id
+      where mt.id = p_source_id
+        and mt.transfer_type = 'cash'
+        and mt.transfer_method = 'cash'
+        and mt.record_status <> 'deleted'
+        and d.cash_status in ('received', 'mismatched', 'difference_accepted')
+        and d.received_total > 0
+    ) candidates;
+
+    return v_entries;
+  elsif p_source_type = 'withdrawal' then
+    select ft.*, profile.name as profile_name,
+      approver.name as approver_name
+    into v_row
+    from public.financial_transactions ft
+    join public.profiles profile on profile.id = ft.profile_id
+    left join public.profiles approver on approver.id = ft.approved_by
+    where ft.id = p_source_id;
+
+    if not found
+      or v_row.type::text <> 'WITHDRAWAL'
+      or v_row.status::text <> 'APPROVED'
+      or v_row.cancelled_at is not null
+      or v_row.expense_location_id is null
+      or v_row.amount <= 0
+    then
+      return v_entries;
+    end if;
+
+    return jsonb_build_array(private.dashboard_money_event_entry(
+      'withdrawal:' || v_row.id::text,
+      v_row.expense_location_id,
+      'expense',
+      'TW-' || left(v_row.id::text, 8),
+      'เบิกเงิน — ' || coalesce(v_row.profile_name, 'พนักงาน')
+        || coalesce(': ' || nullif(v_row.description, ''), ''),
+      'expense',
+      v_row.amount,
+      jsonb_build_object(
+        'profileId', v_row.profile_id,
+        'amount', v_row.amount,
+        'description', v_row.description,
+        'effectiveDate', v_row.effective_date,
+        'expenseLocationId', v_row.expense_location_id,
+        'status', v_row.status
+      ),
+      v_row.approved_by,
+      v_row.approver_name
+    ));
+  elsif p_source_type = 'payroll_slip' then
+    select slip.*, profile.name as profile_name,
+      approver.name as approver_name
+    into v_row
+    from public.payroll_slips slip
+    join public.profiles profile on profile.id = slip.profile_id
+    left join public.profiles approver on approver.id = slip.approved_by
+    where slip.id = p_source_id;
+
+    if not found
+      or v_row.status::text <> 'APPROVED'
+      or v_row.cancelled_at is not null
+      or v_row.expense_location_id is null
+      or v_row.net_pay <= 0
+    then
+      return v_entries;
+    end if;
+
+    return jsonb_build_array(private.dashboard_money_event_entry(
+      'payroll:' || v_row.id::text,
+      v_row.expense_location_id,
+      'expense',
+      'PS-' || left(v_row.id::text, 8),
+      'เงินเดือน — ' || coalesce(v_row.profile_name, 'พนักงาน') || ' — ' || v_row.month,
+      'expense',
+      v_row.net_pay,
+      jsonb_build_object(
+        'profileId', v_row.profile_id,
+        'month', v_row.month,
+        'grossPay', v_row.gross_pay,
+        'totalDeductions', v_row.total_deductions,
+        'netPay', v_row.net_pay,
+        'totalDays', v_row.total_days,
+        'dailyWage', v_row.daily_wage,
+        'expenseLocationId', v_row.expense_location_id,
+        'status', v_row.status,
+        'slipData', v_row.slip_data
+      ),
+      v_row.approved_by,
+      v_row.approver_name
+    ));
+  elsif p_source_type = 'ocr_ticket' then
+    select * into v_row
+    from public.ocr_tickets
+    where id = p_source_id;
+
+    if not found or v_row.record_status <> 'active' or v_row.total_amount <= 0 then
+      return v_entries;
+    end if;
+
+    return jsonb_build_array(private.dashboard_money_event_entry(
+      'ocr-ticket:' || v_row.id::text,
+      v_row.location_id,
+      'rubber_bill',
+      coalesce(nullif(v_row.ticket_id, ''), left(v_row.id::text, 8)),
+      'รับซื้อยางจากใบชั่ง — '
+        || coalesce(nullif(v_row.customer_name, ''), 'ไม่ระบุลูกค้า'),
+      'expense',
+      v_row.total_amount,
+      to_jsonb(v_row) - array[
+        'sync_status', 'revision_no', 'client_recorded_at', 'server_received_at',
+        'created_at', 'updated_at', 'deleted_at', 'deleted_by_name', 'deleted_by_phone',
+        'drive_file_id', 'drive_url'
+      ],
+      v_row.created_by_user_id,
+      v_row.created_by_name
+    ));
+  elsif p_source_type = 'rubber_export' then
+    select * into v_row
+    from public.rubber_exports
+    where id = p_source_id;
+
+    if not found
+      or v_row.status <> 'verified'
+      or v_row.expense_destination <> 'branch'
+      or v_row.work_total <= 0
+    then
+      return v_entries;
+    end if;
+
+    return jsonb_build_array(private.dashboard_money_event_entry(
+      'rubber-export:' || v_row.id::text,
+      v_row.location_id,
+      'rubber_export',
+      v_row.export_no,
+      'ค่าทำงานส่งออกยาง — ' || v_row.export_no,
+      'expense',
+      v_row.work_total,
+      jsonb_build_object(
+        'exportNo', v_row.export_no,
+        'exportDate', v_row.export_date,
+        'status', v_row.status,
+        'originalWeightTotal', v_row.original_weight_total,
+        'paidTotal', v_row.paid_total,
+        'averagePrice', v_row.average_price,
+        'currentWeight', v_row.current_weight,
+        'weightLossPercent', v_row.weight_loss_percent,
+        'workRate', v_row.work_rate,
+        'otherOperatingCost', v_row.other_operating_cost,
+        'workTotal', v_row.work_total,
+        'expenseDestination', v_row.expense_destination
+      ),
+      coalesce(v_row.verified_by_user_id, v_row.created_by_user_id),
+      coalesce(v_row.verified_by_name, v_row.created_by_name)
+    ));
+  end if;
+
+  return v_entries;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."dashboard_money_source_entries"("p_source_type" "text", "p_source_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."dashboard_require_manager"() RETURNS "void"
@@ -2901,6 +3535,24 @@ $$;
 ALTER FUNCTION "private"."prevent_location_code_change"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."prune_dashboard_money_events"() RETURNS bigint
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  deleted_count bigint;
+begin
+  delete from public.dashboard_money_events
+  where event_date < (current_timestamp at time zone 'Asia/Bangkok')::date - 14;
+  get diagnostics deleted_count = row_count;
+  return deleted_count;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."prune_dashboard_money_events"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."raise_report_lock"("p_report_no" "text") RETURNS "void"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -3055,6 +3707,79 @@ $$;
 
 
 ALTER FUNCTION "private"."rebuild_dashboard_branch_target"("p_location_id" "uuid", "p_claimed_version" bigint) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."reconcile_dashboard_money_source"("p_source_type" "text", "p_source_id" "uuid", "p_actor_user_id" "uuid" DEFAULT NULL::"uuid", "p_actor_name" "text" DEFAULT NULL::"text", "p_emit_events" boolean DEFAULT true) RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_old_entries jsonb;
+  v_new_entries jsonb := private.dashboard_money_source_entries(p_source_type, p_source_id);
+  v_old jsonb;
+  v_new jsonb;
+begin
+  perform pg_advisory_xact_lock(
+    hashtextextended('dashboard-money-history:' || p_source_type || ':' || p_source_id::text, 0)
+  );
+
+  select coalesce(jsonb_agg(payload order by event_key), '[]'::jsonb)
+  into v_old_entries
+  from private.dashboard_money_event_projection
+  where source_type = p_source_type
+    and source_id = p_source_id;
+
+  if p_emit_events then
+    for v_old in select value from jsonb_array_elements(v_old_entries)
+    loop
+      select value into v_new
+      from jsonb_array_elements(v_new_entries)
+      where value->>'eventKey' = v_old->>'eventKey'
+      limit 1;
+
+      if v_new is null then
+        perform private.append_dashboard_money_event(
+          p_source_type, p_source_id, 'delete', v_old,
+          p_actor_user_id, p_actor_name
+        );
+      elsif v_new->>'fingerprint' is distinct from v_old->>'fingerprint' then
+        perform private.append_dashboard_money_event(
+          p_source_type, p_source_id, 'update', v_new,
+          p_actor_user_id, p_actor_name
+        );
+      end if;
+      v_new := null;
+    end loop;
+
+    for v_new in select value from jsonb_array_elements(v_new_entries)
+    loop
+      if not exists (
+        select 1
+        from jsonb_array_elements(v_old_entries) old_entry
+        where old_entry->>'eventKey' = v_new->>'eventKey'
+      ) then
+        perform private.append_dashboard_money_event(
+          p_source_type, p_source_id, 'create', v_new,
+          p_actor_user_id, p_actor_name
+        );
+      end if;
+    end loop;
+  end if;
+
+  delete from private.dashboard_money_event_projection
+  where source_type = p_source_type
+    and source_id = p_source_id;
+
+  insert into private.dashboard_money_event_projection (
+    source_type, source_id, event_key, payload
+  )
+  select p_source_type, p_source_id, value->>'eventKey', value
+  from jsonb_array_elements(v_new_entries);
+end;
+$$;
+
+
+ALTER FUNCTION "private"."reconcile_dashboard_money_source"("p_source_type" "text", "p_source_id" "uuid", "p_actor_user_id" "uuid", "p_actor_name" "text", "p_emit_events" boolean) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."report_income_expense_period_rows"("p_report_id" "uuid") RETURNS TABLE("tx_date" "date", "number" "text", "entry_type" "text", "title" "text", "amount" numeric, "sort_key" "text")
@@ -7724,12 +8449,16 @@ $$;
 ALTER FUNCTION "public"."get_dashboard_branch_summaries"() OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "public"."get_dashboard_money_feed"("p_location_id" "uuid", "p_cursor_at" timestamp with time zone DEFAULT NULL::timestamp with time zone, "p_cursor_key" "text" DEFAULT NULL::"text", "p_page_size" integer DEFAULT 10) RETURNS "jsonb"
+CREATE OR REPLACE FUNCTION "public"."get_dashboard_money_history"("p_location_id" "uuid", "p_event_date" "date" DEFAULT NULL::"date", "p_action" "text" DEFAULT NULL::"text", "p_cursor_at" timestamp with time zone DEFAULT NULL::timestamp with time zone, "p_cursor_id" "uuid" DEFAULT NULL::"uuid", "p_page_size" integer DEFAULT 10) RETURNS "jsonb"
     LANGUAGE "plpgsql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
 declare
   page_size integer := least(greatest(coalesce(p_page_size, 10), 1), 50);
+  today_bangkok date := (current_timestamp at time zone 'Asia/Bangkok')::date;
+  from_date date := (current_timestamp at time zone 'Asia/Bangkok')::date - 14;
+  selected_date date;
+  normalized_action text := nullif(p_action, 'all');
 begin
   if not private.is_active_user()
     or not public.can_access_location(p_location_id)
@@ -7737,378 +8466,106 @@ begin
     raise exception 'Location access denied';
   end if;
 
-  if (p_cursor_at is null) <> (p_cursor_key is null) then
-    raise exception 'Invalid dashboard cursor';
+  if normalized_action is not null
+    and normalized_action not in ('create', 'update', 'delete')
+  then
+    raise exception 'Invalid money history action';
+  end if;
+
+  if (p_cursor_at is null) <> (p_cursor_id is null) then
+    raise exception 'Invalid money history cursor';
+  end if;
+
+  if p_event_date is not null
+    and (p_event_date < from_date or p_event_date > today_bangkok)
+  then
+    raise exception 'Money history date is outside retention window';
+  end if;
+
+  selected_date := p_event_date;
+  if selected_date is null then
+    select max(event_date)
+    into selected_date
+    from public.dashboard_money_events
+    where location_id = p_location_id
+      and event_date between from_date and today_bangkok;
+    selected_date := coalesce(selected_date, today_bangkok);
   end if;
 
   return (
-    with income_expense_candidates as (
-      select
-        coalesce(ie.client_recorded_at, ie.created_at) as occurred_at,
-        'actual:' || ie.id::text as sort_key,
-        ie.id::text as id,
-        ie.type::text as kind,
-        coalesce(
-          ie.number,
-          ie.server_bill_no,
-          ie.local_bill_no,
-          left(ie.id::text, 8)
-        ) as number,
-        ie.title,
-        ie.type::text as direction,
-        ie.cost as amount,
-        ie.created_by_name
-      from public.income_expense ie
-      where ie.location_id = p_location_id
-        and ie.record_status = 'active'
-        and ie.cost > 0
+    with filtered as (
+      select event.*
+      from public.dashboard_money_events event
+      where event.location_id = p_location_id
+        and event.event_date = selected_date
+        and (normalized_action is null or event.action = normalized_action)
         and (
           p_cursor_at is null
-          or (
-            coalesce(ie.client_recorded_at, ie.created_at),
-            'actual:' || ie.id::text
-          ) < (p_cursor_at, p_cursor_key)
+          or (event.occurred_at, event.id) < (p_cursor_at, p_cursor_id)
         )
-      order by
-        coalesce(ie.client_recorded_at, ie.created_at) desc,
-        'actual:' || ie.id::text desc
+      order by event.occurred_at desc, event.id desc
       limit page_size + 1
     ),
-    branch_transfer_in_candidates as (
-      select
-        mt.created_at as occurred_at,
-        'branch-transfer-in:' || mt.id::text as sort_key,
-        'branch-transfer-in:' || mt.id::text as id,
-        'transfer_in'::text as kind,
-        'TR-' || left(mt.id::text, 8) as number,
-        'รับโอนเงินเข้าสาขา'::text as title,
-        'income'::text as direction,
-        mt.net_amount_to_pay as amount,
-        coalesce(mt.created_by_name, 'ระบบโอนเงิน') as created_by_name
-      from public.money_transfers mt
-      where mt.transfer_type = 'branch'
-        and coalesce(mt.transfer_method, 'bank') <> 'cash'
-        and mt.target_location_id = p_location_id
-        and mt.record_status <> 'deleted'
-        and mt.transfer_status in ('paid', 'overpaid', 'branch_and_transfer')
-        and mt.net_amount_to_pay > 0
-        and (
-          p_cursor_at is null
-          or (mt.created_at, 'branch-transfer-in:' || mt.id::text)
-            < (p_cursor_at, p_cursor_key)
-        )
-      order by mt.created_at desc, 'branch-transfer-in:' || mt.id::text desc
-      limit page_size + 1
-    ),
-    branch_transfer_out_candidates as (
-      select
-        mt.created_at as occurred_at,
-        'branch-transfer-out:' || mt.id::text as sort_key,
-        'branch-transfer-out:' || mt.id::text as id,
-        'transfer_out'::text as kind,
-        'TR-' || left(mt.id::text, 8) as number,
-        'โยกเงินไป ' || coalesce(mt.target_location_name, 'สาขาปลายทาง')
-          as title,
-        'expense'::text as direction,
-        mt.net_amount_to_pay as amount,
-        coalesce(mt.created_by_name, 'ระบบโอนเงิน') as created_by_name
-      from public.money_transfers mt
-      where mt.transfer_type = 'branch'
-        and coalesce(mt.transfer_method, 'bank') <> 'cash'
-        and mt.location_id = p_location_id
-        and mt.target_location_id <> mt.location_id
-        and mt.record_status <> 'deleted'
-        and mt.transfer_status in ('paid', 'overpaid', 'branch_and_transfer')
-        and mt.net_amount_to_pay > 0
-        and (
-          p_cursor_at is null
-          or (mt.created_at, 'branch-transfer-out:' || mt.id::text)
-            < (p_cursor_at, p_cursor_key)
-        )
-      order by mt.created_at desc, 'branch-transfer-out:' || mt.id::text desc
-      limit page_size + 1
-    ),
-    customer_paid_candidates as (
-      select
-        mt.created_at as occurred_at,
-        'customer-branch-paid:' || mt.id::text as sort_key,
-        'customer-branch-paid:' || mt.id::text as id,
-        'transfer_out'::text as kind,
-        'CT-' || left(mt.id::text, 8) as number,
-        'สาขาจ่ายส่วนต่างให้ ' || coalesce(mt.customer_name, 'ลูกค้า') as title,
-        'expense'::text as direction,
-        mt.branch_paid_amount as amount,
-        coalesce(mt.created_by_name, 'ระบบโอนเงิน') as created_by_name
-      from public.money_transfers mt
-      where mt.transfer_type = 'customer'
-        and mt.transfer_status = 'branch_and_transfer'
-        and mt.location_id = p_location_id
-        and mt.record_status <> 'deleted'
-        and mt.branch_paid_amount > 0
-        and (
-          p_cursor_at is null
-          or (mt.created_at, 'customer-branch-paid:' || mt.id::text)
-            < (p_cursor_at, p_cursor_key)
-        )
-      order by mt.created_at desc, 'customer-branch-paid:' || mt.id::text desc
-      limit page_size + 1
-    ),
-    cash_out_candidates as (
-      select
-        d.sent_at as occurred_at,
-        'cash-transfer-out:' || mt.id::text as sort_key,
-        'cash-transfer-out:' || mt.id::text as id,
-        'transfer_out'::text as kind,
-        'CASH-' || left(mt.id::text, 8) as number,
-        'โยกเงินสดไป ' || coalesce(mt.target_location_name, 'สาขาปลายทาง')
-          as title,
-        'expense'::text as direction,
-        d.sent_total as amount,
-        coalesce(mt.created_by_name, 'ระบบโอนเงิน') as created_by_name
-      from public.money_transfers mt
-      join public.money_transfer_cash_details d on d.transfer_id = mt.id
-      where mt.transfer_type = 'cash'
-        and mt.transfer_method = 'cash'
-        and mt.location_id = p_location_id
-        and mt.record_status <> 'deleted'
-        and d.sent_total > 0
-        and (
-          p_cursor_at is null
-          or (d.sent_at, 'cash-transfer-out:' || mt.id::text)
-            < (p_cursor_at, p_cursor_key)
-        )
-      order by d.sent_at desc, 'cash-transfer-out:' || mt.id::text desc
-      limit page_size + 1
-    ),
-    cash_in_candidates as (
-      select
-        d.received_at as occurred_at,
-        'cash-transfer-in:' || mt.id::text as sort_key,
-        'cash-transfer-in:' || mt.id::text as id,
-        'transfer_in'::text as kind,
-        'CASH-' || left(mt.id::text, 8) as number,
-        'รับโอนเงินสดเข้าสาขา'::text as title,
-        'income'::text as direction,
-        d.received_total as amount,
-        coalesce(
-          d.received_by_name,
-          mt.created_by_name,
-          'ระบบโอนเงิน'
-        ) as created_by_name
-      from public.money_transfers mt
-      join public.money_transfer_cash_details d on d.transfer_id = mt.id
-      where mt.transfer_type = 'cash'
-        and mt.transfer_method = 'cash'
-        and mt.target_location_id = p_location_id
-        and mt.record_status <> 'deleted'
-        and d.cash_status in ('received', 'mismatched', 'difference_accepted')
-        and d.received_total > 0
-        and (
-          p_cursor_at is null
-          or (d.received_at, 'cash-transfer-in:' || mt.id::text)
-            < (p_cursor_at, p_cursor_key)
-        )
-      order by d.received_at desc, 'cash-transfer-in:' || mt.id::text desc
-      limit page_size + 1
-    ),
-    withdrawal_candidates as (
-      select
-        ft.approved_at as occurred_at,
-        'withdrawal:' || ft.id::text as sort_key,
-        'withdrawal:' || ft.id::text as id,
-        'expense'::text as kind,
-        'TW-' || left(ft.id::text, 8) as number,
-        'เบิกเงิน — ' || coalesce(p.name, 'พนักงาน')
-          || coalesce(': ' || nullif(ft.description, ''), '') as title,
-        'expense'::text as direction,
-        ft.amount,
-        coalesce(p.name, 'พนักงาน') as created_by_name
-      from public.financial_transactions ft
-      join public.profiles p on p.id = ft.profile_id
-      where ft.type = 'WITHDRAWAL'
-        and ft.status = 'APPROVED'
-        and ft.cancelled_at is null
-        and ft.expense_location_id = p_location_id
-        and ft.amount > 0
-        and (
-          p_cursor_at is null
-          or (ft.approved_at, 'withdrawal:' || ft.id::text)
-            < (p_cursor_at, p_cursor_key)
-        )
-      order by ft.approved_at desc, 'withdrawal:' || ft.id::text desc
-      limit page_size + 1
-    ),
-    payroll_candidates as (
-      select
-        ps.approved_at as occurred_at,
-        'payroll:' || ps.id::text as sort_key,
-        'payroll:' || ps.id::text as id,
-        'expense'::text as kind,
-        'PS-' || left(ps.id::text, 8) as number,
-        'เงินเดือน — ' || coalesce(p.name, 'พนักงาน') || ' — ' || ps.month
-          as title,
-        'expense'::text as direction,
-        ps.net_pay as amount,
-        coalesce(p.name, 'พนักงาน') as created_by_name
-      from public.payroll_slips ps
-      join public.profiles p on p.id = ps.profile_id
-      where ps.status = 'APPROVED'
-        and ps.cancelled_at is null
-        and ps.expense_location_id = p_location_id
-        and ps.net_pay > 0
-        and (
-          p_cursor_at is null
-          or (ps.approved_at, 'payroll:' || ps.id::text)
-            < (p_cursor_at, p_cursor_key)
-        )
-      order by ps.approved_at desc, 'payroll:' || ps.id::text desc
-      limit page_size + 1
-    ),
-    rubber_bill_candidates as (
-      select
-        coalesce(b.client_recorded_at, b.created_at) as occurred_at,
-        'rubber-bill:' || b.id::text as sort_key,
-        'rubber-bill:' || b.id::text as id,
-        'rubber_bill'::text as kind,
-        coalesce(
-          b.server_bill_no,
-          nullif(b.local_bill_no, ''),
-          nullif(b.bill_no, ''),
-          left(b.id::text, 8)
-        ) as number,
-        'รับซื้อยาง — ' || coalesce(nullif(b.customer_name, ''), 'ไม่ระบุลูกค้า')
-          as title,
-        'expense'::text as direction,
-        b.net_total as amount,
-        b.created_by_name
-      from public.rubber_bills b
-      where b.location_id = p_location_id
-        and b.record_status = 'active'
-        and private.rubber_bill_is_payable(b.id)
-        and (
-          p_cursor_at is null
-          or (
-            coalesce(b.client_recorded_at, b.created_at),
-            'rubber-bill:' || b.id::text
-          ) < (p_cursor_at, p_cursor_key)
-        )
-      order by
-        coalesce(b.client_recorded_at, b.created_at) desc,
-        'rubber-bill:' || b.id::text desc
-      limit page_size + 1
-    ),
-    ocr_candidates as (
-      select
-        coalesce(ot.client_recorded_at, ot.created_at) as occurred_at,
-        'ocr-ticket:' || ot.id::text as sort_key,
-        'ocr-ticket:' || ot.id::text as id,
-        'rubber_bill'::text as kind,
-        coalesce(nullif(ot.ticket_id, ''), left(ot.id::text, 8)) as number,
-        'รับซื้อยางจากใบชั่ง — '
-          || coalesce(nullif(ot.customer_name, ''), 'ไม่ระบุลูกค้า') as title,
-        'expense'::text as direction,
-        ot.total_amount as amount,
-        ot.created_by_name
-      from public.ocr_tickets ot
-      where ot.location_id = p_location_id
-        and ot.record_status = 'active'
-        and ot.total_amount > 0
-        and (
-          p_cursor_at is null
-          or (
-            coalesce(ot.client_recorded_at, ot.created_at),
-            'ocr-ticket:' || ot.id::text
-          ) < (p_cursor_at, p_cursor_key)
-        )
-      order by
-        coalesce(ot.client_recorded_at, ot.created_at) desc,
-        'ocr-ticket:' || ot.id::text desc
-      limit page_size + 1
-    ),
-    export_candidates as (
-      select
-        e.verified_at as occurred_at,
-        'rubber-export:' || e.id::text as sort_key,
-        'rubber-export:' || e.id::text as id,
-        'rubber_export'::text as kind,
-        e.export_no as number,
-        'ค่าทำงานส่งออกยาง — ' || e.export_no as title,
-        'expense'::text as direction,
-        e.work_total as amount,
-        e.created_by_name
-      from public.rubber_exports e
-      where e.location_id = p_location_id
-        and e.status = 'verified'
-        and e.expense_destination = 'branch'
-        and e.work_total > 0
-        and (
-          p_cursor_at is null
-          or (e.verified_at, 'rubber-export:' || e.id::text)
-            < (p_cursor_at, p_cursor_key)
-        )
-      order by e.verified_at desc, 'rubber-export:' || e.id::text desc
-      limit page_size + 1
-    ),
-    candidates as (
-      select * from income_expense_candidates
-      union all select * from branch_transfer_in_candidates
-      union all select * from branch_transfer_out_candidates
-      union all select * from customer_paid_candidates
-      union all select * from cash_out_candidates
-      union all select * from cash_in_candidates
-      union all select * from withdrawal_candidates
-      union all select * from payroll_candidates
-      union all select * from rubber_bill_candidates
-      union all select * from ocr_candidates
-      union all select * from export_candidates
-    ),
-    page as (
+    visible as (
       select *
-      from candidates
-      order by occurred_at desc, sort_key desc
-      limit page_size + 1
+      from filtered
+      order by occurred_at desc, id desc
+      limit page_size
+    ),
+    counts as (
+      select
+        count(*) as total,
+        count(*) filter (where action = 'create') as created,
+        count(*) filter (where action = 'update') as updated,
+        count(*) filter (where action = 'delete') as deleted,
+        max(occurred_at) as latest_at
+      from public.dashboard_money_events
+      where location_id = p_location_id
+        and event_date = selected_date
     )
     select jsonb_build_object(
-      'rows',
-      coalesce((
-        select jsonb_agg(
-          jsonb_build_object(
-            'id', id,
-            'kind', kind,
-            'number', number,
-            'title', title,
-            'direction', direction,
-            'amount', round(amount, 2),
-            'occurredAt', occurred_at,
-            'createdByName', created_by_name
-          )
-          order by occurred_at desc, sort_key desc
-        )
-        from (
-          select *
-          from page
-          order by occurred_at desc, sort_key desc
-          limit page_size
-        ) visible
+      'selectedDate', selected_date,
+      'availableFrom', from_date,
+      'availableTo', today_bangkok,
+      'counts', jsonb_build_object(
+        'all', counts.total,
+        'create', counts.created,
+        'update', counts.updated,
+        'delete', counts.deleted
+      ),
+      'latestAt', counts.latest_at,
+      'rows', coalesce((
+        select jsonb_agg(jsonb_build_object(
+          'id', id,
+          'action', action,
+          'kind', kind,
+          'number', number,
+          'title', title,
+          'direction', direction,
+          'amount', round(amount, 2),
+          'actorName', actor_name,
+          'occurredAt', occurred_at
+        ) order by occurred_at desc, id desc)
+        from visible
       ), '[]'::jsonb),
-      'nextCursor',
-      case
-        when (select count(*) from page) > page_size then (
-          select jsonb_build_object('at', occurred_at, 'key', sort_key)
-          from page
-          order by occurred_at desc, sort_key desc
+      'nextCursor', case
+        when (select count(*) from filtered) > page_size then (
+          select jsonb_build_object('at', occurred_at, 'id', id)
+          from visible
+          order by occurred_at desc, id desc
           offset page_size - 1
           limit 1
         )
         else null
       end
     )
+    from counts
   );
 end;
 $$;
 
 
-ALTER FUNCTION "public"."get_dashboard_money_feed"("p_location_id" "uuid", "p_cursor_at" timestamp with time zone, "p_cursor_key" "text", "p_page_size" integer) OWNER TO "postgres";
+ALTER FUNCTION "public"."get_dashboard_money_history"("p_location_id" "uuid", "p_event_date" "date", "p_action" "text", "p_cursor_at" timestamp with time zone, "p_cursor_id" "uuid", "p_page_size" integer) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_dashboard_overview"("p_location_id" "uuid", "p_cursor_at" timestamp with time zone DEFAULT NULL::timestamp with time zone, "p_cursor_key" "text" DEFAULT NULL::"text", "p_page_size" integer DEFAULT 10) RETURNS "jsonb"
@@ -11279,7 +11736,6 @@ declare
   v_event record;
   v_event_counts bigint[];
   v_target bigint;
-  v_i integer;
   v_difference jsonb;
   v_difference_total numeric;
   v_positive_value numeric := 0;
@@ -11299,7 +11755,7 @@ declare
   v_fractional_count integer := 0;
   v_change_count integer := 0;
   v_change_amount bigint := 0;
-  v_delta bigint;
+  v_selected_delta bigint;
   v_available_total bigint;
   v_change bigint[];
   v_highlights jsonb := '[]'::jsonb;
@@ -11376,22 +11832,26 @@ begin
         v_simulated_count := v_simulated_count + 1;
         if v_take is null then
           v_available_total := 0;
+          v_selected_delta := null;
           for v_i in 1..9 loop
             v_available_total := v_available_total + v_expected[v_i] * (array[1000,500,100,50,20,10,5,2,1]::bigint[])[v_i];
           end loop;
           if v_available_total >= v_target then
-            for v_delta in 1..least(999, v_available_total - v_target) loop
-              v_take := private.cash_exact_take(v_expected, v_target + v_delta);
-              exit when v_take is not null;
+            for v_try_delta in 1..least(999, v_available_total - v_target) loop
+              v_take := private.cash_exact_take(v_expected, v_target + v_try_delta);
+              if v_take is not null then
+                v_selected_delta := v_try_delta;
+                exit;
+              end if;
             end loop;
           end if;
           if v_take is null then
             v_allocation_failures := v_allocation_failures + 1;
           else
-            v_change := private.cash_change_counts(v_delta);
+            v_change := private.cash_change_counts(v_selected_delta);
             for v_i in 1..9 loop v_expected[v_i] := v_expected[v_i] - v_take[v_i] + v_change[v_i]; end loop;
             v_change_count := v_change_count + 1;
-            v_change_amount := v_change_amount + v_delta;
+            v_change_amount := v_change_amount + v_selected_delta;
           end if;
         else
           for v_i in 1..9 loop v_expected[v_i] := v_expected[v_i] - v_take[v_i]; end loop;
@@ -12561,7 +13021,7 @@ ALTER FUNCTION "public"."update_cash_branch_transfer"("p_transfer_id" "uuid", "p
 
 CREATE OR REPLACE FUNCTION "public"."update_rubber_export"("p_export_id" "uuid", "p_current_weight" numeric, "p_work_rate" numeric, "p_other_operating_cost" numeric) RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public', 'private'
+    SET "search_path" TO ''
     AS $$
 declare
   v_export public.rubber_exports%rowtype;
@@ -12575,14 +13035,17 @@ begin
   where id = p_export_id
   for update;
 
-  if v_export.id is null or not private.can_manage_reports(v_export.location_id) then
+  if v_export.id is null
+    or not private.can_manage_reports(v_export.location_id)
+  then
     raise exception 'ไม่มีสิทธิ์แก้ไขรายการส่งออกนี้';
   end if;
   if v_export.status <> 'draft' then
     raise exception 'แก้ไขได้เฉพาะรายการฉบับร่าง';
   end if;
   if p_current_weight is not null
-    and (p_current_weight <= 0 or p_current_weight > v_export.original_weight_total) then
+    and (p_current_weight <= 0 or p_current_weight > v_export.original_weight_total)
+  then
     raise exception 'น้ำหนักปัจจุบันต้องมากกว่า 0 และไม่เกินน้ำหนักสุทธิหลังหักรวม';
   end if;
   if p_work_rate is not null and p_work_rate < 0 then
@@ -12593,11 +13056,14 @@ begin
   end if;
 
   v_loss := case when p_current_weight is null then null
-    else round((v_export.original_weight_total - p_current_weight) /
-      v_export.original_weight_total * 100, 2)
+    else round(
+      (v_export.original_weight_total - p_current_weight)
+        / v_export.original_weight_total * 100,
+      2
+    )
   end;
-  v_total := case when p_current_weight is null or p_work_rate is null then null
-    else round(p_current_weight * p_work_rate + v_other, 2)
+  v_total := case when p_work_rate is null then null
+    else round(v_export.original_weight_total * p_work_rate + v_other, 2)
   end;
 
   update public.rubber_exports
@@ -12726,7 +13192,7 @@ ALTER FUNCTION "public"."validate_stock_non_negative_after_entry_delete"("p_loca
 
 CREATE OR REPLACE FUNCTION "public"."verify_rubber_export_atomic"("p_export_id" "uuid", "p_current_weight" numeric, "p_work_rate" numeric, "p_other_operating_cost" numeric, "p_expense_destination" "text") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public', 'private'
+    SET "search_path" TO ''
     AS $$
 declare
   v_export public.rubber_exports%rowtype;
@@ -12776,10 +13242,10 @@ begin
     raise exception 'ค่าใช้จ่ายอื่นต้องไม่น้อยกว่า 0';
   end if;
 
-  select p.name, p.phone
+  select profile.name, profile.phone
   into v_actor_name, v_actor_phone
-  from public.profiles p
-  where p.id = auth.uid();
+  from public.profiles profile
+  where profile.id = auth.uid();
 
   update public.rubber_exports
   set current_weight = p_current_weight,
@@ -12789,7 +13255,10 @@ begin
         (original_weight_total - p_current_weight) / original_weight_total * 100,
         2
       ),
-      work_total = round(p_current_weight * p_work_rate + p_other_operating_cost, 2),
+      work_total = round(
+        original_weight_total * p_work_rate + p_other_operating_cost,
+        2
+      ),
       expense_destination = p_expense_destination,
       status = 'verified',
       verified_by_user_id = auth.uid(),
@@ -12828,6 +13297,17 @@ $$;
 
 
 ALTER FUNCTION "public"."verify_telegram_badge_dispatch_secret"("p_secret" "text") OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."dashboard_money_event_projection" (
+    "source_type" "text" NOT NULL,
+    "source_id" "uuid" NOT NULL,
+    "event_key" "text" NOT NULL,
+    "payload" "jsonb" NOT NULL
+);
+
+
+ALTER TABLE "private"."dashboard_money_event_projection" OWNER TO "postgres";
 
 
 CREATE TABLE IF NOT EXISTS "public"."stock_products" (
@@ -13210,6 +13690,32 @@ CREATE TABLE IF NOT EXISTS "public"."dashboard_branch_snapshots" (
 
 
 ALTER TABLE "public"."dashboard_branch_snapshots" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."dashboard_money_events" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "source_type" "text" NOT NULL,
+    "source_id" "uuid" NOT NULL,
+    "event_key" "text" NOT NULL,
+    "action" "text" NOT NULL,
+    "kind" "text" NOT NULL,
+    "number" "text" NOT NULL,
+    "title" "text" NOT NULL,
+    "direction" "text" NOT NULL,
+    "amount" numeric NOT NULL,
+    "actor_user_id" "uuid",
+    "actor_name" "text" NOT NULL,
+    "occurred_at" timestamp with time zone DEFAULT "clock_timestamp"() NOT NULL,
+    "event_date" "date" NOT NULL,
+    CONSTRAINT "dashboard_money_events_action_check" CHECK (("action" = ANY (ARRAY['create'::"text", 'update'::"text", 'delete'::"text"]))),
+    CONSTRAINT "dashboard_money_events_amount_check" CHECK (("amount" >= (0)::numeric)),
+    CONSTRAINT "dashboard_money_events_direction_check" CHECK (("direction" = ANY (ARRAY['income'::"text", 'expense'::"text"]))),
+    CONSTRAINT "dashboard_money_events_source_type_check" CHECK (("source_type" = ANY (ARRAY['income_expense'::"text", 'money_transfer'::"text", 'cash_transfer'::"text", 'withdrawal'::"text", 'payroll_slip'::"text", 'rubber_bill'::"text", 'ocr_ticket'::"text", 'rubber_export'::"text"])))
+);
+
+
+ALTER TABLE "public"."dashboard_money_events" OWNER TO "postgres";
 
 
 CREATE TABLE IF NOT EXISTS "public"."dashboard_refresh_settings" (
@@ -13792,6 +14298,11 @@ CREATE TABLE IF NOT EXISTS "public"."user_locations" (
 ALTER TABLE "public"."user_locations" OWNER TO "postgres";
 
 
+ALTER TABLE ONLY "private"."dashboard_money_event_projection"
+    ADD CONSTRAINT "dashboard_money_event_projection_pkey" PRIMARY KEY ("source_type", "source_id", "event_key");
+
+
+
 ALTER TABLE ONLY "public"."stock_products"
     ADD CONSTRAINT "acid_products_name_key" UNIQUE ("name");
 
@@ -13859,6 +14370,11 @@ ALTER TABLE ONLY "public"."dashboard_alert_thresholds"
 
 ALTER TABLE ONLY "public"."dashboard_branch_snapshots"
     ADD CONSTRAINT "dashboard_branch_snapshots_pkey" PRIMARY KEY ("location_id");
+
+
+
+ALTER TABLE ONLY "public"."dashboard_money_events"
+    ADD CONSTRAINT "dashboard_money_events_pkey" PRIMARY KEY ("id");
 
 
 
@@ -14253,6 +14769,14 @@ CREATE INDEX "dashboard_income_expense_money_feed_idx" ON "public"."income_expen
 
 
 
+CREATE INDEX "dashboard_money_events_location_date_action_cursor_idx" ON "public"."dashboard_money_events" USING "btree" ("location_id", "event_date", "action", "occurred_at" DESC, "id" DESC);
+
+
+
+CREATE INDEX "dashboard_money_events_location_date_cursor_idx" ON "public"."dashboard_money_events" USING "btree" ("location_id", "event_date", "occurred_at" DESC, "id" DESC);
+
+
+
 CREATE INDEX "dashboard_ocr_money_feed_idx" ON "public"."ocr_tickets" USING "btree" ("location_id", COALESCE("client_recorded_at", "created_at") DESC, (('ocr-ticket:'::"text" || ("id")::"text")) DESC) WHERE (("record_status" = 'active'::"public"."record_status") AND ("total_amount" > (0)::numeric));
 
 
@@ -14506,6 +15030,54 @@ CREATE OR REPLACE TRIGGER "dashboard_dirty_stock_entries" AFTER INSERT OR DELETE
 
 
 CREATE OR REPLACE TRIGGER "dashboard_dirty_stock_products" AFTER INSERT OR DELETE OR UPDATE ON "public"."stock_products" FOR EACH STATEMENT EXECUTE FUNCTION "private"."dashboard_dirty_all_active_locations"();
+
+
+
+CREATE CONSTRAINT TRIGGER "dashboard_money_event_cash_details" AFTER INSERT OR DELETE OR UPDATE ON "public"."money_transfer_cash_details" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "private"."capture_dashboard_money_source"();
+
+
+
+CREATE CONSTRAINT TRIGGER "dashboard_money_event_income_expense" AFTER INSERT OR DELETE OR UPDATE ON "public"."income_expense" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "private"."capture_dashboard_money_source"();
+
+
+
+CREATE CONSTRAINT TRIGGER "dashboard_money_event_income_sale_lines" AFTER INSERT OR DELETE OR UPDATE ON "public"."income_expense_sale_lines" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "private"."capture_dashboard_money_source"();
+
+
+
+CREATE CONSTRAINT TRIGGER "dashboard_money_event_money_transfers" AFTER INSERT OR DELETE OR UPDATE ON "public"."money_transfers" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "private"."capture_dashboard_money_source"();
+
+
+
+CREATE CONSTRAINT TRIGGER "dashboard_money_event_ocr_tickets" AFTER INSERT OR DELETE OR UPDATE ON "public"."ocr_tickets" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "private"."capture_dashboard_money_source"();
+
+
+
+CREATE CONSTRAINT TRIGGER "dashboard_money_event_payroll" AFTER INSERT OR DELETE OR UPDATE ON "public"."payroll_slips" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "private"."capture_dashboard_money_source"();
+
+
+
+CREATE CONSTRAINT TRIGGER "dashboard_money_event_rubber_bill_items" AFTER INSERT OR DELETE OR UPDATE ON "public"."rubber_bill_items" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "private"."capture_dashboard_money_source"();
+
+
+
+CREATE CONSTRAINT TRIGGER "dashboard_money_event_rubber_bills" AFTER INSERT OR DELETE OR UPDATE ON "public"."rubber_bills" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "private"."capture_dashboard_money_source"();
+
+
+
+CREATE CONSTRAINT TRIGGER "dashboard_money_event_rubber_exports" AFTER INSERT OR DELETE OR UPDATE ON "public"."rubber_exports" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "private"."capture_dashboard_money_source"();
+
+
+
+CREATE CONSTRAINT TRIGGER "dashboard_money_event_withdrawal_delete" AFTER DELETE ON "public"."financial_transactions" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((("old"."type")::"text" = 'WITHDRAWAL'::"text")) EXECUTE FUNCTION "private"."capture_dashboard_money_source"();
+
+
+
+CREATE CONSTRAINT TRIGGER "dashboard_money_event_withdrawal_insert" AFTER INSERT ON "public"."financial_transactions" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((("new"."type")::"text" = 'WITHDRAWAL'::"text")) EXECUTE FUNCTION "private"."capture_dashboard_money_source"();
+
+
+
+CREATE CONSTRAINT TRIGGER "dashboard_money_event_withdrawal_update" AFTER UPDATE ON "public"."financial_transactions" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (((("old"."type")::"text" = 'WITHDRAWAL'::"text") OR (("new"."type")::"text" = 'WITHDRAWAL'::"text"))) EXECUTE FUNCTION "private"."capture_dashboard_money_source"();
 
 
 
@@ -14768,6 +15340,16 @@ ALTER TABLE ONLY "public"."dashboard_alert_thresholds"
 
 ALTER TABLE ONLY "public"."dashboard_branch_snapshots"
     ADD CONSTRAINT "dashboard_branch_snapshots_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."dashboard_money_events"
+    ADD CONSTRAINT "dashboard_money_events_actor_user_id_fkey" FOREIGN KEY ("actor_user_id") REFERENCES "public"."profiles"("id") ON DELETE SET NULL;
+
+
+
+ALTER TABLE ONLY "public"."dashboard_money_events"
+    ADD CONSTRAINT "dashboard_money_events_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id") ON DELETE CASCADE;
 
 
 
@@ -15399,6 +15981,13 @@ ALTER TABLE "public"."dashboard_alert_thresholds" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."dashboard_branch_snapshots" ENABLE ROW LEVEL SECURITY;
 
 
+ALTER TABLE "public"."dashboard_money_events" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "dashboard_money_events_select_scope" ON "public"."dashboard_money_events" FOR SELECT TO "authenticated" USING ("public"."can_access_location"("location_id"));
+
+
+
 ALTER TABLE "public"."dashboard_refresh_settings" ENABLE ROW LEVEL SECURITY;
 
 
@@ -15793,6 +16382,10 @@ GRANT USAGE ON SCHEMA "public" TO "service_role";
 
 
 
+REVOKE ALL ON FUNCTION "private"."append_dashboard_money_event"("p_source_type" "text", "p_source_id" "uuid", "p_action" "text", "p_payload" "jsonb", "p_actor_user_id" "uuid", "p_actor_name" "text") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."apply_time_tracking_deductions"("p_profile_id" "uuid", "p_through_month" "date") FROM PUBLIC;
 
 
@@ -15846,6 +16439,10 @@ REVOKE ALL ON FUNCTION "private"."can_use_cash_count"("p_location_id" "uuid") FR
 
 REVOKE ALL ON FUNCTION "private"."can_view_profile"("target_user" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "private"."can_view_profile"("target_user" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "private"."capture_dashboard_money_source"() FROM PUBLIC;
 
 
 
@@ -15914,6 +16511,14 @@ REVOKE ALL ON FUNCTION "private"."dashboard_dirty_rubber_bill_items"() FROM PUBL
 
 
 
+REVOKE ALL ON FUNCTION "private"."dashboard_money_event_entry"("p_event_key" "text", "p_location_id" "uuid", "p_kind" "text", "p_number" "text", "p_title" "text", "p_direction" "text", "p_amount" numeric, "p_fingerprint" "jsonb", "p_actor_user_id" "uuid", "p_actor_name" "text") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."dashboard_money_source_entries"("p_source_type" "text", "p_source_id" "uuid") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."dashboard_require_manager"() FROM PUBLIC;
 
 
@@ -15970,6 +16575,11 @@ REVOKE ALL ON FUNCTION "private"."prevent_location_code_change"() FROM PUBLIC;
 
 
 
+REVOKE ALL ON FUNCTION "private"."prune_dashboard_money_events"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "private"."prune_dashboard_money_events"() TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "private"."rebuild_active_report_balance_chain"("p_location_id" "uuid") FROM PUBLIC;
 
 
@@ -15979,6 +16589,10 @@ REVOKE ALL ON FUNCTION "private"."rebuild_dashboard_branch"() FROM PUBLIC;
 
 
 REVOKE ALL ON FUNCTION "private"."rebuild_dashboard_branch_target"("p_location_id" "uuid", "p_claimed_version" bigint) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."reconcile_dashboard_money_source"("p_source_type" "text", "p_source_id" "uuid", "p_actor_user_id" "uuid", "p_actor_name" "text", "p_emit_events" boolean) FROM PUBLIC;
 
 
 
@@ -16256,8 +16870,9 @@ GRANT ALL ON FUNCTION "public"."get_dashboard_branch_summaries"() TO "authentica
 
 
 
-REVOKE ALL ON FUNCTION "public"."get_dashboard_money_feed"("p_location_id" "uuid", "p_cursor_at" timestamp with time zone, "p_cursor_key" "text", "p_page_size" integer) FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."get_dashboard_money_feed"("p_location_id" "uuid", "p_cursor_at" timestamp with time zone, "p_cursor_key" "text", "p_page_size" integer) TO "authenticated";
+REVOKE ALL ON FUNCTION "public"."get_dashboard_money_history"("p_location_id" "uuid", "p_event_date" "date", "p_action" "text", "p_cursor_at" timestamp with time zone, "p_cursor_id" "uuid", "p_page_size" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_dashboard_money_history"("p_location_id" "uuid", "p_event_date" "date", "p_action" "text", "p_cursor_at" timestamp with time zone, "p_cursor_id" "uuid", "p_page_size" integer) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."get_dashboard_money_history"("p_location_id" "uuid", "p_event_date" "date", "p_action" "text", "p_cursor_at" timestamp with time zone, "p_cursor_id" "uuid", "p_page_size" integer) TO "service_role";
 
 
 
@@ -16703,6 +17318,11 @@ GRANT ALL ON TABLE "public"."dashboard_alert_thresholds" TO "service_role";
 
 
 GRANT ALL ON TABLE "public"."dashboard_branch_snapshots" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."dashboard_money_events" TO "service_role";
+GRANT SELECT ON TABLE "public"."dashboard_money_events" TO "authenticated";
 
 
 

@@ -4,13 +4,14 @@ import { useQuery } from "@tanstack/react-query";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import type {
   DashboardBranchSummary,
-  DashboardMoneyFeed,
+  DashboardMoneyHistory,
+  DashboardMoneyHistoryAction,
   DashboardSnapshot,
 } from "@/types/dashboard";
 
 export const DASHBOARD_BRANCH_SUMMARIES_QUERY_KEY = "dashboardBranchSummaries";
 export const DASHBOARD_SNAPSHOT_QUERY_KEY = "dashboardSnapshot";
-export const DASHBOARD_MONEY_FEED_QUERY_KEY = "dashboardMoneyFeed";
+export const DASHBOARD_MONEY_HISTORY_QUERY_KEY = "dashboardMoneyHistory";
 
 export function useDashboardBranchSummaries(ownerUserId: string, online: boolean) {
   return useQuery({
@@ -63,26 +64,40 @@ export function useDashboardSnapshot(
   });
 }
 
-export function useDashboardMoneyFeed(
+export function useDashboardMoneyHistory(
   locationId: string,
   online: boolean,
+  eventDate: string | null,
+  action: DashboardMoneyHistoryAction,
   cursor: string | null
 ) {
   return useQuery({
-    queryKey: [DASHBOARD_MONEY_FEED_QUERY_KEY, locationId, cursor],
+    queryKey: [
+      DASHBOARD_MONEY_HISTORY_QUERY_KEY,
+      locationId,
+      eventDate,
+      action,
+      cursor,
+    ],
     enabled: Boolean(locationId) && online,
     queryFn: async ({ signal }) => {
       const params = new URLSearchParams({ locationId });
+      if (eventDate) params.set("date", eventDate);
+      if (action !== "all") params.set("action", action);
       if (cursor) params.set("cursor", cursor);
       const response = await authFetch(
         `/api/lanflow/dashboard/feed?${params}`,
         { cache: "no-store", signal },
       );
       await assertApiResponse(response);
-      return response.json() as Promise<DashboardMoneyFeed>;
+      return response.json() as Promise<DashboardMoneyHistory>;
     },
     placeholderData: (previousData, previousQuery) =>
-      previousQuery?.queryKey[1] === locationId ? previousData : undefined,
+      previousQuery?.queryKey[1] === locationId &&
+      previousQuery?.queryKey[2] === eventDate &&
+      previousQuery?.queryKey[3] === action
+        ? previousData
+        : undefined,
     retry: 1,
   });
 }
