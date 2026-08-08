@@ -1,5 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { bangkokDateString } from "../src/lib/bangkok-date";
+
+const previousBangkokDate = () => bangkokDateString(new Date(Date.now() - 24 * 60 * 60 * 1000));
+
 async function clearFormDrafts(page: Page) {
   await page.goto("/");
   await page.evaluate(() => new Promise<void>((resolve, reject) => {
@@ -54,6 +58,7 @@ test.describe("persistent form drafts", () => {
     await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
     await page.getByRole("button", { name: "เพิ่มบิลยาง", exact: true }).click();
     const modal = page.locator(".fixed.inset-0").last();
+    await modal.locator('input[name="billDate"]').fill(previousBangkokDate());
     await modal.locator('input[name="customerName"]').fill(marker);
     const weighRow = modal.locator("table tbody tr").first();
     await weighRow.locator('input[type="number"]').nth(0).fill("1250");
@@ -120,6 +125,7 @@ test.describe("persistent form drafts", () => {
     const restoredModal = page.locator(".fixed.inset-0").last();
     const restoredWeighRow = restoredModal.locator("table tbody tr").first();
 
+    await expect(restoredModal.locator('input[name="billDate"]')).toHaveValue(bangkokDateString());
     await expect(restoredModal.locator('input[name="customerName"]')).toHaveValue(marker);
     await expect(restoredWeighRow.locator('input[type="number"]').nth(0)).toHaveValue("1250");
     await expect(restoredWeighRow.locator('input[type="number"]').nth(1)).toHaveValue("250");
@@ -159,6 +165,7 @@ test.describe("persistent form drafts", () => {
     await addIncome.click();
     const modal = page.locator(".fixed.inset-0").last();
     await expect(modal).toBeVisible();
+    await modal.locator('input[name="txDate"]').fill(previousBangkokDate());
     const line = modal.locator("table tbody tr").first();
     await expect(line.locator("input:not([type])")).toBeVisible();
     await line.locator("input:not([type])").fill(marker);
@@ -173,6 +180,7 @@ test.describe("persistent form drafts", () => {
     const restoredModal = page.locator(".fixed.inset-0").last();
     const restoredLine = restoredModal.locator("table tbody tr").first();
 
+    await expect(restoredModal.locator('input[name="txDate"]')).toHaveValue(bangkokDateString());
     await expect(restoredLine.locator("input:not([type])")).toHaveValue(marker);
     await expect(restoredLine.locator('input[type="number"]').last()).toHaveValue("1.25");
 

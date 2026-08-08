@@ -127,7 +127,7 @@ export function IncomeExpenseModal({
     enabled: !transaction,
     value: draftValue,
     onRestore: (draft) => {
-      setTxDate(draft.txDate || todayInputValue());
+      setTxDate(todayInputValue());
       setBillOption(draft.billOption || (type === "income" ? "รายรับ" : "ค่าใช้จ่าย"));
       if (Array.isArray(draft.lines) && draft.lines.length > 0) {
         setLines(draft.lines);

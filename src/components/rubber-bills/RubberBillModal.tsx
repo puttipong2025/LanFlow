@@ -136,7 +136,7 @@ export function RubberBillModal({
     enabled: !bill,
     value: draftValue,
     onRestore: (draft) => {
-      setBillDate(draft.billDate || todayInputValue());
+      setBillDate(todayInputValue());
       setCustomerSearch(draft.customerSearch ?? "");
       setSelectedCustomerId(draft.selectedCustomerId ?? null);
       setMemberStatus(draft.memberStatus || "ไม่เป็นสมาชิก");
