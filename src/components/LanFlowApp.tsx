@@ -424,7 +424,6 @@ export function LanFlowApp() {
         {activeTab === "rubber-export" && canAccessReports && (
           <RubberExportsModule
             selectedLocation={selectedLocation}
-            profile={profile}
             online={online}
             initialExportId={
               pendingRubberExportSource?.locationId === selectedLocationId

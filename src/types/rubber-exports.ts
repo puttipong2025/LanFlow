@@ -1,6 +1,11 @@
 export type RubberExportStatus = "draft" | "verified" | "deleted";
 export type RubberExportExpenseDestination = "branch" | "external";
 
+export type RubberExportPermissions = {
+  canVerify: boolean;
+  canDelete: boolean;
+};
+
 export type RubberExportItem = {
   id: string;
   sourceReportItemId: string;

@@ -8,6 +8,7 @@ import type {
   RubberExportAvailableBill,
   RubberExportDetails,
   RubberExportExpenseDestination,
+  RubberExportPermissions,
   RubberExportPreview,
   RubberExportSummary,
 } from "@/types/rubber-exports";
@@ -16,16 +17,22 @@ export function useRubberExports(locationId: string, online: boolean) {
   const queryClient = useQueryClient();
   const [exports, setExports] = useState<RubberExportSummary[]>([]);
   const [availableBills, setAvailableBills] = useState<RubberExportAvailableBill[]>([]);
+  const [permissions, setPermissions] = useState<RubberExportPermissions>({
+    canVerify: false,
+    canDelete: false,
+  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     if (!locationId || !online) {
+      setPermissions({ canVerify: false, canDelete: false });
       setLoading(false);
       return;
     }
     setLoading(true);
     setError(null);
+    setPermissions({ canVerify: false, canDelete: false });
     try {
       const response = await authFetch(
         `/api/lanflow/rubber-exports?locationId=${encodeURIComponent(locationId)}`,
@@ -35,9 +42,11 @@ export function useRubberExports(locationId: string, online: boolean) {
       const body = await response.json() as {
         exports: RubberExportSummary[];
         availableBills: RubberExportAvailableBill[];
+        permissions: RubberExportPermissions;
       };
       setExports(body.exports);
       setAvailableBills(body.availableBills);
+      setPermissions(body.permissions);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "โหลดรายการส่งออกไม่สำเร็จ");
     } finally {
@@ -133,6 +142,7 @@ export function useRubberExports(locationId: string, online: boolean) {
   return {
     exports,
     availableBills,
+    permissions,
     loading,
     error,
     reload,

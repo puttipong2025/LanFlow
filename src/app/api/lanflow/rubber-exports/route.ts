@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAuth } from "@/lib/server/auth";
+import { hasSystemManagerAccess, requireAuth } from "@/lib/server/auth";
 import {
   canManageRubberExports,
   isUuid,
@@ -41,6 +41,8 @@ export async function GET(request: NextRequest) {
   if (error) return rubberExportErrorResponse(error.message);
   if (optionsError) return rubberExportErrorResponse(optionsError.message);
 
+  const canVerifyOrDelete = hasSystemManagerAccess(result.auth);
+
   return NextResponse.json({
     exports: (rows ?? []).map((row) => mapRubberExportRow(row as Record<string, any>)),
     availableBills: (options ?? []).map((row: Record<string, any>) => ({
@@ -53,6 +55,10 @@ export async function GET(request: NextRequest) {
       netWeight: Number(row.net_weight),
       paidAmount: Number(row.paid_amount),
     })),
+    permissions: {
+      canVerify: canVerifyOrDelete,
+      canDelete: canVerifyOrDelete,
+    },
   }, {
     headers: { "Cache-Control": "private, no-store, max-age=0" },
   });

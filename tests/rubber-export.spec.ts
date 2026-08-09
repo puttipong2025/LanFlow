@@ -25,6 +25,103 @@ function service() {
 }
 
 test.describe.serial("Rubber export contract @rubber-export", () => {
+  test("system manager gets super-admin verification actions for another admin's draft without reloading the app", async ({ browser }) => {
+    const managerContext = await authContext(browser, "admin");
+    const creatorContext = await authContext(browser, "user");
+    const db = service();
+    const locationId = crypto.randomUUID();
+    const exportId = crypto.randomUUID();
+
+    const [manager, creator] = await Promise.all([
+      profile(managerContext),
+      profile(creatorContext),
+    ]);
+    const [{ data: managerAccess }, { data: creatorRole }] = await Promise.all([
+      db.from("profiles")
+        .select("can_access_super_admin_features")
+        .eq("id", manager.id)
+        .single(),
+      db.from("profiles")
+        .select("role")
+        .eq("id", creator.id)
+        .single(),
+    ]);
+
+    try {
+      expect((await db.from("profiles")
+        .update({ can_access_super_admin_features: false })
+        .eq("id", manager.id)).error).toBeNull();
+      expect((await db.from("profiles")
+        .update({ role: "admin" })
+        .eq("id", creator.id)).error).toBeNull();
+      expect((await db.from("locations").insert({
+        id: locationId,
+        name: `สาขา System Manager ${locationId.slice(0, 6)}`,
+        code: `SM${locationId.slice(0, 6)}`,
+        is_active: true,
+      })).error).toBeNull();
+      expect((await db.from("user_locations").insert({
+        user_id: manager.id,
+        location_id: locationId,
+      })).error).toBeNull();
+      expect((await db.from("rubber_exports").insert({
+        id: exportId,
+        export_no: `REX-MANAGER-${exportId.slice(0, 8)}`,
+        export_date: "2026-08-09",
+        sequence_no: 990,
+        location_id: locationId,
+        status: "draft",
+        original_weight_total: 100,
+        paid_total: 1000,
+        average_price: 10,
+        other_operating_cost: 0,
+        created_by_user_id: creator.id,
+        created_by_name: creator.name,
+        created_by_phone: creator.phone,
+      })).error).toBeNull();
+
+      const page = await managerContext.newPage();
+      await page.goto("/");
+      await selectAppLocation(page, locationId);
+
+      // The app-level profile is now deliberately stale. The module request must
+      // use the server's current authorization verdict for its action controls.
+      expect((await db.from("profiles")
+        .update({ can_access_super_admin_features: true })
+        .eq("id", manager.id)).error).toBeNull();
+
+      await page.getByRole("button", { name: /^ส่งออกยาง/ }).click();
+      await expect(page.getByRole("button", { name: "เปิดตรวจสอบ" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "รอผู้รับรอง" })).toHaveCount(0);
+
+      await page.getByRole("button", {
+        name: `ดูรายละเอียด REX-MANAGER-${exportId.slice(0, 8)}`,
+      }).click();
+      await page.getByLabel("น้ำหนักปัจจุบัน").fill("90");
+      await page.getByLabel("ค่าทำงาน/กก.").fill("2");
+      await expect(page.getByRole("button", { name: "ตรวจสอบแล้ว", exact: true })).toBeEnabled();
+      await page.getByRole("button", { name: "ตรวจสอบแล้ว", exact: true }).click();
+      await page.getByRole("button", { name: "ลงรายจ่ายสาขานี้" }).click();
+      await expect(page.getByText("ตรวจสอบรายการแล้ว")).toBeVisible();
+      await expect(page.getByText(/ตรวจสอบแล้ว$/).first()).toBeVisible();
+    } finally {
+      await db.from("rubber_exports").delete().eq("id", exportId);
+      await db.from("user_locations").delete().eq("location_id", locationId);
+      await db.from("locations").delete().eq("id", locationId);
+      await db.from("profiles")
+        .update({
+          can_access_super_admin_features:
+            managerAccess?.can_access_super_admin_features === true,
+        })
+        .eq("id", manager.id);
+      await db.from("profiles")
+        .update({ role: creatorRole?.role ?? "user" })
+        .eq("id", creator.id);
+      await managerContext.close();
+      await creatorContext.close();
+    }
+  });
+
   test("draft filter badge is branch-scoped and disappears after refresh", async ({ browser }) => {
     const context = await authContext(browser, "super_admin");
     const adminContext = await authContext(browser, "admin");

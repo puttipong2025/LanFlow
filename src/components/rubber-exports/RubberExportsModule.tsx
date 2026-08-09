@@ -3,9 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { FilePlus2, RotateCw } from "lucide-react";
 import { toast } from "sonner";
-import type { Location, Profile } from "@/types";
+import type { Location } from "@/types";
 import type { RubberExportDetails, RubberExportStatus, RubberExportSummary } from "@/types/rubber-exports";
-import { canManageSystemFeatures } from "@/lib/permissions";
 import { cn } from "@/lib/cn";
 import { useRubberExports } from "@/hooks/useRubberExports";
 import { useSharePdf } from "@/hooks/useSharePdf";
@@ -21,14 +20,12 @@ type Filter = "active" | RubberExportStatus | "all";
 
 export function RubberExportsModule({
   selectedLocation,
-  profile,
   online,
   initialExportId,
   onInitialExportHandled,
   onOpenReports,
 }: {
   selectedLocation: Location;
-  profile: Profile;
   online: boolean;
   initialExportId?: string | null;
   onInitialExportHandled?: () => void;
@@ -42,7 +39,6 @@ export function RubberExportsModule({
   const [pendingDelete, setPendingDelete] = useState<RubberExportSummary | null>(null);
   const [deleting, setDeleting] = useState(false);
   const pdfShare = useSharePdf();
-  const canVerifyOrDelete = canManageSystemFeatures(profile);
   const counts = useMemo(() => ({
     active: api.exports.filter((row) => row.status !== "deleted").length,
     draft: api.exports.filter((row) => row.status === "draft").length,
@@ -193,8 +189,8 @@ export function RubberExportsModule({
         <RubberExportTable
           rows={visibleRows}
           loading={api.loading}
-          canDelete={canVerifyOrDelete}
-          canVerify={canVerifyOrDelete}
+          canDelete={api.permissions.canDelete}
+          canVerify={api.permissions.canVerify}
           shareBusy={pdfShare.busy}
           sharingId={sharingId}
           onOpen={(id) => void open(id)}
@@ -228,7 +224,7 @@ export function RubberExportsModule({
         <RubberExportDetailModal
           key={details.id}
           details={details}
-          canVerify={canVerifyOrDelete}
+          canVerify={api.permissions.canVerify}
           shareBusy={pdfShare.busy}
           sharing={sharingId === details.id}
           onSave={async (values) => {
