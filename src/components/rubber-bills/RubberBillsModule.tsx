@@ -16,6 +16,7 @@ import {
 } from "@/lib/record-action-locks";
 import type { Location, Profile, RubberBill, RubberBillApprovalMarker } from "@/types";
 import { RubberBillsTable } from "./RubberBillsTable";
+import { TablePageSizeSelect } from "@/components/shared/TablePagination";
 import { RubberBillModal, type RubberBillCustomerOption } from "./RubberBillModal";
 import { RubberBillApprovalModal } from "./RubberBillApprovalModal";
 import { WeighingAppointmentModal } from "./WeighingAppointmentModal";
@@ -443,15 +444,10 @@ export function RubberBillsModule({
       <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel">
         <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div className="flex flex-wrap items-center gap-3">
-            <select
-              value={pageSize}
-              onChange={(event) => handlePageSize(event.target.value)}
-              className="focus-ring h-10 rounded-md border border-black/20 bg-white px-3"
-            >
-              {[10, 25, 50].map((size) => (
-                <option key={size} value={size}>{size}</option>
-              ))}
-            </select>
+            <TablePageSizeSelect
+              pageSize={pageSize}
+              onPageSizeChange={(size) => handlePageSize(String(size))}
+            />
           </div>
           <label className="flex items-center gap-2 text-sm font-semibold text-ink">
             ค้นหา:
@@ -489,8 +485,10 @@ export function RubberBillsModule({
           onClose={() => setModalOpen(false)}
           onSave={async (bill) => {
             try {
+              const isCreating = !editingBill;
               const savedBill = await (editingBill ? updateBill(bill) : addBill(bill));
               setModalOpen(false);
+              if (isCreating) setPage(1);
               if (savedBill.netTotal > 0 && !savedBill.approvalPending) {
                 void handlePrint(savedBill);
               }

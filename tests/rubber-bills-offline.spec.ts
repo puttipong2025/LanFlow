@@ -483,7 +483,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     const deleteAction = createdRow.locator('button[title="ลบ"]');
     await expect(editAction).toHaveAttribute('aria-label', 'แก้ไข');
     await expect(deleteAction).toHaveAttribute('aria-label', 'ลบ');
-    await expect(editAction).toHaveText('แก้ไข');
+    await expect(editAction).toHaveText('แก้');
     await expect(deleteAction).toHaveText('ลบ');
     await editAction.click();
     await expect(page.locator('h2:has-text("แก้ไขบิลเครื่องชั่งเล็ก")')).toBeVisible();

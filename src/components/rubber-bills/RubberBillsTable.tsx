@@ -3,6 +3,7 @@ import { formatNumber } from "@/lib/format";
 import type { RubberBill } from "@/types";
 import { formatBillTimestamp, getDisplayBillNo } from "./bill-display";
 import { SyncStatusBadge } from "@/components/shared/SyncStatusBadge";
+import { TablePagination } from "@/components/shared/TablePagination";
 
 export type RubberBillsTableProps = {
   bills: RubberBill[];
@@ -36,8 +37,6 @@ export function RubberBillsTable({
   const totalPages = Math.max(Math.ceil(bills.length / pageSize), 1);
   const currentPage = Math.min(page, totalPages);
   const visibleBills = bills.slice((currentPage - 1) * pageSize, currentPage * pageSize);
-  const firstVisible = bills.length === 0 ? 0 : (currentPage - 1) * pageSize + 1;
-  const lastVisible = Math.min(currentPage * pageSize, bills.length);
 
   return (
     <>
@@ -170,25 +169,12 @@ export function RubberBillsTable({
           </tbody>
         </table>
       </div>
-      <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="text-sm text-ink">
-          <p>แสดง {firstVisible} ถึง {lastVisible} จาก {bills.length} แถว</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {Array.from({ length: totalPages }, (_, index) => index + 1).slice(0, 7).map((pageNumber) => (
-            <button
-              key={pageNumber}
-              type="button"
-              onClick={() => onPageChange(pageNumber)}
-              className={`h-10 min-w-10 rounded-md border px-3 text-sm font-semibold text-white ${
-                currentPage === pageNumber ? "border-leaf bg-leaf" : "border-actionSecondary bg-actionSecondary hover:bg-actionSecondary/90"
-              }`}
-            >
-              {pageNumber}
-            </button>
-          ))}
-        </div>
-      </div>
+      <TablePagination
+        totalItems={bills.length}
+        page={currentPage}
+        pageSize={pageSize}
+        onPageChange={onPageChange}
+      />
     </>
   );
 }

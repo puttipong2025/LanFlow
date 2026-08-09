@@ -31,6 +31,7 @@ import { useSharePdf } from "@/hooks/useSharePdf";
 import type { CashBranchTransfer, IncomeExpense, IncomeExpenseApprovalMarker, Location, MoneyTransfer, Profile } from "@/types";
 import { IconButton } from "@/components/shared/IconButton";
 import { SyncStatusBadge } from "@/components/shared/SyncStatusBadge";
+import { TablePagination, TablePageSizeSelect } from "@/components/shared/TablePagination";
 import { BranchTransferForm } from "@/components/money-transfer/BranchTransferForm";
 import { CashBranchTransferCreateModal, CashBranchTransferDetails, CashBranchTransferReceiveModal } from "./CashBranchTransferModal";
 import { getIncomeExpenseDisplayNo } from "./income-expense-display";
@@ -223,13 +224,21 @@ export function IncomeExpenseModule({
   const [cashDetailsId, setCashDetailsId] = useState<string | null>(null);
   const [cashEditingId, setCashEditingId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const visibleTransactions = search.trim()
+  const [pageSize, setPageSize] = useState(10);
+  const [page, setPage] = useState(1);
+  const filteredTransactions = search.trim()
     ? ledgerTransactions.filter((transaction) =>
       `${transaction.number} ${transaction.title} ${transaction.createdByName}`
         .toLocaleLowerCase("th-TH")
         .includes(search.trim().toLocaleLowerCase("th-TH"))
     )
     : ledgerTransactions;
+  const totalPages = Math.max(Math.ceil(filteredTransactions.length / pageSize), 1);
+  const currentPage = Math.min(page, totalPages);
+  const visibleTransactions = filteredTransactions.slice(
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize,
+  );
 
   function openAdd(type: "income" | "expense") {
     setModalType(type);
@@ -302,6 +311,7 @@ export function IncomeExpenseModule({
     addTransfer.mutate(transfer, {
       onSuccess: () => {
         setBranchTransferModalOpen(false);
+        setPage(1);
         queryClient.invalidateQueries({ queryKey: [INCOME_EXPENSE_FEED_QUERY_KEY] });
         toast.success("บันทึกรายการโยกเงินไปสาขาอื่นแล้ว");
       },
@@ -574,13 +584,6 @@ export function IncomeExpenseModule({
         <div>
           <h2 className="text-balance text-lg font-bold text-ink">CRUD รายรับ-รายจ่าย · {selectedLocation.name}</h2>
           <p className="text-pretty text-sm text-ink/60">เพิ่มผ่าน modal และจัดการรายการจากตาราง</p>
-          <input
-            type="search"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="ค้นหาในรายการที่โหลดแล้ว"
-            className="mt-3 h-9 w-full max-w-xs rounded-md border border-black/15 px-3 text-sm"
-          />
         </div>
         <div className="flex w-full flex-wrap gap-2 sm:w-auto">
           <button
@@ -656,18 +659,39 @@ export function IncomeExpenseModule({
       )}
 
       <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel">
+        <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <TablePageSizeSelect
+            pageSize={pageSize}
+            onPageSizeChange={(size) => {
+              setPageSize(size);
+              setPage(1);
+            }}
+          />
+          <label className="flex items-center gap-2 text-sm font-semibold text-ink">
+            ค้นหา:
+            <input
+              type="search"
+              value={search}
+              onChange={(event) => {
+                setSearch(event.target.value);
+                setPage(1);
+              }}
+              placeholder="ค้นหาในรายการที่โหลดแล้ว"
+              className="focus-ring h-10 w-full rounded-md border border-black/20 bg-white px-3 sm:w-64"
+            />
+          </label>
+        </div>
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1020px] border-collapse text-sm">
+          <table className="w-full min-w-[960px] border-collapse text-sm">
             <thead>
               <tr className="border-b border-black/10 text-left text-ink/60">
                 <th className="py-2">จัดการ</th>
                 <th className="py-2">เลขที่</th>
-                <th>เลขบิล</th>
+                <th className="text-right">จำนวนเงิน</th>
+                <th>รายการ</th>
                 <th>วันที่</th>
                 <th>ประเภท</th>
-                <th>รายการ</th>
                 <th>หมวด</th>
-                <th>จำนวนเงิน</th>
                 <th>ผู้บันทึก</th>
                 <th>Sync</th>
               </tr>
@@ -840,20 +864,9 @@ export function IncomeExpenseModule({
                       )}
                     </div>
                   </td>
-                  <td className="text-xs text-ink/55">
-                    <div className="flex flex-col gap-0.5">
-                      <span>{getIncomeExpenseDisplayNo(transaction)}</span>
-                      {transaction.serverBillNo ? (
-                        transaction.localBillNo !== transaction.serverBillNo && (
-                          <span className="text-[10px] text-leaf font-semibold">ซิงก์จาก {transaction.localBillNo}</span>
-                        )
-                      ) : (
-                        <span className="text-[10px] text-amber-600 font-semibold">Local</span>
-                      )}
-                    </div>
+                  <td className={transaction.type === "income" ? "text-right font-semibold text-leaf tabular-nums" : "text-right font-semibold text-clay tabular-nums"}>
+                    {transaction.type === "income" ? "+" : "-"}{formatCurrency(transaction.cost)}
                   </td>
-                  <td>{transaction.txDate}</td>
-                  <td>{transaction.type === "income" ? "รายรับ" : "รายจ่าย"}</td>
                   <td>
                     <div className="flex flex-col gap-1">
                       <span>{transaction.title}</span>
@@ -864,10 +877,9 @@ export function IncomeExpenseModule({
                       )}
                     </div>
                   </td>
+                  <td className="tabular-nums">{transaction.txDate}</td>
+                  <td>{transaction.type === "income" ? "รายรับ" : "รายจ่าย"}</td>
                   <td>{transaction.billOption}</td>
-                  <td className={transaction.type === "income" ? "font-semibold text-leaf" : "font-semibold text-clay"}>
-                    {transaction.type === "income" ? "+" : "-"}{formatCurrency(transaction.cost)}
-                  </td>
                   <td>{transaction.createdByName} · {transaction.createdByPhone}</td>
                   <td>
                     {transaction.approvalPending ? (
@@ -881,7 +893,7 @@ export function IncomeExpenseModule({
               })}
               {visibleTransactions.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="py-8 text-center text-ink/50">
+                  <td colSpan={9} className="py-8 text-center text-ink/50">
                     {search ? "ไม่พบรายการที่ค้นหา" : "ยังไม่มีรายการรับ-จ่ายในสาขานี้"}
                   </td>
                 </tr>
@@ -889,6 +901,13 @@ export function IncomeExpenseModule({
             </tbody>
           </table>
         </div>
+        <TablePagination
+          totalItems={filteredTransactions.length}
+          page={currentPage}
+          pageSize={pageSize}
+          onPageChange={setPage}
+          hasMore={hasMore}
+        />
       </section>
 
       {hasMore && (
@@ -915,13 +934,16 @@ export function IncomeExpenseModule({
           nonCurrentDateRequiresApproval={approvalSettings?.nonCurrentDateRequiresApproval}
           onClose={() => setModalOpen(false)}
           onSave={async (savedTransactions) => {
+            const isCreating = !editingTransaction;
             const isSaleSubmission =
               savedTransactions.length > 0
               && savedTransactions.every(
                 (transaction) => transaction.billOption === "บิลขาย"
               );
             if (isSaleSubmission) {
-              return submitAndShareSaleReceipt(savedTransactions);
+              const saved = await submitAndShareSaleReceipt(savedTransactions);
+              if (saved && isCreating) setPage(1);
+              return saved;
             }
 
             try {
@@ -929,6 +951,7 @@ export function IncomeExpenseModule({
                 await persistSubmittedTransactions(savedTransactions);
               if (persistError) throw persistError;
               setModalOpen(false);
+              if (isCreating) setPage(1);
               showPersistSummary(pendingApprovalCount, persistedTransactions.length);
               return true;
             } catch (error) {
@@ -986,7 +1009,11 @@ export function IncomeExpenseModule({
               location={selectedLocation}
               online={isOnline}
               modeSelector={<BranchTransferModeSelector mode={branchTransferMode} bankAllowed={canCreateMoneyTransfer} onChange={setBranchTransferMode} />}
-              onSave={cashTransfers.create.mutateAsync}
+              onSave={async (payload) => {
+                const created = await cashTransfers.create.mutateAsync(payload);
+                setPage(1);
+                return created;
+              }}
               onClose={() => setBranchTransferModalOpen(false)}
             />
           ) : (
