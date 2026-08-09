@@ -24,15 +24,17 @@ export function useRubberExports(locationId: string, online: boolean) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (silent = false) => {
     if (!locationId || !online) {
       setPermissions({ canVerify: false, canDelete: false });
       setLoading(false);
       return;
     }
-    setLoading(true);
-    setError(null);
-    setPermissions({ canVerify: false, canDelete: false });
+    if (!silent) {
+      setLoading(true);
+      setError(null);
+      setPermissions({ canVerify: false, canDelete: false });
+    }
     try {
       const response = await authFetch(
         `/api/lanflow/rubber-exports?locationId=${encodeURIComponent(locationId)}`,
@@ -46,17 +48,32 @@ export function useRubberExports(locationId: string, online: boolean) {
       };
       setExports(body.exports);
       setAvailableBills(body.availableBills);
-      setPermissions(body.permissions);
+      setPermissions(body.permissions ?? { canVerify: false, canDelete: false });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "โหลดรายการส่งออกไม่สำเร็จ");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [locationId, online]);
 
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  useEffect(() => {
+    if (!locationId || !online) return;
+    const refresh = () => {
+      if (document.visibilityState === "visible") void reload(true);
+    };
+    window.addEventListener("focus", refresh);
+    window.addEventListener("online", refresh);
+    const interval = window.setInterval(refresh, 15 * 60 * 1000);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("online", refresh);
+      window.clearInterval(interval);
+    };
+  }, [locationId, online, reload]);
 
   async function reloadWithBadges() {
     await Promise.all([

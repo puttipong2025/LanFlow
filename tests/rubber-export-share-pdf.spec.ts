@@ -264,6 +264,21 @@ test("shows fresh-detail errors and recovers the share action", async ({ page })
   await expect(page.getByRole("dialog", { name: "กำลังสร้าง PDF" })).toBeHidden();
 });
 
+test("refreshes an open draft from the server when the window regains focus", async ({ page }) => {
+  let draftRequests = 0;
+  await openRubberExports(page, {
+    onDetail: (id) => {
+      if (id === draft.id) draftRequests += 1;
+    },
+  });
+  await page.getByRole("button", { name: `ดูรายละเอียด ${draft.exportNo}` }).click();
+  await expect(page.getByRole("heading", { name: draft.exportNo, level: 2 })).toBeVisible();
+  await expect.poll(() => draftRequests).toBe(1);
+
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect.poll(() => draftRequests).toBe(2);
+});
+
 test("returns 404 for the removed Rubber Export print bookmark", async ({ page }) => {
   const response = await page.goto(`/rubber-exports/${verified.id}/print`);
   expect(response?.status()).toBe(404);

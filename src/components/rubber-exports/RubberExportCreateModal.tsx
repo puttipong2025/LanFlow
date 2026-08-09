@@ -7,6 +7,7 @@ import type {
   RubberExportAvailableBill,
   RubberExportPreview,
 } from "@/types/rubber-exports";
+import { formatRubberAge } from "@/lib/rubber-exports/rubber-export-presentation";
 
 function number(value: number) {
   return value.toLocaleString("th-TH", {
@@ -129,12 +130,19 @@ export function RubberExportCreateModal({
 
         {preview && (
           <>
-            <div className="grid gap-3 sm:grid-cols-4">
+            <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
               <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">จำนวนบิล</div><div className="font-bold">{preview.itemCount}</div></div>
               <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">น้ำหนักสุทธิรวม</div><div className="font-bold">{number(preview.originalWeightTotal)} กก.</div></div>
               <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ยอดจ่ายจริงรวม</div><div className="font-bold">฿{number(preview.paidTotal)}</div></div>
               <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ต้นทุนซื้อเฉลี่ย</div><div className="font-bold">฿{number(preview.averagePrice)}/กก.</div></div>
+              <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">อายุเฉลี่ยถ่วงน้ำหนัก</div><div className="font-bold tabular-nums">{formatRubberAge(preview.averageAgeHours)}</div></div>
+              <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">อายุมากที่สุด</div><div className="font-bold tabular-nums">{formatRubberAge(preview.oldestAgeHours)}</div></div>
             </div>
+            {preview.estimatedAgeItemCount > 0 && (
+              <p className="text-pretty text-xs font-semibold text-amber-800">
+                มีอายุประมาณการ {preview.estimatedAgeItemCount.toLocaleString("th-TH")} บิล
+              </p>
+            )}
           </>
         )}
 

@@ -22,6 +22,7 @@ export function rubberExportErrorResponse(message: string) {
     message.includes("RUBBER_EXPORT_SELECTION") ||
     message.includes("REPORT_LOCKED") ||
     message.includes("RUBBER_EXPORT_LOCKED") ||
+    message.includes("RUBBER_EXPORT_FUTURE_BILL") ||
     message.includes("ถูกจอง") ||
     message.includes("ฉบับร่าง") ||
     message.includes("ตรวจสอบแล้ว") ||
@@ -67,5 +68,12 @@ export function mapRubberExportRow(row: Record<string, any>): RubberExportSummar
     deletedAt: row.deleted_at,
     itemCount: number(itemCount),
     reportLockNo: row.report_lock_no,
+    ageCalculatedAt: row.age_calculated_at ?? null,
+    averageAgeHours: row.average_age_hours === null || row.average_age_hours === undefined
+      ? null : number(row.average_age_hours),
+    oldestAgeHours: row.oldest_age_hours === null || row.oldest_age_hours === undefined
+      ? null : number(row.oldest_age_hours),
+    estimatedAgeItemCount: row.estimated_age_item_count === null || row.estimated_age_item_count === undefined
+      ? null : number(row.estimated_age_item_count),
   };
 }

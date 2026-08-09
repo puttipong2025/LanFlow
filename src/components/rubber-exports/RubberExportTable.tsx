@@ -1,6 +1,7 @@
 import { Clock3, Eye, Loader2, PackageCheck, Share2, Trash2 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import type { RubberExportSummary, RubberExportStatus } from "@/types/rubber-exports";
+import { formatRubberAge } from "@/lib/rubber-exports/rubber-export-presentation";
 
 const statusLabel: Record<RubberExportStatus, string> = {
   draft: "ฉบับร่าง",
@@ -48,14 +49,16 @@ export function RubberExportTable({
             <th className="px-4 py-3 text-right">น้ำหนักเดิม</th>
             <th className="px-4 py-3 text-right">น้ำหนักปัจจุบัน</th>
             <th className="px-4 py-3 text-right">ยอดค่าทำงาน</th>
+            <th className="px-4 py-3 text-right">อายุเฉลี่ย</th>
+            <th className="px-4 py-3 text-right">อายุมากสุด</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-black/5">
           {loading && (
-            <tr><td colSpan={7} className="px-4 py-8 text-center text-ink/60">กำลังโหลด...</td></tr>
+            <tr><td colSpan={9} className="px-4 py-8 text-center text-ink/60">กำลังโหลด...</td></tr>
           )}
           {!loading && rows.length === 0 && (
-            <tr><td colSpan={7} className="px-4 py-8 text-center text-ink/60">ยังไม่มีรายการส่งออกยาง</td></tr>
+            <tr><td colSpan={9} className="px-4 py-8 text-center text-ink/60">ยังไม่มีรายการส่งออกยาง</td></tr>
           )}
           {!loading && rows.map((row) => (
             <tr key={row.id} className={cn(row.status === "deleted" && "bg-slate-50 text-ink/50")}>
@@ -107,6 +110,14 @@ export function RubberExportTable({
               <td className="px-4 py-3 text-right tabular-nums">{number(row.originalWeightTotal)}</td>
               <td className="px-4 py-3 text-right tabular-nums">{number(row.currentWeight)}</td>
               <td className="px-4 py-3 text-right tabular-nums">{number(row.workTotal)}</td>
+              <td className="px-4 py-3 text-right tabular-nums">
+                {formatRubberAge(row.averageAgeHours)}
+                {Boolean(row.estimatedAgeItemCount) && <div className="text-xs text-amber-800">ประมาณการ {row.estimatedAgeItemCount} บิล</div>}
+              </td>
+              <td className="px-4 py-3 text-right tabular-nums">
+                {formatRubberAge(row.oldestAgeHours)}
+                {Boolean(row.estimatedAgeItemCount) && <div className="text-xs text-amber-800">ประมาณการ {row.estimatedAgeItemCount} บิล</div>}
+              </td>
             </tr>
           ))}
         </tbody>

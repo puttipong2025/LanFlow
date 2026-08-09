@@ -495,7 +495,7 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
         });
         expect(createResponse.status(), await createResponse.text()).toBe(201);
         const created = await createResponse.json() as { id: string; exportNo: string };
-        const cost = 80 * index + 5;
+        const cost = 90 * index + 5;
         exports.push({ ...created, cost });
 
         const verifyResponse = await superAdmin.request.post(

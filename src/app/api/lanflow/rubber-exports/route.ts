@@ -26,7 +26,11 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "ไม่มีสิทธิ์ดูรายการส่งออกของสาขานี้" }, { status: 403 });
   }
 
-  const [{ data: rows, error }, { data: options, error: optionsError }] = await Promise.all([
+  const [
+    { data: rows, error },
+    { data: options, error: optionsError },
+    { data: ages, error: agesError },
+  ] = await Promise.all([
     result.supabase
       .from("rubber_exports")
       .select(columns)
@@ -36,15 +40,27 @@ export async function GET(request: NextRequest) {
     result.supabase.rpc("get_rubber_export_available_bills", {
       p_location_id: locationId,
     }),
+    result.supabase.rpc("get_rubber_export_age_summaries", {
+      p_location_id: locationId,
+    }),
   ]);
 
   if (error) return rubberExportErrorResponse(error.message);
   if (optionsError) return rubberExportErrorResponse(optionsError.message);
+  if (agesError) return rubberExportErrorResponse(agesError.message);
+
+  const agesByExport = new Map<string, Record<string, any>>(
+    (ages ?? []).map((age: Record<string, any>) => [age.export_id as string, age]),
+  );
 
   const canVerifyOrDelete = hasSystemManagerAccess(result.auth);
 
   return NextResponse.json({
-    exports: (rows ?? []).map((row) => mapRubberExportRow(row as Record<string, any>)),
+    exports: (rows ?? []).map((row) => mapRubberExportRow({
+      ...(row as Record<string, any>),
+      ...(agesByExport.get(row.id) ?? {}),
+      age_calculated_at: agesByExport.get(row.id)?.calculated_at ?? null,
+    })),
     availableBills: (options ?? []).map((row: Record<string, any>) => ({
       reportItemId: row.report_item_id,
       billId: row.bill_id,

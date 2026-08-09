@@ -30,6 +30,23 @@ export function formatRubberExportDateTime(value: string | null | undefined) {
   }).format(new Date(value));
 }
 
+export function formatRubberAge(value: number | null | undefined) {
+  if (value == null) return MISSING_VALUE;
+  const roundedHours = Math.round(value);
+  const days = Math.floor(roundedHours / 24);
+  const hours = roundedHours % 24;
+  return `${days} วัน ${hours} ชั่วโมง (${(value / 24).toFixed(2)} วัน)`;
+}
+
+function ageSummaryText(
+  value: number | null | undefined,
+  estimatedCount: number | null | undefined,
+) {
+  const formatted = formatRubberAge(value);
+  if (formatted === MISSING_VALUE || !estimatedCount) return formatted;
+  return `${formatted} · ประมาณการ ${estimatedCount.toLocaleString("th-TH")} บิล`;
+}
+
 function formatBangkokFileTimestamp(value: string) {
   const parts = new Intl.DateTimeFormat("en-GB", {
     year: "numeric",
@@ -94,6 +111,8 @@ export function buildRubberExportPresentation(details: RubberExportDetails) {
       ["ยอดค่าทำงานรวม", details.workTotal == null
         ? MISSING_VALUE
         : `฿${formatRubberExportNumber(details.workTotal)}`],
+      ["อายุเฉลี่ยถ่วงน้ำหนัก", ageSummaryText(details.averageAgeHours, details.estimatedAgeItemCount)],
+      ["อายุมากที่สุด", ageSummaryText(details.oldestAgeHours, details.estimatedAgeItemCount)],
     ] as const,
     items: details.items.map((item) => ({
       ...item,
@@ -101,6 +120,9 @@ export function buildRubberExportPresentation(details: RubberExportDetails) {
       eligibilityAtText: formatRubberExportDateTime(item.eligibilityAt),
       netWeightText: formatRubberExportNumber(item.netWeight),
       paidAmountText: formatRubberExportNumber(item.paidAmount),
+      ageText: item.ageHours == null
+        ? MISSING_VALUE
+        : `${formatRubberAge(item.ageHours)}${item.ageIsEstimated ? " · ประมาณการ" : ""}`,
     })),
     audit: {
       created: `${details.createdByName || MISSING_VALUE}\n${formatRubberExportDateTime(details.createdAt)}`,

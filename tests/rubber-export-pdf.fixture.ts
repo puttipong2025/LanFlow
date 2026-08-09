@@ -13,6 +13,8 @@ export function rubberExportDetails(
     eligibilityAt: "2026-07-29T08:10:00.000Z",
     netWeight: 100 + index,
     paidAmount: 3_000 + index,
+    ageHours: 48 + index,
+    ageIsEstimated: index === 2,
   }));
   return {
     id: "rubber-export-share-test",
@@ -38,6 +40,10 @@ export function rubberExportDetails(
     deletedAt: null,
     itemCount: items.length,
     reportLockNo: null,
+    ageCalculatedAt: "2026-07-29T08:30:00.000Z",
+    averageAgeHours: 49.01,
+    oldestAgeHours: 50,
+    estimatedAgeItemCount: 1,
     items,
     ...overrides,
   };
@@ -56,6 +62,8 @@ export function longRubberExportDetails() {
       eligibilityAt: "2026-07-29T08:10:00.000Z",
       netWeight: 100 + index,
       paidAmount: 3_000 + index,
+      ageHours: 48 + index,
+      ageIsEstimated: false,
     };
   });
   return rubberExportDetails({

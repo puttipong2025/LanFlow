@@ -21,6 +21,8 @@ test("formats a verified Rubber Export for an A4 PDF in Bangkok time", () => {
     ["ค่าทำงานต่อกิโลกรัม", "฿1.50"],
     ["ค่าดำเนินการอื่น", "฿120.00"],
     ["ยอดค่าทำงานรวม", "฿574.50"],
+    ["อายุเฉลี่ยถ่วงน้ำหนัก", "2 วัน 1 ชั่วโมง (2.04 วัน) · ประมาณการ 1 บิล"],
+    ["อายุมากที่สุด", "2 วัน 2 ชั่วโมง (2.08 วัน) · ประมาณการ 1 บิล"],
   ]);
   expect(rubberExportPdfFilename(details)).toBe(
     "LanFlow-rubber-export-REX-20260729-004-20260729-1504-A4-landscape.pdf",
@@ -44,6 +46,10 @@ test("keeps deletion evidence and uses em dashes for a deleted draft", () => {
     deletedAt: "2026-07-29T09:00:00.000Z",
     itemCount: 0,
     items: [],
+    ageCalculatedAt: null,
+    averageAgeHours: null,
+    oldestAgeHours: null,
+    estimatedAgeItemCount: null,
   });
   const presentation = buildRubberExportPresentation(details);
 
@@ -51,6 +57,7 @@ test("keeps deletion evidence and uses em dashes for a deleted draft", () => {
   expect(presentation.previousStatus).toBe("ฉบับร่าง");
   expect(presentation.summary.slice(3, 6).map((entry) => entry[1])).toEqual(["—", "—", "—"]);
   expect(presentation.summary[7][1]).toBe("—");
+  expect(presentation.summary.slice(8).map((entry) => entry[1])).toEqual(["—", "—"]);
   expect(presentation.audit.verified).toBe("—\n—");
   expect(presentation.audit.deleted).toContain("ผู้ลบ");
 });

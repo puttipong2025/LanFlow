@@ -12,6 +12,7 @@ import type {
   RubberExportDetails,
   RubberExportExpenseDestination,
 } from "@/types/rubber-exports";
+import { formatRubberAge } from "@/lib/rubber-exports/rubber-export-presentation";
 
 function number(value: number | null | undefined) {
   return value == null ? "—" : value.toLocaleString("th-TH", {
@@ -117,11 +118,18 @@ export function RubberExportDetailModal({
           </div>
         )}
 
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-5">
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">น้ำหนักสุทธิรวม</div><div className="font-bold tabular-nums">{number(details.originalWeightTotal)} กก.</div></div>
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ยอดจ่ายจริงรวม</div><div className="font-bold tabular-nums">฿{number(details.paidTotal)}</div></div>
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ต้นทุนซื้อเฉลี่ย</div><div className="font-bold tabular-nums">฿{number(details.averagePrice)}/กก.</div></div>
+          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">อายุเฉลี่ยถ่วงน้ำหนัก</div><div className="font-bold tabular-nums">{formatRubberAge(details.averageAgeHours)}</div></div>
+          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">อายุมากที่สุด</div><div className="font-bold tabular-nums">{formatRubberAge(details.oldestAgeHours)}</div></div>
         </div>
+
+        <p className="text-pretty text-xs text-ink/55">
+          คำนวณโดย Server ณ <span className="tabular-nums">{dateTime(details.ageCalculatedAt)}</span>
+          {Boolean(details.estimatedAgeItemCount) && ` · มีอายุประมาณการ ${details.estimatedAgeItemCount} บิล`}
+        </p>
 
         <div className="grid gap-3 sm:grid-cols-5">
           <label className="block">
@@ -178,7 +186,7 @@ export function RubberExportDetailModal({
         <div className="overflow-x-auto rounded-md border border-black/10">
           <table className="min-w-full text-sm">
             <thead className="bg-mint/50">
-              <tr><th className="px-3 py-2 text-left">วันที่</th><th className="px-3 py-2 text-left">บิล</th><th className="px-3 py-2 text-left">ลูกค้า</th><th className="px-3 py-2 text-right">น้ำหนัก</th><th className="px-3 py-2 text-right">จ่ายจริง</th></tr>
+              <tr><th className="px-3 py-2 text-left">วันที่</th><th className="px-3 py-2 text-left">บิล</th><th className="px-3 py-2 text-left">ลูกค้า</th><th className="px-3 py-2 text-right">น้ำหนัก</th><th className="px-3 py-2 text-right">จ่ายจริง</th><th className="px-3 py-2 text-right">อายุยาง</th></tr>
             </thead>
             <tbody className="divide-y divide-black/5">
               {details.items.map((item) => (
@@ -186,8 +194,12 @@ export function RubberExportDetailModal({
                   <td className="px-3 py-2">{item.billDate}</td>
                   <td className="px-3 py-2">{item.billNo}</td>
                   <td className="px-3 py-2">{item.customerName}</td>
-                  <td className="px-3 py-2 text-right">{number(item.netWeight)}</td>
-                  <td className="px-3 py-2 text-right">{number(item.paidAmount)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{number(item.netWeight)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{number(item.paidAmount)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    {formatRubberAge(item.ageHours)}
+                    {item.ageIsEstimated && <div className="text-xs text-amber-800">ประมาณการ</div>}
+                  </td>
                 </tr>
               ))}
             </tbody>

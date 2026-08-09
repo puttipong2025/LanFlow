@@ -200,6 +200,10 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
           verified_by_name: me.name,
           verified_by_phone: me.phone,
           verified_at: "2026-08-02T02:00:00.000Z",
+          age_cutoff_at: "2026-08-02T02:00:00.000Z",
+          average_age_hours: 0,
+          oldest_age_hours: 0,
+          estimated_age_item_count: 0,
         } : {
           id,
           export_no: `REX-BADGE-${id.slice(0, 8)}`,

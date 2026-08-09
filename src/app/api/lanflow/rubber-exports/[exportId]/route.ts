@@ -26,16 +26,32 @@ export async function GET(request: NextRequest, context: RouteContext) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
   const { exportId } = await context.params;
-  const { data: row, error } = await result.supabase
-    .from("rubber_exports")
-    .select(detailColumns)
-    .eq("id", exportId)
-    .maybeSingle();
+  const [
+    { data: row, error },
+    { data: ageDetail, error: ageError },
+  ] = await Promise.all([
+    result.supabase
+      .from("rubber_exports")
+      .select(detailColumns)
+      .eq("id", exportId)
+      .maybeSingle(),
+    result.supabase.rpc("get_rubber_export_age_detail", { p_export_id: exportId }),
+  ]);
   if (error) return rubberExportErrorResponse(error.message);
   if (!row) return NextResponse.json({ error: "ไม่พบรายการส่งออก" }, { status: 404 });
+  if (ageError) return rubberExportErrorResponse(ageError.message);
+
+  const age = (ageDetail ?? {}) as Record<string, any>;
+  const itemAges = new Map(
+    ((age.items ?? []) as Record<string, any>[]).map((item) => [item.itemId, item]),
+  );
 
   const summary = mapRubberExportRow({
     ...row,
+    age_calculated_at: age.calculatedAt ?? null,
+    average_age_hours: age.averageAgeHours ?? null,
+    oldest_age_hours: age.oldestAgeHours ?? null,
+    estimated_age_item_count: age.estimatedAgeItemCount ?? null,
     rubber_export_items: [{ count: row.rubber_export_items.length }],
   } as Record<string, any>);
   return NextResponse.json({
@@ -51,6 +67,8 @@ export async function GET(request: NextRequest, context: RouteContext) {
         eligibilityAt: item.eligibility_at,
         netWeight: Number(item.net_weight),
         paidAmount: Number(item.paid_amount),
+        ageHours: itemAges.get(item.id)?.ageHours ?? null,
+        ageIsEstimated: Boolean(itemAges.get(item.id)?.ageIsEstimated),
       }))
       .sort((left, right) =>
         left.eligibilityAt.localeCompare(right.eligibilityAt)

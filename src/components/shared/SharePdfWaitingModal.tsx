@@ -27,7 +27,7 @@ export function SharePdfWaitingModal({
           </div>
           <button
             type="button"
-            aria-label="ปิดหน้าต่างสร้าง PDF"
+            aria-label="ยกเลิกการสร้าง PDF"
             onClick={onCancel}
             className="focus-ring grid size-9 place-items-center rounded-md bg-actionSecondary text-white"
           >
@@ -39,7 +39,7 @@ export function SharePdfWaitingModal({
           onClick={onCancel}
           className="focus-ring mt-5 h-10 w-full rounded-md bg-actionSecondary px-4 text-sm font-semibold text-white hover:bg-actionSecondary/90"
         >
-          ปิดหน้าต่าง
+          ยกเลิก
         </button>
       </div>
     </div>

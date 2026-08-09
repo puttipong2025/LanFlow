@@ -24,7 +24,8 @@ insert into public.rubber_exports (
   original_weight_total, paid_total, average_price, current_weight,
   weight_loss_percent, work_rate, other_operating_cost, work_total,
   expense_destination, created_by_user_id, created_by_name, created_by_phone,
-  verified_by_user_id, verified_by_name, verified_by_phone, verified_at
+  verified_by_user_id, verified_by_name, verified_by_phone, verified_at,
+  age_cutoff_at, average_age_hours, oldest_age_hours, estimated_age_item_count
 )
 values (
   '33000000-0000-4000-8000-000000000001',
@@ -48,7 +49,8 @@ values (
   '32000000-0000-4000-8000-000000000001',
   'pgTAP Rubber Export Manager',
   '0893000001',
-  '2026-08-01 09:00:00+07'
+  '2026-08-01 09:00:00+07',
+  '2026-08-01 09:00:00+07', 0, 0, 0
 );
 
 insert into public.report_batches (

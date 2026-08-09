@@ -76,6 +76,31 @@ export function RubberExportsModule({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialExportId, online]);
 
+  useEffect(() => {
+    if (!details || details.status !== "draft" || !online) return;
+    let active = true;
+    const refresh = async () => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        const next = await api.details(details.id);
+        if (active) setDetails(next);
+      } catch {
+        // Keep the last valid snapshot; normal actions still surface request errors.
+      }
+    };
+    window.addEventListener("focus", refresh);
+    window.addEventListener("online", refresh);
+    const interval = window.setInterval(refresh, 15 * 60 * 1000);
+    return () => {
+      active = false;
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("online", refresh);
+      window.clearInterval(interval);
+    };
+    // The draft ID/status are the refresh lifecycle boundary.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [details?.id, details?.status, online]);
+
   async function remove(row: RubberExportSummary) {
     if (row.reportLockNo) return;
     setDeleting(true);

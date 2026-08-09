@@ -119,7 +119,10 @@ function drawRubberExportContent(doc: PdfDocument, details: RubberExportDetails)
 
   drawHeader(state, details, presentation.status, presentation.previousStatus);
 
-  const summaryRows: PdfCell[][] = [0, 4].map((offset) =>
+  const summaryRows: PdfCell[][] = Array.from(
+    { length: Math.ceil(presentation.summary.length / 4) },
+    (_, row) => row * 4,
+  ).map((offset) =>
     presentation.summary.slice(offset, offset + 4).flatMap(([label, value]) => [
       { text: label, fontSize: 10, bold: true, fill: PDF_PALETTE.mint },
       { text: value, fontSize: 13, bold: true, align: "right", fill: PDF_PALETTE.paleGreen },
@@ -134,7 +137,7 @@ function drawRubberExportContent(doc: PdfDocument, details: RubberExportDetails)
   );
 
   const itemRows: PdfCell[][] = presentation.items.length === 0
-    ? [[{ text: "ไม่มีรายการ", align: "center", color: PDF_PALETTE.muted, colSpan: 6 }]]
+    ? [[{ text: "ไม่มีรายการ", align: "center", color: PDF_PALETTE.muted, colSpan: 7 }]]
     : presentation.items.map((item) => [
       data(item.billDateText),
       data(item.billNo),
@@ -142,14 +145,16 @@ function drawRubberExportContent(doc: PdfDocument, details: RubberExportDetails)
       data(item.eligibilityAtText),
       data(item.netWeightText, "right"),
       data(item.paidAmountText, "right"),
+      data(item.ageText, "right"),
     ]);
-  drawTable(state, [75, 100, 180, 160, 130, 148], [
+  drawTable(state, [65, 80, 140, 125, 100, 110, 173], [
     header("วันที่บิล"),
     header("เลขบิล"),
     header("ลูกค้า"),
     header("เวลาพร้อมออกรายงาน"),
     header("น้ำหนักสุทธิ", "right"),
     header("ยอดจ่ายจริง", "right"),
+    header("อายุยาง", "right"),
   ], itemRows);
 
   drawTable(state, [264, 264, 265], [
