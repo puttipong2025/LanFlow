@@ -300,11 +300,16 @@ export function useMoneyTransfers(locationId: string, options: { enabled?: boole
 
   const deleteTransfer = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase.from("money_transfers").update({ record_status: "deleted" }).eq("id", id);
+      const { data, error } = await supabase.rpc("delete_money_transfer", {
+        p_transfer_id: id,
+      });
       if (error) throw new Error(error.message || JSON.stringify(error));
-      
-      // Also release all tied items so they can be re-used
-      await supabase.from("money_transfer_items").delete().eq("transfer_id", id);
+
+      if ((data as { status?: string } | null)?.status !== "deleted") {
+        throw new Error("ลบรายการโอนเงินไม่สำเร็จ");
+      }
+
+      return data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["moneyTransfers"] });

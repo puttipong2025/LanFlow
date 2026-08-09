@@ -4112,6 +4112,28 @@ $$;
 ALTER FUNCTION "private"."reportable_items"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."require_atomic_money_transfer_delete"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if old.record_status <> 'deleted'
+    and new.record_status = 'deleted'
+    and coalesce(
+      pg_catalog.current_setting('app.money_transfer_delete_rpc', true),
+      'false'
+    ) <> 'true' then
+    raise exception 'MONEY_TRANSFER_DELETE_RPC_REQUIRED';
+  end if;
+
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."require_atomic_money_transfer_delete"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."rubber_bill_has_active_transfer"("p_bill_id" "uuid") RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -5266,46 +5288,6 @@ $$;
 
 
 ALTER FUNCTION "public"."cancel_cash_count_session"("p_session_id" "uuid") OWNER TO "postgres";
-
-
-CREATE OR REPLACE FUNCTION "public"."cancel_time_tracking_expense_source"("p_source_type" "text", "p_source_id" "uuid", "p_reason" "text" DEFAULT NULL::"text") RETURNS "jsonb"
-    LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public', 'private'
-    AS $$
-declare
-  v_actor_id uuid := auth.uid();
-  v_tx public.financial_transactions%rowtype;
-  v_slip public.payroll_slips%rowtype;
-begin
-  if v_actor_id is null or not private.is_active_user() then raise exception 'Authentication required'; end if;
-  if p_source_type not in ('transaction', 'payroll_slip') then raise exception 'Invalid expense source'; end if;
-
-  if p_source_type = 'transaction' then
-    select * into v_tx from public.financial_transactions where id = p_source_id for update;
-    if not found or v_tx.type <> 'WITHDRAWAL' or v_tx.status <> 'APPROVED' or v_tx.expense_location_id is null then raise exception 'Withdrawal expense not found'; end if;
-    if not private.can_approve_time_tracking_profile(v_tx.profile_id) then raise exception 'Forbidden'; end if;
-    if v_tx.cancelled_at is not null then return jsonb_build_object('status', 'cancelled', 'idempotent', true); end if;
-    perform set_config('app.time_tracking_expense_rpc', 'true', true);
-    update public.financial_transactions set cancelled_at = now(), cancelled_by = v_actor_id, cancel_reason = coalesce(p_reason, '') where id = v_tx.id;
-    insert into public.time_tracking_audit_logs (admin_id, action, target_table, record_id, old_data, new_data, comment)
-    values (v_actor_id, 'CANCEL_TRANSACTION_EXPENSE', 'financial_transactions', v_tx.id, to_jsonb(v_tx), jsonb_build_object('cancelledAt', now()), coalesce(p_reason, ''));
-  else
-    select * into v_slip from public.payroll_slips where id = p_source_id for update;
-    if not found or v_slip.status <> 'APPROVED' or v_slip.net_pay <= 0 or v_slip.expense_location_id is null then raise exception 'Payroll expense not found'; end if;
-    if not private.can_approve_time_tracking_profile(v_slip.profile_id) then raise exception 'Forbidden'; end if;
-    if v_slip.cancelled_at is not null then return jsonb_build_object('status', 'cancelled', 'idempotent', true); end if;
-    perform set_config('app.time_tracking_expense_rpc', 'true', true);
-    update public.payroll_slips set cancelled_at = now(), cancelled_by = v_actor_id, cancel_reason = coalesce(p_reason, '') where id = v_slip.id;
-    insert into public.time_tracking_audit_logs (admin_id, action, target_table, record_id, old_data, new_data, comment)
-    values (v_actor_id, 'CANCEL_PAYROLL_EXPENSE', 'payroll_slips', v_slip.id, to_jsonb(v_slip), jsonb_build_object('cancelledAt', now()), coalesce(p_reason, ''));
-  end if;
-
-  return jsonb_build_object('status', 'cancelled', 'idempotent', false);
-end;
-$$;
-
-
-ALTER FUNCTION "public"."cancel_time_tracking_expense_source"("p_source_type" "text", "p_source_id" "uuid", "p_reason" "text") OWNER TO "postgres";
 
 SET default_tablespace = '';
 
@@ -7729,42 +7711,91 @@ $$;
 ALTER FUNCTION "public"."delete_cash_count"("p_cash_count_id" "uuid") OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "public"."delete_income_sale_item"("item_id" "uuid") RETURNS "void"
+CREATE OR REPLACE FUNCTION "public"."delete_money_transfer"("p_transfer_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public'
+    SET "search_path" TO ''
     AS $$
 declare
-  item_name text;
-  usage_count bigint;
+  v_actor public.profiles%rowtype;
+  v_transfer public.money_transfers%rowtype;
+  v_released_item_count integer := 0;
 begin
-  if not public.can_access_super_admin_features() then
-    raise exception 'Permission denied: only system managers can delete sale items';
+  if p_transfer_id is null
+    or not private.can_access_money_transfer_module() then
+    raise exception 'MONEY_TRANSFER_DELETE_FORBIDDEN';
   end if;
 
-  select name into item_name
-  from public.income_sale_items
-  where id = item_id;
+  select *
+  into v_transfer
+  from public.money_transfers t
+  where t.id = p_transfer_id
+  for update;
 
-  if item_name is null then
-    raise exception 'Item not found';
+  if not found then
+    raise exception 'MONEY_TRANSFER_NOT_FOUND';
   end if;
 
-  select count(*) into usage_count
-  from public.income_expense
-  where income_sale_item_id = item_id
-    and bill_option = 'บิลขาย'
-    and record_status != 'deleted';
-
-  if usage_count > 0 then
-    raise exception 'ไม่สามารถลบได้ เพราะมีรายการรายรับที่ใช้ "%" อยู่ % รายการ', item_name, usage_count;
+  if not private.can_access_location(v_transfer.location_id) then
+    raise exception 'MONEY_TRANSFER_DELETE_FORBIDDEN';
   end if;
 
-  delete from public.income_sale_items where id = item_id;
+  if v_transfer.transfer_type = 'cash'
+    or v_transfer.transfer_method = 'cash' then
+    raise exception 'MONEY_TRANSFER_CASH_DELETE_REQUIRES_DEDICATED_WORKFLOW';
+  end if;
+
+  select *
+  into v_actor
+  from public.profiles p
+  where p.id = auth.uid()
+    and p.is_active = true;
+
+  if not found then
+    raise exception 'MONEY_TRANSFER_DELETE_FORBIDDEN';
+  end if;
+
+  -- Delete relations first so their existing report-lock trigger can abort the
+  -- whole transaction before the parent is hidden.
+  delete from public.money_transfer_items i
+  where i.transfer_id = p_transfer_id;
+
+  get diagnostics v_released_item_count = row_count;
+
+  if v_transfer.record_status = 'deleted' then
+    return pg_catalog.jsonb_build_object(
+      'transferId', p_transfer_id,
+      'status', 'deleted',
+      'idempotent', true,
+      'releasedItemCount', v_released_item_count
+    );
+  end if;
+
+  perform pg_catalog.set_config(
+    'app.money_transfer_delete_rpc',
+    'true',
+    true
+  );
+
+  update public.money_transfers
+  set record_status = 'deleted',
+      deleted_at = pg_catalog.now(),
+      deleted_by_name = v_actor.name,
+      deleted_by_phone = v_actor.phone,
+      revision_no = revision_no + 1,
+      updated_at = pg_catalog.now()
+  where id = p_transfer_id;
+
+  return pg_catalog.jsonb_build_object(
+    'transferId', p_transfer_id,
+    'status', 'deleted',
+    'idempotent', false,
+    'releasedItemCount', v_released_item_count
+  );
 end;
 $$;
 
 
-ALTER FUNCTION "public"."delete_income_sale_item"("item_id" "uuid") OWNER TO "postgres";
+ALTER FUNCTION "public"."delete_money_transfer"("p_transfer_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."delete_report_batch"("p_report_id" "uuid") RETURNS "jsonb"
@@ -9865,7 +9896,7 @@ ALTER FUNCTION "public"."list_rubber_bill_approval_markers"("p_location_id" "uui
 
 CREATE OR REPLACE FUNCTION "public"."merge_pending_money_transfers"("p_location_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public', 'private'
+    SET "search_path" TO ''
     AS $$
 declare
   v_actor public.profiles%rowtype;
@@ -9892,8 +9923,11 @@ begin
     raise exception 'ไม่พบบัญชีผู้ใช้งานที่เปิดใช้งาน';
   end if;
 
-  perform pg_advisory_xact_lock(
-    hashtextextended('money-transfer-pending-merge:' || p_location_id::text, 0)
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(
+      'money-transfer-pending-merge:' || p_location_id::text,
+      0
+    )
   );
 
   -- Parent locks serialize concurrent child/slip writes through their FKs.
@@ -9929,7 +9963,9 @@ begin
         and t.transfer_status = 'pending'
         and t.customer_id is not null
         and not exists (
-          select 1 from public.money_transfer_slips s where s.transfer_id = t.id
+          select 1
+          from public.money_transfer_slips s
+          where s.transfer_id = t.id
         )
         and private.active_transfer_report_no(t.id) is null
         and not exists (
@@ -9942,13 +9978,15 @@ begin
     select
       e.customer_id,
       e.account_number,
-      array_agg(e.id order by e.created_at, e.id) as transfer_ids
+      pg_catalog.array_agg(e.id order by e.created_at, e.id) as transfer_ids
     from eligible e
     group by e.customer_id, e.account_number
     having count(*) >= 2
     order by min(e.created_at), min(e.id::text)
   loop
-    v_secondary_ids := v_group.transfer_ids[2:array_length(v_group.transfer_ids, 1)];
+    v_secondary_ids := v_group.transfer_ids[
+      2:pg_catalog.array_length(v_group.transfer_ids, 1)
+    ];
 
     update public.money_transfer_items
     set transfer_id = v_group.transfer_ids[1]
@@ -9962,30 +10000,41 @@ begin
     update public.money_transfers
     set net_amount_to_pay = v_group_total,
         revision_no = revision_no + 1,
-        updated_at = now()
+        updated_at = pg_catalog.now()
     where id = v_group.transfer_ids[1];
+
+    perform pg_catalog.set_config(
+      'app.money_transfer_delete_rpc',
+      'true',
+      true
+    );
 
     update public.money_transfers
     set record_status = 'deleted',
-        deleted_at = now(),
+        deleted_at = pg_catalog.now(),
         deleted_by_name = v_actor.name,
         deleted_by_phone = v_actor.phone,
         revision_no = revision_no + 1,
-        updated_at = now()
+        updated_at = pg_catalog.now()
     where id = any(v_secondary_ids);
 
     v_merged_group_count := v_merged_group_count + 1;
-    v_merged_transfer_count := v_merged_transfer_count + array_length(v_group.transfer_ids, 1);
-    v_deleted_transfer_count := v_deleted_transfer_count + array_length(v_secondary_ids, 1);
-    v_survivor_ids := array_append(v_survivor_ids, v_group.transfer_ids[1]);
+    v_merged_transfer_count := v_merged_transfer_count
+      + pg_catalog.array_length(v_group.transfer_ids, 1);
+    v_deleted_transfer_count := v_deleted_transfer_count
+      + pg_catalog.array_length(v_secondary_ids, 1);
+    v_survivor_ids := pg_catalog.array_append(
+      v_survivor_ids,
+      v_group.transfer_ids[1]
+    );
   end loop;
 
-  return jsonb_build_object(
+  return pg_catalog.jsonb_build_object(
     'mergedGroupCount', v_merged_group_count,
     'mergedTransferCount', v_merged_transfer_count,
     'deletedTransferCount', v_deleted_transfer_count,
     'skippedTransferCount', v_pending_count - v_merged_transfer_count,
-    'survivorIds', to_jsonb(v_survivor_ids)
+    'survivorIds', pg_catalog.to_jsonb(v_survivor_ids)
   );
 end;
 $$;
@@ -15089,6 +15138,10 @@ CREATE OR REPLACE TRIGGER "default_first_user_location_primary" BEFORE INSERT ON
 
 
 
+CREATE OR REPLACE TRIGGER "enforce_atomic_money_transfer_delete" BEFORE UPDATE OF "record_status" ON "public"."money_transfers" FOR EACH ROW EXECUTE FUNCTION "private"."require_atomic_money_transfer_delete"();
+
+
+
 CREATE OR REPLACE TRIGGER "enforce_financial_transaction_expense_relation" BEFORE UPDATE ON "public"."financial_transactions" FOR EACH ROW EXECUTE FUNCTION "private"."enforce_time_tracking_expense_relation"();
 
 
@@ -16600,6 +16653,10 @@ REVOKE ALL ON FUNCTION "private"."report_income_expense_period_rows"("p_report_i
 
 
 
+REVOKE ALL ON FUNCTION "private"."require_atomic_money_transfer_delete"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."rubber_bill_is_payable"("p_bill_id" "uuid") FROM PUBLIC;
 
 
@@ -16658,11 +16715,6 @@ GRANT ALL ON FUNCTION "public"."can_access_super_admin_features"() TO "authentic
 REVOKE ALL ON FUNCTION "public"."cancel_cash_count_session"("p_session_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."cancel_cash_count_session"("p_session_id" "uuid") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."cancel_cash_count_session"("p_session_id" "uuid") TO "service_role";
-
-
-
-REVOKE ALL ON FUNCTION "public"."cancel_time_tracking_expense_source"("p_source_type" "text", "p_source_id" "uuid", "p_reason" "text") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."cancel_time_tracking_expense_source"("p_source_type" "text", "p_source_id" "uuid", "p_reason" "text") TO "authenticated";
 
 
 
@@ -16809,8 +16861,8 @@ GRANT ALL ON FUNCTION "public"."delete_cash_count"("p_cash_count_id" "uuid") TO 
 
 
 
-REVOKE ALL ON FUNCTION "public"."delete_income_sale_item"("item_id" "uuid") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."delete_income_sale_item"("item_id" "uuid") TO "authenticated";
+REVOKE ALL ON FUNCTION "public"."delete_money_transfer"("p_transfer_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."delete_money_transfer"("p_transfer_id" "uuid") TO "authenticated";
 
 
 
