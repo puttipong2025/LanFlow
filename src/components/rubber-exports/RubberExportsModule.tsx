@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { FilePlus2, RotateCw } from "lucide-react";
 import { toast } from "sonner";
 import type { Location } from "@/types";
@@ -17,6 +17,60 @@ import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
 import { ModalShell } from "@/components/shared/ModalShell";
 
 type Filter = "active" | RubberExportStatus | "all";
+type DetailTarget = Pick<RubberExportSummary, "id" | "exportNo">;
+
+function RubberExportDetailOpeningModal({
+  target,
+  error,
+  onClose,
+}: {
+  target: DetailTarget;
+  error: string | null;
+  onClose: () => void;
+}) {
+  return (
+    <ModalShell
+      title={target.exportNo}
+      subtitle={error ? "โหลดรายละเอียดไม่สำเร็จ" : "กำลังโหลดรายละเอียดรายการส่งออกยาง"}
+      onClose={onClose}
+      size="wide"
+    >
+      {error ? (
+        <div className="grid min-h-64 place-items-center px-4 text-center">
+          <div>
+            <h3 className="text-balance text-lg font-bold text-danger">โหลดรายละเอียดไม่สำเร็จ</h3>
+            <p role="alert" className="mt-2 text-pretty text-sm font-semibold text-danger">{error}</p>
+            <p className="mt-2 text-pretty text-sm text-ink/60">ปิดแล้วเปิดรายการอีกครั้งเพื่อลองใหม่</p>
+          </div>
+        </div>
+      ) : (
+        <div
+          className="space-y-4"
+          role="status"
+          aria-label="กำลังโหลดรายละเอียดรายการส่งออกยาง"
+        >
+          <p className="text-pretty text-sm font-semibold text-ink/60">กำลังโหลดรายละเอียด...</p>
+          <div className="grid gap-3 sm:grid-cols-5" aria-hidden="true">
+            {Array.from({ length: 5 }, (_, index) => (
+              <div key={index} className="h-16 rounded-md bg-black/5" />
+            ))}
+          </div>
+          <div className="grid gap-3 sm:grid-cols-5" aria-hidden="true">
+            {Array.from({ length: 5 }, (_, index) => (
+              <div key={index} className="h-11 rounded-md bg-black/5" />
+            ))}
+          </div>
+          <div className="h-10 rounded-md bg-mint/45" aria-hidden="true" />
+          <div className="space-y-2" aria-hidden="true">
+            {Array.from({ length: 4 }, (_, index) => (
+              <div key={index} className="h-9 rounded-md bg-black/5" />
+            ))}
+          </div>
+        </div>
+      )}
+    </ModalShell>
+  );
+}
 
 export function RubberExportsModule({
   selectedLocation,
@@ -34,10 +88,13 @@ export function RubberExportsModule({
   const api = useRubberExports(selectedLocation.id, online);
   const [filter, setFilter] = useState<Filter>("active");
   const [creating, setCreating] = useState(false);
+  const [detailTarget, setDetailTarget] = useState<DetailTarget | null>(null);
   const [details, setDetails] = useState<RubberExportDetails | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [sharingId, setSharingId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<RubberExportSummary | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const detailController = useRef<AbortController | null>(null);
   const pdfShare = useSharePdf();
   const counts = useMemo(() => ({
     active: api.exports.filter((row) => row.status !== "deleted").length,
@@ -61,17 +118,49 @@ export function RubberExportsModule({
       return left.id.localeCompare(right.id);
     }), [api.exports, filter]);
 
-  async function open(exportId: string) {
+  async function open(target: DetailTarget) {
+    if (!online) return;
+    detailController.current?.abort();
+    const controller = new AbortController();
+    detailController.current = controller;
+    setDetailTarget(target);
+    setDetails(null);
+    setDetailError(null);
+
     try {
-      setDetails(await api.details(exportId));
-      onInitialExportHandled?.();
+      const next = await api.details(target.id, controller.signal);
+      if (detailController.current === controller) {
+        setDetails(next);
+        onInitialExportHandled?.();
+      }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "โหลดรายการส่งออกไม่สำเร็จ");
+      if (error instanceof Error && error.name === "AbortError") return;
+      if (detailController.current === controller) {
+        setDetailError(error instanceof Error ? error.message : "โหลดรายการส่งออกไม่สำเร็จ");
+      }
+    } finally {
+      if (detailController.current === controller) detailController.current = null;
     }
   }
 
+  function closeDetails() {
+    detailController.current?.abort();
+    detailController.current = null;
+    setDetailTarget(null);
+    setDetails(null);
+    setDetailError(null);
+  }
+
+  useEffect(() => () => detailController.current?.abort(), []);
+
   useEffect(() => {
-    if (initialExportId && online) void open(initialExportId);
+    if (initialExportId && online) {
+      void open({
+        id: initialExportId,
+        exportNo: api.exports.find((row) => row.id === initialExportId)?.exportNo
+          ?? "รายการส่งออกยาง",
+      });
+    }
     // Opening is intentionally keyed only by the source ID.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialExportId, online]);
@@ -107,7 +196,7 @@ export function RubberExportsModule({
     try {
       await api.remove(row.id);
       toast.success(`ลบ ${row.exportNo} แล้ว`);
-      if (details?.id === row.id) setDetails(null);
+      if (details?.id === row.id) closeDetails();
       setPendingDelete(null);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "ลบรายการส่งออกไม่สำเร็จ");
@@ -218,7 +307,10 @@ export function RubberExportsModule({
           canVerify={api.permissions.canVerify}
           shareBusy={pdfShare.busy}
           sharingId={sharingId}
-          onOpen={(id) => void open(id)}
+          onOpen={(id) => {
+            const target = api.exports.find((row) => row.id === id);
+            if (target) void open(target);
+          }}
           onShare={(row) => void share(row)}
           onDelete={setPendingDelete}
         />
@@ -234,7 +326,7 @@ export function RubberExportsModule({
               const created = await api.create(selectedReportItemIds);
               toast.success(`สร้าง ${created.exportNo} แล้ว`);
               setCreating(false);
-              await open(created.id);
+              await open(created);
             } catch (error) {
               toast.error(error instanceof Error ? error.message : "สร้างรายการส่งออกไม่สำเร็จ");
               await api.reload();
@@ -242,6 +334,14 @@ export function RubberExportsModule({
             }
           }}
           onClose={() => setCreating(false)}
+        />
+      )}
+
+      {detailTarget && !details && (
+        <RubberExportDetailOpeningModal
+          target={detailTarget}
+          error={detailError}
+          onClose={closeDetails}
         />
       )}
 
@@ -278,7 +378,7 @@ export function RubberExportsModule({
             }
           }}
           onShare={() => void share(details)}
-          onClose={() => setDetails(null)}
+          onClose={closeDetails}
         />
       )}
 

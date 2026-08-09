@@ -94,10 +94,27 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await expect(page.getByRole("button", { name: "เปิดตรวจสอบ" })).toBeVisible();
       await expect(page.getByRole("button", { name: "รอผู้รับรอง" })).toHaveCount(0);
 
+      const detailRoute = `**/api/lanflow/rubber-exports/${exportId}`;
+      await page.route(detailRoute, async (route) => {
+        if (route.request().method() !== "GET") {
+          await route.continue();
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
+        await route.continue();
+      });
       await page.getByRole("button", {
         name: `ดูรายละเอียด REX-MANAGER-${exportId.slice(0, 8)}`,
       }).click();
+      const openingDialog = page.getByRole("dialog", {
+        name: `REX-MANAGER-${exportId.slice(0, 8)}`,
+      });
+      await expect(openingDialog).toBeVisible({ timeout: 1_000 });
+      await expect(openingDialog.getByRole("status", {
+        name: "กำลังโหลดรายละเอียดรายการส่งออกยาง",
+      })).toBeVisible();
       await page.getByLabel("น้ำหนักปัจจุบัน").fill("90");
+      await page.unroute(detailRoute);
       await page.getByLabel("ค่าทำงาน/กก.").fill("2");
       const saveRoute = `**/api/lanflow/rubber-exports/${exportId}`;
       await page.route(saveRoute, async (route) => {
