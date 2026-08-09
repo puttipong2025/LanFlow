@@ -18,7 +18,7 @@ export function ModalShell({
   title: string;
   subtitle?: string;
   onClose: () => void;
-  size?: "normal" | "wide";
+  size?: "compact" | "normal" | "wide";
   mobileFullScreen?: boolean;
   closeOnEscape?: boolean;
   closeDisabled?: boolean;
@@ -47,7 +47,7 @@ export function ModalShell({
         aria-labelledby={titleId}
         className={cn(
           "flex max-h-[calc(100dvh-16px)] w-full flex-col overflow-hidden rounded-xl border border-white/80 bg-white shadow-2xl sm:mt-4 sm:max-h-[calc(100dvh-48px)]",
-          size === "wide" ? "max-w-6xl" : "max-w-4xl",
+          size === "wide" ? "max-w-6xl" : size === "compact" ? "max-w-md" : "max-w-4xl",
           mobileFullScreen && "h-dvh max-h-dvh rounded-none border-0 sm:h-auto sm:max-h-[calc(100dvh-48px)] sm:rounded-xl sm:border",
         )}
       >

@@ -312,6 +312,24 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
       await expect(itemCountCard).toContainText("3");
       await uiPage.waitForTimeout(1_000);
       await expect(itemCountCard).toContainText("3");
+      await uiPage.route("**/api/lanflow/rubber-exports", async (route) => {
+        if (route.request().method() !== "POST") {
+          await route.continue();
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
+        await route.abort("failed");
+      });
+      await uiPage.getByRole("button", { name: "ยืนยันสร้างฉบับร่าง" }).click();
+      await expect(uiPage.getByRole("dialog", { name: "กำลังสร้างฉบับร่าง" })).toBeVisible({
+        timeout: 1_000,
+      });
+      await expect(uiPage.getByRole("button", {
+        name: "กำลังดำเนินการ ไม่สามารถปิดได้",
+      }).last()).toBeDisabled();
+      await expect(uiPage.getByText("Failed to fetch").last()).toBeVisible();
+      await expect(uiPage.getByRole("checkbox", { checked: true })).toHaveCount(3);
+      await uiPage.unroute("**/api/lanflow/rubber-exports");
       await uiPage.getByRole("button", { name: "ปิด" }).click();
 
       const previewResponse = await admin.request.post("/api/lanflow/rubber-exports/preview", {

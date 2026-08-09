@@ -99,11 +99,45 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       }).click();
       await page.getByLabel("น้ำหนักปัจจุบัน").fill("90");
       await page.getByLabel("ค่าทำงาน/กก.").fill("2");
+      const saveRoute = `**/api/lanflow/rubber-exports/${exportId}`;
+      await page.route(saveRoute, async (route) => {
+        if (route.request().method() !== "PATCH") {
+          await route.continue();
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
+        await route.continue();
+      });
+      await page.getByRole("button", { name: "บันทึกร่าง", exact: true }).click();
+      await expect(page.getByRole("dialog", { name: "กำลังบันทึกฉบับร่าง" })).toBeVisible({
+        timeout: 1_000,
+      });
+      await expect(page.getByRole("button", {
+        name: "กำลังดำเนินการ ไม่สามารถปิดได้",
+      }).last()).toBeDisabled();
+      await expect(page.getByText("บันทึกฉบับร่างแล้ว")).toBeVisible();
+      await page.unroute(saveRoute);
+
       await expect(page.getByRole("button", { name: "ตรวจสอบแล้ว", exact: true })).toBeEnabled();
       await page.getByRole("button", { name: "ตรวจสอบแล้ว", exact: true }).click();
-      await page.getByRole("button", { name: "ลงรายจ่ายสาขานี้" }).click();
+      const destinationDialog = page.getByRole("alertdialog", {
+        name: "ยืนยันปลายทางค่าใช้จ่าย",
+      });
+      await expect(destinationDialog).toBeVisible();
+      await expect(destinationDialog).toContainText(`REX-MANAGER-${exportId.slice(0, 8)}`);
+      await expect(destinationDialog).toContainText("฿200.00");
+      await expect(destinationDialog.getByRole("button", {
+        name: "ยืนยันจ่ายภายนอก",
+      })).toBeVisible();
+      await destinationDialog.getByRole("button", {
+        name: "ยืนยันลงรายจ่ายสาขานี้",
+      }).click();
       await expect(page.getByText("ตรวจสอบรายการแล้ว")).toBeVisible();
       await expect(page.getByText(/ตรวจสอบแล้ว$/).first()).toBeVisible();
+      await page.getByRole("button", { name: "ปิด", exact: true }).click();
+      await expect(page.locator("tbody tr").filter({
+        hasText: `REX-MANAGER-${exportId.slice(0, 8)}`,
+      })).toContainText("ตรวจสอบแล้ว");
     } finally {
       await db.from("rubber_exports").delete().eq("id", exportId);
       await db.from("user_locations").delete().eq("location_id", locationId);

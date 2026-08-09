@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { ModalShell } from "@/components/shared/ModalShell";
+import { RubberExportLoadingModal } from "@/components/rubber-exports/RubberExportLoadingModal";
 import type {
   RubberExportAvailableBill,
   RubberExportPreview,
@@ -64,8 +65,15 @@ export function RubberExportCreateModal({
   }
 
   return (
-    <ModalShell title="สร้างรายการส่งออกยาง" subtitle="เลือกบิลที่ต้องการจองสำหรับรายการนี้" onClose={onClose} size="wide">
-      <div className="space-y-4">
+    <>
+      <ModalShell
+        title="สร้างรายการส่งออกยาง"
+        subtitle="เลือกบิลที่ต้องการจองสำหรับรายการนี้"
+        onClose={onClose}
+        closeDisabled={creating}
+        size="wide"
+      >
+        <div className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="text-sm font-semibold text-ink/70">
             เลือกแล้ว {selectedIds.length} จาก {availableBills.length} บิล
@@ -147,7 +155,7 @@ export function RubberExportCreateModal({
         )}
 
         <div className="modal-actions flex justify-end gap-2">
-          <button type="button" onClick={onClose} className="focus-ring rounded-md bg-actionSecondary px-4 py-2 font-semibold text-white hover:bg-actionSecondary/90">ยกเลิก</button>
+          <button type="button" disabled={creating} onClick={onClose} className="focus-ring rounded-md bg-actionSecondary px-4 py-2 font-semibold text-white hover:bg-actionSecondary/90 disabled:opacity-50">ยกเลิก</button>
           <button
             type="button"
             disabled={!preview || loading || creating}
@@ -166,7 +174,14 @@ export function RubberExportCreateModal({
             ยืนยันสร้างฉบับร่าง
           </button>
         </div>
-      </div>
-    </ModalShell>
+        </div>
+      </ModalShell>
+      {creating && (
+        <RubberExportLoadingModal
+          title="กำลังสร้างฉบับร่าง"
+          message="ระบบกำลังจองบิลและอัปเดตตารางส่งออกยาง"
+        />
+      )}
+    </>
   );
 }

@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { Loader2, Share2 } from "lucide-react";
 import { ModalShell } from "@/components/shared/ModalShell";
+import { RubberExportLoadingModal } from "@/components/rubber-exports/RubberExportLoadingModal";
 import {
   calculateWeightLossPercent,
   calculateWorkTotal,
@@ -74,6 +75,8 @@ export function RubberExportDetailModal({
   const [saving, setSaving] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [showVerify, setShowVerify] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
   const isDraft = details.status === "draft";
   const weightValid = isValidCurrentWeight(details.originalWeightTotal, currentWeight);
   const workTotal = useMemo(
@@ -96,22 +99,28 @@ export function RubberExportDetailModal({
         : null;
 
   async function verify(destination: RubberExportExpenseDestination) {
+    setVerifyError(null);
     setVerifying(true);
     try {
       await onVerify(destination, values);
+      setShowVerify(false);
+    } catch (error) {
+      setVerifyError(error instanceof Error ? error.message : "ตรวจสอบรายการไม่สำเร็จ");
     } finally {
       setVerifying(false);
     }
   }
 
   return (
-    <ModalShell
-      title={details.exportNo}
-      subtitle={`${details.locationName} · ${details.status === "draft" ? "ฉบับร่าง" : details.status === "verified" ? "ตรวจสอบแล้ว" : "ลบแล้ว"}`}
-      onClose={onClose}
-      size="wide"
-    >
-      <div className="space-y-5">
+    <>
+      <ModalShell
+        title={details.exportNo}
+        subtitle={`${details.locationName} · ${details.status === "draft" ? "ฉบับร่าง" : details.status === "verified" ? "ตรวจสอบแล้ว" : "ลบแล้ว"}`}
+        onClose={onClose}
+        closeDisabled={saving || verifying}
+        size="wide"
+      >
+        <div className="space-y-5">
         {details.reportLockNo && (
           <div className="rounded-md bg-amber/20 px-4 py-3 text-sm font-semibold text-amber-900">
             รายการนี้ถูกล็อกโดยรายงาน {details.reportLockNo}
@@ -252,8 +261,13 @@ export function RubberExportDetailModal({
               type="button"
               disabled={saving || (currentWeight !== null && !weightValid)}
               onClick={() => {
+                setSaveError(null);
                 setSaving(true);
-                void onSave(values).finally(() => setSaving(false));
+                void onSave(values)
+                  .catch((error) => {
+                    setSaveError(error instanceof Error ? error.message : "บันทึกฉบับร่างไม่สำเร็จ");
+                  })
+                  .finally(() => setSaving(false));
               }}
               className="focus-ring inline-flex items-center gap-2 rounded-md bg-commit px-4 py-2 font-semibold text-white hover:bg-commit/90 disabled:opacity-50"
             >
@@ -279,18 +293,39 @@ export function RubberExportDetailModal({
           <p className="text-pretty text-right text-sm font-semibold text-ink/60">{verifyDisabledReason}</p>
         )}
 
-        {showVerify && (
-          <div className="rounded-md border border-leaf/30 bg-mint/30 p-4">
-            <h3 className="font-bold">ยืนยันปลายทางค่าใช้จ่าย</h3>
-            <p className="mt-1 text-sm text-ink/65">ยอดสุดท้าย ฿{number(workTotal)} เมื่อยืนยันแล้วจะแก้ไขไม่ได้</p>
-            <div className="mt-3 flex flex-wrap gap-2">
+        {isDraft && saveError && (
+          <p role="alert" className="text-pretty text-right text-sm font-semibold text-red-600">{saveError}</p>
+        )}
+
+        {isDraft && showVerify && (
+          <ModalShell
+            role="alertdialog"
+            title="ยืนยันปลายทางค่าใช้จ่าย"
+            subtitle={`${details.exportNo} · ยอดค่าทำงาน ฿${number(workTotal)}`}
+            onClose={() => setShowVerify(false)}
+            closeDisabled={verifying}
+            size="compact"
+          >
+            <p className="text-pretty text-sm font-semibold text-ink/70">
+              เลือกปลายทางที่ถูกต้อง เมื่อยืนยันแล้วจะแก้ไขรายการนี้ไม่ได้
+            </p>
+            {verifyError && (
+              <p role="alert" className="mt-3 text-pretty text-sm font-semibold text-red-600">{verifyError}</p>
+            )}
+            {verifying && (
+              <p role="status" className="mt-3 inline-flex items-center gap-2 text-pretty text-sm font-semibold text-ink/70">
+                <Loader2 size={16} className="animate-spin motion-reduce:animate-none" />
+                กำลังยืนยันรายการ
+              </p>
+            )}
+            <div className="modal-actions mt-5 flex flex-wrap justify-end gap-2">
               <button
                 type="button"
                 disabled={verifying}
                 onClick={() => void verify("branch")}
                 className="focus-ring rounded-md bg-leaf px-4 py-2 font-semibold text-white disabled:opacity-50"
               >
-                ลงรายจ่ายสาขานี้
+                ยืนยันลงรายจ่ายสาขานี้
               </button>
               <button
                 type="button"
@@ -298,13 +333,20 @@ export function RubberExportDetailModal({
                 onClick={() => void verify("external")}
                 className="focus-ring rounded-md bg-river px-4 py-2 font-semibold text-white disabled:opacity-50"
               >
-                จ่ายภายนอก
+                ยืนยันจ่ายภายนอก
               </button>
-              <button type="button" onClick={() => setShowVerify(false)} className="focus-ring rounded-md bg-actionSecondary px-4 py-2 font-semibold text-white hover:bg-actionSecondary/90">ยกเลิก</button>
+              <button type="button" disabled={verifying} onClick={() => setShowVerify(false)} className="focus-ring rounded-md bg-actionSecondary px-4 py-2 font-semibold text-white hover:bg-actionSecondary/90 disabled:opacity-50">ยกเลิก</button>
             </div>
-          </div>
+          </ModalShell>
         )}
-      </div>
-    </ModalShell>
+        </div>
+      </ModalShell>
+      {saving && (
+        <RubberExportLoadingModal
+          title="กำลังบันทึกฉบับร่าง"
+          message="ระบบกำลังบันทึกข้อมูลและอัปเดตตารางส่งออกยาง"
+        />
+      )}
+    </>
   );
 }
