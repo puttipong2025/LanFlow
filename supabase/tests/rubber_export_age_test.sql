@@ -1,6 +1,6 @@
 begin;
 
-select plan(20);
+select plan(25);
 
 select has_column('public', 'rubber_export_items', 'age_source_at', 'items snapshot the source timestamp');
 select has_column('public', 'rubber_export_items', 'age_is_estimated', 'items snapshot whether age is estimated');
@@ -132,11 +132,17 @@ insert into public.report_items (
 insert into public.rubber_exports (
   id, export_no, export_date, sequence_no, location_id, original_weight_total,
   paid_total, average_price, created_by_user_id, created_by_name, created_by_phone
-) values (
-  '46000000-0000-4000-8000-000000000001', 'REX-AGE-001', '2026-08-01', 1,
-  '41000000-0000-4000-8000-000000000001', 500, 5000, 10,
-  '42000000-0000-4000-8000-000000000001', 'manager', '0894000001'
-);
+) values
+  (
+    '46000000-0000-4000-8000-000000000001', 'REX-AGE-001', '2026-08-01', 1,
+    '41000000-0000-4000-8000-000000000001', 500, 5000, 10,
+    '42000000-0000-4000-8000-000000000001', 'manager', '0894000001'
+  ),
+  (
+    '46000000-0000-4000-8000-000000000002', 'REX-AGE-002', '2026-08-01', 2,
+    '41000000-0000-4000-8000-000000000001', 100, 1000, 10,
+    '42000000-0000-4000-8000-000000000001', 'manager', '0894000001'
+  );
 
 insert into public.rubber_export_items (
   export_id, location_id, source_report_item_id, source_bill_id, bill_date,
@@ -145,7 +151,8 @@ insert into public.rubber_export_items (
 ) values
   ('46000000-0000-4000-8000-000000000001', '41000000-0000-4000-8000-000000000001', '45000000-0000-4000-8000-000000000001', '44000000-0000-4000-8000-000000000001', '2026-08-01', 'AGE-1', 'A', '2026-08-01 10:00:00+07', 100, 1000, '2026-08-01 10:00:00+07', false),
   ('46000000-0000-4000-8000-000000000001', '41000000-0000-4000-8000-000000000001', '45000000-0000-4000-8000-000000000002', '44000000-0000-4000-8000-000000000002', '2026-08-01', 'AGE-2', 'B', '2026-08-01 10:01:00+07', 300, 3000, '2026-08-02 10:00:00+07', true),
-  ('46000000-0000-4000-8000-000000000001', '41000000-0000-4000-8000-000000000001', '45000000-0000-4000-8000-000000000003', '44000000-0000-4000-8000-000000000003', '2026-08-01', 'AGE-3', 'C', '2026-08-01 10:02:00+07', 100, 1000, '2026-08-01 11:00:00+07', true);
+  ('46000000-0000-4000-8000-000000000001', '41000000-0000-4000-8000-000000000001', '45000000-0000-4000-8000-000000000003', '44000000-0000-4000-8000-000000000003', '2026-08-01', 'AGE-3', 'C', '2026-08-01 10:02:00+07', 100, 1000, '2026-08-01 11:00:00+07', true),
+  ('46000000-0000-4000-8000-000000000002', '41000000-0000-4000-8000-000000000001', '45000000-0000-4000-8000-000000000005', '44000000-0000-4000-8000-000000000005', '2026-08-01', 'AGE-MISSING', 'Missing', '2026-08-01 10:04:00+07', 100, 1000, '2026-08-01 11:00:00+07', true);
 
 select is(
   (select average_age_hours from private.rubber_export_age_summary(
@@ -182,6 +189,32 @@ select throws_ok(
 select set_config('request.jwt.claim.sub', '42000000-0000-4000-8000-000000000001', true);
 select set_config('request.jwt.claims', '{"sub":"42000000-0000-4000-8000-000000000001","role":"authenticated"}', true);
 set local role authenticated;
+
+select is(
+  public.delete_rubber_export('46000000-0000-4000-8000-000000000002')->>'status',
+  'deleted',
+  'a draft export can be deleted'
+);
+select ok(
+  (select previous_status = 'draft' from public.rubber_exports
+    where id = '46000000-0000-4000-8000-000000000002'),
+  'deleted draft records their previous status'
+);
+select is(
+  public.get_rubber_export_age_detail('46000000-0000-4000-8000-000000000002')->>'calculatedAt',
+  null::text,
+  'deleted-from-draft detail has no calculation cutoff'
+);
+select is(
+  (public.get_rubber_export_age_detail('46000000-0000-4000-8000-000000000002')->>'averageAgeHours')::numeric,
+  null::numeric,
+  'deleted-from-draft detail has no official average age'
+);
+select is(
+  (public.get_rubber_export_age_detail('46000000-0000-4000-8000-000000000002')->'items'->0->>'ageHours')::numeric,
+  null::numeric,
+  'deleted-from-draft items have no official age'
+);
 
 select is(
   (public.preview_rubber_export(

@@ -627,6 +627,11 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
         currentWeight: null,
         workRate: null,
         workTotal: null,
+        ageCalculatedAt: null,
+        averageAgeHours: null,
+        oldestAgeHours: null,
+        estimatedAgeItemCount: null,
+        items: [expect.objectContaining({ ageHours: null })],
       });
     } finally {
       if (expenseReportId) await superAdmin.request.delete(`/api/lanflow/reports/${expenseReportId}`);
