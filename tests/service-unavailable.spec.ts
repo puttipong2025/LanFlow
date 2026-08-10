@@ -23,6 +23,42 @@ async function readSyncQueue(page: import("@playwright/test").Page) {
 test.describe("online device with unavailable API", () => {
   test.use({ storageState: "playwright/.auth/super_admin.json" });
 
+  test("keeps the authenticated app shell when auth profile lookup is temporarily unavailable", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await expect(page.getByRole("button", { name: "ภาพรวม", exact: true })).toBeVisible({
+      timeout: 15_000,
+    });
+
+    await expect.poll(() => page.evaluate(() => Boolean(
+      window.localStorage.getItem("lanflow:last-auth-user"),
+    ))).toBe(true);
+
+    await page.route("**/api/auth/me", async (route) => {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "auth service unavailable" }),
+      });
+    });
+
+    await page.reload();
+
+    await expect(page.getByRole("button", { name: "ภาพรวม", exact: true })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByRole("heading", { name: "LanFlow" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "เข้าสู่ระบบ", exact: true })).toHaveCount(0);
+    await expect(page.getByText(
+      "เชื่อมต่อระบบไม่ได้ กำลังแสดงข้อมูลล่าสุด",
+      { exact: true },
+    )).toBeVisible();
+    await expect.poll(() => page.evaluate(() => Boolean(
+      window.localStorage.getItem("lanflow:last-auth-user"),
+    ))).toBe(true);
+  });
+
   test("keeps cached bootstrap data visible and distinguishes service failure from offline", async ({
     page,
   }) => {

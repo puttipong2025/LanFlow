@@ -48,6 +48,48 @@ test.describe('Offline Auth Cache Clearance', () => {
     await expect(page.getByRole('button', { name: 'ภาพรวม', exact: true })).toBeVisible({ timeout: 15000 });
   });
 
+  test('should keep a valid cached profile when auth revalidation is temporarily unavailable', async ({ page }) => {
+    const phone = process.env.TEST_PHONE || '0800000000';
+    const password = process.env.TEST_PASSWORD || 'password123';
+
+    await page.goto('/login');
+    await page.fill('input[type="tel"]', phone);
+    await page.fill('input[type="password"]', password);
+    await page.click('button:has-text("เข้าสู่ระบบ")');
+    await expect(page.getByRole('button', { name: 'ภาพรวม', exact: true })).toBeVisible({ timeout: 15000 });
+    await waitForServiceWorkerControl(page);
+    await waitForAuthenticatedAppShell(page);
+
+    await page.addInitScript(() => {
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = async (input, init) => {
+        const rawUrl = input instanceof Request ? input.url : String(input);
+        const url = new URL(rawUrl, window.location.origin);
+        if (url.pathname === '/api/auth/me') {
+          const storageKey = 'lanflow:test-auth-503-hits';
+          const hits = Number(window.localStorage.getItem(storageKey) ?? '0') + 1;
+          window.localStorage.setItem(storageKey, String(hits));
+          return new Response(JSON.stringify({ error: 'auth service unavailable' }), {
+            status: 503,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return originalFetch(input, init);
+      };
+    });
+
+    await page.reload({ waitUntil: 'domcontentloaded' });
+
+    await expect(page.getByRole('button', { name: 'ภาพรวม', exact: true })).toBeVisible({ timeout: 15000 });
+    await expect.poll(() => page.evaluate(() => Number(
+      window.localStorage.getItem('lanflow:test-auth-503-hits') ?? '0',
+    ))).toBeGreaterThan(0);
+    await expect(page.getByRole('button', { name: 'เข้าสู่ระบบ', exact: true })).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => Boolean(
+      window.localStorage.getItem('lanflow:last-auth-user'),
+    ))).toBe(true);
+  });
+
   test('should not restore profile if offline after logout', async ({ page, context }) => {
     const phone = process.env.TEST_PHONE || '0800000000';
     const password = process.env.TEST_PASSWORD || 'password123';

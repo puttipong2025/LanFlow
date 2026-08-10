@@ -1,6 +1,12 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import type { AppRole } from "@/types";
+import {
+  type AuthAccessFailure,
+  classifyAuthAccessFailure,
+  classifyAuthClaimsFailure,
+  summarizeUpstreamError,
+} from "@/lib/server/auth-access-failure";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export type AuthTokenPayload = {
@@ -28,18 +34,37 @@ type AuthFailure = {
 
 export type AuthResult = AuthSuccess | AuthFailure;
 
+function authFailureResponse(failure: AuthAccessFailure) {
+  return NextResponse.json(
+    { error: failure.message },
+    {
+      status: failure.status,
+      headers: failure.status === 503
+        ? {
+            "Cache-Control": "private, no-store, max-age=0",
+            "Retry-After": "3",
+          }
+        : undefined,
+    },
+  );
+}
+
 export async function requireAuth(_request?: Request): Promise<AuthResult> {
   const supabase = await createSupabaseServerClient();
   const { data: claimsData, error: claimsError } = await supabase.auth.getClaims();
   const userId = claimsData?.claims?.sub;
 
-  if (claimsError || typeof userId !== "string") {
+  const claimsFailure = classifyAuthClaimsFailure({
+    claimsError,
+    hasUserId: typeof userId === "string",
+  });
+  if (claimsFailure) {
+    if (claimsFailure.status === 503) {
+      console.error("Auth claims unavailable", summarizeUpstreamError(claimsError));
+    }
     return {
       ok: false,
-      response: NextResponse.json(
-        { error: "ไม่ได้เข้าสู่ระบบ หรือ session หมดอายุ" },
-        { status: 401 }
-      )
+      response: authFailureResponse(claimsFailure),
     };
   }
 
@@ -57,40 +82,45 @@ export async function requireAuth(_request?: Request): Promise<AuthResult> {
         .eq("locations.is_active", true)
     ]);
 
-  if (
-    profileError ||
-    assignmentsError ||
-    !profile ||
-    profile.is_active !== true
-  ) {
+  const accessFailure = classifyAuthAccessFailure({
+    assignmentsError,
+    hasProfile: Boolean(profile),
+    isActive: profile?.is_active === true,
+    profileError,
+  });
+  if (accessFailure) {
+    if (accessFailure.status === 503) {
+      console.error("Auth profile lookup unavailable", {
+        assignments: summarizeUpstreamError(assignmentsError),
+        profile: summarizeUpstreamError(profileError),
+      });
+    }
     return {
       ok: false,
-      response: NextResponse.json(
-        { error: "บัญชีถูกปิดใช้งาน หรือไม่มีสิทธิ์เข้าถึง" },
-        { status: 403 }
-      )
+      response: authFailureResponse(accessFailure),
     };
   }
+  const activeProfile = profile!;
 
   return {
     ok: true,
     auth: {
-      sub: profile.id,
-      phone: profile.phone,
-      name: profile.name,
-      role: profile.role as AppRole,
+      sub: activeProfile.id,
+      phone: activeProfile.phone,
+      name: activeProfile.name,
+      role: activeProfile.role as AppRole,
       locationIds: (assignments ?? []).map((item) => item.location_id as string),
       primaryLocationId:
         (assignments ?? []).find((item) => item.is_primary === true)?.location_id as string | undefined ?? null,
-      canAccessSystemManager: profile.role === "super_admin" || profile.can_access_super_admin_features === true,
+      canAccessSystemManager: activeProfile.role === "super_admin" || activeProfile.can_access_super_admin_features === true,
       canAccessMoneyTransfer:
-        profile.role === "super_admin" ||
-        profile.can_access_super_admin_features === true ||
-        profile.can_access_money_transfer === true,
+        activeProfile.role === "super_admin" ||
+        activeProfile.can_access_super_admin_features === true ||
+        activeProfile.can_access_money_transfer === true,
       canManageTimePayroll:
-        profile.role === "super_admin" ||
-        profile.can_access_super_admin_features === true ||
-        profile.can_manage_time_payroll === true
+        activeProfile.role === "super_admin" ||
+        activeProfile.can_access_super_admin_features === true ||
+        activeProfile.can_manage_time_payroll === true
     },
     supabase
   };

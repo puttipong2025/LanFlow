@@ -125,8 +125,9 @@ export function useAuth(initialProfile: Profile | null = null): AuthState {
           setProfile(null);
           setMode("signed_out");
           setOfflineUntil(null);
+          return false;
         }
-        return false;
+        return applyOfflineCache();
       }
 
       const data = (await response.json()) as { profile: Profile };
@@ -262,11 +263,17 @@ export function useAuth(initialProfile: Profile | null = null): AuthState {
       const data = await response.json();
 
       if (!response.ok) {
-        const supabase = createSupabaseBrowserClient();
-        await supabase.auth.signOut();
+        if (response.status === 401 || response.status === 403) {
+          const supabase = createSupabaseBrowserClient();
+          await supabase.auth.signOut();
+        }
         return {
           success: false,
-          error: data.error || "บัญชีไม่มีสิทธิ์เข้าใช้งาน"
+          error: data.error || (
+            response.status >= 500
+              ? "ระบบยืนยันสิทธิ์ชั่วคราวไม่พร้อมใช้งาน กรุณาลองใหม่"
+              : "บัญชีไม่มีสิทธิ์เข้าใช้งาน"
+          )
         };
       }
 

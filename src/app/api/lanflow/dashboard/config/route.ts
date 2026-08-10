@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { requireSystemManager } from "@/lib/server/auth";
+import { summarizeUpstreamError } from "@/lib/server/auth-access-failure";
 import type { DashboardManagerConfig } from "@/types/dashboard";
 
 const UUID =
@@ -41,10 +42,16 @@ export async function GET(request: NextRequest) {
     locationsResult.error ||
     snapshotResult.error;
   if (error) {
-    console.error("Dashboard config error:", error.message);
+    console.error("Dashboard config unavailable", summarizeUpstreamError(error));
     return NextResponse.json(
-      { error: "โหลดการตั้งค่า Dashboard ไม่สำเร็จ" },
-      { status: 500 },
+      { error: "ระบบข้อมูล Dashboard ชั่วคราวไม่พร้อมใช้งาน" },
+      {
+        status: 503,
+        headers: {
+          ...NO_STORE_HEADERS,
+          "Retry-After": "3",
+        },
+      },
     );
   }
 
