@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
@@ -12,10 +12,14 @@ import type {
   RubberExportPreview,
   RubberExportSummary,
 } from "@/types/rubber-exports";
+import type { DocumentDeletionAudit } from "@/types/deletion-audits";
 
 export function useRubberExports(locationId: string, online: boolean) {
   const queryClient = useQueryClient();
+  const locationIdRef = useRef(locationId);
+  locationIdRef.current = locationId;
   const [exports, setExports] = useState<RubberExportSummary[]>([]);
+  const [deletions, setDeletions] = useState<DocumentDeletionAudit[]>([]);
   const [availableBills, setAvailableBills] = useState<RubberExportAvailableBill[]>([]);
   const [permissions, setPermissions] = useState<RubberExportPermissions>({
     canVerify: false,
@@ -23,6 +27,8 @@ export function useRubberExports(locationId: string, online: boolean) {
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [deletionsLoading, setDeletionsLoading] = useState(false);
+  const [deletionsError, setDeletionsError] = useState<string | null>(null);
 
   const reload = useCallback(async (silent = false) => {
     if (!locationId || !online) {
@@ -56,9 +62,33 @@ export function useRubberExports(locationId: string, online: boolean) {
     }
   }, [locationId, online]);
 
+  const reloadDeletions = useCallback(async () => {
+    if (!locationId || !online) return;
+    setDeletionsLoading(true);
+    setDeletionsError(null);
+    try {
+      const response = await authFetch(
+        `/api/lanflow/rubber-exports?locationId=${encodeURIComponent(locationId)}&view=deletions`,
+        { cache: "no-store" },
+      );
+      await assertApiResponse(response);
+      const body = await response.json() as {
+        deletions: DocumentDeletionAudit[];
+      };
+      if (locationIdRef.current === locationId) setDeletions(body.deletions);
+    } catch (caught) {
+      setDeletionsError(
+        caught instanceof Error ? caught.message : "โหลดประวัติการลบไม่สำเร็จ",
+      );
+    } finally {
+      setDeletionsLoading(false);
+    }
+  }, [locationId, online]);
+
   useEffect(() => {
+    setDeletions([]);
     void reload();
-  }, [reload]);
+  }, [locationId, reload]);
 
   useEffect(() => {
     if (!locationId || !online) return;
@@ -153,16 +183,20 @@ export function useRubberExports(locationId: string, online: boolean) {
       method: "DELETE",
     });
     await assertApiResponse(response);
-    await reloadWithBadges();
+    await Promise.all([reloadWithBadges(), reloadDeletions()]);
   }
 
   return {
     exports,
+    deletions,
     availableBills,
     permissions,
     loading,
     error,
+    deletionsLoading,
+    deletionsError,
     reload,
+    reloadDeletions,
     preview,
     create,
     details,

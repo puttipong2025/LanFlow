@@ -38,7 +38,6 @@ const {
   mint: MINT,
   paleGreen: PALE_GREEN,
   muted: MUTED,
-  deleted: DELETED,
 } = PDF_PALETTE;
 
 function drawSectionTitle(state: PdfState, text: string) {
@@ -148,12 +147,11 @@ function drawReportHeader(state: PdfState, details: ReportDetails) {
   metadata.forEach((text, index) => {
     const row = Math.floor(index / 4);
     const column = index % 4;
-    const deletedStatus = index === 6 && details.report.status === "deleted";
     applyTextStyle(doc, {
       text,
-      bold: deletedStatus,
+      bold: false,
       fontSize: 11,
-      color: deletedStatus ? DELETED : DARK_GREEN,
+      color: DARK_GREEN,
     });
     drawActualText(doc, text, PAGE_LEFT + (column * width), state.y + (row * 20), {
       width: index === 6 ? width * 2 : width,
@@ -175,7 +173,13 @@ function drawReportHeader(state: PdfState, details: ReportDetails) {
 function drawReportContent(doc: PdfDocument, details: ReportDetails) {
   const state: PdfState = { doc, y: PAGE_TOP };
   const presentation = buildReportPresentation(details);
-  const { farmerRubberBills, incomeExpense, totals, traderRubberBills } = presentation;
+  const {
+    branchReceiptRubberBills,
+    farmerRubberBills,
+    incomeExpense,
+    totals,
+    traderRubberBills,
+  } = presentation;
   drawReportHeader(state, details);
 
   drawSectionTitle(state, "1. บิลยาง");
@@ -195,6 +199,8 @@ function drawReportContent(doc: PdfDocument, details: ReportDetails) {
   drawTable(state, rubberWidths, rubberHeader, rubberRows(traderRubberBills));
   drawGroupTitle(state, "1.2 ชาวสวน");
   drawTable(state, rubberWidths, rubberHeader, rubberRows(farmerRubberBills));
+  drawGroupTitle(state, "1.3 รับยางจากสาขา");
+  drawTable(state, rubberWidths, rubberHeader, rubberRows(branchReceiptRubberBills));
 
   drawSectionTitle(state, "2. อ่านใบชั่ง");
   const ocrRows: PdfCell[][] = details.ocrTickets.length === 0

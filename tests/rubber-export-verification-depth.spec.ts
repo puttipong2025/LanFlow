@@ -245,11 +245,11 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
       } else {
         const { data: deletedBranchBReport, error: deletedBranchBReportError } = await db
           .from("report_batches")
-          .select("status")
+          .select("id")
           .eq("id", branchBReport.id)
-          .single();
+          .maybeSingle();
         expect(deletedBranchBReportError).toBeNull();
-        expect(deletedBranchBReport?.status).toBe("deleted");
+        expect(deletedBranchBReport).toBeNull();
       }
 
       const optionsResponse = await admin.request.get(
@@ -452,6 +452,7 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
       await db.from("report_items").delete().in("location_id", [locationA, locationB]);
       await db.from("report_batches").delete().in("location_id", [locationA, locationB]);
       await db.from("rubber_bills").delete().in("id", billIds);
+      await db.from("document_deletion_audits").delete().in("location_id", [locationA, locationB]);
       await db.from("user_locations").delete().in("location_id", [locationA, locationB]);
       await db.from("locations").delete().in("id", [locationA, locationB]);
       await Promise.all([user.close(), admin.close(), superAdmin.close()]);
@@ -624,13 +625,14 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
       await db.from("report_items").delete().eq("location_id", locationId);
       await db.from("report_batches").delete().eq("location_id", locationId);
       await db.from("rubber_bills").delete().in("id", billIds);
+      await db.from("document_deletion_audits").delete().eq("location_id", locationId);
       await db.from("user_locations").delete().eq("location_id", locationId);
       await db.from("locations").delete().eq("id", locationId);
       await Promise.all([admin.close(), superAdmin.close()]);
     }
   });
 
-  test("keeps immutable detail snapshots after verification and deletion", async ({ browser }) => {
+  test("keeps immutable snapshots while current and removes every detail after deletion", async ({ browser }) => {
     test.setTimeout(120_000);
     const admin = await authContext(browser, "admin");
     const superAdmin = await authContext(browser, "super_admin");
@@ -730,10 +732,27 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
       );
       expect(verifyResponse.ok(), await verifyResponse.text()).toBeTruthy();
 
+      const detailsResponse = await superAdmin.request.get(
+        `/api/lanflow/rubber-exports/${created.id}`,
+      );
+      expect(detailsResponse.ok(), await detailsResponse.text()).toBeTruthy();
+      const details = await detailsResponse.json() as {
+        status: string;
+        items: Array<{ billNo: string; customerName: string; netWeight: number }>;
+      };
+      expect(details.status).toBe("verified");
+      expect(details.items).toContainEqual(expect.objectContaining({
+        billNo: originalFirstBillNo,
+        customerName: originalFirstCustomer,
+        netWeight: 90,
+      }));
+      expect(details.items.some((item) => item.billNo === mutatedBillNo)).toBeFalsy();
+
       const deleteResponse = await superAdmin.request.delete(
         `/api/lanflow/rubber-exports/${created.id}`,
       );
       expect(deleteResponse.ok(), await deleteResponse.text()).toBeTruthy();
+      exportId = null;
       const deleteReportResponse = await superAdmin.request.delete(
         `/api/lanflow/reports/${sourceReport.id}`,
       );
@@ -755,25 +774,20 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
         .eq("id", billIds[0]);
       expect(mutateError).toBeNull();
 
-      const detailsResponse = await superAdmin.request.get(
+      expect((await superAdmin.request.get(
         `/api/lanflow/rubber-exports/${created.id}`,
-      );
-      expect(detailsResponse.ok(), await detailsResponse.text()).toBeTruthy();
-      const details = await detailsResponse.json() as {
-        status: string;
-        previousStatus: string;
-        items: Array<{ billNo: string; customerName: string; netWeight: number }>;
-      };
-      expect(details).toMatchObject({
-        status: "deleted",
-        previousStatus: "verified",
+      )).status()).toBe(404);
+      const { data: audit, error: auditError } = await db
+        .from("document_deletion_audits")
+        .select("document_no, previous_status")
+        .eq("document_kind", "rubber_export")
+        .eq("source_id", created.id)
+        .single();
+      expect(auditError).toBeNull();
+      expect(audit).toEqual({
+        document_no: created.exportNo,
+        previous_status: "verified",
       });
-      expect(details.items).toContainEqual(expect.objectContaining({
-        billNo: originalFirstBillNo,
-        customerName: originalFirstCustomer,
-        netWeight: 90,
-      }));
-      expect(details.items.some((item) => item.billNo === mutatedBillNo)).toBeFalsy();
     } finally {
       if (exportId) {
         await superAdmin.request.delete(`/api/lanflow/rubber-exports/${exportId}`);
@@ -786,6 +800,7 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
       await db.from("report_items").delete().eq("location_id", locationId);
       await db.from("report_batches").delete().eq("location_id", locationId);
       await db.from("rubber_bills").delete().in("id", billIds);
+      await db.from("document_deletion_audits").delete().eq("location_id", locationId);
       await db.from("user_locations").delete().eq("location_id", locationId);
       await db.from("locations").delete().eq("id", locationId);
       await Promise.all([admin.close(), superAdmin.close()]);

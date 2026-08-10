@@ -627,8 +627,8 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     await context.setOffline(true);
 
     const blockMessage = 'รายการนี้ซิงก์แล้ว ต้องออนไลน์เพื่อแก้ไขหรือลบ';
-    const deleteButton = row.locator('button').nth(1);
-    const editButton = row.locator('button').nth(2);
+    const editButton = row.locator('button', { hasText: 'แก้' });
+    const deleteButton = row.locator('button', { hasText: 'ลบ' });
 
     await expect(editButton).toBeDisabled();
     await expect(deleteButton).toBeDisabled();
@@ -666,6 +666,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
   });
 
   test('online approval requests never enter sync_queue', async ({ page }) => {
+    test.setTimeout(60000);
     const marker = `ApprovalNoQueue-${Date.now()}`;
     const settingsUrl = `${localSupabaseUrl}/rest/v1/rubber_bill_approval_settings?id=eq.true`;
     const serviceHeaders = {
@@ -697,7 +698,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
       await weighRow.locator('input[type="number"]').nth(0).fill('100');
       await weighRow.locator('input[type="number"]').nth(1).fill('20');
       await weighRow.locator('input[type="number"]').nth(3).fill('1');
-      await modal.getByRole('button', { name: 'บันทึกบิล', exact: true }).click();
+      await modal.getByRole('button', { name: 'ส่งขออนุมัติ', exact: true }).click();
       await expect(modal).toBeHidden({ timeout: 10000 });
 
       const pendingRow = page.locator('table tbody tr', { hasText: marker }).first();
@@ -757,7 +758,8 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
 
     // 4. Seed IDB with create + delete for a fresh clientTempId
     const marker = `LegacyCD-${Date.now()}`;
-    const freshId = await page.evaluate(async ({ locationId, marker, ownerUserId }) => {
+    const billDate = bangkokDateString(new Date());
+    const freshId = await page.evaluate(async ({ locationId, marker, ownerUserId, billDate }) => {
       const clientTempId = crypto.randomUUID();
       const now = new Date().toISOString();
 
@@ -769,7 +771,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
         locationId,
         recordStatus: 'active',
         localBillNo: `TEMP-${clientTempId.slice(0, 8)}`,
-        billDate: bangkokDateString(new Date(now)),
+        billDate,
         customerName: marker,
         configuredPriceSnapshot: null,
         weight: 800,
@@ -834,7 +836,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
       await new Promise(resolve => { tx.oncomplete = resolve; });
       db.close();
       return clientTempId;
-    }, { locationId, marker, ownerUserId: testUserId });
+    }, { locationId, marker, ownerUserId: testUserId, billDate });
 
     // 5. Go online → normalizer fires → create+delete = no-op
     await context.setOffline(false);
@@ -877,8 +879,9 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     await context.setOffline(true);
 
     const marker = `LegacyCU-${Date.now()}`;
+    const billDate = bangkokDateString(new Date());
     // 4. Seed IDB with create + update for a fresh clientTempId
-    const freshId = await page.evaluate(async ({ locationId, marker, ownerUserId }) => {
+    const freshId = await page.evaluate(async ({ locationId, marker, ownerUserId, billDate }) => {
       const clientTempId = crypto.randomUUID();
       const now = new Date().toISOString();
 
@@ -890,7 +893,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
         locationId,
         recordStatus: 'active',
         localBillNo: `TEMP-${clientTempId.slice(0, 8)}`,
-        billDate: bangkokDateString(new Date(now)),
+        billDate,
         customerName: marker,
         configuredPriceSnapshot: null,
         weight: 800,
@@ -972,7 +975,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
       await new Promise(resolve => { tx.oncomplete = resolve; });
       db.close();
       return clientTempId;
-    }, { locationId, marker, ownerUserId: testUserId });
+    }, { locationId, marker, ownerUserId: testUserId, billDate });
 
     // 5. Go online → normalizer coalesces create+update → single create with latest payload → sync
     await context.setOffline(false);

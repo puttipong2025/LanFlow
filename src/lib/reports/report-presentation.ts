@@ -68,8 +68,8 @@ export function reportShareTitle(report: ReportSummary) {
   return `รายงาน LanFlow ${report.reportNo} · ${report.locationName} · ${formatThaiDateTime(report.createdAt)}`;
 }
 
-export function reportStatusLabel(report: ReportSummary) {
-  return report.status === "active" ? "ใช้งาน" : "ลบแล้ว (สำเนา)";
+export function reportStatusLabel(_report: ReportSummary) {
+  return "ใช้งาน";
 }
 
 export type RubberBillRow = ReportDetails["rubberBills"][number];
@@ -95,6 +95,7 @@ export function buildReportPresentation(details: ReportDetails) {
   return {
     traderRubberBills: details.rubberBills.filter((row) => row.customerGroup === "trader"),
     farmerRubberBills: details.rubberBills.filter((row) => row.customerGroup === "farmer"),
+    branchReceiptRubberBills: details.rubberBills.filter((row) => row.customerGroup === "branch_receipt"),
     incomeExpense,
     totals: {
       ocrNet: details.ocrTickets.reduce((sum, row) => sum + row.weightNet, 0),

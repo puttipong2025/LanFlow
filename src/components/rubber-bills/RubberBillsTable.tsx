@@ -4,12 +4,15 @@ import type { RubberBill } from "@/types";
 import { formatBillTimestamp, getDisplayBillNo } from "./bill-display";
 import { SyncStatusBadge } from "@/components/shared/SyncStatusBadge";
 import { TablePagination } from "@/components/shared/TablePagination";
+import { cn } from "@/lib/cn";
+import { formatRubberAge } from "@/lib/rubber-exports/rubber-export-presentation";
 
 export type RubberBillsTableProps = {
   bills: RubberBill[];
   page: number;
   pageSize: number;
   onPageChange: (page: number) => void;
+  onView: (bill: RubberBill) => void;
   onEdit: (bill: RubberBill) => void;
   onDelete: (bill: RubberBill) => void;
   onPrint: (bill: RubberBill) => void;
@@ -25,6 +28,7 @@ export function RubberBillsTable({
   page,
   pageSize,
   onPageChange,
+  onView,
   onEdit,
   onDelete,
   onPrint,
@@ -65,6 +69,8 @@ export function RubberBillsTable({
               const deleting = deletingBillId === bill.id;
               const actionsDisabled = Boolean(actionBlockReason) || deleting;
               const actionTitle = deleting ? "กำลังลบรายการ..." : actionBlockReason;
+              const viewDisabled = deleting || (!bill.sourceRubberExportId && Boolean(actionBlockReason));
+              const viewTitle = deleting ? "กำลังลบรายการ..." : "ดูรายละเอียด";
               const printBlockReason = getPrintBlockReason?.(bill) ?? null;
 
               return (
@@ -73,11 +79,11 @@ export function RubberBillsTable({
                   <div className="flex items-center gap-1.5 whitespace-nowrap">
                     <button
                       type="button"
-                       title={actionTitle ?? "ดูรายละเอียด"}
-                       aria-label={actionTitle ?? "ดูรายละเอียด"}
-                      disabled={actionsDisabled}
-                      onClick={() => onEdit(bill)}
-                       className={`focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-river text-white shadow-sm hover:bg-river/90 ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
+                       title={viewTitle}
+                       aria-label={viewTitle}
+                      disabled={viewDisabled}
+                       onClick={() => onView(bill)}
+                        className={cn("focus-ring inline-flex size-10 items-center justify-center rounded-md bg-river text-white shadow-sm hover:bg-river/90", viewDisabled && "cursor-not-allowed opacity-45")}
                     >
                        <Eye size={17} />
                     </button>
@@ -86,17 +92,17 @@ export function RubberBillsTable({
                       className={`inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white hover:bg-actionSecondary/90 ${printBlockReason ? "cursor-not-allowed opacity-45" : ""}`}>
                       <Share2 size={16} /> แชร์ PDF
                     </button>
-                    <button
+                    {!bill.sourceRubberExportId && <button
                       type="button"
                        title={actionTitle ?? "แก้ไข"}
                        aria-label={actionTitle ?? "แก้ไข"}
                       disabled={actionsDisabled}
                       onClick={() => onEdit(bill)}
-                      className={`focus-ring inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-md bg-amber px-3 text-sm font-semibold text-white shadow-sm hover:bg-amber/90 ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}
+                       className={cn("focus-ring inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-md bg-amber px-3 text-sm font-semibold text-white shadow-sm hover:bg-amber/90", actionsDisabled && "cursor-not-allowed opacity-45")}
                     >
                       <Edit3 size={16} />
                        แก้
-                    </button>
+                    </button>}
                     <button type="button" title={actionTitle ?? "ลบ"} aria-label={actionTitle ?? "ลบ"}
                       disabled={actionsDisabled} onClick={() => onDelete(bill)}
                       className={`focus-ring inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-md bg-danger px-3 text-sm font-semibold text-white shadow-sm hover:bg-danger/90 ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}>
@@ -141,7 +147,20 @@ export function RubberBillsTable({
                 </td>
                 <td>{bill.billDate}</td>
                 <td>{formatBillTimestamp(bill.clientCreatedAt)}</td>
-                <td>{bill.customerName}</td>
+                <td>
+                  <div className="flex flex-col items-start gap-1">
+                    <span>{bill.customerName}</span>
+                    {bill.sourceRubberExportId && (
+                      <>
+                        <span className="rounded-full bg-mint px-2 py-0.5 text-xs font-bold text-ink">รับจากสาขา</span>
+                        <span className="text-xs text-ink/60 tabular-nums">
+                          อายุตอนรับ {formatRubberAge(bill.receivedAgeHours ?? null)}
+                          {bill.receivedAgeIsEstimated ? " · ประมาณการ" : ""}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                </td>
                 <td>{bill.createdByName?.trim() || "ไม่ระบุ"}</td>
                 <td>{bill.billType}</td>
                 <td>{formatNumber(bill.netWeight)}</td>

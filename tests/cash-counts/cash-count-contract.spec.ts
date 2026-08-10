@@ -66,6 +66,7 @@ test.describe.serial("cash count aggregate contract", () => {
     if (reportIds.length) await db.from("report_items").delete().in("report_id", reportIds);
     await db.from("report_batches").delete().eq("location_id", locationId);
     await db.from("income_expense").delete().eq("location_id", locationId);
+    await db.from("document_deletion_audits").delete().eq("location_id", locationId);
     await db.from("user_locations").delete().eq("location_id", locationId);
     await db.from("locations").delete().eq("id", locationId);
   });
@@ -130,15 +131,38 @@ test.describe.serial("cash count aggregate contract", () => {
     expect((await directDelete.json()).error).toContain("โมดูลนับเงิน");
     const pairedDelete = await manager.request.delete(`/api/lanflow/cash-counts/${receipt.id}?locationId=${locationId}`);
     expect(pairedDelete.ok()).toBe(true);
-    const [{ data: count }, { data: report }] = await Promise.all([
-      service().from("cash_counts").select("status").eq("id", receipt.id).single(),
-      service().from("report_batches").select("status").eq("id", receipt.reportId).single(),
+    const [{ data: count }, { data: report }, { data: submittedSession }, { data: reportItems }] = await Promise.all([
+      service().from("cash_counts").select("id").eq("id", receipt.id).maybeSingle(),
+      service().from("report_batches").select("id").eq("id", receipt.reportId).maybeSingle(),
+      service().from("cash_count_sessions").select("id").eq("id", session.id).maybeSingle(),
+      service().from("report_items").select("id").eq("report_id", receipt.reportId),
     ]);
-    expect(count?.status).toBe("deleted");
-    expect(report?.status).toBe("deleted");
+    expect(count).toBeNull();
+    expect(report).toBeNull();
+    expect(submittedSession).toBeNull();
+    expect(reportItems).toEqual([]);
     const reportsAfterDelete = await admin.request.get(`/api/lanflow/reports?locationId=${locationId}`);
     const deletedMarker = (await reportsAfterDelete.json()).reports.find((row: { id: string }) => row.id === receipt.reportId);
-    expect(deletedMarker).toMatchObject({ status: "deleted", hasCashCount: true, cashCountId: null });
+    expect(deletedMarker).toBeUndefined();
+    expect((await manager.request.get(`/api/lanflow/cash-counts/${receipt.id}?locationId=${locationId}`)).status()).toBe(404);
+
+    const deletionHistory = await manager.request.get(
+      `/api/lanflow/cash-counts?locationId=${locationId}&view=deletions`,
+    );
+    expect(deletionHistory.ok(), await deletionHistory.text()).toBe(true);
+    expect((await deletionHistory.json()).deletions).toContainEqual(expect.objectContaining({
+      documentKind: "cash_count",
+      documentNo: receipt.reportNo,
+      originalActorName: expect.any(String),
+    }));
+    expect((await admin.request.get(
+      `/api/lanflow/cash-counts?locationId=${locationId}&view=deletions`,
+    )).status()).toBe(403);
+
+    const retryDelete = await manager.request.delete(
+      `/api/lanflow/cash-counts/${receipt.id}?locationId=${locationId}`,
+    );
+    expect(retryDelete.ok(), await retryDelete.text()).toBe(true);
   });
 
   test("only the starter can cancel a live session", async () => {

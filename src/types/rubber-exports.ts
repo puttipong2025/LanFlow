@@ -1,4 +1,4 @@
-export type RubberExportStatus = "draft" | "verified" | "deleted";
+export type RubberExportStatus = "draft" | "verified";
 export type RubberExportExpenseDestination = "branch" | "external";
 
 export type RubberExportPermissions = {
@@ -48,6 +48,9 @@ export type RubberExportSummary = {
   averageAgeHours: number | null;
   oldestAgeHours: number | null;
   estimatedAgeItemCount: number | null;
+  receiptBillId?: string | null;
+  receiptBillNo?: string | null;
+  receiptLocationName?: string | null;
 };
 
 export type RubberExportDetails = RubberExportSummary & {

@@ -219,12 +219,7 @@ export function ReportPreviewModal({
                   <p className="text-pretty text-sm font-semibold text-ink/60">รายงานสาขา {details.report.locationName}</p>
                   <h2 className="mt-1 text-balance text-2xl font-bold text-ink">{details.report.reportNo}</h2>
                 </div>
-                <span className={cn(
-                  "rounded-full px-3 py-1 text-sm font-bold",
-                  details.report.status === "deleted"
-                    ? "bg-danger/10 text-danger"
-                    : "bg-leaf/15 text-leaf",
-                )}>
+                <span className="rounded-full bg-leaf/15 px-3 py-1 text-sm font-bold text-leaf">
                   {reportStatusLabel(details.report)}
                 </span>
               </div>
@@ -256,6 +251,10 @@ export function ReportPreviewModal({
               <div className="mt-5">
                 <h4 className="text-balance font-bold text-ink">1.2 ชาวสวน</h4>
                 <RubberBillTable rows={presentation.farmerRubberBills} />
+              </div>
+              <div>
+                <h4 className="text-balance font-bold text-ink">1.3 รับยางจากสาขา</h4>
+                <RubberBillTable rows={presentation.branchReceiptRubberBills} />
               </div>
             </Section>
 

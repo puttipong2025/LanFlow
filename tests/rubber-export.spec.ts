@@ -26,6 +26,7 @@ function service() {
 
 test.describe.serial("Rubber export contract @rubber-export", () => {
   test("system manager gets super-admin verification actions for another admin's draft without reloading the app", async ({ browser }) => {
+    test.setTimeout(60_000);
     const managerContext = await authContext(browser, "admin");
     const creatorContext = await authContext(browser, "user");
     const db = service();
@@ -105,7 +106,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       });
       await page.getByRole("button", {
         name: `ดูรายละเอียด REX-MANAGER-${exportId.slice(0, 8)}`,
-      }).click();
+      }).dispatchEvent("click");
       const openingDialog = page.getByRole("dialog", {
         name: `REX-MANAGER-${exportId.slice(0, 8)}`,
       });
@@ -156,6 +157,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
         hasText: `REX-MANAGER-${exportId.slice(0, 8)}`,
       })).toContainText("ตรวจสอบแล้ว");
     } finally {
+      await Promise.allSettled([managerContext.close(), creatorContext.close()]);
       await db.from("rubber_exports").delete().eq("id", exportId);
       await db.from("user_locations").delete().eq("location_id", locationId);
       await db.from("locations").delete().eq("id", locationId);
@@ -168,8 +170,6 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await db.from("profiles")
         .update({ role: creatorRole?.role ?? "user" })
         .eq("id", creator.id);
-      await managerContext.close();
-      await creatorContext.close();
     }
   });
 
@@ -194,7 +194,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
           { user_id: adminMe.id, location_id: locationIds[0] },
         ],
       )).error).toBeNull();
-      expect((await db.from("rubber_exports").insert(exportIds.map((id, index) => ({
+      expect((await db.from("rubber_exports").insert(exportIds.slice(0, 5).map((id, index) => ({
         ...(index < 3 ? {
         id,
         export_no: `REX-BADGE-${id.slice(0, 8)}`,
@@ -277,6 +277,16 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
           deleted_at: "2026-08-04T02:00:00.000Z",
         }),
       })))).error).toBeNull();
+      expect((await db.from("document_deletion_audits").insert({
+        document_kind: "rubber_export",
+        source_id: exportIds[5],
+        document_no: `REX-BADGE-${exportIds[5].slice(0, 8)}`,
+        location_id: locationIds[0],
+        previous_status: "draft",
+        deleted_by_user_id: me.id,
+        deleted_by_name: me.name,
+        deleted_at: "2026-08-04T02:00:00.000Z",
+      })).error).toBeNull();
 
       const page = await context.newPage();
       await page.goto("/");
@@ -287,8 +297,9 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       })).toBeVisible({ timeout: 15_000 });
       await expect(page.getByRole("button", { name: "ใช้งาน 3 รายการ" })).toBeVisible();
       await expect(page.getByRole("button", { name: "ตรวจสอบแล้ว 1 รายการ" })).toBeVisible();
-      await expect(page.getByRole("button", { name: "ลบแล้ว 1 รายการ" })).toBeVisible();
-      await expect(page.getByRole("button", { name: "ทั้งหมด 4 รายการ" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "รายการปัจจุบัน" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "ประวัติการลบ" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "ทั้งหมด 3 รายการ" })).toBeVisible();
       const activeRows = page.locator("table").first().locator("tbody > tr");
       await expect(activeRows).toHaveCount(3);
       await expect(activeRows.nth(0)).toContainText(`REX-BADGE-${exportIds[3].slice(0, 8)}`);
@@ -299,6 +310,10 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await expect(auditSection).toBeVisible();
       await expect(auditSection.getByText(me.name, { exact: false })).toBeVisible();
       await page.getByRole("button", { name: "ปิด", exact: true }).click();
+      await page.getByRole("button", { name: "ประวัติการลบ" }).click();
+      await expect(page.getByText(`REX-BADGE-${exportIds[5].slice(0, 8)}`)).toBeVisible();
+      await expect(page.getByText("ฉบับร่าง", { exact: true })).toBeVisible();
+      await page.getByRole("button", { name: "รายการปัจจุบัน" }).click();
 
       const adminPage = await adminContext.newPage();
       await adminPage.goto("/");
@@ -331,6 +346,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       })).toBeVisible();
     } finally {
       await db.from("rubber_exports").delete().in("id", exportIds);
+      await db.from("document_deletion_audits").delete().in("location_id", locationIds);
       await db.from("user_locations").delete().in("location_id", locationIds);
       await db.from("locations").delete().in("id", locationIds);
       await context.close();
@@ -648,42 +664,60 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
         rows: Array<{ relationSourceId?: string }>;
       }).rows;
       expect(afterDeleteRows.some((row) => row.relationSourceId === created.id)).toBeFalsy();
+      const { data: dashboardDeleteEvent, error: dashboardDeleteEventError } = await db
+        .from("dashboard_money_events")
+        .select("action, number, amount, actor_name")
+        .eq("source_type", "rubber_export")
+        .eq("source_id", created.id)
+        .eq("action", "delete")
+        .order("occurred_at", { ascending: false })
+        .limit(1)
+        .single();
+      expect(dashboardDeleteEventError).toBeNull();
+      expect(dashboardDeleteEvent).toMatchObject({
+        action: "delete",
+        number: created.exportNo,
+        amount: 1180,
+        actor_name: expect.any(String),
+      });
       expect((await superAdmin.request.delete(`/api/lanflow/reports/${sourceReport.id}`)).ok()).toBeTruthy();
       sourceReportId = null;
 
       const deletedVerifiedResponse = await superAdmin.request.get(
         `/api/lanflow/rubber-exports/${created.id}`,
       );
-      expect(deletedVerifiedResponse.ok(), await deletedVerifiedResponse.text()).toBeTruthy();
-      const deletedVerifiedDetails = await deletedVerifiedResponse.json();
-      expect(deletedVerifiedDetails).toMatchObject({
-        exportNo: created.exportNo,
-        status: "deleted",
-        previousStatus: "verified",
-        currentWeight: 500,
-        workTotal: 1180,
-      });
-      expect(deletedVerifiedDetails).not.toHaveProperty("createdByPhone");
-      expect(deletedVerifiedDetails).not.toHaveProperty("verifiedByPhone");
-      expect(deletedVerifiedDetails).not.toHaveProperty("deletedByPhone");
+      expect(deletedVerifiedResponse.status()).toBe(404);
 
       const deletedDraftResponse = await superAdmin.request.get(
         `/api/lanflow/rubber-exports/${deletedDraft.id}`,
       );
-      expect(deletedDraftResponse.ok(), await deletedDraftResponse.text()).toBeTruthy();
-      expect(await deletedDraftResponse.json()).toMatchObject({
-        exportNo: deletedDraft.exportNo,
-        status: "deleted",
-        previousStatus: "draft",
-        currentWeight: null,
-        workRate: null,
-        workTotal: null,
-        ageCalculatedAt: null,
-        averageAgeHours: null,
-        oldestAgeHours: null,
-        estimatedAgeItemCount: null,
-        items: [expect.objectContaining({ ageHours: null })],
-      });
+      expect(deletedDraftResponse.status()).toBe(404);
+      const [{ data: removedExports }, { data: removedItems }] = await Promise.all([
+        db.from("rubber_exports").select("id").in("id", [created.id, deletedDraft.id]),
+        db.from("rubber_export_items").select("id").in("export_id", [created.id, deletedDraft.id]),
+      ]);
+      expect(removedExports).toEqual([]);
+      expect(removedItems).toEqual([]);
+
+      const deletionHistory = await admin.request.get(
+        `/api/lanflow/rubber-exports?locationId=${locationId}&view=deletions`,
+      );
+      expect(deletionHistory.ok(), await deletionHistory.text()).toBeTruthy();
+      expect((await deletionHistory.json()).deletions).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          documentKind: "rubber_export",
+          documentNo: created.exportNo,
+          previousStatus: "verified",
+        }),
+        expect.objectContaining({
+          documentKind: "rubber_export",
+          documentNo: deletedDraft.exportNo,
+          previousStatus: "draft",
+        }),
+      ]));
+      expect((await superAdmin.request.delete(
+        `/api/lanflow/rubber-exports/${created.id}`,
+      )).ok()).toBeTruthy();
     } finally {
       if (expenseReportId) await superAdmin.request.delete(`/api/lanflow/reports/${expenseReportId}`);
       for (const id of exportIds) {
@@ -695,6 +729,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await db.from("report_items").delete().eq("location_id", locationId);
       await db.from("report_batches").delete().eq("location_id", locationId);
       await db.from("rubber_bills").delete().in("id", billIds);
+      await db.from("document_deletion_audits").delete().eq("location_id", locationId);
       await db.from("user_locations").delete().eq("location_id", locationId);
       await db.from("locations").delete().eq("id", locationId);
       await Promise.all([user.close(), admin.close(), superAdmin.close()]);

@@ -36,7 +36,7 @@ export type CashCountSummary = {
   confidence: number | null;
   analysisStatus: string | null;
   formulaVersion: string;
-  status: "active" | "deleted";
+  status: "active";
   createdByName: string;
   createdAt: string;
   deletedAt: string | null;

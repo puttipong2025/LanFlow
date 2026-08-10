@@ -17,12 +17,16 @@ export function rubberExportErrorResponse(message: string) {
   if (message.includes("ไม่มีสิทธิ์") || message.includes("access denied")) {
     return NextResponse.json({ error: message }, { status: 403 });
   }
+  if (message.includes("ไม่พบ")) {
+    return NextResponse.json({ error: message }, { status: 404 });
+  }
   if (
     message.includes("INVALID_RUBBER_BILL") ||
     message.includes("RUBBER_EXPORT_SELECTION") ||
     message.includes("REPORT_LOCKED") ||
     message.includes("RUBBER_EXPORT_LOCKED") ||
     message.includes("RUBBER_EXPORT_FUTURE_BILL") ||
+    message.includes("BRANCH_RECEIPT_SOURCE_LOCKED") ||
     message.includes("ถูกจอง") ||
     message.includes("ฉบับร่าง") ||
     message.includes("ตรวจสอบแล้ว") ||
@@ -75,5 +79,8 @@ export function mapRubberExportRow(row: Record<string, any>): RubberExportSummar
       ? null : number(row.oldest_age_hours),
     estimatedAgeItemCount: row.estimated_age_item_count === null || row.estimated_age_item_count === undefined
       ? null : number(row.estimated_age_item_count),
+    receiptBillId: row.receipt_bill_id ?? null,
+    receiptBillNo: row.receipt_bill_no ?? null,
+    receiptLocationName: row.receipt_location_name ?? null,
   };
 }

@@ -1,6 +1,6 @@
 # Generate searchable business PDFs in the browser
 
-Status: Accepted
+Status: Accepted; deleted Report Batch and Rubber Export historical-copy portion superseded by ADR-0034
 
 LanFlow generates Report Batch, Rubber Export, payroll-slip, and withdrawal-slip PDFs in the browser from their detail API responses. Each feature keeps its own presentation model and columns while sharing only the A4 constants, local Noto Sans Thai font loading, PDF `ActualText`, page lifecycle, footer, and in-memory file creation. Report Batch and Rubber Export use A4 landscape; payroll and withdrawal slips use A4 portrait. `ActualText` preserves the logical Thai text used by search, selection, copy, and assistive technology even when glyph shaping uses a different visual order.
 

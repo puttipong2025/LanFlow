@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { FilePlus2, RotateCw } from "lucide-react";
 import { toast } from "sonner";
 import type { Location } from "@/types";
-import type { RubberExportDetails, RubberExportStatus, RubberExportSummary } from "@/types/rubber-exports";
+import type { RubberExportDetails, RubberExportSummary } from "@/types/rubber-exports";
 import { cn } from "@/lib/cn";
 import { useRubberExports } from "@/hooks/useRubberExports";
 import { useSharePdf } from "@/hooks/useSharePdf";
@@ -15,8 +15,10 @@ import { RubberExportDetailModal } from "@/components/rubber-exports/RubberExpor
 import { RubberExportTable } from "@/components/rubber-exports/RubberExportTable";
 import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
 import { ModalShell } from "@/components/shared/ModalShell";
+import { AlertDialog } from "@/components/shared/AlertDialog";
+import { DeletionAuditTable } from "@/components/shared/DeletionAuditTable";
 
-type Filter = "active" | RubberExportStatus | "all";
+type Filter = "active" | "draft" | "verified" | "all";
 type DetailTarget = Pick<RubberExportSummary, "id" | "exportNo">;
 
 function RubberExportDetailOpeningModal({
@@ -86,6 +88,8 @@ export function RubberExportsModule({
   onOpenReports: () => void;
 }) {
   const api = useRubberExports(selectedLocation.id, online);
+  const reloadDeletions = api.reloadDeletions;
+  const [view, setView] = useState<"current" | "deletions">("current");
   const [filter, setFilter] = useState<Filter>("active");
   const [creating, setCreating] = useState(false);
   const [detailTarget, setDetailTarget] = useState<DetailTarget | null>(null);
@@ -97,26 +101,29 @@ export function RubberExportsModule({
   const detailController = useRef<AbortController | null>(null);
   const pdfShare = useSharePdf();
   const counts = useMemo(() => ({
-    active: api.exports.filter((row) => row.status !== "deleted").length,
+    active: api.exports.length,
     draft: api.exports.filter((row) => row.status === "draft").length,
     verified: api.exports.filter((row) => row.status === "verified").length,
-    deleted: api.exports.filter((row) => row.status === "deleted").length,
     all: api.exports.length,
   }), [api.exports]);
   const visibleRows = useMemo(() => api.exports
     .filter((row) => {
       if (filter === "all") return true;
-      if (filter === "active") return row.status !== "deleted";
+      if (filter === "active") return true;
       return row.status === filter;
     })
     .sort((left, right) => {
-      const rank = { draft: 0, verified: 1, deleted: 2 };
+      const rank = { draft: 0, verified: 1 };
       const statusDifference = rank[left.status] - rank[right.status];
       if (statusDifference !== 0) return statusDifference;
       const timeDifference = left.createdAt.localeCompare(right.createdAt);
       if (timeDifference !== 0) return left.status === "draft" ? timeDifference : -timeDifference;
       return left.id.localeCompare(right.id);
     }), [api.exports, filter]);
+
+  useEffect(() => {
+    if (view === "deletions") void reloadDeletions();
+  }, [reloadDeletions, selectedLocation.id, view]);
 
   async function open(target: DetailTarget) {
     if (!online) return;
@@ -212,7 +219,7 @@ export function RubberExportsModule({
       const delivery = await pdfShare.sharePdfFile(async (signal) => {
         const freshDetails = await api.details(row.id, signal);
         if (freshDetails.status === "draft") {
-          throw new Error("แชร์ PDF ได้เฉพาะรายการตรวจสอบแล้วหรือลบแล้ว");
+          throw new Error("แชร์ PDF ได้เฉพาะรายการตรวจสอบแล้ว");
         }
         return {
           file: await createRubberExportPdfFile(freshDetails, signal),
@@ -239,8 +246,8 @@ export function RubberExportsModule({
           <p className="mt-1 text-pretty text-sm text-ink/65">เลือกบิลที่ล็อกในรายงาน และจองบิลที่เลือกทันทีเมื่อสร้างฉบับร่าง</p>
         </div>
         <div className="flex w-full flex-wrap gap-2 sm:w-auto">
-          <button type="button" onClick={() => void api.reload()} disabled={!online || api.loading} className="focus-ring inline-flex items-center gap-2 rounded-md bg-actionSecondary px-3 py-2 text-sm font-semibold text-white hover:bg-actionSecondary/90 disabled:opacity-50">
-            <RotateCw size={16} className={api.loading ? "animate-spin" : ""} /> รีเฟรช
+          <button type="button" onClick={() => void (view === "current" ? api.reload() : api.reloadDeletions())} disabled={!online || api.loading || api.deletionsLoading} className="focus-ring inline-flex items-center gap-2 rounded-md bg-actionSecondary px-3 py-2 text-sm font-semibold text-white hover:bg-actionSecondary/90 disabled:opacity-50">
+            <RotateCw size={16} className={api.loading || api.deletionsLoading ? "animate-spin" : ""} /> รีเฟรช
           </button>
           <button
             type="button"
@@ -260,6 +267,11 @@ export function RubberExportsModule({
           {api.error}
         </div>
       )}
+      {online && view === "deletions" && api.deletionsError && (
+        <div className="rounded-lg bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+          {api.deletionsError}
+        </div>
+      )}
       {online && !api.loading && !api.error && api.availableBills.length === 0 && (
         <div className="flex flex-col items-start gap-3 rounded-lg bg-field px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
@@ -272,12 +284,32 @@ export function RubberExportsModule({
         </div>
       )}
 
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap gap-2" aria-label="มุมมองรายการส่งออกยาง">
+        {([
+          ["current", "รายการปัจจุบัน"],
+          ["deletions", "ประวัติการลบ"],
+        ] as const).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => {
+              setView(value);
+            }}
+            className={cn(
+              "focus-ring rounded-md px-4 py-2 text-sm font-semibold text-white",
+              view === value ? "bg-leaf" : "bg-actionSecondary",
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {view === "current" && <div className="flex flex-wrap gap-2">
         {([
           ["active", "ใช้งาน"],
           ["draft", "ฉบับร่าง"],
           ["verified", "ตรวจสอบแล้ว"],
-          ["deleted", "ลบแล้ว"],
           ["all", "ทั้งหมด"],
         ] as Array<[Filter, string]>).map(([value, label]) => (
           <button
@@ -297,8 +329,9 @@ export function RubberExportsModule({
             </span>
           </button>
         ))}
-      </div>
+      </div>}
 
+      {view === "current" ? (
       <div className="overflow-hidden rounded-xl bg-white shadow-sm">
         <RubberExportTable
           rows={visibleRows}
@@ -315,6 +348,15 @@ export function RubberExportsModule({
           onDelete={setPendingDelete}
         />
       </div>
+      ) : (
+        <DeletionAuditTable
+          rows={api.deletions}
+          loading={api.deletionsLoading}
+          emptyLabel="ยังไม่มีประวัติการลบรายการส่งออกยาง"
+          showPreviousStatus
+          onShowCurrent={() => setView("current")}
+        />
+      )}
 
       {creating && (
         <RubberExportCreateModal
@@ -382,24 +424,19 @@ export function RubberExportsModule({
         />
       )}
 
-      {pendingDelete && (
-        <ModalShell
-          role="alertdialog"
-          title={`ลบ ${pendingDelete.exportNo}?`}
-          subtitle="รายการจะถูกเก็บเป็นประวัติ และบิลทั้งหมดจะถูกคืนให้ใช้งานได้อีกครั้ง"
-          onClose={() => {
-            if (!deleting) setPendingDelete(null);
-          }}
-        >
-          <p className="text-pretty text-sm text-ink/70">ยืนยันการลบรายการส่งออกยางนี้ การลบจะบันทึกผู้ดำเนินการและเวลาไว้ในประวัติ</p>
-          <div className="modal-actions mt-5 flex justify-end gap-2">
-            <button type="button" disabled={deleting} onClick={() => setPendingDelete(null)} className="focus-ring rounded-md bg-actionSecondary px-4 py-2 font-semibold text-white disabled:opacity-50">ยกเลิก</button>
-            <button type="button" disabled={deleting} onClick={() => void remove(pendingDelete)} className="focus-ring inline-flex items-center gap-2 rounded-md bg-clay px-4 py-2 font-semibold text-white disabled:opacity-50">
-              {deleting && <RotateCw size={16} className="animate-spin" />} ยืนยันลบ
-            </button>
-          </div>
-        </ModalShell>
-      )}
+      <AlertDialog
+        open={Boolean(pendingDelete)}
+        title={`ลบ ${pendingDelete?.exportNo ?? "รายการส่งออกยาง"} แบบถาวร?`}
+        description="รายการ บิล snapshot และรายละเอียดทั้งหมดจะถูกลบถาวรและกู้คืนไม่ได้ บิลต้นทางจะกลับมาใช้งานได้ และระบบจะเก็บเฉพาะประวัติการลบขั้นต่ำ"
+        confirmLabel="ยืนยันลบ"
+        busy={deleting}
+        onCancel={() => {
+          if (!deleting) setPendingDelete(null);
+        }}
+        onConfirm={() => {
+          if (pendingDelete) void remove(pendingDelete);
+        }}
+      />
 
       <SharePdfWaitingModal open={pdfShare.waiting} onCancel={pdfShare.cancel} />
     </section>

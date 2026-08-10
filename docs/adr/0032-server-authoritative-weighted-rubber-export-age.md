@@ -2,6 +2,8 @@
 status: accepted
 ---
 
+Deleted-row age retention is superseded by ADR-0034; this age contract continues to apply while the Rubber Export source exists.
+
 # Server-authoritative weighted rubber-export age
 
 LanFlow จะคำนวณอายุยางของรายการส่งออกที่ Server/ฐานข้อมูลจากเวลา UTC และแสดงทุกวันเวลาเป็น `Asia/Bangkok` โดยฉบับร่างใช้เวลาปัจจุบันจาก Server เป็นเวลาตัด และรายการที่ตรวจสอบแล้วรวมถึงรายการที่ลบภายหลังตรึงเวลาตัดไว้ที่ `verifiedAt`. เวลาเริ่มรายบิลใช้ `TimestampBill` เมื่อวันที่ไทยตรงกับ `billDate`; หากวันที่ไม่ตรงให้ใช้วันที่จาก `billDate` ประกอบกับเวลาไทยเดียวกับเวลาตัดและระบุผลว่าเป็นค่าประมาณ ส่วนรายการที่ลบจากฉบับร่างไม่มีอายุอย่างเป็นทางการและบิลที่มี `billDate` หลังวันตัดไม่มีสิทธิ์เข้าส่งออก.

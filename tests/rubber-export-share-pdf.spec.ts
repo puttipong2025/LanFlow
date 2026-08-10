@@ -10,23 +10,7 @@ import {
 test.use({ storageState: "playwright/.auth/super_admin.json" });
 
 const verified = rubberExportDetails();
-const deletedVerified = longRubberExportDetails();
-const deletedDraft = rubberExportDetails({
-  id: "rubber-export-deleted-draft-test",
-  exportNo: "REX-20260729-DRAFT",
-  status: "deleted",
-  previousStatus: "draft",
-  currentWeight: null,
-  weightLossPercent: null,
-  workRate: null,
-  workTotal: null,
-  verifiedByName: null,
-  verifiedAt: null,
-  deletedByName: "ผู้ลบทดสอบ",
-  deletedAt: "2026-07-29T09:30:00.000Z",
-  itemCount: 0,
-  items: [],
-});
+const longVerified = longRubberExportDetails();
 const draft = rubberExportDetails({
   id: "rubber-export-draft-test",
   exportNo: "REX-20260729-ACTIVE-DRAFT",
@@ -35,7 +19,7 @@ const draft = rubberExportDetails({
   verifiedByName: null,
   verifiedAt: null,
 });
-const allDetails = [verified, deletedVerified, deletedDraft, draft];
+const allDetails = [verified, longVerified, draft];
 const outputDirectory = path.resolve("output/pdf");
 const outputPdf = path.join(outputDirectory, "LanFlow-rubber-export-searchable-A4-landscape.pdf");
 const bundledPython = "C:\\Users\\Do\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe";
@@ -133,7 +117,7 @@ test("shares fresh details from both table and modal with filename and title", a
   ]);
 });
 
-test("shows share only for verified and deleted statuses", async ({ page }) => {
+test("shows share only for verified status", async ({ page }) => {
   await openRubberExports(page);
 
   const draftRow = page.locator("tr").filter({ hasText: draft.exportNo });
@@ -141,14 +125,11 @@ test("shows share only for verified and deleted statuses", async ({ page }) => {
   await expect(page.locator("tr").filter({ hasText: verified.exportNo })
     .getByRole("button", { name: /แชร์ PDF/ })).toBeVisible();
 
-  await page.getByRole("button", { name: "ลบแล้ว 2 รายการ" }).click();
-  await expect(page.locator("tr").filter({ hasText: deletedVerified.exportNo })
-    .getByRole("button", { name: /แชร์ PDF/ })).toBeVisible();
-  await expect(page.locator("tr").filter({ hasText: deletedDraft.exportNo })
+  await expect(page.locator("tr").filter({ hasText: longVerified.exportNo })
     .getByRole("button", { name: /แชร์ PDF/ })).toBeVisible();
 });
 
-test("downloads a searchable multi-page deleted copy when file sharing is unsupported", async ({ page }) => {
+test("downloads a searchable multi-page verified copy when file sharing is unsupported", async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "canShare", {
       configurable: true,
@@ -162,12 +143,11 @@ test("downloads a searchable multi-page deleted copy when file sharing is unsupp
     });
   });
   await openRubberExports(page);
-  await page.getByRole("button", { name: "ลบแล้ว 2 รายการ" }).click();
 
   const downloadPromise = page.waitForEvent("download");
-  await page.locator("tr").filter({ hasText: deletedVerified.exportNo })
+  await page.locator("tr").filter({ hasText: longVerified.exportNo })
     .getByRole("button", {
-      name: `แชร์ PDF รายการส่งออกยาง ${deletedVerified.exportNo}`,
+      name: `แชร์ PDF รายการส่งออกยาง ${longVerified.exportNo}`,
     }).click();
   const download = await downloadPromise;
   mkdirSync(outputDirectory, { recursive: true });
@@ -209,12 +189,12 @@ test("downloads a searchable multi-page deleted copy when file sharing is unsupp
   expect(inspection.fonts.join(" ")).toContain("NotoSansThai");
   inspection.actualTexts.forEach((text, index) => {
     expect(text).toContain(
-      `${deletedVerified.exportNo} · หน้า ${index + 1}/${inspection.pages}`,
+      `${longVerified.exportNo} · หน้า ${index + 1}/${inspection.pages}`,
     );
   });
   const allText = inspection.actualTexts.join("\n");
-  expect(allText).toContain("ลบแล้ว (สำเนา)");
-  expect(allText).toContain("ลบจากสถานะ: ตรวจสอบแล้ว");
+  expect(allText).toContain("ตรวจสอบแล้ว");
+  expect(allText).not.toContain("ลบแล้ว");
   expect(allText).toContain("น้ำหนักสุทธิรวม");
   expect(allText).toContain("ผู้สร้าง");
   for (let index = 1; index <= 60; index += 1) {

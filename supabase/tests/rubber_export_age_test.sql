@@ -1,6 +1,6 @@
 begin;
 
-select plan(25);
+select plan(26);
 
 select has_column('public', 'rubber_export_items', 'age_source_at', 'items snapshot the source timestamp');
 select has_column('public', 'rubber_export_items', 'age_is_estimated', 'items snapshot whether age is estimated');
@@ -195,25 +195,39 @@ select is(
   'deleted',
   'a draft export can be deleted'
 );
-select ok(
-  (select previous_status = 'draft' from public.rubber_exports
+select is(
+  (select count(*)::integer from public.rubber_exports
     where id = '46000000-0000-4000-8000-000000000002'),
-  'deleted draft records their previous status'
+  0,
+  'deleted draft header is removed permanently'
 );
 select is(
-  public.get_rubber_export_age_detail('46000000-0000-4000-8000-000000000002')->>'calculatedAt',
-  null::text,
-  'deleted-from-draft detail has no calculation cutoff'
+  (select count(*)::integer from public.rubber_export_items
+    where export_id = '46000000-0000-4000-8000-000000000002'),
+  0,
+  'deleted draft item snapshots are removed permanently'
 );
 select is(
-  (public.get_rubber_export_age_detail('46000000-0000-4000-8000-000000000002')->>'averageAgeHours')::numeric,
-  null::numeric,
-  'deleted-from-draft detail has no official average age'
+  (select previous_status from public.document_deletion_audits
+    where document_kind = 'rubber_export'
+      and source_id = '46000000-0000-4000-8000-000000000002'),
+  'draft',
+  'deleted draft keeps only its previous status in minimal audit'
+);
+select throws_ok(
+  $$select public.get_rubber_export_age_detail(
+    '46000000-0000-4000-8000-000000000002'
+  )$$,
+  'P0001',
+  'ไม่มีสิทธิ์ดูอายุยางของรายการนี้',
+  'deleted draft no longer exposes age detail'
 );
 select is(
-  (public.get_rubber_export_age_detail('46000000-0000-4000-8000-000000000002')->'items'->0->>'ageHours')::numeric,
-  null::numeric,
-  'deleted-from-draft items have no official age'
+  (select document_no from public.document_deletion_audits
+    where document_kind = 'rubber_export'
+      and source_id = '46000000-0000-4000-8000-000000000002'),
+  'REX-AGE-002',
+  'deleted draft audit keeps its document number'
 );
 
 select is(
@@ -261,9 +275,16 @@ select is(
   'a verified export can be deleted without recalculating age'
 );
 select ok(
-  (select previous_status = 'verified' and age_cutoff_at = verified_at
-    from public.rubber_exports where id = '46000000-0000-4000-8000-000000000001'),
-  'deleted-from-verified retains the official cutoff snapshot'
+  not exists (
+    select 1 from public.rubber_exports
+    where id = '46000000-0000-4000-8000-000000000001'
+  ) and exists (
+    select 1 from public.document_deletion_audits
+    where document_kind = 'rubber_export'
+      and source_id = '46000000-0000-4000-8000-000000000001'
+      and previous_status = 'verified'
+  ),
+  'verified export details are removed and only minimal audit remains'
 );
 
 reset role;

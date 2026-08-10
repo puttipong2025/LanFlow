@@ -29,6 +29,10 @@ export type RubberBillReceiptModel = {
   deductionTotal: number;
   netTotal: number;
   netTotalText: string;
+  sourceExportNo?: string | null;
+  receivedAt?: string | null;
+  receivedAgeHours?: number | null;
+  receivedAgeIsEstimated?: boolean;
 };
 
 export function formatBillTimestamp(value: string) {
@@ -96,7 +100,7 @@ export function buildRubberBillReceiptModel(bill: RubberBill): RubberBillReceipt
     outWeight: item.outWeight,
     netWeight: item.netWeight,
     price: item.price,
-    lineTotal: multiplyMoneyHalfUp(item.netWeight, item.price)
+    lineTotal: item.total ?? multiplyMoneyHalfUp(item.netWeight, item.price)
   }));
 
   return {
@@ -119,7 +123,11 @@ export function buildRubberBillReceiptModel(bill: RubberBill): RubberBillReceipt
     deductions,
     deductionTotal: bill.deductionTotal,
     netTotal: bill.netTotal,
-    netTotalText: thaiBahtText(bill.netTotal)
+    netTotalText: thaiBahtText(bill.netTotal),
+    sourceExportNo: bill.sourceExportNo ?? null,
+    receivedAt: bill.receivedAt ?? null,
+    receivedAgeHours: bill.receivedAgeHours ?? null,
+    receivedAgeIsEstimated: bill.receivedAgeIsEstimated === true
   };
 }
 
@@ -174,9 +182,15 @@ export function renderRubberBillReceiptHtml(model: RubberBillReceiptModel) {
   const deductionRows = model.deductions.length === 0
     ? '<div class="row muted"><span>ไม่มีรายการหัก</span><span>0</span></div>'
     : model.deductions.map((item) => `<div class="row"><span>${h(item.label)}</span><span>${n(item.amount)}</span></div>`).join("");
-  const title = model.receiptKind === "offline"
+  const isBranchReceipt = Boolean(model.sourceExportNo);
+  const title = isBranchReceipt
+    ? "ใบรับยางจากสาขา"
+    : model.receiptKind === "offline"
     ? "ใบรับซื้อยางออฟไลน์"
     : "ใบรับซื้อยาง";
+  const branchReceiptMeta = isBranchReceipt
+    ? `<div class="meta"><div class="row"><span>รายการส่งออกต้นทาง</span><strong>${h(model.sourceExportNo)}</strong></div><div class="row"><span>เวลารับเข้า</span><span>${h(model.receivedAt ? formatBangkokDateTime(new Date(model.receivedAt)) : "-")}</span></div><div class="row"><span>อายุตอนรับ</span><span>${h(model.receivedAgeHours == null ? "-" : `${Math.floor(model.receivedAgeHours / 24)} วัน ${Math.round(model.receivedAgeHours % 24)} ชั่วโมง${model.receivedAgeIsEstimated ? " (ประมาณการ)" : ""}`)}</span></div></div>`
+    : "";
 
   return `<!doctype html>
 <html lang="th"><head><meta charset="utf-8"><title>${h(title)} ${h(model.referenceNo)}</title>
@@ -198,6 +212,7 @@ ${model.hasZeroPrice ? '<div class="warning">ยังไม่กำหนด�
 <div><strong>ลูกค้า:</strong> ${h(model.customerName)}</div>
 <div><strong>ผู้รับผิดชอบการจ่าย:</strong> ${h(model.payerName)}</div>
 <div><strong>สถานะอนุมัติ:</strong> ${h(model.approvalLabel)}</div>
+${branchReceiptMeta}
 <table><thead><tr><th>รายการ</th><th class="num">เข้า</th><th class="num">ออก</th><th class="num">ชั่งสุทธิ</th><th class="num">ราคา</th><th class="num">รวม</th></tr></thead><tbody>${weighRows}</tbody></table>
 ${model.deductWeight > 0 ? `<div class="row"><span>น้ำหนักรวมก่อนหัก</span><span>${weight(model.totalWeight)} กก.</span></div><div class="row"><span>น้ำหนักหัก</span><span>${weight(model.deductWeight)} กก.</span></div>` : ""}
 <div class="row"><strong>น้ำหนักสุทธิ</strong><strong>${weight(model.netWeight)} กก.</strong></div>

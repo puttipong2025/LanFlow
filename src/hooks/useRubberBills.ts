@@ -285,7 +285,8 @@ export function useRubberBills(
                 inWeight: Number(item.weight_in ?? 0),
                 outWeight: Number(item.weight_out ?? 0),
                 netWeight: Number(item.net_weight ?? 0),
-                price: Number(item.price ?? 0)
+                price: Number(item.price ?? 0),
+                total: Number(item.total ?? 0)
               }));
             const acidItems = billItems
               .filter((item: any) => item.item_type === "acid" || item.item_type === "stock_deduction")
@@ -360,7 +361,13 @@ export function useRubberBills(
               deletedAt: row.deleted_at ?? undefined,
               deletedByName: row.deleted_by_name ?? undefined,
               deletedByPhone: row.deleted_by_phone ?? undefined,
-              reportLockNo: row.report_lock_no ?? null
+              reportLockNo: row.report_lock_no ?? null,
+              sourceRubberExportId: row.source_rubber_export_id ?? null,
+              sourceExportNo: row.source_export_no ?? null,
+              receivedAt: row.received_at ?? null,
+              receivedAgeHours:
+                row.received_age_hours == null ? null : Number(row.received_age_hours),
+              receivedAgeIsEstimated: row.received_age_is_estimated ?? null
             };
           });
 

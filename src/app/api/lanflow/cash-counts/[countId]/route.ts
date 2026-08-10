@@ -44,7 +44,25 @@ export async function DELETE(request: Request, context: RouteContext) {
     .eq("location_id", locationId)
     .maybeSingle();
   if (lookupError) return cashCountErrorResponse(lookupError.message);
-  if (!count) return cashCountErrorResponse("ไม่พบผลตรวจนับในสาขาปัจจุบัน");
+  if (!count) {
+    const { data: audit, error: auditError } = await result.supabase
+      .from("document_deletion_audits")
+      .select("paired_source_id, document_no")
+      .eq("document_kind", "cash_count")
+      .eq("source_id", countId)
+      .eq("location_id", locationId)
+      .maybeSingle();
+    if (auditError) return cashCountErrorResponse(auditError.message);
+    if (!audit) return cashCountErrorResponse("ไม่พบผลตรวจนับในสาขาปัจจุบัน");
+    return NextResponse.json({
+      id: countId,
+      reportId: audit.paired_source_id,
+      reportNo: audit.document_no,
+      status: "deleted",
+    }, {
+      headers: { "Cache-Control": "private, no-store, max-age=0" },
+    });
+  }
   const { data, error } = await result.supabase.rpc("delete_cash_count", { p_cash_count_id: countId });
   if (error) return cashCountErrorResponse(error.message);
   return NextResponse.json(data, { headers: { "Cache-Control": "private, no-store, max-age=0" } });

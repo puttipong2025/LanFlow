@@ -69,10 +69,7 @@ export function longRubberExportDetails() {
   return rubberExportDetails({
     id: "rubber-export-long-test",
     exportNo: "REX-20260729-060",
-    status: "deleted",
-    previousStatus: "verified",
-    deletedByName: "ผู้ลบทดสอบ",
-    deletedAt: "2026-07-29T09:30:00.000Z",
+    status: "verified",
     itemCount: items.length,
     items,
   });

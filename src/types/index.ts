@@ -58,6 +58,7 @@ export type RubberBill = {
     outWeight: number;
     netWeight: number;
     price: number;
+    total?: number;
   }>;
   acidItems?: Array<{
     id: string;
@@ -91,10 +92,38 @@ export type RubberBill = {
   deletedByPhone?: string;
   syncErrorMessage?: string;
   reportLockNo?: string | null;
+  sourceRubberExportId?: string | null;
+  sourceExportNo?: string | null;
+  receivedAt?: string | null;
+  receivedAgeHours?: number | null;
+  receivedAgeIsEstimated?: boolean | null;
   approvalPending?: boolean;
   approvalRequestId?: string;
   approvalOperation?: RubberBillApprovalOperation;
   approvalReasons?: RubberBillApprovalReason[];
+};
+
+export type BranchRubberReceiptCandidate = {
+  sourceRubberExportId: string;
+  sourceExportNo: string;
+  sourceLocationId: string;
+  sourceLocationName: string;
+  verifiedAt: string;
+  currentWeight: number;
+  rubberValue: number;
+  sourceAverageAgeHours: number;
+  receivedAgeHours: number;
+  ageIsEstimated: boolean;
+};
+
+export type BranchRubberReceiptResult = {
+  status: "received";
+  billId: string;
+  billNo: string;
+  sourceExportId: string;
+  sourceExportNo: string;
+  receivedAt: string;
+  receivedAgeHours: number;
 };
 
 export type RubberBillApprovalOperation = "create" | "update" | "delete";

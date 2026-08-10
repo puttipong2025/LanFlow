@@ -16,12 +16,12 @@ function reportDetails(): ReportDetails {
       locationId: "location-presentation-test",
       locationName: "สาขาทดสอบ",
       cutoffAt: "2026-07-29T08:00:00.000Z",
-      status: "deleted",
+      status: "active",
       createdByName: "ผู้ทดสอบ",
       createdAt: "2026-07-29T08:04:00.000Z",
-      deletedAt: "2026-07-29T09:00:00.000Z",
+      deletedAt: null,
       itemCount: 6,
-      isLatestActive: false,
+      isLatestActive: true,
     },
     rubberBills: [
       {
@@ -47,6 +47,18 @@ function reportDetails(): ReportDetails {
         rubberValue: 1_550,
         deduction: 0,
         net: 1_550,
+      },
+      {
+        date: "2026-07-29",
+        number: "RB-BRANCH",
+        customer: "รับยางจากสาขา สาขาต้นทาง",
+        customerGroup: "branch_receipt",
+        billType: "ชั่ง",
+        netWeight: 25,
+        averagePrice: 30,
+        rubberValue: 750,
+        deduction: 750,
+        net: 0,
       },
     ],
     ocrTickets: [{
@@ -99,6 +111,7 @@ test("builds shared report groups, split ledger columns and totals", () => {
 
   expect(presentation.traderRubberBills.map((row) => row.number)).toEqual(["RB-TRADER"]);
   expect(presentation.farmerRubberBills.map((row) => row.number)).toEqual(["RB-FARMER"]);
+  expect(presentation.branchReceiptRubberBills.map((row) => row.number)).toEqual(["RB-BRANCH"]);
   expect(presentation.incomeExpense).toMatchObject([
     { number: "RPT-OPENING", title: "ยอดยกมา", income: 5_000, expense: null },
     { number: "INC-001", income: 10_000, expense: null },
@@ -117,14 +130,14 @@ test("builds shared report groups, split ledger columns and totals", () => {
     fee: 10,
   });
   expect(rubberBillTotals(details.rubberBills)).toEqual({
-    weight: 150,
-    value: 4_550,
-    deduction: 50,
+    weight: 175,
+    value: 5_300,
+    deduction: 800,
     net: 4_500,
   });
 });
 
-test("formats a sanitized filename, human share title and deleted-copy status in Bangkok time", () => {
+test("formats a sanitized filename, human share title and active status in Bangkok time", () => {
   const report = reportDetails().report;
 
   expect(reportPdfFilename(report)).toBe(
@@ -132,5 +145,5 @@ test("formats a sanitized filename, human share title and deleted-copy status in
   );
   expect(reportShareTitle(report)).toContain("RPT/2569:004 · สาขาทดสอบ");
   expect(reportShareTitle(report)).toContain("15:04");
-  expect(reportStatusLabel(report)).toBe("ลบแล้ว (สำเนา)");
+  expect(reportStatusLabel(report)).toBe("ใช้งาน");
 });

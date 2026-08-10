@@ -5,6 +5,10 @@ import {
   reportCreateErrorResponse,
   reportErrorResponse,
 } from "@/lib/server/report-response";
+import {
+  deletionAuditColumns,
+  mapDeletionAuditRow,
+} from "@/lib/server/deletion-audit-response";
 
 export const dynamic = "force-dynamic";
 
@@ -25,10 +29,27 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "ไม่มีสิทธิ์ดูรายงานของสาขานี้" }, { status: 403 });
   }
 
+  if (request.nextUrl.searchParams.get("view") === "deletions") {
+    const { data, error } = await result.supabase
+      .from("document_deletion_audits")
+      .select(deletionAuditColumns)
+      .eq("location_id", locationId)
+      .eq("document_kind", "report_batch")
+      .order("deleted_at", { ascending: false })
+      .order("id", { ascending: false });
+    if (error) return reportErrorResponse(error.message);
+    return NextResponse.json({
+      deletions: (data ?? []).map((row) => mapDeletionAuditRow(row)),
+    }, {
+      headers: { "Cache-Control": "private, no-store, max-age=0" },
+    });
+  }
+
   const { data, error } = await result.supabase
     .from("report_batches")
     .select("id, report_no, location_id, cutoff_at, status, created_by_name, created_at, deleted_at, rubber_export_lock_no, has_cash_count, cash_count_link_id, cash_count_checker_name, cash_count_submitted_at, report_items(count), locations(name)")
     .eq("location_id", locationId)
+    .eq("status", "active")
     .order("created_at", { ascending: false })
     .order("id", { ascending: false });
 

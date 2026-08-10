@@ -37,11 +37,6 @@ function dateTime(value: string | null | undefined) {
   }).format(new Date(value));
 }
 
-const previousStatusLabel = {
-  draft: "ฉบับร่าง",
-  verified: "ตรวจสอบแล้ว",
-};
-
 export function RubberExportDetailModal({
   details,
   canVerify,
@@ -115,7 +110,7 @@ export function RubberExportDetailModal({
     <>
       <ModalShell
         title={details.exportNo}
-        subtitle={`${details.locationName} · ${details.status === "draft" ? "ฉบับร่าง" : details.status === "verified" ? "ตรวจสอบแล้ว" : "ลบแล้ว"}`}
+        subtitle={`${details.locationName} · ${details.status === "draft" ? "ฉบับร่าง" : "ตรวจสอบแล้ว"}`}
         onClose={onClose}
         closeDisabled={saving || verifying}
         size="wide"
@@ -126,10 +121,15 @@ export function RubberExportDetailModal({
             รายการนี้ถูกล็อกโดยรายงาน {details.reportLockNo}
           </div>
         )}
+        {details.receiptBillNo && (
+          <div className="rounded-md bg-mint px-4 py-3 text-pretty text-sm font-semibold text-ink">
+            รับเข้าแล้วที่ {details.receiptLocationName} · {details.receiptBillNo}
+          </div>
+        )}
 
         <div className="grid gap-3 sm:grid-cols-5">
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">น้ำหนักสุทธิรวม</div><div className="font-bold tabular-nums">{number(details.originalWeightTotal)} กก.</div></div>
-          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ยอดจ่ายจริงรวม</div><div className="font-bold tabular-nums">฿{number(details.paidTotal)}</div></div>
+          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ต้นทุนซื้อรวม</div><div className="font-bold tabular-nums">฿{number(details.paidTotal)}</div></div>
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ต้นทุนซื้อเฉลี่ย</div><div className="font-bold tabular-nums">฿{number(details.averagePrice)}/กก.</div></div>
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">อายุเฉลี่ยถ่วงน้ำหนัก</div><div className="font-bold tabular-nums">{formatRubberAge(details.averageAgeHours)}</div></div>
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">อายุมากที่สุด</div><div className="font-bold tabular-nums">{formatRubberAge(details.oldestAgeHours)}</div></div>
@@ -230,19 +230,11 @@ export function RubberExportDetailModal({
               <dt className="text-ink/60">ปลายทางค่าใช้จ่าย</dt>
               <dd className="font-semibold text-ink">{details.expenseDestination === "branch" ? "ลงรายจ่ายสาขานี้" : details.expenseDestination === "external" ? "จ่ายภายนอก" : "—"}</dd>
             </div>
-            <div>
-              <dt className="text-ink/60">สถานะก่อนลบ</dt>
-              <dd className="font-semibold text-ink">{details.previousStatus ? previousStatusLabel[details.previousStatus] : "—"}</dd>
-            </div>
-            <div className="sm:col-span-2">
-              <dt className="text-ink/60">ผู้ลบ</dt>
-              <dd className="font-semibold text-ink">{details.deletedByName || "—"} · <span className="tabular-nums">{dateTime(details.deletedAt)}</span></dd>
-            </div>
           </dl>
         </section>
 
         <div className="modal-actions flex flex-wrap justify-end gap-2">
-          {(details.status === "verified" || details.status === "deleted") && (
+          {details.status === "verified" && (
             <button
               type="button"
               onClick={onShare}

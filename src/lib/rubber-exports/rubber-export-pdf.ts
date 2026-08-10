@@ -31,40 +31,10 @@ function data(text: string, align: "left" | "right" | "center" = "left"): PdfCel
   return { text, align, fontSize: 10 };
 }
 
-function drawDeletedWatermark(doc: PdfDocument) {
-  const text = "ลบแล้ว";
-  doc.save().opacity(0.08).rotate(-16, {
-    origin: [A4_LANDSCAPE.width / 2, A4_LANDSCAPE.height / 2],
-  });
-  applyTextStyle(doc, {
-    text,
-    bold: true,
-    fontSize: 72,
-    color: PDF_PALETTE.deleted,
-  });
-  drawActualText(
-    doc,
-    text,
-    (A4_LANDSCAPE.width - 400) / 2,
-    (A4_LANDSCAPE.height - 90) / 2,
-    { width: 400, align: "center", lineBreak: false },
-  );
-  doc.restore();
-}
-
-function drawDeletedWatermarks(doc: PdfDocument) {
-  const range = doc.bufferedPageRange();
-  for (let index = 0; index < range.count; index += 1) {
-    doc.switchToPage(range.start + index);
-    drawDeletedWatermark(doc);
-  }
-}
-
 function drawHeader(
   state: PdfState,
   details: RubberExportDetails,
   status: string,
-  previousStatus: string,
 ) {
   const { doc } = state;
   applyTextStyle(doc, { text: "", bold: true, fontSize: 18 });
@@ -81,17 +51,13 @@ function drawHeader(
     `จำนวนบิล: ${details.itemCount.toLocaleString("th-TH")}`,
     `สร้างเมื่อ: ${formatRubberExportDateTime(details.createdAt)}`,
   ];
-  if (details.status === "deleted") {
-    metadata.push(`ลบจากสถานะ: ${previousStatus}`);
-  }
   const width = A4_LANDSCAPE.tableWidth / 4;
   metadata.forEach((text, index) => {
-    const deletedStatus = index === 2 && details.status === "deleted";
     applyTextStyle(doc, {
       text,
-      bold: deletedStatus,
+      bold: false,
       fontSize: 11,
-      color: deletedStatus ? PDF_PALETTE.deleted : PDF_PALETTE.darkGreen,
+      color: PDF_PALETTE.darkGreen,
     });
     drawActualText(
       doc,
@@ -117,7 +83,7 @@ function drawRubberExportContent(doc: PdfDocument, details: RubberExportDetails)
   const presentation = buildRubberExportPresentation(details);
   const state: PdfState = { doc, y: A4_LANDSCAPE.top };
 
-  drawHeader(state, details, presentation.status, presentation.previousStatus);
+  drawHeader(state, details, presentation.status);
 
   const summaryRows: PdfCell[][] = Array.from(
     { length: Math.ceil(presentation.summary.length / 4) },
@@ -157,14 +123,12 @@ function drawRubberExportContent(doc: PdfDocument, details: RubberExportDetails)
     header("อายุยาง", "right"),
   ], itemRows);
 
-  drawTable(state, [264, 264, 265], [
+  drawTable(state, [396, 397], [
     header("ผู้สร้าง"),
     header("ผู้ตรวจสอบ"),
-    header("ผู้ลบ"),
   ], [[
     data(presentation.audit.created),
     data(presentation.audit.verified),
-    data(presentation.audit.deleted),
   ]]);
 }
 
@@ -173,7 +137,7 @@ export function createRubberExportPdfFile(
   signal: AbortSignal,
 ) {
   if (details.status === "draft") {
-    throw new Error("แชร์ PDF ได้เฉพาะรายการตรวจสอบแล้วหรือลบแล้ว");
+    throw new Error("แชร์ PDF ได้เฉพาะรายการตรวจสอบแล้ว");
   }
   return createSearchableA4PdfFile({
     filename: rubberExportPdfFilename(details),
@@ -182,7 +146,6 @@ export function createRubberExportPdfFile(
     signal,
     render(doc) {
       drawRubberExportContent(doc, details);
-      if (details.status === "deleted") drawDeletedWatermarks(doc);
       drawPageFooters(doc, details.exportNo);
     },
   });

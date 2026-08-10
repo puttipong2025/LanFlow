@@ -81,19 +81,12 @@ export function rubberExportShareTitle(details: RubberExportDetails) {
 }
 
 export function rubberExportStatusLabel(details: RubberExportDetails) {
-  return details.status === "verified" ? "ตรวจสอบแล้ว" : "ลบแล้ว (สำเนา)";
-}
-
-export function rubberExportPreviousStatusLabel(details: RubberExportDetails) {
-  if (details.previousStatus === "verified") return "ตรวจสอบแล้ว";
-  if (details.previousStatus === "draft") return "ฉบับร่าง";
-  return MISSING_VALUE;
+  return details.status === "verified" ? "ตรวจสอบแล้ว" : "ฉบับร่าง";
 }
 
 export function buildRubberExportPresentation(details: RubberExportDetails) {
   return {
     status: rubberExportStatusLabel(details),
-    previousStatus: rubberExportPreviousStatusLabel(details),
     summary: [
       ["น้ำหนักสุทธิรวม", `${formatRubberExportNumber(details.originalWeightTotal)} กก.`],
       ["ยอดจ่ายจริงรวม", `฿${formatRubberExportNumber(details.paidTotal)}`],
@@ -127,7 +120,6 @@ export function buildRubberExportPresentation(details: RubberExportDetails) {
     audit: {
       created: `${details.createdByName || MISSING_VALUE}\n${formatRubberExportDateTime(details.createdAt)}`,
       verified: `${details.verifiedByName || MISSING_VALUE}\n${formatRubberExportDateTime(details.verifiedAt)}`,
-      deleted: `${details.deletedByName || MISSING_VALUE}\n${formatRubberExportDateTime(details.deletedAt)}`,
     },
   };
 }

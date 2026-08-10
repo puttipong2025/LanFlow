@@ -40,6 +40,9 @@ export function reportErrorResponse(message: string) {
   if (message.includes("ไม่มีสิทธิ์") || message.includes("access denied")) {
     return NextResponse.json({ error: message }, { status: 403 });
   }
+  if (message.includes("ไม่พบ")) {
+    return NextResponse.json({ error: message }, { status: 404 });
+  }
   if (
     message.includes("ไม่มีรายการ") ||
     message.includes("ล่าสุด") ||

@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, requireSystemManager } from "@/lib/server/auth";
 import { cashCountErrorResponse } from "@/lib/server/cash-count-response";
+import {
+  deletionAuditColumns,
+  mapDeletionAuditRow,
+} from "@/lib/server/deletion-audit-response";
 
 export const dynamic = "force-dynamic";
 
@@ -9,10 +13,26 @@ export async function GET(request: NextRequest) {
   if (!result.ok) return result.response;
   const locationId = request.nextUrl.searchParams.get("locationId");
   if (!locationId) return cashCountErrorResponse("กรุณาระบุสาขา");
+  if (request.nextUrl.searchParams.get("view") === "deletions") {
+    const { data, error } = await result.supabase
+      .from("document_deletion_audits")
+      .select(deletionAuditColumns)
+      .eq("location_id", locationId)
+      .eq("document_kind", "cash_count")
+      .order("deleted_at", { ascending: false })
+      .order("id", { ascending: false });
+    if (error) return cashCountErrorResponse(error.message);
+    return NextResponse.json({
+      deletions: (data ?? []).map((row) => mapDeletionAuditRow(row)),
+    }, {
+      headers: { "Cache-Control": "private, no-store, max-age=0" },
+    });
+  }
   const { data, error } = await result.supabase
     .from("cash_counts")
     .select("id, report_id, location_id, cutoff_at, actual_total, expected_total, difference_total, anomaly_score, confidence, analysis_status, formula_version, status, created_by_name, created_at, deleted_at, report_batches(report_no,status)")
     .eq("location_id", locationId)
+    .eq("status", "active")
     .order("created_at", { ascending: false })
     .order("id", { ascending: false });
   if (error) return cashCountErrorResponse(error.message);

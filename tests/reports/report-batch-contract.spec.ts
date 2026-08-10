@@ -354,6 +354,23 @@ test.describe.serial("Report batch contract @report-batch", () => {
       expect((await db.from("income_expense").update({ title: "ปลดล็อกชุดสอง" }).eq("id", secondSourceId)).error).toBeNull();
       expect((await deleteReport(superAdmin, first.id)).ok()).toBeTruthy();
       expect((await db.from("income_expense").update({ title: "ปลดล็อกชุดแรก" }).eq("id", firstSourceId)).error).toBeNull();
+      const [{ data: removedReports }, { data: removedItems }] = await Promise.all([
+        db.from("report_batches").select("id").in("id", [first.id, second.id]),
+        db.from("report_items").select("id").in("report_id", [first.id, second.id]),
+      ]);
+      expect(removedReports).toEqual([]);
+      expect(removedItems).toEqual([]);
+      expect((await adminContext.request.get(`/api/lanflow/reports/${first.id}`)).status()).toBe(404);
+      expect((await deleteReport(superAdmin, first.id)).ok()).toBeTruthy();
+
+      const deletionHistory = await adminContext.request.get(
+        `/api/lanflow/reports?locationId=${locationId}&view=deletions`,
+      );
+      expect(deletionHistory.ok(), await deletionHistory.text()).toBeTruthy();
+      expect((await deletionHistory.json()).deletions).toEqual(expect.arrayContaining([
+        expect.objectContaining({ documentKind: "report_batch", documentNo: first.reportNo }),
+        expect.objectContaining({ documentKind: "report_batch", documentNo: second.reportNo }),
+      ]));
 
       const recreated = await createReport(adminContext, locationId);
       expect(Number(recreated.reportNo.slice(-3))).toBe(firstSequence + 2);
@@ -461,6 +478,7 @@ test.describe.serial("Report batch contract @report-batch", () => {
       if (sourceIds.length > 0) {
         await db.from("income_expense").delete().in("id", sourceIds);
       }
+      await db.from("document_deletion_audits").delete().eq("location_id", locationId);
       await db.from("locations").delete().eq("id", locationId);
       await superAdmin.close();
     }

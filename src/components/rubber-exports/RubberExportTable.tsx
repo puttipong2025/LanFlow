@@ -1,12 +1,10 @@
 import { Clock3, Eye, Loader2, PackageCheck, Share2, Trash2 } from "lucide-react";
-import { cn } from "@/lib/cn";
 import type { RubberExportSummary, RubberExportStatus } from "@/types/rubber-exports";
 import { formatRubberAge } from "@/lib/rubber-exports/rubber-export-presentation";
 
 const statusLabel: Record<RubberExportStatus, string> = {
   draft: "ฉบับร่าง",
   verified: "ตรวจสอบแล้ว",
-  deleted: "ลบแล้ว",
 };
 
 function number(value: number | null | undefined) {
@@ -61,7 +59,7 @@ export function RubberExportTable({
             <tr><td colSpan={9} className="px-4 py-8 text-center text-ink/60">ยังไม่มีรายการส่งออกยาง</td></tr>
           )}
           {!loading && rows.map((row) => (
-            <tr key={row.id} className={cn(row.status === "deleted" && "bg-slate-50 text-ink/50")}>
+            <tr key={row.id}>
               <td className="px-4 py-3">
                 <div className="flex items-center gap-1.5 whitespace-nowrap">
                   <button type="button" onClick={() => onOpen(row.id)} title="ดูรายละเอียด" aria-label={`ดูรายละเอียด ${row.exportNo}`}
@@ -86,7 +84,7 @@ export function RubberExportTable({
                       <Clock3 size={16} /> รอผู้รับรอง
                     </button>
                   ))}
-                  {(row.status === "verified" || row.status === "deleted") && (
+                  {row.status === "verified" && (
                     <button type="button" onClick={() => onShare(row)} disabled={shareBusy}
                       title={`แชร์ PDF รายการส่งออกยาง ${row.exportNo}`} aria-label={`แชร์ PDF รายการส่งออกยาง ${row.exportNo}`}
                       className="focus-ring inline-flex h-10 items-center gap-1 rounded-md bg-ink px-3 font-semibold text-white disabled:opacity-50">
@@ -94,10 +92,14 @@ export function RubberExportTable({
                       {sharingId === row.id ? "กำลังสร้าง PDF" : "แชร์ PDF"}
                     </button>
                   )}
-                  {canDelete && row.status !== "deleted" && (
-                    <button type="button" onClick={() => onDelete(row)} disabled={Boolean(row.reportLockNo)}
-                      title={row.reportLockNo ? `ต้องลบรายงาน ${row.reportLockNo} ก่อน` : "ลบรายการส่งออกยาง"}
-                      aria-label={row.reportLockNo ? `ต้องลบรายงาน ${row.reportLockNo} ก่อน` : "ลบรายการส่งออกยาง"}
+                  {canDelete && (
+                    <button type="button" onClick={() => onDelete(row)} disabled={Boolean(row.reportLockNo || row.receiptBillNo)}
+                      title={row.receiptBillNo
+                        ? `รับเข้าแล้วที่ ${row.receiptLocationName} · ${row.receiptBillNo} ต้องลบบิลรับก่อน`
+                        : row.reportLockNo ? `ต้องลบรายงาน ${row.reportLockNo} ก่อน` : "ลบรายการส่งออกยาง"}
+                      aria-label={row.receiptBillNo
+                        ? `รับเข้าแล้วที่ ${row.receiptLocationName} · ${row.receiptBillNo} ต้องลบบิลรับก่อน`
+                        : row.reportLockNo ? `ต้องลบรายงาน ${row.reportLockNo} ก่อน` : "ลบรายการส่งออกยาง"}
                       className="focus-ring inline-flex h-10 items-center gap-1 rounded-md bg-clay px-3 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45">
                       <Trash2 size={16} /> ลบ
                     </button>
@@ -105,7 +107,14 @@ export function RubberExportTable({
                 </div>
               </td>
               <td className="px-4 py-3 font-semibold tabular-nums">{row.exportNo}</td>
-              <td className="px-4 py-3">{statusLabel[row.status]}</td>
+              <td className="px-4 py-3">
+                <div>{statusLabel[row.status]}</div>
+                {row.receiptBillNo && (
+                  <div className="mt-1 w-fit rounded-full bg-mint px-2 py-0.5 text-xs font-semibold text-ink">
+                    รับเข้าแล้วที่ {row.receiptLocationName} · {row.receiptBillNo}
+                  </div>
+                )}
+              </td>
               <td className="px-4 py-3 text-right tabular-nums">{row.itemCount.toLocaleString("th-TH")}</td>
               <td className="px-4 py-3 text-right tabular-nums">{number(row.originalWeightTotal)}</td>
               <td className="px-4 py-3 text-right tabular-nums">{number(row.currentWeight)}</td>

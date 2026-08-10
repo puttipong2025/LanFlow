@@ -52,6 +52,9 @@ export async function GET(request: NextRequest, context: RouteContext) {
     average_age_hours: age.averageAgeHours ?? null,
     oldest_age_hours: age.oldestAgeHours ?? null,
     estimated_age_item_count: age.estimatedAgeItemCount ?? null,
+    receipt_bill_id: age.receivedBy?.billId ?? null,
+    receipt_bill_no: age.receivedBy?.billNo ?? null,
+    receipt_location_name: age.receivedBy?.locationName ?? null,
     rubber_export_items: [{ count: row.rubber_export_items.length }],
   } as Record<string, any>);
   return NextResponse.json({

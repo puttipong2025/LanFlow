@@ -105,7 +105,6 @@ export default function ReportPrintPage() {
         .empty { padding: 12px !important; text-align: center; color: #647067; }
         .summary-grid { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 12px; }
         .stock-balance { margin-top: 8px; font-size: 13pt; font-weight: 700; text-align: right; }
-        .deleted { color: #a12626; font-weight: 700; }
       `}</style>
 
       <button
@@ -126,7 +125,7 @@ export default function ReportPrintPage() {
           <div><strong>ผู้สร้าง:</strong> {details.report.createdByName}</div>
           <div><strong>สร้างเมื่อ:</strong> {thaiDateTime(details.report.createdAt)}</div>
           <div><strong>จำนวน source:</strong> {details.report.itemCount.toLocaleString("th-TH")}</div>
-          <div><strong>สถานะ:</strong> <span className={details.report.status === "deleted" ? "deleted" : ""}>{reportStatusLabel(details.report)}</span></div>
+          <div><strong>สถานะ:</strong> <span>{reportStatusLabel(details.report)}</span></div>
           <div><strong>ผลตรวจนับ:</strong> {details.report.hasCashCount ? "มีผลตรวจนับเงินสด" : "ไม่มีผลตรวจนับเงินสด"}</div>
           {details.report.hasCashCount && <div><strong>ผู้ตรวจนับ:</strong> {details.report.cashCountCheckerName ?? "-"}</div>}
           {details.report.hasCashCount && <div><strong>ตรวจนับเมื่อ:</strong> {details.report.cashCountSubmittedAt ? thaiDateTime(details.report.cashCountSubmittedAt) : "-"}</div>}

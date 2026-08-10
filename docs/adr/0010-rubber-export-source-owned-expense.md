@@ -1,6 +1,6 @@
 # ADR-0010: Rubber Export Owns Its Expense And Report References
 
-Status: Accepted; cutoff-selection portion superseded by ADR-0019
+Status: Accepted; cutoff-selection portion superseded by ADR-0019; deleted-row retention portion superseded by ADR-0034
 
 LanFlow will keep each rubber export as the only source of truth for its work expense. A verified export may appear as a read-only Income/Expense feed row and as a `report_items` source, but the system will not create a duplicate `income_expense` row. This preserves one correction path, prevents copied amounts from drifting, and lets active report references enforce deletion order directly.
 

@@ -32,18 +32,15 @@ test("formats a verified Rubber Export for an A4 PDF in Bangkok time", () => {
   );
 });
 
-test("keeps deletion evidence and uses em dashes for a deleted draft", () => {
+test("uses em dashes for an unfinished draft", () => {
   const details = rubberExportDetails({
-    status: "deleted",
-    previousStatus: "draft",
+    status: "draft",
     currentWeight: null,
     weightLossPercent: null,
     workRate: null,
     workTotal: null,
     verifiedByName: null,
     verifiedAt: null,
-    deletedByName: "ผู้ลบ",
-    deletedAt: "2026-07-29T09:00:00.000Z",
     itemCount: 0,
     items: [],
     ageCalculatedAt: null,
@@ -53,11 +50,9 @@ test("keeps deletion evidence and uses em dashes for a deleted draft", () => {
   });
   const presentation = buildRubberExportPresentation(details);
 
-  expect(presentation.status).toBe("ลบแล้ว (สำเนา)");
-  expect(presentation.previousStatus).toBe("ฉบับร่าง");
+  expect(presentation.status).toBe("ฉบับร่าง");
   expect(presentation.summary.slice(3, 6).map((entry) => entry[1])).toEqual(["—", "—", "—"]);
   expect(presentation.summary[7][1]).toBe("—");
   expect(presentation.summary.slice(8).map((entry) => entry[1])).toEqual(["—", "—"]);
   expect(presentation.audit.verified).toBe("—\n—");
-  expect(presentation.audit.deleted).toContain("ผู้ลบ");
 });

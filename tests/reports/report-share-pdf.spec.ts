@@ -219,7 +219,8 @@ test("downloads an actual multi-page PDF when file sharing is unsupported", asyn
   });
   expect(inspection.texts.join("\n")).not.toContain("\u0000");
   const allText = inspection.actualTexts.join("\n");
-  expect(allText).toContain("ลบแล้ว (สำเนา)");
+  expect(allText).toContain("สถานะ: ใช้งาน");
+  expect(allText).not.toContain("ลบแล้ว");
   expect(allText).toContain("มีผลตรวจนับเงินสด");
   expect(allText).toContain("ผู้ตรวจนับทดสอบ");
   expect(allText).not.toContain("คะแนนพิรุธ");
@@ -287,7 +288,7 @@ test("loads one detail object for preview and sharing", async ({ page }) => {
   await preview.getByRole("button", { name: "แชร์ PDF" }).click();
   await expect(page.getByText(`แชร์ ${details.report.reportNo} แล้ว`)).toBeVisible();
   expect(detailRequests).toBe(1);
-  await expect(preview.getByText("ลบแล้ว (สำเนา)", { exact: true })).toBeVisible();
+  await expect(preview.getByText("ใช้งาน", { exact: true })).toBeVisible();
   await expect(preview.getByRole("button", { name: "เปิดผลนับ" })).toHaveCount(0);
   await expect(preview.getByText("คะแนนพิรุธ")).toHaveCount(0);
   await expect(preview.getByText("ความเชื่อมั่น")).toHaveCount(0);

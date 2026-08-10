@@ -4,7 +4,7 @@ export type ReportSummary = {
   locationId: string;
   locationName: string;
   cutoffAt: string;
-  status: "active" | "deleted";
+  status: "active";
   createdByName: string;
   createdAt: string;
   deletedAt: string | null;
@@ -31,7 +31,7 @@ export type ReportDetails = {
     date: string;
     number: string;
     customer: string;
-    customerGroup: "trader" | "farmer";
+    customerGroup: "trader" | "farmer" | "branch_receipt";
     billType: string;
     netWeight: number;
     averagePrice: number;

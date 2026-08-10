@@ -5,9 +5,13 @@ import { CircleDollarSign, Eye, FilePlus2, Loader2, RotateCw, Trash2 } from "luc
 import { toast } from "sonner";
 import type { Location, Profile } from "@/types";
 import type { ReportDetails, ReportSummary } from "@/types/reports";
+import type { DocumentDeletionAudit } from "@/types/deletion-audits";
 import { ApiResponseError, assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { canManageSystemFeatures } from "@/lib/permissions";
+import { cn } from "@/lib/cn";
 import { ReportPreviewModal } from "@/components/reports/ReportPreviewModal";
+import { AlertDialog } from "@/components/shared/AlertDialog";
+import { DeletionAuditTable } from "@/components/shared/DeletionAuditTable";
 
 function dateTime(value: string) {
   return new Intl.DateTimeFormat("th-TH", {
@@ -44,9 +48,13 @@ export function ReportsModule({
   onOpenCashCount?: (countId: string) => void;
 }) {
   const [reports, setReports] = useState<ReportSummary[]>([]);
+  const [deletions, setDeletions] = useState<DocumentDeletionAudit[]>([]);
+  const [view, setView] = useState<"current" | "deletions">("current");
   const [loading, setLoading] = useState(true);
+  const [deletionsLoading, setDeletionsLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<ReportSummary | null>(null);
   const [previewReport, setPreviewReport] = useState<ReportSummary | null>(null);
   const [previewDetails, setPreviewDetails] = useState<ReportDetails | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -71,9 +79,31 @@ export function ReportsModule({
     }
   }, [online, selectedLocation.id]);
 
+  const loadDeletions = useCallback(async () => {
+    if (!online) return;
+    setDeletionsLoading(true);
+    try {
+      const response = await authFetch(
+        `/api/lanflow/reports?locationId=${encodeURIComponent(selectedLocation.id)}&view=deletions`,
+        { cache: "no-store" },
+      );
+      await assertApiResponse(response);
+      const body = await response.json() as {
+        deletions: DocumentDeletionAudit[];
+      };
+      setDeletions(body.deletions);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "โหลดประวัติการลบไม่สำเร็จ");
+    } finally {
+      setDeletionsLoading(false);
+    }
+  }, [online, selectedLocation.id]);
+
   useEffect(() => {
-    void loadReports();
-  }, [loadReports]);
+    setDeletions([]);
+    if (view === "current") void loadReports();
+    else void loadDeletions();
+  }, [loadDeletions, loadReports, selectedLocation.id, view]);
 
   useEffect(() => () => previewController.current?.abort(), []);
 
@@ -152,14 +182,14 @@ export function ReportsModule({
 
   async function deleteReport(report: ReportSummary) {
     if (!report.isLatestActive || !canDelete || deletingId || report.rubberExportLockNo) return;
-    if (!window.confirm(`ลบ ${report.reportNo} เพื่อปลดล็อกรายการหรือไม่?`)) return;
     setDeletingId(report.id);
     try {
       const response = await authFetch(`/api/lanflow/reports/${report.id}`, {
         method: "DELETE",
       });
       await assertApiResponse(response);
-      toast.success(`ลบ ${report.reportNo} แล้ว รายการในชุดนี้ถูกปลดล็อก`);
+      toast.success(`ลบ ${report.reportNo} แบบถาวรแล้ว`);
+      setPendingDelete(null);
       await loadReports();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "ลบรายงานไม่สำเร็จ");
@@ -181,11 +211,11 @@ export function ReportsModule({
         <div className="flex w-full flex-wrap gap-2 sm:w-auto">
           <button
             type="button"
-            onClick={() => void loadReports()}
-            disabled={!online || loading}
+            onClick={() => void (view === "current" ? loadReports() : loadDeletions())}
+            disabled={!online || loading || deletionsLoading}
             className="focus-ring inline-flex items-center gap-2 rounded-md bg-actionSecondary px-3 py-2 text-sm font-semibold text-white hover:bg-actionSecondary/90 disabled:opacity-50"
           >
-            <RotateCw size={16} className={loading ? "animate-spin" : ""} />
+            <RotateCw size={16} className={loading || deletionsLoading ? "animate-spin" : ""} />
             รีเฟรช
           </button>
           <button
@@ -206,6 +236,26 @@ export function ReportsModule({
         </div>
       )}
 
+      <div className="flex flex-wrap gap-2" aria-label="มุมมองรายงาน">
+        {([
+          ["current", "รายการปัจจุบัน"],
+          ["deletions", "ประวัติการลบ"],
+        ] as const).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => setView(value)}
+            className={cn(
+              "focus-ring rounded-md px-4 py-2 text-sm font-semibold text-white",
+              view === value ? "bg-leaf" : "bg-actionSecondary",
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {view === "current" ? (
       <div className="overflow-hidden rounded-xl bg-white shadow-sm">
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm tabular-nums">
@@ -227,7 +277,7 @@ export function ReportsModule({
                 <tr><td colSpan={6} className="px-4 py-8 text-center text-ink/60">ยังไม่มีรายงาน</td></tr>
               )}
               {!loading && reports.map((report) => (
-                <tr key={report.id} className={report.status === "deleted" ? "bg-slate-50 text-ink/50" : ""}>
+                <tr key={report.id}>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-1.5 whitespace-nowrap">
                       <button type="button" onClick={() => void openReportPreview(report)} disabled={!online}
@@ -243,7 +293,7 @@ export function ReportsModule({
                         </button>
                       )}
                       {canDelete && report.status === "active" && report.isLatestActive && !report.hasCashCount && (
-                        <button type="button" onClick={() => void deleteReport(report)}
+                        <button type="button" onClick={() => setPendingDelete(report)}
                           disabled={deletingId === report.id || Boolean(report.rubberExportLockNo)}
                           title={report.rubberExportLockNo ? `ต้องลบรายการส่งออกยาง ${report.rubberExportLockNo} ก่อน` : "ลบรายงานล่าสุดเพื่อปลดล็อกรายการ"}
                           aria-label={report.rubberExportLockNo ? `ต้องลบรายการส่งออกยาง ${report.rubberExportLockNo} ก่อน` : "ลบรายงานล่าสุดเพื่อปลดล็อกรายการ"}
@@ -258,7 +308,7 @@ export function ReportsModule({
                   <td className="px-4 py-3">{report.createdByName}</td>
                   <td className="px-4 py-3 text-right">{report.itemCount.toLocaleString("th-TH")}</td>
                   <td className="px-4 py-3">
-                    <div>{report.status === "active" ? "ใช้งาน" : `ลบแล้ว${report.deletedAt ? ` ${dateTime(report.deletedAt)}` : ""}`}</div>
+                    <div>ใช้งาน</div>
                     <div className="mt-1 text-xs font-semibold text-ink/60">{report.hasCashCount ? "มีผลตรวจนับเงินสด" : "ไม่มีผลตรวจนับเงินสด"}</div>
                   </td>
                 </tr>
@@ -267,6 +317,14 @@ export function ReportsModule({
           </table>
         </div>
       </div>
+      ) : (
+        <DeletionAuditTable
+          rows={deletions}
+          loading={deletionsLoading}
+          emptyLabel="ยังไม่มีประวัติการลบรายงาน"
+          onShowCurrent={() => setView("current")}
+        />
+      )}
     </section>
     {previewReport && (
       <ReportPreviewModal
@@ -277,6 +335,19 @@ export function ReportsModule({
         onClose={closeReportPreview}
       />
     )}
+    <AlertDialog
+      open={Boolean(pendingDelete)}
+      title={`ลบ ${pendingDelete?.reportNo ?? "รายงาน"} แบบถาวร?`}
+      description="รายการในรายงานจะถูกปลดล็อก แต่รายงานและรายละเอียดทั้งหมดจะถูกลบถาวรและกู้คืนไม่ได้ ระบบจะเก็บเฉพาะประวัติการลบขั้นต่ำ"
+      confirmLabel="ลบ"
+      busy={Boolean(deletingId)}
+      onCancel={() => {
+        if (!deletingId) setPendingDelete(null);
+      }}
+      onConfirm={() => {
+        if (pendingDelete) void deleteReport(pendingDelete);
+      }}
+    />
     </>
   );
 }

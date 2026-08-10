@@ -6,6 +6,10 @@ import {
   mapRubberExportRow,
   rubberExportErrorResponse,
 } from "@/lib/server/rubber-export-response";
+import {
+  deletionAuditColumns,
+  mapDeletionAuditRow,
+} from "@/lib/server/deletion-audit-response";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +30,22 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "ไม่มีสิทธิ์ดูรายการส่งออกของสาขานี้" }, { status: 403 });
   }
 
+  if (request.nextUrl.searchParams.get("view") === "deletions") {
+    const { data, error } = await result.supabase
+      .from("document_deletion_audits")
+      .select(deletionAuditColumns)
+      .eq("location_id", locationId)
+      .eq("document_kind", "rubber_export")
+      .order("deleted_at", { ascending: false })
+      .order("id", { ascending: false });
+    if (error) return rubberExportErrorResponse(error.message);
+    return NextResponse.json({
+      deletions: (data ?? []).map((row) => mapDeletionAuditRow(row)),
+    }, {
+      headers: { "Cache-Control": "private, no-store, max-age=0" },
+    });
+  }
+
   const [
     { data: rows, error },
     { data: options, error: optionsError },
@@ -35,6 +55,7 @@ export async function GET(request: NextRequest) {
       .from("rubber_exports")
       .select(columns)
       .eq("location_id", locationId)
+      .in("status", ["draft", "verified"])
       .order("created_at", { ascending: false })
       .order("id", { ascending: false }),
     result.supabase.rpc("get_rubber_export_available_bills", {

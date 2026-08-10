@@ -1,5 +1,6 @@
-import { Clock3, Plus, Settings, Ticket } from "lucide-react";
+import { Clock3, PackagePlus, Plus, Settings, Ticket } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { useRubberBills } from "@/hooks/useRubberBills";
@@ -9,6 +10,7 @@ import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { bangkokDateString } from "@/lib/bangkok-date";
 import { usePerRecordSyncRetry } from "@/hooks/usePerRecordSyncRetry";
 import { useRubberBillApprovals } from "@/hooks/useRubberBillApprovals";
+import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import { canManageSystemFeatures } from "@/lib/permissions";
 import {
   getOfflineSyncedActionBlockReason,
@@ -40,6 +42,10 @@ import {
 } from "@/lib/rubber-bills/weighing-queue";
 import { calculateRubberBill } from "@/lib/rubber-bills/calculations";
 import { runBlockingAction } from "@/lib/swal";
+import {
+  BranchRubberReceiptDetailModal,
+  BranchRubberReceiptModal,
+} from "./BranchRubberReceiptModal";
 
 function pendingCreateBill(marker: RubberBillApprovalMarker): RubberBill | null {
   const payload = marker.proposedCreatePayload;
@@ -139,6 +145,7 @@ export function RubberBillsModule({
   initialSearch?: string | null;
   onInitialSearchHandled?: () => void;
 }) {
+  const queryClient = useQueryClient();
   const pdfShare = useSharePdf();
   const canManageApprovals = canManageSystemFeatures(profile);
   const {
@@ -168,6 +175,8 @@ export function RubberBillsModule({
   const [queueModalOpen, setQueueModalOpen] = useState(false);
   const [appointmentModalOpen, setAppointmentModalOpen] = useState(false);
   const [approvalModalOpen, setApprovalModalOpen] = useState(false);
+  const [branchReceiptModalOpen, setBranchReceiptModalOpen] = useState(false);
+  const [viewingBranchReceipt, setViewingBranchReceipt] = useState<RubberBill | null>(null);
   const [editingBill, setEditingBill] = useState<RubberBill | null>(null);
   const [deletingBillId, setDeletingBillId] = useState<string | null>(null);
   const [pageSize, setPageSize] = useState(10);
@@ -321,6 +330,14 @@ export function RubberBillsModule({
     setModalOpen(true);
   }
 
+  function openView(bill: RubberBill) {
+    if (bill.sourceRubberExportId) {
+      setViewingBranchReceipt(bill);
+      return;
+    }
+    openEdit(bill);
+  }
+
   async function confirmDelete(bill: RubberBill) {
     if (deletingBillId) return;
     const blockReason = getActionBlockReason(bill);
@@ -432,6 +449,16 @@ export function RubberBillsModule({
           )}
           <button
             type="button"
+            onClick={() => setBranchReceiptModalOpen(true)}
+            disabled={!isOnline}
+            title={isOnline ? "เลือกรายการส่งออกยางจากสาขาอื่น" : "รับยางจากสาขาใช้ได้เมื่อออนไลน์เท่านั้น"}
+            className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-river px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+          >
+            <PackagePlus size={18} />
+            รับยางจากสาขา
+          </button>
+          <button
+            type="button"
             onClick={openAdd}
             className="focus-ring flex h-10 w-full items-center justify-center gap-2 rounded-md bg-leaf px-4 text-sm font-semibold text-white sm:w-auto"
           >
@@ -463,6 +490,7 @@ export function RubberBillsModule({
           page={page}
           pageSize={pageSize}
           onPageChange={setPage}
+          onView={openView}
           onEdit={openEdit}
           onDelete={confirmDelete}
           deletingBillId={deletingBillId}
@@ -520,6 +548,28 @@ export function RubberBillsModule({
         <RubberBillApprovalModal
           locationId={selectedLocation.id}
           onClose={() => setApprovalModalOpen(false)}
+        />
+      )}
+      {branchReceiptModalOpen && (
+        <BranchRubberReceiptModal
+          destinationLocationId={selectedLocation.id}
+          destinationLocationName={selectedLocation.name}
+          onClose={() => setBranchReceiptModalOpen(false)}
+          onReceived={async (result) => {
+            setBranchReceiptModalOpen(false);
+            setPage(1);
+            await Promise.all([
+              queryClient.invalidateQueries({ queryKey: ["rubberBills", profile.id, selectedLocation.id] }),
+              queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
+            ]);
+            toast.success(`รับยางเข้าสาขาแล้ว · บิล ${result.billNo}`);
+          }}
+        />
+      )}
+      {viewingBranchReceipt && (
+        <BranchRubberReceiptDetailModal
+          bill={viewingBranchReceipt}
+          onClose={() => setViewingBranchReceipt(null)}
         />
       )}
       <SharePdfWaitingModal open={pdfShare.waiting} onCancel={pdfShare.cancel} />
