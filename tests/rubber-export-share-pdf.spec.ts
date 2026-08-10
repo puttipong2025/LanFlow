@@ -244,7 +244,7 @@ test("shows fresh-detail errors and recovers the share action", async ({ page })
   await expect(page.getByRole("dialog", { name: "กำลังสร้าง PDF" })).toBeHidden();
 });
 
-test("refreshes an open draft from the server when the window regains focus", async ({ page }) => {
+test("does not refresh an open draft when the window regains focus", async ({ page }) => {
   let draftRequests = 0;
   await openRubberExports(page, {
     onDetail: (id) => {
@@ -256,7 +256,8 @@ test("refreshes an open draft from the server when the window regains focus", as
   await expect.poll(() => draftRequests).toBe(1);
 
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-  await expect.poll(() => draftRequests).toBe(2);
+  await page.waitForTimeout(300);
+  expect(draftRequests).toBe(1);
 });
 
 test("returns 404 for the removed Rubber Export print bookmark", async ({ page }) => {

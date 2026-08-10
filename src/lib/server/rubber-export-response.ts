@@ -27,6 +27,8 @@ export function rubberExportErrorResponse(message: string) {
     message.includes("RUBBER_EXPORT_LOCKED") ||
     message.includes("RUBBER_EXPORT_FUTURE_BILL") ||
     message.includes("BRANCH_RECEIPT_SOURCE_LOCKED") ||
+    message.includes("BRANCH_RECEIPT_SOURCE_STALE") ||
+    message.includes("RUBBER_EXPORT_SOLD_OUT") ||
     message.includes("ถูกจอง") ||
     message.includes("ฉบับร่าง") ||
     message.includes("ตรวจสอบแล้ว") ||
@@ -68,6 +70,8 @@ export function mapRubberExportRow(row: Record<string, any>): RubberExportSummar
     createdAt: row.created_at,
     verifiedByName: row.verified_by_name,
     verifiedAt: row.verified_at,
+    soldOutAt: row.sold_out_at ?? null,
+    soldOutByName: row.sold_out_by_name ?? null,
     deletedByName: row.deleted_by_name,
     deletedAt: row.deleted_at,
     itemCount: number(itemCount),
@@ -79,6 +83,13 @@ export function mapRubberExportRow(row: Record<string, any>): RubberExportSummar
       ? null : number(row.oldest_age_hours),
     estimatedAgeItemCount: row.estimated_age_item_count === null || row.estimated_age_item_count === undefined
       ? null : number(row.estimated_age_item_count),
+    officialAgeCutoffAt: row.official_age_cutoff_at ?? null,
+    officialAverageAgeHours: row.official_average_age_hours === null || row.official_average_age_hours === undefined
+      ? null : number(row.official_average_age_hours),
+    officialOldestAgeHours: row.official_oldest_age_hours === null || row.official_oldest_age_hours === undefined
+      ? null : number(row.official_oldest_age_hours),
+    officialEstimatedAgeItemCount: row.official_estimated_age_item_count === null || row.official_estimated_age_item_count === undefined
+      ? null : number(row.official_estimated_age_item_count),
     receiptBillId: row.receipt_bill_id ?? null,
     receiptBillNo: row.receipt_bill_no ?? null,
     receiptLocationName: row.receipt_location_name ?? null,

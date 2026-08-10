@@ -199,7 +199,7 @@ function drawReportContent(doc: PdfDocument, details: ReportDetails) {
   drawTable(state, rubberWidths, rubberHeader, rubberRows(traderRubberBills));
   drawGroupTitle(state, "1.2 ชาวสวน");
   drawTable(state, rubberWidths, rubberHeader, rubberRows(farmerRubberBills));
-  drawGroupTitle(state, "1.3 รับยางจากสาขา");
+  drawGroupTitle(state, "1.3 ยางรับเข้าและยางคงเหลือภายในสาขา");
   drawTable(state, rubberWidths, rubberHeader, rubberRows(branchReceiptRubberBills));
 
   drawSectionTitle(state, "2. อ่านใบชั่ง");

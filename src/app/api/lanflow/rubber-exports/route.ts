@@ -18,7 +18,9 @@ const columns = `
   original_weight_total, paid_total, average_price, current_weight,
   weight_loss_percent, work_rate, other_operating_cost, work_total,
   expense_destination, created_by_name, created_at, verified_by_name,
-  verified_at, deleted_by_name, deleted_at, report_lock_no,
+  verified_at, sold_out_at, sold_out_by_name,
+  deleted_by_name, deleted_at, report_lock_no, age_cutoff_at,
+  average_age_hours, oldest_age_hours, estimated_age_item_count,
   rubber_export_items(count), locations(name)
 `;
 
@@ -79,6 +81,10 @@ export async function GET(request: NextRequest) {
   return NextResponse.json({
     exports: (rows ?? []).map((row) => mapRubberExportRow({
       ...(row as Record<string, any>),
+      official_age_cutoff_at: row.age_cutoff_at,
+      official_average_age_hours: row.average_age_hours,
+      official_oldest_age_hours: row.oldest_age_hours,
+      official_estimated_age_item_count: row.estimated_age_item_count,
       ...(agesByExport.get(row.id) ?? {}),
       age_calculated_at: agesByExport.get(row.id)?.calculated_at ?? null,
     })),

@@ -90,21 +90,6 @@ export function useRubberExports(locationId: string, online: boolean) {
     void reload();
   }, [locationId, reload]);
 
-  useEffect(() => {
-    if (!locationId || !online) return;
-    const refresh = () => {
-      if (document.visibilityState === "visible") void reload(true);
-    };
-    window.addEventListener("focus", refresh);
-    window.addEventListener("online", refresh);
-    const interval = window.setInterval(refresh, 15 * 60 * 1000);
-    return () => {
-      window.removeEventListener("focus", refresh);
-      window.removeEventListener("online", refresh);
-      window.clearInterval(interval);
-    };
-  }, [locationId, online, reload]);
-
   async function reloadWithBadges() {
     await Promise.all([
       reload(),
@@ -112,11 +97,11 @@ export function useRubberExports(locationId: string, online: boolean) {
     ]);
   }
 
-  async function preview(selectedReportItemIds: string[]) {
+  async function preview(selectedReportItemIds: string[], exportId?: string) {
     const response = await authFetch("/api/lanflow/rubber-exports/preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ locationId, selectedReportItemIds }),
+      body: JSON.stringify({ locationId, selectedReportItemIds, exportId }),
     });
     await assertApiResponse(response);
     return response.json() as Promise<RubberExportPreview>;
@@ -155,6 +140,26 @@ export function useRubberExports(locationId: string, online: boolean) {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(values),
+    });
+    await assertApiResponse(response);
+    await reload();
+  }
+
+  async function replaceItems(exportId: string, selectedReportItemIds: string[]) {
+    const response = await authFetch(`/api/lanflow/rubber-exports/${exportId}/items`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ selectedReportItemIds }),
+    });
+    await assertApiResponse(response);
+    await reload();
+  }
+
+  async function setSoldOut(exportId: string, soldOut: boolean) {
+    const response = await authFetch(`/api/lanflow/rubber-exports/${exportId}/sale`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ soldOut }),
     });
     await assertApiResponse(response);
     await reload();
@@ -201,6 +206,8 @@ export function useRubberExports(locationId: string, online: boolean) {
     create,
     details,
     update,
+    replaceItems,
+    setSoldOut,
     verify,
     remove,
   };

@@ -1,4 +1,4 @@
-import { Clock3, Eye, Loader2, PackageCheck, Share2, Trash2 } from "lucide-react";
+import { Clock3, Eye, Loader2, PackageCheck, Pencil, Share2, ShoppingCart, Trash2, Undo2 } from "lucide-react";
 import type { RubberExportSummary, RubberExportStatus } from "@/types/rubber-exports";
 import { formatRubberAge } from "@/lib/rubber-exports/rubber-export-presentation";
 
@@ -14,24 +14,39 @@ function number(value: number | null | undefined) {
   });
 }
 
+function dateTime(value: string | null | undefined) {
+  if (!value) return "—";
+  return new Intl.DateTimeFormat("th-TH", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Bangkok",
+  }).format(new Date(value));
+}
+
 export function RubberExportTable({
   rows,
   loading,
+  online,
   canDelete,
   canVerify,
   shareBusy,
   sharingId,
   onOpen,
+  onEdit,
+  onSale,
   onShare,
   onDelete,
 }: {
   rows: RubberExportSummary[];
   loading: boolean;
+  online: boolean;
   canDelete: boolean;
   canVerify: boolean;
   shareBusy: boolean;
   sharingId: string | null;
   onOpen: (id: string) => void;
+  onEdit: (row: RubberExportSummary) => void;
+  onSale: (row: RubberExportSummary, soldOut: boolean) => void;
   onShare: (row: RubberExportSummary) => void;
   onDelete: (row: RubberExportSummary) => void;
 }) {
@@ -62,8 +77,8 @@ export function RubberExportTable({
             <tr key={row.id}>
               <td className="px-4 py-3">
                 <div className="flex items-center gap-1.5 whitespace-nowrap">
-                  <button type="button" onClick={() => onOpen(row.id)} title="ดูรายละเอียด" aria-label={`ดูรายละเอียด ${row.exportNo}`}
-                    className="focus-ring inline-flex size-10 items-center justify-center rounded-md bg-river text-white">
+                  <button type="button" onClick={() => onOpen(row.id)} disabled={!online} title={online ? "ดูรายละเอียด" : "ต้องออนไลน์ก่อนดูรายละเอียด"} aria-label={`ดูรายละเอียด ${row.exportNo}`}
+                    className="focus-ring inline-flex size-10 items-center justify-center rounded-md bg-river text-white disabled:cursor-not-allowed disabled:opacity-45">
                     <Eye size={17} />
                   </button>
                   {row.status === "draft" && (canVerify ? (
@@ -84,20 +99,47 @@ export function RubberExportTable({
                       <Clock3 size={16} /> รอผู้รับรอง
                     </button>
                   ))}
+                  {row.status === "draft" && (
+                    <button
+                      type="button"
+                      onClick={() => onEdit(row)}
+                      disabled={!online}
+                      title={online ? "แก้รายการส่งออกยาง" : "ต้องออนไลน์ก่อนแก้รายการ"}
+                      className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-river px-3 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      <Pencil size={16} /> แก้
+                    </button>
+                  )}
                   {row.status === "verified" && (
-                    <button type="button" onClick={() => onShare(row)} disabled={shareBusy}
+                    <button type="button" onClick={() => onShare(row)} disabled={!online || shareBusy}
                       title={`แชร์ PDF รายการส่งออกยาง ${row.exportNo}`} aria-label={`แชร์ PDF รายการส่งออกยาง ${row.exportNo}`}
                       className="focus-ring inline-flex h-10 items-center gap-1 rounded-md bg-ink px-3 font-semibold text-white disabled:opacity-50">
                       {sharingId === row.id ? <Loader2 size={16} className="animate-spin" /> : <Share2 size={16} />}
                       {sharingId === row.id ? "กำลังสร้าง PDF" : "แชร์ PDF"}
                     </button>
                   )}
+                  {row.status === "verified" && !row.receiptBillNo && (
+                    <button
+                      type="button"
+                      onClick={() => onSale(row, !row.soldOutAt)}
+                      disabled={!online}
+                      title={online ? (row.soldOutAt ? "ยกเลิกขาย" : "ขายยางออก") : "ต้องออนไลน์ก่อนเปลี่ยนสถานะขาย"}
+                      className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-river px-3 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      {row.soldOutAt ? <Undo2 size={16} /> : <ShoppingCart size={16} />}
+                      {row.soldOutAt ? "ยกเลิกขาย" : "ขายยางออก"}
+                    </button>
+                  )}
                   {canDelete && (
-                    <button type="button" onClick={() => onDelete(row)} disabled={Boolean(row.reportLockNo || row.receiptBillNo)}
-                      title={row.receiptBillNo
+                    <button type="button" onClick={() => onDelete(row)} disabled={Boolean(row.reportLockNo || row.receiptBillNo || row.soldOutAt)}
+                      title={row.soldOutAt
+                        ? "กรุณายกเลิกขายก่อนลบรายการ"
+                        : row.receiptBillNo
                         ? `รับเข้าแล้วที่ ${row.receiptLocationName} · ${row.receiptBillNo} ต้องลบบิลรับก่อน`
                         : row.reportLockNo ? `ต้องลบรายงาน ${row.reportLockNo} ก่อน` : "ลบรายการส่งออกยาง"}
-                      aria-label={row.receiptBillNo
+                      aria-label={row.soldOutAt
+                        ? "กรุณายกเลิกขายก่อนลบรายการ"
+                        : row.receiptBillNo
                         ? `รับเข้าแล้วที่ ${row.receiptLocationName} · ${row.receiptBillNo} ต้องลบบิลรับก่อน`
                         : row.reportLockNo ? `ต้องลบรายงาน ${row.reportLockNo} ก่อน` : "ลบรายการส่งออกยาง"}
                       className="focus-ring inline-flex h-10 items-center gap-1 rounded-md bg-clay px-3 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45">
@@ -112,6 +154,11 @@ export function RubberExportTable({
                 {row.receiptBillNo && (
                   <div className="mt-1 w-fit rounded-full bg-mint px-2 py-0.5 text-xs font-semibold text-ink">
                     รับเข้าแล้วที่ {row.receiptLocationName} · {row.receiptBillNo}
+                  </div>
+                )}
+                {row.soldOutAt && (
+                  <div className="mt-1 w-fit rounded-full bg-amber px-2 py-0.5 text-xs font-semibold text-white">
+                    ขายออกแล้ว · {row.soldOutByName || "—"} · <span className="tabular-nums">{dateTime(row.soldOutAt)}</span>
                   </div>
                 )}
               </td>

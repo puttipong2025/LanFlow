@@ -437,18 +437,6 @@ $$;
 ALTER FUNCTION "private"."assign_rubber_bill_item_sequence"() OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "private"."branch_receipt_age_hours"("p_source_age_hours" numeric, "p_verified_at" timestamp with time zone, "p_received_at" timestamp with time zone) RETURNS numeric
-    LANGUAGE "sql" IMMUTABLE
-    SET "search_path" TO ''
-    AS $$
-  select greatest(coalesce(p_source_age_hours, 0), 0)
-    + greatest(extract(epoch from (p_received_at - p_verified_at)) / 3600, 0)::numeric;
-$$;
-
-
-ALTER FUNCTION "private"."branch_receipt_age_hours"("p_source_age_hours" numeric, "p_verified_at" timestamp with time zone, "p_received_at" timestamp with time zone) OWNER TO "postgres";
-
-
 CREATE OR REPLACE FUNCTION "private"."calculate_dashboard_summary"("p_location_id" "uuid") RETURNS "jsonb"
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -3143,13 +3131,16 @@ declare
   v_id uuid;
   v_report_no text;
 begin
+  if tg_table_name = 'rubber_exports' and tg_op = 'UPDATE'
+     and (to_jsonb(new) - array['sold_out_at', 'sold_out_by_user_id', 'sold_out_by_name'])
+       = (to_jsonb(old) - array['sold_out_at', 'sold_out_by_user_id', 'sold_out_by_name']) then
+    return new;
+  end if;
   v_id := case when tg_op = 'DELETE' then old.id else new.id end;
   v_report_no := private.active_report_no(tg_argv[0], v_id);
-
   if v_report_no is not null then
     perform private.raise_report_lock(v_report_no);
   end if;
-
   if tg_op = 'DELETE' then return old; end if;
   return new;
 end;
@@ -3270,26 +3261,46 @@ CREATE OR REPLACE FUNCTION "private"."guard_rubber_export_state"() RETURNS "trig
     SET "search_path" TO ''
     AS $$
 begin
-  if old.status = 'deleted' then raise exception 'รายการส่งออกที่ลบแล้วแก้ไขไม่ได้'; end if;
-  if old.status = 'verified' and new.status <> 'deleted' then raise exception 'รายการส่งออกที่ตรวจสอบแล้วแก้ไขไม่ได้'; end if;
+  if old.status = 'deleted' then
+    raise exception 'รายการส่งออกที่ลบแล้วแก้ไขไม่ได้';
+  end if;
+  if old.status = 'verified' and new.status <> 'deleted'
+     and (to_jsonb(new) - array['sold_out_at', 'sold_out_by_user_id', 'sold_out_by_name'])
+       is distinct from
+       (to_jsonb(old) - array['sold_out_at', 'sold_out_by_user_id', 'sold_out_by_name']) then
+    raise exception 'รายการส่งออกที่ตรวจสอบแล้วแก้ไขไม่ได้';
+  end if;
   if (
     new.export_no, new.export_date, new.sequence_no, new.location_id,
-    new.original_weight_total, new.paid_total, new.average_price,
     new.created_by_user_id, new.created_at
   ) is distinct from (
     old.export_no, old.export_date, old.sequence_no, old.location_id,
-    old.original_weight_total, old.paid_total, old.average_price,
     old.created_by_user_id, old.created_at
-  ) then raise exception 'ข้อมูลสมาชิกและ snapshot ของรายการส่งออกแก้ไขไม่ได้'; end if;
-  if old.status <> 'draft' and (
-    new.age_cutoff_at, new.average_age_hours, new.oldest_age_hours, new.estimated_age_item_count
+  ) then
+    raise exception 'ข้อมูลระบุตัวตนของรายการส่งออกแก้ไขไม่ได้';
+  end if;
+  if (old.status <> 'draft' or new.status <> 'draft') and (
+    new.original_weight_total, new.paid_total, new.average_price
   ) is distinct from (
-    old.age_cutoff_at, old.average_age_hours, old.oldest_age_hours, old.estimated_age_item_count
-  ) then raise exception 'snapshot อายุยางหลังตรวจสอบแก้ไขไม่ได้'; end if;
+    old.original_weight_total, old.paid_total, old.average_price
+  ) then
+    raise exception 'snapshot สมาชิกของรายการส่งออกแก้ไขไม่ได้';
+  end if;
+  if old.status <> 'draft' and (
+    new.age_cutoff_at, new.average_age_hours, new.oldest_age_hours,
+    new.estimated_age_item_count
+  ) is distinct from (
+    old.age_cutoff_at, old.average_age_hours, old.oldest_age_hours,
+    old.estimated_age_item_count
+  ) then
+    raise exception 'snapshot อายุยางหลังตรวจสอบแก้ไขไม่ได้';
+  end if;
   if old.status = 'draft' and new.status <> 'verified' and (
     new.age_cutoff_at is not null or new.average_age_hours is not null
     or new.oldest_age_hours is not null or new.estimated_age_item_count is not null
-  ) then raise exception 'ฉบับร่างไม่มี snapshot อายุยางอย่างเป็นทางการ'; end if;
+  ) then
+    raise exception 'ฉบับร่างไม่มี snapshot อายุยางอย่างเป็นทางการ';
+  end if;
   return new;
 end;
 $$;
@@ -4655,15 +4666,10 @@ CREATE OR REPLACE FUNCTION "private"."rubber_export_age_summary"("p_export_id" "
     SET "search_path" TO ''
     AS $$
   select
-    coalesce(round(sum(i.net_weight * private.rubber_export_item_age_hours(
-      i.bill_date, i.age_source_at, i.carried_age_hours, p_cutoff_at
-    )) / nullif(sum(i.net_weight), 0), 2), 0),
-    coalesce(round(max(private.rubber_export_item_age_hours(
-      i.bill_date, i.age_source_at, i.carried_age_hours, p_cutoff_at
-    )), 2), 0),
-    count(*) filter (where i.age_is_estimated)::integer
-  from public.rubber_export_items i
-  where i.export_id = p_export_id;
+    round(s.average_age_hours, 2),
+    round(s.oldest_age_hours, 2),
+    s.estimated_age_item_count
+  from private.rubber_export_raw_age_summary(p_export_id, p_cutoff_at) s;
 $$;
 
 
@@ -4671,6 +4677,20 @@ ALTER FUNCTION "private"."rubber_export_age_summary"("p_export_id" "uuid", "p_cu
 
 
 CREATE OR REPLACE FUNCTION "private"."rubber_export_candidates"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) RETURNS TABLE("report_item_id" "uuid", "bill_id" "uuid", "bill_date" "date", "bill_no" "text", "customer_name" "text", "eligibility_at" timestamp with time zone, "net_weight" numeric, "paid_amount" numeric)
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select *
+  from private.rubber_export_candidates(
+    p_location_id, p_selected_report_item_ids, null::uuid
+  );
+$$;
+
+
+ALTER FUNCTION "private"."rubber_export_candidates"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."rubber_export_candidates"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[], "p_current_export_id" "uuid") RETURNS TABLE("report_item_id" "uuid", "bill_id" "uuid", "bill_date" "date", "bill_no" "text", "customer_name" "text", "eligibility_at" timestamp with time zone, "net_weight" numeric, "paid_amount" numeric)
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
@@ -4694,16 +4714,18 @@ CREATE OR REPLACE FUNCTION "private"."rubber_export_candidates"("p_location_id" 
     and b.location_id = p_location_id
     and b.record_status = 'active'
     and not exists (
-      select 1 from public.rubber_export_items x
+      select 1
+      from public.rubber_export_items x
       where x.location_id = p_location_id
         and x.source_bill_id = b.id
         and x.active = true
+        and (p_current_export_id is null or x.export_id <> p_current_export_id)
     )
   order by i.eligibility_at, b.id;
 $$;
 
 
-ALTER FUNCTION "private"."rubber_export_candidates"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) OWNER TO "postgres";
+ALTER FUNCTION "private"."rubber_export_candidates"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[], "p_current_export_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."rubber_export_effective_age_start"("p_bill_date" "date", "p_age_source_at" timestamp with time zone, "p_cutoff_at" timestamp with time zone) RETURNS timestamp with time zone
@@ -4732,6 +4754,30 @@ $$;
 
 
 ALTER FUNCTION "private"."rubber_export_item_age_hours"("p_bill_date" "date", "p_age_source_at" timestamp with time zone, "p_carried_age_hours" numeric, "p_cutoff_at" timestamp with time zone) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."rubber_export_raw_age_summary"("p_export_id" "uuid", "p_cutoff_at" timestamp with time zone) RETURNS TABLE("average_age_hours" numeric, "oldest_age_hours" numeric, "estimated_age_item_count" integer)
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select
+    coalesce(sum(i.net_weight * private.rubber_export_item_age_hours(
+      i.bill_date, i.age_source_at, i.carried_age_hours, p_cutoff_at
+    )) / nullif(sum(i.net_weight), 0), 0),
+    coalesce(max(private.rubber_export_item_age_hours(
+      i.bill_date, i.age_source_at, i.carried_age_hours, p_cutoff_at
+    )), 0),
+    count(*) filter (where i.age_is_estimated)::integer
+  from public.rubber_export_items i
+  where i.export_id = p_export_id;
+$$;
+
+
+ALTER FUNCTION "private"."rubber_export_raw_age_summary"("p_export_id" "uuid", "p_cutoff_at" timestamp with time zone) OWNER TO "postgres";
+
+
+COMMENT ON FUNCTION "private"."rubber_export_raw_age_summary"("p_export_id" "uuid", "p_cutoff_at" timestamp with time zone) IS 'Unrounded weighted age used before receipt/downstream snapshot rounding.';
+
 
 
 CREATE OR REPLACE FUNCTION "private"."sync_income_expense_dispatch_20260805020000"("payload" "jsonb") RETURNS "jsonb"
@@ -5487,6 +5533,19 @@ ALTER FUNCTION "private"."telegram_badge_require_manager"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."validate_rubber_export_selection"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) RETURNS "void"
+    LANGUAGE "sql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select private.validate_rubber_export_selection(
+    p_location_id, p_selected_report_item_ids, null::uuid
+  );
+$$;
+
+
+ALTER FUNCTION "private"."validate_rubber_export_selection"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."validate_rubber_export_selection"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[], "p_current_export_id" "uuid") RETURNS "void"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
@@ -5497,30 +5556,40 @@ declare
 begin
   v_selected_count := coalesce(cardinality(p_selected_report_item_ids), 0);
   if v_selected_count = 0 then
-    raise exception 'RUBBER_EXPORT_SELECTION_EMPTY: กรุณาเลือกบิลอย่างน้อย 1 ใบ' using errcode = 'P0001';
+    raise exception 'RUBBER_EXPORT_SELECTION_EMPTY: กรุณาเลือกบิลอย่างน้อย 1 ใบ'
+      using errcode = 'P0001';
   end if;
   if (select count(distinct selected_id) from unnest(p_selected_report_item_ids) selected_id)
     <> v_selected_count then
-    raise exception 'RUBBER_EXPORT_SELECTION_DUPLICATE: พบบิลที่เลือกซ้ำ' using errcode = 'P0001';
+    raise exception 'RUBBER_EXPORT_SELECTION_DUPLICATE: พบบิลที่เลือกซ้ำ'
+      using errcode = 'P0001';
   end if;
 
   select count(*)::integer into v_candidate_count
-  from private.rubber_export_candidates(p_location_id, p_selected_report_item_ids);
+  from private.rubber_export_candidates(
+    p_location_id, p_selected_report_item_ids, p_current_export_id
+  );
   if v_candidate_count <> v_selected_count then
     raise exception 'RUBBER_EXPORT_SELECTION_STALE: บิลที่เลือกบางรายการไม่พร้อมส่งออกแล้ว'
       using errcode = 'P0001', hint = 'รีเฟรชรายการบิลแล้วเลือกใหม่';
   end if;
 
-  select string_agg(c.bill_no, ', ' order by c.eligibility_at, c.bill_id) into v_invalid
-  from private.rubber_export_candidates(p_location_id, p_selected_report_item_ids) c
+  select string_agg(c.bill_no, ', ' order by c.eligibility_at, c.bill_id)
+  into v_invalid
+  from private.rubber_export_candidates(
+    p_location_id, p_selected_report_item_ids, p_current_export_id
+  ) c
   where c.net_weight <= 0 or c.paid_amount <= 0;
   if v_invalid is not null then
     raise exception 'INVALID_RUBBER_BILL:%', v_invalid
       using errcode = 'P0001', hint = 'น้ำหนักสุทธิหลังหักและยอดจ่ายจริงต้องมากกว่า 0';
   end if;
 
-  select string_agg(c.bill_no, ', ' order by c.eligibility_at, c.bill_id) into v_invalid
-  from private.rubber_export_candidates(p_location_id, p_selected_report_item_ids) c
+  select string_agg(c.bill_no, ', ' order by c.eligibility_at, c.bill_id)
+  into v_invalid
+  from private.rubber_export_candidates(
+    p_location_id, p_selected_report_item_ids, p_current_export_id
+  ) c
   where c.bill_date > (clock_timestamp() at time zone 'Asia/Bangkok')::date;
   if v_invalid is not null then
     raise exception 'RUBBER_EXPORT_FUTURE_BILL:%', v_invalid
@@ -5530,7 +5599,7 @@ end;
 $$;
 
 
-ALTER FUNCTION "private"."validate_rubber_export_selection"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) OWNER TO "postgres";
+ALTER FUNCTION "private"."validate_rubber_export_selection"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[], "p_current_export_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."approve_rubber_bill_approval_request"("p_request_id" "uuid") RETURNS "jsonb"
@@ -8379,48 +8448,37 @@ begin
   if not private.can_delete_reports() then
     raise exception 'เฉพาะ super_admin หรือผู้มีสิทธิ์จัดการระบบเท่านั้นที่ลบได้';
   end if;
-
   select * into v_export
   from public.rubber_exports
   where id = p_export_id
   for update;
-
   if v_export.id is null then
     select * into v_audit
     from public.document_deletion_audits
-    where document_kind = 'rubber_export'
-      and source_id = p_export_id;
+    where document_kind = 'rubber_export' and source_id = p_export_id;
     if v_audit.id is not null then
       return jsonb_build_object(
-        'id', p_export_id,
-        'exportNo', v_audit.document_no,
-        'status', 'deleted'
+        'id', p_export_id, 'exportNo', v_audit.document_no, 'status', 'deleted'
       );
     end if;
     raise exception 'ไม่พบรายการส่งออก';
   end if;
-
-  v_report_no := private.active_report_no('rubber_export', p_export_id);
-  if v_report_no is not null then
-    perform private.raise_report_lock(v_report_no);
+  if v_export.sold_out_at is not null then
+    raise exception 'RUBBER_EXPORT_SOLD_OUT:%', v_export.export_no
+      using errcode = 'P0001', hint = 'กรุณายกเลิกขายก่อนลบรายการ';
   end if;
-
+  v_report_no := private.active_report_no('rubber_export', p_export_id);
+  if v_report_no is not null then perform private.raise_report_lock(v_report_no); end if;
   select coalesce(b.server_bill_no, b.local_bill_no, b.bill_no)
   into v_receipt_no
   from public.rubber_bills b
-  where b.source_rubber_export_id = p_export_id
-    and b.record_status = 'active'
+  where b.source_rubber_export_id = p_export_id and b.record_status = 'active'
   limit 1;
-
   if v_receipt_no is not null then
     raise exception 'BRANCH_RECEIPT_SOURCE_LOCKED:%', v_export.export_no
       using hint = 'กรุณาลบบิลรับ ' || v_receipt_no || ' ก่อน';
   end if;
-
-  select p.name into v_actor_name
-  from public.profiles p
-  where p.id = auth.uid();
-
+  select p.name into v_actor_name from public.profiles p where p.id = auth.uid();
   insert into public.document_deletion_audits (
     document_kind, source_id, document_no, location_id, previous_status,
     deleted_by_user_id, deleted_by_name, deleted_at
@@ -8428,17 +8486,10 @@ begin
     'rubber_export', v_export.id, v_export.export_no, v_export.location_id,
     v_export.status, auth.uid(), coalesce(v_actor_name, ''), v_now
   );
-
-  delete from public.rubber_export_items
-  where export_id = v_export.id;
-
-  delete from public.rubber_exports
-  where id = v_export.id;
-
+  delete from public.rubber_export_items where export_id = v_export.id;
+  delete from public.rubber_exports where id = v_export.id;
   return jsonb_build_object(
-    'id', v_export.id,
-    'exportNo', v_export.export_no,
-    'status', 'deleted'
+    'id', v_export.id, 'exportNo', v_export.export_no, 'status', 'deleted'
   );
 end;
 $$;
@@ -10095,25 +10146,25 @@ begin
     e.verified_at,
     e.current_weight,
     e.paid_total,
-    e.average_age_hours,
-    round(private.branch_receipt_age_hours(
-      e.average_age_hours, e.verified_at, v_now
-    ), 6),
-    coalesce(e.estimated_age_item_count, 0) > 0
+    round(age.average_age_hours, 2),
+    round(age.average_age_hours, 6),
+    age.estimated_age_item_count > 0
   from public.rubber_exports e
   join public.locations l on l.id = e.location_id and l.is_active = true
-  where e.location_id <> p_destination_location_id
-    and e.status = 'verified'
+  cross join lateral private.rubber_export_raw_age_summary(e.id, v_now) age
+  where e.status = 'verified'
+    and e.sold_out_at is null
     and e.verified_at is not null
     and e.current_weight > 0
     and e.paid_total > 0
-    and e.average_age_hours is not null
+    and exists (select 1 from public.rubber_export_items i where i.export_id = e.id)
     and not exists (
       select 1 from public.rubber_bills b
       where b.source_rubber_export_id = e.id
         and b.record_status = 'active'
     )
-  order by e.verified_at desc, e.export_no, e.id;
+  order by (e.location_id = p_destination_location_id) desc,
+    e.verified_at desc, e.export_no, e.id;
 end;
 $$;
 
@@ -10188,15 +10239,28 @@ declare
   v_oldest_age_hours numeric;
   v_estimated_age_item_count integer;
   v_items jsonb;
+  v_official_items jsonb;
   v_receipt jsonb;
 begin
   select * into v_export from public.rubber_exports where id = p_export_id;
   if v_export.id is null or not private.can_manage_reports(v_export.location_id) then
     raise exception 'ไม่มีสิทธิ์ดูอายุยางของรายการนี้';
   end if;
+  select jsonb_build_object(
+    'billId', b.id, 'billNo', b.server_bill_no, 'locationName', l.name
+  ) into v_receipt
+  from public.rubber_bills b
+  join public.locations l on l.id = b.location_id
+  where b.source_rubber_export_id = p_export_id and b.record_status = 'active'
+  limit 1;
+
   v_cutoff := case
     when v_export.status = 'draft' then clock_timestamp()
-    when v_export.status = 'verified' or v_export.previous_status = 'verified' then v_export.age_cutoff_at
+    when v_export.status = 'verified'
+      and v_export.sold_out_at is null
+      and v_receipt is null then clock_timestamp()
+    when v_export.status = 'verified' or v_export.previous_status = 'verified'
+      then v_export.age_cutoff_at
     else null end;
   if v_cutoff is not null then
     select s.average_age_hours, s.oldest_age_hours, s.estimated_age_item_count
@@ -10212,13 +10276,18 @@ begin
   ) order by i.eligibility_at, i.source_bill_id)
   into v_items from public.rubber_export_items i where i.export_id = p_export_id;
 
-  select jsonb_build_object(
-    'billId', b.id, 'billNo', b.server_bill_no, 'locationName', l.name
-  ) into v_receipt
-  from public.rubber_bills b
-  join public.locations l on l.id = b.location_id
-  where b.source_rubber_export_id = p_export_id and b.record_status = 'active'
-  limit 1;
+  if v_export.status = 'verified' and v_export.age_cutoff_at is not null then
+    select jsonb_agg(jsonb_build_object(
+      'itemId', i.id,
+      'ageHours', round(private.rubber_export_item_age_hours(
+        i.bill_date, i.age_source_at, i.carried_age_hours, v_export.age_cutoff_at
+      ), 2),
+      'ageIsEstimated', i.age_is_estimated
+    ) order by i.eligibility_at, i.source_bill_id)
+    into v_official_items
+    from public.rubber_export_items i
+    where i.export_id = p_export_id;
+  end if;
 
   return jsonb_build_object(
     'calculatedAt', v_cutoff,
@@ -10226,7 +10295,8 @@ begin
     'oldestAgeHours', v_oldest_age_hours,
     'estimatedAgeItemCount', v_estimated_age_item_count,
     'receivedBy', v_receipt,
-    'items', coalesce(v_items, '[]'::jsonb)
+    'items', coalesce(v_items, '[]'::jsonb),
+    'officialItems', coalesce(v_official_items, '[]'::jsonb)
   );
 end;
 $$;
@@ -10246,13 +10316,20 @@ begin
   end if;
   return query
   select e.id,
-    case when e.status = 'draft' then v_now else e.age_cutoff_at end,
-    case when e.status = 'draft' then s.average_age_hours else e.average_age_hours end,
-    case when e.status = 'draft' then s.oldest_age_hours else e.oldest_age_hours end,
-    case when e.status = 'draft' then s.estimated_age_item_count else e.estimated_age_item_count end,
+    case when e.status = 'draft'
+      or (e.status = 'verified' and e.sold_out_at is null and receipt.id is null)
+      then v_now else e.age_cutoff_at end,
+    case when e.status = 'draft'
+      or (e.status = 'verified' and e.sold_out_at is null and receipt.id is null)
+      then s.average_age_hours else e.average_age_hours end,
+    case when e.status = 'draft'
+      or (e.status = 'verified' and e.sold_out_at is null and receipt.id is null)
+      then s.oldest_age_hours else e.oldest_age_hours end,
+    case when e.status = 'draft'
+      or (e.status = 'verified' and e.sold_out_at is null and receipt.id is null)
+      then s.estimated_age_item_count else e.estimated_age_item_count end,
     receipt.id, receipt.server_bill_no, receipt.location_name
   from public.rubber_exports e
-  left join lateral private.rubber_export_age_summary(e.id, v_now) s on e.status = 'draft'
   left join lateral (
     select b.id, b.server_bill_no, l.name as location_name
     from public.rubber_bills b
@@ -10260,6 +10337,9 @@ begin
     where b.source_rubber_export_id = e.id and b.record_status = 'active'
     limit 1
   ) receipt on true
+  left join lateral private.rubber_export_age_summary(e.id, v_now) s
+    on e.status = 'draft'
+      or (e.status = 'verified' and e.sold_out_at is null and receipt.id is null)
   where e.location_id = p_location_id;
 end;
 $$;
@@ -10645,17 +10725,45 @@ ALTER FUNCTION "public"."prevent_locked_ocr_ticket_change"() OWNER TO "postgres"
 
 
 CREATE OR REPLACE FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) RETURNS "jsonb"
+    LANGUAGE "sql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select public.preview_rubber_export(
+    p_location_id, p_selected_report_item_ids, null::uuid
+  );
+$$;
+
+
+ALTER FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[], "p_current_export_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
 declare
   v_now timestamptz := clock_timestamp();
   v_result jsonb;
+  v_current public.rubber_exports%rowtype;
 begin
   if p_location_id is null or not private.can_manage_reports(p_location_id) then
     raise exception 'ไม่มีสิทธิ์สร้างรายการส่งออกของสาขานี้';
   end if;
-  perform private.validate_rubber_export_selection(p_location_id, p_selected_report_item_ids);
+  if p_current_export_id is not null then
+    select * into v_current
+    from public.rubber_exports e
+    where e.id = p_current_export_id;
+    if v_current.id is null or v_current.location_id <> p_location_id then
+      raise exception 'ไม่พบรายการส่งออกฉบับร่าง';
+    end if;
+    if v_current.status <> 'draft' then
+      raise exception 'แก้ไขสมาชิกได้เฉพาะรายการฉบับร่าง';
+    end if;
+  end if;
+
+  perform private.validate_rubber_export_selection(
+    p_location_id, p_selected_report_item_ids, p_current_export_id
+  );
 
   with candidates as (
     select c.*,
@@ -10667,7 +10775,9 @@ begin
         else b.client_created_at is null
           or (coalesce(b.client_created_at, b.created_at) at time zone 'Asia/Bangkok')::date <> c.bill_date
         end as age_is_estimated
-    from private.rubber_export_candidates(p_location_id, p_selected_report_item_ids) c
+    from private.rubber_export_candidates(
+      p_location_id, p_selected_report_item_ids, p_current_export_id
+    ) c
     join public.rubber_bills b on b.id = c.bill_id
   ), aged as (
     select c.*, private.rubber_export_item_age_hours(
@@ -10699,7 +10809,7 @@ end;
 $$;
 
 
-ALTER FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) OWNER TO "postgres";
+ALTER FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[], "p_current_export_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."provision_location"("p_request_id" "uuid", "p_name" "text", "p_code" "text") RETURNS "jsonb"
@@ -10970,6 +11080,8 @@ declare
   v_bill_id uuid;
   v_client_temp_id text;
   v_customer_name text;
+  v_debt_description text;
+  v_age record;
   v_age_hours numeric;
   v_average_price numeric;
 begin
@@ -10987,11 +11099,7 @@ begin
   from public.rubber_exports e
   where e.id = p_source_rubber_export_id
   for update;
-
-  if v_source.id is null then
-    raise exception 'BRANCH_RECEIPT_SOURCE_NOT_FOUND';
-  end if;
-
+  if v_source.id is null then raise exception 'BRANCH_RECEIPT_SOURCE_NOT_FOUND'; end if;
   if exists (
     select 1 from public.rubber_bills b
     where b.source_rubber_export_id = v_source.id
@@ -10999,14 +11107,13 @@ begin
   ) then
     raise exception 'BRANCH_RECEIPT_ALREADY_EXISTS:%', v_source.export_no using errcode = 'P0001';
   end if;
-
-  if v_source.location_id = p_destination_location_id
-     or v_source.status <> 'verified'
+  if v_source.status <> 'verified'
+     or v_source.sold_out_at is not null
      or v_source.verified_at is null
      or v_source.current_weight is null
      or v_source.current_weight <= 0
      or v_source.paid_total <= 0
-     or v_source.average_age_hours is null
+     or not exists (select 1 from public.rubber_export_items i where i.export_id = v_source.id)
      or not exists (
        select 1 from public.locations l
        where l.id = v_source.location_id and l.is_active = true
@@ -11017,15 +11124,16 @@ begin
 
   select l.name into v_source_location_name
   from public.locations l where l.id = v_source.location_id;
-
   select p.name, p.phone into v_actor_name, v_actor_phone
   from public.profiles p where p.id = auth.uid() and p.is_active = true;
   if v_actor_name is null then raise exception 'บัญชีผู้ใช้ไม่พร้อมใช้งาน'; end if;
 
+  select * into v_age
+  from private.rubber_export_raw_age_summary(v_source.id, v_now);
+  v_age_hours := round(v_age.average_age_hours, 6);
   v_bill_date := (v_now at time zone 'Asia/Bangkok')::date;
   v_date_key := to_char(v_bill_date, 'YYMMDD');
   perform pg_advisory_xact_lock(hashtext(p_destination_location_id::text || v_date_key));
-
   select count(*) + 1 into v_next_seq
   from public.rubber_bills b
   where b.location_id = p_destination_location_id
@@ -11034,10 +11142,13 @@ begin
 
   v_bill_no := v_date_key || lpad(v_next_seq::text, 4, '0');
   v_client_temp_id := 'branch-receipt:' || v_source.id::text || ':' || gen_random_uuid()::text;
-  v_customer_name := 'รับยางจากสาขา ' || v_source_location_name;
-  v_age_hours := round(private.branch_receipt_age_hours(
-    v_source.average_age_hours, v_source.verified_at, v_now
-  ), 6);
+  if v_source.location_id = p_destination_location_id then
+    v_customer_name := 'ยางคงเหลือภายในสาขา';
+    v_debt_description := 'หักมูลค่ายางคงเหลือภายในสาขา';
+  else
+    v_customer_name := 'รับยางจากสาขา ' || v_source_location_name;
+    v_debt_description := 'หักมูลค่ายางรับจากสาขา ' || v_source_location_name;
+  end if;
   v_average_price := round(v_source.paid_total / v_source.current_weight, 2);
 
   insert into public.rubber_bills (
@@ -11058,7 +11169,7 @@ begin
     0, v_now, v_now, v_now, 1, auth.uid(),
     coalesce(v_actor_name, ''), coalesce(v_actor_phone, ''), v_source.id,
     v_source.export_no, v_now, v_age_hours,
-    coalesce(v_source.estimated_age_item_count, 0) > 0
+    v_age.estimated_age_item_count > 0
   ) returning id into v_bill_id;
 
   insert into public.rubber_bill_items (
@@ -11071,7 +11182,7 @@ begin
       v_source.current_weight, 'kg', v_average_price, v_source.paid_total, 1
     ),
     (
-      v_bill_id, 'debt', 'หักมูลค่ายางรับจากสาขา ' || v_source_location_name,
+      v_bill_id, 'debt', v_debt_description,
       null, null, null, null, null, null, v_source.paid_total, 2
     );
 
@@ -11173,6 +11284,91 @@ $$;
 
 
 ALTER FUNCTION "public"."remove_user_location_with_primary_replacement"("p_user_id" "uuid", "p_location_id" "uuid", "p_replacement_location_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."replace_rubber_export_items"("p_export_id" "uuid", "p_selected_report_item_ids" "uuid"[]) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_export public.rubber_exports%rowtype;
+  v_item_count integer;
+  v_original_weight numeric;
+  v_paid_total numeric;
+begin
+  select * into v_export
+  from public.rubber_exports e
+  where e.id = p_export_id
+  for update;
+  if v_export.id is null or not private.can_manage_reports(v_export.location_id) then
+    raise exception 'ไม่มีสิทธิ์แก้ไขรายการส่งออกนี้';
+  end if;
+  if v_export.status <> 'draft' then
+    raise exception 'แก้ไขสมาชิกได้เฉพาะรายการฉบับร่าง';
+  end if;
+
+  perform pg_advisory_xact_lock(
+    hashtextextended('rubber-export:' || v_export.location_id::text, 0)
+  );
+  perform private.validate_rubber_export_selection(
+    v_export.location_id, p_selected_report_item_ids, v_export.id
+  );
+
+  delete from public.rubber_export_items i
+  where i.export_id = v_export.id;
+
+  insert into public.rubber_export_items (
+    export_id, location_id, source_report_item_id, source_bill_id, bill_date,
+    bill_no, customer_name, eligibility_at, net_weight, paid_amount,
+    age_source_at, age_is_estimated, carried_age_hours
+  )
+  select
+    v_export.id, v_export.location_id, c.report_item_id, c.bill_id, c.bill_date,
+    c.bill_no, c.customer_name, c.eligibility_at, c.net_weight, c.paid_amount,
+    case when b.source_rubber_export_id is not null then b.received_at
+      else coalesce(b.client_created_at, b.created_at) end,
+    case when b.source_rubber_export_id is not null then b.received_age_is_estimated
+      else b.client_created_at is null
+        or (coalesce(b.client_created_at, b.created_at) at time zone 'Asia/Bangkok')::date <> c.bill_date
+      end,
+    case when b.source_rubber_export_id is not null then b.received_age_hours else null end
+  from private.rubber_export_candidates(
+    v_export.location_id, p_selected_report_item_ids, v_export.id
+  ) c
+  join public.rubber_bills b on b.id = c.bill_id;
+
+  select count(*)::integer, round(sum(i.net_weight), 2), round(sum(i.paid_amount), 2)
+  into v_item_count, v_original_weight, v_paid_total
+  from public.rubber_export_items i
+  where i.export_id = v_export.id;
+
+  update public.rubber_exports
+  set original_weight_total = v_original_weight,
+      paid_total = v_paid_total,
+      average_price = round(v_paid_total / v_original_weight, 2),
+      current_weight = null,
+      weight_loss_percent = null,
+      work_rate = null,
+      other_operating_cost = 0,
+      work_total = null
+  where id = v_export.id;
+
+  return jsonb_build_object(
+    'id', v_export.id,
+    'status', 'draft',
+    'itemCount', v_item_count,
+    'originalWeightTotal', v_original_weight,
+    'paidTotal', v_paid_total
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."replace_rubber_export_items"("p_export_id" "uuid", "p_selected_report_item_ids" "uuid"[]) OWNER TO "postgres";
+
+
+COMMENT ON FUNCTION "public"."replace_rubber_export_items"("p_export_id" "uuid", "p_selected_report_item_ids" "uuid"[]) IS 'Atomically replaces the full member set of one draft and resets derived operational inputs.';
+
 
 
 CREATE OR REPLACE FUNCTION "public"."replace_time_tracking_segments"("p_profile_id" "uuid", "p_selections" "jsonb", "p_full_snapshot" "jsonb" DEFAULT '{}'::"jsonb", "p_comment" "text" DEFAULT NULL::"text") RETURNS "jsonb"
@@ -11654,6 +11850,9 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_exports" (
     "average_age_hours" numeric(14,2),
     "oldest_age_hours" numeric(14,2),
     "estimated_age_item_count" integer,
+    "sold_out_at" timestamp with time zone,
+    "sold_out_by_user_id" "uuid",
+    "sold_out_by_name" "text",
     CONSTRAINT "rubber_exports_age_snapshot_check" CHECK ((((("status" = 'verified'::"text") OR (("status" = 'deleted'::"text") AND ("previous_status" = 'verified'::"text"))) AND ("age_cutoff_at" IS NOT NULL) AND ("average_age_hours" IS NOT NULL) AND ("oldest_age_hours" IS NOT NULL) AND ("estimated_age_item_count" IS NOT NULL)) OR ((("status" = 'draft'::"text") OR (("status" = 'deleted'::"text") AND ("previous_status" = 'draft'::"text"))) AND ("age_cutoff_at" IS NULL) AND ("average_age_hours" IS NULL) AND ("oldest_age_hours" IS NULL) AND ("estimated_age_item_count" IS NULL)))),
     CONSTRAINT "rubber_exports_age_values_check" CHECK (((("average_age_hours" IS NULL) OR ("average_age_hours" >= (0)::numeric)) AND (("oldest_age_hours" IS NULL) OR ("oldest_age_hours" >= (0)::numeric)) AND (("estimated_age_item_count" IS NULL) OR ("estimated_age_item_count" >= 0)))),
     CONSTRAINT "rubber_exports_average_price_check" CHECK (("average_price" > (0)::numeric)),
@@ -11665,6 +11864,7 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_exports" (
     CONSTRAINT "rubber_exports_paid_total_check" CHECK (("paid_total" > (0)::numeric)),
     CONSTRAINT "rubber_exports_previous_status_check" CHECK (("previous_status" = ANY (ARRAY['draft'::"text", 'verified'::"text"]))),
     CONSTRAINT "rubber_exports_sequence_no_check" CHECK (("sequence_no" > 0)),
+    CONSTRAINT "rubber_exports_sold_out_snapshot_check" CHECK (((("sold_out_at" IS NULL) AND ("sold_out_by_user_id" IS NULL) AND ("sold_out_by_name" IS NULL)) OR (("status" = 'verified'::"text") AND ("sold_out_at" IS NOT NULL) AND ("sold_out_by_user_id" IS NOT NULL) AND (NULLIF("btrim"("sold_out_by_name"), ''::"text") IS NOT NULL)))),
     CONSTRAINT "rubber_exports_status_check" CHECK (("status" = ANY (ARRAY['draft'::"text", 'verified'::"text", 'deleted'::"text"]))),
     CONSTRAINT "rubber_exports_weight_loss_percent_check" CHECK ((("weight_loss_percent" IS NULL) OR ("weight_loss_percent" >= (0)::numeric))),
     CONSTRAINT "rubber_exports_work_rate_check" CHECK ((("work_rate" IS NULL) OR ("work_rate" >= (0)::numeric))),
@@ -11673,6 +11873,10 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_exports" (
 
 
 ALTER TABLE "public"."rubber_exports" OWNER TO "postgres";
+
+
+COMMENT ON COLUMN "public"."rubber_exports"."sold_out_at" IS 'Current reversible sold-out marker; null means the verified export remains receivable.';
+
 
 
 CREATE OR REPLACE FUNCTION "public"."report_lock_no"("source_row" "public"."rubber_exports") RETURNS "text"
@@ -12307,6 +12511,75 @@ $$;
 
 
 ALTER FUNCTION "public"."save_telegram_badge_config"("payload" "jsonb") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."set_rubber_export_sold_out"("p_export_id" "uuid", "p_sold_out" boolean) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_export public.rubber_exports%rowtype;
+  v_actor_name text;
+  v_now timestamptz := clock_timestamp();
+begin
+  if p_sold_out is null then
+    raise exception 'กรุณาระบุสถานะขายยางออก';
+  end if;
+  select * into v_export
+  from public.rubber_exports e
+  where e.id = p_export_id
+  for update;
+  if v_export.id is null or not private.can_manage_reports(v_export.location_id) then
+    raise exception 'ไม่มีสิทธิ์จัดการการขายรายการส่งออกนี้';
+  end if;
+  if v_export.status <> 'verified' then
+    raise exception 'ขายยางออกได้เฉพาะรายการตรวจสอบแล้ว';
+  end if;
+
+  if p_sold_out then
+    if exists (
+      select 1 from public.rubber_bills b
+      where b.source_rubber_export_id = v_export.id
+        and b.record_status = 'active'
+    ) then
+      raise exception 'BRANCH_RECEIPT_SOURCE_LOCKED:%', v_export.export_no
+        using errcode = 'P0001';
+    end if;
+    if v_export.sold_out_at is null then
+      select p.name into v_actor_name
+      from public.profiles p
+      where p.id = auth.uid() and p.is_active = true;
+      if v_actor_name is null then raise exception 'บัญชีผู้ใช้ไม่พร้อมใช้งาน'; end if;
+      update public.rubber_exports
+      set sold_out_at = v_now,
+          sold_out_by_user_id = auth.uid(),
+          sold_out_by_name = v_actor_name
+      where id = v_export.id;
+    else
+      v_now := v_export.sold_out_at;
+      v_actor_name := v_export.sold_out_by_name;
+    end if;
+  else
+    update public.rubber_exports
+    set sold_out_at = null,
+        sold_out_by_user_id = null,
+        sold_out_by_name = null
+    where id = v_export.id;
+    v_now := null;
+    v_actor_name := null;
+  end if;
+
+  return jsonb_build_object(
+    'id', v_export.id,
+    'status', case when p_sold_out then 'sold_out' else 'verified' end,
+    'soldOutAt', v_now,
+    'soldOutByName', v_actor_name
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."set_rubber_export_sold_out"("p_export_id" "uuid", "p_sold_out" boolean) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."set_time_tracking_status"("p_profile_id" "uuid", "p_status" "text") RETURNS "jsonb"
@@ -16572,6 +16845,11 @@ ALTER TABLE ONLY "public"."rubber_exports"
 
 
 ALTER TABLE ONLY "public"."rubber_exports"
+    ADD CONSTRAINT "rubber_exports_sold_out_by_user_id_fkey" FOREIGN KEY ("sold_out_by_user_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."rubber_exports"
     ADD CONSTRAINT "rubber_exports_verified_by_user_id_fkey" FOREIGN KEY ("verified_by_user_id") REFERENCES "public"."profiles"("id");
 
 
@@ -17258,10 +17536,6 @@ REVOKE ALL ON FUNCTION "private"."apply_time_tracking_deductions"("p_profile_id"
 
 
 
-REVOKE ALL ON FUNCTION "private"."branch_receipt_age_hours"("p_source_age_hours" numeric, "p_verified_at" timestamp with time zone, "p_received_at" timestamp with time zone) FROM PUBLIC;
-
-
-
 REVOKE ALL ON FUNCTION "private"."calculate_dashboard_summary"("p_location_id" "uuid") FROM PUBLIC;
 
 
@@ -17870,6 +18144,11 @@ GRANT ALL ON FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "
 
 
 
+REVOKE ALL ON FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[], "p_current_export_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[], "p_current_export_id" "uuid") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."provision_location"("p_request_id" "uuid", "p_name" "text", "p_code" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."provision_location"("p_request_id" "uuid", "p_name" "text", "p_code" "text") TO "authenticated";
 
@@ -17897,6 +18176,11 @@ GRANT ALL ON FUNCTION "public"."receive_rubber_export"("p_destination_location_i
 
 REVOKE ALL ON FUNCTION "public"."remove_user_location_with_primary_replacement"("p_user_id" "uuid", "p_location_id" "uuid", "p_replacement_location_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."remove_user_location_with_primary_replacement"("p_user_id" "uuid", "p_location_id" "uuid", "p_replacement_location_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."replace_rubber_export_items"("p_export_id" "uuid", "p_selected_report_item_ids" "uuid"[]) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."replace_rubber_export_items"("p_export_id" "uuid", "p_selected_report_item_ids" "uuid"[]) TO "authenticated";
 
 
 
@@ -18057,6 +18341,11 @@ GRANT ALL ON FUNCTION "public"."save_rubber_bill_approval_settings"("p_edit_wind
 
 REVOKE ALL ON FUNCTION "public"."save_telegram_badge_config"("payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."save_telegram_badge_config"("payload" "jsonb") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."set_rubber_export_sold_out"("p_export_id" "uuid", "p_sold_out" boolean) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."set_rubber_export_sold_out"("p_export_id" "uuid", "p_sold_out" boolean) TO "authenticated";
 
 
 

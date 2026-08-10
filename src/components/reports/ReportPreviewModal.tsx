@@ -253,7 +253,7 @@ export function ReportPreviewModal({
                 <RubberBillTable rows={presentation.farmerRubberBills} />
               </div>
               <div>
-                <h4 className="text-balance font-bold text-ink">1.3 รับยางจากสาขา</h4>
+                <h4 className="text-balance font-bold text-ink">1.3 ยางรับเข้าและยางคงเหลือภายในสาขา</h4>
                 <RubberBillTable rows={presentation.branchReceiptRubberBills} />
               </div>
             </Section>

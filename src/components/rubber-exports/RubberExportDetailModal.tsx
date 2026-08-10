@@ -126,6 +126,11 @@ export function RubberExportDetailModal({
             รับเข้าแล้วที่ {details.receiptLocationName} · {details.receiptBillNo}
           </div>
         )}
+        {details.soldOutAt && (
+          <div className="rounded-md bg-amber px-4 py-3 text-pretty text-sm font-semibold text-white">
+            ขายออกแล้ว · {details.soldOutByName || "—"} · <span className="tabular-nums">{dateTime(details.soldOutAt)}</span>
+          </div>
+        )}
 
         <div className="grid gap-3 sm:grid-cols-5">
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">น้ำหนักสุทธิรวม</div><div className="font-bold tabular-nums">{number(details.originalWeightTotal)} กก.</div></div>
@@ -229,6 +234,14 @@ export function RubberExportDetailModal({
             <div>
               <dt className="text-ink/60">ปลายทางค่าใช้จ่าย</dt>
               <dd className="font-semibold text-ink">{details.expenseDestination === "branch" ? "ลงรายจ่ายสาขานี้" : details.expenseDestination === "external" ? "จ่ายภายนอก" : "—"}</dd>
+            </div>
+            <div>
+              <dt className="text-ink/60">สถานะขาย</dt>
+              <dd className="font-semibold text-ink">
+                {details.soldOutAt
+                  ? <>ขายออกแล้ว · {details.soldOutByName || "—"} · <span className="tabular-nums">{dateTime(details.soldOutAt)}</span></>
+                  : "—"}
+              </dd>
             </div>
           </dl>
         </section>

@@ -25,6 +25,138 @@ function service() {
 }
 
 test.describe.serial("Rubber export contract @rubber-export", () => {
+  test("draft edit reuses the create modal, preselects current members and submits the full replacement set", async ({ browser }) => {
+    const context = await authContext(browser, "super_admin");
+    const me = await profile(context);
+    const locationId = me.locationIds[0];
+    const exportId = crypto.randomUUID();
+    const currentReportItemId = crypto.randomUUID();
+    const nextReportItemId = crypto.randomUUID();
+    const currentBillId = crypto.randomUUID();
+    const nextBillId = crypto.randomUUID();
+    let submittedIds: string[] | null = null;
+    const page = await context.newPage();
+
+    const summary = {
+      id: exportId,
+      exportNo: "REX-EDIT-001",
+      locationId,
+      locationName: "สาขาทดสอบ",
+      status: "draft",
+      previousStatus: null,
+      originalWeightTotal: 100,
+      paidTotal: 3_000,
+      averagePrice: 30,
+      currentWeight: 90,
+      weightLossPercent: 10,
+      workRate: 2,
+      otherOperatingCost: 25,
+      workTotal: 225,
+      expenseDestination: null,
+      createdByName: me.name,
+      createdAt: "2026-08-11T01:00:00.000Z",
+      verifiedByName: null,
+      verifiedAt: null,
+      itemCount: 1,
+      reportLockNo: null,
+      ageCalculatedAt: "2026-08-11T02:00:00.000Z",
+      averageAgeHours: 24,
+      oldestAgeHours: 24,
+      estimatedAgeItemCount: 0,
+      receiptBillId: null,
+      receiptBillNo: null,
+      receiptLocationName: null,
+    };
+    const currentItem = {
+      id: crypto.randomUUID(),
+      sourceReportItemId: currentReportItemId,
+      sourceBillId: currentBillId,
+      billDate: "2026-08-10",
+      billNo: "CURRENT-001",
+      customerName: "ลูกค้าปัจจุบัน",
+      eligibilityAt: "2026-08-10T01:00:00.000Z",
+      netWeight: 100,
+      paidAmount: 3_000,
+      ageHours: 24,
+      ageIsEstimated: false,
+    };
+    const nextBill = {
+      reportItemId: nextReportItemId,
+      billId: nextBillId,
+      billDate: "2026-08-11",
+      billNo: "NEXT-001",
+      customerName: "ลูกค้าใหม่",
+      eligibilityAt: "2026-08-11T01:00:00.000Z",
+      netWeight: 80,
+      paidAmount: 2_400,
+    };
+
+    try {
+      await page.route("**/api/lanflow/rubber-exports?locationId=*", async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            exports: [summary],
+            availableBills: [nextBill],
+            permissions: { canVerify: true, canDelete: true },
+          }),
+        });
+      });
+      await page.route(`**/api/lanflow/rubber-exports/${exportId}`, async (route) => {
+        if (route.request().method() === "GET") {
+          await route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({ ...summary, items: [currentItem] }),
+          });
+          return;
+        }
+        await route.continue();
+      });
+      await page.route("**/api/lanflow/rubber-exports/preview", async (route) => {
+        const body = route.request().postDataJSON() as { selectedReportItemIds: string[] };
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            itemCount: body.selectedReportItemIds.length,
+            originalWeightTotal: 80,
+            paidTotal: 2_400,
+            averagePrice: 30,
+            calculatedAt: "2026-08-11T02:00:00.000Z",
+            averageAgeHours: 12,
+            oldestAgeHours: 12,
+            estimatedAgeItemCount: 0,
+            items: [],
+          }),
+        });
+      });
+      await page.route(`**/api/lanflow/rubber-exports/${exportId}/items`, async (route) => {
+        submittedIds = (route.request().postDataJSON() as {
+          selectedReportItemIds: string[];
+        }).selectedReportItemIds;
+        await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+      });
+
+      await page.goto("/");
+      await selectAppLocation(page, locationId);
+      await page.getByRole("button", { name: /^ส่งออกยาง/ }).click();
+      await page.getByRole("button", { name: "แก้", exact: true }).click();
+
+      const editDialog = page.getByRole("dialog", { name: "แก้รายการส่งออกยาง" });
+      await expect(editDialog.getByRole("checkbox", { name: "เลือกบิล CURRENT-001" })).toBeChecked();
+      await editDialog.getByRole("checkbox", { name: "เลือกบิล CURRENT-001" }).uncheck();
+      await expect(editDialog.getByText("กรุณาเลือกอย่างน้อย 1 บิล")).toBeVisible();
+      await editDialog.getByRole("checkbox", { name: "เลือกบิล NEXT-001" }).check();
+      await editDialog.getByRole("button", { name: "บันทึกการแก้" }).click();
+      await expect.poll(() => submittedIds).toEqual([nextReportItemId]);
+      await expect(page.getByText("แก้รายการส่งออกยางแล้ว")).toBeVisible();
+    } finally {
+      await context.close();
+    }
+  });
+
   test("system manager gets super-admin verification actions for another admin's draft without reloading the app", async ({ browser }) => {
     test.setTimeout(60_000);
     const managerContext = await authContext(browser, "admin");
@@ -156,6 +288,21 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await expect(page.locator("tbody tr").filter({
         hasText: `REX-MANAGER-${exportId.slice(0, 8)}`,
       })).toContainText("ตรวจสอบแล้ว");
+      const verifiedRow = page.locator("tbody tr").filter({
+        hasText: `REX-MANAGER-${exportId.slice(0, 8)}`,
+      });
+      await verifiedRow.getByRole("button", { name: "ขายยางออก" }).click();
+      const saleDialog = page.getByRole("alertdialog", { name: "ยืนยันขายยางออก?" });
+      await saleDialog.getByRole("button", { name: "ยืนยันขายยางออก" }).click();
+      await expect(verifiedRow).toContainText("ขายออกแล้ว");
+      await verifiedRow.getByRole("button", { name: "ยกเลิกขาย", exact: true }).click();
+      const cancelSaleDialog = page.getByRole("alertdialog", { name: "ยืนยันยกเลิกขาย?" });
+      await cancelSaleDialog.getByRole("button", { name: "ยกเลิกขาย" }).click();
+      await expect(verifiedRow).not.toContainText("ขายออกแล้ว");
+      await page.getByRole("button", { name: "ขายออกแล้ว 0 รายการ" }).click();
+      await expect(page.getByText("ไม่มีรายการในตัวกรองนี้")).toBeVisible();
+      await page.getByRole("button", { name: "แสดงทั้งหมด" }).click();
+      await expect(verifiedRow).toBeVisible();
     } finally {
       await Promise.allSettled([managerContext.close(), creatorContext.close()]);
       await db.from("rubber_exports").delete().eq("id", exportId);
@@ -295,7 +442,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await expect(page.getByRole("button", {
         name: "ฉบับร่าง 2 รายการ",
       })).toBeVisible({ timeout: 15_000 });
-      await expect(page.getByRole("button", { name: "ใช้งาน 3 รายการ" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "ขายออกแล้ว 0 รายการ" })).toBeVisible();
       await expect(page.getByRole("button", { name: "ตรวจสอบแล้ว 1 รายการ" })).toBeVisible();
       await expect(page.getByRole("button", { name: "รายการปัจจุบัน" })).toBeVisible();
       await expect(page.getByRole("button", { name: "ประวัติการลบ" })).toBeVisible();

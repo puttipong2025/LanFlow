@@ -14,8 +14,9 @@ const detailColumns = `
   original_weight_total, paid_total, average_price, current_weight,
   weight_loss_percent, work_rate, other_operating_cost, work_total,
   expense_destination, created_by_name, created_at,
-  verified_by_name, verified_at, deleted_by_name,
-  deleted_at, report_lock_no, locations(name),
+  verified_by_name, verified_at, sold_out_at, sold_out_by_name, deleted_by_name,
+  deleted_at, report_lock_no, age_cutoff_at, average_age_hours,
+  oldest_age_hours, estimated_age_item_count, locations(name),
   rubber_export_items(
     id, source_report_item_id, source_bill_id, bill_date, bill_no,
     customer_name, eligibility_at, net_weight, paid_amount
@@ -46,9 +47,16 @@ export async function GET(request: NextRequest, context: RouteContext) {
   const itemAges = new Map(
     ((age.items ?? []) as Record<string, any>[]).map((item) => [item.itemId, item]),
   );
+  const officialItemAges = new Map(
+    ((age.officialItems ?? []) as Record<string, any>[]).map((item) => [item.itemId, item]),
+  );
 
   const summary = mapRubberExportRow({
     ...row,
+    official_age_cutoff_at: row.age_cutoff_at,
+    official_average_age_hours: row.average_age_hours,
+    official_oldest_age_hours: row.oldest_age_hours,
+    official_estimated_age_item_count: row.estimated_age_item_count,
     age_calculated_at: age.calculatedAt ?? null,
     average_age_hours: age.averageAgeHours ?? null,
     oldest_age_hours: age.oldestAgeHours ?? null,
@@ -72,6 +80,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
         netWeight: Number(item.net_weight),
         paidAmount: Number(item.paid_amount),
         ageHours: itemAges.get(item.id)?.ageHours ?? null,
+        officialAgeHours: officialItemAges.get(item.id)?.ageHours ?? null,
         ageIsEstimated: Boolean(itemAges.get(item.id)?.ageIsEstimated),
       }))
       .sort((left, right) =>

@@ -60,6 +60,7 @@ export async function GET(request: NextRequest) {
       sourceAverageAgeHours: Number(row.source_average_age_hours),
       receivedAgeHours: Number(row.received_age_hours),
       ageIsEstimated: row.age_is_estimated === true,
+      isSameLocation: row.source_location_id === destinationLocationId,
     })),
   }, {
     headers: { "Cache-Control": "private, no-store, max-age=0" },

@@ -4,7 +4,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { FilePlus2, RotateCw } from "lucide-react";
 import { toast } from "sonner";
 import type { Location } from "@/types";
-import type { RubberExportDetails, RubberExportSummary } from "@/types/rubber-exports";
+import type {
+  RubberExportAvailableBill,
+  RubberExportDetails,
+  RubberExportPreview,
+  RubberExportSummary,
+} from "@/types/rubber-exports";
 import { cn } from "@/lib/cn";
 import { useRubberExports } from "@/hooks/useRubberExports";
 import { useSharePdf } from "@/hooks/useSharePdf";
@@ -18,8 +23,55 @@ import { ModalShell } from "@/components/shared/ModalShell";
 import { AlertDialog } from "@/components/shared/AlertDialog";
 import { DeletionAuditTable } from "@/components/shared/DeletionAuditTable";
 
-type Filter = "active" | "draft" | "verified" | "all";
+type Filter = "sold" | "draft" | "verified" | "all";
 type DetailTarget = Pick<RubberExportSummary, "id" | "exportNo">;
+
+function editableBills(
+  details: RubberExportDetails,
+  availableBills: RubberExportAvailableBill[],
+) {
+  const rows = new Map<string, RubberExportAvailableBill>();
+  details.items.forEach((item) => rows.set(item.sourceReportItemId, {
+    reportItemId: item.sourceReportItemId,
+    billId: item.sourceBillId,
+    billDate: item.billDate,
+    billNo: item.billNo,
+    customerName: item.customerName,
+    eligibilityAt: item.eligibilityAt,
+    netWeight: item.netWeight,
+    paidAmount: item.paidAmount,
+  }));
+  availableBills.forEach((bill) => rows.set(bill.reportItemId, bill));
+  return Array.from(rows.values()).sort((left, right) =>
+    left.eligibilityAt.localeCompare(right.eligibilityAt)
+    || left.billId.localeCompare(right.billId)
+  );
+}
+
+function editPreview(details: RubberExportDetails): RubberExportPreview {
+  return {
+    itemCount: details.items.length,
+    originalWeightTotal: details.originalWeightTotal,
+    paidTotal: details.paidTotal,
+    averagePrice: details.averagePrice,
+    calculatedAt: details.ageCalculatedAt ?? details.createdAt,
+    averageAgeHours: details.averageAgeHours ?? 0,
+    oldestAgeHours: details.oldestAgeHours ?? 0,
+    estimatedAgeItemCount: details.estimatedAgeItemCount ?? 0,
+    items: details.items.map((item) => ({
+      reportItemId: item.sourceReportItemId,
+      billId: item.sourceBillId,
+      billDate: item.billDate,
+      billNo: item.billNo,
+      customerName: item.customerName,
+      eligibilityAt: item.eligibilityAt,
+      netWeight: item.netWeight,
+      paidAmount: item.paidAmount,
+      ageHours: item.ageHours ?? 0,
+      ageIsEstimated: item.ageIsEstimated,
+    })),
+  };
+}
 
 function RubberExportDetailOpeningModal({
   target,
@@ -90,18 +142,24 @@ export function RubberExportsModule({
   const api = useRubberExports(selectedLocation.id, online);
   const reloadDeletions = api.reloadDeletions;
   const [view, setView] = useState<"current" | "deletions">("current");
-  const [filter, setFilter] = useState<Filter>("active");
+  const [filter, setFilter] = useState<Filter>("all");
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<RubberExportDetails | null>(null);
   const [detailTarget, setDetailTarget] = useState<DetailTarget | null>(null);
   const [details, setDetails] = useState<RubberExportDetails | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [sharingId, setSharingId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<RubberExportSummary | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [pendingSale, setPendingSale] = useState<{
+    row: RubberExportSummary;
+    soldOut: boolean;
+  } | null>(null);
+  const [selling, setSelling] = useState(false);
   const detailController = useRef<AbortController | null>(null);
   const pdfShare = useSharePdf();
   const counts = useMemo(() => ({
-    active: api.exports.length,
+    sold: api.exports.filter((row) => Boolean(row.soldOutAt)).length,
     draft: api.exports.filter((row) => row.status === "draft").length,
     verified: api.exports.filter((row) => row.status === "verified").length,
     all: api.exports.length,
@@ -109,7 +167,7 @@ export function RubberExportsModule({
   const visibleRows = useMemo(() => api.exports
     .filter((row) => {
       if (filter === "all") return true;
-      if (filter === "active") return true;
+      if (filter === "sold") return Boolean(row.soldOutAt);
       return row.status === filter;
     })
     .sort((left, right) => {
@@ -172,33 +230,8 @@ export function RubberExportsModule({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialExportId, online]);
 
-  useEffect(() => {
-    if (!details || details.status !== "draft" || !online) return;
-    let active = true;
-    const refresh = async () => {
-      if (document.visibilityState !== "visible") return;
-      try {
-        const next = await api.details(details.id);
-        if (active) setDetails(next);
-      } catch {
-        // Keep the last valid snapshot; normal actions still surface request errors.
-      }
-    };
-    window.addEventListener("focus", refresh);
-    window.addEventListener("online", refresh);
-    const interval = window.setInterval(refresh, 15 * 60 * 1000);
-    return () => {
-      active = false;
-      window.removeEventListener("focus", refresh);
-      window.removeEventListener("online", refresh);
-      window.clearInterval(interval);
-    };
-    // The draft ID/status are the refresh lifecycle boundary.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [details?.id, details?.status, online]);
-
   async function remove(row: RubberExportSummary) {
-    if (row.reportLockNo) return;
+    if (row.reportLockNo || row.receiptBillNo || row.soldOutAt) return;
     setDeleting(true);
     try {
       await api.remove(row.id);
@@ -212,6 +245,32 @@ export function RubberExportsModule({
     }
   }
 
+  async function startEdit(row: RubberExportSummary) {
+    if (row.status !== "draft" || !online) return;
+    try {
+      setEditing(details?.id === row.id ? details : await api.details(row.id));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "โหลดรายการสำหรับแก้ไม่สำเร็จ");
+    }
+  }
+
+  async function changeSoldOut() {
+    if (!pendingSale) return;
+    setSelling(true);
+    try {
+      await api.setSoldOut(pendingSale.row.id, pendingSale.soldOut);
+      if (details?.id === pendingSale.row.id) {
+        setDetails(await api.details(details.id));
+      }
+      toast.success(pendingSale.soldOut ? "ขายยางออกแล้ว" : "ยกเลิกขายแล้ว");
+      setPendingSale(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "เปลี่ยนสถานะขายไม่สำเร็จ");
+    } finally {
+      setSelling(false);
+    }
+  }
+
   async function share(row: Pick<RubberExportSummary, "id" | "exportNo">) {
     if (!online || pdfShare.busy) return;
     setSharingId(row.id);
@@ -221,8 +280,20 @@ export function RubberExportsModule({
         if (freshDetails.status === "draft") {
           throw new Error("แชร์ PDF ได้เฉพาะรายการตรวจสอบแล้ว");
         }
+        const officialDetails = {
+          ...freshDetails,
+          ageCalculatedAt: freshDetails.officialAgeCutoffAt ?? freshDetails.ageCalculatedAt,
+          averageAgeHours: freshDetails.officialAverageAgeHours ?? freshDetails.averageAgeHours,
+          oldestAgeHours: freshDetails.officialOldestAgeHours ?? freshDetails.oldestAgeHours,
+          estimatedAgeItemCount: freshDetails.officialEstimatedAgeItemCount
+            ?? freshDetails.estimatedAgeItemCount,
+          items: freshDetails.items.map((item) => ({
+            ...item,
+            ageHours: item.officialAgeHours ?? item.ageHours,
+          })),
+        };
         return {
-          file: await createRubberExportPdfFile(freshDetails, signal),
+          file: await createRubberExportPdfFile(officialDetails, signal),
           title: rubberExportShareTitle(freshDetails),
         };
       });
@@ -307,7 +378,7 @@ export function RubberExportsModule({
 
       {view === "current" && <div className="flex flex-wrap gap-2">
         {([
-          ["active", "ใช้งาน"],
+          ["sold", "ขายออกแล้ว"],
           ["draft", "ฉบับร่าง"],
           ["verified", "ตรวจสอบแล้ว"],
           ["all", "ทั้งหมด"],
@@ -332,10 +403,26 @@ export function RubberExportsModule({
       </div>}
 
       {view === "current" ? (
+      !api.loading && api.exports.length > 0 && visibleRows.length === 0 ? (
+        <div className="flex flex-col items-start gap-3 rounded-lg bg-field px-4 py-5">
+          <div>
+            <p className="font-semibold text-ink">ไม่มีรายการในตัวกรองนี้</p>
+            <p className="mt-1 text-pretty text-sm text-ink/65">เลือกดูรายการทั้งหมดเพื่อกลับไปจัดการรายการส่งออกยาง</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setFilter("all")}
+            className="focus-ring rounded-md bg-river px-4 py-2 text-sm font-semibold text-white"
+          >
+            แสดงทั้งหมด
+          </button>
+        </div>
+      ) : (
       <div className="overflow-hidden rounded-xl bg-white shadow-sm">
         <RubberExportTable
           rows={visibleRows}
           loading={api.loading}
+          online={online}
           canDelete={api.permissions.canDelete}
           canVerify={api.permissions.canVerify}
           shareBusy={pdfShare.busy}
@@ -344,10 +431,13 @@ export function RubberExportsModule({
             const target = api.exports.find((row) => row.id === id);
             if (target) void open(target);
           }}
+          onEdit={(row) => void startEdit(row)}
+          onSale={(row, soldOut) => setPendingSale({ row, soldOut })}
           onShare={(row) => void share(row)}
           onDelete={setPendingDelete}
         />
       </div>
+      )
       ) : (
         <DeletionAuditTable
           rows={api.deletions}
@@ -363,7 +453,7 @@ export function RubberExportsModule({
           key={api.availableBills.map((bill) => bill.reportItemId).join(",")}
           availableBills={api.availableBills}
           onPreview={api.preview}
-          onCreate={async (selectedReportItemIds) => {
+          onSubmit={async (selectedReportItemIds) => {
             try {
               const created = await api.create(selectedReportItemIds);
               toast.success(`สร้าง ${created.exportNo} แล้ว`);
@@ -376,6 +466,30 @@ export function RubberExportsModule({
             }
           }}
           onClose={() => setCreating(false)}
+        />
+      )}
+
+      {editing && (
+        <RubberExportCreateModal
+          key={`edit-${editing.id}-${api.availableBills.map((bill) => bill.reportItemId).join(",")}`}
+          mode="edit"
+          availableBills={editableBills(editing, api.availableBills)}
+          initialSelectedIds={editing.items.map((item) => item.sourceReportItemId)}
+          initialPreview={editPreview(editing)}
+          onPreview={(selectedReportItemIds) => api.preview(selectedReportItemIds, editing.id)}
+          onSubmit={async (selectedReportItemIds) => {
+            try {
+              await api.replaceItems(editing.id, selectedReportItemIds);
+              if (details?.id === editing.id) setDetails(await api.details(editing.id));
+              toast.success("แก้รายการส่งออกยางแล้ว");
+              setEditing(null);
+            } catch (error) {
+              toast.error(error instanceof Error ? error.message : "แก้รายการส่งออกไม่สำเร็จ");
+              await api.reload();
+              throw error;
+            }
+          }}
+          onClose={() => setEditing(null)}
         />
       )}
 
@@ -436,6 +550,20 @@ export function RubberExportsModule({
         onConfirm={() => {
           if (pendingDelete) void remove(pendingDelete);
         }}
+      />
+
+      <AlertDialog
+        open={Boolean(pendingSale)}
+        title={pendingSale?.soldOut ? "ยืนยันขายยางออก?" : "ยืนยันยกเลิกขาย?"}
+        description={pendingSale?.soldOut
+          ? `${pendingSale.row.exportNo} จะไม่สามารถเลือกรับยางจากสาขาหรือลบได้จนกว่าจะยกเลิกขาย`
+          : `${pendingSale?.row.exportNo ?? "รายการนี้"} จะกลับเป็นรายการตรวจสอบแล้วที่พร้อมรับยาง`}
+        confirmLabel={pendingSale?.soldOut ? "ยืนยันขายยางออก" : "ยกเลิกขาย"}
+        busy={selling}
+        onCancel={() => {
+          if (!selling) setPendingSale(null);
+        }}
+        onConfirm={() => void changeSoldOut()}
       />
 
       <SharePdfWaitingModal open={pdfShare.waiting} onCancel={pdfShare.cancel} />

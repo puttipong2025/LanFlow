@@ -14,6 +14,7 @@ export async function POST(request: Request) {
   const payload = await request.json().catch(() => null) as {
     locationId?: string;
     selectedReportItemIds?: string[];
+    exportId?: string;
   } | null;
   const selectedIds = payload?.selectedReportItemIds;
   if (
@@ -22,6 +23,7 @@ export async function POST(request: Request) {
     || selectedIds.length === 0
     || selectedIds.some((id) => !isUuid(id))
     || new Set(selectedIds).size !== selectedIds.length
+    || (payload?.exportId !== undefined && !isUuid(payload.exportId))
   ) {
     return NextResponse.json({ error: "กรุณาเลือกบิลอย่างน้อย 1 ใบและห้ามเลือกซ้ำ" }, { status: 400 });
   }
@@ -32,6 +34,7 @@ export async function POST(request: Request) {
   const { data, error } = await result.supabase.rpc("preview_rubber_export", {
     p_location_id: payload.locationId,
     p_selected_report_item_ids: selectedIds,
+    ...(payload.exportId ? { p_current_export_id: payload.exportId } : {}),
   });
   if (error) return rubberExportErrorResponse(error.message);
   return NextResponse.json(data, {

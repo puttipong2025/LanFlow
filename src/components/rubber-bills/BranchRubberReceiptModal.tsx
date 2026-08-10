@@ -138,7 +138,14 @@ export function BranchRubberReceiptModal({
                         className="size-4 accent-leaf"
                       />
                     </td>
-                    <td className="px-3 py-3 font-semibold">{candidate.sourceLocationName}</td>
+                    <td className="px-3 py-3 font-semibold">
+                      {candidate.sourceLocationName}
+                      {candidate.isSameLocation && (
+                        <div className="mt-1 w-fit rounded-full bg-amber px-2 py-0.5 text-xs font-semibold text-white">
+                          ยางคงเหลือภายในสาขา
+                        </div>
+                      )}
+                    </td>
                     <td className="whitespace-nowrap px-3 py-3 font-semibold tabular-nums">{candidate.sourceExportNo}</td>
                     <td className="whitespace-nowrap px-3 py-3 tabular-nums">{dateTime(candidate.verifiedAt)}</td>
                     <td className="whitespace-nowrap px-3 py-3 text-right tabular-nums">{formatNumber(candidate.currentWeight)} กก.</td>

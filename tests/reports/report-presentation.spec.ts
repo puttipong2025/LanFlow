@@ -1,4 +1,6 @@
 import { expect, test } from "@playwright/test";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   buildReportPresentation,
   reportPdfFilename,
@@ -146,4 +148,10 @@ test("formats a sanitized filename, human share title and active status in Bangk
   expect(reportShareTitle(report)).toContain("RPT/2569:004 · สาขาทดสอบ");
   expect(reportShareTitle(report)).toContain("15:04");
   expect(reportStatusLabel(report)).toBe("ใช้งาน");
+});
+
+test("uses the combined branch-receipt and current-branch heading in preview and PDF", () => {
+  const expected = "1.3 ยางรับเข้าและยางคงเหลือภายในสาขา";
+  expect(readFileSync(resolve("src/components/reports/ReportPreviewModal.tsx"), "utf8")).toContain(expected);
+  expect(readFileSync(resolve("src/lib/reports/report-pdf.ts"), "utf8")).toContain(expected);
 });

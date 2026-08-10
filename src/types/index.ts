@@ -114,6 +114,7 @@ export type BranchRubberReceiptCandidate = {
   sourceAverageAgeHours: number;
   receivedAgeHours: number;
   ageIsEstimated: boolean;
+  isSameLocation: boolean;
 };
 
 export type BranchRubberReceiptResult = {

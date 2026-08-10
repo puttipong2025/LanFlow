@@ -17,6 +17,7 @@ export type RubberExportItem = {
   netWeight: number;
   paidAmount: number;
   ageHours: number | null;
+  officialAgeHours?: number | null;
   ageIsEstimated: boolean;
 };
 
@@ -40,6 +41,8 @@ export type RubberExportSummary = {
   createdAt: string;
   verifiedByName?: string | null;
   verifiedAt?: string | null;
+  soldOutAt?: string | null;
+  soldOutByName?: string | null;
   deletedByName?: string | null;
   deletedAt?: string | null;
   itemCount: number;
@@ -48,6 +51,10 @@ export type RubberExportSummary = {
   averageAgeHours: number | null;
   oldestAgeHours: number | null;
   estimatedAgeItemCount: number | null;
+  officialAgeCutoffAt?: string | null;
+  officialAverageAgeHours?: number | null;
+  officialOldestAgeHours?: number | null;
+  officialEstimatedAgeItemCount?: number | null;
   receiptBillId?: string | null;
   receiptBillNo?: string | null;
   receiptLocationName?: string | null;

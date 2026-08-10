@@ -451,7 +451,7 @@ export function RubberBillsModule({
             type="button"
             onClick={() => setBranchReceiptModalOpen(true)}
             disabled={!isOnline}
-            title={isOnline ? "เลือกรายการส่งออกยางจากสาขาอื่น" : "รับยางจากสาขาใช้ได้เมื่อออนไลน์เท่านั้น"}
+            title={isOnline ? "เลือกรายการส่งออกยางจากต่างสาขาหรือสาขาปัจจุบัน" : "รับยางจากสาขาใช้ได้เมื่อออนไลน์เท่านั้น"}
             className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-river px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
           >
             <PackagePlus size={18} />

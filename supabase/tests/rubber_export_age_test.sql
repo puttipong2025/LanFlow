@@ -1,10 +1,11 @@
 begin;
 
-select plan(26);
+select plan(28);
 
 select has_column('public', 'rubber_export_items', 'age_source_at', 'items snapshot the source timestamp');
 select has_column('public', 'rubber_export_items', 'age_is_estimated', 'items snapshot whether age is estimated');
 select has_column('public', 'rubber_exports', 'age_cutoff_at', 'verified exports snapshot the cutoff');
+select has_function('private', 'rubber_export_raw_age_summary', array['uuid', 'timestamp with time zone'], 'raw weighted-age helper exists');
 
 select is(
   private.rubber_export_effective_age_start(
@@ -160,6 +161,15 @@ select is(
   )),
   96.90::numeric,
   'weighted average uses raw hours and rounds only the final result'
+);
+select isnt(
+  (select average_age_hours from private.rubber_export_raw_age_summary(
+    '46000000-0000-4000-8000-000000000001', '2026-08-05 12:45:01+07'
+  )),
+  (select round(average_age_hours, 2) from private.rubber_export_raw_age_summary(
+    '46000000-0000-4000-8000-000000000001', '2026-08-05 12:45:01+07'
+  )),
+  'raw weighted age retains sub-centihour precision before receipt snapshotting'
 );
 select is(
   (select oldest_age_hours from private.rubber_export_age_summary(
