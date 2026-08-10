@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Copy,
   Edit3,
+  Eye,
   GitMerge,
   Loader2,
   Plus,
@@ -35,6 +36,7 @@ import { getMoneyTransferPaymentSummary } from "@/lib/money-transfers/state";
 import { CustomerTransferForm } from "./money-transfer/CustomerTransferForm";
 import { TransportTransferForm } from "./money-transfer/TransportTransferForm";
 import { BranchTransferForm } from "./money-transfer/BranchTransferForm";
+import { MoneyTransferSourceDetailsModal } from "./money-transfer/MoneyTransferSourceDetailsModal";
 import {
   buildMoneyTransferReceiptModel,
   getMoneyTransferPrintBlockReason,
@@ -124,9 +126,17 @@ export function MoneyTransferModule({
     mergePendingTransfers,
     getReceiptSourceDetails,
   } = useMoneyTransfers(locationId);
-  const { bills } = useRubberBills(locationId, profile.id);
+  const {
+    bills,
+    isLoading: rubberBillsLoading,
+    isError: rubberBillsError,
+  } = useRubberBills(locationId, profile.id);
   const { markers: rubberBillApprovalMarkers } = useRubberBillApprovals({ locationId });
-  const { ocrTickets } = useOcrTickets(locationId);
+  const {
+    ocrTickets,
+    isLoading: ocrTicketsLoading,
+    isError: ocrTicketsError,
+  } = useOcrTickets(locationId);
   const { customers } = useCustomers();
   const pdfShare = useSharePdf();
   const billsWithApprovalState = useMemo(() => {
@@ -152,6 +162,7 @@ export function MoneyTransferModule({
   const [activeFormType, setActiveFormType] = useState<'customer' | 'transport' | 'branch' | null>(null);
   const [editTransfer, setEditTransfer] = useState<MoneyTransfer | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [detailTransfer, setDetailTransfer] = useState<MoneyTransfer | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<TransferStatusFilter>("pending");
   const [page, setPage] = useState(1);
@@ -528,13 +539,13 @@ export function MoneyTransferModule({
                 <tr className="border-b border-black/5 bg-field/30 text-left text-xs font-bold uppercase tracking-wider text-ink/50">
                   <th className="px-3 py-3">จัดการ</th>
                   <th className="px-3 py-3">#</th>
-                  <th className="px-3 py-3">ประเภท</th>
+                  <th className="px-3 py-3 text-center">รายการ</th>
                   <th className="px-3 py-3">ปลายทาง</th>
                   <th className="px-3 py-3">บัญชีธนาคาร</th>
                   <th className="px-3 py-3 text-right">ยอดที่ต้องจ่าย</th>
                   <th className="px-3 py-3 text-right">ยอดรวมสลิป</th>
                   <th className="px-3 py-3 text-center">สลิป</th>
-                  <th className="px-3 py-3 text-center">รายการ</th>
+                  <th className="px-3 py-3">ประเภท</th>
                   <th className="px-3 py-3">สถานะ</th>
                   <th className="px-3 py-3">สร้างโดย</th>
                   <th className="px-3 py-3">วันที่สร้าง</th>
@@ -596,15 +607,18 @@ export function MoneyTransferModule({
                       </div>
                     </td>
                     <td className="px-3 py-2.5 font-mono text-ink/40">{(currentPage - 1) * PAGE_SIZE + idx + 1}</td>
-                    <td className="px-3 py-2.5">
-                      <span className={cn(
-                        "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-bold",
-                        t.transferType === "customer" && "bg-blue-100 text-blue-700",
-                        t.transferType === "transport" && "bg-orange-100 text-orange-700",
-                        t.transferType === "branch" && "bg-purple-100 text-purple-700",
-                      )}>
-                        {t.transferType === "customer" ? "ลูกค้า" : t.transferType === "transport" ? "รถขนส่ง" : "ให้สาขา"}
-                      </span>
+                    <td className="px-3 py-2.5 text-center">
+                      <button
+                        type="button"
+                        onClick={() => setDetailTransfer(t)}
+                        disabled={(t.items?.length ?? 0) === 0}
+                        aria-label={`ดูรายละเอียดต้นทาง ${t.items?.length ?? 0} รายการ รายการโอนเงิน ${shortTransferId(t.id)}`}
+                        title={(t.items?.length ?? 0) > 0 ? "ดูรายละเอียดบิลยางและใบชั่ง OCR" : "ไม่มีบิลยางหรือใบชั่ง OCR"}
+                        className="focus-ring inline-flex h-10 items-center justify-center gap-1.5 rounded-md bg-actionSecondary px-3 text-xs font-semibold text-white hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <Eye size={15} />
+                        <span className="tabular-nums">{t.items?.length ?? 0}</span>
+                      </button>
                     </td>
                     <td className="px-3 py-2.5 font-semibold text-ink">{t.customerName ?? t.transportStaffName ?? t.targetLocationName ?? "—"}</td>
                     <td className="px-3 py-2.5">
@@ -660,7 +674,16 @@ export function MoneyTransferModule({
                     </td>
                     <td className="px-3 py-2.5 text-right font-mono font-bold tabular-nums text-leaf">{formatMoneyTransferCurrency(summary.amountPaid)}</td>
                     <td className="px-3 py-2.5 text-center"><span className="rounded-full bg-river/10 px-2 py-0.5 text-xs font-bold text-river">{t.slips?.length ?? 0}</span></td>
-                    <td className="px-3 py-2.5 text-center"><span className="rounded-full bg-leaf/10 px-2 py-0.5 text-xs font-bold text-leaf">{t.items?.length ?? 0}</span></td>
+                    <td className="px-3 py-2.5">
+                      <span className={cn(
+                        "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-bold",
+                        t.transferType === "customer" && "bg-blue-100 text-blue-700",
+                        t.transferType === "transport" && "bg-orange-100 text-orange-700",
+                        t.transferType === "branch" && "bg-purple-100 text-purple-700",
+                      )}>
+                        {t.transferType === "customer" ? "ลูกค้า" : t.transferType === "transport" ? "รถขนส่ง" : "ให้สาขา"}
+                      </span>
+                    </td>
                     <td className="px-3 py-2.5">
                       <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold", STATUS_STYLES[summary.status])}>
                         {STATUS_LABELS[summary.status]}
@@ -712,6 +735,23 @@ export function MoneyTransferModule({
           <p className="text-lg font-semibold text-ink/40">ยังไม่มีรายการโอนเงิน</p>
           <p className="mt-1 text-sm text-ink/30">กดปุ่ม &quot;สร้างรายการโอน&quot; เพื่อเริ่มต้น</p>
         </div>
+      )}
+
+      {detailTransfer && (
+        <MoneyTransferSourceDetailsModal
+          transfer={detailTransfer}
+          rubberBills={bills}
+          ocrTickets={ocrTickets}
+          isLoading={Boolean(
+            (detailTransfer.items?.some((item) => item.sourceType === "rubber_bill") && rubberBillsLoading)
+            || (detailTransfer.items?.some((item) => item.sourceType === "ocr_ticket") && ocrTicketsLoading)
+          )}
+          isError={Boolean(
+            (detailTransfer.items?.some((item) => item.sourceType === "rubber_bill") && rubberBillsError)
+            || (detailTransfer.items?.some((item) => item.sourceType === "ocr_ticket") && ocrTicketsError)
+          )}
+          onClose={() => setDetailTransfer(null)}
+        />
       )}
 
       {/* Delete Confirmation */}
