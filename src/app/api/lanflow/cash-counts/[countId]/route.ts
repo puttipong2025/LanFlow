@@ -13,9 +13,10 @@ export async function GET(request: Request, context: RouteContext) {
   if (!locationId) return cashCountErrorResponse("กรุณาระบุสาขา");
   const { data: row, error } = await result.supabase
     .from("cash_counts")
-    .select("*, report_batches(report_no,status), locations(name)")
+    .select("*, report_batches(report_no), locations(name)")
     .eq("id", countId)
     .eq("location_id", locationId)
+    .eq("status", "active")
     .maybeSingle();
   if (error) return cashCountErrorResponse(error.message);
   if (!row) return cashCountErrorResponse("ไม่พบผลตรวจนับ");

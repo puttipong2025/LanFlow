@@ -30,7 +30,7 @@ export async function GET(request: NextRequest) {
   }
   const { data, error } = await result.supabase
     .from("cash_counts")
-    .select("id, report_id, location_id, cutoff_at, actual_total, expected_total, difference_total, anomaly_score, confidence, analysis_status, formula_version, status, created_by_name, created_at, deleted_at, report_batches(report_no,status)")
+    .select("id, report_id, location_id, cutoff_at, actual_total, expected_total, difference_total, anomaly_score, confidence, analysis_status, formula_version, status, created_by_name, created_at, deleted_at, report_batches(report_no)")
     .eq("location_id", locationId)
     .eq("status", "active")
     .order("created_at", { ascending: false })

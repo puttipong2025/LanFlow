@@ -34,6 +34,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
       .from("rubber_exports")
       .select(detailColumns)
       .eq("id", exportId)
+      .in("status", ["draft", "verified"])
       .maybeSingle(),
     result.supabase.rpc("get_rubber_export_age_detail", { p_export_id: exportId }),
   ]);

@@ -2,7 +2,6 @@
 
 import { useEffect, useId, useRef, type ReactNode } from "react";
 import { Loader2 } from "lucide-react";
-import { cn } from "@/lib/cn";
 
 export function AlertDialog({
   open,
@@ -14,7 +13,6 @@ export function AlertDialog({
   onCancel,
   onConfirm,
   children,
-  className,
 }: {
   open: boolean;
   title: string;
@@ -25,7 +23,6 @@ export function AlertDialog({
   onCancel: () => void;
   onConfirm: () => void;
   children?: ReactNode;
-  className?: string;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -48,10 +45,7 @@ export function AlertDialog({
         event.preventDefault();
         if (!busy) onCancel();
       }}
-      className={cn(
-        "m-auto w-[calc(100%-2rem)] max-w-md rounded-xl border border-black/10 bg-white p-0 text-ink shadow-xl backdrop:bg-ink/50",
-        className,
-      )}
+      className="m-auto w-[calc(100%-2rem)] max-w-md rounded-xl border border-black/10 bg-white p-0 text-ink shadow-xl backdrop:bg-ink/50"
     >
       <div className="p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))]">
         <h3 id={titleId} className="text-balance text-lg font-bold">

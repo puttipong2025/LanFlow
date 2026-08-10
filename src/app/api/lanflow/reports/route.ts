@@ -55,7 +55,7 @@ export async function GET(request: NextRequest) {
 
   if (error) return reportErrorResponse(error.message);
 
-  const latestActiveId = data?.find((row) => row.status === "active")?.id;
+  const latestActiveId = data?.[0]?.id;
   const reports = (data ?? []).map((row) => {
     const location = Array.isArray(row.locations) ? row.locations[0] : row.locations;
     const count = Array.isArray(row.report_items) ? row.report_items[0]?.count : 0;

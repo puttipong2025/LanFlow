@@ -46,6 +46,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
     .from("report_batches")
     .select("id, report_no, location_id, cutoff_at, status, created_by_name, created_at, deleted_at, has_cash_count, cash_count_link_id, cash_count_checker_name, cash_count_submitted_at, locations(name)")
     .eq("id", reportId)
+    .eq("status", "active")
     .maybeSingle();
   if (headerError) return reportErrorResponse(headerError.message);
   if (!header) return NextResponse.json({ error: "ไม่พบรายงาน" }, { status: 404 });

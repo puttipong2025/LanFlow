@@ -286,13 +286,13 @@ export function ReportsModule({
                         className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-river text-white disabled:opacity-45">
                         <Eye size={17} />
                       </button>
-                      {canDelete && report.status === "active" && report.hasCashCount && report.cashCountId && onOpenCashCount && (
+                      {canDelete && report.hasCashCount && report.cashCountId && onOpenCashCount && (
                         <button type="button" onClick={() => onOpenCashCount(report.cashCountId!)} title="เปิดผลตรวจนับ" aria-label="เปิดผลตรวจนับ"
                           className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-actionSecondary text-white">
                           <CircleDollarSign size={17} />
                         </button>
                       )}
-                      {canDelete && report.status === "active" && report.isLatestActive && !report.hasCashCount && (
+                      {canDelete && report.isLatestActive && !report.hasCashCount && (
                         <button type="button" onClick={() => setPendingDelete(report)}
                           disabled={deletingId === report.id || Boolean(report.rubberExportLockNo)}
                           title={report.rubberExportLockNo ? `ต้องลบรายการส่งออกยาง ${report.rubberExportLockNo} ก่อน` : "ลบรายงานล่าสุดเพื่อปลดล็อกรายการ"}
