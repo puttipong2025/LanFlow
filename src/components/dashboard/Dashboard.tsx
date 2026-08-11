@@ -53,15 +53,32 @@ function TrendMetricCard({
   formula: string;
   children?: ReactNode;
 }) {
+  const isCompact = children == null;
+
   return (
     <section
       aria-label={label}
-      className="flex h-full min-h-64 min-w-0 flex-col rounded-xl border border-mint/80 bg-white p-5 shadow-panel"
+      className={cn(
+        "flex min-w-0 flex-col rounded-xl border border-mint/80 bg-white shadow-panel",
+        isCompact ? "self-start p-4" : "h-full min-h-64 p-5",
+      )}
     >
       <h3 className="text-balance text-sm font-semibold text-ink/60">{label}</h3>
-      <p className="mt-2 text-2xl font-bold tabular-nums text-ink">{value}</p>
+      <p
+        className={cn(
+          "text-2xl font-bold tabular-nums text-ink",
+          isCompact ? "mt-1.5" : "mt-2",
+        )}
+      >
+        {value}
+      </p>
       <p className="mt-1 text-pretty text-sm text-ink/60">{detail}</p>
-      <p className="mt-4 w-fit max-w-full rounded-full bg-mint/45 px-2.5 py-1 text-pretty text-xs text-ink/55">
+      <p
+        className={cn(
+          "w-fit max-w-full rounded-full bg-mint/45 px-2.5 py-1 text-pretty text-xs text-ink/55",
+          isCompact ? "mt-3" : "mt-4",
+        )}
+      >
         สูตร: {formula}
       </p>
       {children}

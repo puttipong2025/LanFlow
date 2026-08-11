@@ -336,7 +336,7 @@ test.describe("Dashboard immediate refresh UI", () => {
     expect(snapshotRequests).toBeGreaterThan(1);
   });
 
-  test("renders five equal trend cards with empty, signed-weight, and stock overflow states", async ({
+  test("renders four compact trend cards with empty, signed-weight, and stock overflow states", async ({
     page,
   }) => {
     let renderedSummary = summary;
@@ -395,10 +395,12 @@ test.describe("Dashboard immediate refresh UI", () => {
     const boxes = await Promise.all(cards.map((card) => card.boundingBox()));
     expect(boxes.every(Boolean)).toBeTruthy();
     const firstBox = boxes[0]!;
-    for (const box of boxes.slice(1)) {
+    for (const box of boxes.slice(1, 4)) {
       expect(Math.abs(box!.y - firstBox.y)).toBeLessThanOrEqual(1);
       expect(Math.abs(box!.width - firstBox.width)).toBeLessThanOrEqual(1);
-      expect(Math.abs(box!.height - firstBox.height)).toBeLessThanOrEqual(1);
+    }
+    for (const box of boxes.slice(0, 4)) {
+      expect(box!.height).toBeLessThan(boxes[4]!.height);
     }
 
     await page.setViewportSize({ width: 900, height: 1000 });
