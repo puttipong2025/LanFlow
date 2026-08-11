@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { LoaderCircle, RefreshCw, Save } from "lucide-react";
 import { toast } from "sonner";
 import type { Location } from "@/types";
@@ -17,6 +17,7 @@ import {
 } from "@/hooks/useDashboardOverview";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { isNetworkCancellation } from "@/lib/network-abort";
+import { cn } from "@/lib/cn";
 
 const KIND_LABELS: Record<string, string> = {
   income: "รายรับ",
@@ -37,6 +38,35 @@ function formatOccurredAt(value: string) {
 
 function pricePerKg(value: number | null) {
   return value == null ? "—" : `${formatNumber(value)} บาท/กก.`;
+}
+
+function TrendMetricCard({
+  label,
+  value,
+  detail,
+  formula,
+  children,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  formula: string;
+  children?: ReactNode;
+}) {
+  return (
+    <section
+      aria-label={label}
+      className="flex h-full min-h-64 min-w-0 flex-col rounded-xl border border-mint/80 bg-white p-5 shadow-panel"
+    >
+      <h3 className="text-balance text-sm font-semibold text-ink/60">{label}</h3>
+      <p className="mt-2 text-2xl font-bold tabular-nums text-ink">{value}</p>
+      <p className="mt-1 text-pretty text-sm text-ink/60">{detail}</p>
+      <p className="mt-4 w-fit max-w-full rounded-full bg-mint/45 px-2.5 py-1 text-pretty text-xs text-ink/55">
+        สูตร: {formula}
+      </p>
+      {children}
+    </section>
+  );
 }
 
 function rowKind(row: DashboardMoneyHistoryRow) {
@@ -404,6 +434,18 @@ export function Dashboard({
       </div>
     );
   }
+  const hasWaterLossData = summary.waterLoss7Days.percent != null;
+  const hasWeightGain = hasWaterLossData && summary.waterLoss7Days.weight < 0;
+  const waterLossValue = !hasWaterLossData
+    ? "—"
+    : hasWeightGain
+      ? `น้ำหนักเพิ่ม ${formatNumber(Math.abs(summary.waterLoss7Days.weight))} กก.`
+      : `${formatNumber(summary.waterLoss7Days.weight)} กก.`;
+  const waterLossDetail = !hasWaterLossData
+    ? "ไม่มีรายการส่งออก"
+    : `${hasWeightGain ? "เพิ่ม " : ""}${formatNumber(
+        Math.abs(summary.waterLoss7Days.percent ?? 0),
+      )}% · ${summary.waterLoss7Days.exportCount} เที่ยว`;
   return (
     <div className="space-y-5">
       <div>
@@ -506,6 +548,81 @@ export function Dashboard({
           </div>
         </section>
       </div>
+
+      <section aria-labelledby="dashboard-trends-heading">
+        <div>
+          <h2
+            id="dashboard-trends-heading"
+            className="text-balance text-lg font-bold text-ink"
+          >
+            แนวโน้มและการดำเนินงาน
+          </h2>
+          <p className="mt-1 text-pretty text-sm text-ink/55">
+            ตัวชี้วัดย้อนหลัง ต้นทุน ภาระดำเนินงาน และสต็อกล่าสุด
+          </p>
+        </div>
+
+        <div className="mt-3 grid items-stretch gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <TrendMetricCard
+            label="ยอดซื้อยางเฉลี่ย 7 วัน"
+            value={formatCurrency(summary.purchase7Days.dailyAverage)}
+            detail={`รวม ${formatCurrency(summary.purchase7Days.paidTotal)}`}
+            formula="Σ ยอดซื้อ 7 วัน ÷ 7"
+          />
+          <TrendMetricCard
+            label="ต้นทุนซื้อเฉลี่ย 7 วัน"
+            value={pricePerKg(summary.purchase7Days.averageCostPerKg)}
+            detail={`${formatNumber(summary.purchase7Days.netWeight)} กก.`}
+            formula="Σ ยอดซื้อ 7 วัน ÷ Σ น้ำหนักซื้อ 7 วัน"
+          />
+          <TrendMetricCard
+            label="ภาระดำเนินงานต่อยอดซื้อสะสม"
+            value={
+              summary.operatingBurdenPercent == null
+                ? "—"
+                : `${formatNumber(summary.operatingBurdenPercent)}%`
+            }
+            detail={`${formatCurrency(summary.operatingExpenseAccumulated)} ÷ ${formatCurrency(summary.payablePurchaseAccumulated)} · ยิ่งต่ำยิ่งดี`}
+            formula="รายจ่ายดำเนินงานสะสม ÷ ยอดซื้อยางที่ต้องจ่ายสะสม × 100"
+          />
+          <TrendMetricCard
+            label="น้ำหนักสูญเสีย 7 วัน"
+            value={waterLossValue}
+            detail={waterLossDetail}
+            formula="Σ (น้ำหนักต้นทาง − น้ำหนักจริง) 7 วัน"
+          />
+          <TrendMetricCard
+            label="สต็อกสินค้า"
+            value={`${summary.stock.inStockCount} ชนิด`}
+            detail={`หมด ${summary.stock.outOfStockCount} ชนิด`}
+            formula="ยอดคงเหลือ = Σ รับเข้า − Σ จ่ายออก"
+          >
+            <div
+              aria-label="ยอดคงเหลือแยกรายสินค้า"
+              className="mt-3 max-h-24 min-h-0 space-y-1 overflow-y-auto border-t border-black/5 pt-2 text-sm"
+            >
+              {summary.stock.items.length === 0 ? (
+                <p className="text-pretty text-ink/50">ยังไม่มีสินค้า</p>
+              ) : summary.stock.items.map((item) => (
+                <div
+                  key={item.productId}
+                  className="flex min-w-0 items-center justify-between gap-3"
+                >
+                  <span className="truncate text-ink/70">{item.name}</span>
+                  <span
+                    className={cn(
+                      "shrink-0 font-semibold tabular-nums",
+                      item.balance <= 0 ? "text-clay" : "text-ink",
+                    )}
+                  >
+                    {formatNumber(item.balance)} {item.unit}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </TrendMetricCard>
+        </div>
+      </section>
 
       <section className="rounded-xl border border-mint/80 bg-white p-4 shadow-panel">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">

@@ -37,8 +37,18 @@ test.describe("Dashboard overview @dashboard", () => {
     ]) {
       await expect(page.getByText(label, { exact: true }).last()).toBeVisible();
     }
-    await expect(page.getByText(/^สูตร:/)).toHaveCount(0);
+    for (const label of [
+      "ยอดซื้อยางเฉลี่ย 7 วัน",
+      "ต้นทุนซื้อเฉลี่ย 7 วัน",
+      "ภาระดำเนินงานต่อยอดซื้อสะสม",
+      "น้ำหนักสูญเสีย 7 วัน",
+      "สต็อกสินค้า",
+    ]) {
+      await expect(page.getByRole("region", { name: label })).toBeVisible();
+    }
+    await expect(page.getByText(/^สูตร:/)).toHaveCount(5);
     await expect(page.getByText("ซื้อยางวันนี้", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("น้ำหนักยางคงเหลือ", { exact: true })).toHaveCount(0);
     await expect(page.getByRole("heading", { name: "ประวัติรายการเงินล่าสุด" })).toBeVisible();
     for (const action of ["แสดงทั้งหมด", "เพิ่มใหม่", "แก้ไข", "ลบ"]) {
       await expect(page.getByRole("button", { name: new RegExp(`^${action}\\s+\\d+$`) })).toBeVisible();

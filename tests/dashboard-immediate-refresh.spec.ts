@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import type { DashboardSummary } from "@/types/dashboard";
 
 const supabaseUrl =
   process.env.NEXT_PUBLIC_SUPABASE_URL ?? "http://127.0.0.1:54321";
@@ -19,7 +20,7 @@ type RefreshSnapshot = {
   summary: unknown;
 };
 
-const summary = {
+const summary: DashboardSummary = {
   purchaseToday: {
     billCount: 0,
     netWeight: 0,
@@ -333,6 +334,125 @@ test.describe("Dashboard immediate refresh UI", () => {
       timeout: 10_000,
     });
     expect(snapshotRequests).toBeGreaterThan(1);
+  });
+
+  test("renders five equal trend cards with empty, signed-weight, and stock overflow states", async ({
+    page,
+  }) => {
+    let renderedSummary = summary;
+    const trendLabels = [
+      "ยอดซื้อยางเฉลี่ย 7 วัน",
+      "ต้นทุนซื้อเฉลี่ย 7 วัน",
+      "ภาระดำเนินงานต่อยอดซื้อสะสม",
+      "น้ำหนักสูญเสีย 7 วัน",
+      "สต็อกสินค้า",
+    ];
+
+    await page.route("**/api/lanflow/dashboard/feed**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          selectedDate: "2026-08-12",
+          availableFrom: "2026-07-29",
+          availableTo: "2026-08-12",
+          counts: { all: 0, create: 0, update: 0, delete: 0 },
+          latestAt: null,
+          rows: [],
+          nextCursor: null,
+        }),
+      }),
+    );
+    await page.route("**/api/lanflow/dashboard/snapshot**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...snapshot("ready", 2),
+          summary: renderedSummary,
+        }),
+      }),
+    );
+
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto("/");
+    await expect(
+      page.getByRole("heading", { name: "แนวโน้มและการดำเนินงาน" }),
+    ).toBeVisible({ timeout: 15_000 });
+
+    const cards = trendLabels.map((label) =>
+      page.getByRole("region", { name: label })
+    );
+    for (const card of cards) await expect(card).toBeVisible();
+    await expect(cards[0].getByText("฿0", { exact: true })).toBeVisible();
+    await expect(cards[1].getByText("—", { exact: true })).toBeVisible();
+    await expect(cards[2].getByText("—", { exact: true })).toBeVisible();
+    await expect(cards[3].getByText("ไม่มีรายการส่งออก", { exact: true })).toBeVisible();
+    await expect(cards[4].getByText("0 ชนิด", { exact: true })).toBeVisible();
+    await expect(cards[4].getByText("ยังไม่มีสินค้า", { exact: true })).toBeVisible();
+    await expect(page.getByText(/^สูตร:/)).toHaveCount(5);
+
+    const boxes = await Promise.all(cards.map((card) => card.boundingBox()));
+    expect(boxes.every(Boolean)).toBeTruthy();
+    const firstBox = boxes[0]!;
+    for (const box of boxes.slice(1)) {
+      expect(Math.abs(box!.y - firstBox.y)).toBeLessThanOrEqual(1);
+      expect(Math.abs(box!.width - firstBox.width)).toBeLessThanOrEqual(1);
+      expect(Math.abs(box!.height - firstBox.height)).toBeLessThanOrEqual(1);
+    }
+
+    await page.setViewportSize({ width: 900, height: 1000 });
+    const tabletBoxes = await Promise.all(cards.map((card) => card.boundingBox()));
+    expect(Math.abs(tabletBoxes[0]!.y - tabletBoxes[1]!.y)).toBeLessThanOrEqual(1);
+    expect(tabletBoxes[2]!.y).toBeGreaterThan(tabletBoxes[0]!.y);
+    expect(Math.abs(tabletBoxes[2]!.x - tabletBoxes[0]!.x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(tabletBoxes[0]!.width - tabletBoxes[1]!.width))
+      .toBeLessThanOrEqual(1);
+
+    await page.setViewportSize({ width: 390, height: 1000 });
+    const mobileBoxes = await Promise.all(cards.map((card) => card.boundingBox()));
+    for (let index = 1; index < mobileBoxes.length; index += 1) {
+      expect(mobileBoxes[index]!.y).toBeGreaterThan(mobileBoxes[index - 1]!.y);
+      expect(Math.abs(mobileBoxes[index]!.width - mobileBoxes[0]!.width))
+        .toBeLessThanOrEqual(1);
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth))
+      .toBeLessThanOrEqual(390);
+
+    renderedSummary = {
+      ...summary,
+      waterLoss7Days: { exportCount: 2, weight: -15, percent: -5 },
+      stock: {
+        inStockCount: 9,
+        outOfStockCount: 1,
+        items: Array.from({ length: 10 }, (_, index) => ({
+          productId: `product-${index}`,
+          name: `สินค้าทดสอบ ${index + 1}`,
+          unit: index % 2 === 0 ? "แผ่น" : "ลิตร",
+          balance: index === 0 ? 0 : index + 1,
+        })),
+      },
+    };
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: "ภาพรวม", exact: true }).click();
+    await expect(
+      page.getByRole("heading", { name: "แนวโน้มและการดำเนินงาน" }),
+    ).toBeVisible({ timeout: 15_000 });
+
+    const waterCard = page.getByRole("region", { name: "น้ำหนักสูญเสีย 7 วัน" });
+    await expect(waterCard.getByText("น้ำหนักเพิ่ม 15 กก.", { exact: true })).toBeVisible();
+    await expect(waterCard.getByText("เพิ่ม 5% · 2 เที่ยว", { exact: true })).toBeVisible();
+    const stockCard = page.getByRole("region", { name: "สต็อกสินค้า" });
+    await expect(stockCard.getByText("9 ชนิด", { exact: true })).toBeVisible();
+    await expect(stockCard.getByText("หมด 1 ชนิด", { exact: true })).toBeVisible();
+    await expect(stockCard.getByText("สินค้าทดสอบ 1", { exact: true })).toBeVisible();
+    await expect(stockCard.getByText("0 แผ่น", { exact: true })).toBeVisible();
+    const stockList = page.getByLabel("ยอดคงเหลือแยกรายสินค้า");
+    expect(await stockList.evaluate((element) => element.scrollHeight > element.clientHeight))
+      .toBeTruthy();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth))
+      .toBeLessThanOrEqual(1440);
   });
 
   test("shows Admin only the branch refresh control and succeeds at the target version", async ({
