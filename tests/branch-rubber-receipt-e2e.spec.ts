@@ -44,6 +44,7 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
     await page.getByRole("button", { name: /^บิลยาง/ }).click();
     await page.getByRole("button", { name: "รับยางจากสาขา" }).click();
     const dialog = page.getByRole("dialog", { name: "รับยางจากสาขา" });
+    await expect(dialog.getByRole("columnheader", { name: "มูลค่ารวมค่าทำงาน" })).toBeVisible();
     await expect(dialog.getByText("ยางคงเหลือภายในสาขา")).toBeVisible();
     await expect(dialog.getByText("REX-SAME-001")).toBeVisible();
   });
@@ -96,7 +97,7 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
         weight_loss_percent: 20,
         work_rate: 1,
         other_operating_cost: 0,
-        work_total: 80,
+        work_total: 100,
         expense_destination: "branch",
         created_by_user_id: profile.id,
         created_by_name: profile.name,
@@ -227,6 +228,15 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
       expect((await db.from("rubber_bill_items").delete().eq("bill_id", concurrentReceipt!.id)).error).toBeNull();
       expect((await db.from("rubber_bills").delete().eq("id", concurrentReceipt!.id)).error).toBeNull();
 
+      const candidatesBeforeReceipt = await page.request.get(
+        `/api/lanflow/rubber-bills/branch-receipts?destinationLocationId=${destinationLocationId}`,
+      );
+      expect(candidatesBeforeReceipt.ok(), await candidatesBeforeReceipt.text()).toBeTruthy();
+      const sourceCandidate = (await candidatesBeforeReceipt.json() as {
+        candidates: Array<{ sourceRubberExportId: string; rubberValue: number }>;
+      }).candidates.find((candidate) => candidate.sourceRubberExportId === sourceExportId);
+      expect(sourceCandidate?.rubberValue).toBe(8_100);
+
       await page.goto("/");
       await selectAppLocation(page, destinationLocationId);
       await page.getByRole("button", { name: /^บิลยาง/ }).click();
@@ -242,12 +252,16 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
 
       const { data: receipt, error: receiptError } = await db
         .from("rubber_bills")
-        .select("id, bill_no")
+        .select("id, bill_no, rubber_value, average_price, deduction_total, net_total")
         .eq("source_rubber_export_id", sourceExportId)
         .eq("record_status", "active")
         .single();
       expect(receiptError).toBeNull();
       receiptBillId = receipt!.id;
+      expect(Number(receipt!.rubber_value)).toBe(8_100);
+      expect(Number(receipt!.average_price)).toBe(101.25);
+      expect(Number(receipt!.deduction_total)).toBe(8_100);
+      expect(Number(receipt!.net_total)).toBe(0);
 
       const receiptRow = page.getByRole("row").filter({ hasText: receipt!.bill_no });
       await expect(receiptRow).toContainText(`รับยางจากสาขา ${sourceName}`);
@@ -258,7 +272,7 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
       const detailDialog = page.getByRole("dialog", { name: receipt!.bill_no });
       await expect(detailDialog).toContainText("อ่านอย่างเดียว");
       await expect(detailDialog).toContainText(exportNo);
-      await expect(detailDialog).toContainText("฿8,000");
+      await expect(detailDialog).toContainText("฿8,100");
       await expect(detailDialog).toContainText("ยอดที่ต้องจ่ายลูกค้า");
       await expect(detailDialog).toContainText("฿0");
 

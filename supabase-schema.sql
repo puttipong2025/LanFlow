@@ -10145,7 +10145,7 @@ begin
     l.name,
     e.verified_at,
     e.current_weight,
-    e.paid_total,
+    round(e.paid_total + e.work_total, 2),
     round(age.average_age_hours, 2),
     round(age.average_age_hours, 6),
     age.estimated_age_item_count > 0
@@ -10157,6 +10157,8 @@ begin
     and e.verified_at is not null
     and e.current_weight > 0
     and e.paid_total > 0
+    and e.work_total is not null
+    and e.work_total >= 0
     and exists (select 1 from public.rubber_export_items i where i.export_id = e.id)
     and not exists (
       select 1 from public.rubber_bills b
@@ -11083,6 +11085,7 @@ declare
   v_debt_description text;
   v_age record;
   v_age_hours numeric;
+  v_rubber_value numeric;
   v_average_price numeric;
 begin
   if p_destination_location_id is null
@@ -11113,6 +11116,8 @@ begin
      or v_source.current_weight is null
      or v_source.current_weight <= 0
      or v_source.paid_total <= 0
+     or v_source.work_total is null
+     or v_source.work_total < 0
      or not exists (select 1 from public.rubber_export_items i where i.export_id = v_source.id)
      or not exists (
        select 1 from public.locations l
@@ -11149,7 +11154,8 @@ begin
     v_customer_name := 'รับยางจากสาขา ' || v_source_location_name;
     v_debt_description := 'หักมูลค่ายางรับจากสาขา ' || v_source_location_name;
   end if;
-  v_average_price := round(v_source.paid_total / v_source.current_weight, 2);
+  v_rubber_value := round(v_source.paid_total + v_source.work_total, 2);
+  v_average_price := round(v_rubber_value / v_source.current_weight, 2);
 
   insert into public.rubber_bills (
     client_temp_id, local_bill_no, server_bill_no, idempotency_key,
@@ -11165,7 +11171,7 @@ begin
     v_client_temp_id, v_bill_no, v_bill_no, v_client_temp_id,
     'synced', 'active', p_destination_location_id, v_bill_no, v_bill_date,
     null, v_customer_name, 'บิลเครื่องชั่งเล็ก', 0, v_source.current_weight,
-    v_source.paid_total, v_average_price, v_source.paid_total, 0,
+    v_rubber_value, v_average_price, v_rubber_value, 0,
     0, v_now, v_now, v_now, 1, auth.uid(),
     coalesce(v_actor_name, ''), coalesce(v_actor_phone, ''), v_source.id,
     v_source.export_no, v_now, v_age_hours,
@@ -11179,11 +11185,11 @@ begin
     (
       v_bill_id, 'weigh', v_customer_name,
       v_source.current_weight, 0, v_source.current_weight,
-      v_source.current_weight, 'kg', v_average_price, v_source.paid_total, 1
+      v_source.current_weight, 'kg', v_average_price, v_rubber_value, 1
     ),
     (
       v_bill_id, 'debt', v_debt_description,
-      null, null, null, null, null, null, v_source.paid_total, 2
+      null, null, null, null, null, null, v_rubber_value, 2
     );
 
   return jsonb_build_object(

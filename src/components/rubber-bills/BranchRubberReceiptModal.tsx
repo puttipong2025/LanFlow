@@ -121,7 +121,7 @@ export function BranchRubberReceiptModal({
                   <th className="px-3 py-2">เลข REX</th>
                   <th className="px-3 py-2">เวลาตรวจสอบ</th>
                   <th className="px-3 py-2 text-right">น้ำหนักปัจจุบัน</th>
-                  <th className="px-3 py-2 text-right">มูลค่ายาง</th>
+                  <th className="px-3 py-2 text-right">มูลค่ารวมค่าทำงาน</th>
                   <th className="px-3 py-2 text-right">อายุตอนรับ</th>
                 </tr>
               </thead>
@@ -214,7 +214,7 @@ export function BranchRubberReceiptDetailModal({
         </div>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">น้ำหนักปัจจุบัน</div><div className="font-bold tabular-nums">{formatNumber(bill.netWeight)} กก.</div></div>
-          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">มูลค่ายาง</div><div className="font-bold tabular-nums">฿{formatNumber(bill.rubberValue)}</div></div>
+          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">มูลค่ารวมค่าทำงาน</div><div className="font-bold tabular-nums">฿{formatNumber(bill.rubberValue)}</div></div>
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">อายุตอนรับ</div><div className="font-bold tabular-nums">{formatRubberAge(bill.receivedAgeHours ?? null)}</div>{bill.receivedAgeIsEstimated && <div className="text-xs font-semibold text-amber-800">ประมาณการ</div>}</div>
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ราคาเฉลี่ย</div><div className="font-bold tabular-nums">฿{formatNumber(bill.price)}/กก.</div></div>
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ยอดหักเงิน</div><div className="font-bold tabular-nums">฿{formatNumber(bill.deductionTotal)}</div></div>
