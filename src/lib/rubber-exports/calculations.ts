@@ -25,6 +25,26 @@ export function calculateWorkTotal(
   return round2(netWeightTotal * workRate + otherOperatingCost);
 }
 
+export function calculatePurchaseCostIncludingWork(
+  paidTotal: number,
+  workTotal: number | null | undefined,
+  netWeightTotal: number
+) {
+  if (
+    workTotal == null
+    || !Number.isFinite(paidTotal)
+    || !Number.isFinite(workTotal)
+    || !Number.isFinite(netWeightTotal)
+    || paidTotal < 0
+    || workTotal < 0
+    || netWeightTotal <= 0
+  ) {
+    return { total: null, average: null };
+  }
+  const total = round2(paidTotal + workTotal);
+  return { total, average: round2(total / netWeightTotal) };
+}
+
 export function isValidCurrentWeight(originalWeight: number, currentWeight: number | null) {
   return currentWeight !== null
     && Number.isFinite(originalWeight)

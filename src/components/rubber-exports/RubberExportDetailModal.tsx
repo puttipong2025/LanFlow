@@ -5,6 +5,7 @@ import { Loader2, Share2 } from "lucide-react";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { RubberExportLoadingModal } from "@/components/rubber-exports/RubberExportLoadingModal";
 import {
+  calculatePurchaseCostIncludingWork,
   calculateWeightLossPercent,
   calculateWorkTotal,
   isValidCurrentWeight,
@@ -78,6 +79,11 @@ export function RubberExportDetailModal({
     () => calculateWorkTotal(details.originalWeightTotal, workRate, otherCost),
     [details.originalWeightTotal, workRate, otherCost]
   );
+  const purchaseCost = calculatePurchaseCostIncludingWork(
+    details.paidTotal,
+    workTotal,
+    details.originalWeightTotal
+  );
   const lossPercent = useMemo(
     () => currentWeight === null
       ? null
@@ -134,8 +140,8 @@ export function RubberExportDetailModal({
 
         <div className="grid gap-3 sm:grid-cols-5">
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">น้ำหนักสุทธิรวม</div><div className="font-bold tabular-nums">{number(details.originalWeightTotal)} กก.</div></div>
-          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ต้นทุนซื้อรวม</div><div className="font-bold tabular-nums">฿{number(details.paidTotal)}</div></div>
-          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ต้นทุนซื้อเฉลี่ย</div><div className="font-bold tabular-nums">฿{number(details.averagePrice)}/กก.</div></div>
+          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ต้นทุนซื้อรวมค่าทำงาน</div><div className="font-bold tabular-nums">{purchaseCost.total === null ? "—" : `฿${number(purchaseCost.total)}`}</div></div>
+          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ต้นทุนซื้อเฉลี่ยรวมค่าทำงาน</div><div className="font-bold tabular-nums">{purchaseCost.average === null ? "—" : `฿${number(purchaseCost.average)}/กก.`}</div></div>
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">อายุเฉลี่ยถ่วงน้ำหนัก</div><div className="font-bold tabular-nums">{formatRubberAge(details.averageAgeHours)}</div></div>
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">อายุมากที่สุด</div><div className="font-bold tabular-nums">{formatRubberAge(details.oldestAgeHours)}</div></div>
         </div>

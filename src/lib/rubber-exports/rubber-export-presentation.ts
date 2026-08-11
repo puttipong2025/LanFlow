@@ -1,4 +1,5 @@
 import type { RubberExportDetails } from "@/types/rubber-exports";
+import { calculatePurchaseCostIncludingWork } from "@/lib/rubber-exports/calculations";
 
 const BANGKOK_TIME_ZONE = "Asia/Bangkok";
 const MISSING_VALUE = "—";
@@ -85,12 +86,19 @@ export function rubberExportStatusLabel(details: RubberExportDetails) {
 }
 
 export function buildRubberExportPresentation(details: RubberExportDetails) {
+  const purchaseCost = calculatePurchaseCostIncludingWork(
+    details.paidTotal,
+    details.workTotal,
+    details.originalWeightTotal,
+  );
   return {
     status: rubberExportStatusLabel(details),
     summary: [
       ["น้ำหนักสุทธิรวม", `${formatRubberExportNumber(details.originalWeightTotal)} กก.`],
       ["ยอดจ่ายจริงรวม", `฿${formatRubberExportNumber(details.paidTotal)}`],
-      ["ต้นทุนซื้อเฉลี่ย", `฿${formatRubberExportNumber(details.averagePrice)}/กก.`],
+      ["ต้นทุนซื้อเฉลี่ยรวมค่าทำงาน", purchaseCost.average === null
+        ? MISSING_VALUE
+        : `฿${formatRubberExportNumber(purchaseCost.average)}/กก.`],
       ["น้ำหนักปัจจุบัน", details.currentWeight == null
         ? MISSING_VALUE
         : `${formatRubberExportNumber(details.currentWeight)} กก.`],

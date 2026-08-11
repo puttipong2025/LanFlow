@@ -142,6 +142,24 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await page.goto("/");
       await selectAppLocation(page, locationId);
       await page.getByRole("button", { name: /^ส่งออกยาง/ }).click();
+      await page.getByRole("button", { name: "ดูรายละเอียด REX-EDIT-001" }).click();
+
+      const detailDialog = page.getByRole("dialog", { name: "REX-EDIT-001" });
+      const totalCost = detailDialog.getByText("ต้นทุนซื้อรวมค่าทำงาน", { exact: true }).locator("..");
+      const averageCost = detailDialog.getByText("ต้นทุนซื้อเฉลี่ยรวมค่าทำงาน", { exact: true }).locator("..");
+      await expect(totalCost.getByText("฿3,225.00", { exact: true })).toBeVisible();
+      await expect(averageCost.getByText("฿32.25/กก.", { exact: true })).toBeVisible();
+
+      await detailDialog.getByLabel("ค่าทำงาน/กก.").fill("");
+      await expect(totalCost.getByText("—", { exact: true })).toBeVisible();
+      await expect(averageCost.getByText("—", { exact: true })).toBeVisible();
+
+      await detailDialog.getByLabel("ค่าทำงาน/กก.").fill("0");
+      await detailDialog.getByLabel("ค่าดำเนินการอื่น").fill("0");
+      await expect(totalCost.getByText("฿3,000.00", { exact: true })).toBeVisible();
+      await expect(averageCost.getByText("฿30.00/กก.", { exact: true })).toBeVisible();
+      await expect(detailDialog.getByRole("button", { name: "ตรวจสอบแล้ว" })).toBeEnabled();
+      await detailDialog.getByRole("button", { name: "ปิด" }).click();
       await page.getByRole("button", { name: "แก้", exact: true }).click();
 
       const editDialog = page.getByRole("dialog", { name: "แก้รายการส่งออกยาง" });

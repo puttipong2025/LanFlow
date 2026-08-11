@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
+  calculatePurchaseCostIncludingWork,
   calculateWeightLossPercent,
   calculateWorkTotal,
   isValidCurrentWeight,
@@ -14,6 +15,14 @@ test.describe("Rubber export calculations @rubber-export", () => {
     expect(calculateWorkTotal(540, 2, 100)).toBe(1180);
     expect(calculateWorkTotal(1.005, 1, 0)).toBe(1.01);
     expect(calculateWorkTotal(400, 0, 0)).toBe(0);
+    expect(calculatePurchaseCostIncludingWork(3000, 225, 100)).toEqual({
+      total: 3225,
+      average: 32.25,
+    });
+    expect(calculatePurchaseCostIncludingWork(3000, 0, 100)).toEqual({
+      total: 3000,
+      average: 30,
+    });
     expect(isValidCurrentWeight(540, 0)).toBeFalsy();
     expect(isValidCurrentWeight(540, 540)).toBeTruthy();
   });
@@ -24,6 +33,14 @@ test.describe("Rubber export calculations @rubber-export", () => {
     expect(calculateWorkTotal(null, 1, 0)).toBeNull();
     expect(calculateWorkTotal(100, -1, 0)).toBeNull();
     expect(calculateWorkTotal(100, 1, Number.POSITIVE_INFINITY)).toBeNull();
+    expect(calculatePurchaseCostIncludingWork(3000, null, 100)).toEqual({
+      total: null,
+      average: null,
+    });
+    expect(calculatePurchaseCostIncludingWork(3000, undefined, 100)).toEqual({
+      total: null,
+      average: null,
+    });
     expect(isValidCurrentWeight(Number.NaN, 1)).toBeFalsy();
     expect(isValidCurrentWeight(100, Number.NaN)).toBeFalsy();
   });
