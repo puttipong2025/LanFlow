@@ -22,23 +22,23 @@ function bangkokTimestamp(date: string, hour: number, second = 0) {
 test.describe("Dashboard overview @dashboard", () => {
   test.use({ storageState: "playwright/.auth/user.json" });
 
-  test("renders the new cards and falls back to Rubber Bills offline", async ({ page }) => {
+  test("renders the compact accumulated and daily summary surfaces", async ({ page }) => {
     await page.goto("/");
 
     await expect(page.getByRole("heading", { name: /ภาพรวม ·/ })).toBeVisible({ timeout: 15_000 });
     for (const label of [
-      "ซื้อยางวันนี้",
-      "ยอดซื้อเฉลี่ย 7 วัน",
-      "ต้นทุนซื้อเฉลี่ย 7 วัน",
       "รับ–จ่ายสุทธิสะสม",
-      "ภาระดำเนินงานต่อยอดซื้อสะสม",
-      "น้ำหนักยางคงเหลือ",
-      "น้ำหาย 7 วัน",
-      "สต็อกสินค้า",
+      "ภาพรวมบิลยาง",
+      "บิลยางสะสม",
+      "น้ำหนักสุทธิสะสม",
+      "ราคาเฉลี่ยสะสม",
+      "มูลค่ายางสะสม",
+      "ยอดหักเงินสะสม",
     ]) {
       await expect(page.getByText(label, { exact: true }).last()).toBeVisible();
     }
-    await expect(page.getByText(/^สูตร:/)).toHaveCount(8);
+    await expect(page.getByText(/^สูตร:/)).toHaveCount(0);
+    await expect(page.getByText("ซื้อยางวันนี้", { exact: true })).toHaveCount(0);
     await expect(page.getByRole("heading", { name: "ประวัติรายการเงินล่าสุด" })).toBeVisible();
     for (const action of ["แสดงทั้งหมด", "เพิ่มใหม่", "แก้ไข", "ลบ"]) {
       await expect(page.getByRole("button", { name: new RegExp(`^${action}\\s+\\d+$`) })).toBeVisible();
@@ -70,6 +70,29 @@ test.describe("Dashboard overview @dashboard", () => {
       page.getByRole("button", { name: "ออกจากระบบได้เมื่อออนไลน์เท่านั้น" }),
     ).toBeDisabled();
     await page.context().setOffline(false);
+  });
+
+  test("keeps the Dashboard and branch summary within narrow mobile viewports", async ({ page }) => {
+    for (const width of [360, 393]) {
+      await page.setViewportSize({ width, height: 800 });
+      await page.goto("/");
+      await page.getByRole("button", { name: "ภาพรวม", exact: true }).click();
+      await expect(page.getByRole("heading", { name: /ภาพรวม ·/ })).toBeVisible({
+        timeout: 15_000,
+      });
+      expect(await page.evaluate(() => document.documentElement.scrollWidth))
+        .toBeLessThanOrEqual(width);
+
+      const selector = page.getByRole("button", { name: /^เลือกสาขา/ });
+      await selector.click();
+      const listbox = page.getByRole("listbox", { name: "สาขาที่เข้าถึงได้" });
+      const box = await listbox.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.x).toBeGreaterThanOrEqual(0);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+      await page.keyboard.press("Escape");
+      await expect(selector).toBeFocused();
+    }
   });
 
   test("logs out only after confirmation", async ({ page }) => {
@@ -338,6 +361,10 @@ test.describe("Dashboard overview @dashboard", () => {
           verified_by_name: me.profile.name,
           verified_by_phone: me.profile.phone,
           verified_at: bangkokTimestamp(today, 12),
+          age_cutoff_at: bangkokTimestamp(today, 12),
+          average_age_hours: 24,
+          oldest_age_hours: 24,
+          estimated_age_item_count: 0,
         },
         {
           id: exportIds[1],
@@ -362,6 +389,10 @@ test.describe("Dashboard overview @dashboard", () => {
           verified_by_name: me.profile.name,
           verified_by_phone: me.profile.phone,
           verified_at: bangkokTimestamp(today, 13),
+          age_cutoff_at: bangkokTimestamp(today, 13),
+          average_age_hours: 24,
+          oldest_age_hours: 24,
+          estimated_age_item_count: 0,
         },
       ])).error).toBeNull();
 

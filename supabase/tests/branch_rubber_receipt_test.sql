@@ -253,8 +253,8 @@ select extensions.ok(
   (select
     source_export_no = 'REX-BRANCH-001'
     and weight = 100
-    and rubber_value = 3600
-    and deduction_total = 3600
+    and rubber_value = 3720
+    and deduction_total = 3720
     and net_total = 0
     and customer_name = 'รับยางจากสาขา สาขาต้นทางทดสอบ'
     and received_age_hours between 167.99 and 168.01
@@ -272,7 +272,7 @@ select extensions.results_eq(
       where source_rubber_export_id = 'a3000000-0000-4000-8000-000000000001'
         and record_status = 'active'
     ) order by sequence_no$$,
-  $$values ('weigh'::text, 3600::numeric), ('debt'::text, 3600::numeric)$$,
+  $$values ('weigh'::text, 3720::numeric), ('debt'::text, 3720::numeric)$$,
   'receipt has one weigh row and one matching debt deduction'
 );
 
@@ -460,8 +460,8 @@ select extensions.is(
 
 select extensions.is(
   (select paid_amount from public.get_rubber_export_available_bills('a1000000-0000-4000-8000-000000000002')),
-  3600::numeric,
-  'receipt export candidate uses carried rubber value as cost'
+  3720::numeric,
+  'receipt export candidate uses carried rubber and work cost'
 );
 
 select extensions.is(

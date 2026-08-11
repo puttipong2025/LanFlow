@@ -5,17 +5,31 @@ export type DashboardStockItem = {
   balance: number;
 };
 
+export type DashboardRubberMetrics = {
+  billCount: number;
+  netWeight: number;
+  averagePrice: number | null;
+  rubberValue: number;
+  deductionTotal: number;
+  unpricedBillCount: number;
+  pendingApprovalCount: number;
+};
+
 export type DashboardSummary = {
-  purchaseToday: {
-    billCount: number;
-    netWeight: number;
+  purchaseToday: DashboardRubberMetrics & {
     paidTotal: number;
   };
+  rubberRemaining: DashboardRubberMetrics;
   purchase7Days: {
     paidTotal: number;
     dailyAverage: number;
     netWeight: number;
     averageCostPerKg: number | null;
+  };
+  cashToday: {
+    income: number;
+    expense: number;
+    net: number;
   };
   netCashFlow: number;
   operatingExpenseAccumulated: number;
@@ -88,8 +102,18 @@ export type DashboardMoneyHistory = {
   nextCursor: string | null;
 };
 
+export type DashboardLegacySummary = Omit<
+  DashboardSummary,
+  "purchaseToday" | "rubberRemaining" | "cashToday"
+> & {
+  purchaseToday: Pick<
+    DashboardSummary["purchaseToday"],
+    "billCount" | "netWeight" | "paidTotal"
+  >;
+};
+
 export type DashboardOverview = DashboardMoneyFeed & {
-  summary: DashboardSummary;
+  summary: DashboardLegacySummary;
 };
 
 export type DashboardBranchCashStatus =

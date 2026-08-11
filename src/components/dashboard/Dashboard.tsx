@@ -17,7 +17,6 @@ import {
 } from "@/hooks/useDashboardOverview";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { isNetworkCancellation } from "@/lib/network-abort";
-import { Metric } from "./Metric";
 
 const KIND_LABELS: Record<string, string> = {
   income: "รายรับ",
@@ -36,8 +35,8 @@ function formatOccurredAt(value: string) {
   }).format(new Date(value));
 }
 
-function perKg(value: number | null) {
-  return value == null ? "ไม่มีข้อมูล" : `${formatNumber(value)} บาท/กก.`;
+function pricePerKg(value: number | null) {
+  return value == null ? "—" : `${formatNumber(value)} บาท/กก.`;
 }
 
 function rowKind(row: DashboardMoneyHistoryRow) {
@@ -378,7 +377,12 @@ export function Dashboard({
   const summary = snapshot.data.summary;
   const nextCursor = history.data?.nextCursor ?? null;
   const visibleRows = history.isPlaceholderData ? [] : history.data?.rows ?? [];
-  if (!summary) {
+  const hasCurrentSummary = Boolean(
+    summary?.cashToday
+      && summary.rubberRemaining
+      && summary.purchaseToday.averagePrice !== undefined,
+  );
+  if (!summary || !hasCurrentSummary) {
     return (
       <div className="space-y-5">
         <section className="rounded-xl border border-mint/80 bg-white p-6 text-center shadow-panel">
@@ -400,13 +404,6 @@ export function Dashboard({
       </div>
     );
   }
-  const waterLossValue = summary.waterLoss7Days.percent == null
-    ? "—"
-    : `${formatNumber(summary.waterLoss7Days.weight)} กก.`;
-  const waterLossDetail = summary.waterLoss7Days.percent == null
-    ? "ไม่มีรายการส่งออก"
-    : `${formatNumber(summary.waterLoss7Days.percent)}% · ${summary.waterLoss7Days.exportCount} เที่ยว`;
-
   return (
     <div className="space-y-5">
       <div>
@@ -424,72 +421,90 @@ export function Dashboard({
 
       {dashboardControls}
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Metric
-          label="ซื้อยางวันนี้"
-          value={formatCurrency(summary.purchaseToday.paidTotal)}
-          detail={`${summary.purchaseToday.billCount} บิล · ${formatNumber(summary.purchaseToday.netWeight)} กก.`}
-          formula="Σ ยอดที่ต้องจ่ายของบิลวันนี้"
-        />
-        <Metric
-          label="ยอดซื้อเฉลี่ย 7 วัน"
-          value={formatCurrency(summary.purchase7Days.dailyAverage)}
-          detail={`รวม ${formatCurrency(summary.purchase7Days.paidTotal)}`}
-          formula="Σ ยอดซื้อ 7 วัน ÷ 7"
-        />
-        <Metric
-          label="ต้นทุนซื้อเฉลี่ย 7 วัน"
-          value={perKg(summary.purchase7Days.averageCostPerKg)}
-          detail={`${formatNumber(summary.purchase7Days.netWeight)} กก.`}
-          formula="Σ ยอดซื้อ 7 วัน ÷ Σ น้ำหนักซื้อ 7 วัน"
-        />
-        <Metric
-          label="รับ–จ่ายสุทธิสะสม"
-          value={formatCurrency(summary.netCashFlow)}
-          detail="เฉพาะรายการที่เกิดขึ้นจริง"
-          formula="Σ รายรับจริง − Σ รายจ่ายจริง"
-        />
-        <Metric
-          label="ภาระดำเนินงานต่อยอดซื้อสะสม"
-          value={
-            summary.operatingBurdenPercent == null
-              ? "—"
-              : `${formatNumber(summary.operatingBurdenPercent)}%`
-          }
-          detail={`${formatCurrency(summary.operatingExpenseAccumulated)} ÷ ${formatCurrency(summary.payablePurchaseAccumulated)} · ยิ่งต่ำยิ่งดี`}
-          formula="รายจ่ายดำเนินงานสะสม ÷ ยอดซื้อยางที่ต้องจ่ายสะสม × 100"
-        />
-        <Metric
-          label="น้ำหนักยางคงเหลือ"
-          value={`${formatNumber(summary.rubberInventoryWeight)} กก.`}
-          detail="น้ำหนักซื้อสุทธิ − น้ำหนักต้นทางที่ส่งออก"
-          formula="Σ น้ำหนักซื้อ − Σ น้ำหนักต้นทางที่ส่งออก"
-        />
-        <Metric
-          label="น้ำหาย 7 วัน"
-          value={waterLossValue}
-          detail={waterLossDetail}
-          formula="Σ (น้ำหนักต้นทาง − น้ำหนักจริง) 7 วัน"
-        />
-        <Metric
-          label="สต็อกสินค้า"
-          value={`${summary.stock.inStockCount} ชนิด`}
-          detail={`หมด ${summary.stock.outOfStockCount} ชนิด`}
-          formula="ยอดคงเหลือ = Σ รับเข้า − Σ จ่ายออก"
-        >
-          <div className="mt-3 max-h-28 space-y-1 overflow-y-auto border-t border-black/5 pt-2 text-sm">
-            {summary.stock.items.length === 0 ? (
-              <p className="text-ink/50">ยังไม่มีสินค้า</p>
-            ) : summary.stock.items.map((item) => (
-              <div key={item.productId} className="flex items-center justify-between gap-3">
-                <span className="truncate text-ink/70">{item.name}</span>
-                <span className={item.balance <= 0 ? "font-semibold text-clay" : "font-semibold text-ink"}>
-                  {formatNumber(item.balance)} {item.unit}
-                </span>
-              </div>
-            ))}
+      <div className="grid gap-3 xl:grid-cols-3">
+        <section className="rounded-xl border border-mint/80 bg-white p-5 shadow-panel">
+          <h2 className="text-balance text-lg font-bold text-ink">รับ–จ่ายสุทธิสะสม</h2>
+          <p className="mt-1 text-pretty text-sm text-ink/55">
+            เฉพาะรายการที่มีผลต่อยอดของสาขาจริง
+          </p>
+          <p
+            className={`mt-4 text-3xl font-bold tabular-nums ${
+              summary.netCashFlow < 0 ? "text-danger" : "text-leaf"
+            }`}
+          >
+            {formatCurrency(summary.netCashFlow)}
+          </p>
+          <p className="mt-1 text-pretty text-sm text-ink/60">
+            วันนี้ · รับ {formatCurrency(summary.cashToday.income)} · จ่ายจริง {formatCurrency(summary.cashToday.expense)} · สุทธิ {formatCurrency(summary.cashToday.net)}
+          </p>
+        </section>
+
+        <section className="rounded-xl border border-mint/80 bg-white p-5 shadow-panel xl:col-span-2">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 className="text-balance text-lg font-bold text-ink">ภาพรวมบิลยาง</h2>
+              <p className="mt-1 text-pretty text-sm text-ink/55">
+                ยอดสะสมไม่รวมบิลรับจากสาขาและบิลที่ส่งออกแล้ว · วันนี้ยังคงนับกิจกรรมรับซื้อจริง
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2 text-xs font-semibold">
+              <span className="rounded-full bg-amber/10 px-2.5 py-1 text-amber">
+                รอกำหนดราคา {summary.rubberRemaining.unpricedBillCount} บิล
+              </span>
+              <span className="rounded-full bg-settings/10 px-2.5 py-1 text-settings">
+                รออนุมัติ {summary.rubberRemaining.pendingApprovalCount} บิล
+              </span>
+            </div>
           </div>
-        </Metric>
+
+          <div className="mt-4 grid overflow-hidden rounded-lg border border-mint/80 bg-mint/80 sm:grid-cols-2 xl:grid-cols-5">
+            <div className="bg-white p-3.5">
+              <p className="text-sm font-semibold text-ink/60">บิลยางสะสม</p>
+              <p className="mt-2 text-2xl font-bold tabular-nums text-ink">
+                {formatNumber(summary.rubberRemaining.billCount)} บิล
+              </p>
+              <p className="mt-1 text-pretty text-sm text-ink/60">
+                วันนี้ {formatNumber(summary.purchaseToday.billCount)} บิล
+              </p>
+            </div>
+            <div className="border-t border-mint/80 bg-white p-3.5 sm:border-l sm:border-t-0">
+              <p className="text-sm font-semibold text-ink/60">น้ำหนักสุทธิสะสม</p>
+              <p className="mt-2 text-2xl font-bold tabular-nums text-ink">
+                {formatNumber(summary.rubberRemaining.netWeight)} กก.
+              </p>
+              <p className="mt-1 text-pretty text-sm text-ink/60">
+                วันนี้ {formatNumber(summary.purchaseToday.netWeight)} กก.
+              </p>
+            </div>
+            <div className="border-t border-mint/80 bg-white p-3.5 xl:border-l xl:border-t-0">
+              <p className="text-sm font-semibold text-ink/60">ราคาเฉลี่ยสะสม</p>
+              <p className="mt-2 text-2xl font-bold tabular-nums text-ink">
+                {pricePerKg(summary.rubberRemaining.averagePrice)}
+              </p>
+              <p className="mt-1 text-pretty text-sm text-ink/60">
+                วันนี้ {pricePerKg(summary.purchaseToday.averagePrice)}
+              </p>
+            </div>
+            <div className="border-t border-mint/80 bg-white p-3.5 sm:border-l xl:border-t-0">
+              <p className="text-sm font-semibold text-ink/60">มูลค่ายางสะสม</p>
+              <p className="mt-2 text-2xl font-bold tabular-nums text-ink">
+                {formatCurrency(summary.rubberRemaining.rubberValue)}
+              </p>
+              <p className="mt-1 text-pretty text-sm text-ink/60">
+                วันนี้ {formatCurrency(summary.purchaseToday.rubberValue)}
+              </p>
+            </div>
+            <div className="border-t border-mint/80 bg-white p-3.5 sm:col-span-2 xl:col-span-1 xl:border-l xl:border-t-0">
+              <p className="text-sm font-semibold text-ink/60">ยอดหักเงินสะสม</p>
+              <p className="mt-2 text-2xl font-bold tabular-nums text-ink">
+                {formatCurrency(summary.rubberRemaining.deductionTotal)}
+              </p>
+              <p className="mt-1 text-pretty text-sm text-ink/60">
+                วันนี้ {formatCurrency(summary.purchaseToday.deductionTotal)}
+              </p>
+            </div>
+          </div>
+        </section>
       </div>
 
       <section className="rounded-xl border border-mint/80 bg-white p-4 shadow-panel">

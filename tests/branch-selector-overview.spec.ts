@@ -51,6 +51,7 @@ test.describe("branch selector overview", () => {
               paidTotal: 289_239,
               billCount: 30,
               netWeight: 7_959,
+              averagePrice: 36.34,
             },
           },
         }))),
@@ -75,8 +76,8 @@ test.describe("branch selector overview", () => {
     await expect(option.locator(".text-danger").filter({ hasText: "รับ–จ่ายสุทธิ" }))
       .toBeVisible();
     await expect(option).toContainText("นน.ยางคงเหลือ 18,420 กก.");
-    await expect(option).toContainText("ซื้อยางวันนี้ ฿289,239");
-    await expect(option).toContainText("30 บิล · 7,959 กก.");
+    await expect(option).not.toContainText("ซื้อยางวันนี้");
+    await expect(option).toContainText("วันนี้ 30 บิล · 7,959 กก. · เฉลี่ย ฿36.34/กก.");
   });
 
   test("returns only assigned branch summaries and derives cash status without exposing thresholds", async () => {
@@ -109,7 +110,12 @@ test.describe("branch selector overview", () => {
     const marker = assignedLocationId.replaceAll("-", "").slice(0, 5).toUpperCase();
     const calculatedAt = "2026-08-01T03:00:00.000Z";
     const summary = (netCashFlow: number) => ({
-      purchaseToday: { billCount: 30, netWeight: 7_959, paidTotal: 289_239 },
+      purchaseToday: {
+        billCount: 30,
+        netWeight: 7_959,
+        paidTotal: 289_239,
+        averagePrice: 36.34,
+      },
       purchase7Days: {
         paidTotal: 0,
         dailyAverage: 0,
@@ -180,7 +186,12 @@ test.describe("branch selector overview", () => {
         summary: {
           netCashFlow: 99,
           rubberInventoryWeight: 18_420,
-          purchaseToday: { billCount: 30, netWeight: 7_959, paidTotal: 289_239 },
+          purchaseToday: {
+            billCount: 30,
+            netWeight: 7_959,
+            paidTotal: 289_239,
+            averagePrice: 36.34,
+          },
         },
       });
 
@@ -282,7 +293,12 @@ test.describe("branch selector overview", () => {
           summary: {
             netCashFlow: 42_000,
             rubberInventoryWeight: 18_420,
-            purchaseToday: { paidTotal: 289_239, billCount: 30, netWeight: 7_959 },
+            purchaseToday: {
+              paidTotal: 289_239,
+              billCount: 30,
+              netWeight: 7_959,
+              averagePrice: 36.34,
+            },
           },
         }]),
       });

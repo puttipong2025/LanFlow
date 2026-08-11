@@ -20,7 +20,26 @@ type RefreshSnapshot = {
 };
 
 const summary = {
-  purchaseToday: { billCount: 0, netWeight: 0, paidTotal: 0 },
+  purchaseToday: {
+    billCount: 0,
+    netWeight: 0,
+    averagePrice: null,
+    rubberValue: 0,
+    deductionTotal: 0,
+    unpricedBillCount: 0,
+    pendingApprovalCount: 0,
+    paidTotal: 0,
+  },
+  rubberRemaining: {
+    billCount: 0,
+    netWeight: 0,
+    averagePrice: null,
+    rubberValue: 0,
+    deductionTotal: 0,
+    unpricedBillCount: 0,
+    pendingApprovalCount: 0,
+  },
+  cashToday: { income: 0, expense: 0, net: 0 },
   purchase7Days: {
     paidTotal: 0,
     dailyAverage: 0,
@@ -34,6 +53,18 @@ const summary = {
   rubberInventoryWeight: 0,
   waterLoss7Days: { exportCount: 0, weight: 0, percent: null },
   stock: { inStockCount: 0, outOfStockCount: 0, items: [] },
+};
+
+const legacySummary = {
+  purchaseToday: { billCount: 0, netWeight: 0, paidTotal: 0 },
+  purchase7Days: summary.purchase7Days,
+  netCashFlow: 0,
+  operatingExpenseAccumulated: 0,
+  payablePurchaseAccumulated: 0,
+  operatingBurdenPercent: null,
+  rubberInventoryWeight: 0,
+  waterLoss7Days: summary.waterLoss7Days,
+  stock: summary.stock,
 };
 
 function snapshot(
@@ -262,6 +293,48 @@ test.describe.serial("Dashboard immediate manual refresh", () => {
 test.describe("Dashboard immediate refresh UI", () => {
   test.use({ storageState: "playwright/.auth/admin.json" });
 
+  test("polls a dirty legacy snapshot until the new summary contract is ready", async ({
+    page,
+  }) => {
+    let snapshotRequests = 0;
+    await page.route("**/api/lanflow/dashboard/feed**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          selectedDate: "2026-08-12",
+          availableFrom: "2026-07-29",
+          availableTo: "2026-08-12",
+          counts: { all: 0, create: 0, update: 0, delete: 0 },
+          latestAt: null,
+          rows: [],
+          nextCursor: null,
+        }),
+      }),
+    );
+    await page.route("**/api/lanflow/dashboard/snapshot**", (route) => {
+      snapshotRequests += 1;
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(
+          snapshotRequests <= 2
+            ? { ...snapshot("dirty", 1), summary: legacySummary }
+            : snapshot("ready", 2),
+        ),
+      });
+    });
+
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: /กำลังเตรียม Dashboard/ })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByText("ภาพรวมบิลยาง", { exact: true })).toBeVisible({
+      timeout: 10_000,
+    });
+    expect(snapshotRequests).toBeGreaterThan(1);
+  });
+
   test("shows Admin only the branch refresh control and succeeds at the target version", async ({
     page,
   }) => {
@@ -400,7 +473,7 @@ test.describe("Dashboard immediate refresh UI", () => {
       page.getByText("คำนวณ Dashboard ไม่สำเร็จ", { exact: true }).first(),
     ).toBeVisible({ timeout: 10_000 });
     await expect(refreshButton).toBeEnabled();
-    await expect(page.getByText("ซื้อยางวันนี้", { exact: true })).toBeVisible();
+    await expect(page.getByText("ภาพรวมบิลยาง", { exact: true })).toBeVisible();
   });
 
   test("warns after two minutes without cancelling a running refresh", async ({

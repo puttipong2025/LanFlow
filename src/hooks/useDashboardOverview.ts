@@ -53,6 +53,7 @@ export function useDashboardSnapshot(
       if (!data) return false;
       const shouldPoll =
         !data.summary ||
+        data.status === "dirty" ||
         data.status === "queued" ||
         data.status === "running" ||
         (requestedVersion !== null &&

@@ -7,6 +7,7 @@ import { canManageSystemFeatures } from "@/lib/permissions";
 import { TelegramBadgeConfigModal } from "@/components/lanflow/TelegramBadgeConfigModal";
 import { LogoutButton } from "@/components/lanflow/LogoutButton";
 import { useDashboardBranchSummaries } from "@/hooks/useDashboardOverview";
+import { cn } from "@/lib/cn";
 import { formatCurrency, formatNumber } from "@/lib/format";
 import type { DashboardBranchCashStatus } from "@/types/dashboard";
 
@@ -36,6 +37,10 @@ function formatCalculatedAt(value: string | null) {
     timeStyle: "short",
     timeZone: "Asia/Bangkok",
   }).format(new Date(value));
+}
+
+function formatAveragePrice(value: number | null | undefined) {
+  return value == null ? "—" : `฿${formatNumber(value)}/กก.`;
 }
 
 export function AppHeader({
@@ -237,9 +242,12 @@ export function AppHeader({
                         event.preventDefault();
                         focusLocationOption(nextIndex);
                       }}
-                      className={`focus-ring flex w-full items-start gap-2 rounded-lg px-3 py-2.5 text-left text-sm text-ink transition ${
-                        active ? "bg-mint/70" : "hover:bg-mint/55"
-                      }`}
+                      className={cn(
+                        "focus-ring flex w-full items-start gap-2 rounded-xl border px-3.5 py-3 text-left text-sm text-ink transition-colors",
+                        active
+                          ? "border-leaf/25 bg-mint/65 shadow-sm"
+                          : "border-transparent hover:border-mint hover:bg-mint/40",
+                      )}
                     >
                       <Check size={15} className={`mt-0.5 ${active ? "opacity-100 text-leaf" : "opacity-0"}`} />
                       <span className="min-w-0 flex-1">
@@ -270,15 +278,9 @@ export function AppHeader({
                                 {statusLabel}
                               </span>
                             </span>
-                            <span className="block font-semibold text-ink/75">
-                              นน.ยางคงเหลือ {formatNumber(branchSummary.summary.rubberInventoryWeight)} กก.
-                            </span>
-                            <span className="block font-semibold text-ink/75">
-                              ซื้อยางวันนี้ {formatCurrency(branchSummary.summary.purchaseToday.paidTotal)}
-                            </span>
-                            <span className="flex items-center gap-1 text-[11px] text-ink/50">
+                            <span className="mt-1 flex items-center gap-1 text-pretty text-sm text-ink/60">
                               <span>
-                                {formatNumber(branchSummary.summary.purchaseToday.billCount)} บิล · {formatNumber(branchSummary.summary.purchaseToday.netWeight)} กก.
+                                วันนี้ {formatNumber(branchSummary.summary.purchaseToday.billCount)} บิล · {formatNumber(branchSummary.summary.purchaseToday.netWeight)} กก. · เฉลี่ย {formatAveragePrice(branchSummary.summary.purchaseToday.averagePrice)}
                               </span>
                               {dataIsStale && (
                                 <span
@@ -291,6 +293,9 @@ export function AppHeader({
                                 </span>
                               )}
                             </span>
+                            <span className="block font-semibold text-ink/70">
+                              นน.ยางคงเหลือ {formatNumber(branchSummary.summary.rubberInventoryWeight)} กก.
+                            </span>
                           </span>
                         ) : branchSummaries.isPending ? (
                           <span className="mt-1.5 block text-xs text-ink/45">{statusLabel}</span>
@@ -302,11 +307,10 @@ export function AppHeader({
                                 {statusLabel}
                               </span>
                             </span>
-                            <span className="block">นน.ยางคงเหลือ —</span>
-                            <span className="flex justify-between gap-2">
-                              <span>ซื้อยางวันนี้</span>
-                              <span>—</span>
+                            <span className="mt-1 block text-pretty text-sm text-ink/60">
+                              วันนี้ — บิล · — กก. · เฉลี่ย —
                             </span>
+                            <span className="block">นน.ยางคงเหลือ —</span>
                           </span>
                         )}
                       </span>
