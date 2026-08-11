@@ -9,7 +9,6 @@ export type RubberBillReceiptModel = {
   referenceNo: string;
   billDate: string;
   customerName: string;
-  payerName: string;
   approvalLabel: string;
   hasZeroPrice: boolean;
   weighItems: Array<{
@@ -111,7 +110,6 @@ export function buildRubberBillReceiptModel(bill: RubberBill): RubberBillReceipt
       : bill.localBillNo,
     billDate: bill.billDate,
     customerName: bill.customerName,
-    payerName: bill.createdByName?.trim() || "ไม่ระบุ",
     approvalLabel: currentRevisionApprovalLabel(bill, receiptKind),
     hasZeroPrice: weighItems.some((item) => item.price === 0),
     weighItems,
@@ -210,7 +208,6 @@ table { width: 100%; border-collapse: collapse; margin: 6px 0; } th, td { border
 ${model.hasZeroPrice ? '<div class="warning">ยังไม่กำหนดราคา — ห้ามจ่าย</div>' : ""}
 <div class="meta"><div class="row"><span>${h(model.referenceLabel)}</span><strong>${h(model.referenceNo)}</strong></div><div class="row"><span>วันที่</span><span>${h(model.billDate)}</span></div></div>
 <div><strong>ลูกค้า:</strong> ${h(model.customerName)}</div>
-<div><strong>ผู้รับผิดชอบการจ่าย:</strong> ${h(model.payerName)}</div>
 <div><strong>สถานะอนุมัติ:</strong> ${h(model.approvalLabel)}</div>
 ${branchReceiptMeta}
 <table><thead><tr><th>รายการ</th><th class="num">เข้า</th><th class="num">ออก</th><th class="num">ชั่งสุทธิ</th><th class="num">ราคา</th><th class="num">รวม</th></tr></thead><tbody>${weighRows}</tbody></table>

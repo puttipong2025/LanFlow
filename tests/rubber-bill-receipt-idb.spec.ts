@@ -102,7 +102,6 @@ function makeSnapshot(
       referenceNo: bill.serverBillNo!,
       billDate: bill.billDate,
       customerName: bill.customerName,
-      payerName: bill.createdByName,
       approvalLabel: "ไม่ต้องอนุมัติ",
       hasZeroPrice: false,
       weighItems: [{

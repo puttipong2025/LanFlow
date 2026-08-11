@@ -230,7 +230,7 @@ test("shares a Rubber Bill PDF and falls back to download", async ({ page }) => 
   await shareButton.click();
   const waitingDialog = page.getByRole("dialog", { name: "กำลังสร้าง PDF" });
   await expect(waitingDialog).toBeVisible();
-  await waitingDialog.getByRole("button", { name: "ปิดหน้าต่าง", exact: true }).click();
+  await waitingDialog.getByRole("button", { name: "ยกเลิกการสร้าง PDF", exact: true }).click();
   await expect(waitingDialog).toBeHidden();
   await page.waitForTimeout(300);
   expect(await page.evaluate(() =>

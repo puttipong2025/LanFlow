@@ -82,7 +82,6 @@ test.describe("Rubber Bill receipt contract @rubber-bill-print", () => {
     expect(model.rubberValue).toBe(160);
     expect(model.deductionTotal).toBe(25);
     expect(model.netTotal).toBe(135);
-    expect(model.payerName).toBe("ผู้ใช้");
     expect(model.approvalLabel).toBe("ไม่ต้องอนุมัติ");
     expect(model.deductions).toEqual([
       { label: "กรด & สินค้า 1 ถัง", amount: 10 },
@@ -99,6 +98,8 @@ test.describe("Rubber Bill receipt contract @rubber-bill-print", () => {
     expect(html).toContain("ยอดที่ต้องจ่ายลูกค้า");
     expect(html).not.toContain(">ยอดสุทธิ<");
     expect(html).toContain("สถานะอนุมัติ");
+    expect(html).not.toContain("ผู้รับผิดชอบการจ่าย");
+    expect(html).not.toContain("ผู้ใช้");
     expect(html).not.toContain("ที่อยู่:");
     expect(html).not.toContain("FSC");
     expect(html).not.toContain("EUDR");
@@ -189,14 +190,15 @@ test.describe("Rubber Bill receipt contract @rubber-bill-print", () => {
     })).approvalLabel).toBe("ไม่ต้องอนุมัติ");
   });
 
-  test("keeps the original creator as payer on later revisions and falls back to ไม่ระบุ", () => {
-    const original = makeBill({ createdByName: "ผู้สร้างเดิม" });
-    const edited = { ...original, revisionNo: 4, customerName: "ชื่อที่แก้ภายหลัง" };
+  test("never includes the payment-responsible person in the receipt", () => {
+    const html = renderRubberBillReceiptHtml(buildRubberBillReceiptModel(makeBill({
+      createdByName: "ผู้สร้างเดิม",
+      createdByPhone: "0812345678",
+    })));
 
-    expect(buildRubberBillReceiptModel(original).payerName).toBe("ผู้สร้างเดิม");
-    expect(buildRubberBillReceiptModel(edited).payerName).toBe("ผู้สร้างเดิม");
-    expect(buildRubberBillReceiptModel(makeBill({ createdByName: "   " })).payerName)
-      .toBe("ไม่ระบุ");
+    expect(html).not.toContain("ผู้รับผิดชอบการจ่าย");
+    expect(html).not.toContain("ผู้สร้างเดิม");
+    expect(html).not.toContain("0812345678");
   });
 
   test("escapes every dynamic receipt string", () => {
