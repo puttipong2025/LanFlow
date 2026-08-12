@@ -150,6 +150,24 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await expect(totalCost.getByText("฿3,225.00", { exact: true })).toBeVisible();
       await expect(averageCost.getByText("฿32.25/กก.", { exact: true })).toBeVisible();
 
+      const useTotalWeight = detailDialog.getByRole("checkbox", {
+        name: "ใช้น้ำหนักสุทธิรวมเป็นน้ำหนักปัจจุบัน",
+      });
+      const currentWeightInput = detailDialog.getByLabel("น้ำหนักปัจจุบัน", { exact: true });
+      const weightLoss = detailDialog.getByText("น้ำหนักหาย", { exact: true }).locator("..");
+      await expect(useTotalWeight).not.toBeChecked();
+      await expect(detailDialog.getByText("ใช้เมื่อน้ำหนักไม่เปลี่ยน · น้ำหนักหาย 0%", {
+        exact: true,
+      })).toBeVisible();
+      await useTotalWeight.check();
+      await expect(currentWeightInput).toHaveValue("100");
+      await expect(currentWeightInput).toHaveAttribute("readonly", "");
+      await expect(weightLoss.getByText("0.00%", { exact: true })).toBeVisible();
+      await useTotalWeight.uncheck();
+      await expect(currentWeightInput).toHaveValue("100");
+      await expect(currentWeightInput).not.toHaveAttribute("readonly", "");
+      await currentWeightInput.fill("90");
+
       await detailDialog.getByLabel("ค่าทำงาน/กก.").fill("");
       await expect(totalCost.getByText("—", { exact: true })).toBeVisible();
       await expect(averageCost.getByText("—", { exact: true })).toBeVisible();
@@ -160,6 +178,19 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await expect(averageCost.getByText("฿30.00/กก.", { exact: true })).toBeVisible();
       await expect(detailDialog.getByRole("button", { name: "ตรวจสอบแล้ว" })).toBeEnabled();
       await detailDialog.getByRole("button", { name: "ปิด" }).click();
+
+      summary.currentWeight = summary.originalWeightTotal;
+      summary.weightLossPercent = 0;
+      await page.getByRole("button", { name: "ดูรายละเอียด REX-EDIT-001" }).click();
+      const reopenedDialog = page.getByRole("dialog", { name: "REX-EDIT-001" });
+      await expect(reopenedDialog.getByRole("checkbox", {
+        name: "ใช้น้ำหนักสุทธิรวมเป็นน้ำหนักปัจจุบัน",
+      })).toBeChecked();
+      await expect(reopenedDialog.getByLabel("น้ำหนักปัจจุบัน", { exact: true }))
+        .toHaveAttribute("readonly", "");
+      await expect(reopenedDialog.getByText("น้ำหนักหาย", { exact: true }).locator("..")
+        .getByText("0.00%", { exact: true })).toBeVisible();
+      await reopenedDialog.getByRole("button", { name: "ปิด" }).click();
       await page.getByRole("button", { name: "แก้", exact: true }).click();
 
       const editDialog = page.getByRole("dialog", { name: "แก้รายการส่งออกยาง" });
@@ -264,7 +295,12 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await expect(openingDialog.getByRole("status", {
         name: "กำลังโหลดรายละเอียดรายการส่งออกยาง",
       })).toBeVisible();
-      await page.getByLabel("น้ำหนักปัจจุบัน").fill("90");
+      await page.getByRole("checkbox", {
+        name: "ใช้น้ำหนักสุทธิรวมเป็นน้ำหนักปัจจุบัน",
+      }).check();
+      await expect(page.getByLabel("น้ำหนักปัจจุบัน", { exact: true })).toHaveValue("100");
+      await expect(page.getByLabel("น้ำหนักปัจจุบัน", { exact: true }))
+        .toHaveAttribute("readonly", "");
       await page.unroute(detailRoute);
       await page.getByLabel("ค่าทำงาน/กก.").fill("2");
       const saveRoute = `**/api/lanflow/rubber-exports/${exportId}`;
@@ -286,6 +322,13 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await expect(page.getByText("บันทึกฉบับร่างแล้ว")).toBeVisible();
       await page.unroute(saveRoute);
 
+      await page.getByRole("button", { name: "ปิด", exact: true }).click();
+      await page.getByRole("button", {
+        name: `ดูรายละเอียด REX-MANAGER-${exportId.slice(0, 8)}`,
+      }).dispatchEvent("click");
+      await expect(page.getByRole("checkbox", {
+        name: "ใช้น้ำหนักสุทธิรวมเป็นน้ำหนักปัจจุบัน",
+      })).toBeChecked();
       await expect(page.getByRole("button", { name: "ตรวจสอบแล้ว", exact: true })).toBeEnabled();
       await page.getByRole("button", { name: "ตรวจสอบแล้ว", exact: true }).click();
       const destinationDialog = page.getByRole("alertdialog", {
@@ -302,6 +345,9 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       }).click();
       await expect(page.getByText("ตรวจสอบรายการแล้ว")).toBeVisible();
       await expect(page.getByText(/ตรวจสอบแล้ว$/).first()).toBeVisible();
+      await expect(page.getByRole("checkbox", {
+        name: "ใช้น้ำหนักสุทธิรวมเป็นน้ำหนักปัจจุบัน",
+      })).toHaveCount(0);
       await page.getByRole("button", { name: "ปิด", exact: true }).click();
       await expect(page.locator("tbody tr").filter({
         hasText: `REX-MANAGER-${exportId.slice(0, 8)}`,

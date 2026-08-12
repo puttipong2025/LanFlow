@@ -503,7 +503,15 @@ export function RubberExportsModule({
 
       {details && (
         <RubberExportDetailModal
-          key={details.id}
+          key={[
+            details.id,
+            details.status,
+            details.originalWeightTotal,
+            details.currentWeight ?? "",
+            details.workRate ?? "",
+            details.otherOperatingCost,
+            details.items.map((item) => item.id).join(","),
+          ].join(":")}
           details={details}
           canVerify={api.permissions.canVerify}
           shareBusy={pdfShare.busy}

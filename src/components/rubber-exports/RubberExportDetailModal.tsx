@@ -68,6 +68,9 @@ export function RubberExportDetailModal({
   const [currentWeight, setCurrentWeight] = useState<number | null>(details.currentWeight ?? null);
   const [workRate, setWorkRate] = useState<number | null>(details.workRate ?? null);
   const [otherCost, setOtherCost] = useState(details.otherOperatingCost);
+  const [useTotalWeight, setUseTotalWeight] = useState(
+    details.status === "draft" && details.currentWeight === details.originalWeightTotal
+  );
   const [saving, setSaving] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [showVerify, setShowVerify] = useState(false);
@@ -151,6 +154,29 @@ export function RubberExportDetailModal({
           {Boolean(details.estimatedAgeItemCount) && ` · มีอายุประมาณการ ${details.estimatedAgeItemCount} บิล`}
         </p>
 
+        {isDraft && (
+          <label className="flex items-start gap-3 rounded-md border border-black/10 bg-field/60 p-3 text-ink">
+            <input
+              type="checkbox"
+              checked={useTotalWeight}
+              onChange={(event) => {
+                const checked = event.target.checked;
+                setUseTotalWeight(checked);
+                if (checked) setCurrentWeight(details.originalWeightTotal);
+              }}
+              className="focus-ring mt-0.5 size-4 shrink-0 accent-leaf"
+            />
+            <span>
+              <span className="block text-sm font-semibold">
+                ใช้น้ำหนักสุทธิรวมเป็นน้ำหนักปัจจุบัน
+              </span>
+              <span className="mt-0.5 block text-pretty text-xs text-ink/60">
+                ใช้เมื่อน้ำหนักไม่เปลี่ยน · น้ำหนักหาย 0%
+              </span>
+            </span>
+          </label>
+        )}
+
         <div className="grid gap-3 sm:grid-cols-5">
           <label className="block">
             <span className="mb-1 block text-sm font-semibold text-ink/70">น้ำหนักปัจจุบัน</span>
@@ -160,7 +186,7 @@ export function RubberExportDetailModal({
               max={details.originalWeightTotal}
               step="0.01"
               value={currentWeight ?? ""}
-              readOnly={!isDraft}
+              readOnly={!isDraft || useTotalWeight}
               onChange={(event) => setCurrentWeight(nullableNumber(event.target.value))}
               className="focus-ring h-11 w-full rounded-md border border-black/10 px-3 read-only:bg-slate-100"
             />
