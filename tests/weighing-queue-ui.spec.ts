@@ -152,6 +152,8 @@ test("reloads offline with cached customers and the device-local queue", async (
 test("shares an 80mm appointment PDF from a wait preset", async ({ page }) => {
   await openRubberBills(page);
   await page.getByRole("button", { name: "จับเวลา", exact: true }).click();
+  await expect(page.getByRole("button", { name: "แชร์ PDF บัตรนัด 120 นาที" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "แชร์ PDF บัตรนัด 180 นาที" })).toBeVisible();
   await page.getByRole("button", { name: "แชร์ PDF บัตรนัด 5 นาที" }).click();
 
   await expect.poll(() => page.evaluate(() =>

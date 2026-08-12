@@ -1,6 +1,6 @@
 import { bangkokDateString } from "@/lib/bangkok-date";
 
-export const WEIGHING_WAIT_OPTIONS = [5, 10, 15, 30, 40, 60] as const;
+export const WEIGHING_WAIT_OPTIONS = [5, 10, 15, 30, 40, 60, 120, 180] as const;
 
 const THAI_DATE_FORMATTER = new Intl.DateTimeFormat("th-TH-u-ca-buddhist-nu-latn", {
   timeZone: "Asia/Bangkok",

@@ -8,7 +8,7 @@ import {
 
 test.describe("Weighing appointment ticket", () => {
   test("offers only the confirmed wait presets", () => {
-    expect(WEIGHING_WAIT_OPTIONS).toEqual([5, 10, 15, 30, 40, 60]);
+    expect(WEIGHING_WAIT_OPTIONS).toEqual([5, 10, 15, 30, 40, 60, 120, 180]);
   });
 
   test("calculates and formats the appointment in Bangkok time", () => {
