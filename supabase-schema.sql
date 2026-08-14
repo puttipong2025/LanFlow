@@ -1608,6 +1608,23 @@ $$;
 ALTER FUNCTION "private"."claim_dashboard_branch"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."clear_weight_evidence_completion_on_bill_change"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+begin
+  if new.revision_no is distinct from old.revision_no
+     or new.record_status is distinct from old.record_status then
+    new.evidence_completion_id := null;
+  end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."clear_weight_evidence_completion_on_bill_change"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."create_income_expense_approval_request_20260805080000"("payload" "jsonb") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -3225,11 +3242,20 @@ begin
        = (to_jsonb(old) - array['sold_out_at', 'sold_out_by_user_id', 'sold_out_by_name']) then
     return new;
   end if;
+
   v_id := case when tg_op = 'DELETE' then old.id else new.id end;
   v_report_no := private.active_report_no(tg_argv[0], v_id);
+
   if v_report_no is not null then
+    if tg_argv[0] = 'rubber_bill'
+      and tg_op = 'UPDATE'
+      and (to_jsonb(new) - array['print_status', 'updated_at', 'evidence_completion_id'])
+          = (to_jsonb(old) - array['print_status', 'updated_at', 'evidence_completion_id']) then
+      return new;
+    end if;
     perform private.raise_report_lock(v_report_no);
   end if;
+
   if tg_op = 'DELETE' then return old; end if;
   return new;
 end;
@@ -6221,6 +6247,47 @@ $$;
 
 
 ALTER FUNCTION "public"."claim_telegram_badge_dispatch"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_bill public.rubber_bills%rowtype;
+begin
+  if not private.is_active_user() or not public.can_access_location(p_location_id) then
+    raise exception 'WEIGHT_EVIDENCE_ACCESS_DENIED';
+  end if;
+  if p_bill_id is null or p_completion_id is null or p_revision_no < 0 then
+    raise exception 'WEIGHT_EVIDENCE_INVALID_INPUT';
+  end if;
+
+  select * into v_bill
+  from public.rubber_bills
+  where id = p_bill_id and location_id = p_location_id
+  for update;
+
+  if not found then return jsonb_build_object('state', 'inactive'); end if;
+  if v_bill.record_status <> 'active' then return jsonb_build_object('state', 'inactive', 'currentRevisionNo', v_bill.revision_no); end if;
+  if v_bill.revision_no <> p_revision_no then return jsonb_build_object('state', 'stale', 'currentRevisionNo', v_bill.revision_no); end if;
+
+  if v_bill.evidence_completion_id is null then
+    update public.rubber_bills
+    set evidence_completion_id = p_completion_id,
+        updated_at = now()
+    where id = p_bill_id;
+    return jsonb_build_object('state', 'owned', 'currentRevisionNo', v_bill.revision_no);
+  end if;
+  if v_bill.evidence_completion_id = p_completion_id then
+    return jsonb_build_object('state', 'owned', 'currentRevisionNo', v_bill.revision_no);
+  end if;
+  return jsonb_build_object('state', 'owned_by_other', 'currentRevisionNo', v_bill.revision_no);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."complete_telegram_badge_dispatch"("p_claim_token" "uuid", "p_outcome" "text", "p_error" "text" DEFAULT NULL::"text") RETURNS "void"
@@ -11301,6 +11368,44 @@ $$;
 ALTER FUNCTION "public"."receive_rubber_export"("p_destination_location_id" "uuid", "p_source_rubber_export_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."release_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_bill public.rubber_bills%rowtype;
+begin
+  if not private.is_active_user() or not public.can_access_location(p_location_id) then
+    raise exception 'WEIGHT_EVIDENCE_ACCESS_DENIED';
+  end if;
+  if p_bill_id is null or p_completion_id is null or p_revision_no < 0 then
+    raise exception 'WEIGHT_EVIDENCE_INVALID_INPUT';
+  end if;
+
+  select * into v_bill
+  from public.rubber_bills
+  where id = p_bill_id and location_id = p_location_id
+  for update;
+
+  if not found then return jsonb_build_object('state', 'inactive'); end if;
+  if v_bill.record_status <> 'active' then return jsonb_build_object('state', 'inactive', 'currentRevisionNo', v_bill.revision_no); end if;
+  if v_bill.revision_no <> p_revision_no then return jsonb_build_object('state', 'stale', 'currentRevisionNo', v_bill.revision_no); end if;
+  if v_bill.evidence_completion_id is distinct from p_completion_id then
+    return jsonb_build_object('state', 'not_owner', 'currentRevisionNo', v_bill.revision_no);
+  end if;
+
+  update public.rubber_bills
+  set evidence_completion_id = null,
+      updated_at = now()
+  where id = p_bill_id;
+  return jsonb_build_object('state', 'released', 'currentRevisionNo', v_bill.revision_no);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."release_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."remove_user_location_with_primary_replacement"("p_user_id" "uuid", "p_location_id" "uuid", "p_replacement_location_id" "uuid" DEFAULT NULL::"uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -11852,6 +11957,7 @@ END - "deduction_total"), (0)::numeric)) STORED,
     "received_at" timestamp with time zone,
     "received_age_hours" numeric(14,6),
     "received_age_is_estimated" boolean,
+    "evidence_completion_id" "uuid",
     CONSTRAINT "rubber_bills_approval_revision_shape_check" CHECK (((("approval_state" = 'not_required'::"text") AND ("approved_by_name" IS NULL) AND ("approval_revision_no" IS NULL)) OR (("approval_state" = 'approved'::"text") AND ("approved_by_name" IS NOT NULL) AND ("approval_revision_no" = "revision_no")))),
     CONSTRAINT "rubber_bills_approval_state_check" CHECK (("approval_state" = ANY (ARRAY['not_required'::"text", 'approved'::"text"]))),
     CONSTRAINT "rubber_bills_branch_receipt_shape_check" CHECK (((("source_rubber_export_id" IS NULL) AND ("source_export_no" IS NULL) AND ("received_at" IS NULL) AND ("received_age_hours" IS NULL) AND ("received_age_is_estimated" IS NULL)) OR ((NULLIF("btrim"("source_export_no"), ''::"text") IS NOT NULL) AND ("received_at" IS NOT NULL) AND ("received_age_hours" IS NOT NULL) AND ("received_age_hours" >= (0)::numeric) AND ("received_age_is_estimated" IS NOT NULL) AND ("net_total" = (0)::numeric) AND ("rubber_value" > (0)::numeric) AND ("deduction_total" = "net_rubber_value") AND (("source_rubber_export_id" IS NOT NULL) OR ("record_status" = 'deleted'::"public"."record_status"))))),
@@ -11900,6 +12006,10 @@ COMMENT ON COLUMN "public"."rubber_bills"."payable_before_rounding" IS 'Net rubb
 
 
 COMMENT ON COLUMN "public"."rubber_bills"."received_age_hours" IS 'Weighted average age at received_at, including verified-to-received transit time.';
+
+
+
+COMMENT ON COLUMN "public"."rubber_bills"."evidence_completion_id" IS 'Opaque owner UUID for first-completer-wins device-local weight evidence; no image or OCR data.';
 
 
 
@@ -16184,6 +16294,10 @@ CREATE OR REPLACE TRIGGER "assign_rubber_bill_item_sequence" BEFORE INSERT ON "p
 
 
 
+CREATE OR REPLACE TRIGGER "clear_weight_evidence_completion_on_bill_change" BEFORE UPDATE OF "revision_no", "record_status" ON "public"."rubber_bills" FOR EACH ROW EXECUTE FUNCTION "private"."clear_weight_evidence_completion_on_bill_change"();
+
+
+
 CREATE OR REPLACE TRIGGER "dashboard_dirty_financial_transactions" AFTER INSERT OR DELETE OR UPDATE ON "public"."financial_transactions" FOR EACH ROW EXECUTE FUNCTION "private"."dashboard_dirty_location_columns"('expense_location_id');
 
 
@@ -17723,6 +17837,10 @@ REVOKE ALL ON FUNCTION "private"."claim_dashboard_branch"() FROM PUBLIC;
 
 
 
+REVOKE ALL ON FUNCTION "private"."clear_weight_evidence_completion_on_bill_change"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."create_income_expense_approval_request_20260805080000"("payload" "jsonb") FROM PUBLIC;
 
 
@@ -17957,6 +18075,11 @@ GRANT ALL ON FUNCTION "public"."claim_dashboard_refresh_now"("p_location_id" "uu
 
 REVOKE ALL ON FUNCTION "public"."claim_telegram_badge_dispatch"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."claim_telegram_badge_dispatch"() TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") TO "authenticated";
 
 
 
@@ -18266,6 +18389,11 @@ GRANT ALL ON FUNCTION "public"."receive_cash_branch_transfer"("p_transfer_id" "u
 
 REVOKE ALL ON FUNCTION "public"."receive_rubber_export"("p_destination_location_id" "uuid", "p_source_rubber_export_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."receive_rubber_export"("p_destination_location_id" "uuid", "p_source_rubber_export_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."release_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."release_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") TO "authenticated";
 
 
 

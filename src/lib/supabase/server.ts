@@ -1,4 +1,5 @@
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
+import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { getSupabasePublishableKey, getSupabaseUrl } from "@/lib/supabase/config";
 
@@ -25,4 +26,19 @@ export async function createSupabaseServerClient() {
       }
     }
   );
+}
+
+export async function createSupabaseRequestClient(request?: Request) {
+  const authorization = request?.headers.get("authorization")?.trim();
+  if (authorization?.startsWith("Bearer ")) {
+    return createClient(getSupabaseUrl(), getSupabasePublishableKey(), {
+      global: { headers: { Authorization: authorization } },
+      auth: {
+        autoRefreshToken: false,
+        detectSessionInUrl: false,
+        persistSession: false,
+      },
+    });
+  }
+  return createSupabaseServerClient();
 }

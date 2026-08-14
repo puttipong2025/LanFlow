@@ -7,7 +7,7 @@ import {
   classifyAuthClaimsFailure,
   summarizeUpstreamError,
 } from "@/lib/server/auth-access-failure";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseRequestClient } from "@/lib/supabase/server";
 
 export type AuthTokenPayload = {
   sub: string;
@@ -49,9 +49,10 @@ function authFailureResponse(failure: AuthAccessFailure) {
   );
 }
 
-export async function requireAuth(_request?: Request): Promise<AuthResult> {
-  const supabase = await createSupabaseServerClient();
-  const { data: claimsData, error: claimsError } = await supabase.auth.getClaims();
+export async function requireAuth(request?: Request): Promise<AuthResult> {
+  const supabase = await createSupabaseRequestClient(request);
+  const bearerToken = request?.headers.get("authorization")?.trim().match(/^Bearer\s+(.+)$/i)?.[1];
+  const { data: claimsData, error: claimsError } = await supabase.auth.getClaims(bearerToken);
   const userId = claimsData?.claims?.sub;
 
   const claimsFailure = classifyAuthClaimsFailure({
