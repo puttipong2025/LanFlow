@@ -62,53 +62,11 @@ export function useTransportStaffs() {
 
   const addStaff = useMutation({
     mutationFn: async (staff: TransportStaff) => {
-      const { data, error } = await supabase.from("transport_staffs").insert({
-        id: staff.id,
-        client_temp_id: staff.clientTempId,
-        legacy_rec_id: staff.legacyRecId,
-        legacy_member_id: staff.legacyMemberId,
-        main_name: staff.mainName,
-        default_location_id: staff.defaultLocationId,
-        created_by_user_id: staff.createdByUserId,
-        created_by_name: staff.createdByName,
-        created_by_phone: staff.createdByPhone,
-        idempotency_key: staff.idempotencyKey,
-        revision_no: staff.revisionNo,
-        record_status: staff.recordStatus,
-      }).select().single();
+      const { data, error } = await supabase.rpc("save_transport_staff_master_data", {
+        payload: staffWritePayload(staff),
+      });
 
       if (error) throw new Error(error.message || JSON.stringify(error));
-
-      if (staff.contacts && staff.contacts.length > 0) {
-        await supabase.from("transport_staff_contacts").insert(
-          staff.contacts.map((c) => ({
-            id: c.id,
-            staff_id: staff.id,
-            phone: c.phone,
-          }))
-        );
-      }
-      if (staff.bankAccounts && staff.bankAccounts.length > 0) {
-        await supabase.from("transport_staff_bank_accounts").insert(
-          staff.bankAccounts.map((b) => ({
-            id: b.id,
-            staff_id: staff.id,
-            bank_name: b.bankName,
-            account_number: b.accountNumber,
-            account_name: b.accountName,
-            is_primary: b.isPrimary,
-          }))
-        );
-      }
-      if (staff.plates && staff.plates.length > 0) {
-        await supabase.from("transport_staff_plates").insert(
-          staff.plates.map((p) => ({
-            id: p.id,
-            staff_id: staff.id,
-            plate_number: p.plateNumber,
-          }))
-        );
-      }
       return data;
     },
     onSuccess: () => {
@@ -118,56 +76,11 @@ export function useTransportStaffs() {
 
   const updateStaff = useMutation({
     mutationFn: async (staff: TransportStaff) => {
-      const { data, error } = await supabase
-        .from("transport_staffs")
-        .update({
-          legacy_member_id: staff.legacyMemberId,
-          main_name: staff.mainName,
-          revision_no: staff.revisionNo,
-        })
-        .eq("id", staff.id)
-        .select().single();
+      const { data, error } = await supabase.rpc("save_transport_staff_master_data", {
+        payload: staffWritePayload(staff, staff.id),
+      });
 
       if (error) throw new Error(error.message || JSON.stringify(error));
-
-      // Simplistic relation update: delete all and insert new.
-      // A more robust approach would diff and patch.
-      await supabase.from("transport_staff_contacts").delete().eq("staff_id", staff.id);
-      if (staff.contacts && staff.contacts.length > 0) {
-        await supabase.from("transport_staff_contacts").insert(
-          staff.contacts.map((c) => ({
-            id: c.id,
-            staff_id: staff.id,
-            phone: c.phone,
-          }))
-        );
-      }
-
-      await supabase.from("transport_staff_bank_accounts").delete().eq("staff_id", staff.id);
-      if (staff.bankAccounts && staff.bankAccounts.length > 0) {
-        await supabase.from("transport_staff_bank_accounts").insert(
-          staff.bankAccounts.map((b) => ({
-            id: b.id,
-            staff_id: staff.id,
-            bank_name: b.bankName,
-            account_number: b.accountNumber,
-            account_name: b.accountName,
-            is_primary: b.isPrimary,
-          }))
-        );
-      }
-
-      await supabase.from("transport_staff_plates").delete().eq("staff_id", staff.id);
-      if (staff.plates && staff.plates.length > 0) {
-        await supabase.from("transport_staff_plates").insert(
-          staff.plates.map((p) => ({
-            id: p.id,
-            staff_id: staff.id,
-            plate_number: p.plateNumber,
-          }))
-        );
-      }
-
       return data;
     },
     onSuccess: () => {
@@ -195,5 +108,25 @@ export function useTransportStaffs() {
     addStaff,
     updateStaff,
     deleteStaff,
+  };
+}
+
+function staffWritePayload(staff: TransportStaff, staffId?: string) {
+  return {
+    staffId,
+    clientTempId: staff.clientTempId,
+    legacyRecId: staff.legacyRecId,
+    legacyMemberId: staff.legacyMemberId,
+    mainName: staff.mainName,
+    defaultLocationId: staff.defaultLocationId,
+    idempotencyKey: staff.idempotencyKey,
+    contacts: (staff.contacts ?? []).map(({ phone }) => ({ phone })),
+    bankAccounts: (staff.bankAccounts ?? []).map((account) => ({
+      bankName: account.bankName,
+      accountNumber: account.accountNumber,
+      accountName: account.accountName,
+      isPrimary: account.isPrimary,
+    })),
+    plates: (staff.plates ?? []).map(({ plateNumber }) => ({ plateNumber })),
   };
 }

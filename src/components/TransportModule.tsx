@@ -321,16 +321,21 @@ export function TransportModule({ locationId, online }: { locationId: string; on
           onSave={(v) => {
             if (editingStaff) {
               updateStaff.mutate(v, {
-                onSuccess: () => toast.success("แก้ไขข้อมูลสำเร็จ"),
+                onSuccess: () => {
+                  toast.success("แก้ไขข้อมูลสำเร็จ");
+                  setModalOpen(false);
+                },
                 onError: (err) => toast.error("แก้ไขข้อมูลไม่สำเร็จ: " + err.message)
               });
             } else {
               addStaff.mutate(v, {
-                onSuccess: () => toast.success("เพิ่มข้อมูลสำเร็จ"),
+                onSuccess: () => {
+                  toast.success("เพิ่มข้อมูลสำเร็จ");
+                  setModalOpen(false);
+                },
                 onError: (err) => toast.error("เพิ่มข้อมูลไม่สำเร็จ: " + err.message)
               });
             }
-            setModalOpen(false);
           }}
         />
       )}

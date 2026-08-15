@@ -54,11 +54,9 @@ export function useCustomers() {
         })) || [],
         farms: row.customer_farms?.map((f: any) => ({
           id: f.id,
-          titleNumber: f.title_number,
-          areaRai: f.area_rai,
+          ownerName: f.owner_name ?? "",
           address: f.address,
-          latitude: f.latitude,
-          longitude: f.longitude
+          cardNumber: f.card_number ?? ""
         })) || []
       })) as Customer[];
     }
@@ -66,25 +64,10 @@ export function useCustomers() {
 
   const addCustomer = useMutation({
     mutationFn: async (customer: Customer) => {
-      const { data, error } = await supabase.from('customers').insert({
-        id: customer.id,
-        client_temp_id: customer.clientTempId,
-        legacy_rec_id: customer.legacyRecId,
-        legacy_member_id: customer.legacyMemberId,
-        class: customer.class,
-        main_name: customer.mainName,
-        fsc_status: customer.fscStatus,
-        starting_points_date: customer.startingPointsDate,
-        default_location_id: customer.defaultLocationId,
-        created_by_user_id: customer.createdByUserId,
-        created_by_name: customer.createdByName,
-        created_by_phone: customer.createdByPhone,
-        sync_status: customer.syncStatus,
-        idempotency_key: customer.idempotencyKey,
-        revision_no: customer.revisionNo,
-        record_status: customer.recordStatus
-      }).select().single();
-      
+      const { data, error } = await supabase.rpc("save_customer_master_data", {
+        payload: customerWritePayload(customer),
+      });
+
       if (error) throw new Error(error.message || JSON.stringify(error));
       return data;
     },
@@ -95,20 +78,10 @@ export function useCustomers() {
 
   const updateCustomer = useMutation({
     mutationFn: async (customer: Customer) => {
-      const { data, error } = await supabase.from('customers').update({
-        legacy_rec_id: customer.legacyRecId,
-        legacy_member_id: customer.legacyMemberId,
-        class: customer.class,
-        main_name: customer.mainName,
-        fsc_status: customer.fscStatus,
-        starting_points_date: customer.startingPointsDate,
-        default_location_id: customer.defaultLocationId,
-        sync_status: customer.syncStatus,
-        idempotency_key: customer.idempotencyKey,
-        revision_no: customer.revisionNo,
-        record_status: customer.recordStatus
-      }).eq('id', customer.id).select().single();
-      
+      const { data, error } = await supabase.rpc("save_customer_master_data", {
+        payload: customerWritePayload(customer, customer.id),
+      });
+
       if (error) throw new Error(error.message || JSON.stringify(error));
       return data;
     },
@@ -134,5 +107,32 @@ export function useCustomers() {
     addCustomer,
     updateCustomer,
     deleteCustomer
+  };
+}
+
+function customerWritePayload(customer: Customer, customerId?: string) {
+  return {
+    customerId,
+    clientTempId: customer.clientTempId,
+    legacyRecId: customer.legacyRecId,
+    legacyMemberId: customer.legacyMemberId,
+    class: customer.class,
+    mainName: customer.mainName,
+    fscStatus: customer.fscStatus,
+    startingPointsDate: customer.startingPointsDate,
+    defaultLocationId: customer.defaultLocationId,
+    idempotencyKey: customer.idempotencyKey,
+    contacts: (customer.contacts ?? []).map(({ phone }) => ({ phone })),
+    bankAccounts: (customer.bankAccounts ?? []).map((account) => ({
+      bankName: account.bankName,
+      accountNumber: account.accountNumber,
+      accountName: account.accountName,
+      isPrimary: account.isPrimary,
+    })),
+    farms: (customer.farms ?? []).map((farm) => ({
+      ownerName: farm.ownerName,
+      address: farm.address,
+      cardNumber: farm.cardNumber,
+    })),
   };
 }

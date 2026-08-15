@@ -435,7 +435,7 @@ export function LanFlowApp() {
           />
         )}
         {activeTab === "customers" && (
-          <CustomersModule online={online} />
+          <CustomersModule locationId={selectedLocationId} online={online} />
         )}
         {activeTab === "transport" && (
           <TransportModule locationId={selectedLocationId} online={online} />

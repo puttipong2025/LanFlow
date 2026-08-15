@@ -13,7 +13,7 @@ import { bangkokBuddhistYear } from "@/lib/bangkok-date";
 import { useCustomers } from "@/hooks/useCustomers";
 import { Loader2 } from "lucide-react";
 
-export function CustomersModule({ online }: { online: boolean }) {
+export function CustomersModule({ locationId, online }: { locationId: string; online: boolean }) {
   const { customers, isLoading, addCustomer, updateCustomer, deleteCustomer } = useCustomers();
 
   const [search, setSearch] = useState("");
@@ -399,12 +399,18 @@ export function CustomersModule({ online }: { online: boolean }) {
         <CustomerModal
           customer={editingCustomer}
           allCustomers={customers}
+          locationId={locationId}
           online={online}
           onClose={() => setModalOpen(false)}
           onSave={(cust) => {
-            if (editingCustomer) updateCustomer.mutate(cust);
-            else addCustomer.mutate(cust);
-            setModalOpen(false);
+            const mutation = editingCustomer ? updateCustomer : addCustomer;
+            mutation.mutate(cust, {
+              onSuccess: () => {
+                toast.success(editingCustomer ? "แก้ไขข้อมูลลูกค้าสำเร็จ" : "เพิ่มข้อมูลลูกค้าสำเร็จ");
+                setModalOpen(false);
+              },
+              onError: (err) => toast.error("บันทึกข้อมูลลูกค้าไม่สำเร็จ: " + err.message),
+            });
           }}
         />
       )}
@@ -416,6 +422,7 @@ export function CustomersModule({ online }: { online: boolean }) {
 type CustomerModalProps = {
   customer: Customer | null;
   allCustomers: Customer[];
+  locationId: string;
   online: boolean;
   onClose: () => void;
   onSave: (customer: Customer) => void;
@@ -424,6 +431,7 @@ type CustomerModalProps = {
 function CustomerModal({
   customer,
   allCustomers,
+  locationId,
   online,
   onClose,
   onSave
@@ -564,7 +572,7 @@ function CustomerModal({
       mainName: mainName.trim(),
       fscStatus,
       startingPointsDate: customer?.startingPointsDate ?? todayInputValue(),
-      defaultLocationId: customer?.defaultLocationId ?? undefined,
+      defaultLocationId: customer?.defaultLocationId ?? locationId,
       syncStatus: customer?.syncStatus ?? "pending",
       idempotencyKey: customer?.idempotencyKey ?? makeIdempotencyKey("create", clientTempId),
       revisionNo: (customer?.revisionNo ?? 0) + (customer ? 1 : 0),
