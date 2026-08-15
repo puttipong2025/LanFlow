@@ -15,7 +15,7 @@ export async function GET(request: Request) {
   const businessDate = bangkokDateString();
   const { data: bills, error: billsError } = await result.supabase
     .from("rubber_bills")
-    .select("id, bill_no, server_bill_no, bill_date, revision_no, evidence_completion_id")
+    .select("id, bill_no, server_bill_no, bill_date, customer_name, revision_no, evidence_completion_id, client_recorded_at, server_received_at, created_at")
     .eq("location_id", locationId)
     .eq("bill_date", businessDate)
     .eq("record_status", "active")
@@ -36,7 +36,9 @@ export async function GET(request: Request) {
   const responseBills = (bills ?? []).map((bill) => ({
     id: bill.id,
     billNo: bill.server_bill_no ?? bill.bill_no,
+    customerName: bill.customer_name ?? "",
     billDate: bill.bill_date,
+    matchingRecordedAt: bill.client_recorded_at ?? bill.server_received_at ?? bill.created_at,
     revisionNo: bill.revision_no,
     completionState: bill.evidence_completion_id == null ? "available" : "completed",
     weighRows: (rows ?? [])

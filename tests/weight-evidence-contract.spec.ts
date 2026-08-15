@@ -63,3 +63,17 @@ test("evidence routes do not expose foreign completion UUID or persist OCR", () 
   expect(ocr).not.toMatch(/result\.supabase|\.storage\.|\.upload\(/);
   expect(ocr).not.toContain("raw_response");
 });
+
+test("today bills include the customer name needed by the Android work list", () => {
+  const route = fs.readFileSync(path.join(root, "src/app/api/lanflow/evidence/today-bills/route.ts"), "utf8");
+  expect(route).toContain("customer_name");
+  expect(route).toContain("customerName: bill.customer_name");
+});
+
+test("today bills expose the confirmed timestamp fallback for automatic matching", () => {
+  const route = fs.readFileSync(path.join(root, "src/app/api/lanflow/evidence/today-bills/route.ts"), "utf8");
+  expect(route).toContain("client_recorded_at");
+  expect(route).toContain("server_received_at");
+  expect(route).toContain("created_at");
+  expect(route).toContain("matchingRecordedAt: bill.client_recorded_at ?? bill.server_received_at ?? bill.created_at");
+});
