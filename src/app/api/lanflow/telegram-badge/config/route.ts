@@ -46,6 +46,8 @@ export async function PUT(request: NextRequest) {
   const startTime = body.startTime;
   const endTime = body.endTime;
   const intervalMinutes = Number(body.intervalMinutes);
+  const evidenceEnabled = body.evidenceEnabled;
+  const evidenceIntervalMinutes = Number(body.evidenceIntervalMinutes);
   const botToken =
     typeof body.botToken === "string" ? body.botToken.trim() : "";
   const rawKeys = body.enabledBadgeKeys;
@@ -69,6 +71,16 @@ export async function PUT(request: NextRequest) {
   ) {
     return errorResponse("ระยะห่างต้องอยู่ระหว่าง 10 ถึง 240 นาที", 400);
   }
+  if (typeof evidenceEnabled !== "boolean") {
+    return errorResponse("สถานะ Telegram Evidence ไม่ถูกต้อง", 400);
+  }
+  if (
+    !Number.isInteger(evidenceIntervalMinutes) ||
+    evidenceIntervalMinutes < 30 ||
+    evidenceIntervalMinutes > 1440
+  ) {
+    return errorResponse("ระยะห่าง Evidence ต้องอยู่ระหว่าง 30 ถึง 1,440 นาที", 400);
+  }
   if (!Array.isArray(rawKeys) || !rawKeys.every(
     (key): key is TelegramBadgeKey =>
       typeof key === "string" && isTelegramBadgeKey(key),
@@ -91,6 +103,8 @@ export async function PUT(request: NextRequest) {
         startTime,
         endTime,
         intervalMinutes,
+        evidenceEnabled,
+        evidenceIntervalMinutes,
         enabledBadgeKeys: [...new Set(rawKeys)],
         ...(botToken ? { botToken } : {}),
       },

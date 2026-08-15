@@ -21,7 +21,7 @@ export function evidenceError(
   );
 }
 
-export function parseCompletionPayload(value: unknown) {
+function parseIdentityPayload(value: unknown) {
   if (!value || typeof value !== "object") return null;
   const payload = value as Record<string, unknown>;
   if (
@@ -38,6 +38,29 @@ export function parseCompletionPayload(value: unknown) {
     completionId: payload.completionId,
     revisionNo: payload.revisionNo,
   };
+}
+
+export function parseCompletionIdentityPayload(value: unknown) {
+  const payload = parseIdentityPayload(value);
+  if (!payload || Object.keys(value as object).some(
+    (key) => !["locationId", "completionId", "revisionNo"].includes(key),
+  )) return null;
+  return payload;
+}
+
+export function parseCompletionClaimPayload(value: unknown) {
+  const payload = parseIdentityPayload(value);
+  if (!payload || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (
+    Object.keys(record).some(
+      (key) => !["locationId", "completionId", "revisionNo", "manualCorrectionCount"].includes(key),
+    )
+    || typeof record.manualCorrectionCount !== "number"
+    || !Number.isInteger(record.manualCorrectionCount)
+    || record.manualCorrectionCount < 0
+  ) return null;
+  return { ...payload, manualCorrectionCount: record.manualCorrectionCount };
 }
 
 export function parseOcrModelResponse(responseText: string): number | null {

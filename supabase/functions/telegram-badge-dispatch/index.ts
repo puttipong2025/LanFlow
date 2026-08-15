@@ -2,9 +2,11 @@ import { createClient } from "npm:@supabase/supabase-js@2.47.10";
 import {
   formatDashboardAlertDigest,
   formatTelegramBadgeDigest,
+  formatWeightEvidenceDigest,
   type DashboardTelegramAlert,
   type TelegramBadgeCount,
   type TelegramBadgeKey,
+  type WeightEvidenceDigestBranch,
 } from "../_shared/telegram-badge.ts";
 
 type BadgeCountRow = {
@@ -38,11 +40,193 @@ type DashboardAlertRow = {
   detail: string;
 };
 
+type EvidenceDigestRow = {
+  location_id: string;
+  branch_name: string;
+  total_weigh_rows: number;
+  manual_correction_count: number;
+  incomplete_weigh_rows: number;
+};
+
+type DispatchResult = {
+  status: string;
+  messageCount?: number;
+  error?: string;
+};
+
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json; charset=utf-8" },
   });
+}
+
+async function sendMessages(
+  credentials: DeliveryCredentials,
+  messages: string[],
+) {
+  if (!credentials.botToken || !credentials.chatId) {
+    throw new Error("credentials_missing");
+  }
+  for (const text of messages) {
+    const telegramResponse = await fetch(
+      `https://api.telegram.org/bot${credentials.botToken}/sendMessage`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        signal: AbortSignal.timeout(10_000),
+        body: JSON.stringify({
+          chat_id: credentials.chatId,
+          text,
+          disable_web_page_preview: true,
+        }),
+      },
+    );
+    if (!telegramResponse.ok) {
+      throw new Error(`telegram_http_${telegramResponse.status}`);
+    }
+  }
+}
+
+async function deliveryCredentials(
+  supabase: ReturnType<typeof createClient>,
+) {
+  const { data, error } = await supabase.rpc(
+    "get_telegram_badge_delivery_credentials",
+  );
+  if (error) throw new Error("credentials_failed");
+  return data as DeliveryCredentials;
+}
+
+async function dispatchBadges(
+  supabase: ReturnType<typeof createClient>,
+): Promise<DispatchResult> {
+  const { data: claimData, error: claimError } = await supabase.rpc(
+    "claim_telegram_badge_dispatch",
+  );
+  if (claimError) return { status: "failed", error: "badge_claim_failed" };
+  const claim = claimData as ClaimResult;
+  if (!claim.claimed || !claim.claimToken) {
+    return { status: "not_due" };
+  }
+
+  try {
+    const [countResult, dashboardResult] = await Promise.all([
+      supabase.rpc("get_telegram_badge_counts"),
+      supabase.rpc("get_dashboard_alerts_for_telegram"),
+    ]);
+    if (countResult.error) throw new Error("count_failed");
+    if (dashboardResult.error) throw new Error("dashboard_alert_failed");
+
+    const counts: TelegramBadgeCount[] = (countResult.data as BadgeCountRow[])
+      .map((row) => ({
+        key: row.badge_key,
+        locationId: row.location_id,
+        locationName: row.branch_name,
+        moduleLabel: row.module_name,
+        statusLabel: row.status_label,
+        count: Number(row.item_count),
+        sortOrder: row.sort_order,
+      }));
+    const dashboardAlerts: DashboardTelegramAlert[] = (
+      dashboardResult.data as DashboardAlertRow[]
+    ).map((row) => ({
+      locationId: row.location_id,
+      locationName: row.branch_name,
+      key: row.alert_key,
+      label: row.metric_label,
+      currentValue: Number(row.current_value),
+      minimumValue: Number(row.minimum_value),
+      unit: row.unit,
+      detail: row.detail,
+    }));
+    const messages = [
+      ...formatTelegramBadgeDigest(counts),
+      ...formatDashboardAlertDigest(dashboardAlerts),
+    ];
+    if (messages.length > 0) {
+      await sendMessages(await deliveryCredentials(supabase), messages);
+    }
+
+    const { error } = await supabase.rpc("complete_telegram_badge_dispatch", {
+      p_claim_token: claim.claimToken,
+      p_outcome: messages.length === 0 ? "no_items" : "sent",
+      p_error: null,
+    });
+    if (error) throw new Error("complete_failed");
+    return {
+      status: messages.length === 0 ? "no_items" : "sent",
+      messageCount: messages.length,
+    };
+  } catch (error) {
+    const safeError = error instanceof Error
+      ? error.message.slice(0, 120)
+      : "badge_dispatch_failed";
+    await supabase.rpc("complete_telegram_badge_dispatch", {
+      p_claim_token: claim.claimToken,
+      p_outcome: "failed",
+      p_error: safeError,
+    });
+    return { status: "failed", error: "badge_dispatch_failed" };
+  }
+}
+
+async function dispatchEvidence(
+  supabase: ReturnType<typeof createClient>,
+): Promise<DispatchResult> {
+  const { data: claimData, error: claimError } = await supabase.rpc(
+    "claim_telegram_evidence_dispatch",
+  );
+  if (claimError) return { status: "failed", error: "evidence_claim_failed" };
+  const claim = claimData as ClaimResult;
+  if (!claim.claimed || !claim.claimToken) return { status: "not_due" };
+
+  try {
+    const { data, error } = await supabase.rpc("get_weight_evidence_digest");
+    if (error) throw new Error("evidence_count_failed");
+    const branches: WeightEvidenceDigestBranch[] = (
+      data as EvidenceDigestRow[]
+    ).map((row) => ({
+      locationId: row.location_id,
+      locationName: row.branch_name,
+      totalWeighRows: Number(row.total_weigh_rows),
+      manualCorrectionCount: Number(row.manual_correction_count),
+      incompleteWeighRows: Number(row.incomplete_weigh_rows),
+    }));
+    const generatedAt = new Date();
+    const messages = formatWeightEvidenceDigest(branches, generatedAt);
+
+    if (messages.length > 0) {
+      const { data: stillEnabled, error: enabledError } = await supabase.rpc(
+        "is_telegram_evidence_dispatch_enabled",
+      );
+      if (enabledError) throw new Error("evidence_toggle_check_failed");
+      if (stillEnabled !== true) {
+        const { error: completeError } = await supabase.rpc(
+          "complete_telegram_evidence_dispatch",
+          { p_claim_token: claim.claimToken },
+        );
+        if (completeError) throw new Error("evidence_complete_failed");
+        return { status: "disabled" };
+      }
+      await sendMessages(await deliveryCredentials(supabase), messages);
+    }
+
+    const { error: completeError } = await supabase.rpc(
+      "complete_telegram_evidence_dispatch",
+      { p_claim_token: claim.claimToken },
+    );
+    if (completeError) throw new Error("evidence_complete_failed");
+    return {
+      status: messages.length === 0 ? "no_items" : "sent",
+      messageCount: messages.length,
+    };
+  } catch {
+    await supabase.rpc("complete_telegram_evidence_dispatch", {
+      p_claim_token: claim.claimToken,
+    });
+    return { status: "failed", error: "evidence_dispatch_failed" };
+  }
 }
 
 Deno.serve(async (request) => {
@@ -69,115 +253,10 @@ Deno.serve(async (request) => {
     return jsonResponse({ error: "unauthorized" }, 401);
   }
 
-  const { data: claimData, error: claimError } = await supabase.rpc(
-    "claim_telegram_badge_dispatch",
-  );
-  if (claimError) {
-    return jsonResponse({ error: "claim_failed" }, 500);
-  }
-
-  const claim = claimData as ClaimResult;
-  if (!claim.claimed || !claim.claimToken) {
-    return jsonResponse({ status: "not_due" });
-  }
-
-  try {
-    const [countResult, dashboardResult] = await Promise.all([
-      supabase.rpc("get_telegram_badge_counts"),
-      supabase.rpc("get_dashboard_alerts_for_telegram"),
-    ]);
-    if (countResult.error) throw new Error("count_failed");
-    if (dashboardResult.error) throw new Error("dashboard_alert_failed");
-
-    const counts: TelegramBadgeCount[] = (
-      countResult.data as BadgeCountRow[]
-    ).map(
-      (row) => ({
-        key: row.badge_key,
-        locationId: row.location_id,
-        locationName: row.branch_name,
-        moduleLabel: row.module_name,
-        statusLabel: row.status_label,
-        count: Number(row.item_count),
-        sortOrder: row.sort_order,
-      }),
-    );
-    const dashboardAlerts: DashboardTelegramAlert[] = (
-      dashboardResult.data as DashboardAlertRow[]
-    ).map((row) => ({
-      locationId: row.location_id,
-      locationName: row.branch_name,
-      key: row.alert_key,
-      label: row.metric_label,
-      currentValue: Number(row.current_value),
-      minimumValue: Number(row.minimum_value),
-      unit: row.unit,
-      detail: row.detail,
-    }));
-    const messages = [
-      ...formatTelegramBadgeDigest(counts),
-      ...formatDashboardAlertDigest(dashboardAlerts),
-    ];
-
-    if (messages.length === 0) {
-      const { error } = await supabase.rpc(
-        "complete_telegram_badge_dispatch",
-        {
-          p_claim_token: claim.claimToken,
-          p_outcome: "no_items",
-          p_error: null,
-        },
-      );
-      if (error) throw new Error("complete_failed");
-      return jsonResponse({ status: "no_items" });
-    }
-
-    const { data: credentialData, error: credentialError } = await supabase.rpc(
-      "get_telegram_badge_delivery_credentials",
-    );
-    if (credentialError) throw new Error("credentials_failed");
-    const credentials = credentialData as DeliveryCredentials;
-    if (!credentials.botToken || !credentials.chatId) {
-      throw new Error("credentials_missing");
-    }
-
-    for (const text of messages) {
-      const telegramResponse = await fetch(
-        `https://api.telegram.org/bot${credentials.botToken}/sendMessage`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          signal: AbortSignal.timeout(10_000),
-          body: JSON.stringify({
-            chat_id: credentials.chatId,
-            text,
-            disable_web_page_preview: true,
-          }),
-        },
-      );
-      if (!telegramResponse.ok) {
-        throw new Error(`telegram_http_${telegramResponse.status}`);
-      }
-    }
-
-    const { error: completeError } = await supabase.rpc(
-      "complete_telegram_badge_dispatch",
-      {
-        p_claim_token: claim.claimToken,
-        p_outcome: "sent",
-        p_error: null,
-      },
-    );
-    if (completeError) throw new Error("complete_failed");
-    return jsonResponse({ status: "sent", messageCount: messages.length });
-  } catch (error) {
-    const safeError =
-      error instanceof Error ? error.message.slice(0, 120) : "dispatch_failed";
-    await supabase.rpc("complete_telegram_badge_dispatch", {
-      p_claim_token: claim.claimToken,
-      p_outcome: "failed",
-      p_error: safeError,
-    });
-    return jsonResponse({ error: "dispatch_failed" }, 502);
-  }
+  const [badge, evidence] = await Promise.all([
+    dispatchBadges(supabase),
+    dispatchEvidence(supabase),
+  ]);
+  const failed = badge.status === "failed" && evidence.status === "failed";
+  return jsonResponse({ badge, evidence }, failed ? 502 : 200);
 });

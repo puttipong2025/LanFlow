@@ -1610,12 +1610,13 @@ ALTER FUNCTION "private"."claim_dashboard_branch"() OWNER TO "postgres";
 
 CREATE OR REPLACE FUNCTION "private"."clear_weight_evidence_completion_on_bill_change"() RETURNS "trigger"
     LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public', 'private'
+    SET "search_path" TO ''
     AS $$
 begin
   if new.revision_no is distinct from old.revision_no
      or new.record_status is distinct from old.record_status then
     new.evidence_completion_id := null;
+    new.evidence_manual_correction_count := 0;
   end if;
   return new;
 end;
@@ -3231,7 +3232,7 @@ ALTER FUNCTION "private"."guard_reported_cash_details"() OWNER TO "postgres";
 
 CREATE OR REPLACE FUNCTION "private"."guard_reported_entity"() RETURNS "trigger"
     LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public', 'private'
+    SET "search_path" TO ''
     AS $$
 declare
   v_id uuid;
@@ -3249,8 +3250,17 @@ begin
   if v_report_no is not null then
     if tg_argv[0] = 'rubber_bill'
       and tg_op = 'UPDATE'
-      and (to_jsonb(new) - array['print_status', 'updated_at', 'evidence_completion_id'])
-          = (to_jsonb(old) - array['print_status', 'updated_at', 'evidence_completion_id']) then
+      and (to_jsonb(new) - array[
+        'print_status',
+        'updated_at',
+        'evidence_completion_id',
+        'evidence_manual_correction_count'
+      ]) = (to_jsonb(old) - array[
+        'print_status',
+        'updated_at',
+        'evidence_completion_id',
+        'evidence_manual_correction_count'
+      ]) then
       return new;
     end if;
     perform private.raise_report_lock(v_report_no);
@@ -6249,17 +6259,96 @@ $$;
 ALTER FUNCTION "public"."claim_telegram_badge_dispatch"() OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") RETURNS "jsonb"
+CREATE OR REPLACE FUNCTION "public"."claim_telegram_evidence_dispatch"() RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public', 'private'
+    SET "search_path" TO ''
+    AS $$
+declare
+  settings public.telegram_badge_settings%rowtype;
+  now_at timestamptz := now();
+  latest_slot timestamptz;
+  claim_slot timestamptz;
+  next_claim_token uuid;
+begin
+  if auth.role() <> 'service_role' then raise exception 'service_role required'; end if;
+
+  select * into strict settings
+  from public.telegram_badge_settings
+  where id = true
+  for update;
+
+  if not settings.enabled or not settings.evidence_enabled then
+    return jsonb_build_object('claimed', false, 'reason', 'disabled');
+  end if;
+
+  latest_slot := private.telegram_badge_latest_slot(
+    now_at,
+    settings.start_time,
+    settings.end_time,
+    settings.evidence_interval_minutes
+  );
+  if latest_slot is null then
+    return jsonb_build_object('claimed', false, 'reason', 'outside_window');
+  end if;
+
+  if settings.evidence_claim_token is not null
+    and settings.evidence_claimed_at > now_at - interval '5 minutes'
+  then
+    return jsonb_build_object('claimed', false, 'reason', 'already_claimed');
+  end if;
+
+  if settings.evidence_claim_token is null
+    and settings.evidence_last_attempted_slot_at is not null
+    and latest_slot <= settings.evidence_last_attempted_slot_at
+  then
+    return jsonb_build_object('claimed', false, 'reason', 'not_due');
+  end if;
+
+  claim_slot := case
+    when settings.evidence_claim_token is not null
+      then settings.evidence_last_attempted_slot_at
+    else latest_slot
+  end;
+  next_claim_token := extensions.gen_random_uuid();
+  update public.telegram_badge_settings
+  set evidence_last_attempted_slot_at = claim_slot,
+      evidence_claim_token = next_claim_token,
+      evidence_claimed_at = now_at,
+      updated_at = now_at
+  where id = true;
+
+  return jsonb_build_object(
+    'claimed', true,
+    'claimToken', next_claim_token,
+    'slotAt', claim_slot
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."claim_telegram_evidence_dispatch"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid", "p_manual_correction_count" integer) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
     AS $$
 declare
   v_bill public.rubber_bills%rowtype;
+  v_weigh_row_count integer;
 begin
-  if not private.is_active_user() or not public.can_access_location(p_location_id) then
+  if not private.is_active_user()
+    or not public.can_access_location(p_location_id)
+  then
     raise exception 'WEIGHT_EVIDENCE_ACCESS_DENIED';
   end if;
-  if p_bill_id is null or p_completion_id is null or p_revision_no < 0 then
+  if p_bill_id is null
+    or p_completion_id is null
+    or p_revision_no is null
+    or p_revision_no < 0
+    or p_manual_correction_count is null
+    or p_manual_correction_count < 0
+  then
     raise exception 'WEIGHT_EVIDENCE_INVALID_INPUT';
   end if;
 
@@ -6268,26 +6357,55 @@ begin
   where id = p_bill_id and location_id = p_location_id
   for update;
 
-  if not found then return jsonb_build_object('state', 'inactive'); end if;
-  if v_bill.record_status <> 'active' then return jsonb_build_object('state', 'inactive', 'currentRevisionNo', v_bill.revision_no); end if;
-  if v_bill.revision_no <> p_revision_no then return jsonb_build_object('state', 'stale', 'currentRevisionNo', v_bill.revision_no); end if;
+  if not found
+    or v_bill.record_status <> 'active'
+    or v_bill.source_rubber_export_id is not null
+  then
+    return jsonb_build_object('state', 'inactive');
+  end if;
+  if v_bill.revision_no <> p_revision_no then
+    return jsonb_build_object(
+      'state', 'stale',
+      'currentRevisionNo', v_bill.revision_no
+    );
+  end if;
+
+  select count(*)::integer into v_weigh_row_count
+  from public.rubber_bill_items
+  where bill_id = p_bill_id and item_type = 'weigh';
+
+  if v_weigh_row_count = 0
+    or p_manual_correction_count > v_weigh_row_count
+  then
+    raise exception 'WEIGHT_EVIDENCE_INVALID_COUNT';
+  end if;
 
   if v_bill.evidence_completion_id is null then
     update public.rubber_bills
     set evidence_completion_id = p_completion_id,
+        evidence_manual_correction_count = p_manual_correction_count,
         updated_at = now()
     where id = p_bill_id;
-    return jsonb_build_object('state', 'owned', 'currentRevisionNo', v_bill.revision_no);
+    return jsonb_build_object(
+      'state', 'owned',
+      'currentRevisionNo', v_bill.revision_no
+    );
   end if;
   if v_bill.evidence_completion_id = p_completion_id then
-    return jsonb_build_object('state', 'owned', 'currentRevisionNo', v_bill.revision_no);
+    return jsonb_build_object(
+      'state', 'owned',
+      'currentRevisionNo', v_bill.revision_no
+    );
   end if;
-  return jsonb_build_object('state', 'owned_by_other', 'currentRevisionNo', v_bill.revision_no);
+  return jsonb_build_object(
+    'state', 'owned_by_other',
+    'currentRevisionNo', v_bill.revision_no
+  );
 end;
 $$;
 
 
-ALTER FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") OWNER TO "postgres";
+ALTER FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid", "p_manual_correction_count" integer) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."complete_telegram_badge_dispatch"("p_claim_token" "uuid", "p_outcome" "text", "p_error" "text" DEFAULT NULL::"text") RETURNS "void"
@@ -6343,6 +6461,27 @@ $$;
 
 
 ALTER FUNCTION "public"."complete_telegram_badge_dispatch"("p_claim_token" "uuid", "p_outcome" "text", "p_error" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."complete_telegram_evidence_dispatch"("p_claim_token" "uuid") RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if auth.role() <> 'service_role' then raise exception 'service_role required'; end if;
+
+  update public.telegram_badge_settings
+  set evidence_claim_token = null,
+      evidence_claimed_at = null,
+      updated_at = now()
+  where id = true and evidence_claim_token = p_claim_token;
+
+  if not found then raise exception 'claim ไม่ตรงหรือหมดอายุ'; end if;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."complete_telegram_evidence_dispatch"("p_claim_token" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."configure_telegram_badge_dispatcher"("p_edge_url" "text") RETURNS "void"
@@ -10561,12 +10700,10 @@ begin
         'statusLabel', c.status_label,
         'sortOrder', c.sort_order,
         'enabled', c.badge_key = any(settings.enabled_badge_keys)
-      )
-      order by c.sort_order
+      ) order by c.sort_order
     ),
     '[]'::jsonb
-  )
-  into catalog
+  ) into catalog
   from public.telegram_badge_catalog c;
 
   return jsonb_build_object(
@@ -10576,6 +10713,8 @@ begin
     'endTime', to_char(settings.end_time, 'HH24:MI'),
     'intervalMinutes', settings.interval_minutes,
     'enabledBadgeKeys', to_jsonb(settings.enabled_badge_keys),
+    'evidenceEnabled', settings.evidence_enabled,
+    'evidenceIntervalMinutes', settings.evidence_interval_minutes,
     'tokenConfigured', settings.bot_token_secret_id is not null,
     'catalog', catalog,
     'lastAttemptAt', settings.last_attempt_at,
@@ -10740,6 +10879,51 @@ $$;
 ALTER FUNCTION "public"."get_time_payroll_payment_locations"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."get_weight_evidence_digest"() RETURNS TABLE("location_id" "uuid", "branch_name" "text", "total_weigh_rows" bigint, "manual_correction_count" bigint, "incomplete_weigh_rows" bigint)
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if auth.role() <> 'service_role' then raise exception 'service_role required'; end if;
+
+  return query
+  with bill_counts as (
+    select b.id,
+      b.location_id,
+      b.evidence_completion_id,
+      b.evidence_manual_correction_count,
+      count(i.id)::bigint weigh_rows
+    from public.rubber_bills b
+    join public.rubber_bill_items i
+      on i.bill_id = b.id and i.item_type = 'weigh'
+    where b.record_status = 'active'
+      and b.source_rubber_export_id is null
+      and b.bill_date = (now() at time zone 'Asia/Bangkok')::date
+    group by b.id
+  )
+  select c.location_id,
+    coalesce(l.name, 'ไม่ทราบสาขา')::text,
+    sum(c.weigh_rows)::bigint,
+    sum(case
+      when c.evidence_completion_id is not null
+        then c.evidence_manual_correction_count
+      else 0
+    end)::bigint,
+    sum(case
+      when c.evidence_completion_id is null then c.weigh_rows
+      else 0
+    end)::bigint
+  from bill_counts c
+  left join public.locations l on l.id = c.location_id
+  group by c.location_id, coalesce(l.name, 'ไม่ทราบสาขา')
+  order by sum(c.weigh_rows) desc, coalesce(l.name, 'ไม่ทราบสาขา');
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_weight_evidence_digest"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."has_cash_count"("source_row" "public"."report_batches") RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -10761,6 +10945,23 @@ $$;
 
 
 ALTER FUNCTION "public"."is_super_admin"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."is_telegram_evidence_dispatch_enabled"() RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select case
+    when auth.role() <> 'service_role' then false
+    else coalesce((
+      select enabled and evidence_enabled
+      from public.telegram_badge_settings where id = true
+    ), false)
+  end
+$$;
+
+
+ALTER FUNCTION "public"."is_telegram_evidence_dispatch_enabled"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."list_rubber_bill_approval_markers"("p_location_id" "uuid") RETURNS TABLE("request_id" "uuid", "bill_id" "uuid", "client_temp_id" "text", "operation" "text", "matched_reasons" "text"[], "requested_at" timestamp with time zone, "proposed_create_payload" "jsonb")
@@ -11370,15 +11571,19 @@ ALTER FUNCTION "public"."receive_rubber_export"("p_destination_location_id" "uui
 
 CREATE OR REPLACE FUNCTION "public"."release_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public', 'private'
+    SET "search_path" TO ''
     AS $$
 declare
   v_bill public.rubber_bills%rowtype;
 begin
-  if not private.is_active_user() or not public.can_access_location(p_location_id) then
+  if not private.is_active_user()
+    or not public.can_access_location(p_location_id)
+  then
     raise exception 'WEIGHT_EVIDENCE_ACCESS_DENIED';
   end if;
-  if p_bill_id is null or p_completion_id is null or p_revision_no < 0 then
+  if p_bill_id is null or p_completion_id is null
+    or p_revision_no is null or p_revision_no < 0
+  then
     raise exception 'WEIGHT_EVIDENCE_INVALID_INPUT';
   end if;
 
@@ -11387,18 +11592,34 @@ begin
   where id = p_bill_id and location_id = p_location_id
   for update;
 
-  if not found then return jsonb_build_object('state', 'inactive'); end if;
-  if v_bill.record_status <> 'active' then return jsonb_build_object('state', 'inactive', 'currentRevisionNo', v_bill.revision_no); end if;
-  if v_bill.revision_no <> p_revision_no then return jsonb_build_object('state', 'stale', 'currentRevisionNo', v_bill.revision_no); end if;
+  if not found
+    or v_bill.record_status <> 'active'
+    or v_bill.source_rubber_export_id is not null
+  then
+    return jsonb_build_object('state', 'inactive');
+  end if;
+  if v_bill.revision_no <> p_revision_no then
+    return jsonb_build_object(
+      'state', 'stale',
+      'currentRevisionNo', v_bill.revision_no
+    );
+  end if;
   if v_bill.evidence_completion_id is distinct from p_completion_id then
-    return jsonb_build_object('state', 'not_owner', 'currentRevisionNo', v_bill.revision_no);
+    return jsonb_build_object(
+      'state', 'not_owner',
+      'currentRevisionNo', v_bill.revision_no
+    );
   end if;
 
   update public.rubber_bills
   set evidence_completion_id = null,
+      evidence_manual_correction_count = 0,
       updated_at = now()
   where id = p_bill_id;
-  return jsonb_build_object('state', 'released', 'currentRevisionNo', v_bill.revision_no);
+  return jsonb_build_object(
+    'state', 'released',
+    'currentRevisionNo', v_bill.revision_no
+  );
 end;
 $$;
 
@@ -11958,11 +12179,13 @@ END - "deduction_total"), (0)::numeric)) STORED,
     "received_age_hours" numeric(14,6),
     "received_age_is_estimated" boolean,
     "evidence_completion_id" "uuid",
+    "evidence_manual_correction_count" integer DEFAULT 0 NOT NULL,
     CONSTRAINT "rubber_bills_approval_revision_shape_check" CHECK (((("approval_state" = 'not_required'::"text") AND ("approved_by_name" IS NULL) AND ("approval_revision_no" IS NULL)) OR (("approval_state" = 'approved'::"text") AND ("approved_by_name" IS NOT NULL) AND ("approval_revision_no" = "revision_no")))),
     CONSTRAINT "rubber_bills_approval_state_check" CHECK (("approval_state" = ANY (ARRAY['not_required'::"text", 'approved'::"text"]))),
     CONSTRAINT "rubber_bills_branch_receipt_shape_check" CHECK (((("source_rubber_export_id" IS NULL) AND ("source_export_no" IS NULL) AND ("received_at" IS NULL) AND ("received_age_hours" IS NULL) AND ("received_age_is_estimated" IS NULL)) OR ((NULLIF("btrim"("source_export_no"), ''::"text") IS NOT NULL) AND ("received_at" IS NOT NULL) AND ("received_age_hours" IS NOT NULL) AND ("received_age_hours" >= (0)::numeric) AND ("received_age_is_estimated" IS NOT NULL) AND ("net_total" = (0)::numeric) AND ("rubber_value" > (0)::numeric) AND ("deduction_total" = "net_rubber_value") AND (("source_rubber_export_id" IS NOT NULL) OR ("record_status" = 'deleted'::"public"."record_status"))))),
     CONSTRAINT "rubber_bills_configured_price_snapshot_check" CHECK ((("configured_price_snapshot" IS NULL) OR ("configured_price_snapshot" >= (0)::numeric))),
     CONSTRAINT "rubber_bills_deduct_weight_range_check" CHECK ((("deduct_weight" >= (0)::numeric) AND ("deduct_weight" < "weight"))),
+    CONSTRAINT "rubber_bills_evidence_manual_correction_count_nonnegative" CHECK (("evidence_manual_correction_count" >= 0)),
     CONSTRAINT "rubber_bills_money_values_nonnegative_check" CHECK ((("rubber_value" >= (0)::numeric) AND ("average_price" >= (0)::numeric) AND ("deduction_total" >= (0)::numeric) AND ("net_total" >= (0)::numeric))),
     CONSTRAINT "rubber_bills_net_total_formula_check" CHECK (("net_total" = "floor"("payable_before_rounding"))),
     CONSTRAINT "rubber_bills_net_total_whole_baht_check" CHECK (("net_total" = "trunc"("net_total"))),
@@ -12010,6 +12233,10 @@ COMMENT ON COLUMN "public"."rubber_bills"."received_age_hours" IS 'Weighted aver
 
 
 COMMENT ON COLUMN "public"."rubber_bills"."evidence_completion_id" IS 'Opaque owner UUID for first-completer-wins device-local weight evidence; no image or OCR data.';
+
+
+
+COMMENT ON COLUMN "public"."rubber_bills"."evidence_manual_correction_count" IS 'Manual-correction count reported by the first winning evidence device; operational metric, not server-audited row evidence.';
 
 
 
@@ -12289,6 +12516,151 @@ $$;
 
 
 ALTER FUNCTION "public"."run_time_tracking_daily_cutoff"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."save_customer_master_data"("payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_actor_id uuid := auth.uid();
+  v_actor_name text;
+  v_actor_phone text;
+  v_customer_id uuid := nullif(payload->>'customerId', '')::uuid;
+  v_location_id uuid := nullif(payload->>'defaultLocationId', '')::uuid;
+  v_existing public.customers%rowtype;
+begin
+  select p.name, p.phone
+    into v_actor_name, v_actor_phone
+  from public.profiles p
+  where p.id = v_actor_id
+    and p.is_active = true;
+
+  if not found then
+    raise exception 'Active authenticated user required' using errcode = '42501';
+  end if;
+
+  if v_location_id is null or not private.can_access_location(v_location_id) then
+    raise exception 'Location access denied' using errcode = '42501';
+  end if;
+
+  if nullif(btrim(payload->>'mainName'), '') is null then
+    raise exception 'Customer name is required' using errcode = '22023';
+  end if;
+
+  if v_customer_id is null then
+    insert into public.customers (
+      client_temp_id,
+      legacy_rec_id,
+      legacy_member_id,
+      class,
+      main_name,
+      fsc_status,
+      starting_points_date,
+      default_location_id,
+      created_by_user_id,
+      created_by_name,
+      created_by_phone,
+      sync_status,
+      idempotency_key,
+      revision_no,
+      record_status,
+      server_received_at
+    ) values (
+      nullif(payload->>'clientTempId', ''),
+      nullif(payload->>'legacyRecId', ''),
+      nullif(payload->>'legacyMemberId', ''),
+      nullif(payload->>'class', ''),
+      btrim(payload->>'mainName'),
+      nullif(payload->>'fscStatus', ''),
+      nullif(payload->>'startingPointsDate', '')::date,
+      v_location_id,
+      v_actor_id,
+      coalesce(v_actor_name, ''),
+      coalesce(v_actor_phone, ''),
+      'synced',
+      nullif(payload->>'idempotencyKey', ''),
+      0,
+      'active',
+      now()
+    )
+    returning id into v_customer_id;
+  else
+    select *
+      into v_existing
+    from public.customers
+    where id = v_customer_id
+    for update;
+
+    if not found then
+      raise exception 'Customer not found' using errcode = 'P0002';
+    end if;
+
+    if v_existing.default_location_id is not null
+       and not private.can_access_location(v_existing.default_location_id) then
+      raise exception 'Customer access denied' using errcode = '42501';
+    end if;
+
+    update public.customers
+    set legacy_rec_id = nullif(payload->>'legacyRecId', ''),
+        legacy_member_id = nullif(payload->>'legacyMemberId', ''),
+        class = nullif(payload->>'class', ''),
+        main_name = btrim(payload->>'mainName'),
+        fsc_status = nullif(payload->>'fscStatus', ''),
+        starting_points_date = nullif(payload->>'startingPointsDate', '')::date,
+        default_location_id = v_location_id,
+        sync_status = 'synced',
+        record_status = 'active',
+        revision_no = revision_no + 1,
+        updated_by_user_id = v_actor_id,
+        updated_by_name = coalesce(v_actor_name, ''),
+        updated_by_phone = coalesce(v_actor_phone, ''),
+        updated_at = now(),
+        server_received_at = now()
+    where id = v_customer_id;
+  end if;
+
+  delete from public.customer_contacts where customer_id = v_customer_id;
+  insert into public.customer_contacts (customer_id, phone)
+  select v_customer_id, btrim(item.value->>'phone')
+  from jsonb_array_elements(coalesce(payload->'contacts', '[]'::jsonb)) as item(value)
+  where nullif(btrim(item.value->>'phone'), '') is not null;
+
+  delete from public.customer_bank_accounts where customer_id = v_customer_id;
+  insert into public.customer_bank_accounts (
+    customer_id,
+    bank_name,
+    account_number,
+    account_name,
+    is_primary
+  )
+  select
+    v_customer_id,
+    btrim(item.value->>'bankName'),
+    btrim(item.value->>'accountNumber'),
+    btrim(item.value->>'accountName'),
+    coalesce((item.value->>'isPrimary')::boolean, false)
+  from jsonb_array_elements(coalesce(payload->'bankAccounts', '[]'::jsonb)) as item(value)
+  where nullif(btrim(item.value->>'accountNumber'), '') is not null;
+
+  delete from public.customer_farms where customer_id = v_customer_id;
+  insert into public.customer_farms (customer_id, owner_name, address, card_number)
+  select
+    v_customer_id,
+    nullif(btrim(item.value->>'ownerName'), ''),
+    nullif(btrim(item.value->>'address'), ''),
+    nullif(btrim(item.value->>'cardNumber'), '')
+  from jsonb_array_elements(coalesce(payload->'farms', '[]'::jsonb)) as item(value)
+  where nullif(btrim(item.value->>'ownerName'), '') is not null
+     or nullif(btrim(item.value->>'address'), '') is not null
+     or nullif(btrim(item.value->>'cardNumber'), '') is not null;
+
+  return jsonb_build_object('id', v_customer_id);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."save_customer_master_data"("payload" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."save_dashboard_alert_thresholds"("p_location_id" "uuid", "p_purchase_average_min" numeric, "p_net_cash_min" numeric) RETURNS "jsonb"
@@ -12583,11 +12955,14 @@ declare
   next_end_time time;
   next_interval integer;
   next_keys text[];
+  next_evidence_enabled boolean;
+  next_evidence_interval integer;
   token_value text;
   actor_name text;
   actor_phone text;
   unknown_keys text[];
   schedule_changed boolean;
+  evidence_schedule_changed boolean;
 begin
   perform private.telegram_badge_require_manager();
 
@@ -12601,37 +12976,31 @@ begin
   next_start_time := coalesce(nullif(payload->>'startTime', '')::time, current_settings.start_time);
   next_end_time := coalesce(nullif(payload->>'endTime', '')::time, current_settings.end_time);
   next_interval := coalesce((payload->>'intervalMinutes')::integer, current_settings.interval_minutes);
+  next_evidence_enabled := coalesce((payload->>'evidenceEnabled')::boolean, current_settings.evidence_enabled);
+  next_evidence_interval := coalesce((payload->>'evidenceIntervalMinutes')::integer, current_settings.evidence_interval_minutes);
   token_value := nullif(btrim(payload->>'botToken'), '');
 
   if jsonb_typeof(payload->'enabledBadgeKeys') = 'array' then
     select coalesce(array_agg(value order by value), array[]::text[])
     into next_keys
     from (
-      select distinct jsonb_array_elements_text(payload->'enabledBadgeKeys') as value
+      select distinct jsonb_array_elements_text(payload->'enabledBadgeKeys') value
     ) selected;
   else
     next_keys := current_settings.enabled_badge_keys;
   end if;
 
-  select array_agg(key)
-  into unknown_keys
+  select array_agg(key) into unknown_keys
   from unnest(next_keys) key
   where not exists (
     select 1 from public.telegram_badge_catalog c where c.badge_key = key
   );
 
-  if unknown_keys is not null then
-    raise exception 'ประเภท Badge ไม่ถูกต้อง';
-  end if;
-  if next_start_time >= next_end_time then
-    raise exception 'เวลาเริ่มต้องน้อยกว่าเวลาสิ้นสุด';
-  end if;
-  if next_interval not between 10 and 240 then
-    raise exception 'ระยะห่างต้องอยู่ระหว่าง 10 ถึง 240 นาที';
-  end if;
-  if next_enabled and next_chat_id is null then
-    raise exception 'กรุณาระบุ Chat ID';
-  end if;
+  if unknown_keys is not null then raise exception 'ประเภท Badge ไม่ถูกต้อง'; end if;
+  if next_start_time >= next_end_time then raise exception 'เวลาเริ่มต้องน้อยกว่าเวลาสิ้นสุด'; end if;
+  if next_interval not between 10 and 240 then raise exception 'ระยะห่างต้องอยู่ระหว่าง 10 ถึง 240 นาที'; end if;
+  if next_evidence_interval not between 30 and 1440 then raise exception 'ระยะห่าง Evidence ต้องอยู่ระหว่าง 30 ถึง 1440 นาที'; end if;
+  if next_enabled and next_chat_id is null then raise exception 'กรุณาระบุ Chat ID'; end if;
   if next_enabled and current_settings.bot_token_secret_id is null and token_value is null then
     raise exception 'กรุณาระบุ Bot Token';
   end if;
@@ -12640,6 +13009,10 @@ begin
     next_start_time is distinct from current_settings.start_time
     or next_end_time is distinct from current_settings.end_time
     or next_interval is distinct from current_settings.interval_minutes;
+  evidence_schedule_changed :=
+    next_start_time is distinct from current_settings.start_time
+    or next_end_time is distinct from current_settings.end_time
+    or next_evidence_interval is distinct from current_settings.evidence_interval_minutes;
 
   if token_value is not null then
     if current_settings.bot_token_secret_id is null then
@@ -12658,10 +13031,8 @@ begin
     end if;
   end if;
 
-  select p.name, p.phone
-  into actor_name, actor_phone
-  from public.profiles p
-  where p.id = auth.uid();
+  select p.name, p.phone into actor_name, actor_phone
+  from public.profiles p where p.id = auth.uid();
 
   update public.telegram_badge_settings
   set enabled = next_enabled,
@@ -12670,6 +13041,8 @@ begin
       end_time = next_end_time,
       interval_minutes = next_interval,
       enabled_badge_keys = next_keys,
+      evidence_enabled = next_evidence_enabled,
+      evidence_interval_minutes = next_evidence_interval,
       bot_token_secret_id = current_settings.bot_token_secret_id,
       initial_attempt_at = case
         when next_enabled and not current_settings.enabled then now() + interval '10 minutes'
@@ -12677,33 +13050,38 @@ begin
         when schedule_changed then null
         else initial_attempt_at
       end,
-      retry_at = case
-        when not next_enabled or schedule_changed then null
-        else retry_at
-      end,
-      pending_slot_at = case
-        when not next_enabled or schedule_changed then null
-        else pending_slot_at
-      end,
-      claim_token = case
-        when not next_enabled or schedule_changed then null
-        else claim_token
-      end,
-      claimed_at = case
-        when not next_enabled or schedule_changed then null
-        else claimed_at
-      end,
+      retry_at = case when not next_enabled or schedule_changed then null else retry_at end,
+      pending_slot_at = case when not next_enabled or schedule_changed then null else pending_slot_at end,
+      claim_token = case when not next_enabled or schedule_changed then null else claim_token end,
+      claimed_at = case when not next_enabled or schedule_changed then null else claimed_at end,
       last_completed_slot_at = case
         when next_enabled and current_settings.enabled and schedule_changed
-          then private.telegram_badge_latest_slot(
-            now(),
-            next_start_time,
-            next_end_time,
-            next_interval
-          )
+          then private.telegram_badge_latest_slot(now(), next_start_time, next_end_time, next_interval)
         else last_completed_slot_at
       end,
       last_error = case when not next_enabled then null else last_error end,
+      evidence_last_attempted_slot_at = case
+        when next_evidence_enabled and (
+          not current_settings.evidence_enabled or evidence_schedule_changed
+        ) then private.telegram_badge_latest_slot(
+          now(), next_start_time, next_end_time, next_evidence_interval
+        )
+        else evidence_last_attempted_slot_at
+      end,
+      evidence_claim_token = case
+        when not next_evidence_enabled
+          or not next_enabled
+          or evidence_schedule_changed
+          or next_evidence_enabled is distinct from current_settings.evidence_enabled
+        then null else evidence_claim_token
+      end,
+      evidence_claimed_at = case
+        when not next_evidence_enabled
+          or not next_enabled
+          or evidence_schedule_changed
+          or next_evidence_enabled is distinct from current_settings.evidence_enabled
+        then null else evidence_claimed_at
+      end,
       updated_by_user_id = auth.uid(),
       updated_by_name = actor_name,
       updated_by_phone = actor_phone,
@@ -12716,6 +13094,136 @@ $$;
 
 
 ALTER FUNCTION "public"."save_telegram_badge_config"("payload" "jsonb") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."save_transport_staff_master_data"("payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_actor_id uuid := auth.uid();
+  v_actor_name text;
+  v_actor_phone text;
+  v_staff_id uuid := nullif(payload->>'staffId', '')::uuid;
+  v_location_id uuid := nullif(payload->>'defaultLocationId', '')::uuid;
+  v_existing public.transport_staffs%rowtype;
+begin
+  select p.name, p.phone
+    into v_actor_name, v_actor_phone
+  from public.profiles p
+  where p.id = v_actor_id
+    and p.is_active = true;
+
+  if not found then
+    raise exception 'Active authenticated user required' using errcode = '42501';
+  end if;
+
+  if v_location_id is null or not private.can_access_location(v_location_id) then
+    raise exception 'Location access denied' using errcode = '42501';
+  end if;
+
+  if nullif(btrim(payload->>'mainName'), '') is null then
+    raise exception 'Transport staff name is required' using errcode = '22023';
+  end if;
+
+  if v_staff_id is null then
+    insert into public.transport_staffs (
+      client_temp_id,
+      idempotency_key,
+      legacy_rec_id,
+      legacy_member_id,
+      main_name,
+      sync_status,
+      record_status,
+      revision_no,
+      default_location_id,
+      created_by_user_id,
+      created_by_name,
+      created_by_phone,
+      server_received_at
+    ) values (
+      nullif(payload->>'clientTempId', ''),
+      nullif(payload->>'idempotencyKey', ''),
+      nullif(payload->>'legacyRecId', ''),
+      nullif(payload->>'legacyMemberId', ''),
+      btrim(payload->>'mainName'),
+      'synced',
+      'active',
+      0,
+      v_location_id,
+      v_actor_id,
+      coalesce(v_actor_name, ''),
+      coalesce(v_actor_phone, ''),
+      now()
+    )
+    returning id into v_staff_id;
+  else
+    select *
+      into v_existing
+    from public.transport_staffs
+    where id = v_staff_id
+    for update;
+
+    if not found then
+      raise exception 'Transport staff not found' using errcode = 'P0002';
+    end if;
+
+    if v_existing.default_location_id is not null
+       and not private.can_access_location(v_existing.default_location_id) then
+      raise exception 'Transport staff access denied' using errcode = '42501';
+    end if;
+
+    update public.transport_staffs
+    set legacy_rec_id = nullif(payload->>'legacyRecId', ''),
+        legacy_member_id = nullif(payload->>'legacyMemberId', ''),
+        main_name = btrim(payload->>'mainName'),
+        sync_status = 'synced',
+        record_status = 'active',
+        revision_no = revision_no + 1,
+        default_location_id = v_location_id,
+        updated_by_user_id = v_actor_id,
+        updated_by_name = coalesce(v_actor_name, ''),
+        updated_by_phone = coalesce(v_actor_phone, ''),
+        updated_at = now(),
+        server_received_at = now()
+    where id = v_staff_id;
+  end if;
+
+  delete from public.transport_staff_contacts where staff_id = v_staff_id;
+  insert into public.transport_staff_contacts (staff_id, phone)
+  select v_staff_id, btrim(item.value->>'phone')
+  from jsonb_array_elements(coalesce(payload->'contacts', '[]'::jsonb)) as item(value)
+  where nullif(btrim(item.value->>'phone'), '') is not null;
+
+  delete from public.transport_staff_bank_accounts where staff_id = v_staff_id;
+  insert into public.transport_staff_bank_accounts (
+    staff_id,
+    bank_name,
+    account_number,
+    account_name,
+    is_primary
+  )
+  select
+    v_staff_id,
+    btrim(item.value->>'bankName'),
+    btrim(item.value->>'accountNumber'),
+    btrim(item.value->>'accountName'),
+    coalesce((item.value->>'isPrimary')::boolean, false)
+  from jsonb_array_elements(coalesce(payload->'bankAccounts', '[]'::jsonb)) as item(value)
+  where nullif(btrim(item.value->>'accountNumber'), '') is not null;
+
+  delete from public.transport_staff_plates where staff_id = v_staff_id;
+  insert into public.transport_staff_plates (staff_id, plate_number)
+  select v_staff_id, btrim(item.value->>'plateNumber')
+  from jsonb_array_elements(coalesce(payload->'plates', '[]'::jsonb)) as item(value)
+  where nullif(btrim(item.value->>'plateNumber'), '') is not null;
+
+  return jsonb_build_object('id', v_staff_id);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."save_transport_staff_master_data"("payload" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."set_rubber_export_sold_out"("p_export_id" "uuid", "p_sold_out" boolean) RETURNS "jsonb"
@@ -15462,8 +15970,14 @@ CREATE TABLE IF NOT EXISTS "public"."telegram_badge_settings" (
     "updated_by_phone" "text",
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "evidence_enabled" boolean DEFAULT false NOT NULL,
+    "evidence_interval_minutes" integer DEFAULT 60 NOT NULL,
+    "evidence_last_attempted_slot_at" timestamp with time zone,
+    "evidence_claim_token" "uuid",
+    "evidence_claimed_at" timestamp with time zone,
     CONSTRAINT "telegram_badge_settings_chat_id_check" CHECK ((("chat_id" IS NULL) OR (NULLIF("btrim"("chat_id"), ''::"text") IS NOT NULL))),
     CONSTRAINT "telegram_badge_settings_check" CHECK (("start_time" < "end_time")),
+    CONSTRAINT "telegram_badge_settings_evidence_interval_check" CHECK ((("evidence_interval_minutes" >= 30) AND ("evidence_interval_minutes" <= 1440))),
     CONSTRAINT "telegram_badge_settings_id_check" CHECK (("id" = true)),
     CONSTRAINT "telegram_badge_settings_interval_minutes_check" CHECK ((("interval_minutes" >= 10) AND ("interval_minutes" <= 240)))
 );
@@ -18078,13 +18592,23 @@ GRANT ALL ON FUNCTION "public"."claim_telegram_badge_dispatch"() TO "service_rol
 
 
 
-REVOKE ALL ON FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") TO "authenticated";
+REVOKE ALL ON FUNCTION "public"."claim_telegram_evidence_dispatch"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."claim_telegram_evidence_dispatch"() TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid", "p_manual_correction_count" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid", "p_manual_correction_count" integer) TO "authenticated";
 
 
 
 REVOKE ALL ON FUNCTION "public"."complete_telegram_badge_dispatch"("p_claim_token" "uuid", "p_outcome" "text", "p_error" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."complete_telegram_badge_dispatch"("p_claim_token" "uuid", "p_outcome" "text", "p_error" "text") TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."complete_telegram_evidence_dispatch"("p_claim_token" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."complete_telegram_evidence_dispatch"("p_claim_token" "uuid") TO "service_role";
 
 
 
@@ -18332,6 +18856,11 @@ GRANT ALL ON FUNCTION "public"."get_time_payroll_payment_locations"() TO "authen
 
 
 
+REVOKE ALL ON FUNCTION "public"."get_weight_evidence_digest"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_weight_evidence_digest"() TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."has_cash_count"("source_row" "public"."report_batches") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."has_cash_count"("source_row" "public"."report_batches") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."has_cash_count"("source_row" "public"."report_batches") TO "service_role";
@@ -18340,6 +18869,11 @@ GRANT ALL ON FUNCTION "public"."has_cash_count"("source_row" "public"."report_ba
 
 REVOKE ALL ON FUNCTION "public"."is_super_admin"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."is_super_admin"() TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."is_telegram_evidence_dispatch_enabled"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."is_telegram_evidence_dispatch_enabled"() TO "service_role";
 
 
 
@@ -18527,6 +19061,11 @@ REVOKE ALL ON FUNCTION "public"."run_time_tracking_daily_cutoff"() FROM PUBLIC;
 
 
 
+REVOKE ALL ON FUNCTION "public"."save_customer_master_data"("payload" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."save_customer_master_data"("payload" "jsonb") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."save_dashboard_alert_thresholds"("p_location_id" "uuid", "p_purchase_average_min" numeric, "p_net_cash_min" numeric) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."save_dashboard_alert_thresholds"("p_location_id" "uuid", "p_purchase_average_min" numeric, "p_net_cash_min" numeric) TO "authenticated";
 
@@ -18564,6 +19103,11 @@ GRANT ALL ON FUNCTION "public"."save_rubber_bill_approval_settings"("p_edit_wind
 
 REVOKE ALL ON FUNCTION "public"."save_telegram_badge_config"("payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."save_telegram_badge_config"("payload" "jsonb") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."save_transport_staff_master_data"("payload" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."save_transport_staff_master_data"("payload" "jsonb") TO "authenticated";
 
 
 

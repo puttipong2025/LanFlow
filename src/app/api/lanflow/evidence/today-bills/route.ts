@@ -15,10 +15,11 @@ export async function GET(request: Request) {
   const businessDate = bangkokDateString();
   const { data: bills, error: billsError } = await result.supabase
     .from("rubber_bills")
-    .select("id, bill_no, server_bill_no, bill_date, customer_name, revision_no, evidence_completion_id, client_recorded_at, server_received_at, created_at")
+    .select("id, bill_no, server_bill_no, bill_date, customer_name, revision_no, evidence_completion_id, client_recorded_at, server_received_at, created_at, weight, deduct_weight, net_weight, average_price, deduction_total, net_total")
     .eq("location_id", locationId)
     .eq("bill_date", businessDate)
     .eq("record_status", "active")
+    .is("source_rubber_export_id", null)
     .order("created_at", { ascending: false });
   if (billsError) return evidenceError(503, "BILL_READ_FAILED", "โหลดบิลวันนี้ไม่สำเร็จ", true);
 
@@ -27,7 +28,7 @@ export async function GET(request: Request) {
     ? { data: [], error: null }
     : await result.supabase
       .from("rubber_bill_items")
-      .select("id, bill_id, sequence_no, description, weight_in")
+      .select("id, bill_id, sequence_no, description, weight_in, weight_out, net_weight")
       .in("bill_id", billIds)
       .eq("item_type", "weigh")
       .order("sequence_no");
@@ -41,13 +42,21 @@ export async function GET(request: Request) {
     matchingRecordedAt: bill.client_recorded_at ?? bill.server_received_at ?? bill.created_at,
     revisionNo: bill.revision_no,
     completionState: bill.evidence_completion_id == null ? "available" : "completed",
+    weight: bill.weight == null ? null : Number(bill.weight),
+    deductWeight: bill.deduct_weight == null ? null : Number(bill.deduct_weight),
+    netWeight: bill.net_weight == null ? null : Number(bill.net_weight),
+    averagePrice: bill.average_price == null ? null : Number(bill.average_price),
+    deductionTotal: bill.deduction_total == null ? null : Number(bill.deduction_total),
+    netTotal: bill.net_total == null ? null : Number(bill.net_total),
     weighRows: (rows ?? [])
       .filter((row) => row.bill_id === bill.id)
       .map((row) => ({
         id: row.id,
         sequenceNo: row.sequence_no,
         label: row.description ?? `ชั่ง ${row.sequence_no}`,
-        weightIn: Number(row.weight_in),
+        weightIn: row.weight_in == null ? null : Number(row.weight_in),
+        weightOut: row.weight_out == null ? null : Number(row.weight_out),
+        netWeight: row.net_weight == null ? null : Number(row.net_weight),
       })),
   })).filter((bill) => bill.weighRows.length > 0);
 

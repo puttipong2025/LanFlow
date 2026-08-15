@@ -32,6 +32,8 @@ export type TelegramBadgeConfig = {
   endTime: string;
   intervalMinutes: number;
   enabledBadgeKeys: TelegramBadgeKey[];
+  evidenceEnabled: boolean;
+  evidenceIntervalMinutes: number;
   tokenConfigured: boolean;
   catalog: TelegramBadgeCatalogItem[];
   lastAttemptAt: string | null;
@@ -39,6 +41,14 @@ export type TelegramBadgeConfig = {
   lastError: string | null;
   updatedAt: string;
   updatedByName: string | null;
+};
+
+export type WeightEvidenceDigestBranch = {
+  locationId: string;
+  locationName: string;
+  totalWeighRows: number;
+  manualCorrectionCount: number;
+  incompleteWeighRows: number;
 };
 
 export type DashboardTelegramAlert = {
@@ -171,6 +181,66 @@ export function formatDashboardAlertDigest(
   messages.push(current);
   if (messages.some((message) => message.length > TELEGRAM_TEXT_LIMIT)) {
     throw new Error("Dashboard alert summary contains an oversized line");
+  }
+  return messages;
+}
+
+export function formatWeightEvidenceDigest(
+  branches: WeightEvidenceDigestBranch[],
+  generatedAt = new Date(),
+) {
+  const visible = branches
+    .filter(
+      (item) =>
+        Number.isFinite(item.totalWeighRows) &&
+        Number.isFinite(item.manualCorrectionCount) &&
+        Number.isFinite(item.incompleteWeighRows) &&
+        item.totalWeighRows > 0 &&
+        item.manualCorrectionCount >= 0 &&
+        item.incompleteWeighRows >= 0,
+    )
+    .sort(
+      (left, right) =>
+        right.totalWeighRows - left.totalWeighRows ||
+        left.locationName.localeCompare(right.locationName, "th") ||
+        left.locationId.localeCompare(right.locationId),
+    );
+  const manualTotal = visible.reduce(
+    (sum, item) => sum + item.manualCorrectionCount,
+    0,
+  );
+  const incompleteTotal = visible.reduce(
+    (sum, item) => sum + item.incompleteWeighRows,
+    0,
+  );
+  if (manualTotal === 0 && incompleteTotal === 0) return [];
+
+  const totalRows = visible.reduce((sum, item) => sum + item.totalWeighRows, 0);
+  const header = [
+    "⚖️ LanFlow · หลักฐานน้ำหนัก",
+    generatedAtLabel(generatedAt),
+    `รายการชั่งทั้งหมด ${totalRows.toLocaleString("th-TH")}`,
+    `แก้ด้วยมือ ${manualTotal.toLocaleString("th-TH")} · หลักฐานยังไม่ครบ ${incompleteTotal.toLocaleString("th-TH")}`,
+  ].join("\n");
+  const sections = visible.map((item) => [
+    `\n📍 ${item.locationName} · ${item.totalWeighRows.toLocaleString("th-TH")} รายการชั่ง`,
+    `• แก้ด้วยมือ: ${item.manualCorrectionCount.toLocaleString("th-TH")}`,
+    `• หลักฐานยังไม่ครบ: ${item.incompleteWeighRows.toLocaleString("th-TH")}`,
+  ].join("\n"));
+
+  const messages: string[] = [];
+  let current = header;
+  for (const section of sections) {
+    const candidate = `${current}\n${section}`;
+    if (candidate.length <= MESSAGE_TARGET_LENGTH) current = candidate;
+    else {
+      messages.push(current);
+      current = `${header}\n${section}`;
+    }
+  }
+  messages.push(current);
+  if (messages.some((message) => message.length > TELEGRAM_TEXT_LIMIT)) {
+    throw new Error("Weight evidence summary contains an oversized line");
   }
   return messages;
 }

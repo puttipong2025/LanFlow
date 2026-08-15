@@ -1,5 +1,5 @@
 import { requireAuth } from "@/lib/server/auth";
-import { canAccessEvidenceLocation, evidenceError, noStoreJson, parseCompletionPayload, UUID_PATTERN } from "@/lib/server/weight-evidence";
+import { canAccessEvidenceLocation, evidenceError, noStoreJson, parseCompletionIdentityPayload, UUID_PATTERN } from "@/lib/server/weight-evidence";
 
 export const dynamic = "force-dynamic";
 type RouteContext = { params: Promise<{ billId: string }> };
@@ -8,7 +8,7 @@ export async function POST(request: Request, context: RouteContext) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
   const { billId } = await context.params;
-  const payload = parseCompletionPayload(await request.json().catch(() => null));
+  const payload = parseCompletionIdentityPayload(await request.json().catch(() => null));
   if (!UUID_PATTERN.test(billId) || !payload) return evidenceError(400, "INVALID_REQUEST", "ข้อมูล completion ไม่ถูกต้อง");
   if (!canAccessEvidenceLocation(result.auth, payload.locationId)) return evidenceError(403, "LOCATION_ACCESS_DENIED", "ไม่มีสิทธิ์เข้าถึงสาขานี้");
 

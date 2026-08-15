@@ -4,6 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 import {
   formatDashboardAlertDigest,
   formatTelegramBadgeDigest,
+  formatWeightEvidenceDigest,
   TELEGRAM_BADGE_KEYS,
   type DashboardTelegramAlert,
   type TelegramBadgeCount,
@@ -12,6 +13,10 @@ import {
 const supabaseUrl =
   process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const publishableKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+  || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  || "";
+const password = process.env.TEST_PASSWORD || "password123";
 const superAdminId =
   process.env.TEST_USER_ID || "00000000-0000-4000-8000-000000000001";
 
@@ -20,6 +25,20 @@ function service() {
   return createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
+}
+
+async function signedInSuperAdmin() {
+  expect(publishableKey).toBeTruthy();
+  const client = createClient(supabaseUrl, publishableKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const phone = (process.env.TEST_PHONE || "0800000000").replace(/\D/g, "");
+  const { error } = await client.auth.signInWithPassword({
+    phone: phone.startsWith("0") ? `+66${phone.slice(1)}` : `+${phone}`,
+    password,
+  });
+  expect(error).toBeNull();
+  return client;
 }
 
 async function authContext(
@@ -40,6 +59,8 @@ async function saveConfig(
       startTime: "00:01",
       endTime: "23:59",
       intervalMinutes: 60,
+      evidenceEnabled: false,
+      evidenceIntervalMinutes: 60,
       enabledBadgeKeys: TELEGRAM_BADGE_KEYS,
       ...overrides,
     },
@@ -132,6 +153,41 @@ test.describe.serial("Telegram badge digest @telegram-badge", () => {
     expect(messages[0]).not.toContain("รับ–จ่ายสุทธิสะสม");
   });
 
+  test("Evidence formatter sorts by row count and omits an all-zero issue snapshot", () => {
+    const generatedAt = new Date("2026-08-15T03:00:00.000Z");
+    const messages = formatWeightEvidenceDigest([
+      {
+        locationId: "branch-b",
+        locationName: "สาขา ข",
+        totalWeighRows: 2,
+        manualCorrectionCount: 0,
+        incompleteWeighRows: 0,
+      },
+      {
+        locationId: "branch-a",
+        locationName: "สาขา ก",
+        totalWeighRows: 6,
+        manualCorrectionCount: 2,
+        incompleteWeighRows: 3,
+      },
+    ], generatedAt);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toContain("รายการชั่งทั้งหมด 8");
+    expect(messages[0]).toContain("แก้ด้วยมือ 2");
+    expect(messages[0]).toContain("หลักฐานยังไม่ครบ 3");
+    expect(messages[0].indexOf("สาขา ก")).toBeLessThan(messages[0].indexOf("สาขา ข"));
+    expect(messages[0]).not.toMatch(/ส่วน\s+\d+\/\d+/);
+    expect(formatWeightEvidenceDigest([
+      {
+        locationId: "branch-a",
+        locationName: "สาขา ก",
+        totalWeighRows: 1,
+        manualCorrectionCount: 0,
+        incompleteWeighRows: 0,
+      },
+    ], generatedAt)).toEqual([]);
+  });
+
   test("config API is manager-only and never returns the Bot Token", async ({
     browser,
   }) => {
@@ -158,6 +214,13 @@ test.describe.serial("Telegram badge digest @telegram-badge", () => {
       });
       expect(invalidWindow.status()).toBe(400);
 
+      expect((await saveConfig(manager, {
+        evidenceIntervalMinutes: 29,
+      })).status()).toBe(400);
+      expect((await saveConfig(manager, {
+        evidenceIntervalMinutes: 1441,
+      })).status()).toBe(400);
+
       const saved = await saveConfig(manager, {
         botToken: "test-token-never-returned",
       });
@@ -167,6 +230,10 @@ test.describe.serial("Telegram badge digest @telegram-badge", () => {
       expect(savedBody.enabledBadgeKeys).toEqual(
         expect.arrayContaining([...TELEGRAM_BADGE_KEYS]),
       );
+      expect(savedBody).toMatchObject({
+        evidenceEnabled: false,
+        evidenceIntervalMinutes: 60,
+      });
       expect(JSON.stringify(savedBody)).not.toContain(
         "test-token-never-returned",
       );
@@ -226,6 +293,7 @@ test.describe.serial("Telegram badge digest @telegram-badge", () => {
   test("manager sees the config button beside branch controls; regular user does not", async ({
     browser,
   }) => {
+    test.setTimeout(60_000);
     const user = await authContext(browser, "user");
     const manager = await authContext(browser, "super_admin");
 
@@ -278,6 +346,8 @@ test.describe.serial("Telegram badge digest @telegram-badge", () => {
       await expect(
         managerPage.getByText("Badge ที่ต้องการส่ง"),
       ).toBeVisible();
+      await expect(managerPage.getByText("ส่งสรุป Evidence")).toBeVisible();
+      await expect(managerPage.getByText("ระยะห่าง Evidence (นาที)")).toBeVisible();
     } finally {
       await Promise.all([user.close(), manager.close()]);
     }
@@ -336,6 +406,7 @@ test.describe.serial("Telegram badge digest @telegram-badge", () => {
 
   test("advance payment stays in Telegram badges until it is completed or deleted", async () => {
     const db = service();
+    const authenticated = await signedInSuperAdmin();
     const transferId = crypto.randomUUID();
     const { data: location, error: locationError } = await db
       .from("locations")
@@ -384,15 +455,15 @@ test.describe.serial("Telegram badge digest @telegram-badge", () => {
       ).toBeNull();
       expect(await readAdvanceCount()).toBe(baseline);
 
-      expect(
-        (await db
-          .from("money_transfers")
-          .update({
-            transfer_status: "advance_payment",
-            record_status: "deleted",
-          })
-          .eq("id", transferId)).error,
-      ).toBeNull();
+      expect((await db.from("money_transfers").update({
+        transfer_status: "advance_payment",
+      }).eq("id", transferId)).error).toBeNull();
+      expect(await readAdvanceCount()).toBe(baseline + 1);
+
+      const deleted = await authenticated.rpc("delete_money_transfer", {
+        p_transfer_id: transferId,
+      });
+      expect(deleted.error).toBeNull();
       expect(await readAdvanceCount()).toBe(baseline);
     } finally {
       await db.from("money_transfers").delete().eq("id", transferId);
@@ -529,6 +600,81 @@ test.describe.serial("Telegram badge digest @telegram-badge", () => {
         claim_token: null,
       });
     } finally {
+      await manager.close();
+    }
+  });
+
+  test("Evidence uses an independent interval and reclaims a stale claim without Badge retry state", async ({
+    browser,
+  }) => {
+    const manager = await authContext(browser, "super_admin");
+    const db = service();
+    try {
+      const enabled = await saveConfig(manager, {
+        enabled: true,
+        evidenceEnabled: true,
+        evidenceIntervalMinutes: 30,
+      });
+      expect(enabled.ok(), await enabled.text()).toBeTruthy();
+
+      const early = await db.rpc("claim_telegram_evidence_dispatch");
+      expect(early.error).toBeNull();
+      expect(early.data).toMatchObject({ claimed: false, reason: "not_due" });
+
+      await db.from("telegram_badge_settings").update({
+        evidence_last_attempted_slot_at: new Date(
+          Date.now() - 31 * 60 * 1000,
+        ).toISOString(),
+      }).eq("id", true);
+      const first = await db.rpc("claim_telegram_evidence_dispatch");
+      expect(first.error).toBeNull();
+      expect(first.data.claimed).toBe(true);
+      expect(new Date(first.data.slotAt).getTime()).toBeGreaterThan(
+        Date.now() - 31 * 60 * 1000,
+      );
+
+      const duplicate = await db.rpc("claim_telegram_evidence_dispatch");
+      expect(duplicate.data).toMatchObject({
+        claimed: false,
+        reason: "already_claimed",
+      });
+
+      await db.from("telegram_badge_settings").update({
+        evidence_claimed_at: new Date(Date.now() - 6 * 60 * 1000).toISOString(),
+      }).eq("id", true);
+      const reclaimed = await db.rpc("claim_telegram_evidence_dispatch");
+      expect(reclaimed.error).toBeNull();
+      expect(reclaimed.data.claimed).toBe(true);
+      expect(reclaimed.data.claimToken).not.toBe(first.data.claimToken);
+      expect(reclaimed.data.slotAt).toBe(first.data.slotAt);
+
+      expect((await db.rpc("complete_telegram_evidence_dispatch", {
+        p_claim_token: reclaimed.data.claimToken,
+      })).error).toBeNull();
+      const completed = await db.rpc("claim_telegram_evidence_dispatch");
+      expect(completed.data).toMatchObject({ claimed: false, reason: "not_due" });
+
+      const disabled = await saveConfig(manager, {
+        enabled: true,
+        evidenceEnabled: false,
+        evidenceIntervalMinutes: 30,
+      });
+      expect(disabled.ok(), await disabled.text()).toBeTruthy();
+      const { data: state } = await db.from("telegram_badge_settings")
+        .select("evidence_enabled, evidence_claim_token, evidence_claimed_at, retry_at")
+        .eq("id", true)
+        .single();
+      expect(state).toMatchObject({
+        evidence_enabled: false,
+        evidence_claim_token: null,
+        evidence_claimed_at: null,
+      });
+    } finally {
+      await saveConfig(manager, {
+        enabled: false,
+        evidenceEnabled: false,
+        evidenceIntervalMinutes: 60,
+      });
       await manager.close();
     }
   });

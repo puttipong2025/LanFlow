@@ -153,6 +153,8 @@ export function TelegramBadgeConfigModal({
         startTime: config.startTime,
         endTime: config.endTime,
         intervalMinutes: config.intervalMinutes,
+        evidenceEnabled: config.evidenceEnabled,
+        evidenceIntervalMinutes: config.evidenceIntervalMinutes,
         enabledBadgeKeys: config.enabledBadgeKeys,
         botToken: config.botToken,
       }),
@@ -474,6 +476,51 @@ export function TelegramBadgeConfigModal({
                 </p>
               </div>
             )}
+          </fieldset>
+
+          <fieldset className="rounded-md border border-black/10 p-4">
+            <legend className="px-1 text-sm font-bold text-ink text-balance">
+              หลักฐานน้ำหนัก
+            </legend>
+            <div className="space-y-4">
+              <label className="flex items-center justify-between gap-4 rounded-md bg-field p-3">
+                <span>
+                  <span className="block text-sm font-semibold text-ink">
+                    ส่งสรุป Evidence
+                  </span>
+                  <span className="block text-xs text-ink/60 text-pretty">
+                    ส่งเฉพาะจำนวนแก้ด้วยมือและหลักฐานที่ยังไม่ครบ
+                  </span>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={config.evidenceEnabled}
+                  onChange={(event) =>
+                    patchConfig({ evidenceEnabled: event.target.checked })
+                  }
+                  className="h-5 w-5 accent-leaf"
+                />
+              </label>
+              <label className="block text-sm font-semibold text-ink">
+                ระยะห่าง Evidence (นาที)
+                <input
+                  type="number"
+                  min={30}
+                  max={1440}
+                  step={1}
+                  value={config.evidenceIntervalMinutes}
+                  onChange={(event) =>
+                    patchConfig({
+                      evidenceIntervalMinutes: Number(event.target.value),
+                    })
+                  }
+                  className="focus-ring mt-1 h-10 w-full rounded-md border border-black/15 bg-white px-3 font-normal tabular-nums"
+                />
+              </label>
+              <p className="text-xs text-ink/55 text-pretty">
+                ใช้ปลายทางและช่วงเวลาเดียวกับ Telegram หลัก และจะเริ่มในรอบถัดไป
+              </p>
+            </div>
           </fieldset>
 
           <fieldset className="rounded-md border border-black/10 p-4">
