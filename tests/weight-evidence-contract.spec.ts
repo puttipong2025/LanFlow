@@ -95,8 +95,20 @@ test("evidence routes do not expose foreign completion UUID or persist OCR", () 
   const ocr = fs.readFileSync(path.join(root, "src/app/api/lanflow/evidence/ocr/route.ts"), "utf8");
   expect(status).toContain('"owned_by_other"');
   expect(status).not.toContain("evidenceCompletionId:");
+  expect(ocr).toContain("active seven-segment digits inside the physical scale display window");
+  expect(ocr).toContain("Inactive or ghost segments");
+  expect(ocr).toContain("unused leading digit cells");
+  expect(ocr).toContain("stickers, dates, timestamps, camera or GPS overlays");
+  expect(ocr).toContain("Triangles, arrows, or isolated lamps below or above the digit row are status markers");
+  expect(ocr).toContain("Return exactly one value with high confidence only when the main reading is clear");
+  expect(ocr).toContain('reasoning: { effort: "none", exclude: true }');
   expect(ocr).not.toMatch(/result\.supabase|\.storage\.|\.upload\(/);
   expect(ocr).not.toContain("raw_response");
+});
+
+test("evidence OCR example pins the verified OpenRouter model", () => {
+  const envExample = fs.readFileSync(path.join(root, ".env.local.example"), "utf8");
+  expect(envExample).toContain("OPENROUTER_MODEL=google/gemini-3-flash-preview");
 });
 
 test("today bills include the customer name needed by the Android work list", () => {

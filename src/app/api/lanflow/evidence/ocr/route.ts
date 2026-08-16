@@ -8,10 +8,12 @@ import {
 
 export const dynamic = "force-dynamic";
 
-const PROMPT = `Read exactly one displayed weight from this scale display image.
+const PROMPT = `Read only the main weight formed by the active seven-segment digits inside the physical scale display window.
+Inactive or ghost segments (including dark segments on red LED displays), unused leading digit cells, status lamps, stickers, dates, timestamps, camera or GPS overlays, addresses, labels, buttons, and units are not part of the weight.
+A decimal point is a small round dot aligned with the bottom of the digit row. Triangles, arrows, or isolated lamps below or above the digit row are status markers, not decimal points.
+Remove thousands separators and kg/กก. units. Do not infer cropped or missing digits. Negative values are invalid.
 Return JSON only: {"values":[number],"confidence":"high"|"low"}.
-Remove commas and kg/กก. units. Include every plausible displayed weight in values.
-Use confidence low when blurred, cropped, ambiguous, or uncertain. Negative values are invalid.`;
+Return exactly one value with high confidence only when the main reading is clear; otherwise return an empty values array with low confidence.`;
 
 export async function POST(request: Request) {
   const result = await requireAuth(request);
@@ -41,6 +43,7 @@ export async function POST(request: Request) {
       model,
       temperature: 0,
       max_tokens: 128,
+      reasoning: { effort: "none", exclude: true },
       messages: [{
         role: "user",
         content: [
