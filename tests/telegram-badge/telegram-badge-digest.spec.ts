@@ -153,39 +153,98 @@ test.describe.serial("Telegram badge digest @telegram-badge", () => {
     expect(messages[0]).not.toContain("รับ–จ่ายสุทธิสะสม");
   });
 
-  test("Evidence formatter sorts by row count and omits an all-zero issue snapshot", () => {
+  test("Evidence formatter shows incomplete bill times in Bangkok order", () => {
     const generatedAt = new Date("2026-08-15T03:00:00.000Z");
     const messages = formatWeightEvidenceDigest([
       {
-        locationId: "branch-b",
-        locationName: "สาขา ข",
-        totalWeighRows: 2,
-        manualCorrectionCount: 0,
-        incompleteWeighRows: 0,
+        locationId: "branch-a",
+        locationName: "สาขา ก",
+        billId: "bill-late",
+        billRecordedAt: "2026-08-15T04:20:00.000Z",
+        weighRowCount: 2,
       },
       {
         locationId: "branch-a",
         locationName: "สาขา ก",
-        totalWeighRows: 6,
-        manualCorrectionCount: 2,
-        incompleteWeighRows: 3,
+        billId: "bill-early",
+        billRecordedAt: "2026-08-15T01:35:00.000Z",
+        weighRowCount: 6,
+      },
+      {
+        locationId: "branch-b",
+        locationName: "สาขา ข",
+        billId: "bill-b",
+        billRecordedAt: "2026-08-15T02:10:00.000Z",
+        weighRowCount: 6,
       },
     ], generatedAt);
     expect(messages).toHaveLength(1);
-    expect(messages[0]).toContain("รายการชั่งทั้งหมด 8");
-    expect(messages[0]).toContain("แก้ด้วยมือ 2");
-    expect(messages[0]).toContain("หลักฐานยังไม่ครบ 3");
+    expect(messages[0]).toContain("ยังไม่ส่งหลักฐานครบทั้งหมด 14 รายการ");
+    expect(messages[0]).toContain("📍 สาขา ก — 8 รายการ");
+    expect(messages[0]).toContain("• 08:35 — 6 รายการ");
+    expect(messages[0]).toContain("• 11:20 — 2 รายการ");
+    expect(messages[0]).toContain("📍 สาขา ข — 6 รายการ");
+    expect(messages[0]).toContain("• 09:10 — 6 รายการ");
+    expect(messages[0].indexOf("08:35")).toBeLessThan(messages[0].indexOf("11:20"));
     expect(messages[0].indexOf("สาขา ก")).toBeLessThan(messages[0].indexOf("สาขา ข"));
-    expect(messages[0]).not.toMatch(/ส่วน\s+\d+\/\d+/);
-    expect(formatWeightEvidenceDigest([
+    expect(messages[0]).not.toContain("แก้ด้วยมือ");
+    expect(formatWeightEvidenceDigest([], generatedAt)).toEqual([]);
+  });
+
+  test("Evidence formatter chunks a busy branch by complete bill lines", () => {
+    const bills = Array.from({ length: 300 }, (_, index) => ({
+      locationId: "branch-a",
+      locationName: "สาขา ก",
+      billId: "bill-" + index.toString().padStart(3, "0"),
+      billRecordedAt: new Date(Date.UTC(2026, 7, 15, 0, index % 60)).toISOString(),
+      weighRowCount: 1,
+    }));
+
+    const messages = formatWeightEvidenceDigest(
+      bills,
+      new Date("2026-08-15T03:00:00.000Z"),
+    );
+    expect(messages.length).toBeGreaterThan(1);
+    expect(messages.every((message) => message.length <= 4096)).toBe(true);
+    expect(messages.every((message) => message.includes("ยังไม่ส่งหลักฐานครบทั้งหมด 300 รายการ"))).toBe(true);
+    expect(messages.every((message) => message.includes("📍 สาขา ก — 300 รายการ"))).toBe(true);
+    expect(messages.reduce(
+      (count, message) => count + (message.match(/^• /gm)?.length ?? 0),
+      0,
+    )).toBe(300);
+  });
+
+  test("Evidence formatter uses bill ID as a stable tie-break", () => {
+    const messages = formatWeightEvidenceDigest([
       {
         locationId: "branch-a",
         locationName: "สาขา ก",
-        totalWeighRows: 1,
-        manualCorrectionCount: 0,
-        incompleteWeighRows: 0,
+        billId: "bill-b",
+        billRecordedAt: "2026-08-15T01:00:00.000Z",
+        weighRowCount: 2,
       },
-    ], generatedAt)).toEqual([]);
+      {
+        locationId: "branch-a",
+        locationName: "สาขา ก",
+        billId: "bill-a",
+        billRecordedAt: "2026-08-15T01:00:00.000Z",
+        weighRowCount: 1,
+      },
+    ], new Date("2026-08-15T03:00:00.000Z"));
+
+    expect(messages[0].indexOf("• 08:00 — 1 รายการ")).toBeLessThan(
+      messages[0].indexOf("• 08:00 — 2 รายการ"),
+    );
+  });
+
+  test("Evidence formatter fails instead of dropping an invalid bill time", () => {
+    expect(() => formatWeightEvidenceDigest([{
+      locationId: "branch-a",
+      locationName: "สาขา ก",
+      billId: "bill-a",
+      billRecordedAt: "invalid",
+      weighRowCount: 6,
+    }])).toThrow("invalid bill data");
   });
 
   test("config API is manager-only and never returns the Bot Token", async ({

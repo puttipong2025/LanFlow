@@ -49,29 +49,31 @@ export function parseCompletionIdentityPayload(value: unknown) {
 }
 
 export function parseCompletionClaimPayload(value: unknown) {
-  const payload = parseIdentityPayload(value);
-  if (!payload || typeof value !== "object") return null;
-  const record = value as Record<string, unknown>;
-  if (
-    Object.keys(record).some(
-      (key) => !["locationId", "completionId", "revisionNo", "manualCorrectionCount"].includes(key),
-    )
-    || typeof record.manualCorrectionCount !== "number"
-    || !Number.isInteger(record.manualCorrectionCount)
-    || record.manualCorrectionCount < 0
-  ) return null;
-  return { ...payload, manualCorrectionCount: record.manualCorrectionCount };
+  return parseCompletionIdentityPayload(value);
 }
 
-export function parseOcrModelResponse(responseText: string): number | null {
+export type OcrModelResult =
+  | { status: "readable"; weight: number }
+  | { status: "confirmed_unreadable" }
+  | { status: "invalid_response" };
+
+export function parseOcrModelResponse(responseText: string): OcrModelResult {
   const clean = responseText.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   try {
     const parsed = JSON.parse(clean) as { values?: unknown; confidence?: unknown };
-    if (parsed.confidence !== "high" || !Array.isArray(parsed.values) || parsed.values.length !== 1) return null;
-    const value = parsed.values[0];
-    return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+    if (
+      !Array.isArray(parsed.values)
+      || !["high", "low"].includes(String(parsed.confidence))
+      || parsed.values.some(
+        (value) => typeof value !== "number" || !Number.isFinite(value) || value < 0,
+      )
+    ) return { status: "invalid_response" };
+    if (parsed.confidence === "low" || parsed.values.length !== 1) {
+      return { status: "confirmed_unreadable" };
+    }
+    return { status: "readable", weight: parsed.values[0] as number };
   } catch {
-    return null;
+    return { status: "invalid_response" };
   }
 }
 

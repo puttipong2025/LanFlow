@@ -4,11 +4,11 @@ begin;
 
 do $$
 begin
-  if to_regprocedure('public.claim_weight_evidence_completion(uuid,uuid,integer,uuid)') is not null then
-    raise exception 'legacy four-argument claim still exists';
+  if to_regprocedure('public.claim_weight_evidence_completion(uuid,uuid,integer,uuid)') is null then
+    raise exception 'four-argument claim is missing';
   end if;
-  if to_regprocedure('public.claim_weight_evidence_completion(uuid,uuid,integer,uuid,integer)') is null then
-    raise exception 'five-argument claim is missing';
+  if to_regprocedure('public.claim_weight_evidence_completion(uuid,uuid,integer,uuid,integer)') is not null then
+    raise exception 'legacy five-argument claim still exists';
   end if;
 
   if not has_function_privilege('service_role', 'public.claim_telegram_evidence_dispatch()', 'EXECUTE')
@@ -34,27 +34,21 @@ select set_config('request.jwt.claim.role', 'service_role', true);
 do $$
 begin
   if exists (
-    with bill_counts as (
-      select b.id, b.location_id, b.evidence_completion_id,
-        b.evidence_manual_correction_count,
-        count(i.id)::bigint weigh_rows
+    with expected as (
+      select b.location_id,
+        coalesce(l.name, 'ไม่ทราบสาขา')::text branch_name,
+        b.id bill_id,
+        coalesce(b.client_recorded_at, b.server_received_at, b.created_at) bill_recorded_at,
+        count(i.id)::bigint weigh_row_count
       from public.rubber_bills b
       join public.rubber_bill_items i on i.bill_id = b.id and i.item_type = 'weigh'
+      left join public.locations l on l.id = b.location_id
       where b.record_status = 'active'
         and b.source_rubber_export_id is null
         and b.bill_date = (now() at time zone 'Asia/Bangkok')::date
-      group by b.id
-    ), expected as (
-      select c.location_id,
-        coalesce(l.name, 'ไม่ทราบสาขา')::text branch_name,
-        sum(c.weigh_rows)::bigint total_weigh_rows,
-        sum(case when c.evidence_completion_id is not null
-          then c.evidence_manual_correction_count else 0 end)::bigint manual_correction_count,
-        sum(case when c.evidence_completion_id is null
-          then c.weigh_rows else 0 end)::bigint incomplete_weigh_rows
-      from bill_counts c
-      left join public.locations l on l.id = c.location_id
-      group by c.location_id, coalesce(l.name, 'ไม่ทราบสาขา')
+        and b.evidence_completion_id is null
+      group by b.id, b.location_id, l.name,
+        b.client_recorded_at, b.server_received_at, b.created_at
     ), actual as (
       select * from public.get_weight_evidence_digest()
     )

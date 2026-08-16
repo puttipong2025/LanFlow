@@ -43,12 +43,12 @@ export type TelegramBadgeConfig = {
   updatedByName: string | null;
 };
 
-export type WeightEvidenceDigestBranch = {
+export type WeightEvidenceDigestBill = {
   locationId: string;
   locationName: string;
-  totalWeighRows: number;
-  manualCorrectionCount: number;
-  incompleteWeighRows: number;
+  billId: string;
+  billRecordedAt: string;
+  weighRowCount: number;
 };
 
 export type DashboardTelegramAlert = {
@@ -186,56 +186,65 @@ export function formatDashboardAlertDigest(
 }
 
 export function formatWeightEvidenceDigest(
-  branches: WeightEvidenceDigestBranch[],
+  bills: WeightEvidenceDigestBill[],
   generatedAt = new Date(),
 ) {
-  const visible = branches
-    .filter(
-      (item) =>
-        Number.isFinite(item.totalWeighRows) &&
-        Number.isFinite(item.manualCorrectionCount) &&
-        Number.isFinite(item.incompleteWeighRows) &&
-        item.totalWeighRows > 0 &&
-        item.manualCorrectionCount >= 0 &&
-        item.incompleteWeighRows >= 0,
-    )
-    .sort(
+  if (bills.some(
+    (item) =>
+      !Number.isFinite(item.weighRowCount) ||
+      item.weighRowCount <= 0 ||
+      !Number.isFinite(Date.parse(item.billRecordedAt)),
+  )) {
+    throw new Error("Weight evidence digest contains invalid bill data");
+  }
+  const visible = [...bills].sort(
       (left, right) =>
-        right.totalWeighRows - left.totalWeighRows ||
         left.locationName.localeCompare(right.locationName, "th") ||
-        left.locationId.localeCompare(right.locationId),
+        left.locationId.localeCompare(right.locationId) ||
+        Date.parse(left.billRecordedAt) - Date.parse(right.billRecordedAt) ||
+        left.billId.localeCompare(right.billId),
     );
-  const manualTotal = visible.reduce(
-    (sum, item) => sum + item.manualCorrectionCount,
-    0,
-  );
-  const incompleteTotal = visible.reduce(
-    (sum, item) => sum + item.incompleteWeighRows,
-    0,
-  );
-  if (manualTotal === 0 && incompleteTotal === 0) return [];
+  if (visible.length === 0) return [];
 
-  const totalRows = visible.reduce((sum, item) => sum + item.totalWeighRows, 0);
+  const totalRows = visible.reduce((sum, item) => sum + item.weighRowCount, 0);
   const header = [
     "⚖️ LanFlow · หลักฐานน้ำหนัก",
     generatedAtLabel(generatedAt),
-    `รายการชั่งทั้งหมด ${totalRows.toLocaleString("th-TH")}`,
-    `แก้ด้วยมือ ${manualTotal.toLocaleString("th-TH")} · หลักฐานยังไม่ครบ ${incompleteTotal.toLocaleString("th-TH")}`,
+    `ยังไม่ส่งหลักฐานครบทั้งหมด ${totalRows.toLocaleString("th-TH")} รายการ`,
   ].join("\n");
-  const sections = visible.map((item) => [
-    `\n📍 ${item.locationName} · ${item.totalWeighRows.toLocaleString("th-TH")} รายการชั่ง`,
-    `• แก้ด้วยมือ: ${item.manualCorrectionCount.toLocaleString("th-TH")}`,
-    `• หลักฐานยังไม่ครบ: ${item.incompleteWeighRows.toLocaleString("th-TH")}`,
-  ].join("\n"));
+  const timeFormatter = new Intl.DateTimeFormat("th-TH", {
+    timeZone: BANGKOK_TIME_ZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    numberingSystem: "latn",
+  });
+  const groups = new Map<string, WeightEvidenceDigestBill[]>();
+  for (const item of visible) {
+    const key = `${item.locationId}\u0000${item.locationName}`;
+    groups.set(key, [...(groups.get(key) ?? []), item]);
+  }
 
   const messages: string[] = [];
   let current = header;
-  for (const section of sections) {
-    const candidate = `${current}\n${section}`;
-    if (candidate.length <= MESSAGE_TARGET_LENGTH) current = candidate;
-    else {
-      messages.push(current);
-      current = `${header}\n${section}`;
+  for (const group of groups.values()) {
+    const branchTotal = group.reduce((sum, item) => sum + item.weighRowCount, 0);
+    const branchHeader =
+      `📍 ${group[0].locationName} — ${branchTotal.toLocaleString("th-TH")} รายการ`;
+    let branchHeaderAdded = false;
+    for (const item of group) {
+      const time = timeFormatter.format(new Date(item.billRecordedAt));
+      const line = `• ${time} — ${item.weighRowCount.toLocaleString("th-TH")} รายการ`;
+      const addition = branchHeaderAdded ? line : `${branchHeader}\n${line}`;
+      const candidate = `${current}\n${branchHeaderAdded ? "" : "\n"}${addition}`;
+      if (candidate.length <= MESSAGE_TARGET_LENGTH) {
+        current = candidate;
+        branchHeaderAdded = true;
+      } else {
+        messages.push(current);
+        current = `${header}\n\n${branchHeader}\n${line}`;
+        branchHeaderAdded = true;
+      }
     }
   }
   messages.push(current);

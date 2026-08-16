@@ -17,7 +17,6 @@ export async function POST(request: Request, context: RouteContext) {
     p_location_id: payload.locationId,
     p_revision_no: payload.revisionNo,
     p_completion_id: payload.completionId,
-    p_manual_correction_count: payload.manualCorrectionCount,
   });
   if (error) return evidenceError(503, "COMPLETION_CLAIM_FAILED", "ยืนยัน completion ไม่สำเร็จ", true);
   return noStoreJson(data);

@@ -11,10 +11,20 @@ import {
 const root = process.cwd();
 
 test("OCR accepts exactly one high-confidence non-negative value", () => {
-  expect(parseOcrModelResponse('{"values":[2760.5],"confidence":"high"}')).toBe(2760.5);
-  expect(parseOcrModelResponse('{"values":[2760,2810],"confidence":"high"}')).toBeNull();
-  expect(parseOcrModelResponse('{"values":[-1],"confidence":"high"}')).toBeNull();
-  expect(parseOcrModelResponse('{"values":[2760],"confidence":"low"}')).toBeNull();
+  expect(parseOcrModelResponse('{"values":[2760.5],"confidence":"high"}')).toEqual({
+    status: "readable",
+    weight: 2760.5,
+  });
+  expect(parseOcrModelResponse('{"values":[2760,2810],"confidence":"high"}')).toEqual({
+    status: "confirmed_unreadable",
+  });
+  expect(parseOcrModelResponse('{"values":[2760],"confidence":"low"}')).toEqual({
+    status: "confirmed_unreadable",
+  });
+  expect(parseOcrModelResponse('{"values":[-1],"confidence":"high"}')).toEqual({
+    status: "invalid_response",
+  });
+  expect(parseOcrModelResponse("not-json")).toEqual({ status: "invalid_response" });
 });
 
 test("completion payload and branch permission reject malformed or foreign input", () => {
@@ -42,14 +52,13 @@ test("completion payload and branch permission reject malformed or foreign input
   });
   expect(parseCompletionIdentityPayload({ locationId: ownLocation, completionId, revisionNo: -1 })).toBeNull();
   expect(parseCompletionIdentityPayload({ locationId: "not-a-uuid", completionId, revisionNo: 2 })).toBeNull();
-  expect(parseCompletionClaimPayload({ locationId: ownLocation, completionId, revisionNo: 2 })).toBeNull();
-  expect(parseCompletionClaimPayload({ locationId: ownLocation, completionId, revisionNo: 2, manualCorrectionCount: -1 })).toBeNull();
-  expect(parseCompletionClaimPayload({ locationId: ownLocation, completionId, revisionNo: 2, manualCorrectionCount: 1 })).toEqual({
+  expect(parseCompletionClaimPayload({ locationId: ownLocation, completionId, revisionNo: 2 })).toEqual({
     locationId: ownLocation,
     completionId,
     revisionNo: 2,
-    manualCorrectionCount: 1,
   });
+  expect(parseCompletionClaimPayload({ locationId: ownLocation, completionId, revisionNo: 2, manualCorrectionCount: -1 })).toBeNull();
+  expect(parseCompletionClaimPayload({ locationId: ownLocation, completionId, revisionNo: 2, manualCorrectionCount: 1 })).toBeNull();
 });
 
 test("migration stores only opaque completion ownership and clears on bill change", () => {
@@ -64,14 +73,18 @@ test("migration stores only opaque completion ownership and clears on bill chang
   expect(sql).not.toMatch(/add\s+column[^;]*(image|ocr_value|payload_json)/i);
 });
 
-test("count cutover is atomic and leaves only the five-argument claim", () => {
-  const sql = fs.readFileSync(path.join(root, "supabase/migrations/20260815010000_weight_evidence_share_and_digest.sql"), "utf8");
+test("optional display cutover removes manual count and restores the four-argument claim", () => {
+  const sql = fs.readFileSync(path.join(root, "supabase/migrations/20260816010000_weight_evidence_optional_display.sql"), "utf8");
   expect(sql).toContain("begin;");
   expect(sql).toContain("lock table public.rubber_bills in access exclusive mode");
   expect(sql).toContain("WEIGHT_EVIDENCE_COMPLETION_PREFLIGHT_FAILED");
-  expect(sql).toContain("evidence_manual_correction_count integer not null default 0");
-  expect(sql).toContain("p_manual_correction_count integer");
-  expect(sql).toContain("drop function if exists public.claim_weight_evidence_completion(uuid, uuid, integer, uuid)");
+  expect(sql).toContain("drop column evidence_manual_correction_count");
+  expect(sql).toContain("drop function if exists public.claim_weight_evidence_completion(uuid, uuid, integer, uuid, integer)");
+  expect(sql).toContain("create function public.claim_weight_evidence_completion(");
+  expect(sql).not.toContain("p_manual_correction_count integer");
+  expect(sql).toContain("coalesce(b.client_recorded_at, b.server_received_at, b.created_at)");
+  expect(sql).toContain("bill_recorded_at timestamptz");
+  expect(sql).toContain("b.bill_date = (now() at time zone 'Asia/Bangkok')::date");
   expect(sql).toContain("notify pgrst, 'reload schema'");
   expect(sql).toContain("source_rubber_export_id is not null");
   expect(sql).toContain("array['sold_out_at', 'sold_out_by_user_id', 'sold_out_by_name']");

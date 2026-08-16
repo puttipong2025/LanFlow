@@ -58,6 +58,8 @@ export async function POST(request: Request) {
 
   const data = await upstream.json().catch(() => null) as { choices?: Array<{ message?: { content?: unknown } }> } | null;
   const content = data?.choices?.[0]?.message?.content;
-  const weight = typeof content === "string" ? parseOcrModelResponse(content) : null;
-  return noStoreJson(weight == null ? { status: "unreadable" } : { status: "readable", weight });
+  const ocrResult = typeof content === "string"
+    ? parseOcrModelResponse(content)
+    : { status: "invalid_response" as const };
+  return noStoreJson(ocrResult);
 }

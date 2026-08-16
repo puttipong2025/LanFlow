@@ -6,7 +6,7 @@ import {
   type DashboardTelegramAlert,
   type TelegramBadgeCount,
   type TelegramBadgeKey,
-  type WeightEvidenceDigestBranch,
+  type WeightEvidenceDigestBill,
 } from "../_shared/telegram-badge.ts";
 
 type BadgeCountRow = {
@@ -43,9 +43,9 @@ type DashboardAlertRow = {
 type EvidenceDigestRow = {
   location_id: string;
   branch_name: string;
-  total_weigh_rows: number;
-  manual_correction_count: number;
-  incomplete_weigh_rows: number;
+  bill_id: string;
+  bill_recorded_at: string;
+  weigh_row_count: number;
 };
 
 type DispatchResult = {
@@ -184,17 +184,17 @@ async function dispatchEvidence(
   try {
     const { data, error } = await supabase.rpc("get_weight_evidence_digest");
     if (error) throw new Error("evidence_count_failed");
-    const branches: WeightEvidenceDigestBranch[] = (
+    const bills: WeightEvidenceDigestBill[] = (
       data as EvidenceDigestRow[]
     ).map((row) => ({
       locationId: row.location_id,
       locationName: row.branch_name,
-      totalWeighRows: Number(row.total_weigh_rows),
-      manualCorrectionCount: Number(row.manual_correction_count),
-      incompleteWeighRows: Number(row.incomplete_weigh_rows),
+      billId: row.bill_id,
+      billRecordedAt: row.bill_recorded_at,
+      weighRowCount: Number(row.weigh_row_count),
     }));
     const generatedAt = new Date();
-    const messages = formatWeightEvidenceDigest(branches, generatedAt);
+    const messages = formatWeightEvidenceDigest(bills, generatedAt);
 
     if (messages.length > 0) {
       const { data: stillEnabled, error: enabledError } = await supabase.rpc(

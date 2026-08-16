@@ -489,7 +489,7 @@ export function TelegramBadgeConfigModal({
                     ส่งสรุป Evidence
                   </span>
                   <span className="block text-xs text-ink/60 text-pretty">
-                    ส่งเฉพาะจำนวนแก้ด้วยมือและหลักฐานที่ยังไม่ครบ
+                    ส่งจำนวนที่ยังไม่ส่งหลักฐานครบ แยกตามสาขาและเวลาบิล
                   </span>
                 </span>
                 <input

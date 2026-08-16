@@ -1616,7 +1616,6 @@ begin
   if new.revision_no is distinct from old.revision_no
      or new.record_status is distinct from old.record_status then
     new.evidence_completion_id := null;
-    new.evidence_manual_correction_count := 0;
   end if;
   return new;
 end;
@@ -3253,13 +3252,11 @@ begin
       and (to_jsonb(new) - array[
         'print_status',
         'updated_at',
-        'evidence_completion_id',
-        'evidence_manual_correction_count'
+        'evidence_completion_id'
       ]) = (to_jsonb(old) - array[
         'print_status',
         'updated_at',
-        'evidence_completion_id',
-        'evidence_manual_correction_count'
+        'evidence_completion_id'
       ]) then
       return new;
     end if;
@@ -6329,7 +6326,7 @@ $$;
 ALTER FUNCTION "public"."claim_telegram_evidence_dispatch"() OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid", "p_manual_correction_count" integer) RETURNS "jsonb"
+CREATE OR REPLACE FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
@@ -6346,8 +6343,6 @@ begin
     or p_completion_id is null
     or p_revision_no is null
     or p_revision_no < 0
-    or p_manual_correction_count is null
-    or p_manual_correction_count < 0
   then
     raise exception 'WEIGHT_EVIDENCE_INVALID_INPUT';
   end if;
@@ -6374,16 +6369,13 @@ begin
   from public.rubber_bill_items
   where bill_id = p_bill_id and item_type = 'weigh';
 
-  if v_weigh_row_count = 0
-    or p_manual_correction_count > v_weigh_row_count
-  then
+  if v_weigh_row_count = 0 then
     raise exception 'WEIGHT_EVIDENCE_INVALID_COUNT';
   end if;
 
   if v_bill.evidence_completion_id is null then
     update public.rubber_bills
     set evidence_completion_id = p_completion_id,
-        evidence_manual_correction_count = p_manual_correction_count,
         updated_at = now()
     where id = p_bill_id;
     return jsonb_build_object(
@@ -6405,7 +6397,7 @@ end;
 $$;
 
 
-ALTER FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid", "p_manual_correction_count" integer) OWNER TO "postgres";
+ALTER FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."complete_telegram_badge_dispatch"("p_claim_token" "uuid", "p_outcome" "text", "p_error" "text" DEFAULT NULL::"text") RETURNS "void"
@@ -10879,7 +10871,7 @@ $$;
 ALTER FUNCTION "public"."get_time_payroll_payment_locations"() OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "public"."get_weight_evidence_digest"() RETURNS TABLE("location_id" "uuid", "branch_name" "text", "total_weigh_rows" bigint, "manual_correction_count" bigint, "incomplete_weigh_rows" bigint)
+CREATE OR REPLACE FUNCTION "public"."get_weight_evidence_digest"() RETURNS TABLE("location_id" "uuid", "branch_name" "text", "bill_id" "uuid", "bill_recorded_at" timestamp with time zone, "weigh_row_count" bigint)
     LANGUAGE "plpgsql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
@@ -10887,36 +10879,24 @@ begin
   if auth.role() <> 'service_role' then raise exception 'service_role required'; end if;
 
   return query
-  with bill_counts as (
-    select b.id,
-      b.location_id,
-      b.evidence_completion_id,
-      b.evidence_manual_correction_count,
-      count(i.id)::bigint weigh_rows
-    from public.rubber_bills b
-    join public.rubber_bill_items i
-      on i.bill_id = b.id and i.item_type = 'weigh'
-    where b.record_status = 'active'
-      and b.source_rubber_export_id is null
-      and b.bill_date = (now() at time zone 'Asia/Bangkok')::date
-    group by b.id
-  )
-  select c.location_id,
+  select b.location_id,
     coalesce(l.name, 'ไม่ทราบสาขา')::text,
-    sum(c.weigh_rows)::bigint,
-    sum(case
-      when c.evidence_completion_id is not null
-        then c.evidence_manual_correction_count
-      else 0
-    end)::bigint,
-    sum(case
-      when c.evidence_completion_id is null then c.weigh_rows
-      else 0
-    end)::bigint
-  from bill_counts c
-  left join public.locations l on l.id = c.location_id
-  group by c.location_id, coalesce(l.name, 'ไม่ทราบสาขา')
-  order by sum(c.weigh_rows) desc, coalesce(l.name, 'ไม่ทราบสาขา');
+    b.id,
+    coalesce(b.client_recorded_at, b.server_received_at, b.created_at),
+    count(i.id)::bigint
+  from public.rubber_bills b
+  join public.rubber_bill_items i
+    on i.bill_id = b.id and i.item_type = 'weigh'
+  left join public.locations l on l.id = b.location_id
+  where b.record_status = 'active'
+    and b.source_rubber_export_id is null
+    and b.bill_date = (now() at time zone 'Asia/Bangkok')::date
+    and b.evidence_completion_id is null
+  group by b.id, b.location_id, l.name,
+    b.client_recorded_at, b.server_received_at, b.created_at
+  order by coalesce(l.name, 'ไม่ทราบสาขา'),
+    coalesce(b.client_recorded_at, b.server_received_at, b.created_at),
+    b.id;
 end;
 $$;
 
@@ -11613,7 +11593,6 @@ begin
 
   update public.rubber_bills
   set evidence_completion_id = null,
-      evidence_manual_correction_count = 0,
       updated_at = now()
   where id = p_bill_id;
   return jsonb_build_object(
@@ -12179,13 +12158,11 @@ END - "deduction_total"), (0)::numeric)) STORED,
     "received_age_hours" numeric(14,6),
     "received_age_is_estimated" boolean,
     "evidence_completion_id" "uuid",
-    "evidence_manual_correction_count" integer DEFAULT 0 NOT NULL,
     CONSTRAINT "rubber_bills_approval_revision_shape_check" CHECK (((("approval_state" = 'not_required'::"text") AND ("approved_by_name" IS NULL) AND ("approval_revision_no" IS NULL)) OR (("approval_state" = 'approved'::"text") AND ("approved_by_name" IS NOT NULL) AND ("approval_revision_no" = "revision_no")))),
     CONSTRAINT "rubber_bills_approval_state_check" CHECK (("approval_state" = ANY (ARRAY['not_required'::"text", 'approved'::"text"]))),
     CONSTRAINT "rubber_bills_branch_receipt_shape_check" CHECK (((("source_rubber_export_id" IS NULL) AND ("source_export_no" IS NULL) AND ("received_at" IS NULL) AND ("received_age_hours" IS NULL) AND ("received_age_is_estimated" IS NULL)) OR ((NULLIF("btrim"("source_export_no"), ''::"text") IS NOT NULL) AND ("received_at" IS NOT NULL) AND ("received_age_hours" IS NOT NULL) AND ("received_age_hours" >= (0)::numeric) AND ("received_age_is_estimated" IS NOT NULL) AND ("net_total" = (0)::numeric) AND ("rubber_value" > (0)::numeric) AND ("deduction_total" = "net_rubber_value") AND (("source_rubber_export_id" IS NOT NULL) OR ("record_status" = 'deleted'::"public"."record_status"))))),
     CONSTRAINT "rubber_bills_configured_price_snapshot_check" CHECK ((("configured_price_snapshot" IS NULL) OR ("configured_price_snapshot" >= (0)::numeric))),
     CONSTRAINT "rubber_bills_deduct_weight_range_check" CHECK ((("deduct_weight" >= (0)::numeric) AND ("deduct_weight" < "weight"))),
-    CONSTRAINT "rubber_bills_evidence_manual_correction_count_nonnegative" CHECK (("evidence_manual_correction_count" >= 0)),
     CONSTRAINT "rubber_bills_money_values_nonnegative_check" CHECK ((("rubber_value" >= (0)::numeric) AND ("average_price" >= (0)::numeric) AND ("deduction_total" >= (0)::numeric) AND ("net_total" >= (0)::numeric))),
     CONSTRAINT "rubber_bills_net_total_formula_check" CHECK (("net_total" = "floor"("payable_before_rounding"))),
     CONSTRAINT "rubber_bills_net_total_whole_baht_check" CHECK (("net_total" = "trunc"("net_total"))),
@@ -12233,10 +12210,6 @@ COMMENT ON COLUMN "public"."rubber_bills"."received_age_hours" IS 'Weighted aver
 
 
 COMMENT ON COLUMN "public"."rubber_bills"."evidence_completion_id" IS 'Opaque owner UUID for first-completer-wins device-local weight evidence; no image or OCR data.';
-
-
-
-COMMENT ON COLUMN "public"."rubber_bills"."evidence_manual_correction_count" IS 'Manual-correction count reported by the first winning evidence device; operational metric, not server-audited row evidence.';
 
 
 
@@ -18597,8 +18570,8 @@ GRANT ALL ON FUNCTION "public"."claim_telegram_evidence_dispatch"() TO "service_
 
 
 
-REVOKE ALL ON FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid", "p_manual_correction_count" integer) FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid", "p_manual_correction_count" integer) TO "authenticated";
+REVOKE ALL ON FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") TO "authenticated";
 
 
 
