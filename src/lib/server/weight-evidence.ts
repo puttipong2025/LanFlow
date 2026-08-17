@@ -3,6 +3,7 @@ import type { AuthTokenPayload } from "@/lib/server/auth";
 import { hasSystemManagerAccess } from "@/lib/server/auth";
 
 export const WEIGHT_EVIDENCE_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+export const WEIGHT_EVIDENCE_MAX_BACKUP_IMAGE_BYTES = 4 * 1024 * 1024;
 export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function canAccessEvidenceLocation(auth: AuthTokenPayload, locationId: string) {
@@ -49,7 +50,39 @@ export function parseCompletionIdentityPayload(value: unknown) {
 }
 
 export function parseCompletionClaimPayload(value: unknown) {
-  return parseCompletionIdentityPayload(value);
+  const payload = parseIdentityPayload(value);
+  if (!payload || !value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some(
+    (key) => !["locationId", "completionId", "revisionNo", "manualCorrectionCount"].includes(key),
+  )) return null;
+  if (record.manualCorrectionCount === undefined) return payload;
+  if (
+    typeof record.manualCorrectionCount !== "number"
+    || !Number.isInteger(record.manualCorrectionCount)
+    || record.manualCorrectionCount < 0
+  ) return null;
+  return { ...payload, manualCorrectionCount: record.manualCorrectionCount };
+}
+
+export const WEIGHT_EVIDENCE_BACKUP_ROLES = ["rubber", "displayIn", "displayOut"] as const;
+export type WeightEvidenceBackupRole = (typeof WEIGHT_EVIDENCE_BACKUP_ROLES)[number];
+
+export function isWeightEvidenceBackupRole(value: string): value is WeightEvidenceBackupRole {
+  return (WEIGHT_EVIDENCE_BACKUP_ROLES as readonly string[]).includes(value);
+}
+
+export function parseBackupIdentityHeaders(headers: Headers) {
+  const locationId = headers.get("x-lanflow-location-id") ?? "";
+  const completionId = headers.get("x-lanflow-completion-id") ?? "";
+  const revisionNo = Number(headers.get("x-lanflow-revision-no"));
+  if (
+    !UUID_PATTERN.test(locationId)
+    || !UUID_PATTERN.test(completionId)
+    || !Number.isInteger(revisionNo)
+    || revisionNo < 0
+  ) return null;
+  return { locationId, completionId, revisionNo };
 }
 
 export type OcrModelResult =

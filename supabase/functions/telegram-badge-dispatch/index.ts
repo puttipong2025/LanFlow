@@ -46,6 +46,8 @@ type EvidenceDigestRow = {
   bill_id: string;
   bill_recorded_at: string;
   weigh_row_count: number;
+  manual_correction_count: number;
+  digest_kind: "incomplete" | "corrected";
 };
 
 type DispatchResult = {
@@ -192,6 +194,8 @@ async function dispatchEvidence(
       billId: row.bill_id,
       billRecordedAt: row.bill_recorded_at,
       weighRowCount: Number(row.weigh_row_count),
+      manualCorrectionCount: Number(row.manual_correction_count),
+      digestKind: row.digest_kind,
     }));
     const generatedAt = new Date();
     const messages = formatWeightEvidenceDigest(bills, generatedAt);

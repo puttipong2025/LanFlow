@@ -7,8 +7,15 @@ begin
   if to_regprocedure('public.claim_weight_evidence_completion(uuid,uuid,integer,uuid)') is null then
     raise exception 'four-argument claim is missing';
   end if;
-  if to_regprocedure('public.claim_weight_evidence_completion(uuid,uuid,integer,uuid,integer)') is not null then
-    raise exception 'legacy five-argument claim still exists';
+  if to_regprocedure('public.claim_weight_evidence_completion(uuid,uuid,integer,uuid,integer)') is null then
+    raise exception 'five-argument correction-aware claim is missing';
+  end if;
+  if not has_function_privilege(
+    'authenticated',
+    'public.claim_weight_evidence_completion(uuid,uuid,integer,uuid,integer)',
+    'EXECUTE'
+  ) then
+    raise exception 'authenticated role cannot execute correction-aware claim';
   end if;
 
   if not has_function_privilege('service_role', 'public.claim_telegram_evidence_dispatch()', 'EXECUTE')
@@ -39,14 +46,16 @@ begin
         coalesce(l.name, 'ไม่ทราบสาขา')::text branch_name,
         b.id bill_id,
         coalesce(b.client_recorded_at, b.server_received_at, b.created_at) bill_recorded_at,
-        count(i.id)::bigint weigh_row_count
+        count(i.id)::bigint weigh_row_count,
+        b.evidence_manual_correction_count::bigint manual_correction_count,
+        case when b.evidence_completion_id is null then 'incomplete' else 'corrected' end::text digest_kind
       from public.rubber_bills b
       join public.rubber_bill_items i on i.bill_id = b.id and i.item_type = 'weigh'
       left join public.locations l on l.id = b.location_id
       where b.record_status = 'active'
         and b.source_rubber_export_id is null
         and b.bill_date = (now() at time zone 'Asia/Bangkok')::date
-        and b.evidence_completion_id is null
+        and (b.evidence_completion_id is null or b.evidence_manual_correction_count > 0)
       group by b.id, b.location_id, l.name,
         b.client_recorded_at, b.server_received_at, b.created_at
     ), actual as (

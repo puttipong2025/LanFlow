@@ -49,6 +49,8 @@ export type WeightEvidenceDigestBill = {
   billId: string;
   billRecordedAt: string;
   weighRowCount: number;
+  manualCorrectionCount?: number;
+  digestKind?: "incomplete" | "corrected";
 };
 
 export type DashboardTelegramAlert = {
@@ -193,7 +195,12 @@ export function formatWeightEvidenceDigest(
     (item) =>
       !Number.isFinite(item.weighRowCount) ||
       item.weighRowCount <= 0 ||
-      !Number.isFinite(Date.parse(item.billRecordedAt)),
+      !Number.isFinite(Date.parse(item.billRecordedAt)) ||
+      (item.digestKind !== undefined && !["incomplete", "corrected"].includes(item.digestKind)) ||
+      (item.manualCorrectionCount !== undefined && (
+        !Number.isInteger(item.manualCorrectionCount) || item.manualCorrectionCount < 0
+      )) ||
+      (item.digestKind === "corrected" && (item.manualCorrectionCount ?? 0) <= 0),
   )) {
     throw new Error("Weight evidence digest contains invalid bill data");
   }
@@ -206,11 +213,19 @@ export function formatWeightEvidenceDigest(
     );
   if (visible.length === 0) return [];
 
-  const totalRows = visible.reduce((sum, item) => sum + item.weighRowCount, 0);
+  const incomplete = visible.filter((item) => (item.digestKind ?? "incomplete") === "incomplete");
+  const corrected = visible.filter((item) => item.digestKind === "corrected");
+  const totalRows = incomplete.reduce((sum, item) => sum + item.weighRowCount, 0);
+  const totalCorrections = corrected.reduce((sum, item) => sum + (item.manualCorrectionCount ?? 0), 0);
   const header = [
     "⚖️ LanFlow · หลักฐานน้ำหนัก",
     generatedAtLabel(generatedAt),
-    `ยังไม่ส่งหลักฐานครบทั้งหมด ${totalRows.toLocaleString("th-TH")} รายการ`,
+    ...(totalRows > 0
+      ? [`ยังไม่ส่งหลักฐานครบทั้งหมด ${totalRows.toLocaleString("th-TH")} รายการ`]
+      : []),
+    ...(totalCorrections > 0
+      ? [`แก้น้ำหนักรูปจอด้วยมือทั้งหมด ${totalCorrections.toLocaleString("th-TH")} จุด`]
+      : []),
   ].join("\n");
   const timeFormatter = new Intl.DateTimeFormat("th-TH", {
     timeZone: BANGKOK_TIME_ZONE,
@@ -219,31 +234,42 @@ export function formatWeightEvidenceDigest(
     hourCycle: "h23",
     numberingSystem: "latn",
   });
-  const groups = new Map<string, WeightEvidenceDigestBill[]>();
-  for (const item of visible) {
-    const key = `${item.locationId}\u0000${item.locationName}`;
-    groups.set(key, [...(groups.get(key) ?? []), item]);
-  }
-
   const messages: string[] = [];
   let current = header;
-  for (const group of groups.values()) {
-    const branchTotal = group.reduce((sum, item) => sum + item.weighRowCount, 0);
-    const branchHeader =
-      `📍 ${group[0].locationName} — ${branchTotal.toLocaleString("th-TH")} รายการ`;
-    let branchHeaderAdded = false;
-    for (const item of group) {
-      const time = timeFormatter.format(new Date(item.billRecordedAt));
-      const line = `• ${time} — ${item.weighRowCount.toLocaleString("th-TH")} รายการ`;
-      const addition = branchHeaderAdded ? line : `${branchHeader}\n${line}`;
-      const candidate = `${current}\n${branchHeaderAdded ? "" : "\n"}${addition}`;
-      if (candidate.length <= MESSAGE_TARGET_LENGTH) {
-        current = candidate;
-        branchHeaderAdded = true;
-      } else {
-        messages.push(current);
-        current = `${header}\n\n${branchHeader}\n${line}`;
-        branchHeaderAdded = true;
+  for (const [kind, kindBills] of [
+    ["incomplete", incomplete],
+    ["corrected", corrected],
+  ] as const) {
+    if (kindBills.length === 0) continue;
+    const kindHeading = kind === "corrected" ? "⚠️ บิลแก้น้ำหนักรูปจอด้วยมือ" : null;
+    if (kindHeading) current = `${current}\n\n${kindHeading}`;
+    const groups = new Map<string, WeightEvidenceDigestBill[]>();
+    for (const item of kindBills) {
+      const key = `${item.locationId}\u0000${item.locationName}`;
+      groups.set(key, [...(groups.get(key) ?? []), item]);
+    }
+    for (const group of groups.values()) {
+      const branchTotal = group.reduce(
+        (sum, item) => sum + (kind === "corrected" ? item.manualCorrectionCount ?? 0 : item.weighRowCount),
+        0,
+      );
+      const unit = kind === "corrected" ? "จุด" : "รายการ";
+      const branchHeader = `📍 ${group[0].locationName} — ${branchTotal.toLocaleString("th-TH")} ${unit}`;
+      let branchHeaderAdded = false;
+      for (const item of group) {
+        const time = timeFormatter.format(new Date(item.billRecordedAt));
+        const count = kind === "corrected" ? item.manualCorrectionCount ?? 0 : item.weighRowCount;
+        const line = `• ${time} — ${count.toLocaleString("th-TH")} ${unit}`;
+        const addition = branchHeaderAdded ? line : `${branchHeader}\n${line}`;
+        const candidate = `${current}\n${branchHeaderAdded ? "" : "\n"}${addition}`;
+        if (candidate.length <= MESSAGE_TARGET_LENGTH) {
+          current = candidate;
+          branchHeaderAdded = true;
+        } else {
+          messages.push(current);
+          current = `${header}${kindHeading ? `\n\n${kindHeading}` : ""}\n\n${branchHeader}\n${line}`;
+          branchHeaderAdded = true;
+        }
       }
     }
   }

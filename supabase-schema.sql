@@ -1615,7 +1615,12 @@ CREATE OR REPLACE FUNCTION "private"."clear_weight_evidence_completion_on_bill_c
 begin
   if new.revision_no is distinct from old.revision_no
      or new.record_status is distinct from old.record_status then
+    delete from public.rubber_bill_item_evidence_files f
+    using public.rubber_bill_items i
+    where f.bill_item_id = i.id
+      and i.bill_id = old.id;
     new.evidence_completion_id := null;
+    new.evidence_manual_correction_count := 0;
   end if;
   return new;
 end;
@@ -3238,8 +3243,8 @@ declare
   v_report_no text;
 begin
   if tg_table_name = 'rubber_exports' and tg_op = 'UPDATE'
-     and (to_jsonb(new) - array['sold_out_at', 'sold_out_by_user_id', 'sold_out_by_name'])
-       = (to_jsonb(old) - array['sold_out_at', 'sold_out_by_user_id', 'sold_out_by_name']) then
+     and (to_jsonb(new) - 'sold_out_at' - 'sold_out_by_user_id' - 'sold_out_by_name')
+       = (to_jsonb(old) - 'sold_out_at' - 'sold_out_by_user_id' - 'sold_out_by_name') then
     return new;
   end if;
 
@@ -3247,17 +3252,24 @@ begin
   v_report_no := private.active_report_no(tg_argv[0], v_id);
 
   if v_report_no is not null then
-    if tg_argv[0] = 'rubber_bill'
+    if tg_table_name = 'rubber_bills'
       and tg_op = 'UPDATE'
-      and (to_jsonb(new) - array[
-        'print_status',
-        'updated_at',
-        'evidence_completion_id'
-      ]) = (to_jsonb(old) - array[
-        'print_status',
-        'updated_at',
-        'evidence_completion_id'
-      ]) then
+      and (to_jsonb(new)
+        - 'print_status'
+        - 'updated_at'
+        - 'evidence_completion_id'
+        - 'evidence_manual_correction_count'
+        - 'net_rubber_value'
+        - 'net_weight'
+        - 'payable_before_rounding')
+        = (to_jsonb(old)
+        - 'print_status'
+        - 'updated_at'
+        - 'evidence_completion_id'
+        - 'evidence_manual_correction_count'
+        - 'net_rubber_value'
+        - 'net_weight'
+        - 'payable_before_rounding') then
       return new;
     end if;
     perform private.raise_report_lock(v_report_no);
@@ -6327,6 +6339,23 @@ ALTER FUNCTION "public"."claim_telegram_evidence_dispatch"() OWNER TO "postgres"
 
 
 CREATE OR REPLACE FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "sql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select public.claim_weight_evidence_completion(
+    p_bill_id,
+    p_location_id,
+    p_revision_no,
+    p_completion_id,
+    0
+  );
+$$;
+
+
+ALTER FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid", "p_manual_correction_count" integer) RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
@@ -6339,10 +6368,9 @@ begin
   then
     raise exception 'WEIGHT_EVIDENCE_ACCESS_DENIED';
   end if;
-  if p_bill_id is null
-    or p_completion_id is null
-    or p_revision_no is null
-    or p_revision_no < 0
+  if p_bill_id is null or p_completion_id is null
+    or p_revision_no is null or p_revision_no < 0
+    or p_manual_correction_count is null or p_manual_correction_count < 0
   then
     raise exception 'WEIGHT_EVIDENCE_INVALID_INPUT';
   end if;
@@ -6359,45 +6387,36 @@ begin
     return jsonb_build_object('state', 'inactive');
   end if;
   if v_bill.revision_no <> p_revision_no then
-    return jsonb_build_object(
-      'state', 'stale',
-      'currentRevisionNo', v_bill.revision_no
-    );
+    return jsonb_build_object('state', 'stale', 'currentRevisionNo', v_bill.revision_no);
   end if;
 
   select count(*)::integer into v_weigh_row_count
   from public.rubber_bill_items
   where bill_id = p_bill_id and item_type = 'weigh';
 
-  if v_weigh_row_count = 0 then
+  if v_weigh_row_count = 0
+    or p_manual_correction_count > v_weigh_row_count * 2
+  then
     raise exception 'WEIGHT_EVIDENCE_INVALID_COUNT';
   end if;
 
   if v_bill.evidence_completion_id is null then
     update public.rubber_bills
     set evidence_completion_id = p_completion_id,
+        evidence_manual_correction_count = p_manual_correction_count,
         updated_at = now()
     where id = p_bill_id;
-    return jsonb_build_object(
-      'state', 'owned',
-      'currentRevisionNo', v_bill.revision_no
-    );
+    return jsonb_build_object('state', 'owned', 'currentRevisionNo', v_bill.revision_no);
   end if;
   if v_bill.evidence_completion_id = p_completion_id then
-    return jsonb_build_object(
-      'state', 'owned',
-      'currentRevisionNo', v_bill.revision_no
-    );
+    return jsonb_build_object('state', 'owned', 'currentRevisionNo', v_bill.revision_no);
   end if;
-  return jsonb_build_object(
-    'state', 'owned_by_other',
-    'currentRevisionNo', v_bill.revision_no
-  );
+  return jsonb_build_object('state', 'owned_by_other', 'currentRevisionNo', v_bill.revision_no);
 end;
 $$;
 
 
-ALTER FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") OWNER TO "postgres";
+ALTER FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid", "p_manual_correction_count" integer) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."complete_telegram_badge_dispatch"("p_claim_token" "uuid", "p_outcome" "text", "p_error" "text" DEFAULT NULL::"text") RETURNS "void"
@@ -10871,7 +10890,7 @@ $$;
 ALTER FUNCTION "public"."get_time_payroll_payment_locations"() OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "public"."get_weight_evidence_digest"() RETURNS TABLE("location_id" "uuid", "branch_name" "text", "bill_id" "uuid", "bill_recorded_at" timestamp with time zone, "weigh_row_count" bigint)
+CREATE OR REPLACE FUNCTION "public"."get_weight_evidence_digest"() RETURNS TABLE("location_id" "uuid", "branch_name" "text", "bill_id" "uuid", "bill_recorded_at" timestamp with time zone, "weigh_row_count" bigint, "manual_correction_count" bigint, "digest_kind" "text")
     LANGUAGE "plpgsql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
@@ -10883,7 +10902,9 @@ begin
     coalesce(l.name, 'ไม่ทราบสาขา')::text,
     b.id,
     coalesce(b.client_recorded_at, b.server_received_at, b.created_at),
-    count(i.id)::bigint
+    count(i.id)::bigint,
+    b.evidence_manual_correction_count::bigint,
+    case when b.evidence_completion_id is null then 'incomplete' else 'corrected' end::text
   from public.rubber_bills b
   join public.rubber_bill_items i
     on i.bill_id = b.id and i.item_type = 'weigh'
@@ -10891,7 +10912,10 @@ begin
   where b.record_status = 'active'
     and b.source_rubber_export_id is null
     and b.bill_date = (now() at time zone 'Asia/Bangkok')::date
-    and b.evidence_completion_id is null
+    and (
+      b.evidence_completion_id is null
+      or b.evidence_manual_correction_count > 0
+    )
   group by b.id, b.location_id, l.name,
     b.client_recorded_at, b.server_received_at, b.created_at
   order by coalesce(l.name, 'ไม่ทราบสาขา'),
@@ -11549,6 +11573,104 @@ $$;
 ALTER FUNCTION "public"."receive_rubber_export"("p_destination_location_id" "uuid", "p_source_rubber_export_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."record_weight_evidence_backup"("p_bill_id" "uuid", "p_row_id" "uuid", "p_role" "text", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid", "p_evidence_key" "text", "p_drive_file_id" "text", "p_web_view_url" "text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_bill public.rubber_bills%rowtype;
+  v_existing public.rubber_bill_item_evidence_files%rowtype;
+begin
+  if not private.is_active_user()
+    or not public.can_access_location(p_location_id)
+  then
+    raise exception 'WEIGHT_EVIDENCE_ACCESS_DENIED';
+  end if;
+  if p_bill_id is null or p_row_id is null or p_completion_id is null
+    or p_revision_no is null or p_revision_no < 0
+    or p_role not in ('rubber', 'displayIn', 'displayOut')
+    or nullif(btrim(p_evidence_key), '') is null
+    or nullif(btrim(p_drive_file_id), '') is null
+    or nullif(btrim(p_web_view_url), '') is null
+  then
+    raise exception 'WEIGHT_EVIDENCE_INVALID_INPUT';
+  end if;
+
+  select * into v_bill
+  from public.rubber_bills
+  where id = p_bill_id and location_id = p_location_id
+  for update;
+
+  if not found
+    or v_bill.record_status <> 'active'
+    or v_bill.source_rubber_export_id is not null
+  then
+    return jsonb_build_object('state', 'inactive');
+  end if;
+  if v_bill.revision_no <> p_revision_no then
+    return jsonb_build_object('state', 'stale');
+  end if;
+  if v_bill.evidence_completion_id is distinct from p_completion_id then
+    return jsonb_build_object('state', 'not_owner');
+  end if;
+  if not exists (
+    select 1 from public.rubber_bill_items
+    where id = p_row_id and bill_id = p_bill_id and item_type = 'weigh'
+  ) then
+    return jsonb_build_object('state', 'invalid_row');
+  end if;
+
+  select * into v_existing
+  from public.rubber_bill_item_evidence_files
+  where bill_item_id = p_row_id and role = p_role;
+
+  if found then
+    if v_existing.evidence_key = p_evidence_key then
+      return jsonb_build_object(
+        'state', 'stored',
+        'fileId', v_existing.drive_file_id,
+        'webViewUrl', v_existing.web_view_url
+      );
+    end if;
+    return jsonb_build_object('state', 'conflict');
+  end if;
+
+  begin
+    insert into public.rubber_bill_item_evidence_files (
+      bill_item_id, role, completion_id, revision_no,
+      evidence_key, drive_file_id, web_view_url
+    ) values (
+      p_row_id, p_role, p_completion_id, p_revision_no,
+      p_evidence_key, p_drive_file_id, p_web_view_url
+    );
+  exception when unique_violation then
+    select * into v_existing
+    from public.rubber_bill_item_evidence_files
+    where evidence_key = p_evidence_key
+       or (bill_item_id = p_row_id and role = p_role)
+    limit 1;
+    if v_existing.evidence_key = p_evidence_key then
+      return jsonb_build_object(
+        'state', 'stored',
+        'fileId', v_existing.drive_file_id,
+        'webViewUrl', v_existing.web_view_url
+      );
+    end if;
+    return jsonb_build_object('state', 'conflict');
+  end;
+
+  return jsonb_build_object(
+    'state', 'stored',
+    'fileId', p_drive_file_id,
+    'webViewUrl', p_web_view_url
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."record_weight_evidence_backup"("p_bill_id" "uuid", "p_row_id" "uuid", "p_role" "text", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid", "p_evidence_key" "text", "p_drive_file_id" "text", "p_web_view_url" "text") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."release_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -12158,11 +12280,13 @@ END - "deduction_total"), (0)::numeric)) STORED,
     "received_age_hours" numeric(14,6),
     "received_age_is_estimated" boolean,
     "evidence_completion_id" "uuid",
+    "evidence_manual_correction_count" integer DEFAULT 0 NOT NULL,
     CONSTRAINT "rubber_bills_approval_revision_shape_check" CHECK (((("approval_state" = 'not_required'::"text") AND ("approved_by_name" IS NULL) AND ("approval_revision_no" IS NULL)) OR (("approval_state" = 'approved'::"text") AND ("approved_by_name" IS NOT NULL) AND ("approval_revision_no" = "revision_no")))),
     CONSTRAINT "rubber_bills_approval_state_check" CHECK (("approval_state" = ANY (ARRAY['not_required'::"text", 'approved'::"text"]))),
     CONSTRAINT "rubber_bills_branch_receipt_shape_check" CHECK (((("source_rubber_export_id" IS NULL) AND ("source_export_no" IS NULL) AND ("received_at" IS NULL) AND ("received_age_hours" IS NULL) AND ("received_age_is_estimated" IS NULL)) OR ((NULLIF("btrim"("source_export_no"), ''::"text") IS NOT NULL) AND ("received_at" IS NOT NULL) AND ("received_age_hours" IS NOT NULL) AND ("received_age_hours" >= (0)::numeric) AND ("received_age_is_estimated" IS NOT NULL) AND ("net_total" = (0)::numeric) AND ("rubber_value" > (0)::numeric) AND ("deduction_total" = "net_rubber_value") AND (("source_rubber_export_id" IS NOT NULL) OR ("record_status" = 'deleted'::"public"."record_status"))))),
     CONSTRAINT "rubber_bills_configured_price_snapshot_check" CHECK ((("configured_price_snapshot" IS NULL) OR ("configured_price_snapshot" >= (0)::numeric))),
     CONSTRAINT "rubber_bills_deduct_weight_range_check" CHECK ((("deduct_weight" >= (0)::numeric) AND ("deduct_weight" < "weight"))),
+    CONSTRAINT "rubber_bills_evidence_manual_correction_count_nonnegative" CHECK (("evidence_manual_correction_count" >= 0)),
     CONSTRAINT "rubber_bills_money_values_nonnegative_check" CHECK ((("rubber_value" >= (0)::numeric) AND ("average_price" >= (0)::numeric) AND ("deduction_total" >= (0)::numeric) AND ("net_total" >= (0)::numeric))),
     CONSTRAINT "rubber_bills_net_total_formula_check" CHECK (("net_total" = "floor"("payable_before_rounding"))),
     CONSTRAINT "rubber_bills_net_total_whole_baht_check" CHECK (("net_total" = "trunc"("net_total"))),
@@ -15789,6 +15913,27 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_bill_approval_requests" (
 ALTER TABLE "public"."rubber_bill_approval_requests" OWNER TO "postgres";
 
 
+CREATE TABLE IF NOT EXISTS "public"."rubber_bill_item_evidence_files" (
+    "bill_item_id" "uuid" NOT NULL,
+    "role" "text" NOT NULL,
+    "completion_id" "uuid" NOT NULL,
+    "revision_no" integer NOT NULL,
+    "evidence_key" "text" NOT NULL,
+    "drive_file_id" "text" NOT NULL,
+    "web_view_url" "text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "rubber_bill_item_evidence_files_deterministic_key" CHECK (("evidence_key" = "concat_ws"(':'::"text", ("completion_id")::"text", ("revision_no")::"text", ("bill_item_id")::"text", "role"))),
+    CONSTRAINT "rubber_bill_item_evidence_files_drive_file_id_check" CHECK (("btrim"("drive_file_id") <> ''::"text")),
+    CONSTRAINT "rubber_bill_item_evidence_files_evidence_key_check" CHECK (("btrim"("evidence_key") <> ''::"text")),
+    CONSTRAINT "rubber_bill_item_evidence_files_revision_no_check" CHECK (("revision_no" >= 0)),
+    CONSTRAINT "rubber_bill_item_evidence_files_role_check" CHECK (("role" = ANY (ARRAY['rubber'::"text", 'displayIn'::"text", 'displayOut'::"text"]))),
+    CONSTRAINT "rubber_bill_item_evidence_files_web_view_url_check" CHECK (("btrim"("web_view_url") <> ''::"text"))
+);
+
+
+ALTER TABLE "public"."rubber_bill_item_evidence_files" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "public"."rubber_export_items" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "export_id" "uuid" NOT NULL,
@@ -16354,6 +16499,16 @@ ALTER TABLE ONLY "public"."rubber_bill_approval_requests"
 
 ALTER TABLE ONLY "public"."rubber_bill_approval_settings"
     ADD CONSTRAINT "rubber_bill_approval_settings_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."rubber_bill_item_evidence_files"
+    ADD CONSTRAINT "rubber_bill_item_evidence_files_evidence_key_key" UNIQUE ("evidence_key");
+
+
+
+ALTER TABLE ONLY "public"."rubber_bill_item_evidence_files"
+    ADD CONSTRAINT "rubber_bill_item_evidence_files_pkey" PRIMARY KEY ("bill_item_id", "role");
 
 
 
@@ -17475,6 +17630,11 @@ ALTER TABLE ONLY "public"."rubber_bill_approval_settings"
 
 
 
+ALTER TABLE ONLY "public"."rubber_bill_item_evidence_files"
+    ADD CONSTRAINT "rubber_bill_item_evidence_files_bill_item_id_fkey" FOREIGN KEY ("bill_item_id") REFERENCES "public"."rubber_bill_items"("id") ON DELETE CASCADE;
+
+
+
 ALTER TABLE ONLY "public"."rubber_bill_items"
     ADD CONSTRAINT "rubber_bill_items_bill_id_fkey" FOREIGN KEY ("bill_id") REFERENCES "public"."rubber_bills"("id") ON DELETE CASCADE;
 
@@ -18061,6 +18221,16 @@ ALTER TABLE "public"."rubber_bill_approval_requests" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."rubber_bill_approval_settings" ENABLE ROW LEVEL SECURITY;
 
 
+ALTER TABLE "public"."rubber_bill_item_evidence_files" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "rubber_bill_item_evidence_files_parent_scope" ON "public"."rubber_bill_item_evidence_files" FOR SELECT TO "authenticated" USING ((EXISTS ( SELECT 1
+   FROM ("public"."rubber_bill_items" "i"
+     JOIN "public"."rubber_bills" "b" ON (("b"."id" = "i"."bill_id")))
+  WHERE (("i"."id" = "rubber_bill_item_evidence_files"."bill_item_id") AND "public"."can_access_location"("b"."location_id")))));
+
+
+
 ALTER TABLE "public"."rubber_bill_items" ENABLE ROW LEVEL SECURITY;
 
 
@@ -18385,6 +18555,10 @@ REVOKE ALL ON FUNCTION "private"."delete_money_transfer"("p_transfer_id" "uuid")
 
 
 
+REVOKE ALL ON FUNCTION "private"."guard_reported_entity"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."has_time_payroll_manager_access"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "private"."has_time_payroll_manager_access"() TO "authenticated";
 
@@ -18572,6 +18746,11 @@ GRANT ALL ON FUNCTION "public"."claim_telegram_evidence_dispatch"() TO "service_
 
 REVOKE ALL ON FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid", "p_manual_correction_count" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."claim_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid", "p_manual_correction_count" integer) TO "authenticated";
 
 
 
@@ -18896,6 +19075,11 @@ GRANT ALL ON FUNCTION "public"."receive_cash_branch_transfer"("p_transfer_id" "u
 
 REVOKE ALL ON FUNCTION "public"."receive_rubber_export"("p_destination_location_id" "uuid", "p_source_rubber_export_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."receive_rubber_export"("p_destination_location_id" "uuid", "p_source_rubber_export_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."record_weight_evidence_backup"("p_bill_id" "uuid", "p_row_id" "uuid", "p_role" "text", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid", "p_evidence_key" "text", "p_drive_file_id" "text", "p_web_view_url" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."record_weight_evidence_backup"("p_bill_id" "uuid", "p_row_id" "uuid", "p_role" "text", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid", "p_evidence_key" "text", "p_drive_file_id" "text", "p_web_view_url" "text") TO "authenticated";
 
 
 
@@ -19381,6 +19565,11 @@ GRANT SELECT ON TABLE "public"."report_items" TO "authenticated";
 
 GRANT ALL ON TABLE "public"."rubber_bill_approval_requests" TO "service_role";
 GRANT SELECT ON TABLE "public"."rubber_bill_approval_requests" TO "authenticated";
+
+
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."rubber_bill_item_evidence_files" TO "service_role";
+GRANT SELECT ON TABLE "public"."rubber_bill_item_evidence_files" TO "authenticated";
 
 
 

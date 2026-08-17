@@ -214,6 +214,24 @@ test.describe.serial("Telegram badge digest @telegram-badge", () => {
     )).toBe(300);
   });
 
+  test("Evidence formatter reports corrected display OCR without exposing bill identifiers", () => {
+    const messages = formatWeightEvidenceDigest([{
+      locationId: "branch-a",
+      locationName: "สาขา ก",
+      billId: "secret-bill-id",
+      billRecordedAt: "2026-08-15T01:35:00.000Z",
+      weighRowCount: 2,
+      manualCorrectionCount: 1,
+      digestKind: "corrected",
+    }], new Date("2026-08-15T03:00:00.000Z"));
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toContain("⚠️ บิลแก้น้ำหนักรูปจอด้วยมือ");
+    expect(messages[0]).toContain("แก้น้ำหนักรูปจอด้วยมือทั้งหมด 1 จุด");
+    expect(messages[0]).toContain("• 08:35 — 1 จุด");
+    expect(messages[0]).not.toContain("secret-bill-id");
+  });
+
   test("Evidence formatter uses bill ID as a stable tie-break", () => {
     const messages = formatWeightEvidenceDigest([
       {

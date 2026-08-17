@@ -58,7 +58,13 @@ test("completion payload and branch permission reject malformed or foreign input
     revisionNo: 2,
   });
   expect(parseCompletionClaimPayload({ locationId: ownLocation, completionId, revisionNo: 2, manualCorrectionCount: -1 })).toBeNull();
-  expect(parseCompletionClaimPayload({ locationId: ownLocation, completionId, revisionNo: 2, manualCorrectionCount: 1 })).toBeNull();
+  expect(parseCompletionClaimPayload({ locationId: ownLocation, completionId, revisionNo: 2, manualCorrectionCount: 1 })).toEqual({
+    locationId: ownLocation,
+    completionId,
+    revisionNo: 2,
+    manualCorrectionCount: 1,
+  });
+  expect(parseCompletionClaimPayload({ locationId: ownLocation, completionId, revisionNo: 2, manualCorrectionCount: 1.5 })).toBeNull();
 });
 
 test("migration stores only opaque completion ownership and clears on bill change", () => {
