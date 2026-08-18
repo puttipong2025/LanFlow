@@ -2,11 +2,11 @@ import { createClient } from "npm:@supabase/supabase-js@2.47.10";
 import {
   formatDashboardAlertDigest,
   formatTelegramBadgeDigest,
-  formatWeightEvidenceDigest,
+  formatWeightEvidenceReviewDigest,
   type DashboardTelegramAlert,
   type TelegramBadgeCount,
   type TelegramBadgeKey,
-  type WeightEvidenceDigestBill,
+  type WeightEvidenceReviewDigest,
 } from "../_shared/telegram-badge.ts";
 
 type BadgeCountRow = {
@@ -40,14 +40,14 @@ type DashboardAlertRow = {
   detail: string;
 };
 
-type EvidenceDigestRow = {
+type EvidenceReviewDigestRow = {
   location_id: string;
   branch_name: string;
-  bill_id: string;
-  bill_recorded_at: string;
-  weigh_row_count: number;
-  manual_correction_count: number;
-  digest_kind: "incomplete" | "corrected";
+  normal_today: number;
+  pending_today: number;
+  pass_today: number;
+  improve_today: number;
+  pending_before_today: number;
 };
 
 type DispatchResult = {
@@ -184,21 +184,21 @@ async function dispatchEvidence(
   if (!claim.claimed || !claim.claimToken) return { status: "not_due" };
 
   try {
-    const { data, error } = await supabase.rpc("get_weight_evidence_digest");
+    const { data, error } = await supabase.rpc("get_weight_evidence_review_digest");
     if (error) throw new Error("evidence_count_failed");
-    const bills: WeightEvidenceDigestBill[] = (
-      data as EvidenceDigestRow[]
+    const counts: WeightEvidenceReviewDigest[] = (
+      data as EvidenceReviewDigestRow[]
     ).map((row) => ({
       locationId: row.location_id,
       locationName: row.branch_name,
-      billId: row.bill_id,
-      billRecordedAt: row.bill_recorded_at,
-      weighRowCount: Number(row.weigh_row_count),
-      manualCorrectionCount: Number(row.manual_correction_count),
-      digestKind: row.digest_kind,
+      normalToday: Number(row.normal_today),
+      pendingToday: Number(row.pending_today),
+      passToday: Number(row.pass_today),
+      improveToday: Number(row.improve_today),
+      pendingBeforeToday: Number(row.pending_before_today),
     }));
     const generatedAt = new Date();
-    const messages = formatWeightEvidenceDigest(bills, generatedAt);
+    const messages = formatWeightEvidenceReviewDigest(counts, generatedAt);
 
     if (messages.length > 0) {
       const { data: stillEnabled, error: enabledError } = await supabase.rpc(

@@ -1,4 +1,4 @@
-import { test, expect, Page } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 
 const phone = process.env.TEST_PHONE || '0800000000';
 const password = process.env.TEST_PASSWORD || 'password123';

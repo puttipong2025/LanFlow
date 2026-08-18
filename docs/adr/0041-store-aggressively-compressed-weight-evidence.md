@@ -1,0 +1,7 @@
+# Gate compressed weight evidence by Android readability
+
+New Weight Evidence uploads must perform OCR against the original in-memory capture before resize/compression, then upload only the selected compressed JPEG to Drive. Existing evidence is not reprocessed or deleted, and retries must retain the existing idempotent upload behavior.
+
+The accepted upload value is a `480px` maximum long side at JPEG quality `45`, with a 100 KB target and a bounded 320px/q35 fallback. A local six-photo comparison measured 43,342 bytes total at 480/q45 versus 104,337 bytes at 720/q55. The user then read the main numeric fields from the 480/q45 candidate without zoom on the target Vivo V2105, so the smaller candidate passed the release readability gate on 2026-08-18. The available fixture was a printed weight slip rather than a seven-segment display photo; this limits what the test proves but does not override the explicit target-device acceptance.
+
+The Android implementation and tests own this behavior. Its full Gradle gate passed, followed by a data-preserving target install and direct instrumentation 23/23. New uploads send only the compressed byte array; local source media remains under its existing retention policy, retries retain the deterministic evidence key, and existing Drive evidence is not backfilled, transformed, or deleted. This web repository records the cross-client contract without claiming that the uncommitted local Android change has been deployed.

@@ -34,6 +34,9 @@ export type TelegramBadgeConfig = {
   enabledBadgeKeys: TelegramBadgeKey[];
   evidenceEnabled: boolean;
   evidenceIntervalMinutes: number;
+  evidenceAllLocations: boolean;
+  evidenceLocationIds: string[];
+  evidenceLocations: Array<{ id: string; name: string }>;
   tokenConfigured: boolean;
   catalog: TelegramBadgeCatalogItem[];
   lastAttemptAt: string | null;
@@ -43,14 +46,14 @@ export type TelegramBadgeConfig = {
   updatedByName: string | null;
 };
 
-export type WeightEvidenceDigestBill = {
+export type WeightEvidenceReviewDigest = {
   locationId: string;
   locationName: string;
-  billId: string;
-  billRecordedAt: string;
-  weighRowCount: number;
-  manualCorrectionCount?: number;
-  digestKind?: "incomplete" | "corrected";
+  normalToday: number;
+  pendingToday: number;
+  passToday: number;
+  improveToday: number;
+  pendingBeforeToday: number;
 };
 
 export type DashboardTelegramAlert = {
@@ -187,95 +190,49 @@ export function formatDashboardAlertDigest(
   return messages;
 }
 
-export function formatWeightEvidenceDigest(
-  bills: WeightEvidenceDigestBill[],
+export function formatWeightEvidenceReviewDigest(
+  rows: WeightEvidenceReviewDigest[],
   generatedAt = new Date(),
 ) {
-  if (bills.some(
-    (item) =>
-      !Number.isFinite(item.weighRowCount) ||
-      item.weighRowCount <= 0 ||
-      !Number.isFinite(Date.parse(item.billRecordedAt)) ||
-      (item.digestKind !== undefined && !["incomplete", "corrected"].includes(item.digestKind)) ||
-      (item.manualCorrectionCount !== undefined && (
-        !Number.isInteger(item.manualCorrectionCount) || item.manualCorrectionCount < 0
-      )) ||
-      (item.digestKind === "corrected" && (item.manualCorrectionCount ?? 0) <= 0),
-  )) {
-    throw new Error("Weight evidence digest contains invalid bill data");
-  }
-  const visible = [...bills].sort(
-      (left, right) =>
-        left.locationName.localeCompare(right.locationName, "th") ||
-        left.locationId.localeCompare(right.locationId) ||
-        Date.parse(left.billRecordedAt) - Date.parse(right.billRecordedAt) ||
-        left.billId.localeCompare(right.billId),
-    );
+  const visible = rows
+    .filter((row) => [
+      row.normalToday,
+      row.pendingToday,
+      row.passToday,
+      row.improveToday,
+      row.pendingBeforeToday,
+    ].every((value) => Number.isInteger(value) && value >= 0))
+    .filter((row) => row.pendingToday > 0 || row.improveToday > 0 || row.pendingBeforeToday > 0)
+    .sort((left, right) => (
+      left.locationName.localeCompare(right.locationName, "th")
+      || left.locationId.localeCompare(right.locationId)
+    ));
   if (visible.length === 0) return [];
 
-  const incomplete = visible.filter((item) => (item.digestKind ?? "incomplete") === "incomplete");
-  const corrected = visible.filter((item) => item.digestKind === "corrected");
-  const totalRows = incomplete.reduce((sum, item) => sum + item.weighRowCount, 0);
-  const totalCorrections = corrected.reduce((sum, item) => sum + (item.manualCorrectionCount ?? 0), 0);
-  const header = [
-    "⚖️ LanFlow · หลักฐานน้ำหนัก",
-    generatedAtLabel(generatedAt),
-    ...(totalRows > 0
-      ? [`ยังไม่ส่งหลักฐานครบทั้งหมด ${totalRows.toLocaleString("th-TH")} รายการ`]
+  const header = `⚖️ LanFlow · สรุปตรวจหลักฐานน้ำหนัก\n${generatedAtLabel(generatedAt)}`;
+  const sections = visible.map((row) => [
+    `📍 ${row.locationName}`,
+    `• รอตรวจวันนี้ ${row.pendingToday.toLocaleString("th-TH")}`,
+    `• ผ่านวันนี้ ${row.passToday.toLocaleString("th-TH")}`,
+    `• ควรปรับปรุงวันนี้ ${row.improveToday.toLocaleString("th-TH")}`,
+    ...(row.pendingBeforeToday > 0
+      ? [`• งานรอตรวจค้างก่อนวันนี้ ${row.pendingBeforeToday.toLocaleString("th-TH")}`]
       : []),
-    ...(totalCorrections > 0
-      ? [`แก้น้ำหนักรูปจอด้วยมือทั้งหมด ${totalCorrections.toLocaleString("th-TH")} จุด`]
-      : []),
-  ].join("\n");
-  const timeFormatter = new Intl.DateTimeFormat("th-TH", {
-    timeZone: BANGKOK_TIME_ZONE,
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-    numberingSystem: "latn",
-  });
+  ].join("\n"));
+
   const messages: string[] = [];
   let current = header;
-  for (const [kind, kindBills] of [
-    ["incomplete", incomplete],
-    ["corrected", corrected],
-  ] as const) {
-    if (kindBills.length === 0) continue;
-    const kindHeading = kind === "corrected" ? "⚠️ บิลแก้น้ำหนักรูปจอด้วยมือ" : null;
-    if (kindHeading) current = `${current}\n\n${kindHeading}`;
-    const groups = new Map<string, WeightEvidenceDigestBill[]>();
-    for (const item of kindBills) {
-      const key = `${item.locationId}\u0000${item.locationName}`;
-      groups.set(key, [...(groups.get(key) ?? []), item]);
-    }
-    for (const group of groups.values()) {
-      const branchTotal = group.reduce(
-        (sum, item) => sum + (kind === "corrected" ? item.manualCorrectionCount ?? 0 : item.weighRowCount),
-        0,
-      );
-      const unit = kind === "corrected" ? "จุด" : "รายการ";
-      const branchHeader = `📍 ${group[0].locationName} — ${branchTotal.toLocaleString("th-TH")} ${unit}`;
-      let branchHeaderAdded = false;
-      for (const item of group) {
-        const time = timeFormatter.format(new Date(item.billRecordedAt));
-        const count = kind === "corrected" ? item.manualCorrectionCount ?? 0 : item.weighRowCount;
-        const line = `• ${time} — ${count.toLocaleString("th-TH")} ${unit}`;
-        const addition = branchHeaderAdded ? line : `${branchHeader}\n${line}`;
-        const candidate = `${current}\n${branchHeaderAdded ? "" : "\n"}${addition}`;
-        if (candidate.length <= MESSAGE_TARGET_LENGTH) {
-          current = candidate;
-          branchHeaderAdded = true;
-        } else {
-          messages.push(current);
-          current = `${header}${kindHeading ? `\n\n${kindHeading}` : ""}\n\n${branchHeader}\n${line}`;
-          branchHeaderAdded = true;
-        }
-      }
+  for (const section of sections) {
+    const candidate = `${current}\n\n${section}`;
+    if (candidate.length <= MESSAGE_TARGET_LENGTH) current = candidate;
+    else {
+      messages.push(current);
+      current = `${header}\n\n${section}`;
     }
   }
   messages.push(current);
   if (messages.some((message) => message.length > TELEGRAM_TEXT_LIMIT)) {
-    throw new Error("Weight evidence summary contains an oversized line");
+    throw new Error("Weight evidence review summary contains an oversized line");
   }
   return messages;
 }

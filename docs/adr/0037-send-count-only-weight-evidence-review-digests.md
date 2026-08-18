@@ -1,0 +1,5 @@
+# Send count-only weight-evidence review digests
+
+The Telegram weight-evidence feature sends the current Bangkok-day summary grouped by selected branch, with counts for `ปกติ`, `รอตรวจ`, `ผ่าน`, and `ควรปรับปรุง`, plus one count for `รอตรวจ` bills before today. It sends on the existing configurable evidence schedule when the current day has `รอตรวจ` or `ควรปรับปรุง`, or when a pre-today `รอตรวจ` remains. An unchanged summary may repeat each interval until pending review work is resolved; review actions themselves do not send immediately. Older `ผ่าน` and `ควรปรับปรุง` results stay in the table filters and are not carried into Telegram. The message contains no bill-level time, customer, bill identifier, weight, image, or Drive URL.
+
+The Telegram evidence switch and interval remain independent from each branch's evidence-review intake switch. A clear `จัดการสาขาที่แจ้งเตือน` control lets system managers and super admins choose all branches or an explicit subset for evidence summaries only. `ทุกสาขา` is the default and dynamically includes future branches. This selection does not change Dashboard or Badge Telegram scope.

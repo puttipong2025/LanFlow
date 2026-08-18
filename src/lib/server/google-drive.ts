@@ -193,6 +193,19 @@ export async function uploadEvidenceImageToDrive(
   };
 }
 
+export async function downloadEvidenceImageFromDrive(
+  fileId: string,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const token = await getAccessToken();
+  const response = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`,
+    { headers: { Authorization: `Bearer ${token}` }, signal },
+  );
+  if (!response.ok || !response.body) throw new Error("Drive evidence download failed");
+  return response;
+}
+
 export async function deleteImageFromDrive(fileId: string): Promise<void> {
   try {
     const token = await getAccessToken();

@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { selectAppLocation, selectFirstAccessibleOption } from '../helpers/select-app-location';
+import { selectAppLocation, selectFirstAccessibleOption, selectedAppLocationId } from '../helpers/select-app-location';
 
 async function ensureLoggedIn(page: import("@playwright/test").Page, role: "admin" | "super_admin") {
   await page.goto("/");
@@ -93,8 +93,10 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       await modal.locator('button:has-text("บันทึกบิล")').click();
       await expect(page.locator('h2:has-text("เพิ่ม/แก้ไข บิลเงินสด")')).toBeHidden({ timeout: 10000 });
 
-      // Verify it does NOT appear in the main table
-      await expect(page.locator('table tbody tr', { hasText: marker })).toBeHidden({ timeout: 5000 });
+      // Pending requests remain visible as locked placeholders in the main table.
+      const pendingRow = page.locator('table tbody tr', { hasText: marker }).first();
+      await expect(pendingRow).toBeVisible();
+      await expect(pendingRow).toContainText('รออนุมัติ');
     });
   });
 
@@ -210,9 +212,9 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       // Ensure target location dropdown exists
       const targetSelect = modal.locator('select').first();
       
-      const options = await targetSelect.locator('option').evaluateAll(opts => 
-        opts.map(o => ({ value: (o as HTMLOptionElement).value, text: (o as HTMLOptionElement).text }))
-      );
+      const sourceLocationId = await selectedAppLocationId(page);
+      expect(sourceLocationId).toBeTruthy();
+      await expect(targetSelect.locator(`option[value="${sourceLocationId}"]`)).toBeDisabled();
       
       await modal.locator('button:has-text("ยกเลิก")').click();
     });
@@ -221,8 +223,6 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       await page.goto('/');
       await page.click('button:has-text("รับ-จ่าย")');
       await expect(page.locator('button:has-text("โยกเงินไปสาขาอื่น")')).toBeVisible({ timeout: 10000 });
-
-      const marker = `Transfer-${Date.now()}`;
 
       await page.click('button:has-text("โยกเงินไปสาขาอื่น")');
       const modal = page.locator('.fixed.inset-0').last();

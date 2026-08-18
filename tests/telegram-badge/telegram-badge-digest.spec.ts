@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 import {
   formatDashboardAlertDigest,
   formatTelegramBadgeDigest,
-  formatWeightEvidenceDigest,
+  formatWeightEvidenceReviewDigest,
   TELEGRAM_BADGE_KEYS,
   type DashboardTelegramAlert,
   type TelegramBadgeCount,
@@ -153,116 +153,35 @@ test.describe.serial("Telegram badge digest @telegram-badge", () => {
     expect(messages[0]).not.toContain("รับ–จ่ายสุทธิสะสม");
   });
 
-  test("Evidence formatter shows incomplete bill times in Bangkok order", () => {
-    const generatedAt = new Date("2026-08-15T03:00:00.000Z");
-    const messages = formatWeightEvidenceDigest([
+  test("review Evidence formatter sends daily counts plus unresolved backlog only", () => {
+    const messages = formatWeightEvidenceReviewDigest([
       {
         locationId: "branch-a",
         locationName: "สาขา ก",
-        billId: "bill-late",
-        billRecordedAt: "2026-08-15T04:20:00.000Z",
-        weighRowCount: 2,
-      },
-      {
-        locationId: "branch-a",
-        locationName: "สาขา ก",
-        billId: "bill-early",
-        billRecordedAt: "2026-08-15T01:35:00.000Z",
-        weighRowCount: 6,
+        normalToday: 8,
+        pendingToday: 2,
+        passToday: 5,
+        improveToday: 1,
+        pendingBeforeToday: 3,
       },
       {
         locationId: "branch-b",
         locationName: "สาขา ข",
-        billId: "bill-b",
-        billRecordedAt: "2026-08-15T02:10:00.000Z",
-        weighRowCount: 6,
+        normalToday: 10,
+        pendingToday: 0,
+        passToday: 10,
+        improveToday: 0,
+        pendingBeforeToday: 0,
       },
-    ], generatedAt);
-    expect(messages).toHaveLength(1);
-    expect(messages[0]).toContain("ยังไม่ส่งหลักฐานครบทั้งหมด 14 รายการ");
-    expect(messages[0]).toContain("📍 สาขา ก — 8 รายการ");
-    expect(messages[0]).toContain("• 08:35 — 6 รายการ");
-    expect(messages[0]).toContain("• 11:20 — 2 รายการ");
-    expect(messages[0]).toContain("📍 สาขา ข — 6 รายการ");
-    expect(messages[0]).toContain("• 09:10 — 6 รายการ");
-    expect(messages[0].indexOf("08:35")).toBeLessThan(messages[0].indexOf("11:20"));
-    expect(messages[0].indexOf("สาขา ก")).toBeLessThan(messages[0].indexOf("สาขา ข"));
-    expect(messages[0]).not.toContain("แก้ด้วยมือ");
-    expect(formatWeightEvidenceDigest([], generatedAt)).toEqual([]);
-  });
-
-  test("Evidence formatter chunks a busy branch by complete bill lines", () => {
-    const bills = Array.from({ length: 300 }, (_, index) => ({
-      locationId: "branch-a",
-      locationName: "สาขา ก",
-      billId: "bill-" + index.toString().padStart(3, "0"),
-      billRecordedAt: new Date(Date.UTC(2026, 7, 15, 0, index % 60)).toISOString(),
-      weighRowCount: 1,
-    }));
-
-    const messages = formatWeightEvidenceDigest(
-      bills,
-      new Date("2026-08-15T03:00:00.000Z"),
-    );
-    expect(messages.length).toBeGreaterThan(1);
-    expect(messages.every((message) => message.length <= 4096)).toBe(true);
-    expect(messages.every((message) => message.includes("ยังไม่ส่งหลักฐานครบทั้งหมด 300 รายการ"))).toBe(true);
-    expect(messages.every((message) => message.includes("📍 สาขา ก — 300 รายการ"))).toBe(true);
-    expect(messages.reduce(
-      (count, message) => count + (message.match(/^• /gm)?.length ?? 0),
-      0,
-    )).toBe(300);
-  });
-
-  test("Evidence formatter reports corrected display OCR without exposing bill identifiers", () => {
-    const messages = formatWeightEvidenceDigest([{
-      locationId: "branch-a",
-      locationName: "สาขา ก",
-      billId: "secret-bill-id",
-      billRecordedAt: "2026-08-15T01:35:00.000Z",
-      weighRowCount: 2,
-      manualCorrectionCount: 1,
-      digestKind: "corrected",
-    }], new Date("2026-08-15T03:00:00.000Z"));
+    ], new Date("2026-08-18T03:00:00.000Z"));
 
     expect(messages).toHaveLength(1);
-    expect(messages[0]).toContain("⚠️ บิลแก้น้ำหนักรูปจอด้วยมือ");
-    expect(messages[0]).toContain("แก้น้ำหนักรูปจอด้วยมือทั้งหมด 1 จุด");
-    expect(messages[0]).toContain("• 08:35 — 1 จุด");
-    expect(messages[0]).not.toContain("secret-bill-id");
-  });
-
-  test("Evidence formatter uses bill ID as a stable tie-break", () => {
-    const messages = formatWeightEvidenceDigest([
-      {
-        locationId: "branch-a",
-        locationName: "สาขา ก",
-        billId: "bill-b",
-        billRecordedAt: "2026-08-15T01:00:00.000Z",
-        weighRowCount: 2,
-      },
-      {
-        locationId: "branch-a",
-        locationName: "สาขา ก",
-        billId: "bill-a",
-        billRecordedAt: "2026-08-15T01:00:00.000Z",
-        weighRowCount: 1,
-      },
-    ], new Date("2026-08-15T03:00:00.000Z"));
-
-    expect(messages[0].indexOf("• 08:00 — 1 รายการ")).toBeLessThan(
-      messages[0].indexOf("• 08:00 — 2 รายการ"),
-    );
-  });
-
-  test("Evidence formatter fails instead of dropping an invalid bill time", () => {
-    expect(() => formatWeightEvidenceDigest([{
-      locationId: "branch-a",
-      locationName: "สาขา ก",
-      billId: "bill-a",
-      billRecordedAt: "invalid",
-      weighRowCount: 6,
-    }])).toThrow("invalid bill data");
+    expect(messages[0]).toContain("📍 สาขา ก");
+    expect(messages[0]).toContain("รอตรวจวันนี้ 2");
+    expect(messages[0]).toContain("ผ่านวันนี้ 5");
+    expect(messages[0]).toContain("ควรปรับปรุงวันนี้ 1");
+    expect(messages[0]).toContain("งานรอตรวจค้างก่อนวันนี้ 3");
+    expect(messages[0]).not.toContain("สาขา ข");
   });
 
   test("config API is manager-only and never returns the Bot Token", async ({
@@ -321,9 +240,27 @@ test.describe.serial("Telegram badge digest @telegram-badge", () => {
       const loadedBody = await loaded.json();
       expect(loaded.ok(), JSON.stringify(loadedBody)).toBeTruthy();
       expect(loadedBody.catalog).toHaveLength(TELEGRAM_BADGE_KEYS.length);
+      expect(loadedBody.evidenceAllLocations).toBe(true);
+      expect(Array.isArray(loadedBody.evidenceLocations)).toBe(true);
       expect(JSON.stringify(loadedBody)).not.toContain(
         "test-token-never-returned",
       );
+
+      const firstLocationId = loadedBody.evidenceLocations[0]?.id as string;
+      expect(firstLocationId).toBeTruthy();
+      const selectedBranch = await saveConfig(manager, {
+        evidenceAllLocations: false,
+        evidenceLocationIds: [firstLocationId],
+      });
+      expect(selectedBranch.ok()).toBeTruthy();
+      expect(await selectedBranch.json()).toMatchObject({
+        evidenceAllLocations: false,
+        evidenceLocationIds: [firstLocationId],
+      });
+      expect((await saveConfig(manager, {
+        evidenceAllLocations: true,
+        evidenceLocationIds: [],
+      })).ok()).toBeTruthy();
 
       const db = service();
       const { data: credentials, error } = await db.rpc(
@@ -423,8 +360,9 @@ test.describe.serial("Telegram badge digest @telegram-badge", () => {
       await expect(
         managerPage.getByText("Badge ที่ต้องการส่ง"),
       ).toBeVisible();
-      await expect(managerPage.getByText("ส่งสรุป Evidence")).toBeVisible();
-      await expect(managerPage.getByText("ระยะห่าง Evidence (นาที)")).toBeVisible();
+      await expect(managerPage.getByText("ส่งสรุปตรวจหลักฐาน")).toBeVisible();
+      await expect(managerPage.getByText("ระยะห่างสรุปหลักฐาน (นาที)")).toBeVisible();
+      await expect(managerPage.getByRole("button", { name: /จัดการสาขาที่แจ้งเตือน/ })).toBeVisible();
     } finally {
       await Promise.all([user.close(), manager.close()]);
     }

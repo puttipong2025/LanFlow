@@ -28,6 +28,7 @@ import {
 import { type Tab } from "@/components/lanflow/tabs";
 import { Dashboard } from "@/components/dashboard/Dashboard";
 import { RubberBillsModule } from "@/components/rubber-bills/RubberBillsModule";
+import { RubberEvidenceModule } from "@/components/rubber-evidence/RubberEvidenceModule";
 import { IncomeExpenseModule } from "@/components/income-expense/IncomeExpenseModule";
 import { AcidStockModule } from "@/components/acid-stock/AcidStockModule";
 import { ReportsModule } from "@/components/reports/ReportsModule";
@@ -81,6 +82,7 @@ export function LanFlowApp() {
     locationId: string;
   } | null>(null);
   const [pendingCashCountId, setPendingCashCountId] = useState<string | null>(null);
+  const [pendingEvidenceBillId, setPendingEvidenceBillId] = useState<string | null>(null);
   const handleInitialCashCountHandled = useCallback(() => setPendingCashCountId(null), []);
   const [ocrUploadItems, setOcrUploadItems] = useState<UploadItem[]>([]);
   const online = useOnlineStatus();
@@ -205,10 +207,17 @@ export function LanFlowApp() {
     }
   }, [selectedLocationId, locations, profile, authProfileId, isLoaded, online]);
 
-  useRubberBills(selectedLocationId, queueOwnerUserId);
+  const { bills: rubberBills } = useRubberBills(selectedLocationId, queueOwnerUserId);
   useIncomeExpense(selectedLocationId, queueOwnerUserId);
 
   const selectedLocation = locations.find((location) => location.id === selectedLocationId) ?? locations[0];
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("tab") !== "rubber-evidence") return;
+    setActiveTab("rubber-evidence");
+    setPendingEvidenceBillId(params.get("bill"));
+  }, []);
   const selectedOcrUploadItems = ocrUploadItems.filter(
     (item) => item.locationId === selectedLocationId,
   );
@@ -346,6 +355,19 @@ export function LanFlowApp() {
     setActiveTab("money-transfer");
   }
 
+  function openRubberEvidence(billId: string) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("tab", "rubber-evidence");
+    url.searchParams.set("bill", billId);
+    window.history.replaceState(null, "", url);
+    setPendingEvidenceBillId(billId);
+    setActiveTab("rubber-evidence");
+  }
+
+  function handleEvidenceTargetHandled() {
+    setPendingEvidenceBillId(null);
+  }
+
   function openRubberBillSource(locationId: string, billDate?: string) {
     if (!canOpenSourceLocation(locationId)) return;
     if (!changeSelectedLocation(locationId)) return;
@@ -398,7 +420,7 @@ export function LanFlowApp() {
         />
       </section>
 
-      <section className={`mx-auto w-full px-3 py-5 sm:px-4 sm:py-6 ${activeTab === "rubber" || activeTab === "rubber-export" ? "max-w-[1800px]" : "max-w-7xl"}`}>
+      <section className={`mx-auto w-full px-3 py-5 sm:px-4 sm:py-6 ${activeTab === "rubber" || activeTab === "rubber-evidence" || activeTab === "rubber-export" ? "max-w-[1800px]" : "max-w-7xl"}`}>
         {activeTab === "dashboard" && (
           <Dashboard
             selectedLocation={selectedLocation}
@@ -419,6 +441,17 @@ export function LanFlowApp() {
                 : null
             }
             onInitialSearchHandled={() => setPendingRubberBillSource(null)}
+            onOpenEvidence={openRubberEvidence}
+          />
+        )}
+        {activeTab === "rubber-evidence" && (
+          <RubberEvidenceModule
+            selectedLocation={selectedLocation}
+            profile={profile}
+            bills={rubberBills}
+            online={online}
+            initialBillId={pendingEvidenceBillId}
+            onInitialBillHandled={handleEvidenceTargetHandled}
           />
         )}
         {activeTab === "rubber-export" && canAccessReports && (

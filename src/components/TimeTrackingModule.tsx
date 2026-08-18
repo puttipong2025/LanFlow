@@ -1525,7 +1525,7 @@ function PayrollModal({ user, online, onApprove, onReject, onChangePayment, onCl
   const [createMonth, setCreateMonth] = useState(bangkokToday().slice(0, 7));
   const [autoStartNextMonth, setAutoStartNextMonth] = useState(true);
   const [previewSlipId, setPreviewSlipId] = useState<string | null>(null);
-  const { requestInput, inputDialog } = useInputDialog();
+  const { inputDialog } = useInputDialog();
   const userIsRunning = Boolean(user.time_segments?.some((segment: any) => !segment.end_time));
 
   const loadSlips = useCallback(async () => {

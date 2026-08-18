@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { LoaderCircle, Send } from "lucide-react";
+import { LoaderCircle, MapPinned, Send } from "lucide-react";
 import { toast } from "sonner";
 
 import { ModalShell } from "@/components/shared/ModalShell";
@@ -47,6 +47,7 @@ export function TelegramBadgeConfigModal({
     useState(selectedLocationId);
   const [busyAction, setBusyAction] = useState<"save" | "test" | null>(null);
   const [loadError, setLoadError] = useState("");
+  const [evidenceBranchesOpen, setEvidenceBranchesOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -110,6 +111,15 @@ export function TelegramBadgeConfigModal({
     patchConfig({ enabledBadgeKeys: nextKeys });
   }
 
+  function toggleEvidenceLocation(id: string) {
+    if (!config) return;
+    patchConfig({
+      evidenceLocationIds: config.evidenceLocationIds.includes(id)
+        ? config.evidenceLocationIds.filter((item) => item !== id)
+        : [...config.evidenceLocationIds, id],
+    });
+  }
+
   async function saveConfig() {
     if (!config) throw new Error("ยังโหลดการตั้งค่าไม่สำเร็จ");
     if (!dashboardConfig) throw new Error("ยังโหลดเกณฑ์ Dashboard ไม่สำเร็จ");
@@ -155,6 +165,8 @@ export function TelegramBadgeConfigModal({
         intervalMinutes: config.intervalMinutes,
         evidenceEnabled: config.evidenceEnabled,
         evidenceIntervalMinutes: config.evidenceIntervalMinutes,
+        evidenceAllLocations: config.evidenceAllLocations,
+        evidenceLocationIds: config.evidenceLocationIds,
         enabledBadgeKeys: config.enabledBadgeKeys,
         botToken: config.botToken,
       }),
@@ -486,10 +498,10 @@ export function TelegramBadgeConfigModal({
               <label className="flex items-center justify-between gap-4 rounded-md bg-field p-3">
                 <span>
                   <span className="block text-sm font-semibold text-ink">
-                    ส่งสรุป Evidence
+                    ส่งสรุปตรวจหลักฐาน
                   </span>
                   <span className="block text-xs text-ink/60 text-pretty">
-                    ส่งจำนวนที่ยังไม่ส่งหลักฐานครบ แยกตามสาขาและเวลาบิล
+                    ส่งเฉพาะจำนวนรายวันและงานรอตรวจค้าง แยกตามสาขา
                   </span>
                 </span>
                 <input
@@ -502,7 +514,7 @@ export function TelegramBadgeConfigModal({
                 />
               </label>
               <label className="block text-sm font-semibold text-ink">
-                ระยะห่าง Evidence (นาที)
+                ระยะห่างสรุปหลักฐาน (นาที)
                 <input
                   type="number"
                   min={30}
@@ -520,6 +532,56 @@ export function TelegramBadgeConfigModal({
               <p className="text-xs text-ink/55 text-pretty">
                 ใช้ปลายทางและช่วงเวลาเดียวกับ Telegram หลัก และจะเริ่มในรอบถัดไป
               </p>
+              <button
+                type="button"
+                aria-expanded={evidenceBranchesOpen}
+                onClick={() => setEvidenceBranchesOpen((current) => !current)}
+                className="focus-ring flex min-h-10 w-full items-center justify-between gap-3 rounded-md bg-settings px-3 text-left text-sm font-bold text-white"
+              >
+                <span className="flex items-center gap-2"><MapPinned size={17} /> จัดการสาขาที่แจ้งเตือน</span>
+                <span className="text-xs font-semibold">
+                  {config.evidenceAllLocations ? "ทุกสาขา" : `${config.evidenceLocationIds.length} สาขา`}
+                </span>
+              </button>
+              {evidenceBranchesOpen && (
+                <div className="space-y-3 rounded-md border border-black/10 bg-field p-3">
+                  <label className="flex cursor-pointer items-center gap-3 rounded-md bg-white p-3 text-sm font-semibold">
+                    <input
+                      type="radio"
+                      name="evidence-branch-mode"
+                      checked={config.evidenceAllLocations}
+                      onChange={() => patchConfig({ evidenceAllLocations: true })}
+                      className="h-4 w-4 accent-leaf"
+                    />
+                    แจ้งเตือนทุกสาขา
+                  </label>
+                  <label className="flex cursor-pointer items-center gap-3 rounded-md bg-white p-3 text-sm font-semibold">
+                    <input
+                      type="radio"
+                      name="evidence-branch-mode"
+                      checked={!config.evidenceAllLocations}
+                      onChange={() => patchConfig({ evidenceAllLocations: false })}
+                      className="h-4 w-4 accent-leaf"
+                    />
+                    เลือกเฉพาะสาขา
+                  </label>
+                  {!config.evidenceAllLocations && (
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {config.evidenceLocations.map((location) => (
+                        <label key={location.id} className="flex cursor-pointer items-center gap-2 rounded-md bg-white px-3 py-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={config.evidenceLocationIds.includes(location.id)}
+                            onChange={() => toggleEvidenceLocation(location.id)}
+                            className="h-4 w-4 accent-leaf"
+                          />
+                          {location.name}
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </fieldset>
 

@@ -46,6 +46,7 @@ import {
   BranchRubberReceiptDetailModal,
   BranchRubberReceiptModal,
 } from "./BranchRubberReceiptModal";
+import { useRubberBillEvidenceReview } from "@/hooks/useRubberBillEvidenceReview";
 
 function pendingCreateBill(marker: RubberBillApprovalMarker): RubberBill | null {
   const payload = marker.proposedCreatePayload;
@@ -138,12 +139,14 @@ export function RubberBillsModule({
   selectedLocation,
   profile,
   initialSearch,
-  onInitialSearchHandled
+  onInitialSearchHandled,
+  onOpenEvidence,
 }: {
   selectedLocation: Location;
   profile: Profile;
   initialSearch?: string | null;
   onInitialSearchHandled?: () => void;
+  onOpenEvidence: (billId: string) => void;
 }) {
   const queryClient = useQueryClient();
   const pdfShare = useSharePdf();
@@ -160,6 +163,7 @@ export function RubberBillsModule({
     profile.id,
     approvalSettings
   );
+  const evidenceReview = useRubberBillEvidenceReview(selectedLocation.id);
   const { customers, isLoading: customersLoading, error: customersError } = useCustomers();
   const { transfers } = useMoneyTransfers(selectedLocation.id);
   const isOnline = useOnlineStatus();
@@ -362,11 +366,9 @@ export function RubberBillsModule({
         await runBlockingAction(
           likelyNeedsApproval ? "กำลังส่งคำขอลบ..." : "กำลังลบรายการ...",
           () => deleteBill({
-            id: bill.id,
             clientTempId: bill.clientTempId,
             deletedByName: profile.name,
             deletedByPhone: profile.phone,
-            revisionNo: bill.revisionNo,
           }),
         );
       } catch (error) {
@@ -491,6 +493,7 @@ export function RubberBillsModule({
           pageSize={pageSize}
           onPageChange={setPage}
           onView={openView}
+          onEvidence={(bill) => onOpenEvidence(bill.id)}
           onEdit={openEdit}
           onDelete={confirmDelete}
           deletingBillId={deletingBillId}
@@ -499,6 +502,8 @@ export function RubberBillsModule({
           getPrintBlockReason={getPrintBlockReason}
           onRetry={retryFailedSync}
           retryDisabled={!isOnline || isRetrying}
+          evidenceOnline={isOnline}
+          evidenceStatesByBillId={evidenceReview.statesByBillId}
         />
       </section>
 

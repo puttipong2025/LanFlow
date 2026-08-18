@@ -306,7 +306,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
         await modal.getByRole('button', { name: 'บันทึกบิล', exact: true }).click();
         await expect.poll(() => postAttempts).toBeGreaterThan(0);
         await expect(modal).toBeHidden();
-        await expect(row.locator('span:has-text("รอซิงก์")')).toBeVisible();
+        await expect(row.locator('td').last().getByText('รอซิงก์', { exact: true })).toBeVisible();
         const queueAfterFailure = await readQueue(page);
         expect(queueAfterFailure.some((event) =>
           event.entity === 'rubber_bills'
@@ -462,7 +462,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     // Assert: UI shows "รอซิงก์" (pending)
     const createdRow = page.locator('table tbody tr', { hasText: marker }).first();
     await expect(createdRow).toBeVisible({ timeout: 5000 });
-    await expect(createdRow.locator('span:has-text("รอซิงก์")')).toBeVisible();
+    await expect(createdRow.locator('td').last().getByText('รอซิงก์', { exact: true })).toBeVisible();
     await expect(createdRow.locator('td').nth(5)).toHaveText(payerName);
 
     // Assert: IDB queue has the create event with correct payload shape
@@ -549,7 +549,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     // === STEP 5: Verify sync completed (if not, go online to trigger it) ===
     await context.setOffline(false);
     // Wait for sync to complete: "รอซิงก์" should disappear
-    await expect(reloadedRow.locator('span:has-text("รอซิงก์")')).toBeHidden({ timeout: 20000 });
+    await expect(reloadedRow.locator('td').last().getByText('รอซิงก์', { exact: true })).toBeHidden({ timeout: 20000 });
     
     // Queue should be empty after sync
     const queueAfterSync = await readQueue(page);

@@ -713,7 +713,7 @@ export function useRubberBills(
 
   const deleteBillMutation = useMutation({
     networkMode: "always",
-    mutationFn: async ({ id, clientTempId, deletedByName, deletedByPhone, revisionNo }: { id: string, clientTempId: string, deletedByName: string, deletedByPhone: string, revisionNo: number }) => {
+    mutationFn: async ({ clientTempId, deletedByName, deletedByPhone }: { clientTempId: string, deletedByName: string, deletedByPhone: string }) => {
       const existingEvents = await getPendingEvents(queuePartition(ownerUserId, locationId));
       const clientEvents = existingEvents.filter(e => e.id === clientTempId);
 

@@ -5,6 +5,7 @@ import {
   type TelegramBadgeKey,
 } from "@/lib/telegram-badge";
 import { requireSystemManager } from "@/lib/server/auth";
+import { UUID_PATTERN } from "@/lib/server/weight-evidence";
 
 const NO_STORE_HEADERS = {
   "Cache-Control": "private, no-store, max-age=0",
@@ -22,12 +23,20 @@ export async function GET(request: NextRequest) {
   const authCheck = await requireSystemManager(request);
   if (!authCheck.ok) return authCheck.response;
 
-  const { data, error } = await authCheck.supabase.rpc(
-    "get_telegram_badge_config",
-  );
-  if (error) return errorResponse("โหลดการตั้งค่า Telegram ไม่สำเร็จ", 500);
-
-  return NextResponse.json(data, { headers: NO_STORE_HEADERS });
+  const [configResult, locationResult] = await Promise.all([
+    authCheck.supabase.rpc("get_telegram_badge_config"),
+    authCheck.supabase.rpc("get_telegram_evidence_location_config"),
+  ]);
+  if (configResult.error || locationResult.error) {
+    return errorResponse("โหลดการตั้งค่า Telegram ไม่สำเร็จ", 500);
+  }
+  const locations = (locationResult.data ?? {}) as Record<string, unknown>;
+  return NextResponse.json({
+    ...((configResult.data ?? {}) as Record<string, unknown>),
+    evidenceAllLocations: locations.allLocations === true,
+    evidenceLocationIds: locations.locationIds ?? [],
+    evidenceLocations: locations.locations ?? [],
+  }, { headers: NO_STORE_HEADERS });
 }
 
 export async function PUT(request: NextRequest) {
@@ -48,6 +57,8 @@ export async function PUT(request: NextRequest) {
   const intervalMinutes = Number(body.intervalMinutes);
   const evidenceEnabled = body.evidenceEnabled;
   const evidenceIntervalMinutes = Number(body.evidenceIntervalMinutes);
+  let evidenceAllLocations = body.evidenceAllLocations;
+  let evidenceLocationIds = body.evidenceLocationIds;
   const botToken =
     typeof body.botToken === "string" ? body.botToken.trim() : "";
   const rawKeys = body.enabledBadgeKeys;
@@ -63,6 +74,25 @@ export async function PUT(request: NextRequest) {
     startTime >= endTime
   ) {
     return errorResponse("เวลาเริ่มต้องน้อยกว่าเวลาสิ้นสุดภายในวันเดียวกัน", 400);
+  }
+  if (evidenceAllLocations === undefined && evidenceLocationIds === undefined) {
+    const currentResult = await authCheck.supabase.rpc("get_telegram_evidence_location_config");
+    if (currentResult.error) return errorResponse("โหลดสาขาหลักฐานไม่สำเร็จ", 500);
+    const current = (currentResult.data ?? {}) as Record<string, unknown>;
+    evidenceAllLocations = current.allLocations;
+    evidenceLocationIds = current.locationIds;
+  }
+  if (typeof evidenceAllLocations !== "boolean") {
+    return errorResponse("รูปแบบการเลือกสาขาหลักฐานไม่ถูกต้อง", 400);
+  }
+  if (!Array.isArray(evidenceLocationIds) || !evidenceLocationIds.every(
+    (id): id is string => typeof id === "string" && UUID_PATTERN.test(id),
+  )) {
+    return errorResponse("สาขาหลักฐานไม่ถูกต้อง", 400);
+  }
+  const uniqueEvidenceLocationIds = [...new Set(evidenceLocationIds as string[])];
+  if (!evidenceAllLocations && uniqueEvidenceLocationIds.length === 0) {
+    return errorResponse("กรุณาเลือกอย่างน้อยหนึ่งสาขา", 400);
   }
   if (
     !Number.isInteger(intervalMinutes) ||
@@ -95,7 +125,7 @@ export async function PUT(request: NextRequest) {
   }
 
   const { data, error } = await authCheck.supabase.rpc(
-    "save_telegram_badge_config",
+    "save_telegram_badge_config_with_evidence_locations",
     {
       payload: {
         enabled,
@@ -108,6 +138,8 @@ export async function PUT(request: NextRequest) {
         enabledBadgeKeys: [...new Set(rawKeys)],
         ...(botToken ? { botToken } : {}),
       },
+      p_all_locations: evidenceAllLocations,
+      p_location_ids: uniqueEvidenceLocationIds,
     },
   );
 

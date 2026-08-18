@@ -376,7 +376,6 @@ export async function POST(request: NextRequest) {
         const date = new Date(segment.start_time)
           .toLocaleString("sv", { timeZone: "Asia/Bangkok" })
           .split(" ")[0];
-        const month = date.slice(0, 7);
         if (segment.report_lock_no) lockedDates[date] = `REPORT:${segment.report_lock_no}`;
       }
 
