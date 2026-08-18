@@ -39,7 +39,7 @@ export function getSaleReceiptShareBlockReason(
       line.sequenceNo !== index + 1
       || !Number.isInteger(line.quantity)
       || line.quantity <= 0
-      || line.unitPrice <= 0
+      || line.unitPrice < 0
     )
   ) {
     return "ลำดับรายการบิลขายไม่ถูกต้อง";

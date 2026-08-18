@@ -1732,7 +1732,7 @@ begin
         select 1 from private.normalize_income_sale_lines(payload)
         where quantity <= 0
            or quantity <> trunc(quantity)
-           or unit_price <= 0
+           or unit_price < 0
            or unit_price <> round(unit_price, 2)
       ) then
         return jsonb_build_object('status', 'failed', 'errorMessage', 'จำนวนต้องเป็นจำนวนเต็มมากกว่า 0 และราคามีทศนิยมไม่เกิน 2 ตำแหน่ง');
@@ -1777,7 +1777,9 @@ begin
     v_cost := nullif(payload->>'cost', '')::numeric;
   end if;
 
-  if v_type not in ('income', 'expense') or v_title = '' or coalesce(v_cost, 0) <= 0 then
+  if v_type not in ('income', 'expense') or v_title = '' or v_cost is null
+     or v_cost < 0
+     or (v_bill_option is distinct from 'บิลขาย' and v_cost = 0) then
     return jsonb_build_object('status', 'failed', 'errorMessage', 'ข้อมูลรายการหรือยอดเงินไม่ถูกต้อง');
   end if;
 
@@ -5235,7 +5237,7 @@ begin
       from unnest(v_lines) line
       where quantity <= 0
          or quantity <> trunc(quantity)
-         or unit_price <= 0
+         or unit_price < 0
          or unit_price <> round(unit_price, 2)
     ) then
       return jsonb_build_object('status', 'failed', 'errorMessage', 'จำนวนต้องเป็นจำนวนเต็มมากกว่า 0 และราคามีทศนิยมไม่เกิน 2 ตำแหน่ง');
@@ -15636,10 +15638,10 @@ CREATE TABLE IF NOT EXISTS "public"."income_expense_sale_lines" (
     "line_total" numeric(14,2) NOT NULL,
     "sequence_no" integer NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    CONSTRAINT "income_expense_sale_lines_line_total_check" CHECK (("line_total" > (0)::numeric)),
+    CONSTRAINT "income_expense_sale_lines_line_total_check" CHECK (("line_total" >= (0)::numeric)),
     CONSTRAINT "income_expense_sale_lines_quantity_check" CHECK (("quantity" > (0)::numeric)),
     CONSTRAINT "income_expense_sale_lines_sequence_no_check" CHECK (("sequence_no" > 0)),
-    CONSTRAINT "income_expense_sale_lines_unit_price_check" CHECK (("unit_price" > (0)::numeric))
+    CONSTRAINT "income_expense_sale_lines_unit_price_check" CHECK (("unit_price" >= (0)::numeric))
 );
 
 

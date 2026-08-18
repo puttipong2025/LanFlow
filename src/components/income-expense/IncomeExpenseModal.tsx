@@ -202,7 +202,7 @@ export function IncomeExpenseModal({
         && line.incomeSaleItemId
         && line.stockProductId
         && line.unit > 0
-        && line.price > 0
+        && line.price >= 0
       );
     });
     if (invalidSaleLine) {
@@ -212,7 +212,7 @@ export function IncomeExpenseModal({
 
     const filledLines = lines.filter((line) => {
       if (billOption === "บิลขาย") {
-        return line.title.trim() && line.incomeSaleItemId && line.stockProductId && line.unit > 0 && line.price > 0;
+        return line.title.trim() && line.incomeSaleItemId && line.stockProductId && line.unit > 0 && line.price >= 0;
       }
       return line.title.trim() && line.cost > 0;
     });
@@ -227,11 +227,11 @@ export function IncomeExpenseModal({
       && filledLines.some((line) =>
         !Number.isInteger(line.unit)
         || line.unit <= 0
-        || line.price <= 0
+        || line.price < 0
         || Math.abs(line.price * 100 - Math.round(line.price * 100)) > 1e-7
       )
     ) {
-      toast.error("จำนวนสินค้าต้องเป็นจำนวนเต็มมากกว่า 0 และราคามีทศนิยมได้ไม่เกิน 2 ตำแหน่ง");
+      toast.error("จำนวนสินค้าต้องเป็นจำนวนเต็มมากกว่า 0 และราคาต้องไม่ติดลบโดยมีทศนิยมได้ไม่เกิน 2 ตำแหน่ง");
       return;
     }
 

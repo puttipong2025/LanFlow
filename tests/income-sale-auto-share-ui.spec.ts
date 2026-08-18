@@ -127,7 +127,7 @@ async function fillSaleLine(
   await row.locator('input[type="number"]').nth(1).fill(priceValue);
 }
 
-test("keeps one sale command in flight and preserves the modal until sync succeeds", async ({ page }) => {
+test("accepts a zero-priced sale and keeps one command in flight until sync succeeds", async ({ page }) => {
   await installShareMock(page);
 
   let releaseSync!: () => void;
@@ -136,6 +136,7 @@ test("keeps one sale command in flight and preserves the modal until sync succee
   });
   let approvalCount = 0;
   let syncCount = 0;
+  let submittedPayload: Record<string, any> | null = null;
 
   await page.route("**/api/lanflow/income-expense/approval-requests", async (route) => {
     approvalCount += 1;
@@ -143,6 +144,7 @@ test("keeps one sale command in flight and preserves the modal until sync succee
   });
   await page.route("**/api/lanflow/income-expense", async (route) => {
     syncCount += 1;
+    submittedPayload = route.request().postDataJSON();
     await syncGate;
     await route.fulfill({
       json: {
@@ -152,7 +154,7 @@ test("keeps one sale command in flight and preserves the modal until sync succee
         revisionNo: 1,
         serverReceivedAt: new Date().toISOString(),
         title: "บิลขาย — 1 รายการ",
-        cost: 25,
+        cost: 0,
         saleLineCount: 1,
         saleLines: [{
           id: crypto.randomUUID(),
@@ -160,8 +162,8 @@ test("keeps one sale command in flight and preserves the modal until sync succee
           stockProductId: crypto.randomUUID(),
           title: "สินค้า",
           quantity: 1,
-          unitPrice: 25,
-          lineTotal: 25,
+          unitPrice: 0,
+          lineTotal: 0,
           sequenceNo: 1,
         }],
       },
@@ -172,7 +174,7 @@ test("keeps one sale command in flight and preserves the modal until sync succee
   await page.getByRole("button", { name: "เพิ่มรายรับ" }).click();
   const modal = incomeExpenseModal(page);
   await modal.getByRole("button", { name: /บิลขาย/ }).click();
-  await fillSaleLine(modal, 0, "1", "25");
+  await fillSaleLine(modal, 0, "1", "0");
 
   await modal.getByRole("button", { name: "บันทึกบิล" }).click();
   await expect.poll(() => syncCount).toBe(1);
@@ -182,6 +184,10 @@ test("keeps one sale command in flight and preserves the modal until sync succee
   await expect(modal.getByRole("button", { name: "ปิด" })).toBeDisabled();
   await savingButton.evaluate((button: HTMLButtonElement) => button.click());
   expect(approvalCount).toBe(0);
+  expect(submittedPayload).toMatchObject({
+    cost: 0,
+    saleLines: [{ quantity: 1, unitPrice: 0 }],
+  });
   await expect(modal).toBeVisible();
   releaseSync();
   await expect(modal).toBeHidden();

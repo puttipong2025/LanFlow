@@ -243,11 +243,23 @@ test("creates, replays, updates, and deletes one sale parent atomically", async 
       operation: "update",
       expectedRevisionNo: parent.data!.revision_no,
       idempotencyKey: `update:${clientTempId}:${parent.data!.revision_no}`,
-      saleLines: [{ incomeSaleItemId: first.id, quantity: 4, unitPrice: 10.13, sequenceNo: 1 }],
+      saleLines: [{ incomeSaleItemId: first.id, quantity: 4, unitPrice: 0, sequenceNo: 1 }],
     };
     const updated = await authenticated.rpc("sync_income_expense", { payload: updatedPayload });
     expect(updated.error).toBeNull();
-    expect(updated.data).toMatchObject({ status: "synced", cost: 40.52, saleLineCount: 1 });
+    expect(updated.data).toMatchObject({ status: "synced", cost: 0, saleLineCount: 1 });
+    expect((updated.data as any).saleLines).toEqual([
+      expect.objectContaining({ quantity: 4, unitPrice: 0, lineTotal: 0 }),
+    ]);
+    const zeroPriceMovements = await service
+      .from("acid_stock_movements")
+      .select("quantity_delta,amount")
+      .eq("source_type", "income_sale")
+      .eq("source_id", parent.data!.id);
+    expect(zeroPriceMovements.error).toBeNull();
+    expect(zeroPriceMovements.data).toEqual([
+      expect.objectContaining({ quantity_delta: -4, amount: 0 }),
+    ]);
 
     const deletePayload = {
       ...updatedPayload,
@@ -278,8 +290,8 @@ test("creates, replays, updates, and deletes one sale parent atomically", async 
     expect((storedRequest.data!.requested_payload as any).saleLines[0]).toMatchObject({
       title: first.name,
       quantity: 4,
-      unitPrice: 10.13,
-      lineTotal: 40.52,
+      unitPrice: 0,
+      lineTotal: 0,
     });
     const stillActive = await service.from("income_expense").select("record_status").eq("client_temp_id", clientTempId).single();
     expect(stillActive.data?.record_status).toBe("active");

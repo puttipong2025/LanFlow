@@ -2,6 +2,8 @@
 
 Status: Accepted
 
+Price positivity in this decision is superseded by [ADR-0042](0042-allow-zero-price-sale-lines.md), which permits a zero unit price for free giveaways.
+
 ## Context
 
 The Income/Expense sale form currently turns each product line into a separate `income_expense` row and later groups those rows for one PDF. That makes approval, sync, stock deduction, revision, retry, numbering, deletion, report locking, and failure recovery operate at the wrong boundary. The product has no production sale-bill data, so backward compatibility and data backfill are unnecessary.

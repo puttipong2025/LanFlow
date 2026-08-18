@@ -79,6 +79,23 @@ test.describe("sale bill receipt", () => {
     expect(html).not.toContain("สินค้า <พิเศษ>");
   });
 
+  test("allows an all-zero giveaway bill and renders its zero totals", () => {
+    const zeroLine = {
+      ...makeSaleBill().saleLines![0],
+      unitPrice: 0,
+      lineTotal: 0,
+    };
+    const bill = makeSaleBill({
+      title: "บิลขาย — 1 รายการ",
+      cost: 0,
+      saleLineCount: 1,
+      saleLines: [zeroLine],
+    });
+
+    expect(getSaleReceiptShareBlockReason(bill, true)).toBeNull();
+    expect(renderSaleReceiptHtml(buildSaleReceiptModel(bill, location))).toContain("0.00 บาท");
+  });
+
   test("blocks offline, unsynced, incomplete, and invalid line data", () => {
     expect(getSaleReceiptShareBlockReason(makeSaleBill(), false)).toContain("ออนไลน์");
     expect(getSaleReceiptShareBlockReason(
