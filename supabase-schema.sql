@@ -3698,6 +3698,22 @@ $$;
 ALTER FUNCTION "private"."merge_pending_money_transfers"("p_location_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."money_transfer_source_relations"("p_location_id" "uuid", "p_source_type" "text" DEFAULT NULL::"text") RETURNS TABLE("source_type" "text", "source_id" "uuid", "transfer_id" "uuid")
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select i.source_type, i.source_id, i.transfer_id
+  from public.money_transfer_items i
+  join public.money_transfers t on t.id = i.transfer_id
+  where t.location_id = p_location_id
+    and t.record_status <> 'deleted'
+    and (p_source_type is null or i.source_type = p_source_type);
+$$;
+
+
+ALTER FUNCTION "private"."money_transfer_source_relations"("p_location_id" "uuid", "p_source_type" "text") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."next_document_sequence"("p_document_kind" "text", "p_location_id" "uuid", "p_document_date" "date") RETURNS integer
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -4667,6 +4683,47 @@ $$;
 ALTER FUNCTION "private"."require_rubber_bill_evidence_review_manager"("p_location_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."rubber_bill_current_work_items"("p_location_id" "uuid") RETURNS TABLE("location_id" "uuid", "work_kind" "text", "work_identity" "text", "bill_id" "uuid", "sort_at" timestamp with time zone)
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select
+    b.location_id,
+    'unpriced'::text,
+    'bill:' || b.id::text,
+    b.id,
+    coalesce(b.client_created_at, b.created_at)
+  from public.rubber_bills b
+  where b.location_id = p_location_id
+    and b.record_status = 'active'
+    and exists (
+      select 1
+      from public.rubber_bill_items i
+      where i.bill_id = b.id
+        and i.item_type = 'weigh'
+        and coalesce(i.price, 0) <= 0
+    )
+
+  union all
+
+  select
+    r.location_id,
+    'pending_approval'::text,
+    case
+      when r.bill_id is not null then 'bill:' || r.bill_id::text
+      else 'approval:' || r.id::text
+    end,
+    r.bill_id,
+    r.requested_at
+  from public.rubber_bill_approval_requests r
+  where r.location_id = p_location_id
+    and r.request_status = 'pending';
+$$;
+
+
+ALTER FUNCTION "private"."rubber_bill_current_work_items"("p_location_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."rubber_bill_evidence_pending_snapshot"("p_location_id" "uuid") RETURNS TABLE("item_count" bigint, "item_fingerprint" "text")
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -4778,6 +4835,71 @@ $$;
 
 
 ALTER FUNCTION "private"."rubber_bill_evidence_review_states"("p_location_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."rubber_bill_evidence_review_states_for_bills"("p_location_id" "uuid", "p_bill_ids" "uuid"[]) RETURNS TABLE("location_id" "uuid", "bill_id" "uuid", "revision_no" integer, "client_created_at" timestamp with time zone, "review_period_id" "uuid", "review_status" "text", "missing_rubber" boolean, "missing_display_in" boolean, "has_manual_correction" boolean, "is_unpriced" boolean, "has_any_evidence" boolean, "required_role_count" bigint, "present_required_role_count" bigint, "decision" "text", "reviewed_by_name" "text", "reviewed_at" timestamp with time zone)
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  with bill_rows as (
+    select
+      b.id bill_id, b.location_id, b.revision_no, b.client_created_at, b.bill_type,
+      b.source_rubber_export_id, b.evidence_manual_correction_count,
+      count(distinct i.id) filter (where i.item_type = 'weigh')::bigint weigh_row_count,
+      bool_or(coalesce(i.price, 0) <= 0) filter (where i.item_type = 'weigh') is_unpriced,
+      count(f.bill_item_id) filter (where i.item_type = 'weigh' and f.role in ('rubber', 'displayIn'))::bigint present_required_role_count,
+      count(f.bill_item_id) filter (where i.item_type = 'weigh' and f.role = 'rubber')::bigint present_rubber_count,
+      count(f.bill_item_id) filter (where i.item_type = 'weigh' and f.role = 'displayIn')::bigint present_display_in_count,
+      bool_or(f.bill_item_id is not null) has_any_evidence
+    from public.rubber_bills b
+    left join public.rubber_bill_items i on i.bill_id = b.id
+    left join public.rubber_bill_item_evidence_files f
+      on f.bill_item_id = i.id and f.revision_no = b.revision_no
+    where b.location_id = p_location_id
+      and b.record_status = 'active'
+      and b.id = any(coalesce(p_bill_ids, array[]::uuid[]))
+    group by b.id
+  ), scoped as (
+    select b.*, p.id review_period_id, r.decision, r.reviewed_by_name, r.reviewed_at,
+      (b.weigh_row_count * 2)::bigint required_role_count
+    from bill_rows b
+    left join lateral (
+      select period.id
+      from public.rubber_bill_evidence_review_periods period
+      where period.location_id = b.location_id
+        and b.client_created_at is not null
+        and b.client_created_at >= period.opened_at
+        and (period.closed_at is null or b.client_created_at < period.closed_at)
+      order by period.opened_at desc
+      limit 1
+    ) p on true
+    left join public.rubber_bill_evidence_reviews r
+      on r.bill_id = b.bill_id and r.revision_no = b.revision_no
+  )
+  select
+    s.location_id, s.bill_id, s.revision_no, s.client_created_at,
+    case when s.bill_type in ('weighing', 'บิลเครื่องชั่งเล็ก')
+      and s.source_rubber_export_id is null and s.weigh_row_count > 0 then s.review_period_id end,
+    case
+      when s.bill_type not in ('weighing', 'บิลเครื่องชั่งเล็ก')
+        or s.source_rubber_export_id is not null or s.weigh_row_count = 0
+        or s.client_created_at is null or s.review_period_id is null then 'outside'
+      when s.decision is not null then s.decision
+      when s.present_required_role_count < s.required_role_count
+        or s.evidence_manual_correction_count > 0 then 'pending'
+      else 'normal'
+    end,
+    s.weigh_row_count > s.present_rubber_count,
+    s.weigh_row_count > s.present_display_in_count,
+    s.evidence_manual_correction_count > 0,
+    coalesce(s.is_unpriced, false), coalesce(s.has_any_evidence, false),
+    s.required_role_count, s.present_required_role_count,
+    s.decision, s.reviewed_by_name, s.reviewed_at
+  from scoped s;
+$$;
+
+
+ALTER FUNCTION "private"."rubber_bill_evidence_review_states_for_bills"("p_location_id" "uuid", "p_bill_ids" "uuid"[]) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."rubber_bill_has_active_transfer"("p_bill_id" "uuid") RETURNS boolean
@@ -9231,10 +9353,11 @@ begin
     select ps.id, ps.profile_id from public.payroll_slips ps where ps.status = 'PENDING'
   ),
   counts as (
-    select al.location_id, 'rubber'::text module_id, count(distinct b.blocker_id)::bigint item_count
+    select al.location_id, 'rubber'::text module_id, count(distinct w.work_identity)::bigint item_count
     from accessible_locations al
-    cross join lateral private.rubber_bill_report_blockers(al.location_id, now()) b
-    where b.blocker_type = 'zero_price'
+    cross join lateral private.rubber_bill_current_work_items(al.location_id) w
+    where w.work_kind = 'unpriced'
+       or (v_can_manage_system and w.work_kind = 'pending_approval')
     group by al.location_id
 
     union all
@@ -9242,13 +9365,6 @@ begin
     from accessible_locations al
     cross join lateral private.rubber_bill_evidence_review_states(al.location_id) s
     where s.review_status = 'pending'
-    group by al.location_id
-
-    union all
-    select al.location_id, 'rubber', count(*)::bigint
-    from accessible_locations al
-    cross join lateral private.rubber_bill_report_blockers(al.location_id, now()) b
-    where v_can_manage_system and b.blocker_type <> 'zero_price'
     group by al.location_id
 
     union all
@@ -10538,95 +10654,279 @@ $$;
 ALTER FUNCTION "public"."get_income_expense_feed"("p_location_id" "uuid", "p_from_date" "date", "p_to_date" "date", "p_cursor_date" "date", "p_cursor_key" "text", "p_page_size" integer) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."get_money_transfer_detail"("p_transfer_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare v_transfer public.money_transfers; v_result jsonb;
+begin
+  if not private.is_active_user() or not private.can_access_money_transfer_module() then
+    raise exception 'Money transfer module access denied';
+  end if;
+  select * into v_transfer from public.money_transfers t
+  where t.id = p_transfer_id and t.record_status <> 'deleted';
+  if v_transfer.id is null then raise exception 'Money transfer not found'; end if;
+  if not private.can_access_location(v_transfer.location_id) then raise exception 'Location access denied'; end if;
+  select to_jsonb(v_transfer)
+    || jsonb_build_object(
+      'report_lock_no', public.report_lock_no(v_transfer),
+      'money_transfer_slips', coalesce((select jsonb_agg(to_jsonb(s) order by s.sort_order, s.id)
+        from public.money_transfer_slips s where s.transfer_id = p_transfer_id), '[]'::jsonb),
+      'money_transfer_items', coalesce((select jsonb_agg(to_jsonb(i) order by i.created_at, i.id)
+        from public.money_transfer_items i where i.transfer_id = p_transfer_id), '[]'::jsonb)
+    ) into v_result;
+  return v_result;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_money_transfer_detail"("p_transfer_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_money_transfer_list"("p_location_id" "uuid", "p_status" "text" DEFAULT 'all'::"text", "p_search" "text" DEFAULT ''::"text", "p_cursor_created_at" timestamp with time zone DEFAULT NULL::timestamp with time zone, "p_cursor_id" "uuid" DEFAULT NULL::"uuid", "p_page_size" integer DEFAULT 50) RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare v_result jsonb; v_search text := lower(trim(coalesce(p_search, '')));
+begin
+  if not private.is_active_user() or not private.can_access_money_transfer_module() then
+    raise exception 'Money transfer module access denied';
+  end if;
+  if not private.can_access_location(p_location_id) then raise exception 'Location access denied'; end if;
+  if p_page_size < 1 or p_page_size > 100 then raise exception 'Invalid page size'; end if;
+  if (p_cursor_created_at is null) <> (p_cursor_id is null) then raise exception 'Invalid transfer cursor'; end if;
+
+  with candidates as (
+    select t.*,
+      public.report_lock_no(t) report_lock_no,
+      coalesce((select sum(s.amount) from public.money_transfer_slips s where s.transfer_id = t.id), 0) paid_amount,
+      coalesce((select count(*) from public.money_transfer_items i where i.transfer_id = t.id), 0) source_count
+    from public.money_transfers t
+    where t.location_id = p_location_id
+      and t.record_status <> 'deleted'
+      and (p_status = 'all' or t.transfer_status = p_status)
+      and (v_search = '' or position(v_search in lower(concat_ws(' ', t.customer_name, t.account_number,
+        t.account_name, t.bank_name, t.transport_staff_name, t.target_location_name, t.id::text))) > 0)
+      and (p_cursor_created_at is null or (t.created_at, t.id) < (p_cursor_created_at, p_cursor_id))
+    order by t.created_at desc, t.id desc
+    limit p_page_size + 1
+  ), visible as (
+    select * from candidates order by created_at desc, id desc limit p_page_size
+  )
+  select jsonb_build_object(
+    'rows', coalesce((select jsonb_agg(to_jsonb(v) order by v.created_at desc, v.id desc) from visible v), '[]'::jsonb),
+    'statusCounts', (select jsonb_build_object(
+      'all', count(*),
+      'pending', count(*) filter (where t.transfer_status = 'pending'),
+      'partial', count(*) filter (where t.transfer_status = 'partial'),
+      'advance_payment', count(*) filter (where t.transfer_status = 'advance_payment'),
+      'paid', count(*) filter (where t.transfer_status = 'paid'),
+      'overpaid', count(*) filter (where t.transfer_status = 'overpaid'),
+      'branch_and_transfer', count(*) filter (where t.transfer_status = 'branch_and_transfer'),
+      'cancelled', count(*) filter (where t.transfer_status = 'cancelled')
+    ) from public.money_transfers t where t.location_id = p_location_id and t.record_status <> 'deleted'),
+    'hasMore', (select count(*) > p_page_size from candidates),
+    'nextCreatedAt', (select v.created_at from visible v order by v.created_at, v.id limit 1),
+    'nextId', (select v.id from visible v order by v.created_at, v.id limit 1)
+  ) into v_result;
+  return v_result;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_money_transfer_list"("p_location_id" "uuid", "p_status" "text", "p_search" "text", "p_cursor_created_at" timestamp with time zone, "p_cursor_id" "uuid", "p_page_size" integer) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."get_money_transfer_receipt_source_details"("p_transfer_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
-declare
-  v_location_id uuid;
-  v_items jsonb;
+declare v_location_id uuid; v_items jsonb;
 begin
-  if not private.is_active_user() then
-    raise exception 'Unauthorized or inactive user';
-  end if;
-
-  if not private.can_access_money_transfer_module() then
+  if not private.is_active_user() or not private.can_access_money_transfer_module() then
     raise exception 'Money transfer module access denied';
   end if;
+  select t.location_id into v_location_id from public.money_transfers t
+  where t.id = p_transfer_id and t.record_status <> 'deleted';
+  if v_location_id is null then raise exception 'Money transfer not found'; end if;
+  if not private.can_access_location(v_location_id) then raise exception 'Location access denied'; end if;
 
-  select t.location_id
-  into v_location_id
-  from public.money_transfers t
-  where t.id = p_transfer_id
-    and t.record_status <> 'deleted';
-
-  if v_location_id is null then
-    raise exception 'Money transfer not found';
-  end if;
-
-  if not private.can_access_location(v_location_id) then
-    raise exception 'Location access denied';
-  end if;
-
-  if exists (
-    select 1
-    from public.money_transfer_items i
-    left join public.rubber_bills rb on rb.id = i.rubber_bill_id
-    left join public.ocr_tickets ot on ot.id = i.ocr_ticket_id
-    where i.transfer_id = p_transfer_id
-      and (
-        (i.source_type = 'rubber_bill' and rb.id is null)
-        or (i.source_type = 'ocr_ticket' and ot.id is null)
-        or (i.source_type = 'rubber_bill' and rb.location_id <> v_location_id)
-        or (i.source_type = 'ocr_ticket' and ot.location_id <> v_location_id)
-        or (i.source_type = 'rubber_bill' and rb.record_status = 'deleted')
-        or (i.source_type = 'ocr_ticket' and ot.record_status = 'deleted')
-      )
-  ) then
-    raise exception 'Money transfer source is missing or belongs to another location';
-  end if;
-
-  select coalesce(
-    jsonb_agg(
-      jsonb_build_object(
-        'itemId', i.id,
-        'sourceType', i.source_type,
-        'sourceId', i.source_id,
-        'netWeightAfterDeduction',
-          case
-            when i.source_type = 'rubber_bill' then rb.net_weight
-            else coalesce(ot.weight_remaining, 0)
-          end,
-        'deductedAmount',
-          case
-            when i.source_type = 'rubber_bill' then rb.deduction_total
-            else ot.money_deducted
-          end,
-        'netPayableAmount',
-          case
-            when i.source_type = 'rubber_bill' then rb.net_total
-            else coalesce(ot.total_amount, 0) - coalesce(ot.money_deducted, 0)
-          end
-      )
-      order by i.created_at, i.id
-    ),
-    '[]'::jsonb
-  )
-  into v_items
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'itemId', i.id,
+    'sourceType', i.source_type,
+    'sourceId', i.source_id,
+    'sourceNumber', case when i.source_type = 'rubber_bill'
+      then coalesce(rb.server_bill_no, rb.local_bill_no, rb.bill_no) else coalesce(ot.ticket_id, ot.file_name) end,
+    'sourceDate', case when i.source_type = 'rubber_bill' then rb.bill_date::text else ot.date_in::text end,
+    'customerName', coalesce(rb.customer_name, ot.customer_name, i.customer_name),
+    'netWeightAfterDeduction', case when i.source_type = 'rubber_bill' then rb.net_weight else coalesce(ot.weight_remaining, 0) end,
+    'averagePrice', case when i.source_type = 'rubber_bill' then rb.average_price
+      when coalesce(ot.weight_remaining, 0) > 0 then coalesce(ot.total_amount, 0) / ot.weight_remaining
+      else null end,
+    'rubberValue', case when i.source_type = 'rubber_bill' then rb.net_rubber_value else coalesce(ot.total_amount, 0) end,
+    'deductedAmount', case when i.source_type = 'rubber_bill' then rb.deduction_total else ot.money_deducted end,
+    'netPayableAmount', case when i.source_type = 'rubber_bill' then rb.net_total
+      else coalesce(ot.total_amount, 0) - coalesce(ot.money_deducted, 0) end
+  ) order by coalesce(rb.created_at, ot.created_at) desc, i.source_id desc), '[]'::jsonb) into v_items
   from public.money_transfer_items i
   left join public.rubber_bills rb on rb.id = i.rubber_bill_id
   left join public.ocr_tickets ot on ot.id = i.ocr_ticket_id
   where i.transfer_id = p_transfer_id;
-
-  return jsonb_build_object(
-    'transferId', p_transfer_id,
-    'items', v_items
-  );
+  return jsonb_build_object('transferId', p_transfer_id, 'items', v_items);
 end;
 $$;
 
 
 ALTER FUNCTION "public"."get_money_transfer_receipt_source_details"("p_transfer_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_money_transfer_source_locks"("p_location_id" "uuid", "p_source_type" "text", "p_source_ids" "uuid"[] DEFAULT NULL::"uuid"[]) RETURNS TABLE("source_type" "text", "source_id" "uuid", "transfer_id" "uuid")
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if not private.is_active_user() or not private.can_access_location(p_location_id) then
+    raise exception 'Location access denied';
+  end if;
+  if p_source_type not in ('rubber_bill', 'ocr_ticket') then raise exception 'Unsupported source type'; end if;
+  return query
+  select r.source_type, r.source_id, r.transfer_id
+  from private.money_transfer_source_relations(p_location_id, p_source_type) r
+  where p_source_ids is null or r.source_id = any(p_source_ids)
+  order by r.source_id;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_money_transfer_source_locks"("p_location_id" "uuid", "p_source_type" "text", "p_source_ids" "uuid"[]) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_money_transfer_sources"("p_location_id" "uuid", "p_source_type" "text", "p_search" "text" DEFAULT ''::"text", "p_cursor_created_at" timestamp with time zone DEFAULT NULL::timestamp with time zone, "p_cursor_id" "uuid" DEFAULT NULL::"uuid", "p_page_size" integer DEFAULT 50, "p_selected_ids" "uuid"[] DEFAULT ARRAY[]::"uuid"[]) RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_search text := lower(trim(coalesce(p_search, '')));
+  v_result jsonb;
+begin
+  if not private.is_active_user() or not private.can_access_money_transfer_module() then
+    raise exception 'Money transfer module access denied';
+  end if;
+  if not private.can_access_location(p_location_id) then raise exception 'Location access denied'; end if;
+  if p_source_type not in ('rubber_bill', 'ocr_ticket') then raise exception 'Unsupported source type'; end if;
+  if p_page_size < 1 or p_page_size > 100 then raise exception 'Invalid page size'; end if;
+  if (p_cursor_created_at is null) <> (p_cursor_id is null) then raise exception 'Invalid source cursor'; end if;
+
+  with source_rows as (
+    select
+      'rubber_bill'::text source_type,
+      b.id source_id,
+      coalesce(b.server_bill_no, b.local_bill_no, b.bill_no) source_number,
+      b.bill_date::text source_date,
+      b.customer_name,
+      b.net_total::numeric amount,
+      b.net_weight::numeric net_weight,
+      b.average_price::numeric average_price,
+      b.net_rubber_value::numeric rubber_value,
+      b.deduction_total::numeric deducted_amount,
+      null::text license_plate,
+      b.created_at,
+      r.transfer_id,
+      public.report_lock_no(b) report_lock_no,
+      private.rubber_bill_has_pending_approval(b.id) approval_pending,
+      b.sync_status::text sync_status,
+      b.server_bill_no is not null has_server_number,
+      exists (
+        select 1 from public.rubber_bill_items bi
+        where bi.bill_id = b.id and bi.item_type = 'weigh' and coalesce(bi.price, 0) <= 0
+      ) unpriced
+    from public.rubber_bills b
+    left join private.money_transfer_source_relations(p_location_id, 'rubber_bill') r
+      on r.source_id = b.id
+    where b.location_id = p_location_id and b.record_status = 'active'
+
+    union all
+
+    select
+      'ocr_ticket'::text,
+      o.id,
+      coalesce(o.ticket_id, o.file_name),
+      o.date_in::text,
+      o.customer_name,
+      (coalesce(o.total_amount, 0) - coalesce(o.money_deducted, 0))::numeric,
+      coalesce(o.weight_remaining, o.weight_net, 0)::numeric,
+      null::numeric,
+      coalesce(o.total_amount, 0)::numeric,
+      coalesce(o.money_deducted, 0)::numeric,
+      o.license_plate,
+      o.created_at,
+      r.transfer_id,
+      public.report_lock_no(o),
+      false,
+      o.sync_status::text,
+      o.ticket_id is not null,
+      false
+    from public.ocr_tickets o
+    left join private.money_transfer_source_relations(p_location_id, 'ocr_ticket') r
+      on r.source_id = o.id
+    where o.location_id = p_location_id and o.record_status = 'active'
+  ), classified as (
+    select s.*,
+      case
+        when s.transfer_id is not null then 'SOURCE_ALREADY_USED'
+        when s.report_lock_no is not null then 'REPORT_LOCKED'
+        when s.approval_pending then 'PENDING_APPROVAL'
+        when s.sync_status <> 'synced' or not s.has_server_number then 'NOT_SYNCED'
+        when s.unpriced then 'UNPRICED'
+        when coalesce(s.amount, 0) <= 0 then 'NOT_PAYABLE'
+        when nullif(trim(coalesce(s.customer_name, '')), '') is null then 'MISSING_CUSTOMER'
+        else null
+      end block_reason
+    from source_rows s
+    where s.source_type = p_source_type
+      and (
+        s.source_id = any(coalesce(p_selected_ids, array[]::uuid[]))
+        or v_search = ''
+        or position(v_search in lower(concat_ws(' ', s.source_number, s.source_date, s.customer_name, s.license_plate))) > 0
+      )
+      and (s.source_id = any(coalesce(p_selected_ids, array[]::uuid[]))
+        or p_cursor_created_at is null or (s.created_at, s.source_id) < (p_cursor_created_at, p_cursor_id))
+    order by (s.source_id = any(coalesce(p_selected_ids, array[]::uuid[]))) desc, s.created_at desc, s.source_id desc
+    limit p_page_size + cardinality(coalesce(p_selected_ids, array[]::uuid[])) + 1
+  ), visible as (
+    select * from classified
+    order by (source_id = any(coalesce(p_selected_ids, array[]::uuid[]))) desc, created_at desc, source_id desc
+    limit p_page_size + cardinality(coalesce(p_selected_ids, array[]::uuid[]))
+  )
+  select jsonb_build_object(
+    'rows', coalesce((select jsonb_agg(jsonb_build_object(
+      'sourceType', v.source_type,
+      'sourceId', v.source_id,
+      'sourceNumber', v.source_number,
+      'sourceDate', v.source_date,
+      'customerName', v.customer_name,
+      'amount', v.amount,
+      'netWeight', v.net_weight,
+      'averagePrice', v.average_price,
+      'rubberValue', v.rubber_value,
+      'deductedAmount', v.deducted_amount,
+      'licensePlate', v.license_plate,
+      'transferId', v.transfer_id,
+      'reportLockNo', v.report_lock_no,
+      'available', v.block_reason is null,
+      'blockReason', v.block_reason,
+      'createdAt', v.created_at
+    ) order by (v.source_id = any(coalesce(p_selected_ids, array[]::uuid[]))) desc, v.created_at desc, v.source_id desc) from visible v), '[]'::jsonb),
+    'hasMore', (select count(*) filter (where not (source_id = any(coalesce(p_selected_ids, array[]::uuid[])))) > p_page_size from classified),
+    'nextCreatedAt', (select v.created_at from visible v where not (v.source_id = any(coalesce(p_selected_ids, array[]::uuid[]))) order by v.created_at, v.source_id limit 1),
+    'nextId', (select v.source_id from visible v where not (v.source_id = any(coalesce(p_selected_ids, array[]::uuid[]))) order by v.created_at, v.source_id limit 1)
+  ) into v_result;
+  return v_result;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_money_transfer_sources"("p_location_id" "uuid", "p_source_type" "text", "p_search" "text", "p_cursor_created_at" timestamp with time zone, "p_cursor_id" "uuid", "p_page_size" integer, "p_selected_ids" "uuid"[]) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_receivable_rubber_exports"("p_destination_location_id" "uuid") RETURNS TABLE("source_rubber_export_id" "uuid", "source_export_no" "text", "source_location_id" "uuid", "source_location_name" "text", "verified_at" timestamp with time zone, "current_weight" numeric, "rubber_value" numeric, "source_average_age_hours" numeric, "received_age_hours" numeric, "age_is_estimated" boolean)
@@ -10784,6 +11084,236 @@ $$;
 
 
 ALTER FUNCTION "public"."get_rubber_bill_evidence_review_states"("p_location_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_rubber_bill_evidence_states_for_bills"("p_location_id" "uuid", "p_bill_ids" "uuid"[]) RETURNS TABLE("location_id" "uuid", "bill_id" "uuid", "revision_no" integer, "client_created_at" timestamp with time zone, "review_period_id" "uuid", "review_status" "text", "missing_rubber" boolean, "missing_display_in" boolean, "has_manual_correction" boolean, "is_unpriced" boolean, "has_any_evidence" boolean, "required_role_count" bigint, "present_required_role_count" bigint, "decision" "text", "reviewed_by_name" "text", "reviewed_at" timestamp with time zone)
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if not private.is_active_user() or not private.can_access_location(p_location_id) then
+    raise exception 'RUBBER_EVIDENCE_REVIEW_ACCESS_DENIED';
+  end if;
+  return query select *
+  from private.rubber_bill_evidence_review_states_for_bills(p_location_id, p_bill_ids);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_rubber_bill_evidence_states_for_bills"("p_location_id" "uuid", "p_bill_ids" "uuid"[]) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_rubber_bill_operational_feed"("p_location_id" "uuid", "p_mode" "text" DEFAULT 'latest'::"text", "p_document_status" "text" DEFAULT 'any'::"text", "p_search" "text" DEFAULT ''::"text", "p_cursor_sort_at" timestamp with time zone DEFAULT NULL::timestamp with time zone, "p_cursor_id" "uuid" DEFAULT NULL::"uuid", "p_page_size" integer DEFAULT 100) RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_can_manage boolean;
+  v_ascending boolean := p_mode in ('unpriced', 'pending_approval');
+  v_search text := lower(trim(coalesce(p_search, '')));
+  v_result jsonb;
+begin
+  if not private.is_active_user() then
+    raise exception 'Unauthorized or inactive user';
+  end if;
+  if p_location_id is null or not private.can_access_location(p_location_id) then
+    raise exception 'Location access denied';
+  end if;
+  if p_mode not in ('latest', 'unpriced', 'pending_approval') then
+    raise exception 'Unsupported Rubber Bill mode';
+  end if;
+  if p_document_status not in ('any', 'editable', 'report_locked', 'in_transfer') then
+    raise exception 'Unsupported Rubber Bill document status';
+  end if;
+  if p_page_size < 1 or p_page_size > 150 then
+    raise exception 'Rubber Bill page size must be between 1 and 150';
+  end if;
+  if (p_cursor_sort_at is null) <> (p_cursor_id is null) then
+    raise exception 'Rubber Bill cursor is incomplete';
+  end if;
+
+  select p.role = 'super_admin' or p.can_access_super_admin_features = true
+  into v_can_manage
+  from public.profiles p
+  where p.id = auth.uid() and p.is_active = true;
+  if p_mode = 'pending_approval' and not coalesce(v_can_manage, false) then
+    raise exception 'Rubber Bill approval access denied';
+  end if;
+
+  with candidates as (
+    select
+      b.*,
+      public.report_lock_no(b) as report_lock_no,
+      case
+        when p_mode = 'pending_approval' then coalesce((
+          select min(w.sort_at)
+          from private.rubber_bill_current_work_items(p_location_id) w
+          where w.work_kind = 'pending_approval' and w.bill_id = b.id
+        ), coalesce(b.client_created_at, b.created_at))
+        else coalesce(b.client_created_at, b.created_at)
+      end as feed_sort_at,
+      (
+        select i.transfer_id
+        from public.money_transfer_items i
+        join public.money_transfers t on t.id = i.transfer_id
+        where i.source_type = 'rubber_bill'
+          and i.source_id = b.id
+          and t.record_status <> 'deleted'
+        limit 1
+      ) as transfer_lock_id,
+      private.rubber_bill_has_pending_approval(b.id) as approval_pending
+    from public.rubber_bills b
+    where b.location_id = p_location_id
+      and b.record_status = 'active'
+      and (
+        p_mode = 'latest'
+        or exists (
+          select 1
+          from private.rubber_bill_current_work_items(p_location_id) w
+          where w.bill_id = b.id and w.work_kind = p_mode
+        )
+      )
+      and (
+        p_document_status = 'any'
+        or (p_document_status = 'report_locked' and public.report_lock_no(b) is not null)
+        or (p_document_status = 'in_transfer' and exists (
+          select 1
+          from public.money_transfer_items i
+          join public.money_transfers t on t.id = i.transfer_id
+          where i.source_type = 'rubber_bill'
+            and i.source_id = b.id
+            and t.record_status <> 'deleted'
+        ))
+        or (p_document_status = 'editable'
+          and public.report_lock_no(b) is null
+          and not private.rubber_bill_has_pending_approval(b.id)
+          and not exists (
+            select 1
+            from public.money_transfer_items i
+            join public.money_transfers t on t.id = i.transfer_id
+            where i.source_type = 'rubber_bill'
+              and i.source_id = b.id
+              and t.record_status <> 'deleted'
+          ))
+      )
+      and (
+        v_search = ''
+        or position(v_search in lower(concat_ws(' ',
+          b.bill_no,
+          b.local_bill_no,
+          b.server_bill_no,
+          b.bill_date::text,
+          b.customer_name,
+          b.bill_type,
+          b.created_by_name,
+          b.created_by_phone
+        ))) > 0
+      )
+  ), scoped as (
+    select c.*
+    from candidates c
+    where p_cursor_sort_at is null
+      or (v_ascending and (c.feed_sort_at, c.id) > (p_cursor_sort_at, p_cursor_id))
+      or (not v_ascending and (c.feed_sort_at, c.id) < (p_cursor_sort_at, p_cursor_id))
+    order by
+      case when v_ascending then c.feed_sort_at end asc,
+      case when not v_ascending then c.feed_sort_at end desc,
+      case when v_ascending then c.id end asc,
+      case when not v_ascending then c.id end desc
+    limit p_page_size + 1
+  ), visible as (
+    select s.*
+    from scoped s
+    order by
+      case when v_ascending then s.feed_sort_at end asc,
+      case when not v_ascending then s.feed_sort_at end desc,
+      case when v_ascending then s.id end asc,
+      case when not v_ascending then s.id end desc
+    limit p_page_size
+  ), serialized as (
+    select
+      v.feed_sort_at,
+      v.id,
+      to_jsonb(v)
+        - 'feed_sort_at'
+        || jsonb_build_object(
+          'items', coalesce((
+            select jsonb_agg(to_jsonb(i) order by i.sequence_no, i.id)
+            from public.rubber_bill_items i
+            where i.bill_id = v.id
+          ), '[]'::jsonb),
+          'operational_sort_at', v.feed_sort_at,
+          'transfer_lock_id', v.transfer_lock_id,
+          'approval_pending', v.approval_pending
+        ) as row_json
+    from visible v
+  )
+  select jsonb_build_object(
+    'rows', coalesce((
+      select jsonb_agg(x.row_json order by
+        case when v_ascending then x.feed_sort_at end asc,
+        case when not v_ascending then x.feed_sort_at end desc,
+        case when v_ascending then x.id end asc,
+        case when not v_ascending then x.id end desc)
+      from serialized x
+    ), '[]'::jsonb),
+    'hasMore', (select count(*) > p_page_size from scoped),
+    'nextSortAt', (select x.feed_sort_at from serialized x order by
+      case when v_ascending then x.feed_sort_at end desc,
+      case when not v_ascending then x.feed_sort_at end asc,
+      case when v_ascending then x.id end desc,
+      case when not v_ascending then x.id end asc limit 1),
+    'nextId', (select x.id from serialized x order by
+      case when v_ascending then x.feed_sort_at end desc,
+      case when not v_ascending then x.feed_sort_at end asc,
+      case when v_ascending then x.id end desc,
+      case when not v_ascending then x.id end asc limit 1)
+  ) into v_result;
+
+  return v_result;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_rubber_bill_operational_feed"("p_location_id" "uuid", "p_mode" "text", "p_document_status" "text", "p_search" "text", "p_cursor_sort_at" timestamp with time zone, "p_cursor_id" "uuid", "p_page_size" integer) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_rubber_bill_work_counts"("p_location_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_can_manage boolean;
+  v_unpriced bigint;
+  v_pending bigint;
+begin
+  if not private.is_active_user() then
+    raise exception 'Unauthorized or inactive user';
+  end if;
+  if p_location_id is null or not private.can_access_location(p_location_id) then
+    raise exception 'Location access denied';
+  end if;
+
+  select p.role = 'super_admin' or p.can_access_super_admin_features = true
+  into v_can_manage
+  from public.profiles p
+  where p.id = auth.uid() and p.is_active = true;
+
+  select
+    count(distinct w.work_identity) filter (where w.work_kind = 'unpriced'),
+    count(distinct w.work_identity) filter (where w.work_kind = 'pending_approval')
+  into v_unpriced, v_pending
+  from private.rubber_bill_current_work_items(p_location_id) w;
+
+  return jsonb_build_object(
+    'unpriced', coalesce(v_unpriced, 0),
+    'pendingApproval', case when v_can_manage then coalesce(v_pending, 0) else 0 end
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_rubber_bill_work_counts"("p_location_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_rubber_export_age_detail"("p_export_id" "uuid") RETURNS "jsonb"
@@ -13314,6 +13844,227 @@ $$;
 
 
 ALTER FUNCTION "public"."save_dashboard_stock_alert_threshold"("p_location_id" "uuid", "p_product_id" "uuid", "p_minimum_balance" numeric) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."save_money_transfer"("p_payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_id uuid := (p_payload->>'id')::uuid;
+  v_location_id uuid := (p_payload->>'locationId')::uuid;
+  v_idempotency_key text := nullif(p_payload->>'idempotencyKey', '');
+  v_operation text := coalesce(p_payload->>'operation', 'create');
+  v_transfer_type text := coalesce(p_payload->>'transferType', 'customer');
+  v_expected_revision integer := coalesce((p_payload->>'revisionNo')::integer, 0);
+  v_existing public.money_transfers;
+  v_retry public.money_transfers;
+  v_is_create boolean;
+  v_slip_ids uuid[];
+  v_item_ids uuid[];
+  v_changed_sources jsonb;
+begin
+  if not private.is_active_user() or not private.can_access_money_transfer_module() then
+    raise exception 'MT_ACCESS_DENIED: ไม่มีสิทธิ์ใช้งานรายการโอนเงิน';
+  end if;
+  if v_id is null or v_location_id is null then raise exception 'MT_INVALID_PAYLOAD: ข้อมูลรายการโอนไม่ครบ'; end if;
+  if not private.can_access_location(v_location_id) then raise exception 'MT_LOCATION_DENIED: ไม่มีสิทธิ์เข้าถึงสาขา'; end if;
+  if v_transfer_type not in ('customer', 'transport', 'branch') then
+    raise exception 'MT_UNSUPPORTED_WORKFLOW: ไม่รองรับประเภทการโอนนี้';
+  end if;
+  if v_operation not in ('create', 'update') then raise exception 'MT_INVALID_OPERATION: operation ไม่ถูกต้อง'; end if;
+  if jsonb_typeof(coalesce(p_payload->'slips', '[]'::jsonb)) <> 'array'
+    or jsonb_typeof(coalesce(p_payload->'items', '[]'::jsonb)) <> 'array' then
+    raise exception 'MT_INVALID_PAYLOAD: slips/items ต้องเป็นรายการ';
+  end if;
+
+  if v_idempotency_key is not null then
+    select * into v_retry from public.money_transfers t
+    where t.idempotency_key = v_idempotency_key and t.record_status <> 'deleted'
+    for update;
+    if v_retry.id is not null then
+      if v_retry.location_id <> v_location_id then
+        raise exception 'MT_IDEMPOTENCY_CONFLICT: idempotency key อยู่คนละสาขา';
+      end if;
+      if v_operation = 'create' then
+        return public.get_money_transfer_detail(v_retry.id)
+          || jsonb_build_object('idempotentReplay', true, 'changedSources', '[]'::jsonb);
+      end if;
+      if v_retry.id <> v_id then raise exception 'MT_IDEMPOTENCY_CONFLICT: idempotency key ไม่ตรงรายการ'; end if;
+    end if;
+  end if;
+
+  select * into v_existing from public.money_transfers t where t.id = v_id for update;
+  v_is_create := v_existing.id is null;
+  if v_operation = 'create' and not v_is_create then
+    raise exception 'MT_IDEMPOTENCY_CONFLICT: มีรหัสรายการนี้แล้ว';
+  end if;
+  if v_operation = 'update' and v_is_create then raise exception 'MT_NOT_FOUND: ไม่พบรายการโอนเงิน'; end if;
+  if not v_is_create then
+    if v_existing.location_id <> v_location_id then raise exception 'MT_LOCATION_MISMATCH: ห้ามย้ายรายการข้ามสาขา'; end if;
+    if v_existing.record_status = 'deleted' then raise exception 'MT_NOT_FOUND: ไม่พบรายการโอนเงิน'; end if;
+    if v_existing.revision_no <> v_expected_revision then
+      raise exception 'MT_REVISION_CONFLICT: ข้อมูลถูกแก้ไขแล้ว กรุณาโหลดใหม่';
+    end if;
+    if public.report_lock_no(v_existing) is not null then
+      raise exception 'MT_REPORT_LOCKED: รายการถูกล็อกโดยรายงาน';
+    end if;
+  end if;
+
+  if exists (
+    select 1 from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
+    group by x->>'sourceType', x->>'sourceId' having count(*) > 1
+  ) then raise exception 'MT_DUPLICATE_SOURCE: มีแหล่งจ่ายซ้ำในรายการ'; end if;
+
+  -- Deterministic source locking keeps concurrent saves from validating stale availability.
+  perform b.id
+  from public.rubber_bills b
+  where b.id = any(coalesce((select array_agg((x->>'sourceId')::uuid)
+    from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
+    where x->>'sourceType' = 'rubber_bill'), array[]::uuid[]))
+  order by b.id for update;
+  perform o.id
+  from public.ocr_tickets o
+  where o.id = any(coalesce((select array_agg((x->>'sourceId')::uuid)
+    from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
+    where x->>'sourceType' = 'ocr_ticket'), array[]::uuid[]))
+  order by o.id for update;
+
+  if exists (
+    select 1 from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
+    where x->>'sourceType' not in ('rubber_bill', 'ocr_ticket')
+  ) then raise exception 'MT_INVALID_SOURCE: ประเภทแหล่งจ่ายไม่ถูกต้อง'; end if;
+
+  if exists (
+    select 1 from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
+    left join public.rubber_bills b on b.id = (x->>'sourceId')::uuid
+    where x->>'sourceType' = 'rubber_bill' and (
+      b.id is null or b.location_id <> v_location_id or b.record_status <> 'active'
+      or b.sync_status::text <> 'synced' or b.server_bill_no is null or b.net_total <= 0
+      or public.report_lock_no(b) is not null
+      or private.rubber_bill_has_pending_approval(b.id)
+      or exists (select 1 from public.rubber_bill_items bi
+        where bi.bill_id = b.id and bi.item_type = 'weigh' and coalesce(bi.price, 0) <= 0)
+    )
+  ) then raise exception 'MT_RUBBER_SOURCE_BLOCKED: บิลยางยังไม่พร้อมโอนหรือถูกล็อก'; end if;
+
+  if exists (
+    select 1 from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
+    left join public.ocr_tickets o on o.id = (x->>'sourceId')::uuid
+    where x->>'sourceType' = 'ocr_ticket' and (
+      o.id is null or o.location_id <> v_location_id or o.record_status <> 'active'
+      or o.sync_status::text <> 'synced' or o.ticket_id is null
+      or coalesce(o.total_amount, 0) - coalesce(o.money_deducted, 0) <= 0
+      or nullif(trim(coalesce(o.customer_name, '')), '') is null
+      or public.report_lock_no(o) is not null
+    )
+  ) then raise exception 'MT_OCR_SOURCE_BLOCKED: ใบชั่งยังไม่พร้อมโอนหรือถูกล็อก'; end if;
+
+  if exists (
+    select 1 from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
+    join public.money_transfer_items i
+      on i.source_type = x->>'sourceType' and i.source_id = (x->>'sourceId')::uuid
+    join public.money_transfers t on t.id = i.transfer_id and t.record_status <> 'deleted'
+    where i.transfer_id <> v_id
+  ) then raise exception 'MT_SOURCE_ALREADY_USED: แหล่งจ่ายถูกใช้ในรายการโอนอื่นแล้ว'; end if;
+
+  if v_is_create then
+    insert into public.money_transfers (
+      id, client_temp_id, idempotency_key, location_id, customer_id, customer_name,
+      account_number, account_name, bank_name, net_amount_to_pay, branch_paid_amount,
+      transfer_type, transport_cost, transport_staff_id, transport_staff_name,
+      target_location_id, target_location_name, transfer_status, created_by_user_id,
+      created_by_name, created_by_phone, revision_no, record_status
+    ) values (
+      v_id, p_payload->>'clientTempId', v_idempotency_key, v_location_id,
+      nullif(p_payload->>'customerId', '')::uuid, p_payload->>'customerName',
+      p_payload->>'accountNumber', p_payload->>'accountName', p_payload->>'bankName',
+      coalesce((p_payload->>'netAmountToPay')::numeric, 0), coalesce((p_payload->>'branchPaidAmount')::numeric, 0),
+      v_transfer_type, nullif(p_payload->>'transportCost', '')::numeric,
+      nullif(p_payload->>'transportStaffId', '')::uuid, p_payload->>'transportStaffName',
+      nullif(p_payload->>'targetLocationId', '')::uuid, p_payload->>'targetLocationName',
+      coalesce(p_payload->>'transferStatus', 'pending'), auth.uid(),
+      coalesce(p_payload->>'createdByName', ''), coalesce(p_payload->>'createdByPhone', ''), 0, 'active'
+    );
+  else
+    update public.money_transfers t set
+      customer_id = nullif(p_payload->>'customerId', '')::uuid,
+      customer_name = p_payload->>'customerName', account_number = p_payload->>'accountNumber',
+      account_name = p_payload->>'accountName', bank_name = p_payload->>'bankName',
+      net_amount_to_pay = coalesce((p_payload->>'netAmountToPay')::numeric, 0),
+      branch_paid_amount = coalesce((p_payload->>'branchPaidAmount')::numeric, 0),
+      transfer_type = v_transfer_type, transport_cost = nullif(p_payload->>'transportCost', '')::numeric,
+      transport_staff_id = nullif(p_payload->>'transportStaffId', '')::uuid,
+      transport_staff_name = p_payload->>'transportStaffName',
+      target_location_id = nullif(p_payload->>'targetLocationId', '')::uuid,
+      target_location_name = p_payload->>'targetLocationName',
+      transfer_status = coalesce(p_payload->>'transferStatus', t.transfer_status),
+      revision_no = t.revision_no + 1, updated_at = now()
+    where t.id = v_id;
+  end if;
+
+  select coalesce(array_agg((x->>'id')::uuid), array[]::uuid[]) into v_slip_ids
+  from jsonb_array_elements(coalesce(p_payload->'slips', '[]'::jsonb)) x;
+  delete from public.money_transfer_slips s where s.transfer_id = v_id and not (s.id = any(v_slip_ids));
+  insert into public.money_transfer_slips (
+    id, transfer_id, amount, reference_number, fee, sender_name, receiver_name,
+    transaction_date, slip_image_url, sort_order
+  ) select
+    (x->>'id')::uuid, v_id, coalesce((x->>'amount')::numeric, 0), x->>'referenceNumber',
+    coalesce((x->>'fee')::numeric, 0), x->>'senderName', x->>'receiverName',
+    nullif(x->>'transactionDate', '')::timestamptz, x->>'slipImageUrl', coalesce((x->>'sortOrder')::integer, 0)
+  from jsonb_array_elements(coalesce(p_payload->'slips', '[]'::jsonb)) x
+  on conflict (id) do update set
+    amount = excluded.amount, reference_number = excluded.reference_number, fee = excluded.fee,
+    sender_name = excluded.sender_name, receiver_name = excluded.receiver_name,
+    transaction_date = excluded.transaction_date, slip_image_url = excluded.slip_image_url,
+    sort_order = excluded.sort_order, updated_at = now();
+
+  select coalesce(array_agg((x->>'id')::uuid), array[]::uuid[]) into v_item_ids
+  from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x;
+  select coalesce(jsonb_agg(jsonb_build_object('sourceType', i.source_type, 'sourceId', i.source_id)), '[]'::jsonb)
+  into v_changed_sources from public.money_transfer_items i where i.transfer_id = v_id;
+  delete from public.money_transfer_items i where i.transfer_id = v_id and not (i.id = any(v_item_ids));
+  insert into public.money_transfer_items (
+    id, transfer_id, source_type, source_id, rubber_bill_id, ocr_ticket_id, customer_name, amount
+  ) select
+    (x->>'id')::uuid, v_id, x->>'sourceType', (x->>'sourceId')::uuid,
+    case when x->>'sourceType' = 'rubber_bill' then (x->>'sourceId')::uuid end,
+    case when x->>'sourceType' = 'ocr_ticket' then (x->>'sourceId')::uuid end,
+    case when x->>'sourceType' = 'rubber_bill' then b.customer_name else o.customer_name end,
+    case when x->>'sourceType' = 'rubber_bill' then b.net_total
+      else coalesce(o.total_amount, 0) - coalesce(o.money_deducted, 0) end
+  from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
+  left join public.rubber_bills b on x->>'sourceType' = 'rubber_bill' and b.id = (x->>'sourceId')::uuid
+  left join public.ocr_tickets o on x->>'sourceType' = 'ocr_ticket' and o.id = (x->>'sourceId')::uuid
+  on conflict (id) do update set
+    source_type = excluded.source_type, source_id = excluded.source_id,
+    rubber_bill_id = excluded.rubber_bill_id, ocr_ticket_id = excluded.ocr_ticket_id,
+    customer_name = excluded.customer_name, amount = excluded.amount;
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'sourceType', changed.source_type, 'sourceId', changed.source_id
+  ) order by changed.source_type, changed.source_id), '[]'::jsonb)
+  into v_changed_sources
+  from (
+    select old_source.value->>'sourceType' source_type,
+      (old_source.value->>'sourceId')::uuid source_id
+    from jsonb_array_elements(v_changed_sources) old_source
+    union
+    select x->>'sourceType', (x->>'sourceId')::uuid
+    from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
+  ) changed;
+
+  return public.get_money_transfer_detail(v_id)
+    || jsonb_build_object('idempotentReplay', false, 'changedSources', v_changed_sources);
+exception
+  when unique_violation then
+    raise exception 'MT_SOURCE_ALREADY_USED: แหล่งจ่ายถูกใช้ในรายการโอนอื่นแล้ว';
+end;
+$$;
+
+
+ALTER FUNCTION "public"."save_money_transfer"("p_payload" "jsonb") OWNER TO "postgres";
 
 
 CREATE TABLE IF NOT EXISTS "public"."rubber_bill_approval_settings" (
@@ -17253,7 +18004,15 @@ CREATE UNIQUE INDEX "money_transfer_items_source_unique" ON "public"."money_tran
 
 
 
+CREATE INDEX "money_transfer_items_transfer_idx" ON "public"."money_transfer_items" USING "btree" ("transfer_id", "created_at", "id");
+
+
+
 CREATE INDEX "money_transfer_pending_digest" ON "public"."money_transfers" USING "btree" ("location_id", "transfer_status") WHERE (("transfer_method" = 'bank'::"text") AND ("transfer_status" = ANY (ARRAY['pending'::"text", 'partial'::"text", 'advance_payment'::"text"])) AND ("record_status" <> 'deleted'::"public"."record_status"));
+
+
+
+CREATE INDEX "money_transfer_slips_transfer_idx" ON "public"."money_transfer_slips" USING "btree" ("transfer_id", "sort_order", "id");
 
 
 
@@ -17270,6 +18029,10 @@ CREATE INDEX "ocr_tickets_feed_active_idx" ON "public"."ocr_tickets" USING "btre
 
 
 CREATE UNIQUE INDEX "ocr_tickets_location_file_unique" ON "public"."ocr_tickets" USING "btree" ("location_id", "file_name") WHERE ("record_status" = 'active'::"public"."record_status");
+
+
+
+CREATE INDEX "ocr_tickets_source_cursor_idx" ON "public"."ocr_tickets" USING "btree" ("location_id", "created_at" DESC, "id" DESC) WHERE ("record_status" = 'active'::"public"."record_status");
 
 
 
@@ -17298,6 +18061,10 @@ CREATE INDEX "report_items_active_source" ON "public"."report_items" USING "btre
 
 
 CREATE UNIQUE INDEX "report_items_one_active_context" ON "public"."report_items" USING "btree" ("location_id", "entity_type", "entity_id") WHERE ("active" = true);
+
+
+
+CREATE INDEX "rubber_bill_approval_current_work_idx" ON "public"."rubber_bill_approval_requests" USING "btree" ("location_id", "requested_at", "id") WHERE ("request_status" = 'pending'::"text");
 
 
 
@@ -17334,6 +18101,10 @@ CREATE INDEX "rubber_bills_feed_active_idx" ON "public"."rubber_bills" USING "bt
 
 
 CREATE UNIQUE INDEX "rubber_bills_one_active_branch_receipt" ON "public"."rubber_bills" USING "btree" ("source_rubber_export_id") WHERE (("source_rubber_export_id" IS NOT NULL) AND ("record_status" = 'active'::"public"."record_status"));
+
+
+
+CREATE INDEX "rubber_bills_operational_cursor_idx" ON "public"."rubber_bills" USING "btree" ("location_id", COALESCE("client_created_at", "created_at") DESC, "id" DESC) WHERE ("record_status" = 'active'::"public"."record_status");
 
 
 
@@ -19089,6 +19860,10 @@ REVOKE ALL ON FUNCTION "private"."merge_pending_money_transfers"("p_location_id"
 
 
 
+REVOKE ALL ON FUNCTION "private"."money_transfer_source_relations"("p_location_id" "uuid", "p_source_type" "text") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."next_document_sequence"("p_document_kind" "text", "p_location_id" "uuid", "p_document_date" "date") FROM PUBLIC;
 
 
@@ -19142,11 +19917,19 @@ REVOKE ALL ON FUNCTION "private"."require_rubber_bill_evidence_review_manager"("
 
 
 
+REVOKE ALL ON FUNCTION "private"."rubber_bill_current_work_items"("p_location_id" "uuid") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."rubber_bill_evidence_pending_snapshot"("p_location_id" "uuid") FROM PUBLIC;
 
 
 
 REVOKE ALL ON FUNCTION "private"."rubber_bill_evidence_review_states"("p_location_id" "uuid") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."rubber_bill_evidence_review_states_for_bills"("p_location_id" "uuid", "p_bill_ids" "uuid"[]) FROM PUBLIC;
 
 
 
@@ -19475,8 +20258,28 @@ GRANT ALL ON FUNCTION "public"."get_income_expense_feed"("p_location_id" "uuid",
 
 
 
+REVOKE ALL ON FUNCTION "public"."get_money_transfer_detail"("p_transfer_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_money_transfer_detail"("p_transfer_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_money_transfer_list"("p_location_id" "uuid", "p_status" "text", "p_search" "text", "p_cursor_created_at" timestamp with time zone, "p_cursor_id" "uuid", "p_page_size" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_money_transfer_list"("p_location_id" "uuid", "p_status" "text", "p_search" "text", "p_cursor_created_at" timestamp with time zone, "p_cursor_id" "uuid", "p_page_size" integer) TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."get_money_transfer_receipt_source_details"("p_transfer_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_money_transfer_receipt_source_details"("p_transfer_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_money_transfer_source_locks"("p_location_id" "uuid", "p_source_type" "text", "p_source_ids" "uuid"[]) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_money_transfer_source_locks"("p_location_id" "uuid", "p_source_type" "text", "p_source_ids" "uuid"[]) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_money_transfer_sources"("p_location_id" "uuid", "p_source_type" "text", "p_search" "text", "p_cursor_created_at" timestamp with time zone, "p_cursor_id" "uuid", "p_page_size" integer, "p_selected_ids" "uuid"[]) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_money_transfer_sources"("p_location_id" "uuid", "p_source_type" "text", "p_search" "text", "p_cursor_created_at" timestamp with time zone, "p_cursor_id" "uuid", "p_page_size" integer, "p_selected_ids" "uuid"[]) TO "authenticated";
 
 
 
@@ -19497,6 +20300,21 @@ GRANT ALL ON FUNCTION "public"."get_rubber_bill_evidence_review_overview"("p_loc
 
 REVOKE ALL ON FUNCTION "public"."get_rubber_bill_evidence_review_states"("p_location_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_rubber_bill_evidence_review_states"("p_location_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_rubber_bill_evidence_states_for_bills"("p_location_id" "uuid", "p_bill_ids" "uuid"[]) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_rubber_bill_evidence_states_for_bills"("p_location_id" "uuid", "p_bill_ids" "uuid"[]) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_rubber_bill_operational_feed"("p_location_id" "uuid", "p_mode" "text", "p_document_status" "text", "p_search" "text", "p_cursor_sort_at" timestamp with time zone, "p_cursor_id" "uuid", "p_page_size" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_rubber_bill_operational_feed"("p_location_id" "uuid", "p_mode" "text", "p_document_status" "text", "p_search" "text", "p_cursor_sort_at" timestamp with time zone, "p_cursor_id" "uuid", "p_page_size" integer) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_rubber_bill_work_counts"("p_location_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_rubber_bill_work_counts"("p_location_id" "uuid") TO "authenticated";
 
 
 
@@ -19789,6 +20607,11 @@ GRANT ALL ON FUNCTION "public"."save_dashboard_refresh_interval"("p_interval_min
 
 REVOKE ALL ON FUNCTION "public"."save_dashboard_stock_alert_threshold"("p_location_id" "uuid", "p_product_id" "uuid", "p_minimum_balance" numeric) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."save_dashboard_stock_alert_threshold"("p_location_id" "uuid", "p_product_id" "uuid", "p_minimum_balance" numeric) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."save_money_transfer"("p_payload" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."save_money_transfer"("p_payload" "jsonb") TO "authenticated";
 
 
 

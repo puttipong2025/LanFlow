@@ -2,8 +2,8 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { getPendingEvents, removeSyncEvent, updateSyncEvent, type SyncEntity } from "@/lib/idb-queue";
 
-import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
 import { authFetch } from "@/lib/auth-fetch";
+import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 function endpointFor(entity: SyncEntity) {
   return entity === "income_expense" ? "/api/lanflow/income-expense" : "/api/lanflow/rubber-bills";
 }
@@ -38,9 +38,7 @@ export function usePerRecordSyncRetry(locationId: string, ownerUserId: string) {
         await updateSyncEvent(event);
         throw new Error(event.errorMessage);
       } finally {
-        queryClient.invalidateQueries({ queryKey: [INCOME_EXPENSE_FEED_QUERY_KEY, ownerUserId, locationId] });
-        queryClient.invalidateQueries({ queryKey: ["incomeExpensePending", ownerUserId, locationId] });
-        queryClient.invalidateQueries({ queryKey: ["rubberBills", ownerUserId, locationId] });
+        await invalidateMoneyFlowLocation(queryClient, { ownerUserId, locationId });
       }
     },
   });

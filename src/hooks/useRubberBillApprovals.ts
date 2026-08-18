@@ -7,7 +7,9 @@ import {
   saveRubberBillApprovalSettingsCache,
 } from "@/lib/rubber-bills/approval";
 import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
+import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
 import { authFetch } from "@/lib/auth-fetch";
+import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
 import type {
   RubberBillApprovalMarker,
   RubberBillApprovalReason,
@@ -162,10 +164,14 @@ export function useRubberBillApprovals({
   function invalidateApprovalData() {
     void queryClient.invalidateQueries({ queryKey: [RUBBER_BILL_APPROVAL_REQUESTS_KEY] });
     void queryClient.invalidateQueries({ queryKey: [RUBBER_BILL_APPROVAL_MARKERS_KEY] });
-    void queryClient.invalidateQueries({ queryKey: ["rubberBills"] });
-    void queryClient.invalidateQueries({ queryKey: ["moneyTransfers"] });
-    void queryClient.invalidateQueries({ queryKey: ["incomeExpense"] });
-    void queryClient.invalidateQueries({ queryKey: ["stock"] });
+    void queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.rubberBillsRoot() });
+    void queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.rubberBillOperationalFeedRoot() });
+    void queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.rubberBillWorkCountsRoot() });
+    void queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.moneyTransfersRoot() });
+    void queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.moneyTransferListRoot() });
+    void queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.moneyTransferSourcesRoot() });
+    void queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.incomeExpenseFeedRoot() });
+    void queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.stockRoot() });
     void queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
   }
 

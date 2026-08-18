@@ -298,6 +298,11 @@ test("shares a completed transfer PDF and leaves transfer data unchanged", async
           )
         ) {
           receiptDetailRequests.push(requestLabel);
+        } else if (
+          browserRequest.method() === "POST"
+          && new URL(browserRequest.url()).pathname.endsWith("/rest/v1/rpc/get_money_transfer_detail")
+        ) {
+          // PostgREST RPC reads use POST but do not mutate transfer state.
         } else {
           unexpectedWriteRequests.push(requestLabel);
         }

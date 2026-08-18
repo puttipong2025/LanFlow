@@ -37,7 +37,7 @@ type EvidenceReviewOverview = {
 
 type RpcResult = { state?: string; pendingCount?: number; currentStatus?: string };
 
-function mapState(row: Record<string, unknown>): EvidenceReviewState {
+export function mapRubberBillEvidenceState(row: Record<string, unknown>): EvidenceReviewState {
   return {
     locationId: String(row.location_id),
     billId: String(row.bill_id),
@@ -88,7 +88,7 @@ export function useRubberBillEvidenceReview(locationId: string) {
       if (statesResult.error) throw new Error(statesResult.error.message);
       if (overviewResult.error) throw new Error(overviewResult.error.message);
       return {
-        states: ((statesResult.data ?? []) as Record<string, unknown>[]).map(mapState),
+        states: ((statesResult.data ?? []) as Record<string, unknown>[]).map(mapRubberBillEvidenceState),
         overview: mapOverview(overviewResult.data),
       };
     },

@@ -7,6 +7,7 @@ import {
   getRubberBillReceiptSnapshots,
   pruneRubberBillReceiptSnapshots,
   putRubberBillReceiptSnapshot,
+  putRubberBillReceiptSnapshots,
   type RubberBillReceiptSnapshot,
   type SyncEvent,
 } from "../src/lib/idb-queue";
@@ -215,6 +216,24 @@ test.describe.serial("Rubber Bill receipt IndexedDB", () => {
     expect(snapshots.map((snapshot) => snapshot.billId)).not.toContain("bill-000");
     expect(snapshots[0].billId).toBe("bill-100");
     expect(snapshots[99].billId).toBe("bill-001");
+  });
+
+  test("writes a receipt batch in one call and keeps the newest revision", async () => {
+    const first = makeSnapshot("a-1", "location-a", "2026-07-25T00:00:01.000Z");
+    const second = makeSnapshot("a-2", "location-a", "2026-07-25T00:00:02.000Z");
+    await putRubberBillReceiptSnapshots([first, second]);
+
+    await putRubberBillReceiptSnapshots([{
+      ...first,
+      serverReceivedAt: "2026-07-25T00:00:03.000Z",
+      revisionNo: 0,
+      bill: { ...first.bill, customerName: "ข้อมูลเก่ากว่า" },
+    }]);
+
+    const snapshots = await getRubberBillReceiptSnapshots("location-a");
+    expect(snapshots.map((snapshot) => snapshot.billId)).toEqual(["a-2", "a-1"]);
+    expect(snapshots.find((snapshot) => snapshot.billId === "a-1")?.bill.customerName)
+      .toBe("ลูกค้า a-1");
   });
 
   test("prunes one location without changing another location or sync_queue", async () => {

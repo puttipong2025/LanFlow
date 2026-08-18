@@ -1,248 +1,132 @@
 "use client";
 
-import { useState } from "react";
-import { Eye, EyeOff, UserCheck, UserX } from "lucide-react";
-import type { MoneyTransferItem, OcrTicket, RubberBill } from "@/types";
-import { getRubberBillTransferBlockReason } from "@/lib/rubber-bill-validation";
-import { formatCurrency } from "@/lib/format";
-import { cn } from "@/lib/cn";
+import { useEffect, useState } from "react";
+import { Eye, EyeOff, Loader2, Search } from "lucide-react";
 
-export function getOcrTransferAmount(ticket: Pick<OcrTicket, "totalAmount" | "moneyDeducted">) {
+import { useMoneyTransferSources } from "@/hooks/useMoneyTransferSources";
+import { cn } from "@/lib/cn";
+import { formatCurrency } from "@/lib/format";
+import type { MoneyTransferItem } from "@/types";
+
+export function getOcrTransferAmount(ticket: { totalAmount: number | null; moneyDeducted?: number | null }) {
   return (ticket.totalAmount ?? 0) - (ticket.moneyDeducted ?? 0);
 }
 
+const BLOCK_LABELS: Record<string, string> = {
+  SOURCE_ALREADY_USED: "อยู่ในรายการโอนแล้ว",
+  REPORT_LOCKED: "ล็อกโดยรายงาน",
+  PENDING_APPROVAL: "รออนุมัติ",
+  NOT_SYNCED: "ยังไม่ซิงก์",
+  UNPRICED: "ยังไม่กำหนดราคา",
+  NOT_PAYABLE: "ยอดสุทธิไม่พร้อมจ่าย",
+  MISSING_CUSTOMER: "ไม่มีชื่อลูกค้า",
+};
+
 export function ItemPicker({
-  bills,
-  ocrTickets,
-  usedSourceIds,
+  locationId,
   selectedItems,
   onSelect,
   onDeselect,
 }: {
-  bills: RubberBill[];
-  ocrTickets: OcrTicket[];
-  usedSourceIds: Set<string>;
+  locationId: string;
   selectedItems: MoneyTransferItem[];
   onSelect: (item: MoneyTransferItem) => void;
   onDeselect: (sourceId: string) => void;
 }) {
-  const [tab, setTab] = useState<"rubber" | "ocr">("rubber");
+  const [tab, setTab] = useState<"rubber_bill" | "ocr_ticket">("rubber_bill");
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [hideReportLocked, setHideReportLocked] = useState(false);
-  const selectedSourceIds = new Set(selectedItems.map((i) => i.sourceId));
-
-  const activeBills = bills.filter((b) => (
-    b.recordStatus !== "deleted" && (!hideReportLocked || !b.reportLockNo)
-  ));
-  const activeTickets = ocrTickets.filter((t) => (
-    t.recordStatus !== "deleted" && (!hideReportLocked || !t.reportLockNo)
-  ));
+  const selectedIds = selectedItems.map((item) => item.sourceId);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(search), 400);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+  const sources = useMoneyTransferSources({
+    locationId,
+    sourceType: tab,
+    search: debouncedSearch,
+    selectedIds,
+  });
+  const selectedSourceIds = new Set(selectedIds);
+  const visibleRows = sources.rows.filter((row) => !hideReportLocked || !row.reportLockNo || selectedSourceIds.has(row.sourceId));
 
   return (
     <div className="rounded-lg border border-leaf/20 bg-leaf/5 p-3">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={() => setTab("rubber")}
-            className={cn(
-              "focus-ring rounded-md px-3 py-1.5 text-sm font-semibold text-white",
-              tab === "rubber" ? "bg-leaf" : "bg-actionSecondary hover:bg-actionSecondary/90",
-            )}
-          >
-            บิลยาง ({activeBills.length})
+      <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex gap-2" role="tablist" aria-label="ประเภทแหล่งจ่าย">
+          <button type="button" role="tab" aria-selected={tab === "rubber_bill"} onClick={() => setTab("rubber_bill")}
+            className={cn("focus-ring h-10 rounded-md px-3 text-sm font-semibold", tab === "rubber_bill" ? "bg-leaf text-white" : "border border-black/15 bg-white text-ink")}>
+            บิลยาง
           </button>
-          <button
-            type="button"
-            onClick={() => setTab("ocr")}
-            className={cn(
-              "focus-ring rounded-md px-3 py-1.5 text-sm font-semibold text-white",
-              tab === "ocr" ? "bg-river" : "bg-actionSecondary hover:bg-actionSecondary/90",
-            )}
-          >
-            ใบชั่ง ({activeTickets.length})
+          <button type="button" role="tab" aria-selected={tab === "ocr_ticket"} onClick={() => setTab("ocr_ticket")}
+            className={cn("focus-ring h-10 rounded-md px-3 text-sm font-semibold", tab === "ocr_ticket" ? "bg-river text-white" : "border border-black/15 bg-white text-ink")}>
+            ใบชั่ง
           </button>
         </div>
-        <button
-          type="button"
-          aria-pressed={hideReportLocked}
-          onClick={() => setHideReportLocked((current) => !current)}
-          className="focus-ring flex items-center gap-1.5 rounded-md bg-leaf px-3 py-2 text-sm font-semibold text-white hover:bg-leaf/90"
-        >
+        <label className="relative block">
+          <span className="sr-only">ค้นหาแหล่งจ่าย</span>
+          <Search aria-hidden="true" size={16} className="absolute left-3 top-3 text-ink/40" />
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="ค้นหาเลขที่ ลูกค้า หรือทะเบียน"
+            className="focus-ring h-10 w-full rounded-md border border-black/20 bg-white pl-9 pr-3 text-sm sm:w-72" />
+        </label>
+        <button type="button" aria-pressed={hideReportLocked} onClick={() => setHideReportLocked((value) => !value)}
+          className="focus-ring inline-flex h-10 items-center gap-2 rounded-md bg-leaf px-3 text-sm font-semibold text-white">
           {hideReportLocked ? <Eye size={16} /> : <EyeOff size={16} />}
           {hideReportLocked ? "แสดงรายการที่ล็อกแล้ว" : "ซ่อนรายการที่ล็อกแล้ว"}
         </button>
       </div>
 
-      <div className="max-h-72 overflow-y-auto rounded-lg border border-black/10 bg-white">
-        <table className="w-full text-sm">
-          <thead className="sticky top-0 z-10">
-            <tr className="border-b border-black/5 bg-field/60 text-left text-xs font-bold text-ink/50">
-              <th className="px-3 py-2">เลือก</th>
-              {tab === "rubber" ? (
-                <>
-                  <th className="px-3 py-2">เลขบิล</th>
-                  <th className="px-3 py-2">ลูกค้า</th>
-                  <th className="px-3 py-2">วันที่</th>
-                  <th className="px-3 py-2 text-right">ยอดสุทธิ (฿)</th>
-                </>
-              ) : (
-                <>
-                  <th className="px-3 py-2">เลขที่</th>
-                  <th className="px-3 py-2">ลูกค้า</th>
-                  <th className="px-3 py-2">ทะเบียน</th>
-                  <th className="px-3 py-2 text-right">ยอดเงิน (฿)</th>
-                </>
-              )}
-              <th className="px-3 py-2 text-center">สถานะ</th>
-            </tr>
-          </thead>
-          <tbody>
-            {tab === "rubber" &&
-              activeBills.map((bill) => {
-                const alreadyUsed = usedSourceIds.has(bill.id);
-                const alreadySelected = selectedSourceIds.has(bill.id);
-                const noCustomer = !bill.customerName;
-                const negative = bill.netTotal < 0;
-                const paymentBlockReason = getRubberBillTransferBlockReason(bill);
-                const disabled = alreadyUsed || noCustomer || Boolean(paymentBlockReason) || Boolean(bill.reportLockNo) || bill.approvalPending === true;
-                const reportLockReason = bill.reportLockNo
-                  ? `ล็อกโดยรายงาน ${bill.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`
-                  : undefined;
-
+      {sources.error ? (
+        <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm font-semibold text-danger">
+          {sources.error instanceof Error ? sources.error.message : "โหลดแหล่งจ่ายไม่สำเร็จ"}
+        </p>
+      ) : (
+        <div className="max-h-72 overflow-auto rounded-md border border-black/10 bg-white">
+          <table className="w-full min-w-[660px] text-sm">
+            <thead className="sticky top-0 z-10 bg-field">
+              <tr className="border-b border-black/10 text-left text-xs font-bold text-ink/60">
+                <th className="px-3 py-2">เลือก</th><th className="px-3 py-2">เลขที่</th>
+                <th className="px-3 py-2">ลูกค้า</th><th className="px-3 py-2">วันที่/ทะเบียน</th>
+                <th className="px-3 py-2 text-right">ยอดสุทธิ</th><th className="px-3 py-2">สถานะ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleRows.map((row) => {
+                const selected = selectedSourceIds.has(row.sourceId);
+                const disabled = !row.available && !selected;
+                const label = row.blockReason ? BLOCK_LABELS[row.blockReason] ?? row.blockReason : "พร้อมเลือก";
                 return (
-                  <tr key={bill.id} className={cn("border-b border-black/5", disabled && !alreadySelected && "opacity-50")}>
+                  <tr key={row.sourceId} className="border-b border-black/5 last:border-0">
                     <td className="px-3 py-2">
-                      {alreadySelected ? (
-                        <button type="button" onClick={() => onDeselect(bill.id)} disabled={Boolean(reportLockReason)} title={reportLockReason} className="rounded bg-leaf px-2 py-0.5 text-xs font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
-                          ✓
-                        </button>
-                      ) : disabled ? (
-                        <span className="rounded bg-field px-2 py-0.5 text-xs font-bold text-ink/30">—</span>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            onSelect({
-                              id: crypto.randomUUID(),
-                              sourceType: "rubber_bill",
-                              sourceId: bill.id,
-                              customerName: bill.customerName,
-                              amount: bill.netTotal,
-                            })
-                          }
-                          className="rounded bg-leaf px-2 py-0.5 text-xs font-bold text-white hover:bg-leaf/90"
-                        >
-                          เลือก
-                        </button>
-                      )}
+                      <input type="checkbox" checked={selected} disabled={disabled} aria-label={`${selected ? "ยกเลิก" : "เลือก"} ${row.sourceNumber}`}
+                        title={label} onChange={() => selected ? onDeselect(row.sourceId) : onSelect({
+                          id: crypto.randomUUID(), sourceType: row.sourceType, sourceId: row.sourceId,
+                          customerName: row.customerName, amount: row.amount, sourceNumber: row.sourceNumber,
+                          sourceDate: row.sourceDate, netWeightAfterDeduction: row.netWeight,
+                          averagePrice: row.averagePrice, rubberValue: row.rubberValue,
+                          deductedAmount: row.deductedAmount, netPayableAmount: row.amount,
+                        })} className="size-5 accent-leaf" />
                     </td>
-                    <td className="px-3 py-2 font-mono font-semibold">{bill.billNo}</td>
-                    <td className="px-3 py-2">
-                      {bill.customerName ? (
-                        <span className="inline-flex items-center gap-1 text-xs"><UserCheck size={12} className="text-leaf" /> {bill.customerName}</span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-xs text-clay"><UserX size={12} /> ไม่มีชื่อ</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-ink/60">{bill.billDate}</td>
-                    <td className={`px-3 py-2 text-right font-mono font-bold ${negative ? "text-clay" : "text-river"}`}>
-                      {formatCurrency(bill.netTotal)}
-                    </td>
-                    <td className="px-3 py-2 text-center">
-                      {bill.approvalPending ? (
-                        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-800">รออนุมัติ</span>
-                      ) : reportLockReason ? (
-                        <span title={reportLockReason} className="rounded-full bg-amber/20 px-2 py-0.5 text-xs font-bold text-amber">{bill.reportLockNo}</span>
-                      ) : alreadyUsed && !alreadySelected ? (
-                        <span className="rounded-full bg-amber/20 px-2 py-0.5 text-xs font-bold text-amber">โอนแล้ว</span>
-                      ) : noCustomer ? (
-                        <span className="rounded-full bg-clay/10 px-2 py-0.5 text-xs font-bold text-clay">ไม่มีชื่อ</span>
-                      ) : negative ? (
-                        <span className="rounded-full bg-clay/10 px-2 py-0.5 text-xs font-bold text-clay">ติดลบ</span>
-                      ) : paymentBlockReason ? (
-                        <span title={paymentBlockReason} className="rounded-full bg-clay/10 px-2 py-0.5 text-xs font-bold text-clay">ห้ามจ่าย</span>
-                      ) : (
-                        <span className="rounded-full bg-leaf/10 px-2 py-0.5 text-xs font-bold text-leaf">พร้อม</span>
-                      )}
-                    </td>
+                    <td className="px-3 py-2 font-mono font-semibold">{row.sourceNumber}</td>
+                    <td className="px-3 py-2">{row.customerName ?? "—"}</td>
+                    <td className="px-3 py-2 text-ink/60">{row.sourceDate ?? row.licensePlate ?? "—"}</td>
+                    <td className="px-3 py-2 text-right font-semibold tabular-nums text-river">{formatCurrency(row.amount)}</td>
+                    <td className="px-3 py-2"><span className={cn("rounded-full px-2 py-0.5 text-xs font-bold", disabled ? "bg-amber/15 text-amber" : "bg-leaf/10 text-leaf")}>{label}</span></td>
                   </tr>
                 );
               })}
-            {tab === "ocr" &&
-              activeTickets.map((ticket) => {
-                const alreadyUsed = usedSourceIds.has(ticket.id);
-                const alreadySelected = selectedSourceIds.has(ticket.id);
-                const noCustomer = !ticket.customerName;
-                const amount = getOcrTransferAmount(ticket);
-                const negative = amount < 0;
-                const disabled = alreadyUsed || noCustomer || negative || Boolean(ticket.reportLockNo);
-                const reportLockReason = ticket.reportLockNo
-                  ? `ล็อกโดยรายงาน ${ticket.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`
-                  : undefined;
-
-                return (
-                  <tr key={ticket.id} className={cn("border-b border-black/5", disabled && !alreadySelected && "opacity-50")}>
-                    <td className="px-3 py-2">
-                      {alreadySelected ? (
-                        <button type="button" onClick={() => onDeselect(ticket.id)} disabled={Boolean(reportLockReason)} title={reportLockReason} className="rounded bg-river px-2 py-0.5 text-xs font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
-                          ✓
-                        </button>
-                      ) : disabled ? (
-                        <span className="rounded bg-field px-2 py-0.5 text-xs font-bold text-ink/30">—</span>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            onSelect({
-                              id: crypto.randomUUID(),
-                              sourceType: "ocr_ticket",
-                              sourceId: ticket.id,
-                              customerName: ticket.customerName ?? null,
-                              amount,
-                            })
-                          }
-                          className="rounded bg-leaf px-2 py-0.5 text-xs font-bold text-white hover:bg-leaf/90"
-                        >
-                          เลือก
-                        </button>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 font-mono font-semibold">{ticket.ticketId ?? "—"}</td>
-                    <td className="px-3 py-2">
-                      {ticket.customerName ? (
-                        <span className="inline-flex items-center gap-1 text-xs"><UserCheck size={12} className="text-leaf" /> {ticket.customerName}</span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-xs text-clay"><UserX size={12} /> ไม่มีชื่อ</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-ink/60">{ticket.licensePlate ?? "—"}</td>
-                    <td className={`px-3 py-2 text-right font-mono font-bold ${negative ? "text-clay" : "text-river"}`}>
-                      {formatCurrency(amount)}
-                    </td>
-                    <td className="px-3 py-2 text-center">
-                      {reportLockReason ? (
-                        <span title={reportLockReason} className="rounded-full bg-amber/20 px-2 py-0.5 text-xs font-bold text-amber">{ticket.reportLockNo}</span>
-                      ) : alreadyUsed && !alreadySelected ? (
-                        <span className="rounded-full bg-amber/20 px-2 py-0.5 text-xs font-bold text-amber">โอนแล้ว</span>
-                      ) : noCustomer ? (
-                        <span className="rounded-full bg-clay/10 px-2 py-0.5 text-xs font-bold text-clay">ไม่มีชื่อ</span>
-                      ) : negative ? (
-                        <span className="rounded-full bg-clay/10 px-2 py-0.5 text-xs font-bold text-clay">ติดลบ</span>
-                      ) : (
-                        <span className="rounded-full bg-leaf/10 px-2 py-0.5 text-xs font-bold text-leaf">พร้อม</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-          </tbody>
-        </table>
-        {tab === "rubber" && activeBills.length === 0 && (
-          <p className="py-6 text-center text-sm text-ink/40">ไม่มีบิลยาง</p>
-        )}
-        {tab === "ocr" && activeTickets.length === 0 && (
-          <p className="py-6 text-center text-sm text-ink/40">ไม่มีใบชั่ง</p>
-        )}
+            </tbody>
+          </table>
+          {!sources.isLoading && visibleRows.length === 0 && <p className="py-6 text-center text-sm text-ink/50">ไม่พบแหล่งจ่าย</p>}
+        </div>
+      )}
+      <div className="mt-3 flex justify-center">
+        {sources.isLoading ? <span className="inline-flex items-center gap-2 text-sm text-ink/60"><Loader2 size={16} className="animate-spin" /> กำลังโหลด...</span>
+          : sources.hasMore && <button type="button" disabled={sources.isLoadingMore} onClick={() => void sources.loadMore()}
+            className="focus-ring h-10 rounded-md bg-actionSecondary px-4 text-sm font-semibold text-white disabled:opacity-50">
+            {sources.isLoadingMore ? "กำลังโหลด..." : "โหลดเพิ่ม"}
+          </button>}
       </div>
     </div>
   );

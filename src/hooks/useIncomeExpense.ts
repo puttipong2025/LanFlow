@@ -1,6 +1,5 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
-import { isDeviceOnline, subscribeConnectivity } from "@/lib/connectivity";
-import { useEffect, useMemo } from "react";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
+import { useMemo } from "react";
 import type { IncomeExpense } from "@/types";
 import { enqueueSyncEvent, getPendingEvents, removeSyncEvent, updateSyncEvent, type SyncEvent } from "@/lib/idb-queue";
 import { coalesceQueueGroup } from "@/lib/coalesceQueueGroup";
@@ -10,6 +9,9 @@ import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
 import { bangkokDateWindow } from "@/lib/bangkok-date";
 import { authFetch } from "@/lib/auth-fetch";
 import { isRetryableSyncResponse } from "@/lib/sync-response";
+import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
+import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
+import { createScopedSingleFlight } from "@/lib/scoped-single-flight";
 
 const ENTITY = "income_expense" as const;
 const FEED_QUERY_KEY = INCOME_EXPENSE_FEED_QUERY_KEY;
@@ -218,7 +220,7 @@ async function normalizeQueue(ownerUserId: string, locationId: string) {
   }
 }
 
-let activeSyncPromise: Promise<IncomeExpenseSyncResult> | null = null;
+const runIncomeExpenseSyncSingleFlight = createScopedSingleFlight();
 
 async function runPendingIncomeExpenseSync(
   queryClient: ReturnType<typeof useQueryClient>,
@@ -305,41 +307,29 @@ async function runPendingIncomeExpenseSync(
   return { receipts, rejections };
 }
 
-async function syncPendingIncomeExpense(
-  queryClient: ReturnType<typeof useQueryClient>,
+export function syncPendingIncomeExpense(
+  queryClient: QueryClient,
   ownerUserId: string,
   locationId: string
 ): Promise<IncomeExpenseSyncResult> {
   if (!ownerUserId || !locationId || !navigator.onLine) {
-    return { receipts: new Map(), rejections: new Map() };
+    return Promise.resolve({ receipts: new Map(), rejections: new Map() });
   }
 
-  if (activeSyncPromise) {
-    const activeResult = await activeSyncPromise;
-    const remainingResult = await syncPendingIncomeExpense(queryClient, ownerUserId, locationId);
-    return {
-      receipts: new Map([...activeResult.receipts, ...remainingResult.receipts]),
-      rejections: new Map([...activeResult.rejections, ...remainingResult.rejections]),
-    };
-  }
-
-  const syncPromise = runPendingIncomeExpenseSync(queryClient, ownerUserId, locationId);
-  activeSyncPromise = syncPromise;
-  try {
-    return await syncPromise;
-  } finally {
-    if (activeSyncPromise === syncPromise) activeSyncPromise = null;
-    queryClient.invalidateQueries({ queryKey: [FEED_QUERY_KEY, ownerUserId, locationId] });
-    queryClient.invalidateQueries({ queryKey: [PENDING_QUERY_KEY, ownerUserId, locationId] });
-    queryClient.invalidateQueries({ queryKey: ["dashboardOverview", locationId] });
-  }
+  const scopeKey = `${ownerUserId}:${locationId}`;
+  return runIncomeExpenseSyncSingleFlight(scopeKey, () => (
+    runPendingIncomeExpenseSync(queryClient, ownerUserId, locationId)
+      .finally(async () => {
+      await invalidateMoneyFlowLocation(queryClient, { ownerUserId, locationId });
+      })
+  ));
 }
 
 export function useIncomeExpense(locationId: string, ownerUserId: string) {
   const queryClient = useQueryClient();
   const dateWindow = useMemo(defaultDateWindow, []);
   const feedQuery = useInfiniteQuery({
-    queryKey: [FEED_QUERY_KEY, ownerUserId, locationId, dateWindow.from, dateWindow.to],
+    queryKey: [...moneyFlowQueryKeys.incomeExpenseFeed(ownerUserId, locationId), dateWindow.from, dateWindow.to],
     initialPageParam: null as string | null,
     enabled: !!locationId && !!ownerUserId,
     queryFn: async ({ pageParam, signal }): Promise<FeedPage> => {
@@ -353,7 +343,7 @@ export function useIncomeExpense(locationId: string, ownerUserId: string) {
     getNextPageParam: (page) => page.nextCursor ?? undefined,
   });
   const pendingQuery = useQuery({
-    queryKey: [PENDING_QUERY_KEY, ownerUserId, locationId],
+    queryKey: moneyFlowQueryKeys.incomeExpensePending(ownerUserId, locationId),
     enabled: !!locationId && !!ownerUserId,
     networkMode: "always",
     queryFn: () => getPendingEvents(queuePartition(ownerUserId, locationId)),
@@ -364,8 +354,8 @@ export function useIncomeExpense(locationId: string, ownerUserId: string) {
     [feedQuery.data, pendingQuery.data]
   );
   const refresh = () => {
-    queryClient.invalidateQueries({ queryKey: [FEED_QUERY_KEY, ownerUserId, locationId] });
-    queryClient.invalidateQueries({ queryKey: [PENDING_QUERY_KEY, ownerUserId, locationId] });
+    queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.incomeExpenseFeed(ownerUserId, locationId) });
+    queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.incomeExpensePending(ownerUserId, locationId) });
   };
 
   async function syncTransaction(submittedTransaction: IncomeExpense): Promise<IncomeExpense> {
@@ -410,17 +400,6 @@ export function useIncomeExpense(locationId: string, ownerUserId: string) {
       saleLines: receipt.saleLines ?? submittedTransaction.saleLines,
     };
   }
-
-  useEffect(() => {
-    const handleConnectivity = () => {
-      if (isDeviceOnline()) {
-        void syncPendingIncomeExpense(queryClient, ownerUserId, locationId);
-      }
-    };
-    const unsubscribe = subscribeConnectivity(handleConnectivity);
-    if (isDeviceOnline()) handleConnectivity();
-    return unsubscribe;
-  }, [queryClient, ownerUserId, locationId]);
 
   const saveTransaction = useMutation({
     networkMode: "always",

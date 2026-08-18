@@ -193,24 +193,33 @@ export async function removeSyncEvent(queueId: number): Promise<void> {
 export async function putRubberBillReceiptSnapshot(
   snapshot: RubberBillReceiptSnapshot
 ): Promise<void> {
+  return putRubberBillReceiptSnapshots([snapshot]);
+}
+
+export async function putRubberBillReceiptSnapshots(
+  snapshots: RubberBillReceiptSnapshot[]
+): Promise<void> {
+  if (snapshots.length === 0) return;
   const db = await getDb();
   return new Promise((resolve, reject) => {
     const transaction = db.transaction(RECEIPT_STORE_NAME, "readwrite");
     const store = transaction.objectStore(RECEIPT_STORE_NAME);
-    const request = store.get(snapshot.billId);
-    request.onsuccess = () => {
-      const current = request.result as RubberBillReceiptSnapshot | undefined;
-      if (
-        !current
-        || snapshot.revisionNo > current.revisionNo
-        || (
-          snapshot.revisionNo === current.revisionNo
-          && snapshot.serverReceivedAt >= current.serverReceivedAt
-        )
-      ) {
-        store.put(snapshot);
-      }
-    };
+    for (const snapshot of snapshots) {
+      const request = store.get(snapshot.billId);
+      request.onsuccess = () => {
+        const current = request.result as RubberBillReceiptSnapshot | undefined;
+        if (
+          !current
+          || snapshot.revisionNo > current.revisionNo
+          || (
+            snapshot.revisionNo === current.revisionNo
+            && snapshot.serverReceivedAt >= current.serverReceivedAt
+          )
+        ) {
+          store.put(snapshot);
+        }
+      };
+    }
     transaction.oncomplete = () => {
       db.close();
       resolve();

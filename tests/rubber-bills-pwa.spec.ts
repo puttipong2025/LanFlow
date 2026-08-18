@@ -253,10 +253,10 @@ test.describe('PWA Offline Reload', () => {
     // And the bill created offline should be visible with "รอซิงก์" badge
     const offlineRow = page.locator('table tbody tr', { hasText: pwaMarker }).first();
     await expect(offlineRow).toBeVisible({ timeout: 10000 });
-    await expect(offlineRow.locator('span:has-text("รอซิงก์")')).toBeVisible();
+    await expect(offlineRow.locator('td').last().getByText('รอซิงก์', { exact: true })).toBeVisible();
     const cachedSyncedRow = page.locator('table tbody tr', { hasText: syncedMarker }).first();
     await expect(cachedSyncedRow).toBeVisible({ timeout: 10000 });
-    await expect(cachedSyncedRow.locator('span:has-text("ซิงก์แล้ว")')).toBeVisible();
+    await expect(cachedSyncedRow.locator('td').last().getByText('ซิงก์แล้ว', { exact: true })).toBeVisible();
 
     // Verify IDB queue survived the offline reload
     const queueAfterReload = await readQueue(page);

@@ -25,6 +25,8 @@ export type RubberBillsTableProps = {
   getPrintBlockReason?: (bill: RubberBill) => string | null;
   evidenceStatesByBillId: Map<string, EvidenceReviewState>;
   evidenceOnline: boolean;
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
 };
 
 const evidenceStatusLabel = {
@@ -60,6 +62,8 @@ export function RubberBillsTable({
   getPrintBlockReason,
   evidenceStatesByBillId,
   evidenceOnline,
+  hasMore = false,
+  isLoadingMore = false,
 }: RubberBillsTableProps) {
   const totalPages = Math.max(Math.ceil(bills.length / pageSize), 1);
   const currentPage = Math.min(page, totalPages);
@@ -196,6 +200,16 @@ export function RubberBillsTable({
                           : ""}
                       </span>
                     )}
+                    {bill.reportLockNo && (
+                      <span className="w-fit rounded-full bg-slate-200 px-2 py-0.5 text-xs font-bold text-slate-700" title={`ล็อกโดยรายงาน ${bill.reportLockNo}`}>
+                        รายงาน {bill.reportLockNo}
+                      </span>
+                    )}
+                    {bill.transferLockId && (
+                      <span className="w-fit rounded-full bg-purple-100 px-2 py-0.5 text-xs font-bold text-purple-700" title="อยู่ในรายการโอนเงิน">
+                        อยู่ในรายการโอน
+                      </span>
+                    )}
                   </div>
                 </td>
                 <td>{bill.billDate}</td>
@@ -257,6 +271,8 @@ export function RubberBillsTable({
         page={currentPage}
         pageSize={pageSize}
         onPageChange={onPageChange}
+        hasMore={hasMore}
+        isLoadingMore={isLoadingMore}
       />
     </>
   );

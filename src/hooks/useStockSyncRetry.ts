@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { getPendingEvents, removeSyncEvent, updateSyncEvent, type SyncEvent } from "@/lib/idb-queue";
 import { authFetch } from "@/lib/auth-fetch";
+import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
 
 type StockSyncEntity = "income_expense" | "rubber_bills";
 
@@ -110,14 +111,14 @@ async function retryStockSyncEvents(locationId: string, ownerUserId: string, que
       };
     } finally {
       queryClient.invalidateQueries({ queryKey: ["stock", locationId] });
-      queryClient.invalidateQueries({ queryKey: ["incomeExpense", locationId] });
-      queryClient.invalidateQueries({ queryKey: ["rubberBills", locationId] });
+      queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.incomeExpenseFeed(ownerUserId, locationId) });
+      queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.rubberBills(ownerUserId, locationId) });
     }
   }
 
   queryClient.invalidateQueries({ queryKey: ["stock", locationId] });
-  queryClient.invalidateQueries({ queryKey: ["incomeExpense", locationId] });
-  queryClient.invalidateQueries({ queryKey: ["rubberBills", locationId] });
+  queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.incomeExpenseFeed(ownerUserId, locationId) });
+  queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.rubberBills(ownerUserId, locationId) });
 
   return { attempted, synced, stopped: false };
 }

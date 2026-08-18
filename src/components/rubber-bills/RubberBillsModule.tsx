@@ -1,16 +1,21 @@
 import { Clock3, PackagePlus, Plus, Settings, Ticket } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import { useRubberBills } from "@/hooks/useRubberBills";
+import { useRubberBillMutations } from "@/hooks/useRubberBills";
+import {
+  useRubberBillList,
+  useRubberBillWorkCounts,
+  type RubberBillDocumentStatus,
+  type RubberBillListMode,
+} from "@/hooks/useRubberBillList";
 import { useCustomers } from "@/hooks/useCustomers";
-import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { bangkokDateString } from "@/lib/bangkok-date";
 import { usePerRecordSyncRetry } from "@/hooks/usePerRecordSyncRetry";
 import { useRubberBillApprovals } from "@/hooks/useRubberBillApprovals";
-import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
+import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 import { canManageSystemFeatures } from "@/lib/permissions";
 import {
   getOfflineSyncedActionBlockReason,
@@ -46,7 +51,6 @@ import {
   BranchRubberReceiptDetailModal,
   BranchRubberReceiptModal,
 } from "./BranchRubberReceiptModal";
-import { useRubberBillEvidenceReview } from "@/hooks/useRubberBillEvidenceReview";
 
 function pendingCreateBill(marker: RubberBillApprovalMarker): RubberBill | null {
   const payload = marker.proposedCreatePayload;
@@ -132,6 +136,7 @@ function pendingCreateBill(marker: RubberBillApprovalMarker): RubberBill | null 
     approvalRequestId: marker.requestId,
     approvalOperation: "create",
     approvalReasons: marker.matchedReasons,
+    operationalSortAt: marker.requestedAt,
   };
 }
 
@@ -157,16 +162,25 @@ export function RubberBillsModule({
   } = useRubberBillApprovals({
     locationId: selectedLocation.id,
   });
-  const pendingApprovalCount = approvalMarkers.length;
-  const { bills, addBill, updateBill, deleteBill } = useRubberBills(
+  const { addBill, updateBill, deleteBill } = useRubberBillMutations(
     selectedLocation.id,
     profile.id,
     approvalSettings
   );
-  const evidenceReview = useRubberBillEvidenceReview(selectedLocation.id);
   const { customers, isLoading: customersLoading, error: customersError } = useCustomers();
-  const { transfers } = useMoneyTransfers(selectedLocation.id);
   const isOnline = useOnlineStatus();
+  const [mode, setMode] = useState<RubberBillListMode>("latest");
+  const [documentStatus, setDocumentStatus] = useState<RubberBillDocumentStatus>("any");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const list = useRubberBillList({
+    ownerUserId: profile.id,
+    locationId: selectedLocation.id,
+    mode,
+    documentStatus,
+    search: debouncedSearch,
+  });
+  const workCounts = useRubberBillWorkCounts(profile.id, selectedLocation.id);
+  const pendingApprovalCount = workCounts.data?.pendingApproval ?? approvalMarkers.length;
   const approvalButtonLabel = isOnline && pendingApprovalCount > 0
     ? `ตั้งค่าและอนุมัติบิลยาง รออนุมัติ ${pendingApprovalCount} รายการ`
     : "ตั้งค่าและอนุมัติบิลยาง";
@@ -186,6 +200,21 @@ export function RubberBillsModule({
   const [pageSize, setPageSize] = useState(10);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
+  const [pendingTargetPage, setPendingTargetPage] = useState<number | null>(null);
+  const navigationInFlightRef = useRef(false);
+  const navigationScopeRef = useRef(0);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(search), 400);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  useEffect(() => {
+    navigationScopeRef.current += 1;
+    navigationInFlightRef.current = false;
+    setPendingTargetPage(null);
+    setPage(1);
+  }, [profile.id, selectedLocation.id]);
 
   useEffect(() => {
     if (!initialSearch) return;
@@ -233,7 +262,7 @@ export function RubberBillsModule({
         .filter((marker) => marker.billId)
         .map((marker) => [marker.billId as string, marker])
     );
-    const markedBills = bills.map((bill) => {
+    const markedBills = list.bills.map((bill) => {
       const marker = markersByBillId.get(bill.id);
       if (!marker) return bill;
       return {
@@ -248,8 +277,17 @@ export function RubberBillsModule({
       .filter((marker) => marker.operation === "create")
       .map(pendingCreateBill)
       .filter((bill): bill is RubberBill => bill !== null);
-    return [...pendingCreates, ...markedBills];
-  }, [approvalMarkers, bills]);
+    const visibleCreates = (mode === "latest" || mode === "pending_approval")
+      && (documentStatus === "any" || documentStatus === "editable")
+      ? pendingCreates
+      : [];
+    const rows = [...visibleCreates, ...markedBills];
+    if (mode !== "pending_approval") return rows;
+    return rows.sort((a, b) => (
+      (a.operationalSortAt ?? a.clientCreatedAt).localeCompare(b.operationalSortAt ?? b.clientCreatedAt)
+      || a.id.localeCompare(b.id)
+    ));
+  }, [approvalMarkers, documentStatus, list.bills, mode]);
 
   const filteredBills = displayedBills.filter((bill: RubberBill) => {
     const haystack = [
@@ -264,21 +302,11 @@ export function RubberBillsModule({
     ].join(" ");
     return haystack.toLowerCase().includes(search.toLowerCase());
   });
-  const lockedRubberBillIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const transfer of transfers) {
-      for (const item of transfer.items ?? []) {
-        if (item.sourceType === "rubber_bill") ids.add(item.sourceId);
-      }
-    }
-    return ids;
-  }, [transfers]);
-
   function getActionBlockReason(bill: RubberBill) {
     return (bill.approvalPending ? "บิลนี้กำลังรออนุมัติการเปลี่ยนแปลง" : null)
       ?? (bill.reportLockNo ? `ล็อกโดยรายงาน ${bill.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน` : null)
       ?? getOfflineSyncedActionBlockReason(bill, isOnline)
-      ?? (lockedRubberBillIds.has(bill.id) ? RUBBER_BILL_TRANSFER_LOCK_MESSAGE : null);
+      ?? (bill.transferLockId ? RUBBER_BILL_TRANSFER_LOCK_MESSAGE : null);
   }
 
   function getPrintBlockReason(bill: RubberBill) {
@@ -366,7 +394,7 @@ export function RubberBillsModule({
         await runBlockingAction(
           likelyNeedsApproval ? "กำลังส่งคำขอลบ..." : "กำลังลบรายการ...",
           () => deleteBill({
-            clientTempId: bill.clientTempId,
+            bill,
             deletedByName: profile.name,
             deletedByPhone: profile.phone,
           }),
@@ -389,12 +417,51 @@ export function RubberBillsModule({
   }
 
   function handleSearch(value: string) {
+    navigationScopeRef.current += 1;
     setSearch(value);
+    setPendingTargetPage(null);
     setPage(1);
   }
 
   function handlePageSize(value: string) {
+    navigationScopeRef.current += 1;
     setPageSize(Number(value));
+    setPendingTargetPage(null);
+    setPage(1);
+  }
+
+  async function handlePageChange(nextPage: number) {
+    if (navigationInFlightRef.current || pendingTargetPage !== null || list.isFetchingNextPage) return;
+    const needsMore = (nextPage - 1) * pageSize >= filteredBills.length;
+    if (needsMore) {
+      if (!list.hasMore) return;
+      const requestScope = navigationScopeRef.current;
+      navigationInFlightRef.current = true;
+      setPendingTargetPage(nextPage);
+      try {
+        const result = await list.fetchNextPage();
+        if (result.isError || requestScope !== navigationScopeRef.current) return;
+      } finally {
+        navigationInFlightRef.current = false;
+        setPendingTargetPage(null);
+      }
+    }
+    setPage(nextPage);
+  }
+
+  function selectMode(nextMode: RubberBillListMode) {
+    navigationScopeRef.current += 1;
+    setMode(nextMode);
+    setDocumentStatus("any");
+    setPendingTargetPage(null);
+    setPage(1);
+  }
+
+  function selectDocumentStatus(nextStatus: RubberBillDocumentStatus) {
+    navigationScopeRef.current += 1;
+    setDocumentStatus(nextStatus);
+    setMode("latest");
+    setPendingTargetPage(null);
     setPage(1);
   }
 
@@ -402,8 +469,8 @@ export function RubberBillsModule({
     <section className="space-y-4">
       <div className="flex flex-col items-start gap-3 rounded-md border border-black/10 bg-white p-4 shadow-panel">
         <div>
-          <h2 className="text-balance text-lg font-bold text-ink">CRUD บิลยาง · {selectedLocation.name}</h2>
-          <p className="text-pretty text-sm text-ink/60">เพิ่ม แก้ไข ลบ และตรวจรายการบิลของสาขาที่เลือก</p>
+          <h2 className="text-balance text-lg font-bold text-ink">รายการบิลยาง · {selectedLocation.name}</h2>
+          <p className="text-pretty text-sm text-ink/60">ค้นหาและจัดการบิลของสาขาที่เลือก</p>
         </div>
         <div className="flex w-full flex-wrap gap-2 sm:w-auto">
           <button
@@ -471,27 +538,82 @@ export function RubberBillsModule({
       </div>
 
       <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel">
-        <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-          <div className="flex flex-wrap items-center gap-3">
+        <div className="mb-4 space-y-3">
+          <div className="flex flex-wrap gap-2" aria-label="ตัวกรองงานบิลยาง">
+            {([
+              ["latest", "รายการล่าสุด", 0],
+              ["unpriced", "ยังไม่กำหนดราคา", workCounts.data?.unpriced ?? 0],
+              ...(canManageApprovals
+                ? [["pending_approval", "รออนุมัติ", pendingApprovalCount] as const]
+                : []),
+              ["sync_problem", "ซิงก์มีปัญหา", workCounts.data?.syncProblem ?? 0],
+            ] as const).map(([value, label, count]) => (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={mode === value}
+                onClick={() => selectMode(value)}
+                className={mode === value
+                  ? "focus-ring inline-flex h-10 items-center gap-2 rounded-md bg-leaf px-3 text-sm font-semibold text-white"
+                  : "focus-ring inline-flex h-10 items-center gap-2 rounded-md border border-black/15 bg-white px-3 text-sm font-semibold text-ink hover:bg-field"}
+              >
+                {label}
+                {value !== "latest" && count > 0 && (
+                  <span className="min-w-5 rounded-full bg-amber px-1.5 py-0.5 text-center text-[10px] font-extrabold leading-none text-white tabular-nums">
+                    {count > 99 ? "99+" : count}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+            <div className="flex flex-wrap items-center gap-3">
             <TablePageSizeSelect
               pageSize={pageSize}
               onPageSizeChange={(size) => handlePageSize(String(size))}
             />
+              <label className="flex items-center gap-2 text-sm font-semibold text-ink">
+                สถานะเอกสาร
+                <select
+                  value={documentStatus}
+                  onChange={(event) => selectDocumentStatus(event.target.value as RubberBillDocumentStatus)}
+                  className="focus-ring h-10 rounded-md border border-black/20 bg-white px-3"
+                >
+                  <option value="any">ไม่จำกัดสถานะ (ในข้อมูลที่โหลด)</option>
+                  <option value="editable">แก้ไขได้</option>
+                  <option value="report_locked">ล็อกโดยรายงาน</option>
+                  <option value="in_transfer">อยู่ในรายการโอนเงิน</option>
+                </select>
+              </label>
+            </div>
+            <label className="flex items-center gap-2 text-sm font-semibold text-ink">
+              ค้นหา:
+              <input
+                value={search}
+                onChange={(event) => handleSearch(event.target.value)}
+                className="focus-ring h-10 w-full rounded-md border border-black/20 bg-white px-3 sm:w-64"
+              />
+            </label>
           </div>
-          <label className="flex items-center gap-2 text-sm font-semibold text-ink">
-            ค้นหา:
-            <input
-              value={search}
-              onChange={(event) => handleSearch(event.target.value)}
-              className="focus-ring h-10 w-full rounded-md border border-black/20 bg-white px-3 sm:w-64"
-            />
-          </label>
         </div>
+        {list.error && (
+          <p role="alert" className="mb-3 rounded-md bg-red-50 px-3 py-2 text-sm font-semibold text-danger">
+            {list.error instanceof Error ? list.error.message : "โหลดรายการบิลยางไม่สำเร็จ"}
+          </p>
+        )}
+        {!isOnline && (
+          <p role="status" className="mb-3 rounded-md bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
+            ออฟไลน์: แสดงและค้นหาเฉพาะบิลล่าสุดที่เก็บไว้บนเครื่องกับรายการที่รอซิงก์
+          </p>
+        )}
+        {list.isLoading && (
+          <p role="status" className="mb-3 text-sm text-ink/60">กำลังโหลดรายการบิลยาง...</p>
+        )}
         <RubberBillsTable
           bills={filteredBills}
           page={page}
           pageSize={pageSize}
-          onPageChange={setPage}
+          onPageChange={handlePageChange}
           onView={openView}
           onEvidence={(bill) => onOpenEvidence(bill.id)}
           onEdit={openEdit}
@@ -503,7 +625,9 @@ export function RubberBillsModule({
           onRetry={retryFailedSync}
           retryDisabled={!isOnline || isRetrying}
           evidenceOnline={isOnline}
-          evidenceStatesByBillId={evidenceReview.statesByBillId}
+          evidenceStatesByBillId={list.evidenceStatesByBillId}
+          hasMore={list.hasMore}
+          isLoadingMore={list.isFetchingNextPage || pendingTargetPage !== null}
         />
       </section>
 
@@ -563,10 +687,10 @@ export function RubberBillsModule({
           onReceived={async (result) => {
             setBranchReceiptModalOpen(false);
             setPage(1);
-            await Promise.all([
-              queryClient.invalidateQueries({ queryKey: ["rubberBills", profile.id, selectedLocation.id] }),
-              queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
-            ]);
+            await invalidateMoneyFlowLocation(queryClient, {
+              ownerUserId: profile.id,
+              locationId: selectedLocation.id,
+            });
             toast.success(`รับยางเข้าสาขาแล้ว · บิล ${result.billNo}`);
           }}
         />

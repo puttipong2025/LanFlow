@@ -32,6 +32,8 @@ export function useActionableBadges(enabled: boolean) {
       }
       return counts;
     },
+    staleTime: 30_000,
+    placeholderData: (previous) => previous,
     refetchInterval: 60_000,
     refetchOnWindowFocus: true,
   });

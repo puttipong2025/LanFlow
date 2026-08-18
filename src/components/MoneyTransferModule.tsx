@@ -19,11 +19,13 @@ import {
 import type { Location, MoneyTransfer, Profile } from "@/types";
 import { formatBangkokDateTime } from "@/lib/bangkok-date";
 
-import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
-import { useRubberBills } from "@/hooks/useRubberBills";
-import { useOcrTickets } from "@/hooks/useOcrTickets";
+import {
+  getMoneyTransferReceiptSourceDetails,
+  loadMoneyTransferDetail,
+  useMoneyTransferList,
+  useMoneyTransferMutations,
+} from "@/hooks/useMoneyTransfers";
 import { useCustomers } from "@/hooks/useCustomers";
-import { useRubberBillApprovals } from "@/hooks/useRubberBillApprovals";
 import {
   receiptPdfFilename,
 } from "@/lib/rubber-bills/print-receipt";
@@ -118,45 +120,20 @@ export function MoneyTransferModule({
   initialEditTransferId,
   onInitialEditTransferHandled,
 }: Props) {
+  const [statusFilter, setStatusFilter] = useState<TransferStatusFilter>("pending");
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const {
     transfers,
-    addTransfer,
-    updateTransfer,
-    deleteTransfer,
-    mergePendingTransfers,
-    getReceiptSourceDetails,
-  } = useMoneyTransfers(locationId);
-  const {
-    bills,
-    isLoading: rubberBillsLoading,
-    isError: rubberBillsError,
-  } = useRubberBills(locationId, profile.id);
-  const { markers: rubberBillApprovalMarkers } = useRubberBillApprovals({ locationId });
-  const {
-    ocrTickets,
-    isLoading: ocrTicketsLoading,
-    isError: ocrTicketsError,
-  } = useOcrTickets(locationId);
+    statusCounts,
+    hasMore,
+    loadMore,
+    isLoadingMore,
+  } = useMoneyTransferList({ locationId, status: statusFilter, search: debouncedSearch });
+  const { addTransfer, updateTransfer, deleteTransfer, mergePendingTransfers } =
+    useMoneyTransferMutations(locationId, profile.id);
   const { customers } = useCustomers();
   const pdfShare = useSharePdf();
-  const billsWithApprovalState = useMemo(() => {
-    const pendingBillIds = new Set(
-      rubberBillApprovalMarkers
-        .map((marker) => marker.billId)
-        .filter((id): id is string => Boolean(id))
-    );
-    return bills.map((bill) => (
-      pendingBillIds.has(bill.id) ? { ...bill, approvalPending: true } : bill
-    ));
-  }, [bills, rubberBillApprovalMarkers]);
-
-  const usedSourceIds = useMemo(() => {
-    const set = new Set<string>();
-    transfers.forEach(t => {
-      t.items?.forEach(i => set.add(i.sourceId));
-    });
-    return set;
-  }, [transfers]);
 
   const [showTypeSelector, setShowTypeSelector] = useState(false);
   const [activeFormType, setActiveFormType] = useState<'customer' | 'transport' | 'branch' | null>(null);
@@ -164,7 +141,6 @@ export function MoneyTransferModule({
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [detailTransfer, setDetailTransfer] = useState<MoneyTransfer | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState<TransferStatusFilter>("pending");
   const [page, setPage] = useState(1);
   const offlineMessage = "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น";
   const branchTransferFormMode =
@@ -177,46 +153,21 @@ export function MoneyTransferModule({
     summary: getMoneyTransferPaymentSummary(transfer),
   })), [transfers]);
 
-  const statusCounts = useMemo(() => {
-    const counts = new Map<TransferStatusFilter, number>([["all", transferRows.length]]);
-    transferRows.forEach(({ summary }) => {
-      counts.set(summary.status, (counts.get(summary.status) ?? 0) + 1);
-    });
-    return counts;
-  }, [transferRows]);
-
-  const filteredRows = useMemo(() => (
-    statusFilter === "all"
-      ? transferRows
-      : transferRows.filter(({ summary }) => summary.status === statusFilter)
-  ), [statusFilter, transferRows]);
+  const filteredRows = transferRows;
   const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
   const pagedRows = filteredRows.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
-
-  const eligibleMergeGroupCount = useMemo(() => {
-    const groups = new Map<string, number>();
-    transfers.forEach((transfer) => {
-      if (
-        transfer.transferType !== "customer"
-        || transfer.transferStatus !== "pending"
-        || transfer.recordStatus === "deleted"
-        || transfer.syncStatus !== "synced"
-        || !transfer.customerId
-        || transfer.reportLockNo
-        || (transfer.slips?.length ?? 0) > 0
-      ) return;
-      const key = `${transfer.customerId}\u0000${transfer.accountNumber ?? ""}`;
-      groups.set(key, (groups.get(key) ?? 0) + 1);
-    });
-    return [...groups.values()].filter((count) => count >= 2).length;
-  }, [transfers]);
 
   useEffect(() => {
     if (!toastMsg) return;
     const t = setTimeout(() => setToastMsg(null), 3000);
     return () => clearTimeout(t);
   }, [toastMsg]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(search), 400);
+    return () => window.clearTimeout(timer);
+  }, [search]);
 
   useEffect(() => {
     setPage(1);
@@ -303,13 +254,18 @@ export function MoneyTransferModule({
     });
   }, [mergePendingTransfers, offlineMessage, online]);
 
-  const handleEdit = useCallback((t: MoneyTransfer) => {
+  const handleEdit = useCallback(async (t: Pick<MoneyTransfer, "id">) => {
     if (!online) {
       setToastMsg(offlineMessage);
       return;
     }
-    setEditTransfer(t);
-    setActiveFormType(t.transferType === 'transport' ? 'transport' : t.transferType === 'branch' ? 'branch' : 'customer');
+    try {
+      const detail = await loadMoneyTransferDetail(t.id);
+      setEditTransfer(detail);
+      setActiveFormType(detail.transferType === 'transport' ? 'transport' : detail.transferType === 'branch' ? 'branch' : 'customer');
+    } catch (error) {
+      setToastMsg(error instanceof Error ? error.message : "โหลดรายละเอียดรายการโอนไม่สำเร็จ");
+    }
   }, [online, offlineMessage]);
 
   const handleShare = useCallback(async (transfer: MoneyTransfer) => {
@@ -324,11 +280,12 @@ export function MoneyTransferModule({
     }
 
     try {
-      const sourceDetails = await getReceiptSourceDetails(transfer.id);
+      const detailTransfer = await loadMoneyTransferDetail(transfer.id);
+      const sourceDetails = await getMoneyTransferReceiptSourceDetails(transfer.id);
       const sourceDetailsById = new Map(sourceDetails.map((item) => [item.id, item]));
       const enrichedTransfer: MoneyTransfer = {
-        ...transfer,
-        items: (transfer.items ?? []).map((item) => {
+        ...detailTransfer,
+        items: (detailTransfer.items ?? []).map((item) => {
           const detail = sourceDetailsById.get(item.id);
           if (
             !detail
@@ -352,15 +309,21 @@ export function MoneyTransferModule({
     } catch (error) {
       setToastMsg(error instanceof Error ? error.message : "สร้าง PDF ใบรายการโอนเงินไม่สำเร็จ");
     }
-  }, [getReceiptSourceDetails, locations, offlineMessage, online, pdfShare]);
+  }, [locations, offlineMessage, online, pdfShare]);
+
+  const handleOpenDetail = useCallback(async (transferId: string) => {
+    try {
+      setDetailTransfer(await loadMoneyTransferDetail(transferId));
+    } catch (error) {
+      setToastMsg(error instanceof Error ? error.message : "โหลดรายละเอียดรายการโอนไม่สำเร็จ");
+    }
+  }, []);
 
   useEffect(() => {
     if (!initialEditTransferId) return;
-    const transfer = transfers.find(t => t.id === initialEditTransferId);
-    if (!transfer) return;
-    handleEdit(transfer);
+    void handleEdit({ id: initialEditTransferId });
     onInitialEditTransferHandled?.();
-  }, [initialEditTransferId, transfers, handleEdit, onInitialEditTransferHandled]);
+  }, [initialEditTransferId, handleEdit, onInitialEditTransferHandled]);
 
   return (
     <div className="space-y-6">
@@ -426,10 +389,7 @@ export function MoneyTransferModule({
             locationId={locationId}
             online={online}
             profile={profile}
-            bills={billsWithApprovalState}
-            ocrTickets={ocrTickets}
             customers={customers}
-            usedSourceIds={usedSourceIds}
             editTransfer={editTransfer}
             onSave={handleSave}
             onCancel={() => {
@@ -504,18 +464,25 @@ export function MoneyTransferModule({
               )}
             >
               {label}
-              <span className="min-w-5 rounded-full bg-amber px-1.5 py-0.5 text-center text-[10px] font-extrabold leading-none text-white">
-                {statusCounts.get(value) ?? 0}
+              <span className="min-w-5 rounded-full bg-amber px-1.5 py-0.5 text-center text-[10px] font-extrabold leading-none text-white tabular-nums">
+                {statusCounts[value] ?? 0}
               </span>
             </button>
           ))}
+          <input
+            value={search}
+            onChange={(event) => { setSearch(event.target.value); setPage(1); }}
+            aria-label="ค้นหารายการโอนเงิน"
+            placeholder="ค้นหาปลายทาง บัญชี หรือเลขรายการ"
+            className="focus-ring h-10 w-full rounded-md border border-black/20 bg-white px-3 text-sm sm:w-72"
+          />
         </div>
         {statusFilter === "pending" && (
           <button
             type="button"
             onClick={handleMergePending}
-            disabled={!online || mergePendingTransfers.isPending || eligibleMergeGroupCount === 0}
-            title={eligibleMergeGroupCount > 0 ? `พบอย่างน้อย ${eligibleMergeGroupCount} กลุ่มที่รวมได้` : "ยังไม่มีกลุ่มรายการรอโอนที่รวมได้"}
+            disabled={!online || mergePendingTransfers.isPending}
+            title="รวมกลุ่มรายการรอโอนที่เข้าเงื่อนไขในสาขา"
             className="focus-ring inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md bg-leaf px-3 py-2 text-sm font-semibold text-white hover:bg-leaf/90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {mergePendingTransfers.isPending ? <Loader2 size={16} className="animate-spin" /> : <GitMerge size={16} />}
@@ -576,7 +543,7 @@ export function MoneyTransferModule({
                         </button>
                         <button
                           type="button"
-                          onClick={() => handleEdit(t)}
+                        onClick={() => void handleEdit(t)}
                           disabled={!online || Boolean(t.reportLockNo)}
                           className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-amber px-3 text-xs font-semibold text-white shadow-sm hover:bg-amber/90 disabled:cursor-not-allowed disabled:opacity-40"
                           title={t.reportLockNo ? `ล็อกโดยรายงาน ${t.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน` : online ? "แก้ไข" : offlineMessage}
@@ -610,14 +577,14 @@ export function MoneyTransferModule({
                     <td className="px-3 py-2.5 text-center">
                       <button
                         type="button"
-                        onClick={() => setDetailTransfer(t)}
-                        disabled={(t.items?.length ?? 0) === 0}
-                        aria-label={`ดูรายละเอียดต้นทาง ${t.items?.length ?? 0} รายการ รายการโอนเงิน ${shortTransferId(t.id)}`}
-                        title={(t.items?.length ?? 0) > 0 ? "ดูรายละเอียดบิลยางและใบชั่ง OCR" : "ไม่มีบิลยางหรือใบชั่ง OCR"}
+                        onClick={() => void handleOpenDetail(t.id)}
+                        disabled={(t.sourceCount ?? 0) === 0}
+                        aria-label={`ดูรายละเอียดต้นทาง ${t.sourceCount ?? 0} รายการ รายการโอนเงิน ${shortTransferId(t.id)}`}
+                        title={(t.sourceCount ?? 0) > 0 ? "ดูรายละเอียดบิลยางและใบชั่ง OCR" : "ไม่มีบิลยางหรือใบชั่ง OCR"}
                         className="focus-ring inline-flex h-10 items-center justify-center gap-1.5 rounded-md bg-actionSecondary px-3 text-xs font-semibold text-white hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         <Eye size={15} />
-                        <span className="tabular-nums">{t.items?.length ?? 0}</span>
+                        <span className="tabular-nums">{t.sourceCount ?? 0}</span>
                       </button>
                     </td>
                     <td className="px-3 py-2.5 font-semibold text-ink">{t.customerName ?? t.transportStaffName ?? t.targetLocationName ?? "—"}</td>
@@ -718,11 +685,17 @@ export function MoneyTransferModule({
               <span className="min-w-20 text-center text-sm font-semibold tabular-nums text-ink">หน้า {currentPage}/{totalPages}</span>
               <button
                 type="button"
-                onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
-                disabled={currentPage === totalPages}
+                onClick={async () => {
+                  if (currentPage === totalPages && hasMore) {
+                    const result = await loadMore();
+                    if (result.isError) return;
+                  }
+                  setPage((current) => current + 1);
+                }}
+                disabled={isLoadingMore || (currentPage === totalPages && !hasMore)}
                 className="focus-ring flex items-center gap-1.5 rounded-md bg-actionSecondary px-3 py-2 text-sm font-semibold text-white hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                ถัดไป <ChevronRight size={16} />
+                {isLoadingMore ? "กำลังโหลด..." : "ถัดไป"} <ChevronRight size={16} />
               </button>
             </div>
           </div>
@@ -740,16 +713,6 @@ export function MoneyTransferModule({
       {detailTransfer && (
         <MoneyTransferSourceDetailsModal
           transfer={detailTransfer}
-          rubberBills={bills}
-          ocrTickets={ocrTickets}
-          isLoading={Boolean(
-            (detailTransfer.items?.some((item) => item.sourceType === "rubber_bill") && rubberBillsLoading)
-            || (detailTransfer.items?.some((item) => item.sourceType === "ocr_ticket") && ocrTicketsLoading)
-          )}
-          isError={Boolean(
-            (detailTransfer.items?.some((item) => item.sourceType === "rubber_bill") && rubberBillsError)
-            || (detailTransfer.items?.some((item) => item.sourceType === "ocr_ticket") && ocrTicketsError)
-          )}
           onClose={() => setDetailTransfer(null)}
         />
       )}

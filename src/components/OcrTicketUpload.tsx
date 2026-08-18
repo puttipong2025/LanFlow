@@ -61,7 +61,7 @@ type Props = {
 /* ── Main Component ── */
 import { useOcrTickets } from "@/hooks/useOcrTickets";
 import { useCustomers } from "@/hooks/useCustomers";
-import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
+import { useMoneyTransferSourceLocks } from "@/hooks/useMoneyTransferSourceLocks";
 
 export function OcrTicketUpload({
   locationId,
@@ -77,7 +77,11 @@ export function OcrTicketUpload({
   );
   const { ocrTickets, addTicket, updateTicket, deleteTicket } = useOcrTickets(locationId);
   const { customers } = useCustomers();
-  const { transfers } = useMoneyTransfers(locationId);
+  const { lockedSourceIds: lockedOcrTicketIds } = useMoneyTransferSourceLocks(
+    locationId,
+    "ocr_ticket",
+    ocrTickets.map((ticket) => ticket.id),
+  );
 
   const [previewItem, setPreviewItem] = useState<UploadItem | null>(null);
   const [editTicket, setEditTicket] = useState<OcrTicket | null>(null);
@@ -87,16 +91,6 @@ export function OcrTicketUpload({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processingRef = useRef(false);
   const offlineMessage = "อ่านใบชั่งและ OCR ใช้ได้เมื่อออนไลน์เท่านั้น";
-
-  const lockedOcrTicketIds = useMemo(() => {
-    const ids = new Set<string>();
-    transfers.forEach((transfer) => {
-      transfer.items?.forEach((item) => {
-        if (item.sourceType === "ocr_ticket") ids.add(item.sourceId);
-      });
-    });
-    return ids;
-  }, [transfers]);
 
   const getTicketActionBlockReason = useCallback(
     (ticketId: string) => {

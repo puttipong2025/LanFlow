@@ -92,6 +92,8 @@ export type RubberBill = {
   deletedByPhone?: string;
   syncErrorMessage?: string;
   reportLockNo?: string | null;
+  transferLockId?: string | null;
+  operationalSortAt?: string;
   sourceRubberExportId?: string | null;
   sourceExportNo?: string | null;
   receivedAt?: string | null;
@@ -489,6 +491,10 @@ export type MoneyTransferItem = {
   netWeightAfterDeduction?: number | null;
   deductedAmount?: number | null;
   netPayableAmount?: number | null;
+  sourceNumber?: string | null;
+  sourceDate?: string | null;
+  averagePrice?: number | null;
+  rubberValue?: number | null;
 };
 
 export type MoneyTransfer = {
@@ -521,6 +527,8 @@ export type MoneyTransfer = {
   slips?: MoneyTransferSlip[];
   items?: MoneyTransferItem[];
   reportLockNo?: string | null;
+  paidAmount?: number;
+  sourceCount?: number;
 };
 
 export type CashDenominationCounts = {

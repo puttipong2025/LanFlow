@@ -8,7 +8,7 @@ test.use({ storageState: { cookies: [], origins: [] } });
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 
-test("opens mixed rubber-bill and OCR details without a new API contract", async ({ page }) => {
+test("opens mixed rubber-bill and OCR details through the secured detail RPC", async ({ page }) => {
   test.setTimeout(60_000);
   test.skip(!serviceRoleKey, "SUPABASE_SERVICE_ROLE_KEY is required for UI verification");
 
@@ -217,22 +217,16 @@ test("opens mixed rubber-bill and OCR details without a new API contract", async
       active: true,
     })).error).toBeNull();
 
-    let releaseRubberBills = () => {};
-    let rubberBillsRequestDelayed = false;
-    const rubberBillsGate = new Promise<void>((resolve) => {
-      releaseRubberBills = resolve;
-    });
-    await page.route("**/rest/v1/rubber_bills*", async (route) => {
-      rubberBillsRequestDelayed = true;
-      await rubberBillsGate;
-      await route.continue();
+    let rubberBillsRequestCount = 0;
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname.endsWith("/rest/v1/rubber_bills")) rubberBillsRequestCount += 1;
     });
 
     await page.goto("/");
     await selectAppLocation(page, locationId);
     await page.getByRole("button", { name: /^โอนเงิน/ }).click();
     await page.getByRole("button", { name: /^ทั้งหมด/ }).click();
-    await expect.poll(() => rubberBillsRequestDelayed).toBe(true);
+    expect(rubberBillsRequestCount).toBe(0);
 
     const transferRow = page.locator(`[data-transfer-id="${transferId}"]`);
     const emptyRow = page.locator(`[data-transfer-id="${emptyTransferId}"]`);
@@ -269,7 +263,9 @@ test("opens mixed rubber-bill and OCR details without a new API contract", async
       if (pathname.endsWith("/rest/v1/rpc/get_money_transfer_receipt_source_details")) {
         detailRpcRequests.push(`${request.method()} ${pathname}`);
       }
-      if (!["GET", "HEAD", "OPTIONS"].includes(request.method())) {
+      if (!["GET", "HEAD", "OPTIONS"].includes(request.method())
+        && !pathname.endsWith("/rest/v1/rpc/get_money_transfer_detail")
+        && !pathname.endsWith("/rest/v1/rpc/get_money_transfer_receipt_source_details")) {
         writeRequests.push(`${request.method()} ${pathname}`);
       }
     });
@@ -278,8 +274,6 @@ test("opens mixed rubber-bill and OCR details without a new API contract", async
     const dialog = page.getByRole("dialog", { name: "รายละเอียดต้นทางรายการโอนเงิน" });
     await expect(dialog).toBeVisible();
     await expect(dialog).toContainText("2 รายการ");
-    await expect(dialog.getByLabel("กำลังโหลดรายละเอียดต้นทาง")).toBeVisible();
-    releaseRubberBills();
     await expect(dialog.getByRole("columnheader")).toHaveText([
       "ประเภท",
       "เลขที่บิล/ใบชั่ง",
@@ -289,7 +283,6 @@ test("opens mixed rubber-bill and OCR details without a new API contract", async
       "ยอดหักเงิน (บาท)",
       "ยอดที่ต้องจ่ายลูกค้า",
     ]);
-    await page.unroute("**/rest/v1/rubber_bills*");
 
     const sourceRows = dialog.locator("tbody tr[data-source-id]");
     await expect(sourceRows).toHaveCount(2);
@@ -317,8 +310,9 @@ test("opens mixed rubber-bill and OCR details without a new API contract", async
     await expect(totalRow).toContainText("฿2,035.00");
     await expect(totalRow).toContainText("฿85.00");
     await expect(totalRow).toContainText("฿1,950.00");
-    expect(detailRpcRequests).toEqual([]);
+    expect(detailRpcRequests).toHaveLength(1);
     expect(writeRequests).toEqual([]);
+    expect(rubberBillsRequestCount).toBe(0);
 
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();

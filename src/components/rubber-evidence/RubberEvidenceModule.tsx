@@ -17,6 +17,7 @@ import { toast } from "sonner";
 import { AlertDialog } from "@/components/shared/AlertDialog";
 import { OperationWaitingDialog } from "@/components/shared/OperationWaitingDialog";
 import { useRubberBillEvidenceReview, type EvidenceReviewState } from "@/hooks/useRubberBillEvidenceReview";
+import { useRubberBills } from "@/hooks/useRubberBills";
 import { useRubberEvidencePage } from "@/hooks/useRubberEvidencePage";
 import { cn } from "@/lib/cn";
 import { formatNumber } from "@/lib/format";
@@ -277,18 +278,17 @@ function EvidenceCard({
 export function RubberEvidenceModule({
   selectedLocation,
   profile,
-  bills,
   online,
   initialBillId,
   onInitialBillHandled,
 }: {
   selectedLocation: Location;
   profile: Profile;
-  bills: RubberBill[];
   online: boolean;
   initialBillId?: string | null;
   onInitialBillHandled?: () => void;
 }) {
+  const { bills } = useRubberBills(selectedLocation.id, profile.id);
   const review = useRubberBillEvidenceReview(selectedLocation.id);
   const canManage = canManageSystemFeatures(profile);
   const [filter, setFilter] = useState<EvidenceFilter>("pending");

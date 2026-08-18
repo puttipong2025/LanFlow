@@ -54,12 +54,14 @@ export function TablePagination({
   pageSize,
   onPageChange,
   hasMore = false,
+  isLoadingMore = false,
 }: {
   totalItems: number;
   page: number;
   pageSize: number;
   onPageChange: (page: number) => void;
   hasMore?: boolean;
+  isLoadingMore?: boolean;
 }) {
   const totalPages = Math.max(Math.ceil(totalItems / pageSize), 1);
   const currentPage = Math.min(Math.max(page, 1), totalPages);
@@ -76,13 +78,13 @@ export function TablePagination({
     >
       <p className="text-sm text-ink tabular-nums" aria-live="polite">
         แสดง {firstVisible} ถึง {lastVisible} จาก {totalItems} รายการที่โหลดแล้ว
-        {hasMore && <span className="text-ink/60"> · ยังมีข้อมูลเพิ่มเติม</span>}
+        {hasMore && <span className="text-ink/60"> · มีรายการเก่ากว่านี้</span>}
       </p>
       <div className="flex flex-wrap gap-2">
         <button
           type="button"
           onClick={() => onPageChange(currentPage - 1)}
-          disabled={currentPage === 1}
+          disabled={currentPage === 1 || isLoadingMore}
           className={cn(
             pageButtonClass,
             "border-actionSecondary bg-actionSecondary text-white hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:border-black/10 disabled:bg-field disabled:text-ink/40",
@@ -97,6 +99,7 @@ export function TablePagination({
             aria-current={currentPage === pageNumber ? "page" : undefined}
             aria-label={`ไปหน้าที่ ${pageNumber}`}
             onClick={() => onPageChange(pageNumber)}
+            disabled={isLoadingMore}
             className={cn(
               pageButtonClass,
               currentPage === pageNumber
@@ -110,13 +113,13 @@ export function TablePagination({
         <button
           type="button"
           onClick={() => onPageChange(currentPage + 1)}
-          disabled={currentPage === totalPages}
+          disabled={isLoadingMore || (currentPage === totalPages && !hasMore)}
           className={cn(
             pageButtonClass,
             "border-actionSecondary bg-actionSecondary text-white hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:border-black/10 disabled:bg-field disabled:text-ink/40",
           )}
         >
-          ถัดไป
+          {isLoadingMore ? "กำลังโหลด..." : "ถัดไป"}
         </button>
       </div>
     </nav>

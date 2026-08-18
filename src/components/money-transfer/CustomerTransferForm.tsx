@@ -22,9 +22,7 @@ import type {
   MoneyTransfer,
   MoneyTransferSlip,
   MoneyTransferItem,
-  OcrTicket,
   Profile,
-  RubberBill,
 } from "@/types";
 import { formatCurrency } from "@/lib/format";
 import { authFetch } from "@/lib/auth-fetch";
@@ -38,10 +36,7 @@ export function CustomerTransferForm({
   locationId,
   online,
   profile,
-  bills,
-  ocrTickets,
   customers,
-  usedSourceIds,
   editTransfer,
   onSave,
   onCancel,
@@ -49,10 +44,7 @@ export function CustomerTransferForm({
   locationId: string;
   online: boolean;
   profile: Profile;
-  bills: RubberBill[];
-  ocrTickets: OcrTicket[];
   customers: Customer[];
-  usedSourceIds: Set<string>;
   editTransfer: MoneyTransfer | null;
   onSave: (transfer: MoneyTransfer) => void;
   onCancel: () => void;
@@ -518,9 +510,7 @@ export function CustomerTransferForm({
         {/* Item picker */}
         {showItemPicker && (
           <ItemPicker
-            bills={bills}
-            ocrTickets={ocrTickets}
-            usedSourceIds={usedSourceIds}
+            locationId={locationId}
             selectedItems={selectedItems}
             onSelect={(item) => setSelectedItems((prev) => [...prev, item])}
             onDeselect={(sourceId) => setSelectedItems((prev) => prev.filter((i) => i.sourceId !== sourceId))}

@@ -7,7 +7,7 @@ type HeaderCase = {
 };
 
 const headerCases: HeaderCase[] = [
-  { tab: /^บิลยาง/, heading: /^CRUD บิลยาง/, action: /^บัตรคิว$/ },
+  { tab: /^บิลยาง/, heading: /^รายการบิลยาง/, action: /^บัตรคิว$/ },
   { tab: /^ส่งออกยาง/, heading: /^ส่งออกยาง/, action: /^รีเฟรช$/ },
   { tab: /^รับ-จ่าย/, heading: /^CRUD รายรับ-รายจ่าย/, action: /^เพิ่มรายรับ$/ },
   { tab: /^สต็อกสินค้า/, heading: /^สต็อกสินค้า/, action: /^ซิงก์รายการ$/ },

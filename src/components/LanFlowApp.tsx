@@ -10,12 +10,11 @@ import { CustomersModule } from "./CustomersModule";
 import { TransportModule } from "./TransportModule";
 import { OcrTicketUpload } from "./OcrTicketUpload";
 import type { UploadItem } from "./OcrTicketUpload";
-import { useRubberBills } from "@/hooks/useRubberBills";
 import { MoneyTransferModule } from "./MoneyTransferModule";
 import { AdminModule } from "./AdminModule";
 import { TimeTrackingModule } from "./TimeTrackingModule";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
-import { useIncomeExpense } from "@/hooks/useIncomeExpense";
+import { useLanFlowOfflineSyncCoordinator } from "@/hooks/useLanFlowOfflineSyncCoordinator";
 import { useActionableBadges } from "@/hooks/useActionableBadges";
 
 import {
@@ -207,8 +206,10 @@ export function LanFlowApp() {
     }
   }, [selectedLocationId, locations, profile, authProfileId, isLoaded, online]);
 
-  const { bills: rubberBills } = useRubberBills(selectedLocationId, queueOwnerUserId);
-  useIncomeExpense(selectedLocationId, queueOwnerUserId);
+  useLanFlowOfflineSyncCoordinator({
+    locationId: selectedLocationId,
+    ownerUserId: queueOwnerUserId,
+  });
 
   const selectedLocation = locations.find((location) => location.id === selectedLocationId) ?? locations[0];
 
@@ -448,7 +449,6 @@ export function LanFlowApp() {
           <RubberEvidenceModule
             selectedLocation={selectedLocation}
             profile={profile}
-            bills={rubberBills}
             online={online}
             initialBillId={pendingEvidenceBillId}
             onInitialBillHandled={handleEvidenceTargetHandled}

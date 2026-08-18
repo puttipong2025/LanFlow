@@ -1,15 +1,11 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { createSupabaseBrowserClient } from "@/lib/supabase/client";
-import type { MoneyTransfer, MoneyTransferSlip, MoneyTransferItem } from "@/types";
-import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
-import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
-import {
-  DASHBOARD_BRANCH_SUMMARIES_QUERY_KEY,
-  DASHBOARD_MONEY_HISTORY_QUERY_KEY,
-  DASHBOARD_SNAPSHOT_QUERY_KEY,
-} from "@/hooks/useDashboardOverview";
+"use client";
 
-type MoneyTransferClient = ReturnType<typeof createSupabaseBrowserClient>;
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+
+import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
+import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import type { MoneyTransfer, MoneyTransferItem, MoneyTransferSlip } from "@/types";
 
 export type MergePendingMoneyTransfersResult = {
   mergedGroupCount: number;
@@ -19,356 +15,209 @@ export type MergePendingMoneyTransfersResult = {
   survivorIds: string[];
 };
 
-type StoredTransferItem = {
-  id: string;
-  source_type: MoneyTransferItem["sourceType"];
-  source_id: string;
-  customer_name: string | null;
-  amount: number | string;
-};
+export type MoneyTransferStatusFilter = MoneyTransfer["transferStatus"] | "all";
 
-function toTransferItemRow(transferId: string, item: MoneyTransferItem) {
+function mapSlip(row: any): MoneyTransferSlip {
   return {
-    id: item.id,
-    transfer_id: transferId,
-    source_type: item.sourceType,
-    source_id: item.sourceId,
-    rubber_bill_id: item.sourceType === "rubber_bill" ? item.sourceId : null,
-    ocr_ticket_id: item.sourceType === "ocr_ticket" ? item.sourceId : null,
-    customer_name: item.customerName,
-    amount: item.amount,
+    id: row.id,
+    amount: Number(row.amount ?? 0),
+    referenceNumber: row.reference_number,
+    fee: Number(row.fee ?? 0),
+    senderName: row.sender_name,
+    receiverName: row.receiver_name,
+    transactionDate: row.transaction_date,
+    slipImageUrl: row.slip_image_url,
+    sortOrder: Number(row.sort_order ?? 0),
   };
 }
 
-function transferItemChanged(stored: StoredTransferItem, desired: MoneyTransferItem) {
-  return (
-    stored.customer_name !== desired.customerName
-    || Number(stored.amount) !== desired.amount
-  );
+function mapItem(row: any): MoneyTransferItem {
+  return {
+    id: row.id,
+    sourceType: row.source_type,
+    sourceId: row.source_id,
+    customerName: row.customer_name,
+    amount: Number(row.amount ?? 0),
+    sourceNumber: row.sourceNumber ?? row.source_number,
+    sourceDate: row.sourceDate ?? row.source_date,
+    netWeightAfterDeduction: row.netWeightAfterDeduction == null ? null : Number(row.netWeightAfterDeduction),
+    averagePrice: row.averagePrice == null ? null : Number(row.averagePrice),
+    rubberValue: row.rubberValue == null ? null : Number(row.rubberValue),
+    deductedAmount: row.deductedAmount == null ? null : Number(row.deductedAmount),
+    netPayableAmount: row.netPayableAmount == null ? null : Number(row.netPayableAmount),
+  };
 }
 
-async function syncTransferItems(
-  supabase: MoneyTransferClient,
-  transferId: string,
-  desiredItems: MoneyTransferItem[],
-) {
-  const { data: storedItems, error: fetchError } = await supabase
-    .from("money_transfer_items")
-    .select("id, source_type, source_id, customer_name, amount")
-    .eq("transfer_id", transferId);
-
-  if (fetchError) throw new Error("Items Fetch Error: " + fetchError.message);
-
-  const desiredById = new Map(desiredItems.map((item) => [item.id, item]));
-  const storedById = new Map(
-    ((storedItems ?? []) as StoredTransferItem[]).map((item) => [item.id, item]),
-  );
-
-  // A source identity change must delete the old relation first so report-lock
-  // triggers still validate the source that is being detached.
-  const idsToDelete = [...storedById.values()]
-    .filter((stored) => {
-      const desired = desiredById.get(stored.id);
-      return (
-        !desired
-        || desired.sourceType !== stored.source_type
-        || desired.sourceId !== stored.source_id
-      );
-    })
-    .map((stored) => stored.id);
-
-  if (idsToDelete.length > 0) {
-    const { error: deleteError } = await supabase
-      .from("money_transfer_items")
-      .delete()
-      .eq("transfer_id", transferId)
-      .in("id", idsToDelete);
-
-    if (deleteError) throw new Error("Items Delete Error: " + deleteError.message);
-  }
-
-  const rowsToWrite = desiredItems
-    .filter((desired) => {
-      const stored = storedById.get(desired.id);
-      return (
-        !stored
-        || desired.sourceType !== stored.source_type
-        || desired.sourceId !== stored.source_id
-        || transferItemChanged(stored, desired)
-      );
-    })
-    .map((item) => toTransferItemRow(transferId, item));
-
-  if (rowsToWrite.length > 0) {
-    const { error: writeError } = await supabase
-      .from("money_transfer_items")
-      .upsert(rowsToWrite);
-
-    if (writeError) throw new Error("Items Sync Error: " + writeError.message);
-  }
+export function mapMoneyTransferRow(row: any): MoneyTransfer {
+  return {
+    id: row.id,
+    clientTempId: row.client_temp_id ?? row.id,
+    idempotencyKey: row.idempotency_key ?? `server:${row.id}`,
+    locationId: row.location_id,
+    customerId: row.customer_id,
+    customerName: row.customer_name,
+    accountNumber: row.account_number,
+    accountName: row.account_name,
+    bankName: row.bank_name,
+    netAmountToPay: Number(row.net_amount_to_pay ?? 0),
+    paidAmount: row.paid_amount == null ? undefined : Number(row.paid_amount),
+    sourceCount: row.source_count == null ? undefined : Number(row.source_count),
+    branchPaidAmount: row.branch_paid_amount == null ? undefined : Number(row.branch_paid_amount),
+    transferType: row.transfer_type ?? "customer",
+    transportCost: row.transport_cost == null ? undefined : Number(row.transport_cost),
+    transportStaffId: row.transport_staff_id,
+    transportStaffName: row.transport_staff_name,
+    targetLocationId: row.target_location_id,
+    targetLocationName: row.target_location_name,
+    transferStatus: row.transfer_status,
+    syncStatus: row.sync_status ?? "synced",
+    recordStatus: row.record_status ?? "active",
+    revisionNo: Number(row.revision_no ?? 0),
+    createdByUserId: row.created_by_user_id,
+    createdByName: row.created_by_name,
+    createdByPhone: row.created_by_phone,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    reportLockNo: row.report_lock_no ?? null,
+    slips: Array.isArray(row.money_transfer_slips) ? row.money_transfer_slips.map(mapSlip) : undefined,
+    items: Array.isArray(row.money_transfer_items) ? row.money_transfer_items.map(mapItem) : undefined,
+  };
 }
 
-export function useMoneyTransfers(locationId: string, options: { enabled?: boolean } = {}) {
+export function useMoneyTransferList({
+  locationId,
+  status = "all",
+  search = "",
+}: {
+  locationId: string;
+  status?: MoneyTransferStatusFilter;
+  search?: string;
+}) {
+  const supabase = createSupabaseBrowserClient();
+  const normalizedSearch = search.trim().toLocaleLowerCase("th-TH");
+  const query = useInfiniteQuery({
+    queryKey: moneyFlowQueryKeys.moneyTransferList(locationId, status, normalizedSearch),
+    initialPageParam: null as { createdAt: string; id: string } | null,
+    enabled: Boolean(locationId),
+    queryFn: async ({ pageParam }) => {
+      const { data, error } = await supabase.rpc("get_money_transfer_list", {
+        p_location_id: locationId,
+        p_status: status,
+        p_search: normalizedSearch,
+        p_cursor_created_at: pageParam?.createdAt ?? null,
+        p_cursor_id: pageParam?.id ?? null,
+        p_page_size: 50,
+      });
+      if (error) throw new Error(error.message);
+      const payload = (data ?? {}) as any;
+      return {
+        rows: (payload.rows ?? []).map(mapMoneyTransferRow) as MoneyTransfer[],
+        statusCounts: (payload.statusCounts ?? {}) as Record<string, number>,
+        nextCursor: payload.hasMore && payload.nextCreatedAt && payload.nextId
+          ? { createdAt: String(payload.nextCreatedAt), id: String(payload.nextId) }
+          : null,
+      };
+    },
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    staleTime: 30_000,
+  });
+  return {
+    transfers: query.data?.pages.flatMap((page) => page.rows) ?? [],
+    statusCounts: query.data?.pages[0]?.statusCounts ?? {},
+    hasMore: Boolean(query.hasNextPage),
+    loadMore: query.fetchNextPage,
+    isLoading: query.isLoading,
+    isLoadingMore: query.isFetchingNextPage,
+    error: query.error,
+  };
+}
+
+export async function loadMoneyTransferDetail(transferId: string) {
+  const supabase = createSupabaseBrowserClient();
+  const { data, error } = await supabase.rpc("get_money_transfer_detail", { p_transfer_id: transferId });
+  if (error) throw new Error(error.message);
+  return mapMoneyTransferRow(data);
+}
+
+export function useMoneyTransferDetail(transferId: string | null) {
+  return useQuery({
+    queryKey: moneyFlowQueryKeys.moneyTransferDetail(transferId ?? ""),
+    enabled: Boolean(transferId),
+    queryFn: () => loadMoneyTransferDetail(transferId!),
+  });
+}
+
+export async function getMoneyTransferReceiptSourceDetails(transferId: string) {
+  const supabase = createSupabaseBrowserClient();
+  const { data, error } = await supabase.rpc("get_money_transfer_receipt_source_details", {
+    p_transfer_id: transferId,
+  });
+  if (error) throw new Error(error.message || "โหลดรายละเอียดต้นทางไม่สำเร็จ");
+  const items = (data as any)?.items;
+  if (!Array.isArray(items)) throw new Error("รูปแบบรายละเอียดต้นทางไม่ถูกต้อง");
+  return items.map((item) => mapItem({
+    ...item,
+    id: item.itemId,
+    source_type: item.sourceType,
+    source_id: item.sourceId,
+    customer_name: item.customerName,
+    amount: item.netPayableAmount,
+  }));
+}
+
+function moneyTransferError(error: { message?: string }) {
+  const message = error.message ?? "บันทึกรายการโอนเงินไม่สำเร็จ";
+  if (message.includes("MT_SOURCE_ALREADY_USED")) return new Error("แหล่งจ่ายถูกใช้ในรายการโอนอื่นแล้ว กรุณาโหลดรายการใหม่");
+  if (message.includes("MT_REVISION_CONFLICT")) return new Error("ข้อมูลถูกแก้ไขแล้ว กรุณาโหลดใหม่ก่อนบันทึก");
+  return new Error(message.replace(/^.*MT_[A-Z_]+:\s*/, ""));
+}
+
+export function useMoneyTransferMutations(locationId: string, ownerUserId = "") {
   const supabase = createSupabaseBrowserClient();
   const queryClient = useQueryClient();
-  const enabled = options.enabled ?? true;
-
-  const query = useQuery({
-    queryKey: ["moneyTransfers", locationId],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("money_transfers")
-        .select(`
-          *, report_lock_no,
-          money_transfer_slips(*),
-          money_transfer_items(*)
-        `)
-        .eq("location_id", locationId)
-        .neq("record_status", "deleted")
-        .order("created_at", { ascending: false });
-
-      if (error) throw new Error(error.message || JSON.stringify(error));
-      
-      return (data || []).map((row: any): MoneyTransfer => ({
-        id: row.id,
-        clientTempId: row.client_temp_id ?? row.id,
-        idempotencyKey: row.idempotency_key ?? `server:${row.id}`,
-        locationId: row.location_id,
-        customerId: row.customer_id,
-        customerName: row.customer_name,
-        accountNumber: row.account_number,
-        accountName: row.account_name,
-        bankName: row.bank_name,
-        netAmountToPay: Number(row.net_amount_to_pay ?? 0),
-        branchPaidAmount: row.branch_paid_amount != null ? Number(row.branch_paid_amount) : undefined,
-        transferType: row.transfer_type ?? 'customer',
-        transportCost: row.transport_cost != null ? Number(row.transport_cost) : undefined,
-        transportStaffId: row.transport_staff_id,
-        transportStaffName: row.transport_staff_name,
-        targetLocationId: row.target_location_id,
-        targetLocationName: row.target_location_name,
-        transferStatus: row.transfer_status,
-        syncStatus: row.sync_status ?? "synced",
-        recordStatus: row.record_status ?? "active",
-        revisionNo: row.revision_no ?? 0,
-        createdByUserId: row.created_by_user_id,
-        createdByName: row.created_by_name,
-        createdByPhone: row.created_by_phone,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        reportLockNo: row.report_lock_no ?? null,
-        slips: (row.money_transfer_slips || []).map((s: any): MoneyTransferSlip => ({
-          id: s.id,
-          amount: Number(s.amount ?? 0),
-          referenceNumber: s.reference_number,
-          fee: Number(s.fee ?? 0),
-          senderName: s.sender_name,
-          receiverName: s.receiver_name,
-          transactionDate: s.transaction_date,
-          slipImageUrl: s.slip_image_url,
-          sortOrder: s.sort_order ?? 0
-        })),
-        items: (row.money_transfer_items || []).map((i: any): MoneyTransferItem => ({
-          id: i.id,
-          sourceType: i.source_type,
-          sourceId: i.source_id,
-          customerName: i.customer_name,
-          amount: Number(i.amount ?? 0)
-        }))
-      }));
-    },
-    enabled: !!locationId && enabled,
-  });
-
+  const refresh = () => invalidateMoneyFlowLocation(queryClient, { ownerUserId, locationId });
+  async function saveTransfer(transfer: MoneyTransfer, operation: "create" | "update") {
+      const { data, error } = await supabase.rpc("save_money_transfer", {
+        p_payload: { ...transfer, operation },
+      });
+      if (error) throw moneyTransferError(error);
+      return mapMoneyTransferRow(data);
+  }
   const addTransfer = useMutation({
-    mutationFn: async (transfer: MoneyTransfer) => {
-      const { data, error } = await supabase.from("money_transfers").insert({
-        id: transfer.id,
-        client_temp_id: transfer.clientTempId,
-        idempotency_key: transfer.idempotencyKey,
-        location_id: transfer.locationId,
-        customer_id: transfer.customerId,
-        customer_name: transfer.customerName,
-        account_number: transfer.accountNumber,
-        account_name: transfer.accountName,
-        bank_name: transfer.bankName,
-        net_amount_to_pay: transfer.netAmountToPay,
-        branch_paid_amount: transfer.branchPaidAmount ?? 0,
-        transfer_type: transfer.transferType,
-        transport_cost: transfer.transportCost,
-        transport_staff_id: transfer.transportStaffId,
-        transport_staff_name: transfer.transportStaffName,
-        target_location_id: transfer.targetLocationId,
-        target_location_name: transfer.targetLocationName,
-        transfer_status: transfer.transferStatus,
-        created_by_user_id: transfer.createdByUserId,
-        created_by_name: transfer.createdByName,
-        created_by_phone: transfer.createdByPhone,
-        revision_no: transfer.revisionNo,
-        record_status: transfer.recordStatus
-      }).select().single();
-
-      if (error) throw new Error(error.message || JSON.stringify(error));
-
-      if (transfer.slips && transfer.slips.length > 0) {
-        const { error: slipsError } = await supabase.from("money_transfer_slips").insert(
-          transfer.slips.map(s => ({
-            id: s.id,
-            transfer_id: transfer.id,
-            amount: s.amount,
-            reference_number: s.referenceNumber,
-            fee: s.fee,
-            sender_name: s.senderName,
-            receiver_name: s.receiverName,
-            transaction_date: s.transactionDate,
-            slip_image_url: s.slipImageUrl,
-            sort_order: s.sortOrder
-          }))
-        );
-        if (slipsError) throw new Error("Slips Insert Error: " + slipsError.message);
-      }
-
-      if (transfer.items && transfer.items.length > 0) {
-        const { error: itemsError } = await supabase.from("money_transfer_items").insert(
-          transfer.items.map((item) => toTransferItemRow(transfer.id, item))
-        );
-        if (itemsError) throw new Error("Items Insert Error: " + itemsError.message);
-      }
-
-      return data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["moneyTransfers"] });
-      queryClient.invalidateQueries({ queryKey: [INCOME_EXPENSE_FEED_QUERY_KEY] });
-      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
-    }
+    mutationFn: (transfer: MoneyTransfer) => saveTransfer(transfer, "create"),
+    onSuccess: refresh,
   });
-
   const updateTransfer = useMutation({
-    mutationFn: async (transfer: MoneyTransfer) => {
-      const { data, error } = await supabase.from("money_transfers").update({
-        location_id: transfer.locationId,
-        customer_id: transfer.customerId,
-        customer_name: transfer.customerName,
-        account_number: transfer.accountNumber,
-        account_name: transfer.accountName,
-        bank_name: transfer.bankName,
-        net_amount_to_pay: transfer.netAmountToPay,
-        branch_paid_amount: transfer.branchPaidAmount ?? 0,
-        transfer_type: transfer.transferType,
-        transport_cost: transfer.transportCost,
-        transport_staff_id: transfer.transportStaffId,
-        transport_staff_name: transfer.transportStaffName,
-        target_location_id: transfer.targetLocationId,
-        target_location_name: transfer.targetLocationName,
-        transfer_status: transfer.transferStatus,
-        revision_no: transfer.revisionNo,
-      }).eq("id", transfer.id).select().single();
-
-      if (error) throw new Error(error.message || JSON.stringify(error));
-
-      // naive relation sync:
-      await supabase.from("money_transfer_slips").delete().eq("transfer_id", transfer.id);
-      if (transfer.slips && transfer.slips.length > 0) {
-        const { error: slipsError } = await supabase.from("money_transfer_slips").insert(
-          transfer.slips.map(s => ({
-            id: s.id,
-            transfer_id: transfer.id,
-            amount: s.amount,
-            reference_number: s.referenceNumber,
-            fee: s.fee,
-            sender_name: s.senderName,
-            receiver_name: s.receiverName,
-            transaction_date: s.transactionDate,
-            slip_image_url: s.slipImageUrl,
-            sort_order: s.sortOrder
-          }))
-        );
-        if (slipsError) throw new Error("Slips Insert Error: " + slipsError.message);
-      }
-
-      await syncTransferItems(supabase, transfer.id, transfer.items ?? []);
-
-      return data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["moneyTransfers"] });
-      queryClient.invalidateQueries({ queryKey: [INCOME_EXPENSE_FEED_QUERY_KEY] });
-      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
-    }
+    mutationFn: (transfer: MoneyTransfer) => saveTransfer(transfer, "update"),
+    onSuccess: refresh,
   });
-
   const deleteTransfer = useMutation({
     mutationFn: async (id: string) => {
-      const { data, error } = await supabase.rpc("delete_money_transfer", {
-        p_transfer_id: id,
-      });
-      if (error) throw new Error(error.message || JSON.stringify(error));
-
-      if ((data as { status?: string } | null)?.status !== "deleted") {
-        throw new Error("ลบรายการโอนเงินไม่สำเร็จ");
-      }
-
+      const { data, error } = await supabase.rpc("delete_money_transfer", { p_transfer_id: id });
+      if (error) throw new Error(error.message || "ลบรายการโอนเงินไม่สำเร็จ");
+      if ((data as { status?: string } | null)?.status !== "deleted") throw new Error("ลบรายการโอนเงินไม่สำเร็จ");
       return data;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["moneyTransfers"] });
-      queryClient.invalidateQueries({ queryKey: [INCOME_EXPENSE_FEED_QUERY_KEY] });
-      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
-    }
+    onSuccess: refresh,
   });
-
   const mergePendingTransfers = useMutation({
     mutationFn: async (): Promise<MergePendingMoneyTransfersResult> => {
-      const { data, error } = await supabase.rpc("merge_pending_money_transfers", {
-        p_location_id: locationId,
-      });
+      const { data, error } = await supabase.rpc("merge_pending_money_transfers", { p_location_id: locationId });
       if (error) throw new Error(error.message || "รวมรายการรอโอนไม่สำเร็จ");
       return data as MergePendingMoneyTransfersResult;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["moneyTransfers"] });
-      queryClient.invalidateQueries({ queryKey: [INCOME_EXPENSE_FEED_QUERY_KEY] });
-      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
-      queryClient.invalidateQueries({ queryKey: [DASHBOARD_BRANCH_SUMMARIES_QUERY_KEY] });
-      queryClient.invalidateQueries({ queryKey: [DASHBOARD_SNAPSHOT_QUERY_KEY] });
-      queryClient.invalidateQueries({ queryKey: [DASHBOARD_MONEY_HISTORY_QUERY_KEY] });
-    },
+    onSuccess: refresh,
   });
+  return { addTransfer, updateTransfer, deleteTransfer, mergePendingTransfers };
+}
 
-  async function getReceiptSourceDetails(transferId: string): Promise<MoneyTransferItem[]> {
-    const { data, error } = await supabase.rpc(
-      "get_money_transfer_receipt_source_details",
-      { p_transfer_id: transferId },
-    );
-
-    if (error) throw new Error(error.message || "โหลดรายละเอียดต้นทางไม่สำเร็จ");
-
-    const items = (data as { items?: Array<Record<string, unknown>> } | null)?.items;
-    if (!Array.isArray(items)) throw new Error("รูปแบบรายละเอียดต้นทางไม่ถูกต้อง");
-
-    return items.map((item) => ({
-      id: String(item.itemId),
-      sourceType: item.sourceType as MoneyTransferItem["sourceType"],
-      sourceId: String(item.sourceId),
-      customerName: null,
-      amount: 0,
-      netWeightAfterDeduction: item.netWeightAfterDeduction == null
-        ? null
-        : Number(item.netWeightAfterDeduction),
-      deductedAmount: item.deductedAmount == null ? null : Number(item.deductedAmount),
-      netPayableAmount: item.netPayableAmount == null ? null : Number(item.netPayableAmount),
-    }));
-  }
-
+export function useMoneyTransfers(locationId: string) {
+  const list = useMoneyTransferList({ locationId });
+  const mutations = useMoneyTransferMutations(locationId);
   return {
-    transfers: query.data || [],
-    isLoading: query.isLoading,
-    isError: query.isError,
-    addTransfer,
-    updateTransfer,
-    deleteTransfer,
-    mergePendingTransfers,
-    getReceiptSourceDetails,
+    ...list,
+    ...mutations,
+    getReceiptSourceDetails: getMoneyTransferReceiptSourceDetails,
+    isError: Boolean(list.error),
   };
 }

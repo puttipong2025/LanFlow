@@ -6,7 +6,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { formatCurrency } from "@/lib/format";
 import { IncomeExpenseStockShortageError, useIncomeExpense } from "@/hooks/useIncomeExpense";
 import { getIncomeExpenseApprovalReasons, useIncomeExpenseApprovals } from "@/hooks/useIncomeExpenseApprovals";
-import { useMoneyTransfers } from "@/hooks/useMoneyTransfers";
+import { useMoneyTransferMutations } from "@/hooks/useMoneyTransfers";
 import { useCashBranchTransfers } from "@/hooks/useCashBranchTransfers";
 import { useLocations } from "@/hooks/useLocations";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
@@ -168,7 +168,7 @@ export function IncomeExpenseModule({
   const approvalButtonLabel = isOnline && pendingApprovalCount > 0
     ? `ตั้งค่าและอนุมัติรับ-จ่าย รออนุมัติ ${pendingApprovalCount} รายการ`
     : "ตั้งค่าและอนุมัติรับ-จ่าย";
-  const { addTransfer } = useMoneyTransfers(selectedLocation.id, { enabled: canCreateMoneyTransfer });
+  const { addTransfer } = useMoneyTransferMutations(selectedLocation.id, profile.id);
   const cashTransfers = useCashBranchTransfers(selectedLocation.id);
   const { locations } = useLocations();
   const pendingCashReceipts = cashTransfers.transfers.filter((transfer) => transfer.targetLocationId === selectedLocation.id && transfer.status === "pending_receipt");

@@ -30,10 +30,10 @@ export function deriveMoneyTransferStatus({
 }
 
 export function getMoneyTransferPaymentSummary(
-  transfer: Pick<MoneyTransfer, "netAmountToPay" | "slips" | "transferStatus">,
+  transfer: Pick<MoneyTransfer, "netAmountToPay" | "slips" | "transferStatus" | "paidAmount">,
 ) {
   const amountDue = transfer.netAmountToPay;
-  const amountPaid = sumMoneyTransferSlips(transfer.slips);
+  const amountPaid = transfer.paidAmount ?? sumMoneyTransferSlips(transfer.slips);
   const status = deriveMoneyTransferStatus({
     amountDue,
     amountPaid,

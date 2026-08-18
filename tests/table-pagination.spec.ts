@@ -30,6 +30,8 @@ test.describe("shared table pagination", () => {
     expect(incomeExpense).toContain("<TablePagination");
     expect(incomeExpense).toContain("<TablePageSizeSelect");
     expect(rubberBills).toContain("<TablePagination");
+    expect(rubberBills).toContain("hasMore={hasMore}");
+    expect(rubberBills).toContain("isLoadingMore={isLoadingMore}");
   });
 
   test("income/expense keeps one document-number column in the agreed order", () => {

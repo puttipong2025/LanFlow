@@ -1,5 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { isDeviceOnline, subscribeConnectivity } from "@/lib/connectivity";
+import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { RubberBill } from "@/types";
 import {
@@ -8,13 +7,11 @@ import {
   getPendingEvents,
   getRubberBillReceiptSnapshots,
   pruneRubberBillReceiptSnapshots,
-  putRubberBillReceiptSnapshot,
+  putRubberBillReceiptSnapshots,
   removeSyncEvent,
   type SyncEvent,
 } from "@/lib/idb-queue";
-import { useEffect } from "react";
 import { toast } from "sonner";
-import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import { OFFLINE_SYNCED_ACTION_MESSAGE } from "@/lib/record-action-locks";
 import { authFetch } from "@/lib/auth-fetch";
 import { isRetryableSyncResponse } from "@/lib/sync-response";
@@ -28,6 +25,9 @@ import {
   calculateRubberBill,
   multiplyMoneyHalfUp,
 } from "@/lib/rubber-bills/calculations";
+import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
+import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
+import { createScopedSingleFlight } from "@/lib/scoped-single-flight";
 
 export function assertRubberBillDeleteAllowed(pendingCreateCount: number, isOnline: boolean) {
   if (pendingCreateCount === 0 && !isOnline) {
@@ -126,18 +126,22 @@ function buildRpcPayload(
   };
 }
 
-let isSyncing = false;
+const runRubberBillSyncSingleFlight = createScopedSingleFlight();
+const receiptPersistenceVersions = new Map<string, number>();
 
 function queuePartition(ownerUserId: string, locationId: string) {
   return { entity: "rubber_bills" as const, ownerUserId, locationId };
 }
 
-async function syncPendingBills(queryClient: any, ownerUserId: string, locationId: string) {
-  if (isSyncing) return;
-  if (!ownerUserId || !locationId || !navigator.onLine) return;
-  
-  isSyncing = true;
-  try {
+export function syncPendingRubberBills(
+  queryClient: QueryClient,
+  ownerUserId: string,
+  locationId: string,
+): Promise<void> {
+  if (!ownerUserId || !locationId || !navigator.onLine) return Promise.resolve();
+  const scopeKey = `${ownerUserId}:${locationId}`;
+  return runRubberBillSyncSingleFlight(scopeKey, async () => {
+    try {
     await normalizeRubberBillQueueBeforeSync(ownerUserId, locationId);
     const events = await getPendingEvents(queuePartition(ownerUserId, locationId));
     // Precompute: block ALL ids that have any failed/conflict event
@@ -185,14 +189,10 @@ async function syncPendingBills(queryClient: any, ownerUserId: string, locationI
         break; // Stop on network error
       }
     }
-  } finally {
-    isSyncing = false;
-    queryClient.invalidateQueries({ queryKey: ["rubberBills", ownerUserId, locationId] });
-    queryClient.invalidateQueries({ queryKey: ["rubberBillApprovalMarkers", locationId] });
-    queryClient.invalidateQueries({ queryKey: ["rubberBillApprovalRequests"] });
-    queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
-    queryClient.invalidateQueries({ queryKey: ["dashboardOverview", locationId] });
-  }
+    } finally {
+      await invalidateMoneyFlowLocation(queryClient, { ownerUserId, locationId });
+    }
+  });
 }
 
 async function normalizeRubberBillQueueBeforeSync(ownerUserId: string, locationId: string) {
@@ -227,55 +227,66 @@ export function useRubberBills(
   approvalSettings?: Pick<
     RubberBillApprovalSettings,
     "editWindowMinutes" | "configuredPrice" | "nonCurrentDateRequiresApproval"
-  > | null
+  > | null,
+  options: { enabled?: boolean } = {},
 ) {
   const supabase = createSupabaseBrowserClient();
   const queryClient = useQueryClient();
 
-  // Trigger sync when coming online or on mount if already online
-  useEffect(() => {
-    const handleConnectivity = () => {
-      if (isDeviceOnline()) {
-        void syncPendingBills(queryClient, ownerUserId, locationId);
-      }
-    };
-    const unsubscribe = subscribeConnectivity(handleConnectivity);
-
-    // Auto sync on mount if already online (e.g. app reopened while connected)
-    if (isDeviceOnline()) {
-      void syncPendingBills(queryClient, ownerUserId, locationId);
-    }
-
-    return unsubscribe;
-  }, [queryClient, ownerUserId, locationId]);
-
   const query = useQuery({
-    queryKey: ["rubberBills", ownerUserId, locationId],
+    queryKey: moneyFlowQueryKeys.rubberBills(ownerUserId, locationId),
+    enabled: Boolean(locationId && ownerUserId) && (options.enabled ?? true),
     networkMode: "always",
+    staleTime: 30_000,
     queryFn: async () => {
       // 1. Fetch Server State (gracefully degrade when offline)
       let serverBills: RubberBill[] = [];
 
       try {
-        const { data: bills, error: billsError } = await supabase
-          .from("rubber_bills")
-          .select("*, report_lock_no")
-          .eq("location_id", locationId)
-          .eq("record_status", "active")
-          .order("created_at", { ascending: false });
-
-        if (billsError) throw new Error(billsError.message || JSON.stringify(billsError));
+        const bills: any[] = [];
+        for (let offset = 0; ; offset += 1_000) {
+          const { data: pageRows, error: billsError } = await supabase
+            .from("rubber_bills")
+            .select("*, report_lock_no")
+            .eq("location_id", locationId)
+            .eq("record_status", "active")
+            .order("created_at", { ascending: false })
+            .order("id", { ascending: false })
+            .range(offset, offset + 999);
+          if (billsError) throw new Error(billsError.message || JSON.stringify(billsError));
+          bills.push(...(pageRows ?? []));
+          if ((pageRows?.length ?? 0) < 1_000) break;
+        }
 
         if (bills?.length) {
-          const { data: items, error: itemsError } = await supabase
-            .from("rubber_bill_items")
-            .select("*")
-            .in("bill_id", bills.map(b => b.id));
+          const items: any[] = [];
+          const billIds = bills.map((bill) => bill.id);
+          for (let chunkStart = 0; chunkStart < billIds.length; chunkStart += 100) {
+            const chunk = billIds.slice(chunkStart, chunkStart + 100);
+            for (let offset = 0; ; offset += 1_000) {
+              const { data: itemRows, error: itemsError } = await supabase
+                .from("rubber_bill_items")
+                .select("*")
+                .in("bill_id", chunk)
+                .order("bill_id")
+                .order("sequence_no")
+                .order("id")
+                .range(offset, offset + 999);
+              if (itemsError) throw new Error(itemsError.message || JSON.stringify(itemsError));
+              items.push(...(itemRows ?? []));
+              if ((itemRows?.length ?? 0) < 1_000) break;
+            }
+          }
 
-          if (itemsError) throw new Error(itemsError.message || JSON.stringify(itemsError));
+          const itemsByBillId = new Map<string, any[]>();
+          for (const item of items ?? []) {
+            const billItems = itemsByBillId.get(item.bill_id) ?? [];
+            billItems.push(item);
+            itemsByBillId.set(item.bill_id, billItems);
+          }
 
           serverBills = bills.map((row: any): RubberBill => {
-            const billItems = (items || []).filter((item: any) => item.bill_id === row.id);
+            const billItems = itemsByBillId.get(row.id) ?? [];
             
             const weighItems = billItems
               .filter((item: any) => item.item_type === "weigh")
@@ -371,35 +382,43 @@ export function useRubberBills(
             };
           });
 
-          try {
-            await Promise.all(
-              serverBills
-                .filter((bill) => bill.serverBillNo)
-                .map((bill) => putRubberBillReceiptSnapshot({
-                  billId: bill.id,
-                  locationId: bill.locationId,
-                  serverBillNo: bill.serverBillNo!,
-                  serverReceivedAt:
-                    bill.serverReceivedAt
-                    ?? bill.serverCreatedAt
-                    ?? bill.clientRecordedAt,
-                  revisionNo: bill.revisionNo,
-                  bill,
-                  receipt: buildRubberBillReceiptModel(bill),
-                }))
+          const persistenceVersion = (receiptPersistenceVersions.get(locationId) ?? 0) + 1;
+          receiptPersistenceVersions.set(locationId, persistenceVersion);
+          const receiptSnapshots = serverBills
+            .filter((bill) => bill.serverBillNo)
+            .map((bill) => ({
+              billId: bill.id,
+              locationId: bill.locationId,
+              serverBillNo: bill.serverBillNo!,
+              serverReceivedAt:
+                bill.serverReceivedAt
+                ?? bill.serverCreatedAt
+                ?? bill.clientRecordedAt,
+              revisionNo: bill.revisionNo,
+              bill,
+              receipt: buildRubberBillReceiptModel(bill),
+            }));
+          void (async () => {
+            await putRubberBillReceiptSnapshots(receiptSnapshots);
+            if (receiptPersistenceVersions.get(locationId) !== persistenceVersion) return;
+            await deleteRubberBillReceiptSnapshotsNotIn(
+              locationId,
+              new Set(serverBills.map((bill) => bill.id)),
             );
-          } catch (cacheError) {
+            await pruneRubberBillReceiptSnapshots(locationId, 100);
+          })().catch((cacheError) => {
             console.warn("Unable to cache rubber bill receipts", cacheError);
-          }
-        }
-        try {
-          await deleteRubberBillReceiptSnapshotsNotIn(
-            locationId,
-            new Set(serverBills.map((bill) => bill.id))
-          );
-          await pruneRubberBillReceiptSnapshots(locationId, 100);
-        } catch (cacheError) {
-          console.warn("Unable to clean rubber bill receipt cache", cacheError);
+          });
+        } else {
+          const persistenceVersion = (receiptPersistenceVersions.get(locationId) ?? 0) + 1;
+          receiptPersistenceVersions.set(locationId, persistenceVersion);
+          void (async () => {
+            if (receiptPersistenceVersions.get(locationId) !== persistenceVersion) return;
+            await deleteRubberBillReceiptSnapshotsNotIn(locationId, new Set());
+            await pruneRubberBillReceiptSnapshots(locationId, 100);
+          })().catch((cacheError) => {
+            console.warn("Unable to clean rubber bill receipt cache", cacheError);
+          });
         }
       } catch (err) {
         // Offline or network error → use the latest synced receipt snapshots.
@@ -532,7 +551,6 @@ export function useRubberBills(
         new Date(b.clientRecordedAt).getTime() - new Date(a.clientRecordedAt).getTime()
       );
     },
-    enabled: !!locationId && !!ownerUserId,
   });
 
   const saveBillMutation = useMutation({
@@ -688,7 +706,7 @@ export function useRubberBills(
       };
     },
     onSuccess: (savedBill) => {
-      queryClient.setQueryData<RubberBill[]>(["rubberBills", ownerUserId, locationId], (old) => {
+      queryClient.setQueryData<RubberBill[]>(moneyFlowQueryKeys.rubberBills(ownerUserId, locationId), (old) => {
         if (!old) return [savedBill];
         const exists = old.findIndex(b => b.clientTempId === savedBill.clientTempId);
         if (exists >= 0) {
@@ -701,19 +719,15 @@ export function useRubberBills(
       if (savedBill.approvalPending) {
         toast.success("ส่งคำขออนุมัติบิลยางแล้ว");
       }
-      queryClient.invalidateQueries({ queryKey: ["rubberBills", ownerUserId, locationId] });
-      queryClient.invalidateQueries({ queryKey: ["rubberBillApprovalMarkers", locationId] });
-      queryClient.invalidateQueries({ queryKey: ["rubberBillApprovalRequests"] });
-      queryClient.invalidateQueries({ queryKey: ["incomeExpense", locationId] });
-      queryClient.invalidateQueries({ queryKey: ["stock", locationId] });
-      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
-      syncPendingBills(queryClient, ownerUserId, locationId);
+      void invalidateMoneyFlowLocation(queryClient, { ownerUserId, locationId });
+      void syncPendingRubberBills(queryClient, ownerUserId, locationId);
     }
   });
 
   const deleteBillMutation = useMutation({
     networkMode: "always",
-    mutationFn: async ({ clientTempId, deletedByName, deletedByPhone }: { clientTempId: string, deletedByName: string, deletedByPhone: string }) => {
+    mutationFn: async ({ bill, deletedByName, deletedByPhone }: { bill: RubberBill, deletedByName: string, deletedByPhone: string }) => {
+      const clientTempId = bill.clientTempId;
       const existingEvents = await getPendingEvents(queuePartition(ownerUserId, locationId));
       const clientEvents = existingEvents.filter(e => e.id === clientTempId);
 
@@ -746,10 +760,6 @@ export function useRubberBills(
         }
         return { clientTempId, coalesced: true };
       }
-
-      const bills = queryClient.getQueryData<RubberBill[]>(["rubberBills", ownerUserId, locationId]);
-      const bill = bills?.find(b => b.clientTempId === clientTempId);
-      if (!bill) throw new Error("Bill not found in local cache");
 
       // If we replaced a pending update, use its server revision. Else use current bill's server revision.
       const targetRev = pendingUpdates.length > 0 ? pendingUpdates[0].payload.expectedRevisionNo : bill.revisionNo;
@@ -812,7 +822,7 @@ export function useRubberBills(
       return { clientTempId, coalesced: false, approvalPending: false };
     },
     onSuccess: (data) => {
-      queryClient.setQueryData<RubberBill[]>(["rubberBills", ownerUserId, locationId], (old) => {
+      queryClient.setQueryData<RubberBill[]>(moneyFlowQueryKeys.rubberBills(ownerUserId, locationId), (old) => {
         if (!old) return old;
         if (data.approvalPending) {
           return old.map((bill) => bill.clientTempId === data.clientTempId
@@ -824,13 +834,8 @@ export function useRubberBills(
       if (data.approvalPending) {
         toast.success("ส่งคำขออนุมัติลบบิลยางแล้ว");
       }
-      queryClient.invalidateQueries({ queryKey: ["rubberBills", ownerUserId, locationId] });
-      queryClient.invalidateQueries({ queryKey: ["rubberBillApprovalMarkers", locationId] });
-      queryClient.invalidateQueries({ queryKey: ["rubberBillApprovalRequests"] });
-      queryClient.invalidateQueries({ queryKey: ["incomeExpense", locationId] });
-      queryClient.invalidateQueries({ queryKey: ["stock", locationId] });
-      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
-      syncPendingBills(queryClient, ownerUserId, locationId);
+      void invalidateMoneyFlowLocation(queryClient, { ownerUserId, locationId });
+      void syncPendingRubberBills(queryClient, ownerUserId, locationId);
     }
   });
 
@@ -842,4 +847,21 @@ export function useRubberBills(
     updateBill: saveBillMutation.mutateAsync,
     deleteBill: deleteBillMutation.mutateAsync,
   };
+}
+
+export function useRubberBillMutations(
+  locationId: string,
+  ownerUserId: string,
+  approvalSettings?: Pick<
+    RubberBillApprovalSettings,
+    "editWindowMinutes" | "configuredPrice" | "nonCurrentDateRequiresApproval"
+  > | null,
+) {
+  const { addBill, updateBill, deleteBill } = useRubberBills(
+    locationId,
+    ownerUserId,
+    approvalSettings,
+    { enabled: false },
+  );
+  return { addBill, updateBill, deleteBill };
 }
