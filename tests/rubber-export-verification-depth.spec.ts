@@ -204,7 +204,7 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
       )).status()).toBe(403);
 
       const branchBOptionsResponse = await superAdmin.request.get(
-        `/api/lanflow/rubber-exports?locationId=${locationB}`,
+        `/api/lanflow/rubber-exports/options?locationId=${locationB}`,
       );
       expect(branchBOptionsResponse.ok(), await branchBOptionsResponse.text()).toBeTruthy();
       const branchBOptions = (await branchBOptionsResponse.json() as {
@@ -253,7 +253,7 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
       }
 
       const optionsResponse = await admin.request.get(
-        `/api/lanflow/rubber-exports?locationId=${locationA}`,
+        `/api/lanflow/rubber-exports/options?locationId=${locationA}`,
       );
       expect(optionsResponse.ok(), await optionsResponse.text()).toBeTruthy();
       const options = (await optionsResponse.json() as {
@@ -368,7 +368,7 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
       );
 
       const remainingResponse = await admin.request.get(
-        `/api/lanflow/rubber-exports?locationId=${locationA}`,
+        `/api/lanflow/rubber-exports/options?locationId=${locationA}`,
       );
       const remaining = (await remainingResponse.json() as {
         availableBills: Array<{ reportItemId: string; billId: string }>;
@@ -424,7 +424,7 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
       const invalidReport = await createReport(admin, locationA);
       reportIdsA.push(invalidReport.id);
       const invalidOptionsResponse = await admin.request.get(
-        `/api/lanflow/rubber-exports?locationId=${locationA}`,
+        `/api/lanflow/rubber-exports/options?locationId=${locationA}`,
       );
       const invalidOptions = (await invalidOptionsResponse.json() as {
         availableBills: Array<{ reportItemId: string; billId: string }>;
@@ -500,7 +500,7 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
         reportIds.push(report.id);
 
         const optionsResponse = await admin.request.get(
-          `/api/lanflow/rubber-exports?locationId=${locationId}`,
+          `/api/lanflow/rubber-exports/options?locationId=${locationId}`,
         );
         expect(optionsResponse.ok(), await optionsResponse.text()).toBeTruthy();
         const options = (await optionsResponse.json() as {
@@ -708,7 +708,7 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
       const sourceReport = await createReport(admin, locationId);
       sourceReportId = sourceReport.id;
       const optionsResponse = await admin.request.get(
-        `/api/lanflow/rubber-exports?locationId=${locationId}`,
+        `/api/lanflow/rubber-exports/options?locationId=${locationId}`,
       );
       expect(optionsResponse.ok(), await optionsResponse.text()).toBeTruthy();
       const options = (await optionsResponse.json() as {

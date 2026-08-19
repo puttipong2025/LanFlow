@@ -299,4 +299,163 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
       await db.from("locations").delete().in("id", [sourceLocationId, destinationLocationId]);
     }
   });
+
+  test("pages and searches more than one Branch Receipt candidate batch without overlap", async ({ page }) => {
+    const db = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const meResponse = await page.request.get("/api/auth/me");
+    expect(meResponse.ok()).toBeTruthy();
+    const profile = (await meResponse.json() as {
+      profile: { id: string; name: string; phone: string };
+    }).profile;
+    const sourceLocationId = crypto.randomUUID();
+    const destinationLocationId = crypto.randomUUID();
+    const reportId = crypto.randomUUID();
+    const billIds = Array.from({ length: 51 }, () => crypto.randomUUID());
+    const reportItemIds = Array.from({ length: 51 }, () => crypto.randomUUID());
+    const exportIds = Array.from({ length: 51 }, () => crypto.randomUUID());
+    const marker = `RECEIPT-PAGE-${sourceLocationId.slice(0, 6)}`;
+    const base = Date.now() - 200_000;
+
+    try {
+      expect((await db.from("locations").insert([
+        { id: sourceLocationId, name: `ต้นทาง ${marker}`, code: `RS${sourceLocationId.slice(0, 6)}`, is_active: true },
+        { id: destinationLocationId, name: `ปลายทาง ${marker}`, code: `RD${destinationLocationId.slice(0, 6)}`, is_active: true },
+      ])).error).toBeNull();
+      expect((await db.from("user_locations").insert([
+        { user_id: profile.id, location_id: sourceLocationId },
+        { user_id: profile.id, location_id: destinationLocationId },
+      ])).error).toBeNull();
+      expect((await db.from("report_batches").insert({
+        id: reportId,
+        report_no: `RPT-${marker}`,
+        report_date: "2026-08-19",
+        sequence_no: 551,
+        location_id: sourceLocationId,
+        cutoff_at: new Date(base).toISOString(),
+        created_by_user_id: profile.id,
+        created_by_name: profile.name,
+        created_by_phone: profile.phone,
+      })).error).toBeNull();
+      expect((await db.from("rubber_bills").insert(billIds.map((id, index) => ({
+        id,
+        client_temp_id: id,
+        local_bill_no: `${marker}-B-${index}`,
+        server_bill_no: `${marker}-B-${index}`,
+        idempotency_key: `${marker}:${index}`,
+        sync_status: "synced",
+        record_status: "active",
+        location_id: sourceLocationId,
+        bill_no: `${marker}-B-${index}`,
+        bill_date: "2026-08-19",
+        customer_name: marker,
+        bill_type: "weighing",
+        weight: 100,
+        deduct_weight: 0,
+        rubber_value: 3_000,
+        average_price: 30,
+        net_total: 3_000,
+        client_created_at: new Date(base + index * 1_000).toISOString(),
+        created_by_user_id: profile.id,
+        created_by_name: profile.name,
+        created_by_phone: profile.phone,
+      })))).error).toBeNull();
+      expect((await db.from("rubber_bill_items").insert(billIds.map((billId) => ({
+        bill_id: billId,
+        item_type: "weigh",
+        net_weight: 100,
+        quantity: 100,
+        unit: "kg",
+        price: 30,
+        total: 3_000,
+      })))).error).toBeNull();
+      expect((await db.from("report_items").insert(reportItemIds.map((id, index) => ({
+        id,
+        report_id: reportId,
+        location_id: sourceLocationId,
+        entity_type: "rubber_bill",
+        entity_id: billIds[index],
+        eligibility_at: new Date(base + index * 1_000).toISOString(),
+      })))).error).toBeNull();
+      expect((await db.from("rubber_exports").insert(exportIds.map((id, index) => ({
+        id,
+        export_no: `${marker}-E-${String(index).padStart(3, "0")}`,
+        export_date: "2026-08-19",
+        sequence_no: index + 1,
+        location_id: sourceLocationId,
+        status: "verified",
+        original_weight_total: 100,
+        paid_total: 3_000,
+        average_price: 30,
+        current_weight: 90,
+        weight_loss_percent: 10,
+        work_rate: 1,
+        other_operating_cost: 0,
+        work_total: 100,
+        expense_destination: "branch",
+        created_by_user_id: profile.id,
+        created_by_name: profile.name,
+        created_by_phone: profile.phone,
+        verified_by_user_id: profile.id,
+        verified_by_name: profile.name,
+        verified_by_phone: profile.phone,
+        verified_at: new Date(base + index * 1_000).toISOString(),
+        age_cutoff_at: new Date(base + index * 1_000).toISOString(),
+        average_age_hours: 1,
+        oldest_age_hours: 1,
+        estimated_age_item_count: 0,
+      })))).error).toBeNull();
+      expect((await db.from("rubber_export_items").insert(exportIds.map((exportId, index) => ({
+        export_id: exportId,
+        location_id: sourceLocationId,
+        source_report_item_id: reportItemIds[index],
+        source_bill_id: billIds[index],
+        bill_date: "2026-08-19",
+        bill_no: `${marker}-B-${index}`,
+        customer_name: marker,
+        eligibility_at: new Date(base + index * 1_000).toISOString(),
+        net_weight: 100,
+        paid_amount: 3_000,
+        age_source_at: new Date(base + index * 1_000).toISOString(),
+        age_is_estimated: false,
+        carried_age_hours: 1,
+      })))).error).toBeNull();
+
+      const firstResponse = await page.request.get(
+        `/api/lanflow/rubber-bills/branch-receipts?destinationLocationId=${destinationLocationId}&search=${marker}`,
+      );
+      expect(firstResponse.ok(), await firstResponse.text()).toBeTruthy();
+      const first = await firstResponse.json() as {
+        candidates: Array<{ sourceRubberExportId: string }>;
+        hasMore: boolean;
+        nextCursor: string | null;
+      };
+      expect(first.candidates).toHaveLength(50);
+      expect(first.hasMore).toBe(true);
+      expect((await page.request.get(
+        `/api/lanflow/rubber-bills/branch-receipts?destinationLocationId=${destinationLocationId}&search=wrong-scope&cursor=${encodeURIComponent(first.nextCursor!)}`,
+      )).status()).toBe(400);
+      const secondResponse = await page.request.get(
+        `/api/lanflow/rubber-bills/branch-receipts?destinationLocationId=${destinationLocationId}&search=${marker}&cursor=${encodeURIComponent(first.nextCursor!)}`,
+      );
+      expect(secondResponse.ok(), await secondResponse.text()).toBeTruthy();
+      const second = await secondResponse.json() as {
+        candidates: Array<{ sourceRubberExportId: string }>;
+        hasMore: boolean;
+      };
+      expect(second.candidates).toHaveLength(1);
+      expect(second.hasMore).toBe(false);
+      expect(new Set([...first.candidates, ...second.candidates].map((row) => row.sourceRubberExportId)).size).toBe(51);
+    } finally {
+      await db.from("rubber_export_items").delete().in("export_id", exportIds);
+      await db.from("rubber_exports").delete().in("id", exportIds);
+      await db.from("report_items").delete().in("id", reportItemIds);
+      await db.from("report_batches").delete().eq("id", reportId);
+      await db.from("rubber_bill_items").delete().in("bill_id", billIds);
+      await db.from("rubber_bills").delete().in("id", billIds);
+      await db.from("user_locations").delete().in("location_id", [sourceLocationId, destinationLocationId]);
+      await db.from("locations").delete().in("id", [sourceLocationId, destinationLocationId]);
+    }
+  });
 });

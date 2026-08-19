@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { PackagePlus } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { PackagePlus, Search } from "lucide-react";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { formatBangkokDateTime } from "@/lib/bangkok-date";
@@ -34,33 +34,64 @@ export function BranchRubberReceiptModal({
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  const [hasMore, setHasMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const loadController = useRef<AbortController | null>(null);
+  const candidatesRef = useRef<BranchRubberReceiptCandidate[]>([]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (cursor: string | null = null, append = false) => {
+    loadController.current?.abort();
+    const controller = new AbortController();
+    loadController.current = controller;
     setLoading(true);
     setError(null);
     try {
+      const params = new URLSearchParams({ destinationLocationId, search });
+      if (cursor) params.set("cursor", cursor);
       const response = await authFetch(
-        `/api/lanflow/rubber-bills/branch-receipts?destinationLocationId=${encodeURIComponent(destinationLocationId)}`,
-        { cache: "no-store" },
+        `/api/lanflow/rubber-bills/branch-receipts?${params.toString()}`,
+        { cache: "no-store", signal: controller.signal },
       );
       await assertApiResponse(response);
-      const body = await response.json() as { candidates: BranchRubberReceiptCandidate[] };
-      setCandidates(body.candidates);
+      const body = await response.json() as {
+        candidates: BranchRubberReceiptCandidate[];
+        hasMore: boolean;
+        nextCursor: string | null;
+      };
+      if (controller.signal.aborted) return;
+      const nextCandidates = append
+        ? [...candidatesRef.current, ...body.candidates.filter((row) => !candidatesRef.current.some((item) => item.sourceRubberExportId === row.sourceRubberExportId))]
+        : body.candidates;
+      candidatesRef.current = nextCandidates;
+      setCandidates(nextCandidates);
+      setHasMore(body.hasMore);
+      setNextCursor(body.nextCursor);
       setSelectedId((current) => (
-        body.candidates.some((candidate) => candidate.sourceRubberExportId === current)
+        nextCandidates.some((candidate) => candidate.sourceRubberExportId === current)
           ? current
           : null
       ));
     } catch (caught) {
+      if (caught instanceof Error && caught.name === "AbortError") return;
       setError(caught instanceof Error ? caught.message : "โหลดรายการส่งออกยางไม่สำเร็จ");
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
-  }, [destinationLocationId]);
+  }, [destinationLocationId, search]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearch(searchInput.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
 
   useEffect(() => {
     void load();
-  }, [load]);
+    return () => loadController.current?.abort();
+  // Reload only when the destination or debounced search changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [destinationLocationId, search]);
 
   async function receive() {
     if (!selectedId || submitting) return;
@@ -76,7 +107,12 @@ export function BranchRubberReceiptModal({
         }),
       });
       await assertApiResponse(response);
-      await onReceived(await response.json() as BranchRubberReceiptResult);
+      const received = await response.json() as BranchRubberReceiptResult;
+      const remaining = candidatesRef.current.filter((row) => row.sourceRubberExportId !== selectedId);
+      candidatesRef.current = remaining;
+      setCandidates(remaining);
+      setSelectedId(null);
+      await onReceived(received);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "รับยางเข้าสาขาไม่สำเร็จ");
       await load();
@@ -94,6 +130,18 @@ export function BranchRubberReceiptModal({
       size="wide"
     >
       <div className="space-y-4">
+        <label className="block">
+          <span className="mb-1 block text-sm font-semibold text-ink">ค้นหาเลข REX หรือสาขาต้นทาง</span>
+          <span className="flex items-center gap-2 rounded-md border border-black/15 bg-white px-3 focus-within:ring-2 focus-within:ring-river">
+            <Search size={17} className="shrink-0 text-ink/50" aria-hidden="true" />
+            <input
+              value={searchInput}
+              onChange={(event) => setSearchInput(event.target.value)}
+              placeholder="เช่น REX-001 หรือ สาขาเหนือ"
+              className="min-h-10 min-w-0 flex-1 bg-transparent py-2 text-sm outline-none"
+            />
+          </span>
+        </label>
         {loading ? (
           <div className="space-y-2" aria-label="กำลังโหลดรายการส่งออกยาง">
             {[1, 2, 3].map((row) => (
@@ -158,6 +206,19 @@ export function BranchRubberReceiptModal({
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {!loading && hasMore && nextCursor && (
+          <div className="flex flex-col items-center gap-2 rounded-md bg-field px-4 py-3 text-center">
+            <p className="text-sm text-ink/65">โหลดแล้ว {candidates.length} รายการ</p>
+            <button
+              type="button"
+              onClick={() => void load(nextCursor, true)}
+              className="focus-ring rounded-md bg-river px-4 py-2 text-sm font-semibold text-white"
+            >
+              โหลดเพิ่ม
+            </button>
           </div>
         )}
 

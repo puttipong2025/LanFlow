@@ -14,7 +14,7 @@ import type {
 } from "@/types/rubber-exports";
 import type { DocumentDeletionAudit } from "@/types/deletion-audits";
 
-export function useRubberExports(locationId: string, online: boolean) {
+export function useRubberExports(locationId: string, online: boolean, operationalView: "active" | "history") {
   const queryClient = useQueryClient();
   const locationIdRef = useRef(locationId);
   locationIdRef.current = locationId;
@@ -29,6 +29,15 @@ export function useRubberExports(locationId: string, online: boolean) {
   const [error, setError] = useState<string | null>(null);
   const [deletionsLoading, setDeletionsLoading] = useState(false);
   const [deletionsError, setDeletionsError] = useState<string | null>(null);
+  const [deletionsHasMore, setDeletionsHasMore] = useState(false);
+  const [deletionsCursor, setDeletionsCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [optionsLoading, setOptionsLoading] = useState(false);
+  const listController = useRef<AbortController | null>(null);
+  const optionsController = useRef<AbortController | null>(null);
+  const deletionsController = useRef<AbortController | null>(null);
+  const optionsCache = useRef(new Map<string, RubberExportAvailableBill[]>());
 
   const reload = useCallback(async (silent = false) => {
     if (!locationId || !online) {
@@ -41,67 +50,169 @@ export function useRubberExports(locationId: string, online: boolean) {
       setError(null);
       setPermissions({ canVerify: false, canDelete: false });
     }
+    listController.current?.abort();
+    const controller = new AbortController();
+    listController.current = controller;
     try {
       const response = await authFetch(
-        `/api/lanflow/rubber-exports?locationId=${encodeURIComponent(locationId)}`,
-        { cache: "no-store" }
+        `/api/lanflow/rubber-exports?locationId=${encodeURIComponent(locationId)}&view=${operationalView}`,
+        { cache: "no-store", signal: controller.signal }
       );
       await assertApiResponse(response);
       const body = await response.json() as {
         exports: RubberExportSummary[];
-        availableBills: RubberExportAvailableBill[];
         permissions: RubberExportPermissions;
+        hasMore: boolean;
+        nextCursor: string | null;
       };
+      if (locationIdRef.current !== locationId || controller.signal.aborted) return;
       setExports(body.exports);
-      setAvailableBills(body.availableBills);
       setPermissions(body.permissions ?? { canVerify: false, canDelete: false });
+      setHasMore(body.hasMore);
+      setNextCursor(body.nextCursor);
     } catch (caught) {
+      if (controller.signal.aborted) return;
       setError(caught instanceof Error ? caught.message : "โหลดรายการส่งออกไม่สำเร็จ");
     } finally {
-      if (!silent) setLoading(false);
+      if (listController.current === controller) {
+        listController.current = null;
+        if (!silent) setLoading(false);
+      }
     }
-  }, [locationId, online]);
+  }, [locationId, online, operationalView]);
 
-  const reloadDeletions = useCallback(async () => {
+  const loadMore = useCallback(async () => {
+    if (!nextCursor || !online) return;
+    const controller = new AbortController();
+    listController.current?.abort();
+    listController.current = controller;
+    setLoading(true);
+    try {
+      const response = await authFetch(
+        `/api/lanflow/rubber-exports?locationId=${encodeURIComponent(locationId)}&view=${operationalView}&cursor=${encodeURIComponent(nextCursor)}`,
+        { cache: "no-store", signal: controller.signal },
+      );
+      await assertApiResponse(response);
+      const body = await response.json() as {
+        exports: RubberExportSummary[]; hasMore: boolean; nextCursor: string | null;
+      };
+      if (locationIdRef.current !== locationId || controller.signal.aborted) return;
+      setExports((current) => [...current, ...body.exports.filter((row) => !current.some((item) => item.id === row.id))]);
+      setHasMore(body.hasMore);
+      setNextCursor(body.nextCursor);
+    } catch (caught) {
+      if (caught instanceof Error && caught.name === "AbortError") return;
+      setError(caught instanceof Error ? caught.message : "โหลดรายการส่งออกเพิ่มไม่สำเร็จ");
+    } finally {
+      if (listController.current === controller) {
+        listController.current = null;
+        setLoading(false);
+      }
+    }
+  }, [locationId, nextCursor, online, operationalView]);
+
+  const reloadDeletions = useCallback(async (cursor: string | null = null, append = false) => {
     if (!locationId || !online) return;
+    deletionsController.current?.abort();
+    const controller = new AbortController();
+    deletionsController.current = controller;
     setDeletionsLoading(true);
     setDeletionsError(null);
     try {
+      const params = new URLSearchParams({ locationId, view: "deletions" });
+      if (cursor) params.set("cursor", cursor);
       const response = await authFetch(
-        `/api/lanflow/rubber-exports?locationId=${encodeURIComponent(locationId)}&view=deletions`,
-        { cache: "no-store" },
+        `/api/lanflow/rubber-exports?${params.toString()}`,
+        { cache: "no-store", signal: controller.signal },
       );
       await assertApiResponse(response);
       const body = await response.json() as {
         deletions: DocumentDeletionAudit[];
+        hasMore: boolean;
+        nextCursor: string | null;
       };
-      if (locationIdRef.current === locationId) setDeletions(body.deletions);
+      if (locationIdRef.current === locationId && !controller.signal.aborted) {
+        setDeletions((current) => append
+          ? [...current, ...body.deletions.filter((row) => !current.some((item) => item.id === row.id))]
+          : body.deletions);
+        setDeletionsHasMore(body.hasMore);
+        setDeletionsCursor(body.nextCursor);
+      }
     } catch (caught) {
+      if (caught instanceof Error && caught.name === "AbortError") return;
       setDeletionsError(
         caught instanceof Error ? caught.message : "โหลดประวัติการลบไม่สำเร็จ",
       );
     } finally {
-      setDeletionsLoading(false);
+      if (deletionsController.current === controller) {
+        deletionsController.current = null;
+        setDeletionsLoading(false);
+      }
     }
   }, [locationId, online]);
 
   useEffect(() => {
+    setExports([]);
     setDeletions([]);
+    setHasMore(false);
+    setNextCursor(null);
+    setDeletionsHasMore(false);
+    setDeletionsCursor(null);
+    setAvailableBills([]);
+    optionsController.current?.abort();
     void reload();
+    return () => {
+      listController.current?.abort();
+      optionsController.current?.abort();
+      deletionsController.current?.abort();
+    };
   }, [locationId, reload]);
 
+  const loadAvailableBills = useCallback(async (mode: "create" | "edit", exportId?: string) => {
+    const key = `${locationId}:${mode}:${exportId ?? "new"}`;
+    const cached = optionsCache.current.get(key);
+    if (cached) {
+      setAvailableBills(cached);
+      return cached;
+    }
+    optionsController.current?.abort();
+    const controller = new AbortController();
+    optionsController.current = controller;
+    setOptionsLoading(true);
+    try {
+      const response = await authFetch(
+        `/api/lanflow/rubber-exports/options?locationId=${encodeURIComponent(locationId)}`,
+        { cache: "no-store", signal: controller.signal },
+      );
+      await assertApiResponse(response);
+      const body = await response.json() as { availableBills: RubberExportAvailableBill[] };
+      if (controller.signal.aborted || locationIdRef.current !== locationId) return [];
+      optionsCache.current.set(key, body.availableBills);
+      setAvailableBills(body.availableBills);
+      return body.availableBills;
+    } finally {
+      if (optionsController.current === controller) {
+        optionsController.current = null;
+        setOptionsLoading(false);
+      }
+    }
+  }, [locationId]);
+
   async function reloadWithBadges() {
+    optionsCache.current.clear();
+    setAvailableBills([]);
     await Promise.all([
       reload(),
       queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
     ]);
   }
 
-  async function preview(selectedReportItemIds: string[], exportId?: string) {
+  async function preview(selectedReportItemIds: string[], exportId?: string, signal?: AbortSignal) {
     const response = await authFetch("/api/lanflow/rubber-exports/preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ locationId, selectedReportItemIds, exportId }),
+      signal,
     });
     await assertApiResponse(response);
     return response.json() as Promise<RubberExportPreview>;
@@ -152,6 +263,8 @@ export function useRubberExports(locationId: string, online: boolean) {
       body: JSON.stringify({ selectedReportItemIds }),
     });
     await assertApiResponse(response);
+    optionsCache.current.clear();
+    setAvailableBills([]);
     await reload();
   }
 
@@ -200,8 +313,14 @@ export function useRubberExports(locationId: string, online: boolean) {
     error,
     deletionsLoading,
     deletionsError,
+    deletionsHasMore,
+    deletionsCursor,
+    hasMore,
+    optionsLoading,
     reload,
+    loadMore,
     reloadDeletions,
+    loadAvailableBills,
     preview,
     create,
     details,

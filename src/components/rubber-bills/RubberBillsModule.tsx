@@ -21,7 +21,7 @@ import {
   getOfflineSyncedActionBlockReason,
   RUBBER_BILL_TRANSFER_LOCK_MESSAGE
 } from "@/lib/record-action-locks";
-import type { Location, Profile, RubberBill, RubberBillApprovalMarker } from "@/types";
+import type { Location, Profile, RubberBill } from "@/types";
 import { RubberBillsTable } from "./RubberBillsTable";
 import { TablePageSizeSelect } from "@/components/shared/TablePagination";
 import { RubberBillModal, type RubberBillCustomerOption } from "./RubberBillModal";
@@ -45,100 +45,11 @@ import {
   saveCustomerCache,
   type WeighingQueueCustomer,
 } from "@/lib/rubber-bills/weighing-queue";
-import { calculateRubberBill } from "@/lib/rubber-bills/calculations";
 import { runBlockingAction } from "@/lib/swal";
 import {
   BranchRubberReceiptDetailModal,
   BranchRubberReceiptModal,
 } from "./BranchRubberReceiptModal";
-
-function pendingCreateBill(marker: RubberBillApprovalMarker): RubberBill | null {
-  const payload = marker.proposedCreatePayload;
-  if (!payload) return null;
-  const items = Array.isArray(payload.items) ? payload.items : [];
-  const weighItems = items
-    .filter((item: any) => item.itemType === "weigh")
-    .map((item: any) => ({
-      id: String(item.sequenceNo),
-      label: item.title,
-      inWeight: Number(item.inWeight),
-      outWeight: Number(item.outWeight),
-      netWeight: Number(item.netWeight),
-      price: Number(item.unitPrice),
-    }));
-  const acidItems = items
-    .filter((item: any) => item.itemType === "acid" || item.itemType === "stock_deduction")
-    .map((item: any) => ({
-      id: String(item.sequenceNo),
-      name: item.title,
-      stockProductId: item.stockProductId,
-      quantity: Number(item.quantity),
-      unit: item.unit,
-      unitPrice: Number(item.unitPrice),
-    }));
-  const debtItems = items
-    .filter((item: any) => item.itemType === "debt")
-    .map((item: any) => ({
-      id: String(item.sequenceNo),
-      title: item.title,
-      amount: Number(item.totalAmount),
-    }));
-  const calculation = calculateRubberBill({
-    weighItems,
-    deductWeight: Number(payload.deductWeight ?? 0),
-    stockDeductionItems: acidItems,
-    debtItems,
-  });
-
-  return {
-    id: `approval:${marker.requestId}`,
-    clientTempId: marker.clientTempId,
-    localBillNo: String(payload.localBillNo ?? "รอเลขบิล"),
-    syncStatus: "synced",
-    idempotencyKey: String(payload.idempotencyKey ?? marker.requestId),
-    locationId: String(payload.locationId),
-    billNo: "รออนุมัติ",
-    billDate: String(payload.billDate),
-    customerId: payload.customerId ? String(payload.customerId) : null,
-    customerName: String(payload.customerName ?? ""),
-    billType: String(payload.billType ?? "บิลเครื่องชั่งเล็ก"),
-    deductWeight: Number(payload.deductWeight ?? 0),
-    weight: Number(payload.weight ?? 0),
-    netWeight: Number(payload.netWeight ?? calculation.netWeight),
-    weighValueTotal: Number(payload.rubberValue ?? calculation.weighValueTotal),
-    rubberValue: Number(payload.netRubberValue ?? calculation.rubberValue),
-    price: Number(payload.averagePrice ?? 0),
-    deductionTotal: Number(payload.deductionTotal ?? 0),
-    payableBeforeRounding: Number(
-      payload.payableBeforeRounding ?? calculation.payableBeforeRounding
-    ),
-    netTotal: Number(payload.netTotal ?? 0),
-    acidPackCount: Number(payload.acidPackCount ?? 0),
-    configuredPriceSnapshot:
-      payload.configuredPriceSnapshot == null
-        ? null
-        : Number(payload.configuredPriceSnapshot),
-    approvalState: "not_required",
-    approvalApprovedByName: null,
-    approvalRevisionNo: null,
-    weighItems,
-    acidItems,
-    debtItem: debtItems[0],
-    debtItems,
-    createdByUserId: String(payload.createdByUserId ?? ""),
-    createdByName: String(payload.createdByName ?? ""),
-    createdByPhone: String(payload.createdByPhone ?? ""),
-    clientCreatedAt: String(payload.clientCreatedAt),
-    clientRecordedAt: String(payload.clientRecordedAt),
-    revisionNo: 0,
-    recordStatus: "active",
-    approvalPending: true,
-    approvalRequestId: marker.requestId,
-    approvalOperation: "create",
-    approvalReasons: marker.matchedReasons,
-    operationalSortAt: marker.requestedAt,
-  };
-}
 
 export function RubberBillsModule({
   selectedLocation,
@@ -156,10 +67,7 @@ export function RubberBillsModule({
   const queryClient = useQueryClient();
   const pdfShare = useSharePdf();
   const canManageApprovals = canManageSystemFeatures(profile);
-  const {
-    settings: approvalSettings,
-    markers: approvalMarkers,
-  } = useRubberBillApprovals({
+  const { settings: approvalSettings } = useRubberBillApprovals({
     locationId: selectedLocation.id,
   });
   const { addBill, updateBill, deleteBill } = useRubberBillMutations(
@@ -180,7 +88,7 @@ export function RubberBillsModule({
     search: debouncedSearch,
   });
   const workCounts = useRubberBillWorkCounts(profile.id, selectedLocation.id);
-  const pendingApprovalCount = workCounts.data?.pendingApproval ?? approvalMarkers.length;
+  const pendingApprovalCount = workCounts.data?.pendingApproval ?? 0;
   const approvalButtonLabel = isOnline && pendingApprovalCount > 0
     ? `ตั้งค่าและอนุมัติบิลยาง รออนุมัติ ${pendingApprovalCount} รายการ`
     : "ตั้งค่าและอนุมัติบิลยาง";
@@ -256,38 +164,7 @@ export function RubberBillsModule({
     ? cachedCustomerOptions
     : liveCustomerOptions;
 
-  const displayedBills = useMemo(() => {
-    const markersByBillId = new Map(
-      approvalMarkers
-        .filter((marker) => marker.billId)
-        .map((marker) => [marker.billId as string, marker])
-    );
-    const markedBills = list.bills.map((bill) => {
-      const marker = markersByBillId.get(bill.id);
-      if (!marker) return bill;
-      return {
-        ...bill,
-        approvalPending: true,
-        approvalRequestId: marker.requestId,
-        approvalOperation: marker.operation,
-        approvalReasons: marker.matchedReasons,
-      };
-    });
-    const pendingCreates = approvalMarkers
-      .filter((marker) => marker.operation === "create")
-      .map(pendingCreateBill)
-      .filter((bill): bill is RubberBill => bill !== null);
-    const visibleCreates = (mode === "latest" || mode === "pending_approval")
-      && (documentStatus === "any" || documentStatus === "editable")
-      ? pendingCreates
-      : [];
-    const rows = [...visibleCreates, ...markedBills];
-    if (mode !== "pending_approval") return rows;
-    return rows.sort((a, b) => (
-      (a.operationalSortAt ?? a.clientCreatedAt).localeCompare(b.operationalSortAt ?? b.clientCreatedAt)
-      || a.id.localeCompare(b.id)
-    ));
-  }, [approvalMarkers, documentStatus, list.bills, mode]);
+  const displayedBills = list.bills;
 
   const filteredBills = displayedBills.filter((bill: RubberBill) => {
     const haystack = [
@@ -676,6 +553,7 @@ export function RubberBillsModule({
       {approvalModalOpen && (
         <RubberBillApprovalModal
           locationId={selectedLocation.id}
+          profile={profile}
           onClose={() => setApprovalModalOpen(false)}
         />
       )}

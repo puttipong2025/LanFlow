@@ -81,16 +81,12 @@ export function useRubberBillEvidenceReview(locationId: string) {
     queryKey,
     enabled: Boolean(locationId),
     queryFn: async () => {
-      const [statesResult, overviewResult] = await Promise.all([
-        supabase.rpc("get_rubber_bill_evidence_review_states", { p_location_id: locationId }),
-        supabase.rpc("get_rubber_bill_evidence_review_overview", { p_location_id: locationId }),
-      ]);
-      if (statesResult.error) throw new Error(statesResult.error.message);
+      const overviewResult = await supabase.rpc(
+        "get_rubber_bill_evidence_review_overview",
+        { p_location_id: locationId },
+      );
       if (overviewResult.error) throw new Error(overviewResult.error.message);
-      return {
-        states: ((statesResult.data ?? []) as Record<string, unknown>[]).map(mapRubberBillEvidenceState),
-        overview: mapOverview(overviewResult.data),
-      };
+      return { overview: mapOverview(overviewResult.data) };
     },
     refetchInterval: 60_000,
     refetchOnWindowFocus: true,
@@ -100,6 +96,7 @@ export function useRubberBillEvidenceReview(locationId: string) {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey }),
       queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
+      queryClient.invalidateQueries({ queryKey: ["rubberEvidenceFeed"] }),
     ]);
   }
 
@@ -139,10 +136,7 @@ export function useRubberBillEvidenceReview(locationId: string) {
       p_expected_pending_fingerprint: variables.fingerprint,
     }));
 
-  const states = query.data?.states ?? [];
   return {
-    states,
-    statesByBillId: new Map(states.map((state) => [state.billId, state])),
     overview: query.data?.overview ?? {
       isOpen: false,
       periodId: null,

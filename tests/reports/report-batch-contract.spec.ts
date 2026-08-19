@@ -363,7 +363,11 @@ test.describe.serial("Report batch contract @report-batch", () => {
       expect((await adminContext.request.get(`/api/lanflow/reports/${first.id}`)).status()).toBe(404);
       expect((await deleteReport(superAdmin, first.id)).ok()).toBeTruthy();
 
-      const deletionHistory = await adminContext.request.get(
+      const forbiddenDeletionHistory = await adminContext.request.get(
+        `/api/lanflow/reports?locationId=${locationId}&view=deletions`,
+      );
+      expect(forbiddenDeletionHistory.status()).toBe(403);
+      const deletionHistory = await superAdmin.request.get(
         `/api/lanflow/reports?locationId=${locationId}&view=deletions`,
       );
       expect(deletionHistory.ok(), await deletionHistory.text()).toBeTruthy();
@@ -1107,7 +1111,6 @@ test.describe.serial("Report batch contract @report-batch", () => {
       const targetLocation = await activateAlternateLocation(
         db,
         sourceLocationId,
-        actor.locationIds,
       );
       const targetLocationId = targetLocation.id;
       restoreAlternateLocation = targetLocation.restore;

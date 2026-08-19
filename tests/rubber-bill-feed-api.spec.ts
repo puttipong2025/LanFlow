@@ -5,7 +5,7 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
 test.describe("Rubber Bill cursor feed @rubber-bill-feed", () => {
-  test.use({ storageState: "playwright/.auth/user.json" });
+  test.use({ storageState: "playwright/.auth/super_admin.json" });
 
   test("paginates without overlap and rejects malformed or cross-scope cursors", async ({ request }) => {
     const me = await (await request.get("/api/auth/me")).json() as { profile: { locationIds: string[] } };
@@ -91,6 +91,84 @@ test.describe("Rubber Bill cursor feed @rubber-bill-feed", () => {
     } finally {
       await admin.from("rubber_bill_items").delete().in("bill_id", billIds);
       await admin.from("rubber_bills").delete().in("id", billIds);
+    }
+  });
+
+  test("pages more than 150 pending creates through the same minimal work feed", async ({ request }) => {
+    const me = await (await request.get("/api/auth/me")).json() as {
+      profile: { id: string; name: string; phone: string; locationIds: string[] };
+    };
+    const locationId = me.profile.locationIds[0];
+    const admin = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false } });
+    const marker = `APPROVAL-FEED-${Date.now()}`;
+    const requestIds = Array.from({ length: 151 }, () => crypto.randomUUID());
+    const rows = requestIds.map((id, index) => {
+      const requestedAt = new Date(Date.now() + index * 1_000).toISOString();
+      return {
+        id,
+        operation: "create",
+        request_status: "pending",
+        location_id: locationId,
+        client_temp_id: `${marker}-${index}`,
+        idempotency_key: `${marker}:${index}`,
+        base_revision_no: 0,
+        matched_reasons: ["price"],
+        configured_price_snapshot: 10,
+        edit_window_minutes_snapshot: 30,
+        original_payload: null,
+        proposed_payload: {
+          locationId,
+          localBillNo: `${marker}-${index}`,
+          billDate: requestedAt.slice(0, 10),
+          customerName: marker,
+          billType: "บิลเครื่องชั่งเล็ก",
+          netTotal: 1_000,
+          clientCreatedAt: requestedAt,
+          clientRecordedAt: requestedAt,
+          items: [{ itemType: "weigh", sequenceNo: 1, title: "ชั่ง", inWeight: 100, outWeight: 0, netWeight: 100, unitPrice: 10, totalAmount: 1_000 }],
+        },
+        requested_by_user_id: me.profile.id,
+        requested_by_name: me.profile.name,
+        requested_by_phone: me.profile.phone,
+        requested_at: requestedAt,
+      };
+    });
+    try {
+      expect((await admin.from("rubber_bill_approval_requests").insert(rows)).error).toBeNull();
+      const firstStartedAt = performance.now();
+      const firstResponse = await request.get(`/api/lanflow/rubber-bills/feed?locationId=${locationId}&mode=pending_approval&search=${marker}&limit=150`);
+      expect(firstResponse.ok()).toBeTruthy();
+      const firstBody = await firstResponse.body();
+      const firstPageMs = Math.round(performance.now() - firstStartedAt);
+      const first = JSON.parse(firstBody.toString("utf8")) as {
+        rows: Array<Record<string, unknown>>; nextCursor: string | null; hasMore: boolean;
+      };
+      expect(first.rows).toHaveLength(150);
+      expect(first.hasMore).toBe(true);
+      expect(first.nextCursor).toBeTruthy();
+      expect(first.rows.every((row) => row.row_kind === "approval_create")).toBe(true);
+      expect(first.rows.every((row) => String(row.work_identity).startsWith("approval:"))).toBe(true);
+      expect(first.rows.every((row) => !("original_payload" in row) && !("proposed_payload" in row))).toBe(true);
+
+      const secondStartedAt = performance.now();
+      const secondResponse = await request.get(`/api/lanflow/rubber-bills/feed?locationId=${locationId}&mode=pending_approval&search=${marker}&limit=150&cursor=${encodeURIComponent(first.nextCursor!)}`);
+      expect(secondResponse.ok()).toBeTruthy();
+      const secondBody = await secondResponse.body();
+      const second = JSON.parse(secondBody.toString("utf8")) as { rows: Array<Record<string, unknown>>; hasMore: boolean };
+      expect(second.rows).toHaveLength(1);
+      expect(second.hasMore).toBe(false);
+      const identities = [...first.rows, ...second.rows].map((row) => String(row.work_identity));
+      expect(new Set(identities).size).toBe(151);
+      console.info("[rubber-approval-feed-benchmark]", JSON.stringify({
+        rows: 151,
+        firstPageRows: first.rows.length,
+        firstPageMs,
+        firstPageBytes: firstBody.byteLength,
+        secondPageMs: Math.round(performance.now() - secondStartedAt),
+        secondPageBytes: secondBody.byteLength,
+      }));
+    } finally {
+      await admin.from("rubber_bill_approval_requests").delete().in("id", requestIds);
     }
   });
 });

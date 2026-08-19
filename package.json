@@ -12,6 +12,7 @@
     "deploy:check": "node scripts/check-deployment-env.mjs && npm run verify",
     "baseline:income-expense": "node scripts/measure-income-expense-baseline.mjs",
     "baseline:offline-sync": "npm run build && node scripts/measure-offline-sync-baseline.mjs",
+    "baseline:rubber-related": "node scripts/measure-rubber-related-baseline.mjs",
     "auth:migrate-users:dry-run": "node --env-file=.env.local scripts/migrate-supabase-auth-users.mjs",
     "auth:migrate-users": "node --env-file=.env.local scripts/migrate-supabase-auth-users.mjs --apply",
     "auth:verify-rls": "node --env-file=.env.local scripts/verify-supabase-auth-rls.mjs",

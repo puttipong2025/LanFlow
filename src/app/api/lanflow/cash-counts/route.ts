@@ -8,22 +8,49 @@ import {
 
 export const dynamic = "force-dynamic";
 
+type AuditCursor = { version: 1; ownerUserId: string; locationId: string; at: string; id: string };
+function decodeAuditCursor(value: string): AuditCursor | null {
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as AuditCursor;
+    return parsed?.version === 1 && typeof parsed.at === "string" && typeof parsed.id === "string" ? parsed : null;
+  } catch { return null; }
+}
+function encodeAuditCursor(value: AuditCursor) {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+}
+
 export async function GET(request: NextRequest) {
   const result = await requireSystemManager(request);
   if (!result.ok) return result.response;
   const locationId = request.nextUrl.searchParams.get("locationId");
   if (!locationId) return cashCountErrorResponse("กรุณาระบุสาขา");
   if (request.nextUrl.searchParams.get("view") === "deletions") {
-    const { data, error } = await result.supabase
+    const cursorValue = request.nextUrl.searchParams.get("cursor");
+    const cursor = cursorValue ? decodeAuditCursor(cursorValue) : null;
+    if (cursorValue && !cursor) return NextResponse.json({ error: "cursor ไม่ถูกต้อง" }, { status: 400 });
+    if (cursor && (cursor.ownerUserId !== result.auth.sub || cursor.locationId !== locationId)) {
+      return NextResponse.json({ error: "cursor ไม่ตรงกับขอบเขตประวัติ" }, { status: 400 });
+    }
+    let query = result.supabase
       .from("document_deletion_audits")
       .select(deletionAuditColumns)
       .eq("location_id", locationId)
       .eq("document_kind", "cash_count")
       .order("deleted_at", { ascending: false })
-      .order("id", { ascending: false });
+      .order("id", { ascending: false })
+      .limit(51);
+    if (cursor) query = query.or(`deleted_at.lt.${cursor.at},and(deleted_at.eq.${cursor.at},id.lt.${cursor.id})`);
+    const { data, error } = await query;
     if (error) return cashCountErrorResponse(error.message);
+    const page = (data ?? []).slice(0, 50);
+    const tail = page.at(-1);
     return NextResponse.json({
-      deletions: (data ?? []).map((row) => mapDeletionAuditRow(row)),
+      deletions: page.map((row) => mapDeletionAuditRow(row)),
+      hasMore: (data?.length ?? 0) > 50,
+      nextCursor: (data?.length ?? 0) > 50 && tail ? encodeAuditCursor({
+        version: 1, ownerUserId: result.auth.sub, locationId,
+        at: tail.deleted_at, id: tail.id,
+      }) : null,
     }, {
       headers: { "Cache-Control": "private, no-store, max-age=0" },
     });

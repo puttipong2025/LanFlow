@@ -1,24 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { requireAuth } from "@/lib/server/auth";
+import { hasSystemManagerAccess, requireAuth } from "@/lib/server/auth";
 
 export const dynamic = "force-dynamic";
 
 type Cursor = {
-  version: 1;
+  version: 2;
   ownerUserId: string;
   locationId: string;
   mode: string;
   documentStatus: string;
   search: string;
   sortAt: string;
-  id: string;
+  workIdentity: string;
 };
 
 function decodeCursor(value: string): Cursor | null {
   try {
     const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Cursor;
-    return parsed?.version === 1 ? parsed : null;
+    return parsed?.version === 2
+      && typeof parsed.ownerUserId === "string"
+      && typeof parsed.locationId === "string"
+      && typeof parsed.mode === "string"
+      && typeof parsed.documentStatus === "string"
+      && typeof parsed.search === "string"
+      && typeof parsed.sortAt === "string"
+      && typeof parsed.workIdentity === "string"
+      ? parsed : null;
   } catch {
     return null;
   }
@@ -38,7 +46,7 @@ export async function GET(request: NextRequest) {
   const documentStatus = params.get("documentStatus") ?? "any";
   const search = (params.get("search") ?? "").trim().toLocaleLowerCase("th-TH");
   const limit = Number(params.get("limit") ?? 100);
-  if (!result.auth.locationIds.includes(locationId)) {
+  if (!hasSystemManagerAccess(result.auth) && !result.auth.locationIds.includes(locationId)) {
     return NextResponse.json({ error: "ไม่มีสิทธิ์เข้าถึงสาขา" }, { status: 403 });
   }
   if (!["latest", "unpriced", "pending_approval"].includes(mode)
@@ -62,13 +70,13 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "cursor ไม่ตรงกับขอบเขตรายการ", code: "CURSOR_SCOPE_MISMATCH" }, { status: 400 });
   }
 
-  const { data, error } = await result.supabase.rpc("get_rubber_bill_operational_feed", {
+  const { data, error } = await result.supabase.rpc("get_rubber_bill_operational_feed_v2", {
     p_location_id: locationId,
     p_mode: mode,
     p_document_status: documentStatus,
     p_search: search,
     p_cursor_sort_at: cursor?.sortAt ?? null,
-    p_cursor_id: cursor?.id ?? null,
+    p_cursor_work_identity: cursor?.workIdentity ?? null,
     p_page_size: limit,
   });
   if (error) {
@@ -80,10 +88,12 @@ export async function GET(request: NextRequest) {
     rows?: Array<Record<string, unknown>>;
     hasMore?: boolean;
     nextSortAt?: string | null;
-    nextId?: string | null;
+    nextWorkIdentity?: string | null;
   };
   const rows = payload.rows ?? [];
-  const billIds = rows.map((row) => String(row.id));
+  const billIds = rows
+    .filter((row) => row.row_kind === "bill")
+    .map((row) => String(row.id));
   let evidenceStates: Array<Record<string, unknown>> = [];
   if (billIds.length > 0) {
     const evidenceResult = await result.supabase.rpc("get_rubber_bill_evidence_states_for_bills", {
@@ -97,16 +107,16 @@ export async function GET(request: NextRequest) {
     evidenceStates = (evidenceResult.data ?? []) as Array<Record<string, unknown>>;
   }
 
-  const nextCursor = payload.hasMore && payload.nextSortAt && payload.nextId
+  const nextCursor = payload.hasMore && payload.nextSortAt && payload.nextWorkIdentity
     ? encodeCursor({
-      version: 1,
+      version: 2,
       ownerUserId: result.auth.sub,
       locationId,
       mode,
       documentStatus,
       search,
       sortAt: payload.nextSortAt,
-      id: payload.nextId,
+      workIdentity: payload.nextWorkIdentity,
     })
     : null;
 

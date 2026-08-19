@@ -88,12 +88,14 @@ export function useRubberEvidencePage(bills: PageBill[], online: boolean) {
   const cacheRef = useRef(new Map<string, { objectUrl: string; bytes: number }>());
   const detailCacheRef = useRef(new Map<string, EvidenceDetail>());
   const inFlight = useRef(new Map<string, Promise<{ objectUrl: string; bytes: number }>>());
+  const pageScopesRef = useRef(new Map<string, { detailKeys: Set<string>; imageKeys: Set<string> }>());
 
   const clearCache = useCallback(() => {
     for (const item of cacheRef.current.values()) URL.revokeObjectURL(item.objectUrl);
     cacheRef.current.clear();
     detailCacheRef.current.clear();
     inFlight.current.clear();
+    pageScopesRef.current.clear();
   }, []);
 
   useEffect(() => {
@@ -168,15 +170,29 @@ export function useRubberEvidencePage(bills: PageBill[], online: boolean) {
       }
 
       const allTasks = Object.values(details).flatMap(imageTasks);
-      const activeDetailKeys = new Set(bills.map((bill) => `${bill.id}:${bill.revisionNo}`));
-      const activeImageKeys = new Set(allTasks.map((task) => task.key));
-      for (const key of detailCacheRef.current.keys()) {
-        if (!activeDetailKeys.has(key)) detailCacheRef.current.delete(key);
-      }
-      for (const [key, item] of cacheRef.current) {
-        if (activeImageKeys.has(key)) continue;
-        URL.revokeObjectURL(item.objectUrl);
-        cacheRef.current.delete(key);
+      const pageKey = bills.map((bill) => `${bill.id}:${bill.revisionNo}`).join("|");
+      const scope = {
+        detailKeys: new Set(bills.map((bill) => `${bill.id}:${bill.revisionNo}`)),
+        imageKeys: new Set(allTasks.map((task) => task.key)),
+      };
+      pageScopesRef.current.delete(pageKey);
+      pageScopesRef.current.set(pageKey, scope);
+      while (pageScopesRef.current.size > 2) {
+        const oldestKey = pageScopesRef.current.keys().next().value as string | undefined;
+        if (!oldestKey) break;
+        const evicted = pageScopesRef.current.get(oldestKey);
+        pageScopesRef.current.delete(oldestKey);
+        const retainedDetails = new Set([...pageScopesRef.current.values()].flatMap((item) => [...item.detailKeys]));
+        const retainedImages = new Set([...pageScopesRef.current.values()].flatMap((item) => [...item.imageKeys]));
+        for (const key of evicted?.detailKeys ?? []) {
+          if (!retainedDetails.has(key)) detailCacheRef.current.delete(key);
+        }
+        for (const key of evicted?.imageKeys ?? []) {
+          if (retainedImages.has(key)) continue;
+          const image = cacheRef.current.get(key);
+          if (image) URL.revokeObjectURL(image.objectUrl);
+          cacheRef.current.delete(key);
+        }
       }
       const pendingImagesByBill: Record<string, number> = {};
       for (const bill of bills) pendingImagesByBill[bill.id] = 0;

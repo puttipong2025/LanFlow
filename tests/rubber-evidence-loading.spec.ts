@@ -179,6 +179,7 @@ test("prepares five by three evidence cards within the bounded request budget", 
     await page.waitForTimeout(200);
     expect(detailRequests).toHaveLength(5);
     expect(imageRequests).toHaveLength(20);
+    await page.getByPlaceholder("ค้นหาเลขบิลหรือลูกค้า").fill("");
 
     await page.getByRole("button", { name: "หน้าถัดไป" }).click();
     await expect(cards).toHaveCount(1);
@@ -194,9 +195,9 @@ test("prepares five by three evidence cards within the bounded request budget", 
     await page.getByTestId(`evidence-card-${billIds[0]}`).getByRole("button", { name: "ผ่าน" }).click();
     await expect(page.getByTestId(`evidence-card-${billIds[0]}`)).toHaveCount(0);
     await expect(page.getByTestId(`evidence-card-${billIds[5]}`)).toBeVisible();
-    await expect.poll(() => detailRequests.length).toBe(1);
-    await expect.poll(() => imageRequests.length).toBe(4);
-    expect(new Set(imageRequests).size).toBe(4);
+    await page.waitForTimeout(300);
+    expect(detailRequests).toHaveLength(0);
+    expect(imageRequests).toHaveLength(0);
   } finally {
     await service.from("rubber_bills").delete().in("id", billIds);
     if (createdPeriodId) await service.from("rubber_bill_evidence_review_periods").delete().eq("id", createdPeriodId);

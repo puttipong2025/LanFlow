@@ -24,6 +24,17 @@ const columns = `
   rubber_export_items(count), locations(name)
 `;
 
+type Cursor = { version: 1; ownerUserId: string; locationId: string; view: string; createdAt: string; id: string };
+function decodeCursor(value: string): Cursor | null {
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Cursor;
+    return parsed?.version === 1 ? parsed : null;
+  } catch { return null; }
+}
+function encodeCursor(value: Cursor) {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+}
+
 export async function GET(request: NextRequest) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
@@ -33,43 +44,79 @@ export async function GET(request: NextRequest) {
   }
 
   if (request.nextUrl.searchParams.get("view") === "deletions") {
-    const { data, error } = await result.supabase
+    if (!hasSystemManagerAccess(result.auth)) {
+      return NextResponse.json({ error: "ไม่มีสิทธิ์ดูประวัติการลบ" }, { status: 403 });
+    }
+    const cursorValue = request.nextUrl.searchParams.get("cursor");
+    const cursor = cursorValue ? decodeCursor(cursorValue) : null;
+    if (cursorValue && !cursor) return NextResponse.json({ error: "cursor ไม่ถูกต้อง" }, { status: 400 });
+    if (cursor && (cursor.ownerUserId !== result.auth.sub || cursor.locationId !== locationId || cursor.view !== "deletions")) {
+      return NextResponse.json({ error: "cursor ไม่ตรงกับขอบเขตประวัติ" }, { status: 400 });
+    }
+    let query = result.supabase
       .from("document_deletion_audits")
       .select(deletionAuditColumns)
       .eq("location_id", locationId)
       .eq("document_kind", "rubber_export")
       .order("deleted_at", { ascending: false })
-      .order("id", { ascending: false });
+      .order("id", { ascending: false })
+      .limit(51);
+    if (cursor) query = query.or(`deleted_at.lt.${cursor.createdAt},and(deleted_at.eq.${cursor.createdAt},id.lt.${cursor.id})`);
+    const { data, error } = await query;
     if (error) return rubberExportErrorResponse(error.message);
+    const page = (data ?? []).slice(0, 50);
+    const tail = page.at(-1);
     return NextResponse.json({
-      deletions: (data ?? []).map((row) => mapDeletionAuditRow(row)),
+      deletions: page.map((row) => mapDeletionAuditRow(row)),
+      hasMore: (data?.length ?? 0) > 50,
+      nextCursor: (data?.length ?? 0) > 50 && tail ? encodeCursor({
+        version: 1, ownerUserId: result.auth.sub, locationId, view: "deletions",
+        createdAt: tail.deleted_at, id: tail.id,
+      }) : null,
     }, {
       headers: { "Cache-Control": "private, no-store, max-age=0" },
     });
   }
 
-  const [
-    { data: rows, error },
-    { data: options, error: optionsError },
-    { data: ages, error: agesError },
-  ] = await Promise.all([
-    result.supabase
+  const view = request.nextUrl.searchParams.get("view") ?? "active";
+  const limit = Number(request.nextUrl.searchParams.get("limit") ?? 50);
+  if (!["active", "history"].includes(view) || !Number.isInteger(limit) || limit < 1 || limit > 100) {
+    return NextResponse.json({ error: "พารามิเตอร์รายการส่งออกไม่ถูกต้อง" }, { status: 400 });
+  }
+  const cursorValue = request.nextUrl.searchParams.get("cursor");
+  const cursor = cursorValue ? decodeCursor(cursorValue) : null;
+  if (cursorValue && !cursor) return NextResponse.json({ error: "cursor ไม่ถูกต้อง" }, { status: 400 });
+  if (cursor && (cursor.ownerUserId !== result.auth.sub || cursor.locationId !== locationId || cursor.view !== view)) {
+    return NextResponse.json({ error: "cursor ไม่ตรงกับขอบเขตรายการ" }, { status: 400 });
+  }
+
+  const pageResult = await result.supabase.rpc("get_rubber_export_page_ids", {
+    p_location_id: locationId,
+    p_view: view,
+    p_cursor_created_at: cursor?.createdAt ?? null,
+    p_cursor_id: cursor?.id ?? null,
+    p_page_size: limit,
+  });
+  if (pageResult.error) return rubberExportErrorResponse(pageResult.error.message);
+  const page = (pageResult.data ?? {}) as {
+    ids?: string[]; hasMore?: boolean; nextCreatedAt?: string | null; nextId?: string | null;
+  };
+  const ids = page.ids ?? [];
+  const [{ data: rows, error }, { data: ages, error: agesError }] = ids.length === 0
+    ? [{ data: [], error: null }, { data: [], error: null }]
+    : await Promise.all([
+      result.supabase
       .from("rubber_exports")
       .select(columns)
       .eq("location_id", locationId)
-      .in("status", ["draft", "verified"])
-      .order("created_at", { ascending: false })
-      .order("id", { ascending: false }),
-    result.supabase.rpc("get_rubber_export_available_bills", {
-      p_location_id: locationId,
-    }),
-    result.supabase.rpc("get_rubber_export_age_summaries", {
-      p_location_id: locationId,
-    }),
-  ]);
+      .in("id", ids),
+      result.supabase.rpc("get_rubber_export_age_summaries_for_ids", {
+        p_location_id: locationId,
+        p_export_ids: ids,
+      }),
+    ] as const);
 
   if (error) return rubberExportErrorResponse(error.message);
-  if (optionsError) return rubberExportErrorResponse(optionsError.message);
   if (agesError) return rubberExportErrorResponse(agesError.message);
 
   const agesByExport = new Map<string, Record<string, any>>(
@@ -77,9 +124,12 @@ export async function GET(request: NextRequest) {
   );
 
   const canVerifyOrDelete = hasSystemManagerAccess(result.auth);
+  const rowsById = new Map((rows ?? []).map((row) => [row.id, row]));
 
   return NextResponse.json({
-    exports: (rows ?? []).map((row) => mapRubberExportRow({
+    exports: ids.flatMap((id) => {
+      const row = rowsById.get(id);
+      return row ? [mapRubberExportRow({
       ...(row as Record<string, any>),
       official_age_cutoff_at: row.age_cutoff_at,
       official_average_age_hours: row.average_age_hours,
@@ -87,17 +137,13 @@ export async function GET(request: NextRequest) {
       official_estimated_age_item_count: row.estimated_age_item_count,
       ...(agesByExport.get(row.id) ?? {}),
       age_calculated_at: agesByExport.get(row.id)?.calculated_at ?? null,
-    })),
-    availableBills: (options ?? []).map((row: Record<string, any>) => ({
-      reportItemId: row.report_item_id,
-      billId: row.bill_id,
-      billDate: row.bill_date,
-      billNo: row.bill_no,
-      customerName: row.customer_name,
-      eligibilityAt: row.eligibility_at,
-      netWeight: Number(row.net_weight),
-      paidAmount: Number(row.paid_amount),
-    })),
+      })] : [];
+    }),
+    hasMore: Boolean(page.hasMore),
+    nextCursor: page.hasMore && page.nextCreatedAt && page.nextId ? encodeCursor({
+      version: 1, ownerUserId: result.auth.sub, locationId, view,
+      createdAt: page.nextCreatedAt, id: page.nextId,
+    }) : null,
     permissions: {
       canVerify: canVerifyOrDelete,
       canDelete: canVerifyOrDelete,

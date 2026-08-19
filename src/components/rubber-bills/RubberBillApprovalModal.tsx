@@ -2,18 +2,19 @@ import { Check, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
+import { AlertDialog } from "@/components/shared/AlertDialog";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { useLocations } from "@/hooks/useLocations";
 import { useRubberBillApprovals } from "@/hooks/useRubberBillApprovals";
+import { useRubberBillList, useRubberBillWorkCounts } from "@/hooks/useRubberBillList";
 import type {
-  RubberBillApprovalOperation,
   RubberBillApprovalReason,
-  RubberBillApprovalRequest,
-  RubberBillApprovalStatus,
+  Profile,
+  RubberBill,
 } from "@/types";
 import { formatBangkokDateTime } from "@/lib/bangkok-date";
 
-const operationLabels: Record<RubberBillApprovalOperation, string> = {
+const operationLabels = {
   create: "สร้างบิล",
   update: "แก้ไขบิล",
   delete: "ลบบิล",
@@ -29,54 +30,42 @@ function formatDateTime(value: string) {
   return formatBangkokDateTime(value);
 }
 
-function payloadSummary(payload: Record<string, unknown> | null) {
-  if (!payload) return "—";
-  const items = Array.isArray(payload.items) ? payload.items : [];
-  const prices = items
-    .filter((item): item is Record<string, unknown> => (
-      typeof item === "object" && item !== null && item.itemType === "weigh"
-    ))
-    .map((item) => Number(item.unitPrice))
-    .filter(Number.isFinite);
-
-  return [
-    `ลูกค้า: ${String(payload.customerName ?? "—")}`,
-    `วันที่: ${String(payload.billDate ?? "—")}`,
-    `ราคาแต่ละส่วน: ${prices.length ? prices.join(", ") : "—"}`,
-    `ยอดสุทธิ: ${Number(payload.netTotal ?? 0).toLocaleString("th-TH")}`,
-  ].join(" · ");
-}
-
 export function RubberBillApprovalModal({
   locationId,
+  profile,
   onClose,
 }: {
   locationId: string;
+  profile: Profile;
   onClose: () => void;
 }) {
   const [locationFilter, setLocationFilter] = useState(locationId);
   const {
     settings,
-    requests,
-    pendingCount,
     isLoading,
     error,
     saveSettings,
     approveRequest,
     deleteRequest,
   } = useRubberBillApprovals({
-    locationId,
-    includeRequests: true,
-    requestsLocationId: locationFilter === "all" ? undefined : locationFilter,
-    pendingLocationId: locationFilter === "all" ? undefined : locationFilter,
+    locationId: locationFilter,
   });
+  const queue = useRubberBillList({
+    ownerUserId: profile.id,
+    locationId: locationFilter,
+    mode: "pending_approval",
+    documentStatus: "any",
+    search: "",
+  });
+  const counts = useRubberBillWorkCounts(profile.id, locationFilter);
   const { locations } = useLocations();
   const [minutes, setMinutes] = useState("30");
   const [price, setPrice] = useState("");
   const [nonCurrentDateRequiresApproval, setNonCurrentDateRequiresApproval] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<RubberBillApprovalStatus>("pending");
+  const [page, setPage] = useState(1);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [confirmation, setConfirmation] = useState<{ kind: "approve" | "delete"; bill: RubberBill } | null>(null);
 
   useEffect(() => {
     if (!settings) return;
@@ -89,14 +78,22 @@ export function RubberBillApprovalModal({
     setLocationFilter(locationId);
   }, [locationId]);
 
+  useEffect(() => {
+    setPage(1);
+  }, [locationFilter]);
+
+  const totalPages = Math.max(1, Math.ceil(queue.bills.length / 10));
+  const currentPage = Math.min(page, totalPages);
+  const visibleRequests = queue.bills.slice((currentPage - 1) * 10, currentPage * 10);
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+
   const locationNames = useMemo(
     () => new Map(locations.map((location) => [location.id, location.name])),
     [locations]
   );
-  const visibleRequests = requests.filter((request) => (
-    request.requestStatus === statusFilter &&
-    (locationFilter === "all" || request.locationId === locationFilter)
-  ));
   async function handleSaveSettings(event: React.FormEvent) {
     event.preventDefault();
     const parsedMinutes = Number(minutes);
@@ -130,11 +127,11 @@ export function RubberBillApprovalModal({
     }
   }
 
-  async function handleApprove(request: RubberBillApprovalRequest) {
-    if (!window.confirm(`อนุมัติคำขอ${operationLabels[request.operation]}นี้ใช่ไหม?`)) return;
+  async function handleApprove(request: RubberBill) {
+    if (!request.approvalRequestId) return;
     try {
-      setBusyId(request.id);
-      await approveRequest(request.id);
+      setBusyId(request.approvalRequestId);
+      await approveRequest(request.approvalRequestId);
       toast.success("อนุมัติคำขอแล้ว");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "อนุมัติคำขอไม่สำเร็จ");
@@ -143,11 +140,11 @@ export function RubberBillApprovalModal({
     }
   }
 
-  async function handleDelete(request: RubberBillApprovalRequest) {
-    if (!window.confirm("ลบคำขอนี้ถาวรใช่ไหม? รายการจะกู้คืนไม่ได้")) return;
+  async function handleDelete(request: RubberBill) {
+    if (!request.approvalRequestId) return;
     try {
-      setBusyId(request.id);
-      await deleteRequest(request.id);
+      setBusyId(request.approvalRequestId);
+      await deleteRequest(request.approvalRequestId);
       toast.success("ลบคำขอถาวรแล้ว");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "ลบคำขอไม่สำเร็จ");
@@ -159,14 +156,14 @@ export function RubberBillApprovalModal({
   return (
     <ModalShell
       title="ตั้งค่าและอนุมัติบิลยาง"
-      subtitle={`รออนุมัติ ${pendingCount} รายการ`}
+      subtitle={`รออนุมัติ ${counts.data?.pendingApproval ?? 0} รายการ`}
       onClose={onClose}
       size="wide"
     >
       <div className="space-y-5">
         <form onSubmit={handleSaveSettings} className="rounded-md border border-black/10 p-4">
-          <h3 className="font-bold text-ink">เกณฑ์อนุมัติ</h3>
-          <p className="mb-3 text-sm text-ink/60">
+            <h3 className="text-balance font-bold text-ink">เกณฑ์อนุมัติ</h3>
+            <p className="mb-3 text-pretty text-sm text-ink/60">
             ตั้งราคาเป็นค่าว่างเพื่อปิดการตรวจราคา ส่วนเวลา 0 นาทีหมายถึงแก้ไขครั้งถัดไปต้องขออนุมัติทันที
           </p>
           <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
@@ -216,7 +213,7 @@ export function RubberBillApprovalModal({
 
         <section className="rounded-md border border-black/10 p-4">
           <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
-            <h3 className="font-bold text-ink">คำขอบิลยาง</h3>
+            <h3 className="text-balance font-bold text-ink">งานรออนุมัติบิลยาง</h3>
             <div className="flex flex-wrap gap-2">
               <label className="grid gap-1 text-sm font-semibold">
                 สาขา
@@ -225,65 +222,58 @@ export function RubberBillApprovalModal({
                   onChange={(event) => setLocationFilter(event.target.value)}
                   className="focus-ring h-10 rounded-md border border-black/10 bg-white px-3"
                 >
-                  <option value="all">ทุกสาขา</option>
                   {locations.map((location) => (
                     <option key={location.id} value={location.id}>{location.name}</option>
                   ))}
-                </select>
-              </label>
-              <label className="grid gap-1 text-sm font-semibold">
-                สถานะ
-                <select
-                  value={statusFilter}
-                  onChange={(event) => setStatusFilter(event.target.value as RubberBillApprovalStatus)}
-                  className="focus-ring h-10 rounded-md border border-black/10 bg-white px-3"
-                >
-                  <option value="pending">รออนุมัติ</option>
-                  <option value="approved">อนุมัติแล้ว</option>
                 </select>
               </label>
             </div>
           </div>
 
           <div className="space-y-3">
-            {error ? (
-              <p className="rounded-md bg-rose-50 px-3 py-4 text-center text-sm text-rose-700">
-                {error instanceof Error ? error.message : "โหลดคำขอไม่สำเร็จ"}
+            {error || queue.error || counts.error ? (
+              <p role="alert" className="rounded-md bg-rose-50 px-3 py-4 text-center text-pretty text-sm text-rose-700">
+                {(error ?? queue.error ?? counts.error) instanceof Error
+                  ? (error ?? queue.error ?? counts.error as Error).message
+                  : "โหลดคำขอไม่สำเร็จ"}
               </p>
-            ) : isLoading ? (
-              <p className="py-6 text-center text-sm text-ink/50">กำลังโหลด...</p>
+            ) : isLoading || queue.isLoading || counts.isLoading ? (
+              <div className="space-y-2" role="status" aria-label="กำลังโหลดงานรออนุมัติ">
+                {[0, 1, 2].map((item) => <div key={item} className="h-24 animate-pulse rounded-md bg-field" />)}
+              </div>
             ) : visibleRequests.length === 0 ? (
-              <p className="py-6 text-center text-sm text-ink/50">ไม่มีคำขอในสถานะนี้</p>
+              <div className="py-6 text-center">
+                <p className="text-pretty text-sm text-ink/50">ไม่มีงานรออนุมัติในสาขานี้</p>
+                {locations.length > 1 && <p className="mt-1 text-pretty text-xs text-ink/45">เลือกสาขาอื่นเพื่อตรวจคิวถัดไป</p>}
+              </div>
             ) : visibleRequests.map((request) => (
               <article key={request.id} className="rounded-md border border-black/10 p-3 text-sm">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                   <div className="space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-800">
-                        {operationLabels[request.operation]}
+                        {operationLabels[request.approvalOperation ?? "update"]}
                       </span>
-                      {request.matchedReasons.map((reason) => (
+                      {(request.approvalReasons ?? []).map((reason: RubberBillApprovalReason) => (
                         <span key={reason} className="rounded-full bg-clay/10 px-2 py-0.5 text-xs font-bold text-clay">
                           {reasonLabels[reason]}
                         </span>
                       ))}
                     </div>
                     <p className="font-semibold">
-                      {locationNames.get(request.locationId) ?? "ไม่ทราบสาขา"} · {request.requestedByName}
+                      {locationNames.get(request.locationId) ?? "ไม่ทราบสาขา"} · {request.createdByName}
                     </p>
-                    <p className="text-ink/55">{formatDateTime(request.requestedAt)}</p>
-                    <p className="text-ink/70">
-                      ราคาเพดานที่ใช้ตรวจ: {request.configuredPriceSnapshot == null ? "ไม่ได้ตั้ง" : request.configuredPriceSnapshot}
-                      {" · "}เวลาแก้ไขที่ใช้ตรวจ: {request.editWindowMinutesSnapshot} นาที
+                    <p className="text-ink/55">{formatDateTime(request.operationalSortAt ?? request.clientCreatedAt)}</p>
+                    <p className="text-pretty text-ink/70">
+                      {request.customerName || "ไม่ระบุลูกค้า"} · {request.billDate} · ยอดสุทธิ: <span className="tabular-nums">{request.netTotal.toLocaleString("th-TH")}</span> บาท
                     </p>
                   </div>
-                  {request.requestStatus === "pending" && (
-                    <div className="flex gap-1.5 whitespace-nowrap">
+                  <div className="flex gap-1.5 whitespace-nowrap">
                       <button
                         type="button"
-                        disabled={busyId === request.id}
-                        onClick={() => void handleApprove(request)}
-                        className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-success text-white disabled:opacity-50"
+                        disabled={busyId === request.approvalRequestId}
+                        onClick={() => setConfirmation({ kind: "approve", bill: request })}
+                        className="focus-ring inline-flex size-10 items-center justify-center rounded-md bg-success text-white disabled:opacity-50"
                         title="อนุมัติ"
                         aria-label="อนุมัติ"
                       >
@@ -291,8 +281,8 @@ export function RubberBillApprovalModal({
                       </button>
                       <button
                         type="button"
-                        disabled={busyId === request.id}
-                        onClick={() => void handleDelete(request)}
+                        disabled={busyId === request.approvalRequestId}
+                        onClick={() => setConfirmation({ kind: "delete", bill: request })}
                         className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-rose-600 px-3 font-bold text-white disabled:opacity-50"
                         title="ลบคำขอถาวร"
                         aria-label="ลบคำขอถาวร"
@@ -300,24 +290,36 @@ export function RubberBillApprovalModal({
                         <Trash2 size={16} />
                         ลบ
                       </button>
-                    </div>
-                  )}
-                </div>
-                <div className="mt-3 grid gap-2 lg:grid-cols-2">
-                  <div className="rounded bg-field/60 p-2">
-                    <p className="mb-1 font-bold">ก่อนแก้ไข</p>
-                    <p className="text-ink/65">{payloadSummary(request.originalPayload)}</p>
-                  </div>
-                  <div className="rounded bg-field/60 p-2">
-                    <p className="mb-1 font-bold">หลังแก้ไข / รายการที่ขอสร้าง</p>
-                    <p className="text-ink/65">{payloadSummary(request.proposedPayload)}</p>
                   </div>
                 </div>
               </article>
             ))}
           </div>
+          {queue.bills.length > 0 && (
+            <nav aria-label="แบ่งหน้างานรออนุมัติ" className="mt-4 flex flex-wrap items-center justify-center gap-2">
+              <button type="button" disabled={currentPage <= 1} onClick={() => setPage(currentPage - 1)} className="focus-ring h-10 rounded-md border border-black/15 px-3 text-sm font-semibold disabled:opacity-40">ก่อนหน้า</button>
+              <span className="tabular-nums text-sm text-ink/60">หน้า {currentPage} / {totalPages}</span>
+              <button type="button" disabled={currentPage >= totalPages} onClick={() => setPage(currentPage + 1)} className="focus-ring h-10 rounded-md border border-black/15 px-3 text-sm font-semibold disabled:opacity-40">ถัดไป</button>
+              {queue.hasMore && currentPage === totalPages && (
+                <button type="button" disabled={queue.isFetchingNextPage} onClick={() => void queue.fetchNextPage()} className="focus-ring h-10 rounded-md bg-river px-3 text-sm font-semibold text-white disabled:opacity-50">{queue.isFetchingNextPage ? "กำลังโหลด..." : "โหลดงานถัดไป"}</button>
+              )}
+            </nav>
+          )}
         </section>
       </div>
+      <AlertDialog
+        open={confirmation !== null}
+        title={confirmation?.kind === "delete" ? "ลบคำขอถาวร?" : "อนุมัติคำขอนี้?"}
+        description={confirmation?.kind === "delete" ? "คำขอจะถูกลบถาวรและกู้คืนไม่ได้ แต่บิลจริงจะไม่ถูกสร้างหรือแก้ไข" : "ระบบจะตรวจ revision และ relation lock ล่าสุดก่อนบันทึก"}
+        confirmLabel={confirmation?.kind === "delete" ? "ยืนยันลบคำขอ" : "ยืนยันอนุมัติ"}
+        busy={busyId !== null}
+        onCancel={() => setConfirmation(null)}
+        onConfirm={() => {
+          if (!confirmation) return;
+          const action = confirmation.kind === "delete" ? handleDelete : handleApprove;
+          void action(confirmation.bill).finally(() => setConfirmation(null));
+        }}
+      />
     </ModalShell>
   );
 }

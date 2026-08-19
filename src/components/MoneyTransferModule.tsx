@@ -32,6 +32,7 @@ import {
 import { useSharePdf } from "@/hooks/useSharePdf";
 import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
 import { ModalShell } from "@/components/shared/ModalShell";
+import { AlertDialog } from "@/components/shared/AlertDialog";
 import { cn } from "@/lib/cn";
 import { getMoneyTransferPaymentSummary } from "@/lib/money-transfers/state";
 
@@ -108,6 +109,13 @@ function getMergeFailureMessage(error: unknown) {
   return "รวมรายการรอโอนไม่สำเร็จ";
 }
 
+function getReportLockedDeleteMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : "";
+  const reportNo = message.match(/REPORT_LOCKED:([A-Z0-9-]+)/i)?.[1];
+  if (!reportNo) return null;
+  return `รายการโอนเงินนี้ถูกล็อกโดยรายงาน ${reportNo} ต้องลบรายงานล่าสุดตามลำดับก่อน แล้วจึงลองลบรายการอีกครั้ง`;
+}
+
 function formatMoneyTransferCurrency(value: number) {
   return MONEY_TRANSFER_CURRENCY_FORMATTER.format(value);
 }
@@ -139,6 +147,7 @@ export function MoneyTransferModule({
   const [activeFormType, setActiveFormType] = useState<'customer' | 'transport' | 'branch' | null>(null);
   const [editTransfer, setEditTransfer] = useState<MoneyTransfer | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [deleteAlertDescription, setDeleteAlertDescription] = useState<string | null>(null);
   const [detailTransfer, setDetailTransfer] = useState<MoneyTransfer | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [page, setPage] = useState(1);
@@ -230,6 +239,12 @@ export function MoneyTransferModule({
         },
         onError: (err) => {
           console.error("Failed to delete transfer:", err);
+          const reportLockedMessage = getReportLockedDeleteMessage(err);
+          if (reportLockedMessage) {
+            setDeleteConfirmId(null);
+            setDeleteAlertDescription(reportLockedMessage);
+            return;
+          }
           setToastMsg("เกิดข้อผิดพลาดในการลบ");
         }
       });
@@ -717,23 +732,24 @@ export function MoneyTransferModule({
         />
       )}
 
-      {/* Delete Confirmation */}
-      {deleteConfirmId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setDeleteConfirmId(null)}>
-          <div className="w-full max-w-sm rounded-xl bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-lg font-bold text-ink">ยืนยันการลบ</h3>
-            <p className="mt-2 text-sm text-ink/70">คุณแน่ใจหรือไม่ว่าต้องการลบรายการโอนเงินนี้? บิลยาง/ใบชั่งที่เลือกไว้จะสามารถเลือกใช้ใหม่ได้</p>
-            <div className="mt-5 flex justify-end gap-3">
-              <button type="button" onClick={() => setDeleteConfirmId(null)} className="focus-ring rounded-md bg-actionSecondary px-4 py-2 text-sm font-semibold text-white hover:bg-actionSecondary/90">
-                ยกเลิก
-              </button>
-              <button type="button" onClick={handleDeleteConfirm} disabled={!online} title={online ? undefined : offlineMessage} className="focus-ring rounded-md bg-clay px-4 py-2 text-sm font-semibold text-white hover:bg-clay/90 disabled:cursor-not-allowed disabled:opacity-50">
-                ลบ
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <AlertDialog
+        open={Boolean(deleteConfirmId)}
+        title="ยืนยันการลบ"
+        description="คุณแน่ใจหรือไม่ว่าต้องการลบรายการโอนเงินนี้? บิลยาง/ใบชั่งที่เลือกไว้จะสามารถเลือกใช้ใหม่ได้"
+        confirmLabel="ลบ"
+        busy={deleteTransfer.isPending}
+        onCancel={() => setDeleteConfirmId(null)}
+        onConfirm={handleDeleteConfirm}
+      />
+      <AlertDialog
+        open={Boolean(deleteAlertDescription)}
+        title="ลบรายการไม่ได้"
+        description={deleteAlertDescription ?? ""}
+        confirmLabel="รับทราบ"
+        cancelLabel={null}
+        onCancel={() => setDeleteAlertDescription(null)}
+        onConfirm={() => setDeleteAlertDescription(null)}
+      />
       <SharePdfWaitingModal open={pdfShare.waiting} onCancel={pdfShare.cancel} />
     </div>
   );

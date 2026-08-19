@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { RubberExportLoadingModal } from "@/components/rubber-exports/RubberExportLoadingModal";
@@ -30,7 +30,7 @@ export function RubberExportCreateModal({
   mode?: "create" | "edit";
   initialSelectedIds?: string[];
   initialPreview?: RubberExportPreview | null;
-  onPreview: (reportItemIds: string[]) => Promise<RubberExportPreview>;
+  onPreview: (reportItemIds: string[], signal?: AbortSignal) => Promise<RubberExportPreview>;
   onSubmit: (reportItemIds: string[]) => Promise<void>;
   onClose: () => void;
 }) {
@@ -40,9 +40,18 @@ export function RubberExportCreateModal({
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const previewRequest = useRef(0);
+  const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previewController = useRef<AbortController | null>(null);
+
+  useEffect(() => () => {
+    if (previewTimer.current) clearTimeout(previewTimer.current);
+    previewController.current?.abort();
+  }, []);
 
   async function changeSelection(reportItemIds: string[]) {
     const request = ++previewRequest.current;
+    if (previewTimer.current) clearTimeout(previewTimer.current);
+    previewController.current?.abort();
     setSelectedIds(reportItemIds);
     setPreview(null);
     setError(null);
@@ -52,16 +61,19 @@ export function RubberExportCreateModal({
       return;
     }
     setLoading(true);
-    try {
-      const nextPreview = await onPreview(reportItemIds);
-      if (request === previewRequest.current) setPreview(nextPreview);
-    } catch (caught) {
-      if (request === previewRequest.current) {
-        setError(caught instanceof Error ? caught.message : "โหลด preview ไม่สำเร็จ");
-      }
-    } finally {
-      if (request === previewRequest.current) setLoading(false);
-    }
+    const controller = new AbortController();
+    previewController.current = controller;
+    previewTimer.current = setTimeout(() => {
+      void onPreview(reportItemIds, controller.signal).then((nextPreview) => {
+        if (request === previewRequest.current && !controller.signal.aborted) setPreview(nextPreview);
+      }).catch((caught) => {
+        if (request === previewRequest.current && !controller.signal.aborted) {
+          setError(caught instanceof Error ? caught.message : "โหลด preview ไม่สำเร็จ");
+        }
+      }).finally(() => {
+        if (request === previewRequest.current && !controller.signal.aborted) setLoading(false);
+      });
+    }, 250);
   }
 
   function toggle(reportItemId: string) {

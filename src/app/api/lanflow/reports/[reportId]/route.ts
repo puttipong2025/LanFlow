@@ -3,6 +3,7 @@ import { requireAuth, requireSystemManager } from "@/lib/server/auth";
 import { reportErrorResponse } from "@/lib/server/report-response";
 import type { ReportDetails } from "@/types/reports";
 import { reportDatePart } from "@/lib/reports/report-date";
+import { chunkUniqueIds } from "@/lib/server/chunk-ids";
 
 export const dynamic = "force-dynamic";
 
@@ -28,10 +29,27 @@ async function rowsByIds(
   columns: string,
   rowIds: string[]
 ): Promise<Array<Record<string, any>>> {
-  if (rowIds.length === 0) return [];
-  const { data, error } = await (client as any).from(table).select(columns).in("id", rowIds);
-  if (error) throw new Error(error.message);
-  return (data ?? []) as Array<Record<string, any>>;
+  return rowsByForeignIds(client, table, columns, "id", rowIds);
+}
+
+async function rowsByForeignIds(
+  client: Extract<Awaited<ReturnType<typeof requireAuth>>, { ok: true }>["supabase"],
+  table: string,
+  columns: string,
+  foreignColumn: string,
+  rowIds: string[],
+  notNullColumn?: string,
+): Promise<Array<Record<string, any>>> {
+  const chunks = chunkUniqueIds(rowIds);
+  if (chunks.length === 0) return [];
+  const pages = await Promise.all(chunks.map(async (chunk) => {
+    let query = (client as any).from(table).select(columns).in(foreignColumn, chunk);
+    if (notNullColumn) query = query.not(notNullColumn, "is", null);
+    const { data, error } = await query;
+    if (error) throw new Error(error.message);
+    return (data ?? []) as Array<Record<string, any>>;
+  }));
+  return pages.flat();
 }
 
 export async function GET(request: NextRequest, context: RouteContext) {
@@ -78,19 +96,21 @@ export async function GET(request: NextRequest, context: RouteContext) {
       rowsByIds(client, "rubber_bills", "id, bill_date, server_bill_no, local_bill_no, customer_name, bill_type, net_weight, average_price, net_rubber_value, deduction_total, net_total, source_rubber_export_id, customers(class)", ids(items, "rubber_bill")),
       rowsByIds(client, "ocr_tickets", "id, date_in, ticket_id, file_name, customer_name, license_plate, weight_in, weight_out, weight_net, weight_deducted, weight_remaining, total_amount", ids(items, "ocr_ticket")),
       rowsByIds(client, "stock_entries", "id, tx_date, server_bill_no, transfer_bill_no, product_name, tx_type, quantity_delta, amount", ids(items, "acid_stock_entry")),
-      ids(items, "income_expense").length > 0
-        ? (client as any)
-            .from("income_expense_sale_lines")
-            .select("id, income_expense_id, quantity, line_total, stock_product_id, income_expense!inner(tx_date, server_bill_no, local_bill_no), stock_products(name)")
-            .in("income_expense_id", ids(items, "income_expense"))
-        : Promise.resolve({ data: [], error: null }),
-      ids(items, "rubber_bill").length > 0
-        ? (client as any)
-            .from("rubber_bill_items")
-            .select("id, bill_id, quantity, total, stock_product_id, rubber_bills!inner(bill_date, server_bill_no, local_bill_no), stock_products(name)")
-            .in("bill_id", ids(items, "rubber_bill"))
-            .not("stock_product_id", "is", null)
-        : Promise.resolve({ data: [], error: null }),
+      rowsByForeignIds(
+        client,
+        "income_expense_sale_lines",
+        "id, income_expense_id, quantity, line_total, stock_product_id, income_expense!inner(tx_date, server_bill_no, local_bill_no), stock_products(name)",
+        "income_expense_id",
+        ids(items, "income_expense"),
+      ).then((data) => ({ data, error: null })),
+      rowsByForeignIds(
+        client,
+        "rubber_bill_items",
+        "id, bill_id, quantity, total, stock_product_id, rubber_bills!inner(bill_date, server_bill_no, local_bill_no), stock_products(name)",
+        "bill_id",
+        ids(items, "rubber_bill"),
+        "stock_product_id",
+      ).then((data) => ({ data, error: null })),
       (client as any)
         .from("acid_stock_movements")
         .select("product_name, quantity_delta")
@@ -119,8 +139,6 @@ export async function GET(request: NextRequest, context: RouteContext) {
 
     if (ledgerResult.error) throw new Error(ledgerResult.error.message);
     if (latestResult.error) throw new Error(latestResult.error.message);
-    if (stockIncome.error) throw new Error(stockIncome.error.message);
-    if (stockRubberResult.error) throw new Error(stockRubberResult.error.message);
     if (stockBalanceResult.error) throw new Error(stockBalanceResult.error.message);
 
     const profileIds = [...new Set([
@@ -128,11 +146,8 @@ export async function GET(request: NextRequest, context: RouteContext) {
       ...financial.map((row) => row.profile_id),
       ...payroll.map((row) => row.profile_id),
     ].filter(Boolean))];
-    const profileRows = profileIds.length > 0
-      ? await client.from("profiles").select("id, name").in("id", profileIds)
-      : { data: [], error: null };
-    if (profileRows.error) throw new Error(profileRows.error.message);
-    const profileName = new Map((profileRows.data ?? []).map((row) => [row.id, row.name]));
+    const profileRows = await rowsByIds(client, "profiles", "id, name", profileIds);
+    const profileName = new Map(profileRows.map((row) => [row.id, row.name]));
 
     const location = Array.isArray(header.locations) ? header.locations[0] : header.locations;
     const report = {

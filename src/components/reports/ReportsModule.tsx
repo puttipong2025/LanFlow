@@ -59,50 +59,87 @@ export function ReportsModule({
   const [previewDetails, setPreviewDetails] = useState<ReportDetails | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const previewController = useRef<AbortController | null>(null);
+  const listController = useRef<AbortController | null>(null);
+  const deletionController = useRef<AbortController | null>(null);
+  const locationIdRef = useRef(selectedLocation.id);
+  locationIdRef.current = selectedLocation.id;
+  const [reportsHasMore, setReportsHasMore] = useState(false);
+  const [reportsCursor, setReportsCursor] = useState<string | null>(null);
+  const [deletionsHasMore, setDeletionsHasMore] = useState(false);
+  const [deletionsCursor, setDeletionsCursor] = useState<string | null>(null);
   const canDelete = canManageSystemFeatures(profile);
 
-  const loadReports = useCallback(async () => {
+  const loadReports = useCallback(async (cursor: string | null = null, append = false) => {
     if (!online) return;
+    listController.current?.abort();
+    const controller = new AbortController();
+    listController.current = controller;
     setLoading(true);
     try {
+      const params = new URLSearchParams({ locationId: selectedLocation.id });
+      if (cursor) params.set("cursor", cursor);
       const response = await authFetch(
-        `/api/lanflow/reports?locationId=${encodeURIComponent(selectedLocation.id)}`,
-        { cache: "no-store" }
+        `/api/lanflow/reports?${params.toString()}`,
+        { cache: "no-store", signal: controller.signal }
       );
       await assertApiResponse(response);
-      const body = await response.json() as { reports: ReportSummary[] };
-      setReports(body.reports);
+      const body = await response.json() as { reports: ReportSummary[]; hasMore: boolean; nextCursor: string | null };
+      if (controller.signal.aborted || locationIdRef.current !== selectedLocation.id) return;
+      setReports((current) => append
+        ? [...current, ...body.reports.filter((row) => !current.some((item) => item.id === row.id))]
+        : body.reports);
+      setReportsHasMore(body.hasMore);
+      setReportsCursor(body.nextCursor);
     } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") return;
       toast.error(error instanceof Error ? error.message : "โหลดรายงานไม่สำเร็จ");
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
   }, [online, selectedLocation.id]);
 
-  const loadDeletions = useCallback(async () => {
+  const loadDeletions = useCallback(async (cursor: string | null = null, append = false) => {
     if (!online) return;
+    deletionController.current?.abort();
+    const controller = new AbortController();
+    deletionController.current = controller;
     setDeletionsLoading(true);
     try {
+      const params = new URLSearchParams({ locationId: selectedLocation.id, view: "deletions" });
+      if (cursor) params.set("cursor", cursor);
       const response = await authFetch(
-        `/api/lanflow/reports?locationId=${encodeURIComponent(selectedLocation.id)}&view=deletions`,
-        { cache: "no-store" },
+        `/api/lanflow/reports?${params.toString()}`,
+        { cache: "no-store", signal: controller.signal },
       );
       await assertApiResponse(response);
       const body = await response.json() as {
         deletions: DocumentDeletionAudit[];
+        hasMore: boolean;
+        nextCursor: string | null;
       };
-      setDeletions(body.deletions);
+      if (controller.signal.aborted || locationIdRef.current !== selectedLocation.id) return;
+      setDeletions((current) => append
+        ? [...current, ...body.deletions.filter((row) => !current.some((item) => item.id === row.id))]
+        : body.deletions);
+      setDeletionsHasMore(body.hasMore);
+      setDeletionsCursor(body.nextCursor);
     } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") return;
       toast.error(error instanceof Error ? error.message : "โหลดประวัติการลบไม่สำเร็จ");
     } finally {
-      setDeletionsLoading(false);
+      if (!controller.signal.aborted) setDeletionsLoading(false);
     }
   }, [online, selectedLocation.id]);
 
   useEffect(() => {
+    setReports([]);
     setDeletions([]);
     if (view === "current") void loadReports();
     else void loadDeletions();
+    return () => {
+      listController.current?.abort();
+      deletionController.current?.abort();
+    };
   }, [loadDeletions, loadReports, selectedLocation.id, view]);
 
   useEffect(() => () => previewController.current?.abort(), []);
@@ -218,7 +255,7 @@ export function ReportsModule({
             <RotateCw size={16} className={loading || deletionsLoading ? "animate-spin" : ""} />
             รีเฟรช
           </button>
-          <button
+          {view === "current" && <button
             type="button"
             onClick={() => void createReport()}
             disabled={!online || creating}
@@ -226,7 +263,7 @@ export function ReportsModule({
           >
             {creating ? <Loader2 size={16} className="animate-spin" /> : <FilePlus2 size={16} />}
             สร้างรายงาน
-          </button>
+          </button>}
         </div>
       </div>
 
@@ -239,7 +276,7 @@ export function ReportsModule({
       <div className="flex flex-wrap gap-2" aria-label="มุมมองรายงาน">
         {([
           ["current", "รายการปัจจุบัน"],
-          ["deletions", "ประวัติการลบ"],
+          ...(canDelete ? [["deletions", "ประวัติการลบ"]] as const : []),
         ] as const).map(([value, label]) => (
           <button
             key={value}
@@ -256,6 +293,7 @@ export function ReportsModule({
       </div>
 
       {view === "current" ? (
+      <div className="space-y-3">
       <div className="overflow-hidden rounded-xl bg-white shadow-sm">
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm tabular-nums">
@@ -317,13 +355,25 @@ export function ReportsModule({
           </table>
         </div>
       </div>
+      {reportsHasMore && reportsCursor && !loading && (
+        <div className="flex flex-col items-center gap-2 rounded-md bg-field px-4 py-3 text-center">
+          <p className="text-sm text-ink/65">โหลดแล้ว {reports.length} รายงาน</p>
+          <button type="button" onClick={() => void loadReports(reportsCursor, true)} className="focus-ring rounded-md bg-river px-4 py-2 text-sm font-semibold text-white">โหลดเพิ่ม</button>
+        </div>
+      )}
+      </div>
       ) : (
-        <DeletionAuditTable
-          rows={deletions}
-          loading={deletionsLoading}
-          emptyLabel="ยังไม่มีประวัติการลบรายงาน"
-          onShowCurrent={() => setView("current")}
-        />
+        <div className="space-y-3">
+          <DeletionAuditTable
+            rows={deletions}
+            loading={deletionsLoading}
+            emptyLabel="ยังไม่มีประวัติการลบรายงาน"
+            onShowCurrent={() => setView("current")}
+          />
+          {deletionsHasMore && deletionsCursor && !deletionsLoading && (
+            <div className="flex justify-center"><button type="button" onClick={() => void loadDeletions(deletionsCursor, true)} className="focus-ring rounded-md bg-river px-4 py-2 text-sm font-semibold text-white">โหลดประวัติเพิ่ม</button></div>
+          )}
+        </div>
       )}
     </section>
     {previewReport && (

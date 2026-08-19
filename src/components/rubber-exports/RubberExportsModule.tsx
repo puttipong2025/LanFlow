@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FilePlus2, RotateCw } from "lucide-react";
 import { toast } from "sonner";
 import type { Location } from "@/types";
@@ -23,7 +23,6 @@ import { ModalShell } from "@/components/shared/ModalShell";
 import { AlertDialog } from "@/components/shared/AlertDialog";
 import { DeletionAuditTable } from "@/components/shared/DeletionAuditTable";
 
-type Filter = "sold" | "draft" | "verified" | "all";
 type DetailTarget = Pick<RubberExportSummary, "id" | "exportNo">;
 
 function editableBills(
@@ -139,10 +138,10 @@ export function RubberExportsModule({
   onInitialExportHandled?: () => void;
   onOpenReports: () => void;
 }) {
-  const api = useRubberExports(selectedLocation.id, online);
+  const [view, setView] = useState<"active" | "history" | "deletions">("active");
+  const operationalView = view === "history" ? "history" : "active";
+  const api = useRubberExports(selectedLocation.id, online, operationalView);
   const reloadDeletions = api.reloadDeletions;
-  const [view, setView] = useState<"current" | "deletions">("current");
-  const [filter, setFilter] = useState<Filter>("all");
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<RubberExportDetails | null>(null);
   const [detailTarget, setDetailTarget] = useState<DetailTarget | null>(null);
@@ -158,26 +157,6 @@ export function RubberExportsModule({
   const [selling, setSelling] = useState(false);
   const detailController = useRef<AbortController | null>(null);
   const pdfShare = useSharePdf();
-  const counts = useMemo(() => ({
-    sold: api.exports.filter((row) => Boolean(row.soldOutAt)).length,
-    draft: api.exports.filter((row) => row.status === "draft").length,
-    verified: api.exports.filter((row) => row.status === "verified").length,
-    all: api.exports.length,
-  }), [api.exports]);
-  const visibleRows = useMemo(() => api.exports
-    .filter((row) => {
-      if (filter === "all") return true;
-      if (filter === "sold") return Boolean(row.soldOutAt);
-      return row.status === filter;
-    })
-    .sort((left, right) => {
-      const rank = { draft: 0, verified: 1 };
-      const statusDifference = rank[left.status] - rank[right.status];
-      if (statusDifference !== 0) return statusDifference;
-      const timeDifference = left.createdAt.localeCompare(right.createdAt);
-      if (timeDifference !== 0) return left.status === "draft" ? timeDifference : -timeDifference;
-      return left.id.localeCompare(right.id);
-    }), [api.exports, filter]);
 
   useEffect(() => {
     if (view === "deletions") void reloadDeletions();
@@ -248,7 +227,11 @@ export function RubberExportsModule({
   async function startEdit(row: RubberExportSummary) {
     if (row.status !== "draft" || !online) return;
     try {
-      setEditing(details?.id === row.id ? details : await api.details(row.id));
+      const [nextDetails] = await Promise.all([
+        details?.id === row.id ? Promise.resolve(details) : api.details(row.id),
+        api.loadAvailableBills("edit", row.id),
+      ]);
+      setEditing(nextDetails);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "โหลดรายการสำหรับแก้ไม่สำเร็จ");
     }
@@ -317,18 +300,24 @@ export function RubberExportsModule({
           <p className="mt-1 text-pretty text-sm text-ink/65">เลือกบิลที่ล็อกในรายงาน และจองบิลที่เลือกทันทีเมื่อสร้างฉบับร่าง</p>
         </div>
         <div className="flex w-full flex-wrap gap-2 sm:w-auto">
-          <button type="button" onClick={() => void (view === "current" ? api.reload() : api.reloadDeletions())} disabled={!online || api.loading || api.deletionsLoading} className="focus-ring inline-flex items-center gap-2 rounded-md bg-actionSecondary px-3 py-2 text-sm font-semibold text-white hover:bg-actionSecondary/90 disabled:opacity-50">
+          <button type="button" onClick={() => void (view === "deletions" ? api.reloadDeletions() : api.reload())} disabled={!online || api.loading || api.deletionsLoading} className="focus-ring inline-flex items-center gap-2 rounded-md bg-actionSecondary px-3 py-2 text-sm font-semibold text-white hover:bg-actionSecondary/90 disabled:opacity-50">
             <RotateCw size={16} className={api.loading || api.deletionsLoading ? "animate-spin" : ""} /> รีเฟรช
           </button>
-          <button
+          {view === "active" && <button
             type="button"
-            onClick={() => setCreating(true)}
-            disabled={!online || api.availableBills.length === 0}
-            title={!online ? "ต้องออนไลน์ก่อนสร้างรายการ" : api.availableBills.length === 0 ? "ต้องสร้างรายงานที่ล็อกบิลยางก่อน" : "สร้างรายการส่งออกยาง"}
+            onClick={() => void api.loadAvailableBills("create").then((bills) => {
+              if (bills.length === 0) {
+                toast.info("ยังไม่มีบิลที่พร้อมส่งออก กรุณาสร้างรายงานที่ล็อกบิลก่อน");
+                return;
+              }
+              setCreating(true);
+            }).catch((error) => toast.error(error instanceof Error ? error.message : "โหลดบิลที่พร้อมส่งออกไม่สำเร็จ"))}
+            disabled={!online || api.optionsLoading}
+            title={!online ? "ต้องออนไลน์ก่อนสร้างรายการ" : "สร้างรายการส่งออกยาง"}
             className="focus-ring inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-leaf px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
           >
-            <FilePlus2 size={16} /> สร้างรายการ
-          </button>
+            <FilePlus2 size={16} /> {api.optionsLoading ? "กำลังเตรียม..." : "สร้างรายการ"}
+          </button>}
         </div>
       </div>
 
@@ -343,22 +332,11 @@ export function RubberExportsModule({
           {api.deletionsError}
         </div>
       )}
-      {online && !api.loading && !api.error && api.availableBills.length === 0 && (
-        <div className="flex flex-col items-start gap-3 rounded-lg bg-field px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="font-semibold text-ink">ยังไม่มีบิลที่พร้อมส่งออก</p>
-            <p className="mt-1 text-pretty text-sm text-ink/65">สร้างรายงานเพื่อยืนยันและล็อกบิลยางก่อน แล้วจึงกลับมาเลือกรายการส่งออก</p>
-          </div>
-          <button type="button" onClick={onOpenReports} className="focus-ring shrink-0 rounded-md bg-river px-4 py-2 text-sm font-semibold text-white">
-            ไปหน้ารายงาน
-          </button>
-        </div>
-      )}
-
       <div className="flex flex-wrap gap-2" aria-label="มุมมองรายการส่งออกยาง">
         {([
-          ["current", "รายการปัจจุบัน"],
-          ["deletions", "ประวัติการลบ"],
+          ["active", "กำลังดำเนินการ"],
+          ["history", "ประวัติ"],
+          ...(api.permissions.canDelete ? [["deletions", "ประวัติการลบ"]] as const : []),
         ] as const).map(([value, label]) => (
           <button
             key={value}
@@ -376,51 +354,11 @@ export function RubberExportsModule({
         ))}
       </div>
 
-      {view === "current" && <div className="flex flex-wrap gap-2">
-        {([
-          ["sold", "ขายออกแล้ว"],
-          ["draft", "ฉบับร่าง"],
-          ["verified", "ตรวจสอบแล้ว"],
-          ["all", "ทั้งหมด"],
-        ] as Array<[Filter, string]>).map(([value, label]) => (
-          <button
-            key={value}
-            type="button"
-            onClick={() => setFilter(value)}
-            aria-label={`${label} ${counts[value]} รายการ`}
-            title={`${label} ${counts[value]} รายการ`}
-            className={cn(
-              "focus-ring inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-semibold text-white",
-              filter === value ? "bg-leaf" : "bg-actionSecondary hover:bg-actionSecondary/90",
-            )}
-          >
-            {label}
-            <span aria-hidden="true" className="min-w-5 rounded-full bg-amber px-1.5 py-0.5 text-center text-[10px] font-extrabold leading-none text-white tabular-nums">
-              {counts[value] > 99 ? "99+" : counts[value]}
-            </span>
-          </button>
-        ))}
-      </div>}
-
-      {view === "current" ? (
-      !api.loading && api.exports.length > 0 && visibleRows.length === 0 ? (
-        <div className="flex flex-col items-start gap-3 rounded-lg bg-field px-4 py-5">
-          <div>
-            <p className="font-semibold text-ink">ไม่มีรายการในตัวกรองนี้</p>
-            <p className="mt-1 text-pretty text-sm text-ink/65">เลือกดูรายการทั้งหมดเพื่อกลับไปจัดการรายการส่งออกยาง</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => setFilter("all")}
-            className="focus-ring rounded-md bg-river px-4 py-2 text-sm font-semibold text-white"
-          >
-            แสดงทั้งหมด
-          </button>
-        </div>
-      ) : (
+      {view !== "deletions" ? (
+      <>
       <div className="overflow-hidden rounded-xl bg-white shadow-sm">
         <RubberExportTable
-          rows={visibleRows}
+          rows={api.exports}
           loading={api.loading}
           online={online}
           canDelete={api.permissions.canDelete}
@@ -437,22 +375,40 @@ export function RubberExportsModule({
           onDelete={setPendingDelete}
         />
       </div>
-      )
+      {api.hasMore && !api.loading && (
+        <div className="flex flex-col items-center gap-2 rounded-lg bg-field px-4 py-3 text-center">
+          <p className="text-sm text-ink/65">โหลดแล้ว {api.exports.length} รายการ</p>
+          <button type="button" onClick={() => void api.loadMore()} className="focus-ring rounded-md bg-river px-4 py-2 text-sm font-semibold text-white">
+            โหลดเพิ่ม
+          </button>
+        </div>
+      )}
+      {view === "active" && !api.loading && api.exports.length === 0 && (
+        <button type="button" onClick={onOpenReports} className="focus-ring rounded-md bg-river px-4 py-2 text-sm font-semibold text-white">
+          ไปหน้ารายงานเพื่อเตรียมบิลส่งออก
+        </button>
+      )}
+      </>
       ) : (
-        <DeletionAuditTable
-          rows={api.deletions}
-          loading={api.deletionsLoading}
-          emptyLabel="ยังไม่มีประวัติการลบรายการส่งออกยาง"
-          showPreviousStatus
-          onShowCurrent={() => setView("current")}
-        />
+        <div className="space-y-3">
+          <DeletionAuditTable
+            rows={api.deletions}
+            loading={api.deletionsLoading}
+            emptyLabel="ยังไม่มีประวัติการลบรายการส่งออกยาง"
+            showPreviousStatus
+            onShowCurrent={() => setView("active")}
+          />
+          {api.deletionsHasMore && api.deletionsCursor && !api.deletionsLoading && (
+            <div className="flex justify-center"><button type="button" onClick={() => void api.reloadDeletions(api.deletionsCursor, true)} className="focus-ring rounded-md bg-river px-4 py-2 text-sm font-semibold text-white">โหลดประวัติเพิ่ม</button></div>
+          )}
+        </div>
       )}
 
       {creating && (
         <RubberExportCreateModal
           key={api.availableBills.map((bill) => bill.reportItemId).join(",")}
           availableBills={api.availableBills}
-          onPreview={api.preview}
+          onPreview={(selectedReportItemIds, signal) => api.preview(selectedReportItemIds, undefined, signal)}
           onSubmit={async (selectedReportItemIds) => {
             try {
               const created = await api.create(selectedReportItemIds);
@@ -476,7 +432,7 @@ export function RubberExportsModule({
           availableBills={editableBills(editing, api.availableBills)}
           initialSelectedIds={editing.items.map((item) => item.sourceReportItemId)}
           initialPreview={editPreview(editing)}
-          onPreview={(selectedReportItemIds) => api.preview(selectedReportItemIds, editing.id)}
+          onPreview={(selectedReportItemIds, signal) => api.preview(selectedReportItemIds, editing.id, signal)}
           onSubmit={async (selectedReportItemIds) => {
             try {
               await api.replaceItems(editing.id, selectedReportItemIds);

@@ -17,7 +17,7 @@ import { toast } from "sonner";
 import { AlertDialog } from "@/components/shared/AlertDialog";
 import { OperationWaitingDialog } from "@/components/shared/OperationWaitingDialog";
 import { useRubberBillEvidenceReview, type EvidenceReviewState } from "@/hooks/useRubberBillEvidenceReview";
-import { useRubberBills } from "@/hooks/useRubberBills";
+import { useRubberEvidenceFeed, type RubberEvidenceView } from "@/hooks/useRubberEvidenceFeed";
 import { useRubberEvidencePage } from "@/hooks/useRubberEvidencePage";
 import { cn } from "@/lib/cn";
 import { formatNumber } from "@/lib/format";
@@ -25,10 +25,7 @@ import { canManageSystemFeatures } from "@/lib/permissions";
 import {
   buildEvidenceSlides,
   evidenceImageKey,
-  paginateEvidenceItems,
-  selectEvidenceCards,
   type EvidenceDetailRow,
-  type EvidenceFilter,
 } from "@/lib/rubber-evidence/slides";
 import type { Location, Profile, RubberBill } from "@/types";
 
@@ -288,30 +285,28 @@ export function RubberEvidenceModule({
   initialBillId?: string | null;
   onInitialBillHandled?: () => void;
 }) {
-  const { bills } = useRubberBills(selectedLocation.id, profile.id);
   const review = useRubberBillEvidenceReview(selectedLocation.id);
   const canManage = canManageSystemFeatures(profile);
-  const [filter, setFilter] = useState<EvidenceFilter>("pending");
+  const [view, setView] = useState<RubberEvidenceView>("pending");
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [targetBillId, setTargetBillId] = useState<string | null>(initialBillId ?? null);
   const [pageNumber, setPageNumber] = useState(1);
   const [slidesByBill, setSlidesByBill] = useState<Record<string, number>>({});
   const [confirmPassAll, setConfirmPassAll] = useState(false);
   const [confirmClosePeriod, setConfirmClosePeriod] = useState(false);
   const [actionErrors, setActionErrors] = useState<Record<string, string>>({});
 
-  const allScopedBills = useMemo(
-    () => selectEvidenceCards(bills, review.states, "all", ""),
-    [bills, review.states],
-  );
-  const scopedBills = useMemo(
-    () => selectEvidenceCards(bills, review.states, filter, search),
-    [bills, filter, review.states, search],
-  );
-  const pagination = useMemo(
-    () => paginateEvidenceItems(scopedBills, pageNumber, CARD_PAGE_SIZE),
-    [pageNumber, scopedBills],
-  );
-  const { currentPage, totalPages, items: pageCards } = pagination;
+  const feed = useRubberEvidenceFeed({
+    ownerUserId: profile.id,
+    locationId: selectedLocation.id,
+    view,
+    search: debouncedSearch,
+    billId: targetBillId,
+  });
+  const totalPages = Math.max(1, Math.ceil(feed.cards.length / CARD_PAGE_SIZE));
+  const currentPage = Math.min(pageNumber, totalPages);
+  const pageCards = feed.cards.slice((currentPage - 1) * CARD_PAGE_SIZE, currentPage * CARD_PAGE_SIZE);
   const pageIdentityKey = pageCards.map(({ bill }) => `${bill.id}:${bill.revisionNo}`).join("|");
   const pageIdentities = useMemo(
     () => pageCards.map(({ bill }) => ({ id: bill.id, revisionNo: bill.revisionNo })),
@@ -322,41 +317,48 @@ export function RubberEvidenceModule({
   const evidencePage = useRubberEvidencePage(pageIdentities, online);
 
   useEffect(() => {
-    setFilter("pending");
+    setView("pending");
     setSearch("");
+    setDebouncedSearch("");
+    setTargetBillId(null);
     setPageNumber(1);
   }, [selectedLocation.id]);
 
   useEffect(() => {
-    if (!initialBillId || review.isLoading) return;
-    const index = allScopedBills.findIndex(({ bill }) => bill.id === initialBillId);
+    if (!initialBillId) return;
+    setTargetBillId(initialBillId);
+    setPageNumber(1);
+  }, [initialBillId]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(search), 300);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  useEffect(() => {
+    if (!targetBillId || feed.isLoading) return;
+    const index = feed.cards.findIndex(({ bill }) => bill.id === targetBillId);
     if (index < 0) {
-      toast.error("ไม่พบบิลเป้าหมายในสิทธิ์สาขาหรือรอบตรวจปัจจุบัน");
+      toast.error("ไม่พบบิลเป้าหมายในสิทธิ์สาขา");
       onInitialBillHandled?.();
       return;
     }
-    setFilter("all");
     setSearch("");
     setPageNumber(Math.floor(index / CARD_PAGE_SIZE) + 1);
     const frame = window.requestAnimationFrame(() => {
-      document.getElementById(`evidence-card-${initialBillId}`)?.scrollIntoView({ block: "start" });
+      document.getElementById(`evidence-card-${targetBillId}`)?.scrollIntoView({ block: "start" });
       onInitialBillHandled?.();
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [allScopedBills, initialBillId, onInitialBillHandled, review.isLoading]);
+  }, [feed.cards, feed.isLoading, onInitialBillHandled, targetBillId]);
 
   async function decide(bill: RubberBill, decision: "pass" | "improve") {
     setActionErrors((current) => ({ ...current, [bill.id]: "" }));
     try {
-      const refreshed = await review.refetch();
-      const current = refreshed.data?.states.find((item) => item.billId === bill.id);
-      if (!current || current.revisionNo !== bill.revisionNo || !["pending", "pass", "improve"].includes(current.reviewStatus)) {
-        throw new Error("สถานะบิลเปลี่ยนแล้ว กรุณาตรวจรายการล่าสุด");
-      }
       const result = await review.decide({
         billId: bill.id,
         revisionNo: bill.revisionNo,
-        expectedStatus: current.reviewStatus as "pending" | "pass" | "improve",
+        expectedStatus: pageCards.find((card) => card.bill.id === bill.id)?.review.reviewStatus as "pending" | "pass" | "improve",
         decision,
       });
       if (result.state === "stale") {
@@ -403,13 +405,22 @@ export function RubberEvidenceModule({
     }
   }
 
-  const filterOptions: Array<[EvidenceFilter, string]> = [
-    ["all", "ทั้งหมด"],
+  const viewOptions: Array<[RubberEvidenceView, string]> = [
     ["pending", "รอตรวจ"],
-    ["pass", "ผ่าน"],
-    ["improve", "ควรปรับปรุง"],
-    ["normal", "ปกติ"],
+    ["history", "ประวัติการตรวจ"],
   ];
+
+  async function nextPage() {
+    if (currentPage < totalPages) {
+      setPageNumber(currentPage + 1);
+      return;
+    }
+    if (!feed.hasMore) return;
+    const result = await feed.fetchNextPage();
+    if ((result.data?.pages.flatMap((page) => page.cards).length ?? feed.cards.length) > feed.cards.length) {
+      setPageNumber(currentPage + 1);
+    }
+  }
 
   return (
     <section aria-label="ตรวจหลักฐาน" className="space-y-4 pb-[env(safe-area-inset-bottom)]">
@@ -442,33 +453,32 @@ export function RubberEvidenceModule({
       <div className="rounded-xl border border-black/10 bg-white p-3 shadow-panel sm:p-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex flex-wrap gap-1 rounded-lg bg-field p-1" aria-label="กรองสถานะหลักฐาน">
-            {filterOptions.map(([value, label]) => {
-              const count = value === "all" ? allScopedBills.length : allScopedBills.filter(({ review: state }) => state.reviewStatus === value).length;
+            {viewOptions.map(([value, label]) => {
               return (
-                <button key={value} type="button" aria-pressed={filter === value} onClick={() => { setFilter(value); setPageNumber(1); }} className={cn("focus-ring min-h-9 rounded-md px-3 text-sm font-semibold", filter === value ? "bg-river text-white shadow-sm" : "text-ink hover:bg-white")}>
-                  {label} <span className="tabular-nums">{count}</span>
+                <button key={value} type="button" aria-pressed={view === value} onClick={() => { setView(value); setTargetBillId(null); setPageNumber(1); }} className={cn("focus-ring min-h-9 rounded-md px-3 text-sm font-semibold", view === value ? "bg-river text-white shadow-sm" : "text-ink hover:bg-white")}>
+                  {label}
                 </button>
               );
             })}
           </div>
           <label className="text-sm font-semibold text-ink">
             <span className="sr-only">ค้นหาบิลหลักฐาน</span>
-            <input value={search} onChange={(event) => { setSearch(event.target.value); setPageNumber(1); }} placeholder="ค้นหาเลขบิลหรือลูกค้า" className="focus-ring h-10 w-full rounded-md border border-black/20 bg-white px-3 sm:w-72" />
+            <input value={search} onChange={(event) => { setSearch(event.target.value); setTargetBillId(null); setPageNumber(1); }} placeholder="ค้นหาเลขบิลหรือลูกค้า" className="focus-ring h-10 w-full rounded-md border border-black/20 bg-white px-3 sm:w-72" />
           </label>
         </div>
       </div>
 
-      {review.isLoading && <div className="rounded-xl bg-white p-8 text-center text-ink/55">กำลังโหลดคิวตรวจ...</div>}
-      {review.isError && (
+      {(review.isLoading || feed.isLoading) && <div className="rounded-xl bg-white p-8 text-center text-ink/55">กำลังโหลดคิวตรวจ...</div>}
+      {(review.isError || feed.isError) && (
         <div className="rounded-xl border border-danger/30 bg-danger/5 p-4 text-center text-danger">
           <p>โหลดคิวตรวจไม่สำเร็จ</p>
-          <button type="button" onClick={() => void review.refetch()} className="focus-ring mt-2 rounded-md bg-danger px-3 py-2 text-sm font-semibold text-white">ลองใหม่</button>
+          <button type="button" onClick={() => void Promise.all([review.refetch(), feed.refetch()])} className="focus-ring mt-2 rounded-md bg-danger px-3 py-2 text-sm font-semibold text-white">ลองใหม่</button>
         </div>
       )}
-      {!review.isLoading && !review.isError && pageCards.length === 0 && (
+      {!review.isLoading && !review.isError && !feed.isLoading && !feed.isError && pageCards.length === 0 && (
         <div className="rounded-xl border border-dashed border-black/15 bg-white p-8 text-center">
-          <p className="text-pretty text-ink/60">ไม่พบรายการในตัวกรองนี้</p>
-          {filter !== "all" && <button type="button" onClick={() => setFilter("all")} className="focus-ring mt-3 h-10 rounded-md bg-river px-4 text-sm font-semibold text-white">ดูทั้งหมดในรอบ</button>}
+          <p className="text-pretty text-ink/60">{search ? "ไม่พบบิลที่ค้นหา" : view === "pending" ? "ไม่มีงานรอตรวจ" : "ยังไม่มีประวัติการตรวจ"}</p>
+          {!search && <button type="button" onClick={() => setView(view === "pending" ? "history" : "pending")} className="focus-ring mt-3 h-10 rounded-md bg-river px-4 text-sm font-semibold text-white">{view === "pending" ? "ดูประวัติการตรวจ" : "กลับไปงานรอตรวจ"}</button>}
         </div>
       )}
 
@@ -491,11 +501,11 @@ export function RubberEvidenceModule({
         ))}
       </div>
 
-      {scopedBills.length > 0 && (
+      {feed.cards.length > 0 && (
         <nav aria-label="แบ่งหน้าการ์ดหลักฐาน" className="flex items-center justify-center gap-3 rounded-xl bg-white p-3 shadow-panel">
           <button type="button" aria-label="หน้าก่อนหน้า" onClick={() => setPageNumber(Math.max(currentPage - 1, 1))} disabled={currentPage <= 1} className="focus-ring grid size-10 place-items-center rounded-md bg-actionSecondary text-white disabled:opacity-40"><ChevronLeft size={19} /></button>
-          <span className="tabular-nums text-sm font-semibold text-ink">หน้า {currentPage} / {totalPages} · {scopedBills.length} รายการ</span>
-          <button type="button" aria-label="หน้าถัดไป" onClick={() => setPageNumber(Math.min(currentPage + 1, totalPages))} disabled={currentPage >= totalPages} className="focus-ring grid size-10 place-items-center rounded-md bg-actionSecondary text-white disabled:opacity-40"><ChevronRight size={19} /></button>
+          <span className="tabular-nums text-sm font-semibold text-ink">หน้า {currentPage} / {totalPages} · โหลดแล้ว {feed.cards.length} รายการ</span>
+          <button type="button" aria-label="หน้าถัดไป" onClick={() => void nextPage()} disabled={(currentPage >= totalPages && !feed.hasMore) || feed.isFetchingNextPage} className="focus-ring grid size-10 place-items-center rounded-md bg-actionSecondary text-white disabled:opacity-40"><ChevronRight size={19} /></button>
         </nav>
       )}
 

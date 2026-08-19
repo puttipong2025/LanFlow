@@ -387,7 +387,6 @@ test("approval buttons and modal counts follow the selected branch", async ({ br
     expect(rubberPending.error).toBeNull();
     expect(incomePending.error).toBeNull();
     expect(cashDeletePending.error).toBeNull();
-    const allRubberPendingCount = rubberPending.count ?? 0;
     const allIncomePendingCount = (incomePending.count ?? 0) + (cashDeletePending.count ?? 0);
 
     const page = await context.newPage();
@@ -404,9 +403,9 @@ test("approval buttons and modal counts follow the selected branch", async ({ br
     let locationFilter = approvalModal.getByRole("combobox", { name: "สาขา", exact: true });
     await expect(locationFilter).toHaveValue(locationIds[0]);
     await expect(approvalModal.getByText("รออนุมัติ 1 รายการ", { exact: true })).toBeVisible();
-    await locationFilter.selectOption("all");
+    await locationFilter.selectOption(locationIds[1]);
     await expect(approvalModal.getByText(
-      `รออนุมัติ ${allRubberPendingCount} รายการ`,
+      "รออนุมัติ 2 รายการ",
       { exact: true },
     )).toBeVisible();
     await approvalModal.getByLabel("ปิด", { exact: true }).click();
@@ -431,8 +430,9 @@ test("approval buttons and modal counts follow the selected branch", async ({ br
     const rubberRequest = approvalModal.locator("article", {
       hasText: "คำขอบิลยาง Badge 1",
     });
-    page.once("dialog", (dialog) => dialog.accept());
     await rubberRequest.getByRole("button", { name: "ลบคำขอถาวร" }).click();
+    await page.getByRole("alertdialog", { name: "ลบคำขอถาวร?" })
+      .getByRole("button", { name: "ยืนยันลบคำขอ" }).click();
     await expect(page.getByText("ลบคำขอถาวรแล้ว")).toBeVisible({ timeout: 15_000 });
     await expect(approvalModal.getByText("รออนุมัติ 0 รายการ", { exact: true })).toBeVisible();
     await approvalModal.getByLabel("ปิด", { exact: true }).click();

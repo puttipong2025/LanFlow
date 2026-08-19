@@ -18,7 +18,7 @@ export function AlertDialog({
   title: string;
   description: string;
   confirmLabel: string;
-  cancelLabel?: string;
+  cancelLabel?: string | null;
   busy?: boolean;
   onCancel: () => void;
   onConfirm: () => void;
@@ -56,16 +56,19 @@ export function AlertDialog({
         </p>
         {children}
         <div className="mt-5 flex justify-end gap-2">
+          {cancelLabel && (
+            <button
+              autoFocus
+              type="button"
+              disabled={busy}
+              onClick={onCancel}
+              className="focus-ring rounded-md border border-black/10 bg-white px-4 py-2 text-sm font-semibold disabled:opacity-50"
+            >
+              {cancelLabel}
+            </button>
+          )}
           <button
-            autoFocus
-            type="button"
-            disabled={busy}
-            onClick={onCancel}
-            className="focus-ring rounded-md border border-black/10 bg-white px-4 py-2 text-sm font-semibold disabled:opacity-50"
-          >
-            {cancelLabel}
-          </button>
-          <button
+            autoFocus={!cancelLabel}
             type="button"
             disabled={busy}
             onClick={onConfirm}

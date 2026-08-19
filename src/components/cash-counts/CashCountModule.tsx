@@ -66,6 +66,8 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
   const [deletions, setDeletions] = useState<DocumentDeletionAudit[]>([]);
   const [historyView, setHistoryView] = useState<"current" | "deletions">("current");
   const [deletionsLoading, setDeletionsLoading] = useState(false);
+  const [deletionsHasMore, setDeletionsHasMore] = useState(false);
+  const [deletionsCursor, setDeletionsCursor] = useState<string | null>(null);
   const [detail, setDetail] = useState<CashCountDetail | null>(null);
   const handledInitialCountIdRef = useRef<string | null>(null);
   const manager = canManageSystemFeatures(profile);
@@ -97,20 +99,27 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
     setDetail(await response.json() as CashCountDetail);
   }, [selectedLocation.id]);
 
-  const loadDeletions = useCallback(async () => {
+  const loadDeletions = useCallback(async (cursor: string | null = null, append = false) => {
     if (!online || !manager) return;
     setDeletionsLoading(true);
     try {
+      const params = new URLSearchParams({ locationId: selectedLocation.id, view: "deletions" });
+      if (cursor) params.set("cursor", cursor);
       const response = await authFetch(
-        `/api/lanflow/cash-counts?locationId=${encodeURIComponent(selectedLocation.id)}&view=deletions`,
+        `/api/lanflow/cash-counts?${params.toString()}`,
         { cache: "no-store" },
       );
       await assertApiResponse(response);
-      setDeletions(
-        ((await response.json()) as {
-          deletions: DocumentDeletionAudit[];
-        }).deletions,
-      );
+      const body = (await response.json()) as {
+        deletions: DocumentDeletionAudit[];
+        hasMore: boolean;
+        nextCursor: string | null;
+      };
+      setDeletions((current) => append
+        ? [...current, ...body.deletions.filter((row) => !current.some((item) => item.id === row.id))]
+        : body.deletions);
+      setDeletionsHasMore(body.hasMore);
+      setDeletionsCursor(body.nextCursor);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "โหลดประวัติการลบไม่สำเร็จ");
     } finally {
@@ -263,6 +272,7 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
             </table>
           </div>
         </div> : (
+          <div className="space-y-3">
           <DeletionAuditTable
             rows={deletions}
             loading={deletionsLoading}
@@ -270,6 +280,10 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
             originalActorLabel="ผู้ตรวจเดิม"
             onShowCurrent={() => setHistoryView("current")}
           />
+          {deletionsHasMore && deletionsCursor && !deletionsLoading && (
+            <div className="flex justify-center"><button type="button" onClick={() => void loadDeletions(deletionsCursor, true)} className="focus-ring rounded-md bg-river px-4 py-2 text-sm font-semibold text-white">โหลดประวัติเพิ่ม</button></div>
+          )}
+          </div>
         )}
         </>
       )}

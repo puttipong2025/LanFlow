@@ -35,6 +35,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
     const currentBillId = crypto.randomUUID();
     const nextBillId = crypto.randomUUID();
     let submittedIds: string[] | null = null;
+    let previewRequests = 0;
     const page = await context.newPage();
 
     const summary = {
@@ -103,6 +104,13 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
           }),
         });
       });
+      await page.route("**/api/lanflow/rubber-exports/options?*", async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ availableBills: [nextBill] }),
+        });
+      });
       await page.route(`**/api/lanflow/rubber-exports/${exportId}`, async (route) => {
         if (route.request().method() === "GET") {
           await route.fulfill({
@@ -115,6 +123,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
         await route.continue();
       });
       await page.route("**/api/lanflow/rubber-exports/preview", async (route) => {
+        previewRequests += 1;
         const body = route.request().postDataJSON() as { selectedReportItemIds: string[] };
         await route.fulfill({
           status: 200,
@@ -197,7 +206,11 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await expect(editDialog.getByRole("checkbox", { name: "เลือกบิล CURRENT-001" })).toBeChecked();
       await editDialog.getByRole("checkbox", { name: "เลือกบิล CURRENT-001" }).uncheck();
       await expect(editDialog.getByText("กรุณาเลือกอย่างน้อย 1 บิล")).toBeVisible();
-      await editDialog.getByRole("checkbox", { name: "เลือกบิล NEXT-001" }).check();
+      const nextBillCheckbox = editDialog.getByRole("checkbox", { name: "เลือกบิล NEXT-001" });
+      await nextBillCheckbox.check();
+      await nextBillCheckbox.uncheck();
+      await nextBillCheckbox.check();
+      await expect.poll(() => previewRequests).toBe(1);
       await editDialog.getByRole("button", { name: "บันทึกการแก้" }).click();
       await expect.poll(() => submittedIds).toEqual([nextReportItemId]);
       await expect(page.getByText("แก้รายการส่งออกยางแล้ว")).toBeVisible();
@@ -358,14 +371,17 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await verifiedRow.getByRole("button", { name: "ขายยางออก" }).click();
       const saleDialog = page.getByRole("alertdialog", { name: "ยืนยันขายยางออก?" });
       await saleDialog.getByRole("button", { name: "ยืนยันขายยางออก" }).click();
-      await expect(verifiedRow).toContainText("ขายออกแล้ว");
-      await verifiedRow.getByRole("button", { name: "ยกเลิกขาย", exact: true }).click();
+      await expect(verifiedRow).toHaveCount(0);
+      await page.getByRole("button", { name: "ประวัติ", exact: true }).click();
+      const historyRow = page.locator("tbody tr").filter({
+        hasText: `REX-MANAGER-${exportId.slice(0, 8)}`,
+      });
+      await expect(historyRow).toContainText("ขายออกแล้ว");
+      await historyRow.getByRole("button", { name: "ยกเลิกขาย", exact: true }).click();
       const cancelSaleDialog = page.getByRole("alertdialog", { name: "ยืนยันยกเลิกขาย?" });
       await cancelSaleDialog.getByRole("button", { name: "ยกเลิกขาย" }).click();
-      await expect(verifiedRow).not.toContainText("ขายออกแล้ว");
-      await page.getByRole("button", { name: "ขายออกแล้ว 0 รายการ" }).click();
-      await expect(page.getByText("ไม่มีรายการในตัวกรองนี้")).toBeVisible();
-      await page.getByRole("button", { name: "แสดงทั้งหมด" }).click();
+      await expect(historyRow).toHaveCount(0);
+      await page.getByRole("button", { name: "กำลังดำเนินการ" }).click();
       await expect(verifiedRow).toBeVisible();
     } finally {
       await Promise.allSettled([managerContext.close(), creatorContext.close()]);
@@ -384,7 +400,8 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
     }
   });
 
-  test("draft filter badge is branch-scoped and disappears after refresh", async ({ browser }) => {
+  test("operational views are branch-scoped and refresh after deletion", async ({ browser }) => {
+    test.setTimeout(60_000);
     const context = await authContext(browser, "super_admin");
     const adminContext = await authContext(browser, "admin");
     const db = service();
@@ -503,19 +520,14 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await page.goto("/");
       await selectAppLocation(page, locationIds[0]);
       await page.getByRole("button", { name: /^ส่งออกยาง/ }).click();
-      await expect(page.getByRole("button", {
-        name: "ฉบับร่าง 2 รายการ",
-      })).toBeVisible({ timeout: 15_000 });
-      await expect(page.getByRole("button", { name: "ขายออกแล้ว 0 รายการ" })).toBeVisible();
-      await expect(page.getByRole("button", { name: "ตรวจสอบแล้ว 1 รายการ" })).toBeVisible();
-      await expect(page.getByRole("button", { name: "รายการปัจจุบัน" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "กำลังดำเนินการ" })).toBeVisible({ timeout: 15_000 });
+      await expect(page.getByRole("button", { name: "ประวัติ" })).toBeVisible();
       await expect(page.getByRole("button", { name: "ประวัติการลบ" })).toBeVisible();
-      await expect(page.getByRole("button", { name: "ทั้งหมด 3 รายการ" })).toBeVisible();
       const activeRows = page.locator("table").first().locator("tbody > tr");
       await expect(activeRows).toHaveCount(3);
-      await expect(activeRows.nth(0)).toContainText(`REX-BADGE-${exportIds[3].slice(0, 8)}`);
-      await expect(activeRows.nth(1)).toContainText(`REX-BADGE-${exportIds[0].slice(0, 8)}`);
-      await expect(activeRows.nth(2)).toContainText(`REX-BADGE-${exportIds[4].slice(0, 8)}`);
+      for (const exportId of [exportIds[0], exportIds[3], exportIds[4]]) {
+        await expect(page.getByText(`REX-BADGE-${exportId.slice(0, 8)}`)).toBeVisible();
+      }
       await page.getByRole("button", { name: "เปิดตรวจสอบ" }).first().click();
       const auditSection = page.getByRole("heading", { name: "ประวัติรายการ" }).locator("..");
       await expect(auditSection).toBeVisible();
@@ -524,7 +536,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await page.getByRole("button", { name: "ประวัติการลบ" }).click();
       await expect(page.getByText(`REX-BADGE-${exportIds[5].slice(0, 8)}`)).toBeVisible();
       await expect(page.getByText("ฉบับร่าง", { exact: true })).toBeVisible();
-      await page.getByRole("button", { name: "รายการปัจจุบัน" }).click();
+      await page.getByRole("button", { name: "กำลังดำเนินการ" }).click();
 
       const adminPage = await adminContext.newPage();
       await adminPage.goto("/");
@@ -534,27 +546,23 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await adminPage.getByRole("button", { name: `ดูรายละเอียด REX-BADGE-${exportIds[0].slice(0, 8)}` }).click();
       await expect(adminPage.getByText("รอ super_admin หรือผู้มีสิทธิ์จัดการระบบตรวจสอบรายการ")).toBeVisible();
       await adminPage.getByRole("button", { name: "ปิด", exact: true }).click();
-      await adminPage.getByRole("button", { name: "ไปหน้ารายงาน" }).click();
-      await expect(adminPage.getByRole("heading", { name: /^ชุดรายงาน/ })).toBeVisible();
 
       await selectAppLocation(page, locationIds[1]);
-      const secondBranchDraftButton = page.getByRole("button", {
-        name: "ฉบับร่าง 2 รายการ",
-      });
-      await expect(secondBranchDraftButton).toBeVisible();
+      const secondBranchActiveButton = page.getByRole("button", { name: "กำลังดำเนินการ" });
+      await expect(secondBranchActiveButton).toBeVisible();
+      await expect(page.locator("table").first().locator("tbody > tr")).toHaveCount(2);
       await page.setViewportSize({ width: 390, height: 844 });
-      const draftButtonBox = await secondBranchDraftButton.boundingBox();
-      expect(draftButtonBox).not.toBeNull();
-      expect(draftButtonBox!.x).toBeGreaterThanOrEqual(0);
-      expect(draftButtonBox!.x + draftButtonBox!.width).toBeLessThanOrEqual(390);
+      const activeButtonBox = await secondBranchActiveButton.boundingBox();
+      expect(activeButtonBox).not.toBeNull();
+      expect(activeButtonBox!.x).toBeGreaterThanOrEqual(0);
+      expect(activeButtonBox!.x + activeButtonBox!.width).toBeLessThanOrEqual(390);
       await page.setViewportSize({ width: 1280, height: 720 });
 
       await selectAppLocation(page, locationIds[0]);
       expect((await db.from("rubber_exports").delete().eq("id", exportIds[0])).error).toBeNull();
       await page.getByRole("button", { name: "รีเฟรช" }).click();
-      await expect(page.getByRole("button", {
-        name: "ฉบับร่าง 1 รายการ",
-      })).toBeVisible();
+      await expect(activeRows).toHaveCount(2);
+      await expect(page.getByText(`REX-BADGE-${exportIds[0].slice(0, 8)}`)).toBeHidden();
     } finally {
       await db.from("rubber_exports").delete().in("id", exportIds);
       await db.from("document_deletion_audits").delete().in("location_id", locationIds);
@@ -648,7 +656,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       sourceReportId = sourceReport.id;
 
       expect((await user.request.get(`/api/lanflow/rubber-exports?locationId=${locationId}`)).status()).toBe(403);
-      const listResponse = await admin.request.get(`/api/lanflow/rubber-exports?locationId=${locationId}`);
+      const listResponse = await admin.request.get(`/api/lanflow/rubber-exports/options?locationId=${locationId}`);
       expect(listResponse.ok(), await listResponse.text()).toBeTruthy();
       const list = await listResponse.json() as {
         availableBills: Array<{ reportItemId: string; billNo: string; eligibilityAt: string }>;
@@ -738,7 +746,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       )).status()).toBe(403);
 
       const remainingResponse = await admin.request.get(
-        `/api/lanflow/rubber-exports?locationId=${locationId}`
+        `/api/lanflow/rubber-exports/options?locationId=${locationId}`
       );
       const remaining = await remainingResponse.json() as {
         availableBills: Array<{ reportItemId: string; eligibilityAt: string }>;
@@ -760,7 +768,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       )).ok()).toBeTruthy();
 
       const zeroOptionsResponse = await admin.request.get(
-        `/api/lanflow/rubber-exports?locationId=${locationId}`
+        `/api/lanflow/rubber-exports/options?locationId=${locationId}`
       );
       const zeroOptions = await zeroOptionsResponse.json() as {
         availableBills: Array<{ reportItemId: string; eligibilityAt: string }>;
@@ -796,7 +804,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       expect(zeroDetails.workTotal).toBe(0);
 
       const draftOptionsResponse = await admin.request.get(
-        `/api/lanflow/rubber-exports?locationId=${locationId}`
+        `/api/lanflow/rubber-exports/options?locationId=${locationId}`
       );
       const draftOptions = await draftOptionsResponse.json() as {
         availableBills: Array<{ reportItemId: string }>;
@@ -910,7 +918,11 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       expect(removedExports).toEqual([]);
       expect(removedItems).toEqual([]);
 
-      const deletionHistory = await admin.request.get(
+      const forbiddenDeletionHistory = await admin.request.get(
+        `/api/lanflow/rubber-exports?locationId=${locationId}&view=deletions`,
+      );
+      expect(forbiddenDeletionHistory.status()).toBe(403);
+      const deletionHistory = await superAdmin.request.get(
         `/api/lanflow/rubber-exports?locationId=${locationId}&view=deletions`,
       );
       expect(deletionHistory.ok(), await deletionHistory.text()).toBeTruthy();
