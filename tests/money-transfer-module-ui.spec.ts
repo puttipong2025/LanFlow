@@ -167,3 +167,70 @@ test("shows a report-lock alert when deletion loses a race with report creation"
     await service.from("money_transfers").delete().eq("id", transferId);
   }
 });
+
+test("explains when report-locked sources prevent a pending merge", async ({ page }) => {
+  test.skip(!serviceRoleKey, "SUPABASE_SERVICE_ROLE_KEY is required for UI verification");
+  const transferId = crypto.randomUUID();
+  const customerName = `ลูกค้าทดสอบรวมติดล็อก ${transferId.slice(0, 8)}`;
+
+  await page.goto("/login");
+  await page.locator("#phone").fill(process.env.TEST_PHONE ?? "0800000000");
+  await page.locator("#password").fill(process.env.TEST_PASSWORD ?? "password123");
+  await page.getByRole("button", { name: "เข้าสู่ระบบ" }).click();
+  await expect(page.getByText("ออกจากระบบ")).toBeVisible({ timeout: 30_000 });
+  const meResponse = await page.request.get("/api/auth/me");
+  const me = await meResponse.json() as {
+    profile: { id: string; name: string; phone: string; locationIds: string[] };
+  };
+  const locationId = me.profile.locationIds[0];
+  const service = createClient(supabaseUrl, serviceRoleKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+
+  try {
+    expect((await service.from("money_transfers").insert({
+      id: transferId,
+      client_temp_id: transferId,
+      idempotency_key: `merge-lock-alert:${transferId}`,
+      location_id: locationId,
+      customer_name: customerName,
+      net_amount_to_pay: 100,
+      transfer_type: "customer",
+      transfer_method: "bank",
+      transfer_status: "pending",
+      sync_status: "synced",
+      record_status: "active",
+      created_by_user_id: me.profile.id,
+      created_by_name: me.profile.name,
+      created_by_phone: me.profile.phone,
+    })).error).toBeNull();
+
+    await page.route("**/rest/v1/rpc/merge_pending_money_transfers", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          mergedGroupCount: 0,
+          mergedTransferCount: 0,
+          deletedTransferCount: 0,
+          skippedTransferCount: 2,
+          reportLockedTransferCount: 2,
+          survivorIds: [],
+        }),
+      });
+    });
+
+    await page.goto("/");
+    await selectAppLocation(page, locationId);
+    await page.getByRole("button", { name: /^โอนเงิน/ }).click();
+    await page.getByRole("button", { name: "รวมบิลยางและใบชั่ง" }).click();
+
+    const alert = page.getByRole("alertdialog", { name: "รวมรายการบางส่วนไม่ได้" });
+    await expect(alert).toBeVisible();
+    await expect(alert).toContainText("2 รายการถูก Report Lock");
+    await expect(alert).toContainText("ต้องลบรายงานล่าสุดตามลำดับก่อน");
+    await expect(alert.getByRole("button", { name: "รับทราบ" })).toBeFocused();
+  } finally {
+    await service.from("money_transfers").delete().eq("id", transferId);
+  }
+});

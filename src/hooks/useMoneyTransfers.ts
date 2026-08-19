@@ -12,6 +12,7 @@ export type MergePendingMoneyTransfersResult = {
   mergedTransferCount: number;
   deletedTransferCount: number;
   skippedTransferCount: number;
+  reportLockedTransferCount: number;
   survivorIds: string[];
 };
 

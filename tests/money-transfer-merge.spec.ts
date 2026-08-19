@@ -54,7 +54,7 @@ test.describe.serial("Pending money transfer merge", () => {
     const customerId = crypto.randomUUID();
     const otherCustomerId = crypto.randomUUID();
     const reportId = crypto.randomUUID();
-    const transferIds = Array.from({ length: 7 }, () => crypto.randomUUID());
+    const transferIds = Array.from({ length: 8 }, () => crypto.randomUUID());
     const sourceIds = transferIds.map(() => crypto.randomUUID());
     const createdAt = [
       "2026-08-04T01:00:00.000Z",
@@ -64,6 +64,7 @@ test.describe.serial("Pending money transfer merge", () => {
       "2026-08-04T05:00:00.000Z",
       "2026-08-04T06:00:00.000Z",
       "2026-08-04T07:00:00.000Z",
+      "2026-08-04T08:00:00.000Z",
     ];
 
     try {
@@ -141,13 +142,29 @@ test.describe.serial("Pending money transfer merge", () => {
         created_by_name: "LanFlow super_admin",
         created_by_phone: "0800000000",
       })).error).toBeNull();
-      expect((await service.from("report_items").insert({
-        report_id: reportId,
-        location_id: locationId,
-        entity_type: "bank_transfer_source",
-        entity_id: transferIds[3],
-        eligibility_at: "2026-08-04T04:00:00.000Z",
-      })).error).toBeNull();
+      expect((await service.from("report_items").insert([
+        {
+          report_id: reportId,
+          location_id: locationId,
+          entity_type: "bank_transfer_source",
+          entity_id: transferIds[3],
+          eligibility_at: "2026-08-04T04:00:00.000Z",
+        },
+        {
+          report_id: reportId,
+          location_id: locationId,
+          entity_type: "ocr_ticket",
+          entity_id: sourceIds[7],
+          eligibility_at: "2026-08-04T08:00:00.000Z",
+        },
+        {
+          report_id: reportId,
+          location_id: locationId,
+          entity_type: "ocr_ticket",
+          entity_id: sourceIds[5],
+          eligibility_at: "2026-08-04T06:00:00.000Z",
+        },
+      ])).error).toBeNull();
 
       const merged = await client.rpc("merge_pending_money_transfers", {
         p_location_id: locationId,
@@ -157,7 +174,8 @@ test.describe.serial("Pending money transfer merge", () => {
         mergedGroupCount: 1,
         mergedTransferCount: 3,
         deletedTransferCount: 2,
-        skippedTransferCount: 4,
+        skippedTransferCount: 5,
+        reportLockedTransferCount: 2,
         survivorIds: [transferIds[0]],
       });
 
@@ -201,7 +219,8 @@ test.describe.serial("Pending money transfer merge", () => {
         mergedGroupCount: 0,
         mergedTransferCount: 0,
         deletedTransferCount: 0,
-        skippedTransferCount: 5,
+        skippedTransferCount: 6,
+        reportLockedTransferCount: 2,
         survivorIds: [],
       });
     } finally {

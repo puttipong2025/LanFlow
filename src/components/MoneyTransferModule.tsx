@@ -148,6 +148,7 @@ export function MoneyTransferModule({
   const [editTransfer, setEditTransfer] = useState<MoneyTransfer | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [deleteAlertDescription, setDeleteAlertDescription] = useState<string | null>(null);
+  const [mergeAlertDescription, setMergeAlertDescription] = useState<string | null>(null);
   const [detailTransfer, setDetailTransfer] = useState<MoneyTransfer | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [page, setPage] = useState(1);
@@ -262,6 +263,11 @@ export function MoneyTransferModule({
         setToastMsg(
           `รวมสำเร็จ ${result.mergedGroupCount} กลุ่ม · รวม ${result.mergedTransferCount} รายการ · ข้าม ${result.skippedTransferCount} รายการ`,
         );
+        if (result.reportLockedTransferCount > 0) {
+          setMergeAlertDescription(
+            `${result.reportLockedTransferCount} รายการถูก Report Lock จึงไม่สามารถย้ายบิลยางหรือใบชั่งไปรวมกันได้ ต้องลบรายงานล่าสุดตามลำดับก่อน แล้วจึงลองรวมรายการอีกครั้ง`,
+          );
+        }
       },
       onError: (error) => {
         setToastMsg(getMergeFailureMessage(error));
@@ -740,6 +746,15 @@ export function MoneyTransferModule({
         busy={deleteTransfer.isPending}
         onCancel={() => setDeleteConfirmId(null)}
         onConfirm={handleDeleteConfirm}
+      />
+      <AlertDialog
+        open={Boolean(mergeAlertDescription)}
+        title="รวมรายการบางส่วนไม่ได้"
+        description={mergeAlertDescription ?? ""}
+        confirmLabel="รับทราบ"
+        cancelLabel={null}
+        onCancel={() => setMergeAlertDescription(null)}
+        onConfirm={() => setMergeAlertDescription(null)}
       />
       <AlertDialog
         open={Boolean(deleteAlertDescription)}
