@@ -15,9 +15,9 @@ test.describe("Rubber export calculations @rubber-export", () => {
     expect(calculateWorkTotal(540, 2, 100)).toBe(1180);
     expect(calculateWorkTotal(1.005, 1, 0)).toBe(1.01);
     expect(calculateWorkTotal(400, 0, 0)).toBe(0);
-    expect(calculatePurchaseCostIncludingWork(3000, 225, 100)).toEqual({
-      total: 3225,
-      average: 32.25,
+    expect(calculatePurchaseCostIncludingWork(2800, 225, 100)).toEqual({
+      total: 3025,
+      average: 30.25,
     });
     expect(calculatePurchaseCostIncludingWork(3000, 0, 100)).toEqual({
       total: 3000,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Banknote, Save, X } from "lucide-react";
 import { toast } from "sonner";
 import { formatCurrency } from "@/lib/format";
@@ -12,7 +12,6 @@ import {
   calculateCashTotal,
   cashTransferStatusLabel,
   cashCountValues,
-  emptyCashCountValues,
   parseCashCounts,
   zeroCashCountValues,
   type CashCountValues,
@@ -25,20 +24,22 @@ function CountFields({
   values,
   onChange,
   sent,
+  readOnly = false,
 }: {
   values: CashCountValues;
   onChange: (key: keyof CashDenominationCounts, value: string) => void;
   sent?: CashDenominationCounts;
+  readOnly?: boolean;
 }) {
   return (
     <div className="grid gap-2.5 sm:grid-cols-2">
-      {CASH_DENOMINATIONS.map(([key, label, value]) => (
+      {CASH_DENOMINATIONS.map(([key, label, value, unit]) => (
         <label key={key} className="group flex items-center gap-3 rounded-xl border border-black/[0.08] bg-white px-3.5 py-3 shadow-[0_1px_2px_rgba(23,32,27,0.03)] transition hover:border-river/35 hover:shadow-[0_8px_18px_rgba(49,107,131,0.08)] focus-within:border-river focus-within:ring-2 focus-within:ring-river/15">
           <span className="min-w-0 flex-1">
             <span className="block font-semibold text-ink">{label}</span>
             <span className="mt-0.5 flex items-center gap-1.5 text-xs text-ink/50">
               <span className="rounded-md bg-field px-1.5 py-0.5 font-medium text-ink/65">{formatCurrency(value)}</span>
-              {sent && <span className="font-medium text-river">ส่ง {sent[key]} ใบ</span>}
+              {sent && <span className="font-medium text-river">ส่ง {sent[key]} {unit}</span>}
             </span>
           </span>
           <span className="flex items-center rounded-lg border border-black/10 bg-field/45 pl-1.5 focus-within:border-river/35 focus-within:bg-white">
@@ -46,10 +47,11 @@ function CountFields({
               ariaLabel={label}
               value={values[key] === "" ? "" : Number(values[key])}
               onChange={(value) => onChange(key, String(value))}
+              readOnly={readOnly}
               integerOnly
               compact
             />
-            <span className="pr-2 text-xs font-medium text-ink/45">ใบ</span>
+            <span className="pr-2 text-xs font-medium text-ink/45">{unit}</span>
           </span>
         </label>
       ))}
@@ -58,7 +60,7 @@ function CountFields({
 }
 
 export function CashBranchTransferCreateModal({ location, transfer, online, modeSelector, onSave, onClose }: { location: Location; transfer?: CashBranchTransfer; online: boolean; modeSelector?: React.ReactNode; onSave: (payload: unknown) => Promise<unknown>; onClose: () => void }) {
-  const { locations } = useLocations(); const [targetLocationId, setTargetLocationId] = useState(transfer?.targetLocationId ?? ""); const [counts, setCounts] = useState(transfer ? cashCountValues(transfer.sent) : emptyCashCountValues); const [note, setNote] = useState(transfer?.note ?? ""); const [saving, setSaving] = useState(false);
+  const { locations } = useLocations(); const [targetLocationId, setTargetLocationId] = useState(transfer?.targetLocationId ?? ""); const [counts, setCounts] = useState(transfer ? cashCountValues(transfer.sent) : zeroCashCountValues()); const [note, setNote] = useState(transfer?.note ?? ""); const [saving, setSaving] = useState(false);
   const parsed = useMemo(() => parseCashCounts(counts), [counts]); const amount = calculateCashTotal(parsed);
   const submit = async () => { if (!online) return toast.error("การโยกเงินสดต้องออนไลน์ก่อน"); if (!targetLocationId || !parsed || amount <= 0) return toast.error("กรุณาเลือกสาขาและกรอกจำนวนเงินสดครบทุกช่อง"); setSaving(true); try { const payload = transfer ? buildCashTransferUpdatePayload({ targetLocationId, sent: parsed, note }) : buildCashTransferCreatePayload({ sourceLocationId: location.id, targetLocationId, sent: parsed, note, clientTempId: crypto.randomUUID(), idempotencyKey: `cash:${crypto.randomUUID()}` }); await onSave(payload); toast.success(transfer ? "แก้ไขรายการเงินสดแล้ว" : "บันทึกรายการเงินสด รอปลายทางรับเงิน"); onClose(); } catch (error) { toast.error(error instanceof Error ? error.message : "บันทึกรายการไม่สำเร็จ"); } finally { setSaving(false); } };
   return <Modal title={transfer ? "แก้ไขการโยกเงินสด" : "โยกเงินไปสาขาอื่น (เงินสด)"} modeSelector={modeSelector} onClose={onClose}>
@@ -78,9 +80,9 @@ export function CashBranchTransferCreateModal({ location, transfer, online, mode
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
           <h4 className="font-bold text-ink">จำนวนที่ส่ง</h4>
-          <p className="mt-0.5 text-xs text-ink/50">กรอกจำนวนฉบับของแต่ละชนิดราคา</p>
+          <p className="mt-0.5 text-xs text-ink/50">กรอกจำนวนใบธนบัตรหรือเหรียญของแต่ละชนิดราคา</p>
         </div>
-        <span className="text-xs font-medium text-ink/45">หน่วย: ใบ</span>
+        <span className="text-xs font-medium text-ink/45">หน่วย: ใบ / เหรียญ</span>
       </div>
       <CountFields values={counts} onChange={(key, value) => setCounts((current) => ({ ...current, [key]: value }))} />
     </section>
@@ -100,15 +102,41 @@ export function CashBranchTransferCreateModal({ location, transfer, online, mode
 }
 
 export function CashBranchTransferReceiveModal({ transfer, online, onReceive, onClose }: { transfer: CashBranchTransfer; online: boolean; onReceive: (counts: CashDenominationCounts) => Promise<unknown>; onClose: () => void }) {
-  const [counts, setCounts] = useState(zeroCashCountValues); const [saving, setSaving] = useState(false); const parsed = useMemo(() => parseCashCounts(counts), [counts]); const received = calculateCashTotal(parsed); const difference = parsed ? calculateCashDifferences(transfer.sent, parsed).total : null;
+  const [counts, setCounts] = useState(() => cashCountValues(transfer.sent)); const [countsLocked, setCountsLocked] = useState(true); const [saving, setSaving] = useState(false); const countFieldsRef = useRef<HTMLDivElement>(null); const parsed = useMemo(() => parseCashCounts(counts), [counts]); const received = calculateCashTotal(parsed); const difference = parsed ? calculateCashDifferences(transfer.sent, parsed).total : null;
+  const unlockCounts = () => {
+    if (!countsLocked) return;
+    setCountsLocked(false);
+    window.requestAnimationFrame(() => {
+      countFieldsRef.current?.querySelector<HTMLInputElement>("input")?.focus();
+    });
+  };
   const submit = async () => { if (!online) return toast.error("การตรวจรับเงินต้องออนไลน์ก่อน"); if (!parsed) return toast.error("กรุณากรอกจำนวนที่รับจริงครบทุกช่อง รวมถึง 0"); setSaving(true); try { await onReceive(parsed); toast.success(difference === 0 ? "ยืนยันรับเงินแล้ว" : "ยืนยันรับเงินและบันทึกผลต่างแล้ว"); onClose(); } catch (error) { toast.error(error instanceof Error ? error.message : "ตรวจรับไม่สำเร็จ"); } finally { setSaving(false); } };
   return <Modal title="ตรวจรับเงินสด" onClose={onClose}>
     <p className="text-sm text-ink/60">ผู้ส่ง: {transfer.createdByName} · ยอดส่ง {formatCurrency(transfer.sentTotal)}</p>
-    <CountFields
-      values={counts}
-      sent={transfer.sent}
-      onChange={(key, value) => setCounts((current) => ({ ...current, [key]: value }))}
-    />
+    <div ref={countFieldsRef} id="cash-received-counts">
+      <CountFields
+        values={counts}
+        sent={transfer.sent}
+        readOnly={countsLocked}
+        onChange={(key, value) => setCounts((current) => ({ ...current, [key]: value }))}
+      />
+    </div>
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-black/[0.07] bg-field/40 p-3">
+      <p className="text-pretty text-sm text-ink/60">
+        {countsLocked ? "ยอดรับเริ่มต้นตรงกับยอดที่ส่งและยังแก้ไขไม่ได้" : "ปลดล็อกแล้ว กรุณาระบุยอดรับจริง"}
+      </p>
+      <button
+        type="button"
+        aria-controls="cash-received-counts"
+        aria-expanded={!countsLocked}
+        aria-pressed={!countsLocked}
+        disabled={!countsLocked}
+        onClick={unlockCounts}
+        className="focus-ring rounded-lg bg-clay px-3 py-2 text-sm font-semibold text-white disabled:cursor-default disabled:opacity-65"
+      >
+        {countsLocked ? "ยอดรับไม่ตรง" : "แก้ไขยอดรับแล้ว"}
+      </button>
+    </div>
     <DenominationComparison sent={transfer.sent} received={parsed} />
     <Summary label="ยอดรับจริง" amount={received} />
     <p className={difference === null || difference === 0 ? "text-success" : "font-bold text-clay"}>
@@ -138,10 +166,10 @@ export function CashBranchTransferReceiveModal({ transfer, online, onReceive, on
 export function CashBranchTransferDetails({ transfer, canEdit, online, onEdit, onClose }: { transfer: CashBranchTransfer; canEdit: boolean; online: boolean; onEdit: () => void; onClose: () => void }) {
   const status = cashTransferStatusLabel(transfer.status, transfer.differenceTotal);
   const reportLockReason = transfer.reportLockNo ? `ล็อกโดยรายงาน ${transfer.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน` : null;
-  return <Modal title="รายละเอียดเงินสด" onClose={onClose}><p className="font-bold">{status}</p>{reportLockReason && <p className="rounded bg-amber/15 p-2 text-sm font-semibold text-ink">{reportLockReason}</p>}<Summary label="ยอดส่ง" amount={transfer.sentTotal} /><Summary label="ยอดรับจริง" amount={transfer.receivedTotal ?? 0} /><DenominationComparison sent={transfer.sent} received={transfer.received} /><p className="text-sm">ผู้ส่ง: {transfer.createdByName} · ผู้ตรวจรับ: {transfer.receivedByName ?? "ยังไม่ตรวจรับ"}</p>{transfer.note && <p className="text-sm">หมายเหตุ: {transfer.note}</p>}{canEdit && transfer.status === "pending_receipt" && <button disabled={!online || Boolean(reportLockReason)} title={reportLockReason ?? undefined} onClick={onEdit} className="bg-river px-3 py-2 font-semibold text-white disabled:opacity-40">แก้ไขก่อนตรวจรับ</button>}<footer><button onClick={onClose} className="bg-actionSecondary text-white hover:bg-actionSecondary/90">ปิด</button></footer></Modal>;
+  return <Modal title="รายละเอียดเงินสด" onClose={onClose}><p className="font-bold">{status}</p>{reportLockReason && <p className="rounded bg-amber/15 p-2 text-sm font-semibold text-ink">{reportLockReason}</p>}<Summary label="ยอดส่ง" amount={transfer.sentTotal} /><Summary label="ยอดรับจริง" amount={transfer.receivedTotal} /><DenominationComparison sent={transfer.sent} received={transfer.received} /><p className="text-sm">ผู้ส่ง: {transfer.createdByName} · ผู้ตรวจรับ: {transfer.receivedByName ?? "ยังไม่ตรวจรับ"}</p>{transfer.note && <p className="text-sm">หมายเหตุ: {transfer.note}</p>}{canEdit && transfer.status === "pending_receipt" && <button disabled={!online || Boolean(reportLockReason)} title={reportLockReason ?? undefined} onClick={onEdit} className="bg-river px-3 py-2 font-semibold text-white disabled:opacity-40">แก้ไขก่อนตรวจรับ</button>}<footer><button onClick={onClose} className="bg-actionSecondary text-white hover:bg-actionSecondary/90">ปิด</button></footer></Modal>;
 }
 
 function DenominationComparison({ sent, received }: { sent: CashDenominationCounts; received: CashDenominationCounts | null }) { return <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="text-left text-ink/55"><th>ชนิด</th><th>ส่ง</th><th>รับจริง</th><th>ผลต่าง</th></tr></thead><tbody>{CASH_DENOMINATIONS.map(([key, label]) => <tr key={key} className="border-t border-black/10"><td className="py-1">{label}</td><td>{sent[key]}</td><td>{received?.[key] ?? "-"}</td><td>{received ? received[key] - sent[key] : "-"}</td></tr>)}</tbody></table></div>; }
 
-function Summary({ label, amount, prominent = false }: { label: string; amount: number; prominent?: boolean }) { return <div className={`flex items-center justify-between rounded-xl px-4 py-3 ${prominent ? "border border-river/15 bg-river text-white shadow-[0_8px_20px_rgba(49,107,131,0.16)]" : "bg-river/5"}`}><span className="font-semibold">{label}</span><strong className="text-lg tabular-nums">{formatCurrency(amount)}</strong></div>; }
+function Summary({ label, amount, prominent = false }: { label: string; amount: number | null; prominent?: boolean }) { return <div className={`flex items-center justify-between rounded-xl px-4 py-3 ${prominent ? "border border-river/15 bg-river text-white shadow-[0_8px_20px_rgba(49,107,131,0.16)]" : "bg-river/5"}`}><span className="font-semibold">{label}</span><strong className="text-lg tabular-nums">{amount === null ? "—" : formatCurrency(amount)}</strong></div>; }
 function Modal({ title, children, modeSelector, onClose }: { title: string; children: React.ReactNode; modeSelector?: React.ReactNode; onClose: () => void }) { return <div className="fixed inset-0 z-50 flex items-start justify-center bg-ink/55 p-2 backdrop-blur-[2px] sm:p-6"><div className="flex max-h-[calc(100dvh-16px)] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-white/70 bg-white shadow-[0_24px_70px_rgba(23,32,27,0.28)] sm:my-4 sm:max-h-[calc(100dvh-48px)]"><header className="flex shrink-0 items-start justify-between gap-4 border-b border-river/10 bg-river/5 px-4 py-3 sm:px-6"><div className="flex min-w-0 items-center gap-3"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-river text-white"><Banknote size={21} /></span><div><p className="text-xs font-bold uppercase tracking-[0.14em] text-river">Cash transfer</p><h3 className="mt-0.5 text-lg font-bold leading-tight text-ink sm:text-xl">{title}</h3></div></div><button type="button" aria-label="ปิด" onClick={onClose} className="focus-ring inline-flex h-10 shrink-0 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white shadow-sm hover:bg-actionSecondary/90"><X size={18} />ปิด</button></header>{modeSelector}<div className="modal-scroll-body flex-1 space-y-5 overflow-y-auto p-3 sm:p-4">{children}</div></div></div>; }

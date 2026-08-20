@@ -114,7 +114,7 @@ insert into public.report_items (
 
 insert into public.rubber_exports (
   id, export_no, export_date, sequence_no, location_id, status,
-  original_weight_total, paid_total, average_price, current_weight,
+  original_weight_total, paid_total, rubber_value_total, average_price, current_weight,
   weight_loss_percent, work_rate, other_operating_cost, work_total,
   expense_destination, created_by_user_id, created_by_name, created_by_phone,
   verified_by_user_id, verified_by_name, verified_by_phone, verified_at,
@@ -124,7 +124,7 @@ insert into public.rubber_exports (
     '29000000-0000-4000-8000-000000000001', 'PDM-E1',
     (current_timestamp at time zone 'Asia/Bangkok')::date, 1,
     '23000000-0000-4000-8000-000000000001', 'verified',
-    50, 1000, 20, 45, 10, 0, 0, 0, 'branch',
+    50, 1000, 1000, 20, 45, 10, 0, 0, 0, 'branch',
     '24000000-0000-4000-8000-000000000001', 'pgTAP metrics user', '0892400001',
     '24000000-0000-4000-8000-000000000001', 'pgTAP metrics user', '0892400001',
     current_timestamp, current_timestamp, 0, 0, 0
@@ -133,27 +133,27 @@ insert into public.rubber_exports (
     '29000000-0000-4000-8000-000000000002', 'PDM-E2',
     (current_timestamp at time zone 'Asia/Bangkok')::date, 2,
     '23000000-0000-4000-8000-000000000001', 'draft',
-    20, 300, 15, null, null, null, 0, null, null,
+    20, 300, 300, 15, null, null, null, 0, null, null,
     '24000000-0000-4000-8000-000000000001', 'pgTAP metrics user', '0892400001',
     null, null, null, null, null, null, null, null
   );
 
 insert into public.rubber_export_items (
   export_id, location_id, source_report_item_id, source_bill_id, bill_date,
-  bill_no, customer_name, eligibility_at, net_weight, paid_amount,
+  bill_no, customer_name, eligibility_at, net_weight, paid_amount, rubber_value_amount,
   age_source_at, age_is_estimated
 ) values
   (
     '29000000-0000-4000-8000-000000000001', '23000000-0000-4000-8000-000000000001',
     '28000000-0000-4000-8000-000000000001', '25000000-0000-4000-8000-000000000002',
     (current_timestamp at time zone 'Asia/Bangkok')::date,
-    'PDM-B2', 'verified export', current_timestamp, 50, 1000, current_timestamp, false
+    'PDM-B2', 'verified export', current_timestamp, 50, 1000, 1000, current_timestamp, false
   ),
   (
     '29000000-0000-4000-8000-000000000002', '23000000-0000-4000-8000-000000000001',
     '28000000-0000-4000-8000-000000000002', '25000000-0000-4000-8000-000000000004',
     (current_timestamp at time zone 'Asia/Bangkok')::date - 1,
-    'PDM-B4', 'draft export', current_timestamp, 20, 300,
+    'PDM-B4', 'draft export', current_timestamp, 20, 300, 300,
     current_timestamp - interval '1 day', false
   );
 

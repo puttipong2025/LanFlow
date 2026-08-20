@@ -19,6 +19,10 @@ import { appSwal } from "@/lib/swal";
 
 import type { Location, Profile, RubberBill } from "@/types";
 import { ModalShell } from "@/components/shared/ModalShell";
+
+export function rubberValueWholeBahtForDisplay(value: number) {
+  return Math.trunc(value);
+}
 import { Field } from "@/components/shared/Field";
 import { NumberField } from "@/components/shared/NumberField";
 import { InlineRadio } from "@/components/shared/InlineRadio";
@@ -783,7 +787,11 @@ export function RubberBillModal({
           )}
           <NumberField label="น้ำหนักสุทธิ (กก.)" value={calculation.netWeight} readOnly />
           <NumberField label="ราคาเฉลี่ย (บาท/กก.)" value={calculation.averagePrice} readOnly />
-          <NumberField label="มูลค่ายาง (บาท)" value={calculation.rubberValue} readOnly />
+          <NumberField
+            label="มูลค่ายาง (บาท)"
+            value={rubberValueWholeBahtForDisplay(calculation.rubberValue)}
+            readOnly
+          />
           <NumberField label="ยอดหักเงิน (บาท)" value={calculation.deductionTotal} readOnly />
           <NumberField label="ยอดที่ต้องจ่ายลูกค้า (บาท)" value={calculation.netTotal} readOnly />
         </section>

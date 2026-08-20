@@ -149,6 +149,7 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
         billId: firstBill,
         billNo: `DEPTH-A1-${firstBill.slice(0, 6)}`,
         receivedAt: "2026-07-23T01:00:00.000Z",
+        paidAmount: 800,
       });
       await insertBill({
         db,
@@ -262,9 +263,15 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
           billId: string;
           billNo: string;
           eligibilityAt: string;
+          paidAmount: number;
+          rubberValueAmount: number;
         }>;
       }).availableBills;
       expect(options).toHaveLength(4);
+      expect(options.find((option) => option.billId === firstBill)).toMatchObject({
+        paidAmount: 800,
+        rubberValueAmount: 900,
+      });
       expect((await admin.request.post("/api/lanflow/rubber-exports", {
         data: { locationId: locationA, selectedReportItemIds: [] },
       })).status()).toBe(400);
@@ -338,9 +345,22 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
       expect(previewResponse.ok(), await previewResponse.text()).toBeTruthy();
       const preview = await previewResponse.json() as {
         itemCount: number;
-        items: Array<{ billId: string; eligibilityAt: string }>;
+        paidTotal: number;
+        rubberValueTotal: number;
+        items: Array<{
+          billId: string;
+          eligibilityAt: string;
+          paidAmount: number;
+          rubberValueAmount: number;
+        }>;
       };
       expect(preview.itemCount).toBe(3);
+      expect(preview.paidTotal).toBe(2_600);
+      expect(preview.rubberValueTotal).toBe(2_700);
+      expect(preview.items.find((item) => item.billId === firstBill)).toMatchObject({
+        paidAmount: 800,
+        rubberValueAmount: 900,
+      });
       expect(preview.items.map((item) => item.billId)).toEqual([
         firstBill,
         ...[firstTieBill, secondTieBill].sort(),
@@ -355,9 +375,25 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
 
       const { data: selectedItems, error: selectedItemsError } = await db
         .from("rubber_export_items")
-        .select("source_report_item_id")
+        .select("source_report_item_id, paid_amount, rubber_value_amount")
         .eq("export_id", firstExport.id);
       expect(selectedItemsError).toBeNull();
+      expect((selectedItems ?? []).reduce((sum, item) => sum + Number(item.paid_amount), 0)).toBe(2_600);
+      expect((selectedItems ?? []).reduce((sum, item) => sum + Number(item.rubber_value_amount), 0)).toBe(2_700);
+      const detailResponse = await admin.request.get(`/api/lanflow/rubber-exports/${firstExport.id}`);
+      expect(detailResponse.ok(), await detailResponse.text()).toBeTruthy();
+      const detail = await detailResponse.json() as {
+        rubberValueTotal: number;
+        items: Array<{ rubberValueAmount: number }>;
+      };
+      expect(detail.rubberValueTotal).toBe(2_700);
+      expect(detail.items.reduce((sum, item) => sum + item.rubberValueAmount, 0)).toBe(2_700);
+      const listResponse = await admin.request.get(
+        `/api/lanflow/rubber-exports?locationId=${locationA}`,
+      );
+      expect(listResponse.ok(), await listResponse.text()).toBeTruthy();
+      const listed = await listResponse.json() as { exports: Array<{ id: string; rubberValueTotal: number }> };
+      expect(listed.exports.find((item) => item.id === firstExport.id)?.rubberValueTotal).toBe(2_700);
       const { data: selectedReportItems, error: selectedReportItemsError } = await db
         .from("report_items")
         .select("report_id")

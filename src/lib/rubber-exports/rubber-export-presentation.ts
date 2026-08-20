@@ -87,7 +87,7 @@ export function rubberExportStatusLabel(details: RubberExportDetails) {
 
 export function buildRubberExportPresentation(details: RubberExportDetails) {
   const purchaseCost = calculatePurchaseCostIncludingWork(
-    details.paidTotal,
+    details.rubberValueTotal,
     details.workTotal,
     details.originalWeightTotal,
   );

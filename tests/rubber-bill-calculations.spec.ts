@@ -4,6 +4,7 @@ import {
   calculateRubberBill,
   hasAtMostTwoDecimalPlaces,
 } from "../src/lib/rubber-bills/calculations";
+import { rubberValueWholeBahtForDisplay } from "../src/components/rubber-bills/RubberBillModal";
 
 test.describe("rubber bill calculations", () => {
   test("uses the bill-level net weight proportion and floors only the payable total", () => {
@@ -50,5 +51,19 @@ test.describe("rubber bill calculations", () => {
   test("rejects decimal precision beyond hundredths", () => {
     expect(hasAtMostTwoDecimalPlaces(90.12)).toBe(true);
     expect(hasAtMostTwoDecimalPlaces(90.126)).toBe(false);
+  });
+
+  test("truncates only the modal rubber-value display while preserving calculation money", () => {
+    const result = calculateRubberBill({
+      weighItems: [{ netWeight: 80.12, price: 17.23 }],
+      deductWeight: 0,
+      debtItems: [{ amount: 95.35 }],
+    });
+
+    expect(result.rubberValue).toBe(1380.47);
+    expect(rubberValueWholeBahtForDisplay(result.rubberValue)).toBe(1380);
+    expect(result.deductionTotal).toBe(95.35);
+    expect(result.payableBeforeRounding).toBe(1285.12);
+    expect(result.netTotal).toBe(1285);
   });
 });

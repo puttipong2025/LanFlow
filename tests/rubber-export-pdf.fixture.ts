@@ -13,6 +13,7 @@ export function rubberExportDetails(
     eligibilityAt: "2026-07-29T08:10:00.000Z",
     netWeight: 100 + index,
     paidAmount: 3_000 + index,
+    rubberValueAmount: 2_900 + index,
     ageHours: 48 + index,
     ageIsEstimated: index === 2,
   }));
@@ -25,6 +26,7 @@ export function rubberExportDetails(
     previousStatus: null,
     originalWeightTotal: 303,
     paidTotal: 9_003,
+    rubberValueTotal: 8_703,
     averagePrice: 29.712871,
     currentWeight: 295,
     weightLossPercent: 2.640264,
@@ -62,6 +64,7 @@ export function longRubberExportDetails() {
       eligibilityAt: "2026-07-29T08:10:00.000Z",
       netWeight: 100 + index,
       paidAmount: 3_000 + index,
+      rubberValueAmount: 2_900 + index,
       ageHours: 48 + index,
       ageIsEstimated: false,
     };

@@ -2,11 +2,13 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select extensions.plan(55);
+select extensions.plan(69);
 
 select extensions.has_column('public', 'rubber_bills', 'source_rubber_export_id', 'receipt bill stores its source export');
 select extensions.has_column('public', 'rubber_bills', 'received_age_hours', 'receipt bill snapshots age at receipt');
 select extensions.has_column('public', 'rubber_export_items', 'carried_age_hours', 'next export snapshots carried age');
+select extensions.has_column('public', 'rubber_exports', 'rubber_value_total', 'export snapshots total rubber value');
+select extensions.has_column('public', 'rubber_export_items', 'rubber_value_amount', 'export item snapshots rubber value');
 select extensions.has_function('public', 'get_receivable_rubber_exports', array['uuid'], 'candidate RPC exists');
 select extensions.has_function('public', 'receive_rubber_export', array['uuid', 'uuid'], 'atomic receive RPC exists');
 select extensions.has_column('public', 'rubber_exports', 'sold_out_at', 'export stores the current sold-out timestamp');
@@ -46,7 +48,7 @@ insert into public.user_locations (user_id, location_id, is_primary) values
 
 insert into public.rubber_exports (
   id, export_no, export_date, sequence_no, location_id, status,
-  original_weight_total, paid_total, average_price, current_weight,
+  original_weight_total, paid_total, rubber_value_total, average_price, current_weight,
   weight_loss_percent, work_rate, other_operating_cost, work_total,
   expense_destination, created_by_user_id, created_by_name, created_by_phone,
   verified_by_user_id, verified_by_name, verified_by_phone, verified_at,
@@ -55,7 +57,7 @@ insert into public.rubber_exports (
   'a3000000-0000-4000-8000-000000000001', 'REX-BRANCH-001',
   (clock_timestamp() at time zone 'Asia/Bangkok')::date, 1,
   'a1000000-0000-4000-8000-000000000001', 'verified',
-  120, 3600, 30, 100, 16.67, 1, 0, 120, 'branch',
+  120, 3600, 3600, 30, 100, 16.67, 1, 0, 120, 'branch',
   'a2000000-0000-4000-8000-000000000001', 'ผู้ทดสอบ', '0995100001',
   'a2000000-0000-4000-8000-000000000001', 'ผู้ทดสอบ', '0995100001',
   clock_timestamp() - interval '3 days', clock_timestamp() - interval '3 days',
@@ -107,7 +109,7 @@ insert into public.report_items (
 
 insert into public.rubber_export_items (
   export_id, location_id, source_report_item_id, source_bill_id, bill_date,
-  bill_no, customer_name, eligibility_at, net_weight, paid_amount,
+  bill_no, customer_name, eligibility_at, net_weight, paid_amount, rubber_value_amount,
   age_source_at, age_is_estimated, carried_age_hours
 ) select
   'a3000000-0000-4000-8000-000000000001',
@@ -115,7 +117,7 @@ insert into public.rubber_export_items (
   'a3300000-0000-4000-8000-000000000001',
   'a3100000-0000-4000-8000-000000000001', b.bill_date,
   'BRS-SOURCE-001', 'ลูกค้าต้นทางทดสอบ', e.verified_at,
-  120, 3600, e.verified_at, true, 96
+  120, 3600, 3600, e.verified_at, true, 96
 from public.rubber_exports e
 join public.rubber_bills b on b.id = 'a3100000-0000-4000-8000-000000000001'
 where e.id = 'a3000000-0000-4000-8000-000000000001';
@@ -241,6 +243,13 @@ select extensions.is(
 );
 
 select extensions.is(
+  (select rubber_value from public.get_receivable_rubber_exports('a1000000-0000-4000-8000-000000000002')
+   where source_rubber_export_id = 'a3000000-0000-4000-8000-000000000001'),
+  3720::numeric,
+  'receipt candidate adds work cost to rubber value rather than paid total'
+);
+
+select extensions.is(
   public.receive_rubber_export(
     'a1000000-0000-4000-8000-000000000002',
     'a3000000-0000-4000-8000-000000000001'
@@ -263,6 +272,14 @@ select extensions.ok(
    where source_rubber_export_id = 'a3000000-0000-4000-8000-000000000001'
      and record_status = 'active'),
   'receipt carries weight, value, compensated age and zero payable'
+);
+
+select extensions.is(
+  (select average_price from public.rubber_bills
+   where source_rubber_export_id = 'a3000000-0000-4000-8000-000000000001'
+     and record_status = 'active'),
+  37.2::numeric,
+  'receipt average uses carried rubber value divided by current weight'
 );
 
 select extensions.results_eq(
@@ -396,7 +413,7 @@ insert into public.report_items (
 
 insert into public.rubber_exports (
   id, export_no, export_date, sequence_no, location_id, status,
-  original_weight_total, paid_total, average_price, current_weight,
+  original_weight_total, paid_total, rubber_value_total, average_price, current_weight,
   weight_loss_percent, work_rate, other_operating_cost, work_total,
   expense_destination, created_by_user_id, created_by_name, created_by_phone,
   verified_by_user_id, verified_by_name, verified_by_phone, verified_at,
@@ -405,16 +422,30 @@ insert into public.rubber_exports (
   'a6200000-0000-4000-8000-000000000001', 'REX-SAME-BRANCH-001',
   (clock_timestamp() at time zone 'Asia/Bangkok')::date, 2,
   'a1000000-0000-4000-8000-000000000002', 'verified',
-  50, 1500, 30, 45, 10, 1, 0, 50, 'branch',
+  50, 1500, 1500, 30, 45, 10, 1, 0, 50, 'branch',
   'a2000000-0000-4000-8000-000000000001', 'ผู้ทดสอบ', '0995100001',
   'a2000000-0000-4000-8000-000000000001', 'ผู้ทดสอบ', '0995100001',
   clock_timestamp() - interval '12 hours', clock_timestamp() - interval '12 hours',
   36, 36, 0
 );
 
+-- This manual export fixture bypasses create_rubber_export, so mirror its
+-- sequence in the durable allocator before later RPC-created exports.
+insert into private.document_number_counters (
+  document_kind, location_id, document_date, last_sequence_no
+) values (
+  'REX', 'a1000000-0000-4000-8000-000000000002',
+  (clock_timestamp() at time zone 'Asia/Bangkok')::date, 2
+)
+on conflict (document_kind, location_id, document_date)
+do update set last_sequence_no = greatest(
+  private.document_number_counters.last_sequence_no,
+  excluded.last_sequence_no
+), updated_at = clock_timestamp();
+
 insert into public.rubber_export_items (
   export_id, location_id, source_report_item_id, source_bill_id, bill_date,
-  bill_no, customer_name, eligibility_at, net_weight, paid_amount,
+  bill_no, customer_name, eligibility_at, net_weight, paid_amount, rubber_value_amount,
   age_source_at, age_is_estimated, carried_age_hours
 ) values (
   'a6200000-0000-4000-8000-000000000001',
@@ -423,7 +454,7 @@ insert into public.rubber_export_items (
   'a6000000-0000-4000-8000-000000000001',
   (clock_timestamp() at time zone 'Asia/Bangkok')::date,
   'SAME-BRANCH-SOURCE', 'ลูกค้าสาขาปัจจุบัน', clock_timestamp() - interval '1 day',
-  50, 1500, clock_timestamp() - interval '12 hours', false, 36
+  50, 1500, 1500, clock_timestamp() - interval '12 hours', false, 36
 );
 
 set local role authenticated;
@@ -682,6 +713,123 @@ select extensions.is(
    where source_rubber_export_id = 'a3000000-0000-4000-8000-000000000001'),
   1::bigint,
   'source becomes selectable again after the receipt is deleted'
+);
+
+reset role;
+
+insert into public.report_batches (
+  id, report_no, report_date, sequence_no, location_id, cutoff_at,
+  status, created_by_user_id, created_by_name, created_by_phone,
+  opening_balance, closing_balance
+) values (
+  'a7300000-0000-4000-8000-000000000001', 'RPT-MULTI-HOP-B',
+  (clock_timestamp() at time zone 'Asia/Bangkok')::date, 4,
+  'a1000000-0000-4000-8000-000000000002', clock_timestamp(), 'active',
+  'a2000000-0000-4000-8000-000000000001', 'ผู้ทดสอบ', '0995100001', 0, 0
+);
+
+insert into public.report_items (
+  id, report_id, location_id, entity_type, entity_id, eligibility_at
+)
+select 'a7400000-0000-4000-8000-000000000001',
+  'a7300000-0000-4000-8000-000000000001',
+  'a1000000-0000-4000-8000-000000000002', 'rubber_bill', b.id, b.received_at
+from public.rubber_bills b
+where b.source_rubber_export_id = 'a6200000-0000-4000-8000-000000000001'
+  and b.record_status = 'active';
+
+set local role authenticated;
+
+create temporary table multi_hop_export_result on commit drop as
+select public.create_rubber_export(
+  'a1000000-0000-4000-8000-000000000002',
+  array['a7400000-0000-4000-8000-000000000001'::uuid]
+) result;
+
+select extensions.is(
+  (select (result->>'itemCount')::integer from multi_hop_export_result),
+  1,
+  'multi-hop receipt creates Export B'
+);
+
+select extensions.ok(
+  (select paid_total = 1550 and rubber_value_total = 1550 and average_price = 34.44
+   from public.rubber_exports
+   where id = (select (result->>'id')::uuid from multi_hop_export_result)),
+  'Export B carries Receipt B value without re-adding Export A work'
+);
+
+reset role;
+update public.profiles
+set can_access_super_admin_features = true
+where id = 'a2000000-0000-4000-8000-000000000001';
+set local role authenticated;
+
+select extensions.is(
+  public.verify_rubber_export_atomic(
+    (select (result->>'id')::uuid from multi_hop_export_result),
+    40, 2, 20, 'branch'
+  )->>'status',
+  'verified',
+  'Export B verifies atomically before the second receipt'
+);
+
+select extensions.is(
+  (select work_total from public.rubber_exports
+   where id = (select (result->>'id')::uuid from multi_hop_export_result)),
+  110::numeric,
+  'Export B adds work once from original weight 45 kg'
+);
+
+select extensions.is(
+  public.receive_rubber_export(
+    'a1000000-0000-4000-8000-000000000001',
+    (select (result->>'id')::uuid from multi_hop_export_result)
+  )->>'status',
+  'received',
+  'destination C receives Export B atomically'
+);
+
+select extensions.ok(
+  (select rubber_value = 1660 and deduction_total = 1660 and net_total = 0
+      and average_price = 41.50
+   from public.rubber_bills
+   where source_rubber_export_id = (select (result->>'id')::uuid from multi_hop_export_result)
+     and record_status = 'active'),
+  'Receipt C equals Receipt B value plus Export B work and remains zero-payable'
+);
+
+select extensions.is(
+  (select total from public.rubber_bill_items
+   where bill_id = (select id from public.rubber_bills
+     where source_rubber_export_id = (select (result->>'id')::uuid from multi_hop_export_result)
+       and record_status = 'active') and item_type = 'weigh'),
+  1660::numeric,
+  'Receipt C weigh row uses the compounded carrying value'
+);
+
+select extensions.is(
+  (select total from public.rubber_bill_items
+   where bill_id = (select id from public.rubber_bills
+     where source_rubber_export_id = (select (result->>'id')::uuid from multi_hop_export_result)
+       and record_status = 'active') and item_type = 'debt'),
+  1660::numeric,
+  'Receipt C debt row offsets the compounded carrying value'
+);
+
+select extensions.ok(
+  (select rubber_value = 1550 and deduction_total = 1550 and net_total = 0
+   from public.rubber_bills
+   where source_rubber_export_id = 'a6200000-0000-4000-8000-000000000001'
+     and record_status = 'active'),
+  'Receipt B remains unchanged after the next hop'
+);
+
+select extensions.is(
+  (select count(*) from public.get_receivable_rubber_exports('a1000000-0000-4000-8000-000000000001')
+   where source_rubber_export_id = (select (result->>'id')::uuid from multi_hop_export_result)),
+  0::bigint,
+  'Export B is no longer receivable after Receipt C exists'
 );
 
 select * from extensions.finish();

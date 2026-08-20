@@ -21,7 +21,7 @@ values (
 
 insert into public.rubber_exports (
   id, export_no, export_date, sequence_no, location_id, status,
-  original_weight_total, paid_total, average_price, current_weight,
+  original_weight_total, paid_total, rubber_value_total, average_price, current_weight,
   weight_loss_percent, work_rate, other_operating_cost, work_total,
   expense_destination, created_by_user_id, created_by_name, created_by_phone,
   verified_by_user_id, verified_by_name, verified_by_phone, verified_at,
@@ -35,6 +35,7 @@ values (
   '31000000-0000-4000-8000-000000000001',
   'verified',
   100,
+  1000,
   1000,
   10,
   90,

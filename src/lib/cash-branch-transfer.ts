@@ -1,16 +1,23 @@
 import { formatCurrency } from "@/lib/format";
 import type { CashBranchTransferStatus, CashDenominationCounts } from "@/types";
 
-export const CASH_DENOMINATIONS: Array<[keyof CashDenominationCounts, string, number]> = [
-  ["banknote1000", "แบงค์ 1,000", 1000],
-  ["banknote500", "แบงค์ 500", 500],
-  ["banknote100", "แบงค์ 100", 100],
-  ["banknote50", "แบงค์ 50", 50],
-  ["banknote20", "แบงค์ 20", 20],
-  ["coin10", "เหรียญ 10", 10],
-  ["coin5", "เหรียญ 5", 5],
-  ["coin2", "เหรียญ 2", 2],
-  ["coin1", "เหรียญ 1", 1],
+export type CashDenominationUnit = "ใบ" | "เหรียญ";
+
+export const CASH_DENOMINATIONS: Array<[
+  keyof CashDenominationCounts,
+  string,
+  number,
+  CashDenominationUnit,
+]> = [
+  ["banknote1000", "แบงค์ 1,000", 1000, "ใบ"],
+  ["banknote500", "แบงค์ 500", 500, "ใบ"],
+  ["banknote100", "แบงค์ 100", 100, "ใบ"],
+  ["banknote50", "แบงค์ 50", 50, "ใบ"],
+  ["banknote20", "แบงค์ 20", 20, "ใบ"],
+  ["coin10", "เหรียญ 10", 10, "เหรียญ"],
+  ["coin5", "เหรียญ 5", 5, "เหรียญ"],
+  ["coin2", "เหรียญ 2", 2, "เหรียญ"],
+  ["coin1", "เหรียญ 1", 1, "เหรียญ"],
 ];
 
 export type CashCountValues = Record<keyof CashDenominationCounts, string>;

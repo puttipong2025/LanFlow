@@ -197,7 +197,7 @@ test("downloads a searchable multi-page verified copy when file sharing is unsup
   expect(allText).not.toContain("ลบแล้ว");
   expect(allText).toContain("น้ำหนักสุทธิรวม");
   expect(allText).toContain("ต้นทุนซื้อเฉลี่ยรวมค่าทำงาน");
-  expect(allText).toContain("฿31.61/กก.");
+  expect(allText).toContain("฿30.62/กก.");
   expect(allText).toContain("ผู้สร้าง");
   for (let index = 1; index <= 60; index += 1) {
     const row = String(index).padStart(3, "0");

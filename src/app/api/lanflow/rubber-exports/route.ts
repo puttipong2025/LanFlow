@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic";
 
 const columns = `
   id, export_no, location_id, status, previous_status,
-  original_weight_total, paid_total, average_price, current_weight,
+  original_weight_total, paid_total, rubber_value_total, average_price, current_weight,
   weight_loss_percent, work_rate, other_operating_cost, work_total,
   expense_destination, created_by_name, created_at, verified_by_name,
   verified_at, sold_out_at, sold_out_by_name,

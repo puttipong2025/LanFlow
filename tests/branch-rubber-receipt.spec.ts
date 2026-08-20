@@ -84,6 +84,7 @@ test("maps the active destination receipt onto the source Rubber Export", () => 
     status: "verified",
     original_weight_total: 100,
     paid_total: 3_600,
+    rubber_value_total: 3_600,
     average_price: 36,
     other_operating_cost: 0,
     created_by_name: "ผู้สร้าง",
@@ -98,6 +99,7 @@ test("maps the active destination receipt onto the source Rubber Export", () => 
     receiptBillId: "bill-1",
     receiptBillNo: "2608100001",
     receiptLocationName: "สาขาปลายทาง",
+    rubberValueTotal: 3_600,
   });
 });
 

@@ -1017,16 +1017,20 @@ export function IncomeExpenseModule({
               onClose={() => setBranchTransferModalOpen(false)}
             />
           ) : (
-            <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/45 p-3 sm:p-6">
-              <div className="mt-4 w-full max-w-4xl">
-                <BranchTransferForm
-                  locationId={selectedLocation.id}
-                  modeSelector={<BranchTransferModeSelector mode={branchTransferMode} bankAllowed={canCreateMoneyTransfer} onChange={setBranchTransferMode} />}
-                  onSave={handleBranchTransferSave}
-                  onCancel={() => setBranchTransferModalOpen(false)}
-                />
-              </div>
-            </div>
+            <ModalShell
+              title="สร้างรายการโอนเงินใหม่ (ให้สาขา)"
+              subtitle="บันทึกรายการโอนเงินระหว่างสาขา"
+              size="wide"
+              closeOnEscape
+              onClose={() => setBranchTransferModalOpen(false)}
+            >
+              <BranchTransferForm
+                locationId={selectedLocation.id}
+                modeSelector={<BranchTransferModeSelector mode={branchTransferMode} bankAllowed={canCreateMoneyTransfer} onChange={setBranchTransferMode} />}
+                onSave={handleBranchTransferSave}
+                onCancel={() => setBranchTransferModalOpen(false)}
+              />
+            </ModalShell>
           )}
         </>
       )}

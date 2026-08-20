@@ -59,13 +59,17 @@ All persisted numeric values use two decimal places.
 ```text
 bill net-after-deduction weight = rubber_bills.weight - rubber_bills.deduct_weight
 original weight total           = sum(item net-after-deduction weight)
-paid total                      = sum(rubber_bills.net_total)
+paid amount                     = ordinary bill net_total; branch receipt carried rubber_value
+paid total                      = sum(item paid amount)
+rubber value amount             = ordinary bill net_rubber_value; branch receipt carried rubber_value
+rubber value total              = sum(item rubber value amount)
 average price                   = paid total / original weight total
 weight loss percent             = (original weight total - current weight) / original weight total * 100
-work total                      = current weight * work rate + other operating cost
+work total                      = original weight total * work rate + other operating cost
+purchase cost including work    = rubber value total + work total
 ```
 
-The server recalculates authoritative totals. Client calculations are display-only.
+The server recalculates authoritative totals. Client calculations are display-only. The branch-receipt paid amount is a compatibility cost basis even though the receipt has zero customer payable; it must not be substituted for the separate rubber-value snapshot.
 
 ## Expense Visibility
 
@@ -131,7 +135,7 @@ Required fields:
 
 - identity: `id`, `export_no`, `export_date`, `sequence_no`, `location_id`
 - lifecycle: `status`, `previous_status`
-- snapshot totals: `original_weight_total`, `paid_total`, `average_price`
+- snapshot totals: `original_weight_total`, `paid_total`, `rubber_value_total`, `average_price`
 - editable/final totals: `current_weight`, `weight_loss_percent`, `work_rate`, `other_operating_cost`, `work_total`
 - expense destination: `expense_destination`
 - creation audit: creator ID/name/phone and `created_at`
@@ -144,7 +148,7 @@ Required fields:
 
 - `export_id`, `location_id`, `source_report_item_id`, `source_bill_id`
 - snapshot bill date/number/customer
-- snapshot `eligibility_at`, net-after-deduction weight, and paid amount
+- snapshot `eligibility_at`, net-after-deduction weight, paid amount, and rubber value amount
 - `active` reservation flag
 
 Required invariants:
@@ -152,6 +156,7 @@ Required invariants:
 - unique export number per branch
 - unique daily sequence per branch
 - one active reservation per source bill and branch
+- positive, non-null rubber-value snapshots whose parent total equals the rounded item sum
 - verified/deleted transition enforcement
 - current weight cannot exceed original weight
 - verified data cannot be updated
@@ -243,13 +248,15 @@ git diff --check
 ## Implemented Contract
 
 - Migration: `20260724010000_rubber_exports.sql`
+- Value-snapshot migration: `20260820010000_rubber_export_rubber_value_snapshot.sql`
 - Tables: `rubber_exports`, `rubber_export_items`
+- Value snapshots: `rubber_exports.rubber_value_total`, `rubber_export_items.rubber_value_amount`
 - RPCs:
   - `get_rubber_export_available_bills`
   - `preview_rubber_export`
   - `create_rubber_export`
   - `update_rubber_export`
-  - `verify_rubber_export`
+  - `verify_rubber_export_atomic`
   - `delete_rubber_export`
 - API base: `/api/lanflow/rubber-exports`
 - PDF renderer: `src/lib/rubber-exports/rubber-export-pdf.ts`
@@ -267,3 +274,10 @@ Verified on 2026-07-28:
 - `git diff --check` passed
 - Supabase lint reported no rubber-export finding; the remaining pre-existing findings are an unused variable in `sync_income_expense_core` and a temp-table analysis error in `sync_rubber_bill_core_20260725010000`
 - one report-contract test initially timed out because `.env.local` pointed Next.js to an unavailable LAN Supabase URL; rerunning with the local loopback URL passed and no process restart was required
+
+Verified for the value-snapshot extension on 2026-08-21:
+
+- the forward migration replayed successfully on disposable database `codex_rubber_value_20260820_f6f97`; the primary local database was not migrated or reset
+- snapshot/catalog pgTAP passed 12/12 and the branch-receipt suite covered the multi-hop carried-cost chain
+- the generated `public,private` schema dump matches `supabase-schema.sql`
+- TypeScript, ESLint, the production build, and focused frontend/PDF tests passed

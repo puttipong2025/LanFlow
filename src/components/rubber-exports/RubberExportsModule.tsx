@@ -39,6 +39,7 @@ function editableBills(
     eligibilityAt: item.eligibilityAt,
     netWeight: item.netWeight,
     paidAmount: item.paidAmount,
+    rubberValueAmount: item.rubberValueAmount,
   }));
   availableBills.forEach((bill) => rows.set(bill.reportItemId, bill));
   return Array.from(rows.values()).sort((left, right) =>
@@ -52,6 +53,7 @@ function editPreview(details: RubberExportDetails): RubberExportPreview {
     itemCount: details.items.length,
     originalWeightTotal: details.originalWeightTotal,
     paidTotal: details.paidTotal,
+    rubberValueTotal: details.rubberValueTotal,
     averagePrice: details.averagePrice,
     calculatedAt: details.ageCalculatedAt ?? details.createdAt,
     averageAgeHours: details.averageAgeHours ?? 0,
@@ -66,6 +68,7 @@ function editPreview(details: RubberExportDetails): RubberExportPreview {
       eligibilityAt: item.eligibilityAt,
       netWeight: item.netWeight,
       paidAmount: item.paidAmount,
+      rubberValueAmount: item.rubberValueAmount,
       ageHours: item.ageHours ?? 0,
       ageIsEstimated: item.ageIsEstimated,
     })),

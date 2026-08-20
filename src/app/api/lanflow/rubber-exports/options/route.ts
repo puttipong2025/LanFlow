@@ -26,6 +26,7 @@ export async function GET(request: NextRequest) {
       eligibilityAt: row.eligibility_at,
       netWeight: Number(row.net_weight),
       paidAmount: Number(row.paid_amount),
+      rubberValueAmount: Number(row.rubber_value_amount),
     })),
   }, { headers: { "Cache-Control": "private, no-store, max-age=0" } });
 }

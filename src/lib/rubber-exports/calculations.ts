@@ -26,22 +26,22 @@ export function calculateWorkTotal(
 }
 
 export function calculatePurchaseCostIncludingWork(
-  paidTotal: number,
+  rubberValueTotal: number,
   workTotal: number | null | undefined,
   netWeightTotal: number
 ) {
   if (
     workTotal == null
-    || !Number.isFinite(paidTotal)
+    || !Number.isFinite(rubberValueTotal)
     || !Number.isFinite(workTotal)
     || !Number.isFinite(netWeightTotal)
-    || paidTotal < 0
+    || rubberValueTotal < 0
     || workTotal < 0
     || netWeightTotal <= 0
   ) {
     return { total: null, average: null };
   }
-  const total = round2(paidTotal + workTotal);
+  const total = round2(rubberValueTotal + workTotal);
   return { total, average: round2(total / netWeightTotal) };
 }
 

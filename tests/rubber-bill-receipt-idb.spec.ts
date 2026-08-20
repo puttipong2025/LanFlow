@@ -11,6 +11,7 @@ import {
   type RubberBillReceiptSnapshot,
   type SyncEvent,
 } from "../src/lib/idb-queue";
+import { renderRubberBillReceiptHtml } from "../src/components/rubber-bills/bill-display";
 import type { RubberBill } from "../src/types";
 
 const DB_NAME = "lanflow_sync_db";
@@ -234,6 +235,33 @@ test.describe.serial("Rubber Bill receipt IndexedDB", () => {
     expect(snapshots.map((snapshot) => snapshot.billId)).toEqual(["a-2", "a-1"]);
     expect(snapshots.find((snapshot) => snapshot.billId === "a-1")?.bill.customerName)
       .toBe("ลูกค้า a-1");
+  });
+
+  test("reads and renders a legacy receipt snapshot without upgrading or clearing IndexedDB", async () => {
+    await getRubberBillReceiptSnapshots("location-a");
+    const current = makeSnapshot("legacy-1", "location-a", "2026-07-25T00:00:01.000Z");
+    const { hasZeroPrice: _hasZeroPrice, ...legacyReceipt } = current.receipt;
+    const db = await openDatabase(DB_NAME);
+    expect(db.version).toBe(4);
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction("rubber_bill_receipts", "readwrite");
+      transaction.objectStore("rubber_bill_receipts").put({
+        ...current,
+        receipt: legacyReceipt,
+      });
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+    });
+    db.close();
+
+    const [snapshot] = await getRubberBillReceiptSnapshots("location-a");
+    expect(snapshot.billId).toBe("legacy-1");
+    expect(snapshot.receipt.customerName).toBe("ลูกค้า legacy-1");
+    expect((snapshot.receipt as { hasZeroPrice?: boolean }).hasZeroPrice).toBeUndefined();
+    expect(renderRubberBillReceiptHtml(snapshot.receipt)).toContain("ลูกค้า legacy-1");
+    const unchangedDb = await openDatabase(DB_NAME);
+    expect(unchangedDb.version).toBe(4);
+    unchangedDb.close();
   });
 
   test("prunes one location without changing another location or sync_queue", async () => {

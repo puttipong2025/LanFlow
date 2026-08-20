@@ -92,6 +92,7 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
         status: "verified",
         original_weight_total: 100,
         paid_total: 8_000,
+        rubber_value_total: 9_000,
         average_price: 80,
         current_weight: 80,
         weight_loss_percent: 20,
@@ -126,8 +127,9 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
         bill_type: "weighing",
         weight: 100,
         deduct_weight: 0,
-        rubber_value: 8_000,
-        average_price: 80,
+        rubber_value: 9_000,
+        average_price: 90,
+        deduction_total: 1_000,
         net_total: 8_000,
         client_created_at: verifiedAt,
         created_by_user_id: profile.id,
@@ -140,8 +142,8 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
         net_weight: 100,
         quantity: 100,
         unit: "kg",
-        price: 80,
-        total: 8_000,
+        price: 90,
+        total: 9_000,
       })).error).toBeNull();
       expect((await db.from("report_batches").insert({
         id: sourceReportId,
@@ -176,6 +178,7 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
         eligibility_at: verifiedAt,
         net_weight: 100,
         paid_amount: 8_000,
+        rubber_value_amount: 9_000,
         age_source_at: verifiedAt,
         age_is_estimated: false,
         carried_age_hours: 48,
@@ -235,7 +238,7 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
       const sourceCandidate = (await candidatesBeforeReceipt.json() as {
         candidates: Array<{ sourceRubberExportId: string; rubberValue: number }>;
       }).candidates.find((candidate) => candidate.sourceRubberExportId === sourceExportId);
-      expect(sourceCandidate?.rubberValue).toBe(8_100);
+      expect(sourceCandidate?.rubberValue).toBe(9_100);
 
       await page.goto("/");
       await selectAppLocation(page, destinationLocationId);
@@ -258,9 +261,9 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
         .single();
       expect(receiptError).toBeNull();
       receiptBillId = receipt!.id;
-      expect(Number(receipt!.rubber_value)).toBe(8_100);
-      expect(Number(receipt!.average_price)).toBe(101.25);
-      expect(Number(receipt!.deduction_total)).toBe(8_100);
+      expect(Number(receipt!.rubber_value)).toBe(9_100);
+      expect(Number(receipt!.average_price)).toBe(113.75);
+      expect(Number(receipt!.deduction_total)).toBe(9_100);
       expect(Number(receipt!.net_total)).toBe(0);
 
       const receiptRow = page.getByRole("row").filter({ hasText: receipt!.bill_no });
@@ -272,7 +275,7 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
       const detailDialog = page.getByRole("dialog", { name: receipt!.bill_no });
       await expect(detailDialog).toContainText("อ่านอย่างเดียว");
       await expect(detailDialog).toContainText(exportNo);
-      await expect(detailDialog).toContainText("฿8,100");
+      await expect(detailDialog).toContainText("฿9,100");
       await expect(detailDialog).toContainText("ยอดที่ต้องจ่ายลูกค้า");
       await expect(detailDialog).toContainText("฿0");
 
@@ -387,6 +390,7 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
         status: "verified",
         original_weight_total: 100,
         paid_total: 3_000,
+        rubber_value_total: 3_000,
         average_price: 30,
         current_weight: 90,
         weight_loss_percent: 10,
@@ -417,6 +421,7 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
         eligibility_at: new Date(base + index * 1_000).toISOString(),
         net_weight: 100,
         paid_amount: 3_000,
+        rubber_value_amount: 3_000,
         age_source_at: new Date(base + index * 1_000).toISOString(),
         age_is_estimated: false,
         carried_age_hours: 1,

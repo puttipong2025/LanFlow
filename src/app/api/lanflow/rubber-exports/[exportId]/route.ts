@@ -11,7 +11,7 @@ type RouteContext = { params: Promise<{ exportId: string }> };
 
 const detailColumns = `
   id, export_no, location_id, status, previous_status,
-  original_weight_total, paid_total, average_price, current_weight,
+  original_weight_total, paid_total, rubber_value_total, average_price, current_weight,
   weight_loss_percent, work_rate, other_operating_cost, work_total,
   expense_destination, created_by_name, created_at,
   verified_by_name, verified_at, sold_out_at, sold_out_by_name, deleted_by_name,
@@ -19,7 +19,7 @@ const detailColumns = `
   oldest_age_hours, estimated_age_item_count, locations(name),
   rubber_export_items(
     id, source_report_item_id, source_bill_id, bill_date, bill_no,
-    customer_name, eligibility_at, net_weight, paid_amount
+    customer_name, eligibility_at, net_weight, paid_amount, rubber_value_amount
   )
 `;
 
@@ -79,6 +79,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
         eligibilityAt: item.eligibility_at,
         netWeight: Number(item.net_weight),
         paidAmount: Number(item.paid_amount),
+        rubberValueAmount: Number(item.rubber_value_amount),
         ageHours: itemAges.get(item.id)?.ageHours ?? null,
         officialAgeHours: officialItemAges.get(item.id)?.ageHours ?? null,
         ageIsEstimated: Boolean(itemAges.get(item.id)?.ageIsEstimated),

@@ -1,0 +1,77 @@
+begin;
+create extension if not exists pgtap with schema extensions;
+select extensions.plan(12);
+
+select extensions.has_column('public', 'rubber_exports', 'rubber_value_total',
+  'export header stores rubber-value snapshot');
+select extensions.has_column('public', 'rubber_export_items', 'rubber_value_amount',
+  'export item stores rubber-value snapshot');
+
+select extensions.ok(
+  (select attnotnull from pg_attribute
+   where attrelid = 'public.rubber_exports'::regclass and attname = 'rubber_value_total'),
+  'header rubber-value snapshot is not null'
+);
+select extensions.ok(
+  (select attnotnull from pg_attribute
+   where attrelid = 'public.rubber_export_items'::regclass and attname = 'rubber_value_amount'),
+  'item rubber-value snapshot is not null'
+);
+select extensions.ok(
+  (select count(*) = 2 and bool_and(convalidated) from pg_constraint
+   where conname in ('rubber_exports_rubber_value_total_check',
+     'rubber_export_items_rubber_value_amount_check')),
+  'positive-value constraints are validated'
+);
+
+select extensions.ok(
+  pg_get_functiondef('private.rubber_export_candidates(uuid,uuid[],uuid)'::regprocedure)
+    like '%then b.rubber_value else b.net_total end%'
+  and pg_get_functiondef('private.rubber_export_candidates(uuid,uuid[],uuid)'::regprocedure)
+    like '%then b.rubber_value else b.net_rubber_value end%',
+  'candidate mapping preserves paid compatibility and separates rubber value'
+);
+select extensions.ok(
+  pg_get_functiondef('public.create_rubber_export(uuid,uuid[])'::regprocedure)
+    like '%private.next_document_sequence%'
+  and pg_get_functiondef('public.create_rubber_export(uuid,uuid[])'::regprocedure)
+    like '%rubber_value_amount%',
+  'create preserves durable numbering and snapshots rubber value'
+);
+select extensions.ok(
+  pg_get_functiondef('public.replace_rubber_export_items(uuid,uuid[])'::regprocedure)
+    like '%rubber_value_total = v_rubber_value_total%'
+  and pg_get_functiondef('public.replace_rubber_export_items(uuid,uuid[])'::regprocedure)
+    like '%rubberValueTotal%',
+  'replace recomputes and returns rubber-value total'
+);
+select extensions.ok(
+  pg_get_functiondef('public.get_receivable_rubber_exports(uuid)'::regprocedure)
+    like '%e.rubber_value_total + e.work_total%',
+  'legacy receipt candidates use rubber value plus work cost'
+);
+select extensions.ok(
+  pg_get_functiondef('public.get_receivable_rubber_exports_page(uuid,text,boolean,timestamptz,uuid,integer)'::regprocedure)
+    like '%e.rubber_value_total + e.work_total%',
+  'paged receipt candidates use rubber value plus work cost'
+);
+select extensions.ok(
+  pg_get_functiondef('public.receive_rubber_export(uuid,uuid)'::regprocedure)
+    like '%v_source.rubber_value_total + v_source.work_total%'
+  and pg_get_functiondef('public.receive_rubber_export(uuid,uuid)'::regprocedure)
+    like '%pg_advisory_xact_lock%'
+  and pg_get_functiondef('public.receive_rubber_export(uuid,uuid)'::regprocedure)
+    like '%BRANCH_RECEIPT_ALREADY_EXISTS%',
+  'receive uses the new cost basis while preserving lock and idempotency guard'
+);
+select extensions.is(
+  (select count(*)::integer from pg_trigger
+   where tgrelid = 'public.rubber_exports'::regclass
+     and tgname in ('guard_rubber_export_state', 'report_lock_rubber_exports')
+     and tgenabled = 'O'),
+  2,
+  'backfill restores exactly the two guarded triggers'
+);
+
+select * from extensions.finish();
+rollback;

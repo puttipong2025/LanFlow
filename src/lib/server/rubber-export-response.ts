@@ -59,6 +59,7 @@ export function mapRubberExportRow(row: Record<string, any>): RubberExportSummar
     previousStatus: row.previous_status,
     originalWeightTotal: number(row.original_weight_total),
     paidTotal: number(row.paid_total),
+    rubberValueTotal: number(row.rubber_value_total),
     averagePrice: number(row.average_price),
     currentWeight: row.current_weight === null ? null : number(row.current_weight),
     weightLossPercent: row.weight_loss_percent === null ? null : number(row.weight_loss_percent),

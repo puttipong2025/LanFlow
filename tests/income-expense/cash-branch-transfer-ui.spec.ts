@@ -60,7 +60,7 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
     await modal.getByLabel("ปิด", { exact: true }).click();
   });
 
-  test("starts receive counts at zero, finishes with difference, exposes share PDF, and requests post-receipt deletion", async ({ page }) => {
+  test("prefills and locks receive counts, unlocks a mismatch, exposes share PDF, and requests post-receipt deletion", async ({ page }) => {
     test.setTimeout(45000);
     await setOnline(page, true);
     await openIncomeExpense(page);
@@ -78,16 +78,24 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
     expect(modeSelectorBox!.y).toBeGreaterThanOrEqual(modalHeaderBox!.y + modalHeaderBox!.height - 1);
 
     await modeSelector.getByRole("button", { name: "โอนธนาคาร", exact: true }).click();
-    await expect(createModal.getByText("สร้างรายการโอนเงินใหม่ (ระหว่างสาขา)")).toBeVisible();
-    await expect(createModal.getByTestId("branch-transfer-mode-selector")).not.toHaveClass(/fixed/);
-    await expect(createModal.getByRole("button", { name: "โอนธนาคาร", exact: true })).toHaveAttribute("aria-pressed", "true");
-    await createModal.getByRole("button", { name: "เงินสด", exact: true }).click();
+    const bankDialog = page.getByRole("dialog", { name: "สร้างรายการโอนเงินใหม่ (ให้สาขา)" });
+    await expect(bankDialog).toBeVisible();
+    await expect(bankDialog.getByText("บันทึกรายการโอนเงินระหว่างสาขา")).toBeVisible();
+    await expect(page.getByRole("dialog")).toHaveCount(1);
+    await expect(bankDialog.getByTestId("branch-transfer-mode-selector")).not.toHaveClass(/fixed/);
+    await expect(bankDialog.getByRole("button", { name: "โอนธนาคาร", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await page.keyboard.press("Escape");
+    await expect(bankDialog).toBeHidden();
+    await page.click('button:has-text("โยกเงินไปสาขาอื่น")');
     await expect(createModal.getByText("โยกเงินไปสาขาอื่น (เงินสด)")).toBeVisible();
 
     const targetSelect = createModal.getByLabel("สาขาปลายทาง");
     const targetLocationId = await selectFirstAccessibleOption(page, targetSelect);
     await expect(createModal.locator("input")).toHaveCount(9);
-    for (const input of await createModal.locator("input").all()) await expect(input).toHaveValue("");
+    for (const input of await createModal.locator("input").all()) await expect(input).toHaveValue("0");
+    await expect(createModal.locator("label", { hasText: "แบงค์ 20" })).toContainText("ใบ");
+    await expect(createModal.locator("label", { hasText: "เหรียญ 5" })).toContainText("เหรียญ");
+    await expect(createModal).not.toContainText("ฉบับ");
     const createBanknote1000Input = createModal.getByLabel("แบงค์ 1,000");
     await createBanknote1000Input.focus();
     await createBanknote1000Input.blur();
@@ -115,7 +123,6 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
     await expect(shareButton).toHaveClass(/bg-actionSecondary/);
     await expect(deleteButton).toHaveClass(/bg-danger/);
     const openSourceButton = sourceRow.locator('button[aria-label="เปิดรายการต้นทาง"]');
-    await expect(openSourceButton).toHaveClass(/text-xs/);
     await expect(openSourceButton).toHaveClass(/shrink-0/);
     await openSourceButton.click();
     const pendingDetails = page.locator(".fixed.inset-0").last();
@@ -132,12 +139,19 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
     await page.locator(`button[data-transfer-id="${transfer!.id}"]`).click();
     const receiptModal = page.locator(".fixed.inset-0").last();
     await expect(receiptModal.locator("input")).toHaveCount(9);
-    for (const input of await receiptModal.locator("input").all()) await expect(input).toHaveValue("0");
+    for (const input of await receiptModal.locator("input").all()) await expect(input).toHaveAttribute("readonly", "");
     const banknote1000Input = receiptModal.getByLabel("แบงค์ 1,000");
-    await banknote1000Input.focus();
-    await expect(banknote1000Input).toHaveValue("");
-    await banknote1000Input.blur();
     await expect(banknote1000Input).toHaveValue("0");
+    await expect(receiptModal.getByLabel("แบงค์ 20", { exact: true })).toHaveValue("1");
+    await expect(receiptModal.getByRole("button", { name: "ยืนยันรับเงิน" })).toBeEnabled();
+    const unlockButton = receiptModal.getByRole("button", { name: "ยอดรับไม่ตรง" });
+    await expect(unlockButton).toHaveAttribute("aria-expanded", "false");
+    await unlockButton.click();
+    const unlockedButton = receiptModal.getByRole("button", { name: "แก้ไขยอดรับแล้ว" });
+    await expect(unlockedButton).toHaveAttribute("aria-expanded", "true");
+    await expect(unlockedButton).toBeDisabled();
+    await expect(banknote1000Input).toBeFocused();
+    for (const input of await receiptModal.locator("input").all()) await expect(input).not.toHaveAttribute("readonly", "");
     await fillCashCounts(receiptModal, "0");
     const banknote20Row = receiptModal.locator("tbody tr", { hasText: "แบงค์ 20" });
     await expect(banknote20Row).toContainText("-1");

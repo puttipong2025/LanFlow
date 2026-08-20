@@ -83,7 +83,7 @@ export function RubberExportDetailModal({
     [details.originalWeightTotal, workRate, otherCost]
   );
   const purchaseCost = calculatePurchaseCostIncludingWork(
-    details.paidTotal,
+    details.rubberValueTotal,
     workTotal,
     details.originalWeightTotal
   );

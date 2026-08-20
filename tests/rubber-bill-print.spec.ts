@@ -127,6 +127,65 @@ test.describe("Rubber Bill receipt contract @rubber-bill-print", () => {
     }
   });
 
+  test("keeps online and offline receipt content identical except identity and approval labels", () => {
+    const synced = buildRubberBillReceiptModel(makeBill());
+    const offline = buildRubberBillReceiptModel(makeBill({
+      serverBillNo: undefined,
+      syncStatus: "pending",
+    }));
+
+    expect({
+      title: synced.receiptKind,
+      referenceLabel: synced.referenceLabel,
+      referenceNo: synced.referenceNo,
+      approvalLabel: synced.approvalLabel,
+    }).toEqual({
+      title: "synced",
+      referenceLabel: "เลขบิล",
+      referenceNo: "2607160001",
+      approvalLabel: "ไม่ต้องอนุมัติ",
+    });
+    expect({
+      title: offline.receiptKind,
+      referenceLabel: offline.referenceLabel,
+      referenceNo: offline.referenceNo,
+      approvalLabel: offline.approvalLabel,
+    }).toEqual({
+      title: "offline",
+      referenceLabel: "เลขอ้างอิงบนเครื่อง",
+      referenceNo: "LOCAL-1",
+      approvalLabel: "ผ่านการตรวจราคาบนเครื่อง — ไม่ต้องอนุมัติ",
+    });
+
+    const sharedFields = ({
+      receiptKind: _receiptKind,
+      referenceLabel: _referenceLabel,
+      referenceNo: _referenceNo,
+      approvalLabel: _approvalLabel,
+      ...shared
+    }: typeof synced) => shared;
+    expect(sharedFields(offline)).toEqual(sharedFields(synced));
+
+    const normalizeAllowedRendererDifferences = (
+      html: string,
+      model: typeof synced,
+    ) => html
+      .replaceAll(
+        model.receiptKind === "offline" ? "ใบรับซื้อยางออฟไลน์" : "ใบรับซื้อยาง",
+        "__TITLE__",
+      )
+      .replaceAll(model.referenceLabel, "__REFERENCE_LABEL__")
+      .replaceAll(model.referenceNo, "__REFERENCE_NO__")
+      .replaceAll(model.approvalLabel, "__APPROVAL_LABEL__");
+    expect(normalizeAllowedRendererDifferences(
+      renderRubberBillReceiptHtml(offline),
+      offline,
+    )).toBe(normalizeAllowedRendererDifferences(
+      renderRubberBillReceiptHtml(synced),
+      synced,
+    ));
+  });
+
   test("hides pre-deduction weight rows when no weight is deducted", () => {
     const html = renderRubberBillReceiptHtml(buildRubberBillReceiptModel(makeBill({
       deductWeight: 0,

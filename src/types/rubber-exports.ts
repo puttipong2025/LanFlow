@@ -16,6 +16,7 @@ export type RubberExportItem = {
   eligibilityAt: string;
   netWeight: number;
   paidAmount: number;
+  rubberValueAmount: number;
   ageHours: number | null;
   officialAgeHours?: number | null;
   ageIsEstimated: boolean;
@@ -30,6 +31,7 @@ export type RubberExportSummary = {
   previousStatus?: "draft" | "verified" | null;
   originalWeightTotal: number;
   paidTotal: number;
+  rubberValueTotal: number;
   averagePrice: number;
   currentWeight?: number | null;
   weightLossPercent?: number | null;
@@ -73,12 +75,14 @@ export type RubberExportAvailableBill = {
   eligibilityAt: string;
   netWeight: number;
   paidAmount: number;
+  rubberValueAmount: number;
 };
 
 export type RubberExportPreview = {
   itemCount: number;
   originalWeightTotal: number;
   paidTotal: number;
+  rubberValueTotal: number;
   averagePrice: number;
   calculatedAt: string;
   averageAgeHours: number;
@@ -93,6 +97,7 @@ export type RubberExportPreview = {
     eligibilityAt: string;
     netWeight: number;
     paidAmount: number;
+    rubberValueAmount: number;
     ageHours: number;
     ageIsEstimated: boolean;
   }>;
