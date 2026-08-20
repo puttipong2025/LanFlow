@@ -213,7 +213,7 @@ ${branchReceiptMeta}
 <table><thead><tr><th>รายการ</th><th class="num">เข้า</th><th class="num">ออก</th><th class="num">ชั่งสุทธิ</th><th class="num">ราคา</th><th class="num">รวม</th></tr></thead><tbody>${weighRows}</tbody></table>
 ${model.deductWeight > 0 ? `<div class="row"><span>น้ำหนักรวมก่อนหัก</span><span>${weight(model.totalWeight)} กก.</span></div><div class="row"><span>น้ำหนักหัก</span><span>${weight(model.deductWeight)} กก.</span></div>` : ""}
 <div class="row"><strong>น้ำหนักสุทธิ</strong><strong>${weight(model.netWeight)} กก.</strong></div>
-<div class="row"><span>ราคาเฉลี่ย</span><span>${n(model.averagePrice)}</span></div>
+${isBranchReceipt ? `<div class="row"><span>ราคาเฉลี่ย</span><span>${n(model.averagePrice)}</span></div>` : ""}
 <div class="row"><span>${isBranchReceipt ? "มูลค่ารวมค่าทำงาน" : "มูลค่ายาง"}</span><span>${n(model.rubberValue)}</span></div>
 <div class="totals"><strong>รายการหักเงิน</strong>${deductionRows}<div class="row"><strong>ยอดหักเงิน</strong><strong>${n(model.deductionTotal)}</strong></div></div>
 <div class="row payable"><span>ยอดที่ต้องจ่ายลูกค้า</span><span>${n(model.netTotal)} บาท</span></div>

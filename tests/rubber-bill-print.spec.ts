@@ -186,6 +186,17 @@ test.describe("Rubber Bill receipt contract @rubber-bill-print", () => {
     ));
   });
 
+  test("hides average price from shared online and offline purchase receipts", () => {
+    const syncedHtml = renderRubberBillReceiptHtml(buildRubberBillReceiptModel(makeBill()));
+    const offlineHtml = renderRubberBillReceiptHtml(buildRubberBillReceiptModel(makeBill({
+      serverBillNo: undefined,
+      syncStatus: "pending",
+    })));
+
+    expect(syncedHtml).not.toContain("ราคาเฉลี่ย");
+    expect(offlineHtml).not.toContain("ราคาเฉลี่ย");
+  });
+
   test("hides pre-deduction weight rows when no weight is deducted", () => {
     const html = renderRubberBillReceiptHtml(buildRubberBillReceiptModel(makeBill({
       deductWeight: 0,

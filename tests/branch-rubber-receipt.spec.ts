@@ -68,6 +68,7 @@ test("renders branch source, compensated age, carried value and zero payable in 
 
   expect(model.weighItems[0].lineTotal).toBe(3_600);
   expect(html).toContain("ใบรับยางจากสาขา");
+  expect(html).toContain("ราคาเฉลี่ย");
   expect(html).toContain("มูลค่ารวมค่าทำงาน");
   expect(html).toContain("REX-20260807-001");
   expect(html).toContain("7 วัน 0 ชั่วโมง (ประมาณการ)");
