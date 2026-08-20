@@ -23,7 +23,7 @@ import type { RubberBillApprovalSettings } from "@/types";
 import { buildRubberBillReceiptModel } from "@/components/rubber-bills/bill-display";
 import {
   calculateRubberBill,
-  multiplyMoneyHalfUp,
+  multiplyMoneyFloorBaht,
 } from "@/lib/rubber-bills/calculations";
 import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
@@ -73,7 +73,8 @@ function buildRpcPayload(
       quantity: item.quantity,
       unit: item.unit,
       unitPrice: item.unitPrice,
-      totalAmount: multiplyMoneyHalfUp(item.quantity, item.unitPrice),
+      totalAmount: calculation.stockDeductionLineTotals[i]
+        ?? multiplyMoneyFloorBaht(item.quantity, item.unitPrice),
       sequenceNo: (bill.weighItems?.length || 0) + i + 1
     });
   });
@@ -91,6 +92,7 @@ function buildRpcPayload(
 
   return {
     operation,
+    formulaVersion: 2,
     expectedRevisionNo: bill.revisionNo,
     clientTempId: bill.clientTempId,
     idempotencyKey: `${operation}:${bill.clientTempId}:${bill.revisionNo}`,
@@ -307,7 +309,8 @@ export function useRubberBills(
                 stockProductId: item.stock_product_id ?? "",
                 quantity: Number(item.quantity ?? 0),
                 unit: item.unit ?? "ชิ้น",
-                unitPrice: Number(item.price ?? 0)
+                unitPrice: Number(item.price ?? 0),
+                total: Number(item.total ?? 0)
               }));
             const debtItems = billItems
               .filter((item: any) => item.item_type === "debt")
@@ -467,6 +470,7 @@ export function useRubberBills(
               outWeight: item.outWeight,
               netWeight: item.netWeight,
               price: item.unitPrice,
+              total: item.totalAmount,
             }));
           const optimisticAcidItems = optimisticItems
             .filter((item: any) => item.itemType === "acid" || item.itemType === "stock_deduction")
@@ -477,6 +481,7 @@ export function useRubberBills(
               quantity: item.quantity,
               unit: item.unit,
               unitPrice: item.unitPrice,
+              total: item.totalAmount,
             }));
           const optimisticDebtItems = optimisticItems
             .filter((item: any) => item.itemType === "debt")

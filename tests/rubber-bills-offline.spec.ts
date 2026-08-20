@@ -455,6 +455,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     await weighRow.locator('input[type="number"]').nth(0).fill('1000.13');
     await weighRow.locator('input[type="number"]').nth(1).fill('200');
     await weighRow.locator('input[type="number"]').nth(3).fill('19.51');
+    await expect(weighRow.locator('input[type="number"]').nth(4)).toHaveValue('15610');
     await expect(modal.getByLabel('มูลค่ายาง (บาท)')).toHaveValue('15610');
     await expect(modal.getByLabel('ยอดหักเงิน (บาท)')).toHaveValue('0');
     await expect(modal.getByLabel('ยอดที่ต้องจ่ายลูกค้า (บาท)')).toHaveValue('15610');
@@ -474,13 +475,16 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
       e => e.operation === 'create' && e.payload?.customerName === marker
     );
     expect(createEvent).toBeDefined();
+    expect(createEvent.payload.formulaVersion).toBe(2);
     // payload uses items[] with unitPrice, not weighItems[].price
     expect(createEvent.payload.items).toBeDefined();
     const weighItem = createEvent.payload.items.find((i: any) => i.itemType === 'weigh');
     expect(weighItem.unitPrice).toBe(19.51);
-    expect(createEvent.payload.netRubberValue).toBe(15610.54);
+    expect(weighItem.totalAmount).toBe(15610);
+    expect(createEvent.payload.rubberValue).toBe(15610);
+    expect(createEvent.payload.netRubberValue).toBe(15610);
     expect(createEvent.payload.deductionTotal).toBe(0);
-    expect(createEvent.payload.payableBeforeRounding).toBe(15610.54);
+    expect(createEvent.payload.payableBeforeRounding).toBe(15610);
     expect(createEvent.payload.netTotal).toBe(15610);
     expect(createEvent.payload.configuredPriceSnapshot).toBeNull();
     const clientTempId = createEvent.id;

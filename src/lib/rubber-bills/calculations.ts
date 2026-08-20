@@ -29,6 +29,7 @@ export type RubberBillCalculation = {
   payableBeforeRounding: number;
   netTotal: number;
   lineTotals: number[];
+  stockDeductionLineTotals: number[];
 };
 
 const ZERO = BigInt(0);
@@ -55,7 +56,8 @@ function divideHalfUp(numerator: bigint, denominator: bigint) {
  *
  * - input weight and money precision: 0.01
  * - bill net weight: floor to 0.01
- * - average price and monetary results: half-up to 0.01
+ * - weigh-row, stock-deduction, and rubber values: floor to whole baht
+ * - average price and direct debt deductions: precision 0.01
  * - payable total: floor to whole baht
  */
 export function calculateRubberBill(input: RubberBillCalculationInput): RubberBillCalculation {
@@ -68,37 +70,33 @@ export function calculateRubberBill(input: RubberBillCalculationInput): RubberBi
   const netWeightUnits = totalWeightUnits > deductWeightUnits
     ? totalWeightUnits - deductWeightUnits
     : ZERO;
-  const weighValueUnits = weighItems.reduce(
-    (sum, item) => sum + (item.weight * item.price),
-    ZERO,
+  const lineTotalBaht = weighItems.map((item) =>
+    (item.weight * item.price) / (HUNDRED * HUNDRED)
   );
-
-  const lineTotalCents = weighItems.map((item) =>
-    divideHalfUp(item.weight * item.price, HUNDRED)
-  );
+  const weighValueBaht = lineTotalBaht.reduce((sum, value) => sum + value, ZERO);
+  const weighValueUnits = weighValueBaht * HUNDRED * HUNDRED;
   const averagePriceCents = totalWeightUnits > ZERO
     ? divideHalfUp(weighValueUnits, totalWeightUnits)
     : ZERO;
-  const rubberValueCents = totalWeightUnits > ZERO
-    ? divideHalfUp(
-        weighValueUnits * netWeightUnits,
-        HUNDRED * totalWeightUnits,
-      )
+  const rubberValueBaht = totalWeightUnits > ZERO
+    ? (weighValueBaht * netWeightUnits) / totalWeightUnits
     : ZERO;
 
-  const stockDeductionUnits = (input.stockDeductionItems ?? []).reduce(
-    (sum, item) =>
-      sum + (toHundredths(item.quantity) * toHundredths(item.unitPrice)),
+  const stockDeductionLineBaht = (input.stockDeductionItems ?? []).map(
+    (item) => (
+      toHundredths(item.quantity) * toHundredths(item.unitPrice)
+    ) / (HUNDRED * HUNDRED),
+  );
+  const stockDeductionCents = stockDeductionLineBaht.reduce(
+    (sum, value) => sum + (value * HUNDRED),
     ZERO,
   );
   const debtDeductionUnits = (input.debtItems ?? []).reduce(
-    (sum, item) => sum + (toHundredths(item.amount) * HUNDRED),
+    (sum, item) => sum + toHundredths(item.amount),
     ZERO,
   );
-  const deductionTotalCents = divideHalfUp(
-    stockDeductionUnits + debtDeductionUnits,
-    HUNDRED,
-  );
+  const deductionTotalCents = stockDeductionCents + debtDeductionUnits;
+  const rubberValueCents = rubberValueBaht * HUNDRED;
   const payableBeforeRoundingCents = rubberValueCents > deductionTotalCents
     ? rubberValueCents - deductionTotalCents
     : ZERO;
@@ -107,13 +105,14 @@ export function calculateRubberBill(input: RubberBillCalculationInput): RubberBi
   return {
     totalWeight: fromScaled(totalWeightUnits, 100),
     netWeight: fromScaled(netWeightUnits, 100),
-    weighValueTotal: fromScaled(weighValueUnits, 10_000),
+    weighValueTotal: Number(weighValueBaht),
     averagePrice: fromScaled(averagePriceCents, 100),
     rubberValue: fromScaled(rubberValueCents, 100),
     deductionTotal: fromScaled(deductionTotalCents, 100),
     payableBeforeRounding: fromScaled(payableBeforeRoundingCents, 100),
     netTotal: Number(payableBaht),
-    lineTotals: lineTotalCents.map((value) => fromScaled(value, 100)),
+    lineTotals: lineTotalBaht.map(Number),
+    stockDeductionLineTotals: stockDeductionLineBaht.map(Number),
   };
 }
 
@@ -122,9 +121,8 @@ export function hasAtMostTwoDecimalPlaces(value: number) {
     && Math.abs((value * 100) - Math.round(value * 100)) < 1e-8;
 }
 
-export function multiplyMoneyHalfUp(left: number, right: number) {
-  return fromScaled(
-    divideHalfUp(toHundredths(left) * toHundredths(right), HUNDRED),
-    100,
+export function multiplyMoneyFloorBaht(left: number, right: number) {
+  return Number(
+    (toHundredths(left) * toHundredths(right)) / (HUNDRED * HUNDRED),
   );
 }

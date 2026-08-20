@@ -23,6 +23,7 @@ export function mapRubberBillFeedRow(row: any): RubberBill {
       quantity: Number(item.quantity ?? 0),
       unit: item.unit ?? "ชิ้น",
       unitPrice: Number(item.price ?? 0),
+      total: Number(item.total ?? 0),
     }));
   const debtItems = billItems
     .filter((item: any) => item.item_type === "debt")

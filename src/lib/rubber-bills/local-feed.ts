@@ -9,10 +9,12 @@ export function rubberBillFromSyncEvent(event: SyncEvent, ownerUserId: string): 
   const weighItems = items.filter((item: any) => item.itemType === "weigh").map((item: any) => ({
     id: String(item.sequenceNo), label: item.title, inWeight: Number(item.inWeight),
     outWeight: Number(item.outWeight), netWeight: Number(item.netWeight), price: Number(item.unitPrice),
+    total: Number(item.totalAmount ?? 0),
   }));
   const acidItems = items.filter((item: any) => item.itemType === "acid" || item.itemType === "stock_deduction").map((item: any) => ({
     id: String(item.sequenceNo), name: item.title, stockProductId: item.stockProductId,
     quantity: Number(item.quantity), unit: item.unit, unitPrice: Number(item.unitPrice),
+    total: Number(item.totalAmount ?? 0),
   }));
   const debtItems = items.filter((item: any) => item.itemType === "debt").map((item: any) => ({
     id: String(item.sequenceNo), title: item.title, amount: Number(item.totalAmount),

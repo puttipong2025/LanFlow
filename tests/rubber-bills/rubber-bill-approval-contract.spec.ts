@@ -313,6 +313,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         .select(`
           weight,
           net_weight,
+          formula_version,
           rubber_value,
           net_rubber_value,
           average_price,
@@ -326,12 +327,13 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       expect(bill).toMatchObject({
         weight: 10,
         net_weight: 8.89,
+        formula_version: 2,
         rubber_value: 100,
-        net_rubber_value: 88.9,
+        net_rubber_value: 88,
         average_price: 10,
         deduction_total: 0.45,
-        payable_before_rounding: 88.45,
-        net_total: 88,
+        payable_before_rounding: 87.55,
+        net_total: 87,
       });
     } finally {
       await db.from("rubber_bills").delete().eq("client_temp_id", payload.clientTempId);

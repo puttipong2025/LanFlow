@@ -418,6 +418,41 @@ $$;
 ALTER FUNCTION "private"."assert_user_primary_location"("target_user_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."assign_rubber_bill_formula_version"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO ''
+    AS $$
+begin
+  if new.source_rubber_export_id is not null then
+    return new;
+  end if;
+
+  if tg_op = 'INSERT' then
+    new.formula_version := 2;
+  elsif row(
+    new.weight,
+    new.deduct_weight,
+    new.rubber_value,
+    new.deduction_total,
+    new.net_total
+  ) is distinct from row(
+    old.weight,
+    old.deduct_weight,
+    old.rubber_value,
+    old.deduction_total,
+    old.net_total
+  ) then
+    new.formula_version := 2;
+  end if;
+
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."assign_rubber_bill_formula_version"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."assign_rubber_bill_item_sequence"() RETURNS "trigger"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -3848,13 +3883,13 @@ begin
       end if;
 
       v_row_weight := round(v_row_weight, 2);
-      v_line_value := v_row_weight * v_price;
+      v_line_value := floor(v_row_weight * v_price);
       v_total_weight := v_total_weight + v_row_weight;
       v_total_weigh_value := v_total_weigh_value + v_line_value;
       v_weigh_count := v_weigh_count + 1;
       v_item := v_item || jsonb_build_object(
         'netWeight', v_row_weight,
-        'totalAmount', round(v_line_value, 2)
+        'totalAmount', v_line_value
       );
 
     elsif v_item_type in ('acid', 'stock_deduction') then
@@ -3869,10 +3904,10 @@ begin
         raise exception 'stock deductions must use non-negative values with at most 2 decimal places';
       end if;
 
-      v_line_value := v_quantity * v_price;
+      v_line_value := floor(v_quantity * v_price);
       v_money_deduction_raw := v_money_deduction_raw + v_line_value;
       v_item := v_item || jsonb_build_object(
-        'totalAmount', round(v_line_value, 2)
+        'totalAmount', v_line_value
       );
 
     elsif v_item_type = 'debt' then
@@ -3899,12 +3934,10 @@ begin
   end if;
 
   v_total_weight := round(v_total_weight, 2);
-  v_total_weigh_value := round(v_total_weigh_value, 4);
   v_net_weight := trunc(v_total_weight - v_deduct_weight, 2);
   v_average_price := round(v_total_weigh_value / v_total_weight, 2);
-  v_net_rubber_value := round(
-    v_total_weigh_value * v_net_weight / v_total_weight,
-    2
+  v_net_rubber_value := floor(
+    v_total_weigh_value * v_net_weight / v_total_weight
   );
   v_deduction_total := round(v_money_deduction_raw, 2);
   v_payable_before_rounding := greatest(
@@ -3913,6 +3946,7 @@ begin
   );
 
   return payload || jsonb_build_object(
+    'formulaVersion', 2,
     'items', v_items,
     'weight', v_total_weight,
     'netWeight', v_net_weight,
@@ -3930,7 +3964,7 @@ $$;
 ALTER FUNCTION "private"."normalize_rubber_bill_calculation_payload"("payload" "jsonb") OWNER TO "postgres";
 
 
-COMMENT ON FUNCTION "private"."normalize_rubber_bill_calculation_payload"("payload" "jsonb") IS 'Recalculates Rubber Bill source values from item inputs using the same fixed two-decimal contract as the offline browser.';
+COMMENT ON FUNCTION "private"."normalize_rubber_bill_calculation_payload"("payload" "jsonb") IS 'Recalculates Rubber Bill v2 values: floor calculated line values and rubber value to whole baht while preserving two-decimal input precision.';
 
 
 
@@ -13754,12 +13788,20 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_bills" (
     "net_weight" numeric(12,2) GENERATED ALWAYS AS ("trunc"(GREATEST(("weight" - "deduct_weight"), (0)::numeric), 2)) STORED,
     "net_rubber_value" numeric(14,2) GENERATED ALWAYS AS (
 CASE
-    WHEN ("weight" > (0)::numeric) THEN "round"((("rubber_value" * "trunc"(GREATEST(("weight" - "deduct_weight"), (0)::numeric), 2)) / "weight"), 2)
+    WHEN ("weight" > (0)::numeric) THEN
+    CASE
+        WHEN ("formula_version" >= 2) THEN "floor"((("rubber_value" * "trunc"(GREATEST(("weight" - "deduct_weight"), (0)::numeric), 2)) / "weight"))
+        ELSE "round"((("rubber_value" * "trunc"(GREATEST(("weight" - "deduct_weight"), (0)::numeric), 2)) / "weight"), 2)
+    END
     ELSE (0)::numeric
 END) STORED,
     "payable_before_rounding" numeric(14,2) GENERATED ALWAYS AS (GREATEST((
 CASE
-    WHEN ("weight" > (0)::numeric) THEN "round"((("rubber_value" * "trunc"(GREATEST(("weight" - "deduct_weight"), (0)::numeric), 2)) / "weight"), 2)
+    WHEN ("weight" > (0)::numeric) THEN
+    CASE
+        WHEN ("formula_version" >= 2) THEN "floor"((("rubber_value" * "trunc"(GREATEST(("weight" - "deduct_weight"), (0)::numeric), 2)) / "weight"))
+        ELSE "round"((("rubber_value" * "trunc"(GREATEST(("weight" - "deduct_weight"), (0)::numeric), 2)) / "weight"), 2)
+    END
     ELSE (0)::numeric
 END - "deduction_total"), (0)::numeric)) STORED,
     "source_rubber_export_id" "uuid",
@@ -13769,12 +13811,14 @@ END - "deduction_total"), (0)::numeric)) STORED,
     "received_age_is_estimated" boolean,
     "evidence_completion_id" "uuid",
     "evidence_manual_correction_count" integer DEFAULT 0 NOT NULL,
+    "formula_version" smallint DEFAULT 1 NOT NULL,
     CONSTRAINT "rubber_bills_approval_revision_shape_check" CHECK (((("approval_state" = 'not_required'::"text") AND ("approved_by_name" IS NULL) AND ("approval_revision_no" IS NULL)) OR (("approval_state" = 'approved'::"text") AND ("approved_by_name" IS NOT NULL) AND ("approval_revision_no" = "revision_no")))),
     CONSTRAINT "rubber_bills_approval_state_check" CHECK (("approval_state" = ANY (ARRAY['not_required'::"text", 'approved'::"text"]))),
     CONSTRAINT "rubber_bills_branch_receipt_shape_check" CHECK (((("source_rubber_export_id" IS NULL) AND ("source_export_no" IS NULL) AND ("received_at" IS NULL) AND ("received_age_hours" IS NULL) AND ("received_age_is_estimated" IS NULL)) OR ((NULLIF("btrim"("source_export_no"), ''::"text") IS NOT NULL) AND ("received_at" IS NOT NULL) AND ("received_age_hours" IS NOT NULL) AND ("received_age_hours" >= (0)::numeric) AND ("received_age_is_estimated" IS NOT NULL) AND ("net_total" = (0)::numeric) AND ("rubber_value" > (0)::numeric) AND ("deduction_total" = "net_rubber_value") AND (("source_rubber_export_id" IS NOT NULL) OR ("record_status" = 'deleted'::"public"."record_status"))))),
     CONSTRAINT "rubber_bills_configured_price_snapshot_check" CHECK ((("configured_price_snapshot" IS NULL) OR ("configured_price_snapshot" >= (0)::numeric))),
     CONSTRAINT "rubber_bills_deduct_weight_range_check" CHECK ((("deduct_weight" >= (0)::numeric) AND ("deduct_weight" < "weight"))),
     CONSTRAINT "rubber_bills_evidence_manual_correction_count_nonnegative" CHECK (("evidence_manual_correction_count" >= 0)),
+    CONSTRAINT "rubber_bills_formula_version_check" CHECK (("formula_version" = ANY (ARRAY[1, 2]))),
     CONSTRAINT "rubber_bills_money_values_nonnegative_check" CHECK ((("rubber_value" >= (0)::numeric) AND ("average_price" >= (0)::numeric) AND ("deduction_total" >= (0)::numeric) AND ("net_total" >= (0)::numeric))),
     CONSTRAINT "rubber_bills_net_total_formula_check" CHECK (("net_total" = "floor"("payable_before_rounding"))),
     CONSTRAINT "rubber_bills_net_total_whole_baht_check" CHECK (("net_total" = "trunc"("net_total"))),
@@ -13809,11 +13853,11 @@ COMMENT ON COLUMN "public"."rubber_bills"."net_weight" IS 'Bill net weight: tota
 
 
 
-COMMENT ON COLUMN "public"."rubber_bills"."net_rubber_value" IS 'Rubber value after applying the bill net-weight proportion, rounded half-up to 2 decimals.';
+COMMENT ON COLUMN "public"."rubber_bills"."net_rubber_value" IS 'Rubber value after the bill net-weight proportion: v1 rounds half-up to 2 decimals; v2 floors to whole baht.';
 
 
 
-COMMENT ON COLUMN "public"."rubber_bills"."payable_before_rounding" IS 'Net rubber value minus money deductions before whole-baht flooring.';
+COMMENT ON COLUMN "public"."rubber_bills"."payable_before_rounding" IS 'Versioned rubber value minus money deductions before final whole-baht flooring.';
 
 
 
@@ -13822,6 +13866,10 @@ COMMENT ON COLUMN "public"."rubber_bills"."received_age_hours" IS 'Weighted aver
 
 
 COMMENT ON COLUMN "public"."rubber_bills"."evidence_completion_id" IS 'Opaque owner UUID for first-completer-wins device-local weight evidence; no image or OCR data.';
+
+
+
+COMMENT ON COLUMN "public"."rubber_bills"."formula_version" IS '1 preserves the historical two-decimal formula; 2 floors calculated line values and rubber value to whole baht.';
 
 
 
@@ -18863,6 +18911,10 @@ CREATE UNIQUE INDEX "user_locations_one_primary_per_user" ON "public"."user_loca
 
 
 
+CREATE OR REPLACE TRIGGER "assign_rubber_bill_formula_version" BEFORE INSERT OR UPDATE ON "public"."rubber_bills" FOR EACH ROW EXECUTE FUNCTION "private"."assign_rubber_bill_formula_version"();
+
+
+
 CREATE OR REPLACE TRIGGER "assign_rubber_bill_item_sequence" BEFORE INSERT ON "public"."rubber_bill_items" FOR EACH ROW EXECUTE FUNCTION "private"."assign_rubber_bill_item_sequence"();
 
 
@@ -20401,6 +20453,10 @@ REVOKE ALL ON FUNCTION "private"."append_dashboard_money_event"("p_source_type" 
 
 
 REVOKE ALL ON FUNCTION "private"."apply_time_tracking_deductions"("p_profile_id" "uuid", "p_through_month" "date") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."assign_rubber_bill_formula_version"() FROM PUBLIC;
 
 
 

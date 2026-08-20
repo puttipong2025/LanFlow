@@ -1,5 +1,5 @@
 import { thaiBahtText } from "@/lib/thai-baht-text";
-import { multiplyMoneyHalfUp } from "@/lib/rubber-bills/calculations";
+import { multiplyMoneyFloorBaht } from "@/lib/rubber-bills/calculations";
 import type { RubberBill } from "@/types";
 import { formatBangkokDateTime } from "@/lib/bangkok-date";
 
@@ -82,7 +82,7 @@ export function buildRubberBillReceiptModel(bill: RubberBill): RubberBillReceipt
   const deductions = [
     ...(bill.acidItems ?? []).map((item) => ({
       label: `${item.name} ${formatReceiptNumber(item.quantity)} ${item.unit}`,
-      amount: item.quantity * item.unitPrice
+      amount: item.total ?? multiplyMoneyFloorBaht(item.quantity, item.unitPrice)
     })),
     ...(bill.debtItems ?? (bill.debtItem ? [bill.debtItem] : [])).map((item) => ({
       label: item.title,
@@ -99,7 +99,7 @@ export function buildRubberBillReceiptModel(bill: RubberBill): RubberBillReceipt
     outWeight: item.outWeight,
     netWeight: item.netWeight,
     price: item.price,
-    lineTotal: item.total ?? multiplyMoneyHalfUp(item.netWeight, item.price)
+    lineTotal: item.total ?? multiplyMoneyFloorBaht(item.netWeight, item.price)
   }));
 
   return {

@@ -67,6 +67,7 @@ export type RubberBill = {
     quantity: number;
     unit: string;
     unitPrice: number;
+    total?: number;
   }>;
   debtItem?: {
     id: string;

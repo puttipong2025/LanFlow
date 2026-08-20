@@ -20,9 +20,6 @@ import { appSwal } from "@/lib/swal";
 import type { Location, Profile, RubberBill } from "@/types";
 import { ModalShell } from "@/components/shared/ModalShell";
 
-export function rubberValueWholeBahtForDisplay(value: number) {
-  return Math.trunc(value);
-}
 import { Field } from "@/components/shared/Field";
 import { NumberField } from "@/components/shared/NumberField";
 import { InlineRadio } from "@/components/shared/InlineRadio";
@@ -656,7 +653,7 @@ export function RubberBillModal({
                 </tr>
               </thead>
               <tbody>
-                {stockDeductionItems.map((item) => (
+                {stockDeductionItems.map((item, index) => (
                   <tr key={item.id} className="border-b border-black/10">
                     <td className="py-2">
                       <select
@@ -687,7 +684,7 @@ export function RubberBillModal({
                       />
                     </td>
                     <td><InlineNumber value={item.unitPrice} onChange={(value) => updateStockDeductionItem(item.id, { unitPrice: value })} /></td>
-                    <td><InlineNumber value={item.quantity * item.unitPrice} readOnly /></td>
+                    <td><InlineNumber value={calculation.stockDeductionLineTotals[index] ?? 0} readOnly /></td>
                     <td>
                       <button type="button" onClick={() => removeStockDeductionItem(item.id)} className="rounded bg-rose-500 px-3 py-2 text-sm font-bold text-white">
                         ลบ
@@ -789,7 +786,7 @@ export function RubberBillModal({
           <NumberField label="ราคาเฉลี่ย (บาท/กก.)" value={calculation.averagePrice} readOnly />
           <NumberField
             label="มูลค่ายาง (บาท)"
-            value={rubberValueWholeBahtForDisplay(calculation.rubberValue)}
+            value={calculation.rubberValue}
             readOnly
           />
           <NumberField label="ยอดหักเงิน (บาท)" value={calculation.deductionTotal} readOnly />

@@ -4,10 +4,9 @@ import {
   calculateRubberBill,
   hasAtMostTwoDecimalPlaces,
 } from "../src/lib/rubber-bills/calculations";
-import { rubberValueWholeBahtForDisplay } from "../src/components/rubber-bills/RubberBillModal";
 
 test.describe("rubber bill calculations", () => {
-  test("uses the bill-level net weight proportion and floors only the payable total", () => {
+  test("floors calculated money rows and rubber value before saving", () => {
     const result = calculateRubberBill({
       weighItems: [
         { netWeight: 50, price: 20 },
@@ -21,13 +20,14 @@ test.describe("rubber bill calculations", () => {
     expect(result).toEqual({
       totalWeight: 90.13,
       netWeight: 80.12,
-      weighValueTotal: 1551.7875,
-      averagePrice: 17.22,
-      rubberValue: 1379.44,
-      deductionTotal: 95.35,
-      payableBeforeRounding: 1284.09,
-      netTotal: 1284,
-      lineTotals: [1000, 551.79],
+      weighValueTotal: 1551,
+      averagePrice: 17.21,
+      rubberValue: 1378,
+      deductionTotal: 95.1,
+      payableBeforeRounding: 1282.9,
+      netTotal: 1282,
+      lineTotals: [1000, 551],
+      stockDeductionLineTotals: [75],
     });
   });
 
@@ -53,17 +53,19 @@ test.describe("rubber bill calculations", () => {
     expect(hasAtMostTwoDecimalPlaces(90.126)).toBe(false);
   });
 
-  test("truncates only the modal rubber-value display while preserving calculation money", () => {
+  test("keeps direct debt precision after calculated values are floored", () => {
     const result = calculateRubberBill({
       weighItems: [{ netWeight: 80.12, price: 17.23 }],
       deductWeight: 0,
       debtItems: [{ amount: 95.35 }],
     });
 
-    expect(result.rubberValue).toBe(1380.47);
-    expect(rubberValueWholeBahtForDisplay(result.rubberValue)).toBe(1380);
+    expect(result.weighValueTotal).toBe(1380);
+    expect(result.rubberValue).toBe(1380);
+    expect(result.lineTotals).toEqual([1380]);
+    expect(result.stockDeductionLineTotals).toEqual([]);
     expect(result.deductionTotal).toBe(95.35);
-    expect(result.payableBeforeRounding).toBe(1285.12);
-    expect(result.netTotal).toBe(1285);
+    expect(result.payableBeforeRounding).toBe(1284.65);
+    expect(result.netTotal).toBe(1284);
   });
 });
