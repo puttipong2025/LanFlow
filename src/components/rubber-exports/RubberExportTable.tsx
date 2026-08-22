@@ -58,6 +58,7 @@ export function RubberExportTable({
             <th className="px-4 py-3">จัดการ</th>
             <th className="px-4 py-3">เลขที่</th>
             <th className="px-4 py-3">สถานะ</th>
+            <th className="px-4 py-3">ผู้สร้าง</th>
             <th className="px-4 py-3 text-right">บิล</th>
             <th className="px-4 py-3 text-right">น้ำหนักเดิม</th>
             <th className="px-4 py-3 text-right">น้ำหนักปัจจุบัน</th>
@@ -68,10 +69,10 @@ export function RubberExportTable({
         </thead>
         <tbody className="divide-y divide-black/5">
           {loading && (
-            <tr><td colSpan={9} className="px-4 py-8 text-center text-ink/60">กำลังโหลด...</td></tr>
+            <tr><td colSpan={10} className="px-4 py-8 text-center text-ink/60">กำลังโหลด...</td></tr>
           )}
           {!loading && rows.length === 0 && (
-            <tr><td colSpan={9} className="px-4 py-8 text-center text-ink/60">ยังไม่มีรายการส่งออกยาง</td></tr>
+            <tr><td colSpan={10} className="px-4 py-8 text-center text-ink/60">ยังไม่มีรายการส่งออกยาง</td></tr>
           )}
           {!loading && rows.map((row) => (
             <tr key={row.id}>
@@ -162,6 +163,7 @@ export function RubberExportTable({
                   </div>
                 )}
               </td>
+              <td className="px-4 py-3">{row.createdByName || "—"}</td>
               <td className="px-4 py-3 text-right tabular-nums">{row.itemCount.toLocaleString("th-TH")}</td>
               <td className="px-4 py-3 text-right tabular-nums">{number(row.originalWeightTotal)}</td>
               <td className="px-4 py-3 text-right tabular-nums">{number(row.currentWeight)}</td>

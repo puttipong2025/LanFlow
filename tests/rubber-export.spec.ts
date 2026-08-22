@@ -219,6 +219,132 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
     }
   });
 
+  test("shows the creator snapshot in active, history, and deletion views", async ({ browser }) => {
+    const context = await authContext(browser, "super_admin");
+    const me = await profile(context);
+    const page = await context.newPage();
+    const activeExportNo = "REX-CREATOR-ACTIVE-NAMED";
+    const legacyActiveExportNo = "REX-CREATOR-ACTIVE-MISSING";
+    const historyExportNo = "REX-CREATOR-HISTORY-NAMED";
+    const legacyHistoryExportNo = "REX-CREATOR-HISTORY-MISSING";
+    const deletedExportNo = "REX-CREATOR-DELETED";
+    const legacyDeletedExportNo = "REX-CREATOR-LEGACY";
+    const summary = (exportNo: string, createdByName: string) => ({
+      id: crypto.randomUUID(),
+      exportNo,
+      locationId: me.locationIds[0],
+      locationName: "สาขาทดสอบ",
+      status: "verified" as const,
+      originalWeightTotal: 100,
+      paidTotal: 3_000,
+      rubberValueTotal: 3_000,
+      averagePrice: 30,
+      currentWeight: 100,
+      weightLossPercent: 0,
+      workRate: 0,
+      otherOperatingCost: 0,
+      workTotal: 0,
+      expenseDestination: "branch" as const,
+      createdByName,
+      createdAt: "2026-08-11T01:00:00.000Z",
+      verifiedByName: "ผู้รับรอง",
+      verifiedAt: "2026-08-11T02:00:00.000Z",
+      itemCount: 1,
+      reportLockNo: null,
+      ageCalculatedAt: "2026-08-11T02:00:00.000Z",
+      averageAgeHours: 24,
+      oldestAgeHours: 24,
+      estimatedAgeItemCount: 0,
+      receiptBillId: null,
+      receiptBillNo: null,
+      receiptLocationName: null,
+    });
+
+    try {
+      await page.route("**/api/lanflow/rubber-exports?*", async (route) => {
+        const view = new URL(route.request().url()).searchParams.get("view");
+        if (view === "deletions") {
+          await route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({
+              deletions: [
+                {
+                  id: crypto.randomUUID(),
+                  documentKind: "rubber_export",
+                  documentNo: deletedExportNo,
+                  locationId: me.locationIds[0],
+                  locationName: "สาขาทดสอบ",
+                  previousStatus: "verified",
+                  originalActorName: "ผู้สร้างที่ถูกลบ",
+                  deletedByName: "ผู้ลบ",
+                  deletedAt: "2026-08-11T03:00:00.000Z",
+                },
+                {
+                  id: crypto.randomUUID(),
+                  documentKind: "rubber_export",
+                  documentNo: legacyDeletedExportNo,
+                  locationId: me.locationIds[0],
+                  locationName: "สาขาทดสอบ",
+                  previousStatus: "draft",
+                  originalActorName: "",
+                  deletedByName: "ผู้ลบ",
+                  deletedAt: "2026-08-11T03:00:00.000Z",
+                },
+              ],
+              hasMore: false,
+              nextCursor: null,
+            }),
+          });
+          return;
+        }
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            exports: [
+              summary(
+                view === "history" ? historyExportNo : activeExportNo,
+                view === "history" ? "ผู้สร้างประวัติ" : "ผู้สร้างกำลังดำเนินการ",
+              ),
+              summary(
+                view === "history" ? legacyHistoryExportNo : legacyActiveExportNo,
+                "",
+              ),
+            ],
+            permissions: { canVerify: true, canDelete: true },
+            hasMore: false,
+            nextCursor: null,
+          }),
+        });
+      });
+
+      await page.goto("/");
+      await selectAppLocation(page, me.locationIds[0]);
+      await page.getByRole("button", { name: /^ส่งออกยาง/ }).click();
+
+      await expect(page.getByRole("columnheader", { name: "ผู้สร้าง" })).toBeVisible();
+      await expect(page.locator("tbody tr").filter({ hasText: activeExportNo }))
+        .toContainText("ผู้สร้างกำลังดำเนินการ");
+      await expect(page.locator("tbody tr").filter({ hasText: legacyActiveExportNo })
+        .getByRole("cell").nth(3)).toHaveText("—");
+
+      await page.getByRole("button", { name: "ประวัติ", exact: true }).click();
+      await expect(page.locator("tbody tr").filter({ hasText: historyExportNo }))
+        .toContainText("ผู้สร้างประวัติ");
+      await expect(page.locator("tbody tr").filter({ hasText: legacyHistoryExportNo })
+        .getByRole("cell").nth(3)).toHaveText("—");
+
+      await page.getByRole("button", { name: "ประวัติการลบ", exact: true }).click();
+      await expect(page.locator("tbody tr").filter({ hasText: deletedExportNo }))
+        .toContainText("ผู้สร้างที่ถูกลบ");
+      await expect(page.locator("tbody tr").filter({ hasText: legacyDeletedExportNo }))
+        .toContainText("—");
+    } finally {
+      await context.close();
+    }
+  });
+
   test("system manager gets super-admin verification actions for another admin's draft without reloading the app", async ({ browser }) => {
     test.setTimeout(60_000);
     const managerContext = await authContext(browser, "admin");

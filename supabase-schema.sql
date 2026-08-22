@@ -9275,10 +9275,12 @@ begin
   select p.name into v_actor_name from public.profiles p where p.id = auth.uid();
   insert into public.document_deletion_audits (
     document_kind, source_id, document_no, location_id, previous_status,
+    original_actor_user_id, original_actor_name,
     deleted_by_user_id, deleted_by_name, deleted_at
   ) values (
     'rubber_export', v_export.id, v_export.export_no, v_export.location_id,
-    v_export.status, auth.uid(), coalesce(v_actor_name, ''), v_now
+    v_export.status, v_export.created_by_user_id, v_export.created_by_name,
+    auth.uid(), coalesce(v_actor_name, ''), v_now
   );
   delete from public.rubber_export_items where export_id = v_export.id;
   delete from public.rubber_exports where id = v_export.id;

@@ -399,6 +399,7 @@ export function RubberExportsModule({
             loading={api.deletionsLoading}
             emptyLabel="ยังไม่มีประวัติการลบรายการส่งออกยาง"
             showPreviousStatus
+            originalActorLabel="ผู้สร้าง"
             onShowCurrent={() => setView("active")}
           />
           {api.deletionsHasMore && api.deletionsCursor && !api.deletionsLoading && (

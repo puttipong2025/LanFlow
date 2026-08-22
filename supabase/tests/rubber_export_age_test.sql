@@ -1,6 +1,6 @@
 begin;
 
-select plan(28);
+select plan(32);
 
 select has_column('public', 'rubber_export_items', 'age_source_at', 'items snapshot the source timestamp');
 select has_column('public', 'rubber_export_items', 'age_is_estimated', 'items snapshot whether age is estimated');
@@ -63,6 +63,13 @@ insert into public.profiles (
 ) values (
   '42000000-0000-4000-8000-000000000001', '0894000001',
   'pgTAP Rubber Age Manager', 'user', true, true
+);
+
+insert into public.profiles (
+  id, phone, name, role, is_active, can_access_super_admin_features
+) values (
+  '42000000-0000-4000-8000-000000000002', '0894000002',
+  'Renamed Rubber Export Creator', 'user', true, false
 );
 
 insert into public.report_batches (
@@ -137,13 +144,23 @@ insert into public.rubber_exports (
   (
     '46000000-0000-4000-8000-000000000001', 'REX-AGE-001', '2026-08-01', 1,
     '41000000-0000-4000-8000-000000000001', 500, 5000, 5000, 10,
-    '42000000-0000-4000-8000-000000000001', 'manager', '0894000001'
+    '42000000-0000-4000-8000-000000000002', 'Original Rubber Export Creator', '0894000002'
   ),
   (
     '46000000-0000-4000-8000-000000000002', 'REX-AGE-002', '2026-08-01', 2,
     '41000000-0000-4000-8000-000000000001', 100, 1000, 1000, 10,
-    '42000000-0000-4000-8000-000000000001', 'manager', '0894000001'
+    '42000000-0000-4000-8000-000000000002', 'Original Rubber Export Creator', '0894000002'
   );
+
+insert into public.document_deletion_audits (
+  document_kind, source_id, document_no, location_id, previous_status,
+  deleted_by_user_id, deleted_by_name, deleted_at
+) values (
+  'rubber_export', '47000000-0000-4000-8000-000000000001', 'REX-LEGACY-001',
+  '41000000-0000-4000-8000-000000000001', 'draft',
+  '42000000-0000-4000-8000-000000000001', 'pgTAP Rubber Age Manager',
+  '2026-08-01 12:00:00+07'
+);
 
 insert into public.rubber_export_items (
   export_id, location_id, source_report_item_id, source_bill_id, bill_date,
@@ -222,7 +239,36 @@ select is(
     where document_kind = 'rubber_export'
       and source_id = '46000000-0000-4000-8000-000000000002'),
   'draft',
-  'deleted draft keeps only its previous status in minimal audit'
+  'deleted draft keeps its previous status in minimal audit'
+);
+select is(
+  (select original_actor_user_id from public.document_deletion_audits
+    where document_kind = 'rubber_export'
+      and source_id = '46000000-0000-4000-8000-000000000002'),
+  '42000000-0000-4000-8000-000000000002'::uuid,
+  'deleted export audit snapshots its original creator id'
+);
+select is(
+  (select original_actor_name from public.document_deletion_audits
+    where document_kind = 'rubber_export'
+      and source_id = '46000000-0000-4000-8000-000000000002'),
+  'Original Rubber Export Creator',
+  'deleted export audit keeps the creation-time name snapshot'
+);
+select ok(
+  (select deleted_by_user_id <> original_actor_user_id
+      and deleted_by_name = 'pgTAP Rubber Age Manager'
+    from public.document_deletion_audits
+    where document_kind = 'rubber_export'
+      and source_id = '46000000-0000-4000-8000-000000000002'),
+  'deleted export audit keeps creator and deleter as separate actors'
+);
+select ok(
+  (select original_actor_user_id is null and original_actor_name is null
+    from public.document_deletion_audits
+    where document_kind = 'rubber_export'
+      and source_id = '47000000-0000-4000-8000-000000000001'),
+  'legacy deletion audit without creator evidence remains unknown'
 );
 select throws_ok(
   $$select public.get_rubber_export_age_detail(
