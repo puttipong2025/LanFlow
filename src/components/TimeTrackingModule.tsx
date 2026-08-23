@@ -12,6 +12,8 @@ import { ExpenseLocationChangeModal } from "./time-tracking/ExpenseLocationChang
 import { ExpenseLocationApprovalModal } from "./time-tracking/ExpenseLocationApprovalModal";
 import { canManageTimePayroll } from "@/lib/permissions";
 import { ModalShell } from "@/components/shared/ModalShell";
+import { TablePageSizeSelect, TablePagination } from "@/components/shared/TablePagination";
+import { filterTimeTrackingEmployees, resolveEmployeeFilter } from "@/components/time-tracking/employee-list";
 import { SlipPreviewModal } from "./time-tracking/SlipPreviewModal";
 import {
   bangkokDateString,
@@ -629,6 +631,10 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
     currentLocationId?: string | null;
     onSuccess?: () => void;
   } | null>(null);
+  const [employeeFilter, setEmployeeFilter] = useState<"pending" | "all" | null>(null);
+  const [employeeSearch, setEmployeeSearch] = useState("");
+  const [employeePageSize, setEmployeePageSize] = useState(10);
+  const [employeePage, setEmployeePage] = useState(1);
   const expenseLocations = useMemo(
     () => data?.paymentLocations ?? locations.filter((location) => location.active),
     [data?.paymentLocations, locations],
@@ -784,6 +790,14 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
     if (right.id === profile.id) return 1;
     return 0;
   });
+  const pendingUserIds = new Set(users.filter((user: any) => (
+    pendingCountForUser(data?.pendingTransactions, user.id) + pendingCountForUser(data?.pendingSlips, user.id) > 0
+  )).map((user: any) => user.id));
+  const activeEmployeeFilter = resolveEmployeeFilter(employeeFilter, pendingUserIds.size > 0);
+  const filteredUsers = filterTimeTrackingEmployees(users, pendingUserIds, employeeSearch, activeEmployeeFilter);
+  const totalEmployeePages = Math.max(1, Math.ceil(filteredUsers.length / employeePageSize));
+  const currentEmployeePage = Math.min(employeePage, totalEmployeePages);
+  const visibleUsers = filteredUsers.slice((currentEmployeePage - 1) * employeePageSize, currentEmployeePage * employeePageSize);
   const dashboardUser = users.find((user: any) => user.id === viewDashboardUserId);
 
   return (
@@ -814,9 +828,23 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
             </select>
           )}
         </div>
-      </div>
+        </div>
 
-      <div className="bg-white p-4 rounded-xl border border-black/10 shadow-sm overflow-x-auto">
+       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+         <label className="grid gap-1 text-sm font-semibold text-ink">ค้นหาพนักงาน
+           <input value={employeeSearch} onChange={(event) => { setEmployeeSearch(event.target.value); setEmployeePage(1); }} className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3" placeholder="ชื่อพนักงาน" />
+         </label>
+         <div className="flex flex-wrap items-center gap-3">
+           <label className="flex items-center gap-2 text-sm font-semibold text-ink">ตัวกรอง
+             <select value={activeEmployeeFilter} onChange={(event) => { setEmployeeFilter(event.target.value as "pending" | "all"); setEmployeePage(1); }} className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3">
+               <option value="pending">รออนุมัติ</option><option value="all">ทั้งหมด</option>
+             </select>
+           </label>
+           <TablePageSizeSelect pageSize={employeePageSize} onPageSizeChange={(size) => { setEmployeePageSize(size); setEmployeePage(1); }} />
+         </div>
+       </div>
+
+       <div className="bg-white p-4 rounded-xl border border-black/10 shadow-sm overflow-x-auto">
         <table className="w-full text-left text-sm whitespace-nowrap">
           <thead>
             <tr className="border-b border-black/10 text-ink/65">
@@ -830,7 +858,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
             </tr>
           </thead>
           <tbody className="divide-y divide-black/5">
-             {users.map((user: any) => {
+             {visibleUsers.map((user: any) => {
                const isSelf = user.id === profile.id;
                const canManageRow = !isSelf || Boolean(user.primary_location_id);
                const activeSegment = user.time_segments?.find((s: any) => !s.end_time);
@@ -903,9 +931,11 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
                 </tr>
               )
             })}
-          </tbody>
-        </table>
-      </div>
+           </tbody>
+         </table>
+         {filteredUsers.length === 0 && <p className="py-8 text-center text-sm text-ink/55">ไม่พบพนักงานตามตัวกรอง</p>}
+       </div>
+       <TablePagination totalItems={filteredUsers.length} page={currentEmployeePage} pageSize={employeePageSize} onPageChange={setEmployeePage} />
 
       {manageTimeUser && (
         <ManageTimeModal

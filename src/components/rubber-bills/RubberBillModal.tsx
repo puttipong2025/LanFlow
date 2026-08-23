@@ -50,6 +50,7 @@ export function RubberBillModal({
   profile,
   bill,
   configuredPrice,
+  priceTimeExempt = false,
   nonCurrentDateRequiresApproval = false,
   customers,
   onClose,
@@ -59,6 +60,7 @@ export function RubberBillModal({
   profile: Profile;
   bill: RubberBill | null;
   configuredPrice?: number | null;
+  priceTimeExempt?: boolean;
   nonCurrentDateRequiresApproval?: boolean;
   customers: RubberBillCustomerOption[];
   onClose: () => void;
@@ -182,6 +184,7 @@ export function RubberBillModal({
   );
   const exceedsConfiguredPrice =
     hasPriceChange &&
+    !priceTimeExempt &&
     configuredPrice != null &&
     weighItems.some((item) => Math.round(item.price * 100) > Math.round(configuredPrice * 100));
   const requiresNonCurrentDateApproval =
@@ -572,7 +575,7 @@ export function RubberBillModal({
 
         <section className="bg-mint/45 p-3 sm:p-4">
           <h3 className="mb-3 font-bold text-ink">ชั่งสินค้า</h3>
-          {configuredPrice != null && (
+          {!priceTimeExempt && configuredPrice != null && (
             <div className={`mb-3 rounded-md border px-3 py-2 text-sm ${
               exceedsConfiguredPrice
                 ? "border-amber-300 bg-amber-50 text-amber-900"

@@ -19,7 +19,7 @@ import {
   assertOfflineRubberBillPriceAllowed,
   isRubberBillPriceApprovalRequired,
 } from "@/lib/rubber-bills/approval";
-import type { RubberBillApprovalSettings } from "@/types";
+import type { EffectiveRubberApprovalSettings } from "@/types";
 import { buildRubberBillReceiptModel } from "@/components/rubber-bills/bill-display";
 import {
   calculateRubberBill,
@@ -226,10 +226,7 @@ async function normalizeRubberBillQueueBeforeSync(ownerUserId: string, locationI
 export function useRubberBills(
   locationId: string,
   ownerUserId: string,
-  approvalSettings?: Pick<
-    RubberBillApprovalSettings,
-    "editWindowMinutes" | "configuredPrice" | "nonCurrentDateRequiresApproval"
-  > | null,
+  approvalSettings?: EffectiveRubberApprovalSettings | null,
   options: { enabled?: boolean } = {},
 ) {
   const supabase = createSupabaseBrowserClient();
@@ -532,7 +529,10 @@ export function useRubberBills(
                 rawPayload.items
                   .filter((item: any) => item.itemType === "weigh")
                   .map((item: any) => Number(item.unitPrice)),
-                rawPayload.configuredPriceSnapshot ?? null
+                {
+                  configuredPrice: rawPayload.configuredPriceSnapshot ?? null,
+                  priceTimeExempt: approvalSettings?.priceTimeExempt ?? false,
+                }
               ),
             weighItems: optimisticWeighItems,
             acidItems: optimisticAcidItems,
@@ -706,7 +706,10 @@ export function useRubberBills(
           operation === "create"
           && isRubberBillPriceApprovalRequired(
             (bill.weighItems ?? []).map((item) => item.price),
-            approvalSettings?.configuredPrice ?? null
+            {
+              configuredPrice: approvalSettings?.configuredPrice ?? null,
+              priceTimeExempt: approvalSettings?.priceTimeExempt ?? false,
+            }
           ),
       };
     },
@@ -857,10 +860,7 @@ export function useRubberBills(
 export function useRubberBillMutations(
   locationId: string,
   ownerUserId: string,
-  approvalSettings?: Pick<
-    RubberBillApprovalSettings,
-    "editWindowMinutes" | "configuredPrice" | "nonCurrentDateRequiresApproval"
-  > | null,
+  approvalSettings?: EffectiveRubberApprovalSettings | null,
 ) {
   const { addBill, updateBill, deleteBill } = useRubberBills(
     locationId,

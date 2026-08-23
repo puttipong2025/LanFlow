@@ -24,6 +24,30 @@ export type Profile = {
   canManageTimePayroll?: boolean;
 };
 
+export type AdminUserProfileUpdateRequest = {
+  name: string;
+  locationIds: string[];
+  primaryLocationId: string | null;
+};
+
+export type AdminUserProfileUpdateResponse = {
+  user: Profile;
+  auditId: string;
+};
+
+export type AdminPasswordAuditStatus = "pending" | "succeeded" | "failed" | "unknown";
+
+export type AdminPasswordResetRequest = {
+  newPassword: string;
+  confirmPassword: string;
+  requestId: string;
+};
+
+export type AdminPasswordResetResponse = {
+  success: true;
+  auditStatus: Extract<AdminPasswordAuditStatus, "pending" | "succeeded">;
+};
+
 export type RubberBill = {
   id: string;
   clientTempId: string;
@@ -143,6 +167,26 @@ export type RubberBillApprovalSettings = {
   updatedAt?: string;
 };
 
+export type EffectiveRubberApprovalSettings = {
+  locationId: string;
+  groupId: string | null;
+  priceTimeExempt: boolean;
+  editWindowMinutes: number | null;
+  configuredPrice: number | null;
+  nonCurrentDateRequiresApproval: boolean;
+  updatedByName?: string | null;
+  updatedByPhone?: string | null;
+  updatedAt?: string | null;
+};
+
+export type RubberApprovalGroup = {
+  id: string;
+  locationIds: string[];
+  editWindowMinutes: number;
+  configuredPrice: number | null;
+  updatedAt: string;
+};
+
 export type RubberBillApprovalRequest = {
   id: string;
   operation: RubberBillApprovalOperation;
@@ -153,7 +197,8 @@ export type RubberBillApprovalRequest = {
   baseRevisionNo: number;
   matchedReasons: RubberBillApprovalReason[];
   configuredPriceSnapshot: number | null;
-  editWindowMinutesSnapshot: number;
+  editWindowMinutesSnapshot: number | null;
+  approvalGroupIdSnapshot: string | null;
   originalPayload: Record<string, unknown> | null;
   proposedPayload: Record<string, unknown>;
   requestedByName: string;

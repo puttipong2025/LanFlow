@@ -43,6 +43,24 @@ function formatAveragePrice(value: number | null | undefined) {
   return value == null ? "—" : `฿${formatNumber(value)}/กก.`;
 }
 
+export function orderAccessibleLocations(
+  locations: Location[],
+  locationBadgeTotals: Record<string, number>,
+  getNetCashFlow: (locationId: string) => number | null | undefined,
+) {
+  return [...locations].sort((left, right) => {
+    const badgeDifference = (locationBadgeTotals[right.id] ?? 0) - (locationBadgeTotals[left.id] ?? 0);
+    if (badgeDifference !== 0) return badgeDifference;
+    const leftNetCash = getNetCashFlow(left.id);
+    const rightNetCash = getNetCashFlow(right.id);
+    const leftHasNetCash = typeof leftNetCash === "number" && Number.isFinite(leftNetCash);
+    const rightHasNetCash = typeof rightNetCash === "number" && Number.isFinite(rightNetCash);
+    if (leftHasNetCash && rightHasNetCash && leftNetCash !== rightNetCash) return leftNetCash - rightNetCash;
+    if (leftHasNetCash !== rightHasNetCash) return leftHasNetCash ? -1 : 1;
+    return left.name.localeCompare(right.name, "th");
+  });
+}
+
 export function AppHeader({
   profile,
   locations,
@@ -80,7 +98,12 @@ export function AppHeader({
     ),
     [branchSummaries.data],
   );
-  const selectedLocation = accessibleLocations.find((location) => location.id === selectedLocationId);
+  const orderedLocations = useMemo(() => orderAccessibleLocations(
+    accessibleLocations,
+    locationBadgeTotals,
+    (locationId) => branchSummaryByLocation.get(locationId)?.summary?.netCashFlow,
+  ), [accessibleLocations, branchSummaryByLocation, locationBadgeTotals]);
+  const selectedLocation = orderedLocations.find((location) => location.id === selectedLocationId);
   const selectedBadgeTotal = locationBadgeTotals[selectedLocationId] ?? 0;
   const selectedBranchSummary = branchSummaryByLocation.get(selectedLocationId);
   const selectedCashStatusLabel = selectedBranchSummary
@@ -167,7 +190,7 @@ export function AppHeader({
                 if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
                 event.preventDefault();
                 setLocationMenuOpen(true);
-                focusLocationOption(event.key === "ArrowDown" ? 0 : accessibleLocations.length - 1);
+                focusLocationOption(event.key === "ArrowDown" ? 0 : orderedLocations.length - 1);
               }}
               className="focus-ring flex h-10 w-full min-w-0 items-center gap-2 rounded-lg border border-mint bg-white px-3 text-left shadow-sm transition hover:border-leaf/35 hover:bg-mint/35 disabled:cursor-not-allowed disabled:bg-mint/30 disabled:opacity-65 disabled:hover:border-mint"
             >
@@ -194,7 +217,7 @@ export function AppHeader({
                 aria-label="สาขาที่เข้าถึงได้"
                 className="absolute right-0 top-full z-40 mt-2 max-h-72 w-[min(22.5rem,calc(100vw-1.5rem))] overflow-y-auto rounded-xl border border-mint bg-white p-1.5 shadow-xl"
               >
-                {accessibleLocations.map((location, index) => {
+                {orderedLocations.map((location, index) => {
                   const active = location.id === selectedLocationId;
                   const badgeTotal = locationBadgeTotals[location.id] ?? 0;
                   const branchSummary = branchSummaryByLocation.get(location.id);
@@ -230,13 +253,13 @@ export function AppHeader({
                           return;
                         }
                         const nextIndex = event.key === "ArrowDown"
-                          ? Math.min(index + 1, accessibleLocations.length - 1)
+                          ? Math.min(index + 1, orderedLocations.length - 1)
                           : event.key === "ArrowUp"
                             ? Math.max(index - 1, 0)
                             : event.key === "Home"
                               ? 0
                               : event.key === "End"
-                                ? accessibleLocations.length - 1
+                                ? orderedLocations.length - 1
                                 : null;
                         if (nextIndex === null) return;
                         event.preventDefault();

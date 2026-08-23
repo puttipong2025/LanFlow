@@ -86,7 +86,7 @@ test("actionable badges are authenticated, branch-scoped, and exclude finished w
   }
 });
 
-test("normal admin gets no time-tracking manager badge; capability manager gets all pending work", async () => {
+test("time/payroll is absent from actionable badges but remains in Telegram counts", async () => {
   test.skip(!serviceRoleKey || !publishableKey, "Supabase test keys are required");
 
   const service = createClient(supabaseUrl, serviceRoleKey, {
@@ -122,7 +122,16 @@ test("normal admin gets no time-tracking manager badge; capability manager gets 
     );
     return Number(row?.item_count ?? 0);
   };
+  const readTelegramTimeCount = async () => {
+    const { data, error } = await service.rpc("get_telegram_badge_counts");
+    expect(error).toBeNull();
+    const row = data?.find(
+      (item: { badge_key: string }) => item.badge_key === "time_tracking_approval_pending",
+    );
+    return Number(row?.item_count ?? 0);
+  };
   const baseline = await readTimeCount();
+  const telegramBaseline = await readTelegramTimeCount();
   expect((await service
     .from("profiles")
     .update({ can_access_super_admin_features: true })
@@ -167,7 +176,9 @@ test("normal admin gets no time-tracking manager badge; capability manager gets 
       .from("profiles")
       .update({ can_access_super_admin_features: true })
       .eq("id", adminId)).error).toBeNull();
-    expect(await readTimeCount()).toBe(managerBaseline + 2);
+    expect(await readTimeCount()).toBe(managerBaseline);
+    expect(await readTimeCount()).toBe(0);
+    expect(await readTelegramTimeCount()).toBe(telegramBaseline + 2);
   } finally {
     await service
       .from("financial_transactions")

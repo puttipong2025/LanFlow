@@ -122,11 +122,23 @@ async function syncBill(context: BrowserContext, payload: ReturnType<typeof bill
 
 async function saveSettings(
   context: BrowserContext,
+  locationId: string,
   editWindowMinutes: number,
   configuredPrice: number | null
 ) {
-  return context.request.put("/api/lanflow/rubber-bills/approval-settings", {
-    data: { editWindowMinutes, configuredPrice },
+  const listed = await context.request.get("/api/lanflow/rubber-bills/approval-groups");
+  if (!listed.ok()) return listed;
+  const { groups } = await listed.json() as {
+    groups: Array<{ id: string; locationIds: string[] }>;
+  };
+  const group = groups.find((item) => item.locationIds.includes(locationId));
+  if (!group) {
+    return context.request.post("/api/lanflow/rubber-bills/approval-groups", {
+      data: { locationIds: [locationId], editWindowMinutes, configuredPrice },
+    });
+  }
+  return context.request.put(`/api/lanflow/rubber-bills/approval-groups/${group.id}`, {
+    data: { locationIds: group.locationIds, editWindowMinutes, configuredPrice },
   });
 }
 
@@ -148,6 +160,202 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       .toThrow("ยังไม่เคยโหลดกติกาอนุมัติ");
   });
 
+  test("create uses the effective DB price group instead of a client snapshot", async ({ browser }) => {
+    const manager = await authContext(browser, "super_admin");
+    const db = service();
+    const locationIds = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+    const groupIds: string[] = [];
+    const payloads = {
+      missing: billPayload({ locationId: locationIds[0], price: 20.5, configuredPriceSnapshot: null }),
+      tooHigh: billPayload({ locationId: locationIds[0], price: 20.5, configuredPriceSnapshot: 999 }),
+      staleLow: billPayload({ locationId: locationIds[0], price: 15, configuredPriceSnapshot: 10 }),
+      blankGroup: billPayload({ locationId: locationIds[1], price: 100, configuredPriceSnapshot: 0 }),
+      ungrouped: billPayload({ locationId: locationIds[2], price: 100, configuredPriceSnapshot: 0 }),
+    };
+    const requestIds: string[] = [];
+
+    try {
+      expect((await db.from("locations").insert(locationIds.map((id, index) => ({
+        id,
+        name: `สาขาทดสอบ server price ${index + 1}`,
+        code: `SP${id.replaceAll("-", "").slice(0, 6).toUpperCase()}`,
+        is_active: true,
+      })))).error).toBeNull();
+
+      for (const [locationId, configuredPrice] of [
+        [locationIds[0], 20],
+        [locationIds[1], null],
+      ] as const) {
+        const created = await manager.request.post("/api/lanflow/rubber-bills/approval-groups", {
+          data: { locationIds: [locationId], editWindowMinutes: 30, configuredPrice },
+        });
+        expect(created.status(), await created.text()).toBe(201);
+        groupIds.push((await created.json() as { id: string }).id);
+      }
+
+      for (const payload of [payloads.missing, payloads.tooHigh]) {
+        const pending = await syncBill(manager, payload);
+        expect(pending.body.status).toBe("pending_approval");
+        expect(pending.body.matchedReasons).toEqual(["price"]);
+        requestIds.push(pending.body.requestId!);
+        expect((await db.from("rubber_bill_approval_requests")
+          .select("configured_price_snapshot,approval_group_id_snapshot")
+          .eq("id", pending.body.requestId!)
+          .single()).data).toEqual({
+          configured_price_snapshot: 20,
+          approval_group_id_snapshot: groupIds[0],
+        });
+      }
+
+      const pendingReplay = await syncBill(manager, payloads.missing);
+      expect(pendingReplay.body).toMatchObject({
+        status: "pending_approval",
+        requestId: requestIds[0],
+      });
+      expect((await db.from("rubber_bill_approval_requests")
+        .select("id", { count: "exact", head: true })
+        .eq("idempotency_key", payloads.missing.idempotencyKey)).count).toBe(1);
+
+      const staleLow = await syncBill(manager, payloads.staleLow);
+      expect(staleLow.body.status).toBe("synced");
+      expect((await db.from("rubber_bills")
+        .select("id,configured_price_snapshot")
+        .eq("client_temp_id", payloads.staleLow.clientTempId)
+        .single()).data).toEqual({
+        id: staleLow.body.id,
+        configured_price_snapshot: 20,
+      });
+      const staleLowReplay = await syncBill(manager, payloads.staleLow);
+      expect(staleLowReplay.body).toMatchObject({ status: "synced", id: staleLow.body.id });
+
+      for (const payload of [payloads.blankGroup, payloads.ungrouped]) {
+        const synced = await syncBill(manager, payload);
+        expect(synced.body.status).toBe("synced");
+        expect((await db.from("rubber_bills")
+          .select("configured_price_snapshot")
+          .eq("client_temp_id", payload.clientTempId)
+          .single()).data).toEqual({ configured_price_snapshot: null });
+      }
+    } finally {
+      if (requestIds.length > 0) {
+        await db.from("rubber_bill_approval_requests").delete().in("id", requestIds);
+      }
+      await db.from("rubber_bills").delete().in(
+        "client_temp_id",
+        Object.values(payloads).map((payload) => payload.clientTempId),
+      );
+      for (const groupId of groupIds) {
+        await manager.request.delete(`/api/lanflow/rubber-bills/approval-groups/${groupId}`);
+      }
+      await db.from("locations").delete().in("id", locationIds);
+      await manager.close();
+    }
+  });
+
+  test("synced create replay stays idempotent after the DB price cap changes", async ({ browser }) => {
+    const manager = await authContext(browser, "super_admin");
+    const db = service();
+    const locationId = crypto.randomUUID();
+    const originalPayload = billPayload({
+      locationId,
+      price: 15,
+      configuredPriceSnapshot: 999,
+    });
+    const pendingPayload = billPayload({
+      locationId,
+      price: 11,
+      configuredPriceSnapshot: null,
+    });
+    let groupId: string | null = null;
+    let pendingRequestId: string | null = null;
+
+    try {
+      expect((await db.from("locations").insert({
+        id: locationId,
+        name: `สาขาทดสอบ create replay ${locationId.slice(0, 6)}`,
+        code: `SI${locationId.replaceAll("-", "").slice(0, 6).toUpperCase()}`,
+        is_active: true,
+      })).error).toBeNull();
+      const createdGroup = await manager.request.post("/api/lanflow/rubber-bills/approval-groups", {
+        data: { locationIds: [locationId], editWindowMinutes: 30, configuredPrice: 20 },
+      });
+      expect(createdGroup.status(), await createdGroup.text()).toBe(201);
+      groupId = (await createdGroup.json() as { id: string }).id;
+
+      const first = await syncBill(manager, originalPayload);
+      expect(first.body.status, JSON.stringify(first.body)).toBe("synced");
+      expect((await db.from("rubber_bills")
+        .select("id,configured_price_snapshot")
+        .eq("client_temp_id", originalPayload.clientTempId)
+        .single()).data).toEqual({
+        id: first.body.id,
+        configured_price_snapshot: 20,
+      });
+
+      const lowered = await manager.request.put(
+        `/api/lanflow/rubber-bills/approval-groups/${groupId}`,
+        { data: { locationIds: [locationId], editWindowMinutes: 30, configuredPrice: 10 } },
+      );
+      expect(lowered.ok(), await lowered.text()).toBeTruthy();
+
+      const replay = await syncBill(manager, originalPayload);
+      expect(replay.body).toMatchObject({ status: "synced", id: first.body.id });
+      expect((await db.from("rubber_bills")
+        .select("configured_price_snapshot")
+        .eq("id", first.body.id!)
+        .single()).data).toEqual({ configured_price_snapshot: 20 });
+      expect((await db.from("rubber_bill_approval_requests")
+        .select("id", { count: "exact", head: true })
+        .eq("client_temp_id", originalPayload.clientTempId)).count).toBe(0);
+
+      const changedKey = await syncBill(manager, {
+        ...originalPayload,
+        idempotencyKey: `different:${crypto.randomUUID()}`,
+      });
+      expect(changedKey.body.status).toBe("conflict");
+
+      const reusedKey = await syncBill(manager, {
+        ...billPayload({ locationId, price: 15 }),
+        idempotencyKey: originalPayload.idempotencyKey,
+      });
+      expect(reusedKey.body.status).toBe("conflict");
+      expect(reusedKey.body.id).toBeUndefined();
+
+      const pending = await syncBill(manager, pendingPayload);
+      expect(pending.body.status).toBe("pending_approval");
+      pendingRequestId = pending.body.requestId ?? null;
+      const pendingReplay = await syncBill(manager, pendingPayload);
+      expect(pendingReplay.body).toMatchObject({
+        status: "pending_approval",
+        requestId: pendingRequestId,
+      });
+      expect((await syncBill(manager, {
+        ...pendingPayload,
+        idempotencyKey: `different-pending:${crypto.randomUUID()}`,
+      })).body.status).toBe("conflict");
+      expect((await syncBill(manager, {
+        ...billPayload({ locationId, price: 11 }),
+        idempotencyKey: pendingPayload.idempotencyKey,
+      })).body.status).toBe("conflict");
+      expect((await db.from("rubber_bill_approval_requests")
+        .select("id", { count: "exact", head: true })
+        .eq("location_id", locationId)
+        .eq("request_status", "pending")).count).toBe(1);
+    } finally {
+      await db.from("rubber_bill_approval_requests").delete().in(
+        "client_temp_id",
+        [originalPayload.clientTempId, pendingPayload.clientTempId],
+      );
+      await db.from("rubber_bills").delete().in(
+        "client_temp_id",
+        [originalPayload.clientTempId, pendingPayload.clientTempId],
+      );
+      if (groupId) await manager.request.delete(`/api/lanflow/rubber-bills/approval-groups/${groupId}`);
+      await db.from("locations").delete().eq("id", locationId);
+      await manager.close();
+    }
+  });
+
   test("server gates a non-current create and approval preserves billDate", async ({ browser }) => {
     const superAdmin = await authContext(browser, "super_admin");
     const db = service();
@@ -160,14 +368,15 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
     let requestId: string | null = null;
 
     try {
-      const settings = await superAdmin.request.put("/api/lanflow/rubber-bills/approval-settings", {
-        data: { editWindowMinutes: 30, configuredPrice: null, nonCurrentDateRequiresApproval: true },
+      expect((await saveSettings(superAdmin, locationId, 30, null)).ok()).toBeTruthy();
+      const settings = await superAdmin.request.put(`/api/lanflow/rubber-bills/approval-settings?locationId=${locationId}`, {
+        data: { nonCurrentDateRequiresApproval: true },
       });
       expect(settings.ok()).toBeTruthy();
-      const oldClientSettings = await superAdmin.request.put("/api/lanflow/rubber-bills/approval-settings", {
+      const oldClientSettings = await superAdmin.request.put(`/api/lanflow/rubber-bills/approval-settings?locationId=${locationId}`, {
         data: { editWindowMinutes: 30, configuredPrice: null },
       });
-      expect(oldClientSettings.ok()).toBeTruthy();
+      expect(oldClientSettings.status()).toBe(400);
 
       const pending = await syncBill(superAdmin, payload);
       expect(pending.response.ok()).toBeTruthy();
@@ -185,8 +394,8 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
     } finally {
       if (requestId) await db.from("rubber_bill_approval_requests").delete().eq("id", requestId);
       await db.from("rubber_bills").delete().eq("client_temp_id", clientTempId);
-      await superAdmin.request.put("/api/lanflow/rubber-bills/approval-settings", {
-        data: { editWindowMinutes: 30, configuredPrice: null, nonCurrentDateRequiresApproval: false },
+      await superAdmin.request.put(`/api/lanflow/rubber-bills/approval-settings?locationId=${locationId}`, {
+        data: { nonCurrentDateRequiresApproval: false },
       });
       await superAdmin.close();
     }
@@ -208,14 +417,15 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
     let deleteRequestId: string | null = null;
 
     try {
-      expect((await superAdmin.request.put("/api/lanflow/rubber-bills/approval-settings", {
-        data: { editWindowMinutes: 1440, configuredPrice: null, nonCurrentDateRequiresApproval: false },
+      expect((await saveSettings(superAdmin, locationId, 1440, null)).ok()).toBeTruthy();
+      expect((await superAdmin.request.put(`/api/lanflow/rubber-bills/approval-settings?locationId=${locationId}`, {
+        data: { nonCurrentDateRequiresApproval: false },
       })).ok()).toBeTruthy();
       const created = await syncBill(superAdmin, createPayload);
       expect(created.body.status).toBe("synced");
 
-      expect((await superAdmin.request.put("/api/lanflow/rubber-bills/approval-settings", {
-        data: { editWindowMinutes: 1440, configuredPrice: null, nonCurrentDateRequiresApproval: true },
+      expect((await superAdmin.request.put(`/api/lanflow/rubber-bills/approval-settings?locationId=${locationId}`, {
+        data: { nonCurrentDateRequiresApproval: true },
       })).ok()).toBeTruthy();
       const date = new Date(`${bangkokDateString()}T00:00:00.000Z`);
       date.setUTCDate(date.getUTCDate() - 1);
@@ -271,10 +481,100 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
     } finally {
       if (deleteRequestId) await db.from("rubber_bill_approval_requests").delete().eq("id", deleteRequestId);
       await db.from("rubber_bills").delete().eq("client_temp_id", clientTempId);
-      await superAdmin.request.put("/api/lanflow/rubber-bills/approval-settings", {
-        data: { editWindowMinutes: 30, configuredPrice: null, nonCurrentDateRequiresApproval: false },
+      await superAdmin.request.put(`/api/lanflow/rubber-bills/approval-settings?locationId=${locationId}`, {
+        data: { nonCurrentDateRequiresApproval: false },
       });
       await superAdmin.close();
+    }
+  });
+
+  test("ungrouped branch bypasses price/time on create, update, delete but keeps the global date rule", async ({ browser }) => {
+    const manager = await authContext(browser, "super_admin");
+    const db = service();
+    const locationId = crypto.randomUUID();
+    const code = `UG${locationId.replaceAll("-", "").slice(0, 8).toUpperCase()}`;
+    const clientTempId = crypto.randomUUID();
+    const dateClientTempId = crypto.randomUUID();
+    let dateRequestId: string | null = null;
+
+    try {
+      expect((await db.from("locations").insert({
+        id: locationId,
+        name: `สาขายกเว้น ${code}`,
+        code,
+        is_active: true,
+      })).error).toBeNull();
+
+      const created = await syncBill(manager, billPayload({
+        locationId,
+        clientTempId,
+        price: 999,
+        configuredPriceSnapshot: 20,
+      }));
+      expect(created.body.status).toBe("synced");
+      expect((await db.from("rubber_bills")
+        .select("configured_price_snapshot")
+        .eq("id", created.body.id!)
+        .single()).data?.configured_price_snapshot).toBeNull();
+
+      const updated = await syncBill(manager, billPayload({
+        locationId,
+        clientTempId,
+        operation: "update",
+        expectedRevisionNo: created.body.revisionNo,
+        price: 1_000,
+        configuredPriceSnapshot: 20,
+      }));
+      expect(updated.body.status).toBe("synced");
+      const deleted = await syncBill(manager, billPayload({
+        locationId,
+        clientTempId,
+        operation: "delete",
+        expectedRevisionNo: updated.body.revisionNo,
+        configuredPriceSnapshot: 20,
+      }));
+      expect(deleted.body.status).toBe("synced");
+      expect((await db.from("rubber_bill_approval_requests")
+        .select("id", { count: "exact", head: true })
+        .eq("location_id", locationId)).count).toBe(0);
+
+      expect((await manager.request.put(
+        `/api/lanflow/rubber-bills/approval-settings?locationId=${locationId}`,
+        { data: { nonCurrentDateRequiresApproval: true } },
+      )).ok()).toBeTruthy();
+      const past = new Date(`${bangkokDateString()}T00:00:00.000Z`);
+      past.setUTCDate(past.getUTCDate() - 1);
+      const datePending = await syncBill(manager, {
+        ...billPayload({
+          locationId,
+          clientTempId: dateClientTempId,
+          price: 999,
+          configuredPriceSnapshot: 20,
+        }),
+        billDate: past.toISOString().slice(0, 10),
+      });
+      expect(datePending.body.status).toBe("pending_approval");
+      expect(datePending.body.matchedReasons).toEqual(["non_current_date"]);
+      dateRequestId = datePending.body.requestId ?? null;
+      expect((await db.from("rubber_bill_approval_requests")
+        .select("approval_group_id_snapshot,configured_price_snapshot,edit_window_minutes_snapshot")
+        .eq("id", dateRequestId!)
+        .single()).data).toEqual({
+        approval_group_id_snapshot: null,
+        configured_price_snapshot: null,
+        edit_window_minutes_snapshot: null,
+      });
+    } finally {
+      if (dateRequestId) {
+        await manager.request.delete(`/api/lanflow/rubber-bills/approval-requests/${dateRequestId}`);
+      }
+      await manager.request.put(
+        `/api/lanflow/rubber-bills/approval-settings?locationId=${locationId}`,
+        { data: { nonCurrentDateRequiresApproval: false } },
+      );
+      await db.from("rubber_bills").delete().eq("location_id", locationId);
+      await db.from("locations").delete().eq("id", locationId);
+      await manager.close();
     }
   });
 
@@ -371,12 +671,14 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       const userProfile = await profile(user);
       const locationId = userProfile.locationIds[0];
 
-      expect((await saveSettings(user, 30, 20)).status()).toBe(403);
-      expect((await saveSettings(superAdmin, -1, 20)).status()).toBe(400);
-      expect((await saveSettings(superAdmin, 1.5, 20)).status()).toBe(400);
-      expect((await saveSettings(superAdmin, 30, 20.555)).status()).toBe(400);
-      expect((await saveSettings(superAdmin, 30, 0)).ok()).toBeTruthy();
-      expect((await saveSettings(superAdmin, 30, null)).ok()).toBeTruthy();
+      expect((await user.request.post("/api/lanflow/rubber-bills/approval-groups", {
+        data: { locationIds: [locationId], editWindowMinutes: 30, configuredPrice: 20 },
+      })).status()).toBe(403);
+      expect((await saveSettings(superAdmin, locationId, -1, 20)).status()).toBe(400);
+      expect((await saveSettings(superAdmin, locationId, 1.5, 20)).status()).toBe(400);
+      expect((await saveSettings(superAdmin, locationId, 30, 20.555)).status()).toBe(400);
+      expect((await saveSettings(superAdmin, locationId, 30, 0)).ok()).toBeTruthy();
+      expect((await saveSettings(superAdmin, locationId, 30, null)).ok()).toBeTruthy();
 
       const noSettingPayload = billPayload({
         locationId,
@@ -386,7 +688,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       const noSettingCreate = await syncBill(user, noSettingPayload);
       expect(noSettingCreate.body.status).toBe("synced");
 
-      expect((await saveSettings(superAdmin, 30, 20)).ok()).toBeTruthy();
+      expect((await saveSettings(superAdmin, locationId, 30, 20)).ok()).toBeTruthy();
       expect((await db.from("rubber_bill_approval_requests")
         .select("id", { count: "exact", head: true })
         .eq("bill_id", noSettingCreate.body.id!)).count).toBe(0);
@@ -407,10 +709,11 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         request_status: "pending",
         configured_price_snapshot: 20,
         edit_window_minutes_snapshot: 30,
+        approval_group_id_snapshot: expect.any(String),
       });
 
-      expect((await saveSettings(superAdmin, 30, 21)).ok()).toBeTruthy();
-      expect((await saveSettings(superAdmin, 30, null)).ok()).toBeTruthy();
+      expect((await saveSettings(superAdmin, locationId, 30, 21)).ok()).toBeTruthy();
+      expect((await saveSettings(superAdmin, locationId, 30, null)).ok()).toBeTruthy();
       expect((await db.from("rubber_bill_approval_requests")
         .select("configured_price_snapshot")
         .eq("id", pending.body.requestId!)
@@ -440,7 +743,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
     try {
       const superProfile = await profile(superAdmin);
       const locationId = superProfile.locationIds[0];
-      expect((await saveSettings(superAdmin, 1440, 20)).ok()).toBeTruthy();
+      expect((await saveSettings(superAdmin, locationId, 1440, 20)).ok()).toBeTruthy();
 
       const createPayload = billPayload({ locationId, price: 20.5 });
       const pendingCreate = await syncBill(superAdmin, createPayload);
@@ -529,7 +832,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
     try {
       const userProfile = await profile(user);
       const locationId = userProfile.locationIds[0];
-      expect((await saveSettings(superAdmin, 0, null)).ok()).toBeTruthy();
+      expect((await saveSettings(superAdmin, locationId, 0, null)).ok()).toBeTruthy();
 
       const createPayload = billPayload({ locationId, price: 20 });
       const created = await syncBill(user, createPayload);
@@ -572,7 +875,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         `/api/lanflow/rubber-bills/approval-requests/${pendingRows![0].id}`
       )).ok()).toBeTruthy();
 
-      expect((await saveSettings(superAdmin, 1440, null)).ok()).toBeTruthy();
+      expect((await saveSettings(superAdmin, locationId, 1440, null)).ok()).toBeTruthy();
       const directUpdate = await syncBill(user, updatePayload);
       expect(directUpdate.body.status).toBe("synced");
       const stale = await syncBill(user, {
@@ -594,7 +897,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
     try {
       const userProfile = await profile(user);
       const locationId = userProfile.locationIds[0];
-      expect((await saveSettings(superAdmin, 0, null)).ok()).toBeTruthy();
+      expect((await saveSettings(superAdmin, locationId, 0, null)).ok()).toBeTruthy();
 
       const createPayload = billPayload({ locationId, price: 20 });
       const created = await syncBill(user, createPayload);
@@ -647,7 +950,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         adminProfile.locationIds.includes(id)
       );
       expect(locationId).toBeTruthy();
-      expect((await saveSettings(superAdmin, 0, 20)).ok()).toBeTruthy();
+      expect((await saveSettings(superAdmin, locationId!, 0, 20)).ok()).toBeTruthy();
 
       const createPayload = billPayload({ locationId: locationId!, price: 20 });
       const created = await syncBill(user, createPayload);
@@ -768,7 +1071,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       const productName = `สินค้าทดสอบหักบิล-${productId.slice(0, 8)}`;
       const today = bangkokDateString();
 
-      expect((await saveSettings(superAdmin, 30, 20)).ok()).toBeTruthy();
+      expect((await saveSettings(superAdmin, locationId, 30, 20)).ok()).toBeTruthy();
       expect((await db.from("stock_products").insert({
         id: productId,
         name: productName,
@@ -891,7 +1194,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       await page.goto("/");
       const locationId = await selectedAppLocationId(page);
       expect(locationId).toBeTruthy();
-      expect((await saveSettings(context, 30, 20)).ok()).toBeTruthy();
+      expect((await saveSettings(context, locationId!, 30, 20)).ok()).toBeTruthy();
       const payload: any = billPayload({
         locationId: locationId!,
         price: 20.5,
@@ -971,10 +1274,13 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       await superPage.evaluate(() => window.dispatchEvent(new Event("online")));
       await expect(managerButton).toBeEnabled();
       await managerButton.click();
-      await expect(superPage.getByText("เกณฑ์อนุมัติ")).toBeVisible();
-      await expect(superPage.getByLabel("เวลาแก้ไขได้ (นาที)")).toBeVisible();
-      await expect(superPage.getByLabel("ราคายางที่กำหนด")).toBeVisible();
-      await expect(superPage.getByText("คำขอบิลยาง")).toBeVisible();
+      const approvalDialog = superPage.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง" });
+      await expect(approvalDialog.getByText("กลุ่มเกณฑ์ราคาและเวลา")).toBeVisible();
+      await expect(approvalDialog.getByText("กฎวันที่บิล")).toBeVisible();
+      await expect(approvalDialog.getByText("งานรออนุมัติบิลยาง")).toBeVisible();
+      await approvalDialog.getByRole("button", { name: "แก้ไข" }).first().click();
+      await expect(approvalDialog.getByLabel("เวลาแก้ไขได้ (นาที)")).toBeVisible();
+      await expect(approvalDialog.getByLabel("ราคายางที่กำหนด")).toBeVisible();
     } finally {
       await Promise.all([user.close(), superAdmin.close()]);
     }

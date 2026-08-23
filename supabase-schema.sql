@@ -394,6 +394,48 @@ $$;
 ALTER FUNCTION "private"."apply_time_tracking_deductions"("p_profile_id" "uuid", "p_through_month" "date") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."assert_rubber_approval_group_not_empty"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_group_id uuid := coalesce(new.group_id, old.group_id);
+begin
+  if exists (select 1 from public.rubber_approval_groups g where g.id = v_group_id)
+     and not exists (
+       select 1 from public.rubber_approval_group_locations gl
+       where gl.group_id = v_group_id
+     ) then
+    raise exception 'RUBBER_GROUP_EMPTY: กลุ่มต้องมีอย่างน้อยหนึ่งสาขา';
+  end if;
+  return null;
+end
+$$;
+
+
+ALTER FUNCTION "private"."assert_rubber_approval_group_not_empty"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."assert_rubber_approval_group_row_not_empty"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if exists (select 1 from public.rubber_approval_groups g where g.id = new.id)
+     and not exists (
+       select 1 from public.rubber_approval_group_locations gl
+       where gl.group_id = new.id
+     ) then
+    raise exception 'RUBBER_GROUP_EMPTY: กลุ่มต้องมีอย่างน้อยหนึ่งสาขา';
+  end if;
+  return null;
+end
+$$;
+
+
+ALTER FUNCTION "private"."assert_rubber_approval_group_row_not_empty"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."assert_user_primary_location"("target_user_id" "uuid") RETURNS "void"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -2978,6 +3020,29 @@ $$;
 
 
 ALTER FUNCTION "private"."delete_money_transfer"("p_transfer_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."effective_rubber_approval_settings"("p_location_id" "uuid") RETURNS TABLE("group_id" "uuid", "price_time_exempt" boolean, "edit_window_minutes" integer, "configured_price" numeric, "updated_by_name" "text", "updated_by_phone" "text", "updated_at" timestamp with time zone)
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select
+    g.id,
+    g.id is null,
+    g.edit_window_minutes,
+    g.configured_price,
+    g.updated_by_name,
+    g.updated_by_phone,
+    g.updated_at
+  from (select 1) seed
+  left join public.rubber_approval_group_locations gl
+    on gl.location_id = p_location_id
+  left join public.rubber_approval_groups g
+    on g.id = gl.group_id
+$$;
+
+
+ALTER FUNCTION "private"."effective_rubber_approval_settings"("p_location_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."enforce_time_tracking_expense_relation"() RETURNS "trigger"
@@ -6092,6 +6157,387 @@ $$;
 ALTER FUNCTION "private"."sync_rubber_bill_approval_20260805020000"("payload" "jsonb") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."sync_rubber_bill_approval_20260823010000"("payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_operation text := payload->>'operation';
+  v_client_temp_id text := payload->>'clientTempId';
+  v_location_id uuid;
+  v_idempotency_key text := payload->>'idempotencyKey';
+  v_expected_revision integer;
+  v_bill public.rubber_bills%rowtype;
+  v_group_id uuid;
+  v_edit_window_minutes integer;
+  v_configured_price numeric;
+  v_price_time_exempt boolean := true;
+  v_original_payload jsonb;
+  v_current_prices jsonb := '[]'::jsonb;
+  v_proposed_prices jsonb := '[]'::jsonb;
+  v_price numeric;
+  v_price_scale integer;
+  v_price_cap numeric;
+  v_has_exceeded_cap boolean := false;
+  v_reasons text[] := case when payload->>'forceNonCurrentDateApproval' = 'true' then array['non_current_date']::text[] else array[]::text[] end;
+  v_request_id uuid;
+  v_existing_request_status text;
+  v_existing_created_bill_id uuid;
+  v_existing_request_client_temp_id text;
+  v_existing_request_location_id uuid;
+  v_existing_request_idempotency_key text;
+  v_actor_name text;
+  v_actor_phone text;
+  v_report_no text;
+begin
+  if not coalesce(private.is_active_user(), false) then
+    return jsonb_build_object('status', 'failed', 'errorMessage', 'Unauthorized or inactive user');
+  end if;
+
+  if v_operation not in ('create', 'update', 'delete') then
+    return jsonb_build_object('status', 'failed', 'errorMessage', 'Invalid operation');
+  end if;
+
+  begin
+    v_location_id := (payload->>'locationId')::uuid;
+    v_expected_revision := coalesce((payload->>'expectedRevisionNo')::integer, 0);
+  exception when others then
+    return jsonb_build_object('status', 'failed', 'errorMessage', 'Invalid approval payload');
+  end;
+
+  if coalesce(v_client_temp_id, '') = ''
+     or coalesce(v_idempotency_key, '') = ''
+     or not public.can_access_location(v_location_id) then
+    return jsonb_build_object('status', 'failed', 'errorMessage', 'Location access denied or invalid identity');
+  end if;
+
+  payload := private.normalize_rubber_bill_calculation_payload(payload);
+
+  perform pg_advisory_xact_lock(hashtextextended(v_location_id::text, 0));
+
+  if v_operation = 'create' then
+    perform pg_advisory_xact_lock(hashtext('rubber-bill-create:' || v_client_temp_id));
+
+    select * into v_bill
+    from public.rubber_bills b
+    where b.client_temp_id = v_client_temp_id
+    for update;
+
+    if v_bill.id is not null then
+      if v_bill.location_id is distinct from v_location_id
+         or v_bill.idempotency_key is distinct from v_idempotency_key then
+        return jsonb_build_object('status', 'conflict', 'errorMessage', 'Record already exists');
+      end if;
+      return jsonb_build_object(
+        'status', 'synced',
+        'id', v_bill.id,
+        'serverBillNo', v_bill.server_bill_no,
+        'revisionNo', v_bill.revision_no,
+        'serverReceivedAt', v_bill.server_received_at
+      );
+    end if;
+
+    select * into v_bill
+    from public.rubber_bills b
+    where b.idempotency_key = v_idempotency_key
+    for update;
+    if v_bill.id is not null then
+      return jsonb_build_object('status', 'conflict', 'errorMessage', 'Idempotency key already exists');
+    end if;
+
+    select r.id, r.request_status, r.created_bill_id,
+           r.client_temp_id, r.location_id, r.idempotency_key
+      into v_request_id, v_existing_request_status, v_existing_created_bill_id,
+           v_existing_request_client_temp_id, v_existing_request_location_id,
+           v_existing_request_idempotency_key
+    from public.rubber_bill_approval_requests r
+    where r.client_temp_id = v_client_temp_id
+       or r.idempotency_key = v_idempotency_key
+    order by (r.client_temp_id = v_client_temp_id
+              and r.idempotency_key = v_idempotency_key) desc, r.requested_at
+    limit 1
+    for update;
+
+    if v_request_id is not null then
+      if v_existing_request_client_temp_id is distinct from v_client_temp_id
+         or v_existing_request_location_id is distinct from v_location_id
+         or v_existing_request_idempotency_key is distinct from v_idempotency_key then
+        return jsonb_build_object('status', 'conflict', 'errorMessage', 'Approval request identity conflict');
+      end if;
+      if v_existing_request_status = 'approved' and v_existing_created_bill_id is not null then
+        select * into v_bill
+        from public.rubber_bills b
+        where b.id = v_existing_created_bill_id
+          and b.client_temp_id = v_client_temp_id
+          and b.location_id = v_location_id
+          and b.idempotency_key = v_idempotency_key;
+        if v_bill.id is null then
+          return jsonb_build_object('status', 'conflict', 'errorMessage', 'Approved request identity conflict');
+        end if;
+        return jsonb_build_object(
+          'status', 'synced',
+          'id', v_bill.id,
+          'serverBillNo', v_bill.server_bill_no,
+          'revisionNo', v_bill.revision_no,
+          'serverReceivedAt', v_bill.server_received_at
+        );
+      end if;
+      return jsonb_build_object(
+        'status', 'pending_approval',
+        'requestId', v_request_id,
+        'operation', v_operation,
+        'clientTempId', v_client_temp_id
+      );
+    end if;
+  end if;
+
+  select name, phone
+    into v_actor_name, v_actor_phone
+  from public.profiles
+  where id = auth.uid();
+
+  select effective.group_id, effective.price_time_exempt,
+         effective.edit_window_minutes, effective.configured_price
+    into v_group_id, v_price_time_exempt, v_edit_window_minutes, v_configured_price
+  from private.effective_rubber_approval_settings(v_location_id) effective;
+
+  payload := jsonb_set(
+    payload,
+    '{configuredPriceSnapshot}',
+    coalesce(to_jsonb(v_configured_price), 'null'::jsonb),
+    true
+  );
+  v_price_cap := v_configured_price;
+
+  if v_operation = 'create' then
+    if not (payload ? 'configuredPriceSnapshot') then
+      return jsonb_build_object(
+        'status', 'failed',
+        'errorMessage', 'configuredPriceSnapshot is required for create'
+      );
+    end if;
+
+    if jsonb_typeof(payload->'configuredPriceSnapshot') = 'null' then
+      v_price_cap := null;
+    elsif jsonb_typeof(payload->'configuredPriceSnapshot') = 'number' then
+      begin
+        v_price_cap := (payload->>'configuredPriceSnapshot')::numeric;
+      exception when others then
+        return jsonb_build_object(
+          'status', 'failed',
+          'errorMessage', 'configuredPriceSnapshot must be numeric or null'
+        );
+      end;
+
+      if v_price_cap < 0 or scale(v_price_cap) > 2 then
+        return jsonb_build_object(
+          'status', 'failed',
+          'errorMessage', 'configuredPriceSnapshot must be non-negative with at most 2 decimal places'
+        );
+      end if;
+    else
+      return jsonb_build_object(
+        'status', 'failed',
+        'errorMessage', 'configuredPriceSnapshot must be numeric or null'
+      );
+    end if;
+  else
+    v_price_cap := v_configured_price;
+  end if;
+
+  if v_operation in ('create', 'update') then
+    for v_price, v_price_scale in
+      select (item->>'unitPrice')::numeric, scale((item->>'unitPrice')::numeric)
+      from jsonb_array_elements(coalesce(payload->'items', '[]'::jsonb)) item
+      where item->>'itemType' = 'weigh'
+    loop
+      if v_price < 0 or v_price_scale > 2 then
+        return jsonb_build_object(
+          'status', 'failed',
+          'errorMessage', 'ราคายางต้องไม่ติดลบและมีทศนิยมไม่เกิน 2 ตำแหน่ง'
+        );
+      end if;
+      if v_price_cap is not null and v_price > v_price_cap then
+        v_has_exceeded_cap := true;
+      end if;
+    end loop;
+
+    select coalesce(
+      jsonb_agg((item->>'unitPrice')::numeric order by (item->>'sequenceNo')::integer),
+      '[]'::jsonb
+    )
+      into v_proposed_prices
+    from jsonb_array_elements(coalesce(payload->'items', '[]'::jsonb)) item
+    where item->>'itemType' = 'weigh';
+  end if;
+
+  if v_operation = 'create' then
+    if v_price_cap is not null and v_has_exceeded_cap then
+      v_reasons := array_append(v_reasons, 'price');
+    end if;
+
+    if cardinality(v_reasons) = 0 then
+      return public.sync_rubber_bill_core_20260725010000(payload);
+    end if;
+  else
+    select *
+      into v_bill
+    from public.rubber_bills
+    where client_temp_id = v_client_temp_id
+    for update;
+
+    if v_bill.id is null then
+      return jsonb_build_object('status', 'failed', 'errorMessage', 'Cannot update or delete non-existent record');
+    end if;
+
+    perform pg_advisory_xact_lock(hashtext('rubber-bill-approval:' || v_bill.id::text));
+
+    if v_bill.location_id <> v_location_id then
+      return jsonb_build_object('status', 'failed', 'errorMessage', 'Location mismatch');
+    end if;
+
+    if v_bill.idempotency_key = v_idempotency_key then
+      return jsonb_build_object(
+        'status', 'synced',
+        'id', v_bill.id,
+        'serverBillNo', v_bill.server_bill_no,
+        'revisionNo', v_bill.revision_no,
+        'serverReceivedAt', v_bill.server_received_at
+      );
+    end if;
+
+    if v_bill.revision_no <> v_expected_revision then
+      return jsonb_build_object('status', 'conflict', 'errorMessage', 'Revision mismatch');
+    end if;
+
+    select id
+      into v_request_id
+    from public.rubber_bill_approval_requests
+    where bill_id = v_bill.id
+      and request_status = 'pending';
+
+    if v_request_id is not null then
+      return jsonb_build_object(
+        'status', 'pending_approval',
+        'requestId', v_request_id,
+        'operation', v_operation,
+        'clientTempId', v_client_temp_id
+      );
+    end if;
+
+    v_report_no := private.active_report_no('rubber_bill', v_bill.id);
+    if v_report_no is not null then
+      return jsonb_build_object(
+        'status', 'failed',
+        'errorMessage', 'บิลอยู่ในรายงาน ' || v_report_no || ' แล้ว จึงสร้างคำขอไม่ได้'
+      );
+    end if;
+
+    if private.rubber_bill_has_active_transfer(v_bill.id) then
+      return jsonb_build_object(
+        'status', 'failed',
+        'errorMessage', 'บิลอยู่ในรายการโอนเงินแล้ว จึงสร้างคำขอไม่ได้'
+      );
+    end if;
+
+    if not v_price_time_exempt and clock_timestamp() >= v_bill.created_at + make_interval(mins => v_edit_window_minutes) then
+      v_reasons := array_append(v_reasons, 'time');
+    end if;
+
+    if v_operation = 'update' and v_price_cap is not null then
+      select coalesce(jsonb_agg(i.price order by i.sequence_no), '[]'::jsonb)
+        into v_current_prices
+      from public.rubber_bill_items i
+      where i.bill_id = v_bill.id
+        and i.item_type = 'weigh';
+
+      if v_current_prices is distinct from v_proposed_prices and v_has_exceeded_cap then
+        v_reasons := array_append(v_reasons, 'price');
+      end if;
+    end if;
+
+    if cardinality(v_reasons) = 0 then
+      return public.sync_rubber_bill_core_20260725010000(payload);
+    end if;
+
+    v_original_payload := private.current_rubber_bill_payload(v_bill.id);
+  end if;
+
+  insert into public.rubber_bill_approval_requests (
+    operation,
+    bill_id,
+    location_id,
+    client_temp_id,
+    idempotency_key,
+    base_revision_no,
+    matched_reasons,
+    configured_price_snapshot,
+    edit_window_minutes_snapshot,
+    approval_group_id_snapshot,
+    original_payload,
+    proposed_payload,
+    requested_by_user_id,
+    requested_by_name,
+    requested_by_phone
+  )
+  values (
+    v_operation,
+    v_bill.id,
+    v_location_id,
+    v_client_temp_id,
+    v_idempotency_key,
+    v_expected_revision,
+    v_reasons,
+    v_price_cap,
+    v_edit_window_minutes,
+    v_group_id,
+    v_original_payload,
+    payload,
+    auth.uid(),
+    coalesce(v_actor_name, ''),
+    coalesce(v_actor_phone, '')
+  )
+  returning id into v_request_id;
+
+  return jsonb_build_object(
+    'status', 'pending_approval',
+    'requestId', v_request_id,
+    'operation', v_operation,
+    'clientTempId', v_client_temp_id,
+    'matchedReasons', to_jsonb(v_reasons)
+  );
+exception
+  when unique_violation then
+    select id
+      into v_request_id
+    from public.rubber_bill_approval_requests
+    where request_status = 'pending'
+      and (
+        idempotency_key = v_idempotency_key
+        or bill_id = v_bill.id
+        or (operation = 'create' and client_temp_id = v_client_temp_id)
+      )
+    order by requested_at desc
+    limit 1;
+
+    if v_request_id is not null then
+      return jsonb_build_object(
+        'status', 'pending_approval',
+        'requestId', v_request_id,
+        'operation', v_operation,
+        'clientTempId', v_client_temp_id
+      );
+    end if;
+    return jsonb_build_object('status', 'failed', 'errorMessage', sqlerrm);
+  when others then
+    return jsonb_build_object('status', 'failed', 'errorMessage', sqlerrm);
+end;
+$$;
+
+
+ALTER FUNCTION "private"."sync_rubber_bill_approval_20260823010000"("payload" "jsonb") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."telegram_badge_latest_slot"("p_now" timestamp with time zone, "p_start_time" time without time zone, "p_end_time" time without time zone, "p_interval_minutes" integer) RETURNS timestamp with time zone
     LANGUAGE "plpgsql" STABLE
     SET "search_path" TO ''
@@ -6134,6 +6580,43 @@ $$;
 
 
 ALTER FUNCTION "private"."telegram_badge_require_manager"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."validate_rubber_approval_group_input"("p_location_ids" "uuid"[], "p_edit_window_minutes" integer, "p_configured_price" numeric) RETURNS "uuid"[]
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_location_ids uuid[];
+begin
+  select coalesce(array_agg(distinct location_id order by location_id), array[]::uuid[])
+    into v_location_ids
+  from unnest(coalesce(p_location_ids, array[]::uuid[])) location_id
+  where location_id is not null;
+
+  if cardinality(v_location_ids) = 0 then
+    raise exception 'RUBBER_GROUP_EMPTY: กลุ่มต้องมีอย่างน้อยหนึ่งสาขา';
+  end if;
+  if p_edit_window_minutes is null or p_edit_window_minutes < 0 then
+    raise exception 'RUBBER_GROUP_INVALID: จำนวนนาทีต้องเป็นจำนวนเต็มตั้งแต่ 0 ขึ้นไป';
+  end if;
+  if p_configured_price is not null
+     and (p_configured_price < 0 or scale(p_configured_price) > 2) then
+    raise exception 'RUBBER_GROUP_INVALID: ราคายางต้องไม่ติดลบและมีทศนิยมไม่เกิน 2 ตำแหน่ง';
+  end if;
+  if exists (
+    select 1 from unnest(v_location_ids) requested(location_id)
+    left join public.locations l on l.id = requested.location_id and l.is_active = true
+    where l.id is null
+  ) then
+    raise exception 'RUBBER_LOCATION_NOT_FOUND: ไม่พบสาขาที่ใช้งาน';
+  end if;
+  return v_location_ids;
+end
+$$;
+
+
+ALTER FUNCTION "private"."validate_rubber_approval_group_input"("p_location_ids" "uuid"[], "p_edit_window_minutes" integer, "p_configured_price" numeric) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."validate_rubber_export_selection"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) RETURNS "void"
@@ -6296,6 +6779,67 @@ $$;
 
 
 ALTER FUNCTION "public"."approve_rubber_bill_approval_request"("p_request_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."begin_admin_password_reset"("p_target_user_id" "uuid", "p_request_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_actor_id uuid := auth.uid();
+  v_target public.profiles%rowtype;
+  v_audit public.admin_account_audit_logs%rowtype;
+begin
+  if v_actor_id is null or not private.is_active_user()
+     or not private.can_access_super_admin_features() then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์รีเซ็ตรหัสผ่าน';
+  end if;
+  if p_target_user_id is null or p_request_id is null
+     or p_target_user_id = v_actor_id then
+    raise exception 'FORBIDDEN: ไม่สามารถรีเซ็ตรหัสผ่านบัญชีนี้ได้';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended('admin-password:' || p_request_id::text, 0));
+  select * into v_audit
+  from public.admin_account_audit_logs a
+  where a.request_id = p_request_id;
+  if v_audit.id is not null then
+    if v_audit.action <> 'password_reset'
+       or v_audit.actor_user_id <> v_actor_id
+       or v_audit.target_user_id <> p_target_user_id then
+      raise exception 'ADMIN_REQUEST_CONFLICT: requestId ถูกใช้กับคำสั่งอื่นแล้ว';
+    end if;
+    return jsonb_build_object(
+      'auditId', v_audit.id,
+      'status', v_audit.status,
+      'created', false
+    );
+  end if;
+
+  select * into v_target from public.profiles p where p.id = p_target_user_id;
+  if v_target.id is null then
+    raise exception 'ADMIN_USER_NOT_FOUND: ไม่พบบัญชีพนักงาน';
+  end if;
+  if v_target.role = 'super_admin' or not v_target.is_active then
+    raise exception 'FORBIDDEN: บัญชีนี้ไม่สามารถรีเซ็ตรหัสผ่านได้';
+  end if;
+
+  insert into public.admin_account_audit_logs (
+    request_id, actor_user_id, target_user_id, action, status
+  ) values (
+    p_request_id, v_actor_id, p_target_user_id, 'password_reset', 'pending'
+  ) returning * into v_audit;
+
+  return jsonb_build_object(
+    'auditId', v_audit.id,
+    'status', v_audit.status,
+    'created', true
+  );
+end
+$$;
+
+
+ALTER FUNCTION "public"."begin_admin_password_reset"("p_target_user_id" "uuid", "p_request_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."calculate_paid_work_days"("p_profile_id" "uuid", "p_period_start" timestamp with time zone, "p_period_end" timestamp with time zone DEFAULT NULL::timestamp with time zone) RETURNS numeric
@@ -6910,6 +7454,50 @@ $$;
 ALTER FUNCTION "public"."close_rubber_bill_evidence_review_period"("p_location_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."complete_admin_password_reset"("p_audit_id" "uuid", "p_status" "text", "p_error_code" "text" DEFAULT NULL::"text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_audit public.admin_account_audit_logs%rowtype;
+begin
+  if auth.role() <> 'service_role' then
+    raise exception 'FORBIDDEN: service role required';
+  end if;
+  if p_status not in ('succeeded', 'failed', 'unknown') then
+    raise exception 'ADMIN_AUDIT_INVALID: สถานะผลลัพธ์ไม่ถูกต้อง';
+  end if;
+  if p_status = 'succeeded' and p_error_code is not null then
+    raise exception 'ADMIN_AUDIT_INVALID: ผลสำเร็จต้องไม่มี error code';
+  end if;
+  if p_status in ('failed', 'unknown')
+     and nullif(btrim(coalesce(p_error_code, '')), '') is null then
+    raise exception 'ADMIN_AUDIT_INVALID: ผลล้มเหลวต้องมี error code';
+  end if;
+
+  select * into v_audit
+  from public.admin_account_audit_logs a
+  where a.id = p_audit_id and a.action = 'password_reset'
+  for update;
+  if v_audit.id is null then
+    raise exception 'ADMIN_AUDIT_NOT_FOUND: ไม่พบหลักฐานคำสั่ง';
+  end if;
+  if v_audit.status = 'pending' then
+    update public.admin_account_audit_logs
+    set status = p_status,
+        error_code = case when p_status = 'succeeded' then null else left(p_error_code, 80) end,
+        completed_at = now()
+    where id = p_audit_id
+    returning * into v_audit;
+  end if;
+  return jsonb_build_object('auditId', v_audit.id, 'status', v_audit.status);
+end
+$$;
+
+
+ALTER FUNCTION "public"."complete_admin_password_reset"("p_audit_id" "uuid", "p_status" "text", "p_error_code" "text") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."complete_telegram_badge_dispatch"("p_claim_token" "uuid", "p_outcome" "text", "p_error" "text" DEFAULT NULL::"text") RETURNS "void"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -7133,6 +7721,57 @@ $$;
 
 
 ALTER FUNCTION "public"."create_report_batch"("p_location_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."create_rubber_approval_group"("p_location_ids" "uuid"[], "p_edit_window_minutes" integer, "p_configured_price" numeric) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_location_ids uuid[];
+  v_group public.rubber_approval_groups%rowtype;
+  v_actor public.profiles%rowtype;
+begin
+  if not private.is_active_user() or not private.can_access_super_admin_features() then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์จัดการกลุ่มอนุมัติบิลยาง';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended('rubber-approval-groups', 0));
+  v_location_ids := private.validate_rubber_approval_group_input(
+    p_location_ids, p_edit_window_minutes, p_configured_price
+  );
+  if exists (
+    select 1 from public.rubber_approval_group_locations gl
+    where gl.location_id = any(v_location_ids)
+  ) then
+    raise exception 'RUBBER_GROUP_BRANCH_CONFLICT: มีสาขาอยู่ในกลุ่มอื่นแล้ว';
+  end if;
+
+  select * into v_actor from public.profiles p where p.id = auth.uid();
+  insert into public.rubber_approval_groups (
+    edit_window_minutes, configured_price,
+    updated_by_user_id, updated_by_name, updated_by_phone
+  ) values (
+    p_edit_window_minutes, p_configured_price,
+    auth.uid(), v_actor.name, v_actor.phone
+  ) returning * into v_group;
+
+  insert into public.rubber_approval_group_locations (group_id, location_id)
+  select v_group.id, location_id from unnest(v_location_ids) location_id;
+
+  return jsonb_build_object(
+    'id', v_group.id,
+    'locationIds', to_jsonb(v_location_ids),
+    'editWindowMinutes', v_group.edit_window_minutes,
+    'configuredPrice', v_group.configured_price,
+    'updatedAt', v_group.updated_at
+  );
+exception when unique_violation then
+  raise exception 'RUBBER_GROUP_BRANCH_CONFLICT: มีสาขาอยู่ในกลุ่มอื่นแล้ว';
+end
+$$;
+
+
+ALTER FUNCTION "public"."create_rubber_approval_group"("p_location_ids" "uuid"[], "p_edit_window_minutes" integer, "p_configured_price" numeric) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."create_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) RETURNS "jsonb"
@@ -9204,6 +9843,36 @@ $$;
 ALTER FUNCTION "public"."delete_report_batch"("p_report_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."delete_rubber_approval_group"("p_group_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_location_ids uuid[];
+begin
+  if not private.is_active_user() or not private.can_access_super_admin_features() then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์จัดการกลุ่มอนุมัติบิลยาง';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended('rubber-approval-groups', 0));
+  select array_agg(gl.location_id order by gl.location_id)
+    into v_location_ids
+  from public.rubber_approval_group_locations gl
+  where gl.group_id = p_group_id;
+  if v_location_ids is null then
+    raise exception 'RUBBER_GROUP_NOT_FOUND: ไม่พบกลุ่ม';
+  end if;
+  delete from public.rubber_approval_groups where id = p_group_id;
+  return jsonb_build_object(
+    'success', true,
+    'releasedLocationIds', to_jsonb(v_location_ids)
+  );
+end
+$$;
+
+
+ALTER FUNCTION "public"."delete_rubber_approval_group"("p_group_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."delete_rubber_bill_approval_request"("p_request_id" "uuid") RETURNS "void"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -9495,14 +10164,12 @@ declare
   v_role text;
   v_can_manage_system boolean;
   v_can_use_money_transfer boolean;
-  v_can_manage_time_payroll boolean;
 begin
   if v_user_id is null then raise exception 'Authentication required'; end if;
   select p.role,
     p.role = 'super_admin' or p.can_access_super_admin_features = true,
-    p.role = 'super_admin' or p.can_access_super_admin_features = true or p.can_access_money_transfer = true,
-    p.role = 'super_admin' or p.can_access_super_admin_features = true or p.can_manage_time_payroll = true
-  into v_role, v_can_manage_system, v_can_use_money_transfer, v_can_manage_time_payroll
+    p.role = 'super_admin' or p.can_access_super_admin_features = true or p.can_access_money_transfer = true
+  into v_role, v_can_manage_system, v_can_use_money_transfer
   from public.profiles p where p.id = v_user_id and p.is_active = true;
   if v_role is null then raise exception 'Inactive profile'; end if;
 
@@ -9511,10 +10178,6 @@ begin
     select ul.location_id from public.user_locations ul
     join public.locations l on l.id = ul.location_id and l.is_active = true
     where ul.user_id = v_user_id
-  ), scoped_time_requests as (
-    select ft.id, ft.profile_id from public.financial_transactions ft where ft.status = 'PENDING'
-    union all
-    select ps.id, ps.profile_id from public.payroll_slips ps where ps.status = 'PENDING'
   ), counts as (
     select al.location_id, 'rubber'::text module_id, count(distinct w.work_identity)::bigint item_count
     from accessible_locations al
@@ -9572,21 +10235,6 @@ begin
     from accessible_locations al cross join public.stock_product_approval_requests r
     where v_can_manage_system and r.request_status = 'pending'
     group by al.location_id
-
-    union all
-    select al.location_id, 'time-tracking', count(requests.id)::bigint
-    from accessible_locations al cross join scoped_time_requests requests
-    where v_can_manage_system group by al.location_id
-
-    union all
-    select target_primary.location_id, 'time-tracking', count(requests.id)::bigint
-    from scoped_time_requests requests
-    join public.user_locations target_primary
-      on target_primary.user_id = requests.profile_id and target_primary.is_primary = true
-    join accessible_locations al on al.location_id = target_primary.location_id
-    where not v_can_manage_system and v_can_manage_time_payroll
-      and private.can_manage_time_payroll_profile(requests.profile_id)
-    group by target_primary.location_id
 
     union all
     select e.location_id, 'rubber-export', count(*)::bigint
@@ -10471,6 +11119,51 @@ $$;
 
 
 ALTER FUNCTION "public"."get_dashboard_snapshot"("p_location_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_effective_rubber_approval_settings"("p_location_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_effective record;
+  v_non_current_date_requires_approval boolean;
+begin
+  if p_location_id is null
+     or not private.is_active_user()
+     or not private.can_access_location(p_location_id) then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์ดูการตั้งค่าของสาขานี้';
+  end if;
+  if not exists (
+    select 1 from public.locations l
+    where l.id = p_location_id and l.is_active = true
+  ) then
+    raise exception 'RUBBER_LOCATION_NOT_FOUND: ไม่พบสาขาที่ใช้งาน';
+  end if;
+
+  select * into v_effective
+  from private.effective_rubber_approval_settings(p_location_id);
+  select s.non_current_date_requires_approval
+    into v_non_current_date_requires_approval
+  from public.rubber_bill_approval_settings s
+  where s.id = true;
+
+  return jsonb_build_object(
+    'locationId', p_location_id,
+    'groupId', v_effective.group_id,
+    'priceTimeExempt', v_effective.price_time_exempt,
+    'editWindowMinutes', v_effective.edit_window_minutes,
+    'configuredPrice', v_effective.configured_price,
+    'nonCurrentDateRequiresApproval', coalesce(v_non_current_date_requires_approval, false),
+    'updatedByName', v_effective.updated_by_name,
+    'updatedByPhone', v_effective.updated_by_phone,
+    'updatedAt', v_effective.updated_at
+  );
+end
+$$;
+
+
+ALTER FUNCTION "public"."get_effective_rubber_approval_settings"("p_location_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_income_expense_feed"("p_location_id" "uuid", "p_from_date" "date", "p_to_date" "date", "p_cursor_date" "date" DEFAULT NULL::"date", "p_cursor_key" "text" DEFAULT NULL::"text", "p_page_size" integer DEFAULT 100) RETURNS "jsonb"
@@ -12385,6 +13078,61 @@ $$;
 
 
 ALTER FUNCTION "public"."is_telegram_evidence_dispatch_enabled"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."list_rubber_approval_groups"() RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_groups jsonb;
+  v_available_location_ids jsonb;
+  v_non_current_date_requires_approval boolean;
+begin
+  if not private.is_active_user() or not private.can_access_super_admin_features() then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์จัดการกลุ่มอนุมัติบิลยาง';
+  end if;
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'id', grouped.id,
+    'locationIds', grouped.location_ids,
+    'editWindowMinutes', grouped.edit_window_minutes,
+    'configuredPrice', grouped.configured_price,
+    'updatedAt', grouped.updated_at
+  ) order by grouped.created_at, grouped.id), '[]'::jsonb)
+  into v_groups
+  from (
+    select g.id, g.edit_window_minutes, g.configured_price, g.created_at, g.updated_at,
+      to_jsonb(array_agg(gl.location_id order by l.name, gl.location_id)) location_ids
+    from public.rubber_approval_groups g
+    join public.rubber_approval_group_locations gl on gl.group_id = g.id
+    join public.locations l on l.id = gl.location_id
+    group by g.id
+  ) grouped;
+
+  select coalesce(jsonb_agg(l.id order by l.name, l.id), '[]'::jsonb)
+    into v_available_location_ids
+  from public.locations l
+  where l.is_active = true
+    and not exists (
+      select 1 from public.rubber_approval_group_locations gl
+      where gl.location_id = l.id
+    );
+
+  select s.non_current_date_requires_approval
+    into v_non_current_date_requires_approval
+  from public.rubber_bill_approval_settings s where s.id = true;
+
+  return jsonb_build_object(
+    'groups', v_groups,
+    'availableLocationIds', v_available_location_ids,
+    'nonCurrentDateRequiresApproval', coalesce(v_non_current_date_requires_approval, false)
+  );
+end
+$$;
+
+
+ALTER FUNCTION "public"."list_rubber_approval_groups"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."list_rubber_bill_approval_markers"("p_location_id" "uuid") RETURNS TABLE("request_id" "uuid", "bill_id" "uuid", "client_temp_id" "text", "operation" "text", "matched_reasons" "text"[], "requested_at" timestamp with time zone, "proposed_create_payload" "jsonb")
@@ -14842,6 +15590,32 @@ $$;
 ALTER FUNCTION "public"."save_rubber_bill_approval_settings"("p_edit_window_minutes" integer, "p_configured_price" numeric, "p_non_current_date_requires_approval" boolean) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."save_rubber_bill_date_approval_setting"("p_non_current_date_requires_approval" boolean) RETURNS boolean
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if not private.is_active_user() or not private.can_access_super_admin_features() then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์ตั้งค่าการอนุมัติบิลยาง';
+  end if;
+  if p_non_current_date_requires_approval is null then
+    raise exception 'RUBBER_GROUP_INVALID: ต้องระบุกฎวันที่บิล';
+  end if;
+  update public.rubber_bill_approval_settings
+  set non_current_date_requires_approval = p_non_current_date_requires_approval,
+      updated_by_user_id = auth.uid(),
+      updated_by_name = (select p.name from public.profiles p where p.id = auth.uid()),
+      updated_by_phone = (select p.phone from public.profiles p where p.id = auth.uid()),
+      updated_at = now()
+  where id = true;
+  return p_non_current_date_requires_approval;
+end
+$$;
+
+
+ALTER FUNCTION "public"."save_rubber_bill_date_approval_setting"("p_non_current_date_requires_approval" boolean) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."save_telegram_badge_config"("payload" "jsonb") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -16209,8 +16983,8 @@ begin
     payload := payload || jsonb_build_object('forceNonCurrentDateApproval', true);
   end if;
 
-  return private.sync_rubber_bill_approval_20260805020000(payload);
-end;
+  return private.sync_rubber_bill_approval_20260823010000(payload);
+end
 $$;
 
 
@@ -16695,6 +17469,174 @@ $$;
 ALTER FUNCTION "public"."transfer_stock"("payload" "jsonb") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."update_admin_user_profile"("p_user_id" "uuid", "p_name" "text", "p_location_ids" "uuid"[], "p_primary_location_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_actor_id uuid := auth.uid();
+  v_actor_role text;
+  v_target public.profiles%rowtype;
+  v_normalized_name text;
+  v_location_ids uuid[];
+  v_old_location_ids uuid[];
+  v_old_primary_location_id uuid;
+  v_old_data jsonb;
+  v_new_data jsonb;
+  v_audit_id uuid;
+  v_can_manage_system boolean;
+begin
+  if v_actor_id is null or not private.is_active_user() then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์จัดการพนักงาน';
+  end if;
+  if p_user_id is null or p_user_id = v_actor_id then
+    raise exception 'FORBIDDEN: ไม่สามารถแก้ข้อมูลบัญชีของตัวเองได้';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended('admin-profile:' || p_user_id::text, 0));
+  select * into v_target from public.profiles p where p.id = p_user_id for update;
+  if v_target.id is null then
+    raise exception 'ADMIN_USER_NOT_FOUND: ไม่พบบัญชีพนักงาน';
+  end if;
+  if v_target.role = 'super_admin' or not v_target.is_active then
+    raise exception 'FORBIDDEN: บัญชีนี้ไม่สามารถแก้ข้อมูลได้';
+  end if;
+
+  v_normalized_name := regexp_replace(btrim(coalesce(p_name, '')), '[[:space:]]+', ' ', 'g');
+  if v_normalized_name = '' or char_length(v_normalized_name) > 100 then
+    raise exception 'ADMIN_PROFILE_INVALID: ชื่อพนักงานต้องมี 1-100 ตัวอักษร';
+  end if;
+
+  if coalesce(cardinality(p_location_ids), 0) <> (
+    select count(distinct location_id)
+    from unnest(coalesce(p_location_ids, array[]::uuid[])) location_id
+    where location_id is not null
+  ) then
+    raise exception 'ADMIN_PROFILE_INVALID: รายการสาขาซ้ำหรือไม่ถูกต้อง';
+  end if;
+  select coalesce(array_agg(location_id order by location_id), array[]::uuid[])
+    into v_location_ids
+  from unnest(coalesce(p_location_ids, array[]::uuid[])) location_id;
+
+  if cardinality(v_location_ids) = 0 and p_primary_location_id is not null then
+    raise exception 'ADMIN_PROFILE_INVALID: บัญชีไม่มีสาขาต้องไม่มีสาขาหลัก';
+  end if;
+  if cardinality(v_location_ids) > 0
+     and (p_primary_location_id is null or not p_primary_location_id = any(v_location_ids)) then
+    raise exception 'ADMIN_PROFILE_INVALID: ต้องเลือกสาขาหลักหนึ่งสาขาจากสาขาที่มอบหมาย';
+  end if;
+  if exists (
+    select 1 from unnest(v_location_ids) requested(location_id)
+    left join public.locations l on l.id = requested.location_id and l.is_active = true
+    where l.id is null
+  ) then
+    raise exception 'ADMIN_PROFILE_INVALID: มีสาขาที่ไม่พร้อมใช้งาน';
+  end if;
+
+  select p.role into v_actor_role from public.profiles p where p.id = v_actor_id;
+  v_can_manage_system := private.can_access_super_admin_features();
+  if not v_can_manage_system then
+    if v_actor_role <> 'admin' or v_target.role <> 'user'
+       or not private.can_manage_profile(p_user_id) then
+      raise exception 'FORBIDDEN: ไม่มีสิทธิ์จัดการพนักงานคนนี้';
+    end if;
+    if v_normalized_name <> v_target.name then
+      raise exception 'FORBIDDEN: Admin ทั่วไปไม่มีสิทธิ์เปลี่ยนชื่อพนักงาน';
+    end if;
+  end if;
+
+  select
+    coalesce(array_agg(ul.location_id order by ul.location_id), array[]::uuid[]),
+    (array_agg(ul.location_id) filter (where ul.is_primary))[1]
+  into v_old_location_ids, v_old_primary_location_id
+  from public.user_locations ul
+  where ul.user_id = p_user_id;
+
+  if not v_can_manage_system then
+    if exists (
+      select changed.location_id
+      from (
+        (select unnest(v_old_location_ids) location_id
+         except select unnest(v_location_ids))
+        union
+        (select unnest(v_location_ids)
+         except select unnest(v_old_location_ids))
+      ) changed
+      where not private.can_manage_location(changed.location_id)
+    ) then
+      raise exception 'FORBIDDEN: ไม่มีสิทธิ์เปลี่ยนสาขานอกขอบเขตของ Admin';
+    end if;
+    if v_old_primary_location_id is not null
+       and v_old_primary_location_id is distinct from p_primary_location_id then
+      raise exception 'FORBIDDEN: Admin ทั่วไปไม่มีสิทธิ์ย้ายสาขาหลักเดิม';
+    end if;
+    if v_old_primary_location_id is null
+       and p_primary_location_id is not null
+       and not private.can_manage_location(p_primary_location_id) then
+      raise exception 'FORBIDDEN: ไม่มีสิทธิ์กำหนดสาขาหลักนอกขอบเขตของ Admin';
+    end if;
+  end if;
+
+  v_old_data := jsonb_build_object(
+    'name', v_target.name,
+    'locationIds', to_jsonb(v_old_location_ids),
+    'primaryLocationId', v_old_primary_location_id
+  );
+
+  update public.profiles
+  set name = v_normalized_name, updated_at = now()
+  where id = p_user_id;
+
+  update public.user_locations set is_primary = false where user_id = p_user_id;
+  delete from public.user_locations ul
+  where ul.user_id = p_user_id and not (ul.location_id = any(v_location_ids));
+  insert into public.user_locations (user_id, location_id, assigned_by, is_primary)
+  select p_user_id, location_id, v_actor_id, false
+  from unnest(v_location_ids) location_id
+  on conflict (user_id, location_id) do nothing;
+  if p_primary_location_id is not null then
+    update public.user_locations
+    set is_primary = true
+    where user_id = p_user_id and location_id = p_primary_location_id;
+  end if;
+
+  v_new_data := jsonb_build_object(
+    'name', v_normalized_name,
+    'locationIds', to_jsonb(v_location_ids),
+    'primaryLocationId', p_primary_location_id
+  );
+  insert into public.admin_account_audit_logs (
+    actor_user_id, target_user_id, action, status,
+    old_data, new_data, completed_at
+  ) values (
+    v_actor_id, p_user_id, 'profile_update', 'succeeded',
+    v_old_data, v_new_data, now()
+  ) returning id into v_audit_id;
+
+  return jsonb_build_object(
+    'user', jsonb_build_object(
+      'id', v_target.id,
+      'phone', v_target.phone,
+      'name', v_normalized_name,
+      'role', v_target.role,
+      'isActive', v_target.is_active,
+      'locationIds', to_jsonb(v_location_ids),
+      'primaryLocationId', p_primary_location_id,
+      'canAccessSystemManager', v_target.role = 'super_admin' or v_target.can_access_super_admin_features,
+      'canAccessMoneyTransfer', v_target.role = 'super_admin'
+        or v_target.can_access_super_admin_features or v_target.can_access_money_transfer,
+      'canManageTimePayroll', v_target.role = 'super_admin'
+        or v_target.can_access_super_admin_features or v_target.can_manage_time_payroll
+    ),
+    'auditId', v_audit_id
+  );
+end
+$$;
+
+
+ALTER FUNCTION "public"."update_admin_user_profile"("p_user_id" "uuid", "p_name" "text", "p_location_ids" "uuid"[], "p_primary_location_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."update_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -16730,6 +17672,67 @@ $$;
 
 
 ALTER FUNCTION "public"."update_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."update_rubber_approval_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_edit_window_minutes" integer, "p_configured_price" numeric) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_location_ids uuid[];
+  v_group public.rubber_approval_groups%rowtype;
+  v_actor public.profiles%rowtype;
+begin
+  if not private.is_active_user() or not private.can_access_super_admin_features() then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์จัดการกลุ่มอนุมัติบิลยาง';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended('rubber-approval-groups', 0));
+  select * into v_group from public.rubber_approval_groups g
+  where g.id = p_group_id for update;
+  if v_group.id is null then
+    raise exception 'RUBBER_GROUP_NOT_FOUND: ไม่พบกลุ่ม';
+  end if;
+  v_location_ids := private.validate_rubber_approval_group_input(
+    p_location_ids, p_edit_window_minutes, p_configured_price
+  );
+  if exists (
+    select 1 from public.rubber_approval_group_locations gl
+    where gl.location_id = any(v_location_ids) and gl.group_id <> p_group_id
+  ) then
+    raise exception 'RUBBER_GROUP_BRANCH_CONFLICT: มีสาขาอยู่ในกลุ่มอื่นแล้ว';
+  end if;
+
+  select * into v_actor from public.profiles p where p.id = auth.uid();
+  update public.rubber_approval_groups
+  set edit_window_minutes = p_edit_window_minutes,
+      configured_price = p_configured_price,
+      updated_by_user_id = auth.uid(),
+      updated_by_name = v_actor.name,
+      updated_by_phone = v_actor.phone,
+      updated_at = now()
+  where id = p_group_id
+  returning * into v_group;
+
+  delete from public.rubber_approval_group_locations gl
+  where gl.group_id = p_group_id and not (gl.location_id = any(v_location_ids));
+  insert into public.rubber_approval_group_locations (group_id, location_id)
+  select p_group_id, location_id from unnest(v_location_ids) location_id
+  on conflict (group_id, location_id) do nothing;
+
+  return jsonb_build_object(
+    'id', v_group.id,
+    'locationIds', to_jsonb(v_location_ids),
+    'editWindowMinutes', v_group.edit_window_minutes,
+    'configuredPrice', v_group.configured_price,
+    'updatedAt', v_group.updated_at
+  );
+exception when unique_violation then
+  raise exception 'RUBBER_GROUP_BRANCH_CONFLICT: มีสาขาอยู่ในกลุ่มอื่นแล้ว';
+end
+$$;
+
+
+ALTER FUNCTION "public"."update_rubber_approval_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_edit_window_minutes" integer, "p_configured_price" numeric) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."update_rubber_export"("p_export_id" "uuid", "p_current_weight" numeric, "p_work_rate" numeric, "p_other_operating_cost" numeric) RETURNS "jsonb"
@@ -17214,6 +18217,27 @@ UNION ALL
 
 
 ALTER VIEW "public"."acid_stock_movements" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."admin_account_audit_logs" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "request_id" "uuid",
+    "actor_user_id" "uuid" NOT NULL,
+    "target_user_id" "uuid" NOT NULL,
+    "action" "text" NOT NULL,
+    "status" "text" NOT NULL,
+    "old_data" "jsonb",
+    "new_data" "jsonb",
+    "error_code" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "completed_at" timestamp with time zone,
+    CONSTRAINT "admin_account_audit_action_check" CHECK (("action" = ANY (ARRAY['profile_update'::"text", 'password_reset'::"text"]))),
+    CONSTRAINT "admin_account_audit_secret_free_shape" CHECK (((("action" = 'profile_update'::"text") AND ("request_id" IS NULL) AND ("status" = 'succeeded'::"text") AND ("old_data" IS NOT NULL) AND ("new_data" IS NOT NULL) AND ("error_code" IS NULL) AND ("completed_at" IS NOT NULL)) OR (("action" = 'password_reset'::"text") AND ("request_id" IS NOT NULL) AND ("old_data" IS NULL) AND ("new_data" IS NULL) AND ((("status" = 'pending'::"text") AND ("error_code" IS NULL) AND ("completed_at" IS NULL)) OR (("status" = 'succeeded'::"text") AND ("error_code" IS NULL) AND ("completed_at" IS NOT NULL)) OR (("status" = ANY (ARRAY['failed'::"text", 'unknown'::"text"])) AND ("error_code" IS NOT NULL) AND ("completed_at" IS NOT NULL)))))),
+    CONSTRAINT "admin_account_audit_status_check" CHECK (("status" = ANY (ARRAY['pending'::"text", 'succeeded'::"text", 'failed'::"text", 'unknown'::"text"])))
+);
+
+
+ALTER TABLE "public"."admin_account_audit_logs" OWNER TO "postgres";
 
 
 CREATE TABLE IF NOT EXISTS "public"."cash_count_sessions" (
@@ -17768,6 +18792,33 @@ CREATE TABLE IF NOT EXISTS "public"."report_items" (
 ALTER TABLE "public"."report_items" OWNER TO "postgres";
 
 
+CREATE TABLE IF NOT EXISTS "public"."rubber_approval_group_locations" (
+    "group_id" "uuid" NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL
+);
+
+
+ALTER TABLE "public"."rubber_approval_group_locations" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."rubber_approval_groups" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "edit_window_minutes" integer NOT NULL,
+    "configured_price" numeric(12,2),
+    "updated_by_user_id" "uuid",
+    "updated_by_name" "text",
+    "updated_by_phone" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "rubber_approval_groups_edit_window_check" CHECK (("edit_window_minutes" >= 0)),
+    CONSTRAINT "rubber_approval_groups_price_check" CHECK ((("configured_price" IS NULL) OR ("configured_price" >= (0)::numeric)))
+);
+
+
+ALTER TABLE "public"."rubber_approval_groups" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "public"."rubber_bill_approval_requests" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "operation" "text" NOT NULL,
@@ -17790,10 +18841,11 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_bill_approval_requests" (
     "approved_by_phone" "text",
     "approved_at" timestamp with time zone,
     "created_bill_id" "uuid",
-    "edit_window_minutes_snapshot" integer NOT NULL,
+    "edit_window_minutes_snapshot" integer,
+    "approval_group_id_snapshot" "uuid",
     CONSTRAINT "rubber_bill_approval_decision_shape" CHECK (((("request_status" = 'pending'::"text") AND ("approved_by_user_id" IS NULL) AND ("approved_at" IS NULL)) OR (("request_status" = 'approved'::"text") AND ("approved_by_user_id" IS NOT NULL) AND ("approved_at" IS NOT NULL)))),
     CONSTRAINT "rubber_bill_approval_request_shape" CHECK (((("operation" = 'create'::"text") AND ("bill_id" IS NULL) AND ("original_payload" IS NULL)) OR (("operation" = ANY (ARRAY['update'::"text", 'delete'::"text"])) AND ("bill_id" IS NOT NULL) AND ("original_payload" IS NOT NULL)))),
-    CONSTRAINT "rubber_bill_approval_requests_edit_window_snapshot_check" CHECK (("edit_window_minutes_snapshot" >= 0)),
+    CONSTRAINT "rubber_bill_approval_requests_edit_window_snapshot_check" CHECK ((("edit_window_minutes_snapshot" IS NULL) OR ("edit_window_minutes_snapshot" >= 0))),
     CONSTRAINT "rubber_bill_approval_requests_matched_reasons_check" CHECK ((("cardinality"("matched_reasons") > 0) AND ("matched_reasons" <@ ARRAY['price'::"text", 'time'::"text", 'non_current_date'::"text"]))),
     CONSTRAINT "rubber_bill_approval_requests_operation_check" CHECK (("operation" = ANY (ARRAY['create'::"text", 'update'::"text", 'delete'::"text"]))),
     CONSTRAINT "rubber_bill_approval_requests_request_status_check" CHECK (("request_status" = ANY (ARRAY['pending'::"text", 'approved'::"text"])))
@@ -18162,6 +19214,11 @@ ALTER TABLE ONLY "public"."stock_products"
 
 
 
+ALTER TABLE ONLY "public"."admin_account_audit_logs"
+    ADD CONSTRAINT "admin_account_audit_logs_pkey" PRIMARY KEY ("id");
+
+
+
 ALTER TABLE ONLY "public"."cash_count_sessions"
     ADD CONSTRAINT "cash_count_sessions_pkey" PRIMARY KEY ("id");
 
@@ -18422,6 +19479,21 @@ ALTER TABLE ONLY "public"."report_items"
 
 
 
+ALTER TABLE ONLY "public"."rubber_approval_group_locations"
+    ADD CONSTRAINT "rubber_approval_group_locations_location_id_key" UNIQUE ("location_id");
+
+
+
+ALTER TABLE ONLY "public"."rubber_approval_group_locations"
+    ADD CONSTRAINT "rubber_approval_group_locations_pkey" PRIMARY KEY ("group_id", "location_id");
+
+
+
+ALTER TABLE ONLY "public"."rubber_approval_groups"
+    ADD CONSTRAINT "rubber_approval_groups_pkey" PRIMARY KEY ("id");
+
+
+
 ALTER TABLE ONLY "public"."rubber_bill_approval_requests"
     ADD CONSTRAINT "rubber_bill_approval_requests_idempotency_key_key" UNIQUE ("idempotency_key");
 
@@ -18625,6 +19697,14 @@ CREATE INDEX "rubber_bill_evidence_projection_queue" ON "private"."rubber_bill_e
 
 
 
+CREATE INDEX "admin_account_audit_target_created_idx" ON "public"."admin_account_audit_logs" USING "btree" ("target_user_id", "created_at" DESC);
+
+
+
+CREATE UNIQUE INDEX "admin_account_password_request_unique" ON "public"."admin_account_audit_logs" USING "btree" ("request_id") WHERE ("request_id" IS NOT NULL);
+
+
+
 CREATE INDEX "cash_count_sessions_location_history" ON "public"."cash_count_sessions" USING "btree" ("location_id", "started_at" DESC, "id" DESC);
 
 
@@ -18806,6 +19886,10 @@ CREATE INDEX "report_items_active_source" ON "public"."report_items" USING "btre
 
 
 CREATE UNIQUE INDEX "report_items_one_active_context" ON "public"."report_items" USING "btree" ("location_id", "entity_type", "entity_id") WHERE ("active" = true);
+
+
+
+CREATE INDEX "rubber_approval_group_locations_group_idx" ON "public"."rubber_approval_group_locations" USING "btree" ("group_id", "location_id");
 
 
 
@@ -19041,6 +20125,14 @@ CREATE OR REPLACE TRIGGER "enforce_payroll_slip_expense_relation" BEFORE UPDATE 
 
 
 
+CREATE CONSTRAINT TRIGGER "enforce_rubber_approval_group_not_empty" AFTER INSERT OR DELETE OR UPDATE ON "public"."rubber_approval_group_locations" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "private"."assert_rubber_approval_group_not_empty"();
+
+
+
+CREATE CONSTRAINT TRIGGER "enforce_rubber_approval_group_row_not_empty" AFTER INSERT OR UPDATE ON "public"."rubber_approval_groups" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "private"."assert_rubber_approval_group_row_not_empty"();
+
+
+
 CREATE CONSTRAINT TRIGGER "enforce_user_primary_location" AFTER INSERT OR DELETE OR UPDATE ON "public"."user_locations" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "private"."enforce_user_primary_location"();
 
 
@@ -19217,6 +20309,16 @@ ALTER TABLE ONLY "public"."stock_entries"
 
 ALTER TABLE ONLY "public"."stock_entries"
     ADD CONSTRAINT "acid_stock_entries_product_id_fkey" FOREIGN KEY ("product_id") REFERENCES "public"."stock_products"("id");
+
+
+
+ALTER TABLE ONLY "public"."admin_account_audit_logs"
+    ADD CONSTRAINT "admin_account_audit_logs_actor_user_id_fkey" FOREIGN KEY ("actor_user_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."admin_account_audit_logs"
+    ADD CONSTRAINT "admin_account_audit_logs_target_user_id_fkey" FOREIGN KEY ("target_user_id") REFERENCES "public"."profiles"("id");
 
 
 
@@ -19615,6 +20717,21 @@ ALTER TABLE ONLY "public"."report_items"
 
 
 
+ALTER TABLE ONLY "public"."rubber_approval_group_locations"
+    ADD CONSTRAINT "rubber_approval_group_locations_group_id_fkey" FOREIGN KEY ("group_id") REFERENCES "public"."rubber_approval_groups"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."rubber_approval_group_locations"
+    ADD CONSTRAINT "rubber_approval_group_locations_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id");
+
+
+
+ALTER TABLE ONLY "public"."rubber_approval_groups"
+    ADD CONSTRAINT "rubber_approval_groups_updated_by_user_id_fkey" FOREIGN KEY ("updated_by_user_id") REFERENCES "public"."profiles"("id");
+
+
+
 ALTER TABLE ONLY "public"."rubber_bill_approval_requests"
     ADD CONSTRAINT "rubber_bill_approval_requests_approved_by_user_id_fkey" FOREIGN KEY ("approved_by_user_id") REFERENCES "public"."profiles"("id");
 
@@ -19911,6 +21028,9 @@ CREATE POLICY "acid_stock_entries_location_read" ON "public"."stock_entries" FOR
 
 CREATE POLICY "active users read rubber bill approval settings" ON "public"."rubber_bill_approval_settings" FOR SELECT USING ("private"."is_active_user"());
 
+
+
+ALTER TABLE "public"."admin_account_audit_logs" ENABLE ROW LEVEL SECURITY;
 
 
 CREATE POLICY "cash counts manager select" ON "public"."cash_counts" FOR SELECT TO "authenticated" USING ("private"."can_delete_reports"());
@@ -20255,6 +21375,20 @@ CREATE POLICY "rubber exports scoped read" ON "public"."rubber_exports" FOR SELE
 
 
 
+ALTER TABLE "public"."rubber_approval_group_locations" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "rubber_approval_group_locations_manager_read" ON "public"."rubber_approval_group_locations" FOR SELECT TO "authenticated" USING (("private"."is_active_user"() AND "private"."can_access_super_admin_features"()));
+
+
+
+ALTER TABLE "public"."rubber_approval_groups" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "rubber_approval_groups_manager_read" ON "public"."rubber_approval_groups" FOR SELECT TO "authenticated" USING (("private"."is_active_user"() AND "private"."can_access_super_admin_features"()));
+
+
+
 ALTER TABLE "public"."rubber_bill_approval_requests" ENABLE ROW LEVEL SECURITY;
 
 
@@ -20458,6 +21592,14 @@ REVOKE ALL ON FUNCTION "private"."apply_time_tracking_deductions"("p_profile_id"
 
 
 
+REVOKE ALL ON FUNCTION "private"."assert_rubber_approval_group_not_empty"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."assert_rubber_approval_group_row_not_empty"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."assign_rubber_bill_formula_version"() FROM PUBLIC;
 
 
@@ -20615,6 +21757,10 @@ REVOKE ALL ON FUNCTION "private"."delete_money_transfer"("p_transfer_id" "uuid")
 
 
 
+REVOKE ALL ON FUNCTION "private"."effective_rubber_approval_settings"("p_location_id" "uuid") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."has_time_payroll_manager_access"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "private"."has_time_payroll_manager_access"() TO "authenticated";
 
@@ -20760,11 +21906,19 @@ REVOKE ALL ON FUNCTION "private"."sync_rubber_bill_approval_20260805020000"("pay
 
 
 
+REVOKE ALL ON FUNCTION "private"."sync_rubber_bill_approval_20260823010000"("payload" "jsonb") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."telegram_badge_latest_slot"("p_now" timestamp with time zone, "p_start_time" time without time zone, "p_end_time" time without time zone, "p_interval_minutes" integer) FROM PUBLIC;
 
 
 
 REVOKE ALL ON FUNCTION "private"."telegram_badge_require_manager"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."validate_rubber_approval_group_input"("p_location_ids" "uuid"[], "p_edit_window_minutes" integer, "p_configured_price" numeric) FROM PUBLIC;
 
 
 
@@ -20778,6 +21932,11 @@ REVOKE ALL ON FUNCTION "private"."validate_rubber_export_selection"("p_location_
 
 REVOKE ALL ON FUNCTION "public"."approve_rubber_bill_approval_request"("p_request_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."approve_rubber_bill_approval_request"("p_request_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."begin_admin_password_reset"("p_target_user_id" "uuid", "p_request_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."begin_admin_password_reset"("p_target_user_id" "uuid", "p_request_id" "uuid") TO "authenticated";
 
 
 
@@ -20867,6 +22026,11 @@ GRANT ALL ON FUNCTION "public"."close_rubber_bill_evidence_review_period"("p_loc
 
 
 
+REVOKE ALL ON FUNCTION "public"."complete_admin_password_reset"("p_audit_id" "uuid", "p_status" "text", "p_error_code" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."complete_admin_password_reset"("p_audit_id" "uuid", "p_status" "text", "p_error_code" "text") TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."complete_telegram_badge_dispatch"("p_claim_token" "uuid", "p_outcome" "text", "p_error" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."complete_telegram_badge_dispatch"("p_claim_token" "uuid", "p_outcome" "text", "p_error" "text") TO "service_role";
 
@@ -20894,6 +22058,11 @@ GRANT ALL ON FUNCTION "public"."create_income_expense_approval_request"("payload
 
 REVOKE ALL ON FUNCTION "public"."create_report_batch"("p_location_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."create_report_batch"("p_location_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."create_rubber_approval_group"("p_location_ids" "uuid"[], "p_edit_window_minutes" integer, "p_configured_price" numeric) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."create_rubber_approval_group"("p_location_ids" "uuid"[], "p_edit_window_minutes" integer, "p_configured_price" numeric) TO "authenticated";
 
 
 
@@ -20992,6 +22161,11 @@ GRANT ALL ON FUNCTION "public"."delete_report_batch"("p_report_id" "uuid") TO "a
 
 
 
+REVOKE ALL ON FUNCTION "public"."delete_rubber_approval_group"("p_group_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."delete_rubber_approval_group"("p_group_id" "uuid") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."delete_rubber_bill_approval_request"("p_request_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."delete_rubber_bill_approval_request"("p_request_id" "uuid") TO "authenticated";
 
@@ -21061,6 +22235,11 @@ GRANT ALL ON FUNCTION "public"."get_dashboard_refresh_settings"() TO "authentica
 
 REVOKE ALL ON FUNCTION "public"."get_dashboard_snapshot"("p_location_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_dashboard_snapshot"("p_location_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_effective_rubber_approval_settings"("p_location_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_effective_rubber_approval_settings"("p_location_id" "uuid") TO "authenticated";
 
 
 
@@ -21219,6 +22398,11 @@ GRANT ALL ON FUNCTION "public"."is_super_admin"() TO "authenticated";
 
 REVOKE ALL ON FUNCTION "public"."is_telegram_evidence_dispatch_enabled"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."is_telegram_evidence_dispatch_enabled"() TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."list_rubber_approval_groups"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."list_rubber_approval_groups"() TO "authenticated";
 
 
 
@@ -21471,6 +22655,11 @@ GRANT ALL ON FUNCTION "public"."save_rubber_bill_approval_settings"("p_edit_wind
 
 
 
+REVOKE ALL ON FUNCTION "public"."save_rubber_bill_date_approval_setting"("p_non_current_date_requires_approval" boolean) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."save_rubber_bill_date_approval_setting"("p_non_current_date_requires_approval" boolean) TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."save_telegram_badge_config"("payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."save_telegram_badge_config"("payload" "jsonb") TO "authenticated";
 
@@ -21560,8 +22749,18 @@ GRANT ALL ON FUNCTION "public"."transfer_stock"("payload" "jsonb") TO "authentic
 
 
 
+REVOKE ALL ON FUNCTION "public"."update_admin_user_profile"("p_user_id" "uuid", "p_name" "text", "p_location_ids" "uuid"[], "p_primary_location_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."update_admin_user_profile"("p_user_id" "uuid", "p_name" "text", "p_location_ids" "uuid"[], "p_primary_location_id" "uuid") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."update_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."update_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."update_rubber_approval_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_edit_window_minutes" integer, "p_configured_price" numeric) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."update_rubber_approval_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_edit_window_minutes" integer, "p_configured_price" numeric) TO "authenticated";
 
 
 
@@ -21621,6 +22820,10 @@ GRANT SELECT ON TABLE "public"."rubber_bill_items" TO "authenticated";
 GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."acid_stock_movements" TO "anon";
 GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."acid_stock_movements" TO "authenticated";
 GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."acid_stock_movements" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."admin_account_audit_logs" TO "service_role";
 
 
 
@@ -21786,6 +22989,16 @@ GRANT SELECT ON TABLE "public"."report_items" TO "authenticated";
 
 
 
+GRANT ALL ON TABLE "public"."rubber_approval_group_locations" TO "service_role";
+GRANT SELECT ON TABLE "public"."rubber_approval_group_locations" TO "authenticated";
+
+
+
+GRANT ALL ON TABLE "public"."rubber_approval_groups" TO "service_role";
+GRANT SELECT ON TABLE "public"."rubber_approval_groups" TO "authenticated";
+
+
+
 GRANT ALL ON TABLE "public"."rubber_bill_approval_requests" TO "service_role";
 GRANT SELECT ON TABLE "public"."rubber_bill_approval_requests" TO "authenticated";
 
@@ -21884,7 +23097,13 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT UPDATE ON 
 
 
 
+
+
+
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "postgres";
+
+
+
 
 
 

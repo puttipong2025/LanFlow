@@ -264,7 +264,7 @@ export function RubberBillsModule({
         : 0;
       const likelyNeedsApproval = Boolean(
         (approvalSettings?.nonCurrentDateRequiresApproval && bill.billDate !== bangkokDateString())
-        || (approvalSettings && elapsedMinutes > approvalSettings.editWindowMinutes)
+        || (approvalSettings?.editWindowMinutes != null && elapsedMinutes > approvalSettings.editWindowMinutes)
       );
       setDeletingBillId(bill.id);
       try {
@@ -514,6 +514,7 @@ export function RubberBillsModule({
           profile={profile}
           bill={editingBill}
           configuredPrice={approvalSettings?.configuredPrice}
+          priceTimeExempt={approvalSettings?.priceTimeExempt}
           nonCurrentDateRequiresApproval={approvalSettings?.nonCurrentDateRequiresApproval}
           customers={customerOptions}
           onClose={() => setModalOpen(false)}
