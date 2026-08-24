@@ -76,10 +76,10 @@ export function RubberBillsTable({
           <thead>
             <tr className="whitespace-nowrap border-b border-black/20 text-left text-ink">
               <th className="py-2">จัดการ</th>
+              <th>ชื่อลูกค้า</th>
               <th>เลขที่บิล</th>
               <th>วันที่ออกบิล</th>
               <th>TimestampBill</th>
-              <th>ชื่อลูกค้า</th>
               <th>ผู้รับผิดชอบการจ่าย</th>
               <th>ประเภทบิล</th>
               <th>น้ำหนักสุทธิ</th>
@@ -138,11 +138,11 @@ export function RubberBillsTable({
                       disabled={evidenceDisabled}
                       onClick={() => onEvidence(bill)}
                       className={cn(
-                        "focus-ring inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-md bg-settings px-3 text-sm font-semibold text-white shadow-sm hover:bg-settings/90",
+                        "focus-ring inline-flex size-10 shrink-0 items-center justify-center rounded-md bg-settings text-white shadow-sm hover:bg-settings/90",
                         evidenceDisabled && "cursor-not-allowed opacity-45",
                       )}
                     >
-                      <Images size={16} /> {evidenceButtonLabel}
+                      <Images size={16} />
                     </button>}
                     <button type="button" title={printBlockReason ?? "แชร์ PDF ใบรับซื้อยาง"} aria-label={printBlockReason ?? "แชร์ PDF ใบรับซื้อยาง"}
                       disabled={Boolean(printBlockReason)} onClick={() => onPrint(bill)}
@@ -163,7 +163,7 @@ export function RubberBillsTable({
                     <button type="button" title={actionTitle ?? "ลบ"} aria-label={actionTitle ?? "ลบ"}
                       disabled={actionsDisabled} onClick={() => onDelete(bill)}
                       className={`focus-ring inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-md bg-danger px-3 text-sm font-semibold text-white shadow-sm hover:bg-danger/90 ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}>
-                      <Trash2 size={16} /> ลบ
+                      <Trash2 size={16} />
                     </button>
                     {bill.syncStatus === "failed" && (
                       <button
@@ -174,6 +174,20 @@ export function RubberBillsTable({
                       >
                         ลองซิงก์อีกครั้ง
                       </button>
+                    )}
+                  </div>
+                </td>
+                <td>
+                  <div className="flex flex-col items-start gap-1">
+                    <span>{bill.customerName}</span>
+                    {bill.sourceRubberExportId && (
+                      <>
+                        <span className="rounded-full bg-mint px-2 py-0.5 text-xs font-bold text-ink">รับจากสาขา</span>
+                        <span className="text-xs text-ink/60 tabular-nums">
+                          อายุตอนรับ {formatRubberAge(bill.receivedAgeHours ?? null)}
+                          {bill.receivedAgeIsEstimated ? " · ประมาณการ" : ""}
+                        </span>
+                      </>
                     )}
                   </div>
                 </td>
@@ -214,20 +228,6 @@ export function RubberBillsTable({
                 </td>
                 <td>{bill.billDate}</td>
                 <td>{formatBillTimestamp(bill.clientCreatedAt)}</td>
-                <td>
-                  <div className="flex flex-col items-start gap-1">
-                    <span>{bill.customerName}</span>
-                    {bill.sourceRubberExportId && (
-                      <>
-                        <span className="rounded-full bg-mint px-2 py-0.5 text-xs font-bold text-ink">รับจากสาขา</span>
-                        <span className="text-xs text-ink/60 tabular-nums">
-                          อายุตอนรับ {formatRubberAge(bill.receivedAgeHours ?? null)}
-                          {bill.receivedAgeIsEstimated ? " · ประมาณการ" : ""}
-                        </span>
-                      </>
-                    )}
-                  </div>
-                </td>
                 <td>{bill.createdByName?.trim() || "ไม่ระบุ"}</td>
                 <td>{bill.billType}</td>
                 <td>{formatNumber(bill.netWeight)}</td>
