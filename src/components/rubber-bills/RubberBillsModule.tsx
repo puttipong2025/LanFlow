@@ -49,10 +49,12 @@ import {
   type WeighingQueueCustomer,
 } from "@/lib/rubber-bills/weighing-queue";
 import { runBlockingAction } from "@/lib/swal";
+import { cn } from "@/lib/cn";
 import {
   BranchRubberReceiptDetailModal,
   BranchRubberReceiptModal,
 } from "./BranchRubberReceiptModal";
+import { ExportVehicleWeighBillsModal } from "./ExportVehicleWeighBillsModal";
 
 export function RubberBillsModule({
   selectedLocation,
@@ -82,6 +84,7 @@ export function RubberBillsModule({
   );
   const { customers, isLoading: customersLoading, error: customersError } = useCustomers();
   const isOnline = useOnlineStatus();
+  const [billsView, setBillsView] = useState<"purchase" | "wex">("purchase");
   const [mode, setMode] = useState<RubberBillListMode>("latest");
   const [documentStatus, setDocumentStatus] = useState<RubberBillDocumentStatus>("any");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -375,8 +378,51 @@ export function RubberBillsModule({
     setPage(1);
   }
 
+  function selectBillsView(nextView: "purchase" | "wex") {
+    setBillsView(nextView);
+  }
+
+  function moveBillsViewFocus(event: React.KeyboardEvent<HTMLButtonElement>) {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const nextView = event.key === "Home" || event.key === "ArrowLeft"
+      ? "purchase"
+      : "wex";
+    selectBillsView(nextView);
+    window.requestAnimationFrame(() => document.getElementById(`rubber-bills-${nextView}-tab`)?.focus());
+  }
+
   return (
     <section className="space-y-4">
+      <div role="tablist" aria-label="ประเภทเอกสารในโมดูลบิลยาง" className="flex flex-wrap gap-2 rounded-md border border-black/10 bg-white p-2 shadow-panel">
+        {([
+          ["purchase", "บิลรับซื้อยาง"],
+          ["wex", "บิลรถส่งออก (WEX)"],
+        ] as const).map(([value, label]) => (
+          <button
+            key={value}
+            id={`rubber-bills-${value}-tab`}
+            type="button"
+            role="tab"
+            aria-selected={billsView === value}
+            aria-controls={`rubber-bills-${value}-panel`}
+            onClick={() => selectBillsView(value)}
+            onKeyDown={moveBillsViewFocus}
+            className={cn(
+              "focus-ring rounded-md px-4 py-2 text-sm font-semibold",
+              billsView === value ? "bg-leaf text-white" : "bg-field text-ink hover:bg-mint/60",
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {billsView === "wex" ? (
+        <div id="rubber-bills-wex-panel" role="tabpanel" aria-labelledby="rubber-bills-wex-tab">
+          <ExportVehicleWeighBillsModal selectedLocation={selectedLocation} online={isOnline} />
+        </div>
+      ) : (
+        <div id="rubber-bills-purchase-panel" role="tabpanel" aria-labelledby="rubber-bills-purchase-tab" className="space-y-4">
       <div className="flex flex-col items-start gap-3 rounded-md border border-black/10 bg-white p-4 shadow-panel">
         <div>
           <h2 className="text-balance text-lg font-bold text-ink">รายการบิลยาง · {selectedLocation.name}</h2>
@@ -668,6 +714,8 @@ export function RubberBillsModule({
         />
       )}
       <SharePdfWaitingModal open={pdfShare.waiting} onCancel={pdfShare.cancel} />
+        </div>
+      )}
     </section>
   );
 }
