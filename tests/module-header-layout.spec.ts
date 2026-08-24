@@ -46,29 +46,4 @@ test("stacks module header actions below the heading and aligns them left", asyn
       await assertHeaderStacksActions(page, headerCase);
     });
   }
-
-  await test.step("อ่านใบชั่ง (OCR)", async () => {
-    await page.getByRole("button", { name: "อ่านใบชั่ง", exact: true }).click();
-    await page.locator('input[type="file"]').setInputFiles({
-      name: "header-layout.png",
-      mimeType: "image/png",
-      buffer: Buffer.from(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
-        "base64",
-      ),
-    });
-
-    const heading = page.getByRole("heading", { name: /^อ่านใบชั่ง \(OCR\)$/ });
-    const action = page.getByRole("button", { name: /^ล้างรายการอัปโหลด$/ });
-    await expect(action).toBeVisible();
-    const [headingBox, actionBox] = await Promise.all([
-      heading.boundingBox(),
-      action.boundingBox(),
-    ]);
-    expect(headingBox).not.toBeNull();
-    expect(actionBox).not.toBeNull();
-    expect(headingBox!.y + headingBox!.height).toBeLessThan(actionBox!.y);
-    expect(Math.abs(headingBox!.x - actionBox!.x)).toBeLessThanOrEqual(2);
-    await action.click();
-  });
 });

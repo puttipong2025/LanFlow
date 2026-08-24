@@ -106,6 +106,43 @@ export async function uploadImageToDrive(
   return { fileId, webViewLink };
 }
 
+export async function uploadPrivateImageToDrive(
+  fileBuffer: Buffer,
+  mimeType: "image/jpeg" | "image/png",
+  fileName: string,
+): Promise<{ fileId: string }> {
+  const token = await getAccessToken();
+  const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
+  if (!folderId) throw new Error("GOOGLE_DRIVE_FOLDER_ID is missing in .env.local");
+
+  const boundary = "-------314159265358979323846";
+  const delimiter = `\r\n--${boundary}\r\n`;
+  const closeDelimiter = `\r\n--${boundary}--`;
+  const metadata = { name: fileName, parents: [folderId] };
+  const multipartBody = Buffer.concat([
+    Buffer.from(`${delimiter}Content-Type: application/json\r\n\r\n${JSON.stringify(metadata)}\r\n`),
+    Buffer.from(`${delimiter}Content-Type: ${mimeType}\r\n\r\n`),
+    fileBuffer,
+    Buffer.from(closeDelimiter),
+  ]);
+  const uploadRes = await fetch(
+    "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": `multipart/related; boundary=${boundary}`,
+        "Content-Length": multipartBody.length.toString(),
+      },
+      body: multipartBody,
+    },
+  );
+  if (!uploadRes.ok) throw new Error("Drive private upload failed");
+  const uploadData = await uploadRes.json() as { id?: string };
+  if (!uploadData.id) throw new Error("Drive private upload returned no file id");
+  return { fileId: uploadData.id };
+}
+
 function escapeDriveQueryValue(value: string) {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
@@ -204,6 +241,10 @@ export async function downloadEvidenceImageFromDrive(
   );
   if (!response.ok || !response.body) throw new Error("Drive evidence download failed");
   return response;
+}
+
+export async function downloadPrivateImageFromDrive(fileId: string, signal?: AbortSignal) {
+  return downloadEvidenceImageFromDrive(fileId, signal);
 }
 
 export async function deleteImageFromDrive(fileId: string): Promise<void> {

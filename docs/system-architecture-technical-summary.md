@@ -39,7 +39,7 @@ tests/
 
 - **`src/components/lanflow/`**
   - `AppHeader.tsx`: โลโก้, ข้อมูลผู้ใช้, dropdown เลือกสาขา, ปุ่มออกจากระบบ
-  - `NavigationTabs.tsx`: tab navigation, role guard ของเมนู admin, badge ของ OCR / โอนเงิน / เวลาและเงินเดือน
+  - `NavigationTabs.tsx`: tab navigation, role guard ของเมนู admin, badge ของโอนเงิน / เวลาและเงินเดือน
   - `tabs.ts`: config รายการ tab และ icon
 
 - **`src/components/dashboard/`**
@@ -47,7 +47,7 @@ tests/
   - `Metric.tsx`: metric card ขนาดเล็ก
 
 - **`src/components/rubber-bills/`**
-  - `RubberBillsModule.tsx`: state ของหน้าบิลยาง, search, pagination, modal open/close
+  - `RubberBillsModule.tsx`: state ของหน้าบิลยาง, search, pagination, modal open/close และปุ่ม OCR พร้อม badge คิวของสาขาปัจจุบัน
   - `RubberBillsTable.tsx`: ตารางบิลยาง
   - `RubberBillModal.tsx`: form เพิ่ม/แก้ไขบิลยาง
   - `bill-display.ts`: helper แสดงเลขบิลและเวลา
@@ -93,7 +93,7 @@ tests/
   - `RubberBillsModule`: `selectedLocation`, `profile`
   - `IncomeExpenseModule`: `selectedLocation`, `profile`
   - `MoneyTransferModule`: `locationId`, `online`, `profile`
-  - `OcrTicketUpload`: `locationId`, `online`, `uploadItems`, `setUploadItems`
+  - `RubberBillsModule`: ดูแลคิวรูป OCR ชั่วคราวของสาขาปัจจุบันและเปิด `RubberBillModal` ด้วย draft ที่อ่านได้
 
 ## 2. เทคโนโลยีที่ใช้ (Tech Stack)
 
@@ -322,16 +322,6 @@ offline queue อยู่ที่ `src/lib/idb-queue.ts`:
    - ถ้าผู้ใช้มีสิทธิ์สาขาต้นทางหรือเป็น `super_admin` จะมีปุ่มเปิดโมดูลบิลยางต้นทางพร้อม filter วันที่ของ row นั้น
    - เมื่อบิลยางถูกเลือกเข้า `money_transfer_items` แล้ว row รวมรายวันจะตัดบิลนั้นออกจากยอด derived
 
-5. **รายจ่ายรวมรายวันจาก OCR บิลยางที่ยังไม่ถูกเลือกไปโอนเงิน**
-   - source: `ocr_tickets`
-   - เงื่อนไข: `location_id` ตรงกับสาขาที่กำลังดู, `record_status = 'active'`, `total_amount > 0`, และ `id` ยังไม่อยู่ใน `money_transfer_items.source_id` ที่ `source_type = 'ocr_ticket'`
-   - ยอดเงิน: รวม `total_amount` ต่อ `date_in`
-   - แสดงเป็น `IncomeExpense` ชนิด `expense`
-   - badge ใน UI: `OCR บิลยางรวมรายวัน`
-   - relation lock: แก้ไข/ลบจากรับ-จ่ายไม่ได้ ต้องแก้ไขหรือลบที่โมดูล OCR บิลยางต้นทาง
-   - ถ้าผู้ใช้มีสิทธิ์สาขาต้นทางหรือเป็น `super_admin` จะมีปุ่มเปิดโมดูล OCR บิลยางต้นทางพร้อม filter วันที่ของ row นั้น
-   - เมื่อ OCR ticket ถูกเลือกเข้า `money_transfer_items` แล้ว row รวมรายวันจะตัด ticket นั้นออกจากยอด derived
-
 รายการ derived เหล่านี้ไม่ได้ enqueue ลง IndexedDB และไม่ได้เขียนกลับเข้า `income_expense`; `useIncomeExpense` merge เข้ากับ server rows + pending queue ตอน render เท่านั้น เพื่อให้ข้อมูลเปลี่ยนหรือหายตามต้นทางเสมอ.
 
 ### Stock Source Of Truth
@@ -397,17 +387,16 @@ offline queue อยู่ที่ `src/lib/idb-queue.ts`:
 - local draft ที่ยังไม่เคย sync แก้/ลบ offline ได้
 - synced record ต้อง online ก่อนถึงแก้/ลบได้
 - failed/conflict queue ต้อง resolve ก่อน
-- derived rows จาก `money_transfers`, `rubber_bills`, และ `ocr_tickets` ถูกล็อกเสมอและแก้/ลบจากรับ-จ่ายไม่ได้
+- derived rows จาก `money_transfers` และ `rubber_bills` ถูกล็อกเสมอและแก้/ลบจากรับ-จ่ายไม่ได้
 
 ### Module Coverage
 
 สถานะ offline-first ณ ตอนนี้:
 
-- **Rubber Bills**: Full Offline สำหรับ create/update/delete, PWA reload, RPC atomic sync; เป็น source ของ derived expense รายวันใน Income/Expense สำหรับบิลที่ยังไม่ถูกเลือกไปโอนเงิน
+- **Rubber Bills**: Full Offline สำหรับ create/update/delete, PWA reload, RPC atomic sync; เป็น source ของ derived expense รายวันใน Income/Expense สำหรับบิลที่ยังไม่ถูกเลือกไปโอนเงิน และรับ OCR เป็นเพียงวิธีเริ่มกรอกบิลผ่านคิวชั่วคราวในหน่วยความจำ
 - **Auth / Bootstrap**: รองรับ offline auth cache และ branch bootstrap cache
 - **Income/Expense**: Full Offline สำหรับ create/update/delete, PWA reload, RPC atomic sync
-- **OCR Tickets**: online-first; เป็น source ของ derived expense รายวันใน Income/Expense สำหรับ OCR บิลยางที่ยังไม่ถูกเลือกไปโอนเงิน และถูก relation lock เมื่ออยู่ใน `money_transfer_items.source_type = 'ocr_ticket'`
-- **Money Transfer**: online-first; เป็น source ของ derived rows ใน Income/Expense สำหรับโอนเงินสาขาขาเข้า/ขาออก, รายการสำนักงานใหญ่/CEO โอนให้สาขา, และโอนลูกค้าสถานะ `โอน+สาขาจ่าย`; `money_transfer_items` เป็นตัวตัดบิลยางและ OCR ticket ออกจาก derived expense รายวัน; ฟอร์มลูกค้า/รถขนส่ง/สาขาเปิดผ่าน `ModalShell`; ตารางเริ่มที่ filter `pending`, แสดง 20 รายการต่อหน้า และแยก `net_amount_to_pay` ออกจากผลรวม `money_transfer_slips.amount`; เข้าเมนูและเขียนข้อมูลได้เฉพาะผู้มีสิทธิ์โมดูลโอนเงิน
+- **Money Transfer**: online-first; เป็น source ของ derived rows ใน Income/Expense สำหรับโอนเงินสาขาขาเข้า/ขาออก, รายการสำนักงานใหญ่/CEO โอนให้สาขา, และโอนลูกค้าสถานะ `โอน+สาขาจ่าย`; `money_transfer_items` เป็นตัวตัดบิลยางออกจาก derived expense รายวัน; ฟอร์มลูกค้า/รถขนส่ง/สาขาเปิดผ่าน `ModalShell`; ตารางเริ่มที่ filter `pending`, แสดง 20 รายการต่อหน้า และแยก `net_amount_to_pay` ออกจากผลรวม `money_transfer_slips.amount`; เข้าเมนูและเขียนข้อมูลได้เฉพาะผู้มีสิทธิ์โมดูลโอนเงิน
 - **Time Tracking**: online-first; ค่าแรงคำนวณจาก `time_segments` ผ่าน cutoff `15:00` (`Asia/Bangkok`) โดยใช้ helperกลางทั้งฝั่ง API และ DB; รองรับสิทธิ์เฉพาะโมดูลตามสาขาหลักและส่วนกลางจ่ายแบบไม่สร้าง derived expense
 
 ### เปรียบเทียบ Offline-First: Rubber Bills vs Income/Expense
@@ -429,7 +418,7 @@ offline queue อยู่ที่ `src/lib/idb-queue.ts`:
 | Server bill number | server/RPC เป็นผู้จัดการเพื่อกันเลขชน | server/RPC เป็นผู้จัดการเพื่อกันเลขชน |
 | Delete behavior | enqueue delete และ sync เป็น soft delete ผ่าน backend path | enqueue delete และ sync เป็น soft delete ผ่าน backend path |
 | Direct DB writes จาก browser | ปิดแล้ว เหลือ `SELECT` + RPC execute | ปิดแล้ว เหลือ `SELECT` + RPC execute |
-| Derived rows | ไม่มี row ปลายทางจริง; บิลยางและ OCR ticket เป็น source ให้ Income/Expense รวมรายจ่ายรายวันเมื่อยังไม่ถูกเลือกไปโอนเงิน | แสดงรายรับ/รายจ่ายจาก `money_transfers` และรายจ่ายรวมรายวันจาก `rubber_bills`/`ocr_tickets` โดยล็อกแก้/ลบ |
+| Derived rows | ไม่มี row ปลายทางจริง; บิลยางเป็น source ให้ Income/Expense รวมรายจ่ายรายวันเมื่อยังไม่ถูกเลือกไปโอนเงิน | แสดงรายรับ/รายจ่ายจาก `money_transfers` และรายจ่ายรวมรายวันจาก `rubber_bills` โดยล็อกแก้/ลบ |
 | PWA test coverage | `rubber-bills-offline.spec.ts`, `rubber-bills-pwa.spec.ts` | `income-expense-offline.spec.ts`, `income-expense-pwa.spec.ts` |
 | Hardening coverage | idempotency, conflict, failed, coalescing, replay | idempotency, conflict, failed, concurrent bill number, shared sequence, soft delete |
 | ความพร้อมสำหรับ tablet/offline | พร้อมใช้งาน offline-first | พร้อมใช้งาน offline-first |
@@ -574,12 +563,11 @@ Rubber Bills และ Income/Expense เป็น module data-entry ที่�
 
 ข้อมูลการเงินที่เกิดจากโมดูลอื่นต้องมีเจ้าของต้นทางชัดเจน:
 
-- Rubber Bill และ OCR Ticket ที่ถูกใช้ใน `money_transfer_items` ถูกล็อกไม่ให้แก้/ลบจนกว่าจะยกเลิกความสัมพันธ์ในรายการโอนเงิน
+- Rubber Bill ที่ถูกใช้ใน `money_transfer_items` ถูกล็อกไม่ให้แก้/ลบจนกว่าจะยกเลิกความสัมพันธ์ในรายการโอนเงิน
 - รายรับขาเข้าจากโอนเงินสาขาเป็น derived row จาก `money_transfers` ไม่ใช่ row จริงที่ผู้ใช้แก้ใน `income_expense`
 - รายการโอนเงินแบบ `โอนให้สาขา` ในโมดูลโอนเงินเป็นรายการสำนักงานใหญ่/CEO โอนเข้า branch โดย `location_id = target_location_id`; รับ-จ่ายจะแสดงเฉพาะรายรับ ไม่สร้างรายจ่ายขาออก
 - โมดูลโอนเงินถูก gate ด้วยสิทธิ์ผู้จัดการระบบ (`profiles.can_access_super_admin_features`) เป็นหลัก; ผู้ไม่มีสิทธิ์จะไม่เห็น tab `โอนเงิน`, ไม่ fetch/render โมดูลโอนเงิน, และไม่เห็นปุ่ม `โยกเงินไปสาขาอื่น` ใน Income/Expense
 - รายจ่ายรวมรายวันจากบิลยางที่ยังไม่อยู่ใน `money_transfer_items` เป็น derived row จาก `rubber_bills` ไม่ใช่ row จริงที่ผู้ใช้แก้ใน `income_expense`
-- รายจ่ายรวมรายวันจาก OCR บิลยางที่ยังไม่อยู่ใน `money_transfer_items` เป็น derived row จาก `ocr_tickets` ไม่ใช่ row จริงที่ผู้ใช้แก้ใน `income_expense`
 - รายจ่ายส่วน `โอน+สาขาจ่าย` ของโอนเงินลูกค้าเป็น derived row จาก `money_transfers.branch_paid_amount`
 - `public.merge_pending_money_transfers(location_id)` รวมรายการลูกค้าแบบ bank ที่ `active + synced + pending` ใน transaction เดียว แยกกลุ่มด้วย `customer_id + account_number`, เก็บ parent เก่าสุดตาม `created_at, id`, ย้าย `money_transfer_items`, คำนวณ `net_amount_to_pay` ใหม่ และ soft-delete parent ที่เหลือ โดยไม่สร้าง table/column หรือ parent ใหม่
 - RPC รวมรายการต้องปฏิเสธรายการที่มีสลิป, parent ที่อยู่ในรายงาน, หรือต้นทางที่อยู่ในรายงาน; trigger `report_lock_money_transfers` และ `report_lock_money_transfer_items` ยังตรวจซ้ำระหว่าง mutation และไม่มีขั้นตอนปลด Report Lock ชั่วคราว

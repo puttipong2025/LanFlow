@@ -8,10 +8,6 @@ import { cn } from "@/lib/cn";
 import { formatCurrency } from "@/lib/format";
 import type { MoneyTransferItem } from "@/types";
 
-export function getOcrTransferAmount(ticket: { totalAmount: number | null; moneyDeducted?: number | null }) {
-  return (ticket.totalAmount ?? 0) - (ticket.moneyDeducted ?? 0);
-}
-
 const BLOCK_LABELS: Record<string, string> = {
   SOURCE_ALREADY_USED: "อยู่ในรายการโอนแล้ว",
   REPORT_LOCKED: "ล็อกโดยรายงาน",
@@ -33,7 +29,6 @@ export function ItemPicker({
   onSelect: (item: MoneyTransferItem) => void;
   onDeselect: (sourceId: string) => void;
 }) {
-  const [tab, setTab] = useState<"rubber_bill" | "ocr_ticket">("rubber_bill");
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [hideReportLocked, setHideReportLocked] = useState(false);
@@ -44,7 +39,7 @@ export function ItemPicker({
   }, [search]);
   const sources = useMoneyTransferSources({
     locationId,
-    sourceType: tab,
+    sourceType: "rubber_bill",
     search: debouncedSearch,
     selectedIds,
   });
@@ -54,16 +49,7 @@ export function ItemPicker({
   return (
     <div className="rounded-lg border border-leaf/20 bg-leaf/5 p-3">
       <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex gap-2" role="tablist" aria-label="ประเภทแหล่งจ่าย">
-          <button type="button" role="tab" aria-selected={tab === "rubber_bill"} onClick={() => setTab("rubber_bill")}
-            className={cn("focus-ring h-10 rounded-md px-3 text-sm font-semibold", tab === "rubber_bill" ? "bg-leaf text-white" : "border border-black/15 bg-white text-ink")}>
-            บิลยาง
-          </button>
-          <button type="button" role="tab" aria-selected={tab === "ocr_ticket"} onClick={() => setTab("ocr_ticket")}
-            className={cn("focus-ring h-10 rounded-md px-3 text-sm font-semibold", tab === "ocr_ticket" ? "bg-river text-white" : "border border-black/15 bg-white text-ink")}>
-            ใบชั่ง
-          </button>
-        </div>
+        <p className="text-sm font-semibold text-ink">เลือกบิลยาง</p>
         <label className="relative block">
           <span className="sr-only">ค้นหาแหล่งจ่าย</span>
           <Search aria-hidden="true" size={16} className="absolute left-3 top-3 text-ink/40" />

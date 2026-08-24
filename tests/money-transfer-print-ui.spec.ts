@@ -212,13 +212,12 @@ test("shares a completed transfer PDF and leaves transfer data unchanged", async
     expect(children[3].error).toBeNull();
     const sourceRelation = await admin
       .from("money_transfer_items")
-      .select("rubber_bill_id,ocr_ticket_id")
+      .select("rubber_bill_id")
       .eq("transfer_id", paidId)
       .single();
     expect(sourceRelation.error).toBeNull();
     expect(sourceRelation.data).toEqual({
       rubber_bill_id: sourceId,
-      ocr_ticket_id: null,
     });
 
     const before = await admin.from("money_transfers")
@@ -354,7 +353,7 @@ test("shares a completed transfer PDF and leaves transfer data unchanged", async
     await page.getByRole("button", { name: /โอนให้ลูกค้า/ }).click();
     const transferDialog = page.getByRole("dialog");
     await expect(transferDialog.getByRole("heading", { name: "สร้างรายการโอนเงินใหม่" })).toBeVisible();
-    await transferDialog.getByRole("button", { name: "เลือกบิลยาง / ใบชั่ง" }).click();
+    await transferDialog.getByRole("button", { name: "เลือกบิลยาง" }).click();
     const reportLockToggle = transferDialog.getByRole("button", { name: "ซ่อนรายการที่ล็อกแล้ว" });
     await expect(reportLockToggle).toHaveAttribute("aria-pressed", "false");
     await reportLockToggle.click();

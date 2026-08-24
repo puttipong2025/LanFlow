@@ -45,6 +45,54 @@ async function firstLocation(service: SupabaseClient) {
   return data!.id as string;
 }
 
+function rubberBillRow(
+  id: string,
+  locationId: string,
+  customerName: string,
+  amount: number,
+  index: number,
+) {
+  const billNo = `MERGE-${index}-${id.slice(0, 6)}`;
+  return {
+    id,
+    client_temp_id: id,
+    local_bill_no: billNo,
+    server_bill_no: billNo,
+    idempotency_key: `merge-source:${id}`,
+    sync_status: "synced",
+    record_status: "active",
+    location_id: locationId,
+    bill_no: billNo,
+    bill_date: "2026-08-04",
+    customer_name: customerName,
+    bill_type: "weighing",
+    weight: amount,
+    deduct_weight: 0,
+    rubber_value: amount,
+    average_price: 1,
+    deduction_total: 0,
+    net_total: amount,
+    server_received_at: new Date().toISOString(),
+    created_by_user_id: superAdminId,
+    created_by_name: "LanFlow super_admin",
+    created_by_phone: "0800000000",
+  };
+}
+
+function rubberBillItemRow(sourceId: string, amount: number) {
+  return {
+    bill_id: sourceId,
+    item_type: "weigh",
+    description: "ชั่ง 1",
+    weight_in: amount,
+    weight_out: 0,
+    net_weight: amount,
+    price: 1,
+    total: amount,
+    sequence_no: 1,
+  };
+}
+
 test.describe.serial("Pending money transfer merge", () => {
   test("merges eligible groups into the oldest parent and skips slips, locks, and other accounts", async () => {
     test.skip(!serviceRoleKey || !publishableKey, "Supabase test keys are required");
@@ -83,19 +131,16 @@ test.describe.serial("Pending money transfer merge", () => {
         },
       ])).error).toBeNull();
 
-      expect((await service.from("ocr_tickets").insert(sourceIds.map((id, index) => ({
+      expect((await service.from("rubber_bills").insert(sourceIds.map((id, index) => rubberBillRow(
         id,
-        client_temp_id: id,
-        idempotency_key: `merge-source:${id}`,
-        location_id: locationId,
-        file_name: `merge-${index}.jpg`,
-        ticket_id: `MERGE-${index}`,
-        customer_name: index === 6 ? "ลูกค้าคนละคน" : "ลูกค้ารวมรายการ",
-        total_amount: (index + 1) * 100,
-        sync_status: "synced",
-        record_status: "active",
-        created_by_user_id: superAdminId,
-      })))).error).toBeNull();
+        locationId,
+        index === 6 ? "ลูกค้าคนละคน" : "ลูกค้ารวมรายการ",
+        (index + 1) * 100,
+        index,
+      )))).error).toBeNull();
+      expect((await service.from("rubber_bill_items").insert(sourceIds.map((id, index) =>
+        rubberBillItemRow(id, (index + 1) * 100),
+      ))).error).toBeNull();
 
       expect((await service.from("money_transfers").insert(transferIds.map((id, index) => ({
         id,
@@ -119,7 +164,7 @@ test.describe.serial("Pending money transfer merge", () => {
 
       expect((await service.from("money_transfer_items").insert(transferIds.map((transferId, index) => ({
         transfer_id: transferId,
-        source_type: "ocr_ticket",
+        source_type: "rubber_bill",
         source_id: sourceIds[index],
         customer_name: index === 6 ? "ลูกค้าคนละคน" : "ลูกค้ารวมรายการ",
         amount: (index + 1) * 100,
@@ -153,14 +198,14 @@ test.describe.serial("Pending money transfer merge", () => {
         {
           report_id: reportId,
           location_id: locationId,
-          entity_type: "ocr_ticket",
+          entity_type: "rubber_bill",
           entity_id: sourceIds[7],
           eligibility_at: "2026-08-04T08:00:00.000Z",
         },
         {
           report_id: reportId,
           location_id: locationId,
-          entity_type: "ocr_ticket",
+          entity_type: "rubber_bill",
           entity_id: sourceIds[5],
           eligibility_at: "2026-08-04T06:00:00.000Z",
         },
@@ -227,7 +272,7 @@ test.describe.serial("Pending money transfer merge", () => {
       await service.from("report_items").delete().eq("report_id", reportId);
       await service.from("report_batches").delete().eq("id", reportId);
       await service.from("money_transfers").delete().in("id", transferIds);
-      await service.from("ocr_tickets").delete().in("id", sourceIds);
+      await service.from("rubber_bills").delete().in("id", sourceIds);
       await service.from("customers").delete().in("id", [customerId, otherCustomerId]);
     }
   });
@@ -295,19 +340,16 @@ test.describe.serial("Pending money transfer merge", () => {
         created_by_name: "Merge test",
         created_by_phone: "0800000000",
       })))).error).toBeNull();
-      expect((await service.from("ocr_tickets").insert(sourceIds.map((id, index) => ({
+      expect((await service.from("rubber_bills").insert(sourceIds.map((id, index) => rubberBillRow(
         id,
-        client_temp_id: id,
-        idempotency_key: `merge-rollback-source:${id}`,
-        location_id: locationId,
-        file_name: `merge-rollback-${index}.jpg`,
-        ticket_id: `MERGE-ROLLBACK-${index}`,
-        customer_name: `ลูกค้าทดสอบ rollback ${Math.floor(index / 2)}`,
-        total_amount: 1,
-        sync_status: "synced",
-        record_status: "active",
-        created_by_user_id: superAdminId,
-      })))).error).toBeNull();
+        locationId,
+        `ลูกค้าทดสอบ rollback ${Math.floor(index / 2)}`,
+        1,
+        index,
+      )))).error).toBeNull();
+      expect((await service.from("rubber_bill_items").insert(sourceIds.map((id) =>
+        rubberBillItemRow(id, 1),
+      ))).error).toBeNull();
       expect((await service.from("money_transfers").insert(transferIds.map((id, index) => ({
         id,
         client_temp_id: id,
@@ -329,7 +371,7 @@ test.describe.serial("Pending money transfer merge", () => {
       })))).error).toBeNull();
       expect((await service.from("money_transfer_items").insert(transferIds.map((transferId, index) => ({
         transfer_id: transferId,
-        source_type: "ocr_ticket",
+        source_type: "rubber_bill",
         source_id: sourceIds[index],
         customer_name: `ลูกค้าทดสอบ rollback ${Math.floor(index / 2)}`,
         amount: index < 2 ? 100 : "9999999999.99",
@@ -357,7 +399,7 @@ test.describe.serial("Pending money transfer merge", () => {
       }))));
     } finally {
       await service.from("money_transfers").delete().in("id", transferIds);
-      await service.from("ocr_tickets").delete().in("id", sourceIds);
+      await service.from("rubber_bills").delete().in("id", sourceIds);
       await service.from("customers").delete().in("id", customerIds);
     }
   });

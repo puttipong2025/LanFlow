@@ -81,7 +81,6 @@ export async function GET(request: NextRequest, context: RouteContext) {
   try {
     const [
       rubber,
-      ocr,
       stock,
       stockIncome,
       stockRubberResult,
@@ -94,7 +93,6 @@ export async function GET(request: NextRequest, context: RouteContext) {
       latestResult,
     ] = await Promise.all([
       rowsByIds(client, "rubber_bills", "id, bill_date, server_bill_no, local_bill_no, customer_name, bill_type, net_weight, average_price, net_rubber_value, deduction_total, net_total, source_rubber_export_id, customers(class)", ids(items, "rubber_bill")),
-      rowsByIds(client, "ocr_tickets", "id, date_in, ticket_id, file_name, customer_name, license_plate, weight_in, weight_out, weight_net, weight_deducted, weight_remaining, total_amount", ids(items, "ocr_ticket")),
       rowsByIds(client, "stock_entries", "id, tx_date, server_bill_no, transfer_bill_no, product_name, tx_type, quantity_delta, amount", ids(items, "acid_stock_entry")),
       rowsByForeignIds(
         client,
@@ -192,18 +190,6 @@ export async function GET(request: NextRequest, context: RouteContext) {
           net: number(row.net_total),
         };
       }),
-      ocrTickets: ocr.map((row) => ({
-        date: datePart(row.date_in),
-        number: row.ticket_id ?? row.file_name ?? "",
-        customer: row.customer_name ?? "",
-        licensePlate: row.license_plate ?? "",
-        weightIn: number(row.weight_in),
-        weightOut: number(row.weight_out),
-        weightNet: number(row.weight_net),
-        weightDeducted: number(row.weight_deducted),
-        weightRemaining: number(row.weight_remaining),
-        amount: number(row.total_amount),
-      })),
       incomeExpense: ((ledgerResult.data ?? []) as Array<Record<string, any>>).map((row) => ({
         date: datePart(row.tx_date),
         number: row.number ?? "",

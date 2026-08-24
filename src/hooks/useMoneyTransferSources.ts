@@ -5,7 +5,7 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
-export type MoneyTransferSourceType = "rubber_bill" | "ocr_ticket";
+export type MoneyTransferSourceType = "rubber_bill";
 
 export type MoneyTransferSourceRow = {
   sourceType: MoneyTransferSourceType;

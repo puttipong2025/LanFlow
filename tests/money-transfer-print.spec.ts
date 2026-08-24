@@ -6,7 +6,6 @@ import {
   renderMoneyTransferReceiptHtml,
   shortTransferId,
 } from "../src/components/money-transfer/money-transfer-print";
-import { getOcrTransferAmount } from "../src/components/money-transfer/ItemPicker";
 import type { Location, MoneyTransfer } from "../src/types";
 
 const locations: Location[] = [
@@ -146,9 +145,9 @@ test.describe("Money transfer 80mm print", () => {
         ...(makeTransfer().items ?? []),
         {
           id: "item-2",
-          sourceType: "ocr_ticket",
+          sourceType: "rubber_bill",
           sourceId: "fedcba98-1234-4234-8234-1234567890ab",
-          customerName: "ลูกค้า OCR",
+          customerName: "ลูกค้าบิลยาง 2",
           amount: 250,
           netWeightAfterDeduction: 80,
           deductedAmount: 0,
@@ -162,10 +161,10 @@ test.describe("Money transfer 80mm print", () => {
     const html = renderMoneyTransferReceiptHtml(buildMoneyTransferReceiptModel(transfer, locations));
 
     expect(html).toContain("@page { size: 80mm auto;");
-    expect(html).toContain("รายการบิล/ใบชั่งต้นทาง (2)");
+    expect(html).toContain("รายการบิลยางต้นทาง (2)");
     expect(html).toContain("ยอดรายการต้นทางรวม");
-    expect(html).toContain("ใบชั่ง OCR #FEDCBA98");
-    expect(html).toContain("ลูกค้า OCR");
+    expect(html).toContain("บิลยาง #FEDCBA98");
+    expect(html).toContain("ลูกค้าบิลยาง 2");
     expect(html).toContain("1,250.00");
     expect(html).toContain("สลิปประกอบรายการ (2)");
     expect(html).toContain("สลิป 1");
@@ -193,9 +192,9 @@ test.describe("Money transfer 80mm print", () => {
         },
         {
           id: "ocr-item",
-          sourceType: "ocr_ticket",
+          sourceType: "rubber_bill",
           sourceId: "fedcba98-1234-4234-8234-1234567890ab",
-          customerName: "ลูกค้า OCR",
+          customerName: "ลูกค้าบิลยาง 2",
           amount: 900,
           netWeightAfterDeduction: 75,
           deductedAmount: 0,
@@ -211,30 +210,6 @@ test.describe("Money transfer 80mm print", () => {
     expect(html).toContain("ยอดสุทธิที่ต้องจ่ายลูกค้า (บาท)");
     expect(html).toContain("<span>2,572</span>");
     expect(html).not.toContain("<span>2,572.00</span>");
-    expect(html).not.toContain("หักนน.");
-  });
-
-  test("uses OCR amount after money deduction", () => {
-    expect(getOcrTransferAmount({ totalAmount: 1_250, moneyDeducted: 350 })).toBe(900);
-    expect(getOcrTransferAmount({ totalAmount: 1_250, moneyDeducted: null })).toBe(1_250);
-  });
-
-  test("labels a positive OCR money deduction without showing weight-deduction wording", () => {
-    const html = renderMoneyTransferReceiptHtml(buildMoneyTransferReceiptModel(makeTransfer({
-      items: [{
-        id: "ocr-item",
-        sourceType: "ocr_ticket",
-        sourceId: "fedcba98-1234-4234-8234-1234567890ab",
-        customerName: "ลูกค้า OCR",
-        amount: 900,
-        netWeightAfterDeduction: 75,
-        deductedAmount: 350,
-        netPayableAmount: 900,
-      }],
-    }), locations));
-
-    expect(html).toContain("ยอดหักเงิน (บาท)");
-    expect(html).toContain("350.00");
     expect(html).not.toContain("หักนน.");
   });
 

@@ -574,7 +574,7 @@ export function MoneyTransferModule({
                         onClick={() => void handleOpenDetail(t.id)}
                         disabled={(t.sourceCount ?? 0) === 0}
                         aria-label={`ดูรายละเอียดต้นทาง ${t.sourceCount ?? 0} รายการ รายการโอนเงิน ${shortTransferId(t.id)}`}
-                        title={(t.sourceCount ?? 0) > 0 ? "ดูรายละเอียดบิลยางและใบชั่ง OCR" : "ไม่มีบิลยางหรือใบชั่ง OCR"}
+                        title={(t.sourceCount ?? 0) > 0 ? "ดูรายละเอียดบิลยาง" : "ไม่มีบิลยาง"}
                         className="focus-ring inline-flex h-10 items-center justify-center gap-1.5 rounded-md bg-actionSecondary px-3 text-xs font-semibold text-white hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         <Eye size={15} />

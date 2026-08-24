@@ -52,7 +52,7 @@ export function MoneyTransferSourceDetailsModal({
             </thead>
             <tbody>
               {rows.map((row) => <tr key={row.id} data-source-id={row.sourceId} className="border-t border-black/5">
-                <td className="px-3 py-3">{row.sourceType === "rubber_bill" ? "บิลยาง" : "OCR"}</td>
+                <td className="px-3 py-3">บิลยาง</td>
                 <td className="px-3 py-3 font-mono font-semibold">{row.sourceNumber ?? "—"}</td>
                 <td className="px-3 py-3 text-right tabular-nums">{DECIMAL.format(row.netWeightAfterDeduction ?? 0)}</td>
                 <td className="px-3 py-3 text-right tabular-nums">{row.averagePrice == null ? "—" : MONEY.format(row.averagePrice)}</td>

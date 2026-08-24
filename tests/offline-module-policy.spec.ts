@@ -14,7 +14,6 @@ test("blocks every online-only navigation tab and falls back to Rubber Bills", (
     "customers",
     "transport",
     "money-transfer",
-    "ocr",
     "time-tracking",
     "rubber-export",
     "reports",

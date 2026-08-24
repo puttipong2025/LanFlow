@@ -5,7 +5,6 @@ import { resolve } from "node:path";
 const tables = [
   "src/components/CustomersModule.tsx",
   "src/components/TransportModule.tsx",
-  "src/components/OcrTicketUpload.tsx",
   "src/components/cash-counts/CashCountModule.tsx",
   "src/components/reports/ReportsModule.tsx",
   "src/components/MoneyTransferModule.tsx",
@@ -42,12 +41,13 @@ test("shared icon button preserves tooltip, accessible name, focus, and compact 
   expect(source).toContain('visibleLabel ? "px-3" : "w-10"');
 });
 
-test("rubber bill actions for evidence and deletion stay icon-only, with customer before bill number", () => {
+test("rubber bill actions for evidence, OCR source, and deletion stay icon-only, with customer before bill number", () => {
   const source = readFileSync(resolve("src/components/rubber-bills/RubberBillsTable.tsx"), "utf8");
   const header = source.match(/<thead[^>]*>([\s\S]*?)<\/thead>/)?.[1] ?? "";
 
   expect(header.indexOf("ชื่อลูกค้า")).toBeLessThan(header.indexOf("เลขที่บิล"));
   expect(source).toContain("size-10 shrink-0 items-center justify-center rounded-md bg-settings");
   expect(source).toContain("<Images size={16} />\n                    </button>");
+  expect(source).toContain('title="เปิดรูปต้นฉบับจาก OCR"');
   expect(source).toContain("<Trash2 size={16} />\n                    </button>");
 });

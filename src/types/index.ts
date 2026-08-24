@@ -128,6 +128,10 @@ export type RubberBill = {
   approvalRequestId?: string;
   approvalOperation?: RubberBillApprovalOperation;
   approvalReasons?: RubberBillApprovalReason[];
+  inputMethod?: "manual" | "ocr";
+  /** Opaque pending-create field; never render or persist outside the sync event. */
+  ocrUploadId?: string;
+  hasOcrSourceImage?: boolean;
 };
 
 export type BranchRubberReceiptCandidate = {
@@ -390,7 +394,7 @@ export type IncomeExpense = {
   deletedByName?: string;
   deletedByPhone?: string;
   syncErrorMessage?: string;
-  relationSourceType?: "money_transfer" | "rubber_bill_daily" | "rubber_export" | "ocr_ticket_daily" | "time_tracking_withdrawal" | "payroll_slip";
+  relationSourceType?: "money_transfer" | "rubber_bill_daily" | "rubber_export" | "time_tracking_withdrawal" | "payroll_slip";
   relationSourceId?: string;
   relationSourceLocationId?: string;
   relationSourceDate?: string;
@@ -429,9 +433,9 @@ export type AcidStockMovement = {
 export type QueueItem = {
   clientTempId: string;
   idempotencyKey: string;
-  entityType: "rubber_bill" | "income_expense" | "customer" | "ocr_ticket" | "transport_staff" | "money_transfer";
+  entityType: "rubber_bill" | "income_expense" | "customer" | "transport_staff" | "money_transfer";
   operationType: QueueOperation;
-  payload: RubberBill | IncomeExpense | Customer | OcrTicket | TransportStaff | MoneyTransfer;
+  payload: RubberBill | IncomeExpense | Customer | TransportStaff | MoneyTransfer;
   status: SyncStatus;
   createdAt: string;
   serverReceivedAt?: string;
@@ -482,35 +486,6 @@ export type Customer = {
   farms?: CustomerFarm[];
 };
 
-export type OcrTicket = {
-  id: string;
-  clientTempId?: string;
-  idempotencyKey?: string;
-  locationId: string;
-  fileName: string;
-  ticketId: string | null;
-  licensePlate: string | null;
-  dateIn: string | null;
-  weightIn: number | null;
-  weightOut: number | null;
-  weightNet: number | null;
-  weightDeducted: number | null;
-  weightRemaining: number | null;
-  totalAmount: number | null;
-  driveFileId?: string | null;
-  driveUrl?: string | null;
-  customerName?: string | null;
-  moneyDeducted?: number | null;
-  syncStatus?: SyncStatus;
-  recordStatus?: RecordStatus;
-  revisionNo?: number;
-  createdByName?: string;
-  createdByPhone?: string;
-  createdAt?: string;
-  updatedAt?: string;
-  reportLockNo?: string | null;
-};
-
 export type TransportStaffPlate = {
   id: string;
   plateNumber: string;
@@ -530,7 +505,7 @@ export type MoneyTransferSlip = {
 
 export type MoneyTransferItem = {
   id: string;
-  sourceType: 'rubber_bill' | 'ocr_ticket';
+  sourceType: 'rubber_bill';
   sourceId: string;
   customerName: string | null;
   amount: number;

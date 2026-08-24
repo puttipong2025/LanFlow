@@ -145,19 +145,7 @@ export default function ReportPrintPage() {
       </section>
 
       <section className="report-section">
-        <h2>2. อ่านใบชั่ง</h2>
-        <table className="report-table">
-          <thead><tr><th>วันที่</th><th>เลขที่</th><th>ลูกค้า</th><th>ทะเบียน</th><th className="num">ชั่งเข้า</th><th className="num">ชั่งออก</th><th className="num">สุทธิ</th><th className="num">หัก</th><th className="num">คงเหลือ</th><th className="num">ยอดเงิน</th></tr></thead>
-          <tbody>
-            {details.ocrTickets.length === 0 && <EmptyRow columns={10} />}
-            {details.ocrTickets.map((row, index) => <tr key={`${row.number}-${index}`}><td>{thaiDate(row.date)}</td><td>{row.number}</td><td>{row.customer}</td><td>{row.licensePlate}</td><td className="num">{quantity(row.weightIn)}</td><td className="num">{quantity(row.weightOut)}</td><td className="num">{quantity(row.weightNet)}</td><td className="num">{quantity(row.weightDeducted)}</td><td className="num">{quantity(row.weightRemaining)}</td><td className="num">{money(row.amount)}</td></tr>)}
-          </tbody>
-          <tfoot><tr><td colSpan={6}>รวม</td><td className="num">{quantity(totals.ocrNet)}</td><td></td><td className="num">{quantity(totals.ocrRemaining)}</td><td className="num">{money(totals.ocrAmount)}</td></tr></tfoot>
-        </table>
-      </section>
-
-      <section className="report-section">
-        <h2>3. รับ–จ่ายรวม</h2>
+        <h2>2. รับ–จ่ายรวม</h2>
         <table className="report-table">
           <thead><tr><th>วันที่</th><th>เลขที่</th><th>รายการ</th><th className="num">รายรับ</th><th className="num">รายจ่าย</th></tr></thead>
           <tbody>
@@ -172,7 +160,7 @@ export default function ReportPrintPage() {
       </section>
 
       <section className="report-section">
-        <h2>4. สต็อกสินค้า</h2>
+        <h2>3. สต็อกสินค้า</h2>
         <table className="report-table">
           <thead><tr><th>วันที่</th><th>เลขที่</th><th>สินค้า</th><th>ประเภท</th><th className="num">จำนวนเคลื่อนไหว</th><th className="num">ยอดเงินประกอบ</th></tr></thead>
           <tbody>
@@ -189,7 +177,7 @@ export default function ReportPrintPage() {
       </section>
 
       <section className="report-section">
-        <h2>5. เวลาและเงินเดือน</h2>
+        <h2>4. เวลาและเงินเดือน</h2>
         <table className="report-table">
           <thead><tr><th>วันที่</th><th>เลขที่</th><th>ประเภท</th><th>พนักงาน</th><th>รายละเอียด</th><th className="num">ชั่วโมง/วัน</th><th className="num">จำนวนเงิน</th></tr></thead>
           <tbody>
@@ -201,7 +189,7 @@ export default function ReportPrintPage() {
       </section>
 
       <section className="report-section">
-        <h2>6. โอนเงิน (ธนาคารเท่านั้น)</h2>
+        <h2>5. โอนเงิน (ธนาคารเท่านั้น)</h2>
         <table className="report-table">
           <thead><tr><th>วันที่</th><th>เลขที่</th><th>ทิศทาง</th><th>คู่รายการ</th><th>สถานะ</th><th className="num">ยอดที่ต้องจ่าย</th><th className="num">ยอดสลิป</th><th className="num">ค่าธรรมเนียม</th><th className="num">สาขาจ่าย</th></tr></thead>
           <tbody>

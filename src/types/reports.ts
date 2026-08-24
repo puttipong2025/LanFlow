@@ -39,18 +39,6 @@ export type ReportDetails = {
     deduction: number;
     net: number;
   }>;
-  ocrTickets: Array<{
-    date: string;
-    number: string;
-    customer: string;
-    licensePlate: string;
-    weightIn: number;
-    weightOut: number;
-    weightNet: number;
-    weightDeducted: number;
-    weightRemaining: number;
-    amount: number;
-  }>;
   incomeExpense: ReportLedgerRow[];
   stock: Array<{
     date: string;

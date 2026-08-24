@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
 
-type MoneyTransferSourceType = "rubber_bill" | "ocr_ticket";
+type MoneyTransferSourceType = "rubber_bill";
 
 export function useMoneyTransferSourceLocks(
   locationId: string,

@@ -7,7 +7,7 @@
 3 ตารางใหม่:
 - `money_transfers` (Parent) — เก็บข้อมูลหลักของรายการโอนเงิน
 - `money_transfer_slips` (Child 1) — สลิปธนาคาร 1-N ใบ
-- `money_transfer_items` (Child 2) — เชื่อมกับ `rubber_bills` / `ocr_tickets`
+- `money_transfer_items` (Child 2) — เชื่อมกับ `rubber_bills`
 - Unique index บน `(source_type, source_id)` เพื่อป้องกันเลือกบิลซ้ำ
 - RLS policies + service_role grants ครบ
 

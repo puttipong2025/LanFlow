@@ -6,10 +6,6 @@ const REPORT_ERROR_GROUPS = [
     keywords: ["rubber_bill", "rubber bill", "บิลยาง"],
   },
   {
-    label: "อ่านใบชั่ง",
-    keywords: ["ocr_ticket", "ocr ticket", "ใบชั่ง"],
-  },
-  {
     label: "รับ–จ่าย",
     keywords: ["income_expense", "income expense", "rubber_export", "rubber export", "รับ-จ่าย", "รับ–จ่าย"],
   },

@@ -66,6 +66,48 @@ function transferRow(id: string, locationId: string, overrides: Record<string, u
   };
 }
 
+function rubberBillRow(id: string, locationId: string, customerName: string) {
+  const billNo = `DELETE-${id.slice(0, 8)}`;
+  return {
+    id,
+    client_temp_id: id,
+    local_bill_no: billNo,
+    server_bill_no: billNo,
+    idempotency_key: `delete-source:${id}`,
+    sync_status: "synced",
+    record_status: "active",
+    location_id: locationId,
+    bill_no: billNo,
+    bill_date: "2026-08-09",
+    customer_name: customerName,
+    bill_type: "weighing",
+    weight: 100,
+    deduct_weight: 0,
+    rubber_value: 100,
+    average_price: 1,
+    deduction_total: 0,
+    net_total: 100,
+    server_received_at: new Date().toISOString(),
+    created_by_user_id: superAdminId,
+    created_by_name: "LanFlow super_admin",
+    created_by_phone: "0800000000",
+  };
+}
+
+function rubberBillItemRow(sourceId: string) {
+  return {
+    bill_id: sourceId,
+    item_type: "weigh",
+    description: "ชั่ง 1",
+    weight_in: 100,
+    weight_out: 0,
+    net_weight: 100,
+    price: 1,
+    total: 100,
+    sequence_no: 1,
+  };
+}
+
 test.describe.serial("Atomic money transfer deletion", () => {
   test("soft-deletes the parent, releases items, retains slips, and blocks bypasses", async () => {
     test.skip(!serviceRoleKey || !publishableKey, "Supabase test keys are required");
@@ -78,19 +120,12 @@ test.describe.serial("Atomic money transfer deletion", () => {
     const sourceId = crypto.randomUUID();
 
     try {
-      expect((await service.from("ocr_tickets").insert({
-        id: sourceId,
-        client_temp_id: sourceId,
-        idempotency_key: `delete-source:${sourceId}`,
-        location_id: locationId,
-        file_name: "atomic-delete.jpg",
-        ticket_id: `DELETE-${sourceId.slice(0, 8)}`,
-        customer_name: "ลูกค้าทดสอบ atomic delete",
-        total_amount: 100,
-        sync_status: "synced",
-        record_status: "active",
-        created_by_user_id: superAdminId,
-      })).error).toBeNull();
+      expect((await service.from("rubber_bills").insert(
+        rubberBillRow(sourceId, locationId, "ลูกค้าทดสอบ atomic delete"),
+      )).error).toBeNull();
+      expect((await service.from("rubber_bill_items").insert(
+        rubberBillItemRow(sourceId),
+      )).error).toBeNull();
 
       expect((await service.from("money_transfers").insert([
         transferRow(transferId, locationId),
@@ -103,7 +138,7 @@ test.describe.serial("Atomic money transfer deletion", () => {
 
       expect((await service.from("money_transfer_items").insert({
         transfer_id: transferId,
-        source_type: "ocr_ticket",
+        source_type: "rubber_bill",
         source_id: sourceId,
         customer_name: "ลูกค้าทดสอบ atomic delete",
         amount: 100,
@@ -191,7 +226,7 @@ test.describe.serial("Atomic money transfer deletion", () => {
         directDeleteId,
         cashTransferId,
       ]);
-      await service.from("ocr_tickets").delete().eq("id", sourceId);
+      await service.from("rubber_bills").delete().eq("id", sourceId);
     }
   });
 
@@ -205,26 +240,19 @@ test.describe.serial("Atomic money transfer deletion", () => {
     const reportId = crypto.randomUUID();
 
     try {
-      expect((await service.from("ocr_tickets").insert({
-        id: sourceId,
-        client_temp_id: sourceId,
-        idempotency_key: `delete-locked-source:${sourceId}`,
-        location_id: locationId,
-        file_name: "atomic-delete-locked.jpg",
-        ticket_id: `DELETE-LOCK-${sourceId.slice(0, 8)}`,
-        customer_name: "ลูกค้าทดสอบ report lock",
-        total_amount: 100,
-        sync_status: "synced",
-        record_status: "active",
-        created_by_user_id: superAdminId,
-      })).error).toBeNull();
+      expect((await service.from("rubber_bills").insert(
+        rubberBillRow(sourceId, locationId, "ลูกค้าทดสอบ report lock"),
+      )).error).toBeNull();
+      expect((await service.from("rubber_bill_items").insert(
+        rubberBillItemRow(sourceId),
+      )).error).toBeNull();
 
       expect((await service.from("money_transfers").insert(
         transferRow(transferId, locationId),
       )).error).toBeNull();
       expect((await service.from("money_transfer_items").insert({
         transfer_id: transferId,
-        source_type: "ocr_ticket",
+        source_type: "rubber_bill",
         source_id: sourceId,
         customer_name: "ลูกค้าทดสอบ report lock",
         amount: 100,
@@ -276,7 +304,7 @@ test.describe.serial("Atomic money transfer deletion", () => {
       await service.from("report_items").delete().eq("report_id", reportId);
       await service.from("report_batches").delete().eq("id", reportId);
       await service.from("money_transfers").delete().eq("id", transferId);
-      await service.from("ocr_tickets").delete().eq("id", sourceId);
+      await service.from("rubber_bills").delete().eq("id", sourceId);
     }
   });
 

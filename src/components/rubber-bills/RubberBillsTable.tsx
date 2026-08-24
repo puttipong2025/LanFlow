@@ -1,4 +1,4 @@
-import { Edit3, Eye, Images, Share2, Trash2 } from "lucide-react";
+import { Edit3, Eye, FileImage, Images, Share2, Trash2 } from "lucide-react";
 import { formatNumber } from "@/lib/format";
 import type { RubberBill } from "@/types";
 import { formatBillTimestamp, getDisplayBillNo } from "./bill-display";
@@ -19,6 +19,7 @@ export type RubberBillsTableProps = {
   onDelete: (bill: RubberBill) => void;
   onPrint: (bill: RubberBill) => void;
   onRetry: (bill: RubberBill) => void;
+  onOpenOcrSourceImage: (bill: RubberBill) => void;
   retryDisabled: boolean;
   deletingBillId?: string | null;
   getActionBlockReason?: (bill: RubberBill) => string | null;
@@ -56,6 +57,7 @@ export function RubberBillsTable({
   onDelete,
   onPrint,
   onRetry,
+  onOpenOcrSourceImage,
   retryDisabled,
   deletingBillId,
   getActionBlockReason,
@@ -144,6 +146,11 @@ export function RubberBillsTable({
                     >
                       <Images size={16} />
                     </button>}
+                    {bill.hasOcrSourceImage && (
+                      <button type="button" title="เปิดรูปต้นฉบับจาก OCR" aria-label="เปิดรูปต้นฉบับจาก OCR" onClick={() => onOpenOcrSourceImage(bill)} className="focus-ring inline-flex size-10 shrink-0 items-center justify-center rounded-md bg-river text-white shadow-sm hover:bg-river/90">
+                        <FileImage size={16} aria-hidden="true" />
+                      </button>
+                    )}
                     <button type="button" title={printBlockReason ?? "แชร์ PDF ใบรับซื้อยาง"} aria-label={printBlockReason ?? "แชร์ PDF ใบรับซื้อยาง"}
                       disabled={Boolean(printBlockReason)} onClick={() => onPrint(bill)}
                       className={`inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white hover:bg-actionSecondary/90 ${printBlockReason ? "cursor-not-allowed opacity-45" : ""}`}>
@@ -188,6 +195,9 @@ export function RubberBillsTable({
                           {bill.receivedAgeIsEstimated ? " · ประมาณการ" : ""}
                         </span>
                       </>
+                    )}
+                    {bill.inputMethod === "ocr" && (
+                      <span className="w-fit rounded-full bg-river/10 px-2 py-0.5 text-xs font-bold text-river">เพิ่มด้วย OCR</span>
                     )}
                   </div>
                 </td>

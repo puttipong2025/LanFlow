@@ -65,6 +65,7 @@ export function rubberBillFromSyncEvent(event: SyncEvent, ownerUserId: string): 
     clientRecordedAt: payload.clientRecordedAt,
     revisionNo: Number(payload.expectedRevisionNo ?? 0) + 1,
     recordStatus: "active",
+    inputMethod: payload.inputMethod === "ocr" ? "ocr" : "manual",
   };
 }
 

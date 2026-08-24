@@ -8,8 +8,6 @@ import { useAuthContext } from "@/components/AuthProvider";
 import type { Location, Profile } from "@/types";
 import { CustomersModule } from "./CustomersModule";
 import { TransportModule } from "./TransportModule";
-import { OcrTicketUpload } from "./OcrTicketUpload";
-import type { UploadItem } from "./OcrTicketUpload";
 import { MoneyTransferModule } from "./MoneyTransferModule";
 import { AdminModule } from "./AdminModule";
 import { TimeTrackingModule } from "./TimeTrackingModule";
@@ -48,10 +46,10 @@ import {
   isTabBlockedOffline,
   OFFLINE_FALLBACK_TAB,
 } from "@/lib/offline-module-policy";
-import { getOcrActionState } from "@/lib/ocr-action-state";
 import { isDeviceOnline } from "@/lib/connectivity";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { useServiceUnavailable } from "@/lib/service-health";
+import { useRubberBillOcrQueue, type RubberBillOcrQueueItem } from "@/hooks/useRubberBillOcrQueue";
 
 export function LanFlowApp() {
   const auth = useAuthContext();
@@ -72,10 +70,6 @@ export function LanFlowApp() {
     locationId: string;
     billDate?: string;
   } | null>(null);
-  const [pendingOcrTicketSource, setPendingOcrTicketSource] = useState<{
-    locationId: string;
-    ticketDate?: string;
-  } | null>(null);
   const [pendingRubberExportSource, setPendingRubberExportSource] = useState<{
     exportId: string;
     locationId: string;
@@ -83,8 +77,13 @@ export function LanFlowApp() {
   const [pendingCashCountId, setPendingCashCountId] = useState<string | null>(null);
   const [pendingEvidenceBillId, setPendingEvidenceBillId] = useState<string | null>(null);
   const handleInitialCashCountHandled = useCallback(() => setPendingCashCountId(null), []);
-  const [ocrUploadItems, setOcrUploadItems] = useState<UploadItem[]>([]);
+  const [ocrUploadItems, setOcrUploadItems] = useState<RubberBillOcrQueueItem[]>([]);
   const online = useOnlineStatus();
+  const rubberBillOcrQueue = useRubberBillOcrQueue({
+    items: ocrUploadItems,
+    setItems: setOcrUploadItems,
+    online,
+  });
   const [isLoaded, setIsLoaded] = useState(false);
   const serviceUnavailable = useServiceUnavailable();
 
@@ -219,9 +218,16 @@ export function LanFlowApp() {
     setActiveTab("rubber-evidence");
     setPendingEvidenceBillId(params.get("bill"));
   }, []);
-  const selectedOcrUploadItems = ocrUploadItems.filter(
-    (item) => item.locationId === selectedLocationId,
-  );
+  useEffect(() => {
+    if (ocrUploadItems.length === 0) return;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "มีรายการอ่านใบชั่งที่ยังไม่ได้เพิ่มเป็นบิลยาง";
+      return event.returnValue;
+    };
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [ocrUploadItems.length]);
   const visibleActionableBadgeCounts = useMemo(
     () => online ? actionableBadgeCounts : {},
     [actionableBadgeCounts, online],
@@ -232,14 +238,9 @@ export function LanFlowApp() {
     for (const location of locations) {
       totals[location.id] = Object.values(visibleActionableBadgeCounts[location.id] ?? {})
         .reduce((sum, count) => sum + (count ?? 0), 0);
-      if (online) {
-        totals[location.id] += getOcrActionState(
-          ocrUploadItems.filter((item) => item.locationId === location.id),
-        ).actionableCount;
-      }
     }
     return totals;
-  }, [locations, ocrUploadItems, online, visibleActionableBadgeCounts]);
+  }, [locations, visibleActionableBadgeCounts]);
 
   if (!isLoaded || !profile) {
     return (
@@ -376,17 +377,6 @@ export function LanFlowApp() {
     setActiveTab("rubber");
   }
 
-  function openOcrTicketSource(locationId: string, ticketDate?: string) {
-    if (!online) {
-      toast.error("อ่านใบชั่งใช้ได้เมื่อออนไลน์เท่านั้น");
-      return;
-    }
-    if (!canOpenSourceLocation(locationId)) return;
-    if (!changeSelectedLocation(locationId)) return;
-    setPendingOcrTicketSource({ locationId, ticketDate });
-    setActiveTab("ocr");
-  }
-
   function openRubberExportSource(exportId: string, locationId: string) {
     if (!online) {
       toast.error("ส่งออกยางใช้ได้เมื่อออนไลน์เท่านั้น");
@@ -415,7 +405,6 @@ export function LanFlowApp() {
           activeTab={activeTab}
           onTabChange={setActiveTab}
           profile={profile}
-          ocrUploadItems={selectedOcrUploadItems}
           moduleBadgeCounts={selectedModuleBadgeCounts}
           online={online}
         />
@@ -443,6 +432,7 @@ export function LanFlowApp() {
             }
             onInitialSearchHandled={() => setPendingRubberBillSource(null)}
             onOpenEvidence={openRubberEvidence}
+            ocrQueue={rubberBillOcrQueue}
           />
         )}
         {activeTab === "rubber-evidence" && (
@@ -487,20 +477,6 @@ export function LanFlowApp() {
             onInitialEditTransferHandled={() => setPendingMoneyTransferSource(null)}
           />
         )}
-        {activeTab === "ocr" && (
-          <OcrTicketUpload
-            locationId={selectedLocationId}
-            online={online}
-            uploadItems={ocrUploadItems}
-            setUploadItems={setOcrUploadItems}
-            initialDateFilter={
-              pendingOcrTicketSource?.locationId === selectedLocationId
-                ? pendingOcrTicketSource.ticketDate ?? null
-                : null
-            }
-            onInitialDateFilterHandled={() => setPendingOcrTicketSource(null)}
-          />
-        )}
         {activeTab === "cash" && (
           <IncomeExpenseModule
             selectedLocation={selectedLocation}
@@ -508,7 +484,6 @@ export function LanFlowApp() {
             onOpenMoneyTransferSource={canAccessMoneyTransfer ? openMoneyTransferSource : undefined}
             onOpenRubberBillSource={openRubberBillSource}
             onOpenRubberExportSource={openRubberExportSource}
-            onOpenOcrTicketSource={openOcrTicketSource}
             onOpenTimeTrackingSource={() => setActiveTab("time-tracking")}
           />
         )}

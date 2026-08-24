@@ -58,18 +58,6 @@ export function longReportDetails(): ReportDetails {
         net: 2_400,
       },
     ],
-    ocrTickets: [{
-      date: "2026-07-29",
-      number: "OCR-001",
-      customer: "ลูกค้าใบชั่ง",
-      licensePlate: "กข 1234",
-      weightIn: 800,
-      weightOut: 200,
-      weightNet: 600,
-      weightDeducted: 20,
-      weightRemaining: 580,
-      amount: 18_000,
-    }],
     incomeExpense,
     stock: [{
       date: "2026-07-29",

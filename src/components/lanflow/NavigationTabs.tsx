@@ -1,33 +1,23 @@
-import { Link2, Loader2, WifiOff } from "lucide-react";
+import { Link2, WifiOff } from "lucide-react";
 import { type Tab, tabs } from "@/components/lanflow/tabs";
 import type { Profile } from "@/types";
-import type { UploadItem } from "@/components/OcrTicketUpload";
 import type { ModuleBadgeCounts } from "@/hooks/useActionableBadges";
 import { canManageSystemFeatures, canUseMoneyTransfer, canUseReports } from "@/lib/permissions";
 import { getOfflineTabBlockMessage } from "@/lib/offline-module-policy";
-import { getOcrActionState } from "@/lib/ocr-action-state";
 
 export function NavigationTabs({
   activeTab,
   onTabChange,
   profile,
-  ocrUploadItems,
   moduleBadgeCounts,
   online
 }: {
   activeTab: Tab;
   onTabChange: (tab: Tab) => void;
   profile: Profile;
-  ocrUploadItems: UploadItem[];
   moduleBadgeCounts: ModuleBadgeCounts;
   online: boolean;
 }) {
-  const {
-    actionableCount: ocrActionableCount,
-    processingCount: ocrProcessing,
-    errorCount: ocrError,
-  } = getOcrActionState(ocrUploadItems);
-
   return (
     <nav className="mx-auto flex w-full max-w-7xl gap-2 overflow-x-auto px-3 pb-4 sm:flex-wrap sm:overflow-visible sm:px-4">
       {tabs.filter(tab => {
@@ -38,10 +28,7 @@ export function NavigationTabs({
       }).map((tab) => {
         const Icon = tab.icon;
         const active = activeTab === tab.id;
-        const isOcrTab = tab.id === "ocr";
-        const badgeCount = online
-          ? (moduleBadgeCounts[tab.id] ?? 0) + (isOcrTab ? ocrActionableCount : 0)
-          : 0;
+        const badgeCount = online ? (moduleBadgeCounts[tab.id] ?? 0) : 0;
         const offlineBlockMessage = online ? null : getOfflineTabBlockMessage(tab.id);
         const isOfflineBlocked = Boolean(offlineBlockMessage);
         const isReportPair = tab.id === "reports" || tab.id === "cash-count";
@@ -85,18 +72,9 @@ export function NavigationTabs({
               />
             )}
             {isOfflineBlocked && <WifiOff size={13} />}
-            {online && isOcrTab && ocrProcessing > 0 && (
-              <span title="กำลังประมวลผล OCR" aria-label="กำลังประมวลผล OCR">
-                <Loader2 size={10} className="animate-spin" />
-              </span>
-            )}
             {badgeCount > 0 && (
               <span
-                className={`ml-0.5 min-w-5 rounded-full px-1.5 py-0.5 text-center text-[10px] font-extrabold leading-none ${
-                  isOcrTab && ocrError > 0
-                    ? "bg-clay text-white"
-                    : "bg-amber text-white"
-                }`}
+                className="ml-0.5 min-w-5 rounded-full bg-amber px-1.5 py-0.5 text-center text-[10px] font-extrabold leading-none text-white"
                 title={`${badgeCount} งานที่จัดการได้`}
               >
                 {badgeCount > 99 ? "99+" : badgeCount}

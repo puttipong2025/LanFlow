@@ -338,7 +338,7 @@ API response status:
 
 กฎสำหรับข้อมูลที่ derive จากโมดูลอื่น:
 
-- ถ้า row ใน UI ไม่ใช่ source table ของตัวเอง แต่ derive จากโมดูลอื่น เช่น รายรับ/รายจ่ายที่ดึงจาก `money_transfers`, `rubber_bills`, หรือ `ocr_tickets` ห้าม enqueue ลง IndexedDB queue ของ module ปลายทาง
+- ถ้า row ใน UI ไม่ใช่ source table ของตัวเอง แต่ derive จากโมดูลอื่น เช่น รายรับ/รายจ่ายที่ดึงจาก `money_transfers` หรือ `rubber_bills` ห้าม enqueue ลง IndexedDB queue ของ module ปลายทาง
 - Derived row ต้องเปลี่ยนหรือหายตาม source record เสมอ ไม่ควร copy เป็น row ใหม่ถ้าไม่มีเหตุผลด้าน audit ที่ชัดเจน
 - Derived row ต้องมี UI lock ชัดเจนและบอกผู้ใช้ว่าต้องแก้จากโมดูลต้นทาง
 - ถ้า derived row มี action เปิดต้นทาง ให้แสดงเฉพาะเมื่อผู้ใช้มีสิทธิ์สาขาต้นทางหรือเป็น `super_admin`
@@ -448,14 +448,12 @@ errorMessage
 ตัวอย่างปัจจุบัน:
 
 - Rubber Bill ที่อยู่ใน `money_transfer_items` แก้/ลบไม่ได้
-- OCR Ticket ที่อยู่ใน `money_transfer_items` แก้/ลบไม่ได้
 - ต้องลบ item ออกจากรายการโอนก่อน
 - RPC return `failed` พร้อมข้อความไทย เช่น `รายการนี้ถูกล็อก ต้องลบ item ออกจากรายการโอนก่อน`
 - รายรับใน Income/Expense ที่ derive จาก `money_transfers.transfer_type = 'branch'` และ `target_location_id` ตรงสาขาปัจจุบัน แก้/ลบจาก Income/Expense ไม่ได้ ต้องแก้หรือลบที่รายการโอนเงินสาขาต้นทาง
 - รายจ่ายใน Income/Expense ที่ derive จาก `money_transfers.transfer_type = 'branch'`, `location_id` ตรงสาขาปัจจุบัน, และ `target_location_id != location_id` แก้/ลบจาก Income/Expense ไม่ได้ ต้องแก้หรือลบที่รายการโอนเงินสาขาต้นทาง
 - รายจ่ายใน Income/Expense ที่ derive จาก `money_transfers.transfer_type = 'customer'`, `transfer_status = 'branch_and_transfer'`, และ `branch_paid_amount` แก้/ลบจาก Income/Expense ไม่ได้ ต้องแก้หรือลบที่รายการโอนเงินลูกค้าต้นทาง
 - รายจ่ายใน Income/Expense ที่ derive จาก `rubber_bills` แบบรวมยอด `net_total` ต่อ `bill_date` สำหรับบิลที่ยังไม่อยู่ใน `money_transfer_items.source_type = 'rubber_bill'` แก้/ลบจาก Income/Expense ไม่ได้ ต้องแก้หรือลบที่รายการบิลยางต้นทาง
-- รายจ่ายใน Income/Expense ที่ derive จาก `ocr_tickets` แบบรวมยอด `total_amount` ต่อ `date_in` สำหรับ OCR ticket ที่ยังไม่อยู่ใน `money_transfer_items.source_type = 'ocr_ticket'` แก้/ลบจาก Income/Expense ไม่ได้ ต้องแก้หรือลบที่โมดูล OCR บิลยางต้นทาง
 - branch transfer จากโมดูลรับ-จ่าย (`โยกเงินไปสาขาอื่น`) ต้องใช้สิทธิ์สาขาต้นทางเท่านั้น; สาขาปลายทางเป็น dropdown จากสาขา active ทั้งหมด และต้องไม่ใช่สาขาปัจจุบัน
 - branch transfer จากโมดูลโอนเงิน (`โอนให้สาขา`) คือสำนักงานใหญ่/CEO โอนให้สาขา ไม่ใช่สาขาโยกเงินหากัน; ต้องอนุญาตให้เลือกสาขาปัจจุบันเป็นสาขารับเงินได้ และควรบันทึก `location_id = target_location_id` เพื่อไม่สร้างรายจ่ายขาออกในรับ-จ่าย
 - derived row ที่ผู้ใช้มีสิทธิ์สาขาต้นทาง, เป็น `super_admin`, หรือมีสิทธิ์ผู้จัดการระบบ ควรมี action เปิดรายการต้นทาง; ถ้าไม่มีสิทธิ์สาขาต้นทางต้องไม่แสดงปุ่มและห้ามบังคับสลับสาขา
@@ -471,7 +469,7 @@ errorMessage
 
 กฎเพิ่มเติมสำหรับ derived money relation:
 
-1. ต้องนิยาม source of truth ให้ชัด เช่น `money_transfers`, `rubber_bills`, หรือ `ocr_tickets` เป็น source ของ derived income/expense
+1. ต้องนิยาม source of truth ให้ชัด เช่น `money_transfers` หรือ `rubber_bills` เป็น source ของ derived income/expense
 2. ถ้าใช้ derived row แทนการสร้าง row จริงใน table ปลายทาง ต้อง lock action ใน UI เพราะไม่มี mutation path ใน module ปลายทาง
 3. ถ้าสร้าง row จริงใน table ปลายทางแทน derived row ต้องมี relation id, RPC/trigger enforcement, update/delete cascade หรือ sync logic ที่ทำให้ข้อมูลสองฝั่งไม่แยกกัน
 4. ต้องระบุ RLS ให้ปลายทางอ่าน source ได้เท่าที่จำเป็น เช่น branch target อ่าน branch transfer ที่ชี้มายังสาขาตัวเองได้ แต่เขียนไม่ได้

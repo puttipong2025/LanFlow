@@ -122,6 +122,10 @@ function buildRpcPayload(
     createdByPhone: bill.createdByPhone,
     clientRecordedAt: bill.clientRecordedAt || new Date().toISOString(),
     clientCreatedAt: bill.clientCreatedAt || new Date().toISOString(),
+    ...(operation === "create" ? {
+      inputMethod: bill.inputMethod ?? "manual",
+      ...(bill.inputMethod === "ocr" && bill.ocrUploadId ? { ocrUploadId: bill.ocrUploadId } : {}),
+    } : {}),
     deletedByName,
     deletedByPhone,
     items
@@ -246,7 +250,7 @@ export function useRubberBills(
         for (let offset = 0; ; offset += 1_000) {
           const { data: pageRows, error: billsError } = await supabase
             .from("rubber_bills")
-            .select("*, report_lock_no")
+            .select("id,client_temp_id,local_bill_no,server_bill_no,idempotency_key,location_id,bill_no,bill_date,customer_id,customer_name,bill_type,deduct_weight,weight,net_weight,rubber_value,net_rubber_value,average_price,deduction_total,payable_before_rounding,net_total,acid_pack_count,configured_price_snapshot,approval_state,approved_by_name,approval_revision_no,created_by_user_id,created_by_name,created_by_phone,client_created_at,created_at,client_recorded_at,server_received_at,revision_no,record_status,deleted_at,deleted_by_name,deleted_by_phone,report_lock_no,source_rubber_export_id,source_export_no,received_at,received_age_hours,received_age_is_estimated,input_method,has_ocr_source_image")
             .eq("location_id", locationId)
             .eq("record_status", "active")
             .order("created_at", { ascending: false })
@@ -379,6 +383,8 @@ export function useRubberBills(
               receivedAgeHours:
                 row.received_age_hours == null ? null : Number(row.received_age_hours),
               receivedAgeIsEstimated: row.received_age_is_estimated ?? null
+              ,inputMethod: row.input_method === "ocr" ? "ocr" : "manual"
+              ,hasOcrSourceImage: row.has_ocr_source_image === true
             };
           });
 

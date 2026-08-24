@@ -99,7 +99,7 @@ export function buildMoneyTransferReceiptModel(
     }));
   const items = (transfer.items ?? []).map((item) => ({
     ...item,
-    sourceLabel: item.sourceType === "rubber_bill" ? "บิลยาง" : "ใบชั่ง OCR",
+    sourceLabel: "บิลยาง",
     shortSourceId: shortTransferId(item.sourceId),
   }));
   const slipTotal = slips.reduce((sum, slip) => sum + slip.amount, 0);
@@ -188,7 +188,7 @@ export function renderMoneyTransferReceiptHtml(model: MoneyTransferReceiptModel)
     model.accountNumber && `<div class="row"><span>เลขบัญชี</span><strong>${h(model.accountNumber)}</strong></div>`,
   ].filter(Boolean).join("");
   const itemRows = model.items.length === 0
-    ? '<div class="muted">ไม่มีรายการบิล/ใบชั่งต้นทาง</div>'
+    ? '<div class="muted">ไม่มีรายการบิลยางต้นทาง</div>'
     : model.items.map((item, index) => {
       const deductionLabel = "ยอดหักเงิน (บาท)";
       return `
@@ -251,7 +251,7 @@ ${model.isUnfinished ? '<div class="warning">รายการยังไม�
 ${model.items.length > 0 ? `<div class="row"><span>ยอดรายการต้นทางรวม</span><strong>${money(model.sourceItemTotal)}</strong></div>` : ""}
 ${model.branchPaidAmount > 0 ? `<div class="row"><span>สาขาจ่าย</span><strong>${money(model.branchPaidAmount)}</strong></div>` : ""}
 <div class="row"><span>ส่วนต่าง</span><strong>${money(model.difference)}</strong></div>
-<div class="section"><div class="section-title">รายการบิล/ใบชั่งต้นทาง (${model.items.length})</div>${itemRows}</div>
+<div class="section"><div class="section-title">รายการบิลยางต้นทาง (${model.items.length})</div>${itemRows}</div>
 <div class="section"><div class="section-title">สลิปประกอบรายการ (${model.slips.length})</div>${slipRows}</div>
 <div class="section">
   <div class="row"><span>ผู้สร้าง</span><strong>${h(model.createdByName)}</strong></div>

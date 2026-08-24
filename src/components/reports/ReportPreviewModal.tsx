@@ -258,18 +258,7 @@ export function ReportPreviewModal({
               </div>
             </Section>
 
-            <Section title="2. อ่านใบชั่ง">
-              <ReportTable minWidth="min-w-[76rem]">
-                <thead><tr><th className={headerClass}>วันที่</th><th className={headerClass}>เลขที่</th><th className={headerClass}>ลูกค้า</th><th className={headerClass}>ทะเบียน</th><th className={numberHeaderClass}>ชั่งเข้า</th><th className={numberHeaderClass}>ชั่งออก</th><th className={numberHeaderClass}>สุทธิ</th><th className={numberHeaderClass}>หัก</th><th className={numberHeaderClass}>คงเหลือ</th><th className={numberHeaderClass}>ยอดเงิน</th></tr></thead>
-                <tbody>
-                  {details.ocrTickets.length === 0 && <EmptyRow columns={10} />}
-                  {details.ocrTickets.map((row, index) => <tr key={`${row.number}-${index}`}><td className={cellClass}>{formatThaiDate(row.date)}</td><td className={cellClass}>{row.number}</td><td className={cellClass}>{row.customer}</td><td className={cellClass}>{row.licensePlate}</td><td className={numberCellClass}>{formatQuantity(row.weightIn)}</td><td className={numberCellClass}>{formatQuantity(row.weightOut)}</td><td className={numberCellClass}>{formatQuantity(row.weightNet)}</td><td className={numberCellClass}>{formatQuantity(row.weightDeducted)}</td><td className={numberCellClass}>{formatQuantity(row.weightRemaining)}</td><td className={numberCellClass}>{formatMoney(row.amount)}</td></tr>)}
-                </tbody>
-                <tfoot><tr><TotalCell colSpan={6}>รวม</TotalCell><TotalCell className="text-right">{formatQuantity(presentation.totals.ocrNet)}</TotalCell><TotalCell /><TotalCell className="text-right">{formatQuantity(presentation.totals.ocrRemaining)}</TotalCell><TotalCell className="text-right">{formatMoney(presentation.totals.ocrAmount)}</TotalCell></tr></tfoot>
-              </ReportTable>
-            </Section>
-
-            <Section title="3. รับ–จ่ายรวม">
+            <Section title="2. รับ–จ่ายรวม">
               <ReportTable>
                 <thead><tr><th className={headerClass}>วันที่</th><th className={headerClass}>เลขที่</th><th className={headerClass}>รายการ</th><th className={numberHeaderClass}>รายรับ</th><th className={numberHeaderClass}>รายจ่าย</th></tr></thead>
                 <tbody>
@@ -280,7 +269,7 @@ export function ReportPreviewModal({
               </ReportTable>
             </Section>
 
-            <Section title="4. สต็อกสินค้า">
+            <Section title="3. สต็อกสินค้า">
               <ReportTable>
                 <thead><tr><th className={headerClass}>วันที่</th><th className={headerClass}>เลขที่</th><th className={headerClass}>สินค้า</th><th className={headerClass}>ประเภท</th><th className={numberHeaderClass}>จำนวนเคลื่อนไหว</th><th className={numberHeaderClass}>ยอดเงินประกอบ</th></tr></thead>
                 <tbody>
@@ -292,7 +281,7 @@ export function ReportPreviewModal({
               <p className="mt-3 text-pretty text-right text-sm font-bold tabular-nums text-ink">ยอดคงเหลือ ณ cutoff: {details.stockBalances.length === 0 ? "ไม่มีรายการ" : details.stockBalances.map((row) => `${row.product} ${formatQuantity(row.quantity)}`).join(" · ")}</p>
             </Section>
 
-            <Section title="5. เวลาและเงินเดือน">
+            <Section title="4. เวลาและเงินเดือน">
               <ReportTable minWidth="min-w-[70rem]">
                 <thead><tr><th className={headerClass}>วันที่</th><th className={headerClass}>เลขที่</th><th className={headerClass}>ประเภท</th><th className={headerClass}>พนักงาน</th><th className={headerClass}>รายละเอียด</th><th className={numberHeaderClass}>ชั่วโมง/วัน</th><th className={numberHeaderClass}>จำนวนเงิน</th></tr></thead>
                 <tbody>
@@ -303,7 +292,7 @@ export function ReportPreviewModal({
               </ReportTable>
             </Section>
 
-            <Section title="6. โอนเงิน (ธนาคารเท่านั้น)">
+            <Section title="5. โอนเงิน (ธนาคารเท่านั้น)">
               <ReportTable minWidth="min-w-[72rem]">
                 <thead><tr><th className={headerClass}>วันที่</th><th className={headerClass}>เลขที่</th><th className={headerClass}>ทิศทาง</th><th className={headerClass}>คู่รายการ</th><th className={headerClass}>สถานะ</th><th className={numberHeaderClass}>ยอดที่ต้องจ่าย</th><th className={numberHeaderClass}>ยอดสลิป</th><th className={numberHeaderClass}>ค่าธรรมเนียม</th><th className={numberHeaderClass}>สาขาจ่าย</th></tr></thead>
                 <tbody>

@@ -76,7 +76,6 @@ export function IncomeExpenseModule({
   onOpenMoneyTransferSource,
   onOpenRubberBillSource,
   onOpenRubberExportSource,
-  onOpenOcrTicketSource,
   onOpenTimeTrackingSource,
 }: {
   selectedLocation: Location;
@@ -84,7 +83,6 @@ export function IncomeExpenseModule({
   onOpenMoneyTransferSource?: (transferId: string, locationId: string) => void;
   onOpenRubberBillSource?: (locationId: string, billDate?: string) => void;
   onOpenRubberExportSource?: (exportId: string, locationId: string) => void;
-  onOpenOcrTicketSource?: (locationId: string, ticketDate?: string) => void;
   onOpenTimeTrackingSource?: (sourceId: string, sourceType: "time_tracking_withdrawal" | "payroll_slip") => void;
 }) {
   const pdfShare = useSharePdf();
@@ -665,11 +663,6 @@ export function IncomeExpenseModule({
                   onOpenRubberBillSource &&
                   canAccessSourceLocation(profile, sourceLocationId)
                 );
-                const canOpenOcrTicketSource = Boolean(
-                  transaction.relationSourceType === "ocr_ticket_daily" &&
-                  onOpenOcrTicketSource &&
-                  canAccessSourceLocation(profile, sourceLocationId)
-                );
                 const canOpenRubberExportSource = Boolean(
                   transaction.relationSourceType === "rubber_export" &&
                   transaction.relationSourceId &&
@@ -682,7 +675,7 @@ export function IncomeExpenseModule({
                   onOpenTimeTrackingSource &&
                   (profile.role === "admin" || profile.role === "super_admin")
                 );
-                const canOpenSource = Boolean(cashTransferId) || canOpenMoneyTransferSource || canOpenRubberBillSource || canOpenRubberExportSource || canOpenOcrTicketSource || canOpenTimeTrackingSource;
+                const canOpenSource = Boolean(cashTransferId) || canOpenMoneyTransferSource || canOpenRubberBillSource || canOpenRubberExportSource || canOpenTimeTrackingSource;
                 const openSourceLabel = transaction.relationSourceType === "rubber_export"
                   ? "ดูรายการส่งออกยาง"
                   : "เปิดรายการต้นทาง";
@@ -699,10 +692,6 @@ export function IncomeExpenseModule({
                   }
                   if (canOpenRubberExportSource) {
                     onOpenRubberExportSource?.(transaction.relationSourceId!, sourceLocationId);
-                    return;
-                  }
-                  if (canOpenOcrTicketSource) {
-                    onOpenOcrTicketSource?.(sourceLocationId, transaction.relationSourceDate);
                     return;
                   }
                   if (canOpenTimeTrackingSource) {

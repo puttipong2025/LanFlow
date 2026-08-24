@@ -93,5 +93,7 @@ export function mapRubberBillFeedRow(row: any): RubberBill {
     receivedAt: row.received_at ?? null,
     receivedAgeHours: row.received_age_hours == null ? null : Number(row.received_age_hours),
     receivedAgeIsEstimated: row.received_age_is_estimated ?? null,
+    inputMethod: row.input_method === "ocr" ? "ocr" : "manual",
+    hasOcrSourceImage: row.has_ocr_source_image === true,
   };
 }

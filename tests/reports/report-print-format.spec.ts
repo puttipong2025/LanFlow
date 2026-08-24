@@ -31,7 +31,6 @@ test("prints rubber payable as whole baht while preserving two-decimal money fie
       deduction: 0,
       net: 2_572,
     }],
-    ocrTickets: [],
     incomeExpense: [],
     stock: [],
     stockBalances: [],

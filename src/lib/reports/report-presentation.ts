@@ -98,9 +98,6 @@ export function buildReportPresentation(details: ReportDetails) {
     branchReceiptRubberBills: details.rubberBills.filter((row) => row.customerGroup === "branch_receipt"),
     incomeExpense,
     totals: {
-      ocrNet: details.ocrTickets.reduce((sum, row) => sum + row.weightNet, 0),
-      ocrRemaining: details.ocrTickets.reduce((sum, row) => sum + row.weightRemaining, 0),
-      ocrAmount: details.ocrTickets.reduce((sum, row) => sum + row.amount, 0),
       income,
       expense,
       balance: income - expense,

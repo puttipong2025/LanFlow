@@ -1,5 +1,5 @@
 import { toast } from "sonner";
-import { Save, WifiOff } from "lucide-react";
+import { FileImage, Save, WifiOff } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -16,6 +16,8 @@ import { useAcidStock } from "@/hooks/useAcidStock";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { usePersistentFormDraft } from "@/hooks/usePersistentFormDraft";
 import { appSwal } from "@/lib/swal";
+import type { RubberBillOcrInitialDraft } from "@/hooks/useRubberBillOcrQueue";
+import { openRubberBillOcrSourceImage } from "@/lib/rubber-bills/open-ocr-source-image";
 
 import type { Location, Profile, RubberBill } from "@/types";
 import { ModalShell } from "@/components/shared/ModalShell";
@@ -53,6 +55,7 @@ export function RubberBillModal({
   priceTimeExempt = false,
   nonCurrentDateRequiresApproval = false,
   customers,
+  initialOcrDraft,
   onClose,
   onSave
 }: {
@@ -63,6 +66,7 @@ export function RubberBillModal({
   priceTimeExempt?: boolean;
   nonCurrentDateRequiresApproval?: boolean;
   customers: RubberBillCustomerOption[];
+  initialOcrDraft?: RubberBillOcrInitialDraft | null;
   onClose: () => void;
   onSave: (bill: RubberBill) => boolean | void | Promise<boolean | void>;
 }) {
@@ -77,18 +81,18 @@ export function RubberBillModal({
       {
         id: makeClientTempId("weigh"),
         label: "ชั่ง1",
-        inWeight: 0,
-        outWeight: 0,
-        netWeight: bill?.weight ?? 0,
-        price: 0
+        inWeight: initialOcrDraft?.inWeight ?? 0,
+        outWeight: initialOcrDraft?.outWeight ?? 0,
+        netWeight: Math.max((initialOcrDraft?.inWeight ?? 0) - (initialOcrDraft?.outWeight ?? 0), 0),
+        price: initialOcrDraft?.suggestedPrice ?? 0
       }
     ];
   });
   const [stockDeductionItems, setStockDeductionItems] = useState<RubberStockDeductionItem[]>(() => bill?.acidItems ?? []);
   const [debtItems, setDebtItems] = useState<RubberDebtItem[]>(() => bill?.debtItems ?? (bill?.debtItem ? [bill.debtItem] : []));
-  const [weightDeduct, setWeightDeduct] = useState(bill?.deductWeight ?? 0);
-  const [isWeightDeductOpen, setIsWeightDeductOpen] = useState(() => (bill?.deductWeight ?? 0) !== 0);
-  const [billDate, setBillDate] = useState(bill?.billDate ?? todayInputValue());
+  const [weightDeduct, setWeightDeduct] = useState(bill?.deductWeight ?? initialOcrDraft?.deductWeight ?? 0);
+  const [isWeightDeductOpen, setIsWeightDeductOpen] = useState(() => (bill?.deductWeight ?? initialOcrDraft?.deductWeight ?? 0) !== 0);
+  const [billDate, setBillDate] = useState(bill?.billDate ?? initialOcrDraft?.billDate ?? todayInputValue());
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submitLockRef = useRef(false);
@@ -136,7 +140,7 @@ export function RubberBillModal({
       locationId: selectedLocation.id,
       formType: "rubber-bill",
     },
-    enabled: !bill,
+    enabled: !bill && !initialOcrDraft,
     value: draftValue,
     onRestore: (draft) => {
       setBillDate(todayInputValue());
@@ -412,8 +416,10 @@ export function RubberBillModal({
       serverReceivedAt: bill?.serverReceivedAt,
       revisionNo: bill?.revisionNo ?? 0,
       recordStatus: bill?.recordStatus ?? "active",
+      inputMethod: initialOcrDraft ? "ocr" : (bill?.inputMethod ?? "manual"),
+      ocrUploadId: initialOcrDraft?.uploadId,
     });
-    if (saved !== false && !bill) await clearDraft();
+    if (saved !== false && !bill && !initialOcrDraft) await clearDraft();
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -432,7 +438,7 @@ export function RubberBillModal({
 
   async function handleClose() {
     if (submitLockRef.current) return;
-    if (bill) {
+    if (bill || initialOcrDraft) {
       onClose();
       return;
     }
@@ -454,6 +460,15 @@ export function RubberBillModal({
     onClose();
   }
 
+  async function openOcrSourceImage() {
+    if (!bill?.hasOcrSourceImage) return;
+    try {
+      await openRubberBillOcrSourceImage(bill.id);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "เปิดรูปต้นฉบับจาก OCR ไม่สำเร็จ");
+    }
+  }
+
 
   return (
     <ModalShell
@@ -464,6 +479,12 @@ export function RubberBillModal({
       size="wide"
     >
       <form onSubmit={handleSubmit} className="space-y-0" noValidate>
+        {bill?.inputMethod === "ocr" && (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-river/15 bg-river/5 p-3 text-sm text-river">
+            <span className="font-semibold">เพิ่มด้วย OCR · รูปต้นฉบับนี้ไม่ใช่หลักฐานน้ำหนัก</span>
+            {bill.hasOcrSourceImage && <button type="button" onClick={() => void openOcrSourceImage()} className="focus-ring inline-flex h-10 items-center gap-2 rounded-md border border-river/30 bg-white px-3 font-semibold text-river hover:bg-river/5"><FileImage size={16} aria-hidden="true" />เปิดรูปต้นฉบับ</button>}
+          </div>
+        )}
         {validationErrors.length > 0 && (
           <div
             ref={validationSummaryRef}
@@ -575,6 +596,11 @@ export function RubberBillModal({
 
         <section className="bg-mint/45 p-3 sm:p-4">
           <h3 className="mb-3 font-bold text-ink">ชั่งสินค้า</h3>
+          {initialOcrDraft?.ocrTotal != null && Math.round(calculation.netTotal) !== Math.round(initialOcrDraft.ocrTotal) && (
+            <p role="status" className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              ยอดจาก OCR {initialOcrDraft.ocrTotal.toLocaleString("th-TH", { minimumFractionDigits: 2 })} บาท ไม่ตรงกับยอดตามสูตรบิล {calculation.netTotal.toLocaleString("th-TH", { minimumFractionDigits: 2 })} บาท — ระบบจะใช้ยอดตามสูตรบิล
+            </p>
+          )}
           {!priceTimeExempt && configuredPrice != null && (
             <div className={`mb-3 rounded-md border px-3 py-2 text-sm ${
               exceedsConfiguredPrice

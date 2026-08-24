@@ -24,7 +24,6 @@ export const moneyFlowQueryKeys = {
     ["moneyTransferSources", locationId, sourceType, search] as const,
   moneyTransferSourceLocks: (locationId: string, sourceType: string) =>
     ["moneyTransferSourceLocks", locationId, sourceType] as const,
-  ocrTickets: (locationId: string) => ["ocrTickets", locationId] as const,
   rubberBillApprovalMarkers: (locationId: string) =>
     ["rubberBillApprovalMarkers", locationId] as const,
   rubberBillApprovalRequests: () => ["rubberBillApprovalRequests"] as const,

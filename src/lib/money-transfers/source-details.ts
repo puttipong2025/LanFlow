@@ -11,19 +11,10 @@ type SourceRubberBill = {
   serverCreatedAt?: string | null;
 };
 
-type SourceOcrTicket = {
-  id: string;
-  ticketId: string | null;
-  weightRemaining: number | null;
-  totalAmount: number | null;
-  moneyDeducted?: number | null;
-  createdAt?: string | null;
-};
-
 export type MoneyTransferSourceDetailRow = {
   sourceId: string;
   sourceType: MoneyTransferItem["sourceType"];
-  sourceLabel: "บิลยาง" | "OCR";
+  sourceLabel: "บิลยาง";
   sourceNumber: string;
   createdAt: string | null;
   netWeight: number | null;
@@ -61,7 +52,7 @@ function missingRow(item: MoneyTransferItem): MoneyTransferSourceDetailRow {
   return {
     sourceId: item.sourceId,
     sourceType: item.sourceType,
-    sourceLabel: item.sourceType === "rubber_bill" ? "บิลยาง" : "OCR",
+    sourceLabel: "บิลยาง",
     sourceNumber: "ไม่พบข้อมูลต้นทาง",
     createdAt: null,
     netWeight: null,
@@ -76,55 +67,27 @@ function missingRow(item: MoneyTransferItem): MoneyTransferSourceDetailRow {
 export function buildMoneyTransferSourceDetails({
   items,
   rubberBills,
-  ocrTickets,
 }: {
   items: MoneyTransferItem[];
   rubberBills: SourceRubberBill[];
-  ocrTickets: SourceOcrTicket[];
 }) {
   const rubberBillsById = new Map(rubberBills.map((bill) => [bill.id, bill]));
-  const ocrTicketsById = new Map(ocrTickets.map((ticket) => [ticket.id, ticket]));
 
   const rows = items.map((item): MoneyTransferSourceDetailRow => {
-    if (item.sourceType === "rubber_bill") {
-      const bill = rubberBillsById.get(item.sourceId);
-      if (!bill) return missingRow(item);
-
-      return {
-        sourceId: item.sourceId,
-        sourceType: item.sourceType,
-        sourceLabel: "บิลยาง",
-        sourceNumber: bill.billNo,
-        createdAt: bill.serverCreatedAt ?? null,
-        netWeight: finiteOrNull(bill.netWeight),
-        averagePrice: finiteOrNull(bill.price),
-        rubberValue: finiteOrNull(bill.rubberValue),
-        deductedAmount: finiteOrNull(bill.deductionTotal),
-        netPayableAmount: finiteOrNull(bill.netTotal),
-        isMissing: false,
-      };
-    }
-
-    const ticket = ocrTicketsById.get(item.sourceId);
-    if (!ticket) return missingRow(item);
-
-    const netWeight = finiteOrNull(ticket.weightRemaining);
-    const rubberValue = finiteOrNull(ticket.totalAmount);
-    const deductedAmount = finiteOrNull(ticket.moneyDeducted) ?? 0;
+    const bill = rubberBillsById.get(item.sourceId);
+    if (!bill) return missingRow(item);
 
     return {
       sourceId: item.sourceId,
       sourceType: item.sourceType,
-      sourceLabel: "OCR",
-      sourceNumber: ticket.ticketId || "—",
-      createdAt: ticket.createdAt ?? null,
-      netWeight,
-      averagePrice: rubberValue != null && netWeight != null && netWeight > 0
-        ? roundToTwo(rubberValue / netWeight)
-        : null,
-      rubberValue,
-      deductedAmount,
-      netPayableAmount: rubberValue == null ? null : rubberValue - deductedAmount,
+      sourceLabel: "บิลยาง",
+      sourceNumber: bill.billNo,
+      createdAt: bill.serverCreatedAt ?? null,
+      netWeight: finiteOrNull(bill.netWeight),
+      averagePrice: finiteOrNull(bill.price),
+      rubberValue: finiteOrNull(bill.rubberValue),
+      deductedAmount: finiteOrNull(bill.deductionTotal),
+      netPayableAmount: finiteOrNull(bill.netTotal),
       isMissing: false,
     };
   }).sort((a, b) => {

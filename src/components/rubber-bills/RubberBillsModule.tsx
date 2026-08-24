@@ -1,4 +1,4 @@
-import { Clock3, PackagePlus, Plus, Settings, Ticket } from "lucide-react";
+import { Clock3, FileScan, PackagePlus, Plus, RefreshCw, Settings, Ticket } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -25,6 +25,7 @@ import type { Location, Profile, RubberBill } from "@/types";
 import { RubberBillsTable } from "./RubberBillsTable";
 import { TablePageSizeSelect } from "@/components/shared/TablePagination";
 import { RubberBillModal, type RubberBillCustomerOption } from "./RubberBillModal";
+import type { useRubberBillOcrQueue, RubberBillOcrInitialDraft, RubberBillOcrQueueItem } from "@/hooks/useRubberBillOcrQueue";
 import { RubberBillApprovalModal } from "./RubberBillApprovalModal";
 import { WeighingAppointmentModal } from "./WeighingAppointmentModal";
 import { WeighingQueueModal } from "./WeighingQueueModal";
@@ -38,7 +39,9 @@ import {
 } from "@/lib/rubber-bills/print-receipt";
 import { useSharePdf } from "@/hooks/useSharePdf";
 import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
+import { ModalShell } from "@/components/shared/ModalShell";
 import { getDeviceId } from "@/lib/format";
+import { openRubberBillOcrSourceImage } from "@/lib/rubber-bills/open-ocr-source-image";
 import { getRubberBillReceiptSnapshot } from "@/lib/idb-queue";
 import {
   loadCustomerCache,
@@ -57,12 +60,14 @@ export function RubberBillsModule({
   initialSearch,
   onInitialSearchHandled,
   onOpenEvidence,
+  ocrQueue,
 }: {
   selectedLocation: Location;
   profile: Profile;
   initialSearch?: string | null;
   onInitialSearchHandled?: () => void;
   onOpenEvidence: (billId: string) => void;
+  ocrQueue: ReturnType<typeof useRubberBillOcrQueue>;
 }) {
   const queryClient = useQueryClient();
   const pdfShare = useSharePdf();
@@ -98,6 +103,9 @@ export function RubberBillsModule({
     loadCustomerCache(deviceId)
   ));
   const [modalOpen, setModalOpen] = useState(false);
+  const [ocrQueueModalOpen, setOcrQueueModalOpen] = useState(false);
+  const [ocrReviewItem, setOcrReviewItem] = useState<RubberBillOcrQueueItem | null>(null);
+  const ocrFileInputRef = useRef<HTMLInputElement>(null);
   const [queueModalOpen, setQueueModalOpen] = useState(false);
   const [appointmentModalOpen, setAppointmentModalOpen] = useState(false);
   const [approvalModalOpen, setApprovalModalOpen] = useState(false);
@@ -225,8 +233,24 @@ export function RubberBillsModule({
   }
 
   function openAdd() {
+    setOcrReviewItem(null);
     setEditingBill(null);
     setModalOpen(true);
+  }
+
+  function openOcrReview(item: RubberBillOcrQueueItem) {
+    if (!item.uploadId || !item.draft) return;
+    setOcrReviewItem(item);
+    ocrQueue.setReviewing(item.id);
+    setOcrQueueModalOpen(false);
+    setEditingBill(null);
+    setModalOpen(true);
+  }
+
+  function closeBillModal() {
+    if (ocrReviewItem) ocrQueue.restoreReady(ocrReviewItem.id);
+    setOcrReviewItem(null);
+    setModalOpen(false);
   }
 
   function openEdit(bill: RubberBill) {
@@ -235,6 +259,7 @@ export function RubberBillsModule({
       toast.error(blockReason);
       return;
     }
+    setOcrReviewItem(null);
     setEditingBill(bill);
     setModalOpen(true);
   }
@@ -290,6 +315,14 @@ export function RubberBillsModule({
       toast.success("ซิงก์รายการสำเร็จ");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "ซิงก์รายการไม่สำเร็จ");
+    }
+  }
+
+  async function openOcrSourceImage(bill: RubberBill) {
+    try {
+      await openRubberBillOcrSourceImage(bill.id);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "เปิดรูปต้นฉบับจาก OCR ไม่สำเร็จ");
     }
   }
 
@@ -350,7 +383,7 @@ export function RubberBillsModule({
           <p className="text-pretty text-sm text-ink/60">ค้นหาและจัดการบิลของสาขาที่เลือก</p>
         </div>
         <div className="flex w-full flex-wrap gap-2 sm:w-auto">
-          <button
+           <button
             type="button"
             onClick={() => setQueueModalOpen(true)}
             className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-river px-3 text-sm font-semibold text-white hover:bg-river/90"
@@ -411,6 +444,41 @@ export function RubberBillsModule({
             <Plus size={18} />
             เพิ่มบิลยาง
           </button>
+          <input
+            ref={ocrFileInputRef}
+            type="file"
+            accept="image/jpeg,image/png"
+            multiple
+            className="sr-only"
+            onChange={(event) => {
+              const files = event.currentTarget.files;
+              if (!files) return;
+              const result = ocrQueue.addFiles(selectedLocation.id, files);
+              event.currentTarget.value = "";
+              if (result.rejected > 0) toast.error("รองรับเฉพาะรูป JPEG หรือ PNG");
+              if (result.accepted > 0) setOcrQueueModalOpen(true);
+            }}
+          />
+          <button
+            type="button"
+            disabled={!isOnline}
+            title={isOnline ? "อ่านรูปใบชั่งเพื่อเพิ่มเป็นบิลยาง" : "อ่านใบชั่งใช้ได้เมื่อออนไลน์เท่านั้น"}
+            onClick={() => ocrFileInputRef.current?.click()}
+            className="focus-ring relative flex h-10 w-full items-center justify-center gap-2 rounded-md bg-river px-4 text-sm font-semibold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto"
+          >
+            <FileScan size={18} aria-hidden="true" />
+            อ่านใบชั่ง (OCR)
+            {((ocrQueue.countByLocation[selectedLocation.id] ?? 0) > 0) && (
+              <span aria-label={`มี ${ocrQueue.countByLocation[selectedLocation.id]} รายการในคิว`} className="min-w-5 rounded-full bg-amber px-1.5 py-0.5 text-center text-[10px] font-extrabold leading-none text-white tabular-nums">
+                {ocrQueue.countByLocation[selectedLocation.id] > 99 ? "99+" : ocrQueue.countByLocation[selectedLocation.id]}
+              </span>
+            )}
+          </button>
+          {(ocrQueue.countByLocation[selectedLocation.id] ?? 0) > 0 && (
+            <button type="button" onClick={() => setOcrQueueModalOpen(true)} className="focus-ring h-10 rounded-md border border-river/30 bg-white px-3 text-sm font-semibold text-river hover:bg-river/5">
+              ดูคิว OCR
+            </button>
+          )}
         </div>
       </div>
 
@@ -500,6 +568,7 @@ export function RubberBillsModule({
           getActionBlockReason={getActionBlockReason}
           getPrintBlockReason={getPrintBlockReason}
           onRetry={retryFailedSync}
+          onOpenOcrSourceImage={(bill) => void openOcrSourceImage(bill)}
           retryDisabled={!isOnline || isRetrying}
           evidenceOnline={isOnline}
           evidenceStatesByBillId={list.evidenceStatesByBillId}
@@ -517,11 +586,17 @@ export function RubberBillsModule({
           priceTimeExempt={approvalSettings?.priceTimeExempt}
           nonCurrentDateRequiresApproval={approvalSettings?.nonCurrentDateRequiresApproval}
           customers={customerOptions}
-          onClose={() => setModalOpen(false)}
+          initialOcrDraft={ocrReviewItem ? {
+            uploadId: ocrReviewItem.uploadId!,
+            ...ocrReviewItem.draft!,
+          } satisfies RubberBillOcrInitialDraft : null}
+          onClose={closeBillModal}
           onSave={async (bill) => {
             try {
               const isCreating = !editingBill;
               const savedBill = await (editingBill ? updateBill(bill) : addBill(bill));
+              if (ocrReviewItem) ocrQueue.remove(ocrReviewItem.id);
+              setOcrReviewItem(null);
               setModalOpen(false);
               if (isCreating) setPage(1);
               if (savedBill.netTotal > 0 && !savedBill.approvalPending) {
@@ -533,6 +608,18 @@ export function RubberBillsModule({
               return false;
             }
           }}
+        />
+      )}
+
+      {ocrQueueModalOpen && (
+        <OcrQueueModal
+          locationId={selectedLocation.id}
+          items={ocrQueue.items.filter((item) => item.locationId === selectedLocation.id)}
+          online={isOnline}
+          onClose={() => setOcrQueueModalOpen(false)}
+          onRetry={(id) => void ocrQueue.retry(id)}
+          onReview={openOcrReview}
+          onRemove={ocrQueue.remove}
         />
       )}
 
@@ -582,5 +669,48 @@ export function RubberBillsModule({
       )}
       <SharePdfWaitingModal open={pdfShare.waiting} onCancel={pdfShare.cancel} />
     </section>
+  );
+}
+
+function OcrQueueModal({
+  locationId,
+  items,
+  online,
+  onClose,
+  onRetry,
+  onReview,
+  onRemove,
+}: {
+  locationId: string;
+  items: RubberBillOcrQueueItem[];
+  online: boolean;
+  onClose: () => void;
+  onRetry: (id: string) => void;
+  onReview: (item: RubberBillOcrQueueItem) => void;
+  onRemove: (id: string) => void;
+}) {
+  return (
+    <ModalShell title="คิวอ่านใบชั่ง" subtitle="1 รูปต่อ 1 บิลยาง · คิวนี้หายเมื่อปิดหรือรีโหลดหน้า" onClose={onClose} closeOnEscape nativeModal>
+        <ul className="divide-y divide-black/10" aria-label={`รายการ OCR สาขา ${locationId}`}>
+          {items.map((item) => (
+            <li key={item.id} className="flex gap-3 p-3">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={item.previewUrl} alt={`ตัวอย่างรูปใบชั่ง ${item.file.name}`} className="size-16 rounded border border-black/10 object-cover" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate font-semibold text-ink">{item.file.name}</p>
+                <p role="status" className="text-sm text-ink/60">
+                  {item.status === "pending" ? "รอประมวลผล" : item.status === "processing" ? "กำลังอ่านข้อมูล" : item.status === "ready" ? "พร้อมตรวจและเพิ่มบิล" : item.status === "reviewing" ? "กำลังตรวจข้อมูลบิล" : item.errorMessage || "อ่านใบชั่งไม่สำเร็จ"}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {item.status === "ready" && <button type="button" onClick={() => onReview(item)} className="focus-ring h-10 rounded-md bg-commit px-3 text-sm font-semibold text-white hover:bg-commit/90">ตรวจและเพิ่มบิล</button>}
+                {item.status === "error" && <button type="button" disabled={!online} title={!online ? "ลองใหม่ได้เมื่อออนไลน์" : "ลองอ่านรูปอีกครั้ง"} onClick={() => onRetry(item.id)} className="focus-ring inline-flex size-10 items-center justify-center rounded-md bg-river text-white disabled:cursor-not-allowed disabled:bg-slate-300" aria-label="ลองอ่านใบชั่งอีกครั้ง"><RefreshCw size={17} aria-hidden="true" /></button>}
+                {item.status !== "processing" && <button type="button" onClick={() => onRemove(item.id)} className="focus-ring h-10 rounded-md border border-black/15 px-3 text-sm font-semibold text-ink hover:bg-field">เอาออก</button>}
+              </div>
+            </li>
+          ))}
+          {items.length === 0 && <li className="p-8 text-center text-sm text-ink/60">ไม่มีรายการในคิว</li>}
+        </ul>
+    </ModalShell>
   );
 }

@@ -13,19 +13,16 @@ test("app shell owns sync but not Rubber or Income list reads", () => {
   expect(app).not.toContain("useIncomeExpense(");
 });
 
-test("Evidence owns its full Rubber Bill read", () => {
+test("Evidence owns its scoped Rubber Bill feed", () => {
   const evidence = source("src/components/rubber-evidence/RubberEvidenceModule.tsx");
-  expect(evidence).toContain("useRubberBills(selectedLocation.id, profile.id)");
+  expect(evidence).toContain("useRubberEvidenceFeed");
 });
 
-test("Rubber and OCR lock reads do not load Money Transfer history", () => {
+test("Rubber lock reads do not load Money Transfer history", () => {
   const rubber = source("src/components/rubber-bills/RubberBillsModule.tsx");
-  const ocr = source("src/components/OcrTicketUpload.tsx");
   expect(rubber).toContain("bill.transferLockId");
   expect(rubber).not.toContain("useMoneyTransferSourceLocks");
-  expect(ocr).toContain("useMoneyTransferSourceLocks");
   expect(rubber).not.toContain("useMoneyTransfers");
-  expect(ocr).not.toContain("useMoneyTransfers");
 });
 
 test("Rubber operational list uses a scoped cursor feed and page-scoped evidence", () => {

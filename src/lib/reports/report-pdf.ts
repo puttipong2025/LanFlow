@@ -202,42 +202,7 @@ function drawReportContent(doc: PdfDocument, details: ReportDetails) {
   drawGroupTitle(state, "1.3 ยางรับเข้าและยางคงเหลือภายในสาขา");
   drawTable(state, rubberWidths, rubberHeader, rubberRows(branchReceiptRubberBills));
 
-  drawSectionTitle(state, "2. อ่านใบชั่ง");
-  const ocrRows: PdfCell[][] = details.ocrTickets.length === 0
-    ? [emptyRow(10)]
-    : details.ocrTickets.map((row) => [
-      data(formatThaiDate(row.date)),
-      data(row.number),
-      data(row.customer),
-      data(row.licensePlate),
-      data(formatQuantity(row.weightIn), "right"),
-      data(formatQuantity(row.weightOut), "right"),
-      data(formatQuantity(row.weightNet), "right"),
-      data(formatQuantity(row.weightDeducted), "right"),
-      data(formatQuantity(row.weightRemaining), "right"),
-      data(formatMoney(row.amount), "right"),
-    ]);
-  ocrRows.push([
-    total("รวม", "left", 6),
-    total(formatQuantity(totals.ocrNet), "right"),
-    total("", "right"),
-    total(formatQuantity(totals.ocrRemaining), "right"),
-    total(formatMoney(totals.ocrAmount), "right"),
-  ]);
-  drawTable(state, [50, 65, 150, 65, 65, 65, 60, 55, 65, 153], [
-    header("วันที่"),
-    header("เลขที่"),
-    header("ลูกค้า"),
-    header("ทะเบียน"),
-    header("ชั่งเข้า", "right"),
-    header("ชั่งออก", "right"),
-    header("สุทธิ", "right"),
-    header("หัก", "right"),
-    header("คงเหลือ", "right"),
-    header("ยอดเงิน", "right"),
-  ], ocrRows);
-
-  drawSectionTitle(state, "3. รับ-จ่ายรวม");
+  drawSectionTitle(state, "2. รับ-จ่ายรวม");
   const ledgerRows: PdfCell[][] = incomeExpense.length === 0
     ? [emptyRow(5)]
     : incomeExpense.map((row) => [
@@ -270,7 +235,7 @@ function drawReportContent(doc: PdfDocument, details: ReportDetails) {
     header("รายจ่าย", "right"),
   ], ledgerRows);
 
-  drawSectionTitle(state, "4. สต็อกสินค้า");
+  drawSectionTitle(state, "3. สต็อกสินค้า");
   const stockRows: PdfCell[][] = details.stock.length === 0
     ? [emptyRow(6)]
     : details.stock.map((row) => [
@@ -311,7 +276,7 @@ function drawReportContent(doc: PdfDocument, details: ReportDetails) {
   drawRow(doc, [balanceCell], [TABLE_WIDTH], state.y, balanceHeight);
   state.y += balanceHeight + 8;
 
-  drawSectionTitle(state, "5. เวลาและเงินเดือน");
+  drawSectionTitle(state, "4. เวลาและเงินเดือน");
   const payrollRows: PdfCell[][] = details.timePayroll.length === 0
     ? [emptyRow(7)]
     : details.timePayroll.map((row) => [
@@ -338,7 +303,7 @@ function drawReportContent(doc: PdfDocument, details: ReportDetails) {
     header("จำนวนเงิน", "right"),
   ], payrollRows);
 
-  drawSectionTitle(state, "6. โอนเงิน (ธนาคารเท่านั้น)");
+  drawSectionTitle(state, "5. โอนเงิน (ธนาคารเท่านั้น)");
   const transferRows: PdfCell[][] = details.bankTransfers.length === 0
     ? [emptyRow(9)]
     : details.bankTransfers.map((row) => [

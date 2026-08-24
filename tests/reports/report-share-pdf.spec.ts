@@ -227,11 +227,10 @@ test("downloads an actual multi-page PDF when file sharing is unsupported", asyn
   expect(allText).not.toContain("ความเชื่อมั่น");
   expect(allText).toContain("1.1 ผู้ค้าขาย");
   expect(allText).toContain("1.2 ชาวสวน");
-  expect(allText).toContain("2. อ่านใบชั่ง");
-  expect(allText).toContain("3. รับ-จ่ายรวม");
-  expect(allText).toContain("4. สต็อกสินค้า");
-  expect(allText).toContain("5. เวลาและเงินเดือน");
-  expect(allText).toContain("6. โอนเงิน (ธนาคารเท่านั้น)");
+  expect(allText).toContain("2. รับ-จ่ายรวม");
+  expect(allText).toContain("3. สต็อกสินค้า");
+  expect(allText).toContain("4. เวลาและเงินเดือน");
+  expect(allText).toContain("5. โอนเงิน (ธนาคารเท่านั้น)");
   expect(allText).toContain("ยอดคงเหลือสุทธิ");
 
   for (let index = 1; index <= 72; index += 1) {
@@ -329,11 +328,10 @@ test("shows a structural loading state and horizontally scrollable report tables
   await expect(preview).toBeVisible();
   for (const title of [
     "1. บิลยาง",
-    "2. อ่านใบชั่ง",
-    "3. รับ–จ่ายรวม",
-    "4. สต็อกสินค้า",
-    "5. เวลาและเงินเดือน",
-    "6. โอนเงิน (ธนาคารเท่านั้น)",
+    "2. รับ–จ่ายรวม",
+    "3. สต็อกสินค้า",
+    "4. เวลาและเงินเดือน",
+    "5. โอนเงิน (ธนาคารเท่านั้น)",
   ]) {
     await expect(preview.getByText(title, { exact: true })).toBeVisible();
   }

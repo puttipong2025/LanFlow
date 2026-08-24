@@ -1286,18 +1286,6 @@ begin
         nullif(v_old->>'created_by', '')::uuid
       )
     end;
-  elsif tg_table_name = 'ocr_tickets' then
-    v_source_type := 'ocr_ticket';
-    v_source_id := coalesce(v_new->>'id', v_old->>'id')::uuid;
-    if tg_op = 'UPDATE' and v_new->>'record_status' = 'deleted' then
-      v_actor_name := v_new->>'deleted_by_name';
-    else
-      v_actor_user_id := coalesce(
-        nullif(v_new->>'created_by_user_id', '')::uuid,
-        nullif(v_old->>'created_by_user_id', '')::uuid
-      );
-      v_actor_name := coalesce(v_new->>'created_by_name', v_old->>'created_by_name');
-    end if;
   elsif tg_table_name = 'rubber_exports' then
     v_source_type := 'rubber_export';
     v_source_id := coalesce(v_new->>'id', v_old->>'id')::uuid;
@@ -1433,13 +1421,6 @@ CREATE OR REPLACE FUNCTION "private"."cash_count_events"("p_location_id" "uuid",
   from eligible_items i join public.rubber_bills b on b.id = i.entity_id
   where i.entity_type = 'rubber_bill' and b.net_total > 0
     and not exists (select 1 from public.money_transfer_items m where m.source_type = 'rubber_bill' and m.source_id = b.id and m.created_at <= p_to_cutoff)
-
-  union all
-  select i.eligibility_at, 'expense', o.total_amount, null::jsonb,
-    jsonb_build_object('source', 'ocr_ticket', 'id', o.id, 'label', coalesce(o.ticket_id, o.file_name), 'amount', o.total_amount)
-  from eligible_items i join public.ocr_tickets o on o.id = i.entity_id
-  where i.entity_type = 'ocr_ticket' and o.total_amount > 0
-    and not exists (select 1 from public.money_transfer_items m where m.source_type = 'ocr_ticket' and m.source_id = o.id and m.created_at <= p_to_cutoff)
 
   union all
   select i.eligibility_at, 'expense', e.work_total, null::jsonb,
@@ -2298,11 +2279,6 @@ begin
       into location_id
       from public.rubber_bills b
       where b.id = nullif(source_ref ->> 'id', '')::uuid;
-    elsif source_ref ->> 'type' = 'ocr_ticket' then
-      select t.location_id
-      into location_id
-      from public.ocr_tickets t
-      where t.id = nullif(source_ref ->> 'id', '')::uuid;
     else
       location_id := null;
     end if;
@@ -2729,32 +2705,6 @@ begin
       v_row.approved_by,
       v_row.approver_name
     ));
-  elsif p_source_type = 'ocr_ticket' then
-    select * into v_row
-    from public.ocr_tickets
-    where id = p_source_id;
-
-    if not found or v_row.record_status <> 'active' or v_row.total_amount <= 0 then
-      return v_entries;
-    end if;
-
-    return jsonb_build_array(private.dashboard_money_event_entry(
-      'ocr-ticket:' || v_row.id::text,
-      v_row.location_id,
-      'rubber_bill',
-      coalesce(nullif(v_row.ticket_id, ''), left(v_row.id::text, 8)),
-      'รับซื้อยางจากใบชั่ง — '
-        || coalesce(nullif(v_row.customer_name, ''), 'ไม่ระบุลูกค้า'),
-      'expense',
-      v_row.total_amount,
-      to_jsonb(v_row) - array[
-        'sync_status', 'revision_no', 'client_recorded_at', 'server_received_at',
-        'created_at', 'updated_at', 'deleted_at', 'deleted_by_name', 'deleted_by_phone',
-        'drive_file_id', 'drive_url'
-      ],
-      v_row.created_by_user_id,
-      v_row.created_by_name
-    ));
   elsif p_source_type = 'rubber_export' then
     select * into v_row
     from public.rubber_exports
@@ -3043,6 +2993,32 @@ $$;
 
 
 ALTER FUNCTION "private"."effective_rubber_approval_settings"("p_location_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."enforce_rubber_bill_ocr_source_update"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO ''
+    AS $$
+begin
+  if new.owner_user_id is distinct from old.owner_user_id
+     or new.location_id is distinct from old.location_id
+     or new.image_sha256 is distinct from old.image_sha256
+     or new.drive_file_id is distinct from old.drive_file_id then
+    raise exception 'ห้ามแก้ไขข้อมูลอ้างอิงต้นทาง OCR ของบิลยาง';
+  end if;
+  if new.state is distinct from old.state
+     and not (
+       (old.state = 'staged' and new.state = 'reserved')
+       or (old.state = 'reserved' and new.state in ('attached', 'abandoned'))
+     ) then
+    raise exception 'เปลี่ยนสถานะต้นทาง OCR ของบิลยางไม่ถูกต้อง: % -> %', old.state, new.state;
+  end if;
+  return new;
+end
+$$;
+
+
+ALTER FUNCTION "private"."enforce_rubber_bill_ocr_source_update"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."enforce_time_tracking_expense_relation"() RETURNS "trigger"
@@ -4599,28 +4575,6 @@ CREATE OR REPLACE FUNCTION "private"."report_income_expense_period_rows"("p_repo
   union all
 
   select
-    o.date_in,
-    'OCR-' || to_char(o.date_in, 'YYMMDD'),
-    'expense',
-    'จ่ายค่ายางจาก OCR บิลยาง ' || count(*)::text || ' ใบ',
-    sum(o.total_amount),
-    '30-' || o.date_in::text
-  from public.report_items i
-  join public.ocr_tickets o on o.id = i.entity_id
-  where i.report_id = p_report_id
-    and i.entity_type = 'ocr_ticket'
-    and o.total_amount > 0
-    and not exists (
-      select 1
-      from public.money_transfer_items mi
-      where mi.source_type = 'ocr_ticket'
-        and mi.source_id = o.id
-    )
-  group by o.date_in
-
-  union all
-
-  select
     (coalesce(m.server_received_at, m.updated_at, m.created_at) at time zone 'Asia/Bangkok')::date,
     'TR-' || left(m.id::text, 8),
     'expense',
@@ -4766,16 +4720,6 @@ CREATE OR REPLACE FUNCTION "private"."reportable_items"("p_location_id" "uuid", 
       and b.server_bill_no is not null
       and not private.rubber_bill_has_pending_approval(b.id)
       and (private.rubber_bill_is_payable(b.id) or private.rubber_bill_is_branch_receipt_reportable(b.id))
-
-    union all
-
-    select 'ocr_ticket', o.id,
-      coalesce(o.server_received_at, o.updated_at, o.created_at)
-    from public.ocr_tickets o
-    where o.location_id = p_location_id
-      and o.record_status = 'active'
-      and o.sync_status = 'synced'
-      and o.server_received_at is not null
 
     union all
 
@@ -4929,6 +4873,85 @@ $$;
 
 
 ALTER FUNCTION "private"."require_rubber_bill_evidence_review_manager"("p_location_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."reserve_rubber_bill_ocr_source"("p_payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_operation text := p_payload->>'operation';
+  v_input_method text := coalesce(nullif(p_payload->>'inputMethod', ''), 'manual');
+  v_upload_id uuid;
+  v_location_id uuid;
+  v_client_temp_id text := p_payload->>'clientTempId';
+  v_idempotency_key text := p_payload->>'idempotencyKey';
+  v_source public.rubber_bill_ocr_sources%rowtype;
+begin
+  if p_payload ?| array['ocrSourceId', 'ocrImageSha256', 'driveFileId', 'driveUrl'] then
+    return jsonb_build_object('status', 'failed', 'errorMessage', 'ไม่รับข้อมูลอ้างอิง OCR ภายในจากอุปกรณ์');
+  end if;
+  if v_operation <> 'create' then
+    if p_payload ? 'ocrUploadId' then
+      return jsonb_build_object('status', 'conflict', 'errorMessage', 'รูป OCR ใช้ได้เฉพาะตอนสร้างบิลยาง');
+    end if;
+    return jsonb_build_object('status', 'ok');
+  end if;
+  if v_input_method not in ('manual', 'ocr') then
+    return jsonb_build_object('status', 'failed', 'errorMessage', 'วิธีเพิ่มบิลยางไม่ถูกต้อง');
+  end if;
+  if v_input_method = 'manual' then
+    if p_payload ? 'ocrUploadId' then
+      return jsonb_build_object('status', 'conflict', 'errorMessage', 'บิลยางที่เพิ่มเองห้ามใช้รูป OCR');
+    end if;
+    return jsonb_build_object('status', 'ok');
+  end if;
+
+  begin
+    v_upload_id := (p_payload->>'ocrUploadId')::uuid;
+    v_location_id := (p_payload->>'locationId')::uuid;
+  exception when others then
+    return jsonb_build_object('status', 'conflict', 'errorMessage', 'ข้อมูลอ้างอิงรูป OCR ไม่ถูกต้อง');
+  end;
+  if v_upload_id is null
+     or nullif(btrim(v_client_temp_id), '') is null
+     or nullif(btrim(v_idempotency_key), '') is null then
+    return jsonb_build_object('status', 'conflict', 'errorMessage', 'ข้อมูลอ้างอิงรูป OCR ไม่ถูกต้อง');
+  end if;
+
+  select * into v_source
+  from public.rubber_bill_ocr_sources s
+  where s.id = v_upload_id
+  for update;
+  if v_source.id is null
+     or v_source.owner_user_id <> auth.uid()
+     or v_source.location_id <> v_location_id then
+    return jsonb_build_object('status', 'conflict', 'errorMessage', 'ข้อมูลอ้างอิงรูป OCR ไม่ตรงกับคำขอ');
+  end if;
+  if v_source.state = 'abandoned' then
+    return jsonb_build_object('status', 'conflict', 'errorMessage', 'รูป OCR นี้ถูกยกเลิกแล้ว');
+  end if;
+  if v_source.state in ('reserved', 'attached') then
+    if v_source.reserved_client_temp_id is distinct from v_client_temp_id
+       or v_source.reserved_idempotency_key is distinct from v_idempotency_key then
+      return jsonb_build_object('status', 'conflict', 'errorMessage', 'รูป OCR นี้ถูกจองโดยคำขออื่น');
+    end if;
+    return jsonb_build_object('status', 'ok');
+  end if;
+
+  update public.rubber_bill_ocr_sources
+  set state = 'reserved',
+      reserved_client_temp_id = v_client_temp_id,
+      reserved_idempotency_key = v_idempotency_key,
+      reserved_at = now(),
+      updated_at = now()
+  where id = v_upload_id;
+  return jsonb_build_object('status', 'ok');
+end
+$$;
+
+
+ALTER FUNCTION "private"."reserve_rubber_bill_ocr_source"("p_payload" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."rubber_bill_current_work_items"("p_location_id" "uuid") RETURNS TABLE("location_id" "uuid", "work_kind" "text", "work_identity" "text", "bill_id" "uuid", "sort_at" timestamp with time zone)
@@ -6729,6 +6752,22 @@ begin
   end if;
 
   perform pg_advisory_xact_lock(hashtextextended(v_request.location_id::text, 0));
+
+  if v_request.operation = 'create'
+     and v_request.proposed_payload->>'inputMethod' = 'ocr' then
+    perform 1
+    from public.rubber_bill_ocr_sources s
+    where s.id = nullif(v_request.proposed_payload->>'ocrUploadId', '')::uuid
+      and s.owner_user_id = v_request.requested_by_user_id
+      and s.location_id = v_request.location_id
+      and s.reserved_client_temp_id = v_request.client_temp_id
+      and s.reserved_idempotency_key = v_request.idempotency_key
+      and s.state = 'reserved'
+    for update;
+    if not found then
+      raise exception 'ข้อมูลอ้างอิงรูป OCR ไม่ตรงกับคำขออนุมัติ';
+    end if;
+  end if;
 
   v_result := public.sync_rubber_bill_core_20260725010000(v_request.proposed_payload);
   if v_result->>'status' <> 'synced' then
@@ -9875,21 +9914,48 @@ ALTER FUNCTION "public"."delete_rubber_approval_group"("p_group_id" "uuid") OWNE
 
 CREATE OR REPLACE FUNCTION "public"."delete_rubber_bill_approval_request"("p_request_id" "uuid") RETURNS "void"
     LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public', 'private'
+    SET "search_path" TO ''
     AS $$
+declare
+  v_request public.rubber_bill_approval_requests%rowtype;
+  v_upload_id uuid;
 begin
-  if not private.is_active_user() or not public.can_access_super_admin_features() then
+  if not private.is_active_user() or not private.can_access_super_admin_features() then
     raise exception 'ไม่มีสิทธิ์ลบคำขอบิลยาง';
   end if;
-
-  delete from public.rubber_bill_approval_requests
-  where id = p_request_id
-    and request_status = 'pending';
-
-  if not found then
+  select * into v_request
+  from public.rubber_bill_approval_requests r
+  where r.id = p_request_id
+  for update;
+  if v_request.id is null or v_request.request_status <> 'pending' then
     raise exception 'ไม่พบคำขอที่รออนุมัติ';
   end if;
-end;
+
+  if v_request.operation = 'create'
+     and v_request.proposed_payload->>'inputMethod' = 'ocr' then
+    begin
+      v_upload_id := (v_request.proposed_payload->>'ocrUploadId')::uuid;
+    exception when others then
+      raise exception 'ข้อมูลอ้างอิงรูป OCR ในคำขออนุมัติไม่ถูกต้อง';
+    end;
+    perform 1 from public.rubber_bill_ocr_sources s
+    where s.id = v_upload_id
+    for update;
+    update public.rubber_bill_ocr_sources
+    set state = 'abandoned', abandoned_at = now(), updated_at = now()
+    where id = v_upload_id
+      and state = 'reserved'
+      and owner_user_id = v_request.requested_by_user_id
+      and location_id = v_request.location_id
+      and reserved_client_temp_id = v_request.client_temp_id
+      and reserved_idempotency_key = v_request.idempotency_key;
+    if not found then
+      raise exception 'ข้อมูลอ้างอิงรูป OCR ไม่ตรงกับคำขออนุมัติ';
+    end if;
+  end if;
+
+  delete from public.rubber_bill_approval_requests where id = p_request_id;
+end
 $$;
 
 
@@ -10897,31 +10963,6 @@ begin
       union all
 
       select
-        coalesce(ot.client_recorded_at, ot.created_at),
-        ot.date_in,
-        'ocr-ticket:' || ot.id::text,
-        'ocr-ticket:' || ot.id::text,
-        'rubber_bill',
-        coalesce(nullif(ot.ticket_id, ''), left(ot.id::text, 8)),
-        'รับซื้อยางจากใบชั่ง — ' || coalesce(nullif(ot.customer_name, ''), 'ไม่ระบุลูกค้า'),
-        'expense',
-        ot.total_amount,
-        ot.created_by_name,
-        not exists (
-          select 1
-          from public.money_transfer_items i
-          where i.source_type = 'ocr_ticket'
-            and i.source_id = ot.id
-        ),
-        false
-      from public.ocr_tickets ot
-      where ot.location_id = p_location_id
-        and ot.record_status = 'active'
-        and ot.total_amount > 0
-
-      union all
-
-      select
         e.verified_at,
         (e.verified_at at time zone 'Asia/Bangkok')::date,
         'rubber-export:' || e.id::text,
@@ -11453,36 +11494,6 @@ begin
           and not exists (select 1 from public.money_transfer_items i where i.source_type = 'rubber_bill' and i.source_id = rb.id)
         group by bill_date
       ) rb
-
-      union all
-
-      select ot.date_in, 'ocr:' || ot.date_in::text,
-        jsonb_build_object(
-          'id', 'ocr-ticket-daily-expense:' || p_location_id || ':' || ot.date_in,
-          'clientTempId', 'ocr-ticket-daily-expense:' || p_location_id || ':' || ot.date_in,
-          'localBillNo', 'OCR-' || to_char(ot.date_in, 'YYMMDD'), 'serverBillNo', 'OCR-' || to_char(ot.date_in, 'YYMMDD'),
-          'idempotencyKey', 'ocr-ticket-daily-expense:' || p_location_id || ':' || ot.date_in,
-          'locationId', p_location_id, 'syncStatus', 'synced', 'recordStatus', 'active', 'type', 'expense',
-          'number', 'OCR-' || to_char(ot.date_in, 'YYMMDD'), 'txDate', ot.date_in,
-          'title', 'จ่ายค่ายางจาก OCR บิลยาง ' || ot.ticket_count || ' ใบ', 'cost', ot.total,
-          'billOption', 'ค่าใช้จ่าย', 'clientRecordedAt', ot.recorded_at, 'clientCreatedAt', ot.recorded_at,
-          'serverReceivedAt', ot.updated_at, 'revisionNo', ot.revision_no,
-          'createdByUserId', '', 'createdByName', 'ระบบ OCR บิลยาง', 'createdByPhone', '',
-          'relationSourceType', 'ocr_ticket_daily', 'relationSourceId', ot.date_in,
-          'relationSourceLocationId', p_location_id, 'relationSourceDate', ot.date_in,
-          'relationLabel', 'OCR บิลยางรวมรายวัน',
-          'relationLockReason', 'รายการนี้มาจาก OCR บิลยาง ต้องแก้ไขหรือลบที่โมดูล OCR บิลยางต้นทาง'
-        )
-      from (
-        select date_in, sum(total_amount) as total, count(*) as ticket_count,
-          max(coalesce(client_recorded_at, updated_at, created_at)) as recorded_at,
-          max(updated_at) as updated_at, max(revision_no) as revision_no
-        from public.ocr_tickets ot
-        where ot.location_id = p_location_id and ot.record_status = 'active' and ot.total_amount > 0
-          and ot.date_in between p_from_date and p_to_date
-          and not exists (select 1 from public.money_transfer_items i where i.source_type = 'ocr_ticket' and i.source_id = ot.id)
-        group by date_in
-      ) ot
     ), filtered as (
       select *, row_number() over (order by sort_date desc, sort_key desc) as row_no
       from feed
@@ -11537,26 +11548,25 @@ CREATE OR REPLACE FUNCTION "public"."get_money_transfer_list"("p_location_id" "u
     LANGUAGE "plpgsql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
-declare v_result jsonb; v_search text := lower(trim(coalesce(p_search, '')));
+declare
+  v_result jsonb;
+  v_search text := lower(trim(coalesce(p_search, '')));
 begin
-  if not private.is_active_user() or not private.can_access_money_transfer_module() then
-    raise exception 'Money transfer module access denied';
-  end if;
+  if not private.is_active_user() or not private.can_access_money_transfer_module() then raise exception 'Money transfer module access denied'; end if;
   if not private.can_access_location(p_location_id) then raise exception 'Location access denied'; end if;
   if p_page_size < 1 or p_page_size > 100 then raise exception 'Invalid page size'; end if;
   if (p_cursor_created_at is null) <> (p_cursor_id is null) then raise exception 'Invalid transfer cursor'; end if;
 
   with candidates as (
-    select t.*,
-      public.report_lock_no(t) report_lock_no,
+    select t.*, public.report_lock_no(t) report_lock_no,
       coalesce((select sum(s.amount) from public.money_transfer_slips s where s.transfer_id = t.id), 0) paid_amount,
       coalesce((select count(*) from public.money_transfer_items i where i.transfer_id = t.id), 0) source_count
     from public.money_transfers t
     where t.location_id = p_location_id
       and t.record_status <> 'deleted'
+      and t.transfer_type <> 'cash'
       and (p_status = 'all' or t.transfer_status = p_status)
-      and (v_search = '' or position(v_search in lower(concat_ws(' ', t.customer_name, t.account_number,
-        t.account_name, t.bank_name, t.transport_staff_name, t.target_location_name, t.id::text))) > 0)
+      and (v_search = '' or position(v_search in lower(concat_ws(' ', t.customer_name, t.account_number, t.account_name, t.bank_name, t.transport_staff_name, t.target_location_name, t.id::text))) > 0)
       and (p_cursor_created_at is null or (t.created_at, t.id) < (p_cursor_created_at, p_cursor_id))
     order by t.created_at desc, t.id desc
     limit p_page_size + 1
@@ -11566,15 +11576,11 @@ begin
   select jsonb_build_object(
     'rows', coalesce((select jsonb_agg(to_jsonb(v) order by v.created_at desc, v.id desc) from visible v), '[]'::jsonb),
     'statusCounts', (select jsonb_build_object(
-      'all', count(*),
-      'pending', count(*) filter (where t.transfer_status = 'pending'),
-      'partial', count(*) filter (where t.transfer_status = 'partial'),
-      'advance_payment', count(*) filter (where t.transfer_status = 'advance_payment'),
-      'paid', count(*) filter (where t.transfer_status = 'paid'),
-      'overpaid', count(*) filter (where t.transfer_status = 'overpaid'),
-      'branch_and_transfer', count(*) filter (where t.transfer_status = 'branch_and_transfer'),
+      'all', count(*), 'pending', count(*) filter (where t.transfer_status = 'pending'), 'partial', count(*) filter (where t.transfer_status = 'partial'),
+      'advance_payment', count(*) filter (where t.transfer_status = 'advance_payment'), 'paid', count(*) filter (where t.transfer_status = 'paid'),
+      'overpaid', count(*) filter (where t.transfer_status = 'overpaid'), 'branch_and_transfer', count(*) filter (where t.transfer_status = 'branch_and_transfer'),
       'cancelled', count(*) filter (where t.transfer_status = 'cancelled')
-    ) from public.money_transfers t where t.location_id = p_location_id and t.record_status <> 'deleted'),
+    ) from public.money_transfers t where t.location_id = p_location_id and t.record_status <> 'deleted' and t.transfer_type <> 'cash'),
     'hasMore', (select count(*) > p_page_size from candidates),
     'nextCreatedAt', (select v.created_at from visible v order by v.created_at, v.id limit 1),
     'nextId', (select v.id from visible v order by v.created_at, v.id limit 1)
@@ -11591,39 +11597,38 @@ CREATE OR REPLACE FUNCTION "public"."get_money_transfer_receipt_source_details"(
     LANGUAGE "plpgsql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
-declare v_location_id uuid; v_items jsonb;
+declare
+  v_location_id uuid;
+  v_items jsonb;
 begin
   if not private.is_active_user() or not private.can_access_money_transfer_module() then
     raise exception 'Money transfer module access denied';
   end if;
-  select t.location_id into v_location_id from public.money_transfers t
+  select t.location_id into v_location_id
+  from public.money_transfers t
   where t.id = p_transfer_id and t.record_status <> 'deleted';
   if v_location_id is null then raise exception 'Money transfer not found'; end if;
   if not private.can_access_location(v_location_id) then raise exception 'Location access denied'; end if;
 
   select coalesce(jsonb_agg(jsonb_build_object(
     'itemId', i.id,
-    'sourceType', i.source_type,
+    'sourceType', 'rubber_bill',
     'sourceId', i.source_id,
-    'sourceNumber', case when i.source_type = 'rubber_bill'
-      then coalesce(rb.server_bill_no, rb.local_bill_no, rb.bill_no) else coalesce(ot.ticket_id, ot.file_name) end,
-    'sourceDate', case when i.source_type = 'rubber_bill' then rb.bill_date::text else ot.date_in::text end,
-    'customerName', coalesce(rb.customer_name, ot.customer_name, i.customer_name),
-    'netWeightAfterDeduction', case when i.source_type = 'rubber_bill' then rb.net_weight else coalesce(ot.weight_remaining, 0) end,
-    'averagePrice', case when i.source_type = 'rubber_bill' then rb.average_price
-      when coalesce(ot.weight_remaining, 0) > 0 then coalesce(ot.total_amount, 0) / ot.weight_remaining
-      else null end,
-    'rubberValue', case when i.source_type = 'rubber_bill' then rb.net_rubber_value else coalesce(ot.total_amount, 0) end,
-    'deductedAmount', case when i.source_type = 'rubber_bill' then rb.deduction_total else ot.money_deducted end,
-    'netPayableAmount', case when i.source_type = 'rubber_bill' then rb.net_total
-      else coalesce(ot.total_amount, 0) - coalesce(ot.money_deducted, 0) end
-  ) order by coalesce(rb.created_at, ot.created_at) desc, i.source_id desc), '[]'::jsonb) into v_items
+    'sourceNumber', coalesce(rb.server_bill_no, rb.local_bill_no, rb.bill_no),
+    'sourceDate', rb.bill_date::text,
+    'customerName', coalesce(rb.customer_name, i.customer_name),
+    'netWeightAfterDeduction', rb.net_weight,
+    'averagePrice', rb.average_price,
+    'rubberValue', rb.net_rubber_value,
+    'deductedAmount', rb.deduction_total,
+    'netPayableAmount', rb.net_total
+  ) order by rb.created_at desc, i.source_id desc), '[]'::jsonb)
+  into v_items
   from public.money_transfer_items i
-  left join public.rubber_bills rb on rb.id = i.rubber_bill_id
-  left join public.ocr_tickets ot on ot.id = i.ocr_ticket_id
+  join public.rubber_bills rb on rb.id = i.rubber_bill_id
   where i.transfer_id = p_transfer_id;
   return jsonb_build_object('transferId', p_transfer_id, 'items', v_items);
-end;
+end
 $$;
 
 
@@ -11638,7 +11643,7 @@ begin
   if not private.is_active_user() or not private.can_access_location(p_location_id) then
     raise exception 'Location access denied';
   end if;
-  if p_source_type not in ('rubber_bill', 'ocr_ticket') then raise exception 'Unsupported source type'; end if;
+  if p_source_type <> 'rubber_bill' then raise exception 'Unsupported source type'; end if;
   return query
   select r.source_type, r.source_id, r.transfer_id
   from private.money_transfer_source_relations(p_location_id, p_source_type) r
@@ -11663,7 +11668,7 @@ begin
     raise exception 'Money transfer module access denied';
   end if;
   if not private.can_access_location(p_location_id) then raise exception 'Location access denied'; end if;
-  if p_source_type not in ('rubber_bill', 'ocr_ticket') then raise exception 'Unsupported source type'; end if;
+  if p_source_type <> 'rubber_bill' then raise exception 'Unsupported source type'; end if;
   if p_page_size < 1 or p_page_size > 100 then raise exception 'Invalid page size'; end if;
   if (p_cursor_created_at is null) <> (p_cursor_id is null) then raise exception 'Invalid source cursor'; end if;
 
@@ -11694,32 +11699,6 @@ begin
     left join private.money_transfer_source_relations(p_location_id, 'rubber_bill') r
       on r.source_id = b.id
     where b.location_id = p_location_id and b.record_status = 'active'
-
-    union all
-
-    select
-      'ocr_ticket'::text,
-      o.id,
-      coalesce(o.ticket_id, o.file_name),
-      o.date_in::text,
-      o.customer_name,
-      (coalesce(o.total_amount, 0) - coalesce(o.money_deducted, 0))::numeric,
-      coalesce(o.weight_remaining, o.weight_net, 0)::numeric,
-      null::numeric,
-      coalesce(o.total_amount, 0)::numeric,
-      coalesce(o.money_deducted, 0)::numeric,
-      o.license_plate,
-      o.created_at,
-      r.transfer_id,
-      public.report_lock_no(o),
-      false,
-      o.sync_status::text,
-      o.ticket_id is not null,
-      false
-    from public.ocr_tickets o
-    left join private.money_transfer_source_relations(p_location_id, 'ocr_ticket') r
-      on r.source_id = o.id
-    where o.location_id = p_location_id and o.record_status = 'active'
   ), classified as (
     select s.*,
       case
@@ -12309,7 +12288,7 @@ begin
         then coalesce(req.requested_at, coalesce(b.client_created_at, b.created_at))
         else coalesce(b.client_created_at, b.created_at)
       end feed_sort_at,
-      to_jsonb(b) || jsonb_build_object(
+      (to_jsonb(b) - 'ocr_source_id' - 'ocr_image_sha256') || jsonb_build_object(
         'row_kind', 'bill',
         'work_identity', 'bill:' || b.id::text,
         'items', coalesce((
@@ -12398,6 +12377,8 @@ begin
         'customer_id', nullif(r.proposed_payload->>'customerId', '')::uuid,
         'customer_name', coalesce(r.proposed_payload->>'customerName', ''),
         'bill_type', coalesce(r.proposed_payload->>'billType', 'บิลเครื่องชั่งเล็ก'),
+        'input_method', coalesce(r.proposed_payload->>'inputMethod', 'manual'),
+        'has_ocr_source_image', r.proposed_payload->>'inputMethod' = 'ocr',
         'deduct_weight', coalesce((r.proposed_payload->>'deductWeight')::numeric, 0),
         'weight', coalesce((r.proposed_payload->>'weight')::numeric, 0),
         'net_weight', coalesce((r.proposed_payload->>'netWeight')::numeric, 0),
@@ -13431,34 +13412,6 @@ $$;
 ALTER FUNCTION "public"."prevent_location_change"() OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "public"."prevent_locked_ocr_ticket_change"() RETURNS "trigger"
-    LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public'
-    AS $$
-begin
-  if exists (
-    select 1
-    from public.money_transfer_items i
-    join public.money_transfers t on t.id = i.transfer_id
-    where i.source_type = 'ocr_ticket'
-      and i.source_id = old.id
-      and t.record_status <> 'deleted'
-  ) then
-    raise exception 'รายการนี้ถูกล็อก ต้องลบ item ออกจากรายการโอนก่อน';
-  end if;
-
-  if tg_op = 'DELETE' then
-    return old;
-  end if;
-
-  return new;
-end;
-$$;
-
-
-ALTER FUNCTION "public"."prevent_locked_ocr_ticket_change"() OWNER TO "postgres";
-
-
 CREATE OR REPLACE FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) RETURNS "jsonb"
     LANGUAGE "sql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -14414,53 +14367,6 @@ CREATE OR REPLACE FUNCTION "public"."report_lock_no"("source_row" "public"."mone
 ALTER FUNCTION "public"."report_lock_no"("source_row" "public"."money_transfers") OWNER TO "postgres";
 
 
-CREATE TABLE IF NOT EXISTS "public"."ocr_tickets" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "client_temp_id" "text",
-    "idempotency_key" "text",
-    "location_id" "uuid" NOT NULL,
-    "file_name" "text" NOT NULL,
-    "ticket_id" "text",
-    "license_plate" "text",
-    "date_in" "date",
-    "weight_in" integer,
-    "weight_out" integer,
-    "weight_net" integer,
-    "weight_deducted" numeric(12,2) DEFAULT 0,
-    "weight_remaining" numeric(12,2) DEFAULT 0,
-    "total_amount" numeric(12,2) DEFAULT 0,
-    "sync_status" "public"."sync_status" DEFAULT 'pending'::"public"."sync_status" NOT NULL,
-    "record_status" "public"."record_status" DEFAULT 'active'::"public"."record_status" NOT NULL,
-    "revision_no" integer DEFAULT 0 NOT NULL,
-    "created_by_user_id" "uuid",
-    "created_by_name" "text" DEFAULT 'ผู้ดูแลระบบ'::"text" NOT NULL,
-    "created_by_phone" "text" DEFAULT '0800000000'::"text" NOT NULL,
-    "client_recorded_at" timestamp with time zone,
-    "server_received_at" timestamp with time zone,
-    "deleted_at" timestamp with time zone,
-    "deleted_by_name" "text",
-    "deleted_by_phone" "text",
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "drive_file_id" "text",
-    "drive_url" "text",
-    "customer_name" "text",
-    "money_deducted" numeric DEFAULT 0
-);
-
-
-ALTER TABLE "public"."ocr_tickets" OWNER TO "postgres";
-
-
-CREATE OR REPLACE FUNCTION "public"."report_lock_no"("source_row" "public"."ocr_tickets") RETURNS "text"
-    LANGUAGE "sql" STABLE SECURITY DEFINER
-    SET "search_path" TO 'public', 'private'
-    AS $$ select private.active_report_no('ocr_ticket', source_row.id); $$;
-
-
-ALTER FUNCTION "public"."report_lock_no"("source_row" "public"."ocr_tickets") OWNER TO "postgres";
-
-
 CREATE TABLE IF NOT EXISTS "public"."payroll_slips" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "profile_id" "uuid" NOT NULL,
@@ -14562,6 +14468,10 @@ END - "deduction_total"), (0)::numeric)) STORED,
     "evidence_completion_id" "uuid",
     "evidence_manual_correction_count" integer DEFAULT 0 NOT NULL,
     "formula_version" smallint DEFAULT 1 NOT NULL,
+    "input_method" "text" DEFAULT 'manual'::"text" NOT NULL,
+    "ocr_source_id" "uuid",
+    "ocr_image_sha256" "text",
+    "has_ocr_source_image" boolean GENERATED ALWAYS AS (("ocr_source_id" IS NOT NULL)) STORED,
     CONSTRAINT "rubber_bills_approval_revision_shape_check" CHECK (((("approval_state" = 'not_required'::"text") AND ("approved_by_name" IS NULL) AND ("approval_revision_no" IS NULL)) OR (("approval_state" = 'approved'::"text") AND ("approved_by_name" IS NOT NULL) AND ("approval_revision_no" = "revision_no")))),
     CONSTRAINT "rubber_bills_approval_state_check" CHECK (("approval_state" = ANY (ARRAY['not_required'::"text", 'approved'::"text"]))),
     CONSTRAINT "rubber_bills_branch_receipt_shape_check" CHECK (((("source_rubber_export_id" IS NULL) AND ("source_export_no" IS NULL) AND ("received_at" IS NULL) AND ("received_age_hours" IS NULL) AND ("received_age_is_estimated" IS NULL)) OR ((NULLIF("btrim"("source_export_no"), ''::"text") IS NOT NULL) AND ("received_at" IS NOT NULL) AND ("received_age_hours" IS NOT NULL) AND ("received_age_hours" >= (0)::numeric) AND ("received_age_is_estimated" IS NOT NULL) AND ("net_total" = (0)::numeric) AND ("rubber_value" > (0)::numeric) AND ("deduction_total" = "net_rubber_value") AND (("source_rubber_export_id" IS NOT NULL) OR ("record_status" = 'deleted'::"public"."record_status"))))),
@@ -14569,9 +14479,12 @@ END - "deduction_total"), (0)::numeric)) STORED,
     CONSTRAINT "rubber_bills_deduct_weight_range_check" CHECK ((("deduct_weight" >= (0)::numeric) AND ("deduct_weight" < "weight"))),
     CONSTRAINT "rubber_bills_evidence_manual_correction_count_nonnegative" CHECK (("evidence_manual_correction_count" >= 0)),
     CONSTRAINT "rubber_bills_formula_version_check" CHECK (("formula_version" = ANY (ARRAY[1, 2]))),
+    CONSTRAINT "rubber_bills_input_method_check" CHECK (("input_method" = ANY (ARRAY['manual'::"text", 'ocr'::"text"]))),
     CONSTRAINT "rubber_bills_money_values_nonnegative_check" CHECK ((("rubber_value" >= (0)::numeric) AND ("average_price" >= (0)::numeric) AND ("deduction_total" >= (0)::numeric) AND ("net_total" >= (0)::numeric))),
     CONSTRAINT "rubber_bills_net_total_formula_check" CHECK (("net_total" = "floor"("payable_before_rounding"))),
     CONSTRAINT "rubber_bills_net_total_whole_baht_check" CHECK (("net_total" = "trunc"("net_total"))),
+    CONSTRAINT "rubber_bills_ocr_hash_check" CHECK ((("ocr_image_sha256" IS NULL) OR (("ocr_image_sha256" = "lower"("ocr_image_sha256")) AND ("ocr_image_sha256" ~ '^[0-9a-f]{64}$'::"text")))),
+    CONSTRAINT "rubber_bills_ocr_shape_check" CHECK (((("input_method" = 'manual'::"text") AND ("ocr_source_id" IS NULL) AND ("ocr_image_sha256" IS NULL)) OR (("input_method" = 'ocr'::"text") AND ("ocr_source_id" IS NOT NULL) AND ("ocr_image_sha256" IS NOT NULL)))),
     CONSTRAINT "rubber_bills_weight_positive_check" CHECK (("weight" > (0)::numeric))
 );
 
@@ -14620,6 +14533,14 @@ COMMENT ON COLUMN "public"."rubber_bills"."evidence_completion_id" IS 'Opaque ow
 
 
 COMMENT ON COLUMN "public"."rubber_bills"."formula_version" IS '1 preserves the historical two-decimal formula; 2 floors calculated line values and rubber value to whole baht.';
+
+
+
+COMMENT ON COLUMN "public"."rubber_bills"."input_method" IS 'How the Rubber Bill draft was initiated: manual or OCR.';
+
+
+
+COMMENT ON COLUMN "public"."rubber_bills"."has_ocr_source_image" IS 'Safe browser projection; private OCR provenance is never returned.';
 
 
 
@@ -15334,16 +15255,9 @@ begin
     from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
     where x->>'sourceType' = 'rubber_bill'), array[]::uuid[]))
   order by b.id for update;
-  perform o.id
-  from public.ocr_tickets o
-  where o.id = any(coalesce((select array_agg((x->>'sourceId')::uuid)
-    from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
-    where x->>'sourceType' = 'ocr_ticket'), array[]::uuid[]))
-  order by o.id for update;
-
   if exists (
     select 1 from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
-    where x->>'sourceType' not in ('rubber_bill', 'ocr_ticket')
+    where x->>'sourceType' <> 'rubber_bill'
   ) then raise exception 'MT_INVALID_SOURCE: ประเภทแหล่งจ่ายไม่ถูกต้อง'; end if;
 
   if exists (
@@ -15367,27 +15281,6 @@ begin
         where bi.bill_id = b.id and bi.item_type = 'weigh' and coalesce(bi.price, 0) <= 0)
     )
   ) then raise exception 'MT_RUBBER_SOURCE_BLOCKED: บิลยางยังไม่พร้อมโอนหรือถูกล็อก'; end if;
-
-  if exists (
-    select 1 from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
-    left join public.ocr_tickets o on o.id = (x->>'sourceId')::uuid
-    where x->>'sourceType' = 'ocr_ticket' and (
-      o.id is null or o.location_id <> v_location_id or o.record_status <> 'active'
-      or o.sync_status::text <> 'synced' or o.ticket_id is null
-      or coalesce(o.total_amount, 0) - coalesce(o.money_deducted, 0) <= 0
-      or nullif(trim(coalesce(o.customer_name, '')), '') is null
-      or (
-        public.report_lock_no(o) is not null
-        and not exists (
-          select 1
-          from public.money_transfer_items current_item
-          where current_item.transfer_id = v_id
-            and current_item.source_type = 'ocr_ticket'
-            and current_item.source_id = o.id
-        )
-      )
-    )
-  ) then raise exception 'MT_OCR_SOURCE_BLOCKED: ใบชั่งยังไม่พร้อมโอนหรือถูกล็อก'; end if;
 
   if exists (
     select 1 from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
@@ -15455,38 +15348,29 @@ begin
   into v_changed_sources from public.money_transfer_items i where i.transfer_id = v_id;
   delete from public.money_transfer_items i where i.transfer_id = v_id and not (i.id = any(v_item_ids));
   insert into public.money_transfer_items (
-    id, transfer_id, source_type, source_id, rubber_bill_id, ocr_ticket_id, customer_name, amount
+    id, transfer_id, source_type, source_id, rubber_bill_id, customer_name, amount
   ) select
-    (x->>'id')::uuid, v_id, x->>'sourceType', (x->>'sourceId')::uuid,
-    case when x->>'sourceType' = 'rubber_bill' then (x->>'sourceId')::uuid end,
-    case when x->>'sourceType' = 'ocr_ticket' then (x->>'sourceId')::uuid end,
-    case when x->>'sourceType' = 'rubber_bill' then b.customer_name else o.customer_name end,
-    case when x->>'sourceType' = 'rubber_bill' then b.net_total
-      else coalesce(o.total_amount, 0) - coalesce(o.money_deducted, 0) end
+    (x->>'id')::uuid, v_id, 'rubber_bill', (x->>'sourceId')::uuid,
+    (x->>'sourceId')::uuid, b.customer_name, b.net_total
   from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
-  left join public.rubber_bills b on x->>'sourceType' = 'rubber_bill' and b.id = (x->>'sourceId')::uuid
-  left join public.ocr_tickets o on x->>'sourceType' = 'ocr_ticket' and o.id = (x->>'sourceId')::uuid
+  join public.rubber_bills b on b.id = (x->>'sourceId')::uuid
   where not exists (
     select 1
     from public.money_transfer_items existing
     where existing.id = (x->>'id')::uuid
       and existing.transfer_id = v_id
-      and existing.source_type is not distinct from x->>'sourceType'
-      and existing.source_id is not distinct from (x->>'sourceId')::uuid
-      and existing.customer_name is not distinct from
-        case when x->>'sourceType' = 'rubber_bill' then b.customer_name else o.customer_name end
-      and existing.amount is not distinct from
-        case when x->>'sourceType' = 'rubber_bill' then b.net_total
-          else coalesce(o.total_amount, 0) - coalesce(o.money_deducted, 0) end
+      and existing.source_type = 'rubber_bill'
+      and existing.source_id = (x->>'sourceId')::uuid
+      and existing.customer_name is not distinct from b.customer_name
+      and existing.amount is not distinct from b.net_total
   )
   on conflict (id) do update set
     source_type = excluded.source_type, source_id = excluded.source_id,
-    rubber_bill_id = excluded.rubber_bill_id, ocr_ticket_id = excluded.ocr_ticket_id,
+    rubber_bill_id = excluded.rubber_bill_id,
     customer_name = excluded.customer_name, amount = excluded.amount
   where money_transfer_items.source_type is distinct from excluded.source_type
     or money_transfer_items.source_id is distinct from excluded.source_id
     or money_transfer_items.rubber_bill_id is distinct from excluded.rubber_bill_id
-    or money_transfer_items.ocr_ticket_id is distinct from excluded.ocr_ticket_id
     or money_transfer_items.customer_name is distinct from excluded.customer_name
     or money_transfer_items.amount is distinct from excluded.amount;
 
@@ -16897,55 +16781,28 @@ declare
   v_transfer_location_id uuid;
   v_source_location_id uuid;
 begin
-  select t.location_id
-  into v_transfer_location_id
+  select t.location_id into v_transfer_location_id
   from public.money_transfers t
-  where t.id = new.transfer_id
-    and t.record_status <> 'deleted'
+  where t.id = new.transfer_id and t.record_status <> 'deleted'
   for update;
-
-  if v_transfer_location_id is null then
-    raise exception 'money transfer not found';
-  end if;
-
-  if new.source_type = 'rubber_bill' then
-    if new.rubber_bill_id is not null and new.rubber_bill_id <> new.source_id then
-      raise exception 'rubber_bill_id must match source_id';
-    end if;
-    new.rubber_bill_id := new.source_id;
-    new.ocr_ticket_id := null;
-    select rb.location_id
-    into v_source_location_id
-    from public.rubber_bills rb
-    where rb.id = new.rubber_bill_id
-      and rb.record_status <> 'deleted'
-    for update;
-  elsif new.source_type = 'ocr_ticket' then
-    if new.ocr_ticket_id is not null and new.ocr_ticket_id <> new.source_id then
-      raise exception 'ocr_ticket_id must match source_id';
-    end if;
-    new.rubber_bill_id := null;
-    new.ocr_ticket_id := new.source_id;
-    select ot.location_id
-    into v_source_location_id
-    from public.ocr_tickets ot
-    where ot.id = new.ocr_ticket_id
-      and ot.record_status <> 'deleted'
-    for update;
-  else
+  if v_transfer_location_id is null then raise exception 'money transfer not found'; end if;
+  if new.source_type <> 'rubber_bill' then
     raise exception 'unsupported money transfer source type: %', new.source_type;
   end if;
-
-  if v_source_location_id is null then
-    raise exception 'money transfer source not found';
+  if new.rubber_bill_id is not null and new.rubber_bill_id <> new.source_id then
+    raise exception 'rubber_bill_id must match source_id';
   end if;
-
+  new.rubber_bill_id := new.source_id;
+  select rb.location_id into v_source_location_id
+  from public.rubber_bills rb
+  where rb.id = new.rubber_bill_id and rb.record_status <> 'deleted'
+  for update;
+  if v_source_location_id is null then raise exception 'money transfer source not found'; end if;
   if v_source_location_id <> v_transfer_location_id then
     raise exception 'money transfer source must belong to the transfer location';
   end if;
-
   return new;
-end;
+end
 $$;
 
 
@@ -16954,36 +16811,30 @@ ALTER FUNCTION "public"."sync_money_transfer_item_source_fks"() OWNER TO "postgr
 
 CREATE OR REPLACE FUNCTION "public"."sync_rubber_bill"("payload" "jsonb") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public', 'private'
+    SET "search_path" TO ''
     AS $$
 declare
-  v_operation text := payload->>'operation';
-  v_business_date date;
-  v_requires_approval boolean := false;
+  v_reservation jsonb;
+  v_result jsonb;
 begin
   begin
-    if v_operation = 'delete' then
-      select bill_date into v_business_date
-      from public.rubber_bills
-      where client_temp_id = payload->>'clientTempId';
-    elsif v_operation in ('create', 'update') then
-      v_business_date := (payload->>'billDate')::date;
+    v_reservation := private.reserve_rubber_bill_ocr_source(payload);
+    if v_reservation->>'status' = 'conflict' then
+      return v_reservation;
     end if;
-  exception when others then
-    return jsonb_build_object('status', 'failed', 'errorMessage', 'วันที่บิลไม่ถูกต้อง');
+    if v_reservation->>'status' <> 'ok' then
+      v_result := v_reservation;
+      raise exception using errcode = 'P0002', message = 'ROLLBACK_OCR_RESERVATION';
+    end if;
+
+    v_result := private.sync_rubber_bill_approval_20260823010000(payload);
+    if v_result->>'status' in ('failed', 'conflict') then
+      raise exception using errcode = 'P0002', message = 'ROLLBACK_OCR_RESERVATION';
+    end if;
+    return v_result;
+  exception when sqlstate 'P0002' then
+    return v_result;
   end;
-
-  select coalesce(non_current_date_requires_approval, false)
-    into v_requires_approval
-  from public.rubber_bill_approval_settings
-  where id = true;
-
-  if v_requires_approval
-     and v_business_date is distinct from (clock_timestamp() at time zone 'Asia/Bangkok')::date then
-    payload := payload || jsonb_build_object('forceNonCurrentDateApproval', true);
-  end if;
-
-  return private.sync_rubber_bill_approval_20260823010000(payload);
 end
 $$;
 
@@ -16992,6 +16843,115 @@ ALTER FUNCTION "public"."sync_rubber_bill"("payload" "jsonb") OWNER TO "postgres
 
 
 CREATE OR REPLACE FUNCTION "public"."sync_rubber_bill_core_20260725010000"("payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_result jsonb;
+  v_source public.rubber_bill_ocr_sources%rowtype;
+  v_upload_id uuid;
+  v_bill_id uuid;
+  v_expected_owner uuid := auth.uid();
+  v_operation text := payload->>'operation';
+  v_input_method text := coalesce(nullif(payload->>'inputMethod', ''), 'manual');
+begin
+  if v_operation = 'create' and v_input_method = 'ocr' then
+    begin
+      v_upload_id := (payload->>'ocrUploadId')::uuid;
+    exception when others then
+      return jsonb_build_object('status', 'conflict', 'errorMessage', 'ข้อมูลอ้างอิงรูป OCR ไม่ถูกต้อง');
+    end;
+    select * into v_source
+    from public.rubber_bill_ocr_sources s
+    where s.id = v_upload_id
+    for update;
+    if v_source.id is null then
+      return jsonb_build_object('status', 'conflict', 'errorMessage', 'ไม่พบรูป OCR ที่อ้างอิง');
+    end if;
+
+    if v_source.owner_user_id <> v_expected_owner then
+      select r.requested_by_user_id into v_expected_owner
+      from public.rubber_bill_approval_requests r
+      where r.request_status = 'pending'
+        and r.requested_by_user_id = v_source.owner_user_id
+        and r.location_id = v_source.location_id
+        and r.client_temp_id = v_source.reserved_client_temp_id
+        and r.idempotency_key = v_source.reserved_idempotency_key
+        and r.proposed_payload->>'ocrUploadId' = v_source.id::text
+      order by r.requested_at desc
+      limit 1;
+    end if;
+
+    if v_expected_owner is distinct from v_source.owner_user_id
+       or v_source.location_id is distinct from (payload->>'locationId')::uuid
+       or v_source.reserved_client_temp_id is distinct from payload->>'clientTempId'
+       or v_source.reserved_idempotency_key is distinct from payload->>'idempotencyKey'
+       or v_source.state not in ('reserved', 'attached') then
+      return jsonb_build_object('status', 'conflict', 'errorMessage', 'ข้อมูลอ้างอิงรูป OCR ไม่ตรงกับคำขอ');
+    end if;
+  end if;
+
+  payload := payload - 'ocrUploadId' - 'ocrSourceId' - 'ocrImageSha256' - 'driveFileId' - 'driveUrl';
+  v_result := public.sync_rubber_bill_legacy_core_20260824010000(payload);
+  if v_result->>'status' <> 'synced' then
+    return v_result;
+  end if;
+
+  if v_operation = 'create' and v_input_method = 'ocr' then
+    v_bill_id := (v_result->>'id')::uuid;
+    if v_source.state = 'attached' then
+      if not exists (
+        select 1
+        from public.rubber_bills b
+        where b.id = v_bill_id
+          and b.location_id = v_source.location_id
+          and b.client_temp_id = v_source.reserved_client_temp_id
+          and b.idempotency_key = v_source.reserved_idempotency_key
+          and b.input_method = 'ocr'
+          and b.ocr_source_id = v_source.id
+          and b.ocr_image_sha256 = v_source.image_sha256
+      ) then
+        return jsonb_build_object(
+          'status', 'conflict',
+          'errorCode', 'OCR_REPLAY_ATTACHMENT_MISMATCH',
+          'errorMessage', 'ข้อมูลบิลยางไม่ตรงกับรูป OCR ที่แนบไว้'
+        );
+      end if;
+      return v_result;
+    end if;
+
+    update public.rubber_bills
+    set input_method = 'ocr',
+        ocr_source_id = v_source.id,
+        ocr_image_sha256 = v_source.image_sha256
+    where id = v_bill_id
+      and location_id = v_source.location_id
+      and client_temp_id = v_source.reserved_client_temp_id
+      and idempotency_key = v_source.reserved_idempotency_key;
+    if not found then
+      return jsonb_build_object('status', 'conflict', 'errorMessage', 'ข้อมูลบิลยางไม่ตรงกับรูป OCR');
+    end if;
+    update public.rubber_bill_ocr_sources
+    set state = 'attached', attached_at = now(), updated_at = now()
+    where id = v_source.id and state = 'reserved';
+    if not found then
+      return jsonb_build_object('status', 'conflict', 'errorMessage', 'แนบรูป OCR กับบิลยางไม่สำเร็จ');
+    end if;
+  end if;
+  return v_result;
+exception
+  when unique_violation then
+    return jsonb_build_object('status', 'conflict', 'errorMessage', 'รูป OCR นี้ถูกใช้กับบิลยางที่ยังใช้งานอยู่แล้ว');
+  when others then
+    return jsonb_build_object('status', 'failed', 'errorMessage', sqlerrm);
+end
+$$;
+
+
+ALTER FUNCTION "public"."sync_rubber_bill_core_20260725010000"("payload" "jsonb") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."sync_rubber_bill_legacy_core_20260824010000"("payload" "jsonb") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public'
     AS $$
@@ -17321,7 +17281,7 @@ end;
 $$;
 
 
-ALTER FUNCTION "public"."sync_rubber_bill_core_20260725010000"("payload" "jsonb") OWNER TO "postgres";
+ALTER FUNCTION "public"."sync_rubber_bill_legacy_core_20260824010000"("payload" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."sync_stock_entry"("payload" "jsonb") RETURNS "jsonb"
@@ -18471,7 +18431,7 @@ CREATE TABLE IF NOT EXISTS "public"."dashboard_money_events" (
     CONSTRAINT "dashboard_money_events_action_check" CHECK (("action" = ANY (ARRAY['create'::"text", 'update'::"text", 'delete'::"text"]))),
     CONSTRAINT "dashboard_money_events_amount_check" CHECK (("amount" >= (0)::numeric)),
     CONSTRAINT "dashboard_money_events_direction_check" CHECK (("direction" = ANY (ARRAY['income'::"text", 'expense'::"text"]))),
-    CONSTRAINT "dashboard_money_events_source_type_check" CHECK (("source_type" = ANY (ARRAY['income_expense'::"text", 'money_transfer'::"text", 'cash_transfer'::"text", 'withdrawal'::"text", 'payroll_slip'::"text", 'rubber_bill'::"text", 'ocr_ticket'::"text", 'rubber_export'::"text"])))
+    CONSTRAINT "dashboard_money_events_source_type_check" CHECK (("source_type" = ANY (ARRAY['income_expense'::"text", 'money_transfer'::"text", 'cash_transfer'::"text", 'withdrawal'::"text", 'payroll_slip'::"text", 'rubber_bill'::"text", 'rubber_export'::"text"])))
 );
 
 
@@ -18729,9 +18689,8 @@ CREATE TABLE IF NOT EXISTS "public"."money_transfer_items" (
     "amount" numeric(12,2) DEFAULT 0 NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "rubber_bill_id" "uuid",
-    "ocr_ticket_id" "uuid",
-    CONSTRAINT "money_transfer_items_source_fk_shape_check" CHECK (((("source_type" = 'rubber_bill'::"text") AND ("rubber_bill_id" IS NOT NULL) AND ("rubber_bill_id" = "source_id") AND ("ocr_ticket_id" IS NULL)) OR (("source_type" = 'ocr_ticket'::"text") AND ("ocr_ticket_id" IS NOT NULL) AND ("ocr_ticket_id" = "source_id") AND ("rubber_bill_id" IS NULL)))),
-    CONSTRAINT "money_transfer_items_source_type_check" CHECK (("source_type" = ANY (ARRAY['rubber_bill'::"text", 'ocr_ticket'::"text"])))
+    CONSTRAINT "money_transfer_items_source_fk_shape_check" CHECK ((("source_type" = 'rubber_bill'::"text") AND ("rubber_bill_id" IS NOT NULL) AND ("rubber_bill_id" = "source_id"))),
+    CONSTRAINT "money_transfer_items_source_type_check" CHECK (("source_type" = 'rubber_bill'::"text"))
 );
 
 
@@ -18785,7 +18744,7 @@ CREATE TABLE IF NOT EXISTS "public"."report_items" (
     "eligibility_at" timestamp with time zone NOT NULL,
     "active" boolean DEFAULT true NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    CONSTRAINT "report_items_entity_type_check" CHECK (("entity_type" = ANY (ARRAY['rubber_bill'::"text", 'rubber_export'::"text", 'ocr_ticket'::"text", 'income_expense'::"text", 'acid_stock_entry'::"text", 'time_segment'::"text", 'leave_request'::"text", 'financial_transaction'::"text", 'payroll_slip'::"text", 'bank_transfer_source'::"text", 'bank_transfer_target'::"text", 'cash_transfer_sent'::"text", 'cash_transfer_received'::"text"])))
+    CONSTRAINT "report_items_entity_type_check" CHECK (("entity_type" = ANY (ARRAY['rubber_bill'::"text", 'rubber_export'::"text", 'income_expense'::"text", 'acid_stock_entry'::"text", 'time_segment'::"text", 'leave_request'::"text", 'financial_transaction'::"text", 'payroll_slip'::"text", 'bank_transfer_source'::"text", 'bank_transfer_target'::"text", 'cash_transfer_sent'::"text", 'cash_transfer_received'::"text"])))
 );
 
 
@@ -18906,6 +18865,50 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_bill_item_evidence_files" (
 
 
 ALTER TABLE "public"."rubber_bill_item_evidence_files" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."rubber_bill_ocr_sources" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "owner_user_id" "uuid" NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "state" "text" DEFAULT 'staged'::"text" NOT NULL,
+    "image_sha256" "text" NOT NULL,
+    "drive_file_id" "text" NOT NULL,
+    "image_mime_type" "text" NOT NULL,
+    "image_size_bytes" integer NOT NULL,
+    "original_file_name" "text" NOT NULL,
+    "bill_date" "date",
+    "in_weight" numeric(12,2),
+    "out_weight" numeric(12,2),
+    "deduct_weight" numeric(12,2),
+    "ocr_total" numeric(12,2),
+    "suggested_price" numeric(12,2),
+    "reserved_client_temp_id" "text",
+    "reserved_idempotency_key" "text",
+    "reserved_at" timestamp with time zone,
+    "attached_at" timestamp with time zone,
+    "abandoned_at" timestamp with time zone,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "rubber_bill_ocr_sources_deduct_weight_check" CHECK ((("deduct_weight" IS NULL) OR ("deduct_weight" >= (0)::numeric))),
+    CONSTRAINT "rubber_bill_ocr_sources_drive_file_id_check" CHECK (("btrim"("drive_file_id") <> ''::"text")),
+    CONSTRAINT "rubber_bill_ocr_sources_image_mime_type_check" CHECK (("image_mime_type" = ANY (ARRAY['image/jpeg'::"text", 'image/png'::"text"]))),
+    CONSTRAINT "rubber_bill_ocr_sources_image_sha256_check" CHECK ((("image_sha256" = "lower"("image_sha256")) AND ("image_sha256" ~ '^[0-9a-f]{64}$'::"text"))),
+    CONSTRAINT "rubber_bill_ocr_sources_image_size_bytes_check" CHECK ((("image_size_bytes" > 0) AND ("image_size_bytes" <= 8388608))),
+    CONSTRAINT "rubber_bill_ocr_sources_in_weight_check" CHECK ((("in_weight" IS NULL) OR ("in_weight" >= (0)::numeric))),
+    CONSTRAINT "rubber_bill_ocr_sources_ocr_total_check" CHECK ((("ocr_total" IS NULL) OR ("ocr_total" >= (0)::numeric))),
+    CONSTRAINT "rubber_bill_ocr_sources_out_weight_check" CHECK ((("out_weight" IS NULL) OR ("out_weight" >= (0)::numeric))),
+    CONSTRAINT "rubber_bill_ocr_sources_state_check" CHECK (("state" = ANY (ARRAY['staged'::"text", 'reserved'::"text", 'attached'::"text", 'abandoned'::"text"]))),
+    CONSTRAINT "rubber_bill_ocr_sources_state_shape" CHECK (((("state" = 'staged'::"text") AND ("reserved_client_temp_id" IS NULL) AND ("reserved_idempotency_key" IS NULL) AND ("reserved_at" IS NULL) AND ("attached_at" IS NULL) AND ("abandoned_at" IS NULL)) OR (("state" = 'reserved'::"text") AND (NULLIF("btrim"("reserved_client_temp_id"), ''::"text") IS NOT NULL) AND (NULLIF("btrim"("reserved_idempotency_key"), ''::"text") IS NOT NULL) AND ("reserved_at" IS NOT NULL) AND ("attached_at" IS NULL) AND ("abandoned_at" IS NULL)) OR (("state" = 'attached'::"text") AND (NULLIF("btrim"("reserved_client_temp_id"), ''::"text") IS NOT NULL) AND (NULLIF("btrim"("reserved_idempotency_key"), ''::"text") IS NOT NULL) AND ("reserved_at" IS NOT NULL) AND ("attached_at" IS NOT NULL) AND ("abandoned_at" IS NULL)) OR (("state" = 'abandoned'::"text") AND (NULLIF("btrim"("reserved_client_temp_id"), ''::"text") IS NOT NULL) AND (NULLIF("btrim"("reserved_idempotency_key"), ''::"text") IS NOT NULL) AND ("reserved_at" IS NOT NULL) AND ("attached_at" IS NULL) AND ("abandoned_at" IS NOT NULL)))),
+    CONSTRAINT "rubber_bill_ocr_sources_suggested_price_check" CHECK ((("suggested_price" IS NULL) OR ("suggested_price" >= (0)::numeric)))
+);
+
+
+ALTER TABLE "public"."rubber_bill_ocr_sources" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."rubber_bill_ocr_sources" IS 'Private staged and attached provenance for Rubber Bills created from OCR.';
+
 
 
 CREATE TABLE IF NOT EXISTS "public"."rubber_export_items" (
@@ -19419,21 +19422,6 @@ ALTER TABLE ONLY "public"."money_transfers"
 
 
 
-ALTER TABLE ONLY "public"."ocr_tickets"
-    ADD CONSTRAINT "ocr_tickets_client_temp_id_key" UNIQUE ("client_temp_id");
-
-
-
-ALTER TABLE ONLY "public"."ocr_tickets"
-    ADD CONSTRAINT "ocr_tickets_idempotency_key_key" UNIQUE ("idempotency_key");
-
-
-
-ALTER TABLE ONLY "public"."ocr_tickets"
-    ADD CONSTRAINT "ocr_tickets_pkey" PRIMARY KEY ("id");
-
-
-
 ALTER TABLE "public"."payroll_slips"
     ADD CONSTRAINT "payroll_slips_expense_assignment" CHECK ((("status" <> 'APPROVED'::"public"."approval_status") OR ("cancelled_at" IS NOT NULL) OR ("net_pay" <= (0)::numeric) OR ("approved_at" IS NOT NULL))) NOT VALID;
 
@@ -19539,6 +19527,16 @@ ALTER TABLE ONLY "public"."rubber_bill_items"
 
 
 
+ALTER TABLE ONLY "public"."rubber_bill_ocr_sources"
+    ADD CONSTRAINT "rubber_bill_ocr_sources_identity_key" UNIQUE ("id", "location_id", "image_sha256");
+
+
+
+ALTER TABLE ONLY "public"."rubber_bill_ocr_sources"
+    ADD CONSTRAINT "rubber_bill_ocr_sources_pkey" PRIMARY KEY ("id");
+
+
+
 ALTER TABLE ONLY "public"."rubber_bills"
     ADD CONSTRAINT "rubber_bills_client_temp_id_key" UNIQUE ("client_temp_id");
 
@@ -19556,6 +19554,11 @@ ALTER TABLE ONLY "public"."rubber_bills"
 
 ALTER TABLE ONLY "public"."rubber_bills"
     ADD CONSTRAINT "rubber_bills_location_id_server_bill_no_bill_date_bill_type_key" UNIQUE ("location_id", "server_bill_no", "bill_date", "bill_type");
+
+
+
+ALTER TABLE ONLY "public"."rubber_bills"
+    ADD CONSTRAINT "rubber_bills_ocr_source_unique" UNIQUE ("ocr_source_id");
 
 
 
@@ -19749,10 +19752,6 @@ CREATE INDEX "dashboard_money_events_location_date_cursor_idx" ON "public"."dash
 
 
 
-CREATE INDEX "dashboard_ocr_money_feed_idx" ON "public"."ocr_tickets" USING "btree" ("location_id", COALESCE("client_recorded_at", "created_at") DESC, (('ocr-ticket:'::"text" || ("id")::"text")) DESC) WHERE (("record_status" = 'active'::"public"."record_status") AND ("total_amount" > (0)::numeric));
-
-
-
 CREATE INDEX "dashboard_rubber_bill_money_feed_idx" ON "public"."rubber_bills" USING "btree" ("location_id", COALESCE("client_recorded_at", "created_at") DESC, (('rubber-bill:'::"text" || ("id")::"text")) DESC) WHERE ("record_status" = 'active'::"public"."record_status");
 
 
@@ -19849,18 +19848,6 @@ CREATE INDEX "money_transfers_feed_target_idx" ON "public"."money_transfers" USI
 
 
 
-CREATE INDEX "ocr_tickets_feed_active_idx" ON "public"."ocr_tickets" USING "btree" ("location_id", "date_in" DESC, "id") WHERE (("record_status" = 'active'::"public"."record_status") AND ("total_amount" > (0)::numeric));
-
-
-
-CREATE UNIQUE INDEX "ocr_tickets_location_file_unique" ON "public"."ocr_tickets" USING "btree" ("location_id", "file_name") WHERE ("record_status" = 'active'::"public"."record_status");
-
-
-
-CREATE INDEX "ocr_tickets_source_cursor_idx" ON "public"."ocr_tickets" USING "btree" ("location_id", "created_at" DESC, "id" DESC) WHERE ("record_status" = 'active'::"public"."record_status");
-
-
-
 CREATE INDEX "payroll_slips_expense_feed_idx" ON "public"."payroll_slips" USING "btree" ("expense_location_id", "approved_at" DESC, "id" DESC) WHERE (("status" = 'APPROVED'::"public"."approval_status") AND ("cancelled_at" IS NULL) AND ("net_pay" > (0)::numeric));
 
 
@@ -19918,6 +19905,18 @@ CREATE INDEX "rubber_bill_evidence_review_periods_scope_lookup" ON "public"."rub
 
 
 CREATE INDEX "rubber_bill_items_payable_lookup" ON "public"."rubber_bill_items" USING "btree" ("bill_id", "item_type", "price");
+
+
+
+CREATE INDEX "rubber_bill_ocr_sources_owner_created_idx" ON "public"."rubber_bill_ocr_sources" USING "btree" ("owner_user_id", "created_at" DESC);
+
+
+
+CREATE UNIQUE INDEX "rubber_bill_ocr_sources_pending_hash_unique" ON "public"."rubber_bill_ocr_sources" USING "btree" ("location_id", "image_sha256") WHERE ("state" = ANY (ARRAY['staged'::"text", 'reserved'::"text"]));
+
+
+
+CREATE UNIQUE INDEX "rubber_bills_active_ocr_hash_unique" ON "public"."rubber_bills" USING "btree" ("location_id", "ocr_image_sha256") WHERE (("record_status" = 'active'::"public"."record_status") AND ("input_method" = 'ocr'::"text"));
 
 
 
@@ -20029,10 +20028,6 @@ CREATE OR REPLACE TRIGGER "dashboard_dirty_money_transfers" AFTER INSERT OR DELE
 
 
 
-CREATE OR REPLACE TRIGGER "dashboard_dirty_ocr_tickets" AFTER INSERT OR DELETE OR UPDATE ON "public"."ocr_tickets" FOR EACH ROW EXECUTE FUNCTION "private"."dashboard_dirty_location_columns"('location_id');
-
-
-
 CREATE OR REPLACE TRIGGER "dashboard_dirty_payroll_slips" AFTER INSERT OR DELETE OR UPDATE ON "public"."payroll_slips" FOR EACH ROW EXECUTE FUNCTION "private"."dashboard_dirty_location_columns"('expense_location_id');
 
 
@@ -20070,10 +20065,6 @@ CREATE CONSTRAINT TRIGGER "dashboard_money_event_income_sale_lines" AFTER INSERT
 
 
 CREATE CONSTRAINT TRIGGER "dashboard_money_event_money_transfers" AFTER INSERT OR DELETE OR UPDATE ON "public"."money_transfers" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "private"."capture_dashboard_money_source"();
-
-
-
-CREATE CONSTRAINT TRIGGER "dashboard_money_event_ocr_tickets" AFTER INSERT OR DELETE OR UPDATE ON "public"."ocr_tickets" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "private"."capture_dashboard_money_source"();
 
 
 
@@ -20173,15 +20164,7 @@ CREATE OR REPLACE TRIGGER "locations_code_immutable" BEFORE UPDATE OF "code" ON 
 
 
 
-CREATE OR REPLACE TRIGGER "money_transfer_items_sync_source_fks" BEFORE INSERT OR UPDATE OF "source_type", "source_id", "rubber_bill_id", "ocr_ticket_id" ON "public"."money_transfer_items" FOR EACH ROW EXECUTE FUNCTION "public"."sync_money_transfer_item_source_fks"();
-
-
-
-CREATE OR REPLACE TRIGGER "ocr_tickets_transfer_relation_delete_lock" BEFORE DELETE ON "public"."ocr_tickets" FOR EACH ROW EXECUTE FUNCTION "public"."prevent_locked_ocr_ticket_change"();
-
-
-
-CREATE OR REPLACE TRIGGER "ocr_tickets_transfer_relation_update_lock" BEFORE UPDATE ON "public"."ocr_tickets" FOR EACH ROW EXECUTE FUNCTION "public"."prevent_locked_ocr_ticket_change"();
+CREATE OR REPLACE TRIGGER "money_transfer_items_sync_source_fks" BEFORE INSERT OR UPDATE OF "source_type", "source_id", "rubber_bill_id" ON "public"."money_transfer_items" FOR EACH ROW EXECUTE FUNCTION "public"."sync_money_transfer_item_source_fks"();
 
 
 
@@ -20245,10 +20228,6 @@ CREATE OR REPLACE TRIGGER "report_lock_money_transfers" BEFORE DELETE OR UPDATE 
 
 
 
-CREATE OR REPLACE TRIGGER "report_lock_ocr_tickets" BEFORE DELETE OR UPDATE ON "public"."ocr_tickets" FOR EACH ROW EXECUTE FUNCTION "private"."guard_reported_entity"('ocr_ticket');
-
-
-
 CREATE OR REPLACE TRIGGER "report_lock_payroll_slips" BEFORE DELETE OR UPDATE ON "public"."payroll_slips" FOR EACH ROW EXECUTE FUNCTION "private"."guard_reported_entity"('payroll_slip');
 
 
@@ -20270,6 +20249,10 @@ CREATE OR REPLACE TRIGGER "report_lock_stock_entries" BEFORE DELETE OR UPDATE ON
 
 
 CREATE OR REPLACE TRIGGER "report_lock_time_segments" BEFORE DELETE OR UPDATE ON "public"."time_segments" FOR EACH ROW EXECUTE FUNCTION "private"."guard_reported_entity"('time_segment');
+
+
+
+CREATE OR REPLACE TRIGGER "rubber_bill_ocr_sources_enforce_update" BEFORE UPDATE ON "public"."rubber_bill_ocr_sources" FOR EACH ROW EXECUTE FUNCTION "private"."enforce_rubber_bill_ocr_source_update"();
 
 
 
@@ -20608,11 +20591,6 @@ ALTER TABLE ONLY "public"."money_transfer_cash_details"
 
 
 ALTER TABLE ONLY "public"."money_transfer_items"
-    ADD CONSTRAINT "money_transfer_items_ocr_ticket_fk" FOREIGN KEY ("ocr_ticket_id") REFERENCES "public"."ocr_tickets"("id") ON DELETE RESTRICT;
-
-
-
-ALTER TABLE ONLY "public"."money_transfer_items"
     ADD CONSTRAINT "money_transfer_items_rubber_bill_fk" FOREIGN KEY ("rubber_bill_id") REFERENCES "public"."rubber_bills"("id") ON DELETE RESTRICT;
 
 
@@ -20649,16 +20627,6 @@ ALTER TABLE ONLY "public"."money_transfers"
 
 ALTER TABLE ONLY "public"."money_transfers"
     ADD CONSTRAINT "money_transfers_transport_staff_id_fkey" FOREIGN KEY ("transport_staff_id") REFERENCES "public"."transport_staffs"("id");
-
-
-
-ALTER TABLE ONLY "public"."ocr_tickets"
-    ADD CONSTRAINT "ocr_tickets_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."profiles"("id");
-
-
-
-ALTER TABLE ONLY "public"."ocr_tickets"
-    ADD CONSTRAINT "ocr_tickets_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id");
 
 
 
@@ -20802,6 +20770,16 @@ ALTER TABLE ONLY "public"."rubber_bill_items"
 
 
 
+ALTER TABLE ONLY "public"."rubber_bill_ocr_sources"
+    ADD CONSTRAINT "rubber_bill_ocr_sources_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id") ON DELETE RESTRICT;
+
+
+
+ALTER TABLE ONLY "public"."rubber_bill_ocr_sources"
+    ADD CONSTRAINT "rubber_bill_ocr_sources_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."profiles"("id") ON DELETE RESTRICT;
+
+
+
 ALTER TABLE ONLY "public"."rubber_bills"
     ADD CONSTRAINT "rubber_bills_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."profiles"("id");
 
@@ -20814,6 +20792,11 @@ ALTER TABLE ONLY "public"."rubber_bills"
 
 ALTER TABLE ONLY "public"."rubber_bills"
     ADD CONSTRAINT "rubber_bills_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id");
+
+
+
+ALTER TABLE ONLY "public"."rubber_bills"
+    ADD CONSTRAINT "rubber_bills_ocr_source_composite_fk" FOREIGN KEY ("ocr_source_id", "location_id", "ocr_image_sha256") REFERENCES "public"."rubber_bill_ocr_sources"("id", "location_id", "image_sha256") ON DELETE RESTRICT;
 
 
 
@@ -21314,13 +21297,6 @@ CREATE POLICY "money_transfers_update_module_scope" ON "public"."money_transfers
 
 
 
-ALTER TABLE "public"."ocr_tickets" ENABLE ROW LEVEL SECURITY;
-
-
-CREATE POLICY "ocr_tickets_location_scope" ON "public"."ocr_tickets" TO "authenticated" USING ("private"."can_access_location"("location_id")) WITH CHECK ("private"."can_access_location"("location_id"));
-
-
-
 ALTER TABLE "public"."payroll_slips" ENABLE ROW LEVEL SECURITY;
 
 
@@ -21422,6 +21398,9 @@ CREATE POLICY "rubber_bill_item_evidence_files_parent_scope" ON "public"."rubber
 
 
 ALTER TABLE "public"."rubber_bill_items" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."rubber_bill_ocr_sources" ENABLE ROW LEVEL SECURITY;
 
 
 ALTER TABLE "public"."rubber_bills" ENABLE ROW LEVEL SECURITY;
@@ -21761,6 +21740,10 @@ REVOKE ALL ON FUNCTION "private"."effective_rubber_approval_settings"("p_locatio
 
 
 
+REVOKE ALL ON FUNCTION "private"."enforce_rubber_bill_ocr_source_update"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."has_time_payroll_manager_access"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "private"."has_time_payroll_manager_access"() TO "authenticated";
 
@@ -21851,6 +21834,10 @@ REVOKE ALL ON FUNCTION "private"."require_atomic_money_transfer_delete"() FROM P
 
 
 REVOKE ALL ON FUNCTION "private"."require_rubber_bill_evidence_review_manager"("p_location_id" "uuid") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."reserve_rubber_bill_ocr_source"("p_payload" "jsonb") FROM PUBLIC;
 
 
 
@@ -22426,10 +22413,6 @@ GRANT ALL ON FUNCTION "public"."pass_all_pending_rubber_bill_evidence_reviews"("
 
 
 
-REVOKE ALL ON FUNCTION "public"."prevent_locked_ocr_ticket_change"() FROM PUBLIC;
-
-
-
 REVOKE ALL ON FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) TO "authenticated";
 
@@ -22529,18 +22512,6 @@ GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."money_tra
 
 
 
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."ocr_tickets" TO "anon";
-GRANT ALL ON TABLE "public"."ocr_tickets" TO "authenticated";
-GRANT ALL ON TABLE "public"."ocr_tickets" TO "service_role";
-
-
-
-REVOKE ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."ocr_tickets") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."ocr_tickets") TO "authenticated";
-GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."ocr_tickets") TO "service_role";
-
-
-
 GRANT ALL ON TABLE "public"."payroll_slips" TO "service_role";
 GRANT SELECT ON TABLE "public"."payroll_slips" TO "authenticated";
 
@@ -22553,7 +22524,206 @@ GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."payroll_s
 
 
 GRANT ALL ON TABLE "public"."rubber_bills" TO "service_role";
-GRANT SELECT ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("id") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("client_temp_id") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("local_bill_no") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("server_bill_no") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("idempotency_key") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("sync_status") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("record_status") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("location_id") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("bill_no") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("bill_date") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("customer_id") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("customer_name") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("bill_type") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("deduct_weight") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("weight") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("rubber_value") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("average_price") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("deduction_total") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("net_total") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("acid_pack_count") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("locked_at") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("client_recorded_at") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("client_created_at") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("server_received_at") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("revision_no") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("deleted_at") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("deleted_by_name") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("deleted_by_phone") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("created_by_user_id") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("created_by_name") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("created_by_phone") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("created_at") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("updated_at") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("configured_price_snapshot") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("approval_state") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("approved_by_name") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("approval_revision_no") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("net_weight") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("net_rubber_value") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("payable_before_rounding") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("source_rubber_export_id") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("source_export_no") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("received_at") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("received_age_hours") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("received_age_is_estimated") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("evidence_completion_id") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("evidence_manual_correction_count") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("formula_version") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("input_method") ON TABLE "public"."rubber_bills" TO "authenticated";
+
+
+
+GRANT SELECT("has_ocr_source_image") ON TABLE "public"."rubber_bills" TO "authenticated";
 
 
 
@@ -22731,6 +22901,10 @@ GRANT ALL ON FUNCTION "public"."sync_rubber_bill"("payload" "jsonb") TO "authent
 
 
 REVOKE ALL ON FUNCTION "public"."sync_rubber_bill_core_20260725010000"("payload" "jsonb") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "public"."sync_rubber_bill_legacy_core_20260824010000"("payload" "jsonb") FROM PUBLIC;
 
 
 
@@ -23016,6 +23190,10 @@ GRANT SELECT ON TABLE "public"."rubber_bill_evidence_reviews" TO "authenticated"
 
 GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."rubber_bill_item_evidence_files" TO "service_role";
 GRANT SELECT ON TABLE "public"."rubber_bill_item_evidence_files" TO "authenticated";
+
+
+
+GRANT ALL ON TABLE "public"."rubber_bill_ocr_sources" TO "service_role";
 
 
 

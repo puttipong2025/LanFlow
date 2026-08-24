@@ -10,7 +10,6 @@ test("classifies every related report group once and in report order", () => {
   expect(reportErrorGroups([
     "rubber_bills",
     "rubber_bill_items",
-    "ocr_tickets",
     "income_expense",
     "stock_entries",
     "time_segments",
@@ -18,7 +17,6 @@ test("classifies every related report group once and in report order", () => {
     "money_transfers",
   ].join(" "))).toEqual([
     "บิลยาง",
-    "อ่านใบชั่ง",
     "รับ–จ่าย",
     "สต็อกสินค้า",
     "เวลาและเงินเดือน",
