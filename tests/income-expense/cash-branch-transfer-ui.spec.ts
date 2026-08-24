@@ -68,26 +68,8 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
     expect(sourceLocationId).toBeTruthy();
     await page.click('button:has-text("โยกเงินไปสาขาอื่น")');
     const createModal = page.locator(".fixed.inset-0").last();
-    const modeSelector = createModal.getByTestId("branch-transfer-mode-selector");
-    await expect(modeSelector).toBeVisible();
-    await expect(modeSelector.getByRole("button", { name: "เงินสด", exact: true })).toHaveAttribute("aria-pressed", "true");
-    await expect(modeSelector.getByRole("button", { name: "โอนธนาคาร", exact: true })).toHaveAttribute("aria-pressed", "false");
-    await expect(modeSelector).not.toHaveClass(/fixed/);
-    const modalHeaderBox = await createModal.locator("header").boundingBox();
-    const modeSelectorBox = await modeSelector.boundingBox();
-    expect(modeSelectorBox!.y).toBeGreaterThanOrEqual(modalHeaderBox!.y + modalHeaderBox!.height - 1);
-
-    await modeSelector.getByRole("button", { name: "โอนธนาคาร", exact: true }).click();
-    const bankDialog = page.getByRole("dialog", { name: "สร้างรายการโอนเงินใหม่ (ให้สาขา)" });
-    await expect(bankDialog).toBeVisible();
-    await expect(bankDialog.getByText("บันทึกรายการโอนเงินระหว่างสาขา")).toBeVisible();
-    await expect(page.getByRole("dialog")).toHaveCount(1);
-    await expect(bankDialog.getByTestId("branch-transfer-mode-selector")).not.toHaveClass(/fixed/);
-    await expect(bankDialog.getByRole("button", { name: "โอนธนาคาร", exact: true })).toHaveAttribute("aria-pressed", "true");
-    await page.keyboard.press("Escape");
-    await expect(bankDialog).toBeHidden();
-    await page.click('button:has-text("โยกเงินไปสาขาอื่น")');
     await expect(createModal.getByText("โยกเงินไปสาขาอื่น (เงินสด)")).toBeVisible();
+    await expect(createModal.getByText("โอนธนาคาร", { exact: true })).toHaveCount(0);
 
     const targetSelect = createModal.getByLabel("สาขาปลายทาง");
     const targetLocationId = await selectFirstAccessibleOption(page, targetSelect);

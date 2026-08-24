@@ -1,12 +1,10 @@
 import { ArrowRightLeft, Edit3, ExternalLink, Eye, Plus, RefreshCw, Settings, Share2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useMemo, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
 
 import { formatCurrency } from "@/lib/format";
 import { IncomeExpenseStockShortageError, useIncomeExpense } from "@/hooks/useIncomeExpense";
 import { getIncomeExpenseApprovalReasons, useIncomeExpenseApprovals } from "@/hooks/useIncomeExpenseApprovals";
-import { useMoneyTransferMutations } from "@/hooks/useMoneyTransfers";
 import { useCashBranchTransfers } from "@/hooks/useCashBranchTransfers";
 import { useLocations } from "@/hooks/useLocations";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
@@ -14,7 +12,6 @@ import { bangkokDateString } from "@/lib/bangkok-date";
 import { usePerRecordSyncRetry } from "@/hooks/usePerRecordSyncRetry";
 import { getOfflineSyncedActionBlockReason } from "@/lib/record-action-locks";
 import { canAccessSourceLocation, canManageSystemFeatures } from "@/lib/permissions";
-import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
 import {
   buildSaleReceiptModel,
   getSaleReceiptShareBlockReason,
@@ -28,11 +25,10 @@ import {
 } from "@/lib/cash-branch-transfer-receipt";
 import { useSharePdf } from "@/hooks/useSharePdf";
 
-import type { CashBranchTransfer, IncomeExpense, IncomeExpenseApprovalMarker, Location, MoneyTransfer, Profile } from "@/types";
+import type { CashBranchTransfer, IncomeExpense, IncomeExpenseApprovalMarker, Location, Profile } from "@/types";
 import { IconButton } from "@/components/shared/IconButton";
 import { SyncStatusBadge } from "@/components/shared/SyncStatusBadge";
 import { TablePagination, TablePageSizeSelect } from "@/components/shared/TablePagination";
-import { BranchTransferForm } from "@/components/money-transfer/BranchTransferForm";
 import { CashBranchTransferCreateModal, CashBranchTransferDetails, CashBranchTransferReceiveModal } from "./CashBranchTransferModal";
 import { getIncomeExpenseDisplayNo } from "./income-expense-display";
 import { IncomeExpenseApprovalModal } from "./IncomeExpenseApprovalModal";
@@ -74,55 +70,9 @@ function pendingIncomeExpense(marker: IncomeExpenseApprovalMarker): IncomeExpens
   };
 }
 
-function BranchTransferModeSelector({
-  mode,
-  bankAllowed,
-  onChange,
-}: {
-  mode: "cash" | "bank";
-  bankAllowed: boolean;
-  onChange: (mode: "cash" | "bank") => void;
-}) {
-  const buttonClass = (active: boolean) =>
-    active
-      ? "focus-ring rounded-md bg-river px-3 py-1.5 text-sm font-semibold text-white"
-      : "focus-ring rounded-md px-3 py-1.5 text-sm font-semibold text-ink/65 hover:bg-white";
-
-  return (
-    <div
-      data-testid="branch-transfer-mode-selector"
-      className="flex shrink-0 items-center justify-between gap-3 border-b border-black/[0.07] bg-white px-3 py-2.5 sm:px-4"
-    >
-      <span className="text-sm font-semibold text-ink/60">รูปแบบการโยกเงิน</span>
-      <div className="inline-flex rounded-lg bg-field p-1">
-        <button
-          type="button"
-          aria-pressed={mode === "cash"}
-          onClick={() => onChange("cash")}
-          className={buttonClass(mode === "cash")}
-        >
-          เงินสด
-        </button>
-        <button
-          type="button"
-          aria-pressed={mode === "bank"}
-          onClick={() => {
-            if (!bankAllowed) return toast.error("ไม่มีสิทธิ์ใช้โอนธนาคาร");
-            onChange("bank");
-          }}
-          className={buttonClass(mode === "bank")}
-        >
-          โอนธนาคาร
-        </button>
-      </div>
-    </div>
-  );
-}
-
 export function IncomeExpenseModule({
   selectedLocation,
   profile,
-  canCreateMoneyTransfer = true,
   onOpenMoneyTransferSource,
   onOpenRubberBillSource,
   onOpenRubberExportSource,
@@ -131,14 +81,12 @@ export function IncomeExpenseModule({
 }: {
   selectedLocation: Location;
   profile: Profile;
-  canCreateMoneyTransfer?: boolean;
   onOpenMoneyTransferSource?: (transferId: string, locationId: string) => void;
   onOpenRubberBillSource?: (locationId: string, billDate?: string) => void;
   onOpenRubberExportSource?: (exportId: string, locationId: string) => void;
   onOpenOcrTicketSource?: (locationId: string, ticketDate?: string) => void;
   onOpenTimeTrackingSource?: (sourceId: string, sourceType: "time_tracking_withdrawal" | "payroll_slip") => void;
 }) {
-  const queryClient = useQueryClient();
   const pdfShare = useSharePdf();
   const {
     transactions,
@@ -168,7 +116,6 @@ export function IncomeExpenseModule({
   const approvalButtonLabel = isOnline && pendingApprovalCount > 0
     ? `ตั้งค่าและอนุมัติรับ-จ่าย รออนุมัติ ${pendingApprovalCount} รายการ`
     : "ตั้งค่าและอนุมัติรับ-จ่าย";
-  const { addTransfer } = useMoneyTransferMutations(selectedLocation.id, profile.id);
   const cashTransfers = useCashBranchTransfers(selectedLocation.id);
   const { locations } = useLocations();
   const pendingCashReceipts = cashTransfers.transfers.filter((transfer) => transfer.targetLocationId === selectedLocation.id && transfer.status === "pending_receipt");
@@ -219,7 +166,6 @@ export function IncomeExpenseModule({
   const [deletingTransactionId, setDeletingTransactionId] = useState<string | null>(null);
   const [deletingCashTransferId, setDeletingCashTransferId] = useState<string | null>(null);
   const [branchTransferModalOpen, setBranchTransferModalOpen] = useState(false);
-  const [branchTransferMode, setBranchTransferMode] = useState<"cash" | "bank">("cash");
   const [cashReceiptId, setCashReceiptId] = useState<string | null>(null);
   const [cashDetailsId, setCashDetailsId] = useState<string | null>(null);
   const [cashEditingId, setCashEditingId] = useState<string | null>(null);
@@ -303,22 +249,7 @@ export function IncomeExpenseModule({
       toast.error("การโยกเงินไปสาขาอื่นต้องออนไลน์ก่อน");
       return;
     }
-    setBranchTransferMode("cash");
     setBranchTransferModalOpen(true);
-  }
-
-  function handleBranchTransferSave(transfer: MoneyTransfer) {
-    addTransfer.mutate(transfer, {
-      onSuccess: () => {
-        setBranchTransferModalOpen(false);
-        setPage(1);
-        queryClient.invalidateQueries({ queryKey: [INCOME_EXPENSE_FEED_QUERY_KEY] });
-        toast.success("บันทึกรายการโยกเงินไปสาขาอื่นแล้ว");
-      },
-      onError: (error) => {
-        toast.error(error instanceof Error ? error.message : "บันทึกรายการโยกเงินไม่สำเร็จ");
-      },
-    });
   }
 
   async function confirmDelete(transaction: IncomeExpense) {
@@ -1003,36 +934,16 @@ export function IncomeExpenseModule({
       )}
 
       {branchTransferModalOpen && (
-        <>
-          {branchTransferMode === "cash" ? (
-            <CashBranchTransferCreateModal
-              location={selectedLocation}
-              online={isOnline}
-              modeSelector={<BranchTransferModeSelector mode={branchTransferMode} bankAllowed={canCreateMoneyTransfer} onChange={setBranchTransferMode} />}
-              onSave={async (payload) => {
-                const created = await cashTransfers.create.mutateAsync(payload);
-                setPage(1);
-                return created;
-              }}
-              onClose={() => setBranchTransferModalOpen(false)}
-            />
-          ) : (
-            <ModalShell
-              title="สร้างรายการโอนเงินใหม่ (ให้สาขา)"
-              subtitle="บันทึกรายการโอนเงินระหว่างสาขา"
-              size="wide"
-              closeOnEscape
-              onClose={() => setBranchTransferModalOpen(false)}
-            >
-              <BranchTransferForm
-                locationId={selectedLocation.id}
-                modeSelector={<BranchTransferModeSelector mode={branchTransferMode} bankAllowed={canCreateMoneyTransfer} onChange={setBranchTransferMode} />}
-                onSave={handleBranchTransferSave}
-                onCancel={() => setBranchTransferModalOpen(false)}
-              />
-            </ModalShell>
-          )}
-        </>
+        <CashBranchTransferCreateModal
+          location={selectedLocation}
+          online={isOnline}
+          onSave={async (payload) => {
+            const created = await cashTransfers.create.mutateAsync(payload);
+            setPage(1);
+            return created;
+          }}
+          onClose={() => setBranchTransferModalOpen(false)}
+        />
       )}
       {cashReceiptId && (() => { const transfer = cashTransfers.transfers.find((item) => item.id === cashReceiptId); return transfer ? <CashBranchTransferReceiveModal transfer={transfer} online={isOnline} onReceive={(received) => cashTransfers.receive.mutateAsync({ id: transfer.id, received })} onClose={() => setCashReceiptId(null)} /> : null; })()}
       {cashEditingId && (() => { const transfer = cashTransfers.transfers.find((item) => item.id === cashEditingId); return transfer ? <CashBranchTransferCreateModal location={selectedLocation} transfer={transfer} online={isOnline} onSave={(payload) => cashTransfers.update.mutateAsync({ id: transfer.id, payload })} onClose={() => setCashEditingId(null)} /> : null; })()}

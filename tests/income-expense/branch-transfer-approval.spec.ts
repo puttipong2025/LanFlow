@@ -207,69 +207,15 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       await page.click('button:has-text("โยกเงินไปสาขาอื่น")');
       const modal = page.locator('.fixed.inset-0').last();
       await expect(modal).toBeVisible();
-      await page.locator('button:has-text("โอนธนาคาร")').click();
 
       // Ensure target location dropdown exists
-      const targetSelect = modal.locator('select').first();
+      const targetSelect = modal.getByLabel('สาขาปลายทาง');
       
       const sourceLocationId = await selectedAppLocationId(page);
       expect(sourceLocationId).toBeTruthy();
       await expect(targetSelect.locator(`option[value="${sourceLocationId}"]`)).toBeDisabled();
       
       await modal.locator('button:has-text("ยกเลิก")').click();
-    });
-
-    test('create branch transfer success and verify relation lock', async ({ page }) => {
-      await page.goto('/');
-      await page.click('button:has-text("รับ-จ่าย")');
-      await expect(page.locator('button:has-text("โยกเงินไปสาขาอื่น")')).toBeVisible({ timeout: 10000 });
-
-      await page.click('button:has-text("โยกเงินไปสาขาอื่น")');
-      const modal = page.locator('.fixed.inset-0').last();
-      await expect(modal).toBeVisible();
-      await page.locator('button:has-text("โอนธนาคาร")').click();
-
-      // Select target location (pick index 1 which should be another branch)
-      const targetSelect = modal.locator('select').first();
-      const targetLocationId = await selectFirstAccessibleOption(page, targetSelect);
-
-      // Click เพิ่มเอง
-      await modal.locator('button:has-text("เพิ่มเอง")').click();
-      
-      // Wait for SlipRow
-      const slipRow = modal.locator('.grid.gap-3').first();
-      await expect(slipRow).toBeVisible();
-      await expect(modal.getByLabel('จำนวนเงินสลิป 1')).toBeVisible();
-      await expect(modal.getByLabel('ค่าธรรมเนียมสลิป 1')).toBeVisible();
-
-      // Fill amount and date
-      await slipRow.locator('input[type="number"]').first().fill('1000');
-      // Set to some valid date like 2026-07-07T12:00
-      await slipRow.locator('input[type="datetime-local"]').first().fill('2026-07-07T12:00');
-
-      await modal.locator('button:has-text("บันทึก")').first().click();
-      await expect(modal).toBeHidden({ timeout: 10000 });
-
-      // Switch to the target branch via Header location selector
-      // In super_admin, we should be able to select the location
-      await selectAppLocation(page, targetLocationId);
-      
-      // Wait for table to load
-      await page.waitForTimeout(2000);
-
-      // Verify the income appears in target branch (it may take a moment to sync, but we use a loose check)
-      const targetRow = page.locator('table tbody tr', { hasText: 'รับโอน' }).first();
-      await expect(targetRow).toBeVisible();
-
-      // Verify Relation Lock: Edit and Delete buttons should be disabled
-      // Verify Relation Lock: Edit and Delete buttons should be disabled
-      // The buttons will have their titles replaced by the lock reason, so we just check by position
-      // First button is Edit, second is Delete
-      const editButton = targetRow.locator('button').nth(0);
-      await expect(editButton).toBeDisabled();
-
-      const deleteButton = targetRow.locator('button').nth(1);
-      await expect(deleteButton).toBeDisabled();
     });
 
     test('create cash branch transfer with separate denomination counts', async ({ page }) => {

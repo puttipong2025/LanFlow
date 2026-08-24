@@ -41,8 +41,20 @@ test("Rubber operational list uses a scoped cursor feed and page-scoped evidence
   expect(route).toContain("get_rubber_bill_evidence_states_for_bills");
 });
 
-test("Income branch transfer uses the mutation-only seam", () => {
+test("Income cash branch transfer does not depend on the Money Transfer module", () => {
   const incomeExpense = source("src/components/income-expense/IncomeExpenseModule.tsx");
-  expect(incomeExpense).toContain("useMoneyTransferMutations");
-  expect(incomeExpense).not.toContain("= useMoneyTransfers(");
+  expect(incomeExpense).toContain("useCashBranchTransfers");
+  expect(incomeExpense).not.toContain("useMoneyTransferMutations");
+  expect(incomeExpense).not.toContain("BranchTransferForm");
+});
+
+test("Money Transfer does not offer the branch transfer form", () => {
+  const moneyTransfer = source("src/components/MoneyTransferModule.tsx");
+  expect(moneyTransfer).not.toContain("BranchTransferForm");
+  expect(moneyTransfer).not.toContain("setActiveFormType('branch')");
+});
+
+test("Money Transfer list excludes cash transfers owned by Income/Expense", () => {
+  const migration = source("supabase/migrations/20260824020000_hide_cash_transfers_from_money_transfer_module.sql");
+  expect(migration.match(/t\.transfer_type <> 'cash'/g)).toHaveLength(2);
 });

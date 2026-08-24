@@ -505,7 +505,6 @@ export function LanFlowApp() {
           <IncomeExpenseModule
             selectedLocation={selectedLocation}
             profile={profile}
-            canCreateMoneyTransfer={canAccessMoneyTransfer}
             onOpenMoneyTransferSource={canAccessMoneyTransfer ? openMoneyTransferSource : undefined}
             onOpenRubberBillSource={openRubberBillSource}
             onOpenRubberExportSource={openRubberExportSource}

@@ -38,7 +38,6 @@ import { getMoneyTransferPaymentSummary } from "@/lib/money-transfers/state";
 
 import { CustomerTransferForm } from "./money-transfer/CustomerTransferForm";
 import { TransportTransferForm } from "./money-transfer/TransportTransferForm";
-import { BranchTransferForm } from "./money-transfer/BranchTransferForm";
 import { MoneyTransferSourceDetailsModal } from "./money-transfer/MoneyTransferSourceDetailsModal";
 import {
   buildMoneyTransferReceiptModel,
@@ -144,7 +143,7 @@ export function MoneyTransferModule({
   const pdfShare = useSharePdf();
 
   const [showTypeSelector, setShowTypeSelector] = useState(false);
-  const [activeFormType, setActiveFormType] = useState<'customer' | 'transport' | 'branch' | null>(null);
+  const [activeFormType, setActiveFormType] = useState<'customer' | 'transport' | null>(null);
   const [editTransfer, setEditTransfer] = useState<MoneyTransfer | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [deleteAlertDescription, setDeleteAlertDescription] = useState<string | null>(null);
@@ -153,11 +152,6 @@ export function MoneyTransferModule({
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const offlineMessage = "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น";
-  const branchTransferFormMode =
-    editTransfer?.transferType === "branch" && editTransfer.targetLocationId && editTransfer.locationId !== editTransfer.targetLocationId
-      ? "branch-to-branch"
-      : "head-office-to-branch";
-
   const transferRows = useMemo(() => transfers.map((transfer) => ({
     transfer,
     summary: getMoneyTransferPaymentSummary(transfer),
@@ -282,8 +276,12 @@ export function MoneyTransferModule({
     }
     try {
       const detail = await loadMoneyTransferDetail(t.id);
+      if (detail.transferType === 'branch') {
+        setToastMsg("รายการโอนให้สาขาเดิมแก้ไขไม่ได้จากโมดูลโอนเงิน");
+        return;
+      }
       setEditTransfer(detail);
-      setActiveFormType(detail.transferType === 'transport' ? 'transport' : detail.transferType === 'branch' ? 'branch' : 'customer');
+      setActiveFormType(detail.transferType === 'transport' ? 'transport' : 'customer');
     } catch (error) {
       setToastMsg(error instanceof Error ? error.message : "โหลดรายละเอียดรายการโอนไม่สำเร็จ");
     }
@@ -387,7 +385,6 @@ export function MoneyTransferModule({
               <div className="absolute left-0 top-full z-20 mt-2 w-56 rounded-lg border border-black/10 bg-white py-1 shadow-xl">
                 <button type="button" onClick={() => { setActiveFormType('customer'); setShowTypeSelector(false); setEditTransfer(null); }} className="focus-ring w-full bg-actionSecondary px-4 py-2.5 text-left text-sm font-semibold text-white transition-colors hover:bg-leaf focus:bg-leaf">💰 โอนให้ลูกค้า</button>
                 <button type="button" onClick={() => { setActiveFormType('transport'); setShowTypeSelector(false); setEditTransfer(null); }} className="focus-ring w-full bg-actionSecondary px-4 py-2.5 text-left text-sm font-semibold text-white transition-colors hover:bg-leaf focus:bg-leaf">🚛 จ่ายค่าขนส่ง</button>
-                <button type="button" onClick={() => { setActiveFormType('branch'); setShowTypeSelector(false); setEditTransfer(null); }} className="focus-ring w-full bg-actionSecondary px-4 py-2.5 text-left text-sm font-semibold text-white transition-colors hover:bg-leaf focus:bg-leaf">🏢 โอนให้สาขา</button>
               </div>
             )}
           </div>
@@ -443,30 +440,6 @@ export function MoneyTransferModule({
           />
         </ModalShell>
       )}
-      {activeFormType === 'branch' && (
-        <ModalShell
-          title={editTransfer ? "แก้ไขรายการโอนเงิน (ให้สาขา)" : "สร้างรายการโอนเงินใหม่ (ให้สาขา)"}
-          subtitle="บันทึกรายการโอนเงินระหว่างสาขา"
-          size="wide"
-          closeOnEscape
-          onClose={() => {
-            setActiveFormType(null);
-            setEditTransfer(null);
-          }}
-        >
-          <BranchTransferForm
-            locationId={locationId}
-            mode={branchTransferFormMode}
-            editTransfer={editTransfer}
-            onSave={handleSave}
-            onCancel={() => {
-              setActiveFormType(null);
-              setEditTransfer(null);
-            }}
-          />
-        </ModalShell>
-      )}
-
       {/* Transfer filters and actions */}
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="flex flex-wrap gap-2">

@@ -41,33 +41,24 @@ test.describe.serial('Income/Expense: Branch Transfer & Approval Offline Rules',
       await context.setOffline(false).catch(() => {});
     });
 
-  test('Branch Transfer save is disabled when offline', async ({ page, context }) => {
+  test('Cash branch transfer cannot be saved when offline', async ({ page, context }) => {
     // Open branch transfer modal
     await page.click('button:has-text("โยกเงินไปสาขาอื่น")');
     const modal = page.locator('.fixed.inset-0').last();
     await expect(modal).toBeVisible();
-    await page.locator('button:has-text("โอนธนาคาร")').click();
-    await expect(modal.locator('button:has-text("เพิ่มเอง")')).toBeVisible();
-
-    // Select target location to try enabling save button
-    await selectFirstAccessibleOption(page, modal.locator('select').first());
-
-    // Try adding a slip manually to satisfy all form requirements
-    await modal.locator('button:has-text("เพิ่มเอง")').click();
+    await selectFirstAccessibleOption(page, modal.getByLabel('สาขาปลายทาง'));
+    for (const input of await modal.locator('input').all()) await input.fill('0');
+    await modal.getByLabel('แบงค์ 20').fill('1');
 
     // Go offline after opening modal
     await context.setOffline(true);
     await page.evaluate(() => window.dispatchEvent(new Event('offline')));
 
-    // Verify warning message is visible
-    await expect(modal.locator('text=รายการโยกเงินต้องออนไลน์ก่อนบันทึก')).toBeVisible();
-
-    // The save button should still be disabled because we are offline
-    const saveButton = modal.locator('button:has-text("บันทึก")').first();
-    await expect(saveButton).toBeDisabled();
+    await modal.locator('button:has-text("บันทึก")').click();
+    await expect(page.getByText('การโยกเงินสดต้องออนไลน์ก่อน')).toBeVisible();
 
     // Close modal
-    await modal.locator('button:has-text("ยกเลิก")').click();
+    await modal.locator('button:has-text("ปิด")').click();
   });
 
   test('Submitting expense matching approval keyword when offline throws warning', async ({ page, context }) => {
