@@ -3,7 +3,7 @@ import type { SyncEvent } from "@/lib/idb-queue";
 import type { RubberBill } from "@/types";
 
 export function rubberBillFromSyncEvent(event: SyncEvent, ownerUserId: string): RubberBill | null {
-  if (event.operation === "delete") return null;
+  if (event.operation === "delete" && event.status === "pending") return null;
   const payload = event.payload;
   const items = Array.isArray(payload.items) ? payload.items : [];
   const weighItems = items.filter((item: any) => item.itemType === "weigh").map((item: any) => ({

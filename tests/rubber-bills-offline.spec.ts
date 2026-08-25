@@ -527,6 +527,110 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
         await cleanupRubberBillByCustomerName(page, responseLossMarker);
       }
     });
+
+    test('discards a device-local failed event after another device deletes the server bill', async ({ page, browser }) => {
+      test.setTimeout(90000);
+      const marker = `E2E-DISCARD-RUBBER-SYNC-${Date.now()}`;
+      page.on('dialog', dialog => void dialog.accept());
+
+      let secondContext: Awaited<ReturnType<Browser['newContext']>> | null = null;
+      try {
+        await createSyncedBillFromAuthenticatedApp(page, marker);
+        const response = await page.request.get(
+          `${localSupabaseUrl}/rest/v1/rubber_bills?customer_name=eq.${encodeURIComponent(marker)}&select=client_temp_id,location_id,revision_no,local_bill_no,bill_date,client_recorded_at,client_created_at`,
+          {
+            headers: {
+              apikey: localServiceRoleKey,
+              Authorization: `Bearer ${localServiceRoleKey}`,
+            },
+          },
+        );
+        expect(response.ok()).toBe(true);
+        const [serverBill] = await response.json() as Array<{
+          client_temp_id: string;
+          location_id: string;
+          revision_no: number;
+          local_bill_no: string;
+          bill_date: string;
+          client_recorded_at: string;
+          client_created_at: string;
+        }>;
+        expect(serverBill).toBeTruthy();
+
+        await page.evaluate(({ bill, marker, ownerUserId }) => new Promise<void>((resolve, reject) => {
+          const request = indexedDB.open('lanflow_sync_db');
+          request.onerror = () => reject(request.error);
+          request.onsuccess = () => {
+            const db = request.result;
+            const tx = db.transaction('sync_queue', 'readwrite');
+            tx.objectStore('sync_queue').add({
+              id: bill.client_temp_id,
+              entity: 'rubber_bills',
+              ownerUserId,
+              locationId: bill.location_id,
+              operation: 'update',
+              timestamp: Date.now(),
+              status: 'failed',
+              errorMessage: 'สต็อกสินค้าไม่พอสำหรับรายการหักสินค้าในบิลยาง',
+              payload: {
+                operation: 'update',
+                expectedRevisionNo: bill.revision_no,
+                clientTempId: bill.client_temp_id,
+                idempotencyKey: `update:${bill.client_temp_id}:${bill.revision_no}`,
+                locationId: bill.location_id,
+                recordStatus: 'active',
+                localBillNo: bill.local_bill_no,
+                billDate: bill.bill_date,
+                customerName: marker,
+                billType: 'บิลเครื่องชั่งเล็ก',
+                deductWeight: 0,
+                weight: 800,
+                netWeight: 800,
+                rubberValue: 20400,
+                netRubberValue: 20400,
+                averagePrice: 25.5,
+                deductionTotal: 0,
+                payableBeforeRounding: 20400,
+                netTotal: 20400,
+                acidPackCount: 0,
+                clientRecordedAt: bill.client_recorded_at,
+                clientCreatedAt: bill.client_created_at,
+                items: [{
+                  itemType: 'weigh', title: 'ชั่ง', inWeight: 1000, outWeight: 200,
+                  netWeight: 800, unitPrice: 25.5, totalAmount: 20400, sequenceNo: 1,
+                }],
+              },
+            });
+            tx.oncomplete = () => { db.close(); resolve(); };
+            tx.onerror = () => { db.close(); reject(tx.error); };
+          };
+        }), { bill: serverBill, marker, ownerUserId: testUserId });
+
+        secondContext = await browser.newContext({ storageState: 'playwright/.auth/super_admin.json' });
+        const secondPage = await secondContext.newPage();
+        secondPage.on('dialog', dialog => void dialog.accept());
+        await secondPage.goto('/');
+        await expect(secondPage.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+        await secondPage.click('button:has-text("บิลยาง")');
+        const secondRow = secondPage.locator('table tbody tr', { hasText: marker }).first();
+        await expect(secondRow.getByText('ซิงก์แล้ว', { exact: true })).toBeVisible({ timeout: 20000 });
+        await secondRow.getByRole('button', { name: 'ลบ', exact: true }).click();
+        await expect(secondRow).toBeHidden({ timeout: 20000 });
+
+        await page.getByRole('button', { name: /ซิงก์มีปัญหา/ }).click();
+        const failedRow = page.locator('table tbody tr', { hasText: marker }).first();
+        await expect(failedRow.getByText('ซิงก์ไม่สำเร็จ', { exact: true })).toBeVisible();
+        await failedRow.getByRole('button', { name: 'ทิ้งรายการค้างในเครื่อง', exact: true }).click();
+
+        await expect(failedRow).toBeHidden({ timeout: 20000 });
+        expect((await readQueue(page)).filter((event) => event.id === serverBill.client_temp_id)).toEqual([]);
+        await page.getByRole('button', { name: 'รายการล่าสุด', exact: true }).click();
+        await expect(page.locator('table tbody tr', { hasText: marker })).toHaveCount(0);
+      } finally {
+        await secondContext?.close();
+        await cleanupRubberBillByCustomerName(page, marker);
+      }
+    });
   });
 
   test('should support create, edit, delete offline and sync when online', async ({ page, context }) => {

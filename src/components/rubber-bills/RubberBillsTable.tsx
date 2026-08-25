@@ -19,8 +19,10 @@ export type RubberBillsTableProps = {
   onDelete: (bill: RubberBill) => void;
   onPrint: (bill: RubberBill) => void;
   onRetry: (bill: RubberBill) => void;
+  onDiscardLocal: (bill: RubberBill) => void;
   onOpenOcrSourceImage: (bill: RubberBill) => void;
   retryDisabled: boolean;
+  discardDisabled: boolean;
   deletingBillId?: string | null;
   getActionBlockReason?: (bill: RubberBill) => string | null;
   getPrintBlockReason?: (bill: RubberBill) => string | null;
@@ -57,8 +59,10 @@ export function RubberBillsTable({
   onDelete,
   onPrint,
   onRetry,
+  onDiscardLocal,
   onOpenOcrSourceImage,
   retryDisabled,
+  discardDisabled,
   deletingBillId,
   getActionBlockReason,
   getPrintBlockReason,
@@ -97,8 +101,13 @@ export function RubberBillsTable({
             {visibleBills.map((bill) => {
               const actionBlockReason = getActionBlockReason?.(bill) ?? null;
               const deleting = deletingBillId === bill.id;
-              const actionsDisabled = Boolean(actionBlockReason) || deleting;
-              const actionTitle = deleting ? "กำลังลบรายการ..." : actionBlockReason;
+              const hasSyncProblem = bill.syncStatus === "failed" || bill.syncStatus === "conflict";
+              const actionsDisabled = hasSyncProblem || Boolean(actionBlockReason) || deleting;
+              const actionTitle = deleting
+                ? "กำลังดำเนินการ..."
+                : hasSyncProblem
+                  ? "ทิ้งรายการค้างในเครื่องก่อนแก้ไขหรือลบ"
+                  : actionBlockReason;
               const viewDisabled = deleting || (!bill.sourceRubberExportId && Boolean(actionBlockReason));
               const viewTitle = deleting ? "กำลังลบรายการ..." : "ดูรายละเอียด";
               const printBlockReason = getPrintBlockReason?.(bill) ?? null;
@@ -167,11 +176,24 @@ export function RubberBillsTable({
                       <Edit3 size={16} />
                        แก้
                     </button>}
-                    <button type="button" title={actionTitle ?? "ลบ"} aria-label={actionTitle ?? "ลบ"}
-                      disabled={actionsDisabled} onClick={() => onDelete(bill)}
-                      className={`focus-ring inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-md bg-danger px-3 text-sm font-semibold text-white shadow-sm hover:bg-danger/90 ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}>
-                      <Trash2 size={16} />
-                    </button>
+                    {hasSyncProblem ? (
+                      <button
+                        type="button"
+                        title={discardDisabled ? "ทิ้งรายการค้างได้เมื่อออนไลน์เท่านั้น" : "ทิ้งรายการค้างในเครื่อง"}
+                        aria-label="ทิ้งรายการค้างในเครื่อง"
+                        disabled={discardDisabled || deleting}
+                        onClick={() => onDiscardLocal(bill)}
+                        className={`focus-ring inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-md bg-danger px-3 text-sm font-semibold text-white shadow-sm hover:bg-danger/90 ${(discardDisabled || deleting) ? "cursor-not-allowed opacity-45" : ""}`}
+                      >
+                        <Trash2 size={16} /> ทิ้งรายการค้าง
+                      </button>
+                    ) : (
+                      <button type="button" title={actionTitle ?? "ลบ"} aria-label={actionTitle ?? "ลบ"}
+                        disabled={actionsDisabled} onClick={() => onDelete(bill)}
+                        className={`focus-ring inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-md bg-danger px-3 text-sm font-semibold text-white shadow-sm hover:bg-danger/90 ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}>
+                        <Trash2 size={16} />
+                      </button>
+                    )}
                     {bill.syncStatus === "failed" && (
                       <button
                         type="button"

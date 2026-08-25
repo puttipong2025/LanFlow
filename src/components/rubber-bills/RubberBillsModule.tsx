@@ -77,7 +77,7 @@ export function RubberBillsModule({
   const { settings: approvalSettings } = useRubberBillApprovals({
     locationId: selectedLocation.id,
   });
-  const { addBill, updateBill, deleteBill } = useRubberBillMutations(
+  const { addBill, updateBill, deleteBill, discardSyncProblem } = useRubberBillMutations(
     selectedLocation.id,
     profile.id,
     approvalSettings
@@ -378,6 +378,30 @@ export function RubberBillsModule({
     setPage(1);
   }
 
+  async function confirmDiscardSyncProblem(bill: RubberBill) {
+    if (deletingBillId || !isOnline) return;
+    const reference = bill.serverBillNo ?? bill.localBillNo;
+    const confirmed = window.confirm(
+      `ทิ้งรายการค้าง ${reference} ในเครื่องนี้ใช่ไหม?\n`
+      + "การแก้ไขที่ยังไม่ซิงก์จะหาย และระบบจะโหลดข้อมูลล่าสุดจากเซิร์ฟเวอร์",
+    );
+    if (!confirmed) return;
+
+    setDeletingBillId(bill.id);
+    try {
+      await runBlockingAction(
+        "กำลังทิ้งรายการค้าง...",
+        () => discardSyncProblem(bill.clientTempId),
+      );
+      setPage(1);
+      toast.success("ทิ้งรายการค้างแล้ว และโหลดข้อมูลล่าสุดจากเซิร์ฟเวอร์แล้ว");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "ทิ้งรายการค้างไม่สำเร็จ");
+    } finally {
+      setDeletingBillId(null);
+    }
+  }
+
   function selectBillsView(nextView: "purchase" | "wex") {
     setBillsView(nextView);
   }
@@ -614,8 +638,10 @@ export function RubberBillsModule({
           getActionBlockReason={getActionBlockReason}
           getPrintBlockReason={getPrintBlockReason}
           onRetry={retryFailedSync}
+          onDiscardLocal={(bill) => void confirmDiscardSyncProblem(bill)}
           onOpenOcrSourceImage={(bill) => void openOcrSourceImage(bill)}
           retryDisabled={!isOnline || isRetrying}
+          discardDisabled={!isOnline}
           evidenceOnline={isOnline}
           evidenceStatesByBillId={list.evidenceStatesByBillId}
           hasMore={list.hasMore}

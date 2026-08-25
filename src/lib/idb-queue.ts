@@ -190,6 +190,24 @@ export async function removeSyncEvent(queueId: number): Promise<void> {
   });
 }
 
+export async function removeSyncEvents(queueIds: number[]): Promise<void> {
+  if (queueIds.length === 0) return;
+  const db = await getDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(STORE_NAME, "readwrite");
+    const store = transaction.objectStore(STORE_NAME);
+    queueIds.forEach((queueId) => store.delete(queueId));
+    transaction.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    transaction.onerror = () => {
+      db.close();
+      reject(transaction.error);
+    };
+  });
+}
+
 export async function putRubberBillReceiptSnapshot(
   snapshot: RubberBillReceiptSnapshot
 ): Promise<void> {
@@ -313,6 +331,30 @@ export async function deleteRubberBillReceiptSnapshotsNotIn(
     const transaction = db.transaction(RECEIPT_STORE_NAME, "readwrite");
     const store = transaction.objectStore(RECEIPT_STORE_NAME);
     stale.forEach((snapshot) => store.delete(snapshot.billId));
+    transaction.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    transaction.onerror = () => {
+      db.close();
+      reject(transaction.error);
+    };
+  });
+}
+
+export async function deleteRubberBillReceiptSnapshotsByClientTempId(
+  locationId: string,
+  clientTempId: string,
+): Promise<void> {
+  const snapshots = await getRubberBillReceiptSnapshots(locationId);
+  const matching = snapshots.filter((snapshot) => snapshot.bill.clientTempId === clientTempId);
+  if (matching.length === 0) return;
+
+  const db = await getDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(RECEIPT_STORE_NAME, "readwrite");
+    const store = transaction.objectStore(RECEIPT_STORE_NAME);
+    matching.forEach((snapshot) => store.delete(snapshot.billId));
     transaction.oncomplete = () => {
       db.close();
       resolve();

@@ -4,11 +4,13 @@ import type { RubberBill } from "@/types";
 import {
   enqueueSyncEvent,
   deleteRubberBillReceiptSnapshotsNotIn,
+  deleteRubberBillReceiptSnapshotsByClientTempId,
   getPendingEvents,
   getRubberBillReceiptSnapshots,
   pruneRubberBillReceiptSnapshots,
   putRubberBillReceiptSnapshots,
   removeSyncEvent,
+  removeSyncEvents,
   type SyncEvent,
 } from "@/lib/idb-queue";
 import { toast } from "sonner";
@@ -853,6 +855,28 @@ export function useRubberBills(
     }
   });
 
+  async function discardSyncProblem(clientTempId: string) {
+    const events = await getPendingEvents(queuePartition(ownerUserId, locationId));
+    const relatedEvents = events.filter((event) => event.id === clientTempId);
+    const hasSyncProblem = relatedEvents.some((event) => (
+      event.status === "failed" || event.status === "conflict"
+    ));
+    if (!hasSyncProblem) {
+      throw new Error("ไม่พบรายการซิงก์ที่มีปัญหาในเครื่องนี้");
+    }
+
+    const queueIds = relatedEvents.flatMap((event) => (
+      typeof event.queueId === "number" ? [event.queueId] : []
+    ));
+    if (queueIds.length !== relatedEvents.length) {
+      throw new Error("ข้อมูลคิวในเครื่องไม่สมบูรณ์ กรุณาลองเปิดแอปใหม่");
+    }
+
+    await removeSyncEvents(queueIds);
+    await deleteRubberBillReceiptSnapshotsByClientTempId(locationId, clientTempId);
+    await invalidateMoneyFlowLocation(queryClient, { ownerUserId, locationId });
+  }
+
   return {
     bills: query.data || [],
     isLoading: query.isLoading,
@@ -860,6 +884,7 @@ export function useRubberBills(
     addBill: saveBillMutation.mutateAsync,
     updateBill: saveBillMutation.mutateAsync,
     deleteBill: deleteBillMutation.mutateAsync,
+    discardSyncProblem,
   };
 }
 
@@ -868,11 +893,11 @@ export function useRubberBillMutations(
   ownerUserId: string,
   approvalSettings?: EffectiveRubberApprovalSettings | null,
 ) {
-  const { addBill, updateBill, deleteBill } = useRubberBills(
+  const { addBill, updateBill, deleteBill, discardSyncProblem } = useRubberBills(
     locationId,
     ownerUserId,
     approvalSettings,
     { enabled: false },
   );
-  return { addBill, updateBill, deleteBill };
+  return { addBill, updateBill, deleteBill, discardSyncProblem };
 }
