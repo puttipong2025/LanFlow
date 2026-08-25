@@ -242,6 +242,11 @@ export function RubberExportsModule({
 
   async function changeSoldOut() {
     if (!pendingSale) return;
+    if (!pendingSale.soldOut && pendingSale.row.hasWexReservation) {
+      toast.error("รายการนี้ถูกจองในบิลรถส่งออก จึงยกเลิกขายไม่ได้");
+      setPendingSale(null);
+      return;
+    }
     setSelling(true);
     try {
       await api.setSoldOut(pendingSale.row.id, pendingSale.soldOut);
@@ -527,6 +532,7 @@ export function RubberExportsModule({
           ? `${pendingSale.row.exportNo} จะไม่สามารถเลือกรับยางจากสาขาหรือลบได้จนกว่าจะยกเลิกขาย`
           : `${pendingSale?.row.exportNo ?? "รายการนี้"} จะกลับเป็นรายการตรวจสอบแล้วที่พร้อมรับยาง`}
         confirmLabel={pendingSale?.soldOut ? "ยืนยันขายยางออก" : "ยกเลิกขาย"}
+        confirmClassName={pendingSale?.soldOut ? "bg-commit/90 hover:bg-commit" : undefined}
         busy={selling}
         onCancel={() => {
           if (!selling) setPendingSale(null);

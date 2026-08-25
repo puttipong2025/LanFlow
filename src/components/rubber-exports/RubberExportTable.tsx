@@ -123,9 +123,11 @@ export function RubberExportTable({
                     <button
                       type="button"
                       onClick={() => onSale(row, !row.soldOutAt)}
-                      disabled={!online}
-                      title={online ? (row.soldOutAt ? "ยกเลิกขาย" : "ขายยางออก") : "ต้องออนไลน์ก่อนเปลี่ยนสถานะขาย"}
-                      className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-river px-3 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45"
+                      disabled={!online || Boolean(row.soldOutAt && row.hasWexReservation)}
+                      title={row.soldOutAt && row.hasWexReservation
+                        ? "รายการนี้ถูกจองในบิลรถส่งออก จึงยกเลิกขายไม่ได้"
+                        : online ? (row.soldOutAt ? "ยกเลิกขาย" : "ขายยางออก") : "ต้องออนไลน์ก่อนเปลี่ยนสถานะขาย"}
+                      className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-river px-3 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       {row.soldOutAt ? <Undo2 size={16} /> : <ShoppingCart size={16} />}
                       {row.soldOutAt ? "ยกเลิกขาย" : "ขายยางออก"}

@@ -428,6 +428,36 @@ export function RubberBillsModule({
           <h2 className="text-balance text-lg font-bold text-ink">รายการบิลยาง · {selectedLocation.name}</h2>
           <p className="text-pretty text-sm text-ink/60">ค้นหาและจัดการบิลของสาขาที่เลือก</p>
         </div>
+        <input
+          ref={ocrFileInputRef}
+          type="file"
+          accept="image/jpeg,image/png"
+          multiple
+          className="sr-only"
+          onChange={(event) => {
+            const files = event.currentTarget.files;
+            if (!files) return;
+            const result = ocrQueue.addFiles(selectedLocation.id, files);
+            event.currentTarget.value = "";
+            if (result.rejected > 0) toast.error("รองรับเฉพาะรูป JPEG หรือ PNG");
+            if (result.accepted > 0) setOcrQueueModalOpen(true);
+          }}
+        />
+        <button
+          type="button"
+          disabled={!isOnline}
+          title={isOnline ? "อ่านรูปใบชั่งเพื่อเพิ่มเป็นบิลยาง" : "อ่านใบชั่งใช้ได้เมื่อออนไลน์เท่านั้น"}
+          onClick={() => ocrFileInputRef.current?.click()}
+          className="focus-ring relative flex h-10 items-center justify-center gap-2 rounded-md bg-river px-3 text-sm font-semibold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:bg-slate-300"
+        >
+          <FileScan size={18} aria-hidden="true" />
+          อ่านใบชั่ง (OCR)
+          {((ocrQueue.countByLocation[selectedLocation.id] ?? 0) > 0) && (
+            <span aria-label={`มี ${ocrQueue.countByLocation[selectedLocation.id]} รายการในคิว`} className="min-w-5 rounded-full bg-amber px-1.5 py-0.5 text-center text-[10px] font-extrabold leading-none text-white tabular-nums">
+              {ocrQueue.countByLocation[selectedLocation.id] > 99 ? "99+" : ocrQueue.countByLocation[selectedLocation.id]}
+            </span>
+          )}
+        </button>
         <div className="flex w-full flex-wrap gap-2 sm:w-auto">
            <button
             type="button"
@@ -489,36 +519,6 @@ export function RubberBillsModule({
           >
             <Plus size={18} />
             เพิ่มบิลยาง
-          </button>
-          <input
-            ref={ocrFileInputRef}
-            type="file"
-            accept="image/jpeg,image/png"
-            multiple
-            className="sr-only"
-            onChange={(event) => {
-              const files = event.currentTarget.files;
-              if (!files) return;
-              const result = ocrQueue.addFiles(selectedLocation.id, files);
-              event.currentTarget.value = "";
-              if (result.rejected > 0) toast.error("รองรับเฉพาะรูป JPEG หรือ PNG");
-              if (result.accepted > 0) setOcrQueueModalOpen(true);
-            }}
-          />
-          <button
-            type="button"
-            disabled={!isOnline}
-            title={isOnline ? "อ่านรูปใบชั่งเพื่อเพิ่มเป็นบิลยาง" : "อ่านใบชั่งใช้ได้เมื่อออนไลน์เท่านั้น"}
-            onClick={() => ocrFileInputRef.current?.click()}
-            className="focus-ring relative flex h-10 w-full items-center justify-center gap-2 rounded-md bg-river px-4 text-sm font-semibold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto"
-          >
-            <FileScan size={18} aria-hidden="true" />
-            อ่านใบชั่ง (OCR)
-            {((ocrQueue.countByLocation[selectedLocation.id] ?? 0) > 0) && (
-              <span aria-label={`มี ${ocrQueue.countByLocation[selectedLocation.id]} รายการในคิว`} className="min-w-5 rounded-full bg-amber px-1.5 py-0.5 text-center text-[10px] font-extrabold leading-none text-white tabular-nums">
-                {ocrQueue.countByLocation[selectedLocation.id] > 99 ? "99+" : ocrQueue.countByLocation[selectedLocation.id]}
-              </span>
-            )}
           </button>
           {(ocrQueue.countByLocation[selectedLocation.id] ?? 0) > 0 && (
             <button type="button" onClick={() => setOcrQueueModalOpen(true)} className="focus-ring h-10 rounded-md border border-river/30 bg-white px-3 text-sm font-semibold text-river hover:bg-river/5">

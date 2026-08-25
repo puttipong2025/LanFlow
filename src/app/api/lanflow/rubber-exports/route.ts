@@ -21,7 +21,7 @@ const columns = `
   verified_at, sold_out_at, sold_out_by_name,
   deleted_by_name, deleted_at, report_lock_no, age_cutoff_at,
   average_age_hours, oldest_age_hours, estimated_age_item_count,
-  rubber_export_items(count), locations(name)
+  rubber_export_items(count), export_vehicle_weigh_bill_reservations(count), locations(name)
 `;
 
 type Cursor = { version: 1; ownerUserId: string; locationId: string; view: string; createdAt: string; id: string };

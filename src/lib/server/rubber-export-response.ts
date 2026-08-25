@@ -50,6 +50,10 @@ export function mapRubberExportRow(row: Record<string, any>): RubberExportSummar
   const itemCount = Array.isArray(row.rubber_export_items)
     ? row.rubber_export_items[0]?.count ?? row.rubber_export_items.length
     : 0;
+  const reservations = row.export_vehicle_weigh_bill_reservations;
+  const reservationCount = Array.isArray(reservations)
+    ? Number(reservations[0]?.count ?? reservations.length)
+    : Number(reservations?.count ?? 0);
   return {
     id: row.id,
     exportNo: row.export_no,
@@ -73,6 +77,7 @@ export function mapRubberExportRow(row: Record<string, any>): RubberExportSummar
     verifiedAt: row.verified_at,
     soldOutAt: row.sold_out_at ?? null,
     soldOutByName: row.sold_out_by_name ?? null,
+    hasWexReservation: Number.isFinite(reservationCount) && reservationCount > 0,
     deletedByName: row.deleted_by_name,
     deletedAt: row.deleted_at,
     itemCount: number(itemCount),

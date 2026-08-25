@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useRef, type ReactNode } from "react";
 import { Loader2 } from "lucide-react";
+import { cn } from "@/lib/cn";
 
 export function AlertDialog({
   open,
@@ -10,6 +11,7 @@ export function AlertDialog({
   confirmLabel,
   cancelLabel = "ยกเลิก",
   busy = false,
+  confirmClassName,
   onCancel,
   onConfirm,
   children,
@@ -20,6 +22,7 @@ export function AlertDialog({
   confirmLabel: string;
   cancelLabel?: string | null;
   busy?: boolean;
+  confirmClassName?: string;
   onCancel: () => void;
   onConfirm: () => void;
   children?: ReactNode;
@@ -72,7 +75,10 @@ export function AlertDialog({
             type="button"
             disabled={busy}
             onClick={onConfirm}
-            className="focus-ring inline-flex items-center gap-2 rounded-md bg-clay px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+            className={cn(
+              "focus-ring inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-semibold text-white disabled:opacity-50",
+              confirmClassName ?? "bg-clay",
+            )}
           >
             {busy && <Loader2 size={16} className="animate-spin" />}
             {confirmLabel}
