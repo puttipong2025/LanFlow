@@ -10,7 +10,7 @@ export type WexLineInput = {
   carrierName: string | null;
   inboundAt: string;
   inboundWeight: number;
-  outboundAt: string;
+  outboundAt: string | null;
   outboundWeight: number;
 };
 

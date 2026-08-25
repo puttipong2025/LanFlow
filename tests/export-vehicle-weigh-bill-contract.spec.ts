@@ -79,6 +79,38 @@ test("normalizes a valid create payload and rejects malformed vehicle evidence",
   })).toBeNull();
 });
 
+test("accepts an inbound-only weigh line with zero outbound weight", () => {
+  expect(parseCreateExportVehicleWeighBillPayload({
+    locationId,
+    lines: [{
+      ...line,
+      outboundAt: null,
+      outboundWeight: 0,
+    }],
+    rubberExportIds: [],
+  })).toEqual({
+    locationId,
+    lines: [{
+      ...line,
+      vehicleRegistration: "กข 1234",
+      outboundAt: null,
+      outboundWeight: 0,
+    }],
+    rubberExportIds: [],
+  });
+
+  expect(parseCreateExportVehicleWeighBillPayload({
+    locationId,
+    lines: [{ ...line, outboundWeight: 0 }],
+    rubberExportIds: [],
+  })).toBeNull();
+  expect(parseCreateExportVehicleWeighBillPayload({
+    locationId,
+    lines: [{ ...line, outboundAt: null }],
+    rubberExportIds: [],
+  })).toBeNull();
+});
+
 test("normalizes optional carriers and maps nullable carrier snapshots in detail", () => {
   const selected = parseCreateExportVehicleWeighBillPayload({
     locationId,
@@ -181,6 +213,7 @@ test("maps frozen WEX failures to the HTTP contract", async () => {
     ["WEX_REX_INELIGIBLE", 409],
     ["WEX_CARRIER_INELIGIBLE", 409],
     ["WEX_OVERWEIGHT", 409],
+    ["WEX_INCOMPLETE_WEIGHING", 409],
     ["WEX_RESERVATION_LOCKED", 409],
     ["unexpected", 500],
   ] as const;
@@ -231,6 +264,15 @@ test("migration enforces atomic reservation, server weight, sale lock, and perma
   expect(deleteFunction).not.toMatch(/update\s+public\.rubber_exports/i);
   expect(deleteFunction).toContain("document_kind = 'export_vehicle_weigh_bill'");
   expect(deleteFunction).toContain("'status', 'deleted'");
+
+  const inboundOnlySql = readFileSync(resolve(
+    "supabase/migrations/20260825010000_allow_inbound_only_wex.sql",
+  ), "utf8");
+  expect(inboundOnlySql).toContain("outbound_weight = 0 and outbound_at is null");
+  expect(inboundOnlySql).toContain("when outbound_weight = 0 then 0::numeric");
+  expect(inboundOnlySql).toContain("sum(l.net_weight)");
+  expect(inboundOnlySql).toContain("private.enforce_complete_wex_before_reservation");
+  expect(inboundOnlySql).toContain("WEX_INCOMPLETE_WEIGHING");
 });
 
 test("routes expose only the frozen active WEX contract", () => {

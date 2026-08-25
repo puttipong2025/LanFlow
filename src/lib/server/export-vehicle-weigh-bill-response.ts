@@ -54,6 +54,7 @@ export function exportVehicleWeighBillErrorResponse(message: string) {
           || message.includes("WEX_REX_")
           || message.includes("WEX_CARRIER_")
           || message.includes("WEX_OVERWEIGHT")
+          || message.includes("WEX_INCOMPLETE_WEIGHING")
           || message.includes("WEX_RESERVATION_LOCKED")
           || message.includes("ถูกจอง")
           ? 409
@@ -69,6 +70,14 @@ function isTwoDecimalPositiveNumber(value: unknown): value is number {
   return typeof value === "number"
     && Number.isFinite(value)
     && value > 0
+    && value <= 999_999_999_999.99
+    && Math.abs(value * 100 - Math.round(value * 100)) < 1e-7;
+}
+
+function isTwoDecimalNonNegativeNumber(value: unknown): value is number {
+  return typeof value === "number"
+    && Number.isFinite(value)
+    && value >= 0
     && value <= 999_999_999_999.99
     && Math.abs(value * 100 - Math.round(value * 100)) < 1e-7;
 }
@@ -99,28 +108,35 @@ function normalizeLines(value: unknown): WexLineInput[] | null {
       ? raw.carrierName.trim().replace(/\s+/gu, " ") || null
       : null;
     const inboundAt = raw.inboundAt;
-    const outboundAt = raw.outboundAt;
+    const outboundAt = raw.outboundAt == null ? null : raw.outboundAt;
+    const outboundWeight = raw.outboundWeight;
+    const pendingOutbound = outboundWeight === 0;
+    let normalizedOutboundAt: string | null = null;
     if (
       !vehicleRegistration
       || vehicleRegistration.length > 64
       || (carrierId !== null && !isWexUuid(carrierId))
       || typeof inboundAt !== "string"
-      || typeof outboundAt !== "string"
       || !Number.isFinite(Date.parse(inboundAt))
-      || !Number.isFinite(Date.parse(outboundAt))
-      || Date.parse(outboundAt) <= Date.parse(inboundAt)
       || !isTwoDecimalPositiveNumber(raw.inboundWeight)
-      || !isTwoDecimalPositiveNumber(raw.outboundWeight)
-      || Math.round(raw.outboundWeight * 100) <= Math.round(raw.inboundWeight * 100)
+      || !isTwoDecimalNonNegativeNumber(outboundWeight)
+      || (pendingOutbound && outboundAt !== null)
+      || (!pendingOutbound && (
+        typeof outboundAt !== "string"
+        || !Number.isFinite(Date.parse(outboundAt))
+        || Date.parse(outboundAt) <= Date.parse(inboundAt)
+        || Math.round(outboundWeight * 100) <= Math.round(raw.inboundWeight * 100)
+      ))
     ) return null;
+    if (!pendingOutbound) normalizedOutboundAt = outboundAt as string;
     lines.push({
       vehicleRegistration,
       carrierId,
       carrierName,
       inboundAt,
       inboundWeight: raw.inboundWeight,
-      outboundAt,
-      outboundWeight: raw.outboundWeight,
+      outboundAt: normalizedOutboundAt,
+      outboundWeight,
     });
   }
 
@@ -233,7 +249,7 @@ export function mapExportVehicleWeighBillDetail(value: unknown): WexDetails | nu
       carrierName: typeof item.carrierName === "string" ? item.carrierName : null,
       inboundAt: String(item.inboundAt),
       inboundWeight: number(item.inboundWeight),
-      outboundAt: String(item.outboundAt),
+      outboundAt: typeof item.outboundAt === "string" ? item.outboundAt : null,
       outboundWeight: number(item.outboundWeight),
       netWeight: number(item.netWeight),
     })),

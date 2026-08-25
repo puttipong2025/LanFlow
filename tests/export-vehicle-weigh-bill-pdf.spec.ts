@@ -91,3 +91,32 @@ test("keeps a manual carrier snapshot separate from a selected carrier ID", () =
     carrierNameText: "นายสมชาย ขนส่งเอง",
   });
 });
+
+test("renders an inbound-only WEX as waiting for outbound weighing", () => {
+  const pendingDetails = {
+    ...details,
+    vehicleCount: 1,
+    rubberExportCount: 0,
+    vehicleNetWeight: 0,
+    reservedRubberWeight: 0,
+    remainingWeight: 0,
+    lines: [{
+      ...details.lines[0],
+      outboundAt: null,
+      outboundWeight: 0,
+      netWeight: 0,
+    }],
+    rubberExports: [],
+  };
+
+  const presentation = buildExportVehicleWeighBillPresentation(pendingDetails);
+  expect(presentation.lines[0]).toMatchObject({
+    outboundAtText: "รอชั่งออก",
+    netWeightText: "รอชั่งออก",
+    checkoutPending: true,
+  });
+
+  const html = renderExportVehicleWeighBillHtml(pendingDetails);
+  expect(html).toContain("รอชั่งออก");
+  expect(html).not.toContain("Invalid Date");
+});

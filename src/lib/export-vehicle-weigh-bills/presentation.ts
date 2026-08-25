@@ -53,12 +53,13 @@ export function buildExportVehicleWeighBillPresentation(details: WexDetails) {
     ] as const,
     lines: details.lines.map((line) => ({
       ...line,
+      checkoutPending: line.outboundWeight === 0,
       carrierNameText: line.carrierName?.trim() || MISSING_VALUE,
       inboundAtText: formatExportVehicleWeighBillDateTime(line.inboundAt),
-      outboundAtText: formatExportVehicleWeighBillDateTime(line.outboundAt),
+      outboundAtText: line.outboundWeight === 0 ? "รอชั่งออก" : formatExportVehicleWeighBillDateTime(line.outboundAt),
       inboundWeightText: formatExportVehicleWeighBillNumber(line.inboundWeight),
       outboundWeightText: formatExportVehicleWeighBillNumber(line.outboundWeight),
-      netWeightText: formatExportVehicleWeighBillNumber(line.netWeight),
+      netWeightText: line.outboundWeight === 0 ? "รอชั่งออก" : formatExportVehicleWeighBillNumber(line.netWeight),
     })),
     rubberExports: details.rubberExports.map((rubberExport) => ({
       ...rubberExport,

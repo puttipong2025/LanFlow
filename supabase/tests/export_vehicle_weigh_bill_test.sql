@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select extensions.plan(46);
+select extensions.plan(51);
 
 select extensions.has_table('public', 'export_vehicle_weigh_bills', 'WEX parent exists');
 select extensions.has_table('public', 'export_vehicle_weigh_lines', 'WEX vehicle lines exist');
@@ -197,6 +197,55 @@ select extensions.throws_ok(
   'an inactive carrier is rejected'
 );
 
+create temporary table wex_pending on commit drop as
+select public.create_export_vehicle_weigh_bill(
+  '81000000-0000-4000-8000-000000000001',
+  '[{"vehicleRegistration":"PENDING-1","inboundAt":"2026-08-24T01:00:00Z","inboundWeight":1000,"outboundAt":null,"outboundWeight":0}]',
+  array[]::uuid[]
+) as response;
+
+select extensions.ok(
+  (select outbound_weight = 0 and outbound_at is null and net_weight = 0
+    from public.export_vehicle_weigh_lines
+    where wex_id = (select (response->>'id')::uuid from wex_pending)),
+  'inbound-only WEX stores zero outbound weight, null outbound time, and zero net weight'
+);
+select extensions.ok(
+  (select line->'outboundAt' = 'null'::jsonb
+      and (line->>'outboundWeight')::numeric = 0
+      and (line->>'netWeight')::numeric = 0
+    from jsonb_array_elements(public.get_export_vehicle_weigh_bill_detail(
+      (select (response->>'id')::uuid from wex_pending)
+    )->'lines') line),
+  'detail preserves the pending outbound state'
+);
+select extensions.throws_ok(
+  $$select public.create_export_vehicle_weigh_bill(
+    '81000000-0000-4000-8000-000000000001',
+    '[{"vehicleRegistration":"COMPLETE-MIX","inboundAt":"2026-08-24T01:00:00Z","inboundWeight":100,"outboundAt":"2026-08-24T02:00:00Z","outboundWeight":600},{"vehicleRegistration":"PENDING-MIX","inboundAt":"2026-08-24T01:30:00Z","inboundWeight":100,"outboundAt":null,"outboundWeight":0}]',
+    array['83000000-0000-4000-8000-000000000001'::uuid]
+  )$$,
+  'P0001',
+  'WEX_INCOMPLETE_WEIGHING: ต้องชั่งออกรถทุกคันก่อนเลือกรายการขายยาง',
+  'REX reservations are blocked until every vehicle completes outbound weighing'
+);
+select extensions.is(
+  public.update_export_vehicle_weigh_bill(
+    (select (response->>'id')::uuid from wex_pending), 1,
+    '[{"vehicleRegistration":"PENDING-1","inboundAt":"2026-08-24T01:00:00Z","inboundWeight":1000,"outboundAt":"2026-08-24T03:00:00Z","outboundWeight":1500}]',
+    array[]::uuid[]
+  )->>'revision',
+  '2',
+  'pending WEX can be completed later through the normal update RPC'
+);
+select extensions.is(
+  (public.get_export_vehicle_weigh_bill_detail(
+    (select (response->>'id')::uuid from wex_pending)
+  )->>'vehicleNetWeight')::numeric,
+  500::numeric,
+  'completed pending WEX receives its server-computed net weight'
+);
+
 create temporary table wex_created on commit drop as
 select public.create_export_vehicle_weigh_bill(
   '81000000-0000-4000-8000-000000000001',
@@ -204,9 +253,8 @@ select public.create_export_vehicle_weigh_bill(
   array['83000000-0000-4000-8000-000000000001'::uuid]
 ) as response;
 
-select extensions.like(
-  (select response->>'wexNo' from wex_created),
-  'WEX-%',
+select extensions.ok(
+  (select response->>'wexNo' like 'WEX-%' from wex_created),
   'WEX number is server generated'
 );
 select extensions.is(

@@ -113,6 +113,62 @@ test("keeps purchase bills as the default view and creates an online WEX with an
   await expect(page.getByText("อุปกรณ์นี้แชร์ไฟล์ไม่ได้ จึงดาวน์โหลด PDF แทนแล้ว")).toBeVisible();
 });
 
+test("creates an inbound-only WEX with zero outbound weight and no REX reservation", async ({ page }) => {
+  const writes: unknown[] = [];
+  const pendingDetails = {
+    ...details,
+    vehicleNetWeight: 0,
+    remainingWeight: 0,
+    lines: [{
+      ...details.lines[0],
+      outboundAt: null,
+      outboundWeight: 0,
+      netWeight: 0,
+    }],
+  };
+  await page.route("**/api/lanflow/export-vehicle-weigh-bills**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname.endsWith("/options")) {
+      return route.fulfill({
+        json: {
+          rubberExports: [{ rubberExportId: "rex-ui-pending", exportNo: "REX-20260824-099", currentWeight: 100 }],
+          carriers: [],
+        },
+      });
+    }
+    if (request.method() === "POST") {
+      writes.push(request.postDataJSON());
+      return route.fulfill({ status: 201, json: { id: summary.id, wexNo: summary.wexNo, revision: 1 } });
+    }
+    if (url.pathname.endsWith(`/${summary.id}`)) return route.fulfill({ json: pendingDetails });
+    return route.fulfill({ json: { bills: [], hasMore: false, nextCursor: null, permissions: { canCreate: true, canEdit: true, canDelete: true } } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
+  await page.getByRole("tab", { name: "บิลรถส่งออก (WEX)" }).click();
+  await page.getByRole("button", { name: "สร้างบิลรถส่งออก" }).click();
+  const dialog = page.getByRole("dialog", { name: "สร้างบิลรถส่งออก" });
+  await dialog.getByRole("textbox", { name: "ทะเบียนรถคันที่ 1" }).fill("กข 0001");
+  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาเข้าคันที่ 1" }).fill("1000");
+  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกคันที่ 1" }).fill("0");
+  await dialog.getByLabel("เวลาออก").fill("");
+  await expect(dialog.getByRole("checkbox", { name: "เลือก REX-20260824-099" })).toBeDisabled();
+  await dialog.getByRole("button", { name: "บันทึก WEX" }).click();
+
+  await expect.poll(() => writes).toEqual([expect.objectContaining({
+    lines: [expect.objectContaining({
+      vehicleRegistration: "กข 0001",
+      inboundWeight: 1000,
+      outboundAt: null,
+      outboundWeight: 0,
+    })],
+    rubberExportIds: [],
+  })]);
+  await expect(page.getByRole("dialog", { name: summary.wexNo })).toContainText("รอชั่งออก");
+});
+
 test("submits a manual carrier snapshot and a blank carrier", async ({ page }) => {
   const writes: unknown[] = [];
   await page.route("**/api/lanflow/export-vehicle-weigh-bills**", async (route) => {
