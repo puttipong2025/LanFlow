@@ -8,18 +8,18 @@ import {
 import { bangkokDateString, bangkokDateWindow } from "../src/lib/bangkok-date";
 
 test.describe("Rubber export calculations @rubber-export", () => {
-  test("uses current weight for loss and total net weight for work cost", () => {
+  test("uses current weight for loss and purchase cost including work", () => {
     expect(calculateWeightLossPercent(540, 500)).toBe(7.41);
     expect(calculateWeightLossPercent(3, 2)).toBe(33.33);
     expect(calculateWeightLossPercent(540, 541)).toBeNull();
     expect(calculateWorkTotal(540, 2, 100)).toBe(1180);
     expect(calculateWorkTotal(1.005, 1, 0)).toBe(1.01);
     expect(calculateWorkTotal(400, 0, 0)).toBe(0);
-    expect(calculatePurchaseCostIncludingWork(2800, 225, 100)).toEqual({
-      total: 3025,
-      average: 30.25,
+    expect(calculatePurchaseCostIncludingWork(8_703, 574.5, 295, 303)).toEqual({
+      total: 9_277.5,
+      average: 31.45,
     });
-    expect(calculatePurchaseCostIncludingWork(3000, 0, 100)).toEqual({
+    expect(calculatePurchaseCostIncludingWork(3000, 0, 100, 100)).toEqual({
       total: 3000,
       average: 30,
     });
@@ -33,12 +33,24 @@ test.describe("Rubber export calculations @rubber-export", () => {
     expect(calculateWorkTotal(null, 1, 0)).toBeNull();
     expect(calculateWorkTotal(100, -1, 0)).toBeNull();
     expect(calculateWorkTotal(100, 1, Number.POSITIVE_INFINITY)).toBeNull();
-    expect(calculatePurchaseCostIncludingWork(3000, null, 100)).toEqual({
+    expect(calculatePurchaseCostIncludingWork(3000, null, 100, 100)).toEqual({
       total: null,
       average: null,
     });
-    expect(calculatePurchaseCostIncludingWork(3000, undefined, 100)).toEqual({
+    expect(calculatePurchaseCostIncludingWork(3000, undefined, 100, 100)).toEqual({
       total: null,
+      average: null,
+    });
+    expect(calculatePurchaseCostIncludingWork(3000, 225, null, 100)).toEqual({
+      total: 3225,
+      average: null,
+    });
+    expect(calculatePurchaseCostIncludingWork(3000, 225, 0, 100)).toEqual({
+      total: 3225,
+      average: null,
+    });
+    expect(calculatePurchaseCostIncludingWork(3000, 225, 101, 100)).toEqual({
+      total: 3225,
       average: null,
     });
     expect(isValidCurrentWeight(Number.NaN, 1)).toBeFalsy();

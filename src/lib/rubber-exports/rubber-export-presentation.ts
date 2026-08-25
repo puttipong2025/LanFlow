@@ -89,13 +89,17 @@ export function buildRubberExportPresentation(details: RubberExportDetails) {
   const purchaseCost = calculatePurchaseCostIncludingWork(
     details.rubberValueTotal,
     details.workTotal,
+    details.currentWeight,
     details.originalWeightTotal,
   );
   return {
     status: rubberExportStatusLabel(details),
     summary: [
       ["น้ำหนักสุทธิรวม", `${formatRubberExportNumber(details.originalWeightTotal)} กก.`],
-      ["ยอดจ่ายจริงรวม", `฿${formatRubberExportNumber(details.paidTotal)}`],
+      ["ต้นทุนซื้อเฉลี่ย", `฿${formatRubberExportNumber(details.averagePrice)}/กก.`],
+      ["ต้นทุนซื้อรวมค่าทำงาน", purchaseCost.total === null
+        ? MISSING_VALUE
+        : `฿${formatRubberExportNumber(purchaseCost.total)}`],
       ["ต้นทุนซื้อเฉลี่ยรวมค่าทำงาน", purchaseCost.average === null
         ? MISSING_VALUE
         : `฿${formatRubberExportNumber(purchaseCost.average)}/กก.`],

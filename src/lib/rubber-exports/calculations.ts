@@ -28,21 +28,26 @@ export function calculateWorkTotal(
 export function calculatePurchaseCostIncludingWork(
   rubberValueTotal: number,
   workTotal: number | null | undefined,
-  netWeightTotal: number
+  currentWeight: number | null | undefined,
+  originalWeightTotal: number,
 ) {
   if (
     workTotal == null
     || !Number.isFinite(rubberValueTotal)
     || !Number.isFinite(workTotal)
-    || !Number.isFinite(netWeightTotal)
     || rubberValueTotal < 0
     || workTotal < 0
-    || netWeightTotal <= 0
   ) {
     return { total: null, average: null };
   }
   const total = round2(rubberValueTotal + workTotal);
-  return { total, average: round2(total / netWeightTotal) };
+  if (
+    currentWeight == null
+    || !isValidCurrentWeight(originalWeightTotal, currentWeight)
+  ) {
+    return { total, average: null };
+  }
+  return { total, average: round2(total / currentWeight) };
 }
 
 export function isValidCurrentWeight(originalWeight: number, currentWeight: number | null) {

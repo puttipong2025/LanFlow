@@ -196,8 +196,12 @@ test("downloads a searchable multi-page verified copy when file sharing is unsup
   expect(allText).toContain("ตรวจสอบแล้ว");
   expect(allText).not.toContain("ลบแล้ว");
   expect(allText).toContain("น้ำหนักสุทธิรวม");
+  expect(allText).toContain("ต้นทุนซื้อเฉลี่ย");
+  expect(allText).toContain("฿29.71/กก.");
+  expect(allText).toContain("ต้นทุนซื้อรวมค่าทำงาน");
+  expect(allText).toContain("฿9,277.50");
   expect(allText).toContain("ต้นทุนซื้อเฉลี่ยรวมค่าทำงาน");
-  expect(allText).toContain("฿30.62/กก.");
+  expect(allText).toContain("฿31.45/กก.");
   expect(allText).toContain("ผู้สร้าง");
   for (let index = 1; index <= 60; index += 1) {
     const row = String(index).padStart(3, "0");
