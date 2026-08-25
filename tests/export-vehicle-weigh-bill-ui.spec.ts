@@ -40,6 +40,46 @@ const sameNameCarriers = [
   { carrierId: "00000000-0000-4000-8000-000000000102", carrierName: "บริษัทขนส่ง WEX" },
 ];
 
+test("uses truck and trailer roles with Rubber Bill focus-zero weights", async ({ page }) => {
+  await page.route("**/api/lanflow/export-vehicle-weigh-bills**", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/options")) {
+      await route.fulfill({ json: { rubberExports: [], carriers: [] } });
+      return;
+    }
+    await route.fulfill({ json: { bills: [], hasMore: false, nextCursor: null, permissions: { canCreate: true, canEdit: true, canDelete: true } } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
+  await page.getByRole("tab", { name: "บิลรถส่งออก (WEX)" }).click();
+  await page.getByRole("button", { name: "สร้างบิลรถส่งออก" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "สร้างบิลรถส่งออก" });
+  const truck = dialog.getByRole("group", { name: "รถบรรทุก" });
+  const truckInbound = truck.getByRole("spinbutton", { name: "น้ำหนักขาเข้ารถบรรทุก" });
+  const truckOutbound = truck.getByRole("spinbutton", { name: "น้ำหนักขาออกรถบรรทุก" });
+  await expect(truckInbound).toHaveValue("0");
+  await expect(truckOutbound).toHaveValue("0");
+  await truckInbound.focus();
+  await expect(truckInbound).toHaveValue("");
+  await truckInbound.blur();
+  await expect(truckInbound).toHaveValue("0");
+
+  await dialog.getByRole("button", { name: "เพิ่มรถพ่วง" }).click();
+  const trailer = dialog.getByRole("group", { name: "รถพ่วง" });
+  const trailerInbound = trailer.getByRole("spinbutton", { name: "น้ำหนักขาเข้ารถพ่วง" });
+  const trailerOutbound = trailer.getByRole("spinbutton", { name: "น้ำหนักขาออกรถพ่วง" });
+  await expect(trailerInbound).toHaveValue("0");
+  await expect(trailerOutbound).toHaveValue("0");
+  await trailerOutbound.focus();
+  await expect(trailerOutbound).toHaveValue("");
+  await trailerOutbound.blur();
+  await expect(trailerOutbound).toHaveValue("0");
+  await expect(truck.getByRole("button", { name: /ลบ/ })).toHaveCount(0);
+  await expect(trailer.getByRole("button", { name: "ลบรถพ่วง" })).toBeVisible();
+});
+
 test("keeps purchase bills as the default view and creates an online WEX with an accessible validated form", async ({ page }) => {
   const writes: Array<{ method: string; body: unknown }> = [];
   await page.addInitScript(() => {
@@ -88,11 +128,11 @@ test("keeps purchase bills as the default view and creates an online WEX with an
   await dialog.getByRole("button", { name: "บันทึก WEX" }).click();
   await expect(dialog.getByRole("alert")).toContainText("กรุณากรอกทะเบียนรถ");
 
-  await dialog.getByRole("textbox", { name: "ทะเบียนรถคันที่ 1" }).fill("กข 9999");
-  await dialog.getByRole("combobox", { name: "ผู้ขนส่งรถคันที่ 1" }).fill("บริษัทขนส่ง WEX");
+  await dialog.getByRole("textbox", { name: "ทะเบียนรถบรรทุก" }).fill("กข 9999");
+  await dialog.getByRole("combobox", { name: "ผู้ขนส่งรถบรรทุก" }).fill("บริษัทขนส่ง WEX");
   await dialog.getByRole("option", { name: /บริษัทขนส่ง WEX.*00000102/ }).click();
-  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาเข้าคันที่ 1" }).fill("1000");
-  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกคันที่ 1" }).fill("1400");
+  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาเข้ารถบรรทุก" }).fill("1000");
+  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกรถบรรทุก" }).fill("1400");
   await dialog.getByRole("checkbox", { name: "เลือก REX-20260823-001" }).check();
   await dialog.getByRole("button", { name: "บันทึก WEX" }).click();
 
@@ -106,6 +146,7 @@ test("keeps purchase bills as the default view and creates an online WEX with an
 
   const detailDialog = page.getByRole("dialog", { name: summary.wexNo });
   await expect(detailDialog).toBeVisible();
+  await expect(detailDialog).toContainText("รถบรรทุก");
   const downloadPromise = page.waitForEvent("download");
   await detailDialog.getByRole("button", { name: "แชร์ PDF" }).click();
   const download = await downloadPromise;
@@ -150,9 +191,9 @@ test("creates an inbound-only WEX with zero outbound weight and no REX reservati
   await page.getByRole("tab", { name: "บิลรถส่งออก (WEX)" }).click();
   await page.getByRole("button", { name: "สร้างบิลรถส่งออก" }).click();
   const dialog = page.getByRole("dialog", { name: "สร้างบิลรถส่งออก" });
-  await dialog.getByRole("textbox", { name: "ทะเบียนรถคันที่ 1" }).fill("กข 0001");
-  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาเข้าคันที่ 1" }).fill("1000");
-  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกคันที่ 1" }).fill("0");
+  await dialog.getByRole("textbox", { name: "ทะเบียนรถบรรทุก" }).fill("กข 0001");
+  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาเข้ารถบรรทุก" }).fill("1000");
+  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกรถบรรทุก" }).fill("0");
   await dialog.getByLabel("เวลาออก").fill("");
   await expect(dialog.getByRole("checkbox", { name: "เลือก REX-20260824-099" })).toBeDisabled();
   await dialog.getByRole("button", { name: "บันทึก WEX" }).click();
@@ -188,14 +229,14 @@ test("submits a manual carrier snapshot and a blank carrier", async ({ page }) =
   await page.getByRole("tab", { name: "บิลรถส่งออก (WEX)" }).click();
   await page.getByRole("button", { name: "สร้างบิลรถส่งออก" }).click();
   const dialog = page.getByRole("dialog", { name: "สร้างบิลรถส่งออก" });
-  await dialog.getByRole("textbox", { name: "ทะเบียนรถคันที่ 1" }).fill("กข 1000");
-  await dialog.getByRole("combobox", { name: "ผู้ขนส่งรถคันที่ 1" }).fill("นายสมชาย ขนส่งเอง");
-  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาเข้าคันที่ 1" }).fill("1000");
-  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกคันที่ 1" }).fill("1400");
-  await dialog.getByRole("button", { name: "เพิ่มรถคันที่ 2" }).click();
-  await dialog.getByRole("textbox", { name: "ทะเบียนรถคันที่ 2" }).fill("กข 2000");
-  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาเข้าคันที่ 2" }).fill("2000");
-  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกคันที่ 2" }).fill("2300");
+  await dialog.getByRole("textbox", { name: "ทะเบียนรถบรรทุก" }).fill("กข 1000");
+  await dialog.getByRole("combobox", { name: "ผู้ขนส่งรถบรรทุก" }).fill("นายสมชาย ขนส่งเอง");
+  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาเข้ารถบรรทุก" }).fill("1000");
+  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกรถบรรทุก" }).fill("1400");
+  await dialog.getByRole("button", { name: "เพิ่มรถพ่วง" }).click();
+  await dialog.getByRole("textbox", { name: "ทะเบียนรถพ่วง" }).fill("กข 2000");
+  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาเข้ารถพ่วง" }).fill("2000");
+  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกรถพ่วง" }).fill("2300");
   await dialog.getByRole("button", { name: "บันทึก WEX" }).click();
 
   await expect.poll(() => writes).toEqual([expect.objectContaining({
@@ -225,14 +266,14 @@ test("submits the second same-name carrier with ArrowDown and Enter", async ({ p
   await page.getByRole("tab", { name: "บิลรถส่งออก (WEX)" }).click();
   await page.getByRole("button", { name: "สร้างบิลรถส่งออก" }).click();
   const dialog = page.getByRole("dialog", { name: "สร้างบิลรถส่งออก" });
-  await dialog.getByRole("textbox", { name: "ทะเบียนรถคันที่ 1" }).fill("กข 3000");
-  const carrierInput = dialog.getByRole("combobox", { name: "ผู้ขนส่งรถคันที่ 1" });
+  await dialog.getByRole("textbox", { name: "ทะเบียนรถบรรทุก" }).fill("กข 3000");
+  const carrierInput = dialog.getByRole("combobox", { name: "ผู้ขนส่งรถบรรทุก" });
   await carrierInput.fill(sameNameCarriers[0].carrierName);
   await carrierInput.press("ArrowDown");
   await expect(carrierInput).toHaveAttribute("aria-activedescendant", new RegExp(`${sameNameCarriers[1].carrierId}$`));
   await carrierInput.press("Enter");
-  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาเข้าคันที่ 1" }).fill("1000");
-  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกคันที่ 1" }).fill("1400");
+  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาเข้ารถบรรทุก" }).fill("1000");
+  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกรถบรรทุก" }).fill("1400");
   await dialog.getByRole("button", { name: "บันทึก WEX" }).click();
 
   await expect.poll(() => writes).toEqual([expect.objectContaining({
@@ -270,7 +311,7 @@ test("keeps an edit carrier snapshot when the carrier is absent from current opt
   await expect(detailDialog).toContainText("ผู้ขนส่งเดิม");
   await detailDialog.getByRole("button", { name: "แก้ไข" }).click();
   const form = page.getByRole("dialog", { name: `แก้ไข ${summary.wexNo}` });
-  await expect(form.getByRole("combobox", { name: "ผู้ขนส่งรถคันที่ 1" })).toHaveValue("ผู้ขนส่งเดิม");
+  await expect(form.getByRole("combobox", { name: "ผู้ขนส่งรถบรรทุก" })).toHaveValue("ผู้ขนส่งเดิม");
   await form.getByRole("button", { name: "บันทึกการแก้ไข" }).click();
 
   await expect.poll(() => writes).toEqual([expect.objectContaining({
@@ -318,7 +359,7 @@ test("keeps a stored carrier snapshot when the active master was renamed", async
   const detailDialog = page.getByRole("dialog", { name: summary.wexNo });
   await detailDialog.getByRole("button", { name: "แก้ไข" }).click();
   const form = page.getByRole("dialog", { name: `แก้ไข ${summary.wexNo}` });
-  await expect(form.getByRole("combobox", { name: "ผู้ขนส่งรถคันที่ 1" })).toHaveValue("ชื่อผู้ขนส่งเดิม");
+  await expect(form.getByRole("combobox", { name: "ผู้ขนส่งรถบรรทุก" })).toHaveValue("ชื่อผู้ขนส่งเดิม");
   await form.getByRole("button", { name: "บันทึกการแก้ไข" }).click();
 
   await expect.poll(() => writes).toEqual([expect.objectContaining({
@@ -355,7 +396,7 @@ test("selects the exact same-name carrier for an edit", async ({ page }) => {
   await page.getByRole("button", { name: "รายละเอียด" }).click();
   await page.getByRole("dialog", { name: summary.wexNo }).getByRole("button", { name: "แก้ไข" }).click();
   const form = page.getByRole("dialog", { name: `แก้ไข ${summary.wexNo}` });
-  const carrierInput = form.getByRole("combobox", { name: "ผู้ขนส่งรถคันที่ 1" });
+  const carrierInput = form.getByRole("combobox", { name: "ผู้ขนส่งรถบรรทุก" });
   await carrierInput.click();
   await form.getByRole("option", { name: /บริษัทขนส่ง WEX.*00000102/ }).click();
   await form.getByRole("button", { name: "บันทึกการแก้ไข" }).click();
@@ -394,7 +435,7 @@ test("updates to the second same-name carrier with ArrowUp wrap and Enter", asyn
   await page.getByRole("button", { name: "รายละเอียด" }).click();
   await page.getByRole("dialog", { name: summary.wexNo }).getByRole("button", { name: "แก้ไข" }).click();
   const form = page.getByRole("dialog", { name: `แก้ไข ${summary.wexNo}` });
-  const carrierInput = form.getByRole("combobox", { name: "ผู้ขนส่งรถคันที่ 1" });
+  const carrierInput = form.getByRole("combobox", { name: "ผู้ขนส่งรถบรรทุก" });
   await carrierInput.focus();
   await carrierInput.press("ArrowUp");
   await expect(carrierInput).toHaveAttribute("aria-activedescendant", new RegExp(`${sameNameCarriers[1].carrierId}$`));

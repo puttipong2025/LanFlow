@@ -3,6 +3,10 @@ import type { WexDetails } from "@/types/export-vehicle-weigh-bills";
 const BANGKOK_TIME_ZONE = "Asia/Bangkok";
 const MISSING_VALUE = "—";
 
+export function exportVehicleRoleLabel(sequenceNo: number) {
+  return sequenceNo === 1 ? "รถบรรทุก" : "รถพ่วง";
+}
+
 export function formatExportVehicleWeighBillNumber(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) return MISSING_VALUE;
   return value.toLocaleString("th-TH", {
@@ -53,6 +57,7 @@ export function buildExportVehicleWeighBillPresentation(details: WexDetails) {
     ] as const,
     lines: details.lines.map((line) => ({
       ...line,
+      vehicleRoleLabel: exportVehicleRoleLabel(line.sequenceNo),
       checkoutPending: line.outboundWeight === 0,
       carrierNameText: line.carrierName?.trim() || MISSING_VALUE,
       inboundAtText: formatExportVehicleWeighBillDateTime(line.inboundAt),

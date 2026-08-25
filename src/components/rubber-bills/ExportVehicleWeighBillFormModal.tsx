@@ -8,7 +8,10 @@ import type {
   ExportVehicleWeighBillLineInput,
   ExportVehicleWeighBillPayload,
 } from "@/hooks/useExportVehicleWeighBills";
-import { formatExportVehicleWeighBillNumber } from "@/lib/export-vehicle-weigh-bills/presentation";
+import {
+  exportVehicleRoleLabel,
+  formatExportVehicleWeighBillNumber,
+} from "@/lib/export-vehicle-weigh-bills/presentation";
 import type { WexCarrierOption, WexDetails, WexRubberExportOption } from "@/types/export-vehicle-weigh-bills";
 
 type DraftLine = {
@@ -42,7 +45,7 @@ function emptyLine(): DraftLine {
     carrierId: null,
     carrierName: "",
     inboundAt: now,
-    inboundWeight: "",
+    inboundWeight: "0",
     outboundAt: "",
     outboundWeight: "0",
   };
@@ -158,6 +161,14 @@ export function ExportVehicleWeighBillFormModal({
     )));
   }
 
+  function clearZeroWeight(index: number, field: "inboundWeight" | "outboundWeight") {
+    if (Number(lines[index][field]) === 0) updateLine(index, { [field]: "" });
+  }
+
+  function restoreBlankWeight(index: number, field: "inboundWeight" | "outboundWeight") {
+    if (!lines[index][field].trim()) updateLine(index, { [field]: "0" });
+  }
+
   function toggleExport(rubberExportId: string) {
     setSelectedIds((current) => current.includes(rubberExportId)
       ? current.filter((id) => id !== rubberExportId)
@@ -183,13 +194,14 @@ export function ExportVehicleWeighBillFormModal({
     const seenPlates = new Set<string>();
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
+      const vehicleRole = exportVehicleRoleLabel(index + 1);
       const vehicleRegistration = normalizePlate(line.vehicleRegistration);
       const inboundWeight = Number(line.inboundWeight);
       const outboundWeight = Number(line.outboundWeight);
       const inboundAt = toIso(line.inboundAt);
       const outboundAt = outboundWeight === 0 ? null : toIso(line.outboundAt);
       if (!vehicleRegistration) {
-        setError(`กรุณากรอกทะเบียนรถคันที่ ${index + 1}`);
+        setError(`กรุณากรอกทะเบียน${vehicleRole}`);
         return;
       }
       if (seenPlates.has(vehicleRegistration)) {
@@ -198,23 +210,23 @@ export function ExportVehicleWeighBillFormModal({
       }
       seenPlates.add(vehicleRegistration);
       if (!inboundAt) {
-        setError(`กรุณาระบุเวลาเข้าของรถคันที่ ${index + 1}`);
+        setError(`กรุณาระบุเวลาเข้าของ${vehicleRole}`);
         return;
       }
       if (!line.inboundWeight.trim() || !Number.isFinite(inboundWeight) || inboundWeight <= 0) {
-        setError(`น้ำหนักขาเข้าของรถคันที่ ${index + 1} ต้องมากกว่า 0`);
+        setError(`น้ำหนักขาเข้าของ${vehicleRole}ต้องมากกว่า 0`);
         return;
       }
       if (!line.outboundWeight.trim() || !Number.isFinite(outboundWeight) || outboundWeight < 0) {
-        setError(`น้ำหนักขาออกของรถคันที่ ${index + 1} ต้องเป็น 0 หรือมากกว่าน้ำหนักขาเข้า`);
+        setError(`น้ำหนักขาออกของ${vehicleRole}ต้องเป็น 0 หรือมากกว่าน้ำหนักขาเข้า`);
         return;
       }
       if (outboundWeight > 0 && (!outboundAt || outboundWeight <= inboundWeight)) {
-        setError(`เมื่อชั่งออกแล้ว กรุณาระบุเวลาออกและน้ำหนักขาออกให้มากกว่าน้ำหนักขาเข้าของรถคันที่ ${index + 1}`);
+        setError(`เมื่อชั่งออกแล้ว กรุณาระบุเวลาออกและน้ำหนักขาออกให้มากกว่าน้ำหนักขาเข้าของ${vehicleRole}`);
         return;
       }
       if (outboundAt && Date.parse(outboundAt) <= Date.parse(inboundAt)) {
-        setError(`เวลาออกของรถคันที่ ${index + 1} ต้องหลังเวลาเข้า`);
+        setError(`เวลาออกของ${vehicleRole}ต้องหลังเวลาเข้า`);
         return;
       }
       const carrierName = line.carrierName.trim();
@@ -255,7 +267,7 @@ export function ExportVehicleWeighBillFormModal({
   return (
     <ModalShell
       title={isEditing ? `แก้ไข ${details?.wexNo}` : "สร้างบิลรถส่งออก"}
-      subtitle={`${locationName} · ใช้งานได้เมื่อออนไลน์เท่านั้น · รถ 1–2 คัน`}
+      subtitle={`${locationName} · ใช้งานได้เมื่อออนไลน์เท่านั้น · รถบรรทุก 1 คัน และรถพ่วงไม่บังคับ`}
       onClose={onClose}
       closeDisabled={saving}
       closeOnEscape
@@ -276,16 +288,17 @@ export function ExportVehicleWeighBillFormModal({
           <div className="flex flex-wrap items-end justify-between gap-2">
             <div>
               <h3 id="wex-vehicle-lines-title" className="font-bold text-ink">รายการชั่งรถ</h3>
-              <p className="text-sm text-ink/60">ทะเบียนแต่ละคันต้องไม่ซ้ำ; ระหว่างรอรถออกให้ใส่น้ำหนักขาออก 0 และเว้นเวลาออกไว้</p>
+              <p className="text-pretty text-sm text-ink/60">หากมีรถพ่วง ทะเบียนต้องไม่ซ้ำกับรถบรรทุก; ระหว่างรอชั่งออกให้ใช้น้ำหนักขาออก 0 และเว้นเวลาออกไว้</p>
             </div>
             {lines.length < 2 && (
               <button type="button" onClick={() => setLines((current) => [...current, emptyLine()])} className="focus-ring inline-flex h-10 items-center gap-2 rounded-md bg-river px-3 text-sm font-semibold text-white">
-                <Plus size={16} aria-hidden="true" /> เพิ่มรถคันที่ 2
+                <Plus size={16} aria-hidden="true" /> เพิ่มรถพ่วง
               </button>
             )}
           </div>
           {lines.map((line, index) => {
             const netWeight = lineNetWeights[index];
+            const vehicleRole = exportVehicleRoleLabel(index + 1);
             const matchingCarriers = carriers.filter((carrier) => (
               carrier.carrierName.toLocaleLowerCase("th").includes(line.carrierName.trim().toLocaleLowerCase("th"))
             ));
@@ -294,16 +307,16 @@ export function ExportVehicleWeighBillFormModal({
             const activeCarrier = matchingCarriers[activeCarrierIndex];
             return (
               <fieldset key={index} className="rounded-lg border border-black/10 bg-field/50 p-3">
-                <legend className="px-1 text-sm font-bold text-ink">รถคันที่ {index + 1}</legend>
+                <legend className="px-1 text-sm font-bold text-ink">{vehicleRole}</legend>
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
-                  <label className="block lg:col-span-1"><span className="mb-1 block text-sm font-semibold text-ink/70">ทะเบียนรถ</span><input required aria-label={`ทะเบียนรถคันที่ ${index + 1}`} value={line.vehicleRegistration} onChange={(event) => updateLine(index, { vehicleRegistration: event.target.value })} className="focus-ring h-11 w-full rounded-md border border-black/15 bg-white px-3" /></label>
-                  <label className="relative block"><span className="mb-1 block text-sm font-semibold text-ink/70">ผู้ขนส่ง (ไม่บังคับ)</span><input role="combobox" aria-label={`ผู้ขนส่งรถคันที่ ${index + 1}`} aria-autocomplete="list" aria-expanded={isCarrierListboxOpen && matchingCarriers.length > 0} aria-controls={isCarrierListboxOpen ? carrierListboxId : undefined} aria-activedescendant={isCarrierListboxOpen && activeCarrier ? `${carrierListboxId}-${activeCarrier.carrierId}` : undefined} value={line.carrierName} onFocus={() => { setCarrierListboxIndex(index); setActiveCarrierIndex(0); }} onBlur={(event) => { if (!event.currentTarget.parentElement?.contains(event.relatedTarget)) setCarrierListboxIndex(null); }} onChange={(event) => updateCarrierText(index, event.target.value)} onKeyDown={(event) => { if (event.key === "ArrowDown" && matchingCarriers.length > 0) { event.preventDefault(); setCarrierListboxIndex(index); setActiveCarrierIndex((current) => (current + 1) % matchingCarriers.length); } else if (event.key === "ArrowUp" && matchingCarriers.length > 0) { event.preventDefault(); setCarrierListboxIndex(index); setActiveCarrierIndex((current) => (current - 1 + matchingCarriers.length) % matchingCarriers.length); } else if (event.key === "Enter" && isCarrierListboxOpen && activeCarrier) { event.preventDefault(); selectCarrier(index, activeCarrier); } else if (event.key === "Escape") { setCarrierListboxIndex(null); } }} autoComplete="off" placeholder="เลือกจากรายชื่อหรือพิมพ์เอง" className="focus-ring h-11 w-full rounded-md border border-black/15 bg-white px-3" />{isCarrierListboxOpen && matchingCarriers.length > 0 && <ul id={carrierListboxId} role="listbox" aria-label={`รายชื่อผู้ขนส่งรถคันที่ ${index + 1}`} className="absolute z-10 mt-1 max-h-52 w-full overflow-y-auto rounded-md border border-black/15 bg-white py-1 shadow-lg">{matchingCarriers.map((carrier, carrierIndex) => <li key={carrier.carrierId} id={`${carrierListboxId}-${carrier.carrierId}`} role="option" aria-selected={line.carrierId === carrier.carrierId} onMouseDown={(event) => event.preventDefault()} onClick={() => selectCarrier(index, carrier)} className={`cursor-pointer px-3 py-2 text-sm ${carrierIndex === activeCarrierIndex ? "bg-field text-ink" : "text-ink hover:bg-field"}`}><span className="block font-semibold">{carrier.carrierName}</span><span className="block text-xs text-ink/60">รหัส {carrierReference(carrier.carrierId)}</span></li>)}</ul>}</label>
+                  <label className="block lg:col-span-1"><span className="mb-1 block text-sm font-semibold text-ink/70">ทะเบียนรถ</span><input required aria-label={`ทะเบียน${vehicleRole}`} value={line.vehicleRegistration} onChange={(event) => updateLine(index, { vehicleRegistration: event.target.value })} className="focus-ring h-11 w-full rounded-md border border-black/15 bg-white px-3" /></label>
+                  <label className="relative block"><span className="mb-1 block text-sm font-semibold text-ink/70">ผู้ขนส่ง (ไม่บังคับ)</span><input role="combobox" aria-label={`ผู้ขนส่ง${vehicleRole}`} aria-autocomplete="list" aria-expanded={isCarrierListboxOpen && matchingCarriers.length > 0} aria-controls={isCarrierListboxOpen ? carrierListboxId : undefined} aria-activedescendant={isCarrierListboxOpen && activeCarrier ? `${carrierListboxId}-${activeCarrier.carrierId}` : undefined} value={line.carrierName} onFocus={() => { setCarrierListboxIndex(index); setActiveCarrierIndex(0); }} onBlur={(event) => { if (!event.currentTarget.parentElement?.contains(event.relatedTarget)) setCarrierListboxIndex(null); }} onChange={(event) => updateCarrierText(index, event.target.value)} onKeyDown={(event) => { if (event.key === "ArrowDown" && matchingCarriers.length > 0) { event.preventDefault(); setCarrierListboxIndex(index); setActiveCarrierIndex((current) => (current + 1) % matchingCarriers.length); } else if (event.key === "ArrowUp" && matchingCarriers.length > 0) { event.preventDefault(); setCarrierListboxIndex(index); setActiveCarrierIndex((current) => (current - 1 + matchingCarriers.length) % matchingCarriers.length); } else if (event.key === "Enter" && isCarrierListboxOpen && activeCarrier) { event.preventDefault(); selectCarrier(index, activeCarrier); } else if (event.key === "Escape") { setCarrierListboxIndex(null); } }} autoComplete="off" placeholder="เลือกจากรายชื่อหรือพิมพ์เอง" className="focus-ring h-11 w-full rounded-md border border-black/15 bg-white px-3" />{isCarrierListboxOpen && matchingCarriers.length > 0 && <ul id={carrierListboxId} role="listbox" aria-label={`รายชื่อผู้ขนส่ง${vehicleRole}`} className="absolute z-10 mt-1 max-h-52 w-full overflow-y-auto rounded-md border border-black/15 bg-white py-1 shadow-lg">{matchingCarriers.map((carrier, carrierIndex) => <li key={carrier.carrierId} id={`${carrierListboxId}-${carrier.carrierId}`} role="option" aria-selected={line.carrierId === carrier.carrierId} onMouseDown={(event) => event.preventDefault()} onClick={() => selectCarrier(index, carrier)} className={`cursor-pointer px-3 py-2 text-sm ${carrierIndex === activeCarrierIndex ? "bg-field text-ink" : "text-ink hover:bg-field"}`}><span className="block font-semibold">{carrier.carrierName}</span><span className="block text-xs text-ink/60">รหัส {carrierReference(carrier.carrierId)}</span></li>)}</ul>}</label>
                   <label className="block"><span className="mb-1 block text-sm font-semibold text-ink/70">เวลาเข้า</span><input required type="datetime-local" value={line.inboundAt} onChange={(event) => updateLine(index, { inboundAt: event.target.value })} className="focus-ring h-11 w-full rounded-md border border-black/15 bg-white px-3" /></label>
-                  <label className="block"><span className="mb-1 block text-sm font-semibold text-ink/70">น้ำหนักขาเข้า</span><input required aria-label={`น้ำหนักขาเข้าคันที่ ${index + 1}`} type="number" min="0" step="0.01" value={line.inboundWeight} onChange={(event) => updateLine(index, { inboundWeight: event.target.value })} className="focus-ring h-11 w-full rounded-md border border-black/15 bg-white px-3 tabular-nums" /></label>
+                  <label className="block"><span className="mb-1 block text-sm font-semibold text-ink/70">น้ำหนักขาเข้า</span><input required aria-label={`น้ำหนักขาเข้า${vehicleRole}`} type="number" min="0" step="0.01" value={line.inboundWeight} onFocus={() => clearZeroWeight(index, "inboundWeight")} onBlur={() => restoreBlankWeight(index, "inboundWeight")} onChange={(event) => updateLine(index, { inboundWeight: event.target.value })} className="focus-ring h-11 w-full rounded-md border border-black/15 bg-white px-3 tabular-nums" /></label>
                   <label className="block"><span className="mb-1 block text-sm font-semibold text-ink/70">เวลาออก (เมื่อชั่งออก)</span><input required={Number(line.outboundWeight) > 0} type="datetime-local" value={line.outboundAt} onChange={(event) => updateLine(index, { outboundAt: event.target.value })} className="focus-ring h-11 w-full rounded-md border border-black/15 bg-white px-3" /></label>
-                  <div className="flex gap-2"><label className="block min-w-0 flex-1"><span className="mb-1 block text-sm font-semibold text-ink/70">น้ำหนักขาออก</span><input required aria-label={`น้ำหนักขาออกคันที่ ${index + 1}`} type="number" min="0" step="0.01" value={line.outboundWeight} onChange={(event) => { const outboundWeight = event.target.value; updateLine(index, { outboundWeight, ...(!line.outboundAt && Number(outboundWeight) > 0 ? { outboundAt: defaultOutboundAt(line.inboundAt) } : {}) }); }} className="focus-ring h-11 w-full rounded-md border border-black/15 bg-white px-3 tabular-nums" /></label>{lines.length > 1 && <button type="button" aria-label={`ลบรถคันที่ ${index + 1}`} onClick={() => setLines((current) => current.filter((_, lineIndex) => lineIndex !== index))} className="focus-ring mt-6 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md bg-actionSecondary text-white"><Minus size={16} aria-hidden="true" /></button>}</div>
+                  <div className="flex gap-2"><label className="block min-w-0 flex-1"><span className="mb-1 block text-sm font-semibold text-ink/70">น้ำหนักขาออก</span><input required aria-label={`น้ำหนักขาออก${vehicleRole}`} type="number" min="0" step="0.01" value={line.outboundWeight} onFocus={() => clearZeroWeight(index, "outboundWeight")} onBlur={() => restoreBlankWeight(index, "outboundWeight")} onChange={(event) => { const outboundWeight = event.target.value; updateLine(index, { outboundWeight, ...(!line.outboundAt && Number(outboundWeight) > 0 ? { outboundAt: defaultOutboundAt(line.inboundAt) } : {}) }); }} className="focus-ring h-11 w-full rounded-md border border-black/15 bg-white px-3 tabular-nums" /></label>{index === 1 && <button type="button" aria-label="ลบรถพ่วง" onClick={() => setLines((current) => current.filter((_, lineIndex) => lineIndex !== index))} className="focus-ring mt-6 inline-flex size-11 shrink-0 items-center justify-center rounded-md bg-actionSecondary text-white"><Minus size={16} aria-hidden="true" /></button>}</div>
                 </div>
-                <p className={netWeight > 0 ? "mt-2 text-sm font-semibold text-leaf" : "mt-2 text-sm font-semibold text-ink/55"}>{Number(line.outboundWeight) === 0 ? "สถานะ: รอชั่งออก" : `น้ำหนักสุทธิรถคันนี้: ${formatExportVehicleWeighBillNumber(netWeight)} กก.`}</p>
+                <p className={netWeight > 0 ? "mt-2 text-pretty text-sm font-semibold text-leaf" : "mt-2 text-pretty text-sm font-semibold text-ink/55"}>{Number(line.outboundWeight) === 0 ? "สถานะ: รอชั่งออก" : `น้ำหนักสุทธิ${vehicleRole}: ${formatExportVehicleWeighBillNumber(netWeight)} กก.`}</p>
               </fieldset>
             );
           })}

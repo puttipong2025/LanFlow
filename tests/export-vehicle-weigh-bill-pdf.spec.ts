@@ -62,6 +62,7 @@ test("builds a Bangkok 80mm WEX receipt with both vehicles and reserved REX weig
     ["น้ำหนักคงเหลือบนรถ", "120.00 กก."],
   ]);
   expect(presentation.lines.map((line) => line.vehicleRegistration)).toEqual(["กข 1234", "กข 5678"]);
+  expect(presentation.lines.map((line) => line.vehicleRoleLabel)).toEqual(["รถบรรทุก", "รถพ่วง"]);
   expect(presentation.lines.map((line) => line.carrierNameText)).toEqual(["บริษัทขนส่งทดสอบ", "—"]);
   expect(exportVehicleWeighBillPdfFilename(details)).toBe("LanFlow-export-vehicle-weigh-bill-WEX-20260824-001-80mm.pdf");
   expect(exportVehicleWeighBillShareTitle(details)).toContain("WEX-20260824-001 · สาขาทดสอบ WEX");
@@ -70,6 +71,8 @@ test("builds a Bangkok 80mm WEX receipt with both vehicles and reserved REX weig
   expect(html).toContain("@page { size: 80mm auto;");
   expect(html).toContain("กข 1234");
   expect(html).toContain("กข 5678");
+  expect(html).toContain("รถบรรทุก · กข 1234");
+  expect(html).toContain("รถพ่วง · กข 5678");
   expect(html).toContain("บริษัทขนส่งทดสอบ");
   expect(html).toContain("ผู้ขนส่ง</span><strong>—");
   expect(html).toContain("REX-20260823-001");

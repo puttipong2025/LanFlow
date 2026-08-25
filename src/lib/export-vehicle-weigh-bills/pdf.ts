@@ -20,7 +20,7 @@ export function renderExportVehicleWeighBillHtml(details: WexDetails) {
   )).join("");
   const vehicles = presentation.lines.map((line) => `
     <section class="block">
-      <h2>รถ ${line.sequenceNo} · ${escapeHtml(line.vehicleRegistration)}</h2>
+      <h2>${escapeHtml(line.vehicleRoleLabel)} · ${escapeHtml(line.vehicleRegistration)}</h2>
       <div class="row"><span>ผู้ขนส่ง</span><strong>${escapeHtml(line.carrierNameText)}</strong></div>
       <div class="row"><span>ขาเข้า</span><strong>${escapeHtml(line.inboundAtText)}</strong></div>
       <div class="row"><span>น้ำหนักขาเข้า</span><strong>${escapeHtml(line.inboundWeightText)} กก.</strong></div>
