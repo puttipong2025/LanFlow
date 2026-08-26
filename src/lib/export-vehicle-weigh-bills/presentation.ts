@@ -4,7 +4,7 @@ const BANGKOK_TIME_ZONE = "Asia/Bangkok";
 const MISSING_VALUE = "—";
 
 export function exportVehicleRoleLabel(sequenceNo: number) {
-  return sequenceNo === 1 ? "รถบรรทุก" : "รถพ่วง";
+  return sequenceNo === 1 ? "รถบรรทุก" : "หางพ่วง";
 }
 
 export function formatExportVehicleWeighBillNumber(value: number | null | undefined) {
@@ -47,6 +47,7 @@ export function exportVehicleWeighBillShareTitle(
 }
 
 export function buildExportVehicleWeighBillPresentation(details: WexDetails) {
+  const sharedCarrierNameText = details.lines[0]?.carrierName?.trim() || MISSING_VALUE;
   return {
     createdAtText: formatExportVehicleWeighBillDateTime(details.createdAt),
     updatedAtText: formatExportVehicleWeighBillDateTime(details.updatedAt),
@@ -59,7 +60,7 @@ export function buildExportVehicleWeighBillPresentation(details: WexDetails) {
       ...line,
       vehicleRoleLabel: exportVehicleRoleLabel(line.sequenceNo),
       checkoutPending: line.outboundWeight === 0,
-      carrierNameText: line.carrierName?.trim() || MISSING_VALUE,
+      carrierNameText: sharedCarrierNameText,
       inboundAtText: formatExportVehicleWeighBillDateTime(line.inboundAt),
       outboundAtText: line.outboundWeight === 0 ? "รอชั่งออก" : formatExportVehicleWeighBillDateTime(line.outboundAt),
       inboundWeightText: formatExportVehicleWeighBillNumber(line.inboundWeight),

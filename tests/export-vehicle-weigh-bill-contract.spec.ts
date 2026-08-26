@@ -273,6 +273,14 @@ test("migration enforces atomic reservation, server weight, sale lock, and perma
   expect(inboundOnlySql).toContain("sum(l.net_weight)");
   expect(inboundOnlySql).toContain("private.enforce_complete_wex_before_reservation");
   expect(inboundOnlySql).toContain("WEX_INCOMPLETE_WEIGHING");
+
+  const sharedCarrierSql = readFileSync(resolve(
+    "supabase/migrations/20260826030000_wex_shared_carrier.sql",
+  ), "utf8");
+  expect(sharedCarrierSql).toContain("create or replace function private.normalized_export_vehicle_weigh_lines");
+  expect(sharedCarrierSql).toContain("v_shared_carrier_id");
+  expect(sharedCarrierSql).toContain("v_shared_carrier_name");
+  expect(sharedCarrierSql).toContain("p_lines->0->>'carrierId'");
 });
 
 test("routes expose only the frozen active WEX contract", () => {

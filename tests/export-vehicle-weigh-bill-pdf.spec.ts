@@ -38,8 +38,8 @@ const details = {
       id: "line-2",
       sequenceNo: 2,
       vehicleRegistration: "กข 5678",
-      carrierId: null,
-      carrierName: null,
+      carrierId: "carrier-2",
+      carrierName: "ผู้ขนส่งหางพ่วงที่ต้องถูกละเว้น",
       inboundAt: "2026-08-24T08:10:00.000Z",
       inboundWeight: 900,
       outboundAt: "2026-08-24T09:20:00.000Z",
@@ -62,8 +62,8 @@ test("builds a Bangkok 80mm WEX receipt with both vehicles and reserved REX weig
     ["น้ำหนักคงเหลือบนรถ", "120.00 กก."],
   ]);
   expect(presentation.lines.map((line) => line.vehicleRegistration)).toEqual(["กข 1234", "กข 5678"]);
-  expect(presentation.lines.map((line) => line.vehicleRoleLabel)).toEqual(["รถบรรทุก", "รถพ่วง"]);
-  expect(presentation.lines.map((line) => line.carrierNameText)).toEqual(["บริษัทขนส่งทดสอบ", "—"]);
+  expect(presentation.lines.map((line) => line.vehicleRoleLabel)).toEqual(["รถบรรทุก", "หางพ่วง"]);
+  expect(presentation.lines.map((line) => line.carrierNameText)).toEqual(["บริษัทขนส่งทดสอบ", "บริษัทขนส่งทดสอบ"]);
   expect(exportVehicleWeighBillPdfFilename(details)).toBe("LanFlow-export-vehicle-weigh-bill-WEX-20260824-001-80mm.pdf");
   expect(exportVehicleWeighBillShareTitle(details)).toContain("WEX-20260824-001 · สาขาทดสอบ WEX");
 
@@ -72,11 +72,16 @@ test("builds a Bangkok 80mm WEX receipt with both vehicles and reserved REX weig
   expect(html).toContain("กข 1234");
   expect(html).toContain("กข 5678");
   expect(html).toContain("รถบรรทุก · กข 1234");
-  expect(html).toContain("รถพ่วง · กข 5678");
-  expect(html).toContain("บริษัทขนส่งทดสอบ");
-  expect(html).toContain("ผู้ขนส่ง</span><strong>—");
+  expect(html).toContain("หางพ่วง · กข 5678");
+  expect(html.match(/บริษัทขนส่งทดสอบ/g)).toHaveLength(2);
+  expect(html).not.toContain("ผู้ขนส่งหางพ่วงที่ต้องถูกละเว้น");
   expect(html).toContain("REX-20260823-001");
   expect(html).toContain("น้ำหนักคงเหลือบนรถ");
+  expect(html.indexOf("น้ำหนักสุทธิรถรวม")).toBeGreaterThan(html.indexOf("รายการ REX ที่จอง"));
+  expect(html).toContain("height: 5.4cm");
+  expect(html).toContain("พื้นที่วางบัตรประชาชน");
+  expect(html).toContain("ผู้ขับ");
+  expect(html).toContain("ผู้ชั่ง (ผู้ออกบิล)");
 });
 
 test("keeps a manual carrier snapshot separate from a selected carrier ID", () => {
@@ -122,4 +127,9 @@ test("renders an inbound-only WEX as waiting for outbound weighing", () => {
   const html = renderExportVehicleWeighBillHtml(pendingDetails);
   expect(html).toContain("รอชั่งออก");
   expect(html).not.toContain("Invalid Date");
+  expect(html).toContain("น้ำหนักสุทธิรถรวม");
+  expect(html).not.toContain("รายการ REX ที่จอง");
+  expect(html).not.toContain("น้ำหนัก REX ที่จอง");
+  expect(html).not.toContain("น้ำหนักคงเหลือบนรถ");
+  expect(html.indexOf("น้ำหนักสุทธิรถรวม")).toBeGreaterThan(html.indexOf("รายการชั่งรถ"));
 });

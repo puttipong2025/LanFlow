@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select extensions.plan(51);
+select extensions.plan(54);
 
 select extensions.has_table('public', 'export_vehicle_weigh_bills', 'WEX parent exists');
 select extensions.has_table('public', 'export_vehicle_weigh_lines', 'WEX vehicle lines exist');
@@ -195,6 +195,44 @@ select extensions.throws_ok(
   'P0001',
   'WEX_CARRIER_INELIGIBLE: เลือกได้เฉพาะผู้ขนส่งที่ใช้งานอยู่และมีสิทธิ์ในสาขานี้',
   'an inactive carrier is rejected'
+);
+
+create temporary table wex_shared_carrier on commit drop as
+select public.create_export_vehicle_weigh_bill(
+  '81000000-0000-4000-8000-000000000001',
+  '[{"vehicleRegistration":"SHARED-TRUCK","carrierId":"84000000-0000-4000-8000-000000000001","carrierName":"ignored truck","inboundAt":"2026-08-24T01:00:00Z","inboundWeight":100,"outboundAt":"2026-08-24T02:00:00Z","outboundWeight":600},{"vehicleRegistration":"SHARED-TAIL","carrierId":"84000000-0000-4000-8000-000000000002","carrierName":"ignored tail","inboundAt":"2026-08-24T01:00:00Z","inboundWeight":200,"outboundAt":"2026-08-24T02:00:00Z","outboundWeight":700}]',
+  array[]::uuid[]
+) as response;
+
+select extensions.ok(
+  not exists (
+    select 1
+    from public.export_vehicle_weigh_lines
+    where wex_id = (select (response->>'id')::uuid from wex_shared_carrier)
+      and (
+        carrier_id is distinct from '84000000-0000-4000-8000-000000000001'::uuid
+        or carrier_name is distinct from 'ผู้ขนส่งสาขาต้นฉบับ'
+      )
+  ),
+  'create canonicalizes every WEX line to the truck carrier snapshot'
+);
+select extensions.is(
+  public.update_export_vehicle_weigh_bill(
+    (select (response->>'id')::uuid from wex_shared_carrier), 1,
+    '[{"vehicleRegistration":"SHARED-TRUCK","carrierId":null,"carrierName":"   ","inboundAt":"2026-08-24T01:00:00Z","inboundWeight":100,"outboundAt":"2026-08-24T02:00:00Z","outboundWeight":600},{"vehicleRegistration":"SHARED-TAIL","carrierId":"84000000-0000-4000-8000-000000000002","carrierName":"must be ignored","inboundAt":"2026-08-24T01:00:00Z","inboundWeight":200,"outboundAt":"2026-08-24T02:00:00Z","outboundWeight":700}]',
+    array[]::uuid[]
+  )->>'revision',
+  '2',
+  'update accepts a blank truck carrier while ignoring the tail-trailer carrier input'
+);
+select extensions.ok(
+  not exists (
+    select 1
+    from public.export_vehicle_weigh_lines
+    where wex_id = (select (response->>'id')::uuid from wex_shared_carrier)
+      and (carrier_id is not null or carrier_name is not null)
+  ),
+  'update canonicalizes every WEX line to the blank truck carrier snapshot'
 );
 
 create temporary table wex_pending on commit drop as

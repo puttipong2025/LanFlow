@@ -4277,6 +4277,8 @@ CREATE OR REPLACE FUNCTION "private"."normalized_export_vehicle_weigh_lines"("p_
 declare
   v_count integer;
   v_unique_plates integer;
+  v_shared_carrier_id uuid;
+  v_shared_carrier_name text;
 begin
   if coalesce(jsonb_typeof(p_lines), 'null') <> 'array' then
     raise exception 'WEX_INVALID_LINES: ต้องมีรายการชั่งรถ 1–2 คัน';
@@ -4318,42 +4320,32 @@ begin
     raise exception 'WEX_INVALID_LINES: ทะเบียนรถไม่ถูกต้องหรือซ้ำกัน';
   end if;
 
-  perform s.id
-  from public.transport_staffs s
-  join (
-    select distinct nullif(btrim(line.value->>'carrierId'), '')::uuid as id
-    from jsonb_array_elements(p_lines) line(value)
-    where nullif(btrim(line.value->>'carrierId'), '') is not null
-  ) selected on selected.id = s.id
-  order by s.id
-  for share of s;
+  v_shared_carrier_id := nullif(btrim(p_lines->0->>'carrierId'), '')::uuid;
+  if v_shared_carrier_id is not null then
+    select s.id, s.main_name
+    into v_shared_carrier_id, v_shared_carrier_name
+    from public.transport_staffs s
+    where s.id = v_shared_carrier_id
+      and s.record_status = 'active'
+      and (s.default_location_id is null or s.default_location_id = p_location_id)
+    for share of s;
 
-  if exists (
-    select 1
-    from jsonb_array_elements(p_lines) line(value)
-    left join public.transport_staffs s
-      on s.id = nullif(btrim(line.value->>'carrierId'), '')::uuid
-    where nullif(btrim(line.value->>'carrierId'), '') is not null
-      and (
-        s.id is null
-        or not (
-          s.record_status = 'active'
-          and (s.default_location_id is null or s.default_location_id = p_location_id)
-        )
-      )
-  ) then
-    raise exception 'WEX_CARRIER_INELIGIBLE: เลือกได้เฉพาะผู้ขนส่งที่ใช้งานอยู่และมีสิทธิ์ในสาขานี้';
+    if not found then
+      raise exception 'WEX_CARRIER_INELIGIBLE: เลือกได้เฉพาะผู้ขนส่งที่ใช้งานอยู่และมีสิทธิ์ในสาขานี้';
+    end if;
+  else
+    v_shared_carrier_name := nullif(
+      regexp_replace(btrim(p_lines->0->>'carrierName'), '\s+', ' ', 'g'),
+      ''
+    );
   end if;
 
   return query
   select
     line.ordinality::integer,
     regexp_replace(btrim(line.value->>'vehicleRegistration'), '\s+', ' ', 'g'),
-    s.id,
-    case
-      when s.id is not null then s.main_name
-      else nullif(regexp_replace(btrim(line.value->>'carrierName'), '\s+', ' ', 'g'), '')
-    end,
+    v_shared_carrier_id,
+    v_shared_carrier_name,
     (line.value->>'inboundAt')::timestamptz,
     round((line.value->>'inboundWeight')::numeric, 2),
     case
@@ -4362,8 +4354,6 @@ begin
     end,
     round((line.value->>'outboundWeight')::numeric, 2)
   from jsonb_array_elements(p_lines) with ordinality as line(value, ordinality)
-  left join public.transport_staffs s
-    on s.id = nullif(btrim(line.value->>'carrierId'), '')::uuid
   where round((line.value->>'inboundWeight')::numeric, 2) > 0
     and round((line.value->>'outboundWeight')::numeric, 2) >= 0
     and (

@@ -192,6 +192,12 @@ export function ExportVehicleWeighBillFormModal({
     if (!online || saving) return;
     const normalizedLines: ExportVehicleWeighBillLineInput[] = [];
     const seenPlates = new Set<string>();
+    const sharedCarrierName = lines[0].carrierName.trim();
+    const selectedCarrier = lines[0].carrierId
+      ? carriers.find((carrier) => carrier.carrierId === lines[0].carrierId)
+      : null;
+    const selectedCarrierIsCurrent = selectedCarrier?.carrierName === sharedCarrierName;
+    const sharedCarrierId = selectedCarrierIsCurrent ? selectedCarrier.carrierId : null;
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
       const vehicleRole = exportVehicleRoleLabel(index + 1);
@@ -229,15 +235,10 @@ export function ExportVehicleWeighBillFormModal({
         setError(`เวลาออกของ${vehicleRole}ต้องหลังเวลาเข้า`);
         return;
       }
-      const carrierName = line.carrierName.trim();
-      const selectedCarrier = line.carrierId
-        ? carriers.find((carrier) => carrier.carrierId === line.carrierId)
-        : null;
-      const selectedCarrierIsCurrent = selectedCarrier?.carrierName === carrierName;
       normalizedLines.push({
         vehicleRegistration,
-        carrierId: selectedCarrierIsCurrent ? selectedCarrier.carrierId : null,
-        carrierName: carrierName || null,
+        carrierId: sharedCarrierId,
+        carrierName: sharedCarrierName || null,
         inboundAt,
         inboundWeight,
         outboundAt,
@@ -267,7 +268,7 @@ export function ExportVehicleWeighBillFormModal({
   return (
     <ModalShell
       title={isEditing ? `แก้ไข ${details?.wexNo}` : "สร้างบิลรถส่งออก"}
-      subtitle={`${locationName} · ใช้งานได้เมื่อออนไลน์เท่านั้น · รถบรรทุก 1 คัน และรถพ่วงไม่บังคับ`}
+      subtitle={`${locationName} · ใช้งานได้เมื่อออนไลน์เท่านั้น · รถบรรทุก 1 คัน และหางพ่วงไม่บังคับ`}
       onClose={onClose}
       closeDisabled={saving}
       closeOnEscape
@@ -288,11 +289,11 @@ export function ExportVehicleWeighBillFormModal({
           <div className="flex flex-wrap items-end justify-between gap-2">
             <div>
               <h3 id="wex-vehicle-lines-title" className="font-bold text-ink">รายการชั่งรถ</h3>
-              <p className="text-pretty text-sm text-ink/60">หากมีรถพ่วง ทะเบียนต้องไม่ซ้ำกับรถบรรทุก; ระหว่างรอชั่งออกให้ใช้น้ำหนักขาออก 0 และเว้นเวลาออกไว้</p>
+              <p className="text-pretty text-sm text-ink/60">หากมีหางพ่วง ทะเบียนต้องไม่ซ้ำกับรถบรรทุก; ระหว่างรอชั่งออกให้ใช้น้ำหนักขาออก 0 และเว้นเวลาออกไว้</p>
             </div>
             {lines.length < 2 && (
               <button type="button" onClick={() => setLines((current) => [...current, emptyLine()])} className="focus-ring inline-flex h-10 items-center gap-2 rounded-md bg-river px-3 text-sm font-semibold text-white">
-                <Plus size={16} aria-hidden="true" /> เพิ่มรถพ่วง
+                <Plus size={16} aria-hidden="true" /> เพิ่มหางพ่วง
               </button>
             )}
           </div>
@@ -310,11 +311,11 @@ export function ExportVehicleWeighBillFormModal({
                 <legend className="px-1 text-sm font-bold text-ink">{vehicleRole}</legend>
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
                   <label className="block lg:col-span-1"><span className="mb-1 block text-sm font-semibold text-ink/70">ทะเบียนรถ</span><input required aria-label={`ทะเบียน${vehicleRole}`} value={line.vehicleRegistration} onChange={(event) => updateLine(index, { vehicleRegistration: event.target.value })} className="focus-ring h-11 w-full rounded-md border border-black/15 bg-white px-3" /></label>
-                  <label className="relative block"><span className="mb-1 block text-sm font-semibold text-ink/70">ผู้ขนส่ง (ไม่บังคับ)</span><input role="combobox" aria-label={`ผู้ขนส่ง${vehicleRole}`} aria-autocomplete="list" aria-expanded={isCarrierListboxOpen && matchingCarriers.length > 0} aria-controls={isCarrierListboxOpen ? carrierListboxId : undefined} aria-activedescendant={isCarrierListboxOpen && activeCarrier ? `${carrierListboxId}-${activeCarrier.carrierId}` : undefined} value={line.carrierName} onFocus={() => { setCarrierListboxIndex(index); setActiveCarrierIndex(0); }} onBlur={(event) => { if (!event.currentTarget.parentElement?.contains(event.relatedTarget)) setCarrierListboxIndex(null); }} onChange={(event) => updateCarrierText(index, event.target.value)} onKeyDown={(event) => { if (event.key === "ArrowDown" && matchingCarriers.length > 0) { event.preventDefault(); setCarrierListboxIndex(index); setActiveCarrierIndex((current) => (current + 1) % matchingCarriers.length); } else if (event.key === "ArrowUp" && matchingCarriers.length > 0) { event.preventDefault(); setCarrierListboxIndex(index); setActiveCarrierIndex((current) => (current - 1 + matchingCarriers.length) % matchingCarriers.length); } else if (event.key === "Enter" && isCarrierListboxOpen && activeCarrier) { event.preventDefault(); selectCarrier(index, activeCarrier); } else if (event.key === "Escape") { setCarrierListboxIndex(null); } }} autoComplete="off" placeholder="เลือกจากรายชื่อหรือพิมพ์เอง" className="focus-ring h-11 w-full rounded-md border border-black/15 bg-white px-3" />{isCarrierListboxOpen && matchingCarriers.length > 0 && <ul id={carrierListboxId} role="listbox" aria-label={`รายชื่อผู้ขนส่ง${vehicleRole}`} className="absolute z-10 mt-1 max-h-52 w-full overflow-y-auto rounded-md border border-black/15 bg-white py-1 shadow-lg">{matchingCarriers.map((carrier, carrierIndex) => <li key={carrier.carrierId} id={`${carrierListboxId}-${carrier.carrierId}`} role="option" aria-selected={line.carrierId === carrier.carrierId} onMouseDown={(event) => event.preventDefault()} onClick={() => selectCarrier(index, carrier)} className={`cursor-pointer px-3 py-2 text-sm ${carrierIndex === activeCarrierIndex ? "bg-field text-ink" : "text-ink hover:bg-field"}`}><span className="block font-semibold">{carrier.carrierName}</span><span className="block text-xs text-ink/60">รหัส {carrierReference(carrier.carrierId)}</span></li>)}</ul>}</label>
+                  {index === 0 ? <label className="relative block"><span className="mb-1 block text-sm font-semibold text-ink/70">ผู้ขนส่ง (ไม่บังคับ)</span><input role="combobox" aria-label={`ผู้ขนส่ง${vehicleRole}`} aria-autocomplete="list" aria-expanded={isCarrierListboxOpen && matchingCarriers.length > 0} aria-controls={isCarrierListboxOpen ? carrierListboxId : undefined} aria-activedescendant={isCarrierListboxOpen && activeCarrier ? `${carrierListboxId}-${activeCarrier.carrierId}` : undefined} value={line.carrierName} onFocus={() => { setCarrierListboxIndex(index); setActiveCarrierIndex(0); }} onBlur={(event) => { if (!event.currentTarget.parentElement?.contains(event.relatedTarget)) setCarrierListboxIndex(null); }} onChange={(event) => updateCarrierText(index, event.target.value)} onKeyDown={(event) => { if (event.key === "ArrowDown" && matchingCarriers.length > 0) { event.preventDefault(); setCarrierListboxIndex(index); setActiveCarrierIndex((current) => (current + 1) % matchingCarriers.length); } else if (event.key === "ArrowUp" && matchingCarriers.length > 0) { event.preventDefault(); setCarrierListboxIndex(index); setActiveCarrierIndex((current) => (current - 1 + matchingCarriers.length) % matchingCarriers.length); } else if (event.key === "Enter" && isCarrierListboxOpen && activeCarrier) { event.preventDefault(); selectCarrier(index, activeCarrier); } else if (event.key === "Escape") { setCarrierListboxIndex(null); } }} autoComplete="off" placeholder="เลือกจากรายชื่อหรือพิมพ์เอง" className="focus-ring h-11 w-full rounded-md border border-black/15 bg-white px-3" />{isCarrierListboxOpen && matchingCarriers.length > 0 && <ul id={carrierListboxId} role="listbox" aria-label={`รายชื่อผู้ขนส่ง${vehicleRole}`} className="absolute z-10 mt-1 max-h-52 w-full overflow-y-auto rounded-md border border-black/15 bg-white py-1 shadow-lg">{matchingCarriers.map((carrier, carrierIndex) => <li key={carrier.carrierId} id={`${carrierListboxId}-${carrier.carrierId}`} role="option" aria-selected={line.carrierId === carrier.carrierId} onMouseDown={(event) => event.preventDefault()} onClick={() => selectCarrier(index, carrier)} className={`cursor-pointer px-3 py-2 text-sm ${carrierIndex === activeCarrierIndex ? "bg-field text-ink" : "text-ink hover:bg-field"}`}><span className="block font-semibold">{carrier.carrierName}</span><span className="block text-xs text-ink/60">รหัส {carrierReference(carrier.carrierId)}</span></li>)}</ul>}</label> : <label className="block"><span className="mb-1 block text-sm font-semibold text-ink/70">ผู้ขนส่ง (ตามรถบรรทุก)</span><input aria-label={`ผู้ขนส่ง${vehicleRole}`} value={lines[0].carrierName} readOnly className="focus-ring h-11 w-full rounded-md border border-black/15 bg-field px-3 text-ink/70" /></label>}
                   <label className="block"><span className="mb-1 block text-sm font-semibold text-ink/70">เวลาเข้า</span><input required type="datetime-local" value={line.inboundAt} onChange={(event) => updateLine(index, { inboundAt: event.target.value })} className="focus-ring h-11 w-full rounded-md border border-black/15 bg-white px-3" /></label>
                   <label className="block"><span className="mb-1 block text-sm font-semibold text-ink/70">น้ำหนักขาเข้า</span><input required aria-label={`น้ำหนักขาเข้า${vehicleRole}`} type="number" min="0" step="0.01" value={line.inboundWeight} onFocus={() => clearZeroWeight(index, "inboundWeight")} onBlur={() => restoreBlankWeight(index, "inboundWeight")} onChange={(event) => updateLine(index, { inboundWeight: event.target.value })} className="focus-ring h-11 w-full rounded-md border border-black/15 bg-white px-3 tabular-nums" /></label>
                   <label className="block"><span className="mb-1 block text-sm font-semibold text-ink/70">เวลาออก (เมื่อชั่งออก)</span><input required={Number(line.outboundWeight) > 0} type="datetime-local" value={line.outboundAt} onChange={(event) => updateLine(index, { outboundAt: event.target.value })} className="focus-ring h-11 w-full rounded-md border border-black/15 bg-white px-3" /></label>
-                  <div className="flex gap-2"><label className="block min-w-0 flex-1"><span className="mb-1 block text-sm font-semibold text-ink/70">น้ำหนักขาออก</span><input required aria-label={`น้ำหนักขาออก${vehicleRole}`} type="number" min="0" step="0.01" value={line.outboundWeight} onFocus={() => clearZeroWeight(index, "outboundWeight")} onBlur={() => restoreBlankWeight(index, "outboundWeight")} onChange={(event) => { const outboundWeight = event.target.value; updateLine(index, { outboundWeight, ...(!line.outboundAt && Number(outboundWeight) > 0 ? { outboundAt: defaultOutboundAt(line.inboundAt) } : {}) }); }} className="focus-ring h-11 w-full rounded-md border border-black/15 bg-white px-3 tabular-nums" /></label>{index === 1 && <button type="button" aria-label="ลบรถพ่วง" onClick={() => setLines((current) => current.filter((_, lineIndex) => lineIndex !== index))} className="focus-ring mt-6 inline-flex size-11 shrink-0 items-center justify-center rounded-md bg-actionSecondary text-white"><Minus size={16} aria-hidden="true" /></button>}</div>
+                  <div className="flex gap-2"><label className="block min-w-0 flex-1"><span className="mb-1 block text-sm font-semibold text-ink/70">น้ำหนักขาออก</span><input required aria-label={`น้ำหนักขาออก${vehicleRole}`} type="number" min="0" step="0.01" value={line.outboundWeight} onFocus={() => clearZeroWeight(index, "outboundWeight")} onBlur={() => restoreBlankWeight(index, "outboundWeight")} onChange={(event) => { const outboundWeight = event.target.value; updateLine(index, { outboundWeight, ...(!line.outboundAt && Number(outboundWeight) > 0 ? { outboundAt: defaultOutboundAt(line.inboundAt) } : {}) }); }} className="focus-ring h-11 w-full rounded-md border border-black/15 bg-white px-3 tabular-nums" /></label>{index === 1 && <button type="button" aria-label="ลบหางพ่วง" onClick={() => setLines((current) => current.filter((_, lineIndex) => lineIndex !== index))} className="focus-ring mt-6 inline-flex size-11 shrink-0 items-center justify-center rounded-md bg-actionSecondary text-white"><Minus size={16} aria-hidden="true" /></button>}</div>
                 </div>
                 <p className={netWeight > 0 ? "mt-2 text-pretty text-sm font-semibold text-leaf" : "mt-2 text-pretty text-sm font-semibold text-ink/55"}>{Number(line.outboundWeight) === 0 ? "สถานะ: รอชั่งออก" : `น้ำหนักสุทธิ${vehicleRole}: ${formatExportVehicleWeighBillNumber(netWeight)} กก.`}</p>
               </fieldset>

@@ -40,7 +40,7 @@ const sameNameCarriers = [
   { carrierId: "00000000-0000-4000-8000-000000000102", carrierName: "บริษัทขนส่ง WEX" },
 ];
 
-test("uses truck and trailer roles with Rubber Bill focus-zero weights", async ({ page }) => {
+test("uses truck and tail-trailer roles with shared carrier and Rubber Bill focus-zero weights", async ({ page }) => {
   await page.route("**/api/lanflow/export-vehicle-weigh-bills**", async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname.endsWith("/options")) {
@@ -57,6 +57,7 @@ test("uses truck and trailer roles with Rubber Bill focus-zero weights", async (
 
   const dialog = page.getByRole("dialog", { name: "สร้างบิลรถส่งออก" });
   const truck = dialog.getByRole("group", { name: "รถบรรทุก" });
+  const truckCarrier = truck.getByRole("combobox", { name: "ผู้ขนส่งรถบรรทุก" });
   const truckInbound = truck.getByRole("spinbutton", { name: "น้ำหนักขาเข้ารถบรรทุก" });
   const truckOutbound = truck.getByRole("spinbutton", { name: "น้ำหนักขาออกรถบรรทุก" });
   await expect(truckInbound).toHaveValue("0");
@@ -66,10 +67,18 @@ test("uses truck and trailer roles with Rubber Bill focus-zero weights", async (
   await truckInbound.blur();
   await expect(truckInbound).toHaveValue("0");
 
-  await dialog.getByRole("button", { name: "เพิ่มรถพ่วง" }).click();
-  const trailer = dialog.getByRole("group", { name: "รถพ่วง" });
-  const trailerInbound = trailer.getByRole("spinbutton", { name: "น้ำหนักขาเข้ารถพ่วง" });
-  const trailerOutbound = trailer.getByRole("spinbutton", { name: "น้ำหนักขาออกรถพ่วง" });
+  await truckCarrier.fill("ผู้ขนส่งเที่ยวแรก");
+  await dialog.getByRole("button", { name: "เพิ่มหางพ่วง" }).click();
+  const trailer = dialog.getByRole("group", { name: "หางพ่วง" });
+  const trailerCarrier = trailer.getByRole("textbox", { name: "ผู้ขนส่งหางพ่วง" });
+  const trailerInbound = trailer.getByRole("spinbutton", { name: "น้ำหนักขาเข้าหางพ่วง" });
+  const trailerOutbound = trailer.getByRole("spinbutton", { name: "น้ำหนักขาออกหางพ่วง" });
+  await expect(trailerCarrier).toHaveAttribute("readonly", "");
+  await expect(trailerCarrier).toHaveValue("ผู้ขนส่งเที่ยวแรก");
+  await truckCarrier.fill("ผู้ขนส่งเที่ยวแก้ไข");
+  await expect(trailerCarrier).toHaveValue("ผู้ขนส่งเที่ยวแก้ไข");
+  await truckCarrier.fill("");
+  await expect(trailerCarrier).toHaveValue("");
   await expect(trailerInbound).toHaveValue("0");
   await expect(trailerOutbound).toHaveValue("0");
   await trailerOutbound.focus();
@@ -77,7 +86,7 @@ test("uses truck and trailer roles with Rubber Bill focus-zero weights", async (
   await trailerOutbound.blur();
   await expect(trailerOutbound).toHaveValue("0");
   await expect(truck.getByRole("button", { name: /ลบ/ })).toHaveCount(0);
-  await expect(trailer.getByRole("button", { name: "ลบรถพ่วง" })).toBeVisible();
+  await expect(trailer.getByRole("button", { name: "ลบหางพ่วง" })).toBeVisible();
 });
 
 test("keeps purchase bills as the default view and creates an online WEX with an accessible validated form", async ({ page }) => {
@@ -233,16 +242,19 @@ test("submits a manual carrier snapshot and a blank carrier", async ({ page }) =
   await dialog.getByRole("combobox", { name: "ผู้ขนส่งรถบรรทุก" }).fill("นายสมชาย ขนส่งเอง");
   await dialog.getByRole("spinbutton", { name: "น้ำหนักขาเข้ารถบรรทุก" }).fill("1000");
   await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกรถบรรทุก" }).fill("1400");
-  await dialog.getByRole("button", { name: "เพิ่มรถพ่วง" }).click();
-  await dialog.getByRole("textbox", { name: "ทะเบียนรถพ่วง" }).fill("กข 2000");
-  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาเข้ารถพ่วง" }).fill("2000");
-  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกรถพ่วง" }).fill("2300");
+  await dialog.getByRole("button", { name: "เพิ่มหางพ่วง" }).click();
+  await dialog.getByRole("textbox", { name: "ทะเบียนหางพ่วง" }).fill("กข 2000");
+  const trailerCarrier = dialog.getByRole("textbox", { name: "ผู้ขนส่งหางพ่วง" });
+  await expect(trailerCarrier).toHaveAttribute("readonly", "");
+  await expect(trailerCarrier).toHaveValue("นายสมชาย ขนส่งเอง");
+  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาเข้าหางพ่วง" }).fill("2000");
+  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกหางพ่วง" }).fill("2300");
   await dialog.getByRole("button", { name: "บันทึก WEX" }).click();
 
   await expect.poll(() => writes).toEqual([expect.objectContaining({
     lines: [
       expect.objectContaining({ carrierId: null, carrierName: "นายสมชาย ขนส่งเอง" }),
-      expect.objectContaining({ carrierId: null, carrierName: null }),
+      expect.objectContaining({ carrierId: null, carrierName: "นายสมชาย ขนส่งเอง" }),
     ],
   })]);
 });
@@ -274,10 +286,19 @@ test("submits the second same-name carrier with ArrowDown and Enter", async ({ p
   await carrierInput.press("Enter");
   await dialog.getByRole("spinbutton", { name: "น้ำหนักขาเข้ารถบรรทุก" }).fill("1000");
   await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกรถบรรทุก" }).fill("1400");
+  await dialog.getByRole("button", { name: "เพิ่มหางพ่วง" }).click();
+  await dialog.getByRole("textbox", { name: "ทะเบียนหางพ่วง" }).fill("กข 3001");
+  await expect(dialog.getByRole("textbox", { name: "ผู้ขนส่งหางพ่วง" }))
+    .toHaveValue(sameNameCarriers[1].carrierName);
+  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาเข้าหางพ่วง" }).fill("800");
+  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกหางพ่วง" }).fill("900");
   await dialog.getByRole("button", { name: "บันทึก WEX" }).click();
 
   await expect.poll(() => writes).toEqual([expect.objectContaining({
-    lines: [expect.objectContaining({ carrierId: sameNameCarriers[1].carrierId, carrierName: sameNameCarriers[1].carrierName })],
+    lines: [
+      expect.objectContaining({ carrierId: sameNameCarriers[1].carrierId, carrierName: sameNameCarriers[1].carrierName }),
+      expect.objectContaining({ carrierId: sameNameCarriers[1].carrierId, carrierName: sameNameCarriers[1].carrierName }),
+    ],
   })]);
 });
 
