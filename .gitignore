@@ -41,3 +41,4 @@ page.html
 
 # Production database backups stay local and must never be committed.
 supabase/cloud-backups/
+.vercel
