@@ -1,177 +1,63 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAuth } from "@/lib/server/auth";
+import { hasSystemManagerAccess, requireAuth } from "@/lib/server/auth";
 import type { IncomeExpense } from "@/types";
-import { bangkokDateWindow } from "@/lib/bangkok-date";
-import { formatCurrency } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
 
-const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const MODES = new Set(["latest", "pending_approval"]);
+
+function normalizeSearch(value: string | null) {
+  return (value ?? "").trim().replace(/\s+/gu, " ");
+}
 
 export async function GET(request: NextRequest) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
 
-  const { searchParams } = request.nextUrl;
-  const defaultWindow = bangkokDateWindow(90);
-  const locationId = searchParams.get("locationId");
-  const from = searchParams.get("from") ?? defaultWindow.from;
-  const to = searchParams.get("to") ?? defaultWindow.to;
-  const pageSize = Math.min(Math.max(Number(searchParams.get("pageSize") ?? 100), 1), 100);
-  const cursor = searchParams.get("cursor");
+  const locationId = request.nextUrl.searchParams.get("locationId");
+  const mode = request.nextUrl.searchParams.get("mode") ?? "latest";
+  const search = normalizeSearch(request.nextUrl.searchParams.get("search"));
+  const cursor = request.nextUrl.searchParams.get("cursor");
 
-  if (!locationId || !result.auth.locationIds.includes(locationId)) {
-    return NextResponse.json({ error: "ไม่มีสิทธิ์เข้าถึงสาขา" }, { status: 403 });
-  }
-  if (!DATE.test(from) || !DATE.test(to) || from > to || !Number.isInteger(pageSize)) {
+  if (!locationId || !UUID.test(locationId)) {
     return NextResponse.json({ error: "พารามิเตอร์ feed ไม่ถูกต้อง" }, { status: 400 });
   }
-
-  let cursorDate: string | null = null;
-  let cursorKey: string | null = null;
-  if (cursor) {
-    try {
-      [cursorDate, cursorKey] = Buffer.from(cursor, "base64").toString("utf8").split("|", 2);
-    } catch {
-      return NextResponse.json({ error: "cursor ไม่ถูกต้อง" }, { status: 400 });
-    }
-    if (!cursorDate || !cursorKey || !DATE.test(cursorDate)) {
-      return NextResponse.json({ error: "cursor ไม่ถูกต้อง" }, { status: 400 });
-    }
+  if (!MODES.has(mode) || search.length > 200 || (cursor?.length ?? 0) > 4096) {
+    return NextResponse.json({ error: "พารามิเตอร์ feed ไม่ถูกต้อง" }, { status: 400 });
+  }
+  if (!hasSystemManagerAccess(result.auth) && !result.auth.locationIds.includes(locationId)) {
+    return NextResponse.json({ error: "ไม่มีสิทธิ์เข้าถึงสาขา" }, { status: 403 });
+  }
+  if (mode === "pending_approval" && !hasSystemManagerAccess(result.auth)) {
+    return NextResponse.json({ error: "ไม่มีสิทธิ์เข้าถึงคิวอนุมัติ" }, { status: 403 });
   }
 
-  const { data, error } = await result.supabase.rpc("get_income_expense_feed", {
+  const { data, error } = await result.supabase.rpc("get_income_expense_operational_feed", {
     p_location_id: locationId,
-    p_from_date: from,
-    p_to_date: to,
-    p_cursor_date: cursorDate,
-    p_cursor_key: cursorKey,
-    p_page_size: pageSize,
+    p_mode: mode,
+    p_search: search,
+    p_cursor: cursor,
   });
 
   if (error) {
-    console.error("Income/Expense feed error:", error.message);
+    console.error("Income/Expense operational feed error:", error.message);
+    if (/invalid cursor|cursor scope mismatch/i.test(error.message)) {
+      return NextResponse.json({ error: "cursor ไม่ถูกต้อง" }, { status: 400 });
+    }
     return NextResponse.json({ error: "โหลดรายการรับ-จ่ายไม่สำเร็จ" }, { status: 500 });
   }
 
-  const payload = (data ?? { rows: [], nextCursor: null }) as {
+  const payload = (data ?? {}) as Partial<{
     rows: IncomeExpense[];
     nextCursor: string | null;
-  };
-  const directIds = payload.rows
-    .filter((row) => !row.relationSourceType && UUID.test(row.id))
-    .map((row) => row.id);
-
-  if (directIds.length > 0) {
-    const [{ data: locks, error: lockError }, { data: saleLines, error: saleLineError }] = await Promise.all([
-      result.supabase
-      .from("income_expense")
-      .select("id, report_lock_no")
-      .in("id", directIds),
-      result.supabase
-        .from("income_expense_sale_lines")
-        .select("income_expense_id")
-        .in("income_expense_id", directIds),
-    ]);
-    if (lockError) {
-      console.error("Income/Expense report lock error:", lockError.message);
-      return NextResponse.json({ error: "โหลดสถานะล็อกรายงานไม่สำเร็จ" }, { status: 500 });
-    }
-    if (saleLineError) {
-      console.error("Income/Expense sale line count error:", saleLineError.message);
-      return NextResponse.json({ error: "โหลดจำนวนรายการบิลขายไม่สำเร็จ" }, { status: 500 });
-    }
-
-    const saleLineCountById = new Map<string, number>();
-    for (const line of saleLines ?? []) {
-      saleLineCountById.set(
-        line.income_expense_id,
-        (saleLineCountById.get(line.income_expense_id) ?? 0) + 1
-      );
-    }
-
-    const metadataById = new Map(
-      (locks ?? []).map((row) => [row.id, {
-        reportLockNo: row.report_lock_no as string | null,
-        saleLineCount: saleLineCountById.get(row.id),
-      }])
-    );
-    payload.rows = payload.rows.map((row) => {
-      const metadata = metadataById.get(row.id);
-      if (!metadata) return row;
-      return {
-        ...row,
-        saleLineCount: metadata.saleLineCount,
-        ...(metadata.reportLockNo && {
-          reportLockNo: metadata.reportLockNo,
-          relationLockReason: `ล็อกโดยรายงาน ${metadata.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`,
-        }),
-      };
-    });
-  }
-
-  const cashIncomeSourceIds = Array.from(new Set(
-    payload.rows
-      .filter((row) => row.id.startsWith("cash-transfer-income:"))
-      .map((row) => row.relationSourceLocationId)
-      .filter((id): id is string => Boolean(id))
-  ));
-
-  if (cashIncomeSourceIds.length > 0) {
-    const { data: sourceLocations, error: locationError } = await result.supabase
-      .from("locations")
-      .select("id, name")
-      .in("id", cashIncomeSourceIds);
-    if (locationError) {
-      console.error("Cash transfer source location error:", locationError.message);
-      return NextResponse.json({ error: "โหลดชื่อสาขาต้นทางไม่สำเร็จ" }, { status: 500 });
-    }
-
-    const sourceNameById = new Map(
-      (sourceLocations ?? []).map((location) => [location.id, location.name])
-    );
-    payload.rows = payload.rows.map((row) => {
-      if (!row.id.startsWith("cash-transfer-income:") || !row.relationSourceLocationId) return row;
-      const sourceName = sourceNameById.get(row.relationSourceLocationId);
-      return sourceName ? { ...row, title: `รับโอนเงินสดจาก ${sourceName}` } : row;
-    });
-  }
-
-  const cashTransferIds = Array.from(new Set(
-    payload.rows
-      .map((row) => row.relationSourceId)
-      .filter((id): id is string => Boolean(id?.startsWith("cash:")))
-      .map((id) => id.slice(5))
-      .filter((id) => UUID.test(id))
-  ));
-
-  if (cashTransferIds.length > 0) {
-    const { data: details, error: detailError } = await result.supabase
-      .from("money_transfer_cash_details")
-      .select("transfer_id, cash_status, difference_total")
-      .in("transfer_id", cashTransferIds);
-    if (detailError) {
-      console.error("Cash transfer receipt status error:", detailError.message);
-      return NextResponse.json({ error: "โหลดสถานะการรับเงินสดไม่สำเร็จ" }, { status: 500 });
-    }
-
-    const detailByTransferId = new Map((details ?? []).map((detail) => [detail.transfer_id, detail]));
-    payload.rows = payload.rows.map((row) => {
-      if (!row.relationSourceId?.startsWith("cash:")) return row;
-      const detail = detailByTransferId.get(row.relationSourceId.slice(5));
-      if (!detail) return row;
-      const difference = Number(detail.difference_total ?? 0);
-      return {
-        ...row,
-        relationLabel: detail.cash_status === "pending_receipt"
-          ? "รอรับเงิน"
-          : difference
-            ? `รับเงินแล้ว · ผลต่าง ${formatCurrency(difference)}`
-            : "รับเงินแล้ว",
-      };
-    });
-  }
-
-  return NextResponse.json(payload);
+    hasMore: boolean;
+    pendingApprovalCount: number;
+  }>;
+  return NextResponse.json({
+    rows: payload.rows ?? [],
+    nextCursor: payload.nextCursor ?? null,
+    hasMore: payload.hasMore === true,
+    pendingApprovalCount: Number(payload.pendingApprovalCount ?? 0),
+  });
 }

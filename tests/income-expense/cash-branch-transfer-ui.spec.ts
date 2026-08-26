@@ -35,12 +35,6 @@ async function fillCashCounts(modal: import("@playwright/test").Locator, banknot
   await modal.getByLabel("แบงค์ 20").fill(banknote20);
 }
 
-function cashDetail(transfer: { money_transfer_cash_details: unknown }) {
-  return (Array.isArray(transfer.money_transfer_cash_details)
-    ? transfer.money_transfer_cash_details[0]
-    : transfer.money_transfer_cash_details) as { note?: string };
-}
-
 test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
   test("system manager can toggle post-receipt delete approval", async ({ page }) => {
     await setOnline(page, true);
@@ -88,15 +82,15 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
     await createModal.getByLabel("เหรียญ 1", { exact: true }).fill("1");
     const marker = `cash-ui-${Date.now()}`;
     await createModal.locator('textarea[placeholder="หมายเหตุ (ไม่บังคับ)"]').fill(marker);
-    await createModal.locator('button:has-text("บันทึก")').click();
+    const [createResponse] = await Promise.all([
+      page.waitForResponse((response) => response.url().includes("/api/lanflow/cash-branch-transfers") && response.request().method() === "POST"),
+      createModal.locator('button:has-text("บันทึก")').click(),
+    ]);
+    expect(createResponse.ok()).toBeTruthy();
     await expect(page.getByText("บันทึกรายการเงินสด รอปลายทางรับเงิน")).toBeVisible();
-
-    const list = await page.request.get(`/api/lanflow/cash-branch-transfers?locationId=${await selectedAppLocationId(page)}`);
-    const transfer = ((await list.json()).transfers as Array<{ id: string; money_transfer_cash_details: unknown }>).find(
-      (item) => cashDetail(item)?.note === marker,
-    );
-    expect(transfer).toBeTruthy();
-    const displayNo = `CASH-${transfer!.id.slice(0, 8)}`;
+    const transfer = await createResponse.json() as { id: string };
+    expect(transfer.id).toBeTruthy();
+    const displayNo = `CASH-${transfer.id.slice(0, 8)}`;
     const sourceRow = page.locator("table tbody tr", { hasText: displayNo });
     await expect(sourceRow).toBeVisible();
     const shareButton = sourceRow.locator('button[aria-label*="แชร์ PDF รายละเอียดเงินสด"]');
@@ -118,7 +112,7 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
     await setOnline(page, true);
     await selectAppLocation(page, targetLocationId!);
     await expect(page.locator('button:has-text("รอรับเงิน")')).toBeVisible({ timeout: 10000 });
-    await page.locator(`button[data-transfer-id="${transfer!.id}"]`).click();
+    await page.locator(`button[data-transfer-id="${transfer.id}"]`).click();
     const receiptModal = page.locator(".fixed.inset-0").last();
     await expect(receiptModal.locator("input")).toHaveCount(9);
     for (const input of await receiptModal.locator("input").all()) await expect(input).toHaveAttribute("readonly", "");
@@ -167,7 +161,7 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
     page.once("dialog", (dialog) => dialog.accept());
     const [deleteResponse] = await Promise.all([
       page.waitForResponse((response) =>
-        response.url().includes(`/cash-branch-transfers/${transfer!.id}`)
+          response.url().includes(`/cash-branch-transfers/${transfer.id}`)
         && response.request().method() === "DELETE"
       ),
       sourceReceivedRow.locator('button[aria-label="ลบรายการโยกเงิน"]').click(),
@@ -207,15 +201,15 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
       await createModal.getByLabel("แบงค์ 20", { exact: true }).fill("1");
       await createModal.getByLabel("เหรียญ 5", { exact: true }).fill("1");
       await createModal.getByLabel("เหรียญ 2", { exact: true }).fill("1");
-      await expect(targetPage.locator("section", { hasText: "คิวรอตรวจรับเงินสด" }).locator("button", { hasText: "฿777" })).toBeHidden();
-      await createModal.locator('button:has-text("บันทึก")').click();
-      await expect(targetPage.locator("section", { hasText: "คิวรอตรวจรับเงินสด" }).locator("button", { hasText: "฿777" })).toBeVisible({ timeout: 20000 });
-
-      const list = await targetContext.request.get(`/api/lanflow/cash-branch-transfers?locationId=${targetLocationId}`);
-      const transfer = ((await list.json()).transfers as Array<{ id: string; money_transfer_cash_details: unknown }>).find(
-        (item) => cashDetail(item)?.note === marker,
-      );
-      const deleted = await targetContext.request.delete(`/api/lanflow/cash-branch-transfers/${transfer!.id}`);
+      const [createResponse] = await Promise.all([
+        sourcePage.waitForResponse((response) => response.url().includes("/api/lanflow/cash-branch-transfers") && response.request().method() === "POST"),
+        createModal.locator('button:has-text("บันทึก")').click(),
+      ]);
+      expect(createResponse.ok()).toBeTruthy();
+      const transfer = await createResponse.json() as { id: string };
+      // The amount can preexist in fixture data, so prove polling by the newly-created server id.
+      await expect(targetPage.locator(`button[data-transfer-id="${transfer.id}"]`)).toBeVisible({ timeout: 20000 });
+      const deleted = await targetContext.request.delete(`/api/lanflow/cash-branch-transfers/${transfer.id}`);
       const result = await deleted.json() as { status: string; requestId?: string };
       if (result.requestId) {
         await targetContext.request.post(

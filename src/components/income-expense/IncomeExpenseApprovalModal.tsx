@@ -57,9 +57,11 @@ function formatDateTime(value: string) {
 
 export function IncomeExpenseApprovalModal({
   initialLocationId,
+  initialRequestId,
   onClose,
 }: {
   initialLocationId: string;
+  initialRequestId?: string;
   onClose: () => void;
 }) {
   const { requestInput, inputDialog } = useInputDialog();
@@ -129,6 +131,13 @@ export function IncomeExpenseApprovalModal({
       : cashDeleteRequests.filter((request) => request.sourceLocationId === requestLocationFilter),
     [cashDeleteRequests, requestLocationFilter],
   );
+
+  useEffect(() => {
+    if (!initialRequestId) return;
+    const row = document.getElementById(`income-expense-approval-request-${initialRequestId}`);
+    row?.scrollIntoView({ block: "center" });
+    row?.focus();
+  }, [filteredCashDeleteRequests, filteredRequests, initialRequestId]);
 
   async function handleSaveSettings(event: React.FormEvent) {
     event.preventDefault();
@@ -501,7 +510,7 @@ export function IncomeExpenseApprovalModal({
                 ) : (
                   <>
                   {filteredCashDeleteRequests.map((request) => (
-                    <tr key={`cash-delete:${request.id}`} className="border-b border-black/5">
+                    <tr id={`income-expense-approval-request-${request.id}`} tabIndex={-1} key={`cash-delete:${request.id}`} className="border-b border-black/5">
                       <td className="py-3 pr-3">
                         {request.requestStatus === "pending" && (
                           <div className="flex gap-1.5 whitespace-nowrap">
@@ -546,7 +555,7 @@ export function IncomeExpenseApprovalModal({
                     </tr>
                   ))}
                   {filteredRequests.map((request) => (
-                    <tr key={request.id} className="border-b border-black/5">
+                    <tr id={`income-expense-approval-request-${request.id}`} tabIndex={-1} key={request.id} className="border-b border-black/5">
                       <td className="py-3 pr-3">
                         {request.requestStatus === "pending" && (
                           <div className="flex gap-1.5 whitespace-nowrap">

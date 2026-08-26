@@ -254,11 +254,11 @@ test.describe.serial("Cash branch transfer contract @cash-transfer-contract", ()
       const yesterday = yesterdayDate.toISOString().slice(0, 10);
       expect((await service.from("money_transfer_cash_details").update({ sent_at: `${yesterday}T05:00:00.000Z` }).eq("transfer_id", transferId)).error).toBeNull();
 
-      const sourceFeed = await superAdmin.request.get(`/api/lanflow/income-expense/feed?locationId=${sourceLocationId}&from=${yesterday}&to=${yesterday}`);
+      const sourceFeed = await superAdmin.request.get(`/api/lanflow/income-expense/feed?locationId=${sourceLocationId}`);
       const sourceRows = (await sourceFeed.json()).rows as Array<{ id: string; cost: number; txDate: string }>;
       expect(sourceRows).toContainEqual(expect.objectContaining({ id: `cash-transfer-expense:${transferId}`, cost: 40, txDate: yesterday }));
 
-      const targetBeforeReceipt = await superAdmin.request.get(`/api/lanflow/income-expense/feed?locationId=${targetLocationId}&from=${today}&to=${today}`);
+      const targetBeforeReceipt = await superAdmin.request.get(`/api/lanflow/income-expense/feed?locationId=${targetLocationId}`);
       expect(((await targetBeforeReceipt.json()).rows as Array<{ id: string }>).some((row) => row.id === `cash-transfer-income:${transferId}`)).toBeFalsy();
 
       const receive = await superAdmin.request.post(`/api/lanflow/cash-branch-transfers/${transferId}/receive`, {
@@ -267,7 +267,7 @@ test.describe.serial("Cash branch transfer contract @cash-transfer-contract", ()
       expect(receive.ok(), await receive.text()).toBeTruthy();
       expect((await service.from("money_transfer_cash_details").update({ received_at: `${today}T06:00:00.000Z` }).eq("transfer_id", transferId)).error).toBeNull();
 
-      const targetFeed = await superAdmin.request.get(`/api/lanflow/income-expense/feed?locationId=${targetLocationId}&from=${today}&to=${today}`);
+      const targetFeed = await superAdmin.request.get(`/api/lanflow/income-expense/feed?locationId=${targetLocationId}`);
       const targetRows = (await targetFeed.json()).rows as Array<{ id: string; cost: number; txDate: string; title: string; relationLabel: string }>;
       expect(targetRows).toContainEqual(expect.objectContaining({
         id: `cash-transfer-income:${transferId}`,
@@ -348,7 +348,7 @@ test.describe.serial("Cash branch transfer contract @cash-transfer-contract", ()
       ]);
       const queue = await superAdmin.request.get(`/api/lanflow/cash-branch-transfers?locationId=${targetLocationId}`);
       expect(((await queue.json()).transfers as Array<{ id: string }>).some((row) => row.id === transferId)).toBeFalsy();
-      const sourceAfterDelete = await superAdmin.request.get(`/api/lanflow/income-expense/feed?locationId=${sourceLocationId}&from=${yesterday}&to=${yesterday}`);
+      const sourceAfterDelete = await superAdmin.request.get(`/api/lanflow/income-expense/feed?locationId=${sourceLocationId}`);
       expect(((await sourceAfterDelete.json()).rows as Array<{ id: string }>).some((row) => row.id === `cash-transfer-expense:${transferId}`)).toBeFalsy();
 
       expect((await service.from("income_expense_approval_settings").upsert({

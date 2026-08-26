@@ -54,8 +54,8 @@ test.describe.serial('Income/Expense: Branch Transfer & Approval Offline Rules',
     await context.setOffline(true);
     await page.evaluate(() => window.dispatchEvent(new Event('offline')));
 
-    await modal.locator('button:has-text("บันทึก")').click();
-    await expect(page.getByText('การโยกเงินสดต้องออนไลน์ก่อน')).toBeVisible();
+    await expect(page.getByText('ไม่มีอินเทอร์เน็ต')).toBeVisible();
+    await expect(modal.getByRole('button', { name: 'บันทึกรายการ', exact: true })).toBeDisabled();
 
     // Close modal
     await modal.locator('button:has-text("ปิด")').click();

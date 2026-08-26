@@ -403,6 +403,7 @@ export type IncomeExpense = {
   reportLockNo?: string | null;
   approvalPending?: boolean;
   approvalRequestId?: string;
+  approvalRequestType?: "income_expense" | "cash_transfer_delete";
   approvalOperation?: QueueOperation;
   approvalReasons?: IncomeExpenseApprovalReason[];
 };
@@ -565,6 +566,22 @@ export type CashDenominationCounts = {
 };
 
 export type CashBranchTransferStatus = "pending_receipt" | "received";
+
+export type CashBranchTransferSummary = {
+  id: string;
+  locationId: string;
+  sourceLocationName: string | null;
+  targetLocationId: string;
+  targetLocationName: string | null;
+  createdByUserId?: string | null;
+  createdByName: string;
+  createdByPhone: string;
+  sentTotal: number;
+  status: "pending_receipt";
+  note: string | null;
+  sentAt: string;
+  reportLockNo?: string | null;
+};
 
 export type CashBranchTransfer = {
   id: string;

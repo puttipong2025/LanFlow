@@ -2995,6 +2995,27 @@ $$;
 ALTER FUNCTION "private"."effective_rubber_approval_settings"("p_location_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."enforce_complete_wex_before_reservation"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if exists (
+    select 1
+    from public.export_vehicle_weigh_lines l
+    where l.wex_id = new.wex_id
+      and (l.outbound_weight = 0 or l.outbound_at is null)
+  ) then
+    raise exception 'WEX_INCOMPLETE_WEIGHING: ต้องชั่งออกรถทุกคันก่อนเลือกรายการขายยาง';
+  end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."enforce_complete_wex_before_reservation"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."enforce_rubber_bill_ocr_source_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
     SET "search_path" TO ''
@@ -3541,6 +3562,246 @@ $$;
 ALTER FUNCTION "private"."has_time_payroll_manager_access"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."income_expense_operational_row"("p_location_id" "uuid", "p_source_kind" "text", "p_source_id" "uuid", "p_source_date" "date") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_result jsonb;
+begin
+  if p_source_kind = 'actual' then
+    select jsonb_strip_nulls(jsonb_build_object(
+      'id', ie.id, 'clientTempId', coalesce(ie.client_temp_id, ie.id::text),
+      'localBillNo', ie.local_bill_no, 'serverBillNo', ie.server_bill_no,
+      'idempotencyKey', coalesce(ie.idempotency_key, 'server:' || ie.id::text),
+      'locationId', ie.location_id, 'syncStatus', 'synced', 'recordStatus', ie.record_status,
+      'type', ie.type, 'number', coalesce(ie.number, ie.server_bill_no, ie.local_bill_no),
+      'txDate', ie.tx_date, 'title', ie.title, 'cost', ie.cost,
+      'unit', ie.unit, 'price', ie.price,
+      'incomeSaleItemId', ie.income_sale_item_id, 'stockProductId', ie.stock_product_id,
+      'stockQuantity', ie.stock_quantity, 'billOption', ie.bill_option,
+      'clientRecordedAt', coalesce(ie.client_recorded_at, ie.created_at),
+      'clientCreatedAt', coalesce(ie.client_created_at, ie.created_at),
+      'serverReceivedAt', ie.server_received_at, 'revisionNo', ie.revision_no,
+      'createdByUserId', ie.created_by_user_id, 'createdByName', ie.created_by_name,
+      'createdByPhone', ie.created_by_phone,
+      'saleLineCount', (select count(*) from public.income_expense_sale_lines l where l.income_expense_id = ie.id),
+      'reportLockNo', public.report_lock_no(ie),
+      'relationLockReason', case when public.report_lock_no(ie) is not null
+        then 'ล็อกโดยรายงาน ' || public.report_lock_no(ie) || ' — ต้องลบรายงานล่าสุดตามลำดับก่อน' end
+    )) into v_result
+    from public.income_expense ie
+    where ie.id = p_source_id and ie.location_id = p_location_id and ie.record_status = 'active';
+
+  elsif p_source_kind = 'branch_income' then
+    select jsonb_strip_nulls(jsonb_build_object(
+      'id', 'money-transfer-income:' || mt.id, 'clientTempId', 'money-transfer-income:' || mt.id,
+      'localBillNo', 'TR-' || left(mt.id::text, 8), 'serverBillNo', 'TR-' || left(mt.id::text, 8),
+      'idempotencyKey', 'money-transfer:' || mt.id, 'locationId', mt.target_location_id,
+      'syncStatus', 'synced', 'recordStatus', 'active', 'type', 'income',
+      'number', 'TR-' || left(mt.id::text, 8),
+      'txDate', (mt.created_at at time zone 'Asia/Bangkok')::date,
+      'title', 'รับโอนจาก ' || coalesce(source_location.name, 'สาขาต้นทาง'),
+      'cost', mt.net_amount_to_pay, 'billOption', 'รายรับ',
+      'clientRecordedAt', mt.created_at, 'clientCreatedAt', mt.created_at,
+      'serverReceivedAt', mt.updated_at, 'revisionNo', mt.revision_no,
+      'createdByUserId', mt.created_by_user_id, 'createdByName', coalesce(mt.created_by_name, 'ระบบโอนเงิน'),
+      'createdByPhone', mt.created_by_phone, 'relationSourceType', 'money_transfer',
+      'relationSourceId', mt.id, 'relationSourceLocationId', mt.location_id,
+      'relationLabel', 'โอนเงินสาขา',
+      'relationLockReason', 'รายการนี้มาจากการโอนเงินสาขา ต้องแก้ไขหรือลบที่โมดูลโอนเงินต้นทาง',
+      'reportLockNo', public.report_lock_no(mt)
+    )) into v_result
+    from public.money_transfers mt
+    left join public.locations source_location on source_location.id = mt.location_id
+    where mt.id = p_source_id and mt.target_location_id = p_location_id;
+
+  elsif p_source_kind = 'branch_expense' then
+    select jsonb_strip_nulls(jsonb_build_object(
+      'id', 'money-transfer-branch-expense:' || mt.id,
+      'clientTempId', 'money-transfer-branch-expense:' || mt.id,
+      'localBillNo', 'TR-' || left(mt.id::text, 8), 'serverBillNo', 'TR-' || left(mt.id::text, 8),
+      'idempotencyKey', 'money-transfer-branch-expense:' || mt.id, 'locationId', mt.location_id,
+      'syncStatus', 'synced', 'recordStatus', 'active', 'type', 'expense',
+      'number', 'TR-' || left(mt.id::text, 8),
+      'txDate', (mt.created_at at time zone 'Asia/Bangkok')::date,
+      'title', 'โยกเงินไป ' || coalesce(mt.target_location_name, 'สาขาปลายทาง'),
+      'cost', mt.net_amount_to_pay, 'billOption', 'ค่าใช้จ่าย',
+      'clientRecordedAt', mt.created_at, 'clientCreatedAt', mt.created_at,
+      'serverReceivedAt', mt.updated_at, 'revisionNo', mt.revision_no,
+      'createdByUserId', mt.created_by_user_id, 'createdByName', coalesce(mt.created_by_name, 'ระบบโอนเงิน'),
+      'createdByPhone', mt.created_by_phone, 'relationSourceType', 'money_transfer',
+      'relationSourceId', mt.id, 'relationSourceLocationId', mt.location_id,
+      'relationLabel', 'โอนเงินสาขา',
+      'relationLockReason', 'รายการนี้มาจากการโอนเงินสาขา ต้องแก้ไขหรือลบที่โมดูลโอนเงินต้นทาง',
+      'reportLockNo', public.report_lock_no(mt)
+    )) into v_result
+    from public.money_transfers mt where mt.id = p_source_id and mt.location_id = p_location_id;
+
+  elsif p_source_kind = 'customer_branch_paid' then
+    select jsonb_strip_nulls(jsonb_build_object(
+      'id', 'money-transfer-branch-paid-expense:' || mt.id,
+      'clientTempId', 'money-transfer-branch-paid-expense:' || mt.id,
+      'localBillNo', 'CT-' || left(mt.id::text, 8), 'serverBillNo', 'CT-' || left(mt.id::text, 8),
+      'idempotencyKey', 'money-transfer-branch-paid:' || mt.id, 'locationId', mt.location_id,
+      'syncStatus', 'synced', 'recordStatus', 'active', 'type', 'expense',
+      'number', 'CT-' || left(mt.id::text, 8),
+      'txDate', (mt.created_at at time zone 'Asia/Bangkok')::date,
+      'title', 'สาขาจ่ายส่วนต่างให้ ' || coalesce(mt.customer_name, 'ลูกค้า'),
+      'cost', mt.branch_paid_amount, 'billOption', 'ค่าใช้จ่าย',
+      'clientRecordedAt', mt.created_at, 'clientCreatedAt', mt.created_at,
+      'serverReceivedAt', mt.updated_at, 'revisionNo', mt.revision_no,
+      'createdByUserId', mt.created_by_user_id, 'createdByName', coalesce(mt.created_by_name, 'ระบบโอนเงิน'),
+      'createdByPhone', mt.created_by_phone, 'relationSourceType', 'money_transfer',
+      'relationSourceId', mt.id, 'relationSourceLocationId', mt.location_id,
+      'relationLabel', 'โอน+สาขาจ่าย',
+      'relationLockReason', 'รายการนี้มาจากโอนเงินลูกค้าแบบโอน+สาขาจ่าย ต้องแก้ไขหรือลบที่โมดูลโอนเงินลูกค้าต้นทาง',
+      'reportLockNo', public.report_lock_no(mt)
+    )) into v_result
+    from public.money_transfers mt where mt.id = p_source_id and mt.location_id = p_location_id;
+
+  elsif p_source_kind in ('cash_expense', 'cash_income') then
+    select jsonb_strip_nulls(jsonb_build_object(
+      'id', case when p_source_kind = 'cash_income' then 'cash-transfer-income:' else 'cash-transfer-expense:' end || mt.id,
+      'clientTempId', case when p_source_kind = 'cash_income' then 'cash-transfer-income:' else 'cash-transfer-expense:' end || mt.id,
+      'localBillNo', 'CASH-' || left(mt.id::text, 8), 'serverBillNo', 'CASH-' || left(mt.id::text, 8),
+      'idempotencyKey', case when p_source_kind = 'cash_income' then 'cash-transfer-income:' else 'cash-transfer-expense:' end || mt.id,
+      'locationId', case when p_source_kind = 'cash_income' then mt.target_location_id else mt.location_id end,
+      'syncStatus', 'synced', 'recordStatus', 'active',
+      'type', case when p_source_kind = 'cash_income' then 'income' else 'expense' end,
+      'number', 'CASH-' || left(mt.id::text, 8),
+      'txDate', case when p_source_kind = 'cash_income'
+        then (d.received_at at time zone 'Asia/Bangkok')::date
+        else (d.sent_at at time zone 'Asia/Bangkok')::date end,
+      'title', case when p_source_kind = 'cash_income'
+        then 'รับโอนเงินสดจาก ' || coalesce(source_location.name, 'สาขาต้นทาง')
+        else 'โยกเงินสดไป ' || coalesce(mt.target_location_name, 'สาขาปลายทาง') end,
+      'cost', case when p_source_kind = 'cash_income' then d.received_total else d.sent_total end,
+      'billOption', case when p_source_kind = 'cash_income' then 'รายรับ' else 'ค่าใช้จ่าย' end,
+      'clientRecordedAt', case when p_source_kind = 'cash_income' then d.received_at else d.sent_at end,
+      'clientCreatedAt', case when p_source_kind = 'cash_income' then d.received_at else d.sent_at end,
+      'serverReceivedAt', d.updated_at, 'revisionNo', mt.revision_no,
+      'createdByUserId', mt.created_by_user_id, 'createdByName', mt.created_by_name,
+      'createdByPhone', mt.created_by_phone, 'relationSourceType', 'money_transfer',
+      'relationSourceId', 'cash:' || mt.id, 'relationSourceLocationId', mt.location_id,
+      'relationLabel', case when d.cash_status = 'pending_receipt' then 'รอรับเงิน'
+        when coalesce(d.difference_total, 0) <> 0 then 'รับเงินแล้ว · ผลต่าง '
+        || case when d.difference_total >= 0 then '+฿' else '-฿' end
+        || trim(to_char(abs(d.difference_total), 'FM999999999990'))
+        else 'รับเงินแล้ว' end,
+      'relationLockReason', 'รายการนี้มาจากการโยกเงินสด ต้องเปิดรายละเอียดเพื่อดูข้อมูล',
+      'reportLockNo', public.report_lock_no(mt), 'cashStatus', d.cash_status,
+      'cashSourceLocationLabel', source_location.name
+    )) into v_result
+    from public.money_transfers mt
+    join public.money_transfer_cash_details d on d.transfer_id = mt.id
+    left join public.locations source_location on source_location.id = mt.location_id
+    where mt.id = p_source_id
+      and (case when p_source_kind = 'cash_income' then mt.target_location_id else mt.location_id end) = p_location_id;
+
+  elsif p_source_kind = 'withdrawal' then
+    select jsonb_strip_nulls(jsonb_build_object(
+      'id', 'time-tracking-withdrawal:' || ft.id, 'clientTempId', 'time-tracking-withdrawal:' || ft.id,
+      'localBillNo', 'TW-' || left(ft.id::text, 8), 'serverBillNo', 'TW-' || left(ft.id::text, 8),
+      'idempotencyKey', 'time-tracking-withdrawal:' || ft.id, 'locationId', ft.expense_location_id,
+      'syncStatus', 'synced', 'recordStatus', 'active', 'type', 'expense',
+      'number', 'TW-' || left(ft.id::text, 8),
+      'txDate', (ft.approved_at at time zone 'Asia/Bangkok')::date,
+      'title', 'เบิกเงิน — ' || coalesce(profile.name, 'พนักงาน') || coalesce(': ' || nullif(ft.description, ''), ''),
+      'cost', ft.amount, 'billOption', 'ค่าใช้จ่าย',
+      'clientRecordedAt', ft.approved_at, 'clientCreatedAt', ft.created_at,
+      'serverReceivedAt', ft.updated_at, 'revisionNo', 1,
+      'createdByUserId', ft.profile_id, 'createdByName', coalesce(profile.name, 'พนักงาน'),
+      'createdByPhone', profile.phone, 'relationSourceType', 'time_tracking_withdrawal',
+      'relationSourceId', ft.id, 'relationSourceLocationId', ft.expense_location_id,
+      'relationLabel', 'เบิกเงิน',
+      'relationLockReason', 'รายการนี้มาจากการเบิกเงินที่อนุมัติแล้ว ต้องแก้ไขสาขาหรือยกเลิกที่โมดูลลงเวลาต้นทาง',
+      'reportLockNo', public.report_lock_no(ft)
+    )) into v_result
+    from public.financial_transactions ft
+    join public.profiles profile on profile.id = ft.profile_id
+    where ft.id = p_source_id and ft.expense_location_id = p_location_id;
+
+  elsif p_source_kind = 'payroll' then
+    select jsonb_strip_nulls(jsonb_build_object(
+      'id', 'payroll-slip:' || ps.id, 'clientTempId', 'payroll-slip:' || ps.id,
+      'localBillNo', 'PS-' || left(ps.id::text, 8), 'serverBillNo', 'PS-' || left(ps.id::text, 8),
+      'idempotencyKey', 'payroll-slip:' || ps.id, 'locationId', ps.expense_location_id,
+      'syncStatus', 'synced', 'recordStatus', 'active', 'type', 'expense',
+      'number', 'PS-' || left(ps.id::text, 8),
+      'txDate', (ps.approved_at at time zone 'Asia/Bangkok')::date,
+      'title', 'เงินเดือน — ' || coalesce(profile.name, 'พนักงาน') || ' — ' || ps.month,
+      'cost', ps.net_pay, 'billOption', 'ค่าใช้จ่าย',
+      'clientRecordedAt', ps.approved_at, 'clientCreatedAt', ps.created_at,
+      'serverReceivedAt', ps.updated_at, 'revisionNo', 1,
+      'createdByUserId', ps.profile_id, 'createdByName', coalesce(profile.name, 'พนักงาน'),
+      'createdByPhone', profile.phone, 'relationSourceType', 'payroll_slip',
+      'relationSourceId', ps.id, 'relationSourceLocationId', ps.expense_location_id,
+      'relationLabel', 'เงินเดือน',
+      'relationLockReason', 'รายการนี้มาจากเงินเดือนที่อนุมัติแล้ว ต้องแก้ไขสาขาหรือยกเลิกที่โมดูลลงเวลาต้นทาง',
+      'reportLockNo', public.report_lock_no(ps)
+    )) into v_result
+    from public.payroll_slips ps
+    join public.profiles profile on profile.id = ps.profile_id
+    where ps.id = p_source_id and ps.expense_location_id = p_location_id;
+
+  elsif p_source_kind = 'rubber_export' then
+    select jsonb_strip_nulls(jsonb_build_object(
+      'id', 'rubber-export-expense:' || e.id, 'clientTempId', 'rubber-export-expense:' || e.id,
+      'localBillNo', e.export_no, 'serverBillNo', e.export_no,
+      'idempotencyKey', 'rubber-export-expense:' || e.id, 'locationId', e.location_id,
+      'syncStatus', 'synced', 'recordStatus', 'active', 'type', 'expense',
+      'number', e.export_no, 'txDate', (e.verified_at at time zone 'Asia/Bangkok')::date,
+      'title', 'ค่าทำงานส่งออกยาง — ' || e.export_no,
+      'cost', e.work_total, 'billOption', 'ค่าใช้จ่าย',
+      'clientRecordedAt', e.verified_at, 'clientCreatedAt', e.created_at,
+      'serverReceivedAt', e.verified_at, 'revisionNo', 1,
+      'createdByUserId', e.created_by_user_id, 'createdByName', e.created_by_name,
+      'createdByPhone', e.created_by_phone, 'relationSourceType', 'rubber_export',
+      'relationSourceId', e.id, 'relationSourceLocationId', e.location_id,
+      'relationLabel', 'ส่งออกยาง',
+      'relationLockReason', 'รายการนี้มาจากรายการส่งออกยาง ต้องเปิดหรือจัดการที่โมดูลส่งออกยางต้นทาง',
+      'reportLockNo', public.report_lock_no(e)
+    )) into v_result
+    from public.rubber_exports e where e.id = p_source_id and e.location_id = p_location_id;
+
+  elsif p_source_kind = 'rubber_daily' then
+    select jsonb_strip_nulls(jsonb_build_object(
+      'id', 'rubber-bill-daily-expense:' || p_location_id || ':' || p_source_date,
+      'clientTempId', 'rubber-bill-daily-expense:' || p_location_id || ':' || p_source_date,
+      'localBillNo', 'RB-' || to_char(p_source_date, 'YYMMDD'),
+      'serverBillNo', 'RB-' || to_char(p_source_date, 'YYMMDD'),
+      'idempotencyKey', 'rubber-bill-daily-expense:' || p_location_id || ':' || p_source_date,
+      'locationId', p_location_id, 'syncStatus', 'synced', 'recordStatus', 'active',
+      'type', 'expense', 'number', 'RB-' || to_char(p_source_date, 'YYMMDD'),
+      'txDate', p_source_date, 'title', 'จ่ายค่ายางจากบิลยาง ' || count(*) || ' ใบ',
+      'cost', sum(b.net_total), 'billOption', 'ค่าใช้จ่าย',
+      'clientRecordedAt', max(coalesce(b.client_recorded_at, b.updated_at, b.created_at)),
+      'clientCreatedAt', max(coalesce(b.client_recorded_at, b.updated_at, b.created_at)),
+      'serverReceivedAt', max(b.updated_at), 'revisionNo', max(b.revision_no),
+      'createdByUserId', '', 'createdByName', 'ระบบบิลยาง', 'createdByPhone', '',
+      'relationSourceType', 'rubber_bill_daily', 'relationSourceId', p_source_date,
+      'relationSourceLocationId', p_location_id, 'relationSourceDate', p_source_date,
+      'relationLabel', 'บิลยางรวมรายวัน',
+      'relationLockReason', 'รายการนี้มาจากบิลยาง ต้องแก้ไขหรือลบที่โมดูลบิลยางต้นทาง',
+      'reportLockNo', max(public.report_lock_no(b))
+    )) into v_result
+    from public.rubber_bills b
+    where b.location_id = p_location_id and b.bill_date = p_source_date
+      and b.record_status = 'active' and b.net_total > 0
+      and private.rubber_bill_is_payable(b.id)
+      and not exists (select 1 from public.money_transfer_items i
+        where i.source_type = 'rubber_bill' and i.source_id = b.id);
+  end if;
+
+  return v_result;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."income_expense_operational_row"("p_location_id" "uuid", "p_source_kind" "text", "p_source_id" "uuid", "p_source_date" "date") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."is_active_user"() RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -3797,7 +4058,7 @@ CREATE OR REPLACE FUNCTION "private"."next_document_sequence"("p_document_kind" 
 declare
   v_sequence integer;
 begin
-  if p_document_kind not in ('RPT', 'REX')
+  if p_document_kind not in ('RPT', 'REX', 'WEX')
      or p_location_id is null
      or p_document_date is null then
     raise exception 'Invalid document sequence request';
@@ -4007,6 +4268,130 @@ ALTER FUNCTION "private"."normalize_rubber_bill_calculation_payload"("payload" "
 
 COMMENT ON FUNCTION "private"."normalize_rubber_bill_calculation_payload"("payload" "jsonb") IS 'Recalculates Rubber Bill v2 values: floor calculated line values and rubber value to whole baht while preserving two-decimal input precision.';
 
+
+
+CREATE OR REPLACE FUNCTION "private"."normalized_export_vehicle_weigh_lines"("p_location_id" "uuid", "p_lines" "jsonb") RETURNS TABLE("sequence_no" integer, "vehicle_registration" "text", "carrier_id" "uuid", "carrier_name" "text", "inbound_at" timestamp with time zone, "inbound_weight" numeric, "outbound_at" timestamp with time zone, "outbound_weight" numeric)
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_count integer;
+  v_unique_plates integer;
+begin
+  if coalesce(jsonb_typeof(p_lines), 'null') <> 'array' then
+    raise exception 'WEX_INVALID_LINES: ต้องมีรายการชั่งรถ 1–2 คัน';
+  end if;
+  if jsonb_array_length(p_lines) not between 1 and 2 then
+    raise exception 'WEX_INVALID_LINES: ต้องมีรายการชั่งรถ 1–2 คัน';
+  end if;
+  if p_location_id is null then
+    raise exception 'WEX_INVALID_LINES: สาขาของรายการชั่งรถไม่ถูกต้อง';
+  end if;
+  if exists (
+    select 1
+    from jsonb_array_elements(p_lines) line(value)
+    where (line.value ? 'carrierId'
+        and jsonb_typeof(line.value->'carrierId') not in ('string', 'null'))
+      or (line.value ? 'carrierName'
+        and jsonb_typeof(line.value->'carrierName') not in ('string', 'null'))
+      or jsonb_typeof(line.value->'inboundAt') <> 'string'
+      or jsonb_typeof(line.value->'inboundWeight') <> 'number'
+      or jsonb_typeof(line.value->'outboundWeight') <> 'number'
+      or (
+        line.value ? 'outboundAt'
+        and jsonb_typeof(line.value->'outboundAt') not in ('string', 'null')
+      )
+  ) then
+    raise exception 'WEX_INVALID_LINES: รูปแบบเวลา น้ำหนัก ทะเบียนรถ หรือผู้ขนส่งไม่ถูกต้อง';
+  end if;
+
+  with parsed as (
+    select regexp_replace(btrim(line.value->>'vehicleRegistration'), '\s+', ' ', 'g') as registration
+    from jsonb_array_elements(p_lines) line(value)
+  )
+  select count(*), count(distinct lower(registration))
+  into v_count, v_unique_plates
+  from parsed
+  where nullif(registration, '') is not null and char_length(registration) <= 64;
+
+  if v_count <> jsonb_array_length(p_lines) or v_unique_plates <> v_count then
+    raise exception 'WEX_INVALID_LINES: ทะเบียนรถไม่ถูกต้องหรือซ้ำกัน';
+  end if;
+
+  perform s.id
+  from public.transport_staffs s
+  join (
+    select distinct nullif(btrim(line.value->>'carrierId'), '')::uuid as id
+    from jsonb_array_elements(p_lines) line(value)
+    where nullif(btrim(line.value->>'carrierId'), '') is not null
+  ) selected on selected.id = s.id
+  order by s.id
+  for share of s;
+
+  if exists (
+    select 1
+    from jsonb_array_elements(p_lines) line(value)
+    left join public.transport_staffs s
+      on s.id = nullif(btrim(line.value->>'carrierId'), '')::uuid
+    where nullif(btrim(line.value->>'carrierId'), '') is not null
+      and (
+        s.id is null
+        or not (
+          s.record_status = 'active'
+          and (s.default_location_id is null or s.default_location_id = p_location_id)
+        )
+      )
+  ) then
+    raise exception 'WEX_CARRIER_INELIGIBLE: เลือกได้เฉพาะผู้ขนส่งที่ใช้งานอยู่และมีสิทธิ์ในสาขานี้';
+  end if;
+
+  return query
+  select
+    line.ordinality::integer,
+    regexp_replace(btrim(line.value->>'vehicleRegistration'), '\s+', ' ', 'g'),
+    s.id,
+    case
+      when s.id is not null then s.main_name
+      else nullif(regexp_replace(btrim(line.value->>'carrierName'), '\s+', ' ', 'g'), '')
+    end,
+    (line.value->>'inboundAt')::timestamptz,
+    round((line.value->>'inboundWeight')::numeric, 2),
+    case
+      when round((line.value->>'outboundWeight')::numeric, 2) = 0 then null
+      else nullif(btrim(line.value->>'outboundAt'), '')::timestamptz
+    end,
+    round((line.value->>'outboundWeight')::numeric, 2)
+  from jsonb_array_elements(p_lines) with ordinality as line(value, ordinality)
+  left join public.transport_staffs s
+    on s.id = nullif(btrim(line.value->>'carrierId'), '')::uuid
+  where round((line.value->>'inboundWeight')::numeric, 2) > 0
+    and round((line.value->>'outboundWeight')::numeric, 2) >= 0
+    and (
+      (
+        round((line.value->>'outboundWeight')::numeric, 2) = 0
+        and nullif(btrim(line.value->>'outboundAt'), '') is null
+      )
+      or (
+        round((line.value->>'outboundWeight')::numeric, 2)
+          > round((line.value->>'inboundWeight')::numeric, 2)
+        and nullif(btrim(line.value->>'outboundAt'), '')::timestamptz
+          > (line.value->>'inboundAt')::timestamptz
+      )
+    )
+  order by line.ordinality;
+
+  get diagnostics v_count = row_count;
+  if v_count <> jsonb_array_length(p_lines) then
+    raise exception 'WEX_INVALID_LINES: น้ำหนักออกต้องเป็น 0 ระหว่างรอ หรือมากกว่าน้ำหนักเข้าเมื่อชั่งออกแล้ว';
+  end if;
+exception
+  when invalid_text_representation or datetime_field_overflow or numeric_value_out_of_range then
+    raise exception 'WEX_INVALID_LINES: รูปแบบเวลา น้ำหนัก หรือทะเบียนรถไม่ถูกต้อง';
+end;
+$$;
+
+
+ALTER FUNCTION "private"."normalized_export_vehicle_weigh_lines"("p_location_id" "uuid", "p_lines" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."preflight_income_sale_stock"("payload" "jsonb") RETURNS "jsonb"
@@ -6712,6 +7097,58 @@ $$;
 ALTER FUNCTION "private"."validate_rubber_export_selection"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[], "p_current_export_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."validate_wex_rubber_exports"("p_location_id" "uuid", "p_wex_id" "uuid", "p_rubber_export_ids" "uuid"[]) RETURNS numeric
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_ids uuid[] := coalesce(p_rubber_export_ids, array[]::uuid[]);
+  v_count integer;
+  v_weight numeric(14,2);
+begin
+  if exists (select 1 from unnest(v_ids) as selected(id) where selected.id is null)
+     or (select count(*) from unnest(v_ids))
+       <> (select count(distinct selected.id) from unnest(v_ids) as selected(id)) then
+    raise exception 'WEX_INVALID_REX: รายการขายยางห้ามว่างหรือซ้ำกัน';
+  end if;
+
+  perform e.id
+  from public.rubber_exports e
+  where e.id = any(v_ids)
+  order by e.id
+  for update;
+
+  select count(*), coalesce(round(sum(e.current_weight), 2), 0)
+  into v_count, v_weight
+  from public.rubber_exports e
+  where e.id = any(v_ids)
+    and e.location_id = p_location_id
+    and e.status = 'verified'
+    and e.sold_out_at is not null
+    and e.current_weight is not null
+    and e.current_weight > 0;
+
+  if v_count <> cardinality(v_ids) then
+    raise exception 'WEX_REX_INELIGIBLE: เลือกได้เฉพาะรายการขายยางที่ตรวจสอบแล้ว ขายออกแล้ว และอยู่สาขาเดียวกัน';
+  end if;
+
+  if exists (
+    select 1
+    from public.export_vehicle_weigh_bill_reservations r
+    where r.rubber_export_id = any(v_ids)
+      and (p_wex_id is null or r.wex_id <> p_wex_id)
+  ) then
+    raise exception 'WEX_REX_RESERVED: มีรายการขายยางถูกจองในบิลรถส่งออกอื่นแล้ว';
+  end if;
+
+  return v_weight;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."validate_wex_rubber_exports"("p_location_id" "uuid", "p_wex_id" "uuid", "p_rubber_export_ids" "uuid"[]) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."approve_rubber_bill_approval_request"("p_request_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -7705,6 +8142,97 @@ $$;
 
 
 ALTER FUNCTION "public"."create_cash_branch_transfer"("payload" "jsonb") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."create_export_vehicle_weigh_bill"("p_location_id" "uuid", "p_lines" "jsonb", "p_rubber_export_ids" "uuid"[]) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_actor public.profiles%rowtype;
+  v_now timestamptz := clock_timestamp();
+  v_wex_date date;
+  v_sequence_no integer;
+  v_wex_no text;
+  v_wex_id uuid;
+  v_vehicle_net numeric(14,2);
+  v_rubber_weight numeric(14,2);
+begin
+  if p_location_id is null or not private.can_manage_reports(p_location_id)
+     or not exists (
+       select 1 from public.locations l
+       where l.id = p_location_id and l.is_active = true
+     ) then
+    raise exception 'WEX_FORBIDDEN: ไม่มีสิทธิ์สร้างบิลรถส่งออกของสาขานี้';
+  end if;
+
+  perform 1 from private.normalized_export_vehicle_weigh_lines(p_location_id, p_lines);
+  v_rubber_weight := private.validate_wex_rubber_exports(
+    p_location_id, null, p_rubber_export_ids
+  );
+
+  select * into v_actor
+  from public.profiles p
+  where p.id = auth.uid() and p.is_active = true;
+  if v_actor.id is null then
+    raise exception 'WEX_FORBIDDEN: บัญชีผู้ใช้ไม่พร้อมใช้งาน';
+  end if;
+
+  v_wex_date := (v_now at time zone 'Asia/Bangkok')::date;
+  perform pg_advisory_xact_lock(hashtextextended(
+    'export-vehicle-weigh-bill:' || p_location_id::text || ':' || v_wex_date::text, 0
+  ));
+  v_sequence_no := private.next_document_sequence('WEX', p_location_id, v_wex_date);
+  v_wex_no := 'WEX-' || to_char(v_wex_date, 'YYYYMMDD') || '-'
+    || lpad(v_sequence_no::text, 3, '0');
+
+  insert into public.export_vehicle_weigh_bills (
+    wex_no, wex_date, sequence_no, location_id, revision,
+    created_by_user_id, created_by_name, created_at,
+    updated_by_user_id, updated_by_name, updated_at
+  ) values (
+    v_wex_no, v_wex_date, v_sequence_no, p_location_id, 1,
+    v_actor.id, v_actor.name, v_now,
+    v_actor.id, v_actor.name, v_now
+  ) returning id into v_wex_id;
+
+  insert into public.export_vehicle_weigh_lines (
+    wex_id, sequence_no, vehicle_registration, carrier_id, carrier_name,
+    inbound_at, inbound_weight, outbound_at, outbound_weight
+  )
+  select
+    v_wex_id, l.sequence_no, l.vehicle_registration, l.carrier_id, l.carrier_name,
+    l.inbound_at, l.inbound_weight, l.outbound_at, l.outbound_weight
+  from private.normalized_export_vehicle_weigh_lines(p_location_id, p_lines) l;
+
+  select round(sum(l.net_weight), 2)
+  into v_vehicle_net
+  from public.export_vehicle_weigh_lines l
+  where l.wex_id = v_wex_id;
+
+  if v_rubber_weight > v_vehicle_net then
+    raise exception 'WEX_OVERWEIGHT: น้ำหนักรายการขายยางรวมเกินน้ำหนักสุทธิรถ';
+  end if;
+
+  insert into public.export_vehicle_weigh_bill_reservations (
+    wex_id, rubber_export_id, sequence_no, export_no, current_weight, created_at
+  )
+  select
+    v_wex_id, e.id, selected.ordinality::integer, e.export_no, e.current_weight, v_now
+  from unnest(coalesce(p_rubber_export_ids, array[]::uuid[]))
+    with ordinality as selected(id, ordinality)
+  join public.rubber_exports e on e.id = selected.id
+  order by selected.ordinality;
+
+  return jsonb_build_object('id', v_wex_id, 'wexNo', v_wex_no, 'revision', 1);
+exception
+  when unique_violation then
+    raise exception 'WEX_REX_RESERVED: มีรายการขายยางถูกจองในบิลรถส่งออกอื่นแล้ว';
+end;
+$$;
+
+
+ALTER FUNCTION "public"."create_export_vehicle_weigh_bill"("p_location_id" "uuid", "p_lines" "jsonb", "p_rubber_export_ids" "uuid"[]) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."create_income_expense_approval_request"("payload" "jsonb") RETURNS "jsonb"
@@ -9750,6 +10278,74 @@ $$;
 ALTER FUNCTION "public"."delete_cash_count"("p_cash_count_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."delete_export_vehicle_weigh_bill"("p_wex_id" "uuid", "p_expected_revision" integer) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_wex public.export_vehicle_weigh_bills%rowtype;
+  v_audit public.document_deletion_audits%rowtype;
+  v_actor_name text;
+  v_now timestamptz := clock_timestamp();
+begin
+  if not private.can_delete_reports() then
+    raise exception 'WEX_FORBIDDEN: เฉพาะ super_admin หรือผู้จัดการระบบเท่านั้นที่ลบบิลรถส่งออกได้';
+  end if;
+
+  select * into v_wex
+  from public.export_vehicle_weigh_bills w
+  where w.id = p_wex_id
+  for update;
+
+  if v_wex.id is null then
+    select * into v_audit
+    from public.document_deletion_audits a
+    where a.document_kind = 'export_vehicle_weigh_bill'
+      and a.source_id = p_wex_id;
+    if v_audit.id is not null then
+      return jsonb_build_object(
+        'id', p_wex_id, 'wexNo', v_audit.document_no, 'status', 'deleted'
+      );
+    end if;
+    raise exception 'WEX_NOT_FOUND: ไม่พบบิลรถส่งออก';
+  end if;
+
+  if p_expected_revision is null or p_expected_revision <> v_wex.revision then
+    raise exception 'WEX_STALE_REVISION: บิลรถส่งออกถูกแก้ไขแล้ว กรุณาโหลดข้อมูลใหม่';
+  end if;
+
+  select p.name into v_actor_name
+  from public.profiles p
+  where p.id = auth.uid() and p.is_active = true;
+  if nullif(btrim(v_actor_name), '') is null then
+    raise exception 'WEX_FORBIDDEN: บัญชีผู้ใช้ไม่พร้อมใช้งาน';
+  end if;
+
+  insert into public.document_deletion_audits (
+    document_kind, source_id, document_no, location_id,
+    deleted_by_user_id, deleted_by_name, deleted_at
+  ) values (
+    'export_vehicle_weigh_bill', v_wex.id, v_wex.wex_no, v_wex.location_id,
+    auth.uid(), v_actor_name, v_now
+  );
+
+  delete from public.export_vehicle_weigh_bill_reservations
+  where wex_id = v_wex.id;
+  delete from public.export_vehicle_weigh_lines
+  where wex_id = v_wex.id;
+  delete from public.export_vehicle_weigh_bills
+  where id = v_wex.id;
+
+  return jsonb_build_object(
+    'id', v_wex.id, 'wexNo', v_wex.wex_no, 'status', 'deleted'
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."delete_export_vehicle_weigh_bill"("p_wex_id" "uuid", "p_expected_revision" integer) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."delete_money_transfer"("p_transfer_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -10317,6 +10913,103 @@ $$;
 
 
 ALTER FUNCTION "public"."get_actionable_badge_counts"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_cash_branch_transfer_detail"("p_transfer_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+declare
+  v_transfer public.money_transfers%rowtype;
+  v_detail public.money_transfer_cash_details%rowtype;
+begin
+  if not private.is_active_user() then
+    raise exception 'Authentication required';
+  end if;
+
+  select * into v_transfer
+  from public.money_transfers mt
+  where mt.id = p_transfer_id
+    and mt.transfer_type = 'cash'
+    and mt.transfer_method = 'cash'
+    and mt.record_status <> 'deleted';
+
+  if v_transfer.id is null then
+    raise exception 'Cash transfer not found';
+  end if;
+  if not private.can_access_location(v_transfer.location_id)
+    and not private.can_access_location(v_transfer.target_location_id)
+  then
+    raise exception 'Location access denied';
+  end if;
+
+  select * into v_detail
+  from public.money_transfer_cash_details d
+  where d.transfer_id = p_transfer_id;
+
+  if v_detail.transfer_id is null then
+    raise exception 'Cash transfer not found';
+  end if;
+
+  return to_jsonb(v_transfer) || jsonb_build_object(
+    'report_lock_no', public.report_lock_no(v_transfer),
+    'money_transfer_cash_details', jsonb_build_array(to_jsonb(v_detail))
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_cash_branch_transfer_detail"("p_transfer_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_cash_branch_transfer_pending_summary"("p_location_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+begin
+  if not private.is_active_user() or not private.can_access_location(p_location_id) then
+    raise exception 'Location access denied';
+  end if;
+
+  return (
+    with pending as (
+      select mt.*, d.sent_total, d.cash_status, d.note, d.sent_at,
+        source_location.name as source_location_name,
+        public.report_lock_no(mt) as report_lock_no
+      from public.money_transfers mt
+      join public.money_transfer_cash_details d on d.transfer_id = mt.id
+      left join public.locations source_location on source_location.id = mt.location_id
+      where mt.transfer_type = 'cash' and mt.transfer_method = 'cash'
+        and mt.record_status <> 'deleted'
+        and mt.target_location_id = p_location_id
+        and d.cash_status = 'pending_receipt'
+    ), page as (
+      select * from pending order by sent_at asc, id asc limit 20
+    )
+    select jsonb_build_object(
+      'transfers', coalesce((select jsonb_agg(jsonb_build_object(
+        'id', id,
+        'locationId', location_id,
+        'sourceLocationName', source_location_name,
+        'targetLocationId', target_location_id,
+        'targetLocationName', target_location_name,
+        'createdByUserId', created_by_user_id,
+        'createdByName', created_by_name,
+        'createdByPhone', created_by_phone,
+        'sentTotal', sent_total,
+        'status', cash_status,
+        'note', note,
+        'sentAt', sent_at,
+        'reportLockNo', report_lock_no
+      ) order by sent_at asc, id asc) from page), '[]'::jsonb),
+      'total', (select count(*) from pending)
+    )
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_cash_branch_transfer_pending_summary"("p_location_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_cash_count_session"("p_location_id" "uuid") RETURNS "jsonb"
@@ -11207,6 +11900,126 @@ $$;
 ALTER FUNCTION "public"."get_effective_rubber_approval_settings"("p_location_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."get_export_vehicle_weigh_bill_detail"("p_wex_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_wex public.export_vehicle_weigh_bills%rowtype;
+  v_location_name text;
+  v_vehicle_count integer;
+  v_rubber_export_count integer;
+  v_vehicle_net numeric(14,2);
+  v_reserved_weight numeric(14,2);
+  v_lines jsonb;
+  v_rubber_exports jsonb;
+begin
+  select * into v_wex
+  from public.export_vehicle_weigh_bills w
+  where w.id = p_wex_id;
+  if v_wex.id is null then
+    raise exception 'WEX_NOT_FOUND: ไม่พบบิลรถส่งออก';
+  end if;
+  if not private.can_manage_reports(v_wex.location_id) then
+    raise exception 'WEX_FORBIDDEN: ไม่มีสิทธิ์ดูบิลรถส่งออกของสาขานี้';
+  end if;
+
+  select l.name into v_location_name
+  from public.locations l where l.id = v_wex.location_id;
+  select count(*)::integer, coalesce(round(sum(l.net_weight), 2), 0),
+    coalesce(jsonb_agg(jsonb_build_object(
+      'id', l.id,
+      'sequenceNo', l.sequence_no,
+      'vehicleRegistration', l.vehicle_registration,
+      'carrierId', l.carrier_id,
+      'carrierName', l.carrier_name,
+      'inboundAt', l.inbound_at,
+      'inboundWeight', l.inbound_weight,
+      'outboundAt', l.outbound_at,
+      'outboundWeight', l.outbound_weight,
+      'netWeight', l.net_weight
+    ) order by l.sequence_no), '[]'::jsonb)
+  into v_vehicle_count, v_vehicle_net, v_lines
+  from public.export_vehicle_weigh_lines l
+  where l.wex_id = v_wex.id;
+
+  select count(*)::integer, coalesce(round(sum(r.current_weight), 2), 0),
+    coalesce(jsonb_agg(jsonb_build_object(
+      'rubberExportId', r.rubber_export_id,
+      'exportNo', r.export_no,
+      'currentWeight', r.current_weight
+    ) order by r.sequence_no), '[]'::jsonb)
+  into v_rubber_export_count, v_reserved_weight, v_rubber_exports
+  from public.export_vehicle_weigh_bill_reservations r
+  where r.wex_id = v_wex.id;
+
+  return jsonb_build_object(
+    'id', v_wex.id,
+    'wexNo', v_wex.wex_no,
+    'locationId', v_wex.location_id,
+    'locationName', v_location_name,
+    'revision', v_wex.revision,
+    'vehicleCount', v_vehicle_count,
+    'rubberExportCount', v_rubber_export_count,
+    'vehicleNetWeight', v_vehicle_net,
+    'reservedRubberWeight', v_reserved_weight,
+    'remainingWeight', v_vehicle_net - v_reserved_weight,
+    'createdByName', v_wex.created_by_name,
+    'createdAt', v_wex.created_at,
+    'updatedAt', v_wex.updated_at,
+    'lines', v_lines,
+    'rubberExports', v_rubber_exports
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_export_vehicle_weigh_bill_detail"("p_wex_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_export_vehicle_weigh_bill_options"("p_location_id" "uuid", "p_wex_id" "uuid" DEFAULT NULL::"uuid") RETURNS TABLE("rubber_export_id" "uuid", "export_no" "text", "current_weight" numeric, "reserved_by_current_wex" boolean)
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_wex_location_id uuid;
+begin
+  if p_location_id is null or not private.can_manage_reports(p_location_id) then
+    raise exception 'WEX_FORBIDDEN: ไม่มีสิทธิ์ดูรายการขายยางของสาขานี้';
+  end if;
+  if p_wex_id is not null then
+    select w.location_id into v_wex_location_id
+    from public.export_vehicle_weigh_bills w
+    where w.id = p_wex_id;
+    if v_wex_location_id is null then
+      raise exception 'WEX_NOT_FOUND: ไม่พบบิลรถส่งออก';
+    end if;
+    if v_wex_location_id <> p_location_id then
+      raise exception 'WEX_FORBIDDEN: บิลรถส่งออกไม่อยู่ในสาขานี้';
+    end if;
+  end if;
+
+  return query
+  select
+    e.id, e.export_no, e.current_weight,
+    coalesce(r.wex_id = p_wex_id, false)
+  from public.rubber_exports e
+  left join public.export_vehicle_weigh_bill_reservations r
+    on r.rubber_export_id = e.id
+  where e.location_id = p_location_id
+    and e.status = 'verified'
+    and e.sold_out_at is not null
+    and e.current_weight is not null
+    and e.current_weight > 0
+    and (r.id is null or r.wex_id = p_wex_id)
+  order by e.sold_out_at desc, e.id desc;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_export_vehicle_weigh_bill_options"("p_location_id" "uuid", "p_wex_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."get_income_expense_feed"("p_location_id" "uuid", "p_from_date" "date", "p_to_date" "date", "p_cursor_date" "date" DEFAULT NULL::"date", "p_cursor_key" "text" DEFAULT NULL::"text", "p_page_size" integer DEFAULT 100) RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -11513,6 +12326,756 @@ $$;
 
 
 ALTER FUNCTION "public"."get_income_expense_feed"("p_location_id" "uuid", "p_from_date" "date", "p_to_date" "date", "p_cursor_date" "date", "p_cursor_key" "text", "p_page_size" integer) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_income_expense_operational_feed"("p_location_id" "uuid", "p_mode" "text" DEFAULT 'latest'::"text", "p_search" "text" DEFAULT ''::"text", "p_cursor" "text" DEFAULT NULL::"text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $_$
+declare
+  v_search text := lower(regexp_replace(btrim(coalesce(p_search, '')), '\s+', ' ', 'g'));
+  v_cursor jsonb;
+  v_cursor_date date;
+  v_cursor_key text;
+  v_pending_count integer := 0;
+begin
+  if p_mode <> 'latest' or v_search <> '' then
+    return public.get_income_expense_operational_feed_on_demand(
+      p_location_id, p_mode, v_search, p_cursor
+    );
+  end if;
+
+  if not private.is_active_user() or not private.can_access_location(p_location_id) then
+    raise exception 'Location access denied';
+  end if;
+
+  if p_cursor is not null then
+    begin
+      if length(p_cursor) > 4096 or length(p_cursor) % 2 <> 0 or p_cursor !~ '^[0-9a-f]+$' then
+        raise exception 'Invalid cursor';
+      end if;
+      v_cursor := convert_from(decode(p_cursor, 'hex'), 'utf8')::jsonb;
+    exception when others then raise exception 'Invalid cursor'; end;
+    if coalesce((v_cursor->>'v')::integer, 0) <> 1
+      or v_cursor->>'locationId' is distinct from p_location_id::text
+      or v_cursor->>'mode' is distinct from 'latest'
+      or v_cursor->>'search' is distinct from ''
+      or v_cursor->>'sort' is distinct from 'tx_date_desc'
+    then raise exception 'Cursor scope mismatch'; end if;
+    begin
+      v_cursor_date := (v_cursor->>'date')::date;
+      v_cursor_key := nullif(v_cursor->>'key', '');
+      if v_cursor_key is null then raise exception 'Invalid cursor'; end if;
+    exception when others then raise exception 'Invalid cursor'; end;
+  end if;
+
+  if private.can_access_super_admin_features() then
+    select
+      (select count(*) from public.income_expense_approval_requests r
+       where r.location_id = p_location_id and r.request_status = 'pending')
+      +
+      (select count(*) from public.cash_transfer_delete_requests r
+       where r.source_location_id = p_location_id and r.request_status = 'pending')
+    into v_pending_count;
+  end if;
+
+  return (
+    with candidates as (
+      select * from (
+        select 'actual'::text source_kind, ie.id source_id, null::date source_date,
+          ie.tx_date sort_date, 'actual:' || ie.id::text sort_key
+        from public.income_expense ie
+        where ie.location_id = p_location_id and ie.record_status = 'active'
+          and (v_cursor_date is null or (ie.tx_date, 'actual:' || ie.id::text) < (v_cursor_date, v_cursor_key))
+        order by ie.tx_date desc, ('actual:' || ie.id::text) desc limit 101
+      ) actual
+      union all
+      select * from (
+        select 'branch_income', mt.id, null::date,
+          (mt.created_at at time zone 'Asia/Bangkok')::date d, 'transfer-income:' || mt.id::text k
+        from public.money_transfers mt
+        where mt.transfer_type = 'branch' and mt.target_location_id = p_location_id
+          and mt.record_status <> 'deleted' and mt.transfer_status <> 'cancelled' and mt.net_amount_to_pay > 0
+          and (v_cursor_date is null or ((mt.created_at at time zone 'Asia/Bangkok')::date,
+            'transfer-income:' || mt.id::text) < (v_cursor_date, v_cursor_key))
+        order by d desc, k desc limit 101
+      ) branch_income
+      union all
+      select * from (
+        select 'branch_expense', mt.id, null::date,
+          (mt.created_at at time zone 'Asia/Bangkok')::date d, 'transfer-expense:' || mt.id::text k
+        from public.money_transfers mt
+        where mt.transfer_type = 'branch' and mt.location_id = p_location_id
+          and mt.target_location_id <> mt.location_id and mt.record_status <> 'deleted'
+          and mt.transfer_status <> 'cancelled' and mt.net_amount_to_pay > 0
+          and (v_cursor_date is null or ((mt.created_at at time zone 'Asia/Bangkok')::date,
+            'transfer-expense:' || mt.id::text) < (v_cursor_date, v_cursor_key))
+        order by d desc, k desc limit 101
+      ) branch_expense
+      union all
+      select * from (
+        select 'customer_branch_paid', mt.id, null::date,
+          (mt.created_at at time zone 'Asia/Bangkok')::date d, 'customer-transfer-expense:' || mt.id::text k
+        from public.money_transfers mt
+        where mt.transfer_type = 'customer' and mt.transfer_status = 'branch_and_transfer'
+          and mt.location_id = p_location_id and mt.record_status <> 'deleted' and mt.branch_paid_amount > 0
+          and (v_cursor_date is null or ((mt.created_at at time zone 'Asia/Bangkok')::date,
+            'customer-transfer-expense:' || mt.id::text) < (v_cursor_date, v_cursor_key))
+        order by d desc, k desc limit 101
+      ) customer_branch_paid
+      union all
+      select * from (
+        select 'cash_expense', mt.id, null::date,
+          (d.sent_at at time zone 'Asia/Bangkok')::date sd, 'cash-transfer-expense:' || mt.id::text k
+        from public.money_transfers mt join public.money_transfer_cash_details d on d.transfer_id = mt.id
+        where mt.transfer_type = 'cash' and mt.transfer_method = 'cash'
+          and mt.location_id = p_location_id and mt.record_status <> 'deleted'
+          and (v_cursor_date is null or ((d.sent_at at time zone 'Asia/Bangkok')::date,
+            'cash-transfer-expense:' || mt.id::text) < (v_cursor_date, v_cursor_key))
+        order by sd desc, k desc limit 101
+      ) cash_expense
+      union all
+      select * from (
+        select 'cash_income', mt.id, null::date,
+          (d.received_at at time zone 'Asia/Bangkok')::date rd, 'cash-transfer-income:' || mt.id::text k
+        from public.money_transfers mt join public.money_transfer_cash_details d on d.transfer_id = mt.id
+        where mt.transfer_type = 'cash' and mt.transfer_method = 'cash'
+          and mt.target_location_id = p_location_id and mt.record_status <> 'deleted'
+          and d.cash_status in ('received', 'mismatched', 'difference_accepted')
+          and d.received_at is not null
+          and (v_cursor_date is null or ((d.received_at at time zone 'Asia/Bangkok')::date,
+            'cash-transfer-income:' || mt.id::text) < (v_cursor_date, v_cursor_key))
+        order by rd desc, k desc limit 101
+      ) cash_income
+      union all
+      select * from (
+        select 'withdrawal', ft.id, null::date,
+          (ft.approved_at at time zone 'Asia/Bangkok')::date d, 'time-tracking-withdrawal:' || ft.id::text k
+        from public.financial_transactions ft
+        where ft.type = 'WITHDRAWAL' and ft.status = 'APPROVED' and ft.cancelled_at is null
+          and ft.expense_location_id = p_location_id and ft.amount > 0
+          and (v_cursor_date is null or ((ft.approved_at at time zone 'Asia/Bangkok')::date,
+            'time-tracking-withdrawal:' || ft.id::text) < (v_cursor_date, v_cursor_key))
+        order by d desc, k desc limit 101
+      ) withdrawal
+      union all
+      select * from (
+        select 'payroll', ps.id, null::date,
+          (ps.approved_at at time zone 'Asia/Bangkok')::date d, 'payroll-slip:' || ps.id::text k
+        from public.payroll_slips ps
+        where ps.status = 'APPROVED' and ps.net_pay > 0 and ps.cancelled_at is null
+          and ps.expense_location_id = p_location_id
+          and (v_cursor_date is null or ((ps.approved_at at time zone 'Asia/Bangkok')::date,
+            'payroll-slip:' || ps.id::text) < (v_cursor_date, v_cursor_key))
+        order by d desc, k desc limit 101
+      ) payroll
+      union all
+      select * from (
+        select 'rubber_export', e.id, null::date,
+          (e.verified_at at time zone 'Asia/Bangkok')::date d, 'rubber-export-expense:' || e.id::text k
+        from public.rubber_exports e
+        where e.location_id = p_location_id and e.status = 'verified'
+          and e.expense_destination = 'branch' and e.work_total > 0
+          and (v_cursor_date is null or ((e.verified_at at time zone 'Asia/Bangkok')::date,
+            'rubber-export-expense:' || e.id::text) < (v_cursor_date, v_cursor_key))
+        order by d desc, k desc limit 101
+      ) rubber_export
+      union all
+      select * from (
+        select 'rubber_daily', null::uuid, b.bill_date, b.bill_date d, 'rubber:' || b.bill_date::text k
+        from public.rubber_bills b
+        where b.location_id = p_location_id and b.record_status = 'active' and b.net_total > 0
+          and private.rubber_bill_is_payable(b.id)
+          and not exists (select 1 from public.money_transfer_items i
+            where i.source_type = 'rubber_bill' and i.source_id = b.id)
+          and (v_cursor_date is null or (b.bill_date, 'rubber:' || b.bill_date::text) < (v_cursor_date, v_cursor_key))
+        group by b.bill_date order by d desc, k desc limit 101
+      ) rubber_daily
+    ), page as (
+      select * from candidates order by sort_date desc, sort_key desc limit 101
+    ), numbered as (
+      select *, row_number() over (order by sort_date desc, sort_key desc) row_no from page
+    ), rows as (
+      select n.*, private.income_expense_operational_row(
+        p_location_id, n.source_kind, n.source_id, n.source_date
+      ) row_data
+      from numbered n where n.row_no <= 100
+    )
+    select jsonb_build_object(
+      'rows', coalesce((select jsonb_agg(row_data order by sort_date desc, sort_key desc) from rows), '[]'::jsonb),
+      'nextCursor', case when (select count(*) from numbered) > 100 then
+        (select encode(convert_to(jsonb_build_object(
+          'v', 1, 'locationId', p_location_id, 'mode', 'latest', 'search', '',
+          'sort', 'tx_date_desc', 'date', sort_date, 'key', sort_key
+        )::text, 'utf8'), 'hex') from numbered where row_no = 100)
+        else null end,
+      'hasMore', (select count(*) from numbered) > 100,
+      'pendingApprovalCount', v_pending_count
+    )
+  );
+end;
+$_$;
+
+
+ALTER FUNCTION "public"."get_income_expense_operational_feed"("p_location_id" "uuid", "p_mode" "text", "p_search" "text", "p_cursor" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_income_expense_operational_feed_on_demand"("p_location_id" "uuid", "p_mode" "text" DEFAULT 'latest'::"text", "p_search" "text" DEFAULT ''::"text", "p_cursor" "text" DEFAULT NULL::"text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $_$
+declare
+  v_search text := lower(regexp_replace(btrim(coalesce(p_search, '')), '\s+', ' ', 'g'));
+  v_can_manage boolean := private.can_access_super_admin_features();
+  v_pending_count integer := 0;
+  v_cursor jsonb;
+  v_cursor_date date;
+  v_cursor_at timestamptz;
+  v_cursor_key text;
+begin
+  if not private.is_active_user() or not private.can_access_location(p_location_id) then
+    raise exception 'Location access denied';
+  end if;
+  if p_mode not in ('latest', 'pending_approval') then
+    raise exception 'Invalid feed mode';
+  end if;
+  if length(v_search) > 200 then
+    raise exception 'Invalid search';
+  end if;
+  if p_mode = 'pending_approval' and not coalesce(v_can_manage, false) then
+    raise exception 'Approval access denied';
+  end if;
+
+  if p_cursor is not null then
+    begin
+      if length(p_cursor) > 4096
+        or length(p_cursor) % 2 <> 0
+        or p_cursor !~ '^[0-9a-f]+$'
+      then
+        raise exception 'Invalid cursor';
+      end if;
+      v_cursor := convert_from(decode(p_cursor, 'hex'), 'utf8')::jsonb;
+    exception when others then
+      raise exception 'Invalid cursor';
+    end;
+
+    if coalesce((v_cursor->>'v')::integer, 0) <> 1
+      or v_cursor->>'locationId' is distinct from p_location_id::text
+      or v_cursor->>'mode' is distinct from p_mode
+      or v_cursor->>'search' is distinct from v_search
+      or v_cursor->>'sort' is distinct from
+        (case when p_mode = 'latest' then 'tx_date_desc' else 'requested_at_asc' end)
+    then
+      raise exception 'Cursor scope mismatch';
+    end if;
+
+    begin
+      v_cursor_key := nullif(v_cursor->>'key', '');
+      if p_mode = 'latest' then
+        v_cursor_date := (v_cursor->>'date')::date;
+      else
+        v_cursor_at := (v_cursor->>'at')::timestamptz;
+      end if;
+      if v_cursor_key is null then raise exception 'Invalid cursor'; end if;
+    exception when others then
+      raise exception 'Invalid cursor';
+    end;
+  end if;
+
+  if coalesce(v_can_manage, false) then
+    select
+      (select count(*) from public.income_expense_approval_requests r
+       where r.location_id = p_location_id and r.request_status = 'pending')
+      +
+      (select count(*) from public.cash_transfer_delete_requests r
+       where r.source_location_id = p_location_id and r.request_status = 'pending')
+    into v_pending_count;
+  end if;
+
+  if p_mode = 'pending_approval' then
+    return (
+      with candidates as (
+        select
+          r.created_at as sort_at,
+          'income:' || r.id::text as sort_key,
+          lower(regexp_replace(concat_ws(' ',
+            coalesce(r.requested_payload->>'number', r.requested_payload->>'serverBillNo', r.requested_payload->>'localBillNo'),
+            coalesce(r.requested_payload->>'txDate', (r.created_at at time zone 'Asia/Bangkok')::date::text),
+            r.title, coalesce(r.requested_payload->>'billOption', r.tx_type),
+            r.requested_by_name, r.requested_by_phone
+          ), '\s+', ' ', 'g')) as search_text,
+          jsonb_strip_nulls(jsonb_build_object(
+            'id', 'approval-income:' || r.id,
+            'clientTempId', coalesce(r.requested_payload->>'clientTempId', r.id::text),
+            'localBillNo', coalesce(r.requested_payload->>'localBillNo', 'REQ-' || left(r.id::text, 8)),
+            'serverBillNo', r.requested_payload->>'serverBillNo',
+            'idempotencyKey', r.request_idempotency_key,
+            'locationId', r.location_id,
+            'syncStatus', 'pending', 'recordStatus', 'active',
+            'type', r.tx_type,
+            'number', coalesce(r.requested_payload->>'number', r.requested_payload->>'serverBillNo', r.requested_payload->>'localBillNo', 'REQ-' || left(r.id::text, 8)),
+            'txDate', case when coalesce(r.requested_payload->>'txDate', '') ~ '^\d{4}-\d{2}-\d{2}$'
+              then r.requested_payload->>'txDate'
+              else (r.created_at at time zone 'Asia/Bangkok')::date::text end,
+            'title', r.title, 'cost', r.cost,
+            'billOption', coalesce(r.requested_payload->>'billOption', case when r.tx_type = 'income' then 'รายรับ' else 'ค่าใช้จ่าย' end),
+            'clientRecordedAt', coalesce(r.requested_payload->>'clientRecordedAt', r.created_at::text),
+            'clientCreatedAt', coalesce(r.requested_payload->>'clientCreatedAt', r.created_at::text),
+            'serverReceivedAt', r.created_at,
+            'revisionNo', coalesce((r.requested_payload->>'expectedRevisionNo')::integer, 0),
+            'createdByUserId', r.requested_by_user_id,
+            'createdByName', r.requested_by_name,
+            'createdByPhone', r.requested_by_phone,
+            'approvalPending', true,
+            'approvalRequestId', r.id,
+            'approvalRequestType', 'income_expense',
+            'approvalOperation', r.requested_operation,
+            'approvalReasons', to_jsonb(r.matched_reasons)
+          )) as row_data
+        from public.income_expense_approval_requests r
+        where r.location_id = p_location_id and r.request_status = 'pending'
+
+        union all
+
+        select
+          r.created_at,
+          'cash-delete:' || r.id::text,
+          lower(regexp_replace(concat_ws(' ', r.transfer_display_no,
+            (r.created_at at time zone 'Asia/Bangkok')::date::text,
+            'ลบรายการโยกเงินสด', r.source_location_name, r.target_location_name,
+            r.requested_by_name, r.requested_by_phone
+          ), '\s+', ' ', 'g')),
+          jsonb_strip_nulls(jsonb_build_object(
+            'id', 'approval-cash-delete:' || r.id,
+            'clientTempId', 'approval-cash-delete:' || r.id,
+            'localBillNo', r.transfer_display_no,
+            'serverBillNo', r.transfer_display_no,
+            'idempotencyKey', 'approval-cash-delete:' || r.id,
+            'locationId', r.source_location_id,
+            'syncStatus', 'pending', 'recordStatus', 'active',
+            'type', 'expense', 'number', r.transfer_display_no,
+            'txDate', (r.created_at at time zone 'Asia/Bangkok')::date,
+            'title', 'คำขอลบรายการโยกเงินสด — ' || r.source_location_name || ' → ' || r.target_location_name,
+            'cost', r.sent_total, 'billOption', 'ค่าใช้จ่าย',
+            'clientRecordedAt', r.created_at, 'clientCreatedAt', r.created_at,
+            'serverReceivedAt', r.updated_at, 'revisionNo', 0,
+            'createdByUserId', r.requested_by_user_id,
+            'createdByName', r.requested_by_name,
+            'createdByPhone', r.requested_by_phone,
+            'relationSourceType', 'money_transfer',
+            'relationSourceId', case when r.transfer_id is null then null else 'cash:' || r.transfer_id end,
+            'relationSourceLocationId', r.source_location_id,
+            'relationLabel', 'รอตรวจคำขอลบ',
+            'relationLockReason', 'รายการนี้เป็นคำขอลบการโยกเงินสด ต้องตรวจคำขอก่อนดำเนินการ',
+            'approvalPending', true,
+            'approvalRequestId', r.id,
+            'approvalRequestType', 'cash_transfer_delete',
+            'approvalOperation', 'delete',
+            'approvalReasons', '[]'::jsonb
+          ))
+        from public.cash_transfer_delete_requests r
+        where r.source_location_id = p_location_id and r.request_status = 'pending'
+      ), page as (
+        select *
+        from candidates c
+        where (v_search = '' or position(v_search in c.search_text) > 0)
+          and (v_cursor_at is null or (c.sort_at, c.sort_key) > (v_cursor_at, v_cursor_key))
+        order by c.sort_at asc, c.sort_key asc
+        limit 101
+      ), numbered as (
+        select *, row_number() over (order by sort_at asc, sort_key asc) as row_no
+        from page
+      )
+      select jsonb_build_object(
+        'rows', coalesce((select jsonb_agg(row_data order by sort_at asc, sort_key asc)
+          from numbered where row_no <= 100), '[]'::jsonb),
+        'nextCursor', case when (select count(*) from numbered) > 100 then
+          (select encode(convert_to(jsonb_build_object(
+            'v', 1, 'locationId', p_location_id, 'mode', p_mode, 'search', v_search,
+            'sort', 'requested_at_asc', 'at', sort_at, 'key', sort_key
+          )::text, 'utf8'), 'hex') from numbered where row_no = 100)
+          else null end,
+        'hasMore', (select count(*) from numbered) > 100,
+        'pendingApprovalCount', v_pending_count
+      )
+    );
+  end if;
+
+  return (
+    with candidates as (
+      select
+        ie.tx_date as sort_date,
+        'actual:' || ie.id::text as sort_key,
+        lower(regexp_replace(concat_ws(' ', ie.number, ie.server_bill_no, ie.local_bill_no,
+          ie.tx_date::text, ie.title, ie.bill_option, ie.type::text,
+          ie.created_by_name, ie.created_by_phone
+        ), '\s+', ' ', 'g')) as search_text,
+        jsonb_strip_nulls(jsonb_build_object(
+          'id', ie.id, 'clientTempId', coalesce(ie.client_temp_id, ie.id::text),
+          'localBillNo', ie.local_bill_no, 'serverBillNo', ie.server_bill_no,
+          'idempotencyKey', coalesce(ie.idempotency_key, 'server:' || ie.id::text),
+          'locationId', ie.location_id, 'syncStatus', 'synced', 'recordStatus', ie.record_status,
+          'type', ie.type, 'number', coalesce(ie.number, ie.server_bill_no, ie.local_bill_no),
+          'txDate', ie.tx_date, 'title', ie.title, 'cost', ie.cost,
+          'unit', ie.unit, 'price', ie.price,
+          'incomeSaleItemId', ie.income_sale_item_id,
+          'stockProductId', ie.stock_product_id, 'stockQuantity', ie.stock_quantity,
+          'billOption', ie.bill_option,
+          'clientRecordedAt', coalesce(ie.client_recorded_at, ie.created_at),
+          'clientCreatedAt', coalesce(ie.client_created_at, ie.created_at),
+          'serverReceivedAt', ie.server_received_at, 'revisionNo', ie.revision_no,
+          'createdByUserId', ie.created_by_user_id,
+          'createdByName', ie.created_by_name, 'createdByPhone', ie.created_by_phone,
+          'saleLineCount', (select count(*) from public.income_expense_sale_lines l where l.income_expense_id = ie.id),
+          'reportLockNo', public.report_lock_no(ie),
+          'relationLockReason', case when public.report_lock_no(ie) is not null
+            then 'ล็อกโดยรายงาน ' || public.report_lock_no(ie) || ' — ต้องลบรายงานล่าสุดตามลำดับก่อน' end
+        )) as row_data
+      from public.income_expense ie
+      where ie.location_id = p_location_id and ie.record_status = 'active'
+
+      union all
+
+      select
+        (mt.created_at at time zone 'Asia/Bangkok')::date,
+        'transfer-income:' || mt.id,
+        lower(regexp_replace(concat_ws(' ', 'TR-' || left(mt.id::text, 8),
+          (mt.created_at at time zone 'Asia/Bangkok')::date::text,
+          'รับโอนจาก', source_location.name, 'รายรับ', mt.created_by_name, mt.created_by_phone
+        ), '\s+', ' ', 'g')),
+        jsonb_strip_nulls(jsonb_build_object(
+          'id', 'money-transfer-income:' || mt.id, 'clientTempId', 'money-transfer-income:' || mt.id,
+          'localBillNo', 'TR-' || left(mt.id::text, 8), 'serverBillNo', 'TR-' || left(mt.id::text, 8),
+          'idempotencyKey', 'money-transfer:' || mt.id, 'locationId', mt.target_location_id,
+          'syncStatus', 'synced', 'recordStatus', 'active', 'type', 'income',
+          'number', 'TR-' || left(mt.id::text, 8),
+          'txDate', (mt.created_at at time zone 'Asia/Bangkok')::date,
+          'title', 'รับโอนจาก ' || coalesce(source_location.name, 'สาขาต้นทาง'),
+          'cost', mt.net_amount_to_pay, 'billOption', 'รายรับ',
+          'clientRecordedAt', mt.created_at, 'clientCreatedAt', mt.created_at,
+          'serverReceivedAt', mt.updated_at, 'revisionNo', mt.revision_no,
+          'createdByUserId', mt.created_by_user_id, 'createdByName', coalesce(mt.created_by_name, 'ระบบโอนเงิน'),
+          'createdByPhone', mt.created_by_phone, 'relationSourceType', 'money_transfer',
+          'relationSourceId', mt.id, 'relationSourceLocationId', mt.location_id,
+          'relationLabel', 'โอนเงินสาขา',
+          'relationLockReason', 'รายการนี้มาจากการโอนเงินสาขา ต้องแก้ไขหรือลบที่โมดูลโอนเงินต้นทาง',
+          'reportLockNo', public.report_lock_no(mt)
+        ))
+      from public.money_transfers mt
+      left join public.locations source_location on source_location.id = mt.location_id
+      where mt.transfer_type = 'branch' and mt.target_location_id = p_location_id
+        and mt.record_status <> 'deleted' and mt.transfer_status <> 'cancelled'
+        and mt.net_amount_to_pay > 0
+
+      union all
+
+      select
+        (mt.created_at at time zone 'Asia/Bangkok')::date,
+        'transfer-expense:' || mt.id,
+        lower(regexp_replace(concat_ws(' ', 'TR-' || left(mt.id::text, 8),
+          (mt.created_at at time zone 'Asia/Bangkok')::date::text,
+          'โยกเงินไป', mt.target_location_name, 'ค่าใช้จ่าย', mt.created_by_name, mt.created_by_phone
+        ), '\s+', ' ', 'g')),
+        jsonb_strip_nulls(jsonb_build_object(
+          'id', 'money-transfer-branch-expense:' || mt.id, 'clientTempId', 'money-transfer-branch-expense:' || mt.id,
+          'localBillNo', 'TR-' || left(mt.id::text, 8), 'serverBillNo', 'TR-' || left(mt.id::text, 8),
+          'idempotencyKey', 'money-transfer-branch-expense:' || mt.id, 'locationId', mt.location_id,
+          'syncStatus', 'synced', 'recordStatus', 'active', 'type', 'expense',
+          'number', 'TR-' || left(mt.id::text, 8),
+          'txDate', (mt.created_at at time zone 'Asia/Bangkok')::date,
+          'title', 'โยกเงินไป ' || coalesce(mt.target_location_name, 'สาขาปลายทาง'),
+          'cost', mt.net_amount_to_pay, 'billOption', 'ค่าใช้จ่าย',
+          'clientRecordedAt', mt.created_at, 'clientCreatedAt', mt.created_at,
+          'serverReceivedAt', mt.updated_at, 'revisionNo', mt.revision_no,
+          'createdByUserId', mt.created_by_user_id, 'createdByName', coalesce(mt.created_by_name, 'ระบบโอนเงิน'),
+          'createdByPhone', mt.created_by_phone, 'relationSourceType', 'money_transfer',
+          'relationSourceId', mt.id, 'relationSourceLocationId', mt.location_id,
+          'relationLabel', 'โอนเงินสาขา',
+          'relationLockReason', 'รายการนี้มาจากการโอนเงินสาขา ต้องแก้ไขหรือลบที่โมดูลโอนเงินต้นทาง',
+          'reportLockNo', public.report_lock_no(mt)
+        ))
+      from public.money_transfers mt
+      where mt.transfer_type = 'branch' and mt.location_id = p_location_id
+        and mt.target_location_id <> mt.location_id and mt.record_status <> 'deleted'
+        and mt.transfer_status <> 'cancelled' and mt.net_amount_to_pay > 0
+
+      union all
+
+      select
+        (mt.created_at at time zone 'Asia/Bangkok')::date,
+        'customer-transfer-expense:' || mt.id,
+        lower(regexp_replace(concat_ws(' ', 'CT-' || left(mt.id::text, 8),
+          (mt.created_at at time zone 'Asia/Bangkok')::date::text,
+          'สาขาจ่ายส่วนต่างให้', mt.customer_name, 'ค่าใช้จ่าย', mt.created_by_name, mt.created_by_phone
+        ), '\s+', ' ', 'g')),
+        jsonb_strip_nulls(jsonb_build_object(
+          'id', 'money-transfer-branch-paid-expense:' || mt.id,
+          'clientTempId', 'money-transfer-branch-paid-expense:' || mt.id,
+          'localBillNo', 'CT-' || left(mt.id::text, 8), 'serverBillNo', 'CT-' || left(mt.id::text, 8),
+          'idempotencyKey', 'money-transfer-branch-paid:' || mt.id, 'locationId', mt.location_id,
+          'syncStatus', 'synced', 'recordStatus', 'active', 'type', 'expense',
+          'number', 'CT-' || left(mt.id::text, 8),
+          'txDate', (mt.created_at at time zone 'Asia/Bangkok')::date,
+          'title', 'สาขาจ่ายส่วนต่างให้ ' || coalesce(mt.customer_name, 'ลูกค้า'),
+          'cost', mt.branch_paid_amount, 'billOption', 'ค่าใช้จ่าย',
+          'clientRecordedAt', mt.created_at, 'clientCreatedAt', mt.created_at,
+          'serverReceivedAt', mt.updated_at, 'revisionNo', mt.revision_no,
+          'createdByUserId', mt.created_by_user_id, 'createdByName', coalesce(mt.created_by_name, 'ระบบโอนเงิน'),
+          'createdByPhone', mt.created_by_phone, 'relationSourceType', 'money_transfer',
+          'relationSourceId', mt.id, 'relationSourceLocationId', mt.location_id,
+          'relationLabel', 'โอน+สาขาจ่าย',
+          'relationLockReason', 'รายการนี้มาจากโอนเงินลูกค้าแบบโอน+สาขาจ่าย ต้องแก้ไขหรือลบที่โมดูลโอนเงินลูกค้าต้นทาง',
+          'reportLockNo', public.report_lock_no(mt)
+        ))
+      from public.money_transfers mt
+      where mt.transfer_type = 'customer' and mt.transfer_status = 'branch_and_transfer'
+        and mt.location_id = p_location_id and mt.record_status <> 'deleted'
+        and mt.branch_paid_amount > 0
+
+      union all
+
+      select
+        (d.sent_at at time zone 'Asia/Bangkok')::date,
+        'cash-transfer-expense:' || mt.id,
+        lower(regexp_replace(concat_ws(' ', 'CASH-' || left(mt.id::text, 8),
+          (d.sent_at at time zone 'Asia/Bangkok')::date::text,
+          'โยกเงินสดไป', mt.target_location_name, 'ค่าใช้จ่าย', mt.created_by_name, mt.created_by_phone
+        ), '\s+', ' ', 'g')),
+        jsonb_strip_nulls(jsonb_build_object(
+          'id', 'cash-transfer-expense:' || mt.id, 'clientTempId', 'cash-transfer-expense:' || mt.id,
+          'localBillNo', 'CASH-' || left(mt.id::text, 8), 'serverBillNo', 'CASH-' || left(mt.id::text, 8),
+          'idempotencyKey', 'cash-transfer-expense:' || mt.id, 'locationId', mt.location_id,
+          'syncStatus', 'synced', 'recordStatus', 'active', 'type', 'expense',
+          'number', 'CASH-' || left(mt.id::text, 8),
+          'txDate', (d.sent_at at time zone 'Asia/Bangkok')::date,
+          'title', 'โยกเงินสดไป ' || coalesce(mt.target_location_name, 'สาขาปลายทาง'),
+          'cost', d.sent_total, 'billOption', 'ค่าใช้จ่าย',
+          'clientRecordedAt', d.sent_at, 'clientCreatedAt', d.sent_at,
+          'serverReceivedAt', d.updated_at, 'revisionNo', mt.revision_no,
+          'createdByUserId', mt.created_by_user_id, 'createdByName', mt.created_by_name,
+          'createdByPhone', mt.created_by_phone, 'relationSourceType', 'money_transfer',
+          'relationSourceId', 'cash:' || mt.id, 'relationSourceLocationId', mt.location_id,
+          'relationLabel', case when d.cash_status = 'pending_receipt' then 'รอรับเงิน'
+            when coalesce(d.difference_total, 0) <> 0 then 'รับเงินแล้ว · ผลต่าง '
+              || case when d.difference_total >= 0 then '+฿' else '-฿' end
+              || trim(to_char(abs(d.difference_total), 'FM999999999990'))
+            else 'รับเงินแล้ว' end,
+          'relationLockReason', 'รายการนี้มาจากการโยกเงินสด ต้องเปิดรายละเอียดเพื่อดูข้อมูล',
+          'reportLockNo', public.report_lock_no(mt),
+          'cashStatus', d.cash_status,
+          'cashSourceLocationLabel', source_location.name
+        ))
+      from public.money_transfers mt
+      join public.money_transfer_cash_details d on d.transfer_id = mt.id
+      left join public.locations source_location on source_location.id = mt.location_id
+      where mt.transfer_type = 'cash' and mt.transfer_method = 'cash'
+        and mt.location_id = p_location_id and mt.record_status <> 'deleted'
+
+      union all
+
+      select
+        (d.received_at at time zone 'Asia/Bangkok')::date,
+        'cash-transfer-income:' || mt.id,
+        lower(regexp_replace(concat_ws(' ', 'CASH-' || left(mt.id::text, 8),
+          (d.received_at at time zone 'Asia/Bangkok')::date::text,
+          'รับโอนเงินสดจาก', source_location.name, 'รายรับ', mt.created_by_name, mt.created_by_phone
+        ), '\s+', ' ', 'g')),
+        jsonb_strip_nulls(jsonb_build_object(
+          'id', 'cash-transfer-income:' || mt.id, 'clientTempId', 'cash-transfer-income:' || mt.id,
+          'localBillNo', 'CASH-' || left(mt.id::text, 8), 'serverBillNo', 'CASH-' || left(mt.id::text, 8),
+          'idempotencyKey', 'cash-transfer-income:' || mt.id, 'locationId', mt.target_location_id,
+          'syncStatus', 'synced', 'recordStatus', 'active', 'type', 'income',
+          'number', 'CASH-' || left(mt.id::text, 8),
+          'txDate', (d.received_at at time zone 'Asia/Bangkok')::date,
+          'title', 'รับโอนเงินสดจาก ' || coalesce(source_location.name, 'สาขาต้นทาง'),
+          'cost', d.received_total, 'billOption', 'รายรับ',
+          'clientRecordedAt', d.received_at, 'clientCreatedAt', d.received_at,
+          'serverReceivedAt', d.updated_at, 'revisionNo', mt.revision_no,
+          'createdByUserId', mt.created_by_user_id, 'createdByName', mt.created_by_name,
+          'createdByPhone', mt.created_by_phone, 'relationSourceType', 'money_transfer',
+          'relationSourceId', 'cash:' || mt.id, 'relationSourceLocationId', mt.location_id,
+          'relationLabel', case when coalesce(d.difference_total, 0) <> 0
+            then 'รับเงินแล้ว · ผลต่าง '
+              || case when d.difference_total >= 0 then '+฿' else '-฿' end
+              || trim(to_char(abs(d.difference_total), 'FM999999999990')) else 'รับเงินแล้ว' end,
+          'relationLockReason', 'รายการนี้มาจากการโยกเงินสด ต้องเปิดรายละเอียดเพื่อดูข้อมูล',
+          'reportLockNo', public.report_lock_no(mt),
+          'cashStatus', d.cash_status,
+          'cashSourceLocationLabel', source_location.name
+        ))
+      from public.money_transfers mt
+      join public.money_transfer_cash_details d on d.transfer_id = mt.id
+      left join public.locations source_location on source_location.id = mt.location_id
+      where mt.transfer_type = 'cash' and mt.transfer_method = 'cash'
+        and mt.target_location_id = p_location_id and mt.record_status <> 'deleted'
+        and d.cash_status in ('received', 'mismatched', 'difference_accepted')
+        and d.received_at is not null
+
+      union all
+
+      select
+        (ft.approved_at at time zone 'Asia/Bangkok')::date,
+        'time-tracking-withdrawal:' || ft.id,
+        lower(regexp_replace(concat_ws(' ', 'TW-' || left(ft.id::text, 8),
+          (ft.approved_at at time zone 'Asia/Bangkok')::date::text,
+          'เบิกเงิน', profile.name, ft.description, 'ค่าใช้จ่าย', profile.phone
+        ), '\s+', ' ', 'g')),
+        jsonb_strip_nulls(jsonb_build_object(
+          'id', 'time-tracking-withdrawal:' || ft.id, 'clientTempId', 'time-tracking-withdrawal:' || ft.id,
+          'localBillNo', 'TW-' || left(ft.id::text, 8), 'serverBillNo', 'TW-' || left(ft.id::text, 8),
+          'idempotencyKey', 'time-tracking-withdrawal:' || ft.id, 'locationId', ft.expense_location_id,
+          'syncStatus', 'synced', 'recordStatus', 'active', 'type', 'expense',
+          'number', 'TW-' || left(ft.id::text, 8),
+          'txDate', (ft.approved_at at time zone 'Asia/Bangkok')::date,
+          'title', 'เบิกเงิน — ' || coalesce(profile.name, 'พนักงาน') || coalesce(': ' || nullif(ft.description, ''), ''),
+          'cost', ft.amount, 'billOption', 'ค่าใช้จ่าย',
+          'clientRecordedAt', ft.approved_at, 'clientCreatedAt', ft.created_at,
+          'serverReceivedAt', ft.updated_at, 'revisionNo', 1,
+          'createdByUserId', ft.profile_id, 'createdByName', coalesce(profile.name, 'พนักงาน'),
+          'createdByPhone', profile.phone, 'relationSourceType', 'time_tracking_withdrawal',
+          'relationSourceId', ft.id, 'relationSourceLocationId', ft.expense_location_id,
+          'relationLabel', 'เบิกเงิน',
+          'relationLockReason', 'รายการนี้มาจากการเบิกเงินที่อนุมัติแล้ว ต้องแก้ไขสาขาหรือยกเลิกที่โมดูลลงเวลาต้นทาง',
+          'reportLockNo', public.report_lock_no(ft)
+        ))
+      from public.financial_transactions ft
+      join public.profiles profile on profile.id = ft.profile_id
+      where ft.type = 'WITHDRAWAL' and ft.status = 'APPROVED'
+        and ft.cancelled_at is null and ft.expense_location_id = p_location_id and ft.amount > 0
+
+      union all
+
+      select
+        (ps.approved_at at time zone 'Asia/Bangkok')::date,
+        'payroll-slip:' || ps.id,
+        lower(regexp_replace(concat_ws(' ', 'PS-' || left(ps.id::text, 8),
+          (ps.approved_at at time zone 'Asia/Bangkok')::date::text,
+          'เงินเดือน', profile.name, ps.month, 'ค่าใช้จ่าย', profile.phone
+        ), '\s+', ' ', 'g')),
+        jsonb_strip_nulls(jsonb_build_object(
+          'id', 'payroll-slip:' || ps.id, 'clientTempId', 'payroll-slip:' || ps.id,
+          'localBillNo', 'PS-' || left(ps.id::text, 8), 'serverBillNo', 'PS-' || left(ps.id::text, 8),
+          'idempotencyKey', 'payroll-slip:' || ps.id, 'locationId', ps.expense_location_id,
+          'syncStatus', 'synced', 'recordStatus', 'active', 'type', 'expense',
+          'number', 'PS-' || left(ps.id::text, 8),
+          'txDate', (ps.approved_at at time zone 'Asia/Bangkok')::date,
+          'title', 'เงินเดือน — ' || coalesce(profile.name, 'พนักงาน') || ' — ' || ps.month,
+          'cost', ps.net_pay, 'billOption', 'ค่าใช้จ่าย',
+          'clientRecordedAt', ps.approved_at, 'clientCreatedAt', ps.created_at,
+          'serverReceivedAt', ps.updated_at, 'revisionNo', 1,
+          'createdByUserId', ps.profile_id, 'createdByName', coalesce(profile.name, 'พนักงาน'),
+          'createdByPhone', profile.phone, 'relationSourceType', 'payroll_slip',
+          'relationSourceId', ps.id, 'relationSourceLocationId', ps.expense_location_id,
+          'relationLabel', 'เงินเดือน',
+          'relationLockReason', 'รายการนี้มาจากเงินเดือนที่อนุมัติแล้ว ต้องแก้ไขสาขาหรือยกเลิกที่โมดูลลงเวลาต้นทาง',
+          'reportLockNo', public.report_lock_no(ps)
+        ))
+      from public.payroll_slips ps
+      join public.profiles profile on profile.id = ps.profile_id
+      where ps.status = 'APPROVED' and ps.net_pay > 0 and ps.cancelled_at is null
+        and ps.expense_location_id = p_location_id
+
+      union all
+
+      select
+        (e.verified_at at time zone 'Asia/Bangkok')::date,
+        'rubber-export-expense:' || e.id,
+        lower(regexp_replace(concat_ws(' ', e.export_no,
+          (e.verified_at at time zone 'Asia/Bangkok')::date::text,
+          'ค่าทำงานส่งออกยาง', 'ค่าใช้จ่าย', e.created_by_name, e.created_by_phone
+        ), '\s+', ' ', 'g')),
+        jsonb_strip_nulls(jsonb_build_object(
+          'id', 'rubber-export-expense:' || e.id, 'clientTempId', 'rubber-export-expense:' || e.id,
+          'localBillNo', e.export_no, 'serverBillNo', e.export_no,
+          'idempotencyKey', 'rubber-export-expense:' || e.id, 'locationId', e.location_id,
+          'syncStatus', 'synced', 'recordStatus', 'active', 'type', 'expense',
+          'number', e.export_no, 'txDate', (e.verified_at at time zone 'Asia/Bangkok')::date,
+          'title', 'ค่าทำงานส่งออกยาง — ' || e.export_no,
+          'cost', e.work_total, 'billOption', 'ค่าใช้จ่าย',
+          'clientRecordedAt', e.verified_at, 'clientCreatedAt', e.created_at,
+          'serverReceivedAt', e.verified_at, 'revisionNo', 1,
+          'createdByUserId', e.created_by_user_id, 'createdByName', e.created_by_name,
+          'createdByPhone', e.created_by_phone, 'relationSourceType', 'rubber_export',
+          'relationSourceId', e.id, 'relationSourceLocationId', e.location_id,
+          'relationLabel', 'ส่งออกยาง',
+          'relationLockReason', 'รายการนี้มาจากรายการส่งออกยาง ต้องเปิดหรือจัดการที่โมดูลส่งออกยางต้นทาง',
+          'reportLockNo', public.report_lock_no(e)
+        ))
+      from public.rubber_exports e
+      where e.location_id = p_location_id and e.status = 'verified'
+        and e.expense_destination = 'branch' and e.work_total > 0
+
+      union all
+
+      select
+        rb.bill_date,
+        'rubber:' || rb.bill_date::text,
+        lower(regexp_replace(concat_ws(' ', 'RB-' || to_char(rb.bill_date, 'YYMMDD'),
+          rb.bill_date::text, 'จ่ายค่ายางจากบิลยาง', 'ค่าใช้จ่าย', 'ระบบบิลยาง'
+        ), '\s+', ' ', 'g')),
+        jsonb_strip_nulls(jsonb_build_object(
+          'id', 'rubber-bill-daily-expense:' || p_location_id || ':' || rb.bill_date,
+          'clientTempId', 'rubber-bill-daily-expense:' || p_location_id || ':' || rb.bill_date,
+          'localBillNo', 'RB-' || to_char(rb.bill_date, 'YYMMDD'),
+          'serverBillNo', 'RB-' || to_char(rb.bill_date, 'YYMMDD'),
+          'idempotencyKey', 'rubber-bill-daily-expense:' || p_location_id || ':' || rb.bill_date,
+          'locationId', p_location_id, 'syncStatus', 'synced', 'recordStatus', 'active',
+          'type', 'expense', 'number', 'RB-' || to_char(rb.bill_date, 'YYMMDD'),
+          'txDate', rb.bill_date,
+          'title', 'จ่ายค่ายางจากบิลยาง ' || rb.bill_count || ' ใบ',
+          'cost', rb.total, 'billOption', 'ค่าใช้จ่าย',
+          'clientRecordedAt', rb.recorded_at, 'clientCreatedAt', rb.recorded_at,
+          'serverReceivedAt', rb.updated_at, 'revisionNo', rb.revision_no,
+          'createdByUserId', '', 'createdByName', 'ระบบบิลยาง', 'createdByPhone', '',
+          'relationSourceType', 'rubber_bill_daily', 'relationSourceId', rb.bill_date,
+          'relationSourceLocationId', p_location_id, 'relationSourceDate', rb.bill_date,
+          'relationLabel', 'บิลยางรวมรายวัน',
+          'relationLockReason', 'รายการนี้มาจากบิลยาง ต้องแก้ไขหรือลบที่โมดูลบิลยางต้นทาง',
+          'reportLockNo', rb.report_lock_no
+        ))
+      from (
+        select b.bill_date, sum(b.net_total) as total, count(*) as bill_count,
+          max(coalesce(b.client_recorded_at, b.updated_at, b.created_at)) as recorded_at,
+          max(b.updated_at) as updated_at, max(b.revision_no) as revision_no,
+          max(public.report_lock_no(b)) as report_lock_no
+        from public.rubber_bills b
+        where b.location_id = p_location_id and b.record_status = 'active' and b.net_total > 0
+          and private.rubber_bill_is_payable(b.id)
+          and not exists (
+            select 1 from public.money_transfer_items i
+            where i.source_type = 'rubber_bill' and i.source_id = b.id
+          )
+        group by b.bill_date
+      ) rb
+    ), page as (
+      select *
+      from candidates c
+      where (v_search = '' or position(v_search in c.search_text) > 0)
+        and (v_cursor_date is null or (c.sort_date, c.sort_key) < (v_cursor_date, v_cursor_key))
+      order by c.sort_date desc, c.sort_key desc
+      limit 101
+    ), numbered as (
+      select *, row_number() over (order by sort_date desc, sort_key desc) as row_no
+      from page
+    )
+    select jsonb_build_object(
+      'rows', coalesce((select jsonb_agg(row_data order by sort_date desc, sort_key desc)
+        from numbered where row_no <= 100), '[]'::jsonb),
+      'nextCursor', case when (select count(*) from numbered) > 100 then
+        (select encode(convert_to(jsonb_build_object(
+          'v', 1, 'locationId', p_location_id, 'mode', p_mode, 'search', v_search,
+          'sort', 'tx_date_desc', 'date', sort_date, 'key', sort_key
+        )::text, 'utf8'), 'hex') from numbered where row_no = 100)
+        else null end,
+      'hasMore', (select count(*) from numbered) > 100,
+      'pendingApprovalCount', v_pending_count
+    )
+  );
+end;
+$_$;
+
+
+ALTER FUNCTION "public"."get_income_expense_operational_feed_on_demand"("p_location_id" "uuid", "p_mode" "text", "p_search" "text", "p_cursor" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_money_transfer_detail"("p_transfer_id" "uuid") RETURNS "jsonb"
@@ -15892,6 +17455,15 @@ begin
       v_actor_name := v_export.sold_out_by_name;
     end if;
   else
+    if exists (
+      select 1
+      from public.export_vehicle_weigh_bill_reservations r
+      where r.rubber_export_id = v_export.id
+    ) then
+      raise exception 'WEX_RESERVATION_LOCKED: รายการขายยางถูกจองโดยบิลรถส่งออก:%', v_export.export_no
+        using errcode = 'P0001',
+          hint = 'กรุณาถอดรายการขายยางออกจากบิลรถส่งออกก่อน';
+    end if;
     update public.rubber_exports
     set sold_out_at = null,
         sold_out_by_user_id = null,
@@ -17634,6 +19206,112 @@ $$;
 ALTER FUNCTION "public"."update_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."update_export_vehicle_weigh_bill"("p_wex_id" "uuid", "p_expected_revision" integer, "p_lines" "jsonb", "p_rubber_export_ids" "uuid"[]) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_wex public.export_vehicle_weigh_bills%rowtype;
+  v_actor public.profiles%rowtype;
+  v_now timestamptz := clock_timestamp();
+  v_vehicle_net numeric(14,2);
+  v_rubber_weight numeric(14,2);
+  v_lock_ids uuid[];
+begin
+  select * into v_wex
+  from public.export_vehicle_weigh_bills w
+  where w.id = p_wex_id
+  for update;
+  if v_wex.id is null then
+    raise exception 'WEX_NOT_FOUND: ไม่พบบิลรถส่งออก';
+  end if;
+  if not private.can_manage_reports(v_wex.location_id) then
+    raise exception 'WEX_FORBIDDEN: ไม่มีสิทธิ์แก้ไขบิลรถส่งออกของสาขานี้';
+  end if;
+  if p_expected_revision is null or p_expected_revision <> v_wex.revision then
+    raise exception 'WEX_STALE_REVISION: บิลรถส่งออกถูกแก้ไขแล้ว กรุณาโหลดข้อมูลใหม่';
+  end if;
+
+  perform 1 from private.normalized_export_vehicle_weigh_lines(v_wex.location_id, p_lines);
+  select coalesce(array_agg(distinct id order by id), array[]::uuid[])
+  into v_lock_ids
+  from (
+    select unnest(coalesce(p_rubber_export_ids, array[]::uuid[])) as id
+    union
+    select r.rubber_export_id
+    from public.export_vehicle_weigh_bill_reservations r
+    where r.wex_id = v_wex.id
+  ) locked;
+  perform e.id
+  from public.rubber_exports e
+  where e.id = any(v_lock_ids)
+  order by e.id
+  for update;
+
+  v_rubber_weight := private.validate_wex_rubber_exports(
+    v_wex.location_id, v_wex.id, p_rubber_export_ids
+  );
+  select * into v_actor
+  from public.profiles p
+  where p.id = auth.uid() and p.is_active = true;
+  if v_actor.id is null then
+    raise exception 'WEX_FORBIDDEN: บัญชีผู้ใช้ไม่พร้อมใช้งาน';
+  end if;
+
+  delete from public.export_vehicle_weigh_bill_reservations
+  where wex_id = v_wex.id;
+  delete from public.export_vehicle_weigh_lines
+  where wex_id = v_wex.id;
+
+  insert into public.export_vehicle_weigh_lines (
+    wex_id, sequence_no, vehicle_registration, carrier_id, carrier_name,
+    inbound_at, inbound_weight, outbound_at, outbound_weight
+  )
+  select
+    v_wex.id, l.sequence_no, l.vehicle_registration, l.carrier_id, l.carrier_name,
+    l.inbound_at, l.inbound_weight, l.outbound_at, l.outbound_weight
+  from private.normalized_export_vehicle_weigh_lines(v_wex.location_id, p_lines) l;
+
+  select round(sum(l.net_weight), 2)
+  into v_vehicle_net
+  from public.export_vehicle_weigh_lines l
+  where l.wex_id = v_wex.id;
+
+  if v_rubber_weight > v_vehicle_net then
+    raise exception 'WEX_OVERWEIGHT: น้ำหนักรายการขายยางรวมเกินน้ำหนักสุทธิรถ';
+  end if;
+
+  insert into public.export_vehicle_weigh_bill_reservations (
+    wex_id, rubber_export_id, sequence_no, export_no, current_weight, created_at
+  )
+  select
+    v_wex.id, e.id, selected.ordinality::integer, e.export_no, e.current_weight, v_now
+  from unnest(coalesce(p_rubber_export_ids, array[]::uuid[]))
+    with ordinality as selected(id, ordinality)
+  join public.rubber_exports e on e.id = selected.id
+  order by selected.ordinality;
+
+  update public.export_vehicle_weigh_bills
+  set revision = revision + 1,
+      updated_by_user_id = v_actor.id,
+      updated_by_name = v_actor.name,
+      updated_at = v_now
+  where id = v_wex.id
+  returning revision into v_wex.revision;
+
+  return jsonb_build_object(
+    'id', v_wex.id, 'wexNo', v_wex.wex_no, 'revision', v_wex.revision
+  );
+exception
+  when unique_violation then
+    raise exception 'WEX_REX_RESERVED: มีรายการขายยางถูกจองในบิลรถส่งออกอื่นแล้ว';
+end;
+$$;
+
+
+ALTER FUNCTION "public"."update_export_vehicle_weigh_bill"("p_wex_id" "uuid", "p_expected_revision" integer, "p_lines" "jsonb", "p_rubber_export_ids" "uuid"[]) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."update_rubber_approval_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_edit_window_minutes" integer, "p_configured_price" numeric) RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -17961,7 +19639,7 @@ CREATE TABLE IF NOT EXISTS "private"."document_number_counters" (
     "document_date" "date" NOT NULL,
     "last_sequence_no" integer NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "clock_timestamp"() NOT NULL,
-    CONSTRAINT "document_number_counters_document_kind_check" CHECK (("document_kind" = ANY (ARRAY['RPT'::"text", 'REX'::"text"]))),
+    CONSTRAINT "document_number_counters_document_kind_check" CHECK (("document_kind" = ANY (ARRAY['RPT'::"text", 'REX'::"text", 'WEX'::"text"]))),
     CONSTRAINT "document_number_counters_last_sequence_no_check" CHECK (("last_sequence_no" > 0))
 );
 
@@ -17969,7 +19647,7 @@ CREATE TABLE IF NOT EXISTS "private"."document_number_counters" (
 ALTER TABLE "private"."document_number_counters" OWNER TO "postgres";
 
 
-COMMENT ON TABLE "private"."document_number_counters" IS 'Durable per-location/date RPT and REX sequence state that survives source deletion.';
+COMMENT ON TABLE "private"."document_number_counters" IS 'Durable per-location/date RPT, REX, and WEX sequence state that survives source deletion.';
 
 
 
@@ -18485,15 +20163,99 @@ CREATE TABLE IF NOT EXISTS "public"."document_deletion_audits" (
     "created_at" timestamp with time zone DEFAULT "clock_timestamp"() NOT NULL,
     CONSTRAINT "document_deletion_audits_check" CHECK (((("document_kind" = 'rubber_export'::"text") AND ("previous_status" IS NOT NULL)) OR (("document_kind" <> 'rubber_export'::"text") AND ("previous_status" IS NULL)))),
     CONSTRAINT "document_deletion_audits_check1" CHECK (((("document_kind" = 'cash_count'::"text") AND ("paired_source_id" IS NOT NULL)) OR (("document_kind" <> 'cash_count'::"text") AND ("paired_source_id" IS NULL)))),
-    CONSTRAINT "document_deletion_audits_document_kind_check" CHECK (("document_kind" = ANY (ARRAY['report_batch'::"text", 'rubber_export'::"text", 'cash_count'::"text"]))),
-    CONSTRAINT "document_deletion_audits_previous_status_check" CHECK (("previous_status" = ANY (ARRAY['draft'::"text", 'verified'::"text"])))
+    CONSTRAINT "document_deletion_audits_document_kind_check" CHECK (("document_kind" = ANY (ARRAY['report_batch'::"text", 'rubber_export'::"text", 'cash_count'::"text", 'export_vehicle_weigh_bill'::"text"]))),
+    CONSTRAINT "document_deletion_audits_previous_status_check" CHECK (("previous_status" = ANY (ARRAY['draft'::"text", 'verified'::"text"]))),
+    CONSTRAINT "document_deletion_audits_wex_minimal_check" CHECK ((("document_kind" <> 'export_vehicle_weigh_bill'::"text") OR (("paired_source_id" IS NULL) AND ("previous_status" IS NULL) AND ("original_actor_user_id" IS NULL) AND ("original_actor_name" IS NULL))))
 );
 
 
 ALTER TABLE "public"."document_deletion_audits" OWNER TO "postgres";
 
 
-COMMENT ON TABLE "public"."document_deletion_audits" IS 'Permanent minimal audit for hard-deleted RPT, REX, and Cash Count aggregates; never stores business details.';
+COMMENT ON TABLE "public"."document_deletion_audits" IS 'Permanent minimal audit for hard-deleted RPT, REX, Cash Count, and WEX aggregates; never stores child or business-detail snapshots.';
+
+
+
+CREATE TABLE IF NOT EXISTS "public"."export_vehicle_weigh_bill_reservations" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "wex_id" "uuid" NOT NULL,
+    "rubber_export_id" "uuid" NOT NULL,
+    "sequence_no" integer NOT NULL,
+    "export_no" "text" NOT NULL,
+    "current_weight" numeric(14,2) NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "clock_timestamp"() NOT NULL,
+    CONSTRAINT "export_vehicle_weigh_bill_reservations_current_weight_check" CHECK (("current_weight" > (0)::numeric)),
+    CONSTRAINT "export_vehicle_weigh_bill_reservations_export_no_check" CHECK ((NULLIF("btrim"("export_no"), ''::"text") IS NOT NULL)),
+    CONSTRAINT "export_vehicle_weigh_bill_reservations_sequence_no_check" CHECK (("sequence_no" > 0))
+);
+
+
+ALTER TABLE "public"."export_vehicle_weigh_bill_reservations" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."export_vehicle_weigh_bills" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "wex_no" "text" NOT NULL,
+    "wex_date" "date" NOT NULL,
+    "sequence_no" integer NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "revision" integer DEFAULT 1 NOT NULL,
+    "created_by_user_id" "uuid" NOT NULL,
+    "created_by_name" "text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "clock_timestamp"() NOT NULL,
+    "updated_by_user_id" "uuid" NOT NULL,
+    "updated_by_name" "text" NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "clock_timestamp"() NOT NULL,
+    CONSTRAINT "export_vehicle_weigh_bills_created_by_name_check" CHECK ((NULLIF("btrim"("created_by_name"), ''::"text") IS NOT NULL)),
+    CONSTRAINT "export_vehicle_weigh_bills_revision_check" CHECK (("revision" > 0)),
+    CONSTRAINT "export_vehicle_weigh_bills_sequence_no_check" CHECK (("sequence_no" > 0)),
+    CONSTRAINT "export_vehicle_weigh_bills_updated_by_name_check" CHECK ((NULLIF("btrim"("updated_by_name"), ''::"text") IS NOT NULL))
+);
+
+
+ALTER TABLE "public"."export_vehicle_weigh_bills" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."export_vehicle_weigh_lines" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "wex_id" "uuid" NOT NULL,
+    "sequence_no" integer NOT NULL,
+    "vehicle_registration" "text" NOT NULL,
+    "vehicle_registration_key" "text" GENERATED ALWAYS AS ("lower"("regexp_replace"("btrim"("vehicle_registration"), '\s+'::"text", ' '::"text", 'g'::"text"))) STORED,
+    "carrier_id" "uuid",
+    "carrier_name" "text",
+    "inbound_at" timestamp with time zone NOT NULL,
+    "inbound_weight" numeric(14,2) NOT NULL,
+    "outbound_at" timestamp with time zone,
+    "outbound_weight" numeric(14,2) NOT NULL,
+    "net_weight" numeric(14,2) GENERATED ALWAYS AS (
+CASE
+    WHEN ("outbound_weight" = (0)::numeric) THEN (0)::numeric
+    ELSE ("outbound_weight" - "inbound_weight")
+END) STORED,
+    CONSTRAINT "export_vehicle_weigh_lines_carrier_name_check" CHECK ((("carrier_name" IS NULL) OR (NULLIF("btrim"("carrier_name"), ''::"text") IS NOT NULL))),
+    CONSTRAINT "export_vehicle_weigh_lines_check1" CHECK ((("carrier_id" IS NULL) OR ("carrier_name" IS NOT NULL))),
+    CONSTRAINT "export_vehicle_weigh_lines_check2" CHECK (("outbound_at" > "inbound_at")),
+    CONSTRAINT "export_vehicle_weigh_lines_inbound_weight_check" CHECK (("inbound_weight" > (0)::numeric)),
+    CONSTRAINT "export_vehicle_weigh_lines_outbound_time_state_check" CHECK (((("outbound_weight" = (0)::numeric) AND ("outbound_at" IS NULL)) OR (("outbound_weight" > "inbound_weight") AND ("outbound_at" IS NOT NULL) AND ("outbound_at" > "inbound_at")))),
+    CONSTRAINT "export_vehicle_weigh_lines_outbound_weight_state_check" CHECK ((("outbound_weight" = (0)::numeric) OR ("outbound_weight" > "inbound_weight"))),
+    CONSTRAINT "export_vehicle_weigh_lines_sequence_no_check" CHECK ((("sequence_no" >= 1) AND ("sequence_no" <= 2))),
+    CONSTRAINT "export_vehicle_weigh_lines_vehicle_registration_check" CHECK (((NULLIF("btrim"("vehicle_registration"), ''::"text") IS NOT NULL) AND ("char_length"("vehicle_registration") <= 64)))
+);
+
+
+ALTER TABLE "public"."export_vehicle_weigh_lines" OWNER TO "postgres";
+
+
+COMMENT ON COLUMN "public"."export_vehicle_weigh_lines"."outbound_at" IS 'Null while outbound_weight is zero; required and later than inbound_at after checkout.';
+
+
+
+COMMENT ON COLUMN "public"."export_vehicle_weigh_lines"."outbound_weight" IS 'Zero means the vehicle has checked in but has not completed outbound weighing.';
+
+
+
+COMMENT ON COLUMN "public"."export_vehicle_weigh_lines"."net_weight" IS 'Server-derived zero while checkout is pending, otherwise outbound_weight minus inbound_weight.';
 
 
 
@@ -19312,6 +21074,51 @@ ALTER TABLE ONLY "public"."document_deletion_audits"
 
 
 
+ALTER TABLE ONLY "public"."export_vehicle_weigh_bill_reservations"
+    ADD CONSTRAINT "export_vehicle_weigh_bill_reservations_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."export_vehicle_weigh_bill_reservations"
+    ADD CONSTRAINT "export_vehicle_weigh_bill_reservations_rubber_export_id_key" UNIQUE ("rubber_export_id");
+
+
+
+ALTER TABLE ONLY "public"."export_vehicle_weigh_bill_reservations"
+    ADD CONSTRAINT "export_vehicle_weigh_bill_reservations_wex_id_sequence_no_key" UNIQUE ("wex_id", "sequence_no");
+
+
+
+ALTER TABLE ONLY "public"."export_vehicle_weigh_bills"
+    ADD CONSTRAINT "export_vehicle_weigh_bills_location_id_wex_date_sequence_no_key" UNIQUE ("location_id", "wex_date", "sequence_no");
+
+
+
+ALTER TABLE ONLY "public"."export_vehicle_weigh_bills"
+    ADD CONSTRAINT "export_vehicle_weigh_bills_location_id_wex_no_key" UNIQUE ("location_id", "wex_no");
+
+
+
+ALTER TABLE ONLY "public"."export_vehicle_weigh_bills"
+    ADD CONSTRAINT "export_vehicle_weigh_bills_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."export_vehicle_weigh_lines"
+    ADD CONSTRAINT "export_vehicle_weigh_lines_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."export_vehicle_weigh_lines"
+    ADD CONSTRAINT "export_vehicle_weigh_lines_wex_id_sequence_no_key" UNIQUE ("wex_id", "sequence_no");
+
+
+
+ALTER TABLE ONLY "public"."export_vehicle_weigh_lines"
+    ADD CONSTRAINT "export_vehicle_weigh_lines_wex_id_vehicle_registration_key_key" UNIQUE ("wex_id", "vehicle_registration_key");
+
+
+
 ALTER TABLE ONLY "public"."financial_transactions"
     ADD CONSTRAINT "financial_transactions_pkey" PRIMARY KEY ("id");
 
@@ -19760,6 +21567,18 @@ CREATE INDEX "document_deletion_audits_location_kind_time" ON "public"."document
 
 
 
+CREATE INDEX "export_vehicle_weigh_bill_reservations_wex_id" ON "public"."export_vehicle_weigh_bill_reservations" USING "btree" ("wex_id");
+
+
+
+CREATE INDEX "export_vehicle_weigh_bills_location_created" ON "public"."export_vehicle_weigh_bills" USING "btree" ("location_id", "created_at" DESC, "id" DESC);
+
+
+
+CREATE INDEX "export_vehicle_weigh_lines_wex_id" ON "public"."export_vehicle_weigh_lines" USING "btree" ("wex_id");
+
+
+
 CREATE INDEX "financial_transactions_deduction_month" ON "public"."financial_transactions" USING "btree" ("profile_id", "applied_month", "parent_debt_id") WHERE (("type" = ANY (ARRAY['DEBT_DEDUCTION'::"public"."financial_transaction_type", 'WITHDRAWAL_DEDUCTION'::"public"."financial_transaction_type"])) AND ("status" = 'APPROVED'::"public"."approval_status"));
 
 
@@ -20128,6 +21947,10 @@ CREATE CONSTRAINT TRIGGER "enforce_user_primary_location" AFTER INSERT OR DELETE
 
 
 
+CREATE OR REPLACE TRIGGER "export_vehicle_weigh_reservation_complete_guard" BEFORE INSERT OR UPDATE OF "wex_id" ON "public"."export_vehicle_weigh_bill_reservations" FOR EACH ROW EXECUTE FUNCTION "private"."enforce_complete_wex_before_reservation"();
+
+
+
 CREATE OR REPLACE TRIGGER "guard_approved_rubber_bill_request_history" BEFORE DELETE OR UPDATE ON "public"."rubber_bill_approval_requests" FOR EACH ROW EXECUTE FUNCTION "private"."guard_approved_rubber_bill_request_history"();
 
 
@@ -20447,6 +22270,41 @@ ALTER TABLE ONLY "public"."dashboard_stock_alert_thresholds"
 
 ALTER TABLE ONLY "public"."document_deletion_audits"
     ADD CONSTRAINT "document_deletion_audits_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id");
+
+
+
+ALTER TABLE ONLY "public"."export_vehicle_weigh_bill_reservations"
+    ADD CONSTRAINT "export_vehicle_weigh_bill_reservations_rubber_export_id_fkey" FOREIGN KEY ("rubber_export_id") REFERENCES "public"."rubber_exports"("id");
+
+
+
+ALTER TABLE ONLY "public"."export_vehicle_weigh_bill_reservations"
+    ADD CONSTRAINT "export_vehicle_weigh_bill_reservations_wex_id_fkey" FOREIGN KEY ("wex_id") REFERENCES "public"."export_vehicle_weigh_bills"("id");
+
+
+
+ALTER TABLE ONLY "public"."export_vehicle_weigh_bills"
+    ADD CONSTRAINT "export_vehicle_weigh_bills_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."export_vehicle_weigh_bills"
+    ADD CONSTRAINT "export_vehicle_weigh_bills_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id");
+
+
+
+ALTER TABLE ONLY "public"."export_vehicle_weigh_bills"
+    ADD CONSTRAINT "export_vehicle_weigh_bills_updated_by_user_id_fkey" FOREIGN KEY ("updated_by_user_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."export_vehicle_weigh_lines"
+    ADD CONSTRAINT "export_vehicle_weigh_lines_carrier_id_fkey" FOREIGN KEY ("carrier_id") REFERENCES "public"."transport_staffs"("id");
+
+
+
+ALTER TABLE ONLY "public"."export_vehicle_weigh_lines"
+    ADD CONSTRAINT "export_vehicle_weigh_lines_wex_id_fkey" FOREIGN KEY ("wex_id") REFERENCES "public"."export_vehicle_weigh_bills"("id");
 
 
 
@@ -21139,6 +22997,31 @@ CREATE POLICY "document_deletion_audits_select_manager_only" ON "public"."docume
 
 
 
+ALTER TABLE "public"."export_vehicle_weigh_bill_reservations" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "export_vehicle_weigh_bill_reservations_scoped_read" ON "public"."export_vehicle_weigh_bill_reservations" FOR SELECT TO "authenticated" USING ((EXISTS ( SELECT 1
+   FROM "public"."export_vehicle_weigh_bills" "w"
+  WHERE (("w"."id" = "export_vehicle_weigh_bill_reservations"."wex_id") AND "private"."can_manage_reports"("w"."location_id")))));
+
+
+
+ALTER TABLE "public"."export_vehicle_weigh_bills" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "export_vehicle_weigh_bills_scoped_read" ON "public"."export_vehicle_weigh_bills" FOR SELECT TO "authenticated" USING ("private"."can_manage_reports"("location_id"));
+
+
+
+ALTER TABLE "public"."export_vehicle_weigh_lines" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "export_vehicle_weigh_lines_scoped_read" ON "public"."export_vehicle_weigh_lines" FOR SELECT TO "authenticated" USING ((EXISTS ( SELECT 1
+   FROM "public"."export_vehicle_weigh_bills" "w"
+  WHERE (("w"."id" = "export_vehicle_weigh_lines"."wex_id") AND "private"."can_manage_reports"("w"."location_id")))));
+
+
+
 ALTER TABLE "public"."financial_transactions" ENABLE ROW LEVEL SECURITY;
 
 
@@ -21740,12 +23623,20 @@ REVOKE ALL ON FUNCTION "private"."effective_rubber_approval_settings"("p_locatio
 
 
 
+REVOKE ALL ON FUNCTION "private"."enforce_complete_wex_before_reservation"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."enforce_rubber_bill_ocr_source_update"() FROM PUBLIC;
 
 
 
 REVOKE ALL ON FUNCTION "private"."has_time_payroll_manager_access"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "private"."has_time_payroll_manager_access"() TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "private"."income_expense_operational_row"("p_location_id" "uuid", "p_source_kind" "text", "p_source_id" "uuid", "p_source_date" "date") FROM PUBLIC;
 
 
 
@@ -21785,6 +23676,10 @@ REVOKE ALL ON FUNCTION "private"."normalize_income_sale_lines"("payload" "jsonb"
 
 
 REVOKE ALL ON FUNCTION "private"."normalize_rubber_bill_calculation_payload"("payload" "jsonb") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."normalized_export_vehicle_weigh_lines"("p_location_id" "uuid", "p_lines" "jsonb") FROM PUBLIC;
 
 
 
@@ -21917,6 +23812,10 @@ REVOKE ALL ON FUNCTION "private"."validate_rubber_export_selection"("p_location_
 
 
 
+REVOKE ALL ON FUNCTION "private"."validate_wex_rubber_exports"("p_location_id" "uuid", "p_wex_id" "uuid", "p_rubber_export_ids" "uuid"[]) FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "public"."approve_rubber_bill_approval_request"("p_request_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."approve_rubber_bill_approval_request"("p_request_id" "uuid") TO "authenticated";
 
@@ -22038,6 +23937,11 @@ GRANT ALL ON FUNCTION "public"."create_cash_branch_transfer"("payload" "jsonb") 
 
 
 
+REVOKE ALL ON FUNCTION "public"."create_export_vehicle_weigh_bill"("p_location_id" "uuid", "p_lines" "jsonb", "p_rubber_export_ids" "uuid"[]) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."create_export_vehicle_weigh_bill"("p_location_id" "uuid", "p_lines" "jsonb", "p_rubber_export_ids" "uuid"[]) TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."create_income_expense_approval_request"("payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."create_income_expense_approval_request"("payload" "jsonb") TO "authenticated";
 
@@ -22138,6 +24042,11 @@ GRANT ALL ON FUNCTION "public"."delete_cash_count"("p_cash_count_id" "uuid") TO 
 
 
 
+REVOKE ALL ON FUNCTION "public"."delete_export_vehicle_weigh_bill"("p_wex_id" "uuid", "p_expected_revision" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."delete_export_vehicle_weigh_bill"("p_wex_id" "uuid", "p_expected_revision" integer) TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."delete_money_transfer"("p_transfer_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."delete_money_transfer"("p_transfer_id" "uuid") TO "authenticated";
 
@@ -22180,6 +24089,16 @@ GRANT ALL ON FUNCTION "public"."get_acid_stock_balance"("p_location_id" "uuid", 
 
 REVOKE ALL ON FUNCTION "public"."get_actionable_badge_counts"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_actionable_badge_counts"() TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_cash_branch_transfer_detail"("p_transfer_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_cash_branch_transfer_detail"("p_transfer_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_cash_branch_transfer_pending_summary"("p_location_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_cash_branch_transfer_pending_summary"("p_location_id" "uuid") TO "authenticated";
 
 
 
@@ -22230,8 +24149,27 @@ GRANT ALL ON FUNCTION "public"."get_effective_rubber_approval_settings"("p_locat
 
 
 
+REVOKE ALL ON FUNCTION "public"."get_export_vehicle_weigh_bill_detail"("p_wex_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_export_vehicle_weigh_bill_detail"("p_wex_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_export_vehicle_weigh_bill_options"("p_location_id" "uuid", "p_wex_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_export_vehicle_weigh_bill_options"("p_location_id" "uuid", "p_wex_id" "uuid") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."get_income_expense_feed"("p_location_id" "uuid", "p_from_date" "date", "p_to_date" "date", "p_cursor_date" "date", "p_cursor_key" "text", "p_page_size" integer) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_income_expense_feed"("p_location_id" "uuid", "p_from_date" "date", "p_to_date" "date", "p_cursor_date" "date", "p_cursor_key" "text", "p_page_size" integer) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_income_expense_operational_feed"("p_location_id" "uuid", "p_mode" "text", "p_search" "text", "p_cursor" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_income_expense_operational_feed"("p_location_id" "uuid", "p_mode" "text", "p_search" "text", "p_cursor" "text") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_income_expense_operational_feed_on_demand"("p_location_id" "uuid", "p_mode" "text", "p_search" "text", "p_cursor" "text") FROM PUBLIC;
 
 
 
@@ -22933,6 +24871,11 @@ GRANT ALL ON FUNCTION "public"."update_cash_branch_transfer"("p_transfer_id" "uu
 
 
 
+REVOKE ALL ON FUNCTION "public"."update_export_vehicle_weigh_bill"("p_wex_id" "uuid", "p_expected_revision" integer, "p_lines" "jsonb", "p_rubber_export_ids" "uuid"[]) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."update_export_vehicle_weigh_bill"("p_wex_id" "uuid", "p_expected_revision" integer, "p_lines" "jsonb", "p_rubber_export_ids" "uuid"[]) TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."update_rubber_approval_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_edit_window_minutes" integer, "p_configured_price" numeric) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."update_rubber_approval_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_edit_window_minutes" integer, "p_configured_price" numeric) TO "authenticated";
 
@@ -23062,6 +25005,21 @@ GRANT ALL ON TABLE "public"."dashboard_stock_alert_thresholds" TO "service_role"
 
 GRANT ALL ON TABLE "public"."document_deletion_audits" TO "service_role";
 GRANT SELECT ON TABLE "public"."document_deletion_audits" TO "authenticated";
+
+
+
+GRANT ALL ON TABLE "public"."export_vehicle_weigh_bill_reservations" TO "service_role";
+GRANT SELECT ON TABLE "public"."export_vehicle_weigh_bill_reservations" TO "authenticated";
+
+
+
+GRANT ALL ON TABLE "public"."export_vehicle_weigh_bills" TO "service_role";
+GRANT SELECT ON TABLE "public"."export_vehicle_weigh_bills" TO "authenticated";
+
+
+
+GRANT ALL ON TABLE "public"."export_vehicle_weigh_lines" TO "service_role";
+GRANT SELECT ON TABLE "public"."export_vehicle_weigh_lines" TO "authenticated";
 
 
 
@@ -23289,1247 +25247,3 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TAB
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLES TO "anon";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLES TO "authenticated";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLES TO "service_role";
-
--- Export Vehicle Weigh Bills (WEX), synchronized from migration 20260824030000.
--- Kept as a forward section because this snapshot was updated without database replay.
-
-alter table private.document_number_counters
-  drop constraint document_number_counters_document_kind_check;
-alter table private.document_number_counters
-  add constraint document_number_counters_document_kind_check
-  check (document_kind in ('RPT', 'REX', 'WEX'));
-
-create or replace function private.next_document_sequence(
-  p_document_kind text,
-  p_location_id uuid,
-  p_document_date date
-)
-returns integer
-language plpgsql
-security definer
-set search_path = ''
-as $$
-declare
-  v_sequence integer;
-begin
-  if p_document_kind not in ('RPT', 'REX', 'WEX')
-     or p_location_id is null
-     or p_document_date is null then
-    raise exception 'Invalid document sequence request';
-  end if;
-
-  insert into private.document_number_counters (
-    document_kind, location_id, document_date, last_sequence_no, updated_at
-  )
-  values (p_document_kind, p_location_id, p_document_date, 1, clock_timestamp())
-  on conflict (document_kind, location_id, document_date)
-  do update set
-    last_sequence_no = private.document_number_counters.last_sequence_no + 1,
-    updated_at = clock_timestamp()
-  returning last_sequence_no into v_sequence;
-
-  return v_sequence;
-end;
-$$;
-
-comment on table private.document_number_counters is
-  'Durable per-location/date RPT, REX, and WEX sequence state that survives source deletion.';
-
-create table public.export_vehicle_weigh_bills (
-  id uuid primary key default gen_random_uuid(),
-  wex_no text not null,
-  wex_date date not null,
-  sequence_no integer not null check (sequence_no > 0),
-  location_id uuid not null references public.locations(id),
-  revision integer not null default 1 check (revision > 0),
-  created_by_user_id uuid not null references public.profiles(id),
-  created_by_name text not null check (nullif(btrim(created_by_name), '') is not null),
-  created_at timestamptz not null default clock_timestamp(),
-  updated_by_user_id uuid not null references public.profiles(id),
-  updated_by_name text not null check (nullif(btrim(updated_by_name), '') is not null),
-  updated_at timestamptz not null default clock_timestamp(),
-  unique (location_id, wex_date, sequence_no),
-  unique (location_id, wex_no)
-);
-
-create index export_vehicle_weigh_bills_location_created
-  on public.export_vehicle_weigh_bills (location_id, created_at desc, id desc);
-
-create table public.export_vehicle_weigh_lines (
-  id uuid primary key default gen_random_uuid(),
-  wex_id uuid not null references public.export_vehicle_weigh_bills(id),
-  sequence_no integer not null check (sequence_no between 1 and 2),
-  vehicle_registration text not null check (
-    nullif(btrim(vehicle_registration), '') is not null
-    and char_length(vehicle_registration) <= 64
-  ),
-  vehicle_registration_key text generated always as (
-    lower(regexp_replace(btrim(vehicle_registration), '\s+', ' ', 'g'))
-  ) stored,
-  carrier_id uuid references public.transport_staffs(id),
-  carrier_name text,
-  inbound_at timestamptz not null,
-  inbound_weight numeric(14,2) not null check (inbound_weight > 0),
-  outbound_at timestamptz not null,
-  outbound_weight numeric(14,2) not null check (outbound_weight > inbound_weight),
-  net_weight numeric(14,2) generated always as (outbound_weight - inbound_weight) stored,
-  unique (wex_id, sequence_no),
-  unique (wex_id, vehicle_registration_key),
-  check (carrier_name is null or nullif(btrim(carrier_name), '') is not null),
-  check (carrier_id is null or carrier_name is not null),
-  check (outbound_at > inbound_at)
-);
-
-create table public.export_vehicle_weigh_bill_reservations (
-  id uuid primary key default gen_random_uuid(),
-  wex_id uuid not null references public.export_vehicle_weigh_bills(id),
-  rubber_export_id uuid not null references public.rubber_exports(id),
-  sequence_no integer not null check (sequence_no > 0),
-  export_no text not null check (nullif(btrim(export_no), '') is not null),
-  current_weight numeric(14,2) not null check (current_weight > 0),
-  created_at timestamptz not null default clock_timestamp(),
-  unique (wex_id, sequence_no),
-  unique (rubber_export_id)
-);
-
-create index export_vehicle_weigh_lines_wex_id
-  on public.export_vehicle_weigh_lines (wex_id);
-create index export_vehicle_weigh_bill_reservations_wex_id
-  on public.export_vehicle_weigh_bill_reservations (wex_id);
-
-alter table public.document_deletion_audits
-  drop constraint document_deletion_audits_document_kind_check;
-alter table public.document_deletion_audits
-  add constraint document_deletion_audits_document_kind_check check (
-    document_kind in (
-      'report_batch', 'rubber_export', 'cash_count', 'export_vehicle_weigh_bill'
-    )
-  );
-alter table public.document_deletion_audits
-  add constraint document_deletion_audits_wex_minimal_check check (
-    document_kind <> 'export_vehicle_weigh_bill'
-    or (
-      paired_source_id is null
-      and previous_status is null
-      and original_actor_user_id is null
-      and original_actor_name is null
-    )
-  );
-
-comment on table public.document_deletion_audits is
-  'Permanent minimal audit for hard-deleted RPT, REX, Cash Count, and WEX aggregates; never stores child or business-detail snapshots.';
-
-create function private.normalized_export_vehicle_weigh_lines(
-  p_location_id uuid,
-  p_lines jsonb
-)
-returns table (
-  sequence_no integer,
-  vehicle_registration text,
-  carrier_id uuid,
-  carrier_name text,
-  inbound_at timestamptz,
-  inbound_weight numeric,
-  outbound_at timestamptz,
-  outbound_weight numeric
-)
-language plpgsql
-security definer
-set search_path = ''
-as $$
-declare
-  v_count integer;
-  v_unique_plates integer;
-begin
-  if coalesce(jsonb_typeof(p_lines), 'null') <> 'array' then
-    raise exception 'WEX_INVALID_LINES: ต้องมีรายการชั่งรถ 1–2 คัน';
-  end if;
-  if jsonb_array_length(p_lines) not between 1 and 2 then
-    raise exception 'WEX_INVALID_LINES: ต้องมีรายการชั่งรถ 1–2 คัน';
-  end if;
-  if p_location_id is null then
-    raise exception 'WEX_INVALID_LINES: สาขาของรายการชั่งรถไม่ถูกต้อง';
-  end if;
-  if exists (
-    select 1
-    from jsonb_array_elements(p_lines) line(value)
-    where (line.value ? 'carrierId'
-        and jsonb_typeof(line.value->'carrierId') not in ('string', 'null'))
-      or (line.value ? 'carrierName'
-        and jsonb_typeof(line.value->'carrierName') not in ('string', 'null'))
-  ) then
-    raise exception 'WEX_INVALID_CARRIER: รูปแบบผู้ขนส่งไม่ถูกต้อง';
-  end if;
-
-  with parsed as (
-    select regexp_replace(btrim(line.value->>'vehicleRegistration'), '\s+', ' ', 'g') as registration
-    from jsonb_array_elements(p_lines) line(value)
-  )
-  select count(*), count(distinct lower(registration))
-  into v_count, v_unique_plates
-  from parsed
-  where nullif(registration, '') is not null and char_length(registration) <= 64;
-
-  if v_count <> jsonb_array_length(p_lines) or v_unique_plates <> v_count then
-    raise exception 'WEX_INVALID_LINES: ทะเบียนรถไม่ถูกต้องหรือซ้ำกัน';
-  end if;
-
-  perform s.id
-  from public.transport_staffs s
-  join (
-    select distinct nullif(btrim(line.value->>'carrierId'), '')::uuid as id
-    from jsonb_array_elements(p_lines) line(value)
-    where nullif(btrim(line.value->>'carrierId'), '') is not null
-  ) selected on selected.id = s.id
-  order by s.id
-  for share of s;
-
-  if exists (
-    select 1
-    from jsonb_array_elements(p_lines) line(value)
-    left join public.transport_staffs s
-      on s.id = nullif(btrim(line.value->>'carrierId'), '')::uuid
-    where nullif(btrim(line.value->>'carrierId'), '') is not null
-      and (
-        s.id is null
-        or not (
-          s.record_status = 'active'
-          and (s.default_location_id is null or s.default_location_id = p_location_id)
-        )
-      )
-  ) then
-    raise exception 'WEX_CARRIER_INELIGIBLE: เลือกได้เฉพาะผู้ขนส่งที่ใช้งานอยู่และมีสิทธิ์ในสาขานี้';
-  end if;
-
-  return query
-  select
-    line.ordinality::integer,
-    regexp_replace(btrim(line.value->>'vehicleRegistration'), '\s+', ' ', 'g'),
-    s.id,
-    case
-      when s.id is not null then s.main_name
-      else nullif(regexp_replace(btrim(line.value->>'carrierName'), '\s+', ' ', 'g'), '')
-    end,
-    (line.value->>'inboundAt')::timestamptz,
-    round((line.value->>'inboundWeight')::numeric, 2),
-    (line.value->>'outboundAt')::timestamptz,
-    round((line.value->>'outboundWeight')::numeric, 2)
-  from jsonb_array_elements(p_lines) with ordinality as line(value, ordinality)
-  left join public.transport_staffs s
-    on s.id = nullif(btrim(line.value->>'carrierId'), '')::uuid
-  where round((line.value->>'inboundWeight')::numeric, 2) > 0
-    and round((line.value->>'outboundWeight')::numeric, 2)
-      > round((line.value->>'inboundWeight')::numeric, 2)
-    and (line.value->>'outboundAt')::timestamptz
-      > (line.value->>'inboundAt')::timestamptz
-  order by line.ordinality;
-
-  get diagnostics v_count = row_count;
-  if v_count <> jsonb_array_length(p_lines) then
-    raise exception 'WEX_INVALID_LINES: รายการชั่งรถไม่สมบูรณ์หรือน้ำหนักสุทธิไม่เป็นบวก';
-  end if;
-exception
-  when invalid_text_representation or datetime_field_overflow or numeric_value_out_of_range then
-    raise exception 'WEX_INVALID_LINES: รูปแบบเวลา น้ำหนัก หรือทะเบียนรถไม่ถูกต้อง';
-end;
-$$;
-
-create function private.validate_wex_rubber_exports(
-  p_location_id uuid,
-  p_wex_id uuid,
-  p_rubber_export_ids uuid[]
-)
-returns numeric
-language plpgsql
-security definer
-set search_path = ''
-as $$
-declare
-  v_ids uuid[] := coalesce(p_rubber_export_ids, array[]::uuid[]);
-  v_count integer;
-  v_weight numeric(14,2);
-begin
-  if exists (select 1 from unnest(v_ids) as selected(id) where selected.id is null)
-     or (select count(*) from unnest(v_ids))
-       <> (select count(distinct selected.id) from unnest(v_ids) as selected(id)) then
-    raise exception 'WEX_INVALID_REX: รายการขายยางห้ามว่างหรือซ้ำกัน';
-  end if;
-
-  perform e.id
-  from public.rubber_exports e
-  where e.id = any(v_ids)
-  order by e.id
-  for update;
-
-  select count(*), coalesce(round(sum(e.current_weight), 2), 0)
-  into v_count, v_weight
-  from public.rubber_exports e
-  where e.id = any(v_ids)
-    and e.location_id = p_location_id
-    and e.status = 'verified'
-    and e.sold_out_at is not null
-    and e.current_weight is not null
-    and e.current_weight > 0;
-
-  if v_count <> cardinality(v_ids) then
-    raise exception 'WEX_REX_INELIGIBLE: เลือกได้เฉพาะรายการขายยางที่ตรวจสอบแล้ว ขายออกแล้ว และอยู่สาขาเดียวกัน';
-  end if;
-
-  if exists (
-    select 1
-    from public.export_vehicle_weigh_bill_reservations r
-    where r.rubber_export_id = any(v_ids)
-      and (p_wex_id is null or r.wex_id <> p_wex_id)
-  ) then
-    raise exception 'WEX_REX_RESERVED: มีรายการขายยางถูกจองในบิลรถส่งออกอื่นแล้ว';
-  end if;
-
-  return v_weight;
-end;
-$$;
-
-create function public.create_export_vehicle_weigh_bill(
-  p_location_id uuid,
-  p_lines jsonb,
-  p_rubber_export_ids uuid[]
-)
-returns jsonb
-language plpgsql
-security definer
-set search_path = ''
-as $$
-declare
-  v_actor public.profiles%rowtype;
-  v_now timestamptz := clock_timestamp();
-  v_wex_date date;
-  v_sequence_no integer;
-  v_wex_no text;
-  v_wex_id uuid;
-  v_vehicle_net numeric(14,2);
-  v_rubber_weight numeric(14,2);
-begin
-  if p_location_id is null or not private.can_manage_reports(p_location_id)
-     or not exists (
-       select 1 from public.locations l
-       where l.id = p_location_id and l.is_active = true
-     ) then
-    raise exception 'WEX_FORBIDDEN: ไม่มีสิทธิ์สร้างบิลรถส่งออกของสาขานี้';
-  end if;
-
-  perform 1 from private.normalized_export_vehicle_weigh_lines(p_location_id, p_lines);
-  v_rubber_weight := private.validate_wex_rubber_exports(
-    p_location_id, null, p_rubber_export_ids
-  );
-
-  select * into v_actor
-  from public.profiles p
-  where p.id = auth.uid() and p.is_active = true;
-  if v_actor.id is null then
-    raise exception 'WEX_FORBIDDEN: บัญชีผู้ใช้ไม่พร้อมใช้งาน';
-  end if;
-
-  v_wex_date := (v_now at time zone 'Asia/Bangkok')::date;
-  perform pg_advisory_xact_lock(hashtextextended(
-    'export-vehicle-weigh-bill:' || p_location_id::text || ':' || v_wex_date::text, 0
-  ));
-  v_sequence_no := private.next_document_sequence('WEX', p_location_id, v_wex_date);
-  v_wex_no := 'WEX-' || to_char(v_wex_date, 'YYYYMMDD') || '-'
-    || lpad(v_sequence_no::text, 3, '0');
-
-  insert into public.export_vehicle_weigh_bills (
-    wex_no, wex_date, sequence_no, location_id, revision,
-    created_by_user_id, created_by_name, created_at,
-    updated_by_user_id, updated_by_name, updated_at
-  ) values (
-    v_wex_no, v_wex_date, v_sequence_no, p_location_id, 1,
-    v_actor.id, v_actor.name, v_now,
-    v_actor.id, v_actor.name, v_now
-  ) returning id into v_wex_id;
-
-  insert into public.export_vehicle_weigh_lines (
-    wex_id, sequence_no, vehicle_registration, carrier_id, carrier_name,
-    inbound_at, inbound_weight, outbound_at, outbound_weight
-  )
-  select
-    v_wex_id, l.sequence_no, l.vehicle_registration, l.carrier_id, l.carrier_name,
-    l.inbound_at, l.inbound_weight, l.outbound_at, l.outbound_weight
-  from private.normalized_export_vehicle_weigh_lines(p_location_id, p_lines) l;
-
-  select round(sum(l.outbound_weight - l.inbound_weight), 2)
-  into v_vehicle_net
-  from public.export_vehicle_weigh_lines l
-  where l.wex_id = v_wex_id;
-
-  if v_rubber_weight > v_vehicle_net then
-    raise exception 'WEX_OVERWEIGHT: น้ำหนักรายการขายยางรวมเกินน้ำหนักสุทธิรถ';
-  end if;
-
-  insert into public.export_vehicle_weigh_bill_reservations (
-    wex_id, rubber_export_id, sequence_no, export_no, current_weight, created_at
-  )
-  select
-    v_wex_id, e.id, selected.ordinality::integer, e.export_no, e.current_weight, v_now
-  from unnest(coalesce(p_rubber_export_ids, array[]::uuid[]))
-    with ordinality as selected(id, ordinality)
-  join public.rubber_exports e on e.id = selected.id
-  order by selected.ordinality;
-
-  return jsonb_build_object('id', v_wex_id, 'wexNo', v_wex_no, 'revision', 1);
-exception
-  when unique_violation then
-    raise exception 'WEX_REX_RESERVED: มีรายการขายยางถูกจองในบิลรถส่งออกอื่นแล้ว';
-end;
-$$;
-
-create function public.update_export_vehicle_weigh_bill(
-  p_wex_id uuid,
-  p_expected_revision integer,
-  p_lines jsonb,
-  p_rubber_export_ids uuid[]
-)
-returns jsonb
-language plpgsql
-security definer
-set search_path = ''
-as $$
-declare
-  v_wex public.export_vehicle_weigh_bills%rowtype;
-  v_actor public.profiles%rowtype;
-  v_now timestamptz := clock_timestamp();
-  v_vehicle_net numeric(14,2);
-  v_rubber_weight numeric(14,2);
-  v_lock_ids uuid[];
-begin
-  select * into v_wex
-  from public.export_vehicle_weigh_bills w
-  where w.id = p_wex_id
-  for update;
-  if v_wex.id is null then
-    raise exception 'WEX_NOT_FOUND: ไม่พบบิลรถส่งออก';
-  end if;
-  if not private.can_manage_reports(v_wex.location_id) then
-    raise exception 'WEX_FORBIDDEN: ไม่มีสิทธิ์แก้ไขบิลรถส่งออกของสาขานี้';
-  end if;
-  if p_expected_revision is null or p_expected_revision <> v_wex.revision then
-    raise exception 'WEX_STALE_REVISION: บิลรถส่งออกถูกแก้ไขแล้ว กรุณาโหลดข้อมูลใหม่';
-  end if;
-
-  perform 1 from private.normalized_export_vehicle_weigh_lines(v_wex.location_id, p_lines);
-  select coalesce(array_agg(distinct id order by id), array[]::uuid[])
-  into v_lock_ids
-  from (
-    select unnest(coalesce(p_rubber_export_ids, array[]::uuid[])) as id
-    union
-    select r.rubber_export_id
-    from public.export_vehicle_weigh_bill_reservations r
-    where r.wex_id = v_wex.id
-  ) locked;
-  perform e.id
-  from public.rubber_exports e
-  where e.id = any(v_lock_ids)
-  order by e.id
-  for update;
-
-  v_rubber_weight := private.validate_wex_rubber_exports(
-    v_wex.location_id, v_wex.id, p_rubber_export_ids
-  );
-  select * into v_actor
-  from public.profiles p
-  where p.id = auth.uid() and p.is_active = true;
-  if v_actor.id is null then
-    raise exception 'WEX_FORBIDDEN: บัญชีผู้ใช้ไม่พร้อมใช้งาน';
-  end if;
-
-  delete from public.export_vehicle_weigh_bill_reservations
-  where wex_id = v_wex.id;
-  delete from public.export_vehicle_weigh_lines
-  where wex_id = v_wex.id;
-
-  insert into public.export_vehicle_weigh_lines (
-    wex_id, sequence_no, vehicle_registration, carrier_id, carrier_name,
-    inbound_at, inbound_weight, outbound_at, outbound_weight
-  )
-  select
-    v_wex.id, l.sequence_no, l.vehicle_registration, l.carrier_id, l.carrier_name,
-    l.inbound_at, l.inbound_weight, l.outbound_at, l.outbound_weight
-  from private.normalized_export_vehicle_weigh_lines(v_wex.location_id, p_lines) l;
-
-  select round(sum(l.outbound_weight - l.inbound_weight), 2)
-  into v_vehicle_net
-  from public.export_vehicle_weigh_lines l
-  where l.wex_id = v_wex.id;
-
-  if v_rubber_weight > v_vehicle_net then
-    raise exception 'WEX_OVERWEIGHT: น้ำหนักรายการขายยางรวมเกินน้ำหนักสุทธิรถ';
-  end if;
-
-  insert into public.export_vehicle_weigh_bill_reservations (
-    wex_id, rubber_export_id, sequence_no, export_no, current_weight, created_at
-  )
-  select
-    v_wex.id, e.id, selected.ordinality::integer, e.export_no, e.current_weight, v_now
-  from unnest(coalesce(p_rubber_export_ids, array[]::uuid[]))
-    with ordinality as selected(id, ordinality)
-  join public.rubber_exports e on e.id = selected.id
-  order by selected.ordinality;
-
-  update public.export_vehicle_weigh_bills
-  set revision = revision + 1,
-      updated_by_user_id = v_actor.id,
-      updated_by_name = v_actor.name,
-      updated_at = v_now
-  where id = v_wex.id
-  returning revision into v_wex.revision;
-
-  return jsonb_build_object(
-    'id', v_wex.id, 'wexNo', v_wex.wex_no, 'revision', v_wex.revision
-  );
-exception
-  when unique_violation then
-    raise exception 'WEX_REX_RESERVED: มีรายการขายยางถูกจองในบิลรถส่งออกอื่นแล้ว';
-end;
-$$;
-
-create function public.delete_export_vehicle_weigh_bill(
-  p_wex_id uuid,
-  p_expected_revision integer
-)
-returns jsonb
-language plpgsql
-security definer
-set search_path = ''
-as $$
-declare
-  v_wex public.export_vehicle_weigh_bills%rowtype;
-  v_audit public.document_deletion_audits%rowtype;
-  v_actor_name text;
-  v_now timestamptz := clock_timestamp();
-begin
-  if not private.can_delete_reports() then
-    raise exception 'WEX_FORBIDDEN: เฉพาะ super_admin หรือผู้จัดการระบบเท่านั้นที่ลบบิลรถส่งออกได้';
-  end if;
-
-  select * into v_wex
-  from public.export_vehicle_weigh_bills w
-  where w.id = p_wex_id
-  for update;
-
-  if v_wex.id is null then
-    select * into v_audit
-    from public.document_deletion_audits a
-    where a.document_kind = 'export_vehicle_weigh_bill'
-      and a.source_id = p_wex_id;
-    if v_audit.id is not null then
-      return jsonb_build_object(
-        'id', p_wex_id, 'wexNo', v_audit.document_no, 'status', 'deleted'
-      );
-    end if;
-    raise exception 'WEX_NOT_FOUND: ไม่พบบิลรถส่งออก';
-  end if;
-
-  if p_expected_revision is null or p_expected_revision <> v_wex.revision then
-    raise exception 'WEX_STALE_REVISION: บิลรถส่งออกถูกแก้ไขแล้ว กรุณาโหลดข้อมูลใหม่';
-  end if;
-
-  select p.name into v_actor_name
-  from public.profiles p
-  where p.id = auth.uid() and p.is_active = true;
-  if nullif(btrim(v_actor_name), '') is null then
-    raise exception 'WEX_FORBIDDEN: บัญชีผู้ใช้ไม่พร้อมใช้งาน';
-  end if;
-
-  insert into public.document_deletion_audits (
-    document_kind, source_id, document_no, location_id,
-    deleted_by_user_id, deleted_by_name, deleted_at
-  ) values (
-    'export_vehicle_weigh_bill', v_wex.id, v_wex.wex_no, v_wex.location_id,
-    auth.uid(), v_actor_name, v_now
-  );
-
-  delete from public.export_vehicle_weigh_bill_reservations
-  where wex_id = v_wex.id;
-  delete from public.export_vehicle_weigh_lines
-  where wex_id = v_wex.id;
-  delete from public.export_vehicle_weigh_bills
-  where id = v_wex.id;
-
-  return jsonb_build_object(
-    'id', v_wex.id, 'wexNo', v_wex.wex_no, 'status', 'deleted'
-  );
-end;
-$$;
-
-create function public.get_export_vehicle_weigh_bill_options(
-  p_location_id uuid,
-  p_wex_id uuid default null
-)
-returns table (
-  rubber_export_id uuid,
-  export_no text,
-  current_weight numeric,
-  reserved_by_current_wex boolean
-)
-language plpgsql
-stable
-security definer
-set search_path = ''
-as $$
-declare
-  v_wex_location_id uuid;
-begin
-  if p_location_id is null or not private.can_manage_reports(p_location_id) then
-    raise exception 'WEX_FORBIDDEN: ไม่มีสิทธิ์ดูรายการขายยางของสาขานี้';
-  end if;
-  if p_wex_id is not null then
-    select w.location_id into v_wex_location_id
-    from public.export_vehicle_weigh_bills w
-    where w.id = p_wex_id;
-    if v_wex_location_id is null then
-      raise exception 'WEX_NOT_FOUND: ไม่พบบิลรถส่งออก';
-    end if;
-    if v_wex_location_id <> p_location_id then
-      raise exception 'WEX_FORBIDDEN: บิลรถส่งออกไม่อยู่ในสาขานี้';
-    end if;
-  end if;
-
-  return query
-  select
-    e.id, e.export_no, e.current_weight,
-    coalesce(r.wex_id = p_wex_id, false)
-  from public.rubber_exports e
-  left join public.export_vehicle_weigh_bill_reservations r
-    on r.rubber_export_id = e.id
-  where e.location_id = p_location_id
-    and e.status = 'verified'
-    and e.sold_out_at is not null
-    and e.current_weight is not null
-    and e.current_weight > 0
-    and (r.id is null or r.wex_id = p_wex_id)
-  order by e.sold_out_at desc, e.id desc;
-end;
-$$;
-
-create function public.get_export_vehicle_weigh_bill_detail(p_wex_id uuid)
-returns jsonb
-language plpgsql
-stable
-security definer
-set search_path = ''
-as $$
-declare
-  v_wex public.export_vehicle_weigh_bills%rowtype;
-  v_location_name text;
-  v_vehicle_count integer;
-  v_rubber_export_count integer;
-  v_vehicle_net numeric(14,2);
-  v_reserved_weight numeric(14,2);
-  v_lines jsonb;
-  v_rubber_exports jsonb;
-begin
-  select * into v_wex
-  from public.export_vehicle_weigh_bills w
-  where w.id = p_wex_id;
-  if v_wex.id is null then
-    raise exception 'WEX_NOT_FOUND: ไม่พบบิลรถส่งออก';
-  end if;
-  if not private.can_manage_reports(v_wex.location_id) then
-    raise exception 'WEX_FORBIDDEN: ไม่มีสิทธิ์ดูบิลรถส่งออกของสาขานี้';
-  end if;
-
-  select l.name into v_location_name
-  from public.locations l where l.id = v_wex.location_id;
-  select count(*)::integer, coalesce(round(sum(l.net_weight), 2), 0),
-    coalesce(jsonb_agg(jsonb_build_object(
-      'id', l.id,
-      'sequenceNo', l.sequence_no,
-      'vehicleRegistration', l.vehicle_registration,
-      'carrierId', l.carrier_id,
-      'carrierName', l.carrier_name,
-      'inboundAt', l.inbound_at,
-      'inboundWeight', l.inbound_weight,
-      'outboundAt', l.outbound_at,
-      'outboundWeight', l.outbound_weight,
-      'netWeight', l.net_weight
-    ) order by l.sequence_no), '[]'::jsonb)
-  into v_vehicle_count, v_vehicle_net, v_lines
-  from public.export_vehicle_weigh_lines l
-  where l.wex_id = v_wex.id;
-
-  select count(*)::integer, coalesce(round(sum(r.current_weight), 2), 0),
-    coalesce(jsonb_agg(jsonb_build_object(
-      'rubberExportId', r.rubber_export_id,
-      'exportNo', r.export_no,
-      'currentWeight', r.current_weight
-    ) order by r.sequence_no), '[]'::jsonb)
-  into v_rubber_export_count, v_reserved_weight, v_rubber_exports
-  from public.export_vehicle_weigh_bill_reservations r
-  where r.wex_id = v_wex.id;
-
-  return jsonb_build_object(
-    'id', v_wex.id,
-    'wexNo', v_wex.wex_no,
-    'locationId', v_wex.location_id,
-    'locationName', v_location_name,
-    'revision', v_wex.revision,
-    'vehicleCount', v_vehicle_count,
-    'rubberExportCount', v_rubber_export_count,
-    'vehicleNetWeight', v_vehicle_net,
-    'reservedRubberWeight', v_reserved_weight,
-    'remainingWeight', v_vehicle_net - v_reserved_weight,
-    'createdByName', v_wex.created_by_name,
-    'createdAt', v_wex.created_at,
-    'updatedAt', v_wex.updated_at,
-    'lines', v_lines,
-    'rubberExports', v_rubber_exports
-  );
-end;
-$$;
-
-create or replace function public.set_rubber_export_sold_out(
-  p_export_id uuid,
-  p_sold_out boolean
-)
-returns jsonb
-language plpgsql
-security definer
-set search_path = ''
-as $$
-declare
-  v_export public.rubber_exports%rowtype;
-  v_actor_name text;
-  v_now timestamptz := clock_timestamp();
-begin
-  if p_sold_out is null then
-    raise exception 'กรุณาระบุสถานะขายยางออก';
-  end if;
-  select * into v_export
-  from public.rubber_exports e
-  where e.id = p_export_id
-  for update;
-  if v_export.id is null or not private.can_manage_reports(v_export.location_id) then
-    raise exception 'ไม่มีสิทธิ์จัดการการขายรายการส่งออกนี้';
-  end if;
-  if v_export.status <> 'verified' then
-    raise exception 'ขายยางออกได้เฉพาะรายการตรวจสอบแล้ว';
-  end if;
-
-  if p_sold_out then
-    if exists (
-      select 1 from public.rubber_bills b
-      where b.source_rubber_export_id = v_export.id
-        and b.record_status = 'active'
-    ) then
-      raise exception 'BRANCH_RECEIPT_SOURCE_LOCKED:%', v_export.export_no
-        using errcode = 'P0001';
-    end if;
-    if v_export.sold_out_at is null then
-      select p.name into v_actor_name
-      from public.profiles p
-      where p.id = auth.uid() and p.is_active = true;
-      if v_actor_name is null then raise exception 'บัญชีผู้ใช้ไม่พร้อมใช้งาน'; end if;
-      update public.rubber_exports
-      set sold_out_at = v_now,
-          sold_out_by_user_id = auth.uid(),
-          sold_out_by_name = v_actor_name
-      where id = v_export.id;
-    else
-      v_now := v_export.sold_out_at;
-      v_actor_name := v_export.sold_out_by_name;
-    end if;
-  else
-    if exists (
-      select 1
-      from public.export_vehicle_weigh_bill_reservations r
-      where r.rubber_export_id = v_export.id
-    ) then
-      raise exception 'WEX_RESERVATION_LOCKED: รายการขายยางถูกจองโดยบิลรถส่งออก:%', v_export.export_no
-        using errcode = 'P0001',
-          hint = 'กรุณาถอดรายการขายยางออกจากบิลรถส่งออกก่อน';
-    end if;
-    update public.rubber_exports
-    set sold_out_at = null,
-        sold_out_by_user_id = null,
-        sold_out_by_name = null
-    where id = v_export.id;
-    v_now := null;
-    v_actor_name := null;
-  end if;
-
-  return jsonb_build_object(
-    'id', v_export.id,
-    'status', case when p_sold_out then 'sold_out' else 'verified' end,
-    'soldOutAt', v_now,
-    'soldOutByName', v_actor_name
-  );
-end;
-$$;
-
-alter table public.export_vehicle_weigh_bills enable row level security;
-alter table public.export_vehicle_weigh_lines enable row level security;
-alter table public.export_vehicle_weigh_bill_reservations enable row level security;
-
-create policy export_vehicle_weigh_bills_scoped_read
-  on public.export_vehicle_weigh_bills
-  for select to authenticated
-  using (private.can_manage_reports(location_id));
-
-create policy export_vehicle_weigh_lines_scoped_read
-  on public.export_vehicle_weigh_lines
-  for select to authenticated
-  using (exists (
-    select 1 from public.export_vehicle_weigh_bills w
-    where w.id = export_vehicle_weigh_lines.wex_id
-      and private.can_manage_reports(w.location_id)
-  ));
-
-create policy export_vehicle_weigh_bill_reservations_scoped_read
-  on public.export_vehicle_weigh_bill_reservations
-  for select to authenticated
-  using (exists (
-    select 1 from public.export_vehicle_weigh_bills w
-    where w.id = export_vehicle_weigh_bill_reservations.wex_id
-      and private.can_manage_reports(w.location_id)
-  ));
-
-revoke all on table public.export_vehicle_weigh_bills,
-  public.export_vehicle_weigh_lines,
-  public.export_vehicle_weigh_bill_reservations
-from public, anon, authenticated;
-grant select on table public.export_vehicle_weigh_bills,
-  public.export_vehicle_weigh_lines,
-  public.export_vehicle_weigh_bill_reservations
-to authenticated;
-grant all on table public.export_vehicle_weigh_bills,
-  public.export_vehicle_weigh_lines,
-  public.export_vehicle_weigh_bill_reservations
-to service_role;
-
-revoke all on function private.normalized_export_vehicle_weigh_lines(uuid, jsonb),
-  private.validate_wex_rubber_exports(uuid, uuid, uuid[])
-from public, anon, authenticated;
-
-revoke all on function public.create_export_vehicle_weigh_bill(uuid, jsonb, uuid[]),
-  public.update_export_vehicle_weigh_bill(uuid, integer, jsonb, uuid[]),
-  public.delete_export_vehicle_weigh_bill(uuid, integer),
-  public.get_export_vehicle_weigh_bill_options(uuid, uuid),
-  public.get_export_vehicle_weigh_bill_detail(uuid)
-from public, anon;
-
-grant execute on function public.create_export_vehicle_weigh_bill(uuid, jsonb, uuid[]),
-  public.update_export_vehicle_weigh_bill(uuid, integer, jsonb, uuid[]),
-  public.delete_export_vehicle_weigh_bill(uuid, integer),
-  public.get_export_vehicle_weigh_bill_options(uuid, uuid),
-  public.get_export_vehicle_weigh_bill_detail(uuid)
-to authenticated;
-
-notify pgrst, 'reload schema';
-
--- Inbound-only WEX support, synchronized from migration 20260825010000.
-alter table public.export_vehicle_weigh_lines
-  drop constraint if exists export_vehicle_weigh_lines_outbound_weight_check;
-alter table public.export_vehicle_weigh_lines
-  drop constraint if exists export_vehicle_weigh_lines_outbound_at_check;
-alter table public.export_vehicle_weigh_lines
-  drop constraint if exists export_vehicle_weigh_lines_check;
-alter table public.export_vehicle_weigh_lines
-  alter column outbound_at drop not null;
-alter table public.export_vehicle_weigh_lines
-  add constraint export_vehicle_weigh_lines_outbound_weight_state_check
-  check (outbound_weight = 0 or outbound_weight > inbound_weight);
-alter table public.export_vehicle_weigh_lines
-  add constraint export_vehicle_weigh_lines_outbound_time_state_check
-  check (
-    (outbound_weight = 0 and outbound_at is null)
-    or (
-      outbound_weight > inbound_weight
-      and outbound_at is not null
-      and outbound_at > inbound_at
-    )
-  );
-alter table public.export_vehicle_weigh_lines
-  drop column net_weight;
-alter table public.export_vehicle_weigh_lines
-  add column net_weight numeric(14,2)
-  generated always as (
-    case
-      when outbound_weight = 0 then 0::numeric
-      else outbound_weight - inbound_weight
-    end
-  ) stored;
-
-comment on column public.export_vehicle_weigh_lines.outbound_weight is
-  'Zero means the vehicle has checked in but has not completed outbound weighing.';
-comment on column public.export_vehicle_weigh_lines.outbound_at is
-  'Null while outbound_weight is zero; required and later than inbound_at after checkout.';
-comment on column public.export_vehicle_weigh_lines.net_weight is
-  'Server-derived zero while checkout is pending, otherwise outbound_weight minus inbound_weight.';
-
-create or replace function private.normalized_export_vehicle_weigh_lines(
-  p_location_id uuid,
-  p_lines jsonb
-)
-returns table (
-  sequence_no integer,
-  vehicle_registration text,
-  carrier_id uuid,
-  carrier_name text,
-  inbound_at timestamptz,
-  inbound_weight numeric,
-  outbound_at timestamptz,
-  outbound_weight numeric
-)
-language plpgsql
-security definer
-set search_path = ''
-as $$
-declare
-  v_count integer;
-  v_unique_plates integer;
-begin
-  if coalesce(jsonb_typeof(p_lines), 'null') <> 'array' then
-    raise exception 'WEX_INVALID_LINES: ต้องมีรายการชั่งรถ 1–2 คัน';
-  end if;
-  if jsonb_array_length(p_lines) not between 1 and 2 then
-    raise exception 'WEX_INVALID_LINES: ต้องมีรายการชั่งรถ 1–2 คัน';
-  end if;
-  if p_location_id is null then
-    raise exception 'WEX_INVALID_LINES: สาขาของรายการชั่งรถไม่ถูกต้อง';
-  end if;
-  if exists (
-    select 1
-    from jsonb_array_elements(p_lines) line(value)
-    where (line.value ? 'carrierId'
-        and jsonb_typeof(line.value->'carrierId') not in ('string', 'null'))
-      or (line.value ? 'carrierName'
-        and jsonb_typeof(line.value->'carrierName') not in ('string', 'null'))
-      or jsonb_typeof(line.value->'inboundAt') <> 'string'
-      or jsonb_typeof(line.value->'inboundWeight') <> 'number'
-      or jsonb_typeof(line.value->'outboundWeight') <> 'number'
-      or (
-        line.value ? 'outboundAt'
-        and jsonb_typeof(line.value->'outboundAt') not in ('string', 'null')
-      )
-  ) then
-    raise exception 'WEX_INVALID_LINES: รูปแบบเวลา น้ำหนัก ทะเบียนรถ หรือผู้ขนส่งไม่ถูกต้อง';
-  end if;
-
-  with parsed as (
-    select regexp_replace(btrim(line.value->>'vehicleRegistration'), '\s+', ' ', 'g') as registration
-    from jsonb_array_elements(p_lines) line(value)
-  )
-  select count(*), count(distinct lower(registration))
-  into v_count, v_unique_plates
-  from parsed
-  where nullif(registration, '') is not null and char_length(registration) <= 64;
-
-  if v_count <> jsonb_array_length(p_lines) or v_unique_plates <> v_count then
-    raise exception 'WEX_INVALID_LINES: ทะเบียนรถไม่ถูกต้องหรือซ้ำกัน';
-  end if;
-
-  perform s.id
-  from public.transport_staffs s
-  join (
-    select distinct nullif(btrim(line.value->>'carrierId'), '')::uuid as id
-    from jsonb_array_elements(p_lines) line(value)
-    where nullif(btrim(line.value->>'carrierId'), '') is not null
-  ) selected on selected.id = s.id
-  order by s.id
-  for share of s;
-
-  if exists (
-    select 1
-    from jsonb_array_elements(p_lines) line(value)
-    left join public.transport_staffs s
-      on s.id = nullif(btrim(line.value->>'carrierId'), '')::uuid
-    where nullif(btrim(line.value->>'carrierId'), '') is not null
-      and (
-        s.id is null
-        or not (
-          s.record_status = 'active'
-          and (s.default_location_id is null or s.default_location_id = p_location_id)
-        )
-      )
-  ) then
-    raise exception 'WEX_CARRIER_INELIGIBLE: เลือกได้เฉพาะผู้ขนส่งที่ใช้งานอยู่และมีสิทธิ์ในสาขานี้';
-  end if;
-
-  return query
-  select
-    line.ordinality::integer,
-    regexp_replace(btrim(line.value->>'vehicleRegistration'), '\s+', ' ', 'g'),
-    s.id,
-    case
-      when s.id is not null then s.main_name
-      else nullif(regexp_replace(btrim(line.value->>'carrierName'), '\s+', ' ', 'g'), '')
-    end,
-    (line.value->>'inboundAt')::timestamptz,
-    round((line.value->>'inboundWeight')::numeric, 2),
-    case
-      when round((line.value->>'outboundWeight')::numeric, 2) = 0 then null
-      else nullif(btrim(line.value->>'outboundAt'), '')::timestamptz
-    end,
-    round((line.value->>'outboundWeight')::numeric, 2)
-  from jsonb_array_elements(p_lines) with ordinality as line(value, ordinality)
-  left join public.transport_staffs s
-    on s.id = nullif(btrim(line.value->>'carrierId'), '')::uuid
-  where round((line.value->>'inboundWeight')::numeric, 2) > 0
-    and round((line.value->>'outboundWeight')::numeric, 2) >= 0
-    and (
-      (
-        round((line.value->>'outboundWeight')::numeric, 2) = 0
-        and nullif(btrim(line.value->>'outboundAt'), '') is null
-      )
-      or (
-        round((line.value->>'outboundWeight')::numeric, 2)
-          > round((line.value->>'inboundWeight')::numeric, 2)
-        and nullif(btrim(line.value->>'outboundAt'), '')::timestamptz
-          > (line.value->>'inboundAt')::timestamptz
-      )
-    )
-  order by line.ordinality;
-
-  get diagnostics v_count = row_count;
-  if v_count <> jsonb_array_length(p_lines) then
-    raise exception 'WEX_INVALID_LINES: น้ำหนักออกต้องเป็น 0 ระหว่างรอ หรือมากกว่าน้ำหนักเข้าเมื่อชั่งออกแล้ว';
-  end if;
-exception
-  when invalid_text_representation or datetime_field_overflow or numeric_value_out_of_range then
-    raise exception 'WEX_INVALID_LINES: รูปแบบเวลา น้ำหนัก หรือทะเบียนรถไม่ถูกต้อง';
-end;
-$$;
-
-create or replace function private.enforce_complete_wex_before_reservation()
-returns trigger
-language plpgsql
-security definer
-set search_path = ''
-as $$
-begin
-  if exists (
-    select 1
-    from public.export_vehicle_weigh_lines l
-    where l.wex_id = new.wex_id
-      and (l.outbound_weight = 0 or l.outbound_at is null)
-  ) then
-    raise exception 'WEX_INCOMPLETE_WEIGHING: ต้องชั่งออกรถทุกคันก่อนเลือกรายการขายยาง';
-  end if;
-  return new;
-end;
-$$;
-
-drop trigger if exists export_vehicle_weigh_reservation_complete_guard
-  on public.export_vehicle_weigh_bill_reservations;
-create trigger export_vehicle_weigh_reservation_complete_guard
-before insert or update of wex_id
-on public.export_vehicle_weigh_bill_reservations
-for each row execute function private.enforce_complete_wex_before_reservation();
-
-revoke all on function private.enforce_complete_wex_before_reservation()
-from public, anon, authenticated;
-
--- Pending lines contribute zero net weight until checkout is complete.
-create or replace function public.create_export_vehicle_weigh_bill(
-  p_location_id uuid,
-  p_lines jsonb,
-  p_rubber_export_ids uuid[]
-)
-returns jsonb
-language plpgsql
-security definer
-set search_path = ''
-as $$
-declare
-  v_actor public.profiles%rowtype;
-  v_now timestamptz := clock_timestamp();
-  v_wex_date date;
-  v_sequence_no integer;
-  v_wex_no text;
-  v_wex_id uuid;
-  v_vehicle_net numeric(14,2);
-  v_rubber_weight numeric(14,2);
-begin
-  if p_location_id is null or not private.can_manage_reports(p_location_id)
-     or not exists (
-       select 1 from public.locations l
-       where l.id = p_location_id and l.is_active = true
-     ) then
-    raise exception 'WEX_FORBIDDEN: ไม่มีสิทธิ์สร้างบิลรถส่งออกของสาขานี้';
-  end if;
-
-  perform 1 from private.normalized_export_vehicle_weigh_lines(p_location_id, p_lines);
-  v_rubber_weight := private.validate_wex_rubber_exports(
-    p_location_id, null, p_rubber_export_ids
-  );
-
-  select * into v_actor
-  from public.profiles p
-  where p.id = auth.uid() and p.is_active = true;
-  if v_actor.id is null then
-    raise exception 'WEX_FORBIDDEN: บัญชีผู้ใช้ไม่พร้อมใช้งาน';
-  end if;
-
-  v_wex_date := (v_now at time zone 'Asia/Bangkok')::date;
-  perform pg_advisory_xact_lock(hashtextextended(
-    'export-vehicle-weigh-bill:' || p_location_id::text || ':' || v_wex_date::text, 0
-  ));
-  v_sequence_no := private.next_document_sequence('WEX', p_location_id, v_wex_date);
-  v_wex_no := 'WEX-' || to_char(v_wex_date, 'YYYYMMDD') || '-'
-    || lpad(v_sequence_no::text, 3, '0');
-
-  insert into public.export_vehicle_weigh_bills (
-    wex_no, wex_date, sequence_no, location_id, revision,
-    created_by_user_id, created_by_name, created_at,
-    updated_by_user_id, updated_by_name, updated_at
-  ) values (
-    v_wex_no, v_wex_date, v_sequence_no, p_location_id, 1,
-    v_actor.id, v_actor.name, v_now,
-    v_actor.id, v_actor.name, v_now
-  ) returning id into v_wex_id;
-
-  insert into public.export_vehicle_weigh_lines (
-    wex_id, sequence_no, vehicle_registration, carrier_id, carrier_name,
-    inbound_at, inbound_weight, outbound_at, outbound_weight
-  )
-  select
-    v_wex_id, l.sequence_no, l.vehicle_registration, l.carrier_id, l.carrier_name,
-    l.inbound_at, l.inbound_weight, l.outbound_at, l.outbound_weight
-  from private.normalized_export_vehicle_weigh_lines(p_location_id, p_lines) l;
-
-  select round(sum(l.net_weight), 2)
-  into v_vehicle_net
-  from public.export_vehicle_weigh_lines l
-  where l.wex_id = v_wex_id;
-
-  if v_rubber_weight > v_vehicle_net then
-    raise exception 'WEX_OVERWEIGHT: น้ำหนักรายการขายยางรวมเกินน้ำหนักสุทธิรถ';
-  end if;
-
-  insert into public.export_vehicle_weigh_bill_reservations (
-    wex_id, rubber_export_id, sequence_no, export_no, current_weight, created_at
-  )
-  select
-    v_wex_id, e.id, selected.ordinality::integer, e.export_no, e.current_weight, v_now
-  from unnest(coalesce(p_rubber_export_ids, array[]::uuid[]))
-    with ordinality as selected(id, ordinality)
-  join public.rubber_exports e on e.id = selected.id
-  order by selected.ordinality;
-
-  return jsonb_build_object('id', v_wex_id, 'wexNo', v_wex_no, 'revision', 1);
-exception
-  when unique_violation then
-    raise exception 'WEX_REX_RESERVED: มีรายการขายยางถูกจองในบิลรถส่งออกอื่นแล้ว';
-end;
-$$;
-
-create or replace function public.update_export_vehicle_weigh_bill(
-  p_wex_id uuid,
-  p_expected_revision integer,
-  p_lines jsonb,
-  p_rubber_export_ids uuid[]
-)
-returns jsonb
-language plpgsql
-security definer
-set search_path = ''
-as $$
-declare
-  v_wex public.export_vehicle_weigh_bills%rowtype;
-  v_actor public.profiles%rowtype;
-  v_now timestamptz := clock_timestamp();
-  v_vehicle_net numeric(14,2);
-  v_rubber_weight numeric(14,2);
-  v_lock_ids uuid[];
-begin
-  select * into v_wex
-  from public.export_vehicle_weigh_bills w
-  where w.id = p_wex_id
-  for update;
-  if v_wex.id is null then
-    raise exception 'WEX_NOT_FOUND: ไม่พบบิลรถส่งออก';
-  end if;
-  if not private.can_manage_reports(v_wex.location_id) then
-    raise exception 'WEX_FORBIDDEN: ไม่มีสิทธิ์แก้ไขบิลรถส่งออกของสาขานี้';
-  end if;
-  if p_expected_revision is null or p_expected_revision <> v_wex.revision then
-    raise exception 'WEX_STALE_REVISION: บิลรถส่งออกถูกแก้ไขแล้ว กรุณาโหลดข้อมูลใหม่';
-  end if;
-
-  perform 1 from private.normalized_export_vehicle_weigh_lines(v_wex.location_id, p_lines);
-  select coalesce(array_agg(distinct id order by id), array[]::uuid[])
-  into v_lock_ids
-  from (
-    select unnest(coalesce(p_rubber_export_ids, array[]::uuid[])) as id
-    union
-    select r.rubber_export_id
-    from public.export_vehicle_weigh_bill_reservations r
-    where r.wex_id = v_wex.id
-  ) locked;
-  perform e.id
-  from public.rubber_exports e
-  where e.id = any(v_lock_ids)
-  order by e.id
-  for update;
-
-  v_rubber_weight := private.validate_wex_rubber_exports(
-    v_wex.location_id, v_wex.id, p_rubber_export_ids
-  );
-  select * into v_actor
-  from public.profiles p
-  where p.id = auth.uid() and p.is_active = true;
-  if v_actor.id is null then
-    raise exception 'WEX_FORBIDDEN: บัญชีผู้ใช้ไม่พร้อมใช้งาน';
-  end if;
-
-  delete from public.export_vehicle_weigh_bill_reservations
-  where wex_id = v_wex.id;
-  delete from public.export_vehicle_weigh_lines
-  where wex_id = v_wex.id;
-
-  insert into public.export_vehicle_weigh_lines (
-    wex_id, sequence_no, vehicle_registration, carrier_id, carrier_name,
-    inbound_at, inbound_weight, outbound_at, outbound_weight
-  )
-  select
-    v_wex.id, l.sequence_no, l.vehicle_registration, l.carrier_id, l.carrier_name,
-    l.inbound_at, l.inbound_weight, l.outbound_at, l.outbound_weight
-  from private.normalized_export_vehicle_weigh_lines(v_wex.location_id, p_lines) l;
-
-  select round(sum(l.net_weight), 2)
-  into v_vehicle_net
-  from public.export_vehicle_weigh_lines l
-  where l.wex_id = v_wex.id;
-
-  if v_rubber_weight > v_vehicle_net then
-    raise exception 'WEX_OVERWEIGHT: น้ำหนักรายการขายยางรวมเกินน้ำหนักสุทธิรถ';
-  end if;
-
-  insert into public.export_vehicle_weigh_bill_reservations (
-    wex_id, rubber_export_id, sequence_no, export_no, current_weight, created_at
-  )
-  select
-    v_wex.id, e.id, selected.ordinality::integer, e.export_no, e.current_weight, v_now
-  from unnest(coalesce(p_rubber_export_ids, array[]::uuid[]))
-    with ordinality as selected(id, ordinality)
-  join public.rubber_exports e on e.id = selected.id
-  order by selected.ordinality;
-
-  update public.export_vehicle_weigh_bills
-  set revision = revision + 1,
-      updated_by_user_id = v_actor.id,
-      updated_by_name = v_actor.name,
-      updated_at = v_now
-  where id = v_wex.id
-  returning revision into v_wex.revision;
-
-  return jsonb_build_object(
-    'id', v_wex.id, 'wexNo', v_wex.wex_no, 'revision', v_wex.revision
-  );
-exception
-  when unique_violation then
-    raise exception 'WEX_REX_RESERVED: มีรายการขายยางถูกจองในบิลรถส่งออกอื่นแล้ว';
-end;
-$$;
-
-notify pgrst, 'reload schema';
-
-commit;

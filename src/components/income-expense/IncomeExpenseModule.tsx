@@ -1,6 +1,6 @@
 import { ArrowRightLeft, Edit3, ExternalLink, Eye, Plus, RefreshCw, Settings, Share2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { formatCurrency } from "@/lib/format";
 import { IncomeExpenseStockShortageError, useIncomeExpense } from "@/hooks/useIncomeExpense";
@@ -40,10 +40,9 @@ import { appSwal, runBlockingAction } from "@/lib/swal";
 function pendingIncomeExpense(marker: IncomeExpenseApprovalMarker): IncomeExpense | null {
   const payload = marker.requestedPayload;
   if (payload.billOption === "บิลขาย" && marker.operation !== "delete") return null;
-  const clientTempId = marker.clientTempId;
   return {
     id: `approval:${marker.requestId}`,
-    clientTempId,
+    clientTempId: marker.clientTempId,
     localBillNo: String(payload.localBillNo ?? "รอเลขบิล"),
     syncStatus: "synced",
     idempotencyKey: String(payload.idempotencyKey ?? marker.requestId),
@@ -86,6 +85,13 @@ export function IncomeExpenseModule({
   onOpenTimeTrackingSource?: (sourceId: string, sourceType: "time_tracking_withdrawal" | "payroll_slip") => void;
 }) {
   const pdfShare = useSharePdf();
+  const [mode, setMode] = useState<"latest" | "pending_approval" | "sync_problems">("latest");
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setDebouncedSearch(search), 400);
+    return () => window.clearTimeout(timeout);
+  }, [search]);
   const {
     transactions,
     addTransaction,
@@ -96,29 +102,37 @@ export function IncomeExpenseModule({
     hasMore,
     isLoadingMore,
     loadMore,
-  } = useIncomeExpense(selectedLocation.id, profile.id);
+    isLoading,
+    isError,
+    pendingApprovalCount,
+  } = useIncomeExpense(selectedLocation.id, profile.id, { mode, search: debouncedSearch });
   const isOnline = useOnlineStatus();
   const canManageSystem = canManageSystemFeatures(profile);
+  const [cashReceiptId, setCashReceiptId] = useState<string | null>(null);
+  const [cashDetailsId, setCashDetailsId] = useState<string | null>(null);
+  const [cashEditingId, setCashEditingId] = useState<string | null>(null);
   const {
     keywords: approvalKeywords,
     markers: approvalMarkers,
-    pendingCount: pendingApprovalCount,
     settings: approvalSettings,
     submitForApprovalIfNeeded,
   } = useIncomeExpenseApprovals({
-    includePendingCount: canManageSystem,
-    pendingLocationId: selectedLocation.id,
-    includeMarkers: true,
+    includePendingCount: false,
+    includeMarkers: !canManageSystem && mode === "latest",
     markersLocationId: selectedLocation.id,
+    markerOwnerUserId: !canManageSystem ? profile.id : undefined,
   });
   const approvalButtonLabel = isOnline && pendingApprovalCount > 0
     ? `ตั้งค่าและอนุมัติรับ-จ่าย รออนุมัติ ${pendingApprovalCount} รายการ`
     : "ตั้งค่าและอนุมัติรับ-จ่าย";
-  const cashTransfers = useCashBranchTransfers(selectedLocation.id);
+  const activeCashDetailId = cashReceiptId ?? cashDetailsId ?? cashEditingId;
+  const cashTransfers = useCashBranchTransfers(profile.id, selectedLocation.id, activeCashDetailId);
   const { locations } = useLocations();
-  const pendingCashReceipts = cashTransfers.transfers.filter((transfer) => transfer.targetLocationId === selectedLocation.id && transfer.status === "pending_receipt");
+  const pendingCashReceipts = cashTransfers.pendingTransfers;
   const { retrySyncEvent, isRetrying } = usePerRecordSyncRetry(selectedLocation.id, profile.id);
   const ledgerTransactions = useMemo(() => {
+    if (mode !== "latest" || canManageSystem) return transactions;
+
     const markersByRecord = new Map<string, IncomeExpenseApprovalMarker>();
     for (const marker of approvalMarkers) {
       if (marker.operation === "create") continue;
@@ -154,35 +168,34 @@ export function IncomeExpenseModule({
       }
     }
     return [...pendingRows.values(), ...marked];
-  }, [approvalMarkers, transactions]);
+  }, [approvalMarkers, canManageSystem, mode, transactions]);
   const nextNumber = String(transactions.length + 1);
   const [modalOpen, setModalOpen] = useState(false);
   const [modalType, setModalType] = useState<"income" | "expense">("income");
   const [editingTransaction, setEditingTransaction] = useState<IncomeExpense | null>(null);
   const [viewingSaleBill, setViewingSaleBill] = useState<IncomeExpense | null>(null);
   const [approvalModalOpen, setApprovalModalOpen] = useState(false);
+  const [approvalRequestId, setApprovalRequestId] = useState<string | undefined>();
   const [deletingTransactionId, setDeletingTransactionId] = useState<string | null>(null);
   const [deletingCashTransferId, setDeletingCashTransferId] = useState<string | null>(null);
   const [branchTransferModalOpen, setBranchTransferModalOpen] = useState(false);
-  const [cashReceiptId, setCashReceiptId] = useState<string | null>(null);
-  const [cashDetailsId, setCashDetailsId] = useState<string | null>(null);
-  const [cashEditingId, setCashEditingId] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
   const [pageSize, setPageSize] = useState(10);
   const [page, setPage] = useState(1);
-  const filteredTransactions = search.trim()
-    ? ledgerTransactions.filter((transaction) =>
-      `${transaction.number} ${transaction.title} ${transaction.createdByName}`
-        .toLocaleLowerCase("th-TH")
-        .includes(search.trim().toLocaleLowerCase("th-TH"))
-    )
-    : ledgerTransactions;
+  useEffect(() => {
+    setPage(1);
+  }, [selectedLocation.id]);
+  const filteredTransactions = ledgerTransactions;
   const totalPages = Math.max(Math.ceil(filteredTransactions.length / pageSize), 1);
   const currentPage = Math.min(page, totalPages);
   const visibleTransactions = filteredTransactions.slice(
     (currentPage - 1) * pageSize,
     currentPage * pageSize,
   );
+  useEffect(() => {
+    if (filteredTransactions.length < page * pageSize && hasMore && !isLoadingMore) {
+      void loadMore();
+    }
+  }, [filteredTransactions.length, hasMore, isLoadingMore, loadMore, page, pageSize]);
 
   function openAdd(type: "income" | "expense") {
     setModalType(type);
@@ -303,13 +316,17 @@ export function IncomeExpenseModule({
 
   async function confirmDiscardFailed(transaction: IncomeExpense) {
     if (deletingTransactionId) return;
-    if (!window.confirm(`ลบรายการค้าง ${transaction.localBillNo} ออกจากเครื่องนี้ใช่ไหม?`)) return;
+    if (!isOnline) {
+      toast.error("ทิ้งรายการค้างได้เมื่อออนไลน์เท่านั้น");
+      return;
+    }
+    if (!window.confirm(`ทิ้งรายการค้าง ${transaction.localBillNo} จากเครื่องนี้ใช่ไหม?\nการเปลี่ยนแปลงในเครื่องของรายการนี้ทั้งหมดจะถูกล้าง แต่จะไม่แก้ไขข้อมูลบนเซิร์ฟเวอร์`)) return;
     setDeletingTransactionId(transaction.clientTempId);
     try {
       await runBlockingAction("กำลังลบรายการ...", () => (
         discardFailedTransaction(transaction.clientTempId)
       ));
-      toast.success("ลบรายการค้างแล้ว");
+      toast.success("ทิ้งรายการค้างแล้ว และโหลดข้อมูลล่าสุดจากเซิร์ฟเวอร์");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "ลบรายการค้างไม่สำเร็จ");
     } finally {
@@ -465,6 +482,18 @@ export function IncomeExpenseModule({
     }
   }
 
+  async function shareCashTransferById(transferId: string) {
+    if (!isOnline) {
+      toast.error("แชร์ PDF รายละเอียดเงินสดได้เมื่อออนไลน์");
+      return;
+    }
+    try {
+      await shareCashTransfer(await cashTransfers.loadDetail(transferId));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "โหลดรายละเอียดเงินสดไม่สำเร็จ");
+    }
+  }
+
   function cashDeleteBlockReason(transfer: CashBranchTransfer) {
     if (!isOnline) return "การลบรายการโยกเงินต้องออนไลน์";
     if (transfer.reportLockNo) {
@@ -507,6 +536,32 @@ export function IncomeExpenseModule({
     }
   }
 
+  async function confirmCashDeleteById(transferId: string) {
+    try {
+      await confirmCashDelete(await cashTransfers.loadDetail(transferId));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "โหลดรายละเอียดเงินสดไม่สำเร็จ");
+    }
+  }
+
+  function cashDetailFallback(title: string, offlineMessage: string, onClose: () => void) {
+    return (
+      <ModalShell title={title} onClose={onClose}>
+        {cashTransfers.detailError ? (
+          <div role="alert" aria-label={cashTransfers.detailError} className="space-y-3">
+            <p className="font-semibold text-clay">{cashTransfers.detailError}</p>
+            <button type="button" onClick={() => void cashTransfers.retryDetail()} disabled={!isOnline}
+              aria-label="ลองใหม่สำหรับรายละเอียดเงินสด" className="focus-ring rounded-md bg-river px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">
+              ลองใหม่
+            </button>
+          </div>
+        ) : (
+          <p role="status">{isOnline ? "กำลังโหลดรายละเอียดเงินสด…" : offlineMessage}</p>
+        )}
+      </ModalShell>
+    );
+  }
+
   return (
     <section className="space-y-4">
       <div className="flex flex-col items-start gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:p-4">
@@ -545,7 +600,7 @@ export function IncomeExpenseModule({
           )}
           {pendingCashReceipts.length > 0 && (
             <button type="button" disabled={!isOnline} onClick={() => setCashReceiptId(pendingCashReceipts[0]?.id ?? null)} className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-amber px-3 text-sm font-semibold text-white hover:bg-amber/90 disabled:cursor-not-allowed disabled:bg-slate-300">
-              <ArrowRightLeft size={18} /> รอรับเงิน ({pendingCashReceipts.length})
+              <ArrowRightLeft size={18} /> รอรับเงิน ({cashTransfers.pendingTotal})
             </button>
           )}
           {canManageSystem && (
@@ -556,6 +611,7 @@ export function IncomeExpenseModule({
                   toast.error("ตั้งค่าและอนุมัติรับ-จ่ายใช้ได้เมื่อออนไลน์เท่านั้น");
                   return;
                 }
+                setApprovalRequestId(undefined);
                 setApprovalModalOpen(true);
               }}
               disabled={!isOnline}
@@ -578,17 +634,39 @@ export function IncomeExpenseModule({
         </div>
       </div>
 
+      {cashTransfers.pendingError && (
+        <section role="alert" aria-label={cashTransfers.pendingError} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-clay/30 bg-clay/10 p-3">
+          <p className="font-semibold text-clay">{cashTransfers.pendingError}</p>
+          <button type="button" onClick={() => void cashTransfers.retryPending()} disabled={!isOnline}
+            aria-label="ลองใหม่สำหรับคิวรอรับเงินสด" className="focus-ring rounded-md bg-river px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">
+            ลองใหม่
+          </button>
+        </section>
+      )}
       {pendingCashReceipts.length > 0 && (
         <section className="rounded-md border border-amber/40 bg-amber/10 p-3">
           <h3 className="font-bold text-ink">คิวรอตรวจรับเงินสด</h3>
           <div className="mt-2 space-y-2">
             {pendingCashReceipts.map((transfer) => <button key={transfer.id} type="button" data-transfer-id={transfer.id} disabled={!isOnline} onClick={() => setCashReceiptId(transfer.id)} className="flex w-full items-center justify-between rounded bg-amber px-3 py-2 text-left text-sm text-white hover:bg-amber/90 disabled:opacity-60"><span>จาก {transfer.createdByName} · {formatCurrency(transfer.sentTotal)}</span><span className="font-semibold">ตรวจรับ</span></button>)}
           </div>
+          {cashTransfers.pendingTotal > pendingCashReceipts.length && <p className="mt-2 text-xs text-ink/60">แสดง 20 รายการที่เก่าที่สุดจาก {cashTransfers.pendingTotal} รายการค้าง</p>}
         </section>
       )}
 
       <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel">
         <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div className="flex flex-wrap gap-2" role="group" aria-label="มุมมองรายการรับ-จ่าย">
+            {([
+              ["latest", "รายการล่าสุด"],
+              ["pending_approval", "รออนุมัติ"],
+              ["sync_problems", "ซิงก์มีปัญหา"],
+            ] as const).filter(([value]) => value !== "pending_approval" || canManageSystem).map(([value, label]) => (
+              <button key={value} type="button" onClick={() => { setMode(value); setPage(1); }} aria-pressed={mode === value}
+                className={`focus-ring rounded-md px-3 py-2 text-sm font-semibold ${mode === value ? "bg-river text-white" : "bg-field text-ink hover:bg-river/10"}`}>
+                {label}{value === "pending_approval" && pendingApprovalCount > 0 ? ` (${pendingApprovalCount})` : ""}
+              </button>
+            ))}
+          </div>
           <TablePageSizeSelect
             pageSize={pageSize}
             onPageSizeChange={(size) => {
@@ -605,11 +683,15 @@ export function IncomeExpenseModule({
                 setSearch(event.target.value);
                 setPage(1);
               }}
-              placeholder="ค้นหาในรายการที่โหลดแล้ว"
+              placeholder="เลขที่ วันที่ รายการ หมวด หรือผู้บันทึก"
+              aria-describedby="income-expense-search-help"
               className="focus-ring h-10 w-full rounded-md border border-black/20 bg-white px-3 sm:w-64"
             />
           </label>
         </div>
+        <p id="income-expense-search-help" className="-mt-2 mb-3 text-xs text-ink/55">ค้นหาทั้งประวัติเมื่อออนไลน์ · ไม่ค้นตามจำนวนเงิน</p>
+        {isLoading && <p role="status" aria-live="polite" className="mb-3 text-sm text-ink/60">กำลังโหลดรายการ…</p>}
+        {isError && <p role="alert" className="mb-3 text-sm font-semibold text-clay">โหลดรายการไม่สำเร็จ กรุณาลองใหม่อีกครั้ง</p>}
         <div className="overflow-x-auto">
           <table className="w-full min-w-[960px] border-collapse text-sm">
             <thead>
@@ -632,7 +714,7 @@ export function IncomeExpenseModule({
                 const actionsDisabled = Boolean(actionBlockReason) || deleting;
                 const actionTitle = deleting ? "กำลังลบรายการ..." : actionBlockReason;
                 const isSaleBill = transaction.billOption === "บิลขาย";
-                const canDiscardFailed = transaction.syncStatus === "failed" && !transaction.serverBillNo;
+                const canDiscardFailed = (transaction.syncStatus === "failed" || transaction.syncStatus === "conflict") && isOnline;
                 const saleShareBlockReason = isSaleBill
                   ? !isOnline
                     ? "แชร์ PDF บิลขายได้เมื่อออนไลน์"
@@ -644,13 +726,10 @@ export function IncomeExpenseModule({
                   : null;
                 const sourceLocationId = transaction.relationSourceLocationId ?? transaction.locationId;
                 const cashTransferId = transaction.relationSourceId?.startsWith("cash:") ? transaction.relationSourceId.slice(5) : null;
-                const cashTransfer = cashTransferId
-                  ? cashTransfers.transfers.find((item) => item.id === cashTransferId)
-                  : undefined;
                 const cashDeleteReason = cashTransferId
-                  ? cashTransfer
-                    ? cashDeleteBlockReason(cashTransfer)
-                    : "กำลังโหลดรายละเอียดเงินสด"
+                  ? !isOnline
+                    ? "การลบรายการโยกเงินต้องออนไลน์"
+                    : null
                   : null;
                 const canOpenMoneyTransferSource = Boolean(
                   transaction.relationSourceType === "money_transfer" &&
@@ -718,9 +797,9 @@ export function IncomeExpenseModule({
                         </IconButton>
                       )}
                       {cashTransferId && (
-                        <IconButton label={!cashTransfer ? "กำลังโหลดรายละเอียดเงินสด" : pdfShare.busy ? "กำลังสร้าง PDF" : "แชร์ PDF รายละเอียดเงินสด 80 มม."}
-                          visibleLabel="แชร์ PDF" onClick={() => { if (cashTransfer) void shareCashTransfer(cashTransfer); }}
-                          tone="actionSecondary" disabled={!cashTransfer || pdfShare.busy}>
+                        <IconButton label={pdfShare.busy ? "กำลังสร้าง PDF" : "แชร์ PDF รายละเอียดเงินสด 80 มม."}
+                          visibleLabel="แชร์ PDF" onClick={() => void shareCashTransferById(cashTransferId)}
+                          tone="actionSecondary" disabled={!isOnline || pdfShare.busy}>
                           <Share2 size={16} />
                         </IconButton>
                       )}
@@ -739,8 +818,8 @@ export function IncomeExpenseModule({
                       )}
                       {cashTransferId ? (
                         <IconButton label={cashDeleteReason ?? "ลบรายการโยกเงิน"} visibleLabel="ลบ"
-                          onClick={() => { if (cashTransfer) void confirmCashDelete(cashTransfer); }} tone="danger"
-                          disabled={!cashTransfer || Boolean(cashDeleteReason) || deletingCashTransferId === cashTransfer.id}>
+                          onClick={() => void confirmCashDeleteById(cashTransferId)} tone="danger"
+                          disabled={Boolean(cashDeleteReason) || deletingCashTransferId === cashTransferId}>
                           <Trash2 size={16} />
                         </IconButton>
                       ) : canDiscardFailed ? (
@@ -758,7 +837,12 @@ export function IncomeExpenseModule({
                           <Trash2 size={16} />
                         </IconButton>
                       )}
-                      {transaction.syncStatus === "failed" && (
+                      {mode === "pending_approval" && transaction.approvalRequestId && (
+                        <button type="button" onClick={() => { setApprovalRequestId(transaction.approvalRequestId); setApprovalModalOpen(true); }} className="focus-ring rounded-md bg-settings px-3 py-2 text-sm font-semibold text-white hover:bg-settings/90">
+                          ตรวจคำขอ
+                        </button>
+                      )}
+                      {(transaction.syncStatus === "failed" || transaction.syncStatus === "conflict") && (
                         <button type="button" onClick={() => void retryFailedSync(transaction)} disabled={!isOnline || isRetrying}
                           title="ลองซิงก์อีกครั้ง" aria-label="ลองซิงก์อีกครั้ง"
                           className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-river text-white disabled:cursor-not-allowed disabled:bg-slate-300">
@@ -827,21 +911,9 @@ export function IncomeExpenseModule({
           pageSize={pageSize}
           onPageChange={setPage}
           hasMore={hasMore}
+          isLoadingMore={isLoadingMore}
         />
       </section>
-
-      {hasMore && (
-        <div className="flex justify-center">
-          <button
-            type="button"
-            onClick={() => void loadMore()}
-            disabled={isLoadingMore}
-            className="focus-ring rounded-md bg-actionSecondary px-4 py-2 text-sm font-semibold text-white hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {isLoadingMore ? "กำลังโหลด..." : "โหลดรายการเพิ่ม"}
-          </button>
-        </div>
-      )}
 
       {modalOpen && (
         <IncomeExpenseModal
@@ -934,15 +1006,28 @@ export function IncomeExpenseModule({
           onClose={() => setBranchTransferModalOpen(false)}
         />
       )}
-      {cashReceiptId && (() => { const transfer = cashTransfers.transfers.find((item) => item.id === cashReceiptId); return transfer ? <CashBranchTransferReceiveModal transfer={transfer} online={isOnline} onReceive={(received) => cashTransfers.receive.mutateAsync({ id: transfer.id, received })} onClose={() => setCashReceiptId(null)} /> : null; })()}
-      {cashEditingId && (() => { const transfer = cashTransfers.transfers.find((item) => item.id === cashEditingId); return transfer ? <CashBranchTransferCreateModal location={selectedLocation} transfer={transfer} online={isOnline} onSave={(payload) => cashTransfers.update.mutateAsync({ id: transfer.id, payload })} onClose={() => setCashEditingId(null)} /> : null; })()}
-      {cashDetailsId && (() => { const transfer = cashTransfers.transfers.find((item) => item.id === cashDetailsId); return transfer ? <CashBranchTransferDetails transfer={transfer} canEdit={!transfer.reportLockNo && transfer.status === "pending_receipt" && (profile.role === "super_admin" || transfer.createdByUserId === profile.id)} online={isOnline} onEdit={() => { setCashDetailsId(null); setCashEditingId(transfer.id); }} onClose={() => setCashDetailsId(null)} /> : null; })()}
+      {cashReceiptId && (cashTransfers.detail ? (
+        <CashBranchTransferReceiveModal transfer={cashTransfers.detail} online={isOnline} onReceive={(received) => cashTransfers.receive.mutateAsync({ id: cashTransfers.detail!.id, received })} onClose={() => setCashReceiptId(null)} />
+      ) : (
+        cashDetailFallback("ตรวจรับเงินสด", "ตรวจรับเงินสดได้เมื่อออนไลน์", () => setCashReceiptId(null))
+      ))}
+      {cashEditingId && (cashTransfers.detail ? (
+        <CashBranchTransferCreateModal location={selectedLocation} transfer={cashTransfers.detail} online={isOnline} onSave={(payload) => cashTransfers.update.mutateAsync({ id: cashTransfers.detail!.id, payload })} onClose={() => setCashEditingId(null)} />
+      ) : (
+        cashDetailFallback("แก้ไขการโยกเงินสด", "แก้ไขการโยกเงินสดได้เมื่อออนไลน์", () => setCashEditingId(null))
+      ))}
+      {cashDetailsId && (cashTransfers.detail ? (
+        <CashBranchTransferDetails transfer={cashTransfers.detail} canEdit={!cashTransfers.detail.reportLockNo && cashTransfers.detail.status === "pending_receipt" && (profile.role === "super_admin" || cashTransfers.detail.createdByUserId === profile.id)} online={isOnline} onEdit={() => { setCashDetailsId(null); setCashEditingId(cashTransfers.detail!.id); }} onClose={() => setCashDetailsId(null)} />
+      ) : (
+        cashDetailFallback("รายละเอียดเงินสด", "รายละเอียดเงินสดเปิดได้เมื่อออนไลน์", () => setCashDetailsId(null))
+      ))}
       <SharePdfWaitingModal open={pdfShare.waiting} onCancel={pdfShare.cancel} />
 
       {approvalModalOpen && (
         <IncomeExpenseApprovalModal
           initialLocationId={selectedLocation.id}
-          onClose={() => setApprovalModalOpen(false)}
+          initialRequestId={approvalRequestId}
+          onClose={() => { setApprovalModalOpen(false); setApprovalRequestId(undefined); }}
         />
       )}
     </section>

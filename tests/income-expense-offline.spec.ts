@@ -403,12 +403,12 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
     }
   });
 
-  test('synced row blocks offline edit and delete without queue or server changes', async ({ page, context }) => {
+  test('offline view keeps no synced-history snapshot and restores server actions after reconnect', async ({ page, context }) => {
     test.setTimeout(90000);
     await loginAndGoToIncomeExpense(page);
 
     const marker = `E2E-SYNCED-OFFLINE-${Date.now()}`;
-    const row = await createIncomeOnline(page, marker, 1000);
+    await createIncomeOnline(page, marker, 1000);
     const beforeRes = await page.request.fetch(
       `${supabaseUrl}/rest/v1/income_expense?title=eq.${marker}&select=client_temp_id,title,revision_no,record_status`,
       { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
@@ -417,15 +417,8 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
 
     await context.setOffline(true);
 
-    const blockMessage = 'รายการนี้ซิงก์แล้ว ต้องออนไลน์เพื่อแก้ไขหรือลบ';
-    const blockedActions = row.getByRole('button', { name: blockMessage, exact: true });
-    await expect(blockedActions).toHaveCount(2);
-    await expect(blockedActions.nth(0)).toBeDisabled();
-    await expect(blockedActions.nth(1)).toBeDisabled();
-    await expect(blockedActions.nth(0)).toHaveAttribute('title', blockMessage);
-    await expect(blockedActions.nth(1)).toHaveAttribute('title', blockMessage);
-    await expect(blockedActions.nth(0)).toHaveText('แก้ไข');
-    await expect(blockedActions.nth(1)).toHaveText('ลบ');
+    // Offline is deliberately a local sync-queue view, never a cached server-history snapshot.
+    await expect(page.locator('table tbody tr', { hasText: marker })).toHaveCount(0);
     expect((await readQueue(page)).filter(event => event.id === before.client_temp_id)).toHaveLength(0);
 
     await context.setOffline(false);
@@ -439,6 +432,10 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
       record_status: before.record_status,
     }]);
 
+    const row = page.locator('table tbody tr', { hasText: marker }).first();
+    await expect(row).toBeVisible({ timeout: 15000 });
+    await expect(row.getByRole('button', { name: 'แก้ไข', exact: true })).toBeEnabled();
+    await expect(row.getByRole('button', { name: 'ลบ', exact: true })).toBeEnabled();
     await row.getByRole('button', { name: 'ลบ', exact: true }).click();
     await expect.poll(async () => {
       const res = await page.request.fetch(
@@ -697,14 +694,14 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
     const failedEvent = queue.find(e => e.id === payload.clientTempId && e.entity === 'income_expense');
     expect(failedEvent).toBeDefined();
     expect(failedEvent.status).toBe('failed');
-    expect(failedEvent.errorMessage).toContain('cost must be > 0');
+    expect(failedEvent.errorMessage).toBe('ข้อมูลรายการหรือยอดเงินไม่ถูกต้อง');
 
     await page.reload();
     await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
     await page.click('button:has-text("รับ-จ่าย")');
     const failedRow = page.locator('table tbody tr', { hasText: marker }).first();
     await expect(failedRow).toBeVisible({ timeout: 15000 });
-    await expect(failedRow.locator('text=cost must be > 0')).toBeVisible();
+    await expect(failedRow.getByText('ข้อมูลรายการหรือยอดเงินไม่ถูกต้อง', { exact: true })).toBeVisible();
 
     const queueAfterReload = await readQueue(page);
     const failedEventAfterReload = queueAfterReload.find(e => e.id === payload.clientTempId && e.entity === 'income_expense');

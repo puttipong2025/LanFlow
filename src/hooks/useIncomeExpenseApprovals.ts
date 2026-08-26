@@ -89,6 +89,7 @@ export function useIncomeExpenseApprovals(options: {
   requestsLocationId?: string;
   pendingLocationId?: string;
   markersLocationId?: string;
+  markerOwnerUserId?: string;
 } = {}) {
   const supabase = createSupabaseBrowserClient();
   const queryClient = useQueryClient();
@@ -98,6 +99,7 @@ export function useIncomeExpenseApprovals(options: {
   const requestsLocationId = options.requestsLocationId;
   const pendingLocationId = options.pendingLocationId;
   const markersLocationId = options.markersLocationId;
+  const markerOwnerUserId = options.markerOwnerUserId;
 
   const keywordsQuery = useQuery({
     queryKey: [KEYWORDS_KEY],
@@ -186,16 +188,25 @@ export function useIncomeExpenseApprovals(options: {
   });
 
   const markersQuery = useQuery({
-    queryKey: [REQUESTS_KEY, "markers", markersLocationId ?? "none"],
+    queryKey: [REQUESTS_KEY, "markers", markersLocationId ?? "none", markerOwnerUserId ?? "all"],
     enabled: includeMarkers && Boolean(markersLocationId),
     queryFn: async () => {
-      const { data, error } = await supabase
+      let query = supabase
         .from("income_expense_approval_requests")
         .select("id, source_income_expense_id, requested_operation, requested_payload, matched_reasons, location_id, tx_type, title, cost, created_at")
         .eq("location_id", markersLocationId!)
         .eq("request_status", "pending")
-        .order("created_at", { ascending: false })
-        .limit(100);
+        .order("created_at", { ascending: false });
+
+      // A user's own pending rows must not disappear behind a manager queue limit.
+      // The marker query is only enabled for the record owner's latest view.
+      if (markerOwnerUserId) {
+        query = query.eq("requested_by_user_id", markerOwnerUserId);
+      } else {
+        query = query.limit(100);
+      }
+
+      const { data, error } = await query;
 
       if (error) throw new Error(error.message || JSON.stringify(error));
 

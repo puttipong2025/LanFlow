@@ -40,7 +40,7 @@ async function fetchAllFeed(request: APIRequestContext, locationId: string) {
   const rows: FeedRow[] = [];
   let cursor: string | null = null;
   do {
-    const search = new URLSearchParams({ locationId, from: startDate(), to: today(), pageSize: "100" });
+    const search = new URLSearchParams({ locationId });
     if (cursor) search.set("cursor", cursor);
     const response = await request.get(`/api/lanflow/income-expense/feed?${search}`);
     expect(response.ok()).toBeTruthy();
@@ -103,7 +103,7 @@ test.describe("Income/Expense feed correctness @income-expense-feed", () => {
     }
 
     try {
-      const denied = await request.get(`/api/lanflow/income-expense/feed?locationId=${inaccessibleLocationId}&from=${startDate()}&to=${today()}`);
+      const denied = await request.get(`/api/lanflow/income-expense/feed?locationId=${inaccessibleLocationId}`);
       expect(denied.status()).toBe(403);
 
     const feed = await fetchAllFeed(request, locationId);
@@ -166,7 +166,7 @@ test.describe("Income/Expense feed correctness @income-expense-feed", () => {
     }
   });
 
-  test("paginates pageSize=1 without duplicate or missing fixture rows", async ({ request }) => {
+  test("uses the fixed operational batch instead of the legacy pageSize parameter", async ({ request }) => {
     const meResponse = await request.get("/api/auth/me");
     expect(meResponse.ok()).toBeTruthy();
     const me = await meResponse.json() as { profile: { locationIds: string[] } };
@@ -186,21 +186,14 @@ test.describe("Income/Expense feed correctness @income-expense-feed", () => {
         created.push({ payload, revisionNo: data.revisionNo });
       }
 
-      const rows: FeedRow[] = [];
-      let cursor: string | null = null;
-      do {
-        const search = new URLSearchParams({ locationId, from: today(), to: today(), pageSize: "1" });
-        if (cursor) search.set("cursor", cursor);
-        const response = await request.get(`/api/lanflow/income-expense/feed?${search}`);
-        expect(response.ok()).toBeTruthy();
-        const page = await response.json() as { rows: FeedRow[]; nextCursor: string | null };
-        expect(page.rows).toHaveLength(1);
-        rows.push(...page.rows);
-        cursor = page.nextCursor;
-      } while (cursor);
+      const search = new URLSearchParams({ locationId, mode: "latest", search: marker, pageSize: "1" });
+      const response = await request.get(`/api/lanflow/income-expense/feed?${search}`);
+      expect(response.ok()).toBeTruthy();
+      const page = await response.json() as { rows: FeedRow[]; nextCursor: string | null };
 
-      expect(new Set(rows.map((row) => row.id)).size).toBe(rows.length);
-      expect(rows.filter((row) => row.title.startsWith(marker)).map((row) => row.title).sort()).toEqual([
+      expect(page.rows).toHaveLength(2);
+      expect(page.nextCursor).toBeNull();
+      expect(page.rows.map((row) => row.title).sort()).toEqual([
         `${marker}-A`,
         `${marker}-B`,
       ]);
@@ -229,7 +222,7 @@ test.describe("Income/Expense feed correctness @income-expense-feed", () => {
     const locationId = me.profile.locationIds[0];
     const otherLocationId = crypto.randomUUID();
     const marker = crypto.randomUUID();
-    const transferIds = Array.from({ length: 6 }, () => crypto.randomUUID());
+    const transferIds = Array.from({ length: 9 }, () => crypto.randomUUID());
     const beforeMidnight = "2026-08-03T16:59:59.999Z";
     const atMidnight = "2026-08-03T17:00:00.000Z";
     const businessDate = "2026-08-04";
@@ -284,6 +277,47 @@ test.describe("Income/Expense feed correctness @income-expense-feed", () => {
         },
       ];
     });
+    const excludedRows = [
+      {
+        ...common,
+        id: transferIds[6],
+        client_temp_id: transferIds[6],
+        idempotency_key: `${marker}:cancelled-incoming`,
+        location_id: otherLocationId,
+        target_location_id: locationId,
+        target_location_name: "สาขาทดสอบปลายทาง",
+        transfer_type: "branch",
+        transfer_status: "cancelled",
+        net_amount_to_pay: 201,
+        created_at: atMidnight,
+      },
+      {
+        ...common,
+        id: transferIds[7],
+        client_temp_id: transferIds[7],
+        idempotency_key: `${marker}:deleted-outgoing`,
+        location_id: locationId,
+        target_location_id: otherLocationId,
+        target_location_name: "สาขาทดสอบต้นทาง",
+        transfer_type: "branch",
+        record_status: "deleted",
+        net_amount_to_pay: 202,
+        created_at: atMidnight,
+      },
+      {
+        ...common,
+        id: transferIds[8],
+        client_temp_id: transferIds[8],
+        idempotency_key: `${marker}:unpaid-customer`,
+        location_id: locationId,
+        customer_name: "ลูกค้าทดสอบที่ยังไม่เข้าเงื่อนไข",
+        transfer_type: "customer",
+        transfer_status: "paid",
+        net_amount_to_pay: 203,
+        branch_paid_amount: 33,
+        created_at: atMidnight,
+      },
+    ];
 
     try {
       expect((await admin.from("locations").insert({
@@ -292,27 +326,37 @@ test.describe("Income/Expense feed correctness @income-expense-feed", () => {
         code: `FB-${marker.slice(0, 5)}`,
         is_active: true,
       })).error).toBeNull();
-      expect((await admin.from("money_transfers").insert(transferRows)).error).toBeNull();
+      expect((await admin.from("money_transfers").insert([...transferRows, ...excludedRows])).error).toBeNull();
 
       const response = await request.get(
-        `/api/lanflow/income-expense/feed?locationId=${locationId}&from=${businessDate}&to=${businessDate}&pageSize=100`
+        `/api/lanflow/income-expense/feed?locationId=${locationId}`
       );
       expect(response.ok()).toBeTruthy();
       const page = await response.json() as { rows: FeedRow[] };
       const expectedIds = [
+        `money-transfer-income:${transferIds[0]}`,
+        `money-transfer-branch-expense:${transferIds[1]}`,
+        `money-transfer-branch-paid-expense:${transferIds[2]}`,
         `money-transfer-income:${transferIds[3]}`,
         `money-transfer-branch-expense:${transferIds[4]}`,
         `money-transfer-branch-paid-expense:${transferIds[5]}`,
       ];
       const excludedIds = [
-        `money-transfer-income:${transferIds[0]}`,
-        `money-transfer-branch-expense:${transferIds[1]}`,
-        `money-transfer-branch-paid-expense:${transferIds[2]}`,
+        `money-transfer-income:${transferIds[6]}`,
+        `money-transfer-branch-expense:${transferIds[7]}`,
+        `money-transfer-branch-paid-expense:${transferIds[8]}`,
       ];
       expect(page.rows.filter((row) => expectedIds.includes(row.id)).map((row) => row.id).sort())
         .toEqual([...expectedIds].sort());
-      expect(page.rows.filter((row) => expectedIds.includes(row.id)).map((row) => row.txDate))
-        .toEqual([businessDate, businessDate, businessDate]);
+      expect(Object.fromEntries(page.rows.filter((row) => expectedIds.includes(row.id)).map((row) => [row.id, row.txDate])))
+        .toEqual({
+          [`money-transfer-income:${transferIds[0]}`]: "2026-08-03",
+          [`money-transfer-branch-expense:${transferIds[1]}`]: "2026-08-03",
+          [`money-transfer-branch-paid-expense:${transferIds[2]}`]: "2026-08-03",
+          [`money-transfer-income:${transferIds[3]}`]: businessDate,
+          [`money-transfer-branch-expense:${transferIds[4]}`]: businessDate,
+          [`money-transfer-branch-paid-expense:${transferIds[5]}`]: businessDate,
+        });
       expect(page.rows.some((row) => excludedIds.includes(row.id))).toBe(false);
     } finally {
       await admin.from("money_transfers").delete().in("id", transferIds);

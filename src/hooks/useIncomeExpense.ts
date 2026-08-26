@@ -1,24 +1,24 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import type { IncomeExpense } from "@/types";
-import { enqueueSyncEvent, getPendingEvents, removeSyncEvent, updateSyncEvent, type SyncEvent } from "@/lib/idb-queue";
+import { enqueueSyncEvent, getPendingEvents, removeSyncEvent, removeSyncEvents, updateSyncEvent, type SyncEvent } from "@/lib/idb-queue";
 import { coalesceQueueGroup } from "@/lib/coalesceQueueGroup";
 import { buildIncomeExpensePayload } from "@/lib/income-expense/build-income-expense-payload";
 import { OFFLINE_SYNCED_ACTION_MESSAGE } from "@/lib/record-action-locks";
 import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
-import { bangkokDateWindow } from "@/lib/bangkok-date";
 import { authFetch } from "@/lib/auth-fetch";
 import { isRetryableSyncResponse } from "@/lib/sync-response";
 import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
 import { createScopedSingleFlight } from "@/lib/scoped-single-flight";
+import { useIncomeExpenseOperationalList } from "@/hooks/useIncomeExpenseOperationalList";
+import type { IncomeExpenseOperationalFeedPage, IncomeExpenseOperationalMode } from "@/lib/income-expense/operational-list";
 
 const ENTITY = "income_expense" as const;
 const FEED_QUERY_KEY = INCOME_EXPENSE_FEED_QUERY_KEY;
 const PENDING_QUERY_KEY = "incomeExpensePending" as const;
 const PAGE_SIZE = 100;
 
-type FeedPage = { rows: IncomeExpense[]; nextCursor: string | null };
+type FeedPage = IncomeExpenseOperationalFeedPage;
 type IncomeExpenseSyncReceipt = {
   id: string;
   serverBillNo: string;
@@ -54,10 +54,6 @@ type IncomeExpenseSyncResult = {
 
 function queuePartition(ownerUserId: string, locationId: string) {
   return { entity: ENTITY, ownerUserId, locationId };
-}
-
-function defaultDateWindow() {
-  return bangkokDateWindow(90);
 }
 
 function payloadToOptimisticRow(event: SyncEvent): IncomeExpense {
@@ -181,7 +177,7 @@ function upsertSyncedIntoFeedCache(
 
       if (!cached || cached.pages.length === 0) {
         return {
-          pages: [{ rows: [synced], nextCursor: null }],
+          pages: [{ rows: [synced], nextCursor: null, hasMore: false, pendingApprovalCount: 0 }],
           pageParams: [null],
         };
       }
@@ -325,34 +321,19 @@ export function syncPendingIncomeExpense(
   ));
 }
 
-export function useIncomeExpense(locationId: string, ownerUserId: string) {
+export function useIncomeExpense(
+  locationId: string,
+  ownerUserId: string,
+  options: { mode?: IncomeExpenseOperationalMode; search?: string } = {},
+) {
   const queryClient = useQueryClient();
-  const dateWindow = useMemo(defaultDateWindow, []);
-  const feedQuery = useInfiniteQuery({
-    queryKey: [...moneyFlowQueryKeys.incomeExpenseFeed(ownerUserId, locationId), dateWindow.from, dateWindow.to],
-    initialPageParam: null as string | null,
-    enabled: !!locationId && !!ownerUserId,
-    queryFn: async ({ pageParam, signal }): Promise<FeedPage> => {
-      if (!navigator.onLine) return { rows: [], nextCursor: null };
-      const params = new URLSearchParams({ locationId, from: dateWindow.from, to: dateWindow.to, pageSize: String(PAGE_SIZE) });
-      if (pageParam) params.set("cursor", pageParam);
-      const response = await authFetch(`/api/lanflow/income-expense/feed?${params}`, { signal });
-      if (!response.ok) throw new Error("โหลดรายการรับ-จ่ายไม่สำเร็จ");
-      return response.json();
-    },
-    getNextPageParam: (page) => page.nextCursor ?? undefined,
+  const operationalList = useIncomeExpenseOperationalList({
+    locationId,
+    ownerUserId,
+    mode: options.mode ?? "latest",
+    search: options.search ?? "",
   });
-  const pendingQuery = useQuery({
-    queryKey: moneyFlowQueryKeys.incomeExpensePending(ownerUserId, locationId),
-    enabled: !!locationId && !!ownerUserId,
-    networkMode: "always",
-    queryFn: () => getPendingEvents(queuePartition(ownerUserId, locationId)),
-  });
-
-  const transactions = useMemo(
-    () => mergeFeedWithPending(feedQuery.data?.pages.flatMap((page) => page.rows) ?? [], pendingQuery.data ?? []),
-    [feedQuery.data, pendingQuery.data]
-  );
+  const transactions = operationalList.rows;
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.incomeExpenseFeed(ownerUserId, locationId) });
     queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.incomeExpensePending(ownerUserId, locationId) });
@@ -469,27 +450,27 @@ export function useIncomeExpense(locationId: string, ownerUserId: string) {
   });
 
   async function discardFailedTransaction(clientTempId: string) {
+    if (!navigator.onLine) throw new Error("ทิ้งรายการค้างได้เมื่อออนไลน์เท่านั้น");
     const events = await getPendingEvents(queuePartition(ownerUserId, locationId));
-    const discardable = events.filter((event) => (
-      event.id === clientTempId
-      && event.operation === "create"
-      && event.status === "failed"
-    ));
+    const recordEvents = events.filter((event) => event.id === clientTempId);
+    const discardable = recordEvents.filter((event) => event.status === "failed" || event.status === "conflict");
     if (discardable.length === 0) {
-      throw new Error("รายการนี้ไม่ใช่บิลค้างที่ลบได้");
+      throw new Error("รายการนี้ไม่มีปัญหาการซิงก์ที่ทิ้งได้");
     }
-    for (const event of discardable) await removeSyncEvent(event.queueId!);
+    await removeSyncEvents(recordEvents.flatMap((event) => event.queueId == null ? [] : [event.queueId]));
     removeFromFeedCache(queryClient, ownerUserId, locationId, clientTempId);
-    refresh();
+    await operationalList.refresh();
   }
 
   return {
     transactions,
-    isLoading: feedQuery.isLoading || pendingQuery.isLoading,
-    isError: feedQuery.isError || pendingQuery.isError,
-    hasMore: feedQuery.hasNextPage,
-    isLoadingMore: feedQuery.isFetchingNextPage,
-    loadMore: () => feedQuery.fetchNextPage(),
+    pendingApprovalCount: operationalList.pendingApprovalCount,
+    isLoading: operationalList.isLoading,
+    isError: operationalList.isError,
+    hasMore: operationalList.hasMore,
+    isLoadingMore: operationalList.isLoadingMore,
+    loadMore: operationalList.fetchNextPage,
+    refresh: operationalList.refresh,
     addTransaction: saveTransaction.mutateAsync,
     updateTransaction: saveTransaction.mutateAsync,
     syncTransaction,

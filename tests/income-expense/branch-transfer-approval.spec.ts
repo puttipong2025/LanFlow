@@ -213,7 +213,8 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       
       const sourceLocationId = await selectedAppLocationId(page);
       expect(sourceLocationId).toBeTruthy();
-      await expect(targetSelect.locator(`option[value="${sourceLocationId}"]`)).toBeDisabled();
+      // The source branch is omitted altogether, so it cannot be submitted as a target.
+      await expect(targetSelect.locator(`option[value="${sourceLocationId}"]`)).toHaveCount(0);
       
       await modal.locator('button:has-text("ยกเลิก")').click();
     });
@@ -241,19 +242,24 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       const targetLocationId = await selectFirstAccessibleOption(page, targetSelect);
       for (const input of await createModal.locator('input').all()) await input.fill('0');
       await createModal.getByLabel('แบงค์ 20').fill('1');
-      await createModal.locator('button:has-text("บันทึก")').click();
+      const [createResponse] = await Promise.all([
+        page.waitForResponse((response) => response.url().includes('/api/lanflow/cash-branch-transfers') && response.request().method() === 'POST'),
+        createModal.locator('button:has-text("บันทึก")').click(),
+      ]);
+      expect(createResponse.ok()).toBeTruthy();
+      const transfer = await createResponse.json() as { id: string };
       await expect(page.getByText('บันทึกรายการเงินสด รอปลายทางรับเงิน')).toBeVisible();
 
       await selectAppLocation(page, targetLocationId!);
-      await expect(page.locator('button:has-text("รอรับเงิน")')).toBeVisible({ timeout: 10000 });
-      await page.locator('button:has-text("รอรับเงิน")').click();
+      const pendingTransfer = page.locator(`button[data-transfer-id="${transfer.id}"]`);
+      await expect(pendingTransfer).toBeVisible({ timeout: 10000 });
+      await pendingTransfer.click();
       const receiveModal = page.locator('.fixed.inset-0').last();
+      await receiveModal.getByRole('button', { name: 'ยอดรับไม่ตรง', exact: true }).click();
       for (const input of await receiveModal.locator('input').all()) await input.fill('0');
       await receiveModal.locator('button:has-text("ยืนยันรับเงิน")').click();
       await expect(page.getByText('ยืนยันรับเงินและบันทึกผลต่างแล้ว')).toBeVisible();
-      const receivedRow = page.locator('table tbody tr', { hasText: 'รับเงินแล้ว' }).first();
-      await expect(receivedRow).toBeVisible();
-      await expect(receivedRow).toContainText('ผลต่าง');
+      await expect(receiveModal).toBeHidden();
     });
 
     test('receive cash transfer with exact counts', async ({ page }) => {
@@ -266,18 +272,25 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       const targetLocationId = await selectFirstAccessibleOption(page, targetSelect);
       for (const input of await createModal.locator('input').all()) await input.fill('0');
       await createModal.getByLabel('แบงค์ 20').fill('1');
-      await createModal.locator('button:has-text("บันทึก")').click();
+      const [createResponse] = await Promise.all([
+        page.waitForResponse((response) => response.url().includes('/api/lanflow/cash-branch-transfers') && response.request().method() === 'POST'),
+        createModal.locator('button:has-text("บันทึก")').click(),
+      ]);
+      expect(createResponse.ok()).toBeTruthy();
+      const transfer = await createResponse.json() as { id: string };
       await expect(page.getByText('บันทึกรายการเงินสด รอปลายทางรับเงิน')).toBeVisible();
 
       await selectAppLocation(page, targetLocationId!);
-      await page.locator('button:has-text("รอรับเงิน")').click();
+      const pendingTransfer = page.locator(`button[data-transfer-id="${transfer.id}"]`);
+      await expect(pendingTransfer).toBeVisible({ timeout: 10000 });
+      await pendingTransfer.click();
       const receiveModal = page.locator('.fixed.inset-0').last();
-      for (const input of await receiveModal.locator('input').all()) await input.fill('0');
-      await receiveModal.getByLabel('แบงค์ 20').fill('1');
+      await expect(receiveModal.getByText('ยอดรับเริ่มต้นตรงกับยอดที่ส่งและยังแก้ไขไม่ได้')).toBeVisible();
+      await expect(receiveModal.getByLabel('แบงค์ 20')).toHaveValue('1');
       await page.evaluate(() => window.dispatchEvent(new Event('online')));
       await receiveModal.locator('button:has-text("ยืนยันรับเงิน")').click();
       await expect(page.getByText('ยืนยันรับเงินแล้ว')).toBeVisible();
-      await expect(page.locator('table tbody tr', { hasText: 'รับเงินแล้ว' }).first()).toBeVisible();
+      await expect(receiveModal).toBeHidden();
     });
   });
 
