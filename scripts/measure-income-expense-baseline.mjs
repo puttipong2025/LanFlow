@@ -85,14 +85,14 @@ async function measureOpen(browser, storageState) {
   page.on("response", onResponse);
 
   await page.goto(`${baseUrl}/`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "รับ-จ่าย" }).click();
+  await page.getByRole("heading", { name: /CRUD รายรับ-รายจ่าย/ }).waitFor({ timeout: 10_000 });
   const deadline = Date.now() + 60_000;
   while (!firstResponseAt || inFlight > 0 || performance.now() - startedAt - lastResponseAt < 1_000) {
     if (Date.now() > deadline) throw new Error("Timed out waiting for the Income/Expense feed to settle");
     await wait(100);
   }
   page.off("response", onResponse);
-  await page.getByRole("button", { name: "รับ-จ่าย" }).click();
-  await page.getByRole("heading", { name: /CRUD รายรับ-รายจ่าย/ }).waitFor({ timeout: 10_000 });
   const completed = await Promise.all(responses);
   await context.close();
 
