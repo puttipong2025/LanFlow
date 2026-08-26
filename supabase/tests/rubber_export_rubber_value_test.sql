@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select extensions.plan(12);
+select extensions.plan(20);
 
 select extensions.has_column('public', 'rubber_exports', 'rubber_value_total',
   'export header stores rubber-value snapshot');
@@ -30,6 +30,59 @@ select extensions.ok(
   and pg_get_functiondef('private.rubber_export_candidates(uuid,uuid[],uuid)'::regprocedure)
     like '%then b.rubber_value else b.net_rubber_value end%',
   'candidate mapping preserves paid compatibility and separates rubber value'
+);
+select extensions.ok(
+  (select pg_get_constraintdef(oid) like '%paid_amount >=%'
+   from pg_constraint
+   where conrelid = 'public.rubber_export_items'::regclass
+     and conname = 'rubber_export_items_paid_amount_check'),
+  'item paid snapshot allows zero'
+);
+select extensions.ok(
+  (select pg_get_constraintdef(oid) like '%paid_total >=%'
+   from pg_constraint
+   where conrelid = 'public.rubber_exports'::regclass
+     and conname = 'rubber_exports_paid_total_check'),
+  'header paid snapshot allows zero'
+);
+select extensions.ok(
+  pg_get_functiondef('private.validate_rubber_export_selection(uuid,uuid[],uuid)'::regprocedure)
+    like '%c.paid_amount < 0%'
+  and pg_get_functiondef('private.validate_rubber_export_selection(uuid,uuid[],uuid)'::regprocedure)
+    not like '%c.paid_amount <= 0%',
+  'selection accepts zero payable and rejects negative payable'
+);
+select extensions.ok(
+  pg_get_functiondef('public.preview_rubber_export(uuid,uuid[],uuid)'::regprocedure)
+    like '%round(sum(rubber_value_amount) / sum(net_weight), 2)%',
+  'preview average uses rubber value'
+);
+select extensions.ok(
+  pg_get_functiondef('public.create_rubber_export(uuid,uuid[])'::regprocedure)
+    like '%round(v_rubber_value_total / v_original_weight, 2)%'
+  and pg_get_functiondef('public.replace_rubber_export_items(uuid,uuid[])'::regprocedure)
+    like '%round(v_rubber_value_total / v_original_weight, 2)%'
+  and not exists (
+    select 1 from public.rubber_exports e
+    where e.average_price is distinct from round(e.rubber_value_total / e.original_weight_total, 2)
+  ),
+  'new, edited, and historical export averages use rubber value'
+);
+select extensions.ok(
+  to_regprocedure('private.rubber_bill_is_export_reportable(uuid)') is not null
+  and (select prosecdef and proconfig = array['search_path=""']
+       from pg_proc where oid = 'private.rubber_bill_is_export_reportable(uuid)'::regprocedure),
+  'zero-payable export-reportable helper is private and search-path locked'
+);
+select extensions.ok(
+  pg_get_functiondef('private.reportable_items(uuid,timestamptz)'::regprocedure)
+    like '%private.rubber_bill_is_export_reportable(b.id)%',
+  'Report Batch includes positive-value zero-payable rubber bills'
+);
+select extensions.ok(
+  pg_get_functiondef('private.guard_pending_rubber_bill_relation()'::regprocedure)
+    like '%private.rubber_bill_is_export_reportable(v_bill_id)%',
+  'Report Batch relation guard allows export-reportable rubber without opening money transfer'
 );
 select extensions.ok(
   pg_get_functiondef('public.create_rubber_export(uuid,uuid[])'::regprocedure)

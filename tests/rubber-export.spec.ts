@@ -92,6 +92,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       eligibilityAt: "2026-08-11T01:00:00.000Z",
       netWeight: 80,
       paidAmount: 2_400,
+      rubberValueAmount: 2_800,
     };
 
     try {
@@ -134,7 +135,8 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
             itemCount: body.selectedReportItemIds.length,
             originalWeightTotal: 80,
             paidTotal: 2_400,
-            averagePrice: 30,
+            rubberValueTotal: 2_800,
+            averagePrice: 35,
             calculatedAt: "2026-08-11T02:00:00.000Z",
             averageAgeHours: 12,
             oldestAgeHours: 12,
@@ -216,10 +218,17 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await editDialog.getByRole("checkbox", { name: "เลือกบิล CURRENT-001" }).uncheck();
       await expect(editDialog.getByText("กรุณาเลือกอย่างน้อย 1 บิล")).toBeVisible();
       const nextBillCheckbox = editDialog.getByRole("checkbox", { name: "เลือกบิล NEXT-001" });
+      const nextBillRow = editDialog.getByRole("row").filter({ hasText: "NEXT-001" });
+      await expect(nextBillRow).toContainText("2,800.00");
+      await expect(nextBillRow).not.toContainText("2,400.00");
       await nextBillCheckbox.check();
       await nextBillCheckbox.uncheck();
       await nextBillCheckbox.check();
       await expect.poll(() => previewRequests).toBe(1);
+      await expect(editDialog.getByText("ต้นทุนซื้อรวม", { exact: true }).locator(".."))
+        .toContainText("฿2,800.00");
+      await expect(editDialog.getByText("ต้นทุนซื้อเฉลี่ย", { exact: true }).locator(".."))
+        .toContainText("฿35.00/กก.");
       await editDialog.getByRole("button", { name: "บันทึกการแก้" }).click();
       await expect.poll(() => submittedIds).toEqual([nextReportItemId]);
       await expect(page.getByText("แก้รายการส่งออกยางแล้ว")).toBeVisible();

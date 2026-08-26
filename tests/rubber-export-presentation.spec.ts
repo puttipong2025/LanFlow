@@ -14,7 +14,7 @@ test("formats a verified Rubber Export for an A4 PDF in Bangkok time", () => {
   expect(rubberExportStatusLabel(details)).toBe("ตรวจสอบแล้ว");
   expect(presentation.summary).toEqual([
     ["น้ำหนักสุทธิรวม", "303.00 กก."],
-    ["ต้นทุนซื้อเฉลี่ย", "฿29.71/กก."],
+    ["ต้นทุนซื้อเฉลี่ย", "฿28.72/กก."],
     ["ต้นทุนซื้อรวมค่าทำงาน", "฿9,277.50"],
     ["ต้นทุนซื้อเฉลี่ยรวมค่าทำงาน", "฿31.45/กก."],
     ["น้ำหนักปัจจุบัน", "295.00 กก."],
@@ -53,7 +53,7 @@ test("uses em dashes for an unfinished draft", () => {
 
   expect(presentation.status).toBe("ฉบับร่าง");
   expect(presentation.summary).toHaveLength(11);
-  expect(presentation.summary[1]).toEqual(["ต้นทุนซื้อเฉลี่ย", "฿29.71/กก."]);
+  expect(presentation.summary[1]).toEqual(["ต้นทุนซื้อเฉลี่ย", "฿28.72/กก."]);
   expect(presentation.summary[2]).toEqual(["ต้นทุนซื้อรวมค่าทำงาน", "—"]);
   expect(presentation.summary[3]).toEqual(["ต้นทุนซื้อเฉลี่ยรวมค่าทำงาน", "—"]);
   expect(presentation.summary.slice(4, 7).map((entry) => entry[1])).toEqual(["—", "—", "—"]);

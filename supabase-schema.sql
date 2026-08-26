@@ -3205,7 +3205,10 @@ begin
     raise exception 'บิลยางกำลังรออนุมัติ จึงนำไปทำรายงานหรือโอนเงินไม่ได้';
   end if;
   if tg_table_name = 'report_items'
-     and private.rubber_bill_is_branch_receipt_reportable(v_bill_id) then
+     and (
+       private.rubber_bill_is_branch_receipt_reportable(v_bill_id)
+       or private.rubber_bill_is_export_reportable(v_bill_id)
+     ) then
     return new;
   end if;
   if not private.rubber_bill_is_payable(v_bill_id) then
@@ -5094,7 +5097,7 @@ CREATE OR REPLACE FUNCTION "private"."reportable_items"("p_location_id" "uuid", 
       and b.sync_status = 'synced'
       and b.server_bill_no is not null
       and not private.rubber_bill_has_pending_approval(b.id)
-      and (private.rubber_bill_is_payable(b.id) or private.rubber_bill_is_branch_receipt_reportable(b.id))
+      and (private.rubber_bill_is_payable(b.id) or private.rubber_bill_is_branch_receipt_reportable(b.id) or private.rubber_bill_is_export_reportable(b.id))
 
     union all
 
@@ -5642,6 +5645,44 @@ $$;
 
 
 ALTER FUNCTION "private"."rubber_bill_is_branch_receipt_reportable"("p_bill_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."rubber_bill_is_export_reportable"("p_bill_id" "uuid") RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select exists (
+    select 1
+    from public.rubber_bills b
+    where b.id = p_bill_id
+      and b.record_status = 'active'
+      and b.sync_status = 'synced'
+      and b.server_bill_no is not null
+      and b.net_weight > 0
+      and b.net_rubber_value > 0
+      and b.net_total >= 0
+      and exists (
+        select 1
+        from public.rubber_bill_items i
+        where i.bill_id = b.id
+          and i.item_type = 'weigh'
+      )
+      and not exists (
+        select 1
+        from public.rubber_bill_items i
+        where i.bill_id = b.id
+          and i.item_type = 'weigh'
+          and coalesce(i.price, 0) <= 0
+      )
+  );
+$$;
+
+
+ALTER FUNCTION "private"."rubber_bill_is_export_reportable"("p_bill_id" "uuid") OWNER TO "postgres";
+
+
+COMMENT ON FUNCTION "private"."rubber_bill_is_export_reportable"("p_bill_id" "uuid") IS 'True when a synced rubber bill has positive net rubber weight/value and priced weigh items, even when customer payable is zero.';
+
 
 
 CREATE OR REPLACE FUNCTION "private"."rubber_bill_is_payable"("p_bill_id" "uuid") RETURNS boolean
@@ -7064,10 +7105,12 @@ begin
   from private.rubber_export_candidates(
     p_location_id, p_selected_report_item_ids, p_current_export_id
   ) c
-  where c.net_weight <= 0 or c.paid_amount <= 0 or c.rubber_value_amount <= 0;
+  where c.net_weight is null or c.net_weight <= 0
+    or c.paid_amount is null or c.paid_amount < 0
+    or c.rubber_value_amount is null or c.rubber_value_amount <= 0;
   if v_invalid is not null then
     raise exception 'INVALID_RUBBER_BILL:%', v_invalid
-      using errcode = 'P0001', hint = 'น้ำหนักสุทธิ ยอดจ่ายจริง และมูลค่ายางต้องมากกว่า 0';
+      using errcode = 'P0001', hint = 'น้ำหนักสุทธิและมูลค่ายางต้องมากกว่า 0 และยอดจ่ายจริงต้องไม่ติดลบ';
   end if;
 
   select string_agg(c.bill_no, ', ' order by c.eligibility_at, c.bill_id)
@@ -8361,7 +8404,7 @@ begin
     created_by_name, created_by_phone, created_at
   ) values (
     v_export_no, v_export_date, v_sequence_no, p_location_id, v_original_weight,
-    v_paid_total, v_rubber_value_total, round(v_paid_total / v_original_weight, 2),
+    v_paid_total, v_rubber_value_total, round(v_rubber_value_total / v_original_weight, 2),
     v_actor_id, coalesce(v_actor_name, ''), coalesce(v_actor_phone, ''), v_now
   ) returning id into v_export_id;
   insert into public.rubber_export_items (
@@ -8381,7 +8424,8 @@ begin
   join public.rubber_bills b on b.id = c.bill_id;
   get diagnostics v_item_count = row_count;
   return jsonb_build_object('id', v_export_id, 'exportNo', v_export_no, 'itemCount', v_item_count);
-end; $$;
+end;
+$$;
 
 
 ALTER FUNCTION "public"."create_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) OWNER TO "postgres";
@@ -15031,7 +15075,7 @@ begin
     'originalWeightTotal', round(sum(net_weight), 2),
     'paidTotal', round(sum(paid_amount), 2),
     'rubberValueTotal', round(sum(rubber_value_amount), 2),
-    'averagePrice', round(sum(paid_amount) / sum(net_weight), 2),
+    'averagePrice', round(sum(rubber_value_amount) / sum(net_weight), 2),
     'calculatedAt', v_now,
     'averageAgeHours', round(sum(net_weight * age_hours) / sum(net_weight), 2),
     'oldestAgeHours', round(max(age_hours), 2),
@@ -15655,19 +15699,20 @@ begin
   from public.rubber_export_items i where i.export_id = v_export.id;
   update public.rubber_exports set original_weight_total = v_original_weight,
     paid_total = v_paid_total, rubber_value_total = v_rubber_value_total,
-    average_price = round(v_paid_total / v_original_weight, 2), current_weight = null,
+    average_price = round(v_rubber_value_total / v_original_weight, 2), current_weight = null,
     weight_loss_percent = null, work_rate = null, other_operating_cost = 0, work_total = null
   where id = v_export.id;
   return jsonb_build_object('id', v_export.id, 'status', 'draft', 'itemCount', v_item_count,
     'originalWeightTotal', v_original_weight, 'paidTotal', v_paid_total,
     'rubberValueTotal', v_rubber_value_total);
-end; $$;
+end;
+$$;
 
 
 ALTER FUNCTION "public"."replace_rubber_export_items"("p_export_id" "uuid", "p_selected_report_item_ids" "uuid"[]) OWNER TO "postgres";
 
 
-COMMENT ON FUNCTION "public"."replace_rubber_export_items"("p_export_id" "uuid", "p_selected_report_item_ids" "uuid"[]) IS 'Atomically replaces draft Rubber Export members and recomputes paid/rubber-value snapshots.';
+COMMENT ON FUNCTION "public"."replace_rubber_export_items"("p_export_id" "uuid", "p_selected_report_item_ids" "uuid"[]) IS 'Atomically replaces draft members, retains actual-paid snapshots, and recomputes rubber-value cost snapshots.';
 
 
 
@@ -16151,7 +16196,7 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_exports" (
     CONSTRAINT "rubber_exports_expense_destination_check" CHECK (("expense_destination" = ANY (ARRAY['branch'::"text", 'external'::"text"]))),
     CONSTRAINT "rubber_exports_original_weight_total_check" CHECK (("original_weight_total" > (0)::numeric)),
     CONSTRAINT "rubber_exports_other_operating_cost_check" CHECK (("other_operating_cost" >= (0)::numeric)),
-    CONSTRAINT "rubber_exports_paid_total_check" CHECK (("paid_total" > (0)::numeric)),
+    CONSTRAINT "rubber_exports_paid_total_check" CHECK (("paid_total" >= (0)::numeric)),
     CONSTRAINT "rubber_exports_previous_status_check" CHECK (("previous_status" = ANY (ARRAY['draft'::"text", 'verified'::"text"]))),
     CONSTRAINT "rubber_exports_rubber_value_total_check" CHECK (("rubber_value_total" > (0)::numeric)),
     CONSTRAINT "rubber_exports_sequence_no_check" CHECK (("sequence_no" > 0)),
@@ -16164,6 +16209,14 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_exports" (
 
 
 ALTER TABLE "public"."rubber_exports" OWNER TO "postgres";
+
+
+COMMENT ON COLUMN "public"."rubber_exports"."paid_total" IS 'Sum of immutable legacy paid/carry item snapshots; retained for compatibility and reference, never a Rubber Export cost basis.';
+
+
+
+COMMENT ON COLUMN "public"."rubber_exports"."average_price" IS 'Immutable average rubber cost: rubber_value_total divided by original_weight_total.';
+
 
 
 COMMENT ON COLUMN "public"."rubber_exports"."sold_out_at" IS 'Current reversible sold-out marker; null means the verified export remains receivable.';
@@ -20683,12 +20736,16 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_export_items" (
     "rubber_value_amount" numeric(14,2) NOT NULL,
     CONSTRAINT "rubber_export_items_carried_age_check" CHECK ((("carried_age_hours" IS NULL) OR ("carried_age_hours" >= (0)::numeric))),
     CONSTRAINT "rubber_export_items_net_weight_check" CHECK (("net_weight" > (0)::numeric)),
-    CONSTRAINT "rubber_export_items_paid_amount_check" CHECK (("paid_amount" > (0)::numeric)),
+    CONSTRAINT "rubber_export_items_paid_amount_check" CHECK (("paid_amount" >= (0)::numeric)),
     CONSTRAINT "rubber_export_items_rubber_value_amount_check" CHECK (("rubber_value_amount" > (0)::numeric))
 );
 
 
 ALTER TABLE "public"."rubber_export_items" OWNER TO "postgres";
+
+
+COMMENT ON COLUMN "public"."rubber_export_items"."paid_amount" IS 'Immutable legacy paid/carry snapshot: customer payable for ordinary bills and carried rubber value for branch receipts; retained for compatibility and reference, never a Rubber Export cost basis.';
+
 
 
 COMMENT ON COLUMN "public"."rubber_export_items"."carried_age_hours" IS 'Nullable base age carried by a branch-receipt bill; null keeps the normal bill-date formula.';
@@ -23747,6 +23804,10 @@ REVOKE ALL ON FUNCTION "private"."rubber_bill_evidence_review_states_for_bills"(
 
 
 REVOKE ALL ON FUNCTION "private"."rubber_bill_is_branch_receipt_reportable"("p_bill_id" "uuid") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."rubber_bill_is_export_reportable"("p_bill_id" "uuid") FROM PUBLIC;
 
 
 

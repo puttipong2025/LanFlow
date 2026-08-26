@@ -27,7 +27,7 @@ export function rubberExportDetails(
     originalWeightTotal: 303,
     paidTotal: 9_003,
     rubberValueTotal: 8_703,
-    averagePrice: 29.712871,
+    averagePrice: 28.72,
     currentWeight: 295,
     weightLossPercent: 2.640264,
     workRate: 1.5,

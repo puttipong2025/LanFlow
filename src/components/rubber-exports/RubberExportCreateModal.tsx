@@ -147,7 +147,7 @@ export function RubberExportCreateModal({
                   <td className="whitespace-nowrap px-3 py-2">{bill.billNo}</td>
                   <td className="px-3 py-2">{bill.customerName}</td>
                   <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums">{number(bill.netWeight)}</td>
-                  <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums">{number(bill.paidAmount)}</td>
+                  <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums">{number(bill.rubberValueAmount)}</td>
                 </tr>
               ))}
             </tbody>
@@ -160,10 +160,10 @@ export function RubberExportCreateModal({
         {preview && (
           <>
             <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
-              <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">จำนวนบิล</div><div className="font-bold">{preview.itemCount}</div></div>
-              <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">น้ำหนักสุทธิรวม</div><div className="font-bold">{number(preview.originalWeightTotal)} กก.</div></div>
-              <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ต้นทุนซื้อรวม</div><div className="font-bold tabular-nums">฿{number(preview.paidTotal)}</div></div>
-              <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ต้นทุนซื้อเฉลี่ย</div><div className="font-bold">฿{number(preview.averagePrice)}/กก.</div></div>
+              <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">จำนวนบิล</div><div className="font-bold tabular-nums">{preview.itemCount}</div></div>
+              <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">น้ำหนักสุทธิรวม</div><div className="font-bold tabular-nums">{number(preview.originalWeightTotal)} กก.</div></div>
+              <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ต้นทุนซื้อรวม</div><div className="font-bold tabular-nums">฿{number(preview.rubberValueTotal)}</div></div>
+              <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ต้นทุนซื้อเฉลี่ย</div><div className="font-bold tabular-nums">฿{number(preview.averagePrice)}/กก.</div></div>
               <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">อายุเฉลี่ยถ่วงน้ำหนัก</div><div className="font-bold tabular-nums">{formatRubberAge(preview.averageAgeHours)}</div></div>
               <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">อายุมากที่สุด</div><div className="font-bold tabular-nums">{formatRubberAge(preview.oldestAgeHours)}</div></div>
             </div>
