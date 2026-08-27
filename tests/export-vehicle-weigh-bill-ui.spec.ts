@@ -89,6 +89,39 @@ test("uses truck and tail-trailer roles with shared carrier and Rubber Bill focu
   await expect(trailer.getByRole("button", { name: "ลบหางพ่วง" })).toBeVisible();
 });
 
+test("puts WEX management first and keeps edit and delete outside the detail modal", async ({ page }) => {
+  await page.route("**/api/lanflow/export-vehicle-weigh-bills**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname.endsWith(`/${summary.id}`)) return route.fulfill({ json: details });
+    return route.fulfill({ json: { bills: [summary], hasMore: false, nextCursor: null, permissions: { canCreate: true, canEdit: true, canDelete: true } } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
+  await page.getByRole("tab", { name: "บิลรถส่งออก (WEX)" }).click();
+
+  const table = page.getByRole("table");
+  await expect(table.getByRole("columnheader").first()).toHaveText("จัดการ");
+  await expect(table.getByRole("columnheader", { name: "การทำงาน" })).toHaveCount(0);
+  const actionButtons = table.getByRole("row").nth(1).getByRole("button");
+  await expect(actionButtons).toHaveCount(4);
+  await expect(actionButtons.nth(0)).toHaveAccessibleName(`ดูรายละเอียด ${summary.wexNo}`);
+  await expect(actionButtons.nth(1)).toHaveAccessibleName(`แก้ ${summary.wexNo}`);
+  await expect(actionButtons.nth(2)).toHaveAccessibleName(`ลบ ${summary.wexNo}`);
+  await expect(actionButtons.nth(3)).toHaveAccessibleName(`แชร์ PDF ${summary.wexNo}`);
+
+  await actionButtons.nth(0).click();
+  const detailDialog = page.getByRole("dialog", { name: summary.wexNo });
+  await expect(detailDialog).toBeVisible();
+  await expect(detailDialog.getByRole("button", { name: /^แก้/ })).toHaveCount(0);
+  await expect(detailDialog.getByRole("button", { name: /^ลบ/ })).toHaveCount(0);
+  await detailDialog.getByRole("button", { name: "ปิด" }).click();
+
+  await table.getByRole("button", { name: `ลบ ${summary.wexNo}` }).click();
+  await expect(page.getByRole("alertdialog", { name: "ลบบิลรถส่งออก" })).toBeVisible();
+});
+
 test("keeps purchase bills as the default view and creates an online WEX with an accessible validated form", async ({ page }) => {
   const writes: Array<{ method: string; body: unknown }> = [];
   await page.addInitScript(() => {
@@ -327,10 +360,7 @@ test("keeps an edit carrier snapshot when the carrier is absent from current opt
   await page.goto("/");
   await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
   await page.getByRole("tab", { name: "บิลรถส่งออก (WEX)" }).click();
-  await page.getByRole("button", { name: "รายละเอียด" }).click();
-  const detailDialog = page.getByRole("dialog", { name: summary.wexNo });
-  await expect(detailDialog).toContainText("ผู้ขนส่งเดิม");
-  await detailDialog.getByRole("button", { name: "แก้ไข" }).click();
+  await page.getByRole("button", { name: `แก้ ${summary.wexNo}` }).click();
   const form = page.getByRole("dialog", { name: `แก้ไข ${summary.wexNo}` });
   await expect(form.getByRole("combobox", { name: "ผู้ขนส่งรถบรรทุก" })).toHaveValue("ผู้ขนส่งเดิม");
   await form.getByRole("button", { name: "บันทึกการแก้ไข" }).click();
@@ -376,9 +406,7 @@ test("keeps a stored carrier snapshot when the active master was renamed", async
   await page.goto("/");
   await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
   await page.getByRole("tab", { name: "บิลรถส่งออก (WEX)" }).click();
-  await page.getByRole("button", { name: "รายละเอียด" }).click();
-  const detailDialog = page.getByRole("dialog", { name: summary.wexNo });
-  await detailDialog.getByRole("button", { name: "แก้ไข" }).click();
+  await page.getByRole("button", { name: `แก้ ${summary.wexNo}` }).click();
   const form = page.getByRole("dialog", { name: `แก้ไข ${summary.wexNo}` });
   await expect(form.getByRole("combobox", { name: "ผู้ขนส่งรถบรรทุก" })).toHaveValue("ชื่อผู้ขนส่งเดิม");
   await form.getByRole("button", { name: "บันทึกการแก้ไข" }).click();
@@ -414,8 +442,7 @@ test("selects the exact same-name carrier for an edit", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
   await page.getByRole("tab", { name: "บิลรถส่งออก (WEX)" }).click();
-  await page.getByRole("button", { name: "รายละเอียด" }).click();
-  await page.getByRole("dialog", { name: summary.wexNo }).getByRole("button", { name: "แก้ไข" }).click();
+  await page.getByRole("button", { name: `แก้ ${summary.wexNo}` }).click();
   const form = page.getByRole("dialog", { name: `แก้ไข ${summary.wexNo}` });
   const carrierInput = form.getByRole("combobox", { name: "ผู้ขนส่งรถบรรทุก" });
   await carrierInput.click();
@@ -453,8 +480,7 @@ test("updates to the second same-name carrier with ArrowUp wrap and Enter", asyn
   await page.goto("/");
   await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
   await page.getByRole("tab", { name: "บิลรถส่งออก (WEX)" }).click();
-  await page.getByRole("button", { name: "รายละเอียด" }).click();
-  await page.getByRole("dialog", { name: summary.wexNo }).getByRole("button", { name: "แก้ไข" }).click();
+  await page.getByRole("button", { name: `แก้ ${summary.wexNo}` }).click();
   const form = page.getByRole("dialog", { name: `แก้ไข ${summary.wexNo}` });
   const carrierInput = form.getByRole("combobox", { name: "ผู้ขนส่งรถบรรทุก" });
   await carrierInput.focus();
