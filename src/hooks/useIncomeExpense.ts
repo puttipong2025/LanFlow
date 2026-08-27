@@ -15,8 +15,6 @@ import type { IncomeExpenseOperationalFeedPage, IncomeExpenseOperationalMode } f
 
 const ENTITY = "income_expense" as const;
 const FEED_QUERY_KEY = INCOME_EXPENSE_FEED_QUERY_KEY;
-const PENDING_QUERY_KEY = "incomeExpensePending" as const;
-const PAGE_SIZE = 100;
 
 type FeedPage = IncomeExpenseOperationalFeedPage;
 type IncomeExpenseSyncReceipt = {
@@ -89,42 +87,6 @@ function payloadToOptimisticRow(event: SyncEvent): IncomeExpense {
     recordStatus: "active",
     syncErrorMessage: event.errorMessage,
   };
-}
-
-function mergeFeedWithPending(feedRows: IncomeExpense[], events: SyncEvent[]) {
-  const rows = new Map(feedRows.map((row) => [row.clientTempId, row]));
-  for (const event of events) {
-    if (event.operation === "delete") {
-      if (event.status === "pending") rows.delete(event.id);
-      else {
-        const existing = rows.get(event.id);
-        if (existing) rows.set(event.id, {
-          ...existing,
-          syncStatus: event.status === "conflict" ? "conflict" : "failed",
-          syncErrorMessage: event.errorMessage,
-        });
-      }
-      continue;
-    }
-
-    const optimistic = payloadToOptimisticRow(event);
-    const existing = rows.get(event.id);
-    rows.set(event.id, existing ? {
-      ...existing,
-      ...optimistic,
-      id: existing.id,
-      serverBillNo: existing.serverBillNo,
-      number: existing.serverBillNo ?? existing.number,
-      createdByUserId: existing.createdByUserId,
-      createdByName: existing.createdByName,
-      createdByPhone: existing.createdByPhone,
-      serverReceivedAt: existing.serverReceivedAt,
-    } : optimistic);
-  }
-
-  return Array.from(rows.values()).sort(
-    (left, right) => new Date(right.clientRecordedAt).getTime() - new Date(left.clientRecordedAt).getTime()
-  );
 }
 
 function removeFromFeedCache(

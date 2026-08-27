@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDownUp,
   CheckCircle2,
@@ -37,7 +37,9 @@ import { cn } from "@/lib/cn";
 import { getMoneyTransferPaymentSummary } from "@/lib/money-transfers/state";
 
 import { CustomerTransferForm } from "./money-transfer/CustomerTransferForm";
+import { BranchTransferForm } from "./money-transfer/BranchTransferForm";
 import { TransportTransferForm } from "./money-transfer/TransportTransferForm";
+import { LegacyBranchTransferDetailsModal } from "./money-transfer/LegacyBranchTransferDetailsModal";
 import { MoneyTransferSourceDetailsModal } from "./money-transfer/MoneyTransferSourceDetailsModal";
 import {
   buildMoneyTransferReceiptModel,
@@ -115,6 +117,12 @@ function getReportLockedDeleteMessage(error: unknown) {
   return `รายการโอนเงินนี้ถูกล็อกโดยรายงาน ${reportNo} ต้องลบรายงานล่าสุดตามลำดับก่อน แล้วจึงลองลบรายการอีกครั้ง`;
 }
 
+function getSaveFailureMessage(error: unknown) {
+  return error instanceof Error && error.message.trim()
+    ? error.message
+    : "บันทึกรายการโอนเงินไม่สำเร็จ กรุณาลองใหม่";
+}
+
 function formatMoneyTransferCurrency(value: number) {
   return MONEY_TRANSFER_CURRENCY_FORMATTER.format(value);
 }
@@ -143,24 +151,36 @@ export function MoneyTransferModule({
   const pdfShare = useSharePdf();
 
   const [showTypeSelector, setShowTypeSelector] = useState(false);
-  const [activeFormType, setActiveFormType] = useState<'customer' | 'transport' | null>(null);
+  const [activeFormType, setActiveFormType] = useState<'customer' | 'transport' | 'branch' | null>(null);
   const [editTransfer, setEditTransfer] = useState<MoneyTransfer | null>(null);
-  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [legacyBranchTransfer, setLegacyBranchTransfer] = useState<MoneyTransfer | null>(null);
+  const [deleteConfirmTransfer, setDeleteConfirmTransfer] = useState<MoneyTransfer | null>(null);
   const [deleteAlertDescription, setDeleteAlertDescription] = useState<string | null>(null);
   const [mergeAlertDescription, setMergeAlertDescription] = useState<string | null>(null);
   const [detailTransfer, setDetailTransfer] = useState<MoneyTransfer | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submitLockRef = useRef(false);
+  const deleteLockRef = useRef(false);
+  const mergeLockRef = useRef(false);
   const [page, setPage] = useState(1);
   const offlineMessage = "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น";
+  const branchRecipientLocations = useMemo(() => locations.filter((location) => (
+    location.active
+    && (
+      profile.role === "super_admin"
+      || profile.canAccessSystemManager === true
+      || profile.locationIds.includes(location.id)
+    )
+  )), [locations, profile.canAccessSystemManager, profile.locationIds, profile.role]);
   const transferRows = useMemo(() => transfers.map((transfer) => ({
     transfer,
     summary: getMoneyTransferPaymentSummary(transfer),
   })), [transfers]);
 
-  const filteredRows = transferRows;
-  const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(transferRows.length / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
-  const pagedRows = filteredRows.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+  const pagedRows = transferRows.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
   useEffect(() => {
     if (!toastMsg) return;
@@ -187,70 +207,72 @@ export function MoneyTransferModule({
   }, []);
 
   const handleSave = useCallback(
-    (transfer: MoneyTransfer) => {
+    async (transfer: MoneyTransfer) => {
+      if (submitLockRef.current) return;
       if (!online) {
         setToastMsg(offlineMessage);
         return;
       }
-      if (editTransfer) {
-        updateTransfer.mutate(transfer, {
-          onSuccess: () => {
-            setActiveFormType(null);
-            setEditTransfer(null);
-            setToastMsg("บันทึกรายการโอนเงินสำเร็จ");
-          },
-          onError: (err) => {
-            console.error("Failed to update transfer:", err);
-            setToastMsg("เกิดข้อผิดพลาดในการบันทึก");
-          }
-        });
-      } else {
-        addTransfer.mutate(transfer, {
-          onSuccess: () => {
-            setActiveFormType(null);
-            setEditTransfer(null);
-            setToastMsg("บันทึกรายการโอนเงินสำเร็จ");
-          },
-          onError: (err) => {
-            console.error("Failed to add transfer:", err);
-            setToastMsg("เกิดข้อผิดพลาดในการบันทึก");
-          }
-        });
+      const isEditing = Boolean(editTransfer);
+      submitLockRef.current = true;
+      setIsSubmitting(true);
+      try {
+        if (isEditing) await updateTransfer.mutateAsync(transfer);
+        else await addTransfer.mutateAsync(transfer);
+
+        if (!isEditing && transfer.transferType === "branch") {
+          setStatusFilter("paid");
+          setPage(1);
+        }
+        setActiveFormType(null);
+        setEditTransfer(null);
+        setToastMsg("บันทึกรายการโอนเงินสำเร็จ");
+      } catch (error) {
+        console.error("Failed to save transfer:", error);
+        setToastMsg(getSaveFailureMessage(error));
+      } finally {
+        submitLockRef.current = false;
+        setIsSubmitting(false);
       }
     },
     [editTransfer, addTransfer, updateTransfer, online, offlineMessage]
   );
 
   const handleDeleteConfirm = useCallback(() => {
+    if (deleteLockRef.current || !deleteConfirmTransfer) return;
     if (!online) {
       setToastMsg(offlineMessage);
       return;
     }
-    if (deleteConfirmId) {
-      deleteTransfer.mutate(deleteConfirmId, {
-        onSuccess: () => {
-          setDeleteConfirmId(null);
-          setToastMsg("ลบรายการโอนเงินสำเร็จ");
-        },
-        onError: (err) => {
-          console.error("Failed to delete transfer:", err);
-          const reportLockedMessage = getReportLockedDeleteMessage(err);
-          if (reportLockedMessage) {
-            setDeleteConfirmId(null);
-            setDeleteAlertDescription(reportLockedMessage);
-            return;
-          }
-          setToastMsg("เกิดข้อผิดพลาดในการลบ");
+    deleteLockRef.current = true;
+    deleteTransfer.mutate(deleteConfirmTransfer, {
+      onSuccess: () => {
+        setDeleteConfirmTransfer(null);
+        setToastMsg("ลบรายการโอนเงินสำเร็จ");
+      },
+      onError: (err) => {
+        console.error("Failed to delete transfer:", err);
+        const reportLockedMessage = getReportLockedDeleteMessage(err);
+        if (reportLockedMessage) {
+          setDeleteConfirmTransfer(null);
+          setDeleteAlertDescription(reportLockedMessage);
+          return;
         }
-      });
-    }
-  }, [deleteConfirmId, deleteTransfer, online, offlineMessage]);
+        setToastMsg("เกิดข้อผิดพลาดในการลบ");
+      },
+      onSettled: () => {
+        deleteLockRef.current = false;
+      },
+    });
+  }, [deleteConfirmTransfer, deleteTransfer, online, offlineMessage]);
 
   const handleMergePending = useCallback(() => {
+    if (mergeLockRef.current) return;
     if (!online) {
       setToastMsg(offlineMessage);
       return;
     }
+    mergeLockRef.current = true;
     mergePendingTransfers.mutate(undefined, {
       onSuccess: (result) => {
         setPage(1);
@@ -266,6 +288,9 @@ export function MoneyTransferModule({
       onError: (error) => {
         setToastMsg(getMergeFailureMessage(error));
       },
+      onSettled: () => {
+        mergeLockRef.current = false;
+      },
     });
   }, [mergePendingTransfers, offlineMessage, online]);
 
@@ -277,7 +302,12 @@ export function MoneyTransferModule({
     try {
       const detail = await loadMoneyTransferDetail(t.id);
       if (detail.transferType === 'branch') {
-        setToastMsg("รายการโอนให้สาขาเดิมแก้ไขไม่ได้จากโมดูลโอนเงิน");
+        if (detail.locationId !== detail.targetLocationId) {
+          setLegacyBranchTransfer(detail);
+          return;
+        }
+        setEditTransfer(detail);
+        setActiveFormType('branch');
         return;
       }
       setEditTransfer(detail);
@@ -385,6 +415,7 @@ export function MoneyTransferModule({
               <div className="absolute left-0 top-full z-20 mt-2 w-56 rounded-lg border border-black/10 bg-white py-1 shadow-xl">
                 <button type="button" onClick={() => { setActiveFormType('customer'); setShowTypeSelector(false); setEditTransfer(null); }} className="focus-ring w-full bg-actionSecondary px-4 py-2.5 text-left text-sm font-semibold text-white transition-colors hover:bg-leaf focus:bg-leaf">💰 โอนให้ลูกค้า</button>
                 <button type="button" onClick={() => { setActiveFormType('transport'); setShowTypeSelector(false); setEditTransfer(null); }} className="focus-ring w-full bg-actionSecondary px-4 py-2.5 text-left text-sm font-semibold text-white transition-colors hover:bg-leaf focus:bg-leaf">🚛 จ่ายค่าขนส่ง</button>
+                <button type="button" onClick={() => { setActiveFormType('branch'); setShowTypeSelector(false); setEditTransfer(null); }} className="focus-ring w-full bg-actionSecondary px-4 py-2.5 text-left text-sm font-semibold text-white transition-colors hover:bg-leaf focus:bg-leaf">🏢 โอนให้สาขา</button>
               </div>
             )}
           </div>
@@ -398,6 +429,7 @@ export function MoneyTransferModule({
           subtitle="โอนให้ลูกค้าจากบิลยางหรือใบชั่ง"
           size="wide"
           closeOnEscape
+          closeDisabled={isSubmitting}
           onClose={() => {
             setActiveFormType(null);
             setEditTransfer(null);
@@ -409,6 +441,7 @@ export function MoneyTransferModule({
             profile={profile}
             customers={customers}
             editTransfer={editTransfer}
+            submitting={isSubmitting}
             onSave={handleSave}
             onCancel={() => {
               setActiveFormType(null);
@@ -423,6 +456,7 @@ export function MoneyTransferModule({
           subtitle="บันทึกค่าขนส่งและหลักฐานการโอน"
           size="wide"
           closeOnEscape
+          closeDisabled={isSubmitting}
           onClose={() => {
             setActiveFormType(null);
             setEditTransfer(null);
@@ -432,8 +466,38 @@ export function MoneyTransferModule({
             locationId={locationId}
             online={online}
             editTransfer={editTransfer}
+            submitting={isSubmitting}
             onSave={handleSave}
             onCancel={() => {
+              setActiveFormType(null);
+              setEditTransfer(null);
+            }}
+          />
+        </ModalShell>
+      )}
+      {activeFormType === 'branch' && (
+        <ModalShell
+          title={editTransfer ? "แก้ไขรายการโอนให้สาขา" : "สร้างรายการโอนให้สาขา"}
+          subtitle="บันทึกยอดรับของสาขาผู้รับจากหลักฐานการโอน"
+          size="wide"
+          closeOnEscape
+          closeDisabled={isSubmitting}
+          onClose={() => {
+            if (submitLockRef.current) return;
+            setActiveFormType(null);
+            setEditTransfer(null);
+          }}
+        >
+          <BranchTransferForm
+            locationId={locationId}
+            online={online}
+            profile={profile}
+            locations={branchRecipientLocations}
+            editTransfer={editTransfer}
+            submitting={isSubmitting}
+            onSave={handleSave}
+            onCancel={() => {
+              if (submitLockRef.current) return;
               setActiveFormType(null);
               setEditTransfer(null);
             }}
@@ -491,7 +555,7 @@ export function MoneyTransferModule({
           <div className="flex items-center justify-between border-b border-black/5 bg-field/60 px-5 py-3">
             <h3 className="font-bold text-ink">
               <CheckCircle2 size={16} className="mr-1.5 inline-block text-river" />
-              รายการโอนเงิน ({filteredRows.length} รายการ)
+              รายการโอนเงิน ({transferRows.length} รายการ)
             </h3>
           </div>
           <div className="overflow-x-auto">
@@ -515,6 +579,9 @@ export function MoneyTransferModule({
               <tbody>
                 {pagedRows.map(({ transfer: t, summary }, idx) => {
                   const canCopyAmount = summary.status === "pending" || summary.status === "partial";
+                  const isLegacyBranchTransfer = t.transferType === "branch"
+                    && Boolean(t.targetLocationId)
+                    && t.locationId !== t.targetLocationId;
                   const amountToCopy = summary.status === "partial"
                     ? Math.max(summary.amountDue - summary.amountPaid, 0)
                     : summary.amountDue;
@@ -537,13 +604,17 @@ export function MoneyTransferModule({
                         </button>
                         <button
                           type="button"
-                        onClick={() => void handleEdit(t)}
-                          disabled={!online || Boolean(t.reportLockNo)}
+                          onClick={() => void handleEdit(t)}
+                          disabled={!online || (!isLegacyBranchTransfer && Boolean(t.reportLockNo))}
                           className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-amber px-3 text-xs font-semibold text-white shadow-sm hover:bg-amber/90 disabled:cursor-not-allowed disabled:opacity-40"
-                          title={t.reportLockNo ? `ล็อกโดยรายงาน ${t.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน` : online ? "แก้ไข" : offlineMessage}
+                          title={!isLegacyBranchTransfer && t.reportLockNo
+                            ? `ล็อกโดยรายงาน ${t.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`
+                            : online
+                              ? isLegacyBranchTransfer ? "ดูรายละเอียดรายการเดิมแบบอ่านอย่างเดียว" : "แก้ไข"
+                              : offlineMessage}
                         >
-                          <Edit3 size={16} />
-                          แก้
+                          {isLegacyBranchTransfer ? <Eye size={16} /> : <Edit3 size={16} />}
+                          {isLegacyBranchTransfer ? "ดู" : "แก้"}
                         </button>
                         <button
                           type="button"
@@ -556,11 +627,15 @@ export function MoneyTransferModule({
                               setToastMsg(offlineMessage);
                               return;
                             }
-                            setDeleteConfirmId(t.id);
+                            setDeleteConfirmTransfer(t);
                           }}
-                          disabled={!online || Boolean(t.reportLockNo)}
+                          disabled={!online || Boolean(t.reportLockNo) || isLegacyBranchTransfer}
                           className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-clay px-3 text-xs font-semibold text-white hover:bg-clay/90 disabled:cursor-not-allowed disabled:opacity-40"
-                          title={t.reportLockNo ? `ล็อกโดยรายงาน ${t.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน` : online ? "ลบ" : offlineMessage}
+                          title={isLegacyBranchTransfer
+                            ? "รายการโอนระหว่างสาขารุ่นเดิมเป็นข้อมูลอ่านอย่างเดียว"
+                            : t.reportLockNo
+                              ? `ล็อกโดยรายงาน ${t.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`
+                              : online ? "ลบ" : offlineMessage}
                         >
                           <Trash2 size={14} />
                           ลบ
@@ -657,7 +732,7 @@ export function MoneyTransferModule({
                   </tr>
                   );
                 })}
-                {filteredRows.length === 0 && (
+                {transferRows.length === 0 && (
                   <tr><td colSpan={12} className="px-6 py-10 text-center text-sm text-ink/45">ไม่มีรายการในสถานะนี้</td></tr>
                 )}
               </tbody>
@@ -665,7 +740,7 @@ export function MoneyTransferModule({
           </div>
           <div className="mt-4 flex flex-col gap-3 border-t border-black/5 px-4 pb-4 pt-3 lg:flex-row lg:items-center lg:justify-between">
             <p className="text-sm text-ink/60">
-              แสดง {filteredRows.length === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, filteredRows.length)} จาก {filteredRows.length} รายการ
+              แสดง {transferRows.length === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, transferRows.length)} จาก {transferRows.length} รายการ
             </p>
             <div className="flex items-center gap-2">
               <button
@@ -711,13 +786,21 @@ export function MoneyTransferModule({
         />
       )}
 
+      {legacyBranchTransfer && (
+        <LegacyBranchTransferDetailsModal
+          transfer={legacyBranchTransfer}
+          locations={locations}
+          onClose={() => setLegacyBranchTransfer(null)}
+        />
+      )}
+
       <AlertDialog
-        open={Boolean(deleteConfirmId)}
+        open={Boolean(deleteConfirmTransfer)}
         title="ยืนยันการลบ"
         description="คุณแน่ใจหรือไม่ว่าต้องการลบรายการโอนเงินนี้? บิลยาง/ใบชั่งที่เลือกไว้จะสามารถเลือกใช้ใหม่ได้"
         confirmLabel="ลบ"
         busy={deleteTransfer.isPending}
-        onCancel={() => setDeleteConfirmId(null)}
+        onCancel={() => setDeleteConfirmTransfer(null)}
         onConfirm={handleDeleteConfirm}
       />
       <AlertDialog

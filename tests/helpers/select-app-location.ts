@@ -7,11 +7,6 @@ export async function selectAppLocation(page: Page, locationId: string) {
     .click();
 }
 
-export async function selectAppLocationByIndex(page: Page, index: number) {
-  await page.getByLabel(/^เลือกสาขา/).click();
-  await page.getByRole("option").nth(index).click();
-}
-
 export async function selectedAppLocationId(page: Page) {
   return page.getByLabel(/^เลือกสาขา/).getAttribute("data-location-id");
 }

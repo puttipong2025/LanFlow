@@ -14,8 +14,6 @@ import {
 } from "@/lib/income-expense/operational-list";
 import { incomeExpenseOperationalQueryKeys } from "@/lib/income-expense/query-keys";
 
-const PAGE_SIZE = 100;
-
 function queuePartition(ownerUserId: string, locationId: string) {
   return { entity: "income_expense" as const, ownerUserId, locationId };
 }

@@ -16,6 +16,11 @@ import type {
   Profile,
 } from "@/types";
 
+function getConfirmationTarget() {
+  const dialogs = document.querySelectorAll<HTMLDialogElement>("dialog[open]");
+  return dialogs.item(dialogs.length - 1) ?? document.body;
+}
+
 export function AdminModule({ locations, profile, onAddLocation }: {
   locations: Location[];
   profile: Profile;
@@ -43,7 +48,7 @@ export function AdminModule({ locations, profile, onAddLocation }: {
   useEffect(() => { void loadUsers(); }, []);
 
   async function confirmedPatch(userId: string, path: string, body: Record<string, unknown>, title: string) {
-    const confirmation = await appSwal.fire({ title, icon: "warning", showCancelButton: true, confirmButtonText: "ยืนยัน", cancelButtonText: "ยกเลิก" });
+    const confirmation = await appSwal.fire({ target: getConfirmationTarget(), title, icon: "warning", showCancelButton: true, confirmButtonText: "ยืนยัน", cancelButtonText: "ยกเลิก" });
     if (!confirmation.isConfirmed) return;
     try {
       const response = await authFetch(`/api/lanflow/admin/users/${userId}/${path}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -87,7 +92,7 @@ export function AdminModule({ locations, profile, onAddLocation }: {
   async function resetPassword(user: Profile, newPassword: string, confirmPassword: string, requestId: string) {
     if (newPassword.length < 8) { toast.error("รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร"); return false; }
     if (newPassword !== confirmPassword) { toast.error("ยืนยันรหัสผ่านไม่ตรงกัน"); return false; }
-    const confirmation = await appSwal.fire({ title: "ยืนยันรีเซ็ตรหัสผ่าน?", text: `ผู้ใช้ ${user.name} จะต้องใช้รหัสผ่านใหม่`, icon: "warning", showCancelButton: true, confirmButtonText: "ยืนยันรีเซ็ต", cancelButtonText: "ยกเลิก" });
+    const confirmation = await appSwal.fire({ target: getConfirmationTarget(), title: "ยืนยันรีเซ็ตรหัสผ่าน?", text: `ผู้ใช้ ${user.name} จะต้องใช้รหัสผ่านใหม่`, icon: "warning", showCancelButton: true, confirmButtonText: "ยืนยันรีเซ็ต", cancelButtonText: "ยกเลิก" });
     if (!confirmation.isConfirmed) return false;
     try {
       const request: AdminPasswordResetRequest = { newPassword, confirmPassword, requestId };
@@ -107,7 +112,7 @@ export function AdminModule({ locations, profile, onAddLocation }: {
     const code = value.code.trim().toUpperCase();
     if (!name) { toast.error("กรุณากรอกชื่อสาขา"); return false; }
     if (!/^[A-Z0-9]{2,8}$/.test(code)) { toast.error("รหัสสาขาต้องเป็น A–Z หรือ 0–9 จำนวน 2–8 ตัว"); return false; }
-    const confirmation = await appSwal.fire({ title: "ยืนยันเพิ่มสาขา?", text: `${name} · ${code} — รหัสสาขาเปลี่ยนภายหลังไม่ได้`, icon: "warning", showCancelButton: true, confirmButtonText: "ยืนยันเพิ่มสาขา", cancelButtonText: "ยกเลิก" });
+    const confirmation = await appSwal.fire({ target: getConfirmationTarget(), title: "ยืนยันเพิ่มสาขา?", text: `${name} · ${code} — รหัสสาขาเปลี่ยนภายหลังไม่ได้`, icon: "warning", showCancelButton: true, confirmButtonText: "ยืนยันเพิ่มสาขา", cancelButtonText: "ยกเลิก" });
     return confirmation.isConfirmed ? onAddLocation({ name, code, requestId: value.requestId }) : false;
   }
 

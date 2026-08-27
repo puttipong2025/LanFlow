@@ -1312,8 +1312,8 @@ test.describe.serial("Report batch contract @report-batch", () => {
       });
       await page.goto(`/reports/${report.id}/print`);
       await expect(page.getByText(report.reportNo)).toBeVisible();
-      await expect(page.getByRole("heading", { name: "3. รับ–จ่ายรวม" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "6. โอนเงิน (ธนาคารเท่านั้น)" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "2. รับ–จ่ายรวม" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "5. โอนเงิน (ธนาคารเท่านั้น)" })).toBeVisible();
       await expect(page.getByText("รายรับสำหรับหน้า print")).toBeVisible();
       const hasA4LandscapeRule = await page.evaluate(() =>
         [...document.styleSheets].some((sheet) => {

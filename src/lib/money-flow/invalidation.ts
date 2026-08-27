@@ -23,7 +23,6 @@ export function invalidateMoneyFlowLocation(
     queryClient.invalidateQueries({ queryKey: [...moneyFlowQueryKeys.moneyTransferListRoot(), locationId] }),
     queryClient.invalidateQueries({ queryKey: ["moneyTransferDetail"] }),
     queryClient.invalidateQueries({ queryKey: [...moneyFlowQueryKeys.moneyTransferSourcesRoot(), locationId] }),
-    queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.moneyTransferSourceLocks(locationId, "rubber_bill") }),
     queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.stock(locationId) }),
     queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.dashboardOverview(locationId) }),
     queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.dashboardSnapshot(locationId) }),

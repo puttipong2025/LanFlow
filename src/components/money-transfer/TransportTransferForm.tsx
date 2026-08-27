@@ -8,6 +8,9 @@ import { authFetch } from "@/lib/auth-fetch";
 import type { MoneyTransfer, MoneyTransferSlip } from "@/types";
 import { useTransportStaffs } from "@/hooks/useTransportStaffs";
 import { SlipRow, type OcrSlipResult } from "./SlipRow";
+import { SlipValidationSummary } from "./SlipValidationSummary";
+import { focusFirstSlipIssue, validateMoneyTransferSlips, type SlipValidationIssue } from "./slip-validation";
+import { InlineNumber } from "@/components/shared/InlineNumber";
 import { normalizeBangkokDateTime } from "@/lib/bangkok-date";
 import { formatCurrency } from "@/lib/format";
 import { deriveMoneyTransferStatus, sumMoneyTransferSlips } from "@/lib/money-transfers/state";
@@ -16,17 +19,18 @@ export function TransportTransferForm({
   locationId,
   online,
   editTransfer,
+  submitting,
   onSave,
   onCancel,
 }: {
   locationId: string;
   online: boolean;
   editTransfer?: MoneyTransfer | null;
+  submitting: boolean;
   onSave: (transfer: MoneyTransfer) => void;
   onCancel: () => void;
 }) {
   const { profile } = useAuth();
-  const isEdit = !!editTransfer;
   const { staffs } = useTransportStaffs();
 
   // Search and selection
@@ -87,15 +91,13 @@ export function TransportTransferForm({
   }, [selectedAccountNumber]);
 
   // Cost
-  const [transportCostInput, setTransportCostInput] = useState<string>(
-    editTransfer?.transportCost ? editTransfer.transportCost.toString() : ""
-  );
-  
-  const totalCost = parseFloat(transportCostInput) || 0;
+  const [totalCost, setTotalCost] = useState(editTransfer?.transportCost ?? 0);
 
   // Slips
   const [slips, setSlips] = useState<MoneyTransferSlip[]>(editTransfer?.slips ?? []);
   const [slipUploading, setSlipUploading] = useState(false);
+  const [validationIssues, setValidationIssues] = useState<SlipValidationIssue[]>([]);
+  const [formError, setFormError] = useState<string | null>(null);
 
   const handleSlipUpload = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -124,6 +126,7 @@ export function TransportTransferForm({
           const result: OcrSlipResult = await res.json();
           const newSlip: MoneyTransferSlip = {
             id: crypto.randomUUID(),
+            inputMethod: "ocr",
             amount: result.amount ?? 0,
             referenceNumber: result.reference_number ?? null,
             fee: result.fee ?? 0,
@@ -131,16 +134,17 @@ export function TransportTransferForm({
             receiverName: result.receiver_name ?? null,
             transactionDate: normalizeBangkokDateTime(result.transaction_date),
             slipImageUrl: null,
-            sortOrder: slips.length,
+            sortOrder: 0,
           };
-          setSlips((prev) => [...prev, newSlip]);
+          setSlips((prev) => [...prev, { ...newSlip, sortOrder: prev.length }]);
         } catch (err) {
           console.error("Slip OCR failed:", err);
+          setFormError(err instanceof Error ? err.message : "อ่านข้อมูลสลิปไม่สำเร็จ");
         }
       }
       setSlipUploading(false);
     },
-    [slips.length, online]
+    [online]
   );
 
   const addEmptySlip = useCallback(() => {
@@ -155,6 +159,7 @@ export function TransportTransferForm({
     }
     const newSlip: MoneyTransferSlip = {
       id: crypto.randomUUID(),
+      inputMethod: "manual",
       amount: 0,
       referenceNumber: null,
       fee: 0,
@@ -162,17 +167,19 @@ export function TransportTransferForm({
       receiverName: null,
       transactionDate: null,
       slipImageUrl: null,
-      sortOrder: slips.length,
+      sortOrder: 0,
     };
-    setSlips((prev) => [...prev, newSlip]);
-  }, [slips.length, online]);
+    setSlips((prev) => [...prev, { ...newSlip, sortOrder: prev.length }]);
+  }, [online]);
 
   const updateSlip = useCallback((id: string, field: keyof MoneyTransferSlip, value: any) => {
     setSlips((prev) => prev.map((s) => (s.id === id ? { ...s, [field]: value } : s)));
+    setValidationIssues((current) => current.filter((issue) => issue.slipId !== id || issue.field !== field));
   }, []);
 
   const removeSlip = useCallback((id: string) => {
     setSlips((prev) => prev.filter((s) => s.id !== id));
+    setValidationIssues((current) => current.filter((issue) => issue.slipId !== id));
   }, []);
 
   const totalFromSlips = useMemo(
@@ -197,6 +204,8 @@ export function TransportTransferForm({
   const slipAmountMatch = Math.abs(totalCost - totalFromSlips) < 0.01;
 
   const handleSubmit = useCallback(() => {
+    if (submitting) return;
+    setFormError(null);
     if (!online) {
       void Swal.fire({
         icon: "warning",
@@ -206,16 +215,15 @@ export function TransportTransferForm({
       });
       return;
     }
-    if (!matchingStaff && !transportSearch) return;
+    if (!matchingStaff && !transportSearch) {
+      setFormError("กรุณาระบุรถขนส่ง");
+      return;
+    }
 
-    if (slips.some(s => !s.transactionDate)) {
-      Swal.fire({
-        icon: "warning",
-        title: "ข้อมูลไม่ครบถ้วน",
-        text: "กรุณาระบุวันที่ทำรายการให้ครบทุกสลิป",
-        confirmButtonColor: "#4f6f65",
-        confirmButtonText: "ตกลง"
-      });
+    const issues = validateMoneyTransferSlips(slips);
+    setValidationIssues(issues);
+    if (issues.length > 0) {
+      focusFirstSlipIssue(issues);
       return;
     }
 
@@ -260,12 +268,24 @@ export function TransportTransferForm({
     computedStatus,
     totalFromSlips,
     online,
+    submitting,
   ]);
+
+  const slipErrors = useMemo(() => {
+    const result = new Map<string, Partial<Record<SlipValidationIssue["field"], string>>>();
+    validationIssues.forEach((issue) => {
+      if (!issue.slipId) return;
+      result.set(issue.slipId, { ...result.get(issue.slipId), [issue.field]: issue.message });
+    });
+    return result;
+  }, [validationIssues]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   return (
     <div className="space-y-6">
+        {formError && <p role="alert" className="rounded-md border border-clay/25 bg-clay/10 px-4 py-3 text-sm font-semibold text-ink/80">{formError}</p>}
+        <SlipValidationSummary issues={validationIssues} />
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <div className="rounded-lg border border-black/5 bg-field/40 p-3 overflow-visible">
             <p className="text-xs font-semibold text-ink/50">รถขนส่ง</p>
@@ -331,13 +351,7 @@ export function TransportTransferForm({
           </div>
           <div className="rounded-lg border border-black/5 bg-field/40 p-3">
             <p className="text-xs font-semibold text-ink/50">ค่าขนส่ง</p>
-            <input 
-              type="number"
-              value={transportCostInput}
-              onChange={(e) => setTransportCostInput(e.target.value)}
-              className="mt-1 w-full rounded bg-white px-2 py-1 text-sm font-bold text-ink border border-black/10 focus:outline-none focus:border-river"
-              placeholder="0.00"
-            />
+            <div className="mt-1"><InlineNumber ariaLabel="ค่าขนส่ง" value={totalCost} onChange={setTotalCost} /></div>
           </div>
         </div>
 
@@ -388,7 +402,7 @@ export function TransportTransferForm({
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                disabled={slipUploading || !online}
+                disabled={submitting || slipUploading || !online}
                 title={online ? undefined : "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น"}
                 className="focus-ring flex items-center gap-1.5 rounded-md bg-river px-3 py-1.5 text-xs font-semibold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-50"
               >
@@ -398,19 +412,19 @@ export function TransportTransferForm({
               <button
                 type="button"
                 onClick={addEmptySlip}
-                disabled={!online}
+                disabled={submitting || !online}
                 title={online ? undefined : "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น"}
                 className="focus-ring flex items-center gap-1.5 rounded-md bg-leaf px-3 py-1.5 text-xs font-semibold text-white hover:bg-leaf/90 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Plus size={14} /> เพิ่มเอง
               </button>
             </div>
-            <input type="file" accept="image/*" multiple className="hidden" ref={fileInputRef} onChange={handleSlipUpload} disabled={!online} />
+            <input type="file" accept="image/*" multiple className="hidden" ref={fileInputRef} onChange={handleSlipUpload} disabled={submitting || !online} />
           </div>
           {slips.length > 0 ? (
             <div className="space-y-2">
               {slips.map((slip, i) => (
-                <SlipRow key={slip.id} slip={slip} index={i} isEdit={isEdit} onUpdate={updateSlip} onRemove={removeSlip} />
+                <SlipRow key={slip.id} slip={slip} index={i} errors={slipErrors.get(slip.id)} onUpdate={updateSlip} onRemove={removeSlip} />
               ))}
             </div>
           ) : (
@@ -420,15 +434,16 @@ export function TransportTransferForm({
           )}
         </div>
       <div className="flex flex-shrink-0 items-center justify-between border-t border-black/5 p-4">
-        <button type="button" onClick={onCancel} className="focus-ring rounded-md bg-actionSecondary px-4 py-2 text-sm font-semibold text-white hover:bg-actionSecondary/90">ยกเลิก</button>
+        <button type="button" onClick={onCancel} disabled={submitting} className="focus-ring rounded-md bg-actionSecondary px-4 py-2 text-sm font-semibold text-white hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-50">ยกเลิก</button>
         <button
           type="button"
           onClick={handleSubmit}
-          disabled={!online}
+          disabled={submitting || !online}
           title={online ? undefined : "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น"}
           className="focus-ring flex items-center gap-1.5 rounded-md bg-commit px-5 py-2 text-sm font-semibold text-white hover:bg-commit/90 disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          <Save size={15} /> บันทึก
+          {submitting ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
+          {submitting ? "กำลังบันทึก..." : "บันทึก"}
         </button>
       </div>
     </div>

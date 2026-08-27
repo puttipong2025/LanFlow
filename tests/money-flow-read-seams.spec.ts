@@ -45,10 +45,12 @@ test("Income cash branch transfer does not depend on the Money Transfer module",
   expect(incomeExpense).not.toContain("BranchTransferForm");
 });
 
-test("Money Transfer does not offer the branch transfer form", () => {
+test("Money Transfer exclusively owns the branch receipt form", () => {
   const moneyTransfer = source("src/components/MoneyTransferModule.tsx");
-  expect(moneyTransfer).not.toContain("BranchTransferForm");
-  expect(moneyTransfer).not.toContain("setActiveFormType('branch')");
+  const branchForm = source("src/components/money-transfer/BranchTransferForm.tsx");
+  expect(moneyTransfer).toContain("BranchTransferForm");
+  expect(moneyTransfer).toContain("setActiveFormType('branch')");
+  expect(branchForm).not.toContain("branch-to-branch");
 });
 
 test("Money Transfer list excludes cash transfers owned by Income/Expense", () => {

@@ -48,6 +48,8 @@ export function InlineNumber({
   integerOnly = false,
   compact = false,
   ariaLabel,
+  inputId,
+  invalid = false,
 }: {
   value: number | "";
   onChange?: (value: number) => void;
@@ -56,14 +58,18 @@ export function InlineNumber({
   integerOnly?: boolean;
   compact?: boolean;
   ariaLabel?: string;
+  inputId?: string;
+  invalid?: boolean;
 }) {
   const isReadOnly = readOnly || !onChange;
   const [isBlankWhileEditing, setIsBlankWhileEditing] = useState(false);
 
   return (
     <input
+      id={inputId}
       type="number"
       aria-label={ariaLabel}
+      aria-invalid={invalid || undefined}
       inputMode={integerOnly ? "numeric" : "decimal"}
       min={integerOnly ? 0 : undefined}
       step={integerOnly ? 1 : "any"}
@@ -105,7 +111,7 @@ export function InlineNumber({
       className={
         compact
           ? "h-9 w-14 bg-transparent px-1 text-right text-base font-bold text-ink outline-none sm:w-16"
-          : "focus-ring h-10 w-full rounded-md border border-black/10 bg-white px-2 read-only:bg-slate-100 read-only:text-ink/70"
+          : `focus-ring h-10 w-full rounded-md border bg-white px-2 read-only:bg-slate-100 read-only:text-ink/70 ${invalid ? "border-clay ring-1 ring-clay/20" : "border-black/10"}`
       }
     />
   );

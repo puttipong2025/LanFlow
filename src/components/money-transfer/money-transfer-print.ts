@@ -32,6 +32,12 @@ const DATE_TIME_FORMATTER = new Intl.DateTimeFormat("th-TH-u-ca-buddhist-nu-latn
   minute: "2-digit",
   hourCycle: "h23",
 });
+const DATE_FORMATTER = new Intl.DateTimeFormat("th-TH-u-ca-buddhist-nu-latn", {
+  timeZone: "Asia/Bangkok",
+  day: "2-digit",
+  month: "2-digit",
+  year: "numeric",
+});
 
 export type MoneyTransferReceiptSlip = MoneyTransferSlip & {
   transactionDateText: string;
@@ -47,7 +53,9 @@ export type MoneyTransferReceiptModel = {
   typeLabel: string;
   statusLabel: string;
   isUnfinished: boolean;
+  isBranchReceipt: boolean;
   createdAtText: string;
+  accountingDateText: string;
   sourceLocationName: string;
   targetLocationName: string | null;
   recipientName: string;
@@ -81,6 +89,12 @@ function formatBangkokDateTime(value?: string | null) {
   if (!value) return "—";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "—" : `${DATE_TIME_FORMATTER.format(date)} น.`;
+}
+
+function formatAccountingDate(value?: string | null) {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return "—";
+  const date = new Date(`${value}T00:00:00+07:00`);
+  return Number.isNaN(date.getTime()) ? "—" : DATE_FORMATTER.format(date);
 }
 
 function locationName(locations: Location[], id?: string | null) {
@@ -124,7 +138,9 @@ export function buildMoneyTransferReceiptModel(
     typeLabel: TYPE_LABELS[transfer.transferType],
     statusLabel: STATUS_LABELS[transfer.transferStatus],
     isUnfinished: transfer.transferStatus === "advance_payment",
+    isBranchReceipt: isImplicitHeadOffice,
     createdAtText: formatBangkokDateTime(transfer.createdAt),
+    accountingDateText: formatAccountingDate(transfer.accountingDate),
     sourceLocationName,
     targetLocationName,
     recipientName: transfer.customerName
@@ -135,7 +151,9 @@ export function buildMoneyTransferReceiptModel(
     accountName: transfer.accountName,
     accountNumber: transfer.accountNumber,
     primaryAmount,
-    primaryAmountLabel: transfer.transferStatus === "advance_payment"
+    primaryAmountLabel: isImplicitHeadOffice
+      ? "ยอดรับรวม"
+      : transfer.transferStatus === "advance_payment"
       ? "ยอดจ่ายล่วงหน้า"
       : "ยอดที่ต้องจ่าย",
     slipTotal,
@@ -238,20 +256,22 @@ h1 { margin: 0; text-align: center; font-size: 18px; }
 <div class="center"><span class="status">${h(model.statusLabel)}</span></div>
 ${model.isUnfinished ? '<div class="warning">รายการยังไม่สิ้นสุด</div>' : ""}
 <div class="row"><span>ประเภท</span><strong>${h(model.typeLabel)}</strong></div>
-<div class="row"><span>วันที่สร้าง</span><strong>${h(model.createdAtText)}</strong></div>
+<div class="row"><span>${model.isBranchReceipt ? "วันที่บัญชี" : "วันที่สร้าง"}</span><strong>${h(model.isBranchReceipt ? model.accountingDateText : model.createdAtText)}</strong></div>
 <div class="section">
-  <div class="row"><span>ต้นทาง</span><strong>${h(model.sourceLocationName)}</strong></div>
+  ${model.isBranchReceipt
+    ? `<div class="row"><span>สาขาผู้รับ</span><strong>${h(model.targetLocationName ?? model.recipientName)}</strong></div>`
+    : `<div class="row"><span>ต้นทาง</span><strong>${h(model.sourceLocationName)}</strong></div>
   ${model.targetLocationName ? `<div class="row"><span>ปลายทาง</span><strong>${h(model.targetLocationName)}</strong></div>` : ""}
   <div class="row"><span>ผู้รับ</span><strong>${h(model.recipientName)}</strong></div>
-  ${accountRows}
+  ${accountRows}`}
 </div>
 <div class="amount"><span>${h(model.primaryAmountLabel)}</span><strong>${money(model.primaryAmount)} บาท</strong></div>
 <div class="row"><span>ยอดสลิปรวม</span><strong>${money(model.slipTotal)}</strong></div>
 <div class="row"><span>ค่าธรรมเนียมรวม</span><strong>${money(model.feeTotal)}</strong></div>
-${model.items.length > 0 ? `<div class="row"><span>ยอดรายการต้นทางรวม</span><strong>${money(model.sourceItemTotal)}</strong></div>` : ""}
+${!model.isBranchReceipt && model.items.length > 0 ? `<div class="row"><span>ยอดรายการต้นทางรวม</span><strong>${money(model.sourceItemTotal)}</strong></div>` : ""}
 ${model.branchPaidAmount > 0 ? `<div class="row"><span>สาขาจ่าย</span><strong>${money(model.branchPaidAmount)}</strong></div>` : ""}
-<div class="row"><span>ส่วนต่าง</span><strong>${money(model.difference)}</strong></div>
-<div class="section"><div class="section-title">รายการบิลยางต้นทาง (${model.items.length})</div>${itemRows}</div>
+${model.isBranchReceipt ? "" : `<div class="row"><span>ส่วนต่าง</span><strong>${money(model.difference)}</strong></div>`}
+${!model.isBranchReceipt && model.items.length > 0 ? `<div class="section"><div class="section-title">รายการบิลยางต้นทาง (${model.items.length})</div>${itemRows}</div>` : ""}
 <div class="section"><div class="section-title">สลิปประกอบรายการ (${model.slips.length})</div>${slipRows}</div>
 <div class="section">
   <div class="row"><span>ผู้สร้าง</span><strong>${h(model.createdByName)}</strong></div>

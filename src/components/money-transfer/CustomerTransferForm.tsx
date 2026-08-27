@@ -27,6 +27,8 @@ import type {
 import { formatCurrency } from "@/lib/format";
 import { authFetch } from "@/lib/auth-fetch";
 import { SlipRow, type OcrSlipResult } from "./SlipRow";
+import { SlipValidationSummary } from "./SlipValidationSummary";
+import { focusFirstSlipIssue, validateMoneyTransferSlips, type SlipValidationIssue } from "./slip-validation";
 import { normalizeBangkokDateTime } from "@/lib/bangkok-date";
 import { formatBangkokDateTime } from "@/lib/bangkok-date";
 import { ItemPicker } from "./ItemPicker";
@@ -38,6 +40,7 @@ export function CustomerTransferForm({
   profile,
   customers,
   editTransfer,
+  submitting,
   onSave,
   onCancel,
 }: {
@@ -46,11 +49,10 @@ export function CustomerTransferForm({
   profile: Profile;
   customers: Customer[];
   editTransfer: MoneyTransfer | null;
+  submitting: boolean;
   onSave: (transfer: MoneyTransfer) => void;
   onCancel: () => void;
 }) {
-  const isEdit = !!editTransfer;
-
   // ── Selected items (Child 2) ──
   const [selectedItems, setSelectedItems] = useState<MoneyTransferItem[]>(
     editTransfer?.items ?? []
@@ -61,6 +63,8 @@ export function CustomerTransferForm({
     editTransfer?.slips ?? []
   );
   const [slipUploading, setSlipUploading] = useState(false);
+  const [validationIssues, setValidationIssues] = useState<SlipValidationIssue[]>([]);
+  const [formError, setFormError] = useState<string | null>(null);
   const slipFileRef = useRef<HTMLInputElement>(null);
 
   // ── Sections ──
@@ -180,6 +184,7 @@ export function CustomerTransferForm({
           const result: OcrSlipResult = await res.json();
           const newSlip: MoneyTransferSlip = {
             id: crypto.randomUUID(),
+            inputMethod: "ocr",
             amount: result.amount ?? 0,
             referenceNumber: result.reference_number ?? null,
             fee: result.fee ?? 0,
@@ -187,16 +192,17 @@ export function CustomerTransferForm({
             receiverName: result.receiver_name ?? null,
             transactionDate: normalizeBangkokDateTime(result.transaction_date),
             slipImageUrl: null,
-            sortOrder: slips.length,
+            sortOrder: 0,
           };
-          setSlips((prev) => [...prev, newSlip]);
+          setSlips((prev) => [...prev, { ...newSlip, sortOrder: prev.length }]);
         } catch (err) {
           console.error("Slip OCR failed:", err);
+          setFormError(err instanceof Error ? err.message : "อ่านข้อมูลสลิปไม่สำเร็จ");
         }
       }
       setSlipUploading(false);
     },
-    [online, slips.length]
+    [online]
   );
 
   // ── Handler: Add slip manually ──
@@ -212,6 +218,7 @@ export function CustomerTransferForm({
     }
     const newSlip: MoneyTransferSlip = {
       id: crypto.randomUUID(),
+      inputMethod: "manual",
       amount: 0,
       referenceNumber: null,
       fee: 0,
@@ -219,21 +226,25 @@ export function CustomerTransferForm({
       receiverName: null,
       transactionDate: null,
       slipImageUrl: null,
-      sortOrder: slips.length,
+      sortOrder: 0,
     };
-    setSlips((prev) => [...prev, newSlip]);
-  }, [slips.length, online]);
+    setSlips((prev) => [...prev, { ...newSlip, sortOrder: prev.length }]);
+  }, [online]);
 
   const updateSlip = useCallback((id: string, field: keyof MoneyTransferSlip, value: any) => {
     setSlips((prev) => prev.map((s) => (s.id === id ? { ...s, [field]: value } : s)));
+    setValidationIssues((current) => current.filter((issue) => issue.slipId !== id || issue.field !== field));
   }, []);
 
   const removeSlip = useCallback((id: string) => {
     setSlips((prev) => prev.filter((s) => s.id !== id));
+    setValidationIssues((current) => current.filter((issue) => issue.slipId !== id));
   }, []);
 
   // ── Handler: Save ──
   const handleSubmit = useCallback(() => {
+    if (submitting) return;
+    setFormError(null);
     if (!online) {
       void Swal.fire({
         icon: "warning",
@@ -243,16 +254,15 @@ export function CustomerTransferForm({
       });
       return;
     }
-    if (!customerName || (selectedItems.length === 0 && slips.length === 0)) return;
+    if (!customerName || (selectedItems.length === 0 && slips.length === 0)) {
+      setFormError("กรุณาเลือกลูกค้าและเพิ่มรายการหรือสลิปก่อนบันทึก");
+      return;
+    }
 
-    if (slips.some(s => !s.transactionDate)) {
-      Swal.fire({
-        icon: "warning",
-        title: "ข้อมูลไม่ครบถ้วน",
-        text: "กรุณาระบุวันที่ทำรายการให้ครบทุกสลิป",
-        confirmButtonColor: "#4f6f65",
-        confirmButtonText: "ตกลง"
-      });
+    const issues = validateMoneyTransferSlips(slips);
+    setValidationIssues(issues);
+    if (issues.length > 0) {
+      focusFirstSlipIssue(issues);
       return;
     }
 
@@ -298,10 +308,22 @@ export function CustomerTransferForm({
     computedStatus,
     totalFromSlips,
     online,
+    submitting,
   ]);
+
+  const slipErrors = useMemo(() => {
+    const result = new Map<string, Partial<Record<SlipValidationIssue["field"], string>>>();
+    validationIssues.forEach((issue) => {
+      if (!issue.slipId) return;
+      result.set(issue.slipId, { ...result.get(issue.slipId), [issue.field]: issue.message });
+    });
+    return result;
+  }, [validationIssues]);
 
   return (
     <div className="space-y-5">
+      {formError && <p role="alert" className="rounded-md border border-clay/25 bg-clay/10 px-4 py-3 text-sm font-semibold text-ink/80">{formError}</p>}
+      <SlipValidationSummary issues={validationIssues} />
       {/* Parent summary */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div className="rounded-lg border border-black/5 bg-field/40 p-3 overflow-visible relative">
@@ -525,13 +547,13 @@ export function CustomerTransferForm({
             สลิปโอนเงิน ({slips.length})
           </h4>
           <div className="flex gap-2">
-            <button type="button" onClick={addEmptySlip} disabled={!online} title={online ? undefined : "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น"} className="focus-ring flex items-center gap-1.5 rounded-md bg-leaf px-3 py-2 text-sm font-semibold text-white hover:bg-leaf/90 disabled:cursor-not-allowed disabled:opacity-50">
+            <button type="button" onClick={addEmptySlip} disabled={submitting || !online} title={online ? undefined : "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น"} className="focus-ring flex items-center gap-1.5 rounded-md bg-leaf px-3 py-2 text-sm font-semibold text-white hover:bg-leaf/90 disabled:cursor-not-allowed disabled:opacity-50">
               <Plus size={14} /> เพิ่มเอง
             </button>
             <button
               type="button"
               onClick={() => slipFileRef.current?.click()}
-              disabled={!online || slipUploading}
+              disabled={submitting || !online || slipUploading}
               title={online ? undefined : "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น"}
               className="focus-ring flex items-center gap-1.5 rounded-md bg-river px-3 py-2 text-sm font-semibold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -544,7 +566,7 @@ export function CustomerTransferForm({
               accept="image/*"
               multiple
               className="hidden"
-              disabled={!online}
+              disabled={submitting || !online}
               onChange={(e) => {
                 if (e.target.files) handleSlipUpload(e.target.files);
                 e.target.value = "";
@@ -560,7 +582,7 @@ export function CustomerTransferForm({
                 key={slip.id}
                 slip={slip}
                 index={idx}
-                isEdit={isEdit}
+                errors={slipErrors.get(slip.id)}
                 onUpdate={updateSlip}
                 onRemove={removeSlip}
               />
@@ -577,17 +599,18 @@ export function CustomerTransferForm({
 
       {/* ── Actions ── */}
       <div className="flex items-center justify-between border-t border-black/5 pt-4">
-        <button type="button" onClick={onCancel} className="focus-ring rounded-md bg-actionSecondary px-4 py-2 text-sm font-semibold text-white hover:bg-actionSecondary/90">
+        <button type="button" onClick={onCancel} disabled={submitting} className="focus-ring rounded-md bg-actionSecondary px-4 py-2 text-sm font-semibold text-white hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-50">
           ยกเลิก
         </button>
         <button
           type="button"
           onClick={handleSubmit}
-          disabled={!online}
+          disabled={submitting || !online}
           title={online ? undefined : "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น"}
           className="focus-ring flex items-center gap-1.5 rounded-md bg-commit px-5 py-2 text-sm font-semibold text-white hover:bg-commit/90 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          <Save size={15} /> บันทึก
+          {submitting ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
+          {submitting ? "กำลังบันทึก..." : "บันทึก"}
         </button>
       </div>
     </div>

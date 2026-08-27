@@ -152,6 +152,7 @@ test.describe.serial("Atomic money transfer deletion", () => {
 
       const deleted = await client.rpc("delete_money_transfer", {
         p_transfer_id: transferId,
+        p_expected_revision: 0,
       });
       expect(deleted.error).toBeNull();
       expect(deleted.data).toMatchObject({
@@ -191,6 +192,7 @@ test.describe.serial("Atomic money transfer deletion", () => {
 
       const rerun = await client.rpc("delete_money_transfer", {
         p_transfer_id: transferId,
+        p_expected_revision: 1,
       });
       expect(rerun.error).toBeNull();
       expect(rerun.data).toMatchObject({
@@ -203,10 +205,11 @@ test.describe.serial("Atomic money transfer deletion", () => {
         .from("money_transfers")
         .update({ record_status: "deleted" })
         .eq("id", directDeleteId);
-      expect(bypass.error?.message).toContain("MONEY_TRANSFER_DELETE_RPC_REQUIRED");
+      expect(bypass.error?.message).toContain("permission denied for table money_transfers");
 
       const cashDelete = await client.rpc("delete_money_transfer", {
         p_transfer_id: cashTransferId,
+        p_expected_revision: 0,
       });
       expect(cashDelete.error?.message)
         .toContain("MONEY_TRANSFER_CASH_DELETE_REQUIRES_DEDICATED_WORKFLOW");
@@ -279,6 +282,7 @@ test.describe.serial("Atomic money transfer deletion", () => {
 
       const deleted = await client.rpc("delete_money_transfer", {
         p_transfer_id: transferId,
+        p_expected_revision: 0,
       });
       expect(deleted.error?.message).toContain("REPORT_LOCKED:");
 
@@ -343,6 +347,7 @@ test.describe.serial("Atomic money transfer deletion", () => {
       }).eq("id", actorId)).error).toBeNull();
       const revoked = await client.rpc("delete_money_transfer", {
         p_transfer_id: assignedTransferId,
+        p_expected_revision: 0,
       });
       expect(revoked.error?.message).toContain("MONEY_TRANSFER_DELETE_FORBIDDEN");
 
@@ -351,6 +356,7 @@ test.describe.serial("Atomic money transfer deletion", () => {
       }).eq("id", actorId)).error).toBeNull();
       const crossBranch = await client.rpc("delete_money_transfer", {
         p_transfer_id: outsideTransferId,
+        p_expected_revision: 0,
       });
       expect(crossBranch.error?.message).toContain("MONEY_TRANSFER_DELETE_FORBIDDEN");
 

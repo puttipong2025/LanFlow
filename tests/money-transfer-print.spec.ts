@@ -32,6 +32,7 @@ function makeTransfer(patch: Partial<MoneyTransfer> = {}): MoneyTransfer {
     slips: [
       {
         id: "slip-two",
+        inputMethod: "ocr",
         amount: 600,
         referenceNumber: "REF-2",
         fee: 5,
@@ -43,6 +44,7 @@ function makeTransfer(patch: Partial<MoneyTransfer> = {}): MoneyTransfer {
       },
       {
         id: "slip-one",
+        inputMethod: "manual",
         amount: 400,
         referenceNumber: null,
         fee: 0,
@@ -89,13 +91,14 @@ test.describe("Money transfer 80mm print", () => {
     expect(model.difference).toBe(0);
   });
 
-  test("uses head office only for branch transfers without a distinct source", () => {
+  test("prints a same-target branch receipt without a source branch or source items", () => {
     const headOfficeModel = buildMoneyTransferReceiptModel(makeTransfer({
       transferType: "branch",
       locationId: "target-location",
       targetLocationId: "target-location",
       targetLocationName: "สาขาปลายทาง",
       customerName: null,
+      accountingDate: "2026-07-25",
     }), locations);
     const branchToBranchModel = buildMoneyTransferReceiptModel(makeTransfer({
       transferType: "branch",
@@ -106,7 +109,19 @@ test.describe("Money transfer 80mm print", () => {
 
     expect(headOfficeModel.sourceLocationName).toBe("สำนักงานใหญ่");
     expect(headOfficeModel.targetLocationName).toBe("สาขาปลายทาง");
+    expect(headOfficeModel.primaryAmountLabel).toBe("ยอดรับรวม");
+    expect(headOfficeModel.accountingDateText).not.toBe("—");
     expect(branchToBranchModel.sourceLocationName).toBe("สาขาต้นทาง");
+
+    const html = renderMoneyTransferReceiptHtml(headOfficeModel);
+    expect(html).toContain("สาขาผู้รับ");
+    expect(html).toContain("วันที่บัญชี");
+    expect(html).toContain("ยอดรับรวม");
+    expect(html).toContain("ค่าธรรมเนียมรวม");
+    expect(html).not.toContain("<span>ต้นทาง</span>");
+    expect(html).not.toContain("สำนักงานใหญ่");
+    expect(html).not.toContain("รายการบิลยางต้นทาง");
+    expect(html).not.toContain("ยอดรายการต้นทางรวม");
   });
 
   test("maps every transfer type and completed status to the receipt labels", () => {

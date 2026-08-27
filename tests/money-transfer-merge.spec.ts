@@ -98,7 +98,7 @@ test.describe.serial("Pending money transfer merge", () => {
     test.skip(!serviceRoleKey || !publishableKey, "Supabase test keys are required");
     const service = serviceClient();
     const client = await signedInClient();
-    const locationId = await firstLocation(service);
+    const locationId = crypto.randomUUID();
     const customerId = crypto.randomUUID();
     const otherCustomerId = crypto.randomUUID();
     const reportId = crypto.randomUUID();
@@ -116,6 +116,12 @@ test.describe.serial("Pending money transfer merge", () => {
     ];
 
     try {
+      expect((await service.from("locations").insert({
+        id: locationId,
+        name: `สาขาทดสอบรวมรายการ ${locationId.slice(0, 8)}`,
+        code: `MG-${locationId.slice(0, 8)}`,
+        is_active: true,
+      })).error).toBeNull();
       expect((await service.from("customers").insert([
         {
           id: customerId,
@@ -274,6 +280,7 @@ test.describe.serial("Pending money transfer merge", () => {
       await service.from("money_transfers").delete().in("id", transferIds);
       await service.from("rubber_bills").delete().in("id", sourceIds);
       await service.from("customers").delete().in("id", [customerId, otherCustomerId]);
+      await service.from("locations").delete().eq("id", locationId);
     }
   });
 

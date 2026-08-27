@@ -55,7 +55,4 @@ export function makeClientRecordedAt() {
   return new Date().toISOString();
 }
 
-export function makeSimulatedServerBillNo(sequence: number) {
-  return `${compactDate()}-${String(sequence).padStart(3, "0")}`;
-}
 import { bangkokDateString } from "@/lib/bangkok-date";

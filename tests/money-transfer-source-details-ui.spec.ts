@@ -133,19 +133,24 @@ test("opens rubber-bill details through the secured detail RPC", async ({ page }
     const detailButton = transferRow.getByRole("button", { name: /ดูรายละเอียดต้นทาง 1 รายการ/ });
     await expect(detailButton).toBeEnabled();
     await expect(emptyRow.getByRole("button", { name: /ดูรายละเอียดต้นทาง 0 รายการ/ })).toBeDisabled();
-    await expect(transferRow.getByRole("button", { name: /แก้/ })).toBeDisabled();
-    await expect(transferRow.getByRole("button", { name: /ลบ/ })).toBeDisabled();
+    await expect(transferRow.getByRole("button", { name: /แก้/ })).toBeEnabled();
+    await expect(transferRow.getByRole("button", { name: /ลบ/ })).toBeEnabled();
 
     const detailRpcRequests: string[] = [];
     const writeRequests: string[] = [];
+    const readOnlyRpcPaths = new Set([
+      "/rest/v1/rpc/get_actionable_badge_counts",
+      "/rest/v1/rpc/get_money_transfer_detail",
+      "/rest/v1/rpc/get_money_transfer_list",
+      "/rest/v1/rpc/get_money_transfer_receipt_source_details",
+    ]);
     page.on("request", (request) => {
       const pathname = new URL(request.url()).pathname;
       if (pathname.endsWith("/rest/v1/rpc/get_money_transfer_receipt_source_details")) {
         detailRpcRequests.push(`${request.method()} ${pathname}`);
       }
       if (!["GET", "HEAD", "OPTIONS"].includes(request.method())
-        && !pathname.endsWith("/rest/v1/rpc/get_money_transfer_detail")
-        && !pathname.endsWith("/rest/v1/rpc/get_money_transfer_receipt_source_details")) {
+        && !readOnlyRpcPaths.has(pathname)) {
         writeRequests.push(`${request.method()} ${pathname}`);
       }
     });

@@ -174,7 +174,7 @@ ALTER FUNCTION "private"."active_transfer_report_no"("p_transfer_id" "uuid") OWN
 CREATE OR REPLACE FUNCTION "private"."append_dashboard_money_event"("p_source_type" "text", "p_source_id" "uuid", "p_action" "text", "p_payload" "jsonb", "p_actor_user_id" "uuid" DEFAULT NULL::"uuid", "p_actor_name" "text" DEFAULT NULL::"text") RETURNS "void"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
-    AS $$
+    AS $_$
 declare
   v_actor_id uuid := coalesce(auth.uid(), p_actor_user_id, nullif(p_payload->>'actorUserId', '')::uuid);
   v_actor_name text;
@@ -210,10 +210,12 @@ begin
     v_actor_id,
     v_actor_name,
     v_occurred_at,
-    (v_occurred_at at time zone 'Asia/Bangkok')::date
+    case when coalesce(p_payload->>'eventDate', '') ~ '^\d{4}-\d{2}-\d{2}$'
+      then (p_payload->>'eventDate')::date
+      else (v_occurred_at at time zone 'Asia/Bangkok')::date end
   );
 end;
-$$;
+$_$;
 
 
 ALTER FUNCTION "private"."append_dashboard_money_event"("p_source_type" "text", "p_source_id" "uuid", "p_action" "text", "p_payload" "jsonb", "p_actor_user_id" "uuid", "p_actor_name" "text") OWNER TO "postgres";
@@ -682,7 +684,7 @@ CREATE OR REPLACE FUNCTION "private"."calculate_dashboard_summary"("p_location_i
     union all
 
     select 'income', mt.net_amount_to_pay, true, false,
-      (mt.created_at at time zone 'Asia/Bangkok')::date
+      coalesce(mt.accounting_date, (mt.created_at at time zone 'Asia/Bangkok')::date)
     from public.money_transfers mt
     where mt.transfer_type = 'branch'
       and coalesce(mt.transfer_method, 'bank') <> 'cash'
@@ -694,7 +696,7 @@ CREATE OR REPLACE FUNCTION "private"."calculate_dashboard_summary"("p_location_i
     union all
 
     select 'expense', mt.net_amount_to_pay, true, false,
-      (mt.created_at at time zone 'Asia/Bangkok')::date
+      coalesce(mt.accounting_date, (mt.created_at at time zone 'Asia/Bangkok')::date)
     from public.money_transfers mt
     where mt.transfer_type = 'branch'
       and coalesce(mt.transfer_method, 'bank') <> 'cash'
@@ -2337,7 +2339,7 @@ ALTER FUNCTION "private"."dashboard_dirty_rubber_bill_items"() OWNER TO "postgre
 CREATE OR REPLACE FUNCTION "private"."dashboard_money_event_entry"("p_event_key" "text", "p_location_id" "uuid", "p_kind" "text", "p_number" "text", "p_title" "text", "p_direction" "text", "p_amount" numeric, "p_fingerprint" "jsonb", "p_actor_user_id" "uuid" DEFAULT NULL::"uuid", "p_actor_name" "text" DEFAULT NULL::"text") RETURNS "jsonb"
     LANGUAGE "sql" IMMUTABLE
     SET "search_path" TO ''
-    AS $$
+    AS $_$
   select jsonb_build_object(
     'eventKey', p_event_key,
     'locationId', p_location_id,
@@ -2346,11 +2348,13 @@ CREATE OR REPLACE FUNCTION "private"."dashboard_money_event_entry"("p_event_key"
     'title', coalesce(nullif(p_title, ''), 'ไม่ระบุรายละเอียด'),
     'direction', p_direction,
     'amount', greatest(coalesce(p_amount, 0), 0),
+    'eventDate', case when coalesce(p_fingerprint->>'accountingDate', '') ~ '^\d{4}-\d{2}-\d{2}$'
+      then p_fingerprint->>'accountingDate' end,
     'fingerprint', md5(coalesce(p_fingerprint, '{}'::jsonb)::text),
     'actorUserId', p_actor_user_id,
     'actorName', p_actor_name
   );
-$$;
+$_$;
 
 
 ALTER FUNCTION "private"."dashboard_money_event_entry"("p_event_key" "text", "p_location_id" "uuid", "p_kind" "text", "p_number" "text", "p_title" "text", "p_direction" "text", "p_amount" numeric, "p_fingerprint" "jsonb", "p_actor_user_id" "uuid", "p_actor_name" "text") OWNER TO "postgres";
@@ -2479,7 +2483,7 @@ begin
         mt.target_location_id,
         'transfer_in',
         'TR-' || left(mt.id::text, 8),
-        'รับโอนเงินเข้าสาขา',
+        case when mt.location_id = mt.target_location_id then 'โอนให้สาขา' else 'รับโอนเงินเข้าสาขา' end,
         'income',
         mt.net_amount_to_pay,
         jsonb_build_object(
@@ -2489,7 +2493,8 @@ begin
           'amount', mt.net_amount_to_pay,
           'sourceLocationId', mt.location_id,
           'targetLocationId', mt.target_location_id,
-          'targetLocationName', mt.target_location_name
+          'targetLocationName', mt.target_location_name,
+          'accountingDate', mt.accounting_date
         ),
         mt.created_by_user_id,
         mt.created_by_name
@@ -2519,7 +2524,8 @@ begin
           'amount', mt.net_amount_to_pay,
           'sourceLocationId', mt.location_id,
           'targetLocationId', mt.target_location_id,
-          'targetLocationName', mt.target_location_name
+          'targetLocationName', mt.target_location_name,
+          'accountingDate', mt.accounting_date
         ),
         mt.created_by_user_id,
         mt.created_by_name
@@ -3603,16 +3609,19 @@ begin
       'idempotencyKey', 'money-transfer:' || mt.id, 'locationId', mt.target_location_id,
       'syncStatus', 'synced', 'recordStatus', 'active', 'type', 'income',
       'number', 'TR-' || left(mt.id::text, 8),
-      'txDate', (mt.created_at at time zone 'Asia/Bangkok')::date,
-      'title', 'รับโอนจาก ' || coalesce(source_location.name, 'สาขาต้นทาง'),
+      'txDate', coalesce(mt.accounting_date, (mt.created_at at time zone 'Asia/Bangkok')::date),
+      'title', case when mt.location_id = mt.target_location_id then 'โอนให้สาขา'
+        else 'รับโอนจาก ' || coalesce(source_location.name, 'สาขาต้นทาง') end,
       'cost', mt.net_amount_to_pay, 'billOption', 'รายรับ',
       'clientRecordedAt', mt.created_at, 'clientCreatedAt', mt.created_at,
       'serverReceivedAt', mt.updated_at, 'revisionNo', mt.revision_no,
       'createdByUserId', mt.created_by_user_id, 'createdByName', coalesce(mt.created_by_name, 'ระบบโอนเงิน'),
       'createdByPhone', mt.created_by_phone, 'relationSourceType', 'money_transfer',
       'relationSourceId', mt.id, 'relationSourceLocationId', mt.location_id,
-      'relationLabel', 'โอนเงินสาขา',
-      'relationLockReason', 'รายการนี้มาจากการโอนเงินสาขา ต้องแก้ไขหรือลบที่โมดูลโอนเงินต้นทาง',
+      'relationLabel', case when mt.location_id = mt.target_location_id then 'โอนให้สาขา' else 'โอนเงินสาขา' end,
+      'relationLockReason', case when mt.location_id = mt.target_location_id
+        then 'รายการนี้มาจากโอนให้สาขา ต้องแก้ไขหรือลบที่โมดูลโอนเงิน'
+        else 'รายการนี้มาจากการโอนเงินสาขา ต้องแก้ไขหรือลบที่โมดูลโอนเงินต้นทาง' end,
       'reportLockNo', public.report_lock_no(mt)
     )) into v_result
     from public.money_transfers mt
@@ -3627,7 +3636,7 @@ begin
       'idempotencyKey', 'money-transfer-branch-expense:' || mt.id, 'locationId', mt.location_id,
       'syncStatus', 'synced', 'recordStatus', 'active', 'type', 'expense',
       'number', 'TR-' || left(mt.id::text, 8),
-      'txDate', (mt.created_at at time zone 'Asia/Bangkok')::date,
+      'txDate', coalesce(mt.accounting_date, (mt.created_at at time zone 'Asia/Bangkok')::date),
       'title', 'โยกเงินไป ' || coalesce(mt.target_location_name, 'สาขาปลายทาง'),
       'cost', mt.net_amount_to_pay, 'billOption', 'ค่าใช้จ่าย',
       'clientRecordedAt', mt.created_at, 'clientCreatedAt', mt.created_at,
@@ -3635,8 +3644,10 @@ begin
       'createdByUserId', mt.created_by_user_id, 'createdByName', coalesce(mt.created_by_name, 'ระบบโอนเงิน'),
       'createdByPhone', mt.created_by_phone, 'relationSourceType', 'money_transfer',
       'relationSourceId', mt.id, 'relationSourceLocationId', mt.location_id,
-      'relationLabel', 'โอนเงินสาขา',
-      'relationLockReason', 'รายการนี้มาจากการโอนเงินสาขา ต้องแก้ไขหรือลบที่โมดูลโอนเงินต้นทาง',
+      'relationLabel', case when mt.location_id = mt.target_location_id then 'โอนให้สาขา' else 'โอนเงินสาขา' end,
+      'relationLockReason', case when mt.location_id = mt.target_location_id
+        then 'รายการนี้มาจากโอนให้สาขา ต้องแก้ไขหรือลบที่โมดูลโอนเงิน'
+        else 'รายการนี้มาจากการโอนเงินสาขา ต้องแก้ไขหรือลบที่โมดูลโอนเงินต้นทาง' end,
       'reportLockNo', public.report_lock_no(mt)
     )) into v_result
     from public.money_transfers mt where mt.id = p_source_id and mt.location_id = p_location_id;
@@ -4036,6 +4047,29 @@ $$;
 
 
 ALTER FUNCTION "private"."merge_pending_money_transfers"("p_location_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."money_transfer_ocr_fingerprint"("p_reference_number" "text", "p_amount" numeric, "p_transaction_date" timestamp with time zone) RETURNS "text"
+    LANGUAGE "sql" IMMUTABLE
+    SET "search_path" TO ''
+    AS $$
+  select case
+    when nullif(pg_catalog.btrim(p_reference_number), '') is null
+      or p_amount is null
+      or p_transaction_date is null
+    then null
+    else pg_catalog.md5(
+      pg_catalog.lower(
+        pg_catalog.regexp_replace(pg_catalog.btrim(p_reference_number), '[^[:alnum:]]+', '', 'g')
+      )
+      || '|' || pg_catalog.round(p_amount, 2)::text
+      || '|' || (extract(epoch from p_transaction_date) * 1000)::bigint::text
+    )
+  end
+$$;
+
+
+ALTER FUNCTION "private"."money_transfer_ocr_fingerprint"("p_reference_number" "text", "p_amount" numeric, "p_transaction_date" timestamp with time zone) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."money_transfer_source_relations"("p_location_id" "uuid", "p_source_type" "text" DEFAULT NULL::"text") RETURNS TABLE("source_type" "text", "source_id" "uuid", "transfer_id" "uuid")
@@ -4953,7 +4987,8 @@ CREATE OR REPLACE FUNCTION "private"."report_income_expense_period_rows"("p_repo
   union all
 
   select
-    (coalesce(m.server_received_at, m.updated_at, m.created_at) at time zone 'Asia/Bangkok')::date,
+    coalesce(m.accounting_date,
+      (coalesce(m.server_received_at, m.updated_at, m.created_at) at time zone 'Asia/Bangkok')::date),
     'TR-' || left(m.id::text, 8),
     'expense',
     'โยกเงินไป ' || coalesce(m.target_location_name, 'สาขาปลายทาง'),
@@ -4987,10 +5022,11 @@ CREATE OR REPLACE FUNCTION "private"."report_income_expense_period_rows"("p_repo
   union all
 
   select
-    (coalesce(m.server_received_at, m.updated_at, m.created_at) at time zone 'Asia/Bangkok')::date,
+    coalesce(m.accounting_date,
+      (coalesce(m.server_received_at, m.updated_at, m.created_at) at time zone 'Asia/Bangkok')::date),
     'TR-' || left(m.id::text, 8),
     'income',
-    'รับโอนจากสาขาต้นทาง',
+    case when m.location_id = m.target_location_id then 'โอนให้สาขา' else 'รับโอนจากสาขาต้นทาง' end,
     m.net_amount_to_pay,
     '42-' || m.id::text
   from public.report_items i
@@ -5150,6 +5186,7 @@ CREATE OR REPLACE FUNCTION "private"."reportable_items"("p_location_id" "uuid", 
       coalesce(m.server_received_at, m.updated_at, m.created_at)
     from public.money_transfers m
     where m.location_id = p_location_id
+      and (m.transfer_type <> 'branch' or m.location_id <> m.target_location_id)
       and m.transfer_method = 'bank'
       and m.record_status = 'active'
       and m.sync_status = 'synced'
@@ -5161,7 +5198,6 @@ CREATE OR REPLACE FUNCTION "private"."reportable_items"("p_location_id" "uuid", 
       coalesce(m.server_received_at, m.updated_at, m.created_at)
     from public.money_transfers m
     where m.target_location_id = p_location_id
-      and m.location_id <> p_location_id
       and m.transfer_type = 'branch'
       and m.transfer_method = 'bank'
       and m.record_status = 'active'
@@ -10414,6 +10450,46 @@ $$;
 ALTER FUNCTION "public"."delete_money_transfer"("p_transfer_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."delete_money_transfer"("p_transfer_id" "uuid", "p_expected_revision" integer) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_transfer public.money_transfers;
+begin
+  if p_transfer_id is null or p_expected_revision is null then
+    raise exception 'MT_INVALID_PAYLOAD: ข้อมูลลบรายการโอนไม่ครบ';
+  end if;
+
+  select * into v_transfer
+  from public.money_transfers t
+  where t.id = p_transfer_id
+  for update;
+
+  if not found then
+    raise exception 'MONEY_TRANSFER_NOT_FOUND';
+  end if;
+
+  if v_transfer.transfer_type = 'branch'
+    and v_transfer.target_location_id is distinct from v_transfer.location_id
+  then
+    raise exception 'MT_LEGACY_BRANCH_READ_ONLY: รายการโอนระหว่างสาขารุ่นเดิมลบไม่ได้';
+  end if;
+
+  if v_transfer.record_status <> 'deleted'
+    and v_transfer.revision_no <> p_expected_revision
+  then
+    raise exception 'MT_REVISION_CONFLICT: ข้อมูลถูกแก้ไขแล้ว กรุณาโหลดใหม่';
+  end if;
+
+  return public.delete_money_transfer(p_transfer_id);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."delete_money_transfer"("p_transfer_id" "uuid", "p_expected_revision" integer) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."delete_report_batch"("p_report_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -12426,23 +12502,27 @@ begin
       union all
       select * from (
         select 'branch_income', mt.id, null::date,
-          (mt.created_at at time zone 'Asia/Bangkok')::date d, 'transfer-income:' || mt.id::text k
+          coalesce(mt.accounting_date, (mt.created_at at time zone 'Asia/Bangkok')::date) d,
+          'transfer-income:' || mt.id::text k
         from public.money_transfers mt
         where mt.transfer_type = 'branch' and mt.target_location_id = p_location_id
           and mt.record_status <> 'deleted' and mt.transfer_status <> 'cancelled' and mt.net_amount_to_pay > 0
-          and (v_cursor_date is null or ((mt.created_at at time zone 'Asia/Bangkok')::date,
+          and (v_cursor_date is null or (coalesce(mt.accounting_date,
+            (mt.created_at at time zone 'Asia/Bangkok')::date),
             'transfer-income:' || mt.id::text) < (v_cursor_date, v_cursor_key))
         order by d desc, k desc limit 101
       ) branch_income
       union all
       select * from (
         select 'branch_expense', mt.id, null::date,
-          (mt.created_at at time zone 'Asia/Bangkok')::date d, 'transfer-expense:' || mt.id::text k
+          coalesce(mt.accounting_date, (mt.created_at at time zone 'Asia/Bangkok')::date) d,
+          'transfer-expense:' || mt.id::text k
         from public.money_transfers mt
         where mt.transfer_type = 'branch' and mt.location_id = p_location_id
           and mt.target_location_id <> mt.location_id and mt.record_status <> 'deleted'
           and mt.transfer_status <> 'cancelled' and mt.net_amount_to_pay > 0
-          and (v_cursor_date is null or ((mt.created_at at time zone 'Asia/Bangkok')::date,
+          and (v_cursor_date is null or (coalesce(mt.accounting_date,
+            (mt.created_at at time zone 'Asia/Bangkok')::date),
             'transfer-expense:' || mt.id::text) < (v_cursor_date, v_cursor_key))
         order by d desc, k desc limit 101
       ) branch_expense
@@ -12771,11 +12851,12 @@ begin
       union all
 
       select
-        (mt.created_at at time zone 'Asia/Bangkok')::date,
+        coalesce(mt.accounting_date, (mt.created_at at time zone 'Asia/Bangkok')::date),
         'transfer-income:' || mt.id,
         lower(regexp_replace(concat_ws(' ', 'TR-' || left(mt.id::text, 8),
-          (mt.created_at at time zone 'Asia/Bangkok')::date::text,
-          'รับโอนจาก', source_location.name, 'รายรับ', mt.created_by_name, mt.created_by_phone
+          coalesce(mt.accounting_date, (mt.created_at at time zone 'Asia/Bangkok')::date)::text,
+          case when mt.location_id = mt.target_location_id then 'โอนให้สาขา' else 'รับโอนจาก' end,
+          source_location.name, 'รายรับ', mt.created_by_name, mt.created_by_phone
         ), '\s+', ' ', 'g')),
         jsonb_strip_nulls(jsonb_build_object(
           'id', 'money-transfer-income:' || mt.id, 'clientTempId', 'money-transfer-income:' || mt.id,
@@ -12783,16 +12864,19 @@ begin
           'idempotencyKey', 'money-transfer:' || mt.id, 'locationId', mt.target_location_id,
           'syncStatus', 'synced', 'recordStatus', 'active', 'type', 'income',
           'number', 'TR-' || left(mt.id::text, 8),
-          'txDate', (mt.created_at at time zone 'Asia/Bangkok')::date,
-          'title', 'รับโอนจาก ' || coalesce(source_location.name, 'สาขาต้นทาง'),
+          'txDate', coalesce(mt.accounting_date, (mt.created_at at time zone 'Asia/Bangkok')::date),
+          'title', case when mt.location_id = mt.target_location_id then 'โอนให้สาขา'
+            else 'รับโอนจาก ' || coalesce(source_location.name, 'สาขาต้นทาง') end,
           'cost', mt.net_amount_to_pay, 'billOption', 'รายรับ',
           'clientRecordedAt', mt.created_at, 'clientCreatedAt', mt.created_at,
           'serverReceivedAt', mt.updated_at, 'revisionNo', mt.revision_no,
           'createdByUserId', mt.created_by_user_id, 'createdByName', coalesce(mt.created_by_name, 'ระบบโอนเงิน'),
           'createdByPhone', mt.created_by_phone, 'relationSourceType', 'money_transfer',
           'relationSourceId', mt.id, 'relationSourceLocationId', mt.location_id,
-          'relationLabel', 'โอนเงินสาขา',
-          'relationLockReason', 'รายการนี้มาจากการโอนเงินสาขา ต้องแก้ไขหรือลบที่โมดูลโอนเงินต้นทาง',
+          'relationLabel', case when mt.location_id = mt.target_location_id then 'โอนให้สาขา' else 'โอนเงินสาขา' end,
+          'relationLockReason', case when mt.location_id = mt.target_location_id
+            then 'รายการนี้มาจากโอนให้สาขา ต้องแก้ไขหรือลบที่โมดูลโอนเงิน'
+            else 'รายการนี้มาจากการโอนเงินสาขา ต้องแก้ไขหรือลบที่โมดูลโอนเงินต้นทาง' end,
           'reportLockNo', public.report_lock_no(mt)
         ))
       from public.money_transfers mt
@@ -12804,10 +12888,10 @@ begin
       union all
 
       select
-        (mt.created_at at time zone 'Asia/Bangkok')::date,
+        coalesce(mt.accounting_date, (mt.created_at at time zone 'Asia/Bangkok')::date),
         'transfer-expense:' || mt.id,
         lower(regexp_replace(concat_ws(' ', 'TR-' || left(mt.id::text, 8),
-          (mt.created_at at time zone 'Asia/Bangkok')::date::text,
+          coalesce(mt.accounting_date, (mt.created_at at time zone 'Asia/Bangkok')::date)::text,
           'โยกเงินไป', mt.target_location_name, 'ค่าใช้จ่าย', mt.created_by_name, mt.created_by_phone
         ), '\s+', ' ', 'g')),
         jsonb_strip_nulls(jsonb_build_object(
@@ -12816,7 +12900,7 @@ begin
           'idempotencyKey', 'money-transfer-branch-expense:' || mt.id, 'locationId', mt.location_id,
           'syncStatus', 'synced', 'recordStatus', 'active', 'type', 'expense',
           'number', 'TR-' || left(mt.id::text, 8),
-          'txDate', (mt.created_at at time zone 'Asia/Bangkok')::date,
+          'txDate', coalesce(mt.accounting_date, (mt.created_at at time zone 'Asia/Bangkok')::date),
           'title', 'โยกเงินไป ' || coalesce(mt.target_location_name, 'สาขาปลายทาง'),
           'cost', mt.net_amount_to_pay, 'billOption', 'ค่าใช้จ่าย',
           'clientRecordedAt', mt.created_at, 'clientCreatedAt', mt.created_at,
@@ -12824,8 +12908,10 @@ begin
           'createdByUserId', mt.created_by_user_id, 'createdByName', coalesce(mt.created_by_name, 'ระบบโอนเงิน'),
           'createdByPhone', mt.created_by_phone, 'relationSourceType', 'money_transfer',
           'relationSourceId', mt.id, 'relationSourceLocationId', mt.location_id,
-          'relationLabel', 'โอนเงินสาขา',
-          'relationLockReason', 'รายการนี้มาจากการโอนเงินสาขา ต้องแก้ไขหรือลบที่โมดูลโอนเงินต้นทาง',
+          'relationLabel', case when mt.location_id = mt.target_location_id then 'โอนให้สาขา' else 'โอนเงินสาขา' end,
+          'relationLockReason', case when mt.location_id = mt.target_location_id
+            then 'รายการนี้มาจากโอนให้สาขา ต้องแก้ไขหรือลบที่โมดูลโอนเงิน'
+            else 'รายการนี้มาจากการโอนเงินสาขา ต้องแก้ไขหรือลบที่โมดูลโอนเงินต้นทาง' end,
           'reportLockNo', public.report_lock_no(mt)
         ))
       from public.money_transfers mt
@@ -15947,6 +16033,8 @@ CREATE TABLE IF NOT EXISTS "public"."money_transfers" (
     "target_location_id" "uuid",
     "target_location_name" "text",
     "transfer_method" "text" DEFAULT 'bank'::"text" NOT NULL,
+    "accounting_date" "date",
+    "request_fingerprint" "text",
     CONSTRAINT "money_transfers_transfer_method_check" CHECK (("transfer_method" = ANY (ARRAY['bank'::"text", 'cash'::"text"]))),
     CONSTRAINT "money_transfers_transfer_status_check" CHECK (("transfer_status" = ANY (ARRAY['pending'::"text", 'paid'::"text", 'partial'::"text", 'overpaid'::"text", 'branch_and_transfer'::"text", 'advance_payment'::"text", 'cancelled'::"text"]))),
     CONSTRAINT "money_transfers_transfer_type_check" CHECK (("transfer_type" = ANY (ARRAY['customer'::"text", 'transport'::"text", 'branch'::"text", 'cash'::"text"])))
@@ -16795,83 +16883,272 @@ declare
   v_operation text := coalesce(p_payload->>'operation', 'create');
   v_transfer_type text := coalesce(p_payload->>'transferType', 'customer');
   v_expected_revision integer := coalesce((p_payload->>'revisionNo')::integer, 0);
+  v_target_location_id uuid := nullif(p_payload->>'targetLocationId', '')::uuid;
+  v_request_fingerprint text := pg_catalog.md5((p_payload - 'operation')::text);
   v_existing public.money_transfers;
   v_retry public.money_transfers;
   v_is_create boolean;
   v_slip_ids uuid[];
   v_item_ids uuid[];
   v_changed_sources jsonb;
+  v_target_location_name text;
+  v_accounting_date date;
+  v_branch_total numeric(12,2);
+  v_ocr_fingerprint text;
 begin
   if not private.is_active_user() or not private.can_access_money_transfer_module() then
     raise exception 'MT_ACCESS_DENIED: ไม่มีสิทธิ์ใช้งานรายการโอนเงิน';
   end if;
-  if v_id is null or v_location_id is null then raise exception 'MT_INVALID_PAYLOAD: ข้อมูลรายการโอนไม่ครบ'; end if;
-  if not private.can_access_location(v_location_id) then raise exception 'MT_LOCATION_DENIED: ไม่มีสิทธิ์เข้าถึงสาขา'; end if;
+  if v_id is null or v_location_id is null then
+    raise exception 'MT_INVALID_PAYLOAD: ข้อมูลรายการโอนไม่ครบ';
+  end if;
+  if not private.can_access_location(v_location_id) then
+    raise exception 'MT_LOCATION_DENIED: ไม่มีสิทธิ์เข้าถึงสาขา';
+  end if;
   if v_transfer_type not in ('customer', 'transport', 'branch') then
     raise exception 'MT_UNSUPPORTED_WORKFLOW: ไม่รองรับประเภทการโอนนี้';
   end if;
-  if v_operation not in ('create', 'update') then raise exception 'MT_INVALID_OPERATION: operation ไม่ถูกต้อง'; end if;
+  if v_operation not in ('create', 'update') then
+    raise exception 'MT_INVALID_OPERATION: operation ไม่ถูกต้อง';
+  end if;
   if jsonb_typeof(coalesce(p_payload->'slips', '[]'::jsonb)) <> 'array'
     or jsonb_typeof(coalesce(p_payload->'items', '[]'::jsonb)) <> 'array' then
     raise exception 'MT_INVALID_PAYLOAD: slips/items ต้องเป็นรายการ';
   end if;
 
+  if v_idempotency_key is not null and v_operation = 'create' then
+    perform pg_catalog.pg_advisory_xact_lock(
+      pg_catalog.hashtextextended('money-transfer-create:' || v_idempotency_key, 0)
+    );
+  end if;
+
   if v_idempotency_key is not null then
-    select * into v_retry from public.money_transfers t
-    where t.idempotency_key = v_idempotency_key and t.record_status <> 'deleted'
+    select * into v_retry
+    from public.money_transfers t
+    where t.idempotency_key = v_idempotency_key
+      and t.record_status <> 'deleted'
     for update;
+
     if v_retry.id is not null then
       if v_retry.location_id <> v_location_id then
         raise exception 'MT_IDEMPOTENCY_CONFLICT: idempotency key อยู่คนละสาขา';
       end if;
       if v_operation = 'create' then
+        if v_retry.request_fingerprint is not null
+          and v_retry.request_fingerprint <> v_request_fingerprint then
+          raise exception 'MT_IDEMPOTENCY_PAYLOAD_MISMATCH: idempotency key ถูกใช้กับข้อมูลอื่นแล้ว';
+        end if;
         return public.get_money_transfer_detail(v_retry.id)
           || jsonb_build_object('idempotentReplay', true, 'changedSources', '[]'::jsonb);
       end if;
-      if v_retry.id <> v_id then raise exception 'MT_IDEMPOTENCY_CONFLICT: idempotency key ไม่ตรงรายการ'; end if;
+      if v_retry.id <> v_id then
+        raise exception 'MT_IDEMPOTENCY_CONFLICT: idempotency key ไม่ตรงรายการ';
+      end if;
     end if;
   end if;
 
-  select * into v_existing from public.money_transfers t where t.id = v_id for update;
+  select * into v_existing
+  from public.money_transfers t
+  where t.id = v_id
+  for update;
   v_is_create := v_existing.id is null;
+
   if v_operation = 'create' and not v_is_create then
     raise exception 'MT_IDEMPOTENCY_CONFLICT: มีรหัสรายการนี้แล้ว';
   end if;
-  if v_operation = 'update' and v_is_create then raise exception 'MT_NOT_FOUND: ไม่พบรายการโอนเงิน'; end if;
+  if v_operation = 'update' and v_is_create then
+    raise exception 'MT_NOT_FOUND: ไม่พบรายการโอนเงิน';
+  end if;
   if not v_is_create then
-    if v_existing.location_id <> v_location_id then raise exception 'MT_LOCATION_MISMATCH: ห้ามย้ายรายการข้ามสาขา'; end if;
-    if v_existing.record_status = 'deleted' then raise exception 'MT_NOT_FOUND: ไม่พบรายการโอนเงิน'; end if;
+    if v_existing.location_id <> v_location_id then
+      raise exception 'MT_LOCATION_MISMATCH: ห้ามย้ายรายการข้ามสาขา';
+    end if;
+    if v_existing.record_status = 'deleted' then
+      raise exception 'MT_NOT_FOUND: ไม่พบรายการโอนเงิน';
+    end if;
     if v_existing.revision_no <> v_expected_revision then
       raise exception 'MT_REVISION_CONFLICT: ข้อมูลถูกแก้ไขแล้ว กรุณาโหลดใหม่';
     end if;
     if public.report_lock_no(v_existing) is not null then
       raise exception 'MT_REPORT_LOCKED: รายการถูกล็อกโดยรายงาน';
     end if;
+    if v_existing.transfer_type <> v_transfer_type then
+      raise exception 'MT_TRANSFER_TYPE_IMMUTABLE: ห้ามเปลี่ยนประเภทรายการโอน';
+    end if;
+    if v_existing.transfer_type = 'branch'
+      and v_existing.location_id <> v_existing.target_location_id then
+      raise exception 'MT_LEGACY_BRANCH_READ_ONLY: รายการโอนระหว่างสาขารุ่นเดิมแก้ไขไม่ได้';
+    end if;
   end if;
 
   if exists (
-    select 1 from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
-    group by x->>'sourceType', x->>'sourceId' having count(*) > 1
-  ) then raise exception 'MT_DUPLICATE_SOURCE: มีแหล่งจ่ายซ้ำในรายการ'; end if;
+    select 1
+    from jsonb_array_elements(coalesce(p_payload->'slips', '[]'::jsonb)) x
+    group by x->>'id'
+    having count(*) > 1
+  ) then
+    raise exception 'MT_DUPLICATE_SLIP_ID: มีรหัสสลิปซ้ำในรายการ';
+  end if;
+  if exists (
+    select 1
+    from jsonb_array_elements(coalesce(p_payload->'slips', '[]'::jsonb)) x
+    join public.money_transfer_slips s on s.id = (x->>'id')::uuid
+    where s.transfer_id <> v_id
+  ) then
+    raise exception 'MT_SLIP_PARENT_CONFLICT: สลิปอยู่ในรายการโอนอื่น';
+  end if;
+  if exists (
+    select 1
+    from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
+    group by x->>'id'
+    having count(*) > 1
+  ) then
+    raise exception 'MT_DUPLICATE_ITEM_ID: มีรหัสแหล่งจ่ายซ้ำในรายการ';
+  end if;
+  if exists (
+    select 1
+    from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
+    join public.money_transfer_items i on i.id = (x->>'id')::uuid
+    where i.transfer_id <> v_id
+  ) then
+    raise exception 'MT_ITEM_PARENT_CONFLICT: แหล่งจ่ายอยู่ในรายการโอนอื่น';
+  end if;
 
-  -- Deterministic source locking keeps concurrent saves from validating stale availability.
+  if v_transfer_type = 'branch' then
+    if v_target_location_id is null or v_target_location_id <> v_location_id then
+      raise exception 'MT_BRANCH_TARGET_MISMATCH: รายการโอนให้สาขาต้องเป็นของสาขาผู้รับ';
+    end if;
+    if not private.can_access_location(v_target_location_id) then
+      raise exception 'MT_TARGET_LOCATION_DENIED: ไม่มีสิทธิ์โอนให้สาขานี้';
+    end if;
+    select l.name into v_target_location_name
+    from public.locations l
+    where l.id = v_target_location_id
+      and l.is_active = true;
+    if v_target_location_name is null then
+      raise exception 'MT_TARGET_LOCATION_INACTIVE: สาขาผู้รับไม่เปิดใช้งาน';
+    end if;
+    if jsonb_array_length(coalesce(p_payload->'items', '[]'::jsonb)) <> 0 then
+      raise exception 'MT_BRANCH_SOURCE_NOT_ALLOWED: โอนให้สาขาไม่มีรายการต้นทาง';
+    end if;
+    if jsonb_array_length(coalesce(p_payload->'slips', '[]'::jsonb)) = 0 then
+      raise exception 'MT_SLIP_REQUIRED: กรุณาเพิ่มสลิปอย่างน้อยหนึ่งใบ';
+    end if;
+    if exists (
+      select 1
+      from jsonb_array_elements(p_payload->'slips') x
+      where nullif(x->>'id', '') is null
+        or coalesce((x->>'amount')::numeric, 0) <= 0
+        or coalesce((x->>'fee')::numeric, 0) < 0
+        or nullif(x->>'transactionDate', '') is null
+        or x->>'inputMethod' not in ('manual', 'ocr')
+        or (x->>'inputMethod' = 'manual' and nullif(trim(x->>'referenceNumber'), '') is not null)
+        or (x->>'inputMethod' = 'ocr' and nullif(trim(x->>'referenceNumber'), '') is null)
+    ) then
+      raise exception 'MT_INVALID_SLIP: จำนวนเงิน ค่าธรรมเนียม วันเวลา หรือที่มาของสลิปไม่ถูกต้อง';
+    end if;
+
+    select
+      min(((x->>'transactionDate')::timestamptz at time zone 'Asia/Bangkok')::date),
+      round(sum((x->>'amount')::numeric), 2)
+    into v_accounting_date, v_branch_total
+    from jsonb_array_elements(p_payload->'slips') x;
+
+    if exists (
+      select 1
+      from jsonb_array_elements(p_payload->'slips') x
+      where ((x->>'transactionDate')::timestamptz at time zone 'Asia/Bangkok')::date
+        <> v_accounting_date
+    ) then
+      raise exception 'MT_SLIP_DATE_MISMATCH: สลิปทุกใบต้องเป็นวันเดียวกันตามเวลาไทย';
+    end if;
+
+    if exists (
+      select 1
+      from jsonb_array_elements(p_payload->'slips') x
+      where x->>'inputMethod' = 'ocr'
+      group by private.money_transfer_ocr_fingerprint(
+        x->>'referenceNumber',
+        (x->>'amount')::numeric,
+        (x->>'transactionDate')::timestamptz
+      )
+      having count(*) > 1
+    ) then
+      raise exception 'MT_OCR_DUPLICATE: พบสลิป OCR ซ้ำในรายการ';
+    end if;
+
+    for v_ocr_fingerprint in
+      select distinct private.money_transfer_ocr_fingerprint(
+        x->>'referenceNumber',
+        (x->>'amount')::numeric,
+        (x->>'transactionDate')::timestamptz
+      )
+      from jsonb_array_elements(p_payload->'slips') x
+      where x->>'inputMethod' = 'ocr'
+      order by 1
+    loop
+      perform pg_catalog.pg_advisory_xact_lock(
+        pg_catalog.hashtextextended('money-transfer-ocr:' || v_ocr_fingerprint, 0)
+      );
+    end loop;
+
+    if exists (
+      select 1
+      from jsonb_array_elements(p_payload->'slips') x
+      join public.money_transfer_slips s
+        on s.ocr_fingerprint = private.money_transfer_ocr_fingerprint(
+          x->>'referenceNumber',
+          (x->>'amount')::numeric,
+          (x->>'transactionDate')::timestamptz
+        )
+      join public.money_transfers t
+        on t.id = s.transfer_id
+       and t.record_status <> 'deleted'
+      where x->>'inputMethod' = 'ocr'
+        and t.id <> v_id
+    ) then
+      raise exception 'MT_OCR_DUPLICATE: สลิป OCR ถูกใช้ในรายการอื่นแล้ว';
+    end if;
+  end if;
+
+  if exists (
+    select 1
+    from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
+    group by x->>'sourceType', x->>'sourceId'
+    having count(*) > 1
+  ) then
+    raise exception 'MT_DUPLICATE_SOURCE: มีแหล่งจ่ายซ้ำในรายการ';
+  end if;
+
   perform b.id
   from public.rubber_bills b
-  where b.id = any(coalesce((select array_agg((x->>'sourceId')::uuid)
+  where b.id = any(coalesce((
+    select array_agg((x->>'sourceId')::uuid)
     from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
-    where x->>'sourceType' = 'rubber_bill'), array[]::uuid[]))
-  order by b.id for update;
-  if exists (
-    select 1 from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
-    where x->>'sourceType' <> 'rubber_bill'
-  ) then raise exception 'MT_INVALID_SOURCE: ประเภทแหล่งจ่ายไม่ถูกต้อง'; end if;
+    where x->>'sourceType' = 'rubber_bill'
+  ), array[]::uuid[]))
+  order by b.id
+  for update;
 
   if exists (
-    select 1 from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
+    select 1
+    from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
+    where x->>'sourceType' <> 'rubber_bill'
+  ) then
+    raise exception 'MT_INVALID_SOURCE: ประเภทแหล่งจ่ายไม่ถูกต้อง';
+  end if;
+
+  if exists (
+    select 1
+    from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
     left join public.rubber_bills b on b.id = (x->>'sourceId')::uuid
     where x->>'sourceType' = 'rubber_bill' and (
-      b.id is null or b.location_id <> v_location_id or b.record_status <> 'active'
-      or b.sync_status::text <> 'synced' or b.server_bill_no is null or b.net_total <= 0
+      b.id is null
+      or b.location_id <> v_location_id
+      or b.record_status <> 'active'
+      or b.sync_status::text <> 'synced'
+      or b.server_bill_no is null
+      or b.net_total <= 0
       or (
         public.report_lock_no(b) is not null
         and not exists (
@@ -16883,81 +17160,156 @@ begin
         )
       )
       or private.rubber_bill_has_pending_approval(b.id)
-      or exists (select 1 from public.rubber_bill_items bi
-        where bi.bill_id = b.id and bi.item_type = 'weigh' and coalesce(bi.price, 0) <= 0)
+      or exists (
+        select 1
+        from public.rubber_bill_items bi
+        where bi.bill_id = b.id
+          and bi.item_type = 'weigh'
+          and coalesce(bi.price, 0) <= 0
+      )
     )
-  ) then raise exception 'MT_RUBBER_SOURCE_BLOCKED: บิลยางยังไม่พร้อมโอนหรือถูกล็อก'; end if;
+  ) then
+    raise exception 'MT_RUBBER_SOURCE_BLOCKED: บิลยางยังไม่พร้อมโอนหรือถูกล็อก';
+  end if;
 
   if exists (
-    select 1 from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
+    select 1
+    from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
     join public.money_transfer_items i
-      on i.source_type = x->>'sourceType' and i.source_id = (x->>'sourceId')::uuid
-    join public.money_transfers t on t.id = i.transfer_id and t.record_status <> 'deleted'
+      on i.source_type = x->>'sourceType'
+     and i.source_id = (x->>'sourceId')::uuid
+    join public.money_transfers t
+      on t.id = i.transfer_id
+     and t.record_status <> 'deleted'
     where i.transfer_id <> v_id
-  ) then raise exception 'MT_SOURCE_ALREADY_USED: แหล่งจ่ายถูกใช้ในรายการโอนอื่นแล้ว'; end if;
+  ) then
+    raise exception 'MT_SOURCE_ALREADY_USED: แหล่งจ่ายถูกใช้ในรายการโอนอื่นแล้ว';
+  end if;
 
   if v_is_create then
     insert into public.money_transfers (
-      id, client_temp_id, idempotency_key, location_id, customer_id, customer_name,
-      account_number, account_name, bank_name, net_amount_to_pay, branch_paid_amount,
-      transfer_type, transport_cost, transport_staff_id, transport_staff_name,
-      target_location_id, target_location_name, transfer_status, created_by_user_id,
-      created_by_name, created_by_phone, revision_no, record_status
+      id, client_temp_id, idempotency_key, request_fingerprint, location_id,
+      customer_id, customer_name, account_number, account_name, bank_name,
+      net_amount_to_pay, branch_paid_amount, transfer_type, transport_cost,
+      transport_staff_id, transport_staff_name, target_location_id,
+      target_location_name, transfer_status, accounting_date,
+      created_by_user_id, created_by_name, created_by_phone, revision_no, record_status
     ) values (
-      v_id, p_payload->>'clientTempId', v_idempotency_key, v_location_id,
+      v_id, p_payload->>'clientTempId', v_idempotency_key, v_request_fingerprint, v_location_id,
       nullif(p_payload->>'customerId', '')::uuid, p_payload->>'customerName',
       p_payload->>'accountNumber', p_payload->>'accountName', p_payload->>'bankName',
-      coalesce((p_payload->>'netAmountToPay')::numeric, 0), coalesce((p_payload->>'branchPaidAmount')::numeric, 0),
+      case when v_transfer_type = 'branch' then v_branch_total
+        else coalesce((p_payload->>'netAmountToPay')::numeric, 0) end,
+      case when v_transfer_type = 'branch' then 0
+        else coalesce((p_payload->>'branchPaidAmount')::numeric, 0) end,
       v_transfer_type, nullif(p_payload->>'transportCost', '')::numeric,
       nullif(p_payload->>'transportStaffId', '')::uuid, p_payload->>'transportStaffName',
-      nullif(p_payload->>'targetLocationId', '')::uuid, p_payload->>'targetLocationName',
-      coalesce(p_payload->>'transferStatus', 'pending'), auth.uid(),
-      coalesce(p_payload->>'createdByName', ''), coalesce(p_payload->>'createdByPhone', ''), 0, 'active'
+      case when v_transfer_type = 'branch' then v_location_id else v_target_location_id end,
+      case when v_transfer_type = 'branch' then v_target_location_name else p_payload->>'targetLocationName' end,
+      case when v_transfer_type = 'branch' then 'paid'
+        else coalesce(p_payload->>'transferStatus', 'pending') end,
+      case when v_transfer_type = 'branch' then v_accounting_date end,
+      auth.uid(), coalesce(p_payload->>'createdByName', ''),
+      coalesce(p_payload->>'createdByPhone', ''), 0, 'active'
     );
   else
     update public.money_transfers t set
       customer_id = nullif(p_payload->>'customerId', '')::uuid,
-      customer_name = p_payload->>'customerName', account_number = p_payload->>'accountNumber',
-      account_name = p_payload->>'accountName', bank_name = p_payload->>'bankName',
-      net_amount_to_pay = coalesce((p_payload->>'netAmountToPay')::numeric, 0),
-      branch_paid_amount = coalesce((p_payload->>'branchPaidAmount')::numeric, 0),
-      transfer_type = v_transfer_type, transport_cost = nullif(p_payload->>'transportCost', '')::numeric,
+      customer_name = p_payload->>'customerName',
+      account_number = p_payload->>'accountNumber',
+      account_name = p_payload->>'accountName',
+      bank_name = p_payload->>'bankName',
+      net_amount_to_pay = case when v_transfer_type = 'branch' then v_branch_total
+        else coalesce((p_payload->>'netAmountToPay')::numeric, 0) end,
+      branch_paid_amount = case when v_transfer_type = 'branch' then 0
+        else coalesce((p_payload->>'branchPaidAmount')::numeric, 0) end,
+      transport_cost = nullif(p_payload->>'transportCost', '')::numeric,
       transport_staff_id = nullif(p_payload->>'transportStaffId', '')::uuid,
       transport_staff_name = p_payload->>'transportStaffName',
-      target_location_id = nullif(p_payload->>'targetLocationId', '')::uuid,
-      target_location_name = p_payload->>'targetLocationName',
-      transfer_status = coalesce(p_payload->>'transferStatus', t.transfer_status),
-      revision_no = t.revision_no + 1, updated_at = now()
+      target_location_id = case when v_transfer_type = 'branch' then v_location_id
+        else v_target_location_id end,
+      target_location_name = case when v_transfer_type = 'branch' then v_target_location_name
+        else p_payload->>'targetLocationName' end,
+      transfer_status = case when v_transfer_type = 'branch' then 'paid'
+        else coalesce(p_payload->>'transferStatus', t.transfer_status) end,
+      accounting_date = case when v_transfer_type = 'branch' then v_accounting_date
+        else t.accounting_date end,
+      revision_no = t.revision_no + 1,
+      updated_at = now()
     where t.id = v_id;
   end if;
 
-  select coalesce(array_agg((x->>'id')::uuid), array[]::uuid[]) into v_slip_ids
+  select coalesce(array_agg((x->>'id')::uuid), array[]::uuid[])
+  into v_slip_ids
   from jsonb_array_elements(coalesce(p_payload->'slips', '[]'::jsonb)) x;
-  delete from public.money_transfer_slips s where s.transfer_id = v_id and not (s.id = any(v_slip_ids));
+
+  delete from public.money_transfer_slips s
+  where s.transfer_id = v_id
+    and not (s.id = any(v_slip_ids));
+
   insert into public.money_transfer_slips (
     id, transfer_id, amount, reference_number, fee, sender_name, receiver_name,
-    transaction_date, slip_image_url, sort_order
-  ) select
-    (x->>'id')::uuid, v_id, coalesce((x->>'amount')::numeric, 0), x->>'referenceNumber',
-    coalesce((x->>'fee')::numeric, 0), x->>'senderName', x->>'receiverName',
-    nullif(x->>'transactionDate', '')::timestamptz, x->>'slipImageUrl', coalesce((x->>'sortOrder')::integer, 0)
+    transaction_date, slip_image_url, sort_order, input_method, ocr_fingerprint
+  )
+  select
+    (x->>'id')::uuid,
+    v_id,
+    coalesce((x->>'amount')::numeric, 0),
+    case when x->>'inputMethod' = 'manual' then null else nullif(x->>'referenceNumber', '') end,
+    coalesce((x->>'fee')::numeric, 0),
+    x->>'senderName',
+    x->>'receiverName',
+    nullif(x->>'transactionDate', '')::timestamptz,
+    x->>'slipImageUrl',
+    coalesce((x->>'sortOrder')::integer, 0),
+    nullif(x->>'inputMethod', ''),
+    case when x->>'inputMethod' = 'ocr' then private.money_transfer_ocr_fingerprint(
+      x->>'referenceNumber',
+      (x->>'amount')::numeric,
+      (x->>'transactionDate')::timestamptz
+    ) end
   from jsonb_array_elements(coalesce(p_payload->'slips', '[]'::jsonb)) x
   on conflict (id) do update set
-    amount = excluded.amount, reference_number = excluded.reference_number, fee = excluded.fee,
-    sender_name = excluded.sender_name, receiver_name = excluded.receiver_name,
-    transaction_date = excluded.transaction_date, slip_image_url = excluded.slip_image_url,
-    sort_order = excluded.sort_order, updated_at = now();
+    amount = excluded.amount,
+    reference_number = excluded.reference_number,
+    fee = excluded.fee,
+    sender_name = excluded.sender_name,
+    receiver_name = excluded.receiver_name,
+    transaction_date = excluded.transaction_date,
+    slip_image_url = excluded.slip_image_url,
+    sort_order = excluded.sort_order,
+    input_method = excluded.input_method,
+    ocr_fingerprint = excluded.ocr_fingerprint,
+    updated_at = now()
+  where money_transfer_slips.transfer_id = v_id;
 
-  select coalesce(array_agg((x->>'id')::uuid), array[]::uuid[]) into v_item_ids
+  select coalesce(array_agg((x->>'id')::uuid), array[]::uuid[])
+  into v_item_ids
   from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x;
-  select coalesce(jsonb_agg(jsonb_build_object('sourceType', i.source_type, 'sourceId', i.source_id)), '[]'::jsonb)
-  into v_changed_sources from public.money_transfer_items i where i.transfer_id = v_id;
-  delete from public.money_transfer_items i where i.transfer_id = v_id and not (i.id = any(v_item_ids));
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'sourceType', i.source_type,
+    'sourceId', i.source_id
+  )), '[]'::jsonb)
+  into v_changed_sources
+  from public.money_transfer_items i
+  where i.transfer_id = v_id;
+
+  delete from public.money_transfer_items i
+  where i.transfer_id = v_id
+    and not (i.id = any(v_item_ids));
+
   insert into public.money_transfer_items (
     id, transfer_id, source_type, source_id, rubber_bill_id, customer_name, amount
-  ) select
-    (x->>'id')::uuid, v_id, 'rubber_bill', (x->>'sourceId')::uuid,
-    (x->>'sourceId')::uuid, b.customer_name, b.net_total
+  )
+  select
+    (x->>'id')::uuid,
+    v_id,
+    'rubber_bill',
+    (x->>'sourceId')::uuid,
+    (x->>'sourceId')::uuid,
+    b.customer_name,
+    b.net_total
   from jsonb_array_elements(coalesce(p_payload->'items', '[]'::jsonb)) x
   join public.rubber_bills b on b.id = (x->>'sourceId')::uuid
   where not exists (
@@ -16971,21 +17323,28 @@ begin
       and existing.amount is not distinct from b.net_total
   )
   on conflict (id) do update set
-    source_type = excluded.source_type, source_id = excluded.source_id,
+    source_type = excluded.source_type,
+    source_id = excluded.source_id,
     rubber_bill_id = excluded.rubber_bill_id,
-    customer_name = excluded.customer_name, amount = excluded.amount
-  where money_transfer_items.source_type is distinct from excluded.source_type
-    or money_transfer_items.source_id is distinct from excluded.source_id
-    or money_transfer_items.rubber_bill_id is distinct from excluded.rubber_bill_id
-    or money_transfer_items.customer_name is distinct from excluded.customer_name
-    or money_transfer_items.amount is distinct from excluded.amount;
+    customer_name = excluded.customer_name,
+    amount = excluded.amount
+  where money_transfer_items.transfer_id = v_id
+    and (
+      money_transfer_items.source_type is distinct from excluded.source_type
+      or money_transfer_items.source_id is distinct from excluded.source_id
+      or money_transfer_items.rubber_bill_id is distinct from excluded.rubber_bill_id
+      or money_transfer_items.customer_name is distinct from excluded.customer_name
+      or money_transfer_items.amount is distinct from excluded.amount
+    );
 
   select coalesce(jsonb_agg(jsonb_build_object(
-    'sourceType', changed.source_type, 'sourceId', changed.source_id
+    'sourceType', changed.source_type,
+    'sourceId', changed.source_id
   ) order by changed.source_type, changed.source_id), '[]'::jsonb)
   into v_changed_sources
   from (
-    select old_source.value->>'sourceType' source_type,
+    select
+      old_source.value->>'sourceType' source_type,
       (old_source.value->>'sourceId')::uuid source_id
     from jsonb_array_elements(v_changed_sources) old_source
     union
@@ -20514,7 +20873,11 @@ CREATE TABLE IF NOT EXISTS "public"."money_transfer_slips" (
     "slip_image_url" "text",
     "sort_order" integer DEFAULT 0 NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "input_method" "text",
+    "ocr_fingerprint" "text",
+    CONSTRAINT "money_transfer_slips_input_contract_check" CHECK ((("input_method" IS NULL) OR (("input_method" = 'manual'::"text") AND ("reference_number" IS NULL) AND ("ocr_fingerprint" IS NULL)) OR (("input_method" = 'ocr'::"text") AND (NULLIF(TRIM(BOTH FROM "reference_number"), ''::"text") IS NOT NULL) AND ("ocr_fingerprint" IS NOT NULL)))),
+    CONSTRAINT "money_transfer_slips_input_method_check" CHECK ((("input_method" IS NULL) OR ("input_method" = ANY (ARRAY['manual'::"text", 'ocr'::"text"]))))
 );
 
 
@@ -21699,6 +22062,10 @@ CREATE INDEX "money_transfer_items_transfer_idx" ON "public"."money_transfer_ite
 
 
 CREATE INDEX "money_transfer_pending_digest" ON "public"."money_transfers" USING "btree" ("location_id", "transfer_status") WHERE (("transfer_method" = 'bank'::"text") AND ("transfer_status" = ANY (ARRAY['pending'::"text", 'partial'::"text", 'advance_payment'::"text"])) AND ("record_status" <> 'deleted'::"public"."record_status"));
+
+
+
+CREATE INDEX "money_transfer_slips_ocr_fingerprint_idx" ON "public"."money_transfer_slips" USING "btree" ("ocr_fingerprint", "transfer_id") WHERE ("ocr_fingerprint" IS NOT NULL);
 
 
 
@@ -23486,6 +23853,7 @@ GRANT USAGE ON SCHEMA "private" TO "authenticated";
 
 
 
+REVOKE USAGE ON SCHEMA "public" FROM PUBLIC;
 GRANT USAGE ON SCHEMA "public" TO "postgres";
 GRANT USAGE ON SCHEMA "public" TO "anon";
 GRANT USAGE ON SCHEMA "public" TO "authenticated";
@@ -23707,6 +24075,10 @@ REVOKE ALL ON FUNCTION "private"."mark_dashboard_dirty"("p_location_id" "uuid") 
 
 
 REVOKE ALL ON FUNCTION "private"."merge_pending_money_transfers"("p_location_id" "uuid") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."money_transfer_ocr_fingerprint"("p_reference_number" "text", "p_amount" numeric, "p_transaction_date" timestamp with time zone) FROM PUBLIC;
 
 
 
@@ -24099,7 +24471,11 @@ GRANT ALL ON FUNCTION "public"."delete_export_vehicle_weigh_bill"("p_wex_id" "uu
 
 
 REVOKE ALL ON FUNCTION "public"."delete_money_transfer"("p_transfer_id" "uuid") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."delete_money_transfer"("p_transfer_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."delete_money_transfer"("p_transfer_id" "uuid", "p_expected_revision" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."delete_money_transfer"("p_transfer_id" "uuid", "p_expected_revision" integer) TO "authenticated";
 
 
 
@@ -24490,7 +24866,7 @@ GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."income_ex
 
 
 GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."money_transfers" TO "anon";
-GRANT ALL ON TABLE "public"."money_transfers" TO "authenticated";
+GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."money_transfers" TO "authenticated";
 GRANT ALL ON TABLE "public"."money_transfers" TO "service_role";
 
 
@@ -25107,13 +25483,13 @@ GRANT SELECT ON TABLE "public"."money_transfer_cash_details" TO "authenticated";
 
 
 GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."money_transfer_items" TO "anon";
-GRANT ALL ON TABLE "public"."money_transfer_items" TO "authenticated";
+GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."money_transfer_items" TO "authenticated";
 GRANT ALL ON TABLE "public"."money_transfer_items" TO "service_role";
 
 
 
 GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."money_transfer_slips" TO "anon";
-GRANT ALL ON TABLE "public"."money_transfer_slips" TO "authenticated";
+GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."money_transfer_slips" TO "authenticated";
 GRANT ALL ON TABLE "public"."money_transfer_slips" TO "service_role";
 
 
@@ -25284,13 +25660,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT UPDATE ON 
 
 
 
-
-
-
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "postgres";
-
-
-
 
 
 

@@ -56,6 +56,35 @@ function transferRow(id: string, locationId: string, actor: typeof actors[number
   };
 }
 
+function transferPayload(
+  id: string,
+  locationId: string,
+  actor: typeof actors[number],
+  operation: "create" | "update" = "create",
+  revisionNo = 0,
+) {
+  return {
+    id,
+    clientTempId: id,
+    idempotencyKey: `money-transfer-access:${id}`,
+    locationId,
+    customerId: null,
+    customerName: `ทดสอบสิทธิ์ ${actor.role}`,
+    netAmountToPay: 100,
+    transferType: "customer",
+    transferStatus: "pending",
+    branchPaidAmount: 0,
+    syncStatus: "pending",
+    recordStatus: "active",
+    revisionNo,
+    createdByName: `LanFlow ${actor.role}`,
+    createdByPhone: actor.phone,
+    slips: [],
+    items: [],
+    operation,
+  };
+}
+
 async function assignedLocation(service: SupabaseClient, userId: string) {
   const { data, error } = await service
     .from("user_locations")
@@ -87,9 +116,9 @@ test.describe.serial("Money Transfer account access @money-transfer-access", () 
       expect(enabled.error).toBeNull();
 
       const client = await signedInClient(actor.phone);
-      const inserted = await client.from("money_transfers").insert(
-        transferRow(transferId, locationId, actor),
-      );
+      const inserted = await client.rpc("save_money_transfer", {
+        p_payload: transferPayload(transferId, locationId, actor),
+      });
       expect(inserted.error).toBeNull();
     } finally {
       await service.from("money_transfers").delete().eq("id", transferId);
@@ -103,7 +132,7 @@ test.describe.serial("Money Transfer account access @money-transfer-access", () 
     }
   });
 
-  test("the standalone capability grants the same branch-scoped write access to user and admin", async () => {
+  test("the standalone capability grants RPC writes while direct table writes stay blocked", async () => {
     test.skip(!serviceRoleKey || !publishableKey, "Supabase test keys are required");
     const service = serviceClient();
     const transferIds: string[] = [];
@@ -123,27 +152,28 @@ test.describe.serial("Money Transfer account access @money-transfer-access", () 
         const client = await signedInClient(actor.phone);
         const transferId = crypto.randomUUID();
         transferIds.push(transferId);
-        const granted = await client.from("money_transfers").insert(
-          transferRow(transferId, locationId, actor),
-        );
+        const granted = await client.rpc("save_money_transfer", {
+          p_payload: transferPayload(transferId, locationId, actor),
+        });
         expect(granted.error).toBeNull();
 
-        const updated = await client
-          .from("money_transfers")
-          .update({ customer_name: `แก้ไขโดย ${actor.role}` })
-          .eq("id", transferId)
-          .select("id")
-          .single();
+        const directInsert = await client.from("money_transfers").insert(
+          transferRow(crypto.randomUUID(), locationId, actor),
+        );
+        expect(directInsert.error).not.toBeNull();
+
+        const updated = await client.rpc("save_money_transfer", {
+          p_payload: {
+            ...transferPayload(transferId, locationId, actor, "update", 0),
+            customerName: `แก้ไขโดย ${actor.role}`,
+          },
+        });
         expect(updated.error).toBeNull();
 
-        const slipId = crypto.randomUUID();
         const slipInserted = await client.from("money_transfer_slips").insert({
-          id: slipId,
-          transfer_id: transferId,
-          amount: 100,
-          reference_number: `REF-${actor.role}`,
+          id: crypto.randomUUID(), transfer_id: transferId, amount: 100,
         });
-        expect(slipInserted.error).toBeNull();
+        expect(slipInserted.error).not.toBeNull();
 
         const receiptDetails = await client.rpc(
           "get_money_transfer_receipt_source_details",
@@ -154,30 +184,29 @@ test.describe.serial("Money Transfer account access @money-transfer-access", () 
 
         const deletedId = crypto.randomUUID();
         transferIds.push(deletedId);
-        expect((await client.from("money_transfers").insert(
-          transferRow(deletedId, locationId, actor),
-        )).error).toBeNull();
-        const deleted = await client
-          .from("money_transfers")
-          .delete()
-          .eq("id", deletedId)
-          .select("id")
-          .single();
+        expect((await client.rpc("save_money_transfer", {
+          p_payload: transferPayload(deletedId, locationId, actor),
+        })).error).toBeNull();
+        const deleted = await client.rpc("delete_money_transfer", {
+          p_transfer_id: deletedId,
+          p_expected_revision: 0,
+        });
         expect(deleted.error).toBeNull();
 
-        const { data: foreignLocation } = await service
-          .from("locations")
-          .select("id")
-          .neq("id", locationId)
-          .limit(1)
-          .single();
-        expect(foreignLocation).toBeTruthy();
-        const foreignId = crypto.randomUUID();
-        transferIds.push(foreignId);
-        const foreignDenied = await client.from("money_transfers").insert(
-          transferRow(foreignId, foreignLocation!.id, actor),
-        );
-        expect(foreignDenied.error).not.toBeNull();
+        const [{ data: allLocations }, { data: assignments }] = await Promise.all([
+          service.from("locations").select("id").eq("is_active", true),
+          service.from("user_locations").select("location_id").eq("user_id", actor.id),
+        ]);
+        const assignedIds = new Set((assignments ?? []).map((item) => item.location_id));
+        const foreignLocation = (allLocations ?? []).find((item) => !assignedIds.has(item.id));
+        if (foreignLocation) {
+          const foreignId = crypto.randomUUID();
+          transferIds.push(foreignId);
+          const foreignDenied = await client.rpc("save_money_transfer", {
+            p_payload: transferPayload(foreignId, foreignLocation.id, actor),
+          });
+          expect(foreignDenied.error).not.toBeNull();
+        }
 
         const disabled = await service
           .from("profiles")
@@ -185,12 +214,9 @@ test.describe.serial("Money Transfer account access @money-transfer-access", () 
           .eq("id", actor.id);
         expect(disabled.error).toBeNull();
 
-        const updateDenied = await client
-          .from("money_transfers")
-          .update({ customer_name: "ต้องไม่ถูกบันทึก" })
-          .eq("id", transferId)
-          .select("id")
-          .single();
+        const updateDenied = await client.rpc("save_money_transfer", {
+          p_payload: transferPayload(transferId, locationId, actor, "update", 1),
+        });
         expect(updateDenied.error).not.toBeNull();
 
         const receiptDenied = await client.rpc(
@@ -201,9 +227,9 @@ test.describe.serial("Money Transfer account access @money-transfer-access", () 
 
         const deniedId = crypto.randomUUID();
         transferIds.push(deniedId);
-        const denied = await client.from("money_transfers").insert(
-          transferRow(deniedId, locationId, actor),
-        );
+        const denied = await client.rpc("save_money_transfer", {
+          p_payload: transferPayload(deniedId, locationId, actor),
+        });
         expect(denied.error).not.toBeNull();
       }
     } finally {
@@ -315,9 +341,12 @@ test.describe.serial("Money Transfer account access @money-transfer-access", () 
 
       await page.goto("/");
       await page.getByRole("button", { name: "Admin" }).click();
-      const userCard = page.locator(`[data-user-id="${userActor.id}"]`);
-      await expect(userCard).toBeVisible();
-      await userCard.getByRole("button", { name: "เปิดสิทธิ์โอนเงิน" }).click();
+      const userRow = page.getByRole("row").filter({ hasText: "LanFlow user" });
+      await expect(userRow).toBeVisible();
+      await userRow.getByRole("button", { name: "จัดการ" }).click();
+      const manageDialog = page.getByRole("dialog", { name: "จัดการพนักงาน" });
+      await expect(manageDialog).toBeVisible();
+      await manageDialog.getByRole("button", { name: "สิทธิ์โอนเงิน" }).click();
       const updateResponse = page.waitForResponse((response) =>
         response.url().endsWith(`/api/lanflow/admin/users/${userActor.id}/money-transfer-access`)
         && response.request().method() === "PATCH"
@@ -338,7 +367,6 @@ test.describe.serial("Money Transfer account access @money-transfer-access", () 
         can_access_super_admin_features: false,
         can_access_money_transfer: true,
       });
-      await expect(userCard.getByRole("button", { name: "ปิดสิทธิ์โอนเงิน" })).toBeVisible();
     } finally {
       await service.from("profiles").update({
         can_access_super_admin_features: false,
@@ -364,13 +392,13 @@ test.describe.serial("Money Transfer account access @money-transfer-access", () 
         contexts.push(context);
         const page = await context.newPage();
         await page.goto("/");
-        await expect(page.getByRole("button", { name: "โอนเงิน", exact: true })).toHaveCount(0);
+        await expect(page.getByRole("button", { name: /^โอนเงิน(?:\s|$)/ })).toHaveCount(0);
 
         expect((await service.from("profiles").update({
           can_access_money_transfer: true,
         }).eq("id", actor.id)).error).toBeNull();
         await page.reload();
-        await page.getByRole("button", { name: "โอนเงิน", exact: true }).click();
+        await page.getByRole("button", { name: /^โอนเงิน(?:\s|$)/ }).click();
         await expect(page.getByRole("heading", { name: "ระบบโอนเงิน" })).toBeVisible();
       }
     } finally {
@@ -452,9 +480,9 @@ test.describe.serial("Money Transfer account access @money-transfer-access", () 
         can_access_money_transfer: true,
       }).eq("id", actor.id)).error).toBeNull();
 
-      const denied = await client.from("money_transfers").insert(
-        transferRow(transferId, locationId, actor),
-      );
+      const denied = await client.rpc("save_money_transfer", {
+        p_payload: transferPayload(transferId, locationId, actor),
+      });
       expect(denied.error).not.toBeNull();
 
       const { data: profile, error } = await service

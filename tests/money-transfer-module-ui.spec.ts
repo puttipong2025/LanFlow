@@ -102,6 +102,7 @@ test("shows a report-lock alert when deletion loses a race with report creation"
   const transferId = crypto.randomUUID();
   const customerName = `ลูกค้าทดสอบแจ้งเตือน ${transferId.slice(0, 8)}`;
   const reportNo = "RPT-20260819-040";
+  let deleteRequestCount = 0;
 
   await page.goto("/login");
   await page.locator("#phone").fill(process.env.TEST_PHONE ?? "0800000000");
@@ -133,6 +134,8 @@ test("shows a report-lock alert when deletion loses a race with report creation"
     })).error).toBeNull();
 
     await page.route("**/rest/v1/rpc/delete_money_transfer", async (route) => {
+      deleteRequestCount += 1;
+      await new Promise((resolve) => setTimeout(resolve, 100));
       await route.fulfill({
         status: 400,
         contentType: "application/json",
@@ -152,7 +155,8 @@ test("shows a report-lock alert when deletion loses a race with report creation"
     const transferRow = page.getByRole("row").filter({ hasText: customerName });
     await expect(transferRow).toBeVisible();
     await transferRow.getByRole("button", { name: "ลบ" }).click();
-    await page.getByRole("button", { name: "ลบ", exact: true }).last().click();
+    await page.getByRole("button", { name: "ลบ", exact: true }).last().dblclick();
+    await expect.poll(() => deleteRequestCount).toBe(1);
 
     const alert = page.getByRole("alertdialog", { name: "ลบรายการไม่ได้" });
     await expect(alert).toBeVisible();
@@ -172,6 +176,7 @@ test("explains when report-locked sources prevent a pending merge", async ({ pag
   test.skip(!serviceRoleKey, "SUPABASE_SERVICE_ROLE_KEY is required for UI verification");
   const transferId = crypto.randomUUID();
   const customerName = `ลูกค้าทดสอบรวมติดล็อก ${transferId.slice(0, 8)}`;
+  let mergeRequestCount = 0;
 
   await page.goto("/login");
   await page.locator("#phone").fill(process.env.TEST_PHONE ?? "0800000000");
@@ -206,6 +211,8 @@ test("explains when report-locked sources prevent a pending merge", async ({ pag
     })).error).toBeNull();
 
     await page.route("**/rest/v1/rpc/merge_pending_money_transfers", async (route) => {
+      mergeRequestCount += 1;
+      await new Promise((resolve) => setTimeout(resolve, 100));
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -223,7 +230,8 @@ test("explains when report-locked sources prevent a pending merge", async ({ pag
     await page.goto("/");
     await selectAppLocation(page, locationId);
     await page.getByRole("button", { name: /^โอนเงิน/ }).click();
-    await page.getByRole("button", { name: "รวมบิลยางและใบชั่ง" }).click();
+    await page.getByRole("button", { name: "รวมบิลยางและใบชั่ง" }).dblclick();
+    await expect.poll(() => mergeRequestCount).toBe(1);
 
     const alert = page.getByRole("alertdialog", { name: "รวมรายการบางส่วนไม่ได้" });
     await expect(alert).toBeVisible();

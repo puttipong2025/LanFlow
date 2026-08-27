@@ -494,6 +494,7 @@ export type TransportStaffPlate = {
 
 export type MoneyTransferSlip = {
   id: string;
+  inputMethod: 'manual' | 'ocr' | null;
   amount: number;
   referenceNumber: string | null;
   fee: number;
@@ -530,6 +531,7 @@ export type MoneyTransfer = {
   accountName: string | null;
   bankName: string | null;
   netAmountToPay: number;
+  accountingDate?: string | null;
   transferType: 'customer' | 'transport' | 'branch';
   transportCost?: number;
   transportStaffId?: string | null;

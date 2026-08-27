@@ -32,6 +32,7 @@ test.describe("Money transfer payment state", () => {
       transferStatus: "advance_payment",
       slips: slips.map((slip, index) => ({
         id: String(index),
+        inputMethod: "manual",
         amount: slip.amount,
         referenceNumber: null,
         fee: 0,

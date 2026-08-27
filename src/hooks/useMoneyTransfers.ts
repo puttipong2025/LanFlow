@@ -1,6 +1,6 @@
 "use client";
 
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
@@ -21,6 +21,7 @@ export type MoneyTransferStatusFilter = MoneyTransfer["transferStatus"] | "all";
 function mapSlip(row: any): MoneyTransferSlip {
   return {
     id: row.id,
+    inputMethod: row.input_method ?? null,
     amount: Number(row.amount ?? 0),
     referenceNumber: row.reference_number,
     fee: Number(row.fee ?? 0),
@@ -61,6 +62,7 @@ export function mapMoneyTransferRow(row: any): MoneyTransfer {
     accountName: row.account_name,
     bankName: row.bank_name,
     netAmountToPay: Number(row.net_amount_to_pay ?? 0),
+    accountingDate: row.accounting_date ?? null,
     paidAmount: row.paid_amount == null ? undefined : Number(row.paid_amount),
     sourceCount: row.source_count == null ? undefined : Number(row.source_count),
     branchPaidAmount: row.branch_paid_amount == null ? undefined : Number(row.branch_paid_amount),
@@ -140,14 +142,6 @@ export async function loadMoneyTransferDetail(transferId: string) {
   return mapMoneyTransferRow(data);
 }
 
-export function useMoneyTransferDetail(transferId: string | null) {
-  return useQuery({
-    queryKey: moneyFlowQueryKeys.moneyTransferDetail(transferId ?? ""),
-    enabled: Boolean(transferId),
-    queryFn: () => loadMoneyTransferDetail(transferId!),
-  });
-}
-
 export async function getMoneyTransferReceiptSourceDetails(transferId: string) {
   const supabase = createSupabaseBrowserClient();
   const { data, error } = await supabase.rpc("get_money_transfer_receipt_source_details", {
@@ -170,6 +164,8 @@ function moneyTransferError(error: { message?: string }) {
   const message = error.message ?? "บันทึกรายการโอนเงินไม่สำเร็จ";
   if (message.includes("MT_SOURCE_ALREADY_USED")) return new Error("แหล่งจ่ายถูกใช้ในรายการโอนอื่นแล้ว กรุณาโหลดรายการใหม่");
   if (message.includes("MT_REVISION_CONFLICT")) return new Error("ข้อมูลถูกแก้ไขแล้ว กรุณาโหลดใหม่ก่อนบันทึก");
+  if (message.includes("MT_OCR_DUPLICATE")) return new Error("สลิป OCR นี้ถูกใช้ในรายการที่ยังใช้งานอยู่แล้ว");
+  if (message.includes("MT_IDEMPOTENCY_PAYLOAD_MISMATCH")) return new Error("คำขอบันทึกซ้ำมีข้อมูลไม่ตรงกับครั้งแรก กรุณาโหลดรายการใหม่");
   return new Error(message.replace(/^.*MT_[A-Z_]+:\s*/, ""));
 }
 
@@ -193,8 +189,11 @@ export function useMoneyTransferMutations(locationId: string, ownerUserId = "") 
     onSuccess: refresh,
   });
   const deleteTransfer = useMutation({
-    mutationFn: async (id: string) => {
-      const { data, error } = await supabase.rpc("delete_money_transfer", { p_transfer_id: id });
+    mutationFn: async ({ id, revisionNo }: Pick<MoneyTransfer, "id" | "revisionNo">) => {
+      const { data, error } = await supabase.rpc("delete_money_transfer", {
+        p_transfer_id: id,
+        p_expected_revision: revisionNo ?? 0,
+      });
       if (error) throw new Error(error.message || "ลบรายการโอนเงินไม่สำเร็จ");
       if ((data as { status?: string } | null)?.status !== "deleted") throw new Error("ลบรายการโอนเงินไม่สำเร็จ");
       return data;
@@ -210,15 +209,4 @@ export function useMoneyTransferMutations(locationId: string, ownerUserId = "") 
     onSuccess: refresh,
   });
   return { addTransfer, updateTransfer, deleteTransfer, mergePendingTransfers };
-}
-
-export function useMoneyTransfers(locationId: string) {
-  const list = useMoneyTransferList({ locationId });
-  const mutations = useMoneyTransferMutations(locationId);
-  return {
-    ...list,
-    ...mutations,
-    getReceiptSourceDetails: getMoneyTransferReceiptSourceDetails,
-    isError: Boolean(list.error),
-  };
 }

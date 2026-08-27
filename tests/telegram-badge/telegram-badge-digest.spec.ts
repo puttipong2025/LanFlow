@@ -477,6 +477,7 @@ test.describe.serial("Telegram badge digest @telegram-badge", () => {
 
       const deleted = await authenticated.rpc("delete_money_transfer", {
         p_transfer_id: transferId,
+        p_expected_revision: 0,
       });
       expect(deleted.error).toBeNull();
       expect(await readAdvanceCount()).toBe(baseline);

@@ -22,20 +22,6 @@ export const CASH_DENOMINATIONS: Array<[
 
 export type CashCountValues = Record<keyof CashDenominationCounts, string>;
 
-export function emptyCashCountValues(): CashCountValues {
-  return {
-    coin1: "",
-    coin2: "",
-    coin5: "",
-    coin10: "",
-    banknote20: "",
-    banknote50: "",
-    banknote100: "",
-    banknote500: "",
-    banknote1000: "",
-  };
-}
-
 export function zeroCashCountValues(): CashCountValues {
   return Object.fromEntries(
     CASH_DENOMINATIONS.map(([key]) => [key, "0"]),
