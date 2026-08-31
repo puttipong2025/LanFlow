@@ -58,7 +58,9 @@ async function ensureTestUser() {
       role: u.role,
       is_active: true,
       password_hash: null,
-      can_access_super_admin_features: u.role === 'super_admin',
+      can_access_super_admin_features: false,
+      can_access_money_transfer: false,
+      can_manage_time_payroll: false,
     }, { onConflict: 'id' });
 
     // Ensure users have access to locations in user_locations

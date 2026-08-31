@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireRole } from "@/lib/server/auth";
+import { createSupabaseAdminClient } from "@/lib/server/supabase-admin";
 
 export async function PATCH(
   request: NextRequest,
@@ -19,30 +20,32 @@ export async function PATCH(
       return NextResponse.json({ error: "Missing user ID" }, { status: 400 });
     }
 
-    const supabase = adminCheck.supabase;
-
-    // Ensure target user is not a super_admin
-    const { data: targetUser, error: checkError } = await supabase
+    const admin = createSupabaseAdminClient();
+    const updates = role === "user"
+      ? {
+          role,
+          can_access_super_admin_features: false,
+          can_access_money_transfer: false,
+          can_manage_time_payroll: false,
+          updated_at: new Date().toISOString(),
+        }
+      : { role, updated_at: new Date().toISOString() };
+    const { data: updated, error: updateError } = await admin
       .from("profiles")
-      .select("role")
+      .update(updates)
       .eq("id", targetUserId)
-      .single();
-
-    if (checkError || !targetUser) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
-
-    if (targetUser.role === "super_admin") {
-      return NextResponse.json({ error: "Cannot change role of super_admin" }, { status: 403 });
-    }
-
-    // Update role
-    const { error: updateError } = await supabase
-      .from("profiles")
-      .update({ role, updated_at: new Date().toISOString() })
-      .eq("id", targetUserId);
+      .eq("is_active", true)
+      .in("role", ["user", "admin"])
+      .select("id")
+      .maybeSingle();
 
     if (updateError) throw updateError;
+    if (!updated) {
+      return NextResponse.json(
+        { error: "บัญชีนี้ไม่สามารถเปลี่ยนบทบาทได้" },
+        { status: 403 },
+      );
+    }
 
     return NextResponse.json({ success: true, role });
   } catch (error: any) {

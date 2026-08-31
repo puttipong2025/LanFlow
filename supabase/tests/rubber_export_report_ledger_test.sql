@@ -14,7 +14,7 @@ values (
   '32000000-0000-4000-8000-000000000001',
   '0893000001',
   'pgTAP Rubber Export Manager',
-  'user',
+  'admin',
   true,
   true
 );

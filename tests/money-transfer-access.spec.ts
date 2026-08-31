@@ -132,13 +132,13 @@ test.describe.serial("Money Transfer account access @money-transfer-access", () 
     }
   });
 
-  test("the standalone capability grants RPC writes while direct table writes stay blocked", async () => {
+  test("the Admin-only standalone capability grants RPC writes while direct table writes stay blocked", async () => {
     test.skip(!serviceRoleKey || !publishableKey, "Supabase test keys are required");
     const service = serviceClient();
     const transferIds: string[] = [];
 
     try {
-      for (const actor of actors) {
+      for (const actor of actors.filter((candidate) => candidate.role === "admin")) {
         const locationId = await assignedLocation(service, actor.id);
         const enabled = await service
           .from("profiles")
@@ -282,11 +282,11 @@ test.describe.serial("Money Transfer account access @money-transfer-access", () 
       );
       expect(managerCannotToggleAutomaticAccess.status()).toBe(403);
 
-      const managerGrantedUser = await admin.request.patch(
+      const managerDeniedUser = await admin.request.patch(
         `/api/lanflow/admin/users/${userActor.id}/money-transfer-access`,
         { data: { canAccessMoneyTransfer: true } },
       );
-      expect(managerGrantedUser.ok(), await managerGrantedUser.text()).toBeTruthy();
+      expect(managerDeniedUser.status(), await managerDeniedUser.text()).toBe(403);
 
       const managerDisabled = await superAdmin.request.patch(
         `/api/lanflow/admin/users/${adminActor.id}/system-manager-access`,
@@ -308,7 +308,7 @@ test.describe.serial("Money Transfer account access @money-transfer-access", () 
         expect.objectContaining({
           id: userActor.id,
           can_access_super_admin_features: false,
-          can_access_money_transfer: true,
+          can_access_money_transfer: false,
         }),
       ]));
 
@@ -341,32 +341,14 @@ test.describe.serial("Money Transfer account access @money-transfer-access", () 
 
       await page.goto("/");
       await page.getByRole("button", { name: "Admin" }).click();
+      await page.getByLabel("ค้นหาพนักงาน").fill("LanFlow user");
       const userRow = page.getByRole("row").filter({ hasText: "LanFlow user" });
       await expect(userRow).toBeVisible();
       await userRow.getByRole("button", { name: "จัดการ" }).click();
       const manageDialog = page.getByRole("dialog", { name: "จัดการพนักงาน" });
       await expect(manageDialog).toBeVisible();
-      await manageDialog.getByRole("button", { name: "สิทธิ์โอนเงิน" }).click();
-      const updateResponse = page.waitForResponse((response) =>
-        response.url().endsWith(`/api/lanflow/admin/users/${userActor.id}/money-transfer-access`)
-        && response.request().method() === "PATCH"
-      );
-      await page.getByRole("button", { name: "ยืนยัน", exact: true }).click();
-      const response = await updateResponse;
-      expect(response.ok()).toBeTruthy();
-
-      await expect.poll(async () => {
-        const { data, error } = await service
-          .from("profiles")
-          .select("can_access_super_admin_features, can_access_money_transfer")
-          .eq("id", userActor.id)
-          .single();
-        expect(error).toBeNull();
-        return data;
-      }).toEqual({
-        can_access_super_admin_features: false,
-        can_access_money_transfer: true,
-      });
+      await expect(manageDialog.getByText("ต้องตั้งเป็น Admin ก่อน", { exact: true })).toBeVisible();
+      await expect(manageDialog.getByRole("button", { name: "สิทธิ์โอนเงิน" })).toHaveCount(0);
     } finally {
       await service.from("profiles").update({
         can_access_super_admin_features: false,
@@ -376,13 +358,13 @@ test.describe.serial("Money Transfer account access @money-transfer-access", () 
     }
   });
 
-  test("user and admin navigation follows the same per-account capability", async ({ browser }) => {
+  test("only Admin navigation follows the standalone capability", async ({ browser }) => {
     test.skip(!serviceRoleKey || !publishableKey, "Supabase test keys are required");
     const service = serviceClient();
     const contexts: BrowserContext[] = [];
 
     try {
-      for (const actor of actors) {
+      for (const actor of actors.filter((candidate) => candidate.role === "admin")) {
         expect((await service.from("profiles").update({
           can_access_super_admin_features: false,
           can_access_money_transfer: false,
@@ -413,8 +395,8 @@ test.describe.serial("Money Transfer account access @money-transfer-access", () 
   test("revoked module access keeps the assigned-branch Income/Expense derived row read-only", async ({ browser }) => {
     test.skip(!serviceRoleKey || !publishableKey, "Supabase test keys are required");
     const service = serviceClient();
-    const actor = actors[1];
-    const user = await authContext(browser, "user");
+    const actor = actors[0];
+    const user = await authContext(browser, "admin");
     const transferId = crypto.randomUUID();
 
     try {
@@ -468,7 +450,7 @@ test.describe.serial("Money Transfer account access @money-transfer-access", () 
   test("an inactive account stays blocked even when the capability flag is preserved", async () => {
     test.skip(!serviceRoleKey || !publishableKey, "Supabase test keys are required");
     const service = serviceClient();
-    const actor = actors[1];
+    const actor = actors[0];
     const transferId = crypto.randomUUID();
 
     try {

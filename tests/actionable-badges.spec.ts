@@ -457,6 +457,7 @@ test("approval buttons and modal counts follow the selected branch", async ({ br
       name: "ตั้งค่าและอนุมัติรับ-จ่าย รออนุมัติ 1 รายการ",
     });
     await expect(approvalButton).toBeVisible({ timeout: 15_000 });
+    await page.getByRole("button", { name: "รออนุมัติ (1)", exact: true }).click();
     const pendingIncomeRow = page.locator("tbody tr", { hasText: "คำขอรับจ่าย Badge 1" });
     await expect(pendingIncomeRow).toBeVisible();
     await expect(pendingIncomeRow.getByText("รออนุมัติสร้าง", { exact: true })).toBeVisible();

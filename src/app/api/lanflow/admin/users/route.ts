@@ -3,6 +3,7 @@ import { requireRoleOrSystemManager } from "@/lib/server/auth";
 import { createSupabaseAdminClient } from "@/lib/server/supabase-admin";
 import { normalizeThaiPhoneToE164 } from "@/lib/phone";
 import type { AppRole } from "@/types";
+import { deriveEffectiveCapabilities } from "@/lib/permissions";
 
 export async function GET(request: NextRequest) {
   const adminCheck = await requireRoleOrSystemManager(request, ["super_admin", "admin"]);
@@ -36,24 +37,26 @@ export async function GET(request: NextRequest) {
     }
 
     // Map to Profile type
-    const result = profiles.map(p => ({
-      id: p.id,
-      name: p.name,
-      phone: p.phone,
-      role: p.role,
-      isActive: p.is_active,
-      locationIds: locationMap.get(p.id) || [],
-      primaryLocationId: userLocations.find((ul) => ul.user_id === p.id && ul.is_primary === true)?.location_id ?? null,
-      canAccessSystemManager: p.role === "super_admin" || p.can_access_super_admin_features === true,
-      canAccessMoneyTransfer:
-        p.role === "super_admin" ||
-        p.can_access_super_admin_features === true ||
-        p.can_access_money_transfer === true,
-      canManageTimePayroll:
-        p.role === "super_admin" ||
-        p.can_access_super_admin_features === true ||
-        p.can_manage_time_payroll === true,
-    }));
+    const result = profiles.map(p => {
+      const capabilities = deriveEffectiveCapabilities({
+        role: p.role as AppRole,
+        canAccessSystemManager: p.can_access_super_admin_features === true,
+        canAccessMoneyTransfer: p.can_access_money_transfer === true,
+        canManageTimePayroll: p.can_manage_time_payroll === true,
+      });
+      return {
+        id: p.id,
+        name: p.name,
+        phone: p.phone,
+        role: p.role,
+        isActive: p.is_active,
+        locationIds: locationMap.get(p.id) || [],
+        primaryLocationId: userLocations.find((ul) => ul.user_id === p.id && ul.is_primary === true)?.location_id ?? null,
+        canAccessSystemManager: capabilities.canManageSystem,
+        canAccessMoneyTransfer: capabilities.canUseMoneyTransfer,
+        canManageTimePayroll: capabilities.canManageTimePayroll,
+      };
+    });
 
     return NextResponse.json({ users: result });
   } catch (error: any) {

@@ -71,7 +71,7 @@ insert into public.profiles (
 values
   ('82000000-0000-4000-8000-000000000001', '0898100001', 'pgTAP WEX admin', 'admin', true, false),
   ('82000000-0000-4000-8000-000000000002', '0898100002', 'pgTAP WEX user', 'user', true, false),
-  ('82000000-0000-4000-8000-000000000003', '0898100003', 'pgTAP WEX manager', 'user', true, true);
+  ('82000000-0000-4000-8000-000000000003', '0898100003', 'pgTAP WEX manager', 'admin', true, true);
 
 insert into public.user_locations (user_id, location_id, is_primary)
 values

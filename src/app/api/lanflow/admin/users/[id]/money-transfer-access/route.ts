@@ -21,40 +21,26 @@ export async function PATCH(
     }
 
     const admin = createSupabaseAdminClient();
-    const { data: targetUser, error: targetError } = await admin
-      .from("profiles")
-      .select("role, can_access_super_admin_features")
-      .eq("id", userId)
-      .maybeSingle();
-
-    if (targetError) throw targetError;
-    if (!targetUser) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
-
-    if (targetUser.role === "super_admin") {
-      return NextResponse.json(
-        { error: "super_admin can always access Money Transfer" },
-        { status: 403 }
-      );
-    }
-
-    if (targetUser.can_access_super_admin_features === true) {
-      return NextResponse.json(
-        { error: "System managers can always access Money Transfer" },
-        { status: 403 }
-      );
-    }
-
-    const { error } = await admin
+    const { data: updated, error } = await admin
       .from("profiles")
       .update({
         can_access_money_transfer: body.canAccessMoneyTransfer,
         updated_at: new Date().toISOString(),
       })
-      .eq("id", userId);
+      .eq("id", userId)
+      .eq("role", "admin")
+      .eq("is_active", true)
+      .eq("can_access_super_admin_features", false)
+      .select("id")
+      .maybeSingle();
 
     if (error) throw error;
+    if (!updated) {
+      return NextResponse.json(
+        { error: "ต้องเป็น Admin ที่ใช้งานอยู่และไม่ใช่ผู้จัดการระบบ" },
+        { status: 403 },
+      );
+    }
 
     return NextResponse.json({
       success: true,

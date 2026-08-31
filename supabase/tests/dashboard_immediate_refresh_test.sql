@@ -46,7 +46,7 @@ insert into public.profiles (
 values
   ('22000000-0000-4000-8000-000000000001', '0892000001', 'pgTAP assigned admin', 'admin', true, false),
   ('22000000-0000-4000-8000-000000000002', '0892000002', 'pgTAP user', 'user', true, false),
-  ('22000000-0000-4000-8000-000000000003', '0892000003', 'pgTAP system manager', 'user', true, true);
+  ('22000000-0000-4000-8000-000000000003', '0892000003', 'pgTAP system manager', 'admin', true, true);
 
 insert into public.user_locations (user_id, location_id, is_primary)
 values

@@ -5,6 +5,7 @@
 - Owners: LanFlow team
 - Decision scope: Time Tracking, payroll, user locations, Admin permissions, derived expenses
 - Supersedes: the global-only manager scope in ADR-0027 and the branch-choice restriction in ADR-0006
+- Partially superseded by: ADR-0049 for the Account capability subsection only
 
 ## Context
 
@@ -15,6 +16,8 @@ The product also needs a trusted `user` or `admin` to use the existing manager w
 ## Decision
 
 ### Account capability
+
+> Superseded by ADR-0049. The primary-branch, approval-payment, and account-suspension decisions below remain in force.
 
 Add one independent, default-off Time/Payroll manager capability for `user` and `admin`. `super_admin` and system managers retain automatic global access. Only `super_admin` and system managers may grant or revoke the standalone capability.
 

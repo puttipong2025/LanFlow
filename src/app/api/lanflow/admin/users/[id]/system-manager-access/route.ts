@@ -21,39 +21,31 @@ export async function PATCH(
     }
 
     const admin = createSupabaseAdminClient();
-    const { data: targetUser, error: targetError } = await admin
-      .from("profiles")
-      .select("role, can_access_money_transfer")
-      .eq("id", userId)
-      .maybeSingle();
-
-    if (targetError) throw targetError;
-    if (!targetUser) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
-
-    if (targetUser.role === "super_admin") {
-      return NextResponse.json(
-        { error: "super_admin manages system permissions directly" },
-        { status: 403 }
-      );
-    }
-
-    const { error } = await admin
+    const { data: updated, error } = await admin
       .from("profiles")
       .update({
         can_access_super_admin_features: body.canAccessSystemManager,
         updated_at: new Date().toISOString(),
       })
-      .eq("id", userId);
+      .eq("id", userId)
+      .eq("role", "admin")
+      .eq("is_active", true)
+      .select("can_access_money_transfer")
+      .maybeSingle();
 
     if (error) throw error;
+    if (!updated) {
+      return NextResponse.json(
+        { error: "ต้องตั้งบัญชีเป็น Admin ที่ใช้งานอยู่ก่อน" },
+        { status: 403 },
+      );
+    }
 
     return NextResponse.json({
       success: true,
       canAccessSystemManager: body.canAccessSystemManager,
       canAccessMoneyTransfer:
-        body.canAccessSystemManager || targetUser.can_access_money_transfer === true,
+        body.canAccessSystemManager || updated.can_access_money_transfer === true,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not update system manager access";

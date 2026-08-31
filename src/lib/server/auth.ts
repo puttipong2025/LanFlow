@@ -8,6 +8,7 @@ import {
   summarizeUpstreamError,
 } from "@/lib/server/auth-access-failure";
 import { createSupabaseRequestClient } from "@/lib/supabase/server";
+import { deriveEffectiveCapabilities } from "@/lib/permissions";
 
 export type AuthTokenPayload = {
   sub: string;
@@ -102,6 +103,12 @@ export async function requireAuth(request?: Request): Promise<AuthResult> {
     };
   }
   const activeProfile = profile!;
+  const capabilities = deriveEffectiveCapabilities({
+    role: activeProfile.role as AppRole,
+    canAccessSystemManager: activeProfile.can_access_super_admin_features === true,
+    canAccessMoneyTransfer: activeProfile.can_access_money_transfer === true,
+    canManageTimePayroll: activeProfile.can_manage_time_payroll === true,
+  });
 
   return {
     ok: true,
@@ -113,15 +120,9 @@ export async function requireAuth(request?: Request): Promise<AuthResult> {
       locationIds: (assignments ?? []).map((item) => item.location_id as string),
       primaryLocationId:
         (assignments ?? []).find((item) => item.is_primary === true)?.location_id as string | undefined ?? null,
-      canAccessSystemManager: activeProfile.role === "super_admin" || activeProfile.can_access_super_admin_features === true,
-      canAccessMoneyTransfer:
-        activeProfile.role === "super_admin" ||
-        activeProfile.can_access_super_admin_features === true ||
-        activeProfile.can_access_money_transfer === true,
-      canManageTimePayroll:
-        activeProfile.role === "super_admin" ||
-        activeProfile.can_access_super_admin_features === true ||
-        activeProfile.can_manage_time_payroll === true
+      canAccessSystemManager: capabilities.canManageSystem,
+      canAccessMoneyTransfer: capabilities.canUseMoneyTransfer,
+      canManageTimePayroll: capabilities.canManageTimePayroll,
     },
     supabase
   };

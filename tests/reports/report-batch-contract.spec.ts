@@ -1195,22 +1195,38 @@ test.describe.serial("Report batch contract @report-batch", () => {
 
   test("time tracking permanent delete exposes the report number and stays locked", async ({ browser }) => {
     const superAdmin = await authContext(browser, "super_admin");
+    const manager = await authContext(browser, "admin");
     const db = service();
     let reportId: string | undefined;
     let withdrawalId: string | undefined;
+    let previousTimePayrollAccess = false;
     try {
-      const actor = await profile(superAdmin);
-      const locationId = actor.locationIds[0];
-      const dashboardResponse = await superAdmin.request.get("/api/lanflow/time-tracking/admin");
+      const managerProfile = await profile(manager);
+      const locationId = managerProfile.locationIds[0];
+      const previousAccess = await db
+        .from("profiles")
+        .select("can_manage_time_payroll")
+        .eq("id", managerProfile.id)
+        .single();
+      expect(previousAccess.error).toBeNull();
+      previousTimePayrollAccess = previousAccess.data?.can_manage_time_payroll === true;
+      expect((await db
+        .from("profiles")
+        .update({ can_manage_time_payroll: true })
+        .eq("id", managerProfile.id)).error).toBeNull();
+
+      const dashboardResponse = await manager.request.get("/api/lanflow/time-tracking/admin");
       expect(dashboardResponse.ok()).toBeTruthy();
       const dashboard = await dashboardResponse.json() as {
-        users: Array<{ id: string; role: string }>;
+        users: Array<{ id: string; role: string; primary_location_id: string | null }>;
       };
-      const employee = dashboard.users.find((user) => user.role === "user");
+      const employee = dashboard.users.find((user) =>
+        user.role === "user" && user.primary_location_id === locationId
+      );
       expect(employee).toBeTruthy();
 
       const amount = 700000 + (Date.now() % 10000);
-      expect((await superAdmin.request.post("/api/lanflow/time-tracking/admin", {
+      expect((await manager.request.post("/api/lanflow/time-tracking/admin", {
         data: {
           action: "ADMIN_REQUEST_WITHDRAWAL",
           payload: { user_id: employee!.id, amount, effective_date: bangkokDate(new Date().toISOString()) },
@@ -1286,6 +1302,11 @@ test.describe.serial("Report batch contract @report-batch", () => {
       if (withdrawalId) {
         await db.from("financial_transactions").delete().eq("id", withdrawalId);
       }
+      await db
+        .from("profiles")
+        .update({ can_manage_time_payroll: previousTimePayrollAccess })
+        .eq("id", (await profile(manager)).id);
+      await manager.close();
       await superAdmin.close();
     }
   });

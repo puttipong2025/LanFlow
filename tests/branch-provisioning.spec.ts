@@ -243,7 +243,7 @@ test.describe.serial("safe branch provisioning", () => {
     }
   });
 
-  test("uses the existing form and selects the new branch without opening Telegram", async ({
+  test("uses the existing modal and selects the new branch without opening Telegram", async ({
     page,
   }) => {
     const marker = crypto.randomUUID().replaceAll("-", "").slice(0, 8).toUpperCase();
@@ -254,9 +254,11 @@ test.describe.serial("safe branch provisioning", () => {
     try {
       await page.goto("/");
       await page.getByRole("button", { name: "Admin", exact: true }).click();
-      await page.getByPlaceholder("ชื่อสาขาใหม่").fill(name);
-      await page.getByLabel("รหัสสาขาใหม่").fill(code.toLowerCase());
       await page.getByRole("button", { name: "เพิ่มสาขา", exact: true }).click();
+      const createBranchModal = page.getByRole("dialog", { name: "เพิ่มสาขา" });
+      await createBranchModal.getByLabel("ชื่อสาขา").fill(name);
+      await createBranchModal.getByLabel("รหัสสาขา").fill(code.toLowerCase());
+      await createBranchModal.getByRole("button", { name: "ยืนยันเพิ่มสาขา", exact: true }).click();
 
       await expect(
         page.getByRole("heading", { name: "ยืนยันเพิ่มสาขา?" }),
@@ -266,7 +268,7 @@ test.describe.serial("safe branch provisioning", () => {
           response.url().endsWith("/api/lanflow/admin/locations") &&
           response.request().method() === "POST",
       );
-      await page
+      await page.getByLabel("ยืนยันเพิ่มสาขา?")
         .getByRole("button", { name: "ยืนยันเพิ่มสาขา", exact: true })
         .click();
       const response = await responsePromise;
@@ -298,8 +300,7 @@ test.describe.serial("safe branch provisioning", () => {
       await expect(
         page.getByRole("heading", { name: "ตั้งค่าการแจ้งเตือน Telegram" }),
       ).toHaveCount(0);
-      await expect(page.getByPlaceholder("ชื่อสาขาใหม่")).toHaveValue("");
-      await expect(page.getByLabel("รหัสสาขาใหม่")).toHaveValue("");
+      await expect(createBranchModal).toHaveCount(0);
     } finally {
       if (locationId) await removeLocation(locationId);
     }

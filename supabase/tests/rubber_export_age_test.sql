@@ -62,7 +62,7 @@ insert into public.profiles (
   id, phone, name, role, is_active, can_access_super_admin_features
 ) values (
   '42000000-0000-4000-8000-000000000001', '0894000001',
-  'pgTAP Rubber Age Manager', 'user', true, true
+  'pgTAP Rubber Age Manager', 'admin', true, true
 );
 
 insert into public.profiles (

@@ -95,6 +95,11 @@ async function createEmployee(service: SupabaseClient, label: string) {
   return id;
 }
 
+async function promoteEmployee(service: SupabaseClient, id: string) {
+  const result = await service.from("profiles").update({ role: "admin" }).eq("id", id);
+  expect(result.error).toBeNull();
+}
+
 async function deleteEmployee(service: SupabaseClient, id: string) {
   await service.from("time_tracking_resume_schedules").delete().eq("profile_id", id);
   await service.from("time_tracking_audit_logs").delete().eq("record_id", id);
@@ -515,6 +520,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     const month = workStart.slice(0, 7);
 
     try {
+      await promoteEmployee(service, delegatedId);
       const capability = await service
         .from("profiles")
         .update({ can_manage_time_payroll: true })
@@ -660,6 +666,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     const previousMonth = previousLast.slice(0, 7);
 
     try {
+      await promoteEmployee(service, delegatedId);
       for (const profileId of [
         debtEmployee,
         positiveEmployee,

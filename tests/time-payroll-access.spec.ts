@@ -142,7 +142,7 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
     }
   });
 
-  test("delegated manager without a branch keeps a self-service row", async ({ browser }) => {
+  test("User keeps self-service without delegated manager access", async ({ browser }) => {
     test.setTimeout(60_000);
     const service = serviceClient();
     const originalProfile = await service
@@ -159,37 +159,22 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
 
     const context = await browser.newContext({ storageState: "playwright/.auth/user.json" });
     try {
-      expect((await service.from("profiles").update({ can_manage_time_payroll: true }).eq("id", userId)).error).toBeNull();
-      expect((await service.from("user_locations").delete().eq("user_id", userId)).error).toBeNull();
-
       const response = await context.request.get("/api/lanflow/time-tracking/admin");
-      expect(response.ok(), await response.text()).toBeTruthy();
-      const users = (await response.json()).users as Array<{ id: string; primary_location_id: string | null }>;
-      expect(users.find((profile) => profile.id === userId)?.primary_location_id).toBeNull();
+      expect(response.status(), await response.text()).toBe(403);
 
       const bootstrapResponse = await context.request.get("/api/lanflow");
       expect(bootstrapResponse.ok(), await bootstrapResponse.text()).toBeTruthy();
       const bootstrap = await bootstrapResponse.json();
-      expect(bootstrap.profile.canManageTimePayroll).toBe(true);
-      expect(bootstrap.profile.locationIds).toEqual([]);
+      expect(bootstrap.profile.canManageTimePayroll).toBe(false);
+      expect(bootstrap.profile.locationIds.length).toBeGreaterThan(0);
 
       const page = await context.newPage();
       await page.goto("/");
-      await expect(page.getByText("ไม่มีสาขาหลัก · ใช้บริการตนเองเท่านั้น", { exact: true })).toBeVisible();
+      await page.getByRole("button", { name: /^เวลาและเงินเดือน/ }).click();
 
-      const selfRow = page.locator('[data-time-payroll-self="true"]');
-      await expect(selfRow).toBeVisible();
-      await expect(selfRow.getByText("ของตนเอง", { exact: true })).toBeVisible();
-      await expect(selfRow.getByRole("button", { name: /^แก้ไขค่าแรงรายวันของ / })).toHaveCount(0);
-      await expect(selfRow.getByRole("button", { name: /^จัดการปฏิทินวันทำงานของ / })).toHaveCount(0);
-      await expect(selfRow.getByRole("button", { name: /^จัดการสลิปเงินเดือนของ / })).toHaveCount(0);
-
-      await selfRow.getByRole("button", { name: /^ดูข้อมูลเวลาและเงินเดือนของ / }).click();
-      const dialog = page.getByRole("dialog", { name: "ข้อมูลของตนเอง" });
-      await expect(dialog).toBeVisible();
-      await expect(dialog.getByRole("button", { name: "ขอเบิกเงินตนเอง" })).toBeVisible();
-      await expect(dialog.getByRole("button", { name: /เริ่มนับเวลา|หยุดงาน/ })).toHaveCount(0);
-      await expect(dialog.getByRole("button", { name: "สร้างหนี้สินเพิ่ม" })).toHaveCount(0);
+      await expect(page.getByRole("heading", { name: "ระบบเวลาและเงินเดือน (ของตนเอง)" })).toBeVisible();
+      await expect(page.getByRole("button", { name: /เริ่มนับเวลา|หยุดงาน/ })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "สร้างหนี้สินเพิ่ม" })).toHaveCount(0);
     } finally {
       await service.from("user_locations").delete().eq("user_id", userId);
       if ((originalAssignments.data?.length ?? 0) > 0) {
@@ -258,7 +243,7 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
     }
   });
 
-  test("user and admin capability have equal primary-branch scope and revoke immediately", async () => {
+  test("Admin capability has primary-branch scope and revokes immediately", async () => {
     const service = serviceClient();
     const [insideLocationId, outsideLocationId] = await activeLocationIds(service);
     const activeLocations = await service.from("locations").select("id").eq("is_active", true);
@@ -269,10 +254,7 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
     const originalAssignments = new Map<string, Array<{ location_id: string; is_primary: boolean }>>();
 
     try {
-      for (const actor of [
-        { id: adminId, role: "admin" },
-        { id: userId, role: "user" },
-      ] as const) {
+      for (const actor of [{ id: adminId, role: "admin" }] as const) {
         const existing = await service
           .from("user_locations")
           .select("location_id, is_primary")
@@ -319,7 +301,7 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
           expect(denied.status()).toBe(403);
 
           expect((await service.from("profiles")
-            .update({ can_access_super_admin_features: true })
+            .update({ role: "admin", can_access_super_admin_features: true })
             .eq("id", insideTarget)).error).toBeNull();
           const globalTargetDashboard = await request.get("/api/lanflow/time-tracking/admin");
           const globalTargetUsers = ((await globalTargetDashboard.json()).users || []) as Array<{ id: string }>;
@@ -329,7 +311,7 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
             payload: { user_id: insideTarget, amount: 10, effective_date: "2026-08-01" },
           } })).status()).toBe(403);
           expect((await service.from("profiles")
-            .update({ can_access_super_admin_features: false })
+            .update({ role: "user", can_access_super_admin_features: false })
             .eq("id", insideTarget)).error).toBeNull();
 
           expect((await service.from("user_locations").delete().eq("user_id", insideTarget)).error).toBeNull();
@@ -355,7 +337,7 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
         }
       }
     } finally {
-      for (const actorId of [adminId, userId]) {
+      for (const actorId of [adminId]) {
         await service.from("profiles").update({
           can_access_super_admin_features: false,
           can_manage_time_payroll: false,
@@ -566,7 +548,7 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
   test("primary location changes and deletion replacement are explicit and atomic", async () => {
     const service = serviceClient();
     const [firstLocationId, secondLocationId] = await activeLocationIds(service);
-    const targetId = await createTarget(service, "ทดสอบสาขาหลัก", "user", firstLocationId);
+    const targetId = await createTarget(service, "ทดสอบสาขาหลัก", "admin", firstLocationId);
     const superRequest = await playwrightRequest.newContext({
       baseURL: "http://127.0.0.1:3000",
       storageState: "playwright/.auth/super_admin.json",
@@ -621,6 +603,8 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
       expect((await adminRequest.patch(`/api/lanflow/admin/users/${targetId}/time-payroll-access`, { data: { canManageTimePayroll: true } })).status()).toBe(403);
       expect((await adminRequest.patch(`/api/lanflow/admin/users/${targetId}/status`, { data: { isActive: false } })).status()).toBe(403);
 
+      expect((await superRequest.patch(`/api/lanflow/admin/users/${targetId}/time-payroll-access`, { data: { canManageTimePayroll: true } })).status()).toBe(403);
+      expect((await superRequest.patch(`/api/lanflow/admin/users/${targetId}/role`, { data: { role: "admin" } })).ok()).toBeTruthy();
       expect((await superRequest.patch(`/api/lanflow/admin/users/${targetId}/time-payroll-access`, { data: { canManageTimePayroll: true } })).ok()).toBeTruthy();
       expect((await service.from("profiles").update({ can_access_super_admin_features: true }).eq("id", adminId)).error).toBeNull();
       expect((await adminRequest.patch(`/api/lanflow/admin/users/${targetId}/time-payroll-access`, { data: { canManageTimePayroll: false } })).ok()).toBeTruthy();

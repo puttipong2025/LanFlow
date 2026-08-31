@@ -443,6 +443,7 @@ test.describe.serial("Pending money transfer merge", () => {
       expect(revoked.error?.message).toContain("ไม่มีสิทธิ์รวมรายการโอนเงิน");
 
       expect((await service.from("profiles").update({
+        role: "admin",
         can_access_money_transfer: true,
       }).eq("id", actorId)).error).toBeNull();
       const crossBranch = await client.rpc("merge_pending_money_transfers", {
@@ -451,6 +452,7 @@ test.describe.serial("Pending money transfer merge", () => {
       expect(crossBranch.error?.message).toContain("ไม่มีสิทธิ์รวมรายการโอนเงิน");
     } finally {
       await service.from("profiles").update({
+        role: "user",
         can_access_super_admin_features: false,
         can_access_money_transfer: false,
       }).eq("id", actorId);

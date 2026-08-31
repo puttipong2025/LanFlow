@@ -352,6 +352,7 @@ test.describe.serial("Atomic money transfer deletion", () => {
       expect(revoked.error?.message).toContain("MONEY_TRANSFER_DELETE_FORBIDDEN");
 
       expect((await service.from("profiles").update({
+        role: "admin",
         can_access_money_transfer: true,
       }).eq("id", actorId)).error).toBeNull();
       const crossBranch = await client.rpc("delete_money_transfer", {
@@ -371,6 +372,7 @@ test.describe.serial("Atomic money transfer deletion", () => {
       ]));
     } finally {
       await service.from("profiles").update({
+        role: "user",
         can_access_super_admin_features: false,
         can_access_money_transfer: false,
       }).eq("id", actorId);

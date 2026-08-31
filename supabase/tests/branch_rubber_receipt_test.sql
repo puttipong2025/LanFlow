@@ -145,7 +145,8 @@ select extensions.throws_ok(
 
 reset role;
 update public.profiles
-set can_access_super_admin_features = true
+set role = 'admin',
+    can_access_super_admin_features = true
 where id = 'a2000000-0000-4000-8000-000000000001';
 set local role authenticated;
 
@@ -761,7 +762,8 @@ select extensions.ok(
 
 reset role;
 update public.profiles
-set can_access_super_admin_features = true
+set role = 'admin',
+    can_access_super_admin_features = true
 where id = 'a2000000-0000-4000-8000-000000000001';
 set local role authenticated;
 

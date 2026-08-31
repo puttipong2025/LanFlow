@@ -10,4 +10,7 @@ test("Admin section switcher uses named pressed buttons instead of incomplete ta
   expect(source).toContain('aria-pressed={tab === "branches"}');
   expect(source).toContain(">พนักงาน</button>");
   expect(source).toContain(">สาขา</button>");
+  expect(source).toContain("ต้องตั้งเป็น Admin ก่อน");
+  expect(source).toContain("รวมอัตโนมัติในสิทธิ์ผู้จัดการระบบ");
+  expect(source).toContain('role="status"');
 });
