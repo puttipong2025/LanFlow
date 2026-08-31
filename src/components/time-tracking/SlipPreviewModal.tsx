@@ -110,11 +110,14 @@ export function SlipPreviewModal({
         onClose={onClose}
         size="wide"
         mobileFullScreen
+        nativeModal
+        closeOnEscape
+        closeDisabled={pdfShare.busy}
       >
         {!document && !error && (
           <div className="grid min-h-64 place-items-center text-ink/60" role="status">
             <div className="flex items-center gap-2">
-              <LoaderCircle className="animate-spin" size={20} />
+              <LoaderCircle className="animate-spin motion-reduce:animate-none" size={20} aria-hidden="true" />
               กำลังโหลดเอกสาร...
             </div>
           </div>
@@ -134,7 +137,7 @@ export function SlipPreviewModal({
                 title={online ? undefined : "เอกสารใช้ได้เมื่อออนไลน์เท่านั้น"}
                 className="focus-ring inline-flex h-10 items-center gap-2 rounded-lg bg-river px-4 text-sm font-semibold text-white shadow-sm hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <FileUp size={17} />
+                <FileUp size={17} aria-hidden="true" />
                 แชร์ PDF
               </button>
             </div>

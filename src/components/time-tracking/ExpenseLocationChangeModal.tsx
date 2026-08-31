@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { ModalShell } from "@/components/shared/ModalShell";
 import type { Location } from "@/types";
 
 const CENTRAL_OUTSIDE = "__central_outside_system__";
@@ -32,27 +33,38 @@ export function ExpenseLocationChangeModal({
   const [locationId, setLocationId] = useState(initialLocationId);
   const [comment, setComment] = useState("");
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function submit() {
     if (!locationId) return;
     setSaving(true);
+    setError(null);
     try {
-      await onSubmit(locationId === CENTRAL_OUTSIDE ? null : locationId, comment);
+      const success = await onSubmit(locationId === CENTRAL_OUTSIDE ? null : locationId, comment);
+      if (!success) setError("เปลี่ยนวิธีจ่ายไม่สำเร็จ กรุณาลองใหม่");
+    } catch (submitError) {
+      console.error("Failed to change expense location:", submitError);
+      setError("เปลี่ยนวิธีจ่ายไม่สำเร็จ กรุณาลองใหม่");
     } finally {
       setSaving(false);
     }
   }
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4">
-      <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl">
-        <h2 className="text-lg font-bold text-ink">เปลี่ยนวิธีจ่าย</h2>
+    <ModalShell
+      title="เปลี่ยนวิธีจ่าย"
+      onClose={onClose}
+      nativeModal
+      closeOnEscape
+      closeDisabled={saving}
+      size="compact"
+    >
+      <form onSubmit={(event) => { event.preventDefault(); void submit(); }} aria-busy={saving}>
         <label className="mt-5 block text-sm font-semibold text-ink" htmlFor="change-expense-location">
           วิธีจ่ายใหม่
         </label>
         <select
           id="change-expense-location"
-          autoFocus
           value={locationId}
           onChange={(event) => setLocationId(event.target.value)}
           className="mt-2 w-full rounded-md border border-black/15 bg-white px-3 py-2"
@@ -72,6 +84,7 @@ export function ExpenseLocationChangeModal({
           onChange={(event) => setComment(event.target.value)}
           className="mt-2 w-full rounded-md border border-black/15 px-3 py-2"
         />
+        {error && <p role="alert" className="mt-3 text-sm font-semibold text-danger">{error}</p>}
         <div className="mt-6 flex justify-end gap-3">
           <button
             type="button"
@@ -82,15 +95,14 @@ export function ExpenseLocationChangeModal({
             ยกเลิก
           </button>
           <button
-            type="button"
-            onClick={() => void submit()}
+            type="submit"
             disabled={saving || !locationId}
             className="rounded-md bg-success px-4 py-2 text-sm font-bold text-white disabled:opacity-50"
           >
             {saving ? "กำลังบันทึก..." : "บันทึก"}
           </button>
         </div>
-      </div>
-    </div>
+      </form>
+    </ModalShell>
   );
 }

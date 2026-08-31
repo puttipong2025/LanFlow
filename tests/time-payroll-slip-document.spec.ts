@@ -92,6 +92,50 @@ test("payroll keeps snapshot amounts and produces a Thai filename", () => {
   expect(JSON.stringify(document)).not.toMatch(/Payroll|Withdrawal/);
 });
 
+test("payroll attendance snapshot still populates the work-calendar table", () => {
+  const document = buildPayrollSlipDocument({
+    source: {
+      id: SOURCE_ID,
+      month: "2026-07",
+      status: "APPROVED",
+      total_days: 1.5,
+      daily_wage: 500,
+      gross_pay: 750,
+      total_deductions: 0,
+      net_pay: 750,
+      created_at: "2026-08-01T01:00:00.000Z",
+      slip_data: {
+        transactions: [],
+        attendance: {
+          month: "2026-07",
+          workdayEndTime: "16:00",
+          eligibleThrough: "2026-07-03",
+          periods: [{ startOn: "2026-07-01", endOn: "2026-07-04" }],
+          exceptions: [
+            { date: "2026-07-02", status: "HALF_DAY" },
+            { date: "2026-07-03", status: "OFF" },
+          ],
+          summary: {
+            fullDays: 1,
+            halfDays: 1,
+            offDays: 1,
+            paidDays: 1.5,
+            grossPay: 750,
+          },
+        },
+      },
+    },
+    employeeName: "สมชาย ใจดี",
+    generatedAt: GENERATED_AT,
+  });
+
+  expect(document.calendar).toHaveLength(31);
+  expect(document.calendar.find((day) => day.date === "2026-07-01")?.paidDays).toBe(1);
+  expect(document.calendar.find((day) => day.date === "2026-07-02")?.paidDays).toBe(0.5);
+  expect(document.calendar.find((day) => day.date === "2026-07-03")?.paidDays).toBe(0);
+  expect(document.calendar.find((day) => day.date === "2026-07-04")?.paidDays).toBe(0);
+});
+
 test("documents exist only for non-deleted pending or approved sources", () => {
   expect(canCreateSlipDocument("PENDING", null)).toBe(true);
   expect(canCreateSlipDocument("APPROVED", null)).toBe(true);

@@ -28,7 +28,7 @@ function rpcFailure(error: { message: string }) {
   );
 }
 
-function bangkokMonthBounds() {
+function bangkokCurrentMonth() {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Bangkok",
     year: "numeric",
@@ -36,11 +36,7 @@ function bangkokMonthBounds() {
   }).formatToParts(new Date());
   const year = Number(parts.find((part) => part.type === "year")?.value);
   const month = Number(parts.find((part) => part.type === "month")?.value);
-  const start = `${year}-${String(month).padStart(2, "0")}-01T00:00:00+07:00`;
-  const nextYear = month === 12 ? year + 1 : year;
-  const nextMonth = month === 12 ? 1 : month + 1;
-  const end = `${nextYear}-${String(nextMonth).padStart(2, "0")}-01T00:00:00+07:00`;
-  return { start, end, month: `${year}-${String(month).padStart(2, "0")}` };
+  return `${year}-${String(month).padStart(2, "0")}`;
 }
 
 export async function GET(request: NextRequest) {
@@ -57,24 +53,18 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const { start, end, month } = bangkokMonthBounds();
+    const month = new URL(request.url).searchParams.get("month") || bangkokCurrentMonth();
+    if (!/^[0-9]{4}-(0[1-9]|1[0-2])$/.test(month)) {
+      return NextResponse.json({ error: "เดือนไม่ถูกต้อง" }, { status: 400 });
+    }
     const supabase = result.supabase;
     const [
-      activeSegment,
       transactions,
-      profile,
-      paidDays,
       activeDebts,
       deductions,
       slips,
-      resumeSchedule,
+      attendance,
     ] = await Promise.all([
-      supabase
-        .from("time_segments")
-        .select("id, start_time, end_time, report_lock_no")
-        .eq("profile_id", targetUserId)
-        .is("end_time", null)
-        .maybeSingle(),
       supabase
         .from("financial_transactions")
         .select("*, report_lock_no, approver:profiles!financial_transactions_approved_by_fkey(name)")
@@ -83,12 +73,6 @@ export async function GET(request: NextRequest) {
         .order("effective_date", { ascending: false })
         .order("created_at", { ascending: false })
         .limit(50),
-      supabase.from("profiles").select("daily_wage").eq("id", targetUserId).single(),
-      supabase.rpc("calculate_paid_work_days", {
-        p_profile_id: targetUserId,
-        p_period_start: start,
-        p_period_end: end,
-      }),
       supabase
         .from("financial_transactions")
         .select("id, type, amount, remaining_amount, effective_date, created_at, description")
@@ -111,28 +95,24 @@ export async function GET(request: NextRequest) {
         .select("*, report_lock_no, approver:profiles!payroll_slips_approved_by_fkey(name)")
         .eq("profile_id", targetUserId)
         .order("month", { ascending: false }),
-      supabase
-        .from("time_tracking_resume_schedules")
-        .select("profile_id, payroll_slip_id, resume_at")
-        .eq("profile_id", targetUserId)
-        .maybeSingle(),
+      supabase.rpc("get_time_payroll_attendance_month", {
+        p_profile_id: targetUserId,
+        p_month: month,
+      }),
     ]);
 
     for (const response of [
-      activeSegment,
       transactions,
-      profile,
-      paidDays,
       activeDebts,
       deductions,
       slips,
-      resumeSchedule,
+      attendance,
     ]) {
       if (response.error) throw response.error;
     }
 
-    const totalDays = Number(paidDays.data || 0);
-    const grossPay = totalDays * Number(profile.data?.daily_wage || 0);
+    const totalDays = Number(attendance.data?.summary?.paidDays || 0);
+    const grossPay = Number(attendance.data?.summary?.grossPay || 0);
     const usedThisMonth = (deductions.data || []).reduce(
       (sum, transaction) => transaction.applied_month === `${month}-01`
         ? sum + Number(transaction.amount || 0)
@@ -145,24 +125,26 @@ export async function GET(request: NextRequest) {
     );
 
     return NextResponse.json({
-      timeTracking: {
-        status: activeSegment.data ? "RUNNING" : "PAUSED",
-        start_time: activeSegment.data?.start_time || null,
-        resume_schedule: resumeSchedule.data || null,
-      },
       wageInfo: {
         totalDays,
         grossPay,
         remainingBalance: Math.max(grossPay - usedThisMonth, 0),
         totalDebt,
       },
+      attendance: attendance.data,
       debts: activeDebts.data || [],
-      transactions: transactions.data || [],
+      transactions: result.auth.canManageTimePayroll
+        ? transactions.data || []
+        : (transactions.data || []).filter((item) => item.status !== "REJECTED"),
       deductions: deductions.data || [],
       slips: slips.data || [],
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown error";
+    const message = error instanceof Error
+      ? error.message
+      : typeof error === "object" && error && "message" in error
+        ? String(error.message)
+        : "Unknown error";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
@@ -171,21 +153,22 @@ export async function POST(request: NextRequest) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
 
-  const body = await request.json();
+  let body: { action?: string; payload?: Record<string, any> };
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "ข้อมูลคำขอไม่ถูกต้อง" }, { status: 400 });
+  }
   const payload = body?.payload || {};
   const supabase = result.supabase;
 
   if (body.action === "REQUEST_WITHDRAWAL") {
-    const { amount, effective_date } = payload;
-    if (typeof amount !== "number" || typeof effective_date !== "string") {
+    const { amount } = payload;
+    if (typeof amount !== "number") {
       return NextResponse.json({ error: "ข้อมูลรายการไม่ถูกต้อง" }, { status: 400 });
     }
-    const { data, error } = await supabase.rpc("create_time_tracking_transaction", {
-      p_profile_id: result.auth.sub,
-      p_type: "WITHDRAWAL",
+    const { data, error } = await supabase.rpc("request_time_tracking_withdrawal", {
       p_amount: amount,
-      p_effective_date: effective_date,
-      p_description: null,
     });
     if (error) return rpcFailure(error);
     return NextResponse.json({ success: true, result: data });

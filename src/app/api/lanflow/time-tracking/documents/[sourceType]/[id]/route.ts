@@ -131,13 +131,8 @@ export async function GET(
 
     const month = source.effective_date.slice(0, 7);
     const { start, end } = monthBounds(month);
-    const [metadata, paidDays, segmentsResponse, deductionsResponse] = await Promise.all([
+    const [metadata, segmentsResponse, deductionsResponse, attendanceResponse] = await Promise.all([
       sourceMetadata(result.supabase, source),
-      result.supabase.rpc("calculate_paid_work_days", {
-        p_profile_id: source.profile_id,
-        p_period_start: start,
-        p_period_end: end,
-      }),
       result.supabase
         .from("time_segments")
         .select("start_time, end_time")
@@ -153,11 +148,15 @@ export async function GET(
         .eq("status", "APPROVED")
         .in("type", ["WITHDRAWAL_DEDUCTION", "DEBT_DEDUCTION"])
         .eq("applied_month", `${month}-01`),
+      result.supabase.rpc("get_time_payroll_attendance_month", {
+        p_profile_id: source.profile_id,
+        p_month: month,
+      }),
     ]);
     if (!metadata) return NextResponse.json({ error: "ไม่พบเอกสาร" }, { status: 404 });
-    if (paidDays.error) throw paidDays.error;
     if (segmentsResponse.error) throw segmentsResponse.error;
     if (deductionsResponse.error) throw deductionsResponse.error;
+    if (attendanceResponse.error) throw attendanceResponse.error;
 
     const existingDeductions = (deductionsResponse.data || []).reduce(
       (sum, deduction) => sum + Number(deduction.amount || 0),
@@ -172,9 +171,12 @@ export async function GET(
       },
       employeeName: metadata.employeeName,
       dailyWage: metadata.dailyWage,
-      totalPaidDays: Number(paidDays.data) || 0,
+      totalPaidDays: Number(attendanceResponse.data?.summary?.paidDays) || 0,
       existingDeductions,
       segments: clipSegments(segmentsResponse.data || [], start, end),
+      attendance: attendanceResponse.data?.mode === "EXCEPTIONS"
+        ? attendanceResponse.data
+        : null,
       generatedAt: new Date().toISOString(),
     }));
   } catch (error) {

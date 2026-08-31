@@ -13,13 +13,14 @@ function serviceClient() {
   });
 }
 
-function bangkokDate() {
+function bangkokDate(offsetDays = 0) {
+  const date = new Date(Date.now() + offsetDays * 86_400_000);
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Bangkok",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).format(new Date());
+  }).format(date);
 }
 
 async function createEmployee(suffix: string) {
@@ -48,11 +49,18 @@ async function createEmployee(suffix: string) {
 
 async function deleteEmployee(profileId: string) {
   const service = serviceClient();
+  await service.from("time_tracking_resume_schedules").delete().eq("profile_id", profileId);
   await service.from("time_tracking_audit_logs").delete().eq("record_id", profileId);
+  await service.from("time_tracking_audit_logs").delete().eq("admin_id", profileId);
+  await service.from("admin_account_audit_logs").delete().eq("target_user_id", profileId);
+  await service.from("admin_account_audit_logs").delete().eq("actor_user_id", profileId);
   await service.from("financial_transactions").delete().eq("profile_id", profileId);
   await service.from("time_segments").delete().eq("profile_id", profileId);
   await service.from("payroll_slips").delete().eq("profile_id", profileId);
-  await service.auth.admin.deleteUser(profileId);
+  const profile = await service.from("profiles").delete().eq("id", profileId);
+  expect(profile.error).toBeNull();
+  const auth = await service.auth.admin.deleteUser(profileId);
+  expect(auth.error).toBeNull();
 }
 
 test.describe("Time Tracking branch expense @time-tracking", () => {
@@ -79,28 +87,25 @@ test.describe("Time Tracking branch expense @time-tracking", () => {
       expect(created.ok()).toBeTruthy();
       const sourceId = ((await created.json()).result as { id: string }).id;
 
-      const approved = await request.post("/api/lanflow/time-tracking/admin", { data: {
-        action: "APPROVE_TRANSACTION",
-        payload: {
-          transaction_id: sourceId,
-          status: "APPROVED",
-          expense_location_id: locationId,
-          admin_comment: "ทดสอบเชื่อมค่าใช้จ่าย",
-        },
-      } });
-      expect(approved.ok()).toBeTruthy();
+      const service = serviceClient();
+      const initiallyCentral = await service
+        .from("financial_transactions")
+        .select("status, expense_location_id")
+        .eq("id", sourceId)
+        .single();
+      expect(initiallyCentral.error).toBeNull();
+      expect(initiallyCentral.data).toEqual({ status: "APPROVED", expense_location_id: null });
 
-      const retry = await request.post("/api/lanflow/time-tracking/admin", { data: {
-        action: "APPROVE_TRANSACTION",
+      const changedToBranch = await request.post("/api/lanflow/time-tracking/admin", { data: {
+        action: "CHANGE_EXPENSE_LOCATION",
         payload: {
-          transaction_id: sourceId,
-          status: "APPROVED",
+          source_type: "transaction",
+          source_id: sourceId,
           expense_location_id: locationId,
           admin_comment: "ทดสอบเชื่อมค่าใช้จ่าย",
         },
       } });
-      expect(retry.ok()).toBeTruthy();
-      expect((await retry.json()).result).toMatchObject({ idempotent: true });
+      expect(changedToBranch.ok(), await changedToBranch.text()).toBeTruthy();
 
       const feed = await request.get(
         `/api/lanflow/income-expense/feed?locationId=${locationId}&from=${bangkokDate()}&to=${bangkokDate()}`,
@@ -168,22 +173,11 @@ test.describe("Time Tracking branch expense @time-tracking", () => {
         payload: {
           user_id: employeeId,
           month,
-          auto_start_next_month: false,
         },
       } });
       expect(created.ok()).toBeTruthy();
       const slip = (await created.json()).slip as { id: string; net_pay: number };
       expect(Number(slip.net_pay)).toBe(0);
-
-      const approved = await request.post("/api/lanflow/time-tracking/admin", { data: {
-        action: "APPROVE_PAYROLL_SLIP",
-        payload: {
-          slip_id: slip.id,
-          status: "APPROVED",
-          admin_comment: "อนุมัติสลิปตนเองได้",
-        },
-      } });
-      expect(approved.ok()).toBeTruthy();
 
       const service = serviceClient();
       const approvedSlip = await service
@@ -210,44 +204,38 @@ test.describe("Time Tracking branch expense @time-tracking", () => {
   test("positive payroll can move between central outside payment and a branch expense", async ({ request }) => {
     const employeeId = await createEmployee("7");
     try {
-      const workDate = bangkokDate();
+      const approvalDate = bangkokDate();
+      const workDate = bangkokDate(-1);
       const month = workDate.slice(0, 7);
       const work = await request.post("/api/lanflow/time-tracking/admin", { data: {
-        action: "ADD_BULK_SEGMENTS",
-        payload: {
-          user_id: employeeId,
-          selections: [{ date: workDate, work_type: "FULL_DAY" }],
-          full_snapshot: { [workDate]: "FULL_DAY" },
-          admin_comment: "ทดสอบเงินเดือนยอดบวก",
-        },
+        action: "SET_PAYROLL_ACTIVE_PERIOD",
+        payload: { user_id: employeeId, action: "ENABLE", effective_date: workDate },
       } });
       expect(work.ok(), await work.text()).toBeTruthy();
 
       const created = await request.post("/api/lanflow/time-tracking/admin", { data: {
         action: "CREATE_PAYROLL_SLIP",
-        payload: { user_id: employeeId, month, auto_start_next_month: false },
+        payload: { user_id: employeeId, month },
       } });
       expect(created.ok(), await created.text()).toBeTruthy();
       const slip = (await created.json()).slip as { id: string; net_pay: number };
       expect(Number(slip.net_pay)).toBeGreaterThan(0);
 
-      const approved = await request.post("/api/lanflow/time-tracking/admin", { data: {
-        action: "APPROVE_PAYROLL_SLIP",
-        payload: {
-          slip_id: slip.id,
-          status: "APPROVED",
-          expense_location_id: null,
-          admin_comment: "",
-        },
-      } });
-      expect(approved.ok(), await approved.text()).toBeTruthy();
+      const service = serviceClient();
+      const initiallyCentral = await service
+        .from("payroll_slips")
+        .select("status, expense_location_id")
+        .eq("id", slip.id)
+        .single();
+      expect(initiallyCentral.error).toBeNull();
+      expect(initiallyCentral.data).toEqual({ status: "APPROVED", expense_location_id: null });
 
       const me = await (await request.get("/api/auth/me")).json() as {
         profile: { locationIds: string[] };
       };
       for (const locationId of me.profile.locationIds) {
         const feed = await request.get(
-          `/api/lanflow/income-expense/feed?locationId=${locationId}&from=${workDate}&to=${workDate}`,
+          `/api/lanflow/income-expense/feed?locationId=${locationId}&from=${approvalDate}&to=${approvalDate}`,
         );
         expect(feed.ok()).toBeTruthy();
         const rows = (await feed.json()).rows as Array<{ relationSourceId?: string }>;
@@ -267,7 +255,7 @@ test.describe("Time Tracking branch expense @time-tracking", () => {
       } });
       expect(changedToBranch.ok(), await changedToBranch.text()).toBeTruthy();
       const branchFeed = await request.get(
-        `/api/lanflow/income-expense/feed?locationId=${branchId}&from=${workDate}&to=${workDate}`,
+        `/api/lanflow/income-expense/feed?locationId=${branchId}&from=${approvalDate}&to=${approvalDate}`,
       );
       const branchRows = (await branchFeed.json()).rows as Array<{ relationSourceId?: string; relationSourceType?: string }>;
       expect(branchRows).toContainEqual(expect.objectContaining({
@@ -302,17 +290,6 @@ test.describe("Time Tracking branch expense @time-tracking", () => {
       } });
       expect(created.ok()).toBeTruthy();
       const sourceId = ((await created.json()).result as { id: string }).id;
-
-      const approved = await request.post("/api/lanflow/time-tracking/admin", { data: {
-        action: "APPROVE_TRANSACTION",
-        payload: {
-          transaction_id: sourceId,
-          status: "APPROVED",
-          expense_location_id: null,
-          admin_comment: "",
-        },
-      } });
-      expect(approved.ok(), await approved.text()).toBeTruthy();
 
       const service = serviceClient();
       const stored = await service
@@ -398,15 +375,23 @@ test.describe("Time Tracking permission matrix @time-tracking", () => {
       expect(created.ok()).toBeTruthy();
       const sourceId = ((await created.json()).result as { id: string }).id;
 
-      const approved = await managerRequest.post("/api/lanflow/time-tracking/admin", { data: {
-        action: "APPROVE_TRANSACTION",
+      const initiallyCentral = await service
+        .from("financial_transactions")
+        .select("status, expense_location_id")
+        .eq("id", sourceId)
+        .single();
+      expect(initiallyCentral.error).toBeNull();
+      expect(initiallyCentral.data).toEqual({ status: "APPROVED", expense_location_id: null });
+
+      const changedToBranch = await managerRequest.post("/api/lanflow/time-tracking/admin", { data: {
+        action: "CHANGE_EXPENSE_LOCATION",
         payload: {
-          transaction_id: sourceId,
-          status: "APPROVED",
+          source_type: "transaction",
+          source_id: sourceId,
           expense_location_id: locationId,
         },
       } });
-      expect(approved.ok()).toBeTruthy();
+      expect(changedToBranch.ok(), await changedToBranch.text()).toBeTruthy();
 
       const deleted = await managerRequest.post("/api/lanflow/time-tracking/admin", { data: {
         action: "DELETE_TRANSACTION",

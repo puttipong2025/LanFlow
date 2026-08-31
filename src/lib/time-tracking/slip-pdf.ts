@@ -248,7 +248,7 @@ function renderDocument(doc: PdfDocument, document: TimePayrollSlipDocument) {
   keyValueRows(state, detailRows);
   sectionTitle(state, document.kind === "withdrawal" ? "สรุปค่าแรงประกอบการเบิกเงิน" : "สรุปเงินเดือน");
   keyValueRows(state, document.summary);
-  drawCalendar(state);
+  if (document.calendar.length > 0) drawCalendar(state);
   if (document.kind === "payroll") {
     drawTransactionTable(state, "รายการหักเงิน", document.deductionRows);
     drawTransactionTable(state, "รายการหนี้สินและเบิกเงิน", document.sourceRows);

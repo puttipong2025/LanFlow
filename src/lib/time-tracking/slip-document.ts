@@ -1,9 +1,9 @@
 import { calculateTimeSegmentPaidDays, type PaidWorkSegment } from "@/lib/time-tracking/pay";
 
-export type SlipDocumentStatus = "PENDING" | "APPROVED";
-export type SlipDocumentKind = "withdrawal" | "payroll";
+type SlipDocumentStatus = "PENDING" | "APPROVED";
+type SlipDocumentKind = "withdrawal" | "payroll";
 
-export type SlipCalendarDay = {
+type SlipCalendarDay = {
   date: string;
   day: number;
   paidDays: number;
@@ -70,6 +70,21 @@ type SnapshotTransaction = {
   created_at?: string | null;
 };
 
+type AttendanceSnapshot = {
+  month: string;
+  workdayEndTime: string;
+  eligibleThrough?: string;
+  periods: Array<{ id?: string; startOn: string; endOn: string | null }>;
+  exceptions: Array<{ date: string; status: "HALF_DAY" | "OFF" }>;
+  summary: {
+    fullDays: number;
+    halfDays: number;
+    offDays: number;
+    paidDays: number;
+    grossPay: number;
+  };
+};
+
 type PayrollSource = ApprovalFields & {
   id: string;
   month: string;
@@ -83,6 +98,7 @@ type PayrollSource = ApprovalFields & {
   slip_data: {
     segments?: PaidWorkSegment[] | null;
     transactions?: SnapshotTransaction[] | null;
+    attendance?: AttendanceSnapshot | null;
   } | null;
 };
 
@@ -133,6 +149,31 @@ function calendarForMonth(month: string, segments: PaidWorkSegment[] | null | un
   });
 }
 
+function calendarForAttendance(attendance: AttendanceSnapshot) {
+  const exceptionsByDate = new Map(attendance.exceptions.map((exception) => [exception.date, exception.status]));
+  const isActiveDate = (date: string) => attendance.periods.some((period) => (
+    date >= period.startOn && (period.endOn == null || date <= period.endOn)
+  ));
+  const [year, monthNumber] = attendance.month.split("-").map(Number);
+  const daysInMonth = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+
+  return Array.from({ length: daysInMonth }, (_, index) => {
+    const day = index + 1;
+    const date = `${attendance.month}-${String(day).padStart(2, "0")}`;
+    const eligible = attendance.eligibleThrough == null || date <= attendance.eligibleThrough;
+    const exception = exceptionsByDate.get(date);
+    const paidDays = !isActiveDate(date) || !eligible
+      ? 0
+      : exception === "HALF_DAY"
+        ? 0.5
+        : exception === "OFF"
+          ? 0
+          : 1;
+
+    return { date, day, paidDays };
+  });
+}
+
 function filenameDate(date: string) {
   return date.slice(0, 10).replaceAll("-", "");
 }
@@ -166,6 +207,7 @@ export function buildWithdrawalSlipDocument({
   totalPaidDays,
   existingDeductions,
   segments,
+  attendance,
   generatedAt,
 }: {
   source: WithdrawalSource;
@@ -174,6 +216,7 @@ export function buildWithdrawalSlipDocument({
   totalPaidDays: number;
   existingDeductions: number;
   segments: PaidWorkSegment[];
+  attendance?: AttendanceSnapshot | null;
   generatedAt: string;
 }): TimePayrollSlipDocument {
   const grossWage = Math.max(Math.trunc(totalPaidDays * dailyWage * 100) / 100, 0);
@@ -210,7 +253,7 @@ export function buildWithdrawalSlipDocument({
       { label: "ค่าแรงคงเหลือหลังเบิก", value: formatMoney(wageRemaining) },
       { label: "ยอดเบิกที่ยังหักไม่หมด", value: formatMoney(outstanding) },
     ],
-    calendar: calendarForMonth(month, segments),
+    calendar: attendance ? calendarForAttendance(attendance) : calendarForMonth(month, segments),
     deductionRows: [],
     sourceRows: [],
     notice: source.status === "PENDING"
@@ -232,6 +275,7 @@ export function buildPayrollSlipDocument({
   const transactions = source.slip_data?.transactions || [];
   const approved = transactions.filter((transaction) => transaction.status === "APPROVED");
   const statusLabel = statusLabels[source.status];
+  const attendance = source.slip_data?.attendance;
 
   return {
     kind: "payroll",
@@ -251,13 +295,18 @@ export function buildPayrollSlipDocument({
     paymentLabel: source.payment_label || null,
     adminComment: source.admin_comment || null,
     summary: [
+      ...(attendance ? [
+        { label: "วันเต็ม", value: formatDays(attendance.summary.fullDays) },
+        { label: "ครึ่งวัน", value: formatDays(attendance.summary.halfDays) },
+        { label: "วันหยุด", value: formatDays(attendance.summary.offDays) },
+      ] : []),
       { label: "จำนวนวันทำงานรวม", value: formatDays(source.total_days) },
       { label: "ค่าแรงต่อวัน", value: formatMoney(source.daily_wage) },
       { label: "ค่าแรงรวม", value: formatMoney(source.gross_pay) },
       { label: "ยอดหักรวม", value: formatMoney(source.total_deductions) },
       { label: "ยอดสุทธิ", value: formatMoney(source.net_pay) },
     ],
-    calendar: calendarForMonth(source.month, source.slip_data?.segments),
+    calendar: attendance ? calendarForAttendance(attendance) : calendarForMonth(source.month, source.slip_data?.segments),
     deductionRows: approved
       .filter((transaction) => transaction.type !== "DEBT" && transaction.type !== "WITHDRAWAL")
       .map(transactionRow),

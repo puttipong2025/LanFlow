@@ -3,6 +3,9 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const publishableKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+  || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  || "";
 const password = process.env.TEST_PASSWORD || "password123";
 const superAdminId = "00000000-0000-4000-8000-000000000001";
 const adminId = "00000000-0000-4000-8000-000000000002";
@@ -15,6 +18,21 @@ function serviceClient() {
   return createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
+}
+
+async function signedInClient(phone: string) {
+  expect(publishableKey).toBeTruthy();
+  const client = createClient(supabaseUrl, publishableKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const normalizedPhone = phone.startsWith("+") ? phone : `+66${phone.slice(1)}`;
+  const signIn = await client.auth.signInWithPassword({ phone: normalizedPhone, password });
+  expect(signIn.error).toBeNull();
+  expect(signIn.data.session?.access_token).toBeTruthy();
+  return {
+    client,
+    accessToken: signIn.data.session!.access_token,
+  };
 }
 
 async function createTarget(service: SupabaseClient, label: string, role: "user" | "admin", locationId: string) {
@@ -48,11 +66,18 @@ async function createTarget(service: SupabaseClient, label: string, role: "user"
 }
 
 async function deleteTarget(service: SupabaseClient, id: string) {
+  await service.from("time_tracking_resume_schedules").delete().eq("profile_id", id);
   await service.from("time_tracking_audit_logs").delete().eq("record_id", id);
+  await service.from("time_tracking_audit_logs").delete().eq("admin_id", id);
+  await service.from("admin_account_audit_logs").delete().eq("target_user_id", id);
+  await service.from("admin_account_audit_logs").delete().eq("actor_user_id", id);
   await service.from("financial_transactions").delete().eq("profile_id", id);
   await service.from("payroll_slips").delete().eq("profile_id", id);
   await service.from("time_segments").delete().eq("profile_id", id);
-  await service.auth.admin.deleteUser(id);
+  const profile = await service.from("profiles").delete().eq("id", id);
+  expect(profile.error).toBeNull();
+  const auth = await service.auth.admin.deleteUser(id);
+  expect(auth.error).toBeNull();
 }
 
 async function activeLocationIds(service: SupabaseClient) {
@@ -83,6 +108,37 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
   test.afterAll(async () => {
     if (temporaryLocationId) {
       await serviceClient().from("locations").delete().eq("id", temporaryLocationId);
+    }
+  });
+
+  test("admin and employee routes reject malformed JSON without throwing", async () => {
+    const contexts = await Promise.all([
+      playwrightRequest.newContext({
+        baseURL: "http://127.0.0.1:3000",
+        storageState: "playwright/.auth/super_admin.json",
+      }),
+      playwrightRequest.newContext({
+        baseURL: "http://127.0.0.1:3000",
+        storageState: "playwright/.auth/user.json",
+      }),
+    ]);
+    try {
+      const [adminResponse, userResponse] = await Promise.all([
+        contexts[0].post("/api/lanflow/time-tracking/admin", {
+          data: "{",
+          headers: { "Content-Type": "application/json" },
+        }),
+        contexts[1].post("/api/lanflow/time-tracking/user", {
+          data: "{",
+          headers: { "Content-Type": "application/json" },
+        }),
+      ]);
+
+      for (const response of [adminResponse, userResponse]) {
+        expect(response.status(), await response.text()).toBe(400);
+      }
+    } finally {
+      await Promise.all(contexts.map((context) => context.dispose()));
     }
   });
 
@@ -124,11 +180,11 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
       const selfRow = page.locator('[data-time-payroll-self="true"]');
       await expect(selfRow).toBeVisible();
       await expect(selfRow.getByText("ของตนเอง", { exact: true })).toBeVisible();
-      await expect(selfRow.getByRole("button", { name: "แก้ไข" })).toHaveCount(0);
-      await expect(selfRow.getByRole("button", { name: "คลิกเพื่อติ๊กเลือกวันทำงาน" })).toHaveCount(0);
-      await expect(selfRow.getByRole("button", { name: "คำนวณเงินเดือน" })).toHaveCount(0);
+      await expect(selfRow.getByRole("button", { name: /^แก้ไขค่าแรงรายวันของ / })).toHaveCount(0);
+      await expect(selfRow.getByRole("button", { name: /^จัดการปฏิทินวันทำงานของ / })).toHaveCount(0);
+      await expect(selfRow.getByRole("button", { name: /^จัดการสลิปเงินเดือนของ / })).toHaveCount(0);
 
-      await selfRow.getByRole("button", { name: "ดู Dashboard" }).click();
+      await selfRow.getByRole("button", { name: /^ดูข้อมูลเวลาและเงินเดือนของ / }).click();
       const dialog = page.getByRole("dialog", { name: "ข้อมูลของตนเอง" });
       await expect(dialog).toBeVisible();
       await expect(dialog.getByRole("button", { name: "ขอเบิกเงินตนเอง" })).toBeVisible();
@@ -181,18 +237,19 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
       await expect(page.getByRole("heading", { name: "ระบบเวลาและเงินเดือน (ของตนเอง)" })).toHaveCount(0);
       await expect(firstRow).toHaveAttribute("data-time-payroll-self", "true");
       await expect(firstRow.getByText("ของตนเอง", { exact: true })).toBeVisible();
-      await expect(firstRow.getByRole("button", { name: "แก้ไข" })).toBeVisible();
-      await expect(firstRow.getByRole("button", { name: "คลิกเพื่อติ๊กเลือกวันทำงาน" })).toBeVisible();
-      await expect(firstRow.getByRole("button", { name: "คำนวณเงินเดือน" })).toBeVisible();
+      await expect(firstRow.getByRole("button", { name: /^แก้ไขค่าแรงรายวันของ / })).toBeVisible();
+      const attendanceButton = firstRow.getByRole("button", { name: /^จัดการปฏิทินวันทำงานของ / });
+      await expect(attendanceButton).toBeVisible();
+      await expect(firstRow.getByRole("button", { name: /^จัดการสลิปเงินเดือนของ / })).toBeVisible();
 
-      await firstRow.getByRole("button", { name: "ดู Dashboard" }).click();
+      await attendanceButton.click();
       const dialog = page.getByRole("dialog", { name: "ข้อมูลของตนเอง" });
       await expect(dialog).toBeVisible();
       await expect(dialog.getByRole("status", { name: "กำลังโหลดข้อมูล..." })).toBeVisible();
 
       releaseDashboard();
       await expect(dialog.getByRole("button", { name: "ขอเบิกเงินตนเอง" })).toBeVisible();
-      await expect(dialog.getByRole("button", { name: /เริ่มนับเวลา|หยุดงาน/ })).toBeVisible();
+      await expect(dialog.getByRole("button", { name: /เริ่มนับเวลา|หยุดงาน/ })).toHaveCount(0);
       await expect(dialog.getByRole("button", { name: "สร้างหนี้สินเพิ่ม" })).toBeVisible();
       await expect(dialog.getByText("ผู้จัดการหยุดงาน", { exact: true })).toHaveCount(0);
     } finally {
@@ -204,6 +261,9 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
   test("user and admin capability have equal primary-branch scope and revoke immediately", async () => {
     const service = serviceClient();
     const [insideLocationId, outsideLocationId] = await activeLocationIds(service);
+    const activeLocations = await service.from("locations").select("id").eq("is_active", true);
+    expect(activeLocations.error).toBeNull();
+    const expectedPaymentLocationIds = (activeLocations.data || []).map((location) => location.id).sort();
     const insideTarget = await createTarget(service, "เป้าหมายสาขาเดียวกัน", "user", insideLocationId);
     const outsideTarget = await createTarget(service, "เป้าหมายต่างสาขา", "admin", outsideLocationId);
     const originalAssignments = new Map<string, Array<{ location_id: string; is_primary: boolean }>>();
@@ -242,7 +302,9 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
           const users = dashboardBody.users as Array<{ id: string }>;
           expect(users.some((profile) => profile.id === insideTarget)).toBeTruthy();
           expect(users.some((profile) => profile.id === outsideTarget)).toBeFalsy();
-          expect(dashboardBody.paymentLocations).toHaveLength(2);
+          expect(
+            (dashboardBody.paymentLocations as Array<{ id: string }>).map((location) => location.id).sort(),
+          ).toEqual(expectedPaymentLocationIds);
 
           const allowed = await request.post("/api/lanflow/time-tracking/admin", { data: {
             action: "ADMIN_REQUEST_WITHDRAWAL",
@@ -310,6 +372,194 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
       }
       await deleteTarget(service, insideTarget);
       await deleteTarget(service, outsideTarget);
+    }
+  });
+
+  test("delegated manager cannot mutate approved sources but can withdraw an own pending payroll slip", async () => {
+    test.setTimeout(60_000);
+    const service = serviceClient();
+    const [locationId] = await activeLocationIds(service);
+    const delegatedId = await createTarget(service, "ผู้จัดการสาขาทดสอบสิทธิ์", "admin", locationId);
+    const transactionTargetId = await createTarget(service, "พนักงานทดสอบรายการเงิน", "user", locationId);
+    const slipTargetId = await createTarget(service, "พนักงานทดสอบสลิป", "user", locationId);
+    const approvedSlipTargetId = await createTarget(service, "พนักงานทดสอบสลิปอนุมัติ", "user", locationId);
+    let pendingTransactionId: string | null = null;
+    let approvedTransactionId: string | null = null;
+    let pendingSlipId: string | null = null;
+    let approvedSlipId: string | null = null;
+    let routePendingSlipId: string | null = null;
+
+    const superProfile = await service.from("profiles").select("phone").eq("id", superAdminId).single();
+    const delegatedProfile = await service.from("profiles").select("phone").eq("id", delegatedId).single();
+    expect(superProfile.error).toBeNull();
+    expect(delegatedProfile.error).toBeNull();
+    const global = await signedInClient(superProfile.data!.phone);
+    const delegated = await signedInClient(delegatedProfile.data!.phone);
+    const delegatedRequest = await playwrightRequest.newContext({
+      baseURL: "http://127.0.0.1:3000",
+      extraHTTPHeaders: { Authorization: `Bearer ${delegated.accessToken}` },
+    });
+
+    try {
+      expect((await service.from("profiles").update({
+        can_manage_time_payroll: true,
+      }).eq("id", delegatedId)).error).toBeNull();
+
+      const pendingTransaction = await service.from("financial_transactions").insert({
+        profile_id: transactionTargetId,
+        type: "WITHDRAWAL",
+        amount: 111,
+        status: "PENDING",
+        effective_date: "2026-08-01",
+      }).select("id").single();
+      expect(pendingTransaction.error).toBeNull();
+      pendingTransactionId = pendingTransaction.data!.id;
+
+      const approvedTransaction = await service.from("financial_transactions").insert({
+        profile_id: transactionTargetId,
+        type: "WITHDRAWAL",
+        amount: 222,
+        status: "APPROVED",
+        effective_date: "2026-08-01",
+        approved_by: superAdminId,
+        approved_at: new Date().toISOString(),
+      }).select("id").single();
+      expect(approvedTransaction.error).toBeNull();
+      approvedTransactionId = approvedTransaction.data!.id;
+
+      const pendingSlip = await service.from("payroll_slips").insert({
+        profile_id: slipTargetId,
+        month: "2026-06",
+        status: "PENDING",
+        created_by: delegatedId,
+      }).select("id").single();
+      expect(pendingSlip.error).toBeNull();
+      pendingSlipId = pendingSlip.data!.id;
+
+      const routePendingSlip = await service.from("payroll_slips").insert({
+        profile_id: slipTargetId,
+        month: "2026-07",
+        status: "PENDING",
+        created_by: delegatedId,
+      }).select("id").single();
+      expect(routePendingSlip.error).toBeNull();
+      routePendingSlipId = routePendingSlip.data!.id;
+
+      const approvedSlip = await service.from("payroll_slips").insert({
+        profile_id: approvedSlipTargetId,
+        month: "2026-06",
+        gross_pay: 500,
+        net_pay: 500,
+        total_days: 1,
+        daily_wage: 500,
+        status: "APPROVED",
+        created_by: delegatedId,
+        approved_by: superAdminId,
+        approved_at: new Date().toISOString(),
+      }).select("id").single();
+      expect(approvedSlip.error).toBeNull();
+      approvedSlipId = approvedSlip.data!.id;
+
+      const delegatedPaymentChange = await delegated.client.rpc("change_time_tracking_expense_location", {
+        p_source_type: "transaction",
+        p_source_id: approvedTransactionId,
+        p_expense_location_id: locationId,
+        p_comment: null,
+      });
+      expect(delegatedPaymentChange.error?.message).toContain("Forbidden");
+
+      for (const [sourceType, sourceId] of [
+        ["transaction", pendingTransactionId],
+        ["transaction", approvedTransactionId],
+        ["payroll_slip", approvedSlipId],
+      ] as const) {
+        const deletion = await delegated.client.rpc("delete_time_tracking_source_permanently", {
+          p_source_type: sourceType,
+          p_source_id: sourceId,
+        });
+        expect(deletion.error?.message).toContain("Forbidden");
+      }
+
+      const routeCreatorDelete = await delegatedRequest.post("/api/lanflow/time-tracking/admin", { data: {
+        action: "DELETE_PAYROLL_SLIP",
+        payload: { slip_id: routePendingSlipId },
+      } });
+      expect(routeCreatorDelete.ok(), await routeCreatorDelete.text()).toBeTruthy();
+      routePendingSlipId = null;
+
+      const creatorPendingSlipDelete = await delegated.client.rpc("delete_time_tracking_source_permanently", {
+        p_source_type: "payroll_slip",
+        p_source_id: pendingSlipId,
+      });
+      expect(creatorPendingSlipDelete.error).toBeNull();
+      pendingSlipId = null;
+
+      for (const request of [
+        {
+          action: "CHANGE_EXPENSE_LOCATION",
+          payload: {
+            source_type: "transaction",
+            source_id: approvedTransactionId,
+            expense_location_id: locationId,
+          },
+        },
+        { action: "DELETE_TRANSACTION", payload: { transaction_id: approvedTransactionId } },
+        { action: "DELETE_PAYROLL_SLIP", payload: { slip_id: approvedSlipId } },
+      ]) {
+        const response = await delegatedRequest.post("/api/lanflow/time-tracking/admin", { data: request });
+        expect(response.status(), await response.text()).toBe(403);
+      }
+
+      const globalPaymentChange = await global.client.rpc("change_time_tracking_expense_location", {
+        p_source_type: "transaction",
+        p_source_id: approvedTransactionId,
+        p_expense_location_id: locationId,
+        p_comment: null,
+      });
+      expect(globalPaymentChange.error).toBeNull();
+
+      const globalApprovedTransactionDelete = await global.client.rpc("delete_time_tracking_source_permanently", {
+        p_source_type: "transaction",
+        p_source_id: approvedTransactionId,
+      });
+      expect(globalApprovedTransactionDelete.error).toBeNull();
+      approvedTransactionId = null;
+
+      const globalPendingTransactionDelete = await global.client.rpc("delete_time_tracking_source_permanently", {
+        p_source_type: "transaction",
+        p_source_id: pendingTransactionId,
+      });
+      expect(globalPendingTransactionDelete.error).toBeNull();
+      pendingTransactionId = null;
+
+      const globalApprovedSlipDelete = await global.client.rpc("delete_time_tracking_source_permanently", {
+        p_source_type: "payroll_slip",
+        p_source_id: approvedSlipId,
+      });
+      expect(globalApprovedSlipDelete.error).toBeNull();
+      approvedSlipId = null;
+    } finally {
+      for (const [sourceType, sourceId] of [
+        ["transaction", pendingTransactionId],
+        ["transaction", approvedTransactionId],
+        ["payroll_slip", pendingSlipId],
+        ["payroll_slip", routePendingSlipId],
+        ["payroll_slip", approvedSlipId],
+      ] as const) {
+        if (sourceId) {
+          await global.client.rpc("delete_time_tracking_source_permanently", {
+            p_source_type: sourceType,
+            p_source_id: sourceId,
+          });
+        }
+      }
+      await delegatedRequest.dispose();
+      await delegated.client.auth.signOut();
+      await global.client.auth.signOut();
+      await deleteTarget(service, delegatedId);
+      await deleteTarget(service, transactionTargetId);
+      await deleteTarget(service, slipTargetId);
+      await deleteTarget(service, approvedSlipTargetId);
     }
   });
 
@@ -396,15 +646,22 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
       const superPage = await superContext.newPage();
       await superPage.goto("/");
       await superPage.getByRole("button", { name: "Admin" }).click();
-      const adminRow = superPage.locator(`[data-user-id="${adminId}"]`);
-      await expect(adminRow.getByRole("button", { name: "เปิดสิทธิ์เวลาและเงินเดือน" })).toBeVisible();
+      await superPage.getByLabel("ค้นหาพนักงาน").fill("0810000001");
+      const adminRow = superPage.getByRole("row", { name: /LanFlow admin.*0810000001/ });
+      await expect(adminRow).toBeVisible();
+      await adminRow.getByRole("button", { name: "จัดการ" }).click();
+      const superAdminDialog = superPage.getByRole("dialog", { name: "จัดการพนักงาน" });
+      await expect(superAdminDialog.getByRole("button", { name: "สิทธิ์เวลา/เงินเดือน" })).toBeVisible();
 
       const adminPage = await adminContext.newPage();
       await adminPage.goto("/");
       await adminPage.getByRole("button", { name: "Admin" }).click();
-      const userRow = adminPage.locator(`[data-user-id="${userId}"]`);
+      await adminPage.getByLabel("ค้นหาพนักงาน").fill("0820000001");
+      const userRow = adminPage.getByRole("row", { name: /LanFlow user.*0820000001/ });
       await expect(userRow).toBeVisible();
-      await expect(userRow.getByRole("button", { name: /ระงับการใช้งาน|กู้คืนการใช้งาน/ })).toHaveCount(0);
+      await userRow.getByRole("button", { name: "จัดการ" }).click();
+      const normalAdminDialog = adminPage.getByRole("dialog", { name: "จัดการพนักงาน" });
+      await expect(normalAdminDialog.getByRole("button", { name: /ระงับบัญชี|กู้คืนบัญชี/ })).toHaveCount(0);
     } finally {
       await superContext.close();
       await adminContext.close();

@@ -43,6 +43,11 @@ function rpcErrorMessage(message: string) {
   if (noWorkMonth) return `เดือน ${noWorkMonth} ไม่มีวันทำงาน จึงไม่ต้องสร้างสลิป`;
 
   if (/FUTURE_EFFECTIVE_DATE/i.test(message)) return "วันที่รายการต้องไม่เกินวันปัจจุบัน";
+  if (/FUTURE_ATTENDANCE_DATE/i.test(message)) return "ช่วงวันที่แก้ปฏิทินต้องไม่เกินวันปัจจุบัน";
+  if (/ACTIVE_PERIOD_ALREADY_OPEN/i.test(message)) return "พนักงานคนนี้มีช่วงทำงานที่เปิดอยู่แล้ว กรุณารีเฟรชข้อมูล";
+  if (/NO_OPEN_ACTIVE_PERIOD/i.test(message)) return "ไม่พบช่วงทำงานที่เปิดอยู่ หรือวันที่มีผลไม่ต่อเนื่องกับช่วงเดิม";
+  if (/DATE_OUTSIDE_ACTIVE_PERIOD/i.test(message)) return "ช่วงวันที่อยู่นอกช่วงทำงานของพนักงาน กรุณาเปิดหรือกลับเข้าทำงานก่อน";
+  if (/PRIMARY_BRANCH_REQUIRED/i.test(message)) return "พนักงานบางคนไม่มีสาขาหลักที่ใช้งานอยู่ กรุณาตั้งค่าสาขาหลักก่อน";
   if (/DESCRIPTION_REQUIRED/i.test(message)) return "กรุณาระบุรายละเอียดหนี้";
   if (/INVALID_AMOUNT/i.test(message)) return "จำนวนเงินต้องมากกว่า 0";
   if (/INVALID_MONTH/i.test(message)) return "เดือนไม่ถูกต้องหรือเป็นเดือนในอนาคต";
@@ -60,17 +65,6 @@ function rpcFailure(error: { message: string }) {
   );
 }
 
-function bangkokCurrentMonth() {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Bangkok",
-    year: "numeric",
-    month: "2-digit",
-  }).formatToParts(new Date());
-  const year = parts.find((part) => part.type === "year")?.value;
-  const month = parts.find((part) => part.type === "month")?.value;
-  return `${year}-${month}`;
-}
-
 export async function GET(request: NextRequest) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
@@ -79,19 +73,19 @@ export async function GET(request: NextRequest) {
   }
 
   try {
+    const canDecide = result.auth.canAccessSystemManager;
     const [
       usersResult,
       pendingTransactionsResult,
       pendingSlipsResult,
       managersResult,
-      schedulesResult,
-      currentSlipsResult,
       paymentLocationsResult,
+      settingsResult,
+      activePeriodsResult,
     ] = await Promise.all([
       result.supabase.from("profiles").select(`
         id, name, phone, daily_wage, role, is_active, can_access_super_admin_features,
-        user_locations!user_locations_user_id_fkey(location_id, is_primary, locations!inner(is_active)),
-        time_segments(id, start_time, end_time, report_lock_no)
+        user_locations!user_locations_user_id_fkey(location_id, is_primary, locations!inner(is_active))
       `),
       result.supabase
         .from("financial_transactions")
@@ -108,23 +102,21 @@ export async function GET(request: NextRequest) {
         .from("profiles")
         .select("id, name, role, can_access_super_admin_features")
         .eq("is_active", true),
-      result.supabase
-        .from("time_tracking_resume_schedules")
-        .select("profile_id, payroll_slip_id, resume_at"),
-      result.supabase
-        .from("payroll_slips")
-        .select("profile_id")
-        .eq("month", bangkokCurrentMonth()),
       result.supabase.rpc("get_time_payroll_payment_locations"),
+      result.supabase.rpc("get_time_payroll_settings"),
+      result.supabase
+        .from("time_payroll_active_periods")
+        .select("id, profile_id, start_on, end_on")
+        .is("end_on", null),
     ]);
 
     if (usersResult.error) throw usersResult.error;
     if (pendingTransactionsResult.error) throw pendingTransactionsResult.error;
     if (pendingSlipsResult.error) throw pendingSlipsResult.error;
     if (managersResult.error) throw managersResult.error;
-    if (schedulesResult.error) throw schedulesResult.error;
-    if (currentSlipsResult.error) throw currentSlipsResult.error;
     if (paymentLocationsResult.error) throw paymentLocationsResult.error;
+    if (settingsResult.error) throw settingsResult.error;
+    if (activePeriodsResult.error) throw activePeriodsResult.error;
 
     const users = (usersResult.data || []).filter((user) => {
       if (user.id === result.auth.sub) return true;
@@ -163,25 +155,37 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    const schedules = new Map(
-      (schedulesResult.data || []).map((schedule) => [schedule.profile_id, schedule]),
-    );
-    const currentClosedProfiles = new Set(
-      (currentSlipsResult.data || []).map((slip) => slip.profile_id),
+    const activePeriods = new Map(
+      (activePeriodsResult.data || []).map((period) => [period.profile_id, period]),
     );
 
     return NextResponse.json({
+      settings: settingsResult.data,
+      permissions: {
+        canManage: result.auth.canManageTimePayroll,
+        canDecide,
+        canConfigure: canDecide,
+      },
       users: users.map((user) => ({
         ...user,
         primary_location_id:
           user.user_locations?.find((assignment) => assignment.is_primary === true)?.location_id ?? null,
         user_locations: undefined,
         debt_remaining_amount: debtTotals.get(user.id) || 0,
-        resume_schedule: schedules.get(user.id) || null,
-        current_month_closed: currentClosedProfiles.has(user.id),
+        active_period: activePeriods.has(user.id)
+          ? {
+              id: activePeriods.get(user.id)!.id,
+              startOn: activePeriods.get(user.id)!.start_on,
+              endOn: activePeriods.get(user.id)!.end_on,
+            }
+          : null,
       })),
-      pendingTransactions: (pendingTransactionsResult.data || []).filter((item) => allowedUserIds.has(item.profile_id)),
-      pendingSlips: (pendingSlipsResult.data || []).filter((item) => allowedUserIds.has(item.profile_id)),
+      pendingTransactions: canDecide
+        ? (pendingTransactionsResult.data || []).filter((item) => allowedUserIds.has(item.profile_id))
+        : [],
+      pendingSlips: canDecide
+        ? (pendingSlipsResult.data || []).filter((item) => allowedUserIds.has(item.profile_id))
+        : [],
       admins: result.auth.canAccessSystemManager ? (managersResult.data || [])
         .filter((profile) => profile.role === "super_admin" || profile.can_access_super_admin_features === true)
         .map(({ id, name }) => ({ id, name })) : [{ id: result.auth.sub, name: result.auth.name }],
@@ -204,12 +208,20 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
   }
 
-  const body = await request.json();
+  let body: { action?: string; payload?: Record<string, any> };
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "ข้อมูลคำขอไม่ถูกต้อง" }, { status: 400 });
+  }
   const payload = body?.payload || {};
   const supabase = result.supabase;
 
   try {
     if (body.action === "GET_AUDIT_LOGS") {
+      if (!result.auth.canAccessSystemManager) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+      }
       const { admin_user_id, target_user_id, action_filter } = payload;
       let query = supabase
         .from("time_tracking_audit_logs")
@@ -222,32 +234,6 @@ export async function POST(request: NextRequest) {
       const { data, error } = await query;
       if (error) throw error;
       return NextResponse.json({ logs: data || [] });
-    }
-
-    if (body.action === "TOGGLE_TRACKING") {
-      const { user_id, status } = payload;
-      if (!isUuid(user_id) || !["RUNNING", "PAUSED"].includes(status)) {
-        return NextResponse.json({ error: "ข้อมูลสถานะเวลาไม่ถูกต้อง" }, { status: 400 });
-      }
-      const { data, error } = await supabase.rpc("set_time_tracking_status", {
-        p_profile_id: user_id,
-        p_status: status,
-      });
-      if (error) return rpcFailure(error);
-      return NextResponse.json({ success: true, result: data });
-    }
-
-    if (body.action === "CUTOFF_TRACKING") {
-      const { user_id, cutoff_time } = payload;
-      if (!isUuid(user_id) || typeof cutoff_time !== "string") {
-        return NextResponse.json({ error: "ข้อมูลตัดรอบเวลาไม่ถูกต้อง" }, { status: 400 });
-      }
-      const { data, error } = await supabase.rpc("cutoff_time_tracking", {
-        p_profile_id: user_id,
-        p_cutoff_time: cutoff_time,
-      });
-      if (error) return rpcFailure(error);
-      return NextResponse.json({ success: true, result: data });
     }
 
     if (body.action === "CREATE_DEBT" || body.action === "ADMIN_REQUEST_WITHDRAWAL") {
@@ -273,6 +259,23 @@ export async function POST(request: NextRequest) {
       if (!isUuid(sourceId)) {
         return NextResponse.json({ error: "รหัสรายการไม่ถูกต้อง" }, { status: 400 });
       }
+      if (body.action === "DELETE_TRANSACTION" && !result.auth.canAccessSystemManager) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+      }
+      if (body.action === "DELETE_PAYROLL_SLIP" && !result.auth.canAccessSystemManager) {
+        const { data: pendingSlip, error: pendingSlipError } = await supabase
+          .from("payroll_slips")
+          .select("status, created_by")
+          .eq("id", sourceId)
+          .maybeSingle();
+        if (
+          pendingSlipError
+          || pendingSlip?.status !== "PENDING"
+          || pendingSlip.created_by !== result.auth.sub
+        ) {
+          return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+        }
+      }
       const { data, error } = await supabase.rpc("delete_time_tracking_source_permanently", {
         p_source_type: body.action === "DELETE_TRANSACTION" ? "transaction" : "payroll_slip",
         p_source_id: sourceId,
@@ -282,6 +285,9 @@ export async function POST(request: NextRequest) {
     }
 
     if (body.action === "APPROVE_TRANSACTION" || body.action === "APPROVE_PAYROLL_SLIP") {
+      if (!result.auth.canAccessSystemManager) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+      }
       const sourceId = body.action === "APPROVE_TRANSACTION"
         ? payload.transaction_id
         : payload.slip_id;
@@ -305,6 +311,9 @@ export async function POST(request: NextRequest) {
     }
 
     if (body.action === "CHANGE_EXPENSE_LOCATION") {
+      if (!result.auth.canAccessSystemManager) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+      }
       const { source_type, source_id, expense_location_id, admin_comment } = payload;
       if (
         !["transaction", "payroll_slip"].includes(source_type)
@@ -324,6 +333,9 @@ export async function POST(request: NextRequest) {
     }
 
     if (body.action === "UPDATE_WAGE") {
+      if (!result.auth.canAccessSystemManager) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+      }
       const { user_id, daily_wage } = payload;
       if (!isUuid(user_id) || typeof daily_wage !== "number") {
         return NextResponse.json({ error: "ข้อมูลค่าแรงไม่ถูกต้อง" }, { status: 400 });
@@ -336,84 +348,65 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true, result: data });
     }
 
-    if (body.action === "GET_LOCKED_DATES") {
-      const { user_id } = payload;
-      if (!isUuid(user_id)) {
-        return NextResponse.json({ error: "รหัสพนักงานไม่ถูกต้อง" }, { status: 400 });
+    if (body.action === "REPLACE_ATTENDANCE_EXCEPTIONS") {
+      const { user_id, month, selections } = payload;
+      if (!isUuid(user_id) || typeof month !== "string" || !Array.isArray(selections)) {
+        return NextResponse.json({ error: "ข้อมูลข้อยกเว้นวันทำงานไม่ถูกต้อง" }, { status: 400 });
       }
-
-      const lockedDates: Record<string, string> = {};
-      const [{ data: deductions, error: deductionError }, { data: slips, error: slipError }, { data: segments, error: segmentError }] = await Promise.all([
-        supabase
-          .from("financial_transactions")
-          .select("applied_month")
-          .eq("profile_id", user_id)
-          .eq("status", "APPROVED")
-          .in("type", ["DEBT_DEDUCTION", "WITHDRAWAL_DEDUCTION"])
-          .not("applied_month", "is", null),
-        supabase.from("payroll_slips").select("month").eq("profile_id", user_id),
-        supabase
-          .from("time_segments")
-          .select("start_time, report_lock_no")
-          .eq("profile_id", user_id)
-          .not("end_time", "is", null),
-      ]);
-      if (deductionError) throw deductionError;
-      if (slipError) throw slipError;
-      if (segmentError) throw segmentError;
-
-      const deductionMonths = new Set(
-        (deductions || []).map((item) => item.applied_month?.slice(0, 7)).filter(Boolean),
-      );
-      for (const month of deductionMonths) {
-        const [year, monthNumber] = month!.split("-").map(Number);
-        const daysInMonth = new Date(year, monthNumber, 0).getDate();
-        for (let day = 1; day <= daysInMonth; day += 1) {
-          lockedDates[`${year}-${String(monthNumber).padStart(2, "0")}-${String(day).padStart(2, "0")}`] = "DEDUCTION";
-        }
-      }
-      for (const segment of segments || []) {
-        const date = new Date(segment.start_time)
-          .toLocaleString("sv", { timeZone: "Asia/Bangkok" })
-          .split(" ")[0];
-        if (segment.report_lock_no) lockedDates[date] = `REPORT:${segment.report_lock_no}`;
-      }
-
-      for (const slip of slips || []) {
-        const [year, month] = slip.month.split("-").map(Number);
-        const daysInMonth = new Date(year, month, 0).getDate();
-        for (let day = 1; day <= daysInMonth; day += 1) {
-          lockedDates[`${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`] = "SLIP";
-        }
-      }
-
-      return NextResponse.json({ lockedDates });
+      const { data, error } = await supabase.rpc("replace_time_payroll_attendance_exceptions", {
+        p_profile_id: user_id,
+        p_month: month,
+        p_selections: selections,
+      });
+      if (error) return rpcFailure(error);
+      return NextResponse.json({ success: true, result: data });
     }
 
-    if (body.action === "ADD_BULK_SEGMENTS") {
-      const { user_id, selections, full_snapshot, admin_comment } = payload;
-      if (!isUuid(user_id) || !Array.isArray(selections)) {
-        return NextResponse.json({ error: "ข้อมูลวันทำงานไม่ถูกต้อง" }, { status: 400 });
+    if (body.action === "UPDATE_TIME_PAYROLL_CONFIG") {
+      if (!result.auth.canAccessSystemManager) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
       }
-      const { data, error } = await supabase.rpc("replace_time_tracking_segments", {
+      const { workday_end_time } = payload;
+      if (typeof workday_end_time !== "string") {
+        return NextResponse.json({ error: "เวลาสิ้นสุดวันไม่ถูกต้อง" }, { status: 400 });
+      }
+      const { data, error } = await supabase.rpc("update_time_payroll_config", {
+        p_workday_end_time: workday_end_time,
+      });
+      if (error) return rpcFailure(error);
+      return NextResponse.json({ success: true, settings: data });
+    }
+
+    if (body.action === "SET_PAYROLL_ACTIVE_PERIOD") {
+      if (!result.auth.canAccessSystemManager) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+      }
+      const { user_id, action, effective_date } = payload;
+      if (
+        !isUuid(user_id)
+        || !["ENABLE", "PAUSE", "RESUME", "END"].includes(action)
+        || typeof effective_date !== "string"
+      ) {
+        return NextResponse.json({ error: "ข้อมูลช่วงเงินเดือนไม่ถูกต้อง" }, { status: 400 });
+      }
+      const { data, error } = await supabase.rpc("set_time_payroll_active_period", {
         p_profile_id: user_id,
-        p_selections: selections,
-        p_full_snapshot: full_snapshot || {},
-        p_comment: admin_comment || null,
+        p_action: action,
+        p_effective_date: effective_date,
       });
       if (error) return rpcFailure(error);
       return NextResponse.json({ success: true, result: data });
     }
 
     if (body.action === "CREATE_PAYROLL_SLIP") {
-      const { user_id, month, auto_start_next_month } = payload;
+      const { user_id, month } = payload;
       if (!isUuid(user_id) || typeof month !== "string") {
         return NextResponse.json({ error: "ข้อมูลสลิปไม่ถูกต้อง" }, { status: 400 });
       }
       const { data, error } = await supabase.rpc("create_time_tracking_payroll_slip", {
         p_profile_id: user_id,
         p_month: month,
-        p_auto_start_next_month: auto_start_next_month !== false,
+        p_auto_start_next_month: false,
       });
       if (error) return rpcFailure(error);
       return NextResponse.json({ success: true, slip: data });

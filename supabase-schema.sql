@@ -396,6 +396,56 @@ $$;
 ALTER FUNCTION "private"."apply_time_tracking_deductions"("p_profile_id" "uuid", "p_through_month" "date") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."assert_attendance_month_open"("p_profile_id" "uuid", "p_month" "text") RETURNS "void"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if exists (
+    select 1 from public.payroll_slips ps
+    where ps.profile_id = p_profile_id and ps.month = p_month and ps.status in ('PENDING', 'APPROVED')
+  ) then raise exception 'MONTH_CLOSED:%', p_month; end if;
+  if exists (
+    select 1
+    from public.financial_transactions ft
+    where ft.profile_id = p_profile_id
+      and ft.status = 'APPROVED'
+      and ft.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
+      and ft.applied_month = (p_month || '-01')::date
+  ) then raise exception 'DEDUCTION_LOCKED:%', p_month; end if;
+end
+$$;
+
+
+ALTER FUNCTION "private"."assert_attendance_month_open"("p_profile_id" "uuid", "p_month" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."assert_attendance_range_open"("p_profile_id" "uuid", "p_start_date" "date", "p_end_date" "date") RETURNS "void"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_month date;
+begin
+  if p_start_date is null or p_end_date is null or p_start_date > p_end_date then
+    return;
+  end if;
+  for v_month in
+    select generate_series(
+      date_trunc('month', p_start_date)::date,
+      date_trunc('month', p_end_date)::date,
+      interval '1 month'
+    )::date
+  loop
+    perform private.assert_attendance_month_open(p_profile_id, to_char(v_month, 'YYYY-MM'));
+  end loop;
+end
+$$;
+
+
+ALTER FUNCTION "private"."assert_attendance_range_open"("p_profile_id" "uuid", "p_start_date" "date", "p_end_date" "date") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."assert_rubber_approval_group_not_empty"() RETURNS "trigger"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -3001,6 +3051,34 @@ $$;
 ALTER FUNCTION "private"."effective_rubber_approval_settings"("p_location_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."effective_time_payroll_settings"() RETURNS TABLE("mode" "text", "workday_end_time" time without time zone, "pending_workday_end_time" time without time zone, "pending_effective_date" "date", "activated_on" "date")
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select
+    s.mode,
+    case
+      when s.pending_effective_date <= (now() at time zone 'Asia/Bangkok')::date
+        then s.pending_workday_end_time
+      else s.workday_end_time
+    end,
+    case
+      when s.pending_effective_date <= (now() at time zone 'Asia/Bangkok')::date then null
+      else s.pending_workday_end_time
+    end,
+    case
+      when s.pending_effective_date <= (now() at time zone 'Asia/Bangkok')::date then null
+      else s.pending_effective_date
+    end,
+    s.activated_on
+  from public.time_payroll_settings s
+  where s.singleton = true
+$$;
+
+
+ALTER FUNCTION "private"."effective_time_payroll_settings"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."enforce_complete_wex_before_reservation"() RETURNS "trigger"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -3122,6 +3200,49 @@ $$;
 
 
 ALTER FUNCTION "private"."enforce_user_primary_location"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."exception_attendance_summary"("p_profile_id" "uuid", "p_period_start" timestamp with time zone, "p_period_end" timestamp with time zone, "p_now" timestamp with time zone DEFAULT "now"()) RETURNS "jsonb"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  with settings as (
+    select * from private.effective_time_payroll_settings()
+  ), bounds as (
+    select
+      (p_period_start at time zone 'Asia/Bangkok')::date as start_on,
+      ((p_period_end at time zone 'Asia/Bangkok')::date - 1) as end_on,
+      (p_now at time zone 'Asia/Bangkok')::date as today,
+      (p_now at time zone 'Asia/Bangkok')::time as current_time
+  ), eligible as (
+    select d::date as work_date
+    from bounds b
+    cross join settings s
+    cross join lateral generate_series(b.start_on, b.end_on, interval '1 day') d
+    where (d::date < b.today or (d::date = b.today and b.current_time >= s.workday_end_time))
+      and exists (
+        select 1 from public.time_payroll_active_periods ap
+        where ap.profile_id = p_profile_id
+          and ap.start_on <= d::date
+          and (ap.end_on is null or ap.end_on >= d::date)
+      )
+  ), classified as (
+    select e.work_date, coalesce(x.status, 'FULL') as status
+    from eligible e
+    left join public.time_payroll_attendance_exceptions x
+      on x.profile_id = p_profile_id and x.work_date = e.work_date
+  )
+  select jsonb_build_object(
+    'fullDays', count(*) filter (where status = 'FULL'),
+    'halfDays', count(*) filter (where status = 'HALF_DAY'),
+    'offDays', count(*) filter (where status = 'OFF'),
+    'paidDays', count(*) filter (where status = 'FULL') + (count(*) filter (where status = 'HALF_DAY') * 0.5)
+  )
+  from classified
+$$;
+
+
+ALTER FUNCTION "private"."exception_attendance_summary"("p_profile_id" "uuid", "p_period_start" timestamp with time zone, "p_period_end" timestamp with time zone, "p_now" timestamp with time zone) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."guard_approved_rubber_bill_request_history"() RETURNS "trigger"
@@ -3830,6 +3951,17 @@ $$;
 
 
 ALTER FUNCTION "private"."is_active_user"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."is_global_time_payroll_manager"() RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select private.is_active_user() and private.can_access_super_admin_features()
+$$;
+
+
+ALTER FUNCTION "private"."is_global_time_payroll_manager"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."is_super_admin"() RETURNS boolean
@@ -7218,6 +7350,36 @@ $$;
 ALTER FUNCTION "private"."validate_wex_rubber_exports"("p_location_id" "uuid", "p_wex_id" "uuid", "p_rubber_export_ids" "uuid"[]) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."activate_exception_attendance"() RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_actor uuid := auth.uid();
+  v_active bigint;
+  v_resume bigint;
+  v_job record;
+  v_today date := (now() at time zone 'Asia/Bangkok')::date;
+begin
+  if v_actor is null or not private.is_global_time_payroll_manager() then raise exception 'Forbidden'; end if;
+  select count(*) into v_active from public.time_segments where end_time is null;
+  select count(*) into v_resume from public.time_tracking_resume_schedules;
+  if v_active > 0 or v_resume > 0 then raise exception 'ACTIVATION_BLOCKED:active=%:resume=%', v_active, v_resume; end if;
+  update public.time_payroll_settings set mode = 'EXCEPTIONS', activated_on = coalesce(activated_on, v_today), updated_by = v_actor, updated_at = now() where singleton = true;
+  for v_job in select jobid from cron.job where jobname in ('time-tracking-daily-cutoff', 'deduct-debts-daily', 'time-tracking-auto-start') loop
+    perform cron.unschedule(v_job.jobid);
+  end loop;
+  insert into public.time_tracking_audit_logs(admin_id, action, target_table, record_id, new_data, comment)
+  values (v_actor, 'ACTIVATE_EXCEPTION_ATTENDANCE', 'time_payroll_settings', v_actor,
+    jsonb_build_object('activatedOn', v_today), 'เปิดใช้วันทำงานแบบข้อยกเว้น');
+  return public.get_time_payroll_settings();
+end
+$$;
+
+
+ALTER FUNCTION "public"."activate_exception_attendance"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."approve_rubber_bill_approval_request"("p_request_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -7388,23 +7550,16 @@ ALTER FUNCTION "public"."begin_admin_password_reset"("p_target_user_id" "uuid", 
 
 
 CREATE OR REPLACE FUNCTION "public"."calculate_paid_work_days"("p_profile_id" "uuid", "p_period_start" timestamp with time zone, "p_period_end" timestamp with time zone DEFAULT NULL::timestamp with time zone) RETURNS numeric
-    LANGUAGE "sql" STABLE
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
-  select coalesce(sum(
-    public.calculate_time_segment_paid_days(
-      greatest(s.start_time, p_period_start),
-      least(
-        s.end_time,
-        coalesce(p_period_end, s.end_time)
-      )
-    )
-  ), 0)
-  from public.time_segments s
-  where s.profile_id = p_profile_id
-    and s.end_time is not null
-    and s.end_time > p_period_start
-    and (p_period_end is null or s.start_time < p_period_end)
+declare
+  v_summary jsonb;
+begin
+  if p_period_end is null then raise exception 'PERIOD_END_REQUIRED'; end if;
+  v_summary := private.exception_attendance_summary(p_profile_id, p_period_start, p_period_end, now());
+  return coalesce((v_summary ->> 'paidDays')::numeric, 0);
+end
 $$;
 
 
@@ -7572,7 +7727,7 @@ ALTER FUNCTION "public"."cash_count_submitted_at"("source_row" "public"."report_
 
 CREATE OR REPLACE FUNCTION "public"."change_time_tracking_expense_location"("p_source_type" "text", "p_source_id" "uuid", "p_expense_location_id" "uuid", "p_comment" "text" DEFAULT NULL::"text") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public', 'private'
+    SET "search_path" TO ''
     AS $$
 declare
   v_actor_id uuid := auth.uid();
@@ -7582,6 +7737,9 @@ declare
 begin
   if v_actor_id is null or not private.is_active_user() then
     raise exception 'Authentication required';
+  end if;
+  if not private.is_global_time_payroll_manager() then
+    raise exception 'Forbidden';
   end if;
   if p_source_type not in ('transaction', 'payroll_slip') then
     raise exception 'Invalid expense source';
@@ -8962,6 +9120,69 @@ CREATE OR REPLACE FUNCTION "public"."create_time_tracking_payroll_slip"("p_profi
     SET "search_path" TO ''
     AS $_$
 declare
+  v_mode text;
+  v_month date;
+  v_scan_month date;
+  v_first_active_month date;
+  v_created jsonb;
+  v_attendance jsonb;
+  v_final jsonb;
+begin
+  perform pg_advisory_xact_lock(hashtextextended('time-payroll-attendance:' || p_profile_id::text, 0));
+  select s.mode into v_mode from public.time_payroll_settings s where s.singleton = true for share;
+  if v_mode = 'EXCEPTIONS' then
+    if p_month !~ '^[0-9]{4}-[0-9]{2}$' then raise exception 'INVALID_MONTH'; end if;
+    begin v_month := (p_month || '-01')::date; exception when others then raise exception 'INVALID_MONTH'; end;
+    if to_char(v_month, 'YYYY-MM') <> p_month then raise exception 'INVALID_MONTH'; end if;
+    select min(date_trunc('month', ap.start_on)::date)
+      into v_first_active_month
+    from public.time_payroll_active_periods ap
+    where ap.profile_id = p_profile_id;
+    if v_first_active_month is not null then
+      for v_scan_month in
+        select generate_series(
+          v_first_active_month::timestamp,
+          (v_month - interval '1 month')::timestamp,
+          interval '1 month'
+        )::date
+      loop
+        if not exists (
+          select 1 from public.payroll_slips ps
+          where ps.profile_id = p_profile_id and ps.month = to_char(v_scan_month, 'YYYY-MM')
+        ) and public.calculate_paid_work_days(
+          p_profile_id,
+          v_scan_month::timestamp at time zone 'Asia/Bangkok',
+          (v_scan_month + interval '1 month')::timestamp at time zone 'Asia/Bangkok'
+        ) > 0 then
+          raise exception 'OLDER_WORK_MONTH:%', to_char(v_scan_month, 'YYYY-MM');
+        end if;
+      end loop;
+    end if;
+  end if;
+  v_created := public.create_time_tracking_payroll_slip_internal_20260829(
+    p_profile_id, p_month, case when v_mode = 'EXCEPTIONS' then false else p_auto_start_next_month end
+  );
+  v_attendance := public.get_time_payroll_attendance_month(p_profile_id, p_month);
+  update public.payroll_slips
+  set slip_data = coalesce(slip_data, '{}'::jsonb) || jsonb_build_object('attendance', v_attendance)
+  where id = (v_created ->> 'id')::uuid;
+  if private.is_global_time_payroll_manager() then
+    perform public.decide_time_tracking_approval('payroll_slip', (v_created ->> 'id')::uuid, 'APPROVED', null, null);
+  end if;
+  select to_jsonb(ps) into v_final from public.payroll_slips ps where ps.id = (v_created ->> 'id')::uuid;
+  return v_final || jsonb_build_object('auto_start_scheduled', coalesce((v_created ->> 'auto_start_scheduled')::boolean, false));
+end
+$_$;
+
+
+ALTER FUNCTION "public"."create_time_tracking_payroll_slip"("p_profile_id" "uuid", "p_month" "text", "p_auto_start_next_month" boolean) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."create_time_tracking_payroll_slip_internal_20260829"("p_profile_id" "uuid", "p_month" "text", "p_auto_start_next_month" boolean DEFAULT true) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $_$
+declare
   v_actor_id uuid := auth.uid();
   v_month date;
   v_next_month date;
@@ -9196,10 +9417,43 @@ end;
 $_$;
 
 
-ALTER FUNCTION "public"."create_time_tracking_payroll_slip"("p_profile_id" "uuid", "p_month" "text", "p_auto_start_next_month" boolean) OWNER TO "postgres";
+ALTER FUNCTION "public"."create_time_tracking_payroll_slip_internal_20260829"("p_profile_id" "uuid", "p_month" "text", "p_auto_start_next_month" boolean) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."create_time_tracking_transaction"("p_profile_id" "uuid", "p_type" "text", "p_amount" numeric, "p_effective_date" "date", "p_description" "text" DEFAULT NULL::"text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_created jsonb;
+  v_decision jsonb;
+  v_bangkok_today date := (now() at time zone 'Asia/Bangkok')::date;
+  v_effective_date date := p_effective_date;
+begin
+  if p_type = 'WITHDRAWAL'
+    and p_profile_id = auth.uid()
+    and not private.can_manage_time_payroll_profile(p_profile_id)
+  then
+    v_effective_date := v_bangkok_today;
+  end if;
+  v_created := public.create_time_tracking_transaction_internal_20260829(
+    p_profile_id, p_type, p_amount, v_effective_date, p_description
+  );
+  if private.is_global_time_payroll_manager() then
+    v_decision := public.decide_time_tracking_approval(
+      'transaction', (v_created ->> 'id')::uuid, 'APPROVED', null, null
+    );
+    return v_created || jsonb_build_object('status', 'approved', 'decision', v_decision);
+  end if;
+  return v_created;
+end
+$$;
+
+
+ALTER FUNCTION "public"."create_time_tracking_transaction"("p_profile_id" "uuid", "p_type" "text", "p_amount" numeric, "p_effective_date" "date", "p_description" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."create_time_tracking_transaction_internal_20260829"("p_profile_id" "uuid", "p_type" "text", "p_amount" numeric, "p_effective_date" "date", "p_description" "text" DEFAULT NULL::"text") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
@@ -9289,7 +9543,7 @@ end
 $$;
 
 
-ALTER FUNCTION "public"."create_time_tracking_transaction"("p_profile_id" "uuid", "p_type" "text", "p_amount" numeric, "p_effective_date" "date", "p_description" "text") OWNER TO "postgres";
+ALTER FUNCTION "public"."create_time_tracking_transaction_internal_20260829"("p_profile_id" "uuid", "p_type" "text", "p_amount" numeric, "p_effective_date" "date", "p_description" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."current_profile_id"() RETURNS "uuid"
@@ -9854,6 +10108,22 @@ ALTER FUNCTION "public"."decide_stock_product_approval_request"("p_request_id" "
 
 CREATE OR REPLACE FUNCTION "public"."decide_time_tracking_approval"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text" DEFAULT NULL::"text", "p_expense_location_id" "uuid" DEFAULT NULL::"uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if auth.uid() is null or not private.is_global_time_payroll_manager() then raise exception 'Forbidden'; end if;
+  return public.decide_time_tracking_approval_internal_20260829(
+    p_source_type, p_source_id, p_decision, p_comment, p_expense_location_id
+  );
+end
+$$;
+
+
+ALTER FUNCTION "public"."decide_time_tracking_approval"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text", "p_expense_location_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."decide_time_tracking_approval_internal_20260829"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text" DEFAULT NULL::"text", "p_expense_location_id" "uuid" DEFAULT NULL::"uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
     AS $$
 declare
@@ -10075,7 +10345,7 @@ end
 $$;
 
 
-ALTER FUNCTION "public"."decide_time_tracking_approval"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text", "p_expense_location_id" "uuid") OWNER TO "postgres";
+ALTER FUNCTION "public"."decide_time_tracking_approval_internal_20260829"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text", "p_expense_location_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."deduct_debts_daily"() RETURNS "void"
@@ -10737,7 +11007,7 @@ ALTER FUNCTION "public"."delete_rubber_export"("p_export_id" "uuid") OWNER TO "p
 
 CREATE OR REPLACE FUNCTION "public"."delete_time_tracking_source_permanently"("p_source_type" "text", "p_source_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public', 'private'
+    SET "search_path" TO ''
     AS $$
 declare
   v_actor_id uuid := auth.uid();
@@ -10760,15 +11030,6 @@ begin
       raise exception 'Transaction not found';
     end if;
 
-    if v_tx.status = 'PENDING'
-      and v_tx.type = 'WITHDRAWAL'
-      and v_tx.profile_id = v_actor_id
-    then
-      null;
-    elsif not private.can_manage_time_payroll_profile(v_tx.profile_id) then
-      raise exception 'Forbidden';
-    end if;
-
     perform pg_advisory_xact_lock(hashtextextended('time-tracking:' || v_tx.profile_id::text, 0));
     select * into v_tx
     from public.financial_transactions
@@ -10776,6 +11037,13 @@ begin
     for update;
     if not found or v_tx.type not in ('DEBT', 'WITHDRAWAL') then
       raise exception 'Transaction not found';
+    end if;
+    if not (
+      v_tx.status = 'PENDING'
+      and v_tx.type = 'WITHDRAWAL'
+      and v_tx.profile_id = v_actor_id
+    ) and not private.is_global_time_payroll_manager() then
+      raise exception 'Forbidden';
     end if;
 
     select ps.month into v_blocked_month
@@ -10813,9 +11081,8 @@ begin
     select * into v_slip
     from public.payroll_slips
     where id = p_source_id;
-    if not found then raise exception 'Payroll slip not found'; end if;
-    if not private.can_manage_time_payroll_profile(v_slip.profile_id) then
-      raise exception 'Forbidden';
+    if not found then
+      raise exception 'Payroll slip not found';
     end if;
 
     perform pg_advisory_xact_lock(hashtextextended('time-tracking:' || v_slip.profile_id::text, 0));
@@ -10823,7 +11090,15 @@ begin
     from public.payroll_slips
     where id = p_source_id
     for update;
-    if not found then raise exception 'Payroll slip not found'; end if;
+    if not found then
+      raise exception 'Payroll slip not found';
+    end if;
+    if not (
+      v_slip.status = 'PENDING'
+      and v_slip.created_by = v_actor_id
+    ) and not private.is_global_time_payroll_manager() then
+      raise exception 'Forbidden';
+    end if;
 
     if exists (
       select 1
@@ -14659,6 +14934,94 @@ $$;
 ALTER FUNCTION "public"."get_telegram_evidence_location_config"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."get_time_payroll_attendance_month"("p_profile_id" "uuid", "p_month" "text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $_$
+declare
+  v_month date;
+  v_next_month date;
+  v_settings jsonb;
+  v_summary jsonb;
+  v_periods jsonb;
+  v_exceptions jsonb;
+  v_wage numeric;
+  v_bangkok_now timestamp := now() at time zone 'Asia/Bangkok';
+  v_eligible_through date;
+begin
+  if auth.uid() is null or not (
+    p_profile_id = auth.uid() or private.can_manage_time_payroll_profile(p_profile_id)
+  ) then raise exception 'Forbidden'; end if;
+  if p_month !~ '^[0-9]{4}-(0[1-9]|1[0-2])$' then raise exception 'INVALID_MONTH'; end if;
+  begin
+    v_month := (p_month || '-01')::date;
+  exception when others then
+    raise exception 'INVALID_MONTH';
+  end;
+  if to_char(v_month, 'YYYY-MM') <> p_month then raise exception 'INVALID_MONTH'; end if;
+
+  v_next_month := (v_month + interval '1 month')::date;
+  v_settings := public.get_time_payroll_settings();
+  v_eligible_through := case
+    when v_bangkok_now::time >= (v_settings ->> 'workdayEndTime')::time then v_bangkok_now::date
+    else v_bangkok_now::date - 1
+  end;
+
+  select p.daily_wage into v_wage
+  from public.profiles p
+  where p.id = p_profile_id and p.is_active;
+  if not found then raise exception 'PROFILE_NOT_FOUND'; end if;
+
+  v_summary := private.exception_attendance_summary(
+    p_profile_id,
+    v_month::timestamp at time zone 'Asia/Bangkok',
+    v_next_month::timestamp at time zone 'Asia/Bangkok',
+    now()
+  );
+  v_summary := v_summary || jsonb_build_object(
+    'grossPay', trunc(coalesce((v_summary ->> 'paidDays')::numeric, 0) * coalesce(v_wage, 0), 2)
+  );
+
+  select coalesce(
+    jsonb_agg(
+      jsonb_build_object('id', ap.id, 'startOn', ap.start_on, 'endOn', ap.end_on)
+      order by ap.start_on
+    ),
+    '[]'::jsonb
+  ) into v_periods
+  from public.time_payroll_active_periods ap
+  where ap.profile_id = p_profile_id
+    and ap.start_on < v_next_month
+    and (ap.end_on is null or ap.end_on >= v_month);
+
+  select coalesce(
+    jsonb_agg(
+      jsonb_build_object('date', x.work_date, 'status', x.status)
+      order by x.work_date
+    ),
+    '[]'::jsonb
+  ) into v_exceptions
+  from public.time_payroll_attendance_exceptions x
+  where x.profile_id = p_profile_id
+    and x.work_date >= v_month
+    and x.work_date < v_next_month;
+
+  return jsonb_build_object(
+    'month', p_month,
+    'mode', 'EXCEPTIONS',
+    'workdayEndTime', v_settings ->> 'workdayEndTime',
+    'eligibleThrough', v_eligible_through,
+    'periods', v_periods,
+    'exceptions', v_exceptions,
+    'summary', v_summary
+  );
+end
+$_$;
+
+
+ALTER FUNCTION "public"."get_time_payroll_attendance_month"("p_profile_id" "uuid", "p_month" "text") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."get_time_payroll_payment_locations"() RETURNS TABLE("id" "uuid", "name" "text", "code" "text", "active" boolean)
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -14672,6 +15035,51 @@ $$;
 
 
 ALTER FUNCTION "public"."get_time_payroll_payment_locations"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_time_payroll_preflight"() RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_result jsonb;
+begin
+  if auth.uid() is null or not private.is_global_time_payroll_manager() then raise exception 'Forbidden'; end if;
+  select jsonb_build_object(
+    'activeTimerSegments', (select count(*) from public.time_segments where end_time is null),
+    'resumeSchedules', (select count(*) from public.time_tracking_resume_schedules),
+    'cronJobs', coalesce((select jsonb_agg(jsonb_build_object('name', j.jobname, 'active', j.active) order by j.jobname)
+      from cron.job j where j.jobname in ('time-tracking-daily-cutoff', 'deduct-debts-daily', 'time-tracking-auto-start')), '[]'::jsonb)
+  ) into v_result;
+  return v_result;
+end
+$$;
+
+
+ALTER FUNCTION "public"."get_time_payroll_preflight"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_time_payroll_settings"() RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_settings record;
+begin
+  if not private.is_active_user() then raise exception 'Authentication required'; end if;
+  select * into v_settings from private.effective_time_payroll_settings();
+  return jsonb_build_object(
+    'mode', v_settings.mode,
+    'workdayEndTime', to_char(v_settings.workday_end_time, 'HH24:MI'),
+    'pendingWorkdayEndTime', case when v_settings.pending_workday_end_time is null then null else to_char(v_settings.pending_workday_end_time, 'HH24:MI') end,
+    'pendingEffectiveDate', v_settings.pending_effective_date,
+    'activatedOn', v_settings.activated_on
+  );
+end
+$$;
+
+
+ALTER FUNCTION "public"."get_time_payroll_settings"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_weight_evidence_review_digest"() RETURNS TABLE("location_id" "uuid", "branch_name" "text", "normal_today" bigint, "pending_today" bigint, "pass_today" bigint, "improve_today" bigint, "pending_before_today" bigint)
@@ -15802,6 +16210,65 @@ COMMENT ON FUNCTION "public"."replace_rubber_export_items"("p_export_id" "uuid",
 
 
 
+CREATE OR REPLACE FUNCTION "public"."replace_time_payroll_attendance_exceptions"("p_profile_id" "uuid", "p_month" "text", "p_selections" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $_$
+declare
+  v_actor uuid := auth.uid();
+  v_month date;
+  v_next date;
+  v_changed integer;
+  v_today date := (now() at time zone 'Asia/Bangkok')::date;
+begin
+  if v_actor is null or p_profile_id is null or not private.can_manage_time_payroll_profile(p_profile_id)
+  then raise exception 'Forbidden'; end if;
+  if p_month is null
+    or p_month !~ '^[0-9]{4}-[0-9]{2}$'
+    or jsonb_typeof(p_selections) is distinct from 'array'
+  then raise exception 'INVALID_ATTENDANCE_SELECTIONS'; end if;
+  begin v_month := (p_month || '-01')::date; exception when others then raise exception 'INVALID_MONTH'; end;
+  if to_char(v_month, 'YYYY-MM') <> p_month then raise exception 'INVALID_MONTH'; end if;
+  v_next := (v_month + interval '1 month')::date;
+  if exists (
+    select 1 from jsonb_array_elements(p_selections) item
+    where (item ->> 'date') is not null and (item ->> 'date')::date > v_today
+  ) then raise exception 'FUTURE_ATTENDANCE_DATE'; end if;
+  perform pg_advisory_xact_lock(hashtextextended('time-payroll-attendance:' || p_profile_id::text, 0));
+  perform private.assert_attendance_month_open(p_profile_id, p_month);
+  if exists (
+    select 1 from jsonb_array_elements(p_selections) item
+    where (item ->> 'status') is null
+      or (item ->> 'status') not in ('HALF_DAY', 'OFF')
+      or (item ->> 'date') is null
+      or (item ->> 'date')::date < v_month
+      or (item ->> 'date')::date >= v_next
+      or not exists (
+        select 1 from public.time_payroll_active_periods ap
+        where ap.profile_id = p_profile_id and ap.start_on <= (item ->> 'date')::date
+          and (ap.end_on is null or ap.end_on >= (item ->> 'date')::date)
+      )
+  ) or (
+    select count(*) <> count(distinct item ->> 'date') from jsonb_array_elements(p_selections) item
+  ) then raise exception 'INVALID_ATTENDANCE_SELECTIONS'; end if;
+
+  delete from public.time_payroll_attendance_exceptions x
+  where x.profile_id = p_profile_id and x.work_date >= v_month and x.work_date < v_next;
+  insert into public.time_payroll_attendance_exceptions(profile_id, work_date, status, created_by, updated_by)
+  select p_profile_id, (item ->> 'date')::date, item ->> 'status', v_actor, v_actor
+  from jsonb_array_elements(p_selections) item;
+  get diagnostics v_changed = row_count;
+  insert into public.time_tracking_audit_logs(admin_id, action, target_table, record_id, new_data, comment)
+  values (v_actor, 'REPLACE_ATTENDANCE_EXCEPTIONS', 'time_payroll_attendance_exceptions', p_profile_id,
+    jsonb_build_object('month', p_month, 'selections', p_selections, 'count', v_changed), 'แก้ข้อยกเว้นวันทำงาน');
+  return jsonb_build_object('changed', v_changed, 'month', p_month);
+end
+$_$;
+
+
+ALTER FUNCTION "public"."replace_time_payroll_attendance_exceptions"("p_profile_id" "uuid", "p_month" "text", "p_selections" "jsonb") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."replace_time_tracking_segments"("p_profile_id" "uuid", "p_selections" "jsonb", "p_full_snapshot" "jsonb" DEFAULT '{}'::"jsonb", "p_comment" "text" DEFAULT NULL::"text") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -16382,6 +16849,26 @@ CREATE OR REPLACE FUNCTION "public"."report_lock_no"("source_row" "public"."time
 
 
 ALTER FUNCTION "public"."report_lock_no"("source_row" "public"."time_segments") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."request_time_tracking_withdrawal"("p_amount" numeric) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if auth.uid() is null or not private.is_active_user() then raise exception 'Authentication required'; end if;
+  return public.create_time_tracking_transaction(
+    auth.uid(),
+    'WITHDRAWAL',
+    p_amount,
+    (now() at time zone 'Asia/Bangkok')::date,
+    null
+  );
+end
+$$;
+
+
+ALTER FUNCTION "public"."request_time_tracking_withdrawal"("p_amount" numeric) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."rubber_export_lock_no"("source_row" "public"."report_batches") RETURNS "text"
@@ -17886,6 +18373,76 @@ $$;
 
 
 ALTER FUNCTION "public"."set_rubber_export_sold_out"("p_export_id" "uuid", "p_sold_out" boolean) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."set_time_payroll_active_period"("p_profile_id" "uuid", "p_action" "text", "p_effective_date" "date") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_actor uuid := auth.uid();
+  v_open public.time_payroll_active_periods%rowtype;
+  v_latest public.time_payroll_active_periods%rowtype;
+  v_today date := (now() at time zone 'Asia/Bangkok')::date;
+begin
+  if v_actor is null or not private.is_global_time_payroll_manager() then raise exception 'Forbidden'; end if;
+  if p_profile_id is null
+    or p_action is null
+    or p_action not in ('ENABLE', 'PAUSE', 'RESUME', 'END')
+    or p_effective_date is null
+  then raise exception 'INVALID_PERIOD_ACTION'; end if;
+  if p_effective_date > v_today then raise exception 'FUTURE_EFFECTIVE_DATE'; end if;
+  if not exists (select 1 from public.profiles p where p.id = p_profile_id and p.is_active) then raise exception 'PROFILE_NOT_FOUND'; end if;
+  perform pg_advisory_xact_lock(hashtextextended('time-payroll-attendance:' || p_profile_id::text, 0));
+  select * into v_open
+  from public.time_payroll_active_periods ap
+  where ap.profile_id = p_profile_id and ap.end_on is null
+  for update;
+
+  if p_action in ('ENABLE', 'RESUME') then
+    if found then raise exception 'ACTIVE_PERIOD_ALREADY_OPEN'; end if;
+
+    if p_action = 'RESUME' then
+      select * into v_latest
+      from public.time_payroll_active_periods ap
+      where ap.profile_id = p_profile_id
+      order by ap.start_on desc
+      limit 1
+      for update;
+    end if;
+
+    perform private.assert_attendance_range_open(p_profile_id, p_effective_date, v_today);
+    if p_action = 'RESUME' and v_latest.end_on = p_effective_date then
+      update public.time_payroll_active_periods
+      set end_on = null, updated_by = v_actor, updated_at = now()
+      where id = v_latest.id;
+    else
+      insert into public.time_payroll_active_periods(profile_id, start_on, created_by, updated_by)
+      values (p_profile_id, p_effective_date, v_actor, v_actor);
+    end if;
+  elsif p_action = 'PAUSE' then
+    if not found or p_effective_date <= v_open.start_on then raise exception 'NO_OPEN_ACTIVE_PERIOD'; end if;
+    perform private.assert_attendance_range_open(p_profile_id, p_effective_date, v_today);
+    update public.time_payroll_active_periods
+    set end_on = p_effective_date - 1, updated_by = v_actor, updated_at = now()
+    where id = v_open.id;
+  else
+    if not found or p_effective_date < v_open.start_on then raise exception 'NO_OPEN_ACTIVE_PERIOD'; end if;
+    perform private.assert_attendance_range_open(p_profile_id, p_effective_date + 1, v_today);
+    update public.time_payroll_active_periods
+    set end_on = p_effective_date, updated_by = v_actor, updated_at = now()
+    where id = v_open.id;
+  end if;
+
+  insert into public.time_tracking_audit_logs(admin_id, action, target_table, record_id, new_data, comment)
+  values (v_actor, 'SET_PAYROLL_ACTIVE_PERIOD', 'time_payroll_active_periods', p_profile_id,
+    jsonb_build_object('action', p_action, 'effectiveDate', p_effective_date), 'เปลี่ยนช่วงเงินเดือน');
+  return jsonb_build_object('profileId', p_profile_id, 'action', p_action, 'effectiveDate', p_effective_date);
+end
+$$;
+
+
+ALTER FUNCTION "public"."set_time_payroll_active_period"("p_profile_id" "uuid", "p_action" "text", "p_effective_date" "date") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."set_time_tracking_status"("p_profile_id" "uuid", "p_status" "text") RETURNS "jsonb"
@@ -19843,7 +20400,52 @@ $$;
 ALTER FUNCTION "public"."update_rubber_export"("p_export_id" "uuid", "p_current_weight" numeric, "p_work_rate" numeric, "p_other_operating_cost" numeric) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."update_time_payroll_config"("p_workday_end_time" "text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $_$
+declare
+  v_actor uuid := auth.uid();
+  v_time time;
+  v_today date := (now() at time zone 'Asia/Bangkok')::date;
+begin
+  if v_actor is null or not private.is_global_time_payroll_manager() then raise exception 'Forbidden'; end if;
+  if p_workday_end_time is null or p_workday_end_time !~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+  then raise exception 'INVALID_WORKDAY_END_TIME'; end if;
+  v_time := p_workday_end_time::time;
+  update public.time_payroll_settings
+  set workday_end_time = case when pending_effective_date <= v_today then pending_workday_end_time else workday_end_time end,
+      pending_workday_end_time = v_time,
+      pending_effective_date = v_today + 1,
+      updated_by = v_actor,
+      updated_at = now()
+  where singleton = true;
+  insert into public.time_tracking_audit_logs(admin_id, action, target_table, record_id, new_data, comment)
+  values (v_actor, 'UPDATE_TIME_PAYROLL_CONFIG', 'time_payroll_settings', v_actor,
+    jsonb_build_object('workdayEndTime', p_workday_end_time, 'effectiveDate', v_today + 1), 'ตั้งค่าเวลาสิ้นสุดวัน');
+  return public.get_time_payroll_settings();
+end
+$_$;
+
+
+ALTER FUNCTION "public"."update_time_payroll_config"("p_workday_end_time" "text") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."update_time_tracking_wage"("p_profile_id" "uuid", "p_daily_wage" numeric) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if auth.uid() is null or not private.is_global_time_payroll_manager() then raise exception 'Forbidden'; end if;
+  return public.update_time_tracking_wage_internal_20260829(p_profile_id, p_daily_wage);
+end
+$$;
+
+
+ALTER FUNCTION "public"."update_time_tracking_wage"("p_profile_id" "uuid", "p_daily_wage" numeric) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."update_time_tracking_wage_internal_20260829"("p_profile_id" "uuid", "p_daily_wage" numeric) RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
@@ -19900,7 +20502,7 @@ end;
 $$;
 
 
-ALTER FUNCTION "public"."update_time_tracking_wage"("p_profile_id" "uuid", "p_daily_wage" numeric) OWNER TO "postgres";
+ALTER FUNCTION "public"."update_time_tracking_wage_internal_20260829"("p_profile_id" "uuid", "p_daily_wage" numeric) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."validate_stock_non_negative_after_entry_delete"("p_location_id" "uuid", "p_product_id" "uuid", "p_deleted_entry_ids" "uuid"[]) RETURNS "jsonb"
@@ -21261,6 +21863,56 @@ CREATE TABLE IF NOT EXISTS "public"."telegram_badge_settings" (
 ALTER TABLE "public"."telegram_badge_settings" OWNER TO "postgres";
 
 
+CREATE TABLE IF NOT EXISTS "public"."time_payroll_active_periods" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "profile_id" "uuid" NOT NULL,
+    "start_on" "date" NOT NULL,
+    "end_on" "date",
+    "created_by" "uuid" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_by" "uuid" NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "time_payroll_active_period_dates" CHECK ((("end_on" IS NULL) OR ("start_on" <= "end_on")))
+);
+
+
+ALTER TABLE "public"."time_payroll_active_periods" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."time_payroll_attendance_exceptions" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "profile_id" "uuid" NOT NULL,
+    "work_date" "date" NOT NULL,
+    "status" "text" NOT NULL,
+    "created_by" "uuid" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_by" "uuid" NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "time_payroll_attendance_exceptions_status_check" CHECK (("status" = ANY (ARRAY['HALF_DAY'::"text", 'OFF'::"text"])))
+);
+
+
+ALTER TABLE "public"."time_payroll_attendance_exceptions" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."time_payroll_settings" (
+    "singleton" boolean DEFAULT true NOT NULL,
+    "mode" "text" DEFAULT 'EXCEPTIONS'::"text" NOT NULL,
+    "workday_end_time" time without time zone DEFAULT '16:00:00'::time without time zone NOT NULL,
+    "pending_workday_end_time" time without time zone,
+    "pending_effective_date" "date",
+    "activated_on" "date",
+    "updated_by" "uuid",
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "time_payroll_settings_mode_check" CHECK (("mode" = 'EXCEPTIONS'::"text")),
+    CONSTRAINT "time_payroll_settings_pending_pair" CHECK ((("pending_workday_end_time" IS NULL) = ("pending_effective_date" IS NULL))),
+    CONSTRAINT "time_payroll_settings_singleton_check" CHECK ("singleton")
+);
+
+
+ALTER TABLE "public"."time_payroll_settings" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "public"."time_tracking_audit_logs" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "admin_id" "uuid" NOT NULL,
@@ -21854,6 +22506,31 @@ ALTER TABLE ONLY "public"."telegram_badge_settings"
 
 
 
+ALTER TABLE ONLY "public"."time_payroll_active_periods"
+    ADD CONSTRAINT "time_payroll_active_period_no_overlap" EXCLUDE USING "gist" ("profile_id" WITH =, "daterange"("start_on", COALESCE("end_on", 'infinity'::"date"), '[]'::"text") WITH &&);
+
+
+
+ALTER TABLE ONLY "public"."time_payroll_active_periods"
+    ADD CONSTRAINT "time_payroll_active_periods_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."time_payroll_attendance_exceptions"
+    ADD CONSTRAINT "time_payroll_attendance_exceptions_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."time_payroll_attendance_exceptions"
+    ADD CONSTRAINT "time_payroll_attendance_exceptions_profile_id_work_date_key" UNIQUE ("profile_id", "work_date");
+
+
+
+ALTER TABLE ONLY "public"."time_payroll_settings"
+    ADD CONSTRAINT "time_payroll_settings_pkey" PRIMARY KEY ("singleton");
+
+
+
 ALTER TABLE ONLY "public"."time_segments"
     ADD CONSTRAINT "time_segments_pkey" PRIMARY KEY ("id");
 
@@ -22210,6 +22887,18 @@ CREATE UNIQUE INDEX "stock_product_approval_requests_pending_delete_product_idx"
 
 
 CREATE INDEX "stock_product_approval_requests_status_created_idx" ON "public"."stock_product_approval_requests" USING "btree" ("request_status", "created_at" DESC);
+
+
+
+CREATE UNIQUE INDEX "time_payroll_active_period_one_open" ON "public"."time_payroll_active_periods" USING "btree" ("profile_id") WHERE ("end_on" IS NULL);
+
+
+
+CREATE INDEX "time_payroll_active_period_profile_dates" ON "public"."time_payroll_active_periods" USING "btree" ("profile_id", "start_on", "end_on");
+
+
+
+CREATE INDEX "time_payroll_attendance_exception_month" ON "public"."time_payroll_attendance_exceptions" USING "btree" ("profile_id", "work_date");
 
 
 
@@ -23172,6 +23861,41 @@ ALTER TABLE ONLY "public"."telegram_badge_settings"
 
 
 
+ALTER TABLE ONLY "public"."time_payroll_active_periods"
+    ADD CONSTRAINT "time_payroll_active_periods_created_by_fkey" FOREIGN KEY ("created_by") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."time_payroll_active_periods"
+    ADD CONSTRAINT "time_payroll_active_periods_profile_id_fkey" FOREIGN KEY ("profile_id") REFERENCES "public"."profiles"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."time_payroll_active_periods"
+    ADD CONSTRAINT "time_payroll_active_periods_updated_by_fkey" FOREIGN KEY ("updated_by") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."time_payroll_attendance_exceptions"
+    ADD CONSTRAINT "time_payroll_attendance_exceptions_created_by_fkey" FOREIGN KEY ("created_by") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."time_payroll_attendance_exceptions"
+    ADD CONSTRAINT "time_payroll_attendance_exceptions_profile_id_fkey" FOREIGN KEY ("profile_id") REFERENCES "public"."profiles"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."time_payroll_attendance_exceptions"
+    ADD CONSTRAINT "time_payroll_attendance_exceptions_updated_by_fkey" FOREIGN KEY ("updated_by") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."time_payroll_settings"
+    ADD CONSTRAINT "time_payroll_settings_updated_by_fkey" FOREIGN KEY ("updated_by") REFERENCES "public"."profiles"("id");
+
+
+
 ALTER TABLE ONLY "public"."time_segments"
     ADD CONSTRAINT "time_segments_profile_id_fkey" FOREIGN KEY ("profile_id") REFERENCES "public"."profiles"("id");
 
@@ -23747,6 +24471,27 @@ ALTER TABLE "public"."telegram_badge_catalog" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."telegram_badge_settings" ENABLE ROW LEVEL SECURITY;
 
 
+ALTER TABLE "public"."time_payroll_active_periods" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "time_payroll_active_periods_read_self_or_manager" ON "public"."time_payroll_active_periods" FOR SELECT TO "authenticated" USING ((("profile_id" = "auth"."uid"()) OR "private"."can_manage_time_payroll_profile"("profile_id")));
+
+
+
+ALTER TABLE "public"."time_payroll_attendance_exceptions" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "time_payroll_attendance_exceptions_read_self_or_manager" ON "public"."time_payroll_attendance_exceptions" FOR SELECT TO "authenticated" USING ((("profile_id" = "auth"."uid"()) OR "private"."can_manage_time_payroll_profile"("profile_id")));
+
+
+
+ALTER TABLE "public"."time_payroll_settings" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "time_payroll_settings_read_authenticated" ON "public"."time_payroll_settings" FOR SELECT TO "authenticated" USING ("private"."is_active_user"());
+
+
+
 ALTER TABLE "public"."time_segments" ENABLE ROW LEVEL SECURITY;
 
 
@@ -23757,7 +24502,7 @@ CREATE POLICY "time_segments_read_self_or_manager" ON "public"."time_segments" F
 ALTER TABLE "public"."time_tracking_audit_logs" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "time_tracking_audit_logs_read_manager" ON "public"."time_tracking_audit_logs" FOR SELECT TO "authenticated" USING (("private"."can_access_super_admin_features"() OR ("private"."has_time_payroll_manager_access"() AND ("admin_id" = "auth"."uid"()))));
+CREATE POLICY "time_tracking_audit_logs_read_global_manager" ON "public"."time_tracking_audit_logs" FOR SELECT TO "authenticated" USING ("private"."is_global_time_payroll_manager"());
 
 
 
@@ -23866,6 +24611,14 @@ REVOKE ALL ON FUNCTION "private"."append_dashboard_money_event"("p_source_type" 
 
 
 REVOKE ALL ON FUNCTION "private"."apply_time_tracking_deductions"("p_profile_id" "uuid", "p_through_month" "date") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."assert_attendance_month_open"("p_profile_id" "uuid", "p_month" "text") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."assert_attendance_range_open"("p_profile_id" "uuid", "p_start_date" "date", "p_end_date" "date") FROM PUBLIC;
 
 
 
@@ -24038,11 +24791,19 @@ REVOKE ALL ON FUNCTION "private"."effective_rubber_approval_settings"("p_locatio
 
 
 
+REVOKE ALL ON FUNCTION "private"."effective_time_payroll_settings"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."enforce_complete_wex_before_reservation"() FROM PUBLIC;
 
 
 
 REVOKE ALL ON FUNCTION "private"."enforce_rubber_bill_ocr_source_update"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."exception_attendance_summary"("p_profile_id" "uuid", "p_period_start" timestamp with time zone, "p_period_end" timestamp with time zone, "p_now" timestamp with time zone) FROM PUBLIC;
 
 
 
@@ -24057,6 +24818,11 @@ REVOKE ALL ON FUNCTION "private"."income_expense_operational_row"("p_location_id
 
 REVOKE ALL ON FUNCTION "private"."is_active_user"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "private"."is_active_user"() TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "private"."is_global_time_payroll_manager"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "private"."is_global_time_payroll_manager"() TO "authenticated";
 
 
 
@@ -24239,6 +25005,10 @@ REVOKE ALL ON FUNCTION "private"."validate_wex_rubber_exports"("p_location_id" "
 
 
 
+REVOKE ALL ON FUNCTION "public"."activate_exception_attendance"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "public"."approve_rubber_bill_approval_request"("p_request_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."approve_rubber_bill_approval_request"("p_request_id" "uuid") TO "authenticated";
 
@@ -24302,6 +25072,7 @@ GRANT ALL ON FUNCTION "public"."cash_count_submitted_at"("source_row" "public"."
 
 REVOKE ALL ON FUNCTION "public"."change_time_tracking_expense_location"("p_source_type" "text", "p_source_id" "uuid", "p_expense_location_id" "uuid", "p_comment" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."change_time_tracking_expense_location"("p_source_type" "text", "p_source_id" "uuid", "p_expense_location_id" "uuid", "p_comment" "text") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."change_time_tracking_expense_location"("p_source_type" "text", "p_source_id" "uuid", "p_expense_location_id" "uuid", "p_comment" "text") TO "service_role";
 
 
 
@@ -24405,8 +25176,16 @@ GRANT ALL ON FUNCTION "public"."create_time_tracking_payroll_slip"("p_profile_id
 
 
 
+REVOKE ALL ON FUNCTION "public"."create_time_tracking_payroll_slip_internal_20260829"("p_profile_id" "uuid", "p_month" "text", "p_auto_start_next_month" boolean) FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "public"."create_time_tracking_transaction"("p_profile_id" "uuid", "p_type" "text", "p_amount" numeric, "p_effective_date" "date", "p_description" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."create_time_tracking_transaction"("p_profile_id" "uuid", "p_type" "text", "p_amount" numeric, "p_effective_date" "date", "p_description" "text") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."create_time_tracking_transaction_internal_20260829"("p_profile_id" "uuid", "p_type" "text", "p_amount" numeric, "p_effective_date" "date", "p_description" "text") FROM PUBLIC;
 
 
 
@@ -24416,7 +25195,6 @@ GRANT ALL ON FUNCTION "public"."current_profile_id"() TO "authenticated";
 
 
 REVOKE ALL ON FUNCTION "public"."cutoff_time_tracking"("p_profile_id" "uuid", "p_cutoff_time" timestamp with time zone) FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."cutoff_time_tracking"("p_profile_id" "uuid", "p_cutoff_time" timestamp with time zone) TO "authenticated";
 
 
 
@@ -24447,6 +25225,10 @@ GRANT ALL ON FUNCTION "public"."decide_stock_product_approval_request"("p_reques
 
 REVOKE ALL ON FUNCTION "public"."decide_time_tracking_approval"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text", "p_expense_location_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."decide_time_tracking_approval"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text", "p_expense_location_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."decide_time_tracking_approval_internal_20260829"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text", "p_expense_location_id" "uuid") FROM PUBLIC;
 
 
 
@@ -24501,6 +25283,7 @@ GRANT ALL ON FUNCTION "public"."delete_rubber_export"("p_export_id" "uuid") TO "
 
 REVOKE ALL ON FUNCTION "public"."delete_time_tracking_source_permanently"("p_source_type" "text", "p_source_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."delete_time_tracking_source_permanently"("p_source_type" "text", "p_source_id" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."delete_time_tracking_source_permanently"("p_source_type" "text", "p_source_id" "uuid") TO "service_role";
 
 
 
@@ -24727,8 +25510,22 @@ GRANT ALL ON FUNCTION "public"."get_telegram_evidence_location_config"() TO "aut
 
 
 
+REVOKE ALL ON FUNCTION "public"."get_time_payroll_attendance_month"("p_profile_id" "uuid", "p_month" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_time_payroll_attendance_month"("p_profile_id" "uuid", "p_month" "text") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."get_time_payroll_payment_locations"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_time_payroll_payment_locations"() TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_time_payroll_preflight"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_time_payroll_settings"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_time_payroll_settings"() TO "authenticated";
 
 
 
@@ -24838,8 +25635,12 @@ GRANT ALL ON FUNCTION "public"."replace_rubber_export_items"("p_export_id" "uuid
 
 
 
+REVOKE ALL ON FUNCTION "public"."replace_time_payroll_attendance_exceptions"("p_profile_id" "uuid", "p_month" "text", "p_selections" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."replace_time_payroll_attendance_exceptions"("p_profile_id" "uuid", "p_month" "text", "p_selections" "jsonb") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."replace_time_tracking_segments"("p_profile_id" "uuid", "p_selections" "jsonb", "p_full_snapshot" "jsonb", "p_comment" "text") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."replace_time_tracking_segments"("p_profile_id" "uuid", "p_selections" "jsonb", "p_full_snapshot" "jsonb", "p_comment" "text") TO "authenticated";
 
 
 
@@ -25131,6 +25932,11 @@ GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."time_segm
 
 
 
+REVOKE ALL ON FUNCTION "public"."request_time_tracking_withdrawal"("p_amount" numeric) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."request_time_tracking_withdrawal"("p_amount" numeric) TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."rubber_export_lock_no"("source_row" "public"."report_batches") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."rubber_export_lock_no"("source_row" "public"."report_batches") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."rubber_export_lock_no"("source_row" "public"."report_batches") TO "service_role";
@@ -25220,8 +26026,12 @@ GRANT ALL ON FUNCTION "public"."set_rubber_export_sold_out"("p_export_id" "uuid"
 
 
 
+REVOKE ALL ON FUNCTION "public"."set_time_payroll_active_period"("p_profile_id" "uuid", "p_action" "text", "p_effective_date" "date") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."set_time_payroll_active_period"("p_profile_id" "uuid", "p_action" "text", "p_effective_date" "date") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."set_time_tracking_status"("p_profile_id" "uuid", "p_status" "text") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."set_time_tracking_status"("p_profile_id" "uuid", "p_status" "text") TO "authenticated";
 
 
 
@@ -25313,8 +26123,17 @@ GRANT ALL ON FUNCTION "public"."update_rubber_export"("p_export_id" "uuid", "p_c
 
 
 
+REVOKE ALL ON FUNCTION "public"."update_time_payroll_config"("p_workday_end_time" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."update_time_payroll_config"("p_workday_end_time" "text") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."update_time_tracking_wage"("p_profile_id" "uuid", "p_daily_wage" numeric) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."update_time_tracking_wage"("p_profile_id" "uuid", "p_daily_wage" numeric) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."update_time_tracking_wage_internal_20260829"("p_profile_id" "uuid", "p_daily_wage" numeric) FROM PUBLIC;
 
 
 
@@ -25610,6 +26429,21 @@ GRANT SELECT ON TABLE "public"."telegram_badge_catalog" TO "authenticated";
 
 GRANT ALL ON TABLE "public"."telegram_badge_settings" TO "service_role";
 GRANT SELECT ON TABLE "public"."telegram_badge_settings" TO "authenticated";
+
+
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."time_payroll_active_periods" TO "service_role";
+GRANT SELECT ON TABLE "public"."time_payroll_active_periods" TO "authenticated";
+
+
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."time_payroll_attendance_exceptions" TO "service_role";
+GRANT SELECT ON TABLE "public"."time_payroll_attendance_exceptions" TO "authenticated";
+
+
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."time_payroll_settings" TO "service_role";
+GRANT SELECT ON TABLE "public"."time_payroll_settings" TO "authenticated";
 
 
 

@@ -1,10 +1,22 @@
 import { expect, request as playwrightRequest, test } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const userId = "00000000-0000-4000-8000-000000000003";
 const superAdminId = "00000000-0000-4000-8000-000000000001";
+
+test("withdrawal documents use one attendance snapshot for the total and calendar", () => {
+  const routeSource = readFileSync(
+    resolve("src/app/api/lanflow/time-tracking/documents/[sourceType]/[id]/route.ts"),
+    "utf8",
+  );
+
+  expect(routeSource).not.toContain('rpc("calculate_paid_work_days"');
+  expect(routeSource).toContain("totalPaidDays: Number(attendanceResponse.data?.summary?.paidDays) || 0");
+});
 
 test("document API follows source-row RLS and excludes rejected, cancelled, and deleted rows", async () => {
   expect(serviceRoleKey).toBeTruthy();
@@ -55,12 +67,27 @@ test("document API follows source-row RLS and excludes rejected, cancelled, and 
       id: payrollId,
       profile_id: userId,
       month: "2049-02",
-      gross_pay: 5000,
-      total_deductions: 2000,
-      net_pay: 3000,
-      total_days: 10,
+      gross_pay: 1250,
+      total_deductions: 250,
+      net_pay: 1000,
+      total_days: 2.5,
       daily_wage: 500,
-      slip_data: { segments: [], transactions: [] },
+      slip_data: {
+        attendance: {
+          month: "2049-02",
+          mode: "EXCEPTIONS",
+          workdayEndTime: "16:00",
+          eligibleThrough: "2049-02-04",
+          periods: [{ id: crypto.randomUUID(), startOn: "2049-02-01", endOn: null }],
+          exceptions: [
+            { date: "2049-02-02", status: "HALF_DAY" },
+            { date: "2049-02-03", status: "OFF" },
+          ],
+          summary: { fullDays: 2, halfDays: 1, offDays: 1, paidDays: 2.5, grossPay: 1250 },
+        },
+        segments: [],
+        transactions: [],
+      },
       status: "PENDING",
       created_by: superAdminId,
     });
@@ -101,13 +128,25 @@ test("document API follows source-row RLS and excludes rejected, cancelled, and 
 
       const payrollResponse = await request.get(`/api/lanflow/time-tracking/documents/payroll/${payrollId}`);
       expect(payrollResponse.status(), await payrollResponse.text()).toBe(200);
-      expect(await payrollResponse.json()).toMatchObject({
+      const payrollDocument = await payrollResponse.json();
+      expect(payrollDocument).toMatchObject({
         kind: "payroll",
         sourceId: payrollId,
         status: "PENDING",
         title: "สลิปเงินเดือน",
         paymentLabel: null,
       });
+      expect(payrollDocument.calendar).toHaveLength(28);
+      expect(payrollDocument.calendar.slice(0, 4)).toEqual([
+        { date: "2049-02-01", day: 1, paidDays: 1 },
+        { date: "2049-02-02", day: 2, paidDays: 0.5 },
+        { date: "2049-02-03", day: 3, paidDays: 0 },
+        { date: "2049-02-04", day: 4, paidDays: 1 },
+      ]);
+      expect(payrollDocument.calendar.reduce(
+        (sum: number, day: { paidDays: number }) => sum + day.paidDays,
+        0,
+      )).toBe(2.5);
 
       for (const id of [rejectedId, cancelledId]) {
         const response = await request.get(`/api/lanflow/time-tracking/documents/withdrawal/${id}`);

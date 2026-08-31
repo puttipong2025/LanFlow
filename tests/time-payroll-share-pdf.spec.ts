@@ -69,7 +69,7 @@ const payrollDocument = buildPayrollSlipDocument({
 });
 
 async function openTimeTracking(page: Page) {
-  await page.route("**/api/lanflow/time-tracking/user", async (route) => {
+  await page.route("**/api/lanflow/time-tracking/user?*", async (route) => {
     const pathname = new URL(route.request().url()).pathname;
     if (pathname !== "/api/lanflow/time-tracking/user") return route.continue();
     await route.fulfill({
