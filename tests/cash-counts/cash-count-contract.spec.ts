@@ -185,9 +185,18 @@ test.describe.serial("cash count aggregate contract", () => {
 
     for (const denomination of [1000, 500, 100, 50, 20, 10, 5, 2, 1]) {
       const input = page.getByRole("spinbutton", { name: `จำนวนเงินชนิด ${denomination} บาท` });
-      await expect(input).toHaveValue("");
-      await input.fill(denomination === 1000 ? "1" : "0");
+      await expect(input).toHaveValue("0");
     }
+    const thousandBaht = page.getByRole("spinbutton", { name: "จำนวนเงินชนิด 1000 บาท" });
+    await thousandBaht.focus();
+    await expect(thousandBaht).toHaveValue("");
+    await thousandBaht.fill("1");
+
+    const fiveHundredBaht = page.getByRole("spinbutton", { name: "จำนวนเงินชนิด 500 บาท" });
+    await fiveHundredBaht.focus();
+    await expect(fiveHundredBaht).toHaveValue("");
+    await thousandBaht.focus();
+    await expect(fiveHundredBaht).toHaveValue("0");
     await expect(page.getByText("1,000.00 บาท", { exact: false }).first()).toBeVisible();
     await page.getByRole("button", { name: "ยืนยันและส่งผล" }).click();
     const dialog = page.getByRole("alertdialog");
