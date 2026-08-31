@@ -1,5 +1,7 @@
 import { expect, test, type Browser, type BrowserContext } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { selectAppLocation } from "../helpers/select-app-location";
 import { bangkokDateString } from "../../src/lib/bangkok-date";
 
@@ -8,6 +10,12 @@ const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const userId = "00000000-0000-4000-8000-000000000003";
 const adminId = "00000000-0000-4000-8000-000000000002";
 const managerId = "00000000-0000-4000-8000-000000000001";
+const thousandOnly = { "1": 0, "2": 0, "5": 0, "10": 0, "20": 0, "50": 0, "100": 0, "500": 0, "1000": 1 };
+const nineHundred = { "1": 0, "2": 0, "5": 0, "10": 0, "20": 0, "50": 0, "100": 4, "500": 1, "1000": 0 };
+const zeroTransferCounts = {
+  coin1: 0, coin2: 0, coin5: 0, coin10: 0,
+  banknote20: 0, banknote50: 0, banknote100: 0, banknote500: 0, banknote1000: 0,
+};
 
 async function contextFor(browser: Browser, role: "user" | "admin" | "super_admin") {
   return browser.newContext({ storageState: `playwright/.auth/${role}.json` });
@@ -35,9 +43,11 @@ async function addIncome(locationId: string, actorId: string, title: string, typ
 
 test.describe.serial("cash count aggregate contract", () => {
   let locationId = "";
+  let sourceLocationId = "";
   let user: BrowserContext;
   let admin: BrowserContext;
   let manager: BrowserContext;
+  const transferIds: string[] = [];
 
   test.beforeAll(async ({ browser }) => {
     expect(serviceRoleKey).toBeTruthy();
@@ -45,10 +55,17 @@ test.describe.serial("cash count aggregate contract", () => {
     const { data: location, error } = await db.from("locations").insert({ name: `Cash Count ${crypto.randomUUID().slice(0, 8)}`, code: `CC${Date.now()}` }).select("id").single();
     expect(error).toBeNull();
     locationId = location!.id;
+    const { data: sourceLocation, error: sourceError } = await db.from("locations").insert({
+      name: `Cash Count Source ${crypto.randomUUID().slice(0, 8)}`,
+      code: `CS${Date.now()}`,
+    }).select("id").single();
+    expect(sourceError).toBeNull();
+    sourceLocationId = sourceLocation!.id;
     expect((await db.from("user_locations").insert([
       { user_id: userId, location_id: locationId },
       { user_id: adminId, location_id: locationId },
       { user_id: managerId, location_id: locationId },
+      { user_id: managerId, location_id: sourceLocationId },
     ])).error).toBeNull();
     user = await contextFor(browser, "user");
     admin = await contextFor(browser, "admin");
@@ -59,16 +76,17 @@ test.describe.serial("cash count aggregate contract", () => {
     await user?.close(); await admin?.close(); await manager?.close();
     if (!locationId) return;
     const db = service();
-    const { data: reports } = await db.from("report_batches").select("id").eq("location_id", locationId);
+    const { data: reports } = await db.from("report_batches").select("id").in("location_id", [locationId, sourceLocationId]);
     const reportIds = (reports ?? []).map((row) => row.id);
     await db.from("cash_counts").delete().eq("location_id", locationId);
     await db.from("cash_count_sessions").delete().eq("location_id", locationId);
     if (reportIds.length) await db.from("report_items").delete().in("report_id", reportIds);
-    await db.from("report_batches").delete().eq("location_id", locationId);
+    if (transferIds.length) await db.from("money_transfers").delete().in("id", transferIds);
+    await db.from("report_batches").delete().in("location_id", [locationId, sourceLocationId]);
     await db.from("income_expense").delete().eq("location_id", locationId);
     await db.from("document_deletion_audits").delete().eq("location_id", locationId);
-    await db.from("user_locations").delete().eq("location_id", locationId);
-    await db.from("locations").delete().eq("id", locationId);
+    await db.from("user_locations").delete().in("location_id", [locationId, sourceLocationId]);
+    await db.from("locations").delete().in("id", [locationId, sourceLocationId]);
   });
 
   test("fixed cutoff keeps business writes open and creates a private paired result", async () => {
@@ -173,6 +191,140 @@ test.describe.serial("cash count aggregate contract", () => {
     expect(otherCancel.status()).toBe(400);
     expect((await otherCancel.json()).error).toContain("ผู้เริ่ม");
     expect((await user.request.delete("/api/lanflow/cash-counts/session", { data: { sessionId: session.id } })).ok()).toBe(true);
+  });
+
+  test("unknown-denomination income rebaselines the current physical count", async () => {
+    await addIncome(locationId, userId, "สร้างฐานก่อนทดสอบรายรับ", "income", 100);
+    const baselineStart = await user.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
+    expect(baselineStart.ok()).toBe(true);
+    const baselineSession = (await baselineStart.json()).session as { id: string };
+    const baselineSubmit = await user.request.post("/api/lanflow/cash-counts", {
+      data: { sessionId: baselineSession.id, actualCounts: thousandOnly },
+    });
+    expect(baselineSubmit.ok()).toBe(true);
+
+    let latestReceipt: { id: string; reportId: string; reportNo: string } | null = null;
+    for (const amount of [120, 1500]) {
+      const title = `รายรับไม่ทราบชนิดเงิน ${amount}`;
+      const incomeId = await addIncome(locationId, userId, title, "income", amount);
+      const start = await user.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
+      expect(start.ok()).toBe(true);
+      const session = (await start.json()).session as { id: string };
+      const submit = await user.request.post("/api/lanflow/cash-counts", {
+        data: { sessionId: session.id, actualCounts: thousandOnly },
+      });
+      expect(submit.ok()).toBe(true);
+      const receipt = await submit.json() as { id: string; reportId: string; reportNo: string };
+      latestReceipt = receipt;
+
+      const detailResponse = await manager.request.get(`/api/lanflow/cash-counts/${receipt.id}?locationId=${locationId}`);
+      expect(detailResponse.ok()).toBe(true);
+      const detail = await detailResponse.json();
+      expect(detail).toMatchObject({
+        actualTotal: 1000,
+        expectedTotal: 1000,
+        differenceTotal: 0,
+        anomalyScore: null,
+        confidence: null,
+        analysisStatus: null,
+        formulaVersion: "cash-v1-rebaseline",
+      });
+      expect(detail.differenceCounts).toEqual({ "1": 0, "2": 0, "5": 0, "10": 0, "20": 0, "50": 0, "100": 0, "500": 0, "1000": 0 });
+      expect(detail.evidence.references).toContainEqual(expect.objectContaining({ source: "income_expense", id: incomeId, amount }));
+      const { data: stored } = await service().from("cash_counts").select("previous_cash_count_id").eq("id", receipt.id).single();
+      expect(stored?.previous_cash_count_id).toBeNull();
+    }
+
+    expect(latestReceipt).not.toBeNull();
+    const managerPage = await manager.newPage();
+    await managerPage.goto("/");
+    await selectAppLocation(managerPage, locationId);
+    await managerPage.getByRole("button", { name: "นับเงิน", exact: true }).click();
+    const latestRow = managerPage.getByRole("row").filter({ hasText: latestReceipt!.reportNo });
+    await expect(latestRow.getByText("ตั้งฐานใหม่", { exact: true })).toBeVisible();
+    await expect(latestRow).not.toContainText("คะแนน");
+    await latestRow.getByRole("button", { name: "ดูรายละเอียด" }).click();
+    await expect(managerPage.getByText("ตั้งฐานเงินสดใหม่จากผลนับจริง", { exact: false })).toBeVisible();
+    await managerPage.getByText("รายการอ้างอิง (1)", { exact: true }).click();
+    await expect(managerPage.getByText("รายรับไม่ทราบชนิดเงิน 1500", { exact: false })).toBeVisible();
+    await managerPage.close();
+
+    await addIncome(locationId, userId, "รายจ่ายเพื่อทดสอบฐานรอบถัดไป", "expense", 100);
+    const normalStart = await user.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
+    const normalStartBody = await normalStart.json();
+    expect(normalStart.ok(), normalStartBody.error).toBe(true);
+    const normalSession = normalStartBody.session as { id: string };
+    const delayedIncomeId = await addIncome(locationId, userId, "รายรับหลัง cutoff", "income", 75);
+    const normalSubmit = await user.request.post("/api/lanflow/cash-counts", {
+      data: { sessionId: normalSession.id, actualCounts: nineHundred },
+    });
+    expect(normalSubmit.ok()).toBe(true);
+    const normalReceipt = await normalSubmit.json();
+    const normalDetail = await manager.request.get(`/api/lanflow/cash-counts/${normalReceipt.id}?locationId=${locationId}`);
+    expect(await normalDetail.json()).toMatchObject({ formulaVersion: "cash-v1", expectedTotal: 900, differenceTotal: 0 });
+    const { data: normalStored } = await service().from("cash_counts").select("previous_cash_count_id").eq("id", normalReceipt.id).single();
+    expect(normalStored?.previous_cash_count_id).toBe(latestReceipt!.id);
+
+    const delayedStart = await user.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
+    const delayedStartBody = await delayedStart.json();
+    expect(delayedStart.ok(), delayedStartBody.error).toBe(true);
+    const delayedSession = delayedStartBody.session as { id: string };
+    const delayedSubmit = await user.request.post("/api/lanflow/cash-counts", {
+      data: { sessionId: delayedSession.id, actualCounts: nineHundred },
+    });
+    expect(delayedSubmit.ok()).toBe(true);
+    const delayedReceipt = await delayedSubmit.json();
+    const delayedDetail = await manager.request.get(`/api/lanflow/cash-counts/${delayedReceipt.id}?locationId=${locationId}`);
+    expect(await delayedDetail.json()).toMatchObject({ formulaVersion: "cash-v1-rebaseline" });
+    const { data: delayedItems } = await service().from("report_items").select("entity_id").eq("report_id", delayedReceipt.reportId);
+    expect(delayedItems?.some((item) => item.entity_id === delayedIncomeId)).toBe(true);
+  });
+
+  test("late bank-transfer adjustments remain unknown-denomination income events", () => {
+    const eventSource = readFileSync(resolve("supabase/migrations/20260802010000_cash_counts.sql"), "utf8");
+    const rebaselineMigration = readFileSync(resolve("supabase/migrations/20260831040000_rebaseline_cash_count_unknown_inflow.sql"), "utf8");
+    expect(eventSource).toContain("select mi.created_at, 'income', mi.amount, null::jsonb");
+    expect(eventSource).toContain("'source', 'late_bank_transfer_adjustment'");
+    expect(rebaselineMigration).toContain("where event.event_kind = 'income'");
+    expect(rebaselineMigration).toContain("and event.counts is null");
+    expect(rebaselineMigration).toContain("v_definition := replace(v_definition, chr(13) || chr(10), chr(10));");
+  });
+
+  test("known-denomination branch receipt stays on the normal formula", async () => {
+    const transferId = crypto.randomUUID();
+    transferIds.push(transferId);
+    const create = await manager.request.post("/api/lanflow/cash-branch-transfers", {
+      data: {
+        id: transferId,
+        sourceLocationId,
+        targetLocationId: locationId,
+        sent: { ...zeroTransferCounts, banknote20: 1 },
+        clientTempId: transferId,
+        idempotencyKey: `cash-count-known:${transferId}`,
+      },
+    });
+    expect(create.ok(), await create.text()).toBe(true);
+    const receive = await manager.request.post(`/api/lanflow/cash-branch-transfers/${transferId}/receive`, {
+      data: { received: { ...zeroTransferCounts, banknote20: 1 } },
+    });
+    expect(receive.ok(), await receive.text()).toBe(true);
+
+    const start = await user.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
+    const session = (await start.json()).session as { id: string };
+    const actualCounts = { ...nineHundred, "20": 1 };
+    const submit = await user.request.post("/api/lanflow/cash-counts", {
+      data: { sessionId: session.id, actualCounts },
+    });
+    expect(submit.ok()).toBe(true);
+    const receipt = await submit.json();
+    const detailResponse = await manager.request.get(`/api/lanflow/cash-counts/${receipt.id}?locationId=${locationId}`);
+    const detail = await detailResponse.json();
+    expect(detail).toMatchObject({ formulaVersion: "cash-v1", expectedTotal: 920, differenceTotal: 0 });
+    expect(detail.evidence.references).toContainEqual(expect.objectContaining({
+      source: "cash_transfer_received",
+      id: transferId,
+      amount: 20,
+    }));
   });
 
   test("user sees a blind nine-field form and only the immediate receipt", async () => {
