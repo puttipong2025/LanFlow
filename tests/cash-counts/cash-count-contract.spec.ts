@@ -230,6 +230,33 @@ test.describe.serial("cash count aggregate contract", () => {
     expect(detail.evidence.references.length).toBeGreaterThan(0);
   });
 
+  test("submits promptly when the previous count has no small cash", async () => {
+    const highOnlyCounts = { "1": 0, "2": 0, "5": 0, "10": 0, "20": 100, "50": 100, "100": 100, "500": 100, "1000": 100 };
+    await addIncome(locationId, userId, "รอบตั้งต้นเงินก้อน");
+    const seedStart = await user.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
+    expect(seedStart.ok()).toBe(true);
+    const seedSession = (await seedStart.json()) as { session: { id: string } };
+    const seedSubmit = await user.request.post("/api/lanflow/cash-counts", {
+      data: { sessionId: seedSession.session.id, actualCounts: highOnlyCounts },
+    });
+    expect(seedSubmit.ok()).toBe(true);
+
+    await addIncome(locationId, userId, "รายจ่ายไม่มีเงินย่อย", "expense", 10001);
+    const start = await user.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
+    expect(start.ok()).toBe(true);
+    const session = (await start.json()) as { session: { id: string } };
+    const submit = await user.request.post("/api/lanflow/cash-counts", {
+      data: { sessionId: session.session.id, actualCounts: highOnlyCounts },
+    });
+    expect(submit.ok()).toBe(true);
+    const receipt = await submit.json();
+    const detailResponse = await manager.request.get(`/api/lanflow/cash-counts/${receipt.id}?locationId=${locationId}`);
+    expect(detailResponse.ok()).toBe(true);
+    const detail = await detailResponse.json();
+    expect(detail.formulaVersion).toBe("cash-v1");
+    expect(detail.evidence.limitations).toContain("จำลองรับเงินทอน 1 ครั้ง รวม 9 บาท");
+  });
+
   test("expired sessions reject stale submit and stop blocking normal reports", async () => {
     await addIncome(locationId, userId, "รอบหมดเวลา");
     const start = await user.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });

@@ -81,6 +81,13 @@ export async function POST(request: Request) {
     p_session_id: body.sessionId,
     p_actual_counts: body.actualCounts,
   });
+  if (error?.code === "57014") {
+    console.error("Cash Count RPC timed out", { operation: "submit_cash_count", code: error.code });
+    return NextResponse.json(
+      { error: "ระบบประมวลผลผลตรวจนับเกินเวลา กรุณาลองส่งอีกครั้ง" },
+      { status: 504 },
+    );
+  }
   if (error) return cashCountErrorResponse(error.message);
   return NextResponse.json(data, { status: 201, headers: { "Cache-Control": "private, no-store, max-age=0" } });
 }

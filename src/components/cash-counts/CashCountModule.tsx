@@ -59,6 +59,7 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
   const [values, setValues] = useState<Record<CashDenomination, number | "">>(() => Object.fromEntries(CASH_DENOMINATIONS.map((d) => [d, ""])) as Record<CashDenomination, number | "">);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [confirmMode, setConfirmMode] = useState<"submit" | "cancel" | "delete" | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<CashCountSummary | null>(null);
   const [now, setNow] = useState(Date.now());
@@ -156,6 +157,7 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
   async function start() {
     if (!online || working) return;
     setWorking(true);
+    setSubmitError(null);
     try {
       const [rubberQueue, incomeQueue] = await Promise.all([
         getPendingEvents({ entity: "rubber_bills", ownerUserId: profile.id, locationId: selectedLocation.id }),
@@ -173,13 +175,17 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
   async function submit() {
     if (!session || !complete || secondsLeft <= 0) return;
     setWorking(true);
+    setSubmitError(null);
     try {
       const actualCounts = Object.fromEntries(CASH_DENOMINATIONS.map((d) => [String(d), Number(values[d])]));
       const response = await authFetch("/api/lanflow/cash-counts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: session.id, actualCounts }) });
       await assertApiResponse(response);
       setReceipt(await response.json() as CashCountReceipt); setSession(null); setConfirmMode(null);
       await loadHistory();
-    } catch (error) { toast.error(error instanceof Error ? error.message : "ส่งผลตรวจนับไม่สำเร็จ"); }
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : "ส่งผลตรวจนับไม่สำเร็จ");
+      setConfirmMode(null);
+    }
     finally { setWorking(false); }
   }
 
@@ -216,7 +222,7 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
         : !session ? <div className="mt-5 rounded-lg bg-mint/35 p-5 text-center"><Banknote className="mx-auto text-leaf" size={32} /><h3 className="mt-2 font-bold text-ink">พร้อมเริ่มตรวจนับเงินสด</h3><p className="mt-1 text-pretty text-sm text-ink/65">ระบบจะยึดเวลา server ตอนเริ่มและให้กรอกภายใน 30 นาที</p><button type="button" onClick={() => void start()} disabled={!online || working} className="focus-ring mt-4 inline-flex items-center gap-2 rounded-md bg-leaf px-5 py-2.5 font-semibold text-white disabled:opacity-50">{working && <Loader2 size={16} className="animate-spin" />}เริ่มนับเงิน</button></div>
         : !session.isOwner ? <div className="mt-5 rounded-lg bg-amber/20 p-4 text-sm font-semibold text-ink">{session.startedByName} กำลังตรวจนับสาขานี้ · เหลือ {Math.floor(secondsLeft / 60)}:{String(secondsLeft % 60).padStart(2, "0")} นาที</div>
         : secondsLeft <= 0 ? <div className="mt-5 rounded-lg bg-clay/10 p-4"><h3 className="font-bold text-clay">ช่วงตรวจนับหมดเวลาแล้ว</h3><p className="mt-1 text-sm text-ink/70">ผลเดิมส่งไม่ได้ กรุณารีเฟรชและเริ่มรอบใหม่</p></div>
-        : <div className="mt-5"><div className="flex flex-wrap items-center justify-between gap-2 text-sm"><span className="font-semibold text-ink">Cutoff {dateTime(session.cutoffAt)}</span><span className="rounded-md bg-amber/20 px-3 py-1 font-bold text-amber-900">เหลือ {Math.floor(secondsLeft / 60)}:{String(secondsLeft % 60).padStart(2, "0")} นาที</span></div><div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">{CASH_DENOMINATIONS.map((d) => <label key={d} className="rounded-lg border border-black/10 bg-field p-3"><span className="text-sm font-semibold text-ink">{d >= 20 ? "ธนบัตร" : "เหรียญ"} {d} บาท</span><div className="mt-2"><InlineNumber value={values[d]} integerOnly ariaLabel={`จำนวนเงินชนิด ${d} บาท`} onChange={(value) => setValues((current) => ({ ...current, [d]: value }))} /></div></label>)}</div><div className="mt-4 flex flex-col gap-3 rounded-lg bg-mint/45 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-sm text-ink/60">ยอดรวมที่กรอก</div><div className="text-2xl font-bold text-ink">{money(actualTotal)} บาท</div></div><div className="flex gap-2"><button type="button" onClick={() => setConfirmMode("cancel")} className="focus-ring inline-flex items-center gap-1 rounded-md border border-clay px-4 py-2 font-semibold text-clay"><X size={16} />ยกเลิก</button><button type="button" onClick={() => setConfirmMode("submit")} disabled={!complete || working} className="focus-ring rounded-md bg-leaf px-5 py-2 font-semibold text-white disabled:opacity-50">ยืนยันและส่งผล</button></div></div>{!complete && <p className="mt-2 text-sm text-clay">กรุณากรอกครบทั้ง 9 ชนิด รวมถึงระบุ 0 อย่างชัดเจน</p>}</div>}
+        : <div className="mt-5"><div className="flex flex-wrap items-center justify-between gap-2 text-sm"><span className="font-semibold text-ink">Cutoff {dateTime(session.cutoffAt)}</span><span className="rounded-md bg-amber/20 px-3 py-1 font-bold text-amber-900">เหลือ {Math.floor(secondsLeft / 60)}:{String(secondsLeft % 60).padStart(2, "0")} นาที</span></div><div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">{CASH_DENOMINATIONS.map((d) => <label key={d} className="rounded-lg border border-black/10 bg-field p-3"><span className="text-sm font-semibold text-ink">{d >= 20 ? "ธนบัตร" : "เหรียญ"} {d} บาท</span><div className="mt-2"><InlineNumber value={values[d]} integerOnly ariaLabel={`จำนวนเงินชนิด ${d} บาท`} onChange={(value) => { setSubmitError(null); setValues((current) => ({ ...current, [d]: value })); }} /></div></label>)}</div><div className="mt-4 flex flex-col gap-3 rounded-lg bg-mint/45 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-sm text-ink/60">ยอดรวมที่กรอก</div><div className="text-2xl font-bold text-ink">{money(actualTotal)} บาท</div></div><div className="flex gap-2"><button type="button" onClick={() => setConfirmMode("cancel")} className="focus-ring inline-flex items-center gap-1 rounded-md border border-clay px-4 py-2 font-semibold text-clay"><X size={16} />ยกเลิก</button><button type="button" onClick={() => setConfirmMode("submit")} disabled={!complete || working} className="focus-ring rounded-md bg-leaf px-5 py-2 font-semibold text-white disabled:opacity-50">ยืนยันและส่งผล</button></div></div>{submitError && <p role="alert" className="mt-2 text-pretty text-sm font-medium text-clay">{submitError}</p>}{!complete && <p className="mt-2 text-pretty text-sm text-clay">กรุณากรอกครบทั้ง 9 ชนิด รวมถึงระบุ 0 อย่างชัดเจน</p>}</div>}
       </div>
 
       {manager && (
