@@ -11,6 +11,10 @@ import {
 } from "@/lib/format";
 
 import type { IncomeExpense, IncomeExpenseSaleLine, Location, Profile } from "@/types";
+import {
+  calculateIncomeSaleLineTotal,
+  calculateIncomeSaleTotals,
+} from "@/lib/income-expense/calculations";
 import { useIncomeSaleItems } from "@/hooks/useIncomeSaleItems";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { usePersistentFormDraft } from "@/hooks/usePersistentFormDraft";
@@ -166,7 +170,10 @@ export function IncomeExpenseModal({
   }
 
   function getLineCost(line: CashLine) {
-    if (billOption === "บิลขาย") return Math.round((line.unit * line.price + Number.EPSILON) * 100) / 100;
+    if (billOption === "บิลขาย") return calculateIncomeSaleLineTotal({
+      quantity: line.unit,
+      unitPrice: line.price,
+    });
     return line.cost;
   }
 
@@ -259,7 +266,7 @@ export function IncomeExpenseModal({
         number: String(form.get("number") || nextNumber),
         txDate,
         title: `บิลขาย — ${saleLines.length} รายการ`,
-        cost: saleLines.reduce((sum, line) => sum + line.lineTotal, 0),
+        cost: calculateIncomeSaleTotals(saleLines).total,
         billOption: "บิลขาย",
         saleLineCount: saleLines.length,
         saleLines,
@@ -489,7 +496,7 @@ export function IncomeExpenseModal({
                     <td className="px-2 py-2">
                       {billOption === "บิลขาย" ? (
                         <div className="flex h-10 items-center justify-end rounded-md border border-black/5 bg-slate-50 px-3 text-right text-sm font-semibold text-ink/70">
-                          {(line.unit * line.price).toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          {getLineCost(line).toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </div>
                       ) : (
                         <InlineNumber value={line.cost} onChange={(value) => updateLine(line.id, { cost: value })} />

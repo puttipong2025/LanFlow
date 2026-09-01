@@ -116,4 +116,25 @@ test.describe("sale bill receipt", () => {
       true
     )).toContain("ลำดับ");
   });
+
+  test("blocks stale server totals instead of printing an inconsistent bill", () => {
+    const staleLine = makeSaleBill({
+      cost: 80,
+      saleLineCount: 1,
+      saleLines: [{
+        ...makeSaleBill().saleLines![0],
+        quantity: 2,
+        unitPrice: 50,
+        lineTotal: 80,
+        sequenceNo: 1,
+      }],
+    });
+
+    expect(getSaleReceiptShareBlockReason(staleLine, true)).toContain("ยอดคำนวณ");
+    expect(() => buildSaleReceiptModel(staleLine, location)).toThrow(/ยอดคำนวณ/);
+
+    const staleGrandTotal = makeSaleBill({ cost: 174 });
+    expect(getSaleReceiptShareBlockReason(staleGrandTotal, true)).toContain("ยอดคำนวณ");
+    expect(() => buildSaleReceiptModel(staleGrandTotal, location)).toThrow(/ยอดคำนวณ/);
+  });
 });

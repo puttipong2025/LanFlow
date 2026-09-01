@@ -1,6 +1,11 @@
 import { expect, test } from "@playwright/test";
 
 import {
+  calculateCashDifferences,
+  calculateCashTotal,
+} from "../src/lib/cash-branch-transfer";
+
+import {
   cashTransferReference,
   renderCashTransferReceiptHtml,
 } from "../src/lib/cash-branch-transfer-receipt";
@@ -46,6 +51,14 @@ function transfer(patch: Partial<CashBranchTransfer> = {}): CashBranchTransfer {
 }
 
 test.describe("cash transfer 80mm receipt", () => {
+  test("derives sent, received, and difference totals from denomination counts", () => {
+    const received = { ...sent, banknote20: 0, coin5: 2 };
+
+    expect(calculateCashTotal(sent)).toBe(123);
+    expect(calculateCashTotal(received)).toBe(113);
+    expect(calculateCashDifferences(sent, received)).toMatchObject({ total: -10 });
+  });
+
   test("renders pending details with safe 80mm HTML", () => {
     const item = transfer();
     const html = renderCashTransferReceiptHtml(item, "สาขาต้นทาง");
@@ -57,10 +70,14 @@ test.describe("cash transfer 80mm receipt", () => {
     expect(html).toContain("รายละเอียดเงินสด");
     expect(html).toContain("รอรับเงิน");
     expect(html).toContain("สาขาต้นทาง");
-    expect(html).toContain("ยังไม่ตรวจรับ");
     expect(html).toContain(">ส่ง<");
-    expect(html).toContain(">รับ<");
-    expect(html).toContain(">ต่าง<");
+    expect(html).not.toContain(">รับ<");
+    expect(html).not.toContain(">ต่าง<");
+    expect(html).toContain("ยอดส่ง");
+    expect(html).not.toContain("ยอดรับ");
+    expect(html).not.toContain("ผลต่าง");
+    expect(html).not.toContain("ผู้ตรวจรับ");
+    expect(html).not.toContain("รับเมื่อ");
     expect(html).toContain("<th>ชนิด</th><th class=\"number\">จำนวน</th><th class=\"number\">บาท</th>");
     expect(html).not.toContain("NaN");
     expect(html).toContain("ทดสอบ &amp; ตรวจสอบ");
@@ -81,6 +98,11 @@ test.describe("cash transfer 80mm receipt", () => {
     }), "สาขาต้นทาง");
 
     expect(html).toContain("รับเงินแล้ว");
+    expect(html).toContain(">ส่ง<");
+    expect(html).toContain(">รับ<");
+    expect(html).toContain(">ต่าง<");
+    expect(html).toContain("ยอดรับ");
+    expect(html).toContain("ผลต่าง");
     expect(html).toContain("-10.00 บาท");
     expect(html).toContain("-1");
     expect(html).toContain("-20.00");

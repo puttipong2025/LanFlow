@@ -1,4 +1,15 @@
 import type { IncomeExpense, Location } from "@/types";
+import { calculateIncomeSaleTotals } from "@/lib/income-expense/calculations";
+
+const SALE_TOTAL_MISMATCH_MESSAGE = "ยอดคำนวณบิลขายไม่ตรงกับจำนวนและราคา กรุณาโหลดข้อมูลใหม่";
+
+function hasSaleTotalMismatch(transaction: IncomeExpense) {
+  if (!transaction.saleLines) return false;
+  const calculation = calculateIncomeSaleTotals(transaction.saleLines);
+  return !Number.isFinite(transaction.cost)
+    || transaction.saleLines.some((line, index) => line.lineTotal !== calculation.lineTotals[index])
+    || transaction.cost !== calculation.total;
+}
 
 export type SaleReceiptModel = {
   branchName: string;
@@ -39,10 +50,15 @@ export function getSaleReceiptShareBlockReason(
       line.sequenceNo !== index + 1
       || !Number.isInteger(line.quantity)
       || line.quantity <= 0
+      || !Number.isFinite(line.unitPrice)
       || line.unitPrice < 0
+      || !Number.isFinite(line.lineTotal)
     )
   ) {
     return "ลำดับรายการบิลขายไม่ถูกต้อง";
+  }
+  if (hasSaleTotalMismatch(transaction)) {
+    return SALE_TOTAL_MISMATCH_MESSAGE;
   }
   return null;
 }
@@ -78,6 +94,9 @@ export function buildSaleReceiptModel(
   transaction: IncomeExpense,
   location: Location,
 ): SaleReceiptModel {
+  if (hasSaleTotalMismatch(transaction)) {
+    throw new Error(SALE_TOTAL_MISMATCH_MESSAGE);
+  }
   const lines = (transaction.saleLines ?? []).map((line) => ({
     title: line.title,
     quantity: line.quantity,
