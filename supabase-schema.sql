@@ -11549,6 +11549,14 @@ begin
     select ul.location_id from public.user_locations ul
     join public.locations l on l.id = ul.location_id and l.is_active = true
     where ul.user_id = v_user_id
+  ), scoped_time_requests as (
+    select ft.id, ft.profile_id
+    from public.financial_transactions ft
+    where ft.status = 'PENDING' and ft.type in ('DEBT', 'WITHDRAWAL')
+    union all
+    select ps.id, ps.profile_id
+    from public.payroll_slips ps
+    where ps.status = 'PENDING'
   ), counts as (
     select al.location_id, 'rubber'::text module_id, count(distinct w.work_identity)::bigint item_count
     from accessible_locations al
@@ -11606,6 +11614,15 @@ begin
     from accessible_locations al cross join public.stock_product_approval_requests r
     where v_can_manage_system and r.request_status = 'pending'
     group by al.location_id
+
+    union all
+    select target_primary.location_id, 'time-tracking', count(requests.id)::bigint
+    from scoped_time_requests requests
+    join public.user_locations target_primary
+      on target_primary.user_id = requests.profile_id and target_primary.is_primary = true
+    join accessible_locations al on al.location_id = target_primary.location_id
+    where v_can_manage_system
+    group by target_primary.location_id
 
     union all
     select e.location_id, 'rubber-export', count(*)::bigint

@@ -86,7 +86,7 @@ test("actionable badges are authenticated, branch-scoped, and exclude finished w
   }
 });
 
-test("time/payroll is absent from actionable badges but remains in Telegram counts", async () => {
+test("time/payroll actionable badges follow the employee primary branch and approver access", async () => {
   test.skip(!serviceRoleKey || !publishableKey, "Supabase test keys are required");
 
   const service = createClient(supabaseUrl, serviceRoleKey, {
@@ -103,17 +103,34 @@ test("time/payroll is absent from actionable badges but remains in Telegram coun
 
   const adminId = signIn.data.user!.id;
   const userId = "00000000-0000-4000-8000-000000000003";
-  const { data: assignment, error: assignmentError } = await service
+  const { data: adminProfile, error: adminProfileError } = await service
+    .from("profiles")
+    .select("role, can_access_super_admin_features")
+    .eq("id", adminId)
+    .single();
+  expect(adminProfileError).toBeNull();
+  expect(adminProfile!.role).toBe("admin");
+
+  const { data: targetAssignment, error: assignmentError } = await service
     .from("user_locations")
     .select("location_id, locations!inner(is_active)")
-    .eq("user_id", adminId)
+    .eq("user_id", userId)
+    .eq("is_primary", true)
     .eq("locations.is_active", true)
-    .limit(1)
     .single();
   expect(assignmentError).toBeNull();
 
-  const locationId = assignment!.location_id;
-  const readTimeCount = async () => {
+  const targetLocationId = targetAssignment!.location_id;
+  const { data: otherLocation, error: otherLocationError } = await service
+    .from("locations")
+    .select("id")
+    .eq("is_active", true)
+    .neq("id", targetLocationId)
+    .limit(1)
+    .maybeSingle();
+  expect(otherLocationError).toBeNull();
+
+  const readTimeCount = async (locationId: string) => {
     const { data, error } = await admin.rpc("get_actionable_badge_counts");
     expect(error).toBeNull();
     const row = data?.find(
@@ -130,19 +147,8 @@ test("time/payroll is absent from actionable badges but remains in Telegram coun
     );
     return Number(row?.item_count ?? 0);
   };
-  const baseline = await readTimeCount();
-  const telegramBaseline = await readTelegramTimeCount();
-  expect((await service
-    .from("profiles")
-    .update({ can_access_super_admin_features: true })
-    .eq("id", adminId)).error).toBeNull();
-  const managerBaseline = await readTimeCount();
-  expect((await service
-    .from("profiles")
-    .update({ can_access_super_admin_features: false })
-    .eq("id", adminId)).error).toBeNull();
-  const ownRequestId = crypto.randomUUID();
-  const userRequestId = crypto.randomUUID();
+  const transactionId = crypto.randomUUID();
+  const slipId = crypto.randomUUID();
 
   const effectiveDate = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Bangkok",
@@ -150,77 +156,91 @@ test("time/payroll is absent from actionable badges but remains in Telegram coun
     month: "2-digit",
     day: "2-digit",
   }).format(new Date());
-  const inserted = await service.from("financial_transactions").insert([
-    {
-      id: ownRequestId,
-      profile_id: adminId,
-      type: "WITHDRAWAL",
-      amount: 100,
-      effective_date: effectiveDate,
-      description: "รายการ admin ที่อนุมัติเองไม่ได้",
-    },
-    {
-      id: userRequestId,
-      profile_id: userId,
-      type: "WITHDRAWAL",
-      amount: 100,
-      effective_date: effectiveDate,
-      description: "รายการ user ที่ admin อนุมัติได้",
-    },
-  ]);
-  expect(inserted.error).toBeNull();
-
   try {
-    expect(await readTimeCount()).toBe(baseline);
+    expect((await service
+      .from("profiles")
+      .update({ can_access_super_admin_features: false })
+      .eq("id", adminId)).error).toBeNull();
+    expect(await readTimeCount(targetLocationId)).toBe(0);
+
     expect((await service
       .from("profiles")
       .update({ can_access_super_admin_features: true })
       .eq("id", adminId)).error).toBeNull();
-    expect(await readTimeCount()).toBe(managerBaseline);
-    expect(await readTimeCount()).toBe(0);
+    const targetBaseline = await readTimeCount(targetLocationId);
+    const otherBaseline = otherLocation ? await readTimeCount(otherLocation.id) : null;
+    const telegramBaseline = await readTelegramTimeCount();
+
+    const transaction = await service.from("financial_transactions").insert({
+      id: transactionId,
+      profile_id: userId,
+      type: "WITHDRAWAL",
+      amount: 100,
+      effective_date: effectiveDate,
+      description: "ทดสอบ Badge เวลาและเงินเดือนตามสาขาหลัก",
+    });
+    expect(transaction.error).toBeNull();
+    const slip = await service.from("payroll_slips").insert({
+      id: slipId,
+      profile_id: userId,
+      month: "2199-12",
+      status: "PENDING",
+      created_by: adminId,
+    });
+    expect(slip.error).toBeNull();
+
+    expect(await readTimeCount(targetLocationId)).toBe(targetBaseline + 2);
+    if (otherLocation && otherBaseline !== null) {
+      expect(await readTimeCount(otherLocation.id)).toBe(otherBaseline);
+    }
     expect(await readTelegramTimeCount()).toBe(telegramBaseline + 2);
-  } finally {
-    await service
-      .from("financial_transactions")
-      .delete()
-      .in("id", [ownRequestId, userRequestId]);
-    await service
+
+    expect((await service
       .from("profiles")
       .update({ can_access_super_admin_features: false })
+      .eq("id", adminId)).error).toBeNull();
+    expect(await readTimeCount(targetLocationId)).toBe(0);
+  } finally {
+    await service.from("payroll_slips").delete().eq("id", slipId);
+    await service.from("financial_transactions").delete().eq("id", transactionId);
+    await service
+      .from("profiles")
+      .update({ can_access_super_admin_features: adminProfile!.can_access_super_admin_features })
       .eq("id", adminId);
   }
 });
 
-test("module nav and branch selector show the same actionable branch work", async ({
+test("time/payroll pending count reaches the module nav and primary-branch selector badges", async ({
   browser,
 }) => {
   test.skip(!serviceRoleKey, "Supabase service role key is required");
   const service = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
-  const transferId = crypto.randomUUID();
-  const { data: location, error: locationError } = await service
-    .from("locations")
-    .select("id")
-    .eq("is_active", true)
-    .limit(1)
+  const userId = "00000000-0000-4000-8000-000000000003";
+  const transactionId = crypto.randomUUID();
+  const { data: assignment, error: assignmentError } = await service
+    .from("user_locations")
+    .select("location_id, locations!inner(is_active)")
+    .eq("user_id", userId)
+    .eq("is_primary", true)
+    .eq("locations.is_active", true)
     .single();
-  expect(locationError).toBeNull();
+  expect(assignmentError).toBeNull();
 
-  const inserted = await service.from("money_transfers").insert({
-    id: transferId,
-    client_temp_id: transferId,
-    idempotency_key: `actionable-badge-ui:${transferId}`,
-    location_id: location!.id,
-    customer_name: "ทดสอบ Badge บนเมนู",
-    net_amount_to_pay: 100,
-    transfer_method: "bank",
-    transfer_type: "customer",
-    transfer_status: "pending",
-    created_by_user_id:
-      process.env.TEST_USER_ID ?? "00000000-0000-4000-8000-000000000001",
-    created_by_name: "LanFlow super_admin",
-    created_by_phone: process.env.TEST_PHONE ?? "0800000000",
+  const effectiveDate = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Bangkok",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+  const inserted = await service.from("financial_transactions").insert({
+    id: transactionId,
+    profile_id: userId,
+    type: "DEBT",
+    amount: 100,
+    effective_date: effectiveDate,
+    description: "ทดสอบ Badge เวลาและเงินเดือนบนเมนูและสาขา",
   });
   expect(inserted.error).toBeNull();
 
@@ -230,21 +250,24 @@ test("module nav and branch selector show the same actionable branch work", asyn
   try {
     const page = await context.newPage();
     await page.goto("/");
-    await selectAppLocation(page, location!.id);
+    await selectAppLocation(page, assignment!.location_id);
 
-    await expect(
-      page.getByRole("button", {
-        name: /^โอนเงิน มีงานที่จัดการได้ [1-9]\d* รายการ$/,
-      }),
-    ).toBeVisible({ timeout: 15_000 });
-    const branchButton = page.getByLabel(/^เลือกสาขา มีงาน [1-9]\d* รายการ$/);
+    const timePayrollTab = page.getByRole("button", {
+      name: /^เวลาและเงินเดือน มีงานที่จัดการได้ [1-9]\d* รายการ$/,
+    });
+    await expect(timePayrollTab).toBeVisible({ timeout: 15_000 });
+    const tabLabel = await timePayrollTab.getAttribute("aria-label");
+    const tabCount = Number(tabLabel?.match(/(\d+) รายการ$/)?.[1] ?? 0);
+    expect(tabCount).toBeGreaterThan(0);
+
+    const branchButton = page.getByLabel(/^เลือกสาขา มีงาน [1-9]\d* รายการ/);
     await expect(branchButton).toBeVisible();
     await branchButton.click();
     await expect(page.getByRole("listbox", { name: "สาขาที่เข้าถึงได้" }))
       .toBeVisible();
     await expect(
       page.locator(
-        `[role="option"][data-location-id="${location!.id}"] [data-branch-badge]`,
+        `[role="option"][data-location-id="${assignment!.location_id}"] [data-branch-badge]`,
       ),
     ).toHaveText(/^[1-9]\d*$|^99\+$/);
     await page.keyboard.press("Escape");
@@ -252,9 +275,17 @@ test("module nav and branch selector show the same actionable branch work", asyn
       .toHaveCount(0);
     await branchButton.press("ArrowDown");
     await expect(page.getByRole("option").first()).toBeFocused();
+
+    await page.keyboard.press("Escape");
+    await timePayrollTab.click();
+    await page.getByLabel("กรองสาขา").selectOption(assignment!.location_id);
+    await expect(page.getByRole("button", {
+      name: `รออนุมัติ ${tabCount} รายการ`,
+      exact: true,
+    })).toBeVisible({ timeout: 15_000 });
   } finally {
     await context.close();
-    await service.from("money_transfers").delete().eq("id", transferId);
+    await service.from("financial_transactions").delete().eq("id", transactionId);
   }
 });
 
