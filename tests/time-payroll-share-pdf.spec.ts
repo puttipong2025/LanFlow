@@ -15,8 +15,8 @@ const withdrawalId = "a1b2c3d4-1111-4111-8111-123456789abc";
 const payrollId = "b2c3d4e5-2222-4222-8222-123456789abc";
 const generatedAt = "2026-08-02T03:04:05.000Z";
 const outputDirectory = path.resolve("output/pdf");
-const outputPdf = path.join(outputDirectory, "LanFlow-time-payroll-slip-A4-portrait.pdf");
-const outputLongPdf = path.join(outputDirectory, "LanFlow-payroll-slip-multi-page.pdf");
+const outputPdf = path.join(outputDirectory, "LanFlow-time-payroll-withdrawal-slip-80mm.pdf");
+const outputLongPdf = path.join(outputDirectory, "LanFlow-time-payroll-payroll-slip-long-80mm.pdf");
 const bundledPython = "C:\\Users\\Do\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe";
 const longPayrollTransactions = Array.from({ length: 48 }, (_, index) => {
   const row = String(index + 1).padStart(3, "0");
@@ -69,6 +69,25 @@ const payrollDocument = buildPayrollSlipDocument({
 });
 
 async function openTimeTracking(page: Page) {
+  await page.route("**/api/lanflow", async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname !== "/api/lanflow") return route.continue();
+    await route.fulfill({
+      json: {
+        locations: [],
+        profile: {
+          id: "00000000-0000-4000-8000-000000000003",
+          name: "ผู้ใช้งานทั่วไป",
+          phone: "0820000001",
+          role: "user",
+          isActive: true,
+          locationIds: ["00000000-0000-4000-8000-000000000010"],
+          primaryLocationId: "00000000-0000-4000-8000-000000000010",
+          canManageTimePayroll: false,
+        },
+      },
+    });
+  });
   await page.route("**/api/lanflow/time-tracking/user?*", async (route) => {
     const pathname = new URL(route.request().url()).pathname;
     if (pathname !== "/api/lanflow/time-tracking/user") return route.continue();
@@ -117,7 +136,7 @@ async function openTimeTracking(page: Page) {
   await expect(page.getByRole("heading", { name: /ระบบเวลาและเงินเดือน/ })).toBeVisible();
 }
 
-test("previews only eligible sources and shares the payroll PDF File", async ({ page }) => {
+test("previews an 80mm receipt with both signatures and shares the payroll PDF File", async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "canShare", { configurable: true, value: () => true });
     Object.defineProperty(navigator, "share", {
@@ -140,12 +159,18 @@ test("previews only eligible sources and shares the payroll PDF File", async ({ 
   const dialog = page.getByRole("dialog", { name: "สลิปเงินเดือน" });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText("3,000.00 บาท", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("1 ก.ค. 2569", { exact: true }).first()).toBeVisible();
+  const preview = dialog.getByTestId("time-payroll-receipt-preview");
+  await expect(preview).toBeVisible();
+  expect((await preview.boundingBox())?.width).toBeCloseTo(302.36, 0);
+  await expect(dialog.getByText("ผู้รับเงิน", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("ผู้จ่ายเงิน", { exact: true })).toBeVisible();
   await dialog.getByRole("button", { name: "แชร์ PDF" }).click();
 
   await expect.poll(() => page.evaluate(() =>
     (window as typeof window & { __slipShare?: { name: string; size: number; title: string } }).__slipShare
   )).toMatchObject({
-    name: "LanFlow-เงินเดือน-2026-07-b2c3d4e5-อนุมัติแล้ว.pdf",
+    name: "LanFlow-เงินเดือน-2026-07-b2c3d4e5-อนุมัติแล้ว-80mm.pdf",
     title: "สลิปเงินเดือน",
   });
   const shared = await page.evaluate(() =>
@@ -154,7 +179,7 @@ test("previews only eligible sources and shares the payroll PDF File", async ({ 
   expect(shared?.size).toBeGreaterThan(1_000);
 });
 
-test("downloads a searchable A4 portrait withdrawal PDF from the same preview", async ({ page }) => {
+test("downloads a searchable single-page 80mm withdrawal PDF from the same preview", async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "canShare", { configurable: true, value: () => false });
   });
@@ -171,7 +196,7 @@ test("downloads a searchable A4 portrait withdrawal PDF from the same preview", 
   const download = await downloadPromise;
   mkdirSync(outputDirectory, { recursive: true });
   await download.saveAs(outputPdf);
-  expect(download.suggestedFilename()).toBe("LanFlow-เบิกเงิน-20260802-a1b2c3d4-รออนุมัติ.pdf");
+  expect(download.suggestedFilename()).toBe("LanFlow-เบิกเงิน-20260802-a1b2c3d4-รออนุมัติ-80mm.pdf");
 
   const inspection = JSON.parse(execFileSync(bundledPython, [
     "-c",
@@ -188,19 +213,20 @@ test("downloads a searchable A4 portrait withdrawal PDF from the same preview", 
     outputPdf,
   ], { encoding: "utf8" })) as { pages: number; width: number; height: number; actual: string[] };
 
-  expect(inspection.pages).toBeGreaterThanOrEqual(1);
-  expect(inspection.width).toBeCloseTo(595.28, 1);
-  expect(inspection.height).toBeCloseTo(841.89, 1);
+  expect(inspection.pages).toBe(1);
+  expect(inspection.width).toBeCloseTo(226.77, 1);
+  expect(inspection.height).toBeGreaterThan(400);
+  expect(inspection.height).toBeLessThan(14_400);
   const allText = inspection.actual.join("\n");
   expect(allText).toContain("สลิปเบิกเงิน");
   expect(allText).toContain("วันทำงานสะสม");
   expect(allText).toContain("ยอดเบิกที่ยังหักไม่หมด");
-  inspection.actual.forEach((text, index) => {
-    expect(text).toContain(`${withdrawalId} · หน้า ${index + 1}/${inspection.pages}`);
-  });
+  expect(allText).toContain("ผู้รับเงิน");
+  expect(allText).toContain("ผู้จ่ายเงิน");
+  expect(allText).toContain(withdrawalId);
 });
 
-test("keeps every payroll transaction row on one page in a multi-page PDF", async ({ page }) => {
+test("keeps every payroll transaction row on one long 80mm PDF page", async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "canShare", { configurable: true, value: () => false });
   });
@@ -223,15 +249,20 @@ test("keeps every payroll transaction row on one page in a multi-page PDF", asyn
       "reader=PdfReader(sys.argv[1])",
       "actual=[]",
       "for page in reader.pages:\n cs=ContentStream(page.get_contents(),reader)\n actual.append('\\n'.join(str(operands[1].get('/ActualText')) for operands,operator in cs.operations if operator==b'BDC' and len(operands)>1 and hasattr(operands[1],'get') and operands[1].get('/ActualText') is not None))",
-      "print(json.dumps({'pages':len(reader.pages),'actual':actual},ensure_ascii=False))",
+      "page=reader.pages[0]",
+      "print(json.dumps({'pages':len(reader.pages),'width':float(page.mediabox.width),'height':float(page.mediabox.height),'actual':actual},ensure_ascii=False))",
     ].join("\n"),
     outputLongPdf,
-  ], { encoding: "utf8" })) as { pages: number; actual: string[] };
+  ], { encoding: "utf8" })) as { pages: number; width: number; height: number; actual: string[] };
 
-  expect(inspection.pages).toBeGreaterThan(1);
-  inspection.actual.forEach((text, index) => {
-    expect(text).toContain(`${payrollId} · หน้า ${index + 1}/${inspection.pages}`);
-  });
+  expect(inspection.pages).toBe(1);
+  expect(inspection.width).toBeCloseTo(226.77, 1);
+  expect(inspection.height).toBeGreaterThan(1_000);
+  expect(inspection.height).toBeLessThan(14_400);
+  expect(inspection.actual[0]).toContain("ผู้รับเงิน");
+  expect(inspection.actual[0]).toContain("ผู้จ่ายเงิน");
+  expect(inspection.actual[0]).toContain(payrollId);
+  expect(inspection.actual[0]).toContain("1 ก.ค. 2569");
   for (let index = 1; index <= longPayrollTransactions.length; index += 1) {
     const row = String(index).padStart(3, "0");
     const startPage = inspection.actual.findIndex((text) => text.includes(`ROW-BEGIN-${row}`));
@@ -239,4 +270,17 @@ test("keeps every payroll transaction row on one page in a multi-page PDF", asyn
     expect(startPage, `missing row ${row}`).toBeGreaterThanOrEqual(0);
     expect(endPage, `split row ${row}`).toBe(startPage);
   }
+});
+
+test("keeps the 80mm preview inside a narrow mobile viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 740 });
+  await openTimeTracking(page);
+  await page.getByRole("button", { name: "ดูสลิป", exact: true }).first().click();
+  const dialog = page.getByRole("dialog", { name: "สลิปเบิกเงิน" });
+  const preview = dialog.getByTestId("time-payroll-receipt-preview");
+  await expect(preview).toBeVisible();
+  const overflow = await preview.evaluate((element) => element.scrollWidth - element.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(1);
+  await expect(dialog.getByText("ผู้รับเงิน", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("ผู้จ่ายเงิน", { exact: true })).toBeVisible();
 });

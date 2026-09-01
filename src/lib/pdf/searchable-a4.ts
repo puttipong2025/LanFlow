@@ -254,6 +254,59 @@ function abortError() {
   return new DOMException("ยกเลิกการสร้าง PDF", "AbortError");
 }
 
+type PdfFontBuffers = Awaited<ReturnType<typeof loadFontBuffers>>;
+
+function registerPdfFonts(doc: PdfDocument, fonts: PdfFontBuffers) {
+  doc.registerFont("NotoSansThai", fonts.regular as unknown as Buffer);
+  doc.registerFont("NotoSansThaiBold", fonts.bold as unknown as Buffer);
+}
+
+async function writePdfFile(
+  doc: PdfDocument,
+  filename: string,
+  signal: AbortSignal,
+  render: () => void,
+) {
+  const chunks: Uint8Array[] = [];
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    let settled = false;
+    const onAbort = () => {
+      settled = true;
+      reject(abortError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    doc.on("data", (chunk: Uint8Array) => chunks.push(chunk));
+    doc.on("error", (error: Error) => {
+      signal.removeEventListener("abort", onAbort);
+      if (settled) return;
+      settled = true;
+      reject(error);
+    });
+    doc.on("end", () => {
+      signal.removeEventListener("abort", onAbort);
+      if (settled) return;
+      settled = true;
+      const parts = chunks.map((chunk) => chunk.slice().buffer as ArrayBuffer);
+      resolve(new Blob(parts, { type: "application/pdf" }));
+    });
+
+    try {
+      render();
+      doc.end();
+    } catch (error) {
+      signal.removeEventListener("abort", onAbort);
+      settled = true;
+      reject(error);
+    }
+  });
+  signal.throwIfAborted();
+
+  return new File([blob], filename, {
+    type: "application/pdf",
+    lastModified: Date.now(),
+  });
+}
+
 export async function createSearchableA4PdfFile({
   filename,
   title,
@@ -295,45 +348,74 @@ export async function createSearchableA4PdfFile({
       bottom: layout === "portrait" ? 40 : 34,
     },
   });
-  doc.registerFont("NotoSansThai", fonts.regular as unknown as Buffer);
-  doc.registerFont("NotoSansThaiBold", fonts.bold as unknown as Buffer);
+  registerPdfFonts(doc, fonts);
+  return writePdfFile(doc, filename, signal, () => render(doc));
+}
 
-  const chunks: Uint8Array[] = [];
-  const blob = await new Promise<Blob>((resolve, reject) => {
-    let settled = false;
-    const onAbort = () => {
-      settled = true;
-      reject(abortError());
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    doc.on("data", (chunk: Uint8Array) => chunks.push(chunk));
-    doc.on("error", (error: Error) => {
-      signal.removeEventListener("abort", onAbort);
-      if (settled) return;
-      settled = true;
-      reject(error);
-    });
-    doc.on("end", () => {
-      signal.removeEventListener("abort", onAbort);
-      if (settled) return;
-      settled = true;
-      const parts = chunks.map((chunk) => chunk.slice().buffer as ArrayBuffer);
-      resolve(new Blob(parts, { type: "application/pdf" }));
-    });
-
-    try {
-      render(doc);
-      doc.end();
-    } catch (error) {
-      signal.removeEventListener("abort", onAbort);
-      settled = true;
-      reject(error);
-    }
-  });
+export async function createSearchableRollPdfFile({
+  filename,
+  title,
+  subject,
+  signal,
+  width,
+  margins,
+  minHeight = 180,
+  maxHeight = 14_400,
+  render,
+}: {
+  filename: string;
+  title: string;
+  subject: string;
+  signal: AbortSignal;
+  width: number;
+  margins: { top: number; right: number; bottom: number; left: number };
+  minHeight?: number;
+  maxHeight?: number;
+  render: (doc: PdfDocument) => number;
+}) {
+  signal.throwIfAborted();
+  const [{ default: PDFDocument }, fonts] = await Promise.all([
+    import("pdfkit/js/pdfkit.standalone"),
+    loadFontBuffers(signal),
+  ]);
   signal.throwIfAborted();
 
-  return new File([blob], filename, {
-    type: "application/pdf",
-    lastModified: Date.now(),
+  const documentOptions = (height: number) => ({
+    size: [width, height] as [number, number],
+    bufferPages: true,
+    compress: true,
+    tagged: true,
+    lang: "th-TH",
+    info: {
+      Title: title,
+      Subject: subject,
+      Author: "LanFlow",
+    },
+    margins,
+  });
+
+  const measurementDoc = new PDFDocument(documentOptions(maxHeight));
+  registerPdfFonts(measurementDoc, fonts);
+  measurementDoc.on("data", () => undefined);
+  measurementDoc.on("error", () => undefined);
+  const contentBottom = render(measurementDoc);
+  measurementDoc.end();
+  signal.throwIfAborted();
+
+  if (!Number.isFinite(contentBottom) || contentBottom < margins.top) {
+    throw new Error("คำนวณความสูงเอกสาร PDF ไม่สำเร็จ");
+  }
+  const pageHeight = Math.ceil(Math.max(minHeight, contentBottom + margins.bottom));
+  if (pageHeight > maxHeight) {
+    throw new Error("เนื้อหาเอกสารยาวเกินขนาดสูงสุดของ PDF 80 มม.");
+  }
+
+  const doc = new PDFDocument(documentOptions(pageHeight));
+  registerPdfFonts(doc, fonts);
+  return writePdfFile(doc, filename, signal, () => {
+    const renderedBottom = render(doc);
+    if (renderedBottom + margins.bottom > pageHeight + 0.5) {
+      throw new Error("เนื้อหาเอกสาร PDF สูงกว่าพื้นที่ที่คำนวณไว้");
+    }
   });
 }

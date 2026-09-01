@@ -35,7 +35,7 @@ export function calculateTimeSegmentPaidDays(segment: PaidWorkSegment): number {
   return cutoffDays > 0 ? cutoffDays : durationDays;
 }
 
-export type ExceptionAttendanceInput = {
+type ExceptionAttendanceInput = {
   month: string;
   workdayEndTime: string;
   periods: Array<{ startOn: string; endOn: string | null }>;
@@ -44,7 +44,7 @@ export type ExceptionAttendanceInput = {
   now: Date;
 };
 
-export type ExceptionAttendanceSummary = {
+type ExceptionAttendanceSummary = {
   fullDays: number;
   halfDays: number;
   offDays: number;

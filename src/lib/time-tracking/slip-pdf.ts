@@ -1,28 +1,49 @@
 import {
-  A4_PORTRAIT,
   PDF_PALETTE,
   applyTextStyle,
-  createSearchableA4PdfFile,
+  createSearchableRollPdfFile,
   drawActualText,
   type PdfDocument,
 } from "@/lib/pdf/searchable-a4";
-import type {
-  SlipDocumentRow,
-  TimePayrollSlipDocument,
+import {
+  buildSlipDocumentDetailRows,
+  type SlipDocumentRow,
+  type TimePayrollSlipDocument,
 } from "@/lib/time-tracking/slip-document";
 
+const MM_TO_POINTS = 72 / 25.4;
+const RECEIPT_WIDTH = 80 * MM_TO_POINTS;
+const RECEIPT_MARGIN = 9;
+const CONTENT_WIDTH = RECEIPT_WIDTH - (RECEIPT_MARGIN * 2);
 const moneyFormatter = new Intl.NumberFormat("th-TH", { maximumFractionDigits: 2 });
-const dateFormatter = new Intl.DateTimeFormat("th-TH", {
-  timeZone: "Asia/Bangkok",
-  dateStyle: "medium",
-  timeStyle: "short",
-});
 
-type PortraitState = {
+type ReceiptState = {
   doc: PdfDocument;
   document: TimePayrollSlipDocument;
   y: number;
 };
+
+type TextOptions = {
+  bold?: boolean;
+  size?: number;
+  color?: string;
+  align?: "left" | "right" | "center";
+  lineGap?: number;
+};
+
+function textHeight(doc: PdfDocument, value: string, width: number, options: TextOptions = {}) {
+  applyTextStyle(doc, {
+    text: value,
+    bold: options.bold,
+    fontSize: options.size,
+    color: options.color,
+  });
+  return doc.heightOfString(value || " ", {
+    width,
+    align: options.align ?? "left",
+    lineGap: options.lineGap ?? 1,
+  });
+}
 
 function text(
   doc: PdfDocument,
@@ -30,7 +51,7 @@ function text(
   x: number,
   y: number,
   width: number,
-  options: { bold?: boolean; size?: number; color?: string; align?: "left" | "right" | "center" } = {},
+  options: TextOptions = {},
 ) {
   applyTextStyle(doc, {
     text: value,
@@ -40,93 +61,69 @@ function text(
   });
   drawActualText(doc, value, x, y, {
     width,
-    align: options.align || "left",
-    lineGap: 1,
+    align: options.align ?? "left",
+    lineGap: options.lineGap ?? 1,
   });
 }
 
-function addPage(state: PortraitState) {
-  state.doc.addPage({
-    size: "A4",
-    layout: "portrait",
-    margins: { top: A4_PORTRAIT.top, right: A4_PORTRAIT.left, bottom: 40, left: A4_PORTRAIT.left },
-  });
-  state.y = A4_PORTRAIT.top;
-  text(state.doc, `${state.document.title} (ต่อ)`, A4_PORTRAIT.left, state.y, A4_PORTRAIT.contentWidth, {
-    bold: true,
-    size: 13,
-    color: PDF_PALETTE.darkGreen,
-  });
-  state.y += 24;
-}
-
-function ensureSpace(state: PortraitState, height: number) {
-  if (state.y + height > A4_PORTRAIT.bottom) addPage(state);
-}
-
-function thaiDate(value: string | null) {
-  if (!value) return "-";
-  return dateFormatter.format(new Date(value));
-}
-
-function sectionTitle(state: PortraitState, title: string) {
-  ensureSpace(state, 30);
+function divider(state: ReceiptState, gap = 7) {
   state.doc
-    .save()
-    .rect(A4_PORTRAIT.left, state.y, A4_PORTRAIT.contentWidth, 24)
-    .fill(PDF_PALETTE.paleGreen)
-    .restore();
-  text(state.doc, title, A4_PORTRAIT.left + 8, state.y + 5, A4_PORTRAIT.contentWidth - 16, {
+    .moveTo(RECEIPT_MARGIN, state.y)
+    .lineTo(RECEIPT_MARGIN + CONTENT_WIDTH, state.y)
+    .strokeColor("#C9D4CD")
+    .lineWidth(0.6)
+    .stroke();
+  state.y += gap;
+}
+
+function sectionTitle(state: ReceiptState, title: string) {
+  const height = textHeight(state.doc, title, CONTENT_WIDTH - 12, { bold: true, size: 9 }) + 10;
+  state.doc.save().roundedRect(RECEIPT_MARGIN, state.y, CONTENT_WIDTH, height, 2).fill(PDF_PALETTE.paleGreen).restore();
+  text(state.doc, title, RECEIPT_MARGIN + 6, state.y + 5, CONTENT_WIDTH - 12, {
     bold: true,
-    size: 11,
+    size: 9,
   });
-  state.y += 30;
+  state.y += height + 5;
 }
 
-function keyValueRows(state: PortraitState, rows: Array<{ label: string; value: string }>) {
+function keyValueRows(state: ReceiptState, rows: Array<{ label: string; value: string }>) {
+  const labelWidth = 72;
+  const valueWidth = CONTENT_WIDTH - labelWidth - 10;
   for (const row of rows) {
-    applyTextStyle(state.doc, { text: row.label, fontSize: 10 });
-    const labelHeight = state.doc.heightOfString(row.label, { width: 245, lineGap: 1 });
-    applyTextStyle(state.doc, { text: row.value, bold: true, fontSize: 10 });
-    const valueHeight = state.doc.heightOfString(row.value, {
-      width: A4_PORTRAIT.contentWidth - 266,
-      align: "right",
-      lineGap: 1,
-    });
-    const rowHeight = Math.max(25, Math.max(labelHeight, valueHeight) + 10);
-    ensureSpace(state, rowHeight);
-    text(state.doc, row.label, A4_PORTRAIT.left + 6, state.y + 4, 245, {
-      color: PDF_PALETTE.muted,
-      size: 10,
-    });
-    text(state.doc, row.value, A4_PORTRAIT.left + 260, state.y + 4, A4_PORTRAIT.contentWidth - 266, {
+    const labelHeight = textHeight(state.doc, row.label, labelWidth, { size: 7.7 });
+    const valueHeight = textHeight(state.doc, row.value, valueWidth, {
       bold: true,
-      size: 10,
+      size: 7.7,
       align: "right",
     });
-    state.doc
-      .moveTo(A4_PORTRAIT.left, state.y + rowHeight - 3)
-      .lineTo(A4_PORTRAIT.left + A4_PORTRAIT.contentWidth, state.y + rowHeight - 3)
-      .strokeColor("#D4DED8")
-      .stroke();
+    const rowHeight = Math.max(18, Math.max(labelHeight, valueHeight) + 7);
+    text(state.doc, row.label, RECEIPT_MARGIN + 3, state.y + 3, labelWidth, {
+      color: PDF_PALETTE.muted,
+      size: 7.7,
+    });
+    text(state.doc, row.value, RECEIPT_MARGIN + labelWidth + 7, state.y + 3, valueWidth, {
+      bold: true,
+      size: 7.7,
+      align: "right",
+    });
     state.y += rowHeight;
+    divider(state, 4);
   }
-  state.y += 5;
+  state.y += 1;
 }
 
-function drawCalendar(state: PortraitState) {
+function drawCalendar(state: ReceiptState) {
   sectionTitle(state, `ตารางการทำงาน เดือน ${state.document.month}`);
-  const columnWidth = A4_PORTRAIT.contentWidth / 7;
+  const columnWidth = CONTENT_WIDTH / 7;
   const weekdays = ["อา.", "จ.", "อ.", "พ.", "พฤ.", "ศ.", "ส."];
-  ensureSpace(state, 22);
   weekdays.forEach((weekday, index) => {
-    text(state.doc, weekday, A4_PORTRAIT.left + (index * columnWidth), state.y + 3, columnWidth, {
+    text(state.doc, weekday, RECEIPT_MARGIN + (index * columnWidth), state.y + 2, columnWidth, {
       bold: true,
-      size: 9,
+      size: 6.2,
       align: "center",
     });
   });
-  state.y += 22;
+  state.y += 14;
 
   const firstWeekday = new Date(`${state.document.month}-01T00:00:00+07:00`).getDay();
   const cells = [
@@ -136,9 +133,8 @@ function drawCalendar(state: PortraitState) {
   while (cells.length % 7 !== 0) cells.push(null);
 
   for (let offset = 0; offset < cells.length; offset += 7) {
-    ensureSpace(state, 34);
     cells.slice(offset, offset + 7).forEach((day, index) => {
-      const x = A4_PORTRAIT.left + (index * columnWidth);
+      const x = RECEIPT_MARGIN + (index * columnWidth);
       const fill = !day
         ? PDF_PALETTE.white
         : day.paidDays >= 1
@@ -147,134 +143,150 @@ function drawCalendar(state: PortraitState) {
             ? PDF_PALETTE.mint
             : PDF_PALETTE.white;
       const color = day?.paidDays && day.paidDays >= 1 ? PDF_PALETTE.white : PDF_PALETTE.darkGreen;
-      state.doc.save().rect(x, state.y, columnWidth, 31).fillAndStroke(fill, "#C9D4CD").restore();
+      state.doc.save().rect(x, state.y, columnWidth, 24).fillAndStroke(fill, "#C9D4CD").restore();
       if (day) {
         const label = day.paidDays > 0 && day.paidDays < 1
-          ? `${day.day}\n${moneyFormatter.format(day.paidDays)} วัน`
+          ? `${day.day}\n${moneyFormatter.format(day.paidDays)}`
           : String(day.day);
-        text(state.doc, label, x + 2, state.y + 5, columnWidth - 4, {
+        text(state.doc, label, x + 1, state.y + 4, columnWidth - 2, {
           bold: true,
-          size: day.paidDays > 0 && day.paidDays < 1 ? 7 : 9,
+          size: day.paidDays > 0 && day.paidDays < 1 ? 5.4 : 6.7,
           color,
           align: "center",
+          lineGap: 0,
         });
       }
     });
-    state.y += 34;
+    state.y += 24;
   }
-  state.y += 5;
+  state.y += 7;
 }
 
-function drawTransactionTable(state: PortraitState, title: string, rows: SlipDocumentRow[]) {
+function drawTransactionRows(state: ReceiptState, title: string, rows: SlipDocumentRow[]) {
   sectionTitle(state, title);
   if (rows.length === 0) {
-    text(state.doc, "ไม่มีรายการ", A4_PORTRAIT.left + 6, state.y, A4_PORTRAIT.contentWidth - 12, {
-      size: 9,
+    text(state.doc, "ไม่มีรายการ", RECEIPT_MARGIN + 3, state.y, CONTENT_WIDTH - 6, {
+      size: 7.5,
       color: PDF_PALETTE.muted,
     });
-    state.y += 24;
+    state.y += 18;
     return;
   }
 
+  const amountWidth = 60;
+  const labelWidth = CONTENT_WIDTH - amountWidth - 8;
   for (const row of rows) {
-    const description = `${row.label}${row.description ? ` · ${row.description}` : ""}`;
-    applyTextStyle(state.doc, { text: description, fontSize: 9 });
-    const rowHeight = Math.max(24, state.doc.heightOfString(description, { width: 330, lineGap: 1 }) + 10);
-    ensureSpace(state, rowHeight);
-    text(state.doc, description, A4_PORTRAIT.left + 6, state.y + 4, 330, { size: 9 });
-    text(
-      state.doc,
-      `${moneyFormatter.format(row.amount)} บาท`,
-      A4_PORTRAIT.left + 350,
-      state.y + 4,
-      A4_PORTRAIT.contentWidth - 356,
-      { bold: true, size: 9, align: "right" },
-    );
-    state.doc
-      .moveTo(A4_PORTRAIT.left, state.y + rowHeight - 2)
-      .lineTo(A4_PORTRAIT.left + A4_PORTRAIT.contentWidth, state.y + rowHeight - 2)
-      .strokeColor("#D4DED8")
-      .stroke();
-    state.y += rowHeight;
-  }
-  state.y += 5;
-}
-
-function drawFooters(doc: PdfDocument, documentNo: string) {
-  const range = doc.bufferedPageRange();
-  for (let index = 0; index < range.count; index += 1) {
-    doc.switchToPage(range.start + index);
-    const footer = `${documentNo} · หน้า ${index + 1}/${range.count}`;
-    text(doc, footer, A4_PORTRAIT.left, A4_PORTRAIT.height - 54, A4_PORTRAIT.contentWidth, {
-      size: 8,
-      color: PDF_PALETTE.muted,
+    const amount = `${moneyFormatter.format(row.amount)} บาท`;
+    const details = [row.dateLabel, row.description].filter(Boolean).join(" · ");
+    const labelHeight = textHeight(state.doc, row.label, labelWidth, { bold: true, size: 7.3 });
+    const amountHeight = textHeight(state.doc, amount, amountWidth, {
+      bold: true,
+      size: 7.3,
       align: "right",
     });
+    const descriptionHeight = details
+      ? textHeight(state.doc, details, CONTENT_WIDTH - 6, { size: 6.8 }) + 3
+      : 0;
+    const rowHeight = Math.max(18, Math.max(labelHeight, amountHeight) + descriptionHeight + 7);
+    text(state.doc, row.label, RECEIPT_MARGIN + 3, state.y + 3, labelWidth, { bold: true, size: 7.3 });
+    text(state.doc, amount, RECEIPT_MARGIN + labelWidth + 5, state.y + 3, amountWidth, {
+      bold: true,
+      size: 7.3,
+      align: "right",
+    });
+    if (details) {
+      text(state.doc, details, RECEIPT_MARGIN + 3, state.y + 5 + Math.max(labelHeight, amountHeight), CONTENT_WIDTH - 6, {
+        size: 6.8,
+        color: PDF_PALETTE.muted,
+      });
+    }
+    state.y += rowHeight;
+    divider(state, 4);
   }
+  state.y += 1;
+}
+
+function drawNotice(state: ReceiptState) {
+  const height = textHeight(state.doc, state.document.notice, CONTENT_WIDTH - 12, { size: 7.2 }) + 12;
+  state.doc.save().roundedRect(RECEIPT_MARGIN, state.y, CONTENT_WIDTH, height, 2).fill(PDF_PALETTE.paleGreen).restore();
+  text(state.doc, state.document.notice, RECEIPT_MARGIN + 6, state.y + 6, CONTENT_WIDTH - 12, {
+    size: 7.2,
+    color: PDF_PALETTE.muted,
+  });
+  state.y += height + 14;
+}
+
+function drawSignatures(state: ReceiptState) {
+  const gap = 12;
+  const columnWidth = (CONTENT_WIDTH - gap) / 2;
+  const lineY = state.y + 24;
+  const labels = ["ผู้รับเงิน", "ผู้จ่ายเงิน"];
+  labels.forEach((label, index) => {
+    const x = RECEIPT_MARGIN + (index * (columnWidth + gap));
+    state.doc.moveTo(x, lineY).lineTo(x + columnWidth, lineY).strokeColor(PDF_PALETTE.border).lineWidth(0.7).stroke();
+    text(state.doc, label, x, lineY + 4, columnWidth, { bold: true, size: 7.4, align: "center" });
+    text(state.doc, "วันที่ ____/____/______", x, lineY + 16, columnWidth, {
+      size: 6.2,
+      color: PDF_PALETTE.muted,
+      align: "center",
+    });
+  });
+  state.y = lineY + 33;
 }
 
 function renderDocument(doc: PdfDocument, document: TimePayrollSlipDocument) {
-  const state: PortraitState = { doc, document, y: A4_PORTRAIT.top };
-  text(doc, "LanFlow", A4_PORTRAIT.left, state.y, 120, { bold: true, size: 12 });
-  text(doc, document.statusLabel, A4_PORTRAIT.left + 350, state.y, A4_PORTRAIT.contentWidth - 350, {
+  const state: ReceiptState = { doc, document, y: RECEIPT_MARGIN };
+  text(doc, "LanFlow", RECEIPT_MARGIN, state.y, 60, { bold: true, size: 9 });
+  text(doc, document.statusLabel, RECEIPT_MARGIN + 70, state.y, CONTENT_WIDTH - 70, {
     bold: true,
-    size: 10,
+    size: 7.5,
     align: "right",
     color: document.status === "APPROVED" ? PDF_PALETTE.darkGreen : "#8A5A00",
   });
-  state.y += 24;
-  text(doc, document.title, A4_PORTRAIT.left, state.y, A4_PORTRAIT.contentWidth, {
-    bold: true,
-    size: 23,
-    align: "center",
-  });
-  state.y += 38;
+  state.y += 19;
+  const titleHeight = textHeight(doc, document.title, CONTENT_WIDTH, { bold: true, size: 14, align: "center" });
+  text(doc, document.title, RECEIPT_MARGIN, state.y, CONTENT_WIDTH, { bold: true, size: 14, align: "center" });
+  state.y += titleHeight + 10;
 
-  const detailRows = [
-    { label: "ชื่อพนักงาน", value: document.employeeName },
-    { label: "เดือน", value: document.month },
-    ...(document.amount == null ? [] : [{ label: "ยอดเบิก", value: `${moneyFormatter.format(document.amount)} บาท` }]),
-    ...(document.effectiveDate ? [{ label: "วันที่รายการ", value: thaiDate(`${document.effectiveDate}T00:00:00+07:00`) }] : []),
-    { label: "วันที่สร้างคำขอ/สลิป", value: thaiDate(document.createdAt) },
-    ...(document.description ? [{ label: "รายละเอียด", value: document.description }] : []),
-    { label: "รหัสอ้างอิง", value: document.sourceId },
-    ...(document.approverName ? [{ label: "ผู้อนุมัติ", value: document.approverName }] : []),
-    ...(document.approvedAt ? [{ label: "วันที่อนุมัติ", value: thaiDate(document.approvedAt) }] : []),
-    ...(document.paymentLabel ? [{ label: "วิธีจ่าย", value: document.paymentLabel }] : []),
-    ...(document.adminComment ? [{ label: "หมายเหตุผู้อนุมัติ", value: document.adminComment }] : []),
-    { label: "สร้างเอกสารเมื่อ", value: thaiDate(document.generatedAt) },
-  ];
   sectionTitle(state, "ข้อมูลเอกสาร");
-  keyValueRows(state, detailRows);
+  keyValueRows(state, buildSlipDocumentDetailRows(document));
   sectionTitle(state, document.kind === "withdrawal" ? "สรุปค่าแรงประกอบการเบิกเงิน" : "สรุปเงินเดือน");
   keyValueRows(state, document.summary);
   if (document.calendar.length > 0) drawCalendar(state);
   if (document.kind === "payroll") {
-    drawTransactionTable(state, "รายการหักเงิน", document.deductionRows);
-    drawTransactionTable(state, "รายการหนี้สินและเบิกเงิน", document.sourceRows);
+    drawTransactionRows(state, "รายการหักเงิน", document.deductionRows);
+    drawTransactionRows(state, "รายการหนี้สินและเบิกเงิน", document.sourceRows);
   }
-
-  applyTextStyle(doc, { text: document.notice, fontSize: 9 });
-  const noticeHeight = doc.heightOfString(document.notice, { width: A4_PORTRAIT.contentWidth - 16 }) + 18;
-  ensureSpace(state, noticeHeight);
-  doc.save().rect(A4_PORTRAIT.left, state.y, A4_PORTRAIT.contentWidth, noticeHeight).fill(PDF_PALETTE.paleGreen).restore();
-  text(doc, document.notice, A4_PORTRAIT.left + 8, state.y + 7, A4_PORTRAIT.contentWidth - 16, {
-    size: 9,
+  drawNotice(state);
+  drawSignatures(state);
+  state.y += 7;
+  divider(state, 7);
+  const reference = `รหัสอ้างอิง ${document.sourceId}`;
+  text(doc, reference, RECEIPT_MARGIN, state.y, CONTENT_WIDTH, {
+    size: 6.3,
     color: PDF_PALETTE.muted,
+    align: "center",
   });
-  drawFooters(doc, document.sourceId);
+  state.y += textHeight(doc, reference, CONTENT_WIDTH, { size: 6.3, align: "center" });
+  return state.y;
 }
 
 export function createTimePayrollSlipPdfFile(
   document: TimePayrollSlipDocument,
   signal: AbortSignal,
 ) {
-  return createSearchableA4PdfFile({
+  return createSearchableRollPdfFile({
     filename: document.filename,
     title: document.title,
-    subject: `${document.title} ${document.statusLabel}`,
+    subject: `${document.title} ${document.statusLabel} กระดาษ 80 มม.`,
     signal,
-    layout: "portrait",
+    width: RECEIPT_WIDTH,
+    margins: {
+      top: RECEIPT_MARGIN,
+      right: RECEIPT_MARGIN,
+      bottom: RECEIPT_MARGIN,
+      left: RECEIPT_MARGIN,
+    },
     render: (doc) => renderDocument(doc, document),
   });
 }

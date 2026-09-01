@@ -12,7 +12,7 @@ type SlipCalendarDay = {
 
 export type SlipDocumentRow = {
   id: string;
-  date: string | null;
+  dateLabel: string | null;
   label: string;
   description: string | null;
   amount: number;
@@ -41,6 +41,11 @@ export type TimePayrollSlipDocument = {
   sourceRows: SlipDocumentRow[];
   notice: string;
   filename: string;
+};
+
+type SlipDocumentDetailRow = {
+  label: string;
+  value: string;
 };
 
 type ApprovalFields = {
@@ -100,8 +105,6 @@ type PayrollSource = ApprovalFields & {
     segments?: PaidWorkSegment[] | null;
     transactions?: SnapshotTransaction[] | null;
     attendance?: AttendanceSnapshot | null;
-    netPayBeforeRounding?: number;
-    roundingAdjustment?: number;
   } | null;
 };
 
@@ -112,6 +115,15 @@ const statusLabels: Record<SlipDocumentStatus, string> = {
 
 const numberFormatter = new Intl.NumberFormat("th-TH", {
   maximumFractionDigits: 2,
+});
+const documentDateFormatter = new Intl.DateTimeFormat("th-TH", {
+  timeZone: "Asia/Bangkok",
+  dateStyle: "medium",
+  timeStyle: "short",
+});
+const documentDayFormatter = new Intl.DateTimeFormat("th-TH", {
+  timeZone: "Asia/Bangkok",
+  dateStyle: "medium",
 });
 
 function formatMoney(value: number) {
@@ -128,6 +140,41 @@ function formatPayrollMoneyValue(value: number) {
 
 function formatDays(value: number) {
   return `${numberFormatter.format(Number(value) || 0)} วัน`;
+}
+
+function formatDocumentDate(value: string | null) {
+  return value ? documentDateFormatter.format(new Date(value)) : "-";
+}
+
+function formatTransactionDate(value: string | null) {
+  if (!value) return null;
+  const timestamp = /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ? `${value}T00:00:00+07:00`
+    : value;
+  const date = new Date(timestamp);
+  return Number.isFinite(date.getTime()) ? documentDayFormatter.format(date) : value;
+}
+
+export function buildSlipDocumentDetailRows(
+  document: TimePayrollSlipDocument,
+): SlipDocumentDetailRow[] {
+  return [
+    { label: "ชื่อพนักงาน", value: document.employeeName },
+    { label: "เดือน", value: document.month },
+    ...(document.amount == null ? [] : [{ label: "ยอดเบิก", value: formatMoney(document.amount) }]),
+    ...(document.effectiveDate ? [{
+      label: "วันที่รายการ",
+      value: formatDocumentDate(`${document.effectiveDate}T00:00:00+07:00`),
+    }] : []),
+    { label: "วันที่สร้างคำขอ/สลิป", value: formatDocumentDate(document.createdAt) },
+    ...(document.description ? [{ label: "รายละเอียด", value: document.description }] : []),
+    { label: "รหัสอ้างอิง", value: document.sourceId },
+    ...(document.approverName ? [{ label: "ผู้อนุมัติ", value: document.approverName }] : []),
+    ...(document.approvedAt ? [{ label: "วันที่อนุมัติ", value: formatDocumentDate(document.approvedAt) }] : []),
+    ...(document.paymentLabel ? [{ label: "วิธีจ่าย", value: document.paymentLabel }] : []),
+    ...(document.adminComment ? [{ label: "หมายเหตุผู้อนุมัติ", value: document.adminComment }] : []),
+    { label: "สร้างเอกสารเมื่อ", value: formatDocumentDate(document.generatedAt) },
+  ];
 }
 
 function bangkokDate(isoDate: string) {
@@ -198,9 +245,10 @@ function transactionLabel(type: string) {
 }
 
 function transactionRow(transaction: SnapshotTransaction): SlipDocumentRow {
+  const date = transaction.applied_month || transaction.effective_date || transaction.created_at || null;
   return {
     id: transaction.id,
-    date: transaction.applied_month || transaction.effective_date || transaction.created_at || null,
+    dateLabel: formatTransactionDate(date),
     label: transactionLabel(transaction.type),
     description: transaction.description || null,
     amount: Number(transaction.amount) || 0,
@@ -270,7 +318,7 @@ export function buildWithdrawalSlipDocument({
     notice: source.status === "PENDING"
       ? "ประมาณการหากอนุมัติ โดยคำนวณจากข้อมูลปัจจุบันในระบบ เอกสารนี้รับรองสถานะคำขอ ไม่ใช่หลักฐานการรับเงิน"
       : "เอกสารนี้รับรองสถานะคำขอ ไม่ใช่หลักฐานการรับเงิน",
-    filename: `LanFlow-เบิกเงิน-${filenameDate(source.effective_date)}-${source.id.slice(0, 8)}-${statusLabel}.pdf`,
+    filename: `LanFlow-เบิกเงิน-${filenameDate(source.effective_date)}-${source.id.slice(0, 8)}-${statusLabel}-80mm.pdf`,
   };
 }
 
@@ -327,6 +375,6 @@ export function buildPayrollSlipDocument({
     notice: source.status === "APPROVED"
       ? "เอกสารนี้รับรองข้อมูลสลิปเงินเดือนที่อนุมัติแล้วตามข้อมูลในระบบ"
       : "เอกสารนี้เป็นสลิปเงินเดือนที่อยู่ระหว่างรออนุมัติ",
-    filename: `LanFlow-เงินเดือน-${source.month}-${source.id.slice(0, 8)}-${statusLabel}.pdf`,
+    filename: `LanFlow-เงินเดือน-${source.month}-${source.id.slice(0, 8)}-${statusLabel}-80mm.pdf`,
   };
 }

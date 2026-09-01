@@ -35,7 +35,7 @@ test("withdrawal estimate uses live database totals and floors remaining wage at
     { label: "ยอดเบิกที่ยังหักไม่หมด", value: "2,000 บาท" },
   ]);
   expect(document.notice).toContain("ประมาณการหากอนุมัติ");
-  expect(document.filename).toBe("LanFlow-เบิกเงิน-20260802-a1b2c3d4-รออนุมัติ.pdf");
+  expect(document.filename).toBe("LanFlow-เบิกเงิน-20260802-a1b2c3d4-รออนุมัติ-80mm.pdf");
 });
 
 test("approved withdrawal uses actual ledger balance without deducting the source twice", () => {
@@ -59,7 +59,7 @@ test("approved withdrawal uses actual ledger balance without deducting the sourc
 
   expect(document.summary.at(-2)?.value).toBe("3,000 บาท");
   expect(document.summary.at(-1)?.value).toBe("1,000 บาท");
-  expect(document.filename).toBe("LanFlow-เบิกเงิน-20260802-a1b2c3d4-อนุมัติแล้ว.pdf");
+  expect(document.filename).toBe("LanFlow-เบิกเงิน-20260802-a1b2c3d4-อนุมัติแล้ว-80mm.pdf");
 });
 
 test("payroll keeps snapshot amounts and produces a Thai filename", () => {
@@ -94,9 +94,50 @@ test("payroll keeps snapshot amounts and produces a Thai filename", () => {
     "2,000.23 บาท",
     "3,001.00 บาท",
   ]);
-  expect(document.filename).toBe("LanFlow-เงินเดือน-2026-07-a1b2c3d4-อนุมัติแล้ว.pdf");
+  expect(document.filename).toBe("LanFlow-เงินเดือน-2026-07-a1b2c3d4-อนุมัติแล้ว-80mm.pdf");
   expect(JSON.stringify(document)).not.toMatch(/Payroll|Withdrawal/);
   expect(JSON.stringify(document)).not.toMatch(/netPayBeforeRounding|roundingAdjustment/);
+});
+
+test("payroll transaction rows keep a localized source date without a dead raw-date field", () => {
+  const document = buildPayrollSlipDocument({
+    source: {
+      id: SOURCE_ID,
+      month: "2026-07",
+      status: "APPROVED",
+      total_days: 10,
+      daily_wage: 500,
+      gross_pay: 5_000,
+      total_deductions: 1_000,
+      net_pay: 4_000,
+      created_at: "2026-08-01T01:00:00.000Z",
+      slip_data: {
+        transactions: [
+          {
+            id: "deduction-1",
+            type: "DEBT_DEDUCTION",
+            status: "APPROVED",
+            amount: 500,
+            applied_month: "2026-07-01",
+          },
+          {
+            id: "debt-1",
+            type: "DEBT",
+            status: "APPROVED",
+            amount: 500,
+            effective_date: "2026-07-15",
+          },
+        ],
+      },
+    },
+    employeeName: "สมชาย ใจดี",
+    generatedAt: GENERATED_AT,
+  });
+
+  expect(document.deductionRows[0]).toMatchObject({ dateLabel: "1 ก.ค. 2569" });
+  expect(document.sourceRows[0]).toMatchObject({ dateLabel: "15 ก.ค. 2569" });
+  expect(document.deductionRows[0]).not.toHaveProperty("date");
+  expect(document.sourceRows[0]).not.toHaveProperty("date");
 });
 
 test("payroll attendance snapshot still populates the work-calendar table", () => {
