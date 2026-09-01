@@ -9,6 +9,7 @@ const attendanceFutureDateGuardMigrationPath = "supabase/migrations/202608290400
 const sameDayResumeMigrationPath = "supabase/migrations/20260830030000_time_payroll_same_day_resume.sql";
 const calendarEligibilityMigrationPath = "supabase/migrations/20260830040000_time_payroll_calendar_eligibility_boundary.sql";
 const retireTimerMigrationPath = "supabase/migrations/20260831010000_retire_time_tracking_timer.sql";
+const futureSchedulingMigrationPath = "supabase/migrations/20260901030000_time_payroll_future_period_scheduling.sql";
 
 test("counts exception attendance only after the Bangkok workday boundary", () => {
   const input = {
@@ -81,13 +82,15 @@ test("routes expose only the exception-attendance runtime commands", async () =>
 
   expect(admin).not.toContain("attendanceMode");
   expect(admin).toContain("canDecide");
-  expect(admin).toContain("active_period:");
+  expect(admin).not.toContain("active_period:");
+  expect(admin).toContain("period_state:");
   expect(admin).toContain("time_payroll_active_periods");
   expect(admin).toContain('body.action === "REPLACE_ATTENDANCE_EXCEPTIONS"');
   expect(admin).not.toContain("APPLY_ATTENDANCE_BATCH");
   expect(admin).not.toContain("apply_time_payroll_attendance_batch");
   expect(admin).toContain('body.action === "UPDATE_TIME_PAYROLL_CONFIG"');
   expect(admin).toContain('body.action === "SET_PAYROLL_ACTIVE_PERIOD"');
+  expect(admin).toContain('body.action === "CANCEL_PAYROLL_ACTIVE_PERIOD_SCHEDULE"');
   expect(admin).not.toContain('body.action === "GET_TIME_PAYROLL_PREFLIGHT"');
   expect(admin).not.toContain('body.action === "ACTIVATE_EXCEPTION_ATTENDANCE"');
   expect(admin).not.toContain('body.action === "TOGGLE_TRACKING"');
@@ -95,6 +98,7 @@ test("routes expose only the exception-attendance runtime commands", async () =>
   expect(admin).not.toContain('.from("time_segments")');
   expect(admin).toContain("ช่วงวันที่อยู่นอกช่วงทำงานของพนักงาน กรุณาเปิดหรือกลับเข้าทำงานก่อน");
   expect(user).toContain("attendance:");
+  expect(user).toContain("periodState:");
   expect(user).toContain("get_time_payroll_attendance_month");
   expect(user).not.toContain('.from("time_segments")');
   expect(user).not.toContain("time_tracking_resume_schedules");
@@ -170,12 +174,30 @@ test("active-period backdates check every affected month for slip and deduction 
   expect(sql).toContain("perform private.assert_attendance_range_open(p_profile_id, p_effective_date + 1, v_today)");
 });
 
-test("active-period actions reject dates after the Bangkok server day", async () => {
+test("historical guard migration rejected future active-period dates", async () => {
   const sql = await readFile(futureDateGuardMigrationPath, "utf8");
 
   expect(sql).toContain("v_today date := (now() at time zone 'Asia/Bangkok')::date");
   expect(sql).toContain("if p_effective_date > v_today then raise exception 'FUTURE_EFFECTIVE_DATE'; end if;");
   expect(sql).toContain("create or replace function public.set_time_payroll_active_period(");
+});
+
+test("forward migration schedules period actions without weakening payroll month locks", async () => {
+  const sql = await readFile(futureSchedulingMigrationPath, "utf8");
+
+  expect(sql).toContain("scheduled_action");
+  expect(sql).toContain("scheduled_effective_on");
+  expect(sql).toContain("scheduled_activation_on");
+  expect(sql).toContain("p_action = 'END' then p_effective_date + 1");
+  expect(sql).toContain("create or replace function public.cancel_time_payroll_active_period_schedule");
+  expect(sql).toContain("private.assert_attendance_month_open");
+  expect(sql).toContain("to_char(v_pending.scheduled_activation_on, 'YYYY-MM')");
+  expect(sql).toContain("or to_char(ap.scheduled_activation_on, 'YYYY-MM') = p_month");
+  expect(sql).toContain("PENDING_PERIOD_ACTION");
+  expect(sql).not.toContain("if v_mode = 'EXCEPTIONS' then");
+  expect(sql).toContain("p_profile_id, p_month, false");
+  expect(sql).toContain("pg_advisory_xact_lock(hashtextextended('time-payroll-attendance:' || p_profile_id::text, 0))");
+  expect(sql).toContain("set search_path = ''");
 });
 
 test("individual attendance writes reject future Bangkok dates", async () => {

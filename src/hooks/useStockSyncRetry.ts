@@ -37,6 +37,17 @@ function stockEventEndpoint(entity: StockSyncEntity) {
   return entity === "income_expense" ? "/api/lanflow/income-expense" : "/api/lanflow/rubber-bills";
 }
 
+function invalidateStockSyncQueries(locationId: string, ownerUserId: string, queryClient: any) {
+  void queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.stock(locationId) });
+  void queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.incomeExpenseFeed(ownerUserId, locationId) });
+  void queryClient.invalidateQueries({
+    queryKey: [...moneyFlowQueryKeys.rubberBillOperationalFeedRoot(), ownerUserId, locationId],
+  });
+  void queryClient.invalidateQueries({
+    queryKey: moneyFlowQueryKeys.rubberBillWorkCounts(ownerUserId, locationId),
+  });
+}
+
 async function retryStockSyncEvents(locationId: string, ownerUserId: string, queryClient: any): Promise<StockSyncRetryResult> {
   if (typeof navigator !== "undefined" && !navigator.onLine) {
     throw new Error("ซิงก์รายการได้เมื่อออนไลน์เท่านั้น");
@@ -110,15 +121,11 @@ async function retryStockSyncEvents(locationId: string, ownerUserId: string, que
         errorMessage: event.errorMessage,
       };
     } finally {
-      queryClient.invalidateQueries({ queryKey: ["stock", locationId] });
-      queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.incomeExpenseFeed(ownerUserId, locationId) });
-      queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.rubberBills(ownerUserId, locationId) });
+      invalidateStockSyncQueries(locationId, ownerUserId, queryClient);
     }
   }
 
-  queryClient.invalidateQueries({ queryKey: ["stock", locationId] });
-  queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.incomeExpenseFeed(ownerUserId, locationId) });
-  queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.rubberBills(ownerUserId, locationId) });
+  invalidateStockSyncQueries(locationId, ownerUserId, queryClient);
 
   return { attempted, synced, stopped: false };
 }

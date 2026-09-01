@@ -48,6 +48,16 @@ function bangkokDate(offsetDays = 0) {
   }).format(date);
 }
 
+function nextBangkokMonthBoundary() {
+  const [year, month] = bangkokDate().split("-").map(Number);
+  const activation = new Date(Date.UTC(year, month, 1));
+  const effective = new Date(activation.getTime() - 86_400_000);
+  return {
+    effectiveDate: effective.toISOString().slice(0, 10),
+    activationMonth: activation.toISOString().slice(0, 7),
+  };
+}
+
 function expectedEligibleThrough(workdayEndTime: string, instant: Date) {
   const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Bangkok",
@@ -130,7 +140,30 @@ async function phoneFor(service: SupabaseClient, profileId: string) {
   return profile.data!.phone;
 }
 
+let temporaryLocationId: string | null = null;
+
 test.describe.serial("Exception attendance backend contract @time-payroll-exceptions-backend", () => {
+  test.beforeAll(async () => {
+    const service = serviceClient();
+    const existing = await service.from("locations").select("id").eq("is_active", true);
+    expect(existing.error).toBeNull();
+    if ((existing.data?.length ?? 0) < 2) {
+      temporaryLocationId = crypto.randomUUID();
+      expect((await service.from("locations").insert({
+        id: temporaryLocationId,
+        name: `สาขาทดสอบข้อยกเว้น ${temporaryLocationId.slice(0, 6)}`,
+        code: `TE${temporaryLocationId.replaceAll("-", "").slice(0, 6).toUpperCase()}`,
+        is_active: true,
+      })).error).toBeNull();
+    }
+  });
+
+  test.afterAll(async () => {
+    if (temporaryLocationId) {
+      await serviceClient().from("locations").delete().eq("id", temporaryLocationId);
+    }
+  });
+
   test("direct non-array attendance replacements are rejected without erasing the month", async () => {
     const service = serviceClient();
     const manager = await globalManagerClient();
@@ -315,7 +348,8 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_action: "END",
         p_effective_date: bangkokDate(1),
       });
-      expect(futureEnd.error?.message).toContain("FUTURE_EFFECTIVE_DATE");
+      expect(futureEnd.error).toBeNull();
+      expect(futureEnd.data).toMatchObject({ scheduled: true, activationOn: bangkokDate(2) });
 
       const paused = await manager.rpc("set_time_payroll_active_period", {
         p_profile_id: employeeId,
@@ -444,7 +478,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     }
   });
 
-  test("RESUME on the same day reopens the just-closed period instead of creating an overlap", async () => {
+  test("END today remains active until tomorrow and can be cancelled", async () => {
     const service = serviceClient();
     const manager = await globalManagerClient();
     const employeeId = await createEmployee(service, "QA same-day resume");
@@ -465,17 +499,28 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_effective_date: today,
       })).error).toBeNull();
 
+      const scheduled = await manager
+        .from("time_payroll_active_periods")
+        .select("start_on, end_on, scheduled_action, scheduled_effective_on, scheduled_activation_on")
+        .eq("profile_id", employeeId)
+        .single();
+      expect(scheduled.error).toBeNull();
+      expect(scheduled.data).toEqual({
+        start_on: today,
+        end_on: today,
+        scheduled_action: "END",
+        scheduled_effective_on: today,
+        scheduled_activation_on: bangkokDate(1),
+      });
+
+      const cancelled = await manager.rpc("cancel_time_payroll_active_period_schedule", {
+        p_profile_id: employeeId,
+      });
+      expect(cancelled.error).toBeNull();
+      expect(cancelled.data).toMatchObject({ cancelled: true, action: "END" });
+
       const session = await manager.auth.getSession();
       const authorization = `Bearer ${session.data.session!.access_token}`;
-      const resumed = await fetch(appUrl + "/api/lanflow/time-tracking/admin", {
-        method: "POST",
-        headers: { Authorization: authorization, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "SET_PAYROLL_ACTIVE_PERIOD",
-          payload: { user_id: employeeId, action: "RESUME", effective_date: today },
-        }),
-      });
-      expect(resumed.ok, await resumed.text()).toBeTruthy();
 
       const attendanceUpdate = await fetch(appUrl + "/api/lanflow/time-tracking/admin", {
         method: "POST",
@@ -501,6 +546,298 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       expect(exceptions.data).toEqual([{ work_date: today, status: "OFF" }]);
     } finally {
       await deleteEmployee(service, employeeId);
+    }
+  });
+
+  test("future period scheduling reschedules atomically and blocks payroll close in both directions", async () => {
+    const service = serviceClient();
+    const manager = await globalManagerClient();
+    const scheduledEmployee = await createEmployee(service, "QA future period schedule");
+    const closedEmployee = await createEmployee(service, "QA future period closed month");
+    const tomorrow = bangkokDate(1);
+    const later = bangkokDate(2);
+    const month = tomorrow.slice(0, 7);
+
+    try {
+      const first = await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: scheduledEmployee,
+        p_action: "ENABLE",
+        p_effective_date: tomorrow,
+      });
+      expect(first.error).toBeNull();
+      expect(first.data).toMatchObject({
+        action: "ENABLE",
+        selectedEffectiveOn: tomorrow,
+        activationOn: tomorrow,
+        scheduled: true,
+      });
+
+      const rescheduled = await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: scheduledEmployee,
+        p_action: "ENABLE",
+        p_effective_date: later,
+      });
+      expect(rescheduled.error).toBeNull();
+      const scheduledRows = await manager
+        .from("time_payroll_active_periods")
+        .select("start_on, end_on, scheduled_action, scheduled_effective_on, scheduled_activation_on")
+        .eq("profile_id", scheduledEmployee);
+      expect(scheduledRows.error).toBeNull();
+      expect(scheduledRows.data).toEqual([{
+        start_on: later,
+        end_on: null,
+        scheduled_action: "ENABLE",
+        scheduled_effective_on: later,
+        scheduled_activation_on: later,
+      }]);
+
+      const blockedSlip = await manager.rpc("create_time_tracking_payroll_slip", {
+        p_profile_id: scheduledEmployee,
+        p_month: month,
+        p_auto_start_next_month: false,
+      });
+      expect(blockedSlip.error?.message).toContain(`PENDING_PERIOD_ACTION:${month}`);
+
+      const cancelled = await manager.rpc("cancel_time_payroll_active_period_schedule", {
+        p_profile_id: scheduledEmployee,
+      });
+      expect(cancelled.error).toBeNull();
+      const afterCancel = await manager
+        .from("time_payroll_active_periods")
+        .select("id")
+        .eq("profile_id", scheduledEmployee);
+      expect(afterCancel.data).toEqual([]);
+
+      const today = bangkokDate();
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: closedEmployee,
+        p_action: "ENABLE",
+        p_effective_date: today,
+      })).error).toBeNull();
+      const closedSlip = await manager.rpc("create_time_tracking_payroll_slip", {
+        p_profile_id: closedEmployee,
+        p_month: today.slice(0, 7),
+        p_auto_start_next_month: false,
+      });
+      expect(closedSlip.error).toBeNull();
+      const blockedSchedule = await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: closedEmployee,
+        p_action: "END",
+        p_effective_date: today,
+      });
+      expect(blockedSchedule.error?.message).toContain(`MONTH_CLOSED:${today.slice(0, 7)}`);
+    } finally {
+      await deleteEmployee(service, scheduledEmployee);
+      await deleteEmployee(service, closedEmployee);
+    }
+  });
+
+  test("END at month boundary locks the activation month for set, reschedule, cancel, and payroll close", async () => {
+    const service = serviceClient();
+    const manager = await globalManagerClient();
+    const existingSlipEmployee = await createEmployee(service, "QA END activation month lock");
+    const scheduledEmployee = await createEmployee(service, "QA END activation pending lock");
+    const { effectiveDate, activationMonth } = nextBangkokMonthBoundary();
+    let futureSlipId: string | null = null;
+    let scheduledFutureSlipId: string | null = null;
+
+    try {
+      for (const profileId of [existingSlipEmployee, scheduledEmployee]) {
+        expect((await manager.rpc("set_time_payroll_active_period", {
+          p_profile_id: profileId,
+          p_action: "ENABLE",
+          p_effective_date: bangkokDate(),
+        })).error).toBeNull();
+      }
+
+      const futureSlip = await service.from("payroll_slips").insert({
+        profile_id: existingSlipEmployee,
+        month: activationMonth,
+        status: "PENDING",
+        created_by: existingSlipEmployee,
+      }).select("id").single();
+      expect(futureSlip.error).toBeNull();
+      futureSlipId = futureSlip.data!.id;
+
+      const blockedSet = await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: existingSlipEmployee,
+        p_action: "END",
+        p_effective_date: effectiveDate,
+      });
+      expect(blockedSet.error?.message).toContain(`MONTH_CLOSED:${activationMonth}`);
+
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: scheduledEmployee,
+        p_action: "END",
+        p_effective_date: effectiveDate,
+      })).error).toBeNull();
+
+      const blockedClose = await manager.rpc("create_time_tracking_payroll_slip", {
+        p_profile_id: scheduledEmployee,
+        p_month: activationMonth,
+        p_auto_start_next_month: false,
+      });
+      expect(blockedClose.error?.message).toContain(`PENDING_PERIOD_ACTION:${activationMonth}`);
+
+      const scheduledFutureSlip = await service.from("payroll_slips").insert({
+        profile_id: scheduledEmployee,
+        month: activationMonth,
+        status: "PENDING",
+        created_by: scheduledEmployee,
+      }).select("id").single();
+      expect(scheduledFutureSlip.error).toBeNull();
+      scheduledFutureSlipId = scheduledFutureSlip.data!.id;
+
+      const blockedReschedule = await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: scheduledEmployee,
+        p_action: "END",
+        p_effective_date: effectiveDate,
+      });
+      expect(blockedReschedule.error?.message).toContain(`MONTH_CLOSED:${activationMonth}`);
+
+      const blockedCancel = await manager.rpc("cancel_time_payroll_active_period_schedule", {
+        p_profile_id: scheduledEmployee,
+      });
+      expect(blockedCancel.error?.message).toContain(`MONTH_CLOSED:${activationMonth}`);
+    } finally {
+      if (futureSlipId) await service.from("payroll_slips").delete().eq("id", futureSlipId);
+      if (scheduledFutureSlipId) await service.from("payroll_slips").delete().eq("id", scheduledFutureSlipId);
+      await deleteEmployee(service, existingSlipEmployee);
+      await deleteEmployee(service, scheduledEmployee);
+    }
+  });
+
+  test("future PAUSE and RESUME preserve today's state and audit the activation time", async () => {
+    const service = serviceClient();
+    const manager = await globalManagerClient();
+    const pauseEmployee = await createEmployee(service, "QA future pause");
+    const resumeEmployee = await createEmployee(service, "QA future resume");
+    const yesterday = bangkokDate(-1);
+    const today = bangkokDate();
+    const tomorrow = bangkokDate(1);
+
+    try {
+      for (const profileId of [pauseEmployee, resumeEmployee]) {
+        expect((await manager.rpc("set_time_payroll_active_period", {
+          p_profile_id: profileId,
+          p_action: "ENABLE",
+          p_effective_date: yesterday,
+        })).error).toBeNull();
+      }
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: resumeEmployee,
+        p_action: "PAUSE",
+        p_effective_date: today,
+      })).error).toBeNull();
+
+      const futurePause = await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: pauseEmployee,
+        p_action: "PAUSE",
+        p_effective_date: tomorrow,
+      });
+      const futureResume = await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: resumeEmployee,
+        p_action: "RESUME",
+        p_effective_date: tomorrow,
+      });
+      expect(futurePause.error).toBeNull();
+      expect(futurePause.data).toMatchObject({ scheduled: true, activationOn: tomorrow });
+      expect(futureResume.error).toBeNull();
+      expect(futureResume.data).toMatchObject({ scheduled: true, activationOn: tomorrow });
+
+      const pausedPeriod = await manager
+        .from("time_payroll_active_periods")
+        .select("start_on, end_on, scheduled_action, scheduled_activation_on")
+        .eq("profile_id", pauseEmployee)
+        .single();
+      expect(pausedPeriod.data).toEqual({
+        start_on: yesterday,
+        end_on: today,
+        scheduled_action: "PAUSE",
+        scheduled_activation_on: tomorrow,
+      });
+      const resumedPeriods = await manager
+        .from("time_payroll_active_periods")
+        .select("start_on, end_on, scheduled_action, scheduled_activation_on")
+        .eq("profile_id", resumeEmployee)
+        .order("start_on");
+      expect(resumedPeriods.data).toEqual([
+        { start_on: yesterday, end_on: yesterday, scheduled_action: null, scheduled_activation_on: null },
+        { start_on: tomorrow, end_on: null, scheduled_action: "RESUME", scheduled_activation_on: tomorrow },
+      ]);
+
+      const audit = await manager
+        .from("time_tracking_audit_logs")
+        .select("comment")
+        .eq("record_id", resumeEmployee)
+        .eq("action", "SET_PAYROLL_ACTIVE_PERIOD")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .single();
+      expect(audit.error).toBeNull();
+      expect(audit.data?.comment).toContain(`มีผลจริง ${tomorrow} 00:00 Asia/Bangkok`);
+    } finally {
+      await deleteEmployee(service, pauseEmployee);
+      await deleteEmployee(service, resumeEmployee);
+    }
+  });
+
+  test("period scheduling serializes schedule and payroll-slip races per employee", async () => {
+    const service = serviceClient();
+    const manager = await globalManagerClient();
+    const payrollRaceEmployee = await createEmployee(service, "QA schedule slip race");
+    const scheduleRaceEmployee = await createEmployee(service, "QA schedule schedule race");
+    const today = bangkokDate();
+    const tomorrow = bangkokDate(1);
+    const later = bangkokDate(2);
+
+    try {
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: payrollRaceEmployee,
+        p_action: "ENABLE",
+        p_effective_date: today,
+      })).error).toBeNull();
+
+      const [scheduleResult, slipResult] = await Promise.all([
+        manager.rpc("set_time_payroll_active_period", {
+          p_profile_id: payrollRaceEmployee,
+          p_action: "END",
+          p_effective_date: today,
+        }),
+        manager.rpc("create_time_tracking_payroll_slip", {
+          p_profile_id: payrollRaceEmployee,
+          p_month: today.slice(0, 7),
+          p_auto_start_next_month: false,
+        }),
+      ]);
+      const raceErrors = [scheduleResult.error?.message, slipResult.error?.message].filter(Boolean);
+      expect(raceErrors).toHaveLength(1);
+      expect(raceErrors[0]).toMatch(/MONTH_CLOSED|PENDING_PERIOD_ACTION|NO_WORK_MONTH/);
+
+      const concurrentSchedules = await Promise.all([
+        manager.rpc("set_time_payroll_active_period", {
+          p_profile_id: scheduleRaceEmployee,
+          p_action: "ENABLE",
+          p_effective_date: tomorrow,
+        }),
+        manager.rpc("set_time_payroll_active_period", {
+          p_profile_id: scheduleRaceEmployee,
+          p_action: "ENABLE",
+          p_effective_date: later,
+        }),
+      ]);
+      expect(concurrentSchedules.every((result) => result.error === null)).toBe(true);
+      const pendingRows = await manager
+        .from("time_payroll_active_periods")
+        .select("start_on, scheduled_action, scheduled_activation_on")
+        .eq("profile_id", scheduleRaceEmployee);
+      expect(pendingRows.error).toBeNull();
+      expect(pendingRows.data).toHaveLength(1);
+      expect(pendingRows.data?.[0].scheduled_action).toBe("ENABLE");
+      expect([tomorrow, later]).toContain(pendingRows.data?.[0].scheduled_activation_on);
+    } finally {
+      await deleteEmployee(service, payrollRaceEmployee);
+      await deleteEmployee(service, scheduleRaceEmployee);
     }
   });
 
@@ -947,6 +1284,15 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_effective_date: workDate,
       });
       expect(normalAdminPeriod.error?.message).toContain("Forbidden");
+      expect((await systemManager.rpc("set_time_payroll_active_period", {
+        p_profile_id: targetId,
+        p_action: "RESUME",
+        p_effective_date: bangkokDate(1),
+      })).error).toBeNull();
+      const normalAdminCancel = await normalAdmin.rpc("cancel_time_payroll_active_period_schedule", {
+        p_profile_id: targetId,
+      });
+      expect(normalAdminCancel.error?.message).toContain("Forbidden");
       const normalAdminAttendance = await normalAdmin.rpc("get_time_payroll_attendance_month", {
         p_profile_id: targetId,
         p_month: month,
@@ -966,10 +1312,31 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       expect(systemRoute.status).toBe(200);
       const systemPayload = await systemRoute.json() as {
         permissions: { canDecide: boolean; canConfigure: boolean };
-        users: Array<{ id: string }>;
+        users: Array<{
+          id: string;
+          period_state: {
+            currentStatus: string;
+            nextAction: { action: string; activationOn: string } | null;
+          };
+        }>;
       };
       expect(systemPayload.permissions).toMatchObject({ canDecide: true, canConfigure: true });
       expect(systemPayload.users.map((profile) => profile.id)).toContain(targetId);
+      expect(systemPayload.users.find((profile) => profile.id === targetId)?.period_state).toMatchObject({
+        currentStatus: "INACTIVE",
+        nextAction: { action: "RESUME", activationOn: bangkokDate(1) },
+      });
+
+      const targetClient = await signedInClient(await phoneFor(service, targetId));
+      const targetSession = await targetClient.auth.getSession();
+      const targetRoute = await fetch(appUrl + "/api/lanflow/time-tracking/user?month=" + month, {
+        headers: { Authorization: "Bearer " + targetSession.data.session!.access_token },
+      });
+      expect(targetRoute.status).toBe(200);
+      expect((await targetRoute.json()).periodState).toMatchObject({
+        currentStatus: "INACTIVE",
+        nextAction: { action: "RESUME", activationOn: bangkokDate(1) },
+      });
 
       const normalAdminSession = await normalAdmin.auth.getSession();
       const normalAdminRoute = await fetch(appUrl + "/api/lanflow/time-tracking/admin?month=" + month, {

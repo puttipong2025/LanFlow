@@ -1,14 +1,9 @@
-import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { RubberBill } from "@/types";
 import {
   enqueueSyncEvent,
-  deleteRubberBillReceiptSnapshotsNotIn,
   deleteRubberBillReceiptSnapshotsByClientTempId,
   getPendingEvents,
-  getRubberBillReceiptSnapshots,
-  pruneRubberBillReceiptSnapshots,
-  putRubberBillReceiptSnapshots,
   removeSyncEvent,
   removeSyncEvents,
   type SyncEvent,
@@ -22,13 +17,11 @@ import {
   isRubberBillPriceApprovalRequired,
 } from "@/lib/rubber-bills/approval";
 import type { EffectiveRubberApprovalSettings } from "@/types";
-import { buildRubberBillReceiptModel } from "@/components/rubber-bills/bill-display";
 import {
-  calculateRubberBill,
+  applyRubberBillCalculation,
   multiplyMoneyFloorBaht,
 } from "@/lib/rubber-bills/calculations";
 import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
-import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
 import { createScopedSingleFlight } from "@/lib/scoped-single-flight";
 
 export function assertRubberBillDeleteAllowed(pendingCreateCount: number, isOnline: boolean) {
@@ -44,15 +37,13 @@ function buildRpcPayload(
   deletedByName?: string,
   deletedByPhone?: string
 ) {
-  const items: any[] = [];
-  const calculation = calculateRubberBill({
+  const calculatedBill = applyRubberBillCalculation({
+    ...bill,
     weighItems: bill.weighItems ?? [],
-    deductWeight: bill.deductWeight,
-    stockDeductionItems: bill.acidItems ?? [],
-    debtItems: bill.debtItems ?? (bill.debtItem ? [bill.debtItem] : []),
   });
+  const items: any[] = [];
   
-  (bill.weighItems || []).forEach((item, i) => {
+  calculatedBill.weighItems.forEach((item, i) => {
     items.push({
       itemType: "weigh",
       title: item.label,
@@ -61,12 +52,12 @@ function buildRpcPayload(
       outWeight: item.outWeight,
       netWeight: item.netWeight,
       unitPrice: item.price,
-      totalAmount: calculation.lineTotals[i] ?? 0,
+      totalAmount: item.total ?? multiplyMoneyFloorBaht(item.netWeight, item.price),
       sequenceNo: i + 1
     });
   });
 
-  (bill.acidItems || []).forEach((item, i) => {
+  (calculatedBill.acidItems || []).forEach((item, i) => {
     items.push({
       itemType: "stock_deduction",
       title: item.name,
@@ -75,67 +66,71 @@ function buildRpcPayload(
       quantity: item.quantity,
       unit: item.unit,
       unitPrice: item.unitPrice,
-      totalAmount: calculation.stockDeductionLineTotals[i]
-        ?? multiplyMoneyFloorBaht(item.quantity, item.unitPrice),
-      sequenceNo: (bill.weighItems?.length || 0) + i + 1
+      totalAmount: item.total ?? multiplyMoneyFloorBaht(item.quantity, item.unitPrice),
+      sequenceNo: calculatedBill.weighItems.length + i + 1
     });
   });
 
-  const allDebts = bill.debtItems ?? (bill.debtItem ? [bill.debtItem] : []);
+  const allDebts = calculatedBill.debtItems
+    ?? (calculatedBill.debtItem ? [calculatedBill.debtItem] : []);
   allDebts.forEach((item, i) => {
     items.push({
       itemType: "debt",
       title: item.title,
       description: item.title,
       totalAmount: item.amount,
-      sequenceNo: (bill.weighItems?.length || 0) + (bill.acidItems?.length || 0) + i + 1
+      sequenceNo: calculatedBill.weighItems.length + (calculatedBill.acidItems?.length || 0) + i + 1
     });
   });
 
   return {
-    operation,
-    formulaVersion: 2,
-    expectedRevisionNo: bill.revisionNo,
-    clientTempId: bill.clientTempId,
-    idempotencyKey: `${operation}:${bill.clientTempId}:${bill.revisionNo}`,
-    locationId: bill.locationId,
-    recordStatus: operation === "delete" ? "deleted" : bill.recordStatus,
-    localBillNo: bill.localBillNo,
-    billDate: bill.billDate,
-    customerId: bill.customerId ?? null,
-    customerName: bill.customerName,
-    configuredPriceSnapshot:
-      operation === "create"
-        ? configuredPriceSnapshot
-        : bill.configuredPriceSnapshot ?? null,
-    billType: bill.billType,
-    deductWeight: bill.deductWeight,
-    weight: calculation.totalWeight,
-    netWeight: calculation.netWeight,
-    rubberValue: calculation.weighValueTotal,
-    netRubberValue: calculation.rubberValue,
-    averagePrice: calculation.averagePrice,
-    deductionTotal: calculation.deductionTotal,
-    payableBeforeRounding: calculation.payableBeforeRounding,
-    netTotal: calculation.netTotal,
-    acidPackCount: bill.acidPackCount,
-    createdByUserId: bill.createdByUserId,
-    createdByName: bill.createdByName,
-    createdByPhone: bill.createdByPhone,
-    clientRecordedAt: bill.clientRecordedAt || new Date().toISOString(),
-    clientCreatedAt: bill.clientCreatedAt || new Date().toISOString(),
-    ...(operation === "create" ? {
-      inputMethod: bill.inputMethod ?? "manual",
-      ...(bill.inputMethod === "ocr" && bill.ocrUploadId ? { ocrUploadId: bill.ocrUploadId } : {}),
-    } : {}),
-    deletedByName,
-    deletedByPhone,
-    items
+    calculatedBill,
+    payload: {
+      operation,
+      formulaVersion: 2,
+      expectedRevisionNo: calculatedBill.revisionNo,
+      clientTempId: calculatedBill.clientTempId,
+      idempotencyKey: `${operation}:${calculatedBill.clientTempId}:${calculatedBill.revisionNo}`,
+      locationId: calculatedBill.locationId,
+      recordStatus: operation === "delete" ? "deleted" : calculatedBill.recordStatus,
+      localBillNo: calculatedBill.localBillNo,
+      billDate: calculatedBill.billDate,
+      customerId: calculatedBill.customerId ?? null,
+      customerName: calculatedBill.customerName,
+      configuredPriceSnapshot:
+        operation === "create"
+          ? configuredPriceSnapshot
+          : calculatedBill.configuredPriceSnapshot ?? null,
+      billType: calculatedBill.billType,
+      deductWeight: calculatedBill.deductWeight,
+      weight: calculatedBill.weight,
+      netWeight: calculatedBill.netWeight,
+      rubberValue: calculatedBill.weighValueTotal,
+      netRubberValue: calculatedBill.rubberValue,
+      averagePrice: calculatedBill.price,
+      deductionTotal: calculatedBill.deductionTotal,
+      payableBeforeRounding: calculatedBill.payableBeforeRounding,
+      netTotal: calculatedBill.netTotal,
+      acidPackCount: calculatedBill.acidPackCount,
+      createdByUserId: calculatedBill.createdByUserId,
+      createdByName: calculatedBill.createdByName,
+      createdByPhone: calculatedBill.createdByPhone,
+      clientRecordedAt: calculatedBill.clientRecordedAt || new Date().toISOString(),
+      clientCreatedAt: calculatedBill.clientCreatedAt || new Date().toISOString(),
+      ...(operation === "create" ? {
+        inputMethod: calculatedBill.inputMethod ?? "manual",
+        ...(calculatedBill.inputMethod === "ocr" && calculatedBill.ocrUploadId
+          ? { ocrUploadId: calculatedBill.ocrUploadId }
+          : {}),
+      } : {}),
+      deletedByName,
+      deletedByPhone,
+      items,
+    },
   };
 }
 
 const runRubberBillSyncSingleFlight = createScopedSingleFlight();
-const receiptPersistenceVersions = new Map<string, number>();
 
 function queuePartition(ownerUserId: string, locationId: string) {
   return { entity: "rubber_bills" as const, ownerUserId, locationId };
@@ -229,342 +224,12 @@ async function normalizeRubberBillQueueBeforeSync(ownerUserId: string, locationI
   }
 }
 
-export function useRubberBills(
+export function useRubberBillMutations(
   locationId: string,
   ownerUserId: string,
   approvalSettings?: EffectiveRubberApprovalSettings | null,
-  options: { enabled?: boolean } = {},
 ) {
-  const supabase = createSupabaseBrowserClient();
   const queryClient = useQueryClient();
-
-  const query = useQuery({
-    queryKey: moneyFlowQueryKeys.rubberBills(ownerUserId, locationId),
-    enabled: Boolean(locationId && ownerUserId) && (options.enabled ?? true),
-    networkMode: "always",
-    staleTime: 30_000,
-    queryFn: async () => {
-      // 1. Fetch Server State (gracefully degrade when offline)
-      let serverBills: RubberBill[] = [];
-
-      try {
-        const bills: any[] = [];
-        for (let offset = 0; ; offset += 1_000) {
-          const { data: pageRows, error: billsError } = await supabase
-            .from("rubber_bills")
-            .select("id,client_temp_id,local_bill_no,server_bill_no,idempotency_key,location_id,bill_no,bill_date,customer_id,customer_name,bill_type,deduct_weight,weight,net_weight,rubber_value,net_rubber_value,average_price,deduction_total,payable_before_rounding,net_total,acid_pack_count,configured_price_snapshot,approval_state,approved_by_name,approval_revision_no,created_by_user_id,created_by_name,created_by_phone,client_created_at,created_at,client_recorded_at,server_received_at,revision_no,record_status,deleted_at,deleted_by_name,deleted_by_phone,report_lock_no,source_rubber_export_id,source_export_no,received_at,received_age_hours,received_age_is_estimated,input_method,has_ocr_source_image")
-            .eq("location_id", locationId)
-            .eq("record_status", "active")
-            .order("created_at", { ascending: false })
-            .order("id", { ascending: false })
-            .range(offset, offset + 999);
-          if (billsError) throw new Error(billsError.message || JSON.stringify(billsError));
-          bills.push(...(pageRows ?? []));
-          if ((pageRows?.length ?? 0) < 1_000) break;
-        }
-
-        if (bills?.length) {
-          const items: any[] = [];
-          const billIds = bills.map((bill) => bill.id);
-          for (let chunkStart = 0; chunkStart < billIds.length; chunkStart += 100) {
-            const chunk = billIds.slice(chunkStart, chunkStart + 100);
-            for (let offset = 0; ; offset += 1_000) {
-              const { data: itemRows, error: itemsError } = await supabase
-                .from("rubber_bill_items")
-                .select("*")
-                .in("bill_id", chunk)
-                .order("bill_id")
-                .order("sequence_no")
-                .order("id")
-                .range(offset, offset + 999);
-              if (itemsError) throw new Error(itemsError.message || JSON.stringify(itemsError));
-              items.push(...(itemRows ?? []));
-              if ((itemRows?.length ?? 0) < 1_000) break;
-            }
-          }
-
-          const itemsByBillId = new Map<string, any[]>();
-          for (const item of items ?? []) {
-            const billItems = itemsByBillId.get(item.bill_id) ?? [];
-            billItems.push(item);
-            itemsByBillId.set(item.bill_id, billItems);
-          }
-
-          serverBills = bills.map((row: any): RubberBill => {
-            const billItems = itemsByBillId.get(row.id) ?? [];
-            
-            const weighItems = billItems
-              .filter((item: any) => item.item_type === "weigh")
-              .map((item: any) => ({
-                id: item.id,
-                label: item.description ?? "ชั่ง",
-                inWeight: Number(item.weight_in ?? 0),
-                outWeight: Number(item.weight_out ?? 0),
-                netWeight: Number(item.net_weight ?? 0),
-                price: Number(item.price ?? 0),
-                total: Number(item.total ?? 0)
-              }));
-            const acidItems = billItems
-              .filter((item: any) => item.item_type === "acid" || item.item_type === "stock_deduction")
-              .map((item: any) => ({
-                id: item.id,
-                name: item.description ?? "สินค้า",
-                stockProductId: item.stock_product_id ?? "",
-                quantity: Number(item.quantity ?? 0),
-                unit: item.unit ?? "ชิ้น",
-                unitPrice: Number(item.price ?? 0),
-                total: Number(item.total ?? 0)
-              }));
-            const debtItems = billItems
-              .filter((item: any) => item.item_type === "debt")
-              .map((item: any) => ({
-                id: item.id,
-                title: item.description ?? "หักชำระหนี้",
-                amount: Number(item.total ?? 0)
-              }));
-            const fallbackCalculation = calculateRubberBill({
-              weighItems,
-              deductWeight: Number(row.deduct_weight ?? 0),
-              stockDeductionItems: acidItems,
-              debtItems,
-            });
-
-            return {
-              id: row.id,
-              clientTempId: row.client_temp_id ?? row.id,
-              localBillNo: row.local_bill_no,
-              serverBillNo: row.server_bill_no ?? undefined,
-              syncStatus: "synced",
-              idempotencyKey: row.idempotency_key ?? `server:${row.id}`,
-              locationId: row.location_id,
-              billNo: row.bill_no,
-              billDate: row.bill_date,
-              customerId: row.customer_id ?? null,
-              customerName: row.customer_name ?? "",
-              billType: row.bill_type === "weighing" ? "บิลเครื่องชั่งเล็ก" : row.bill_type,
-              deductWeight: Number(row.deduct_weight ?? 0),
-              weight: Number(row.weight ?? 0),
-              netWeight: Number(row.net_weight ?? fallbackCalculation.netWeight),
-              weighValueTotal: Number(row.rubber_value ?? fallbackCalculation.weighValueTotal),
-              rubberValue: Number(row.net_rubber_value ?? fallbackCalculation.rubberValue),
-              price: Number(row.average_price ?? 0),
-              deductionTotal: Number(row.deduction_total ?? 0),
-              payableBeforeRounding: Number(
-                row.payable_before_rounding ?? fallbackCalculation.payableBeforeRounding
-              ),
-              netTotal: Number(row.net_total ?? 0),
-              acidPackCount: Number(row.acid_pack_count ?? 0),
-              configuredPriceSnapshot:
-                row.configured_price_snapshot == null
-                  ? null
-                  : Number(row.configured_price_snapshot),
-              approvalState: row.approval_state === "approved" ? "approved" : "not_required",
-              approvalApprovedByName: row.approved_by_name ?? null,
-              approvalRevisionNo:
-                row.approval_revision_no == null ? null : Number(row.approval_revision_no),
-              weighItems,
-              acidItems,
-              debtItem: debtItems[0],
-              debtItems,
-              createdByUserId: row.created_by_user_id,
-              createdByName: row.created_by_name,
-              createdByPhone: row.created_by_phone,
-              clientCreatedAt: row.client_created_at ?? row.created_at,
-              serverCreatedAt: row.created_at,
-              clientRecordedAt: row.client_recorded_at ?? row.created_at,
-              serverReceivedAt: row.server_received_at ?? undefined,
-              revisionNo: row.revision_no ?? 0,
-              recordStatus: row.record_status,
-              deletedAt: row.deleted_at ?? undefined,
-              deletedByName: row.deleted_by_name ?? undefined,
-              deletedByPhone: row.deleted_by_phone ?? undefined,
-              reportLockNo: row.report_lock_no ?? null,
-              sourceRubberExportId: row.source_rubber_export_id ?? null,
-              sourceExportNo: row.source_export_no ?? null,
-              receivedAt: row.received_at ?? null,
-              receivedAgeHours:
-                row.received_age_hours == null ? null : Number(row.received_age_hours),
-              receivedAgeIsEstimated: row.received_age_is_estimated ?? null
-              ,inputMethod: row.input_method === "ocr" ? "ocr" : "manual"
-              ,hasOcrSourceImage: row.has_ocr_source_image === true
-            };
-          });
-
-          const persistenceVersion = (receiptPersistenceVersions.get(locationId) ?? 0) + 1;
-          receiptPersistenceVersions.set(locationId, persistenceVersion);
-          const receiptSnapshots = serverBills
-            .filter((bill) => bill.serverBillNo)
-            .map((bill) => ({
-              billId: bill.id,
-              locationId: bill.locationId,
-              serverBillNo: bill.serverBillNo!,
-              serverReceivedAt:
-                bill.serverReceivedAt
-                ?? bill.serverCreatedAt
-                ?? bill.clientRecordedAt,
-              revisionNo: bill.revisionNo,
-              bill,
-              receipt: buildRubberBillReceiptModel(bill),
-            }));
-          void (async () => {
-            await putRubberBillReceiptSnapshots(receiptSnapshots);
-            if (receiptPersistenceVersions.get(locationId) !== persistenceVersion) return;
-            await deleteRubberBillReceiptSnapshotsNotIn(
-              locationId,
-              new Set(serverBills.map((bill) => bill.id)),
-            );
-            await pruneRubberBillReceiptSnapshots(locationId, 100);
-          })().catch((cacheError) => {
-            console.warn("Unable to cache rubber bill receipts", cacheError);
-          });
-        } else {
-          const persistenceVersion = (receiptPersistenceVersions.get(locationId) ?? 0) + 1;
-          receiptPersistenceVersions.set(locationId, persistenceVersion);
-          void (async () => {
-            if (receiptPersistenceVersions.get(locationId) !== persistenceVersion) return;
-            await deleteRubberBillReceiptSnapshotsNotIn(locationId, new Set());
-            await pruneRubberBillReceiptSnapshots(locationId, 100);
-          })().catch((cacheError) => {
-            console.warn("Unable to clean rubber bill receipt cache", cacheError);
-          });
-        }
-      } catch (err) {
-        // Offline or network error → use the latest synced receipt snapshots.
-        if (!navigator.onLine) {
-          try {
-            serverBills = (await getRubberBillReceiptSnapshots(locationId))
-              .map((snapshot) => snapshot.bill);
-          } catch {
-            serverBills = [];
-          }
-        } else {
-          throw err; // re-throw real errors when online
-        }
-      }
-
-      // 2. Fetch Pending Queue
-      const pendingEvents = await getPendingEvents(queuePartition(ownerUserId, locationId));
-      
-      // 3. Merge server state and pending state
-      const billsMap = new Map<string, RubberBill>();
-      serverBills.forEach(b => billsMap.set(b.clientTempId, b));
-
-      for (const event of pendingEvents) {
-        if (event.operation === "delete") {
-          if (event.status === "pending") {
-            // Optimistic: hide the bill while delete is pending
-            billsMap.delete(event.id);
-          } else {
-            // Conflict or failed: show the bill back with error status
-            const existing = billsMap.get(event.id);
-            if (existing) {
-              billsMap.set(event.id, { ...existing, syncStatus: event.status === "conflict" ? "conflict" : "failed", syncErrorMessage: event.errorMessage });
-            }
-          }
-          continue;
-        } else {
-          // It's create or update, overlay it
-          const rawPayload = event.payload;
-          const optimisticItems = Array.isArray(rawPayload.items) ? rawPayload.items : [];
-          const optimisticWeighItems = optimisticItems
-            .filter((item: any) => item.itemType === "weigh")
-            .map((item: any) => ({
-              id: item.sequenceNo.toString(),
-              label: item.title,
-              inWeight: item.inWeight,
-              outWeight: item.outWeight,
-              netWeight: item.netWeight,
-              price: item.unitPrice,
-              total: item.totalAmount,
-            }));
-          const optimisticAcidItems = optimisticItems
-            .filter((item: any) => item.itemType === "acid" || item.itemType === "stock_deduction")
-            .map((item: any) => ({
-              id: item.sequenceNo.toString(),
-              name: item.title,
-              stockProductId: item.stockProductId,
-              quantity: item.quantity,
-              unit: item.unit,
-              unitPrice: item.unitPrice,
-              total: item.totalAmount,
-            }));
-          const optimisticDebtItems = optimisticItems
-            .filter((item: any) => item.itemType === "debt")
-            .map((item: any) => ({
-              id: item.sequenceNo.toString(),
-              title: item.title,
-              amount: item.totalAmount,
-            }));
-          const optimisticCalculation = calculateRubberBill({
-            weighItems: optimisticWeighItems,
-            deductWeight: rawPayload.deductWeight || 0,
-            stockDeductionItems: optimisticAcidItems,
-            debtItems: optimisticDebtItems,
-          });
-          
-          // Convert RPC payload back to RubberBill shape for Optimistic UI
-          const optimisticBill: RubberBill = {
-            id: rawPayload.clientTempId,
-            clientTempId: rawPayload.clientTempId,
-            localBillNo: rawPayload.localBillNo,
-            serverBillNo: undefined, // pending
-            syncStatus: event.status === "conflict" ? "conflict" : event.status === "failed" ? "failed" : "pending",
-            idempotencyKey: rawPayload.idempotencyKey,
-            locationId: rawPayload.locationId,
-            billNo: rawPayload.localBillNo,
-            billDate: rawPayload.billDate,
-            customerId: rawPayload.customerId ?? null,
-            customerName: rawPayload.customerName,
-            billType: rawPayload.billType ?? "บิลเครื่องชั่งเล็ก",
-            deductWeight: rawPayload.deductWeight || 0,
-            weight: rawPayload.weight || 0,
-            netWeight: rawPayload.netWeight ?? optimisticCalculation.netWeight,
-            weighValueTotal: rawPayload.rubberValue ?? optimisticCalculation.weighValueTotal,
-            rubberValue: rawPayload.netRubberValue ?? optimisticCalculation.rubberValue,
-            price: rawPayload.averagePrice ?? optimisticCalculation.averagePrice,
-            deductionTotal: rawPayload.deductionTotal ?? optimisticCalculation.deductionTotal,
-            payableBeforeRounding:
-              rawPayload.payableBeforeRounding ?? optimisticCalculation.payableBeforeRounding,
-            netTotal: rawPayload.netTotal ?? optimisticCalculation.netTotal,
-            acidPackCount: rawPayload.acidPackCount || 0,
-            configuredPriceSnapshot: rawPayload.configuredPriceSnapshot ?? null,
-            approvalState: "not_required",
-            approvalApprovedByName: null,
-            approvalRevisionNo: null,
-            approvalPending:
-              rawPayload.operation === "create"
-              && isRubberBillPriceApprovalRequired(
-                rawPayload.items
-                  .filter((item: any) => item.itemType === "weigh")
-                  .map((item: any) => Number(item.unitPrice)),
-                {
-                  configuredPrice: rawPayload.configuredPriceSnapshot ?? null,
-                  priceTimeExempt: approvalSettings?.priceTimeExempt ?? false,
-                }
-              ),
-            weighItems: optimisticWeighItems,
-            acidItems: optimisticAcidItems,
-            debtItems: optimisticDebtItems,
-            debtItem: optimisticDebtItems[0],
-            createdByUserId: rawPayload.createdByUserId ?? ownerUserId,
-            createdByName: rawPayload.createdByName ?? "",
-            createdByPhone: rawPayload.createdByPhone ?? "",
-            clientCreatedAt: rawPayload.clientCreatedAt,
-            serverCreatedAt: rawPayload.clientCreatedAt,
-            clientRecordedAt: rawPayload.clientRecordedAt,
-            revisionNo: rawPayload.expectedRevisionNo + 1,
-            recordStatus: "active",
-            syncErrorMessage: event.errorMessage
-          };
-          billsMap.set(event.id, optimisticBill);
-        }
-      }
-
-      return Array.from(billsMap.values()).sort((a, b) => 
-        new Date(b.clientRecordedAt).getTime() - new Date(a.clientRecordedAt).getTime()
-      );
-    },
-  });
 
   const saveBillMutation = useMutation({
     networkMode: "always",
@@ -593,7 +258,7 @@ export function useRubberBills(
         );
       }
       
-      const payload = buildRpcPayload(
+      const { calculatedBill, payload } = buildRpcPayload(
         bill,
         operation,
         operation === "create" ? approvalSettings?.configuredPrice : bill.configuredPriceSnapshot
@@ -682,7 +347,7 @@ export function useRubberBills(
           }
           await mLib.removeSyncEvent(newlyQueuedEvent.queueId!);
           return {
-            ...bill,
+            ...calculatedBill,
             id: data.id ?? bill.id,
             serverBillNo: data.serverBillNo ?? bill.serverBillNo,
             billNo: data.serverBillNo ?? bill.billNo,
@@ -704,7 +369,7 @@ export function useRubberBills(
       }
       
       return {
-        ...bill,
+        ...calculatedBill,
         syncStatus: "pending" as const,
         configuredPriceSnapshot:
           operation === "create"
@@ -722,16 +387,6 @@ export function useRubberBills(
       };
     },
     onSuccess: (savedBill) => {
-      queryClient.setQueryData<RubberBill[]>(moneyFlowQueryKeys.rubberBills(ownerUserId, locationId), (old) => {
-        if (!old) return [savedBill];
-        const exists = old.findIndex(b => b.clientTempId === savedBill.clientTempId);
-        if (exists >= 0) {
-          const newBills = [...old];
-          newBills[exists] = { ...newBills[exists], ...savedBill };
-          return newBills;
-        }
-        return [savedBill, ...old];
-      });
       if (savedBill.approvalPending) {
         toast.success("ส่งคำขออนุมัติบิลยางแล้ว");
       }
@@ -779,14 +434,15 @@ export function useRubberBills(
 
       // If we replaced a pending update, use its server revision. Else use current bill's server revision.
       const targetRev = pendingUpdates.length > 0 ? pendingUpdates[0].payload.expectedRevisionNo : bill.revisionNo;
+      const { payload: calculatedPayload } = buildRpcPayload(
+        bill,
+        "delete",
+        bill.configuredPriceSnapshot,
+        deletedByName,
+        deletedByPhone
+      );
       const payload = {
-        ...buildRpcPayload(
-          bill,
-          "delete",
-          bill.configuredPriceSnapshot,
-          deletedByName,
-          deletedByPhone
-        ),
+        ...calculatedPayload,
         expectedRevisionNo: targetRev,
         idempotencyKey: `delete:${clientTempId}:${targetRev}`
       };
@@ -838,15 +494,6 @@ export function useRubberBills(
       return { clientTempId, coalesced: false, approvalPending: false };
     },
     onSuccess: (data) => {
-      queryClient.setQueryData<RubberBill[]>(moneyFlowQueryKeys.rubberBills(ownerUserId, locationId), (old) => {
-        if (!old) return old;
-        if (data.approvalPending) {
-          return old.map((bill) => bill.clientTempId === data.clientTempId
-            ? { ...bill, approvalPending: true, approvalOperation: "delete" }
-            : bill);
-        }
-        return old.filter(b => b.clientTempId !== data.clientTempId);
-      });
       if (data.approvalPending) {
         toast.success("ส่งคำขออนุมัติลบบิลยางแล้ว");
       }
@@ -878,26 +525,9 @@ export function useRubberBills(
   }
 
   return {
-    bills: query.data || [],
-    isLoading: query.isLoading,
-    isError: query.isError,
     addBill: saveBillMutation.mutateAsync,
     updateBill: saveBillMutation.mutateAsync,
     deleteBill: deleteBillMutation.mutateAsync,
     discardSyncProblem,
   };
-}
-
-export function useRubberBillMutations(
-  locationId: string,
-  ownerUserId: string,
-  approvalSettings?: EffectiveRubberApprovalSettings | null,
-) {
-  const { addBill, updateBill, deleteBill, discardSyncProblem } = useRubberBills(
-    locationId,
-    ownerUserId,
-    approvalSettings,
-    { enabled: false },
-  );
-  return { addBill, updateBill, deleteBill, discardSyncProblem };
 }

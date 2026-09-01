@@ -80,8 +80,8 @@ test.describe("Lean attendance UI contract", () => {
   });
 
   test("keeps row actions in the management column as labelled emoji buttons", () => {
-    expect(moduleSource).toContain("const activePeriod = user.active_period as { id: string; startOn: string; endOn: string | null }");
-    expect(moduleSource).toContain("const status = activePeriod ? 'ACTIVE_PERIOD' : 'INACTIVE_PERIOD'");
+    expect(moduleSource).toContain("const periodState = user.period_state as PayrollPeriodStateDto | undefined");
+    expect(moduleSource).toContain('const status = periodState?.currentStatus === "ACTIVE" ? \'ACTIVE_PERIOD\' : \'INACTIVE_PERIOD\'');
     expect(moduleSource).toContain("aria-label={overviewLabel}");
     expect(moduleSource).toContain('aria-label={`แก้ไขค่าแรงรายวันของ ${user.name}`}');
     expect(moduleSource).toContain("aria-label={payrollLabel}");
@@ -91,6 +91,21 @@ test.describe("Lean attendance UI contract", () => {
     expect(moduleSource).not.toContain('>แดชบอร์ด</th>');
     expect(moduleSource).not.toContain('>สรุปสิ้นเดือน</th>');
     expect(moduleSource).not.toContain("ดู Dashboard");
+  });
+
+  test("shows a branch filter, pending-only count badge, and explicit future activation copy", () => {
+    expect(moduleSource).toContain("กรองสาขา");
+    expect(moduleSource).toContain('aria-label="กรองตามสถานะ"');
+    expect(moduleSource).toContain('filter === "pending" && branchPendingCount > 0');
+    expect(moduleSource).toContain('filter === "pending" && branchPendingCount > 0 && (');
+    expect(moduleSource).toContain('window.addEventListener("focus", refreshVisibleData)');
+    expect(moduleSource).toContain('document.addEventListener("visibilitychange", refreshVisibleData)');
+    expect(moduleSource).not.toContain("hasPeriodHistory: false");
+    expect(controls).toContain("สถานะเปลี่ยนจริง 00:00 วันที่");
+    expect(controls).toContain("กดก่อนเวลานี้ยังไม่ได้เงินวันนั้น");
+    expect(controls).toContain('title="ยกเลิกกำหนดการรอมีผล"');
+    expect(controls).toContain('role="alertdialog"');
+    expect(modalShellSource).toContain("role={role}");
   });
 
   test("uses accessible native dialogs for debt, payroll, and audit-history workflows", () => {
@@ -135,7 +150,7 @@ test.describe("Time/payroll native dialogs", () => {
     await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
     await expect(page.getByRole("heading", { name: "จัดการเวลาและเงินเดือน" })).toBeVisible({ timeout: 30_000 });
 
-    await page.getByLabel("ตัวกรอง").selectOption("all");
+    await page.getByRole("button", { name: "ทั้งหมด", exact: true }).click();
     const calendarButton = page.getByRole("button", { name: /^จัดการปฏิทินวันทำงานของ / }).first();
     await expect(calendarButton).toBeVisible();
     await calendarButton.click();
@@ -154,7 +169,7 @@ test.describe("Time/payroll native dialogs", () => {
     await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
     await expect(page.getByRole("heading", { name: "จัดการเวลาและเงินเดือน" })).toBeVisible({ timeout: 30_000 });
 
-    await page.getByLabel("ตัวกรอง").selectOption("all");
+    await page.getByRole("button", { name: "ทั้งหมด", exact: true }).click();
     const payrollButton = page.getByRole("button", { name: /^จัดการสลิปเงินเดือนของ / }).first();
     await expect(payrollButton).toBeVisible();
     await payrollButton.click();
@@ -208,5 +223,25 @@ test.describe("Time/payroll native dialogs", () => {
     await page.keyboard.press("Escape");
     await expect(auditDialog).toBeHidden();
     await expect(auditSelect).toBeFocused();
+  });
+
+  test("keeps branch and status controls usable without page overflow at 360px and 393px", async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 800 });
+    await page.goto("/");
+    await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "จัดการเวลาและเงินเดือน" })).toBeVisible({ timeout: 30_000 });
+
+    await expect(page.getByLabel("กรองสาขา")).toBeVisible();
+    const allButton = page.getByRole("button", { name: "ทั้งหมด", exact: true });
+    const pendingButton = page.getByRole("button", { name: /^รออนุมัติ/ });
+    await allButton.click();
+    await expect(allButton).toHaveAttribute("aria-pressed", "true");
+    await pendingButton.click();
+    await expect(pendingButton).toHaveAttribute("aria-pressed", "true");
+    const dimensions = await page.evaluate(() => ({ width: window.innerWidth, scrollWidth: document.documentElement.scrollWidth }));
+    expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.width);
+    await page.setViewportSize({ width: 393, height: 852 });
+    const widerDimensions = await page.evaluate(() => ({ width: window.innerWidth, scrollWidth: document.documentElement.scrollWidth }));
+    expect(widerDimensions.scrollWidth).toBeLessThanOrEqual(widerDimensions.width);
   });
 });

@@ -186,6 +186,36 @@ test.describe("Rubber Bill receipt contract @rubber-bill-print", () => {
     ));
   });
 
+  test("recalculates pending offline row totals from current weight and price", () => {
+    const pending = buildRubberBillReceiptModel(makeBill({
+      serverBillNo: undefined,
+      syncStatus: "pending",
+      weighItems: [{
+        id: "w1",
+        label: "ชั่ง1",
+        inWeight: 15,
+        outWeight: 5,
+        netWeight: 10,
+        price: 20,
+        total: 160,
+      }],
+    }));
+    const synced = buildRubberBillReceiptModel(makeBill({
+      weighItems: [{
+        id: "w1",
+        label: "ชั่ง1",
+        inWeight: 15,
+        outWeight: 5,
+        netWeight: 10,
+        price: 20,
+        total: 160,
+      }],
+    }));
+
+    expect(pending.weighItems[0].lineTotal).toBe(200);
+    expect(synced.weighItems[0].lineTotal).toBe(160);
+  });
+
   test("hides average price from shared online and offline purchase receipts", () => {
     const syncedHtml = renderRubberBillReceiptHtml(buildRubberBillReceiptModel(makeBill()));
     const offlineHtml = renderRubberBillReceiptHtml(buildRubberBillReceiptModel(makeBill({

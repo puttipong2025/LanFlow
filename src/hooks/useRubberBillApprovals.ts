@@ -53,7 +53,6 @@ export function useRubberBillApprovals({
 
   function invalidateApprovalData() {
     void queryClient.invalidateQueries({ queryKey: [RUBBER_BILL_APPROVAL_REQUESTS_KEY] });
-    void queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.rubberBillsRoot() });
     void queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.rubberBillOperationalFeedRoot() });
     void queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.rubberBillWorkCountsRoot() });
     void queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.moneyTransfersRoot() });

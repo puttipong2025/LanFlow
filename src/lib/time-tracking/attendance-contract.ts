@@ -1,11 +1,6 @@
-const ATTENDANCE_MODES = ["EXCEPTIONS"] as const;
-type AttendanceMode = (typeof ATTENDANCE_MODES)[number];
-
-const ATTENDANCE_EXCEPTION_STATUSES = ["HALF_DAY", "OFF"] as const;
-type AttendanceExceptionStatus = (typeof ATTENDANCE_EXCEPTION_STATUSES)[number];
-
-const PAYROLL_PERIOD_ACTIONS = ["ENABLE", "PAUSE", "RESUME", "END"] as const;
-export type PayrollPeriodAction = (typeof PAYROLL_PERIOD_ACTIONS)[number];
+type AttendanceMode = "EXCEPTIONS";
+type AttendanceExceptionStatus = "HALF_DAY" | "OFF";
+export type PayrollPeriodAction = "ENABLE" | "PAUSE" | "RESUME" | "END";
 
 export interface TimePayrollSettingsDto {
   mode: AttendanceMode;
@@ -19,6 +14,19 @@ export interface AttendancePeriodDto {
   id: string;
   startOn: string;
   endOn: string | null;
+}
+
+interface PayrollScheduledActionDto {
+  action: PayrollPeriodAction;
+  selectedEffectiveOn: string;
+  activationOn: string;
+}
+
+export interface PayrollPeriodStateDto {
+  currentStatus: "ACTIVE" | "INACTIVE";
+  currentPeriod: AttendancePeriodDto | null;
+  nextAction: PayrollScheduledActionDto | null;
+  hasPeriodHistory: boolean;
 }
 
 export interface AttendanceExceptionDto {

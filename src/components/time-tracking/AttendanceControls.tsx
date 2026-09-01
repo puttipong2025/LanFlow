@@ -1,14 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CalendarDays, Settings2 } from "lucide-react";
+import { CalendarDays, Clock3, Settings2 } from "lucide-react";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { formatCurrency } from "@/lib/format";
 import type {
   AttendanceExceptionDto,
   AttendanceMonthDto,
-  AttendancePeriodDto,
   PayrollPeriodAction,
+  PayrollPeriodStateDto,
   TimePayrollSettingsDto,
 } from "@/lib/time-tracking/attendance-contract";
 
@@ -235,21 +235,52 @@ export function TimePayrollConfigPanel({
 
 export function AttendancePeriodControls({
   userName,
-  periods,
+  periodState,
+  workdayEndTime,
   online,
   saving,
   onAction,
+  onCancel,
 }: {
   userName: string;
-  periods: AttendancePeriodDto[];
+  periodState: PayrollPeriodStateDto;
+  workdayEndTime: string;
   online: boolean;
   saving?: boolean;
   onAction: (action: PayrollPeriodAction, effectiveDate: string) => Promise<string | null>;
+  onCancel: () => Promise<string | null>;
 }) {
   const [date, setDate] = useState(new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" }));
   const [error, setError] = useState<string | null>(null);
-  const current = periods.find((period) => period.endOn === null);
-  const actions: PayrollPeriodAction[] = current ? ["PAUSE", "END"] : periods.length ? ["RESUME"] : ["ENABLE"];
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const current = periodState.currentPeriod;
+  const actions: PayrollPeriodAction[] = periodState.currentStatus === "ACTIVE"
+    ? ["PAUSE", "END"]
+    : periodState.hasPeriodHistory ? ["RESUME"] : ["ENABLE"];
+
+  function actionLabel(action: PayrollPeriodAction) {
+    if (action === "ENABLE") return "เปิดใช้เงินเดือน";
+    if (action === "PAUSE") return "พักงาน";
+    if (action === "RESUME") return "กลับเข้าทำงาน";
+    return "สิ้นสุดงาน";
+  }
+
+  function nextDate(value: string) {
+    const parsed = new Date(`${value}T00:00:00Z`);
+    parsed.setUTCDate(parsed.getUTCDate() + 1);
+    return parsed.toISOString().slice(0, 10);
+  }
+
+  function effectText(action: PayrollPeriodAction, selectedDate: string) {
+    if (!selectedDate) return "เลือกวันที่เพื่อดูเวลาที่มีผลจริง";
+    if (action === "END") {
+      return `วันที่ ${selectedDate} เป็นวันสุดท้ายที่ได้ค่าแรง และสิ้นสุดจริง 00:00 วันที่ ${nextDate(selectedDate)}`;
+    }
+    if (action === "PAUSE") {
+      return `พักและหยุดนับค่าแรงตั้งแต่ 00:00 วันที่ ${selectedDate}`;
+    }
+    return `มีผล 00:00 วันที่ ${selectedDate}; ค่าแรงเต็มวันจะนับเมื่อถึง ${workdayEndTime} น. — กดก่อนเวลานี้ยังไม่ได้เงินวันนั้น`;
+  }
 
   async function handle(action: PayrollPeriodAction) {
     setError(null);
@@ -261,15 +292,76 @@ export function AttendancePeriodControls({
     if (actionError) setError(actionError);
   }
 
+  async function cancelSchedule() {
+    setError(null);
+    const cancelError = await onCancel();
+    if (cancelError) {
+      setError(cancelError);
+      return;
+    }
+    setCancelOpen(false);
+  }
+
   return (
     <section className="rounded-xl border border-black/10 bg-white p-4 shadow-sm" aria-busy={saving}>
       <h3 className="text-balance font-bold text-ink">ช่วงทำงานของ {userName}</h3>
-      <p className="mt-1 text-pretty text-sm text-ink/60">{current ? `กำลังทำงานตั้งแต่ ${current.startOn}` : "ไม่มีช่วงทำงานที่เปิดอยู่"}</p>
+      <p className="mt-1 text-pretty text-sm text-ink/60">
+        {periodState.currentStatus === "ACTIVE" && current
+          ? `สถานะปัจจุบัน: อยู่ในระบบเงินเดือนตั้งแต่ ${current.startOn}`
+          : "สถานะปัจจุบัน: ไม่อยู่ในระบบเงินเดือน"}
+      </p>
+      {periodState.nextAction && (
+        <div className="mt-3 rounded-lg border border-amber/40 bg-amber/10 p-3" role="status">
+          <div className="flex items-start gap-2">
+            <Clock3 className="mt-0.5 shrink-0 text-amber" size={18} aria-hidden="true" />
+            <div className="min-w-0">
+              <p className="font-semibold text-ink">รอมีผล: {actionLabel(periodState.nextAction.action)}</p>
+              <p className="mt-1 text-pretty text-sm text-ink/70">
+                เลือกวันที่ {periodState.nextAction.selectedEffectiveOn} · สถานะเปลี่ยนจริง 00:00 วันที่ {periodState.nextAction.activationOn}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setCancelOpen(true)}
+            disabled={saving || !online}
+            className="focus-ring mt-3 inline-flex h-10 items-center rounded-md border border-danger/30 bg-white px-3 text-sm font-semibold text-danger hover:bg-danger/5 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            ยกเลิกกำหนดการ
+          </button>
+        </div>
+      )}
       <label className="mt-3 grid max-w-xs gap-1 text-sm font-semibold">วันที่มีผล<input type="date" value={date} onChange={(event) => setDate(event.target.value)} className="focus-ring h-10 rounded-md border border-black/15 px-3" aria-invalid={Boolean(error)} aria-describedby={error ? "period-action-error" : undefined} /></label>
-      <div className="mt-3 flex flex-wrap gap-2">
-        {actions.map((action) => <button key={action} type="button" onClick={() => void handle(action)} disabled={saving || !online} className="focus-ring rounded-md bg-river px-3 py-2 text-sm font-bold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-50">{action === "ENABLE" ? "เปิดใช้เงินเดือน" : action === "PAUSE" ? "พักงาน" : action === "RESUME" ? "กลับเข้าทำงาน" : "สิ้นสุดงาน"}</button>)}
+      {periodState.nextAction && <p className="mt-2 text-pretty text-xs text-ink/60">บันทึกคำสั่งใหม่เพื่อแทนกำหนดการเดิมได้ทันที</p>}
+      <div className="mt-3 grid gap-2 lg:grid-cols-2">
+        {actions.map((action) => (
+          <div key={action} className="rounded-lg border border-black/10 bg-field/35 p-3">
+            <button type="button" onClick={() => void handle(action)} disabled={saving || !online} className="focus-ring inline-flex min-h-10 items-center rounded-md bg-river px-3 py-2 text-sm font-bold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-50">{actionLabel(action)}</button>
+            <p className="mt-2 text-pretty text-xs leading-5 text-ink/65">{effectText(action, date)}</p>
+          </div>
+        ))}
       </div>
       {error && <p id="period-action-error" role="alert" className="mt-2 text-sm font-semibold text-danger">{error}</p>}
+      {cancelOpen && periodState.nextAction && (
+        <ModalShell
+          title="ยกเลิกกำหนดการรอมีผล"
+          subtitle={`${actionLabel(periodState.nextAction.action)} จะไม่เกิดขึ้นในวันที่กำหนด`}
+          onClose={() => setCancelOpen(false)}
+          nativeModal
+          closeOnEscape
+          closeDisabled={saving}
+          role="alertdialog"
+          size="compact"
+        >
+          <p className="text-pretty text-sm text-ink/70">
+            ยืนยันยกเลิกคำสั่งที่เลือกวันที่ {periodState.nextAction.selectedEffectiveOn} และจะมีผลจริง 00:00 วันที่ {periodState.nextAction.activationOn}
+          </p>
+          <div className="mt-4 flex flex-wrap justify-end gap-2">
+            <button type="button" onClick={() => setCancelOpen(false)} disabled={saving} className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3 text-sm font-semibold text-ink hover:bg-field disabled:opacity-50">ไม่ยกเลิก</button>
+            <button type="button" onClick={() => void cancelSchedule()} disabled={saving || !online} className="focus-ring h-10 rounded-md bg-danger px-3 text-sm font-bold text-white hover:bg-danger/90 disabled:opacity-50">ยืนยันยกเลิก</button>
+          </div>
+        </ModalShell>
+      )}
     </section>
   );
 }

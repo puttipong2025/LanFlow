@@ -28,14 +28,25 @@ test("Rubber lock reads do not load Money Transfer history", () => {
 test("Rubber operational list uses a scoped cursor feed and page-scoped evidence", () => {
   const module = source("src/components/rubber-bills/RubberBillsModule.tsx");
   const hook = source("src/hooks/useRubberBillList.ts");
+  const mutations = source("src/hooks/useRubberBills.ts");
   const route = source("src/app/api/lanflow/rubber-bills/feed/route.ts");
   expect(module).toContain("useRubberBillList");
   expect(module).not.toContain("useRubberBillEvidenceReview");
   expect(hook).toContain("useInfiniteQuery");
   expect(hook).toContain('limit: pageParam ? "100" : "150"');
   expect(hook).toContain("signal");
+  expect(mutations).not.toContain("useQuery(");
+  expect(mutations).not.toContain("createSupabaseBrowserClient");
+  expect(mutations).not.toContain("moneyFlowQueryKeys.rubberBills(");
   expect(route).toContain("CURSOR_SCOPE_MISMATCH");
   expect(route).toContain("get_rubber_bill_evidence_states_for_bills");
+});
+
+test("Stock retry refreshes the active Rubber operational feed", () => {
+  const retry = source("src/hooks/useStockSyncRetry.ts");
+  expect(retry).toContain("rubberBillOperationalFeedRoot");
+  expect(retry).toContain("rubberBillWorkCounts");
+  expect(retry).not.toContain("moneyFlowQueryKeys.rubberBills(");
 });
 
 test("Income cash branch transfer does not depend on the Money Transfer module", () => {

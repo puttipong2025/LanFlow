@@ -1,5 +1,8 @@
 import { thaiBahtText } from "@/lib/thai-baht-text";
-import { multiplyMoneyFloorBaht } from "@/lib/rubber-bills/calculations";
+import {
+  applyRubberBillCalculation,
+  multiplyMoneyFloorBaht,
+} from "@/lib/rubber-bills/calculations";
 import type { RubberBill } from "@/types";
 import { formatBangkokDateTime } from "@/lib/bangkok-date";
 
@@ -79,21 +82,24 @@ function currentRevisionApprovalLabel(
 }
 
 export function buildRubberBillReceiptModel(bill: RubberBill): RubberBillReceiptModel {
+  const receiptKind = bill.syncStatus === "synced" && Boolean(bill.serverBillNo)
+    ? "synced"
+    : "offline";
+  const displayBill = receiptKind === "offline"
+    ? applyRubberBillCalculation({ ...bill, weighItems: bill.weighItems ?? [] })
+    : bill;
   const deductions = [
-    ...(bill.acidItems ?? []).map((item) => ({
+    ...(displayBill.acidItems ?? []).map((item) => ({
       label: `${item.name} ${formatReceiptNumber(item.quantity)} ${item.unit}`,
       amount: item.total ?? multiplyMoneyFloorBaht(item.quantity, item.unitPrice)
     })),
-    ...(bill.debtItems ?? (bill.debtItem ? [bill.debtItem] : [])).map((item) => ({
+    ...(displayBill.debtItems ?? (displayBill.debtItem ? [displayBill.debtItem] : [])).map((item) => ({
       label: item.title,
       amount: item.amount
     }))
   ];
 
-  const receiptKind = bill.syncStatus === "synced" && Boolean(bill.serverBillNo)
-    ? "synced"
-    : "offline";
-  const weighItems = (bill.weighItems ?? []).map((item) => ({
+  const weighItems = (displayBill.weighItems ?? []).map((item) => ({
     label: item.label,
     inWeight: item.inWeight,
     outWeight: item.outWeight,
@@ -113,15 +119,15 @@ export function buildRubberBillReceiptModel(bill: RubberBill): RubberBillReceipt
     approvalLabel: currentRevisionApprovalLabel(bill, receiptKind),
     hasZeroPrice: weighItems.some((item) => item.price === 0),
     weighItems,
-    totalWeight: bill.weight,
-    deductWeight: bill.deductWeight,
-    netWeight: bill.netWeight,
-    rubberValue: bill.rubberValue,
-    averagePrice: bill.price,
+    totalWeight: displayBill.weight,
+    deductWeight: displayBill.deductWeight,
+    netWeight: displayBill.netWeight,
+    rubberValue: displayBill.rubberValue,
+    averagePrice: displayBill.price,
     deductions,
-    deductionTotal: bill.deductionTotal,
-    netTotal: bill.netTotal,
-    netTotalText: thaiBahtText(bill.netTotal),
+    deductionTotal: displayBill.deductionTotal,
+    netTotal: displayBill.netTotal,
+    netTotalText: thaiBahtText(displayBill.netTotal),
     sourceExportNo: bill.sourceExportNo ?? null,
     receivedAt: bill.receivedAt ?? null,
     receivedAgeHours: bill.receivedAgeHours ?? null,

@@ -172,7 +172,7 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
       const page = await context.newPage();
       await page.goto("/");
 
-      await expect(page.getByRole("heading", { name: "เวลาและเงินเดือน" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "เวลาและเงินเดือน", exact: true })).toBeVisible();
       await expect(page.getByRole("navigation")).toHaveCount(0);
       await expect(page.getByRole("heading", { name: "ระบบเวลาและเงินเดือน (ของตนเอง)" }))
         .toBeVisible({ timeout: 30_000 });

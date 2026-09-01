@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import {
+  applyRubberBillCalculation,
   calculateRubberBill,
   hasAtMostTwoDecimalPlaces,
 } from "../src/lib/rubber-bills/calculations";
@@ -67,5 +68,30 @@ test.describe("rubber bill calculations", () => {
     expect(result.deductionTotal).toBe(95.35);
     expect(result.payableBeforeRounding).toBe(1284.65);
     expect(result.netTotal).toBe(1284);
+  });
+
+  test("replaces stale item and summary totals in a local bill snapshot", () => {
+    const bill = applyRubberBillCalculation({
+      deductWeight: 0,
+      weighItems: [{ netWeight: 10, price: 20, total: 160 }],
+      acidItems: [{ quantity: 2, unitPrice: 10, total: 5 }],
+      debtItems: [{ amount: 15 }],
+      weight: 10,
+      netWeight: 10,
+      weighValueTotal: 160,
+      rubberValue: 160,
+      price: 16,
+      deductionTotal: 20,
+      payableBeforeRounding: 140,
+      netTotal: 140,
+    });
+
+    expect(bill.weighItems[0].total).toBe(200);
+    expect(bill.acidItems[0].total).toBe(20);
+    expect(bill.weighValueTotal).toBe(200);
+    expect(bill.rubberValue).toBe(200);
+    expect(bill.price).toBe(20);
+    expect(bill.deductionTotal).toBe(35);
+    expect(bill.netTotal).toBe(165);
   });
 });

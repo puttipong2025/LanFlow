@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { bangkokDateString } from "@/lib/bangkok-date";
 import { requireAuth } from "@/lib/server/auth";
+import { buildPayrollPeriodState, type PayrollPeriodRow } from "@/lib/time-tracking/period-state";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +14,7 @@ function isUuid(value: unknown): value is string {
 function rpcErrorStatus(message: string) {
   if (/Authentication required/i.test(message)) return 401;
   if (/Forbidden|access denied/i.test(message)) return 403;
-  if (/MONTH_CLOSED|DEDUCTION_LOCKED|DEDUCTION_WAGE_LOCKED|PENDING_BLOCKER|OLDER_WORK_MONTH|DELETE_NEWER_SLIP_FIRST|REPORT_LOCKED|already been decided/i.test(message)) return 409;
+  if (/MONTH_CLOSED|PENDING_PERIOD_ACTION|DEDUCTION_LOCKED|DEDUCTION_WAGE_LOCKED|PENDING_BLOCKER|OLDER_WORK_MONTH|DELETE_NEWER_SLIP_FIRST|REPORT_LOCKED|already been decided/i.test(message)) return 409;
   return 400;
 }
 
@@ -22,6 +24,9 @@ function rpcErrorMessage(message: string) {
 
   const closedMonth = message.match(/MONTH_CLOSED:([0-9]{4}-[0-9]{2})/)?.[1];
   if (closedMonth) return `เดือน ${closedMonth} มีสลิปเงินเดือนแล้ว กรุณาลบสลิปก่อน`;
+
+  const pendingPeriodMonth = message.match(/PENDING_PERIOD_ACTION:([0-9]{4}-[0-9]{2})/)?.[1];
+  if (pendingPeriodMonth) return `เดือน ${pendingPeriodMonth} มีการเปลี่ยนสถานะเงินเดือนรอมีผล กรุณายกเลิกหรือเปลี่ยนกำหนดการก่อนสร้างสลิป`;
 
   const deductionMonth = message.match(/DEDUCTION_LOCKED:([0-9]{4}-[0-9]{2})/)?.[1];
   if (deductionMonth) return `เดือน ${deductionMonth} มีรายการหักเงินจริงแล้ว จึงแก้วันทำงานย้อนหลังไม่ได้`;
@@ -46,6 +51,7 @@ function rpcErrorMessage(message: string) {
   if (/FUTURE_ATTENDANCE_DATE/i.test(message)) return "ช่วงวันที่แก้ปฏิทินต้องไม่เกินวันปัจจุบัน";
   if (/ACTIVE_PERIOD_ALREADY_OPEN/i.test(message)) return "พนักงานคนนี้มีช่วงทำงานที่เปิดอยู่แล้ว กรุณารีเฟรชข้อมูล";
   if (/NO_OPEN_ACTIVE_PERIOD/i.test(message)) return "ไม่พบช่วงทำงานที่เปิดอยู่ หรือวันที่มีผลไม่ต่อเนื่องกับช่วงเดิม";
+  if (/NO_PENDING_PERIOD_ACTION/i.test(message)) return "ไม่พบกำหนดการรอมีผล กรุณารีเฟรชข้อมูล";
   if (/DATE_OUTSIDE_ACTIVE_PERIOD/i.test(message)) return "ช่วงวันที่อยู่นอกช่วงทำงานของพนักงาน กรุณาเปิดหรือกลับเข้าทำงานก่อน";
   if (/PRIMARY_BRANCH_REQUIRED/i.test(message)) return "พนักงานบางคนไม่มีสาขาหลักที่ใช้งานอยู่ กรุณาตั้งค่าสาขาหลักก่อน";
   if (/DESCRIPTION_REQUIRED/i.test(message)) return "กรุณาระบุรายละเอียดหนี้";
@@ -63,6 +69,22 @@ function rpcFailure(error: { message: string }) {
     { error: rpcErrorMessage(error.message) },
     { status: rpcErrorStatus(error.message) },
   );
+}
+
+type UserLocationAssignment = {
+  location_id: string;
+  is_primary: boolean;
+  locations: { is_active: boolean } | Array<{ is_active: boolean }> | null;
+};
+
+function activePrimaryLocationId(assignments: UserLocationAssignment[] | null | undefined) {
+  return assignments?.find((assignment) => {
+    const linkedLocations = Array.isArray(assignment.locations)
+      ? assignment.locations
+      : [assignment.locations];
+    return assignment.is_primary === true
+      && linkedLocations.some((location) => location?.is_active === true);
+  })?.location_id ?? null;
 }
 
 export async function GET(request: NextRequest) {
@@ -106,8 +128,8 @@ export async function GET(request: NextRequest) {
       result.supabase.rpc("get_time_payroll_settings"),
       result.supabase
         .from("time_payroll_active_periods")
-        .select("id, profile_id, start_on, end_on")
-        .is("end_on", null),
+        .select("id, profile_id, start_on, end_on, scheduled_action, scheduled_effective_on, scheduled_activation_on")
+        .order("start_on", { ascending: false }),
     ]);
 
     if (usersResult.error) throw usersResult.error;
@@ -121,17 +143,11 @@ export async function GET(request: NextRequest) {
     const users = (usersResult.data || []).filter((user) => {
       if (user.id === result.auth.sub) return true;
       if (result.auth.canAccessSystemManager) return true;
-      const primary = user.user_locations?.find((assignment) => {
-        const linkedLocations = Array.isArray(assignment.locations)
-          ? assignment.locations
-          : [assignment.locations];
-        return assignment.is_primary === true
-          && linkedLocations.some((location) => location?.is_active === true);
-      });
+      const primaryLocationId = activePrimaryLocationId(user.user_locations);
       return ["user", "admin"].includes(user.role)
         && user.can_access_super_admin_features !== true
-        && !!primary
-        && result.auth.locationIds.includes(primary.location_id);
+        && !!primaryLocationId
+        && result.auth.locationIds.includes(primaryLocationId);
     });
     const userIds = users.map((user) => user.id);
     const allowedUserIds = new Set(userIds);
@@ -155,9 +171,13 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    const activePeriods = new Map(
-      (activePeriodsResult.data || []).map((period) => [period.profile_id, period]),
-    );
+    const periodsByUser = new Map<string, PayrollPeriodRow[]>();
+    for (const period of activePeriodsResult.data || []) {
+      const periods = periodsByUser.get(period.profile_id) || [];
+      periods.push(period as PayrollPeriodRow);
+      periodsByUser.set(period.profile_id, periods);
+    }
+    const today = bangkokDateString();
 
     return NextResponse.json({
       settings: settingsResult.data,
@@ -166,20 +186,16 @@ export async function GET(request: NextRequest) {
         canDecide,
         canConfigure: canDecide,
       },
-      users: users.map((user) => ({
-        ...user,
-        primary_location_id:
-          user.user_locations?.find((assignment) => assignment.is_primary === true)?.location_id ?? null,
-        user_locations: undefined,
-        debt_remaining_amount: debtTotals.get(user.id) || 0,
-        active_period: activePeriods.has(user.id)
-          ? {
-              id: activePeriods.get(user.id)!.id,
-              startOn: activePeriods.get(user.id)!.start_on,
-              endOn: activePeriods.get(user.id)!.end_on,
-            }
-          : null,
-      })),
+      users: users.map((user) => {
+        const periodState = buildPayrollPeriodState(periodsByUser.get(user.id) || [], today);
+        return {
+          ...user,
+          primary_location_id: activePrimaryLocationId(user.user_locations),
+          user_locations: undefined,
+          debt_remaining_amount: debtTotals.get(user.id) || 0,
+          period_state: periodState,
+        };
+      }),
       pendingTransactions: canDecide
         ? (pendingTransactionsResult.data || []).filter((item) => allowedUserIds.has(item.profile_id))
         : [],
@@ -393,6 +409,21 @@ export async function POST(request: NextRequest) {
         p_profile_id: user_id,
         p_action: action,
         p_effective_date: effective_date,
+      });
+      if (error) return rpcFailure(error);
+      return NextResponse.json({ success: true, result: data });
+    }
+
+    if (body.action === "CANCEL_PAYROLL_ACTIVE_PERIOD_SCHEDULE") {
+      if (!result.auth.canAccessSystemManager) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+      }
+      const { user_id } = payload;
+      if (!isUuid(user_id)) {
+        return NextResponse.json({ error: "รหัสพนักงานไม่ถูกต้อง" }, { status: 400 });
+      }
+      const { data, error } = await supabase.rpc("cancel_time_payroll_active_period_schedule", {
+        p_profile_id: user_id,
       });
       if (error) return rpcFailure(error);
       return NextResponse.json({ success: true, result: data });

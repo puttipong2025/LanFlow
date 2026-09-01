@@ -13,7 +13,12 @@ import { ExpenseLocationApprovalModal } from "./time-tracking/ExpenseLocationApp
 import { canManageTimePayroll } from "@/lib/permissions";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { TablePageSizeSelect, TablePagination } from "@/components/shared/TablePagination";
-import { filterTimeTrackingEmployees, resolveEmployeeFilter } from "@/components/time-tracking/employee-list";
+import {
+  countPendingItemsForUsers,
+  filterTimeTrackingEmployees,
+  resolveEmployeeFilter,
+} from "@/components/time-tracking/employee-list";
+import { cn } from "@/lib/cn";
 import { SlipPreviewModal } from "./time-tracking/SlipPreviewModal";
 import {
   AttendanceCalendar,
@@ -24,6 +29,7 @@ import type {
   AttendanceExceptionDto,
   AttendanceMonthDto,
   PayrollPeriodAction,
+  PayrollPeriodStateDto,
   TimePayrollSettingsDto,
 } from "@/lib/time-tracking/attendance-contract";
 import {
@@ -108,6 +114,18 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
     void loadData();
     return () => {
       loadRequestIdRef.current += 1;
+    };
+  }, [loadData]);
+
+  useEffect(() => {
+    const refreshVisibleData = () => {
+      if (document.visibilityState === "visible") void loadData();
+    };
+    window.addEventListener("focus", refreshVisibleData);
+    document.addEventListener("visibilitychange", refreshVisibleData);
+    return () => {
+      window.removeEventListener("focus", refreshVisibleData);
+      document.removeEventListener("visibilitychange", refreshVisibleData);
     };
   }, [loadData]);
 
@@ -209,6 +227,7 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
 
   const debtTransactions = data?.transactions?.filter((t: any) => t.status !== 'REJECTED' && (t.type === 'DEBT' || t.type === 'WITHDRAWAL')) || [];
   const attendance = data?.attendance as AttendanceMonthDto | undefined;
+  const periodState = data?.periodState as PayrollPeriodStateDto | undefined;
 
   async function replaceAttendanceExceptions(selections: AttendanceExceptionDto[]) {
     if (!online || !attendance) return false;
@@ -260,6 +279,33 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
     } catch (error) {
       console.error(error);
       return "บันทึกช่วงทำงานไม่สำเร็จ กรุณาลองใหม่";
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function cancelPayrollPeriodSchedule() {
+    if (!online) return TIME_TRACKING_OFFLINE_MESSAGE;
+    if (!canConfigure) return "คุณไม่มีสิทธิ์เปลี่ยนช่วงทำงาน";
+    setSaving(true);
+    try {
+      const response = await authFetch("/api/lanflow/time-tracking/admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "CANCEL_PAYROLL_ACTIVE_PERIOD_SCHEDULE",
+          payload: { user_id: managedUserId },
+        }),
+      });
+      if (!response.ok) {
+        const json = await response.json().catch(() => null);
+        return json?.error || "ยกเลิกกำหนดการไม่สำเร็จ กรุณาลองใหม่";
+      }
+      await loadData();
+      return null;
+    } catch (error) {
+      console.error(error);
+      return "ยกเลิกกำหนดการไม่สำเร็จ กรุณาลองใหม่";
     } finally {
       setSaving(false);
     }
@@ -330,13 +376,15 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
           onSave={replaceAttendanceExceptions}
         />
       )}
-      {attendance && canConfigure && targetUserId && (
+      {attendance && canConfigure && targetUserId && periodState && (
         <AttendancePeriodControls
           userName={data?.profile?.name || data?.user?.name || "พนักงาน"}
-          periods={attendance.periods}
+          periodState={periodState}
+          workdayEndTime={attendance.workdayEndTime}
           online={online}
           saving={saving}
           onAction={setPayrollPeriod}
+          onCancel={cancelPayrollPeriodSchedule}
         />
       )}
 
@@ -647,6 +695,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
     onSuccess?: () => void;
   } | null>(null);
   const [employeeFilter, setEmployeeFilter] = useState<"pending" | "all" | null>(null);
+  const [employeeBranchFilter, setEmployeeBranchFilter] = useState("all");
   const [employeeSearch, setEmployeeSearch] = useState("");
   const [employeePageSize, setEmployeePageSize] = useState(10);
   const [employeePage, setEmployeePage] = useState(1);
@@ -679,6 +728,18 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
     void load();
     return () => {
       adminLoadRequestIdRef.current += 1;
+    };
+  }, [load]);
+
+  useEffect(() => {
+    const refreshVisibleData = () => {
+      if (document.visibilityState === "visible") void load();
+    };
+    window.addEventListener("focus", refreshVisibleData);
+    document.addEventListener("visibilitychange", refreshVisibleData);
+    return () => {
+      window.removeEventListener("focus", refreshVisibleData);
+      document.removeEventListener("visibilitychange", refreshVisibleData);
     };
   }, [load]);
 
@@ -869,7 +930,20 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
     pendingCountForUser(data?.pendingTransactions, user.id) + pendingCountForUser(data?.pendingSlips, user.id) > 0
   )).map((user: any) => user.id));
   const activeEmployeeFilter = resolveEmployeeFilter(employeeFilter, pendingUserIds.size > 0);
-  const filteredUsers = filterTimeTrackingEmployees(users, pendingUserIds, employeeSearch, activeEmployeeFilter);
+  const branchUsers = filterTimeTrackingEmployees(users, pendingUserIds, "", "all", employeeBranchFilter);
+  const branchUserIds = new Set(branchUsers.map((user: any) => user.id as string));
+  const branchPendingCount = countPendingItemsForUsers(data?.pendingTransactions, data?.pendingSlips, branchUserIds);
+  const filteredUsers = filterTimeTrackingEmployees(
+    users,
+    pendingUserIds,
+    employeeSearch,
+    activeEmployeeFilter,
+    employeeBranchFilter,
+  );
+  const branchLocationIds = new Set(users.map((user: any) => user.primary_location_id).filter(Boolean));
+  const branchOptions = (data?.paymentLocations || locations)
+    .filter((location: Location) => location.active && branchLocationIds.has(location.id));
+  const hasUnassignedUsers = users.some((user: any) => !user.primary_location_id);
   const totalEmployeePages = Math.max(1, Math.ceil(filteredUsers.length / employeePageSize));
   const currentEmployeePage = Math.min(employeePage, totalEmployeePages);
   const visibleUsers = filteredUsers.slice((currentEmployeePage - 1) * employeePageSize, currentEmployeePage * employeePageSize);
@@ -879,7 +953,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-6 p-4">
          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-           <h2 className="text-xl font-bold text-ink flex items-center gap-2">
+           <h2 className="flex items-center gap-2 text-balance text-xl font-bold text-ink">
              <Clock /> จัดการเวลาและเงินเดือน
            </h2>
          <div className="flex flex-wrap gap-2">
@@ -920,12 +994,45 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
          <label className="grid gap-1 text-sm font-semibold text-ink">ค้นหาพนักงาน
            <input value={employeeSearch} onChange={(event) => { setEmployeeSearch(event.target.value); setEmployeePage(1); }} className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3" placeholder="ชื่อพนักงาน" />
          </label>
-         <div className="flex flex-wrap items-center gap-3">
-           <label className="flex items-center gap-2 text-sm font-semibold text-ink">ตัวกรอง
-             <select value={activeEmployeeFilter} onChange={(event) => { setEmployeeFilter(event.target.value as "pending" | "all"); setEmployeePage(1); }} className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3">
-               <option value="pending">รออนุมัติ</option><option value="all">ทั้งหมด</option>
+         <div className="flex flex-wrap items-end gap-3">
+           <label className="grid gap-1 text-sm font-semibold text-ink">กรองสาขา
+             <select value={employeeBranchFilter} onChange={(event) => { setEmployeeBranchFilter(event.target.value); setEmployeePage(1); }} className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3">
+               <option value="all">ทุกสาขา</option>
+               {branchOptions.map((location: Location) => <option key={location.id} value={location.id}>{location.name}</option>)}
+               {hasUnassignedUsers && <option value="unassigned">ไม่มีสาขาหลัก</option>}
              </select>
            </label>
+           <div className="flex flex-wrap gap-2" aria-label="กรองตามสถานะ">
+             {(["pending", "all"] as const).map((filter) => {
+               const selected = activeEmployeeFilter === filter;
+               const label = filter === "pending" ? "รออนุมัติ" : "ทั้งหมด";
+               const accessibleLabel = filter === "pending" && branchPendingCount > 0
+                 ? `${label} ${branchPendingCount} รายการ`
+                 : label;
+               return (
+                 <button
+                   key={filter}
+                   type="button"
+                   aria-pressed={selected}
+                   aria-label={accessibleLabel}
+                   onClick={() => { setEmployeeFilter(filter); setEmployeePage(1); }}
+                   className={cn(
+                     "focus-ring inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm font-semibold",
+                     selected
+                       ? "border-leaf bg-leaf text-white hover:bg-leaf/90"
+                       : "border-black/15 bg-white text-ink hover:bg-field",
+                   )}
+                 >
+                   {label}
+                   {filter === "pending" && branchPendingCount > 0 && (
+                     <span aria-hidden="true" className="min-w-5 rounded-full bg-clay px-1.5 py-0.5 text-center text-xs font-bold leading-none text-white tabular-nums">
+                       {branchPendingCount > 99 ? "99+" : branchPendingCount}
+                     </span>
+                   )}
+                 </button>
+               );
+             })}
+           </div>
            <TablePageSizeSelect pageSize={employeePageSize} onPageSizeChange={(size) => { setEmployeePageSize(size); setEmployeePage(1); }} />
          </div>
        </div>
@@ -944,13 +1051,12 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
           <tbody className="divide-y divide-black/5">
              {visibleUsers.map((user: any) => {
                const isSelf = user.id === profile.id;
-                const canManageRow = canManage && (!isSelf || Boolean(user.primary_location_id));
-                const activePeriod = user.active_period as { id: string; startOn: string; endOn: string | null } | null | undefined;
-                const status = activePeriod ? 'ACTIVE_PERIOD' : 'INACTIVE_PERIOD';
+                  const periodState = user.period_state as PayrollPeriodStateDto | undefined;
+                  const status = periodState?.currentStatus === "ACTIVE" ? 'ACTIVE_PERIOD' : 'INACTIVE_PERIOD';
                const debtRemainingAmount = Number(user.debt_remaining_amount || 0);
                const dashboardPendingCount = pendingCountForUser(data?.pendingTransactions, user.id);
                const payrollPendingCount = pendingCountForUser(data?.pendingSlips, user.id);
-               const overviewAction = canManageRow
+               const overviewAction = canManage
                  ? `จัดการปฏิทินวันทำงานของ ${user.name}`
                  : `ดูข้อมูลเวลาและเงินเดือนของ ${user.name}`;
                const overviewLabel = dashboardPendingCount > 0
@@ -994,7 +1100,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
                           <span aria-hidden="true">✏️</span>
                         </button>
                       )}
-                      {canManageRow && (
+                      {canManage && (
                         <button
                           type="button"
                           onClick={() => openPayroll(user)}
@@ -1017,11 +1123,16 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
                   <td className="py-3">
                     <span>{formatCurrency(user.daily_wage || 0)}</span>
                   </td>
-                   <td className="py-3">
-                     <span className={`px-2 py-1 rounded text-xs font-bold ${status === 'ACTIVE_PERIOD' ? 'bg-leaf/20 text-leaf' : 'bg-black/10 text-ink/60'}`}>
-                       {status === 'ACTIVE_PERIOD' ? 'ช่วงทำงานเปิดอยู่' : 'ไม่ได้เปิดเงินเดือน'}
-                    </span>
-                  </td>
+                    <td className="py-3">
+                      <span className={`px-2 py-1 rounded text-xs font-bold ${status === 'ACTIVE_PERIOD' ? 'bg-leaf/20 text-leaf' : 'bg-black/10 text-ink/60'}`}>
+                        {status === 'ACTIVE_PERIOD' ? 'ช่วงทำงานเปิดอยู่' : 'ไม่ได้เปิดเงินเดือน'}
+                      </span>
+                      {periodState?.nextAction && (
+                        <p className="mt-1 text-pretty text-xs text-amber">
+                          รอ {periodState.nextAction.action} · มีผล {periodState.nextAction.activationOn}
+                        </p>
+                      )}
+                   </td>
                   <td className="py-3">
                      <span className="text-clay font-bold">{formatCurrency(debtRemainingAmount)}</span>
                   </td>
@@ -1049,7 +1160,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
             online={online}
              expenseLocations={expenseLocations}
              hideHeading
-             allowManagerActions={canManage && (dashboardUser.id !== profile.id || Boolean(dashboardUser.primary_location_id))}
+             allowManagerActions={canManage}
              canDecide={canDecide}
              canConfigure={canConfigure}
              onApprove={canDecide ? (type, item) => handleApprove(

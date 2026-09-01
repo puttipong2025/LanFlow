@@ -8,7 +8,6 @@ export function invalidateMoneyFlowLocation(
 ) {
   const { ownerUserId, locationId } = scope;
   return Promise.all([
-    queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.rubberBills(ownerUserId, locationId) }),
     queryClient.invalidateQueries({
       queryKey: [...moneyFlowQueryKeys.rubberBillOperationalFeedRoot(), ownerUserId, locationId],
     }),

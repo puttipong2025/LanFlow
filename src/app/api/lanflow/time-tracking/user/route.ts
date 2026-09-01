@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { bangkokDateString } from "@/lib/bangkok-date";
 import { requireAuth } from "@/lib/server/auth";
+import { buildPayrollPeriodState, type PayrollPeriodRow } from "@/lib/time-tracking/period-state";
 
 export const dynamic = "force-dynamic";
 
@@ -64,6 +66,7 @@ export async function GET(request: NextRequest) {
       deductions,
       slips,
       attendance,
+      activePeriods,
     ] = await Promise.all([
       supabase
         .from("financial_transactions")
@@ -99,6 +102,11 @@ export async function GET(request: NextRequest) {
         p_profile_id: targetUserId,
         p_month: month,
       }),
+      supabase
+        .from("time_payroll_active_periods")
+        .select("id, start_on, end_on, scheduled_action, scheduled_effective_on, scheduled_activation_on")
+        .eq("profile_id", targetUserId)
+        .order("start_on", { ascending: false }),
     ]);
 
     for (const response of [
@@ -107,6 +115,7 @@ export async function GET(request: NextRequest) {
       deductions,
       slips,
       attendance,
+      activePeriods,
     ]) {
       if (response.error) throw response.error;
     }
@@ -132,6 +141,10 @@ export async function GET(request: NextRequest) {
         totalDebt,
       },
       attendance: attendance.data,
+      periodState: buildPayrollPeriodState(
+        (activePeriods.data || []) as PayrollPeriodRow[],
+        bangkokDateString(),
+      ),
       debts: activeDebts.data || [],
       transactions: result.auth.canManageTimePayroll
         ? transactions.data || []

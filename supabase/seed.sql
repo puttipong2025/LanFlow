@@ -2517,6 +2517,13 @@ SELECT pg_catalog.setval('"supabase_functions"."hooks_id_seq"', 1, false);
 -- Stock seed data
 --
 
+INSERT INTO "public"."time_payroll_settings" (
+	"singleton", "mode", "workday_end_time", "activated_on"
+) VALUES (
+	true, 'EXCEPTIONS', '16:00', (now() AT TIME ZONE 'Asia/Bangkok')::date
+)
+ON CONFLICT ("singleton") DO NOTHING;
+
 INSERT INTO "public"."stock_products" ("name", "unit", "is_active") VALUES
 	('น้ำกรดตราเสือไฟท์', 'แพ็ค', true),
 	('น้ำกรดตรามังกรไฟท์', 'แพ็ค', true)

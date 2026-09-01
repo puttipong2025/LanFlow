@@ -95,6 +95,7 @@ export function ModalShell({
   const accessibleModal = nativeModal ? (
     <dialog
       ref={dialogRef}
+      role={role}
       aria-labelledby={titleId}
       onCancel={(event) => {
         event.preventDefault();

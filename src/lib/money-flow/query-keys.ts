@@ -3,7 +3,6 @@ export const moneyFlowQueryKeys = {
   moneyTransfersRoot: () => ["moneyTransfers"] as const,
   moneyTransferListRoot: () => ["moneyTransferList"] as const,
   moneyTransferSourcesRoot: () => ["moneyTransferSources"] as const,
-  rubberBillsRoot: () => ["rubberBills"] as const,
   rubberBillOperationalFeedRoot: () => ["rubberBillOperationalFeed"] as const,
   rubberBillWorkCountsRoot: () => ["rubberBillWorkCounts"] as const,
   stockRoot: () => ["stock"] as const,
@@ -25,8 +24,6 @@ export const moneyFlowQueryKeys = {
   rubberBillApprovalMarkers: (locationId: string) =>
     ["rubberBillApprovalMarkers", locationId] as const,
   rubberBillApprovalRequests: () => ["rubberBillApprovalRequests"] as const,
-  rubberBills: (ownerUserId: string, locationId: string) =>
-    ["rubberBills", ownerUserId, locationId] as const,
   rubberBillOperationalFeed: (
     ownerUserId: string,
     locationId: string,

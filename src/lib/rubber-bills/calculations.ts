@@ -32,6 +32,14 @@ export type RubberBillCalculation = {
   stockDeductionLineTotals: number[];
 };
 
+type RubberBillCalculationSnapshotInput = {
+  deductWeight: number;
+  weighItems: Array<RubberWeighCalculationInput & { total?: number }>;
+  acidItems?: Array<RubberStockDeductionCalculationInput & { total?: number }>;
+  debtItems?: RubberDebtCalculationInput[];
+  debtItem?: RubberDebtCalculationInput;
+};
+
 const ZERO = BigInt(0);
 const TWO = BigInt(2);
 const HUNDRED = BigInt(100);
@@ -113,6 +121,35 @@ export function calculateRubberBill(input: RubberBillCalculationInput): RubberBi
     netTotal: Number(payableBaht),
     lineTotals: lineTotalBaht.map(Number),
     stockDeductionLineTotals: stockDeductionLineBaht.map(Number),
+  };
+}
+
+export function applyRubberBillCalculation<T extends RubberBillCalculationSnapshotInput>(bill: T) {
+  const calculation = calculateRubberBill({
+    weighItems: bill.weighItems,
+    deductWeight: bill.deductWeight,
+    stockDeductionItems: bill.acidItems,
+    debtItems: bill.debtItems ?? (bill.debtItem ? [bill.debtItem] : []),
+  });
+
+  return {
+    ...bill,
+    weight: calculation.totalWeight,
+    netWeight: calculation.netWeight,
+    weighValueTotal: calculation.weighValueTotal,
+    rubberValue: calculation.rubberValue,
+    price: calculation.averagePrice,
+    deductionTotal: calculation.deductionTotal,
+    payableBeforeRounding: calculation.payableBeforeRounding,
+    netTotal: calculation.netTotal,
+    weighItems: bill.weighItems.map((item, index) => ({
+      ...item,
+      total: calculation.lineTotals[index] ?? 0,
+    })),
+    acidItems: bill.acidItems?.map((item, index) => ({
+      ...item,
+      total: calculation.stockDeductionLineTotals[index] ?? 0,
+    })),
   };
 }
 

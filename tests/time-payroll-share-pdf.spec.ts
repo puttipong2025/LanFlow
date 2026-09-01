@@ -114,7 +114,6 @@ async function openTimeTracking(page: Page) {
     await route.fulfill({ json: document });
   });
   await page.goto("/");
-  await page.getByRole("button", { name: "เวลาและเงินเดือน" }).click();
   await expect(page.getByRole("heading", { name: /ระบบเวลาและเงินเดือน/ })).toBeVisible();
 }
 

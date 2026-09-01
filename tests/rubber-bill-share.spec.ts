@@ -1,25 +1,27 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
 test.use({ storageState: { cookies: [], origins: [] } });
 
-test("locks the Rubber Bill modal and sends one request during rapid submit", async ({ page }) => {
-  await page.addInitScript(() => {
-    localStorage.setItem(
-      "lanflow:rubber-bill-approval-settings:v1",
-      JSON.stringify({
-        editWindowMinutes: 30,
-        configuredPrice: null,
-        cachedAt: new Date().toISOString(),
-      })
-    );
-  });
-  await page.route("**/rest/v1/rubber_bill_approval_settings*", async (route) => {
+async function routeApprovalSettings(page: Page) {
+  await page.route("**/api/lanflow/rubber-bills/approval-settings?locationId=*", async (route) => {
+    const locationId = new URL(route.request().url()).searchParams.get("locationId") ?? "";
     await route.fulfill({
-      json: { id: true, edit_window_minutes: 30, configured_price: null },
+      json: {
+        locationId,
+        groupId: null,
+        priceTimeExempt: true,
+        editWindowMinutes: null,
+        configuredPrice: null,
+        nonCurrentDateRequiresApproval: false,
+      },
     });
   });
+}
+
+test("locks the Rubber Bill modal and sends one request during rapid submit", async ({ page }) => {
+  await routeApprovalSettings(page);
 
   let releaseSave!: () => void;
   const saveGate = new Promise<void>((resolve) => {
@@ -75,6 +77,7 @@ test("locks the Rubber Bill modal and sends one request during rapid submit", as
 });
 
 test("removes every stock deduction after shortage confirmation and saves the rubber bill", async ({ page }) => {
+  await routeApprovalSettings(page);
   let submittedPayload: any;
   await page.route("**/api/lanflow/rubber-bills", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
@@ -127,14 +130,6 @@ test("removes every stock deduction after shortage confirmation and saves the ru
 
 test("shares a Rubber Bill PDF and falls back to download", async ({ page }) => {
   await page.addInitScript(() => {
-    localStorage.setItem(
-      "lanflow:rubber-bill-approval-settings:v1",
-      JSON.stringify({
-        editWindowMinutes: 30,
-        configuredPrice: null,
-        cachedAt: new Date().toISOString(),
-      })
-    );
     const originalToBlob = HTMLCanvasElement.prototype.toBlob;
     HTMLCanvasElement.prototype.toBlob = function (...args) {
       window.setTimeout(() => originalToBlob.apply(this, args), 200);
@@ -160,15 +155,7 @@ test("shares a Rubber Bill PDF and falls back to download", async ({ page }) => 
       },
     });
   });
-  await page.route("**/rest/v1/rubber_bill_approval_settings*", async (route) => {
-    await route.fulfill({
-      json: {
-        id: true,
-        edit_window_minutes: 30,
-        configured_price: null,
-      },
-    });
-  });
+  await routeApprovalSettings(page);
 
   await page.goto("/login");
   await page.locator("#phone").fill(process.env.TEST_PHONE ?? "0800000000");
@@ -230,7 +217,7 @@ test("shares a Rubber Bill PDF and falls back to download", async ({ page }) => 
   await shareButton.click();
   const waitingDialog = page.getByRole("dialog", { name: "กำลังสร้าง PDF" });
   await expect(waitingDialog).toBeVisible();
-  await waitingDialog.getByRole("button", { name: "ยกเลิกการสร้าง PDF", exact: true }).click();
+  await waitingDialog.getByRole("button", { name: "ยกเลิก", exact: true }).click();
   await expect(waitingDialog).toBeHidden();
   await page.waitForTimeout(300);
   expect(await page.evaluate(() =>
@@ -281,14 +268,6 @@ test("shares a Rubber Bill PDF and falls back to download", async ({ page }) => 
 for (const mode of ["online", "offline"] as const) {
 test(`automatically shares a payable rubber bill after an ${mode} submit`, async ({ page, context }) => {
   await page.addInitScript(() => {
-    localStorage.setItem(
-      "lanflow:rubber-bill-approval-settings:v1",
-      JSON.stringify({
-        editWindowMinutes: 30,
-        configuredPrice: null,
-        cachedAt: new Date().toISOString(),
-      })
-    );
     Object.defineProperty(navigator, "canShare", {
       configurable: true,
       value: (data: ShareData) => data.files?.[0]?.type === "application/pdf",
@@ -305,15 +284,7 @@ test(`automatically shares a payable rubber bill after an ${mode} submit`, async
       },
     });
   });
-  await page.route("**/rest/v1/rubber_bill_approval_settings*", async (route) => {
-    await route.fulfill({
-      json: {
-        id: true,
-        edit_window_minutes: 30,
-        configured_price: null,
-      },
-    });
-  });
+  await routeApprovalSettings(page);
   if (mode === "online") {
     await page.route("**/api/lanflow/rubber-bills", async (route) => {
       if (route.request().method() !== "POST") {
