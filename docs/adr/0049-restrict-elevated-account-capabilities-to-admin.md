@@ -5,6 +5,7 @@
 - Owners: LanFlow team
 - Decision scope: Admin account management, Money Transfer, Time and Payroll, system-manager access
 - Partially supersedes: the Account capability subsection of ADR-0028
+- Extended by: ADR-0051 for the base User module and active-primary self-service boundary
 
 ## Context
 
@@ -26,7 +27,7 @@ Only a `super_admin` or system manager may grant or revoke standalone Money Tran
 
 The database enforces the role/flag invariant. API routes use conditional updates against an Admin target and return `403` when the target role or state is not eligible. The Admin UI reflects the same state matrix: an active User can be promoted or suspended, but elevated controls are read-only with the reason `ต้องตั้งเป็น Admin ก่อน`; an inactive account exposes restore only; automatic system-manager capabilities are shown as read-only rather than as controls that the API will reject.
 
-User Time/Payroll self-service remains available and does not depend on any elevated flag. Primary-branch authorization, payment destination rules, account suspension authorization, and module-specific data boundaries remain unchanged.
+User Time/Payroll self-service remains available and does not depend on any elevated flag, subject to ADR-0051's active-primary and exclusive-module boundary. Payment destination rules and account-suspension authorization remain unchanged.
 
 ## Consequences
 

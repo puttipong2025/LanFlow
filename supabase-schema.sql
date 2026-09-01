@@ -946,19 +946,38 @@ $$;
 ALTER FUNCTION "private"."calculate_dashboard_summary"("p_location_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."can_access_business_modules"() RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select exists (
+    select 1
+    from public.profiles p
+    where p.id = auth.uid()
+      and p.is_active = true
+      and p.role in ('admin', 'super_admin')
+  )
+$$;
+
+
+ALTER FUNCTION "private"."can_access_business_modules"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."can_access_location"("target_location" "uuid") RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
-  select private.can_access_super_admin_features()
-    or (
-      private.is_active_user()
-      and target_location is not null
-      and exists (
-        select 1
-        from public.user_locations ul
-        where ul.user_id = auth.uid()
-          and ul.location_id = target_location
+  select private.can_access_business_modules()
+    and (
+      private.can_access_super_admin_features()
+      or (
+        target_location is not null
+        and exists (
+          select 1
+          from public.user_locations ul
+          where ul.user_id = auth.uid()
+            and ul.location_id = target_location
+        )
       )
     )
 $$;
@@ -977,7 +996,7 @@ CREATE OR REPLACE FUNCTION "private"."can_access_money_transfer_module"() RETURN
       from public.profiles p
       where p.id = auth.uid()
         and p.is_active = true
-        and p.role in ('user', 'admin')
+        and p.role = 'admin'
         and p.can_access_money_transfer = true
     )
 $$;
@@ -1011,7 +1030,7 @@ CREATE OR REPLACE FUNCTION "private"."can_access_super_admin_features"() RETURNS
       from public.profiles p
       where p.id = auth.uid()
         and p.is_active = true
-        and p.role in ('user', 'admin')
+        and p.role = 'admin'
         and p.can_access_super_admin_features = true
     )
 $$;
@@ -1162,9 +1181,10 @@ CREATE OR REPLACE FUNCTION "private"."can_manage_time_payroll_profile"("target_p
                 and target_primary.is_primary = true
             )
             and exists (
-              select 1 from public.profiles actor
+              select 1
+              from public.profiles actor
               where actor.id = auth.uid()
-                and actor.role in ('user', 'admin')
+                and actor.role = 'admin'
                 and actor.can_manage_time_payroll = true
             )
           )
@@ -3259,6 +3279,22 @@ $$;
 ALTER FUNCTION "private"."effective_time_payroll_settings"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."enforce_business_module_write"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if auth.uid() is not null and not private.can_access_business_modules() then
+    raise exception 'Business module access denied' using errcode = '42501';
+  end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."enforce_business_module_write"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."enforce_complete_wex_before_reservation"() RETURNS "trigger"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -3670,7 +3706,8 @@ begin
         - 'evidence_manual_correction_count'
         - 'net_rubber_value'
         - 'net_weight'
-        - 'payable_before_rounding')
+        - 'payable_before_rounding'
+        - 'has_ocr_source_image')
         = (to_jsonb(old)
         - 'print_status'
         - 'updated_at'
@@ -3678,7 +3715,8 @@ begin
         - 'evidence_manual_correction_count'
         - 'net_rubber_value'
         - 'net_weight'
-        - 'payable_before_rounding') then
+        - 'payable_before_rounding'
+        - 'has_ocr_source_image') then
       return new;
     end if;
     perform private.raise_report_lock(v_report_no);
@@ -3860,9 +3898,10 @@ CREATE OR REPLACE FUNCTION "private"."has_time_payroll_manager_access"() RETURNS
     and (
       private.can_access_super_admin_features()
       or exists (
-        select 1 from public.profiles p
+        select 1
+        from public.profiles p
         where p.id = auth.uid()
-          and p.role in ('user', 'admin')
+          and p.role = 'admin'
           and p.can_manage_time_payroll = true
       )
     )
@@ -13690,13 +13729,22 @@ declare
   v_result jsonb;
   v_search text := lower(trim(coalesce(p_search, '')));
 begin
-  if not private.is_active_user() or not private.can_access_money_transfer_module() then raise exception 'Money transfer module access denied'; end if;
-  if not private.can_access_location(p_location_id) then raise exception 'Location access denied'; end if;
-  if p_page_size < 1 or p_page_size > 100 then raise exception 'Invalid page size'; end if;
-  if (p_cursor_created_at is null) <> (p_cursor_id is null) then raise exception 'Invalid transfer cursor'; end if;
+  if not private.is_active_user() or not private.can_access_money_transfer_module() then
+    raise exception 'Money transfer module access denied';
+  end if;
+  if not private.can_access_location(p_location_id) then
+    raise exception 'Location access denied';
+  end if;
+  if p_page_size < 1 or p_page_size > 100 then
+    raise exception 'Invalid page size';
+  end if;
+  if (p_cursor_created_at is null) <> (p_cursor_id is null) then
+    raise exception 'Invalid transfer cursor';
+  end if;
 
   with candidates as (
-    select t.*, public.report_lock_no(t) report_lock_no,
+    select t.*,
+      public.report_lock_no(t) report_lock_no,
       coalesce((select sum(s.amount) from public.money_transfer_slips s where s.transfer_id = t.id), 0) paid_amount,
       coalesce((select count(*) from public.money_transfer_items i where i.transfer_id = t.id), 0) source_count
     from public.money_transfers t
@@ -13704,7 +13752,8 @@ begin
       and t.record_status <> 'deleted'
       and t.transfer_type <> 'cash'
       and (p_status = 'all' or t.transfer_status = p_status)
-      and (v_search = '' or position(v_search in lower(concat_ws(' ', t.customer_name, t.account_number, t.account_name, t.bank_name, t.transport_staff_name, t.target_location_name, t.id::text))) > 0)
+      and (v_search = '' or position(v_search in lower(concat_ws(' ', t.customer_name, t.account_number,
+        t.account_name, t.bank_name, t.transport_staff_name, t.target_location_name, t.id::text))) > 0)
       and (p_cursor_created_at is null or (t.created_at, t.id) < (p_cursor_created_at, p_cursor_id))
     order by t.created_at desc, t.id desc
     limit p_page_size + 1
@@ -13714,11 +13763,18 @@ begin
   select jsonb_build_object(
     'rows', coalesce((select jsonb_agg(to_jsonb(v) order by v.created_at desc, v.id desc) from visible v), '[]'::jsonb),
     'statusCounts', (select jsonb_build_object(
-      'all', count(*), 'pending', count(*) filter (where t.transfer_status = 'pending'), 'partial', count(*) filter (where t.transfer_status = 'partial'),
-      'advance_payment', count(*) filter (where t.transfer_status = 'advance_payment'), 'paid', count(*) filter (where t.transfer_status = 'paid'),
-      'overpaid', count(*) filter (where t.transfer_status = 'overpaid'), 'branch_and_transfer', count(*) filter (where t.transfer_status = 'branch_and_transfer'),
+      'all', count(*),
+      'pending', count(*) filter (where t.transfer_status = 'pending'),
+      'partial', count(*) filter (where t.transfer_status = 'partial'),
+      'advance_payment', count(*) filter (where t.transfer_status = 'advance_payment'),
+      'paid', count(*) filter (where t.transfer_status = 'paid'),
+      'overpaid', count(*) filter (where t.transfer_status = 'overpaid'),
+      'branch_and_transfer', count(*) filter (where t.transfer_status = 'branch_and_transfer'),
       'cancelled', count(*) filter (where t.transfer_status = 'cancelled')
-    ) from public.money_transfers t where t.location_id = p_location_id and t.record_status <> 'deleted' and t.transfer_type <> 'cash'),
+    ) from public.money_transfers t
+      where t.location_id = p_location_id
+        and t.record_status <> 'deleted'
+        and t.transfer_type <> 'cash'),
     'hasMore', (select count(*) > p_page_size from candidates),
     'nextCreatedAt', (select v.created_at from visible v order by v.created_at, v.id limit 1),
     'nextId', (select v.id from visible v order by v.created_at, v.id limit 1)
@@ -13894,6 +13950,22 @@ $$;
 
 
 ALTER FUNCTION "public"."get_money_transfer_sources"("p_location_id" "uuid", "p_source_type" "text", "p_search" "text", "p_cursor_created_at" timestamp with time zone, "p_cursor_id" "uuid", "p_page_size" integer, "p_selected_ids" "uuid"[]) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_my_active_location_assignments"() RETURNS TABLE("location_id" "uuid", "is_primary" boolean)
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select ul.location_id, ul.is_primary
+  from public.user_locations ul
+  join public.locations l on l.id = ul.location_id and l.is_active = true
+  join public.profiles p on p.id = ul.user_id and p.is_active = true
+  where ul.user_id = auth.uid()
+  order by ul.is_primary desc, ul.created_at, ul.id
+$$;
+
+
+ALTER FUNCTION "public"."get_my_active_location_assignments"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_receivable_rubber_exports"("p_destination_location_id" "uuid") RETURNS TABLE("source_rubber_export_id" "uuid", "source_export_no" "text", "source_location_id" "uuid", "source_location_name" "text", "verified_at" timestamp with time zone, "current_weight" numeric, "rubber_value" numeric, "source_average_age_hours" numeric, "received_age_hours" numeric, "age_is_estimated" boolean)
@@ -21703,7 +21775,8 @@ CREATE TABLE IF NOT EXISTS "public"."profiles" (
     "daily_wage" numeric DEFAULT 0 NOT NULL,
     "can_access_money_transfer" boolean DEFAULT false NOT NULL,
     "can_access_super_admin_features" boolean DEFAULT false NOT NULL,
-    "can_manage_time_payroll" boolean DEFAULT false NOT NULL
+    "can_manage_time_payroll" boolean DEFAULT false NOT NULL,
+    CONSTRAINT "profiles_admin_only_elevated_access" CHECK ((("role" = 'admin'::"public"."app_role") OR (("can_access_super_admin_features" = false) AND ("can_access_money_transfer" = false) AND ("can_manage_time_payroll" = false))))
 );
 
 
@@ -23251,6 +23324,10 @@ CREATE CONSTRAINT TRIGGER "enforce_rubber_approval_group_row_not_empty" AFTER IN
 
 
 
+CREATE OR REPLACE TRIGGER "enforce_stock_product_approval_business_access" BEFORE INSERT OR UPDATE ON "public"."stock_product_approval_requests" FOR EACH ROW EXECUTE FUNCTION "private"."enforce_business_module_write"();
+
+
+
 CREATE CONSTRAINT TRIGGER "enforce_user_primary_location" AFTER INSERT OR DELETE OR UPDATE ON "public"."user_locations" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "private"."enforce_user_primary_location"();
 
 
@@ -24174,7 +24251,7 @@ ALTER TABLE ONLY "public"."user_locations"
 ALTER TABLE "private"."money_transfer_delete_context" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "Allow all authenticated users to read active items" ON "public"."income_sale_items" FOR SELECT TO "authenticated" USING (("is_active" = true));
+CREATE POLICY "Allow all authenticated users to read active items" ON "public"."income_sale_items" FOR SELECT TO "authenticated" USING ((("is_active" = true) AND "private"."can_access_business_modules"()));
 
 
 
@@ -24190,7 +24267,7 @@ CREATE POLICY "Allow system managers to update" ON "public"."income_sale_items" 
 
 
 
-CREATE POLICY "acid_products_active_read" ON "public"."stock_products" FOR SELECT TO "authenticated" USING (("is_active" = true));
+CREATE POLICY "acid_products_active_read" ON "public"."stock_products" FOR SELECT TO "authenticated" USING ((("is_active" = true) AND "private"."can_access_business_modules"()));
 
 
 
@@ -24210,7 +24287,7 @@ CREATE POLICY "acid_stock_entries_location_read" ON "public"."stock_entries" FOR
 
 
 
-CREATE POLICY "active users read rubber bill approval settings" ON "public"."rubber_bill_approval_settings" FOR SELECT USING ("private"."is_active_user"());
+CREATE POLICY "active users read rubber bill approval settings" ON "public"."rubber_bill_approval_settings" FOR SELECT USING ("private"."can_access_business_modules"());
 
 
 
@@ -24227,7 +24304,7 @@ CREATE POLICY "cash details source or target select" ON "public"."money_transfer
 
 
 
-CREATE POLICY "cash transfer delete requests read" ON "public"."cash_transfer_delete_requests" FOR SELECT TO "authenticated" USING (("private"."can_access_super_admin_features"() OR ("requested_by_user_id" = "auth"."uid"()) OR "private"."can_access_location"("source_location_id")));
+CREATE POLICY "cash transfer delete requests read" ON "public"."cash_transfer_delete_requests" FOR SELECT TO "authenticated" USING (("private"."can_access_business_modules"() AND ("private"."can_access_super_admin_features"() OR ("requested_by_user_id" = "auth"."uid"()) OR "private"."can_access_location"("source_location_id"))));
 
 
 
@@ -24251,9 +24328,9 @@ CREATE POLICY "customer_bank_accounts_parent_scope" ON "public"."customer_bank_a
 
 
 
-CREATE POLICY "customer_bank_accounts_select_legacy_global" ON "public"."customer_bank_accounts" FOR SELECT TO "authenticated" USING ((EXISTS ( SELECT 1
+CREATE POLICY "customer_bank_accounts_select_legacy_global" ON "public"."customer_bank_accounts" FOR SELECT TO "authenticated" USING (("private"."can_access_business_modules"() AND (EXISTS ( SELECT 1
    FROM "public"."customers" "c"
-  WHERE (("c"."id" = "customer_bank_accounts"."customer_id") AND ("c"."default_location_id" IS NULL) AND "private"."is_active_user"()))));
+  WHERE (("c"."id" = "customer_bank_accounts"."customer_id") AND ("c"."default_location_id" IS NULL))))));
 
 
 
@@ -24268,9 +24345,9 @@ CREATE POLICY "customer_contacts_parent_scope" ON "public"."customer_contacts" T
 
 
 
-CREATE POLICY "customer_contacts_select_legacy_global" ON "public"."customer_contacts" FOR SELECT TO "authenticated" USING ((EXISTS ( SELECT 1
+CREATE POLICY "customer_contacts_select_legacy_global" ON "public"."customer_contacts" FOR SELECT TO "authenticated" USING (("private"."can_access_business_modules"() AND (EXISTS ( SELECT 1
    FROM "public"."customers" "c"
-  WHERE (("c"."id" = "customer_contacts"."customer_id") AND ("c"."default_location_id" IS NULL) AND "private"."is_active_user"()))));
+  WHERE (("c"."id" = "customer_contacts"."customer_id") AND ("c"."default_location_id" IS NULL))))));
 
 
 
@@ -24285,9 +24362,9 @@ CREATE POLICY "customer_farms_parent_scope" ON "public"."customer_farms" TO "aut
 
 
 
-CREATE POLICY "customer_farms_select_legacy_global" ON "public"."customer_farms" FOR SELECT TO "authenticated" USING ((EXISTS ( SELECT 1
+CREATE POLICY "customer_farms_select_legacy_global" ON "public"."customer_farms" FOR SELECT TO "authenticated" USING (("private"."can_access_business_modules"() AND (EXISTS ( SELECT 1
    FROM "public"."customers" "c"
-  WHERE (("c"."id" = "customer_farms"."customer_id") AND ("c"."default_location_id" IS NULL) AND "private"."is_active_user"()))));
+  WHERE (("c"."id" = "customer_farms"."customer_id") AND ("c"."default_location_id" IS NULL))))));
 
 
 
@@ -24302,7 +24379,7 @@ CREATE POLICY "customers_insert_location" ON "public"."customers" FOR INSERT TO 
 
 
 
-CREATE POLICY "customers_select_legacy_global" ON "public"."customers" FOR SELECT TO "authenticated" USING ((("default_location_id" IS NULL) AND "private"."is_active_user"()));
+CREATE POLICY "customers_select_legacy_global" ON "public"."customers" FOR SELECT TO "authenticated" USING ((("default_location_id" IS NULL) AND "private"."can_access_business_modules"()));
 
 
 
@@ -24378,7 +24455,7 @@ ALTER TABLE "public"."income_expense" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."income_expense_approval_keywords" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "income_expense_approval_keywords_read" ON "public"."income_expense_approval_keywords" FOR SELECT TO "authenticated" USING ((("is_active" = true) OR "public"."is_super_admin"()));
+CREATE POLICY "income_expense_approval_keywords_read" ON "public"."income_expense_approval_keywords" FOR SELECT TO "authenticated" USING ((("is_active" = true) AND "private"."can_access_business_modules"()));
 
 
 
@@ -24389,14 +24466,14 @@ CREATE POLICY "income_expense_approval_keywords_system_manager_write" ON "public
 ALTER TABLE "public"."income_expense_approval_requests" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "income_expense_approval_requests_read" ON "public"."income_expense_approval_requests" FOR SELECT TO "authenticated" USING (("public"."can_access_super_admin_features"() OR ("requested_by_user_id" = "auth"."uid"()) OR "public"."can_access_location"("location_id")));
+CREATE POLICY "income_expense_approval_requests_read" ON "public"."income_expense_approval_requests" FOR SELECT TO "authenticated" USING (("private"."can_access_business_modules"() AND ("public"."can_access_super_admin_features"() OR ("requested_by_user_id" = "auth"."uid"()) OR "public"."can_access_location"("location_id"))));
 
 
 
 ALTER TABLE "public"."income_expense_approval_settings" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "income_expense_approval_settings_read" ON "public"."income_expense_approval_settings" FOR SELECT TO "authenticated" USING (true);
+CREATE POLICY "income_expense_approval_settings_read" ON "public"."income_expense_approval_settings" FOR SELECT TO "authenticated" USING ("private"."can_access_business_modules"());
 
 
 
@@ -24427,7 +24504,7 @@ CREATE POLICY "locations_manage_super_admin" ON "public"."locations" TO "authent
 
 
 
-CREATE POLICY "locations_select_active_for_branch_transfer" ON "public"."locations" FOR SELECT TO "authenticated" USING (("is_active" = true));
+CREATE POLICY "locations_select_active_for_branch_transfer" ON "public"."locations" FOR SELECT TO "authenticated" USING ((("is_active" = true) AND "private"."can_access_business_modules"()));
 
 
 
@@ -24644,14 +24721,14 @@ ALTER TABLE "public"."stock_entries" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."stock_entry_approval_requests" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "stock_entry_approval_requests_read" ON "public"."stock_entry_approval_requests" FOR SELECT TO "authenticated" USING (("public"."can_access_super_admin_features"() OR ("requested_by_user_id" = "auth"."uid"()) OR "public"."can_access_location"("location_id") OR (("target_location_id" IS NOT NULL) AND "public"."can_access_location"("target_location_id"))));
+CREATE POLICY "stock_entry_approval_requests_read" ON "public"."stock_entry_approval_requests" FOR SELECT TO "authenticated" USING (("private"."can_access_business_modules"() AND ("public"."can_access_super_admin_features"() OR ("requested_by_user_id" = "auth"."uid"()) OR "public"."can_access_location"("location_id") OR (("target_location_id" IS NOT NULL) AND "public"."can_access_location"("target_location_id")))));
 
 
 
 ALTER TABLE "public"."stock_product_approval_requests" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "stock_product_approval_requests_read" ON "public"."stock_product_approval_requests" FOR SELECT TO "authenticated" USING (("public"."can_access_super_admin_features"() OR ("requested_by_user_id" = "auth"."uid"())));
+CREATE POLICY "stock_product_approval_requests_read" ON "public"."stock_product_approval_requests" FOR SELECT TO "authenticated" USING (("private"."can_access_business_modules"() AND ("public"."can_access_super_admin_features"() OR ("requested_by_user_id" = "auth"."uid"()))));
 
 
 
@@ -24729,9 +24806,9 @@ CREATE POLICY "transport_staff_bank_accounts_parent_scope" ON "public"."transpor
 
 
 
-CREATE POLICY "transport_staff_bank_accounts_select_legacy_global" ON "public"."transport_staff_bank_accounts" FOR SELECT TO "authenticated" USING ((EXISTS ( SELECT 1
+CREATE POLICY "transport_staff_bank_accounts_select_legacy_global" ON "public"."transport_staff_bank_accounts" FOR SELECT TO "authenticated" USING (("private"."can_access_business_modules"() AND (EXISTS ( SELECT 1
    FROM "public"."transport_staffs" "s"
-  WHERE (("s"."id" = "transport_staff_bank_accounts"."staff_id") AND ("s"."default_location_id" IS NULL) AND "private"."is_active_user"()))));
+  WHERE (("s"."id" = "transport_staff_bank_accounts"."staff_id") AND ("s"."default_location_id" IS NULL))))));
 
 
 
@@ -24746,9 +24823,9 @@ CREATE POLICY "transport_staff_contacts_parent_scope" ON "public"."transport_sta
 
 
 
-CREATE POLICY "transport_staff_contacts_select_legacy_global" ON "public"."transport_staff_contacts" FOR SELECT TO "authenticated" USING ((EXISTS ( SELECT 1
+CREATE POLICY "transport_staff_contacts_select_legacy_global" ON "public"."transport_staff_contacts" FOR SELECT TO "authenticated" USING (("private"."can_access_business_modules"() AND (EXISTS ( SELECT 1
    FROM "public"."transport_staffs" "s"
-  WHERE (("s"."id" = "transport_staff_contacts"."staff_id") AND ("s"."default_location_id" IS NULL) AND "private"."is_active_user"()))));
+  WHERE (("s"."id" = "transport_staff_contacts"."staff_id") AND ("s"."default_location_id" IS NULL))))));
 
 
 
@@ -24763,9 +24840,9 @@ CREATE POLICY "transport_staff_plates_parent_scope" ON "public"."transport_staff
 
 
 
-CREATE POLICY "transport_staff_plates_select_legacy_global" ON "public"."transport_staff_plates" FOR SELECT TO "authenticated" USING ((EXISTS ( SELECT 1
+CREATE POLICY "transport_staff_plates_select_legacy_global" ON "public"."transport_staff_plates" FOR SELECT TO "authenticated" USING (("private"."can_access_business_modules"() AND (EXISTS ( SELECT 1
    FROM "public"."transport_staffs" "s"
-  WHERE (("s"."id" = "transport_staff_plates"."staff_id") AND ("s"."default_location_id" IS NULL) AND "private"."is_active_user"()))));
+  WHERE (("s"."id" = "transport_staff_plates"."staff_id") AND ("s"."default_location_id" IS NULL))))));
 
 
 
@@ -24776,7 +24853,7 @@ CREATE POLICY "transport_staffs_location_scope" ON "public"."transport_staffs" T
 
 
 
-CREATE POLICY "transport_staffs_select_legacy_global" ON "public"."transport_staffs" FOR SELECT TO "authenticated" USING ((("default_location_id" IS NULL) AND "private"."is_active_user"()));
+CREATE POLICY "transport_staffs_select_legacy_global" ON "public"."transport_staffs" FOR SELECT TO "authenticated" USING ((("default_location_id" IS NULL) AND "private"."can_access_business_modules"()));
 
 
 
@@ -24803,7 +24880,6 @@ GRANT USAGE ON SCHEMA "private" TO "authenticated";
 
 
 
-REVOKE USAGE ON SCHEMA "public" FROM PUBLIC;
 GRANT USAGE ON SCHEMA "public" TO "postgres";
 GRANT USAGE ON SCHEMA "public" TO "anon";
 GRANT USAGE ON SCHEMA "public" TO "authenticated";
@@ -24840,6 +24916,12 @@ REVOKE ALL ON FUNCTION "private"."assign_rubber_bill_formula_version"() FROM PUB
 
 
 REVOKE ALL ON FUNCTION "private"."calculate_dashboard_summary"("p_location_id" "uuid") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."can_access_business_modules"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "private"."can_access_business_modules"() TO "authenticated";
+GRANT ALL ON FUNCTION "private"."can_access_business_modules"() TO "service_role";
 
 
 
@@ -25008,6 +25090,10 @@ REVOKE ALL ON FUNCTION "private"."effective_time_payroll_settings"() FROM PUBLIC
 
 
 
+REVOKE ALL ON FUNCTION "private"."enforce_business_module_write"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."enforce_complete_wex_before_reservation"() FROM PUBLIC;
 
 
@@ -25017,6 +25103,10 @@ REVOKE ALL ON FUNCTION "private"."enforce_rubber_bill_ocr_source_update"() FROM 
 
 
 REVOKE ALL ON FUNCTION "private"."exception_attendance_summary"("p_profile_id" "uuid", "p_period_start" timestamp with time zone, "p_period_end" timestamp with time zone, "p_now" timestamp with time zone) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."guard_reported_entity"() FROM PUBLIC;
 
 
 
@@ -25380,7 +25470,6 @@ GRANT ALL ON FUNCTION "public"."create_stock_product_approval_request"("payload"
 
 
 REVOKE ALL ON FUNCTION "public"."create_stock_product_with_sale_item"("payload" "jsonb") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."create_stock_product_with_sale_item"("payload" "jsonb") TO "authenticated";
 
 
 
@@ -25618,6 +25707,12 @@ GRANT ALL ON FUNCTION "public"."get_money_transfer_source_locks"("p_location_id"
 
 REVOKE ALL ON FUNCTION "public"."get_money_transfer_sources"("p_location_id" "uuid", "p_source_type" "text", "p_search" "text", "p_cursor_created_at" timestamp with time zone, "p_cursor_id" "uuid", "p_page_size" integer, "p_selected_ids" "uuid"[]) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_money_transfer_sources"("p_location_id" "uuid", "p_source_type" "text", "p_search" "text", "p_cursor_created_at" timestamp with time zone, "p_cursor_id" "uuid", "p_page_size" integer, "p_selected_ids" "uuid"[]) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_my_active_location_assignments"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_my_active_location_assignments"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."get_my_active_location_assignments"() TO "service_role";
 
 
 
@@ -26707,7 +26802,13 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT UPDATE ON 
 
 
 
+
+
+
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "postgres";
+
+
+
 
 
 

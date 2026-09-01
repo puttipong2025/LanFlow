@@ -2,6 +2,10 @@
 
 begin;
 
+create extension if not exists pgtap with schema extensions;
+
+select extensions.plan(1);
+
 do $$
 begin
   if to_regprocedure('public.get_weight_evidence_digest()') is not null then
@@ -207,5 +211,9 @@ begin
   end if;
 end;
 $$;
+
+select extensions.pass('rubber bill Evidence review transactional contract passes');
+
+select * from extensions.finish();
 
 rollback;

@@ -2,47 +2,55 @@
 
 begin;
 
+create extension if not exists pgtap with schema extensions;
+
+select extensions.plan(1);
+
 do $$
 declare
-  v_user_id uuid;
-  v_location_id uuid;
-  v_bill_id uuid;
-  v_row_id uuid;
-  v_revision_no integer;
+  v_user_id constant uuid := 'e2000000-0000-4000-8000-000000000001';
+  v_location_id constant uuid := 'e2000000-0000-4000-8000-000000000002';
+  v_bill_id constant uuid := 'e2000000-0000-4000-8000-000000000003';
+  v_row_id constant uuid := 'e2000000-0000-4000-8000-000000000004';
+  v_report_id constant uuid := 'e2000000-0000-4000-8000-000000000005';
+  v_revision_no integer := 1;
   v_completion_id uuid := gen_random_uuid();
   v_other_completion_id uuid := gen_random_uuid();
   v_result jsonb;
   v_key text;
-  v_report_id uuid := gen_random_uuid();
-  v_report_sequence integer;
 begin
-  select p.id, b.location_id, b.id, i.id, b.revision_no
-    into v_user_id, v_location_id, v_bill_id, v_row_id, v_revision_no
-  from public.rubber_bills b
-  join public.rubber_bill_items i on i.bill_id = b.id and i.item_type = 'weigh'
-  join public.user_locations ul on ul.location_id = b.location_id
-  join public.profiles p on p.id = ul.user_id and p.is_active = true
-  where b.record_status = 'active'
-    and b.source_rubber_export_id is null
-    and b.approval_state = 'not_required'
-    and not exists (
-      select 1
-      from public.report_items item
-      join public.report_batches report on report.id = item.report_id
-      where item.entity_type = 'rubber_bill'
-        and item.entity_id = b.id
-        and report.status = 'active'
-    )
-  order by b.id, i.sequence_no
-  limit 1;
+  insert into public.locations (id, name, code, is_active)
+  values (v_location_id, 'pgTAP Weight Evidence backup', 'PGWEB', true);
 
-  if v_bill_id is null then raise exception 'No eligible seed bill for evidence backup test'; end if;
+  insert into public.profiles (id, phone, name, role, is_active)
+  values (v_user_id, '0899200001', 'pgTAP Weight Evidence backup user', 'admin', true);
+
+  insert into public.user_locations (user_id, location_id, assigned_by, is_primary)
+  values (v_user_id, v_location_id, v_user_id, true);
+
+  insert into public.rubber_bills (
+    id, client_temp_id, local_bill_no, server_bill_no, idempotency_key,
+    revision_no, sync_status, record_status, location_id, bill_no, bill_date,
+    customer_name, bill_type, weight, rubber_value, average_price,
+    deduction_total, net_total, client_recorded_at, client_created_at,
+    server_received_at, created_by_user_id, created_by_name, created_by_phone
+  ) values (
+    v_bill_id, 'PGWEB-BILL', 'PGWEB-BILL', 'PGWEB-BILL', 'PGWEB-BILL',
+    v_revision_no, 'synced', 'active', v_location_id, 'PGWEB-BILL', current_date,
+    'pgTAP backup customer', 'weighing', 100, 1000, 10,
+    0, 1000, now(), now(), now(),
+    v_user_id, 'pgTAP Weight Evidence backup user', '0899200001'
+  );
+
+  insert into public.rubber_bill_items (
+    id, bill_id, item_type, description, weight_in, weight_out,
+    net_weight, price, total, sequence_no
+  ) values (
+    v_row_id, v_bill_id, 'weigh', 'pgTAP backup row', 150, 50,
+    100, 10, 1000, 1
+  );
+
   perform set_config('request.jwt.claim.sub', v_user_id::text, true);
-  delete from public.rubber_bill_item_evidence_files where bill_item_id = v_row_id;
-  update public.rubber_bills
-  set evidence_completion_id = null,
-      evidence_manual_correction_count = 0
-  where id = v_bill_id;
 
   v_result := public.claim_weight_evidence_completion(
     v_bill_id, v_location_id, v_revision_no, v_completion_id, 1
@@ -65,15 +73,37 @@ begin
   );
   if v_result->>'state' <> 'stored' then raise exception 'backup retry was not idempotent: %', v_result; end if;
 
+  begin
+    perform public.record_weight_evidence_backup(
+      v_bill_id, v_row_id, 'rubber', v_location_id, v_revision_no,
+      v_completion_id, v_key || '-different', 'drive-file-b', 'https://drive.example/b'
+    );
+    raise exception 'invalid deterministic key was accepted';
+  exception when others then
+    if sqlerrm = 'invalid deterministic key was accepted' then raise; end if;
+    if sqlerrm <> 'WEIGHT_EVIDENCE_INVALID_INPUT' then
+      raise exception 'unexpected invalid-key error: %', sqlerrm;
+    end if;
+  end;
+
+  update public.rubber_bill_item_evidence_files
+  set completion_id = v_other_completion_id,
+      evidence_key = concat_ws(':', v_other_completion_id, v_revision_no, v_row_id, 'rubber')
+  where bill_item_id = v_row_id and role = 'rubber';
+
   v_result := public.record_weight_evidence_backup(
     v_bill_id, v_row_id, 'rubber', v_location_id, v_revision_no,
-    v_completion_id, v_key || '-different', 'drive-file-b', 'https://drive.example/b'
+    v_completion_id, v_key, 'drive-file-b', 'https://drive.example/b'
   );
-  if v_result->>'state' <> 'conflict' then raise exception 'different backup did not conflict: %', v_result; end if;
+  if v_result->>'state' <> 'conflict' then
+    raise exception 'different canonical backup did not conflict: %', v_result;
+  end if;
 
   v_result := public.record_weight_evidence_backup(
     v_bill_id, v_row_id, 'displayIn', v_location_id, v_revision_no,
-    v_other_completion_id, v_key || '-other', 'drive-file-c', 'https://drive.example/c'
+    v_other_completion_id,
+    concat_ws(':', v_other_completion_id, v_revision_no, v_row_id, 'displayIn'),
+    'drive-file-c', 'https://drive.example/c'
   );
   if v_result->>'state' <> 'not_owner' then raise exception 'non-owner backup was accepted: %', v_result; end if;
 
@@ -89,22 +119,12 @@ begin
   end if;
 
   select revision_no into v_revision_no from public.rubber_bills where id = v_bill_id;
-  select coalesce(max(sequence_no), 0) + 1 into v_report_sequence
-  from public.report_batches
-  where location_id = v_location_id and report_date = current_date;
   insert into public.report_batches (
     id, report_no, report_date, sequence_no, location_id, cutoff_at,
     created_by_user_id, created_by_name, created_by_phone
   ) values (
-    v_report_id,
-    'TEST-EVIDENCE-' || substring(gen_random_uuid()::text, 1, 8),
-    current_date,
-    v_report_sequence,
-    v_location_id,
-    now(),
-    v_user_id,
-    (select name from public.profiles where id = v_user_id),
-    (select phone from public.profiles where id = v_user_id)
+    v_report_id, 'PGWEB-REPORT', current_date, 1, v_location_id, now(),
+    v_user_id, 'pgTAP Weight Evidence backup user', '0899200001'
   );
   insert into public.report_items (
     report_id, location_id, entity_type, entity_id, eligibility_at
@@ -116,6 +136,7 @@ begin
   if v_result->>'state' <> 'owned' then
     raise exception 'report-locked bill rejected evidence claim: %', v_result;
   end if;
+
   v_key := concat_ws(':', v_completion_id, v_revision_no, v_row_id, 'rubber');
   v_result := public.record_weight_evidence_backup(
     v_bill_id, v_row_id, 'rubber', v_location_id, v_revision_no,
@@ -136,5 +157,9 @@ begin
   end;
 end;
 $$;
+
+select extensions.pass('Weight Evidence Drive backup transactional contract passes');
+
+select * from extensions.finish();
 
 rollback;

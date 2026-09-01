@@ -75,3 +75,11 @@ export function readBootstrapCache(userId: string): BootstrapCacheData | null {
     return null;
   }
 }
+
+export function clearBusinessBootstrapCache(userId: string) {
+  if (!userId) return;
+  try {
+    localStorage.removeItem(`lanflow_bootstrap_cache:${userId}`);
+    localStorage.removeItem(lastLocationPreferenceKey(userId));
+  } catch { /* skip */ }
+}

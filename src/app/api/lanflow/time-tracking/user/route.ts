@@ -40,7 +40,7 @@ function bangkokCurrentMonth() {
 }
 
 export async function GET(request: NextRequest) {
-  const result = await requireAuth(request);
+  const result = await requireAuth(request, { allowUserLanflow: true });
   if (!result.ok) return result.response;
 
   const requestedUserId = new URL(request.url).searchParams.get("userId");
@@ -150,7 +150,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const result = await requireAuth(request);
+  const result = await requireAuth(request, { allowUserLanflow: true });
   if (!result.ok) return result.response;
 
   let body: { action?: string; payload?: Record<string, any> };

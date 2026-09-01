@@ -77,7 +77,7 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ sourceType: string; id: string }> },
 ) {
-  const result = await requireAuth(request);
+  const result = await requireAuth(request, { allowUserLanflow: true });
   if (!result.ok) return result.response;
 
   const { sourceType, id } = await params;

@@ -1,0 +1,4 @@
+# Project-scoped custom agents live in .codex/agents/.
+# Current Codex Desktop enables subagents by default and controls concurrency
+# at runtime. Keep this file free of the newer [agents] global keys so the
+# locally installed Codex CLI 0.144.1 can still load the project configuration.

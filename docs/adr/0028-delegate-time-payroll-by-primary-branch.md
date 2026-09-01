@@ -5,7 +5,7 @@
 - Owners: LanFlow team
 - Decision scope: Time Tracking, payroll, user locations, Admin permissions, derived expenses
 - Supersedes: the global-only manager scope in ADR-0027 and the branch-choice restriction in ADR-0006
-- Partially superseded by: ADR-0049 for the Account capability subsection only
+- Partially superseded by: ADR-0049 for the Account capability subsection; ADR-0051 for User module access and no-primary-branch self-service
 
 ## Context
 
@@ -30,6 +30,8 @@ Reuse `user_locations.is_primary` as the employee's single payroll ownership bra
 A delegated manager may manage only active `user` or `admin` targets whose primary branch is an active branch assigned to the manager. A delegated manager cannot manage `super_admin` or a system manager. Global managers keep their existing target scope.
 
 If an account has no branch, delegated manager scope for that account is empty while self-service and global-manager access remain. Changing the primary branch transfers manager visibility over the employee's complete Time/Payroll history immediately; already-derived branch accounting rows keep their recorded branch.
+
+> ADR-0051 supersedes the self-service clause above for `role = 'user'`: a User without an active primary branch is blocked until reassigned. Global-manager access and the historical data-preservation rule remain unchanged.
 
 The database enforces at most one primary assignment and requires exactly one when any assignments remain. The first assignment becomes primary automatically. Replacing or removing the primary while other assignments remain is one atomic operation with an audit record.
 

@@ -68,6 +68,32 @@ insert into public.rubber_bill_items (
   ('25000000-0000-4000-8000-000000000004', 'weigh', 'draft export', 20, 15, 300, 1),
   ('25000000-0000-4000-8000-000000000005', 'weigh', 'pending approval', 10, 10, 100, 1);
 
+insert into public.rubber_bill_ocr_sources (
+  id, owner_user_id, location_id, state, image_sha256, drive_file_id,
+  image_mime_type, image_size_bytes, original_file_name,
+  reserved_client_temp_id, reserved_idempotency_key, reserved_at, attached_at
+) values (
+  '25100000-0000-4000-8000-000000000001',
+  '24000000-0000-4000-8000-000000000001',
+  '23000000-0000-4000-8000-000000000001',
+  'attached',
+  'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  'pgtap-dashboard-ocr-source',
+  'image/jpeg',
+  1024,
+  'pgtap-dashboard-ocr-source.jpg',
+  'PDM-B1',
+  'PDM-B1',
+  current_timestamp,
+  current_timestamp
+);
+
+update public.rubber_bills
+set input_method = 'ocr',
+    ocr_source_id = '25100000-0000-4000-8000-000000000001',
+    ocr_image_sha256 = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+where id = '25000000-0000-4000-8000-000000000001';
+
 insert into public.rubber_bill_approval_requests (
   id, operation, request_status, bill_id, location_id, client_temp_id,
   idempotency_key, base_revision_no, matched_reasons, edit_window_minutes_snapshot, original_payload,
@@ -199,17 +225,6 @@ insert into public.income_expense (
     '24000000-0000-4000-8000-000000000001', 'pgTAP metrics user', '0892400001'
   );
 
-insert into public.ocr_tickets (
-  client_temp_id, idempotency_key, location_id, file_name, date_in,
-  weight_in, weight_out, weight_net, total_amount, sync_status,
-  record_status, created_by_user_id, created_by_name, created_by_phone
-) values (
-  'PDM-OCR-1', 'PDM-OCR-1', '23000000-0000-4000-8000-000000000001',
-  'PDM-OCR-1.jpg', (current_timestamp at time zone 'Asia/Bangkok')::date,
-  100, 90, 10, 777, 'synced', 'active',
-  '24000000-0000-4000-8000-000000000001', 'pgTAP metrics user', '0892400001'
-);
-
 create temporary table dashboard_metrics_summary on commit drop as
 select private.calculate_dashboard_summary(
   '23000000-0000-4000-8000-000000000001'
@@ -218,7 +233,7 @@ select private.calculate_dashboard_summary(
 select extensions.is(
   (select (summary #>> '{purchaseToday,billCount}')::integer from dashboard_metrics_summary),
   4,
-  'today counts customer purchase activity including a bill exported today'
+  'today counts an OCR-origin purchase once as a Rubber Bill'
 );
 select extensions.is(
   (select (summary #>> '{purchaseToday,netWeight}')::numeric from dashboard_metrics_summary),
@@ -273,7 +288,7 @@ select extensions.is(
 select extensions.is(
   (select (summary #>> '{cashToday,net}')::numeric from dashboard_metrics_summary),
   (-1500)::numeric,
-  'today cash net includes actual payable purchases and direct expenses but excludes OCR'
+  'today cash net includes OCR provenance only through its Rubber Bill payable'
 );
 
 update public.rubber_bills

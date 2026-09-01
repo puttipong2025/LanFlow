@@ -8,6 +8,7 @@ import {
   pruneRubberBillReceiptSnapshots,
   putRubberBillReceiptSnapshot,
   putRubberBillReceiptSnapshots,
+  removeSyncEventsForOwner,
   type RubberBillReceiptSnapshot,
   type SyncEvent,
 } from "../src/lib/idb-queue";
@@ -300,5 +301,57 @@ test.describe.serial("Rubber Bill receipt IndexedDB", () => {
         status: "pending",
       }),
     ]);
+  });
+
+  test("removes only one user's business queue and keeps receipt snapshots", async () => {
+    await putRubberBillReceiptSnapshot(
+      makeSnapshot("receipt-1", "location-a", "2026-09-01T00:00:00.000Z"),
+    );
+    await Promise.all([
+      enqueueSyncEvent({
+        id: "user-1-rubber",
+        entity: "rubber_bills",
+        ownerUserId: "user-1",
+        locationId: "location-a",
+        operation: "create",
+        payload: {},
+        timestamp: 1,
+        status: "pending",
+      }),
+      enqueueSyncEvent({
+        id: "user-1-cash",
+        entity: "income_expense",
+        ownerUserId: "user-1",
+        locationId: "location-a",
+        operation: "create",
+        payload: {},
+        timestamp: 2,
+        status: "failed",
+      }),
+      enqueueSyncEvent({
+        id: "user-2-rubber",
+        entity: "rubber_bills",
+        ownerUserId: "user-2",
+        locationId: "location-a",
+        operation: "create",
+        payload: {},
+        timestamp: 3,
+        status: "pending",
+      }),
+    ]);
+
+    expect(await removeSyncEventsForOwner("user-1")).toBe(2);
+    expect(await removeSyncEventsForOwner("user-1")).toBe(0);
+    expect(await getPendingEvents({
+      entity: "rubber_bills",
+      ownerUserId: "user-1",
+      locationId: "location-a",
+    })).toEqual([]);
+    expect(await getPendingEvents({
+      entity: "rubber_bills",
+      ownerUserId: "user-2",
+      locationId: "location-a",
+    })).toHaveLength(1);
+    expect(await getRubberBillReceiptSnapshots("location-a")).toHaveLength(1);
   });
 });

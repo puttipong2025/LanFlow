@@ -40,3 +40,16 @@ test("new claim payload accepts a bounded manual correction count", () => {
   expect(source).toContain("WEIGHT_EVIDENCE_MAX_BACKUP_IMAGE_BYTES = 4 * 1024 * 1024");
   expect(source).toContain("WEIGHT_EVIDENCE_MAX_IMAGE_BYTES = 8 * 1024 * 1024");
 });
+
+test("reported OCR-origin bills allow only isolated Weight Evidence updates", () => {
+  const sql = fs.readFileSync(path.join(
+    root,
+    "supabase/migrations/20260901010000_allow_weight_evidence_on_reported_ocr_bills.sql",
+  ), "utf8");
+
+  expect(sql).toContain("create or replace function private.guard_reported_entity()");
+  expect(sql).toContain("evidence_completion_id");
+  expect(sql).toContain("evidence_manual_correction_count");
+  expect(sql.match(/- 'has_ocr_source_image'/g)).toHaveLength(2);
+  expect(sql).toContain("perform private.raise_report_lock(v_report_no)");
+});

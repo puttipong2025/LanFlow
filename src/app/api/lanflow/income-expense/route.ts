@@ -1,16 +1,13 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireAuth } from "@/lib/server/auth";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
-    const supabase = await createSupabaseServerClient();
-
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) {
-      return NextResponse.json({ status: "failed", errorMessage: "Unauthorized" }, { status: 401 });
-    }
+    const result = await requireAuth(request);
+    if (!result.ok) return result.response;
+    const supabase = result.supabase;
 
     const raw = await request.text();
     if (!raw) {

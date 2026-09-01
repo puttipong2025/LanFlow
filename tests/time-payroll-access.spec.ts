@@ -167,12 +167,15 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
       const bootstrap = await bootstrapResponse.json();
       expect(bootstrap.profile.canManageTimePayroll).toBe(false);
       expect(bootstrap.profile.locationIds.length).toBeGreaterThan(0);
+      expect(bootstrap.locations).toEqual([]);
 
       const page = await context.newPage();
       await page.goto("/");
-      await page.getByRole("button", { name: /^เวลาและเงินเดือน/ }).click();
 
-      await expect(page.getByRole("heading", { name: "ระบบเวลาและเงินเดือน (ของตนเอง)" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "เวลาและเงินเดือน" })).toBeVisible();
+      await expect(page.getByRole("navigation")).toHaveCount(0);
+      await expect(page.getByRole("heading", { name: "ระบบเวลาและเงินเดือน (ของตนเอง)" }))
+        .toBeVisible({ timeout: 30_000 });
       await expect(page.getByRole("button", { name: /เริ่มนับเวลา|หยุดงาน/ })).toHaveCount(0);
       await expect(page.getByRole("button", { name: "สร้างหนี้สินเพิ่ม" })).toHaveCount(0);
     } finally {

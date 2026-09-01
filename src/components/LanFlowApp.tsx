@@ -17,11 +17,13 @@ import { useActionableBadges } from "@/hooks/useActionableBadges";
 
 import {
   readBootstrapCache,
+  clearBusinessBootstrapCache,
   readLastLocationPreference,
   resolveSelectedLocationId,
   writeBootstrapCache,
   writeLastLocationPreference,
 } from "@/lib/lanflow/bootstrap-cache";
+import { removeSyncEventsForOwner } from "@/lib/idb-queue";
 import { type Tab } from "@/components/lanflow/tabs";
 import { Dashboard } from "@/components/dashboard/Dashboard";
 import { RubberBillsModule } from "@/components/rubber-bills/RubberBillsModule";
@@ -52,6 +54,140 @@ import { useServiceUnavailable } from "@/lib/service-health";
 import { useRubberBillOcrQueue, type RubberBillOcrQueueItem } from "@/hooks/useRubberBillOcrQueue";
 
 export function LanFlowApp() {
+  const auth = useAuthContext();
+  if (auth.profile?.role === "user") return <UserTimePayrollApp />;
+  return <BusinessLanFlowApp />;
+}
+
+function UserTimePayrollApp() {
+  const auth = useAuthContext();
+  const online = useOnlineStatus();
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has("tab") && !url.searchParams.has("bill")) return;
+    url.searchParams.delete("tab");
+    url.searchParams.delete("bill");
+    window.history.replaceState(null, "", url);
+  }, []);
+
+  useEffect(() => {
+    let ignore = false;
+    if (!online || !auth.profile?.id) return;
+
+    async function loadUserProfile() {
+      setState("loading");
+      try {
+        const response = await authFetch("/api/lanflow", { cache: "no-store" });
+        await assertApiResponse(response);
+        const data = await response.json() as { locations: Location[]; profile: Profile };
+        if (data.profile.role !== "user") {
+          window.location.reload();
+          return;
+        }
+
+        clearBusinessBootstrapCache(data.profile.id);
+        try {
+          await removeSyncEventsForOwner(data.profile.id);
+        } catch (error) {
+          console.error("Failed to clear stale User business queue", error);
+        }
+        if (ignore) return;
+        setProfile(data.profile);
+        setState("ready");
+      } catch (error) {
+        console.error("User time and payroll bootstrap failed", error);
+        if (!ignore) setState("error");
+      }
+    }
+
+    void loadUserProfile();
+    return () => {
+      ignore = true;
+    };
+  }, [auth.profile?.id, online]);
+
+  const header = (
+    <section className="border-b border-mint bg-white shadow-sm">
+      <div className="mx-auto flex w-full max-w-7xl items-center justify-between gap-4 px-4 py-4">
+        <div className="min-w-0">
+          <h1 className="text-balance text-xl font-bold text-ink">เวลาและเงินเดือน</h1>
+          <p className="truncate text-sm text-ink/60">
+            {auth.profile?.name} · {online ? "ออนไลน์" : "ออฟไลน์"}
+          </p>
+        </div>
+        <LogoutButton online={online} onLogout={auth.logout} />
+      </div>
+    </section>
+  );
+
+  if (!online) {
+    return (
+      <main className="min-h-screen bg-sand">
+        {header}
+        <section className="mx-auto w-full max-w-3xl px-4 py-10">
+          <div role="status" className="rounded-xl border border-black/10 bg-white p-5 shadow-sm">
+            <h2 className="text-balance text-lg font-bold text-ink">ต้องเชื่อมต่ออินเทอร์เน็ต</h2>
+            <p className="mt-2 text-pretty text-sm text-ink/65">เวลาและเงินเดือนใช้งานได้เมื่อออนไลน์เท่านั้น</p>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (state === "loading") {
+    return (
+      <main className="min-h-screen bg-sand">
+        {header}
+        <div role="status" className="flex justify-center px-4 py-12 text-sm font-semibold text-ink/65">
+          กำลังตรวจสอบสิทธิ์...
+        </div>
+      </main>
+    );
+  }
+
+  if (state === "error" || !profile) {
+    return (
+      <main className="min-h-screen bg-sand">
+        {header}
+        <section className="mx-auto w-full max-w-3xl px-4 py-10">
+          <div role="alert" className="rounded-xl border border-danger/25 bg-white p-5 shadow-sm">
+            <h2 className="text-balance text-lg font-bold text-danger">โหลดสิทธิ์ไม่สำเร็จ</h2>
+            <p className="mt-2 text-pretty text-sm text-ink/65">กรุณารีเฟรชหน้าเพื่อลองอีกครั้ง</p>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (!profile.primaryLocationId) {
+    return (
+      <main className="min-h-screen bg-sand">
+        {header}
+        <section className="mx-auto w-full max-w-3xl px-4 py-10 text-center">
+          <div className="rounded-xl border border-black/10 bg-white p-6 shadow-sm">
+            <ShieldCheck size={32} className="mx-auto text-leaf" />
+            <h2 className="mt-3 text-balance text-lg font-bold text-ink">ยังไม่ได้กำหนดสาขาหลัก</h2>
+            <p className="mt-2 text-pretty text-sm text-ink/65">กรุณาติดต่อผู้ดูแลระบบก่อนใช้งานเวลาและเงินเดือน</p>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="min-h-screen bg-sand">
+      {header}
+      <section className="mx-auto w-full max-w-7xl px-3 py-5 sm:px-4 sm:py-6">
+        <TimeTrackingModule profile={profile} online={online} locations={[]} />
+      </section>
+    </main>
+  );
+}
+
+function BusinessLanFlowApp() {
   const auth = useAuthContext();
   const authProfileId = auth.profile?.id;
   const queueOwnerUserId = authProfileId ?? "";

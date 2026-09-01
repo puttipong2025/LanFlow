@@ -35,6 +35,10 @@ type AuthFailure = {
 
 export type AuthResult = AuthSuccess | AuthFailure;
 
+type RequireAuthOptions = {
+  allowUserLanflow?: boolean;
+};
+
 function authFailureResponse(failure: AuthAccessFailure) {
   return NextResponse.json(
     { error: failure.message },
@@ -50,7 +54,10 @@ function authFailureResponse(failure: AuthAccessFailure) {
   );
 }
 
-export async function requireAuth(request?: Request): Promise<AuthResult> {
+export async function requireAuth(
+  request?: Request,
+  options: RequireAuthOptions = {},
+): Promise<AuthResult> {
   const supabase = await createSupabaseRequestClient(request);
   const bearerToken = request?.headers.get("authorization")?.trim().match(/^Bearer\s+(.+)$/i)?.[1];
   const { data: claimsData, error: claimsError } = await supabase.auth.getClaims(bearerToken);
@@ -77,11 +84,7 @@ export async function requireAuth(request?: Request): Promise<AuthResult> {
         .select("id, phone, name, role, is_active, can_access_super_admin_features, can_access_money_transfer, can_manage_time_payroll")
         .eq("id", userId)
         .maybeSingle(),
-      supabase
-        .from("user_locations")
-        .select("location_id, is_primary, locations!inner(is_active)")
-        .eq("user_id", userId)
-        .eq("locations.is_active", true)
+      supabase.rpc("get_my_active_location_assignments")
     ]);
 
   const accessFailure = classifyAuthAccessFailure({
@@ -103,6 +106,23 @@ export async function requireAuth(request?: Request): Promise<AuthResult> {
     };
   }
   const activeProfile = profile!;
+  const activeAssignments = (assignments ?? []) as Array<{
+    location_id: string;
+    is_primary: boolean;
+  }>;
+
+  const pathname = request ? new URL(request.url).pathname : "";
+  if (
+    activeProfile.role === "user"
+    && pathname.startsWith("/api/lanflow")
+    && options.allowUserLanflow !== true
+  ) {
+    return {
+      ok: false,
+      response: NextResponse.json({ error: "ไม่มีสิทธิ์เข้าถึง" }, { status: 403 }),
+    };
+  }
+
   const capabilities = deriveEffectiveCapabilities({
     role: activeProfile.role as AppRole,
     canAccessSystemManager: activeProfile.can_access_super_admin_features === true,
@@ -117,9 +137,9 @@ export async function requireAuth(request?: Request): Promise<AuthResult> {
       phone: activeProfile.phone,
       name: activeProfile.name,
       role: activeProfile.role as AppRole,
-      locationIds: (assignments ?? []).map((item) => item.location_id as string),
+      locationIds: activeAssignments.map((item) => item.location_id),
       primaryLocationId:
-        (assignments ?? []).find((item) => item.is_primary === true)?.location_id as string | undefined ?? null,
+        activeAssignments.find((item) => item.is_primary)?.location_id ?? null,
       canAccessSystemManager: capabilities.canManageSystem,
       canAccessMoneyTransfer: capabilities.canUseMoneyTransfer,
       canManageTimePayroll: capabilities.canManageTimePayroll,
