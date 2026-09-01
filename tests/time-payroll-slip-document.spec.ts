@@ -63,18 +63,24 @@ test("approved withdrawal uses actual ledger balance without deducting the sourc
 });
 
 test("payroll keeps snapshot amounts and produces a Thai filename", () => {
+  const slipDataWithRoundingAudit = {
+    segments: [],
+    transactions: [],
+    netPayBeforeRounding: 3_000.5,
+    roundingAdjustment: 0.5,
+  };
   const document = buildPayrollSlipDocument({
     source: {
       id: SOURCE_ID,
       month: "2026-07",
       status: "APPROVED",
       total_days: 10,
-      daily_wage: 500,
-      gross_pay: 5_000,
-      total_deductions: 2_000,
-      net_pay: 3_000,
+      daily_wage: 500.1234,
+      gross_pay: 5_001.23,
+      total_deductions: 2_000.23,
+      net_pay: 3_001,
       created_at: "2026-08-01T01:00:00.000Z",
-      slip_data: { segments: [], transactions: [] },
+      slip_data: slipDataWithRoundingAudit,
     },
     employeeName: "สมชาย ใจดี",
     generatedAt: GENERATED_AT,
@@ -83,13 +89,14 @@ test("payroll keeps snapshot amounts and produces a Thai filename", () => {
   expect(document.title).toBe("สลิปเงินเดือน");
   expect(document.summary.map((row) => row.value)).toEqual([
     "10 วัน",
-    "500 บาท",
-    "5,000 บาท",
-    "2,000 บาท",
-    "3,000 บาท",
+    "500.1234 บาท",
+    "5,001.23 บาท",
+    "2,000.23 บาท",
+    "3,001.00 บาท",
   ]);
   expect(document.filename).toBe("LanFlow-เงินเดือน-2026-07-a1b2c3d4-อนุมัติแล้ว.pdf");
   expect(JSON.stringify(document)).not.toMatch(/Payroll|Withdrawal/);
+  expect(JSON.stringify(document)).not.toMatch(/netPayBeforeRounding|roundingAdjustment/);
 });
 
 test("payroll attendance snapshot still populates the work-calendar table", () => {

@@ -82,6 +82,7 @@ export type DashboardMoneyHistoryAction = "all" | "create" | "update" | "delete"
 
 export type DashboardMoneyHistoryRow = {
   id: string;
+  sourceType: string;
   action: Exclude<DashboardMoneyHistoryAction, "all">;
   kind: string;
   number: string;

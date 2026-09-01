@@ -139,7 +139,7 @@ test("previews only eligible sources and shares the payroll PDF File", async ({ 
   await previewButtons.nth(1).click();
   const dialog = page.getByRole("dialog", { name: "สลิปเงินเดือน" });
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByText("3,000 บาท", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("3,000.00 บาท", { exact: true })).toBeVisible();
   await dialog.getByRole("button", { name: "แชร์ PDF" }).click();
 
   await expect.poll(() => page.evaluate(() =>

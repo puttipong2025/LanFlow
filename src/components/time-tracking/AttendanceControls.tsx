@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { CalendarDays, Clock3, Settings2 } from "lucide-react";
 import { ModalShell } from "@/components/shared/ModalShell";
-import { formatCurrency } from "@/lib/format";
+import { formatPayrollCurrency } from "@/lib/time-tracking/format";
 import type {
   AttendanceExceptionDto,
   AttendanceMonthDto,
@@ -163,7 +163,7 @@ export function AttendanceCalendar({
       </div>
 
       <div className="mt-4 flex flex-col gap-2 border-t border-black/10 pt-3 sm:flex-row sm:items-center sm:justify-between">
-        <p className="text-pretty text-sm text-ink/70">ค่าแรงขั้นต้น: <strong className="tabular-nums text-ink">{formatCurrency(attendance.summary.grossPay)}</strong></p>
+        <p className="text-pretty text-sm text-ink/70">ค่าแรงขั้นต้น: <strong className="tabular-nums text-ink">{formatPayrollCurrency(attendance.summary.grossPay)}</strong></p>
         {editable && (
           <div className="flex flex-wrap gap-2">
             {dirty && <button type="button" onClick={() => setDraft(null)} disabled={saving} className="focus-ring rounded-md border border-black/15 px-3 py-2 text-sm font-semibold disabled:opacity-50">ยกเลิกการแก้</button>}

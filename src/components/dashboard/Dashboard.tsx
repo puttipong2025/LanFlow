@@ -11,6 +11,7 @@ import type {
   DashboardRefreshRequest,
 } from "@/types/dashboard";
 import { formatCurrency, formatNumber } from "@/lib/format";
+import { formatPayrollCurrency } from "@/lib/time-tracking/format";
 import {
   useDashboardMoneyHistory,
   useDashboardSnapshot,
@@ -741,7 +742,9 @@ export function Dashboard({
                   <td className="whitespace-nowrap pr-3 font-semibold">{row.number}</td>
                   <td className="max-w-[360px] pr-3">{row.title}</td>
                   <td className={`whitespace-nowrap pr-3 text-right font-semibold ${row.direction === "income" ? "text-leaf" : "text-clay"}`}>
-                    {row.direction === "income" ? "+" : "-"}{formatCurrency(row.amount)}
+                    {row.direction === "income" ? "+" : "-"}{row.sourceType === "payroll_slip"
+                      ? formatPayrollCurrency(row.amount)
+                      : formatCurrency(row.amount)}
                   </td>
                   <td className="whitespace-nowrap">{row.actorName || "ระบบ"}</td>
                 </tr>

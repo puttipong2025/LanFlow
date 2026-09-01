@@ -109,7 +109,7 @@ export async function GET(
           payment_label: source.status === "APPROVED"
             ? Number(source.net_pay) > 0
               ? metadata.paymentLabel
-              : "ไม่มีการจ่าย (ยอดสุทธิ 0 บาท)"
+              : "ไม่มีการจ่าย (ยอดสุทธิ 0.00 บาท)"
             : null,
         },
         employeeName: metadata.employeeName,

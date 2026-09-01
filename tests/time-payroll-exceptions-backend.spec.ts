@@ -1216,6 +1216,95 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     }
   });
 
+  test("daily wage keeps four decimals and payroll rounds .49 down and .50 up with initial audit fields", async () => {
+    const service = serviceClient();
+    const globalManager = await globalManagerClient();
+    const location = await service.from("locations").select("id").eq("is_active", true).order("id").limit(1).single();
+    expect(location.error).toBeNull();
+    const branchId = location.data!.id;
+    const workDate = bangkokDate(-1);
+    const month = workDate.slice(0, 7);
+    const cases = [
+      { label: "QA payroll round down", wage: 1000.49, net: 1000, adjustment: -0.49 },
+      { label: "QA payroll round up", wage: 1000.5, net: 1001, adjustment: 0.5 },
+      { label: "QA payroll round zero", wage: 0.49, net: 0, adjustment: -0.49 },
+      { label: "QA payroll round one", wage: 0.5, net: 1, adjustment: 0.5 },
+      { label: "QA payroll four decimals", wage: 500.1234, net: 500, adjustment: -0.12 },
+    ];
+    const employeeIds: string[] = [];
+    for (const item of cases) employeeIds.push(await createEmployee(service, item.label));
+
+    try {
+      for (const [index, profileId] of employeeIds.entries()) {
+        const expected = cases[index];
+        await primaryLocation(service, profileId, branchId);
+
+        const wage = await globalManager.rpc("update_time_tracking_wage", {
+          p_profile_id: profileId,
+          p_daily_wage: expected.wage,
+        });
+        expect(wage.error).toBeNull();
+        expect(Number(wage.data?.dailyWage)).toBe(expected.wage);
+
+        const storedWage = await service.from("profiles").select("daily_wage").eq("id", profileId).single();
+        expect(storedWage.error).toBeNull();
+        expect(Number(storedWage.data!.daily_wage)).toBe(expected.wage);
+
+        expect((await globalManager.rpc("set_time_payroll_active_period", {
+          p_profile_id: profileId,
+          p_action: "ENABLE",
+          p_effective_date: workDate,
+        })).error).toBeNull();
+        expect((await globalManager.rpc("set_time_payroll_active_period", {
+          p_profile_id: profileId,
+          p_action: "END",
+          p_effective_date: workDate,
+        })).error).toBeNull();
+
+        const created = await globalManager.rpc("create_time_tracking_payroll_slip", {
+          p_profile_id: profileId,
+          p_month: month,
+          p_auto_start_next_month: false,
+        });
+        expect(created.error).toBeNull();
+        expect(Number(created.data?.net_pay)).toBe(expected.net);
+        expect(Number(created.data?.slip_data?.netPayBeforeRounding)).toBe(
+          Math.trunc(expected.wage * 100) / 100,
+        );
+        expect(Number(created.data?.slip_data?.roundingAdjustment)).toBeCloseTo(expected.adjustment, 8);
+
+        const createAudit = await service
+          .from("time_tracking_audit_logs")
+          .select("new_data")
+          .eq("record_id", created.data!.id)
+          .eq("action", "CREATE_PAYROLL_SLIP")
+          .single();
+        expect(createAudit.error).toBeNull();
+        expect(Number(createAudit.data!.new_data.slip_data.netPayBeforeRounding)).toBe(
+          Math.trunc(expected.wage * 100) / 100,
+        );
+        expect(Number(createAudit.data!.new_data.slip_data.roundingAdjustment)).toBeCloseTo(
+          expected.adjustment,
+          8,
+        );
+      }
+
+      const excessivePrecision = await globalManager.rpc("update_time_tracking_wage", {
+        p_profile_id: employeeIds[0],
+        p_daily_wage: 500.12345,
+      });
+      expect(excessivePrecision.error?.message).toContain("INVALID_WAGE_PRECISION");
+
+      const directConstraint = await service
+        .from("profiles")
+        .update({ daily_wage: 500.12345 })
+        .eq("id", employeeIds[0]);
+      expect(directConstraint.error?.message).toContain("profiles_daily_wage_precision");
+    } finally {
+      for (const profileId of employeeIds) await deleteEmployee(service, profileId);
+    }
+  });
+
   test("system manager is global while normal admin remains user-level, including audit visibility", async () => {
     const service = serviceClient();
     const systemManagerId = await createEmployee(service, "QA system manager");

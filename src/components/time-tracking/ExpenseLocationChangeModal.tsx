@@ -3,18 +3,23 @@
 import { useState } from "react";
 
 import { ModalShell } from "@/components/shared/ModalShell";
+import { formatPayrollCurrency } from "@/lib/time-tracking/format";
 import type { Location } from "@/types";
 
 const CENTRAL_OUTSIDE = "__central_outside_system__";
 
 export function ExpenseLocationChangeModal({
   locations,
+  paymentAmount,
+  amountLabel,
   primaryLocationId,
   currentLocationId,
   onClose,
   onSubmit,
 }: {
   locations: Location[];
+  paymentAmount: number;
+  amountLabel: string;
   primaryLocationId?: string | null;
   currentLocationId?: string | null;
   onClose: () => void;
@@ -60,7 +65,11 @@ export function ExpenseLocationChangeModal({
       size="compact"
     >
       <form onSubmit={(event) => { event.preventDefault(); void submit(); }} aria-busy={saving}>
-        <label className="mt-5 block text-sm font-semibold text-ink" htmlFor="change-expense-location">
+        <div className="mt-5 rounded-lg border border-mint bg-mint/30 px-3 py-3">
+          <p className="text-pretty text-xs font-semibold text-ink/60">{amountLabel}</p>
+          <p className="mt-1 tabular-nums text-lg font-bold text-ink">{formatPayrollCurrency(paymentAmount)}</p>
+        </div>
+        <label className="mt-4 block text-sm font-semibold text-ink" htmlFor="change-expense-location">
           วิธีจ่ายใหม่
         </label>
         <select

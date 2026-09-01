@@ -1,4 +1,5 @@
 import { calculateTimeSegmentPaidDays, type PaidWorkSegment } from "@/lib/time-tracking/pay";
+import { formatDailyWage, formatPayrollMoney } from "@/lib/time-tracking/format";
 
 type SlipDocumentStatus = "PENDING" | "APPROVED";
 type SlipDocumentKind = "withdrawal" | "payroll";
@@ -99,6 +100,8 @@ type PayrollSource = ApprovalFields & {
     segments?: PaidWorkSegment[] | null;
     transactions?: SnapshotTransaction[] | null;
     attendance?: AttendanceSnapshot | null;
+    netPayBeforeRounding?: number;
+    roundingAdjustment?: number;
   } | null;
 };
 
@@ -113,6 +116,14 @@ const numberFormatter = new Intl.NumberFormat("th-TH", {
 
 function formatMoney(value: number) {
   return `${numberFormatter.format(Number(value) || 0)} บาท`;
+}
+
+function formatDailyWageMoney(value: number) {
+  return `${formatDailyWage(value)} บาท`;
+}
+
+function formatPayrollMoneyValue(value: number) {
+  return `${formatPayrollMoney(value)} บาท`;
 }
 
 function formatDays(value: number) {
@@ -301,10 +312,10 @@ export function buildPayrollSlipDocument({
         { label: "วันหยุด", value: formatDays(attendance.summary.offDays) },
       ] : []),
       { label: "จำนวนวันทำงานรวม", value: formatDays(source.total_days) },
-      { label: "ค่าแรงต่อวัน", value: formatMoney(source.daily_wage) },
-      { label: "ค่าแรงรวม", value: formatMoney(source.gross_pay) },
-      { label: "ยอดหักรวม", value: formatMoney(source.total_deductions) },
-      { label: "ยอดสุทธิ", value: formatMoney(source.net_pay) },
+      { label: "ค่าแรงต่อวัน", value: formatDailyWageMoney(source.daily_wage) },
+      { label: "ค่าแรงรวม", value: formatPayrollMoneyValue(source.gross_pay) },
+      { label: "ยอดหักรวม", value: formatPayrollMoneyValue(source.total_deductions) },
+      { label: "ยอดสุทธิ", value: formatPayrollMoneyValue(source.net_pay) },
     ],
     calendar: attendance ? calendarForAttendance(attendance) : calendarForMonth(source.month, source.slip_data?.segments),
     deductionRows: approved

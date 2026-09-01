@@ -5,6 +5,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Clock, UserCircle, XCircle } from "lucide-react";
 import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import { formatCurrency } from "@/lib/format";
+import {
+  formatDailyWage,
+  formatDailyWageCurrency,
+  formatPayrollCurrency,
+} from "@/lib/time-tracking/format";
+import { parseDailyWageInput } from "@/lib/time-tracking/wage";
 import { authFetch } from "@/lib/auth-fetch";
 import { Location, Profile } from "@/types";
 import { useInputDialog } from "@/hooks/useInputDialog";
@@ -533,8 +539,8 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
             {data.slips.map((slip: any) => (
               <li key={slip.id} className="flex flex-col gap-1 py-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <p className="font-semibold">เดือน {slip.month} · สุทธิ {formatCurrency(slip.net_pay)}</p>
-                  <p className="text-xs text-ink/55">ขั้นต้น {formatCurrency(slip.gross_pay)} · หัก {formatCurrency(slip.total_deductions)} · {slip.status}</p>
+                  <p className="font-semibold">เดือน {slip.month} · สุทธิ {formatPayrollCurrency(slip.net_pay)}</p>
+                  <p className="text-xs text-ink/55">ขั้นต้น {formatPayrollCurrency(slip.gross_pay)} · หัก {formatPayrollCurrency(slip.total_deductions)} · {slip.status}</p>
                 </div>
                 {!slip.cancelled_at && (slip.status === 'PENDING' || slip.status === 'APPROVED') && (
                   <button
@@ -649,6 +655,8 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
       {pendingExpenseLocationTx && (
         <ExpenseLocationChangeModal
           locations={expenseLocations}
+          paymentAmount={Number(pendingExpenseLocationTx.amount) || 0}
+          amountLabel="ยอดเบิกที่ใช้จ่าย"
           primaryLocationId={targetPrimaryLocationId ?? profile.primaryLocationId}
           currentLocationId={pendingExpenseLocationTx.expense_location_id ?? null}
           onClose={() => setPendingExpenseLocationTx(null)}
@@ -690,6 +698,8 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
   const [pendingPaymentChange, setPendingPaymentChange] = useState<{
     sourceType: 'transaction' | 'payroll_slip';
     sourceId: string;
+    paymentAmount: number;
+    amountLabel: string;
     primaryLocationId?: string | null;
     currentLocationId?: string | null;
     onSuccess?: () => void;
@@ -875,24 +885,26 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
       alert(TIME_TRACKING_OFFLINE_MESSAGE);
       return;
     }
-    const wageStr = await requestInput({
+    const wageText = await requestInput({
       title: "แก้ไขค่าแรงรายวัน",
       label: "ค่าแรงรายวัน (บาท)",
-      initialValue: currentWage.toString(),
+      initialValue: formatDailyWage(currentWage),
       inputType: "number",
       required: true,
       min: 0,
-      step: 0.01,
+      step: 0.0001,
     });
-    if (wageStr === null) return;
-    const wage = Number(wageStr);
-    if (isNaN(wage) || wage < 0) return;
+    if (wageText === null) return;
+    if (parseDailyWageInput(wageText) === null) {
+      alert("ค่าแรงต้องเป็น 0 ขึ้นไปและมีทศนิยมไม่เกิน 4 ตำแหน่ง");
+      return;
+    }
 
     try {
       const response = await authFetch("/api/lanflow/time-tracking/admin", {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'UPDATE_WAGE', payload: { user_id: userId, daily_wage: wage } })
+        body: JSON.stringify({ action: 'UPDATE_WAGE', payload: { user_id: userId, daily_wage: wageText.trim() } })
       });
       if (!response.ok) {
         const json = await response.json().catch(() => null);
@@ -1121,7 +1133,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
                     {user.is_active === false && <span className="ml-2 text-xs bg-red-100 text-red-700 px-1.5 py-0.5 rounded border border-red-200">ถูกระงับ</span>}
                   </td>
                   <td className="py-3">
-                    <span>{formatCurrency(user.daily_wage || 0)}</span>
+                    <span className="tabular-nums">{formatDailyWageCurrency(user.daily_wage || 0)}</span>
                   </td>
                     <td className="py-3">
                       <span className={`px-2 py-1 rounded text-xs font-bold ${status === 'ACTIVE_PERIOD' ? 'bg-leaf/20 text-leaf' : 'bg-black/10 text-ink/60'}`}>
@@ -1193,6 +1205,8 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
           onChangePayment={(slip) => setPendingPaymentChange({
             sourceType: 'payroll_slip',
             sourceId: slip.id,
+            paymentAmount: Number(slip.net_pay) || 0,
+            amountLabel: 'ยอดสุทธิที่ใช้จ่าย',
             primaryLocationId: payrollUser.primary_location_id,
             currentLocationId: slip.expense_location_id ?? null,
           })}
@@ -1220,6 +1234,8 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
        {pendingPaymentChange && (
         <ExpenseLocationChangeModal
           locations={expenseLocations}
+          paymentAmount={pendingPaymentChange.paymentAmount}
+          amountLabel={pendingPaymentChange.amountLabel}
           primaryLocationId={pendingPaymentChange.primaryLocationId}
           currentLocationId={pendingPaymentChange.currentLocationId}
           onClose={() => setPendingPaymentChange(null)}
@@ -1455,9 +1471,9 @@ function PayrollModal({ user, online, canDecide, onApprove, onReject, onChangePa
                     <div className="flex flex-col">
                       <span className="font-bold text-lg">สลิปเดือน {slip.month}</span>
                       <div className="text-sm text-ink/70 flex gap-4 mt-1">
-                        <span>ค่าแรง: <strong className="text-ink">{formatCurrency(slip.gross_pay)}</strong></span>
-                        <span>หักหนี้/เบิก: <strong className="text-clay">{formatCurrency(slip.total_deductions)}</strong></span>
-                        <span>ยอดสุทธิ: <strong className={slip.net_pay < 0 ? 'text-clay' : 'text-leaf'}>{formatCurrency(slip.net_pay)}</strong></span>
+                        <span>ค่าแรง: <strong className="tabular-nums text-ink">{formatPayrollCurrency(slip.gross_pay)}</strong></span>
+                        <span>หักหนี้/เบิก: <strong className="tabular-nums text-clay">{formatPayrollCurrency(slip.total_deductions)}</strong></span>
+                        <span>ยอดสุทธิ: <strong className={cn('tabular-nums', slip.net_pay < 0 ? 'text-clay' : 'text-leaf')}>{formatPayrollCurrency(slip.net_pay)}</strong></span>
                       </div>
 
                        <span className="text-xs text-ink/50 mt-1">สร้างเมื่อ: {formatBangkokDateTime(slip.created_at)}</span>

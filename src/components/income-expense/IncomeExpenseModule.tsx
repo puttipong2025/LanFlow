@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { useEffect, useMemo, useState } from "react";
 
 import { formatCurrency } from "@/lib/format";
+import { formatPayrollCurrency } from "@/lib/time-tracking/format";
 import { IncomeExpenseStockShortageError, useIncomeExpense } from "@/hooks/useIncomeExpense";
 import { getIncomeExpenseApprovalReasons, useIncomeExpenseApprovals } from "@/hooks/useIncomeExpenseApprovals";
 import { useCashBranchTransfers } from "@/hooks/useCashBranchTransfers";
@@ -869,7 +870,9 @@ export function IncomeExpenseModule({
                     </div>
                   </td>
                   <td className={transaction.type === "income" ? "text-right font-semibold text-leaf tabular-nums" : "text-right font-semibold text-clay tabular-nums"}>
-                    {transaction.type === "income" ? "+" : "-"}{formatCurrency(transaction.cost)}
+                    {transaction.type === "income" ? "+" : "-"}{transaction.relationSourceType === "payroll_slip"
+                      ? formatPayrollCurrency(transaction.cost)
+                      : formatCurrency(transaction.cost)}
                   </td>
                   <td>
                     <div className="flex flex-col gap-1">

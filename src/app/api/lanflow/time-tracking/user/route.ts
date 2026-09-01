@@ -95,7 +95,7 @@ export async function GET(request: NextRequest) {
         .order("created_at", { ascending: false }),
       supabase
         .from("payroll_slips")
-        .select("*, report_lock_no, approver:profiles!payroll_slips_approved_by_fkey(name)")
+        .select("id, profile_id, month, gross_pay, total_deductions, net_pay, status, created_at, approved_at, cancelled_at, expense_location_id, admin_comment, report_lock_no, approver:profiles!payroll_slips_approved_by_fkey(name)")
         .eq("profile_id", targetUserId)
         .order("month", { ascending: false }),
       supabase.rpc("get_time_payroll_attendance_month", {

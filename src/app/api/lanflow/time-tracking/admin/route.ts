@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { bangkokDateString } from "@/lib/bangkok-date";
 import { requireAuth } from "@/lib/server/auth";
 import { buildPayrollPeriodState, type PayrollPeriodRow } from "@/lib/time-tracking/period-state";
+import { parseDailyWageInput } from "@/lib/time-tracking/wage";
 
 export const dynamic = "force-dynamic";
 
@@ -55,6 +56,7 @@ function rpcErrorMessage(message: string) {
   if (/DATE_OUTSIDE_ACTIVE_PERIOD/i.test(message)) return "ช่วงวันที่อยู่นอกช่วงทำงานของพนักงาน กรุณาเปิดหรือกลับเข้าทำงานก่อน";
   if (/PRIMARY_BRANCH_REQUIRED/i.test(message)) return "พนักงานบางคนไม่มีสาขาหลักที่ใช้งานอยู่ กรุณาตั้งค่าสาขาหลักก่อน";
   if (/DESCRIPTION_REQUIRED/i.test(message)) return "กรุณาระบุรายละเอียดหนี้";
+  if (/INVALID_WAGE_PRECISION|INVALID_WAGE/i.test(message)) return "ค่าแรงต้องเป็น 0 ขึ้นไปและมีทศนิยมไม่เกิน 4 ตำแหน่ง";
   if (/INVALID_AMOUNT/i.test(message)) return "จำนวนเงินต้องมากกว่า 0";
   if (/INVALID_MONTH/i.test(message)) return "เดือนไม่ถูกต้องหรือเป็นเดือนในอนาคต";
   if (/Expense location.*access denied|New expense location access denied/i.test(message)) return "คุณไม่มีสิทธิ์ดูแลสาขาค่าใช้จ่ายที่เลือก";
@@ -353,12 +355,13 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
       }
       const { user_id, daily_wage } = payload;
-      if (!isUuid(user_id) || typeof daily_wage !== "number") {
+      const parsedDailyWage = parseDailyWageInput(daily_wage);
+      if (!isUuid(user_id) || parsedDailyWage === null) {
         return NextResponse.json({ error: "ข้อมูลค่าแรงไม่ถูกต้อง" }, { status: 400 });
       }
       const { data, error } = await supabase.rpc("update_time_tracking_wage", {
         p_profile_id: user_id,
-        p_daily_wage: daily_wage,
+        p_daily_wage: parsedDailyWage,
       });
       if (error) return rpcFailure(error);
       return NextResponse.json({ success: true, result: data });
@@ -450,7 +453,7 @@ export async function POST(request: NextRequest) {
       }
       const { data, error } = await supabase
         .from("payroll_slips")
-        .select("*, report_lock_no, approver:profiles!payroll_slips_approved_by_fkey(name)")
+        .select("id, profile_id, month, gross_pay, total_deductions, net_pay, status, created_at, approved_at, cancelled_at, expense_location_id, admin_comment, report_lock_no, approver:profiles!payroll_slips_approved_by_fkey(name)")
         .eq("profile_id", user_id)
         .order("month", { ascending: false });
       if (error) throw error;
