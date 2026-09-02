@@ -14,7 +14,7 @@ test.describe("Lean attendance UI contract", () => {
     expect(controls).toContain('nativeModal closeOnEscape');
     expect(controls).toContain('aria-label={`${date} ${dayOfWeek(date)}: ${calendarStatusLabel(status)}');
     expect(controls).toContain('role="alert"');
-    expect(controls).toContain("setError(actionError)");
+    expect(controls).toContain("setError(formatPayrollUiError(actionError))");
   });
 
   test("offers attendance editing only on an individual employee calendar", () => {
@@ -27,7 +27,7 @@ test.describe("Lean attendance UI contract", () => {
 
   test("does not present dates outside active periods as paid or editable", () => {
     expect(controls).toContain("const isActiveDate = (date: string) => attendance.periods.some");
-    expect(controls).toContain('if (status === "INACTIVE") return "ไม่ได้เปิดเงินเดือน"');
+    expect(controls).toContain('if (status === "INACTIVE") return "ไม่ได้คิดค่าแรง"');
     expect(controls).toContain("disabled={!activeDate || !eligibleDate || !editable || saving}");
     expect(controls).toContain(".filter(([date]) => isActiveDate(date) && isEligibleDate(date))");
   });
@@ -94,7 +94,7 @@ test.describe("Lean attendance UI contract", () => {
     expect(moduleSource).not.toContain("ดู Dashboard");
   });
 
-  test("shows a branch filter, pending-only count badge, and server-authoritative END copy", () => {
+  test("shows a branch filter, pending-only count badge, and server-authoritative action copy", () => {
     expect(moduleSource).toContain("กรองสาขา");
     expect(moduleSource).toContain('aria-label="กรองตามสถานะ"');
     expect(moduleSource).toContain('filter === "pending" && branchPendingCount > 0');
@@ -102,27 +102,47 @@ test.describe("Lean attendance UI contract", () => {
     expect(moduleSource).toContain('window.addEventListener("focus", refreshVisibleData)');
     expect(moduleSource).toContain('document.addEventListener("visibilitychange", refreshVisibleData)');
     expect(moduleSource).not.toContain("hasPeriodHistory: false");
-    expect(controls).toContain("วันที่เลือกเป็นวันแรกที่ไม่คิดค่าแรง");
+    expect(controls).toContain("สิ้นสุดสถานะเงินเดือนวันที่");
+    expect(controls).toContain("คิดค่าแรงถึง");
     expect(controls).toContain("ระบบจะตรวจเวลาสิ้นสุดวันทำงานจากเซิร์ฟเวอร์");
-    expect(controls).toContain('title="ยืนยันสิ้นสุดงาน"');
-    expect(controls).toContain("confirmingEndDate &&");
-    expect(controls).toContain("confirmingResumeDate &&");
-    expect(controls).toContain("!cancelOpen && !confirmingEndDate && !confirmingResumeDate");
-    expect(controls).toContain("setError(null); setConfirmingEndDate(null)");
-    expect(controls).toContain('title="ยืนยันกลับเข้าทำงานย้อนหลัง"');
-    expect(controls).toContain('min={resumeMode ? periodState.resumeEarliestOn ?? undefined : undefined}');
-    expect(controls).toContain('runAction("RESUME", confirmingResumeDate)');
-    expect(controls).toContain("ถึง ${today}");
-    expect(controls).toContain("วันย้อนหลังเป็นเต็มวันตามปฏิทินเดิม");
+    expect(controls).toContain("actionDraft &&");
+    expect(controls).toContain('role={actionDraft.action === "END" ? "alertdialog" : "dialog"}');
+    expect(controls).toContain('actionDraft.action === "RESUME" ? periodState.resumeEarliestOn');
+    expect(controls).toContain("วันย้อนหลังนับเต็มวันตามปฏิทินเดิม");
     expect(controls).toContain('role="alertdialog"');
-    expect(controls).toContain('title="ยกเลิกกำหนดการรอมีผล"');
-    expect(controls).toContain('title="ยืนยันแก้วันเริ่มช่วงล่าสุด"');
-    expect(controls).toContain("affectedMonths(periodState.periodStartCorrection.currentStartOn, confirmingCorrectionDate)");
+    expect(controls).toContain('title="ยกเลิกกำหนดการ"');
+    expect(controls).toContain('title="แก้ไขวันเริ่มช่วงล่าสุด"');
+    expect(controls).toContain("affectedMonths(correction.currentStartOn, correctionDate)");
     expect(controls).toContain("จะไม่เปลี่ยนวันสิ้นสุด สลิป หรือรายการหักเงินจริง");
     expect(controls).toContain('id="period-start-correction-error" role="alert"');
     expect(moduleSource).toContain('action: "CORRECT_PAYROLL_PERIOD_START"');
     expect(moduleSource).toContain("period_id: periodId");
     expect(modalShellSource).toContain("role={role}");
+  });
+
+  test("uses an action-first payroll-period UI inside the employee dialog", () => {
+    expect(moduleSource.indexOf("<AttendancePeriodControls")).toBeLessThan(
+      moduleSource.indexOf("<AttendanceCalendar"),
+    );
+    expect(controls).toContain('const [actionDraft, setActionDraft]');
+    expect(controls).not.toContain(">วันที่มีผล<input");
+    expect(controls).toContain('if (action === "ENABLE") return "เริ่มคิดค่าแรง"');
+    expect(controls).toContain('if (action === "PAUSE") return "พักคิดค่าแรง"');
+    expect(controls).toContain('if (action === "RESUME") return "กลับมาคิดค่าแรง"');
+    expect(controls).toContain('return "สิ้นสุดสถานะเงินเดือน"');
+    expect(controls).toContain('return "วันที่สิ้นสุดสถานะเงินเดือน"');
+    expect(controls).toContain("แก้กำหนดการ");
+    expect(controls).toContain("ยืนยันและแทนที่กำหนดเดิม");
+    expect(controls).toContain("วันเริ่มที่ถูกต้อง");
+    expect(controls).toContain("แก้ไขวันเริ่ม");
+    expect(controls).not.toContain("ตรวจสอบวันใหม่");
+    expect(controls).toContain('new Intl.DateTimeFormat("th-TH"');
+    expect(controls).toContain("function formatPayrollUiError");
+    expect(controls).toContain("setError(formatPayrollUiError(actionError))");
+    expect(controls).toContain("setCorrectionError(formatPayrollUiError(correctionFailure))");
+    expect(moduleSource).toContain("payrollPeriodActionLabel(periodState.nextAction.action)");
+    expect(moduleSource).toContain("formatThaiDate(periodState.nextAction.activationOn)");
+    expect(moduleSource).not.toContain("รอ {periodState.nextAction.action}");
   });
 
   test("uses accessible native dialogs for debt, payroll, and audit-history workflows", () => {

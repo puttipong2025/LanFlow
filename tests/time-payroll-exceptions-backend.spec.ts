@@ -954,7 +954,6 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     const previousMonthEndValue = new Date(`${firstCurrent}T12:00:00Z`);
     previousMonthEndValue.setUTCDate(previousMonthEndValue.getUTCDate() - 1);
     const previousMonthEnd = previousMonthEndValue.toISOString().slice(0, 10);
-    const previousMonth = previousMonthEnd.slice(0, 7);
 
     try {
       expect((await manager.rpc("set_time_payroll_active_period", {
@@ -980,35 +979,45 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       await calendarButton.click();
 
       const employeeDialog = page.getByRole("dialog", { name: "ข้อมูลของพนักงาน" });
-      await expect(employeeDialog.getByText("แก้วันเริ่มช่วงล่าสุด")).toBeVisible();
-      await expect(employeeDialog.getByText("สถานะปัจจุบัน: ไม่อยู่ในระบบเงินเดือน")).toBeVisible();
-      const correctionInput = employeeDialog.getByLabel("วันใหม่");
+      await expect(employeeDialog.getByText("จัดการการคิดค่าแรง")).toBeVisible();
+      await expect(employeeDialog.getByText("สถานะปัจจุบัน: ไม่ได้คิดค่าแรง")).toBeVisible();
+      await expect(employeeDialog.getByText("ปฏิทินวันทำงาน")).toBeVisible();
+      const correctionButton = employeeDialog.getByRole("button", { name: "แก้ไขวันเริ่ม" });
+      await correctionButton.click();
+
+      const correctionDialog = page.getByRole("dialog", { name: "แก้ไขวันเริ่มช่วงล่าสุด" });
+      const correctionInput = correctionDialog.getByLabel("วันเริ่มที่ถูกต้อง");
       await expect(correctionInput).not.toHaveAttribute("min", /.+/);
       await expect(correctionInput).toHaveAttribute("max", firstCurrent);
       await correctionInput.fill(previousMonthEnd);
-      const reviewButton = employeeDialog.getByRole("button", { name: "ตรวจสอบวันใหม่" });
-      await reviewButton.click();
-
-      const confirmation = page.getByRole("alertdialog", { name: "ยืนยันแก้วันเริ่มช่วงล่าสุด" });
-      await expect(confirmation).toContainText(`${firstCurrent} → ${previousMonthEnd}`);
-      await expect(confirmation).toContainText(previousMonth);
-      await expect(confirmation).not.toContainText(`ได้รับผล: ${previousMonth}, ${today.slice(0, 7)}`);
-      const dimensions = await confirmation.evaluate((element) => ({
+      await expect(correctionDialog.getByRole("button", { name: "ยืนยันแก้ไขวันเริ่ม" })).toBeEnabled();
+      await expect(correctionDialog).toContainText("ระบบจะตรวจเดือนที่ได้รับผล");
+      await expect(correctionDialog).not.toContainText(today.slice(0, 7));
+      const dimensions = await correctionDialog.evaluate((element) => ({
         width: element.clientWidth,
         scrollWidth: element.scrollWidth,
       }));
       expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.width);
 
       await page.setViewportSize({ width: 393, height: 852 });
-      const widerDimensions = await confirmation.evaluate((element) => ({
+      const widerDimensions = await correctionDialog.evaluate((element) => ({
         width: element.clientWidth,
         scrollWidth: element.scrollWidth,
       }));
       expect(widerDimensions.scrollWidth).toBeLessThanOrEqual(widerDimensions.width);
 
       await page.keyboard.press("Escape");
-      await expect(confirmation).toBeHidden();
-      await expect(reviewButton).toBeFocused();
+      await expect(correctionDialog).toBeHidden();
+      await expect(correctionButton).toBeFocused();
+
+      const resumeButton = employeeDialog.getByRole("button", { name: "กลับมาคิดค่าแรง", exact: true });
+      await resumeButton.click();
+      const resumeDialog = page.getByRole("dialog", { name: "กลับมาคิดค่าแรง" });
+      await expect(resumeDialog.getByLabel("วันแรกที่กลับมาคิดค่าแรง")).toHaveValue(today);
+      await expect(resumeDialog).toContainText("กำหนดให้");
+      await page.keyboard.press("Escape");
+      await expect(resumeDialog).toBeHidden();
+      await expect(resumeButton).toBeFocused();
     } finally {
       await deleteEmployee(service, employeeId);
     }
@@ -1359,10 +1368,11 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     }
   });
 
-  test("future period scheduling reschedules atomically and blocks payroll close in both directions", async () => {
+  test("future period scheduling reschedules atomically and blocks payroll close in both directions", async ({ page }) => {
     const service = serviceClient();
     const manager = await globalManagerClient();
-    const scheduledEmployee = await createEmployee(service, "QA future period schedule");
+    const scheduledEmployeeName = `QA future period schedule ${Date.now()}`;
+    const scheduledEmployee = await createEmployee(service, scheduledEmployeeName);
     const closedEmployee = await createEmployee(service, "QA future period closed month");
     const tomorrow = bangkokDate(1);
     const later = bangkokDate(2);
@@ -1420,6 +1430,31 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_auto_start_next_month: false,
       });
       expect(blockedSlip.error?.message).toContain(`PENDING_PERIOD_ACTION:${month}`);
+
+      await page.setViewportSize({ width: 360, height: 800 });
+      await page.goto("/");
+      await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
+      await expect(page.getByRole("heading", { name: "จัดการเวลาและเงินเดือน" })).toBeVisible({ timeout: 30_000 });
+      await page.getByLabel("ค้นหาพนักงาน").fill(scheduledEmployeeName);
+      const calendarButton = page.getByRole("button", { name: `จัดการปฏิทินวันทำงานของ ${scheduledEmployeeName}` });
+      await calendarButton.click();
+      const employeeDialog = page.getByRole("dialog", { name: "ข้อมูลของพนักงาน" });
+      await expect(employeeDialog.getByText("กำหนดไว้: เริ่มคิดค่าแรง")).toBeVisible();
+      await expect(employeeDialog.getByRole("button", { name: "แก้ไขวันเริ่ม" })).toHaveCount(0);
+      const editScheduleButton = employeeDialog.getByRole("button", { name: "แก้กำหนดการ" });
+      await editScheduleButton.click();
+      const scheduleDialog = page.getByRole("dialog", { name: "เริ่มคิดค่าแรง" });
+      await expect(scheduleDialog.getByLabel("วันเริ่มคิดค่าแรง")).toHaveValue(later);
+      await expect(scheduleDialog).toContainText("กำหนดการนี้จะแทนที่");
+      await expect(scheduleDialog.getByRole("button", { name: "ยืนยันและแทนที่กำหนดเดิม" })).toBeVisible();
+      const scheduleDimensions = await scheduleDialog.evaluate((element) => ({
+        width: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+      }));
+      expect(scheduleDimensions.scrollWidth).toBeLessThanOrEqual(scheduleDimensions.width);
+      await page.keyboard.press("Escape");
+      await expect(scheduleDialog).toBeHidden();
+      await expect(editScheduleButton).toBeFocused();
 
       const cancelled = await manager.rpc("cancel_time_payroll_active_period_schedule", {
         p_profile_id: scheduledEmployee,

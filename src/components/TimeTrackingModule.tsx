@@ -29,6 +29,8 @@ import { SlipPreviewModal } from "./time-tracking/SlipPreviewModal";
 import {
   AttendanceCalendar,
   AttendancePeriodControls,
+  formatThaiDate,
+  payrollPeriodActionLabel,
   TimePayrollConfigPanel,
 } from "./time-tracking/AttendanceControls";
 import type {
@@ -398,17 +400,6 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
         </div>
       </div>
 
-      {attendance && (
-        <AttendanceCalendar
-          attendance={attendance}
-          month={attendanceMonth}
-          editable={canManageTime}
-          saving={saving}
-          disabledReason={!online ? TIME_TRACKING_OFFLINE_MESSAGE : undefined}
-          onMonthChange={setAttendanceMonth}
-          onSave={replaceAttendanceExceptions}
-        />
-      )}
       {attendance && canConfigure && targetUserId && periodState && (
         <AttendancePeriodControls
           userName={data?.profile?.name || data?.user?.name || "พนักงาน"}
@@ -419,6 +410,17 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
           onAction={setPayrollPeriod}
           onCancel={cancelPayrollPeriodSchedule}
           onCorrectPeriodStart={correctPayrollPeriodStart}
+        />
+      )}
+      {attendance && (
+        <AttendanceCalendar
+          attendance={attendance}
+          month={attendanceMonth}
+          editable={canManageTime}
+          saving={saving}
+          disabledReason={!online ? TIME_TRACKING_OFFLINE_MESSAGE : undefined}
+          onMonthChange={setAttendanceMonth}
+          onSave={replaceAttendanceExceptions}
         />
       )}
 
@@ -1165,11 +1167,11 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
                   </td>
                     <td className="py-3">
                       <span className={`px-2 py-1 rounded text-xs font-bold ${status === 'ACTIVE_PERIOD' ? 'bg-leaf/20 text-leaf' : 'bg-black/10 text-ink/60'}`}>
-                        {status === 'ACTIVE_PERIOD' ? 'ช่วงทำงานเปิดอยู่' : 'ไม่ได้เปิดเงินเดือน'}
+                        {status === 'ACTIVE_PERIOD' ? 'กำลังคิดค่าแรง' : 'ไม่ได้คิดค่าแรง'}
                       </span>
                       {periodState?.nextAction && (
                         <p className="mt-1 text-pretty text-xs text-amber">
-                          รอ {periodState.nextAction.action} · มีผล {periodState.nextAction.activationOn}
+                          กำหนด{payrollPeriodActionLabel(periodState.nextAction.action)} · {formatThaiDate(periodState.nextAction.activationOn)}
                         </p>
                       )}
                    </td>

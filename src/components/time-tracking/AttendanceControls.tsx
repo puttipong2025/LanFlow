@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { CalendarDays, Clock3, Settings2 } from "lucide-react";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { bangkokDateString } from "@/lib/bangkok-date";
+import { cn } from "@/lib/cn";
 import { formatPayrollCurrency } from "@/lib/time-tracking/format";
 import type {
   AttendanceExceptionDto,
@@ -18,6 +19,69 @@ const MONTH_FORMATTER = new Intl.DateTimeFormat("th-TH", {
   year: "numeric",
   timeZone: "Asia/Bangkok",
 });
+
+const THAI_DATE_FORMATTER = new Intl.DateTimeFormat("th-TH", {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  timeZone: "Asia/Bangkok",
+});
+
+export function formatThaiDate(date: string) {
+  const value = new Date(`${date}T00:00:00+07:00`);
+  return Number.isNaN(value.getTime()) ? date : THAI_DATE_FORMATTER.format(value);
+}
+
+function previousDate(date: string) {
+  const value = new Date(`${date}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() - 1);
+  return value.toISOString().slice(0, 10);
+}
+
+export function payrollPeriodActionLabel(action: PayrollPeriodAction) {
+  if (action === "ENABLE") return "เริ่มคิดค่าแรง";
+  if (action === "PAUSE") return "พักคิดค่าแรง";
+  if (action === "RESUME") return "กลับมาคิดค่าแรง";
+  return "สิ้นสุดสถานะเงินเดือน";
+}
+
+function actionDateLabel(action: PayrollPeriodAction) {
+  if (action === "ENABLE") return "วันเริ่มคิดค่าแรง";
+  if (action === "PAUSE") return "วันแรกที่พักคิดค่าแรง";
+  if (action === "RESUME") return "วันแรกที่กลับมาคิดค่าแรง";
+  return "วันที่สิ้นสุดสถานะเงินเดือน";
+}
+
+function actionDescription(action: PayrollPeriodAction) {
+  if (action === "ENABLE") return "เปิดช่วงคิดค่าแรงครั้งแรก";
+  if (action === "PAUSE") return "หยุดชั่วคราว และกลับมาคิดต่อได้";
+  if (action === "RESUME") return "เปิดช่วงคิดค่าแรงต่อจากช่วงเดิม";
+  return "ปิดช่วงการคิดค่าแรงปัจจุบัน";
+}
+
+function scheduledActionText(
+  action: PayrollPeriodAction,
+  selectedDate: string,
+  activationDate: string,
+) {
+  const summary = action === "END"
+    ? `วันที่สิ้นสุดสถานะเงินเดือน ${formatThaiDate(selectedDate)} · คิดค่าแรงถึง ${formatThaiDate(previousDate(selectedDate))}`
+    : `${actionDateLabel(action)} ${formatThaiDate(selectedDate)} เวลา 00:00`;
+  return selectedDate === activationDate
+    ? summary
+    : `${summary} · สถานะเปลี่ยนจริง ${formatThaiDate(activationDate)} เวลา 00:00`;
+}
+
+function formatPayrollUiError(message: string) {
+  return message
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, (date) => formatThaiDate(date))
+    .replace(/\b\d{4}-\d{2}\b/g, (month) => monthLabel(month))
+    .replaceAll("เปิดใช้เงินเดือน", "เริ่มคิดค่าแรง")
+    .replaceAll("กลับเข้าทำงาน", "กลับมาคิดค่าแรง")
+    .replaceAll("พักงาน", "พักคิดค่าแรง")
+    .replaceAll("สิ้นสุดงาน", "สิ้นสุดสถานะเงินเดือน")
+    .replaceAll("เปลี่ยนสถานะเงินเดือน", "เปลี่ยนสถานะการคิดค่าแรง");
+}
 
 type AttendanceCalendarProps = {
   attendance: AttendanceMonthDto;
@@ -65,7 +129,7 @@ function statusLabel(status: "FULL" | "HALF_DAY" | "OFF") {
 }
 
 function calendarStatusLabel(status: "FULL" | "HALF_DAY" | "OFF" | "INACTIVE" | "PENDING") {
-  if (status === "INACTIVE") return "ไม่ได้เปิดเงินเดือน";
+  if (status === "INACTIVE") return "ไม่ได้คิดค่าแรง";
   if (status === "PENDING") return "ยังไม่ถึงวันทำงาน";
   return statusLabel(status);
 }
@@ -170,7 +234,7 @@ export function AttendanceCalendar({
             >
               <span className="block text-[10px] font-medium opacity-80">{dayOfWeek(date)}</span>
               <span className="block text-sm">{date.slice(-2)}</span>
-              <span className="block text-[10px]">{status === "INACTIVE" ? "ไม่ได้เปิด" : status === "PENDING" ? "ยังไม่ถึงวันทำงาน" : statusLabel(status)}</span>
+              <span className="block text-[10px]">{status === "INACTIVE" ? "ไม่คิดค่าแรง" : status === "PENDING" ? "ยังไม่ถึงวันทำงาน" : statusLabel(status)}</span>
             </button>
           );
         })}
@@ -266,126 +330,104 @@ export function AttendancePeriodControls({
   onCancel: () => Promise<string | null>;
   onCorrectPeriodStart: (periodId: string, startOn: string) => Promise<string | null>;
 }) {
-  const [date, setDate] = useState(bangkokDateString);
+  const [actionDraft, setActionDraft] = useState<{ action: PayrollPeriodAction; date: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
-  const [confirmingEndDate, setConfirmingEndDate] = useState<string | null>(null);
-  const [confirmingResumeDate, setConfirmingResumeDate] = useState<string | null>(null);
+  const [correctionOpen, setCorrectionOpen] = useState(false);
   const [correctionDate, setCorrectionDate] = useState(periodState.periodStartCorrection?.currentStartOn ?? "");
   const [correctionError, setCorrectionError] = useState<string | null>(null);
-  const [confirmingCorrectionDate, setConfirmingCorrectionDate] = useState<string | null>(null);
   const current = periodState.currentPeriod;
   const actions: PayrollPeriodAction[] = periodState.currentStatus === "ACTIVE"
     ? ["PAUSE", "END"]
     : periodState.hasPeriodHistory ? ["RESUME"] : ["ENABLE"];
   const today = bangkokDateString();
-  const resumeMode = actions.length === 1 && actions[0] === "RESUME";
+  const correction = periodState.periodStartCorrection;
+  const latestPeriodStart = correction?.currentStartOn ?? current?.startOn ?? null;
+  const latestPeriodEnd = correction ? correction.endOn : current?.endOn ?? null;
+  const correctionDateValid = Boolean(
+    correction
+    && correctionDate
+    && correctionDate !== correction.currentStartOn
+    && (!correction.earliestOn || correctionDate >= correction.earliestOn)
+    && correctionDate <= correction.latestOn,
+  );
 
   useEffect(() => {
     setCorrectionDate(periodState.periodStartCorrection?.currentStartOn ?? "");
     setCorrectionError(null);
-    setConfirmingCorrectionDate(null);
+    setCorrectionOpen(false);
   }, [periodState.periodStartCorrection?.periodId, periodState.periodStartCorrection?.currentStartOn]);
 
-  function actionLabel(action: PayrollPeriodAction) {
-    if (action === "ENABLE") return "เปิดใช้เงินเดือน";
-    if (action === "PAUSE") return "พักงาน";
-    if (action === "RESUME") return "กลับเข้าทำงาน";
-    return "สิ้นสุดงาน";
+  function openAction(action: PayrollPeriodAction) {
+    const pending = periodState.nextAction;
+    setError(null);
+    setActionDraft({
+      action,
+      date: pending?.action === action ? pending.selectedEffectiveOn : today,
+    });
   }
 
   function effectText(action: PayrollPeriodAction, selectedDate: string) {
     if (!selectedDate) return "เลือกวันที่เพื่อดูเวลาที่มีผลจริง";
     if (action === "END") {
-      return `หากเป็นวันอนาคต วันที่เลือกเป็นวันแรกที่ไม่คิดค่าแรง (${selectedDate}); หากเลือกวันนี้ ระบบจะตรวจเวลาสิ้นสุดวันทำงานจากเซิร์ฟเวอร์และคงผลวันที่ได้รับแล้ว`;
+      return selectedDate === today
+        ? `สิ้นสุดสถานะเงินเดือนทันทีในวันที่ ${formatThaiDate(selectedDate)} โดยระบบจะตรวจเวลาสิ้นสุดวันทำงานจากเซิร์ฟเวอร์และคงผลค่าแรงวันนี้หากได้รับแล้ว`
+        : `สิ้นสุดสถานะเงินเดือนวันที่ ${formatThaiDate(selectedDate)} และคิดค่าแรงถึง ${formatThaiDate(previousDate(selectedDate))}`;
     }
     if (action === "PAUSE") {
-      return `พักและหยุดนับค่าแรงตั้งแต่ 00:00 วันที่ ${selectedDate}`;
+      return `เริ่มพักคิดค่าแรง 00:00 วันที่ ${formatThaiDate(selectedDate)} และคิดค่าแรงถึง ${formatThaiDate(previousDate(selectedDate))}`;
     }
     if (action === "RESUME" && selectedDate < today) {
-      return `วันที่ ${selectedDate} เป็นวันแรกที่กลับมามีสิทธิ์ค่าแรง วันย้อนหลังนับเต็มวันตามปฏิทินเดิม เว้นแต่แก้เป็นครึ่งวันหรือหยุด; วันนี้นับเมื่อถึง ${workdayEndTime} น.`;
+      return `${formatThaiDate(selectedDate)} เป็นวันแรกที่กลับมามีสิทธิ์ค่าแรง วันย้อนหลังนับเต็มวันตามปฏิทินเดิม เว้นแต่แก้เป็นครึ่งวันหรือหยุด; วันนี้นับเมื่อถึง ${workdayEndTime} น.`;
     }
-    return `มีผล 00:00 วันที่ ${selectedDate}; ค่าแรงเต็มวันจะนับเมื่อถึง ${workdayEndTime} น. — กดก่อนเวลานี้ยังไม่ได้เงินวันนั้น`;
+    return `เริ่มมีสิทธิ์ค่าแรง 00:00 วันที่ ${formatThaiDate(selectedDate)}; ค่าแรงเต็มวันจะนับเมื่อถึง ${workdayEndTime} น.`;
   }
 
-  async function runAction(action: PayrollPeriodAction, effectiveDate: string) {
-    setError(null);
-    const actionError = await onAction(action, effectiveDate);
-    if (actionError) {
-      setError(actionError);
-      return;
-    }
-    setConfirmingEndDate(null);
-    setConfirmingResumeDate(null);
-  }
-
-  async function handle(action: PayrollPeriodAction) {
+  async function runAction() {
+    if (!actionDraft) return;
+    const { action, date } = actionDraft;
     setError(null);
     if (!date) {
-      setError("กรุณาเลือกวันที่มีผล");
+      setError(`กรุณาเลือก${actionDateLabel(action)}`);
       return;
     }
-    if (action === "END") {
-      if (date < today) {
-        setError("สิ้นสุดงานย้อนหลังไม่ได้ กรุณาเลือกวันนี้หรือวันในอนาคต");
-        return;
-      }
-      setConfirmingEndDate(date);
+    if (action === "END" && date < today) {
+      setError("สิ้นสุดสถานะเงินเดือนย้อนหลังไม่ได้ กรุณาเลือกวันนี้หรือวันในอนาคต");
       return;
     }
-    if (action === "RESUME") {
-      if (periodState.resumeEarliestOn && date < periodState.resumeEarliestOn) {
-        setError(`วันที่กลับเข้าทำงานต้องไม่ก่อน ${periodState.resumeEarliestOn}`);
-        return;
-      }
-      if (date < today) {
-        setConfirmingResumeDate(date);
-        return;
-      }
-    }
-    await runAction(action, date);
-  }
-
-  function reviewCorrection() {
-    const correction = periodState.periodStartCorrection;
-    setCorrectionError(null);
-    if (!correction || !correctionDate) {
-      setCorrectionError("กรุณาเลือกวันเริ่มใหม่");
+    if (action === "RESUME" && periodState.resumeEarliestOn && date < periodState.resumeEarliestOn) {
+      setError(`วันกลับมาคิดค่าแรงต้องไม่ก่อน ${formatThaiDate(periodState.resumeEarliestOn)}`);
       return;
     }
-    if (correction.earliestOn && correctionDate < correction.earliestOn) {
-      setCorrectionError(`วันที่ใหม่ต้องไม่ก่อน ${correction.earliestOn}`);
+    const actionError = await onAction(action, date);
+    if (actionError) {
+      setError(formatPayrollUiError(actionError));
       return;
     }
-    if (correctionDate > correction.latestOn) {
-      setCorrectionError(`วันที่ใหม่ต้องไม่เกิน ${correction.latestOn}`);
-      return;
-    }
-    if (correctionDate === correction.currentStartOn) {
-      setCorrectionError("กรุณาเลือกวันที่ต่างจากวันเดิม");
-      return;
-    }
-    setConfirmingCorrectionDate(correctionDate);
+    setActionDraft(null);
   }
 
   async function correctPeriodStart() {
-    if (!confirmingCorrectionDate) return;
     const correction = periodState.periodStartCorrection;
     if (!correction) return;
     setCorrectionError(null);
-    const correctionFailure = await onCorrectPeriodStart(correction.periodId, confirmingCorrectionDate);
-    if (correctionFailure) {
-      setCorrectionError(correctionFailure);
+    if (!correctionDateValid) {
+      setCorrectionError("กรุณาเลือกวันเริ่มที่ถูกต้องภายในช่วงที่กำหนด");
       return;
     }
-    setConfirmingCorrectionDate(null);
+    const correctionFailure = await onCorrectPeriodStart(correction.periodId, correctionDate);
+    if (correctionFailure) {
+      setCorrectionError(formatPayrollUiError(correctionFailure));
+      return;
+    }
+    setCorrectionOpen(false);
   }
 
   async function cancelSchedule() {
     setError(null);
     const cancelError = await onCancel();
     if (cancelError) {
-      setError(cancelError);
+      setError(formatPayrollUiError(cancelError));
       return;
     }
     setCancelOpen(false);
@@ -393,74 +435,102 @@ export function AttendancePeriodControls({
 
   return (
     <section className="rounded-xl border border-black/10 bg-white p-4 shadow-sm" aria-busy={saving}>
-      <h3 className="text-balance font-bold text-ink">ช่วงทำงานของ {userName}</h3>
-      <p className="mt-1 text-pretty text-sm text-ink/60">
-        {periodState.currentStatus === "ACTIVE" && current
-          ? `สถานะปัจจุบัน: อยู่ในระบบเงินเดือนตั้งแต่ ${current.startOn}`
-          : "สถานะปัจจุบัน: ไม่อยู่ในระบบเงินเดือน"}
-      </p>
+      <div>
+        <h3 className="text-balance font-bold text-ink">จัดการการคิดค่าแรง</h3>
+        <p className="mt-1 text-pretty text-sm text-ink/60">{userName}</p>
+        <p className="mt-2 text-pretty text-sm font-semibold text-ink">
+          {periodState.currentStatus === "ACTIVE" && current
+            ? `สถานะปัจจุบัน: กำลังคิดค่าแรงตั้งแต่ ${formatThaiDate(current.startOn)}`
+            : "สถานะปัจจุบัน: ไม่ได้คิดค่าแรง"}
+        </p>
+      </div>
+
+      {latestPeriodStart && (
+        <div className="mt-3 rounded-lg border border-black/10 bg-field/35 p-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="text-balance text-sm font-semibold text-ink">ช่วงทำงานล่าสุด</p>
+              <p className="mt-1 text-pretty text-sm text-ink/65 tabular-nums">
+                {formatThaiDate(latestPeriodStart)} – {latestPeriodEnd ? formatThaiDate(latestPeriodEnd) : "ปัจจุบัน"}
+              </p>
+            </div>
+            {correction && (
+              <button
+                type="button"
+                onClick={() => {
+                  setCorrectionDate(correction.currentStartOn);
+                  setCorrectionError(null);
+                  setCorrectionOpen(true);
+                }}
+                disabled={saving || !online}
+                className="focus-ring inline-flex h-10 shrink-0 items-center justify-center rounded-md border border-river/30 bg-white px-3 text-sm font-semibold text-river hover:bg-river/10 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                แก้ไขวันเริ่ม
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {periodState.nextAction && (
         <div className="mt-3 rounded-lg border border-amber/40 bg-amber/10 p-3" role="status">
           <div className="flex items-start gap-2">
             <Clock3 className="mt-0.5 shrink-0 text-amber" size={18} aria-hidden="true" />
             <div className="min-w-0">
-              <p className="font-semibold text-ink">รอมีผล: {actionLabel(periodState.nextAction.action)}</p>
-              <p className="mt-1 text-pretty text-sm text-ink/70">
-                เลือกวันที่ {periodState.nextAction.selectedEffectiveOn} · สถานะเปลี่ยนจริง 00:00 วันที่ {periodState.nextAction.activationOn}
-              </p>
+              <p className="text-balance font-semibold text-ink">กำหนดไว้: {payrollPeriodActionLabel(periodState.nextAction.action)}</p>
+              <p className="mt-1 text-pretty text-sm text-ink/70 tabular-nums">{scheduledActionText(
+                periodState.nextAction.action,
+                periodState.nextAction.selectedEffectiveOn,
+                periodState.nextAction.activationOn,
+              )}</p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => { setError(null); setCancelOpen(true); }}
-            disabled={saving || !online}
-            className="focus-ring mt-3 inline-flex h-10 items-center rounded-md border border-danger/30 bg-white px-3 text-sm font-semibold text-danger hover:bg-danger/5 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            ยกเลิกกำหนดการ
-          </button>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => openAction(periodState.nextAction!.action)}
+              disabled={saving || !online}
+              className="focus-ring inline-flex h-10 items-center rounded-md border border-amber/40 bg-white px-3 text-sm font-semibold text-amber hover:bg-amber/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              แก้กำหนดการ
+            </button>
+            <button
+              type="button"
+              onClick={() => { setError(null); setCancelOpen(true); }}
+              disabled={saving || !online}
+              className="focus-ring inline-flex h-10 items-center rounded-md border border-danger/30 bg-white px-3 text-sm font-semibold text-danger hover:bg-danger/5 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              ยกเลิกกำหนดการ
+            </button>
+          </div>
         </div>
       )}
-      <label className="mt-3 grid max-w-xs gap-1 text-sm font-semibold">วันที่มีผล<input type="date" value={date} min={resumeMode ? periodState.resumeEarliestOn ?? undefined : undefined} onChange={(event) => setDate(event.target.value)} className="focus-ring h-10 rounded-md border border-black/15 px-3 tabular-nums" aria-invalid={Boolean(error)} aria-describedby={error ? "period-action-error" : undefined} /></label>
-      {periodState.nextAction && <p className="mt-2 text-pretty text-xs text-ink/60">บันทึกคำสั่งใหม่เพื่อแทนกำหนดการเดิมได้ทันที</p>}
+
       <div className="mt-3 grid gap-2 lg:grid-cols-2">
         {actions.map((action) => (
           <div key={action} className="rounded-lg border border-black/10 bg-field/35 p-3">
-            <button type="button" onClick={() => void handle(action)} disabled={saving || !online} className="focus-ring inline-flex min-h-10 items-center rounded-md bg-river px-3 py-2 text-sm font-bold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-50">{actionLabel(action)}</button>
-            <p className="mt-2 text-pretty text-xs leading-5 text-ink/65">{effectText(action, date)}</p>
+            <button
+              type="button"
+              onClick={() => openAction(action)}
+              disabled={saving || !online}
+              className={cn(
+                "focus-ring inline-flex min-h-10 w-full items-center justify-center rounded-md px-3 py-2 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-50",
+                action === "END" && "bg-danger text-white hover:bg-danger/90",
+                action === "PAUSE" && "border border-amber/40 bg-amber/10 text-amber hover:bg-amber/15",
+                (action === "ENABLE" || action === "RESUME") && "bg-commit text-white hover:bg-commit/90",
+              )}
+            >
+              {payrollPeriodActionLabel(action)}
+            </button>
+            <p className="mt-2 text-pretty text-xs leading-5 text-ink/65">{actionDescription(action)}</p>
           </div>
         ))}
       </div>
-      {periodState.periodStartCorrection && (
-        <div className="mt-4 rounded-lg border border-river/20 bg-river/5 p-3">
-          <div>
-            <p className="text-balance font-semibold text-ink">แก้วันเริ่มช่วงล่าสุด</p>
-            <p className="mt-1 text-pretty text-xs leading-5 text-ink/65 tabular-nums">
-              ช่วงเดิม {periodState.periodStartCorrection.currentStartOn} ถึง {periodState.periodStartCorrection.endOn ?? "ปัจจุบัน"} · เลือกได้{periodState.periodStartCorrection.earliestOn ? `ตั้งแต่ ${periodState.periodStartCorrection.earliestOn}` : "ย้อนหลังเมื่อเดือนยังเปิด"} ถึง {periodState.periodStartCorrection.latestOn}
-            </p>
-          </div>
-          <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,16rem)_auto] sm:items-end">
-            <label className="grid gap-1 text-sm font-semibold">วันใหม่
-              <input
-                type="date"
-                value={correctionDate}
-                min={periodState.periodStartCorrection.earliestOn ?? undefined}
-                max={periodState.periodStartCorrection.latestOn}
-                onChange={(event) => { setCorrectionDate(event.target.value); setCorrectionError(null); }}
-                className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3 tabular-nums"
-                aria-invalid={Boolean(correctionError)}
-                aria-describedby={correctionError ? "period-start-correction-error" : undefined}
-              />
-            </label>
-            <button type="button" onClick={reviewCorrection} disabled={saving || !online} className="focus-ring h-10 rounded-md border border-river/30 bg-white px-3 text-sm font-bold text-river hover:bg-river/10 disabled:cursor-not-allowed disabled:opacity-50">ตรวจสอบวันใหม่</button>
-          </div>
-          {correctionError && !confirmingCorrectionDate && <p id="period-start-correction-error" role="alert" className="mt-2 text-pretty text-sm font-semibold text-danger">{correctionError}</p>}
-        </div>
-      )}
-      {error && !cancelOpen && !confirmingEndDate && !confirmingResumeDate && <p id="period-action-error" role="alert" className="mt-2 text-sm font-semibold text-danger">{error}</p>}
+
       {cancelOpen && periodState.nextAction && (
         <ModalShell
-          title="ยกเลิกกำหนดการรอมีผล"
-          subtitle={`${actionLabel(periodState.nextAction.action)} จะไม่เกิดขึ้นในวันที่กำหนด`}
+          title="ยกเลิกกำหนดการ"
+          subtitle={`${payrollPeriodActionLabel(periodState.nextAction.action)} จะไม่เกิดขึ้นตามวันที่กำหนด`}
           onClose={() => { setError(null); setCancelOpen(false); }}
           nativeModal
           closeOnEscape
@@ -470,7 +540,11 @@ export function AttendancePeriodControls({
           size="compact"
         >
           <p className="text-pretty text-sm text-ink/70">
-            ยืนยันยกเลิกคำสั่งที่เลือกวันที่ {periodState.nextAction.selectedEffectiveOn} และจะมีผลจริง 00:00 วันที่ {periodState.nextAction.activationOn}
+            {scheduledActionText(
+              periodState.nextAction.action,
+              periodState.nextAction.selectedEffectiveOn,
+              periodState.nextAction.activationOn,
+            )}
           </p>
           {error && <p id="period-action-error" role="alert" className="mt-3 text-sm font-semibold text-danger">{error}</p>}
           <div className="mt-4 flex flex-wrap justify-end gap-2">
@@ -479,69 +553,99 @@ export function AttendancePeriodControls({
           </div>
         </ModalShell>
       )}
-      {confirmingEndDate && (
+
+      {actionDraft && (
         <ModalShell
-          title="ยืนยันสิ้นสุดงาน"
-          subtitle={`สถานะจะสิ้นสุดตามวันที่เลือก ${confirmingEndDate}`}
-          onClose={() => { setError(null); setConfirmingEndDate(null); }}
+          title={payrollPeriodActionLabel(actionDraft.action)}
+          subtitle={`กำหนดให้ ${userName}`}
+          onClose={() => { setError(null); setActionDraft(null); }}
           nativeModal
           closeOnEscape
           closeDisabled={saving}
           renderInPortal
-          role="alertdialog"
+          role={actionDraft.action === "END" ? "alertdialog" : "dialog"}
           size="compact"
         >
-          <p className="text-pretty text-sm text-ink/70">
-            หากเลือกวันนี้ สถานะจะสิ้นสุดทันที โดยระบบจะตรวจเวลาสิ้นสุดวันทำงานจากเซิร์ฟเวอร์และคงผลเต็มวัน ครึ่งวัน หรือหยุดที่ได้รับแล้ว
-          </p>
-          {error && <p id="period-action-error" role="alert" className="mt-3 text-sm font-semibold text-danger">{error}</p>}
-          <div className="mt-4 flex flex-wrap justify-end gap-2">
-            <button type="button" onClick={() => { setError(null); setConfirmingEndDate(null); }} disabled={saving} className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3 text-sm font-semibold text-ink hover:bg-field disabled:opacity-50">กลับไปตรวจสอบ</button>
-            <button type="button" onClick={() => void runAction("END", confirmingEndDate)} disabled={saving || !online} className="focus-ring h-10 rounded-md bg-danger px-3 text-sm font-bold text-white hover:bg-danger/90 disabled:opacity-50">ยืนยันสิ้นสุดงาน</button>
-          </div>
+          <form onSubmit={(event) => { event.preventDefault(); void runAction(); }} aria-busy={saving}>
+            <label className="grid gap-1 text-sm font-semibold text-ink">
+              {actionDateLabel(actionDraft.action)}
+              <input
+                type="date"
+                value={actionDraft.date}
+                min={actionDraft.action === "RESUME" ? periodState.resumeEarliestOn ?? undefined : actionDraft.action === "END" ? today : undefined}
+                onChange={(event) => { setActionDraft({ ...actionDraft, date: event.target.value }); setError(null); }}
+                className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3 tabular-nums"
+                aria-invalid={Boolean(error)}
+                aria-describedby={`period-action-effect${error ? " period-action-error" : ""}`}
+                required
+              />
+            </label>
+            <p id="period-action-effect" className="mt-3 text-pretty text-sm text-ink/70">{effectText(actionDraft.action, actionDraft.date)}</p>
+            {periodState.nextAction && (
+              <div className="mt-3 rounded-md border border-amber/40 bg-amber/10 p-3 text-pretty text-sm text-ink/75">
+                กำหนดการนี้จะแทนที่ “{payrollPeriodActionLabel(periodState.nextAction.action)} {formatThaiDate(periodState.nextAction.selectedEffectiveOn)}”
+              </div>
+            )}
+            {error && <p id="period-action-error" role="alert" className="mt-3 text-pretty text-sm font-semibold text-danger">{error}</p>}
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <button type="button" onClick={() => { setError(null); setActionDraft(null); }} disabled={saving} className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3 text-sm font-semibold text-ink hover:bg-field disabled:opacity-50">ยกเลิก</button>
+              <button
+                type="submit"
+                disabled={saving || !online}
+                className={cn(
+                  "focus-ring min-h-10 rounded-md px-3 py-2 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50",
+                  actionDraft.action === "END" ? "bg-danger hover:bg-danger/90" : "bg-commit hover:bg-commit/90",
+                )}
+              >
+                {periodState.nextAction ? "ยืนยันและแทนที่กำหนดเดิม" : `ยืนยัน${payrollPeriodActionLabel(actionDraft.action)}`}
+              </button>
+            </div>
+          </form>
         </ModalShell>
       )}
-      {confirmingResumeDate && (
+
+      {correctionOpen && correction && (
         <ModalShell
-          title="ยืนยันกลับเข้าทำงานย้อนหลัง"
-          subtitle={`ระบบจะทบทวนปฏิทินวันที่ ${confirmingResumeDate} ถึง ${today}`}
-          onClose={() => { setError(null); setConfirmingResumeDate(null); }}
+          title="แก้ไขวันเริ่มช่วงล่าสุด"
+          subtitle={`${formatThaiDate(correction.currentStartOn)} → ${formatThaiDate(correctionDate)}`}
+          onClose={() => { setCorrectionError(null); setCorrectionOpen(false); }}
           nativeModal
           closeOnEscape
           closeDisabled={saving}
           renderInPortal
-          role="alertdialog"
           size="compact"
         >
-          <p className="text-pretty text-sm text-ink/70">
-            วันที่ {confirmingResumeDate} เป็นวันแรกที่กลับมามีสิทธิ์ค่าแรง ระบบจะนับวันย้อนหลังเป็นเต็มวันตามปฏิทินเดิม เว้นแต่แก้เป็นครึ่งวันหรือหยุด ส่วนวันนี้ยังยึดเวลาสิ้นสุดวันทำงาน {workdayEndTime} น.
-          </p>
-          {error && <p id="period-action-error" role="alert" className="mt-3 text-sm font-semibold text-danger">{error}</p>}
-          <div className="mt-4 flex flex-wrap justify-end gap-2">
-            <button type="button" onClick={() => { setError(null); setConfirmingResumeDate(null); }} disabled={saving} className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3 text-sm font-semibold text-ink hover:bg-field disabled:opacity-50">กลับไปตรวจสอบ</button>
-            <button type="button" onClick={() => void runAction("RESUME", confirmingResumeDate)} disabled={saving || !online} className="focus-ring h-10 rounded-md bg-river px-3 text-sm font-bold text-white hover:bg-river/90 disabled:opacity-50">ยืนยันกลับเข้าทำงาน</button>
+          <div className="rounded-md border border-black/10 bg-field/35 p-3">
+            <p className="text-balance text-sm font-semibold text-ink">ช่วงเดิม</p>
+            <p className="mt-1 text-pretty text-sm text-ink/65 tabular-nums">
+              {formatThaiDate(correction.currentStartOn)} – {correction.endOn ? formatThaiDate(correction.endOn) : "ปัจจุบัน"}
+            </p>
           </div>
-        </ModalShell>
-      )}
-      {confirmingCorrectionDate && periodState.periodStartCorrection && (
-        <ModalShell
-          title="ยืนยันแก้วันเริ่มช่วงล่าสุด"
-          subtitle={`${periodState.periodStartCorrection.currentStartOn} → ${confirmingCorrectionDate}`}
-          onClose={() => { setCorrectionError(null); setConfirmingCorrectionDate(null); }}
-          nativeModal
-          closeOnEscape
-          closeDisabled={saving}
-          renderInPortal
-          role="alertdialog"
-          size="compact"
-        >
-          <p className="text-pretty text-sm text-ink/70">
-            ระบบจะตรวจเดือนที่ได้รับผล: {affectedMonths(periodState.periodStartCorrection.currentStartOn, confirmingCorrectionDate).join(", ")} และจะไม่เปลี่ยนวันสิ้นสุด สลิป หรือรายการหักเงินจริง
+          <label className="mt-3 grid gap-1 text-sm font-semibold text-ink">
+            วันเริ่มที่ถูกต้อง
+            <input
+              type="date"
+              value={correctionDate}
+              min={correction.earliestOn ?? undefined}
+              max={correction.latestOn}
+              onChange={(event) => { setCorrectionDate(event.target.value); setCorrectionError(null); }}
+              className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3 tabular-nums"
+              aria-invalid={Boolean(correctionError)}
+              aria-describedby={`period-start-correction-help${correctionError ? " period-start-correction-error" : ""}`}
+            />
+          </label>
+          <p id="period-start-correction-help" className="mt-2 text-pretty text-xs leading-5 text-ink/60">
+            เลือกได้{correction.earliestOn ? `ตั้งแต่ ${formatThaiDate(correction.earliestOn)}` : "ย้อนหลังเมื่อเดือนยังเปิด"} ถึง {formatThaiDate(correction.latestOn)}
           </p>
+          {correctionDateValid && (
+            <p className="mt-3 text-pretty text-sm text-ink/70">
+              ระบบจะตรวจเดือนที่ได้รับผล: {affectedMonths(correction.currentStartOn, correctionDate).map(monthLabel).join(", ")} และจะไม่เปลี่ยนวันสิ้นสุด สลิป หรือรายการหักเงินจริง
+            </p>
+          )}
           {correctionError && <p id="period-start-correction-error" role="alert" className="mt-3 text-pretty text-sm font-semibold text-danger">{correctionError}</p>}
           <div className="mt-4 flex flex-wrap justify-end gap-2">
-            <button type="button" onClick={() => { setCorrectionError(null); setConfirmingCorrectionDate(null); }} disabled={saving} className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3 text-sm font-semibold text-ink hover:bg-field disabled:opacity-50">กลับไปตรวจสอบ</button>
-            <button type="button" onClick={() => void correctPeriodStart()} disabled={saving || !online} className="focus-ring h-10 rounded-md bg-river px-3 text-sm font-bold text-white hover:bg-river/90 disabled:opacity-50">ยืนยันแก้วันเริ่ม</button>
+            <button type="button" onClick={() => { setCorrectionError(null); setCorrectionOpen(false); }} disabled={saving} className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3 text-sm font-semibold text-ink hover:bg-field disabled:opacity-50">ยกเลิก</button>
+            <button type="button" onClick={() => void correctPeriodStart()} disabled={saving || !online || !correctionDateValid} className="focus-ring min-h-10 rounded-md bg-commit px-3 py-2 text-sm font-bold text-white hover:bg-commit/90 disabled:cursor-not-allowed disabled:opacity-50">ยืนยันแก้ไขวันเริ่ม</button>
           </div>
         </ModalShell>
       )}
