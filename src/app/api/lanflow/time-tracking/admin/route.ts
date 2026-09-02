@@ -50,6 +50,7 @@ function rpcErrorMessage(message: string) {
 
   if (/FUTURE_EFFECTIVE_DATE/i.test(message)) return "วันที่รายการต้องไม่เกินวันปัจจุบัน";
   if (/END_DATE_IN_PAST/i.test(message)) return "สิ้นสุดงานย้อนหลังไม่ได้ กรุณาเลือกวันนี้หรือวันในอนาคต";
+  if (/RESUME_DATE_BEFORE_CURRENT_MONTH/i.test(message)) return "กลับเข้าทำงานย้อนหลังได้เฉพาะเดือนปัจจุบัน กรุณาเลือกตั้งแต่วันแรกของเดือนนี้";
   if (/FUTURE_ATTENDANCE_DATE/i.test(message)) return "ช่วงวันที่แก้ปฏิทินต้องไม่เกินวันปัจจุบัน";
   if (/ACTIVE_PERIOD_ALREADY_OPEN/i.test(message)) return "พนักงานคนนี้มีช่วงทำงานที่เปิดอยู่แล้ว กรุณารีเฟรชข้อมูล";
   if (/NO_OPEN_ACTIVE_PERIOD/i.test(message)) return "ไม่พบช่วงทำงานที่เปิดอยู่ หรือวันที่มีผลไม่ต่อเนื่องกับช่วงเดิม";

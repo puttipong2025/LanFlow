@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { CalendarDays, Clock3, Settings2 } from "lucide-react";
 import { ModalShell } from "@/components/shared/ModalShell";
+import { bangkokDateString } from "@/lib/bangkok-date";
 import { formatPayrollCurrency } from "@/lib/time-tracking/format";
 import type {
   AttendanceExceptionDto,
@@ -250,14 +251,18 @@ export function AttendancePeriodControls({
   onAction: (action: PayrollPeriodAction, effectiveDate: string) => Promise<string | null>;
   onCancel: () => Promise<string | null>;
 }) {
-  const [date, setDate] = useState(new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" }));
+  const [date, setDate] = useState(bangkokDateString);
   const [error, setError] = useState<string | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [confirmingEndDate, setConfirmingEndDate] = useState<string | null>(null);
+  const [confirmingResumeDate, setConfirmingResumeDate] = useState<string | null>(null);
   const current = periodState.currentPeriod;
   const actions: PayrollPeriodAction[] = periodState.currentStatus === "ACTIVE"
     ? ["PAUSE", "END"]
     : periodState.hasPeriodHistory ? ["RESUME"] : ["ENABLE"];
+  const today = bangkokDateString();
+  const resumeMode = actions.length === 1 && actions[0] === "RESUME";
+  const resumeMonthStart = `${today.slice(0, 7)}-01`;
 
   function actionLabel(action: PayrollPeriodAction) {
     if (action === "ENABLE") return "เปิดใช้เงินเดือน";
@@ -274,6 +279,9 @@ export function AttendancePeriodControls({
     if (action === "PAUSE") {
       return `พักและหยุดนับค่าแรงตั้งแต่ 00:00 วันที่ ${selectedDate}`;
     }
+    if (action === "RESUME" && selectedDate < today) {
+      return `วันที่ ${selectedDate} เป็นวันแรกที่กลับมามีสิทธิ์ค่าแรง วันย้อนหลังนับเต็มวันตามปฏิทินเดิม เว้นแต่แก้เป็นครึ่งวันหรือหยุด; วันนี้นับเมื่อถึง ${workdayEndTime} น.`;
+    }
     return `มีผล 00:00 วันที่ ${selectedDate}; ค่าแรงเต็มวันจะนับเมื่อถึง ${workdayEndTime} น. — กดก่อนเวลานี้ยังไม่ได้เงินวันนั้น`;
   }
 
@@ -285,6 +293,7 @@ export function AttendancePeriodControls({
       return;
     }
     setConfirmingEndDate(null);
+    setConfirmingResumeDate(null);
   }
 
   async function handle(action: PayrollPeriodAction) {
@@ -294,13 +303,22 @@ export function AttendancePeriodControls({
       return;
     }
     if (action === "END") {
-      const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" });
       if (date < today) {
         setError("สิ้นสุดงานย้อนหลังไม่ได้ กรุณาเลือกวันนี้หรือวันในอนาคต");
         return;
       }
       setConfirmingEndDate(date);
       return;
+    }
+    if (action === "RESUME") {
+      if (date < resumeMonthStart) {
+        setError("กลับเข้าทำงานย้อนหลังได้เฉพาะเดือนปัจจุบัน กรุณาเลือกตั้งแต่วันแรกของเดือนนี้");
+        return;
+      }
+      if (date < today) {
+        setConfirmingResumeDate(date);
+        return;
+      }
     }
     await runAction(action, date);
   }
@@ -344,7 +362,7 @@ export function AttendancePeriodControls({
           </button>
         </div>
       )}
-      <label className="mt-3 grid max-w-xs gap-1 text-sm font-semibold">วันที่มีผล<input type="date" value={date} onChange={(event) => setDate(event.target.value)} className="focus-ring h-10 rounded-md border border-black/15 px-3" aria-invalid={Boolean(error)} aria-describedby={error ? "period-action-error" : undefined} /></label>
+      <label className="mt-3 grid max-w-xs gap-1 text-sm font-semibold">วันที่มีผล<input type="date" value={date} min={resumeMode ? resumeMonthStart : undefined} onChange={(event) => setDate(event.target.value)} className="focus-ring h-10 rounded-md border border-black/15 px-3 tabular-nums" aria-invalid={Boolean(error)} aria-describedby={error ? "period-action-error" : undefined} /></label>
       {periodState.nextAction && <p className="mt-2 text-pretty text-xs text-ink/60">บันทึกคำสั่งใหม่เพื่อแทนกำหนดการเดิมได้ทันที</p>}
       <div className="mt-3 grid gap-2 lg:grid-cols-2">
         {actions.map((action) => (
@@ -354,7 +372,7 @@ export function AttendancePeriodControls({
           </div>
         ))}
       </div>
-      {error && !cancelOpen && !confirmingEndDate && <p id="period-action-error" role="alert" className="mt-2 text-sm font-semibold text-danger">{error}</p>}
+      {error && !cancelOpen && !confirmingEndDate && !confirmingResumeDate && <p id="period-action-error" role="alert" className="mt-2 text-sm font-semibold text-danger">{error}</p>}
       {cancelOpen && periodState.nextAction && (
         <ModalShell
           title="ยกเลิกกำหนดการรอมีผล"
@@ -394,6 +412,27 @@ export function AttendancePeriodControls({
           <div className="mt-4 flex flex-wrap justify-end gap-2">
             <button type="button" onClick={() => { setError(null); setConfirmingEndDate(null); }} disabled={saving} className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3 text-sm font-semibold text-ink hover:bg-field disabled:opacity-50">กลับไปตรวจสอบ</button>
             <button type="button" onClick={() => void runAction("END", confirmingEndDate)} disabled={saving || !online} className="focus-ring h-10 rounded-md bg-danger px-3 text-sm font-bold text-white hover:bg-danger/90 disabled:opacity-50">ยืนยันสิ้นสุดงาน</button>
+          </div>
+        </ModalShell>
+      )}
+      {confirmingResumeDate && (
+        <ModalShell
+          title="ยืนยันกลับเข้าทำงานย้อนหลัง"
+          subtitle={`ระบบจะทบทวนปฏิทินวันที่ ${confirmingResumeDate} ถึง ${today}`}
+          onClose={() => { setError(null); setConfirmingResumeDate(null); }}
+          nativeModal
+          closeOnEscape
+          closeDisabled={saving}
+          role="alertdialog"
+          size="compact"
+        >
+          <p className="text-pretty text-sm text-ink/70">
+            วันที่ {confirmingResumeDate} เป็นวันแรกที่กลับมามีสิทธิ์ค่าแรง ระบบจะนับวันย้อนหลังเป็นเต็มวันตามปฏิทินเดิม เว้นแต่แก้เป็นครึ่งวันหรือหยุด ส่วนวันนี้ยังยึดเวลาสิ้นสุดวันทำงาน {workdayEndTime} น.
+          </p>
+          {error && <p id="period-action-error" role="alert" className="mt-3 text-sm font-semibold text-danger">{error}</p>}
+          <div className="mt-4 flex flex-wrap justify-end gap-2">
+            <button type="button" onClick={() => { setError(null); setConfirmingResumeDate(null); }} disabled={saving} className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3 text-sm font-semibold text-ink hover:bg-field disabled:opacity-50">กลับไปตรวจสอบ</button>
+            <button type="button" onClick={() => void runAction("RESUME", confirmingResumeDate)} disabled={saving || !online} className="focus-ring h-10 rounded-md bg-river px-3 text-sm font-bold text-white hover:bg-river/90 disabled:opacity-50">ยืนยันกลับเข้าทำงาน</button>
           </div>
         </ModalShell>
       )}

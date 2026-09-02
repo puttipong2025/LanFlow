@@ -11,6 +11,7 @@ const calendarEligibilityMigrationPath = "supabase/migrations/20260830040000_tim
 const retireTimerMigrationPath = "supabase/migrations/20260831010000_retire_time_tracking_timer.sql";
 const futureSchedulingMigrationPath = "supabase/migrations/20260901030000_time_payroll_future_period_scheduling.sql";
 const immediateEndMigrationPath = "supabase/migrations/20260902030000_end_time_payroll_employment_immediately.sql";
+const backdatedResumeMigrationPath = "supabase/migrations/20260902040000_time_payroll_backdated_resume_current_month.sql";
 
 test("counts exception attendance only after the Bangkok workday boundary", () => {
   const input = {
@@ -173,6 +174,22 @@ test("active-period backdates check every affected month for slip and deduction 
   expect(sql).toContain("perform private.assert_attendance_month_open(p_profile_id, to_char(v_month, 'YYYY-MM'))");
   expect(sql).toContain("perform private.assert_attendance_range_open(p_profile_id, p_effective_date, v_today)");
   expect(sql).toContain("perform private.assert_attendance_range_open(p_profile_id, p_effective_date + 1, v_today)");
+});
+
+test("backdated RESUME stays inside the current Bangkok month without removing existing guards", async () => {
+  const [sql, admin] = await Promise.all([
+    readFile(backdatedResumeMigrationPath, "utf8"),
+    readFile("src/app/api/lanflow/time-tracking/admin/route.ts", "utf8"),
+  ]);
+
+  expect(sql).toContain("v_today date := (now() at time zone 'Asia/Bangkok')::date");
+  expect(sql).toContain("p_action = 'RESUME' and p_effective_date < date_trunc('month', v_today)::date");
+  expect(sql).toContain("raise exception 'RESUME_DATE_BEFORE_CURRENT_MONTH'");
+  expect(sql).toContain("perform private.assert_attendance_month_open(p_profile_id, to_char(p_effective_date, 'YYYY-MM'))");
+  expect(sql).toContain("perform private.assert_attendance_range_open(p_profile_id, p_effective_date, v_today)");
+  expect(sql).toContain("v_is_scheduled := v_activation_on > v_today");
+  expect(admin).toContain("RESUME_DATE_BEFORE_CURRENT_MONTH");
+  expect(admin).toContain("กลับเข้าทำงานย้อนหลังได้เฉพาะเดือนปัจจุบัน");
 });
 
 test("historical guard migration rejected future active-period dates", async () => {

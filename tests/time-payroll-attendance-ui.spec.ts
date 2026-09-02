@@ -105,8 +105,14 @@ test.describe("Lean attendance UI contract", () => {
     expect(controls).toContain("ระบบจะตรวจเวลาสิ้นสุดวันทำงานจากเซิร์ฟเวอร์");
     expect(controls).toContain('title="ยืนยันสิ้นสุดงาน"');
     expect(controls).toContain("confirmingEndDate &&");
-    expect(controls).toContain("!cancelOpen && !confirmingEndDate");
+    expect(controls).toContain("confirmingResumeDate &&");
+    expect(controls).toContain("!cancelOpen && !confirmingEndDate && !confirmingResumeDate");
     expect(controls).toContain("setError(null); setConfirmingEndDate(null)");
+    expect(controls).toContain('title="ยืนยันกลับเข้าทำงานย้อนหลัง"');
+    expect(controls).toContain('min={resumeMode ? resumeMonthStart : undefined}');
+    expect(controls).toContain('runAction("RESUME", confirmingResumeDate)');
+    expect(controls).toContain("ถึง ${today}");
+    expect(controls).toContain("วันย้อนหลังเป็นเต็มวันตามปฏิทินเดิม");
     expect(controls).toContain('role="alertdialog"');
     expect(controls).toContain('title="ยกเลิกกำหนดการรอมีผล"');
     expect(modalShellSource).toContain("role={role}");

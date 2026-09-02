@@ -19084,6 +19084,9 @@ begin
   if p_action = 'END' and p_effective_date < v_today then
     raise exception 'END_DATE_IN_PAST';
   end if;
+  if p_action = 'RESUME' and p_effective_date < date_trunc('month', v_today)::date then
+    raise exception 'RESUME_DATE_BEFORE_CURRENT_MONTH';
+  end if;
 
   v_activation_on := p_effective_date;
   v_is_scheduled := v_activation_on > v_today;
