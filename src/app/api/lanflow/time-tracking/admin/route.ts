@@ -7,30 +7,50 @@ import { parseDailyWageInput } from "@/lib/time-tracking/wage";
 export const dynamic = "force-dynamic";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ISO_DATE_PATTERN = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 
 function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
 }
 
+function isIsoDate(value: unknown): value is string {
+  if (typeof value !== "string" || !ISO_DATE_PATTERN.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
 function rpcErrorStatus(message: string) {
   if (/Authentication required/i.test(message)) return 401;
   if (/Forbidden|access denied/i.test(message)) return 403;
-  if (/MONTH_CLOSED|PENDING_PERIOD_ACTION|DEDUCTION_LOCKED|DEDUCTION_WAGE_LOCKED|PENDING_BLOCKER|OLDER_WORK_MONTH|DELETE_NEWER_SLIP_FIRST|REPORT_LOCKED|already been decided/i.test(message)) return 409;
+  if (/MONTH_CLOSED|PENDING_PERIOD_ACTION|DEDUCTION_LOCKED|DEDUCTION_WAGE_LOCKED|PENDING_BLOCKER|OLDER_WORK_MONTH|DELETE_NEWER_SLIP_FIRST|REPORT_LOCKED|NO_PERIOD_HISTORY_TO_RESUME|RESUME_BEFORE_LAST_END_DATE|already been decided/i.test(message)) return 409;
   return 400;
 }
 
 function rpcErrorMessage(message: string) {
-  const reportNo = message.match(/REPORT_LOCKED:([A-Z0-9-]+)/i)?.[1];
-  if (reportNo) return `ล็อกโดยรายงาน ${reportNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`;
+  const reportLock = message.match(/REPORT_LOCKED:([A-Z0-9-]+)(?::PAYROLL_SLIP:([0-9]{4}-[0-9]{2}):([A-Z]+):([0-9a-f-]+))?/i);
+  if (reportLock) {
+    return reportLock[2]
+      ? `เดือน ${reportLock[2]} ล็อกโดยรายงาน ${reportLock[1]} (${reportLock[3]}) — ต้องลบรายงานล่าสุดตามลำดับก่อน`
+      : `ล็อกโดยรายงาน ${reportLock[1]} — ต้องลบรายงานล่าสุดตามลำดับก่อน`;
+  }
 
-  const closedMonth = message.match(/MONTH_CLOSED:([0-9]{4}-[0-9]{2})/)?.[1];
-  if (closedMonth) return `เดือน ${closedMonth} มีสลิปเงินเดือนแล้ว กรุณาลบสลิปก่อน`;
+  const closed = message.match(/MONTH_CLOSED:([0-9]{4}-[0-9]{2})(?::PAYROLL_SLIP:([A-Z]+):([0-9a-f-]+))?/i);
+  if (closed) {
+    return closed[2]
+      ? `เดือน ${closed[1]} มีสลิปเงินเดือนสถานะ ${closed[2]} (รายการ ${closed[3]}) กรุณาลบสลิปก่อน`
+      : `เดือน ${closed[1]} มีสลิปเงินเดือนแล้ว กรุณาลบสลิปก่อน`;
+  }
 
   const pendingPeriodMonth = message.match(/PENDING_PERIOD_ACTION:([0-9]{4}-[0-9]{2})/)?.[1];
   if (pendingPeriodMonth) return `เดือน ${pendingPeriodMonth} มีการเปลี่ยนสถานะเงินเดือนรอมีผล กรุณายกเลิกหรือเปลี่ยนกำหนดการก่อนสร้างสลิป`;
 
-  const deductionMonth = message.match(/DEDUCTION_LOCKED:([0-9]{4}-[0-9]{2})/)?.[1];
-  if (deductionMonth) return `เดือน ${deductionMonth} มีรายการหักเงินจริงแล้ว จึงแก้วันทำงานย้อนหลังไม่ได้`;
+  const deduction = message.match(/DEDUCTION_LOCKED:([0-9]{4}-[0-9]{2})(?::([A-Z_]+):([0-9a-f-]+))?/i);
+  if (deduction) {
+    const label = deduction[2] === "WITHDRAWAL_DEDUCTION" ? "หักเงินเบิก" : "หักหนี้";
+    return deduction[3]
+      ? `เดือน ${deduction[1]} มีรายการ${label}เงินจริงแล้ว (รายการ ${deduction[3]}) จึงแก้วันทำงานย้อนหลังไม่ได้`
+      : `เดือน ${deduction[1]} มีรายการหักเงินจริงแล้ว จึงแก้วันทำงานย้อนหลังไม่ได้`;
+  }
   if (/DEDUCTION_WAGE_LOCKED/i.test(message)) return "มีเดือนที่หักเงินจริงแล้วแต่ยังไม่ได้ออกสลิป จึงแก้ค่าแรงไม่ได้";
 
   const pending = message.match(/PENDING_BLOCKER:(DEBT|WITHDRAWAL):([0-9a-f-]+):([0-9]{4}-[0-9]{2})/i);
@@ -50,7 +70,15 @@ function rpcErrorMessage(message: string) {
 
   if (/FUTURE_EFFECTIVE_DATE/i.test(message)) return "วันที่รายการต้องไม่เกินวันปัจจุบัน";
   if (/END_DATE_IN_PAST/i.test(message)) return "สิ้นสุดงานย้อนหลังไม่ได้ กรุณาเลือกวันนี้หรือวันในอนาคต";
-  if (/RESUME_DATE_BEFORE_CURRENT_MONTH/i.test(message)) return "กลับเข้าทำงานย้อนหลังได้เฉพาะเดือนปัจจุบัน กรุณาเลือกตั้งแต่วันแรกของเดือนนี้";
+  const overlapEnd = message.match(/RESUME_OVERLAPS_PREVIOUS_PERIOD:([0-9]{4}-[0-9]{2}-[0-9]{2})/)?.[1];
+  if (overlapEnd) return `วันที่กลับเข้าทำงานต้องหลังช่วงเดิมซึ่งสิ้นสุด ${overlapEnd}`;
+  const lastEndDate = message.match(/RESUME_BEFORE_LAST_END_DATE:([0-9]{4}-[0-9]{2}-[0-9]{2})/)?.[1];
+  if (lastEndDate) return `วันที่กลับเข้าทำงานต้องไม่ก่อนวันที่สิ้นสุดล่าสุด ${lastEndDate}`;
+  if (/NO_PERIOD_HISTORY_TO_RESUME/i.test(message)) return "ไม่พบประวัติช่วงทำงานเดิม กรุณาใช้เปิดใช้เงินเดือน";
+  if (/NO_RESUME_PERIOD_TO_CORRECT/i.test(message)) return "แก้ได้เฉพาะช่วงทำงานปัจจุบันที่สร้างจากการกลับเข้าทำงานล่าสุด";
+  if (/INVALID_RESUME_CORRECTION/i.test(message)) return "กรุณาเลือกวันกลับเข้าทำงานใหม่ที่ต่างจากวันเดิม";
+  if (/RESUME_CORRECTION_DATE_IN_FUTURE/i.test(message)) return "วันกลับเข้าทำงานใหม่ต้องไม่เกินวันนี้";
+  if (/RESUME_CORRECTION_AFTER_PENDING_ACTION/i.test(message)) return "วันกลับเข้าทำงานใหม่ต้องอยู่ก่อนกำหนดการพักหรือสิ้นสุดงาน";
   if (/FUTURE_ATTENDANCE_DATE/i.test(message)) return "ช่วงวันที่แก้ปฏิทินต้องไม่เกินวันปัจจุบัน";
   if (/ACTIVE_PERIOD_ALREADY_OPEN/i.test(message)) return "พนักงานคนนี้มีช่วงทำงานที่เปิดอยู่แล้ว กรุณารีเฟรชข้อมูล";
   if (/NO_OPEN_ACTIVE_PERIOD/i.test(message)) return "ไม่พบช่วงทำงานที่เปิดอยู่ หรือวันที่มีผลไม่ต่อเนื่องกับช่วงเดิม";
@@ -407,7 +435,7 @@ export async function POST(request: NextRequest) {
       if (
         !isUuid(user_id)
         || !["ENABLE", "PAUSE", "RESUME", "END"].includes(action)
-        || typeof effective_date !== "string"
+        || !isIsoDate(effective_date)
       ) {
         return NextResponse.json({ error: "ข้อมูลช่วงเงินเดือนไม่ถูกต้อง" }, { status: 400 });
       }
@@ -415,6 +443,22 @@ export async function POST(request: NextRequest) {
         p_profile_id: user_id,
         p_action: action,
         p_effective_date: effective_date,
+      });
+      if (error) return rpcFailure(error);
+      return NextResponse.json({ success: true, result: data });
+    }
+
+    if (body.action === "CORRECT_PAYROLL_RESUME_START") {
+      if (!result.auth.canAccessSystemManager) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+      }
+      const { user_id, start_on } = payload;
+      if (!isUuid(user_id) || !isIsoDate(start_on)) {
+        return NextResponse.json({ error: "ข้อมูลวันกลับเข้าทำงานไม่ถูกต้อง" }, { status: 400 });
+      }
+      const { data, error } = await supabase.rpc("correct_time_payroll_resume_start", {
+        p_profile_id: user_id,
+        p_start_on: start_on,
       });
       if (error) return rpcFailure(error);
       return NextResponse.json({ success: true, result: data });

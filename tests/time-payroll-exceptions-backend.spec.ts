@@ -142,6 +142,8 @@ async function phoneFor(service: SupabaseClient, profileId: string) {
 let temporaryLocationId: string | null = null;
 
 test.describe.serial("Exception attendance backend contract @time-payroll-exceptions-backend", () => {
+  test.use({ storageState: "playwright/.auth/super_admin.json" });
+
   test.beforeAll(async () => {
     const service = serviceClient();
     const existing = await service.from("locations").select("id").eq("is_active", true);
@@ -288,6 +290,30 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     }
   });
 
+  test("RESUME without period or END history is rejected without creating a period", async () => {
+    const service = serviceClient();
+    const manager = await globalManagerClient();
+    const employeeId = await createEmployee(service, "QA resume requires history");
+
+    try {
+      const resumed = await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "RESUME",
+        p_effective_date: bangkokDate(-30),
+      });
+      expect(resumed.error?.message).toContain("NO_PERIOD_HISTORY_TO_RESUME");
+
+      const periods = await manager
+        .from("time_payroll_active_periods")
+        .select("id")
+        .eq("profile_id", employeeId);
+      expect(periods.error).toBeNull();
+      expect(periods.data).toEqual([]);
+    } finally {
+      await deleteEmployee(service, employeeId);
+    }
+  });
+
   test("null Config input fails closed without changing state or audit", async () => {
     const manager = await globalManagerClient();
     const managerUser = await manager.auth.getUser();
@@ -318,7 +344,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     expect(configAuditAfter.count).toBe(configAuditBefore.count);
   });
 
-  test("RESUME rejects dates before the current Bangkok month", async () => {
+  test("RESUME accepts a previous open payroll month without touching withdrawal balance", async () => {
     const service = serviceClient();
     const manager = await globalManagerClient();
     const employeeId = await createEmployee(service, "QA resume month boundary");
@@ -358,19 +384,12 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       expect(beforeResume.error).toBeNull();
       expect(Number(beforeResume.data!.remaining_amount)).toBe(1000);
 
-      const rejected = await manager.rpc("set_time_payroll_active_period", {
+      const resumed = await manager.rpc("set_time_payroll_active_period", {
         p_profile_id: employeeId,
         p_action: "RESUME",
         p_effective_date: previousResume,
       });
-      expect(rejected.error?.message).toContain("RESUME_DATE_BEFORE_CURRENT_MONTH");
-
-      const acceptedBoundary = await manager.rpc("set_time_payroll_active_period", {
-        p_profile_id: employeeId,
-        p_action: "RESUME",
-        p_effective_date: firstCurrent,
-      });
-      expect(acceptedBoundary.error).toBeNull();
+      expect(resumed.error).toBeNull();
       const afterResume = await service
         .from("financial_transactions")
         .select("remaining_amount")
@@ -378,6 +397,409 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         .single();
       expect(afterResume.error).toBeNull();
       expect(Number(afterResume.data!.remaining_amount)).toBe(1000);
+    } finally {
+      await deleteEmployee(service, employeeId);
+    }
+  });
+
+  test("corrects the latest resumed period start without audit or financial side effects", async () => {
+    const service = serviceClient();
+    const manager = await globalManagerClient();
+    const employeeId = await createEmployee(service, "QA resume date correction");
+    const firstCurrent = `${bangkokDate().slice(0, 7)}-01`;
+    const previousMonthEndValue = new Date(`${firstCurrent}T12:00:00Z`);
+    previousMonthEndValue.setUTCDate(previousMonthEndValue.getUTCDate() - 1);
+    const previousMonthEnd = previousMonthEndValue.toISOString().slice(0, 10);
+    const previousMonth = previousMonthEnd.slice(0, 7);
+
+    try {
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "ENABLE",
+        p_effective_date: `${previousMonth}-01`,
+      })).error).toBeNull();
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "PAUSE",
+        p_effective_date: `${previousMonth}-02`,
+      })).error).toBeNull();
+      const withdrawal = await manager.rpc("create_time_tracking_transaction", {
+        p_profile_id: employeeId,
+        p_type: "WITHDRAWAL",
+        p_amount: 1000,
+        p_effective_date: firstCurrent,
+        p_description: "QA correction financial no-op",
+      });
+      expect(withdrawal.error).toBeNull();
+      const withdrawalId = (withdrawal.data as { id: string }).id;
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "RESUME",
+        p_effective_date: firstCurrent,
+      })).error).toBeNull();
+      expect((await manager.rpc("replace_time_payroll_attendance_exceptions", {
+        p_profile_id: employeeId,
+        p_month: firstCurrent.slice(0, 7),
+        p_selections: [{ date: firstCurrent, status: "HALF_DAY" }],
+      })).error).toBeNull();
+      const pendingPauseOn = bangkokDate(1);
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "PAUSE",
+        p_effective_date: pendingPauseOn,
+      })).error).toBeNull();
+      const session = await manager.auth.getSession();
+      const authorization = `Bearer ${session.data.session!.access_token}`;
+      const stateResponse = await fetch(`${appUrl}/api/lanflow/time-tracking/admin?month=${firstCurrent.slice(0, 7)}`, {
+        headers: { Authorization: authorization },
+      });
+      expect(stateResponse.status).toBe(200);
+      const statePayload = await stateResponse.json() as {
+        users: Array<{ id: string; period_state: { resumeCorrection: unknown } }>;
+      };
+      expect(statePayload.users.find((user) => user.id === employeeId)?.period_state.resumeCorrection).toEqual({
+        currentStartOn: firstCurrent,
+        earliestOn: `${previousMonth}-02`,
+      });
+      const auditBefore = await service
+        .from("time_tracking_audit_logs")
+        .select("id", { count: "exact", head: true })
+        .eq("record_id", employeeId);
+      expect(auditBefore.error).toBeNull();
+
+      const overlapping = await manager.rpc("correct_time_payroll_resume_start", {
+        p_profile_id: employeeId,
+        p_start_on: `${previousMonth}-01`,
+      });
+      expect(overlapping.error?.message).toContain("RESUME_OVERLAPS_PREVIOUS_PERIOD");
+      const future = await manager.rpc("correct_time_payroll_resume_start", {
+        p_profile_id: employeeId,
+        p_start_on: pendingPauseOn,
+      });
+      expect(future.error?.message).toContain("RESUME_CORRECTION_DATE_IN_FUTURE");
+
+      const corrected = await fetch(`${appUrl}/api/lanflow/time-tracking/admin`, {
+        method: "POST",
+        headers: { Authorization: authorization, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "CORRECT_PAYROLL_RESUME_START",
+          payload: { user_id: employeeId, start_on: previousMonthEnd },
+        }),
+      });
+      expect(corrected.status, await corrected.text()).toBe(200);
+      const correctedAgain = await manager.rpc("correct_time_payroll_resume_start", {
+        p_profile_id: employeeId,
+        p_start_on: firstCurrent,
+      });
+      expect(correctedAgain.error).toBeNull();
+      const noOpCorrection = await manager.rpc("correct_time_payroll_resume_start", {
+        p_profile_id: employeeId,
+        p_start_on: firstCurrent,
+      });
+      expect(noOpCorrection.error?.message).toContain("INVALID_RESUME_CORRECTION");
+
+      const periods = await manager
+        .from("time_payroll_active_periods")
+        .select("start_on,end_on,scheduled_action,scheduled_effective_on")
+        .eq("profile_id", employeeId)
+        .order("start_on", { ascending: true });
+      expect(periods.error).toBeNull();
+      expect(periods.data?.at(-1)).toEqual({
+        start_on: firstCurrent,
+        end_on: bangkokDate(),
+        scheduled_action: "PAUSE",
+        scheduled_effective_on: pendingPauseOn,
+      });
+      const exceptions = await manager
+        .from("time_payroll_attendance_exceptions")
+        .select("work_date,status")
+        .eq("profile_id", employeeId);
+      expect(exceptions.error).toBeNull();
+      expect(exceptions.data).toEqual([{ work_date: firstCurrent, status: "HALF_DAY" }]);
+
+      const auditAfter = await service
+        .from("time_tracking_audit_logs")
+        .select("id", { count: "exact", head: true })
+        .eq("record_id", employeeId);
+      expect(auditAfter.error).toBeNull();
+      expect(auditAfter.count).toBe(auditBefore.count);
+
+      const transactionAfter = await service
+        .from("financial_transactions")
+        .select("remaining_amount")
+        .eq("id", withdrawalId)
+        .single();
+      expect(transactionAfter.error).toBeNull();
+      expect(Number(transactionAfter.data!.remaining_amount)).toBe(1000);
+    } finally {
+      await deleteEmployee(service, employeeId);
+    }
+  });
+
+  test("resume correction reports the first payroll, report, or real-deduction blocker atomically", async () => {
+    const service = serviceClient();
+    const manager = await globalManagerClient();
+    const managerUser = await manager.auth.getUser();
+    const managerId = managerUser.data.user!.id;
+    const managerProfile = await service
+      .from("profiles")
+      .select("name,phone")
+      .eq("id", managerId)
+      .single();
+    expect(managerProfile.error).toBeNull();
+    const employeeId = await createEmployee(service, "QA resume correction blockers");
+    const locationId = crypto.randomUUID();
+    const reportId = crypto.randomUUID();
+    const reportNo = `RPT-CORRECT-${reportId.replaceAll("-", "").slice(0, 10).toUpperCase()}`;
+    const firstCurrent = `${bangkokDate().slice(0, 7)}-01`;
+    const previousMonthEndValue = new Date(`${firstCurrent}T12:00:00Z`);
+    previousMonthEndValue.setUTCDate(previousMonthEndValue.getUTCDate() - 1);
+    const previousMonthEnd = previousMonthEndValue.toISOString().slice(0, 10);
+    const previousMonth = previousMonthEnd.slice(0, 7);
+    let slipId: string | null = null;
+
+    try {
+      expect((await service.from("locations").insert({
+        id: locationId,
+        name: `สาขาทดสอบ correction ${locationId.slice(0, 6)}`,
+        code: `RC${locationId.replaceAll("-", "").slice(0, 6).toUpperCase()}`,
+        is_active: true,
+      })).error).toBeNull();
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "ENABLE",
+        p_effective_date: `${previousMonth}-01`,
+      })).error).toBeNull();
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "PAUSE",
+        p_effective_date: `${previousMonth}-02`,
+      })).error).toBeNull();
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "RESUME",
+        p_effective_date: firstCurrent,
+      })).error).toBeNull();
+
+      const slip = await service.from("payroll_slips").insert({
+        profile_id: employeeId,
+        month: previousMonth,
+        status: "PENDING",
+        created_by: managerId,
+      }).select("id").single();
+      expect(slip.error).toBeNull();
+      slipId = slip.data!.id;
+      expect((await service.from("report_batches").insert({
+        id: reportId,
+        report_no: reportNo,
+        report_date: bangkokDate(),
+        sequence_no: 1,
+        location_id: locationId,
+        cutoff_at: `${bangkokDate()}T16:00:00+07:00`,
+        created_by_user_id: managerId,
+        created_by_name: managerProfile.data!.name,
+        created_by_phone: managerProfile.data!.phone,
+      })).error).toBeNull();
+      expect((await service.from("report_items").insert({
+        report_id: reportId,
+        location_id: locationId,
+        entity_type: "payroll_slip",
+        entity_id: slipId,
+        eligibility_at: `${bangkokDate()}T16:00:00+07:00`,
+      })).error).toBeNull();
+
+      const reportBlocked = await manager.rpc("correct_time_payroll_resume_start", {
+        p_profile_id: employeeId,
+        p_start_on: previousMonthEnd,
+      });
+      expect(reportBlocked.error?.message).toContain(
+        `REPORT_LOCKED:${reportNo}:PAYROLL_SLIP:${previousMonth}:PENDING:${slipId}`,
+      );
+      const session = await manager.auth.getSession();
+      const reportBlockedResponse = await fetch(`${appUrl}/api/lanflow/time-tracking/admin`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${session.data.session!.access_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "CORRECT_PAYROLL_RESUME_START",
+          payload: { user_id: employeeId, start_on: previousMonthEnd },
+        }),
+      });
+      const reportBlockedPayload = await reportBlockedResponse.json();
+      expect(reportBlockedResponse.status).toBe(409);
+      expect(reportBlockedPayload.error).toContain(previousMonth);
+      expect(reportBlockedPayload.error).toContain(reportNo);
+
+      expect((await service.from("report_items").delete().eq("report_id", reportId)).error).toBeNull();
+      expect((await service.from("report_batches").delete().eq("id", reportId)).error).toBeNull();
+      const slipBlocked = await manager.rpc("correct_time_payroll_resume_start", {
+        p_profile_id: employeeId,
+        p_start_on: previousMonthEnd,
+      });
+      expect(slipBlocked.error?.message).toContain(
+        `MONTH_CLOSED:${previousMonth}:PAYROLL_SLIP:PENDING:${slipId}`,
+      );
+      expect((await service.from("payroll_slips").delete().eq("id", slipId)).error).toBeNull();
+      slipId = null;
+
+      const withdrawal = await manager.rpc("create_time_tracking_transaction", {
+        p_profile_id: employeeId,
+        p_type: "WITHDRAWAL",
+        p_amount: 1000,
+        p_effective_date: firstCurrent,
+        p_description: "QA applied correction blocker",
+      });
+      expect(withdrawal.error).toBeNull();
+      const deductionBlocked = await manager.rpc("correct_time_payroll_resume_start", {
+        p_profile_id: employeeId,
+        p_start_on: previousMonthEnd,
+      });
+      expect(deductionBlocked.error?.message).toMatch(
+        new RegExp(`DEDUCTION_LOCKED:${firstCurrent.slice(0, 7)}:WITHDRAWAL_DEDUCTION:[0-9a-f-]+`),
+      );
+
+      const openPeriod = await manager
+        .from("time_payroll_active_periods")
+        .select("start_on")
+        .eq("profile_id", employeeId)
+        .is("end_on", null)
+        .single();
+      expect(openPeriod.error).toBeNull();
+      expect(openPeriod.data?.start_on).toBe(firstCurrent);
+    } finally {
+      await service.from("report_items").delete().eq("report_id", reportId);
+      await service.from("report_batches").delete().eq("id", reportId);
+      if (slipId) await service.from("payroll_slips").delete().eq("id", slipId);
+      await deleteEmployee(service, employeeId);
+      await service.from("locations").delete().eq("id", locationId);
+    }
+  });
+
+  test("resume correction and payroll close serialize to one consistent month snapshot", async () => {
+    const service = serviceClient();
+    const manager = await globalManagerClient();
+    const employeeId = await createEmployee(service, "QA correction payroll race");
+    const firstCurrent = `${bangkokDate().slice(0, 7)}-01`;
+    const previousMonthEndValue = new Date(`${firstCurrent}T12:00:00Z`);
+    previousMonthEndValue.setUTCDate(previousMonthEndValue.getUTCDate() - 1);
+    const previousMonthEnd = previousMonthEndValue.toISOString().slice(0, 10);
+    const previousMonth = previousMonthEnd.slice(0, 7);
+
+    try {
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "ENABLE",
+        p_effective_date: `${previousMonth}-01`,
+      })).error).toBeNull();
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "PAUSE",
+        p_effective_date: `${previousMonth}-02`,
+      })).error).toBeNull();
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "RESUME",
+        p_effective_date: firstCurrent,
+      })).error).toBeNull();
+
+      const [correction, slip] = await Promise.all([
+        manager.rpc("correct_time_payroll_resume_start", {
+          p_profile_id: employeeId,
+          p_start_on: previousMonthEnd,
+        }),
+        manager.rpc("create_time_tracking_payroll_slip", {
+          p_profile_id: employeeId,
+          p_month: previousMonth,
+          p_auto_start_next_month: false,
+        }),
+      ]);
+      expect(slip.error).toBeNull();
+
+      const slipDays = Number((slip.data as { total_days: number }).total_days);
+      if (correction.error) {
+        expect(correction.error.message).toContain(`MONTH_CLOSED:${previousMonth}`);
+        expect(slipDays).toBe(1);
+      } else {
+        expect(slipDays).toBe(2);
+      }
+
+      const current = await manager
+        .from("time_payroll_active_periods")
+        .select("start_on")
+        .eq("profile_id", employeeId)
+        .is("end_on", null)
+        .single();
+      expect(current.error).toBeNull();
+      expect(current.data?.start_on).toBe(correction.error ? firstCurrent : previousMonthEnd);
+    } finally {
+      await deleteEmployee(service, employeeId);
+    }
+  });
+
+  test("resume correction control keeps its bounded confirmation usable at 360px", async ({ page }) => {
+    const service = serviceClient();
+    const manager = await globalManagerClient();
+    const employeeName = `QA correction browser ${Date.now()}`;
+    const employeeId = await createEmployee(service, employeeName);
+    const today = bangkokDate();
+    const firstCurrent = `${today.slice(0, 7)}-01`;
+    const previousMonthEndValue = new Date(`${firstCurrent}T12:00:00Z`);
+    previousMonthEndValue.setUTCDate(previousMonthEndValue.getUTCDate() - 1);
+    const previousMonthEnd = previousMonthEndValue.toISOString().slice(0, 10);
+    const previousMonth = previousMonthEnd.slice(0, 7);
+
+    try {
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "ENABLE",
+        p_effective_date: `${previousMonth}-01`,
+      })).error).toBeNull();
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "PAUSE",
+        p_effective_date: `${previousMonth}-02`,
+      })).error).toBeNull();
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "RESUME",
+        p_effective_date: firstCurrent,
+      })).error).toBeNull();
+
+      await page.setViewportSize({ width: 360, height: 800 });
+      await page.goto("/");
+      await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
+      await expect(page.getByRole("heading", { name: "จัดการเวลาและเงินเดือน" })).toBeVisible({ timeout: 30_000 });
+      await page.getByRole("button", { name: "ทั้งหมด", exact: true }).click();
+      const calendarButton = page.getByRole("button", {
+        name: `จัดการปฏิทินวันทำงานของ ${employeeName}`,
+      });
+      await expect(calendarButton).toBeVisible();
+      await calendarButton.click();
+
+      const employeeDialog = page.getByRole("dialog", { name: "ข้อมูลของพนักงาน" });
+      await expect(employeeDialog.getByText("แก้วันกลับเข้าทำงานล่าสุด")).toBeVisible();
+      const correctionInput = employeeDialog.getByLabel("วันใหม่");
+      await expect(correctionInput).toHaveAttribute("min", `${previousMonth}-02`);
+      await expect(correctionInput).toHaveAttribute("max", today);
+      await correctionInput.fill(previousMonthEnd);
+      const reviewButton = employeeDialog.getByRole("button", { name: "ตรวจสอบวันใหม่" });
+      await reviewButton.click();
+
+      const confirmation = page.getByRole("alertdialog", { name: "ยืนยันแก้วันกลับเข้าทำงาน" });
+      await expect(confirmation).toContainText(`${firstCurrent} → ${previousMonthEnd}`);
+      await expect(confirmation).toContainText(previousMonth);
+      await expect(confirmation).toContainText(today.slice(0, 7));
+      const dimensions = await confirmation.evaluate((element) => ({
+        width: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+      }));
+      expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.width);
+
+      await page.keyboard.press("Escape");
+      await expect(confirmation).toBeHidden();
+      await expect(reviewButton).toBeFocused();
     } finally {
       await deleteEmployee(service, employeeId);
     }
@@ -478,12 +900,12 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         },
       });
 
-      const historicalResume = await manager.rpc("set_time_payroll_active_period", {
+      const overlappingResume = await manager.rpc("set_time_payroll_active_period", {
         p_profile_id: employeeId,
         p_action: "RESUME",
         p_effective_date: secondDay,
       });
-      expect(historicalResume.error?.message).toContain("RESUME_DATE_BEFORE_CURRENT_MONTH");
+      expect(overlappingResume.error?.message).toContain("RESUME_OVERLAPS_PREVIOUS_PERIOD");
       const periods = await manager
         .from("time_payroll_active_periods")
         .select("start_on, end_on")
@@ -554,6 +976,11 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_action: "ENABLE",
         p_effective_date: yesterday,
       })).error).toBeNull();
+      const initialCorrection = await manager.rpc("correct_time_payroll_resume_start", {
+        p_profile_id: employeeId,
+        p_start_on: today,
+      });
+      expect(initialCorrection.error?.message).toContain("NO_RESUME_PERIOD_TO_CORRECT");
       const settings = await manager.rpc("get_time_payroll_settings");
       expect(settings.error).toBeNull();
       const beforeEnd = new Date();
@@ -596,6 +1023,15 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_effective_date: today,
       });
       expect(resumed.error).toBeNull();
+      const reopenedCorrection = await manager.rpc("correct_time_payroll_resume_start", {
+        p_profile_id: employeeId,
+        p_start_on: today,
+      });
+      if (endedPeriod.data!.end_on === today) {
+        expect(reopenedCorrection.error?.message).toContain("NO_RESUME_PERIOD_TO_CORRECT");
+      } else {
+        expect(reopenedCorrection.error?.message).toContain("INVALID_RESUME_CORRECTION");
+      }
       const resumedPeriods = await manager
         .from("time_payroll_active_periods")
         .select("start_on, end_on")
@@ -688,7 +1124,15 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       expect(body.periodState).toMatchObject({
         currentStatus: "INACTIVE",
         hasPeriodHistory: true,
+        resumeEarliestOn: today,
       });
+
+      const backdatedResume = await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "RESUME",
+        p_effective_date: bangkokDate(-1),
+      });
+      expect(backdatedResume.error?.message).toContain("RESUME_BEFORE_LAST_END_DATE");
 
       expect((await manager.rpc("set_time_payroll_active_period", {
         p_profile_id: employeeId,

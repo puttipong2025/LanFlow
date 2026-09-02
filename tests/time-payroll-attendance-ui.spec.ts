@@ -46,6 +46,7 @@ test.describe("Lean attendance UI contract", () => {
       "REPLACE_ATTENDANCE_EXCEPTIONS",
       "UPDATE_TIME_PAYROLL_CONFIG",
       "SET_PAYROLL_ACTIVE_PERIOD",
+      "CORRECT_PAYROLL_RESUME_START",
     ]) expect(moduleSource).toContain(action);
 
     expect(moduleSource).not.toContain('"TIMER"');
@@ -109,12 +110,17 @@ test.describe("Lean attendance UI contract", () => {
     expect(controls).toContain("!cancelOpen && !confirmingEndDate && !confirmingResumeDate");
     expect(controls).toContain("setError(null); setConfirmingEndDate(null)");
     expect(controls).toContain('title="ยืนยันกลับเข้าทำงานย้อนหลัง"');
-    expect(controls).toContain('min={resumeMode ? resumeMonthStart : undefined}');
+    expect(controls).toContain('min={resumeMode ? periodState.resumeEarliestOn ?? undefined : undefined}');
     expect(controls).toContain('runAction("RESUME", confirmingResumeDate)');
     expect(controls).toContain("ถึง ${today}");
     expect(controls).toContain("วันย้อนหลังเป็นเต็มวันตามปฏิทินเดิม");
     expect(controls).toContain('role="alertdialog"');
     expect(controls).toContain('title="ยกเลิกกำหนดการรอมีผล"');
+    expect(controls).toContain('title="ยืนยันแก้วันกลับเข้าทำงาน"');
+    expect(controls).toContain("affectedMonths(periodState.resumeCorrection.currentStartOn, confirmingCorrectionDate)");
+    expect(controls).toContain("จะไม่เปลี่ยนสลิปหรือรายการหักเงินจริง");
+    expect(controls).toContain('id="resume-correction-error" role="alert"');
+    expect(moduleSource).toContain('action: "CORRECT_PAYROLL_RESUME_START"');
     expect(modalShellSource).toContain("role={role}");
   });
 
@@ -148,6 +154,7 @@ test.describe("Lean attendance UI contract", () => {
     expect(slipPreviewSource).toContain("closeOnEscape");
     expect(slipPreviewSource).toContain("closeDisabled={pdfShare.busy}");
     expect(modalShellSource).toContain("dialog.showModal()");
+    expect(modalShellSource).toContain("event.stopPropagation()");
     expect(modalShellSource).toContain("previousFocus?.focus()");
   });
 });

@@ -317,6 +317,33 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
     }
   }
 
+  async function correctPayrollResumeStart(startOn: string) {
+    if (!online) return TIME_TRACKING_OFFLINE_MESSAGE;
+    if (!canConfigure) return "คุณไม่มีสิทธิ์เปลี่ยนช่วงทำงาน";
+    setSaving(true);
+    try {
+      const response = await authFetch("/api/lanflow/time-tracking/admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "CORRECT_PAYROLL_RESUME_START",
+          payload: { user_id: managedUserId, start_on: startOn },
+        }),
+      });
+      if (!response.ok) {
+        const json = await response.json().catch(() => null);
+        return json?.error || "แก้วันกลับเข้าทำงานไม่สำเร็จ กรุณาลองใหม่";
+      }
+      await loadData();
+      return null;
+    } catch (error) {
+      console.error(error);
+      return "แก้วันกลับเข้าทำงานไม่สำเร็จ กรุณาลองใหม่";
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div className={`flex flex-col gap-6 p-4 ${targetUserId ? 'bg-mint/35 rounded-2xl border border-black/5 shadow-inner' : ''}`}>
       {!hideHeading && (
@@ -391,6 +418,7 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
           saving={saving}
           onAction={setPayrollPeriod}
           onCancel={cancelPayrollPeriodSchedule}
+          onCorrectResume={correctPayrollResumeStart}
         />
       )}
 

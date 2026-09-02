@@ -45,6 +45,17 @@ function shiftMonth(month: string, amount: number) {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
+function affectedMonths(firstDate: string, secondDate: string) {
+  const firstMonth = firstDate.slice(0, 7);
+  const secondMonth = secondDate.slice(0, 7);
+  const [start, end] = firstMonth <= secondMonth
+    ? [firstMonth, secondMonth]
+    : [secondMonth, firstMonth];
+  const months: string[] = [];
+  for (let month = start; month <= end; month = shiftMonth(month, 1)) months.push(month);
+  return months;
+}
+
 function statusLabel(status: "FULL" | "HALF_DAY" | "OFF") {
   if (status === "HALF_DAY") return "ครึ่งวัน";
   if (status === "OFF") return "หยุด";
@@ -242,6 +253,7 @@ export function AttendancePeriodControls({
   saving,
   onAction,
   onCancel,
+  onCorrectResume,
 }: {
   userName: string;
   periodState: PayrollPeriodStateDto;
@@ -250,19 +262,28 @@ export function AttendancePeriodControls({
   saving?: boolean;
   onAction: (action: PayrollPeriodAction, effectiveDate: string) => Promise<string | null>;
   onCancel: () => Promise<string | null>;
+  onCorrectResume: (startOn: string) => Promise<string | null>;
 }) {
   const [date, setDate] = useState(bangkokDateString);
   const [error, setError] = useState<string | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [confirmingEndDate, setConfirmingEndDate] = useState<string | null>(null);
   const [confirmingResumeDate, setConfirmingResumeDate] = useState<string | null>(null);
+  const [correctionDate, setCorrectionDate] = useState(periodState.resumeCorrection?.currentStartOn ?? "");
+  const [correctionError, setCorrectionError] = useState<string | null>(null);
+  const [confirmingCorrectionDate, setConfirmingCorrectionDate] = useState<string | null>(null);
   const current = periodState.currentPeriod;
   const actions: PayrollPeriodAction[] = periodState.currentStatus === "ACTIVE"
     ? ["PAUSE", "END"]
     : periodState.hasPeriodHistory ? ["RESUME"] : ["ENABLE"];
   const today = bangkokDateString();
   const resumeMode = actions.length === 1 && actions[0] === "RESUME";
-  const resumeMonthStart = `${today.slice(0, 7)}-01`;
+
+  useEffect(() => {
+    setCorrectionDate(periodState.resumeCorrection?.currentStartOn ?? "");
+    setCorrectionError(null);
+    setConfirmingCorrectionDate(null);
+  }, [periodState.resumeCorrection?.currentStartOn]);
 
   function actionLabel(action: PayrollPeriodAction) {
     if (action === "ENABLE") return "เปิดใช้เงินเดือน";
@@ -311,8 +332,8 @@ export function AttendancePeriodControls({
       return;
     }
     if (action === "RESUME") {
-      if (date < resumeMonthStart) {
-        setError("กลับเข้าทำงานย้อนหลังได้เฉพาะเดือนปัจจุบัน กรุณาเลือกตั้งแต่วันแรกของเดือนนี้");
+      if (periodState.resumeEarliestOn && date < periodState.resumeEarliestOn) {
+        setError(`วันที่กลับเข้าทำงานต้องไม่ก่อน ${periodState.resumeEarliestOn}`);
         return;
       }
       if (date < today) {
@@ -321,6 +342,39 @@ export function AttendancePeriodControls({
       }
     }
     await runAction(action, date);
+  }
+
+  function reviewCorrection() {
+    const correction = periodState.resumeCorrection;
+    setCorrectionError(null);
+    if (!correction || !correctionDate) {
+      setCorrectionError("กรุณาเลือกวันกลับเข้าทำงานใหม่");
+      return;
+    }
+    if (correctionDate < correction.earliestOn) {
+      setCorrectionError(`วันที่ใหม่ต้องไม่ก่อน ${correction.earliestOn}`);
+      return;
+    }
+    if (correctionDate > today) {
+      setCorrectionError("วันที่ใหม่ต้องไม่เกินวันนี้");
+      return;
+    }
+    if (correctionDate === correction.currentStartOn) {
+      setCorrectionError("กรุณาเลือกวันที่ต่างจากวันเดิม");
+      return;
+    }
+    setConfirmingCorrectionDate(correctionDate);
+  }
+
+  async function correctResume() {
+    if (!confirmingCorrectionDate) return;
+    setCorrectionError(null);
+    const correctionFailure = await onCorrectResume(confirmingCorrectionDate);
+    if (correctionFailure) {
+      setCorrectionError(correctionFailure);
+      return;
+    }
+    setConfirmingCorrectionDate(null);
   }
 
   async function cancelSchedule() {
@@ -362,7 +416,7 @@ export function AttendancePeriodControls({
           </button>
         </div>
       )}
-      <label className="mt-3 grid max-w-xs gap-1 text-sm font-semibold">วันที่มีผล<input type="date" value={date} min={resumeMode ? resumeMonthStart : undefined} onChange={(event) => setDate(event.target.value)} className="focus-ring h-10 rounded-md border border-black/15 px-3 tabular-nums" aria-invalid={Boolean(error)} aria-describedby={error ? "period-action-error" : undefined} /></label>
+      <label className="mt-3 grid max-w-xs gap-1 text-sm font-semibold">วันที่มีผล<input type="date" value={date} min={resumeMode ? periodState.resumeEarliestOn ?? undefined : undefined} onChange={(event) => setDate(event.target.value)} className="focus-ring h-10 rounded-md border border-black/15 px-3 tabular-nums" aria-invalid={Boolean(error)} aria-describedby={error ? "period-action-error" : undefined} /></label>
       {periodState.nextAction && <p className="mt-2 text-pretty text-xs text-ink/60">บันทึกคำสั่งใหม่เพื่อแทนกำหนดการเดิมได้ทันที</p>}
       <div className="mt-3 grid gap-2 lg:grid-cols-2">
         {actions.map((action) => (
@@ -372,6 +426,32 @@ export function AttendancePeriodControls({
           </div>
         ))}
       </div>
+      {periodState.resumeCorrection && (
+        <div className="mt-4 rounded-lg border border-river/20 bg-river/5 p-3">
+          <div>
+            <p className="font-semibold text-ink">แก้วันกลับเข้าทำงานล่าสุด</p>
+            <p className="mt-1 text-pretty text-xs leading-5 text-ink/65">
+              วันเดิม {periodState.resumeCorrection.currentStartOn} · เลือกได้ตั้งแต่ {periodState.resumeCorrection.earliestOn} ถึง {today}
+            </p>
+          </div>
+          <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,16rem)_auto] sm:items-end">
+            <label className="grid gap-1 text-sm font-semibold">วันใหม่
+              <input
+                type="date"
+                value={correctionDate}
+                min={periodState.resumeCorrection.earliestOn}
+                max={today}
+                onChange={(event) => { setCorrectionDate(event.target.value); setCorrectionError(null); }}
+                className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3 tabular-nums"
+                aria-invalid={Boolean(correctionError)}
+                aria-describedby={correctionError ? "resume-correction-error" : undefined}
+              />
+            </label>
+            <button type="button" onClick={reviewCorrection} disabled={saving || !online} className="focus-ring h-10 rounded-md border border-river/30 bg-white px-3 text-sm font-bold text-river hover:bg-river/10 disabled:cursor-not-allowed disabled:opacity-50">ตรวจสอบวันใหม่</button>
+          </div>
+          {correctionError && !confirmingCorrectionDate && <p id="resume-correction-error" role="alert" className="mt-2 text-sm font-semibold text-danger">{correctionError}</p>}
+        </div>
+      )}
       {error && !cancelOpen && !confirmingEndDate && !confirmingResumeDate && <p id="period-action-error" role="alert" className="mt-2 text-sm font-semibold text-danger">{error}</p>}
       {cancelOpen && periodState.nextAction && (
         <ModalShell
@@ -381,6 +461,7 @@ export function AttendancePeriodControls({
           nativeModal
           closeOnEscape
           closeDisabled={saving}
+          renderInPortal
           role="alertdialog"
           size="compact"
         >
@@ -402,6 +483,7 @@ export function AttendancePeriodControls({
           nativeModal
           closeOnEscape
           closeDisabled={saving}
+          renderInPortal
           role="alertdialog"
           size="compact"
         >
@@ -423,6 +505,7 @@ export function AttendancePeriodControls({
           nativeModal
           closeOnEscape
           closeDisabled={saving}
+          renderInPortal
           role="alertdialog"
           size="compact"
         >
@@ -433,6 +516,28 @@ export function AttendancePeriodControls({
           <div className="mt-4 flex flex-wrap justify-end gap-2">
             <button type="button" onClick={() => { setError(null); setConfirmingResumeDate(null); }} disabled={saving} className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3 text-sm font-semibold text-ink hover:bg-field disabled:opacity-50">กลับไปตรวจสอบ</button>
             <button type="button" onClick={() => void runAction("RESUME", confirmingResumeDate)} disabled={saving || !online} className="focus-ring h-10 rounded-md bg-river px-3 text-sm font-bold text-white hover:bg-river/90 disabled:opacity-50">ยืนยันกลับเข้าทำงาน</button>
+          </div>
+        </ModalShell>
+      )}
+      {confirmingCorrectionDate && periodState.resumeCorrection && (
+        <ModalShell
+          title="ยืนยันแก้วันกลับเข้าทำงาน"
+          subtitle={`${periodState.resumeCorrection.currentStartOn} → ${confirmingCorrectionDate}`}
+          onClose={() => { setCorrectionError(null); setConfirmingCorrectionDate(null); }}
+          nativeModal
+          closeOnEscape
+          closeDisabled={saving}
+          renderInPortal
+          role="alertdialog"
+          size="compact"
+        >
+          <p className="text-pretty text-sm text-ink/70">
+            ระบบจะตรวจเดือนที่ได้รับผล: {affectedMonths(periodState.resumeCorrection.currentStartOn, confirmingCorrectionDate).join(", ")} และจะไม่เปลี่ยนสลิปหรือรายการหักเงินจริง
+          </p>
+          {correctionError && <p id="resume-correction-error" role="alert" className="mt-3 text-sm font-semibold text-danger">{correctionError}</p>}
+          <div className="mt-4 flex flex-wrap justify-end gap-2">
+            <button type="button" onClick={() => { setCorrectionError(null); setConfirmingCorrectionDate(null); }} disabled={saving} className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3 text-sm font-semibold text-ink hover:bg-field disabled:opacity-50">กลับไปตรวจสอบ</button>
+            <button type="button" onClick={() => void correctResume()} disabled={saving || !online} className="focus-ring h-10 rounded-md bg-river px-3 text-sm font-bold text-white hover:bg-river/90 disabled:opacity-50">ยืนยันแก้วัน</button>
           </div>
         </ModalShell>
       )}

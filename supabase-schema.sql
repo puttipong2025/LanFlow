@@ -435,19 +435,45 @@ CREATE OR REPLACE FUNCTION "private"."assert_attendance_month_open"("p_profile_i
     LANGUAGE "plpgsql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
+declare
+  v_slip_id uuid;
+  v_slip_status text;
+  v_report_no text;
+  v_deduction_id uuid;
+  v_deduction_type text;
 begin
-  if exists (
-    select 1 from public.payroll_slips ps
-    where ps.profile_id = p_profile_id and ps.month = p_month and ps.status in ('PENDING', 'APPROVED')
-  ) then raise exception 'MONTH_CLOSED:%', p_month; end if;
-  if exists (
-    select 1
-    from public.financial_transactions ft
-    where ft.profile_id = p_profile_id
-      and ft.status = 'APPROVED'
-      and ft.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
-      and ft.applied_month = (p_month || '-01')::date
-  ) then raise exception 'DEDUCTION_LOCKED:%', p_month; end if;
+  select ps.id, ps.status::text, public.report_lock_no(ps)
+    into v_slip_id, v_slip_status, v_report_no
+  from public.payroll_slips ps
+  where ps.profile_id = p_profile_id
+    and ps.month = p_month
+    and ps.status in ('PENDING', 'APPROVED')
+  order by (public.report_lock_no(ps) is not null) desc, ps.created_at desc
+  limit 1;
+
+  if found then
+    if v_report_no is not null then
+      raise exception 'REPORT_LOCKED:%:PAYROLL_SLIP:%:%:%',
+        v_report_no, p_month, v_slip_status, v_slip_id;
+    end if;
+    raise exception 'MONTH_CLOSED:%:PAYROLL_SLIP:%:%',
+      p_month, v_slip_status, v_slip_id;
+  end if;
+
+  select ft.id, ft.type::text
+    into v_deduction_id, v_deduction_type
+  from public.financial_transactions ft
+  where ft.profile_id = p_profile_id
+    and ft.status = 'APPROVED'
+    and ft.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
+    and ft.applied_month = (p_month || '-01')::date
+  order by ft.created_at desc
+  limit 1;
+
+  if found then
+    raise exception 'DEDUCTION_LOCKED:%:%:%',
+      p_month, v_deduction_type, v_deduction_id;
+  end if;
 end
 $$;
 
@@ -8701,6 +8727,91 @@ $$;
 ALTER FUNCTION "public"."configure_telegram_badge_dispatcher"("p_edge_url" "text") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."correct_time_payroll_resume_start"("p_profile_id" "uuid", "p_start_on" "date") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_actor uuid := auth.uid();
+  v_today date := (now() at time zone 'Asia/Bangkok')::date;
+  v_current public.time_payroll_active_periods%rowtype;
+  v_previous public.time_payroll_active_periods%rowtype;
+  v_old_start_on date;
+  v_affected_from date;
+  v_affected_through date;
+begin
+  if v_actor is null or not private.is_global_time_payroll_manager() then raise exception 'Forbidden'; end if;
+  if p_profile_id is null or p_start_on is null then raise exception 'INVALID_RESUME_CORRECTION'; end if;
+  if not exists (select 1 from public.profiles p where p.id = p_profile_id and p.is_active) then
+    raise exception 'PROFILE_NOT_FOUND';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended('time-payroll-attendance:' || p_profile_id::text, 0));
+
+  select * into v_current
+  from public.time_payroll_active_periods ap
+  where ap.profile_id = p_profile_id
+    and ap.start_on <= v_today
+    and (
+      ap.end_on is null
+      or (
+        ap.scheduled_action in ('PAUSE', 'END')
+        and ap.scheduled_activation_on > v_today
+      )
+    )
+  order by ap.start_on desc
+  limit 1
+  for update;
+
+  if not found then raise exception 'NO_RESUME_PERIOD_TO_CORRECT'; end if;
+
+  select * into v_previous
+  from public.time_payroll_active_periods ap
+  where ap.profile_id = p_profile_id
+    and ap.id <> v_current.id
+    and ap.start_on < v_current.start_on
+    and ap.end_on is not null
+  order by ap.start_on desc
+  limit 1
+  for update;
+
+  if not found then raise exception 'NO_RESUME_PERIOD_TO_CORRECT'; end if;
+  if p_start_on <= v_previous.end_on then
+    raise exception 'RESUME_OVERLAPS_PREVIOUS_PERIOD:%', v_previous.end_on;
+  end if;
+  if p_start_on > v_today then raise exception 'RESUME_CORRECTION_DATE_IN_FUTURE'; end if;
+  if v_current.scheduled_effective_on is not null
+    and p_start_on >= v_current.scheduled_effective_on
+  then
+    raise exception 'RESUME_CORRECTION_AFTER_PENDING_ACTION:%', v_current.scheduled_effective_on;
+  end if;
+
+  v_old_start_on := v_current.start_on;
+  if p_start_on = v_old_start_on then raise exception 'INVALID_RESUME_CORRECTION'; end if;
+  v_affected_from := least(v_old_start_on, p_start_on);
+  v_affected_through := greatest(v_old_start_on, p_start_on);
+  perform private.assert_attendance_range_open(p_profile_id, v_affected_from, v_affected_through);
+
+  update public.time_payroll_active_periods
+  set start_on = p_start_on,
+      updated_by = v_actor,
+      updated_at = now()
+  where id = v_current.id;
+
+  return jsonb_build_object(
+    'profileId', p_profile_id,
+    'oldStartOn', v_old_start_on,
+    'newStartOn', p_start_on,
+    'affectedFrom', v_affected_from,
+    'affectedThrough', v_affected_through
+  );
+end
+$$;
+
+
+ALTER FUNCTION "public"."correct_time_payroll_resume_start"("p_profile_id" "uuid", "p_start_on" "date") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."create_cash_branch_transfer"("payload" "jsonb") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -9558,248 +9669,6 @@ $_$;
 
 
 ALTER FUNCTION "public"."create_time_tracking_payroll_slip"("p_profile_id" "uuid", "p_month" "text", "p_auto_start_next_month" boolean) OWNER TO "postgres";
-
-
-CREATE OR REPLACE FUNCTION "public"."create_time_tracking_payroll_slip_internal_20260829"("p_profile_id" "uuid", "p_month" "text", "p_auto_start_next_month" boolean DEFAULT true) RETURNS "jsonb"
-    LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO ''
-    AS $_$
-declare
-  v_actor_id uuid := auth.uid();
-  v_month date;
-  v_next_month date;
-  v_current_month date := date_trunc(
-    'month',
-    (now() at time zone 'Asia/Bangkok')::date
-  )::date;
-  v_scan_month date;
-  v_first_segment_month date;
-  v_active_segment public.time_segments%rowtype;
-  v_was_running boolean := false;
-  v_daily_wage numeric;
-  v_total_days numeric;
-  v_gross numeric;
-  v_deductions numeric;
-  v_net numeric;
-  v_segments jsonb;
-  v_transactions jsonb;
-  v_slip public.payroll_slips%rowtype;
-  v_blocker record;
-begin
-  if v_actor_id is null or not private.can_approve_time_tracking_profile(p_profile_id) then
-    raise exception 'Forbidden';
-  end if;
-  if p_month !~ '^[0-9]{4}-[0-9]{2}$' then
-    raise exception 'INVALID_MONTH';
-  end if;
-
-  begin
-    v_month := (p_month || '-01')::date;
-  exception when others then
-    raise exception 'INVALID_MONTH';
-  end;
-  if to_char(v_month, 'YYYY-MM') <> p_month or v_month > v_current_month then
-    raise exception 'INVALID_MONTH';
-  end if;
-  v_next_month := (v_month + interval '1 month')::date;
-
-  perform pg_advisory_xact_lock(hashtextextended('time-tracking:' || p_profile_id::text, 0));
-
-  if exists (
-    select 1 from public.payroll_slips ps
-    where ps.profile_id = p_profile_id and ps.month = p_month
-  ) then
-    raise exception 'MONTH_CLOSED:%', p_month;
-  end if;
-
-  select ft.id, ft.type::text type, ft.effective_date
-  into v_blocker
-  from public.financial_transactions ft
-  where ft.profile_id = p_profile_id
-    and ft.type in ('DEBT', 'WITHDRAWAL')
-    and ft.status = 'PENDING'
-    and ft.effective_date < v_next_month
-  order by ft.effective_date, ft.created_at, ft.id
-  limit 1;
-  if found then
-    raise exception 'PENDING_BLOCKER:%:%:%',
-      v_blocker.type,
-      v_blocker.id,
-      to_char(v_blocker.effective_date, 'YYYY-MM');
-  end if;
-
-  select min(date_trunc('month', s.start_time at time zone 'Asia/Bangkok')::date)
-  into v_first_segment_month
-  from public.time_segments s
-  where s.profile_id = p_profile_id;
-
-  if v_first_segment_month is not null then
-    for v_scan_month in
-      select generate_series(
-        v_first_segment_month::timestamp,
-        (v_month - interval '1 month')::timestamp,
-        interval '1 month'
-      )::date
-    loop
-      if not exists (
-        select 1 from public.payroll_slips ps
-        where ps.profile_id = p_profile_id
-          and ps.month = to_char(v_scan_month, 'YYYY-MM')
-      ) and public.calculate_paid_work_days(
-        p_profile_id,
-        v_scan_month::timestamp at time zone 'Asia/Bangkok',
-        (v_scan_month + interval '1 month')::timestamp at time zone 'Asia/Bangkok'
-      ) > 0 then
-        raise exception 'OLDER_WORK_MONTH:%', to_char(v_scan_month, 'YYYY-MM');
-      end if;
-    end loop;
-  end if;
-
-  if v_month = v_current_month then
-    select * into v_active_segment
-    from public.time_segments s
-    where s.profile_id = p_profile_id and s.end_time is null
-    for update;
-    if found then
-      v_was_running := true;
-      update public.time_segments
-      set end_time = now()
-      where id = v_active_segment.id;
-    end if;
-  end if;
-
-  v_total_days := public.calculate_paid_work_days(
-    p_profile_id,
-    v_month::timestamp at time zone 'Asia/Bangkok',
-    v_next_month::timestamp at time zone 'Asia/Bangkok'
-  );
-
-  if v_month < v_current_month and v_total_days <= 0 then
-    raise exception 'NO_WORK_MONTH:%', p_month;
-  end if;
-
-  perform private.apply_time_tracking_deductions(p_profile_id, v_month);
-
-  select p.daily_wage into v_daily_wage
-  from public.profiles p
-  where p.id = p_profile_id;
-  if not found then raise exception 'PROFILE_NOT_FOUND'; end if;
-
-  v_gross := trunc(v_total_days * v_daily_wage, 2);
-  select coalesce(sum(ft.amount), 0)
-  into v_deductions
-  from public.financial_transactions ft
-  where ft.profile_id = p_profile_id
-    and ft.status = 'APPROVED'
-    and ft.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
-    and ft.applied_month = v_month;
-  v_net := greatest(trunc(v_gross - v_deductions, 2), 0);
-
-  select coalesce(jsonb_agg(to_jsonb(s) order by s.start_time), '[]'::jsonb)
-  into v_segments
-  from public.time_segments s
-  where s.profile_id = p_profile_id
-    and s.end_time is not null
-    and s.end_time > (v_month::timestamp at time zone 'Asia/Bangkok')
-    and s.start_time < (v_next_month::timestamp at time zone 'Asia/Bangkok');
-
-  select coalesce(jsonb_agg(to_jsonb(ft) order by ft.created_at, ft.id), '[]'::jsonb)
-  into v_transactions
-  from public.financial_transactions ft
-  where ft.profile_id = p_profile_id
-    and (
-      (
-        ft.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
-        and ft.applied_month = v_month
-      )
-      or
-      (
-        ft.type in ('DEBT', 'WITHDRAWAL')
-        and ft.effective_date >= v_month
-        and ft.effective_date < v_next_month
-      )
-    );
-
-  insert into public.payroll_slips (
-    profile_id,
-    month,
-    gross_pay,
-    total_deductions,
-    net_pay,
-    total_days,
-    daily_wage,
-    slip_data,
-    status,
-    created_by
-  )
-  values (
-    p_profile_id,
-    p_month,
-    v_gross,
-    v_deductions,
-    v_net,
-    v_total_days,
-    v_daily_wage,
-    jsonb_build_object(
-      'segments', v_segments,
-      'transactions', v_transactions,
-      'lockedAt', now()
-    ),
-    'PENDING',
-    v_actor_id
-  )
-  returning * into v_slip;
-
-  if v_month = v_current_month and v_was_running and p_auto_start_next_month then
-    insert into public.time_tracking_resume_schedules (
-      profile_id,
-      payroll_slip_id,
-      resume_at,
-      created_by
-    )
-    values (
-      p_profile_id,
-      v_slip.id,
-      v_next_month::timestamp at time zone 'Asia/Bangkok',
-      v_actor_id
-    )
-    on conflict (profile_id) do update
-    set
-      payroll_slip_id = excluded.payroll_slip_id,
-      resume_at = excluded.resume_at,
-      created_by = excluded.created_by,
-      created_at = now();
-  else
-    delete from public.time_tracking_resume_schedules
-    where profile_id = p_profile_id;
-  end if;
-
-  insert into public.time_tracking_audit_logs (
-    admin_id, action, target_table, record_id, new_data, comment
-  )
-  values (
-    v_actor_id,
-    'CREATE_PAYROLL_SLIP',
-    'payroll_slips',
-    v_slip.id,
-    to_jsonb(v_slip) || jsonb_build_object(
-      'was_running', v_was_running,
-      'auto_start_next_month', v_month = v_current_month
-        and v_was_running
-        and p_auto_start_next_month
-    ),
-    'สร้างสลิปเดือน ' || p_month
-  );
-
-  return to_jsonb(v_slip) || jsonb_build_object(
-    'auto_start_scheduled',
-    v_month = v_current_month and v_was_running and p_auto_start_next_month
-  );
-end;
-$_$;
-
-
-ALTER FUNCTION "public"."create_time_tracking_payroll_slip_internal_20260829"("p_profile_id" "uuid", "p_month" "text", "p_auto_start_next_month" boolean) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."create_time_tracking_payroll_slip_internal_20260901"("p_profile_id" "uuid", "p_month" "text", "p_auto_start_next_month" boolean DEFAULT true) RETURNS "jsonb"
@@ -19060,7 +18929,7 @@ ALTER FUNCTION "public"."set_rubber_export_sold_out"("p_export_id" "uuid", "p_so
 CREATE OR REPLACE FUNCTION "public"."set_time_payroll_active_period"("p_profile_id" "uuid", "p_action" "text", "p_effective_date" "date") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
-    AS $$
+    AS $_$
 declare
   v_actor uuid := auth.uid();
   v_today date := (now() at time zone 'Asia/Bangkok')::date;
@@ -19069,6 +18938,7 @@ declare
   v_pending public.time_payroll_active_periods%rowtype;
   v_current public.time_payroll_active_periods%rowtype;
   v_latest public.time_payroll_active_periods%rowtype;
+  v_last_end_action_on date;
   v_workday_end_time time;
   v_end_day_earned boolean;
 begin
@@ -19083,9 +18953,6 @@ begin
   end if;
   if p_action = 'END' and p_effective_date < v_today then
     raise exception 'END_DATE_IN_PAST';
-  end if;
-  if p_action = 'RESUME' and p_effective_date < date_trunc('month', v_today)::date then
-    raise exception 'RESUME_DATE_BEFORE_CURRENT_MONTH';
   end if;
 
   v_activation_on := p_effective_date;
@@ -19156,6 +19023,28 @@ begin
       order by ap.start_on desc
       limit 1
       for update;
+
+      if not found then
+        select (al.new_data ->> 'selectedEffectiveOn')::date
+          into v_last_end_action_on
+        from public.time_tracking_audit_logs al
+        where al.target_table = 'time_payroll_active_periods'
+          and al.record_id = p_profile_id
+          and al.action = 'SET_PAYROLL_ACTIVE_PERIOD'
+          and al.new_data @> '{"action":"END"}'::jsonb
+          and al.new_data ->> 'selectedEffectiveOn' ~ '^\d{4}-\d{2}-\d{2}$'
+        order by al.created_at desc
+        limit 1;
+
+        if not found then raise exception 'NO_PERIOD_HISTORY_TO_RESUME'; end if;
+        if p_effective_date < v_last_end_action_on then
+          raise exception 'RESUME_BEFORE_LAST_END_DATE:%', v_last_end_action_on;
+        end if;
+      elsif not (v_latest.end_on = v_today and p_effective_date = v_today)
+        and (v_latest.end_on is null or p_effective_date <= v_latest.end_on)
+      then
+        raise exception 'RESUME_OVERLAPS_PREVIOUS_PERIOD:%', v_latest.end_on;
+      end if;
     end if;
 
     if v_is_scheduled then
@@ -19168,7 +19057,10 @@ begin
       );
     else
       perform private.assert_attendance_range_open(p_profile_id, p_effective_date, v_today);
-      if p_action = 'RESUME' and v_latest.end_on = p_effective_date then
+      if p_action = 'RESUME'
+        and v_latest.end_on = v_today
+        and p_effective_date = v_today
+      then
         update public.time_payroll_active_periods
         set end_on = null, updated_by = v_actor, updated_at = now()
         where id = v_latest.id;
@@ -19259,7 +19151,7 @@ begin
     'endDayEarned', v_end_day_earned
   );
 end
-$$;
+$_$;
 
 
 ALTER FUNCTION "public"."set_time_payroll_active_period"("p_profile_id" "uuid", "p_action" "text", "p_effective_date" "date") OWNER TO "postgres";
@@ -26082,6 +25974,11 @@ GRANT ALL ON FUNCTION "public"."configure_telegram_badge_dispatcher"("p_edge_url
 
 
 
+REVOKE ALL ON FUNCTION "public"."correct_time_payroll_resume_start"("p_profile_id" "uuid", "p_start_on" "date") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."correct_time_payroll_resume_start"("p_profile_id" "uuid", "p_start_on" "date") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."create_cash_branch_transfer"("payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."create_cash_branch_transfer"("payload" "jsonb") TO "authenticated";
 
@@ -26128,10 +26025,6 @@ REVOKE ALL ON FUNCTION "public"."create_stock_product_with_sale_item"("payload" 
 
 REVOKE ALL ON FUNCTION "public"."create_time_tracking_payroll_slip"("p_profile_id" "uuid", "p_month" "text", "p_auto_start_next_month" boolean) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."create_time_tracking_payroll_slip"("p_profile_id" "uuid", "p_month" "text", "p_auto_start_next_month" boolean) TO "authenticated";
-
-
-
-REVOKE ALL ON FUNCTION "public"."create_time_tracking_payroll_slip_internal_20260829"("p_profile_id" "uuid", "p_month" "text", "p_auto_start_next_month" boolean) FROM PUBLIC;
 
 
 

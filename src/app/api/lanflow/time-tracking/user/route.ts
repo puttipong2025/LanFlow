@@ -140,14 +140,19 @@ export async function GET(request: NextRequest) {
     if (!periodState.hasPeriodHistory && result.auth.canAccessSystemManager) {
       const { data: endHistory, error: endHistoryError } = await supabase
         .from("time_tracking_audit_logs")
-        .select("id")
+        .select("new_data")
         .eq("target_table", "time_payroll_active_periods")
         .eq("record_id", targetUserId)
         .eq("action", "SET_PAYROLL_ACTIVE_PERIOD")
         .contains("new_data", { action: "END" })
+        .order("created_at", { ascending: false })
         .limit(1);
       if (endHistoryError) throw endHistoryError;
-      if ((endHistory || []).length > 0) periodState.hasPeriodHistory = true;
+      const lastEndDate = endHistory?.[0]?.new_data?.selectedEffectiveOn;
+      if (typeof lastEndDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(lastEndDate)) {
+        periodState.hasPeriodHistory = true;
+        periodState.resumeEarliestOn = lastEndDate;
+      }
     }
 
     return NextResponse.json({

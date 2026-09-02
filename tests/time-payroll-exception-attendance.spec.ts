@@ -11,7 +11,7 @@ const calendarEligibilityMigrationPath = "supabase/migrations/20260830040000_tim
 const retireTimerMigrationPath = "supabase/migrations/20260831010000_retire_time_tracking_timer.sql";
 const futureSchedulingMigrationPath = "supabase/migrations/20260901030000_time_payroll_future_period_scheduling.sql";
 const immediateEndMigrationPath = "supabase/migrations/20260902030000_end_time_payroll_employment_immediately.sql";
-const backdatedResumeMigrationPath = "supabase/migrations/20260902040000_time_payroll_backdated_resume_current_month.sql";
+const crossMonthResumeMigrationPath = "supabase/migrations/20260902050000_time_payroll_cross_month_resume_correction.sql";
 
 test("counts exception attendance only after the Bangkok workday boundary", () => {
   const input = {
@@ -176,20 +176,30 @@ test("active-period backdates check every affected month for slip and deduction 
   expect(sql).toContain("perform private.assert_attendance_range_open(p_profile_id, p_effective_date + 1, v_today)");
 });
 
-test("backdated RESUME stays inside the current Bangkok month without removing existing guards", async () => {
+test("cross-month RESUME and latest-period correction retain the financial guards", async () => {
   const [sql, admin] = await Promise.all([
-    readFile(backdatedResumeMigrationPath, "utf8"),
+    readFile(crossMonthResumeMigrationPath, "utf8"),
     readFile("src/app/api/lanflow/time-tracking/admin/route.ts", "utf8"),
   ]);
 
   expect(sql).toContain("v_today date := (now() at time zone 'Asia/Bangkok')::date");
-  expect(sql).toContain("p_action = 'RESUME' and p_effective_date < date_trunc('month', v_today)::date");
-  expect(sql).toContain("raise exception 'RESUME_DATE_BEFORE_CURRENT_MONTH'");
+  expect(sql).not.toContain("RESUME_DATE_BEFORE_CURRENT_MONTH");
+  expect(sql).toContain("raise exception 'RESUME_OVERLAPS_PREVIOUS_PERIOD:%', v_latest.end_on");
   expect(sql).toContain("perform private.assert_attendance_month_open(p_profile_id, to_char(p_effective_date, 'YYYY-MM'))");
   expect(sql).toContain("perform private.assert_attendance_range_open(p_profile_id, p_effective_date, v_today)");
   expect(sql).toContain("v_is_scheduled := v_activation_on > v_today");
-  expect(admin).toContain("RESUME_DATE_BEFORE_CURRENT_MONTH");
-  expect(admin).toContain("กลับเข้าทำงานย้อนหลังได้เฉพาะเดือนปัจจุบัน");
+  expect(sql).toContain("raise exception 'NO_PERIOD_HISTORY_TO_RESUME'");
+  expect(sql).toContain("raise exception 'RESUME_BEFORE_LAST_END_DATE:%', v_last_end_action_on");
+  expect(sql).toContain("create or replace function public.correct_time_payroll_resume_start(");
+  expect(sql).toContain("perform private.assert_attendance_range_open(p_profile_id, v_affected_from, v_affected_through)");
+  expect(sql).toContain("set start_on = p_start_on,");
+  const correctionSql = sql.slice(sql.indexOf("create or replace function public.correct_time_payroll_resume_start("));
+  expect(correctionSql).not.toContain("insert into public.time_tracking_audit_logs");
+  expect(admin).toContain('body.action === "CORRECT_PAYROLL_RESUME_START"');
+  expect(admin).toContain("correct_time_payroll_resume_start");
+  expect(admin).toContain("!isIsoDate(effective_date)");
+  expect(admin).toContain("!isIsoDate(start_on)");
+  expect(sql).toContain("drop function if exists public.create_time_tracking_payroll_slip_internal_20260829");
 });
 
 test("historical guard migration rejected future active-period dates", async () => {

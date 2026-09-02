@@ -22,11 +22,18 @@ interface PayrollScheduledActionDto {
   activationOn: string;
 }
 
+interface PayrollResumeCorrectionDto {
+  currentStartOn: string;
+  earliestOn: string;
+}
+
 export interface PayrollPeriodStateDto {
   currentStatus: "ACTIVE" | "INACTIVE";
   currentPeriod: AttendancePeriodDto | null;
   nextAction: PayrollScheduledActionDto | null;
   hasPeriodHistory: boolean;
+  resumeEarliestOn: string | null;
+  resumeCorrection: PayrollResumeCorrectionDto | null;
 }
 
 export interface AttendanceExceptionDto {

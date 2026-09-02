@@ -99,6 +99,7 @@ export function ModalShell({
       aria-labelledby={titleId}
       onCancel={(event) => {
         event.preventDefault();
+        event.stopPropagation();
         if (closeOnEscape && !closeDisabled) onClose();
       }}
       className="m-0 h-dvh max-h-none w-screen max-w-none border-0 bg-transparent p-0"
