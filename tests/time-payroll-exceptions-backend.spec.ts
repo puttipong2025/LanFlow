@@ -1438,4 +1438,127 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       }
     }
   });
+
+  test("reported withdrawal still settles through payroll while direct balance edits stay locked", async () => {
+    const service = serviceClient();
+    const manager = await globalManagerClient();
+    const managerUser = await manager.auth.getUser();
+    const managerId = managerUser.data.user!.id;
+    const managerProfile = await service
+      .from("profiles")
+      .select("name, phone")
+      .eq("id", managerId)
+      .single();
+    expect(managerProfile.error).toBeNull();
+
+    const employeeId = await createEmployee(service, "QA reported payroll settlement");
+    const locationId = crypto.randomUUID();
+    const reportId = crypto.randomUUID();
+    const reportNo = `RPT-LOCK-${reportId.replaceAll("-", "").slice(0, 12).toUpperCase()}`;
+    let withdrawalId: string | null = null;
+
+    try {
+      expect((await service.from("locations").insert({
+        id: locationId,
+        name: `สาขาทดสอบ payroll lock ${locationId.slice(0, 6)}`,
+        code: `PL${locationId.replaceAll("-", "").slice(0, 6).toUpperCase()}`,
+        is_active: true,
+      })).error).toBeNull();
+      await primaryLocation(service, employeeId, locationId);
+      expect((await service.from("profiles").update({ daily_wage: 0 }).eq("id", employeeId)).error)
+        .toBeNull();
+
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "ENABLE",
+        p_effective_date: "2026-08-01",
+      })).error).toBeNull();
+      const withdrawal = await manager.rpc("create_time_tracking_transaction", {
+        p_profile_id: employeeId,
+        p_type: "WITHDRAWAL",
+        p_amount: 1000,
+        p_effective_date: "2026-08-08",
+        p_description: "QA reported withdrawal",
+      });
+      expect(withdrawal.error).toBeNull();
+      expect(withdrawal.data).toMatchObject({ status: "approved" });
+      withdrawalId = (withdrawal.data as { id: string }).id;
+      expect((await manager.rpc("update_time_tracking_wage", {
+        p_profile_id: employeeId,
+        p_daily_wage: 500,
+      })).error).toBeNull();
+
+      expect((await service.from("report_batches").insert({
+        id: reportId,
+        report_no: reportNo,
+        report_date: "2026-08-08",
+        sequence_no: 1,
+        location_id: locationId,
+        cutoff_at: "2026-08-08T16:00:00+07:00",
+        created_by_user_id: managerId,
+        created_by_name: managerProfile.data!.name,
+        created_by_phone: managerProfile.data!.phone,
+      })).error).toBeNull();
+      expect((await service.from("report_items").insert({
+        report_id: reportId,
+        location_id: locationId,
+        entity_type: "financial_transaction",
+        entity_id: withdrawalId,
+        eligibility_at: "2026-08-08T16:00:00+07:00",
+      })).error).toBeNull();
+
+      const directBeforePayroll = await service
+        .from("financial_transactions")
+        .update({ remaining_amount: 999 })
+        .eq("id", withdrawalId);
+      expect(directBeforePayroll.error?.message).toContain(`REPORT_LOCKED:${reportNo}`);
+
+      const slip = await manager.rpc("create_time_tracking_payroll_slip", {
+        p_profile_id: employeeId,
+        p_month: "2026-08",
+        p_auto_start_next_month: false,
+      });
+      expect(slip.error).toBeNull();
+      expect(slip.data).toMatchObject({ status: "APPROVED", total_deductions: 1000 });
+
+      const source = await service
+        .from("financial_transactions")
+        .select("amount, remaining_amount")
+        .eq("id", withdrawalId)
+        .single();
+      expect(source.error).toBeNull();
+      expect(Number(source.data!.amount)).toBe(1000);
+      expect(Number(source.data!.remaining_amount)).toBe(0);
+
+      const deductions = await service
+        .from("financial_transactions")
+        .select("type, amount, applied_month")
+        .eq("parent_debt_id", withdrawalId);
+      expect(deductions.error).toBeNull();
+      expect(deductions.data).toEqual([{
+        type: "WITHDRAWAL_DEDUCTION",
+        amount: 1000,
+        applied_month: "2026-08-01",
+      }]);
+      const reportItem = await service
+        .from("report_items")
+        .select("active")
+        .eq("report_id", reportId)
+        .eq("entity_id", withdrawalId)
+        .single();
+      expect(reportItem.error).toBeNull();
+      expect(reportItem.data!.active).toBe(true);
+
+      const directAfterPayroll = await service
+        .from("financial_transactions")
+        .update({ remaining_amount: 100 })
+        .eq("id", withdrawalId);
+      expect(directAfterPayroll.error?.message).toContain(`REPORT_LOCKED:${reportNo}`);
+    } finally {
+      await service.from("report_items").delete().eq("report_id", reportId);
+      await service.from("report_batches").delete().eq("id", reportId);
+      await deleteEmployee(service, employeeId);
+      await service.from("locations").delete().eq("id", locationId);
+    }
+  });
 });

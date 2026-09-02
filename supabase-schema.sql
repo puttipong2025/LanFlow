@@ -226,6 +226,41 @@ CREATE OR REPLACE FUNCTION "private"."apply_time_tracking_deductions"("p_profile
     SET "search_path" TO ''
     AS $$
 declare
+  v_previous_flag text := current_setting('app.time_payroll_settlement_rpc', true);
+  v_result jsonb;
+begin
+  perform set_config('app.time_payroll_settlement_rpc', 'true', true);
+  begin
+    v_result := private.apply_time_tracking_deductions_internal_20260902(
+      p_profile_id,
+      p_through_month
+    );
+  exception when others then
+    perform set_config(
+      'app.time_payroll_settlement_rpc',
+      coalesce(nullif(v_previous_flag, ''), 'false'),
+      true
+    );
+    raise;
+  end;
+  perform set_config(
+    'app.time_payroll_settlement_rpc',
+    coalesce(nullif(v_previous_flag, ''), 'false'),
+    true
+  );
+  return v_result;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."apply_time_tracking_deductions"("p_profile_id" "uuid", "p_through_month" "date") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."apply_time_tracking_deductions_internal_20260902"("p_profile_id" "uuid", "p_through_month" "date") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
   v_month date;
   v_first_month date;
   v_through_month date := date_trunc('month', p_through_month)::date;
@@ -393,7 +428,7 @@ end;
 $$;
 
 
-ALTER FUNCTION "private"."apply_time_tracking_deductions"("p_profile_id" "uuid", "p_through_month" "date") OWNER TO "postgres";
+ALTER FUNCTION "private"."apply_time_tracking_deductions_internal_20260902"("p_profile_id" "uuid", "p_through_month" "date") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."assert_attendance_month_open"("p_profile_id" "uuid", "p_month" "text") RETURNS "void"
@@ -3717,6 +3752,19 @@ begin
         - 'net_weight'
         - 'payable_before_rounding'
         - 'has_ocr_source_image') then
+      return new;
+    end if;
+    if tg_table_name = 'financial_transactions'
+      and tg_op = 'UPDATE'
+      and coalesce(current_setting('app.time_payroll_settlement_rpc', true), 'false') = 'true'
+      and (to_jsonb(old) ->> 'type') in ('DEBT', 'WITHDRAWAL')
+      and (to_jsonb(new) ->> 'type') = (to_jsonb(old) ->> 'type')
+      and (to_jsonb(old) ->> 'status') = 'APPROVED'
+      and (to_jsonb(new) ->> 'status') = (to_jsonb(old) ->> 'status')
+      and (to_jsonb(new) ->> 'remaining_amount')::numeric between 0
+        and (to_jsonb(new) ->> 'amount')::numeric
+      and (to_jsonb(new) - array['remaining_amount', 'updated_at'])
+        = (to_jsonb(old) - array['remaining_amount', 'updated_at']) then
       return new;
     end if;
     perform private.raise_report_lock(v_report_no);
@@ -25454,6 +25502,10 @@ REVOKE ALL ON FUNCTION "private"."append_dashboard_money_event"("p_source_type" 
 
 
 REVOKE ALL ON FUNCTION "private"."apply_time_tracking_deductions"("p_profile_id" "uuid", "p_through_month" "date") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."apply_time_tracking_deductions_internal_20260902"("p_profile_id" "uuid", "p_through_month" "date") FROM PUBLIC;
 
 
 
