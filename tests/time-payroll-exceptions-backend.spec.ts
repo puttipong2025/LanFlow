@@ -51,9 +51,8 @@ function bangkokDate(offsetDays = 0) {
 function nextBangkokMonthBoundary() {
   const [year, month] = bangkokDate().split("-").map(Number);
   const activation = new Date(Date.UTC(year, month, 1));
-  const effective = new Date(activation.getTime() - 86_400_000);
   return {
-    effectiveDate: effective.toISOString().slice(0, 10),
+    effectiveDate: activation.toISOString().slice(0, 10),
     activationMonth: activation.toISOString().slice(0, 7),
   };
 }
@@ -323,11 +322,16 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     const service = serviceClient();
     const manager = await globalManagerClient();
     const employeeId = await createEmployee(service, "QA attendance lifecycle");
-    const startOn = bangkokDate(-5);
-    const secondDay = bangkokDate(-4);
-    const pauseOn = bangkokDate(-3);
-    const resumeOn = bangkokDate(-2);
-    const endOn = bangkokDate(-1);
+    const previousMonthEnd = new Date(`${bangkokDate().slice(0, 7)}-01T00:00:00Z`);
+    previousMonthEnd.setUTCDate(previousMonthEnd.getUTCDate() - 1);
+    const lifecycleDate = (offsetDays: number) => new Date(
+      previousMonthEnd.getTime() + offsetDays * 86_400_000,
+    ).toISOString().slice(0, 10);
+    const startOn = lifecycleDate(-4);
+    const secondDay = lifecycleDate(-3);
+    const pauseOn = lifecycleDate(-2);
+    const resumeOn = lifecycleDate(-1);
+    const endOn = lifecycleDate(0);
     const month = startOn.slice(0, 7);
 
     try {
@@ -349,7 +353,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_effective_date: bangkokDate(1),
       });
       expect(futureEnd.error).toBeNull();
-      expect(futureEnd.data).toMatchObject({ scheduled: true, activationOn: bangkokDate(2) });
+      expect(futureEnd.data).toMatchObject({ scheduled: true, activationOn: bangkokDate(1) });
 
       const paused = await manager.rpc("set_time_payroll_active_period", {
         p_profile_id: employeeId,
@@ -368,7 +372,12 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_action: "END",
         p_effective_date: endOn,
       });
-      expect(ended.error).toBeNull();
+      expect(ended.error?.message).toContain("END_DATE_IN_PAST");
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "PAUSE",
+        p_effective_date: lifecycleDate(1),
+      })).error).toBeNull();
 
       const replaced = await manager.rpc("replace_time_payroll_attendance_exceptions", {
         p_profile_id: employeeId,
@@ -478,11 +487,12 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     }
   });
 
-  test("END today remains active until tomorrow and can be cancelled", async () => {
+  test("END today is immediate and same-day RESUME does not duplicate attendance", async () => {
     const service = serviceClient();
     const manager = await globalManagerClient();
     const employeeId = await createEmployee(service, "QA same-day resume");
-    const today = bangkokDate(0);
+    const today = bangkokDate();
+    const yesterday = bangkokDate(-1);
 
     try {
       const location = await service.from("locations").select("id").eq("is_active", true).limit(1).single();
@@ -491,33 +501,66 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       expect((await manager.rpc("set_time_payroll_active_period", {
         p_profile_id: employeeId,
         p_action: "ENABLE",
-        p_effective_date: today,
+        p_effective_date: yesterday,
       })).error).toBeNull();
-      expect((await manager.rpc("set_time_payroll_active_period", {
+      const settings = await manager.rpc("get_time_payroll_settings");
+      expect(settings.error).toBeNull();
+      const beforeEnd = new Date();
+      const ended = await manager.rpc("set_time_payroll_active_period", {
         p_profile_id: employeeId,
         p_action: "END",
         p_effective_date: today,
-      })).error).toBeNull();
+      });
+      const afterEnd = new Date();
+      expect(ended.error).toBeNull();
+      expect(ended.data).toMatchObject({ scheduled: false, activationOn: today });
 
-      const scheduled = await manager
+      const endedPeriod = await manager
         .from("time_payroll_active_periods")
         .select("start_on, end_on, scheduled_action, scheduled_effective_on, scheduled_activation_on")
         .eq("profile_id", employeeId)
         .single();
-      expect(scheduled.error).toBeNull();
-      expect(scheduled.data).toEqual({
-        start_on: today,
-        end_on: today,
-        scheduled_action: "END",
-        scheduled_effective_on: today,
-        scheduled_activation_on: bangkokDate(1),
+      expect(endedPeriod.error).toBeNull();
+      const cutoff = String(settings.data?.workdayEndTime);
+      const allowedEndDates = new Set([
+        expectedEligibleThrough(cutoff, beforeEnd),
+        expectedEligibleThrough(cutoff, afterEnd),
+      ]);
+      expect(allowedEndDates).toContain(endedPeriod.data!.end_on);
+      expect(endedPeriod.data).toMatchObject({
+        start_on: yesterday,
+        scheduled_action: null,
+        scheduled_effective_on: null,
+        scheduled_activation_on: null,
       });
 
-      const cancelled = await manager.rpc("cancel_time_payroll_active_period_schedule", {
+      const noPending = await manager.rpc("cancel_time_payroll_active_period_schedule", {
         p_profile_id: employeeId,
       });
-      expect(cancelled.error).toBeNull();
-      expect(cancelled.data).toMatchObject({ cancelled: true, action: "END" });
+      expect(noPending.error?.message).toContain("NO_PENDING_PERIOD_ACTION");
+
+      const resumed = await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "RESUME",
+        p_effective_date: today,
+      });
+      expect(resumed.error).toBeNull();
+      const resumedPeriods = await manager
+        .from("time_payroll_active_periods")
+        .select("start_on, end_on")
+        .eq("profile_id", employeeId)
+        .order("start_on");
+      expect(resumedPeriods.error).toBeNull();
+      expect(resumedPeriods.data?.filter((period) => period.end_on === null)).toHaveLength(1);
+      expect(resumedPeriods.data?.filter((period) => period.start_on <= today && (period.end_on === null || period.end_on >= today))).toHaveLength(1);
+
+      const audits = await manager
+        .from("time_tracking_audit_logs")
+        .select("id", { count: "exact", head: true })
+        .eq("record_id", employeeId)
+        .eq("action", "SET_PAYROLL_ACTIVE_PERIOD");
+      expect(audits.error).toBeNull();
+      expect(audits.count).toBe(3);
 
       const session = await manager.auth.getSession();
       const authorization = `Bearer ${session.data.session!.access_token}`;
@@ -532,18 +575,81 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       });
       expect(attendanceUpdate.ok, await attendanceUpdate.text()).toBeTruthy();
 
-      const periods = await manager
+      const periodsAfterAttendance = await manager
         .from("time_payroll_active_periods")
         .select("start_on, end_on")
         .eq("profile_id", employeeId);
-      expect(periods.error).toBeNull();
-      expect(periods.data).toEqual([{ start_on: today, end_on: null }]);
+      expect(periodsAfterAttendance.error).toBeNull();
+      expect(periodsAfterAttendance.data).toEqual(resumedPeriods.data);
       const exceptions = await manager
         .from("time_payroll_attendance_exceptions")
         .select("work_date, status")
         .eq("profile_id", employeeId);
       expect(exceptions.error).toBeNull();
       expect(exceptions.data).toEqual([{ work_date: today, status: "OFF" }]);
+    } finally {
+      await deleteEmployee(service, employeeId);
+    }
+  });
+
+  test("END before cutoff removes a zero-day period but audit history still offers RESUME", async () => {
+    const service = serviceClient();
+    const manager = await globalManagerClient();
+    const employeeId = await createEmployee(service, "QA zero-day END history");
+    const today = bangkokDate();
+    const settings = await manager.rpc("get_time_payroll_settings");
+    expect(settings.error).toBeNull();
+    test.skip(
+      expectedEligibleThrough(String(settings.data?.workdayEndTime), new Date()) === today,
+      "This integration path only applies before the current Bangkok workday cutoff",
+    );
+
+    try {
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "ENABLE",
+        p_effective_date: today,
+      })).error).toBeNull();
+      const ended = await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "END",
+        p_effective_date: today,
+      });
+      expect(ended.error).toBeNull();
+      expect(ended.data).toMatchObject({ endDayEarned: false, scheduled: false });
+
+      const rows = await manager
+        .from("time_payroll_active_periods")
+        .select("id")
+        .eq("profile_id", employeeId);
+      expect(rows.error).toBeNull();
+      expect(rows.data).toEqual([]);
+
+      const session = await manager.auth.getSession();
+      const response = await fetch(
+        appUrl + `/api/lanflow/time-tracking/user?userId=${employeeId}&month=${today.slice(0, 7)}`,
+        {
+        headers: { Authorization: `Bearer ${session.data.session!.access_token}` },
+        },
+      );
+      const body = await response.json();
+      expect(response.ok, JSON.stringify(body)).toBeTruthy();
+      expect(body.periodState).toMatchObject({
+        currentStatus: "INACTIVE",
+        hasPeriodHistory: true,
+      });
+
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "RESUME",
+        p_effective_date: today,
+      })).error).toBeNull();
+      const resumed = await manager
+        .from("time_payroll_active_periods")
+        .select("start_on, end_on")
+        .eq("profile_id", employeeId);
+      expect(resumed.error).toBeNull();
+      expect(resumed.data).toEqual([{ start_on: today, end_on: null }]);
     } finally {
       await deleteEmployee(service, employeeId);
     }
@@ -590,6 +696,19 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         scheduled_effective_on: later,
         scheduled_activation_on: later,
       }]);
+
+      const session = await manager.auth.getSession();
+      const scheduleStateResponse = await fetch(
+        appUrl + `/api/lanflow/time-tracking/user?userId=${scheduledEmployee}&month=${month}`,
+        { headers: { Authorization: `Bearer ${session.data.session!.access_token}` } },
+      );
+      const scheduleStateBody = await scheduleStateResponse.json();
+      expect(scheduleStateResponse.ok, JSON.stringify(scheduleStateBody)).toBeTruthy();
+      expect(scheduleStateBody.periodState).toMatchObject({
+        currentStatus: "INACTIVE",
+        hasPeriodHistory: false,
+        nextAction: { action: "ENABLE", activationOn: later },
+      });
 
       const blockedSlip = await manager.rpc("create_time_tracking_payroll_slip", {
         p_profile_id: scheduledEmployee,
@@ -775,7 +894,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         .limit(1)
         .single();
       expect(audit.error).toBeNull();
-      expect(audit.data?.comment).toContain(`มีผลจริง ${tomorrow} 00:00 Asia/Bangkok`);
+      expect(audit.data?.comment).toContain(`มีผล ${tomorrow} 00:00 Asia/Bangkok`);
     } finally {
       await deleteEmployee(service, pauseEmployee);
       await deleteEmployee(service, resumeEmployee);
@@ -811,8 +930,8 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         }),
       ]);
       const raceErrors = [scheduleResult.error?.message, slipResult.error?.message].filter(Boolean);
-      expect(raceErrors).toHaveLength(1);
-      expect(raceErrors[0]).toMatch(/MONTH_CLOSED|PENDING_PERIOD_ACTION|NO_WORK_MONTH/);
+      expect(raceErrors.length).toBeLessThanOrEqual(1);
+      for (const error of raceErrors) expect(error).toMatch(/MONTH_CLOSED|NO_WORK_MONTH/);
 
       const concurrentSchedules = await Promise.all([
         manager.rpc("set_time_payroll_active_period", {
@@ -1029,6 +1148,11 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_profile_id: debtEmployee,
         p_action: "END",
         p_effective_date: previousLast,
+      })).error?.message).toContain("END_DATE_IN_PAST");
+      expect((await globalManager.rpc("set_time_payroll_active_period", {
+        p_profile_id: debtEmployee,
+        p_action: "PAUSE",
+        p_effective_date: firstCurrent,
       })).error).toBeNull();
       expect((await globalManager.rpc("set_time_payroll_active_period", {
         p_profile_id: debtEmployee,
@@ -1039,6 +1163,11 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_profile_id: debtEmployee,
         p_action: "END",
         p_effective_date: currentDay,
+      })).error?.message).toContain("END_DATE_IN_PAST");
+      expect((await globalManager.rpc("set_time_payroll_active_period", {
+        p_profile_id: debtEmployee,
+        p_action: "PAUSE",
+        p_effective_date: bangkokDate(),
       })).error).toBeNull();
 
       const debt = await globalManager.rpc("create_time_tracking_transaction", {
@@ -1106,7 +1235,12 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
           p_action: "END",
           p_effective_date: currentDay,
         });
-        expect(ended.error).toBeNull();
+        expect(ended.error?.message).toContain("END_DATE_IN_PAST");
+        expect((await globalManager.rpc("set_time_payroll_active_period", {
+          p_profile_id: profileId,
+          p_action: "PAUSE",
+          p_effective_date: bangkokDate(),
+        })).error).toBeNull();
       }
 
       const positiveSlip = await globalManager.rpc("create_time_tracking_payroll_slip", {
@@ -1259,6 +1393,11 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
           p_profile_id: profileId,
           p_action: "END",
           p_effective_date: workDate,
+        })).error?.message).toContain("END_DATE_IN_PAST");
+        expect((await globalManager.rpc("set_time_payroll_active_period", {
+          p_profile_id: profileId,
+          p_action: "PAUSE",
+          p_effective_date: bangkokDate(),
         })).error).toBeNull();
 
         const created = await globalManager.rpc("create_time_tracking_payroll_slip", {
@@ -1315,6 +1454,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     const branchId = location.data!.id;
     const workDate = bangkokDate(-1);
     const month = workDate.slice(0, 7);
+    const futureResumeDate = nextBangkokMonthBoundary().effectiveDate;
 
     try {
       expect((await service.from("profiles").update({
@@ -1342,6 +1482,11 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_profile_id: targetId,
         p_action: "END",
         p_effective_date: workDate,
+      })).error?.message).toContain("END_DATE_IN_PAST");
+      expect((await systemManager.rpc("set_time_payroll_active_period", {
+        p_profile_id: targetId,
+        p_action: "PAUSE",
+        p_effective_date: bangkokDate(),
       })).error).toBeNull();
       const autoApproved = await systemManager.rpc("create_time_tracking_transaction", {
         p_profile_id: targetId,
@@ -1376,7 +1521,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       expect((await systemManager.rpc("set_time_payroll_active_period", {
         p_profile_id: targetId,
         p_action: "RESUME",
-        p_effective_date: bangkokDate(1),
+        p_effective_date: futureResumeDate,
       })).error).toBeNull();
       const normalAdminCancel = await normalAdmin.rpc("cancel_time_payroll_active_period_schedule", {
         p_profile_id: targetId,
@@ -1413,7 +1558,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       expect(systemPayload.users.map((profile) => profile.id)).toContain(targetId);
       expect(systemPayload.users.find((profile) => profile.id === targetId)?.period_state).toMatchObject({
         currentStatus: "INACTIVE",
-        nextAction: { action: "RESUME", activationOn: bangkokDate(1) },
+        nextAction: { action: "RESUME", activationOn: futureResumeDate },
       });
 
       const targetClient = await signedInClient(await phoneFor(service, targetId));
@@ -1424,7 +1569,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       expect(targetRoute.status).toBe(200);
       expect((await targetRoute.json()).periodState).toMatchObject({
         currentStatus: "INACTIVE",
-        nextAction: { action: "RESUME", activationOn: bangkokDate(1) },
+        nextAction: { action: "RESUME", activationOn: futureResumeDate },
       });
 
       const normalAdminSession = await normalAdmin.auth.getSession();

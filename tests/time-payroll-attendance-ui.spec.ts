@@ -14,7 +14,7 @@ test.describe("Lean attendance UI contract", () => {
     expect(controls).toContain('nativeModal closeOnEscape');
     expect(controls).toContain('aria-label={`${date} ${dayOfWeek(date)}: ${calendarStatusLabel(status)}');
     expect(controls).toContain('role="alert"');
-    expect(controls).toContain("if (actionError) setError(actionError)");
+    expect(controls).toContain("setError(actionError)");
   });
 
   test("offers attendance editing only on an individual employee calendar", () => {
@@ -93,7 +93,7 @@ test.describe("Lean attendance UI contract", () => {
     expect(moduleSource).not.toContain("ดู Dashboard");
   });
 
-  test("shows a branch filter, pending-only count badge, and explicit future activation copy", () => {
+  test("shows a branch filter, pending-only count badge, and server-authoritative END copy", () => {
     expect(moduleSource).toContain("กรองสาขา");
     expect(moduleSource).toContain('aria-label="กรองตามสถานะ"');
     expect(moduleSource).toContain('filter === "pending" && branchPendingCount > 0');
@@ -101,10 +101,14 @@ test.describe("Lean attendance UI contract", () => {
     expect(moduleSource).toContain('window.addEventListener("focus", refreshVisibleData)');
     expect(moduleSource).toContain('document.addEventListener("visibilitychange", refreshVisibleData)');
     expect(moduleSource).not.toContain("hasPeriodHistory: false");
-    expect(controls).toContain("สถานะเปลี่ยนจริง 00:00 วันที่");
-    expect(controls).toContain("กดก่อนเวลานี้ยังไม่ได้เงินวันนั้น");
-    expect(controls).toContain('title="ยกเลิกกำหนดการรอมีผล"');
+    expect(controls).toContain("วันที่เลือกเป็นวันแรกที่ไม่คิดค่าแรง");
+    expect(controls).toContain("ระบบจะตรวจเวลาสิ้นสุดวันทำงานจากเซิร์ฟเวอร์");
+    expect(controls).toContain('title="ยืนยันสิ้นสุดงาน"');
+    expect(controls).toContain("confirmingEndDate &&");
+    expect(controls).toContain("!cancelOpen && !confirmingEndDate");
+    expect(controls).toContain("setError(null); setConfirmingEndDate(null)");
     expect(controls).toContain('role="alertdialog"');
+    expect(controls).toContain('title="ยกเลิกกำหนดการรอมีผล"');
     expect(modalShellSource).toContain("role={role}");
   });
 

@@ -7456,6 +7456,17 @@ $$;
 ALTER FUNCTION "private"."telegram_badge_require_manager"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."time_payroll_day_earned_at"("p_now" timestamp with time zone, "p_workday_end_time" time without time zone) RETURNS boolean
+    LANGUAGE "sql" IMMUTABLE
+    SET "search_path" TO ''
+    AS $$
+  select (p_now at time zone 'Asia/Bangkok')::time >= p_workday_end_time
+$$;
+
+
+ALTER FUNCTION "private"."time_payroll_day_earned_at"("p_now" timestamp with time zone, "p_workday_end_time" time without time zone) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."validate_rubber_approval_group_input"("p_location_ids" "uuid"[], "p_edit_window_minutes" integer, "p_configured_price" numeric) RETURNS "uuid"[]
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -19058,6 +19069,8 @@ declare
   v_pending public.time_payroll_active_periods%rowtype;
   v_current public.time_payroll_active_periods%rowtype;
   v_latest public.time_payroll_active_periods%rowtype;
+  v_workday_end_time time;
+  v_end_day_earned boolean;
 begin
   if v_actor is null or not private.is_global_time_payroll_manager() then raise exception 'Forbidden'; end if;
   if p_profile_id is null
@@ -19068,15 +19081,15 @@ begin
   if not exists (select 1 from public.profiles p where p.id = p_profile_id and p.is_active) then
     raise exception 'PROFILE_NOT_FOUND';
   end if;
+  if p_action = 'END' and p_effective_date < v_today then
+    raise exception 'END_DATE_IN_PAST';
+  end if;
 
-  v_activation_on := case when p_action = 'END' then p_effective_date + 1 else p_effective_date end;
+  v_activation_on := p_effective_date;
   v_is_scheduled := v_activation_on > v_today;
 
   perform pg_advisory_xact_lock(hashtextextended('time-payroll-attendance:' || p_profile_id::text, 0));
 
-  -- No volatile date predicate is used by the unique index. Retire metadata
-  -- here before accepting another action; the date range already represents
-  -- the effective state once activation_on is reached.
   update public.time_payroll_active_periods
   set scheduled_action = null,
       scheduled_effective_on = null,
@@ -19099,14 +19112,6 @@ begin
       p_profile_id,
       to_char(v_pending.scheduled_effective_on, 'YYYY-MM')
     );
-    if to_char(v_pending.scheduled_activation_on, 'YYYY-MM')
-      <> to_char(v_pending.scheduled_effective_on, 'YYYY-MM')
-    then
-      perform private.assert_attendance_month_open(
-        p_profile_id,
-        to_char(v_pending.scheduled_activation_on, 'YYYY-MM')
-      );
-    end if;
     if v_pending.scheduled_action in ('ENABLE', 'RESUME') then
       delete from public.time_payroll_active_periods where id = v_pending.id;
     else
@@ -19121,18 +19126,19 @@ begin
     end if;
   end if;
 
-  -- Scheduling and rescheduling must not mutate a month whose payroll snapshot
-  -- or deduction ledger is already closed.
   perform private.assert_attendance_month_open(p_profile_id, to_char(p_effective_date, 'YYYY-MM'));
-  if to_char(v_activation_on, 'YYYY-MM') <> to_char(p_effective_date, 'YYYY-MM') then
-    perform private.assert_attendance_month_open(p_profile_id, to_char(v_activation_on, 'YYYY-MM'));
-  end if;
 
   select * into v_current
   from public.time_payroll_active_periods ap
   where ap.profile_id = p_profile_id
     and ap.start_on <= v_today
-    and (ap.end_on is null or ap.end_on >= v_today)
+    and (
+      ap.end_on is null
+      or (
+        ap.scheduled_action in ('PAUSE', 'END')
+        and ap.scheduled_activation_on > v_today
+      )
+    )
   order by ap.start_on desc
   limit 1
   for update;
@@ -19183,17 +19189,36 @@ begin
     where id = v_current.id;
   else
     if not found or p_effective_date < v_current.start_on then raise exception 'NO_OPEN_ACTIVE_PERIOD'; end if;
-    if not v_is_scheduled then
-      perform private.assert_attendance_range_open(p_profile_id, p_effective_date + 1, v_today);
+
+    if v_is_scheduled then
+      update public.time_payroll_active_periods
+      set end_on = p_effective_date - 1,
+          scheduled_action = p_action,
+          scheduled_effective_on = p_effective_date,
+          scheduled_activation_on = v_activation_on,
+          updated_by = v_actor,
+          updated_at = now()
+      where id = v_current.id;
+    else
+      select coalesce(s.workday_end_time, time '16:00')
+        into v_workday_end_time
+      from private.effective_time_payroll_settings() s;
+      v_workday_end_time := coalesce(v_workday_end_time, time '16:00');
+      v_end_day_earned := private.time_payroll_day_earned_at(now(), v_workday_end_time);
+
+      if not v_end_day_earned and v_current.start_on = v_today then
+        delete from public.time_payroll_active_periods where id = v_current.id;
+      else
+        update public.time_payroll_active_periods
+        set end_on = case when v_end_day_earned then v_today else v_today - 1 end,
+            scheduled_action = null,
+            scheduled_effective_on = null,
+            scheduled_activation_on = null,
+            updated_by = v_actor,
+            updated_at = now()
+        where id = v_current.id;
+      end if;
     end if;
-    update public.time_payroll_active_periods
-    set end_on = p_effective_date,
-        scheduled_action = case when v_is_scheduled then p_action else null end,
-        scheduled_effective_on = case when v_is_scheduled then p_effective_date else null end,
-        scheduled_activation_on = case when v_is_scheduled then v_activation_on else null end,
-        updated_by = v_actor,
-        updated_at = now()
-    where id = v_current.id;
   end if;
 
   insert into public.time_tracking_audit_logs(admin_id, action, target_table, record_id, new_data, comment)
@@ -19206,12 +19231,17 @@ begin
       'action', p_action,
       'selectedEffectiveOn', p_effective_date,
       'activationOn', v_activation_on,
-      'scheduled', v_is_scheduled
+      'scheduled', v_is_scheduled,
+      'endDayEarned', v_end_day_earned
     ),
     case
       when v_is_scheduled then format(
-        'ตั้งกำหนดการ %s: วันที่เลือก %s มีผลจริง %s 00:00 Asia/Bangkok',
+        'ตั้งกำหนดการ %s: วันที่เลือก %s มีผล %s 00:00 Asia/Bangkok',
         p_action, p_effective_date, v_activation_on
+      )
+      when p_action = 'END' then format(
+        'สิ้นสุดงานทันทีวันที่ %s; คงผลค่าแรงวันนี้: %s (cutoff %s Asia/Bangkok)',
+        p_effective_date, v_end_day_earned, v_workday_end_time
       )
       else format('เปลี่ยนช่วงเงินเดือน %s มีผลวันที่ %s Asia/Bangkok', p_action, v_activation_on)
     end
@@ -19222,7 +19252,8 @@ begin
     'action', p_action,
     'selectedEffectiveOn', p_effective_date,
     'activationOn', v_activation_on,
-    'scheduled', v_is_scheduled
+    'scheduled', v_is_scheduled,
+    'endDayEarned', v_end_day_earned
   );
 end
 $$;
@@ -22752,11 +22783,7 @@ CREATE TABLE IF NOT EXISTS "public"."time_payroll_active_periods" (
     "scheduled_effective_on" "date",
     "scheduled_activation_on" "date",
     CONSTRAINT "time_payroll_active_period_dates" CHECK ((("end_on" IS NULL) OR ("start_on" <= "end_on"))),
-    CONSTRAINT "time_payroll_active_period_schedule_fields" CHECK (((("scheduled_action" IS NULL) AND ("scheduled_effective_on" IS NULL) AND ("scheduled_activation_on" IS NULL)) OR (("scheduled_action" = ANY (ARRAY['ENABLE'::"text", 'PAUSE'::"text", 'RESUME'::"text", 'END'::"text"])) AND ("scheduled_effective_on" IS NOT NULL) AND ("scheduled_activation_on" =
-CASE
-    WHEN ("scheduled_action" = 'END'::"text") THEN ("scheduled_effective_on" + 1)
-    ELSE "scheduled_effective_on"
-END))))
+    CONSTRAINT "time_payroll_active_period_schedule_fields" CHECK (((("scheduled_action" IS NULL) AND ("scheduled_effective_on" IS NULL) AND ("scheduled_activation_on" IS NULL)) OR (("scheduled_action" = ANY (ARRAY['ENABLE'::"text", 'PAUSE'::"text", 'RESUME'::"text", 'END'::"text"])) AND ("scheduled_effective_on" IS NOT NULL) AND ("scheduled_activation_on" = "scheduled_effective_on"))))
 );
 
 
@@ -25903,6 +25930,10 @@ REVOKE ALL ON FUNCTION "private"."telegram_badge_latest_slot"("p_now" timestamp 
 
 
 REVOKE ALL ON FUNCTION "private"."telegram_badge_require_manager"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."time_payroll_day_earned_at"("p_now" timestamp with time zone, "p_workday_end_time" time without time zone) FROM PUBLIC;
 
 
 

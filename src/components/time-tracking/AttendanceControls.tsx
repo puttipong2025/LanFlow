@@ -253,6 +253,7 @@ export function AttendancePeriodControls({
   const [date, setDate] = useState(new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" }));
   const [error, setError] = useState<string | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
+  const [confirmingEndDate, setConfirmingEndDate] = useState<string | null>(null);
   const current = periodState.currentPeriod;
   const actions: PayrollPeriodAction[] = periodState.currentStatus === "ACTIVE"
     ? ["PAUSE", "END"]
@@ -265,21 +266,25 @@ export function AttendancePeriodControls({
     return "สิ้นสุดงาน";
   }
 
-  function nextDate(value: string) {
-    const parsed = new Date(`${value}T00:00:00Z`);
-    parsed.setUTCDate(parsed.getUTCDate() + 1);
-    return parsed.toISOString().slice(0, 10);
-  }
-
   function effectText(action: PayrollPeriodAction, selectedDate: string) {
     if (!selectedDate) return "เลือกวันที่เพื่อดูเวลาที่มีผลจริง";
     if (action === "END") {
-      return `วันที่ ${selectedDate} เป็นวันสุดท้ายที่ได้ค่าแรง และสิ้นสุดจริง 00:00 วันที่ ${nextDate(selectedDate)}`;
+      return `หากเป็นวันอนาคต วันที่เลือกเป็นวันแรกที่ไม่คิดค่าแรง (${selectedDate}); หากเลือกวันนี้ ระบบจะตรวจเวลาสิ้นสุดวันทำงานจากเซิร์ฟเวอร์และคงผลวันที่ได้รับแล้ว`;
     }
     if (action === "PAUSE") {
       return `พักและหยุดนับค่าแรงตั้งแต่ 00:00 วันที่ ${selectedDate}`;
     }
     return `มีผล 00:00 วันที่ ${selectedDate}; ค่าแรงเต็มวันจะนับเมื่อถึง ${workdayEndTime} น. — กดก่อนเวลานี้ยังไม่ได้เงินวันนั้น`;
+  }
+
+  async function runAction(action: PayrollPeriodAction, effectiveDate: string) {
+    setError(null);
+    const actionError = await onAction(action, effectiveDate);
+    if (actionError) {
+      setError(actionError);
+      return;
+    }
+    setConfirmingEndDate(null);
   }
 
   async function handle(action: PayrollPeriodAction) {
@@ -288,8 +293,16 @@ export function AttendancePeriodControls({
       setError("กรุณาเลือกวันที่มีผล");
       return;
     }
-    const actionError = await onAction(action, date);
-    if (actionError) setError(actionError);
+    if (action === "END") {
+      const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" });
+      if (date < today) {
+        setError("สิ้นสุดงานย้อนหลังไม่ได้ กรุณาเลือกวันนี้หรือวันในอนาคต");
+        return;
+      }
+      setConfirmingEndDate(date);
+      return;
+    }
+    await runAction(action, date);
   }
 
   async function cancelSchedule() {
@@ -323,7 +336,7 @@ export function AttendancePeriodControls({
           </div>
           <button
             type="button"
-            onClick={() => setCancelOpen(true)}
+            onClick={() => { setError(null); setCancelOpen(true); }}
             disabled={saving || !online}
             className="focus-ring mt-3 inline-flex h-10 items-center rounded-md border border-danger/30 bg-white px-3 text-sm font-semibold text-danger hover:bg-danger/5 disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -341,12 +354,12 @@ export function AttendancePeriodControls({
           </div>
         ))}
       </div>
-      {error && <p id="period-action-error" role="alert" className="mt-2 text-sm font-semibold text-danger">{error}</p>}
+      {error && !cancelOpen && !confirmingEndDate && <p id="period-action-error" role="alert" className="mt-2 text-sm font-semibold text-danger">{error}</p>}
       {cancelOpen && periodState.nextAction && (
         <ModalShell
           title="ยกเลิกกำหนดการรอมีผล"
           subtitle={`${actionLabel(periodState.nextAction.action)} จะไม่เกิดขึ้นในวันที่กำหนด`}
-          onClose={() => setCancelOpen(false)}
+          onClose={() => { setError(null); setCancelOpen(false); }}
           nativeModal
           closeOnEscape
           closeDisabled={saving}
@@ -356,9 +369,31 @@ export function AttendancePeriodControls({
           <p className="text-pretty text-sm text-ink/70">
             ยืนยันยกเลิกคำสั่งที่เลือกวันที่ {periodState.nextAction.selectedEffectiveOn} และจะมีผลจริง 00:00 วันที่ {periodState.nextAction.activationOn}
           </p>
+          {error && <p id="period-action-error" role="alert" className="mt-3 text-sm font-semibold text-danger">{error}</p>}
           <div className="mt-4 flex flex-wrap justify-end gap-2">
-            <button type="button" onClick={() => setCancelOpen(false)} disabled={saving} className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3 text-sm font-semibold text-ink hover:bg-field disabled:opacity-50">ไม่ยกเลิก</button>
+            <button type="button" onClick={() => { setError(null); setCancelOpen(false); }} disabled={saving} className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3 text-sm font-semibold text-ink hover:bg-field disabled:opacity-50">ไม่ยกเลิก</button>
             <button type="button" onClick={() => void cancelSchedule()} disabled={saving || !online} className="focus-ring h-10 rounded-md bg-danger px-3 text-sm font-bold text-white hover:bg-danger/90 disabled:opacity-50">ยืนยันยกเลิก</button>
+          </div>
+        </ModalShell>
+      )}
+      {confirmingEndDate && (
+        <ModalShell
+          title="ยืนยันสิ้นสุดงาน"
+          subtitle={`สถานะจะสิ้นสุดตามวันที่เลือก ${confirmingEndDate}`}
+          onClose={() => { setError(null); setConfirmingEndDate(null); }}
+          nativeModal
+          closeOnEscape
+          closeDisabled={saving}
+          role="alertdialog"
+          size="compact"
+        >
+          <p className="text-pretty text-sm text-ink/70">
+            หากเลือกวันนี้ สถานะจะสิ้นสุดทันที โดยระบบจะตรวจเวลาสิ้นสุดวันทำงานจากเซิร์ฟเวอร์และคงผลเต็มวัน ครึ่งวัน หรือหยุดที่ได้รับแล้ว
+          </p>
+          {error && <p id="period-action-error" role="alert" className="mt-3 text-sm font-semibold text-danger">{error}</p>}
+          <div className="mt-4 flex flex-wrap justify-end gap-2">
+            <button type="button" onClick={() => { setError(null); setConfirmingEndDate(null); }} disabled={saving} className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3 text-sm font-semibold text-ink hover:bg-field disabled:opacity-50">กลับไปตรวจสอบ</button>
+            <button type="button" onClick={() => void runAction("END", confirmingEndDate)} disabled={saving || !online} className="focus-ring h-10 rounded-md bg-danger px-3 text-sm font-bold text-white hover:bg-danger/90 disabled:opacity-50">ยืนยันสิ้นสุดงาน</button>
           </div>
         </ModalShell>
       )}

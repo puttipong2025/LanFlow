@@ -132,6 +132,23 @@ export async function GET(request: NextRequest) {
       (sum, transaction) => sum + Number(transaction.remaining_amount || 0),
       0,
     );
+    const periodState = buildPayrollPeriodState(
+      (activePeriods.data || []) as PayrollPeriodRow[],
+      bangkokDateString(),
+    );
+
+    if (!periodState.hasPeriodHistory && result.auth.canAccessSystemManager) {
+      const { data: endHistory, error: endHistoryError } = await supabase
+        .from("time_tracking_audit_logs")
+        .select("id")
+        .eq("target_table", "time_payroll_active_periods")
+        .eq("record_id", targetUserId)
+        .eq("action", "SET_PAYROLL_ACTIVE_PERIOD")
+        .contains("new_data", { action: "END" })
+        .limit(1);
+      if (endHistoryError) throw endHistoryError;
+      if ((endHistory || []).length > 0) periodState.hasPeriodHistory = true;
+    }
 
     return NextResponse.json({
       wageInfo: {
@@ -141,10 +158,7 @@ export async function GET(request: NextRequest) {
         totalDebt,
       },
       attendance: attendance.data,
-      periodState: buildPayrollPeriodState(
-        (activePeriods.data || []) as PayrollPeriodRow[],
-        bangkokDateString(),
-      ),
+      periodState,
       debts: activeDebts.data || [],
       transactions: result.auth.canManageTimePayroll
         ? transactions.data || []

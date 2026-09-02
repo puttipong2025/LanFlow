@@ -1,22 +1,35 @@
 import { expect, test } from "@playwright/test";
 import { buildPayrollPeriodState } from "../src/lib/time-tracking/period-state";
 
-test("period state keeps END active through its selected last paid day", () => {
+test("period state makes END inactive on its selected date", () => {
   const state = buildPayrollPeriodState([{
     id: "period-1",
     start_on: "2026-08-01",
     end_on: "2026-09-01",
+  }], "2026-09-01");
+
+  expect(state.currentStatus).toBe("INACTIVE");
+  expect(state.currentPeriod).toBeNull();
+  expect(state.nextAction).toBeNull();
+  expect(state.hasPeriodHistory).toBe(true);
+});
+
+test("period state keeps a future END active until the selected first unpaid day", () => {
+  const state = buildPayrollPeriodState([{
+    id: "period-future-end",
+    start_on: "2026-08-01",
+    end_on: "2026-09-04",
     scheduled_action: "END",
-    scheduled_effective_on: "2026-09-01",
-    scheduled_activation_on: "2026-09-02",
+    scheduled_effective_on: "2026-09-05",
+    scheduled_activation_on: "2026-09-05",
   }], "2026-09-01");
 
   expect(state.currentStatus).toBe("ACTIVE");
-  expect(state.currentPeriod?.endOn).toBe("2026-09-01");
+  expect(state.currentPeriod?.endOn).toBe("2026-09-04");
   expect(state.nextAction).toEqual({
     action: "END",
-    selectedEffectiveOn: "2026-09-01",
-    activationOn: "2026-09-02",
+    selectedEffectiveOn: "2026-09-05",
+    activationOn: "2026-09-05",
   });
 });
 

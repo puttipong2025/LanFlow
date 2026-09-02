@@ -10,6 +10,7 @@ const sameDayResumeMigrationPath = "supabase/migrations/20260830030000_time_payr
 const calendarEligibilityMigrationPath = "supabase/migrations/20260830040000_time_payroll_calendar_eligibility_boundary.sql";
 const retireTimerMigrationPath = "supabase/migrations/20260831010000_retire_time_tracking_timer.sql";
 const futureSchedulingMigrationPath = "supabase/migrations/20260901030000_time_payroll_future_period_scheduling.sql";
+const immediateEndMigrationPath = "supabase/migrations/20260902030000_end_time_payroll_employment_immediately.sql";
 
 test("counts exception attendance only after the Bangkok workday boundary", () => {
   const input = {
@@ -98,7 +99,7 @@ test("routes expose only the exception-attendance runtime commands", async () =>
   expect(admin).not.toContain('.from("time_segments")');
   expect(admin).toContain("ช่วงวันที่อยู่นอกช่วงทำงานของพนักงาน กรุณาเปิดหรือกลับเข้าทำงานก่อน");
   expect(user).toContain("attendance:");
-  expect(user).toContain("periodState:");
+  expect(user).toContain("periodState,");
   expect(user).toContain("get_time_payroll_attendance_month");
   expect(user).not.toContain('.from("time_segments")');
   expect(user).not.toContain("time_tracking_resume_schedules");
@@ -198,6 +199,24 @@ test("forward migration schedules period actions without weakening payroll month
   expect(sql).toContain("p_profile_id, p_month, false");
   expect(sql).toContain("pg_advisory_xact_lock(hashtextextended('time-payroll-attendance:' || p_profile_id::text, 0))");
   expect(sql).toContain("set search_path = ''");
+});
+
+test("latest forward migration makes END immediate while preserving an earned cutoff day", async () => {
+  const [sql, adminRoute] = await Promise.all([
+    readFile(immediateEndMigrationPath, "utf8"),
+    readFile("src/app/api/lanflow/time-tracking/admin/route.ts", "utf8"),
+  ]);
+
+  expect(sql).toContain("PENDING_END_REQUIRES_MANUAL_REVIEW");
+  expect(sql).toContain("v_activation_on := p_effective_date");
+  expect(sql).toContain("END_DATE_IN_PAST");
+  expect(sql).toContain("private.time_payroll_day_earned_at(now(), v_workday_end_time)");
+  expect(sql).toContain("case when v_end_day_earned then v_today else v_today - 1 end");
+  expect(sql).toContain("if not v_end_day_earned and v_current.start_on = v_today then");
+  expect(sql).toContain("scheduled_activation_on = scheduled_effective_on");
+  expect(sql).not.toContain("p_effective_date + 1");
+  expect(adminRoute).toContain("END_DATE_IN_PAST");
+  expect(adminRoute).toContain("สิ้นสุดงานย้อนหลังไม่ได้ กรุณาเลือกวันนี้หรือวันในอนาคต");
 });
 
 test("individual attendance writes reject future Bangkok dates", async () => {

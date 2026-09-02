@@ -26,7 +26,14 @@ export function buildPayrollPeriodState(
   today: string,
 ): PayrollPeriodStateDto {
   const current = periods
-    .filter((period) => period.start_on <= today && (period.end_on === null || period.end_on >= today))
+    .filter((period) => period.start_on <= today && (
+      period.end_on === null
+      || (
+        (period.scheduled_action === "PAUSE" || period.scheduled_action === "END")
+        && Boolean(period.scheduled_activation_on)
+        && period.scheduled_activation_on! > today
+      )
+    ))
     .sort((left, right) => right.start_on.localeCompare(left.start_on))[0];
   const scheduled = periods
     .filter((period) => (
