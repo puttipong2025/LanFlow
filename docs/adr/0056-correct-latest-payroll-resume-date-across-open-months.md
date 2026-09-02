@@ -1,6 +1,7 @@
 ---
-status: accepted
+status: superseded
 date: 2026-09-02
+superseded_by: ADR-0057
 extends:
   - ADR-0047
   - ADR-0052

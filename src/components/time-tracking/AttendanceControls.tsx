@@ -46,11 +46,13 @@ function shiftMonth(month: string, amount: number) {
 }
 
 function affectedMonths(firstDate: string, secondDate: string) {
-  const firstMonth = firstDate.slice(0, 7);
-  const secondMonth = secondDate.slice(0, 7);
-  const [start, end] = firstMonth <= secondMonth
-    ? [firstMonth, secondMonth]
-    : [secondMonth, firstMonth];
+  const [startDate, endExclusive] = firstDate <= secondDate
+    ? [firstDate, secondDate]
+    : [secondDate, firstDate];
+  const affectedEnd = new Date(`${endExclusive}T00:00:00Z`);
+  affectedEnd.setUTCDate(affectedEnd.getUTCDate() - 1);
+  const start = startDate.slice(0, 7);
+  const end = affectedEnd.toISOString().slice(0, 7);
   const months: string[] = [];
   for (let month = start; month <= end; month = shiftMonth(month, 1)) months.push(month);
   return months;
@@ -253,7 +255,7 @@ export function AttendancePeriodControls({
   saving,
   onAction,
   onCancel,
-  onCorrectResume,
+  onCorrectPeriodStart,
 }: {
   userName: string;
   periodState: PayrollPeriodStateDto;
@@ -262,14 +264,14 @@ export function AttendancePeriodControls({
   saving?: boolean;
   onAction: (action: PayrollPeriodAction, effectiveDate: string) => Promise<string | null>;
   onCancel: () => Promise<string | null>;
-  onCorrectResume: (startOn: string) => Promise<string | null>;
+  onCorrectPeriodStart: (periodId: string, startOn: string) => Promise<string | null>;
 }) {
   const [date, setDate] = useState(bangkokDateString);
   const [error, setError] = useState<string | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [confirmingEndDate, setConfirmingEndDate] = useState<string | null>(null);
   const [confirmingResumeDate, setConfirmingResumeDate] = useState<string | null>(null);
-  const [correctionDate, setCorrectionDate] = useState(periodState.resumeCorrection?.currentStartOn ?? "");
+  const [correctionDate, setCorrectionDate] = useState(periodState.periodStartCorrection?.currentStartOn ?? "");
   const [correctionError, setCorrectionError] = useState<string | null>(null);
   const [confirmingCorrectionDate, setConfirmingCorrectionDate] = useState<string | null>(null);
   const current = periodState.currentPeriod;
@@ -280,10 +282,10 @@ export function AttendancePeriodControls({
   const resumeMode = actions.length === 1 && actions[0] === "RESUME";
 
   useEffect(() => {
-    setCorrectionDate(periodState.resumeCorrection?.currentStartOn ?? "");
+    setCorrectionDate(periodState.periodStartCorrection?.currentStartOn ?? "");
     setCorrectionError(null);
     setConfirmingCorrectionDate(null);
-  }, [periodState.resumeCorrection?.currentStartOn]);
+  }, [periodState.periodStartCorrection?.periodId, periodState.periodStartCorrection?.currentStartOn]);
 
   function actionLabel(action: PayrollPeriodAction) {
     if (action === "ENABLE") return "เปิดใช้เงินเดือน";
@@ -345,18 +347,18 @@ export function AttendancePeriodControls({
   }
 
   function reviewCorrection() {
-    const correction = periodState.resumeCorrection;
+    const correction = periodState.periodStartCorrection;
     setCorrectionError(null);
     if (!correction || !correctionDate) {
-      setCorrectionError("กรุณาเลือกวันกลับเข้าทำงานใหม่");
+      setCorrectionError("กรุณาเลือกวันเริ่มใหม่");
       return;
     }
-    if (correctionDate < correction.earliestOn) {
+    if (correction.earliestOn && correctionDate < correction.earliestOn) {
       setCorrectionError(`วันที่ใหม่ต้องไม่ก่อน ${correction.earliestOn}`);
       return;
     }
-    if (correctionDate > today) {
-      setCorrectionError("วันที่ใหม่ต้องไม่เกินวันนี้");
+    if (correctionDate > correction.latestOn) {
+      setCorrectionError(`วันที่ใหม่ต้องไม่เกิน ${correction.latestOn}`);
       return;
     }
     if (correctionDate === correction.currentStartOn) {
@@ -366,10 +368,12 @@ export function AttendancePeriodControls({
     setConfirmingCorrectionDate(correctionDate);
   }
 
-  async function correctResume() {
+  async function correctPeriodStart() {
     if (!confirmingCorrectionDate) return;
+    const correction = periodState.periodStartCorrection;
+    if (!correction) return;
     setCorrectionError(null);
-    const correctionFailure = await onCorrectResume(confirmingCorrectionDate);
+    const correctionFailure = await onCorrectPeriodStart(correction.periodId, confirmingCorrectionDate);
     if (correctionFailure) {
       setCorrectionError(correctionFailure);
       return;
@@ -426,12 +430,12 @@ export function AttendancePeriodControls({
           </div>
         ))}
       </div>
-      {periodState.resumeCorrection && (
+      {periodState.periodStartCorrection && (
         <div className="mt-4 rounded-lg border border-river/20 bg-river/5 p-3">
           <div>
-            <p className="font-semibold text-ink">แก้วันกลับเข้าทำงานล่าสุด</p>
-            <p className="mt-1 text-pretty text-xs leading-5 text-ink/65">
-              วันเดิม {periodState.resumeCorrection.currentStartOn} · เลือกได้ตั้งแต่ {periodState.resumeCorrection.earliestOn} ถึง {today}
+            <p className="text-balance font-semibold text-ink">แก้วันเริ่มช่วงล่าสุด</p>
+            <p className="mt-1 text-pretty text-xs leading-5 text-ink/65 tabular-nums">
+              ช่วงเดิม {periodState.periodStartCorrection.currentStartOn} ถึง {periodState.periodStartCorrection.endOn ?? "ปัจจุบัน"} · เลือกได้{periodState.periodStartCorrection.earliestOn ? `ตั้งแต่ ${periodState.periodStartCorrection.earliestOn}` : "ย้อนหลังเมื่อเดือนยังเปิด"} ถึง {periodState.periodStartCorrection.latestOn}
             </p>
           </div>
           <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,16rem)_auto] sm:items-end">
@@ -439,17 +443,17 @@ export function AttendancePeriodControls({
               <input
                 type="date"
                 value={correctionDate}
-                min={periodState.resumeCorrection.earliestOn}
-                max={today}
+                min={periodState.periodStartCorrection.earliestOn ?? undefined}
+                max={periodState.periodStartCorrection.latestOn}
                 onChange={(event) => { setCorrectionDate(event.target.value); setCorrectionError(null); }}
                 className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3 tabular-nums"
                 aria-invalid={Boolean(correctionError)}
-                aria-describedby={correctionError ? "resume-correction-error" : undefined}
+                aria-describedby={correctionError ? "period-start-correction-error" : undefined}
               />
             </label>
             <button type="button" onClick={reviewCorrection} disabled={saving || !online} className="focus-ring h-10 rounded-md border border-river/30 bg-white px-3 text-sm font-bold text-river hover:bg-river/10 disabled:cursor-not-allowed disabled:opacity-50">ตรวจสอบวันใหม่</button>
           </div>
-          {correctionError && !confirmingCorrectionDate && <p id="resume-correction-error" role="alert" className="mt-2 text-sm font-semibold text-danger">{correctionError}</p>}
+          {correctionError && !confirmingCorrectionDate && <p id="period-start-correction-error" role="alert" className="mt-2 text-pretty text-sm font-semibold text-danger">{correctionError}</p>}
         </div>
       )}
       {error && !cancelOpen && !confirmingEndDate && !confirmingResumeDate && <p id="period-action-error" role="alert" className="mt-2 text-sm font-semibold text-danger">{error}</p>}
@@ -519,10 +523,10 @@ export function AttendancePeriodControls({
           </div>
         </ModalShell>
       )}
-      {confirmingCorrectionDate && periodState.resumeCorrection && (
+      {confirmingCorrectionDate && periodState.periodStartCorrection && (
         <ModalShell
-          title="ยืนยันแก้วันกลับเข้าทำงาน"
-          subtitle={`${periodState.resumeCorrection.currentStartOn} → ${confirmingCorrectionDate}`}
+          title="ยืนยันแก้วันเริ่มช่วงล่าสุด"
+          subtitle={`${periodState.periodStartCorrection.currentStartOn} → ${confirmingCorrectionDate}`}
           onClose={() => { setCorrectionError(null); setConfirmingCorrectionDate(null); }}
           nativeModal
           closeOnEscape
@@ -532,12 +536,12 @@ export function AttendancePeriodControls({
           size="compact"
         >
           <p className="text-pretty text-sm text-ink/70">
-            ระบบจะตรวจเดือนที่ได้รับผล: {affectedMonths(periodState.resumeCorrection.currentStartOn, confirmingCorrectionDate).join(", ")} และจะไม่เปลี่ยนสลิปหรือรายการหักเงินจริง
+            ระบบจะตรวจเดือนที่ได้รับผล: {affectedMonths(periodState.periodStartCorrection.currentStartOn, confirmingCorrectionDate).join(", ")} และจะไม่เปลี่ยนวันสิ้นสุด สลิป หรือรายการหักเงินจริง
           </p>
-          {correctionError && <p id="resume-correction-error" role="alert" className="mt-3 text-sm font-semibold text-danger">{correctionError}</p>}
+          {correctionError && <p id="period-start-correction-error" role="alert" className="mt-3 text-pretty text-sm font-semibold text-danger">{correctionError}</p>}
           <div className="mt-4 flex flex-wrap justify-end gap-2">
             <button type="button" onClick={() => { setCorrectionError(null); setConfirmingCorrectionDate(null); }} disabled={saving} className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3 text-sm font-semibold text-ink hover:bg-field disabled:opacity-50">กลับไปตรวจสอบ</button>
-            <button type="button" onClick={() => void correctResume()} disabled={saving || !online} className="focus-ring h-10 rounded-md bg-river px-3 text-sm font-bold text-white hover:bg-river/90 disabled:opacity-50">ยืนยันแก้วัน</button>
+            <button type="button" onClick={() => void correctPeriodStart()} disabled={saving || !online} className="focus-ring h-10 rounded-md bg-river px-3 text-sm font-bold text-white hover:bg-river/90 disabled:opacity-50">ยืนยันแก้วันเริ่ม</button>
           </div>
         </ModalShell>
       )}

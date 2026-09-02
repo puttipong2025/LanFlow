@@ -22,9 +22,12 @@ interface PayrollScheduledActionDto {
   activationOn: string;
 }
 
-interface PayrollResumeCorrectionDto {
+interface PayrollPeriodStartCorrectionDto {
+  periodId: string;
   currentStartOn: string;
-  earliestOn: string;
+  earliestOn: string | null;
+  latestOn: string;
+  endOn: string | null;
 }
 
 export interface PayrollPeriodStateDto {
@@ -33,7 +36,7 @@ export interface PayrollPeriodStateDto {
   nextAction: PayrollScheduledActionDto | null;
   hasPeriodHistory: boolean;
   resumeEarliestOn: string | null;
-  resumeCorrection: PayrollResumeCorrectionDto | null;
+  periodStartCorrection: PayrollPeriodStartCorrectionDto | null;
 }
 
 export interface AttendanceExceptionDto {

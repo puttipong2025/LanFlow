@@ -124,6 +124,19 @@ async function deleteEmployee(service: SupabaseClient, id: string) {
   expect(auth.error).toBeNull();
 }
 
+async function latestStartedPeriodId(client: SupabaseClient, profileId: string) {
+  const result = await client
+    .from("time_payroll_active_periods")
+    .select("id")
+    .eq("profile_id", profileId)
+    .lte("start_on", bangkokDate())
+    .order("start_on", { ascending: false })
+    .limit(1)
+    .single();
+  expect(result.error).toBeNull();
+  return result.data!.id as string;
+}
+
 async function primaryLocation(service: SupabaseClient, profileId: string, locationId: string) {
   const assigned = await service.from("user_locations").upsert({
     user_id: profileId,
@@ -402,7 +415,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     }
   });
 
-  test("corrects the latest resumed period start without audit or financial side effects", async () => {
+  test("corrects the latest period start without audit or financial side effects", async () => {
     const service = serviceClient();
     const manager = await globalManagerClient();
     const employeeId = await createEmployee(service, "QA resume date correction");
@@ -455,48 +468,63 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       });
       expect(stateResponse.status).toBe(200);
       const statePayload = await stateResponse.json() as {
-        users: Array<{ id: string; period_state: { resumeCorrection: unknown } }>;
+        users: Array<{ id: string; period_state: { periodStartCorrection: {
+          periodId: string;
+          currentStartOn: string;
+          earliestOn: string | null;
+          latestOn: string;
+          endOn: string | null;
+        } | null } }>;
       };
-      expect(statePayload.users.find((user) => user.id === employeeId)?.period_state.resumeCorrection).toEqual({
+      const periodCorrection = statePayload.users.find((user) => user.id === employeeId)?.period_state.periodStartCorrection;
+      expect(periodCorrection).toEqual({
+        periodId: expect.any(String),
         currentStartOn: firstCurrent,
         earliestOn: `${previousMonth}-02`,
+        latestOn: bangkokDate(),
+        endOn: bangkokDate(),
       });
+      const periodId = periodCorrection!.periodId;
       const auditBefore = await service
         .from("time_tracking_audit_logs")
         .select("id", { count: "exact", head: true })
         .eq("record_id", employeeId);
       expect(auditBefore.error).toBeNull();
 
-      const overlapping = await manager.rpc("correct_time_payroll_resume_start", {
+      const overlapping = await manager.rpc("correct_time_payroll_period_start", {
         p_profile_id: employeeId,
+        p_period_id: periodId,
         p_start_on: `${previousMonth}-01`,
       });
-      expect(overlapping.error?.message).toContain("RESUME_OVERLAPS_PREVIOUS_PERIOD");
-      const future = await manager.rpc("correct_time_payroll_resume_start", {
+      expect(overlapping.error?.message).toContain("PERIOD_START_OVERLAPS_PREVIOUS");
+      const future = await manager.rpc("correct_time_payroll_period_start", {
         p_profile_id: employeeId,
+        p_period_id: periodId,
         p_start_on: pendingPauseOn,
       });
-      expect(future.error?.message).toContain("RESUME_CORRECTION_DATE_IN_FUTURE");
+      expect(future.error?.message).toContain("PERIOD_START_CORRECTION_DATE_IN_FUTURE");
 
       const corrected = await fetch(`${appUrl}/api/lanflow/time-tracking/admin`, {
         method: "POST",
         headers: { Authorization: authorization, "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "CORRECT_PAYROLL_RESUME_START",
-          payload: { user_id: employeeId, start_on: previousMonthEnd },
+          action: "CORRECT_PAYROLL_PERIOD_START",
+          payload: { user_id: employeeId, period_id: periodId, start_on: previousMonthEnd },
         }),
       });
       expect(corrected.status, await corrected.text()).toBe(200);
-      const correctedAgain = await manager.rpc("correct_time_payroll_resume_start", {
+      const correctedAgain = await manager.rpc("correct_time_payroll_period_start", {
         p_profile_id: employeeId,
+        p_period_id: periodId,
         p_start_on: firstCurrent,
       });
       expect(correctedAgain.error).toBeNull();
-      const noOpCorrection = await manager.rpc("correct_time_payroll_resume_start", {
+      const noOpCorrection = await manager.rpc("correct_time_payroll_period_start", {
         p_profile_id: employeeId,
+        p_period_id: periodId,
         p_start_on: firstCurrent,
       });
-      expect(noOpCorrection.error?.message).toContain("INVALID_RESUME_CORRECTION");
+      expect(noOpCorrection.error?.message).toContain("INVALID_PERIOD_START_CORRECTION");
 
       const periods = await manager
         .from("time_payroll_active_periods")
@@ -536,7 +564,110 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     }
   });
 
-  test("resume correction reports the first payroll, report, or real-deduction blocker atomically", async () => {
+  test("corrects an initial closed period in place and rejects a stale period id", async () => {
+    const service = serviceClient();
+    const manager = await globalManagerClient();
+    const managerUser = await manager.auth.getUser();
+    const managerId = managerUser.data.user!.id;
+    const employeeId = await createEmployee(service, "QA initial closed period correction");
+    const today = bangkokDate();
+    const initialStart = `${today.slice(0, 7)}-01`;
+    const closedEnd = bangkokDate(-1);
+    const previousMonthEndValue = new Date(`${initialStart}T12:00:00Z`);
+    previousMonthEndValue.setUTCDate(previousMonthEndValue.getUTCDate() - 1);
+    const correctedStart = previousMonthEndValue.toISOString().slice(0, 10);
+
+    try {
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "ENABLE",
+        p_effective_date: initialStart,
+      })).error).toBeNull();
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "PAUSE",
+        p_effective_date: today,
+      })).error).toBeNull();
+
+      const periodId = await latestStartedPeriodId(manager, employeeId);
+      const employee = await signedInClient(await phoneFor(service, employeeId));
+      const forbiddenRpc = await employee.rpc("correct_time_payroll_period_start", {
+        p_profile_id: employeeId,
+        p_period_id: periodId,
+        p_start_on: correctedStart,
+      });
+      expect(forbiddenRpc.error?.message).toContain("Forbidden");
+      const employeeSession = await employee.auth.getSession();
+      const forbiddenRoute = await fetch(`${appUrl}/api/lanflow/time-tracking/admin`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${employeeSession.data.session!.access_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "CORRECT_PAYROLL_PERIOD_START",
+          payload: { user_id: employeeId, period_id: periodId, start_on: correctedStart },
+        }),
+      });
+      expect(forbiddenRoute.status).toBe(403);
+
+      const stale = await manager.rpc("correct_time_payroll_period_start", {
+        p_profile_id: employeeId,
+        p_period_id: crypto.randomUUID(),
+        p_start_on: correctedStart,
+      });
+      expect(stale.error?.message).toContain("PERIOD_START_CORRECTION_STALE");
+
+      const currentMonthSlip = await service.from("payroll_slips").insert({
+        profile_id: employeeId,
+        month: initialStart.slice(0, 7),
+        status: "PENDING",
+        created_by: managerId,
+      });
+      expect(currentMonthSlip.error).toBeNull();
+
+      const session = await manager.auth.getSession();
+      const response = await fetch(`${appUrl}/api/lanflow/time-tracking/admin`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${session.data.session!.access_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "CORRECT_PAYROLL_PERIOD_START",
+          payload: { user_id: employeeId, period_id: periodId, start_on: correctedStart },
+        }),
+      });
+      const responseBody = await response.json() as {
+        result?: { affectedFrom?: string; affectedThrough?: string };
+        error?: string;
+      };
+      expect(response.status, JSON.stringify(responseBody)).toBe(200);
+      expect(responseBody.result).toMatchObject({
+        affectedFrom: correctedStart,
+        affectedThrough: correctedStart,
+      });
+
+      const corrected = await manager
+        .from("time_payroll_active_periods")
+        .select("id,start_on,end_on")
+        .eq("profile_id", employeeId)
+        .single();
+      expect(corrected.error).toBeNull();
+      expect(corrected.data).toEqual({ id: periodId, start_on: correctedStart, end_on: closedEnd });
+
+      const movedForward = await manager.rpc("correct_time_payroll_period_start", {
+        p_profile_id: employeeId,
+        p_period_id: periodId,
+        p_start_on: initialStart,
+      });
+      expect(movedForward.error).toBeNull();
+    } finally {
+      await deleteEmployee(service, employeeId);
+    }
+  });
+
+  test("period start correction reports the first payroll, report, or real-deduction blocker atomically", async () => {
     const service = serviceClient();
     const manager = await globalManagerClient();
     const managerUser = await manager.auth.getUser();
@@ -547,7 +678,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       .eq("id", managerId)
       .single();
     expect(managerProfile.error).toBeNull();
-    const employeeId = await createEmployee(service, "QA resume correction blockers");
+    const employeeId = await createEmployee(service, "QA period correction blockers");
     const locationId = crypto.randomUUID();
     const reportId = crypto.randomUUID();
     const reportNo = `RPT-CORRECT-${reportId.replaceAll("-", "").slice(0, 10).toUpperCase()}`;
@@ -608,8 +739,10 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         eligibility_at: `${bangkokDate()}T16:00:00+07:00`,
       })).error).toBeNull();
 
-      const reportBlocked = await manager.rpc("correct_time_payroll_resume_start", {
+      const periodId = await latestStartedPeriodId(manager, employeeId);
+      const reportBlocked = await manager.rpc("correct_time_payroll_period_start", {
         p_profile_id: employeeId,
+        p_period_id: periodId,
         p_start_on: previousMonthEnd,
       });
       expect(reportBlocked.error?.message).toContain(
@@ -623,8 +756,8 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          action: "CORRECT_PAYROLL_RESUME_START",
-          payload: { user_id: employeeId, start_on: previousMonthEnd },
+          action: "CORRECT_PAYROLL_PERIOD_START",
+          payload: { user_id: employeeId, period_id: periodId, start_on: previousMonthEnd },
         }),
       });
       const reportBlockedPayload = await reportBlockedResponse.json();
@@ -634,8 +767,9 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
 
       expect((await service.from("report_items").delete().eq("report_id", reportId)).error).toBeNull();
       expect((await service.from("report_batches").delete().eq("id", reportId)).error).toBeNull();
-      const slipBlocked = await manager.rpc("correct_time_payroll_resume_start", {
+      const slipBlocked = await manager.rpc("correct_time_payroll_period_start", {
         p_profile_id: employeeId,
+        p_period_id: periodId,
         p_start_on: previousMonthEnd,
       });
       expect(slipBlocked.error?.message).toContain(
@@ -648,16 +782,17 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_profile_id: employeeId,
         p_type: "WITHDRAWAL",
         p_amount: 1000,
-        p_effective_date: firstCurrent,
+        p_effective_date: previousMonthEnd,
         p_description: "QA applied correction blocker",
       });
       expect(withdrawal.error).toBeNull();
-      const deductionBlocked = await manager.rpc("correct_time_payroll_resume_start", {
+      const deductionBlocked = await manager.rpc("correct_time_payroll_period_start", {
         p_profile_id: employeeId,
+        p_period_id: periodId,
         p_start_on: previousMonthEnd,
       });
       expect(deductionBlocked.error?.message).toMatch(
-        new RegExp(`DEDUCTION_LOCKED:${firstCurrent.slice(0, 7)}:WITHDRAWAL_DEDUCTION:[0-9a-f-]+`),
+        new RegExp(`DEDUCTION_LOCKED:${previousMonth}:WITHDRAWAL_DEDUCTION:[0-9a-f-]+`),
       );
 
       const openPeriod = await manager
@@ -677,7 +812,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     }
   });
 
-  test("resume correction and payroll close serialize to one consistent month snapshot", async () => {
+  test("period start correction and payroll close serialize to one consistent month snapshot", async () => {
     const service = serviceClient();
     const manager = await globalManagerClient();
     const employeeId = await createEmployee(service, "QA correction payroll race");
@@ -704,9 +839,11 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_effective_date: firstCurrent,
       })).error).toBeNull();
 
+      const periodId = await latestStartedPeriodId(manager, employeeId);
       const [correction, slip] = await Promise.all([
-        manager.rpc("correct_time_payroll_resume_start", {
+        manager.rpc("correct_time_payroll_period_start", {
           p_profile_id: employeeId,
+          p_period_id: periodId,
           p_start_on: previousMonthEnd,
         }),
         manager.rpc("create_time_tracking_payroll_slip", {
@@ -738,7 +875,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     }
   });
 
-  test("resume correction control keeps its bounded confirmation usable at 360px", async ({ page }) => {
+  test("initial closed-period correction stays usable at 360px", async ({ page }) => {
     const service = serviceClient();
     const manager = await globalManagerClient();
     const employeeName = `QA correction browser ${Date.now()}`;
@@ -754,17 +891,12 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       expect((await manager.rpc("set_time_payroll_active_period", {
         p_profile_id: employeeId,
         p_action: "ENABLE",
-        p_effective_date: `${previousMonth}-01`,
+        p_effective_date: firstCurrent,
       })).error).toBeNull();
       expect((await manager.rpc("set_time_payroll_active_period", {
         p_profile_id: employeeId,
         p_action: "PAUSE",
-        p_effective_date: `${previousMonth}-02`,
-      })).error).toBeNull();
-      expect((await manager.rpc("set_time_payroll_active_period", {
-        p_profile_id: employeeId,
-        p_action: "RESUME",
-        p_effective_date: firstCurrent,
+        p_effective_date: today,
       })).error).toBeNull();
 
       await page.setViewportSize({ width: 360, height: 800 });
@@ -779,23 +911,31 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       await calendarButton.click();
 
       const employeeDialog = page.getByRole("dialog", { name: "ข้อมูลของพนักงาน" });
-      await expect(employeeDialog.getByText("แก้วันกลับเข้าทำงานล่าสุด")).toBeVisible();
+      await expect(employeeDialog.getByText("แก้วันเริ่มช่วงล่าสุด")).toBeVisible();
+      await expect(employeeDialog.getByText("สถานะปัจจุบัน: ไม่อยู่ในระบบเงินเดือน")).toBeVisible();
       const correctionInput = employeeDialog.getByLabel("วันใหม่");
-      await expect(correctionInput).toHaveAttribute("min", `${previousMonth}-02`);
-      await expect(correctionInput).toHaveAttribute("max", today);
+      await expect(correctionInput).not.toHaveAttribute("min", /.+/);
+      await expect(correctionInput).toHaveAttribute("max", firstCurrent);
       await correctionInput.fill(previousMonthEnd);
       const reviewButton = employeeDialog.getByRole("button", { name: "ตรวจสอบวันใหม่" });
       await reviewButton.click();
 
-      const confirmation = page.getByRole("alertdialog", { name: "ยืนยันแก้วันกลับเข้าทำงาน" });
+      const confirmation = page.getByRole("alertdialog", { name: "ยืนยันแก้วันเริ่มช่วงล่าสุด" });
       await expect(confirmation).toContainText(`${firstCurrent} → ${previousMonthEnd}`);
       await expect(confirmation).toContainText(previousMonth);
-      await expect(confirmation).toContainText(today.slice(0, 7));
+      await expect(confirmation).not.toContainText(`ได้รับผล: ${previousMonth}, ${today.slice(0, 7)}`);
       const dimensions = await confirmation.evaluate((element) => ({
         width: element.clientWidth,
         scrollWidth: element.scrollWidth,
       }));
       expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.width);
+
+      await page.setViewportSize({ width: 393, height: 852 });
+      const widerDimensions = await confirmation.evaluate((element) => ({
+        width: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+      }));
+      expect(widerDimensions.scrollWidth).toBeLessThanOrEqual(widerDimensions.width);
 
       await page.keyboard.press("Escape");
       await expect(confirmation).toBeHidden();

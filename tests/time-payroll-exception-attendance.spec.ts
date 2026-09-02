@@ -12,6 +12,7 @@ const retireTimerMigrationPath = "supabase/migrations/20260831010000_retire_time
 const futureSchedulingMigrationPath = "supabase/migrations/20260901030000_time_payroll_future_period_scheduling.sql";
 const immediateEndMigrationPath = "supabase/migrations/20260902030000_end_time_payroll_employment_immediately.sql";
 const crossMonthResumeMigrationPath = "supabase/migrations/20260902050000_time_payroll_cross_month_resume_correction.sql";
+const periodStartCorrectionMigrationPath = "supabase/migrations/20260902060000_time_payroll_latest_period_start_correction.sql";
 
 test("counts exception attendance only after the Bangkok workday boundary", () => {
   const input = {
@@ -177,10 +178,7 @@ test("active-period backdates check every affected month for slip and deduction 
 });
 
 test("cross-month RESUME and latest-period correction retain the financial guards", async () => {
-  const [sql, admin] = await Promise.all([
-    readFile(crossMonthResumeMigrationPath, "utf8"),
-    readFile("src/app/api/lanflow/time-tracking/admin/route.ts", "utf8"),
-  ]);
+  const sql = await readFile(crossMonthResumeMigrationPath, "utf8");
 
   expect(sql).toContain("v_today date := (now() at time zone 'Asia/Bangkok')::date");
   expect(sql).not.toContain("RESUME_DATE_BEFORE_CURRENT_MONTH");
@@ -195,11 +193,26 @@ test("cross-month RESUME and latest-period correction retain the financial guard
   expect(sql).toContain("set start_on = p_start_on,");
   const correctionSql = sql.slice(sql.indexOf("create or replace function public.correct_time_payroll_resume_start("));
   expect(correctionSql).not.toContain("insert into public.time_tracking_audit_logs");
-  expect(admin).toContain('body.action === "CORRECT_PAYROLL_RESUME_START"');
-  expect(admin).toContain("correct_time_payroll_resume_start");
-  expect(admin).toContain("!isIsoDate(effective_date)");
-  expect(admin).toContain("!isIsoDate(start_on)");
   expect(sql).toContain("drop function if exists public.create_time_tracking_payroll_slip_internal_20260829");
+});
+
+test("latest period start correction is identity-bound and keeps the legacy RPC compatible", async () => {
+  const [sql, admin] = await Promise.all([
+    readFile(periodStartCorrectionMigrationPath, "utf8"),
+    readFile("src/app/api/lanflow/time-tracking/admin/route.ts", "utf8"),
+  ]);
+
+  expect(sql).toContain("create or replace function public.correct_time_payroll_period_start(");
+  expect(sql).toContain("p_period_id uuid");
+  expect(sql).toContain("pg_advisory_xact_lock");
+  expect(sql).toContain("if v_target.id <> p_period_id then raise exception 'PERIOD_START_CORRECTION_STALE'; end if");
+  expect(sql).toContain("v_affected_through := greatest(v_old_start_on, p_start_on) - 1");
+  expect(sql).toContain("perform private.assert_attendance_range_open(p_profile_id, v_affected_from, v_affected_through)");
+  expect(sql).toContain("set start_on = p_start_on,");
+  expect(sql).not.toContain("drop function public.correct_time_payroll_resume_start");
+  expect(admin).toContain('body.action === "CORRECT_PAYROLL_PERIOD_START"');
+  expect(admin).toContain("correct_time_payroll_period_start");
+  expect(admin).toContain("!isUuid(period_id)");
 });
 
 test("historical guard migration rejected future active-period dates", async () => {

@@ -46,7 +46,7 @@ test.describe("Lean attendance UI contract", () => {
       "REPLACE_ATTENDANCE_EXCEPTIONS",
       "UPDATE_TIME_PAYROLL_CONFIG",
       "SET_PAYROLL_ACTIVE_PERIOD",
-      "CORRECT_PAYROLL_RESUME_START",
+      "CORRECT_PAYROLL_PERIOD_START",
     ]) expect(moduleSource).toContain(action);
 
     expect(moduleSource).not.toContain('"TIMER"');
@@ -116,11 +116,12 @@ test.describe("Lean attendance UI contract", () => {
     expect(controls).toContain("วันย้อนหลังเป็นเต็มวันตามปฏิทินเดิม");
     expect(controls).toContain('role="alertdialog"');
     expect(controls).toContain('title="ยกเลิกกำหนดการรอมีผล"');
-    expect(controls).toContain('title="ยืนยันแก้วันกลับเข้าทำงาน"');
-    expect(controls).toContain("affectedMonths(periodState.resumeCorrection.currentStartOn, confirmingCorrectionDate)");
-    expect(controls).toContain("จะไม่เปลี่ยนสลิปหรือรายการหักเงินจริง");
-    expect(controls).toContain('id="resume-correction-error" role="alert"');
-    expect(moduleSource).toContain('action: "CORRECT_PAYROLL_RESUME_START"');
+    expect(controls).toContain('title="ยืนยันแก้วันเริ่มช่วงล่าสุด"');
+    expect(controls).toContain("affectedMonths(periodState.periodStartCorrection.currentStartOn, confirmingCorrectionDate)");
+    expect(controls).toContain("จะไม่เปลี่ยนวันสิ้นสุด สลิป หรือรายการหักเงินจริง");
+    expect(controls).toContain('id="period-start-correction-error" role="alert"');
+    expect(moduleSource).toContain('action: "CORRECT_PAYROLL_PERIOD_START"');
+    expect(moduleSource).toContain("period_id: periodId");
     expect(modalShellSource).toContain("role={role}");
   });
 

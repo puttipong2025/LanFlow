@@ -49,34 +49,42 @@ export function buildPayrollPeriodState(
       && period.scheduled_activation_on > today
     ))
     .sort((left, right) => left.scheduled_activation_on!.localeCompare(right.scheduled_activation_on!))[0];
-  const hasPeriodHistory = periods.some((period) => !(
-    (period.scheduled_action === "ENABLE" || period.scheduled_action === "RESUME")
-    && period.scheduled_activation_on
-    && period.scheduled_activation_on > today
-  ));
-  const history = periods
-    .filter((period) => !(
-      (period.scheduled_action === "ENABLE" || period.scheduled_action === "RESUME")
-      && period.scheduled_activation_on
-      && period.scheduled_activation_on > today
-    ))
+  const started = periods
+    .filter((period) => period.start_on <= today)
     .sort((left, right) => right.start_on.localeCompare(left.start_on));
-  const latest = history[0];
-  const previous = current
-    ? history.find((period) => (
-        period.id !== current.id
-        && period.start_on < current.start_on
+  const hasPeriodHistory = started.length > 0;
+  const latest = started[0];
+  const previous = latest
+    ? started.find((period) => (
+        period.id !== latest.id
+        && period.start_on < latest.start_on
         && period.end_on !== null
-        && period.end_on < current.start_on
+        && period.end_on < latest.start_on
       ))
     : undefined;
   const correctionEarliestOn = previous ? nextDate(previous.end_on!) : null;
-  const resumeCorrection = current
-    && correctionEarliestOn
-    && (correctionEarliestOn < current.start_on || current.start_on < today)
+  const latestStillEffective = latest && (
+    latest.end_on === null
+    || (
+      (latest.scheduled_action === "PAUSE" || latest.scheduled_action === "END")
+      && Boolean(latest.scheduled_activation_on)
+      && latest.scheduled_activation_on! > today
+    )
+  );
+  const correctionLatestOn = latest
+    ? latestStillEffective ? today : latest.end_on
+    : null;
+  const canMoveEarlier = latest && (correctionEarliestOn === null || correctionEarliestOn < latest.start_on);
+  const canMoveLater = latest && correctionLatestOn && latest.start_on < correctionLatestOn;
+  const periodStartCorrection = latest
+    && correctionLatestOn
+    && (canMoveEarlier || canMoveLater)
       ? {
-          currentStartOn: current.start_on,
+          periodId: latest.id,
+          currentStartOn: latest.start_on,
           earliestOn: correctionEarliestOn,
+          latestOn: correctionLatestOn,
+          endOn: latest.end_on,
         }
       : null;
   const resumeEarliestOn = !current && hasPeriodHistory && latest?.end_on
@@ -95,6 +103,6 @@ export function buildPayrollPeriodState(
       : null,
     hasPeriodHistory,
     resumeEarliestOn,
-    resumeCorrection,
+    periodStartCorrection,
   };
 }

@@ -22,7 +22,7 @@ function isIsoDate(value: unknown): value is string {
 function rpcErrorStatus(message: string) {
   if (/Authentication required/i.test(message)) return 401;
   if (/Forbidden|access denied/i.test(message)) return 403;
-  if (/MONTH_CLOSED|PENDING_PERIOD_ACTION|DEDUCTION_LOCKED|DEDUCTION_WAGE_LOCKED|PENDING_BLOCKER|OLDER_WORK_MONTH|DELETE_NEWER_SLIP_FIRST|REPORT_LOCKED|NO_PERIOD_HISTORY_TO_RESUME|RESUME_BEFORE_LAST_END_DATE|already been decided/i.test(message)) return 409;
+  if (/MONTH_CLOSED|PENDING_PERIOD_ACTION|DEDUCTION_LOCKED|DEDUCTION_WAGE_LOCKED|PENDING_BLOCKER|OLDER_WORK_MONTH|DELETE_NEWER_SLIP_FIRST|REPORT_LOCKED|NO_PERIOD_HISTORY_TO_RESUME|RESUME_BEFORE_LAST_END_DATE|PERIOD_START_CORRECTION_STALE|already been decided/i.test(message)) return 409;
   return 400;
 }
 
@@ -79,6 +79,14 @@ function rpcErrorMessage(message: string) {
   if (/INVALID_RESUME_CORRECTION/i.test(message)) return "กรุณาเลือกวันกลับเข้าทำงานใหม่ที่ต่างจากวันเดิม";
   if (/RESUME_CORRECTION_DATE_IN_FUTURE/i.test(message)) return "วันกลับเข้าทำงานใหม่ต้องไม่เกินวันนี้";
   if (/RESUME_CORRECTION_AFTER_PENDING_ACTION/i.test(message)) return "วันกลับเข้าทำงานใหม่ต้องอยู่ก่อนกำหนดการพักหรือสิ้นสุดงาน";
+  if (/PERIOD_START_CORRECTION_STALE/i.test(message)) return "ช่วงทำงานเปลี่ยนแล้ว กรุณารีเฟรชและตรวจสอบช่วงล่าสุดอีกครั้ง";
+  if (/NO_PERIOD_START_TO_CORRECT/i.test(message)) return "ไม่พบช่วงทำงานล่าสุดที่แก้วันเริ่มได้ กรุณารีเฟรชข้อมูล";
+  if (/INVALID_PERIOD_START_CORRECTION/i.test(message)) return "กรุณาเลือกวันเริ่มใหม่ที่ต่างจากวันเดิม";
+  const periodOverlapEnd = message.match(/PERIOD_START_OVERLAPS_PREVIOUS:([0-9]{4}-[0-9]{2}-[0-9]{2})/)?.[1];
+  if (periodOverlapEnd) return `วันเริ่มใหม่ต้องหลังช่วงก่อนหน้าซึ่งสิ้นสุด ${periodOverlapEnd}`;
+  if (/PERIOD_START_CORRECTION_DATE_IN_FUTURE/i.test(message)) return "วันเริ่มใหม่ต้องไม่เกินวันนี้";
+  const correctionEnd = message.match(/PERIOD_START_CORRECTION_AFTER_END:([0-9]{4}-[0-9]{2}-[0-9]{2})/)?.[1];
+  if (correctionEnd) return `วันเริ่มใหม่ต้องไม่เกินวันสิ้นสุดช่วง ${correctionEnd}`;
   if (/FUTURE_ATTENDANCE_DATE/i.test(message)) return "ช่วงวันที่แก้ปฏิทินต้องไม่เกินวันปัจจุบัน";
   if (/ACTIVE_PERIOD_ALREADY_OPEN/i.test(message)) return "พนักงานคนนี้มีช่วงทำงานที่เปิดอยู่แล้ว กรุณารีเฟรชข้อมูล";
   if (/NO_OPEN_ACTIVE_PERIOD/i.test(message)) return "ไม่พบช่วงทำงานที่เปิดอยู่ หรือวันที่มีผลไม่ต่อเนื่องกับช่วงเดิม";
@@ -448,16 +456,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true, result: data });
     }
 
-    if (body.action === "CORRECT_PAYROLL_RESUME_START") {
+    if (body.action === "CORRECT_PAYROLL_PERIOD_START") {
       if (!result.auth.canAccessSystemManager) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
       }
-      const { user_id, start_on } = payload;
-      if (!isUuid(user_id) || !isIsoDate(start_on)) {
-        return NextResponse.json({ error: "ข้อมูลวันกลับเข้าทำงานไม่ถูกต้อง" }, { status: 400 });
+      const { user_id, period_id, start_on } = payload;
+      if (!isUuid(user_id) || !isUuid(period_id) || !isIsoDate(start_on)) {
+        return NextResponse.json({ error: "ข้อมูลวันเริ่มช่วงทำงานไม่ถูกต้อง" }, { status: 400 });
       }
-      const { data, error } = await supabase.rpc("correct_time_payroll_resume_start", {
+      const { data, error } = await supabase.rpc("correct_time_payroll_period_start", {
         p_profile_id: user_id,
+        p_period_id: period_id,
         p_start_on: start_on,
       });
       if (error) return rpcFailure(error);

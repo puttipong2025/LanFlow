@@ -317,7 +317,7 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
     }
   }
 
-  async function correctPayrollResumeStart(startOn: string) {
+  async function correctPayrollPeriodStart(periodId: string, startOn: string) {
     if (!online) return TIME_TRACKING_OFFLINE_MESSAGE;
     if (!canConfigure) return "คุณไม่มีสิทธิ์เปลี่ยนช่วงทำงาน";
     setSaving(true);
@@ -326,19 +326,19 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "CORRECT_PAYROLL_RESUME_START",
-          payload: { user_id: managedUserId, start_on: startOn },
+          action: "CORRECT_PAYROLL_PERIOD_START",
+          payload: { user_id: managedUserId, period_id: periodId, start_on: startOn },
         }),
       });
       if (!response.ok) {
         const json = await response.json().catch(() => null);
-        return json?.error || "แก้วันกลับเข้าทำงานไม่สำเร็จ กรุณาลองใหม่";
+        return json?.error || "แก้วันเริ่มช่วงทำงานไม่สำเร็จ กรุณาลองใหม่";
       }
       await loadData();
       return null;
     } catch (error) {
       console.error(error);
-      return "แก้วันกลับเข้าทำงานไม่สำเร็จ กรุณาลองใหม่";
+      return "แก้วันเริ่มช่วงทำงานไม่สำเร็จ กรุณาลองใหม่";
     } finally {
       setSaving(false);
     }
@@ -418,7 +418,7 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
           saving={saving}
           onAction={setPayrollPeriod}
           onCancel={cancelPayrollPeriodSchedule}
-          onCorrectResume={correctPayrollResumeStart}
+          onCorrectPeriodStart={correctPayrollPeriodStart}
         />
       )}
 

@@ -13,7 +13,13 @@ test("period state makes END inactive on its selected date", () => {
   expect(state.nextAction).toBeNull();
   expect(state.hasPeriodHistory).toBe(true);
   expect(state.resumeEarliestOn).toBe("2026-09-01");
-  expect(state.resumeCorrection).toBeNull();
+  expect(state.periodStartCorrection).toEqual({
+    periodId: "period-1",
+    currentStartOn: "2026-08-01",
+    earliestOn: null,
+    latestOn: "2026-09-01",
+    endOn: "2026-09-01",
+  });
 });
 
 test("period state keeps a future END active until the selected first unpaid day", () => {
@@ -33,7 +39,13 @@ test("period state keeps a future END active until the selected first unpaid day
     selectedEffectiveOn: "2026-09-05",
     activationOn: "2026-09-05",
   });
-  expect(state.resumeCorrection).toBeNull();
+  expect(state.periodStartCorrection).toEqual({
+    periodId: "period-future-end",
+    currentStartOn: "2026-08-01",
+    earliestOn: null,
+    latestOn: "2026-09-01",
+    endOn: "2026-09-04",
+  });
 });
 
 test("period state exposes a future enable without treating it as active", () => {
@@ -51,6 +63,7 @@ test("period state exposes a future enable without treating it as active", () =>
   expect(state.nextAction?.action).toBe("ENABLE");
   expect(state.hasPeriodHistory).toBe(false);
   expect(state.resumeEarliestOn).toBeNull();
+  expect(state.periodStartCorrection).toBeNull();
 });
 
 test("period state ignores metadata after its activation date", () => {
@@ -67,7 +80,7 @@ test("period state ignores metadata after its activation date", () => {
   expect(state.nextAction).toBeNull();
 });
 
-test("period state exposes a correction window only for a separate resumed period", () => {
+test("period state exposes a correction window for the latest started period", () => {
   const state = buildPayrollPeriodState([{
     id: "period-1",
     start_on: "2026-08-01",
@@ -78,9 +91,12 @@ test("period state exposes a correction window only for a separate resumed perio
     end_on: null,
   }], "2026-09-02");
 
-  expect(state.resumeCorrection).toEqual({
+  expect(state.periodStartCorrection).toEqual({
+    periodId: "period-2",
     currentStartOn: "2026-09-01",
     earliestOn: "2026-08-16",
+    latestOn: "2026-09-02",
+    endOn: null,
   });
   expect(state.resumeEarliestOn).toBeNull();
 });
@@ -96,7 +112,7 @@ test("period state hides a correction control when today is the only valid date"
     end_on: null,
   }], "2026-09-02");
 
-  expect(state.resumeCorrection).toBeNull();
+  expect(state.periodStartCorrection).toBeNull();
 });
 
 test("period state derives the earliest RESUME date from the latest closed period", () => {
@@ -107,5 +123,51 @@ test("period state derives the earliest RESUME date from the latest closed perio
   }], "2026-09-02");
 
   expect(state.resumeEarliestOn).toBe("2026-08-16");
-  expect(state.resumeCorrection).toBeNull();
+  expect(state.periodStartCorrection).toEqual({
+    periodId: "period-1",
+    currentStartOn: "2026-07-01",
+    earliestOn: null,
+    latestOn: "2026-08-15",
+    endOn: "2026-08-15",
+  });
+});
+
+test("period state exposes an unbounded earliest date for an initial open period", () => {
+  const state = buildPayrollPeriodState([{
+    id: "initial-open",
+    start_on: "2026-09-01",
+    end_on: null,
+  }], "2026-09-02");
+
+  expect(state.periodStartCorrection).toEqual({
+    periodId: "initial-open",
+    currentStartOn: "2026-09-01",
+    earliestOn: null,
+    latestOn: "2026-09-02",
+    endOn: null,
+  });
+});
+
+test("period state corrects the latest started period while preserving a future RESUME", () => {
+  const state = buildPayrollPeriodState([{
+    id: "closed-period",
+    start_on: "2026-09-01",
+    end_on: "2026-09-02",
+  }, {
+    id: "future-resume",
+    start_on: "2026-09-10",
+    end_on: null,
+    scheduled_action: "RESUME",
+    scheduled_effective_on: "2026-09-10",
+    scheduled_activation_on: "2026-09-10",
+  }], "2026-09-02");
+
+  expect(state.nextAction?.action).toBe("RESUME");
+  expect(state.periodStartCorrection).toEqual({
+    periodId: "closed-period",
+    currentStartOn: "2026-09-01",
+    earliestOn: null,
+    latestOn: "2026-09-02",
+    endOn: "2026-09-02",
+  });
 });
