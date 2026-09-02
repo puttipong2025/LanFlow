@@ -8734,7 +8734,9 @@ CREATE OR REPLACE FUNCTION "public"."correct_time_payroll_period_start"("p_profi
 declare
   v_actor uuid := auth.uid();
   v_today date := (now() at time zone 'Asia/Bangkok')::date;
+  v_tail public.time_payroll_active_periods%rowtype;
   v_target public.time_payroll_active_periods%rowtype;
+  v_candidate public.time_payroll_active_periods%rowtype;
   v_previous public.time_payroll_active_periods%rowtype;
   v_latest_on date;
   v_old_start_on date;
@@ -8751,7 +8753,7 @@ begin
 
   perform pg_advisory_xact_lock(hashtextextended('time-payroll-attendance:' || p_profile_id::text, 0));
 
-  select * into v_target
+  select * into v_tail
   from public.time_payroll_active_periods ap
   where ap.profile_id = p_profile_id
     and ap.start_on <= v_today
@@ -8760,12 +8762,25 @@ begin
   for update;
 
   if not found then raise exception 'NO_PERIOD_START_TO_CORRECT'; end if;
+  v_target := v_tail;
+
+  loop
+    select * into v_candidate
+    from public.time_payroll_active_periods ap
+    where ap.profile_id = p_profile_id
+      and ap.end_on = v_target.start_on - 1
+    order by ap.start_on desc
+    limit 1
+    for update;
+    exit when not found;
+    v_target := v_candidate;
+  end loop;
+
   if v_target.id <> p_period_id then raise exception 'PERIOD_START_CORRECTION_STALE'; end if;
 
   select * into v_previous
   from public.time_payroll_active_periods ap
   where ap.profile_id = p_profile_id
-    and ap.id <> v_target.id
     and ap.start_on < v_target.start_on
     and ap.end_on is not null
   order by ap.start_on desc
@@ -8778,13 +8793,14 @@ begin
   if p_start_on > v_today then raise exception 'PERIOD_START_CORRECTION_DATE_IN_FUTURE'; end if;
 
   v_latest_on := case
-    when v_target.end_on is null
+    when v_target.id <> v_tail.id then v_target.end_on
+    when v_tail.end_on is null
       or (
-        v_target.scheduled_action in ('PAUSE', 'END')
-        and v_target.scheduled_activation_on > v_today
+        v_tail.scheduled_action in ('PAUSE', 'END')
+        and v_tail.scheduled_activation_on > v_today
       )
     then v_today
-    else v_target.end_on
+    else v_tail.end_on
   end;
 
   if v_latest_on is null or p_start_on > v_latest_on then
@@ -8795,8 +8811,6 @@ begin
   if p_start_on = v_old_start_on then raise exception 'INVALID_PERIOD_START_CORRECTION'; end if;
 
   v_affected_from := least(v_old_start_on, p_start_on);
-  -- The later boundary is unchanged under both versions, so only guard dates
-  -- before it. This avoids blocking an August-only correction on a September slip.
   v_affected_through := greatest(v_old_start_on, p_start_on) - 1;
   perform private.assert_attendance_range_open(p_profile_id, v_affected_from, v_affected_through);
 

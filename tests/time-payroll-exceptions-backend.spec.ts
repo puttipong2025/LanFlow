@@ -667,6 +667,75 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     }
   });
 
+  test("corrects only the head row of the latest contiguous period chain", async () => {
+    const service = serviceClient();
+    const manager = await globalManagerClient();
+    const employeeId = await createEmployee(service, "QA contiguous period correction");
+    const correctedStart = bangkokDate(-2);
+    const chainHeadStart = bangkokDate(-1);
+    const chainTailStart = bangkokDate();
+
+    try {
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "ENABLE",
+        p_effective_date: chainHeadStart,
+      })).error).toBeNull();
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "PAUSE",
+        p_effective_date: chainTailStart,
+      })).error).toBeNull();
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "RESUME",
+        p_effective_date: chainTailStart,
+      })).error).toBeNull();
+
+      const before = await manager
+        .from("time_payroll_active_periods")
+        .select("id,start_on,end_on")
+        .eq("profile_id", employeeId)
+        .order("start_on", { ascending: true });
+      expect(before.error).toBeNull();
+      expect(before.data).toHaveLength(2);
+      const chainHeadId = before.data![0].id;
+      const chainTailId = before.data![1].id;
+
+      const staleTail = await manager.rpc("correct_time_payroll_period_start", {
+        p_profile_id: employeeId,
+        p_period_id: chainTailId,
+        p_start_on: correctedStart,
+      });
+      expect(staleTail.error?.message).toContain("PERIOD_START_CORRECTION_STALE");
+
+      const corrected = await manager.rpc("correct_time_payroll_period_start", {
+        p_profile_id: employeeId,
+        p_period_id: chainHeadId,
+        p_start_on: correctedStart,
+      });
+      expect(corrected.error).toBeNull();
+
+      const periods = await manager
+        .from("time_payroll_active_periods")
+        .select("id,start_on,end_on")
+        .eq("profile_id", employeeId)
+        .order("start_on", { ascending: true });
+      expect(periods.error).toBeNull();
+      expect(periods.data).toEqual([{
+        id: chainHeadId,
+        start_on: correctedStart,
+        end_on: chainHeadStart,
+      }, {
+        id: chainTailId,
+        start_on: chainTailStart,
+        end_on: null,
+      }]);
+    } finally {
+      await deleteEmployee(service, employeeId);
+    }
+  });
+
   test("period start correction reports the first payroll, report, or real-deduction blocker atomically", async () => {
     const service = serviceClient();
     const manager = await globalManagerClient();

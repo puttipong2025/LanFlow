@@ -54,12 +54,16 @@ export function buildPayrollPeriodState(
     .sort((left, right) => right.start_on.localeCompare(left.start_on));
   const hasPeriodHistory = started.length > 0;
   const latest = started[0];
-  const previous = latest
+  let correctionTarget = latest;
+  for (const candidate of started.slice(1)) {
+    if (!candidate.end_on || !correctionTarget || nextDate(candidate.end_on) !== correctionTarget.start_on) break;
+    correctionTarget = candidate;
+  }
+  const previous = correctionTarget
     ? started.find((period) => (
-        period.id !== latest.id
-        && period.start_on < latest.start_on
+        period.start_on < correctionTarget.start_on
         && period.end_on !== null
-        && period.end_on < latest.start_on
+        && period.end_on < correctionTarget.start_on
       ))
     : undefined;
   const correctionEarliestOn = previous ? nextDate(previous.end_on!) : null;
@@ -71,17 +75,19 @@ export function buildPayrollPeriodState(
       && latest.scheduled_activation_on! > today
     )
   );
-  const correctionLatestOn = latest
-    ? latestStillEffective ? today : latest.end_on
+  const correctionLatestOn = correctionTarget
+    ? correctionTarget.id === latest?.id
+      ? latestStillEffective ? today : latest.end_on
+      : correctionTarget.end_on
     : null;
-  const canMoveEarlier = latest && (correctionEarliestOn === null || correctionEarliestOn < latest.start_on);
-  const canMoveLater = latest && correctionLatestOn && latest.start_on < correctionLatestOn;
-  const periodStartCorrection = latest
+  const canMoveEarlier = correctionTarget && (correctionEarliestOn === null || correctionEarliestOn < correctionTarget.start_on);
+  const canMoveLater = correctionTarget && correctionLatestOn && correctionTarget.start_on < correctionLatestOn;
+  const periodStartCorrection = correctionTarget
     && correctionLatestOn
     && (canMoveEarlier || canMoveLater)
       ? {
-          periodId: latest.id,
-          currentStartOn: latest.start_on,
+          periodId: correctionTarget.id,
+          currentStartOn: correctionTarget.start_on,
           earliestOn: correctionEarliestOn,
           latestOn: correctionLatestOn,
           endOn: latest.end_on,

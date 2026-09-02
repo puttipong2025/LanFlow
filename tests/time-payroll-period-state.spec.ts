@@ -101,7 +101,7 @@ test("period state exposes a correction window for the latest started period", (
   expect(state.resumeEarliestOn).toBeNull();
 });
 
-test("period state hides a correction control when today is the only valid date", () => {
+test("period state corrects the head of an adjacent chain with an open tail", () => {
   const state = buildPayrollPeriodState([{
     id: "period-1",
     start_on: "2026-09-01",
@@ -112,7 +112,13 @@ test("period state hides a correction control when today is the only valid date"
     end_on: null,
   }], "2026-09-02");
 
-  expect(state.periodStartCorrection).toBeNull();
+  expect(state.periodStartCorrection).toEqual({
+    periodId: "period-1",
+    currentStartOn: "2026-09-01",
+    earliestOn: null,
+    latestOn: "2026-09-01",
+    endOn: null,
+  });
 });
 
 test("period state derives the earliest RESUME date from the latest closed period", () => {
@@ -170,4 +176,25 @@ test("period state corrects the latest started period while preserving a future 
     latestOn: "2026-09-02",
     endOn: "2026-09-02",
   });
+});
+
+test("period state corrects the head of the latest contiguous closed chain", () => {
+  const state = buildPayrollPeriodState([{
+    id: "chain-head",
+    start_on: "2026-09-01",
+    end_on: "2026-09-01",
+  }, {
+    id: "chain-tail",
+    start_on: "2026-09-02",
+    end_on: "2026-09-02",
+  }], "2026-09-02");
+
+  expect(state.periodStartCorrection).toEqual({
+    periodId: "chain-head",
+    currentStartOn: "2026-09-01",
+    earliestOn: null,
+    latestOn: "2026-09-01",
+    endOn: "2026-09-02",
+  });
+  expect(state.resumeEarliestOn).toBe("2026-09-02");
 });

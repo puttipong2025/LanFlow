@@ -12,7 +12,7 @@ const retireTimerMigrationPath = "supabase/migrations/20260831010000_retire_time
 const futureSchedulingMigrationPath = "supabase/migrations/20260901030000_time_payroll_future_period_scheduling.sql";
 const immediateEndMigrationPath = "supabase/migrations/20260902030000_end_time_payroll_employment_immediately.sql";
 const crossMonthResumeMigrationPath = "supabase/migrations/20260902050000_time_payroll_cross_month_resume_correction.sql";
-const periodStartCorrectionMigrationPath = "supabase/migrations/20260902060000_time_payroll_latest_period_start_correction.sql";
+const periodStartCorrectionMigrationPath = "supabase/migrations/20260902070000_time_payroll_contiguous_period_start_correction.sql";
 
 test("counts exception attendance only after the Bangkok workday boundary", () => {
   const input = {
@@ -205,6 +205,7 @@ test("latest period start correction is identity-bound and keeps the legacy RPC 
   expect(sql).toContain("create or replace function public.correct_time_payroll_period_start(");
   expect(sql).toContain("p_period_id uuid");
   expect(sql).toContain("pg_advisory_xact_lock");
+  expect(sql).toContain("ap.end_on = v_target.start_on - 1");
   expect(sql).toContain("if v_target.id <> p_period_id then raise exception 'PERIOD_START_CORRECTION_STALE'; end if");
   expect(sql).toContain("v_affected_through := greatest(v_old_start_on, p_start_on) - 1");
   expect(sql).toContain("perform private.assert_attendance_range_open(p_profile_id, v_affected_from, v_affected_through)");
