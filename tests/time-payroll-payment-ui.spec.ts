@@ -52,7 +52,7 @@ test("approval uses the shared payment dialog and persists the displayed payer o
   await payment.getByRole("button", { name: "อนุมัติ", exact: true }).click();
   await expect(payment).toHaveCount(0);
   const change = payroll.getByRole("button", { name: "เปลี่ยนวิธีจ่าย", exact: true });
-  await expect(change.locator("..")).toContainText(`จ่ายจาก: ${branch.name}`);
+  await expect(change.locator("..")).toContainText(`จ่ายโดย: ${branch.name}`);
   await change.click();
   const correction = page.getByRole("dialog", { name: "เปลี่ยนวิธีจ่าย", exact: true });
   await correction.getByLabel("วิธีจ่ายใหม่").selectOption("__central_outside_system__");

@@ -65,7 +65,7 @@ function reportLockReason(item: { report_lock_no?: string | null }) {
 
 function paymentSourceLabel(item: { expense_location_id?: string | null; expense_location_name?: string | null }) {
   return item.expense_location_id
-    ? `จ่ายจาก: ${item.expense_location_name || "ไม่พบชื่อสาขาผู้จ่าย"}`
+    ? `จ่ายโดย: ${item.expense_location_name || "ไม่พบชื่อสาขาผู้จ่าย"}`
     : "ส่วนกลางจ่าย (จ่ายนอกระบบ)";
 }
 
