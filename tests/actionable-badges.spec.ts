@@ -508,7 +508,7 @@ test("approval buttons and modal counts follow the selected branch", async ({ br
       hasText: "คำขอรับจ่าย Badge 1",
     });
     await incomeRequest.getByRole("button", { name: "ปฏิเสธ" }).click();
-    const rejectDialog = page.getByRole("heading", { name: "ปฏิเสธรายการ" }).locator("..");
+    const rejectDialog = page.getByRole("dialog", { name: "ปฏิเสธรายการ" });
     await rejectDialog.getByLabel("เหตุผลที่ปฏิเสธ (ไม่บังคับ)").fill("ทดสอบลด Badge");
     await rejectDialog.getByRole("button", { name: "ยืนยัน" }).click();
     await expect(page.getByText("ปฏิเสธรายการแล้ว")).toBeVisible({ timeout: 15_000 });

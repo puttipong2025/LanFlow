@@ -15,8 +15,7 @@ import { authFetch } from "@/lib/auth-fetch";
 import { Location, Profile } from "@/types";
 import { useInputDialog } from "@/hooks/useInputDialog";
 import { ExpenseLocationChangeModal } from "./time-tracking/ExpenseLocationChangeModal";
-import { ExpenseLocationApprovalModal } from "./time-tracking/ExpenseLocationApprovalModal";
-import { canManageTimePayroll } from "@/lib/permissions";
+import { canManageSystemFeatures, canManageTimePayroll } from "@/lib/permissions";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { TablePageSizeSelect, TablePagination } from "@/components/shared/TablePagination";
 import {
@@ -64,6 +63,19 @@ function reportLockReason(item: { report_lock_no?: string | null }) {
     : null;
 }
 
+function paymentSourceLabel(item: { expense_location_id?: string | null; expense_location_name?: string | null }) {
+  return item.expense_location_id
+    ? `จ่ายจาก: ${item.expense_location_name || "ไม่พบชื่อสาขาผู้จ่าย"}`
+    : "ส่วนกลางจ่าย (จ่ายนอกระบบ)";
+}
+
+function paymentScopeReason(item: { status: string; expense_location_id?: string | null }, globalManager: boolean, locations: Location[]) {
+  return item.status === "APPROVED" && item.expense_location_id && !globalManager
+    && !locations.some((location) => location.id === item.expense_location_id)
+    ? "รายการนี้จ่ายจากสาขานอกขอบเขต กรุณาให้ผู้จัดการระบบจัดการ"
+    : null;
+}
+
 export function TimeTrackingModule({ profile, online, locations }: TimeTrackingModuleProps) {
   if (canManageTimePayroll(profile)) {
     return <AdminTimeTracking profile={profile} online={online} locations={locations} />;
@@ -79,6 +91,7 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [pendingExpenseLocationTx, setPendingExpenseLocationTx] = useState<any>(null);
+  const [pendingWithdrawal, setPendingWithdrawal] = useState<{ amount: number; effectiveDate: string } | null>(null);
   const [previewSource, setPreviewSource] = useState<{ type: "withdrawal" | "payroll"; id: string } | null>(null);
   const { requestInput, inputDialog } = useInputDialog();
   const loadRequestIdRef = useRef(0);
@@ -94,6 +107,7 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
   const isSelf = managedUserId === profile.id;
   const canManageTime = allowManagerActions ?? canManageTimePayroll(profile);
   const canDecideItems = canDecide ?? canManageTime;
+  const globalManager = canManageSystemFeatures(profile);
   const withdrawalActionText = isSelf ? "ขอเบิกเงินตนเอง" : "ขอเบิกเงินแทน";
 
   const loadData = useCallback(async () => {
@@ -138,7 +152,7 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
   }, [loadData]);
 
   async function handleDeleteTransaction(tx: any) {
-    const lockReason = reportLockReason(tx);
+    const lockReason = reportLockReason(tx) || paymentScopeReason(tx, globalManager, expenseLocations);
     if (lockReason) {
       alert(lockReason);
       return;
@@ -183,7 +197,7 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
   }
 
   async function changeWithdrawalExpenseLocation(tx: any) {
-    const lockReason = reportLockReason(tx);
+    const lockReason = reportLockReason(tx) || paymentScopeReason(tx, globalManager, expenseLocations);
     if (lockReason) {
       alert(lockReason);
       return;
@@ -210,8 +224,7 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
       });
       if (!res.ok) {
         const json = await res.json();
-        alert(json.error || 'ไม่สามารถเปลี่ยนสาขาค่าใช้จ่ายได้');
-        return false;
+        throw new Error(json.error || 'ไม่สามารถเปลี่ยนสาขาค่าใช้จ่ายได้');
       }
       setPendingExpenseLocationTx(null);
       await loadData();
@@ -221,7 +234,27 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
     }
   }
 
-  if (loading) return (
+  async function createWithdrawal(amount: number, effectiveDate: string | null, locationId: string | null = null, comment = "") {
+    const response = await authFetch(canManageTime ? "/api/lanflow/time-tracking/admin" : "/api/lanflow/time-tracking/user", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: canManageTime ? "ADMIN_REQUEST_WITHDRAWAL" : "REQUEST_WITHDRAWAL",
+        payload: canManageTime
+          ? { user_id: managedUserId, amount, effective_date: effectiveDate, expense_location_id: locationId, admin_comment: comment }
+          : { amount },
+      }),
+    });
+    if (!response.ok) {
+      const json = await response.json().catch(() => null);
+      throw new Error(json?.error || "ไม่สามารถสร้างรายการเบิกได้");
+    }
+    setPendingWithdrawal(null);
+    await loadData();
+    await queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
+    return true;
+  }
+
+  if (loading && !data) return (
     <div role="status" aria-label="กำลังโหลดข้อมูล..." aria-busy="true" className="space-y-5 p-1">
       <p className="text-pretty text-sm font-semibold text-ink/65">กำลังโหลดข้อมูล...</p>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2" aria-hidden="true">
@@ -464,25 +497,15 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
               : null;
             if (canManageTime && !effectiveDate) return;
 
-            const endpoint = canManageTime ? "/api/lanflow/time-tracking/admin" : "/api/lanflow/time-tracking/user";
-            const action = canManageTime ? "ADMIN_REQUEST_WITHDRAWAL" : "REQUEST_WITHDRAWAL";
-            const payload = canManageTime
-              ? { user_id: managedUserId, amount: Number(amount), effective_date: effectiveDate }
-              : { amount: Number(amount) };
-
+            if (canManageTime && effectiveDate) {
+              setPendingWithdrawal({ amount: Number(amount), effectiveDate });
+              return;
+            }
             setSaving(true);
             try {
-              const response = await authFetch(endpoint, {
-                method: "POST", headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ action, payload })
-              });
-              if (!response.ok) {
-                const json = await response.json().catch(() => null);
-                alert(json?.error || "ไม่สามารถสร้างรายการเบิกได้");
-                return;
-              }
-              await loadData();
-              await queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
+              await createWithdrawal(Number(amount), null);
+            } catch (error) {
+              alert(error instanceof Error ? error.message : "ไม่สามารถสร้างรายการเบิกได้");
             } finally {
               setSaving(false);
             }
@@ -524,9 +547,6 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
                     {t.status === 'APPROVED' && (
                       <span className="text-xs text-ink/50">วันที่อนุมัติ: {t.updated_at ? formatBangkokDateTime(t.updated_at) : (t.created_at ? formatBangkokDateTime(t.created_at) : '-')}</span>
                     )}
-                    {t.type === 'WITHDRAWAL' && t.status === 'APPROVED' && !t.expense_location_id && (
-                      <span className="text-xs font-semibold text-river">ส่วนกลางจ่าย (จ่ายนอกระบบ)</span>
-                    )}
                     {t.admin_comment?.startsWith("ระบบอัตโนมัติ:") && (
                       <span className="text-xs text-amber mt-1 font-bold">{t.admin_comment}</span>
                     )}
@@ -556,11 +576,14 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
                     {canDecideItems && t.status === 'PENDING' && onReject && (
                       <button onClick={() => void runApprovalAction(() => onReject('TRANSACTION', t, loadData))} disabled={saving || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded bg-danger px-3 py-1 font-bold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-50">ปฏิเสธ</button>
                     )}
-                    {canManageTime && t.type === 'WITHDRAWAL' && t.status === 'APPROVED' && (
-                      <button onClick={() => changeWithdrawalExpenseLocation(t)} disabled={saving || !online || Boolean(t.report_lock_no)} title={reportLockReason(t) ?? undefined} className="rounded-md bg-river px-3 py-1 text-sm font-semibold text-white hover:bg-river/90 disabled:opacity-40">เปลี่ยนวิธีจ่าย</button>
+                    {t.type === 'WITHDRAWAL' && t.status === 'APPROVED' && (
+                      <div className="flex min-w-0 flex-col items-start gap-1">
+                        <span className="text-pretty text-xs font-semibold text-ink/70">{paymentSourceLabel(t)}</span>
+                        {canManageTime && <button onClick={() => changeWithdrawalExpenseLocation(t)} disabled={saving || !online || Boolean(t.report_lock_no) || Boolean(paymentScopeReason(t, globalManager, expenseLocations))} title={reportLockReason(t) ?? paymentScopeReason(t, globalManager, expenseLocations) ?? undefined} className="rounded-md bg-river px-3 py-1 text-sm font-semibold text-white hover:bg-river/90 disabled:opacity-40">เปลี่ยนวิธีจ่าย</button>}
+                      </div>
                     )}
                     {(canManageTime || (isSelf && t.type === 'WITHDRAWAL' && t.status === 'PENDING')) && (
-                      <button onClick={() => handleDeleteTransaction(t)} disabled={saving || !online || Boolean(t.report_lock_no)} title={reportLockReason(t) ?? (online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE)} className="inline-flex h-10 items-center gap-1 rounded-md bg-danger px-2 text-sm font-semibold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-40">
+                      <button onClick={() => handleDeleteTransaction(t)} disabled={saving || !online || Boolean(t.report_lock_no) || Boolean(paymentScopeReason(t, globalManager, expenseLocations))} title={reportLockReason(t) ?? paymentScopeReason(t, globalManager, expenseLocations) ?? (online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE)} className="inline-flex h-10 items-center gap-1 rounded-md bg-danger px-2 text-sm font-semibold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-40">
                         <XCircle size={18} />
                         ลบ
                       </button>
@@ -694,6 +717,17 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
           </div>
         </ModalShell>
       )}
+      {pendingWithdrawal && (
+        <ExpenseLocationChangeModal
+          mode="create"
+          locations={expenseLocations}
+          paymentAmount={pendingWithdrawal.amount}
+          amountLabel="ยอดเบิกที่ใช้จ่าย"
+          primaryLocationId={targetPrimaryLocationId ?? profile.primaryLocationId}
+          onClose={() => setPendingWithdrawal(null)}
+          onSubmit={(locationId, comment) => createWithdrawal(pendingWithdrawal.amount, pendingWithdrawal.effectiveDate, locationId, comment)}
+        />
+      )}
       {pendingExpenseLocationTx && (
         <ExpenseLocationChangeModal
           locations={expenseLocations}
@@ -799,6 +833,8 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
   const canManage = permissions.canManage ?? canManageTimePayroll(profile);
   const canDecide = permissions.canDecide ?? canManageTimePayroll(profile);
   const canConfigure = permissions.canConfigure ?? canManageTimePayroll(profile);
+  const canEditGlobalConfig = permissions.canEditGlobalConfig ?? profile.role === "super_admin";
+  const canViewAudit = permissions.canViewAudit ?? canManageSystemFeatures(profile);
 
   async function updateTimePayrollConfig(workdayEndTime: string) {
     setAttendanceSaving(true);
@@ -837,26 +873,38 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
     }
     const requestedComment = providedComment === undefined
       ? await requestInput({
-          title: "อนุมัติรายการ",
-          label: "เหตุผลการอนุมัติ",
+          title: status === 'APPROVED' ? "อนุมัติรายการ" : "ปฏิเสธรายการ",
+          label: status === 'APPROVED' ? "เหตุผลการอนุมัติ" : "เหตุผลการปฏิเสธ",
           multiline: true,
         })
       : providedComment;
     if (requestedComment === null) return false;
     const comment = requestedComment;
-    const res = await authFetch("/api/lanflow/time-tracking/admin", {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: type === 'TRANSACTION' ? 'APPROVE_TRANSACTION' : 'APPROVE_PAYROLL_SLIP',
-        payload: type === 'TRANSACTION'
-          ? { transaction_id: id, status, admin_comment: comment, expense_location_id: expenseLocationId }
-          : { slip_id: id, status, admin_comment: comment, expense_location_id: expenseLocationId }
-      })
-    });
+    const failureMessage = status === 'APPROVED'
+      ? 'ไม่สามารถบันทึกการอนุมัติได้'
+      : 'ไม่สามารถบันทึกการปฏิเสธได้';
+    let res: Response;
+    try {
+      res = await authFetch("/api/lanflow/time-tracking/admin", {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: type === 'TRANSACTION' ? 'APPROVE_TRANSACTION' : 'APPROVE_PAYROLL_SLIP',
+          payload: type === 'TRANSACTION'
+            ? { transaction_id: id, status, admin_comment: comment, expense_location_id: expenseLocationId }
+            : { slip_id: id, status, admin_comment: comment, expense_location_id: expenseLocationId }
+        })
+      });
+    } catch (error) {
+      console.error("Failed to submit time/payroll decision:", error);
+      if (providedComment !== undefined) throw new Error(failureMessage);
+      alert(failureMessage);
+      return false;
+    }
     if (!res.ok) {
       const json = await res.json().catch(() => null);
-      alert(json?.error || 'ไม่สามารถบันทึกการอนุมัติได้');
+      if (providedComment !== undefined) throw new Error(json?.error || failureMessage);
+      alert(json?.error || failureMessage);
       return false;
     }
     await Promise.all([
@@ -897,8 +945,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
     });
     if (!res.ok) {
       const json = await res.json().catch(() => null);
-      alert(json?.error || "ไม่สามารถเปลี่ยนวิธีจ่ายได้");
-      return false;
+      throw new Error(json?.error || "ไม่สามารถเปลี่ยนวิธีจ่ายได้");
     }
     const refreshOwner = pendingPaymentChange.refreshOwner;
     setPendingPaymentChange(null);
@@ -1013,13 +1060,13 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
            {data?.settings && (
              <TimePayrollConfigPanel
                settings={data.settings as TimePayrollSettingsDto}
-               canConfigure={canConfigure}
+               canConfigure={canEditGlobalConfig}
                online={online}
                saving={attendanceSaving}
                onSave={updateTimePayrollConfig}
              />
            )}
-           {canDecide && data?.admins && data.admins.length > 0 && (
+           {canViewAudit && data?.admins && data.admins.length > 0 && (
              <select
                ref={auditLogsTriggerRef}
                aria-label="ดูประวัติของแอดมิน"
@@ -1241,6 +1288,8 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
           user={payrollUser}
           online={online}
           canDecide={canDecide}
+          expenseLocations={expenseLocations}
+          globalManager={canManageSystemFeatures(profile)}
           onApprove={canDecide ? (slip, refreshOwner) => handleApprove('SLIP', slip.id, Number(slip.net_pay) > 0 ? { title: `เงินเดือนของ ${payrollUser.name} เดือน ${slip.month}`, amount: Number(slip.net_pay), primaryLocationId: payrollUser.primary_location_id } : undefined, refreshOwner) : undefined}
           onReject={canDecide ? (slip, refreshOwner) => submitApproval('SLIP', slip.id, 'REJECTED', undefined, undefined, refreshOwner) : undefined}
           onChangePayment={(slip, refreshOwner) => setPendingPaymentChange({
@@ -1257,8 +1306,10 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
         />
       )}
       {pendingExpenseApproval && (
-        <ExpenseLocationApprovalModal
-          approval={pendingExpenseApproval}
+        <ExpenseLocationChangeModal
+          mode="approve"
+          paymentAmount={pendingExpenseApproval.amount}
+          amountLabel={pendingExpenseApproval.title}
           locations={expenseLocations}
           primaryLocationId={pendingExpenseApproval.primaryLocationId}
           onClose={() => setPendingExpenseApproval(null)}
@@ -1366,7 +1417,9 @@ function AuditLogsModal({ adminId, adminName, onClose }: { adminId: string, admi
   )
 }
 
-function PayrollModal({ user, online, canDecide, onApprove, onReject, onChangePayment, onClose, onRefresh }: { user: any, online: boolean, canDecide: boolean, onApprove?: (slip: any, refreshOwner: () => Promise<void>) => Promise<boolean>, onReject?: (slip: any, refreshOwner: () => Promise<void>) => Promise<boolean>, onChangePayment: (slip: any, refreshOwner: () => Promise<void>) => void, onClose: () => void, onRefresh: () => Promise<void> }) {
+function PayrollModal({ user, online, canDecide, expenseLocations, globalManager, onApprove, onReject, onChangePayment, onClose, onRefresh }: { user: any, online: boolean, canDecide: boolean, expenseLocations: Location[], globalManager: boolean, onApprove?: (slip: any, refreshOwner: () => Promise<void>) => Promise<boolean>, onReject?: (slip: any, refreshOwner: () => Promise<void>) => Promise<boolean>, onChangePayment: (slip: any, refreshOwner: () => Promise<void>) => void, onClose: () => void, onRefresh: () => Promise<void> }) {
+  const [pendingCreatePayment, setPendingCreatePayment] = useState<{ month: string; netPay: number } | null>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [slips, setSlips] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -1375,6 +1428,7 @@ function PayrollModal({ user, online, canDecide, onApprove, onReject, onChangePa
   const [createMonth, setCreateMonth] = useState(bangkokToday().slice(0, 7));
   const [previewSlipId, setPreviewSlipId] = useState<string | null>(null);
   const loadSlipsRequestIdRef = useRef(0);
+  const createSubmitRef = useRef<HTMLButtonElement>(null);
 
   const loadSlips = useCallback(async () => {
     const requestId = ++loadSlipsRequestIdRef.current;
@@ -1421,36 +1475,55 @@ function PayrollModal({ user, online, canDecide, onApprove, onReject, onChangePa
       return;
     }
     setCreateMonth(bangkokToday().slice(0, 7));
+    setCreateError(null);
     setCreateFormOpen(true);
   }
 
   async function createSlip() {
     if (!createMonth) return;
     setSaving(true);
+    setCreateError(null);
     try {
-      const res = await authFetch("/api/lanflow/time-tracking/admin", {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'CREATE_PAYROLL_SLIP',
-            payload: { user_id: user.id, month: createMonth },
-          })
+      const response = await authFetch("/api/lanflow/time-tracking/admin", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "PREVIEW_PAYROLL_SLIP", payload: { user_id: user.id, month: createMonth } }),
       });
-      if (res.ok) {
-        setCreateFormOpen(false);
-        alert("สร้างสลิปเงินเดือนสำเร็จ");
-        await loadSlips();
-        await onRefresh();
-      } else {
-        const json = await res.json();
-        alert(json.error || "เกิดข้อผิดพลาด");
-      }
-    } catch (e) {
-      console.error(e);
-      alert("เกิดข้อผิดพลาด");
+      const json = await response.json();
+      if (!response.ok) throw new Error(json.error || "ตรวจยอดสลิปไม่สำเร็จ");
+      const netPay = Number(json.preview?.netPay);
+      if (!Number.isFinite(netPay) || netPay < 0) throw new Error("ตรวจยอดสลิปไม่สำเร็จ");
+      if (netPay > 0) setPendingCreatePayment({ month: createMonth, netPay });
+      else await submitCreateSlip(createMonth, netPay, null, "");
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : "ตรวจยอดสลิปไม่สำเร็จ");
     } finally {
       setSaving(false);
     }
+  }
+
+  async function submitCreateSlip(month: string, expectedNetPay: number, locationId: string | null, comment: string) {
+    const res = await authFetch("/api/lanflow/time-tracking/admin", {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'CREATE_PAYROLL_SLIP',
+          payload: { user_id: user.id, month, expense_location_id: locationId, admin_comment: comment, expected_net_pay: expectedNetPay },
+        })
+    });
+    if (!res.ok) {
+      const json = await res.json().catch(() => null);
+      throw new Error(json?.error || "สร้างสลิปเงินเดือนไม่สำเร็จ");
+    }
+    setPendingCreatePayment(null);
+    setCreateFormOpen(false);
+    await loadSlips();
+    await onRefresh();
+    return true;
+  }
+
+  function closeCreatePayment() {
+    setPendingCreatePayment(null);
+    window.requestAnimationFrame(() => createSubmitRef.current?.focus());
   }
 
   async function deleteSlip(slipId: string, month: string) {
@@ -1535,12 +1608,11 @@ function PayrollModal({ user, online, canDecide, onApprove, onReject, onChangePa
 
                        <span className="text-xs text-ink/50 mt-1">สร้างเมื่อ: {formatBangkokDateTime(slip.created_at)}</span>
                        {Number(slip.net_pay) <= 0 && <span className="text-xs text-ink/55 mt-1">อนุมัติได้ แต่จะไม่สร้างค่าใช้จ่าย</span>}
-                       {slip.status === 'APPROVED' && Number(slip.net_pay) > 0 && !slip.expense_location_id && <span className="text-xs font-semibold text-river mt-1">ส่วนกลางจ่าย (จ่ายนอกระบบ)</span>}
                        {slip.admin_comment && <span className="text-xs text-river mt-1">หมายเหตุ: {slip.admin_comment}</span>}
                       {slip.approver?.name && <span className="text-xs text-leaf mt-1">ผู้ทำรายการ: {slip.approver.name}</span>}
                     </div>
 
-                    <div className="flex items-center gap-3">
+                    <div className="flex flex-wrap items-center gap-3">
                       <span className={`text-xs font-bold px-2 py-1 rounded-md ${slip.status === 'APPROVED' ? 'bg-success/15 text-success' : 'bg-ink/10 text-ink'}`}>
                         {slip.status}
                       </span>
@@ -1561,14 +1633,17 @@ function PayrollModal({ user, online, canDecide, onApprove, onReject, onChangePa
                          <button onClick={() => void runSlipDecision(() => onApprove(slip, loadSlips))} disabled={saving || loading || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-success text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-success/85 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
                        )}
                        {slip.status === 'APPROVED' && Number(slip.net_pay) > 0 && (
-                          <button onClick={() => onChangePayment(slip, loadSlips)} disabled={saving || loading || !online || Boolean(slip.report_lock_no)} title={reportLockReason(slip) ?? undefined} className="bg-river text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-river/85 disabled:opacity-40">เปลี่ยนวิธีจ่าย</button>
+                          <div className="flex min-w-0 flex-col items-start gap-1">
+                            <span className="text-pretty text-xs font-semibold text-ink/70">{paymentSourceLabel(slip)}</span>
+                            <button onClick={() => onChangePayment(slip, loadSlips)} disabled={saving || loading || !online || Boolean(slip.report_lock_no) || Boolean(paymentScopeReason(slip, globalManager, expenseLocations))} title={reportLockReason(slip) ?? paymentScopeReason(slip, globalManager, expenseLocations) ?? undefined} className="bg-river text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-river/85 disabled:opacity-40">เปลี่ยนวิธีจ่าย</button>
+                          </div>
                        )}
                         {canDecide && slip.status === 'PENDING' && onReject && (
                           <button onClick={() => void runSlipDecision(() => onReject(slip, loadSlips))} disabled={saving || loading || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-danger text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-danger/85 disabled:cursor-not-allowed disabled:opacity-50">ปฏิเสธ</button>
                        )}
 
                       {canDelete && (
-                        <button onClick={() => deleteSlip(slip.id, slip.month)} disabled={saving || !online || Boolean(slip.report_lock_no)} title={reportLockReason(slip) ?? (online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE)} className="rounded-md bg-danger px-3 py-1.5 text-sm font-semibold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-40">
+                        <button onClick={() => deleteSlip(slip.id, slip.month)} disabled={saving || !online || Boolean(slip.report_lock_no) || Boolean(paymentScopeReason(slip, globalManager, expenseLocations))} title={reportLockReason(slip) ?? paymentScopeReason(slip, globalManager, expenseLocations) ?? (online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE)} className="rounded-md bg-danger px-3 py-1.5 text-sm font-semibold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-40">
                           {slip.status === 'APPROVED' && Number(slip.net_pay) > 0 ? 'ยกเลิกค่าใช้จ่าย' : 'ลบสลิป'}
                         </button>
                       )}
@@ -1601,9 +1676,10 @@ function PayrollModal({ user, online, canDecide, onApprove, onReject, onChangePa
               className="mt-2 w-full rounded-md border border-black/15 px-3 py-2"
               required
             />
+            {createError && <p role="alert" className="mt-3 text-pretty text-sm font-semibold text-danger">{createError}</p>}
             <div className="mt-6 flex justify-end gap-3">
               <button type="button" onClick={() => setCreateFormOpen(false)} disabled={saving} className="rounded-md bg-actionSecondary px-4 py-2 font-semibold text-white disabled:opacity-50">ยกเลิก</button>
-              <button type="submit" disabled={saving || !createMonth} className="rounded-md bg-success px-4 py-2 font-bold text-white disabled:opacity-50">ยืนยันสร้างสลิป</button>
+              <button ref={createSubmitRef} type="submit" disabled={saving || !createMonth} className="rounded-md bg-success px-4 py-2 font-bold text-white disabled:opacity-50">ยืนยันสร้างสลิป</button>
             </div>
           </form>
         </ModalShell>
@@ -1614,6 +1690,17 @@ function PayrollModal({ user, online, canDecide, onApprove, onReject, onChangePa
           sourceId={previewSlipId}
           online={online}
           onClose={() => setPreviewSlipId(null)}
+        />
+      )}
+      {pendingCreatePayment && (
+        <ExpenseLocationChangeModal
+          mode="create"
+          locations={expenseLocations}
+          paymentAmount={pendingCreatePayment.netPay}
+          amountLabel={`ยอดสุทธิเดือน ${pendingCreatePayment.month} ของ ${user.name}`}
+          primaryLocationId={user.primary_location_id}
+          onClose={closeCreatePayment}
+          onSubmit={(locationId, comment) => submitCreateSlip(pendingCreatePayment.month, pendingCreatePayment.netPay, locationId, comment)}
         />
       )}
     </>

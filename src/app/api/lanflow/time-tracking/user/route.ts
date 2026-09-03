@@ -70,7 +70,7 @@ export async function GET(request: NextRequest) {
     ] = await Promise.all([
       supabase
         .from("financial_transactions")
-        .select("*, report_lock_no, approver:profiles!financial_transactions_approved_by_fkey(name)")
+        .select("*, expense_location_name, report_lock_no, approver:profiles!financial_transactions_approved_by_fkey(name)")
         .eq("profile_id", targetUserId)
         .in("type", ["DEBT", "WITHDRAWAL"])
         .order("effective_date", { ascending: false })
@@ -95,7 +95,7 @@ export async function GET(request: NextRequest) {
         .order("created_at", { ascending: false }),
       supabase
         .from("payroll_slips")
-        .select("id, profile_id, month, gross_pay, total_deductions, net_pay, status, created_at, approved_at, cancelled_at, expense_location_id, admin_comment, report_lock_no, approver:profiles!payroll_slips_approved_by_fkey(name)")
+        .select("id, profile_id, month, gross_pay, total_deductions, net_pay, status, created_at, approved_at, cancelled_at, expense_location_id, expense_location_name, admin_comment, report_lock_no, approver:profiles!payroll_slips_approved_by_fkey(name)")
         .eq("profile_id", targetUserId)
         .order("month", { ascending: false }),
       supabase.rpc("get_time_payroll_attendance_month", {
@@ -137,18 +137,8 @@ export async function GET(request: NextRequest) {
       bangkokDateString(),
     );
 
-    if (!periodState.hasPeriodHistory && result.auth.canAccessSystemManager) {
-      const { data: endHistory, error: endHistoryError } = await supabase
-        .from("time_tracking_audit_logs")
-        .select("new_data")
-        .eq("target_table", "time_payroll_active_periods")
-        .eq("record_id", targetUserId)
-        .eq("action", "SET_PAYROLL_ACTIVE_PERIOD")
-        .contains("new_data", { action: "END" })
-        .order("created_at", { ascending: false })
-        .limit(1);
-      if (endHistoryError) throw endHistoryError;
-      const lastEndDate = endHistory?.[0]?.new_data?.selectedEffectiveOn;
+    if (!periodState.hasPeriodHistory) {
+      const lastEndDate = attendance.data?.lastEndOn;
       if (typeof lastEndDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(lastEndDate)) {
         periodState.hasPeriodHistory = true;
         periodState.resumeEarliestOn = lastEndDate;

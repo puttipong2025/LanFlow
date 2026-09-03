@@ -369,37 +369,26 @@ API response status:
 
 ## 12. Time Tracking And Payroll Rules
 
-กฎค่าแรงของโมดูล `เวลาและเงินเดือน` ต้องใช้ cutoff เวลา `15:00` ตาม timezone `Asia/Bangkok` เป็นเส้นนับวันทำงาน:
+กฎค่าแรงของโมดูล `เวลาและเงินเดือน` ใช้ปฏิทินข้อยกเว้นและช่วงคิดค่าแรงตาม timezone `Asia/Bangkok`:
 
-- `time_segments.start_time` และ `time_segments.end_time` เป็น source row ของช่วงทำงานจริง
-- ถ้า segment ผ่านเวลา `15:00` ให้คิดค่าแรงตามจำนวนเส้น `15:00` ที่ผ่าน ไม่ใช่เอาชั่วโมงรวมหาร 8 อย่างเดียว
-- ถ้า segment ยังไม่ผ่าน `15:00` ให้คิดแบบชั่วโมงรวม / 8 เพื่อรองรับครึ่งวันหรือช่วงสั้น เช่น `08:00-12:00 = 0.5`
-- ตัวอย่างที่ต้องถูกเสมอ:
-  - `14:59 -> 15:00` = `1` วัน
-  - `06:59 -> 15:00` = `1` วัน
-  - `15:01 -> 15:00` ของวันถัดไป = `1` วัน
-  - `08:00 -> 12:00` = `0.5` วัน
-  - `08:00 -> 16:00` = `1` วัน
-
-กฎ implementation:
-
-- ฝั่ง TypeScript ต้องใช้ `src/lib/time-tracking/pay.ts` เป็น helper กลาง ห้าม duplicate สูตรใน API route หรือ component
-- `GET /api/lanflow/time-tracking/user` ต้องคำนวณ `wageInfo.totalDays`, `grossPay`, และ `remainingBalance` จาก helper กลาง
-- `POST /api/lanflow/time-tracking/admin` action `CREATE_PAYROLL_SLIP` ต้องใช้ helper กลางเดียวกันในการ snapshot `total_days` และ `gross_pay`
-- ฝั่ง database ต้องใช้ `public.calculate_time_segment_paid_days(start_time, end_time)` และ `public.calculate_paid_work_days(profile_id, period_start, period_end)` สำหรับ logic ที่รันใน DB เช่น `deduct_debts_daily()`
-- ถ้าแก้สูตรค่าแรง ต้องแก้ทั้ง TypeScript helper และ SQL helper ให้ตรงกัน พร้อมทดสอบ edge cases ข้างต้น
-- ห้ามใช้เวลาจาก client เป็น source of truth สำหรับการปิดรอบค่าแรง; client timer ใช้ได้แค่ UX/countdown แต่ server/API/DB ต้องคำนวณซ้ำเอง
+- วันที่อยู่ในช่วงคิดค่าแรงมีค่าเริ่มต้นเป็นเต็มวัน ส่วน `time_payroll_attendance_exceptions` เก็บเฉพาะ `FULL_DAY`, `HALF_DAY` หรือ `OFF` ที่ต่างจากค่าปริยาย
+- วันนี้มีสิทธิ์ถูกนับเมื่อเวลาถึง Config เวลาสิ้นสุดวันทำงานที่มีผลอยู่ Config เป็นค่าร่วมทั้งระบบและการแก้เริ่มใช้วันถัดไป
+- `public.get_time_payroll_attendance_month` และ `public.calculate_paid_work_days` เป็น source of truth สำหรับจำนวนวันและยอดรวม สลิปต้อง snapshot ผลจากฐานข้อมูลใน transaction ที่สร้าง
+- `time_segments` และ timer ถูกเลิกใช้แล้ว ห้ามนำกลับมาเป็นฐานคำนวณหรือสร้างสูตรคู่ใน TypeScript
+- ห้ามใช้เวลาจาก client เป็น source of truth สำหรับ eligibility หรือการปิดรอบ หน้าเว็บใช้ผล `eligibleThrough` และ summary จาก server
 
 กฎสิทธิ์และสาขาค่าแรง:
 
-- `profiles.can_manage_time_payroll` เป็นสิทธิ์เฉพาะโมดูลแบบ default-off สำหรับ `user` และ `admin`; ทั้งสอง role ได้ขอบเขตเท่ากัน และสิทธิ์นี้ต้องไม่เปิดสิทธิ์โมดูลอื่น
+- `profiles.can_manage_time_payroll` เป็นสิทธิ์เฉพาะโมดูลแบบ default-off สำหรับ `admin` เท่านั้น บัญชี `user` ต้องถูกเลื่อนเป็น `admin` ก่อนและสิทธิ์นี้ต้องไม่เปิดสิทธิ์โมดูลอื่น
 - เฉพาะ `super_admin` หรือผู้มี `can_access_super_admin_features` เท่านั้นที่เปิด/ปิดสิทธิ์นี้ได้; การเพิกถอนต้องมีผลทันทีที่ API/RPC/RLS
-- ผู้ได้รับมอบสิทธิ์จัดการได้เฉพาะ `user`/`admin` ที่ active และมี `user_locations.is_primary` อยู่ในสาขา active ที่ตนได้รับมอบหมาย ห้ามจัดการ `super_admin` หรือผู้จัดการระบบ
+- ผู้ได้รับมอบสิทธิ์จัดการและอนุมัติได้เฉพาะ `user`/`admin` ที่ active และมี `user_locations.is_primary` อยู่ในสาขา active ที่ตนได้รับมอบหมาย รวมตนเองและ Admin ผู้ได้รับมอบสิทธิ์คนอื่น ห้ามจัดการ `super_admin` หรือผู้จัดการระบบ
 - ถ้าผู้ใช้ไม่มีสาขา ขอบเขตของผู้ได้รับมอบสิทธิ์ต้องเป็นศูนย์ แต่ self-service และผู้จัดการระบบส่วนกลางยังทำงานตามเดิม
 - เมื่อมีสาขาอย่างน้อยหนึ่งแห่ง ต้องมีสาขาหลักหนึ่งแห่งพอดี: สาขาแรกเป็นสาขาหลักอัตโนมัติ การเปลี่ยน/ลบสาขาหลักที่ยังมีสาขาอื่นต้องระบุสาขาทดแทนและทำแบบ atomic
-- ตัวเลือกตอนอนุมัติเรียงเป็นสาขาหลักของพนักงาน, สาขา active อื่นทั้งหมด, แล้ว `ส่วนกลางจ่าย (จ่ายนอกระบบ)`; เหตุผลไม่บังคับ
+- ตัวเลือกตอนอนุมัติของ Admin ผู้ได้รับมอบสิทธิ์มีเฉพาะสาขา active ที่ตนได้รับมอบหมาย แล้ว `ส่วนกลางจ่าย (จ่ายนอกระบบ)`; ผู้จัดการระบบและ super admin เลือกสาขา active ได้ทั้งหมด เหตุผลไม่บังคับ
 - `expense_location_id = null` ของรายการเบิกที่อนุมัติหรือสลิปเงินเดือนยอดบวกหมายถึงส่วนกลางจ่าย และต้องไม่สร้าง derived Income/Expense หรือรายการสาขาใด
-- เปลี่ยนสาขาจ่าย ↔ ส่วนกลางจ่ายได้ก่อน report lock เท่านั้น และต้อง audit ที่ source module
+- รายการที่ Admin ผู้ได้รับมอบสิทธิ์สร้างภายในขอบเขตอนุมัติทันที ส่วนรายการรออนุมัติภายในขอบเขตตัดสินได้โดยไม่ห้าม self-approval
+- เปลี่ยนสาขาจ่าย ↔ ส่วนกลางจ่ายและลบรายการอนุมัติได้ก่อน report lock ตามกฎเดือนเดิม แต่ Admin ผู้ได้รับมอบสิทธิ์ต้องมีสิทธิ์ทั้งสาขาผู้จ่ายเดิมและสาขาผู้จ่ายใหม่ รายการเดิมที่จ่ายจากสาขานอกขอบเขตอ่านได้แต่แก้หรือลบไม่ได้
+- Config เวลาสิ้นสุดวันทำงานเป็นค่าร่วมทั้งระบบและแก้ได้เฉพาะ `super_admin`; ผู้จัดการระบบและ Admin ผู้ได้รับมอบสิทธิ์อ่านได้อย่างเดียว
 - ปุ่มและ API ระงับ/กู้คืนบัญชีมีเฉพาะ `super_admin` และผู้จัดการระบบ; ผู้จัดการระบบห้ามระงับตนเองหรือ `super_admin`
 
 ## 13. IndexedDB Queue Rules

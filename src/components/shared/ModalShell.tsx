@@ -32,6 +32,11 @@ export function ModalShell({
 }) {
   const titleId = useId();
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(
+    typeof document !== "undefined" && document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null,
+  );
 
   useEffect(() => {
     if (!closeOnEscape || closeDisabled || nativeModal) return;
@@ -46,9 +51,7 @@ export function ModalShell({
     if (!nativeModal) return;
     const dialog = dialogRef.current;
     if (!dialog) return;
-    const previousFocus = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
+    const previousFocus = previousFocusRef.current;
     if (!dialog.open) dialog.showModal();
     return () => {
       if (dialog.open) dialog.close();

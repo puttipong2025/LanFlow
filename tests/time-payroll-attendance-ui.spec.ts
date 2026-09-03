@@ -6,7 +6,6 @@ const controls = readFileSync(resolve("src/components/time-tracking/AttendanceCo
 const moduleSource = readFileSync(resolve("src/components/TimeTrackingModule.tsx"), "utf8");
 const modalShellSource = readFileSync(resolve("src/components/shared/ModalShell.tsx"), "utf8");
 const expenseLocationChangeSource = readFileSync(resolve("src/components/time-tracking/ExpenseLocationChangeModal.tsx"), "utf8");
-const expenseLocationApprovalSource = readFileSync(resolve("src/components/time-tracking/ExpenseLocationApprovalModal.tsx"), "utf8");
 const slipPreviewSource = readFileSync(resolve("src/components/time-tracking/SlipPreviewModal.tsx"), "utf8");
 
 test.describe("Lean attendance UI contract", () => {
@@ -62,7 +61,7 @@ test.describe("Lean attendance UI contract", () => {
     expect(moduleSource).toContain("if (requestId !== loadRequestIdRef.current) return");
     expect(moduleSource).toContain("if (requestId === loadRequestIdRef.current) setLoading(false)");
     expect(moduleSource).toContain("const effectiveDate = canManageTime");
-    expect(moduleSource).toContain(": { amount: Number(amount) }");
+    expect(moduleSource).toContain(": { amount },");
     expect(moduleSource).toContain("const requestId = ++adminLoadRequestIdRef.current");
     expect(moduleSource).toContain("if (requestId !== adminLoadRequestIdRef.current) return");
     expect(moduleSource).toContain("const loadSlipsRequestIdRef = useRef(0)");
@@ -167,7 +166,7 @@ test.describe("Lean attendance UI contract", () => {
     expect(moduleSource).toContain('title="สร้างหนี้สิน"');
     expect(moduleSource).toContain('htmlFor="time-payroll-debt-date"');
     expect(moduleSource).toContain('title={dashboardUser.id === profile.id ? "ข้อมูลของตนเอง" : "ข้อมูลของพนักงาน"}');
-    for (const source of [expenseLocationChangeSource, expenseLocationApprovalSource]) {
+    for (const source of [expenseLocationChangeSource]) {
       expect(source).toContain("<ModalShell");
       expect(source).toContain("nativeModal");
       expect(source).toContain("closeOnEscape");
@@ -179,6 +178,7 @@ test.describe("Lean attendance UI contract", () => {
     expect(slipPreviewSource).toContain("closeDisabled={pdfShare.busy}");
     expect(modalShellSource).toContain("dialog.showModal()");
     expect(modalShellSource).toContain("event.stopPropagation()");
+    expect(modalShellSource).toContain("const previousFocus = previousFocusRef.current");
     expect(modalShellSource).toContain("previousFocus?.focus()");
   });
 });
@@ -231,6 +231,10 @@ test.describe("Time/payroll native dialogs", () => {
         return;
       }
 
+      if (body.action === "PREVIEW_PAYROLL_SLIP") {
+        await route.fulfill({ json: { preview: { netPay: 15000 } } });
+        return;
+      }
       if (body.action === "CREATE_PAYROLL_SLIP") {
         slipCreated = true;
         expectingAdminRefresh = true;
@@ -258,6 +262,7 @@ test.describe("Time/payroll native dialogs", () => {
     const createDialog = page.getByRole("dialog", { name: "สร้างสลิปเงินเดือน" });
     await createDialog.getByLabel("เดือน").fill("2026-08");
     await createDialog.getByRole("button", { name: "ยืนยันสร้างสลิป" }).click();
+    await page.getByRole("dialog", { name: "เลือกวิธีจ่าย", exact: true }).getByRole("button", { name: "สร้างและอนุมัติ" }).click();
 
     await adminRefreshRequested;
     try {
@@ -347,6 +352,75 @@ test.describe("Time/payroll native dialogs", () => {
     } finally {
       releaseAdminRefresh();
     }
+  });
+
+  test("labels rejection correctly and recovers after a network failure", async ({ page }) => {
+    const employee = {
+      id: "e85ab5ad-019c-474b-93cf-2c88a01cd2e5",
+      name: "พนักงานปฏิเสธรายการ",
+      daily_wage: 500,
+      primary_location_id: null,
+      debt_remaining_amount: 100,
+    };
+    const transaction = {
+      id: "739b559c-9783-4813-9cbd-2f8c45456069",
+      profile_id: employee.id,
+      type: "DEBT",
+      amount: 100,
+      remaining_amount: 100,
+      effective_date: "2026-09-02",
+      created_at: "2026-09-02T03:00:00.000Z",
+      status: "PENDING",
+      description: "หนี้สำหรับทดสอบปฏิเสธ",
+      report_lock_no: null,
+    };
+
+    await page.route("**/api/lanflow/time-tracking/admin", async (route) => {
+      if (route.request().method() === "GET") {
+        await route.fulfill({
+          json: {
+            permissions: { canManage: true, canDecide: true, canConfigure: true },
+            users: [employee],
+            pendingTransactions: [transaction],
+            pendingSlips: [],
+            paymentLocations: [],
+            admins: [],
+          },
+        });
+        return;
+      }
+      const body = route.request().postDataJSON() as { action?: string };
+      if (body.action === "APPROVE_TRANSACTION") {
+        await route.abort("failed");
+        return;
+      }
+      await route.continue();
+    });
+    await page.route("**/api/lanflow/time-tracking/user?*", (route) => route.fulfill({
+      json: {
+        transactions: [transaction],
+        wageInfo: { remainingBalance: 0, totalDays: 0, totalDebt: 100 },
+        attendance: null,
+        periodState: null,
+      },
+    }));
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
+    await page.getByRole("button", { name: "ทั้งหมด", exact: true }).click();
+    await page.getByRole("button", { name: /^จัดการปฏิทินวันทำงานของ พนักงานปฏิเสธรายการ/ }).click();
+    const employeeDialog = page.getByRole("dialog", { name: "ข้อมูลของพนักงาน" });
+    await employeeDialog.getByRole("button", { name: "ปฏิเสธ" }).click();
+    const rejectionDialog = page.getByRole("dialog", { name: "ปฏิเสธรายการ" });
+    await rejectionDialog.getByLabel("เหตุผลการปฏิเสธ").fill("ข้อมูลไม่ครบ");
+    const failureAlert = page.waitForEvent("dialog");
+    const submit = rejectionDialog.getByRole("button", { name: "ยืนยัน" }).click();
+    const alert = await failureAlert;
+    expect(alert.message()).toBe("ไม่สามารถบันทึกการปฏิเสธได้");
+    await alert.accept();
+    await submit;
+    await expect(employeeDialog.getByText("PENDING", { exact: true })).toBeVisible();
+    await expect(employeeDialog.getByRole("button", { name: "ปฏิเสธ" })).toBeEnabled();
   });
 
   test("updates the open payroll slip once and keeps it visible during summary refresh", async ({ page }) => {

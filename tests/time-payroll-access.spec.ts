@@ -249,9 +249,7 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
   test("Admin capability has primary-branch scope and revokes immediately", async () => {
     const service = serviceClient();
     const [insideLocationId, outsideLocationId] = await activeLocationIds(service);
-    const activeLocations = await service.from("locations").select("id").eq("is_active", true);
-    expect(activeLocations.error).toBeNull();
-    const expectedPaymentLocationIds = (activeLocations.data || []).map((location) => location.id).sort();
+    const expectedPaymentLocationIds = [insideLocationId];
     const insideTarget = await createTarget(service, "เป้าหมายสาขาเดียวกัน", "user", insideLocationId);
     const outsideTarget = await createTarget(service, "เป้าหมายต่างสาขา", "admin", outsideLocationId);
     const originalAssignments = new Map<string, Array<{ location_id: string; is_primary: boolean }>>();
@@ -360,10 +358,10 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
     }
   });
 
-  test("delegated manager cannot mutate approved sources but can withdraw an own pending payroll slip", async () => {
+  test("delegated manager cannot mutate sources paid outside scope but can withdraw an own pending payroll slip", async () => {
     test.setTimeout(60_000);
     const service = serviceClient();
-    const [locationId] = await activeLocationIds(service);
+    const [locationId, outsidePaymentLocationId] = await activeLocationIds(service);
     const delegatedId = await createTarget(service, "ผู้จัดการสาขาทดสอบสิทธิ์", "admin", locationId);
     const transactionTargetId = await createTarget(service, "พนักงานทดสอบรายการเงิน", "user", locationId);
     const slipTargetId = await createTarget(service, "พนักงานทดสอบสลิป", "user", locationId);
@@ -405,6 +403,7 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
         type: "WITHDRAWAL",
         amount: 222,
         status: "APPROVED",
+        expense_location_id: outsidePaymentLocationId,
         effective_date: "2026-08-01",
         approved_by: superAdminId,
         approved_at: new Date().toISOString(),
@@ -439,6 +438,7 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
         daily_wage: 500,
         status: "APPROVED",
         created_by: delegatedId,
+        expense_location_id: outsidePaymentLocationId,
         approved_by: superAdminId,
         approved_at: new Date().toISOString(),
       }).select("id").single();
@@ -451,10 +451,9 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
         p_expense_location_id: locationId,
         p_comment: null,
       });
-      expect(delegatedPaymentChange.error?.message).toContain("Forbidden");
+      expect(delegatedPaymentChange.error?.message).toContain("Existing expense location access denied");
 
       for (const [sourceType, sourceId] of [
-        ["transaction", pendingTransactionId],
         ["transaction", approvedTransactionId],
         ["payroll_slip", approvedSlipId],
       ] as const) {
@@ -462,7 +461,7 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
           p_source_type: sourceType,
           p_source_id: sourceId,
         });
-        expect(deletion.error?.message).toContain("Forbidden");
+        expect(deletion.error?.message).toContain("Existing expense location access denied");
       }
 
       const routeCreatorDelete = await delegatedRequest.post("/api/lanflow/time-tracking/admin", { data: {

@@ -281,7 +281,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_action: "END",
         p_effective_date: workDate,
       });
-      expect(nullProfile.error?.message).toContain("INVALID_PERIOD_ACTION");
+      expect(nullProfile.error?.message).toContain("Forbidden");
 
       const period = await manager
         .from("time_payroll_active_periods")
@@ -950,6 +950,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     const employeeName = `QA correction browser ${Date.now()}`;
     const employeeId = await createEmployee(service, employeeName);
     const today = bangkokDate();
+    const lastPaidDate = bangkokDate(-1);
     const firstCurrent = `${today.slice(0, 7)}-01`;
     const previousMonthEndValue = new Date(`${firstCurrent}T12:00:00Z`);
     previousMonthEndValue.setUTCDate(previousMonthEndValue.getUTCDate() - 1);
@@ -988,7 +989,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       const correctionDialog = page.getByRole("dialog", { name: "แก้ไขวันเริ่มช่วงล่าสุด" });
       const correctionInput = correctionDialog.getByLabel("วันเริ่มที่ถูกต้อง");
       await expect(correctionInput).not.toHaveAttribute("min", /.+/);
-      await expect(correctionInput).toHaveAttribute("max", firstCurrent);
+      await expect(correctionInput).toHaveAttribute("max", lastPaidDate);
       await correctionInput.fill(previousMonthEnd);
       await expect(correctionDialog.getByRole("button", { name: "ยืนยันแก้ไขวันเริ่ม" })).toBeEnabled();
       await expect(correctionDialog).toContainText("ระบบจะตรวจเดือนที่ได้รับผล");
@@ -1762,7 +1763,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       const visibleIds = delegatedDashboard.users.map((profile) => profile.id);
       expect(visibleIds).toEqual(expect.arrayContaining([delegatedId, employeeA, employeeB]));
       expect(visibleIds).not.toContain(employeeOtherBranch);
-      expect(delegatedDashboard.permissions.canDecide).toBe(false);
+      expect(delegatedDashboard.permissions.canDecide).toBe(true);
       expect(delegatedDashboard.pendingTransactions).toEqual([]);
       expect(delegatedDashboard.pendingSlips).toEqual([]);
 
@@ -1791,18 +1792,32 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       expect(delegatedConfig.error?.message).toContain("Forbidden");
       const delegatedPeriod = await delegated.rpc("set_time_payroll_active_period", {
         p_profile_id: employeeA,
-        p_action: "END",
-        p_effective_date: workEnd,
+        p_action: "PAUSE",
+        p_effective_date: bangkokDate(),
       });
-      expect(delegatedPeriod.error?.message).toContain("Forbidden");
+      expect(delegatedPeriod.error).toBeNull();
+      expect((await employee.rpc("request_time_tracking_withdrawal", { p_amount: 5 })).error).toBeNull();
+      const pendingWithdrawal = await employee
+        .from("financial_transactions")
+        .select("id")
+        .eq("profile_id", employeeA)
+        .eq("type", "WITHDRAWAL")
+        .eq("status", "PENDING")
+        .single();
+      expect(pendingWithdrawal.error).toBeNull();
       const delegatedDecision = await delegated.rpc("decide_time_tracking_approval", {
         p_source_type: "transaction",
-        p_source_id: crypto.randomUUID(),
+        p_source_id: pendingWithdrawal.data!.id,
         p_decision: "APPROVED",
         p_comment: null,
-        p_expense_location_id: null,
+        p_expense_location_id: branchA,
       });
-      expect(delegatedDecision.error?.message).toContain("Forbidden");
+      expect(delegatedDecision.error).toBeNull();
+      const delegatedDelete = await delegated.rpc("delete_time_tracking_source_permanently", {
+        p_source_type: "transaction",
+        p_source_id: pendingWithdrawal.data!.id,
+      });
+      expect(delegatedDelete.error).toBeNull();
 
       const employeeOwnRead = await employee.rpc("get_time_payroll_attendance_month", {
         p_profile_id: employeeA,
@@ -2035,19 +2050,19 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       expect(centralPayment.error).toBeNull();
       expect(centralPayment.data).toMatchObject({ status: "updated", expenseLocationId: null });
 
-      const delegatedPending = await delegated.rpc("create_time_tracking_payroll_slip", {
+      const delegatedCreated = await delegated.rpc("create_time_tracking_payroll_slip", {
         p_profile_id: pendingEmployee,
         p_month: currentMonth,
         p_auto_start_next_month: false,
       });
-      expect(delegatedPending.error).toBeNull();
-      expect(delegatedPending.data).toMatchObject({ status: "PENDING", net_pay: 500 });
-      const pendingSlipId = (delegatedPending.data as { id: string }).id;
-      const deletedOwnPending = await delegated.rpc("delete_time_tracking_source_permanently", {
+      expect(delegatedCreated.error).toBeNull();
+      expect(delegatedCreated.data).toMatchObject({ status: "APPROVED", net_pay: 500 });
+      const createdSlipId = (delegatedCreated.data as { id: string }).id;
+      const deletedOwnCreated = await delegated.rpc("delete_time_tracking_source_permanently", {
         p_source_type: "payroll_slip",
-        p_source_id: pendingSlipId,
+        p_source_id: createdSlipId,
       });
-      expect(deletedOwnPending.error).toBeNull();
+      expect(deletedOwnCreated.error).toBeNull();
 
       const delegatedApproved = await delegated.rpc("create_time_tracking_payroll_slip", {
         p_profile_id: approvedEmployee,
@@ -2055,27 +2070,20 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_auto_start_next_month: false,
       });
       expect(delegatedApproved.error).toBeNull();
+      expect(delegatedApproved.data).toMatchObject({ status: "APPROVED", net_pay: 500 });
       const approvedSlipId = (delegatedApproved.data as { id: string }).id;
-      const approved = await globalManager.rpc("decide_time_tracking_approval", {
-        p_source_type: "payroll_slip",
-        p_source_id: approvedSlipId,
-        p_decision: "APPROVED",
-        p_comment: "QA approve delegated",
-        p_expense_location_id: null,
-      });
-      expect(approved.error).toBeNull();
-      const delegatedDeleteApproved = await delegated.rpc("delete_time_tracking_source_permanently", {
-        p_source_type: "payroll_slip",
-        p_source_id: approvedSlipId,
-      });
-      expect(delegatedDeleteApproved.error?.message).toContain("Forbidden");
       const delegatedMoveApproved = await delegated.rpc("change_time_tracking_expense_location", {
         p_source_type: "payroll_slip",
         p_source_id: approvedSlipId,
         p_expense_location_id: branchId,
         p_comment: null,
       });
-      expect(delegatedMoveApproved.error?.message).toContain("Forbidden");
+      expect(delegatedMoveApproved.error).toBeNull();
+      const delegatedDeleteApproved = await delegated.rpc("delete_time_tracking_source_permanently", {
+        p_source_type: "payroll_slip",
+        p_source_id: approvedSlipId,
+      });
+      expect(delegatedDeleteApproved.error).toBeNull();
     } finally {
       for (const profileId of [
         debtEmployee,

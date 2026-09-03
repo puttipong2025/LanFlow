@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useRef, useState } from "react";
 
 import { ModalShell } from "@/components/shared/ModalShell";
 import { formatPayrollCurrency } from "@/lib/time-tracking/format";
@@ -16,6 +16,7 @@ export function ExpenseLocationChangeModal({
   currentLocationId,
   onClose,
   onSubmit,
+  mode = "change",
 }: {
   locations: Location[];
   paymentAmount: number;
@@ -24,7 +25,12 @@ export function ExpenseLocationChangeModal({
   currentLocationId?: string | null;
   onClose: () => void;
   onSubmit: (locationId: string | null, comment: string) => Promise<boolean>;
+  mode?: "change" | "approve" | "create";
 }) {
+  const fieldId = useId();
+  const submitting = useRef(false);
+  const title = mode === "change" ? "เปลี่ยนวิธีจ่าย" : "เลือกวิธีจ่าย";
+  const submitLabel = mode === "change" ? "บันทึก" : mode === "approve" ? "อนุมัติ" : "สร้างและอนุมัติ";
   const orderedLocations = [...locations].sort((a, b) =>
     a.id === primaryLocationId ? -1 : b.id === primaryLocationId ? 1 : 0
   );
@@ -41,23 +47,25 @@ export function ExpenseLocationChangeModal({
   const [error, setError] = useState<string | null>(null);
 
   async function submit() {
-    if (!locationId) return;
+    if (!locationId || submitting.current) return;
+    submitting.current = true;
     setSaving(true);
     setError(null);
     try {
       const success = await onSubmit(locationId === CENTRAL_OUTSIDE ? null : locationId, comment);
-      if (!success) setError("เปลี่ยนวิธีจ่ายไม่สำเร็จ กรุณาลองใหม่");
+      if (!success) setError("บันทึกวิธีจ่ายไม่สำเร็จ กรุณาลองใหม่");
     } catch (submitError) {
       console.error("Failed to change expense location:", submitError);
-      setError("เปลี่ยนวิธีจ่ายไม่สำเร็จ กรุณาลองใหม่");
+      setError(submitError instanceof Error ? submitError.message : "บันทึกวิธีจ่ายไม่สำเร็จ กรุณาลองใหม่");
     } finally {
+      submitting.current = false;
       setSaving(false);
     }
   }
 
   return (
     <ModalShell
-      title="เปลี่ยนวิธีจ่าย"
+      title={title}
       onClose={onClose}
       nativeModal
       closeOnEscape
@@ -69,13 +77,14 @@ export function ExpenseLocationChangeModal({
           <p className="text-pretty text-xs font-semibold text-ink/60">{amountLabel}</p>
           <p className="mt-1 tabular-nums text-lg font-bold text-ink">{formatPayrollCurrency(paymentAmount)}</p>
         </div>
-        <label className="mt-4 block text-sm font-semibold text-ink" htmlFor="change-expense-location">
-          วิธีจ่ายใหม่
+        <label className="mt-4 block text-sm font-semibold text-ink" htmlFor={`${fieldId}-location`}>
+          {mode === "change" ? "วิธีจ่ายใหม่" : "วิธีจ่าย"}
         </label>
         <select
-          id="change-expense-location"
+          id={`${fieldId}-location`}
           value={locationId}
           onChange={(event) => setLocationId(event.target.value)}
+          disabled={saving}
           className="mt-2 w-full rounded-md border border-black/15 bg-white px-3 py-2"
         >
           {orderedLocations.map((location) => (
@@ -83,14 +92,15 @@ export function ExpenseLocationChangeModal({
           ))}
           <option value={CENTRAL_OUTSIDE}>ส่วนกลางจ่าย (จ่ายนอกระบบ)</option>
         </select>
-        <label className="mt-4 block text-sm font-semibold text-ink" htmlFor="change-expense-comment">
+        <label className="mt-4 block text-sm font-semibold text-ink" htmlFor={`${fieldId}-comment`}>
           หมายเหตุ (ถ้ามี)
         </label>
         <textarea
-          id="change-expense-comment"
+          id={`${fieldId}-comment`}
           rows={3}
           value={comment}
           onChange={(event) => setComment(event.target.value)}
+          disabled={saving}
           className="mt-2 w-full rounded-md border border-black/15 px-3 py-2"
         />
         {error && <p role="alert" className="mt-3 text-sm font-semibold text-danger">{error}</p>}
@@ -108,7 +118,7 @@ export function ExpenseLocationChangeModal({
             disabled={saving || !locationId}
             className="rounded-md bg-success px-4 py-2 text-sm font-bold text-white disabled:opacity-50"
           >
-            {saving ? "กำลังบันทึก..." : "บันทึก"}
+            {saving ? "กำลังบันทึก..." : submitLabel}
           </button>
         </div>
       </form>

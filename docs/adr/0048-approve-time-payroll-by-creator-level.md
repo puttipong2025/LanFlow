@@ -1,5 +1,7 @@
 # Approve time and payroll records by creator level
 
+> Superseded in part by ADR-0060 on 2026-09-03. A delegated Admin with Time/Payroll access now auto-approves records created within primary-branch scope and may decide scoped pending records, including their own. The employee self-service pending flow remains unchanged.
+
 Time and Payroll will decide payroll slips, debts, and withdrawals according to the creator's authority. Records created by a `super_admin` or system manager are approved atomically during creation and audit the same actor as creator and approver; records created by an employee or delegated branch Time/Payroll manager remain pending and may be decided only by a `super_admin` or system manager. Branch managers cannot approve one another's records.
 
 This approval model is deliberately limited to payroll slips, debts, and withdrawals. Branch managers may change their own or another employee's attendance calendar individually within primary-branch scope with event audit, while wage, payroll enrollment, start/end, and pause controls remain global-manager-only. When a branch manager's own slip is reviewed, the approval view highlights the count of self-attendance edits in that month and can reveal their audit details. LanFlow will not introduce a generic approval engine for every Time/Payroll mutation.
