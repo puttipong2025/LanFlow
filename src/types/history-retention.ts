@@ -5,10 +5,15 @@ export type HistoryRetentionGroup = {
 };
 
 export type HistoryCleanupSummary = {
+  id: string;
+  source: "manual" | "automatic";
   status: "running" | "succeeded" | "failed";
   retentionDays: number;
   cutoffDate: string;
   deletedCounts: Record<string, number>;
+  remainingCounts: Record<string, number>;
+  countsAsOf: string | null;
+  batches: number;
   hasMore: boolean | null;
   errorMessage: string | null;
   startedAt: string;
@@ -24,9 +29,7 @@ export type HistoryRetentionOverview = {
   totalEligible: number;
   groups: HistoryRetentionGroup[];
   lastCleanup: HistoryCleanupSummary | null;
-  cleanup?: {
-    status: "succeeded" | "failed" | "skipped";
-    hasMore?: boolean;
-    errorMessage?: string;
-  };
 };
+
+export type HistoryCleanupStatus = Pick<HistoryRetentionOverview,
+  "currentDays" | "cutoffDate" | "updatedAt" | "lastCleanup">;

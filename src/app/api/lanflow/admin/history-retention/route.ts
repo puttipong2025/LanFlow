@@ -1,11 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { requireSystemManager } from "@/lib/server/auth";
-import type { HistoryRetentionOverview } from "@/types/history-retention";
 
 export const dynamic = "force-dynamic";
 
 const NO_STORE_HEADERS = { "Cache-Control": "private, no-store, max-age=0" };
+
+function validDate(value: unknown): value is string {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)
+    && !value.startsWith("0000") && Number.isFinite(Date.parse(value))
+    && new Date(value).toISOString().slice(0, 10) === value;
+}
+
+function validTimestamp(value: unknown): value is string {
+  return typeof value === "string" && validDate(value.slice(0, 10))
+    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-](?:0\d|1[0-5]):[0-5]\d)$/.test(value)
+    && Number.isFinite(Date.parse(value));
+}
 
 function errorResponse(message: string, status = 400) {
   return NextResponse.json({ error: message }, { status, headers: NO_STORE_HEADERS });
@@ -26,9 +37,12 @@ function retentionError(message: string) {
 export async function GET(request: NextRequest) {
   const result = await requireSystemManager(request);
   if (!result.ok) return result.response;
-  const { data, error } = await result.supabase.rpc("get_history_retention_overview");
+  const { data, error } = await result.supabase.rpc(
+    request.nextUrl.searchParams.get("view") === "status"
+      ? "get_history_cleanup_status" : "get_history_retention_overview",
+  );
   if (error) return retentionError(error.message);
-  return NextResponse.json(data as HistoryRetentionOverview, { headers: NO_STORE_HEADERS });
+  return NextResponse.json(data, { headers: NO_STORE_HEADERS });
 }
 
 export async function POST(request: NextRequest) {
@@ -38,7 +52,23 @@ export async function POST(request: NextRequest) {
     action?: unknown;
     retentionDays?: unknown;
     expectedUpdatedAt?: unknown;
+    requestId?: unknown;
+    cutoffDate?: unknown;
   } | null;
+  if (body?.action === "cleanup") {
+    if (typeof body.requestId !== "string"
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.requestId)
+      || !validTimestamp(body.expectedUpdatedAt) || !validDate(body.cutoffDate)) {
+      return errorResponse("คำขอล้างประวัติไม่ถูกต้อง");
+    }
+    const { data, error } = await result.supabase.rpc("request_history_retention_cleanup", {
+      p_request_id: body.requestId,
+      p_expected_updated_at: body.expectedUpdatedAt,
+      p_expected_cutoff_date: body.cutoffDate,
+    });
+    if (error) return retentionError(error.message);
+    return NextResponse.json(data, { status: 202, headers: NO_STORE_HEADERS });
+  }
   const retentionDays = body?.retentionDays;
   if (typeof retentionDays !== "number" || !Number.isInteger(retentionDays)
     || retentionDays < 1 || retentionDays > 365) {
@@ -49,9 +79,9 @@ export async function POST(request: NextRequest) {
       p_retention_days: retentionDays,
     });
     if (error) return retentionError(error.message);
-    return NextResponse.json(data as HistoryRetentionOverview, { headers: NO_STORE_HEADERS });
+    return NextResponse.json(data, { headers: NO_STORE_HEADERS });
   }
-  if (body?.action !== "save" || typeof body.expectedUpdatedAt !== "string") {
+  if (body?.action !== "save" || !validTimestamp(body.expectedUpdatedAt)) {
     return errorResponse("คำขอไม่ถูกต้อง");
   }
   const { data, error } = await result.supabase.rpc("save_history_retention_settings", {
@@ -59,5 +89,5 @@ export async function POST(request: NextRequest) {
     p_expected_updated_at: body.expectedUpdatedAt,
   });
   if (error) return retentionError(error.message);
-  return NextResponse.json(data as HistoryRetentionOverview, { headers: NO_STORE_HEADERS });
+  return NextResponse.json(data, { headers: NO_STORE_HEADERS });
 }

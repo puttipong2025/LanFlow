@@ -62,6 +62,7 @@ export function AlertDialog({
           {cancelLabel && (
             <button
               autoFocus
+              ref={(button) => { if (button) button.autofocus = true; }}
               type="button"
               disabled={busy}
               onClick={onCancel}
@@ -72,6 +73,7 @@ export function AlertDialog({
           )}
           <button
             autoFocus={!cancelLabel}
+            ref={(button) => { if (button) button.autofocus = !cancelLabel; }}
             type="button"
             disabled={busy}
             onClick={onConfirm}

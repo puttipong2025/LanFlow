@@ -9,7 +9,7 @@ extends:
 
 # Configure one retention window for temporary history
 
-LanFlow uses one system-wide temporary-history retention value from 1–365 Bangkok calendar days, defaulting to 15 days. System Managers may preview and change it. A value of 15 keeps today and the preceding 14 Bangkok dates. Reducing the value hides out-of-window history immediately and starts bounded physical cleanup; a daily job retries bounded cleanup until no eligible rows remain. Increasing the value affects future retention only and cannot restore rows already deleted.
+LanFlow uses one system-wide temporary-history retention value from 1–365 Bangkok calendar days, defaulting to 15 days. System Managers may preview and change it. A value of 15 keeps today and the preceding 14 Bangkok dates. Reducing the value hides out-of-window history immediately and requests bounded physical cleanup; scheduling and resumable manual cleanup follow [ADR-0059](0059-background-history-retention-catch-up.md). Increasing the value affects future retention only and cannot restore rows already deleted.
 
 The policy covers Dashboard money events, Time/Payroll audit logs, terminal Admin account audit logs, terminal approval requests for Income/Expense, cash-transfer deletion, Rubber Bills, stock entries and stock products, scheduler run details, and temporary cleanup-run details. Pending work is not history: stale Admin password-reset audit rows become `unknown` after 24 hours before normal retention applies. Each setting change leaves a permanent minimal audit containing the actor, old/new values, timestamp, and eligible counts by group; cleanup payloads are never copied into that audit.
 

@@ -2057,88 +2057,170 @@ ALTER FUNCTION "private"."claim_dashboard_branch"() OWNER TO "postgres";
 CREATE OR REPLACE FUNCTION "private"."cleanup_history_retention"("p_batch_size" integer DEFAULT 1000) RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
+    SET "lock_timeout" TO '2s'
     AS $$
 declare
-  v_days integer := private.history_retention_days();
-  v_cutoff date := private.history_retention_cutoff_date();
-  v_run_id uuid;
+  v_settings public.history_retention_settings%rowtype;
+  v_run public.history_cleanup_runs%rowtype;
+  v_days integer;
+  v_cutoff date;
+  v_cutoff_at timestamptz;
   v_count bigint;
   v_counts jsonb := '{}'::jsonb;
+  v_remaining jsonb;
+  v_totals jsonb;
   v_has_more boolean;
   v_error text;
+  v_previous_cleanup_flag text := current_setting('app.history_retention_cleanup', true);
 begin
-  if p_batch_size not between 1 and 5000 then
+  if p_batch_size is null or p_batch_size not between 1 and 5000 then
     raise exception 'HISTORY_RETENTION_BATCH_INVALID';
   end if;
   if not pg_try_advisory_xact_lock(hashtextextended('history-retention-cleanup', 0)) then
     return jsonb_build_object('status', 'skipped', 'reason', 'already_running');
   end if;
-  insert into public.history_cleanup_runs(retention_days, cutoff_date, status)
-  values (v_days, v_cutoff, 'running') returning id into v_run_id;
+  select * into strict v_settings from public.history_retention_settings where singleton for update;
+  v_days := v_settings.retention_days;
+  v_cutoff := private.history_retention_cutoff_date(v_days);
+  v_cutoff_at := v_cutoff::timestamp at time zone 'Asia/Bangkok';
+  select * into v_run from public.history_cleanup_runs where status = 'running' for update;
+  if not found then
+    if not private.history_retention_has_work(v_days) then
+      return jsonb_build_object('status', 'skipped', 'reason', 'no_work', 'hasMore', false);
+    end if;
+    insert into public.history_cleanup_runs(retention_days, cutoff_date, status)
+    values (v_days, v_cutoff, 'running') returning * into v_run;
+  end if;
   begin
+    -- Full counts only once per job, or when the saved policy/calendar cutoff changes.
+    if v_run.settings_updated_at is distinct from v_settings.updated_at
+      or v_run.cutoff_date <> v_cutoff then
+      select jsonb_object_agg(group_key, eligible_count) into v_run.remaining_counts
+        from private.history_retention_preview_rows(v_days);
+      v_run.counts_as_of := clock_timestamp();
+    end if;
+
     update public.admin_account_audit_logs
     set status = 'unknown', error_code = 'PENDING_TIMEOUT', completed_at = now()
     where id in (
       select id from public.admin_account_audit_logs
       where status = 'pending' and created_at < now() - interval '24 hours'
-      order by created_at, id limit p_batch_size
+      order by created_at, id limit p_batch_size for update skip locked
     );
-
-    with doomed as (select id from public.dashboard_money_events where event_date < v_cutoff order by event_date, id limit p_batch_size)
-    delete from public.dashboard_money_events t using doomed d where t.id = d.id;
-    get diagnostics v_count = row_count; v_counts := v_counts || jsonb_build_object('dashboard_money_events', v_count);
-
-    with doomed as (select id from public.time_tracking_audit_logs where (created_at at time zone 'Asia/Bangkok')::date < v_cutoff order by created_at, id limit p_batch_size)
-    delete from public.time_tracking_audit_logs t using doomed d where t.id = d.id;
-    get diagnostics v_count = row_count; v_counts := v_counts || jsonb_build_object('time_tracking_audit_logs', v_count);
-
-    with doomed as (select id from public.admin_account_audit_logs where status <> 'pending' and (coalesce(completed_at, created_at) at time zone 'Asia/Bangkok')::date < v_cutoff order by coalesce(completed_at, created_at), id limit p_batch_size)
-    delete from public.admin_account_audit_logs t using doomed d where t.id = d.id;
-    get diagnostics v_count = row_count; v_counts := v_counts || jsonb_build_object('admin_account_audit_logs', v_count);
-
     perform set_config('app.history_retention_cleanup', 'on', true);
-    with doomed as (select id from public.income_expense_approval_requests where request_status <> 'pending' and (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date < v_cutoff order by coalesce(decided_at, updated_at), id limit p_batch_size)
+
+    with doomed as (
+      select id from public.dashboard_money_events where true
+        and event_date < v_cutoff
+      order by event_date, id limit p_batch_size for update skip locked
+    )
+    delete from public.dashboard_money_events t using doomed d where t.id = d.id;
+    get diagnostics v_count = row_count;
+    v_counts := v_counts || jsonb_build_object('dashboard_money_events', v_count);
+
+    with doomed as (
+      select id from public.time_tracking_audit_logs where true
+        and created_at < v_cutoff_at
+      order by created_at, id limit p_batch_size for update skip locked
+    )
+    delete from public.time_tracking_audit_logs t using doomed d where t.id = d.id;
+    get diagnostics v_count = row_count;
+    v_counts := v_counts || jsonb_build_object('time_tracking_audit_logs', v_count);
+
+    with doomed as (
+      select id from public.admin_account_audit_logs where status <> 'pending'
+        and coalesce(completed_at, created_at) < v_cutoff_at
+      order by coalesce(completed_at, created_at), id limit p_batch_size for update skip locked
+    )
+    delete from public.admin_account_audit_logs t using doomed d where t.id = d.id;
+    get diagnostics v_count = row_count;
+    v_counts := v_counts || jsonb_build_object('admin_account_audit_logs', v_count);
+
+    with doomed as (
+      select id from public.income_expense_approval_requests where request_status <> 'pending'
+        and coalesce(decided_at, updated_at) < v_cutoff_at
+      order by coalesce(decided_at, updated_at), id limit p_batch_size for update skip locked
+    )
     delete from public.income_expense_approval_requests t using doomed d where t.id = d.id;
-    get diagnostics v_count = row_count; v_counts := v_counts || jsonb_build_object('income_expense_approval_requests', v_count);
+    get diagnostics v_count = row_count;
+    v_counts := v_counts || jsonb_build_object('income_expense_approval_requests', v_count);
 
-    with doomed as (select id from public.cash_transfer_delete_requests where request_status <> 'pending' and (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date < v_cutoff order by coalesce(decided_at, updated_at), id limit p_batch_size)
+    with doomed as (
+      select id from public.cash_transfer_delete_requests where request_status <> 'pending'
+        and coalesce(decided_at, updated_at) < v_cutoff_at
+      order by coalesce(decided_at, updated_at), id limit p_batch_size for update skip locked
+    )
     delete from public.cash_transfer_delete_requests t using doomed d where t.id = d.id;
-    get diagnostics v_count = row_count; v_counts := v_counts || jsonb_build_object('cash_transfer_delete_requests', v_count);
+    get diagnostics v_count = row_count;
+    v_counts := v_counts || jsonb_build_object('cash_transfer_delete_requests', v_count);
 
-    with doomed as (select id from public.rubber_bill_approval_requests where request_status <> 'pending' and (coalesce(approved_at, requested_at) at time zone 'Asia/Bangkok')::date < v_cutoff order by coalesce(approved_at, requested_at), id limit p_batch_size)
+    with doomed as (
+      select id from public.rubber_bill_approval_requests where request_status <> 'pending'
+        and coalesce(approved_at, requested_at) < v_cutoff_at
+      order by coalesce(approved_at, requested_at), id limit p_batch_size for update skip locked
+    )
     delete from public.rubber_bill_approval_requests t using doomed d where t.id = d.id;
-    get diagnostics v_count = row_count; v_counts := v_counts || jsonb_build_object('rubber_bill_approval_requests', v_count);
+    get diagnostics v_count = row_count;
+    v_counts := v_counts || jsonb_build_object('rubber_bill_approval_requests', v_count);
 
-    with doomed as (select id from public.stock_entry_approval_requests where request_status <> 'pending' and (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date < v_cutoff order by coalesce(decided_at, updated_at), id limit p_batch_size)
+    with doomed as (
+      select id from public.stock_entry_approval_requests where request_status <> 'pending'
+        and coalesce(decided_at, updated_at) < v_cutoff_at
+      order by coalesce(decided_at, updated_at), id limit p_batch_size for update skip locked
+    )
     delete from public.stock_entry_approval_requests t using doomed d where t.id = d.id;
-    get diagnostics v_count = row_count; v_counts := v_counts || jsonb_build_object('stock_entry_approval_requests', v_count);
+    get diagnostics v_count = row_count;
+    v_counts := v_counts || jsonb_build_object('stock_entry_approval_requests', v_count);
 
-    with doomed as (select id from public.stock_product_approval_requests where request_status <> 'pending' and (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date < v_cutoff order by coalesce(decided_at, updated_at), id limit p_batch_size)
+    with doomed as (
+      select id from public.stock_product_approval_requests where request_status <> 'pending'
+        and coalesce(decided_at, updated_at) < v_cutoff_at
+      order by coalesce(decided_at, updated_at), id limit p_batch_size for update skip locked
+    )
     delete from public.stock_product_approval_requests t using doomed d where t.id = d.id;
-    get diagnostics v_count = row_count; v_counts := v_counts || jsonb_build_object('stock_product_approval_requests', v_count);
+    get diagnostics v_count = row_count;
+    v_counts := v_counts || jsonb_build_object('stock_product_approval_requests', v_count);
 
-    with doomed as (select runid from cron.job_run_details where (start_time at time zone 'Asia/Bangkok')::date < v_cutoff order by start_time, runid limit p_batch_size)
+    with doomed as (
+      select runid from cron.job_run_details where status in ('succeeded', 'failed')
+        and start_time < v_cutoff_at
+      order by runid limit p_batch_size for update skip locked
+    )
     delete from cron.job_run_details t using doomed d where t.runid = d.runid;
-    get diagnostics v_count = row_count; v_counts := v_counts || jsonb_build_object('scheduler_run_history', v_count);
+    get diagnostics v_count = row_count;
+    v_counts := v_counts || jsonb_build_object('scheduler_run_history', v_count);
 
-    with doomed as (select id from public.history_cleanup_runs where id <> v_run_id and status <> 'running' and (coalesce(completed_at, started_at) at time zone 'Asia/Bangkok')::date < v_cutoff order by coalesce(completed_at, started_at), id limit p_batch_size)
+    with doomed as (
+      select id from public.history_cleanup_runs where status <> 'running'
+        and coalesce(completed_at, started_at) < v_cutoff_at
+      order by coalesce(completed_at, started_at), id limit p_batch_size for update skip locked
+    )
     delete from public.history_cleanup_runs t using doomed d where t.id = d.id;
-    get diagnostics v_count = row_count; v_counts := v_counts || jsonb_build_object('cleanup_run_history', v_count);
+    get diagnostics v_count = row_count;
+    v_counts := v_counts || jsonb_build_object('cleanup_run_history', v_count);
 
-    select exists(select 1 from private.history_retention_preview_rows(v_days) p where p.eligible_count > 0)
-      into v_has_more;
+    perform set_config('app.history_retention_cleanup', coalesce(v_previous_cleanup_flag, ''), true);
+    v_has_more := private.history_retention_has_work(v_days);
+    select jsonb_object_agg(c.key, coalesce((v_run.deleted_counts ->> c.key)::bigint, 0) + c.value::bigint),
+      jsonb_object_agg(c.key, case when v_has_more
+        then greatest(0, coalesce((v_run.remaining_counts ->> c.key)::bigint, 0) - c.value::bigint)
+        else 0 end)
+    into v_totals, v_remaining from jsonb_each_text(v_counts) c;
     update public.history_cleanup_runs
-    set status = 'succeeded', deleted_counts = v_counts,
-        has_more = v_has_more, completed_at = now()
-    where id = v_run_id;
-    return jsonb_build_object('status', 'succeeded', 'runId', v_run_id,
-      'deletedCounts', v_counts, 'hasMore', v_has_more);
-  exception when others then
-    v_error := left(sqlerrm, 500);
+    set status = case when v_has_more then 'running' else 'succeeded' end,
+        retention_days = v_days, cutoff_date = v_cutoff, settings_updated_at = v_settings.updated_at,
+        deleted_counts = v_totals, remaining_counts = v_remaining, counts_as_of = v_run.counts_as_of,
+        batches = batches + 1, has_more = v_has_more, error_message = null,
+        completed_at = case when v_has_more then null else clock_timestamp() end
+    where id = v_run.id;
+    return jsonb_build_object('status', 'succeeded', 'runId', v_run.id, 'deletedCounts', v_counts, 'hasMore', v_has_more);
+  exception when query_canceled or others then
+    -- The failed batch rolls back; earlier committed batches and their counts survive.
+    v_error := 'การล้างรอบนี้ไม่สำเร็จ (SQLSTATE ' || sqlstate || ')';
     update public.history_cleanup_runs
-    set status = 'failed', error_message = v_error, has_more = true, completed_at = now()
-    where id = v_run_id;
-    return jsonb_build_object('status', 'failed', 'runId', v_run_id, 'errorMessage', v_error);
+    set status = 'failed', error_message = v_error, has_more = true, completed_at = clock_timestamp()
+    where id = v_run.id;
+    return jsonb_build_object('status', 'failed', 'runId', v_run.id, 'hasMore', true, 'errorMessage', v_error);
   end;
 end
 $$;
@@ -4155,6 +4237,24 @@ $$;
 ALTER FUNCTION "private"."has_time_payroll_manager_access"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."history_cleanup_summary"() RETURNS "jsonb"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select jsonb_build_object(
+    'id', r.id, 'status', r.status, 'source', r.source,
+    'retentionDays', r.retention_days, 'cutoffDate', r.cutoff_date,
+    'deletedCounts', r.deleted_counts, 'remainingCounts', r.remaining_counts,
+    'countsAsOf', r.counts_as_of, 'batches', r.batches,
+    'hasMore', r.has_more, 'errorMessage', r.error_message,
+    'startedAt', r.started_at, 'completedAt', r.completed_at
+  ) from public.history_cleanup_runs r order by r.started_at desc, r.id desc limit 1
+$$;
+
+
+ALTER FUNCTION "private"."history_cleanup_summary"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."history_retention_cutoff_date"("p_days" integer DEFAULT NULL::integer) RETURNS "date"
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -4181,58 +4281,94 @@ $$;
 ALTER FUNCTION "private"."history_retention_days"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."history_retention_has_work"("p_days" integer) RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  with bounds as (
+    select private.history_retention_cutoff_date(p_days) as cutoff,
+      private.history_retention_cutoff_date(p_days)::timestamp at time zone 'Asia/Bangkok' as cutoff_at
+  )
+  select
+    exists (select 1 from public.dashboard_money_events, bounds where true and event_date < cutoff)
+    or
+    exists (select 1 from public.time_tracking_audit_logs, bounds where true and created_at < cutoff_at)
+    or
+    exists (select 1 from public.admin_account_audit_logs, bounds where status <> 'pending' and coalesce(completed_at, created_at) < cutoff_at)
+    or
+    exists (select 1 from public.income_expense_approval_requests, bounds where request_status <> 'pending' and coalesce(decided_at, updated_at) < cutoff_at)
+    or
+    exists (select 1 from public.cash_transfer_delete_requests, bounds where request_status <> 'pending' and coalesce(decided_at, updated_at) < cutoff_at)
+    or
+    exists (select 1 from public.rubber_bill_approval_requests, bounds where request_status <> 'pending' and coalesce(approved_at, requested_at) < cutoff_at)
+    or
+    exists (select 1 from public.stock_entry_approval_requests, bounds where request_status <> 'pending' and coalesce(decided_at, updated_at) < cutoff_at)
+    or
+    exists (select 1 from public.stock_product_approval_requests, bounds where request_status <> 'pending' and coalesce(decided_at, updated_at) < cutoff_at)
+    or
+    exists (select 1 from cron.job_run_details, bounds where status in ('succeeded', 'failed') and start_time < cutoff_at)
+    or
+    exists (select 1 from public.history_cleanup_runs, bounds where status <> 'running' and coalesce(completed_at, started_at) < cutoff_at)
+    or exists (select 1 from public.admin_account_audit_logs where status = 'pending' and created_at < now() - interval '24 hours')
+$$;
+
+
+ALTER FUNCTION "private"."history_retention_has_work"("p_days" integer) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."history_retention_preview_rows"("p_days" integer) RETURNS TABLE("group_key" "text", "eligible_count" bigint, "oldest_date" "date")
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
   with bounds as (
-    select private.history_retention_cutoff_date(p_days) as cutoff
+    select private.history_retention_cutoff_date(p_days) as cutoff,
+      private.history_retention_cutoff_date(p_days)::timestamp at time zone 'Asia/Bangkok' as cutoff_at
   ), groups as (
     select 'dashboard_money_events'::text group_key, event_date item_date
     from public.dashboard_money_events, bounds where event_date < cutoff
     union all
     select 'time_tracking_audit_logs', (created_at at time zone 'Asia/Bangkok')::date
     from public.time_tracking_audit_logs, bounds
-    where (created_at at time zone 'Asia/Bangkok')::date < cutoff
+    where created_at < cutoff_at
     union all
     select 'admin_account_audit_logs', (coalesce(completed_at, created_at) at time zone 'Asia/Bangkok')::date
     from public.admin_account_audit_logs, bounds
     where status <> 'pending'
-      and (coalesce(completed_at, created_at) at time zone 'Asia/Bangkok')::date < cutoff
+      and coalesce(completed_at, created_at) < cutoff_at
     union all
     select 'income_expense_approval_requests', (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date
     from public.income_expense_approval_requests, bounds
     where request_status <> 'pending'
-      and (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date < cutoff
+      and coalesce(decided_at, updated_at) < cutoff_at
     union all
     select 'cash_transfer_delete_requests', (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date
     from public.cash_transfer_delete_requests, bounds
     where request_status <> 'pending'
-      and (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date < cutoff
+      and coalesce(decided_at, updated_at) < cutoff_at
     union all
     select 'rubber_bill_approval_requests', (coalesce(approved_at, requested_at) at time zone 'Asia/Bangkok')::date
     from public.rubber_bill_approval_requests, bounds
     where request_status <> 'pending'
-      and (coalesce(approved_at, requested_at) at time zone 'Asia/Bangkok')::date < cutoff
+      and coalesce(approved_at, requested_at) < cutoff_at
     union all
     select 'stock_entry_approval_requests', (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date
     from public.stock_entry_approval_requests, bounds
     where request_status <> 'pending'
-      and (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date < cutoff
+      and coalesce(decided_at, updated_at) < cutoff_at
     union all
     select 'stock_product_approval_requests', (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date
     from public.stock_product_approval_requests, bounds
     where request_status <> 'pending'
-      and (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date < cutoff
+      and coalesce(decided_at, updated_at) < cutoff_at
     union all
     select 'scheduler_run_history', (start_time at time zone 'Asia/Bangkok')::date
     from cron.job_run_details, bounds
-    where (start_time at time zone 'Asia/Bangkok')::date < cutoff
+    where status in ('succeeded', 'failed') and start_time < cutoff_at
     union all
     select 'cleanup_run_history', (coalesce(completed_at, started_at) at time zone 'Asia/Bangkok')::date
     from public.history_cleanup_runs, bounds
     where status <> 'running'
-      and (coalesce(completed_at, started_at) at time zone 'Asia/Bangkok')::date < cutoff
+      and coalesce(completed_at, started_at) < cutoff_at
   ), keys(group_key) as (values
     ('dashboard_money_events'), ('time_tracking_audit_logs'),
     ('admin_account_audit_logs'), ('income_expense_approval_requests'),
@@ -13275,6 +13411,25 @@ $$;
 ALTER FUNCTION "public"."get_export_vehicle_weigh_bill_options"("p_location_id" "uuid", "p_wex_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."get_history_cleanup_status"() RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if not private.is_active_user() or not private.can_access_super_admin_features() then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์จัดการระยะเก็บประวัติ';
+  end if;
+  return (select jsonb_build_object('currentDays', retention_days, 'updatedAt', updated_at,
+    'cutoffDate', private.history_retention_cutoff_date(retention_days),
+    'lastCleanup', private.history_cleanup_summary())
+    from public.history_retention_settings where singleton);
+end
+$$;
+
+
+ALTER FUNCTION "public"."get_history_cleanup_status"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."get_history_retention_overview"("p_retention_days" integer DEFAULT NULL::integer) RETURNS "jsonb"
     LANGUAGE "plpgsql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -13302,13 +13457,7 @@ begin
     ) order by p.group_key), '[]'::jsonb), coalesce(sum(p.eligible_count), 0)
   into v_groups, v_total
   from private.history_retention_preview_rows(v_requested) p;
-  select jsonb_build_object(
-    'status', r.status, 'retentionDays', r.retention_days,
-    'cutoffDate', r.cutoff_date, 'deletedCounts', r.deleted_counts,
-    'hasMore', r.has_more, 'errorMessage', r.error_message,
-    'startedAt', r.started_at, 'completedAt', r.completed_at
-  ) into v_last_cleanup
-  from public.history_cleanup_runs r order by r.started_at desc limit 1;
+  v_last_cleanup := private.history_cleanup_summary();
   return jsonb_build_object(
     'currentDays', v_settings.retention_days,
     'requestedDays', v_requested,
@@ -17806,6 +17955,52 @@ CREATE OR REPLACE FUNCTION "public"."report_lock_no"("source_row" "public"."time
 ALTER FUNCTION "public"."report_lock_no"("source_row" "public"."time_segments") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."request_history_retention_cleanup"("p_request_id" "uuid", "p_expected_updated_at" timestamp with time zone, "p_expected_cutoff_date" "date") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    SET "lock_timeout" TO '3s'
+    AS $$
+declare
+  v_settings public.history_retention_settings%rowtype;
+  v_run public.history_cleanup_runs%rowtype;
+  v_counts jsonb;
+  v_has_work boolean;
+begin
+  if auth.uid() is null or not private.is_active_user() or not private.can_access_super_admin_features() then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์สั่งล้างประวัติ';
+  end if;
+  if p_request_id is null then raise exception 'HISTORY_CLEANUP_REQUEST_INVALID'; end if;
+  -- A setting update and a batch both lock this row before reading the policy.
+  select * into strict v_settings from public.history_retention_settings where singleton for update;
+  select * into v_run from public.history_cleanup_runs where request_id = p_request_id;
+  if found then return jsonb_build_object('status', v_run.status, 'runId', v_run.id); end if;
+  if p_expected_updated_at is distinct from v_settings.updated_at
+    or p_expected_cutoff_date is distinct from private.history_retention_cutoff_date(v_settings.retention_days) then
+    raise exception 'HISTORY_RETENTION_CONFLICT';
+  end if;
+  select * into v_run from public.history_cleanup_runs where status = 'running';
+  if found then return jsonb_build_object('status', v_run.status, 'runId', v_run.id); end if;
+  select jsonb_object_agg(group_key, eligible_count) into v_counts
+    from private.history_retention_preview_rows(v_settings.retention_days);
+  v_has_work := private.history_retention_has_work(v_settings.retention_days);
+  insert into public.history_cleanup_runs(
+    request_id, requested_by_user_id, source, retention_days, cutoff_date,
+    status, settings_updated_at, remaining_counts, counts_as_of, has_more, completed_at
+  ) values (
+    p_request_id, auth.uid(), 'manual', v_settings.retention_days,
+    private.history_retention_cutoff_date(v_settings.retention_days),
+    case when v_has_work then 'running' else 'succeeded' end,
+    v_settings.updated_at, v_counts, clock_timestamp(), v_has_work,
+    case when v_has_work then null else clock_timestamp() end
+  ) returning * into v_run;
+  return jsonb_build_object('status', v_run.status, 'runId', v_run.id);
+end
+$$;
+
+
+ALTER FUNCTION "public"."request_history_retention_cleanup"("p_request_id" "uuid", "p_expected_updated_at" timestamp with time zone, "p_expected_cutoff_date" "date") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."request_time_tracking_withdrawal"("p_amount" numeric) RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -18329,7 +18524,7 @@ begin
      or not private.can_access_super_admin_features() then
     raise exception 'FORBIDDEN: ไม่มีสิทธิ์เปลี่ยนระยะเก็บประวัติ';
   end if;
-  if p_retention_days not between 1 and 365 then
+  if p_retention_days is null or p_retention_days not between 1 and 365 then
     raise exception 'HISTORY_RETENTION_INVALID: จำนวนวันต้องอยู่ระหว่าง 1 ถึง 365';
   end if;
   select * into strict v_settings from public.history_retention_settings
@@ -18353,7 +18548,11 @@ begin
   set retention_days = p_retention_days, updated_by = v_actor,
       updated_by_name = coalesce(v_actor_name, ''), updated_at = clock_timestamp()
   where singleton = true;
-  v_cleanup := private.cleanup_history_retention(1000);
+  v_cleanup := public.request_history_retention_cleanup(
+    gen_random_uuid(),
+    (select updated_at from public.history_retention_settings where singleton),
+    private.history_retention_cutoff_date(p_retention_days)
+  );
   return public.get_history_retention_overview(p_retention_days)
     || jsonb_build_object('cleanup', v_cleanup);
 end
@@ -22541,10 +22740,20 @@ CREATE TABLE IF NOT EXISTS "public"."history_cleanup_runs" (
     "deleted_counts" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
     "has_more" boolean,
     "error_message" "text",
-    "started_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "started_at" timestamp with time zone DEFAULT "clock_timestamp"() NOT NULL,
     "completed_at" timestamp with time zone,
+    "request_id" "uuid",
+    "requested_by_user_id" "uuid",
+    "source" "text" DEFAULT 'automatic'::"text" NOT NULL,
+    "settings_updated_at" timestamp with time zone,
+    "remaining_counts" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
+    "counts_as_of" timestamp with time zone,
+    "batches" integer DEFAULT 0 NOT NULL,
+    CONSTRAINT "history_cleanup_runs_batches_check" CHECK (("batches" >= 0)),
     CONSTRAINT "history_cleanup_runs_deleted_counts_check" CHECK (("jsonb_typeof"("deleted_counts") = 'object'::"text")),
+    CONSTRAINT "history_cleanup_runs_remaining_counts_check" CHECK (("jsonb_typeof"("remaining_counts") = 'object'::"text")),
     CONSTRAINT "history_cleanup_runs_retention_days_check" CHECK ((("retention_days" >= 1) AND ("retention_days" <= 365))),
+    CONSTRAINT "history_cleanup_runs_source_check" CHECK (("source" = ANY (ARRAY['manual'::"text", 'automatic'::"text"]))),
     CONSTRAINT "history_cleanup_runs_status_check" CHECK (("status" = ANY (ARRAY['running'::"text", 'succeeded'::"text", 'failed'::"text"])))
 );
 
@@ -23532,6 +23741,11 @@ ALTER TABLE ONLY "public"."history_cleanup_runs"
 
 
 
+ALTER TABLE ONLY "public"."history_cleanup_runs"
+    ADD CONSTRAINT "history_cleanup_runs_request_id_key" UNIQUE ("request_id");
+
+
+
 ALTER TABLE ONLY "public"."history_retention_change_audits"
     ADD CONSTRAINT "history_retention_change_audits_pkey" PRIMARY KEY ("id");
 
@@ -23945,7 +24159,7 @@ CREATE INDEX "rubber_bill_evidence_projection_queue" ON "private"."rubber_bill_e
 
 
 
-CREATE INDEX "admin_account_audit_logs_retention_idx" ON "public"."admin_account_audit_logs" USING "btree" ("status", COALESCE("completed_at", "created_at"), "id");
+CREATE INDEX "admin_account_audit_logs_retention_idx" ON "public"."admin_account_audit_logs" USING "btree" (COALESCE("completed_at", "created_at"), "id") WHERE ("status" <> 'pending'::"text");
 
 
 
@@ -23977,7 +24191,7 @@ CREATE INDEX "cash_transfer_delete_requests_status_created" ON "public"."cash_tr
 
 
 
-CREATE INDEX "cash_transfer_delete_retention_idx" ON "public"."cash_transfer_delete_requests" USING "btree" ("request_status", COALESCE("decided_at", "updated_at"), "id");
+CREATE INDEX "cash_transfer_delete_retention_idx" ON "public"."cash_transfer_delete_requests" USING "btree" (COALESCE("decided_at", "updated_at"), "id") WHERE ("request_status" <> 'pending'::"text");
 
 
 
@@ -24045,7 +24259,15 @@ CREATE INDEX "financial_transactions_withdrawal_expense_feed_idx" ON "public"."f
 
 
 
+CREATE UNIQUE INDEX "history_cleanup_one_running_idx" ON "public"."history_cleanup_runs" USING "btree" ((true)) WHERE ("status" = 'running'::"text");
+
+
+
 CREATE INDEX "history_cleanup_runs_completed_idx" ON "public"."history_cleanup_runs" USING "btree" (COALESCE("completed_at", "started_at"));
+
+
+
+CREATE INDEX "history_cleanup_runs_started_idx" ON "public"."history_cleanup_runs" USING "btree" ("started_at" DESC);
 
 
 
@@ -24073,7 +24295,7 @@ CREATE INDEX "income_expense_approval_pending_digest" ON "public"."income_expens
 
 
 
-CREATE INDEX "income_expense_approval_retention_idx" ON "public"."income_expense_approval_requests" USING "btree" ("request_status", COALESCE("decided_at", "updated_at"), "id");
+CREATE INDEX "income_expense_approval_retention_idx" ON "public"."income_expense_approval_requests" USING "btree" (COALESCE("decided_at", "updated_at"), "id") WHERE ("request_status" <> 'pending'::"text");
 
 
 
@@ -24177,7 +24399,7 @@ CREATE INDEX "rubber_bill_approval_queue" ON "public"."rubber_bill_approval_requ
 
 
 
-CREATE INDEX "rubber_bill_approval_retention_idx" ON "public"."rubber_bill_approval_requests" USING "btree" ("request_status", COALESCE("approved_at", "requested_at"), "id");
+CREATE INDEX "rubber_bill_approval_retention_idx" ON "public"."rubber_bill_approval_requests" USING "btree" (COALESCE("approved_at", "requested_at"), "id") WHERE ("request_status" <> 'pending'::"text");
 
 
 
@@ -24253,7 +24475,7 @@ CREATE INDEX "stock_entry_approval_requests_status_created_idx" ON "public"."sto
 
 
 
-CREATE INDEX "stock_entry_approval_retention_idx" ON "public"."stock_entry_approval_requests" USING "btree" ("request_status", COALESCE("decided_at", "updated_at"), "id");
+CREATE INDEX "stock_entry_approval_retention_idx" ON "public"."stock_entry_approval_requests" USING "btree" (COALESCE("decided_at", "updated_at"), "id") WHERE ("request_status" <> 'pending'::"text");
 
 
 
@@ -24269,7 +24491,7 @@ CREATE INDEX "stock_product_approval_requests_status_created_idx" ON "public"."s
 
 
 
-CREATE INDEX "stock_product_approval_retention_idx" ON "public"."stock_product_approval_requests" USING "btree" ("request_status", COALESCE("decided_at", "updated_at"), "id");
+CREATE INDEX "stock_product_approval_retention_idx" ON "public"."stock_product_approval_requests" USING "btree" (COALESCE("decided_at", "updated_at"), "id") WHERE ("request_status" <> 'pending'::"text");
 
 
 
@@ -24869,6 +25091,11 @@ ALTER TABLE ONLY "public"."financial_transactions"
 
 ALTER TABLE ONLY "public"."financial_transactions"
     ADD CONSTRAINT "financial_transactions_profile_id_fkey" FOREIGN KEY ("profile_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."history_cleanup_runs"
+    ADD CONSTRAINT "history_cleanup_runs_requested_by_user_id_fkey" FOREIGN KEY ("requested_by_user_id") REFERENCES "public"."profiles"("id") ON DELETE SET NULL;
 
 
 
@@ -26317,6 +26544,10 @@ GRANT ALL ON FUNCTION "private"."has_time_payroll_manager_access"() TO "authenti
 
 
 
+REVOKE ALL ON FUNCTION "private"."history_cleanup_summary"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."history_retention_cutoff_date"("p_days" integer) FROM PUBLIC;
 GRANT ALL ON FUNCTION "private"."history_retention_cutoff_date"("p_days" integer) TO "authenticated";
 GRANT ALL ON FUNCTION "private"."history_retention_cutoff_date"("p_days" integer) TO "service_role";
@@ -26326,6 +26557,10 @@ GRANT ALL ON FUNCTION "private"."history_retention_cutoff_date"("p_days" integer
 REVOKE ALL ON FUNCTION "private"."history_retention_days"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "private"."history_retention_days"() TO "authenticated";
 GRANT ALL ON FUNCTION "private"."history_retention_days"() TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "private"."history_retention_has_work"("p_days" integer) FROM PUBLIC;
 
 
 
@@ -26913,6 +27148,12 @@ GRANT ALL ON FUNCTION "public"."get_export_vehicle_weigh_bill_options"("p_locati
 
 
 
+REVOKE ALL ON FUNCTION "public"."get_history_cleanup_status"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_history_cleanup_status"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."get_history_cleanup_status"() TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."get_history_retention_overview"("p_retention_days" integer) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_history_retention_overview"("p_retention_days" integer) TO "authenticated";
 GRANT ALL ON FUNCTION "public"."get_history_retention_overview"("p_retention_days" integer) TO "service_role";
@@ -27485,6 +27726,12 @@ GRANT SELECT ON TABLE "public"."time_segments" TO "authenticated";
 REVOKE ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."time_segments") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."time_segments") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."time_segments") TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."request_history_retention_cleanup"("p_request_id" "uuid", "p_expected_updated_at" timestamp with time zone, "p_expected_cutoff_date" "date") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."request_history_retention_cleanup"("p_request_id" "uuid", "p_expected_updated_at" timestamp with time zone, "p_expected_cutoff_date" "date") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."request_history_retention_cleanup"("p_request_id" "uuid", "p_expected_updated_at" timestamp with time zone, "p_expected_cutoff_date" "date") TO "service_role";
 
 
 

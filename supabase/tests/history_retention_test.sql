@@ -193,12 +193,12 @@ select extensions.is(
 select extensions.is(
   (select count(*) from cron.job where jobname = 'lanflow-temporary-history-retention'),
   1::bigint,
-  'one daily unified retention job is scheduled'
+  'one unified retention job is scheduled'
 );
 select extensions.is(
   (select schedule from cron.job where jobname = 'lanflow-temporary-history-retention'),
-  '10 17 * * *',
-  'daily cleanup runs at 00:10 Asia Bangkok'
+  '* * * * *',
+  'bounded cleanup runs every minute to keep up with history generation'
 );
 select extensions.ok(
   to_regprocedure('private.prune_dashboard_money_events()') is null,
