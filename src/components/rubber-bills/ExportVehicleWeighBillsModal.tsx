@@ -44,8 +44,12 @@ export function ExportVehicleWeighBillsModal({
   const [deleting, setDeleting] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [sharingId, setSharingId] = useState<string | null>(null);
+  const deleteScopeRef = useRef(0);
 
   useEffect(() => {
+    deleteScopeRef.current += 1;
+    setPendingDelete(null);
+    setDeleting(false);
     detailControllerRef.current?.abort();
     detailControllerRef.current = null;
     optionsControllerRef.current?.abort();
@@ -169,16 +173,19 @@ export function ExportVehicleWeighBillsModal({
 
   async function deleteWex() {
     if (!pendingDelete) return;
+    const scope = deleteScopeRef.current;
     setDeleting(true);
     try {
       const deleted = await api.remove(pendingDelete.id, pendingDelete.revision);
+      if (scope !== deleteScopeRef.current) return;
       toast.success(`ลบ ${deleted.wexNo} แล้ว`);
       if (details?.id === pendingDelete.id) closeDetails();
       setPendingDelete(null);
     } catch (caught) {
+      if (scope !== deleteScopeRef.current) return;
       toast.error(caught instanceof Error ? caught.message : "ลบบิลรถส่งออกไม่สำเร็จ");
     } finally {
-      setDeleting(false);
+      if (scope === deleteScopeRef.current) setDeleting(false);
     }
   }
 

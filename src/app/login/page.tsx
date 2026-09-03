@@ -109,7 +109,6 @@ export default function LoginPage() {
                 type="button"
                 className="login-eye-btn"
                 onClick={() => setShowPassword(!showPassword)}
-                tabIndex={-1}
               >
                 {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                 {showPassword ? "ซ่อน" : "แสดง"}

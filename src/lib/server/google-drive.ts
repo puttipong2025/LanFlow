@@ -182,22 +182,3 @@ export async function downloadEvidenceImageFromDrive(
 export async function downloadPrivateImageFromDrive(fileId: string, signal?: AbortSignal) {
   return downloadEvidenceImageFromDrive(fileId, signal);
 }
-
-export async function deleteImageFromDrive(fileId: string): Promise<void> {
-  try {
-    const token = await getAccessToken();
-    const res = await fetch(
-      `https://www.googleapis.com/drive/v3/files/${fileId}`,
-      {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      }
-    );
-
-    if (!res.ok) {
-      console.error(`Failed to delete file from Drive. Status: ${res.status}`);
-    }
-  } catch (error) {
-    console.error("Drive delete error:", error);
-  }
-}

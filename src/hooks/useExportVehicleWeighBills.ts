@@ -52,6 +52,8 @@ export function useExportVehicleWeighBills({
   const cancelListRequest = useCallback(() => {
     listControllerRef.current?.abort();
     listControllerRef.current = null;
+    setLoading(false);
+    setLoadingMore(false);
   }, []);
 
   const requestList = useCallback(async ({ append }: { append: boolean }) => {
@@ -86,8 +88,8 @@ export function useExportVehicleWeighBills({
         setError(caught instanceof Error ? caught.message : "โหลดบิลรถส่งออกไม่สำเร็จ");
       }
     } finally {
-      if (listControllerRef.current === controller) listControllerRef.current = null;
-      if (scopeRef.current === requestScope) {
+      if (listControllerRef.current === controller && scopeRef.current === requestScope) {
+        listControllerRef.current = null;
         if (append) setLoadingMore(false);
         else setLoading(false);
       }
@@ -117,7 +119,10 @@ export function useExportVehicleWeighBills({
     if (online && locationId) void reload();
   }, [cancelListRequest, locationId, online, reload]);
 
-  useEffect(() => () => cancelListRequest(), [cancelListRequest]);
+  useEffect(() => () => {
+    scopeRef.current += 1;
+    cancelListRequest();
+  }, [cancelListRequest]);
 
   const details = useCallback(async (wexId: string, signal?: AbortSignal) => {
     const response = await authFetch(`${API_BASE}/${encodeURIComponent(wexId)}`, {
@@ -168,6 +173,7 @@ export function useExportVehicleWeighBills({
   }, [reload]);
 
   const remove = useCallback(async (wexId: string, expectedRevision: number) => {
+    const requestScope = scopeRef.current;
     const response = await authFetch(`${API_BASE}/${encodeURIComponent(wexId)}`, {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
@@ -175,9 +181,12 @@ export function useExportVehicleWeighBills({
     });
     await assertApiResponse(response);
     const deleted = await response.json() as WexDeleteReceipt;
+    if (scopeRef.current !== requestScope) return deleted;
+    cancelListRequest();
     setBills((current) => current.filter((bill) => bill.id !== wexId));
+    await reload();
     return deleted;
-  }, []);
+  }, [cancelListRequest, reload]);
 
   return {
     bills,

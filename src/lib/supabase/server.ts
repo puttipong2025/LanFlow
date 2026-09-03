@@ -28,11 +28,19 @@ export async function createSupabaseServerClient() {
   );
 }
 
+// undefined means cookie auth; null means an explicitly invalid header.
+export function parseBearerToken(request?: Request): string | null | undefined {
+  const authorization = request?.headers.get("authorization");
+  if (authorization == null) return undefined;
+  return /^Bearer[ \t]+([^\s,]+)$/i.exec(authorization.trim())?.[1] ?? null;
+}
+
 export async function createSupabaseRequestClient(request?: Request) {
-  const authorization = request?.headers.get("authorization")?.trim();
-  if (authorization?.startsWith("Bearer ")) {
+  const bearerToken = parseBearerToken(request);
+  if (bearerToken === null) throw new Error("Invalid authorization header");
+  if (bearerToken !== undefined) {
     return createClient(getSupabaseUrl(), getSupabasePublishableKey(), {
-      global: { headers: { Authorization: authorization } },
+      global: { headers: { Authorization: `Bearer ${bearerToken}` } },
       auth: {
         autoRefreshToken: false,
         detectSessionInUrl: false,

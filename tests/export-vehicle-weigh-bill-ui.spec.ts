@@ -40,6 +40,42 @@ const sameNameCarriers = [
   { carrierId: "00000000-0000-4000-8000-000000000102", carrierName: "บริษัทขนส่ง WEX" },
 ];
 
+test("clears WEX delete confirmation on reconnect and keeps a confirmed deletion absent", async ({ page }) => {
+  let deleted = false;
+  let deletes = 0;
+  await page.route("**/api/lanflow/export-vehicle-weigh-bills**", async (route) => {
+    if (route.request().method() === "DELETE") {
+      deleted = true; deletes += 1;
+      return route.fulfill({ json: { id: summary.id, wexNo: summary.wexNo, status: "deleted" } });
+    }
+    return route.fulfill({ json: { bills: deleted ? [] : [summary], hasMore: false, nextCursor: null,
+      permissions: { canCreate: true, canEdit: true, canDelete: true } } });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
+  await page.getByRole("tab", { name: "บิลรถส่งออก (WEX)" }).click();
+  const deleteButton = page.getByRole("button", { name: `ลบ ${summary.wexNo}` });
+  await deleteButton.click();
+  const confirmation = page.getByRole("alertdialog", { name: "ลบบิลรถส่งออก" });
+  await expect(confirmation).toBeVisible();
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "onLine", { configurable: true, get: () => false });
+    window.dispatchEvent(new Event("offline"));
+  });
+  await expect(confirmation).not.toBeVisible();
+  expect(deletes).toBe(0);
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "onLine", { configurable: true, get: () => true });
+    window.dispatchEvent(new Event("online"));
+  });
+  await deleteButton.click();
+  await confirmation.getByRole("button", { name: "ลบ WEX", exact: true }).click();
+  await expect(confirmation).not.toBeVisible();
+  await expect(deleteButton).toHaveCount(0);
+  await expect(page.getByText("ยังไม่มีบิลรถส่งออก", { exact: true })).toBeVisible();
+  expect(deletes).toBe(1);
+});
+
 test("uses truck and tail-trailer roles with shared carrier and Rubber Bill focus-zero weights", async ({ page }) => {
   await page.route("**/api/lanflow/export-vehicle-weigh-bills**", async (route) => {
     const url = new URL(route.request().url());

@@ -3,6 +3,8 @@ import { resolve } from "node:path";
 
 import { expect, test } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
+import { loadSourceModule } from "../helpers/load-source-module";
+import { requireAuth, hasSystemManagerAccess } from "../../src/lib/server/auth";
 
 import {
   detectRubberBillOcrImage,
@@ -194,8 +196,19 @@ test("OCR upload rejects unauthenticated requests with the stable error envelope
   });
 });
 
-test.describe("authenticated OCR upload boundary", () => {
+test.describe("ordinary user OCR boundary", () => {
   test.use({ storageState: "playwright/.auth/user.json" });
+
+  test("rejects a role without LanFlow access", async ({ request }) => {
+    const response = await request.post("/api/lanflow/rubber-bills/ocr", {
+      multipart: { locationId: crypto.randomUUID() },
+    });
+    expect(response.status()).toBe(403);
+  });
+});
+
+test.describe("authenticated OCR upload boundary", () => {
+  test.use({ storageState: "playwright/.auth/admin.json" });
 
   test("requires one image and keeps the stable error envelope", async ({ request }) => {
     const response = await request.post("/api/lanflow/rubber-bills/ocr", {
@@ -312,7 +325,7 @@ test.describe("authenticated OCR upload boundary", () => {
       locationId,
       recordStatus: "active",
       localBillNo: `OCR-REPLAY-${clientTempId.slice(0, 8)}`,
-      billDate: "2026-08-24",
+      billDate: new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Bangkok" }).format(new Date()),
       customerId: null,
       customerName: "ทดสอบ OCR replay",
       configuredPriceSnapshot: 0,
@@ -384,6 +397,34 @@ test.describe("authenticated OCR upload boundary", () => {
         .select("id", { count: "exact" })
         .eq("client_temp_id", clientTempId);
       expect(bills.count).toBe(1);
+
+      // Exercise real local auth, RLS and attached-source lookup; only Drive media is synthetic.
+      expect(["localhost", "127.0.0.1"]).toContain(new URL(supabaseUrl).hostname);
+      const actor = createClient(supabaseUrl,
+        process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+        { auth: { persistSession: false, autoRefreshToken: false } });
+      const signedIn = await actor.auth.signInWithPassword({
+        phone: "+66810000001", password: process.env.TEST_PASSWORD ?? "password123",
+      });
+      expect(signedIn.error).toBeNull();
+      expect(signedIn.data.user?.id).toBe(me.profile.id);
+      const imageBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0]);
+      const sourceImage = loadSourceModule<typeof import("../../src/app/api/lanflow/rubber-bills/[billId]/ocr-source-image/route")>(
+        "src/app/api/lanflow/rubber-bills/[billId]/ocr-source-image/route.ts", {
+          "@/lib/server/auth": { requireAuth, hasSystemManagerAccess },
+          "@/lib/server/supabase-admin": { createSupabaseAdminClient: () => admin },
+          "@/lib/server/google-drive": { downloadPrivateImageFromDrive: async (fileId: string) => {
+            expect(fileId).toBe(`attached-replay-${uploadId}`);
+            return new Response(imageBytes);
+          } },
+        });
+      const imageResponse = await sourceImage.GET(new Request(
+        `http://localhost/api/lanflow/rubber-bills/${billId}/ocr-source-image`, {
+          headers: { authorization: `bearer ${signedIn.data.session!.access_token}` },
+        }), { params: Promise.resolve({ billId }) });
+      expect(imageResponse.status).toBe(200);
+      expect(imageResponse.headers.get("Cache-Control")).toBe("private, no-store, max-age=0");
+      expect(new Uint8Array(await imageResponse.arrayBuffer())).toEqual(imageBytes);
     } finally {
       if (billId) {
         await admin.from("dashboard_money_events").delete()

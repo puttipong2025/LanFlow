@@ -1,4 +1,4 @@
-import { deleteImageFromDrive, uploadPrivateImageToDrive } from "@/lib/server/google-drive";
+import { uploadPrivateImageToDrive } from "@/lib/server/google-drive";
 import { requireAuth, hasSystemManagerAccess } from "@/lib/server/auth";
 import {
   detectRubberBillOcrImage,
@@ -135,9 +135,11 @@ export async function POST(request: Request) {
     return rubberBillOcrError(503, "OCR_DRIVE_UPLOAD_FAILED", "จัดเก็บรูปใบชั่งไม่สำเร็จ", true);
   }
 
+  const uploadId = crypto.randomUUID();
   const { data: source, error: insertError } = await admin
     .from("rubber_bill_ocr_sources")
     .insert({
+      id: uploadId,
       owner_user_id: authResult.auth.sub,
       location_id: locationId,
       state: "staged",
@@ -156,9 +158,27 @@ export async function POST(request: Request) {
     .select("id")
     .single();
   if (insertError || !source) {
-    await deleteImageFromDrive(driveFileId);
+    // Recover a committed INSERT whose response was lost. Drive files are kept
+    // for manual cleanup, including rejected or indeterminate attempts.
+    const { data: recovered, error: recoveryError } = await admin
+      .from("rubber_bill_ocr_sources")
+      .select("id, owner_user_id, location_id, state, bill_date, in_weight, out_weight, deduct_weight, ocr_total, suggested_price")
+      .eq("id", uploadId)
+      .eq("owner_user_id", authResult.auth.sub)
+      .eq("location_id", locationId)
+      .eq("image_sha256", imageSha256)
+      .eq("drive_file_id", driveFileId)
+      .maybeSingle();
+    if (recoveryError) {
+      return rubberBillOcrError(503, "OCR_STAGING_FAILED", "บันทึกรูปใบชั่งไม่สำเร็จ", true);
+    }
+    if (recovered) {
+      const resolution = resolveRubberBillOcrExistingSource(recovered, authResult.auth.sub, locationId);
+      if (resolution.kind === "replay") return rubberBillOcrSuccess(resolution.uploadId, resolution.draft);
+      return rubberBillOcrError(409, "OCR_UPLOAD_IDENTITY_CONFLICT", "รูปใบชั่งนี้อยู่ในคิวของคำขออื่นแล้ว");
+    }
     if (insertError?.code === "23505") {
-      const { data: concurrentSource } = await admin
+      const { data: concurrentSource, error: concurrentError } = await admin
         .from("rubber_bill_ocr_sources")
         .select("id, owner_user_id, location_id, state, bill_date, in_weight, out_weight, deduct_weight, ocr_total, suggested_price")
         .eq("location_id", locationId)
@@ -166,6 +186,9 @@ export async function POST(request: Request) {
         .in("state", ["staged", "reserved"])
         .limit(1)
         .maybeSingle();
+      if (concurrentError) {
+        return rubberBillOcrError(503, "OCR_STAGING_FAILED", "บันทึกรูปใบชั่งไม่สำเร็จ", true);
+      }
       const concurrentResolution = resolveRubberBillOcrExistingSource(
         concurrentSource,
         authResult.auth.sub,

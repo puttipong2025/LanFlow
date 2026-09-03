@@ -7,7 +7,7 @@ import {
   classifyAuthClaimsFailure,
   summarizeUpstreamError,
 } from "@/lib/server/auth-access-failure";
-import { createSupabaseRequestClient } from "@/lib/supabase/server";
+import { createSupabaseRequestClient, parseBearerToken } from "@/lib/supabase/server";
 import { deriveEffectiveCapabilities } from "@/lib/permissions";
 
 export type AuthTokenPayload = {
@@ -58,8 +58,14 @@ export async function requireAuth(
   request?: Request,
   options: RequireAuthOptions = {},
 ): Promise<AuthResult> {
+  const bearerToken = parseBearerToken(request);
+  if (bearerToken === null) {
+    return {
+      ok: false,
+      response: authFailureResponse({ status: 401, message: "ไม่ได้เข้าสู่ระบบ หรือ session หมดอายุ" }),
+    };
+  }
   const supabase = await createSupabaseRequestClient(request);
-  const bearerToken = request?.headers.get("authorization")?.trim().match(/^Bearer\s+(.+)$/i)?.[1];
   const { data: claimsData, error: claimsError } = await supabase.auth.getClaims(bearerToken);
   const userId = claimsData?.claims?.sub;
 
