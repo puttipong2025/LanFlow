@@ -2560,6 +2560,10 @@ INSERT INTO "public"."telegram_badge_settings" ("id")
 VALUES (true)
 ON CONFLICT ("id") DO NOTHING;
 
+INSERT INTO "public"."history_retention_settings" ("singleton", "retention_days")
+VALUES (true, 15)
+ON CONFLICT ("singleton") DO NOTHING;
+
 
 --
 -- PostgreSQL database dump complete

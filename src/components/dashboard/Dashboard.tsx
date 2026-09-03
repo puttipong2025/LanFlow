@@ -647,7 +647,7 @@ export function Dashboard({
           <div>
             <h2 className="text-lg font-bold text-ink">ประวัติรายการเงินล่าสุด</h2>
             <p className="text-sm text-ink/50">
-              หน้า {cursorHistory.length} · 10 เหตุการณ์ต่อหน้า · เก็บย้อนหลัง 15 วัน
+              หน้า {cursorHistory.length} · 10 เหตุการณ์ต่อหน้า · เก็บย้อนหลัง {history.data?.retentionDays ?? 15} วัน
             </p>
           </div>
           <label className="text-sm font-semibold text-ink/70">

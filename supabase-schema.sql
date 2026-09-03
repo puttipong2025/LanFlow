@@ -431,6 +431,51 @@ $$;
 ALTER FUNCTION "private"."apply_time_tracking_deductions_internal_20260902"("p_profile_id" "uuid", "p_through_month" "date") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."archive_terminal_approval_request"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_old jsonb := to_jsonb(old);
+  v_workflow text;
+  v_request_key text;
+  v_completed_at timestamptz;
+begin
+  if v_old ->> 'request_status' = 'pending' then return old; end if;
+  v_workflow := case tg_table_name
+    when 'income_expense_approval_requests' then 'income_expense'
+    when 'rubber_bill_approval_requests' then 'rubber_bill'
+    when 'stock_entry_approval_requests' then 'stock_entry'
+    when 'stock_product_approval_requests' then 'stock_product'
+  end;
+  v_request_key := coalesce(
+    nullif(v_old ->> 'request_idempotency_key', ''),
+    nullif(v_old ->> 'idempotency_key', '')
+  );
+  v_completed_at := coalesce(
+    nullif(v_old ->> 'decided_at', '')::timestamptz,
+    nullif(v_old ->> 'approved_at', '')::timestamptz,
+    nullif(v_old ->> 'updated_at', '')::timestamptz,
+    nullif(v_old ->> 'requested_at', '')::timestamptz,
+    nullif(v_old ->> 'created_at', '')::timestamptz,
+    now()
+  );
+  if v_workflow is not null and v_request_key is not null then
+    insert into private.approval_request_replay_guards(
+      workflow, request_key, terminal_status, completed_at
+    ) values (
+      v_workflow, v_request_key, v_old ->> 'request_status', v_completed_at
+    )
+    on conflict (workflow, request_key) do nothing;
+  end if;
+  return old;
+end
+$$;
+
+
+ALTER FUNCTION "private"."archive_terminal_approval_request"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."assert_attendance_month_open"("p_profile_id" "uuid", "p_month" "text") RETURNS "void"
     LANGUAGE "plpgsql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -1456,6 +1501,36 @@ $$;
 ALTER FUNCTION "private"."capture_dashboard_money_source"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."capture_time_payroll_employment_boundary"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $_$
+declare
+  v_end_on date;
+begin
+  if new.target_table = 'time_payroll_active_periods'
+     and new.action = 'SET_PAYROLL_ACTIVE_PERIOD'
+     and new.new_data @> '{"action":"END"}'::jsonb
+     and new.new_data ->> 'selectedEffectiveOn' ~ '^\d{4}-\d{2}-\d{2}$'
+  then
+    v_end_on := (new.new_data ->> 'selectedEffectiveOn')::date;
+    insert into private.time_payroll_employment_boundaries(
+      profile_id, last_end_action_on, recorded_at, updated_at
+    ) values (new.record_id, v_end_on, new.created_at, now())
+    on conflict (profile_id) do update
+    set last_end_action_on = excluded.last_end_action_on,
+        recorded_at = excluded.recorded_at,
+        updated_at = now()
+    where excluded.recorded_at >= private.time_payroll_employment_boundaries.recorded_at;
+  end if;
+  return new;
+end
+$_$;
+
+
+ALTER FUNCTION "private"."capture_time_payroll_employment_boundary"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."cash_array_to_json"("p_counts" bigint[]) RETURNS "jsonb"
     LANGUAGE "sql" IMMUTABLE
     SET "search_path" TO 'public', 'private'
@@ -1977,6 +2052,99 @@ $$;
 
 
 ALTER FUNCTION "private"."claim_dashboard_branch"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."cleanup_history_retention"("p_batch_size" integer DEFAULT 1000) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_days integer := private.history_retention_days();
+  v_cutoff date := private.history_retention_cutoff_date();
+  v_run_id uuid;
+  v_count bigint;
+  v_counts jsonb := '{}'::jsonb;
+  v_has_more boolean;
+  v_error text;
+begin
+  if p_batch_size not between 1 and 5000 then
+    raise exception 'HISTORY_RETENTION_BATCH_INVALID';
+  end if;
+  if not pg_try_advisory_xact_lock(hashtextextended('history-retention-cleanup', 0)) then
+    return jsonb_build_object('status', 'skipped', 'reason', 'already_running');
+  end if;
+  insert into public.history_cleanup_runs(retention_days, cutoff_date, status)
+  values (v_days, v_cutoff, 'running') returning id into v_run_id;
+  begin
+    update public.admin_account_audit_logs
+    set status = 'unknown', error_code = 'PENDING_TIMEOUT', completed_at = now()
+    where id in (
+      select id from public.admin_account_audit_logs
+      where status = 'pending' and created_at < now() - interval '24 hours'
+      order by created_at, id limit p_batch_size
+    );
+
+    with doomed as (select id from public.dashboard_money_events where event_date < v_cutoff order by event_date, id limit p_batch_size)
+    delete from public.dashboard_money_events t using doomed d where t.id = d.id;
+    get diagnostics v_count = row_count; v_counts := v_counts || jsonb_build_object('dashboard_money_events', v_count);
+
+    with doomed as (select id from public.time_tracking_audit_logs where (created_at at time zone 'Asia/Bangkok')::date < v_cutoff order by created_at, id limit p_batch_size)
+    delete from public.time_tracking_audit_logs t using doomed d where t.id = d.id;
+    get diagnostics v_count = row_count; v_counts := v_counts || jsonb_build_object('time_tracking_audit_logs', v_count);
+
+    with doomed as (select id from public.admin_account_audit_logs where status <> 'pending' and (coalesce(completed_at, created_at) at time zone 'Asia/Bangkok')::date < v_cutoff order by coalesce(completed_at, created_at), id limit p_batch_size)
+    delete from public.admin_account_audit_logs t using doomed d where t.id = d.id;
+    get diagnostics v_count = row_count; v_counts := v_counts || jsonb_build_object('admin_account_audit_logs', v_count);
+
+    perform set_config('app.history_retention_cleanup', 'on', true);
+    with doomed as (select id from public.income_expense_approval_requests where request_status <> 'pending' and (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date < v_cutoff order by coalesce(decided_at, updated_at), id limit p_batch_size)
+    delete from public.income_expense_approval_requests t using doomed d where t.id = d.id;
+    get diagnostics v_count = row_count; v_counts := v_counts || jsonb_build_object('income_expense_approval_requests', v_count);
+
+    with doomed as (select id from public.cash_transfer_delete_requests where request_status <> 'pending' and (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date < v_cutoff order by coalesce(decided_at, updated_at), id limit p_batch_size)
+    delete from public.cash_transfer_delete_requests t using doomed d where t.id = d.id;
+    get diagnostics v_count = row_count; v_counts := v_counts || jsonb_build_object('cash_transfer_delete_requests', v_count);
+
+    with doomed as (select id from public.rubber_bill_approval_requests where request_status <> 'pending' and (coalesce(approved_at, requested_at) at time zone 'Asia/Bangkok')::date < v_cutoff order by coalesce(approved_at, requested_at), id limit p_batch_size)
+    delete from public.rubber_bill_approval_requests t using doomed d where t.id = d.id;
+    get diagnostics v_count = row_count; v_counts := v_counts || jsonb_build_object('rubber_bill_approval_requests', v_count);
+
+    with doomed as (select id from public.stock_entry_approval_requests where request_status <> 'pending' and (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date < v_cutoff order by coalesce(decided_at, updated_at), id limit p_batch_size)
+    delete from public.stock_entry_approval_requests t using doomed d where t.id = d.id;
+    get diagnostics v_count = row_count; v_counts := v_counts || jsonb_build_object('stock_entry_approval_requests', v_count);
+
+    with doomed as (select id from public.stock_product_approval_requests where request_status <> 'pending' and (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date < v_cutoff order by coalesce(decided_at, updated_at), id limit p_batch_size)
+    delete from public.stock_product_approval_requests t using doomed d where t.id = d.id;
+    get diagnostics v_count = row_count; v_counts := v_counts || jsonb_build_object('stock_product_approval_requests', v_count);
+
+    with doomed as (select runid from cron.job_run_details where (start_time at time zone 'Asia/Bangkok')::date < v_cutoff order by start_time, runid limit p_batch_size)
+    delete from cron.job_run_details t using doomed d where t.runid = d.runid;
+    get diagnostics v_count = row_count; v_counts := v_counts || jsonb_build_object('scheduler_run_history', v_count);
+
+    with doomed as (select id from public.history_cleanup_runs where id <> v_run_id and status <> 'running' and (coalesce(completed_at, started_at) at time zone 'Asia/Bangkok')::date < v_cutoff order by coalesce(completed_at, started_at), id limit p_batch_size)
+    delete from public.history_cleanup_runs t using doomed d where t.id = d.id;
+    get diagnostics v_count = row_count; v_counts := v_counts || jsonb_build_object('cleanup_run_history', v_count);
+
+    select exists(select 1 from private.history_retention_preview_rows(v_days) p where p.eligible_count > 0)
+      into v_has_more;
+    update public.history_cleanup_runs
+    set status = 'succeeded', deleted_counts = v_counts,
+        has_more = v_has_more, completed_at = now()
+    where id = v_run_id;
+    return jsonb_build_object('status', 'succeeded', 'runId', v_run_id,
+      'deletedCounts', v_counts, 'hasMore', v_has_more);
+  exception when others then
+    v_error := left(sqlerrm, 500);
+    update public.history_cleanup_runs
+    set status = 'failed', error_message = v_error, has_more = true, completed_at = now()
+    where id = v_run_id;
+    return jsonb_build_object('status', 'failed', 'runId', v_run_id, 'errorMessage', v_error);
+  end;
+end
+$$;
+
+
+ALTER FUNCTION "private"."cleanup_history_retention"("p_batch_size" integer) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."clear_weight_evidence_completion_on_bill_change"() RETURNS "trigger"
@@ -3527,12 +3695,14 @@ CREATE OR REPLACE FUNCTION "private"."guard_approved_rubber_bill_request_history
     SET "search_path" TO 'public', 'private'
     AS $$
 begin
-  if old.request_status = 'approved' then
+  if old.request_status = 'approved'
+     and coalesce(current_setting('app.history_retention_cleanup', true), '') <> 'on'
+  then
     raise exception 'ประวัติคำขอที่อนุมัติแล้วแก้ไขหรือลบไม่ได้';
   end if;
   if tg_op = 'DELETE' then return old; end if;
   return new;
-end;
+end
 $$;
 
 
@@ -3983,6 +4153,114 @@ $$;
 
 
 ALTER FUNCTION "private"."has_time_payroll_manager_access"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."history_retention_cutoff_date"("p_days" integer DEFAULT NULL::integer) RETURNS "date"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select (current_timestamp at time zone 'Asia/Bangkok')::date
+    - (coalesce(p_days, private.history_retention_days()) - 1)
+$$;
+
+
+ALTER FUNCTION "private"."history_retention_cutoff_date"("p_days" integer) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."history_retention_days"() RETURNS integer
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select coalesce(
+    (select s.retention_days from public.history_retention_settings s where s.singleton = true),
+    15
+  )
+$$;
+
+
+ALTER FUNCTION "private"."history_retention_days"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."history_retention_preview_rows"("p_days" integer) RETURNS TABLE("group_key" "text", "eligible_count" bigint, "oldest_date" "date")
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  with bounds as (
+    select private.history_retention_cutoff_date(p_days) as cutoff
+  ), groups as (
+    select 'dashboard_money_events'::text group_key, event_date item_date
+    from public.dashboard_money_events, bounds where event_date < cutoff
+    union all
+    select 'time_tracking_audit_logs', (created_at at time zone 'Asia/Bangkok')::date
+    from public.time_tracking_audit_logs, bounds
+    where (created_at at time zone 'Asia/Bangkok')::date < cutoff
+    union all
+    select 'admin_account_audit_logs', (coalesce(completed_at, created_at) at time zone 'Asia/Bangkok')::date
+    from public.admin_account_audit_logs, bounds
+    where status <> 'pending'
+      and (coalesce(completed_at, created_at) at time zone 'Asia/Bangkok')::date < cutoff
+    union all
+    select 'income_expense_approval_requests', (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date
+    from public.income_expense_approval_requests, bounds
+    where request_status <> 'pending'
+      and (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date < cutoff
+    union all
+    select 'cash_transfer_delete_requests', (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date
+    from public.cash_transfer_delete_requests, bounds
+    where request_status <> 'pending'
+      and (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date < cutoff
+    union all
+    select 'rubber_bill_approval_requests', (coalesce(approved_at, requested_at) at time zone 'Asia/Bangkok')::date
+    from public.rubber_bill_approval_requests, bounds
+    where request_status <> 'pending'
+      and (coalesce(approved_at, requested_at) at time zone 'Asia/Bangkok')::date < cutoff
+    union all
+    select 'stock_entry_approval_requests', (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date
+    from public.stock_entry_approval_requests, bounds
+    where request_status <> 'pending'
+      and (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date < cutoff
+    union all
+    select 'stock_product_approval_requests', (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date
+    from public.stock_product_approval_requests, bounds
+    where request_status <> 'pending'
+      and (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date < cutoff
+    union all
+    select 'scheduler_run_history', (start_time at time zone 'Asia/Bangkok')::date
+    from cron.job_run_details, bounds
+    where (start_time at time zone 'Asia/Bangkok')::date < cutoff
+    union all
+    select 'cleanup_run_history', (coalesce(completed_at, started_at) at time zone 'Asia/Bangkok')::date
+    from public.history_cleanup_runs, bounds
+    where status <> 'running'
+      and (coalesce(completed_at, started_at) at time zone 'Asia/Bangkok')::date < cutoff
+  ), keys(group_key) as (values
+    ('dashboard_money_events'), ('time_tracking_audit_logs'),
+    ('admin_account_audit_logs'), ('income_expense_approval_requests'),
+    ('cash_transfer_delete_requests'), ('rubber_bill_approval_requests'),
+    ('stock_entry_approval_requests'), ('stock_product_approval_requests'),
+    ('scheduler_run_history'), ('cleanup_run_history')
+  )
+  select keys.group_key, count(groups.item_date), min(groups.item_date)
+  from keys left join groups using (group_key)
+  group by keys.group_key
+  order by keys.group_key
+$$;
+
+
+ALTER FUNCTION "private"."history_retention_preview_rows"("p_days" integer) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."history_terminal_row_visible"("p_status" "text", "p_completed_at" timestamp with time zone) RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select p_status = 'pending'
+    or (p_completed_at at time zone 'Asia/Bangkok')::date
+      >= private.history_retention_cutoff_date()
+$$;
+
+
+ALTER FUNCTION "private"."history_terminal_row_visible"("p_status" "text", "p_completed_at" timestamp with time zone) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."income_expense_operational_row"("p_location_id" "uuid", "p_source_kind" "text", "p_source_id" "uuid", "p_source_date" "date") RETURNS "jsonb"
@@ -4975,24 +5253,6 @@ $$;
 ALTER FUNCTION "private"."prevent_location_code_change"() OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "private"."prune_dashboard_money_events"() RETURNS bigint
-    LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO ''
-    AS $$
-declare
-  deleted_count bigint;
-begin
-  delete from public.dashboard_money_events
-  where event_date < (current_timestamp at time zone 'Asia/Bangkok')::date - 14;
-  get diagnostics deleted_count = row_count;
-  return deleted_count;
-end;
-$$;
-
-
-ALTER FUNCTION "private"."prune_dashboard_money_events"() OWNER TO "postgres";
-
-
 CREATE OR REPLACE FUNCTION "private"."raise_report_lock"("p_report_no" "text") RETURNS "void"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -5369,6 +5629,39 @@ end; $$;
 
 
 ALTER FUNCTION "private"."refresh_rubber_evidence_from_reviews"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."reject_expired_approval_request_replay"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_new jsonb := to_jsonb(new);
+  v_workflow text;
+  v_request_key text;
+begin
+  v_workflow := case tg_table_name
+    when 'income_expense_approval_requests' then 'income_expense'
+    when 'rubber_bill_approval_requests' then 'rubber_bill'
+    when 'stock_entry_approval_requests' then 'stock_entry'
+    when 'stock_product_approval_requests' then 'stock_product'
+  end;
+  v_request_key := coalesce(
+    nullif(v_new ->> 'request_idempotency_key', ''),
+    nullif(v_new ->> 'idempotency_key', '')
+  );
+  if v_workflow is not null and v_request_key is not null and exists (
+    select 1 from private.approval_request_replay_guards g
+    where g.workflow = v_workflow and g.request_key = v_request_key
+  ) then
+    raise exception 'APPROVAL_REQUEST_EXPIRED_REPLAY: คำขอนี้สิ้นสุดและพ้นช่วงประวัติแล้ว';
+  end if;
+  return new;
+end
+$$;
+
+
+ALTER FUNCTION "private"."reject_expired_approval_request_replay"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."report_income_expense_period_rows"("p_report_id" "uuid") RETURNS TABLE("tx_date" "date", "number" "text", "entry_type" "text", "title" "text", "amount" numeric, "sort_key" "text")
@@ -12259,114 +12552,66 @@ CREATE OR REPLACE FUNCTION "public"."get_dashboard_money_history"("p_location_id
     AS $$
 declare
   page_size integer := least(greatest(coalesce(p_page_size, 10), 1), 50);
+  retention_days integer := private.history_retention_days();
   today_bangkok date := (current_timestamp at time zone 'Asia/Bangkok')::date;
-  from_date date := (current_timestamp at time zone 'Asia/Bangkok')::date - 14;
+  from_date date := private.history_retention_cutoff_date(retention_days);
   selected_date date;
   normalized_action text := nullif(p_action, 'all');
 begin
-  if not private.is_active_user()
-    or not public.can_access_location(p_location_id)
-  then
+  if not private.is_active_user() or not public.can_access_location(p_location_id) then
     raise exception 'Location access denied';
   end if;
-
-  if normalized_action is not null
-    and normalized_action not in ('create', 'update', 'delete')
-  then
+  if normalized_action is not null and normalized_action not in ('create', 'update', 'delete') then
     raise exception 'Invalid money history action';
   end if;
-
   if (p_cursor_at is null) <> (p_cursor_id is null) then
     raise exception 'Invalid money history cursor';
   end if;
-
-  if p_event_date is not null
-    and (p_event_date < from_date or p_event_date > today_bangkok)
-  then
+  if p_event_date is not null and (p_event_date < from_date or p_event_date > today_bangkok) then
     raise exception 'Money history date is outside retention window';
   end if;
-
   selected_date := p_event_date;
   if selected_date is null then
-    select max(event_date)
-    into selected_date
-    from public.dashboard_money_events
-    where location_id = p_location_id
-      and event_date between from_date and today_bangkok;
+    select max(event_date) into selected_date from public.dashboard_money_events
+    where location_id = p_location_id and event_date between from_date and today_bangkok;
     selected_date := coalesce(selected_date, today_bangkok);
   end if;
-
   return (
     with filtered as (
-      select event.*
-      from public.dashboard_money_events event
-      where event.location_id = p_location_id
-        and event.event_date = selected_date
+      select event.* from public.dashboard_money_events event
+      where event.location_id = p_location_id and event.event_date = selected_date
         and (normalized_action is null or event.action = normalized_action)
-        and (
-          p_cursor_at is null
-          or (event.occurred_at, event.id) < (p_cursor_at, p_cursor_id)
-        )
-      order by event.occurred_at desc, event.id desc
-      limit page_size + 1
-    ),
-    visible as (
-      select *
-      from filtered
-      order by occurred_at desc, id desc
-      limit page_size
-    ),
-    counts as (
-      select
-        count(*) as total,
-        count(*) filter (where action = 'create') as created,
-        count(*) filter (where action = 'update') as updated,
-        count(*) filter (where action = 'delete') as deleted,
-        max(occurred_at) as latest_at
+        and (p_cursor_at is null or (event.occurred_at, event.id) < (p_cursor_at, p_cursor_id))
+      order by event.occurred_at desc, event.id desc limit page_size + 1
+    ), visible as (
+      select * from filtered order by occurred_at desc, id desc limit page_size
+    ), counts as (
+      select count(*) total,
+        count(*) filter (where action = 'create') created,
+        count(*) filter (where action = 'update') updated,
+        count(*) filter (where action = 'delete') deleted,
+        max(occurred_at) latest_at
       from public.dashboard_money_events
-      where location_id = p_location_id
-        and event_date = selected_date
+      where location_id = p_location_id and event_date = selected_date
     )
     select jsonb_build_object(
-      'selectedDate', selected_date,
-      'availableFrom', from_date,
-      'availableTo', today_bangkok,
-      'counts', jsonb_build_object(
-        'all', counts.total,
-        'create', counts.created,
-        'update', counts.updated,
-        'delete', counts.deleted
-      ),
+      'selectedDate', selected_date, 'availableFrom', from_date,
+      'availableTo', today_bangkok, 'retentionDays', retention_days,
+      'counts', jsonb_build_object('all', counts.total, 'create', counts.created,
+        'update', counts.updated, 'delete', counts.deleted),
       'latestAt', counts.latest_at,
-      'rows', coalesce((
-        select jsonb_agg(jsonb_build_object(
-          'id', id,
-          'sourceType', source_type,
-          'action', action,
-          'kind', kind,
-          'number', number,
-          'title', title,
-          'direction', direction,
-          'amount', round(amount, 2),
-          'actorName', actor_name,
-          'occurredAt', occurred_at
-        ) order by occurred_at desc, id desc)
-        from visible
-      ), '[]'::jsonb),
-      'nextCursor', case
-        when (select count(*) from filtered) > page_size then (
-          select jsonb_build_object('at', occurred_at, 'id', id)
-          from visible
-          order by occurred_at desc, id desc
-          offset page_size - 1
-          limit 1
-        )
-        else null
-      end
-    )
-    from counts
+      'rows', coalesce((select jsonb_agg(jsonb_build_object(
+        'id', id, 'sourceType', source_type, 'action', action, 'kind', kind,
+        'number', number, 'title', title, 'direction', direction,
+        'amount', round(amount, 2), 'actorName', actor_name, 'occurredAt', occurred_at
+      ) order by occurred_at desc, id desc) from visible), '[]'::jsonb),
+      'nextCursor', case when (select count(*) from filtered) > page_size then (
+        select jsonb_build_object('at', occurred_at, 'id', id)
+        from visible order by occurred_at desc, id desc offset page_size - 1 limit 1
+      ) else null end
+    ) from counts
   );
-end;
+end
 $$;
 
 
@@ -13028,6 +13273,57 @@ $$;
 
 
 ALTER FUNCTION "public"."get_export_vehicle_weigh_bill_options"("p_location_id" "uuid", "p_wex_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_history_retention_overview"("p_retention_days" integer DEFAULT NULL::integer) RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_settings public.history_retention_settings%rowtype;
+  v_requested integer;
+  v_groups jsonb;
+  v_total bigint;
+  v_last_cleanup jsonb;
+begin
+  if not private.is_active_user() or not private.can_access_super_admin_features() then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์จัดการระยะเก็บประวัติ';
+  end if;
+  select * into strict v_settings
+  from public.history_retention_settings s where s.singleton = true;
+  v_requested := coalesce(p_retention_days, v_settings.retention_days);
+  if v_requested not between 1 and 365 then
+    raise exception 'HISTORY_RETENTION_INVALID: จำนวนวันต้องอยู่ระหว่าง 1 ถึง 365';
+  end if;
+  select coalesce(jsonb_agg(jsonb_build_object(
+      'key', p.group_key,
+      'eligibleCount', p.eligible_count,
+      'oldestDate', p.oldest_date
+    ) order by p.group_key), '[]'::jsonb), coalesce(sum(p.eligible_count), 0)
+  into v_groups, v_total
+  from private.history_retention_preview_rows(v_requested) p;
+  select jsonb_build_object(
+    'status', r.status, 'retentionDays', r.retention_days,
+    'cutoffDate', r.cutoff_date, 'deletedCounts', r.deleted_counts,
+    'hasMore', r.has_more, 'errorMessage', r.error_message,
+    'startedAt', r.started_at, 'completedAt', r.completed_at
+  ) into v_last_cleanup
+  from public.history_cleanup_runs r order by r.started_at desc limit 1;
+  return jsonb_build_object(
+    'currentDays', v_settings.retention_days,
+    'requestedDays', v_requested,
+    'cutoffDate', private.history_retention_cutoff_date(v_requested),
+    'updatedAt', v_settings.updated_at,
+    'updatedByName', v_settings.updated_by_name,
+    'totalEligible', v_total,
+    'groups', v_groups,
+    'lastCleanup', v_last_cleanup
+  );
+end
+$$;
+
+
+ALTER FUNCTION "public"."get_history_retention_overview"("p_retention_days" integer) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_income_expense_feed"("p_location_id" "uuid", "p_from_date" "date", "p_to_date" "date", "p_cursor_date" "date" DEFAULT NULL::"date", "p_cursor_key" "text" DEFAULT NULL::"text", "p_page_size" integer DEFAULT 100) RETURNS "jsonb"
@@ -18018,6 +18314,55 @@ $$;
 ALTER FUNCTION "public"."save_dashboard_stock_alert_threshold"("p_location_id" "uuid", "p_product_id" "uuid", "p_minimum_balance" numeric) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."save_history_retention_settings"("p_retention_days" integer, "p_expected_updated_at" timestamp with time zone) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_actor uuid := auth.uid();
+  v_actor_name text;
+  v_settings public.history_retention_settings%rowtype;
+  v_counts jsonb;
+  v_cleanup jsonb;
+begin
+  if v_actor is null or not private.is_active_user()
+     or not private.can_access_super_admin_features() then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์เปลี่ยนระยะเก็บประวัติ';
+  end if;
+  if p_retention_days not between 1 and 365 then
+    raise exception 'HISTORY_RETENTION_INVALID: จำนวนวันต้องอยู่ระหว่าง 1 ถึง 365';
+  end if;
+  select * into strict v_settings from public.history_retention_settings
+  where singleton = true for update;
+  if p_expected_updated_at is null or v_settings.updated_at <> p_expected_updated_at then
+    raise exception 'HISTORY_RETENTION_CONFLICT: การตั้งค่าถูกเปลี่ยนแล้ว กรุณาโหลดใหม่';
+  end if;
+  if v_settings.retention_days = p_retention_days then
+    return public.get_history_retention_overview(p_retention_days);
+  end if;
+  select p.name into v_actor_name from public.profiles p where p.id = v_actor;
+  select coalesce(jsonb_object_agg(p.group_key, p.eligible_count), '{}'::jsonb)
+    into v_counts from private.history_retention_preview_rows(p_retention_days) p;
+  insert into public.history_retention_change_audits(
+    actor_user_id, actor_name, old_retention_days, new_retention_days, eligible_counts
+  ) values (
+    v_actor, coalesce(v_actor_name, ''), v_settings.retention_days,
+    p_retention_days, v_counts
+  );
+  update public.history_retention_settings
+  set retention_days = p_retention_days, updated_by = v_actor,
+      updated_by_name = coalesce(v_actor_name, ''), updated_at = clock_timestamp()
+  where singleton = true;
+  v_cleanup := private.cleanup_history_retention(1000);
+  return public.get_history_retention_overview(p_retention_days)
+    || jsonb_build_object('cleanup', v_cleanup);
+end
+$$;
+
+
+ALTER FUNCTION "public"."save_history_retention_settings"("p_retention_days" integer, "p_expected_updated_at" timestamp with time zone) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."save_money_transfer"("p_payload" "jsonb") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -19037,7 +19382,7 @@ ALTER FUNCTION "public"."set_rubber_export_sold_out"("p_export_id" "uuid", "p_so
 CREATE OR REPLACE FUNCTION "public"."set_time_payroll_active_period"("p_profile_id" "uuid", "p_action" "text", "p_effective_date" "date") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
-    AS $_$
+    AS $$
 declare
   v_actor uuid := auth.uid();
   v_today date := (now() at time zone 'Asia/Bangkok')::date;
@@ -19133,16 +19478,10 @@ begin
       for update;
 
       if not found then
-        select (al.new_data ->> 'selectedEffectiveOn')::date
+        select b.last_end_action_on
           into v_last_end_action_on
-        from public.time_tracking_audit_logs al
-        where al.target_table = 'time_payroll_active_periods'
-          and al.record_id = p_profile_id
-          and al.action = 'SET_PAYROLL_ACTIVE_PERIOD'
-          and al.new_data @> '{"action":"END"}'::jsonb
-          and al.new_data ->> 'selectedEffectiveOn' ~ '^\d{4}-\d{2}-\d{2}$'
-        order by al.created_at desc
-        limit 1;
+        from private.time_payroll_employment_boundaries b
+        where b.profile_id = p_profile_id;
 
         if not found then raise exception 'NO_PERIOD_HISTORY_TO_RESUME'; end if;
         if p_effective_date < v_last_end_action_on then
@@ -19259,7 +19598,7 @@ begin
     'endDayEarned', v_end_day_earned
   );
 end
-$_$;
+$$;
 
 
 ALTER FUNCTION "public"."set_time_payroll_active_period"("p_profile_id" "uuid", "p_action" "text", "p_effective_date" "date") OWNER TO "postgres";
@@ -21534,6 +21873,18 @@ $$;
 ALTER FUNCTION "public"."verify_telegram_badge_dispatch_secret"("p_secret" "text") OWNER TO "postgres";
 
 
+CREATE TABLE IF NOT EXISTS "private"."approval_request_replay_guards" (
+    "workflow" "text" NOT NULL,
+    "request_key" "text" NOT NULL,
+    "terminal_status" "text" NOT NULL,
+    "completed_at" timestamp with time zone NOT NULL,
+    "archived_at" timestamp with time zone DEFAULT "now"() NOT NULL
+);
+
+
+ALTER TABLE "private"."approval_request_replay_guards" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "private"."dashboard_money_event_projection" (
     "source_type" "text" NOT NULL,
     "source_id" "uuid" NOT NULL,
@@ -21597,6 +21948,17 @@ CREATE TABLE IF NOT EXISTS "private"."rubber_bill_evidence_projection" (
 
 
 ALTER TABLE "private"."rubber_bill_evidence_projection" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."time_payroll_employment_boundaries" (
+    "profile_id" "uuid" NOT NULL,
+    "last_end_action_on" "date" NOT NULL,
+    "recorded_at" timestamp with time zone NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL
+);
+
+
+ALTER TABLE "private"."time_payroll_employment_boundaries" OWNER TO "postgres";
 
 
 CREATE TABLE IF NOT EXISTS "public"."stock_products" (
@@ -22169,6 +22531,56 @@ COMMENT ON COLUMN "public"."export_vehicle_weigh_lines"."outbound_weight" IS 'Ze
 
 COMMENT ON COLUMN "public"."export_vehicle_weigh_lines"."net_weight" IS 'Server-derived zero while checkout is pending, otherwise outbound_weight minus inbound_weight.';
 
+
+
+CREATE TABLE IF NOT EXISTS "public"."history_cleanup_runs" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "retention_days" integer NOT NULL,
+    "cutoff_date" "date" NOT NULL,
+    "status" "text" NOT NULL,
+    "deleted_counts" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
+    "has_more" boolean,
+    "error_message" "text",
+    "started_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "completed_at" timestamp with time zone,
+    CONSTRAINT "history_cleanup_runs_deleted_counts_check" CHECK (("jsonb_typeof"("deleted_counts") = 'object'::"text")),
+    CONSTRAINT "history_cleanup_runs_retention_days_check" CHECK ((("retention_days" >= 1) AND ("retention_days" <= 365))),
+    CONSTRAINT "history_cleanup_runs_status_check" CHECK (("status" = ANY (ARRAY['running'::"text", 'succeeded'::"text", 'failed'::"text"])))
+);
+
+
+ALTER TABLE "public"."history_cleanup_runs" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."history_retention_change_audits" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "actor_user_id" "uuid" NOT NULL,
+    "actor_name" "text" NOT NULL,
+    "old_retention_days" integer NOT NULL,
+    "new_retention_days" integer NOT NULL,
+    "eligible_counts" "jsonb" NOT NULL,
+    "changed_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "history_retention_change_audits_eligible_counts_check" CHECK (("jsonb_typeof"("eligible_counts") = 'object'::"text")),
+    CONSTRAINT "history_retention_change_audits_new_retention_days_check" CHECK ((("new_retention_days" >= 1) AND ("new_retention_days" <= 365))),
+    CONSTRAINT "history_retention_change_audits_old_retention_days_check" CHECK ((("old_retention_days" >= 1) AND ("old_retention_days" <= 365)))
+);
+
+
+ALTER TABLE "public"."history_retention_change_audits" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."history_retention_settings" (
+    "singleton" boolean DEFAULT true NOT NULL,
+    "retention_days" integer DEFAULT 15 NOT NULL,
+    "updated_by" "uuid",
+    "updated_by_name" "text",
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "history_retention_settings_retention_days_check" CHECK ((("retention_days" >= 1) AND ("retention_days" <= 365))),
+    CONSTRAINT "history_retention_settings_singleton_check" CHECK ("singleton")
+);
+
+
+ALTER TABLE "public"."history_retention_settings" OWNER TO "postgres";
 
 
 CREATE TABLE IF NOT EXISTS "public"."income_expense_approval_keywords" (
@@ -22930,6 +23342,11 @@ CREATE TABLE IF NOT EXISTS "public"."user_locations" (
 ALTER TABLE "public"."user_locations" OWNER TO "postgres";
 
 
+ALTER TABLE ONLY "private"."approval_request_replay_guards"
+    ADD CONSTRAINT "approval_request_replay_guards_pkey" PRIMARY KEY ("workflow", "request_key");
+
+
+
 ALTER TABLE ONLY "private"."dashboard_money_event_projection"
     ADD CONSTRAINT "dashboard_money_event_projection_pkey" PRIMARY KEY ("source_type", "source_id", "event_key");
 
@@ -22947,6 +23364,11 @@ ALTER TABLE ONLY "private"."money_transfer_delete_context"
 
 ALTER TABLE ONLY "private"."rubber_bill_evidence_projection"
     ADD CONSTRAINT "rubber_bill_evidence_projection_pkey" PRIMARY KEY ("bill_id");
+
+
+
+ALTER TABLE ONLY "private"."time_payroll_employment_boundaries"
+    ADD CONSTRAINT "time_payroll_employment_boundaries_pkey" PRIMARY KEY ("profile_id");
 
 
 
@@ -23102,6 +23524,21 @@ ALTER TABLE ONLY "public"."financial_transactions"
 
 ALTER TABLE "public"."financial_transactions"
     ADD CONSTRAINT "financial_transactions_withdrawal_expense_assignment" CHECK ((("type" <> 'WITHDRAWAL'::"public"."financial_transaction_type") OR ("status" <> 'APPROVED'::"public"."approval_status") OR ("cancelled_at" IS NOT NULL) OR ("approved_at" IS NOT NULL))) NOT VALID;
+
+
+
+ALTER TABLE ONLY "public"."history_cleanup_runs"
+    ADD CONSTRAINT "history_cleanup_runs_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."history_retention_change_audits"
+    ADD CONSTRAINT "history_retention_change_audits_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."history_retention_settings"
+    ADD CONSTRAINT "history_retention_settings_pkey" PRIMARY KEY ("singleton");
 
 
 
@@ -23508,6 +23945,10 @@ CREATE INDEX "rubber_bill_evidence_projection_queue" ON "private"."rubber_bill_e
 
 
 
+CREATE INDEX "admin_account_audit_logs_retention_idx" ON "public"."admin_account_audit_logs" USING "btree" ("status", COALESCE("completed_at", "created_at"), "id");
+
+
+
 CREATE INDEX "admin_account_audit_target_created_idx" ON "public"."admin_account_audit_logs" USING "btree" ("target_user_id", "created_at" DESC);
 
 
@@ -23533,6 +23974,10 @@ CREATE UNIQUE INDEX "cash_transfer_delete_requests_one_pending" ON "public"."cas
 
 
 CREATE INDEX "cash_transfer_delete_requests_status_created" ON "public"."cash_transfer_delete_requests" USING "btree" ("request_status", "created_at" DESC);
+
+
+
+CREATE INDEX "cash_transfer_delete_retention_idx" ON "public"."cash_transfer_delete_requests" USING "btree" ("request_status", COALESCE("decided_at", "updated_at"), "id");
 
 
 
@@ -23600,6 +24045,14 @@ CREATE INDEX "financial_transactions_withdrawal_expense_feed_idx" ON "public"."f
 
 
 
+CREATE INDEX "history_cleanup_runs_completed_idx" ON "public"."history_cleanup_runs" USING "btree" (COALESCE("completed_at", "started_at"));
+
+
+
+CREATE INDEX "history_retention_change_audits_changed_idx" ON "public"."history_retention_change_audits" USING "btree" ("changed_at" DESC);
+
+
+
 CREATE UNIQUE INDEX "idx_customer_bank_accounts_primary" ON "public"."customer_bank_accounts" USING "btree" ("customer_id") WHERE ("is_primary" = true);
 
 
@@ -23617,6 +24070,10 @@ CREATE UNIQUE INDEX "income_expense_approval_keywords_active_unique" ON "public"
 
 
 CREATE INDEX "income_expense_approval_pending_digest" ON "public"."income_expense_approval_requests" USING "btree" ("location_id") WHERE ("request_status" = 'pending'::"text");
+
+
+
+CREATE INDEX "income_expense_approval_retention_idx" ON "public"."income_expense_approval_requests" USING "btree" ("request_status", COALESCE("decided_at", "updated_at"), "id");
 
 
 
@@ -23720,6 +24177,10 @@ CREATE INDEX "rubber_bill_approval_queue" ON "public"."rubber_bill_approval_requ
 
 
 
+CREATE INDEX "rubber_bill_approval_retention_idx" ON "public"."rubber_bill_approval_requests" USING "btree" ("request_status", COALESCE("approved_at", "requested_at"), "id");
+
+
+
 CREATE UNIQUE INDEX "rubber_bill_evidence_review_periods_one_open_per_location" ON "public"."rubber_bill_evidence_review_periods" USING "btree" ("location_id") WHERE ("closed_at" IS NULL);
 
 
@@ -23792,6 +24253,10 @@ CREATE INDEX "stock_entry_approval_requests_status_created_idx" ON "public"."sto
 
 
 
+CREATE INDEX "stock_entry_approval_retention_idx" ON "public"."stock_entry_approval_requests" USING "btree" ("request_status", COALESCE("decided_at", "updated_at"), "id");
+
+
+
 CREATE UNIQUE INDEX "stock_product_approval_requests_pending_create_name_idx" ON "public"."stock_product_approval_requests" USING "btree" ("lower"(TRIM(BOTH FROM "product_name"))) WHERE (("request_status" = 'pending'::"text") AND ("request_type" = 'create_product'::"text"));
 
 
@@ -23801,6 +24266,10 @@ CREATE UNIQUE INDEX "stock_product_approval_requests_pending_delete_product_idx"
 
 
 CREATE INDEX "stock_product_approval_requests_status_created_idx" ON "public"."stock_product_approval_requests" USING "btree" ("request_status", "created_at" DESC);
+
+
+
+CREATE INDEX "stock_product_approval_retention_idx" ON "public"."stock_product_approval_requests" USING "btree" ("request_status", COALESCE("decided_at", "updated_at"), "id");
 
 
 
@@ -23824,6 +24293,10 @@ CREATE UNIQUE INDEX "time_segments_one_active_per_profile" ON "public"."time_seg
 
 
 
+CREATE INDEX "time_tracking_audit_logs_retention_idx" ON "public"."time_tracking_audit_logs" USING "btree" ("created_at", "id");
+
+
+
 CREATE INDEX "time_tracking_resume_schedules_due" ON "public"."time_tracking_resume_schedules" USING "btree" ("resume_at");
 
 
@@ -23836,11 +24309,31 @@ CREATE UNIQUE INDEX "user_locations_one_primary_per_user" ON "public"."user_loca
 
 
 
+CREATE OR REPLACE TRIGGER "archive_terminal_approval_request" BEFORE DELETE ON "public"."income_expense_approval_requests" FOR EACH ROW EXECUTE FUNCTION "private"."archive_terminal_approval_request"();
+
+
+
+CREATE OR REPLACE TRIGGER "archive_terminal_approval_request" BEFORE DELETE ON "public"."rubber_bill_approval_requests" FOR EACH ROW EXECUTE FUNCTION "private"."archive_terminal_approval_request"();
+
+
+
+CREATE OR REPLACE TRIGGER "archive_terminal_approval_request" BEFORE DELETE ON "public"."stock_entry_approval_requests" FOR EACH ROW EXECUTE FUNCTION "private"."archive_terminal_approval_request"();
+
+
+
+CREATE OR REPLACE TRIGGER "archive_terminal_approval_request" BEFORE DELETE ON "public"."stock_product_approval_requests" FOR EACH ROW EXECUTE FUNCTION "private"."archive_terminal_approval_request"();
+
+
+
 CREATE OR REPLACE TRIGGER "assign_rubber_bill_formula_version" BEFORE INSERT OR UPDATE ON "public"."rubber_bills" FOR EACH ROW EXECUTE FUNCTION "private"."assign_rubber_bill_formula_version"();
 
 
 
 CREATE OR REPLACE TRIGGER "assign_rubber_bill_item_sequence" BEFORE INSERT ON "public"."rubber_bill_items" FOR EACH ROW EXECUTE FUNCTION "private"."assign_rubber_bill_item_sequence"();
+
+
+
+CREATE OR REPLACE TRIGGER "capture_time_payroll_employment_boundary" AFTER INSERT ON "public"."time_tracking_audit_logs" FOR EACH ROW EXECUTE FUNCTION "private"."capture_time_payroll_employment_boundary"();
 
 
 
@@ -24052,6 +24545,22 @@ CREATE OR REPLACE TRIGGER "refresh_rubber_evidence_review" AFTER INSERT OR DELET
 
 
 
+CREATE OR REPLACE TRIGGER "reject_expired_approval_request_replay" BEFORE INSERT ON "public"."income_expense_approval_requests" FOR EACH ROW EXECUTE FUNCTION "private"."reject_expired_approval_request_replay"();
+
+
+
+CREATE OR REPLACE TRIGGER "reject_expired_approval_request_replay" BEFORE INSERT ON "public"."rubber_bill_approval_requests" FOR EACH ROW EXECUTE FUNCTION "private"."reject_expired_approval_request_replay"();
+
+
+
+CREATE OR REPLACE TRIGGER "reject_expired_approval_request_replay" BEFORE INSERT ON "public"."stock_entry_approval_requests" FOR EACH ROW EXECUTE FUNCTION "private"."reject_expired_approval_request_replay"();
+
+
+
+CREATE OR REPLACE TRIGGER "reject_expired_approval_request_replay" BEFORE INSERT ON "public"."stock_product_approval_requests" FOR EACH ROW EXECUTE FUNCTION "private"."reject_expired_approval_request_replay"();
+
+
+
 CREATE OR REPLACE TRIGGER "report_lock_financial_transactions" BEFORE DELETE OR UPDATE ON "public"."financial_transactions" FOR EACH ROW EXECUTE FUNCTION "private"."guard_reported_entity"('financial_transaction');
 
 
@@ -24120,6 +24629,11 @@ ALTER TABLE ONLY "private"."rubber_bill_evidence_projection"
 
 ALTER TABLE ONLY "private"."rubber_bill_evidence_projection"
     ADD CONSTRAINT "rubber_bill_evidence_projection_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id");
+
+
+
+ALTER TABLE ONLY "private"."time_payroll_employment_boundaries"
+    ADD CONSTRAINT "time_payroll_employment_boundaries_profile_id_fkey" FOREIGN KEY ("profile_id") REFERENCES "public"."profiles"("id") ON DELETE CASCADE;
 
 
 
@@ -24355,6 +24869,16 @@ ALTER TABLE ONLY "public"."financial_transactions"
 
 ALTER TABLE ONLY "public"."financial_transactions"
     ADD CONSTRAINT "financial_transactions_profile_id_fkey" FOREIGN KEY ("profile_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."history_retention_change_audits"
+    ADD CONSTRAINT "history_retention_change_audits_actor_user_id_fkey" FOREIGN KEY ("actor_user_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."history_retention_settings"
+    ADD CONSTRAINT "history_retention_settings_updated_by_fkey" FOREIGN KEY ("updated_by") REFERENCES "public"."profiles"("id");
 
 
 
@@ -24944,7 +25468,7 @@ CREATE POLICY "cash details source or target select" ON "public"."money_transfer
 
 
 
-CREATE POLICY "cash transfer delete requests read" ON "public"."cash_transfer_delete_requests" FOR SELECT TO "authenticated" USING (("private"."can_access_business_modules"() AND ("private"."can_access_super_admin_features"() OR ("requested_by_user_id" = "auth"."uid"()) OR "private"."can_access_location"("source_location_id"))));
+CREATE POLICY "cash transfer delete requests read" ON "public"."cash_transfer_delete_requests" FOR SELECT TO "authenticated" USING (("private"."can_access_business_modules"() AND ("private"."can_access_super_admin_features"() OR ("requested_by_user_id" = "auth"."uid"()) OR "private"."can_access_location"("source_location_id")) AND "private"."history_terminal_row_visible"("request_status", COALESCE("decided_at", "updated_at"))));
 
 
 
@@ -25040,7 +25564,7 @@ ALTER TABLE "public"."dashboard_branch_snapshots" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."dashboard_money_events" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "dashboard_money_events_select_scope" ON "public"."dashboard_money_events" FOR SELECT TO "authenticated" USING ("public"."can_access_location"("location_id"));
+CREATE POLICY "dashboard_money_events_select_scope" ON "public"."dashboard_money_events" FOR SELECT TO "authenticated" USING (("public"."can_access_location"("location_id") AND ("event_date" >= "private"."history_retention_cutoff_date"())));
 
 
 
@@ -25089,6 +25613,27 @@ CREATE POLICY "financial_transactions_read_self_or_manager" ON "public"."financi
 
 
 
+ALTER TABLE "public"."history_cleanup_runs" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "history_cleanup_runs_manager_read" ON "public"."history_cleanup_runs" FOR SELECT TO "authenticated" USING ("private"."can_access_super_admin_features"());
+
+
+
+ALTER TABLE "public"."history_retention_change_audits" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "history_retention_change_audits_manager_read" ON "public"."history_retention_change_audits" FOR SELECT TO "authenticated" USING ("private"."can_access_super_admin_features"());
+
+
+
+ALTER TABLE "public"."history_retention_settings" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "history_retention_settings_manager_read" ON "public"."history_retention_settings" FOR SELECT TO "authenticated" USING ("private"."can_access_super_admin_features"());
+
+
+
 ALTER TABLE "public"."income_expense" ENABLE ROW LEVEL SECURITY;
 
 
@@ -25106,7 +25651,7 @@ CREATE POLICY "income_expense_approval_keywords_system_manager_write" ON "public
 ALTER TABLE "public"."income_expense_approval_requests" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "income_expense_approval_requests_read" ON "public"."income_expense_approval_requests" FOR SELECT TO "authenticated" USING (("private"."can_access_business_modules"() AND ("public"."can_access_super_admin_features"() OR ("requested_by_user_id" = "auth"."uid"()) OR "public"."can_access_location"("location_id"))));
+CREATE POLICY "income_expense_approval_requests_read" ON "public"."income_expense_approval_requests" FOR SELECT TO "authenticated" USING (("private"."can_access_business_modules"() AND ("public"."can_access_super_admin_features"() OR ("requested_by_user_id" = "auth"."uid"()) OR "public"."can_access_location"("location_id")) AND "private"."history_terminal_row_visible"("request_status", COALESCE("decided_at", "updated_at"))));
 
 
 
@@ -25361,21 +25906,21 @@ ALTER TABLE "public"."stock_entries" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."stock_entry_approval_requests" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "stock_entry_approval_requests_read" ON "public"."stock_entry_approval_requests" FOR SELECT TO "authenticated" USING (("private"."can_access_business_modules"() AND ("public"."can_access_super_admin_features"() OR ("requested_by_user_id" = "auth"."uid"()) OR "public"."can_access_location"("location_id") OR (("target_location_id" IS NOT NULL) AND "public"."can_access_location"("target_location_id")))));
+CREATE POLICY "stock_entry_approval_requests_read" ON "public"."stock_entry_approval_requests" FOR SELECT TO "authenticated" USING (("private"."can_access_business_modules"() AND ("public"."can_access_super_admin_features"() OR ("requested_by_user_id" = "auth"."uid"()) OR "public"."can_access_location"("location_id") OR (("target_location_id" IS NOT NULL) AND "public"."can_access_location"("target_location_id"))) AND "private"."history_terminal_row_visible"("request_status", COALESCE("decided_at", "updated_at"))));
 
 
 
 ALTER TABLE "public"."stock_product_approval_requests" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "stock_product_approval_requests_read" ON "public"."stock_product_approval_requests" FOR SELECT TO "authenticated" USING (("private"."can_access_business_modules"() AND ("public"."can_access_super_admin_features"() OR ("requested_by_user_id" = "auth"."uid"()))));
+CREATE POLICY "stock_product_approval_requests_read" ON "public"."stock_product_approval_requests" FOR SELECT TO "authenticated" USING (("private"."can_access_business_modules"() AND ("public"."can_access_super_admin_features"() OR ("requested_by_user_id" = "auth"."uid"())) AND "private"."history_terminal_row_visible"("request_status", COALESCE("decided_at", "updated_at"))));
 
 
 
 ALTER TABLE "public"."stock_products" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "system managers read rubber bill approval requests" ON "public"."rubber_bill_approval_requests" FOR SELECT USING (("private"."is_active_user"() AND "public"."can_access_super_admin_features"()));
+CREATE POLICY "system managers read rubber bill approval requests" ON "public"."rubber_bill_approval_requests" FOR SELECT TO "authenticated" USING (("private"."is_active_user"() AND "public"."can_access_super_admin_features"() AND "private"."history_terminal_row_visible"("request_status", COALESCE("approved_at", "requested_at"))));
 
 
 
@@ -25424,7 +25969,7 @@ CREATE POLICY "time_segments_read_self_or_manager" ON "public"."time_segments" F
 ALTER TABLE "public"."time_tracking_audit_logs" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "time_tracking_audit_logs_read_global_manager" ON "public"."time_tracking_audit_logs" FOR SELECT TO "authenticated" USING ("private"."is_global_time_payroll_manager"());
+CREATE POLICY "time_tracking_audit_logs_read_global_manager" ON "public"."time_tracking_audit_logs" FOR SELECT TO "authenticated" USING (("private"."is_global_time_payroll_manager"() AND ((("created_at" AT TIME ZONE 'Asia/Bangkok'::"text"))::"date" >= "private"."history_retention_cutoff_date"())));
 
 
 
@@ -25539,6 +26084,10 @@ REVOKE ALL ON FUNCTION "private"."apply_time_tracking_deductions_internal_202609
 
 
 
+REVOKE ALL ON FUNCTION "private"."archive_terminal_approval_request"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."assert_attendance_month_open"("p_profile_id" "uuid", "p_month" "text") FROM PUBLIC;
 
 
@@ -25621,6 +26170,10 @@ REVOKE ALL ON FUNCTION "private"."capture_dashboard_money_source"() FROM PUBLIC;
 
 
 
+REVOKE ALL ON FUNCTION "private"."capture_time_payroll_employment_boundary"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."cash_array_to_json"("p_counts" bigint[]) FROM PUBLIC;
 
 
@@ -25662,6 +26215,11 @@ REVOKE ALL ON FUNCTION "private"."cash_take_with_change"("p_available" bigint[],
 
 
 REVOKE ALL ON FUNCTION "private"."claim_dashboard_branch"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."cleanup_history_retention"("p_batch_size" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "private"."cleanup_history_retention"("p_batch_size" integer) TO "service_role";
 
 
 
@@ -25759,6 +26317,28 @@ GRANT ALL ON FUNCTION "private"."has_time_payroll_manager_access"() TO "authenti
 
 
 
+REVOKE ALL ON FUNCTION "private"."history_retention_cutoff_date"("p_days" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "private"."history_retention_cutoff_date"("p_days" integer) TO "authenticated";
+GRANT ALL ON FUNCTION "private"."history_retention_cutoff_date"("p_days" integer) TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "private"."history_retention_days"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "private"."history_retention_days"() TO "authenticated";
+GRANT ALL ON FUNCTION "private"."history_retention_days"() TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "private"."history_retention_preview_rows"("p_days" integer) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."history_terminal_row_visible"("p_status" "text", "p_completed_at" timestamp with time zone) FROM PUBLIC;
+GRANT ALL ON FUNCTION "private"."history_terminal_row_visible"("p_status" "text", "p_completed_at" timestamp with time zone) TO "authenticated";
+GRANT ALL ON FUNCTION "private"."history_terminal_row_visible"("p_status" "text", "p_completed_at" timestamp with time zone) TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "private"."income_expense_operational_row"("p_location_id" "uuid", "p_source_kind" "text", "p_source_id" "uuid", "p_source_date" "date") FROM PUBLIC;
 
 
@@ -25823,11 +26403,6 @@ REVOKE ALL ON FUNCTION "private"."prevent_location_code_change"() FROM PUBLIC;
 
 
 
-REVOKE ALL ON FUNCTION "private"."prune_dashboard_money_events"() FROM PUBLIC;
-GRANT ALL ON FUNCTION "private"."prune_dashboard_money_events"() TO "service_role";
-
-
-
 REVOKE ALL ON FUNCTION "private"."rebuild_active_report_balance_chain"("p_location_id" "uuid") FROM PUBLIC;
 
 
@@ -25849,6 +26424,10 @@ REVOKE ALL ON FUNCTION "private"."reconcile_dashboard_money_source"("p_source_ty
 
 
 REVOKE ALL ON FUNCTION "private"."refresh_rubber_bill_evidence_projection"("p_bill_ids" "uuid"[]) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."reject_expired_approval_request_replay"() FROM PUBLIC;
 
 
 
@@ -26331,6 +26910,12 @@ GRANT ALL ON FUNCTION "public"."get_export_vehicle_weigh_bill_detail"("p_wex_id"
 
 REVOKE ALL ON FUNCTION "public"."get_export_vehicle_weigh_bill_options"("p_location_id" "uuid", "p_wex_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_export_vehicle_weigh_bill_options"("p_location_id" "uuid", "p_wex_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_history_retention_overview"("p_retention_days" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_history_retention_overview"("p_retention_days" integer) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."get_history_retention_overview"("p_retention_days" integer) TO "service_role";
 
 
 
@@ -26947,6 +27532,12 @@ GRANT ALL ON FUNCTION "public"."save_dashboard_stock_alert_threshold"("p_locatio
 
 
 
+REVOKE ALL ON FUNCTION "public"."save_history_retention_settings"("p_retention_days" integer, "p_expected_updated_at" timestamp with time zone) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."save_history_retention_settings"("p_retention_days" integer, "p_expected_updated_at" timestamp with time zone) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."save_history_retention_settings"("p_retention_days" integer, "p_expected_updated_at" timestamp with time zone) TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."save_money_transfer"("p_payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."save_money_transfer"("p_payload" "jsonb") TO "authenticated";
 
@@ -27126,7 +27717,15 @@ GRANT ALL ON FUNCTION "public"."verify_telegram_badge_dispatch_secret"("p_secret
 
 
 
+GRANT ALL ON TABLE "private"."approval_request_replay_guards" TO "service_role";
+
+
+
 GRANT ALL ON TABLE "private"."document_number_counters" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "private"."time_payroll_employment_boundaries" TO "service_role";
 
 
 
@@ -27241,6 +27840,21 @@ GRANT SELECT ON TABLE "public"."export_vehicle_weigh_bills" TO "authenticated";
 
 GRANT ALL ON TABLE "public"."export_vehicle_weigh_lines" TO "service_role";
 GRANT SELECT ON TABLE "public"."export_vehicle_weigh_lines" TO "authenticated";
+
+
+
+GRANT ALL ON TABLE "public"."history_cleanup_runs" TO "service_role";
+GRANT SELECT ON TABLE "public"."history_cleanup_runs" TO "authenticated";
+
+
+
+GRANT ALL ON TABLE "public"."history_retention_change_audits" TO "service_role";
+GRANT SELECT ON TABLE "public"."history_retention_change_audits" TO "authenticated";
+
+
+
+GRANT ALL ON TABLE "public"."history_retention_settings" TO "service_role";
+GRANT SELECT ON TABLE "public"."history_retention_settings" TO "authenticated";
 
 
 

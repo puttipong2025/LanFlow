@@ -97,6 +97,7 @@ export type DashboardMoneyHistory = {
   selectedDate: string;
   availableFrom: string;
   availableTo: string;
+  retentionDays: number;
   counts: Record<DashboardMoneyHistoryAction, number>;
   latestAt: string | null;
   rows: DashboardMoneyHistoryRow[];

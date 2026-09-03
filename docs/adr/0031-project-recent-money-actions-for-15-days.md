@@ -1,5 +1,6 @@
 ---
-status: accepted
+status: superseded
+superseded_by: ADR-0058
 ---
 
 # Project recent-money actions for 15 Bangkok days

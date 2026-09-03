@@ -87,7 +87,7 @@ export async function GET(request: NextRequest) {
   if (error) {
     if (error.message.includes("outside retention window")) {
       return NextResponse.json(
-        { error: "วันที่อยู่นอกช่วงประวัติ 15 วัน" },
+        { error: "วันที่อยู่นอกช่วงเก็บประวัติที่กำหนด" },
         { status: 400 },
       );
     }
