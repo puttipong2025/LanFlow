@@ -336,9 +336,7 @@ export function useIncomeExpenseApprovals(options: {
 
       if (error) throw new Error(error.message || JSON.stringify(error));
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [KEYWORDS_KEY] });
-    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: [KEYWORDS_KEY] }),
   });
 
   const disableKeywordMutation = useMutation({
@@ -355,9 +353,7 @@ export function useIncomeExpenseApprovals(options: {
 
       if (error) throw new Error(error.message || JSON.stringify(error));
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [KEYWORDS_KEY] });
-    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: [KEYWORDS_KEY] }),
   });
 
   const saveSettingsMutation = useMutation({
@@ -391,9 +387,7 @@ export function useIncomeExpenseApprovals(options: {
 
       if (error) throw new Error(error.message || JSON.stringify(error));
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [SETTINGS_KEY] });
-    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: [SETTINGS_KEY] }),
   });
 
   const decideRequestMutation = useMutation({
@@ -416,8 +410,8 @@ export function useIncomeExpenseApprovals(options: {
         queryClient.invalidateQueries({ queryKey: [REQUESTS_KEY] }),
         queryClient.invalidateQueries({ queryKey: [INCOME_EXPENSE_FEED_QUERY_KEY] }),
         queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
+        queryClient.invalidateQueries({ queryKey: ["stock"] }),
       ]);
-      queryClient.invalidateQueries({ queryKey: ["stock"] });
     },
   });
 
@@ -487,8 +481,10 @@ export function useIncomeExpenseApprovals(options: {
     }
 
     if (data.status === "pending") {
-      queryClient.invalidateQueries({ queryKey: [REQUESTS_KEY] });
-      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: [REQUESTS_KEY] }),
+        queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
+      ]);
       return {
         requiresApproval: true,
         requestId: data.requestId,

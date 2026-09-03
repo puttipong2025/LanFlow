@@ -153,6 +153,7 @@ export function RubberExportsModule({
   const [sharingId, setSharingId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<RubberExportSummary | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const deleteRequestVersion = useRef(0);
   const [pendingSale, setPendingSale] = useState<{
     row: RubberExportSummary;
     soldOut: boolean;
@@ -160,6 +161,12 @@ export function RubberExportsModule({
   const [selling, setSelling] = useState(false);
   const detailController = useRef<AbortController | null>(null);
   const pdfShare = useSharePdf();
+
+  useEffect(() => {
+    setPendingDelete(null);
+    setDeleting(false);
+    return () => { deleteRequestVersion.current += 1; };
+  }, [selectedLocation.id]);
 
   useEffect(() => {
     if (view === "deletions") void reloadDeletions();
@@ -213,17 +220,20 @@ export function RubberExportsModule({
   }, [initialExportId, online]);
 
   async function remove(row: RubberExportSummary) {
-    if (row.reportLockNo || row.receiptBillNo || row.soldOutAt) return;
+    if (!online || deleting || api.deletionRefreshing || row.reportLockNo || row.receiptBillNo || row.soldOutAt) return;
+    const request = ++deleteRequestVersion.current;
     setDeleting(true);
     try {
       await api.remove(row.id);
+      if (request !== deleteRequestVersion.current) return;
       toast.success(`ลบ ${row.exportNo} แล้ว`);
       if (details?.id === row.id) closeDetails();
       setPendingDelete(null);
     } catch (error) {
+      if (request !== deleteRequestVersion.current) return;
       toast.error(error instanceof Error ? error.message : "ลบรายการส่งออกไม่สำเร็จ");
     } finally {
-      setDeleting(false);
+      if (request === deleteRequestVersion.current) setDeleting(false);
     }
   }
 
@@ -330,6 +340,15 @@ export function RubberExportsModule({
       </div>
 
       {!online && <div className="rounded-lg bg-amber/20 px-4 py-3 text-sm font-semibold text-amber-900">ส่งออกยางใช้ได้เมื่อออนไลน์เท่านั้น</div>}
+      {api.deletionRefreshError && (
+        <div role="status" className="space-y-2 rounded-md bg-amber/20 px-4 py-3 text-sm font-semibold text-amber-900">
+          <p className="text-pretty">{api.deletionRefreshError} ไม่ต้องลบรายการซ้ำ</p>
+          <button type="button" onClick={() => void api.refreshAfterDelete()} disabled={!online || api.deletionRefreshing}
+            className="focus-ring rounded-md bg-actionSecondary px-3 py-2 text-white disabled:opacity-50">
+            {api.deletionRefreshing ? "กำลังโหลดข้อมูล" : "โหลดข้อมูลใหม่"}
+          </button>
+        </div>
+      )}
       {online && api.error && (
         <div className="rounded-lg bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
           {api.error}

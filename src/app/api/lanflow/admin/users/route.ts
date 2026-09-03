@@ -143,6 +143,13 @@ export async function POST(request: NextRequest) {
       if (assignmentError) throw assignmentError;
     }
 
+    const capabilities = deriveEffectiveCapabilities({
+      role,
+      canAccessSystemManager: false,
+      canAccessMoneyTransfer: false,
+      canManageTimePayroll: false,
+    });
+
     return NextResponse.json(
       {
         user: {
@@ -150,10 +157,11 @@ export async function POST(request: NextRequest) {
           phone: body.phone.trim(),
           name: body.name.trim(),
           role,
+          isActive: true,
           locationIds,
-          canAccessSystemManager: false,
-          canAccessMoneyTransfer: false,
-          canManageTimePayroll: false,
+          canAccessSystemManager: capabilities.canManageSystem,
+          canAccessMoneyTransfer: capabilities.canUseMoneyTransfer,
+          canManageTimePayroll: capabilities.canManageTimePayroll,
           primaryLocationId: locationIds[0] ?? null
         }
       },

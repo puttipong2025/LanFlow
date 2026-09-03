@@ -124,9 +124,7 @@ export function useAcidStock(locationId: string) {
 
       return postStock({ action: "receive", ...input });
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [QUERY_KEY, locationId] });
-    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: [QUERY_KEY, locationId] }),
   });
 
   const transferMutation = useMutation({
@@ -137,16 +135,12 @@ export function useAcidStock(locationId: string) {
 
       return postStock({ action: "transfer", ...input });
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [QUERY_KEY] });
-    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: [QUERY_KEY] }),
   });
 
   const deleteEntryMutation = useMutation({
     mutationFn: postStockEntryDeleteRequest,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [STOCK_ENTRY_APPROVAL_REQUESTS_KEY] });
-    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: [STOCK_ENTRY_APPROVAL_REQUESTS_KEY] }),
   });
 
   return {

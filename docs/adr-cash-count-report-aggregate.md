@@ -14,7 +14,7 @@ The pair is soft-deleted only from the Cash Count manager view and only when its
 
 ## Authorization
 
-No permission schema or feature toggle is added. Active User/Admin accounts may start, cancel their own session, and submit only in assigned locations. The existing system-manager capability is a superset and additionally permits location-scoped history, analysis, and latest-pair deletion.
+No permission schema or feature toggle is added. This ADR originally allowed active User/Admin accounts to start, cancel their own session, and submit only in assigned locations. ADR-0051 supersedes the User portion of that rule: Cash Count is a business module, so positive operator flows now require an active Admin or Super Admin. The existing system-manager capability remains a superset and additionally permits location-scoped history, analysis, and latest-pair deletion.
 
 ## Formula v1
 

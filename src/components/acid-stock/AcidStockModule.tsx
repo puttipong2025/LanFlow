@@ -539,7 +539,10 @@ export function AcidStockModule({
   const { movements, isLoading, receiveStock, transferStock, deleteStockEntry } = useAcidStock(selectedLocation.id);
   const { requests: productApprovalRequests, isLoading: productApprovalsLoading, decideRequest: decideProductRequest } = useStockProductApprovals({ includeRequests: true });
   const { requests: entryApprovalRequests, isLoading: entryApprovalsLoading, decideRequest: decideEntryRequest } = useStockEntryApprovals({ includeRequests: true });
-  const { retryStockSync, isRetrying } = useStockSyncRetry(selectedLocation.id, profile.id);
+  const { retryStockSync, isRetrying, refreshStockSync, isRefreshing } = useStockSyncRetry(selectedLocation.id, profile.id);
+  const [refreshWarning, setRefreshWarning] = useState<{ locationId: string; ownerUserId: string; message: string } | null>(null);
+  const currentRefreshWarning = refreshWarning?.locationId === selectedLocation.id && refreshWarning.ownerUserId === profile.id
+    ? refreshWarning.message : null;
   const canManageSystem = canManageSystemFeatures(profile);
   const offlineActionTitle = online ? undefined : "ใช้ได้เมื่อออนไลน์ เพราะต้องตรวจยอดสต็อกล่าสุด";
   const [productOpen, setProductOpen] = useState(false);
@@ -588,13 +591,16 @@ export function AcidStockModule({
   ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   async function handleRetryStockSync() {
+    if (isRetrying || isRefreshing) return;
     if (!online) {
       toast.error("ซิงก์รายการได้เมื่อออนไลน์เท่านั้น");
       return;
     }
 
     try {
+      setRefreshWarning(null);
       const result = await retryStockSync();
+      if (result.refreshError) setRefreshWarning({ locationId: selectedLocation.id, ownerUserId: profile.id, message: result.refreshError });
       if (result.attempted === 0) {
         toast.info("ไม่มีรายการขายหรือหักสินค้าที่รอซิงก์");
         return;
@@ -606,6 +612,16 @@ export function AcidStockModule({
       toast.success(`ซิงก์รายการสำเร็จ ${result.synced.toLocaleString("th-TH")} รายการ`);
     } catch (error) {
       showActionError(error, "ซิงก์รายการไม่สำเร็จ");
+    }
+  }
+
+  async function handleRefreshStockSync() {
+    if (!online || isRetrying || isRefreshing) return;
+    try {
+      await refreshStockSync();
+      setRefreshWarning((current) => current?.locationId === selectedLocation.id && current.ownerUserId === profile.id ? null : current);
+    } catch (error) {
+      setRefreshWarning({ locationId: selectedLocation.id, ownerUserId: profile.id, message: error instanceof Error ? error.message : "โหลดข้อมูลหลังซิงก์ไม่สำเร็จ" });
     }
   }
 
@@ -665,7 +681,7 @@ export function AcidStockModule({
           <button
             type="button"
             onClick={handleRetryStockSync}
-            disabled={!online || isRetrying}
+            disabled={!online || isRetrying || isRefreshing}
             title={offlineActionTitle}
             className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:bg-slate-300"
           >
@@ -706,6 +722,16 @@ export function AcidStockModule({
           </button>
         </div>
       </div>
+
+      {currentRefreshWarning && (
+        <div role="status" className="space-y-2 rounded-md bg-amber/20 px-4 py-3 text-sm font-semibold text-amber-900">
+          <p className="text-pretty">{currentRefreshWarning} รายการที่ซิงก์สำเร็จแล้วไม่ต้องส่งซ้ำ</p>
+          <button type="button" onClick={() => void handleRefreshStockSync()} disabled={!online || isRetrying || isRefreshing}
+            className="focus-ring rounded-md bg-actionSecondary px-3 py-2 text-white disabled:opacity-50">
+            {isRefreshing ? "กำลังโหลดข้อมูล" : "โหลดข้อมูลใหม่"}
+          </button>
+        </div>
+      )}
 
       {(canManageSystem || approvalsLoading || pendingApprovalRequests.length > 0) && (
         <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel">

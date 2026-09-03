@@ -1,5 +1,6 @@
 import { expect, test, type Browser, type BrowserContext } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { selectAppLocation } from "../helpers/select-app-location";
@@ -16,6 +17,48 @@ const zeroTransferCounts = {
   coin1: 0, coin2: 0, coin5: 0, coin10: 0,
   banknote20: 0, banknote50: 0, banknote100: 0, banknote500: 0, banknote1000: 0,
 };
+
+function assertLocalSupabaseTarget() {
+  const target = new URL(supabaseUrl);
+  expect(["127.0.0.1", "localhost"]).toContain(target.hostname);
+  expect(target.port).toBe("55421");
+}
+
+function deletePrivateCountersAndLocations(fixtures: Array<{ id: string; code: string }>) {
+  if (fixtures.length === 0) return;
+  for (const fixture of fixtures) {
+    if (!/^[0-9a-f-]{36}$/i.test(fixture.id) || !/^C[CS]\d+$/.test(fixture.code)) {
+      throw new Error("Refusing to clean an unexpected Cash Count fixture");
+    }
+  }
+  const fixtureValues = fixtures
+    .map(({ id, code }) => `('${id}'::uuid, '${code}'::text)`)
+    .join(", ");
+  const sql = `
+begin;
+delete from private.document_number_counters c
+using (values ${fixtureValues}) as fixture(id, code)
+where c.location_id = fixture.id;
+do $$
+declare
+  v_deleted integer;
+begin
+  delete from public.locations l
+  using (values ${fixtureValues}) as fixture(id, code)
+  where l.id = fixture.id and l.code = fixture.code;
+  get diagnostics v_deleted = row_count;
+  if v_deleted <> ${fixtures.length} then
+    raise exception 'Cash Count fixture cleanup deleted % of ${fixtures.length} locations', v_deleted;
+  end if;
+end $$;
+commit;
+`;
+  execFileSync(
+    "docker",
+    ["exec", "-i", "supabase_db_webapp", "psql", "-U", "postgres", "-d", "postgres", "-X", "-v", "ON_ERROR_STOP=1"],
+    { input: sql, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] },
+  );
+}
 
 async function contextFor(browser: Browser, role: "user" | "admin" | "super_admin") {
   return browser.newContext({ storageState: `playwright/.auth/${role}.json` });
@@ -44,20 +87,25 @@ async function addIncome(locationId: string, actorId: string, title: string, typ
 test.describe.serial("cash count aggregate contract", () => {
   let locationId = "";
   let sourceLocationId = "";
-  let user: BrowserContext;
-  let admin: BrowserContext;
+  let locationCode = "";
+  let sourceLocationCode = "";
+  let deniedUser: BrowserContext;
+  let operator: BrowserContext;
   let manager: BrowserContext;
   const transferIds: string[] = [];
 
   test.beforeAll(async ({ browser }) => {
+    assertLocalSupabaseTarget();
     expect(serviceRoleKey).toBeTruthy();
     const db = service();
-    const { data: location, error } = await db.from("locations").insert({ name: `Cash Count ${crypto.randomUUID().slice(0, 8)}`, code: `CC${Date.now()}` }).select("id").single();
+    locationCode = `CC${Date.now()}`;
+    const { data: location, error } = await db.from("locations").insert({ name: `Cash Count ${crypto.randomUUID().slice(0, 8)}`, code: locationCode }).select("id").single();
     expect(error).toBeNull();
     locationId = location!.id;
+    sourceLocationCode = `CS${Date.now()}`;
     const { data: sourceLocation, error: sourceError } = await db.from("locations").insert({
       name: `Cash Count Source ${crypto.randomUUID().slice(0, 8)}`,
-      code: `CS${Date.now()}`,
+      code: sourceLocationCode,
     }).select("id").single();
     expect(sourceError).toBeNull();
     sourceLocationId = sourceLocation!.id;
@@ -67,41 +115,86 @@ test.describe.serial("cash count aggregate contract", () => {
       { user_id: managerId, location_id: locationId },
       { user_id: managerId, location_id: sourceLocationId },
     ])).error).toBeNull();
-    user = await contextFor(browser, "user");
-    admin = await contextFor(browser, "admin");
+    const { data: actors, error: actorsError } = await db.from("profiles")
+      .select("id,role,is_active,can_access_super_admin_features,can_access_money_transfer,can_manage_time_payroll")
+      .in("id", [userId, adminId]);
+    expect(actorsError).toBeNull();
+    expect(actors?.find(({ id }) => id === userId)).toMatchObject({
+      role: "user", is_active: true, can_access_super_admin_features: false,
+      can_access_money_transfer: false, can_manage_time_payroll: false,
+    });
+    expect(actors?.find(({ id }) => id === adminId)).toMatchObject({
+      role: "admin", is_active: true, can_access_super_admin_features: false,
+      can_access_money_transfer: false, can_manage_time_payroll: false,
+    });
+    deniedUser = await contextFor(browser, "user");
+    operator = await contextFor(browser, "admin");
     manager = await contextFor(browser, "super_admin");
   });
 
   test.afterAll(async () => {
-    await user?.close(); await admin?.close(); await manager?.close();
-    if (!locationId) return;
+    const cleanupErrors: string[] = [];
+    for (const [label, context] of [["denied user", deniedUser], ["operator", operator], ["manager", manager]] as const) {
+      try { await context?.close(); } catch (error) { cleanupErrors.push(`${label} context: ${String(error)}`); }
+    }
+    const locationIds = [locationId, sourceLocationId].filter(Boolean);
+    if (locationIds.length === 0) {
+      if (cleanupErrors.length) throw new Error(cleanupErrors.join("\n"));
+      return;
+    }
     const db = service();
-    const { data: reports } = await db.from("report_batches").select("id").in("location_id", [locationId, sourceLocationId]);
+    const check = (label: string, error: { message: string } | null) => {
+      if (error) cleanupErrors.push(`${label}: ${error.message}`);
+    };
+    const { data: reports, error: reportsError } = await db.from("report_batches").select("id").in("location_id", locationIds);
+    check("read reports", reportsError);
     const reportIds = (reports ?? []).map((row) => row.id);
-    await db.from("cash_counts").delete().eq("location_id", locationId);
-    await db.from("cash_count_sessions").delete().eq("location_id", locationId);
-    if (reportIds.length) await db.from("report_items").delete().in("report_id", reportIds);
-    if (transferIds.length) await db.from("money_transfers").delete().in("id", transferIds);
-    await db.from("report_batches").delete().in("location_id", [locationId, sourceLocationId]);
-    await db.from("income_expense").delete().eq("location_id", locationId);
-    await db.from("document_deletion_audits").delete().eq("location_id", locationId);
-    await db.from("user_locations").delete().in("location_id", [locationId, sourceLocationId]);
-    await db.from("locations").delete().in("id", [locationId, sourceLocationId]);
+    check("delete cash counts", (await db.from("cash_counts").delete().in("location_id", locationIds)).error);
+    check("delete cash count sessions", (await db.from("cash_count_sessions").delete().in("location_id", locationIds)).error);
+    if (reportIds.length) check("delete report items", (await db.from("report_items").delete().in("report_id", reportIds)).error);
+    if (transferIds.length) check("delete transfers", (await db.from("money_transfers").delete().in("id", transferIds)).error);
+    check("delete reports", (await db.from("report_batches").delete().in("location_id", locationIds)).error);
+    check("delete income and expense", (await db.from("income_expense").delete().in("location_id", locationIds)).error);
+    check("delete audits", (await db.from("document_deletion_audits").delete().in("location_id", locationIds)).error);
+    check("delete assignments", (await db.from("user_locations").delete().in("location_id", locationIds)).error);
+    try {
+      deletePrivateCountersAndLocations([
+        ...(locationId && locationCode ? [{ id: locationId, code: locationCode }] : []),
+        ...(sourceLocationId && sourceLocationCode ? [{ id: sourceLocationId, code: sourceLocationCode }] : []),
+      ]);
+    } catch (error) {
+      cleanupErrors.push(`delete counters and locations: ${String(error)}`);
+    }
+    if (cleanupErrors.length) throw new Error(`Cash Count fixture cleanup failed:\n${cleanupErrors.join("\n")}`);
   });
 
   test("fixed cutoff keeps business writes open and creates a private paired result", async () => {
-    const beforeId = await addIncome(locationId, userId, "ก่อนเริ่มนับ");
-    const start = await user.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
+    const beforeId = await addIncome(locationId, adminId, "ก่อนเริ่มนับ");
+    const start = await operator.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
     expect(start.status()).toBe(201);
     const session = (await start.json()).session as { id: string; cutoffAt: string };
 
-    const blockedReport = await admin.request.post("/api/lanflow/reports", { data: { locationId } });
+    for (const response of [
+      await deniedUser.request.get(`/api/lanflow/cash-counts/session?locationId=${locationId}`),
+      await deniedUser.request.post("/api/lanflow/cash-counts/session", { data: { locationId } }),
+      await deniedUser.request.post("/api/lanflow/cash-counts", { data: { sessionId: session.id, actualCounts: thousandOnly } }),
+      await deniedUser.request.delete("/api/lanflow/cash-counts/session", { data: { sessionId: session.id } }),
+    ]) {
+      const body = await response.json();
+      expect(response.status(), body.error).toBe(403);
+      expect(body.error).toBe("ไม่มีสิทธิ์เข้าถึง");
+    }
+    const unassignedStart = await operator.request.post("/api/lanflow/cash-counts/session", { data: { locationId: sourceLocationId } });
+    const unassignedBody = await unassignedStart.json();
+    expect(unassignedStart.status(), unassignedBody.error).toBe(403);
+
+    const blockedReport = await operator.request.post("/api/lanflow/reports", { data: { locationId } });
     expect(blockedReport.status()).toBe(409);
     expect((await blockedReport.json()).error).toContain("ตรวจนับ");
 
-    const afterId = await addIncome(locationId, userId, "หลังเริ่มนับ");
+    const afterId = await addIncome(locationId, adminId, "หลังเริ่มนับ");
     const actualCounts = { "1": 0, "2": 0, "5": 0, "10": 0, "20": 0, "50": 0, "100": 0, "500": 0, "1000": 1 };
-    const submit = await user.request.post("/api/lanflow/cash-counts", { data: { sessionId: session.id, actualCounts } });
+    const submit = await operator.request.post("/api/lanflow/cash-counts", { data: { sessionId: session.id, actualCounts } });
     expect(submit.status()).toBe(201);
     const receipt = await submit.json();
     expect(Object.keys(receipt).sort()).toEqual(["actualCounts", "actualTotal", "countedByName", "cutoffAt", "id", "reportId", "reportNo", "submittedAt"].sort());
@@ -111,13 +204,13 @@ test.describe.serial("cash count aggregate contract", () => {
     expect(items?.some((row) => row.entity_id === beforeId)).toBe(true);
     expect(items?.some((row) => row.entity_id === afterId)).toBe(false);
 
-    expect((await user.request.get(`/api/lanflow/cash-counts?locationId=${locationId}`)).status()).toBe(403);
-    expect((await admin.request.get(`/api/lanflow/cash-counts?locationId=${locationId}`)).status()).toBe(403);
+    expect((await deniedUser.request.get(`/api/lanflow/cash-counts?locationId=${locationId}`)).status()).toBe(403);
+    expect((await operator.request.get(`/api/lanflow/cash-counts?locationId=${locationId}`)).status()).toBe(403);
     const history = await manager.request.get(`/api/lanflow/cash-counts?locationId=${locationId}`);
     expect(history.ok()).toBe(true);
     expect((await history.json()).counts[0]).toMatchObject({ id: receipt.id, anomalyScore: null, confidence: null, formulaVersion: "cash-v1-baseline" });
 
-    const adminReports = await admin.request.get(`/api/lanflow/reports?locationId=${locationId}`);
+    const adminReports = await operator.request.get(`/api/lanflow/reports?locationId=${locationId}`);
     const adminMarker = (await adminReports.json()).reports.find((row: { id: string }) => row.id === receipt.reportId);
     expect(adminMarker).toMatchObject({ hasCashCount: true, cashCountId: null });
     expect(adminMarker.cashCountCheckerName).toBeTruthy();
@@ -142,7 +235,8 @@ test.describe.serial("cash count aggregate contract", () => {
     expect(detail.ok()).toBe(true);
     expect(await detail.json()).toMatchObject({ actualTotal: 1000, anomalyScore: null, confidence: null });
     expect((await manager.request.get(`/api/lanflow/cash-counts/${receipt.id}?locationId=00000000-0000-4000-8000-000000000099`)).status()).toBe(404);
-    expect((await admin.request.get(`/api/lanflow/cash-counts/${receipt.id}?locationId=${locationId}`)).status()).toBe(403);
+    expect((await deniedUser.request.get(`/api/lanflow/cash-counts/${receipt.id}?locationId=${locationId}`)).status()).toBe(403);
+    expect((await operator.request.get(`/api/lanflow/cash-counts/${receipt.id}?locationId=${locationId}`)).status()).toBe(403);
 
     const directDelete = await manager.request.delete(`/api/lanflow/reports/${receipt.reportId}`);
     expect(directDelete.status()).toBe(409);
@@ -159,7 +253,7 @@ test.describe.serial("cash count aggregate contract", () => {
     expect(report).toBeNull();
     expect(submittedSession).toBeNull();
     expect(reportItems).toEqual([]);
-    const reportsAfterDelete = await admin.request.get(`/api/lanflow/reports?locationId=${locationId}`);
+    const reportsAfterDelete = await operator.request.get(`/api/lanflow/reports?locationId=${locationId}`);
     const deletedMarker = (await reportsAfterDelete.json()).reports.find((row: { id: string }) => row.id === receipt.reportId);
     expect(deletedMarker).toBeUndefined();
     expect((await manager.request.get(`/api/lanflow/cash-counts/${receipt.id}?locationId=${locationId}`)).status()).toBe(404);
@@ -173,7 +267,7 @@ test.describe.serial("cash count aggregate contract", () => {
       documentNo: receipt.reportNo,
       originalActorName: expect.any(String),
     }));
-    expect((await admin.request.get(
+    expect((await operator.request.get(
       `/api/lanflow/cash-counts?locationId=${locationId}&view=deletions`,
     )).status()).toBe(403);
 
@@ -184,21 +278,22 @@ test.describe.serial("cash count aggregate contract", () => {
   });
 
   test("only the starter can cancel a live session", async () => {
-    await addIncome(locationId, userId, "รอบยกเลิก");
-    const start = await user.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
+    await addIncome(locationId, adminId, "รอบยกเลิก");
+    const start = await operator.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
     const session = (await start.json()).session as { id: string };
-    const otherCancel = await admin.request.delete("/api/lanflow/cash-counts/session", { data: { sessionId: session.id } });
+    const otherCancel = await manager.request.delete("/api/lanflow/cash-counts/session", { data: { sessionId: session.id } });
     expect(otherCancel.status()).toBe(400);
     expect((await otherCancel.json()).error).toContain("ผู้เริ่ม");
-    expect((await user.request.delete("/api/lanflow/cash-counts/session", { data: { sessionId: session.id } })).ok()).toBe(true);
+    expect((await operator.request.delete("/api/lanflow/cash-counts/session", { data: { sessionId: session.id } })).ok()).toBe(true);
   });
 
   test("unknown-denomination income rebaselines the current physical count", async () => {
-    await addIncome(locationId, userId, "สร้างฐานก่อนทดสอบรายรับ", "income", 100);
-    const baselineStart = await user.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
-    expect(baselineStart.ok()).toBe(true);
-    const baselineSession = (await baselineStart.json()).session as { id: string };
-    const baselineSubmit = await user.request.post("/api/lanflow/cash-counts", {
+    await addIncome(locationId, adminId, "สร้างฐานก่อนทดสอบรายรับ", "income", 100);
+    const baselineStart = await operator.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
+    const baselineStartBody = await baselineStart.json();
+    expect(baselineStart.ok(), baselineStartBody.error).toBe(true);
+    const baselineSession = baselineStartBody.session as { id: string };
+    const baselineSubmit = await operator.request.post("/api/lanflow/cash-counts", {
       data: { sessionId: baselineSession.id, actualCounts: thousandOnly },
     });
     expect(baselineSubmit.ok()).toBe(true);
@@ -206,11 +301,11 @@ test.describe.serial("cash count aggregate contract", () => {
     let latestReceipt: { id: string; reportId: string; reportNo: string } | null = null;
     for (const amount of [120, 1500]) {
       const title = `รายรับไม่ทราบชนิดเงิน ${amount}`;
-      const incomeId = await addIncome(locationId, userId, title, "income", amount);
-      const start = await user.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
+      const incomeId = await addIncome(locationId, adminId, title, "income", amount);
+      const start = await operator.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
       expect(start.ok()).toBe(true);
       const session = (await start.json()).session as { id: string };
-      const submit = await user.request.post("/api/lanflow/cash-counts", {
+      const submit = await operator.request.post("/api/lanflow/cash-counts", {
         data: { sessionId: session.id, actualCounts: thousandOnly },
       });
       expect(submit.ok()).toBe(true);
@@ -249,13 +344,13 @@ test.describe.serial("cash count aggregate contract", () => {
     await expect(managerPage.getByText("รายรับไม่ทราบชนิดเงิน 1500", { exact: false })).toBeVisible();
     await managerPage.close();
 
-    await addIncome(locationId, userId, "รายจ่ายเพื่อทดสอบฐานรอบถัดไป", "expense", 100);
-    const normalStart = await user.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
+    await addIncome(locationId, adminId, "รายจ่ายเพื่อทดสอบฐานรอบถัดไป", "expense", 100);
+    const normalStart = await operator.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
     const normalStartBody = await normalStart.json();
     expect(normalStart.ok(), normalStartBody.error).toBe(true);
     const normalSession = normalStartBody.session as { id: string };
-    const delayedIncomeId = await addIncome(locationId, userId, "รายรับหลัง cutoff", "income", 75);
-    const normalSubmit = await user.request.post("/api/lanflow/cash-counts", {
+    const delayedIncomeId = await addIncome(locationId, adminId, "รายรับหลัง cutoff", "income", 75);
+    const normalSubmit = await operator.request.post("/api/lanflow/cash-counts", {
       data: { sessionId: normalSession.id, actualCounts: nineHundred },
     });
     expect(normalSubmit.ok()).toBe(true);
@@ -265,11 +360,11 @@ test.describe.serial("cash count aggregate contract", () => {
     const { data: normalStored } = await service().from("cash_counts").select("previous_cash_count_id").eq("id", normalReceipt.id).single();
     expect(normalStored?.previous_cash_count_id).toBe(latestReceipt!.id);
 
-    const delayedStart = await user.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
+    const delayedStart = await operator.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
     const delayedStartBody = await delayedStart.json();
     expect(delayedStart.ok(), delayedStartBody.error).toBe(true);
     const delayedSession = delayedStartBody.session as { id: string };
-    const delayedSubmit = await user.request.post("/api/lanflow/cash-counts", {
+    const delayedSubmit = await operator.request.post("/api/lanflow/cash-counts", {
       data: { sessionId: delayedSession.id, actualCounts: nineHundred },
     });
     expect(delayedSubmit.ok()).toBe(true);
@@ -309,10 +404,10 @@ test.describe.serial("cash count aggregate contract", () => {
     });
     expect(receive.ok(), await receive.text()).toBe(true);
 
-    const start = await user.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
+    const start = await operator.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
     const session = (await start.json()).session as { id: string };
     const actualCounts = { ...nineHundred, "20": 1 };
-    const submit = await user.request.post("/api/lanflow/cash-counts", {
+    const submit = await operator.request.post("/api/lanflow/cash-counts", {
       data: { sessionId: session.id, actualCounts },
     });
     expect(submit.ok()).toBe(true);
@@ -327,9 +422,9 @@ test.describe.serial("cash count aggregate contract", () => {
     }));
   });
 
-  test("user sees a blind nine-field form and only the immediate receipt", async () => {
-    await addIncome(locationId, userId, "รอบทดสอบหน้าจอ");
-    const page = await user.newPage();
+  test("operator sees a blind nine-field form and only the immediate receipt", async () => {
+    await addIncome(locationId, adminId, "รอบทดสอบหน้าจอ");
+    const page = await operator.newPage();
     await page.goto("/");
     await selectAppLocation(page, locationId);
     await page.getByRole("button", { name: "นับเงิน", exact: true }).click();
@@ -360,13 +455,137 @@ test.describe.serial("cash count aggregate contract", () => {
     await page.close();
   });
 
+  test("ignores delayed session and history responses from the previously selected branch", async () => {
+    const page = await manager.newPage();
+    let releaseOldSession!: () => void;
+    let releaseOldHistory!: () => void;
+    let markOldSessionRequested!: () => void;
+    let markOldHistoryRequested!: () => void;
+    const oldSessionReleased = new Promise<void>((resolve) => { releaseOldSession = resolve; });
+    const oldHistoryReleased = new Promise<void>((resolve) => { releaseOldHistory = resolve; });
+    const oldSessionRequested = new Promise<void>((resolve) => { markOldSessionRequested = resolve; });
+    const oldHistoryRequested = new Promise<void>((resolve) => { markOldHistoryRequested = resolve; });
+    const summary = (id: string, reportNo: string) => ({
+      id,
+      reportNo,
+      createdAt: "2026-09-02T03:00:00.000Z",
+      createdByName: "ผู้ตรวจทดสอบ",
+      actualTotal: 1000,
+      expectedTotal: 1000,
+      differenceTotal: 0,
+      analysisStatus: "normal",
+      formulaVersion: "cash-v1",
+      isLatestActive: true,
+      rubberExportLockNo: null,
+    });
+
+    await page.route("**/api/lanflow/cash-counts/session?*", async (route) => {
+      const requestedLocationId = new URL(route.request().url()).searchParams.get("locationId");
+      if (requestedLocationId === sourceLocationId) {
+        markOldSessionRequested();
+        await oldSessionReleased;
+        await route.fulfill({
+          json: {
+            session: {
+              id: "old-session",
+              isOwner: false,
+              startedByName: "OLD SESSION OWNER",
+              cutoffAt: "2026-09-02T03:00:00.000Z",
+              expiresAt: "2099-09-02T03:30:00.000Z",
+            },
+          },
+        });
+        return;
+      }
+      await route.fulfill({ json: { session: null } });
+    });
+    await page.route("**/api/lanflow/cash-counts?*", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get("view") === "deletions") {
+        await route.fulfill({ json: { deletions: [], hasMore: false, nextCursor: null } });
+        return;
+      }
+      const requestedLocationId = url.searchParams.get("locationId");
+      if (requestedLocationId === sourceLocationId) {
+        markOldHistoryRequested();
+        await oldHistoryReleased;
+        await route.fulfill({ json: { counts: [summary("old-count", "COUNT-OLD-BRANCH")] } });
+        return;
+      }
+      await route.fulfill({ json: { counts: [summary("new-count", "COUNT-NEW-BRANCH")] } });
+    });
+
+    await page.goto("/");
+    await selectAppLocation(page, sourceLocationId);
+    await page.getByRole("button", { name: "นับเงิน", exact: true }).click();
+    await Promise.all([oldSessionRequested, oldHistoryRequested]);
+    await selectAppLocation(page, locationId);
+    await expect(page.getByText("พร้อมเริ่มตรวจนับเงินสด", { exact: true })).toBeVisible();
+    await expect(page.getByText("COUNT-NEW-BRANCH", { exact: true })).toBeVisible();
+    releaseOldSession();
+    releaseOldHistory();
+    await expect(page.getByText("OLD SESSION OWNER", { exact: false })).toHaveCount(0);
+    await expect(page.getByText("COUNT-NEW-BRANCH", { exact: true })).toBeVisible();
+    await expect(page.getByText("COUNT-OLD-BRANCH", { exact: true })).toHaveCount(0);
+    await page.close();
+  });
+
+  test("ignores a delayed start response after switching branches", async () => {
+    const page = await manager.newPage();
+    let releaseOldStart!: () => void;
+    let markOldStartRequested!: () => void;
+    const oldStartReleased = new Promise<void>((resolve) => { releaseOldStart = resolve; });
+    const oldStartRequested = new Promise<void>((resolve) => { markOldStartRequested = resolve; });
+
+    await page.route("**/api/lanflow/cash-counts/session?*", (route) => route.fulfill({ json: { session: null } }));
+    await page.route("**/api/lanflow/cash-counts/session", async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      const body = route.request().postDataJSON() as { locationId?: string };
+      if (body.locationId !== sourceLocationId) {
+        await route.continue();
+        return;
+      }
+      markOldStartRequested();
+      await oldStartReleased;
+      await route.fulfill({
+        status: 201,
+        json: {
+          session: {
+            id: "old-start-session",
+            isOwner: true,
+            startedByName: "OLD START OWNER",
+            cutoffAt: "2026-09-02T03:00:00.000Z",
+            expiresAt: "2099-09-02T03:30:00.000Z",
+          },
+        },
+      });
+    });
+    await page.route("**/api/lanflow/cash-counts?*", (route) => route.fulfill({ json: { counts: [] } }));
+
+    await page.goto("/");
+    await selectAppLocation(page, sourceLocationId);
+    await page.getByRole("button", { name: "นับเงิน", exact: true }).click();
+    await expect(page.getByText("พร้อมเริ่มตรวจนับเงินสด", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "เริ่มนับเงิน", exact: true }).click();
+    await oldStartRequested;
+    await selectAppLocation(page, locationId);
+    await expect(page.getByRole("button", { name: "เริ่มนับเงิน", exact: true })).toBeEnabled();
+    releaseOldStart();
+    await expect(page.getByText("พร้อมเริ่มตรวจนับเงินสด", { exact: true })).toBeVisible();
+    await expect(page.getByText("Cutoff", { exact: false })).toHaveCount(0);
+    await page.close();
+  });
+
   test("second round stores immutable score, confidence, and evidence separately", async () => {
-    await addIncome(locationId, userId, "รายจ่ายทดสอบสูตร", "expense", 100);
-    const start = await user.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
+    await addIncome(locationId, adminId, "รายจ่ายทดสอบสูตร", "expense", 100);
+    const start = await operator.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
     expect(start.ok()).toBe(true);
     const session = (await start.json()).session as { id: string };
     const actualCounts = { "1": 0, "2": 0, "5": 0, "10": 0, "20": 0, "50": 0, "100": 0, "500": 0, "1000": 1 };
-    const submit = await user.request.post("/api/lanflow/cash-counts", { data: { sessionId: session.id, actualCounts } });
+    const submit = await operator.request.post("/api/lanflow/cash-counts", { data: { sessionId: session.id, actualCounts } });
     expect(submit.ok()).toBe(true);
     const receipt = await submit.json();
     expect(receipt).not.toHaveProperty("anomalyScore");
@@ -393,20 +612,20 @@ test.describe.serial("cash count aggregate contract", () => {
 
   test("submits promptly when the previous count has no small cash", async () => {
     const highOnlyCounts = { "1": 0, "2": 0, "5": 0, "10": 0, "20": 100, "50": 100, "100": 100, "500": 100, "1000": 100 };
-    await addIncome(locationId, userId, "รอบตั้งต้นเงินก้อน");
-    const seedStart = await user.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
+    await addIncome(locationId, adminId, "รอบตั้งต้นเงินก้อน");
+    const seedStart = await operator.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
     expect(seedStart.ok()).toBe(true);
     const seedSession = (await seedStart.json()) as { session: { id: string } };
-    const seedSubmit = await user.request.post("/api/lanflow/cash-counts", {
+    const seedSubmit = await operator.request.post("/api/lanflow/cash-counts", {
       data: { sessionId: seedSession.session.id, actualCounts: highOnlyCounts },
     });
     expect(seedSubmit.ok()).toBe(true);
 
-    await addIncome(locationId, userId, "รายจ่ายไม่มีเงินย่อย", "expense", 10001);
-    const start = await user.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
+    await addIncome(locationId, adminId, "รายจ่ายไม่มีเงินย่อย", "expense", 10001);
+    const start = await operator.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
     expect(start.ok()).toBe(true);
     const session = (await start.json()) as { session: { id: string } };
-    const submit = await user.request.post("/api/lanflow/cash-counts", {
+    const submit = await operator.request.post("/api/lanflow/cash-counts", {
       data: { sessionId: session.session.id, actualCounts: highOnlyCounts },
     });
     expect(submit.ok()).toBe(true);
@@ -419,22 +638,22 @@ test.describe.serial("cash count aggregate contract", () => {
   });
 
   test("expired sessions reject stale submit and stop blocking normal reports", async () => {
-    await addIncome(locationId, userId, "รอบหมดเวลา");
-    const start = await user.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
+    await addIncome(locationId, adminId, "รอบหมดเวลา");
+    const start = await operator.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
     expect(start.ok()).toBe(true);
     const session = (await start.json()).session as { id: string };
     const cutoff = new Date(Date.now() - 31 * 60_000);
     const expires = new Date(cutoff.getTime() + 30 * 60_000);
     expect((await service().from("cash_count_sessions").update({ cutoff_at: cutoff.toISOString(), expires_at: expires.toISOString() }).eq("id", session.id)).error).toBeNull();
-    const staleSubmit = await user.request.post("/api/lanflow/cash-counts", { data: {
+    const staleSubmit = await operator.request.post("/api/lanflow/cash-counts", { data: {
       sessionId: session.id,
       actualCounts: { "1": 0, "2": 0, "5": 0, "10": 0, "20": 0, "50": 0, "100": 0, "500": 0, "1000": 1 },
     } });
     expect(staleSubmit.status()).toBe(409);
     expect((await staleSubmit.json()).error).toContain("หมดเวลา");
-    const status = await user.request.get(`/api/lanflow/cash-counts/session?locationId=${locationId}`);
+    const status = await operator.request.get(`/api/lanflow/cash-counts/session?locationId=${locationId}`);
     expect((await status.json()).session).toBeNull();
-    const normalReport = await admin.request.post("/api/lanflow/reports", { data: { locationId } });
+    const normalReport = await operator.request.post("/api/lanflow/reports", { data: { locationId } });
     expect(normalReport.status()).toBe(201);
   });
 });

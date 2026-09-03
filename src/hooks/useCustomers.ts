@@ -71,9 +71,7 @@ export function useCustomers() {
       if (error) throw new Error(error.message || JSON.stringify(error));
       return data;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["customers"] });
-    }
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["customers"] })
   });
 
   const updateCustomer = useMutation({
@@ -85,9 +83,7 @@ export function useCustomers() {
       if (error) throw new Error(error.message || JSON.stringify(error));
       return data;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["customers"] });
-    }
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["customers"] })
   });
 
   const deleteCustomer = useMutation({
@@ -95,9 +91,7 @@ export function useCustomers() {
       const { error } = await supabase.from('customers').delete().eq('id', id);
       if (error) throw new Error(error.message || JSON.stringify(error));
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["customers"] });
-    }
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["customers"] })
   });
 
   return {

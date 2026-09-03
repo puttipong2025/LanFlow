@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import { ModalShell } from "@/components/shared/ModalShell";
 
 type InputDialogOptions = {
   title: string;
@@ -43,16 +44,22 @@ export function useInputDialog() {
   }
 
   const inputDialog = dialog ? (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4">
+    <ModalShell
+      title={dialog.title}
+      onClose={close}
+      nativeModal
+      renderInPortal
+      closeOnEscape
+      size="compact"
+    >
       <form
-        className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl"
+        className="space-y-5"
         onSubmit={(event) => {
           event.preventDefault();
           submit();
         }}
       >
-        <h2 className="text-lg font-bold text-ink">{dialog.title}</h2>
-        <label className="mt-5 block text-sm font-semibold text-ink" htmlFor="input-dialog-value">
+        <label className="block text-sm font-semibold text-ink" htmlFor="input-dialog-value">
           {dialog.label}
         </label>
         {dialog.multiline ? (
@@ -79,7 +86,7 @@ export function useInputDialog() {
             className="mt-2 w-full rounded-md border border-black/15 px-3 py-2"
           />
         )}
-        <div className="mt-6 flex justify-end gap-3">
+        <div className="flex justify-end gap-3">
           <button
             type="button"
             onClick={close}
@@ -96,7 +103,7 @@ export function useInputDialog() {
           </button>
         </div>
       </form>
-    </div>
+    </ModalShell>
   ) : null;
 
   return { requestInput, inputDialog };

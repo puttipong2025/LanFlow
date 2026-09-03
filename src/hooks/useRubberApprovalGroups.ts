@@ -29,8 +29,10 @@ export function useRubberApprovalGroups(allLocationIds: string[]) {
 
   function invalidateLocations(locationIds: string[]) {
     clearRubberBillApprovalSettingsCache(locationIds);
-    void queryClient.invalidateQueries({ queryKey: [RUBBER_BILL_APPROVAL_SETTINGS_KEY] });
-    void queryClient.invalidateQueries({ queryKey: [RUBBER_APPROVAL_GROUPS_KEY] });
+    return Promise.all([
+      queryClient.invalidateQueries({ queryKey: [RUBBER_BILL_APPROVAL_SETTINGS_KEY] }),
+      queryClient.invalidateQueries({ queryKey: [RUBBER_APPROVAL_GROUPS_KEY] }),
+    ]);
   }
 
   const createGroup = useMutation({

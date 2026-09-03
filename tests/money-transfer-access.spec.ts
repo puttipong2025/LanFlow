@@ -256,6 +256,7 @@ test.describe.serial("Money Transfer account access @money-transfer-access", () 
       expect((await service.from("profiles").update({
         can_access_super_admin_features: false,
         can_access_money_transfer: false,
+        can_manage_time_payroll: false,
       }).in("id", [adminActor.id, userActor.id])).error).toBeNull();
 
       const denied = await admin.request.patch(
@@ -275,6 +276,11 @@ test.describe.serial("Money Transfer account access @money-transfer-access", () 
         { data: { canAccessSystemManager: true } },
       );
       expect(managerEnabled.ok(), await managerEnabled.text()).toBeTruthy();
+      expect(await managerEnabled.json()).toMatchObject({
+        canAccessSystemManager: true,
+        canAccessMoneyTransfer: true,
+        canManageTimePayroll: true,
+      });
 
       const managerCannotToggleAutomaticAccess = await superAdmin.request.patch(
         `/api/lanflow/admin/users/${adminActor.id}/money-transfer-access`,
@@ -293,6 +299,11 @@ test.describe.serial("Money Transfer account access @money-transfer-access", () 
         { data: { canAccessSystemManager: false } },
       );
       expect(managerDisabled.ok(), await managerDisabled.text()).toBeTruthy();
+      expect(await managerDisabled.json()).toMatchObject({
+        canAccessSystemManager: false,
+        canAccessMoneyTransfer: true,
+        canManageTimePayroll: false,
+      });
 
       const { data: profiles, error } = await service
         .from("profiles")
@@ -321,6 +332,7 @@ test.describe.serial("Money Transfer account access @money-transfer-access", () 
       await service.from("profiles").update({
         can_access_super_admin_features: false,
         can_access_money_transfer: false,
+        can_manage_time_payroll: false,
       }).in("id", [adminActor.id, userActor.id]);
       await closeAll([superAdmin, admin]);
     }

@@ -30,7 +30,7 @@ export async function PATCH(
       .eq("id", userId)
       .eq("role", "admin")
       .eq("is_active", true)
-      .select("can_access_money_transfer")
+      .select("can_access_money_transfer, can_manage_time_payroll")
       .maybeSingle();
 
     if (error) throw error;
@@ -46,6 +46,8 @@ export async function PATCH(
       canAccessSystemManager: body.canAccessSystemManager,
       canAccessMoneyTransfer:
         body.canAccessSystemManager || updated.can_access_money_transfer === true,
+      canManageTimePayroll:
+        body.canAccessSystemManager || updated.can_manage_time_payroll === true,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not update system manager access";

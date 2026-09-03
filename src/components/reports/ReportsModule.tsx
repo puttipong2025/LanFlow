@@ -226,6 +226,7 @@ export function ReportsModule({
       });
       await assertApiResponse(response);
       toast.success(`ลบ ${report.reportNo} แบบถาวรแล้ว`);
+      setReports((current) => current.filter((item) => item.id !== report.id));
       setPendingDelete(null);
       await loadReports();
     } catch (error) {

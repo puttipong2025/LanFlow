@@ -60,13 +60,15 @@ export function useStockProductApprovals(options: { includeRequests?: boolean } 
 
       return data;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [REQUESTS_KEY] });
-      queryClient.invalidateQueries({ queryKey: ["stockProducts"] });
-      queryClient.invalidateQueries({ queryKey: ["incomeSaleItems"] });
-      queryClient.invalidateQueries({ queryKey: ["stock"] });
-      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
-    },
+    onSuccess: (data) => Promise.all([
+      queryClient.invalidateQueries({ queryKey: [REQUESTS_KEY] }),
+      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
+      ...(data.status === "approved" ? [
+        queryClient.invalidateQueries({ queryKey: ["stockProducts"] }),
+        queryClient.invalidateQueries({ queryKey: ["incomeSaleItems"] }),
+        queryClient.invalidateQueries({ queryKey: ["stock"] }),
+      ] : []),
+    ]),
   });
 
   return {

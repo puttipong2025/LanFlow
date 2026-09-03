@@ -65,6 +65,9 @@ test.describe("Lean attendance UI contract", () => {
     expect(moduleSource).toContain(": { amount: Number(amount) }");
     expect(moduleSource).toContain("const requestId = ++adminLoadRequestIdRef.current");
     expect(moduleSource).toContain("if (requestId !== adminLoadRequestIdRef.current) return");
+    expect(moduleSource).toContain("const loadSlipsRequestIdRef = useRef(0)");
+    expect(moduleSource).toContain("const requestId = ++loadSlipsRequestIdRef.current");
+    expect(moduleSource).toContain("if (requestId !== loadSlipsRequestIdRef.current) return");
   });
 
   test("removes inert admin month and payroll input-dialog state", () => {
@@ -182,6 +185,316 @@ test.describe("Lean attendance UI contract", () => {
 
 test.describe("Time/payroll native dialogs", () => {
   test.use({ storageState: "playwright/.auth/super_admin.json" });
+
+  test("keeps the payroll modal current while its parent summary refreshes", async ({ page }) => {
+    const createdSlip = {
+      id: "4c74fbd5-e08f-4510-8860-4b9e627aa89e",
+      month: "2026-08-01",
+      gross_pay: 15000,
+      total_deductions: 0,
+      net_pay: 15000,
+      status: "PENDING",
+      created_at: "2026-09-02T02:00:00.000Z",
+      cancelled_at: null,
+      expense_location_id: null,
+      report_lock_no: null,
+    };
+    let listReads = 0;
+    let initialListsReleased = false;
+    let slipCreated = false;
+    let expectingAdminRefresh = false;
+    let releaseOldList!: () => void;
+    let releaseAdminRefresh!: () => void;
+    let markAdminRefreshRequested!: () => void;
+    const oldListReleased = new Promise<void>((resolve) => { releaseOldList = resolve; });
+    const adminRefreshReleased = new Promise<void>((resolve) => { releaseAdminRefresh = resolve; });
+    const adminRefreshRequested = new Promise<void>((resolve) => { markAdminRefreshRequested = resolve; });
+
+    await page.route("**/api/lanflow/time-tracking/admin", async (route) => {
+      if (route.request().method() === "GET") {
+        if (expectingAdminRefresh) {
+          expectingAdminRefresh = false;
+          markAdminRefreshRequested();
+          await adminRefreshReleased;
+        }
+        await route.continue();
+        return;
+      }
+
+      const body = route.request().postDataJSON() as { action?: string };
+      if (body.action === "LIST_PAYROLL_SLIPS") {
+        listReads += 1;
+        if (!initialListsReleased) {
+          await oldListReleased;
+        }
+        await route.fulfill({ json: { slips: slipCreated ? [createdSlip] : [] } });
+        return;
+      }
+
+      if (body.action === "CREATE_PAYROLL_SLIP") {
+        slipCreated = true;
+        expectingAdminRefresh = true;
+        await route.fulfill({ json: { success: true, slip: createdSlip } });
+        return;
+      }
+
+      await route.continue();
+    });
+    page.on("dialog", (dialog) => void dialog.accept());
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "จัดการเวลาและเงินเดือน" })).toBeVisible({ timeout: 30_000 });
+    await page.getByRole("button", { name: "ทั้งหมด", exact: true }).click();
+    await page.getByRole("button", { name: /^จัดการสลิปเงินเดือนของ / }).first().click();
+
+    const payrollDialog = page.getByRole("dialog", { name: /^สลิปเงินเดือนของ / });
+    const createSlipButton = payrollDialog.getByRole("button", { name: "สร้างสลิปเงินเดือน", exact: true });
+    await expect(createSlipButton).toBeDisabled();
+    initialListsReleased = true;
+    releaseOldList();
+    await expect(createSlipButton).toBeEnabled();
+    await createSlipButton.click();
+    const createDialog = page.getByRole("dialog", { name: "สร้างสลิปเงินเดือน" });
+    await createDialog.getByLabel("เดือน").fill("2026-08");
+    await createDialog.getByRole("button", { name: "ยืนยันสร้างสลิป" }).click();
+
+    await adminRefreshRequested;
+    try {
+      await expect.poll(() => listReads).toBeGreaterThanOrEqual(2);
+      await expect(payrollDialog.getByText("สลิปเดือน 2026-08-01", { exact: true })).toBeVisible({ timeout: 750 });
+    } finally {
+      releaseAdminRefresh();
+    }
+  });
+
+  test("updates the open employee detail before the admin summary refresh completes", async ({ page }) => {
+    const employee = {
+      id: "e85ab5ad-019c-474b-93cf-2c88a01cd2e4",
+      name: "พนักงานอนุมัติทันที",
+      daily_wage: 500,
+      primary_location_id: null,
+      debt_remaining_amount: 100,
+    };
+    const transaction = {
+      id: "739b559c-9783-4813-9cbd-2f8c45456068",
+      profile_id: employee.id,
+      type: "DEBT",
+      amount: 100,
+      remaining_amount: 100,
+      effective_date: "2026-09-02",
+      created_at: "2026-09-02T03:00:00.000Z",
+      status: "PENDING",
+      description: "หนี้ทดสอบ",
+      report_lock_no: null,
+    };
+    let approved = false;
+    let releaseAdminRefresh!: () => void;
+    let markAdminRefreshRequested!: () => void;
+    const adminRefreshReleased = new Promise<void>((resolve) => { releaseAdminRefresh = resolve; });
+    const adminRefreshRequested = new Promise<void>((resolve) => { markAdminRefreshRequested = resolve; });
+
+    await page.route("**/api/lanflow/time-tracking/admin", async (route) => {
+      if (route.request().method() === "GET") {
+        if (approved) {
+          markAdminRefreshRequested();
+          await adminRefreshReleased;
+        }
+        await route.fulfill({
+          json: {
+            permissions: { canManage: true, canDecide: true, canConfigure: true },
+            users: [employee],
+            pendingTransactions: approved ? [] : [transaction],
+            pendingSlips: [],
+            paymentLocations: [],
+            admins: [],
+          },
+        });
+        return;
+      }
+
+      const body = route.request().postDataJSON() as { action?: string };
+      if (body.action === "APPROVE_TRANSACTION") {
+        approved = true;
+        await route.fulfill({ json: { success: true, result: { status: "APPROVED" } } });
+        return;
+      }
+      await route.continue();
+    });
+    await page.route("**/api/lanflow/time-tracking/user?*", (route) => route.fulfill({
+      json: {
+        transactions: [{ ...transaction, status: approved ? "APPROVED" : "PENDING" }],
+        wageInfo: { remainingBalance: 0, totalDays: 0, totalDebt: 100 },
+        attendance: null,
+        periodState: null,
+      },
+    }));
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "จัดการเวลาและเงินเดือน" })).toBeVisible();
+    await page.getByRole("button", { name: "ทั้งหมด", exact: true }).click();
+    await page.getByRole("button", { name: /^จัดการปฏิทินวันทำงานของ พนักงานอนุมัติทันที/ }).click();
+    const employeeDialog = page.getByRole("dialog", { name: "ข้อมูลของพนักงาน" });
+    await employeeDialog.getByRole("button", { name: "อนุมัติ" }).click();
+    await page.getByLabel("เหตุผลการอนุมัติ").fill("อนุมัติจาก regression");
+    await page.getByRole("button", { name: "ยืนยัน", exact: true }).click();
+    await adminRefreshRequested;
+
+    try {
+      await expect(employeeDialog.getByText("APPROVED", { exact: true })).toBeVisible({ timeout: 1_000 });
+      await expect(employeeDialog.getByRole("button", { name: "อนุมัติ" })).toHaveCount(0);
+    } finally {
+      releaseAdminRefresh();
+    }
+  });
+
+  test("updates the open payroll slip once and keeps it visible during summary refresh", async ({ page }) => {
+    const slip = {
+      id: "fe281ea6-b8c6-401c-97f3-17fc60cd3408",
+      month: "2026-08-01",
+      gross_pay: 0,
+      total_deductions: 0,
+      net_pay: 0,
+      created_at: "2026-09-02T03:00:00.000Z",
+      cancelled_at: null,
+      expense_location_id: null,
+      report_lock_no: null,
+    };
+    let approved = false;
+    let listReads = 0;
+    let releaseAdminRefresh!: () => void;
+    let markAdminRefreshRequested!: () => void;
+    const adminRefreshReleased = new Promise<void>((resolve) => { releaseAdminRefresh = resolve; });
+    const adminRefreshRequested = new Promise<void>((resolve) => { markAdminRefreshRequested = resolve; });
+
+    await page.route("**/api/lanflow/time-tracking/admin", async (route) => {
+      if (route.request().method() === "GET") {
+        if (approved) {
+          markAdminRefreshRequested();
+          await adminRefreshReleased;
+        }
+        await route.continue();
+        return;
+      }
+
+      const body = route.request().postDataJSON() as { action?: string };
+      if (body.action === "LIST_PAYROLL_SLIPS") {
+        listReads += 1;
+        await route.fulfill({ json: { slips: [{ ...slip, status: approved ? "APPROVED" : "PENDING" }] } });
+        return;
+      }
+      if (body.action === "APPROVE_PAYROLL_SLIP") {
+        approved = true;
+        await route.fulfill({ json: { success: true, result: { status: "APPROVED" } } });
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "จัดการเวลาและเงินเดือน" })).toBeVisible();
+    await page.getByRole("button", { name: "ทั้งหมด", exact: true }).click();
+    await page.getByRole("button", { name: /^จัดการสลิปเงินเดือนของ / }).first().click();
+    const payrollDialog = page.getByRole("dialog", { name: /^สลิปเงินเดือนของ / });
+    await expect(payrollDialog.getByText("PENDING", { exact: true })).toBeVisible();
+    const readsBeforeApproval = listReads;
+    await payrollDialog.getByRole("button", { name: "อนุมัติ" }).click();
+    await page.getByLabel("เหตุผลการอนุมัติ").fill("อนุมัติสลิปจาก regression");
+    await page.getByRole("dialog", { name: "อนุมัติรายการ" }).getByRole("button", { name: "ยืนยัน" }).click();
+    await adminRefreshRequested;
+
+    try {
+      await expect(payrollDialog.getByText("APPROVED", { exact: true })).toBeVisible({ timeout: 1_000 });
+      expect(listReads).toBe(readsBeforeApproval + 1);
+    } finally {
+      releaseAdminRefresh();
+    }
+  });
+
+  test("updates the open payroll payment method before the summary refresh completes", async ({ page }) => {
+    const location = { id: "695e95b8-f4a7-4a0a-909f-f2f932c3ef8b", name: "สาขาจ่ายเงิน", code: "PAY", active: true };
+    const employee = {
+      id: "9d159aa0-d258-40b2-82f9-8a90517d0c61",
+      name: "พนักงานเปลี่ยนวิธีจ่าย",
+      daily_wage: 500,
+      primary_location_id: location.id,
+      debt_remaining_amount: 0,
+    };
+    const slip = {
+      id: "45874010-28e4-4ed6-828d-1584a150170a",
+      month: "2026-08-01",
+      gross_pay: 15000,
+      total_deductions: 0,
+      net_pay: 15000,
+      status: "APPROVED",
+      created_at: "2026-09-02T03:00:00.000Z",
+      cancelled_at: null,
+      expense_location_id: location.id,
+      report_lock_no: null,
+    };
+    let changed = false;
+    let listReads = 0;
+    let releaseAdminRefresh!: () => void;
+    let markAdminRefreshRequested!: () => void;
+    const adminRefreshReleased = new Promise<void>((resolve) => { releaseAdminRefresh = resolve; });
+    const adminRefreshRequested = new Promise<void>((resolve) => { markAdminRefreshRequested = resolve; });
+
+    await page.route("**/api/lanflow/time-tracking/admin", async (route) => {
+      if (route.request().method() === "GET") {
+        if (changed) {
+          markAdminRefreshRequested();
+          await adminRefreshReleased;
+        }
+        await route.fulfill({
+          json: {
+            permissions: { canManage: true, canDecide: true, canConfigure: true },
+            users: [employee],
+            pendingTransactions: [],
+            pendingSlips: [],
+            paymentLocations: [location],
+            admins: [],
+          },
+        });
+        return;
+      }
+
+      const body = route.request().postDataJSON() as { action?: string; payload?: { expense_location_id?: string | null } };
+      if (body.action === "LIST_PAYROLL_SLIPS") {
+        listReads += 1;
+        await route.fulfill({ json: { slips: [{ ...slip, expense_location_id: changed ? null : location.id }] } });
+        return;
+      }
+      if (body.action === "CHANGE_EXPENSE_LOCATION") {
+        expect(body.payload?.expense_location_id).toBeNull();
+        changed = true;
+        await route.fulfill({ json: { success: true } });
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "จัดการเวลาและเงินเดือน" })).toBeVisible();
+    await page.getByRole("button", { name: "ทั้งหมด", exact: true }).click();
+    await page.getByRole("button", { name: /^จัดการสลิปเงินเดือนของ พนักงานเปลี่ยนวิธีจ่าย/ }).click();
+    const payrollDialog = page.getByRole("dialog", { name: "สลิปเงินเดือนของ พนักงานเปลี่ยนวิธีจ่าย" });
+    const readsBeforeChange = listReads;
+    await payrollDialog.getByRole("button", { name: "เปลี่ยนวิธีจ่าย" }).click();
+    const changeDialog = page.getByRole("dialog", { name: "เปลี่ยนวิธีจ่าย" });
+    await changeDialog.getByLabel("วิธีจ่ายใหม่").selectOption("__central_outside_system__");
+    await changeDialog.getByRole("button", { name: "บันทึก", exact: true }).click();
+    await adminRefreshRequested;
+
+    try {
+      await expect(payrollDialog.getByText("ส่วนกลางจ่าย (จ่ายนอกระบบ)", { exact: true })).toBeVisible({ timeout: 1_000 });
+      expect(listReads).toBe(readsBeforeChange + 1);
+    } finally {
+      releaseAdminRefresh();
+    }
+  });
 
   test("closes the employee calendar dialog with Escape and restores its trigger", async ({ page }) => {
     await page.goto("/");

@@ -34,6 +34,10 @@ export function useRubberExports(locationId: string, online: boolean, operationa
   const [hasMore, setHasMore] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [optionsLoading, setOptionsLoading] = useState(false);
+  const [deletionRefreshError, setDeletionRefreshError] = useState<string | null>(null);
+  const [deletionRefreshing, setDeletionRefreshing] = useState(false);
+  const scopeVersion = useRef(0);
+  const deletionRefreshVersion = useRef(0);
   const listController = useRef<AbortController | null>(null);
   const optionsController = useRef<AbortController | null>(null);
   const deletionsController = useRef<AbortController | null>(null);
@@ -70,9 +74,11 @@ export function useRubberExports(locationId: string, online: boolean, operationa
       setPermissions(body.permissions ?? { canVerify: false, canDelete: false });
       setHasMore(body.hasMore);
       setNextCursor(body.nextCursor);
+      return true;
     } catch (caught) {
       if (controller.signal.aborted) return;
       setError(caught instanceof Error ? caught.message : "โหลดรายการส่งออกไม่สำเร็จ");
+      return false;
     } finally {
       if (listController.current === controller) {
         listController.current = null;
@@ -101,7 +107,7 @@ export function useRubberExports(locationId: string, online: boolean, operationa
       setHasMore(body.hasMore);
       setNextCursor(body.nextCursor);
     } catch (caught) {
-      if (caught instanceof Error && caught.name === "AbortError") return;
+      if (controller.signal.aborted || locationIdRef.current !== locationId) return;
       setError(caught instanceof Error ? caught.message : "โหลดรายการส่งออกเพิ่มไม่สำเร็จ");
     } finally {
       if (listController.current === controller) {
@@ -137,12 +143,14 @@ export function useRubberExports(locationId: string, online: boolean, operationa
           : body.deletions);
         setDeletionsHasMore(body.hasMore);
         setDeletionsCursor(body.nextCursor);
+        return true;
       }
     } catch (caught) {
-      if (caught instanceof Error && caught.name === "AbortError") return;
+      if (controller.signal.aborted || locationIdRef.current !== locationId) return;
       setDeletionsError(
         caught instanceof Error ? caught.message : "โหลดประวัติการลบไม่สำเร็จ",
       );
+      return false;
     } finally {
       if (deletionsController.current === controller) {
         deletionsController.current = null;
@@ -152,8 +160,11 @@ export function useRubberExports(locationId: string, online: boolean, operationa
   }, [locationId, online]);
 
   useEffect(() => {
+    setDeletionRefreshError(null);
+    setDeletionRefreshing(false);
     setExports([]);
     setDeletions([]);
+    setDeletionsError(null);
     setHasMore(false);
     setNextCursor(null);
     setDeletionsHasMore(false);
@@ -162,11 +173,28 @@ export function useRubberExports(locationId: string, online: boolean, operationa
     optionsController.current?.abort();
     void reload();
     return () => {
+      scopeVersion.current += 1;
       listController.current?.abort();
       optionsController.current?.abort();
       deletionsController.current?.abort();
     };
   }, [locationId, reload]);
+
+  async function refreshAfterDelete() {
+    const scope = scopeVersion.current;
+    const request = ++deletionRefreshVersion.current;
+    setDeletionRefreshing(true);
+    const results = await Promise.allSettled([
+      reload(),
+      reloadDeletions(),
+      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }, { throwOnError: true }),
+    ]);
+    if (scope !== scopeVersion.current || locationIdRef.current !== locationId || request !== deletionRefreshVersion.current) return;
+    const failed = results.some((result, index) => result.status === "rejected"
+      || (index < 2 && result.status === "fulfilled" && result.value !== true));
+    setDeletionRefreshError(failed ? "ลบสำเร็จ แต่โหลดข้อมูลใหม่ไม่สำเร็จ" : null);
+    setDeletionRefreshing(false);
+  }
 
   const loadAvailableBills = useCallback(async (mode: "create" | "edit", exportId?: string) => {
     const key = `${locationId}:${mode}:${exportId ?? "new"}`;
@@ -297,11 +325,18 @@ export function useRubberExports(locationId: string, online: boolean, operationa
   }
 
   async function remove(exportId: string) {
+    const scope = scopeVersion.current;
     const response = await authFetch(`/api/lanflow/rubber-exports/${exportId}`, {
       method: "DELETE",
     });
     await assertApiResponse(response);
-    await Promise.all([reloadWithBadges(), reloadDeletions()]);
+    if (scope !== scopeVersion.current || locationIdRef.current !== locationId) return;
+    listController.current?.abort();
+    setExports((current) => current.filter((row) => row.id !== exportId));
+    optionsController.current?.abort();
+    optionsCache.current.clear();
+    setAvailableBills([]);
+    await refreshAfterDelete();
   }
 
   return {
@@ -317,6 +352,9 @@ export function useRubberExports(locationId: string, online: boolean, operationa
     deletionsCursor,
     hasMore,
     optionsLoading,
+    deletionRefreshError,
+    deletionRefreshing,
+    refreshAfterDelete,
     reload,
     loadMore,
     reloadDeletions,

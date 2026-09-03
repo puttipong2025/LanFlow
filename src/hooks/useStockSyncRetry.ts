@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { getPendingEvents, removeSyncEvent, updateSyncEvent, type SyncEvent } from "@/lib/idb-queue";
 import { authFetch } from "@/lib/auth-fetch";
 import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
@@ -11,6 +11,7 @@ type StockSyncRetryResult = {
   stopped: boolean;
   errorMessage?: string;
   entity?: StockSyncEntity;
+  refreshError?: string;
 };
 
 function isIncomeStockEvent(event: SyncEvent) {
@@ -37,18 +38,19 @@ function stockEventEndpoint(entity: StockSyncEntity) {
   return entity === "income_expense" ? "/api/lanflow/income-expense" : "/api/lanflow/rubber-bills";
 }
 
-function invalidateStockSyncQueries(locationId: string, ownerUserId: string, queryClient: any) {
-  void queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.stock(locationId) });
-  void queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.incomeExpenseFeed(ownerUserId, locationId) });
-  void queryClient.invalidateQueries({
-    queryKey: [...moneyFlowQueryKeys.rubberBillOperationalFeedRoot(), ownerUserId, locationId],
-  });
-  void queryClient.invalidateQueries({
-    queryKey: moneyFlowQueryKeys.rubberBillWorkCounts(ownerUserId, locationId),
-  });
+async function invalidateStockSyncQueries(locationId: string, ownerUserId: string, queryClient: QueryClient) {
+  const results = await Promise.allSettled([
+    moneyFlowQueryKeys.stock(locationId),
+    moneyFlowQueryKeys.incomeExpenseFeed(ownerUserId, locationId),
+    [...moneyFlowQueryKeys.rubberBillOperationalFeedRoot(), ownerUserId, locationId],
+    moneyFlowQueryKeys.rubberBillWorkCounts(ownerUserId, locationId),
+  ].map((queryKey) => queryClient.invalidateQueries({ queryKey }, { throwOnError: true })));
+  if (results.some((result) => result.status === "rejected") || (typeof navigator !== "undefined" && !navigator.onLine)) {
+    throw new Error("โหลดข้อมูลหลังซิงก์ไม่สำเร็จ กรุณาโหลดข้อมูลใหม่");
+  }
 }
 
-async function retryStockSyncEvents(locationId: string, ownerUserId: string, queryClient: any): Promise<StockSyncRetryResult> {
+async function retryStockSyncEvents(locationId: string, ownerUserId: string, queryClient: QueryClient): Promise<StockSyncRetryResult> {
   if (typeof navigator !== "undefined" && !navigator.onLine) {
     throw new Error("ซิงก์รายการได้เมื่อออนไลน์เท่านั้น");
   }
@@ -66,68 +68,58 @@ async function retryStockSyncEvents(locationId: string, ownerUserId: string, que
     .filter((event) => isIncomeStockEvent(event) || isRubberStockEvent(event))
     .sort((a, b) => (a.timestamp - b.timestamp) || ((a.queueId ?? 0) - (b.queueId ?? 0)));
 
-  let attempted = 0;
-  let synced = 0;
+  const result: StockSyncRetryResult = { attempted: 0, synced: 0, stopped: false };
 
-  for (const event of events) {
-    if (typeof navigator !== "undefined" && !navigator.onLine) {
-      return {
-        attempted,
-        synced,
-        stopped: true,
-        entity: event.entity as StockSyncEntity,
-        errorMessage: "ออฟไลน์ระหว่างซิงก์รายการ",
-      };
-    }
-
-    attempted += 1;
-
-    try {
-      const response = await authFetch(stockEventEndpoint(event.entity as StockSyncEntity), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(event.payload),
-      });
-
-      const data = await response.json().catch(() => ({}));
-
-      if (response.ok) {
-        await removeSyncEvent(event.queueId!);
-        synced += 1;
-        continue;
+  try {
+    for (const event of events) {
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        result.stopped = true;
+        result.entity = event.entity as StockSyncEntity;
+        result.errorMessage = "ออฟไลน์ระหว่างซิงก์รายการ";
+        return result;
       }
 
-      event.status = data.status === "conflict" ? "conflict" : "failed";
-      event.errorMessage = data.errorMessage || data.error || "ซิงก์รายการไม่สำเร็จ";
-      await updateSyncEvent(event);
+      result.attempted += 1;
 
-      return {
-        attempted,
-        synced,
-        stopped: true,
-        entity: event.entity as StockSyncEntity,
-        errorMessage: event.errorMessage,
-      };
-    } catch (error) {
-      event.status = "failed";
-      event.errorMessage = error instanceof Error ? error.message : "ซิงก์รายการไม่สำเร็จ";
-      await updateSyncEvent(event);
+      try {
+        const response = await authFetch(stockEventEndpoint(event.entity as StockSyncEntity), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(event.payload),
+        });
 
-      return {
-        attempted,
-        synced,
-        stopped: true,
-        entity: event.entity as StockSyncEntity,
-        errorMessage: event.errorMessage,
-      };
-    } finally {
-      invalidateStockSyncQueries(locationId, ownerUserId, queryClient);
+        const data = await response.json().catch(() => ({}));
+
+        if (response.ok) {
+          await removeSyncEvent(event.queueId!);
+          result.synced += 1;
+          continue;
+        }
+
+        event.status = data.status === "conflict" ? "conflict" : "failed";
+        event.errorMessage = data.errorMessage || data.error || "ซิงก์รายการไม่สำเร็จ";
+        await updateSyncEvent(event);
+      } catch (error) {
+        event.status = "failed";
+        event.errorMessage = error instanceof Error ? error.message : "ซิงก์รายการไม่สำเร็จ";
+        await updateSyncEvent(event);
+      }
+
+      result.stopped = true;
+      result.entity = event.entity as StockSyncEntity;
+      result.errorMessage = event.errorMessage;
+      return result;
+    }
+    return result;
+  } finally {
+    if (result.attempted > 0) {
+      try {
+        await invalidateStockSyncQueries(locationId, ownerUserId, queryClient);
+      } catch (error) {
+        result.refreshError = error instanceof Error ? error.message : "โหลดข้อมูลหลังซิงก์ไม่สำเร็จ";
+      }
     }
   }
-
-  invalidateStockSyncQueries(locationId, ownerUserId, queryClient);
-
-  return { attempted, synced, stopped: false };
 }
 
 export function useStockSyncRetry(locationId: string, ownerUserId: string) {
@@ -136,9 +128,14 @@ export function useStockSyncRetry(locationId: string, ownerUserId: string) {
   const mutation = useMutation({
     mutationFn: () => retryStockSyncEvents(locationId, ownerUserId, queryClient),
   });
+  const refreshMutation = useMutation({
+    mutationFn: () => invalidateStockSyncQueries(locationId, ownerUserId, queryClient),
+  });
 
   return {
     retryStockSync: mutation.mutateAsync,
     isRetrying: mutation.isPending,
+    refreshStockSync: refreshMutation.mutateAsync,
+    isRefreshing: refreshMutation.isPending,
   };
 }

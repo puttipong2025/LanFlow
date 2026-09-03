@@ -102,18 +102,12 @@ export function useAcidProducts({ includeInactive = false }: { includeInactive?:
 
   const addProductMutation = useMutation({
     mutationFn: postStockProduct,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [QUERY_KEY] });
-      queryClient.invalidateQueries({ queryKey: ["incomeSaleItems"] });
-      queryClient.invalidateQueries({ queryKey: [STOCK_PRODUCT_APPROVAL_REQUESTS_KEY] });
-    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: [STOCK_PRODUCT_APPROVAL_REQUESTS_KEY] }),
   });
 
   const deleteProductMutation = useMutation({
     mutationFn: postStockProductDelete,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [STOCK_PRODUCT_APPROVAL_REQUESTS_KEY] });
-    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: [STOCK_PRODUCT_APPROVAL_REQUESTS_KEY] }),
   });
 
   return {

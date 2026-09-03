@@ -28,6 +28,7 @@ export function AdminModule({ locations, profile, onAddLocation }: {
 }) {
   const [users, setUsers] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
+  const [updatingUserId, setUpdatingUserId] = useState<string | null>(null);
   const canManageSystem = canManageSystemFeatures(profile);
   const canManagePermissions = canManageFeatureAccess(profile);
 
@@ -47,27 +48,44 @@ export function AdminModule({ locations, profile, onAddLocation }: {
 
   useEffect(() => { void loadUsers(); }, []);
 
-  async function confirmedPatch(userId: string, path: string, body: Record<string, unknown>, title: string) {
+  async function confirmedPatch(
+    userId: string,
+    path: string,
+    body: Record<string, unknown>,
+    title: string,
+    getProfilePatch: (data: Record<string, unknown>) => Partial<Profile>,
+  ) {
     const confirmation = await appSwal.fire({ target: getConfirmationTarget(), title, icon: "warning", showCancelButton: true, confirmButtonText: "ยืนยัน", cancelButtonText: "ยกเลิก" });
     if (!confirmation.isConfirmed) return;
+    setUpdatingUserId(userId);
     try {
       const response = await authFetch(`/api/lanflow/admin/users/${userId}/${path}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.errorMessage || data.error || "อัปเดตไม่สำเร็จ");
+      const data = await response.json().catch(() => ({})) as Record<string, unknown>;
+      if (!response.ok) {
+        const message = typeof data.errorMessage === "string"
+          ? data.errorMessage
+          : typeof data.error === "string" ? data.error : "อัปเดตไม่สำเร็จ";
+        throw new Error(message);
+      }
+      const profilePatch = getProfilePatch(data);
+      setUsers((current) => current.map((user) => user.id === userId ? { ...user, ...profilePatch } : user));
       toast.success("บันทึกแล้ว");
-      await loadUsers();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "อัปเดตไม่สำเร็จ");
+    } finally {
+      setUpdatingUserId((current) => current === userId ? null : current);
     }
   }
 
   async function createUser(value: { name: string; phone: string; password: string; role: "user" | "admin"; locationId: string }) {
     try {
       const response = await authFetch("/api/lanflow/admin/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...value, locationIds: value.locationId ? [value.locationId] : [] }) });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.errorMessage || data.error || "สร้างบัญชีไม่สำเร็จ");
+      const data = await response.json().catch(() => ({})) as { user?: Profile; errorMessage?: string; error?: string };
+      if (!response.ok || !data.user) throw new Error(data.errorMessage || data.error || "สร้างบัญชีไม่สำเร็จ");
+      setUsers((current) => current.some((user) => user.id === data.user!.id)
+        ? current.map((user) => user.id === data.user!.id ? data.user! : user)
+        : [...current, data.user!]);
       toast.success("สร้างบัญชีผู้ใช้แล้ว");
-      await loadUsers();
       return true;
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "สร้างบัญชีไม่สำเร็จ");
@@ -117,14 +135,23 @@ export function AdminModule({ locations, profile, onAddLocation }: {
   }
 
   return <AdminContent
-    locations={locations} users={users} loading={loading} profile={profile}
+    locations={locations} users={users} loading={loading} updatingUserId={updatingUserId} profile={profile}
     canManageSystem={canManageSystem} canManagePermissions={canManagePermissions}
-    onReload={() => void loadUsers()} onCreateUser={createUser} onCreateLocation={createLocation}
+    onCreateUser={createUser} onCreateLocation={createLocation}
     onSaveProfile={saveProfile} onResetPassword={resetPassword}
-    onToggleRole={(id, role) => void confirmedPatch(id, "role", { role: role === "admin" ? "user" : "admin" }, "เปลี่ยนบทบาท?")}
-    onToggleStatus={(id, active) => void confirmedPatch(id, "status", { isActive: !active }, active ? "ระงับการใช้งาน?" : "กู้คืนการใช้งาน?")}
-    onToggleSystemManager={(id, value) => void confirmedPatch(id, "system-manager-access", { canAccessSystemManager: !value }, value ? "ปิดสิทธิ์ผู้จัดการระบบ?" : "เปิดสิทธิ์ผู้จัดการระบบ?")}
-    onToggleMoneyTransfer={(id, value) => void confirmedPatch(id, "money-transfer-access", { canAccessMoneyTransfer: !value }, value ? "ปิดสิทธิ์โอนเงิน?" : "เปิดสิทธิ์โอนเงิน?")}
-    onToggleTimePayroll={(id, value) => void confirmedPatch(id, "time-payroll-access", { canManageTimePayroll: !value }, value ? "ปิดสิทธิ์เวลาและเงินเดือน?" : "เปิดสิทธิ์เวลาและเงินเดือน?")}
+    onToggleRole={(id, role) => {
+      const nextRole = role === "admin" ? "user" : "admin";
+      void confirmedPatch(id, "role", { role: nextRole }, "เปลี่ยนบทบาท?", () => nextRole === "user"
+        ? { role: nextRole, canAccessSystemManager: false, canAccessMoneyTransfer: false, canManageTimePayroll: false }
+        : { role: nextRole });
+    }}
+    onToggleStatus={(id, active) => void confirmedPatch(id, "status", { isActive: !active }, active ? "ระงับการใช้งาน?" : "กู้คืนการใช้งาน?", () => ({ isActive: !active }))}
+    onToggleSystemManager={(id, value) => void confirmedPatch(id, "system-manager-access", { canAccessSystemManager: !value }, value ? "ปิดสิทธิ์ผู้จัดการระบบ?" : "เปิดสิทธิ์ผู้จัดการระบบ?", (data) => ({
+      canAccessSystemManager: data.canAccessSystemManager === true,
+      canAccessMoneyTransfer: data.canAccessMoneyTransfer === true,
+      canManageTimePayroll: data.canManageTimePayroll === true,
+    }))}
+    onToggleMoneyTransfer={(id, value) => void confirmedPatch(id, "money-transfer-access", { canAccessMoneyTransfer: !value }, value ? "ปิดสิทธิ์โอนเงิน?" : "เปิดสิทธิ์โอนเงิน?", () => ({ canAccessMoneyTransfer: !value }))}
+    onToggleTimePayroll={(id, value) => void confirmedPatch(id, "time-payroll-access", { canManageTimePayroll: !value }, value ? "ปิดสิทธิ์เวลาและเงินเดือน?" : "เปิดสิทธิ์เวลาและเงินเดือน?", () => ({ canManageTimePayroll: !value }))}
   />;
 }

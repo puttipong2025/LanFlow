@@ -61,6 +61,8 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [historyWarning, setHistoryWarning] = useState<{ message: string; includeDeletions: boolean } | null>(null);
+  const [historyRefreshing, setHistoryRefreshing] = useState(false);
   const [confirmMode, setConfirmMode] = useState<"submit" | "cancel" | "delete" | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<CashCountSummary | null>(null);
   const [now, setNow] = useState(Date.now());
@@ -72,40 +74,74 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
   const [deletionsCursor, setDeletionsCursor] = useState<string | null>(null);
   const [detail, setDetail] = useState<CashCountDetail | null>(null);
   const handledInitialCountIdRef = useRef<string | null>(null);
+  const locationIdRef = useRef(selectedLocation.id);
+  const sessionRequestIdRef = useRef(0);
+  const historyRequestIdRef = useRef(0);
+  const detailRequestIdRef = useRef(0);
+  const deletionRequestIdRef = useRef(0);
+  const mutationRequestIdRef = useRef(0);
+  const historyRefreshRequestIdRef = useRef(0);
+  locationIdRef.current = selectedLocation.id;
   const manager = canManageSystemFeatures(profile);
 
   const resetForm = useCallback(() => setValues(Object.fromEntries(CASH_DENOMINATIONS.map((d) => [d, 0])) as Record<CashDenomination, number>), []);
   const loadSession = useCallback(async () => {
     if (!online) return;
+    const requestId = ++sessionRequestIdRef.current;
+    const locationId = selectedLocation.id;
     setLoading(true);
     try {
-      const response = await authFetch(`/api/lanflow/cash-counts/session?locationId=${encodeURIComponent(selectedLocation.id)}`, { cache: "no-store" });
+      const response = await authFetch(`/api/lanflow/cash-counts/session?locationId=${encodeURIComponent(locationId)}`, { cache: "no-store" });
       await assertApiResponse(response);
       const body = await response.json() as { session: CashCountSession | null };
+      if (requestId !== sessionRequestIdRef.current || locationIdRef.current !== locationId) return;
       setSession(body.session);
     } catch (error) {
+      if (requestId !== sessionRequestIdRef.current || locationIdRef.current !== locationId) return;
       toast.error(error instanceof Error ? error.message : "โหลดสถานะตรวจนับไม่สำเร็จ");
-    } finally { setLoading(false); }
+    } finally {
+      if (requestId === sessionRequestIdRef.current && locationIdRef.current === locationId) setLoading(false);
+    }
   }, [online, selectedLocation.id]);
 
   const loadHistory = useCallback(async () => {
     if (!online || !manager) return;
-    const response = await authFetch(`/api/lanflow/cash-counts?locationId=${encodeURIComponent(selectedLocation.id)}`, { cache: "no-store" });
-    await assertApiResponse(response);
-    setHistory(((await response.json()) as { counts: CashCountSummary[] }).counts);
+    const requestId = ++historyRequestIdRef.current;
+    const locationId = selectedLocation.id;
+    try {
+      const response = await authFetch(`/api/lanflow/cash-counts?locationId=${encodeURIComponent(locationId)}`, { cache: "no-store" });
+      await assertApiResponse(response);
+      const body = (await response.json()) as { counts: CashCountSummary[] };
+      if (requestId !== historyRequestIdRef.current || locationIdRef.current !== locationId) return;
+      setHistory(body.counts);
+    } catch (error) {
+      if (requestId !== historyRequestIdRef.current || locationIdRef.current !== locationId) return;
+      throw error;
+    }
   }, [manager, online, selectedLocation.id]);
 
   const loadDetail = useCallback(async (id: string) => {
-    const response = await authFetch(`/api/lanflow/cash-counts/${id}?locationId=${encodeURIComponent(selectedLocation.id)}`, { cache: "no-store" });
-    await assertApiResponse(response);
-    setDetail(await response.json() as CashCountDetail);
+    const requestId = ++detailRequestIdRef.current;
+    const locationId = selectedLocation.id;
+    try {
+      const response = await authFetch(`/api/lanflow/cash-counts/${id}?locationId=${encodeURIComponent(locationId)}`, { cache: "no-store" });
+      await assertApiResponse(response);
+      const body = await response.json() as CashCountDetail;
+      if (requestId !== detailRequestIdRef.current || locationIdRef.current !== locationId) return;
+      setDetail(body);
+    } catch (error) {
+      if (requestId !== detailRequestIdRef.current || locationIdRef.current !== locationId) return;
+      throw error;
+    }
   }, [selectedLocation.id]);
 
   const loadDeletions = useCallback(async (cursor: string | null = null, append = false) => {
     if (!online || !manager) return;
+    const requestId = ++deletionRequestIdRef.current;
+    const locationId = selectedLocation.id;
     setDeletionsLoading(true);
     try {
-      const params = new URLSearchParams({ locationId: selectedLocation.id, view: "deletions" });
+      const params = new URLSearchParams({ locationId, view: "deletions" });
       if (cursor) params.set("cursor", cursor);
       const response = await authFetch(
         `/api/lanflow/cash-counts?${params.toString()}`,
@@ -117,23 +153,66 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
         hasMore: boolean;
         nextCursor: string | null;
       };
+      if (requestId !== deletionRequestIdRef.current || locationIdRef.current !== locationId) return;
       setDeletions((current) => append
         ? [...current, ...body.deletions.filter((row) => !current.some((item) => item.id === row.id))]
         : body.deletions);
       setDeletionsHasMore(body.hasMore);
       setDeletionsCursor(body.nextCursor);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "โหลดประวัติการลบไม่สำเร็จ");
+      if (requestId !== deletionRequestIdRef.current || locationIdRef.current !== locationId) return;
+      throw error;
     } finally {
-      setDeletionsLoading(false);
+      if (requestId === deletionRequestIdRef.current && locationIdRef.current === locationId) setDeletionsLoading(false);
     }
   }, [manager, online, selectedLocation.id]);
 
-  useEffect(() => { setReceipt(null); setDetail(null); setDeletions([]); resetForm(); void loadSession(); }, [loadSession, resetForm, selectedLocation.id]);
+  async function refreshHistory(includeDeletions: boolean, confirmedAction?: string) {
+    const requestId = ++historyRefreshRequestIdRef.current;
+    const locationId = selectedLocation.id;
+    setHistoryRefreshing(true);
+    try {
+      await Promise.all([loadHistory(), ...(includeDeletions ? [loadDeletions()] : [])]);
+      if (requestId === historyRefreshRequestIdRef.current && locationIdRef.current === locationId) setHistoryWarning(null);
+    } catch (error) {
+      if (requestId !== historyRefreshRequestIdRef.current || locationIdRef.current !== locationId) return;
+      setHistoryWarning({
+        message: `${confirmedAction ? `${confirmedAction} แต่` : ""}โหลดประวัติใหม่ไม่สำเร็จ${error instanceof Error ? `: ${error.message}` : ""}`,
+        includeDeletions,
+      });
+    } finally {
+      if (requestId === historyRefreshRequestIdRef.current && locationIdRef.current === locationId) setHistoryRefreshing(false);
+    }
+  }
+
+  useEffect(() => {
+    setSession(null);
+    setReceipt(null);
+    setDetail(null);
+    setHistory([]);
+    setDeletions([]);
+    setWorking(false);
+    setConfirmMode(null);
+    setDeleteTarget(null);
+    setSubmitError(null);
+    setHistoryWarning(null);
+    setHistoryRefreshing(false);
+    setDeletionsHasMore(false);
+    setDeletionsCursor(null);
+    resetForm();
+    void loadSession();
+    return () => {
+      sessionRequestIdRef.current += 1;
+      historyRequestIdRef.current += 1;
+      deletionRequestIdRef.current += 1;
+      mutationRequestIdRef.current += 1;
+      historyRefreshRequestIdRef.current += 1;
+    };
+  }, [loadSession, resetForm, selectedLocation.id]);
   useEffect(() => {
     if (!manager) return;
     if (historyView === "deletions") {
-      void loadDeletions();
+      void loadDeletions().catch((error) => toast.error(error instanceof Error ? error.message : "โหลดประวัติการลบไม่สำเร็จ"));
       return;
     }
     void loadHistory().catch((error) => toast.error(
@@ -156,57 +235,99 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
 
   async function start() {
     if (!online || working) return;
+    const requestId = ++mutationRequestIdRef.current;
+    const locationId = selectedLocation.id;
     setWorking(true);
     setSubmitError(null);
     try {
       const [rubberQueue, incomeQueue] = await Promise.all([
-        getPendingEvents({ entity: "rubber_bills", ownerUserId: profile.id, locationId: selectedLocation.id }),
-        getPendingEvents({ entity: "income_expense", ownerUserId: profile.id, locationId: selectedLocation.id }),
+        getPendingEvents({ entity: "rubber_bills", ownerUserId: profile.id, locationId }),
+        getPendingEvents({ entity: "income_expense", ownerUserId: profile.id, locationId }),
       ]);
       if (rubberQueue.length + incomeQueue.length > 0) throw new Error("อุปกรณ์นี้ยังมีรายการเงินสดรอซิงก์หรือต้องแก้ไข กรุณาจัดการก่อนเริ่มนับ");
-      const response = await authFetch("/api/lanflow/cash-counts/session", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ locationId: selectedLocation.id }) });
+      const response = await authFetch("/api/lanflow/cash-counts/session", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ locationId }) });
       await assertApiResponse(response);
-      setSession(((await response.json()) as { session: CashCountSession }).session);
+      const body = (await response.json()) as { session: CashCountSession };
+      if (requestId !== mutationRequestIdRef.current || locationIdRef.current !== locationId) return;
+      setSession(body.session);
       setReceipt(null); resetForm();
-    } catch (error) { toast.error(error instanceof Error ? error.message : "เริ่มตรวจนับไม่สำเร็จ"); }
-    finally { setWorking(false); }
+    } catch (error) {
+      if (requestId === mutationRequestIdRef.current && locationIdRef.current === locationId) {
+        toast.error(error instanceof Error ? error.message : "เริ่มตรวจนับไม่สำเร็จ");
+      }
+    } finally {
+      if (requestId === mutationRequestIdRef.current && locationIdRef.current === locationId) setWorking(false);
+    }
   }
 
   async function submit() {
-    if (!session || secondsLeft <= 0) return;
+    if (!online || working || !session || secondsLeft <= 0) return;
+    const requestId = ++mutationRequestIdRef.current;
+    const locationId = selectedLocation.id;
+    const sessionId = session.id;
     setWorking(true);
     setSubmitError(null);
     try {
       const actualCounts = Object.fromEntries(CASH_DENOMINATIONS.map((d) => [String(d), Number(values[d])]));
-      const response = await authFetch("/api/lanflow/cash-counts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: session.id, actualCounts }) });
+      const response = await authFetch("/api/lanflow/cash-counts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId, actualCounts }) });
       await assertApiResponse(response);
-      setReceipt(await response.json() as CashCountReceipt); setSession(null); setConfirmMode(null);
-      await loadHistory();
+      const body = await response.json() as CashCountReceipt;
+      if (requestId !== mutationRequestIdRef.current || locationIdRef.current !== locationId) return;
+      setReceipt(body); setSession(null); setConfirmMode(null);
+      await refreshHistory(false, "ส่งผลสำเร็จ");
     } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : "ส่งผลตรวจนับไม่สำเร็จ");
-      setConfirmMode(null);
+      if (requestId === mutationRequestIdRef.current && locationIdRef.current === locationId) {
+        setSubmitError(error instanceof Error ? error.message : "ส่งผลตรวจนับไม่สำเร็จ");
+        setConfirmMode(null);
+      }
     }
-    finally { setWorking(false); }
+    finally {
+      if (requestId === mutationRequestIdRef.current && locationIdRef.current === locationId) setWorking(false);
+    }
   }
 
   async function cancel() {
-    if (!session) return;
+    if (!online || working || !session) return;
+    const requestId = ++mutationRequestIdRef.current;
+    const locationId = selectedLocation.id;
+    const sessionId = session.id;
     setWorking(true);
     try {
-      const response = await authFetch("/api/lanflow/cash-counts/session", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: session.id }) });
-      await assertApiResponse(response); setSession(null); setConfirmMode(null); resetForm(); toast.success("ยกเลิกช่วงตรวจนับแล้ว");
-    } catch (error) { toast.error(error instanceof Error ? error.message : "ยกเลิกไม่สำเร็จ"); }
-    finally { setWorking(false); }
+      const response = await authFetch("/api/lanflow/cash-counts/session", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId }) });
+      await assertApiResponse(response);
+      if (requestId !== mutationRequestIdRef.current || locationIdRef.current !== locationId) return;
+      setSession(null); setConfirmMode(null); resetForm(); toast.success("ยกเลิกช่วงตรวจนับแล้ว");
+    } catch (error) {
+      if (requestId === mutationRequestIdRef.current && locationIdRef.current === locationId) {
+        toast.error(error instanceof Error ? error.message : "ยกเลิกไม่สำเร็จ");
+      }
+    } finally {
+      if (requestId === mutationRequestIdRef.current && locationIdRef.current === locationId) setWorking(false);
+    }
   }
 
   async function removeCount() {
-    if (!deleteTarget) return;
+    if (!online || working || !deleteTarget) return;
+    const requestId = ++mutationRequestIdRef.current;
+    const locationId = selectedLocation.id;
+    const target = deleteTarget;
     setWorking(true);
     try {
-      const response = await authFetch(`/api/lanflow/cash-counts/${deleteTarget.id}?locationId=${encodeURIComponent(selectedLocation.id)}`, { method: "DELETE" });
-      await assertApiResponse(response); toast.success(`ลบชุด ${deleteTarget.reportNo} แบบถาวรแล้ว`); setDetail(null); setDeleteTarget(null); setConfirmMode(null); await Promise.all([loadHistory(), loadDeletions()]);
-    } catch (error) { toast.error(error instanceof Error ? error.message : "ลบชุดตรวจนับไม่สำเร็จ"); }
-    finally { setWorking(false); }
+      const response = await authFetch(`/api/lanflow/cash-counts/${target.id}?locationId=${encodeURIComponent(locationId)}`, { method: "DELETE" });
+      await assertApiResponse(response);
+      if (requestId !== mutationRequestIdRef.current || locationIdRef.current !== locationId) return;
+      detailRequestIdRef.current += 1;
+      setHistory((current) => current.filter((item) => item.id !== target.id));
+      setReceipt((current) => current?.id === target.id ? null : current);
+      toast.success(`ลบชุด ${target.reportNo} แบบถาวรแล้ว`); setDetail(null); setDeleteTarget(null); setConfirmMode(null);
+      await refreshHistory(true, "ลบสำเร็จ");
+    } catch (error) {
+      if (requestId === mutationRequestIdRef.current && locationIdRef.current === locationId) {
+        toast.error(error instanceof Error ? error.message : "ลบชุดตรวจนับไม่สำเร็จ");
+      }
+    } finally {
+      if (requestId === mutationRequestIdRef.current && locationIdRef.current === locationId) setWorking(false);
+    }
   }
 
   return (
@@ -214,7 +335,7 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
       <div className="rounded-xl border border-black/10 bg-white p-4 shadow-panel sm:p-5">
         <div className="flex flex-col items-start gap-3">
           <div><h2 className="text-balance text-xl font-bold text-ink">นับเงิน — {selectedLocation.name}</h2><p className="mt-1 text-pretty text-sm text-ink/65">นับแบบไม่แสดงยอดคาดการณ์ รายการที่เกิดหลังเวลาเริ่มจะเข้ารอบถัดไป</p></div>
-          <button type="button" onClick={() => void loadSession()} disabled={!online || loading} className="focus-ring inline-flex items-center justify-center gap-2 rounded-md bg-actionSecondary px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"><RotateCw size={16} className={loading ? "animate-spin" : ""} />รีเฟรช</button>
+          <button type="button" onClick={() => void loadSession()} disabled={!online || loading || working} className="focus-ring inline-flex items-center justify-center gap-2 rounded-md bg-actionSecondary px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"><RotateCw size={16} className={cn(loading && "animate-spin")} />รีเฟรช</button>
         </div>
 
         {loading ? <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3"><div className="h-20 animate-pulse rounded-lg bg-mint/50" /><div className="h-20 animate-pulse rounded-lg bg-mint/50" /><div className="h-20 animate-pulse rounded-lg bg-mint/50" /></div>
@@ -227,6 +348,12 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
 
       {manager && (
         <>
+        {historyWarning && (
+          <div role="status" className="flex flex-col items-start gap-3 rounded-lg border border-amber/30 bg-amber/10 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <p className="min-w-0 break-words text-pretty text-sm font-medium text-ink">{historyWarning.message}</p>
+            <button type="button" onClick={() => void refreshHistory(historyWarning.includeDeletions)} disabled={!online || working || historyRefreshing} className="focus-ring shrink-0 rounded-md bg-actionSecondary px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">{historyRefreshing ? "กำลังโหลดประวัติ" : "โหลดประวัติใหม่"}</button>
+          </div>
+        )}
         <div className="flex flex-wrap gap-2" aria-label="มุมมองผลตรวจนับ">
           {([
             ["current", "ผลตรวจนับ"],
@@ -264,8 +391,9 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
                         className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-river text-white"><Eye size={17} /></button>
                       {history[0]?.id === item.id && (
                         <button type="button" onClick={() => { setDeleteTarget(item); setConfirmMode("delete"); }}
+                          disabled={!online || working || historyRefreshing}
                           title="ลบชุดล่าสุด" aria-label="ลบชุดล่าสุด"
-                          className="focus-ring inline-flex h-10 items-center gap-1 rounded-md bg-clay px-3 font-semibold text-white"><Trash2 size={16} />ลบ</button>
+                          className="focus-ring inline-flex h-10 items-center gap-1 rounded-md bg-clay px-3 font-semibold text-white disabled:opacity-50"><Trash2 size={16} />ลบ</button>
                       )}
                     </div></td>
                     <td className="px-4 py-3"><div className="font-semibold">{item.reportNo}</div><div className="text-xs">{dateTime(item.createdAt)}</div></td>
@@ -287,7 +415,7 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
             onShowCurrent={() => setHistoryView("current")}
           />
           {deletionsHasMore && deletionsCursor && !deletionsLoading && (
-            <div className="flex justify-center"><button type="button" onClick={() => void loadDeletions(deletionsCursor, true)} className="focus-ring rounded-md bg-river px-4 py-2 text-sm font-semibold text-white">โหลดประวัติเพิ่ม</button></div>
+            <div className="flex justify-center"><button type="button" onClick={() => void loadDeletions(deletionsCursor, true).catch((error) => toast.error(error instanceof Error ? error.message : "โหลดประวัติการลบไม่สำเร็จ"))} className="focus-ring rounded-md bg-river px-4 py-2 text-sm font-semibold text-white">โหลดประวัติเพิ่ม</button></div>
           )}
           </div>
         )}

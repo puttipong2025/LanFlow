@@ -34,6 +34,8 @@ export function BranchRubberReceiptModal({
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [commandError, setCommandError] = useState<string | null>(null);
+  const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [hasMore, setHasMore] = useState(false);
@@ -87,6 +89,8 @@ export function BranchRubberReceiptModal({
   }, [searchInput]);
 
   useEffect(() => {
+    setCommandError(null);
+    setRefreshWarning(null);
     void load();
     return () => loadController.current?.abort();
   // Reload only when the destination or debounced search changes.
@@ -97,6 +101,8 @@ export function BranchRubberReceiptModal({
     if (!selectedId || submitting) return;
     setSubmitting(true);
     setError(null);
+    setCommandError(null);
+    setRefreshWarning(null);
     try {
       const response = await authFetch("/api/lanflow/rubber-bills/branch-receipts", {
         method: "POST",
@@ -108,13 +114,19 @@ export function BranchRubberReceiptModal({
       });
       await assertApiResponse(response);
       const received = await response.json() as BranchRubberReceiptResult;
+      loadController.current?.abort();
+      setLoading(false);
       const remaining = candidatesRef.current.filter((row) => row.sourceRubberExportId !== selectedId);
       candidatesRef.current = remaining;
       setCandidates(remaining);
       setSelectedId(null);
-      await onReceived(received);
+      try {
+        await onReceived(received);
+      } catch {
+        setRefreshWarning(`รับยางสำเร็จแล้ว · บิล ${received.billNo} แต่โหลดข้อมูลใหม่ไม่สำเร็จ กรุณาปิดแล้วเปิดรายการอีกครั้ง ไม่ต้องรับซ้ำ`);
+      }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "รับยางเข้าสาขาไม่สำเร็จ");
+      setCommandError(caught instanceof Error ? caught.message : "รับยางเข้าสาขาไม่สำเร็จ");
       await load();
     } finally {
       setSubmitting(false);
@@ -127,6 +139,9 @@ export function BranchRubberReceiptModal({
       subtitle={`เลือกหนึ่งรายการเพื่อรับเข้า ${destinationLocationName}`}
       onClose={onClose}
       closeDisabled={submitting}
+      nativeModal
+      closeOnEscape
+      renderInPortal
       size="wide"
     >
       <div className="space-y-4">
@@ -181,7 +196,7 @@ export function BranchRubberReceiptModal({
                         type="radio"
                         name="branch-rubber-receipt"
                         checked={selectedId === candidate.sourceRubberExportId}
-                        onChange={() => setSelectedId(candidate.sourceRubberExportId)}
+                        onChange={() => { setSelectedId(candidate.sourceRubberExportId); setCommandError(null); }}
                         aria-label={`เลือก ${candidate.sourceExportNo} จาก ${candidate.sourceLocationName}`}
                         className="size-4 accent-leaf"
                       />
@@ -222,9 +237,14 @@ export function BranchRubberReceiptModal({
           </div>
         )}
 
-        {error && (
+        {(commandError || error) && (
           <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-pretty text-sm font-semibold text-red-700">
-            {error}
+            {commandError || error}
+          </p>
+        )}
+        {refreshWarning && (
+          <p role="status" className="rounded-md bg-amber/20 px-3 py-2 text-pretty text-sm font-semibold text-amber-900">
+            {refreshWarning}
           </p>
         )}
 

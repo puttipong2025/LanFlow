@@ -73,9 +73,7 @@ export function useIncomeSaleItems({
       if (error) throw new Error(error.message || JSON.stringify(error));
       return data;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["incomeSaleItems"] });
-    }
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["incomeSaleItems"] })
   });
 
   const disableItemMutation = useMutation({
@@ -92,9 +90,7 @@ export function useIncomeSaleItems({
         
       if (error) throw new Error(error.message || JSON.stringify(error));
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["incomeSaleItems"] });
-    }
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["incomeSaleItems"] })
   });
 
   const enableItemMutation = useMutation({
@@ -110,9 +106,7 @@ export function useIncomeSaleItems({
 
       if (error) throw new Error(error.message || JSON.stringify(error));
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["incomeSaleItems"] });
-    }
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["incomeSaleItems"] })
   });
 
   const updateStockProductMutation = useMutation({
@@ -124,9 +118,7 @@ export function useIncomeSaleItems({
 
       if (error) throw new Error(error.message || JSON.stringify(error));
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["incomeSaleItems"] });
-    }
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["incomeSaleItems"] })
   });
 
   return {

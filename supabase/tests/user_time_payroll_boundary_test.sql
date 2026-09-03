@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select extensions.plan(15);
+select extensions.plan(16);
 
 select extensions.ok(
   not has_function_privilege(
@@ -58,6 +58,13 @@ select extensions.is(
   public.can_access_location('21000000-0000-4000-8000-000000000001'),
   false,
   'User cannot turn an assignment into business location access'
+);
+
+select extensions.throws_ok(
+  $$ select public.get_cash_count_session('21000000-0000-4000-8000-000000000001') $$,
+  'P0001',
+  'ไม่มีสิทธิ์ตรวจนับเงินสดของสาขานี้',
+  'User cannot bypass the API through the Cash Count RPC'
 );
 
 select extensions.is(

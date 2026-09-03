@@ -72,7 +72,7 @@ export function TimeTrackingModule({ profile, online, locations }: TimeTrackingM
   return <UserTimeTracking profile={profile} online={online} />;
 }
 
-function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, online, expenseLocations = [], hideHeading = false, allowManagerActions, canDecide, canConfigure, onApprove, onReject }: { profile: Profile, targetUserId?: string, targetPrimaryLocationId?: string | null, online: boolean, expenseLocations?: Location[], hideHeading?: boolean, allowManagerActions?: boolean, canDecide?: boolean, canConfigure?: boolean, onApprove?: (type: ApprovalType, item: any) => void, onReject?: (type: ApprovalType, item: any) => void }) {
+function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, online, expenseLocations = [], hideHeading = false, allowManagerActions, canDecide, canConfigure, onApprove, onReject }: { profile: Profile, targetUserId?: string, targetPrimaryLocationId?: string | null, online: boolean, expenseLocations?: Location[], hideHeading?: boolean, allowManagerActions?: boolean, canDecide?: boolean, canConfigure?: boolean, onApprove?: (type: ApprovalType, item: any, refreshOwner: () => Promise<void>) => Promise<boolean>, onReject?: (type: ApprovalType, item: any, refreshOwner: () => Promise<void>) => Promise<boolean> }) {
   const queryClient = useQueryClient();
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -164,10 +164,19 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
       } else {
          alert("ลบรายการสำเร็จ");
          await loadData();
-         void queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
+         await queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
       }
     } catch (e) {
       alert("เกิดข้อผิดพลาด");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function runApprovalAction(action: () => Promise<boolean>) {
+    setSaving(true);
+    try {
+      await action();
     } finally {
       setSaving(false);
     }
@@ -347,7 +356,10 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
   }
 
   return (
-    <div className={`flex flex-col gap-6 p-4 ${targetUserId ? 'bg-mint/35 rounded-2xl border border-black/5 shadow-inner' : ''}`}>
+    <div
+      className={`flex flex-col gap-6 p-4 ${targetUserId ? 'bg-mint/35 rounded-2xl border border-black/5 shadow-inner' : ''}`}
+      aria-busy={saving}
+    >
       {!hideHeading && (
         <h2 className="flex items-center gap-2 text-balance text-xl font-bold text-ink">
           <UserCircle /> {targetUserId ? "ข้อมูลของพนักงาน" : "ระบบเวลาและเงินเดือน (ของตนเอง)"}
@@ -470,7 +482,7 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
                 return;
               }
               await loadData();
-              void queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
+              await queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
             } finally {
               setSaving(false);
             }
@@ -539,10 +551,10 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
                       </button>
                     )}
                     {canDecideItems && t.status === 'PENDING' && onApprove && (
-                      <button onClick={() => onApprove('TRANSACTION', t)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded bg-success px-3 py-1 font-bold text-white hover:bg-success/90 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
+                      <button onClick={() => void runApprovalAction(() => onApprove('TRANSACTION', t, loadData))} disabled={saving || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded bg-success px-3 py-1 font-bold text-white hover:bg-success/90 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
                     )}
                     {canDecideItems && t.status === 'PENDING' && onReject && (
-                      <button onClick={() => onReject('TRANSACTION', t)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded bg-danger px-3 py-1 font-bold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-50">ปฏิเสธ</button>
+                      <button onClick={() => void runApprovalAction(() => onReject('TRANSACTION', t, loadData))} disabled={saving || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded bg-danger px-3 py-1 font-bold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-50">ปฏิเสธ</button>
                     )}
                     {canManageTime && t.type === 'WITHDRAWAL' && t.status === 'APPROVED' && (
                       <button onClick={() => changeWithdrawalExpenseLocation(t)} disabled={saving || !online || Boolean(t.report_lock_no)} title={reportLockReason(t) ?? undefined} className="rounded-md bg-river px-3 py-1 text-sm font-semibold text-white hover:bg-river/90 disabled:opacity-40">เปลี่ยนวิธีจ่าย</button>
@@ -723,7 +735,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
     title: string;
     amount: number;
     primaryLocationId?: string | null;
-    onSuccess?: () => void;
+    refreshOwner?: () => Promise<void>;
   } | null>(null);
   const [pendingPaymentChange, setPendingPaymentChange] = useState<{
     sourceType: 'transaction' | 'payroll_slip';
@@ -732,7 +744,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
     amountLabel: string;
     primaryLocationId?: string | null;
     currentLocationId?: string | null;
-    onSuccess?: () => void;
+    refreshOwner?: () => Promise<void>;
   } | null>(null);
   const [employeeFilter, setEmployeeFilter] = useState<"pending" | "all" | null>(null);
   const [employeeBranchFilter, setEmployeeBranchFilter] = useState("all");
@@ -745,9 +757,9 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
     [data?.paymentLocations, locations],
   );
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (showLoading = true) => {
     const requestId = ++adminLoadRequestIdRef.current;
-    setLoading(true);
+    if (showLoading) setLoading(true);
     setLoadError(null);
     try {
       const res = await authFetch("/api/lanflow/time-tracking/admin");
@@ -773,7 +785,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
 
   useEffect(() => {
     const refreshVisibleData = () => {
-      if (document.visibilityState === "visible") void load();
+      if (document.visibilityState === "visible") void load(false);
     };
     window.addEventListener("focus", refreshVisibleData);
     document.addEventListener("visibilitychange", refreshVisibleData);
@@ -801,7 +813,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
         alert(json?.error || "บันทึกการตั้งค่าไม่สำเร็จ");
         return false;
       }
-      await load();
+      await load(false);
       return true;
     } catch (error) {
       console.error(error);
@@ -817,6 +829,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
     status: 'APPROVED' | 'REJECTED',
     expenseLocationId?: string | null,
     providedComment?: string,
+    refreshOwner?: () => Promise<void>,
   ) {
     if (!online) {
       alert(TIME_TRACKING_OFFLINE_MESSAGE);
@@ -846,10 +859,11 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
       alert(json?.error || 'ไม่สามารถบันทึกการอนุมัติได้');
       return false;
     }
-    void load();
-    void queryClient.invalidateQueries({
-      queryKey: [ACTIONABLE_BADGES_QUERY_KEY],
-    });
+    await Promise.all([
+      load(false),
+      refreshOwner?.(),
+      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
+    ]);
     return true;
   }
 
@@ -857,15 +871,13 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
     type: ApprovalType,
     id: string,
     expense?: { title: string; amount: number; primaryLocationId?: string | null },
-    onSuccess?: () => void,
+    refreshOwner?: () => Promise<void>,
   ) {
     if (expense) {
-      setPendingExpenseApproval({ type: type as 'TRANSACTION' | 'SLIP', id, ...expense, onSuccess });
-      return;
+      setPendingExpenseApproval({ type: type as 'TRANSACTION' | 'SLIP', id, ...expense, refreshOwner });
+      return Promise.resolve(false);
     }
-    void submitApproval(type, id, 'APPROVED').then((success) => {
-      if (success) onSuccess?.();
-    });
+    return submitApproval(type, id, 'APPROVED', undefined, undefined, refreshOwner);
   }
 
   async function submitPaymentChange(locationId: string | null, comment: string) {
@@ -888,10 +900,9 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
       alert(json?.error || "ไม่สามารถเปลี่ยนวิธีจ่ายได้");
       return false;
     }
-    const onSuccess = pendingPaymentChange.onSuccess;
+    const refreshOwner = pendingPaymentChange.refreshOwner;
     setPendingPaymentChange(null);
-    await load();
-    onSuccess?.();
+    await Promise.all([load(false), refreshOwner?.()]);
     return true;
   }
 
@@ -941,7 +952,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
         alert(json?.error || "แก้ไขค่าแรงรายวันไม่สำเร็จ");
         return;
       }
-      await load();
+      await load(false);
     } catch (error) {
       console.error("Failed to update daily wage:", error);
       alert("แก้ไขค่าแรงรายวันไม่สำเร็จ");
@@ -1205,15 +1216,15 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
              allowManagerActions={canManage}
              canDecide={canDecide}
              canConfigure={canConfigure}
-             onApprove={canDecide ? (type, item) => handleApprove(
+             onApprove={canDecide ? (type, item, refreshOwner) => handleApprove(
                type,
                item.id,
                type === 'TRANSACTION' && item.type === 'WITHDRAWAL'
                  ? { title: dashboardUser.id === profile.id ? "เบิกเงินของตนเอง" : `เบิกเงินของ ${item.profiles?.name || 'พนักงาน'}`, amount: Number(item.amount), primaryLocationId: dashboardUser.primary_location_id ?? null }
                  : undefined,
-               () => load(),
+               refreshOwner,
              ) : undefined}
-             onReject={canDecide ? (type, item) => void submitApproval(type, item.id, 'REJECTED') : undefined}
+             onReject={canDecide ? (type, item, refreshOwner) => submitApproval(type, item.id, 'REJECTED', undefined, undefined, refreshOwner) : undefined}
           />
         </ModalShell>
       )}
@@ -1230,18 +1241,19 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
           user={payrollUser}
           online={online}
           canDecide={canDecide}
-          onApprove={canDecide ? (slip) => handleApprove('SLIP', slip.id, Number(slip.net_pay) > 0 ? { title: `เงินเดือนของ ${payrollUser.name} เดือน ${slip.month}`, amount: Number(slip.net_pay), primaryLocationId: payrollUser.primary_location_id } : undefined, () => load()) : undefined}
-          onReject={canDecide ? (slip) => void submitApproval('SLIP', slip.id, 'REJECTED') : undefined}
-          onChangePayment={(slip) => setPendingPaymentChange({
+          onApprove={canDecide ? (slip, refreshOwner) => handleApprove('SLIP', slip.id, Number(slip.net_pay) > 0 ? { title: `เงินเดือนของ ${payrollUser.name} เดือน ${slip.month}`, amount: Number(slip.net_pay), primaryLocationId: payrollUser.primary_location_id } : undefined, refreshOwner) : undefined}
+          onReject={canDecide ? (slip, refreshOwner) => submitApproval('SLIP', slip.id, 'REJECTED', undefined, undefined, refreshOwner) : undefined}
+          onChangePayment={(slip, refreshOwner) => setPendingPaymentChange({
             sourceType: 'payroll_slip',
             sourceId: slip.id,
             paymentAmount: Number(slip.net_pay) || 0,
             amountLabel: 'ยอดสุทธิที่ใช้จ่าย',
             primaryLocationId: payrollUser.primary_location_id,
             currentLocationId: slip.expense_location_id ?? null,
+            refreshOwner,
           })}
           onClose={() => setPayrollUser(null)}
-          onRefresh={() => load()}
+          onRefresh={() => load(false)}
         />
       )}
       {pendingExpenseApproval && (
@@ -1252,10 +1264,9 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
           onClose={() => setPendingExpenseApproval(null)}
           onSubmit={async (locationId, comment) => {
             const approval = pendingExpenseApproval;
-            const success = await submitApproval(approval.type, approval.id, 'APPROVED', locationId, comment);
+            const success = await submitApproval(approval.type, approval.id, 'APPROVED', locationId, comment, approval.refreshOwner);
             if (success) {
               setPendingExpenseApproval(null);
-              approval.onSuccess?.();
             }
             return success;
           }}
@@ -1355,7 +1366,7 @@ function AuditLogsModal({ adminId, adminName, onClose }: { adminId: string, admi
   )
 }
 
-function PayrollModal({ user, online, canDecide, onApprove, onReject, onChangePayment, onClose, onRefresh }: { user: any, online: boolean, canDecide: boolean, onApprove?: (slip: any) => void, onReject?: (slip: any) => void, onChangePayment: (slip: any) => void, onClose: () => void, onRefresh: () => void }) {
+function PayrollModal({ user, online, canDecide, onApprove, onReject, onChangePayment, onClose, onRefresh }: { user: any, online: boolean, canDecide: boolean, onApprove?: (slip: any, refreshOwner: () => Promise<void>) => Promise<boolean>, onReject?: (slip: any, refreshOwner: () => Promise<void>) => Promise<boolean>, onChangePayment: (slip: any, refreshOwner: () => Promise<void>) => void, onClose: () => void, onRefresh: () => Promise<void> }) {
   const [slips, setSlips] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -1363,8 +1374,10 @@ function PayrollModal({ user, online, canDecide, onApprove, onReject, onChangePa
   const [createFormOpen, setCreateFormOpen] = useState(false);
   const [createMonth, setCreateMonth] = useState(bangkokToday().slice(0, 7));
   const [previewSlipId, setPreviewSlipId] = useState<string | null>(null);
+  const loadSlipsRequestIdRef = useRef(0);
 
   const loadSlips = useCallback(async () => {
+    const requestId = ++loadSlipsRequestIdRef.current;
     setLoading(true);
     setLoadError(null);
     try {
@@ -1375,18 +1388,32 @@ function PayrollModal({ user, online, canDecide, onApprove, onReject, onChangePa
       });
       if (!res.ok) throw new Error("โหลดสลิปเงินเดือนไม่สำเร็จ");
       const json = await res.json();
+      if (requestId !== loadSlipsRequestIdRef.current) return;
       setSlips(json.slips || []);
     } catch (error) {
+      if (requestId !== loadSlipsRequestIdRef.current) return;
       console.error("Failed to load payroll slips:", error);
       setLoadError("โหลดสลิปเงินเดือนไม่สำเร็จ");
     } finally {
-      setLoading(false);
+      if (requestId === loadSlipsRequestIdRef.current) setLoading(false);
     }
   }, [user.id]);
 
   useEffect(() => {
     void loadSlips();
+    return () => {
+      loadSlipsRequestIdRef.current += 1;
+    };
   }, [loadSlips]);
+
+  async function runSlipDecision(action: () => Promise<boolean>) {
+    setSaving(true);
+    try {
+      await action();
+    } finally {
+      setSaving(false);
+    }
+  }
 
   function openCreateSlip() {
     if (!online) {
@@ -1413,7 +1440,7 @@ function PayrollModal({ user, online, canDecide, onApprove, onReject, onChangePa
         setCreateFormOpen(false);
         alert("สร้างสลิปเงินเดือนสำเร็จ");
         await loadSlips();
-        onRefresh();
+        await onRefresh();
       } else {
         const json = await res.json();
         alert(json.error || "เกิดข้อผิดพลาด");
@@ -1447,7 +1474,7 @@ function PayrollModal({ user, online, canDecide, onApprove, onReject, onChangePa
       });
       if (res.ok) {
         await loadSlips();
-        onRefresh();
+        await onRefresh();
       } else {
         const json = await res.json();
         alert(json.error || "เกิดข้อผิดพลาด");
@@ -1475,7 +1502,7 @@ function PayrollModal({ user, online, canDecide, onApprove, onReject, onChangePa
             <button
               type="button"
               onClick={openCreateSlip}
-              disabled={saving || !online}
+              disabled={saving || loading || !online}
               title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE}
               className="focus-ring bg-leaf text-white px-4 py-2 rounded-lg font-bold shadow-sm hover:bg-leaf/80 disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -1531,13 +1558,13 @@ function PayrollModal({ user, online, canDecide, onApprove, onReject, onChangePa
                       )}
 
                         {canDecide && slip.status === 'PENDING' && onApprove && (
-                         <button onClick={() => onApprove(slip)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-success text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-success/85 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
+                         <button onClick={() => void runSlipDecision(() => onApprove(slip, loadSlips))} disabled={saving || loading || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-success text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-success/85 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
                        )}
                        {slip.status === 'APPROVED' && Number(slip.net_pay) > 0 && (
-                         <button onClick={() => onChangePayment(slip)} disabled={!online || Boolean(slip.report_lock_no)} title={reportLockReason(slip) ?? undefined} className="bg-river text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-river/85 disabled:opacity-40">เปลี่ยนวิธีจ่าย</button>
+                          <button onClick={() => onChangePayment(slip, loadSlips)} disabled={saving || loading || !online || Boolean(slip.report_lock_no)} title={reportLockReason(slip) ?? undefined} className="bg-river text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-river/85 disabled:opacity-40">เปลี่ยนวิธีจ่าย</button>
                        )}
                         {canDecide && slip.status === 'PENDING' && onReject && (
-                         <button onClick={() => onReject(slip)} disabled={!online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-danger text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-danger/85 disabled:cursor-not-allowed disabled:opacity-50">ปฏิเสธ</button>
+                          <button onClick={() => void runSlipDecision(() => onReject(slip, loadSlips))} disabled={saving || loading || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-danger text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-danger/85 disabled:cursor-not-allowed disabled:opacity-50">ปฏิเสธ</button>
                        )}
 
                       {canDelete && (

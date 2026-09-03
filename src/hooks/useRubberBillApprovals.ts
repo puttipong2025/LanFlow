@@ -12,7 +12,6 @@ import { authFetch } from "@/lib/auth-fetch";
 import type { EffectiveRubberApprovalSettings } from "@/types";
 
 export const RUBBER_BILL_APPROVAL_SETTINGS_KEY = "rubberBillApprovalSettings";
-export const RUBBER_BILL_APPROVAL_REQUESTS_KEY = "rubberBillApprovalRequests";
 
 export function useRubberBillApprovals({
   locationId,
@@ -51,16 +50,22 @@ export function useRubberBillApprovals({
     });
   }, [settingsQuery.data]);
 
+  function invalidateApprovalQueue() {
+    return Promise.all([
+      queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.rubberBillOperationalFeedRoot() }),
+      queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.rubberBillWorkCountsRoot() }),
+      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
+    ]);
+  }
+
   function invalidateApprovalData() {
-    void queryClient.invalidateQueries({ queryKey: [RUBBER_BILL_APPROVAL_REQUESTS_KEY] });
-    void queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.rubberBillOperationalFeedRoot() });
-    void queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.rubberBillWorkCountsRoot() });
-    void queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.moneyTransfersRoot() });
-    void queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.moneyTransferListRoot() });
-    void queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.moneyTransferSourcesRoot() });
-    void queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.incomeExpenseFeedRoot() });
-    void queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.stockRoot() });
-    void queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
+    return Promise.all([
+      invalidateApprovalQueue(),
+      queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.moneyTransferListRoot() }),
+      queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.moneyTransferSourcesRoot() }),
+      queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.incomeExpenseFeedRoot() }),
+      queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.stockRoot() }),
+    ]);
   }
 
   const saveSettingsMutation = useMutation({
@@ -76,10 +81,10 @@ export function useRubberBillApprovals({
       }
       return data;
     },
-    onSuccess: (settings: EffectiveRubberApprovalSettings) => {
+    onSuccess: async (settings: EffectiveRubberApprovalSettings) => {
       clearRubberBillApprovalSettingsCache(cachedLocationIds);
       queryClient.setQueryData([RUBBER_BILL_APPROVAL_SETTINGS_KEY, locationId], settings);
-      void queryClient.invalidateQueries({ queryKey: [RUBBER_BILL_APPROVAL_SETTINGS_KEY] });
+      await queryClient.invalidateQueries({ queryKey: [RUBBER_BILL_APPROVAL_SETTINGS_KEY] });
     },
   });
 
@@ -110,7 +115,7 @@ export function useRubberBillApprovals({
       }
       return data;
     },
-    onSuccess: invalidateApprovalData,
+    onSuccess: invalidateApprovalQueue,
   });
 
   return {

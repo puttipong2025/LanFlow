@@ -69,9 +69,7 @@ export function useTransportStaffs() {
       if (error) throw new Error(error.message || JSON.stringify(error));
       return data;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["transportStaffs"] });
-    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["transportStaffs"] }),
   });
 
   const updateStaff = useMutation({
@@ -83,9 +81,7 @@ export function useTransportStaffs() {
       if (error) throw new Error(error.message || JSON.stringify(error));
       return data;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["transportStaffs"] });
-    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["transportStaffs"] }),
   });
 
   const deleteStaff = useMutation({
@@ -96,9 +92,7 @@ export function useTransportStaffs() {
         .eq("id", id);
       if (error) throw new Error(error.message || JSON.stringify(error));
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["transportStaffs"] });
-    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["transportStaffs"] }),
   });
 
   return {

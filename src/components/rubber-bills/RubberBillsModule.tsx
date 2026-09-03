@@ -723,12 +723,12 @@ export function RubberBillsModule({
           destinationLocationName={selectedLocation.name}
           onClose={() => setBranchReceiptModalOpen(false)}
           onReceived={async (result) => {
-            setBranchReceiptModalOpen(false);
             setPage(1);
             await invalidateMoneyFlowLocation(queryClient, {
               ownerUserId: profile.id,
               locationId: selectedLocation.id,
-            });
+            }, { throwOnError: true });
+            setBranchReceiptModalOpen(false);
             toast.success(`รับยางเข้าสาขาแล้ว · บิล ${result.billNo}`);
           }}
         />
