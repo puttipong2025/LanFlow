@@ -916,7 +916,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
       await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
       await page.click('button:has-text("บิลยาง")');
       await page.click('button:has-text("เพิ่มบิลยาง")');
-      await expect(page.getByText('ราคาที่กำหนด 0.00 บาท')).toBeVisible({ timeout: 15000 });
+      await expect(page.getByText('ราคาต่ำกว่า 0.00 บาท ไม่ต้องอนุมัติ')).toBeVisible({ timeout: 15000 });
 
       const modal = page.locator('.fixed.inset-0').last();
       await modal.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]').fill(marker);

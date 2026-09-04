@@ -607,7 +607,7 @@ export function RubberBillModal({
                 ? "border-amber-300 bg-amber-50 text-amber-900"
                 : "border-leaf/20 bg-leaf/5 text-leaf"
             }`}>
-              ราคาที่กำหนด {configuredPrice.toFixed(2)} บาท
+              ราคาต่ำกว่า {configuredPrice.toFixed(2)} บาท ไม่ต้องอนุมัติ
               {exceedsConfiguredPrice && " — บิลนี้จะเข้ารออนุมัติเมื่อบันทึก"}
             </div>
           )}
