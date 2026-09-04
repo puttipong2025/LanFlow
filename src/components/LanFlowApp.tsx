@@ -14,6 +14,7 @@ import { TimeTrackingModule } from "./TimeTrackingModule";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { useLanFlowOfflineSyncCoordinator } from "@/hooks/useLanFlowOfflineSyncCoordinator";
 import { useActionableBadges } from "@/hooks/useActionableBadges";
+import { useBranchCreateGuard } from "@/hooks/useBranchCreateGuard";
 
 import {
   readBootstrapCache,
@@ -23,6 +24,7 @@ import {
   writeBootstrapCache,
   writeLastLocationPreference,
 } from "@/lib/lanflow/bootstrap-cache";
+import { clearBranchCreateGuardState } from "@/lib/lanflow/branch-create-guard";
 import { removeSyncEventsForOwner } from "@/lib/idb-queue";
 import { type Tab } from "@/components/lanflow/tabs";
 import { Dashboard } from "@/components/dashboard/Dashboard";
@@ -89,6 +91,7 @@ function UserTimePayrollApp() {
         }
 
         clearBusinessBootstrapCache(data.profile.id);
+        clearBranchCreateGuardState(data.profile.id);
         try {
           await removeSyncEventsForOwner(data.profile.id);
         } catch (error) {
@@ -347,6 +350,18 @@ function BusinessLanFlowApp() {
   });
 
   const selectedLocation = locations.find((location) => location.id === selectedLocationId) ?? locations[0];
+  const managedLocations = useMemo(
+    () => locations.filter((location) => location.active && profile.locationIds.includes(location.id)),
+    [locations, profile.locationIds],
+  );
+  const { requestBranchCreate, branchCreateDialog } = useBranchCreateGuard({
+    userId: profile.id,
+    primaryLocationId: profile.primaryLocationId ?? null,
+    activeLocationId: selectedLocation?.id ?? "",
+    managedLocations,
+    isLoaded,
+    online,
+  });
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -563,6 +578,7 @@ function BusinessLanFlowApp() {
             onInitialSearchHandled={() => setPendingRubberBillSource(null)}
             onOpenEvidence={openRubberEvidence}
             ocrQueue={rubberBillOcrQueue}
+            requestBranchCreate={requestBranchCreate}
           />
         )}
         {activeTab === "rubber-evidence" && (
@@ -585,6 +601,7 @@ function BusinessLanFlowApp() {
             }
             onInitialExportHandled={() => setPendingRubberExportSource(null)}
             onOpenReports={() => setActiveTab("reports")}
+            requestBranchCreate={requestBranchCreate}
           />
         )}
         {activeTab === "customers" && (
@@ -611,6 +628,7 @@ function BusinessLanFlowApp() {
           <IncomeExpenseModule
             selectedLocation={selectedLocation}
             profile={profile}
+            requestBranchCreate={requestBranchCreate}
             onOpenMoneyTransferSource={canAccessMoneyTransfer ? openMoneyTransferSource : undefined}
             onOpenRubberBillSource={openRubberBillSource}
             onOpenRubberExportSource={openRubberExportSource}
@@ -656,6 +674,7 @@ function BusinessLanFlowApp() {
           />
         )}
       </section>
+      {branchCreateDialog}
     </main>
   );
 }

@@ -17,6 +17,14 @@ test(`shows all Rubber Bill errors without moving focus and restores blank numer
 
   await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
   await page.getByRole("button", { name: "เพิ่มบิลยาง" }).click();
+  const branchGuard = page.getByRole("alertdialog", { name: "ยืนยันสาขาก่อนสร้างรายการ" });
+  if (await branchGuard.isVisible()) {
+    const activeBranchName = await page.getByLabel(/^เลือกสาขา/).locator("span").first().innerText();
+    await branchGuard.getByRole("button", {
+      name: `เลือกสาขา ${activeBranchName}`,
+      exact: true,
+    }).click();
+  }
 
   const modal = page.locator(".fixed.inset-0").last();
   const weighRow = modal.locator("table").first().locator("tbody tr").first();

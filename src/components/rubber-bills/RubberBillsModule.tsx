@@ -55,6 +55,8 @@ import {
   BranchRubberReceiptModal,
 } from "./BranchRubberReceiptModal";
 import { ExportVehicleWeighBillsModal } from "./ExportVehicleWeighBillsModal";
+import type { RequestBranchCreate } from "@/hooks/useBranchCreateGuard";
+import { isDeviceOnline } from "@/lib/connectivity";
 
 export function RubberBillsModule({
   selectedLocation,
@@ -63,6 +65,7 @@ export function RubberBillsModule({
   onInitialSearchHandled,
   onOpenEvidence,
   ocrQueue,
+  requestBranchCreate,
 }: {
   selectedLocation: Location;
   profile: Profile;
@@ -70,6 +73,7 @@ export function RubberBillsModule({
   onInitialSearchHandled?: () => void;
   onOpenEvidence: (billId: string) => void;
   ocrQueue: ReturnType<typeof useRubberBillOcrQueue>;
+  requestBranchCreate: RequestBranchCreate;
 }) {
   const queryClient = useQueryClient();
   const pdfShare = useSharePdf();
@@ -235,14 +239,18 @@ export function RubberBillsModule({
     }
   }
 
-  function openAdd() {
+  async function openAdd() {
+    const approval = await requestBranchCreate();
+    if (approval?.locationId !== selectedLocation.id) return;
     setOcrReviewItem(null);
     setEditingBill(null);
     setModalOpen(true);
   }
 
-  function openOcrReview(item: RubberBillOcrQueueItem) {
+  async function openOcrReview(item: RubberBillOcrQueueItem) {
     if (!item.uploadId || !item.draft) return;
+    const approval = await requestBranchCreate();
+    if (approval?.locationId !== selectedLocation.id) return;
     setOcrReviewItem(item);
     ocrQueue.setReviewing(item.id);
     setOcrQueueModalOpen(false);
@@ -378,6 +386,13 @@ export function RubberBillsModule({
     setPage(1);
   }
 
+  async function openBranchReceipt() {
+    if (!isOnline) return;
+    const approval = await requestBranchCreate({ requiresOnline: true });
+    if (approval?.locationId !== selectedLocation.id || !isDeviceOnline()) return;
+    setBranchReceiptModalOpen(true);
+  }
+
   async function confirmDiscardSyncProblem(bill: RubberBill) {
     if (deletingBillId || !isOnline) return;
     const reference = bill.serverBillNo ?? bill.localBillNo;
@@ -443,7 +458,7 @@ export function RubberBillsModule({
       </div>
       {billsView === "wex" ? (
         <div id="rubber-bills-wex-panel" role="tabpanel" aria-labelledby="rubber-bills-wex-tab">
-          <ExportVehicleWeighBillsModal selectedLocation={selectedLocation} online={isOnline} />
+          <ExportVehicleWeighBillsModal selectedLocation={selectedLocation} online={isOnline} requestBranchCreate={requestBranchCreate} />
         </div>
       ) : (
         <div id="rubber-bills-purchase-panel" role="tabpanel" aria-labelledby="rubber-bills-purchase-tab" className="space-y-4">
@@ -528,7 +543,7 @@ export function RubberBillsModule({
           )}
           <button
             type="button"
-            onClick={() => setBranchReceiptModalOpen(true)}
+            onClick={() => void openBranchReceipt()}
             disabled={!isOnline}
             title={isOnline ? "เลือกรายการส่งออกยางจากต่างสาขาหรือสาขาปัจจุบัน" : "รับยางจากสาขาใช้ได้เมื่อออนไลน์เท่านั้น"}
             className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-river px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
@@ -538,7 +553,7 @@ export function RubberBillsModule({
           </button>
           <button
             type="button"
-            onClick={openAdd}
+            onClick={() => void openAdd()}
             className="focus-ring flex h-10 w-full items-center justify-center gap-2 rounded-md bg-leaf px-4 text-sm font-semibold text-white sm:w-auto"
           >
             <Plus size={18} />

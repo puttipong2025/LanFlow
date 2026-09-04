@@ -426,6 +426,7 @@ export function RubberBillModal({
     event.preventDefault();
     if (submitLockRef.current) return;
     const formElement = event.currentTarget;
+    const submitter = (event.nativeEvent as SubmitEvent).submitter;
     submitLockRef.current = true;
     setIsSubmitting(true);
     try {
@@ -433,6 +434,11 @@ export function RubberBillModal({
     } finally {
       submitLockRef.current = false;
       setIsSubmitting(false);
+      requestAnimationFrame(() => {
+        if (submitter instanceof HTMLElement && submitter.isConnected) {
+          submitter.focus({ preventScroll: true });
+        }
+      });
     }
   }
 

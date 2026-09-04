@@ -4,6 +4,21 @@ import { useEffect, useId, useRef, type ReactNode } from "react";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/cn";
 
+type AlertDialogProps = {
+  open: boolean;
+  title: string;
+  description: string;
+  cancelLabel?: string | null;
+  busy?: boolean;
+  confirmClassName?: string;
+  onCancel: () => void;
+  onClosed?: () => void;
+  children?: ReactNode;
+} & (
+  | { confirmLabel: string; onConfirm: () => void }
+  | { confirmLabel: null; onConfirm?: never }
+);
+
 export function AlertDialog({
   open,
   title,
@@ -14,19 +29,9 @@ export function AlertDialog({
   confirmClassName,
   onCancel,
   onConfirm,
+  onClosed,
   children,
-}: {
-  open: boolean;
-  title: string;
-  description: string;
-  confirmLabel: string;
-  cancelLabel?: string | null;
-  busy?: boolean;
-  confirmClassName?: string;
-  onCancel: () => void;
-  onConfirm: () => void;
-  children?: ReactNode;
-}) {
+}: AlertDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   const descriptionId = useId();
@@ -44,6 +49,7 @@ export function AlertDialog({
       role="alertdialog"
       aria-labelledby={titleId}
       aria-describedby={descriptionId}
+      onClose={onClosed}
       onCancel={(event) => {
         event.preventDefault();
         if (!busy) onCancel();
@@ -71,20 +77,22 @@ export function AlertDialog({
               {cancelLabel}
             </button>
           )}
-          <button
-            autoFocus={!cancelLabel}
-            ref={(button) => { if (button) button.autofocus = !cancelLabel; }}
-            type="button"
-            disabled={busy}
-            onClick={onConfirm}
-            className={cn(
-              "focus-ring inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-semibold text-white disabled:opacity-50",
-              confirmClassName ?? "bg-clay",
-            )}
-          >
-            {busy && <Loader2 size={16} className="animate-spin" />}
-            {confirmLabel}
-          </button>
+          {confirmLabel && (
+            <button
+              autoFocus={!cancelLabel}
+              ref={(button) => { if (button) button.autofocus = !cancelLabel; }}
+              type="button"
+              disabled={busy}
+              onClick={onConfirm}
+              className={cn(
+                "focus-ring inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-semibold text-white disabled:opacity-50",
+                confirmClassName ?? "bg-clay",
+              )}
+            >
+              {busy && <Loader2 size={16} className="animate-spin" />}
+              {confirmLabel}
+            </button>
+          )}
         </div>
       </div>
     </dialog>

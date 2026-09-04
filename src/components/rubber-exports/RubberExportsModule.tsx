@@ -22,6 +22,8 @@ import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { AlertDialog } from "@/components/shared/AlertDialog";
 import { DeletionAuditTable } from "@/components/shared/DeletionAuditTable";
+import type { RequestBranchCreate } from "@/hooks/useBranchCreateGuard";
+import { isDeviceOnline } from "@/lib/connectivity";
 
 type DetailTarget = Pick<RubberExportSummary, "id" | "exportNo">;
 
@@ -134,12 +136,14 @@ export function RubberExportsModule({
   initialExportId,
   onInitialExportHandled,
   onOpenReports,
+  requestBranchCreate,
 }: {
   selectedLocation: Location;
   online: boolean;
   initialExportId?: string | null;
   onInitialExportHandled?: () => void;
   onOpenReports: () => void;
+  requestBranchCreate: RequestBranchCreate;
 }) {
   const [view, setView] = useState<"active" | "history" | "deletions">("active");
   const operationalView = view === "history" ? "history" : "active";
@@ -161,6 +165,22 @@ export function RubberExportsModule({
   const [selling, setSelling] = useState(false);
   const detailController = useRef<AbortController | null>(null);
   const pdfShare = useSharePdf();
+
+  async function openCreate() {
+    if (!online || api.optionsLoading) return;
+    try {
+      const bills = await api.loadAvailableBills("create");
+      if (bills.length === 0) {
+        toast.info("ยังไม่มีบิลที่พร้อมส่งออก กรุณาสร้างรายงานที่ล็อกบิลก่อน");
+        return;
+      }
+      const approval = await requestBranchCreate({ requiresOnline: true });
+      if (approval?.locationId !== selectedLocation.id || !isDeviceOnline()) return;
+      setCreating(true);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "โหลดบิลที่พร้อมส่งออกไม่สำเร็จ");
+    }
+  }
 
   useEffect(() => {
     setPendingDelete(null);
@@ -323,13 +343,7 @@ export function RubberExportsModule({
           </button>
           {view === "active" && <button
             type="button"
-            onClick={() => void api.loadAvailableBills("create").then((bills) => {
-              if (bills.length === 0) {
-                toast.info("ยังไม่มีบิลที่พร้อมส่งออก กรุณาสร้างรายงานที่ล็อกบิลก่อน");
-                return;
-              }
-              setCreating(true);
-            }).catch((error) => toast.error(error instanceof Error ? error.message : "โหลดบิลที่พร้อมส่งออกไม่สำเร็จ"))}
+            onClick={() => void openCreate()}
             disabled={!online || api.optionsLoading}
             title={!online ? "ต้องออนไลน์ก่อนสร้างรายการ" : "สร้างรายการส่งออกยาง"}
             className="focus-ring inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-leaf px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"

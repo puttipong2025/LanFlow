@@ -15,6 +15,8 @@ import { exportVehicleWeighBillPdfDocument } from "@/lib/export-vehicle-weigh-bi
 import { formatExportVehicleWeighBillNumber } from "@/lib/export-vehicle-weigh-bills/presentation";
 import type { Location } from "@/types";
 import type { WexDetails, WexSummary } from "@/types/export-vehicle-weigh-bills";
+import type { RequestBranchCreate } from "@/hooks/useBranchCreateGuard";
+import { isDeviceOnline } from "@/lib/connectivity";
 
 type DetailTarget = Pick<WexSummary, "id" | "wexNo">;
 type DeleteTarget = Pick<WexSummary, "id" | "wexNo" | "revision">;
@@ -22,9 +24,11 @@ type DeleteTarget = Pick<WexSummary, "id" | "wexNo" | "revision">;
 export function ExportVehicleWeighBillsModal({
   selectedLocation,
   online,
+  requestBranchCreate,
 }: {
   selectedLocation: Location;
   online: boolean;
+  requestBranchCreate: RequestBranchCreate;
 }) {
   const api = useExportVehicleWeighBills({ locationId: selectedLocation.id, online });
   const pdfShare = useSharePdf();
@@ -45,6 +49,18 @@ export function ExportVehicleWeighBillsModal({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [sharingId, setSharingId] = useState<string | null>(null);
   const deleteScopeRef = useRef(0);
+  const createEligibilityRef = useRef({
+    locationId: selectedLocation.id,
+    online,
+    optionsLoading,
+    canCreate: api.permissions.canCreate,
+  });
+  createEligibilityRef.current = {
+    locationId: selectedLocation.id,
+    online,
+    optionsLoading,
+    canCreate: api.permissions.canCreate,
+  };
 
   useEffect(() => {
     deleteScopeRef.current += 1;
@@ -120,6 +136,20 @@ export function ExportVehicleWeighBillsModal({
     }
   }
 
+  async function openCreate() {
+    if (!online || optionsLoading || !api.permissions.canCreate) return;
+    const approval = await requestBranchCreate({ requiresOnline: true });
+    const currentEligibility = createEligibilityRef.current;
+    if (
+      approval?.locationId !== currentEligibility.locationId
+      || !currentEligibility.online
+      || !isDeviceOnline()
+      || currentEligibility.optionsLoading
+      || !currentEligibility.canCreate
+    ) return;
+    await openForm(null);
+  }
+
   async function openEdit(target: DetailTarget) {
     if (!online) return;
     detailControllerRef.current?.abort();
@@ -193,7 +223,7 @@ export function ExportVehicleWeighBillsModal({
     <section className="space-y-4" aria-label="บิลรถส่งออก">
       <div className="flex flex-col items-start gap-3 rounded-md border border-black/10 bg-white p-4 shadow-panel">
         <div><h2 className="text-balance text-lg font-bold text-ink">บิลรถส่งออก (WEX) · {selectedLocation.name}</h2><p className="text-pretty text-sm text-ink/60">หลักฐานชั่งและบรรทุกยางของรถบรรทุก พร้อมหางพ่วงเสริมได้หนึ่งรายการ โดยไม่สร้างรายการการเงินหรือรายงาน</p></div>
-        <div className="flex w-full flex-wrap gap-2 sm:w-auto"><button type="button" disabled={!online || api.loading} onClick={() => void api.reload()} className="focus-ring inline-flex h-10 items-center gap-2 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"><RefreshCw size={16} className={api.loading ? "animate-spin motion-reduce:animate-none" : ""} aria-hidden="true" />รีเฟรช</button>{api.permissions.canCreate && <button type="button" disabled={!online || optionsLoading} title={!online ? "สร้าง WEX ได้เมื่อออนไลน์เท่านั้น" : "สร้างบิลรถส่งออก"} onClick={() => void openForm(null)} className="focus-ring inline-flex h-10 items-center gap-2 rounded-md bg-leaf px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"><FilePlus2 size={16} aria-hidden="true" />สร้างบิลรถส่งออก</button>}</div>
+        <div className="flex w-full flex-wrap gap-2 sm:w-auto"><button type="button" disabled={!online || api.loading} onClick={() => void api.reload()} className="focus-ring inline-flex h-10 items-center gap-2 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"><RefreshCw size={16} className={api.loading ? "animate-spin motion-reduce:animate-none" : ""} aria-hidden="true" />รีเฟรช</button>{api.permissions.canCreate && <button type="button" disabled={!online || optionsLoading} title={!online ? "สร้าง WEX ได้เมื่อออนไลน์เท่านั้น" : "สร้างบิลรถส่งออก"} onClick={() => void openCreate()} className="focus-ring inline-flex h-10 items-center gap-2 rounded-md bg-leaf px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"><FilePlus2 size={16} aria-hidden="true" />สร้างบิลรถส่งออก</button>}</div>
       </div>
       {!online && <p role="status" className="rounded-md bg-amber/20 px-4 py-3 text-sm font-semibold text-amber-900">บิลรถส่งออกเป็นเอกสารออนไลน์เท่านั้น โปรดเชื่อมต่ออินเทอร์เน็ตเพื่อดูหรือจัดการ</p>}
       {online && api.error && <p role="alert" className="rounded-md bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">{api.error}</p>}

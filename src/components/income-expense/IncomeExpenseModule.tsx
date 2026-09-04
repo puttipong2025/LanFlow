@@ -1,6 +1,6 @@
 import { ArrowRightLeft, Edit3, ExternalLink, Eye, Plus, RefreshCw, Settings, Share2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { formatCurrency } from "@/lib/format";
 import { formatPayrollCurrency } from "@/lib/time-tracking/format";
@@ -25,6 +25,8 @@ import {
   renderCashTransferReceiptHtml,
 } from "@/lib/cash-branch-transfer-receipt";
 import { useSharePdf } from "@/hooks/useSharePdf";
+import type { RequestBranchCreate } from "@/hooks/useBranchCreateGuard";
+import { isDeviceOnline } from "@/lib/connectivity";
 
 import type { CashBranchTransfer, IncomeExpense, IncomeExpenseApprovalMarker, Location, Profile } from "@/types";
 import { IconButton } from "@/components/shared/IconButton";
@@ -73,6 +75,7 @@ function pendingIncomeExpense(marker: IncomeExpenseApprovalMarker): IncomeExpens
 export function IncomeExpenseModule({
   selectedLocation,
   profile,
+  requestBranchCreate,
   onOpenMoneyTransferSource,
   onOpenRubberBillSource,
   onOpenRubberExportSource,
@@ -80,6 +83,7 @@ export function IncomeExpenseModule({
 }: {
   selectedLocation: Location;
   profile: Profile;
+  requestBranchCreate: RequestBranchCreate;
   onOpenMoneyTransferSource?: (transferId: string, locationId: string) => void;
   onOpenRubberBillSource?: (locationId: string, billDate?: string) => void;
   onOpenRubberExportSource?: (exportId: string, locationId: string) => void;
@@ -108,6 +112,11 @@ export function IncomeExpenseModule({
     pendingApprovalCount,
   } = useIncomeExpense(selectedLocation.id, profile.id, { mode, search: debouncedSearch });
   const isOnline = useOnlineStatus();
+  const branchTransferEligibilityRef = useRef({ locationId: selectedLocation.id, allowed: false });
+  branchTransferEligibilityRef.current = {
+    locationId: selectedLocation.id,
+    allowed: isOnline && canAccessSourceLocation(profile, selectedLocation.id),
+  };
   const canManageSystem = canManageSystemFeatures(profile);
   const [cashReceiptId, setCashReceiptId] = useState<string | null>(null);
   const [cashDetailsId, setCashDetailsId] = useState<string | null>(null);
@@ -198,7 +207,9 @@ export function IncomeExpenseModule({
     }
   }, [filteredTransactions.length, hasMore, isLoadingMore, loadMore, page, pageSize]);
 
-  function openAdd(type: "income" | "expense") {
+  async function openAdd(type: "income" | "expense") {
+    const approval = await requestBranchCreate();
+    if (approval?.locationId !== selectedLocation.id) return;
     setModalType(type);
     setEditingTransaction(null);
     setModalOpen(true);
@@ -256,11 +267,18 @@ export function IncomeExpenseModule({
     return getOfflineSyncedActionBlockReason(transaction, isOnline);
   }
 
-  function openBranchTransfer() {
+  async function openBranchTransfer() {
     if (!isOnline) {
       toast.error("การโยกเงินไปสาขาอื่นต้องออนไลน์ก่อน");
       return;
     }
+    const approval = await requestBranchCreate({ requiresOnline: true });
+    const currentEligibility = branchTransferEligibilityRef.current;
+    if (
+      approval?.locationId !== currentEligibility.locationId
+      || !isDeviceOnline()
+      || !currentEligibility.allowed
+    ) return;
     setBranchTransferModalOpen(true);
   }
 
@@ -573,7 +591,7 @@ export function IncomeExpenseModule({
         <div className="flex w-full flex-wrap gap-2 sm:w-auto">
           <button
             type="button"
-            onClick={() => openAdd("income")}
+            onClick={() => void openAdd("income")}
             className="focus-ring flex h-10 w-full items-center justify-center gap-2 rounded-md bg-leaf px-4 text-sm font-semibold text-white sm:w-auto"
           >
             <Plus size={18} />
@@ -581,7 +599,7 @@ export function IncomeExpenseModule({
           </button>
           <button
             type="button"
-            onClick={() => openAdd("expense")}
+            onClick={() => void openAdd("expense")}
             className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-clay px-3 text-sm font-semibold text-white hover:bg-clay/90"
           >
             <Plus size={18} />
@@ -590,7 +608,7 @@ export function IncomeExpenseModule({
           {canAccessSourceLocation(profile, selectedLocation.id) && (
             <button
               type="button"
-              onClick={openBranchTransfer}
+              onClick={() => void openBranchTransfer()}
               disabled={!isOnline}
               title={isOnline ? "โยกเงินไปสาขาอื่น" : "โยกเงินต้องออนไลน์ก่อน"}
               className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-river px-3 text-sm font-semibold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:bg-slate-300"

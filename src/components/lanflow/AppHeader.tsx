@@ -104,6 +104,11 @@ export function AppHeader({
     (locationId) => branchSummaryByLocation.get(locationId)?.summary?.netCashFlow,
   ), [accessibleLocations, branchSummaryByLocation, locationBadgeTotals]);
   const selectedLocation = orderedLocations.find((location) => location.id === selectedLocationId);
+  const branchContextLabel = !profile.primaryLocationId
+    ? "ไม่มีสาขาหลัก"
+    : profile.primaryLocationId !== selectedLocationId
+      ? "สาขารอง"
+      : null;
   const selectedBadgeTotal = locationBadgeTotals[selectedLocationId] ?? 0;
   const selectedBranchSummary = branchSummaryByLocation.get(selectedLocationId);
   const selectedCashStatusLabel = selectedBranchSummary
@@ -179,7 +184,7 @@ export function AppHeader({
               type="button"
               data-location-id={selectedLocationId}
               data-cash-status={selectedBranchSummary?.cashStatus ?? "unknown"}
-              aria-label={`เลือกสาขา${selectedBadgeTotal > 0 ? ` มีงาน ${selectedBadgeTotal} รายการ` : ""}${selectedCashStatusLabel ? ` สถานะ${selectedCashStatusLabel}` : ""}`}
+              aria-label={`เลือกสาขา${branchContextLabel ? ` ${branchContextLabel}` : ""}${selectedBadgeTotal > 0 ? ` มีงาน ${selectedBadgeTotal} รายการ` : ""}${selectedCashStatusLabel ? ` สถานะ${selectedCashStatusLabel}` : ""}`}
               aria-haspopup="listbox"
               aria-controls="location-selector-listbox"
               aria-expanded={locationMenuOpen}
@@ -198,6 +203,11 @@ export function AppHeader({
               <span className="min-w-0 flex-1 truncate text-sm font-semibold text-ink">
                 {selectedLocation?.name ?? "เลือกสาขา"}
               </span>
+              {branchContextLabel && (
+                <span className="shrink-0 whitespace-nowrap rounded-md bg-amber/20 px-2 py-0.5 text-[11px] font-semibold text-amber-900">
+                  {branchContextLabel}
+                </span>
+              )}
               <span
                 aria-hidden="true"
                 className={`size-2 shrink-0 rounded-full ${cashStatusDot(selectedBranchSummary?.cashStatus)}`}
