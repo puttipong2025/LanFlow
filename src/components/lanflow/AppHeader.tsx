@@ -5,7 +5,7 @@ import { BellRing, Building2, Check, ChevronDown, Clock3, Wifi, WifiOff } from "
 import type { Location, Profile } from "@/types";
 import { canManageSystemFeatures } from "@/lib/permissions";
 import { TelegramBadgeConfigModal } from "@/components/lanflow/TelegramBadgeConfigModal";
-import { LogoutButton } from "@/components/lanflow/LogoutButton";
+import { AccountActions } from "@/components/lanflow/AccountActions";
 import { useDashboardBranchSummaries } from "@/hooks/useDashboardOverview";
 import { cn } from "@/lib/cn";
 import { formatCurrency, formatNumber } from "@/lib/format";
@@ -357,7 +357,7 @@ export function AppHeader({
             </button>
           )}
 
-          <LogoutButton online={online} onLogout={onLogout} />
+          <AccountActions online={online} onLogout={onLogout} />
         </div>
       </div>
       {online && serviceUnavailable && (

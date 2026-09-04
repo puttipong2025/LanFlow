@@ -46,6 +46,18 @@ export type AdminPasswordResetRequest = {
 export type AdminPasswordResetResponse = {
   success: true;
   auditStatus: Extract<AdminPasswordAuditStatus, "pending" | "succeeded">;
+  readablePasswordAvailable: boolean;
+};
+
+export type SelfPasswordChangeRequest = {
+  currentPassword: string;
+  newPassword: string;
+  confirmPassword: string;
+};
+
+export type SelfPasswordChangeResponse = {
+  success: true;
+  readablePasswordAvailable: boolean;
 };
 
 export type RubberBill = {

@@ -31,9 +31,11 @@
 | `name` | `text` | ชื่อพนักงาน |
 | `role` | `enum` | ระดับสิทธิ์ `user` (พนักงานทั่วไป), `admin` (ผู้ดูแล), `super_admin` (เจ้าของระบบ) |
 | `is_active` | `boolean` | สถานะบัญชี (`true` = ใช้งานได้, `false` = ถูกแบน/ปิดใช้งาน) |
+| `current_password_plaintext` | `text` (nullable) | สำเนาค่าปัจจุบันสำหรับ Super Admin เปิดดูตาม ADR-0061; ไม่ใช่แหล่งยืนยันตัวตน |
+| `current_password_auth_version` | `text` (nullable) | UUID ที่จับคู่กับ Auth user metadata; reveal ได้เมื่อ version ตรงกันเท่านั้น |
 
-> [!NOTE]
-> รหัสผ่าน (`password_hash`) จะไม่ได้ถูกจัดการโดยเราอีกต่อไป แต่ถูกจัดการโดย Supabase อย่างปลอดภัย
+> [!WARNING]
+> Supabase Auth ยังคงจัดการ password hash และยืนยันตัวตน แต่ตามการตัดสินใจใน ADR-0061 แอปเก็บสำเนารหัสผ่านปัจจุบันแบบอ่านกลับได้ซึ่งเจ้าของระบบยอมรับความเสี่ยง มีเพียง exact Super Admin ที่โหลดผ่าน server endpoint รายบัญชีได้ และห้ามค่าดังกล่าวอยู่ใน list, audit, log หรือ cache
 
 ### 2. `user_locations` (ตารางเชื่อมผู้ใช้-สาขา)
 ใช้เก็บว่าพนักงานแต่ละคนมีสิทธิ์มองเห็นและจัดการข้อมูลของ "สาขาไหน" บ้าง (1 คนดูแลได้หลายสาขา)
@@ -66,3 +68,12 @@
 2. Frontend เรียกคำสั่ง `supabase.auth.signOut()`
 3. Supabase จะล้าง Cookie Session และ LocalStorage ของระบบ
 4. พาผู้ใช้กลับไปหน้า `/login`
+
+### 3.4 การเปลี่ยนและรีเซ็ตรหัสผ่าน
+
+1. ทุกบัญชี active เปลี่ยนรหัสผ่านตนเองผ่าน `POST /api/auth/password` โดยยืนยัน current password ก่อน
+2. user-scoped password update คง refresh session ปัจจุบันและยกเลิก refresh session อื่น
+3. Super Admin และผู้จัดการระบบรีเซ็ตบัญชีอื่นที่ไม่ใช่ Super Admin ผ่าน Admin workflow; refresh session เดิมของเป้าหมายถูกยกเลิกทั้งหมด
+4. password reveal และ admin reset ตรวจ `session_id` กับ `auth.sessions` เพิ่มจาก role/capability guard
+5. access JWT ของ route อื่นอาจใช้ได้จนหมดอายุ แม้ refresh session ถูกยกเลิกแล้ว
+6. readable copy ใช้ลำดับ clear → Auth update → write และจับคู่ UUID version กับ Auth metadata; เมื่อ version ไม่ตรงหรือยืนยันไม่ได้ให้ล้างแบบมีเงื่อนไขและแสดง “ยังไม่มีข้อมูล”

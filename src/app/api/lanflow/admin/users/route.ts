@@ -4,6 +4,7 @@ import { createSupabaseAdminClient } from "@/lib/server/supabase-admin";
 import { normalizeThaiPhoneToE164 } from "@/lib/phone";
 import type { AppRole } from "@/types";
 import { deriveEffectiveCapabilities } from "@/lib/permissions";
+import { isUuid } from "@/lib/server/management-route-error";
 
 export async function GET(request: NextRequest) {
   const adminCheck = await requireRoleOrSystemManager(request, ["super_admin", "admin"]);
@@ -73,7 +74,16 @@ export async function POST(request: NextRequest) {
   let authUserId: string | null = null;
 
   try {
-    const body = await request.json() as {
+    let parsed: unknown;
+    try {
+      parsed = await request.json();
+    } catch {
+      return NextResponse.json({ error: "invalid request body" }, { status: 400 });
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return NextResponse.json({ error: "invalid request body" }, { status: 400 });
+    }
+    const body = parsed as {
       phone?: string;
       name?: string;
       password?: string;
@@ -81,11 +91,21 @@ export async function POST(request: NextRequest) {
       locationIds?: string[];
     };
 
-    if (!body.phone || !body.name || !body.password) {
+    if (typeof body.phone !== "string"
+        || typeof body.name !== "string"
+        || typeof body.password !== "string"
+        || !body.phone.trim()
+        || !body.name.trim()
+        || !body.password) {
       return NextResponse.json(
         { error: "phone, name and password are required" },
         { status: 400 }
       );
+    }
+
+    if (body.locationIds !== undefined
+        && (!Array.isArray(body.locationIds) || body.locationIds.some((id) => !isUuid(id)))) {
+      return NextResponse.json({ error: "invalid locationIds" }, { status: 400 });
     }
 
     if (body.password.length < 8) {
@@ -105,13 +125,25 @@ export async function POST(request: NextRequest) {
     }
 
     const id = crypto.randomUUID();
-    const phoneE164 = normalizeThaiPhoneToE164(body.phone);
+    const passwordVersion = crypto.randomUUID();
+    let phoneE164: string;
+    try {
+      phoneE164 = normalizeThaiPhoneToE164(body.phone);
+    } catch (error) {
+      return NextResponse.json(
+        { error: error instanceof Error ? error.message : "กรุณากรอกเบอร์โทรศัพท์ให้ถูกต้อง" },
+        { status: 400 },
+      );
+    }
     const { data: authUser, error: authError } = await admin.auth.admin.createUser({
       id,
       phone: phoneE164,
       phone_confirm: true,
       password: body.password,
-      user_metadata: { name: body.name.trim() },
+      user_metadata: {
+        name: body.name.trim(),
+        lanflow_password_copy_version: passwordVersion,
+      },
       app_metadata: { lanflow_role: role }
     });
 
@@ -126,7 +158,8 @@ export async function POST(request: NextRequest) {
       name: body.name.trim(),
       role,
       is_active: true,
-      password_hash: null
+      current_password_plaintext: body.password,
+      current_password_auth_version: passwordVersion,
     });
     if (profileError) throw profileError;
 

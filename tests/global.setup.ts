@@ -35,20 +35,28 @@ async function ensureTestUser() {
 
   for (const u of usersConfig) {
     const phoneE164 = normalizeThaiPhoneToE164(u.phone);
+    const passwordVersion = crypto.randomUUID();
     const existing = await admin.auth.admin.getUserById(u.id);
     
-    if (existing.data.user) {
-      await admin.auth.admin.updateUserById(u.id, {
+    const authWrite = existing.data.user
+      ? await admin.auth.admin.updateUserById(u.id, {
         phone: phoneE164, password, phone_confirm: true,
-        user_metadata: { name: `LanFlow ${u.role}` },
+        user_metadata: {
+          name: `LanFlow ${u.role}`,
+          lanflow_password_copy_version: passwordVersion,
+        },
         app_metadata: { lanflow_role: u.role },
-      });
-    } else {
-      await admin.auth.admin.createUser({
+      })
+      : await admin.auth.admin.createUser({
         id: u.id, phone: phoneE164, password, phone_confirm: true,
-        user_metadata: { name: `LanFlow ${u.role}` },
+        user_metadata: {
+          name: `LanFlow ${u.role}`,
+          lanflow_password_copy_version: passwordVersion,
+        },
         app_metadata: { lanflow_role: u.role },
       });
+    if (authWrite.error || !authWrite.data.user) {
+      throw authWrite.error ?? new Error(`Auth user unavailable for ${u.id}`);
     }
 
     await admin.from('profiles').upsert({
@@ -58,6 +66,8 @@ async function ensureTestUser() {
       role: u.role,
       is_active: true,
       password_hash: null,
+      current_password_plaintext: password,
+      current_password_auth_version: passwordVersion,
       can_access_super_admin_features: false,
       can_access_money_transfer: false,
       can_manage_time_payroll: false,

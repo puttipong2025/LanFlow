@@ -35,7 +35,7 @@ import { RubberExportsModule } from "@/components/rubber-exports/RubberExportsMo
 import { CashCountModule } from "@/components/cash-counts/CashCountModule";
 import { AppHeader } from "@/components/lanflow/AppHeader";
 import { NavigationTabs } from "@/components/lanflow/NavigationTabs";
-import { LogoutButton } from "@/components/lanflow/LogoutButton";
+import { AccountActions } from "@/components/lanflow/AccountActions";
 import {
   canAccessSourceLocation,
   canManageSystemFeatures,
@@ -118,7 +118,7 @@ function UserTimePayrollApp() {
             {auth.profile?.name} · {online ? "ออนไลน์" : "ออฟไลน์"}
           </p>
         </div>
-        <LogoutButton online={online} onLogout={auth.logout} />
+        <AccountActions online={online} onLogout={auth.logout} />
       </div>
     </section>
   );
@@ -402,7 +402,7 @@ function BusinessLanFlowApp() {
                   : "ไม่มีสาขาหลัก · ใช้บริการตนเองเท่านั้น"}
               </p>
             </div>
-            <LogoutButton online={online} onLogout={auth.logout} />
+            <AccountActions online={online} onLogout={auth.logout} />
           </div>
         </section>
         <section className="mx-auto w-full max-w-7xl px-3 py-5 sm:px-4 sm:py-6">
@@ -423,10 +423,10 @@ function BusinessLanFlowApp() {
           บัญชีของคุณยังไม่ได้รับการกำหนดสาขา<br />
           กรุณาติดต่อผู้ดูแลระบบเพื่อกำหนดสาขาให้คุณ
         </p>
-        <LogoutButton
+        <AccountActions
           online={online}
           onLogout={auth.logout}
-          className="mt-6 px-4"
+          className="mt-6"
         />
       </div>
     );
@@ -458,15 +458,9 @@ function BusinessLanFlowApp() {
           : [...current.locationIds, newLoc.id],
       }));
       changeSelectedLocation(newLoc.id);
-      toast.success(
-        "เพิ่มสาขาแล้ว · ตั้งค่าเกณฑ์ผ่านปุ่ม Telegram เพื่อเริ่ม Dashboard alert",
-      );
       return true;
     } catch (error) {
       console.error("Add location error:", error);
-      toast.error(
-        error instanceof Error ? error.message : "เพิ่มสาขาไม่สำเร็จ",
-      );
       return false;
     }
   }

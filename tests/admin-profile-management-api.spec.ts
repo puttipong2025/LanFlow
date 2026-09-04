@@ -3,6 +3,9 @@ import { createClient } from "@supabase/supabase-js";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const publishableKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+  || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  || "";
 
 async function authContext(browser: Browser, role: "admin" | "super_admin") {
   return browser.newContext({ storageState: `playwright/.auth/${role}.json` });
@@ -47,6 +50,22 @@ test.describe.serial("Admin profile management API", () => {
         location_id: secondLocationId,
         is_primary: false,
       })).error).toBeNull();
+
+      const malformedCreate = await manager.request.post("/api/lanflow/admin/users", { data: [] });
+      expect(malformedCreate.status()).toBe(400);
+      expect(await malformedCreate.json()).toEqual({ error: "invalid request body" });
+
+      const invalidPhone = await manager.request.post("/api/lanflow/admin/users", {
+        data: {
+          phone: "not-a-phone",
+          name: "invalid phone",
+          password,
+          role: "user",
+          locationIds: [],
+        },
+      });
+      expect(invalidPhone.status()).toBe(400);
+      expect(await invalidPhone.json()).toEqual({ error: "กรุณากรอกเบอร์โทรศัพท์ให้ถูกต้อง" });
 
       const created = await manager.request.post("/api/lanflow/admin/users", {
         data: {
@@ -153,7 +172,7 @@ test.describe.serial("Admin profile management API", () => {
     }
   });
 
-  test("password reset is idempotent and never stores or returns the password", async ({ browser }) => {
+  test("password reset is idempotent, stores only the display copy, and never returns it from mutation or audit", async ({ browser }) => {
     const manager = await authContext(browser, "super_admin");
     const ordinaryAdmin = await authContext(browser, "admin");
     const db = service();
@@ -161,6 +180,9 @@ test.describe.serial("Admin profile management API", () => {
     const phone = `08${Date.now().toString().slice(-8)}`;
     const originalPassword = `Start-${crypto.randomUUID()}`;
     const newPassword = `Changed-${crypto.randomUUID()}`;
+    const managerPassword = `Manager-${crypto.randomUUID()}`;
+    const concurrentPasswordA = `Concurrent-A-${crypto.randomUUID()}`;
+    const concurrentPasswordB = `Concurrent-B-${crypto.randomUUID()}`;
     const requestId = crypto.randomUUID();
     const stoppedRequestId = crypto.randomUUID();
     const failedRequestId = crypto.randomUUID();
@@ -179,6 +201,40 @@ test.describe.serial("Admin profile management API", () => {
       });
       expect(created.status(), await created.text()).toBe(201);
       targetId = (await created.json() as { user: { id: string } }).user.id;
+
+      const malformedReset = await manager.request.put(`/api/lanflow/admin/users/${targetId}/password`, {
+        data: [],
+      });
+      expect(malformedReset.status()).toBe(400);
+      expect(await malformedReset.json()).toEqual({ errorMessage: "ข้อมูลรีเซ็ตรหัสผ่านไม่ถูกต้อง" });
+
+      const initialReveal = await manager.request.get(`/api/lanflow/admin/users/${targetId}/password`);
+      expect(initialReveal.ok(), await initialReveal.text()).toBeTruthy();
+      expect(await initialReveal.json()).toEqual({ available: true, password: originalPassword });
+
+      expect((await db.from("profiles").update({ can_access_super_admin_features: true }).eq("id", "00000000-0000-4000-8000-000000000002")).error).toBeNull();
+      const managerReveal = await ordinaryAdmin.request.get(`/api/lanflow/admin/users/${targetId}/password`);
+      expect(managerReveal.status()).toBe(403);
+      expect((await db.from("profiles").update({ can_access_super_admin_features: false }).eq("id", "00000000-0000-4000-8000-000000000002")).error).toBeNull();
+
+      const targetDeviceOne = createClient(supabaseUrl, publishableKey, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+      const targetDeviceTwo = createClient(supabaseUrl, publishableKey, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+      const signedInOne = await targetDeviceOne.auth.signInWithPassword({
+        phone: `+66${phone.slice(1)}`,
+        password: originalPassword,
+      });
+      const signedInTwo = await targetDeviceTwo.auth.signInWithPassword({
+        phone: `+66${phone.slice(1)}`,
+        password: originalPassword,
+      });
+      expect(signedInOne.error).toBeNull();
+      expect(signedInTwo.error).toBeNull();
+      const refreshTokenOne = signedInOne.data.session!.refresh_token;
+      const refreshTokenTwo = signedInTwo.data.session!.refresh_token;
 
       const completedAt = new Date().toISOString();
       expect((await db.from("admin_account_audit_logs").insert([
@@ -236,11 +292,93 @@ test.describe.serial("Admin profile management API", () => {
       expect(first.ok(), await first.text()).toBeTruthy();
       const firstText = await first.text();
       expect(firstText).not.toContain(newPassword);
-      expect(JSON.parse(firstText)).toMatchObject({ success: true, auditStatus: "succeeded" });
+      expect(JSON.parse(firstText)).toEqual({
+        success: true,
+        auditStatus: "succeeded",
+        readablePasswordAvailable: true,
+      });
+      expect((await targetDeviceOne.auth.refreshSession({ refresh_token: refreshTokenOne })).error).not.toBeNull();
+      expect((await targetDeviceTwo.auth.refreshSession({ refresh_token: refreshTokenTwo })).error).not.toBeNull();
 
       const retry = await manager.request.put(`/api/lanflow/admin/users/${targetId}/password`, { data: payload });
       expect(retry.ok(), await retry.text()).toBeTruthy();
-      expect(await retry.json()).toEqual({ success: true, auditStatus: "succeeded" });
+      expect(await retry.json()).toEqual({
+        success: true,
+        auditStatus: "succeeded",
+        readablePasswordAvailable: true,
+      });
+
+      const updatedReveal = await manager.request.get(`/api/lanflow/admin/users/${targetId}/password`);
+      expect(updatedReveal.ok(), await updatedReveal.text()).toBeTruthy();
+      expect(await updatedReveal.json()).toEqual({ available: true, password: newPassword });
+
+      expect((await db.from("profiles").update({ can_access_super_admin_features: true }).eq("id", "00000000-0000-4000-8000-000000000002")).error).toBeNull();
+      const managerReset = await ordinaryAdmin.request.put(`/api/lanflow/admin/users/${targetId}/password`, {
+        data: {
+          newPassword: managerPassword,
+          confirmPassword: managerPassword,
+          requestId: crypto.randomUUID(),
+        },
+      });
+      expect(managerReset.ok(), await managerReset.text()).toBeTruthy();
+      expect(await managerReset.json()).toMatchObject({
+        success: true,
+        readablePasswordAvailable: true,
+      });
+      const stillForbiddenReveal = await ordinaryAdmin.request.get(`/api/lanflow/admin/users/${targetId}/password`);
+      expect(stillForbiddenReveal.status()).toBe(403);
+      expect((await db.from("profiles").update({ can_access_super_admin_features: false }).eq("id", "00000000-0000-4000-8000-000000000002")).error).toBeNull();
+
+      const managerUpdatedReveal = await manager.request.get(`/api/lanflow/admin/users/${targetId}/password`);
+      expect(managerUpdatedReveal.ok(), await managerUpdatedReveal.text()).toBeTruthy();
+      expect(await managerUpdatedReveal.json()).toEqual({ available: true, password: managerPassword });
+
+      const [concurrentA, concurrentB] = await Promise.all([
+        manager.request.put(`/api/lanflow/admin/users/${targetId}/password`, {
+          data: {
+            newPassword: concurrentPasswordA,
+            confirmPassword: concurrentPasswordA,
+            requestId: crypto.randomUUID(),
+          },
+        }),
+        manager.request.put(`/api/lanflow/admin/users/${targetId}/password`, {
+          data: {
+            newPassword: concurrentPasswordB,
+            confirmPassword: concurrentPasswordB,
+            requestId: crypto.randomUUID(),
+          },
+        }),
+      ]);
+      expect(concurrentA.ok(), await concurrentA.text()).toBeTruthy();
+      expect(concurrentB.ok(), await concurrentB.text()).toBeTruthy();
+
+      const loginAfterConcurrentA = await createClient(supabaseUrl, publishableKey, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      }).auth.signInWithPassword({ phone: `+66${phone.slice(1)}`, password: concurrentPasswordA });
+      const loginAfterConcurrentB = await createClient(supabaseUrl, publishableKey, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      }).auth.signInWithPassword({ phone: `+66${phone.slice(1)}`, password: concurrentPasswordB });
+      const activeConcurrentPassword = loginAfterConcurrentA.error === null
+        ? concurrentPasswordA
+        : concurrentPasswordB;
+      expect([loginAfterConcurrentA.error, loginAfterConcurrentB.error].filter((error) => error === null)).toHaveLength(1);
+
+      const concurrentReveal = await manager.request.get(`/api/lanflow/admin/users/${targetId}/password`);
+      expect(concurrentReveal.ok(), await concurrentReveal.text()).toBeTruthy();
+      const concurrentRevealBody = await concurrentReveal.json() as { available: boolean; password?: string };
+      if (concurrentRevealBody.available) {
+        expect(concurrentRevealBody.password).toBe(activeConcurrentPassword);
+      }
+
+      const authenticated = createClient(supabaseUrl, publishableKey, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+      expect((await authenticated.auth.signInWithPassword({ phone: "+66810000001", password: process.env.TEST_PASSWORD ?? "password123" })).error).toBeNull();
+      const directSecretRead = await authenticated
+        .from("profiles")
+        .select("current_password_plaintext")
+        .eq("id", targetId);
+      expect(directSecretRead.error).not.toBeNull();
 
       const audits = await db.from("admin_account_audit_logs")
         .select("id,action,status,old_data,new_data,error_code")
@@ -250,9 +388,18 @@ test.describe.serial("Admin profile management API", () => {
       expect(audits.data?.[0]).toMatchObject({ action: "password_reset", status: "succeeded" });
       expect(JSON.stringify(audits.data)).not.toContain(newPassword);
 
-      const signedIn = await db.auth.signInWithPassword({ phone: `+66${phone.slice(1)}`, password: newPassword });
+      const targetLogin = createClient(supabaseUrl, publishableKey, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+      const signedIn = await targetLogin.auth.signInWithPassword({ phone: `+66${phone.slice(1)}`, password: activeConcurrentPassword });
       expect(signedIn.error).toBeNull();
+
+      expect((await service().from("profiles").update({ current_password_plaintext: null }).eq("id", targetId)).error).toBeNull();
+      const unavailableReveal = await manager.request.get(`/api/lanflow/admin/users/${targetId}/password`);
+      expect(unavailableReveal.ok(), await unavailableReveal.text()).toBeTruthy();
+      expect(await unavailableReveal.json()).toEqual({ available: false });
     } finally {
+      await db.from("profiles").update({ can_access_super_admin_features: false }).eq("id", "00000000-0000-4000-8000-000000000002");
       if (targetId) {
         await db.from("admin_account_audit_logs").delete().eq("target_user_id", targetId);
         await db.from("profiles").delete().eq("id", targetId);

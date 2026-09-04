@@ -1,5 +1,8 @@
 # Implementation Plan: LanFlow Auth System (3 เฟส)
 
+> [!WARNING] Superseded
+> แผน Custom JWT นี้เสร็จสิ้นและถูกแทนด้วย Supabase Auth ตาม ADR-0001 เก็บไว้เป็นหลักฐานการวางแผนเดิมเท่านั้น ระบบรหัสผ่านปัจจุบันอ้างอิง `docs/auth_architecture.md` และ ADR-0061
+
 ## สรุปภาพรวม
 
 แบ่งงานเป็น 3 เฟส โดย **เฟส 1 ไม่กระทบโค้ดเดิมเลย** (zero breaking changes):

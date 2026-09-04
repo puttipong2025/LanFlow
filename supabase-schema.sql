@@ -16378,6 +16378,28 @@ $$;
 ALTER FUNCTION "public"."has_cash_count"("source_row" "public"."report_batches") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."is_current_auth_session_active"() RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select coalesce(
+    auth.uid() is not null
+    and nullif(auth.jwt() ->> 'session_id', '') is not null
+    and exists (
+      select 1
+      from auth.sessions s
+      where s.id = (auth.jwt() ->> 'session_id')::uuid
+        and s.user_id = auth.uid()
+        and (s.not_after is null or s.not_after > now())
+    ),
+    false
+  )
+$$;
+
+
+ALTER FUNCTION "public"."is_current_auth_session_active"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."is_super_admin"() RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -23157,12 +23179,22 @@ CREATE TABLE IF NOT EXISTS "public"."profiles" (
     "can_access_money_transfer" boolean DEFAULT false NOT NULL,
     "can_access_super_admin_features" boolean DEFAULT false NOT NULL,
     "can_manage_time_payroll" boolean DEFAULT false NOT NULL,
+    "current_password_plaintext" "text",
+    "current_password_auth_version" "text",
     CONSTRAINT "profiles_admin_only_elevated_access" CHECK ((("role" = 'admin'::"public"."app_role") OR (("can_access_super_admin_features" = false) AND ("can_access_money_transfer" = false) AND ("can_manage_time_payroll" = false)))),
     CONSTRAINT "profiles_daily_wage_precision" CHECK ((("daily_wage" >= (0)::numeric) AND ("daily_wage" = "trunc"("daily_wage", 4))))
 );
 
 
 ALTER TABLE "public"."profiles" OWNER TO "postgres";
+
+
+COMMENT ON COLUMN "public"."profiles"."current_password_plaintext" IS 'Current password display copy. Server-only, nullable, overwritten on password changes, never audited.';
+
+
+
+COMMENT ON COLUMN "public"."profiles"."current_password_auth_version" IS 'Opaque UUID mirrored in Auth user metadata and paired with current_password_plaintext for stale-copy detection.';
+
 
 
 CREATE TABLE IF NOT EXISTS "public"."report_items" (
@@ -27493,6 +27525,11 @@ GRANT ALL ON FUNCTION "public"."get_weight_evidence_review_digest"() TO "service
 REVOKE ALL ON FUNCTION "public"."has_cash_count"("source_row" "public"."report_batches") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."has_cash_count"("source_row" "public"."report_batches") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."has_cash_count"("source_row" "public"."report_batches") TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."is_current_auth_session_active"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."is_current_auth_session_active"() TO "authenticated";
 
 
 

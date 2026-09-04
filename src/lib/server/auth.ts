@@ -214,3 +214,38 @@ export async function requireRole(
 
   return result;
 }
+
+export async function requireCurrentSessionActive(supabase: SupabaseClient) {
+  let data: unknown;
+  let error: unknown;
+  try {
+    const result = await supabase.rpc("is_current_auth_session_active");
+    data = result.data;
+    error = result.error;
+  } catch (cause) {
+    error = cause;
+  }
+  if (error) {
+    console.error("Auth session lookup unavailable", summarizeUpstreamError(error));
+    return NextResponse.json(
+      { error: "ไม่สามารถตรวจสอบ session ได้ กรุณาลองใหม่" },
+      {
+        status: 503,
+        headers: {
+          "Cache-Control": "private, no-store, max-age=0",
+          "Retry-After": "3",
+        },
+      },
+    );
+  }
+  if (data !== true) {
+    return NextResponse.json(
+      { error: "session นี้ถูกยกเลิกแล้ว กรุณาเข้าสู่ระบบใหม่" },
+      {
+        status: 401,
+        headers: { "Cache-Control": "private, no-store, max-age=0" },
+      },
+    );
+  }
+  return null;
+}

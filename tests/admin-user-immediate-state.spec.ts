@@ -227,4 +227,47 @@ test.describe("admin employee state feedback", () => {
     await dialog.getByRole("button", { name: "ปิด", exact: true }).click();
     await expect(employeeRow).toContainText(updatedUser.name);
   });
+
+  test("shows Admin mutation feedback above the open employee dialog", async ({ page }) => {
+    const targetUser = {
+      id: "0dd40880-6b96-4552-9492-10b0e4747f57",
+      name: "พนักงานทดสอบข้อความแจ้งผล",
+      phone: "0865555555",
+      role: "user",
+      isActive: true,
+      locationIds: [],
+      primaryLocationId: null,
+      canAccessSystemManager: false,
+      canAccessMoneyTransfer: false,
+      canManageTimePayroll: false,
+    };
+    const updatedUser = { ...targetUser, name: "พนักงานบันทึกสำเร็จ" };
+
+    await page.route(/\/api\/lanflow\/admin\/users(?:\?.*)?$/, (route) => route.fulfill({
+      json: { users: [targetUser] },
+    }));
+    await page.route(`/api/lanflow/admin/users/${targetUser.id}/profile`, (route) => route.fulfill({
+      json: { user: updatedUser, auditId: "fd9c7536-afab-4fd0-b7d7-d6a5e246745e" },
+    }));
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "Admin" }).click();
+    await page.getByLabel("ค้นหาพนักงาน").fill(targetUser.phone);
+    await page.getByRole("row").filter({ hasText: targetUser.phone }).getByRole("button", { name: "จัดการ" }).click();
+
+    const dialog = page.getByRole("dialog", { name: "จัดการพนักงาน" });
+    await dialog.getByLabel("ชื่อ").fill(updatedUser.name);
+    await dialog.getByRole("button", { name: "บันทึกข้อมูลและสาขา" }).click();
+
+    const feedback = page.locator(".swal2-popup").filter({ hasText: "บันทึกข้อมูลและสาขาแล้ว" }).last();
+    await expect(feedback).toBeVisible();
+    await expect.poll(() => feedback.evaluate((element) => {
+      const bounds = element.getBoundingClientRect();
+      const topElement = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+      return {
+        onTop: topElement !== null && element.contains(topElement),
+        inDialog: element.closest("dialog") !== null,
+      };
+    })).toEqual({ onTop: true, inDialog: true });
+  });
 });
