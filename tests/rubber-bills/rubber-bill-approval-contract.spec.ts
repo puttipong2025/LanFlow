@@ -663,15 +663,15 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
   });
 
   test("settings permission, mismatched create, and permanent request delete", async ({ browser }) => {
-    const user = await authContext(browser, "user");
+    const branchAdmin = await authContext(browser, "admin");
     const superAdmin = await authContext(browser, "super_admin");
     const db = service();
 
     try {
-      const userProfile = await profile(user);
-      const locationId = userProfile.locationIds[0];
+      const branchAdminProfile = await profile(branchAdmin);
+      const locationId = branchAdminProfile.locationIds[0];
 
-      expect((await user.request.post("/api/lanflow/rubber-bills/approval-groups", {
+      expect((await branchAdmin.request.post("/api/lanflow/rubber-bills/approval-groups", {
         data: { locationIds: [locationId], editWindowMinutes: 30, configuredPrice: 20 },
       })).status()).toBe(403);
       expect((await saveSettings(superAdmin, locationId, -1, 20)).status()).toBe(400);
@@ -685,7 +685,11 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         price: 20.5,
         configuredPriceSnapshot: null,
       });
-      const noSettingCreate = await syncBill(user, noSettingPayload);
+      const noSettingCreate = await syncBill(branchAdmin, noSettingPayload);
+      expect(
+        noSettingCreate.response.ok(),
+        JSON.stringify(noSettingCreate.body)
+      ).toBeTruthy();
       expect(noSettingCreate.body.status).toBe("synced");
 
       expect((await saveSettings(superAdmin, locationId, 30, 20)).ok()).toBeTruthy();
@@ -694,7 +698,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         .eq("bill_id", noSettingCreate.body.id!)).count).toBe(0);
 
       const payload = billPayload({ locationId, prices: [20, 20.5] });
-      const pending = await syncBill(user, payload);
+      const pending = await syncBill(branchAdmin, payload);
       expect(pending.response.ok(), pending.body.errorMessage).toBeTruthy();
       expect(pending.body.status).toBe("pending_approval");
       expect(pending.body.matchedReasons).toEqual(["price"]);
@@ -732,7 +736,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         .eq("client_temp_id", payload.clientTempId)
         .maybeSingle()).data).toBeNull();
     } finally {
-      await Promise.all([user.close(), superAdmin.close()]);
+      await Promise.all([branchAdmin.close(), superAdmin.close()]);
     }
   });
 
@@ -825,17 +829,17 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
   });
 
   test("concurrent changes create one pending request and stale revisions conflict", async ({ browser }) => {
-    const user = await authContext(browser, "user");
+    const branchAdmin = await authContext(browser, "admin");
     const superAdmin = await authContext(browser, "super_admin");
     const db = service();
 
     try {
-      const userProfile = await profile(user);
-      const locationId = userProfile.locationIds[0];
+      const branchAdminProfile = await profile(branchAdmin);
+      const locationId = branchAdminProfile.locationIds[0];
       expect((await saveSettings(superAdmin, locationId, 0, null)).ok()).toBeTruthy();
 
       const createPayload = billPayload({ locationId, price: 20 });
-      const created = await syncBill(user, createPayload);
+      const created = await syncBill(branchAdmin, createPayload);
       expect(created.body.status).toBe("synced");
 
       const updatePayload = billPayload({
@@ -852,12 +856,12 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
           operation: "delete",
           expectedRevisionNo: created.body.revisionNo,
         }),
-        deletedByName: userProfile.name,
-        deletedByPhone: userProfile.phone,
+        deletedByName: branchAdminProfile.name,
+        deletedByPhone: branchAdminProfile.phone,
       };
       const concurrent = await Promise.all([
-        syncBill(user, updatePayload),
-        syncBill(user, deletePayload),
+        syncBill(branchAdmin, updatePayload),
+        syncBill(branchAdmin, deletePayload),
       ]);
       expect(concurrent.map((result) => result.body.status)).toEqual([
         "pending_approval",
@@ -876,31 +880,31 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       )).ok()).toBeTruthy();
 
       expect((await saveSettings(superAdmin, locationId, 1440, null)).ok()).toBeTruthy();
-      const directUpdate = await syncBill(user, updatePayload);
+      const directUpdate = await syncBill(branchAdmin, updatePayload);
       expect(directUpdate.body.status).toBe("synced");
-      const stale = await syncBill(user, {
+      const stale = await syncBill(branchAdmin, {
         ...updatePayload,
         idempotencyKey: `stale:${createPayload.clientTempId}`,
       });
       expect(stale.response.status()).toBe(409);
       expect(stale.body.status).toBe("conflict");
     } finally {
-      await Promise.all([user.close(), superAdmin.close()]);
+      await Promise.all([branchAdmin.close(), superAdmin.close()]);
     }
   });
 
   test("approved delete keeps the Rubber Bill as a soft-deleted source", async ({ browser }) => {
-    const user = await authContext(browser, "user");
+    const branchAdmin = await authContext(browser, "admin");
     const superAdmin = await authContext(browser, "super_admin");
     const db = service();
 
     try {
-      const userProfile = await profile(user);
-      const locationId = userProfile.locationIds[0];
+      const branchAdminProfile = await profile(branchAdmin);
+      const locationId = branchAdminProfile.locationIds[0];
       expect((await saveSettings(superAdmin, locationId, 0, null)).ok()).toBeTruthy();
 
       const createPayload = billPayload({ locationId, price: 20 });
-      const created = await syncBill(user, createPayload);
+      const created = await syncBill(branchAdmin, createPayload);
       const deletePayload = {
         ...billPayload({
           locationId,
@@ -908,10 +912,10 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
           operation: "delete",
           expectedRevisionNo: created.body.revisionNo,
         }),
-        deletedByName: userProfile.name,
-        deletedByPhone: userProfile.phone,
+        deletedByName: branchAdminProfile.name,
+        deletedByPhone: branchAdminProfile.phone,
       };
-      const pendingDelete = await syncBill(user, deletePayload);
+      const pendingDelete = await syncBill(branchAdmin, deletePayload);
       expect(pendingDelete.body.status).toBe("pending_approval");
 
       const approved = await superAdmin.request.post(
@@ -923,16 +927,15 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         .eq("id", created.body.id!)
         .single()).data).toMatchObject({
           record_status: "deleted",
-          deleted_by_name: userProfile.name,
-          deleted_by_phone: userProfile.phone,
+          deleted_by_name: branchAdminProfile.name,
+          deleted_by_phone: branchAdminProfile.phone,
         });
     } finally {
-      await Promise.all([user.close(), superAdmin.close()]);
+      await Promise.all([branchAdmin.close(), superAdmin.close()]);
     }
   });
 
   test("time request keeps source unchanged and cannot enter transfer or report", async ({ browser }) => {
-    const user = await authContext(browser, "user");
     const admin = await authContext(browser, "admin");
     const superAdmin = await authContext(browser, "super_admin");
     const db = service();
@@ -942,30 +945,24 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
     let requestId: string | undefined;
 
     try {
-      const [userProfile, adminProfile] = await Promise.all([
-        profile(user),
-        profile(admin),
-      ]);
-      const locationId = userProfile.locationIds.find((id) =>
-        adminProfile.locationIds.includes(id)
-      );
-      expect(locationId).toBeTruthy();
-      expect((await saveSettings(superAdmin, locationId!, 0, 20)).ok()).toBeTruthy();
+      const adminProfile = await profile(admin);
+      const locationId = adminProfile.locationIds[0];
+      expect((await saveSettings(superAdmin, locationId, 0, 20)).ok()).toBeTruthy();
 
-      const createPayload = billPayload({ locationId: locationId!, price: 20 });
-      const created = await syncBill(user, createPayload);
+      const createPayload = billPayload({ locationId, price: 20 });
+      const created = await syncBill(admin, createPayload);
       expect(created.body.status).toBe("synced");
       billId = created.body.id;
 
       const updatePayload = billPayload({
-        locationId: locationId!,
+        locationId,
         clientTempId: createPayload.clientTempId,
         operation: "update",
         expectedRevisionNo: created.body.revisionNo,
         price: 20.5,
         customerName: "ชื่อใหม่ที่ยังไม่ควรถูกใช้",
       });
-      const pending = await syncBill(user, updatePayload);
+      const pending = await syncBill(admin, updatePayload);
       expect(pending.body.status).toBe("pending_approval");
       expect(pending.body.matchedReasons).toEqual(["time", "price"]);
       requestId = pending.body.requestId;
@@ -982,7 +979,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         id: transferId,
         client_temp_id: transferId,
         idempotency_key: `approval-transfer:${transferId}`,
-        location_id: locationId!,
+        location_id: locationId,
         customer_name: "ทดสอบ",
         net_amount_to_pay: 200,
       })).error).toBeNull();
@@ -996,7 +993,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       expect(blockedTransfer.error?.message).toContain("กำลังรออนุมัติ");
 
       const report = await admin.request.post("/api/lanflow/reports", {
-        data: { locationId: locationId! },
+        data: { locationId },
       });
       const reportBody = await report.json() as { error?: string; errorGroups?: string[] };
       expect(report.status(), reportBody.error).toBe(409);
@@ -1012,7 +1009,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         .single()).data?.customer_name).toBe("ชื่อใหม่ที่ยังไม่ควรถูกใช้");
 
       const secondReport = await admin.request.post("/api/lanflow/reports", {
-        data: { locationId: locationId! },
+        data: { locationId },
       });
       const secondReportBody = await secondReport.json() as { id?: string; error?: string };
       expect(secondReport.status(), secondReportBody.error).toBe(201);
@@ -1025,14 +1022,14 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         .maybeSingle()).data).not.toBeNull();
 
       const reportedUpdate = billPayload({
-        locationId: locationId!,
+        locationId,
         clientTempId: createPayload.clientTempId,
         operation: "update",
         expectedRevisionNo: 2,
         price: 20.5,
         customerName: "ห้ามสร้างคำขอหลังทำรายงาน",
       });
-      const blocked = await syncBill(user, reportedUpdate);
+      const blocked = await syncBill(admin, reportedUpdate);
       expect(blocked.response.status()).toBe(400);
       expect(blocked.body.errorMessage).toContain("อยู่ในรายงาน");
       expect((await db.from("rubber_bill_approval_requests")
@@ -1053,12 +1050,12 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         await db.from("rubber_bill_items").delete().eq("bill_id", billId);
         await db.from("rubber_bills").delete().eq("id", billId);
       }
-      await Promise.all([user.close(), admin.close(), superAdmin.close()]);
+      await Promise.all([admin.close(), superAdmin.close()]);
     }
   });
 
   test("stock deduction updates atomically and rejects insufficient balance", async ({ browser }) => {
-    const user = await authContext(browser, "user");
+    const branchAdmin = await authContext(browser, "admin");
     const superAdmin = await authContext(browser, "super_admin");
     const db = service();
     const productId = crypto.randomUUID();
@@ -1066,8 +1063,8 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
     let billId: string | undefined;
 
     try {
-      const userProfile = await profile(user);
-      const locationId = userProfile.locationIds[0];
+      const branchAdminProfile = await profile(branchAdmin);
+      const locationId = branchAdminProfile.locationIds[0];
       const productName = `สินค้าทดสอบหักบิล-${productId.slice(0, 8)}`;
       const today = bangkokDateString();
 
@@ -1077,9 +1074,9 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         name: productName,
         unit: "แพ็ค",
         is_active: true,
-        created_by_user_id: userProfile.id,
-        created_by_name: userProfile.name,
-        created_by_phone: userProfile.phone,
+        created_by_user_id: branchAdminProfile.id,
+        created_by_name: branchAdminProfile.name,
+        created_by_phone: branchAdminProfile.phone,
       })).error).toBeNull();
       expect((await db.from("stock_entries").insert({
         id: stockEntryId,
@@ -1092,16 +1089,16 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         location_id: locationId,
         tx_type: "receive",
         record_status: "active",
-        created_by_user_id: userProfile.id,
-        created_by_name: userProfile.name,
-        created_by_phone: userProfile.phone,
+        created_by_user_id: branchAdminProfile.id,
+        created_by_name: branchAdminProfile.name,
+        created_by_phone: branchAdminProfile.phone,
       })).error).toBeNull();
 
       const createPayload = billPayload({
         locationId,
         stockDeduction: { productId, quantity: 3, unitPrice: 10 },
       });
-      const created = await syncBill(user, createPayload);
+      const created = await syncBill(branchAdmin, createPayload);
       expect(created.response.ok(), created.body.errorMessage).toBeTruthy();
       expect(created.body).toMatchObject({ status: "synced", revisionNo: 1 });
       billId = created.body.id;
@@ -1118,7 +1115,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       }));
       expect(movements!.reduce((sum, row) => sum + Number(row.quantity_delta), 0)).toBe(7);
 
-      const updated = await syncBill(user, billPayload({
+      const updated = await syncBill(branchAdmin, billPayload({
         locationId,
         clientTempId: createPayload.clientTempId,
         operation: "update",
@@ -1138,7 +1135,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       ]);
       expect(movements!.reduce((sum, row) => sum + Number(row.quantity_delta), 0)).toBe(5);
 
-      const rejected = await syncBill(user, billPayload({
+      const rejected = await syncBill(branchAdmin, billPayload({
         locationId,
         clientTempId: createPayload.clientTempId,
         operation: "update",
@@ -1179,7 +1176,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       }
       await db.from("stock_entries").delete().eq("id", stockEntryId);
       await db.from("stock_products").delete().eq("id", productId);
-      await Promise.all([user.close(), superAdmin.close()]);
+      await Promise.all([branchAdmin.close(), superAdmin.close()]);
     }
   });
 
@@ -1235,22 +1232,22 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
   });
 
   test("only system managers see the approval entry point and it is disabled offline", async ({ browser }) => {
-    const user = await authContext(browser, "user");
+    const branchAdmin = await authContext(browser, "admin");
     const superAdmin = await authContext(browser, "super_admin");
 
     try {
-      const [userPage, superPage] = await Promise.all([
-        user.newPage(),
+      const [branchAdminPage, superPage] = await Promise.all([
+        branchAdmin.newPage(),
         superAdmin.newPage(),
       ]);
-      await Promise.all([userPage.goto("/"), superPage.goto("/")]);
+      await Promise.all([branchAdminPage.goto("/"), superPage.goto("/")]);
       await Promise.all([
-        userPage.getByRole("button", { name: "บิลยาง" }).click(),
+        branchAdminPage.getByRole("button", { name: "บิลยาง" }).click(),
         superPage.getByRole("button", { name: "บิลยาง" }).click(),
       ]);
 
       await expect(
-        userPage.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ })
+        branchAdminPage.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ })
       ).toHaveCount(0);
       const managerButton = superPage.getByRole("button", {
         name: /ตั้งค่าและอนุมัติบิลยาง/,
@@ -1282,7 +1279,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       await expect(approvalDialog.getByLabel("เวลาแก้ไขได้ (นาที)")).toBeVisible();
       await expect(approvalDialog.getByLabel("ราคายางที่กำหนด")).toBeVisible();
     } finally {
-      await Promise.all([user.close(), superAdmin.close()]);
+      await Promise.all([branchAdmin.close(), superAdmin.close()]);
     }
   });
 });

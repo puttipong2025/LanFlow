@@ -172,16 +172,6 @@ export type BranchRubberReceiptResult = {
 
 export type RubberBillApprovalOperation = "create" | "update" | "delete";
 export type RubberBillApprovalReason = "price" | "time" | "non_current_date";
-export type RubberBillApprovalStatus = "pending" | "approved";
-
-export type RubberBillApprovalSettings = {
-  editWindowMinutes: number;
-  configuredPrice: number | null;
-  nonCurrentDateRequiresApproval: boolean;
-  updatedByName?: string | null;
-  updatedByPhone?: string | null;
-  updatedAt?: string;
-};
 
 export type EffectiveRubberApprovalSettings = {
   locationId: string;
@@ -201,39 +191,6 @@ export type RubberApprovalGroup = {
   editWindowMinutes: number;
   configuredPrice: number | null;
   updatedAt: string;
-};
-
-export type RubberBillApprovalRequest = {
-  id: string;
-  operation: RubberBillApprovalOperation;
-  requestStatus: RubberBillApprovalStatus;
-  billId: string | null;
-  locationId: string;
-  clientTempId: string;
-  baseRevisionNo: number;
-  matchedReasons: RubberBillApprovalReason[];
-  configuredPriceSnapshot: number | null;
-  editWindowMinutesSnapshot: number | null;
-  approvalGroupIdSnapshot: string | null;
-  originalPayload: Record<string, unknown> | null;
-  proposedPayload: Record<string, unknown>;
-  requestedByName: string;
-  requestedByPhone: string;
-  requestedAt: string;
-  approvedByName?: string | null;
-  approvedByPhone?: string | null;
-  approvedAt?: string | null;
-  createdBillId?: string | null;
-};
-
-export type RubberBillApprovalMarker = {
-  requestId: string;
-  billId: string | null;
-  clientTempId: string;
-  operation: RubberBillApprovalOperation;
-  matchedReasons: RubberBillApprovalReason[];
-  requestedAt: string;
-  proposedCreatePayload: Record<string, any> | null;
 };
 
 export type IncomeBillOption = "รายรับ" | "บิลขาย";

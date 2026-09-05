@@ -28,10 +28,6 @@ const reasonLabels: Record<RubberBillApprovalReason, string> = {
   non_current_date: "วันที่ไม่ใช่วันปัจจุบัน",
 };
 
-function formatDateTime(value: string) {
-  return formatBangkokDateTime(value);
-}
-
 export function RubberBillApprovalModal({
   locationId,
   profile,
@@ -42,11 +38,16 @@ export function RubberBillApprovalModal({
   onClose: () => void;
 }) {
   const [locationFilter, setLocationFilter] = useState(locationId);
-  const { locations } = useLocations();
+  const {
+    locations,
+    isLoading: locationsLoading,
+    error: locationsError,
+  } = useLocations();
   const {
     settings,
-    isLoading,
-    error,
+    isLoading: settingsLoading,
+    isFetching: settingsFetching,
+    error: settingsError,
     saveGlobalDateRule,
     approveRequest,
     deleteRequest,
@@ -100,8 +101,13 @@ export function RubberBillApprovalModal({
     () => new Map(locations.map((location) => [location.id, location.name])),
     [locations]
   );
+  const settingsReady = settings != null
+    && !settingsLoading
+    && !settingsFetching
+    && !settingsError;
   async function handleSaveSettings(event: React.FormEvent) {
     event.preventDefault();
+    if (!settingsReady) return;
     try {
       setIsSaving(true);
       await saveGlobalDateRule(nonCurrentDateRequiresApproval);
@@ -215,16 +221,25 @@ export function RubberBillApprovalModal({
               <h3 className="text-balance font-bold text-ink">กลุ่มเกณฑ์ราคาและเวลา</h3>
               <p className="text-pretty text-sm text-ink/60">สาขานอกกลุ่มจะยกเว้นเฉพาะราคาและเวลา</p>
             </div>
-            {!editingGroup && groups.availableLocationIds.length > 0 && (
+            {!groupEditorOpen
+              && !groups.isLoading
+              && !locationsLoading
+              && !groups.error
+              && !locationsError
+              && groups.availableLocationIds.length > 0 && (
               <button type="button" onClick={() => openGroupEditor()} className="focus-ring inline-flex h-10 items-center gap-2 rounded-md bg-commit px-3 text-sm font-bold text-white hover:bg-commit/90">
                 <Plus size={16} /> สร้างกลุ่ม
               </button>
             )}
           </div>
-          {groups.isLoading ? (
+          {groups.isLoading || locationsLoading ? (
             <p role="status" className="text-sm text-ink/60">กำลังโหลดกลุ่ม...</p>
-          ) : groups.error ? (
-            <p role="alert" className="rounded-md bg-rose-50 p-3 text-sm text-rose-700">{groups.error instanceof Error ? groups.error.message : "โหลดกลุ่มไม่สำเร็จ"}</p>
+          ) : groups.error || locationsError ? (
+            <p role="alert" className="rounded-md bg-rose-50 p-3 text-sm text-rose-700">
+              {(groups.error ?? locationsError) instanceof Error
+                ? (groups.error ?? locationsError as Error).message
+                : "โหลดกลุ่มไม่สำเร็จ"}
+            </p>
           ) : groupEditorOpen ? (
             <form onSubmit={handleSaveGroup} className="space-y-3 rounded-md bg-field/55 p-3">
               <h4 className="font-semibold text-ink">{editingGroup ? `แก้ไขกลุ่ม ${groups.groups.findIndex((group) => group.id === editingGroup.id) + 1}` : "สร้างกลุ่มใหม่"}</h4>
@@ -254,10 +269,21 @@ export function RubberBillApprovalModal({
                 <button type="button" onClick={() => { setEditingGroup(null); setGroupEditorOpen(false); setGroupLocationIds([]); }} className="focus-ring h-10 rounded-md border border-black/15 px-3 text-sm font-semibold">ยกเลิก</button>
               </div>
             </form>
-          ) : groups.groups.length === 0 ? (
+          ) : groups.groups.length === 0 && groups.availableLocationIds.length === 0 ? (
             <p className="text-pretty text-sm text-ink/60">ยังไม่มีกลุ่ม และไม่มีสาขาให้เลือกเพิ่ม</p>
           ) : (
-            <div className="space-y-2">
+            <div className="space-y-2" data-testid="approval-group-list">
+              {groups.availableLocationIds.length > 0 && (
+                <div className="rounded-md border border-dashed border-black/15 bg-field/40 p-3">
+                  <h4 className="text-balance font-semibold text-ink">ยังไม่จัดกลุ่ม</h4>
+                  <p className="text-pretty text-sm text-ink/60">
+                    {groups.availableLocationIds
+                      .map((id) => locations.find((location) => location.id === id)?.name ?? id)
+                      .join(", ")}
+                  </p>
+                  <p className="text-pretty text-sm text-ink/70">ยกเว้นเกณฑ์ราคาและเวลา</p>
+                </div>
+              )}
               {groups.groups.map((group, index) => <div key={group.id} className="flex flex-col gap-2 rounded-md border border-black/10 p-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0"><p className="font-semibold text-ink">กลุ่ม {index + 1}</p><p className="text-pretty text-sm text-ink/60">{group.locationIds.map((id) => locations.find((location) => location.id === id)?.name ?? id).join(", ")}</p><p className="text-sm text-ink/70">เวลา {group.editWindowMinutes} นาที · ราคา {group.configuredPrice == null ? "ไม่ตรวจ" : `${group.configuredPrice.toFixed(2)} บาท`}</p></div>
                 <div className="flex gap-2"><button type="button" onClick={() => openGroupEditor(group)} className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md border border-river/30 px-3 text-sm font-semibold text-river"><Pencil size={15} /> แก้ไข</button><button type="button" onClick={() => setGroupToDelete(group)} disabled={groups.isSaving} className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-rose-600 px-3 text-sm font-semibold text-white disabled:opacity-50"><Trash2 size={15} /> ลบ</button></div>
@@ -267,8 +293,16 @@ export function RubberBillApprovalModal({
         </section>
         <form onSubmit={handleSaveSettings} className="rounded-md border border-black/10 p-4">
           <h3 className="text-balance font-bold text-ink">กฎวันที่บิล</h3>
-          <label className="mt-3 flex items-start gap-3 rounded-md bg-field/55 p-3 text-sm text-ink"><input type="checkbox" checked={nonCurrentDateRequiresApproval} onChange={(event) => setNonCurrentDateRequiresApproval(event.target.checked)} className="mt-0.5 size-4 accent-river" /><span><strong className="block">ขออนุมัติเมื่อวันที่บิลไม่ใช่วันปัจจุบัน</strong><span className="text-ink/60">ใช้กับทุกสาขา รวมสาขานอกกลุ่ม</span></span></label>
-          <button type="submit" disabled={isSaving} className="focus-ring mt-3 h-10 rounded-md bg-commit px-3 text-sm font-bold text-white disabled:opacity-50">บันทึกกฎวันที่</button>
+          {(settingsLoading || settingsFetching) && (
+            <p role="status" className="mt-2 text-pretty text-sm text-ink/60">กำลังโหลดกฎวันที่...</p>
+          )}
+          {settingsError && (
+            <p role="alert" className="mt-2 rounded-md bg-rose-50 p-3 text-pretty text-sm text-rose-700">
+              {settingsError instanceof Error ? settingsError.message : "โหลดกฎวันที่ไม่สำเร็จ"}
+            </p>
+          )}
+          <label className="mt-3 flex items-start gap-3 rounded-md bg-field/55 p-3 text-sm text-ink"><input type="checkbox" checked={nonCurrentDateRequiresApproval} disabled={!settingsReady || isSaving} onChange={(event) => setNonCurrentDateRequiresApproval(event.target.checked)} className="mt-0.5 size-4 accent-river disabled:cursor-not-allowed" /><span><strong className="block">ขออนุมัติเมื่อวันที่บิลไม่ใช่วันปัจจุบัน</strong><span className="text-ink/60">ใช้กับทุกสาขา รวมสาขานอกกลุ่ม</span></span></label>
+          <button type="submit" disabled={!settingsReady || isSaving} className="focus-ring mt-3 h-10 rounded-md bg-commit px-3 text-sm font-bold text-white disabled:opacity-50">บันทึกกฎวันที่</button>
         </form>
 
         <section className="rounded-md border border-black/10 p-4">
@@ -291,13 +325,13 @@ export function RubberBillApprovalModal({
           </div>
 
           <div className="space-y-3">
-            {error || queue.error || counts.error ? (
+            {locationsError || queue.error || counts.error ? (
               <p role="alert" className="rounded-md bg-rose-50 px-3 py-4 text-center text-pretty text-sm text-rose-700">
-                {(error ?? queue.error ?? counts.error) instanceof Error
-                  ? (error ?? queue.error ?? counts.error as Error).message
+                {(locationsError ?? queue.error ?? counts.error) instanceof Error
+                  ? (locationsError ?? queue.error ?? counts.error as Error).message
                   : "โหลดคำขอไม่สำเร็จ"}
               </p>
-            ) : isLoading || queue.isLoading || counts.isLoading ? (
+            ) : locationsLoading || queue.isLoading || counts.isLoading ? (
               <div className="space-y-2" role="status" aria-label="กำลังโหลดงานรออนุมัติ">
                 {[0, 1, 2].map((item) => <div key={item} className="h-24 animate-pulse rounded-md bg-field" />)}
               </div>
@@ -323,7 +357,7 @@ export function RubberBillApprovalModal({
                     <p className="font-semibold">
                       {locationNames.get(request.locationId) ?? "ไม่ทราบสาขา"} · {request.createdByName}
                     </p>
-                    <p className="text-ink/55">{formatDateTime(request.operationalSortAt ?? request.clientCreatedAt)}</p>
+                    <p className="text-ink/55">{formatBangkokDateTime(request.operationalSortAt ?? request.clientCreatedAt)}</p>
                     <p className="text-pretty text-ink/70">
                       {request.customerName || "ไม่ระบุลูกค้า"} · {request.billDate} · ยอดสุทธิ: <span className="tabular-nums">{request.netTotal.toLocaleString("th-TH")}</span> บาท
                     </p>

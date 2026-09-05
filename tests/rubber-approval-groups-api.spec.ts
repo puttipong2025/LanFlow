@@ -1,6 +1,7 @@
 import { expect, test, type Browser, type BrowserContext } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 
+import { mapLocationRow } from "../src/hooks/useLocations";
 import { parseRubberApprovalGroupBody } from "../src/lib/server/rubber-approval-groups";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
@@ -38,6 +39,20 @@ function normalizeThaiPhone(rawPhone: string) {
 }
 
 test.describe.serial("Rubber approval groups API", () => {
+  test("maps the persisted location active state", () => {
+    expect(mapLocationRow({
+      id: "branch-a",
+      name: "สาขา A",
+      code: null,
+      is_active: true,
+    })).toEqual({
+      id: "branch-a",
+      name: "สาขา A",
+      code: "",
+      active: true,
+    });
+  });
+
   test("configured price accepts normal two-decimal numbers only", () => {
     const validCases = [20, 20.1, 0.29, 999999.99];
     for (const configuredPrice of validCases) {
@@ -63,12 +78,13 @@ test.describe.serial("Rubber approval groups API", () => {
     const db = service();
     const locationId = crypto.randomUUID();
     const code = `RG${locationId.replaceAll("-", "").slice(0, 8).toUpperCase()}`;
+    const locationName = `สาขาทดสอบกลุ่มยาง ${code}`;
     let groupId: string | null = null;
 
     try {
       expect((await db.from("locations").insert({
         id: locationId,
-        name: `สาขาทดสอบกลุ่มยาง ${code}`,
+        name: locationName,
         code,
         is_active: true,
       })).error).toBeNull();
@@ -90,6 +106,20 @@ test.describe.serial("Rubber approval groups API", () => {
       expect(await listed.json()).toMatchObject({
         availableLocationIds: expect.arrayContaining([locationId]),
       });
+
+      const page = await manager.newPage();
+      await page.goto("/");
+      await page.getByRole("button", { name: "บิลยาง" }).click();
+      await page.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ }).click();
+      const approvalDialog = page.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง" });
+      const groupList = approvalDialog.getByTestId("approval-group-list");
+      await expect(groupList.locator(":scope > *").first()).toContainText("ยังไม่จัดกลุ่ม");
+      await expect(groupList.locator(":scope > *").first()).toContainText(locationName);
+      await expect(groupList.locator(":scope > *").first()).toContainText("ยกเว้นเกณฑ์ราคาและเวลา");
+      const createGroupButton = approvalDialog.getByRole("button", { name: "สร้างกลุ่ม" });
+      await createGroupButton.click();
+      await expect(createGroupButton).toHaveCount(0);
+      await approvalDialog.getByRole("button", { name: "ยกเลิก" }).click();
 
       const created = await manager.request.post("/api/lanflow/rubber-bills/approval-groups", {
         data: { locationIds: [locationId], editWindowMinutes: 0, configuredPrice: null },
@@ -130,6 +160,43 @@ test.describe.serial("Rubber approval groups API", () => {
         await manager.request.delete(`/api/lanflow/rubber-bills/approval-groups/${groupId}`);
       }
       await db.from("locations").delete().eq("id", locationId);
+      await manager.close();
+    }
+  });
+
+  test("date rule stays disabled until authoritative settings finish loading", async ({ browser }) => {
+    const manager = await authContext(browser, "super_admin");
+    let releaseSettings = () => {};
+    const settingsGate = new Promise<void>((resolve) => {
+      releaseSettings = resolve;
+    });
+
+    try {
+      const page = await manager.newPage();
+      let delayed = false;
+      await page.route(/\/api\/lanflow\/rubber-bills\/approval-settings\?/, async (route) => {
+        if (!delayed) {
+          delayed = true;
+          await settingsGate;
+        }
+        await route.continue();
+      });
+      await page.goto("/");
+      await page.getByRole("button", { name: "บิลยาง" }).click();
+      await page.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ }).click();
+      const approvalDialog = page.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง" });
+      const dateRule = approvalDialog.getByRole("checkbox", {
+        name: /ขออนุมัติเมื่อวันที่บิลไม่ใช่วันปัจจุบัน/,
+      });
+      const saveDateRule = approvalDialog.getByRole("button", { name: "บันทึกกฎวันที่" });
+      await expect(dateRule).toBeDisabled();
+      await expect(saveDateRule).toBeDisabled();
+
+      releaseSettings();
+      await expect(dateRule).toBeEnabled();
+      await expect(saveDateRule).toBeEnabled();
+    } finally {
+      releaseSettings();
       await manager.close();
     }
   });
@@ -192,32 +259,56 @@ test.describe.serial("Rubber approval groups API", () => {
     const anonymous = publicClient();
     const ordinaryUser = publicClient();
     const manager = publicClient();
+    const db = service();
+    const locationId = crypto.randomUUID();
+    const code = `RA${locationId.replaceAll("-", "").slice(0, 8).toUpperCase()}`;
+    let groupId: string | null = null;
     const password = process.env.TEST_PASSWORD ?? "password123";
-    expect((await ordinaryUser.auth.signInWithPassword({
-      phone: "+66820000001",
-      password,
-    })).error).toBeNull();
-    expect((await manager.auth.signInWithPassword({
-      phone: normalizeThaiPhone(process.env.TEST_PHONE ?? "0800000000"),
-      password,
-    })).error).toBeNull();
+    try {
+      expect((await db.from("locations").insert({
+        id: locationId,
+        name: `สาขาทดสอบ RLS ${code}`,
+        code,
+        is_active: true,
+      })).error).toBeNull();
+      expect((await ordinaryUser.auth.signInWithPassword({
+        phone: "+66820000001",
+        password,
+      })).error).toBeNull();
+      expect((await manager.auth.signInWithPassword({
+        phone: normalizeThaiPhone(process.env.TEST_PHONE ?? "0800000000"),
+        password,
+      })).error).toBeNull();
+      const created = await manager.rpc("create_rubber_approval_group", {
+        p_location_ids: [locationId],
+        p_edit_window_minutes: 30,
+        p_configured_price: 20,
+      });
+      expect(created.error).toBeNull();
+      groupId = (created.data as { id: string }).id;
 
-    const anonymousGroups = await anonymous.from("rubber_approval_groups").select("id");
-    expect(anonymousGroups.error).not.toBeNull();
-    const ordinaryGroups = await ordinaryUser.from("rubber_approval_groups").select("id");
-    expect(ordinaryGroups.error).toBeNull();
-    expect(ordinaryGroups.data).toEqual([]);
-    const managerGroups = await manager.from("rubber_approval_groups").select("id");
-    expect(managerGroups.error).toBeNull();
-    expect(managerGroups.data?.length).toBeGreaterThan(0);
+      const anonymousGroups = await anonymous.from("rubber_approval_groups").select("id");
+      expect(anonymousGroups.error).not.toBeNull();
+      const ordinaryGroups = await ordinaryUser.from("rubber_approval_groups").select("id");
+      expect(ordinaryGroups.error).toBeNull();
+      expect(ordinaryGroups.data).toEqual([]);
+      const managerGroups = await manager.from("rubber_approval_groups").select("id").eq("id", groupId);
+      expect(managerGroups.error).toBeNull();
+      expect(managerGroups.data).toEqual([{ id: groupId }]);
 
-    const forbiddenWrite = await ordinaryUser.from("rubber_approval_groups").insert({
-      edit_window_minutes: 30,
-      configured_price: 20,
-    });
-    expect(forbiddenWrite.error).not.toBeNull();
-    const managerAuditRead = await manager.from("admin_account_audit_logs").select("id").limit(1);
-    expect(managerAuditRead.error).not.toBeNull();
+      const forbiddenWrite = await ordinaryUser.from("rubber_approval_groups").insert({
+        edit_window_minutes: 30,
+        configured_price: 20,
+      });
+      expect(forbiddenWrite.error).not.toBeNull();
+      const managerAuditRead = await manager.from("admin_account_audit_logs").select("id").limit(1);
+      expect(managerAuditRead.error).not.toBeNull();
+    } finally {
+      if (groupId) {
+        await manager.rpc("delete_rubber_approval_group", { p_group_id: groupId });
+      }
+      await db.from("locations").delete().eq("id", locationId);
+    }
   });
 
   test("concurrent group creation has one winner for a branch", async ({ browser }) => {

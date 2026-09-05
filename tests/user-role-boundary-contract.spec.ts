@@ -19,7 +19,7 @@ function routeFiles(directory: string): string[] {
 
 test("all LanFlow API routes use the shared authorization boundary", () => {
   const files = routeFiles(LANFLOW_API);
-  expect(files).toHaveLength(71);
+  expect(files).toHaveLength(72);
   for (const file of files) {
     const source = readFileSync(file, "utf8");
     expect(source, path.relative(ROOT, file)).toMatch(

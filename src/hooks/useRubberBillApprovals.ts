@@ -120,8 +120,8 @@ export function useRubberBillApprovals({
 
   return {
     settings: settingsQuery.data ?? (cachedSettings.locationId === locationId ? cachedSettings.value : undefined),
-    hasCachedSettings: cachedSettings.locationId === locationId && cachedSettings.value !== null,
     isLoading: settingsQuery.isLoading,
+    isFetching: settingsQuery.isFetching,
     error: settingsQuery.error,
     saveGlobalDateRule: saveSettingsMutation.mutateAsync,
     approveRequest: approveMutation.mutateAsync,
