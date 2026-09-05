@@ -40,12 +40,6 @@ export function exportVehicleWeighBillPdfFilename(details: Pick<WexDetails, "wex
   return `LanFlow-export-vehicle-weigh-bill-${sanitizeFilenamePart(details.wexNo)}-80mm.pdf`;
 }
 
-export function exportVehicleWeighBillShareTitle(
-  details: Pick<WexDetails, "wexNo" | "locationName">,
-) {
-  return `บิลรถส่งออก ${details.wexNo} · ${details.locationName}`;
-}
-
 export function buildExportVehicleWeighBillPresentation(details: WexDetails) {
   const sharedCarrierNameText = details.lines[0]?.carrierName?.trim() || MISSING_VALUE;
   return {
@@ -59,7 +53,6 @@ export function buildExportVehicleWeighBillPresentation(details: WexDetails) {
     lines: details.lines.map((line) => ({
       ...line,
       vehicleRoleLabel: exportVehicleRoleLabel(line.sequenceNo),
-      checkoutPending: line.outboundWeight === 0,
       carrierNameText: sharedCarrierNameText,
       inboundAtText: formatExportVehicleWeighBillDateTime(line.inboundAt),
       outboundAtText: line.outboundWeight === 0 ? "รอชั่งออก" : formatExportVehicleWeighBillDateTime(line.outboundAt),

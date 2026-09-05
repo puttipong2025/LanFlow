@@ -136,6 +136,14 @@ export function ExportVehicleWeighBillsModal({
     }
   }
 
+  function closeForm() {
+    optionsControllerRef.current?.abort();
+    optionsControllerRef.current = null;
+    setOptionsLoading(false);
+    setOptionsError(null);
+    setFormDetails(undefined);
+  }
+
   async function openCreate() {
     if (!online || optionsLoading || !api.permissions.canCreate) return;
     const approval = await requestBranchCreate({ requiresOnline: true });
@@ -234,7 +242,7 @@ export function ExportVehicleWeighBillsModal({
 
       {detailTarget && !details && <ModalShell title={detailTarget.wexNo} subtitle={detailError ? "โหลดรายละเอียด WEX ไม่สำเร็จ" : "กำลังโหลดรายละเอียด WEX"} onClose={closeDetails} closeOnEscape nativeModal renderInPortal size="compact"><div className="min-h-28 py-4">{detailError ? <p role="alert" className="text-sm font-semibold text-red-700">{detailError}</p> : <p role="status" className="inline-flex items-center gap-2 text-sm text-ink/60"><Loader2 size={16} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />กำลังโหลดรายละเอียด WEX...</p>}</div></ModalShell>}
       {details && <ExportVehicleWeighBillDetailModal details={details} online={online} sharing={sharingId === details.id} onShare={() => void share(details)} onClose={closeDetails} />}
-      {formDetails !== undefined && <ExportVehicleWeighBillFormModal locationName={selectedLocation.name} details={formDetails} online={online} rubberOptions={options.rubberExports} carriers={options.carriers} optionsLoading={optionsLoading} optionsError={optionsError} onSubmit={submitForm} onClose={() => setFormDetails(undefined)} />}
+      {formDetails !== undefined && <ExportVehicleWeighBillFormModal locationName={selectedLocation.name} details={formDetails} online={online} rubberOptions={options.rubberExports} carriers={options.carriers} optionsLoading={optionsLoading} optionsError={optionsError} onSubmit={submitForm} onClose={closeForm} />}
       <AlertDialog open={Boolean(pendingDelete)} title="ลบบิลรถส่งออก" description={`ต้องการลบ ${pendingDelete?.wexNo ?? ""} ใช่หรือไม่? การลบจะปลดการจอง REX แต่ไม่ยกเลิกสถานะขายออก`} confirmLabel="ลบ WEX" busy={deleting} onCancel={() => setPendingDelete(null)} onConfirm={() => void deleteWex()} />
       <SharePdfWaitingModal open={pdfShare.waiting} onCancel={pdfShare.cancel} />
     </section>

@@ -3,7 +3,6 @@ import { expect, test } from "@playwright/test";
 import {
   buildExportVehicleWeighBillPresentation,
   exportVehicleWeighBillPdfFilename,
-  exportVehicleWeighBillShareTitle,
 } from "@/lib/export-vehicle-weigh-bills/presentation";
 import { renderExportVehicleWeighBillHtml } from "@/lib/export-vehicle-weigh-bills/pdf";
 
@@ -65,7 +64,6 @@ test("builds a Bangkok 80mm WEX receipt with both vehicles and reserved REX weig
   expect(presentation.lines.map((line) => line.vehicleRoleLabel)).toEqual(["รถบรรทุก", "หางพ่วง"]);
   expect(presentation.lines.map((line) => line.carrierNameText)).toEqual(["บริษัทขนส่งทดสอบ", "บริษัทขนส่งทดสอบ"]);
   expect(exportVehicleWeighBillPdfFilename(details)).toBe("LanFlow-export-vehicle-weigh-bill-WEX-20260824-001-80mm.pdf");
-  expect(exportVehicleWeighBillShareTitle(details)).toContain("WEX-20260824-001 · สาขาทดสอบ WEX");
 
   const html = renderExportVehicleWeighBillHtml(details);
   expect(html).toContain("@page { size: 80mm auto;");
@@ -121,7 +119,6 @@ test("renders an inbound-only WEX as waiting for outbound weighing", () => {
   expect(presentation.lines[0]).toMatchObject({
     outboundAtText: "รอชั่งออก",
     netWeightText: "รอชั่งออก",
-    checkoutPending: true,
   });
 
   const html = renderExportVehicleWeighBillHtml(pendingDetails);

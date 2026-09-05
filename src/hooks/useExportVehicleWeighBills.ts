@@ -24,9 +24,7 @@ export type ExportVehicleWeighBillPayload = {
   rubberExportIds: string[];
 };
 
-export type ExportVehicleWeighBillPermissions = WexPermissions;
-
-const noPermissions: ExportVehicleWeighBillPermissions = {
+const noPermissions: WexPermissions = {
   canCreate: false,
   canEdit: false,
   canDelete: false,
@@ -40,7 +38,7 @@ export function useExportVehicleWeighBills({
   online: boolean;
 }) {
   const [bills, setBills] = useState<WexSummary[]>([]);
-  const [permissions, setPermissions] = useState<ExportVehicleWeighBillPermissions>(noPermissions);
+  const [permissions, setPermissions] = useState<WexPermissions>(noPermissions);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
