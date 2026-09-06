@@ -2,7 +2,7 @@ const BANGKOK_OFFSET_MS = 7 * 60 * 60 * 1_000;
 const INITIAL_TRUCK_INBOUND_LOOKBACK_MS = 2 * 60 * 60 * 1_000;
 const DATE_TIME_INPUT_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/;
 
-export function bangkokDateTimeInput(value = new Date(), includeSeconds = false) {
+export function bangkokDateTimeInput(value = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Bangkok",
     year: "numeric",
@@ -10,12 +10,10 @@ export function bangkokDateTimeInput(value = new Date(), includeSeconds = false)
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
-    ...(includeSeconds ? { second: "2-digit" } : {}),
     hourCycle: "h23",
   }).formatToParts(value);
   const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? "";
-  const minuteValue = `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}`;
-  return includeSeconds ? `${minuteValue}:${part("second")}` : minuteValue;
+  return `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}`;
 }
 
 export function bangkokDateTimeInputToMillis(value: string) {
@@ -49,20 +47,25 @@ export function initialWexTruckInboundAt(value = new Date()) {
   return bangkokDateTimeInput(new Date(value.getTime() - INITIAL_TRUCK_INBOUND_LOOKBACK_MS));
 }
 
-export function currentBangkokDateTimeAfter(previousValues: string[], now = new Date()) {
-  const candidate = bangkokDateTimeInput(now, true);
-  const candidateMillis = bangkokDateTimeInputToMillis(candidate);
-  if (candidateMillis === null) return "";
-  const previousMillis = previousValues.map(bangkokDateTimeInputToMillis);
-  return previousMillis.every((value) => value !== null && candidateMillis > value)
-    ? candidate
-    : "";
-}
-
-export function currentBangkokDateTimeNotBefore(previousValue: string, now = new Date()) {
-  const candidate = bangkokDateTimeInput(now, true);
-  const candidateMillis = bangkokDateTimeInputToMillis(candidate);
-  const previousMillis = bangkokDateTimeInputToMillis(previousValue);
-  if (candidateMillis === null || previousMillis === null || candidateMillis < previousMillis) return "";
-  return candidate;
+export function addRandomMinutes(
+  baseValue: string,
+  minMinutes: number,
+  maxMinutes: number,
+  rng: () => number = Math.random,
+) {
+  const baseMillis = bangkokDateTimeInputToMillis(baseValue);
+  if (
+    baseMillis === null
+    || !Number.isInteger(minMinutes)
+    || !Number.isInteger(maxMinutes)
+    || minMinutes > maxMinutes
+  ) return "";
+  const randomValue = rng();
+  if (
+    !Number.isFinite(randomValue)
+    || randomValue < 0
+    || randomValue >= 1
+  ) return "";
+  const minutes = Math.floor(randomValue * (maxMinutes - minMinutes + 1)) + minMinutes;
+  return bangkokDateTimeInput(new Date(baseMillis + (minutes * 60_000)));
 }

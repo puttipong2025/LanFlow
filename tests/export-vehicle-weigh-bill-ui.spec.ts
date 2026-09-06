@@ -54,6 +54,10 @@ async function openCreateWexForm(page: Page) {
   return form;
 }
 
+function minutesBetween(later: string, earlier: string) {
+  return (Date.parse(`${later}:00+07:00`) - Date.parse(`${earlier}:00+07:00`)) / 60_000;
+}
+
 test("clears WEX delete confirmation on reconnect and keeps a confirmed deletion absent", async ({ page }) => {
   let deleted = false;
   let deletes = 0;
@@ -120,13 +124,6 @@ test("uses truck and tail-trailer roles with shared carrier and Rubber Bill focu
   await expect(truckInbound).toHaveValue("");
   await truckInbound.blur();
   await expect(truckInbound).toHaveValue("0");
-
-  const validTruckInboundAt = await truckInboundAt.inputValue();
-  await truckInboundAt.fill("2099-01-01T00:00");
-  await dialog.getByRole("button", { name: "เพิ่มหางพ่วง" }).click();
-  await expect(dialog.getByRole("alert")).toContainText("เวลาเข้ารถบรรทุกต้องไม่เป็นอนาคตก่อนเพิ่มหางพ่วง");
-  await expect(dialog.getByRole("group", { name: "หางพ่วง" })).toHaveCount(0);
-  await truckInboundAt.fill(validTruckInboundAt);
 
   await truckCarrier.fill("ผู้ขนส่งเที่ยวแรก");
   await dialog.getByRole("button", { name: "เพิ่มหางพ่วง" }).evaluate((button) => {
@@ -362,6 +359,150 @@ test("creates an inbound-only WEX with zero outbound weight and no REX reservati
   await expect(page.getByRole("dialog", { name: summary.wexNo })).toContainText("รอชั่งออก");
 });
 
+test("calculates ordered WEX times and recovers after truck outbound reset", async ({ page }) => {
+  await page.addInitScript(() => { Math.random = () => 0; });
+  await page.route("**/api/lanflow/export-vehicle-weigh-bills**", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/options")) return route.fulfill({ json: { rubberExports: [], carriers: [] } });
+    return route.fulfill({ json: { bills: [], hasMore: false, nextCursor: null, permissions: { canCreate: true, canEdit: true, canDelete: true } } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
+  await page.getByRole("tab", { name: "บิลรถส่งออก (WEX)" }).click();
+  const dialog = await openCreateWexForm(page);
+  const truckInbound = dialog.getByLabel("เวลาเข้ารถบรรทุก");
+  const truckOutbound = dialog.getByLabel("เวลาออกรถบรรทุก");
+  await truckInbound.fill("2026-09-05T10:00");
+  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกรถบรรทุก" }).fill("1400");
+  await expect(truckOutbound).toHaveValue("2026-09-05T10:30");
+  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกรถบรรทุก" }).fill("1500");
+  await expect(truckOutbound).toHaveValue("2026-09-05T10:30");
+
+  await dialog.getByRole("button", { name: "เพิ่มหางพ่วง" }).click();
+  const trailerInbound = dialog.getByLabel("เวลาเข้าหางพ่วง");
+  const trailerOutbound = dialog.getByLabel("เวลาออกหางพ่วง");
+  await expect(trailerInbound).toHaveValue("2026-09-05T10:01");
+  await expect(truckOutbound).toHaveValue("2026-09-05T10:30");
+  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกหางพ่วง" }).fill("700");
+  await expect(trailerOutbound).toHaveValue("2026-09-05T10:31");
+
+  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกรถบรรทุก" }).fill("0");
+  await expect(truckOutbound).toHaveValue("");
+  await expect(trailerOutbound).toHaveValue("");
+  await expect(dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกหางพ่วง" })).toHaveValue("700");
+  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกรถบรรทุก" }).fill("1400");
+  await expect(truckOutbound).toHaveValue("2026-09-05T10:30");
+  await expect(trailerOutbound).toHaveValue("2026-09-05T10:31");
+
+  await truckInbound.fill("2026-09-05T11:00");
+  await expect(trailerInbound).toHaveValue("2026-09-05T11:01");
+  await expect(truckOutbound).toHaveValue("2026-09-05T11:30");
+  await expect(trailerOutbound).toHaveValue("2026-09-05T11:31");
+});
+
+test("keeps trailer outbound pending until truck outbound is available", async ({ page }) => {
+  await page.addInitScript(() => { Math.random = () => 0.999_999; });
+  await page.route("**/api/lanflow/export-vehicle-weigh-bills**", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/options")) return route.fulfill({ json: { rubberExports: [], carriers: [] } });
+    return route.fulfill({ json: { bills: [], hasMore: false, nextCursor: null, permissions: { canCreate: true, canEdit: true, canDelete: true } } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
+  await page.getByRole("tab", { name: "บิลรถส่งออก (WEX)" }).click();
+  const dialog = await openCreateWexForm(page);
+  await dialog.getByLabel("เวลาเข้ารถบรรทุก").fill("2026-09-05T10:00");
+  await dialog.getByRole("button", { name: "เพิ่มหางพ่วง" }).click();
+  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกหางพ่วง" }).fill("700");
+  await expect(dialog.getByLabel("เวลาออกหางพ่วง")).toHaveValue("");
+  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกรถบรรทุก" }).fill("1400");
+
+  const truckInbound = await dialog.getByLabel("เวลาเข้ารถบรรทุก").inputValue();
+  const trailerInbound = await dialog.getByLabel("เวลาเข้าหางพ่วง").inputValue();
+  const truckOutbound = await dialog.getByLabel("เวลาออกรถบรรทุก").inputValue();
+  const trailerOutbound = await dialog.getByLabel("เวลาออกหางพ่วง").inputValue();
+  expect(minutesBetween(trailerInbound, truckInbound)).toBe(3);
+  expect(minutesBetween(truckOutbound, truckInbound)).toBe(180);
+  expect(minutesBetween(trailerOutbound, truckOutbound)).toBe(3);
+});
+
+test("preserves stored WEX times on edit and recalculates after an explicit truck inbound change", async ({ page }) => {
+  await page.addInitScript(() => { Math.random = () => 0; });
+  await page.route("**/api/lanflow/export-vehicle-weigh-bills**", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/options")) return route.fulfill({ json: { rubberExports: [], carriers: [] } });
+    if (url.pathname.endsWith(`/${summary.id}`)) return route.fulfill({ json: details });
+    return route.fulfill({ json: { bills: [summary], hasMore: false, nextCursor: null, permissions: { canCreate: true, canEdit: true, canDelete: true } } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
+  await page.getByRole("tab", { name: "บิลรถส่งออก (WEX)" }).click();
+  await page.getByRole("button", { name: `แก้ ${summary.wexNo}` }).click();
+  const dialog = page.getByRole("dialog", { name: `แก้ไข ${summary.wexNo}` });
+  await expect(dialog.getByLabel("เวลาเข้ารถบรรทุก")).toHaveValue("2026-08-24T15:00");
+  await expect(dialog.getByLabel("เวลาออกรถบรรทุก")).toHaveValue("2026-08-24T16:00");
+  await dialog.getByLabel("เวลาเข้ารถบรรทุก").fill("2026-08-24T17:00");
+  await expect(dialog.getByLabel("เวลาออกรถบรรทุก")).toHaveValue("2026-08-24T17:30");
+});
+
+test("samples a calculated WEX time once outside React state updaters", async ({ page }) => {
+  await page.route("**/api/lanflow/export-vehicle-weigh-bills**", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/options")) return route.fulfill({ json: { rubberExports: [], carriers: [] } });
+    return route.fulfill({ json: { bills: [], hasMore: false, nextCursor: null, permissions: { canCreate: true, canEdit: true, canDelete: true } } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
+  await page.getByRole("tab", { name: "บิลรถส่งออก (WEX)" }).click();
+  const dialog = await openCreateWexForm(page);
+  await dialog.getByLabel("เวลาเข้ารถบรรทุก").fill("2026-09-05T10:00");
+  await page.evaluate(() => {
+    let calls = 0;
+    Object.defineProperty(window, "__wexRandomCalls", { configurable: true, get: () => calls });
+    Math.random = () => { calls += 1; return 0; };
+  });
+
+  await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกรถบรรทุก" }).fill("1400");
+  expect(await page.evaluate(() => (
+    window as Window & Partial<{ __wexRandomCalls: number }>
+  ).__wexRandomCalls)).toBe(1);
+});
+
+test("keeps a calculated time while replacing one positive outbound weight with another", async ({ page }) => {
+  await page.addInitScript(() => { Math.random = () => 0; });
+  await page.route("**/api/lanflow/export-vehicle-weigh-bills**", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/options")) return route.fulfill({ json: { rubberExports: [], carriers: [] } });
+    return route.fulfill({ json: { bills: [], hasMore: false, nextCursor: null, permissions: { canCreate: true, canEdit: true, canDelete: true } } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
+  await page.getByRole("tab", { name: "บิลรถส่งออก (WEX)" }).click();
+  const dialog = await openCreateWexForm(page);
+  await dialog.getByLabel("เวลาเข้ารถบรรทุก").fill("2026-09-05T10:00");
+  const outboundWeight = dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกรถบรรทุก" });
+  const outboundAt = dialog.getByLabel("เวลาออกรถบรรทุก");
+  await outboundWeight.fill("1400");
+  await expect(outboundAt).toHaveValue("2026-09-05T10:30");
+  await page.evaluate(() => { Math.random = () => 0.999_999; });
+
+  await outboundWeight.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
+  await outboundWeight.press("Backspace");
+  await outboundWeight.pressSequentially("1500");
+  await expect(outboundAt).toHaveValue("2026-09-05T10:30");
+
+  await outboundWeight.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
+  await outboundWeight.press("Backspace");
+  await outboundWeight.blur();
+  await expect(outboundWeight).toHaveValue("0");
+  await expect(outboundAt).toHaveValue("");
+});
+
 test("submits a manual carrier snapshot and a blank carrier", async ({ page }) => {
   const writes: unknown[] = [];
   await page.route("**/api/lanflow/export-vehicle-weigh-bills**", async (route) => {
@@ -390,7 +531,6 @@ test("submits a manual carrier snapshot and a blank carrier", async ({ page }) =
   await expect(trailerCarrier).toHaveValue("นายสมชาย ขนส่งเอง");
   await dialog.getByRole("spinbutton", { name: "น้ำหนักขาเข้าหางพ่วง" }).fill("2000");
   await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกรถบรรทุก" }).fill("1400");
-  await page.waitForTimeout(1_100);
   await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกหางพ่วง" }).fill("2300");
   await dialog.getByRole("button", { name: "บันทึก WEX" }).click();
 
@@ -433,7 +573,6 @@ test("submits the second same-name carrier with ArrowDown and Enter", async ({ p
     .toHaveValue(sameNameCarriers[1].carrierName);
   await dialog.getByRole("spinbutton", { name: "น้ำหนักขาเข้าหางพ่วง" }).fill("800");
   await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกรถบรรทุก" }).fill("1400");
-  await page.waitForTimeout(1_100);
   await dialog.getByRole("spinbutton", { name: "น้ำหนักขาออกหางพ่วง" }).fill("900");
   await dialog.getByRole("button", { name: "บันทึก WEX" }).click();
 
