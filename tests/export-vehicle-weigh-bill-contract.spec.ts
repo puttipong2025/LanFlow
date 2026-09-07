@@ -37,6 +37,7 @@ function auth(overrides: Partial<AuthTokenPayload> = {}): AuthTokenPayload {
     canAccessSystemManager: false,
     canAccessMoneyTransfer: false,
     canManageTimePayroll: false,
+    canManageRubberExports: false,
     ...overrides,
   };
 }

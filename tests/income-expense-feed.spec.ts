@@ -10,6 +10,8 @@ type FeedRow = {
   txDate?: string;
   relationSourceType?: string;
   relationSourceId?: string;
+  approvalPending?: boolean;
+  approvalOperation?: string;
 };
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
@@ -75,7 +77,7 @@ function createIncomePayload(locationId: string, title: string) {
 }
 
 test.describe("Income/Expense feed correctness @income-expense-feed", () => {
-  test.use({ storageState: "playwright/.auth/user.json" });
+  test.use({ storageState: "playwright/.auth/admin.json" });
 
   test("preserves legacy source totals and rejects an inaccessible branch", async ({ request }) => {
     expect(serviceRoleKey, "SUPABASE_SERVICE_ROLE_KEY is required for feed verification").toBeTruthy();
@@ -107,7 +109,10 @@ test.describe("Income/Expense feed correctness @income-expense-feed", () => {
       expect(denied.status()).toBe(403);
 
     const feed = await fetchAllFeed(request, locationId);
-    const feedActual = feed.filter((row) => !row.relationSourceType);
+    const feedActual = feed.filter((row) =>
+      !row.relationSourceType
+      && !(row.approvalPending && row.approvalOperation === "create")
+    );
     const feedIncoming = feed.filter((row) => row.id.startsWith("money-transfer-income:"));
     const feedOutgoing = feed.filter((row) => row.id.startsWith("money-transfer-branch-expense:"));
     const feedBranchPaid = feed.filter((row) => row.id.startsWith("money-transfer-branch-paid-expense:"));
@@ -136,15 +141,22 @@ test.describe("Income/Expense feed correctness @income-expense-feed", () => {
     expect(sum(feedBranchPaid)).toBe(transfers.filter((row) => row.transfer_type === "customer" && row.location_id === locationId && row.transfer_status === "branch_and_transfer" && row.record_status !== "deleted" && Number(row.branch_paid_amount) > 0).reduce((total, row) => total + Number(row.branch_paid_amount), 0));
 
     const rubberIds = (rubberResult.data ?? []).map((row) => row.id);
-    const [usedRubberResult, rubberItemResult] = await Promise.all([
-      rubberIds.length ? admin.from("money_transfer_items").select("source_id").eq("source_type", "rubber_bill").in("source_id", rubberIds) : Promise.resolve({ data: [], error: null }),
-      rubberIds.length ? admin.from("rubber_bill_items").select("bill_id,item_type,price").in("bill_id", rubberIds) : Promise.resolve({ data: [], error: null }),
-    ]);
-    expect(usedRubberResult.error).toBeNull();
-    expect(rubberItemResult.error).toBeNull();
-    const usedRubberIds = new Set((usedRubberResult.data ?? []).map((row) => row.source_id));
+    const usedRubberRows: Array<{ source_id: string }> = [];
+    const rubberItemRows: Array<{ bill_id: string; item_type: string; price: number | string }> = [];
+    for (let index = 0; index < rubberIds.length; index += 100) {
+      const chunk = rubberIds.slice(index, index + 100);
+      const [usedRubberResult, rubberItemResult] = await Promise.all([
+        admin.from("money_transfer_items").select("source_id").eq("source_type", "rubber_bill").in("source_id", chunk),
+        admin.from("rubber_bill_items").select("bill_id,item_type,price").in("bill_id", chunk),
+      ]);
+      expect(usedRubberResult.error).toBeNull();
+      expect(rubberItemResult.error).toBeNull();
+      usedRubberRows.push(...(usedRubberResult.data ?? []));
+      rubberItemRows.push(...(rubberItemResult.data ?? []));
+    }
+    const usedRubberIds = new Set(usedRubberRows.map((row) => row.source_id));
     const weighItemsByBill = new Map<string, Array<{ price: number | string }>>();
-    for (const item of rubberItemResult.data ?? []) {
+    for (const item of rubberItemRows) {
       if (item.item_type !== "weigh") continue;
       const items = weighItemsByBill.get(item.bill_id) ?? [];
       items.push({ price: item.price });

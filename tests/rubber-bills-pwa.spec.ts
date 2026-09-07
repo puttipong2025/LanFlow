@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { createClient } from '@supabase/supabase-js';
 import { bangkokDateString } from '../src/lib/bangkok-date';
+import { confirmCurrentBranchIfRequired, selectedAppLocationId } from './helpers/select-app-location';
 
 const localSupabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://127.0.0.1:54321';
 const localServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
@@ -140,14 +141,6 @@ test.describe('PWA Offline Reload', () => {
       }
     );
     expect(resetApprovalSetting.ok()).toBeTruthy();
-    await page.addInitScript(() => {
-      localStorage.setItem("lanflow:rubber-bill-approval-settings:v2", JSON.stringify({
-        editWindowMinutes: 30,
-        configuredPrice: null,
-        nonCurrentDateRequiresApproval: false,
-        cachedAt: new Date().toISOString(),
-      }));
-    });
     await page.goto('/');
     await clearQueue(page);
   });
@@ -178,6 +171,7 @@ test.describe('PWA Offline Reload', () => {
     // Create one synced bill so the online query stores a complete receipt snapshot.
     const syncedMarker = `PWA-SYNCED-${Date.now()}`;
     await page.click('button:has-text("เพิ่มบิลยาง")');
+    await confirmCurrentBranchIfRequired(page);
     await page.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]').fill(syncedMarker);
     await page.keyboard.press('Escape');
     const syncedModal = page.locator('.fixed.inset-0').last();
@@ -213,6 +207,7 @@ test.describe('PWA Offline Reload', () => {
 
     const pwaMarker = `PWA-${Date.now()}`;
     await page.click('button:has-text("เพิ่มบิลยาง")');
+    await confirmCurrentBranchIfRequired(page);
     await expect(page.locator('h2:has-text("บิลเครื่องชั่งเล็ก")')).toBeVisible();
     await page.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]').fill(pwaMarker);
     await page.keyboard.press('Escape');
@@ -388,13 +383,16 @@ test.describe('PWA Offline Reload', () => {
       await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
       await page.click('button:has-text("บิลยาง")');
       await expect(page.locator('button:has-text("เพิ่มบิลยาง")')).toBeVisible();
-      await expect.poll(() => page.evaluate(() => {
-        const value = localStorage.getItem('lanflow:rubber-bill-approval-settings:v2');
+      const locationId = await selectedAppLocationId(page);
+      expect(locationId).toBeTruthy();
+      await expect.poll(() => page.evaluate((id) => {
+        const value = localStorage.getItem(`lanflow:rubber-bill-approval-settings:v3:${id}`);
         return value ? JSON.parse(value).nonCurrentDateRequiresApproval : null;
-      })).toBe(true);
+      }, locationId)).toBe(true);
 
       await context.setOffline(true);
       await page.click('button:has-text("เพิ่มบิลยาง")');
+      await confirmCurrentBranchIfRequired(page);
       const modal = page.locator('.fixed.inset-0').last();
       await modal.getByLabel('วันที่').fill(past.toISOString().slice(0, 10));
       await page.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]').fill(marker);

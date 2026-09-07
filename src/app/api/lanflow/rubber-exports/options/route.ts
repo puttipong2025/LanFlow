@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { requireAuth } from "@/lib/server/auth";
-import { canManageRubberExports, rubberExportErrorResponse } from "@/lib/server/rubber-export-response";
+import { canAccessRubberExports, rubberExportErrorResponse } from "@/lib/server/rubber-export-response";
 
 export const dynamic = "force-dynamic";
 
@@ -9,7 +9,7 @@ export async function GET(request: NextRequest) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
   const locationId = request.nextUrl.searchParams.get("locationId") ?? "";
-  if (!canManageRubberExports(result.auth, locationId)) {
+  if (!canAccessRubberExports(result.auth, locationId)) {
     return NextResponse.json({ error: "ไม่มีสิทธิ์ดูบิลที่เลือกได้ของสาขานี้" }, { status: 403 });
   }
   const { data, error } = await result.supabase.rpc("get_rubber_export_available_bills", {

@@ -268,7 +268,7 @@ export function BranchTransferForm({
                 <Plus size={14} /> เพิ่มเอง
               </button>
             </div>
-            <input type="file" accept="image/*" multiple className="hidden" ref={fileInputRef} onChange={handleSlipUpload} disabled={submitting || !online} />
+            <input type="file" accept="image/jpeg,image/png,image/webp" multiple className="hidden" ref={fileInputRef} onChange={handleSlipUpload} disabled={submitting || !online} />
           </div>
           {slips.length > 0 ? (
             <div className="space-y-2">

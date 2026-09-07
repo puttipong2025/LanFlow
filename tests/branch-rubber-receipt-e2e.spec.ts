@@ -12,9 +12,9 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
     const meResponse = await page.request.get("/api/auth/me");
     expect(meResponse.ok()).toBeTruthy();
     const me = (await meResponse.json() as {
-      profile: { locationIds: string[] };
+      profile: { locationIds: string[]; primaryLocationId: string | null };
     }).profile;
-    const locationId = me.locationIds[0];
+    const locationId = me.primaryLocationId ?? me.locationIds[0];
     const exportId = crypto.randomUUID();
 
     await page.route("**/api/lanflow/rubber-bills/branch-receipts?destinationLocationId=*", async (route) => {
@@ -244,6 +244,13 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
       await selectAppLocation(page, destinationLocationId);
       await page.getByRole("button", { name: /^บิลยาง/ }).click();
       await page.getByRole("button", { name: "รับยางจากสาขา" }).click();
+      const branchGuard = page.getByRole("alertdialog", {
+        name: "ยืนยันสาขาก่อนสร้างรายการ",
+      });
+      await expect(branchGuard).toBeVisible();
+      await branchGuard.getByRole("button", {
+        name: `เลือกสาขา ${destinationName}`,
+      }).click();
 
       const receiveDialog = page.getByRole("dialog", { name: "รับยางจากสาขา" });
       await expect(receiveDialog).toBeVisible();
@@ -251,20 +258,35 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
       await expect(receiveDialog.getByText(exportNo)).toBeVisible();
       await receiveDialog.getByRole("radio", { name: `เลือก ${exportNo} จาก ${sourceName}` }).check();
       await receiveDialog.getByRole("button", { name: "ยืนยันรับเข้าสาขา" }).click();
-      await expect(page.getByText(/รับยางเข้าสาขาแล้ว/)).toBeVisible();
 
-      const { data: receipt, error: receiptError } = await db
-        .from("rubber_bills")
-        .select("id, bill_no, rubber_value, average_price, deduction_total, net_total")
-        .eq("source_rubber_export_id", sourceExportId)
-        .eq("record_status", "active")
-        .single();
-      expect(receiptError).toBeNull();
+      type ReceiptRow = {
+        id: string;
+        bill_no: string;
+        rubber_value: number;
+        average_price: number;
+        deduction_total: number;
+        net_total: number;
+      };
+      let receipt: ReceiptRow | null = null;
+      await expect.poll(async () => {
+        const result = await db
+          .from("rubber_bills")
+          .select("id, bill_no, rubber_value, average_price, deduction_total, net_total")
+          .eq("source_rubber_export_id", sourceExportId)
+          .eq("record_status", "active")
+          .maybeSingle();
+        if (result.error) throw result.error;
+        receipt = result.data as ReceiptRow | null;
+        return receipt !== null;
+      }).toBe(true);
       receiptBillId = receipt!.id;
       expect(Number(receipt!.rubber_value)).toBe(9_100);
       expect(Number(receipt!.average_price)).toBe(113.75);
       expect(Number(receipt!.deduction_total)).toBe(9_100);
       expect(Number(receipt!.net_total)).toBe(0);
+      if (await receiveDialog.isVisible()) {
+        await receiveDialog.getByRole("button", { name: "ปิด", exact: true }).click();
+      }
 
       const receiptRow = page.getByRole("row").filter({ hasText: receipt!.bill_no });
       await expect(receiptRow).toContainText(`รับยางจากสาขา ${sourceName}`);

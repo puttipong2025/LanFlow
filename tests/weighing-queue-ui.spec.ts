@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { confirmCurrentBranchIfRequired } from "./helpers/select-app-location";
 
 test.use({ storageState: "playwright/.auth/super_admin.json" });
 
@@ -71,7 +72,7 @@ test("manages, reorders, warns, reshares, deletes, and persists the daily queue"
   await rows.nth(1).getByRole("button", { name: "ลบคิว 2" }).click();
   await expect(rows).toHaveCount(1);
 
-  await page.getByRole("button", { name: "ปิด" }).click();
+  await page.getByRole("button", { name: "ปิด", exact: true }).click();
   await page.getByRole("button", { name: "บัตรคิว", exact: true }).click();
   await expect(page.getByRole("table", { name: "ตารางคิวชั่ง" }).locator("tbody tr")).toHaveCount(1);
   await expect(page.getByText("15:00 น.", { exact: true })).toBeVisible();
@@ -106,6 +107,7 @@ test("reloads offline with cached customers and the device-local queue", async (
   await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
 
   await page.getByRole("button", { name: "เพิ่มบิลยาง" }).click();
+  await confirmCurrentBranchIfRequired(page);
   const billCustomerInput = page.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]');
   await billCustomerInput.fill("CACHE001");
   await expect(page.getByRole("button", { name: /ลูกค้าแคชทดสอบ/ })).toBeVisible();
@@ -114,7 +116,7 @@ test("reloads offline with cached customers and the device-local queue", async (
   await expect(page.getByRole("radio", { name: "สาขาใหญ่จ่าย" })).toHaveCount(0);
   await expect(page.getByText("สวนออฟไลน์")).toHaveCount(0);
   page.once("dialog", (dialog) => dialog.accept());
-  await page.getByRole("button", { name: "ปิด" }).click();
+  await page.getByRole("button", { name: "ปิด", exact: true }).click();
   await expect(page.getByRole("heading", { name: "บิลเครื่องชั่งเล็ก" })).toBeHidden();
 
   await page.getByRole("button", { name: "บัตรคิว", exact: true }).click();

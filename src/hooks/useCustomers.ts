@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { createSupabaseBrowserClient } from "@/lib/supabase-browser";
 import type { Customer } from "@/types";
+import { readAllSupabaseRows } from "@/lib/supabase-pages";
 
 export function useCustomers() {
   const queryClient = useQueryClient();
@@ -9,7 +10,7 @@ export function useCustomers() {
   const { data: customers, isLoading, error } = useQuery({
     queryKey: ["customers"],
     queryFn: async () => {
-      const { data, error } = await supabase
+      const data = await readAllSupabaseRows((from, to) => supabase
         .from("customers")
         .select(`
           *,
@@ -17,9 +18,9 @@ export function useCustomers() {
           customer_bank_accounts (*),
           customer_farms (*)
         `)
-        .order("created_at", { ascending: false });
-
-      if (error) throw new Error(error.message || JSON.stringify(error));
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .range(from, to));
       
       // Transform Supabase data to our Customer type
       return data.map((row: any) => ({

@@ -1,32 +1,74 @@
 import { test, expect } from '@playwright/test';
-import { selectAppLocation, selectFirstAccessibleOption, selectedAppLocationId } from '../helpers/select-app-location';
+import { createClient } from '@supabase/supabase-js';
+import {
+  confirmCurrentBranchIfRequired,
+  selectAppLocation,
+  selectFirstAccessibleOption,
+  selectedAppLocationId,
+} from '../helpers/select-app-location';
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? 'http://127.0.0.1:55421';
+const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
+const superAdminId = process.env.TEST_USER_ID ?? '00000000-0000-4000-8000-000000000001';
+const transferLocationId = crypto.randomUUID();
 
 async function ensureLoggedIn(page: import("@playwright/test").Page, role: "admin" | "super_admin") {
   await page.goto("/");
-  await page.locator('button:has-text("รับ-จ่าย"), input[type="tel"]').first().waitFor({
+  await page.getByRole('button', { name: /^รับ-จ่าย(?: |$)/ }).or(page.locator('input[type="tel"]')).first().waitFor({
     state: "visible",
     timeout: 30000,
   });
   if (await page.locator('input[type="tel"]').isVisible()) {
     await page.fill('input[type="tel"]', role === "admin" ? "0810000001" : process.env.TEST_PHONE || "0800000000");
     await page.fill('input[type="password"]', process.env.TEST_PASSWORD || "password123");
-    await page.click('button:has-text("เข้าสู่ระบบ")');
+    await page.getByRole('button', { name: 'เข้าสู่ระบบ', exact: true }).click();
     await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
   }
 }
 
 test.describe('Income/Expense: Branch Transfer & Approval', () => {
   // We use admin for creating normal records
+
+  test.beforeAll(async () => {
+    expect(serviceRoleKey).toBeTruthy();
+    const db = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    expect((await db.from('locations').insert({
+      id: transferLocationId,
+      name: `สาขาปลายทางทดสอบ ${transferLocationId.slice(0, 6)}`,
+      code: `BT${transferLocationId.replaceAll('-', '').slice(0, 6).toUpperCase()}`,
+      is_active: true,
+    })).error).toBeNull();
+    expect((await db.from('user_locations').insert({
+      user_id: superAdminId,
+      location_id: transferLocationId,
+      is_primary: false,
+    })).error).toBeNull();
+  });
+
+  test.afterAll(async () => {
+    if (!serviceRoleKey) return;
+    const db = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    expect((await db
+      .from('money_transfers')
+      .delete()
+      .or(`location_id.eq.${transferLocationId},target_location_id.eq.${transferLocationId}`)).error).toBeNull();
+    expect((await db.from('user_locations').delete().eq('location_id', transferLocationId)).error).toBeNull();
+    expect((await db.from('locations').delete().eq('id', transferLocationId)).error).toBeNull();
+  });
   
   test.describe('0. Setup Approval Config @approval', () => {
     test.use({ storageState: 'playwright/.auth/super_admin.json' });
 
     test('Super Admin configures keyword', async ({ page }) => {
       await page.goto('/');
-      await page.click('button:has-text("รับ-จ่าย")');
-      await expect(page.locator('button:has-text("ตั้งค่าและอนุมัติรับ-จ่าย")')).toBeVisible({ timeout: 10000 });
+      await page.getByRole('button', { name: /^รับ-จ่าย(?: |$)/ }).click();
+      await expect(page.getByRole('button', { name: /^ตั้งค่าและอนุมัติรับ-จ่าย/ })).toBeVisible({ timeout: 10000 });
 
-      await page.click('button:has-text("ตั้งค่าและอนุมัติรับ-จ่าย")');
+      await page.getByRole('button', { name: /^ตั้งค่าและอนุมัติรับ-จ่าย/ }).click();
       const approvalModal = page.locator('.fixed.inset-0').last();
       await expect(approvalModal).toBeVisible();
 
@@ -50,12 +92,12 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
 
     test('Admin: save normal expense immediately without keyword', async ({ page }) => {
       await page.goto('/');
-      await page.click('button:has-text("รับ-จ่าย")');
-      await expect(page.locator('button:has-text("เพิ่มรายจ่าย")')).toBeVisible({ timeout: 10000 });
+      await page.getByRole('button', { name: /^รับ-จ่าย(?: |$)/ }).click();
+      await expect(page.getByRole('button', { name: 'เพิ่มรายจ่าย', exact: true })).toBeVisible({ timeout: 10000 });
 
       const marker = `NormalExp-${Date.now()}`;
       
-      await page.click('button:has-text("เพิ่มรายจ่าย")');
+      await page.getByRole('button', { name: 'เพิ่มรายจ่าย', exact: true }).click();
       await expect(page.locator('h2:has-text("เพิ่ม/แก้ไข บิลเงินสด")')).toBeVisible();
 
       const modal = page.locator('.fixed.inset-0').last();
@@ -74,13 +116,13 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
 
     test('Admin: save expense with keyword goes to approval queue', async ({ page }) => {
       await page.goto('/');
-      await page.click('button:has-text("รับ-จ่าย")');
-      await expect(page.locator('button:has-text("เพิ่มรายจ่าย")')).toBeVisible({ timeout: 10000 });
+      await page.getByRole('button', { name: /^รับ-จ่าย(?: |$)/ }).click();
+      await expect(page.getByRole('button', { name: 'เพิ่มรายจ่าย', exact: true })).toBeVisible({ timeout: 10000 });
 
       // Assuming "เบิกเงินสด" matches a keyword "เบิก"
       const marker = `เบิกเงินสด-${Date.now()}`;
       
-      await page.click('button:has-text("เพิ่มรายจ่าย")');
+      await page.getByRole('button', { name: 'เพิ่มรายจ่าย', exact: true }).click();
       await expect(page.locator('h2:has-text("เพิ่ม/แก้ไข บิลเงินสด")')).toBeVisible();
 
       const modal = page.locator('.fixed.inset-0').last();
@@ -105,18 +147,19 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
 
     test('Super Admin: shows pending approval count on the module nav and approval button', async ({ page }) => {
       await page.goto('/');
-      await page.click('button:has-text("รับ-จ่าย")');
-      await expect(page.locator('button:has-text("เพิ่มรายจ่าย")')).toBeVisible({ timeout: 10000 });
+      await page.getByRole('button', { name: /^รับ-จ่าย(?: |$)/ }).click();
+      await expect(page.getByRole('button', { name: 'เพิ่มรายจ่าย', exact: true })).toBeVisible({ timeout: 10000 });
 
       const marker = `เบิกเงินสด-Badge-${Date.now()}`;
-      await page.click('button:has-text("เพิ่มรายจ่าย")');
+      await page.getByRole('button', { name: 'เพิ่มรายจ่าย', exact: true }).click();
+      await confirmCurrentBranchIfRequired(page);
       const modal = page.locator('.fixed.inset-0').last();
       await modal.locator('table tbody tr').first().locator('input').first().fill(marker);
       await modal.locator('table tbody tr').first().locator('input[type="number"]').first().fill('250');
       await modal.locator('button:has-text("บันทึกบิล")').click();
       await expect(page.locator('h2:has-text("เพิ่ม/แก้ไข บิลเงินสด")')).toBeHidden({ timeout: 10000 });
 
-      const approvalButton = page.locator('button:has-text("ตั้งค่าและอนุมัติรับ-จ่าย")');
+      const approvalButton = page.getByRole('button', { name: /^ตั้งค่าและอนุมัติรับ-จ่าย/ });
       await expect(
         page.getByRole('navigation').getByRole('button', {
           name: /^รับ-จ่าย มีงานที่จัดการได้ [1-9]\d* รายการ$/,
@@ -131,7 +174,7 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       const requestRow = approvalModal.locator('tr', { hasText: marker }).first();
       await expect(requestRow).toBeVisible();
       await requestRow.locator('button[title="ปฏิเสธ"]').click();
-      const rejectDialog = page.getByRole('heading', { name: 'ปฏิเสธรายการ' }).locator('..');
+      const rejectDialog = page.getByRole('dialog', { name: 'ปฏิเสธรายการ' });
       await rejectDialog.getByLabel('เหตุผลที่ปฏิเสธ (ไม่บังคับ)').fill('badge test cleanup');
       await rejectDialog.getByRole('button', { name: 'ยืนยัน' }).click();
       await expect(page.getByText('ปฏิเสธรายการแล้ว')).toBeVisible();
@@ -140,12 +183,13 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
 
     test('Super Admin: approve and reject pending requests', async ({ page }) => {
       await page.goto('/');
-      await page.click('button:has-text("รับ-จ่าย")');
-      await expect(page.locator('button:has-text("เพิ่มรายจ่าย")')).toBeVisible({ timeout: 10000 });
+      await page.getByRole('button', { name: /^รับ-จ่าย(?: |$)/ }).click();
+      await expect(page.getByRole('button', { name: 'เพิ่มรายจ่าย', exact: true })).toBeVisible({ timeout: 10000 });
 
       // 1. Create a request to approve
       const approveMarker = `เบิกเงินสด-Approve-${Date.now()}`;
-      await page.click('button:has-text("เพิ่มรายจ่าย")');
+      await page.getByRole('button', { name: 'เพิ่มรายจ่าย', exact: true }).click();
+      await confirmCurrentBranchIfRequired(page);
       let modal = page.locator('.fixed.inset-0').last();
       await modal.locator('table tbody tr').first().locator('input').first().fill(approveMarker);
       await modal.locator('table tbody tr').first().locator('input[type="number"]').first().fill('300');
@@ -154,7 +198,7 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
 
       // 2. Create a request to reject
       const rejectMarker = `เบิกเงินสด-Reject-${Date.now()}`;
-      await page.click('button:has-text("เพิ่มรายจ่าย")');
+      await page.getByRole('button', { name: 'เพิ่มรายจ่าย', exact: true }).click();
       modal = page.locator('.fixed.inset-0').last();
       await modal.locator('table tbody tr').first().locator('input').first().fill(rejectMarker);
       await modal.locator('table tbody tr').first().locator('input[type="number"]').first().fill('400');
@@ -162,7 +206,7 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       await expect(page.locator('h2:has-text("เพิ่ม/แก้ไข บิลเงินสด")')).toBeHidden({ timeout: 10000 });
 
       // Open settings / approval modal
-      await page.click('button:has-text("ตั้งค่าและอนุมัติรับ-จ่าย")');
+      await page.getByRole('button', { name: /^ตั้งค่าและอนุมัติรับ-จ่าย/ }).click();
       const approvalModal = page.locator('.fixed.inset-0').last();
       await expect(approvalModal).toBeVisible();
 
@@ -177,7 +221,7 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       const rejectRow = approvalModal.locator('tr', { hasText: rejectMarker }).first();
       await expect(rejectRow).toBeVisible();
       await rejectRow.locator('button[title="ปฏิเสธ"]').first().click();
-      const rejectDialog = page.getByRole('heading', { name: 'ปฏิเสธรายการ' }).locator('..');
+      const rejectDialog = page.getByRole('dialog', { name: 'ปฏิเสธรายการ' });
       await rejectDialog.getByLabel('เหตุผลที่ปฏิเสธ (ไม่บังคับ)').fill('ทดสอบปฏิเสธ');
       await rejectDialog.getByRole('button', { name: 'ยืนยัน' }).click();
       await expect(page.getByText("ปฏิเสธรายการแล้ว")).toBeVisible();
@@ -200,11 +244,12 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
 
     test('target location cannot be same as source location', async ({ page }) => {
       await page.goto('/');
-      await page.click('button:has-text("รับ-จ่าย")');
-      await expect(page.locator('button:has-text("โยกเงินไปสาขาอื่น")')).toBeVisible({ timeout: 10000 });
+      await page.getByRole('button', { name: /^รับ-จ่าย(?: |$)/ }).click();
+      await expect(page.getByRole('button', { name: 'โยกเงินไปสาขาอื่น', exact: true })).toBeVisible({ timeout: 10000 });
 
       // Click the new main button
-      await page.click('button:has-text("โยกเงินไปสาขาอื่น")');
+      await page.getByRole('button', { name: 'โยกเงินไปสาขาอื่น', exact: true }).click();
+      await confirmCurrentBranchIfRequired(page);
       const modal = page.locator('.fixed.inset-0').last();
       await expect(modal).toBeVisible();
 
@@ -221,8 +266,9 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
 
     test('create cash branch transfer with separate denomination counts', async ({ page }) => {
       await page.goto('/');
-      await page.click('button:has-text("รับ-จ่าย")');
-      await page.click('button:has-text("โยกเงินไปสาขาอื่น")');
+      await page.getByRole('button', { name: /^รับ-จ่าย(?: |$)/ }).click();
+      await page.getByRole('button', { name: 'โยกเงินไปสาขาอื่น', exact: true }).click();
+      await confirmCurrentBranchIfRequired(page);
       const modal = page.locator('.fixed.inset-0').last();
       await selectFirstAccessibleOption(page, modal.getByLabel('สาขาปลายทาง'));
       const values = ['1', '0', '0', '0', '0', '0', '0', '0', '1'];
@@ -235,8 +281,9 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
     test('receive cash transfer with zero actual counts and finish with visible difference', async ({ page }) => {
       await page.context().setOffline(false);
       await page.goto('/');
-      await page.click('button:has-text("รับ-จ่าย")');
-      await page.click('button:has-text("โยกเงินไปสาขาอื่น")');
+      await page.getByRole('button', { name: /^รับ-จ่าย(?: |$)/ }).click();
+      await page.getByRole('button', { name: 'โยกเงินไปสาขาอื่น', exact: true }).click();
+      await confirmCurrentBranchIfRequired(page);
       const createModal = page.locator('.fixed.inset-0').last();
       const targetSelect = createModal.getByLabel('สาขาปลายทาง');
       const targetLocationId = await selectFirstAccessibleOption(page, targetSelect);
@@ -265,8 +312,9 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
     test('receive cash transfer with exact counts', async ({ page }) => {
       await page.context().setOffline(false);
       await page.goto('/');
-      await page.click('button:has-text("รับ-จ่าย")');
-      await page.click('button:has-text("โยกเงินไปสาขาอื่น")');
+      await page.getByRole('button', { name: /^รับ-จ่าย(?: |$)/ }).click();
+      await page.getByRole('button', { name: 'โยกเงินไปสาขาอื่น', exact: true }).click();
+      await confirmCurrentBranchIfRequired(page);
       const createModal = page.locator('.fixed.inset-0').last();
       const targetSelect = createModal.getByLabel('สาขาปลายทาง');
       const targetLocationId = await selectFirstAccessibleOption(page, targetSelect);
@@ -297,15 +345,11 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
   test.describe('3. Role & Security @role', () => {
     test.use({ storageState: 'playwright/.auth/user.json' });
 
-    test('user cannot approve/reject or see settings', async ({ page }) => {
+    test('user sees only the time and payroll shell', async ({ page }) => {
       await page.goto('/');
-      await page.click('button:has-text("รับ-จ่าย")');
-      await expect(page.locator('button:has-text("เพิ่มรายจ่าย")')).toBeVisible({ timeout: 10000 });
-
-      // Normal user should not see the approval settings button
-      await expect(page.locator('button:has-text("ตั้งค่าและอนุมัติรับ-จ่าย")')).toBeHidden();
-
-      // Can also test API direct access if needed, but UI hiding is a good first step
+      await expect(page.getByRole('heading', { name: 'เวลาและเงินเดือน' })).toBeVisible();
+      await expect(page.getByRole('navigation')).toHaveCount(0);
+      await expect(page.getByRole('button', { name: /^รับ-จ่าย(?: |$)/ })).toHaveCount(0);
     });
   });
 });

@@ -1263,6 +1263,29 @@ $$;
 ALTER FUNCTION "private"."can_manage_reports"("p_location_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."can_manage_rubber_exports"("p_location_id" "uuid") RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select private.is_active_user()
+    and (
+      private.can_delete_reports()
+      or exists (
+        select 1
+        from public.profiles p
+        join public.user_locations ul on ul.user_id = p.id
+        where p.id = auth.uid()
+          and p.role = 'admin'
+          and p.can_manage_rubber_exports = true
+          and ul.location_id = p_location_id
+      )
+    )
+$$;
+
+
+ALTER FUNCTION "private"."can_manage_rubber_exports"("p_location_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."can_manage_time_payroll_profile"("target_profile_id" "uuid") RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -4646,6 +4669,35 @@ $$;
 
 
 ALTER FUNCTION "private"."income_expense_operational_row"("p_location_id" "uuid", "p_source_kind" "text", "p_source_id" "uuid", "p_source_date" "date") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."income_expense_pending_fields"("p_location_id" "uuid", "p_row" "jsonb") RETURNS "jsonb"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $_$
+  select coalesce((
+    select jsonb_build_object(
+      'approvalPending', true,
+      'approvalRequestId', request.id,
+      'approvalRequestType', 'income_expense',
+      'approvalOperation', request.requested_operation,
+      'approvalReasons', to_jsonb(request.matched_reasons)
+    )
+    from public.income_expense_approval_requests request
+    where request.location_id = p_location_id
+      and request.source_income_expense_id = case
+        when p_row->>'id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+          then (p_row->>'id')::uuid
+        else null
+      end
+      and request.request_status = 'pending'
+    order by request.created_at, request.id
+    limit 1
+  ), '{}'::jsonb);
+$_$;
+
+
+ALTER FUNCTION "private"."income_expense_pending_fields"("p_location_id" "uuid", "p_row" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."is_active_user"() RETURNS boolean
@@ -9363,6 +9415,98 @@ $$;
 ALTER FUNCTION "public"."correct_time_payroll_resume_start"("p_profile_id" "uuid", "p_start_on" "date") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."create_admin_user_profile"("p_user_id" "uuid", "p_phone" "text", "p_name" "text", "p_role" "text", "p_location_ids" "uuid"[], "p_password_plaintext" "text", "p_password_auth_version" "uuid") RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_actor_id uuid := auth.uid();
+  v_actor_role text := private.current_user_role();
+  v_location_ids uuid[];
+begin
+  if v_actor_id is null or not private.is_active_user()
+     or not (
+       v_actor_role in ('super_admin', 'admin')
+       or private.can_access_super_admin_features()
+     ) then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์สร้างบัญชีพนักงาน';
+  end if;
+  if p_user_id is null
+     or nullif(btrim(coalesce(p_phone, '')), '') is null
+     or nullif(btrim(coalesce(p_name, '')), '') is null
+     or char_length(btrim(p_name)) > 100
+     or p_role not in ('user', 'admin')
+     or nullif(coalesce(p_password_plaintext, ''), '') is null
+     or p_password_auth_version is null then
+    raise exception 'ADMIN_PROFILE_INVALID: ข้อมูลพนักงานไม่ถูกต้อง';
+  end if;
+  if p_role = 'admin' and v_actor_role <> 'super_admin' then
+    raise exception 'FORBIDDEN: เฉพาะ super_admin เท่านั้นที่สร้างบัญชี Admin ได้';
+  end if;
+  if coalesce(cardinality(p_location_ids), 0) <> (
+    select count(distinct location_id)
+    from unnest(coalesce(p_location_ids, array[]::uuid[])) location_id
+    where location_id is not null
+  ) then
+    raise exception 'ADMIN_PROFILE_INVALID: รายการสาขาซ้ำหรือไม่ถูกต้อง';
+  end if;
+
+  select coalesce(array_agg(location_id order by position), array[]::uuid[])
+  into v_location_ids
+  from unnest(coalesce(p_location_ids, array[]::uuid[]))
+    with ordinality requested(location_id, position);
+
+  if exists (
+    select 1
+    from unnest(v_location_ids) requested(location_id)
+    left join public.locations location
+      on location.id = requested.location_id and location.is_active = true
+    where location.id is null
+  ) then
+    raise exception 'ADMIN_PROFILE_INVALID: มีสาขาที่ไม่พร้อมใช้งาน';
+  end if;
+  if not private.can_access_super_admin_features()
+     and exists (
+       select 1
+       from unnest(v_location_ids) requested(location_id)
+       where not private.can_manage_location(requested.location_id)
+     ) then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์กำหนดสาขานอกขอบเขตของ Admin';
+  end if;
+
+  insert into public.profiles (
+    id,
+    phone,
+    name,
+    role,
+    is_active,
+    current_password_plaintext,
+    current_password_auth_version
+  ) values (
+    p_user_id,
+    btrim(p_phone),
+    regexp_replace(btrim(p_name), '[[:space:]]+', ' ', 'g'),
+    p_role::public.app_role,
+    true,
+    p_password_plaintext,
+    p_password_auth_version
+  );
+
+  insert into public.user_locations (
+    user_id,
+    location_id,
+    assigned_by,
+    is_primary
+  )
+  select p_user_id, location_id, v_actor_id, position = 1
+  from unnest(v_location_ids) with ordinality requested(location_id, position);
+end
+$$;
+
+
+ALTER FUNCTION "public"."create_admin_user_profile"("p_user_id" "uuid", "p_phone" "text", "p_name" "text", "p_role" "text", "p_location_ids" "uuid"[], "p_password_plaintext" "text", "p_password_auth_version" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."create_cash_branch_transfer"("payload" "jsonb") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -9493,27 +9637,90 @@ ALTER FUNCTION "public"."create_export_vehicle_weigh_bill"("p_location_id" "uuid
 
 CREATE OR REPLACE FUNCTION "public"."create_income_expense_approval_request"("payload" "jsonb") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public', 'private'
+    SET "search_path" TO ''
     AS $$
 declare
+  v_operation text := lower(coalesce(payload->>'operation', ''));
+  v_bill_option text := coalesce(payload->>'billOption', '');
   v_location_id uuid := nullif(payload->>'locationId', '')::uuid;
+  v_client_temp_id text := nullif(btrim(payload->>'clientTempId'), '');
+  v_idempotency_key text := nullif(btrim(payload->>'idempotencyKey'), '');
+  v_existing_request record;
+  v_result jsonb;
 begin
-  if payload->>'billOption' = 'บิลขาย'
-     and payload->>'operation' in ('create', 'update') then
+  if v_bill_option = 'บิลขาย'
+     and v_operation = 'create' then
     if not coalesce(private.is_active_user(), false) then
-      return jsonb_build_object('status', 'failed', 'errorMessage', 'Unauthorized or inactive user');
+      return jsonb_build_object(
+        'status', 'failed',
+        'errorMessage', 'Unauthorized or inactive user'
+      );
     end if;
+
     if v_location_id is null
        or not exists (select 1 from public.locations where id = v_location_id)
        or not public.can_access_location(v_location_id) then
-      return jsonb_build_object('status', 'failed', 'errorMessage', 'Location access denied');
+      return jsonb_build_object(
+        'status', 'failed',
+        'errorMessage', 'Location access denied'
+      );
     end if;
+
     return jsonb_build_object('status', 'no_approval');
   end if;
 
-  return private.create_income_expense_approval_request_20260805080000(payload);
-exception when others then
-  return jsonb_build_object('status', 'failed', 'errorMessage', sqlerrm);
+  if coalesce(private.is_active_user(), false)
+     and v_bill_option = 'บิลขาย'
+     and v_operation in ('update', 'delete')
+     and v_client_temp_id is not null then
+    perform pg_advisory_xact_lock(
+      hashtextextended('income-expense-approval-source:' || v_client_temp_id, 0)
+    );
+
+    select
+      request.id,
+      request.matched_reasons,
+      request.matched_keyword
+    into v_existing_request
+    from public.income_expense_approval_requests request
+    join public.income_expense source
+      on source.id = request.source_income_expense_id
+    where source.client_temp_id = v_client_temp_id
+      and source.location_id = v_location_id
+      and public.can_access_location(source.location_id)
+      and request.request_status = 'pending'
+    order by request.created_at desc, request.id desc
+    limit 1;
+
+    if v_existing_request.id is not null then
+      return jsonb_build_object(
+        'status', 'pending',
+        'requestId', v_existing_request.id,
+        'requestStatus', 'pending',
+        'matchedReasons', to_jsonb(coalesce(v_existing_request.matched_reasons, array[]::text[])),
+        'matchedKeyword', v_existing_request.matched_keyword
+      );
+    end if;
+  elsif v_idempotency_key is not null then
+    perform pg_advisory_xact_lock(
+      hashtextextended('income-expense-approval-idempotency:' || v_idempotency_key, 0)
+    );
+  end if;
+
+  v_result := private.create_income_expense_approval_request_20260805080000(payload);
+
+  if v_result->>'status' = 'pending'
+     and v_result->>'requestStatus' = 'approved' then
+    return jsonb_build_object('status', 'no_approval');
+  end if;
+
+  return v_result;
+exception
+  when others then
+    return jsonb_build_object(
+      'status', 'failed',
+      'errorMessage', sqlerrm
+    );
 end;
 $$;
 
@@ -12033,9 +12240,6 @@ declare
   v_actor_name text;
   v_now timestamptz := clock_timestamp();
 begin
-  if not private.can_delete_reports() then
-    raise exception 'เฉพาะ super_admin หรือผู้มีสิทธิ์จัดการระบบเท่านั้นที่ลบได้';
-  end if;
   select * into v_export
   from public.rubber_exports
   where id = p_export_id
@@ -12045,11 +12249,17 @@ begin
     from public.document_deletion_audits
     where document_kind = 'rubber_export' and source_id = p_export_id;
     if v_audit.id is not null then
+      if not private.can_manage_rubber_exports(v_audit.location_id) then
+        raise exception 'ไม่มีสิทธิ์ลบรายการส่งออกของสาขานี้';
+      end if;
       return jsonb_build_object(
         'id', p_export_id, 'exportNo', v_audit.document_no, 'status', 'deleted'
       );
     end if;
     raise exception 'ไม่พบรายการส่งออก';
+  end if;
+  if not private.can_manage_rubber_exports(v_export.location_id) then
+    raise exception 'ไม่มีสิทธิ์ลบรายการส่งออกของสาขานี้';
   end if;
   if v_export.sold_out_at is not null then
     raise exception 'RUBBER_EXPORT_SOLD_OUT:%', v_export.export_no
@@ -13925,6 +14135,116 @@ ALTER FUNCTION "public"."get_income_expense_feed"("p_location_id" "uuid", "p_fro
 
 
 CREATE OR REPLACE FUNCTION "public"."get_income_expense_operational_feed"("p_location_id" "uuid", "p_mode" "text" DEFAULT 'latest'::"text", "p_search" "text" DEFAULT ''::"text", "p_cursor" "text" DEFAULT NULL::"text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $_$
+declare
+  v_result jsonb;
+  v_rows jsonb;
+  v_pending_creates jsonb := '[]'::jsonb;
+  v_search text := lower(regexp_replace(btrim(coalesce(p_search, '')), '\s+', ' ', 'g'));
+begin
+  v_result := public.get_income_expense_operational_feed_20260907010000_base(
+    p_location_id,
+    p_mode,
+    p_search,
+    p_cursor
+  );
+
+  if p_mode <> 'latest' then
+    return v_result;
+  end if;
+
+  select coalesce(
+    jsonb_agg(
+      entry.row_data || private.income_expense_pending_fields(p_location_id, entry.row_data)
+      order by entry.position
+    ),
+    '[]'::jsonb
+  )
+  into v_rows
+  from jsonb_array_elements(coalesce(v_result->'rows', '[]'::jsonb))
+    with ordinality entry(row_data, position);
+
+  if p_cursor is null then
+    select coalesce(jsonb_agg(pending.row_data order by pending.created_at desc, pending.id desc), '[]'::jsonb)
+    into v_pending_creates
+    from (
+      select request.id, request.created_at, jsonb_strip_nulls(jsonb_build_object(
+        'id', 'approval-income:' || request.id,
+        'clientTempId', coalesce(request.requested_payload->>'clientTempId', request.id::text),
+        'localBillNo', coalesce(request.requested_payload->>'localBillNo', 'REQ-' || left(request.id::text, 8)),
+        'serverBillNo', request.requested_payload->>'serverBillNo',
+        'idempotencyKey', request.request_idempotency_key,
+        'locationId', request.location_id,
+        'syncStatus', 'pending',
+        'recordStatus', 'active',
+        'type', request.tx_type,
+        'number', coalesce(
+          request.requested_payload->>'number',
+          request.requested_payload->>'serverBillNo',
+          request.requested_payload->>'localBillNo',
+          'REQ-' || left(request.id::text, 8)
+        ),
+        'txDate', case
+          when coalesce(request.requested_payload->>'txDate', '') ~ '^\d{4}-\d{2}-\d{2}$'
+            then request.requested_payload->>'txDate'
+          else (request.created_at at time zone 'Asia/Bangkok')::date::text
+        end,
+        'title', request.title,
+        'cost', request.cost,
+        'billOption', coalesce(
+          request.requested_payload->>'billOption',
+          case when request.tx_type = 'income' then 'รายรับ' else 'ค่าใช้จ่าย' end
+        ),
+        'clientRecordedAt', coalesce(request.requested_payload->>'clientRecordedAt', request.created_at::text),
+        'clientCreatedAt', coalesce(request.requested_payload->>'clientCreatedAt', request.created_at::text),
+        'serverReceivedAt', request.created_at,
+        'revisionNo', coalesce((request.requested_payload->>'expectedRevisionNo')::integer, 0),
+        'createdByUserId', request.requested_by_user_id,
+        'createdByName', request.requested_by_name,
+        'createdByPhone', request.requested_by_phone,
+        'approvalPending', true,
+        'approvalRequestId', request.id,
+        'approvalRequestType', 'income_expense',
+        'approvalOperation', request.requested_operation,
+        'approvalReasons', to_jsonb(request.matched_reasons)
+      )) row_data
+      from public.income_expense_approval_requests request
+      where request.location_id = p_location_id
+        and request.request_status = 'pending'
+        and request.requested_operation = 'create'
+        and request.requested_by_user_id = auth.uid()
+        and (
+          v_search = ''
+          or position(v_search in lower(regexp_replace(concat_ws(' ',
+            coalesce(
+              request.requested_payload->>'number',
+              request.requested_payload->>'serverBillNo',
+              request.requested_payload->>'localBillNo'
+            ),
+            coalesce(
+              request.requested_payload->>'txDate',
+              (request.created_at at time zone 'Asia/Bangkok')::date::text
+            ),
+            request.title,
+            coalesce(request.requested_payload->>'billOption', request.tx_type),
+            request.requested_by_name,
+            request.requested_by_phone
+          ), '\s+', ' ', 'g'))) > 0
+        )
+    ) pending;
+  end if;
+
+  return jsonb_set(v_result, '{rows}', v_pending_creates || v_rows, true);
+end;
+$_$;
+
+
+ALTER FUNCTION "public"."get_income_expense_operational_feed"("p_location_id" "uuid", "p_mode" "text", "p_search" "text", "p_cursor" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_income_expense_operational_feed_20260907010000_base"("p_location_id" "uuid", "p_mode" "text" DEFAULT 'latest'::"text", "p_search" "text" DEFAULT ''::"text", "p_cursor" "text" DEFAULT NULL::"text") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
     AS $_$
@@ -14117,7 +14437,7 @@ end;
 $_$;
 
 
-ALTER FUNCTION "public"."get_income_expense_operational_feed"("p_location_id" "uuid", "p_mode" "text", "p_search" "text", "p_cursor" "text") OWNER TO "postgres";
+ALTER FUNCTION "public"."get_income_expense_operational_feed_20260907010000_base"("p_location_id" "uuid", "p_mode" "text", "p_search" "text", "p_cursor" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_income_expense_operational_feed_on_demand"("p_location_id" "uuid", "p_mode" "text" DEFAULT 'latest'::"text", "p_search" "text" DEFAULT ''::"text", "p_cursor" "text" DEFAULT NULL::"text") RETURNS "jsonb"
@@ -15103,6 +15423,55 @@ $$;
 
 
 ALTER FUNCTION "public"."get_report_income_expense_rows"("p_report_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_report_income_expense_rows_json"("p_report_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "sql" STABLE
+    SET "search_path" TO ''
+    AS $$
+  select coalesce(jsonb_agg(to_jsonb(rows)), '[]'::jsonb)
+  from public.get_report_income_expense_rows(p_report_id) rows
+$$;
+
+
+ALTER FUNCTION "public"."get_report_income_expense_rows_json"("p_report_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_report_stock_balances"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_result jsonb;
+begin
+  if p_location_id is null
+     or p_cutoff_at is null
+     or not private.can_manage_reports(p_location_id) then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์ดูรายงานนี้';
+  end if;
+
+  select coalesce(
+    jsonb_agg(
+      jsonb_build_object('product', balances.product_name, 'quantity', balances.quantity)
+      order by balances.product_name
+    ),
+    '[]'::jsonb
+  )
+  into v_result
+  from (
+    select movement.product_name, sum(movement.quantity_delta) as quantity
+    from public.acid_stock_movements movement
+    where movement.location_id = p_location_id
+      and movement.created_at <= p_cutoff_at
+    group by movement.product_name
+  ) balances;
+
+  return v_result;
+end
+$$;
+
+
+ALTER FUNCTION "public"."get_report_stock_balances"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_rubber_bill_evidence_feed"("p_location_id" "uuid", "p_view" "text" DEFAULT 'pending'::"text", "p_search" "text" DEFAULT ''::"text", "p_bill_id" "uuid" DEFAULT NULL::"uuid", "p_cursor_sort_at" timestamp with time zone DEFAULT NULL::timestamp with time zone, "p_cursor_bill_id" "uuid" DEFAULT NULL::"uuid", "p_page_size" integer DEFAULT 75) RETURNS "jsonb"
@@ -16276,6 +16645,32 @@ $_$;
 ALTER FUNCTION "public"."get_time_payroll_attendance_month"("p_profile_id" "uuid", "p_month" "text") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."get_time_payroll_debt_totals"() RETURNS "jsonb"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select coalesce(
+    jsonb_agg(
+      jsonb_build_object('profileId', totals.profile_id, 'amount', totals.amount)
+      order by totals.profile_id
+    ),
+    '[]'::jsonb
+  )
+  from (
+    select transaction.profile_id, sum(transaction.remaining_amount) as amount
+    from public.financial_transactions transaction
+    where transaction.type in ('DEBT', 'WITHDRAWAL')
+      and transaction.status = 'APPROVED'
+      and transaction.remaining_amount > 0
+      and private.can_manage_time_payroll_profile(transaction.profile_id)
+    group by transaction.profile_id
+  ) totals
+$$;
+
+
+ALTER FUNCTION "public"."get_time_payroll_debt_totals"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."get_time_payroll_payment_locations"() RETURNS TABLE("id" "uuid", "name" "text", "code" "text", "active" boolean)
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -16334,6 +16729,55 @@ $$;
 
 
 ALTER FUNCTION "public"."get_time_payroll_settings"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_time_payroll_user_totals"("p_profile_id" "uuid", "p_month" "text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $_$
+declare
+  v_month date;
+  v_debt numeric;
+  v_deductions numeric;
+begin
+  if p_profile_id is null
+     or not private.is_active_user()
+     or not (
+       p_profile_id = auth.uid()
+       or private.can_manage_time_payroll_profile(p_profile_id)
+     ) then
+    raise exception 'FORBIDDEN: access denied';
+  end if;
+  if p_month is null or p_month !~ '^[0-9]{4}-(0[1-9]|1[0-2])$' then
+    raise exception 'INVALID_MONTH';
+  end if;
+  v_month := (p_month || '-01')::date;
+
+  select coalesce(sum(transaction.remaining_amount), 0)
+  into v_debt
+  from public.financial_transactions transaction
+  where transaction.profile_id = p_profile_id
+    and transaction.type in ('DEBT', 'WITHDRAWAL')
+    and transaction.status = 'APPROVED'
+    and transaction.remaining_amount > 0;
+
+  select coalesce(sum(transaction.amount), 0)
+  into v_deductions
+  from public.financial_transactions transaction
+  where transaction.profile_id = p_profile_id
+    and transaction.type in ('WITHDRAWAL_DEDUCTION', 'DEBT_DEDUCTION')
+    and transaction.status = 'APPROVED'
+    and transaction.applied_month = v_month;
+
+  return jsonb_build_object(
+    'totalDebt', v_debt,
+    'usedThisMonth', v_deductions
+  );
+end
+$_$;
+
+
+ALTER FUNCTION "public"."get_time_payroll_user_totals"("p_profile_id" "uuid", "p_month" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_weight_evidence_review_digest"() RETURNS TABLE("location_id" "uuid", "branch_name" "text", "normal_today" bigint, "pending_today" bigint, "pass_today" bigint, "improve_today" bigint, "pending_before_today" bigint)
@@ -20490,6 +20934,14 @@ begin
   if payload->>'billOption' = 'บิลขาย'
      and payload->>'operation' in ('create', 'update') then
     v_approval := public.create_income_expense_approval_request(payload);
+    if v_approval->>'status' = 'pending' then
+      return jsonb_build_object(
+        'status', 'pending_approval',
+        'requestId', v_approval->>'requestId',
+        'matchedReasons', coalesce(v_approval->'matchedReasons', '[]'::jsonb),
+        'errorMessage', 'รายการนี้ต้องรออนุมัติ'
+      );
+    end if;
     if v_approval->>'status' <> 'no_approval' then
       return v_approval;
     end if;
@@ -22191,10 +22643,12 @@ declare
   v_now timestamptz := clock_timestamp();
   v_age record;
 begin
-  if not private.can_delete_reports() then raise exception 'เฉพาะ super_admin หรือผู้มีสิทธิ์จัดการระบบเท่านั้นที่ตรวจสอบได้'; end if;
-  if p_expense_destination not in ('branch', 'external') then raise exception 'กรุณาเลือกปลายทางค่าใช้จ่าย'; end if;
   select * into v_export from public.rubber_exports where id = p_export_id for update;
   if v_export.id is null then raise exception 'ไม่พบรายการส่งออก'; end if;
+  if not private.can_manage_rubber_exports(v_export.location_id) then
+    raise exception 'ไม่มีสิทธิ์ตรวจสอบรายการส่งออกของสาขานี้';
+  end if;
+  if p_expense_destination not in ('branch', 'external') then raise exception 'กรุณาเลือกปลายทางค่าใช้จ่าย'; end if;
   if v_export.status = 'verified' then
     if v_export.current_weight is not distinct from p_current_weight
       and v_export.work_rate is not distinct from p_work_rate
@@ -23216,7 +23670,8 @@ CREATE TABLE IF NOT EXISTS "public"."profiles" (
     "can_manage_time_payroll" boolean DEFAULT false NOT NULL,
     "current_password_plaintext" "text",
     "current_password_auth_version" "text",
-    CONSTRAINT "profiles_admin_only_elevated_access" CHECK ((("role" = 'admin'::"public"."app_role") OR (("can_access_super_admin_features" = false) AND ("can_access_money_transfer" = false) AND ("can_manage_time_payroll" = false)))),
+    "can_manage_rubber_exports" boolean DEFAULT false NOT NULL,
+    CONSTRAINT "profiles_admin_only_elevated_access" CHECK ((("role" = 'admin'::"public"."app_role") OR (("can_access_super_admin_features" = false) AND ("can_access_money_transfer" = false) AND ("can_manage_time_payroll" = false) AND ("can_manage_rubber_exports" = false)))),
     CONSTRAINT "profiles_daily_wage_precision" CHECK ((("daily_wage" >= (0)::numeric) AND ("daily_wage" = "trunc"("daily_wage", 4))))
 );
 
@@ -24488,6 +24943,10 @@ CREATE UNIQUE INDEX "income_expense_approval_keywords_active_unique" ON "public"
 
 
 CREATE INDEX "income_expense_approval_pending_digest" ON "public"."income_expense_approval_requests" USING "btree" ("location_id") WHERE ("request_status" = 'pending'::"text");
+
+
+
+CREATE INDEX "income_expense_approval_pending_source_idx" ON "public"."income_expense_approval_requests" USING "btree" ("location_id", "source_income_expense_id", "created_at", "id") WHERE (("request_status" = 'pending'::"text") AND ("source_income_expense_id" IS NOT NULL));
 
 
 
@@ -26000,7 +26459,7 @@ ALTER TABLE "public"."dashboard_stock_alert_thresholds" ENABLE ROW LEVEL SECURIT
 ALTER TABLE "public"."document_deletion_audits" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "document_deletion_audits_select_manager_only" ON "public"."document_deletion_audits" FOR SELECT TO "authenticated" USING (("private"."can_delete_reports"() AND "private"."can_manage_reports"("location_id")));
+CREATE POLICY "document_deletion_audits_select_manager_only" ON "public"."document_deletion_audits" FOR SELECT TO "authenticated" USING ((("private"."can_delete_reports"() AND "private"."can_manage_reports"("location_id")) OR (("document_kind" = 'rubber_export'::"text") AND "private"."can_manage_rubber_exports"("location_id"))));
 
 
 
@@ -26571,6 +27030,11 @@ GRANT ALL ON FUNCTION "private"."can_manage_profile"("target_user" "uuid") TO "a
 
 
 
+REVOKE ALL ON FUNCTION "private"."can_manage_rubber_exports"("p_location_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "private"."can_manage_rubber_exports"("p_location_id" "uuid") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "private"."can_manage_time_payroll_profile"("target_profile_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "private"."can_manage_time_payroll_profile"("target_profile_id" "uuid") TO "authenticated";
 
@@ -26606,10 +27070,12 @@ REVOKE ALL ON FUNCTION "private"."cash_change_counts"("p_amount" bigint) FROM PU
 
 
 REVOKE ALL ON FUNCTION "private"."cash_count_counts_valid"("p_counts" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "private"."cash_count_counts_valid"("p_counts" "jsonb") TO "service_role";
 
 
 
 REVOKE ALL ON FUNCTION "private"."cash_count_difference_valid"("p_counts" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "private"."cash_count_difference_valid"("p_counts" "jsonb") TO "service_role";
 
 
 
@@ -26618,6 +27084,7 @@ REVOKE ALL ON FUNCTION "private"."cash_count_events"("p_location_id" "uuid", "p_
 
 
 REVOKE ALL ON FUNCTION "private"."cash_count_total"("p_counts" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "private"."cash_count_total"("p_counts" "jsonb") TO "service_role";
 
 
 
@@ -26771,6 +27238,10 @@ GRANT ALL ON FUNCTION "private"."history_terminal_row_visible"("p_status" "text"
 
 
 REVOKE ALL ON FUNCTION "private"."income_expense_operational_row"("p_location_id" "uuid", "p_source_kind" "text", "p_source_id" "uuid", "p_source_date" "date") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."income_expense_pending_fields"("p_location_id" "uuid", "p_row" "jsonb") FROM PUBLIC;
 
 
 
@@ -27102,6 +27573,11 @@ GRANT ALL ON FUNCTION "public"."correct_time_payroll_resume_start"("p_profile_id
 
 
 
+REVOKE ALL ON FUNCTION "public"."create_admin_user_profile"("p_user_id" "uuid", "p_phone" "text", "p_name" "text", "p_role" "text", "p_location_ids" "uuid"[], "p_password_plaintext" "text", "p_password_auth_version" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."create_admin_user_profile"("p_user_id" "uuid", "p_phone" "text", "p_name" "text", "p_role" "text", "p_location_ids" "uuid"[], "p_password_plaintext" "text", "p_password_auth_version" "uuid") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."create_cash_branch_transfer"("payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."create_cash_branch_transfer"("payload" "jsonb") TO "authenticated";
 
@@ -27396,6 +27872,10 @@ GRANT ALL ON FUNCTION "public"."get_income_expense_operational_feed"("p_location
 
 
 
+REVOKE ALL ON FUNCTION "public"."get_income_expense_operational_feed_20260907010000_base"("p_location_id" "uuid", "p_mode" "text", "p_search" "text", "p_cursor" "text") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "public"."get_income_expense_operational_feed_on_demand"("p_location_id" "uuid", "p_mode" "text", "p_search" "text", "p_cursor" "text") FROM PUBLIC;
 
 
@@ -27443,6 +27923,16 @@ GRANT ALL ON FUNCTION "public"."get_receivable_rubber_exports_page"("p_destinati
 
 REVOKE ALL ON FUNCTION "public"."get_report_income_expense_rows"("p_report_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_report_income_expense_rows"("p_report_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_report_income_expense_rows_json"("p_report_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_report_income_expense_rows_json"("p_report_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_report_stock_balances"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_report_stock_balances"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) TO "authenticated";
 
 
 
@@ -27538,6 +28028,11 @@ GRANT ALL ON FUNCTION "public"."get_time_payroll_attendance_month"("p_profile_id
 
 
 
+REVOKE ALL ON FUNCTION "public"."get_time_payroll_debt_totals"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_time_payroll_debt_totals"() TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."get_time_payroll_payment_locations"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_time_payroll_payment_locations"() TO "authenticated";
 
@@ -27549,6 +28044,11 @@ REVOKE ALL ON FUNCTION "public"."get_time_payroll_preflight"() FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION "public"."get_time_payroll_settings"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_time_payroll_settings"() TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_time_payroll_user_totals"("p_profile_id" "uuid", "p_month" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_time_payroll_user_totals"("p_profile_id" "uuid", "p_month" "text") TO "authenticated";
 
 
 
@@ -28421,6 +28921,10 @@ GRANT SELECT("can_access_super_admin_features"),UPDATE("can_access_super_admin_f
 
 
 GRANT SELECT("can_manage_time_payroll") ON TABLE "public"."profiles" TO "authenticated";
+
+
+
+GRANT SELECT("can_manage_rubber_exports") ON TABLE "public"."profiles" TO "authenticated";
 
 
 

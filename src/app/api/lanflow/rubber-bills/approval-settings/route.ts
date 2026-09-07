@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, requireSystemManager } from "@/lib/server/auth";
 import {
   isUuid,
+  isJsonObject,
   managementAuthFailure,
   managementErrorResponse,
 } from "@/lib/server/management-route-error";
@@ -32,15 +33,20 @@ export async function PUT(request: NextRequest) {
   const authCheck = await requireSystemManager(request);
   if (!authCheck.ok) return managementAuthFailure(authCheck.response);
 
+  const locationId = locationIdFrom(request);
+  if (!locationId) {
+    return NextResponse.json({ errorMessage: "ต้องระบุสาขา" }, { status: 400 });
+  }
+  let body: unknown;
   try {
-    const locationId = locationIdFrom(request);
-    if (!locationId) {
-      return NextResponse.json({ errorMessage: "ต้องระบุสาขา" }, { status: 400 });
-    }
-    const body = await request.json() as { nonCurrentDateRequiresApproval?: unknown };
-    if (typeof body.nonCurrentDateRequiresApproval !== "boolean") {
-      return NextResponse.json({ errorMessage: "ต้องระบุกฎวันที่บิล" }, { status: 400 });
-    }
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ errorMessage: "ต้องระบุกฎวันที่บิล" }, { status: 400 });
+  }
+  if (!isJsonObject(body) || typeof body.nonCurrentDateRequiresApproval !== "boolean") {
+    return NextResponse.json({ errorMessage: "ต้องระบุกฎวันที่บิล" }, { status: 400 });
+  }
+  try {
     const saved = await authCheck.supabase.rpc("save_rubber_bill_date_approval_setting", {
       p_non_current_date_requires_approval: body.nonCurrentDateRequiresApproval,
     });

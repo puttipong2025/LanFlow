@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { hasSystemManagerAccess, requireAuth } from "@/lib/server/auth";
+import { requireAuth } from "@/lib/server/auth";
 import {
-  canManageRubberExports,
+  canAccessRubberExports,
+  canAdministerRubberExports,
   isUuid,
   mapRubberExportRow,
   rubberExportErrorResponse,
@@ -28,7 +29,15 @@ type Cursor = { version: 1; ownerUserId: string; locationId: string; view: strin
 function decodeCursor(value: string): Cursor | null {
   try {
     const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Cursor;
-    return parsed?.version === 1 ? parsed : null;
+    return parsed?.version === 1
+      && isUuid(parsed.ownerUserId)
+      && isUuid(parsed.locationId)
+      && ["active", "history", "deletions"].includes(parsed.view)
+      && typeof parsed.createdAt === "string"
+      && !Number.isNaN(Date.parse(parsed.createdAt))
+      && isUuid(parsed.id)
+      ? parsed
+      : null;
   } catch { return null; }
 }
 function encodeCursor(value: Cursor) {
@@ -39,12 +48,12 @@ export async function GET(request: NextRequest) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
   const locationId = request.nextUrl.searchParams.get("locationId");
-  if (!locationId || !canManageRubberExports(result.auth, locationId)) {
+  if (!isUuid(locationId) || !canAccessRubberExports(result.auth, locationId)) {
     return NextResponse.json({ error: "ไม่มีสิทธิ์ดูรายการส่งออกของสาขานี้" }, { status: 403 });
   }
 
   if (request.nextUrl.searchParams.get("view") === "deletions") {
-    if (!hasSystemManagerAccess(result.auth)) {
+    if (!canAdministerRubberExports(result.auth, locationId)) {
       return NextResponse.json({ error: "ไม่มีสิทธิ์ดูประวัติการลบ" }, { status: 403 });
     }
     const cursorValue = request.nextUrl.searchParams.get("cursor");
@@ -123,7 +132,7 @@ export async function GET(request: NextRequest) {
     (ages ?? []).map((age: Record<string, any>) => [age.export_id as string, age]),
   );
 
-  const canVerifyOrDelete = hasSystemManagerAccess(result.auth);
+  const canVerifyOrDelete = canAdministerRubberExports(result.auth, locationId);
   const rowsById = new Map((rows ?? []).map((row) => [row.id, row]));
 
   return NextResponse.json({
@@ -170,7 +179,7 @@ export async function POST(request: Request) {
   ) {
     return NextResponse.json({ error: "กรุณาเลือกบิลอย่างน้อย 1 ใบและห้ามเลือกซ้ำ" }, { status: 400 });
   }
-  if (!canManageRubberExports(result.auth, payload.locationId)) {
+  if (!canAccessRubberExports(result.auth, payload.locationId)) {
     return NextResponse.json({ error: "ไม่มีสิทธิ์สร้างรายการส่งออกของสาขานี้" }, { status: 403 });
   }
 

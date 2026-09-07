@@ -15,6 +15,7 @@ test.describe("admin employee state feedback", () => {
       canAccessSystemManager: false,
       canAccessMoneyTransfer: false,
       canManageTimePayroll: false,
+      canManageRubberExports: false,
     };
     let employeeListReads = 0;
 
@@ -59,6 +60,7 @@ test.describe("admin employee state feedback", () => {
       canAccessSystemManager: false,
       canAccessMoneyTransfer: false,
       canManageTimePayroll: false,
+      canManageRubberExports: false,
     };
     let employeeListReads = 0;
     let releaseStatusUpdate!: () => void;
@@ -125,6 +127,7 @@ test.describe("admin employee state feedback", () => {
       canAccessSystemManager: false,
       canAccessMoneyTransfer: false,
       canManageTimePayroll: false,
+      canManageRubberExports: false,
     };
     let employeeListReads = 0;
 
@@ -137,7 +140,7 @@ test.describe("admin employee state feedback", () => {
       await route.fulfill({ json: { users: [targetUser] } });
     });
     await page.route(
-      new RegExp(`/api/lanflow/admin/users/${targetUser.id}/(role|system-manager-access|money-transfer-access|time-payroll-access)$`),
+      new RegExp(`/api/lanflow/admin/users/${targetUser.id}/(role|system-manager-access|money-transfer-access|time-payroll-access|rubber-export-access)$`),
       async (route) => {
         const path = new URL(route.request().url()).pathname.split("/").at(-1);
         const body = route.request().postDataJSON() as Record<string, boolean | string>;
@@ -148,9 +151,11 @@ test.describe("admin employee state feedback", () => {
             canAccessSystemManager: body.canAccessSystemManager === true,
             canAccessMoneyTransfer: true,
             canManageTimePayroll: true,
+            canManageRubberExports: true,
           },
           "money-transfer-access": { success: true, canAccessMoneyTransfer: body.canAccessMoneyTransfer === true },
           "time-payroll-access": { success: true, canManageTimePayroll: body.canManageTimePayroll === true },
+          "rubber-export-access": { success: true, canManageRubberExports: body.canManageRubberExports === true },
         };
         await route.fulfill({ json: responses[path ?? ""] });
       },
@@ -164,7 +169,7 @@ test.describe("admin employee state feedback", () => {
     const dialog = page.getByRole("dialog", { name: "จัดการพนักงาน" });
     const readsBeforeMutations = employeeListReads;
 
-    for (const action of ["เปิดสิทธิ์โอนเงิน", "เปิดสิทธิ์เวลา/เงินเดือน", "เปิดผู้จัดการระบบ"] as const) {
+    for (const action of ["เปิดสิทธิ์โอนเงิน", "เปิดสิทธิ์เวลา/เงินเดือน", "เปิดสิทธิ์จัดการส่งออกยาง", "เปิดผู้จัดการระบบ"] as const) {
       await dialog.getByRole("button", { name: action }).click();
       await page.getByRole("button", { name: "ยืนยัน", exact: true }).click();
       await expect(dialog.getByRole("button", { name: action.replace("เปิด", "ปิด") })).toBeVisible();
@@ -175,6 +180,7 @@ test.describe("admin employee state feedback", () => {
     await expect(dialog.getByRole("button", { name: "เปิดผู้จัดการระบบ" })).toBeVisible();
     await expect(dialog.getByRole("button", { name: "ปิดสิทธิ์โอนเงิน" })).toBeVisible();
     await expect(dialog.getByRole("button", { name: "ปิดสิทธิ์เวลา/เงินเดือน" })).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "ปิดสิทธิ์จัดการส่งออกยาง" })).toBeVisible();
 
     await dialog.getByRole("button", { name: "ลดเป็น User" }).click();
     await page.getByRole("button", { name: "ยืนยัน", exact: true }).click();
@@ -195,6 +201,7 @@ test.describe("admin employee state feedback", () => {
       canAccessSystemManager: false,
       canAccessMoneyTransfer: false,
       canManageTimePayroll: false,
+      canManageRubberExports: false,
     };
     const updatedUser = { ...targetUser, name: "ชื่อพนักงานใหม่" };
     let employeeListReads = 0;
@@ -240,6 +247,7 @@ test.describe("admin employee state feedback", () => {
       canAccessSystemManager: false,
       canAccessMoneyTransfer: false,
       canManageTimePayroll: false,
+      canManageRubberExports: false,
     };
     const updatedUser = { ...targetUser, name: "พนักงานบันทึกสำเร็จ" };
 

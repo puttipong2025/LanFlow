@@ -20,7 +20,7 @@ function bangkokTimestamp(date: string, hour: number, second = 0) {
 }
 
 test.describe("Dashboard overview @dashboard", () => {
-  test.use({ storageState: "playwright/.auth/user.json" });
+  test.use({ storageState: "playwright/.auth/admin.json" });
 
   test("renders the compact accumulated and daily summary surfaces", async ({ page }) => {
     await page.goto("/");

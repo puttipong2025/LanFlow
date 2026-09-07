@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSystemManager } from "@/lib/server/auth";
+import { isJsonObject } from "@/lib/server/management-route-error";
 
 type StockProductDecisionRpcResponse = {
   status?: string;
@@ -13,11 +14,19 @@ export async function POST(
   const adminCheck = await requireSystemManager(request);
   if (!adminCheck.ok) return adminCheck.response;
 
+  const { id } = await params;
+  let body: unknown;
   try {
-    const { id } = await params;
-    const body = await request.json();
-    const decision = body?.decision;
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ status: "failed", errorMessage: "Invalid request body" }, { status: 400 });
+  }
+  if (!isJsonObject(body)) {
+    return NextResponse.json({ status: "failed", errorMessage: "Invalid request body" }, { status: 400 });
+  }
+  const decision = body.decision;
 
+  try {
     if (!id) {
       return NextResponse.json({ status: "failed", errorMessage: "Missing request ID" }, { status: 400 });
     }
@@ -31,7 +40,7 @@ export async function POST(
       {
         p_request_id: id,
         p_decision: decision,
-        p_comment: typeof body?.comment === "string" ? body.comment : null,
+        p_comment: typeof body.comment === "string" ? body.comment : null,
       }
     );
 

@@ -131,7 +131,7 @@ export async function GET(
 
     const month = source.effective_date.slice(0, 7);
     const { start, end } = monthBounds(month);
-    const [metadata, segmentsResponse, deductionsResponse, attendanceResponse] = await Promise.all([
+    const [metadata, segmentsResponse, totalsResponse, attendanceResponse] = await Promise.all([
       sourceMetadata(result.supabase, source),
       result.supabase
         .from("time_segments")
@@ -141,13 +141,10 @@ export async function GET(
         .gt("end_time", start)
         .lt("start_time", end)
         .order("start_time", { ascending: true }),
-      result.supabase
-        .from("financial_transactions")
-        .select("amount")
-        .eq("profile_id", source.profile_id)
-        .eq("status", "APPROVED")
-        .in("type", ["WITHDRAWAL_DEDUCTION", "DEBT_DEDUCTION"])
-        .eq("applied_month", `${month}-01`),
+      result.supabase.rpc("get_time_payroll_user_totals", {
+        p_profile_id: source.profile_id,
+        p_month: month,
+      }),
       result.supabase.rpc("get_time_payroll_attendance_month", {
         p_profile_id: source.profile_id,
         p_month: month,
@@ -155,13 +152,10 @@ export async function GET(
     ]);
     if (!metadata) return NextResponse.json({ error: "ไม่พบเอกสาร" }, { status: 404 });
     if (segmentsResponse.error) throw segmentsResponse.error;
-    if (deductionsResponse.error) throw deductionsResponse.error;
+    if (totalsResponse.error) throw totalsResponse.error;
     if (attendanceResponse.error) throw attendanceResponse.error;
 
-    const existingDeductions = (deductionsResponse.data || []).reduce(
-      (sum, deduction) => sum + Number(deduction.amount || 0),
-      0,
-    );
+    const existingDeductions = Number(totalsResponse.data?.usedThisMonth || 0);
     return NextResponse.json(buildWithdrawalSlipDocument({
       source: {
         ...source,

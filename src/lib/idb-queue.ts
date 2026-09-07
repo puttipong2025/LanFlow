@@ -235,12 +235,6 @@ export async function removeSyncEventsForOwner(ownerUserId: string): Promise<num
   });
 }
 
-export async function putRubberBillReceiptSnapshot(
-  snapshot: RubberBillReceiptSnapshot
-): Promise<void> {
-  return putRubberBillReceiptSnapshots([snapshot]);
-}
-
 export async function putRubberBillReceiptSnapshots(
   snapshots: RubberBillReceiptSnapshot[]
 ): Promise<void> {
@@ -327,30 +321,6 @@ export async function pruneRubberBillReceiptSnapshots(
 ): Promise<void> {
   const snapshots = await getRubberBillReceiptSnapshots(locationId);
   const stale = snapshots.slice(Math.max(keep, 0));
-  if (stale.length === 0) return;
-
-  const db = await getDb();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(RECEIPT_STORE_NAME, "readwrite");
-    const store = transaction.objectStore(RECEIPT_STORE_NAME);
-    stale.forEach((snapshot) => store.delete(snapshot.billId));
-    transaction.oncomplete = () => {
-      db.close();
-      resolve();
-    };
-    transaction.onerror = () => {
-      db.close();
-      reject(transaction.error);
-    };
-  });
-}
-
-export async function deleteRubberBillReceiptSnapshotsNotIn(
-  locationId: string,
-  activeBillIds: Set<string>
-): Promise<void> {
-  const snapshots = await getRubberBillReceiptSnapshots(locationId);
-  const stale = snapshots.filter((snapshot) => !activeBillIds.has(snapshot.billId));
   if (stale.length === 0) return;
 
   const db = await getDb();

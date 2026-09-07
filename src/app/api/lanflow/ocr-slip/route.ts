@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/server/auth";
+import {
+  OCR_SLIP_IMAGE_TYPES,
+  OCR_SLIP_MAX_IMAGE_BYTES,
+  parseOcrSlipResponseText,
+} from "@/lib/server/ocr-slip";
 
 export const dynamic = "force-dynamic";
 
-
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "google/gemini-2.5-flash";
 
 const OCR_SLIP_PROMPT = `คุณคือผู้เชี่ยวชาญด้าน OCR ที่เชี่ยวชาญในการอ่านสลิปโอนเงินธนาคารของไทย
 
@@ -35,33 +37,48 @@ export async function POST(request: NextRequest) {
   if (!authResult.ok) return authResult.response;
 
   try {
-    const formData = await request.formData();
-    const file = formData.get("image") as File | null;
+    const formData = await request.formData().catch(() => null);
+    const file = formData?.get("image");
 
-    if (!file) {
+    if (!(file instanceof File)) {
       return NextResponse.json(
         { error: "กรุณาส่งรูปภาพสลิปมาด้วย (field name: image)" },
         { status: 400 }
       );
     }
+    if (
+      !OCR_SLIP_IMAGE_TYPES.has(file.type)
+      || file.size <= 0
+      || file.size > OCR_SLIP_MAX_IMAGE_BYTES
+    ) {
+      return NextResponse.json(
+        { error: "รองรับเฉพาะ JPEG, PNG หรือ WebP ขนาดไม่เกิน 8 MB" },
+        { status: 400 },
+      );
+    }
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    if (!apiKey) {
+      return NextResponse.json({ error: "ระบบ OCR ยังไม่ได้ตั้งค่า" }, { status: 503 });
+    }
+    const model = process.env.OPENROUTER_MODEL || "google/gemini-2.5-flash";
 
     // Convert file to base64 data URL
     const arrayBuffer = await file.arrayBuffer();
     const base64Data = Buffer.from(arrayBuffer).toString("base64");
-    const mimeType = file.type || "image/jpeg";
-    const dataUrl = `data:${mimeType};base64,${base64Data}`;
+    const dataUrl = `data:${file.type};base64,${base64Data}`;
 
     // Call OpenRouter API
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
+      signal: AbortSignal.timeout(30_000),
       headers: {
-        "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+        "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json",
         "HTTP-Referer": "https://lanflow.vercel.app",
         "X-Title": "LanFlow OCR Slip",
       },
       body: JSON.stringify({
-        model: OPENROUTER_MODEL,
+        model,
         messages: [
           {
             role: "user",
@@ -80,41 +97,32 @@ export async function POST(request: NextRequest) {
     });
 
     if (!response.ok) {
-      const errorBody = await response.text();
-      throw new Error(`OpenRouter API error (${response.status}): ${errorBody}`);
-    }
-
-    const data = await response.json();
-    const responseText = (data.choices?.[0]?.message?.content ?? "").trim();
-
-    // Try to parse as JSON
-    let parsedResult;
-    try {
-      let cleanText = responseText;
-      if (cleanText.startsWith("```json")) {
-        cleanText = cleanText.slice(7);
-      } else if (cleanText.startsWith("```")) {
-        cleanText = cleanText.slice(3);
-      }
-      if (cleanText.endsWith("```")) {
-        cleanText = cleanText.slice(0, -3);
-      }
-      cleanText = cleanText.trim();
-      parsedResult = JSON.parse(cleanText);
-    } catch {
       return NextResponse.json(
-        {
-          error: "ไม่สามารถแปลงผลลัพธ์เป็น JSON ได้",
-          raw_response: responseText,
-        },
-        { status: 422 }
+        { error: response.status === 429 ? "ระบบ OCR มีงานมาก กรุณาลองใหม่" : "ระบบ OCR ประมวลผลไม่สำเร็จ" },
+        { status: response.status === 429 ? 429 : 503 },
       );
     }
 
-    return NextResponse.json(parsedResult);
+    const data = await response.json().catch(() => null) as {
+      choices?: Array<{ message?: { content?: unknown } }>;
+    } | null;
+    const responseText = data?.choices?.[0]?.message?.content;
+    if (typeof responseText !== "string") {
+      return NextResponse.json({ error: "ผล OCR ไม่อยู่ในรูปแบบที่ใช้ได้" }, { status: 422 });
+    }
+    try {
+      return NextResponse.json(parseOcrSlipResponseText(responseText));
+    } catch {
+      return NextResponse.json({ error: "ผล OCR ไม่อยู่ในรูปแบบที่ใช้ได้" }, { status: 422 });
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : JSON.stringify(error);
     console.error("OCR Slip API Error:", message);
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json(
+      { error: error instanceof DOMException && error.name === "TimeoutError"
+        ? "ระบบ OCR ใช้เวลานานเกินกำหนด กรุณาลองใหม่"
+        : "เชื่อมต่อระบบ OCR ไม่สำเร็จ" },
+      { status: 503 },
+    );
   }
 }

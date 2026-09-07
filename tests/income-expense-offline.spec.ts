@@ -2,6 +2,7 @@ import { test, expect, Page } from '@playwright/test';
 import { createClient } from '@supabase/supabase-js';
 import { selectAppLocation, selectedAppLocationId } from './helpers/select-app-location';
 import { bangkokDateString } from '../src/lib/bangkok-date';
+import { createTransferLocationFixture } from './helpers/transfer-location-fixture';
 
 /** Read all events from IndexedDB sync_queue */
 async function readQueue(page: Page): Promise<any[]> {
@@ -813,32 +814,37 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
 
   test('P0-T3 target: branch switch must only load queue for selected location', async ({ page, context }) => {
     test.setTimeout(60000);
+    const branch = createTransferLocationFixture('Offline queue scope');
+    await branch.setup();
+    try {
+      await loginAndGoToIncomeExpense(page);
+      const locationIds = await getAccessibleLocationIds(page);
+      const sourceLocationId = locationIds.find(id => id !== branch.locationId);
+      expect(sourceLocationId).toBeTruthy();
+      await selectHeaderLocation(page, branch.locationId);
+      await context.setOffline(true);
+      const marker = `E2E-XBRANCH-${Date.now()}`;
+      const payload = await buildIncomeExpensePayload(page, {
+        locationId: sourceLocationId,
+        title: marker,
+      });
+      await enqueueIncomeExpenseEvent(page, {
+        id: payload.clientTempId,
+        entity: 'income_expense',
+        operation: 'create',
+        payload,
+        timestamp: Date.now(),
+        status: 'pending',
+      });
 
-    await loginAndGoToIncomeExpense(page);
-    const locationIds = await getAccessibleLocationIds(page);
-    test.skip(locationIds.length < 2, 'requires a test user with access to at least two locations');
-
-    const [sourceLocationId, targetLocationId] = locationIds;
-    await selectHeaderLocation(page, targetLocationId);
-    await context.setOffline(true);
-    const marker = `E2E-XBRANCH-${Date.now()}`;
-    const payload = await buildIncomeExpensePayload(page, {
-      locationId: sourceLocationId,
-      title: marker,
-    });
-    await enqueueIncomeExpenseEvent(page, {
-      id: payload.clientTempId,
-      entity: 'income_expense',
-      operation: 'create',
-      payload,
-      timestamp: Date.now(),
-      status: 'pending',
-    });
-
-    await expect(page.locator('table tbody tr', { hasText: marker })).toHaveCount(0);
-    await context.setOffline(false);
-    await expect.poll(async () => (await fetchIncomeExpenseRows(page, payload.clientTempId, 'id')).length, { timeout: 15000 }).toBe(0);
-    expect((await readQueue(page)).find(event => event.id === payload.clientTempId && event.entity === 'income_expense')).toMatchObject({ status: 'pending' });
+      await expect(page.locator('table tbody tr', { hasText: marker })).toHaveCount(0);
+      await context.setOffline(false);
+      await expect.poll(async () => (await fetchIncomeExpenseRows(page, payload.clientTempId, 'id')).length, { timeout: 15000 }).toBe(0);
+      expect((await readQueue(page)).find(event => event.id === payload.clientTempId && event.entity === 'income_expense')).toMatchObject({ status: 'pending' });
+    } finally {
+      await context.setOffline(false);
+      await branch.cleanup();
+    }
   });
 
   test('P1-T4: v2 events without an owner are quarantined during the v3 upgrade', async ({ page }) => {

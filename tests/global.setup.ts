@@ -5,11 +5,16 @@ import * as fs from 'fs';
 import { createClient } from '@supabase/supabase-js';
 import { createBrowserClient } from '@supabase/ssr';
 
+import {
+  LOCAL_SUPABASE_API_URL,
+  assertSafeIntegrationTarget,
+} from './support/integration-target';
+
 const authDir = path.join(__dirname, '../playwright/.auth');
 
 const phone = process.env.TEST_PHONE || '0800000000';
 const password = process.env.TEST_PASSWORD || 'password123';
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://127.0.0.1:54321';
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || LOCAL_SUPABASE_API_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const testUserId = process.env.TEST_USER_ID || '00000000-0000-4000-8000-000000000001';
 
@@ -23,6 +28,7 @@ function normalizeThaiPhoneToE164(rawPhone: string) {
 
 async function ensureTestUser() {
   if (!serviceRoleKey) return;
+  assertSafeIntegrationTarget(supabaseUrl);
   const admin = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
 
   const { data: locations } = await admin.from('locations').select('id').eq('is_active', true).limit(1);
@@ -73,20 +79,18 @@ async function ensureTestUser() {
       can_manage_time_payroll: false,
     }, { onConflict: 'id' });
 
-    // Ensure users have access to locations in user_locations
-    const { data: allLocations } = await admin.from('locations').select('id');
-    if (allLocations) {
-      for (const loc of allLocations) {
-        if (u.role === 'super_admin') {
-            await admin.from('user_locations').upsert({
-              user_id: u.id, location_id: loc.id
-            }, { onConflict: 'user_id,location_id' });
-        } else if (locations && locations.find(l => l.id === loc.id)) {
-            await admin.from('user_locations').upsert({
-              user_id: u.id, location_id: loc.id
-            }, { onConflict: 'user_id,location_id' });
-        }
-      }
+    const { data: allLocations } = await admin.from('locations').select('id').eq('is_active', true);
+    const assignedLocations = u.role === 'super_admin' ? allLocations : locations;
+    await admin.from('user_locations').delete().eq('user_id', u.id);
+    if (assignedLocations?.length) {
+      const assignmentWrite = await admin.from('user_locations').insert(
+        assignedLocations.map((location, index) => ({
+          user_id: u.id,
+          location_id: location.id,
+          is_primary: index === 0,
+        })),
+      );
+      if (assignmentWrite.error) throw assignmentWrite.error;
     }
   }
 }
@@ -99,6 +103,7 @@ const authUsers = [
 
 setup('authenticate users', async () => {
   setup.setTimeout(60000);
+  assertSafeIntegrationTarget(supabaseUrl);
   await ensureTestUser();
   const password = process.env.TEST_PASSWORD || 'password123';
   const publishableKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';

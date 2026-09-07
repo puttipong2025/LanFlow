@@ -260,7 +260,7 @@ test("time/payroll pending count reaches the module nav and primary-branch selec
     const tabCount = Number(tabLabel?.match(/(\d+) รายการ$/)?.[1] ?? 0);
     expect(tabCount).toBeGreaterThan(0);
 
-    const branchButton = page.getByLabel(/^เลือกสาขา มีงาน [1-9]\d* รายการ/);
+    const branchButton = page.getByLabel(/^เลือกสาขา .*มีงาน [1-9]\d* รายการ/);
     await expect(branchButton).toBeVisible();
     await branchButton.click();
     await expect(page.getByRole("listbox", { name: "สาขาที่เข้าถึงได้" }))

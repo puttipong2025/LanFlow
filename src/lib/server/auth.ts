@@ -20,6 +20,7 @@ export type AuthTokenPayload = {
   canAccessSystemManager: boolean;
   canAccessMoneyTransfer: boolean;
   canManageTimePayroll: boolean;
+  canManageRubberExports: boolean;
 };
 
 type AuthSuccess = {
@@ -87,7 +88,7 @@ export async function requireAuth(
     await Promise.all([
       supabase
         .from("profiles")
-        .select("id, phone, name, role, is_active, can_access_super_admin_features, can_access_money_transfer, can_manage_time_payroll")
+        .select("id, phone, name, role, is_active, can_access_super_admin_features, can_access_money_transfer, can_manage_time_payroll, can_manage_rubber_exports")
         .eq("id", userId)
         .maybeSingle(),
       supabase.rpc("get_my_active_location_assignments")
@@ -134,6 +135,7 @@ export async function requireAuth(
     canAccessSystemManager: activeProfile.can_access_super_admin_features === true,
     canAccessMoneyTransfer: activeProfile.can_access_money_transfer === true,
     canManageTimePayroll: activeProfile.can_manage_time_payroll === true,
+    canManageRubberExports: activeProfile.can_manage_rubber_exports === true,
   });
 
   return {
@@ -149,6 +151,7 @@ export async function requireAuth(
       canAccessSystemManager: capabilities.canManageSystem,
       canAccessMoneyTransfer: capabilities.canUseMoneyTransfer,
       canManageTimePayroll: capabilities.canManageTimePayroll,
+      canManageRubberExports: capabilities.canManageRubberExports,
     },
     supabase
   };

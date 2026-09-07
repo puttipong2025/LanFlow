@@ -4,7 +4,10 @@ import { createSupabaseAdminClient } from "@/lib/server/supabase-admin";
 import { normalizeThaiPhoneToE164 } from "@/lib/phone";
 import type { AppRole } from "@/types";
 import { deriveEffectiveCapabilities } from "@/lib/permissions";
-import { isUuid } from "@/lib/server/management-route-error";
+import {
+  isUuid,
+  managementErrorResponse,
+} from "@/lib/server/management-route-error";
 
 export async function GET(request: NextRequest) {
   const adminCheck = await requireRoleOrSystemManager(request, ["super_admin", "admin"]);
@@ -16,7 +19,7 @@ export async function GET(request: NextRequest) {
     // Fetch all profiles
     const { data: profiles, error: profilesError } = await supabase
       .from("profiles")
-      .select("id, name, phone, role, is_active, can_access_super_admin_features, can_access_money_transfer, can_manage_time_payroll")
+      .select("id, name, phone, role, is_active, can_access_super_admin_features, can_access_money_transfer, can_manage_time_payroll, can_manage_rubber_exports")
       .order("created_at", { ascending: true });
 
     if (profilesError) throw profilesError;
@@ -44,6 +47,7 @@ export async function GET(request: NextRequest) {
         canAccessSystemManager: p.can_access_super_admin_features === true,
         canAccessMoneyTransfer: p.can_access_money_transfer === true,
         canManageTimePayroll: p.can_manage_time_payroll === true,
+        canManageRubberExports: p.can_manage_rubber_exports === true,
       });
       return {
         id: p.id,
@@ -56,6 +60,7 @@ export async function GET(request: NextRequest) {
         canAccessSystemManager: capabilities.canManageSystem,
         canAccessMoneyTransfer: capabilities.canUseMoneyTransfer,
         canManageTimePayroll: capabilities.canManageTimePayroll,
+        canManageRubberExports: capabilities.canManageRubberExports,
       };
     });
 
@@ -124,6 +129,24 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Only super_admin can create admin accounts" }, { status: 403 });
     }
 
+    const locationIds = [...new Set(body.locationIds ?? [])];
+    if (locationIds.length > 0) {
+      const { data: visibleLocations, error: locationError } = await adminCheck.supabase
+        .from("locations")
+        .select("id, is_active")
+        .in("id", locationIds);
+      if (locationError) throw locationError;
+      if (visibleLocations.length !== locationIds.length) {
+        return NextResponse.json(
+          { error: "ไม่มีสิทธิ์กำหนดสาขานอกขอบเขตของ Admin" },
+          { status: 403 },
+        );
+      }
+      if (visibleLocations.some((location) => location.is_active !== true)) {
+        return NextResponse.json({ error: "มีสาขาที่ไม่พร้อมใช้งาน" }, { status: 400 });
+      }
+    }
+
     const id = crypto.randomUUID();
     const passwordVersion = crypto.randomUUID();
     let phoneE164: string;
@@ -152,28 +175,20 @@ export async function POST(request: NextRequest) {
     }
     authUserId = authUser.user.id;
 
-    const { error: profileError } = await admin.from("profiles").insert({
-      id,
-      phone: body.phone.trim(),
-      name: body.name.trim(),
-      role,
-      is_active: true,
-      current_password_plaintext: body.password,
-      current_password_auth_version: passwordVersion,
+    const { error: profileError } = await adminCheck.supabase.rpc("create_admin_user_profile", {
+      p_user_id: id,
+      p_phone: body.phone.trim(),
+      p_name: body.name.trim(),
+      p_role: role,
+      p_location_ids: locationIds,
+      p_password_plaintext: body.password,
+      p_password_auth_version: passwordVersion,
     });
-    if (profileError) throw profileError;
-
-    const locationIds = [...new Set(body.locationIds ?? [])];
-    if (locationIds.length > 0) {
-      const { error: assignmentError } = await admin.from("user_locations").insert(
-        locationIds.map((locationId, index) => ({
-          user_id: id,
-          location_id: locationId,
-          assigned_by: adminCheck.auth.sub,
-          is_primary: index === 0
-        }))
-      );
-      if (assignmentError) throw assignmentError;
+    if (profileError) {
+      const cleanup = await admin.auth.admin.deleteUser(authUserId);
+      if (cleanup.error) throw cleanup.error;
+      authUserId = null;
+      return managementErrorResponse(profileError, "Could not create user");
     }
 
     const capabilities = deriveEffectiveCapabilities({
@@ -181,6 +196,7 @@ export async function POST(request: NextRequest) {
       canAccessSystemManager: false,
       canAccessMoneyTransfer: false,
       canManageTimePayroll: false,
+      canManageRubberExports: false,
     });
 
     return NextResponse.json(
@@ -195,6 +211,7 @@ export async function POST(request: NextRequest) {
           canAccessSystemManager: capabilities.canManageSystem,
           canAccessMoneyTransfer: capabilities.canUseMoneyTransfer,
           canManageTimePayroll: capabilities.canManageTimePayroll,
+          canManageRubberExports: capabilities.canManageRubberExports,
           primaryLocationId: locationIds[0] ?? null
         }
       },

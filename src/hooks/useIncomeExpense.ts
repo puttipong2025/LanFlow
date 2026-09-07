@@ -48,7 +48,13 @@ type IncomeExpenseSyncRejection = {
 type IncomeExpenseSyncResult = {
   receipts: Map<string, IncomeExpenseSyncReceipt>;
   rejections: Map<string, IncomeExpenseSyncRejection>;
+  pendingApprovalIds: Set<string>;
+  attemptedIds: Set<string>;
 };
+
+type IncomeExpenseTransactionSyncResult =
+  | { status: "synced"; transaction: IncomeExpense }
+  | { status: "pending_approval" };
 
 function queuePartition(ownerUserId: string, locationId: string) {
   return { entity: ENTITY, ownerUserId, locationId };
@@ -187,6 +193,8 @@ async function runPendingIncomeExpenseSync(
 ) {
   const receipts = new Map<string, IncomeExpenseSyncReceipt>();
   const rejections = new Map<string, IncomeExpenseSyncRejection>();
+  const pendingApprovalIds = new Set<string>();
+  const attemptedIds = new Set<string>();
   await normalizeQueue(ownerUserId, locationId);
   const events = await getPendingEvents(queuePartition(ownerUserId, locationId));
   const blockedIds = new Set(events.filter((event) => event.status !== "pending").map((event) => event.id));
@@ -194,6 +202,7 @@ async function runPendingIncomeExpenseSync(
   for (const event of events) {
     if (!navigator.onLine || blockedIds.has(event.id)) continue;
     try {
+      attemptedIds.add(event.id);
       const response = await authFetch("/api/lanflow/income-expense", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -201,6 +210,11 @@ async function runPendingIncomeExpenseSync(
       });
       const data = await response.json();
       if (response.ok) {
+        if (data.status === "pending_approval") {
+          pendingApprovalIds.add(event.id);
+          await removeSyncEvent(event.queueId!);
+          continue;
+        }
         if (event.operation === "delete") {
           await queryClient.cancelQueries({ queryKey: [FEED_QUERY_KEY, ownerUserId, locationId] });
           removeFromFeedCache(queryClient, ownerUserId, locationId, event.id);
@@ -262,7 +276,7 @@ async function runPendingIncomeExpenseSync(
     }
   }
 
-  return { receipts, rejections };
+  return { receipts, rejections, pendingApprovalIds, attemptedIds };
 }
 
 export function syncPendingIncomeExpense(
@@ -271,7 +285,12 @@ export function syncPendingIncomeExpense(
   locationId: string
 ): Promise<IncomeExpenseSyncResult> {
   if (!ownerUserId || !locationId || !navigator.onLine) {
-    return Promise.resolve({ receipts: new Map(), rejections: new Map() });
+    return Promise.resolve({
+      receipts: new Map(),
+      rejections: new Map(),
+      pendingApprovalIds: new Set(),
+      attemptedIds: new Set(),
+    });
   }
 
   const scopeKey = `${ownerUserId}:${locationId}`;
@@ -301,23 +320,34 @@ export function useIncomeExpense(
     queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.incomeExpensePending(ownerUserId, locationId) });
   };
 
-  async function syncTransaction(submittedTransaction: IncomeExpense): Promise<IncomeExpense> {
+  async function syncTransaction(
+    submittedTransaction: IncomeExpense
+  ): Promise<IncomeExpenseTransactionSyncResult> {
     if (!navigator.onLine) throw new Error("บิลขายต้องออนไลน์จนกว่าจะซิงก์สำเร็จ");
 
-    const syncResult = await syncPendingIncomeExpense(queryClient, ownerUserId, locationId);
-    const rejection = syncResult.rejections.get(submittedTransaction.clientTempId);
-    if (rejection?.errorCode === "STOCK_SHORTAGE") {
-      throw new IncomeExpenseStockShortageError(rejection.shortages);
-    }
-    const remainingEvents = (await getPendingEvents(queuePartition(ownerUserId, locationId)))
-      .filter((event) => event.id === submittedTransaction.clientTempId);
-    const failedEvent = remainingEvents.find(
-      (event) => event.status === "failed" || event.status === "conflict"
-    );
-    if (failedEvent) {
-      throw new Error(failedEvent.errorMessage || "ซิงก์บิลขายไม่สำเร็จ");
-    }
-    if (remainingEvents.length > 0) {
+    let syncResult: IncomeExpenseSyncResult | undefined;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      syncResult = await syncPendingIncomeExpense(queryClient, ownerUserId, locationId);
+      const rejection = syncResult.rejections.get(submittedTransaction.clientTempId);
+      if (rejection?.errorCode === "STOCK_SHORTAGE") {
+        throw new IncomeExpenseStockShortageError(rejection.shortages);
+      }
+      if (syncResult.pendingApprovalIds.has(submittedTransaction.clientTempId)) {
+        return { status: "pending_approval" };
+      }
+
+      const remainingEvents = (await getPendingEvents(queuePartition(ownerUserId, locationId)))
+        .filter((event) => event.id === submittedTransaction.clientTempId);
+      const failedEvent = remainingEvents.find(
+        (event) => event.status === "failed" || event.status === "conflict"
+      );
+      if (failedEvent) {
+        throw new Error(failedEvent.errorMessage || "ซิงก์บิลขายไม่สำเร็จ");
+      }
+      if (remainingEvents.length === 0) break;
+
+      const joinedOlderFlight = !syncResult.attemptedIds.has(submittedTransaction.clientTempId);
+      if (attempt === 0 && joinedOlderFlight) continue;
       throw new Error(
         navigator.onLine
           ? "ซิงก์บิลขายไม่สำเร็จ กรุณาลองซิงก์อีกครั้ง"
@@ -325,22 +355,25 @@ export function useIncomeExpense(
       );
     }
 
-    const receipt = syncResult.receipts.get(submittedTransaction.clientTempId);
+    const receipt = syncResult?.receipts.get(submittedTransaction.clientTempId);
     if (!receipt) {
       throw new Error("ไม่พบผลการซิงก์หรือเลขบิลส่วนกลางของบิลขาย");
     }
     return {
-      ...submittedTransaction,
-      id: receipt.id,
-      serverBillNo: receipt.serverBillNo,
-      number: receipt.serverBillNo,
-      syncStatus: "synced",
-      revisionNo: receipt.revisionNo,
-      serverReceivedAt: receipt.serverReceivedAt,
-      title: receipt.title ?? submittedTransaction.title,
-      cost: receipt.cost ?? submittedTransaction.cost,
-      saleLineCount: receipt.saleLineCount ?? submittedTransaction.saleLineCount,
-      saleLines: receipt.saleLines ?? submittedTransaction.saleLines,
+      status: "synced",
+      transaction: {
+        ...submittedTransaction,
+        id: receipt.id,
+        serverBillNo: receipt.serverBillNo,
+        number: receipt.serverBillNo,
+        syncStatus: "synced",
+        revisionNo: receipt.revisionNo,
+        serverReceivedAt: receipt.serverReceivedAt,
+        title: receipt.title ?? submittedTransaction.title,
+        cost: receipt.cost ?? submittedTransaction.cost,
+        saleLineCount: receipt.saleLineCount ?? submittedTransaction.saleLineCount,
+        saleLines: receipt.saleLines ?? submittedTransaction.saleLines,
+      },
     };
   }
 

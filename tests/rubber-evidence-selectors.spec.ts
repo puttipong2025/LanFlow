@@ -3,22 +3,8 @@ import { expect, test } from "@playwright/test";
 import {
   buildEvidenceSlides,
   evidenceImageKey,
-  paginateEvidenceItems,
-  selectEvidenceCards,
   type EvidenceDetail,
 } from "../src/lib/rubber-evidence/slides";
-import type { EvidenceReviewState } from "../src/hooks/useRubberBillEvidenceReview";
-import type { RubberBill } from "../src/types";
-
-test("paginates at five cards and clamps after a filtered replacement", () => {
-  expect(paginateEvidenceItems([1, 2, 3, 4, 5, 6], 1).items).toEqual([1, 2, 3, 4, 5]);
-  expect(paginateEvidenceItems([1, 2, 3, 4, 5, 6], 2).items).toEqual([6]);
-  expect(paginateEvidenceItems([1, 2, 3, 4], 2)).toEqual({
-    currentPage: 1,
-    totalPages: 1,
-    items: [1, 2, 3, 4],
-  });
-});
 
 test("orders weigh rows deterministically and shows the latest mapped rubber only in summary", () => {
   const detail: EvidenceDetail = {
@@ -41,34 +27,4 @@ test("orders weigh rows deterministically and shows the latest mapped rubber onl
   expect(slides.slice(0, -1).every((slide) => slide.kind === "weigh")).toBe(true);
   expect(slides.at(-1)).toMatchObject({ kind: "summary", rubberRow: { id: "row-2" } });
   expect(evidenceImageKey("bill-1", 3, "row-2", "rubber")).toBe("bill-1:3:row-2:rubber");
-});
-
-test("selects only synced in-period cards and applies the queue order", () => {
-  const bills = [
-    { id: "old", recordStatus: "active", syncStatus: "synced", clientCreatedAt: "2026-08-18T01:00:00Z", customerName: "เก่า" },
-    { id: "new", recordStatus: "active", syncStatus: "synced", clientCreatedAt: "2026-08-18T02:00:00Z", customerName: "ใหม่" },
-    { id: "offline", recordStatus: "active", syncStatus: "pending", clientCreatedAt: "2026-08-18T03:00:00Z", customerName: "ออฟไลน์" },
-  ] as unknown as RubberBill[];
-  const state = (billId: string, reviewStatus: EvidenceReviewState["reviewStatus"]): EvidenceReviewState => ({
-    locationId: "branch",
-    billId,
-    revisionNo: 1,
-    clientCreatedAt: bills.find((bill) => bill.id === billId)?.clientCreatedAt ?? null,
-    reviewPeriodId: reviewStatus === "outside" ? null : "period",
-    reviewStatus,
-    missingRubber: false,
-    missingDisplayIn: false,
-    hasManualCorrection: false,
-    isUnpriced: false,
-    hasAnyEvidence: true,
-    requiredRoleCount: 2,
-    presentRequiredRoleCount: 2,
-    decision: null,
-    reviewedByName: null,
-    reviewedAt: null,
-  });
-  const states = [state("new", "pending"), state("old", "pending"), state("offline", "pending")];
-
-  expect(selectEvidenceCards(bills, states, "pending", "").map(({ bill }) => bill.id)).toEqual(["old", "new"]);
-  expect(selectEvidenceCards(bills, states, "all", "ใหม่").map(({ bill }) => bill.id)).toEqual(["new"]);
 });

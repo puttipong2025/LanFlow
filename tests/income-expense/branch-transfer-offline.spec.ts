@@ -1,9 +1,14 @@
 import { test, expect } from '@playwright/test';
-import { selectFirstAccessibleOption } from '../helpers/select-app-location';
+import { confirmCurrentBranchIfRequired, selectFirstAccessibleOption } from '../helpers/select-app-location';
+import { createTransferLocationFixture } from '../helpers/transfer-location-fixture';
 
 test.use({ storageState: 'playwright/.auth/super_admin.json' });
+const transferLocation = createTransferLocationFixture('สาขา offline');
 
 test.describe.serial('Income/Expense: Branch Transfer & Approval Offline Rules', () => {
+  test.beforeAll(() => transferLocation.setup());
+  test.afterAll(() => transferLocation.cleanup());
+
   test('Super Admin configures keyword for offline test', async ({ page }) => {
     // Override storage state to super_admin for this test only
     const superAdminContext = await page.context().browser()?.newContext({ storageState: 'playwright/.auth/super_admin.json' });
@@ -44,6 +49,7 @@ test.describe.serial('Income/Expense: Branch Transfer & Approval Offline Rules',
   test('Cash branch transfer cannot be saved when offline', async ({ page, context }) => {
     // Open branch transfer modal
     await page.click('button:has-text("โยกเงินไปสาขาอื่น")');
+    await confirmCurrentBranchIfRequired(page);
     const modal = page.locator('.fixed.inset-0').last();
     await expect(modal).toBeVisible();
     await selectFirstAccessibleOption(page, modal.getByLabel('สาขาปลายทาง'));
@@ -66,6 +72,7 @@ test.describe.serial('Income/Expense: Branch Transfer & Approval Offline Rules',
     
     // Open Add Expense
     await page.click('button:has-text("เพิ่มรายจ่าย")');
+    await confirmCurrentBranchIfRequired(page);
     const modal = page.locator('.fixed.inset-0').last();
     await expect(page.locator('h2:has-text("เพิ่ม/แก้ไข บิลเงินสด")')).toBeVisible();
 

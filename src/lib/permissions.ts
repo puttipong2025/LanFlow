@@ -2,7 +2,7 @@ import type { Profile } from "@/types";
 
 type CapabilityProfile = Pick<
   Profile,
-  "role" | "canAccessSystemManager" | "canAccessMoneyTransfer" | "canManageTimePayroll"
+  "role" | "canAccessSystemManager" | "canAccessMoneyTransfer" | "canManageTimePayroll" | "canManageRubberExports"
 >;
 
 export function deriveEffectiveCapabilities(profile: CapabilityProfile | null | undefined) {
@@ -16,6 +16,8 @@ export function deriveEffectiveCapabilities(profile: CapabilityProfile | null | 
       canManageSystem || (isAdmin && profile?.canAccessMoneyTransfer === true),
     canManageTimePayroll:
       canManageSystem || (isAdmin && profile?.canManageTimePayroll === true),
+    canManageRubberExports:
+      canManageSystem || (isAdmin && profile?.canManageRubberExports === true),
   };
 }
 

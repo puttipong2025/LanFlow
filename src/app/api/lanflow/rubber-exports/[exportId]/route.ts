@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAuth, requireSystemManager } from "@/lib/server/auth";
+import { requireAuth } from "@/lib/server/auth";
 import {
   mapRubberExportRow,
   rubberExportErrorResponse,
@@ -117,7 +117,7 @@ export async function PATCH(request: Request, context: RouteContext) {
 }
 
 export async function DELETE(request: Request, context: RouteContext) {
-  const result = await requireSystemManager(request);
+  const result = await requireAuth(request);
   if (!result.ok) return result.response;
   const { exportId } = await context.params;
   const { data, error } = await result.supabase.rpc("delete_rubber_export", {

@@ -25,7 +25,15 @@ type Cursor = {
 function decodeCursor(value: string): Cursor | null {
   try {
     const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Cursor;
-    return parsed?.version === 1 && isUuid(parsed.id) && typeof parsed.at === "string" ? parsed : null;
+    return parsed?.version === 1
+      && isUuid(parsed.ownerUserId)
+      && isUuid(parsed.locationId)
+      && ["current", "deletions"].includes(parsed.view)
+      && isUuid(parsed.id)
+      && typeof parsed.at === "string"
+      && !Number.isNaN(Date.parse(parsed.at))
+      ? parsed
+      : null;
   } catch {
     return null;
   }
@@ -48,7 +56,7 @@ export async function GET(request: NextRequest) {
   if (!result.ok) return result.response;
 
   const locationId = request.nextUrl.searchParams.get("locationId");
-  if (!locationId || !canAccessReports(result.auth, locationId)) {
+  if (!isUuid(locationId) || !canAccessReports(result.auth, locationId)) {
     return NextResponse.json({ error: "ไม่มีสิทธิ์ดูรายงานของสาขานี้" }, { status: 403 });
   }
 

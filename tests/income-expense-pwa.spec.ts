@@ -1,6 +1,7 @@
 import { test, expect, Page } from '@playwright/test';
 import { createClient } from '@supabase/supabase-js';
 import { bangkokDateString } from '../src/lib/bangkok-date';
+import { confirmCurrentBranchIfRequired } from './helpers/select-app-location';
 
 async function readQueue(page: Page): Promise<any[]> {
   await page.waitForLoadState('domcontentloaded');
@@ -39,74 +40,12 @@ const phone = process.env.TEST_PHONE || '0800000000';
 const password = process.env.TEST_PASSWORD || 'password123';
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://127.0.0.1:54321';
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-const testUserId = process.env.TEST_USER_ID || '00000000-0000-4000-8000-000000000001';
-
-function normalizeThaiPhoneToE164(rawPhone: string) {
-  const digits = rawPhone.replace(/\D/g, '');
-  if (digits.startsWith('0')) return `+66${digits.slice(1)}`;
-  if (digits.startsWith('66')) return `+${digits}`;
-  if (rawPhone.startsWith('+')) return rawPhone;
-  return `+${digits}`;
-}
-
-async function ensureTestUser() {
-  expect(serviceRoleKey, 'SUPABASE_SERVICE_ROLE_KEY is required for E2E setup').toBeTruthy();
-
-  const admin = createClient(supabaseUrl, serviceRoleKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-    },
-  });
-  const phoneE164 = normalizeThaiPhoneToE164(phone);
-
-  const existing = await admin.auth.admin.getUserById(testUserId);
-  if (existing.data.user) {
-    const { error } = await admin.auth.admin.updateUserById(testUserId, {
-      phone: phoneE164,
-      password,
-      phone_confirm: true,
-      user_metadata: { name: 'LanFlow E2E' },
-      app_metadata: { lanflow_role: 'super_admin' },
-    });
-    if (error) throw error;
-  } else {
-    const { error } = await admin.auth.admin.createUser({
-      id: testUserId,
-      phone: phoneE164,
-      password,
-      phone_confirm: true,
-      user_metadata: { name: 'LanFlow E2E' },
-      app_metadata: { lanflow_role: 'super_admin' },
-    });
-    if (error) throw error;
-  }
-
-  const { error: profileError } = await admin.from('profiles').upsert({
-    id: testUserId,
-    phone,
-    name: 'LanFlow E2E',
-    role: 'super_admin',
-    is_active: true,
-    password_hash: null,
-  }, { onConflict: 'id' });
-  if (profileError) throw profileError;
-
-  const { data: locations, error: locationError } = await admin
-    .from('locations')
-    .select('id')
-    .eq('is_active', true)
-    .limit(1);
-  if (locationError) throw locationError;
-  if (!locations?.[0]?.id) throw new Error('No active location available for E2E user');
-
-  const { error: assignmentError } = await admin.from('user_locations').upsert({
-    user_id: testUserId,
-    location_id: locations[0].id,
-    assigned_by: testUserId,
-  }, { onConflict: 'user_id,location_id' });
-  if (assignmentError) throw assignmentError;
-}
+const approvalAdmin = createClient(supabaseUrl, serviceRoleKey, {
+  auth: { persistSession: false, autoRefreshToken: false },
+});
+let approvalSettingBeforeTest: any = null;
+let approvalSettingExistedBeforeTest = false;
+let approvalSettingLoaded = false;
 
 async function cleanupIncomeExpense(page: Page, payload: any, clientTempId: string, revisionNo: number) {
   const cleanupRes = await page.request.post('/api/lanflow/income-expense', {
@@ -133,15 +72,37 @@ async function cleanupIncomeExpense(page: Page, payload: any, clientTempId: stri
 test.use({ baseURL: 'http://127.0.0.1:3001' });
 
 test.describe('Income/Expense PWA Offline Reload', () => {
-  test.beforeAll(async () => {
-    await ensureTestUser();
-  });
-
   test.afterEach(async ({ context }) => {
     await context.setOffline(false).catch(() => {});
+    if (!approvalSettingLoaded) return;
+    if (approvalSettingExistedBeforeTest) {
+      const { error } = await approvalAdmin.from('income_expense_approval_settings').update({
+        applies_to: approvalSettingBeforeTest.applies_to,
+        approval_min_amount: approvalSettingBeforeTest.approval_min_amount,
+        cash_transfer_delete_requires_approval: approvalSettingBeforeTest.cash_transfer_delete_requires_approval,
+        non_current_date_requires_approval: approvalSettingBeforeTest.non_current_date_requires_approval,
+      }).eq('id', true);
+      expect(error).toBeNull();
+    } else {
+      expect((await approvalAdmin.from('income_expense_approval_settings').delete().eq('id', true)).error).toBeNull();
+    }
+    approvalSettingLoaded = false;
   });
 
   test.beforeEach(async ({ page }) => {
+    approvalSettingLoaded = false;
+    const original = await approvalAdmin.from('income_expense_approval_settings').select('*').eq('id', true).maybeSingle();
+    expect(original.error).toBeNull();
+    approvalSettingLoaded = true;
+    approvalSettingBeforeTest = original.data;
+    approvalSettingExistedBeforeTest = Boolean(original.data);
+    expect((await approvalAdmin.from('income_expense_approval_settings').upsert({
+      id: true,
+      applies_to: 'expense',
+      approval_min_amount: null,
+      cash_transfer_delete_requires_approval: original.data?.cash_transfer_delete_requires_approval ?? true,
+      non_current_date_requires_approval: false,
+    })).error).toBeNull();
     await page.goto('/');
     await page.evaluate(async () => {
       return new Promise<void>((resolve, reject) => {
@@ -177,6 +138,7 @@ test.describe('Income/Expense PWA Offline Reload', () => {
 
     const marker = `PWA-IE-${Date.now()}`;
     await page.click('button:has-text("เพิ่มรายรับ")');
+    await confirmCurrentBranchIfRequired(page);
     await expect(page.locator('h2:has-text("เพิ่ม/แก้ไข บิลเงินสด")')).toBeVisible();
     const modal = page.locator('.fixed.inset-0').last();
     await modal.locator('table tbody tr').first().locator('input').first().fill(marker);
@@ -233,16 +195,17 @@ test.describe('Income/Expense PWA Offline Reload', () => {
     const admin = createClient(supabaseUrl, serviceRoleKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
-    const original = await admin.from('income_expense_approval_settings').select('*').eq('id', true).single();
+    const original = await admin.from('income_expense_approval_settings').select('*').eq('id', true).maybeSingle();
     expect(original.error).toBeNull();
     const marker = `PWA-DATE-GUARD-${Date.now()}`;
     const past = new Date(`${bangkokDateString()}T00:00:00.000Z`);
     past.setUTCDate(past.getUTCDate() - 1);
 
     try {
-      expect((await admin.from('income_expense_approval_settings').update({
+      expect((await admin.from('income_expense_approval_settings').upsert({
+        id: true,
         non_current_date_requires_approval: true,
-      }).eq('id', true)).error).toBeNull();
+      })).error).toBeNull();
 
       await page.goto('/login');
       await page.fill('input[type="tel"]', phone);
@@ -258,6 +221,7 @@ test.describe('Income/Expense PWA Offline Reload', () => {
 
       await context.setOffline(true);
       await page.click('button:has-text("เพิ่มรายรับ")');
+      await confirmCurrentBranchIfRequired(page);
       const modal = page.locator('.fixed.inset-0').last();
       await modal.getByLabel('วันที่').fill(past.toISOString().slice(0, 10));
       await modal.locator('table tbody tr').first().locator('input').first().fill(marker);
@@ -270,12 +234,14 @@ test.describe('Income/Expense PWA Offline Reload', () => {
     } finally {
       await context.setOffline(false).catch(() => {});
       if (original.data) {
-        await admin.from('income_expense_approval_settings').update({
+        expect((await admin.from('income_expense_approval_settings').update({
           applies_to: original.data.applies_to,
           approval_min_amount: original.data.approval_min_amount,
           cash_transfer_delete_requires_approval: original.data.cash_transfer_delete_requires_approval,
           non_current_date_requires_approval: original.data.non_current_date_requires_approval,
-        }).eq('id', true);
+        }).eq('id', true)).error).toBeNull();
+      } else {
+        expect((await admin.from('income_expense_approval_settings').delete().eq('id', true)).error).toBeNull();
       }
     }
   });

@@ -199,7 +199,7 @@ function BusinessLanFlowApp() {
   const [locations, setLocations] = useState<Location[]>([]);
   const [profile, setProfile] = useState<Profile>(auth.profile as Profile);
   const [selectedLocationId, setSelectedLocationId] = useState(
-    auth.profile?.locationIds[0] ?? ""
+    auth.profile?.primaryLocationId ?? auth.profile?.locationIds[0] ?? ""
   );
   const [pendingMoneyTransferSource, setPendingMoneyTransferSource] = useState<{
     transferId: string;
@@ -263,7 +263,7 @@ function BusinessLanFlowApp() {
         const locId = resolveSelectedLocationId(
           data.locations,
           data.profile.locationIds,
-          readLastLocationPreference(authProfileId),
+          readLastLocationPreference(authProfileId) ?? data.profile.primaryLocationId ?? null,
         );
         setSelectedLocationId((currentLocationId) =>
           currentLocationId !== locId && !isDeviceOnline()

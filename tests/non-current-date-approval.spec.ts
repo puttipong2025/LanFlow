@@ -48,8 +48,9 @@ test.describe.serial("non-current income/expense approval gate", () => {
     const locationId = (await profile(manager)).locationIds[0];
     const txDate = adjacentDate(-1);
     const payload = incomePayload(locationId, txDate);
-    const originalSettings = await db.from("income_expense_approval_settings").select("*").eq("id", true).single();
+    const originalSettings = await db.from("income_expense_approval_settings").select("*").eq("id", true).maybeSingle();
     expect(originalSettings.error).toBeNull();
+    expect((await db.from("income_expense_approval_settings").upsert({ id: true }, { onConflict: "id" })).error).toBeNull();
 
     let requestId: string | null = null;
     const keywordId = crypto.randomUUID();
@@ -105,6 +106,8 @@ test.describe.serial("non-current income/expense approval gate", () => {
           cash_transfer_delete_requires_approval: originalSettings.data.cash_transfer_delete_requires_approval,
           non_current_date_requires_approval: originalSettings.data.non_current_date_requires_approval,
         }).eq("id", true);
+      } else {
+        await db.from("income_expense_approval_settings").delete().eq("id", true);
       }
       await manager.close();
     }
@@ -115,8 +118,9 @@ test.describe.serial("non-current income/expense approval gate", () => {
     const manager = await browser.newContext({ storageState: "playwright/.auth/super_admin.json" });
     const db = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
     const locationId = (await profile(manager)).locationIds[0];
-    const originalSettings = await db.from("income_expense_approval_settings").select("*").eq("id", true).single();
+    const originalSettings = await db.from("income_expense_approval_settings").select("*").eq("id", true).maybeSingle();
     expect(originalSettings.error).toBeNull();
+    expect((await db.from("income_expense_approval_settings").upsert({ id: true }, { onConflict: "id" })).error).toBeNull();
     const basePayload = incomePayload(locationId, bangkokDateString());
     let updateRequestId: string | null = null;
     let deleteRequestId: string | null = null;
@@ -197,6 +201,8 @@ test.describe.serial("non-current income/expense approval gate", () => {
           cash_transfer_delete_requires_approval: originalSettings.data.cash_transfer_delete_requires_approval,
           non_current_date_requires_approval: originalSettings.data.non_current_date_requires_approval,
         }).eq("id", true);
+      } else {
+        await db.from("income_expense_approval_settings").delete().eq("id", true);
       }
       await manager.close();
     }

@@ -29,10 +29,3 @@ test("create and update use one atomic RPC while delete and merge keep their ato
   expect(migration).toContain("for update");
   expect(migration).toContain("on conflict (id) do update");
 });
-
-test("legacy Evidence full read paginates parents and children past Data API max_rows", () => {
-  const hook = source("src/hooks/useRubberBills.ts");
-  expect(hook).toContain(".range(offset, offset + 999)");
-  expect(hook).toContain("chunkStart += 100");
-  expect(hook).toContain("itemsByBillId");
-});

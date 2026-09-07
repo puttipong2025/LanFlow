@@ -95,7 +95,7 @@ test.describe("branch selector overview", () => {
       auth: { persistSession: false, autoRefreshToken: false },
     });
     const signIn = await user.auth.signInWithPassword({
-      phone: "+66820000001",
+      phone: "+66810000001",
       password: process.env.TEST_PASSWORD ?? "password123",
     });
     expect(signIn.error).toBeNull();

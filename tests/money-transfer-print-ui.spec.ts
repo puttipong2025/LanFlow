@@ -287,6 +287,11 @@ test("shares a completed transfer PDF and leaves transfer data unchanged", async
 
     const receiptDetailRequests: string[] = [];
     const unexpectedWriteRequests: string[] = [];
+    const readOnlyRpcPaths = new Set([
+      "/rest/v1/rpc/get_actionable_badge_counts",
+      "/rest/v1/rpc/get_money_transfer_detail",
+      "/rest/v1/rpc/get_money_transfer_list",
+    ]);
     page.on("request", (browserRequest) => {
       if (!["GET", "HEAD", "OPTIONS"].includes(browserRequest.method())) {
         const requestLabel = `${browserRequest.method()} ${browserRequest.url()}`;
@@ -299,7 +304,7 @@ test("shares a completed transfer PDF and leaves transfer data unchanged", async
           receiptDetailRequests.push(requestLabel);
         } else if (
           browserRequest.method() === "POST"
-          && new URL(browserRequest.url()).pathname.endsWith("/rest/v1/rpc/get_money_transfer_detail")
+          && readOnlyRpcPaths.has(new URL(browserRequest.url()).pathname)
         ) {
           // PostgREST RPC reads use POST but do not mutate transfer state.
         } else {

@@ -5,6 +5,7 @@ import {
   deletionAuditColumns,
   mapDeletionAuditRow,
 } from "@/lib/server/deletion-audit-response";
+import { isUuid } from "@/lib/server/management-route-error";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +13,14 @@ type AuditCursor = { version: 1; ownerUserId: string; locationId: string; at: st
 function decodeAuditCursor(value: string): AuditCursor | null {
   try {
     const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as AuditCursor;
-    return parsed?.version === 1 && typeof parsed.at === "string" && typeof parsed.id === "string" ? parsed : null;
+    return parsed?.version === 1
+      && isUuid(parsed.ownerUserId)
+      && isUuid(parsed.locationId)
+      && typeof parsed.at === "string"
+      && !Number.isNaN(Date.parse(parsed.at))
+      && isUuid(parsed.id)
+      ? parsed
+      : null;
   } catch { return null; }
 }
 function encodeAuditCursor(value: AuditCursor) {
@@ -23,7 +31,7 @@ export async function GET(request: NextRequest) {
   const result = await requireSystemManager(request);
   if (!result.ok) return result.response;
   const locationId = request.nextUrl.searchParams.get("locationId");
-  if (!locationId) return cashCountErrorResponse("กรุณาระบุสาขา");
+  if (!isUuid(locationId)) return cashCountErrorResponse("กรุณาระบุสาขา");
   if (request.nextUrl.searchParams.get("view") === "deletions") {
     const cursorValue = request.nextUrl.searchParams.get("cursor");
     const cursor = cursorValue ? decodeAuditCursor(cursorValue) : null;
@@ -55,21 +63,42 @@ export async function GET(request: NextRequest) {
       headers: { "Cache-Control": "private, no-store, max-age=0" },
     });
   }
-  const { data, error } = await result.supabase
+  const cursorValue = request.nextUrl.searchParams.get("cursor");
+  const cursor = cursorValue ? decodeAuditCursor(cursorValue) : null;
+  if (cursorValue && !cursor) return NextResponse.json({ error: "cursor ไม่ถูกต้อง" }, { status: 400 });
+  if (cursor && (cursor.ownerUserId !== result.auth.sub || cursor.locationId !== locationId)) {
+    return NextResponse.json({ error: "cursor ไม่ตรงกับขอบเขตประวัติ" }, { status: 400 });
+  }
+  let query = result.supabase
     .from("cash_counts")
     .select("id, report_id, location_id, cutoff_at, actual_total, expected_total, difference_total, anomaly_score, confidence, analysis_status, formula_version, status, created_by_name, created_at, deleted_at, report_batches(report_no)")
     .eq("location_id", locationId)
     .eq("status", "active")
     .order("created_at", { ascending: false })
-    .order("id", { ascending: false });
+    .order("id", { ascending: false })
+    .limit(51);
+  if (cursor) query = query.or(`created_at.lt.${cursor.at},and(created_at.eq.${cursor.at},id.lt.${cursor.id})`);
+  const { data, error } = await query;
   if (error) return cashCountErrorResponse(error.message);
-  return NextResponse.json({ counts: (data ?? []).map((row: any) => ({
+  const page = (data ?? []).slice(0, 50);
+  const tail = page.at(-1);
+  return NextResponse.json({
+    counts: page.map((row: any) => ({
     id: row.id, reportId: row.report_id, reportNo: (Array.isArray(row.report_batches) ? row.report_batches[0] : row.report_batches)?.report_no ?? "",
     locationId: row.location_id, cutoffAt: row.cutoff_at, actualTotal: Number(row.actual_total), expectedTotal: Number(row.expected_total),
     differenceTotal: Number(row.difference_total), anomalyScore: row.anomaly_score, confidence: row.confidence,
     analysisStatus: row.analysis_status, formulaVersion: row.formula_version, status: row.status,
     createdByName: row.created_by_name, createdAt: row.created_at, deletedAt: row.deleted_at,
-  })) }, { headers: { "Cache-Control": "private, no-store, max-age=0" } });
+    })),
+    hasMore: (data?.length ?? 0) > 50,
+    nextCursor: (data?.length ?? 0) > 50 && tail ? encodeAuditCursor({
+      version: 1,
+      ownerUserId: result.auth.sub,
+      locationId,
+      at: tail.created_at,
+      id: tail.id,
+    }) : null,
+  }, { headers: { "Cache-Control": "private, no-store, max-age=0" } });
 }
 
 export async function POST(request: Request) {

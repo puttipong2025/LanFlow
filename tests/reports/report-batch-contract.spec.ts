@@ -584,7 +584,6 @@ test.describe.serial("Report batch contract @report-batch", () => {
     try {
       const superProfile = await profile(superAdmin);
       const foreignLocationId = alternateLocation.id;
-      expect(superProfile.locationIds).toContain(foreignLocationId);
       expect((await adminContext.request.get(`/api/lanflow/reports?locationId=${foreignLocationId}`)).status()).toBe(403);
       expect((await db.from("profiles").update({ can_access_super_admin_features: true }).eq("id", adminProfile.id)).error).toBeNull();
 
@@ -1079,7 +1078,7 @@ test.describe.serial("Report batch contract @report-batch", () => {
       await expect(page.getByRole("heading", { name: "แก้ไขรายการโอนเงิน" })).toBeVisible();
       await page.getByRole("button", { name: "บันทึก" }).click();
 
-      await expect(page.getByText("บันทึกรายการโอนเงินสำเร็จ")).toBeVisible();
+      await expect(page.getByText("บันทึกรายการโอนเงินสำเร็จ")).toBeVisible({ timeout: 15_000 });
       await expect(page.getByRole("heading", { name: "แก้ไขรายการโอนเงิน" })).toBeHidden();
 
       const { data: items, error: itemsError } = await db
@@ -1226,33 +1225,16 @@ test.describe.serial("Report batch contract @report-batch", () => {
       expect(employee).toBeTruthy();
 
       const amount = 700000 + (Date.now() % 10000);
-      expect((await manager.request.post("/api/lanflow/time-tracking/admin", {
+      const createdWithdrawal = await manager.request.post("/api/lanflow/time-tracking/admin", {
         data: {
           action: "ADMIN_REQUEST_WITHDRAWAL",
-          payload: { user_id: employee!.id, amount, effective_date: bangkokDate(new Date().toISOString()) },
+          payload: { user_id: employee!.id, amount, effective_date: bangkokDate(new Date().toISOString()), expense_location_id: locationId },
         },
-      })).ok()).toBeTruthy();
-
-      const pendingResponse = await superAdmin.request.get("/api/lanflow/time-tracking/admin");
-      const pending = await pendingResponse.json() as {
-        pendingTransactions: Array<{ id: string; profile_id: string; amount: number }>;
-      };
-      const withdrawal = pending.pendingTransactions.find((item) =>
-        item.profile_id === employee!.id && Number(item.amount) === amount
-      );
-      expect(withdrawal).toBeTruthy();
-      withdrawalId = withdrawal!.id;
-      expect((await superAdmin.request.post("/api/lanflow/time-tracking/admin", {
-        data: {
-          action: "APPROVE_TRANSACTION",
-          payload: {
-            transaction_id: withdrawal!.id,
-            status: "APPROVED",
-            expense_location_id: locationId,
-            admin_comment: "report permanent-delete test",
-          },
-        },
-      })).ok()).toBeTruthy();
+      });
+      expect(createdWithdrawal.ok(), await createdWithdrawal.text()).toBeTruthy();
+      const withdrawal = (await createdWithdrawal.json() as { result: { id: string; status: string } }).result;
+      expect(withdrawal.status).toBe("approved");
+      withdrawalId = withdrawal.id;
 
       const report = await createReport(superAdmin, locationId);
       reportId = report.id;

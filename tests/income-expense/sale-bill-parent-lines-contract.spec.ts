@@ -31,17 +31,18 @@ test("creates, replays, updates, and deletes one sale parent atomically", async 
   expect(profile.error).toBeNull();
   expect(userLocation.error).toBeNull();
 
-  const saleItems = await service
-    .from("income_sale_items")
-    .select("id,name,stock_product_id")
-    .eq("is_active", true)
-    .not("stock_product_id", "is", null)
-    .limit(2);
-  expect(saleItems.error).toBeNull();
-  expect(saleItems.data?.length).toBeGreaterThan(1);
-
-  const first = saleItems.data![0];
-  const second = saleItems.data![1];
+  const productIds = [crypto.randomUUID(), crypto.randomUUID()];
+  const saleItemIds = [crypto.randomUUID(), crypto.randomUUID()];
+  const first = {
+    id: saleItemIds[0],
+    name: `สินค้าทดสอบ ${saleItemIds[0].slice(0, 8)}`,
+    stock_product_id: productIds[0],
+  };
+  const second = {
+    id: saleItemIds[1],
+    name: `สินค้าทดสอบ ${saleItemIds[1].slice(0, 8)}`,
+    stock_product_id: productIds[1],
+  };
   const locationId = userLocation.data!.location_id as string;
   const clientTempId = crypto.randomUUID();
   const rejectedClientId = crypto.randomUUID();
@@ -49,8 +50,7 @@ test("creates, replays, updates, and deletes one sale parent atomically", async 
   const noStockClientId = crypto.randomUUID();
   const unauthorizedClientId = crypto.randomUUID();
   const concurrentClientIds = [crypto.randomUUID(), crypto.randomUUID()];
-  const stockEntryIds = [...new Set([first.stock_product_id, second.stock_product_id])]
-    .map(() => crypto.randomUUID());
+  const stockEntryIds = productIds.map(() => crypto.randomUUID());
   const approvalKeywordId = crypto.randomUUID();
   let approvalRequestId: string | null = null;
   const today = bangkokDateString();
@@ -81,8 +81,15 @@ test("creates, replays, updates, and deletes one sale parent atomically", async 
   };
 
   try {
-    const products = [...new Set([first.stock_product_id, second.stock_product_id])];
-    const stockSeed = await service.from("stock_entries").insert(products.map((productId, index) => ({
+    expect((await service.from("stock_products").insert(productIds.map((id, index) => ({
+      id,
+      name: index === 0 ? first.name : second.name,
+      unit: "ชิ้น",
+      is_active: true,
+    })))).error).toBeNull();
+    expect((await service.from("income_sale_items").insert([first, second])).error).toBeNull();
+
+    const stockSeed = await service.from("stock_entries").insert(productIds.map((productId, index) => ({
       id: stockEntryIds[index],
       server_bill_no: `TEST-STOCK-${stockEntryIds[index].slice(0, 8)}`,
       tx_date: today,
@@ -187,18 +194,6 @@ test("creates, replays, updates, and deletes one sale parent atomically", async 
       }],
     });
 
-    const keyword = await service.from("income_expense_approval_keywords").insert({
-      id: approvalKeywordId,
-      keyword: first.name,
-      match_mode: "exact",
-      applies_to: "income",
-      is_active: true,
-      created_by_user_id: userId,
-      created_by_name: profile.data!.name,
-      created_by_phone: profile.data!.phone,
-    });
-    expect(keyword.error).toBeNull();
-
     const validPayload = { ...payload, saleLines: validLines };
     const created = await authenticated.rpc("sync_income_expense", { payload: validPayload });
     expect(created.error).toBeNull();
@@ -260,6 +255,18 @@ test("creates, replays, updates, and deletes one sale parent atomically", async 
     expect(zeroPriceMovements.data).toEqual([
       expect.objectContaining({ quantity_delta: -4, amount: 0 }),
     ]);
+
+    const keyword = await service.from("income_expense_approval_keywords").insert({
+      id: approvalKeywordId,
+      keyword: first.name,
+      match_mode: "exact",
+      applies_to: "income",
+      is_active: true,
+      created_by_user_id: userId,
+      created_by_name: profile.data!.name,
+      created_by_phone: profile.data!.phone,
+    });
+    expect(keyword.error).toBeNull();
 
     const deletePayload = {
       ...updatedPayload,
@@ -328,5 +335,7 @@ test("creates, replays, updates, and deletes one sale parent atomically", async 
     }
     await service.from("income_expense_approval_keywords").delete().eq("id", approvalKeywordId);
     await service.from("stock_entries").delete().in("id", stockEntryIds);
+    await service.from("income_sale_items").delete().in("id", saleItemIds);
+    await service.from("stock_products").delete().in("id", productIds);
   }
 });

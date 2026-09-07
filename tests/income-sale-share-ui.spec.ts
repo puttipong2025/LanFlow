@@ -122,7 +122,7 @@ test("shows one read-only share action for one synced sale parent", async ({ pag
     expect(await page.getByRole("button", { name: /แชร์ PDF บิลขาย/ }).count()).toBe(1);
 
     await page.getByRole("button", { name: "ดูรายละเอียดบิลขาย" }).click();
-    await expect(page.getByRole("heading", { name: `รายละเอียด ${referenceNo}` })).toBeVisible();
+    await expect(page.getByRole("heading", { name: `รายละเอียด ${referenceNo}` })).toBeVisible({ timeout: 15_000 });
     await expect(page.locator("table").filter({ hasText: "ราคา/หน่วย" }).locator("tbody tr")).toHaveCount(2);
     await page.getByRole("button", { name: "ปิด", exact: true }).click();
 

@@ -1,11 +1,14 @@
 import { expect, test } from "@playwright/test";
 import {
+  confirmCurrentBranchIfRequired,
   selectAppLocation,
   selectedAppLocationId,
   selectFirstAccessibleOption,
 } from "../helpers/select-app-location";
+import { createTransferLocationFixture } from "../helpers/transfer-location-fixture";
 
 test.use({ storageState: "playwright/.auth/super_admin.json" });
+const transferLocation = createTransferLocationFixture("สาขา cash UI");
 
 async function setOnline(page: import("@playwright/test").Page, online: boolean) {
   await page.context().setOffline(!online);
@@ -36,6 +39,9 @@ async function fillCashCounts(modal: import("@playwright/test").Locator, banknot
 }
 
 test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
+  test.beforeAll(() => transferLocation.setup());
+  test.afterAll(() => transferLocation.cleanup());
+
   test("system manager can toggle post-receipt delete approval", async ({ page }) => {
     await setOnline(page, true);
     await openIncomeExpense(page);
@@ -61,6 +67,7 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
     const sourceLocationId = await selectedAppLocationId(page);
     expect(sourceLocationId).toBeTruthy();
     await page.click('button:has-text("โยกเงินไปสาขาอื่น")');
+    await confirmCurrentBranchIfRequired(page);
     const createModal = page.locator(".fixed.inset-0").last();
     await expect(createModal.getByText("โยกเงินไปสาขาอื่น (เงินสด)")).toBeVisible();
     await expect(createModal.getByText("โอนธนาคาร", { exact: true })).toHaveCount(0);
@@ -188,6 +195,7 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
       await openIncomeExpense(targetPage);
 
       await sourcePage.click('button:has-text("โยกเงินไปสาขาอื่น")');
+      await confirmCurrentBranchIfRequired(sourcePage);
       const createModal = sourcePage.locator(".fixed.inset-0").last();
       const targetSelect = createModal.getByLabel("สาขาปลายทาง");
       const targetLocationId = await selectFirstAccessibleOption(sourcePage, targetSelect);

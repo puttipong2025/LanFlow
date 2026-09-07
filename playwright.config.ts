@@ -21,7 +21,6 @@ const isPwa = process.env.PW_PROJECT === 'pwa';
 
 export default defineConfig({
   testDir: './tests',
-  globalTeardown: './tests/playwright-global-teardown.ts',
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,

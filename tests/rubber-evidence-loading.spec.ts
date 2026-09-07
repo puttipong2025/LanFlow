@@ -8,6 +8,7 @@ const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 const jpeg = Buffer.from("/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABBQJ//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPyF//9oADAMBAAIAAwAAABD/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAEDAQE/EH//xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAECAQE/EH//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAE/EH//2Q==", "base64");
 
 test("prepares five by three evidence cards within the bounded request budget", async ({ page }) => {
+  test.setTimeout(60_000);
   test.skip(!serviceRoleKey, "SUPABASE_SERVICE_ROLE_KEY is required for loading verification");
   const service = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
@@ -146,6 +147,9 @@ test("prepares five by three evidence cards within the bounded request budget", 
 
     await page.goto("/");
     await selectAppLocation(page, locationId);
+    // Exclude Next dev's first route compilation from the runtime request budget.
+    const warmFeed = await page.request.get(`/api/lanflow/evidence/feed?locationId=${locationId}&view=pending&search=&limit=75`);
+    expect(warmFeed.ok(), await warmFeed.text()).toBe(true);
     const startedAt = performance.now();
     await page.getByRole("button", { name: /^ตรวจหลักฐาน/ }).click();
     const cards = page.locator("[data-testid^='evidence-card-']");

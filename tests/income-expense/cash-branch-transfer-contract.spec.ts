@@ -1,9 +1,11 @@
 import { expect, test, type APIRequestContext, type Browser, type BrowserContext } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 import { bangkokDateString } from "../../src/lib/bangkok-date";
+import { createTransferLocationFixture } from "../helpers/transfer-location-fixture";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const transferLocation = createTransferLocationFixture("สาขา cash contract");
 
 const zeroCounts = {
   coin1: 0,
@@ -89,7 +91,10 @@ function cashDetail(transfer: { money_transfer_cash_details: unknown }) {
 }
 
 test.describe.serial("Cash branch transfer contract @cash-transfer-contract", () => {
-  test("user, admin, and super_admin create with server identity; location and state guards hold", async ({ browser }) => {
+  test.beforeAll(() => transferLocation.setup());
+  test.afterAll(() => transferLocation.cleanup());
+
+  test("ordinary users are denied while admins create with server identity and state guards hold", async ({ browser }) => {
     test.setTimeout(60000);
     expect(serviceRoleKey).toBeTruthy();
     const service = createClient(supabaseUrl, serviceRoleKey, {
@@ -105,19 +110,17 @@ test.describe.serial("Cash branch transfer contract @cash-transfer-contract", ()
         profile(admin.request),
         profile(superAdmin.request),
       ]);
-      const sourceLocationId = userProfile.locationIds.find((id) =>
-        adminProfile.locationIds.includes(id)
-      );
+      const sourceLocationId = adminProfile.locationIds[0];
       const targetLocationId = superProfile.locationIds.find((id) => !userProfile.locationIds.includes(id));
       expect(sourceLocationId).toBeTruthy();
       expect(targetLocationId).toBeTruthy();
 
       const deniedCreate = await user.request.post("/api/lanflow/cash-branch-transfers", {
-        data: createPayload(targetLocationId!, sourceLocationId!),
+        data: createPayload(sourceLocationId!, targetLocationId!),
       });
       expect(deniedCreate.status()).toBe(403);
 
-      for (const [context, actor] of [[user, userProfile], [admin, adminProfile], [superAdmin, superProfile]] as const) {
+      for (const [context, actor] of [[admin, adminProfile], [superAdmin, superProfile]] as const) {
         const transferId = await createTransfer(context.request, sourceLocationId!, targetLocationId!);
         const detail = await superAdmin.request.get(`/api/lanflow/cash-branch-transfers/${transferId}`);
         expect(detail.ok()).toBeTruthy();
@@ -128,7 +131,7 @@ test.describe.serial("Cash branch transfer contract @cash-transfer-contract", ()
         await deleteTransfer(superAdmin.request, transferId);
       }
 
-      const guardedId = await createTransfer(user.request, sourceLocationId!, targetLocationId!);
+      const guardedId = await createTransfer(admin.request, sourceLocationId!, targetLocationId!);
       const deniedReceive = await user.request.post(`/api/lanflow/cash-branch-transfers/${guardedId}/receive`, {
         data: { received: { ...zeroCounts, banknote20: 1 } },
       });
@@ -147,7 +150,7 @@ test.describe.serial("Cash branch transfer contract @cash-transfer-contract", ()
       });
       expect(removedRpc.error).not.toBeNull();
 
-      const lockedEdit = await user.request.patch(`/api/lanflow/cash-branch-transfers/${guardedId}`, {
+      const lockedEdit = await admin.request.patch(`/api/lanflow/cash-branch-transfers/${guardedId}`, {
         data: { targetLocationId, sent: { ...zeroCounts, banknote20: 2 } },
       });
       expect(lockedEdit.status()).toBe(409);

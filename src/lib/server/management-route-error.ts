@@ -8,6 +8,10 @@ export function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
 }
 
+export function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 export function managementErrorResponse(error: ErrorLike, fallback: string) {
   const message = error?.message ?? "";
   const known = [

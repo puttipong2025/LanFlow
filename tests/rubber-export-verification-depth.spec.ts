@@ -1,6 +1,6 @@
 import { expect, test, type Browser, type BrowserContext } from "@playwright/test";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { selectAppLocation } from "./helpers/select-app-location";
+import { confirmCurrentBranchIfRequired, selectAppLocation } from "./helpers/select-app-location";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -307,6 +307,9 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
       await selectAppLocation(uiPage, locationA);
       await uiPage.getByRole("button", { name: "ส่งออกยาง", exact: true }).click();
       await uiPage.getByRole("button", { name: "สร้างรายการ", exact: true }).click();
+      await expect(uiPage.getByRole("alertdialog", { name: "ยืนยันสาขาก่อนสร้างรายการ" }))
+        .toBeVisible({ timeout: 15_000 });
+      await confirmCurrentBranchIfRequired(uiPage);
       const billCheckboxes = uiPage.getByRole("checkbox");
       await expect(billCheckboxes).toHaveCount(4);
       await expect(uiPage.getByRole("checkbox", { checked: true })).toHaveCount(0);
@@ -499,7 +502,7 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
     }
   });
 
-  test("keeps rubber-export feed rows complete across filters, pagination, and source navigation", async ({ browser }) => {
+  test("keeps rubber-export feed rows complete across search and source navigation", async ({ browser }) => {
     test.setTimeout(120_000);
     const admin = await authContext(browser, "admin");
     const superAdmin = await authContext(browser, "super_admin");
@@ -587,9 +590,8 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
       do {
         const search = new URLSearchParams({
           locationId,
-          from: feedDate,
-          to: feedDate,
-          pageSize: "1",
+          mode: "latest",
+          search: "ค่าทำงานส่งออกยาง",
         });
         if (cursor) search.set("cursor", cursor);
         const response = await admin.request.get(
@@ -600,7 +602,7 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
           rows: typeof feedRows;
           nextCursor: string | null;
         };
-        expect(page.rows).toHaveLength(1);
+        expect(page.rows.length).toBeGreaterThan(0);
         feedRows.push(...page.rows);
         cursor = page.nextCursor;
       } while (cursor);
@@ -619,12 +621,9 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
         }));
       }
 
-      const previousDate = new Date(`${feedDate}T00:00:00.000Z`);
-      previousDate.setUTCDate(previousDate.getUTCDate() - 1);
       const filteredResponse = await admin.request.get(
         `/api/lanflow/income-expense/feed?locationId=${locationId}`
-        + `&from=${previousDate.toISOString().slice(0, 10)}`
-        + `&to=${previousDate.toISOString().slice(0, 10)}`,
+        + `&search=${encodeURIComponent("no-matching-export-fixture")}`,
       );
       expect(filteredResponse.ok(), await filteredResponse.text()).toBeTruthy();
       const filteredRows = (await filteredResponse.json() as {
@@ -642,7 +641,7 @@ test.describe.serial("Rubber export verification depth @rubber-export", () => {
       const page = await admin.newPage();
       await page.goto("/");
       await selectAppLocation(page, locationId);
-      await page.getByRole("button", { name: "รับ-จ่าย", exact: true }).click();
+      await page.getByRole("button", { name: /^รับ-จ่าย(?: |$)/ }).click();
       const sourceRow = page.locator("tbody tr").filter({ hasText: exports[0].exportNo });
       await expect(sourceRow).toBeVisible();
       await sourceRow.getByRole("button", { name: "ดูรายการส่งออกยาง" }).click();

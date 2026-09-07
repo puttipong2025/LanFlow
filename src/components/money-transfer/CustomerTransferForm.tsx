@@ -563,7 +563,7 @@ export function CustomerTransferForm({
             <input
               ref={slipFileRef}
               type="file"
-              accept="image/*"
+              accept="image/jpeg,image/png,image/webp"
               multiple
               className="hidden"
               disabled={submitting || !online}

@@ -20,6 +20,7 @@ test.describe.serial("Admin-only elevated permission boundary", () => {
       can_access_super_admin_features: true,
       can_access_money_transfer: true,
       can_manage_time_payroll: true,
+      can_manage_rubber_exports: true,
     }).eq("id", userId);
 
     expect(result.error?.message).toContain("profiles_admin_only_elevated_access");
@@ -39,12 +40,14 @@ test.describe.serial("Admin-only elevated permission boundary", () => {
         can_access_super_admin_features: false,
         can_access_money_transfer: false,
         can_manage_time_payroll: false,
+        can_manage_rubber_exports: false,
       }).eq("id", userId)).error).toBeNull();
 
       for (const [path, data] of [
         ["system-manager-access", { canAccessSystemManager: true }],
         ["money-transfer-access", { canAccessMoneyTransfer: true }],
         ["time-payroll-access", { canManageTimePayroll: true }],
+        ["rubber-export-access", { canManageRubberExports: true }],
       ] as const) {
         const denied = await superRequest.patch(`/api/lanflow/admin/users/${userId}/${path}`, { data });
         expect(denied.status(), await denied.text()).toBe(403);
@@ -59,6 +62,7 @@ test.describe.serial("Admin-only elevated permission boundary", () => {
         ["system-manager-access", { canAccessSystemManager: true }],
         ["money-transfer-access", { canAccessMoneyTransfer: true }],
         ["time-payroll-access", { canManageTimePayroll: true }],
+        ["rubber-export-access", { canManageRubberExports: true }],
       ] as const) {
         if (path !== "system-manager-access") {
           await superRequest.patch(`/api/lanflow/admin/users/${userId}/system-manager-access`, {
@@ -75,7 +79,7 @@ test.describe.serial("Admin-only elevated permission boundary", () => {
       expect(demoted.ok(), await demoted.text()).toBeTruthy();
 
       const { data: profile, error } = await service.from("profiles")
-        .select("role, can_access_super_admin_features, can_access_money_transfer, can_manage_time_payroll")
+        .select("role, can_access_super_admin_features, can_access_money_transfer, can_manage_time_payroll, can_manage_rubber_exports")
         .eq("id", userId)
         .single();
       expect(error).toBeNull();
@@ -84,6 +88,7 @@ test.describe.serial("Admin-only elevated permission boundary", () => {
         can_access_super_admin_features: false,
         can_access_money_transfer: false,
         can_manage_time_payroll: false,
+        can_manage_rubber_exports: false,
       });
 
       expect((await superRequest.patch(`/api/lanflow/admin/users/${userId}/role`, {
@@ -101,7 +106,7 @@ test.describe.serial("Admin-only elevated permission boundary", () => {
       expect([200, 403]).toContain(concurrentGrant.status());
 
       const concurrentProfile = await service.from("profiles")
-        .select("role, can_access_super_admin_features, can_access_money_transfer, can_manage_time_payroll")
+        .select("role, can_access_super_admin_features, can_access_money_transfer, can_manage_time_payroll, can_manage_rubber_exports")
         .eq("id", userId)
         .single();
       expect(concurrentProfile.error).toBeNull();
@@ -110,6 +115,7 @@ test.describe.serial("Admin-only elevated permission boundary", () => {
         can_access_super_admin_features: false,
         can_access_money_transfer: false,
         can_manage_time_payroll: false,
+        can_manage_rubber_exports: false,
       });
     } finally {
       await service.from("profiles").update({
@@ -118,6 +124,7 @@ test.describe.serial("Admin-only elevated permission boundary", () => {
         can_access_super_admin_features: false,
         can_access_money_transfer: false,
         can_manage_time_payroll: false,
+        can_manage_rubber_exports: false,
       }).eq("id", userId);
       await superRequest.dispose();
     }
@@ -158,8 +165,62 @@ test.describe.serial("Admin-only elevated permission boundary", () => {
         can_access_super_admin_features: false,
         can_access_money_transfer: false,
         can_manage_time_payroll: false,
+        can_manage_rubber_exports: false,
       }).eq("id", adminId);
       await superRequest.dispose();
+    }
+  });
+
+  test("only Super Admin or a system manager can delegate Rubber Export management", async () => {
+    const service = serviceClient();
+    const adminRequest = await playwrightRequest.newContext({
+      baseURL: "http://127.0.0.1:3000",
+      storageState: "playwright/.auth/admin.json",
+    });
+
+    try {
+      expect((await service.from("profiles").update({
+        role: "admin",
+        is_active: true,
+        can_access_super_admin_features: false,
+      }).eq("id", adminId)).error).toBeNull();
+      expect((await service.from("profiles").update({
+        role: "admin",
+        is_active: true,
+        can_access_super_admin_features: false,
+        can_manage_rubber_exports: false,
+      }).eq("id", userId)).error).toBeNull();
+
+      const denied = await adminRequest.patch(
+        `/api/lanflow/admin/users/${userId}/rubber-export-access`,
+        { data: { canManageRubberExports: true } },
+      );
+      expect(denied.status(), await denied.text()).toBe(403);
+
+      expect((await service.from("profiles").update({
+        can_access_super_admin_features: true,
+      }).eq("id", adminId)).error).toBeNull();
+      const granted = await adminRequest.patch(
+        `/api/lanflow/admin/users/${userId}/rubber-export-access`,
+        { data: { canManageRubberExports: true } },
+      );
+      expect(granted.ok(), await granted.text()).toBeTruthy();
+    } finally {
+      await service.from("profiles").update({
+        role: "admin",
+        is_active: true,
+        can_access_super_admin_features: false,
+        can_manage_rubber_exports: false,
+      }).eq("id", adminId);
+      await service.from("profiles").update({
+        role: "user",
+        is_active: true,
+        can_access_super_admin_features: false,
+        can_access_money_transfer: false,
+        can_manage_time_payroll: false,
+        can_manage_rubber_exports: false,
+      }).eq("id", userId);
+      await adminRequest.dispose();
     }
   });
 });

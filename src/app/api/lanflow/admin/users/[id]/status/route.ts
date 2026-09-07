@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSystemManager } from "@/lib/server/auth";
 import { createSupabaseAdminClient } from "@/lib/server/supabase-admin";
+import { isJsonObject } from "@/lib/server/management-route-error";
 
 export async function PATCH(
   request: NextRequest,
@@ -11,9 +12,9 @@ export async function PATCH(
 
   try {
     const { id: userId } = await params;
-    const body = await request.json();
+    const body: unknown = await request.json();
 
-    if (typeof body.isActive !== "boolean") {
+    if (!isJsonObject(body) || typeof body.isActive !== "boolean") {
       return NextResponse.json(
         { error: "isActive is required and must be a boolean" },
         { status: 400 }
@@ -51,6 +52,9 @@ export async function PATCH(
 
     return NextResponse.json({ success: true, isActive: body.isActive });
   } catch (error: any) {
+    if (error instanceof SyntaxError) {
+      return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+    }
     console.error("Admin user status update error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

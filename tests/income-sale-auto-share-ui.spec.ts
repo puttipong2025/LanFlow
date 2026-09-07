@@ -1,6 +1,9 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { selectAppLocation } from "./helpers/select-app-location";
+import {
+  confirmCurrentBranchIfRequired,
+  selectAppLocation,
+} from "./helpers/select-app-location";
 import { bangkokDateString } from "../src/lib/bangkok-date";
 
 test.use({ storageState: { cookies: [], origins: [] } });
@@ -128,6 +131,7 @@ async function fillSaleLine(
 }
 
 test("accepts a zero-priced sale and keeps one command in flight until sync succeeds", async ({ page }) => {
+  test.setTimeout(45_000);
   await installShareMock(page);
 
   let releaseSync!: () => void;
@@ -172,6 +176,7 @@ test("accepts a zero-priced sale and keeps one command in flight until sync succ
 
   await loginAndOpenIncomeExpense(page);
   await page.getByRole("button", { name: "เพิ่มรายรับ" }).click();
+  await confirmCurrentBranchIfRequired(page);
   const modal = incomeExpenseModal(page);
   await modal.getByRole("button", { name: /บิลขาย/ }).click();
   await fillSaleLine(modal, 0, "1", "0");
@@ -244,6 +249,7 @@ test("opens the PDF window only after one whole-bill sync succeeds", async ({ pa
 
   await loginAndOpenIncomeExpense(page);
   await page.getByRole("button", { name: "เพิ่มรายรับ" }).click();
+  await confirmCurrentBranchIfRequired(page);
   const modal = incomeExpenseModal(page);
   await modal.getByRole("button", { name: /บิลขาย/ }).click();
   await fillSaleLine(modal, 0, "2", "25");
@@ -329,6 +335,9 @@ test("waits for an edited sale line to sync and keeps the server bill number on 
       },
     });
   });
+  await page.route("**/api/lanflow/income-expense/approval-requests", async (route) => {
+    await route.fulfill({ json: { status: "no_approval" } });
+  });
   await page.route("**/api/lanflow/income-expense", async (route) => {
     syncStarted = true;
     await syncGate;
@@ -375,6 +384,233 @@ test("waits for an edited sale line to sync and keeps the server bill number on 
   expect((await sharedReceipts(page))[0].name).toBe(
     `LanFlow-sale-bill-${serverBillNo}-80mm.pdf`
   );
+});
+
+test("treats a server-side pending approval race as queued instead of a failed sale sync", async ({ page }) => {
+  await installShareMock(page);
+
+  const serverBillNo = "SERVER-PENDING-RACE";
+  const clientTempId = crypto.randomUUID();
+  const rowId = crypto.randomUUID();
+  const today = bangkokDateString();
+  let syncCount = 0;
+
+  await page.route("**/api/lanflow/income-expense/feed?**", async (route) => {
+    await route.fulfill({
+      json: {
+        rows: [{
+          id: rowId,
+          clientTempId,
+          localBillNo: "LOCAL-PENDING-RACE",
+          serverBillNo,
+          syncStatus: "synced",
+          idempotencyKey: `create:${clientTempId}:0`,
+          locationId: "placeholder",
+          type: "income",
+          number: serverBillNo,
+          txDate: today,
+          title: "สินค้าก่อนเปลี่ยนกฎอนุมัติ",
+          cost: 25,
+          billOption: "บิลขาย",
+          saleLineCount: 1,
+          createdByUserId: crypto.randomUUID(),
+          createdByName: "ผู้ทดสอบ",
+          createdByPhone: "",
+          clientCreatedAt: new Date().toISOString(),
+          clientRecordedAt: new Date().toISOString(),
+          revisionNo: 1,
+          recordStatus: "active",
+        }],
+        nextCursor: null,
+      },
+    });
+  });
+  await page.route(`**/api/lanflow/income-expense/${rowId}`, async (route) => {
+    await route.fulfill({
+      json: {
+        saleLineCount: 1,
+        saleLines: [{
+          id: crypto.randomUUID(),
+          incomeSaleItemId: crypto.randomUUID(),
+          stockProductId: crypto.randomUUID(),
+          title: "สินค้าก่อนเปลี่ยนกฎอนุมัติ",
+          quantity: 1,
+          unitPrice: 25,
+          lineTotal: 25,
+          sequenceNo: 1,
+        }],
+      },
+    });
+  });
+  await page.route("**/api/lanflow/income-expense/approval-requests", async (route) => {
+    await route.fulfill({ json: { status: "no_approval" } });
+  });
+  await page.route("**/api/lanflow/income-expense", async (route) => {
+    syncCount += 1;
+    await route.fulfill({
+      status: 202,
+      json: {
+        status: "pending_approval",
+        requestId: crypto.randomUUID(),
+        matchedReasons: ["amount_threshold"],
+      },
+    });
+  });
+
+  await loginAndOpenIncomeExpense(page);
+  const row = page.locator("tbody tr", { hasText: "สินค้าก่อนเปลี่ยนกฎอนุมัติ" });
+  await row.getByRole("button", { name: "แก้ไข", exact: true }).click();
+  const modal = incomeExpenseModal(page);
+  await fillSaleLine(modal, 0, "2", "25");
+  await modal.getByRole("button", { name: "บันทึกบิล" }).click();
+
+  await expect(page.getByText("ส่งคำขออนุมัติ 1 รายการแล้ว")).toBeVisible();
+  await expect(modal).toBeHidden();
+  expect(syncCount).toBe(1);
+  expect(await sharedReceipts(page)).toEqual([]);
+  await expect.poll(async () => (await readQueue(page)).length).toBe(0);
+  await expect(page.getByText("ไม่พบผลการซิงก์หรือเลขบิลส่วนกลางของบิลขาย")).toHaveCount(0);
+});
+
+test("closes an edited sale after approval is queued without syncing or printing", async ({ page }) => {
+  await installShareMock(page);
+
+  const serverBillNo = "SERVER-PENDING-EDIT";
+  const clientTempId = crypto.randomUUID();
+  const rowId = crypto.randomUUID();
+  const today = bangkokDateString();
+  let syncCount = 0;
+
+  await page.route("**/api/lanflow/income-expense/feed?**", async (route) => {
+    await route.fulfill({
+      json: {
+        rows: [{
+          id: rowId,
+          clientTempId,
+          localBillNo: "LOCAL-PENDING-EDIT",
+          serverBillNo,
+          syncStatus: "synced",
+          idempotencyKey: `create:${clientTempId}:0`,
+          locationId: "placeholder",
+          type: "income",
+          number: serverBillNo,
+          txDate: today,
+          title: "สินค้าก่อนส่งอนุมัติ",
+          cost: 25,
+          billOption: "บิลขาย",
+          saleLineCount: 1,
+          createdByUserId: crypto.randomUUID(),
+          createdByName: "ผู้ทดสอบ",
+          createdByPhone: "",
+          clientCreatedAt: new Date().toISOString(),
+          clientRecordedAt: new Date().toISOString(),
+          revisionNo: 1,
+          recordStatus: "active",
+        }],
+        nextCursor: null,
+      },
+    });
+  });
+  await page.route(`**/api/lanflow/income-expense/${rowId}`, async (route) => {
+    await route.fulfill({
+      json: {
+        saleLineCount: 1,
+        saleLines: [{
+          id: crypto.randomUUID(),
+          incomeSaleItemId: crypto.randomUUID(),
+          stockProductId: crypto.randomUUID(),
+          title: "สินค้าก่อนส่งอนุมัติ",
+          quantity: 1,
+          unitPrice: 25,
+          lineTotal: 25,
+          sequenceNo: 1,
+        }],
+      },
+    });
+  });
+  await page.route("**/api/lanflow/income-expense/approval-requests", async (route) => {
+    await route.fulfill({
+      json: {
+        status: "pending",
+        requestId: crypto.randomUUID(),
+        matchedReasons: ["amount_threshold"],
+      },
+    });
+  });
+  await page.route("**/api/lanflow/income-expense", async (route) => {
+    syncCount += 1;
+    await route.fulfill({ status: 500, json: { errorMessage: "ไม่ควรเรียก sync" } });
+  });
+
+  await loginAndOpenIncomeExpense(page);
+  const row = page.locator("tbody tr", { hasText: "สินค้าก่อนส่งอนุมัติ" });
+  await expect(row).toBeVisible();
+  await row.getByRole("button", { name: "แก้ไข", exact: true }).click();
+  const modal = incomeExpenseModal(page);
+  await fillSaleLine(modal, 0, "2", "25");
+  await modal.getByRole("button", { name: "บันทึกบิล" }).click();
+
+  await expect(page.getByText("ส่งคำขออนุมัติ 1 รายการแล้ว")).toBeVisible();
+  await expect(modal).toBeHidden();
+  expect(syncCount).toBe(0);
+  expect(await sharedReceipts(page)).toEqual([]);
+  await expect(page.getByText("ไม่พบบิลขายหลังซิงก์")).toHaveCount(0);
+});
+
+test("locks edit delete and print actions for a pending sale update", async ({ page }) => {
+  await installShareMock(page);
+  const rowId = crypto.randomUUID();
+  const clientTempId = crypto.randomUUID();
+  const serverBillNo = "SERVER-PENDING-LOCK";
+
+  await page.route("**/api/lanflow/income-expense/feed?**", async (route) => {
+    await route.fulfill({
+      json: {
+        rows: [{
+          id: rowId,
+          clientTempId,
+          localBillNo: "LOCAL-PENDING-LOCK",
+          serverBillNo,
+          syncStatus: "synced",
+          idempotencyKey: `create:${clientTempId}:0`,
+          locationId: "placeholder",
+          type: "income",
+          number: serverBillNo,
+          txDate: bangkokDateString(),
+          title: "บิลขายที่รออนุมัติ",
+          cost: 25,
+          billOption: "บิลขาย",
+          saleLineCount: 1,
+          createdByUserId: crypto.randomUUID(),
+          createdByName: "ผู้ทดสอบ",
+          createdByPhone: "",
+          clientCreatedAt: new Date().toISOString(),
+          clientRecordedAt: new Date().toISOString(),
+          revisionNo: 1,
+          recordStatus: "active",
+          approvalPending: true,
+          approvalRequestId: crypto.randomUUID(),
+          approvalOperation: "update",
+          approvalReasons: ["amount_threshold"],
+        }],
+        nextCursor: null,
+      },
+    });
+  });
+
+  await loginAndOpenIncomeExpense(page);
+  const row = page.locator("tbody tr", { hasText: "บิลขายที่รออนุมัติ" });
+  await expect(row.getByText("รออนุมัติแก้ไข", { exact: true })).toBeVisible();
+  const lockedActions = row.getByRole("button", {
+    name: "รายการนี้กำลังรออนุมัติการเปลี่ยนแปลง",
+  });
+  await expect(lockedActions).toHaveCount(2);
+  await expect(lockedActions.nth(0)).toBeDisabled();
+  await expect(lockedActions.nth(1)).toBeDisabled();
+  const share = row.getByRole("button", { name: `แชร์ PDF บิลขาย ${serverBillNo}` });
+  await expect(share).toBeDisabled();
+  await expect(share).toHaveAttribute("title", "บิลนี้ยังรออนุมัติ จึงยังพิมพ์ไม่ได้");
+  expect(await sharedReceipts(page)).toEqual([]);
 });
 
 test("shows every stock shortage, preserves the modal, and removes the rejected queue event", async ({ page }) => {
@@ -426,6 +662,7 @@ test("shows every stock shortage, preserves the modal, and removes the rejected 
 
   await loginAndOpenIncomeExpense(page);
   await page.getByRole("button", { name: "เพิ่มรายรับ" }).click();
+  await confirmCurrentBranchIfRequired(page);
   const modal = incomeExpenseModal(page);
   await modal.getByRole("button", { name: /บิลขาย/ }).click();
   await fillSaleLine(modal, 0, "2", "25");
@@ -444,7 +681,8 @@ test("shows every stock shortage, preserves the modal, and removes the rejected 
   expect(submittedClientIds[1]).toBe(submittedClientIds[0]);
 });
 
-test("labels the post-save PDF action as closing a saved bill window", async ({ page }) => {
+test("closes the saved bill after the post-save PDF is shared", async ({ page }) => {
+  test.setTimeout(60_000);
   await installShareMock(page);
 
   let releaseSync!: () => void;
@@ -482,6 +720,7 @@ test("labels the post-save PDF action as closing a saved bill window", async ({ 
 
   await loginAndOpenIncomeExpense(page);
   await page.getByRole("button", { name: "เพิ่มรายรับ" }).click();
+  await confirmCurrentBranchIfRequired(page);
   const modal = incomeExpenseModal(page);
   await modal.getByRole("button", { name: /บิลขาย/ }).click();
   await fillSaleLine(modal, 0, "1", "25");
@@ -493,11 +732,7 @@ test("labels the post-save PDF action as closing a saved bill window", async ({ 
   await expect(modal).toBeVisible();
 
   releaseSync();
-  await Promise.all([
-    expect(waiting).toContainText("บิลบันทึกแล้ว กรุณารอสักครู่"),
-    expect(waiting.getByRole("button", { name: "ปิดหน้าต่าง", exact: true })).toBeVisible(),
-  ]);
-  await expect(waiting).toBeHidden();
+  await expect(page.getByText("แชร์ PDF บิลขายแล้ว")).toBeVisible();
   await expect(modal).toBeHidden();
   await expect.poll(async () => (await readQueue(page)).length).toBe(0);
 });
@@ -513,6 +748,7 @@ test("lets the user remove a legacy failed sale that never reached the server", 
 
   await loginAndOpenIncomeExpense(page);
   await page.getByRole("button", { name: "เพิ่มรายรับ" }).click();
+  await confirmCurrentBranchIfRequired(page);
   const modal = incomeExpenseModal(page);
   await modal.getByRole("button", { name: /บิลขาย/ }).click();
   await fillSaleLine(modal, 0, "1", "25");

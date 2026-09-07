@@ -64,46 +64,6 @@ export function formatBangkokDateTime(value: DateValue) {
   }).format(toDate(value));
 }
 
-export function formatBangkokTime(value: DateValue) {
-  return new Intl.DateTimeFormat("th-TH", {
-    timeZone: BANGKOK_TIME_ZONE,
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).format(toDate(value));
-}
-
 export function bangkokBuddhistYear(value = new Date()) {
   return Number(bangkokDateString(value).slice(0, 4)) + 543;
-}
-
-function shiftDateOnly(value: string, dayCount: number) {
-  const date = new Date(`${value}T00:00:00.000Z`);
-  date.setUTCDate(date.getUTCDate() + dayCount);
-  return date.toISOString().slice(0, 10);
-}
-
-export function nextBangkokCutoff(value: DateValue, cutoffHour = 15) {
-  const instant = toDate(value);
-  const businessDate = bangkokDateString(instant);
-  let cutoff = new Date(bangkokWallClockToUtcIso(
-    `${businessDate}T${String(cutoffHour).padStart(2, "0")}:00`,
-  ));
-  if (instant.getTime() >= cutoff.getTime()) {
-    cutoff = new Date(bangkokWallClockToUtcIso(
-      `${shiftDateOnly(businessDate, 1)}T${String(cutoffHour).padStart(2, "0")}:00`,
-    ));
-  }
-  return cutoff;
-}
-
-export function isAtOrAfterBangkokHour(value: DateValue, hour: number) {
-  return bangkokDateTimeLocalValue(value).slice(11) >= `${String(hour).padStart(2, "0")}:00`;
-}
-
-export function bangkokDateWindow(dayCount: number, value = new Date()) {
-  const to = bangkokDateString(value);
-  const fromDate = new Date(`${to}T00:00:00.000Z`);
-  fromDate.setUTCDate(fromDate.getUTCDate() - (dayCount - 1));
-  return { from: fromDate.toISOString().slice(0, 10), to };
 }

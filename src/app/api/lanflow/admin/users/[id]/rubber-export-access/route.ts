@@ -1,0 +1,55 @@
+import { NextRequest, NextResponse } from "next/server";
+import { requireSystemManager } from "@/lib/server/auth";
+import { createSupabaseAdminClient } from "@/lib/server/supabase-admin";
+import { isJsonObject } from "@/lib/server/management-route-error";
+
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const manager = await requireSystemManager(request);
+  if (!manager.ok) return manager.response;
+
+  try {
+    const { id: userId } = await params;
+    const body: unknown = await request.json();
+    if (!isJsonObject(body) || typeof body.canManageRubberExports !== "boolean") {
+      return NextResponse.json(
+        { error: "canManageRubberExports is required and must be a boolean" },
+        { status: 400 }
+      );
+    }
+
+    const admin = createSupabaseAdminClient();
+    const { data: updated, error } = await admin
+      .from("profiles")
+      .update({
+        can_manage_rubber_exports: body.canManageRubberExports,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", userId)
+      .eq("role", "admin")
+      .eq("is_active", true)
+      .eq("can_access_super_admin_features", false)
+      .select("id")
+      .maybeSingle();
+    if (error) throw error;
+    if (!updated) {
+      return NextResponse.json(
+        { error: "ต้องเป็น Admin ที่ใช้งานอยู่และไม่ใช่ผู้จัดการระบบ" },
+        { status: 403 },
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      canManageRubberExports: body.canManageRubberExports,
+    });
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+    }
+    const message = error instanceof Error ? error.message : "Could not update Rubber Export access";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}

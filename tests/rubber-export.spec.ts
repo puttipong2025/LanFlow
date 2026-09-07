@@ -733,6 +733,8 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
     let sourceReportId: string | null = null;
     let expenseReportId: string | null = null;
     const exportIds: string[] = [];
+    let adminProfileId: string | null = null;
+    let storedAdminRubberAccess = false;
 
     try {
       const [adminProfile, superProfile, userProfile] = await Promise.all([
@@ -740,6 +742,15 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
         profile(superAdmin),
         profile(user),
       ]);
+      adminProfileId = adminProfile.id;
+      const { data: adminAccess } = await db.from("profiles")
+        .select("can_manage_rubber_exports")
+        .eq("id", adminProfile.id)
+        .single();
+      storedAdminRubberAccess = adminAccess?.can_manage_rubber_exports === true;
+      expect((await db.from("profiles")
+        .update({ can_manage_rubber_exports: false })
+        .eq("id", adminProfile.id)).error).toBeNull();
       expect((await db.from("locations").insert({
         id: locationId,
         name: `สาขาทดสอบส่งออก ${locationId.slice(0, 8)}`,
@@ -856,6 +867,18 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       expect((await admin.request.patch(`/api/lanflow/rubber-exports/${created.id}`, {
         data: { currentWeight: 500, workRate: 2, otherOperatingCost: 100 },
       })).ok()).toBeTruthy();
+      const unauthorizedInvalidVerify = await admin.request.post(
+        `/api/lanflow/rubber-exports/${created.id}/verify`,
+        {
+          data: {
+            currentWeight: 0,
+            workRate: -1,
+            otherOperatingCost: -1,
+            expenseDestination: "invalid",
+          },
+        },
+      );
+      expect(unauthorizedInvalidVerify.status(), await unauthorizedInvalidVerify.text()).toBe(403);
       expect((await admin.request.post(`/api/lanflow/rubber-exports/${created.id}/verify`, {
         data: {
           currentWeight: 500,
@@ -864,7 +887,34 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
           expenseDestination: "branch",
         },
       })).status()).toBe(403);
-      expect((await superAdmin.request.post(`/api/lanflow/rubber-exports/${created.id}/verify`, {
+      const grantedRubberAccess = await superAdmin.request.patch(
+        `/api/lanflow/admin/users/${adminProfile.id}/rubber-export-access`,
+        { data: { canManageRubberExports: true } },
+      );
+      expect(grantedRubberAccess.ok(), await grantedRubberAccess.text()).toBeTruthy();
+      const authorizedInvalidVerify = await admin.request.post(
+        `/api/lanflow/rubber-exports/${created.id}/verify`,
+        {
+          data: {
+            currentWeight: 0,
+            workRate: -1,
+            otherOperatingCost: -1,
+            expenseDestination: "invalid",
+          },
+        },
+      );
+      expect(authorizedInvalidVerify.status(), await authorizedInvalidVerify.text()).toBe(400);
+      const delegatedList = await admin.request.get(
+        `/api/lanflow/rubber-exports?locationId=${locationId}`,
+      );
+      expect(delegatedList.ok(), await delegatedList.text()).toBeTruthy();
+      expect(await delegatedList.json()).toMatchObject({
+        permissions: { canVerify: true, canDelete: true },
+      });
+      expect((await admin.request.get(
+        `/api/lanflow/rubber-exports?locationId=${locationId}&view=deletions`,
+      )).ok()).toBeTruthy();
+      expect((await admin.request.post(`/api/lanflow/rubber-exports/${created.id}/verify`, {
         data: {
           currentWeight: 541,
           workRate: 2,
@@ -878,7 +928,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
         currentWeight: 500,
         workTotal: 1180,
       });
-      const verified = await superAdmin.request.post(`/api/lanflow/rubber-exports/${created.id}/verify`, {
+      const verified = await admin.request.post(`/api/lanflow/rubber-exports/${created.id}/verify`, {
         data: {
           currentWeight: 500,
           workRate: 2,
@@ -887,6 +937,18 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
         },
       });
       expect(verified.ok(), await verified.text()).toBeTruthy();
+      const revokedRubberAccess = await superAdmin.request.patch(
+        `/api/lanflow/admin/users/${adminProfile.id}/rubber-export-access`,
+        { data: { canManageRubberExports: false } },
+      );
+      expect(revokedRubberAccess.ok(), await revokedRubberAccess.text()).toBeTruthy();
+      const revokedList = await admin.request.get(
+        `/api/lanflow/rubber-exports?locationId=${locationId}`,
+      );
+      expect(revokedList.ok(), await revokedList.text()).toBeTruthy();
+      expect(await revokedList.json()).toMatchObject({
+        permissions: { canVerify: false, canDelete: false },
+      });
       expect((await admin.request.patch(`/api/lanflow/rubber-exports/${created.id}`, {
         data: { currentWeight: 490, workRate: 2, otherOperatingCost: 100 },
       })).status()).toBe(409);
@@ -1104,6 +1166,11 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await db.from("document_deletion_audits").delete().eq("location_id", locationId);
       await db.from("user_locations").delete().eq("location_id", locationId);
       await db.from("locations").delete().eq("id", locationId);
+      if (adminProfileId) {
+        await db.from("profiles")
+          .update({ can_manage_rubber_exports: storedAdminRubberAccess })
+          .eq("id", adminProfileId);
+      }
       await Promise.all([user.close(), admin.close(), superAdmin.close()]);
     }
   });

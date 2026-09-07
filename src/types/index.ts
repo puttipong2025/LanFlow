@@ -22,6 +22,7 @@ export type Profile = {
   canAccessSystemManager?: boolean;
   canAccessMoneyTransfer?: boolean;
   canManageTimePayroll?: boolean;
+  canManageRubberExports?: boolean;
 };
 
 export type AdminUserProfileUpdateRequest = {
@@ -307,20 +308,6 @@ export type IncomeExpenseApprovalRequest = {
   createdAt: string;
 };
 
-export type IncomeExpenseApprovalMarker = {
-  requestId: string;
-  sourceIncomeExpenseId?: string | null;
-  clientTempId: string;
-  operation: QueueOperation;
-  matchedReasons: IncomeExpenseApprovalReason[];
-  requestedPayload: Record<string, any>;
-  locationId: string;
-  txType: "income" | "expense";
-  title: string;
-  cost: number;
-  createdAt: string;
-};
-
 export type IncomeExpenseSaleLine = {
   id?: string;
   incomeSaleItemId: string;
@@ -398,18 +385,6 @@ export type AcidStockMovement = {
   createdAt: string;
   relationLockReason?: string | null;
   reportLockNo?: string | null;
-};
-
-export type QueueItem = {
-  clientTempId: string;
-  idempotencyKey: string;
-  entityType: "rubber_bill" | "income_expense" | "customer" | "transport_staff" | "money_transfer";
-  operationType: QueueOperation;
-  payload: RubberBill | IncomeExpense | Customer | TransportStaff | MoneyTransfer;
-  status: SyncStatus;
-  createdAt: string;
-  serverReceivedAt?: string;
-  errorMessage?: string;
 };
 
 export type CustomerContact = {

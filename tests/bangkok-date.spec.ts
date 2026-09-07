@@ -4,10 +4,7 @@ import {
   bangkokDateTimeLocalValue,
   bangkokWallClockToUtcIso,
   formatBangkokDateTime,
-  formatBangkokTime,
   normalizeBangkokDateTime,
-  nextBangkokCutoff,
-  isAtOrAfterBangkokHour,
 } from "../src/lib/bangkok-date";
 
 test.use({ timezoneId: "UTC" });
@@ -36,14 +33,6 @@ test.describe("Bangkok business date primitives", () => {
 
   test("formats timestamps explicitly in Bangkok", () => {
     const instant = "2026-08-03T17:05:00.000Z";
-    expect(formatBangkokTime(instant)).toBe("00:05");
     expect(formatBangkokDateTime(instant)).toContain("00:05");
-  });
-
-  test("uses one Bangkok 15:00 cutoff independent of the browser timezone", () => {
-    expect(nextBangkokCutoff("2026-08-04T07:59:59.999Z").toISOString()).toBe("2026-08-04T08:00:00.000Z");
-    expect(nextBangkokCutoff("2026-08-04T08:00:00.000Z").toISOString()).toBe("2026-08-05T08:00:00.000Z");
-    expect(isAtOrAfterBangkokHour("2026-08-04T07:59:59.999Z", 15)).toBe(false);
-    expect(isAtOrAfterBangkokHour("2026-08-04T08:00:00.000Z", 15)).toBe(true);
   });
 });

@@ -16,6 +16,26 @@ const summary = {
 test.describe("cash count confirmed command / refresh failure", () => {
   test.use({ storageState: "playwright/.auth/super_admin.json" });
 
+  test("loads the next history page without losing or duplicating existing rows", async ({ page }) => {
+    const requests: string[] = [];
+    await page.route("**/api/lanflow/cash-counts/session?*", (route) => route.fulfill({ json: { session: null } }));
+    await page.route(/\/api\/lanflow\/cash-counts\?.*$/, async (route) => {
+      const cursor = new URL(route.request().url()).searchParams.get("cursor");
+      requests.push(cursor ?? "first");
+      await route.fulfill({ json: cursor ? {
+        counts: [summary, { ...summary, id: "next-count", reportNo: "COUNT-NEXT" }], hasMore: false, nextCursor: null,
+      } : { counts: [summary], hasMore: true, nextCursor: "page-two" } });
+    });
+    await page.goto("/");
+    await page.getByRole("button", { name: "นับเงิน", exact: true }).click();
+    await expect(page.getByRole("row").filter({ hasText: receipt.reportNo })).toBeVisible();
+    await page.getByRole("button", { name: "โหลดผลตรวจนับเพิ่ม", exact: true }).click();
+    await expect(page.getByRole("row").filter({ hasText: "COUNT-NEXT" })).toBeVisible();
+    await expect(page.getByRole("row").filter({ hasText: receipt.reportNo })).toHaveCount(1);
+    await expect(page.getByRole("button", { name: "โหลดผลตรวจนับเพิ่ม", exact: true })).toHaveCount(0);
+    expect(requests).toContain("page-two");
+  });
+
   test("retains a confirmed receipt and retries only history reads at 360px", async ({ page }, testInfo) => {
     let submitted = false;
     let failHistory = true;

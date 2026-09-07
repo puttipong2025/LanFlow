@@ -67,6 +67,9 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
   const [deleteTarget, setDeleteTarget] = useState<CashCountSummary | null>(null);
   const [now, setNow] = useState(Date.now());
   const [history, setHistory] = useState<CashCountSummary[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyHasMore, setHistoryHasMore] = useState(false);
+  const [historyCursor, setHistoryCursor] = useState<string | null>(null);
   const [deletions, setDeletions] = useState<DocumentDeletionAudit[]>([]);
   const [historyView, setHistoryView] = useState<"current" | "deletions">("current");
   const [deletionsLoading, setDeletionsLoading] = useState(false);
@@ -104,19 +107,32 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
     }
   }, [online, selectedLocation.id]);
 
-  const loadHistory = useCallback(async () => {
+  const loadHistory = useCallback(async (cursor: string | null = null, append = false) => {
     if (!online || !manager) return;
     const requestId = ++historyRequestIdRef.current;
     const locationId = selectedLocation.id;
+    setHistoryLoading(true);
     try {
-      const response = await authFetch(`/api/lanflow/cash-counts?locationId=${encodeURIComponent(locationId)}`, { cache: "no-store" });
+      const params = new URLSearchParams({ locationId });
+      if (cursor) params.set("cursor", cursor);
+      const response = await authFetch(`/api/lanflow/cash-counts?${params.toString()}`, { cache: "no-store" });
       await assertApiResponse(response);
-      const body = (await response.json()) as { counts: CashCountSummary[] };
+      const body = (await response.json()) as {
+        counts: CashCountSummary[];
+        hasMore?: boolean;
+        nextCursor?: string | null;
+      };
       if (requestId !== historyRequestIdRef.current || locationIdRef.current !== locationId) return;
-      setHistory(body.counts);
+      setHistory((current) => append
+        ? [...current, ...body.counts.filter((row) => !current.some((item) => item.id === row.id))]
+        : body.counts);
+      setHistoryHasMore(body.hasMore === true);
+      setHistoryCursor(body.nextCursor ?? null);
     } catch (error) {
       if (requestId !== historyRequestIdRef.current || locationIdRef.current !== locationId) return;
       throw error;
+    } finally {
+      if (requestId === historyRequestIdRef.current && locationIdRef.current === locationId) setHistoryLoading(false);
     }
   }, [manager, online, selectedLocation.id]);
 
@@ -190,6 +206,9 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
     setReceipt(null);
     setDetail(null);
     setHistory([]);
+    setHistoryLoading(false);
+    setHistoryHasMore(false);
+    setHistoryCursor(null);
     setDeletions([]);
     setWorking(false);
     setConfirmMode(null);
@@ -374,7 +393,8 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
             </button>
           ))}
         </div>
-        {historyView === "current" ? <div className="rounded-xl bg-white shadow-sm">
+        {historyView === "current" ? <div className="space-y-3">
+          <div className="rounded-xl bg-white shadow-sm">
           <div className="flex items-center justify-between border-b border-black/5 p-4">
             <div><h3 className="font-bold text-ink">ประวัติผลตรวจนับสาขานี้</h3><p className="text-sm text-ink/60">แสดงทีละสาขาตามตัวเลือกหลักของแอป</p></div>
           </div>
@@ -405,6 +425,12 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
               </tbody>
             </table>
           </div>
+          </div>
+          {historyHasMore && historyCursor && !historyLoading && (
+            <div className="flex justify-center">
+              <button type="button" onClick={() => void loadHistory(historyCursor, true).catch((error) => toast.error(error instanceof Error ? error.message : "โหลดประวัติเพิ่มไม่สำเร็จ"))} className="focus-ring rounded-md bg-river px-4 py-2 text-sm font-semibold text-white">โหลดผลตรวจนับเพิ่ม</button>
+            </div>
+          )}
         </div> : (
           <div className="space-y-3">
           <DeletionAuditTable

@@ -137,7 +137,6 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const canDecide = result.auth.canManageTimePayroll;
     const [
       usersResult,
       pendingTransactionsResult,
@@ -146,6 +145,7 @@ export async function GET(request: NextRequest) {
       paymentLocationsResult,
       settingsResult,
       activePeriodsResult,
+      debtTotalsResult,
     ] = await Promise.all([
       result.supabase.from("profiles").select(`
         id, name, phone, daily_wage, role, is_active, can_access_super_admin_features,
@@ -172,6 +172,7 @@ export async function GET(request: NextRequest) {
         .from("time_payroll_active_periods")
         .select("id, profile_id, start_on, end_on, scheduled_action, scheduled_effective_on, scheduled_activation_on")
         .order("start_on", { ascending: false }),
+      result.supabase.rpc("get_time_payroll_debt_totals"),
     ]);
 
     if (usersResult.error) throw usersResult.error;
@@ -181,6 +182,7 @@ export async function GET(request: NextRequest) {
     if (paymentLocationsResult.error) throw paymentLocationsResult.error;
     if (settingsResult.error) throw settingsResult.error;
     if (activePeriodsResult.error) throw activePeriodsResult.error;
+    if (debtTotalsResult.error) throw debtTotalsResult.error;
 
     const users = (usersResult.data || []).filter((user) => {
       if (!user.is_active) return false;
@@ -193,26 +195,10 @@ export async function GET(request: NextRequest) {
     });
     const userIds = users.map((user) => user.id);
     const allowedUserIds = new Set(userIds);
-    const debtTotals = new Map<string, number>();
-
-    if (userIds.length > 0) {
-      const { data: activeDebts, error } = await result.supabase
-        .from("financial_transactions")
-        .select("profile_id, remaining_amount")
-        .in("profile_id", userIds)
-        .in("type", ["DEBT", "WITHDRAWAL"])
-        .eq("status", "APPROVED")
-        .gt("remaining_amount", 0);
-      if (error) throw error;
-
-      for (const debt of activeDebts || []) {
-        debtTotals.set(
-          debt.profile_id,
-          (debtTotals.get(debt.profile_id) || 0) + Number(debt.remaining_amount || 0),
-        );
-      }
-
-    }
+    const debtTotals = new Map(
+      ((debtTotalsResult.data || []) as Array<{ profileId: string; amount: number }>)
+        .map((row) => [row.profileId, Number(row.amount || 0)]),
+    );
 
     const periodsByUser = new Map<string, PayrollPeriodRow[]>();
     for (const period of activePeriodsResult.data || []) {
@@ -226,8 +212,8 @@ export async function GET(request: NextRequest) {
       settings: settingsResult.data,
       permissions: {
         canManage: result.auth.canManageTimePayroll,
-        canDecide,
-        canConfigure: canDecide,
+        canDecide: true,
+        canConfigure: true,
         canEditGlobalConfig: result.auth.role === "super_admin",
         canViewAudit: result.auth.canAccessSystemManager,
       },
@@ -241,12 +227,8 @@ export async function GET(request: NextRequest) {
           period_state: periodState,
         };
       }),
-      pendingTransactions: canDecide
-        ? (pendingTransactionsResult.data || []).filter((item) => allowedUserIds.has(item.profile_id))
-        : [],
-      pendingSlips: canDecide
-        ? (pendingSlipsResult.data || []).filter((item) => allowedUserIds.has(item.profile_id))
-        : [],
+      pendingTransactions: (pendingTransactionsResult.data || []).filter((item) => allowedUserIds.has(item.profile_id)),
+      pendingSlips: (pendingSlipsResult.data || []).filter((item) => allowedUserIds.has(item.profile_id)),
       admins: result.auth.canAccessSystemManager ? (managersResult.data || [])
         .filter((profile) => profile.role === "super_admin" || profile.can_access_super_admin_features === true)
         .map(({ id, name }) => ({ id, name })) : [],
@@ -273,6 +255,9 @@ export async function POST(request: NextRequest) {
   try {
     body = await request.json();
   } catch {
+    return NextResponse.json({ error: "ข้อมูลคำขอไม่ถูกต้อง" }, { status: 400 });
+  }
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
     return NextResponse.json({ error: "ข้อมูลคำขอไม่ถูกต้อง" }, { status: 400 });
   }
   const payload = body?.payload || {};

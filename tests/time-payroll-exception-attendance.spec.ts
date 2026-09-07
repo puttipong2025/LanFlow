@@ -1,6 +1,5 @@
 import { expect, test } from "@playwright/test";
 import { readFile } from "node:fs/promises";
-import { calculateExceptionAttendance } from "@/lib/time-tracking/pay";
 
 const migrationPath = "supabase/migrations/20260829010000_time_payroll_exception_attendance.sql";
 const correctionMigrationPath = "supabase/migrations/20260829020000_time_payroll_exception_attendance_corrections.sql";
@@ -13,44 +12,6 @@ const futureSchedulingMigrationPath = "supabase/migrations/20260901030000_time_p
 const immediateEndMigrationPath = "supabase/migrations/20260902030000_end_time_payroll_employment_immediately.sql";
 const crossMonthResumeMigrationPath = "supabase/migrations/20260902050000_time_payroll_cross_month_resume_correction.sql";
 const periodStartCorrectionMigrationPath = "supabase/migrations/20260902070000_time_payroll_contiguous_period_start_correction.sql";
-
-test("counts exception attendance only after the Bangkok workday boundary", () => {
-  const input = {
-    month: "2026-08",
-    workdayEndTime: "16:00",
-    periods: [{ startOn: "2026-08-01", endOn: null }],
-    exceptions: [
-      { date: "2026-08-02", status: "HALF_DAY" as const },
-      { date: "2026-08-03", status: "OFF" as const },
-    ],
-    dailyWage: 500,
-  };
-
-  expect(calculateExceptionAttendance({
-    ...input,
-    now: new Date("2026-08-04T08:59:59.000Z"),
-  })).toEqual({ fullDays: 1, halfDays: 1, offDays: 1, paidDays: 1.5, grossPay: 750 });
-
-  expect(calculateExceptionAttendance({
-    ...input,
-    now: new Date("2026-08-04T09:00:00.000Z"),
-  })).toEqual({ fullDays: 2, halfDays: 1, offDays: 1, paidDays: 2.5, grossPay: 1250 });
-});
-
-test("ignores dates outside active periods and supports a closed period", () => {
-  expect(calculateExceptionAttendance({
-    month: "2026-08",
-    workdayEndTime: "16:00",
-    periods: [{ startOn: "2026-08-02", endOn: "2026-08-04" }],
-    exceptions: [
-      { date: "2026-08-01", status: "OFF" },
-      { date: "2026-08-03", status: "HALF_DAY" },
-      { date: "2026-08-05", status: "OFF" },
-    ],
-    dailyWage: 400,
-    now: new Date("2026-08-31T17:00:00.000Z"),
-  })).toEqual({ fullDays: 2, halfDays: 1, offDays: 0, paidDays: 2.5, grossPay: 1000 });
-});
 
 test("migration freezes additive schema, narrow individual writes, and explicit activation", async () => {
   const sql = await readFile(migrationPath, "utf8");

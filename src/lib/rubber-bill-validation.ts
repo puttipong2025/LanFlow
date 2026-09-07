@@ -1,35 +1,4 @@
-import type { RubberBill } from "@/types";
 import { hasAtMostTwoDecimalPlaces } from "@/lib/rubber-bills/calculations";
-
-export function getRubberBillPaymentBlockReason(
-  bill: Pick<RubberBill, "netTotal" | "weighItems">
-) {
-  const weighItems = bill.weighItems ?? [];
-  if (weighItems.length === 0 || weighItems.some((item) => item.price <= 0)) {
-    return "ยังมีรายการราคายาง 0 จึงยังจ่ายเงินไม่ได้";
-  }
-  if (bill.netTotal <= 0) {
-    return "ยอดสุทธิต้องมากกว่า 0 จึงจะจ่ายเงินได้";
-  }
-  return null;
-}
-
-export function isRubberBillPayable(
-  bill: Pick<RubberBill, "netTotal" | "weighItems">
-) {
-  return getRubberBillPaymentBlockReason(bill) === null;
-}
-
-export function getRubberBillTransferBlockReason(
-  bill: Pick<RubberBill, "netTotal" | "weighItems" | "syncStatus" | "serverBillNo">
-) {
-  const paymentReason = getRubberBillPaymentBlockReason(bill);
-  if (paymentReason) return paymentReason;
-  if (bill.syncStatus !== "synced" || !bill.serverBillNo) {
-    return "กรุณารอให้บิลซิงก์กับเซิร์ฟเวอร์ก่อนโอนเงิน";
-  }
-  return null;
-}
 
 export function validateRubberBillDraft(draft: {
   customerName: string;

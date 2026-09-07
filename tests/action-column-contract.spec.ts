@@ -47,7 +47,7 @@ test("rubber bill actions for evidence, OCR source, and deletion stay icon-only,
 
   expect(header.indexOf("ชื่อลูกค้า")).toBeLessThan(header.indexOf("เลขที่บิล"));
   expect(source).toContain("size-10 shrink-0 items-center justify-center rounded-md bg-settings");
-  expect(source).toContain("<Images size={16} />\n                    </button>");
+  expect(source).toMatch(/<Images size=\{16\} \/>\s*<\/button>/);
   expect(source).toContain('title="เปิดรูปต้นฉบับจาก OCR"');
-  expect(source).toContain("<Trash2 size={16} />\n                    </button>");
+  expect(source).toMatch(/<Trash2 size=\{16\} \/>\s*<\/button>/);
 });

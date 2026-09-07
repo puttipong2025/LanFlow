@@ -41,6 +41,7 @@ test("completion payload and branch permission reject malformed or foreign input
     canAccessSystemManager: false,
     canAccessMoneyTransfer: false,
     canManageTimePayroll: false,
+    canManageRubberExports: false,
   };
 
   expect(canAccessEvidenceLocation(auth, ownLocation)).toBe(true);

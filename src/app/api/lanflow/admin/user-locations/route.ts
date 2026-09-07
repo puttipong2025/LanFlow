@@ -1,12 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { hasSystemManagerAccess, requireRoleOrSystemManager, requireSystemManager } from "@/lib/server/auth";
+import { isJsonObject } from "@/lib/server/management-route-error";
 
 export async function PATCH(request: NextRequest) {
   const manager = await requireSystemManager(request);
   if (!manager.ok) return manager.response;
 
   try {
-    const { userId, locationId } = await request.json();
+    const body: unknown = await request.json();
+    if (!isJsonObject(body)) {
+      return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+    }
+    const { userId, locationId } = body;
     if (!userId || !locationId) {
       return NextResponse.json({ error: "Missing userId or locationId" }, { status: 400 });
     }
@@ -28,7 +33,11 @@ export async function POST(request: NextRequest) {
   if (!adminCheck.ok) return adminCheck.response;
 
   try {
-    const { userId, locationId } = await request.json();
+    const body: unknown = await request.json();
+    if (!isJsonObject(body)) {
+      return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+    }
+    const { userId, locationId } = body;
     if (!userId || !locationId) {
       return NextResponse.json({ error: "Missing userId or locationId" }, { status: 400 });
     }
@@ -70,6 +79,9 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ success: true });
   } catch (error: any) {
+    if (error instanceof SyntaxError) {
+      return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+    }
     console.error("Admin user-location add error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/server/auth";
+import { isJsonObject } from "@/lib/server/management-route-error";
 
 type StockProductApprovalRpcResponse = {
   status?: string;
@@ -10,8 +11,17 @@ export async function POST(request: NextRequest) {
   const authCheck = await requireAuth(request);
   if (!authCheck.ok) return authCheck.response;
 
+  let payload: unknown;
   try {
-    const payload = await request.json();
+    payload = await request.json();
+  } catch {
+    return NextResponse.json({ status: "failed", errorMessage: "Invalid request body" }, { status: 400 });
+  }
+  if (!isJsonObject(payload)) {
+    return NextResponse.json({ status: "failed", errorMessage: "Invalid request body" }, { status: 400 });
+  }
+
+  try {
     const { data, error } = await authCheck.supabase.rpc(
       "create_stock_product_approval_request",
       { payload }

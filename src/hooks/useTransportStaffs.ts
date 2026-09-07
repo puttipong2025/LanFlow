@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { TransportStaff } from "@/types";
+import { readAllSupabaseRows } from "@/lib/supabase-pages";
 
 function mapStaff(row: any): TransportStaff {
   return {
@@ -44,7 +45,7 @@ export function useTransportStaffs() {
   const query = useQuery({
     queryKey: ["transportStaffs"],
     queryFn: async () => {
-      const { data, error } = await supabase
+      const data = await readAllSupabaseRows((from, to) => supabase
         .from("transport_staffs")
         .select(`
           *,
@@ -53,10 +54,10 @@ export function useTransportStaffs() {
           transport_staff_plates(id, plate_number)
         `)
         .neq("record_status", "deleted")
-        .order("created_at", { ascending: false });
-
-      if (error) throw new Error(error.message || JSON.stringify(error));
-      return (data || []).map(mapStaff);
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .range(from, to));
+      return data.map(mapStaff);
     },
   });
 

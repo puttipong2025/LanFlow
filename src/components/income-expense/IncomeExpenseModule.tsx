@@ -1,6 +1,6 @@
 import { ArrowRightLeft, Edit3, ExternalLink, Eye, Plus, RefreshCw, Settings, Share2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { formatCurrency } from "@/lib/format";
 import { formatPayrollCurrency } from "@/lib/time-tracking/format";
@@ -28,7 +28,7 @@ import { useSharePdf } from "@/hooks/useSharePdf";
 import type { RequestBranchCreate } from "@/hooks/useBranchCreateGuard";
 import { isDeviceOnline } from "@/lib/connectivity";
 
-import type { CashBranchTransfer, IncomeExpense, IncomeExpenseApprovalMarker, Location, Profile } from "@/types";
+import type { CashBranchTransfer, IncomeExpense, Location, Profile } from "@/types";
 import { IconButton } from "@/components/shared/IconButton";
 import { SyncStatusBadge } from "@/components/shared/SyncStatusBadge";
 import { TablePagination, TablePageSizeSelect } from "@/components/shared/TablePagination";
@@ -39,38 +39,6 @@ import { IncomeExpenseModal } from "./IncomeExpenseModal";
 import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { appSwal, runBlockingAction } from "@/lib/swal";
-
-function pendingIncomeExpense(marker: IncomeExpenseApprovalMarker): IncomeExpense | null {
-  const payload = marker.requestedPayload;
-  if (payload.billOption === "บิลขาย" && marker.operation !== "delete") return null;
-  return {
-    id: `approval:${marker.requestId}`,
-    clientTempId: marker.clientTempId,
-    localBillNo: String(payload.localBillNo ?? "รอเลขบิล"),
-    syncStatus: "synced",
-    idempotencyKey: String(payload.idempotencyKey ?? marker.requestId),
-    locationId: String(payload.locationId ?? marker.locationId),
-    type: payload.type === "expense" || marker.txType === "expense" ? "expense" : "income",
-    number: String(payload.number ?? "รออนุมัติ"),
-    txDate: String(payload.txDate ?? ""),
-    title: String(payload.title ?? marker.title),
-    cost: Number(payload.cost ?? marker.cost),
-    billOption: payload.billOption === "ค่าใช้จ่าย" || marker.txType === "expense" ? "ค่าใช้จ่าย" : "รายรับ",
-    unit: payload.unit == null ? undefined : String(payload.unit),
-    price: payload.price == null ? undefined : Number(payload.price),
-    createdByUserId: String(payload.createdByUserId ?? ""),
-    createdByName: String(payload.createdByName ?? ""),
-    createdByPhone: String(payload.createdByPhone ?? ""),
-    clientCreatedAt: String(payload.clientCreatedAt ?? marker.createdAt),
-    clientRecordedAt: String(payload.clientRecordedAt ?? marker.createdAt),
-    revisionNo: 0,
-    recordStatus: "active",
-    approvalPending: true,
-    approvalRequestId: marker.requestId,
-    approvalOperation: marker.operation,
-    approvalReasons: marker.matchedReasons,
-  };
-}
 
 export function IncomeExpenseModule({
   selectedLocation,
@@ -123,14 +91,10 @@ export function IncomeExpenseModule({
   const [cashEditingId, setCashEditingId] = useState<string | null>(null);
   const {
     keywords: approvalKeywords,
-    markers: approvalMarkers,
     settings: approvalSettings,
     submitForApprovalIfNeeded,
   } = useIncomeExpenseApprovals({
     includePendingCount: false,
-    includeMarkers: !canManageSystem && mode === "latest",
-    markersLocationId: selectedLocation.id,
-    markerOwnerUserId: !canManageSystem ? profile.id : undefined,
   });
   const approvalButtonLabel = isOnline && pendingApprovalCount > 0
     ? `ตั้งค่าและอนุมัติรับ-จ่าย รออนุมัติ ${pendingApprovalCount} รายการ`
@@ -140,45 +104,7 @@ export function IncomeExpenseModule({
   const { locations } = useLocations();
   const pendingCashReceipts = cashTransfers.pendingTransfers;
   const { retrySyncEvent, isRetrying } = usePerRecordSyncRetry(selectedLocation.id, profile.id);
-  const ledgerTransactions = useMemo(() => {
-    if (mode !== "latest" || canManageSystem) return transactions;
-
-    const markersByRecord = new Map<string, IncomeExpenseApprovalMarker>();
-    for (const marker of approvalMarkers) {
-      if (marker.operation === "create") continue;
-      if (marker.requestedPayload.billOption === "บิลขาย" && marker.operation !== "delete") continue;
-      if (marker.sourceIncomeExpenseId && !markersByRecord.has(`id:${marker.sourceIncomeExpenseId}`)) {
-        markersByRecord.set(`id:${marker.sourceIncomeExpenseId}`, marker);
-      }
-      if (!markersByRecord.has(`client:${marker.clientTempId}`)) {
-        markersByRecord.set(`client:${marker.clientTempId}`, marker);
-      }
-    }
-    const marked = transactions.map((transaction) => {
-      const marker = markersByRecord.get(`id:${transaction.id}`)
-        ?? markersByRecord.get(`client:${transaction.clientTempId}`);
-      if (!marker) return transaction;
-      return {
-        ...transaction,
-        approvalPending: true,
-        approvalRequestId: marker.requestId,
-        approvalOperation: marker.operation,
-        approvalReasons: marker.matchedReasons,
-      };
-    });
-    const representedRequests = new Set(marked.flatMap((transaction) => (
-      transaction.approvalRequestId ? [transaction.approvalRequestId] : []
-    )));
-    const pendingRows = new Map<string, IncomeExpense>();
-    for (const marker of approvalMarkers) {
-      if (representedRequests.has(marker.requestId)) continue;
-      const pending = pendingIncomeExpense(marker);
-      if (pending && !pendingRows.has(pending.clientTempId)) {
-        pendingRows.set(pending.clientTempId, pending);
-      }
-    }
-    return [...pendingRows.values(), ...marked];
-  }, [approvalMarkers, canManageSystem, mode, transactions]);
+  const ledgerTransactions = transactions;
   const nextNumber = String(transactions.length + 1);
   const [modalOpen, setModalOpen] = useState(false);
   const [modalType, setModalType] = useState<"income" | "expense">("income");
@@ -443,10 +369,20 @@ export function IncomeExpenseModule({
         await persistSubmittedTransactions(submittedTransactions);
       showPersistSummary(pendingApprovalCount, persistedTransactions.length);
       if (persistError) throw persistError;
+      if (pendingApprovalCount > 0) {
+        setModalOpen(false);
+        return true;
+      }
 
-      const syncedTransaction = persistedTransactions[0]
+      const syncResult = persistedTransactions[0]
         ? await syncTransaction(persistedTransactions[0])
         : undefined;
+      if (syncResult?.status === "pending_approval") {
+        toast.info("ส่งคำขออนุมัติ 1 รายการแล้ว");
+        setModalOpen(false);
+        return true;
+      }
+      const syncedTransaction = syncResult?.transaction;
       const blockReason = getSaleReceiptShareBlockReason(syncedTransaction, true);
       if (blockReason || !syncedTransaction) {
         throw new Error(blockReason ?? "ไม่พบบิลขายหลังซิงก์");
@@ -737,6 +673,8 @@ export function IncomeExpenseModule({
                 const saleShareBlockReason = isSaleBill
                   ? !isOnline
                     ? "แชร์ PDF บิลขายได้เมื่อออนไลน์"
+                    : transaction.approvalPending
+                      ? "บิลนี้ยังรออนุมัติ จึงยังพิมพ์ไม่ได้"
                     : transaction.syncStatus !== "synced" || !transaction.serverBillNo
                       ? "กำลังรอให้บิลขายซิงก์สำเร็จ"
                       : pdfShare.busy

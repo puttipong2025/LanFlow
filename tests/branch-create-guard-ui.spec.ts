@@ -1,5 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
+import { createClient } from "@supabase/supabase-js";
 import { selectAppLocation } from "./helpers/select-app-location";
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "http://127.0.0.1:55421";
+const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
+const superAdminId = process.env.TEST_USER_ID ?? "00000000-0000-4000-8000-000000000001";
+const fixtureLocationIds = [crypto.randomUUID(), crypto.randomUUID()];
 
 type Bootstrap = {
   locations: Array<{ id: string; name: string; active: boolean }>;
@@ -11,7 +17,7 @@ type Bootstrap = {
 };
 
 async function loadBranches(page: Page) {
-  const response = await page.request.get("/api/lanflow");
+  const response = await page.request.get("/api/lanflow", { maxRetries: 2 });
   expect(response.ok(), await response.text()).toBeTruthy();
   const bootstrap = await response.json() as Bootstrap;
   const accessible = bootstrap.locations.filter((location) =>
@@ -66,6 +72,33 @@ async function closeDialog(page: Page, name: string) {
 
 test.describe("branch create guard quiz", () => {
   test.use({ storageState: "playwright/.auth/super_admin.json" });
+
+  test.beforeAll(async () => {
+    expect(serviceRoleKey).toBeTruthy();
+    const db = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    expect((await db.from("locations").insert(fixtureLocationIds.map((id, index) => ({
+      id,
+      name: `สาขาทดสอบ Guard ${index + 1} ${id.slice(0, 6)}`,
+      code: `GD${id.replaceAll("-", "").slice(0, 6).toUpperCase()}`,
+      is_active: true,
+    })))).error).toBeNull();
+    expect((await db.from("user_locations").insert(fixtureLocationIds.map((locationId) => ({
+      user_id: superAdminId,
+      location_id: locationId,
+      is_primary: false,
+    })))).error).toBeNull();
+  });
+
+  test.afterAll(async () => {
+    if (!serviceRoleKey) return;
+    const db = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    await db.from("user_locations").delete().in("location_id", fixtureLocationIds);
+    await db.from("locations").delete().in("id", fixtureLocationIds);
+  });
 
   test("tests primary and secondary branches and shares one acknowledgement across the three target tabs", async ({ page }) => {
     test.setTimeout(90_000);

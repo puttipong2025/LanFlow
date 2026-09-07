@@ -8,6 +8,7 @@ import {
   isWexUuid,
   withExportVehicleWeighBillNoStore,
 } from "@/lib/server/export-vehicle-weigh-bill-response";
+import { readAllSupabaseRows } from "@/lib/supabase-pages";
 
 export const dynamic = "force-dynamic";
 
@@ -24,35 +25,39 @@ export async function GET(request: NextRequest) {
     return exportVehicleWeighBillErrorResponse("WEX_FORBIDDEN: ไม่มีสิทธิ์ดูรายการขายยางของสาขานี้");
   }
 
-  const [rubberExportResult, carrierResult] = await Promise.all([
-    result.supabase.rpc("get_export_vehicle_weigh_bill_options", {
-      p_location_id: locationId,
-      p_wex_id: wexId,
-    }),
-    result.supabase
-      .from("transport_staffs")
-      .select("id, main_name")
-      .eq("record_status", "active")
-      .or(`default_location_id.is.null,default_location_id.eq.${locationId}`)
-      .order("main_name", { ascending: true })
-      .order("id", { ascending: true }),
-  ]);
-  if (rubberExportResult.error) {
-    return exportVehicleWeighBillErrorResponse(rubberExportResult.error.message);
+  try {
+    const [rubberExportResult, carrierResult] = await Promise.all([
+      result.supabase.rpc("get_export_vehicle_weigh_bill_options", {
+        p_location_id: locationId,
+        p_wex_id: wexId,
+      }),
+      readAllSupabaseRows((from, to) => result.supabase
+        .from("transport_staffs")
+        .select("id, main_name")
+        .eq("record_status", "active")
+        .or(`default_location_id.is.null,default_location_id.eq.${locationId}`)
+        .order("main_name", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to)),
+    ]);
+    if (rubberExportResult.error) {
+      return exportVehicleWeighBillErrorResponse(rubberExportResult.error.message);
+    }
+    return exportVehicleWeighBillJson({
+      rubberExports: (rubberExportResult.data ?? []).map((row: Record<string, unknown>) => ({
+        rubberExportId: row.rubber_export_id,
+        exportNo: row.export_no,
+        currentWeight: Number(row.current_weight),
+        reservedByCurrentWex: Boolean(row.reserved_by_current_wex),
+      })),
+      carriers: carrierResult.map((row: Record<string, unknown>) => ({
+        carrierId: row.id,
+        carrierName: row.main_name,
+      })),
+    });
+  } catch {
+    return exportVehicleWeighBillErrorResponse(
+      "WEX_OPTIONS_UNAVAILABLE: โหลดตัวเลือกบิลรถส่งออกไม่สำเร็จ",
+    );
   }
-  if (carrierResult.error) {
-    return exportVehicleWeighBillErrorResponse(carrierResult.error.message);
-  }
-  return exportVehicleWeighBillJson({
-    rubberExports: (rubberExportResult.data ?? []).map((row: Record<string, unknown>) => ({
-      rubberExportId: row.rubber_export_id,
-      exportNo: row.export_no,
-      currentWeight: Number(row.current_weight),
-      reservedByCurrentWex: Boolean(row.reserved_by_current_wex),
-    })),
-    carriers: (carrierResult.data ?? []).map((row: Record<string, unknown>) => ({
-      carrierId: row.id,
-      carrierName: row.main_name,
-    })),
-  });
 }

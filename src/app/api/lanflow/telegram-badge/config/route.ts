@@ -6,6 +6,7 @@ import {
 } from "@/lib/telegram-badge";
 import { requireSystemManager } from "@/lib/server/auth";
 import { UUID_PATTERN } from "@/lib/server/weight-evidence";
+import { isJsonObject } from "@/lib/server/management-route-error";
 
 const NO_STORE_HEADERS = {
   "Cache-Control": "private, no-store, max-age=0",
@@ -43,10 +44,13 @@ export async function PUT(request: NextRequest) {
   const authCheck = await requireSystemManager(request);
   if (!authCheck.ok) return authCheck.response;
 
-  let body: Record<string, unknown>;
+  let body: unknown;
   try {
     body = await request.json();
   } catch {
+    return errorResponse("ข้อมูลการตั้งค่าไม่ถูกต้อง", 400);
+  }
+  if (!isJsonObject(body)) {
     return errorResponse("ข้อมูลการตั้งค่าไม่ถูกต้อง", 400);
   }
 

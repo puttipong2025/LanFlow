@@ -6,7 +6,6 @@ import {
   getPendingEvents,
   getRubberBillReceiptSnapshots,
   pruneRubberBillReceiptSnapshots,
-  putRubberBillReceiptSnapshot,
   putRubberBillReceiptSnapshots,
   removeSyncEventsForOwner,
   type RubberBillReceiptSnapshot,
@@ -16,6 +15,10 @@ import { renderRubberBillReceiptHtml } from "../src/components/rubber-bills/bill
 import type { RubberBill } from "../src/types";
 
 const DB_NAME = "lanflow_sync_db";
+
+async function putRubberBillReceiptSnapshot(snapshot: RubberBillReceiptSnapshot) {
+  return putRubberBillReceiptSnapshots([snapshot]);
+}
 
 function resetIndexedDb() {
   Object.defineProperty(globalThis, "indexedDB", {

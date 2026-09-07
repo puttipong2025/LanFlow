@@ -8,9 +8,18 @@ export function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
 }
 
-export function canManageRubberExports(auth: AuthTokenPayload, locationId: string) {
+export function canAccessRubberExports(auth: AuthTokenPayload, locationId: string) {
   return hasSystemManagerAccess(auth)
     || (auth.role === "admin" && auth.locationIds.includes(locationId));
+}
+
+export function canAdministerRubberExports(auth: AuthTokenPayload, locationId: string) {
+  return hasSystemManagerAccess(auth)
+    || (
+      auth.role === "admin"
+      && auth.canManageRubberExports
+      && auth.locationIds.includes(locationId)
+    );
 }
 
 export function rubberExportErrorResponse(message: string) {

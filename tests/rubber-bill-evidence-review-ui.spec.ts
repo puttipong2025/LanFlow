@@ -99,6 +99,7 @@ test("opens the evidence module inside Android and desktop viewports without ove
     await page.getByRole("button", { name: /^ตรวจหลักฐาน/ }).click();
     const module = page.getByRole("region", { name: "ตรวจหลักฐาน" });
     await expect(module.getByRole("heading", { name: "ตรวจหลักฐาน" })).toBeVisible();
+    await expect(page.getByRole("dialog", { name: "กำลังเตรียมหลักฐาน" })).toBeHidden({ timeout: 20_000 });
     const card = module.getByTestId(`evidence-card-${billId}`);
     await expect(card.getByText("รอตรวจ", { exact: true })).toBeVisible();
     await expect(card.getByText("ไม่พบรูปหลักฐาน", { exact: true })).toBeVisible();

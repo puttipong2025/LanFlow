@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/server/auth";
 import {
-  canManageRubberExports,
+  canAccessRubberExports,
   isUuid,
   rubberExportErrorResponse,
 } from "@/lib/server/rubber-export-response";
@@ -27,7 +27,7 @@ export async function POST(request: Request) {
   ) {
     return NextResponse.json({ error: "กรุณาเลือกบิลอย่างน้อย 1 ใบและห้ามเลือกซ้ำ" }, { status: 400 });
   }
-  if (!canManageRubberExports(result.auth, payload.locationId)) {
+  if (!canAccessRubberExports(result.auth, payload.locationId)) {
     return NextResponse.json({ error: "ไม่มีสิทธิ์ดู preview ของสาขานี้" }, { status: 403 });
   }
 

@@ -27,6 +27,77 @@ function service() {
 }
 
 test.describe.serial("Admin profile management API", () => {
+  test("profile failure rolls back provisioning and removes the newly created Auth account", async ({ browser }) => {
+    const manager = await authContext(browser, "super_admin");
+    const managerProfile = await ownProfile(manager);
+    const db = service();
+    const existingId = crypto.randomUUID();
+    const phone = `09${Date.now().toString().slice(-8)}`;
+    try {
+      // A profile-only collision happens after Auth creation, exercising the
+      // compensating delete rather than the prevalidation rejection path.
+      expect((await db.from("profiles").insert({
+        id: existingId, phone, name: "Provisioning collision fixture", role: "user", is_active: true,
+      })).error).toBeNull();
+      const response = await manager.request.post("/api/lanflow/admin/users", { data: {
+        phone, name: "Conflicting employee", password: `Fixture-${crypto.randomUUID()}`,
+        role: "user", locationIds: [managerProfile.primaryLocationId],
+      } });
+      expect(response.status()).toBe(500);
+      expect((await db.from("profiles").select("id").eq("phone", phone)).data).toEqual([{ id: existingId }]);
+      const users = await db.auth.admin.listUsers({ page: 1, perPage: 1000 });
+      expect(users.error).toBeNull();
+      expect(users.data.users.some((user) => user.phone?.replace(/^\+/, "") === `66${phone.slice(1)}`)).toBe(false);
+      expect((await db.from("user_locations").select("location_id").eq("user_id", existingId)).data).toEqual([]);
+    } finally {
+      await db.from("profiles").delete().eq("id", existingId);
+      await manager.close();
+    }
+  });
+
+  test("ordinary Admin cannot create a user in a branch outside their scope", async ({ browser }) => {
+    const admin = await authContext(browser, "admin");
+    const db = service();
+    const outsideLocationId = crypto.randomUUID();
+    const phone = `07${Date.now().toString().slice(-8)}`;
+    let createdUserId: string | null = null;
+
+    try {
+      expect((await db.from("locations").insert({
+        id: outsideLocationId,
+        name: `สาขานอกขอบเขต ${outsideLocationId.slice(0, 6)}`,
+        code: `OS${outsideLocationId.replaceAll("-", "").slice(0, 6).toUpperCase()}`,
+        is_active: true,
+      })).error).toBeNull();
+
+      const response = await admin.request.post("/api/lanflow/admin/users", {
+        data: {
+          phone,
+          name: "พนักงานนอกขอบเขต",
+          password: `Outside-${crypto.randomUUID()}`,
+          role: "user",
+          locationIds: [outsideLocationId],
+        },
+      });
+      const body = await response.json() as { user?: { id: string } };
+      createdUserId = body.user?.id ?? null;
+
+      expect(response.status()).toBe(403);
+      expect((await db.from("profiles").select("id").eq("phone", phone)).data).toEqual([]);
+
+      const listed = await db.auth.admin.listUsers({ page: 1, perPage: 1000 });
+      expect(listed.error).toBeNull();
+      expect(listed.data.users.some((user) => user.phone === `+66${phone.slice(1)}`)).toBe(false);
+    } finally {
+      if (createdUserId) {
+        await db.from("profiles").delete().eq("id", createdUserId);
+        await db.auth.admin.deleteUser(createdUserId);
+      }
+      await db.from("locations").delete().eq("id", outsideLocationId);
+      await admin.close();
+    }
+  });
+
   test("profile save is atomic, audited, and enforces field-level authorization", async ({ browser }) => {
     const manager = await authContext(browser, "super_admin");
     const admin = await authContext(browser, "admin");

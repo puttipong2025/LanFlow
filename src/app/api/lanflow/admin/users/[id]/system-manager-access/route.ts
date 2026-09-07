@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireRole } from "@/lib/server/auth";
 import { createSupabaseAdminClient } from "@/lib/server/supabase-admin";
+import { isJsonObject } from "@/lib/server/management-route-error";
 
 export async function PATCH(
   request: NextRequest,
@@ -11,9 +12,9 @@ export async function PATCH(
 
   try {
     const { id: userId } = await params;
-    const body = await request.json();
+    const body: unknown = await request.json();
 
-    if (typeof body.canAccessSystemManager !== "boolean") {
+    if (!isJsonObject(body) || typeof body.canAccessSystemManager !== "boolean") {
       return NextResponse.json(
         { error: "canAccessSystemManager is required and must be a boolean" },
         { status: 400 }
@@ -30,7 +31,7 @@ export async function PATCH(
       .eq("id", userId)
       .eq("role", "admin")
       .eq("is_active", true)
-      .select("can_access_money_transfer, can_manage_time_payroll")
+      .select("can_access_money_transfer, can_manage_time_payroll, can_manage_rubber_exports")
       .maybeSingle();
 
     if (error) throw error;
@@ -48,8 +49,13 @@ export async function PATCH(
         body.canAccessSystemManager || updated.can_access_money_transfer === true,
       canManageTimePayroll:
         body.canAccessSystemManager || updated.can_manage_time_payroll === true,
+      canManageRubberExports:
+        body.canAccessSystemManager || updated.can_manage_rubber_exports === true,
     });
   } catch (error) {
+    if (error instanceof SyntaxError) {
+      return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+    }
     const message = error instanceof Error ? error.message : "Could not update system manager access";
     return NextResponse.json({ error: message }, { status: 500 });
   }

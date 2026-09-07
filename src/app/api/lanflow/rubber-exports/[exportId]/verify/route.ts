@@ -1,15 +1,36 @@
 import { NextResponse } from "next/server";
-import { requireSystemManager } from "@/lib/server/auth";
-import { rubberExportErrorResponse } from "@/lib/server/rubber-export-response";
+import { hasSystemManagerAccess, requireAuth } from "@/lib/server/auth";
+import {
+  canAdministerRubberExports,
+  isUuid,
+  rubberExportErrorResponse,
+} from "@/lib/server/rubber-export-response";
 
 export const dynamic = "force-dynamic";
 
 type RouteContext = { params: Promise<{ exportId: string }> };
 
 export async function POST(request: Request, context: RouteContext) {
-  const result = await requireSystemManager(request);
+  const result = await requireAuth(request);
   if (!result.ok) return result.response;
   const { exportId } = await context.params;
+  if (!isUuid(exportId)) {
+    return NextResponse.json({ error: "รหัสรายการส่งออกไม่ถูกต้อง" }, { status: 400 });
+  }
+  if (!hasSystemManagerAccess(result.auth)) {
+    const { data: scopedExport, error: scopeError } = await result.supabase
+      .from("rubber_exports")
+      .select("location_id")
+      .eq("id", exportId)
+      .maybeSingle();
+    if (scopeError) return rubberExportErrorResponse(scopeError.message);
+    if (!scopedExport || !canAdministerRubberExports(result.auth, scopedExport.location_id)) {
+      return NextResponse.json(
+        { error: "ไม่มีสิทธิ์ตรวจสอบรายการส่งออกของสาขานี้" },
+        { status: 403 },
+      );
+    }
+  }
   const payload = await request.json().catch(() => null) as {
     expenseDestination?: "branch" | "external";
     currentWeight?: number;

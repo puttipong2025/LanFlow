@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { confirmCurrentBranchIfRequired } from "./helpers/select-app-location";
 
 test.use({ baseURL: "http://127.0.0.1:3001" });
 
@@ -97,6 +98,7 @@ test.describe("production PWA connectivity matrix", () => {
 
     await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
     await page.getByRole("button", { name: "เพิ่มบิลยาง", exact: true }).click();
+    await confirmCurrentBranchIfRequired(page);
     const modal = page.locator(".fixed.inset-0").last();
     const customerInput = modal.locator(
       'input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]',
@@ -112,6 +114,7 @@ test.describe("production PWA connectivity matrix", () => {
 
     await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
     await page.getByRole("button", { name: "เพิ่มบิลยาง", exact: true }).click();
+    await confirmCurrentBranchIfRequired(page);
     const restoredModal = page.locator(".fixed.inset-0").last();
     await expect(restoredModal.locator(
       'input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]',

@@ -185,7 +185,7 @@ export function AdminModule({ locations, profile, onAddLocation }: {
     onToggleRole={(id, role) => {
       const nextRole = role === "admin" ? "user" : "admin";
       void confirmedPatch(id, "role", { role: nextRole }, "เปลี่ยนบทบาท?", () => nextRole === "user"
-        ? { role: nextRole, canAccessSystemManager: false, canAccessMoneyTransfer: false, canManageTimePayroll: false }
+        ? { role: nextRole, canAccessSystemManager: false, canAccessMoneyTransfer: false, canManageTimePayroll: false, canManageRubberExports: false }
         : { role: nextRole });
     }}
     onToggleStatus={(id, active) => void confirmedPatch(id, "status", { isActive: !active }, active ? "ระงับการใช้งาน?" : "กู้คืนการใช้งาน?", () => ({ isActive: !active }))}
@@ -193,8 +193,10 @@ export function AdminModule({ locations, profile, onAddLocation }: {
       canAccessSystemManager: data.canAccessSystemManager === true,
       canAccessMoneyTransfer: data.canAccessMoneyTransfer === true,
       canManageTimePayroll: data.canManageTimePayroll === true,
+      canManageRubberExports: data.canManageRubberExports === true,
     }))}
     onToggleMoneyTransfer={(id, value) => void confirmedPatch(id, "money-transfer-access", { canAccessMoneyTransfer: !value }, value ? "ปิดสิทธิ์โอนเงิน?" : "เปิดสิทธิ์โอนเงิน?", () => ({ canAccessMoneyTransfer: !value }))}
     onToggleTimePayroll={(id, value) => void confirmedPatch(id, "time-payroll-access", { canManageTimePayroll: !value }, value ? "ปิดสิทธิ์เวลาและเงินเดือน?" : "เปิดสิทธิ์เวลาและเงินเดือน?", () => ({ canManageTimePayroll: !value }))}
+    onToggleRubberExports={(id, value) => void confirmedPatch(id, "rubber-export-access", { canManageRubberExports: !value }, value ? "ปิดสิทธิ์จัดการส่งออกยาง?" : "เปิดสิทธิ์จัดการส่งออกยาง?", () => ({ canManageRubberExports: !value }))}
   />;
 }

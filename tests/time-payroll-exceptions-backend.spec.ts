@@ -1301,7 +1301,6 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
   test("END before cutoff removes a zero-day period but audit history still offers RESUME", async () => {
     const service = serviceClient();
     const manager = await globalManagerClient();
-    const employeeId = await createEmployee(service, "QA zero-day END history");
     const today = bangkokDate();
     const settings = await manager.rpc("get_time_payroll_settings");
     expect(settings.error).toBeNull();
@@ -1309,7 +1308,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       expectedEligibleThrough(String(settings.data?.workdayEndTime), new Date()) === today,
       "This integration path only applies before the current Bangkok workday cutoff",
     );
-
+    const employeeId = await createEmployee(service, "QA zero-day END history");
     try {
       expect((await manager.rpc("set_time_payroll_active_period", {
         p_profile_id: employeeId,
@@ -1712,7 +1711,6 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     const employeeB = await createEmployee(service, "QA branch A employee 2");
     const employeeOtherBranch = await createEmployee(service, "QA branch B employee");
     const workStart = bangkokDate(-2);
-    const workEnd = bangkokDate(-1);
     const month = workStart.slice(0, 7);
 
     try {

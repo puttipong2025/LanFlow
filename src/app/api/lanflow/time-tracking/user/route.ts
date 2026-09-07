@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { bangkokDateString } from "@/lib/bangkok-date";
 import { requireAuth } from "@/lib/server/auth";
 import { buildPayrollPeriodState, type PayrollPeriodRow } from "@/lib/time-tracking/period-state";
+import { readAllSupabaseRows } from "@/lib/supabase-pages";
 
 export const dynamic = "force-dynamic";
 
@@ -67,6 +68,7 @@ export async function GET(request: NextRequest) {
       slips,
       attendance,
       activePeriods,
+      totals,
     ] = await Promise.all([
       supabase
         .from("financial_transactions")
@@ -76,7 +78,7 @@ export async function GET(request: NextRequest) {
         .order("effective_date", { ascending: false })
         .order("created_at", { ascending: false })
         .limit(50),
-      supabase
+      readAllSupabaseRows((from, to) => supabase
         .from("financial_transactions")
         .select("id, type, amount, remaining_amount, effective_date, created_at, description")
         .eq("profile_id", targetUserId)
@@ -84,56 +86,53 @@ export async function GET(request: NextRequest) {
         .eq("status", "APPROVED")
         .gt("remaining_amount", 0)
         .order("effective_date", { ascending: true })
-        .order("created_at", { ascending: true }),
-      supabase
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to)),
+      readAllSupabaseRows((from, to) => supabase
         .from("financial_transactions")
         .select("id, type, amount, parent_debt_id, applied_month, created_at")
         .eq("profile_id", targetUserId)
         .eq("status", "APPROVED")
         .in("type", ["WITHDRAWAL_DEDUCTION", "DEBT_DEDUCTION"])
         .order("applied_month", { ascending: false })
-        .order("created_at", { ascending: false }),
-      supabase
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .range(from, to)),
+      readAllSupabaseRows((from, to) => supabase
         .from("payroll_slips")
         .select("id, profile_id, month, gross_pay, total_deductions, net_pay, status, created_at, approved_at, cancelled_at, expense_location_id, expense_location_name, admin_comment, report_lock_no, approver:profiles!payroll_slips_approved_by_fkey(name)")
         .eq("profile_id", targetUserId)
-        .order("month", { ascending: false }),
+        .order("month", { ascending: false })
+        .order("id", { ascending: false })
+        .range(from, to)),
       supabase.rpc("get_time_payroll_attendance_month", {
         p_profile_id: targetUserId,
         p_month: month,
       }),
-      supabase
+      readAllSupabaseRows((from, to) => supabase
         .from("time_payroll_active_periods")
         .select("id, start_on, end_on, scheduled_action, scheduled_effective_on, scheduled_activation_on")
         .eq("profile_id", targetUserId)
-        .order("start_on", { ascending: false }),
+        .order("start_on", { ascending: false })
+        .order("id", { ascending: false })
+        .range(from, to)),
+      supabase.rpc("get_time_payroll_user_totals", {
+        p_profile_id: targetUserId,
+        p_month: month,
+      }),
     ]);
 
-    for (const response of [
-      transactions,
-      activeDebts,
-      deductions,
-      slips,
-      attendance,
-      activePeriods,
-    ]) {
+    for (const response of [transactions, attendance, totals]) {
       if (response.error) throw response.error;
     }
 
     const totalDays = Number(attendance.data?.summary?.paidDays || 0);
     const grossPay = Number(attendance.data?.summary?.grossPay || 0);
-    const usedThisMonth = (deductions.data || []).reduce(
-      (sum, transaction) => transaction.applied_month === `${month}-01`
-        ? sum + Number(transaction.amount || 0)
-        : sum,
-      0,
-    );
-    const totalDebt = (activeDebts.data || []).reduce(
-      (sum, transaction) => sum + Number(transaction.remaining_amount || 0),
-      0,
-    );
+    const usedThisMonth = Number(totals.data?.usedThisMonth || 0);
+    const totalDebt = Number(totals.data?.totalDebt || 0);
     const periodState = buildPayrollPeriodState(
-      (activePeriods.data || []) as PayrollPeriodRow[],
+      activePeriods as PayrollPeriodRow[],
       bangkokDateString(),
     );
 
@@ -154,12 +153,12 @@ export async function GET(request: NextRequest) {
       },
       attendance: attendance.data,
       periodState,
-      debts: activeDebts.data || [],
+      debts: activeDebts,
       transactions: result.auth.canManageTimePayroll
         ? transactions.data || []
         : (transactions.data || []).filter((item) => item.status !== "REJECTED"),
-      deductions: deductions.data || [],
-      slips: slips.data || [],
+      deductions,
+      slips,
     });
   } catch (error) {
     const message = error instanceof Error
@@ -179,6 +178,9 @@ export async function POST(request: NextRequest) {
   try {
     body = await request.json();
   } catch {
+    return NextResponse.json({ error: "ข้อมูลคำขอไม่ถูกต้อง" }, { status: 400 });
+  }
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
     return NextResponse.json({ error: "ข้อมูลคำขอไม่ถูกต้อง" }, { status: 400 });
   }
   const payload = body?.payload || {};

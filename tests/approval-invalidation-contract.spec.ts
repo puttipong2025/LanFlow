@@ -29,11 +29,19 @@ function loadHook(path: string, hook: string, args: object = {}) {
     "@/hooks/useActionableBadges": { ACTIONABLE_BADGES_QUERY_KEY: "actionableBadges" },
     "@/hooks/useStockProductApprovals": { STOCK_PRODUCT_APPROVAL_REQUESTS_KEY: "stockProductApprovalRequests" },
     "@/lib/money-flow/query-keys": { moneyFlowQueryKeys },
-    "@/lib/auth-fetch": {},
-    "@/lib/income-expense/build-income-expense-payload": {},
+    "@/lib/auth-fetch": {
+      authFetch: async () => ({
+        ok: true,
+        json: async () => ({ status: "pending", requestId: "approval-request" }),
+      }),
+    },
+    "@/lib/income-expense/build-income-expense-payload": {
+      buildIncomeExpensePayload: () => ({}),
+    },
     "@/lib/income-expense/query-keys": { INCOME_EXPENSE_FEED_QUERY_KEY: "incomeExpenseFeed" },
     "@/lib/income-expense/approval-cache": {},
     "@/lib/bangkok-date": {},
+    "@/lib/supabase-pages": { readAllSupabaseRows: () => Promise.resolve([]) },
   };
   const exports: Record<string, (args: object) => unknown> = {};
   runInNewContext(ts.transpileModule(readFileSync(path, "utf8"), {
@@ -45,8 +53,8 @@ function loadHook(path: string, hook: string, args: object = {}) {
       return dependencies[id];
     },
   });
-  exports[hook](args);
-  return { mutations, invalidated, release: () => releases.splice(0).forEach((resolve) => resolve()) };
+  const hookResult = exports[hook](args);
+  return { hookResult, mutations, invalidated, release: () => releases.splice(0).forEach((resolve) => resolve()) };
 }
 
 for (const [hook, queue, downstream] of [
@@ -128,6 +136,30 @@ test("income approval settings and decisions await every affected owner", async 
     loaded.release();
     await result;
   }
+});
+
+test("pending income approval submission refreshes the queue, feed, and actionable badges before settling", async () => {
+  const loaded = loadHook("src/hooks/useIncomeExpenseApprovals.ts", "useIncomeExpenseApprovals");
+  const hookResult = loaded.hookResult as {
+    submitForApprovalIfNeeded: (transaction: Record<string, unknown>, operation: "update") => Promise<unknown>;
+  };
+  let settled = false;
+  const submitted = hookResult.submitForApprovalIfNeeded({
+    billOption: "บิลขาย",
+    txDate: "2026-09-07",
+  }, "update").then((result) => {
+    settled = true;
+    return result;
+  });
+
+  await expect.poll(() => loaded.invalidated).toEqual([
+    ["incomeExpenseApprovalRequests"],
+    ["incomeExpenseFeed"],
+    ["actionableBadges"],
+  ]);
+  expect(settled).toBe(false);
+  loaded.release();
+  expect(await submitted).toMatchObject({ requiresApproval: true, requestId: "approval-request" });
 });
 
 test("shared money-flow refresh has no legacy Rubber approval query owners", () => {

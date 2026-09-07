@@ -31,6 +31,7 @@ export function getSaleReceiptShareBlockReason(
 ) {
   if (!online) return "แชร์ PDF บิลขายได้เมื่อออนไลน์";
   if (!transaction || transaction.billOption !== "บิลขาย") return "ไม่พบข้อมูลบิลขาย";
+  if (transaction.approvalPending) return "บิลนี้ยังรออนุมัติ จึงยังพิมพ์ไม่ได้";
   if (transaction.syncStatus === "failed" || transaction.syncStatus === "conflict") {
     return "บิลขายซิงก์ไม่สำเร็จ กรุณาใช้ปุ่มลองซิงก์อีกครั้ง";
   }

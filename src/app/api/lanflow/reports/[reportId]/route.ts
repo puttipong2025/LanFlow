@@ -4,6 +4,7 @@ import { reportErrorResponse } from "@/lib/server/report-response";
 import type { ReportDetails } from "@/types/reports";
 import { reportDatePart } from "@/lib/reports/report-date";
 import { chunkUniqueIds } from "@/lib/server/chunk-ids";
+import { readAllSupabaseRows } from "@/lib/supabase-pages";
 
 export const dynamic = "force-dynamic";
 
@@ -43,11 +44,15 @@ async function rowsByForeignIds(
   const chunks = chunkUniqueIds(rowIds);
   if (chunks.length === 0) return [];
   const pages = await Promise.all(chunks.map(async (chunk) => {
-    let query = (client as any).from(table).select(columns).in(foreignColumn, chunk);
-    if (notNullColumn) query = query.not(notNullColumn, "is", null);
-    const { data, error } = await query;
-    if (error) throw new Error(error.message);
-    return (data ?? []) as Array<Record<string, any>>;
+    return readAllSupabaseRows<Array<Record<string, any>>[number]>((from, to) => {
+      let query = (client as any)
+        .from(table)
+        .select(columns)
+        .in(foreignColumn, chunk)
+        .order("id", { ascending: true });
+      if (notNullColumn) query = query.not(notNullColumn, "is", null);
+      return query.range(from, to);
+    });
   }));
   return pages.flat();
 }
@@ -55,9 +60,6 @@ async function rowsByForeignIds(
 export async function GET(request: NextRequest, context: RouteContext) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
-  if (result.auth.role === "user" && !result.auth.canAccessSystemManager) {
-    return NextResponse.json({ error: "ไม่มีสิทธิ์ดูรายงาน" }, { status: 403 });
-  }
 
   const { reportId } = await context.params;
   const { data: header, error: headerError } = await result.supabase
@@ -69,13 +71,23 @@ export async function GET(request: NextRequest, context: RouteContext) {
   if (headerError) return reportErrorResponse(headerError.message);
   if (!header) return NextResponse.json({ error: "ไม่พบรายงาน" }, { status: 404 });
 
-  const { data: itemRows, error: itemsError } = await result.supabase
-    .from("report_items")
-    .select("entity_type, entity_id")
-    .eq("report_id", reportId);
-  if (itemsError) return reportErrorResponse(itemsError.message);
+  let itemRows: Item[];
+  try {
+    itemRows = await readAllSupabaseRows<Item>((from, to) => result.supabase
+      .from("report_items")
+      .select("entity_type, entity_id, id")
+      .eq("report_id", reportId)
+      .order("id", { ascending: true })
+      .range(from, to)
+      .then(({ data, error }) => ({
+        data: data?.map(({ entity_type, entity_id }) => ({ entity_type, entity_id })) ?? null,
+        error,
+      })));
+  } catch (error) {
+    return reportErrorResponse(error instanceof Error ? error.message : "โหลดรายการรายงานไม่สำเร็จ");
+  }
 
-  const items = (itemRows ?? []) as Item[];
+  const items = itemRows;
   const client = result.supabase;
 
   try {
@@ -109,11 +121,10 @@ export async function GET(request: NextRequest, context: RouteContext) {
         ids(items, "rubber_bill"),
         "stock_product_id",
       ).then((data) => ({ data, error: null })),
-      (client as any)
-        .from("acid_stock_movements")
-        .select("product_name, quantity_delta")
-        .eq("location_id", header.location_id)
-        .lte("created_at", header.cutoff_at),
+      result.supabase.rpc("get_report_stock_balances", {
+        p_location_id: header.location_id,
+        p_cutoff_at: header.cutoff_at,
+      }),
       rowsByIds(client, "time_segments", "id, profile_id, start_time, end_time", ids(items, "time_segment")),
       rowsByIds(client, "financial_transactions", "id, profile_id, type, amount, description, approved_at, updated_at", ids(items, "financial_transaction")),
       rowsByIds(client, "payroll_slips", "id, profile_id, month, gross_pay, total_deductions, net_pay, approved_at, updated_at", ids(items, "payroll_slip")),
@@ -123,7 +134,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
         "id, location_id, target_location_id, target_location_name, customer_name, transport_staff_name, transfer_type, transfer_status, net_amount_to_pay, branch_paid_amount, server_received_at, updated_at, created_at, money_transfer_slips(amount, fee)",
         [...ids(items, "bank_transfer_source"), ...ids(items, "bank_transfer_target")]
       ),
-      result.supabase.rpc("get_report_income_expense_rows", { p_report_id: reportId }),
+      result.supabase.rpc("get_report_income_expense_rows_json", { p_report_id: reportId }),
       result.supabase
         .from("report_batches")
         .select("id")
@@ -233,13 +244,10 @@ export async function GET(request: NextRequest, context: RouteContext) {
           };
         }),
       ],
-      stockBalances: [...((stockBalanceResult.data ?? []) as Array<Record<string, any>>).reduce<Map<string, number>>(
-        (balances, row) => balances.set(
-          row.product_name ?? "",
-          (balances.get(row.product_name ?? "") ?? 0) + number(row.quantity_delta)
-        ),
-        new Map<string, number>()
-      )].map(([product, quantity]) => ({ product, quantity })),
+      stockBalances: ((stockBalanceResult.data ?? []) as Array<Record<string, any>>).map((row) => ({
+        product: row.product ?? "",
+        quantity: number(row.quantity),
+      })),
       timePayroll: [
         ...segments.map((row) => ({
           date: datePart(row.end_time),
