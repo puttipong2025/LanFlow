@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
+  BRANCH_CONFIRMATION_DEFAULT_MINUTES,
   acknowledgeBranchCreateGuardState,
   buildBranchCreateChoices,
   clearBranchCreateGuardState,
@@ -58,6 +59,41 @@ test.describe("branch create guard state", () => {
     )).toBe(false);
   });
 
+  test("expires at the fixed boundary without sliding on later create attempts", () => {
+    const context = { primaryLocationId: "a", activeLocationId: "b" };
+    const acknowledged = acknowledgeBranchCreateGuardState(
+      reconcileBranchCreateGuardState(null, context),
+      1_000,
+    );
+
+    expect(requiresBranchCreateConfirmation(acknowledged, context, ["a", "b"], 15, 900_999))
+      .toBe(false);
+    expect(requiresBranchCreateConfirmation(acknowledged, context, ["a", "b"], 15, 901_000))
+      .toBe(true);
+    expect(acknowledged.acknowledgedAt).toBe(1_000);
+  });
+
+  test("rejects missing, malformed and future acknowledgement timestamps", () => {
+    const context = { primaryLocationId: "a", activeLocationId: "b" };
+    const pending = reconcileBranchCreateGuardState(null, context);
+    expect(requiresBranchCreateConfirmation(pending, context, ["a", "b"], 15, 1_000))
+      .toBe(true);
+    expect(requiresBranchCreateConfirmation(
+      { ...pending, acknowledgedAt: Number.NaN },
+      context,
+      ["a", "b"],
+      15,
+      1_000,
+    )).toBe(true);
+    expect(requiresBranchCreateConfirmation(
+      { ...pending, acknowledgedAt: 1_001 },
+      context,
+      ["a", "b"],
+      15,
+      1_000,
+    )).toBe(true);
+  });
+
   test("bypasses confirmation for a single managed branch", () => {
     const context = { primaryLocationId: "a", activeLocationId: "a" };
     expect(requiresBranchCreateConfirmation(
@@ -73,9 +109,9 @@ test.describe("branch create guard state", () => {
     const b = reconcileBranchCreateGuardState(acknowledgedA, { ...a, activeLocationId: "b" });
     const returnedA = reconcileBranchCreateGuardState(b, a);
 
-    expect(b.acknowledged).toBe(false);
-    expect(returnedA.acknowledged).toBe(false);
-    expect(reconcileBranchCreateGuardState(acknowledgedA, { ...a, primaryLocationId: "other" }).acknowledged).toBe(false);
+    expect(b.acknowledgedAt).toBeNull();
+    expect(returnedA.acknowledgedAt).toBeNull();
+    expect(reconcileBranchCreateGuardState(acknowledgedA, { ...a, primaryLocationId: "other" }).acknowledgedAt).toBeNull();
   });
 
   test("keeps acknowledgement for a reload of the same user and branch", () => {
@@ -143,16 +179,16 @@ test.describe("branch create guard state", () => {
       acknowledged: true,
     }))).toBeNull();
     expect(parseBranchCreateGuardState(JSON.stringify({
-      version: 2,
+      version: 3,
       primaryLocationId: "a",
       activeLocationId: "b",
-      acknowledged: true,
+      acknowledgedAt: 1_000,
       unexpected: "ignored",
     }))).toEqual({
-      version: 2,
+      version: 3,
       primaryLocationId: "a",
       activeLocationId: "b",
-      acknowledged: true,
+      acknowledgedAt: 1_000,
     });
 
     const context = { primaryLocationId: "a", activeLocationId: "b" };
@@ -165,8 +201,21 @@ test.describe("branch create guard state", () => {
     expect(readBranchCreateGuardState("user-a")).toBeNull();
     expect(localStorage.getItem("lanflow:branch-create-guard:v1:user-a")).toBeNull();
 
+    localStorage.setItem("lanflow:branch-create-guard:v2:user-a", JSON.stringify({
+      version: 2,
+      primaryLocationId: "a",
+      activeLocationId: "b",
+      acknowledged: true,
+    }));
+    expect(readBranchCreateGuardState("user-a")).toBeNull();
+    expect(localStorage.getItem("lanflow:branch-create-guard:v2:user-a")).toBeNull();
+
     writeBranchCreateGuardState("user-a", reconcileBranchCreateGuardState(null, context));
     clearBranchCreateGuardState("user-a");
     expect(readBranchCreateGuardState("user-a")).toBeNull();
+  });
+
+  test("uses the documented default duration", () => {
+    expect(BRANCH_CONFIRMATION_DEFAULT_MINUTES).toBe(15);
   });
 });

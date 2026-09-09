@@ -24,7 +24,11 @@ import {
   writeBootstrapCache,
   writeLastLocationPreference,
 } from "@/lib/lanflow/bootstrap-cache";
-import { clearBranchCreateGuardState } from "@/lib/lanflow/branch-create-guard";
+import {
+  BRANCH_CONFIRMATION_DEFAULT_MINUTES,
+  clearBranchCreateGuardState,
+  resolveBranchConfirmationMinutes,
+} from "@/lib/lanflow/branch-create-guard";
 import { removeSyncEventsForOwner } from "@/lib/idb-queue";
 import { type Tab } from "@/components/lanflow/tabs";
 import { Dashboard } from "@/components/dashboard/Dashboard";
@@ -224,6 +228,9 @@ function BusinessLanFlowApp() {
     online,
   });
   const [isLoaded, setIsLoaded] = useState(false);
+  const [confirmationMinutes, setConfirmationMinutes] = useState(
+    BRANCH_CONFIRMATION_DEFAULT_MINUTES,
+  );
   const serviceUnavailable = useServiceUnavailable();
 
   useEffect(() => {
@@ -231,6 +238,7 @@ function BusinessLanFlowApp() {
 
     async function loadDatabaseData() {
       setIsLoaded(false);
+      setConfirmationMinutes(BRANCH_CONFIRMATION_DEFAULT_MINUTES);
       if (!authProfileId) {
         setIsLoaded(true);
         return;
@@ -246,6 +254,7 @@ function BusinessLanFlowApp() {
             cached.profile.locationIds,
             cached.selectedLocationId,
           ));
+          setConfirmationMinutes(cached.confirmationMinutes);
         }
         setIsLoaded(true);
         return;
@@ -254,11 +263,22 @@ function BusinessLanFlowApp() {
       try {
         const response = await authFetch("/api/lanflow", { cache: "no-store" });
         await assertApiResponse(response);
-        const data = await response.json() as { locations: Location[], profile: Profile };
+        const data = await response.json() as {
+          locations: Location[];
+          profile: Profile;
+          confirmationMinutes: number | null;
+        };
         if (ignore) return;
+
+        const cached = readBootstrapCache(authProfileId);
+        const nextConfirmationMinutes = resolveBranchConfirmationMinutes(
+          data.confirmationMinutes,
+          cached?.confirmationMinutes,
+        );
 
         setLocations(data.locations);
         setProfile(data.profile);
+        setConfirmationMinutes(nextConfirmationMinutes);
         
         const locId = resolveSelectedLocationId(
           data.locations,
@@ -275,7 +295,8 @@ function BusinessLanFlowApp() {
           writeBootstrapCache(authProfileId, {
             locations: data.locations,
             profile: data.profile,
-            selectedLocationId: locId
+            selectedLocationId: locId,
+            confirmationMinutes: nextConfirmationMinutes,
           });
         }
 
@@ -286,6 +307,7 @@ function BusinessLanFlowApp() {
         if (cached && !ignore) {
           setLocations(cached.locations);
           setProfile(cached.profile);
+          setConfirmationMinutes(cached.confirmationMinutes);
           const cachedLocationId = resolveSelectedLocationId(
             cached.locations,
             cached.profile.locationIds,
@@ -339,10 +361,11 @@ function BusinessLanFlowApp() {
       writeBootstrapCache(authProfileId, {
         locations,
         profile,
-        selectedLocationId
+        selectedLocationId,
+        confirmationMinutes,
       });
     }
-  }, [selectedLocationId, locations, profile, authProfileId, isLoaded, online]);
+  }, [selectedLocationId, locations, profile, authProfileId, isLoaded, online, confirmationMinutes]);
 
   useLanFlowOfflineSyncCoordinator({
     locationId: selectedLocationId,
@@ -361,6 +384,7 @@ function BusinessLanFlowApp() {
     managedLocations,
     isLoaded,
     online,
+    confirmationMinutes,
   });
 
   useEffect(() => {
@@ -670,6 +694,7 @@ function BusinessLanFlowApp() {
           <AdminModule
             locations={locations}
             profile={profile}
+            confirmationMinutes={confirmationMinutes}
             onAddLocation={addLocation}
           />
         )}

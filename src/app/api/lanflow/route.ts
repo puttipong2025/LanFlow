@@ -7,6 +7,17 @@ export async function GET(request: NextRequest) {
   const result = await requireAuth(request, { allowUserLanflow: true });
   if (!result.ok) return result.response;
 
+  const confirmationResult = await result.supabase
+    .rpc("get_branch_create_confirmation_minutes");
+  const confirmationMinutes = confirmationResult.error
+    || typeof confirmationResult.data !== "number"
+    || !Number.isInteger(confirmationResult.data)
+      ? null
+      : confirmationResult.data;
+  if (confirmationResult.error) {
+    console.error("Branch confirmation setting load failed", confirmationResult.error.message);
+  }
+
   const profile = {
     id: result.auth.sub,
     name: result.auth.name,
@@ -21,7 +32,7 @@ export async function GET(request: NextRequest) {
   };
 
   if (result.auth.role === "user") {
-    return NextResponse.json({ locations: [], profile });
+    return NextResponse.json({ locations: [], profile, confirmationMinutes });
   }
 
   try {
@@ -41,7 +52,7 @@ export async function GET(request: NextRequest) {
       active: row.is_active
     }));
 
-    return NextResponse.json({ locations, profile });
+    return NextResponse.json({ locations, profile, confirmationMinutes });
   } catch (error) {
     const message = error instanceof Error ? error.message : JSON.stringify(error);
     return NextResponse.json({ error: message }, { status: 500 });

@@ -1,9 +1,15 @@
 import { expect, test } from "@playwright/test";
 import {
+  readBootstrapCache,
   readLastLocationPreference,
   resolveSelectedLocationId,
+  writeBootstrapCache,
   writeLastLocationPreference,
 } from "../src/lib/lanflow/bootstrap-cache";
+import {
+  resolveBranchConfirmationMinutes,
+} from "../src/lib/lanflow/branch-create-guard";
+import type { Location, Profile } from "../src/types";
 
 class MemoryStorage implements Storage {
   private readonly values = new Map<string, string>();
@@ -84,5 +90,26 @@ test.describe("last location preference", () => {
       ["retired-location", "chanauman"],
       "retired-location",
     )).toBe("chanauman");
+  });
+
+  test("keeps a valid cached confirmation duration and defaults old caches to 15", () => {
+    const locations: Location[] = [{ id: "location-a", name: "A", code: "A1", active: true }];
+    const profile: Profile = {
+      id: "user-a", name: "A", phone: "0800000000", role: "admin", isActive: true,
+      locationIds: ["location-a"], primaryLocationId: "location-a",
+    };
+    localStorage.setItem("lanflow_bootstrap_cache:user-a", JSON.stringify({
+      locations, profile, selectedLocationId: "location-a",
+    }));
+    expect(readBootstrapCache("user-a")?.confirmationMinutes).toBe(15);
+
+    writeBootstrapCache("user-a", {
+      locations, profile, selectedLocationId: "location-a", confirmationMinutes: 30,
+    });
+    expect(readBootstrapCache("user-a")?.confirmationMinutes).toBe(30);
+    expect(resolveBranchConfirmationMinutes(null, 30)).toBe(30);
+    expect(resolveBranchConfirmationMinutes(45, 30)).toBe(45);
+    expect(resolveBranchConfirmationMinutes(0, 30)).toBe(30);
+    expect(resolveBranchConfirmationMinutes(null, 121)).toBe(15);
   });
 });

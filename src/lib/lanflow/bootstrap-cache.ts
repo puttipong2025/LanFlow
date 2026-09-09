@@ -1,9 +1,14 @@
 import type { Location, Profile } from "@/types";
+import {
+  BRANCH_CONFIRMATION_DEFAULT_MINUTES,
+  validBranchConfirmationMinutes,
+} from "@/lib/lanflow/branch-create-guard";
 
 type BootstrapCacheData = {
   locations: Location[];
   profile: Profile;
   selectedLocationId: string;
+  confirmationMinutes: number;
 };
 
 function lastLocationPreferenceKey(userId: string) {
@@ -69,7 +74,10 @@ export function readBootstrapCache(userId: string): BootstrapCacheData | null {
     return {
       locations: allowedLocations,
       profile: parsed.profile,
-      selectedLocationId: validSelected ? parsed.selectedLocationId : allowedLocations[0].id
+      selectedLocationId: validSelected ? parsed.selectedLocationId : allowedLocations[0].id,
+      confirmationMinutes: validBranchConfirmationMinutes(parsed.confirmationMinutes)
+        ? parsed.confirmationMinutes
+        : BRANCH_CONFIRMATION_DEFAULT_MINUTES,
     };
   } catch {
     return null;

@@ -108,7 +108,7 @@ test.describe("branch create guard quiz", () => {
     await page.addInitScript(({ userId, primaryLocationId }) => {
       if (sessionStorage.getItem("branch-create-guard-test-ready")) return;
       sessionStorage.setItem("branch-create-guard-test-ready", "true");
-      localStorage.removeItem(`lanflow:branch-create-guard:v2:${userId}`);
+      localStorage.removeItem(`lanflow:branch-create-guard:v3:${userId}`);
       localStorage.setItem(`lanflow:last-location:${userId}`, primaryLocationId);
     }, { userId: bootstrap.profile.id, primaryLocationId: primary.id });
     await page.route("**/api/lanflow/rubber-exports/options?**", (route) => route.fulfill({
@@ -216,11 +216,45 @@ test.describe("branch create guard quiz", () => {
     await expect(branchGuard(page)).toBeVisible();
   });
 
+  test("keeps acknowledgement before expiry and asks again at the boundary after reload", async ({ page }) => {
+    const { bootstrap, primary } = await loadBranches(page);
+    await mockBranchContext(page, bootstrap, primary.id);
+    await page.addInitScript(({ userId, primaryLocationId }) => {
+      const acknowledgedAt = 1_700_000_000_000;
+      if (!sessionStorage.getItem("branch-create-expiry-seeded")) {
+        sessionStorage.setItem("branch-create-expiry-seeded", "true");
+        sessionStorage.setItem("branch-create-test-now", String(acknowledgedAt + 14 * 60_000));
+        localStorage.setItem(`lanflow:branch-create-guard:v3:${userId}`, JSON.stringify({
+          version: 3,
+          primaryLocationId,
+          activeLocationId: primaryLocationId,
+          acknowledgedAt,
+        }));
+        localStorage.setItem(`lanflow:last-location:${userId}`, primaryLocationId);
+      }
+      Date.now = () => Number(sessionStorage.getItem("branch-create-test-now"));
+    }, { userId: bootstrap.profile.id, primaryLocationId: primary.id });
+
+    await page.goto("/");
+    await page.getByRole("button", { name: /^รับ-จ่าย/ }).click();
+    await page.getByRole("button", { name: "เพิ่มรายรับ", exact: true }).click();
+    await expect(branchGuard(page)).toHaveCount(0);
+    await closeDialog(page, "เพิ่ม/แก้ไข บิลเงินสด");
+
+    await page.evaluate(() => {
+      sessionStorage.setItem("branch-create-test-now", String(1_700_000_000_000 + 15 * 60_000));
+    });
+    await page.reload();
+    await page.getByRole("button", { name: /^รับ-จ่าย/ }).click();
+    await page.getByRole("button", { name: "เพิ่มรายรับ", exact: true }).click();
+    await expect(branchGuard(page)).toBeVisible();
+  });
+
   test("tests the active branch when the account has no primary branch", async ({ page }) => {
     const { bootstrap, primary } = await loadBranches(page);
     await mockBranchContext(page, bootstrap, null);
     await page.addInitScript(({ userId, locationId }) => {
-      localStorage.removeItem(`lanflow:branch-create-guard:v2:${userId}`);
+      localStorage.removeItem(`lanflow:branch-create-guard:v3:${userId}`);
       localStorage.setItem(`lanflow:last-location:${userId}`, locationId);
     }, { userId: bootstrap.profile.id, locationId: primary.id });
 
@@ -244,7 +278,7 @@ test.describe("branch create guard quiz", () => {
     const { bootstrap, primary } = await loadBranches(page);
     await mockBranchContext(page, bootstrap, primary.id, [primary.id]);
     await page.addInitScript(({ userId, locationId }) => {
-      localStorage.removeItem(`lanflow:branch-create-guard:v2:${userId}`);
+      localStorage.removeItem(`lanflow:branch-create-guard:v3:${userId}`);
       localStorage.setItem(`lanflow:last-location:${userId}`, locationId);
     }, { userId: bootstrap.profile.id, locationId: primary.id });
 
@@ -262,7 +296,7 @@ test.describe("branch create guard quiz", () => {
     const branch = secondary[0];
     await mockBranchContext(page, bootstrap, primary.id);
     await page.addInitScript(({ userId }) => {
-      localStorage.removeItem(`lanflow:branch-create-guard:v2:${userId}`);
+      localStorage.removeItem(`lanflow:branch-create-guard:v3:${userId}`);
     }, { userId: bootstrap.profile.id });
 
     await page.goto("/");
@@ -293,7 +327,7 @@ test.describe("branch create guard quiz", () => {
     await page.addInitScript(({ userId }) => {
       if (sessionStorage.getItem("branch-create-guard-native-test-ready")) return;
       sessionStorage.setItem("branch-create-guard-native-test-ready", "true");
-      localStorage.removeItem(`lanflow:branch-create-guard:v2:${userId}`);
+      localStorage.removeItem(`lanflow:branch-create-guard:v3:${userId}`);
     }, { userId: bootstrap.profile.id });
 
     await page.goto("/");
@@ -315,9 +349,9 @@ test.describe("branch create guard quiz", () => {
     await context.setOffline(true);
     await expect(guard).toBeHidden();
     await expect.poll(() => page.evaluate(({ userId }) => {
-      const raw = localStorage.getItem(`lanflow:branch-create-guard:v2:${userId}`);
-      return raw ? JSON.parse(raw).acknowledged : null;
-    }, { userId: bootstrap.profile.id })).toBe(false);
+      const raw = localStorage.getItem(`lanflow:branch-create-guard:v3:${userId}`);
+      return raw ? JSON.parse(raw).acknowledgedAt : undefined;
+    }, { userId: bootstrap.profile.id })).toBeNull();
 
     await context.setOffline(false);
     await expect(createWex).toBeEnabled();
@@ -338,7 +372,7 @@ test.describe("branch create guard quiz", () => {
     const branch = secondary[0];
     await mockBranchContext(page, bootstrap, primary.id);
     await page.addInitScript(({ userId }) => {
-      localStorage.removeItem(`lanflow:branch-create-guard:v2:${userId}`);
+      localStorage.removeItem(`lanflow:branch-create-guard:v3:${userId}`);
     }, { userId: bootstrap.profile.id });
 
     let releaseOptions!: () => void;

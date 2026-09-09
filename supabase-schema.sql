@@ -12704,6 +12704,27 @@ $$;
 ALTER FUNCTION "public"."get_actionable_badge_counts"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."get_branch_create_confirmation_minutes"() RETURNS integer
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_minutes integer;
+begin
+  if not private.is_active_user() then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์อ่านระยะยืนยันสาขา';
+  end if;
+  select s.confirmation_minutes into strict v_minutes
+  from public.branch_create_guard_settings s
+  where s.singleton = true;
+  return v_minutes;
+end
+$$;
+
+
+ALTER FUNCTION "public"."get_branch_create_confirmation_minutes"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."get_cash_branch_transfer_detail"("p_transfer_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -18754,6 +18775,29 @@ $$;
 ALTER FUNCTION "public"."run_time_tracking_daily_cutoff"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."save_branch_create_confirmation_minutes"("p_confirmation_minutes" integer) RETURNS integer
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if not private.is_active_user()
+     or not private.can_access_super_admin_features() then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์เปลี่ยนระยะยืนยันสาขา';
+  end if;
+  if p_confirmation_minutes is null or p_confirmation_minutes not between 1 and 120 then
+    raise exception 'BRANCH_CONFIRMATION_INVALID: ระยะยืนยันสาขาต้องอยู่ระหว่าง 1 ถึง 120 นาที';
+  end if;
+  update public.branch_create_guard_settings
+  set confirmation_minutes = p_confirmation_minutes
+  where singleton = true;
+  return p_confirmation_minutes;
+end
+$$;
+
+
+ALTER FUNCTION "public"."save_branch_create_confirmation_minutes"("p_confirmation_minutes" integer) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."save_customer_master_data"("payload" "jsonb") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -22991,6 +23035,17 @@ CREATE TABLE IF NOT EXISTS "public"."admin_account_audit_logs" (
 ALTER TABLE "public"."admin_account_audit_logs" OWNER TO "postgres";
 
 
+CREATE TABLE IF NOT EXISTS "public"."branch_create_guard_settings" (
+    "singleton" boolean DEFAULT true NOT NULL,
+    "confirmation_minutes" integer DEFAULT 15 NOT NULL,
+    CONSTRAINT "branch_create_guard_settings_confirmation_minutes_check" CHECK ((("confirmation_minutes" >= 1) AND ("confirmation_minutes" <= 120))),
+    CONSTRAINT "branch_create_guard_settings_singleton_check" CHECK ("singleton")
+);
+
+
+ALTER TABLE "public"."branch_create_guard_settings" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "public"."cash_count_sessions" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "location_id" "uuid" NOT NULL,
@@ -24239,6 +24294,11 @@ ALTER TABLE ONLY "public"."stock_products"
 
 ALTER TABLE ONLY "public"."admin_account_audit_logs"
     ADD CONSTRAINT "admin_account_audit_logs_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."branch_create_guard_settings"
+    ADD CONSTRAINT "branch_create_guard_settings_pkey" PRIMARY KEY ("singleton");
 
 
 
@@ -26340,6 +26400,9 @@ CREATE POLICY "active users read rubber bill approval settings" ON "public"."rub
 ALTER TABLE "public"."admin_account_audit_logs" ENABLE ROW LEVEL SECURITY;
 
 
+ALTER TABLE "public"."branch_create_guard_settings" ENABLE ROW LEVEL SECURITY;
+
+
 CREATE POLICY "cash counts manager select" ON "public"."cash_counts" FOR SELECT TO "authenticated" USING ("private"."can_delete_reports"());
 
 
@@ -27783,6 +27846,12 @@ GRANT ALL ON FUNCTION "public"."get_actionable_badge_counts"() TO "authenticated
 
 
 
+REVOKE ALL ON FUNCTION "public"."get_branch_create_confirmation_minutes"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_branch_create_confirmation_minutes"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."get_branch_create_confirmation_minutes"() TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."get_cash_branch_transfer_detail"("p_transfer_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_cash_branch_transfer_detail"("p_transfer_id" "uuid") TO "authenticated";
 
@@ -28480,6 +28549,12 @@ REVOKE ALL ON FUNCTION "public"."run_time_tracking_daily_cutoff"() FROM PUBLIC;
 
 
 
+REVOKE ALL ON FUNCTION "public"."save_branch_create_confirmation_minutes"("p_confirmation_minutes" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."save_branch_create_confirmation_minutes"("p_confirmation_minutes" integer) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."save_branch_create_confirmation_minutes"("p_confirmation_minutes" integer) TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."save_customer_master_data"("payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."save_customer_master_data"("payload" "jsonb") TO "authenticated";
 
@@ -28734,6 +28809,10 @@ GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."acid_stock_
 
 
 GRANT ALL ON TABLE "public"."admin_account_audit_logs" TO "service_role";
+
+
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."branch_create_guard_settings" TO "service_role";
 
 
 

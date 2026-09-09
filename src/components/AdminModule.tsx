@@ -36,9 +36,10 @@ function showAdminFeedback(kind: "success" | "error", message: string, target?: 
   });
 }
 
-export function AdminModule({ locations, profile, onAddLocation }: {
+export function AdminModule({ locations, profile, confirmationMinutes, onAddLocation }: {
   locations: Location[];
   profile: Profile;
+  confirmationMinutes: number;
   onAddLocation: (request: { name: string; code: string; requestId: string }) => Promise<boolean>;
 }) {
   const [users, setUsers] = useState<Profile[]>([]);
@@ -179,6 +180,7 @@ export function AdminModule({ locations, profile, onAddLocation }: {
 
   return <AdminContent
     locations={locations} users={users} loading={loading} updatingUserId={updatingUserId} profile={profile}
+    confirmationMinutes={confirmationMinutes}
     canManageSystem={canManageSystem} canManagePermissions={canManagePermissions}
     onCreateUser={createUser} onCreateLocation={createLocation}
     onSaveProfile={saveProfile} onResetPassword={resetPassword} onLoadCurrentPassword={loadCurrentPassword}

@@ -36,6 +36,7 @@ export function useBranchCreateGuard({
   managedLocations,
   isLoaded,
   online,
+  confirmationMinutes,
 }: {
   userId: string;
   primaryLocationId: string | null;
@@ -43,6 +44,7 @@ export function useBranchCreateGuard({
   managedLocations: BranchCreateChoice[];
   isLoaded: boolean;
   online: boolean;
+  confirmationMinutes: number;
 }) {
   const [dialogMounted, setDialogMounted] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -51,6 +53,7 @@ export function useBranchCreateGuard({
   const contextRef = useRef<BranchCreateGuardContext | null>(null);
   const managedLocationsRef = useRef(managedLocations);
   const onlineRef = useRef(online);
+  const confirmationMinutesRef = useRef(confirmationMinutes);
   const pendingRef = useRef<PendingRequest | null>(null);
   const closedResultRef = useRef<BranchCreateApproval | null>(null);
   const closedErrorRef = useRef<string | null>(null);
@@ -75,6 +78,10 @@ export function useBranchCreateGuard({
     onlineRef.current = online;
     if (!online && pendingRef.current?.requiresOnline) finishAfterClose(null);
   }, [finishAfterClose, online]);
+
+  useEffect(() => {
+    confirmationMinutesRef.current = confirmationMinutes;
+  }, [confirmationMinutes]);
 
   useEffect(() => {
     managedLocationsRef.current = managedLocations;
@@ -124,6 +131,8 @@ export function useBranchCreateGuard({
       currentState,
       currentContext,
       currentManagedLocations.map((location) => location.id),
+      confirmationMinutesRef.current,
+      Date.now(),
     )) {
       return Promise.resolve({ locationId: currentContext.activeLocationId });
     }

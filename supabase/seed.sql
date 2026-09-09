@@ -2564,6 +2564,10 @@ INSERT INTO "public"."history_retention_settings" ("singleton", "retention_days"
 VALUES (true, 15)
 ON CONFLICT ("singleton") DO NOTHING;
 
+INSERT INTO "public"."branch_create_guard_settings" ("singleton", "confirmation_minutes")
+VALUES (true, 15)
+ON CONFLICT ("singleton") DO NOTHING;
+
 
 --
 -- PostgreSQL database dump complete

@@ -87,8 +87,8 @@ test("history retention UI closes stale manager-only state and describes bounded
   const adminSource = readFileSync(resolve(process.cwd(), "src/components/admin/AdminContent.tsx"), "utf8");
   const retentionSource = readFileSync(resolve(process.cwd(), "src/components/admin/HistoryRetentionSettings.tsx"), "utf8");
 
-  expect(adminSource).toContain('if (!canManageSystem && tab === "history") setTab("employees")');
-  expect(adminSource).toContain('canManageSystem ? <HistoryRetentionSettings /> : null');
+  expect(adminSource).toContain('if (!canManageSystem && isManagerTab(tab)) setTab("employees")');
+  expect(adminSource).toContain('if (isManagerTab(tab) && !canManageSystem) return null');
   expect(retentionSource).toContain("เข้าเกณฑ์ลบ");
   expect(retentionSource).not.toContain(">ลบทันที</th>");
 });

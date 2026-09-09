@@ -3,9 +3,29 @@ export type BranchCreateGuardContext = {
   activeLocationId: string;
 };
 
+export const BRANCH_CONFIRMATION_MIN_MINUTES = 1;
+export const BRANCH_CONFIRMATION_MAX_MINUTES = 120;
+export const BRANCH_CONFIRMATION_DEFAULT_MINUTES = 15;
+
+export function validBranchConfirmationMinutes(value: unknown): value is number {
+  return typeof value === "number"
+    && Number.isInteger(value)
+    && value >= BRANCH_CONFIRMATION_MIN_MINUTES
+    && value <= BRANCH_CONFIRMATION_MAX_MINUTES;
+}
+
+export function resolveBranchConfirmationMinutes(
+  freshValue: unknown,
+  cachedValue: unknown,
+) {
+  if (validBranchConfirmationMinutes(freshValue)) return freshValue;
+  if (validBranchConfirmationMinutes(cachedValue)) return cachedValue;
+  return BRANCH_CONFIRMATION_DEFAULT_MINUTES;
+}
+
 export type BranchCreateGuardState = BranchCreateGuardContext & {
-  version: 2;
-  acknowledged: boolean;
+  version: 3;
+  acknowledgedAt: number | null;
 };
 
 export type BranchCreateChoice = {
@@ -14,11 +34,14 @@ export type BranchCreateChoice = {
 };
 
 function storageKey(userId: string) {
-  return `lanflow:branch-create-guard:v2:${userId}`;
+  return `lanflow:branch-create-guard:v3:${userId}`;
 }
 
-function legacyStorageKey(userId: string) {
-  return `lanflow:branch-create-guard:v1:${userId}`;
+function legacyStorageKeys(userId: string) {
+  return [
+    `lanflow:branch-create-guard:v1:${userId}`,
+    `lanflow:branch-create-guard:v2:${userId}`,
+  ];
 }
 
 export function parseBranchCreateGuardState(
@@ -28,18 +51,20 @@ export function parseBranchCreateGuardState(
   try {
     const parsed = JSON.parse(value) as Partial<BranchCreateGuardState>;
     if (
-      parsed.version !== 2
+      parsed.version !== 3
       || typeof parsed.activeLocationId !== "string"
       || !parsed.activeLocationId
       || (parsed.primaryLocationId !== null
         && (typeof parsed.primaryLocationId !== "string" || !parsed.primaryLocationId))
-      || typeof parsed.acknowledged !== "boolean"
+      || (parsed.acknowledgedAt !== null
+        && (typeof parsed.acknowledgedAt !== "number"
+          || !Number.isFinite(parsed.acknowledgedAt)))
     ) return null;
     return {
-      version: 2,
+      version: 3,
       primaryLocationId: parsed.primaryLocationId,
       activeLocationId: parsed.activeLocationId,
-      acknowledged: parsed.acknowledged,
+      acknowledgedAt: parsed.acknowledgedAt,
     };
   } catch {
     return null;
@@ -53,26 +78,37 @@ export function reconcileBranchCreateGuardState(
   const sameContext = stored?.activeLocationId === context.activeLocationId
     && stored.primaryLocationId === context.primaryLocationId;
   return {
-    version: 2,
+    version: 3,
     ...context,
-    acknowledged: sameContext ? stored.acknowledged : false,
+    acknowledgedAt: sameContext ? stored.acknowledgedAt : null,
   };
 }
 
-export function acknowledgeBranchCreateGuardState(state: BranchCreateGuardState) {
-  return { ...state, acknowledged: true } satisfies BranchCreateGuardState;
+export function acknowledgeBranchCreateGuardState(
+  state: BranchCreateGuardState,
+  nowMs: number = Date.now(),
+) {
+  return { ...state, acknowledgedAt: nowMs } satisfies BranchCreateGuardState;
 }
 
 export function requiresBranchCreateConfirmation(
   state: BranchCreateGuardState,
   context: BranchCreateGuardContext,
   managedLocationIds: string[],
+  confirmationMinutes: number = BRANCH_CONFIRMATION_DEFAULT_MINUTES,
+  nowMs: number = Date.now(),
 ) {
   if (!managedLocationIds.includes(context.activeLocationId)) return true;
   if (managedLocationIds.length === 1) return false;
   if (state.activeLocationId !== context.activeLocationId
     || state.primaryLocationId !== context.primaryLocationId) return true;
-  return !state.acknowledged;
+  if (state.acknowledgedAt === null
+    || !Number.isFinite(state.acknowledgedAt)
+    || state.acknowledgedAt > nowMs) return true;
+  const minutes = validBranchConfirmationMinutes(confirmationMinutes)
+    ? confirmationMinutes
+    : BRANCH_CONFIRMATION_DEFAULT_MINUTES;
+  return nowMs - state.acknowledgedAt >= minutes * 60_000;
 }
 
 function shuffled<T>(values: T[], random: () => number) {
@@ -111,7 +147,7 @@ export function buildBranchCreateChoices(
 export function readBranchCreateGuardState(userId: string) {
   if (!userId) return null;
   try {
-    localStorage.removeItem(legacyStorageKey(userId));
+    for (const key of legacyStorageKeys(userId)) localStorage.removeItem(key);
     return parseBranchCreateGuardState(localStorage.getItem(storageKey(userId)));
   } catch {
     return null;
@@ -132,6 +168,6 @@ export function clearBranchCreateGuardState(userId: string) {
   if (!userId) return;
   try {
     localStorage.removeItem(storageKey(userId));
-    localStorage.removeItem(legacyStorageKey(userId));
+    for (const key of legacyStorageKeys(userId)) localStorage.removeItem(key);
   } catch { /* best effort */ }
 }
