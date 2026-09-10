@@ -33,7 +33,9 @@ test.describe("Dashboard overview @dashboard", () => {
       "น้ำหนักสุทธิสะสม",
       "ราคาเฉลี่ยสะสม",
       "มูลค่ายางสะสม",
-      "ยอดหักเงินสะสม",
+      "ยอดหักจากบิลซื้อสะสม",
+      "รับจากสาขา",
+      "ยางคงเหลือภายในสาขา",
     ]) {
       await expect(page.getByText(label, { exact: true }).last()).toBeVisible();
     }

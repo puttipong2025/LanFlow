@@ -39,6 +39,10 @@ const summary: DashboardSummary = {
     deductionTotal: 0,
     unpricedBillCount: 0,
     pendingApprovalCount: 0,
+    branchReceipts: {
+      crossBranch: { billCount: 0, netWeight: 0, rubberValue: 0 },
+      sameBranch: { billCount: 0, netWeight: 0, rubberValue: 0 },
+    },
   },
   cashToday: { income: 0, expense: 0, net: 0 },
   purchase7Days: {
@@ -56,16 +60,17 @@ const summary: DashboardSummary = {
   stock: { inStockCount: 0, outOfStockCount: 0, items: [] },
 };
 
-const legacySummary = {
-  purchaseToday: { billCount: 0, netWeight: 0, paidTotal: 0 },
-  purchase7Days: summary.purchase7Days,
-  netCashFlow: 0,
-  operatingExpenseAccumulated: 0,
-  payablePurchaseAccumulated: 0,
-  operatingBurdenPercent: null,
-  rubberInventoryWeight: 0,
-  waterLoss7Days: summary.waterLoss7Days,
-  stock: summary.stock,
+const summaryWithoutBranchReceiptBreakdown: DashboardSummary = {
+  ...summary,
+  rubberRemaining: {
+    billCount: 0,
+    netWeight: 0,
+    averagePrice: null,
+    rubberValue: 0,
+    deductionTotal: 0,
+    unpricedBillCount: 0,
+    pendingApprovalCount: 0,
+  },
 };
 
 function snapshot(
@@ -294,10 +299,11 @@ test.describe.serial("Dashboard immediate manual refresh", () => {
 test.describe("Dashboard immediate refresh UI", () => {
   test.use({ storageState: "playwright/.auth/admin.json" });
 
-  test("polls a dirty legacy snapshot until the new summary contract is ready", async ({
+  test("polls until the branch-receipt summary contract is ready", async ({
     page,
   }) => {
     let snapshotRequests = 0;
+    let currentContractReady = false;
     await page.route("**/api/lanflow/dashboard/feed**", (route) =>
       route.fulfill({
         status: 200,
@@ -319,9 +325,9 @@ test.describe("Dashboard immediate refresh UI", () => {
         status: 200,
         contentType: "application/json",
         body: JSON.stringify(
-          snapshotRequests <= 2
-            ? { ...snapshot("dirty", 1), summary: legacySummary }
-            : snapshot("ready", 2),
+          currentContractReady
+            ? snapshot("ready", 2)
+            : { ...snapshot("ready", 1), summary: summaryWithoutBranchReceiptBreakdown },
         ),
       });
     });
@@ -330,9 +336,13 @@ test.describe("Dashboard immediate refresh UI", () => {
     await expect(page.getByRole("heading", { name: /กำลังเตรียม Dashboard/ })).toBeVisible({
       timeout: 15_000,
     });
+    currentContractReady = true;
     await expect(page.getByText("ภาพรวมบิลยาง", { exact: true })).toBeVisible({
       timeout: 10_000,
     });
+    await expect(page.getByText("รับจากสาขา", { exact: true })).toBeVisible();
+    await expect(page.getByText("ยางคงเหลือภายในสาขา", { exact: true })).toBeVisible();
+    await expect(page.getByText("ยอดหักจากบิลซื้อสะสม", { exact: true })).toBeVisible();
     expect(snapshotRequests).toBeGreaterThan(1);
   });
 

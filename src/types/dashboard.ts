@@ -15,11 +15,22 @@ export type DashboardRubberMetrics = {
   pendingApprovalCount: number;
 };
 
+type DashboardBranchReceiptMetrics = {
+  billCount: number;
+  netWeight: number;
+  rubberValue: number;
+};
+
 export type DashboardSummary = {
   purchaseToday: DashboardRubberMetrics & {
     paidTotal: number;
   };
-  rubberRemaining: DashboardRubberMetrics;
+  rubberRemaining: DashboardRubberMetrics & {
+    branchReceipts?: {
+      crossBranch: DashboardBranchReceiptMetrics;
+      sameBranch: DashboardBranchReceiptMetrics;
+    };
+  };
   purchase7Days: {
     paidTotal: number;
     dailyAverage: number;

@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select extensions.plan(14);
+select extensions.plan(17);
 
 insert into public.locations (id, name, code, is_active)
 values ('23000000-0000-4000-8000-000000000001', 'pgTAP Dashboard metrics', 'PDM', true);
@@ -267,18 +267,36 @@ select extensions.is(
 );
 select extensions.is(
   (select (summary #>> '{rubberRemaining,billCount}')::integer from dashboard_metrics_summary),
-  4,
-  'remaining accumulated bills exclude verified exports but retain draft exports'
+  5,
+  'remaining accumulated bills include branch receipts and retain draft exports'
 );
 select extensions.is(
   (select (summary #>> '{rubberRemaining,netWeight}')::numeric from dashboard_metrics_summary),
-  160::numeric,
-  'remaining accumulated weight excludes verified exports and branch receipts'
+  200::numeric,
+  'remaining accumulated weight includes branch receipts not exported onward'
 );
 select extensions.is(
   (select (summary #>> '{rubberRemaining,averagePrice}')::numeric from dashboard_metrics_summary),
-  10.77::numeric,
-  'remaining weighted average excludes unpriced weight'
+  12.94::numeric,
+  'remaining weighted average includes carried branch-receipt value and excludes unpriced weight'
+);
+select extensions.is(
+  (select (summary #>> '{rubberRemaining,branchReceipts,sameBranch,billCount}')::integer
+   from dashboard_metrics_summary),
+  1,
+  'remaining breakdown classifies a same-branch receipt'
+);
+select extensions.is(
+  (select (summary #>> '{rubberRemaining,branchReceipts,sameBranch,netWeight}')::numeric
+   from dashboard_metrics_summary),
+  40::numeric,
+  'same-branch receipt breakdown exposes remaining weight'
+);
+select extensions.is(
+  (select (summary #>> '{rubberRemaining,branchReceipts,sameBranch,rubberValue}')::numeric
+   from dashboard_metrics_summary),
+  800::numeric,
+  'same-branch receipt breakdown exposes carried rubber value'
 );
 select extensions.is(
   (select (summary #>> '{cashToday,income}')::numeric from dashboard_metrics_summary),

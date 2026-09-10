@@ -741,6 +741,63 @@ CREATE OR REPLACE FUNCTION "private"."calculate_dashboard_summary"("p_location_i
     cross join bounds d
     where b.bill_date = d.today
   ),
+  branch_receipt_facts as (
+    select
+      b.net_weight,
+      b.rubber_value,
+      (
+        exists (
+          select 1
+          from public.rubber_bill_items i
+          where i.bill_id = b.id
+            and i.item_type = 'weigh'
+        )
+        and not exists (
+          select 1
+          from public.rubber_bill_items i
+          where i.bill_id = b.id
+            and i.item_type = 'weigh'
+            and coalesce(i.price, 0) <= 0
+        )
+      ) as has_price,
+      case
+        when source.location_id = b.location_id then 'same_branch'
+        else 'cross_branch'
+      end as receipt_kind,
+      exists (
+        select 1
+        from public.rubber_export_items i
+        join public.rubber_exports e on e.id = i.export_id
+        where i.source_bill_id = b.id
+          and e.status = 'verified'
+      ) as has_verified_export
+    from active_bills b
+    join public.rubber_exports source on source.id = b.source_rubber_export_id
+    where b.source_rubber_export_id is not null
+  ),
+  remaining_rubber_facts as (
+    select
+      b.net_weight,
+      b.rubber_value,
+      b.deduction_total,
+      b.has_price,
+      b.has_pending_approval,
+      'customer'::text as receipt_kind,
+      b.has_verified_export
+    from customer_bill_facts b
+
+    union all
+
+    select
+      b.net_weight,
+      b.rubber_value,
+      0::numeric as deduction_total,
+      b.has_price,
+      false as has_pending_approval,
+      b.receipt_kind,
+      b.has_verified_export
+    from branch_receipt_facts b
+  ),
   remaining_rubber as (
     select
       count(*) as bill_count,
@@ -750,9 +807,29 @@ CREATE OR REPLACE FUNCTION "private"."calculate_dashboard_summary"("p_location_i
       ), 0) as priced_net_weight,
       coalesce(sum(b.rubber_value) filter (where b.has_price), 0) as rubber_value,
       coalesce(sum(b.deduction_total), 0) as deduction_total,
-      count(*) filter (where not b.has_price) as unpriced_bill_count,
-      count(*) filter (where b.has_pending_approval) as pending_approval_count
-    from customer_bill_facts b
+      count(*) filter (
+        where b.receipt_kind = 'customer' and not b.has_price
+      ) as unpriced_bill_count,
+      count(*) filter (
+        where b.receipt_kind = 'customer' and b.has_pending_approval
+      ) as pending_approval_count,
+      count(*) filter (where b.receipt_kind = 'cross_branch')
+        as cross_branch_bill_count,
+      coalesce(sum(b.net_weight) filter (
+        where b.receipt_kind = 'cross_branch'
+      ), 0) as cross_branch_net_weight,
+      coalesce(sum(b.rubber_value) filter (
+        where b.receipt_kind = 'cross_branch' and b.has_price
+      ), 0) as cross_branch_rubber_value,
+      count(*) filter (where b.receipt_kind = 'same_branch')
+        as same_branch_bill_count,
+      coalesce(sum(b.net_weight) filter (
+        where b.receipt_kind = 'same_branch'
+      ), 0) as same_branch_net_weight,
+      coalesce(sum(b.rubber_value) filter (
+        where b.receipt_kind = 'same_branch' and b.has_price
+      ), 0) as same_branch_rubber_value
+    from remaining_rubber_facts b
     where not b.has_verified_export
   ),
   seven_day_purchase as (
@@ -994,7 +1071,19 @@ CREATE OR REPLACE FUNCTION "private"."calculate_dashboard_summary"("p_location_i
       'rubberValue', round(rr.rubber_value, 2),
       'deductionTotal', round(rr.deduction_total, 2),
       'unpricedBillCount', rr.unpriced_bill_count,
-      'pendingApprovalCount', rr.pending_approval_count
+      'pendingApprovalCount', rr.pending_approval_count,
+      'branchReceipts', jsonb_build_object(
+        'crossBranch', jsonb_build_object(
+          'billCount', rr.cross_branch_bill_count,
+          'netWeight', round(rr.cross_branch_net_weight, 2),
+          'rubberValue', round(rr.cross_branch_rubber_value, 2)
+        ),
+        'sameBranch', jsonb_build_object(
+          'billCount', rr.same_branch_bill_count,
+          'netWeight', round(rr.same_branch_net_weight, 2),
+          'rubberValue', round(rr.same_branch_rubber_value, 2)
+        )
+      )
     ),
     'purchase7Days', jsonb_build_object(
       'paidTotal', round(sd.paid_total, 2),

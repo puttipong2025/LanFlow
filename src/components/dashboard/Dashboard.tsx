@@ -425,12 +425,14 @@ export function Dashboard({
   const summary = snapshot.data.summary;
   const nextCursor = history.data?.nextCursor ?? null;
   const visibleRows = history.isPlaceholderData ? [] : history.data?.rows ?? [];
+  const branchReceipts = summary?.rubberRemaining?.branchReceipts;
   const hasCurrentSummary = Boolean(
     summary?.cashToday
       && summary.rubberRemaining
+      && branchReceipts
       && summary.purchaseToday.averagePrice !== undefined,
   );
-  if (!summary || !hasCurrentSummary) {
+  if (!summary || !hasCurrentSummary || !branchReceipts) {
     return (
       <div className="space-y-5">
         <section className="rounded-xl border border-mint/80 bg-white p-6 text-center shadow-panel">
@@ -504,7 +506,7 @@ export function Dashboard({
             <div>
               <h2 className="text-balance text-lg font-bold text-ink">ภาพรวมบิลยาง</h2>
               <p className="mt-1 text-pretty text-sm text-ink/55">
-                ยอดสะสมไม่รวมบิลรับจากสาขาและบิลที่ส่งออกแล้ว · วันนี้ยังคงนับกิจกรรมรับซื้อจริง
+                ยอดสะสมรวมยางรับเข้าและไม่รวมรายการที่ส่งออกแล้ว · วันนี้นับเฉพาะบิลซื้อจากลูกค้า
               </p>
             </div>
             <div className="flex flex-wrap gap-2 text-xs font-semibold">
@@ -555,12 +557,27 @@ export function Dashboard({
               </p>
             </div>
             <div className="border-t border-mint/80 bg-white p-3.5 sm:col-span-2 xl:col-span-1 xl:border-l xl:border-t-0">
-              <p className="text-sm font-semibold text-ink/60">ยอดหักเงินสะสม</p>
+              <p className="text-sm font-semibold text-ink/60">ยอดหักจากบิลซื้อสะสม</p>
               <p className="mt-2 text-2xl font-bold tabular-nums text-ink">
                 {formatCurrency(summary.rubberRemaining.deductionTotal)}
               </p>
               <p className="mt-1 text-pretty text-sm text-ink/60">
                 วันนี้ {formatCurrency(summary.purchaseToday.deductionTotal)}
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            <div className="rounded-lg border border-mint/80 bg-mint/20 px-3 py-2.5">
+              <p className="text-balance text-sm font-semibold text-ink">รับจากสาขา</p>
+              <p className="mt-1 text-pretty text-sm tabular-nums text-ink/60">
+                {formatNumber(branchReceipts.crossBranch.billCount)} บิล · {formatNumber(branchReceipts.crossBranch.netWeight)} กก. · {formatCurrency(branchReceipts.crossBranch.rubberValue)}
+              </p>
+            </div>
+            <div className="rounded-lg border border-mint/80 bg-mint/20 px-3 py-2.5">
+              <p className="text-balance text-sm font-semibold text-ink">ยางคงเหลือภายในสาขา</p>
+              <p className="mt-1 text-pretty text-sm tabular-nums text-ink/60">
+                {formatNumber(branchReceipts.sameBranch.billCount)} บิล · {formatNumber(branchReceipts.sameBranch.netWeight)} กก. · {formatCurrency(branchReceipts.sameBranch.rubberValue)}
               </p>
             </div>
           </div>
