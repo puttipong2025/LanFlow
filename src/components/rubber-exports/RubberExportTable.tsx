@@ -34,6 +34,7 @@ export function RubberExportTable({
   onOpen,
   onEdit,
   onSale,
+  onRevert,
   onShare,
   onDelete,
 }: {
@@ -47,6 +48,7 @@ export function RubberExportTable({
   onOpen: (id: string) => void;
   onEdit: (row: RubberExportSummary) => void;
   onSale: (row: RubberExportSummary, soldOut: boolean) => void;
+  onRevert: (row: RubberExportSummary) => void;
   onShare: (row: RubberExportSummary) => void;
   onDelete: (row: RubberExportSummary) => void;
 }) {
@@ -117,6 +119,24 @@ export function RubberExportTable({
                       className="focus-ring inline-flex h-10 items-center gap-1 rounded-md bg-ink px-3 font-semibold text-white disabled:opacity-50">
                       {sharingId === row.id ? <Loader2 size={16} className="animate-spin" /> : <Share2 size={16} />}
                       {sharingId === row.id ? "กำลังสร้าง PDF" : "แชร์ PDF"}
+                    </button>
+                  )}
+                  {canVerify && row.status === "verified" && !row.soldOutAt && !row.receiptBillNo && (
+                    <button
+                      type="button"
+                      onClick={() => onRevert(row)}
+                      disabled={!online || Boolean(row.reportLockNo)}
+                      title={row.reportLockNo
+                        ? `ต้องลบรายงาน ${row.reportLockNo} ก่อน`
+                        : online ? `ย้อนกลับเป็นฉบับร่าง ${row.exportNo}` : "ต้องออนไลน์ก่อนย้อนกลับเป็นฉบับร่าง"}
+                      aria-label={row.reportLockNo
+                        ? `ย้อนกลับเป็นฉบับร่าง ${row.exportNo} ไม่ได้ ต้องลบรายงาน ${row.reportLockNo} ก่อน`
+                        : online
+                          ? `ย้อนกลับเป็นฉบับร่าง ${row.exportNo}`
+                          : `ย้อนกลับเป็นฉบับร่าง ${row.exportNo} ไม่ได้ ต้องออนไลน์ก่อน`}
+                      className="focus-ring inline-flex size-10 items-center justify-center rounded-md bg-actionSecondary text-white disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      <span aria-hidden="true" className="text-lg leading-none">↩️</span>
                     </button>
                   )}
                   {row.status === "verified" && !row.receiptBillNo && (

@@ -324,6 +324,14 @@ export function useRubberExports(locationId: string, online: boolean, operationa
     await reloadWithBadges();
   }
 
+  async function revertVerification(exportId: string) {
+    const response = await authFetch(`/api/lanflow/rubber-exports/${exportId}/verify`, {
+      method: "DELETE",
+    });
+    await assertApiResponse(response);
+    await reloadWithBadges();
+  }
+
   async function remove(exportId: string) {
     const scope = scopeVersion.current;
     const response = await authFetch(`/api/lanflow/rubber-exports/${exportId}`, {
@@ -366,6 +374,7 @@ export function useRubberExports(locationId: string, online: boolean, operationa
     replaceItems,
     setSoldOut,
     verify,
+    revertVerification,
     remove,
   };
 }

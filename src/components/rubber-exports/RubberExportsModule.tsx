@@ -163,6 +163,9 @@ export function RubberExportsModule({
     soldOut: boolean;
   } | null>(null);
   const [selling, setSelling] = useState(false);
+  const [pendingRevert, setPendingRevert] = useState<RubberExportSummary | null>(null);
+  const [reverting, setReverting] = useState(false);
+  const [revertError, setRevertError] = useState<string | null>(null);
   const detailController = useRef<AbortController | null>(null);
   const pdfShare = useSharePdf();
 
@@ -185,6 +188,9 @@ export function RubberExportsModule({
   useEffect(() => {
     setPendingDelete(null);
     setDeleting(false);
+    setPendingRevert(null);
+    setReverting(false);
+    setRevertError(null);
     return () => { deleteRequestVersion.current += 1; };
   }, [selectedLocation.id]);
 
@@ -289,6 +295,23 @@ export function RubberExportsModule({
       toast.error(error instanceof Error ? error.message : "เปลี่ยนสถานะขายไม่สำเร็จ");
     } finally {
       setSelling(false);
+    }
+  }
+
+  async function revertToDraft() {
+    if (!pendingRevert || !online || reverting || pendingRevert.reportLockNo) return;
+    setReverting(true);
+    setRevertError(null);
+    try {
+      await api.revertVerification(pendingRevert.id);
+      toast.success(`ย้อน ${pendingRevert.exportNo} เป็นฉบับร่างแล้ว`);
+      setPendingRevert(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "ย้อนรายการเป็นฉบับร่างไม่สำเร็จ";
+      setRevertError(message);
+      toast.error(message);
+    } finally {
+      setReverting(false);
     }
   }
 
@@ -412,6 +435,10 @@ export function RubberExportsModule({
           }}
           onEdit={(row) => void startEdit(row)}
           onSale={(row, soldOut) => setPendingSale({ row, soldOut })}
+          onRevert={(row) => {
+            setRevertError(null);
+            setPendingRevert(row);
+          }}
           onShare={(row) => void share(row)}
           onDelete={setPendingDelete}
         />
@@ -543,6 +570,27 @@ export function RubberExportsModule({
           onClose={closeDetails}
         />
       )}
+
+      <AlertDialog
+        open={Boolean(pendingRevert)}
+        title={`ย้อน ${pendingRevert?.exportNo ?? "รายการส่งออกยาง"} เป็นฉบับร่าง?`}
+        description="ข้อมูลน้ำหนักปัจจุบัน ค่าทำงาน ค่าใช้จ่าย ปลายทาง ผู้ตรวจสอบ เวลา และอายุยางที่ยืนยันไว้จะถูกล้าง แต่เลข REX ผู้สร้าง และชุดบิลเดิมจะยังอยู่"
+        confirmLabel="ย้อนกลับเป็นฉบับร่าง"
+        busy={reverting}
+        onCancel={() => {
+          if (!reverting) {
+            setPendingRevert(null);
+            setRevertError(null);
+          }
+        }}
+        onConfirm={() => void revertToDraft()}
+      >
+        {revertError && (
+          <p role="alert" className="mt-3 text-pretty text-sm font-semibold text-danger">
+            {revertError}
+          </p>
+        )}
+      </AlertDialog>
 
       <AlertDialog
         open={Boolean(pendingDelete)}

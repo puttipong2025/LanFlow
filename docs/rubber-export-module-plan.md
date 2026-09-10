@@ -36,16 +36,16 @@ Only these fields are editable:
 
 ### Verification
 
-Only a super admin or delegated system manager can verify. Verification requires valid current weight and a submitted work rate. The reviewer chooses:
+Only a super admin, system manager, or delegated Rubber Export admin can verify. Verification requires valid current weight and a submitted work rate. The reviewer chooses:
 
 - branch expense: the export's owning branch
 - external payment: no Income/Expense feed row
 
-Verification records the reviewer and server time and makes the export immutable.
+Verification records the reviewer and server time and keeps the export immutable while it remains verified. An unsold export with no active branch receipt or Report Lock may be reverted to a canonical draft by an authorized reviewer; the export identity, creator, aggregate snapshots, and item membership remain unchanged while verification, operational, destination, and official-age fields are cleared.
 
 ### Deletion
 
-Only a super admin or delegated system manager can soft-delete an export.
+Only a super admin, system manager, or delegated Rubber Export admin can soft-delete an export.
 
 - If an active report item references the export, deletion is blocked and returns the locking report number.
 - Successful deletion records the previous status, actor, and server time.
@@ -117,13 +117,14 @@ The server repeats every lock check inside the write transaction.
 
 ## Permission Matrix
 
-| Action | Assigned admin | Super admin / system manager | User |
-| --- | :---: | :---: | :---: |
-| View branch exports | Yes | Yes, all branches | No |
-| Preview/create/edit draft | Yes | Yes | No |
-| Verify | No | Yes | No |
-| Soft delete | No | Yes | No |
-| Share PDF for verified/deleted | Yes, assigned branch | Yes | No |
+| Action | Assigned admin | Delegated Rubber Export admin | Super admin / system manager | User |
+| --- | :---: | :---: | :---: | :---: |
+| View branch exports | Yes | Yes | Yes, all branches | No |
+| Preview/create/edit draft | Yes | Yes | Yes | No |
+| Verify | No | Yes, assigned branch | Yes | No |
+| Revert eligible verified export to draft | No | Yes, assigned branch | Yes | No |
+| Soft delete | No | Yes, assigned branch | Yes | No |
+| Share PDF for verified/deleted | Yes, assigned branch | Yes, assigned branch | Yes | No |
 
 UI guards are for experience only. API routes and security-definer RPCs recheck active user, role, delegated access, and branch scope.
 
@@ -159,7 +160,7 @@ Required invariants:
 - positive, non-null rubber-value snapshots whose parent total equals the rounded item sum
 - verified/deleted transition enforcement
 - current weight cannot exceed original weight
-- verified data cannot be updated
+- verified data cannot be updated except for the canonical verified-to-draft reset and existing sold marker transition
 
 ## API And RPC Boundaries
 
@@ -170,6 +171,7 @@ Next.js App Router endpoints remain thin authenticated wrappers over database RP
 - create draft
 - update draft
 - verify
+- revert verification with `DELETE /[exportId]/verify`
 - soft delete
 
 All responses use `Cache-Control: private, no-store, max-age=0`.
@@ -183,7 +185,7 @@ RPC transactions own:
 - document numbering
 - status transitions and audit
 - relation-lock checks
-- idempotent equivalent verify/delete retries
+- idempotent equivalent verify/revert/delete retries
 
 ## Direct PDF Share Contract
 
@@ -211,7 +213,9 @@ The former `/rubber-exports/[exportId]/print` route is removed. Old bookmarks re
 - invalid source weight or paid total blocks the entire create
 - concurrent creates cannot reserve the same bill or duplicate an export number
 - admin is branch-scoped; system manager has global access; user is denied
-- verified fields are immutable
+- verified fields are immutable except for the complete authorized revert-to-draft reset
+- revert preserves identity and item snapshots, clears verification/operational/official-age fields, and rejects sold, received, or report-locked exports
+- report creation and revert share the branch advisory lock so an active report never references a draft export
 - report-to-export and export-to-report lock order is enforced
 - delete releases active bill reservations without removing history
 
@@ -228,6 +232,7 @@ The former `/rubber-exports/[exportId]/print` route is removed. Old bookmarks re
 
 - selected-set preview matches the created item set
 - verification controls and disabled reasons match permissions and form state
+- eligible verified rows expose an icon-only revert action with a unique accessible name, confirmation dialog, and Report Lock guidance
 - source navigation opens the export
 - verified, deleted-verified, and deleted-draft PDF contracts render; active drafts have no share action
 - table and modal share paths both refetch detail and recover after success, cancel, fallback, or error
@@ -249,6 +254,7 @@ git diff --check
 
 - Migration: `20260724010000_rubber_exports.sql`
 - Value-snapshot migration: `20260820010000_rubber_export_rubber_value_snapshot.sql`
+- Revert-to-draft migration: `20260910010000_rubber_export_revert_to_draft.sql`
 - Tables: `rubber_exports`, `rubber_export_items`
 - Value snapshots: `rubber_exports.rubber_value_total`, `rubber_export_items.rubber_value_amount`
 - RPCs:
@@ -257,6 +263,7 @@ git diff --check
   - `create_rubber_export`
   - `update_rubber_export`
   - `verify_rubber_export_atomic`
+  - `revert_rubber_export_to_draft`
   - `delete_rubber_export`
 - API base: `/api/lanflow/rubber-exports`
 - PDF renderer: `src/lib/rubber-exports/rubber-export-pdf.ts`
@@ -281,3 +288,13 @@ Verified for the value-snapshot extension on 2026-08-21:
 - snapshot/catalog pgTAP passed 12/12 and the branch-receipt suite covered the multi-hop carried-cost chain
 - the generated `public,private` schema dump matches `supabase-schema.sql`
 - TypeScript, ESLint, the production build, and focused frontend/PDF tests passed
+
+Verified for the revert-to-draft extension on 2026-09-10:
+
+- full local migration replay and seed restore passed through `20260910010000_rubber_export_revert_to_draft.sql`
+- the complete pgTAP suite passed 423 tests; the focused Rubber Export subset passed 94 tests, including 19 revert assertions
+- the full Rubber Export Playwright file passed 8 tests; the new UI and report-race scenarios also passed three repeated runs
+- post-implementation scrutiny reproduced a delegated-permission revoke while the revert RPC waited on the report branch lock; the RPC now rechecks live branch authority after lock/re-read, and the same three-session repro is rejected without changing the verified export
+- TypeScript, ESLint, production build, service-worker checks, and normalized `public,private` schema parity passed
+- DB lint reported only the pre-existing volatility warning in `public.get_income_expense_operational_feed`
+- the feature diff passes `git diff --check`; the repository-wide command still reports the pre-existing trailing blank line in the unrelated user change `docs/troubleshooting.md`

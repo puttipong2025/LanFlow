@@ -545,6 +545,241 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
     }
   });
 
+  test("verified rows expose an accessible revert action with confirmation and lock guidance", async ({ browser }) => {
+    const context = await authContext(browser, "super_admin");
+    const me = await profile(context);
+    const locationId = me.locationIds[0];
+    const exportId = crypto.randomUUID();
+    let deleteAttempts = 0;
+    let reverted = false;
+    const page = await context.newPage();
+    const baseSummary = {
+      locationId,
+      locationName: "สาขาทดสอบ",
+      status: "verified" as const,
+      previousStatus: null,
+      originalWeightTotal: 100,
+      paidTotal: 1_000,
+      rubberValueTotal: 1_000,
+      averagePrice: 10,
+      currentWeight: 90,
+      weightLossPercent: 10,
+      workRate: 2,
+      otherOperatingCost: 10,
+      workTotal: 210,
+      expenseDestination: "branch" as const,
+      createdByName: me.name,
+      createdAt: "2026-09-10T01:00:00.000Z",
+      verifiedByName: me.name,
+      verifiedAt: "2026-09-10T02:00:00.000Z",
+      soldOutAt: null,
+      soldOutByName: null,
+      hasWexReservation: false,
+      deletedByName: null,
+      deletedAt: null,
+      itemCount: 1,
+      reportLockNo: null,
+      ageCalculatedAt: "2026-09-10T02:00:00.000Z",
+      averageAgeHours: 24,
+      oldestAgeHours: 24,
+      estimatedAgeItemCount: 0,
+      officialAgeCutoffAt: "2026-09-10T02:00:00.000Z",
+      officialAverageAgeHours: 24,
+      officialOldestAgeHours: 24,
+      officialEstimatedAgeItemCount: 0,
+      receiptBillId: null,
+      receiptBillNo: null,
+      receiptLocationName: null,
+    };
+
+    await page.route("**/api/lanflow/rubber-exports?*", async (route) => {
+      const active = reverted ? {
+        ...baseSummary,
+        id: exportId,
+        exportNo: "REX-REVERT-UI",
+        status: "draft" as const,
+        currentWeight: null,
+        weightLossPercent: null,
+        workRate: null,
+        otherOperatingCost: 0,
+        workTotal: null,
+        expenseDestination: null,
+        verifiedByName: null,
+        verifiedAt: null,
+        ageCalculatedAt: "2026-09-10T03:00:00.000Z",
+        officialAgeCutoffAt: null,
+        officialAverageAgeHours: null,
+        officialOldestAgeHours: null,
+        officialEstimatedAgeItemCount: null,
+      } : {
+        ...baseSummary,
+        id: exportId,
+        exportNo: "REX-REVERT-UI",
+      };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          exports: [
+            active,
+            { ...baseSummary, id: crypto.randomUUID(), exportNo: "REX-LOCKED-UI", reportLockNo: "RPT-LOCK-001" },
+            { ...baseSummary, id: crypto.randomUUID(), exportNo: "REX-SOLD-UI", soldOutAt: "2026-09-10T03:00:00.000Z" },
+            { ...baseSummary, id: crypto.randomUUID(), exportNo: "REX-RECEIVED-UI", receiptBillNo: "RB-001" },
+          ],
+          permissions: { canVerify: true, canDelete: true },
+          hasMore: false,
+          nextCursor: null,
+        }),
+      });
+    });
+    await page.route(`**/api/lanflow/rubber-exports/${exportId}/verify`, async (route) => {
+      expect(route.request().method()).toBe("DELETE");
+      deleteAttempts += 1;
+      if (deleteAttempts === 1) {
+        await route.fulfill({
+          status: 409,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "จำลองการย้อนสถานะไม่สำเร็จ" }),
+        });
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      reverted = true;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ id: exportId, exportNo: "REX-REVERT-UI", status: "draft" }),
+      });
+    });
+
+    try {
+      await page.goto("/");
+      await selectAppLocation(page, locationId);
+      await page.getByRole("button", { name: /^ส่งออกยาง/ }).click();
+
+      const row = page.locator("tbody tr").filter({ hasText: "REX-REVERT-UI" });
+      const revertButton = row.getByRole("button", { name: "ย้อนกลับเป็นฉบับร่าง REX-REVERT-UI" });
+      await expect(revertButton).toBeVisible();
+      await expect(revertButton).toHaveText("↩️");
+
+      const lockedButton = page.locator("tbody tr").filter({ hasText: "REX-LOCKED-UI" })
+        .getByRole("button", {
+          name: "ย้อนกลับเป็นฉบับร่าง REX-LOCKED-UI ไม่ได้ ต้องลบรายงาน RPT-LOCK-001 ก่อน",
+        });
+      await expect(lockedButton).toBeDisabled();
+      await expect(lockedButton).toHaveAttribute("title", "ต้องลบรายงาน RPT-LOCK-001 ก่อน");
+      await expect(page.locator("tbody tr").filter({ hasText: "REX-SOLD-UI" })
+        .getByRole("button", { name: /ย้อนกลับเป็นฉบับร่าง/ })).toHaveCount(0);
+      await expect(page.locator("tbody tr").filter({ hasText: "REX-RECEIVED-UI" })
+        .getByRole("button", { name: /ย้อนกลับเป็นฉบับร่าง/ })).toHaveCount(0);
+
+      await revertButton.click();
+      let dialog = page.getByRole("alertdialog", { name: "ย้อน REX-REVERT-UI เป็นฉบับร่าง?" });
+      await expect(dialog).toContainText("ข้อมูลน้ำหนักปัจจุบัน");
+      await expect(dialog).toContainText("เลข REX ผู้สร้าง และชุดบิลเดิมจะยังอยู่");
+      await dialog.getByRole("button", { name: "ยกเลิก", exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+      expect(deleteAttempts).toBe(0);
+
+      await revertButton.click();
+      dialog = page.getByRole("alertdialog", { name: "ย้อน REX-REVERT-UI เป็นฉบับร่าง?" });
+      await dialog.getByRole("button", { name: "ย้อนกลับเป็นฉบับร่าง", exact: true }).click();
+      await expect(dialog.getByRole("alert")).toHaveText("จำลองการย้อนสถานะไม่สำเร็จ");
+      await dialog.getByRole("button", { name: "ย้อนกลับเป็นฉบับร่าง", exact: true }).click();
+      await expect(dialog.getByRole("button", { name: "ย้อนกลับเป็นฉบับร่าง", exact: true })).toBeDisabled();
+      await expect(page.getByText("ย้อน REX-REVERT-UI เป็นฉบับร่างแล้ว")).toBeVisible();
+      await expect(row).toContainText("ฉบับร่าง");
+      await expect(row.getByRole("button", { name: /ย้อนกลับเป็นฉบับร่าง/ })).toHaveCount(0);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("revert and report creation serialize without reporting a draft export", async ({ browser }) => {
+    test.setTimeout(60_000);
+    const context = await authContext(browser, "super_admin");
+    const me = await profile(context);
+    const db = service();
+    const locationId = crypto.randomUUID();
+    const exportId = crypto.randomUUID();
+    let reportId: string | null = null;
+
+    try {
+      expect((await db.from("locations").insert({
+        id: locationId,
+        name: `สาขา Revert Race ${locationId.slice(0, 6)}`,
+        code: `RR${locationId.slice(0, 6)}`,
+        is_active: true,
+      })).error).toBeNull();
+      expect((await db.from("rubber_exports").insert({
+        id: exportId,
+        export_no: `REX-RACE-${exportId.slice(0, 8)}`,
+        export_date: "2026-09-10",
+        sequence_no: 991,
+        location_id: locationId,
+        status: "verified",
+        original_weight_total: 100,
+        paid_total: 1_000,
+        rubber_value_total: 1_000,
+        average_price: 10,
+        current_weight: 90,
+        weight_loss_percent: 10,
+        work_rate: 2,
+        other_operating_cost: 10,
+        work_total: 210,
+        expense_destination: "branch",
+        created_by_user_id: me.id,
+        created_by_name: me.name,
+        created_by_phone: me.phone,
+        verified_by_user_id: me.id,
+        verified_by_name: me.name,
+        verified_by_phone: me.phone,
+        verified_at: new Date().toISOString(),
+        age_cutoff_at: new Date().toISOString(),
+        average_age_hours: 0,
+        oldest_age_hours: 0,
+        estimated_age_item_count: 0,
+      })).error).toBeNull();
+
+      const [revertResponse, reportResponse] = await Promise.all([
+        context.request.delete(`/api/lanflow/rubber-exports/${exportId}/verify`),
+        context.request.post("/api/lanflow/reports", { data: { locationId } }),
+      ]);
+      const successfulResponses = [revertResponse, reportResponse]
+        .filter((response) => response.ok());
+      expect(successfulResponses).toHaveLength(1);
+
+      if (reportResponse.ok()) {
+        reportId = (await reportResponse.json() as { id: string }).id;
+      }
+      const [{ data: storedExport, error: exportError }, { data: activeItems, error: itemError }] =
+        await Promise.all([
+          db.from("rubber_exports").select("status").eq("id", exportId).single(),
+          db.from("report_items").select("id").eq("entity_type", "rubber_export")
+            .eq("entity_id", exportId).eq("active", true),
+        ]);
+      expect(exportError).toBeNull();
+      expect(itemError).toBeNull();
+      expect(storedExport?.status === "draft" && Boolean(activeItems?.length)).toBeFalsy();
+
+      if (reportId) {
+        expect(revertResponse.status()).toBe(409);
+        expect((await revertResponse.json() as { error: string }).error).toContain("REPORT_LOCKED");
+      } else {
+        expect(revertResponse.ok(), await revertResponse.text()).toBeTruthy();
+        expect(storedExport?.status).toBe("draft");
+      }
+    } finally {
+      if (reportId) await context.request.delete(`/api/lanflow/reports/${reportId}`);
+      await db.from("report_items").delete().eq("location_id", locationId);
+      await db.from("report_batches").delete().eq("location_id", locationId);
+      await db.from("rubber_exports").delete().eq("id", exportId);
+      await db.from("dashboard_money_events").delete().eq("location_id", locationId);
+      await db.from("locations").delete().eq("id", locationId);
+      await context.close();
+    }
+  });
+
   test("operational views are branch-scoped and refresh after deletion", async ({ browser }) => {
     test.setTimeout(60_000);
     const context = await authContext(browser, "super_admin");

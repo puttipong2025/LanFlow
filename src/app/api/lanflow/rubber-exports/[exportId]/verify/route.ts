@@ -69,3 +69,34 @@ export async function POST(request: Request, context: RouteContext) {
     headers: { "Cache-Control": "private, no-store, max-age=0" },
   });
 }
+
+export async function DELETE(request: Request, context: RouteContext) {
+  const result = await requireAuth(request);
+  if (!result.ok) return result.response;
+  const { exportId } = await context.params;
+  if (!isUuid(exportId)) {
+    return NextResponse.json({ error: "รหัสรายการส่งออกไม่ถูกต้อง" }, { status: 400 });
+  }
+  if (!hasSystemManagerAccess(result.auth)) {
+    const { data: scopedExport, error: scopeError } = await result.supabase
+      .from("rubber_exports")
+      .select("location_id")
+      .eq("id", exportId)
+      .maybeSingle();
+    if (scopeError) return rubberExportErrorResponse(scopeError.message);
+    if (!scopedExport || !canAdministerRubberExports(result.auth, scopedExport.location_id)) {
+      return NextResponse.json(
+        { error: "ไม่มีสิทธิ์ตรวจสอบรายการส่งออกของสาขานี้" },
+        { status: 403 },
+      );
+    }
+  }
+
+  const { data, error } = await result.supabase.rpc("revert_rubber_export_to_draft", {
+    p_export_id: exportId,
+  });
+  if (error) return rubberExportErrorResponse(error.message);
+  return NextResponse.json(data, {
+    headers: { "Cache-Control": "private, no-store, max-age=0" },
+  });
+}
