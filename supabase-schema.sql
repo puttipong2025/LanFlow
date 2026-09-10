@@ -16473,6 +16473,95 @@ end; $$;
 ALTER FUNCTION "public"."get_rubber_export_page_ids"("p_location_id" "uuid", "p_view" "text", "p_cursor_created_at" timestamp with time zone, "p_cursor_id" "uuid", "p_page_size" integer) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."get_rubber_weight_alert_check"() RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  settings public.dashboard_refresh_settings%rowtype;
+  candidates jsonb;
+begin
+  if not private.can_access_business_modules() then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์ตรวจการแจ้งเตือนน้ำหนัก';
+  end if;
+
+  select *
+  into strict settings
+  from public.dashboard_refresh_settings
+  where id = true;
+
+  with eligible as (
+    select
+      l.id,
+      l.name,
+      l.created_at,
+      case
+        when jsonb_typeof(s.summary #> '{rubberRemaining,netWeight}') = 'number'
+          then (s.summary #>> '{rubberRemaining,netWeight}')::numeric
+        else null
+      end as net_weight
+    from public.locations l
+    join public.dashboard_branch_snapshots s on s.location_id = l.id
+    where l.is_active = true
+      and public.can_access_location(l.id)
+      and s.status = 'ready'
+  )
+  select coalesce(
+    jsonb_agg(
+      jsonb_build_object(
+        'locationId', eligible.id,
+        'locationName', eligible.name,
+        'netWeight', eligible.net_weight
+      )
+      order by eligible.net_weight desc, eligible.created_at, eligible.id
+    ),
+    '[]'::jsonb
+  )
+  into candidates
+  from eligible
+  where eligible.net_weight > settings.rubber_alert_threshold_kg;
+
+  return jsonb_build_object(
+    'config', jsonb_build_object(
+      'thresholdKg', settings.rubber_alert_threshold_kg,
+      'intervalMinutes', settings.rubber_alert_interval_minutes
+    ),
+    'candidates', candidates
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_rubber_weight_alert_check"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_rubber_weight_alert_config"() RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  settings public.dashboard_refresh_settings%rowtype;
+begin
+  if not private.can_access_business_modules() then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์อ่านค่าการแจ้งเตือนน้ำหนัก';
+  end if;
+
+  select *
+  into strict settings
+  from public.dashboard_refresh_settings
+  where id = true;
+
+  return jsonb_build_object(
+    'thresholdKg', settings.rubber_alert_threshold_kg,
+    'intervalMinutes', settings.rubber_alert_interval_minutes
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_rubber_weight_alert_config"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."get_stock_balance"("p_location_id" "uuid", "p_product_id" "uuid") RETURNS numeric
     LANGUAGE "sql" STABLE
     AS $$
@@ -20024,6 +20113,46 @@ $$;
 ALTER FUNCTION "public"."save_rubber_bill_date_approval_setting"("p_non_current_date_requires_approval" boolean) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."save_rubber_weight_alert_config"("p_threshold_kg" integer, "p_interval_minutes" integer) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  actor_name text;
+begin
+  perform private.dashboard_require_manager();
+
+  if p_threshold_kg is null
+    or p_threshold_kg < 1
+    or p_threshold_kg > 1000000
+    or p_interval_minutes is null
+    or p_interval_minutes < 1
+    or p_interval_minutes > 1440
+  then
+    raise exception 'RUBBER_WEIGHT_ALERT_INVALID: ค่าการแจ้งเตือนไม่ถูกต้อง';
+  end if;
+
+  select p.name
+  into actor_name
+  from public.profiles p
+  where p.id = auth.uid();
+
+  update public.dashboard_refresh_settings
+  set rubber_alert_threshold_kg = p_threshold_kg,
+      rubber_alert_interval_minutes = p_interval_minutes,
+      updated_by_user_id = auth.uid(),
+      updated_by_name = actor_name,
+      updated_at = now()
+  where id = true;
+
+  return public.get_rubber_weight_alert_config();
+end;
+$$;
+
+
+ALTER FUNCTION "public"."save_rubber_weight_alert_config"("p_threshold_kg" integer, "p_interval_minutes" integer) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."save_telegram_badge_config"("payload" "jsonb") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -23522,8 +23651,12 @@ CREATE TABLE IF NOT EXISTS "public"."dashboard_refresh_settings" (
     "updated_by_name" "text",
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "rubber_alert_threshold_kg" integer DEFAULT 10000 NOT NULL,
+    "rubber_alert_interval_minutes" integer DEFAULT 60 NOT NULL,
     CONSTRAINT "dashboard_refresh_settings_id_check" CHECK (("id" = true)),
-    CONSTRAINT "dashboard_refresh_settings_interval_minutes_check" CHECK ((("interval_minutes" >= 10) AND ("interval_minutes" <= 1440)))
+    CONSTRAINT "dashboard_refresh_settings_interval_minutes_check" CHECK ((("interval_minutes" >= 10) AND ("interval_minutes" <= 1440))),
+    CONSTRAINT "dashboard_refresh_settings_rubber_alert_interval_minutes_check" CHECK ((("rubber_alert_interval_minutes" >= 1) AND ("rubber_alert_interval_minutes" <= 1440))),
+    CONSTRAINT "dashboard_refresh_settings_rubber_alert_threshold_kg_check" CHECK ((("rubber_alert_threshold_kg" >= 1) AND ("rubber_alert_threshold_kg" <= 1000000)))
 );
 
 
@@ -28297,6 +28430,18 @@ GRANT ALL ON FUNCTION "public"."get_rubber_export_page_ids"("p_location_id" "uui
 
 
 
+REVOKE ALL ON FUNCTION "public"."get_rubber_weight_alert_check"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_rubber_weight_alert_check"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."get_rubber_weight_alert_check"() TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_rubber_weight_alert_config"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_rubber_weight_alert_config"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."get_rubber_weight_alert_config"() TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."get_stock_balance"("p_location_id" "uuid", "p_product_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_stock_balance"("p_location_id" "uuid", "p_product_id" "uuid") TO "authenticated";
 
@@ -28843,6 +28988,12 @@ GRANT ALL ON FUNCTION "public"."save_rubber_bill_approval_settings"("p_edit_wind
 
 REVOKE ALL ON FUNCTION "public"."save_rubber_bill_date_approval_setting"("p_non_current_date_requires_approval" boolean) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."save_rubber_bill_date_approval_setting"("p_non_current_date_requires_approval" boolean) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."save_rubber_weight_alert_config"("p_threshold_kg" integer, "p_interval_minutes" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."save_rubber_weight_alert_config"("p_threshold_kg" integer, "p_interval_minutes" integer) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."save_rubber_weight_alert_config"("p_threshold_kg" integer, "p_interval_minutes" integer) TO "service_role";
 
 
 

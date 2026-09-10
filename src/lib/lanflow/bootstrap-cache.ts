@@ -3,12 +3,17 @@ import {
   BRANCH_CONFIRMATION_DEFAULT_MINUTES,
   validBranchConfirmationMinutes,
 } from "@/lib/lanflow/branch-create-guard";
+import {
+  resolveRubberWeightAlertConfig,
+  type RubberWeightAlertConfig,
+} from "@/lib/lanflow/rubber-weight-alert";
 
 type BootstrapCacheData = {
   locations: Location[];
   profile: Profile;
   selectedLocationId: string;
   confirmationMinutes: number;
+  rubberWeightAlertConfig: RubberWeightAlertConfig;
 };
 
 function lastLocationPreferenceKey(userId: string) {
@@ -78,6 +83,9 @@ export function readBootstrapCache(userId: string): BootstrapCacheData | null {
       confirmationMinutes: validBranchConfirmationMinutes(parsed.confirmationMinutes)
         ? parsed.confirmationMinutes
         : BRANCH_CONFIRMATION_DEFAULT_MINUTES,
+      rubberWeightAlertConfig: resolveRubberWeightAlertConfig(
+        parsed.rubberWeightAlertConfig,
+      ),
     };
   } catch {
     return null;

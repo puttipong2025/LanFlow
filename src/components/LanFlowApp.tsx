@@ -15,6 +15,7 @@ import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { useLanFlowOfflineSyncCoordinator } from "@/hooks/useLanFlowOfflineSyncCoordinator";
 import { useActionableBadges } from "@/hooks/useActionableBadges";
 import { useBranchCreateGuard } from "@/hooks/useBranchCreateGuard";
+import { useRubberWeightAlert } from "@/hooks/useRubberWeightAlert";
 
 import {
   readBootstrapCache,
@@ -58,6 +59,12 @@ import { isDeviceOnline } from "@/lib/connectivity";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { useServiceUnavailable } from "@/lib/service-health";
 import { useRubberBillOcrQueue, type RubberBillOcrQueueItem } from "@/hooks/useRubberBillOcrQueue";
+import { RubberWeightAlertDialog } from "@/components/lanflow/RubberWeightAlertDialog";
+import {
+  DEFAULT_RUBBER_WEIGHT_ALERT_CONFIG,
+  resolveRubberWeightAlertConfig,
+  type RubberWeightAlertConfig,
+} from "@/lib/lanflow/rubber-weight-alert";
 
 export function LanFlowApp() {
   const auth = useAuthContext();
@@ -231,6 +238,9 @@ function BusinessLanFlowApp() {
   const [confirmationMinutes, setConfirmationMinutes] = useState(
     BRANCH_CONFIRMATION_DEFAULT_MINUTES,
   );
+  const [rubberWeightAlertConfig, setRubberWeightAlertConfig] = useState(
+    DEFAULT_RUBBER_WEIGHT_ALERT_CONFIG,
+  );
   const serviceUnavailable = useServiceUnavailable();
 
   useEffect(() => {
@@ -239,6 +249,7 @@ function BusinessLanFlowApp() {
     async function loadDatabaseData() {
       setIsLoaded(false);
       setConfirmationMinutes(BRANCH_CONFIRMATION_DEFAULT_MINUTES);
+      setRubberWeightAlertConfig(DEFAULT_RUBBER_WEIGHT_ALERT_CONFIG);
       if (!authProfileId) {
         setIsLoaded(true);
         return;
@@ -255,6 +266,7 @@ function BusinessLanFlowApp() {
             cached.selectedLocationId,
           ));
           setConfirmationMinutes(cached.confirmationMinutes);
+          setRubberWeightAlertConfig(cached.rubberWeightAlertConfig);
         }
         setIsLoaded(true);
         return;
@@ -267,6 +279,7 @@ function BusinessLanFlowApp() {
           locations: Location[];
           profile: Profile;
           confirmationMinutes: number | null;
+          rubberWeightAlertConfig: unknown;
         };
         if (ignore) return;
 
@@ -275,10 +288,15 @@ function BusinessLanFlowApp() {
           data.confirmationMinutes,
           cached?.confirmationMinutes,
         );
+        const nextRubberWeightAlertConfig = resolveRubberWeightAlertConfig(
+          data.rubberWeightAlertConfig,
+          cached?.rubberWeightAlertConfig,
+        );
 
         setLocations(data.locations);
         setProfile(data.profile);
         setConfirmationMinutes(nextConfirmationMinutes);
+        setRubberWeightAlertConfig(nextRubberWeightAlertConfig);
         
         const locId = resolveSelectedLocationId(
           data.locations,
@@ -297,6 +315,7 @@ function BusinessLanFlowApp() {
             profile: data.profile,
             selectedLocationId: locId,
             confirmationMinutes: nextConfirmationMinutes,
+            rubberWeightAlertConfig: nextRubberWeightAlertConfig,
           });
         }
 
@@ -308,6 +327,7 @@ function BusinessLanFlowApp() {
           setLocations(cached.locations);
           setProfile(cached.profile);
           setConfirmationMinutes(cached.confirmationMinutes);
+          setRubberWeightAlertConfig(cached.rubberWeightAlertConfig);
           const cachedLocationId = resolveSelectedLocationId(
             cached.locations,
             cached.profile.locationIds,
@@ -363,9 +383,10 @@ function BusinessLanFlowApp() {
         profile,
         selectedLocationId,
         confirmationMinutes,
+        rubberWeightAlertConfig,
       });
     }
-  }, [selectedLocationId, locations, profile, authProfileId, isLoaded, online, confirmationMinutes]);
+  }, [selectedLocationId, locations, profile, authProfileId, isLoaded, online, confirmationMinutes, rubberWeightAlertConfig]);
 
   useLanFlowOfflineSyncCoordinator({
     locationId: selectedLocationId,
@@ -385,6 +406,22 @@ function BusinessLanFlowApp() {
     isLoaded,
     online,
     confirmationMinutes,
+  });
+  const updateRubberWeightAlertConfig = useCallback((nextConfig: RubberWeightAlertConfig) => {
+    setRubberWeightAlertConfig((current) => (
+      current.thresholdKg === nextConfig.thresholdKg
+        && current.intervalMinutes === nextConfig.intervalMinutes
+        ? current
+        : nextConfig
+    ));
+  }, []);
+  const rubberWeightAlert = useRubberWeightAlert({
+    userId: profile.id,
+    enabled: isLoaded
+      && online
+      && (profile.role === "admin" || profile.role === "super_admin"),
+    config: rubberWeightAlertConfig,
+    onConfigChange: updateRubberWeightAlertConfig,
   });
 
   useEffect(() => {
@@ -695,11 +732,17 @@ function BusinessLanFlowApp() {
             locations={locations}
             profile={profile}
             confirmationMinutes={confirmationMinutes}
+            rubberWeightAlertConfig={rubberWeightAlertConfig}
+            onRubberWeightAlertSaved={updateRubberWeightAlertConfig}
             onAddLocation={addLocation}
           />
         )}
       </section>
       {branchCreateDialog}
+      <RubberWeightAlertDialog
+        alert={rubberWeightAlert.alert}
+        onAcknowledge={rubberWeightAlert.acknowledge}
+      />
     </main>
   );
 }

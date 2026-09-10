@@ -28,6 +28,7 @@ export default defineConfig({
     '**/rubber-bill-calculations.spec.ts',
     '**/rubber-bill-print.spec.ts',
     '**/rubber-bill-validation.spec.ts',
+    '**/rubber-weight-alert-state.spec.ts',
     '**/rubber-bills/rubber-bill-ocr-queue.spec.ts',
     '**/rubber-evidence-selectors.spec.ts',
     '**/rubber-export-age.spec.ts',

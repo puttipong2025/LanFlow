@@ -6,6 +6,7 @@ import { AdminContent } from "@/components/admin/AdminContent";
 import { authFetch } from "@/lib/auth-fetch";
 import { canManageFeatureAccess, canManageSystemFeatures } from "@/lib/permissions";
 import appSwal from "@/lib/swal";
+import type { RubberWeightAlertConfig } from "@/lib/lanflow/rubber-weight-alert";
 import type {
   AdminPasswordResetRequest,
   AdminPasswordResetResponse,
@@ -36,11 +37,13 @@ function showAdminFeedback(kind: "success" | "error", message: string, target?: 
   });
 }
 
-export function AdminModule({ locations, profile, confirmationMinutes, onAddLocation }: {
+export function AdminModule({ locations, profile, confirmationMinutes, rubberWeightAlertConfig, onAddLocation, onRubberWeightAlertSaved }: {
   locations: Location[];
   profile: Profile;
   confirmationMinutes: number;
+  rubberWeightAlertConfig: RubberWeightAlertConfig;
   onAddLocation: (request: { name: string; code: string; requestId: string }) => Promise<boolean>;
+  onRubberWeightAlertSaved: (config: RubberWeightAlertConfig) => void;
 }) {
   const [users, setUsers] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
@@ -180,10 +183,11 @@ export function AdminModule({ locations, profile, confirmationMinutes, onAddLoca
 
   return <AdminContent
     locations={locations} users={users} loading={loading} updatingUserId={updatingUserId} profile={profile}
-    confirmationMinutes={confirmationMinutes}
+    confirmationMinutes={confirmationMinutes} rubberWeightAlertConfig={rubberWeightAlertConfig}
     canManageSystem={canManageSystem} canManagePermissions={canManagePermissions}
     onCreateUser={createUser} onCreateLocation={createLocation}
     onSaveProfile={saveProfile} onResetPassword={resetPassword} onLoadCurrentPassword={loadCurrentPassword}
+    onRubberWeightAlertSaved={onRubberWeightAlertSaved}
     onToggleRole={(id, role) => {
       const nextRole = role === "admin" ? "user" : "admin";
       void confirmedPatch(id, "role", { role: nextRole }, "เปลี่ยนบทบาท?", () => nextRole === "user"

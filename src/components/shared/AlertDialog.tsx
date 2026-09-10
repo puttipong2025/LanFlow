@@ -33,13 +33,19 @@ export function AlertDialog({
   children,
 }: AlertDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
   const titleId = useId();
   const descriptionId = useId();
 
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
-    if (open && !dialog.open) dialog.showModal();
+    if (open && !dialog.open) {
+      previousFocusRef.current = document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+      dialog.showModal();
+    }
     if (!open && dialog.open) dialog.close();
   }, [open]);
 
@@ -49,7 +55,11 @@ export function AlertDialog({
       role="alertdialog"
       aria-labelledby={titleId}
       aria-describedby={descriptionId}
-      onClose={onClosed}
+      onClose={() => {
+        previousFocusRef.current?.focus();
+        previousFocusRef.current = null;
+        onClosed?.();
+      }}
       onCancel={(event) => {
         event.preventDefault();
         if (!busy) onCancel();

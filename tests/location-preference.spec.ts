@@ -104,9 +104,17 @@ test.describe("last location preference", () => {
     expect(readBootstrapCache("user-a")?.confirmationMinutes).toBe(15);
 
     writeBootstrapCache("user-a", {
-      locations, profile, selectedLocationId: "location-a", confirmationMinutes: 30,
+      locations,
+      profile,
+      selectedLocationId: "location-a",
+      confirmationMinutes: 30,
+      rubberWeightAlertConfig: { thresholdKg: 20_000, intervalMinutes: 90 },
     });
     expect(readBootstrapCache("user-a")?.confirmationMinutes).toBe(30);
+    expect(readBootstrapCache("user-a")?.rubberWeightAlertConfig).toEqual({
+      thresholdKg: 20_000,
+      intervalMinutes: 90,
+    });
     expect(resolveBranchConfirmationMinutes(null, 30)).toBe(30);
     expect(resolveBranchConfirmationMinutes(45, 30)).toBe(45);
     expect(resolveBranchConfirmationMinutes(0, 30)).toBe(30);

@@ -8,25 +8,29 @@ import { TablePageSizeSelect, TablePagination } from "@/components/shared/TableP
 import { isPrimaryLocationLocked } from "@/components/admin/profile-draft";
 import { HistoryRetentionSettings } from "@/components/admin/HistoryRetentionSettings";
 import { BranchConfirmationSettings } from "@/components/admin/BranchConfirmationSettings";
+import { RubberWeightAlertSettings } from "@/components/admin/RubberWeightAlertSettings";
 import { cn } from "@/lib/cn";
+import type { RubberWeightAlertConfig } from "@/lib/lanflow/rubber-weight-alert";
 import type { AppRole, Location, Profile } from "@/types";
 
 type NewUser = { name: string; phone: string; password: string; role: "user" | "admin"; locationId: string };
 type ProfileDraft = { name: string; locationIds: string[]; primaryLocationId: string | null };
-type AdminTab = "employees" | "branches" | "history" | "branch-confirmation";
+type AdminTab = "employees" | "branches" | "history" | "branch-confirmation" | "rubber-weight-alert";
 
 function isManagerTab(tab: AdminTab) {
-  return tab === "history" || tab === "branch-confirmation";
+  return tab === "history" || tab === "branch-confirmation" || tab === "rubber-weight-alert";
 }
 
-export function AdminContent({ locations, users, loading, updatingUserId, profile, confirmationMinutes, canManageSystem, canManagePermissions, onCreateUser, onCreateLocation, onSaveProfile, onResetPassword, onLoadCurrentPassword, onToggleRole, onToggleStatus, onToggleSystemManager, onToggleMoneyTransfer, onToggleTimePayroll, onToggleRubberExports }: {
+export function AdminContent({ locations, users, loading, updatingUserId, profile, confirmationMinutes, rubberWeightAlertConfig, canManageSystem, canManagePermissions, onCreateUser, onCreateLocation, onSaveProfile, onResetPassword, onLoadCurrentPassword, onToggleRole, onToggleStatus, onToggleSystemManager, onToggleMoneyTransfer, onToggleTimePayroll, onToggleRubberExports, onRubberWeightAlertSaved }: {
   locations: Location[]; users: Profile[]; loading: boolean; updatingUserId: string | null; profile: Profile; canManageSystem: boolean; canManagePermissions: boolean;
   confirmationMinutes: number;
+  rubberWeightAlertConfig: RubberWeightAlertConfig;
   onCreateUser: (value: NewUser) => Promise<boolean>; onCreateLocation: (value: { name: string; code: string; requestId: string }) => Promise<boolean>;
   onSaveProfile: (user: Profile, value: ProfileDraft) => Promise<boolean>;
   onResetPassword: (user: Profile, password: string, confirmation: string, requestId: string) => Promise<boolean>;
   onLoadCurrentPassword: (userId: string) => Promise<{ available: true; password: string } | { available: false }>;
   onToggleRole: (id: string, role: string) => void; onToggleStatus: (id: string, status: boolean) => void; onToggleSystemManager: (id: string, value: boolean) => void; onToggleMoneyTransfer: (id: string, value: boolean) => void; onToggleTimePayroll: (id: string, value: boolean) => void; onToggleRubberExports: (id: string, value: boolean) => void;
+  onRubberWeightAlertSaved: (config: RubberWeightAlertConfig) => void;
 }) {
   const [tab, setTab] = useState<AdminTab>("employees");
   const [search, setSearch] = useState("");
@@ -63,13 +67,19 @@ export function AdminContent({ locations, users, loading, updatingUserId, profil
           onAccessDenied={() => setTab("employees")}
           onSaved={setAdminConfirmationMinutes}
         />;
+      case "rubber-weight-alert":
+        return <RubberWeightAlertSettings
+          initialConfig={rubberWeightAlertConfig}
+          onAccessDenied={() => setTab("employees")}
+          onSaved={onRubberWeightAlertSaved}
+        />;
     }
   }
 
   return <div className="space-y-5">
     <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel">
       <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-balance text-lg font-bold text-ink">ผู้ดูแลระบบ</h2><p className="text-pretty text-sm text-ink/60">{profile.name} · {profile.phone}</p></div><div className="flex gap-2">{(canManageSystem || profile.role === "admin") && <button type="button" disabled={loading} onClick={() => setCreateUserOpen(true)} className="focus-ring inline-flex h-10 items-center gap-2 rounded-md bg-leaf px-3 text-sm font-semibold text-white disabled:cursor-wait disabled:opacity-50"><UserPlus size={16} />เพิ่มพนักงาน</button>}{canManageSystem && <button type="button" onClick={() => setCreateBranchOpen(true)} className="focus-ring inline-flex h-10 items-center gap-2 rounded-md bg-river px-3 text-sm font-semibold text-white"><Plus size={16} />เพิ่มสาขา</button>}</div></div>
-      <div className="mt-4 flex flex-wrap gap-2 border-b border-black/10" aria-label="เลือกส่วนจัดการ"><button type="button" aria-pressed={tab === "employees"} onClick={() => setTab("employees")} className={`focus-ring border-b-2 px-3 py-2 text-sm font-semibold ${tab === "employees" ? "border-leaf text-leaf" : "border-transparent text-ink/60"}`}>พนักงาน</button><button type="button" aria-pressed={tab === "branches"} onClick={() => setTab("branches")} className={`focus-ring border-b-2 px-3 py-2 text-sm font-semibold ${tab === "branches" ? "border-leaf text-leaf" : "border-transparent text-ink/60"}`}>สาขา</button>{canManageSystem && <><button type="button" aria-pressed={tab === "history"} onClick={() => setTab("history")} className={`focus-ring border-b-2 px-3 py-2 text-sm font-semibold ${tab === "history" ? "border-leaf text-leaf" : "border-transparent text-ink/60"}`}>การเก็บประวัติ</button><button type="button" aria-pressed={tab === "branch-confirmation"} onClick={() => setTab("branch-confirmation")} className={`focus-ring border-b-2 px-3 py-2 text-sm font-semibold ${tab === "branch-confirmation" ? "border-leaf text-leaf" : "border-transparent text-ink/60"}`}>ยืนยันสาขา</button></>}</div>
+      <div className="mt-4 flex flex-wrap gap-2 border-b border-black/10" aria-label="เลือกส่วนจัดการ"><button type="button" aria-pressed={tab === "employees"} onClick={() => setTab("employees")} className={`focus-ring border-b-2 px-3 py-2 text-sm font-semibold ${tab === "employees" ? "border-leaf text-leaf" : "border-transparent text-ink/60"}`}>พนักงาน</button><button type="button" aria-pressed={tab === "branches"} onClick={() => setTab("branches")} className={`focus-ring border-b-2 px-3 py-2 text-sm font-semibold ${tab === "branches" ? "border-leaf text-leaf" : "border-transparent text-ink/60"}`}>สาขา</button>{canManageSystem && <><button type="button" aria-pressed={tab === "history"} onClick={() => setTab("history")} className={`focus-ring border-b-2 px-3 py-2 text-sm font-semibold ${tab === "history" ? "border-leaf text-leaf" : "border-transparent text-ink/60"}`}>การเก็บประวัติ</button><button type="button" aria-pressed={tab === "branch-confirmation"} onClick={() => setTab("branch-confirmation")} className={`focus-ring border-b-2 px-3 py-2 text-sm font-semibold ${tab === "branch-confirmation" ? "border-leaf text-leaf" : "border-transparent text-ink/60"}`}>ยืนยันสาขา</button><button type="button" aria-pressed={tab === "rubber-weight-alert"} onClick={() => setTab("rubber-weight-alert")} className={`focus-ring border-b-2 px-3 py-2 text-sm font-semibold ${tab === "rubber-weight-alert" ? "border-leaf text-leaf" : "border-transparent text-ink/60"}`}>แจ้งเตือนน้ำหนัก</button></>}</div>
     </section>
     {renderTabContent()}
     {managedUser && <ManageUserModal user={managedUser} locations={locations} canManageSystem={canManageSystem} canManagePermissions={canManagePermissions} actorId={profile.id} updating={updatingUserId === managedUser.id} onClose={() => setManagedUserId(null)} onSaveProfile={onSaveProfile} onResetPassword={onResetPassword} onLoadCurrentPassword={onLoadCurrentPassword} onToggleRole={onToggleRole} onToggleStatus={onToggleStatus} onToggleSystemManager={onToggleSystemManager} onToggleMoneyTransfer={onToggleMoneyTransfer} onToggleTimePayroll={onToggleTimePayroll} onToggleRubberExports={onToggleRubberExports} />}

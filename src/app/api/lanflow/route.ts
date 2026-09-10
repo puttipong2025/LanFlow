@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import { parseRubberWeightAlertConfig } from "@/lib/lanflow/rubber-weight-alert";
 import { requireAuth } from "@/lib/server/auth";
 
 export const dynamic = "force-dynamic";
+
+const NO_STORE_HEADERS = { "Cache-Control": "private, no-store, max-age=0" };
 
 export async function GET(request: NextRequest) {
   const result = await requireAuth(request, { allowUserLanflow: true });
@@ -32,10 +35,24 @@ export async function GET(request: NextRequest) {
   };
 
   if (result.auth.role === "user") {
-    return NextResponse.json({ locations: [], profile, confirmationMinutes });
+    return NextResponse.json(
+      { locations: [], profile, confirmationMinutes, rubberWeightAlertConfig: null },
+      { headers: NO_STORE_HEADERS },
+    );
   }
 
   try {
+    const alertConfigResult = await result.supabase
+      .rpc("get_rubber_weight_alert_config");
+    const rubberWeightAlertConfig = alertConfigResult.error
+      ? null
+      : parseRubberWeightAlertConfig(alertConfigResult.data);
+    if (alertConfigResult.error) {
+      console.error("Rubber weight alert config load failed", alertConfigResult.error.message);
+    } else if (!rubberWeightAlertConfig) {
+      console.error("Rubber weight alert config load returned an invalid payload");
+    }
+
     const locationsResult = await result.supabase
       .from("locations")
       .select("*")
@@ -52,9 +69,12 @@ export async function GET(request: NextRequest) {
       active: row.is_active
     }));
 
-    return NextResponse.json({ locations, profile, confirmationMinutes });
+    return NextResponse.json(
+      { locations, profile, confirmationMinutes, rubberWeightAlertConfig },
+      { headers: NO_STORE_HEADERS },
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : JSON.stringify(error);
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json({ error: message }, { status: 500, headers: NO_STORE_HEADERS });
   }
 }
