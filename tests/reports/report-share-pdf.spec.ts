@@ -11,6 +11,15 @@ const outputDirectory = path.resolve("output/pdf");
 const outputPdf = path.join(outputDirectory, "LanFlow-report-searchable-A4-landscape.pdf");
 const bundledPython = "C:\\Users\\Do\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe";
 
+function reportSummary(report = details.report) {
+  return {
+    ...report,
+    status: "active" as const,
+    isLatestActive: true,
+    rubberExportLockNo: null,
+  };
+}
+
 async function openReports(
   page: Page,
   detailStatus = 200,
@@ -18,7 +27,7 @@ async function openReports(
   detailDelayMs = 0,
 ) {
   await page.route("**/api/lanflow/reports?*", (route) => route.fulfill({
-    json: { reports: [details.report] },
+    json: { reports: [reportSummary()] },
   }));
   await page.route("**/api/lanflow/reports/report-share-test", (route) => {
     onDetailRequest?.();
@@ -47,6 +56,27 @@ async function openPreview(page: Page) {
   await expect(preview.getByText("1. บิลยาง", { exact: true })).toBeVisible();
   return preview;
 }
+
+test("shows report counts and actual data date range in the preview", async ({ page }) => {
+  await openReports(page);
+  const preview = await openPreview(page);
+  const summary = preview.locator("dl");
+
+  await expect(summary).toContainText("รวมรายการ");
+  await expect(summary).toContainText("ไม่รวมยอดยกมา");
+  await expect(summary).toContainText("80");
+  await expect(summary).toContainText("ช่วงวันที่ข้อมูล");
+  await expect(summary).toContainText("29 ก.ค. 2569");
+  await expect(summary).not.toContainText("จำนวน source");
+  await expect(preview).toContainText("รวม 72 รายการ (ไม่รวมยอดยกมา)");
+  await expect(preview.getByText("รวม 72 รายการ (ไม่รวมยอดยกมา)", { exact: true })).toBeVisible();
+  await expect(preview.getByText("รวม 0 รายการ", { exact: true })).toBeVisible();
+  const ledgerRows = preview.locator("section").filter({
+    has: page.getByRole("heading", { name: "2. รับ–จ่ายรวม" }),
+  }).locator("tbody tr");
+  await expect(ledgerRows.first()).toContainText("LEDGER-001");
+  await expect(ledgerRows.last()).toContainText("LEDGER-072");
+});
 
 test("shares a searchable report File with a human-readable title", async ({ page }) => {
   await page.addInitScript(() => {
@@ -232,6 +262,13 @@ test("downloads an actual multi-page PDF when file sharing is unsupported", asyn
   expect(allText).toContain("4. เวลาและเงินเดือน");
   expect(allText).toContain("5. โอนเงิน (ธนาคารเท่านั้น)");
   expect(allText).toContain("ยอดคงเหลือสุทธิ");
+  expect(allText).toContain("รวมรายการ (ไม่รวมยอดยกมา): 80");
+  expect(allText).toContain("ช่วงวันที่ข้อมูล: 29 ก.ค. 2569");
+  expect(allText).toContain("รวม 72 รายการ");
+  expect(allText).toContain("รวม 72 รายการ (ไม่รวมยอดยกมา)");
+  expect(allText).toContain("รวม 0 รายการ");
+  expect(allText).not.toContain("จำนวน source");
+  expect(allText.indexOf("LEDGER-002")).toBeLessThan(allText.indexOf("LEDGER-010"));
 
   for (let index = 1; index <= 72; index += 1) {
     const row = String(index).padStart(3, "0");
@@ -293,12 +330,10 @@ test("loads one detail object for preview and sharing", async ({ page }) => {
   await expect(preview.getByText("ความเชื่อมั่น")).toHaveCount(0);
 });
 
-test("previews an active report with its current status", async ({ page }) => {
+test("previews a report with its current active label", async ({ page }) => {
   const activeDetails = structuredClone(details);
-  activeDetails.report.status = "active";
-  activeDetails.report.deletedAt = null;
   await page.route("**/api/lanflow/reports?*", (route) => route.fulfill({
-    json: { reports: [activeDetails.report] },
+    json: { reports: [reportSummary(activeDetails.report)] },
   }));
   await page.route("**/api/lanflow/reports/report-share-test", (route) => route.fulfill({
     json: activeDetails,

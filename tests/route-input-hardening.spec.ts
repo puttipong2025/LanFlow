@@ -57,6 +57,32 @@ test("history routes reject incomplete and malformed keyset cursors", async ({ b
   }
 });
 
+test("report history canonicalizes parseable cursor timestamps before building filters", async ({ browser }) => {
+  const manager = await context(browser, "super_admin");
+  try {
+    const authResponse = await manager.request.get("/api/auth/me");
+    expect(authResponse.ok()).toBe(true);
+    const { profile } = await authResponse.json() as {
+      profile: { id: string; locationIds: string[] };
+    };
+    const parseableButUnsafe = encodeURIComponent(cursor({
+      version: 1,
+      ownerUserId: profile.id,
+      locationId: profile.locationIds[0],
+      view: "current",
+      at: "Thu, 01 Jan 2026 00:00:00 GMT (cursor comment)",
+      id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+    }));
+
+    const response = await manager.request.get(
+      `/api/lanflow/reports?locationId=${profile.locationIds[0]}&cursor=${parseableButUnsafe}`,
+    );
+    expect(response.status()).toBe(200);
+  } finally {
+    await manager.close();
+  }
+});
+
 test("slip OCR rejects missing and unsupported uploads before upstream work", async ({ browser }) => {
   const manager = await context(browser, "super_admin");
   try {
@@ -75,6 +101,51 @@ test("slip OCR rejects missing and unsupported uploads before upstream work", as
       },
     });
     expect(unsupported.status()).toBe(400);
+  } finally {
+    await manager.close();
+  }
+});
+
+test("approval decision routes reject malformed request IDs before PostgreSQL", async ({ browser }) => {
+  const manager = await context(browser, "super_admin");
+  try {
+    for (const path of [
+      "/api/lanflow/income-expense/approval-requests/not-a-uuid/decide",
+      "/api/lanflow/cash-branch-transfers/delete-requests/not-a-uuid/decide",
+    ]) {
+      const response = await manager.request.post(path, {
+        data: { decision: "approved" },
+      });
+      expect(response.status(), path).toBe(400);
+    }
+  } finally {
+    await manager.close();
+  }
+});
+
+test("report detail routes reject malformed report IDs before PostgreSQL", async ({ browser }) => {
+  const manager = await context(browser, "super_admin");
+  try {
+    const [detail, deletion] = await Promise.all([
+      manager.request.get("/api/lanflow/reports/not-a-uuid"),
+      manager.request.delete("/api/lanflow/reports/not-a-uuid"),
+    ]);
+    expect([detail.status(), deletion.status()]).toEqual([400, 400]);
+  } finally {
+    await manager.close();
+  }
+});
+
+test("report collection routes reject malformed location IDs before PostgreSQL", async ({ browser }) => {
+  const manager = await context(browser, "super_admin");
+  try {
+    const [list, create] = await Promise.all([
+      manager.request.get("/api/lanflow/reports?locationId=not-a-uuid"),
+      manager.request.post("/api/lanflow/reports", {
+        data: { locationId: "not-a-uuid" },
+      }),
+    ]);
+    expect([list.status(), create.status()]).toEqual([400, 400]);
   } finally {
     await manager.close();
   }

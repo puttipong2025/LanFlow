@@ -1,6 +1,45 @@
-import type { ReportDetails, ReportSummary } from "@/types/reports";
+import type { ReportDetails, ReportHeader, ReportLedgerRow } from "@/types/reports";
 
 const BANGKOK_TIME_ZONE = "Asia/Bangkok";
+const REPORT_NUMBER_COLLATOR = new Intl.Collator("th-TH", {
+  numeric: true,
+  sensitivity: "base",
+});
+
+export const REPORT_OPENING_BALANCE_COUNT_NOTE = "ไม่รวมยอดยกมา";
+export const REPORT_STATUS_LABEL = "ใช้งาน";
+
+type DatedReportRow = { date: string; number: string };
+type ReportDateRange = { start: string; end: string };
+
+function compareBlankLast(left: string, right: string, compare: (a: string, b: string) => number) {
+  const normalizedLeft = left.trim();
+  const normalizedRight = right.trim();
+  if (!normalizedLeft && !normalizedRight) return 0;
+  if (!normalizedLeft) return 1;
+  if (!normalizedRight) return -1;
+  return compare(normalizedLeft, normalizedRight);
+}
+
+function sortReportRows<T extends DatedReportRow>(rows: T[]) {
+  return rows
+    .map((row, index) => ({ row, index }))
+    .sort((left, right) => (
+      compareBlankLast(left.row.date, right.row.date, (a, b) => a.localeCompare(b))
+      || compareBlankLast(left.row.number, right.row.number, (a, b) => REPORT_NUMBER_COLLATOR.compare(a, b))
+      || left.index - right.index
+    ))
+    .map(({ row }) => row);
+}
+
+function isOpeningBalance(row: ReportLedgerRow) {
+  return row.isOpeningBalance === true;
+}
+
+function reportDateRange(rows: DatedReportRow[]): ReportDateRange | null {
+  const dates = rows.map((row) => row.date.trim()).filter(Boolean).sort();
+  return dates.length === 0 ? null : { start: dates[0], end: dates[dates.length - 1] };
+}
 
 export function formatMoney(value: number) {
   return value.toLocaleString("th-TH", {
@@ -25,6 +64,16 @@ export function formatThaiDate(value: string) {
     year: "numeric",
     timeZone: BANGKOK_TIME_ZONE,
   }).format(new Date(`${value}T00:00:00+07:00`));
+}
+
+export function formatReportDateRange(range: ReportDateRange | null) {
+  if (!range) return "ไม่มีรายการ";
+  if (range.start === range.end) return formatThaiDate(range.start);
+  return `${formatThaiDate(range.start)} – ${formatThaiDate(range.end)}`;
+}
+
+export function formatReportItemCount(value: number) {
+  return `รวม ${value.toLocaleString("th-TH")} รายการ`;
 }
 
 export function formatThaiDateTime(value: string) {
@@ -60,16 +109,12 @@ function sanitizeFilenamePart(value: string) {
     .slice(0, 80) || "report";
 }
 
-export function reportPdfFilename(report: ReportSummary) {
+export function reportPdfFilename(report: ReportHeader) {
   return `LanFlow-report-${sanitizeFilenamePart(report.reportNo)}-${formatBangkokFileTimestamp(report.createdAt)}-A4-landscape.pdf`;
 }
 
-export function reportShareTitle(report: ReportSummary) {
+export function reportShareTitle(report: ReportHeader) {
   return `รายงาน LanFlow ${report.reportNo} · ${report.locationName} · ${formatThaiDateTime(report.createdAt)}`;
-}
-
-export function reportStatusLabel(_report: ReportSummary) {
-  return "ใช้งาน";
 }
 
 export type RubberBillRow = ReportDetails["rubberBills"][number];
@@ -84,33 +129,60 @@ export function rubberBillTotals(rows: RubberBillRow[]) {
 }
 
 export function buildReportPresentation(details: ReportDetails) {
-  const incomeExpense = details.incomeExpense.map((row) => ({
+  const rubberBills = sortReportRows(details.rubberBills);
+  const incomeExpense = sortReportRows(details.incomeExpense.map((row) => ({
     ...row,
     income: row.type === "income" ? row.amount : null,
     expense: row.type === "expense" ? row.amount : null,
-  }));
+  })));
+  const stock = sortReportRows(details.stock);
+  const timePayroll = sortReportRows(details.timePayroll);
+  const bankTransfers = sortReportRows(details.bankTransfers);
+  const periodIncomeExpense = incomeExpense.filter((row) => !isOpeningBalance(row));
+  const traderRubberBills = rubberBills.filter((row) => row.customerGroup === "trader");
+  const farmerRubberBills = rubberBills.filter((row) => row.customerGroup === "farmer");
+  const branchReceiptRubberBills = rubberBills.filter((row) => row.customerGroup === "branch_receipt");
   const income = incomeExpense.reduce((sum, row) => sum + (row.income ?? 0), 0);
   const expense = incomeExpense.reduce((sum, row) => sum + (row.expense ?? 0), 0);
 
   return {
-    traderRubberBills: details.rubberBills.filter((row) => row.customerGroup === "trader"),
-    farmerRubberBills: details.rubberBills.filter((row) => row.customerGroup === "farmer"),
-    branchReceiptRubberBills: details.rubberBills.filter((row) => row.customerGroup === "branch_receipt"),
+    traderRubberBills,
+    farmerRubberBills,
+    branchReceiptRubberBills,
     incomeExpense,
+    stock,
+    timePayroll,
+    bankTransfers,
+    counts: {
+      traderRubberBills: traderRubberBills.length,
+      farmerRubberBills: farmerRubberBills.length,
+      branchReceiptRubberBills: branchReceiptRubberBills.length,
+      incomeExpense: periodIncomeExpense.length,
+      stock: stock.length,
+      timePayroll: timePayroll.length,
+      bankTransfers: bankTransfers.length,
+    },
+    dateRange: reportDateRange([
+      ...rubberBills,
+      ...periodIncomeExpense,
+      ...stock,
+      ...timePayroll,
+      ...bankTransfers,
+    ]),
     totals: {
       income,
       expense,
       balance: income - expense,
-      stockQuantity: details.stock.reduce((sum, row) => sum + row.quantity, 0),
-      stockAmount: details.stock.reduce((sum, row) => sum + row.amount, 0),
-      payrollAmount: details.timePayroll.reduce((sum, row) => sum + (row.amount ?? 0), 0),
-      workHours: details.timePayroll
+      stockQuantity: stock.reduce((sum, row) => sum + row.quantity, 0),
+      stockAmount: stock.reduce((sum, row) => sum + row.amount, 0),
+      payrollAmount: timePayroll.reduce((sum, row) => sum + (row.amount ?? 0), 0),
+      workHours: timePayroll
         .filter((row) => row.category === "เวลาทำงาน")
         .reduce((sum, row) => sum + (row.quantity ?? 0), 0),
-      transferAmount: details.bankTransfers.reduce((sum, row) => sum + row.amount, 0),
-      slipAmount: details.bankTransfers.reduce((sum, row) => sum + row.slipAmount, 0),
-      fee: details.bankTransfers.reduce((sum, row) => sum + row.fee, 0),
-      branchPaid: details.bankTransfers.reduce((sum, row) => sum + row.branchPaid, 0),
+      transferAmount: bankTransfers.reduce((sum, row) => sum + row.amount, 0),
+      slipAmount: bankTransfers.reduce((sum, row) => sum + row.slipAmount, 0),
+      fee: bankTransfers.reduce((sum, row) => sum + row.fee, 0),
+      branchPaid: bankTransfers.reduce((sum, row) => sum + row.branchPaid, 0),
     },
   };
 }

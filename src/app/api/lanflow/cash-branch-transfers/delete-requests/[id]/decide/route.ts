@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSystemManager } from "@/lib/server/auth";
 import { cashTransferErrorResponse } from "@/lib/server/cash-branch-transfer-response";
+import { isJsonObject, isUuid } from "@/lib/server/management-route-error";
 
 export async function POST(
   request: NextRequest,
@@ -10,8 +11,12 @@ export async function POST(
   if (!manager.ok) return manager.response;
 
   const { id } = await params;
-  const body = await request.json().catch(() => null);
-  if (!id || (body?.decision !== "approved" && body?.decision !== "rejected")) {
+  const body: unknown = await request.json().catch(() => null);
+  if (
+    !isUuid(id)
+    || !isJsonObject(body)
+    || (body.decision !== "approved" && body.decision !== "rejected")
+  ) {
     return NextResponse.json({ error: "ข้อมูลคำตัดสินไม่ถูกต้อง" }, { status: 400 });
   }
 

@@ -13,6 +13,8 @@ import {
 } from "@/lib/server/deletion-audit-response";
 
 export const dynamic = "force-dynamic";
+const MAX_CURSOR_LENGTH = 4096;
+const CURSOR_TIMESTAMP = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d{1,6})?(?:Z|\+00:00)$/;
 
 const columns = `
   id, export_no, location_id, status, previous_status,
@@ -26,18 +28,32 @@ const columns = `
 `;
 
 type Cursor = { version: 1; ownerUserId: string; locationId: string; view: string; createdAt: string; id: string };
+function isCursorTimestamp(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const match = CURSOR_TIMESTAMP.exec(value);
+  if (!match) return false;
+  const parsed = new Date(`${match[1]}Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 19) === match[1];
+}
 function decodeCursor(value: string): Cursor | null {
   try {
     const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Cursor;
-    return parsed?.version === 1
+    if (!(parsed?.version === 1
       && isUuid(parsed.ownerUserId)
       && isUuid(parsed.locationId)
       && ["active", "history", "deletions"].includes(parsed.view)
-      && typeof parsed.createdAt === "string"
-      && !Number.isNaN(Date.parse(parsed.createdAt))
-      && isUuid(parsed.id)
-      ? parsed
-      : null;
+      && isCursorTimestamp(parsed.createdAt)
+      && isUuid(parsed.id))) {
+      return null;
+    }
+    return {
+      version: 1,
+      ownerUserId: parsed.ownerUserId,
+      locationId: parsed.locationId,
+      view: parsed.view,
+      createdAt: parsed.createdAt,
+      id: parsed.id,
+    };
   } catch { return null; }
 }
 function encodeCursor(value: Cursor) {
@@ -48,7 +64,10 @@ export async function GET(request: NextRequest) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
   const locationId = request.nextUrl.searchParams.get("locationId");
-  if (!isUuid(locationId) || !canAccessRubberExports(result.auth, locationId)) {
+  if (!isUuid(locationId)) {
+    return NextResponse.json({ error: "พารามิเตอร์สาขาไม่ถูกต้อง" }, { status: 400 });
+  }
+  if (!canAccessRubberExports(result.auth, locationId)) {
     return NextResponse.json({ error: "ไม่มีสิทธิ์ดูรายการส่งออกของสาขานี้" }, { status: 403 });
   }
 
@@ -57,8 +76,13 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "ไม่มีสิทธิ์ดูประวัติการลบ" }, { status: 403 });
     }
     const cursorValue = request.nextUrl.searchParams.get("cursor");
+    if (cursorValue && cursorValue.length > MAX_CURSOR_LENGTH) {
+      return NextResponse.json({ error: "cursor ไม่ถูกต้อง" }, { status: 400 });
+    }
     const cursor = cursorValue ? decodeCursor(cursorValue) : null;
-    if (cursorValue && !cursor) return NextResponse.json({ error: "cursor ไม่ถูกต้อง" }, { status: 400 });
+    if (cursorValue && !cursor) {
+      return NextResponse.json({ error: "cursor ไม่ถูกต้อง" }, { status: 400 });
+    }
     if (cursor && (cursor.ownerUserId !== result.auth.sub || cursor.locationId !== locationId || cursor.view !== "deletions")) {
       return NextResponse.json({ error: "cursor ไม่ตรงกับขอบเขตประวัติ" }, { status: 400 });
     }
@@ -89,12 +113,30 @@ export async function GET(request: NextRequest) {
 
   const view = request.nextUrl.searchParams.get("view") ?? "active";
   const limit = Number(request.nextUrl.searchParams.get("limit") ?? 50);
-  if (!["active", "history"].includes(view) || !Number.isInteger(limit) || limit < 1 || limit > 100) {
+  const search = request.nextUrl.searchParams.get("search")?.trim() ?? "";
+  const subfilter = request.nextUrl.searchParams.get("subfilter") ?? "all";
+  const validSubfilter = view === "active"
+    ? ["all", "draft", "verified"].includes(subfilter)
+    : view === "history" && ["all", "sold", "received"].includes(subfilter);
+  if (
+    !["active", "history"].includes(view)
+    || search.length > 200
+    || search.includes("\u0000")
+    || !validSubfilter
+    || !Number.isInteger(limit)
+    || limit < 1
+    || limit > 100
+  ) {
     return NextResponse.json({ error: "พารามิเตอร์รายการส่งออกไม่ถูกต้อง" }, { status: 400 });
   }
   const cursorValue = request.nextUrl.searchParams.get("cursor");
+  if (cursorValue && cursorValue.length > MAX_CURSOR_LENGTH) {
+    return NextResponse.json({ error: "cursor ไม่ถูกต้อง" }, { status: 400 });
+  }
   const cursor = cursorValue ? decodeCursor(cursorValue) : null;
-  if (cursorValue && !cursor) return NextResponse.json({ error: "cursor ไม่ถูกต้อง" }, { status: 400 });
+  if (cursorValue && !cursor) {
+    return NextResponse.json({ error: "cursor ไม่ถูกต้อง" }, { status: 400 });
+  }
   if (cursor && (cursor.ownerUserId !== result.auth.sub || cursor.locationId !== locationId || cursor.view !== view)) {
     return NextResponse.json({ error: "cursor ไม่ตรงกับขอบเขตรายการ" }, { status: 400 });
   }
@@ -105,6 +147,8 @@ export async function GET(request: NextRequest) {
     p_cursor_created_at: cursor?.createdAt ?? null,
     p_cursor_id: cursor?.id ?? null,
     p_page_size: limit,
+    p_search: search,
+    p_subfilter: subfilter,
   });
   if (pageResult.error) return rubberExportErrorResponse(pageResult.error.message);
   const page = (pageResult.data ?? {}) as {

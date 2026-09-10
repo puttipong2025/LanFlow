@@ -1,6 +1,7 @@
 import { Clock3, Eye, Loader2, PackageCheck, Pencil, Share2, ShoppingCart, Trash2, Undo2 } from "lucide-react";
 import type { RubberExportSummary, RubberExportStatus } from "@/types/rubber-exports";
 import { formatRubberAge } from "@/lib/rubber-exports/rubber-export-presentation";
+import { TablePagination } from "@/components/shared/TablePagination";
 
 const statusLabel: Record<RubberExportStatus, string> = {
   draft: "ฉบับร่าง",
@@ -31,6 +32,11 @@ export function RubberExportTable({
   canVerify,
   shareBusy,
   sharingId,
+  page,
+  pageSize,
+  hasMore,
+  isLoadingMore,
+  onPageChange,
   onOpen,
   onEdit,
   onSale,
@@ -45,6 +51,11 @@ export function RubberExportTable({
   canVerify: boolean;
   shareBusy: boolean;
   sharingId: string | null;
+  page: number;
+  pageSize: number;
+  hasMore: boolean;
+  isLoadingMore: boolean;
+  onPageChange: (page: number) => void;
   onOpen: (id: string) => void;
   onEdit: (row: RubberExportSummary) => void;
   onSale: (row: RubberExportSummary, soldOut: boolean) => void;
@@ -52,13 +63,16 @@ export function RubberExportTable({
   onShare: (row: RubberExportSummary) => void;
   onDelete: (row: RubberExportSummary) => void;
 }) {
+  const visibleRows = rows.slice((page - 1) * pageSize, page * pageSize);
+
   return (
+    <div>
     <div className="overflow-x-auto">
       <table className="min-w-full text-sm">
         <thead className="bg-mint/60 text-left text-ink">
           <tr>
-            <th className="px-4 py-3">จัดการ</th>
-            <th className="px-4 py-3">เลขที่</th>
+            <th className="bg-mint px-4 py-3 lg:sticky lg:left-0 lg:z-20">จัดการ</th>
+            <th className="px-4 py-3">เลขที่/วันที่</th>
             <th className="px-4 py-3">สถานะ</th>
             <th className="px-4 py-3">ผู้สร้าง</th>
             <th className="px-4 py-3 text-right">บิล</th>
@@ -76,13 +90,13 @@ export function RubberExportTable({
           {!loading && rows.length === 0 && (
             <tr><td colSpan={10} className="px-4 py-8 text-center text-ink/60">ยังไม่มีรายการส่งออกยาง</td></tr>
           )}
-          {!loading && rows.map((row) => (
+          {!loading && visibleRows.map((row) => (
             <tr key={row.id}>
-              <td className="px-4 py-3">
+              <td className="bg-white px-4 py-3 lg:sticky lg:left-0 lg:z-10">
                 <div className="flex items-center gap-1.5 whitespace-nowrap">
                   <button type="button" onClick={() => onOpen(row.id)} disabled={!online} title={online ? "ดูรายละเอียด" : "ต้องออนไลน์ก่อนดูรายละเอียด"} aria-label={`ดูรายละเอียด ${row.exportNo}`}
-                    className="focus-ring inline-flex size-10 items-center justify-center rounded-md bg-river text-white disabled:cursor-not-allowed disabled:opacity-45">
-                    <Eye size={17} />
+                    className="focus-ring inline-flex h-10 items-center justify-center gap-1.5 rounded-md bg-river px-3 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45">
+                    <Eye size={17} /> ดู
                   </button>
                   {row.status === "draft" && (canVerify ? (
                     <button
@@ -134,9 +148,9 @@ export function RubberExportTable({
                         : online
                           ? `ย้อนกลับเป็นฉบับร่าง ${row.exportNo}`
                           : `ย้อนกลับเป็นฉบับร่าง ${row.exportNo} ไม่ได้ ต้องออนไลน์ก่อน`}
-                      className="focus-ring inline-flex size-10 items-center justify-center rounded-md bg-actionSecondary text-white disabled:cursor-not-allowed disabled:opacity-45"
+                      className="focus-ring inline-flex h-10 items-center justify-center gap-1.5 rounded-md bg-actionSecondary px-3 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45"
                     >
-                      <span aria-hidden="true" className="text-lg leading-none">↩️</span>
+                      <span aria-hidden="true" className="text-lg leading-none">↩️</span> ย้อนร่าง
                     </button>
                   )}
                   {row.status === "verified" && !row.receiptBillNo && (
@@ -171,7 +185,10 @@ export function RubberExportTable({
                   )}
                 </div>
               </td>
-              <td className="px-4 py-3 font-semibold tabular-nums">{row.exportNo}</td>
+              <td className="px-4 py-3 tabular-nums">
+                <div className="font-semibold">{row.exportNo}</div>
+                <div className="mt-0.5 text-xs text-ink/55">{dateTime(row.createdAt)}</div>
+              </td>
               <td className="px-4 py-3">
                 <div>{statusLabel[row.status]}</div>
                 {row.receiptBillNo && (
@@ -182,6 +199,11 @@ export function RubberExportTable({
                 {row.soldOutAt && (
                   <div className="mt-1 w-fit rounded-full bg-amber px-2 py-0.5 text-xs font-semibold text-white">
                     ขายออกแล้ว · {row.soldOutByName || "—"} · <span className="tabular-nums">{dateTime(row.soldOutAt)}</span>
+                  </div>
+                )}
+                {row.reportLockNo && (
+                  <div className="mt-1 w-fit rounded-full bg-ink/10 px-2 py-0.5 text-xs font-semibold text-ink/70">
+                    ล็อกโดย {row.reportLockNo}
                   </div>
                 )}
               </td>
@@ -202,6 +224,17 @@ export function RubberExportTable({
           ))}
         </tbody>
       </table>
+    </div>
+    <div className="px-4 pb-4">
+      <TablePagination
+        totalItems={rows.length}
+        page={page}
+        pageSize={pageSize}
+        onPageChange={onPageChange}
+        hasMore={hasMore}
+        isLoadingMore={isLoadingMore}
+      />
+    </div>
     </div>
   );
 }

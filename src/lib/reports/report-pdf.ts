@@ -3,11 +3,14 @@ import {
   buildReportPresentation,
   formatMoney,
   formatQuantity,
+  formatReportDateRange,
+  formatReportItemCount,
   formatThaiDate,
   formatThaiDateTime,
+  REPORT_OPENING_BALANCE_COUNT_NOTE,
+  REPORT_STATUS_LABEL,
   formatWholeMoney,
   reportPdfFilename,
-  reportStatusLabel,
   rubberBillTotals,
   type RubberBillRow,
 } from "@/lib/reports/report-presentation";
@@ -110,7 +113,7 @@ function rubberRows(rows: RubberBillRow[]): PdfCell[][] {
     ]);
   const sums = rubberBillTotals(rows);
   result.push([
-    total("รวม", "left", 4),
+    total(formatReportItemCount(rows.length), "left", 4),
     total(formatQuantity(sums.weight), "right"),
     total(formatMoney(sums.weight > 0 ? sums.value / sums.weight : 0), "right"),
     total(formatMoney(sums.value), "right"),
@@ -120,7 +123,7 @@ function rubberRows(rows: RubberBillRow[]): PdfCell[][] {
   return result;
 }
 
-function drawReportHeader(state: PdfState, details: ReportDetails) {
+function drawReportHeader(state: PdfState, details: ReportDetails, dataDateRange: string) {
   const { doc } = state;
   applyTextStyle(doc, { text: "", bold: true, fontSize: 18 });
   drawActualText(doc, "ชุดรายงาน LanFlow", PAGE_LEFT, state.y, {
@@ -135,8 +138,9 @@ function drawReportHeader(state: PdfState, details: ReportDetails) {
     `Cutoff: ${formatThaiDateTime(details.report.cutoffAt)}`,
     `ผู้สร้าง: ${details.report.createdByName}`,
     `สร้างเมื่อ: ${formatThaiDateTime(details.report.createdAt)}`,
-    `จำนวน source: ${details.report.itemCount.toLocaleString("th-TH")}`,
-    `สถานะ: ${reportStatusLabel(details.report)}`,
+    `รวมรายการ (${REPORT_OPENING_BALANCE_COUNT_NOTE}): ${details.report.itemCount.toLocaleString("th-TH")}`,
+    `ช่วงวันที่ข้อมูล: ${dataDateRange}`,
+    `สถานะ: ${REPORT_STATUS_LABEL}`,
     details.report.hasCashCount ? "ผลตรวจนับ: มีผลตรวจนับเงินสด" : "ผลตรวจนับ: ไม่มีผลตรวจนับเงินสด",
     ...(details.report.hasCashCount ? [
       `ผู้ตรวจนับ: ${details.report.cashCountCheckerName ?? "-"}`,
@@ -154,7 +158,7 @@ function drawReportHeader(state: PdfState, details: ReportDetails) {
       color: DARK_GREEN,
     });
     drawActualText(doc, text, PAGE_LEFT + (column * width), state.y + (row * 20), {
-      width: index === 6 ? width * 2 : width,
+      width,
       height: 19,
     });
   });
@@ -175,12 +179,17 @@ function drawReportContent(doc: PdfDocument, details: ReportDetails) {
   const presentation = buildReportPresentation(details);
   const {
     branchReceiptRubberBills,
+    bankTransfers,
+    counts,
+    dateRange,
     farmerRubberBills,
     incomeExpense,
+    stock,
+    timePayroll,
     totals,
     traderRubberBills,
   } = presentation;
-  drawReportHeader(state, details);
+  drawReportHeader(state, details, formatReportDateRange(dateRange));
 
   drawSectionTitle(state, "1. บิลยาง");
   const rubberHeader = [
@@ -214,7 +223,7 @@ function drawReportContent(doc: PdfDocument, details: ReportDetails) {
     ]);
   ledgerRows.push(
     [
-      total("รวม", "left", 3),
+      total(`${formatReportItemCount(counts.incomeExpense)} (${REPORT_OPENING_BALANCE_COUNT_NOTE})`, "left", 3),
       total(formatMoney(totals.income), "right"),
       total(formatMoney(totals.expense), "right"),
     ],
@@ -236,9 +245,9 @@ function drawReportContent(doc: PdfDocument, details: ReportDetails) {
   ], ledgerRows);
 
   drawSectionTitle(state, "3. สต็อกสินค้า");
-  const stockRows: PdfCell[][] = details.stock.length === 0
+  const stockRows: PdfCell[][] = stock.length === 0
     ? [emptyRow(6)]
-    : details.stock.map((row) => [
+    : stock.map((row) => [
       data(formatThaiDate(row.date)),
       data(row.number),
       data(row.product),
@@ -247,7 +256,7 @@ function drawReportContent(doc: PdfDocument, details: ReportDetails) {
       data(formatMoney(row.amount), "right"),
     ]);
   stockRows.push([
-    total("รวมการเคลื่อนไหว", "left", 4),
+    total(formatReportItemCount(counts.stock), "left", 4),
     total(formatQuantity(totals.stockQuantity), "right"),
     total(formatMoney(totals.stockAmount), "right"),
   ]);
@@ -277,9 +286,9 @@ function drawReportContent(doc: PdfDocument, details: ReportDetails) {
   state.y += balanceHeight + 8;
 
   drawSectionTitle(state, "4. เวลาและเงินเดือน");
-  const payrollRows: PdfCell[][] = details.timePayroll.length === 0
+  const payrollRows: PdfCell[][] = timePayroll.length === 0
     ? [emptyRow(7)]
-    : details.timePayroll.map((row) => [
+    : timePayroll.map((row) => [
       data(formatThaiDate(row.date)),
       data(row.number),
       data(row.category),
@@ -289,7 +298,7 @@ function drawReportContent(doc: PdfDocument, details: ReportDetails) {
       data(row.amount === null ? "-" : formatMoney(row.amount), "right"),
     ]);
   payrollRows.push([total(
-    `เวลาทำงาน ${formatQuantity(totals.workHours)} ชม.   ธุรกรรม/เงินเดือน ${formatMoney(totals.payrollAmount)}`,
+    `${formatReportItemCount(counts.timePayroll)}   เวลาทำงาน ${formatQuantity(totals.workHours)} ชม.   ธุรกรรม/เงินเดือน ${formatMoney(totals.payrollAmount)}`,
     "right",
     7,
   )]);
@@ -304,9 +313,9 @@ function drawReportContent(doc: PdfDocument, details: ReportDetails) {
   ], payrollRows);
 
   drawSectionTitle(state, "5. โอนเงิน (ธนาคารเท่านั้น)");
-  const transferRows: PdfCell[][] = details.bankTransfers.length === 0
+  const transferRows: PdfCell[][] = bankTransfers.length === 0
     ? [emptyRow(9)]
-    : details.bankTransfers.map((row) => [
+    : bankTransfers.map((row) => [
       data(formatThaiDate(row.date)),
       data(row.number),
       data(row.direction === "out" ? "ออก" : "เข้า"),
@@ -318,7 +327,7 @@ function drawReportContent(doc: PdfDocument, details: ReportDetails) {
       data(formatMoney(row.branchPaid), "right"),
     ]);
   transferRows.push([
-    total("รวม", "left", 5),
+    total(formatReportItemCount(counts.bankTransfers), "left", 5),
     total(formatMoney(totals.transferAmount), "right"),
     total(formatMoney(totals.slipAmount), "right"),
     total(formatMoney(totals.fee), "right"),

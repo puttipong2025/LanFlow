@@ -502,7 +502,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
         name: "ยืนยันลงรายจ่ายสาขานี้",
       }).click();
       await expect(page.getByText("ตรวจสอบรายการแล้ว")).toBeVisible();
-      await expect(page.getByText(/ตรวจสอบแล้ว$/).first()).toBeVisible();
+      await expect(page.getByRole("dialog").getByText(/ตรวจสอบแล้ว$/).first()).toBeVisible();
       await expect(page.getByRole("checkbox", {
         name: "ใช้น้ำหนักสุทธิรวมเป็นน้ำหนักปัจจุบัน",
       })).toHaveCount(0);
@@ -660,7 +660,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       const row = page.locator("tbody tr").filter({ hasText: "REX-REVERT-UI" });
       const revertButton = row.getByRole("button", { name: "ย้อนกลับเป็นฉบับร่าง REX-REVERT-UI" });
       await expect(revertButton).toBeVisible();
-      await expect(revertButton).toHaveText("↩️");
+      await expect(revertButton).toHaveText("↩️ ย้อนร่าง");
 
       const lockedButton = page.locator("tbody tr").filter({ hasText: "REX-LOCKED-UI" })
         .getByRole("button", {

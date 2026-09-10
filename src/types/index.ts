@@ -291,7 +291,6 @@ export type IncomeExpenseApprovalKeyword = {
 export type IncomeExpenseApprovalRequest = {
   id: string;
   requestStatus: IncomeExpenseApprovalStatus;
-  requestedOperation: QueueOperation;
   matchedKeyword?: string | null;
   matchedReasons: IncomeExpenseApprovalReason[];
   locationId: string;
@@ -303,8 +302,6 @@ export type IncomeExpenseApprovalRequest = {
   requestedByPhone: string;
   decidedByName?: string | null;
   decidedByPhone?: string | null;
-  decidedAt?: string | null;
-  decisionComment?: string | null;
   createdAt: string;
 };
 
@@ -366,9 +363,17 @@ export type IncomeExpense = {
 
 export type AcidStockSourceType = "stock_entry" | "income_sale" | "rubber_bill_acid" | "rubber_bill_stock_deduction";
 
+export type AcidStockBalance = {
+  productId: string;
+  name: string;
+  unit: string;
+  balance: number;
+};
+
 export type AcidStockMovement = {
   movementId: string;
   sourceType: AcidStockSourceType;
+  sourceLabel: string;
   sourceId: string;
   sourceLineId?: string | null;
   txDate: string;
@@ -568,8 +573,6 @@ export type CashTransferDeleteRequest = {
   requestedByPhone: string;
   decidedByName: string | null;
   decidedByPhone: string | null;
-  decidedAt: string | null;
-  decisionComment: string | null;
   createdAt: string;
 };
 

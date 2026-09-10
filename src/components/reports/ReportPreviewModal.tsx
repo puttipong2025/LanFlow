@@ -13,11 +13,14 @@ import {
   buildReportPresentation,
   formatMoney,
   formatQuantity,
+  formatReportDateRange,
+  formatReportItemCount,
   formatThaiDate,
   formatThaiDateTime,
+  REPORT_OPENING_BALANCE_COUNT_NOTE,
+  REPORT_STATUS_LABEL,
   formatWholeMoney,
   reportShareTitle,
-  reportStatusLabel,
   rubberBillTotals,
   type RubberBillRow,
 } from "@/lib/reports/report-presentation";
@@ -107,7 +110,7 @@ function RubberBillTable({ rows }: { rows: RubberBillRow[] }) {
       </tbody>
       <tfoot>
         <tr>
-          <TotalCell colSpan={4}>รวม</TotalCell>
+          <TotalCell colSpan={4}>{formatReportItemCount(rows.length)}</TotalCell>
           <TotalCell className="text-right tabular-nums">{formatQuantity(totals.weight)}</TotalCell>
           <TotalCell className="text-right tabular-nums">{formatMoney(totals.weight > 0 ? totals.value / totals.weight : 0)}</TotalCell>
           <TotalCell className="text-right tabular-nums">{formatMoney(totals.value)}</TotalCell>
@@ -220,7 +223,7 @@ export function ReportPreviewModal({
                   <h2 className="mt-1 text-balance text-2xl font-bold text-ink">{details.report.reportNo}</h2>
                 </div>
                 <span className="rounded-full bg-leaf/15 px-3 py-1 text-sm font-bold text-leaf">
-                  {reportStatusLabel(details.report)}
+                  {REPORT_STATUS_LABEL}
                 </span>
               </div>
               <dl className="mt-4 grid gap-x-6 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
@@ -228,7 +231,8 @@ export function ReportPreviewModal({
                   ["Cutoff", formatThaiDateTime(details.report.cutoffAt)],
                   ["ผู้สร้าง", details.report.createdByName],
                   ["สร้างเมื่อ", formatThaiDateTime(details.report.createdAt)],
-                  ["จำนวน source", details.report.itemCount.toLocaleString("th-TH")],
+                  [`รวมรายการ (${REPORT_OPENING_BALANCE_COUNT_NOTE})`, details.report.itemCount.toLocaleString("th-TH")],
+                  ["ช่วงวันที่ข้อมูล", formatReportDateRange(presentation.dateRange)],
                   ["ผลตรวจนับ", details.report.hasCashCount ? "มีผลตรวจนับเงินสด" : "ไม่มีผลตรวจนับเงินสด"],
                   ...(details.report.hasCashCount ? [
                     ["ผู้ตรวจนับ", details.report.cashCountCheckerName ?? "-"],
@@ -252,7 +256,7 @@ export function ReportPreviewModal({
                 <h4 className="text-balance font-bold text-ink">1.2 ชาวสวน</h4>
                 <RubberBillTable rows={presentation.farmerRubberBills} />
               </div>
-              <div>
+              <div className="mt-5">
                 <h4 className="text-balance font-bold text-ink">1.3 ยางรับเข้าและยางคงเหลือภายในสาขา</h4>
                 <RubberBillTable rows={presentation.branchReceiptRubberBills} />
               </div>
@@ -265,7 +269,7 @@ export function ReportPreviewModal({
                   {presentation.incomeExpense.length === 0 && <EmptyRow columns={5} />}
                   {presentation.incomeExpense.map((row, index) => <tr key={`${row.number}-${index}`}><td className={cellClass}>{formatThaiDate(row.date)}</td><td className={cellClass}>{row.number}</td><td className={cellClass}>{row.title}</td><td className={numberCellClass}>{row.income === null ? "" : formatMoney(row.income)}</td><td className={numberCellClass}>{row.expense === null ? "" : formatMoney(row.expense)}</td></tr>)}
                 </tbody>
-                <tfoot><tr><TotalCell colSpan={3}>รวม</TotalCell><TotalCell className="text-right">{formatMoney(presentation.totals.income)}</TotalCell><TotalCell className="text-right">{formatMoney(presentation.totals.expense)}</TotalCell></tr><tr><TotalCell colSpan={5} className="text-right text-base">ยอดคงเหลือสุทธิ {formatMoney(presentation.totals.balance)}</TotalCell></tr></tfoot>
+                <tfoot><tr><TotalCell colSpan={3}>{formatReportItemCount(presentation.counts.incomeExpense)} ({REPORT_OPENING_BALANCE_COUNT_NOTE})</TotalCell><TotalCell className="text-right">{formatMoney(presentation.totals.income)}</TotalCell><TotalCell className="text-right">{formatMoney(presentation.totals.expense)}</TotalCell></tr><tr><TotalCell colSpan={5} className="text-right text-base">ยอดคงเหลือสุทธิ {formatMoney(presentation.totals.balance)}</TotalCell></tr></tfoot>
               </ReportTable>
             </Section>
 
@@ -273,10 +277,10 @@ export function ReportPreviewModal({
               <ReportTable>
                 <thead><tr><th className={headerClass}>วันที่</th><th className={headerClass}>เลขที่</th><th className={headerClass}>สินค้า</th><th className={headerClass}>ประเภท</th><th className={numberHeaderClass}>จำนวนเคลื่อนไหว</th><th className={numberHeaderClass}>ยอดเงินประกอบ</th></tr></thead>
                 <tbody>
-                  {details.stock.length === 0 && <EmptyRow columns={6} />}
-                  {details.stock.map((row, index) => <tr key={`${row.number}-${index}`}><td className={cellClass}>{formatThaiDate(row.date)}</td><td className={cellClass}>{row.number}</td><td className={cellClass}>{row.product}</td><td className={cellClass}>{row.type}</td><td className={numberCellClass}>{formatQuantity(row.quantity)}</td><td className={numberCellClass}>{formatMoney(row.amount)}</td></tr>)}
+                  {presentation.stock.length === 0 && <EmptyRow columns={6} />}
+                  {presentation.stock.map((row, index) => <tr key={`${row.number}-${index}`}><td className={cellClass}>{formatThaiDate(row.date)}</td><td className={cellClass}>{row.number}</td><td className={cellClass}>{row.product}</td><td className={cellClass}>{row.type}</td><td className={numberCellClass}>{formatQuantity(row.quantity)}</td><td className={numberCellClass}>{formatMoney(row.amount)}</td></tr>)}
                 </tbody>
-                <tfoot><tr><TotalCell colSpan={4}>รวมการเคลื่อนไหว</TotalCell><TotalCell className="text-right">{formatQuantity(presentation.totals.stockQuantity)}</TotalCell><TotalCell className="text-right">{formatMoney(presentation.totals.stockAmount)}</TotalCell></tr></tfoot>
+                <tfoot><tr><TotalCell colSpan={4}>{formatReportItemCount(presentation.counts.stock)}</TotalCell><TotalCell className="text-right">{formatQuantity(presentation.totals.stockQuantity)}</TotalCell><TotalCell className="text-right">{formatMoney(presentation.totals.stockAmount)}</TotalCell></tr></tfoot>
               </ReportTable>
               <p className="mt-3 text-pretty text-right text-sm font-bold tabular-nums text-ink">ยอดคงเหลือ ณ cutoff: {details.stockBalances.length === 0 ? "ไม่มีรายการ" : details.stockBalances.map((row) => `${row.product} ${formatQuantity(row.quantity)}`).join(" · ")}</p>
             </Section>
@@ -285,10 +289,10 @@ export function ReportPreviewModal({
               <ReportTable minWidth="min-w-[70rem]">
                 <thead><tr><th className={headerClass}>วันที่</th><th className={headerClass}>เลขที่</th><th className={headerClass}>ประเภท</th><th className={headerClass}>พนักงาน</th><th className={headerClass}>รายละเอียด</th><th className={numberHeaderClass}>ชั่วโมง/วัน</th><th className={numberHeaderClass}>จำนวนเงิน</th></tr></thead>
                 <tbody>
-                  {details.timePayroll.length === 0 && <EmptyRow columns={7} />}
-                  {details.timePayroll.map((row, index) => <tr key={`${row.number}-${index}`}><td className={cellClass}>{formatThaiDate(row.date)}</td><td className={cellClass}>{row.number}</td><td className={cellClass}>{row.category}</td><td className={cellClass}>{row.employee}</td><td className={cellClass}>{row.detail}</td><td className={numberCellClass}>{row.quantity === null ? "-" : formatQuantity(row.quantity)}</td><td className={numberCellClass}>{row.amount === null ? "-" : formatMoney(row.amount)}</td></tr>)}
+                  {presentation.timePayroll.length === 0 && <EmptyRow columns={7} />}
+                  {presentation.timePayroll.map((row, index) => <tr key={`${row.number}-${index}`}><td className={cellClass}>{formatThaiDate(row.date)}</td><td className={cellClass}>{row.number}</td><td className={cellClass}>{row.category}</td><td className={cellClass}>{row.employee}</td><td className={cellClass}>{row.detail}</td><td className={numberCellClass}>{row.quantity === null ? "-" : formatQuantity(row.quantity)}</td><td className={numberCellClass}>{row.amount === null ? "-" : formatMoney(row.amount)}</td></tr>)}
                 </tbody>
-                <tfoot><tr><TotalCell colSpan={7} className="text-right">เวลาทำงาน {formatQuantity(presentation.totals.workHours)} ชม. · ธุรกรรม/เงินเดือน {formatMoney(presentation.totals.payrollAmount)}</TotalCell></tr></tfoot>
+                <tfoot><tr><TotalCell colSpan={7} className="text-right">{formatReportItemCount(presentation.counts.timePayroll)} · เวลาทำงาน {formatQuantity(presentation.totals.workHours)} ชม. · ธุรกรรม/เงินเดือน {formatMoney(presentation.totals.payrollAmount)}</TotalCell></tr></tfoot>
               </ReportTable>
             </Section>
 
@@ -296,10 +300,10 @@ export function ReportPreviewModal({
               <ReportTable minWidth="min-w-[72rem]">
                 <thead><tr><th className={headerClass}>วันที่</th><th className={headerClass}>เลขที่</th><th className={headerClass}>ทิศทาง</th><th className={headerClass}>คู่รายการ</th><th className={headerClass}>สถานะ</th><th className={numberHeaderClass}>ยอดที่ต้องจ่าย</th><th className={numberHeaderClass}>ยอดสลิป</th><th className={numberHeaderClass}>ค่าธรรมเนียม</th><th className={numberHeaderClass}>สาขาจ่าย</th></tr></thead>
                 <tbody>
-                  {details.bankTransfers.length === 0 && <EmptyRow columns={9} />}
-                  {details.bankTransfers.map((row, index) => <tr key={`${row.number}-${index}`}><td className={cellClass}>{formatThaiDate(row.date)}</td><td className={cellClass}>{row.number}</td><td className={cellClass}>{row.direction === "out" ? "ออก" : "เข้า"}</td><td className={cellClass}>{row.party}</td><td className={cellClass}>{row.status}</td><td className={numberCellClass}>{formatMoney(row.amount)}</td><td className={numberCellClass}>{formatMoney(row.slipAmount)}</td><td className={numberCellClass}>{formatMoney(row.fee)}</td><td className={numberCellClass}>{formatMoney(row.branchPaid)}</td></tr>)}
+                  {presentation.bankTransfers.length === 0 && <EmptyRow columns={9} />}
+                  {presentation.bankTransfers.map((row, index) => <tr key={`${row.number}-${index}`}><td className={cellClass}>{formatThaiDate(row.date)}</td><td className={cellClass}>{row.number}</td><td className={cellClass}>{row.direction === "out" ? "ออก" : "เข้า"}</td><td className={cellClass}>{row.party}</td><td className={cellClass}>{row.status}</td><td className={numberCellClass}>{formatMoney(row.amount)}</td><td className={numberCellClass}>{formatMoney(row.slipAmount)}</td><td className={numberCellClass}>{formatMoney(row.fee)}</td><td className={numberCellClass}>{formatMoney(row.branchPaid)}</td></tr>)}
                 </tbody>
-                <tfoot><tr><TotalCell colSpan={5}>รวม</TotalCell><TotalCell className="text-right">{formatMoney(presentation.totals.transferAmount)}</TotalCell><TotalCell className="text-right">{formatMoney(presentation.totals.slipAmount)}</TotalCell><TotalCell className="text-right">{formatMoney(presentation.totals.fee)}</TotalCell><TotalCell className="text-right">{formatMoney(presentation.totals.branchPaid)}</TotalCell></tr></tfoot>
+                <tfoot><tr><TotalCell colSpan={5}>{formatReportItemCount(presentation.counts.bankTransfers)}</TotalCell><TotalCell className="text-right">{formatMoney(presentation.totals.transferAmount)}</TotalCell><TotalCell className="text-right">{formatMoney(presentation.totals.slipAmount)}</TotalCell><TotalCell className="text-right">{formatMoney(presentation.totals.fee)}</TotalCell><TotalCell className="text-right">{formatMoney(presentation.totals.branchPaid)}</TotalCell></tr></tfoot>
               </ReportTable>
             </Section>
           </article>

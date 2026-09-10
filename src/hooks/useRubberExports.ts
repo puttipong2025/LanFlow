@@ -14,10 +14,19 @@ import type {
 } from "@/types/rubber-exports";
 import type { DocumentDeletionAudit } from "@/types/deletion-audits";
 
-export function useRubberExports(locationId: string, online: boolean, operationalView: "active" | "history") {
+export function useRubberExports(
+  locationId: string,
+  online: boolean,
+  view: "active" | "history" | "deletions",
+  search: string,
+  subfilter: string,
+) {
   const queryClient = useQueryClient();
   const locationIdRef = useRef(locationId);
   locationIdRef.current = locationId;
+  const scopeKey = `${locationId}:${view}:${search}:${subfilter}`;
+  const scopeKeyRef = useRef(scopeKey);
+  scopeKeyRef.current = scopeKey;
   const [exports, setExports] = useState<RubberExportSummary[]>([]);
   const [deletions, setDeletions] = useState<DocumentDeletionAudit[]>([]);
   const [availableBills, setAvailableBills] = useState<RubberExportAvailableBill[]>([]);
@@ -26,6 +35,7 @@ export function useRubberExports(locationId: string, online: boolean, operationa
     canDelete: false,
   });
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deletionsLoading, setDeletionsLoading] = useState(false);
   const [deletionsError, setDeletionsError] = useState<string | null>(null);
@@ -42,24 +52,36 @@ export function useRubberExports(locationId: string, online: boolean, operationa
   const optionsController = useRef<AbortController | null>(null);
   const deletionsController = useRef<AbortController | null>(null);
   const optionsCache = useRef(new Map<string, RubberExportAvailableBill[]>());
+  const exportsRef = useRef<RubberExportSummary[]>([]);
 
-  const reload = useCallback(async (silent = false) => {
+  const reload = useCallback(async () => {
     if (!locationId || !online) {
       setPermissions({ canVerify: false, canDelete: false });
       setLoading(false);
+      setLoadingMore(false);
       return;
     }
-    if (!silent) {
-      setLoading(true);
-      setError(null);
-      setPermissions({ canVerify: false, canDelete: false });
+    if (view === "deletions") {
+      setLoading(false);
+      setLoadingMore(false);
+      return true;
     }
     listController.current?.abort();
+    setLoadingMore(false);
+    setLoading(true);
+    setError(null);
     const controller = new AbortController();
     listController.current = controller;
     try {
+      const params = new URLSearchParams({
+        locationId,
+        view,
+        search,
+        subfilter,
+        limit: "50",
+      });
       const response = await authFetch(
-        `/api/lanflow/rubber-exports?locationId=${encodeURIComponent(locationId)}&view=${operationalView}`,
+        `/api/lanflow/rubber-exports?${params}`,
         { cache: "no-store", signal: controller.signal }
       );
       await assertApiResponse(response);
@@ -69,7 +91,8 @@ export function useRubberExports(locationId: string, online: boolean, operationa
         hasMore: boolean;
         nextCursor: string | null;
       };
-      if (locationIdRef.current !== locationId || controller.signal.aborted) return;
+      if (scopeKeyRef.current !== scopeKey || controller.signal.aborted) return;
+      exportsRef.current = body.exports;
       setExports(body.exports);
       setPermissions(body.permissions ?? { canVerify: false, canDelete: false });
       setHasMore(body.hasMore);
@@ -82,40 +105,57 @@ export function useRubberExports(locationId: string, online: boolean, operationa
     } finally {
       if (listController.current === controller) {
         listController.current = null;
-        if (!silent) setLoading(false);
+        setLoading(false);
       }
     }
-  }, [locationId, online, operationalView]);
+  }, [locationId, online, search, scopeKey, subfilter, view]);
 
   const loadMore = useCallback(async () => {
-    if (!nextCursor || !online) return;
+    if (!nextCursor || !online || loading || view === "deletions") return false;
     const controller = new AbortController();
     listController.current?.abort();
     listController.current = controller;
-    setLoading(true);
+    setLoadingMore(true);
     try {
+      const params = new URLSearchParams({
+        locationId,
+        view,
+        search,
+        subfilter,
+        limit: "50",
+        cursor: nextCursor,
+      });
       const response = await authFetch(
-        `/api/lanflow/rubber-exports?locationId=${encodeURIComponent(locationId)}&view=${operationalView}&cursor=${encodeURIComponent(nextCursor)}`,
+        `/api/lanflow/rubber-exports?${params}`,
         { cache: "no-store", signal: controller.signal },
       );
       await assertApiResponse(response);
       const body = await response.json() as {
         exports: RubberExportSummary[]; hasMore: boolean; nextCursor: string | null;
       };
-      if (locationIdRef.current !== locationId || controller.signal.aborted) return;
-      setExports((current) => [...current, ...body.exports.filter((row) => !current.some((item) => item.id === row.id))]);
+      if (scopeKeyRef.current !== scopeKey || controller.signal.aborted) return;
+      const current = exportsRef.current;
+      const currentIds = new Set(current.map((item) => item.id));
+      const additions = body.exports.filter((row) => !currentIds.has(row.id));
+      if (additions.length > 0) {
+        const next = [...current, ...additions];
+        exportsRef.current = next;
+        setExports(next);
+      }
       setHasMore(body.hasMore);
       setNextCursor(body.nextCursor);
+      return additions.length > 0;
     } catch (caught) {
-      if (controller.signal.aborted || locationIdRef.current !== locationId) return;
+      if (controller.signal.aborted || scopeKeyRef.current !== scopeKey) return;
       setError(caught instanceof Error ? caught.message : "โหลดรายการส่งออกเพิ่มไม่สำเร็จ");
+      return false;
     } finally {
       if (listController.current === controller) {
         listController.current = null;
-        setLoading(false);
+        setLoadingMore(false);
       }
     }
-  }, [locationId, nextCursor, online, operationalView]);
+  }, [loading, locationId, nextCursor, online, search, scopeKey, subfilter, view]);
 
   const reloadDeletions = useCallback(async (cursor: string | null = null, append = false) => {
     if (!locationId || !online) return;
@@ -160,13 +200,20 @@ export function useRubberExports(locationId: string, online: boolean, operationa
   }, [locationId, online]);
 
   useEffect(() => {
+    setPermissions({ canVerify: false, canDelete: false });
+  }, [locationId]);
+
+  useEffect(() => {
     setDeletionRefreshError(null);
     setDeletionRefreshing(false);
+    setError(null);
+    exportsRef.current = [];
     setExports([]);
     setDeletions([]);
     setDeletionsError(null);
     setHasMore(false);
     setNextCursor(null);
+    setLoadingMore(false);
     setDeletionsHasMore(false);
     setDeletionsCursor(null);
     setAvailableBills([]);
@@ -340,7 +387,9 @@ export function useRubberExports(locationId: string, online: boolean, operationa
     await assertApiResponse(response);
     if (scope !== scopeVersion.current || locationIdRef.current !== locationId) return;
     listController.current?.abort();
-    setExports((current) => current.filter((row) => row.id !== exportId));
+    const remaining = exportsRef.current.filter((row) => row.id !== exportId);
+    exportsRef.current = remaining;
+    setExports(remaining);
     optionsController.current?.abort();
     optionsCache.current.clear();
     setAvailableBills([]);
@@ -353,6 +402,7 @@ export function useRubberExports(locationId: string, online: boolean, operationa
     availableBills,
     permissions,
     loading,
+    loadingMore,
     error,
     deletionsLoading,
     deletionsError,

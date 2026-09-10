@@ -9,10 +9,13 @@ import {
   buildReportPresentation,
   formatMoney as money,
   formatQuantity as quantity,
+  formatReportDateRange,
+  formatReportItemCount,
   formatThaiDate as thaiDate,
   formatThaiDateTime as thaiDateTime,
+  REPORT_OPENING_BALANCE_COUNT_NOTE,
+  REPORT_STATUS_LABEL,
   formatWholeMoney as wholeMoney,
-  reportStatusLabel,
   rubberBillTotals,
   type RubberBillRow,
 } from "@/lib/reports/report-presentation";
@@ -31,7 +34,7 @@ function RubberBillTable({ rows }: { rows: RubberBillRow[] }) {
         {rows.length === 0 && <EmptyRow columns={9} />}
         {rows.map((row, index) => <tr key={`${row.number}-${index}`}><td>{thaiDate(row.date)}</td><td>{row.number}</td><td>{row.customer}</td><td>{row.billType}</td><td className="num">{quantity(row.netWeight)}</td><td className="num">{money(row.averagePrice)}</td><td className="num">{money(row.rubberValue)}</td><td className="num">{money(row.deduction)}</td><td className="num">{wholeMoney(row.net)}</td></tr>)}
       </tbody>
-      <tfoot><tr><td colSpan={4}>รวม</td><td className="num">{quantity(totals.weight)}</td><td className="num">{money(totals.weight > 0 ? totals.value / totals.weight : 0)}</td><td className="num">{money(totals.value)}</td><td className="num">{money(totals.deduction)}</td><td className="num">{wholeMoney(totals.net)}</td></tr></tfoot>
+      <tfoot><tr><td colSpan={4}>{formatReportItemCount(rows.length)}</td><td className="num">{quantity(totals.weight)}</td><td className="num">{money(totals.weight > 0 ? totals.value / totals.weight : 0)}</td><td className="num">{money(totals.value)}</td><td className="num">{money(totals.deduction)}</td><td className="num">{wholeMoney(totals.net)}</td></tr></tfoot>
     </table>
   );
 }
@@ -74,7 +77,18 @@ export default function ReportPrintPage() {
 
   if (error) return <main className="p-8 text-center text-pretty text-red-700">{error}</main>;
   if (!details || !presentation) return <main className="p-8 text-center text-pretty">กำลังโหลดรายงาน...</main>;
-  const { farmerRubberBills, incomeExpense, totals, traderRubberBills } = presentation;
+  const {
+    bankTransfers,
+    branchReceiptRubberBills,
+    counts,
+    dateRange,
+    farmerRubberBills,
+    incomeExpense,
+    stock,
+    timePayroll,
+    totals,
+    traderRubberBills,
+  } = presentation;
 
   return (
     <main className="report-page">
@@ -124,8 +138,9 @@ export default function ReportPrintPage() {
           <div><strong>Cutoff:</strong> {thaiDateTime(details.report.cutoffAt)}</div>
           <div><strong>ผู้สร้าง:</strong> {details.report.createdByName}</div>
           <div><strong>สร้างเมื่อ:</strong> {thaiDateTime(details.report.createdAt)}</div>
-          <div><strong>จำนวน source:</strong> {details.report.itemCount.toLocaleString("th-TH")}</div>
-          <div><strong>สถานะ:</strong> <span>{reportStatusLabel(details.report)}</span></div>
+          <div><strong>รวมรายการ ({REPORT_OPENING_BALANCE_COUNT_NOTE}):</strong> {details.report.itemCount.toLocaleString("th-TH")}</div>
+          <div><strong>ช่วงวันที่ข้อมูล:</strong> {formatReportDateRange(dateRange)}</div>
+          <div><strong>สถานะ:</strong> <span>{REPORT_STATUS_LABEL}</span></div>
           <div><strong>ผลตรวจนับ:</strong> {details.report.hasCashCount ? "มีผลตรวจนับเงินสด" : "ไม่มีผลตรวจนับเงินสด"}</div>
           {details.report.hasCashCount && <div><strong>ผู้ตรวจนับ:</strong> {details.report.cashCountCheckerName ?? "-"}</div>}
           {details.report.hasCashCount && <div><strong>ตรวจนับเมื่อ:</strong> {details.report.cashCountSubmittedAt ? thaiDateTime(details.report.cashCountSubmittedAt) : "-"}</div>}
@@ -142,6 +157,10 @@ export default function ReportPrintPage() {
           <h3>1.2 ชาวสวน</h3>
           <RubberBillTable rows={farmerRubberBills} />
         </div>
+        <div className="rubber-group">
+          <h3>1.3 ยางรับเข้าและยางคงเหลือภายในสาขา</h3>
+          <RubberBillTable rows={branchReceiptRubberBills} />
+        </div>
       </section>
 
       <section className="report-section">
@@ -153,7 +172,7 @@ export default function ReportPrintPage() {
             {incomeExpense.map((row, index) => <tr key={`${row.number}-${index}`}><td>{thaiDate(row.date)}</td><td>{row.number}</td><td>{row.title}</td><td className="num">{row.income === null ? "" : money(row.income)}</td><td className="num">{row.expense === null ? "" : money(row.expense)}</td></tr>)}
           </tbody>
           <tfoot>
-            <tr><td colSpan={3}>รวม</td><td className="num">{money(totals.income)}</td><td className="num">{money(totals.expense)}</td></tr>
+            <tr><td colSpan={3}>{formatReportItemCount(counts.incomeExpense)} ({REPORT_OPENING_BALANCE_COUNT_NOTE})</td><td className="num">{money(totals.income)}</td><td className="num">{money(totals.expense)}</td></tr>
             <tr><td colSpan={5} className="net-balance">ยอดคงเหลือสุทธิ {money(totals.balance)}</td></tr>
           </tfoot>
         </table>
@@ -164,10 +183,10 @@ export default function ReportPrintPage() {
         <table className="report-table">
           <thead><tr><th>วันที่</th><th>เลขที่</th><th>สินค้า</th><th>ประเภท</th><th className="num">จำนวนเคลื่อนไหว</th><th className="num">ยอดเงินประกอบ</th></tr></thead>
           <tbody>
-            {details.stock.length === 0 && <EmptyRow columns={6} />}
-            {details.stock.map((row, index) => <tr key={`${row.number}-${index}`}><td>{thaiDate(row.date)}</td><td>{row.number}</td><td>{row.product}</td><td>{row.type}</td><td className="num">{quantity(row.quantity)}</td><td className="num">{money(row.amount)}</td></tr>)}
+            {stock.length === 0 && <EmptyRow columns={6} />}
+            {stock.map((row, index) => <tr key={`${row.number}-${index}`}><td>{thaiDate(row.date)}</td><td>{row.number}</td><td>{row.product}</td><td>{row.type}</td><td className="num">{quantity(row.quantity)}</td><td className="num">{money(row.amount)}</td></tr>)}
           </tbody>
-          <tfoot><tr><td colSpan={4}>รวมการเคลื่อนไหว</td><td className="num">{quantity(totals.stockQuantity)}</td><td className="num">{money(totals.stockAmount)}</td></tr></tfoot>
+          <tfoot><tr><td colSpan={4}>{formatReportItemCount(counts.stock)}</td><td className="num">{quantity(totals.stockQuantity)}</td><td className="num">{money(totals.stockAmount)}</td></tr></tfoot>
         </table>
         <div className="stock-balance">
           ยอดคงเหลือ ณ cutoff: {details.stockBalances.length === 0
@@ -181,10 +200,10 @@ export default function ReportPrintPage() {
         <table className="report-table">
           <thead><tr><th>วันที่</th><th>เลขที่</th><th>ประเภท</th><th>พนักงาน</th><th>รายละเอียด</th><th className="num">ชั่วโมง/วัน</th><th className="num">จำนวนเงิน</th></tr></thead>
           <tbody>
-            {details.timePayroll.length === 0 && <EmptyRow columns={7} />}
-            {details.timePayroll.map((row, index) => <tr key={`${row.number}-${index}`}><td>{thaiDate(row.date)}</td><td>{row.number}</td><td>{row.category}</td><td>{row.employee}</td><td>{row.detail}</td><td className="num">{row.quantity === null ? "-" : quantity(row.quantity)}</td><td className="num">{row.amount === null ? "-" : money(row.amount)}</td></tr>)}
+            {timePayroll.length === 0 && <EmptyRow columns={7} />}
+            {timePayroll.map((row, index) => <tr key={`${row.number}-${index}`}><td>{thaiDate(row.date)}</td><td>{row.number}</td><td>{row.category}</td><td>{row.employee}</td><td>{row.detail}</td><td className="num">{row.quantity === null ? "-" : quantity(row.quantity)}</td><td className="num">{row.amount === null ? "-" : money(row.amount)}</td></tr>)}
           </tbody>
-          <tfoot><tr><td colSpan={7}><div className="summary-grid"><span>เวลาทำงาน {quantity(totals.workHours)} ชม.</span><span>ธุรกรรม/เงินเดือน {money(totals.payrollAmount)}</span></div></td></tr></tfoot>
+          <tfoot><tr><td colSpan={7}><div className="summary-grid"><span>{formatReportItemCount(counts.timePayroll)}</span><span>เวลาทำงาน {quantity(totals.workHours)} ชม.</span><span>ธุรกรรม/เงินเดือน {money(totals.payrollAmount)}</span></div></td></tr></tfoot>
         </table>
       </section>
 
@@ -193,10 +212,10 @@ export default function ReportPrintPage() {
         <table className="report-table">
           <thead><tr><th>วันที่</th><th>เลขที่</th><th>ทิศทาง</th><th>คู่รายการ</th><th>สถานะ</th><th className="num">ยอดที่ต้องจ่าย</th><th className="num">ยอดสลิป</th><th className="num">ค่าธรรมเนียม</th><th className="num">สาขาจ่าย</th></tr></thead>
           <tbody>
-            {details.bankTransfers.length === 0 && <EmptyRow columns={9} />}
-            {details.bankTransfers.map((row, index) => <tr key={`${row.number}-${index}`}><td>{thaiDate(row.date)}</td><td>{row.number}</td><td>{row.direction === "out" ? "ออก" : "เข้า"}</td><td>{row.party}</td><td>{row.status}</td><td className="num">{money(row.amount)}</td><td className="num">{money(row.slipAmount)}</td><td className="num">{money(row.fee)}</td><td className="num">{money(row.branchPaid)}</td></tr>)}
+            {bankTransfers.length === 0 && <EmptyRow columns={9} />}
+            {bankTransfers.map((row, index) => <tr key={`${row.number}-${index}`}><td>{thaiDate(row.date)}</td><td>{row.number}</td><td>{row.direction === "out" ? "ออก" : "เข้า"}</td><td>{row.party}</td><td>{row.status}</td><td className="num">{money(row.amount)}</td><td className="num">{money(row.slipAmount)}</td><td className="num">{money(row.fee)}</td><td className="num">{money(row.branchPaid)}</td></tr>)}
           </tbody>
-          <tfoot><tr><td colSpan={5}>รวม</td><td className="num">{money(totals.transferAmount)}</td><td className="num">{money(totals.slipAmount)}</td><td className="num">{money(totals.fee)}</td><td className="num">{money(totals.branchPaid)}</td></tr></tfoot>
+          <tfoot><tr><td colSpan={5}>{formatReportItemCount(counts.bankTransfers)}</td><td className="num">{money(totals.transferAmount)}</td><td className="num">{money(totals.slipAmount)}</td><td className="num">{money(totals.fee)}</td><td className="num">{money(totals.branchPaid)}</td></tr></tfoot>
         </table>
       </section>
     </main>

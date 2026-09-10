@@ -1,32 +1,24 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createSupabaseBrowserClient } from "@/lib/supabase/client";
-import type { AcidStockMovement } from "@/types";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { AcidStockBalance, AcidStockMovement } from "@/types";
 import { STOCK_ENTRY_APPROVAL_REQUESTS_KEY } from "@/hooks/useStockEntryApprovals";
 import { authFetch } from "@/lib/auth-fetch";
 
 const QUERY_KEY = "stock";
+const PAGE_SIZE = 50;
 
-function mapMovement(row: any): AcidStockMovement {
-  return {
-    movementId: row.movement_id,
-    sourceType: row.source_type,
-    sourceId: row.source_id,
-    sourceLineId: row.source_line_id,
-    txDate: row.tx_date,
-    locationId: row.location_id,
-    productId: row.product_id,
-    productName: row.product_name,
-    quantityDelta: Number(row.quantity_delta ?? 0),
-    amount: Number(row.amount ?? 0),
-    displayBillNo: row.display_bill_no,
-    txType: row.tx_type,
-    createdByUserId: row.created_by_user_id,
-    createdByName: row.created_by_name,
-    createdByPhone: row.created_by_phone,
-    createdAt: row.created_at,
-    relationLockReason: row.relation_lock_reason,
-    reportLockNo: row.report_lock_no ?? null,
-  };
+export type StockMovementFilter = "all" | "receive" | "transfer" | "sale" | "rubber_bill";
+
+type MovementPage = {
+  movements: AcidStockMovement[];
+  hasMore: boolean;
+  nextCursor: string | null;
+};
+
+async function readJson<T>(url: string): Promise<T> {
+  const response = await authFetch(url, { cache: "no-store" });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || data.errorMessage || "โหลดข้อมูลสต็อกไม่สำเร็จ");
+  return data as T;
 }
 
 async function postStock(payload: Record<string, unknown>) {
@@ -35,12 +27,8 @@ async function postStock(payload: Record<string, unknown>) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data.errorMessage || data.error || "บันทึกสต็อกไม่สำเร็จ");
-  }
-
+  if (!response.ok) throw new Error(data.errorMessage || data.error || "บันทึกสต็อกไม่สำเร็จ");
   return data;
 }
 
@@ -55,7 +43,6 @@ async function postStockEntryDeleteRequest(input: { stockEntryId: string }) {
   if (typeof navigator !== "undefined" && !navigator.onLine) {
     throw new Error("ลบรายการสต็อกต้องออนไลน์ก่อน");
   }
-
   const response = await authFetch("/api/lanflow/stock-entry-approval-requests", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -64,75 +51,74 @@ async function postStockEntryDeleteRequest(input: { stockEntryId: string }) {
       stockEntryId: input.stockEntryId,
     }),
   });
-
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data.errorMessage || data.error || "ส่งคำขอลบรายการสต็อกไม่สำเร็จ");
-  }
-
-  if (data.status !== "pending") {
-    throw new Error(data.errorMessage || "ส่งคำขอลบรายการสต็อกไม่สำเร็จ");
-  }
-
+  if (!response.ok) throw new Error(data.errorMessage || data.error || "ส่งคำขอลบรายการสต็อกไม่สำเร็จ");
+  if (data.status !== "pending") throw new Error(data.errorMessage || "ส่งคำขอลบรายการสต็อกไม่สำเร็จ");
   return data;
 }
 
-export function useAcidStock(locationId: string) {
-  const supabase = createSupabaseBrowserClient();
+export function useAcidStock(
+  locationId: string,
+  options: {
+    online: boolean;
+    search: string;
+    type: StockMovementFilter;
+    fromDate: string;
+    toDate: string;
+    includeMovements?: boolean;
+  },
+) {
   const queryClient = useQueryClient();
 
-  const query = useQuery({
-    queryKey: [QUERY_KEY, locationId],
+  const balancesQuery = useQuery({
+    queryKey: [QUERY_KEY, locationId, "balances"],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("stock_movements")
-        .select("*")
-        .eq("location_id", locationId)
-        .order("tx_date", { ascending: false })
-        .order("created_at", { ascending: false });
-
-      if (error) throw new Error(error.message || JSON.stringify(error));
-      const rows = (data || []).map(mapMovement);
-      const entryIds = [...new Set(
-        rows.filter((row) => row.sourceType === "stock_entry").map((row) => row.sourceId)
-      )];
-      if (entryIds.length === 0) return rows;
-
-      const { data: locks, error: lockError } = await supabase
-        .from("stock_entries")
-        .select("id, report_lock_no")
-        .in("id", entryIds);
-      if (lockError) throw new Error(lockError.message || JSON.stringify(lockError));
-      const lockById = new Map(
-        (locks || []).map((row) => [row.id, row.report_lock_no as string | null])
-      );
-      return rows.map((row) => ({
-        ...row,
-        reportLockNo: row.sourceType === "stock_entry"
-          ? lockById.get(row.sourceId) ?? null
-          : null,
-      }));
+      const params = new URLSearchParams({ view: "balances", locationId });
+      const body = await readJson<{ balances: AcidStockBalance[] }>(`/api/lanflow/acid-stock?${params}`);
+      return body.balances;
     },
-    enabled: !!locationId,
+    enabled: Boolean(locationId) && options.online,
+  });
+
+  const movementsQuery = useInfiniteQuery({
+    queryKey: [
+      QUERY_KEY,
+      locationId,
+      "movements",
+      options.search,
+      options.type,
+      options.fromDate,
+      options.toDate,
+    ],
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam }) => {
+      const params = new URLSearchParams({
+        view: "movements",
+        locationId,
+        search: options.search,
+        type: options.type,
+        limit: String(PAGE_SIZE),
+      });
+      if (options.fromDate) params.set("fromDate", options.fromDate);
+      if (options.toDate) params.set("toDate", options.toDate);
+      if (pageParam) params.set("cursor", pageParam);
+      return readJson<MovementPage>(`/api/lanflow/acid-stock?${params}`);
+    },
+    getNextPageParam: (lastPage) => lastPage.hasMore ? lastPage.nextCursor : undefined,
+    enabled: Boolean(locationId) && options.online && options.includeMovements !== false,
   });
 
   const receiveMutation = useMutation({
     mutationFn: async (input: { locationId: string; productId: string; txDate: string; quantity: number; amount: number }) => {
-      if (typeof navigator !== "undefined" && !navigator.onLine) {
-        throw new Error("รับเข้าสต็อกต้องออนไลน์ก่อน");
-      }
-
+      if (typeof navigator !== "undefined" && !navigator.onLine) throw new Error("รับเข้าสต็อกต้องออนไลน์ก่อน");
       return postStock({ action: "receive", ...input });
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: [QUERY_KEY, locationId] }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: [QUERY_KEY] }),
   });
 
   const transferMutation = useMutation({
     mutationFn: async (input: { fromLocationId: string; toLocationId: string; productId: string; txDate: string; quantity: number }) => {
-      if (typeof navigator !== "undefined" && !navigator.onLine) {
-        throw new Error("ย้ายสต็อกต้องออนไลน์ก่อน");
-      }
-
+      if (typeof navigator !== "undefined" && !navigator.onLine) throw new Error("ย้ายสต็อกต้องออนไลน์ก่อน");
       return postStock({ action: "transfer", ...input });
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: [QUERY_KEY] }),
@@ -143,10 +129,34 @@ export function useAcidStock(locationId: string) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: [STOCK_ENTRY_APPROVAL_REQUESTS_KEY] }),
   });
 
+  const seen = new Set<string>();
+  const movements = (movementsQuery.data?.pages ?? []).flatMap((page) =>
+    page.movements.filter((movement) => {
+      if (seen.has(movement.movementId)) return false;
+      seen.add(movement.movementId);
+      return true;
+    }),
+  );
+
+  async function loadMore() {
+    const result = await movementsQuery.fetchNextPage();
+    if (result.isError) return false;
+    const loadedIds = new Set(
+      (result.data?.pages ?? []).flatMap((page) => page.movements.map((movement) => movement.movementId)),
+    );
+    return loadedIds.size > movements.length;
+  }
+
   return {
-    movements: query.data || [],
-    isLoading: query.isLoading,
-    isError: query.isError,
+    balances: balancesQuery.data ?? [],
+    movements,
+    balancesLoading: balancesQuery.isLoading,
+    movementsLoading: movementsQuery.isLoading,
+    balancesError: balancesQuery.error instanceof Error ? balancesQuery.error.message : null,
+    movementsError: movementsQuery.error instanceof Error ? movementsQuery.error.message : null,
+    hasMore: movementsQuery.hasNextPage,
+    isLoadingMore: movementsQuery.isFetchingNextPage,
+    loadMore,
     receiveStock: receiveMutation.mutateAsync,
     transferStock: transferMutation.mutateAsync,
     deleteStockEntry: deleteEntryMutation.mutateAsync,

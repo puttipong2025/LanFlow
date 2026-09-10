@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { FilePlus2, RotateCw } from "lucide-react";
+import { FilePlus2, RotateCw, Search, X } from "lucide-react";
 import { toast } from "sonner";
 import type { Location } from "@/types";
 import type {
@@ -21,6 +21,7 @@ import { RubberExportTable } from "@/components/rubber-exports/RubberExportTable
 import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { AlertDialog } from "@/components/shared/AlertDialog";
+import { TablePageSizeSelect } from "@/components/shared/TablePagination";
 import { DeletionAuditTable } from "@/components/shared/DeletionAuditTable";
 import type { RequestBranchCreate } from "@/hooks/useBranchCreateGuard";
 import { isDeviceOnline } from "@/lib/connectivity";
@@ -146,8 +147,12 @@ export function RubberExportsModule({
   requestBranchCreate: RequestBranchCreate;
 }) {
   const [view, setView] = useState<"active" | "history" | "deletions">("active");
-  const operationalView = view === "history" ? "history" : "active";
-  const api = useRubberExports(selectedLocation.id, online, operationalView);
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [subfilter, setSubfilter] = useState("all");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const api = useRubberExports(selectedLocation.id, online, view, debouncedSearch, subfilter);
   const reloadDeletions = api.reloadDeletions;
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<RubberExportDetails | null>(null);
@@ -168,6 +173,29 @@ export function RubberExportsModule({
   const [revertError, setRevertError] = useState<string | null>(null);
   const detailController = useRef<AbortController | null>(null);
   const pdfShare = useSharePdf();
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 400);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [selectedLocation.id, view, debouncedSearch, subfilter, pageSize]);
+
+  useEffect(() => {
+    const lastPage = Math.max(Math.ceil(api.exports.length / pageSize), 1);
+    setPage((current) => Math.min(current, lastPage));
+  }, [api.exports.length, pageSize]);
+
+  async function handlePageChange(nextPage: number) {
+    const safePage = Math.max(1, nextPage);
+    if ((safePage - 1) * pageSize >= api.exports.length && api.hasMore) {
+      const loaded = await api.loadMore();
+      if (!loaded) return;
+    }
+    setPage(safePage);
+  }
 
   async function openCreate() {
     if (!online || api.optionsLoading) return;
@@ -376,7 +404,6 @@ export function RubberExportsModule({
         </div>
       </div>
 
-      {!online && <div className="rounded-lg bg-amber/20 px-4 py-3 text-sm font-semibold text-amber-900">ส่งออกยางใช้ได้เมื่อออนไลน์เท่านั้น</div>}
       {api.deletionRefreshError && (
         <div role="status" className="space-y-2 rounded-md bg-amber/20 px-4 py-3 text-sm font-semibold text-amber-900">
           <p className="text-pretty">{api.deletionRefreshError} ไม่ต้องลบรายการซ้ำ</p>
@@ -407,6 +434,7 @@ export function RubberExportsModule({
             type="button"
             onClick={() => {
               setView(value);
+              if (value !== "deletions") setSubfilter("all");
             }}
             className={cn(
               "focus-ring rounded-md px-4 py-2 text-sm font-semibold text-white",
@@ -420,10 +448,58 @@ export function RubberExportsModule({
 
       {view !== "deletions" ? (
       <>
+      <div className="grid gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel lg:grid-cols-[minmax(16rem,1fr)_auto_auto] lg:items-end">
+        <label className="block">
+          <span className="mb-1 block text-sm font-semibold text-ink/70">ค้นหารายการส่งออก</span>
+          <span className="relative block">
+            <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink/45" />
+            <input
+              type="search"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              disabled={!online}
+              placeholder="เลขที่รายการ ผู้สร้าง หรือเลขบิลรับเข้า"
+              className="focus-ring h-10 w-full rounded-md border border-black/20 bg-white pl-9 pr-10 text-sm disabled:cursor-not-allowed disabled:bg-slate-100"
+            />
+            {search && (
+              <button type="button" onClick={() => setSearch("")} disabled={!online} aria-label="ล้างคำค้นหา"
+                className="focus-ring absolute right-1 top-1 inline-flex size-8 items-center justify-center rounded-md text-ink/55 hover:bg-field">
+                <X size={16} />
+              </button>
+            )}
+          </span>
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-sm font-semibold text-ink/70">กรองสถานะ</span>
+          <select value={subfilter} onChange={(event) => setSubfilter(event.target.value)} disabled={!online}
+            className="focus-ring h-10 rounded-md border border-black/20 bg-white px-3 text-sm font-semibold text-ink disabled:cursor-not-allowed disabled:bg-slate-100">
+            <option value="all">ทั้งหมด</option>
+            {view === "active" ? (
+              <><option value="draft">ฉบับร่าง</option><option value="verified">ตรวจสอบแล้ว</option></>
+            ) : (
+              <><option value="sold">ขายออกแล้ว</option><option value="received">รับเข้าแล้ว</option></>
+            )}
+          </select>
+        </label>
+        <TablePageSizeSelect pageSize={pageSize} onPageSizeChange={setPageSize} />
+      </div>
+      {(search || subfilter !== "all") && (
+        <div>
+          <button type="button" onClick={() => { setSearch(""); setSubfilter("all"); }} disabled={!online}
+            className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
+            <X size={16} /> ล้างตัวกรอง
+          </button>
+        </div>
+      )}
       <div className="overflow-hidden rounded-xl bg-white shadow-sm">
         <RubberExportTable
           rows={api.exports}
           loading={api.loading}
+          page={page}
+          pageSize={pageSize}
+          hasMore={api.hasMore}
+          isLoadingMore={api.loadingMore || api.loading}
+          onPageChange={(nextPage) => void handlePageChange(nextPage)}
           online={online}
           canDelete={api.permissions.canDelete}
           canVerify={api.permissions.canVerify}
@@ -443,14 +519,6 @@ export function RubberExportsModule({
           onDelete={setPendingDelete}
         />
       </div>
-      {api.hasMore && !api.loading && (
-        <div className="flex flex-col items-center gap-2 rounded-lg bg-field px-4 py-3 text-center">
-          <p className="text-sm text-ink/65">โหลดแล้ว {api.exports.length} รายการ</p>
-          <button type="button" onClick={() => void api.loadMore()} className="focus-ring rounded-md bg-river px-4 py-2 text-sm font-semibold text-white">
-            โหลดเพิ่ม
-          </button>
-        </div>
-      )}
       {view === "active" && !api.loading && api.exports.length === 0 && (
         <button type="button" onClick={onOpenReports} className="focus-ring rounded-md bg-river px-4 py-2 text-sm font-semibold text-white">
           ไปหน้ารายงานเพื่อเตรียมบิลส่งออก

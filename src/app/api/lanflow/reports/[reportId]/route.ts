@@ -4,6 +4,7 @@ import { reportErrorResponse } from "@/lib/server/report-response";
 import type { ReportDetails } from "@/types/reports";
 import { reportDatePart } from "@/lib/reports/report-date";
 import { chunkUniqueIds } from "@/lib/server/chunk-ids";
+import { isUuid } from "@/lib/server/rubber-export-response";
 import { readAllSupabaseRows } from "@/lib/supabase-pages";
 
 export const dynamic = "force-dynamic";
@@ -62,9 +63,12 @@ export async function GET(request: NextRequest, context: RouteContext) {
   if (!result.ok) return result.response;
 
   const { reportId } = await context.params;
+  if (!isUuid(reportId)) {
+    return NextResponse.json({ error: "รหัสรายงานไม่ถูกต้อง" }, { status: 400 });
+  }
   const { data: header, error: headerError } = await result.supabase
     .from("report_batches")
-    .select("id, report_no, location_id, cutoff_at, status, created_by_name, created_at, deleted_at, has_cash_count, cash_count_link_id, cash_count_checker_name, cash_count_submitted_at, locations(name)")
+    .select("id, report_no, location_id, cutoff_at, previous_report_id, created_by_name, created_at, has_cash_count, cash_count_link_id, cash_count_checker_name, cash_count_submitted_at, locations(name)")
     .eq("id", reportId)
     .eq("status", "active")
     .maybeSingle();
@@ -102,7 +106,6 @@ export async function GET(request: NextRequest, context: RouteContext) {
       payroll,
       bank,
       ledgerResult,
-      latestResult,
     ] = await Promise.all([
       rowsByIds(client, "rubber_bills", "id, bill_date, server_bill_no, local_bill_no, customer_name, bill_type, net_weight, average_price, net_rubber_value, deduction_total, net_total, source_rubber_export_id, customers(class)", ids(items, "rubber_bill")),
       rowsByIds(client, "stock_entries", "id, tx_date, server_bill_no, transfer_bill_no, product_name, tx_type, quantity_delta, amount", ids(items, "acid_stock_entry")),
@@ -135,19 +138,9 @@ export async function GET(request: NextRequest, context: RouteContext) {
         [...ids(items, "bank_transfer_source"), ...ids(items, "bank_transfer_target")]
       ),
       result.supabase.rpc("get_report_income_expense_rows_json", { p_report_id: reportId }),
-      result.supabase
-        .from("report_batches")
-        .select("id")
-        .eq("location_id", header.location_id)
-        .eq("status", "active")
-        .order("created_at", { ascending: false })
-        .order("id", { ascending: false })
-        .limit(1)
-        .maybeSingle(),
     ]);
 
     if (ledgerResult.error) throw new Error(ledgerResult.error.message);
-    if (latestResult.error) throw new Error(latestResult.error.message);
     if (stockBalanceResult.error) throw new Error(stockBalanceResult.error.message);
 
     const profileIds = [...new Set([
@@ -165,12 +158,9 @@ export async function GET(request: NextRequest, context: RouteContext) {
       locationId: header.location_id,
       locationName: location?.name ?? "",
       cutoffAt: header.cutoff_at,
-      status: header.status,
       createdByName: header.created_by_name,
       createdAt: header.created_at,
-      deletedAt: header.deleted_at,
       itemCount: items.length,
-      isLatestActive: latestResult.data?.id === header.id,
       hasCashCount: header.has_cash_count === true,
       cashCountId: header.cash_count_link_id,
       cashCountCheckerName: header.cash_count_checker_name,
@@ -201,12 +191,13 @@ export async function GET(request: NextRequest, context: RouteContext) {
           net: number(row.net_total),
         };
       }),
-      incomeExpense: ((ledgerResult.data ?? []) as Array<Record<string, any>>).map((row) => ({
+      incomeExpense: ((ledgerResult.data ?? []) as Array<Record<string, any>>).map((row, index) => ({
         date: datePart(row.tx_date),
         number: row.number ?? "",
         type: row.entry_type as "income" | "expense",
         title: row.title ?? "",
         amount: number(row.amount),
+        isOpeningBalance: header.previous_report_id !== null && index === 0,
       })),
       stock: [
         ...stock.map((row) => ({
@@ -308,6 +299,9 @@ export async function DELETE(request: Request, context: RouteContext) {
   const result = await requireSystemManager(request);
   if (!result.ok) return result.response;
   const { reportId } = await context.params;
+  if (!isUuid(reportId)) {
+    return NextResponse.json({ error: "รหัสรายงานไม่ถูกต้อง" }, { status: 400 });
+  }
   const { data, error } = await result.supabase.rpc("delete_report_batch", {
     p_report_id: reportId,
   });

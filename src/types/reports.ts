@@ -1,20 +1,22 @@
-export type ReportSummary = {
+export type ReportHeader = {
   id: string;
   reportNo: string;
   locationId: string;
   locationName: string;
   cutoffAt: string;
-  status: "active";
   createdByName: string;
   createdAt: string;
-  deletedAt: string | null;
   itemCount: number;
-  isLatestActive: boolean;
-  rubberExportLockNo?: string | null;
   hasCashCount?: boolean;
   cashCountId?: string | null;
   cashCountCheckerName?: string | null;
   cashCountSubmittedAt?: string | null;
+};
+
+export type ReportSummary = ReportHeader & {
+  status: "active";
+  isLatestActive: boolean;
+  rubberExportLockNo?: string | null;
 };
 
 export type ReportLedgerRow = {
@@ -23,10 +25,11 @@ export type ReportLedgerRow = {
   type: "income" | "expense";
   title: string;
   amount: number;
+  isOpeningBalance?: boolean;
 };
 
 export type ReportDetails = {
-  report: ReportSummary;
+  report: ReportHeader;
   rubberBills: Array<{
     date: string;
     number: string;

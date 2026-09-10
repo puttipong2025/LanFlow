@@ -146,7 +146,7 @@ export function useIncomeExpenseApprovals(options: {
     queryFn: async () => {
       let query = supabase
         .from("income_expense_approval_requests")
-        .select("*");
+        .select("id, request_status, matched_keyword, matched_reasons, location_id, tx_type, title, cost, requested_payload, requested_by_name, requested_by_phone, decided_by_name, decided_by_phone, created_at");
       if (requestsLocationId) {
         query = query.eq("location_id", requestsLocationId);
       }
@@ -159,7 +159,6 @@ export function useIncomeExpenseApprovals(options: {
       return (data || []).map((row: any): IncomeExpenseApprovalRequest => ({
         id: row.id,
         requestStatus: row.request_status,
-        requestedOperation: row.requested_operation,
         matchedKeyword: row.matched_keyword,
         matchedReasons: row.matched_reasons,
         locationId: row.location_id,
@@ -173,8 +172,6 @@ export function useIncomeExpenseApprovals(options: {
         requestedByPhone: row.requested_by_phone,
         decidedByName: row.decided_by_name,
         decidedByPhone: row.decided_by_phone,
-        decidedAt: row.decided_at,
-        decisionComment: row.decision_comment,
         createdAt: row.created_at,
       }));
     },
@@ -195,7 +192,7 @@ export function useIncomeExpenseApprovals(options: {
     queryFn: async () => {
       let query = supabase
         .from("cash_transfer_delete_requests")
-        .select("*");
+        .select("id, transfer_id, source_location_id, source_location_name, target_location_id, target_location_name, transfer_display_no, sent_total, received_total, difference_total, note, request_status, requested_by_name, requested_by_phone, decided_by_name, decided_by_phone, created_at");
       if (requestsLocationId) {
         query = query.eq("source_location_id", requestsLocationId);
       }
@@ -222,8 +219,6 @@ export function useIncomeExpenseApprovals(options: {
         requestedByPhone: row.requested_by_phone,
         decidedByName: row.decided_by_name,
         decidedByPhone: row.decided_by_phone,
-        decidedAt: row.decided_at,
-        decisionComment: row.decision_comment,
         createdAt: row.created_at,
       }));
     },

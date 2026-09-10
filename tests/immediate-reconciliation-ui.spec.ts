@@ -1,6 +1,26 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 test.use({ storageState: "playwright/.auth/super_admin.json" });
+
+async function confirmAvailableBranchIfPrompted(page: Page) {
+  const confirmation = page.getByRole("alertdialog", { name: "ยืนยันสาขาก่อนสร้างรายการ" });
+  const receiptDialog = page.getByRole("dialog", { name: "รับยางจากสาขา", exact: true });
+  await expect.poll(async () => (
+    await confirmation.isVisible() || await receiptDialog.isVisible()
+  )).toBe(true);
+  if (await confirmation.isVisible()) {
+    const currentLocationName = await page
+      .getByLabel(/^เลือกสาขา/)
+      .locator("span")
+      .first()
+      .innerText();
+    await confirmation
+      .getByRole("group", { name: "เลือกสาขาปัจจุบัน" })
+      .getByRole("button", { name: `เลือกสาขา ${currentLocationName.trim()}`, exact: true })
+      .click();
+  }
+  await expect(receiptDialog).toBeVisible();
+}
 
 for (const failedView of ["active", "deletions"]) {
   test(`Export confirmed deletion keeps GET-only retry after ${failedView} failure at 360px`, async ({ page }, testInfo) => {
@@ -57,6 +77,7 @@ for (const status of [403, 409, 500]) {
     await page.goto("/");
     await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
     await page.getByRole("button", { name: "รับยางจากสาขา", exact: true }).click();
+    await confirmAvailableBranchIfPrompted(page);
     await page.setViewportSize({ width: 393, height: 850 });
     const dialog = page.getByRole("dialog", { name: "รับยางจากสาขา", exact: true });
     await dialog.getByRole("radio", { name: /เลือก REX-RECEIPT/ }).check();
@@ -92,6 +113,7 @@ test("Branch Receipt keeps confirmed success when its real parent feed refresh f
   await page.goto("/");
   await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
   await page.getByRole("button", { name: "รับยางจากสาขา", exact: true }).click();
+  await confirmAvailableBranchIfPrompted(page);
   const dialog = page.getByRole("dialog", { name: "รับยางจากสาขา", exact: true });
   await dialog.getByRole("radio").check();
   await dialog.getByRole("button", { name: "ยืนยันรับเข้าสาขา" }).click();
@@ -106,11 +128,13 @@ test("Stock sync waits for reads and offers read-only recovery at 360px", async 
   let writes = 0; let failReads = true; let refetchStarted = false;
   let releaseRead!: () => void;
   const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
-  await page.route("**/rest/v1/stock_movements?*", async (route) => {
+  await page.route(/\/api\/lanflow\/acid-stock\?.*$/, async (route) => {
     if (writes) { refetchStarted = true; await readGate; }
     await route.fulfill(writes && failReads
-      ? { status: 503, json: { message: "STOCK_READ_UNAVAILABLE" } }
-      : { json: [] });
+      ? { status: 503, json: { error: "STOCK_READ_UNAVAILABLE" } }
+      : new URL(route.request().url()).searchParams.get("view") === "balances"
+        ? { json: { balances: [] } }
+        : { json: { movements: [], hasMore: false, nextCursor: null } });
   });
   await page.route("**/api/lanflow/rubber-bills", (route) => {
     expect(route.request().method()).toBe("POST"); writes++;

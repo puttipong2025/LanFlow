@@ -55,6 +55,10 @@ function formatDateTime(value: string) {
   }).format(date);
 }
 
+function formatPerson(name?: string | null, phone?: string | null) {
+  return [name?.trim(), phone?.trim()].filter(Boolean).join(" · ") || "—";
+}
+
 export function IncomeExpenseApprovalModal({
   initialLocationId,
   initialRequestId,
@@ -480,30 +484,31 @@ export function IncomeExpenseApprovalModal({
             </label>
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1080px] border-collapse text-sm">
+            <table className="w-full min-w-[1320px] border-collapse text-sm tabular-nums">
               <thead>
                 <tr className="border-b border-black/10 text-left text-ink/60">
                   <th className="py-2">จัดการ</th>
                   <th className="py-2">สถานะ</th>
+                  <th>ผู้ขอ</th>
+                  <th>ผู้พิจารณา</th>
                   <th>ประเภท</th>
                   <th>สาขา</th>
                   <th>รายการ</th>
                   <th>จำนวนเงิน</th>
                   <th>เหตุผล</th>
-                  <th>ผู้ขอ</th>
                   <th>วันที่</th>
                 </tr>
               </thead>
               <tbody>
                 {isLoading ? (
                   <tr>
-                    <td colSpan={9} className="py-5 text-center text-ink/50">
+                    <td colSpan={10} className="py-5 text-center text-ink/50">
                       กำลังโหลด...
                     </td>
                   </tr>
                 ) : filteredRequests.length === 0 && filteredCashDeleteRequests.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="py-5 text-center text-ink/50">
+                    <td colSpan={10} className="py-5 text-center text-ink/50">
                       ยังไม่มีคำขออนุมัติ
                     </td>
                   </tr>
@@ -540,6 +545,8 @@ export function IncomeExpenseApprovalModal({
                           {statusLabels[request.requestStatus]}
                         </span>
                       </td>
+                      <td className="whitespace-nowrap">{formatPerson(request.requestedByName, request.requestedByPhone)}</td>
+                      <td className="whitespace-nowrap">{formatPerson(request.decidedByName, request.decidedByPhone)}</td>
                       <td>ลบถาวรรายการโยกเงิน</td>
                       <td>{request.sourceLocationName}</td>
                       <td>
@@ -550,7 +557,6 @@ export function IncomeExpenseApprovalModal({
                       </td>
                       <td className="font-semibold text-clay">{formatCurrency(request.sentTotal)}</td>
                       <td>ลบหลังปลายทางตรวจรับ</td>
-                      <td>{request.requestedByName} · {request.requestedByPhone}</td>
                       <td>{formatDateTime(request.createdAt)}</td>
                     </tr>
                   ))}
@@ -583,6 +589,8 @@ export function IncomeExpenseApprovalModal({
                           {statusLabels[request.requestStatus]}
                         </span>
                       </td>
+                      <td className="whitespace-nowrap">{formatPerson(request.requestedByName, request.requestedByPhone)}</td>
+                      <td className="whitespace-nowrap">{formatPerson(request.decidedByName, request.decidedByPhone)}</td>
                       <td>{request.txType === "income" ? "รายรับ" : "รายจ่าย"}</td>
                       <td>{locationNameById.get(request.locationId) ?? "ไม่ทราบสาขา"}</td>
                       <td>
@@ -606,7 +614,6 @@ export function IncomeExpenseApprovalModal({
                         {formatCurrency(request.cost)}
                       </td>
                       <td>{request.matchedReasons.map((reason) => reasonLabels[reason]).join(" · ")}</td>
-                      <td>{request.requestedByName} · {request.requestedByPhone}</td>
                       <td>{formatDateTime(request.createdAt)}</td>
                     </tr>
                   ))}

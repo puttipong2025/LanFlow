@@ -209,22 +209,40 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       await page.getByRole('button', { name: /^ตั้งค่าและอนุมัติรับ-จ่าย/ }).click();
       const approvalModal = page.locator('.fixed.inset-0').last();
       await expect(approvalModal).toBeVisible();
+      const approvalTable = approvalModal.locator('section', { hasText: 'คำขออนุมัติรับ-จ่าย' }).locator('table');
+      await expect(approvalTable.locator('thead th')).toHaveText([
+        'จัดการ',
+        'สถานะ',
+        'ผู้ขอ',
+        'ผู้พิจารณา',
+        'ประเภท',
+        'สาขา',
+        'รายการ',
+        'จำนวนเงิน',
+        'เหตุผล',
+        'วันที่',
+      ]);
 
       // Approve the first one
       const approveRow = approvalModal.locator('tr', { hasText: approveMarker }).first();
       await expect(approveRow).toBeVisible();
+      await expect(approveRow.locator('td').nth(2)).not.toHaveText('—');
+      await expect(approveRow.locator('td').nth(3)).toHaveText('—');
       page.once("dialog", dialog => dialog.accept());
       await approveRow.locator('button[title="อนุมัติ"]').click();
 
       await expect(page.getByText("อนุมัติรายการแล้ว")).toBeVisible();
+      await expect(approveRow.locator('td').nth(3)).not.toHaveText('—');
       // Reject the second one
       const rejectRow = approvalModal.locator('tr', { hasText: rejectMarker }).first();
       await expect(rejectRow).toBeVisible();
+      await expect(rejectRow.locator('td').nth(3)).toHaveText('—');
       await rejectRow.locator('button[title="ปฏิเสธ"]').first().click();
       const rejectDialog = page.getByRole('dialog', { name: 'ปฏิเสธรายการ' });
       await rejectDialog.getByLabel('เหตุผลที่ปฏิเสธ (ไม่บังคับ)').fill('ทดสอบปฏิเสธ');
       await rejectDialog.getByRole('button', { name: 'ยืนยัน' }).click();
       await expect(page.getByText("ปฏิเสธรายการแล้ว")).toBeVisible();
+      await expect(rejectRow.locator('td').nth(3)).not.toHaveText('—');
       await approvalModal.locator('button[aria-label="ปิด"]').first().click();
       await expect(approvalModal).toBeHidden();
 

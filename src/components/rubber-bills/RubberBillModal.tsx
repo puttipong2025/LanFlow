@@ -98,8 +98,20 @@ export function RubberBillModal({
   const submitLockRef = useRef(false);
   const validationSummaryRef = useRef<HTMLDivElement>(null);
   const { products: stockProducts } = useAcidProducts();
-  const { movements: stockMovements, isLoading: isStockLoading, isError: isStockError } = useAcidStock(selectedLocation.id);
   const isOnline = useOnlineStatus();
+  const {
+    balances: stockBalances,
+    balancesLoading: isStockLoading,
+    balancesError: stockBalancesError,
+  } = useAcidStock(selectedLocation.id, {
+    online: isOnline,
+    search: "",
+    type: "all",
+    fromDate: "",
+    toDate: "",
+    includeMovements: false,
+  });
+  const isStockError = Boolean(stockBalancesError);
 
   useEffect(() => {
     if (validationErrors.length === 0) return;
@@ -296,11 +308,8 @@ export function RubberBillModal({
       }
 
       const balanceByProduct = new Map<string, number>();
-      for (const movement of stockMovements) {
-        balanceByProduct.set(
-          movement.productId,
-          (balanceByProduct.get(movement.productId) ?? 0) + movement.quantityDelta,
-        );
+      for (const balance of stockBalances) {
+        balanceByProduct.set(balance.productId, balance.balance);
       }
       const oldQuantityByProduct = new Map<string, number>();
       for (const item of bill?.acidItems ?? []) {

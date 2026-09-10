@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSystemManager } from "@/lib/server/auth";
-import { isJsonObject } from "@/lib/server/management-route-error";
+import { isJsonObject, isUuid } from "@/lib/server/management-route-error";
 
 type DecisionRpcResponse = {
   status?: string;
@@ -27,8 +27,8 @@ export async function POST(
   const decision = body.decision;
 
   try {
-    if (!id) {
-      return NextResponse.json({ status: "failed", errorMessage: "Missing request ID" }, { status: 400 });
+    if (!isUuid(id)) {
+      return NextResponse.json({ status: "failed", errorMessage: "Invalid request ID" }, { status: 400 });
     }
 
     if (decision !== "approved" && decision !== "rejected") {

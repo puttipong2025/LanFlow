@@ -179,9 +179,12 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
     const approvalModal = page.locator(".fixed.inset-0").last();
     const deleteRequestRow = approvalModal.locator("tbody tr", { hasText: displayNo });
     await expect(deleteRequestRow).toContainText("ลบถาวรรายการโยกเงิน");
+    await expect(deleteRequestRow.locator("td").nth(2)).not.toHaveText("—");
+    await expect(deleteRequestRow.locator("td").nth(3)).toHaveText("—");
     page.once("dialog", (dialog) => dialog.accept());
     await deleteRequestRow.locator('button[title="อนุมัติการลบ"]').click();
     await expect(page.getByText("อนุมัติและลบรายการแล้ว")).toBeVisible();
+    await expect(deleteRequestRow.locator("td").nth(3)).not.toHaveText("—");
   });
 
   test("queue badge auto-refreshes while the destination module remains open", async ({ browser }) => {

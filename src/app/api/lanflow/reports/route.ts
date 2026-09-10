@@ -25,14 +25,14 @@ type Cursor = {
 function decodeCursor(value: string): Cursor | null {
   try {
     const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Cursor;
+    const timestamp = typeof parsed?.at === "string" ? Date.parse(parsed.at) : Number.NaN;
     return parsed?.version === 1
       && isUuid(parsed.ownerUserId)
       && isUuid(parsed.locationId)
       && ["current", "deletions"].includes(parsed.view)
       && isUuid(parsed.id)
-      && typeof parsed.at === "string"
-      && !Number.isNaN(Date.parse(parsed.at))
-      ? parsed
+      && !Number.isNaN(timestamp)
+      ? { ...parsed, at: new Date(timestamp).toISOString() }
       : null;
   } catch {
     return null;
@@ -56,7 +56,10 @@ export async function GET(request: NextRequest) {
   if (!result.ok) return result.response;
 
   const locationId = request.nextUrl.searchParams.get("locationId");
-  if (!isUuid(locationId) || !canAccessReports(result.auth, locationId)) {
+  if (!isUuid(locationId)) {
+    return NextResponse.json({ error: "รหัสสาขาไม่ถูกต้อง" }, { status: 400 });
+  }
+  if (!canAccessReports(result.auth, locationId)) {
     return NextResponse.json({ error: "ไม่มีสิทธิ์ดูรายงานของสาขานี้" }, { status: 403 });
   }
 
@@ -101,7 +104,7 @@ export async function GET(request: NextRequest) {
 
   let reportsQuery = result.supabase
     .from("report_batches")
-    .select("id, report_no, location_id, cutoff_at, status, created_by_name, created_at, deleted_at, rubber_export_lock_no, has_cash_count, cash_count_link_id, cash_count_checker_name, cash_count_submitted_at, report_items(count), locations(name)")
+    .select("id, report_no, location_id, cutoff_at, status, created_by_name, created_at, rubber_export_lock_no, has_cash_count, cash_count_link_id, cash_count_checker_name, cash_count_submitted_at, report_items(count), locations(name)")
     .eq("location_id", locationId)
     .eq("status", "active")
     .order("created_at", { ascending: false })
@@ -138,7 +141,6 @@ export async function GET(request: NextRequest) {
       status: row.status,
       createdByName: row.created_by_name,
       createdAt: row.created_at,
-      deletedAt: row.deleted_at,
       itemCount: Number(count ?? 0),
       isLatestActive: row.id === latestActiveId,
       rubberExportLockNo: row.rubber_export_lock_no,
@@ -168,7 +170,10 @@ export async function POST(request: Request) {
   const payload = await request.json().catch(() => null) as { locationId?: string } | null;
   const locationId = payload?.locationId;
 
-  if (!locationId || !canAccessReports(result.auth, locationId)) {
+  if (!isUuid(locationId)) {
+    return NextResponse.json({ error: "รหัสสาขาไม่ถูกต้อง" }, { status: 400 });
+  }
+  if (!canAccessReports(result.auth, locationId)) {
     return NextResponse.json({ error: "ไม่มีสิทธิ์สร้างรายงานของสาขานี้" }, { status: 403 });
   }
 

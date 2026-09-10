@@ -345,6 +345,7 @@ test.describe.serial("Report batch contract @report-batch", () => {
         type: firstBalance >= 0 ? "income" : "expense",
         title: "ยอดยกมา",
         amount: Math.abs(firstBalance),
+        isOpeningBalance: true,
       });
 
       const oldDelete = await deleteReport(superAdmin, first.id);
@@ -451,6 +452,7 @@ test.describe.serial("Report batch contract @report-batch", () => {
         type: "income",
         title: "ยอดยกมา",
         amount: 5000,
+        isOpeningBalance: true,
       });
 
       sourceIds.push(await addIncomeExpense(
@@ -473,6 +475,7 @@ test.describe.serial("Report batch contract @report-batch", () => {
         type: "expense",
         title: "ยอดยกมา",
         amount: 2000,
+        isOpeningBalance: true,
       });
     } finally {
       for (const reportId of reportIds.reverse()) {

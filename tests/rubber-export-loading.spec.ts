@@ -25,6 +25,7 @@ test("Rubber Export keeps options and audit lazy on initial entry", async ({ pag
   await selectAppLocation(page, locationId);
   await page.getByRole("button", { name: /^ส่งออกยาง/ }).click();
   await expect.poll(() => listRequests).toBeGreaterThan(0);
+  await expect(page.getByRole("button", { name: "ประวัติการลบ" })).toBeVisible();
   expect(optionRequests).toBe(0);
   expect(auditRequests).toBe(0);
 

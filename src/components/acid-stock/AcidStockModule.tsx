@@ -1,14 +1,14 @@
-import { ArrowRightLeft, Check, Lock, PackagePlus, Plus, RefreshCw, Trash2, X } from "lucide-react";
-import { FormEvent, useMemo, useState } from "react";
+import { ArrowRightLeft, Check, PackagePlus, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { useAcidProducts } from "@/hooks/useAcidProducts";
-import { useAcidStock } from "@/hooks/useAcidStock";
+import { useAcidStock, type StockMovementFilter } from "@/hooks/useAcidStock";
 import { useIncomeSaleItems } from "@/hooks/useIncomeSaleItems";
 import { useStockEntryApprovals } from "@/hooks/useStockEntryApprovals";
 import { useStockProductApprovals } from "@/hooks/useStockProductApprovals";
 import { useStockSyncRetry } from "@/hooks/useStockSyncRetry";
-import { formatCurrency, todayInputValue } from "@/lib/format";
+import { todayInputValue } from "@/lib/format";
 import { canManageSystemFeatures } from "@/lib/permissions";
 import type { AcidProduct, AcidStockMovement, IncomeSaleItem, Location, Profile, StockEntryApprovalRequest, StockProductApprovalRequest } from "@/types";
 import { ModalShell } from "@/components/shared/ModalShell";
@@ -16,26 +16,15 @@ import { Field } from "@/components/shared/Field";
 import { NumberField } from "@/components/shared/NumberField";
 import { isNetworkCancellation } from "@/lib/network-abort";
 import { formatBangkokDateTime } from "@/lib/bangkok-date";
+import { AlertDialog } from "@/components/shared/AlertDialog";
+import { TablePageSizeSelect } from "@/components/shared/TablePagination";
+import { StockBalanceTable } from "@/components/acid-stock/StockBalanceTable";
+import { StockMovementTable } from "@/components/acid-stock/StockMovementTable";
 
 function showActionError(error: unknown, fallback: string) {
   if (!isNetworkCancellation(error)) {
     toast.error(error instanceof Error ? error.message : fallback);
   }
-}
-
-function movementLabel(movement: AcidStockMovement) {
-  if (movement.sourceType === "income_sale") return "ขายจากรับ-จ่าย";
-  if (movement.sourceType === "rubber_bill_acid" || movement.sourceType === "rubber_bill_stock_deduction") return "หักจากบิลยาง";
-  if (movement.txType === "receive") return "รับเข้า";
-  if (movement.txType === "transfer_out") return "ย้ายออก";
-  if (movement.txType === "transfer_in") return "ย้ายเข้า";
-  return movement.txType;
-}
-
-function quantityTone(quantity: number) {
-  if (quantity > 0) return "text-leaf";
-  if (quantity < 0) return "text-clay";
-  return "text-ink";
 }
 
 function approvalRequestTypeLabel(request: StockProductApprovalRequest) {
@@ -282,6 +271,7 @@ function ProductModal({
   const [createSaleItem, setCreateSaleItem] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [changingProductId, setChangingProductId] = useState<string | null>(null);
+  const [pendingDeleteProduct, setPendingDeleteProduct] = useState<AcidProduct | null>(null);
 
   const saleItemByProductId = useMemo(() => {
     const next = new Map<string, IncomeSaleItem>();
@@ -342,18 +332,21 @@ function ProductModal({
     }
   }
 
-  async function handleDeleteProduct(product: AcidProduct) {
+  function handleDeleteProduct(product: AcidProduct) {
     if (!online) {
       toast.error("ลบสินค้าได้เมื่อออนไลน์เท่านั้น");
       return;
     }
-    const confirmed = window.confirm(`ส่งคำขอลบสินค้า "${product.name}" หรือไม่?`);
-    if (!confirmed) return;
+    setPendingDeleteProduct(product);
+  }
 
+  async function confirmDeleteProduct() {
+    if (!pendingDeleteProduct) return;
     try {
-      setChangingProductId(product.id);
-      await onDeleteProduct({ productId: product.id });
+      setChangingProductId(pendingDeleteProduct.id);
+      await onDeleteProduct({ productId: pendingDeleteProduct.id });
       toast.success("ส่งคำขอลบสินค้าแล้ว รอผู้จัดการระบบอนุมัติ");
+      setPendingDeleteProduct(null);
     } catch (error) {
       showActionError(error, "ส่งคำขอลบสินค้าไม่สำเร็จ");
     } finally {
@@ -387,6 +380,7 @@ function ProductModal({
   }
 
   return (
+    <>
     <ModalShell title="เพิ่มสินค้า" subtitle="สร้างสินค้าและกำหนดการขายผ่านบิลขายในที่เดียว" onClose={onClose} size="wide">
       <form onSubmit={handleSubmit} className="space-y-4 p-4">
         <label className="block">
@@ -513,6 +507,18 @@ function ProductModal({
         </div>
       </div>
     </ModalShell>
+    <AlertDialog
+      open={Boolean(pendingDeleteProduct)}
+      title="ส่งคำขอลบสินค้า"
+      description={`ส่งคำขอลบสินค้า “${pendingDeleteProduct?.name ?? ""}” หรือไม่? รายการจะถูกลบเมื่อผู้จัดการระบบอนุมัติ`}
+      confirmLabel="ส่งคำขอลบ"
+      cancelLabel="ยกเลิก"
+      busy={Boolean(pendingDeleteProduct && changingProductId === pendingDeleteProduct.id)}
+      confirmClassName="bg-clay text-white hover:bg-clay/90"
+      onCancel={() => setPendingDeleteProduct(null)}
+      onConfirm={() => void confirmDeleteProduct()}
+    />
+    </>
   );
 }
 
@@ -536,7 +542,37 @@ export function AcidStockModule({
     disableItem: disableSaleItem,
     updateStockProduct: updateSaleItemStockProduct,
   } = useIncomeSaleItems({ includeInactive: true });
-  const { movements, isLoading, receiveStock, transferStock, deleteStockEntry } = useAcidStock(selectedLocation.id);
+  const [movementSearch, setMovementSearch] = useState("");
+  const [debouncedMovementSearch, setDebouncedMovementSearch] = useState("");
+  const [movementType, setMovementType] = useState<StockMovementFilter>("all");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+  const [movementPage, setMovementPage] = useState(1);
+  const [movementPageSize, setMovementPageSize] = useState(10);
+  const [balanceSearch, setBalanceSearch] = useState("");
+  const [balanceStatus, setBalanceStatus] = useState<"all" | "available" | "empty">("all");
+  const [balancePage, setBalancePage] = useState(1);
+  const [balancePageSize, setBalancePageSize] = useState(10);
+  const {
+    balances: balanceRows,
+    movements,
+    balancesLoading,
+    movementsLoading,
+    balancesError,
+    movementsError,
+    hasMore,
+    isLoadingMore,
+    loadMore,
+    receiveStock,
+    transferStock,
+    deleteStockEntry,
+  } = useAcidStock(selectedLocation.id, {
+    online,
+    search: debouncedMovementSearch,
+    type: movementType,
+    fromDate,
+    toDate,
+  });
   const { requests: productApprovalRequests, isLoading: productApprovalsLoading, decideRequest: decideProductRequest } = useStockProductApprovals({ includeRequests: true });
   const { requests: entryApprovalRequests, isLoading: entryApprovalsLoading, decideRequest: decideEntryRequest } = useStockEntryApprovals({ includeRequests: true });
   const { retryStockSync, isRetrying, refreshStockSync, isRefreshing } = useStockSyncRetry(selectedLocation.id, profile.id);
@@ -548,19 +584,43 @@ export function AcidStockModule({
   const [productOpen, setProductOpen] = useState(false);
   const [receiveOpen, setReceiveOpen] = useState(false);
   const [transferOpen, setTransferOpen] = useState(false);
+  const [pendingStockDelete, setPendingStockDelete] = useState<AcidStockMovement | null>(null);
+  const [deletingStock, setDeletingStock] = useState(false);
 
-  const balances = useMemo(() => {
-    const next = new Map<string, number>();
-    for (const movement of movements) {
-      next.set(movement.productId, (next.get(movement.productId) ?? 0) + movement.quantityDelta);
-    }
-    return next;
-  }, [movements]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedMovementSearch(movementSearch.trim()), 400);
+    return () => window.clearTimeout(timer);
+  }, [movementSearch]);
 
-  const productSummaries = products.map((product) => ({
-    product,
-    balance: balances.get(product.id) ?? 0,
-  }));
+  useEffect(() => {
+    setMovementPage(1);
+  }, [selectedLocation.id, debouncedMovementSearch, movementType, fromDate, toDate, movementPageSize]);
+
+  useEffect(() => {
+    setBalancePage(1);
+  }, [selectedLocation.id, balanceSearch, balanceStatus, balancePageSize]);
+
+  useEffect(() => {
+    const lastPage = Math.max(Math.ceil(movements.length / movementPageSize), 1);
+    setMovementPage((current) => Math.min(current, lastPage));
+  }, [movementPageSize, movements.length]);
+
+  const balances = useMemo(
+    () => new Map(balanceRows.map((row) => [row.productId, row.balance])),
+    [balanceRows],
+  );
+  const filteredBalances = useMemo(() => {
+    const term = balanceSearch.trim().toLocaleLowerCase("th-TH");
+    return balanceRows.filter((row) =>
+      (!term || `${row.name} ${row.unit}`.toLocaleLowerCase("th-TH").includes(term))
+      && (balanceStatus === "all" || (balanceStatus === "available" ? row.balance > 0 : row.balance <= 0)),
+    );
+  }, [balanceRows, balanceSearch, balanceStatus]);
+
+  useEffect(() => {
+    const lastPage = Math.max(Math.ceil(filteredBalances.length / balancePageSize), 1);
+    setBalancePage((current) => Math.min(current, lastPage));
+  }, [balancePageSize, filteredBalances.length]);
 
   const approvalsLoading = productApprovalsLoading || entryApprovalsLoading;
   const pendingApprovalRequests: PendingApprovalRow[] = [
@@ -625,7 +685,7 @@ export function AcidStockModule({
     }
   }
 
-  async function handleDeleteStockMovement(movement: AcidStockMovement) {
+  function handleDeleteStockMovement(movement: AcidStockMovement) {
     if (movement.reportLockNo) {
       toast.error(`ล็อกโดยรายงาน ${movement.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`);
       return;
@@ -639,17 +699,30 @@ export function AcidStockModule({
       return;
     }
 
-    const detail = movement.txType === "transfer_out"
-      ? `ส่งคำขอลบรายการย้ายสต็อก ${movement.displayBillNo} หรือไม่? ระบบจะลบทั้งฝั่งย้ายออกและย้ายเข้า`
-      : `ส่งคำขอลบรายการรับเข้า ${movement.displayBillNo} หรือไม่?`;
-    if (!window.confirm(detail)) return;
+    setPendingStockDelete(movement);
+  }
 
+  async function confirmDeleteStockMovement() {
+    if (!pendingStockDelete || deletingStock) return;
+    setDeletingStock(true);
     try {
-      await deleteStockEntry({ stockEntryId: movement.sourceId });
+      await deleteStockEntry({ stockEntryId: pendingStockDelete.sourceId });
       toast.success("ส่งคำขอลบรายการสต็อกแล้ว รอผู้จัดการระบบอนุมัติ");
+      setPendingStockDelete(null);
     } catch (error) {
       showActionError(error, "ส่งคำขอลบรายการสต็อกไม่สำเร็จ");
+    } finally {
+      setDeletingStock(false);
     }
+  }
+
+  async function handleMovementPageChange(nextPage: number) {
+    const safePage = Math.max(1, nextPage);
+    if ((safePage - 1) * movementPageSize >= movements.length && hasMore) {
+      const loaded = await loadMore();
+      if (!loaded) return;
+    }
+    setMovementPage(safePage);
   }
 
   async function handleDecideApproval(request: PendingApprovalRow, decision: "approved" | "rejected") {
@@ -795,88 +868,74 @@ export function AcidStockModule({
         </section>
       )}
 
-      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        {productSummaries.map(({ product, balance }) => (
-          <div key={product.id} className="rounded-md border border-black/10 bg-white p-4 shadow-panel">
-            <p className="text-sm font-semibold text-ink/60">{product.name}</p>
-            <p className={`mt-2 text-3xl font-bold ${quantityTone(balance)}`}>{balance.toLocaleString("th-TH")}</p>
-            <p className="mt-1 text-xs font-semibold text-ink/50">{product.unit}</p>
-          </div>
-        ))}
-      </section>
+      <div>
+        <h3 className="text-balance text-lg font-bold text-ink">ยอดคงเหลือสินค้า</h3>
+        <p className="mt-1 text-pretty text-sm text-ink/60">รวมข้อมูลจากรายการรับเข้า ย้าย บิลขาย และบิลยางทั้งหมดของสาขา</p>
+      </div>
+      <div className="grid gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel lg:grid-cols-[minmax(16rem,1fr)_auto_auto] lg:items-end">
+        <label className="block">
+          <span className="mb-1 block text-sm font-semibold text-ink/70">ค้นหาสินค้า</span>
+          <span className="relative block">
+            <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink/45" />
+            <input type="search" value={balanceSearch} onChange={(event) => setBalanceSearch(event.target.value)} disabled={!online}
+              placeholder="ชื่อสินค้าหรือหน่วย"
+              className="focus-ring h-10 w-full rounded-md border border-black/20 bg-white pl-9 pr-10 text-sm disabled:cursor-not-allowed disabled:bg-slate-100" />
+            {balanceSearch && <button type="button" onClick={() => setBalanceSearch("")} disabled={!online} aria-label="ล้างคำค้นหาสินค้า"
+              className="focus-ring absolute right-1 top-1 inline-flex size-8 items-center justify-center rounded-md text-ink/55 hover:bg-field"><X size={16} /></button>}
+          </span>
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-sm font-semibold text-ink/70">กรองยอดคงเหลือ</span>
+          <select value={balanceStatus} onChange={(event) => setBalanceStatus(event.target.value as typeof balanceStatus)} disabled={!online}
+            className="focus-ring h-10 rounded-md border border-black/20 bg-white px-3 text-sm font-semibold text-ink disabled:cursor-not-allowed disabled:bg-slate-100">
+            <option value="all">ทั้งหมด</option><option value="available">มีสินค้า</option><option value="empty">หมดสต็อก</option>
+          </select>
+        </label>
+        <TablePageSizeSelect pageSize={balancePageSize} onPageSizeChange={setBalancePageSize} />
+      </div>
+      {balancesError && <p role="alert" className="rounded-md bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">{balancesError}</p>}
+      <StockBalanceTable rows={filteredBalances} loading={balancesLoading} page={balancePage} pageSize={balancePageSize} onPageChange={setBalancePage} />
 
-      <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel">
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[1220px] border-collapse text-sm">
-            <thead>
-              <tr className="border-b border-black/10 text-left text-ink/60">
-                <th className="py-2">จัดการ</th>
-                <th className="py-2">วันที่</th>
-                <th>เลขบิล</th>
-                <th>สินค้า</th>
-                <th>ประเภท</th>
-                <th className="text-right">จำนวน</th>
-                <th className="text-right">ยอดเงิน</th>
-                <th>ผู้บันทึก</th>
-                <th>สถานะ</th>
-              </tr>
-            </thead>
-            <tbody>
-              {isLoading ? (
-                <tr>
-                  <td colSpan={9} className="py-8 text-center text-ink/50">กำลังโหลด...</td>
-                </tr>
-              ) : movements.length === 0 ? (
-                <tr>
-                  <td colSpan={9} className="py-8 text-center text-ink/50">ยังไม่มีรายการสต็อก</td>
-                </tr>
-              ) : (
-                movements.map((movement) => (
-                  <tr key={movement.movementId} className="border-b border-black/5 hover:bg-field/50">
-                    <td className="py-3 pr-3">
-                      {movement.sourceType !== "stock_entry" ? (
-                        <span className="text-xs font-semibold text-ink/40">-</span>
-                      ) : movement.txType === "transfer_in" ? (
-                        <span className="text-xs font-semibold text-ink/50" title="ลบจากฝั่งย้ายออก">-</span>
-                      ) : (
-                        <button type="button" onClick={() => handleDeleteStockMovement(movement)}
-                          disabled={!online || Boolean(movement.reportLockNo)}
-                          title={movement.reportLockNo ? `ล็อกโดยรายงาน ${movement.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน` : online ? "ส่งคำขอลบรายการสต็อก" : "ลบรายการสต็อกได้เมื่อออนไลน์เท่านั้น"}
-                          aria-label={movement.reportLockNo ? `ล็อกโดยรายงาน ${movement.reportLockNo}` : "ลบรายการสต็อก"}
-                          className="focus-ring inline-flex h-10 items-center gap-1 rounded-md bg-clay px-3 text-xs font-bold text-white hover:bg-clay/90 disabled:cursor-not-allowed disabled:bg-slate-300">
-                          <Trash2 size={16} /> ลบ
-                        </button>
-                      )}
-                    </td>
-                    <td className="py-3">{movement.txDate}</td>
-                    <td className="font-semibold">{movement.displayBillNo}</td>
-                    <td>{movement.productName}</td>
-                    <td>{movementLabel(movement)}</td>
-                    <td className={`text-right font-bold ${quantityTone(movement.quantityDelta)}`}>
-                      {movement.quantityDelta > 0 ? "+" : ""}{movement.quantityDelta.toLocaleString("th-TH")}
-                    </td>
-                    <td className="text-right">{formatCurrency(movement.amount)}</td>
-                    <td>{movement.createdByName || "ระบบ"} {movement.createdByPhone ? `· ${movement.createdByPhone}` : ""}</td>
-                    <td>
-                      {movement.relationLockReason ? (
-                        <span title={movement.relationLockReason} className="inline-flex items-center gap-1 rounded-full bg-ink/10 px-2 py-1 text-xs font-bold text-ink/70">
-                          <Lock size={12} />
-                          ต้นทาง
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-leaf/10 px-2 py-1 text-xs font-bold text-leaf">
-                          <X size={12} className="rotate-45" />
-                          รายการสต็อก
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      <div className="pt-2">
+        <h3 className="text-balance text-lg font-bold text-ink">รายการเคลื่อนไหวสต็อก</h3>
+        <p className="mt-1 text-pretty text-sm text-ink/60">ค้นหาและกรองรายการย้อนหลัง โดยโหลดข้อมูลครั้งละ 50 รายการ</p>
+      </div>
+      <div className="grid gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel lg:grid-cols-[minmax(16rem,1fr)_auto_auto_auto_auto] lg:items-end">
+        <label className="block">
+          <span className="mb-1 block text-sm font-semibold text-ink/70">ค้นหารายการ</span>
+          <span className="relative block">
+            <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink/45" />
+            <input type="search" value={movementSearch} onChange={(event) => setMovementSearch(event.target.value)} disabled={!online}
+              placeholder="เลขบิล สินค้า หรือผู้บันทึก"
+              className="focus-ring h-10 w-full rounded-md border border-black/20 bg-white pl-9 pr-10 text-sm disabled:cursor-not-allowed disabled:bg-slate-100" />
+            {movementSearch && <button type="button" onClick={() => setMovementSearch("")} disabled={!online} aria-label="ล้างคำค้นหารายการ"
+              className="focus-ring absolute right-1 top-1 inline-flex size-8 items-center justify-center rounded-md text-ink/55 hover:bg-field"><X size={16} /></button>}
+          </span>
+        </label>
+        <label className="block"><span className="mb-1 block text-sm font-semibold text-ink/70">ประเภท</span>
+          <select value={movementType} onChange={(event) => setMovementType(event.target.value as StockMovementFilter)} disabled={!online}
+            className="focus-ring h-10 rounded-md border border-black/20 bg-white px-3 text-sm font-semibold text-ink disabled:cursor-not-allowed disabled:bg-slate-100">
+            <option value="all">ทั้งหมด</option><option value="receive">รับเข้า</option><option value="transfer">ย้ายสต็อก</option><option value="sale">บิลขาย</option><option value="rubber_bill">บิลยาง</option>
+          </select>
+        </label>
+        <label className="block"><span className="mb-1 block text-sm font-semibold text-ink/70">จากวันที่</span>
+          <input type="date" value={fromDate} max={toDate || undefined} onChange={(event) => { const value = event.target.value; setFromDate(value); if (toDate && value > toDate) setToDate(value); }} disabled={!online}
+            className="focus-ring h-10 rounded-md border border-black/20 bg-white px-3 text-sm tabular-nums disabled:cursor-not-allowed disabled:bg-slate-100" />
+        </label>
+        <label className="block"><span className="mb-1 block text-sm font-semibold text-ink/70">ถึงวันที่</span>
+          <input type="date" value={toDate} min={fromDate || undefined} onChange={(event) => { const value = event.target.value; setToDate(value); if (fromDate && value < fromDate) setFromDate(value); }} disabled={!online}
+            className="focus-ring h-10 rounded-md border border-black/20 bg-white px-3 text-sm tabular-nums disabled:cursor-not-allowed disabled:bg-slate-100" />
+        </label>
+        <TablePageSizeSelect pageSize={movementPageSize} onPageSizeChange={setMovementPageSize} />
+      </div>
+      {(movementSearch || movementType !== "all" || fromDate || toDate) && (
+        <div><button type="button" onClick={() => { setMovementSearch(""); setMovementType("all"); setFromDate(""); setToDate(""); }} disabled={!online}
+          className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white"><X size={16} /> ล้างตัวกรอง</button></div>
+      )}
+      {movementsError && <p role="alert" className="rounded-md bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">{movementsError}</p>}
+      <StockMovementTable rows={movements} loading={movementsLoading} online={online}
+        page={movementPage} pageSize={movementPageSize} hasMore={hasMore} isLoadingMore={isLoadingMore}
+        onPageChange={(nextPage) => void handleMovementPageChange(nextPage)} onDelete={handleDeleteStockMovement} />
 
       {productOpen && (
         <ProductModal
@@ -915,6 +974,19 @@ export function AcidStockModule({
           onSave={(input) => transferStock({ fromLocationId: selectedLocation.id, ...input })}
         />
       )}
+      <AlertDialog
+        open={Boolean(pendingStockDelete)}
+        title="ส่งคำขอลบรายการสต็อก"
+        description={pendingStockDelete?.txType === "transfer_out"
+          ? `ส่งคำขอลบรายการย้ายสต็อก ${pendingStockDelete.displayBillNo} หรือไม่? ระบบจะลบทั้งฝั่งย้ายออกและย้ายเข้าเมื่ออนุมัติ`
+          : `ส่งคำขอลบรายการรับเข้า ${pendingStockDelete?.displayBillNo ?? ""} หรือไม่?`}
+        confirmLabel="ส่งคำขอลบ"
+        cancelLabel="ยกเลิก"
+        busy={deletingStock}
+        confirmClassName="bg-clay text-white hover:bg-clay/90"
+        onCancel={() => setPendingStockDelete(null)}
+        onConfirm={() => void confirmDeleteStockMovement()}
+      />
     </section>
   );
 }
