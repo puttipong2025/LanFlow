@@ -297,4 +297,4 @@ Verified for the revert-to-draft extension on 2026-09-10:
 - post-implementation scrutiny reproduced a delegated-permission revoke while the revert RPC waited on the report branch lock; the RPC now rechecks live branch authority after lock/re-read, and the same three-session repro is rejected without changing the verified export
 - TypeScript, ESLint, production build, service-worker checks, and normalized `public,private` schema parity passed
 - DB lint reported only the pre-existing volatility warning in `public.get_income_expense_operational_feed`
-- the feature diff passes `git diff --check`; the repository-wide command still reports the pre-existing trailing blank line in the unrelated user change `docs/troubleshooting.md`
+- the feature diff passes `git diff --check`
