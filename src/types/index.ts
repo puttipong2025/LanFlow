@@ -194,6 +194,12 @@ export type RubberApprovalGroup = {
   updatedAt: string;
 };
 
+export type RubberWeightAlertGroup = {
+  id: string;
+  locationIds: string[];
+  thresholdKg: number;
+};
+
 export type IncomeBillOption = "รายรับ" | "บิลขาย";
 export type ExpenseBillOption = "ค่าใช้จ่าย";
 

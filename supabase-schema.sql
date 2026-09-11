@@ -594,6 +594,48 @@ $$;
 ALTER FUNCTION "private"."assert_rubber_approval_group_row_not_empty"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."assert_rubber_weight_alert_group_not_empty"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_group_id uuid := coalesce(new.group_id, old.group_id);
+begin
+  if exists (select 1 from public.rubber_weight_alert_groups g where g.id = v_group_id)
+     and not exists (
+       select 1 from public.rubber_weight_alert_group_locations gl
+       where gl.group_id = v_group_id
+     ) then
+    raise exception 'RUBBER_WEIGHT_ALERT_GROUP_EMPTY: กลุ่มต้องมีอย่างน้อยหนึ่งสาขา';
+  end if;
+  return null;
+end
+$$;
+
+
+ALTER FUNCTION "private"."assert_rubber_weight_alert_group_not_empty"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."assert_rubber_weight_alert_group_row_not_empty"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if exists (select 1 from public.rubber_weight_alert_groups g where g.id = new.id)
+     and not exists (
+       select 1 from public.rubber_weight_alert_group_locations gl
+       where gl.group_id = new.id
+     ) then
+    raise exception 'RUBBER_WEIGHT_ALERT_GROUP_EMPTY: กลุ่มต้องมีอย่างน้อยหนึ่งสาขา';
+  end if;
+  return null;
+end
+$$;
+
+
+ALTER FUNCTION "private"."assert_rubber_weight_alert_group_row_not_empty"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."assert_user_primary_location"("target_user_id" "uuid") RETURNS "void"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -8222,6 +8264,57 @@ $$;
 ALTER FUNCTION "private"."validate_rubber_export_selection"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[], "p_current_export_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."validate_rubber_weight_alert_group_input"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_threshold_kg" integer) RETURNS "uuid"[]
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_location_ids uuid[];
+begin
+  select coalesce(array_agg(distinct location_id order by location_id), array[]::uuid[])
+  into v_location_ids
+  from (
+    select location_id
+    from unnest(coalesce(p_location_ids, array[]::uuid[])) location_id
+    where location_id is not null
+    union
+    select gl.location_id
+    from public.rubber_weight_alert_group_locations gl
+    join public.locations l on l.id = gl.location_id
+    where p_group_id is not null
+      and gl.group_id = p_group_id
+      and l.is_active = false
+  ) retained;
+
+  if cardinality(v_location_ids) = 0 then
+    raise exception 'RUBBER_WEIGHT_ALERT_GROUP_EMPTY: กลุ่มต้องมีอย่างน้อยหนึ่งสาขา';
+  end if;
+  if p_threshold_kg is null or p_threshold_kg < 1 or p_threshold_kg > 1000000 then
+    raise exception 'RUBBER_WEIGHT_ALERT_GROUP_INVALID: เกณฑ์ต้องอยู่ระหว่าง 1–1,000,000 กก.';
+  end if;
+  if exists (
+    select 1
+    from unnest(v_location_ids) requested(location_id)
+    left join public.locations l on l.id = requested.location_id
+    where l.id is null
+      or (
+        l.is_active = false
+        and not exists (
+          select 1 from public.rubber_weight_alert_group_locations gl
+          where gl.group_id = p_group_id and gl.location_id = requested.location_id
+        )
+      )
+  ) then
+    raise exception 'RUBBER_LOCATION_NOT_FOUND: ไม่พบสาขาที่เปิดใช้งาน';
+  end if;
+  return v_location_ids;
+end
+$$;
+
+
+ALTER FUNCTION "private"."validate_rubber_weight_alert_group_input"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_threshold_kg" integer) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."validate_wex_rubber_exports"("p_location_id" "uuid", "p_wex_id" "uuid", "p_rubber_export_ids" "uuid"[]) RETURNS numeric
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -9994,6 +10087,53 @@ $$;
 
 
 ALTER FUNCTION "public"."create_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."create_rubber_weight_alert_group"("p_location_ids" "uuid"[], "p_threshold_kg" integer) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_location_ids uuid[];
+  v_group public.rubber_weight_alert_groups%rowtype;
+  v_actor public.profiles%rowtype;
+begin
+  if not private.is_active_user() or not private.can_access_super_admin_features() then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์จัดการกลุ่มแจ้งเตือนน้ำหนัก';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended('rubber-weight-alert-groups', 0));
+  v_location_ids := private.validate_rubber_weight_alert_group_input(
+    null, p_location_ids, p_threshold_kg
+  );
+  if exists (
+    select 1 from public.rubber_weight_alert_group_locations gl
+    where gl.location_id = any(v_location_ids)
+  ) then
+    raise exception 'RUBBER_WEIGHT_ALERT_GROUP_BRANCH_CONFLICT: มีสาขาอยู่ในกลุ่มอื่นแล้ว';
+  end if;
+
+  select * into v_actor from public.profiles p where p.id = auth.uid();
+  insert into public.rubber_weight_alert_groups (
+    threshold_kg, updated_by_user_id, updated_by_name, updated_by_phone
+  ) values (
+    p_threshold_kg, auth.uid(), v_actor.name, v_actor.phone
+  ) returning * into v_group;
+
+  insert into public.rubber_weight_alert_group_locations (group_id, location_id)
+  select v_group.id, location_id from unnest(v_location_ids) location_id;
+
+  return jsonb_build_object(
+    'id', v_group.id,
+    'locationIds', to_jsonb(v_location_ids),
+    'thresholdKg', v_group.threshold_kg
+  );
+exception when unique_violation then
+  raise exception 'RUBBER_WEIGHT_ALERT_GROUP_BRANCH_CONFLICT: มีสาขาอยู่ในกลุ่มอื่นแล้ว';
+end
+$$;
+
+
+ALTER FUNCTION "public"."create_rubber_weight_alert_group"("p_location_ids" "uuid"[], "p_threshold_kg" integer) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."create_stock_entry_delete_approval_request"("payload" "jsonb") RETURNS "jsonb"
@@ -12431,6 +12571,36 @@ $$;
 
 
 ALTER FUNCTION "public"."delete_rubber_export"("p_export_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."delete_rubber_weight_alert_group"("p_group_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_location_ids uuid[];
+begin
+  if not private.is_active_user() or not private.can_access_super_admin_features() then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์จัดการกลุ่มแจ้งเตือนน้ำหนัก';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended('rubber-weight-alert-groups', 0));
+  select array_agg(gl.location_id order by gl.location_id)
+  into v_location_ids
+  from public.rubber_weight_alert_group_locations gl
+  where gl.group_id = p_group_id;
+  if v_location_ids is null then
+    raise exception 'RUBBER_WEIGHT_ALERT_GROUP_NOT_FOUND: ไม่พบกลุ่ม';
+  end if;
+  delete from public.rubber_weight_alert_groups where id = p_group_id;
+  return jsonb_build_object(
+    'success', true,
+    'releasedLocationIds', to_jsonb(v_location_ids)
+  );
+end
+$$;
+
+
+ALTER FUNCTION "public"."delete_rubber_weight_alert_group"("p_group_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."delete_time_tracking_source_permanently"("p_source_type" "text", "p_source_id" "uuid") RETURNS "jsonb"
@@ -16530,41 +16700,46 @@ begin
     raise exception 'FORBIDDEN: ไม่มีสิทธิ์ตรวจการแจ้งเตือนน้ำหนัก';
   end if;
 
-  select *
-  into strict settings
+  select * into strict settings
   from public.dashboard_refresh_settings
   where id = true;
 
-  with eligible as (
+  with ordered_groups as (
+    select g.id, g.threshold_kg,
+      row_number() over (order by g.created_at, g.id)::integer as group_order
+    from public.rubber_weight_alert_groups g
+  ), eligible as (
     select
       l.id,
       l.name,
       l.created_at,
+      ordered_groups.id as group_id,
+      ordered_groups.group_order,
+      ordered_groups.threshold_kg,
       case
         when jsonb_typeof(s.summary #> '{rubberRemaining,netWeight}') = 'number'
           then (s.summary #>> '{rubberRemaining,netWeight}')::numeric
         else null
       end as net_weight
-    from public.locations l
+    from ordered_groups
+    join public.rubber_weight_alert_group_locations gl on gl.group_id = ordered_groups.id
+    join public.locations l on l.id = gl.location_id
     join public.dashboard_branch_snapshots s on s.location_id = l.id
     where l.is_active = true
       and public.can_access_location(l.id)
       and s.status = 'ready'
   )
-  select coalesce(
-    jsonb_agg(
-      jsonb_build_object(
-        'locationId', eligible.id,
-        'locationName', eligible.name,
-        'netWeight', eligible.net_weight
-      )
-      order by eligible.net_weight desc, eligible.created_at, eligible.id
-    ),
-    '[]'::jsonb
-  )
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'locationId', eligible.id,
+    'locationName', eligible.name,
+    'netWeight', eligible.net_weight,
+    'groupId', eligible.group_id,
+    'groupOrder', eligible.group_order,
+    'thresholdKg', eligible.threshold_kg
+  ) order by eligible.group_order, eligible.net_weight desc, eligible.created_at, eligible.id), '[]'::jsonb)
   into candidates
   from eligible
-  where eligible.net_weight > settings.rubber_alert_threshold_kg;
+  where eligible.net_weight > eligible.threshold_kg;
 
   return jsonb_build_object(
     'config', jsonb_build_object(
@@ -16573,7 +16748,7 @@ begin
     ),
     'candidates', candidates
   );
-end;
+end
 $$;
 
 
@@ -17370,6 +17545,53 @@ $$;
 
 
 ALTER FUNCTION "public"."list_rubber_bill_approval_markers"("p_location_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."list_rubber_weight_alert_groups"() RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_groups jsonb;
+  v_available_location_ids jsonb;
+begin
+  if not private.is_active_user() or not private.can_access_super_admin_features() then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์จัดการกลุ่มแจ้งเตือนน้ำหนัก';
+  end if;
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'id', grouped.id,
+    'locationIds', grouped.location_ids,
+    'thresholdKg', grouped.threshold_kg
+  ) order by grouped.created_at, grouped.id), '[]'::jsonb)
+  into v_groups
+  from (
+    select g.id, g.threshold_kg, g.created_at,
+      to_jsonb(array_agg(gl.location_id order by l.name, gl.location_id)) location_ids
+    from public.rubber_weight_alert_groups g
+    join public.rubber_weight_alert_group_locations gl on gl.group_id = g.id
+    join public.locations l on l.id = gl.location_id
+    group by g.id
+  ) grouped;
+
+  select coalesce(jsonb_agg(l.id order by l.name, l.id), '[]'::jsonb)
+  into v_available_location_ids
+  from public.locations l
+  where l.is_active = true
+    and not exists (
+      select 1 from public.rubber_weight_alert_group_locations gl
+      where gl.location_id = l.id
+    );
+
+  return jsonb_build_object(
+    'groups', v_groups,
+    'availableLocationIds', v_available_location_ids
+  );
+end
+$$;
+
+
+ALTER FUNCTION "public"."list_rubber_weight_alert_groups"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."merge_pending_money_transfers"("p_location_id" "uuid") RETURNS "jsonb"
@@ -20324,6 +20546,32 @@ $$;
 ALTER FUNCTION "public"."save_rubber_weight_alert_config"("p_threshold_kg" integer, "p_interval_minutes" integer) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."save_rubber_weight_alert_interval"("p_interval_minutes" integer) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  actor_name text;
+begin
+  perform private.dashboard_require_manager();
+  if p_interval_minutes is null or p_interval_minutes < 1 or p_interval_minutes > 1440 then
+    raise exception 'RUBBER_WEIGHT_ALERT_INVALID: รอบตรวจต้องอยู่ระหว่าง 1–1,440 นาที';
+  end if;
+  select p.name into actor_name from public.profiles p where p.id = auth.uid();
+  update public.dashboard_refresh_settings
+  set rubber_alert_interval_minutes = p_interval_minutes,
+      updated_by_user_id = auth.uid(),
+      updated_by_name = actor_name,
+      updated_at = now()
+  where id = true;
+  return public.get_rubber_weight_alert_config();
+end
+$$;
+
+
+ALTER FUNCTION "public"."save_rubber_weight_alert_interval"("p_interval_minutes" integer) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."save_telegram_badge_config"("payload" "jsonb") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -22995,6 +23243,65 @@ $$;
 ALTER FUNCTION "public"."update_rubber_export"("p_export_id" "uuid", "p_current_weight" numeric, "p_work_rate" numeric, "p_other_operating_cost" numeric) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."update_rubber_weight_alert_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_threshold_kg" integer) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_location_ids uuid[];
+  v_group public.rubber_weight_alert_groups%rowtype;
+  v_actor public.profiles%rowtype;
+begin
+  if not private.is_active_user() or not private.can_access_super_admin_features() then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์จัดการกลุ่มแจ้งเตือนน้ำหนัก';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended('rubber-weight-alert-groups', 0));
+  select * into v_group from public.rubber_weight_alert_groups g
+  where g.id = p_group_id for update;
+  if v_group.id is null then
+    raise exception 'RUBBER_WEIGHT_ALERT_GROUP_NOT_FOUND: ไม่พบกลุ่ม';
+  end if;
+
+  v_location_ids := private.validate_rubber_weight_alert_group_input(
+    p_group_id, p_location_ids, p_threshold_kg
+  );
+  if exists (
+    select 1 from public.rubber_weight_alert_group_locations gl
+    where gl.location_id = any(v_location_ids) and gl.group_id <> p_group_id
+  ) then
+    raise exception 'RUBBER_WEIGHT_ALERT_GROUP_BRANCH_CONFLICT: มีสาขาอยู่ในกลุ่มอื่นแล้ว';
+  end if;
+
+  select * into v_actor from public.profiles p where p.id = auth.uid();
+  update public.rubber_weight_alert_groups
+  set threshold_kg = p_threshold_kg,
+      updated_by_user_id = auth.uid(),
+      updated_by_name = v_actor.name,
+      updated_by_phone = v_actor.phone,
+      updated_at = now()
+  where id = p_group_id
+  returning * into v_group;
+
+  delete from public.rubber_weight_alert_group_locations gl
+  where gl.group_id = p_group_id and not (gl.location_id = any(v_location_ids));
+  insert into public.rubber_weight_alert_group_locations (group_id, location_id)
+  select p_group_id, location_id from unnest(v_location_ids) location_id
+  on conflict (group_id, location_id) do nothing;
+
+  return jsonb_build_object(
+    'id', v_group.id,
+    'locationIds', to_jsonb(v_location_ids),
+    'thresholdKg', v_group.threshold_kg
+  );
+exception when unique_violation then
+  raise exception 'RUBBER_WEIGHT_ALERT_GROUP_BRANCH_CONFLICT: มีสาขาอยู่ในกลุ่มอื่นแล้ว';
+end
+$$;
+
+
+ALTER FUNCTION "public"."update_rubber_weight_alert_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_threshold_kg" integer) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."update_time_payroll_config"("p_workday_end_time" "text") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -24492,6 +24799,31 @@ COMMENT ON COLUMN "public"."rubber_export_items"."rubber_value_amount" IS 'Immut
 
 
 
+CREATE TABLE IF NOT EXISTS "public"."rubber_weight_alert_group_locations" (
+    "group_id" "uuid" NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL
+);
+
+
+ALTER TABLE "public"."rubber_weight_alert_group_locations" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."rubber_weight_alert_groups" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "threshold_kg" integer NOT NULL,
+    "updated_by_user_id" "uuid",
+    "updated_by_name" "text",
+    "updated_by_phone" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "rubber_weight_alert_groups_threshold_check" CHECK ((("threshold_kg" >= 1) AND ("threshold_kg" <= 1000000)))
+);
+
+
+ALTER TABLE "public"."rubber_weight_alert_groups" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "public"."stock_entry_approval_requests" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "request_status" "text" DEFAULT 'pending'::"text" NOT NULL,
@@ -25271,6 +25603,21 @@ ALTER TABLE ONLY "public"."rubber_exports"
 
 
 
+ALTER TABLE ONLY "public"."rubber_weight_alert_group_locations"
+    ADD CONSTRAINT "rubber_weight_alert_group_locations_location_id_key" UNIQUE ("location_id");
+
+
+
+ALTER TABLE ONLY "public"."rubber_weight_alert_group_locations"
+    ADD CONSTRAINT "rubber_weight_alert_group_locations_pkey" PRIMARY KEY ("group_id", "location_id");
+
+
+
+ALTER TABLE ONLY "public"."rubber_weight_alert_groups"
+    ADD CONSTRAINT "rubber_weight_alert_groups_pkey" PRIMARY KEY ("id");
+
+
+
 ALTER TABLE ONLY "public"."stock_entries"
     ADD CONSTRAINT "stock_entries_pkey" PRIMARY KEY ("id");
 
@@ -25925,6 +26272,14 @@ CREATE CONSTRAINT TRIGGER "enforce_rubber_approval_group_not_empty" AFTER INSERT
 
 
 CREATE CONSTRAINT TRIGGER "enforce_rubber_approval_group_row_not_empty" AFTER INSERT OR UPDATE ON "public"."rubber_approval_groups" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "private"."assert_rubber_approval_group_row_not_empty"();
+
+
+
+CREATE CONSTRAINT TRIGGER "enforce_rubber_weight_alert_group_not_empty" AFTER INSERT OR DELETE OR UPDATE ON "public"."rubber_weight_alert_group_locations" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "private"."assert_rubber_weight_alert_group_not_empty"();
+
+
+
+CREATE CONSTRAINT TRIGGER "enforce_rubber_weight_alert_group_row_not_empty" AFTER INSERT OR UPDATE ON "public"."rubber_weight_alert_groups" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "private"."assert_rubber_weight_alert_group_row_not_empty"();
 
 
 
@@ -26733,6 +27088,21 @@ ALTER TABLE ONLY "public"."rubber_exports"
 
 
 
+ALTER TABLE ONLY "public"."rubber_weight_alert_group_locations"
+    ADD CONSTRAINT "rubber_weight_alert_group_locations_group_id_fkey" FOREIGN KEY ("group_id") REFERENCES "public"."rubber_weight_alert_groups"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."rubber_weight_alert_group_locations"
+    ADD CONSTRAINT "rubber_weight_alert_group_locations_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id");
+
+
+
+ALTER TABLE ONLY "public"."rubber_weight_alert_groups"
+    ADD CONSTRAINT "rubber_weight_alert_groups_updated_by_user_id_fkey" FOREIGN KEY ("updated_by_user_id") REFERENCES "public"."profiles"("id");
+
+
+
 ALTER TABLE ONLY "public"."stock_entry_approval_requests"
     ADD CONSTRAINT "stock_entry_approval_requests_decided_by_user_id_fkey" FOREIGN KEY ("decided_by_user_id") REFERENCES "public"."profiles"("id");
 
@@ -27379,6 +27749,20 @@ ALTER TABLE "public"."rubber_export_items" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."rubber_exports" ENABLE ROW LEVEL SECURITY;
 
 
+ALTER TABLE "public"."rubber_weight_alert_group_locations" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "rubber_weight_alert_group_locations_manager_read" ON "public"."rubber_weight_alert_group_locations" FOR SELECT TO "authenticated" USING (("private"."is_active_user"() AND "private"."can_access_super_admin_features"()));
+
+
+
+ALTER TABLE "public"."rubber_weight_alert_groups" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "rubber_weight_alert_groups_manager_read" ON "public"."rubber_weight_alert_groups" FOR SELECT TO "authenticated" USING (("private"."is_active_user"() AND "private"."can_access_super_admin_features"()));
+
+
+
 ALTER TABLE "public"."stock_entries" ENABLE ROW LEVEL SECURITY;
 
 
@@ -27580,6 +27964,14 @@ REVOKE ALL ON FUNCTION "private"."assert_rubber_approval_group_not_empty"() FROM
 
 
 REVOKE ALL ON FUNCTION "private"."assert_rubber_approval_group_row_not_empty"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."assert_rubber_weight_alert_group_not_empty"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."assert_rubber_weight_alert_group_row_not_empty"() FROM PUBLIC;
 
 
 
@@ -28030,6 +28422,10 @@ REVOKE ALL ON FUNCTION "private"."validate_rubber_export_selection"("p_location_
 
 
 
+REVOKE ALL ON FUNCTION "private"."validate_rubber_weight_alert_group_input"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_threshold_kg" integer) FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."validate_wex_rubber_exports"("p_location_id" "uuid", "p_wex_id" "uuid", "p_rubber_export_ids" "uuid"[]) FROM PUBLIC;
 
 
@@ -28205,6 +28601,12 @@ GRANT ALL ON FUNCTION "public"."create_rubber_export"("p_location_id" "uuid", "p
 
 
 
+REVOKE ALL ON FUNCTION "public"."create_rubber_weight_alert_group"("p_location_ids" "uuid"[], "p_threshold_kg" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."create_rubber_weight_alert_group"("p_location_ids" "uuid"[], "p_threshold_kg" integer) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."create_rubber_weight_alert_group"("p_location_ids" "uuid"[], "p_threshold_kg" integer) TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."create_stock_entry_delete_approval_request"("payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."create_stock_entry_delete_approval_request"("payload" "jsonb") TO "authenticated";
 
@@ -28336,6 +28738,12 @@ GRANT ALL ON FUNCTION "public"."delete_rubber_bill_approval_request"("p_request_
 
 REVOKE ALL ON FUNCTION "public"."delete_rubber_export"("p_export_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."delete_rubber_export"("p_export_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."delete_rubber_weight_alert_group"("p_group_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."delete_rubber_weight_alert_group"("p_group_id" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."delete_rubber_weight_alert_group"("p_group_id" "uuid") TO "service_role";
 
 
 
@@ -28710,6 +29118,12 @@ GRANT ALL ON FUNCTION "public"."list_rubber_approval_groups"() TO "authenticated
 
 REVOKE ALL ON FUNCTION "public"."list_rubber_bill_approval_markers"("p_location_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."list_rubber_bill_approval_markers"("p_location_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."list_rubber_weight_alert_groups"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."list_rubber_weight_alert_groups"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."list_rubber_weight_alert_groups"() TO "service_role";
 
 
 
@@ -29178,6 +29592,12 @@ GRANT ALL ON FUNCTION "public"."save_rubber_weight_alert_config"("p_threshold_kg
 
 
 
+REVOKE ALL ON FUNCTION "public"."save_rubber_weight_alert_interval"("p_interval_minutes" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."save_rubber_weight_alert_interval"("p_interval_minutes" integer) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."save_rubber_weight_alert_interval"("p_interval_minutes" integer) TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."save_telegram_badge_config"("payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."save_telegram_badge_config"("payload" "jsonb") TO "authenticated";
 
@@ -29297,6 +29717,12 @@ GRANT ALL ON FUNCTION "public"."update_rubber_approval_group"("p_group_id" "uuid
 
 REVOKE ALL ON FUNCTION "public"."update_rubber_export"("p_export_id" "uuid", "p_current_weight" numeric, "p_work_rate" numeric, "p_other_operating_cost" numeric) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."update_rubber_export"("p_export_id" "uuid", "p_current_weight" numeric, "p_work_rate" numeric, "p_other_operating_cost" numeric) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."update_rubber_weight_alert_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_threshold_kg" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."update_rubber_weight_alert_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_threshold_kg" integer) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."update_rubber_weight_alert_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_threshold_kg" integer) TO "service_role";
 
 
 
@@ -29615,6 +30041,16 @@ GRANT ALL ON TABLE "public"."rubber_bill_ocr_sources" TO "service_role";
 
 GRANT ALL ON TABLE "public"."rubber_export_items" TO "service_role";
 GRANT SELECT ON TABLE "public"."rubber_export_items" TO "authenticated";
+
+
+
+GRANT ALL ON TABLE "public"."rubber_weight_alert_group_locations" TO "service_role";
+GRANT SELECT ON TABLE "public"."rubber_weight_alert_group_locations" TO "authenticated";
+
+
+
+GRANT ALL ON TABLE "public"."rubber_weight_alert_groups" TO "service_role";
+GRANT SELECT ON TABLE "public"."rubber_weight_alert_groups" TO "authenticated";
 
 
 

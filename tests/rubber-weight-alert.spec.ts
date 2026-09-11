@@ -17,11 +17,17 @@ function qualifyingCheck() {
         locationId: "branch-heavy",
         locationName: "สาขาชื่อยาวมากสำหรับตรวจการตัดบรรทัดบนหน้าจอขนาดเล็ก",
         netWeight: 25_500.5,
+        groupId: "group-heavy",
+        groupOrder: 2,
+        thresholdKg: 20_000,
       },
       {
         locationId: "branch-light",
         locationName: "สาขารอง",
         netWeight: 12_000,
+        groupId: "group-light",
+        groupOrder: 4,
+        thresholdKg: 10_000,
       },
     ],
   };
@@ -62,19 +68,17 @@ test("alert API enforces role, bounds, atomic save, and no-store responses", asy
     expect((await (await user.request.get("/api/lanflow")).json()).rubberWeightAlertConfig)
       .toBeNull();
     const deniedSave = await admin.request.put("/api/lanflow/admin/rubber-weight-alert", {
-      data: { thresholdKg: 20_000, intervalMinutes: 30 },
+      data: { intervalMinutes: 30 },
     });
     expect(deniedSave.status()).toBe(403);
     expect(deniedSave.headers()["cache-control"]).toContain("no-store");
 
-    for (const value of [
-      { thresholdKg: 0, intervalMinutes: 60 },
-      { thresholdKg: 1_000_001, intervalMinutes: 60 },
-      { thresholdKg: 10_000, intervalMinutes: 0 },
-      { thresholdKg: 10_000, intervalMinutes: 1_441 },
-      { thresholdKg: "10000", intervalMinutes: 60 },
-      { thresholdKg: 10_000.5, intervalMinutes: 60 },
-    ]) {
+    const staleClientSave = await manager.request.put("/api/lanflow/admin/rubber-weight-alert", {
+      data: { thresholdKg: 20_000, intervalMinutes: 30 },
+    });
+    expect(staleClientSave.status()).toBe(409);
+
+    for (const value of [{ intervalMinutes: 0 }, { intervalMinutes: 1_441 }, { intervalMinutes: "60" }]) {
       const response = await manager.request.put("/api/lanflow/admin/rubber-weight-alert", {
         data: value,
       });
@@ -82,21 +86,32 @@ test("alert API enforces role, bounds, atomic save, and no-store responses", asy
     }
 
     const saved = await manager.request.put("/api/lanflow/admin/rubber-weight-alert", {
-      data: { thresholdKg: 20_000, intervalMinutes: 30 },
+      data: { intervalMinutes: 30 },
     });
     expect(saved.ok(), await saved.text()).toBeTruthy();
     expect(saved.headers()["cache-control"]).toContain("no-store");
-    expect(await saved.json()).toEqual({ thresholdKg: 20_000, intervalMinutes: 30 });
+    expect(await saved.json()).toEqual({ thresholdKg: 10_000, intervalMinutes: 30 });
+
+    const listedGroups = await manager.request.get("/api/lanflow/rubber-weight-alert/groups");
+    expect(listedGroups.ok(), await listedGroups.text()).toBeTruthy();
+    expect(listedGroups.headers()["cache-control"]).toContain("no-store");
+    expect(await listedGroups.json()).toMatchObject({ groups: expect.any(Array), availableLocationIds: expect.any(Array) });
+    const deniedGroups = await admin.request.get("/api/lanflow/rubber-weight-alert/groups");
+    expect(deniedGroups.status()).toBe(403);
+    expect(deniedGroups.headers()["cache-control"]).toContain("no-store");
+    const anonymousGroups = await anonymous.request.get("/api/lanflow/rubber-weight-alert/groups");
+    expect(anonymousGroups.status()).toBe(401);
+    expect(anonymousGroups.headers()["cache-control"]).toContain("no-store");
 
     const check = await admin.request.get("/api/lanflow/rubber-weight-alert");
     expect(check.ok(), await check.text()).toBeTruthy();
     expect(check.headers()["cache-control"]).toContain("no-store");
-    expect((await check.json()).config).toEqual({ thresholdKg: 20_000, intervalMinutes: 30 });
+    expect((await check.json()).config).toEqual({ thresholdKg: 10_000, intervalMinutes: 30 });
     expect((await (await admin.request.get("/api/lanflow")).json()).rubberWeightAlertConfig)
-      .toEqual({ thresholdKg: 20_000, intervalMinutes: 30 });
+      .toEqual({ thresholdKg: 10_000, intervalMinutes: 30 });
   } finally {
     await manager.request.put("/api/lanflow/admin/rubber-weight-alert", {
-      data: { thresholdKg: 10_000, intervalMinutes: 60 },
+      data: { intervalMinutes: 60 },
     }).catch(() => undefined);
     await Promise.all([manager.close(), admin.close(), user.close(), anonymous.close()]);
   }
@@ -105,48 +120,41 @@ test("alert API enforces role, bounds, atomic save, and no-store responses", asy
 test.describe("rubber weight alert UI", () => {
   test.use({ storageState: "playwright/.auth/super_admin.json" });
 
-  test("saves both settings with inline accessible validation on mobile", async ({ page }) => {
+  test("saves the central interval with inline accessible validation on mobile", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await clearAlertTimestamp(page);
     await page.route("**/api/lanflow/rubber-weight-alert", (route) => route.fulfill({ json: emptyCheck }));
+    await page.route("**/api/lanflow/rubber-weight-alert/groups", (route) => route.fulfill({
+      json: { groups: [], availableLocationIds: [] },
+    }));
     let writes = 0;
     await page.route("**/api/lanflow/admin/rubber-weight-alert", async (route) => {
       writes += 1;
-      expect(route.request().postDataJSON()).toEqual({ thresholdKg: 20_000, intervalMinutes: 30 });
+      expect(route.request().postDataJSON()).toEqual({ intervalMinutes: 30 });
       if (writes === 1) {
         await route.fulfill({ status: 500, json: { error: "บันทึกไม่สำเร็จ กรุณาลองใหม่" } });
         return;
       }
-      await route.fulfill({ json: { thresholdKg: 20_000, intervalMinutes: 30 } });
+      await route.fulfill({ json: { thresholdKg: 10_000, intervalMinutes: 30 } });
     });
 
     await page.goto("/");
     await page.getByRole("button", { name: "Admin", exact: true }).click();
     await page.getByRole("button", { name: "แจ้งเตือนน้ำหนัก", exact: true }).click();
-    const threshold = page.getByLabel("เกณฑ์น้ำหนักสุทธิสะสม (กก.)");
     const interval = page.getByLabel("รอบตรวจ (นาที)");
-    await expect(threshold).toHaveValue("10000");
     await expect(interval).toHaveValue("60");
 
-    await threshold.fill("0");
-    await page.getByRole("button", { name: "บันทึกการแจ้งเตือน", exact: true }).click();
-    await expect(page.getByText(
-      "เกณฑ์ต้องอยู่ระหว่าง 1–1,000,000 กก. และรอบตรวจต้องอยู่ระหว่าง 1–1,440 นาที",
-      { exact: true },
-    )).toBeVisible();
-    await expect(threshold).toHaveAttribute("aria-invalid", "true");
+    await interval.fill("0");
+    await page.getByRole("button", { name: "บันทึกรอบตรวจ", exact: true }).click();
+    await expect(page.getByText("รอบตรวจต้องอยู่ระหว่าง 1–1,440 นาที", { exact: true })).toBeVisible();
+    await expect(interval).toHaveAttribute("aria-invalid", "true");
 
-    await threshold.fill("20000");
     await interval.fill("30");
-    await page.getByRole("button", { name: "บันทึกการแจ้งเตือน", exact: true }).click();
+    await page.getByRole("button", { name: "บันทึกรอบตรวจ", exact: true }).click();
     await expect(page.getByText("บันทึกไม่สำเร็จ กรุณาลองใหม่", { exact: true })).toBeVisible();
-    await expect(threshold).toHaveValue("20000");
     await expect(interval).toHaveValue("30");
-    await page.getByRole("button", { name: "บันทึกการแจ้งเตือน", exact: true }).click();
-    await expect(page.getByText(
-      "บันทึกแล้ว เครื่องนี้ใช้รอบเวลาใหม่ทันที",
-      { exact: true },
-    )).toBeVisible();
+    await page.getByRole("button", { name: "บันทึกรอบตรวจ", exact: true }).click();
+    await expect(page.getByText("บันทึกรอบตรวจแล้ว", { exact: true })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
   });
 
@@ -164,6 +172,9 @@ test.describe("rubber weight alert UI", () => {
     await expect(dialog).toBeVisible();
     await expect(dialog.getByRole("listitem")).toHaveCount(2);
     await expect(dialog.getByRole("listitem").nth(0)).toContainText("25,500.5");
+    await expect(dialog.getByRole("heading", { name: "กลุ่ม 2" })).toBeVisible();
+    await expect(dialog.getByRole("heading", { name: "กลุ่ม 4" })).toBeVisible();
+    await expect(dialog.getByText("20,000 กก.", { exact: true })).toBeVisible();
     await expect(dialog.getByRole("button", { name: "รับทราบ", exact: true })).toHaveCount(1);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
     await dialog.getByRole("button", { name: "รับทราบ", exact: true }).click();
@@ -199,7 +210,8 @@ test.describe("rubber weight alert UI", () => {
       return document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
         ?.closest("dialog") === element;
     })).toBeTruthy();
-    await alertDialog.getByRole("button", { name: "รับทราบ", exact: true }).click();
+    await page.keyboard.press("Escape");
+    await expect(alertDialog).toBeHidden();
     await expect(focusTarget).toBeFocused();
     await expect(adminDialog).toBeVisible();
   });

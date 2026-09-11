@@ -8,6 +8,7 @@ import {
   rubberWeightAlertDelayMs,
   writeRubberWeightAlertLastCheckedAt,
 } from "../src/lib/lanflow/rubber-weight-alert";
+import { parseRubberWeightAlertGroupBody } from "../src/lib/server/rubber-weight-alert-groups";
 
 class MemoryStorage implements Storage {
   private readonly values = new Map<string, string>();
@@ -73,10 +74,47 @@ test.describe("rubber weight alert browser state", () => {
         locationName: "สาขา A",
         netWeight: 12_500.5,
       }],
-    })?.candidates).toHaveLength(1);
+    })?.candidates).toEqual([{
+      locationId: "branch-a",
+      locationName: "สาขา A",
+      netWeight: 12_500.5,
+      groupId: null,
+      groupOrder: null,
+      thresholdKg: null,
+    }]);
+    expect(parseRubberWeightAlertCheck({
+      config: { thresholdKg: 10_000, intervalMinutes: 60 },
+      candidates: [{
+        locationId: "branch-a",
+        locationName: "สาขา A",
+        netWeight: 12_500.5,
+        groupId: "group-a",
+        groupOrder: 3,
+        thresholdKg: 12_000,
+      }],
+    })?.candidates[0]).toMatchObject({ groupId: "group-a", groupOrder: 3, thresholdKg: 12_000 });
+    expect(parseRubberWeightAlertCheck({
+      config: { thresholdKg: 10_000, intervalMinutes: 60 },
+      candidates: [{
+        locationId: "branch-a",
+        locationName: "สาขา A",
+        netWeight: 12_500.5,
+        groupId: "group-a",
+      }],
+    })).toBeNull();
     expect(parseRubberWeightAlertCheck({
       config: { thresholdKg: 10_000, intervalMinutes: 60 },
       candidates: [{ locationId: "branch-a", netWeight: Number.NaN }],
     })).toBeNull();
+  });
+
+  test("validates group membership and integer threshold input", () => {
+    const locationId = crypto.randomUUID();
+    expect(parseRubberWeightAlertGroupBody({ locationIds: [locationId], thresholdKg: 10_000 }))
+      .toEqual({ value: { locationIds: [locationId], thresholdKg: 10_000 } });
+    expect(parseRubberWeightAlertGroupBody({ locationIds: [], thresholdKg: 10_000 }))
+      .toEqual({ errorMessage: "ต้องเลือกสาขาอย่างน้อยหนึ่งสาขาและห้ามซ้ำ" });
+    expect(parseRubberWeightAlertGroupBody({ locationIds: [locationId], thresholdKg: 10_000.5 }))
+      .toEqual({ errorMessage: "เกณฑ์ต้องอยู่ระหว่าง 1–1,000,000 กก." });
   });
 });

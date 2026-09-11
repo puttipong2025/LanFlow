@@ -17,13 +17,17 @@ export function managementErrorResponse(error: ErrorLike, fallback: string) {
   const known = [
     { prefix: "FORBIDDEN:", status: 403 },
     { prefix: "RUBBER_GROUP_NOT_FOUND:", status: 404 },
+    { prefix: "RUBBER_WEIGHT_ALERT_GROUP_NOT_FOUND:", status: 404 },
     { prefix: "RUBBER_LOCATION_NOT_FOUND:", status: 404 },
     { prefix: "ADMIN_USER_NOT_FOUND:", status: 404 },
     { prefix: "ADMIN_AUDIT_NOT_FOUND:", status: 404 },
     { prefix: "RUBBER_GROUP_BRANCH_CONFLICT:", status: 409 },
+    { prefix: "RUBBER_WEIGHT_ALERT_GROUP_BRANCH_CONFLICT:", status: 409 },
     { prefix: "ADMIN_REQUEST_CONFLICT:", status: 409 },
     { prefix: "RUBBER_GROUP_EMPTY:", status: 400 },
     { prefix: "RUBBER_GROUP_INVALID:", status: 400 },
+    { prefix: "RUBBER_WEIGHT_ALERT_GROUP_EMPTY:", status: 400 },
+    { prefix: "RUBBER_WEIGHT_ALERT_GROUP_INVALID:", status: 400 },
     { prefix: "ADMIN_PROFILE_INVALID:", status: 400 },
     { prefix: "ADMIN_AUDIT_INVALID:", status: 400 },
   ].find(({ prefix }) => message.includes(prefix));

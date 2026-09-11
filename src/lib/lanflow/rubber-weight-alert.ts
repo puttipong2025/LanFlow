@@ -14,6 +14,9 @@ export type RubberWeightAlertCandidate = {
   locationId: string;
   locationName: string;
   netWeight: number;
+  groupId: string | null;
+  groupOrder: number | null;
+  thresholdKg: number | null;
 };
 
 export type RubberWeightAlertCheck = {
@@ -76,10 +79,22 @@ export function parseRubberWeightAlertCheck(value: unknown): RubberWeightAlertCh
       || !Number.isFinite(candidate.netWeight)) {
       return null;
     }
+    const hasGroupMetadata = candidate.groupId !== undefined
+      || candidate.groupOrder !== undefined
+      || candidate.thresholdKg !== undefined;
+    if (hasGroupMetadata && (
+      typeof candidate.groupId !== "string"
+      || !Number.isInteger(candidate.groupOrder)
+      || Number(candidate.groupOrder) < 1
+      || !validRubberWeightAlertThreshold(candidate.thresholdKg)
+    )) return null;
     candidates.push({
       locationId: candidate.locationId,
       locationName: candidate.locationName,
       netWeight: candidate.netWeight,
+      groupId: hasGroupMetadata ? candidate.groupId as string : null,
+      groupOrder: hasGroupMetadata ? Number(candidate.groupOrder) : null,
+      thresholdKg: hasGroupMetadata ? Number(candidate.thresholdKg) : null,
     });
   }
   return { config, candidates };

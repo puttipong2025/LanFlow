@@ -3,7 +3,6 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   parseRubberWeightAlertConfig,
   validRubberWeightAlertInterval,
-  validRubberWeightAlertThreshold,
 } from "@/lib/lanflow/rubber-weight-alert";
 import { requireSystemManager } from "@/lib/server/auth";
 
@@ -23,18 +22,19 @@ export async function PUT(request: NextRequest) {
     thresholdKg?: unknown;
     intervalMinutes?: unknown;
   } | null;
-  if (!validRubberWeightAlertThreshold(body?.thresholdKg)
-    || !validRubberWeightAlertInterval(body?.intervalMinutes)) {
+  if (body && Object.prototype.hasOwnProperty.call(body, "thresholdKg")) {
+    return errorResponse("การตั้งค่าเกณฑ์เปลี่ยนเป็นแบบกลุ่มแล้ว กรุณาโหลดหน้าใหม่", 409);
+  }
+  if (!validRubberWeightAlertInterval(body?.intervalMinutes)) {
     return errorResponse(
-      "เกณฑ์ต้องอยู่ระหว่าง 1–1,000,000 กก. และรอบตรวจต้องอยู่ระหว่าง 1–1,440 นาที",
+      "รอบตรวจต้องอยู่ระหว่าง 1–1,440 นาที",
       400,
     );
   }
 
   const { data, error } = await result.supabase.rpc(
-    "save_rubber_weight_alert_config",
+    "save_rubber_weight_alert_interval",
     {
-      p_threshold_kg: body.thresholdKg,
       p_interval_minutes: body.intervalMinutes,
     },
   );
@@ -44,7 +44,7 @@ export async function PUT(request: NextRequest) {
     }
     if (error.message.includes("RUBBER_WEIGHT_ALERT_INVALID")) {
       return errorResponse(
-        "เกณฑ์ต้องอยู่ระหว่าง 1–1,000,000 กก. และรอบตรวจต้องอยู่ระหว่าง 1–1,440 นาที",
+        "รอบตรวจต้องอยู่ระหว่าง 1–1,440 นาที",
         400,
       );
     }
