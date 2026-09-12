@@ -78,6 +78,9 @@ export type DashboardSnapshot = {
   calculatedAt: string | null;
   manualRequestedAt: string | null;
   lastError: string | null;
+  // Optional during staggered DB/frontend rollout and for cached older payloads.
+  isOverdue?: boolean;
+  nextCheckAt?: string | null;
 };
 
 export type DashboardRefreshRequest = DashboardSnapshot & {
@@ -140,6 +143,7 @@ export type DashboardBranchSummary = {
   snapshotStatus: DashboardSnapshot["status"] | null;
   calculatedAt: string | null;
   cashStatus: DashboardBranchCashStatus;
+  isOverdue?: boolean;
   summary: Pick<
     DashboardSummary,
     "netCashFlow" | "rubberInventoryWeight" | "purchaseToday"

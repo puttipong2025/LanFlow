@@ -184,7 +184,7 @@ export function AppHeader({
               type="button"
               data-location-id={selectedLocationId}
               data-cash-status={selectedBranchSummary?.cashStatus ?? "unknown"}
-              aria-label={`เลือกสาขา${branchContextLabel ? ` ${branchContextLabel}` : ""}${selectedBadgeTotal > 0 ? ` มีงาน ${selectedBadgeTotal} รายการ` : ""}${selectedCashStatusLabel ? ` สถานะ${selectedCashStatusLabel}` : ""}`}
+              aria-label={`เลือกสาขา${branchContextLabel ? ` ${branchContextLabel}` : ""}${selectedBadgeTotal > 0 ? ` มีงาน ${selectedBadgeTotal} รายการ` : ""}${selectedCashStatusLabel ? ` สถานะ${selectedCashStatusLabel}` : ""}${selectedBranchSummary?.isOverdue ? ` อัปเดตล่าช้า ข้อมูลล่าสุด ${formatCalculatedAt(selectedBranchSummary.calculatedAt)}` : ""}`}
               aria-haspopup="listbox"
               aria-controls="location-selector-listbox"
               aria-expanded={locationMenuOpen}
@@ -212,6 +212,11 @@ export function AppHeader({
                 aria-hidden="true"
                 className={`size-2 shrink-0 rounded-full ${cashStatusDot(selectedBranchSummary?.cashStatus)}`}
               />
+              {selectedBranchSummary?.isOverdue && (
+                <span className="shrink-0 text-xs font-semibold text-amber-900" title={`ข้อมูลล่าสุด ${formatCalculatedAt(selectedBranchSummary.calculatedAt)}`}>
+                  อัปเดตล่าช้า
+                </span>
+              )}
               {selectedBadgeTotal > 0 && (
                 <span className="min-w-6 rounded-full bg-amber px-1.5 py-0.5 text-center text-[11px] font-extrabold leading-none text-white">
                   {selectedBadgeTotal > 99 ? "99+" : selectedBadgeTotal}
@@ -318,7 +323,7 @@ export function AppHeader({
                               {dataIsStale && (
                                 <span
                                   role="img"
-                                  aria-label={`ข้อมูลไม่สด ข้อมูลล่าสุด ${formatCalculatedAt(branchSummary.calculatedAt)}`}
+                                  aria-label={`${branchSummary.isOverdue ? "อัปเดตล่าช้า" : "ข้อมูลไม่สด"} ข้อมูลล่าสุด ${formatCalculatedAt(branchSummary.calculatedAt)}`}
                                   title={`ข้อมูลล่าสุด ${formatCalculatedAt(branchSummary.calculatedAt)}`}
                                   className="inline-flex items-center"
                                 >
@@ -344,6 +349,11 @@ export function AppHeader({
                               วันนี้ — บิล · — กก. · เฉลี่ย —
                             </span>
                             <span className="block">นน.ยางคงเหลือ —</span>
+                          </span>
+                        )}
+                        {branchSummary?.isOverdue && (
+                          <span className="mt-1 block text-pretty text-xs font-semibold text-amber-900">
+                            อัปเดตล่าช้า · ข้อมูลล่าสุด {formatCalculatedAt(branchSummary.calculatedAt)}
                           </span>
                         )}
                       </span>

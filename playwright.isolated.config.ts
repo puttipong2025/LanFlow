@@ -3,6 +3,7 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './tests',
   testMatch: [
+    '**/dashboard-freshness.spec.ts',
     '**/action-column-contract.spec.ts',
     '**/admin-content-accessibility.spec.ts',
     '**/admin-profile-draft.spec.ts',

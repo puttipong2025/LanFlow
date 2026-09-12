@@ -19,6 +19,7 @@ import {
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { isNetworkCancellation } from "@/lib/network-abort";
 import { cn } from "@/lib/cn";
+import { dashboardStatusLabel } from "@/lib/dashboard-freshness";
 
 const KIND_LABELS: Record<string, string> = {
   income: "รายรับ",
@@ -304,6 +305,9 @@ export function Dashboard({
     managerBusy === "refresh" ||
     snapshot.data?.status === "queued" ||
     snapshot.data?.status === "running";
+  const freshnessLabel = snapshot.data
+    ? dashboardStatusLabel(snapshot.data.status, snapshot.data.isOverdue)
+    : null;
   const dashboardControls =
     (canConfigureDashboard || canRequestDashboardRefresh) && (
     <section className="flex flex-wrap items-end gap-3 rounded-xl border border-mint/80 bg-white p-4 shadow-panel">
@@ -374,15 +378,15 @@ export function Dashboard({
         {manualRefreshError
           ? manualRefreshError
           : snapshot.data?.status === "failed"
-            ? snapshot.data.lastError || "คำนวณ Dashboard ไม่สำเร็จ"
+            ? "อัปเดตไม่สำเร็จ · ระบบจะลองใหม่อัตโนมัติ"
             : manualLongRunning
           ? "ใช้เวลานานกว่าปกติ ระบบยังคำนวณอยู่"
           : snapshot.data?.status === "queued"
-            ? "รอเริ่มคำนวณสาขานี้…"
+            ? "อยู่ในคิวคำนวณ"
             : snapshot.data?.status === "running"
-              ? "กำลังสร้างผลคำนวณล่าสุดของสาขานี้…"
+              ? "กำลังคำนวณ"
               : canConfigureDashboard
-                ? "รอบกลางต่ำสุด 10 นาที · ปุ่มนี้เริ่มคำนวณสาขาที่เลือกทันที"
+                ? "อัปเดตภายในรอบที่ตั้งเมื่อระบบทำงานปกติ · ปุ่มนี้เริ่มคำนวณทันที"
                 : "Admin คำนวณใหม่ได้เฉพาะสาขาที่ได้รับมอบหมาย"}
       </p>
     </section>
@@ -436,14 +440,21 @@ export function Dashboard({
     return (
       <div className="space-y-5">
         <section className="rounded-xl border border-mint/80 bg-white p-6 text-center shadow-panel">
-          <LoaderCircle className="mx-auto animate-spin text-leaf" size={22} />
-          <h2 className="mt-3 text-lg font-bold text-ink">
-            กำลังเตรียม Dashboard · {selectedLocation.name}
+          {snapshot.data.status !== "failed" && (
+            <LoaderCircle className="mx-auto animate-spin text-leaf" size={22} aria-hidden="true" />
+          )}
+          <h2 className="mt-3 text-balance text-lg font-bold text-ink">
+            {snapshot.data.status === "failed" ? "ยังไม่มีผลคำนวณภาพรวม" : "กำลังเตรียม Dashboard"} · {selectedLocation.name}
           </h2>
-          <p className="mt-1 text-sm text-ink/55">
-            ระบบจะเก็บผลสำเร็จล่าสุดไว้หนึ่งชุดต่อสาขา · สถานะ{" "}
-            {snapshot.data.status}
+          <p className="mt-1 text-pretty text-sm text-ink/55">
+            ระบบจะเก็บผลสำเร็จล่าสุดไว้หนึ่งชุดต่อสาขา
           </p>
+          <p className="mt-1 text-pretty text-sm text-ink/55">
+            ผลคำนวณล่าสุด {snapshot.data.calculatedAt ? formatOccurredAt(snapshot.data.calculatedAt) : "ยังไม่เคยคำนวณ"}
+          </p>
+          {freshnessLabel && (
+            <p role="status" className="mt-2 text-sm font-semibold text-amber-900">{freshnessLabel}</p>
+          )}
           {snapshot.data.lastError && (
             <p className="mt-2 text-sm font-semibold text-danger">
               {snapshot.data.lastError}
@@ -470,15 +481,17 @@ export function Dashboard({
     <div className="space-y-5">
       <div>
         <h1 className="text-balance text-2xl font-bold text-ink">ภาพรวม · {selectedLocation.name}</h1>
-        <p className="mt-1 text-sm text-ink/55">
+        <p className="mt-1 text-pretty text-sm text-ink/55">
           ผลคำนวณล่าสุด{" "}
           {snapshot.data.calculatedAt
             ? formatOccurredAt(snapshot.data.calculatedAt)
             : "ยังไม่เคยคำนวณ"}
-          {snapshot.data.status !== "ready"
-            ? ` · สถานะ ${snapshot.data.status}`
-            : ""}
         </p>
+        {freshnessLabel && (
+          <p role="status" aria-live="polite" className={cn("mt-1 text-pretty text-sm font-semibold", snapshot.data.isOverdue ? "text-amber-900" : snapshot.data.status === "failed" ? "text-danger" : "text-ink/65")}>
+            {freshnessLabel}{snapshot.data.status === "failed" ? " · ระบบจะลองใหม่อัตโนมัติ" : ""}
+          </p>
+        )}
       </div>
 
       {dashboardControls}

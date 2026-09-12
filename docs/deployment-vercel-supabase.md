@@ -124,3 +124,28 @@ npx.cmd vercel --prod
 If the web deployment fails after database migrations were applied, keep the
 database forward-compatible and fix or roll forward the web deployment. Do
 not edit an already-applied migration in place.
+
+## Dashboard freshness release checks
+
+Migration `20260912010000_dashboard_refresh_freshness.sql` replaces the two
+Dashboard Cron jobs with one adaptive tick. Keep the existing manual Edge
+Function deployed; its source/authorization flow is unchanged.
+Apply `20260912020000_dashboard_source_commit_order.sql` immediately after it:
+the source version is a serialized monotonic counter, while a separate internal
+transaction token deduplicates bulk triggers without losing older-XID commits.
+Then apply `20260912030000_dashboard_manual_handoff_wait.sql`; it makes a
+manual branch rebuild wait for an overlapping automatic branch lock so the
+Edge worker's existing second pass completes instead of falling back to Cron.
+
+- Run full Local pgTAP, focused Dashboard/branch-selector Playwright, lint and `npm run verify`.
+- `scripts/verify-dashboard-freshness.mjs --replay` requires a fresh, networkless `lanflow-dashboard-freshness-20260912` Postgres container with Cron disabled. It mirrors canonical provisioning defaults, replays historical migrations, proves the original one-versus-three budget failure, checks five-state backfill and exercises real multi-connection races. It copies only managed Auth schema from Local, never Auth data. Do not point it at an app DB.
+- Run `node scripts/verify-dashboard-release.mjs backup` and `pre` before Cloud changes. The helper is Production read-only, verifies the linked project and keeps backup/hash receipts under ignored `output/production-backups/dashboard-freshness-20260912/`.
+- Restore those backups only into a new networkless `lanflow-dashboard-backup-20260912` container with Cron disabled, then run `node scripts/verify-dashboard-backup.mjs --restore`. It verifies backup hashes, all 26 completed rebuilds, semantic parity and unchanged non-read-model table fingerprints. This isolated test sets 10 minutes; it never changes the Production interval.
+- Apply only the three reviewed forward migrations, then run release helper `post` for catalog, grants, one-Cron and business/Auth/Storage fingerprint checks. Run `roles` for read-only RPC contract/branch isolation checks and `status` for real Cron runtime/pending age. These are database-role checks, not a claim of HTTP sign-in for every role.
+- Deploy Vercel with `vercel deploy --project lan-flow --prod --yes`, then inspect the authenticated existing session without pressing refresh or creating Production fixtures. Test forced overdue/failure paths locally; do not alter Production data or interval merely for a smoke test.
+- Before any CLI upload, verify `.vercelignore`: the CLI does not inherit `.gitignore`. Exclude `output/`, database backups, `.env*`, Supabase temporary credentials and Playwright auth fixtures. Keep backup receipts on this machine only; inspect the replacement deployment file tree if a local artifact was accidentally uploaded.
+
+Dirty work is eligible immediately. `pending_since + interval` is the freshness
+deadline and ordering key, not a gate that starts work when it is already due.
+Failures preserve the last summary and retry after 1/2/5/10/30 minutes. If any
+release check fails, keep its ignored receipt and use a forward fix.

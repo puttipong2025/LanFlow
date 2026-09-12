@@ -2148,62 +2148,20 @@ CREATE OR REPLACE FUNCTION "private"."claim_dashboard_branch"() RETURNS "uuid"
     AS $$
 declare
   branch_id uuid;
-  refresh_minutes integer;
 begin
   perform private.dashboard_rollover_if_needed();
-
+  select s.location_id into branch_id
+  from public.dashboard_branch_snapshots s
+  join public.locations l on l.id = s.location_id and l.is_active
+  where s.status in ('queued', 'dirty')
+     or (s.status = 'failed' and coalesce(s.next_retry_at, now()) <= now())
+  order by case when s.status = 'queued' then 0 when s.summary is null then 1 when s.status = 'failed' then 2 else 3 end,
+    s.pending_since nulls first, s.location_id
+  limit 1 for update of s skip locked;
+  if branch_id is null then return null; end if;
   update public.dashboard_branch_snapshots
-  set status = 'failed',
-      claimed_version = null,
-      claimed_at = null,
-      last_error = 'งานคำนวณก่อนหน้าไม่สิ้นสุด',
-      updated_at = now()
-  where status = 'running'
-    and claimed_at < now() - interval '15 minutes';
-
-  select s.interval_minutes
-  into refresh_minutes
-  from public.dashboard_refresh_settings s
-  where s.id = true;
-
-  select snapshot.location_id
-  into branch_id
-  from public.dashboard_branch_snapshots snapshot
-  join public.locations l
-    on l.id = snapshot.location_id
-   and l.is_active = true
-  where snapshot.status = 'queued'
-     or (
-       snapshot.status = 'dirty'
-       and (
-         snapshot.summary is null
-         or snapshot.updated_at <= now() - make_interval(mins => refresh_minutes)
-       )
-     )
-     or (
-       snapshot.status = 'failed'
-       and snapshot.updated_at <= now() - make_interval(mins => refresh_minutes)
-     )
-  order by
-    (snapshot.status = 'queued') desc,
-    (snapshot.summary is null) desc,
-    snapshot.updated_at,
-    snapshot.location_id
-  for update of snapshot skip locked
-  limit 1;
-
-  if branch_id is null then
-    return null;
-  end if;
-
-  update public.dashboard_branch_snapshots
-  set status = 'running',
-      claimed_version = source_version,
-      claimed_at = now(),
-      last_error = null,
-      updated_at = now()
+  set status = 'running', claimed_version = source_version, claimed_at = now(), last_error = null, updated_at = now()
   where location_id = branch_id;
-
   return branch_id;
 end;
 $$;
@@ -3510,6 +3468,23 @@ $$;
 ALTER FUNCTION "private"."dashboard_require_refresh_access"("p_location_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."dashboard_retry_delay"("p_failure_count" integer) RETURNS interval
+    LANGUAGE "sql" IMMUTABLE
+    SET "search_path" TO ''
+    AS $$
+  select case
+    when p_failure_count <= 1 then interval '1 minute'
+    when p_failure_count = 2 then interval '2 minutes'
+    when p_failure_count = 3 then interval '5 minutes'
+    when p_failure_count = 4 then interval '10 minutes'
+    else interval '30 minutes'
+  end
+$$;
+
+
+ALTER FUNCTION "private"."dashboard_retry_delay"("p_failure_count" integer) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."dashboard_rollover_if_needed"() RETURNS boolean
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -3520,49 +3495,26 @@ declare
   next_version bigint := pg_catalog.txid_current();
 begin
   insert into public.dashboard_refresh_settings (id)
-  values (true)
-  on conflict (id) do nothing;
-
+  values (true) on conflict (id) do nothing;
   insert into public.dashboard_branch_snapshots (location_id)
-  select l.id
-  from public.locations l
-  where l.is_active = true
+  select l.id from public.locations l where l.is_active
   on conflict (location_id) do nothing;
-
   insert into public.dashboard_alert_thresholds (location_id)
-  select l.id
-  from public.locations l
-  where l.is_active = true
+  select l.id from public.locations l where l.is_active
   on conflict (location_id) do nothing;
 
   update public.dashboard_refresh_settings
-  set last_rollover_date = today,
-      updated_at = now()
-  where id = true
-    and last_rollover_date < today
+  set last_rollover_date = today, updated_at = now()
+  where id = true and last_rollover_date < today
   returning true into changed;
-
-  if not coalesce(changed, false) then
-    return false;
-  end if;
+  if not coalesce(changed, false) then return false; end if;
 
   update public.dashboard_branch_snapshots
-  set status = case
-        when dashboard_branch_snapshots.status in ('queued', 'running')
-          then dashboard_branch_snapshots.status
-        else 'dirty'
-      end,
-      source_version = greatest(
-        dashboard_branch_snapshots.source_version + 1,
-        next_version
-      ),
+  set status = case when status in ('queued', 'running', 'failed') then status else 'dirty' end,
+      source_version = greatest(source_version + 1, next_version),
+      pending_since = coalesce(pending_since, now()),
       updated_at = now()
-  where location_id in (
-    select l.id
-    from public.locations l
-    where l.is_active = true
-  );
-
+  where location_id in (select l.id from public.locations l where l.is_active);
   return true;
 end;
 $$;
@@ -4931,40 +4883,30 @@ CREATE OR REPLACE FUNCTION "private"."mark_dashboard_dirty"("p_location_id" "uui
     SET "search_path" TO ''
     AS $$
 declare
-  next_version bigint := pg_catalog.txid_current();
+  source_transaction_id bigint := pg_catalog.txid_current();
 begin
   if p_location_id is null or not exists (
-    select 1
-    from public.locations l
-    where l.id = p_location_id
-      and l.is_active = true
-  ) then
-    return;
-  end if;
+    select 1 from public.locations l where l.id = p_location_id and l.is_active
+  ) then return; end if;
 
   insert into public.dashboard_branch_snapshots (
-    location_id,
-    status,
-    source_version
-  )
-  values (
-    p_location_id,
-    'dirty',
-    next_version
-  )
+    location_id, status, source_version, pending_since, last_source_transaction_id
+  ) values (p_location_id, 'dirty', 1, now(), source_transaction_id)
   on conflict (location_id) do update
   set status = case
-        when dashboard_branch_snapshots.status in ('queued', 'running')
+        when dashboard_branch_snapshots.status in ('queued', 'running', 'failed')
           then dashboard_branch_snapshots.status
         else 'dirty'
       end,
-      source_version = excluded.source_version,
+      source_version = dashboard_branch_snapshots.source_version + 1,
+      pending_since = coalesce(dashboard_branch_snapshots.pending_since, excluded.pending_since),
+      last_source_transaction_id = excluded.last_source_transaction_id,
       updated_at = now()
-  where dashboard_branch_snapshots.source_version < excluded.source_version;
+  where dashboard_branch_snapshots.last_source_transaction_id
+    is distinct from excluded.last_source_transaction_id;
 
   insert into public.dashboard_alert_thresholds (location_id)
-  values (p_location_id)
-  on conflict (location_id) do nothing;
+  values (p_location_id) on conflict (location_id) do nothing;
 end;
 $$;
 
@@ -5622,6 +5564,61 @@ $$;
 ALTER FUNCTION "private"."prevent_location_code_change"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."process_dashboard_refresh_tick"() RETURNS integer
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  batch_size integer;
+  processed integer := 0;
+  branch_id uuid;
+begin
+  -- Also serialize direct/retried ticks, not just pg_cron's named job.
+  if not pg_catalog.pg_try_advisory_xact_lock(pg_catalog.hashtext('lanflow-dashboard-tick')) then return 0; end if;
+  perform private.dashboard_rollover_if_needed();
+
+  update public.dashboard_branch_snapshots
+  set status = 'failed',
+      pending_since = coalesce(pending_since, claimed_at, now()),
+      failure_count = failure_count + 1,
+      next_retry_at = now() + private.dashboard_retry_delay(failure_count + 1),
+      claimed_version = null,
+      claimed_at = null,
+      last_error = 'คำนวณ Dashboard ไม่สำเร็จ',
+      updated_at = now()
+  where status = 'running' and claimed_at < now() - interval '15 minutes';
+
+  select greatest(1, ceil(count(*)::numeric / settings.interval_minutes)::integer)
+  into batch_size
+  from public.locations l cross join public.dashboard_refresh_settings settings
+  where l.is_active and settings.id = true
+  group by settings.interval_minutes;
+  batch_size := coalesce(batch_size, 1);
+
+  -- Adopt a manual claim if its Edge worker exited. An active worker holds the
+  -- same advisory lock and is skipped without starting a duplicate calculation.
+  if private.rebuild_dashboard_branch() is not null then processed := 1; end if;
+
+  for branch_id in
+    select s.location_id
+    from public.dashboard_branch_snapshots s
+    join public.locations l on l.id = s.location_id and l.is_active
+    where s.status in ('queued', 'dirty')
+       or (s.status = 'failed' and coalesce(s.next_retry_at, now()) <= now())
+    order by case when s.status = 'queued' then 0 when s.summary is null then 1 when s.status = 'failed' then 2 else 3 end,
+      s.pending_since nulls first, s.location_id
+    limit greatest(0, batch_size - processed)
+  loop
+    if private.rebuild_dashboard_branch_automatic(branch_id) then processed := processed + 1; end if;
+  end loop;
+  return processed;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."process_dashboard_refresh_tick"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."raise_report_lock"("p_report_no" "text") RETURNS "void"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -5708,6 +5705,74 @@ $$;
 ALTER FUNCTION "private"."rebuild_dashboard_branch"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."rebuild_dashboard_branch_automatic"("p_location_id" "uuid") RETURNS boolean
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  target_version bigint;
+  target_status text;
+  started_at timestamptz := now();
+  next_summary jsonb;
+begin
+  if not pg_catalog.pg_try_advisory_xact_lock(
+    pg_catalog.hashtext('lanflow-dashboard-rebuild'), pg_catalog.hashtext(p_location_id::text)
+  ) then return false; end if;
+
+  select s.source_version, s.status into target_version, target_status
+  from public.dashboard_branch_snapshots s
+  join public.locations l on l.id = s.location_id and l.is_active
+  where s.location_id = p_location_id
+    and (s.status in ('queued', 'dirty') or (s.status = 'failed' and coalesce(s.next_retry_at, now()) <= now()));
+  if target_version is null then return false; end if;
+
+  begin
+    next_summary := private.calculate_dashboard_summary(p_location_id);
+    update public.dashboard_branch_snapshots
+    set summary = next_summary,
+        calculated_at = now(),
+        snapshot_version = target_version,
+        status = case when source_version = target_version then 'ready' else 'dirty' end,
+        pending_since = case when source_version = target_version then null else started_at end,
+        failure_count = 0,
+        next_retry_at = null,
+        claimed_version = null,
+        claimed_at = null,
+        manual_requested_at = null,
+        last_error = null,
+        updated_at = now()
+    where location_id = p_location_id;
+  exception when others then
+    -- A manual claim can arrive while we calculate. Leave that intent intact;
+    -- its worker owns the next attempt after our advisory lock is released.
+    update public.dashboard_branch_snapshots
+    set status = case
+          when status = 'running' or (status = 'queued' and (target_status <> 'queued' or source_version <> target_version)) then status
+          else 'failed'
+        end,
+        failure_count = case
+          when status = 'running' or (status = 'queued' and (target_status <> 'queued' or source_version <> target_version)) then failure_count
+          else failure_count + 1
+        end,
+        next_retry_at = case
+          when status = 'running' or (status = 'queued' and (target_status <> 'queued' or source_version <> target_version)) then next_retry_at
+          else now() + private.dashboard_retry_delay(failure_count + 1)
+        end,
+        last_error = case
+          when status = 'running' or (status = 'queued' and (target_status <> 'queued' or source_version <> target_version)) then last_error
+          else 'คำนวณ Dashboard ไม่สำเร็จ'
+        end,
+        updated_at = now()
+    where location_id = p_location_id;
+  end;
+  return true;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."rebuild_dashboard_branch_automatic"("p_location_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."rebuild_dashboard_branch_target"("p_location_id" "uuid", "p_claimed_version" bigint) RETURNS "uuid"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -5715,61 +5780,45 @@ CREATE OR REPLACE FUNCTION "private"."rebuild_dashboard_branch_target"("p_locati
 declare
   next_summary jsonb;
 begin
-  if p_location_id is null or p_claimed_version is null then
-    return null;
-  end if;
-
+  if p_location_id is null or p_claimed_version is null then return null; end if;
   if not pg_catalog.pg_try_advisory_xact_lock(
-    pg_catalog.hashtext('lanflow-dashboard-rebuild'),
-    pg_catalog.hashtext(p_location_id::text)
-  ) then
-    return null;
-  end if;
-
+    pg_catalog.hashtext('lanflow-dashboard-rebuild'), pg_catalog.hashtext(p_location_id::text)
+  ) then return null; end if;
   if not exists (
-    select 1
-    from public.dashboard_branch_snapshots snapshot
-    join public.locations l
-      on l.id = snapshot.location_id
-     and l.is_active = true
-    where snapshot.location_id = p_location_id
-      and snapshot.status = 'running'
-      and snapshot.claimed_version = p_claimed_version
-  ) then
-    return null;
-  end if;
+    select 1 from public.dashboard_branch_snapshots s
+    join public.locations l on l.id = s.location_id and l.is_active
+    where s.location_id = p_location_id and s.status = 'running'
+      and s.claimed_version = p_claimed_version
+  ) then return null; end if;
 
   begin
     next_summary := private.calculate_dashboard_summary(p_location_id);
-
     update public.dashboard_branch_snapshots
     set summary = next_summary,
         calculated_at = now(),
         snapshot_version = p_claimed_version,
-        status = case
-          when source_version = p_claimed_version then 'ready'
-          else 'dirty'
-        end,
+        status = case when source_version = p_claimed_version then 'ready' else 'dirty' end,
+        pending_since = case when source_version = p_claimed_version then null else coalesce(claimed_at, pending_since, now()) end,
+        failure_count = 0,
+        next_retry_at = null,
         claimed_version = null,
         claimed_at = null,
         manual_requested_at = null,
         last_error = null,
         updated_at = now()
-    where location_id = p_location_id
-      and status = 'running'
-      and claimed_version = p_claimed_version;
+    where location_id = p_location_id and status = 'running' and claimed_version = p_claimed_version;
   exception when others then
     update public.dashboard_branch_snapshots
     set status = 'failed',
+        pending_since = coalesce(pending_since, claimed_at, now()),
+        failure_count = failure_count + 1,
+        next_retry_at = now() + private.dashboard_retry_delay(failure_count + 1),
         claimed_version = null,
         claimed_at = null,
         last_error = 'คำนวณ Dashboard ไม่สำเร็จ',
         updated_at = now()
-    where location_id = p_location_id
-      and status = 'running'
-      and claimed_version = p_claimed_version;
+    where location_id = p_location_id and status = 'running' and claimed_version = p_claimed_version;
   end;
-
   return p_location_id;
 end;
 $$;
@@ -13315,42 +13364,29 @@ CREATE OR REPLACE FUNCTION "public"."get_dashboard_branch_summaries"() RETURNS "
 declare
   payload jsonb;
 begin
-  if not private.is_active_user() then
-    raise exception 'Access denied';
-  end if;
-
-  select coalesce(
-    jsonb_agg(
-      jsonb_build_object(
-        'locationId', l.id,
-        'snapshotStatus', s.status,
-        'calculatedAt', s.calculated_at,
-        'cashStatus', case
-          when s.summary is null then 'no_data'
-          when coalesce(t.is_configured, false) = false then 'unconfigured'
-          when (s.summary ->> 'netCashFlow')::numeric < t.net_cash_min then 'low'
-          else 'normal'
-        end,
-        'summary', case
-          when s.summary is null then null
-          else jsonb_build_object(
-            'netCashFlow', s.summary -> 'netCashFlow',
-            'rubberInventoryWeight', s.summary -> 'rubberInventoryWeight',
-            'purchaseToday', s.summary -> 'purchaseToday'
-          )
-        end
-      )
-      order by l.created_at, l.id
-    ),
-    '[]'::jsonb
-  )
-  into payload
+  if not private.is_active_user() then raise exception 'Access denied'; end if;
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'locationId', l.id,
+    'snapshotStatus', s.status,
+    'calculatedAt', s.calculated_at,
+    'isOverdue', coalesce(s.status <> 'ready' and s.pending_since + make_interval(mins => settings.interval_minutes) < now(), false),
+    'cashStatus', case
+      when s.summary is null then 'no_data'
+      when coalesce(t.is_configured, false) = false then 'unconfigured'
+      when (s.summary ->> 'netCashFlow')::numeric < t.net_cash_min then 'low'
+      else 'normal'
+    end,
+    'summary', case when s.summary is null then null else jsonb_build_object(
+      'netCashFlow', s.summary -> 'netCashFlow',
+      'rubberInventoryWeight', s.summary -> 'rubberInventoryWeight',
+      'purchaseToday', s.summary -> 'purchaseToday'
+    ) end
+  ) order by l.created_at, l.id), '[]'::jsonb) into payload
   from public.locations l
+  cross join public.dashboard_refresh_settings settings
   left join public.dashboard_branch_snapshots s on s.location_id = l.id
   left join public.dashboard_alert_thresholds t on t.location_id = l.id
-  where l.is_active = true
-    and public.can_access_location(l.id);
-
+  where l.is_active and settings.id = true and public.can_access_location(l.id);
   return payload;
 end;
 $$;
@@ -13883,38 +13919,30 @@ CREATE OR REPLACE FUNCTION "public"."get_dashboard_snapshot"("p_location_id" "uu
     AS $$
 declare
   snapshot public.dashboard_branch_snapshots%rowtype;
+  deadline timestamptz;
+  refresh_minutes integer;
 begin
-  if not private.is_active_user()
-    or not public.can_access_location(p_location_id)
-  then
+  if not private.is_active_user() or not public.can_access_location(p_location_id) then
     raise exception 'Location access denied';
   end if;
-
-  select *
-  into snapshot
-  from public.dashboard_branch_snapshots s
-  where s.location_id = p_location_id;
-
-  if snapshot.location_id is null then
-    return jsonb_build_object(
-      'status', 'dirty',
-      'sourceVersion', 1,
-      'snapshotVersion', 0,
-      'summary', null,
-      'calculatedAt', null,
-      'manualRequestedAt', null,
-      'lastError', null
-    );
-  end if;
-
+  select * into snapshot from public.dashboard_branch_snapshots s where s.location_id = p_location_id;
+  select interval_minutes into refresh_minutes from public.dashboard_refresh_settings where id = true;
+  deadline := snapshot.pending_since + make_interval(mins => coalesce(refresh_minutes, 10));
   return jsonb_build_object(
-    'status', snapshot.status,
-    'sourceVersion', snapshot.source_version,
-    'snapshotVersion', snapshot.snapshot_version,
+    'status', coalesce(snapshot.status, 'dirty'),
+    'sourceVersion', coalesce(snapshot.source_version, 1),
+    'snapshotVersion', coalesce(snapshot.snapshot_version, 0),
     'summary', snapshot.summary,
     'calculatedAt', snapshot.calculated_at,
     'manualRequestedAt', snapshot.manual_requested_at,
-    'lastError', snapshot.last_error
+    'lastError', snapshot.last_error,
+    'isOverdue', coalesce(snapshot.status <> 'ready' and deadline < now(), false),
+    'nextCheckAt', case
+      when snapshot.status = 'ready' then null
+      when snapshot.status = 'failed' then snapshot.next_retry_at
+      when snapshot.summary is null or snapshot.status in ('queued', 'running') then now()
+      else deadline
+    end
   );
 end;
 $$;
@@ -18105,33 +18133,19 @@ declare
   requested_version bigint;
 begin
   perform private.dashboard_require_refresh_access(p_location_id);
-
   insert into public.dashboard_branch_snapshots (
-    location_id,
-    status,
-    source_version,
-    manual_requested_at
-  )
-  values (
-    p_location_id,
-    'queued',
-    1,
-    now()
-  )
+    location_id, status, source_version, manual_requested_at, pending_since
+  ) values (p_location_id, 'queued', 1, now(), now())
   on conflict (location_id) do update
-  set status = case
-        when dashboard_branch_snapshots.status = 'running' then 'running'
-        else 'queued'
-      end,
+  set status = case when dashboard_branch_snapshots.status = 'running' then 'running' else 'queued' end,
       source_version = case
-        when dashboard_branch_snapshots.status in ('queued', 'running')
-          then dashboard_branch_snapshots.source_version
+        when dashboard_branch_snapshots.status in ('queued', 'running') then dashboard_branch_snapshots.source_version
         else dashboard_branch_snapshots.source_version + 1
       end,
+      pending_since = coalesce(dashboard_branch_snapshots.pending_since, now()),
       manual_requested_at = now(),
       updated_at = now()
   returning source_version into requested_version;
-
   return public.get_dashboard_snapshot(p_location_id)
     || jsonb_build_object('requestedVersion', requested_version);
 end;
@@ -18151,6 +18165,11 @@ begin
   if p_claimed_version is null or p_claimed_version < 1 then
     raise exception 'Claimed Dashboard version is invalid';
   end if;
+
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtext('lanflow-dashboard-rebuild'),
+    pg_catalog.hashtext(p_location_id::text)
+  );
 
   perform private.rebuild_dashboard_branch_target(
     p_location_id,
@@ -24084,15 +24103,24 @@ CREATE TABLE IF NOT EXISTS "public"."dashboard_branch_snapshots" (
     "last_error" "text",
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "pending_since" timestamp with time zone DEFAULT "now"(),
+    "failure_count" integer DEFAULT 0 NOT NULL,
+    "next_retry_at" timestamp with time zone,
+    "last_source_transaction_id" bigint,
     CONSTRAINT "dashboard_branch_snapshots_check" CHECK ((("snapshot_version" >= 0) AND ("snapshot_version" <= "source_version"))),
     CONSTRAINT "dashboard_branch_snapshots_check1" CHECK ((("claimed_version" IS NULL) OR (("claimed_version" >= 1) AND ("claimed_version" <= "source_version")))),
     CONSTRAINT "dashboard_branch_snapshots_check2" CHECK (((("summary" IS NULL) AND ("calculated_at" IS NULL)) OR (("summary" IS NOT NULL) AND ("calculated_at" IS NOT NULL)))),
+    CONSTRAINT "dashboard_branch_snapshots_failure_count_check" CHECK (("failure_count" >= 0)),
     CONSTRAINT "dashboard_branch_snapshots_source_version_check" CHECK (("source_version" >= 1)),
     CONSTRAINT "dashboard_branch_snapshots_status_check" CHECK (("status" = ANY (ARRAY['dirty'::"text", 'queued'::"text", 'running'::"text", 'ready'::"text", 'failed'::"text"])))
 );
 
 
 ALTER TABLE "public"."dashboard_branch_snapshots" OWNER TO "postgres";
+
+
+COMMENT ON COLUMN "public"."dashboard_branch_snapshots"."last_source_transaction_id" IS 'Internal source-write dedupe token, not a scheduling clock or source version.';
+
 
 
 CREATE TABLE IF NOT EXISTS "public"."dashboard_money_events" (
@@ -25795,7 +25823,7 @@ CREATE UNIQUE INDEX "customer_bank_accounts_only_one_primary" ON "public"."custo
 
 
 
-CREATE INDEX "dashboard_branch_snapshots_work_idx" ON "public"."dashboard_branch_snapshots" USING "btree" ("status", "updated_at", "location_id") WHERE ("status" = ANY (ARRAY['dirty'::"text", 'queued'::"text", 'failed'::"text"]));
+CREATE INDEX "dashboard_branch_snapshots_work_idx" ON "public"."dashboard_branch_snapshots" USING "btree" ("status", "next_retry_at", "pending_since", "location_id") WHERE ("status" = ANY (ARRAY['dirty'::"text", 'queued'::"text", 'failed'::"text"]));
 
 
 
@@ -28151,6 +28179,10 @@ REVOKE ALL ON FUNCTION "private"."dashboard_require_refresh_access"("p_location_
 
 
 
+REVOKE ALL ON FUNCTION "private"."dashboard_retry_delay"("p_failure_count" integer) FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."dashboard_rollover_if_needed"() FROM PUBLIC;
 
 
@@ -28294,11 +28326,19 @@ REVOKE ALL ON FUNCTION "private"."prevent_location_code_change"() FROM PUBLIC;
 
 
 
+REVOKE ALL ON FUNCTION "private"."process_dashboard_refresh_tick"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."rebuild_active_report_balance_chain"("p_location_id" "uuid") FROM PUBLIC;
 
 
 
 REVOKE ALL ON FUNCTION "private"."rebuild_dashboard_branch"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."rebuild_dashboard_branch_automatic"("p_location_id" "uuid") FROM PUBLIC;
 
 
 

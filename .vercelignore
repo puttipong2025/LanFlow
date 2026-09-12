@@ -1,0 +1,29 @@
+# Vercel CLI does not inherit .gitignore. Never upload local evidence or backups.
+output/
+supabase/cloud-backups/
+supabase/backup_*.sql
+supabase/.temp/
+supabase/.branches/
+backup_customers*.sql
+.env
+.env.*
+scratch/
+.codex-remote-attachments/
+.gemini/
+.agents/
+src/lib/server/*.json
+test-results/
+playwright-report/
+playwright/.auth/
+*.log
+*.tsbuildinfo
+lanflow-*.png
+test-failed-*.png
+page.html
+# Regenerated in the production build.
+public/sw.js
+public/sw.js.map
+public/workbox-*.js
+public/workbox-*.js.map
+public/swe-worker-*.js
+public/swe-worker-*.js.map

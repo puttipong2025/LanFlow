@@ -88,6 +88,8 @@ function snapshot(
         ? "2026-08-02T05:01:00.000Z"
         : null,
     lastError: status === "failed" ? "คำนวณ Dashboard ไม่สำเร็จ" : null,
+    isOverdue: false,
+    nextCheckAt: null,
   };
 }
 
@@ -272,6 +274,10 @@ test.describe.serial("Dashboard immediate manual refresh", () => {
     expect(claimResult.error).toBeNull();
     const claimed = claimResult.data as RefreshSnapshot;
     expect(claimed.status).toBe("running");
+    const claimMetadata = await db.from("dashboard_branch_snapshots")
+      .select("claimed_at,pending_since").eq("location_id", locationId).single();
+    expect(claimMetadata.error).toBeNull();
+    expect(claimMetadata.data!.pending_since).not.toBeNull();
 
     expect(
       (
@@ -293,8 +299,63 @@ test.describe.serial("Dashboard immediate manual refresh", () => {
     );
     expect(rebuilt.sourceVersion).toBeGreaterThan(rebuilt.snapshotVersion);
     expect(rebuilt.status).toBe("dirty");
+    const completionMetadata = await db.from("dashboard_branch_snapshots")
+      .select("pending_since,failure_count,next_retry_at,claimed_version")
+      .eq("location_id", locationId).single();
+    expect(completionMetadata.error).toBeNull();
+    expect(completionMetadata.data).toEqual({
+      pending_since: claimMetadata.data!.claimed_at,
+      failure_count: 0, next_retry_at: null, claimed_version: null,
+    });
   });
 });
+
+for (const role of ["admin", "super_admin"] as const) {
+  test.describe(`Dashboard automatic freshness for ${role}`, () => {
+    test.use({ storageState: `playwright/.auth/${role}.json` });
+    test("discloses overdue, keeps the saved result, and recovers at the retry time", async ({ page }) => {
+      const time = new Date();
+      await page.clock.install({ time });
+      let recovered = false;
+      let requests = 0;
+      await page.route("**/api/lanflow/dashboard/snapshot**", (route) => {
+        requests += 1;
+        return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+          ...snapshot(recovered ? "ready" : "failed", recovered ? 2 : 1),
+          isOverdue: !recovered,
+          nextCheckAt: recovered ? null : new Date(time.getTime() + 60_000).toISOString(),
+        }) });
+      });
+      await page.route("**/api/lanflow/dashboard/feed**", (route) => route.fulfill({
+        status: 200, contentType: "application/json", body: JSON.stringify({ rows: [], nextCursor: null, counts: { all: 0, create: 0, update: 0, delete: 0 } }),
+      }));
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.goto("/");
+      await expect(page.getByText("ภาพรวมบิลยาง", { exact: true })).toBeVisible({ timeout: 15_000 });
+      await page.clock.pauseAt(new Date(time.getTime() + 30_000));
+      await expect(page.getByRole("status").filter({ hasText: "อัปเดตล่าช้า" })).toBeVisible();
+      await expect(page.getByText(/ผลคำนวณล่าสุด/).first()).toBeVisible();
+      await expect(page.getByRole("button", { name: "คำนวณสาขานี้ใหม่", exact: true })).toHaveCount(1);
+      await expect(page.getByText(/สถานะ (dirty|queued|running|failed)/)).toHaveCount(0);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+      if (role === "admin") await page.screenshot({ path: "output/dashboard-freshness/mobile-overdue.png", fullPage: true });
+      const before = requests;
+      recovered = true;
+      await page.clock.runFor(29_000);
+      expect(requests).toBe(before);
+      // Allow the 5-second minimum recheck and async notification headroom.
+      await page.clock.runFor(7_000);
+      // React Query batches notifications on a timer after the async response.
+      await page.clock.resume();
+      await expect.poll(() => requests).toBeGreaterThan(before);
+      await expect(page.getByRole("status").filter({ hasText: "อัปเดตล่าช้า" })).toHaveCount(0);
+      await expect(page.getByText("ภาพรวมบิลยาง", { exact: true })).toBeVisible();
+      const after = requests;
+      await page.clock.runFor(60_000);
+      expect(requests).toBe(after);
+    });
+  });
+}
 
 test.describe("Dashboard immediate refresh UI", () => {
   test.use({ storageState: "playwright/.auth/admin.json" });
@@ -598,11 +659,11 @@ test.describe("Dashboard immediate refresh UI", () => {
     await refreshButton.click();
     await expect(
       page.locator("#dashboard-refresh-status"),
-    ).toHaveText("คำนวณ Dashboard ไม่สำเร็จ", {
+    ).toHaveText("อัปเดตไม่สำเร็จ · ระบบจะลองใหม่อัตโนมัติ", {
       timeout: 10_000,
     });
     await expect(
-      page.getByText("คำนวณ Dashboard ไม่สำเร็จ", { exact: true }).first(),
+      page.getByText("อัปเดตไม่สำเร็จ · ระบบจะลองใหม่อัตโนมัติ", { exact: true }).first(),
     ).toBeVisible({ timeout: 10_000 });
     await expect(refreshButton).toBeEnabled();
     await expect(page.getByText("ภาพรวมบิลยาง", { exact: true })).toBeVisible();

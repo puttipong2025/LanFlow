@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
+import { dashboardPollInterval } from "@/lib/dashboard-freshness";
 import type {
   DashboardBranchSummary,
   DashboardMoneyHistory,
@@ -48,20 +49,7 @@ export function useDashboardSnapshot(
       await assertApiResponse(response);
       return response.json() as Promise<DashboardSnapshot>;
     },
-    refetchInterval: (query) => {
-      const data = query.state.data;
-      if (!data) return false;
-      const shouldPoll =
-        !data.summary ||
-        !data.summary.rubberRemaining?.branchReceipts ||
-        data.status === "dirty" ||
-        data.status === "queued" ||
-        data.status === "running" ||
-        (requestedVersion !== null &&
-          data.snapshotVersion < requestedVersion &&
-          data.status !== "failed");
-      return shouldPoll ? (requestedVersion === null ? 5_000 : 1_000) : false;
-    },
+    refetchInterval: (query) => dashboardPollInterval(query.state.data, requestedVersion),
     retry: 1,
   });
 }

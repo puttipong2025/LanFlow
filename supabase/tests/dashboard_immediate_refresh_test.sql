@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select extensions.plan(17);
+select extensions.plan(21);
 
 select extensions.ok(
   has_function_privilege('authenticated', 'public.queue_dashboard_refresh(uuid)', 'execute'),
@@ -27,6 +27,11 @@ select extensions.ok(
 select extensions.ok(
   not has_function_privilege('anon', 'public.rebuild_dashboard_refresh_now(uuid,bigint)', 'execute'),
   'anon cannot execute rebuild_dashboard_refresh_now'
+);
+select extensions.alike(
+  pg_get_functiondef('public.rebuild_dashboard_refresh_now(uuid,bigint)'::regprocedure),
+  '%pg_advisory_xact_lock%',
+  'a manual rebuild waits for an overlapping automatic branch rebuild'
 );
 
 insert into public.locations (id, name, code, is_active)
@@ -101,6 +106,12 @@ select extensions.is(
   'queued',
   'an assigned Admin queues the active branch'
 );
+reset role;
+select extensions.ok(
+  (select pending_since is not null from public.dashboard_branch_snapshots where location_id = '21000000-0000-4000-8000-000000000001'),
+  'manual queue retains a first pending timestamp'
+);
+set local role authenticated;
 
 select extensions.is(
   (select (response ->> 'requestedVersion')::bigint from dashboard_first_response),
@@ -150,6 +161,14 @@ select extensions.ok(
 select extensions.ok(
   (select response -> 'summary' is not null from dashboard_rebuild_response),
   'a successful rebuild returns the calculated summary'
+);
+select extensions.is(
+  (select response ->> 'isOverdue' from dashboard_rebuild_response),
+  'false', 'completed manual refresh is not overdue'
+);
+select extensions.is(
+  (select response ->> 'nextCheckAt' from dashboard_rebuild_response),
+  null::text, 'completed manual refresh does not schedule polling'
 );
 
 reset role;

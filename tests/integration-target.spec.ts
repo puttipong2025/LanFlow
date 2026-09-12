@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { readFileSync } from 'node:fs';
 
 import {
   LOCAL_SUPABASE_API_URL,
@@ -21,4 +22,20 @@ test('rejects remote, encrypted, and wrong-port mutation targets', () => {
   ]) {
     expect(() => assertSafeIntegrationTarget(target), target).toThrow();
   }
+});
+
+test('Vercel CLI upload explicitly excludes local secrets, backups, and auth fixtures', () => {
+  const rules = readFileSync('.vercelignore', 'utf8').split(/\r?\n/);
+  for (const rule of [
+    'output/',
+    'supabase/cloud-backups/',
+    'supabase/.temp/',
+    '.env',
+    '.env.*',
+    'src/lib/server/*.json',
+    'playwright/.auth/',
+  ]) {
+    expect(rules, rule).toContain(rule);
+  }
+  expect(rules.some((rule) => rule.startsWith('!'))).toBe(false);
 });

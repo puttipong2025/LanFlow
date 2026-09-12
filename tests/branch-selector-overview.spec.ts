@@ -41,7 +41,8 @@ test.describe("branch selector overview", () => {
         contentType: "application/json",
         body: JSON.stringify(accessibleLocations.map((location, index) => ({
           locationId: location.id,
-          snapshotStatus: "ready",
+          snapshotStatus: index === 0 ? "dirty" : "ready",
+          isOverdue: index === 0,
           calculatedAt: "2026-08-01T00:00:00.000Z",
           cashStatus: index === 0 ? "low" : "normal",
           summary: {
@@ -78,6 +79,18 @@ test.describe("branch selector overview", () => {
     await expect(option).toContainText("นน.ยางคงเหลือ 18,420 กก.");
     await expect(option).not.toContainText("ซื้อยางวันนี้");
     await expect(option).toContainText("วันนี้ 30 บิล · 7,959 กก. · เฉลี่ย ฿36.34/กก.");
+    await expect(option).toContainText("อัปเดตล่าช้า · ข้อมูลล่าสุด");
+    await expect(option.getByRole("img", { name: /^อัปเดตล่าช้า ข้อมูลล่าสุด/ })).toBeVisible();
+    await page.setViewportSize({ width: 390, height: 844 });
+    const listbox = page.getByRole("listbox");
+    const box = await listbox.boundingBox();
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+    await page.screenshot({ path: "output/dashboard-freshness/branch-overdue-mobile.png" });
+    await option.focus();
+    await option.press("Escape");
+    await expect(selector).toBeFocused();
+    await expect(selector).toHaveCSS("height", "40px");
   });
 
   test("returns only assigned branch summaries and derives cash status without exposing thresholds", async () => {
@@ -254,8 +267,8 @@ test.describe("branch selector overview", () => {
         "id",
         [assignedLocationId, inaccessibleLocationId],
       );
-      await user.auth.signOut();
-      await manager.auth.signOut();
+      await user.auth.signOut({ scope: "local" });
+      await manager.auth.signOut({ scope: "local" });
     }
   });
 
