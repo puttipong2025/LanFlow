@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Clock, UserCircle, XCircle } from "lucide-react";
+import { toast } from "sonner";
 import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import { formatCurrency } from "@/lib/format";
 import {
@@ -25,6 +26,10 @@ import {
 } from "@/components/time-tracking/employee-list";
 import { cn } from "@/lib/cn";
 import { SlipPreviewModal } from "./time-tracking/SlipPreviewModal";
+import {
+  WageRecalculationDialog,
+  type WageRecalculationPreview,
+} from "./time-tracking/WageRecalculationDialog";
 import {
   AttendanceCalendar,
   AttendancePeriodControls,
@@ -759,6 +764,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const adminLoadRequestIdRef = useRef(0);
+  const wageEditTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   const [viewDashboardUserId, setViewDashboardUserId] = useState<string | null>(null);
   const [viewAuditLogsAdminId, setViewAuditLogsAdminId] = useState<string | null>(null);
@@ -786,6 +792,17 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
   const [employeePageSize, setEmployeePageSize] = useState(10);
   const [employeePage, setEmployeePage] = useState(1);
   const [attendanceSaving, setAttendanceSaving] = useState(false);
+  const [wagePreviewingUserId, setWagePreviewingUserId] = useState<string | null>(null);
+  const [wageCommitBusy, setWageCommitBusy] = useState(false);
+  const [wageChangeError, setWageChangeError] = useState<{ userId: string; message: string } | null>(null);
+  const [pendingWageChange, setPendingWageChange] = useState<{
+    userId: string;
+    employeeName: string;
+    wageText: string;
+    preview: WageRecalculationPreview;
+  } | null>(null);
+  const [wageDialogOpen, setWageDialogOpen] = useState(false);
+  const [wageDialogError, setWageDialogError] = useState<string | null>(null);
   const expenseLocations = useMemo(
     () => data?.paymentLocations ?? locations.filter((location) => location.active),
     [data?.paymentLocations, locations],
@@ -968,7 +985,21 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
     window.requestAnimationFrame(() => auditLogsTriggerRef.current?.focus());
   }
 
-  async function editWage(userId: string, currentWage: number) {
+  async function loadWagePreview(userId: string, wageText: string) {
+    const response = await authFetch("/api/lanflow/time-tracking/admin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "PREVIEW_WAGE_RECALCULATION",
+        payload: { user_id: userId, daily_wage: wageText },
+      }),
+    });
+    const json = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(json?.error || "ตรวจผลกระทบของค่าแรงไม่สำเร็จ");
+    return json.preview as WageRecalculationPreview;
+  }
+
+  async function editWage(userId: string, employeeName: string, currentWage: number) {
     if (!online) {
       alert(TIME_TRACKING_OFFLINE_MESSAGE);
       return;
@@ -984,25 +1015,80 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
     });
     if (wageText === null) return;
     if (parseDailyWageInput(wageText) === null) {
-      alert("ค่าแรงต้องเป็น 0 ขึ้นไปและมีทศนิยมไม่เกิน 4 ตำแหน่ง");
+      setWageChangeError({ userId, message: "ค่าแรงต้องเป็น 0 ขึ้นไปและมีทศนิยมไม่เกิน 4 ตำแหน่ง" });
       return;
     }
 
+    setWagePreviewingUserId(userId);
+    setWageChangeError(null);
     try {
-      const response = await authFetch("/api/lanflow/time-tracking/admin", {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'UPDATE_WAGE', payload: { user_id: userId, daily_wage: wageText.trim() } })
-      });
-      if (!response.ok) {
-        const json = await response.json().catch(() => null);
-        alert(json?.error || "แก้ไขค่าแรงรายวันไม่สำเร็จ");
+      const normalizedWage = wageText.trim();
+      const preview = await loadWagePreview(userId, normalizedWage);
+      if (preview.noOp) {
+        toast.info("ค่าแรงเท่าเดิม ไม่มีข้อมูลที่ต้องเปลี่ยน");
         return;
       }
-      await load(false);
+      setPendingWageChange({ userId, employeeName, wageText: normalizedWage, preview });
+      setWageDialogError(null);
+      setWageDialogOpen(true);
     } catch (error) {
-      console.error("Failed to update daily wage:", error);
-      alert("แก้ไขค่าแรงรายวันไม่สำเร็จ");
+      console.error("Failed to preview daily wage:", error);
+      setWageChangeError({
+        userId,
+        message: error instanceof Error ? error.message : "ตรวจผลกระทบของค่าแรงไม่สำเร็จ",
+      });
+    } finally {
+      setWagePreviewingUserId(null);
+    }
+  }
+
+  async function commitWageChange() {
+    if (!pendingWageChange || wageCommitBusy) return;
+    setWageCommitBusy(true);
+    setWageDialogError(null);
+    try {
+      const response = await authFetch("/api/lanflow/time-tracking/admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "COMMIT_WAGE_RECALCULATION",
+          payload: {
+            user_id: pendingWageChange.userId,
+            daily_wage: pendingWageChange.wageText,
+            expected_digest: pendingWageChange.preview.digest,
+          },
+        }),
+      });
+      const json = await response.json().catch(() => null);
+      if (!response.ok) {
+        if (json?.code === "WAGE_PREVIEW_STALE") {
+          const refreshedPreview = await loadWagePreview(
+            pendingWageChange.userId,
+            pendingWageChange.wageText,
+          );
+          if (refreshedPreview.noOp) {
+            setWageDialogOpen(false);
+            toast.info("ข้อมูลล่าสุดมีค่าแรงตามที่ระบุแล้ว ไม่มีข้อมูลที่ต้องเปลี่ยน");
+            return;
+          }
+          setPendingWageChange((current) => current ? { ...current, preview: refreshedPreview } : current);
+          setWageDialogError("ข้อมูลเปลี่ยนระหว่างยืนยัน ระบบโหลด Preview ล่าสุดแล้ว กรุณาตรวจยอดอีกครั้ง");
+          return;
+        }
+        throw new Error(json?.error || "แก้ไขค่าแรงรายวันไม่สำเร็จ");
+      }
+      setWageChangeError(null);
+      setWageDialogOpen(false);
+      await Promise.all([
+        load(false),
+        queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
+      ]);
+      toast.success("แก้ค่าแรงและคำนวณยอดหักใหม่แล้ว");
+    } catch (error) {
+      console.error("Failed to commit daily wage:", error);
+      setWageDialogError(error instanceof Error ? error.message : "แก้ไขค่าแรงรายวันไม่สำเร็จ");
+    } finally {
+      setWageCommitBusy(false);
     }
   }
 
@@ -1191,8 +1277,11 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
                       {canConfigure && (
                         <button
                           type="button"
-                          onClick={() => editWage(user.id, user.daily_wage || 0)}
-                          disabled={!online}
+                          onClick={(event) => {
+                            wageEditTriggerRef.current = event.currentTarget;
+                            void editWage(user.id, user.name, user.daily_wage || 0);
+                          }}
+                          disabled={!online || wagePreviewingUserId !== null}
                           title={online ? `แก้ไขค่าแรงรายวันของ ${user.name}` : TIME_TRACKING_OFFLINE_MESSAGE}
                           aria-label={`แก้ไขค่าแรงรายวันของ ${user.name}`}
                           className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-amber text-lg text-white hover:bg-amber/90 disabled:cursor-not-allowed disabled:opacity-40"
@@ -1222,6 +1311,11 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
                   </td>
                   <td className="py-3">
                     <span className="tabular-nums">{formatDailyWageCurrency(user.daily_wage || 0)}</span>
+                    {wageChangeError?.userId === user.id && (
+                      <p role="alert" className="mt-1 max-w-56 text-pretty text-xs font-semibold text-rose-700">
+                        {wageChangeError?.message}
+                      </p>
+                    )}
                   </td>
                     <td className="py-3">
                       <span className={`px-2 py-1 rounded text-xs font-bold ${status === 'ACTIVE_PERIOD' ? 'bg-leaf/20 text-leaf' : 'bg-black/10 text-ink/60'}`}>
@@ -1334,10 +1428,42 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
           onSubmit={submitPaymentChange}
         />
        )}
+      {pendingWageChange && (
+        <WageRecalculationDialog
+          open={wageDialogOpen}
+          employeeName={pendingWageChange.employeeName}
+          preview={pendingWageChange.preview}
+          busy={wageCommitBusy}
+          error={wageDialogError}
+          onCancel={() => {
+            if (wageCommitBusy) return;
+            setWageDialogOpen(false);
+          }}
+          onConfirm={() => void commitWageChange()}
+          onClosed={() => {
+            setPendingWageChange(null);
+            setWageDialogError(null);
+            wageEditTriggerRef.current?.focus();
+            wageEditTriggerRef.current = null;
+          }}
+        />
+      )}
       {inputDialog}
       </div>
     </div>
   );
+}
+
+function auditActionLabel(action: string) {
+  return action === "RECALCULATE_WAGE_DEDUCTIONS"
+    ? "แก้ค่าแรงและคำนวณยอดหักใหม่"
+    : action;
+}
+
+function auditDataLabel(action: string, data: any) {
+  if (!data) return "-";
+  if (action !== "RECALCULATE_WAGE_DEDUCTIONS") return JSON.stringify(data);
+  return `${formatDailyWageCurrency(Number(data.dailyWage) || 0)} · ยอดหัก ${formatPayrollCurrency(Number(data.totalDeduction) || 0)}`;
 }
 
 function AuditLogsModal({ adminId, adminName, onClose }: { adminId: string, adminName: string, onClose: () => void }) {
@@ -1403,9 +1529,9 @@ function AuditLogsModal({ adminId, adminName, onClose }: { adminId: string, admi
               {logs.map(log => (
                 <tr key={log.id} className="hover:bg-sand/30">
                   <td className="py-3">{formatBangkokDateTime(log.created_at)}</td>
-                  <td className="py-3 font-bold text-river">{log.action}</td>
-                  <td className="py-3 text-[11px] text-ink/60 max-w-[150px] truncate" title={JSON.stringify(log.old_data)}>{JSON.stringify(log.old_data) || '-'}</td>
-                  <td className="py-3 text-[11px] text-ink/60 max-w-[150px] truncate" title={JSON.stringify(log.new_data)}>{JSON.stringify(log.new_data)}</td>
+                  <td className="py-3 font-bold text-river">{auditActionLabel(log.action)}</td>
+                  <td className="max-w-[180px] truncate py-3 text-xs text-ink/60" title={JSON.stringify(log.old_data)}>{auditDataLabel(log.action, log.old_data)}</td>
+                  <td className="max-w-[180px] truncate py-3 text-xs text-ink/60" title={JSON.stringify(log.new_data)}>{auditDataLabel(log.action, log.new_data)}</td>
                   <td className="py-3 text-ink/80 truncate max-w-[150px]" title={log.comment}>{log.comment || '-'}</td>
                 </tr>
               ))}

@@ -36,6 +36,11 @@ select extensions.ok(not has_function_privilege('anon', 'public.get_rubber_weigh
 select extensions.ok(not has_function_privilege('anon', 'public.list_rubber_weight_alert_groups()', 'execute'), 'anon cannot execute group list RPC');
 select extensions.ok(not has_function_privilege('anon', 'public.save_rubber_weight_alert_interval(integer)', 'execute'), 'anon cannot execute interval RPC');
 
+-- Production-like local databases can already contain alert groups. Keep this
+-- test deterministic while the surrounding transaction preserves those rows.
+delete from public.rubber_weight_alert_group_locations;
+delete from public.rubber_weight_alert_groups;
+
 insert into public.locations (id, name, code, is_active)
 values
   ('41000000-0000-4000-8000-000000000001', 'Alert assigned high', 'AWH', true),

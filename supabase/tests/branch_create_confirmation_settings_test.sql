@@ -6,10 +6,19 @@ select extensions.ok(
   'branch create guard setting table exists'
 );
 select extensions.is(
-  (select confirmation_minutes from public.branch_create_guard_settings where singleton),
+  (
+    select column_default::integer
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'branch_create_guard_settings'
+      and column_name = 'confirmation_minutes'
+  ),
   15,
   'default confirmation duration is 15 minutes'
 );
+update public.branch_create_guard_settings
+set confirmation_minutes = 15
+where singleton;
 select extensions.ok(
   has_function_privilege('authenticated', 'public.get_branch_create_confirmation_minutes()', 'execute'),
   'active authenticated accounts can call the read RPC'

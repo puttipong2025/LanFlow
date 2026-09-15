@@ -2189,6 +2189,147 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     }
   });
 
+  test("wage preview atomically rebuilds open deductions and rejects stale confirmation", async () => {
+    const service = serviceClient();
+    const manager = await globalManagerClient();
+    const managerUser = await manager.auth.getUser();
+    const managerId = managerUser.data.user!.id;
+    const managerSession = await manager.auth.getSession();
+    const authorization = `Bearer ${managerSession.data.session!.access_token}`;
+    const employeeId = await createEmployee(service, "QA wage recalculation");
+    const location = await service.from("locations").select("id").eq("is_active", true).order("id").limit(1).single();
+    expect(location.error).toBeNull();
+    const currentMonth = bangkokDate().slice(0, 7);
+
+    try {
+      await primaryLocation(service, employeeId, location.data!.id);
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "ENABLE",
+        p_effective_date: `${currentMonth}-01`,
+      })).error).toBeNull();
+      const withdrawal = await manager.rpc("create_time_tracking_transaction", {
+        p_profile_id: employeeId,
+        p_type: "WITHDRAWAL",
+        p_amount: 100000,
+        p_effective_date: `${currentMonth}-01`,
+        p_description: "QA wage recalculation withdrawal",
+      });
+      expect(withdrawal.error).toBeNull();
+      const withdrawalId = (withdrawal.data as { id: string }).id;
+
+      const originalDeductions = await service
+        .from("financial_transactions")
+        .select("id, amount")
+        .eq("parent_debt_id", withdrawalId)
+        .eq("applied_month", `${currentMonth}-01`);
+      expect(originalDeductions.error).toBeNull();
+      expect(originalDeductions.data?.length).toBe(1);
+      expect(Number(originalDeductions.data![0].amount)).toBeGreaterThan(0);
+
+      const legacy = await manager.rpc("update_time_tracking_wage", {
+        p_profile_id: employeeId,
+        p_daily_wage: 600,
+      });
+      expect(legacy.error?.message).toContain("DEDUCTION_WAGE_LOCKED");
+
+      const previewResponse = await fetch(`${appUrl}/api/lanflow/time-tracking/admin`, {
+        method: "POST",
+        headers: { Authorization: authorization, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "PREVIEW_WAGE_RECALCULATION",
+          payload: { user_id: employeeId, daily_wage: "600" },
+        }),
+      });
+      expect(previewResponse.status, await previewResponse.clone().text()).toBe(200);
+      const preview = (await previewResponse.json() as { preview: {
+        oldWage: number;
+        newWage: number;
+        noOp: boolean;
+        digest: string;
+      } }).preview;
+      expect(preview).toMatchObject({ oldWage: 500, newWage: 600, noOp: false });
+      expect(preview.digest).toMatch(/^[0-9a-f]{64}$/);
+
+      expect((await service.from("profiles").update({ daily_wage: 501 }).eq("id", employeeId)).error).toBeNull();
+      const staleResponse = await fetch(`${appUrl}/api/lanflow/time-tracking/admin`, {
+        method: "POST",
+        headers: { Authorization: authorization, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "COMMIT_WAGE_RECALCULATION",
+          payload: { user_id: employeeId, daily_wage: "600", expected_digest: preview.digest },
+        }),
+      });
+      expect(staleResponse.status).toBe(409);
+      expect(await staleResponse.json()).toMatchObject({ code: "WAGE_PREVIEW_STALE" });
+      const afterStale = await service.from("financial_transactions").select("id, amount").eq("parent_debt_id", withdrawalId);
+      expect(afterStale.error).toBeNull();
+      expect(afterStale.data).toEqual(originalDeductions.data);
+
+      expect((await service.from("profiles").update({ daily_wage: 500 }).eq("id", employeeId)).error).toBeNull();
+      const freshPreviewResponse = await fetch(`${appUrl}/api/lanflow/time-tracking/admin`, {
+        method: "POST",
+        headers: { Authorization: authorization, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "PREVIEW_WAGE_RECALCULATION",
+          payload: { user_id: employeeId, daily_wage: "600" },
+        }),
+      });
+      expect(freshPreviewResponse.status, await freshPreviewResponse.clone().text()).toBe(200);
+      const freshDigest = (await freshPreviewResponse.json() as { preview: { digest: string } }).preview.digest;
+      const committedResponse = await fetch(`${appUrl}/api/lanflow/time-tracking/admin`, {
+        method: "POST",
+        headers: { Authorization: authorization, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "COMMIT_WAGE_RECALCULATION",
+          payload: { user_id: employeeId, daily_wage: "600", expected_digest: freshDigest },
+        }),
+      });
+      expect(committedResponse.status, await committedResponse.clone().text()).toBe(200);
+      expect(await committedResponse.json()).toMatchObject({
+        success: true,
+        result: { committed: true, oldWage: 500, newWage: 600 },
+      });
+
+      const stored = await service.from("profiles").select("daily_wage").eq("id", employeeId).single();
+      expect(stored.error).toBeNull();
+      expect(Number(stored.data!.daily_wage)).toBe(600);
+      const audit = await service
+        .from("time_tracking_audit_logs")
+        .select("admin_id, old_data, new_data")
+        .eq("record_id", employeeId)
+        .eq("action", "RECALCULATE_WAGE_DEDUCTIONS")
+        .single();
+      expect(audit.error).toBeNull();
+      expect(audit.data!.admin_id).toBe(managerId);
+      expect(Number(audit.data!.old_data.dailyWage)).toBe(500);
+      expect(Number(audit.data!.new_data.dailyWage)).toBe(600);
+
+      const zeroPreview = await manager.rpc("preview_time_tracking_wage_recalculation", {
+        p_profile_id: employeeId,
+        p_daily_wage: 0,
+      });
+      expect(zeroPreview.error).toBeNull();
+      expect((await manager.rpc("commit_time_tracking_wage_recalculation", {
+        p_profile_id: employeeId,
+        p_daily_wage: 0,
+        p_expected_digest: zeroPreview.data!.digest,
+      })).error).toBeNull();
+      const openDeductions = await service
+        .from("financial_transactions")
+        .select("id")
+        .eq("parent_debt_id", withdrawalId)
+        .eq("applied_month", `${currentMonth}-01`);
+      expect(openDeductions.error).toBeNull();
+      expect(openDeductions.data).toEqual([]);
+      const restored = await service.from("financial_transactions").select("remaining_amount").eq("id", withdrawalId).single();
+      expect(restored.error).toBeNull();
+      expect(Number(restored.data!.remaining_amount)).toBe(100000);
+    } finally {
+      await deleteEmployee(service, employeeId);
+    }
+  });
+
   test("system manager is global while normal admin remains user-level, including audit visibility", async () => {
     const service = serviceClient();
     const systemManagerId = await createEmployee(service, "QA system manager");

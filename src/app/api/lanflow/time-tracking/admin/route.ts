@@ -8,6 +8,7 @@ export const dynamic = "force-dynamic";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ISO_DATE_PATTERN = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
 function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
@@ -22,7 +23,7 @@ function isIsoDate(value: unknown): value is string {
 function rpcErrorStatus(message: string) {
   if (/Authentication required/i.test(message)) return 401;
   if (/Forbidden|access denied/i.test(message)) return 403;
-  if (/PAYROLL_AMOUNT_CHANGED|MONTH_CLOSED|PENDING_PERIOD_ACTION|DEDUCTION_LOCKED|DEDUCTION_WAGE_LOCKED|PENDING_BLOCKER|OLDER_WORK_MONTH|DELETE_NEWER_SLIP_FIRST|REPORT_LOCKED|NO_PERIOD_HISTORY_TO_RESUME|RESUME_BEFORE_LAST_END_DATE|PERIOD_START_CORRECTION_STALE|already been decided/i.test(message)) return 409;
+  if (/PAYROLL_AMOUNT_CHANGED|WAGE_PREVIEW_STALE|WAGE_PREVIEW_REQUIRED|MONTH_CLOSED|PENDING_PERIOD_ACTION|DEDUCTION_LOCKED|DEDUCTION_WAGE_LOCKED|PENDING_BLOCKER|OLDER_WORK_MONTH|DELETE_NEWER_SLIP_FIRST|REPORT_LOCKED|NO_PERIOD_HISTORY_TO_RESUME|RESUME_BEFORE_LAST_END_DATE|PERIOD_START_CORRECTION_STALE|already been decided/i.test(message)) return 409;
   return 400;
 }
 
@@ -54,6 +55,8 @@ function rpcErrorMessage(message: string) {
       : `เดือน ${deduction[1]} มีรายการหักเงินจริงแล้ว จึงแก้วันทำงานย้อนหลังไม่ได้`;
   }
   if (/DEDUCTION_WAGE_LOCKED/i.test(message)) return "มีเดือนที่หักเงินจริงแล้วแต่ยังไม่ได้ออกสลิป จึงแก้ค่าแรงไม่ได้";
+  if (/WAGE_PREVIEW_STALE/i.test(message)) return "ข้อมูลค่าแรงหรือยอดหักเปลี่ยนแล้ว กรุณาตรวจ Preview ใหม่ก่อนยืนยัน";
+  if (/WAGE_PREVIEW_REQUIRED/i.test(message)) return "กรุณาตรวจ Preview ค่าแรงก่อนยืนยัน";
 
   const pending = message.match(/PENDING_BLOCKER:(DEBT|WITHDRAWAL):([0-9a-f-]+):([0-9]{4}-[0-9]{2})/i);
   if (pending) {
@@ -107,8 +110,9 @@ function rpcErrorMessage(message: string) {
 }
 
 function rpcFailure(error: { message: string }) {
+  const code = error.message.match(/WAGE_PREVIEW_STALE|WAGE_PREVIEW_REQUIRED/)?.[0] ?? null;
   return NextResponse.json(
-    { error: rpcErrorMessage(error.message) },
+    { error: rpcErrorMessage(error.message), ...(code ? { code } : {}) },
     { status: rpcErrorStatus(error.message) },
   );
 }
@@ -368,6 +372,40 @@ export async function POST(request: NextRequest) {
       const { data, error } = await supabase.rpc("update_time_tracking_wage", {
         p_profile_id: user_id,
         p_daily_wage: parsedDailyWage,
+      });
+      if (error) return rpcFailure(error);
+      return NextResponse.json({ success: true, result: data });
+    }
+
+    if (body.action === "PREVIEW_WAGE_RECALCULATION") {
+      const { user_id, daily_wage } = payload;
+      const parsedDailyWage = parseDailyWageInput(daily_wage);
+      if (!isUuid(user_id) || parsedDailyWage === null) {
+        return NextResponse.json({ error: "ข้อมูลค่าแรงไม่ถูกต้อง" }, { status: 400 });
+      }
+      const { data, error } = await supabase.rpc("preview_time_tracking_wage_recalculation", {
+        p_profile_id: user_id,
+        p_daily_wage: parsedDailyWage,
+      });
+      if (error) return rpcFailure(error);
+      return NextResponse.json({ preview: data });
+    }
+
+    if (body.action === "COMMIT_WAGE_RECALCULATION") {
+      const { user_id, daily_wage, expected_digest } = payload;
+      const parsedDailyWage = parseDailyWageInput(daily_wage);
+      if (
+        !isUuid(user_id)
+        || parsedDailyWage === null
+        || typeof expected_digest !== "string"
+        || !SHA256_PATTERN.test(expected_digest)
+      ) {
+        return NextResponse.json({ error: "ข้อมูลยืนยันค่าแรงไม่ถูกต้อง" }, { status: 400 });
+      }
+      const { data, error } = await supabase.rpc("commit_time_tracking_wage_recalculation", {
+        p_profile_id: user_id,
+        p_daily_wage: parsedDailyWage,
+        p_expected_digest: expected_digest,
       });
       if (error) return rpcFailure(error);
       return NextResponse.json({ success: true, result: data });
