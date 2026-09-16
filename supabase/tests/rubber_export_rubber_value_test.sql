@@ -109,13 +109,13 @@ select extensions.ok(
   'paged receipt candidates use rubber value plus work cost'
 );
 select extensions.ok(
-  pg_get_functiondef('public.receive_rubber_export(uuid,uuid)'::regprocedure)
+  pg_get_functiondef('private.create_branch_rubber_receipt(uuid,uuid,numeric)'::regprocedure)
     like '%v_source.rubber_value_total + v_source.work_total%'
-  and pg_get_functiondef('public.receive_rubber_export(uuid,uuid)'::regprocedure)
+  and pg_get_functiondef('private.create_branch_rubber_receipt(uuid,uuid,numeric)'::regprocedure)
     like '%pg_advisory_xact_lock%'
-  and pg_get_functiondef('public.receive_rubber_export(uuid,uuid)'::regprocedure)
+  and pg_get_functiondef('private.create_branch_rubber_receipt(uuid,uuid,numeric)'::regprocedure)
     like '%BRANCH_RECEIPT_ALREADY_EXISTS%',
-  'receive uses the new cost basis while preserving lock and idempotency guard'
+  'authoritative receipt core uses the new cost basis while preserving lock and idempotency guard'
 );
 select extensions.is(
   (select count(*)::integer from pg_trigger

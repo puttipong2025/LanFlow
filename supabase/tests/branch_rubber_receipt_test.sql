@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select extensions.plan(69);
+select extensions.plan(81);
 
 select extensions.has_column('public', 'rubber_bills', 'source_rubber_export_id', 'receipt bill stores its source export');
 select extensions.has_column('public', 'rubber_bills', 'received_age_hours', 'receipt bill snapshots age at receipt');
@@ -11,6 +11,12 @@ select extensions.has_column('public', 'rubber_exports', 'rubber_value_total', '
 select extensions.has_column('public', 'rubber_export_items', 'rubber_value_amount', 'export item snapshots rubber value');
 select extensions.has_function('public', 'get_receivable_rubber_exports', array['uuid'], 'candidate RPC exists');
 select extensions.has_function('public', 'receive_rubber_export', array['uuid', 'uuid'], 'atomic receive RPC exists');
+select extensions.has_function(
+  'public',
+  'receive_same_branch_yard_remainder',
+  array['uuid', 'uuid', 'numeric'],
+  'same-branch yard-remainder RPC exists'
+);
 select extensions.has_column('public', 'rubber_exports', 'sold_out_at', 'export stores the current sold-out timestamp');
 select extensions.has_column('public', 'rubber_exports', 'sold_out_by_user_id', 'export stores the current sold-out actor');
 select extensions.has_column('public', 'rubber_exports', 'sold_out_by_name', 'export stores the current sold-out actor name');
@@ -467,13 +473,92 @@ select extensions.is(
   'verified export from the current branch is selectable'
 );
 
-select extensions.is(
-  public.receive_rubber_export(
+select extensions.throws_ok(
+  $$select public.receive_rubber_export(
     'a1000000-0000-4000-8000-000000000002',
     'a6200000-0000-4000-8000-000000000001'
+  )$$,
+  'P0001',
+  'BRANCH_RECEIPT_REMAINING_WEIGHT_REQUIRED',
+  'legacy two-argument RPC fails safely for same-branch receipts'
+);
+
+select extensions.throws_ok(
+  $$select public.receive_same_branch_yard_remainder(
+    'a1000000-0000-4000-8000-000000000002',
+    'a6200000-0000-4000-8000-000000000001',
+    null
+  )$$,
+  'P0001',
+  'BRANCH_RECEIPT_REMAINING_WEIGHT_REQUIRED',
+  'same-branch receipt requires a yard-remainder weight'
+);
+
+select extensions.throws_ok(
+  $$select public.receive_same_branch_yard_remainder(
+    'a1000000-0000-4000-8000-000000000002',
+    'a6200000-0000-4000-8000-000000000001',
+    0
+  )$$,
+  'P0001',
+  'BRANCH_RECEIPT_REMAINING_WEIGHT_INVALID',
+  'same-branch receipt rejects zero weight'
+);
+
+select extensions.throws_ok(
+  $$select public.receive_same_branch_yard_remainder(
+    'a1000000-0000-4000-8000-000000000002',
+    'a6200000-0000-4000-8000-000000000001',
+    -0.01
+  )$$,
+  'P0001',
+  'BRANCH_RECEIPT_REMAINING_WEIGHT_INVALID',
+  'same-branch receipt rejects negative weight'
+);
+
+select extensions.throws_ok(
+  $$select public.receive_same_branch_yard_remainder(
+    'a1000000-0000-4000-8000-000000000002',
+    'a6200000-0000-4000-8000-000000000001',
+    20.001
+  )$$,
+  'P0001',
+  'BRANCH_RECEIPT_REMAINING_WEIGHT_PRECISION',
+  'same-branch receipt rejects more than two decimal places'
+);
+
+select extensions.throws_ok(
+  $$select public.receive_same_branch_yard_remainder(
+    'a1000000-0000-4000-8000-000000000002',
+    'a6200000-0000-4000-8000-000000000001',
+    45.01
+  )$$,
+  'P0001',
+  'BRANCH_RECEIPT_REMAINING_WEIGHT_INVALID',
+  'same-branch receipt rejects weight above the source current weight'
+);
+
+savepoint same_branch_equal_weight;
+
+select extensions.lives_ok(
+  $$select public.receive_same_branch_yard_remainder(
+    'a1000000-0000-4000-8000-000000000002',
+    'a6200000-0000-4000-8000-000000000001',
+    45
+  )$$,
+  'same-branch receipt accepts the source current weight as the upper bound'
+);
+
+rollback to savepoint same_branch_equal_weight;
+
+select extensions.is(
+  public.receive_same_branch_yard_remainder(
+    'a1000000-0000-4000-8000-000000000002',
+    'a6200000-0000-4000-8000-000000000001',
+    20
   )->>'status',
   'received',
-  'current branch receives its own remaining rubber atomically'
+  'current branch receives its entered yard remainder atomically'
 );
 
 select extensions.is(
@@ -482,6 +567,41 @@ select extensions.is(
      and record_status = 'active'),
   'ยางคงเหลือภายในสาขา',
   'same-branch receipt uses the agreed synthetic customer name'
+);
+
+select extensions.ok(
+  (select weight = 20 and net_weight = 20
+      and rubber_value = 688.89 and deduction_total = 688.89
+      and average_price = 34.44 and net_total = 0
+   from public.rubber_bills
+   where source_rubber_export_id = 'a6200000-0000-4000-8000-000000000001'
+     and record_status = 'active'),
+  'same-branch receipt stores the entered weight and prorated carried value'
+);
+
+select extensions.ok(
+  (select count(*) = 2
+      and bool_and(case
+        when item_type = 'weigh' then net_weight = 20 and quantity = 20 and total = 688.89
+        when item_type = 'debt' then total = 688.89
+        else false
+      end)
+   from public.rubber_bill_items
+   where bill_id = (
+     select id
+     from public.rubber_bills
+     where source_rubber_export_id = 'a6200000-0000-4000-8000-000000000001'
+       and record_status = 'active'
+   )),
+  'same-branch weigh and debt rows use the same effective weight and value'
+);
+
+select extensions.ok(
+  (select current_weight = 45 and rubber_value_total = 1500
+      and work_total = 50 and sold_out_at is null
+   from public.rubber_exports
+   where id = 'a6200000-0000-4000-8000-000000000001'),
+  'same-branch receipt leaves the source REX snapshots and sale state unchanged'
 );
 
 select extensions.is(
@@ -709,6 +829,17 @@ select extensions.is(
   'receipt uses the normal Rubber Bill delete workflow'
 );
 
+select extensions.throws_ok(
+  $$select public.receive_same_branch_yard_remainder(
+    'a1000000-0000-4000-8000-000000000002',
+    'a3000000-0000-4000-8000-000000000001',
+    20
+  )$$,
+  'P0001',
+  'BRANCH_RECEIPT_SAME_BRANCH_REQUIRED',
+  'yard-remainder RPC rejects a source from another branch'
+);
+
 select extensions.is(
   (select count(*) from public.get_receivable_rubber_exports('a1000000-0000-4000-8000-000000000002')
    where source_rubber_export_id = 'a3000000-0000-4000-8000-000000000001'),
@@ -754,7 +885,7 @@ select extensions.is(
 );
 
 select extensions.ok(
-  (select paid_total = 1550 and rubber_value_total = 1550 and average_price = 34.44
+  (select paid_total = 688.89 and rubber_value_total = 688.89 and average_price = 34.44
    from public.rubber_exports
    where id = (select (result->>'id')::uuid from multi_hop_export_result)),
   'Export B carries Receipt B value without re-adding Export A work'
@@ -770,7 +901,7 @@ set local role authenticated;
 select extensions.is(
   public.verify_rubber_export_atomic(
     (select (result->>'id')::uuid from multi_hop_export_result),
-    40, 2, 20, 'branch'
+    18, 2, 20, 'branch'
   )->>'status',
   'verified',
   'Export B verifies atomically before the second receipt'
@@ -779,8 +910,8 @@ select extensions.is(
 select extensions.is(
   (select work_total from public.rubber_exports
    where id = (select (result->>'id')::uuid from multi_hop_export_result)),
-  110::numeric,
-  'Export B adds work once from original weight 45 kg'
+  60::numeric,
+  'Export B adds work once from the 20 kg carried receipt weight'
 );
 
 select extensions.is(
@@ -793,8 +924,8 @@ select extensions.is(
 );
 
 select extensions.ok(
-  (select rubber_value = 1660 and deduction_total = 1660 and net_total = 0
-      and average_price = 41.50
+  (select rubber_value = 748.89 and deduction_total = 748.89 and net_total = 0
+      and average_price = 41.61
    from public.rubber_bills
    where source_rubber_export_id = (select (result->>'id')::uuid from multi_hop_export_result)
      and record_status = 'active'),
@@ -806,7 +937,7 @@ select extensions.is(
    where bill_id = (select id from public.rubber_bills
      where source_rubber_export_id = (select (result->>'id')::uuid from multi_hop_export_result)
        and record_status = 'active') and item_type = 'weigh'),
-  1660::numeric,
+  748.89::numeric,
   'Receipt C weigh row uses the compounded carrying value'
 );
 
@@ -815,12 +946,12 @@ select extensions.is(
    where bill_id = (select id from public.rubber_bills
      where source_rubber_export_id = (select (result->>'id')::uuid from multi_hop_export_result)
        and record_status = 'active') and item_type = 'debt'),
-  1660::numeric,
+  748.89::numeric,
   'Receipt C debt row offsets the compounded carrying value'
 );
 
 select extensions.ok(
-  (select rubber_value = 1550 and deduction_total = 1550 and net_total = 0
+  (select rubber_value = 688.89 and deduction_total = 688.89 and net_total = 0
    from public.rubber_bills
    where source_rubber_export_id = 'a6200000-0000-4000-8000-000000000001'
      and record_status = 'active'),

@@ -11,13 +11,23 @@ export function NumberField({
   value,
   onChange,
   readOnly = false,
-  autoFocus = false
+  autoFocus = false,
+  min,
+  max,
+  step,
+  ariaDescribedBy,
+  ariaInvalid = false,
 }: {
   label: string;
   value: number;
   onChange?: (value: number) => void;
   readOnly?: boolean;
   autoFocus?: boolean;
+  min?: number;
+  max?: number;
+  step?: number;
+  ariaDescribedBy?: string;
+  ariaInvalid?: boolean;
 }) {
   const isReadOnly = readOnly || !onChange;
   const [isBlankWhileEditing, setIsBlankWhileEditing] = useState(false);
@@ -28,6 +38,11 @@ export function NumberField({
       <input
         type="number"
         autoFocus={autoFocus}
+        min={min}
+        max={max}
+        step={step}
+        aria-describedby={ariaDescribedBy}
+        aria-invalid={ariaInvalid}
         value={!isReadOnly && isBlankWhileEditing ? "" : Number.isFinite(value) ? value : 0}
         readOnly={isReadOnly}
         onFocus={(event) => {

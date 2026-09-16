@@ -3,9 +3,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PackagePlus, Search } from "lucide-react";
 import { ModalShell } from "@/components/shared/ModalShell";
+import { NumberField } from "@/components/shared/NumberField";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { formatBangkokDateTime } from "@/lib/bangkok-date";
 import { formatNumber } from "@/lib/format";
+import {
+  hasAtMostTwoDecimalPlaces,
+  prorateMoneyHalfUp,
+} from "@/lib/rubber-bills/calculations";
 import { formatRubberAge } from "@/lib/rubber-exports/rubber-export-presentation";
 import type {
   BranchRubberReceiptCandidate,
@@ -17,6 +22,8 @@ function dateTime(value: string | null | undefined) {
   if (!value) return "—";
   return formatBangkokDateTime(new Date(value));
 }
+
+const SAME_BRANCH_RECEIPT_NAME = "ยางคงเหลือภายในสาขา";
 
 export function BranchRubberReceiptModal({
   destinationLocationId,
@@ -31,6 +38,7 @@ export function BranchRubberReceiptModal({
 }) {
   const [candidates, setCandidates] = useState<BranchRubberReceiptCandidate[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [remainingYardWeight, setRemainingYardWeight] = useState(0);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -70,11 +78,10 @@ export function BranchRubberReceiptModal({
       setCandidates(nextCandidates);
       setHasMore(body.hasMore);
       setNextCursor(body.nextCursor);
-      setSelectedId((current) => (
-        nextCandidates.some((candidate) => candidate.sourceRubberExportId === current)
-          ? current
-          : null
-      ));
+      if (!append) {
+        setSelectedId(null);
+        setRemainingYardWeight(0);
+      }
     } catch (caught) {
       if (caught instanceof Error && caught.name === "AbortError") return;
       setError(caught instanceof Error ? caught.message : "โหลดรายการส่งออกยางไม่สำเร็จ");
@@ -82,6 +89,29 @@ export function BranchRubberReceiptModal({
       if (!controller.signal.aborted) setLoading(false);
     }
   }, [destinationLocationId, search]);
+
+  const selectedCandidate = candidates.find(
+    (candidate) => candidate.sourceRubberExportId === selectedId,
+  ) ?? null;
+  const isSameBranch = selectedCandidate?.isSameLocation === true;
+  const remainingWeightError = !isSameBranch
+    ? null
+    : !Number.isFinite(remainingYardWeight)
+      ? "น้ำหนักยางคงเหลือไม่ถูกต้อง"
+      : remainingYardWeight <= 0
+        ? "กรุณากรอกน้ำหนักยางคงเหลือมากกว่า 0 กก."
+        : remainingYardWeight > selectedCandidate.currentWeight
+          ? `น้ำหนักต้องไม่เกิน ${formatNumber(selectedCandidate.currentWeight)} กก.`
+          : !hasAtMostTwoDecimalPlaces(remainingYardWeight)
+            ? "กรอกทศนิยมได้ไม่เกิน 2 ตำแหน่ง"
+            : null;
+  const remainingRubberValue = selectedCandidate && isSameBranch
+    ? prorateMoneyHalfUp(
+        selectedCandidate.rubberValue,
+        remainingYardWeight,
+        selectedCandidate.currentWeight,
+      )
+    : 0;
 
   useEffect(() => {
     const timer = window.setTimeout(() => setSearch(searchInput.trim()), 300);
@@ -93,12 +123,10 @@ export function BranchRubberReceiptModal({
     setRefreshWarning(null);
     void load();
     return () => loadController.current?.abort();
-  // Reload only when the destination or debounced search changes.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [destinationLocationId, search]);
+  }, [load]);
 
   async function receive() {
-    if (!selectedId || submitting) return;
+    if (!selectedId || submitting || remainingWeightError) return;
     setSubmitting(true);
     setError(null);
     setCommandError(null);
@@ -110,6 +138,7 @@ export function BranchRubberReceiptModal({
         body: JSON.stringify({
           destinationLocationId,
           sourceRubberExportId: selectedId,
+          remainingYardWeight: isSameBranch ? remainingYardWeight : undefined,
         }),
       });
       await assertApiResponse(response);
@@ -120,6 +149,7 @@ export function BranchRubberReceiptModal({
       candidatesRef.current = remaining;
       setCandidates(remaining);
       setSelectedId(null);
+      setRemainingYardWeight(0);
       try {
         await onReceived(received);
       } catch {
@@ -196,7 +226,11 @@ export function BranchRubberReceiptModal({
                         type="radio"
                         name="branch-rubber-receipt"
                         checked={selectedId === candidate.sourceRubberExportId}
-                        onChange={() => { setSelectedId(candidate.sourceRubberExportId); setCommandError(null); }}
+                        onChange={() => {
+                          setSelectedId(candidate.sourceRubberExportId);
+                          setRemainingYardWeight(0);
+                          setCommandError(null);
+                        }}
                         aria-label={`เลือก ${candidate.sourceExportNo} จาก ${candidate.sourceLocationName}`}
                         className="size-4 accent-leaf"
                       />
@@ -222,6 +256,48 @@ export function BranchRubberReceiptModal({
               </tbody>
             </table>
           </div>
+        )}
+
+        {selectedCandidate?.isSameLocation && (
+          <section className="space-y-3 rounded-md border border-black/10 bg-white p-4" aria-labelledby="yard-remainder-title">
+            <div>
+              <h3 id="yard-remainder-title" className="text-balance font-bold text-ink">
+                ยางคงเหลือสำหรับสร้างบิลรอบใหม่
+              </h3>
+              <p className="text-pretty text-sm text-ink/60">
+                กรอกยอดคงเหลือสุดท้ายในลาน ระบบจะแบ่งมูลค่าต้นทุนตามสัดส่วนให้อัตโนมัติ
+              </p>
+            </div>
+            <NumberField
+              label="น้ำหนักยางคงเหลือในลาน (กก.)"
+              value={remainingYardWeight}
+              onChange={setRemainingYardWeight}
+              min={0.01}
+              max={selectedCandidate.currentWeight}
+              step={0.01}
+              ariaDescribedBy={remainingWeightError ? "yard-remainder-error" : undefined}
+              ariaInvalid={remainingWeightError !== null}
+            />
+            {remainingWeightError && (
+              <p id="yard-remainder-error" role="alert" className="text-pretty text-sm font-semibold text-red-700">
+                {remainingWeightError}
+              </p>
+            )}
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="rounded-md bg-field p-3">
+                <p className="text-xs text-ink/60">น้ำหนัก REX ต้นทาง</p>
+                <p className="font-bold tabular-nums">{formatNumber(selectedCandidate.currentWeight)} กก.</p>
+              </div>
+              <div className="rounded-md bg-field p-3">
+                <p className="text-xs text-ink/60">น้ำหนักคงเหลือในลาน</p>
+                <p className="font-bold tabular-nums">{formatNumber(remainingYardWeight)} กก.</p>
+              </div>
+              <div className="rounded-md bg-field p-3">
+                <p className="text-xs text-ink/60">มูลค่าคงเหลือตามสัดส่วน</p>
+                <p className="font-bold tabular-nums">฿{formatNumber(remainingRubberValue)}</p>
+              </div>
+            </div>
+          </section>
         )}
 
         {!loading && hasMore && nextCursor && (
@@ -260,7 +336,7 @@ export function BranchRubberReceiptModal({
           <button
             type="button"
             onClick={() => void receive()}
-            disabled={!selectedId || loading || submitting}
+            disabled={!selectedId || loading || submitting || remainingWeightError !== null}
             className="focus-ring inline-flex items-center gap-2 rounded-md bg-leaf px-4 py-2 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
           >
             <PackagePlus size={17} />
@@ -279,6 +355,10 @@ export function BranchRubberReceiptDetailModal({
   bill: RubberBill;
   onClose: () => void;
 }) {
+  const weightLabel = bill.customerName === SAME_BRANCH_RECEIPT_NAME
+    ? "น้ำหนักยางคงเหลือในลาน"
+    : "น้ำหนักปัจจุบัน";
+
   return (
     <ModalShell
       title={bill.serverBillNo ?? bill.localBillNo}
@@ -294,7 +374,7 @@ export function BranchRubberReceiptDetailModal({
           </p>
         </div>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">น้ำหนักปัจจุบัน</div><div className="font-bold tabular-nums">{formatNumber(bill.netWeight)} กก.</div></div>
+          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">{weightLabel}</div><div className="font-bold tabular-nums">{formatNumber(bill.netWeight)} กก.</div></div>
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">มูลค่ารวมค่าทำงาน</div><div className="font-bold tabular-nums">฿{formatNumber(bill.rubberValue)}</div></div>
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">อายุตอนรับ</div><div className="font-bold tabular-nums">{formatRubberAge(bill.receivedAgeHours ?? null)}</div>{bill.receivedAgeIsEstimated && <div className="text-xs font-semibold text-amber-800">ประมาณการ</div>}</div>
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ราคาเฉลี่ย</div><div className="font-bold tabular-nums">฿{formatNumber(bill.price)}/กก.</div></div>

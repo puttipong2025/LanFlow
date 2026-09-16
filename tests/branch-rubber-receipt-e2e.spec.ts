@@ -1,12 +1,65 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
-import { selectAppLocation } from "./helpers/select-app-location";
+import { confirmCurrentBranchIfRequired, selectAppLocation } from "./helpers/select-app-location";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
+async function dismissRubberWeightAlertIfVisible(page: Page) {
+  const alert = page.getByRole("alertdialog", { name: "น้ำหนักยางสุทธิสะสมเกินเกณฑ์" });
+  const appeared = await alert
+    .waitFor({ state: "visible", timeout: 2_000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!appeared) return;
+  await alert.getByRole("button", { name: "รับทราบ", exact: true }).click();
+  await alert.waitFor({ state: "hidden" });
+}
+
 test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
   test.use({ storageState: "playwright/.auth/super_admin.json" });
+
+  test("rejects tampered receipt timestamps before they reach PostgreSQL", async ({ page }) => {
+    const meResponse = await page.request.get("/api/auth/me");
+    expect(meResponse.ok()).toBeTruthy();
+    const profile = (await meResponse.json() as {
+      profile: { id: string; locationIds: string[]; primaryLocationId: string | null };
+    }).profile;
+    const locationId = profile.primaryLocationId ?? profile.locationIds[0];
+    for (const verifiedAt of ["not-a-timestamp", "2026-02-30T00:00:00.000Z"]) {
+      const cursor = Buffer.from(JSON.stringify({
+        version: 1,
+        ownerUserId: profile.id,
+        destinationLocationId: locationId,
+        search: "",
+        sameLocation: true,
+        verifiedAt,
+        id: crypto.randomUUID(),
+      }), "utf8").toString("base64url");
+
+      const response = await page.request.get(
+        `/api/lanflow/rubber-bills/branch-receipts?destinationLocationId=${locationId}&cursor=${cursor}`,
+      );
+      const body = await response.json();
+
+      expect(response.status(), JSON.stringify(body)).toBe(400);
+      expect(body).toMatchObject({ error: "เคอร์เซอร์ไม่ถูกต้อง" });
+    }
+
+    const validCursor = Buffer.from(JSON.stringify({
+      version: 1,
+      ownerUserId: profile.id,
+      destinationLocationId: locationId,
+      search: "",
+      sameLocation: true,
+      verifiedAt: "2026-02-28T00:00:00.123456Z",
+      id: crypto.randomUUID(),
+    }), "utf8").toString("base64url");
+    const nonCanonicalResponse = await page.request.get(
+      `/api/lanflow/rubber-bills/branch-receipts?destinationLocationId=${locationId}&cursor=!${validCursor}`,
+    );
+    expect(nonCanonicalResponse.status()).toBe(400);
+  });
 
   test("labels a current-branch candidate as remaining rubber", async ({ page }) => {
     const meResponse = await page.request.get("/api/auth/me");
@@ -16,37 +69,318 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
     }).profile;
     const locationId = me.primaryLocationId ?? me.locationIds[0];
     const exportId = crypto.randomUUID();
+    const crossBranchExportId = crypto.randomUUID();
+    let postedPayload: Record<string, unknown> | null = null;
 
     await page.route("**/api/lanflow/rubber-bills/branch-receipts?destinationLocationId=*", async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
-          candidates: [{
-            sourceRubberExportId: exportId,
-            sourceExportNo: "REX-SAME-001",
-            sourceLocationId: locationId,
-            sourceLocationName: "สาขาปัจจุบัน",
-            verifiedAt: "2026-08-11T01:00:00.000Z",
-            currentWeight: 80,
-            rubberValue: 2_400,
-            sourceAverageAgeHours: 12,
-            receivedAgeHours: 12,
-            ageIsEstimated: false,
-            isSameLocation: true,
-          }],
+          candidates: [
+            {
+              sourceRubberExportId: exportId,
+              sourceExportNo: "REX-SAME-001",
+              sourceLocationName: "สาขาปัจจุบัน",
+              verifiedAt: "2026-08-11T01:00:00.000Z",
+              currentWeight: 100,
+              rubberValue: 100.10,
+              receivedAgeHours: 12,
+              ageIsEstimated: false,
+              isSameLocation: true,
+            },
+            {
+              sourceRubberExportId: crossBranchExportId,
+              sourceExportNo: "REX-CROSS-001",
+              sourceLocationName: "สาขาอื่น",
+              verifiedAt: "2026-08-10T01:00:00.000Z",
+              currentWeight: 50,
+              rubberValue: 1_500,
+              receivedAgeHours: 24,
+              ageIsEstimated: false,
+              isSameLocation: false,
+            },
+          ],
+        }),
+      });
+    });
+    await page.route("**/api/lanflow/rubber-bills/branch-receipts", async (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
+      postedPayload = route.request().postDataJSON() as Record<string, unknown>;
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({
+          status: "received",
+          billId: crypto.randomUUID(),
+          billNo: "2609160001",
+          sourceExportId: exportId,
+          sourceExportNo: "REX-SAME-001",
+          receivedAt: "2026-09-16T01:00:00.000Z",
+          receivedAgeHours: 12,
         }),
       });
     });
 
     await page.goto("/");
+    await dismissRubberWeightAlertIfVisible(page);
     await selectAppLocation(page, locationId);
     await page.getByRole("button", { name: /^บิลยาง/ }).click();
     await page.getByRole("button", { name: "รับยางจากสาขา" }).click();
+    await dismissRubberWeightAlertIfVisible(page);
+    await confirmCurrentBranchIfRequired(page);
     const dialog = page.getByRole("dialog", { name: "รับยางจากสาขา" });
     await expect(dialog.getByRole("columnheader", { name: "มูลค่ารวมค่าทำงาน" })).toBeVisible();
     await expect(dialog.getByText("ยางคงเหลือภายในสาขา")).toBeVisible();
     await expect(dialog.getByText("REX-SAME-001")).toBeVisible();
+    await dialog.getByRole("radio", { name: "เลือก REX-SAME-001 จาก สาขาปัจจุบัน" }).check();
+    const weightField = dialog.getByRole("spinbutton", { name: "น้ำหนักยางคงเหลือในลาน (กก.)" });
+    const confirmButton = dialog.getByRole("button", { name: "ยืนยันรับเข้าสาขา" });
+    await expect(weightField).toHaveValue("0");
+    await expect(confirmButton).toBeDisabled();
+    await weightField.focus();
+    await expect(weightField).toHaveValue("");
+    await weightField.blur();
+    await expect(weightField).toHaveValue("0");
+
+    await weightField.fill("35");
+    await expect(dialog.getByText("฿35.04", { exact: true })).toBeVisible();
+    await expect(confirmButton).toBeEnabled();
+
+    await dialog.getByRole("radio", { name: "เลือก REX-CROSS-001 จาก สาขาอื่น" }).check();
+    await expect(weightField).toHaveCount(0);
+    await dialog.getByRole("radio", { name: "เลือก REX-SAME-001 จาก สาขาปัจจุบัน" }).check();
+    await expect(weightField).toHaveValue("0");
+
+    await weightField.fill("100.01");
+    await expect(dialog.getByText("น้ำหนักต้องไม่เกิน 100 กก.")).toBeVisible();
+    await expect(confirmButton).toBeDisabled();
+
+    await weightField.fill("35");
+    await confirmButton.click();
+    await expect.poll(() => postedPayload).toMatchObject({
+      destinationLocationId: locationId,
+      sourceRubberExportId: exportId,
+      remainingYardWeight: 35,
+    });
+  });
+
+  test("creates a prorated same-branch receipt through the authenticated API", async ({ page }) => {
+    test.setTimeout(60_000);
+    expect(serviceRoleKey).toBeTruthy();
+    const db = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const meResponse = await page.request.get("/api/auth/me");
+    expect(meResponse.ok()).toBeTruthy();
+    const profile = (await meResponse.json() as {
+      profile: { id: string; name: string; phone: string };
+    }).profile;
+    const locationId = crypto.randomUUID();
+    const sourceExportId = crypto.randomUUID();
+    const sourceBillId = crypto.randomUUID();
+    const sourceReportId = crypto.randomUUID();
+    const sourceReportItemId = crypto.randomUUID();
+    const marker = sourceExportId.slice(0, 8);
+    const exportNo = `REX-SAME-E2E-${marker}`;
+    const locationName = `สาขาเดียวกัน E2E ${marker}`;
+    const verifiedAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    let receiptBillId: string | null = null;
+
+    try {
+      expect((await db.from("locations").insert({
+        id: locationId,
+        name: locationName,
+        code: `Y${marker.slice(0, 6)}`,
+        is_active: true,
+      })).error).toBeNull();
+      expect((await db.from("user_locations").insert({
+        user_id: profile.id,
+        location_id: locationId,
+      })).error).toBeNull();
+      expect((await db.from("rubber_bills").insert({
+        id: sourceBillId,
+        client_temp_id: sourceBillId,
+        local_bill_no: `SRC-SAME-${marker}`,
+        server_bill_no: `SRC-SAME-${marker}`,
+        idempotency_key: `same-branch-e2e:${sourceBillId}`,
+        sync_status: "synced",
+        record_status: "active",
+        location_id: locationId,
+        bill_no: `SRC-SAME-${marker}`,
+        bill_date: verifiedAt.slice(0, 10),
+        customer_name: "ลูกค้าต้นทาง Same Branch E2E",
+        bill_type: "weighing",
+        weight: 100,
+        deduct_weight: 0,
+        rubber_value: 9_000,
+        average_price: 90,
+        deduction_total: 1_000,
+        net_total: 8_000,
+        client_created_at: verifiedAt,
+        created_by_user_id: profile.id,
+        created_by_name: profile.name,
+        created_by_phone: profile.phone,
+      })).error).toBeNull();
+      expect((await db.from("rubber_bill_items").insert({
+        bill_id: sourceBillId,
+        item_type: "weigh",
+        net_weight: 100,
+        quantity: 100,
+        unit: "kg",
+        price: 90,
+        total: 9_000,
+      })).error).toBeNull();
+      expect((await db.from("report_batches").insert({
+        id: sourceReportId,
+        report_no: `RPT-SAME-${marker}`,
+        report_date: verifiedAt.slice(0, 10),
+        sequence_no: 991,
+        location_id: locationId,
+        cutoff_at: verifiedAt,
+        status: "active",
+        created_by_user_id: profile.id,
+        created_by_name: profile.name,
+        created_by_phone: profile.phone,
+        opening_balance: 0,
+        closing_balance: 0,
+      })).error).toBeNull();
+      expect((await db.from("report_items").insert({
+        id: sourceReportItemId,
+        report_id: sourceReportId,
+        location_id: locationId,
+        entity_type: "rubber_bill",
+        entity_id: sourceBillId,
+        eligibility_at: verifiedAt,
+      })).error).toBeNull();
+      expect((await db.from("rubber_exports").insert({
+        id: sourceExportId,
+        export_no: exportNo,
+        export_date: verifiedAt.slice(0, 10),
+        sequence_no: 991,
+        location_id: locationId,
+        status: "verified",
+        original_weight_total: 100,
+        paid_total: 8_000,
+        rubber_value_total: 9_000,
+        average_price: 80,
+        current_weight: 80,
+        weight_loss_percent: 20,
+        work_rate: 1,
+        other_operating_cost: 0,
+        work_total: 100,
+        expense_destination: "branch",
+        created_by_user_id: profile.id,
+        created_by_name: profile.name,
+        created_by_phone: profile.phone,
+        verified_by_user_id: profile.id,
+        verified_by_name: profile.name,
+        verified_by_phone: profile.phone,
+        verified_at: verifiedAt,
+        age_cutoff_at: verifiedAt,
+        average_age_hours: 24,
+        oldest_age_hours: 24,
+        estimated_age_item_count: 0,
+      })).error).toBeNull();
+      expect((await db.from("rubber_export_items").insert({
+        export_id: sourceExportId,
+        location_id: locationId,
+        source_report_item_id: sourceReportItemId,
+        source_bill_id: sourceBillId,
+        bill_date: verifiedAt.slice(0, 10),
+        bill_no: `SRC-SAME-${marker}`,
+        customer_name: "ลูกค้าต้นทาง Same Branch E2E",
+        eligibility_at: verifiedAt,
+        net_weight: 100,
+        paid_amount: 8_000,
+        rubber_value_amount: 9_000,
+        age_source_at: verifiedAt,
+        age_is_estimated: false,
+        carried_age_hours: 24,
+      })).error).toBeNull();
+
+      const missingWeightResponse = await page.request.post(
+        "/api/lanflow/rubber-bills/branch-receipts",
+        { data: { destinationLocationId: locationId, sourceRubberExportId: sourceExportId } },
+      );
+      expect(missingWeightResponse.status()).toBe(400);
+
+      const invalidTypeResponse = await page.request.post(
+        "/api/lanflow/rubber-bills/branch-receipts",
+        { data: {
+          destinationLocationId: locationId,
+          sourceRubberExportId: sourceExportId,
+          remainingYardWeight: "20",
+        } },
+      );
+      expect(invalidTypeResponse.status()).toBe(400);
+
+      const response = await page.request.post("/api/lanflow/rubber-bills/branch-receipts", {
+        data: {
+          destinationLocationId: locationId,
+          sourceRubberExportId: sourceExportId,
+          remainingYardWeight: 20,
+        },
+      });
+      expect(response.status(), await response.text()).toBe(201);
+
+      const { data: receipt, error: receiptError } = await db
+        .from("rubber_bills")
+        .select("id, bill_no, customer_name, weight, net_weight, rubber_value, average_price, deduction_total, net_total")
+        .eq("source_rubber_export_id", sourceExportId)
+        .eq("record_status", "active")
+        .single();
+      expect(receiptError).toBeNull();
+      receiptBillId = receipt!.id;
+      expect(receipt).toMatchObject({
+        customer_name: "ยางคงเหลือภายในสาขา",
+        weight: 20,
+        net_weight: 20,
+        rubber_value: 2_275,
+        average_price: 113.75,
+        deduction_total: 2_275,
+        net_total: 0,
+      });
+
+      const { data: sourceAfter, error: sourceAfterError } = await db
+        .from("rubber_exports")
+        .select("current_weight, rubber_value_total, work_total, sold_out_at")
+        .eq("id", sourceExportId)
+        .single();
+      expect(sourceAfterError).toBeNull();
+      expect(sourceAfter).toMatchObject({
+        current_weight: 80,
+        rubber_value_total: 9_000,
+        work_total: 100,
+        sold_out_at: null,
+      });
+
+      await page.goto("/");
+      await dismissRubberWeightAlertIfVisible(page);
+      await selectAppLocation(page, locationId);
+      await dismissRubberWeightAlertIfVisible(page);
+      await page.getByRole("button", { name: /^บิลยาง/ }).click();
+      const receiptRow = page.getByRole("row").filter({ hasText: receipt!.bill_no });
+      await expect(receiptRow).toContainText("ยางคงเหลือภายในสาขา");
+      await receiptRow.getByRole("button", { name: "ดูรายละเอียด" }).click();
+      const detailDialog = page.getByRole("dialog", { name: receipt!.bill_no });
+      await expect(detailDialog).toContainText("น้ำหนักยางคงเหลือในลาน");
+      await expect(detailDialog).toContainText("20 กก.");
+      await expect(detailDialog).toContainText("฿2,275");
+    } finally {
+      if (receiptBillId) {
+        await db.from("rubber_bill_items").delete().eq("bill_id", receiptBillId);
+        await db.from("rubber_bills").delete().eq("id", receiptBillId);
+      }
+      await db.from("rubber_export_items").delete().eq("export_id", sourceExportId);
+      await db.from("rubber_exports").delete().eq("id", sourceExportId);
+      await db.from("report_items").delete().eq("id", sourceReportItemId);
+      await db.from("report_batches").delete().eq("id", sourceReportId);
+      await db.from("rubber_bill_items").delete().eq("bill_id", sourceBillId);
+      await db.from("rubber_bills").delete().eq("id", sourceBillId);
+      await db.from("user_locations").delete().eq("location_id", locationId);
+      await db.from("locations").delete().eq("id", locationId);
+    }
   });
 
   test("receives one verified export as a read-only zero-pay rubber bill and hides the source", async ({ page }) => {
@@ -189,6 +523,12 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
         sourceRubberExportId: sourceExportId,
       };
 
+      const crossBranchWeightResponse = await page.request.post(
+        "/api/lanflow/rubber-bills/branch-receipts",
+        { data: { ...receivePayload, remainingYardWeight: 20 } },
+      );
+      expect(crossBranchWeightResponse.status()).toBe(400);
+
       const saleReceiveRace = await Promise.all([
         page.request.patch(`/api/lanflow/rubber-exports/${sourceExportId}/sale`, {
           data: { soldOut: true },
@@ -241,16 +581,12 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
       expect(sourceCandidate?.rubberValue).toBe(9_100);
 
       await page.goto("/");
+      await dismissRubberWeightAlertIfVisible(page);
       await selectAppLocation(page, destinationLocationId);
+      await dismissRubberWeightAlertIfVisible(page);
       await page.getByRole("button", { name: /^บิลยาง/ }).click();
       await page.getByRole("button", { name: "รับยางจากสาขา" }).click();
-      const branchGuard = page.getByRole("alertdialog", {
-        name: "ยืนยันสาขาก่อนสร้างรายการ",
-      });
-      await expect(branchGuard).toBeVisible();
-      await branchGuard.getByRole("button", {
-        name: `เลือกสาขา ${destinationName}`,
-      }).click();
+      await confirmCurrentBranchIfRequired(page);
 
       const receiveDialog = page.getByRole("dialog", { name: "รับยางจากสาขา" });
       await expect(receiveDialog).toBeVisible();
@@ -284,15 +620,15 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
       expect(Number(receipt!.average_price)).toBe(113.75);
       expect(Number(receipt!.deduction_total)).toBe(9_100);
       expect(Number(receipt!.net_total)).toBe(0);
-      if (await receiveDialog.isVisible()) {
-        await receiveDialog.getByRole("button", { name: "ปิด", exact: true }).click();
-      }
+      await expect(receiveDialog).toBeHidden();
 
       const receiptRow = page.getByRole("row").filter({ hasText: receipt!.bill_no });
       await expect(receiptRow).toContainText(`รับยางจากสาขา ${sourceName}`);
       await expect(receiptRow).toContainText("รับจากสาขา");
       await expect(receiptRow.getByRole("button", { name: "แก้ไข" })).toHaveCount(0);
-      await receiptRow.getByRole("button", { name: "ดูรายละเอียด" }).click();
+      const detailButton = receiptRow.getByRole("button", { name: "ดูรายละเอียด" });
+      await detailButton.focus();
+      await detailButton.press("Enter");
 
       const detailDialog = page.getByRole("dialog", { name: receipt!.bill_no });
       await expect(detailDialog).toContainText("อ่านอย่างเดียว");
@@ -342,6 +678,12 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
     const exportIds = Array.from({ length: 51 }, () => crypto.randomUUID());
     const marker = `RECEIPT-PAGE-${sourceLocationId.slice(0, 6)}`;
     const base = Date.now() - 200_000;
+    const boundarySecond = new Date(Math.floor(base / 1_000) * 1_000).toISOString().slice(0, 19);
+    const verifiedAtForIndex = (index: number) => index === 0
+      ? `${boundarySecond}.999800Z`
+      : index === 1
+        ? `${boundarySecond}.999900Z`
+        : new Date(base + index * 1_000).toISOString();
 
     try {
       expect((await db.from("locations").insert([
@@ -426,8 +768,8 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
         verified_by_user_id: profile.id,
         verified_by_name: profile.name,
         verified_by_phone: profile.phone,
-        verified_at: new Date(base + index * 1_000).toISOString(),
-        age_cutoff_at: new Date(base + index * 1_000).toISOString(),
+        verified_at: verifiedAtForIndex(index),
+        age_cutoff_at: verifiedAtForIndex(index),
         average_age_hours: 1,
         oldest_age_hours: 1,
         estimated_age_item_count: 0,
@@ -460,6 +802,10 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
       };
       expect(first.candidates).toHaveLength(50);
       expect(first.hasMore).toBe(true);
+      const cursorPayload = JSON.parse(
+        Buffer.from(first.nextCursor!, "base64url").toString("utf8"),
+      ) as { verifiedAt: string };
+      expect(cursorPayload.verifiedAt).toContain(".9999");
       expect((await page.request.get(
         `/api/lanflow/rubber-bills/branch-receipts?destinationLocationId=${destinationLocationId}&search=wrong-scope&cursor=${encodeURIComponent(first.nextCursor!)}`,
       )).status()).toBe(400);

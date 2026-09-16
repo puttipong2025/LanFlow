@@ -158,6 +158,30 @@ export function hasAtMostTwoDecimalPlaces(value: number) {
     && Math.abs((value * 100) - Math.round(value * 100)) < 1e-8;
 }
 
+export function prorateMoneyHalfUp(
+  value: number,
+  numeratorWeight: number,
+  denominatorWeight: number,
+) {
+  if (
+    !Number.isFinite(value)
+    || !Number.isFinite(numeratorWeight)
+    || !Number.isFinite(denominatorWeight)
+    || value <= 0
+    || numeratorWeight <= 0
+    || denominatorWeight <= 0
+  ) {
+    return 0;
+  }
+  const valueCents = toHundredths(value);
+  const numeratorUnits = toHundredths(numeratorWeight);
+  const denominatorUnits = toHundredths(denominatorWeight);
+  return fromScaled(
+    divideHalfUp(valueCents * numeratorUnits, denominatorUnits),
+    100,
+  );
+}
+
 export function multiplyMoneyFloorBaht(left: number, right: number) {
   return Number(
     (toHundredths(left) * toHundredths(right)) / (HUNDRED * HUNDRED),

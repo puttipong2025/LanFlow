@@ -150,12 +150,10 @@ export type RubberBill = {
 export type BranchRubberReceiptCandidate = {
   sourceRubberExportId: string;
   sourceExportNo: string;
-  sourceLocationId: string;
   sourceLocationName: string;
   verifiedAt: string;
   currentWeight: number;
   rubberValue: number;
-  sourceAverageAgeHours: number;
   receivedAgeHours: number;
   ageIsEstimated: boolean;
   isSameLocation: boolean;

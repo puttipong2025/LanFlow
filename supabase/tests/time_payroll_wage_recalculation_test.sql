@@ -395,7 +395,10 @@ select extensions.lives_ok(
 );
 reset role;
 select extensions.is(
-  (select count(*) from public.time_tracking_audit_logs where action = 'RECALCULATE_WAGE_DEDUCTIONS'),
+  (select count(*) from public.time_tracking_audit_logs
+   where action = 'RECALCULATE_WAGE_DEDUCTIONS'
+     and admin_id = '7c100000-0000-4000-8000-000000000001'
+     and record_id = '7c100000-0000-4000-8000-000000000002'),
   1::bigint,
   'a no-op commit creates no audit row'
 );

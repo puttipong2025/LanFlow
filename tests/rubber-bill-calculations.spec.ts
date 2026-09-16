@@ -4,6 +4,7 @@ import {
   applyRubberBillCalculation,
   calculateRubberBill,
   hasAtMostTwoDecimalPlaces,
+  prorateMoneyHalfUp,
 } from "../src/lib/rubber-bills/calculations";
 
 test.describe("rubber bill calculations", () => {
@@ -52,6 +53,11 @@ test.describe("rubber bill calculations", () => {
   test("rejects decimal precision beyond hundredths", () => {
     expect(hasAtMostTwoDecimalPlaces(90.12)).toBe(true);
     expect(hasAtMostTwoDecimalPlaces(90.126)).toBe(false);
+  });
+
+  test("prorates money with PostgreSQL-compatible half-up rounding", () => {
+    expect(prorateMoneyHalfUp(100.10, 35, 100)).toBe(35.04);
+    expect(prorateMoneyHalfUp(2.26, 75, 100)).toBe(1.70);
   });
 
   test("keeps direct debt precision after calculated values are floored", () => {
