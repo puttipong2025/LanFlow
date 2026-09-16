@@ -1,4 +1,4 @@
-import { expect, test, type Browser, type BrowserContext } from "@playwright/test";
+import { expect, test, type Browser, type BrowserContext, type Page } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -17,6 +17,14 @@ const zeroTransferCounts = {
   coin1: 0, coin2: 0, coin5: 0, coin10: 0,
   banknote20: 0, banknote50: 0, banknote100: 0, banknote500: 0, banknote1000: 0,
 };
+
+async function dismissRubberWeightAlertIfVisible(page: Page) {
+  const alert = page.getByRole("alertdialog", { name: "น้ำหนักยางสุทธิสะสมเกินเกณฑ์" });
+  const appeared = await alert.waitFor({ state: "visible", timeout: 2_000 }).then(() => true).catch(() => false);
+  if (!appeared) return;
+  await alert.getByRole("button", { name: "รับทราบ", exact: true }).click();
+  await alert.waitFor({ state: "hidden" });
+}
 
 function assertLocalSupabaseTarget() {
   const target = new URL(supabaseUrl);
@@ -223,17 +231,29 @@ test.describe.serial("cash count aggregate contract", () => {
       }
     });
     await managerPage.goto("/");
+    await dismissRubberWeightAlertIfVisible(managerPage);
     await selectAppLocation(managerPage, locationId);
     await managerPage.getByRole("button", { name: "รายงาน", exact: true }).click();
     await expect(managerPage.getByText("มีผลตรวจนับเงินสด", { exact: true })).toBeVisible();
+    await dismissRubberWeightAlertIfVisible(managerPage);
     await managerPage.getByRole("button", { name: "เปิดผลตรวจนับ", exact: true }).click();
-    await expect(managerPage.getByRole("heading", { name: `รายละเอียด ${receipt.reportNo}` })).toBeVisible();
+    const detailDialog = managerPage.getByRole("dialog", { name: `รายละเอียด ${receipt.reportNo}` });
+    await expect(detailDialog.getByRole("heading", { name: `รายละเอียด ${receipt.reportNo}` })).toBeVisible();
     expect(detailRequestCount).toBe(1);
     await managerPage.close();
 
     const detail = await manager.request.get(`/api/lanflow/cash-counts/${receipt.id}?locationId=${locationId}`);
     expect(detail.ok()).toBe(true);
     expect(await detail.json()).toMatchObject({ actualTotal: 1000, anomalyScore: null, confidence: null });
+    const malformedCount = await manager.request.get(`/api/lanflow/cash-counts/not-a-uuid?locationId=${locationId}`);
+    expect(malformedCount.status()).toBe(400);
+    expect(await malformedCount.json()).toEqual({ error: "รหัสผลตรวจนับไม่ถูกต้อง" });
+    const malformedLocation = await manager.request.get(`/api/lanflow/cash-counts/${receipt.id}?locationId=not-a-uuid`);
+    expect(malformedLocation.status()).toBe(400);
+    expect(await malformedLocation.json()).toEqual({ error: "กรุณาระบุสาขา" });
+    const malformedDelete = await manager.request.delete(`/api/lanflow/cash-counts/not-a-uuid?locationId=${locationId}`);
+    expect(malformedDelete.status()).toBe(400);
+    expect(await malformedDelete.json()).toEqual({ error: "รหัสผลตรวจนับไม่ถูกต้อง" });
     expect((await manager.request.get(`/api/lanflow/cash-counts/${receipt.id}?locationId=00000000-0000-4000-8000-000000000099`)).status()).toBe(404);
     expect((await deniedUser.request.get(`/api/lanflow/cash-counts/${receipt.id}?locationId=${locationId}`)).status()).toBe(403);
     expect((await operator.request.get(`/api/lanflow/cash-counts/${receipt.id}?locationId=${locationId}`)).status()).toBe(403);
@@ -333,6 +353,7 @@ test.describe.serial("cash count aggregate contract", () => {
     expect(latestReceipt).not.toBeNull();
     const managerPage = await manager.newPage();
     await managerPage.goto("/");
+    await dismissRubberWeightAlertIfVisible(managerPage);
     await selectAppLocation(managerPage, locationId);
     await managerPage.getByRole("button", { name: "นับเงิน", exact: true }).click();
     const latestRow = managerPage.getByRole("row").filter({ hasText: latestReceipt!.reportNo });
@@ -426,6 +447,7 @@ test.describe.serial("cash count aggregate contract", () => {
     await addIncome(locationId, adminId, "รอบทดสอบหน้าจอ");
     const page = await operator.newPage();
     await page.goto("/");
+    await dismissRubberWeightAlertIfVisible(page);
     await selectAppLocation(page, locationId);
     await page.getByRole("button", { name: "นับเงิน", exact: true }).click();
     await page.getByRole("button", { name: "เริ่มนับเงิน" }).click();
@@ -516,6 +538,7 @@ test.describe.serial("cash count aggregate contract", () => {
     });
 
     await page.goto("/");
+    await dismissRubberWeightAlertIfVisible(page);
     await selectAppLocation(page, sourceLocationId);
     await page.getByRole("button", { name: "นับเงิน", exact: true }).click();
     await Promise.all([oldSessionRequested, oldHistoryRequested]);
@@ -566,6 +589,7 @@ test.describe.serial("cash count aggregate contract", () => {
     await page.route("**/api/lanflow/cash-counts?*", (route) => route.fulfill({ json: { counts: [] } }));
 
     await page.goto("/");
+    await dismissRubberWeightAlertIfVisible(page);
     await selectAppLocation(page, sourceLocationId);
     await page.getByRole("button", { name: "นับเงิน", exact: true }).click();
     await expect(page.getByText("พร้อมเริ่มตรวจนับเงินสด", { exact: true })).toBeVisible();

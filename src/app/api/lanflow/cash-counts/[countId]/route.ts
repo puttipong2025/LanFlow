@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireSystemManager } from "@/lib/server/auth";
 import { cashCountErrorResponse } from "@/lib/server/cash-count-response";
+import { isUuid } from "@/lib/server/management-route-error";
 
 export const dynamic = "force-dynamic";
 type RouteContext = { params: Promise<{ countId: string }> };
@@ -10,7 +11,8 @@ export async function GET(request: Request, context: RouteContext) {
   if (!result.ok) return result.response;
   const { countId } = await context.params;
   const locationId = new URL(request.url).searchParams.get("locationId");
-  if (!locationId) return cashCountErrorResponse("กรุณาระบุสาขา");
+  if (!isUuid(countId)) return cashCountErrorResponse("รหัสผลตรวจนับไม่ถูกต้อง");
+  if (!isUuid(locationId)) return cashCountErrorResponse("กรุณาระบุสาขา");
   const { data: row, error } = await result.supabase
     .from("cash_counts")
     .select("*, report_batches(report_no), locations(name)")
@@ -37,7 +39,8 @@ export async function DELETE(request: Request, context: RouteContext) {
   if (!result.ok) return result.response;
   const { countId } = await context.params;
   const locationId = new URL(request.url).searchParams.get("locationId");
-  if (!locationId) return cashCountErrorResponse("กรุณาระบุสาขา");
+  if (!isUuid(countId)) return cashCountErrorResponse("รหัสผลตรวจนับไม่ถูกต้อง");
+  if (!isUuid(locationId)) return cashCountErrorResponse("กรุณาระบุสาขา");
   const { data: count, error: lookupError } = await result.supabase
     .from("cash_counts")
     .select("id")

@@ -9,6 +9,7 @@ import type { DocumentDeletionAudit } from "@/types/deletion-audits";
 import { InlineNumber } from "@/components/shared/InlineNumber";
 import { AlertDialog } from "@/components/shared/AlertDialog";
 import { DeletionAuditTable } from "@/components/shared/DeletionAuditTable";
+import { ModalShell } from "@/components/shared/ModalShell";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { canManageSystemFeatures } from "@/lib/permissions";
 import { getPendingEvents } from "@/lib/idb-queue";
@@ -75,8 +76,12 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
   const [deletionsLoading, setDeletionsLoading] = useState(false);
   const [deletionsHasMore, setDeletionsHasMore] = useState(false);
   const [deletionsCursor, setDeletionsCursor] = useState<string | null>(null);
+  const [detailTarget, setDetailTarget] = useState<{ id: string; reportNo?: string } | null>(null);
   const [detail, setDetail] = useState<CashCountDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const handledInitialCountIdRef = useRef<string | null>(null);
+  const detailLocationIdRef = useRef(selectedLocation.id);
   const locationIdRef = useRef(selectedLocation.id);
   const sessionRequestIdRef = useRef(0);
   const historyRequestIdRef = useRef(0);
@@ -139,6 +144,8 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
   const loadDetail = useCallback(async (id: string) => {
     const requestId = ++detailRequestIdRef.current;
     const locationId = selectedLocation.id;
+    setDetailLoading(true);
+    setDetailError(null);
     try {
       const response = await authFetch(`/api/lanflow/cash-counts/${id}?locationId=${encodeURIComponent(locationId)}`, { cache: "no-store" });
       await assertApiResponse(response);
@@ -147,9 +154,25 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
       setDetail(body);
     } catch (error) {
       if (requestId !== detailRequestIdRef.current || locationIdRef.current !== locationId) return;
-      throw error;
+      setDetailError(error instanceof Error ? error.message : "โหลดรายละเอียดไม่สำเร็จ");
+    } finally {
+      if (requestId === detailRequestIdRef.current && locationIdRef.current === locationId) setDetailLoading(false);
     }
   }, [selectedLocation.id]);
+
+  const openDetail = useCallback((id: string, reportNo?: string) => {
+    setDetailTarget({ id, reportNo });
+    setDetail(null);
+    void loadDetail(id);
+  }, [loadDetail]);
+
+  const closeDetail = useCallback(() => {
+    detailRequestIdRef.current += 1;
+    setDetailTarget(null);
+    setDetail(null);
+    setDetailLoading(false);
+    setDetailError(null);
+  }, []);
 
   const loadDeletions = useCallback(async (cursor: string | null = null, append = false) => {
     if (!online || !manager) return;
@@ -202,9 +225,16 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
   }
 
   useEffect(() => {
+    const detailLocationChanged = detailLocationIdRef.current !== selectedLocation.id;
+    detailLocationIdRef.current = selectedLocation.id;
     setSession(null);
     setReceipt(null);
-    setDetail(null);
+    if (detailLocationChanged) {
+      setDetailTarget(null);
+      setDetail(null);
+      setDetailLoading(false);
+      setDetailError(null);
+    }
     setHistory([]);
     setHistoryLoading(false);
     setHistoryHasMore(false);
@@ -246,7 +276,9 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
     }
     if (!manager || handledInitialCountIdRef.current === initialCountId) return;
     handledInitialCountIdRef.current = initialCountId;
-    void loadDetail(initialCountId).catch((error) => toast.error(error instanceof Error ? error.message : "เปิดผลตรวจนับไม่สำเร็จ")).finally(onInitialCountHandled);
+    setDetailTarget({ id: initialCountId });
+    setDetail(null);
+    void loadDetail(initialCountId).finally(onInitialCountHandled);
   }, [initialCountId, loadDetail, manager, onInitialCountHandled]);
 
   const secondsLeft = session ? Math.max(0, Math.ceil((new Date(session.expiresAt).getTime() - now) / 1000)) : 0;
@@ -335,10 +367,9 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
       const response = await authFetch(`/api/lanflow/cash-counts/${target.id}?locationId=${encodeURIComponent(locationId)}`, { method: "DELETE" });
       await assertApiResponse(response);
       if (requestId !== mutationRequestIdRef.current || locationIdRef.current !== locationId) return;
-      detailRequestIdRef.current += 1;
       setHistory((current) => current.filter((item) => item.id !== target.id));
       setReceipt((current) => current?.id === target.id ? null : current);
-      toast.success(`ลบชุด ${target.reportNo} แบบถาวรแล้ว`); setDetail(null); setDeleteTarget(null); setConfirmMode(null);
+      toast.success(`ลบชุด ${target.reportNo} แบบถาวรแล้ว`); setDeleteTarget(null); setConfirmMode(null);
       await refreshHistory(true, "ลบสำเร็จ");
     } catch (error) {
       if (requestId === mutationRequestIdRef.current && locationIdRef.current === locationId) {
@@ -406,7 +437,7 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
                 {history.map((item) => (
                   <tr key={item.id}>
                     <td className="px-4 py-3"><div className="flex gap-1.5 whitespace-nowrap">
-                      <button type="button" onClick={() => void loadDetail(item.id).catch((error) => toast.error(error instanceof Error ? error.message : "โหลดรายละเอียดไม่สำเร็จ"))}
+                      <button type="button" onClick={() => openDetail(item.id, item.reportNo)}
                         title="ดูรายละเอียด" aria-label="ดูรายละเอียด"
                         className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-river text-white"><Eye size={17} /></button>
                       {history[0]?.id === item.id && (
@@ -448,7 +479,66 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
         </>
       )}
 
-      {manager && detail && <div className="rounded-xl border border-black/10 bg-white p-4 shadow-panel sm:p-5"><div className="flex items-start justify-between gap-3"><div><h3 className="text-balance text-lg font-bold text-ink">รายละเอียด {detail.reportNo}</h3><p className="mt-1 text-sm text-ink/60">สูตร {detail.formulaVersion} · {statusLabel(detail.analysisStatus, detail.formulaVersion)}</p></div><button type="button" onClick={() => setDetail(null)} aria-label="ปิดรายละเอียด" className="focus-ring rounded-md p-2 text-ink/60"><X size={18} /></button></div><div className="mt-4 grid gap-3 sm:grid-cols-3"><div className="rounded-lg bg-field p-3"><div className="text-xs text-ink/55">ยอดจริง</div><div className="text-lg font-bold">{money(detail.actualTotal)}</div></div><div className="rounded-lg bg-field p-3"><div className="text-xs text-ink/55">ยอดคาดการณ์</div><div className="text-lg font-bold">{money(detail.expectedTotal)}</div></div><div className="rounded-lg bg-field p-3"><div className="text-xs text-ink/55">ส่วนต่าง</div><div className="text-lg font-bold">{money(detail.differenceTotal)}</div></div></div><div className="mt-4 grid grid-cols-3 gap-2 sm:grid-cols-9">{CASH_DENOMINATIONS.map((d) => <div key={d} className="rounded-md border border-black/5 p-2 text-center"><div className="text-xs text-ink/50">฿{d}</div><div className="font-bold">{detail.actualCounts[String(d)]}</div><div className="text-xs text-ink/55">คาด {detail.expectedCounts[String(d)]}</div></div>)}</div><div className="mt-5 grid gap-4 lg:grid-cols-2"><div><h4 className="font-bold text-ink">ประเด็นสำคัญ</h4><ul className="mt-2 space-y-1 text-sm text-ink/75">{detail.evidence.highlights?.map((item) => <li key={item}>• {item}</li>)}</ul></div><div><h4 className="font-bold text-ink">ข้อจำกัดการคำนวณ</h4><ul className="mt-2 space-y-1 text-sm text-ink/75">{detail.evidence.limitations?.map((item) => <li key={item}>• {item}</li>)}</ul></div></div><details className="mt-5 rounded-lg border border-black/10 p-3"><summary className="cursor-pointer font-semibold text-ink">รายการอ้างอิง ({detail.evidence.references?.length ?? 0})</summary><div className="mt-3 space-y-2 text-sm text-ink/70">{detail.evidence.references?.map((item, index) => <div key={`${String(item.id ?? "ref")}-${index}`} className="rounded-md bg-field p-2">{String(item.label ?? item.source ?? "รายการ")} · {money(Number(item.amount ?? 0))} บาท</div>)}</div></details></div>}
+      {manager && detailTarget && (
+        <ModalShell
+          title={`รายละเอียด ${detail?.reportNo ?? detailTarget.reportNo ?? "ผลตรวจนับ"}`}
+          subtitle={detail ? `สูตร ${detail.formulaVersion} · ${statusLabel(detail.analysisStatus, detail.formulaVersion)}` : undefined}
+          onClose={closeDetail}
+          size="wide"
+          mobileFullScreen
+          closeOnEscape
+          nativeModal
+        >
+          {detailLoading ? (
+            <div role="status" className="space-y-4" aria-label="กำลังโหลดรายละเอียดผลตรวจนับ">
+              <p className="text-pretty text-sm font-medium text-ink/65">กำลังโหลดรายละเอียด...</p>
+              <div aria-hidden="true" className="grid gap-3 sm:grid-cols-3">
+                {[0, 1, 2].map((item) => <div key={item} className="h-20 rounded-lg bg-field" />)}
+              </div>
+              <div aria-hidden="true" className="grid grid-cols-3 gap-2 sm:grid-cols-9">
+                {CASH_DENOMINATIONS.map((denomination) => <div key={denomination} className="h-20 rounded-md bg-field" />)}
+              </div>
+            </div>
+          ) : detailError ? (
+            <div role="alert" className="rounded-lg border border-clay/30 bg-clay/10 p-4">
+              <p className="text-pretty text-sm font-medium text-clay">โหลดรายละเอียดไม่สำเร็จ: {detailError}</p>
+              <button
+                type="button"
+                aria-label="ลองใหม่สำหรับรายละเอียดผลตรวจนับ"
+                onClick={() => void loadDetail(detailTarget.id)}
+                className="focus-ring mt-3 rounded-md bg-actionSecondary px-4 py-2 text-sm font-semibold text-white"
+              >
+                ลองใหม่
+              </button>
+            </div>
+          ) : detail ? (
+            <div className="tabular-nums">
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="rounded-lg bg-field p-3"><div className="text-xs text-ink/55">ยอดจริง</div><div className="text-lg font-bold">{money(detail.actualTotal)}</div></div>
+                <div className="rounded-lg bg-field p-3"><div className="text-xs text-ink/55">ยอดคาดการณ์</div><div className="text-lg font-bold">{money(detail.expectedTotal)}</div></div>
+                <div className="rounded-lg bg-field p-3"><div className="text-xs text-ink/55">ส่วนต่าง</div><div className="text-lg font-bold">{money(detail.differenceTotal)}</div></div>
+              </div>
+              <div className="mt-4 grid grid-cols-3 gap-2 sm:grid-cols-9">
+                {CASH_DENOMINATIONS.map((denomination) => (
+                  <div key={denomination} className="rounded-md border border-black/5 p-2 text-center">
+                    <div className="text-xs text-ink/50">฿{denomination}</div>
+                    <div className="font-bold">{detail.actualCounts[String(denomination)]}</div>
+                    <div className="text-xs text-ink/55">คาด {detail.expectedCounts[String(denomination)]}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-5 grid gap-4 lg:grid-cols-2">
+                <div><h3 className="text-balance font-bold text-ink">ประเด็นสำคัญ</h3><ul className="mt-2 space-y-1 text-pretty text-sm text-ink/75">{detail.evidence.highlights?.map((item) => <li key={item}>• {item}</li>)}</ul></div>
+                <div><h3 className="text-balance font-bold text-ink">ข้อจำกัดการคำนวณ</h3><ul className="mt-2 space-y-1 text-pretty text-sm text-ink/75">{detail.evidence.limitations?.map((item) => <li key={item}>• {item}</li>)}</ul></div>
+              </div>
+              <details className="mt-5 rounded-lg border border-black/10 p-3">
+                <summary className="cursor-pointer font-semibold text-ink">รายการอ้างอิง ({detail.evidence.references?.length ?? 0})</summary>
+                <div className="mt-3 space-y-2 text-pretty text-sm text-ink/70">{detail.evidence.references?.map((item, index) => <div key={`${String(item.id ?? "ref")}-${index}`} className="rounded-md bg-field p-2">{String(item.label ?? item.source ?? "รายการ")} · {money(Number(item.amount ?? 0))} บาท</div>)}</div>
+              </details>
+            </div>
+          ) : null}
+        </ModalShell>
+      )}
 
       <ConfirmDialog open={confirmMode === "submit"} title="ยืนยันผลตรวจนับ" description={`จำนวนที่กรอกครบ 9 ชนิด รวม ${money(actualTotal)} บาท หลังส่งแล้วแก้ไขไม่ได้`} detail={<div className="mt-3 grid grid-cols-3 gap-2">{CASH_DENOMINATIONS.map((d) => <div key={d} className="rounded-md bg-field p-2 text-center text-sm"><div className="text-xs text-ink/50">฿{d}</div><div className="font-bold text-ink">{values[d]}</div></div>)}</div>} confirmLabel="ส่งผลตรวจนับ" busy={working} onCancel={() => setConfirmMode(null)} onConfirm={() => void submit()} />
       <ConfirmDialog open={confirmMode === "cancel"} title="ยกเลิกช่วงตรวจนับ" description="ค่าที่กรอกในหน้านี้จะหาย และต้องเริ่มช่วงตรวจนับใหม่" confirmLabel="ยกเลิกช่วงนี้" busy={working} onCancel={() => setConfirmMode(null)} onConfirm={() => void cancel()} />

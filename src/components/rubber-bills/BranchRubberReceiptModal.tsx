@@ -112,6 +112,9 @@ export function BranchRubberReceiptModal({
         selectedCandidate.currentWeight,
       )
     : 0;
+  const remainingAveragePrice = isSameBranch
+    ? prorateMoneyHalfUp(remainingRubberValue, 1, remainingYardWeight)
+    : 0;
 
   useEffect(() => {
     const timer = window.setTimeout(() => setSearch(searchInput.trim()), 300);
@@ -272,6 +275,7 @@ export function BranchRubberReceiptModal({
               label="น้ำหนักยางคงเหลือในลาน (กก.)"
               value={remainingYardWeight}
               onChange={setRemainingYardWeight}
+              autoFocus
               min={0.01}
               max={selectedCandidate.currentWeight}
               step={0.01}
@@ -283,7 +287,7 @@ export function BranchRubberReceiptModal({
                 {remainingWeightError}
               </p>
             )}
-            <div className="grid gap-3 sm:grid-cols-3">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <div className="rounded-md bg-field p-3">
                 <p className="text-xs text-ink/60">น้ำหนัก REX ต้นทาง</p>
                 <p className="font-bold tabular-nums">{formatNumber(selectedCandidate.currentWeight)} กก.</p>
@@ -295,6 +299,10 @@ export function BranchRubberReceiptModal({
               <div className="rounded-md bg-field p-3">
                 <p className="text-xs text-ink/60">มูลค่าคงเหลือตามสัดส่วน</p>
                 <p className="font-bold tabular-nums">฿{formatNumber(remainingRubberValue)}</p>
+              </div>
+              <div className="rounded-md bg-field p-3">
+                <p className="text-xs text-ink/60">ราคาเฉลี่ย</p>
+                <p className="font-bold tabular-nums">฿{formatNumber(remainingAveragePrice)}/กก.</p>
               </div>
             </div>
           </section>

@@ -125,6 +125,7 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
     await page.goto("/");
     await dismissRubberWeightAlertIfVisible(page);
     await selectAppLocation(page, locationId);
+    await dismissRubberWeightAlertIfVisible(page);
     await page.getByRole("button", { name: /^บิลยาง/ }).click();
     await page.getByRole("button", { name: "รับยางจากสาขา" }).click();
     await dismissRubberWeightAlertIfVisible(page);
@@ -136,21 +137,23 @@ test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
     await dialog.getByRole("radio", { name: "เลือก REX-SAME-001 จาก สาขาปัจจุบัน" }).check();
     const weightField = dialog.getByRole("spinbutton", { name: "น้ำหนักยางคงเหลือในลาน (กก.)" });
     const confirmButton = dialog.getByRole("button", { name: "ยืนยันรับเข้าสาขา" });
-    await expect(weightField).toHaveValue("0");
-    await expect(confirmButton).toBeDisabled();
-    await weightField.focus();
+    await expect(weightField).toBeFocused();
     await expect(weightField).toHaveValue("");
+    await expect(dialog.getByText("฿0/กก.", { exact: true })).toBeVisible();
+    await expect(confirmButton).toBeDisabled();
     await weightField.blur();
     await expect(weightField).toHaveValue("0");
 
     await weightField.fill("35");
     await expect(dialog.getByText("฿35.04", { exact: true })).toBeVisible();
+    await expect(dialog.getByText("฿1/กก.", { exact: true })).toBeVisible();
     await expect(confirmButton).toBeEnabled();
 
     await dialog.getByRole("radio", { name: "เลือก REX-CROSS-001 จาก สาขาอื่น" }).check();
     await expect(weightField).toHaveCount(0);
     await dialog.getByRole("radio", { name: "เลือก REX-SAME-001 จาก สาขาปัจจุบัน" }).check();
-    await expect(weightField).toHaveValue("0");
+    await expect(weightField).toBeFocused();
+    await expect(weightField).toHaveValue("");
 
     await weightField.fill("100.01");
     await expect(dialog.getByText("น้ำหนักต้องไม่เกิน 100 กก.")).toBeVisible();
