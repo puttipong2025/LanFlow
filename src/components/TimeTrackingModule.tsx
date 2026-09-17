@@ -57,9 +57,24 @@ interface TimeTrackingModuleProps {
 
 const TIME_TRACKING_OFFLINE_MESSAGE = "เวลาและเงินเดือนใช้ได้เมื่อออนไลน์เท่านั้น";
 type ApprovalType = 'TRANSACTION' | 'SLIP';
+type AttendanceDeductionResult = {
+  deductionsChanged?: boolean;
+  oldOpenDeduction?: number;
+  newOpenDeduction?: number;
+};
 
 function bangkokToday() {
   return bangkokDateString();
+}
+
+function notifyAttendanceSaved(result: AttendanceDeductionResult | undefined, fallback: string) {
+  if (!result?.deductionsChanged) {
+    toast.success(fallback);
+    return;
+  }
+  toast.success("บันทึกและคำนวณยอดหักใหม่แล้ว", {
+    description: `ยอดหักเดือนเปิด ${formatPayrollCurrency(Number(result.oldOpenDeduction) || 0)} → ${formatPayrollCurrency(Number(result.newOpenDeduction) || 0)}`,
+  });
 }
 
 function reportLockReason(item: { report_lock_no?: string | null }) {
@@ -285,7 +300,8 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
   const periodState = data?.periodState as PayrollPeriodStateDto | undefined;
 
   async function replaceAttendanceExceptions(selections: AttendanceExceptionDto[]) {
-    if (!online || !attendance) return false;
+    if (!online) return TIME_TRACKING_OFFLINE_MESSAGE;
+    if (!attendance) return "ไม่พบข้อมูลปฏิทินวันทำงาน กรุณาโหลดใหม่";
     setSaving(true);
     try {
       const response = await authFetch("/api/lanflow/time-tracking/admin", {
@@ -293,20 +309,20 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "REPLACE_ATTENDANCE_EXCEPTIONS",
-          payload: { user_id: managedUserId, month: attendanceMonth, selections },
+          payload: { user_id: managedUserId, month: attendance.month, selections },
         }),
       });
       if (!response.ok) {
         const json = await response.json().catch(() => null);
-        alert(json?.error || "บันทึกปฏิทินไม่สำเร็จ");
-        return false;
+        return json?.error || "บันทึกปฏิทินไม่สำเร็จ";
       }
+      const json = await response.json() as { result?: AttendanceDeductionResult };
       await loadData();
-      return true;
+      notifyAttendanceSaved(json.result, "บันทึกปฏิทินแล้ว");
+      return null;
     } catch (error) {
       console.error(error);
-      alert("บันทึกปฏิทินไม่สำเร็จ");
-      return false;
+      return "บันทึกปฏิทินไม่สำเร็จ";
     } finally {
       setSaving(false);
     }
@@ -383,7 +399,9 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
         const json = await response.json().catch(() => null);
         return json?.error || "แก้วันเริ่มช่วงทำงานไม่สำเร็จ กรุณาลองใหม่";
       }
+      const json = await response.json() as { result?: AttendanceDeductionResult };
       await loadData();
+      notifyAttendanceSaved(json.result, "แก้วันเริ่มช่วงทำงานแล้ว");
       return null;
     } catch (error) {
       console.error(error);
@@ -467,7 +485,7 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
           attendance={attendance}
           month={attendanceMonth}
           editable={canManageTime}
-          saving={saving}
+          saving={saving || loading || attendance.month !== attendanceMonth}
           disabledReason={!online ? TIME_TRACKING_OFFLINE_MESSAGE : undefined}
           onMonthChange={setAttendanceMonth}
           onSave={replaceAttendanceExceptions}

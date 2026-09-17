@@ -90,7 +90,7 @@ type AttendanceCalendarProps = {
   saving?: boolean;
   disabledReason?: string;
   onMonthChange: (month: string) => void;
-  onSave?: (selections: AttendanceExceptionDto[]) => Promise<boolean>;
+  onSave?: (selections: AttendanceExceptionDto[]) => Promise<string | null>;
 };
 
 function monthLabel(month: string) {
@@ -150,6 +150,7 @@ export function AttendanceCalendar({
   onSave,
 }: AttendanceCalendarProps) {
   const [draft, setDraft] = useState<Record<string, "HALF_DAY" | "OFF"> | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const exceptions = useMemo(() => Object.fromEntries(attendance.exceptions.map((item) => [item.date, item.status])), [attendance.exceptions]);
   const selections = draft ?? exceptions;
   const dirty = draft !== null;
@@ -164,10 +165,12 @@ export function AttendanceCalendar({
 
   useEffect(() => {
     setDraft(null);
+    setSaveError(null);
   }, [month, attendance.month]);
 
   function cycleDay(date: string) {
     if (!editable || saving || !isActiveDate(date) || !isEligibleDate(date)) return;
+    setSaveError(null);
     setDraft((current) => {
       const next = { ...(current ?? exceptions) };
       if (!next[date]) next[date] = "HALF_DAY";
@@ -179,10 +182,15 @@ export function AttendanceCalendar({
 
   async function save() {
     if (!onSave || !dirty) return;
-    const saved = await onSave(Object.entries(selections)
+    setSaveError(null);
+    const error = await onSave(Object.entries(selections)
       .filter(([date]) => isActiveDate(date) && isEligibleDate(date))
       .map(([date, status]) => ({ date, status })));
-    if (saved) setDraft(null);
+    if (error) {
+      setSaveError(error);
+      return;
+    }
+    setDraft(null);
   }
 
   return (
@@ -244,13 +252,14 @@ export function AttendanceCalendar({
         <p className="text-pretty text-sm text-ink/70">ค่าแรงขั้นต้น: <strong className="tabular-nums text-ink">{formatPayrollCurrency(attendance.summary.grossPay)}</strong></p>
         {editable && (
           <div className="flex flex-wrap gap-2">
-            {dirty && <button type="button" onClick={() => setDraft(null)} disabled={saving} className="focus-ring rounded-md border border-black/15 px-3 py-2 text-sm font-semibold disabled:opacity-50">ยกเลิกการแก้</button>}
+            {dirty && <button type="button" onClick={() => { setDraft(null); setSaveError(null); }} disabled={saving} className="focus-ring rounded-md border border-black/15 px-3 py-2 text-sm font-semibold disabled:opacity-50">ยกเลิกการแก้</button>}
             <button type="button" onClick={() => void save()} disabled={!dirty || saving} title={disabledReason} className="focus-ring rounded-md bg-commit px-3 py-2 text-sm font-bold text-white hover:bg-commit/90 disabled:cursor-not-allowed disabled:opacity-50">
               {saving ? "กำลังบันทึก..." : "บันทึกปฏิทิน"}
             </button>
           </div>
         )}
       </div>
+      {saveError && <p id="attendance-calendar-error" role="alert" className="mt-2 text-pretty text-sm font-semibold text-danger">{saveError}</p>}
       {editable && <p className="mt-2 text-pretty text-xs text-ink/55">กดวันที่หนึ่งครั้งเป็นครึ่งวัน สองครั้งเป็นหยุด และสามครั้งกลับเป็นเต็มวัน</p>}
     </section>
   );

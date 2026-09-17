@@ -8,6 +8,7 @@ export const dynamic = "force-dynamic";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ISO_DATE_PATTERN = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+const ISO_MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
 function isUuid(value: unknown): value is string {
@@ -18,6 +19,23 @@ function isIsoDate(value: unknown): value is string {
   if (typeof value !== "string" || !ISO_DATE_PATTERN.test(value)) return false;
   const parsed = new Date(`${value}T00:00:00Z`);
   return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function hasValidAttendanceSelections(value: unknown, month: string) {
+  if (!Array.isArray(value) || value.length > 31) return false;
+  const dates = new Set<string>();
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    const selection = item as Record<string, unknown>;
+    if (
+      !isIsoDate(selection.date)
+      || selection.date.slice(0, 7) !== month
+      || (selection.status !== "HALF_DAY" && selection.status !== "OFF")
+      || dates.has(selection.date)
+    ) return false;
+    dates.add(selection.date);
+  }
+  return true;
 }
 
 function rpcErrorStatus(message: string) {
@@ -101,6 +119,7 @@ function rpcErrorMessage(message: string) {
   if (/DESCRIPTION_REQUIRED/i.test(message)) return "กรุณาระบุรายละเอียดหนี้";
   if (/INVALID_WAGE_PRECISION|INVALID_WAGE/i.test(message)) return "ค่าแรงต้องเป็น 0 ขึ้นไปและมีทศนิยมไม่เกิน 4 ตำแหน่ง";
   if (/INVALID_AMOUNT/i.test(message)) return "จำนวนเงินต้องมากกว่า 0";
+  if (/INVALID_ATTENDANCE_SELECTIONS/i.test(message)) return "ข้อมูลข้อยกเว้นวันทำงานไม่ถูกต้อง";
   if (/INVALID_MONTH/i.test(message)) return "เดือนไม่ถูกต้องหรือเป็นเดือนในอนาคต";
   if (/Expense location.*access denied|New expense location access denied/i.test(message)) return "คุณไม่มีสิทธิ์ดูแลสาขาค่าใช้จ่ายที่เลือก";
   if (/Expense location is not valid/i.test(message)) return "รายการนี้ไม่ต้องเลือกสาขาค่าใช้จ่าย";
@@ -413,7 +432,12 @@ export async function POST(request: NextRequest) {
 
     if (body.action === "REPLACE_ATTENDANCE_EXCEPTIONS") {
       const { user_id, month, selections } = payload;
-      if (!isUuid(user_id) || typeof month !== "string" || !Array.isArray(selections)) {
+      if (
+        !isUuid(user_id)
+        || typeof month !== "string"
+        || !ISO_MONTH_PATTERN.test(month)
+        || !hasValidAttendanceSelections(selections, month)
+      ) {
         return NextResponse.json({ error: "ข้อมูลข้อยกเว้นวันทำงานไม่ถูกต้อง" }, { status: 400 });
       }
       const { data, error } = await supabase.rpc("replace_time_payroll_attendance_exceptions", {

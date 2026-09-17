@@ -8,6 +8,15 @@ const modalShellSource = readFileSync(resolve("src/components/shared/ModalShell.
 const expenseLocationChangeSource = readFileSync(resolve("src/components/time-tracking/ExpenseLocationChangeModal.tsx"), "utf8");
 const slipPreviewSource = readFileSync(resolve("src/components/time-tracking/SlipPreviewModal.tsx"), "utf8");
 
+test.beforeEach(async ({ page }) => {
+  await page.route("**/api/lanflow/rubber-weight-alert", (route) => route.fulfill({
+    json: {
+      config: { thresholdKg: 10_000, intervalMinutes: 60 },
+      candidates: [],
+    },
+  }));
+});
+
 test.describe("Lean attendance UI contract", () => {
   test("keeps the exception controls labelled and uses native modal semantics", () => {
     expect(controls).toContain('nativeModal closeOnEscape');
@@ -53,6 +62,27 @@ test.describe("Lean attendance UI contract", () => {
     expect(moduleSource).not.toContain("TOGGLE_TRACKING");
     expect(moduleSource).not.toContain("ADD_BULK_SEGMENTS");
     expect(moduleSource).toContain("<AttendanceCalendar");
+  });
+
+  test("shows the server-confirmed open deduction summary without adding another dialog", () => {
+    expect(moduleSource).toContain("notifyAttendanceSaved(json.result");
+    expect(moduleSource).toContain("oldOpenDeduction");
+    expect(moduleSource).toContain("newOpenDeduction");
+    expect(moduleSource).toContain("deductionsChanged");
+    expect(moduleSource).toContain("ยอดหักเดือนเปิด");
+    expect(moduleSource).toContain('toast.success("บันทึกและคำนวณยอดหักใหม่แล้ว"');
+    expect(controls).not.toContain("AttendanceDeductionSummaryDialog");
+    expect(controls).toContain('id="attendance-calendar-error" role="alert"');
+    expect(moduleSource).not.toContain('alert(json?.error || "บันทึกปฏิทินไม่สำเร็จ")');
+  });
+
+  test("binds attendance replacement to the loaded server snapshot", () => {
+    expect(moduleSource).toContain("month: attendance.month, selections");
+    expect(moduleSource).toContain("saving={saving || loading || attendance.month !== attendanceMonth}");
+  });
+
+  test("clears a failed attendance save when the user discards the draft", () => {
+    expect(controls).toContain('onClick={() => { setDraft(null); setSaveError(null); }}');
   });
 
   test("guards month changes from stale responses and keeps employee withdrawals server-dated", () => {
@@ -568,6 +598,97 @@ test.describe("Time/payroll native dialogs", () => {
     } finally {
       releaseAdminRefresh();
     }
+  });
+
+  test("keeps a newly selected attendance month read-only until its server snapshot arrives", async ({ page }) => {
+    const employee = {
+      id: "42b44f45-d44a-4efe-b987-0ab872b591b1",
+      name: "พนักงานเปลี่ยนเดือนช้า",
+      daily_wage: 500,
+      primary_location_id: null,
+      debt_remaining_amount: 0,
+      is_active: true,
+      period_state: {
+        currentStatus: "ACTIVE",
+        currentPeriod: null,
+        nextAction: null,
+        hasPeriodHistory: true,
+        resumeEarliestOn: null,
+        periodStartCorrection: null,
+      },
+    };
+    const today = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Bangkok",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+    const currentMonth = today.slice(0, 7);
+    const [year, month] = currentMonth.split("-").map(Number);
+    const previous = new Date(Date.UTC(year, month - 2, 1));
+    const previousMonth = `${previous.getUTCFullYear()}-${String(previous.getUTCMonth() + 1).padStart(2, "0")}`;
+    const previousDay = `${previousMonth}-01`;
+    let releasePreviousMonth!: () => void;
+    let markPreviousMonthRequested!: () => void;
+    const previousMonthReleased = new Promise<void>((resolve) => { releasePreviousMonth = resolve; });
+    const previousMonthRequested = new Promise<void>((resolve) => { markPreviousMonthRequested = resolve; });
+
+    await page.route("**/api/lanflow/time-tracking/admin", async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.fulfill({ json: { success: true } });
+        return;
+      }
+      await route.fulfill({
+        json: {
+          permissions: { canManage: true, canDecide: true, canConfigure: true },
+          users: [employee],
+          pendingTransactions: [],
+          pendingSlips: [],
+          paymentLocations: [],
+          admins: [],
+        },
+      });
+    });
+    await page.route("**/api/lanflow/time-tracking/user?*", async (route) => {
+      const requestedMonth = new URL(route.request().url()).searchParams.get("month") ?? currentMonth;
+      if (requestedMonth === previousMonth) {
+        markPreviousMonthRequested();
+        await previousMonthReleased;
+      }
+      await route.fulfill({
+        json: {
+          profile: employee,
+          transactions: [],
+          wageInfo: { remainingBalance: 0, totalDays: 0, totalDebt: 0 },
+          periodState: employee.period_state,
+          attendance: {
+            month: requestedMonth,
+            mode: "EXCEPTIONS",
+            workdayEndTime: "15:00",
+            eligibleThrough: today,
+            periods: [{ id: "e9ba5311-8e20-4749-9a13-0af22c7bf977", startOn: previousDay, endOn: null }],
+            exceptions: requestedMonth === previousMonth ? [{ date: previousDay, status: "OFF" }] : [],
+            summary: { fullDays: 0, halfDays: 0, offDays: 0, paidDays: 0, grossPay: 0 },
+          },
+        },
+      });
+    });
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
+    await page.getByRole("button", { name: "ทั้งหมด", exact: true }).click();
+    await page.getByRole("button", { name: `จัดการปฏิทินวันทำงานของ ${employee.name}` }).click();
+    const dialog = page.getByRole("dialog", { name: "ข้อมูลของพนักงาน" });
+    await expect(dialog.getByRole("button", { name: new RegExp(`^${currentMonth}-01`) })).toBeVisible();
+    await dialog.getByRole("button", { name: "เดือนก่อน" }).click();
+    await previousMonthRequested;
+
+    try {
+      await expect(dialog.getByRole("button", { name: new RegExp(`^${previousDay}`) })).toBeDisabled();
+    } finally {
+      releasePreviousMonth();
+    }
+    await expect(dialog.getByRole("button", { name: new RegExp(`^${previousDay}.*หยุด`) })).toBeEnabled();
   });
 
   test("closes the employee calendar dialog with Escape and restores its trigger", async ({ page }) => {

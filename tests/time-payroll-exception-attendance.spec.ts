@@ -12,6 +12,7 @@ const futureSchedulingMigrationPath = "supabase/migrations/20260901030000_time_p
 const immediateEndMigrationPath = "supabase/migrations/20260902030000_end_time_payroll_employment_immediately.sql";
 const crossMonthResumeMigrationPath = "supabase/migrations/20260902050000_time_payroll_cross_month_resume_correction.sql";
 const periodStartCorrectionMigrationPath = "supabase/migrations/20260902070000_time_payroll_contiguous_period_start_correction.sql";
+const attendanceDeductionMigrationPath = "supabase/migrations/20260917100000_time_payroll_attendance_deduction_recalculation.sql";
 
 test("migration freezes additive schema, narrow individual writes, and explicit activation", async () => {
   const sql = await readFile(migrationPath, "utf8");
@@ -219,6 +220,26 @@ test("latest forward migration makes END immediate while preserving an earned cu
   expect(sql).not.toContain("p_effective_date + 1");
   expect(adminRoute).toContain("END_DATE_IN_PAST");
   expect(adminRoute).toContain("สิ้นสุดงานย้อนหลังไม่ได้ กรุณาเลือกวันนี้หรือวันในอนาคต");
+});
+
+test("attendance corrections reuse the wage planner without widening other period mutations", async () => {
+  const sql = await readFile(attendanceDeductionMigrationPath, "utf8");
+
+  expect(sql).toContain("private.assert_attendance_range_without_payroll_slip(");
+  expect(sql).toContain("private.rebuild_open_deductions_after_attendance(");
+  expect(sql).toContain("private.plan_time_tracking_deductions(");
+  expect(sql).toContain("true\n  );");
+  expect(sql).toContain("group by item ->> 'parentId', item ->> 'type', item ->> 'appliedMonth'");
+  expect(sql).toContain("where (month_row ->> 'closed')::boolean = false");
+  expect(sql).toContain("'RECALCULATE_ATTENDANCE_DEDUCTIONS'");
+  expect(sql).toContain("create or replace function public.replace_time_payroll_attendance_exceptions(");
+  expect(sql).toContain("create or replace function public.correct_time_payroll_period_start(");
+  expect(sql).toContain("'deductionsChanged'");
+  expect(sql).toContain("return jsonb_build_object('changed', v_changed, 'month', p_month) || v_rebuild;");
+  expect(sql).not.toContain("'attendanceChanged'");
+  expect(sql).not.toContain("create table");
+  expect(sql).not.toContain("create or replace function public.commit_time_tracking_wage_recalculation(");
+  expect(sql).not.toContain("create or replace function private.apply_time_tracking_deductions(");
 });
 
 test("individual attendance writes reject future Bangkok dates", async () => {

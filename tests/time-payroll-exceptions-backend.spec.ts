@@ -157,6 +157,15 @@ let temporaryLocationId: string | null = null;
 test.describe.serial("Exception attendance backend contract @time-payroll-exceptions-backend", () => {
   test.use({ storageState: "playwright/.auth/super_admin.json" });
 
+  test.beforeEach(async ({ page }) => {
+    await page.route("**/api/lanflow/rubber-weight-alert", (route) => route.fulfill({
+      json: {
+        config: { thresholdKg: 10_000, intervalMinutes: 60 },
+        candidates: [],
+      },
+    }));
+  });
+
   test.beforeAll(async () => {
     const service = serviceClient();
     const existing = await service.from("locations").select("id").eq("is_active", true);
@@ -178,7 +187,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     }
   });
 
-  test("direct non-array attendance replacements are rejected without erasing the month", async () => {
+  test("invalid attendance replacements are rejected without erasing the month", async () => {
     const service = serviceClient();
     const manager = await globalManagerClient();
     const employeeId = await createEmployee(service, "QA attendance null guard");
@@ -215,6 +224,36 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         expect(rows.error).toBeNull();
         expect(rows.data).toEqual([{ work_date: workDate, status: "OFF" }]);
       }
+
+      for (const invalidDate of ["not-a-date", "2026-02-31"]) {
+        const malformedDate = await manager.rpc("replace_time_payroll_attendance_exceptions", {
+          p_profile_id: employeeId,
+          p_month: month,
+          p_selections: [{ date: invalidDate, status: "OFF" }],
+        });
+        expect(malformedDate.error?.message).toContain("INVALID_ATTENDANCE_SELECTIONS");
+      }
+
+      const managerSession = await manager.auth.getSession();
+      const malformedRoute = await fetch(`${appUrl}/api/lanflow/time-tracking/admin`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${managerSession.data.session!.access_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "REPLACE_ATTENDANCE_EXCEPTIONS",
+          payload: {
+            user_id: employeeId,
+            month,
+            selections: [{ date: "not-a-date", status: "OFF" }],
+          },
+        }),
+      });
+      expect(malformedRoute.status).toBe(400);
+      expect(await malformedRoute.json()).toEqual({
+        error: "ข้อมูลข้อยกเว้นวันทำงานไม่ถูกต้อง",
+      });
 
       const nullMonth = await manager.rpc("replace_time_payroll_attendance_exceptions", {
         p_profile_id: employeeId,
@@ -415,7 +454,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     }
   });
 
-  test("corrects the latest period start without audit or financial side effects", async () => {
+  test("corrects the latest period start without redundant deduction churn", async () => {
     const service = serviceClient();
     const manager = await globalManagerClient();
     const employeeId = await createEmployee(service, "QA resume date correction");
@@ -450,16 +489,16 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_action: "RESUME",
         p_effective_date: firstCurrent,
       })).error).toBeNull();
-      expect((await manager.rpc("replace_time_payroll_attendance_exceptions", {
-        p_profile_id: employeeId,
-        p_month: firstCurrent.slice(0, 7),
-        p_selections: [{ date: firstCurrent, status: "HALF_DAY" }],
-      })).error).toBeNull();
       const pendingPauseOn = bangkokDate(1);
       expect((await manager.rpc("set_time_payroll_active_period", {
         p_profile_id: employeeId,
         p_action: "PAUSE",
         p_effective_date: pendingPauseOn,
+      })).error).toBeNull();
+      expect((await manager.rpc("replace_time_payroll_attendance_exceptions", {
+        p_profile_id: employeeId,
+        p_month: firstCurrent.slice(0, 7),
+        p_selections: [{ date: firstCurrent, status: "HALF_DAY" }],
       })).error).toBeNull();
       const session = await manager.auth.getSession();
       const authorization = `Bearer ${session.data.session!.access_token}`;
@@ -490,6 +529,12 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         .select("id", { count: "exact", head: true })
         .eq("record_id", employeeId);
       expect(auditBefore.error).toBeNull();
+      const deductionBefore = await service
+        .from("financial_transactions")
+        .select("id,amount")
+        .eq("parent_debt_id", withdrawalId)
+        .single();
+      expect(deductionBefore.error).toBeNull();
 
       const overlapping = await manager.rpc("correct_time_payroll_period_start", {
         p_profile_id: employeeId,
@@ -558,7 +603,14 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         .eq("id", withdrawalId)
         .single();
       expect(transactionAfter.error).toBeNull();
-      expect(Number(transactionAfter.data!.remaining_amount)).toBe(1000);
+      expect(Number(transactionAfter.data!.remaining_amount)).toBe(0);
+      const deductionAfter = await service
+        .from("financial_transactions")
+        .select("id,amount")
+        .eq("parent_debt_id", withdrawalId)
+        .single();
+      expect(deductionAfter.error).toBeNull();
+      expect(deductionAfter.data).toEqual(deductionBefore.data);
     } finally {
       await deleteEmployee(service, employeeId);
     }
@@ -736,7 +788,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     }
   });
 
-  test("period start correction reports the first payroll, report, or real-deduction blocker atomically", async () => {
+  test("period start correction keeps payroll and report locks while rebuilding open deductions atomically", async () => {
     const service = serviceClient();
     const manager = await globalManagerClient();
     const managerUser = await manager.auth.getUser();
@@ -855,14 +907,17 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_description: "QA applied correction blocker",
       });
       expect(withdrawal.error).toBeNull();
-      const deductionBlocked = await manager.rpc("correct_time_payroll_period_start", {
+      const rebuilt = await manager.rpc("correct_time_payroll_period_start", {
         p_profile_id: employeeId,
         p_period_id: periodId,
         p_start_on: previousMonthEnd,
       });
-      expect(deductionBlocked.error?.message).toMatch(
-        new RegExp(`DEDUCTION_LOCKED:${previousMonth}:WITHDRAWAL_DEDUCTION:[0-9a-f-]+`),
-      );
+      expect(rebuilt.error).toBeNull();
+      expect(rebuilt.data).toMatchObject({
+        deductionsChanged: true,
+        oldOpenDeduction: 1000,
+        newOpenDeduction: 1000,
+      });
 
       const openPeriod = await manager
         .from("time_payroll_active_periods")
@@ -871,13 +926,335 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         .is("end_on", null)
         .single();
       expect(openPeriod.error).toBeNull();
-      expect(openPeriod.data?.start_on).toBe(firstCurrent);
+      expect(openPeriod.data?.start_on).toBe(previousMonthEnd);
     } finally {
       await service.from("report_items").delete().eq("report_id", reportId);
       await service.from("report_batches").delete().eq("id", reportId);
       if (slipId) await service.from("payroll_slips").delete().eq("id", slipId);
       await deleteEmployee(service, employeeId);
       await service.from("locations").delete().eq("id", locationId);
+    }
+  });
+
+  test("attendance exceptions rebuild open deductions and preserve identities on a no-op", async () => {
+    const service = serviceClient();
+    const manager = await globalManagerClient();
+    const managerUser = await manager.auth.getUser();
+    const managerId = managerUser.data.user!.id;
+    const managerProfile = await service.from("profiles").select("name,phone").eq("id", managerId).single();
+    expect(managerProfile.error).toBeNull();
+    const location = await service.from("locations").select("id").eq("is_active", true).limit(1).single();
+    expect(location.error).toBeNull();
+    const employeeId = await createEmployee(service, "QA attendance deduction rebuild");
+    const currentMonth = bangkokDate().slice(0, 7);
+    const firstDay = `${currentMonth}-01`;
+    const thirdDay = `${currentMonth}-03`;
+    const reportId = crypto.randomUUID();
+
+    try {
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "ENABLE",
+        p_effective_date: firstDay,
+      })).error).toBeNull();
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "PAUSE",
+        p_effective_date: thirdDay,
+      })).error).toBeNull();
+
+      const withdrawal = await manager.rpc("create_time_tracking_transaction", {
+        p_profile_id: employeeId,
+        p_type: "WITHDRAWAL",
+        p_amount: 1000,
+        p_effective_date: firstDay,
+        p_description: "QA attendance rebuild withdrawal",
+      });
+      expect(withdrawal.error).toBeNull();
+      const withdrawalId = (withdrawal.data as { id: string }).id;
+      expect((await service.from("report_batches").insert({
+        id: reportId,
+        report_no: `RPT-ATT-REBUILD-${reportId.replaceAll("-", "").slice(0, 8).toUpperCase()}`,
+        report_date: bangkokDate(),
+        sequence_no: 1,
+        location_id: location.data!.id,
+        cutoff_at: `${bangkokDate()}T16:00:00+07:00`,
+        created_by_user_id: managerId,
+        created_by_name: managerProfile.data!.name,
+        created_by_phone: managerProfile.data!.phone,
+      })).error).toBeNull();
+      expect((await service.from("report_items").insert({
+        report_id: reportId,
+        location_id: location.data!.id,
+        entity_type: "financial_transaction",
+        entity_id: withdrawalId,
+        eligibility_at: `${bangkokDate()}T16:00:00+07:00`,
+      })).error).toBeNull();
+
+      const managerSession = await manager.auth.getSession();
+      const rebuiltResponse = await fetch(`${appUrl}/api/lanflow/time-tracking/admin`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${managerSession.data.session!.access_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "REPLACE_ATTENDANCE_EXCEPTIONS",
+          payload: {
+            user_id: employeeId,
+            month: currentMonth,
+            selections: [{ date: firstDay, status: "OFF" }],
+          },
+        }),
+      });
+      expect(rebuiltResponse.status).toBe(200);
+      expect(await rebuiltResponse.json()).toMatchObject({
+        success: true,
+        result: {
+          changed: 1,
+          deductionsChanged: true,
+          oldOpenDeduction: 1000,
+          newOpenDeduction: 500,
+        },
+      });
+
+      const source = await service
+        .from("financial_transactions")
+        .select("amount,status,remaining_amount")
+        .eq("id", withdrawalId)
+        .single();
+      expect(source.error).toBeNull();
+      expect(Number(source.data!.amount)).toBe(1000);
+      expect(source.data!.status).toBe("APPROVED");
+      expect(Number(source.data!.remaining_amount)).toBe(500);
+      const deduction = await service
+        .from("financial_transactions")
+        .select("id,amount")
+        .eq("parent_debt_id", withdrawalId)
+        .single();
+      expect(deduction.error).toBeNull();
+      expect(Number(deduction.data!.amount)).toBe(500);
+
+      const noOp = await manager.rpc("replace_time_payroll_attendance_exceptions", {
+        p_profile_id: employeeId,
+        p_month: currentMonth,
+        p_selections: [{ date: firstDay, status: "OFF" }],
+      });
+      expect(noOp.error).toBeNull();
+      expect(noOp.data).toMatchObject({
+        changed: 1,
+        deductionsChanged: false,
+        oldOpenDeduction: 500,
+        newOpenDeduction: 500,
+      });
+      const deductionAfterNoOp = await service
+        .from("financial_transactions")
+        .select("id")
+        .eq("parent_debt_id", withdrawalId)
+        .single();
+      expect(deductionAfterNoOp.error).toBeNull();
+      expect(deductionAfterNoOp.data!.id).toBe(deduction.data!.id);
+      const audits = await service
+        .from("time_tracking_audit_logs")
+        .select("id", { count: "exact", head: true })
+        .eq("record_id", employeeId)
+        .eq("action", "RECALCULATE_ATTENDANCE_DEDUCTIONS");
+      expect(audits.error).toBeNull();
+      expect(audits.count).toBe(1);
+    } finally {
+      await service.from("report_items").delete().eq("report_id", reportId);
+      await service.from("report_batches").delete().eq("id", reportId);
+      await deleteEmployee(service, employeeId);
+    }
+  });
+
+  test("canonical comparison aggregates fragmented deduction rows without UUID churn", async () => {
+    const service = serviceClient();
+    const manager = await globalManagerClient();
+    const managerUser = await manager.auth.getUser();
+    const managerId = managerUser.data.user!.id;
+    const employeeId = await createEmployee(service, "QA canonical attendance allocation");
+    const currentMonth = bangkokDate().slice(0, 7);
+    const firstDay = `${currentMonth}-01`;
+
+    try {
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "ENABLE",
+        p_effective_date: firstDay,
+      })).error).toBeNull();
+      const withdrawal = await manager.rpc("create_time_tracking_transaction", {
+        p_profile_id: employeeId,
+        p_type: "WITHDRAWAL",
+        p_amount: 1000,
+        p_effective_date: firstDay,
+        p_description: "QA canonical allocation withdrawal",
+      });
+      expect(withdrawal.error).toBeNull();
+      const withdrawalId = (withdrawal.data as { id: string }).id;
+      expect((await service.from("financial_transactions").delete().eq("parent_debt_id", withdrawalId)).error).toBeNull();
+
+      const fragmentIds = [crypto.randomUUID(), crypto.randomUUID()];
+      expect((await service.from("financial_transactions").insert([
+        {
+          id: fragmentIds[0],
+          profile_id: employeeId,
+          type: "WITHDRAWAL_DEDUCTION",
+          amount: 400,
+          status: "APPROVED",
+          parent_debt_id: withdrawalId,
+          applied_month: `${currentMonth}-01`,
+          approved_by: managerId,
+          approved_at: new Date().toISOString(),
+        },
+        {
+          id: fragmentIds[1],
+          profile_id: employeeId,
+          type: "WITHDRAWAL_DEDUCTION",
+          amount: 600,
+          status: "APPROVED",
+          parent_debt_id: withdrawalId,
+          applied_month: `${currentMonth}-01`,
+          approved_by: managerId,
+          approved_at: new Date().toISOString(),
+        },
+      ])).error).toBeNull();
+
+      const result = await manager.rpc("replace_time_payroll_attendance_exceptions", {
+        p_profile_id: employeeId,
+        p_month: currentMonth,
+        p_selections: [],
+      });
+      expect(result.error).toBeNull();
+      expect(result.data).toMatchObject({
+        changed: 0,
+        deductionsChanged: false,
+        oldOpenDeduction: 1000,
+        newOpenDeduction: 1000,
+      });
+
+      const fragments = await service
+        .from("financial_transactions")
+        .select("id")
+        .eq("parent_debt_id", withdrawalId)
+        .order("id");
+      expect(fragments.error).toBeNull();
+      expect(fragments.data?.map((row) => row.id).sort()).toEqual(fragmentIds.sort());
+      const audits = await service
+        .from("time_tracking_audit_logs")
+        .select("id", { count: "exact", head: true })
+        .eq("record_id", employeeId)
+        .eq("action", "RECALCULATE_ATTENDANCE_DEDUCTIONS");
+      expect(audits.error).toBeNull();
+      expect(audits.count).toBe(0);
+    } finally {
+      await deleteEmployee(service, employeeId);
+    }
+  });
+
+  test("attendance and deduction changes roll back together when settlement apply fails", async () => {
+    const service = serviceClient();
+    const manager = await globalManagerClient();
+    const managerUser = await manager.auth.getUser();
+    const managerId = managerUser.data.user!.id;
+    const managerProfile = await service
+      .from("profiles")
+      .select("name,phone")
+      .eq("id", managerId)
+      .single();
+    expect(managerProfile.error).toBeNull();
+    const location = await service.from("locations").select("id").eq("is_active", true).limit(1).single();
+    expect(location.error).toBeNull();
+    const employeeId = await createEmployee(service, "QA attendance rebuild rollback");
+    const currentMonth = bangkokDate().slice(0, 7);
+    const firstDay = `${currentMonth}-01`;
+    const thirdDay = `${currentMonth}-03`;
+    const reportId = crypto.randomUUID();
+
+    try {
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "ENABLE",
+        p_effective_date: firstDay,
+      })).error).toBeNull();
+      expect((await manager.rpc("set_time_payroll_active_period", {
+        p_profile_id: employeeId,
+        p_action: "PAUSE",
+        p_effective_date: thirdDay,
+      })).error).toBeNull();
+      const withdrawal = await manager.rpc("create_time_tracking_transaction", {
+        p_profile_id: employeeId,
+        p_type: "WITHDRAWAL",
+        p_amount: 1000,
+        p_effective_date: firstDay,
+        p_description: "QA attendance rollback withdrawal",
+      });
+      expect(withdrawal.error).toBeNull();
+      const withdrawalId = (withdrawal.data as { id: string }).id;
+      const deduction = await service
+        .from("financial_transactions")
+        .select("id")
+        .eq("parent_debt_id", withdrawalId)
+        .single();
+      expect(deduction.error).toBeNull();
+
+      expect((await service.from("report_batches").insert({
+        id: reportId,
+        report_no: `RPT-ATT-ROLLBACK-${reportId.replaceAll("-", "").slice(0, 8).toUpperCase()}`,
+        report_date: bangkokDate(),
+        sequence_no: 1,
+        location_id: location.data!.id,
+        cutoff_at: `${bangkokDate()}T16:00:00+07:00`,
+        created_by_user_id: managerId,
+        created_by_name: managerProfile.data!.name,
+        created_by_phone: managerProfile.data!.phone,
+      })).error).toBeNull();
+      expect((await service.from("report_items").insert({
+        report_id: reportId,
+        location_id: location.data!.id,
+        entity_type: "financial_transaction",
+        entity_id: deduction.data!.id,
+        eligibility_at: `${bangkokDate()}T16:00:00+07:00`,
+      })).error).toBeNull();
+
+      const failed = await manager.rpc("replace_time_payroll_attendance_exceptions", {
+        p_profile_id: employeeId,
+        p_month: currentMonth,
+        p_selections: [{ date: firstDay, status: "OFF" }],
+      });
+      expect(failed.error?.message).toContain("REPORT_LOCKED");
+
+      const attendance = await manager
+        .from("time_payroll_attendance_exceptions")
+        .select("work_date")
+        .eq("profile_id", employeeId);
+      expect(attendance.error).toBeNull();
+      expect(attendance.data).toEqual([]);
+      const source = await service
+        .from("financial_transactions")
+        .select("remaining_amount")
+        .eq("id", withdrawalId)
+        .single();
+      expect(source.error).toBeNull();
+      expect(Number(source.data!.remaining_amount)).toBe(0);
+      const preservedDeduction = await service
+        .from("financial_transactions")
+        .select("id,amount")
+        .eq("id", deduction.data!.id)
+        .single();
+      expect(preservedDeduction.error).toBeNull();
+      expect(Number(preservedDeduction.data!.amount)).toBe(1000);
+      const audits = await service
+        .from("time_tracking_audit_logs")
+        .select("id", { count: "exact", head: true })
+        .eq("record_id", employeeId)
+        .in("action", ["REPLACE_ATTENDANCE_EXCEPTIONS", "RECALCULATE_ATTENDANCE_DEDUCTIONS"]);
+      expect(audits.error).toBeNull();
+      expect(audits.count).toBe(0);
+    } finally {
+      await service.from("report_items").delete().eq("report_id", reportId);
+      await service.from("report_batches").delete().eq("id", reportId);
+      await deleteEmployee(service, employeeId);
     }
   });
 
@@ -973,6 +1350,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
       await expect(page.getByRole("heading", { name: "จัดการเวลาและเงินเดือน" })).toBeVisible({ timeout: 30_000 });
       await page.getByRole("button", { name: "ทั้งหมด", exact: true }).click();
+      await page.getByRole("textbox", { name: "ค้นหาพนักงาน" }).fill(employeeName);
       const calendarButton = page.getByRole("button", {
         name: `จัดการปฏิทินวันทำงานของ ${employeeName}`,
       });
@@ -1782,7 +2160,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_selections: [{ date: workStart, status: "HALF_DAY" }],
       });
       expect(sameBranch.error).toBeNull();
-      expect(sameBranch.data).toMatchObject({ changed: 1, month });
+      expect(sameBranch.data).toMatchObject({ changed: 1, deductionsChanged: false, month });
 
       const delegatedConfig = await delegated.rpc("update_time_payroll_config", {
         p_workday_end_time: "15:30",
