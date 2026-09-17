@@ -4480,6 +4480,60 @@ $$;
 ALTER FUNCTION "private"."guard_rubber_export_state"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."guard_rubber_export_work_transfer"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_export public.rubber_exports;
+begin
+  if tg_op = 'UPDATE' and old.transfer_type = 'rubber_export_work' then
+    if new.record_status <> 'active'
+      or (to_jsonb(new) - array['transfer_status', 'revision_no', 'updated_at'])
+         is distinct from
+         (to_jsonb(old) - array['transfer_status', 'revision_no', 'updated_at']) then
+      raise exception 'REX_WORK_TRANSFER_LOCKED: ต้นทางและยอดค่าทำงานแก้ไขไม่ได้';
+    end if;
+    return new;
+  end if;
+
+  if new.transfer_type <> 'rubber_export_work' then
+    return new;
+  end if;
+  if tg_op = 'UPDATE' then
+    raise exception 'REX_WORK_TRANSFER_LOCKED: เปลี่ยนรายการทั่วไปเป็นค่าทำงานไม่ได้';
+  end if;
+  select * into v_export
+  from public.rubber_exports
+  where id = new.rubber_export_id;
+  if v_export.id is null
+    or v_export.status <> 'verified'
+    or v_export.expense_destination <> 'external'
+    or v_export.work_total <= 0
+    or new.location_id <> v_export.location_id
+    or new.net_amount_to_pay <> v_export.work_total
+    or new.transfer_method <> 'bank'
+    or new.transfer_status <> 'pending'
+    or new.record_status <> 'active'
+    or new.customer_id is not null
+    or new.customer_name is not null
+    or new.account_number is not null
+    or new.account_name is not null
+    or new.bank_name is not null
+    or new.transport_staff_id is not null
+    or new.transport_staff_name is not null
+    or new.target_location_id is not null
+    or new.target_location_name is not null then
+    raise exception 'REX_WORK_TRANSFER_INVALID: ข้อมูลโอนไม่ตรงกับรายการส่งออกยาง';
+  end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."guard_rubber_export_work_transfer"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."has_time_payroll_manager_access"() RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -13110,18 +13164,15 @@ CREATE OR REPLACE FUNCTION "public"."delete_rubber_export"("p_export_id" "uuid")
 declare
   v_export public.rubber_exports%rowtype;
   v_audit public.document_deletion_audits%rowtype;
+  v_transfer public.money_transfers%rowtype;
   v_report_no text;
   v_receipt_no text;
   v_actor_name text;
   v_now timestamptz := clock_timestamp();
 begin
-  select * into v_export
-  from public.rubber_exports
-  where id = p_export_id
-  for update;
+  select * into v_export from public.rubber_exports where id = p_export_id;
   if v_export.id is null then
-    select * into v_audit
-    from public.document_deletion_audits
+    select * into v_audit from public.document_deletion_audits
     where document_kind = 'rubber_export' and source_id = p_export_id;
     if v_audit.id is not null then
       if not private.can_manage_rubber_exports(v_audit.location_id) then
@@ -13136,6 +13187,12 @@ begin
   if not private.can_manage_rubber_exports(v_export.location_id) then
     raise exception 'ไม่มีสิทธิ์ลบรายการส่งออกของสาขานี้';
   end if;
+  perform pg_advisory_xact_lock(hashtextextended(v_export.location_id::text, 0));
+  select * into v_export from public.rubber_exports where id = p_export_id for update;
+  if v_export.id is null then raise exception 'ไม่พบรายการส่งออก'; end if;
+  if not private.can_manage_rubber_exports(v_export.location_id) then
+    raise exception 'ไม่มีสิทธิ์ลบรายการส่งออกของสาขานี้';
+  end if;
   if v_export.sold_out_at is not null then
     raise exception 'RUBBER_EXPORT_SOLD_OUT:%', v_export.export_no
       using errcode = 'P0001', hint = 'กรุณายกเลิกขายก่อนลบรายการ';
@@ -13143,13 +13200,22 @@ begin
   v_report_no := private.active_report_no('rubber_export', p_export_id);
   if v_report_no is not null then perform private.raise_report_lock(v_report_no); end if;
   select coalesce(b.server_bill_no, b.local_bill_no, b.bill_no)
-  into v_receipt_no
-  from public.rubber_bills b
+  into v_receipt_no from public.rubber_bills b
   where b.source_rubber_export_id = p_export_id and b.record_status = 'active'
   limit 1;
   if v_receipt_no is not null then
     raise exception 'BRANCH_RECEIPT_SOURCE_LOCKED:%', v_export.export_no
       using hint = 'กรุณาลบบิลรับ ' || v_receipt_no || ' ก่อน';
+  end if;
+  select * into v_transfer from public.money_transfers
+  where rubber_export_id = p_export_id for update;
+  if v_transfer.id is not null then
+    if not private.can_access_money_transfer_module()
+      or not private.can_access_location(v_export.location_id) then
+      raise exception 'ไม่มีสิทธิ์โอนเงินของสาขานี้';
+    end if;
+    v_report_no := private.active_transfer_report_no(v_transfer.id);
+    if v_report_no is not null then perform private.raise_report_lock(v_report_no); end if;
   end if;
   select p.name into v_actor_name from public.profiles p where p.id = auth.uid();
   insert into public.document_deletion_audits (
@@ -13161,6 +13227,9 @@ begin
     v_export.status, v_export.created_by_user_id, v_export.created_by_name,
     auth.uid(), coalesce(v_actor_name, ''), v_now
   );
+  if v_transfer.id is not null then
+    delete from public.money_transfers where id = v_transfer.id;
+  end if;
   delete from public.rubber_export_items where export_id = v_export.id;
   delete from public.rubber_exports where id = v_export.id;
   return jsonb_build_object(
@@ -15917,7 +15986,9 @@ CREATE OR REPLACE FUNCTION "public"."get_money_transfer_detail"("p_transfer_id" 
     LANGUAGE "plpgsql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
-declare v_transfer public.money_transfers; v_result jsonb;
+declare
+  v_transfer public.money_transfers;
+  v_result jsonb;
 begin
   if not private.is_active_user() or not private.can_access_money_transfer_module() then
     raise exception 'Money transfer module access denied';
@@ -15929,6 +16000,7 @@ begin
   select to_jsonb(v_transfer)
     || jsonb_build_object(
       'report_lock_no', public.report_lock_no(v_transfer),
+      'rubber_export_no', (select e.export_no from public.rubber_exports e where e.id = v_transfer.rubber_export_id),
       'money_transfer_slips', coalesce((select jsonb_agg(to_jsonb(s) order by s.sort_order, s.id)
         from public.money_transfer_slips s where s.transfer_id = p_transfer_id), '[]'::jsonb),
       'money_transfer_items', coalesce((select jsonb_agg(to_jsonb(i) order by i.created_at, i.id)
@@ -15962,19 +16034,21 @@ begin
   if (p_cursor_created_at is null) <> (p_cursor_id is null) then
     raise exception 'Invalid transfer cursor';
   end if;
-
   with candidates as (
-    select t.*,
+    select t.*, e.export_no as rubber_export_no,
       public.report_lock_no(t) report_lock_no,
       coalesce((select sum(s.amount) from public.money_transfer_slips s where s.transfer_id = t.id), 0) paid_amount,
+      coalesce((select count(*) from public.money_transfer_slips s where s.transfer_id = t.id), 0) slip_count,
       coalesce((select count(*) from public.money_transfer_items i where i.transfer_id = t.id), 0) source_count
     from public.money_transfers t
+    left join public.rubber_exports e on e.id = t.rubber_export_id
     where t.location_id = p_location_id
       and t.record_status <> 'deleted'
       and t.transfer_type <> 'cash'
       and (p_status = 'all' or t.transfer_status = p_status)
       and (v_search = '' or position(v_search in lower(concat_ws(' ', t.customer_name, t.account_number,
-        t.account_name, t.bank_name, t.transport_staff_name, t.target_location_name, t.id::text))) > 0)
+        t.account_name, t.bank_name, t.transport_staff_name, t.target_location_name,
+        e.export_no, t.id::text))) > 0)
       and (p_cursor_created_at is null or (t.created_at, t.id) < (p_cursor_created_at, p_cursor_id))
     order by t.created_at desc, t.id desc
     limit p_page_size + 1
@@ -15992,10 +16066,8 @@ begin
       'overpaid', count(*) filter (where t.transfer_status = 'overpaid'),
       'branch_and_transfer', count(*) filter (where t.transfer_status = 'branch_and_transfer'),
       'cancelled', count(*) filter (where t.transfer_status = 'cancelled')
-    ) from public.money_transfers t
-      where t.location_id = p_location_id
-        and t.record_status <> 'deleted'
-        and t.transfer_type <> 'cash'),
+    ) from public.money_transfers t where t.location_id = p_location_id and t.record_status <> 'deleted'
+      and t.transfer_type <> 'cash'),
     'hasMore', (select count(*) > p_page_size from candidates),
     'nextCreatedAt', (select v.created_at from visible v order by v.created_at, v.id limit 1),
     'nextId', (select v.id from visible v order by v.created_at, v.id limit 1)
@@ -17265,6 +17337,34 @@ $$;
 
 
 ALTER FUNCTION "public"."get_rubber_export_page_ids"("p_location_id" "uuid", "p_view" "text", "p_cursor_created_at" timestamp with time zone, "p_cursor_id" "uuid", "p_page_size" integer, "p_search" "text", "p_subfilter" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_rubber_export_work_transfer_ids"("p_export_ids" "uuid"[]) RETURNS "uuid"[]
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_ids uuid[];
+begin
+  if not private.is_active_user()
+    or not (private.can_access_super_admin_features() or exists (
+      select 1 from public.profiles p
+      where p.id = auth.uid() and p.is_active and p.role = 'admin'
+    )) then
+    raise exception 'ไม่มีสิทธิ์ดูรายการส่งออกยาง';
+  end if;
+  if cardinality(p_export_ids) > 100 then raise exception 'จำนวนรายการส่งออกยางเกินกำหนด'; end if;
+  select coalesce(array_agg(e.id), array[]::uuid[]) into v_ids
+  from public.rubber_exports e
+  where e.id = any(coalesce(p_export_ids, array[]::uuid[]))
+    and private.can_access_location(e.location_id)
+    and exists (select 1 from public.money_transfers t where t.rubber_export_id = e.id);
+  return v_ids;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_rubber_export_work_transfer_ids"("p_export_ids" "uuid"[]) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_rubber_weight_alert_check"() RETURNS "jsonb"
@@ -19380,7 +19480,7 @@ CREATE TABLE IF NOT EXISTS "public"."money_transfers" (
     "account_number" "text",
     "account_name" "text",
     "bank_name" "text",
-    "net_amount_to_pay" numeric(12,2) DEFAULT 0 NOT NULL,
+    "net_amount_to_pay" numeric(14,2) DEFAULT 0 NOT NULL,
     "transfer_status" "text" DEFAULT 'pending'::"text" NOT NULL,
     "sync_status" "public"."sync_status" DEFAULT 'synced'::"public"."sync_status" NOT NULL,
     "record_status" "public"."record_status" DEFAULT 'active'::"public"."record_status" NOT NULL,
@@ -19405,9 +19505,11 @@ CREATE TABLE IF NOT EXISTS "public"."money_transfers" (
     "transfer_method" "text" DEFAULT 'bank'::"text" NOT NULL,
     "accounting_date" "date",
     "request_fingerprint" "text",
+    "rubber_export_id" "uuid",
+    CONSTRAINT "money_transfers_rubber_export_source_check" CHECK ((("transfer_type" = 'rubber_export_work'::"text") = ("rubber_export_id" IS NOT NULL))),
     CONSTRAINT "money_transfers_transfer_method_check" CHECK (("transfer_method" = ANY (ARRAY['bank'::"text", 'cash'::"text"]))),
     CONSTRAINT "money_transfers_transfer_status_check" CHECK (("transfer_status" = ANY (ARRAY['pending'::"text", 'paid'::"text", 'partial'::"text", 'overpaid'::"text", 'branch_and_transfer'::"text", 'advance_payment'::"text", 'cancelled'::"text"]))),
-    CONSTRAINT "money_transfers_transfer_type_check" CHECK (("transfer_type" = ANY (ARRAY['customer'::"text", 'transport'::"text", 'branch'::"text", 'cash'::"text"])))
+    CONSTRAINT "money_transfers_transfer_type_check" CHECK (("transfer_type" = ANY (ARRAY['customer'::"text", 'transport'::"text", 'branch'::"text", 'cash'::"text", 'rubber_export_work'::"text"])))
 );
 
 
@@ -19799,39 +19901,23 @@ CREATE OR REPLACE FUNCTION "public"."revert_rubber_export_to_draft"("p_export_id
     AS $$
 declare
   v_export public.rubber_exports%rowtype;
+  v_transfer public.money_transfers%rowtype;
   v_report_no text;
   v_receipt_no text;
 begin
-  select * into v_export
-  from public.rubber_exports
-  where id = p_export_id;
-
-  if v_export.id is null then
-    raise exception 'ไม่พบรายการส่งออก';
-  end if;
+  select * into v_export from public.rubber_exports where id = p_export_id;
+  if v_export.id is null then raise exception 'ไม่พบรายการส่งออก'; end if;
   if not private.can_manage_rubber_exports(v_export.location_id) then
     raise exception 'ไม่มีสิทธิ์ตรวจสอบรายการส่งออกของสาขานี้';
   end if;
-
   perform pg_advisory_xact_lock(hashtextextended(v_export.location_id::text, 0));
-
-  select * into v_export
-  from public.rubber_exports
-  where id = p_export_id
-  for update;
-
-  if v_export.id is null then
-    raise exception 'ไม่พบรายการส่งออก';
-  end if;
+  select * into v_export from public.rubber_exports where id = p_export_id for update;
+  if v_export.id is null then raise exception 'ไม่พบรายการส่งออก'; end if;
   if not private.can_manage_rubber_exports(v_export.location_id) then
     raise exception 'ไม่มีสิทธิ์ตรวจสอบรายการส่งออกของสาขานี้';
   end if;
   if v_export.status = 'draft' then
-    return jsonb_build_object(
-      'id', v_export.id,
-      'exportNo', v_export.export_no,
-      'status', 'draft'
-    );
+    return jsonb_build_object('id', v_export.id, 'exportNo', v_export.export_no, 'status', 'draft');
   end if;
   if v_export.status <> 'verified' then
     raise exception 'ย้อนกลับเป็นฉบับร่างได้เฉพาะรายการที่ตรวจสอบแล้ว';
@@ -19840,47 +19926,38 @@ begin
     raise exception 'RUBBER_EXPORT_SOLD_OUT:%', v_export.export_no
       using errcode = 'P0001', hint = 'กรุณายกเลิกขายก่อนย้อนกลับเป็นฉบับร่าง';
   end if;
-
   select coalesce(b.server_bill_no, b.local_bill_no, b.bill_no)
-  into v_receipt_no
-  from public.rubber_bills b
-  where b.source_rubber_export_id = p_export_id
-    and b.record_status = 'active'
+  into v_receipt_no from public.rubber_bills b
+  where b.source_rubber_export_id = p_export_id and b.record_status = 'active'
   limit 1;
   if v_receipt_no is not null then
     raise exception 'BRANCH_RECEIPT_SOURCE_LOCKED:%', v_export.export_no
       using hint = 'กรุณาลบบิลรับ ' || v_receipt_no || ' ก่อน';
   end if;
-
   v_report_no := private.active_report_no('rubber_export', p_export_id);
-  if v_report_no is not null then
-    perform private.raise_report_lock(v_report_no);
+  if v_report_no is not null then perform private.raise_report_lock(v_report_no); end if;
+  select * into v_transfer from public.money_transfers
+  where rubber_export_id = p_export_id for update;
+  if v_transfer.id is not null then
+    if not private.can_access_money_transfer_module()
+      or not private.can_access_location(v_export.location_id) then
+      raise exception 'ไม่มีสิทธิ์โอนเงินของสาขานี้';
+    end if;
+    v_report_no := private.active_transfer_report_no(v_transfer.id);
+    if v_report_no is not null then perform private.raise_report_lock(v_report_no); end if;
+    delete from public.money_transfers where id = v_transfer.id;
   end if;
-
   update public.rubber_exports
-  set status = 'draft',
-      previous_status = null,
-      current_weight = null,
-      weight_loss_percent = null,
-      work_rate = null,
-      other_operating_cost = 0,
-      work_total = null,
-      expense_destination = null,
-      verified_by_user_id = null,
-      verified_by_name = null,
-      verified_by_phone = null,
-      verified_at = null,
-      age_cutoff_at = null,
-      average_age_hours = null,
-      oldest_age_hours = null,
-      estimated_age_item_count = null
+  set status = 'draft', previous_status = null,
+      current_weight = null, weight_loss_percent = null,
+      work_rate = null, other_operating_cost = 0,
+      work_total = null, expense_destination = null,
+      verified_by_user_id = null, verified_by_name = null,
+      verified_by_phone = null, verified_at = null,
+      age_cutoff_at = null, average_age_hours = null,
+      oldest_age_hours = null, estimated_age_item_count = null
   where id = p_export_id;
-
-  return jsonb_build_object(
-    'id', v_export.id,
-    'exportNo', v_export.export_no,
-    'status', 'draft'
-  );
+  return jsonb_build_object('id', v_export.id, 'exportNo', v_export.export_no, 'status', 'draft');
 end;
 $$;
 
@@ -21043,6 +21120,138 @@ $$;
 
 
 ALTER FUNCTION "public"."save_rubber_bill_date_approval_setting"("p_non_current_date_requires_approval" boolean) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."save_rubber_export_work_transfer_slips"("p_transfer_id" "uuid", "p_expected_revision" integer, "p_slips" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_location_id uuid;
+  v_transfer public.money_transfers;
+  v_slip_ids uuid[];
+  v_paid numeric;
+  v_fingerprint text;
+  v_report_no text;
+begin
+  if not private.is_active_user() or not private.can_access_money_transfer_module() then
+    raise exception 'MT_ACCESS_DENIED: ไม่มีสิทธิ์ใช้งานรายการโอนเงิน';
+  end if;
+  if p_transfer_id is null or p_expected_revision is null or p_slips is null
+    or jsonb_typeof(p_slips) <> 'array' then
+    raise exception 'MT_INVALID_PAYLOAD: ข้อมูลสลิปไม่ครบ';
+  end if;
+  select location_id into v_location_id from public.money_transfers where id = p_transfer_id;
+  if v_location_id is null then raise exception 'MT_NOT_FOUND: ไม่พบรายการโอนเงิน'; end if;
+  if not private.can_access_location(v_location_id) then
+    raise exception 'MT_LOCATION_DENIED: ไม่มีสิทธิ์เข้าถึงสาขา';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended(v_location_id::text, 0));
+  select * into v_transfer from public.money_transfers where id = p_transfer_id for update;
+  if v_transfer.id is null or v_transfer.transfer_type <> 'rubber_export_work'
+    or v_transfer.record_status <> 'active' or v_transfer.location_id <> v_location_id then
+    raise exception 'MT_NOT_FOUND: ไม่พบรายการโอนค่าทำงาน';
+  end if;
+  if v_transfer.revision_no <> p_expected_revision then
+    raise exception 'MT_REVISION_CONFLICT: ข้อมูลถูกแก้ไขแล้ว กรุณาโหลดใหม่';
+  end if;
+  v_report_no := public.report_lock_no(v_transfer);
+  if v_report_no is not null then perform private.raise_report_lock(v_report_no); end if;
+  if exists (select 1 from jsonb_array_elements(p_slips) x
+    group by x->>'id' having count(*) > 1) then
+    raise exception 'MT_DUPLICATE_SLIP_ID: มีรหัสสลิปซ้ำในรายการ';
+  end if;
+  if exists (
+    select 1 from jsonb_array_elements(p_slips) x
+    where nullif(x->>'id', '') is null
+      or coalesce((x->>'amount')::numeric, 0) <= 0
+      or coalesce((x->>'fee')::numeric, 0) < 0
+      or nullif(x->>'transactionDate', '') is null
+      or x->>'inputMethod' not in ('manual', 'ocr')
+      or (x->>'inputMethod' = 'manual' and nullif(trim(x->>'referenceNumber'), '') is not null)
+      or (x->>'inputMethod' = 'ocr' and nullif(trim(x->>'referenceNumber'), '') is null)
+  ) then
+    raise exception 'MT_INVALID_SLIP: จำนวนเงิน ค่าธรรมเนียม วันเวลา หรือที่มาของสลิปไม่ถูกต้อง';
+  end if;
+  if exists (
+    select 1 from jsonb_array_elements(p_slips) x
+    join public.money_transfer_slips s on s.id = (x->>'id')::uuid
+    where s.transfer_id <> p_transfer_id
+  ) then
+    raise exception 'MT_SLIP_PARENT_CONFLICT: สลิปอยู่ในรายการโอนอื่น';
+  end if;
+  if exists (
+    select 1 from jsonb_array_elements(p_slips) x
+    where x->>'inputMethod' = 'ocr'
+    group by private.money_transfer_ocr_fingerprint(
+      x->>'referenceNumber', (x->>'amount')::numeric, (x->>'transactionDate')::timestamptz
+    )
+    having count(*) > 1
+  ) then
+    raise exception 'MT_OCR_DUPLICATE: พบสลิป OCR ซ้ำในรายการ';
+  end if;
+  for v_fingerprint in
+    select distinct private.money_transfer_ocr_fingerprint(
+      x->>'referenceNumber', (x->>'amount')::numeric, (x->>'transactionDate')::timestamptz
+    )
+    from jsonb_array_elements(p_slips) x
+    where x->>'inputMethod' = 'ocr'
+    order by 1
+  loop
+    perform pg_advisory_xact_lock(hashtextextended('money-transfer-ocr:' || v_fingerprint, 0));
+  end loop;
+  if exists (
+    select 1 from jsonb_array_elements(p_slips) x
+    join public.money_transfer_slips s
+      on s.ocr_fingerprint = private.money_transfer_ocr_fingerprint(
+        x->>'referenceNumber', (x->>'amount')::numeric, (x->>'transactionDate')::timestamptz
+      )
+    join public.money_transfers t on t.id = s.transfer_id and t.record_status <> 'deleted'
+    where x->>'inputMethod' = 'ocr' and t.id <> p_transfer_id
+  ) then
+    raise exception 'MT_OCR_DUPLICATE: สลิป OCR ถูกใช้ในรายการอื่นแล้ว';
+  end if;
+  select coalesce(array_agg((x->>'id')::uuid), array[]::uuid[])
+    into v_slip_ids from jsonb_array_elements(p_slips) x;
+  delete from public.money_transfer_slips s
+  where s.transfer_id = p_transfer_id and not (s.id = any(v_slip_ids));
+  insert into public.money_transfer_slips (
+    id, transfer_id, amount, reference_number, fee, sender_name, receiver_name,
+    transaction_date, slip_image_url, sort_order, input_method, ocr_fingerprint
+  )
+  select (x->>'id')::uuid, p_transfer_id, (x->>'amount')::numeric,
+    case when x->>'inputMethod' = 'manual' then null else nullif(x->>'referenceNumber', '') end,
+    coalesce((x->>'fee')::numeric, 0), null, null,
+    (x->>'transactionDate')::timestamptz, null,
+    coalesce((x->>'sortOrder')::integer, 0), x->>'inputMethod',
+    case when x->>'inputMethod' = 'ocr' then private.money_transfer_ocr_fingerprint(
+      x->>'referenceNumber', (x->>'amount')::numeric, (x->>'transactionDate')::timestamptz
+    ) end
+  from jsonb_array_elements(p_slips) x
+  on conflict (id) do update set
+    amount = excluded.amount, reference_number = excluded.reference_number,
+    fee = excluded.fee, transaction_date = excluded.transaction_date,
+    sort_order = excluded.sort_order, input_method = excluded.input_method,
+    ocr_fingerprint = excluded.ocr_fingerprint, sender_name = null,
+    receiver_name = null, slip_image_url = null, updated_at = now()
+  where money_transfer_slips.transfer_id = p_transfer_id;
+  select coalesce(sum(amount), 0) into v_paid
+  from public.money_transfer_slips where transfer_id = p_transfer_id;
+  update public.money_transfers
+  set transfer_status = case
+      when v_paid = 0 then 'pending'
+      when v_paid < v_transfer.net_amount_to_pay then 'partial'
+      when v_paid = v_transfer.net_amount_to_pay then 'paid'
+      else 'overpaid'
+    end,
+    revision_no = revision_no + 1, updated_at = now()
+  where id = p_transfer_id;
+  return public.get_money_transfer_detail(p_transfer_id);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."save_rubber_export_work_transfer_slips"("p_transfer_id" "uuid", "p_expected_revision" integer, "p_slips" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."save_rubber_weight_alert_config"("p_threshold_kg" integer, "p_interval_minutes" integer) RETURNS "jsonb"
@@ -23985,6 +24194,7 @@ declare
   v_actor_phone text;
   v_now timestamptz := clock_timestamp();
   v_age record;
+  v_work_total numeric(14,2);
 begin
   select * into v_export from public.rubber_exports where id = p_export_id for update;
   if v_export.id is null then raise exception 'ไม่พบรายการส่งออก'; end if;
@@ -24008,6 +24218,7 @@ begin
   if p_work_rate is null or p_work_rate < 0 then raise exception 'ค่าทำงานต้องไม่น้อยกว่า 0'; end if;
   if p_other_operating_cost is null or p_other_operating_cost < 0 then raise exception 'ค่าใช้จ่ายอื่นต้องไม่น้อยกว่า 0'; end if;
 
+  v_work_total := round(v_export.original_weight_total * p_work_rate + p_other_operating_cost, 2);
   select p.name, p.phone into v_actor_name, v_actor_phone from public.profiles p where p.id = auth.uid();
   select * into v_age from private.rubber_export_age_summary(p_export_id, v_now);
   update public.rubber_exports
@@ -24015,7 +24226,7 @@ begin
       work_rate = p_work_rate,
       other_operating_cost = p_other_operating_cost,
       weight_loss_percent = round((original_weight_total - p_current_weight) / original_weight_total * 100, 2),
-      work_total = round(original_weight_total * p_work_rate + p_other_operating_cost, 2),
+      work_total = v_work_total,
       expense_destination = p_expense_destination,
       status = 'verified',
       verified_by_user_id = auth.uid(),
@@ -24027,6 +24238,18 @@ begin
       oldest_age_hours = v_age.oldest_age_hours,
       estimated_age_item_count = v_age.estimated_age_item_count
   where id = p_export_id;
+
+  if p_expense_destination = 'external' and v_work_total > 0 then
+    insert into public.money_transfers (
+      location_id, rubber_export_id, net_amount_to_pay, transfer_type,
+      transfer_method, transfer_status, sync_status, record_status,
+      created_by_user_id, created_by_name, created_by_phone, server_received_at
+    ) values (
+      v_export.location_id, p_export_id, v_work_total, 'rubber_export_work',
+      'bank', 'pending', 'synced', 'active',
+      auth.uid(), coalesce(v_actor_name, ''), coalesce(v_actor_phone, ''), v_now
+    );
+  end if;
   return jsonb_build_object('id', p_export_id, 'status', 'verified', 'verifiedAt', v_now);
 end;
 $$;
@@ -25002,7 +25225,7 @@ ALTER TABLE "public"."money_transfer_items" OWNER TO "postgres";
 CREATE TABLE IF NOT EXISTS "public"."money_transfer_slips" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "transfer_id" "uuid" NOT NULL,
-    "amount" numeric(12,2) DEFAULT 0 NOT NULL,
+    "amount" numeric(14,2) DEFAULT 0 NOT NULL,
     "reference_number" "text",
     "fee" numeric(12,2) DEFAULT 0 NOT NULL,
     "sender_name" "text",
@@ -25904,6 +26127,11 @@ ALTER TABLE ONLY "public"."money_transfers"
 
 
 
+ALTER TABLE ONLY "public"."money_transfers"
+    ADD CONSTRAINT "money_transfers_rubber_export_id_key" UNIQUE ("rubber_export_id");
+
+
+
 ALTER TABLE "public"."payroll_slips"
     ADD CONSTRAINT "payroll_slips_expense_assignment" CHECK ((("status" <> 'APPROVED'::"public"."approval_status") OR ("cancelled_at" IS NOT NULL) OR ("net_pay" <= (0)::numeric) OR ("approved_at" IS NOT NULL))) NOT VALID;
 
@@ -26782,6 +27010,10 @@ CREATE OR REPLACE TRIGGER "guard_rubber_export_state" BEFORE UPDATE ON "public".
 
 
 
+CREATE OR REPLACE TRIGGER "guard_rubber_export_work_transfer" BEFORE INSERT OR UPDATE ON "public"."money_transfers" FOR EACH ROW EXECUTE FUNCTION "private"."guard_rubber_export_work_transfer"();
+
+
+
 CREATE OR REPLACE TRIGGER "handle_updated_at" BEFORE UPDATE ON "public"."financial_transactions" FOR EACH ROW EXECUTE FUNCTION "extensions"."moddatetime"('updated_at');
 
 
@@ -27326,6 +27558,11 @@ ALTER TABLE ONLY "public"."money_transfers"
 
 ALTER TABLE ONLY "public"."money_transfers"
     ADD CONSTRAINT "money_transfers_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id");
+
+
+
+ALTER TABLE ONLY "public"."money_transfers"
+    ADD CONSTRAINT "money_transfers_rubber_export_id_fkey" FOREIGN KEY ("rubber_export_id") REFERENCES "public"."rubber_exports"("id");
 
 
 
@@ -28666,6 +28903,10 @@ REVOKE ALL ON FUNCTION "private"."guard_reported_entity"() FROM PUBLIC;
 
 
 
+REVOKE ALL ON FUNCTION "private"."guard_rubber_export_work_transfer"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."has_time_payroll_manager_access"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "private"."has_time_payroll_manager_access"() TO "authenticated";
 
@@ -29505,6 +29746,11 @@ GRANT ALL ON FUNCTION "public"."get_rubber_export_page_ids"("p_location_id" "uui
 
 
 
+REVOKE ALL ON FUNCTION "public"."get_rubber_export_work_transfer_ids"("p_export_ids" "uuid"[]) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_rubber_export_work_transfer_ids"("p_export_ids" "uuid"[]) TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."get_rubber_weight_alert_check"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_rubber_weight_alert_check"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."get_rubber_weight_alert_check"() TO "service_role";
@@ -30089,6 +30335,11 @@ GRANT ALL ON FUNCTION "public"."save_rubber_bill_approval_settings"("p_edit_wind
 
 REVOKE ALL ON FUNCTION "public"."save_rubber_bill_date_approval_setting"("p_non_current_date_requires_approval" boolean) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."save_rubber_bill_date_approval_setting"("p_non_current_date_requires_approval" boolean) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."save_rubber_export_work_transfer_slips"("p_transfer_id" "uuid", "p_expected_revision" integer, "p_slips" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."save_rubber_export_work_transfer_slips"("p_transfer_id" "uuid", "p_expected_revision" integer, "p_slips" "jsonb") TO "authenticated";
 
 
 

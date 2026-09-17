@@ -21,12 +21,14 @@ export function SlipRow({
   errors = {},
   onUpdate,
   onRemove,
+  hidePartyFields = false,
 }: {
   slip: MoneyTransferSlip;
   index: number;
   errors?: Partial<Record<SlipField, string>>;
   onUpdate: (id: string, field: keyof MoneyTransferSlip, value: any) => void;
   onRemove: (id: string) => void;
+  hidePartyFields?: boolean;
 }) {
   const isOcr = slip.inputMethod === "ocr"
     || (slip.inputMethod === null && slip.referenceNumber !== null);
@@ -78,7 +80,7 @@ export function SlipRow({
             invalid={Boolean(errors.fee)}
           />
         </label>
-        <label className="block">
+        {!hidePartyFields && <label className="block">
           <span className="mb-1 block text-xs font-semibold text-ink/60">ชื่อผู้โอน</span>
           <input
             type="text"
@@ -86,8 +88,8 @@ export function SlipRow({
             onChange={(e) => onUpdate(slip.id, "senderName", e.target.value || null)}
             className="focus-ring h-9 w-full rounded-md border border-black/10 bg-white px-3 text-sm"
           />
-        </label>
-        <label className="block">
+        </label>}
+        {!hidePartyFields && <label className="block">
           <span className="mb-1 block text-xs font-semibold text-ink/60">ชื่อผู้รับ</span>
           <input
             type="text"
@@ -95,7 +97,7 @@ export function SlipRow({
             onChange={(e) => onUpdate(slip.id, "receiverName", e.target.value || null)}
             className="focus-ring h-9 w-full rounded-md border border-black/10 bg-white px-3 text-sm"
           />
-        </label>
+        </label>}
         <label className="block">
           <span className="mb-1 block text-xs font-semibold text-ink/60">
             วันที่ทำรายการ {!slip.transactionDate && <span className="text-clay font-normal">*จำเป็น</span>}

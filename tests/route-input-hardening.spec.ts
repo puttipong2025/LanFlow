@@ -136,6 +136,22 @@ test("report detail routes reject malformed report IDs before PostgreSQL", async
   }
 });
 
+test("rubber export detail routes reject malformed export IDs before PostgreSQL", async ({ browser }) => {
+  const manager = await context(browser, "super_admin");
+  try {
+    const [detail, update, deletion] = await Promise.all([
+      manager.request.get("/api/lanflow/rubber-exports/not-a-uuid"),
+      manager.request.patch("/api/lanflow/rubber-exports/not-a-uuid", {
+        data: { currentWeight: 1, workRate: 0, otherOperatingCost: 0 },
+      }),
+      manager.request.delete("/api/lanflow/rubber-exports/not-a-uuid"),
+    ]);
+    expect([detail.status(), update.status(), deletion.status()]).toEqual([400, 400, 400]);
+  } finally {
+    await manager.close();
+  }
+});
+
 test("report collection routes reject malformed location IDs before PostgreSQL", async ({ browser }) => {
   const manager = await context(browser, "super_admin");
   try {

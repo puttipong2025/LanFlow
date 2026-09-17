@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/server/auth";
 import {
+  isUuid,
   mapRubberExportRow,
   rubberExportErrorResponse,
 } from "@/lib/server/rubber-export-response";
@@ -27,9 +28,13 @@ export async function GET(request: NextRequest, context: RouteContext) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
   const { exportId } = await context.params;
+  if (!isUuid(exportId)) {
+    return NextResponse.json({ error: "รหัสรายการส่งออกไม่ถูกต้อง" }, { status: 400 });
+  }
   const [
     { data: row, error },
     { data: ageDetail, error: ageError },
+    { data: workTransferIds, error: workTransferError },
   ] = await Promise.all([
     result.supabase
       .from("rubber_exports")
@@ -38,10 +43,12 @@ export async function GET(request: NextRequest, context: RouteContext) {
       .in("status", ["draft", "verified"])
       .maybeSingle(),
     result.supabase.rpc("get_rubber_export_age_detail", { p_export_id: exportId }),
+    result.supabase.rpc("get_rubber_export_work_transfer_ids", { p_export_ids: [exportId] }),
   ]);
   if (error) return rubberExportErrorResponse(error.message);
   if (!row) return NextResponse.json({ error: "ไม่พบรายการส่งออก" }, { status: 404 });
   if (ageError) return rubberExportErrorResponse(ageError.message);
+  if (workTransferError) return rubberExportErrorResponse(workTransferError.message);
 
   const age = (ageDetail ?? {}) as Record<string, any>;
   const itemAges = new Map(
@@ -64,6 +71,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
     receipt_bill_id: age.receivedBy?.billId ?? null,
     receipt_bill_no: age.receivedBy?.billNo ?? null,
     receipt_location_name: age.receivedBy?.locationName ?? null,
+    has_work_transfer: (workTransferIds ?? []).includes(exportId),
     rubber_export_items: [{ count: row.rubber_export_items.length }],
   } as Record<string, any>);
   return NextResponse.json({
@@ -97,6 +105,9 @@ export async function PATCH(request: Request, context: RouteContext) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
   const { exportId } = await context.params;
+  if (!isUuid(exportId)) {
+    return NextResponse.json({ error: "รหัสรายการส่งออกไม่ถูกต้อง" }, { status: 400 });
+  }
   const payload = await request.json().catch(() => null) as {
     currentWeight?: number | null;
     workRate?: number | null;
@@ -120,6 +131,9 @@ export async function DELETE(request: Request, context: RouteContext) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
   const { exportId } = await context.params;
+  if (!isUuid(exportId)) {
+    return NextResponse.json({ error: "รหัสรายการส่งออกไม่ถูกต้อง" }, { status: 400 });
+  }
   const { data, error } = await result.supabase.rpc("delete_rubber_export", {
     p_export_id: exportId,
   });

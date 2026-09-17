@@ -642,7 +642,7 @@ export function RubberExportsModule({
       <AlertDialog
         open={Boolean(pendingRevert)}
         title={`ย้อน ${pendingRevert?.exportNo ?? "รายการส่งออกยาง"} เป็นฉบับร่าง?`}
-        description="ข้อมูลน้ำหนักปัจจุบัน ค่าทำงาน ค่าใช้จ่าย ปลายทาง ผู้ตรวจสอบ เวลา และอายุยางที่ยืนยันไว้จะถูกล้าง แต่เลข REX ผู้สร้าง และชุดบิลเดิมจะยังอยู่"
+        description={`ข้อมูลการตรวจสอบจะถูกล้าง แต่เลข REX ผู้สร้าง และชุดบิลเดิมจะยังอยู่${pendingRevert?.hasWorkTransfer ? " รายการโอนค่าทำงานและสลิปทั้งหมดจะถูกลบถาวร" : ""}`}
         confirmLabel="ย้อนกลับเป็นฉบับร่าง"
         busy={reverting}
         onCancel={() => {
@@ -663,7 +663,7 @@ export function RubberExportsModule({
       <AlertDialog
         open={Boolean(pendingDelete)}
         title={`ลบ ${pendingDelete?.exportNo ?? "รายการส่งออกยาง"} แบบถาวร?`}
-        description="รายการ บิล snapshot และรายละเอียดทั้งหมดจะถูกลบถาวรและกู้คืนไม่ได้ บิลต้นทางจะกลับมาใช้งานได้ และระบบจะเก็บเฉพาะประวัติการลบขั้นต่ำ"
+        description={`รายการ บิล snapshot และรายละเอียดทั้งหมดจะถูกลบถาวรและกู้คืนไม่ได้ บิลต้นทางจะกลับมาใช้งานได้${pendingDelete?.hasWorkTransfer ? " รายการโอนค่าทำงานและสลิปทั้งหมดจะถูกลบถาวรด้วย" : ""} ระบบจะเก็บเฉพาะประวัติการลบขั้นต่ำ`}
         confirmLabel="ยืนยันลบ"
         busy={deleting}
         onCancel={() => {

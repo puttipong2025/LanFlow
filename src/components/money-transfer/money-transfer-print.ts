@@ -21,6 +21,7 @@ const TYPE_LABELS: Record<MoneyTransfer["transferType"], string> = {
   customer: "โอนให้ลูกค้า",
   transport: "จ่ายค่าขนส่ง",
   branch: "โอนให้สาขา",
+  rubber_export_work: "ค่าทำงานส่งออกยาง",
 };
 
 const DATE_TIME_FORMATTER = new Intl.DateTimeFormat("th-TH-u-ca-buddhist-nu-latn", {
@@ -57,6 +58,8 @@ export type MoneyTransferReceiptModel = {
   createdAtText: string;
   accountingDateText: string;
   sourceLocationName: string;
+  isRubberExportWork: boolean;
+  rubberExportNo: string | null;
   targetLocationName: string | null;
   recipientName: string;
   bankName: string | null;
@@ -142,6 +145,8 @@ export function buildMoneyTransferReceiptModel(
     createdAtText: formatBangkokDateTime(transfer.createdAt),
     accountingDateText: formatAccountingDate(transfer.accountingDate),
     sourceLocationName,
+    isRubberExportWork: transfer.transferType === "rubber_export_work",
+    rubberExportNo: transfer.rubberExportNo ?? null,
     targetLocationName,
     recipientName: transfer.customerName
       ?? transfer.transportStaffName
@@ -225,8 +230,7 @@ export function renderMoneyTransferReceiptHtml(model: MoneyTransferReceiptModel)
         <div class="row"><strong>สลิป ${index + 1}</strong><strong>${money(slip.amount)}</strong></div>
         <div class="small">วันที่ ${h(slip.transactionDateText)}</div>
         <div class="small">อ้างอิง ${h(slip.referenceNumber ?? "—")}</div>
-        <div class="small">ผู้จ่าย ${h(slip.senderName ?? "—")}</div>
-        <div class="small">ผู้รับ ${h(slip.receiverName ?? "—")}</div>
+        ${model.isRubberExportWork ? "" : `<div class="small">ผู้จ่าย ${h(slip.senderName ?? "—")}</div><div class="small">ผู้รับ ${h(slip.receiverName ?? "—")}</div>`}
         <div class="row small"><span>ค่าธรรมเนียม</span><span>${money(slip.fee)}</span></div>
       </div>`).join("");
 
@@ -256,13 +260,14 @@ h1 { margin: 0; text-align: center; font-size: 18px; }
 <div class="center"><span class="status">${h(model.statusLabel)}</span></div>
 ${model.isUnfinished ? '<div class="warning">รายการยังไม่สิ้นสุด</div>' : ""}
 <div class="row"><span>ประเภท</span><strong>${h(model.typeLabel)}</strong></div>
+${model.isRubberExportWork ? `<div class="row"><span>รายการส่งออกยาง</span><strong>${h(model.rubberExportNo ?? "—")}</strong></div>` : ""}
 <div class="row"><span>${model.isBranchReceipt ? "วันที่บัญชี" : "วันที่สร้าง"}</span><strong>${h(model.isBranchReceipt ? model.accountingDateText : model.createdAtText)}</strong></div>
 <div class="section">
   ${model.isBranchReceipt
     ? `<div class="row"><span>สาขาผู้รับ</span><strong>${h(model.targetLocationName ?? model.recipientName)}</strong></div>`
-    : `<div class="row"><span>ต้นทาง</span><strong>${h(model.sourceLocationName)}</strong></div>
+    : `<div class="row"><span>${model.isRubberExportWork ? "สาขาต้นทาง" : "ต้นทาง"}</span><strong>${h(model.sourceLocationName)}</strong></div>
   ${model.targetLocationName ? `<div class="row"><span>ปลายทาง</span><strong>${h(model.targetLocationName)}</strong></div>` : ""}
-  <div class="row"><span>ผู้รับ</span><strong>${h(model.recipientName)}</strong></div>
+  ${model.isRubberExportWork ? "" : `<div class="row"><span>ผู้รับ</span><strong>${h(model.recipientName)}</strong></div>`}
   ${accountRows}`}
 </div>
 <div class="amount"><span>${h(model.primaryAmountLabel)}</span><strong>${money(model.primaryAmount)} บาท</strong></div>

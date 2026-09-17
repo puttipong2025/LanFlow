@@ -87,6 +87,7 @@ export function mapRubberExportRow(row: Record<string, any>): RubberExportSummar
     soldOutAt: row.sold_out_at ?? null,
     soldOutByName: row.sold_out_by_name ?? null,
     hasWexReservation: Number.isFinite(reservationCount) && reservationCount > 0,
+    hasWorkTransfer: row.has_work_transfer === true,
     deletedByName: row.deleted_by_name,
     deletedAt: row.deleted_at,
     itemCount: number(itemCount),

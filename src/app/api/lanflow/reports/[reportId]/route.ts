@@ -134,7 +134,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
       rowsByIds(
         client,
         "money_transfers",
-        "id, location_id, target_location_id, target_location_name, customer_name, transport_staff_name, transfer_type, transfer_status, net_amount_to_pay, branch_paid_amount, server_received_at, updated_at, created_at, money_transfer_slips(amount, fee)",
+        "id, location_id, rubber_export_id, target_location_id, target_location_name, customer_name, transport_staff_name, transfer_type, transfer_status, net_amount_to_pay, branch_paid_amount, server_received_at, updated_at, created_at, money_transfer_slips(amount, fee)",
         [...ids(items, "bank_transfer_source"), ...ids(items, "bank_transfer_target")]
       ),
       result.supabase.rpc("get_report_income_expense_rows_json", { p_report_id: reportId }),
@@ -150,6 +150,12 @@ export async function GET(request: NextRequest, context: RouteContext) {
     ].filter(Boolean))];
     const profileRows = await rowsByIds(client, "profiles", "id, name", profileIds);
     const profileName = new Map(profileRows.map((row) => [row.id, row.name]));
+    const [exportRows, sourceLocationRows] = await Promise.all([
+      rowsByIds(client, "rubber_exports", "id, export_no", bank.map((row) => row.rubber_export_id).filter(Boolean)),
+      rowsByIds(client, "locations", "id, name", bank.map((row) => row.location_id).filter(Boolean)),
+    ]);
+    const exportNoById = new Map(exportRows.map((row) => [row.id, row.export_no]));
+    const sourceLocationNameById = new Map(sourceLocationRows.map((row) => [row.id, row.name]));
 
     const location = Array.isArray(header.locations) ? header.locations[0] : header.locations;
     const report = {
@@ -275,7 +281,9 @@ export async function GET(request: NextRequest, context: RouteContext) {
           date: datePart(row.server_received_at ?? row.updated_at ?? row.created_at),
           number: `TR-${row.id.slice(0, 8)}`,
           direction,
-          party: direction === "in"
+          party: row.transfer_type === "rubber_export_work"
+            ? `ค่าทำงานส่งออกยาง ${exportNoById.get(row.rubber_export_id) ?? "REX"} · สาขาต้นทาง: ${sourceLocationNameById.get(row.location_id) ?? "ไม่ระบุสาขา"}`
+            : direction === "in"
             ? "สาขาต้นทาง"
             : row.target_location_name ?? row.customer_name ?? row.transport_staff_name ?? "",
           status: row.transfer_status ?? "",

@@ -65,8 +65,11 @@ export function mapMoneyTransferRow(row: any): MoneyTransfer {
     accountingDate: row.accounting_date ?? null,
     paidAmount: row.paid_amount == null ? undefined : Number(row.paid_amount),
     sourceCount: row.source_count == null ? undefined : Number(row.source_count),
+    slipCount: row.slip_count == null ? undefined : Number(row.slip_count),
     branchPaidAmount: row.branch_paid_amount == null ? undefined : Number(row.branch_paid_amount),
     transferType: row.transfer_type ?? "customer",
+    rubberExportId: row.rubber_export_id ?? null,
+    rubberExportNo: row.rubber_export_no ?? null,
     transportCost: row.transport_cost == null ? undefined : Number(row.transport_cost),
     transportStaffId: row.transport_staff_id,
     transportStaffName: row.transport_staff_name,
@@ -188,6 +191,18 @@ export function useMoneyTransferMutations(locationId: string, ownerUserId = "") 
     mutationFn: (transfer: MoneyTransfer) => saveTransfer(transfer, "update"),
     onSuccess: refresh,
   });
+  const updateWorkTransferSlips = useMutation({
+    mutationFn: async (transfer: MoneyTransfer) => {
+      const { data, error } = await supabase.rpc("save_rubber_export_work_transfer_slips", {
+        p_transfer_id: transfer.id,
+        p_expected_revision: transfer.revisionNo ?? 0,
+        p_slips: transfer.slips ?? [],
+      });
+      if (error) throw moneyTransferError(error);
+      return mapMoneyTransferRow(data);
+    },
+    onSuccess: refresh,
+  });
   const deleteTransfer = useMutation({
     mutationFn: async ({ id, revisionNo }: Pick<MoneyTransfer, "id" | "revisionNo">) => {
       const { data, error } = await supabase.rpc("delete_money_transfer", {
@@ -208,5 +223,5 @@ export function useMoneyTransferMutations(locationId: string, ownerUserId = "") 
     },
     onSuccess: refresh,
   });
-  return { addTransfer, updateTransfer, deleteTransfer, mergePendingTransfers };
+  return { addTransfer, updateTransfer, updateWorkTransferSlips, deleteTransfer, mergePendingTransfers };
 }

@@ -155,8 +155,8 @@ export async function GET(request: NextRequest) {
     ids?: string[]; hasMore?: boolean; nextCreatedAt?: string | null; nextId?: string | null;
   };
   const ids = page.ids ?? [];
-  const [{ data: rows, error }, { data: ages, error: agesError }] = ids.length === 0
-    ? [{ data: [], error: null }, { data: [], error: null }]
+  const [{ data: rows, error }, { data: ages, error: agesError }, { data: workTransferIds, error: workTransferError }] = ids.length === 0
+    ? [{ data: [], error: null }, { data: [], error: null }, { data: [], error: null }]
     : await Promise.all([
       result.supabase
       .from("rubber_exports")
@@ -167,10 +167,13 @@ export async function GET(request: NextRequest) {
         p_location_id: locationId,
         p_export_ids: ids,
       }),
+      result.supabase.rpc("get_rubber_export_work_transfer_ids", { p_export_ids: ids }),
     ] as const);
 
   if (error) return rubberExportErrorResponse(error.message);
   if (agesError) return rubberExportErrorResponse(agesError.message);
+  if (workTransferError) return rubberExportErrorResponse(workTransferError.message);
+  const linkedWorkTransferIds = new Set<string>(workTransferIds ?? []);
 
   const agesByExport = new Map<string, Record<string, any>>(
     (ages ?? []).map((age: Record<string, any>) => [age.export_id as string, age]),
@@ -190,6 +193,7 @@ export async function GET(request: NextRequest) {
       official_estimated_age_item_count: row.estimated_age_item_count,
       ...(agesByExport.get(row.id) ?? {}),
       age_calculated_at: agesByExport.get(row.id)?.calculated_at ?? null,
+      has_work_transfer: linkedWorkTransferIds.has(row.id),
       })] : [];
     }),
     hasMore: Boolean(page.hasMore),

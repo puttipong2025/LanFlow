@@ -46,6 +46,7 @@ export type RubberExportSummary = {
   soldOutAt?: string | null;
   soldOutByName?: string | null;
   hasWexReservation?: boolean;
+  hasWorkTransfer?: boolean;
   deletedByName?: string | null;
   deletedAt?: string | null;
   itemCount: number;

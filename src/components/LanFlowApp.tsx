@@ -677,6 +677,7 @@ function BusinessLanFlowApp() {
             locations={locations}
             online={online}
             profile={profile}
+            onOpenRubberExport={canAccessReports ? openRubberExportSource : undefined}
             initialEditTransferId={
               pendingMoneyTransferSource?.locationId === selectedLocationId
                 ? pendingMoneyTransferSource.transferId

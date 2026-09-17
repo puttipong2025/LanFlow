@@ -272,6 +272,12 @@ export function RubberExportDetailModal({
               <dt className="text-ink/60">ปลายทางค่าใช้จ่าย</dt>
               <dd className="font-semibold text-ink">{details.expenseDestination === "branch" ? "ลงรายจ่ายสาขานี้" : details.expenseDestination === "external" ? "จ่ายภายนอก" : "—"}</dd>
             </div>
+            {details.hasWorkTransfer && (
+              <div>
+                <dt className="text-ink/60">รายการโอนค่าทำงาน</dt>
+                <dd className="font-semibold text-river">สร้างรายการรอโอนอัตโนมัติแล้ว</dd>
+              </div>
+            )}
             <div>
               <dt className="text-ink/60">สถานะขาย</dt>
               <dd className="font-semibold text-ink">

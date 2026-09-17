@@ -485,7 +485,9 @@ export type MoneyTransfer = {
   bankName: string | null;
   netAmountToPay: number;
   accountingDate?: string | null;
-  transferType: 'customer' | 'transport' | 'branch';
+  transferType: 'customer' | 'transport' | 'branch' | 'rubber_export_work';
+  rubberExportId?: string | null;
+  rubberExportNo?: string | null;
   transportCost?: number;
   transportStaffId?: string | null;
   transportStaffName?: string | null;
@@ -506,6 +508,7 @@ export type MoneyTransfer = {
   reportLockNo?: string | null;
   paidAmount?: number;
   sourceCount?: number;
+  slipCount?: number;
 };
 
 export type CashDenominationCounts = {

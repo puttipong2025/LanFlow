@@ -39,6 +39,7 @@ import { getMoneyTransferPaymentSummary } from "@/lib/money-transfers/state";
 import { CustomerTransferForm } from "./money-transfer/CustomerTransferForm";
 import { BranchTransferForm } from "./money-transfer/BranchTransferForm";
 import { TransportTransferForm } from "./money-transfer/TransportTransferForm";
+import { RubberExportWorkTransferForm } from "./money-transfer/RubberExportWorkTransferForm";
 import { LegacyBranchTransferDetailsModal } from "./money-transfer/LegacyBranchTransferDetailsModal";
 import { MoneyTransferSourceDetailsModal } from "./money-transfer/MoneyTransferSourceDetailsModal";
 import {
@@ -55,6 +56,7 @@ type Props = {
   profile: Profile;
   initialEditTransferId?: string | null;
   onInitialEditTransferHandled?: () => void;
+  onOpenRubberExport?: (exportId: string, locationId: string) => void;
 };
 
 type TransferStatusFilter = MoneyTransfer["transferStatus"] | "all";
@@ -118,9 +120,10 @@ function getReportLockedDeleteMessage(error: unknown) {
 }
 
 function getSaveFailureMessage(error: unknown) {
-  return error instanceof Error && error.message.trim()
-    ? error.message
-    : "บันทึกรายการโอนเงินไม่สำเร็จ กรุณาลองใหม่";
+  const message = error instanceof Error ? error.message.trim() : "";
+  const reportNo = message.match(/REPORT_LOCKED:([A-Z0-9-]+)/i)?.[1];
+  if (reportNo) return `รายการถูกล็อกโดยรายงาน ${reportNo} ต้องลบรายงานล่าสุดตามลำดับก่อน`;
+  return message || "บันทึกรายการโอนเงินไม่สำเร็จ กรุณาลองใหม่";
 }
 
 function formatMoneyTransferCurrency(value: number) {
@@ -134,6 +137,7 @@ export function MoneyTransferModule({
   profile,
   initialEditTransferId,
   onInitialEditTransferHandled,
+  onOpenRubberExport,
 }: Props) {
   const [statusFilter, setStatusFilter] = useState<TransferStatusFilter>("pending");
   const [search, setSearch] = useState("");
@@ -145,13 +149,13 @@ export function MoneyTransferModule({
     loadMore,
     isLoadingMore,
   } = useMoneyTransferList({ locationId, status: statusFilter, search: debouncedSearch });
-  const { addTransfer, updateTransfer, deleteTransfer, mergePendingTransfers } =
+  const { addTransfer, updateTransfer, updateWorkTransferSlips, deleteTransfer, mergePendingTransfers } =
     useMoneyTransferMutations(locationId, profile.id);
   const { customers } = useCustomers();
   const pdfShare = useSharePdf();
 
   const [showTypeSelector, setShowTypeSelector] = useState(false);
-  const [activeFormType, setActiveFormType] = useState<'customer' | 'transport' | 'branch' | null>(null);
+  const [activeFormType, setActiveFormType] = useState<'customer' | 'transport' | 'branch' | 'rubber_export_work' | null>(null);
   const [editTransfer, setEditTransfer] = useState<MoneyTransfer | null>(null);
   const [legacyBranchTransfer, setLegacyBranchTransfer] = useState<MoneyTransfer | null>(null);
   const [deleteConfirmTransfer, setDeleteConfirmTransfer] = useState<MoneyTransfer | null>(null);
@@ -217,7 +221,8 @@ export function MoneyTransferModule({
       submitLockRef.current = true;
       setIsSubmitting(true);
       try {
-        if (isEditing) await updateTransfer.mutateAsync(transfer);
+        if (transfer.transferType === "rubber_export_work") await updateWorkTransferSlips.mutateAsync(transfer);
+        else if (isEditing) await updateTransfer.mutateAsync(transfer);
         else await addTransfer.mutateAsync(transfer);
 
         if (!isEditing && transfer.transferType === "branch") {
@@ -235,7 +240,7 @@ export function MoneyTransferModule({
         setIsSubmitting(false);
       }
     },
-    [editTransfer, addTransfer, updateTransfer, online, offlineMessage]
+    [editTransfer, addTransfer, updateTransfer, updateWorkTransferSlips, online, offlineMessage]
   );
 
   const handleDeleteConfirm = useCallback(() => {
@@ -301,6 +306,11 @@ export function MoneyTransferModule({
     }
     try {
       const detail = await loadMoneyTransferDetail(t.id);
+      if (detail.transferType === 'rubber_export_work') {
+        setEditTransfer(detail);
+        setActiveFormType('rubber_export_work');
+        return;
+      }
       if (detail.transferType === 'branch') {
         if (detail.locationId !== detail.targetLocationId) {
           setLegacyBranchTransfer(detail);
@@ -504,6 +514,28 @@ export function MoneyTransferModule({
           />
         </ModalShell>
       )}
+      {activeFormType === 'rubber_export_work' && editTransfer && (
+        <ModalShell
+          title={`ค่าทำงานส่งออกยาง ${editTransfer.rubberExportNo ?? ""}`}
+          subtitle={`สาขาต้นทาง: ${locations.find((location) => location.id === editTransfer.locationId)?.name ?? "ไม่ระบุสาขา"}`}
+          size="wide"
+          closeOnEscape
+          closeDisabled={isSubmitting}
+          onClose={() => { setActiveFormType(null); setEditTransfer(null); }}
+        >
+          <RubberExportWorkTransferForm
+            transfer={editTransfer}
+            sourceLocationName={locations.find((location) => location.id === editTransfer.locationId)?.name ?? "ไม่ระบุสาขา"}
+            online={online}
+            submitting={isSubmitting}
+            onSave={handleSave}
+            onCancel={() => { setActiveFormType(null); setEditTransfer(null); }}
+            onOpenSource={onOpenRubberExport && editTransfer.rubberExportId
+              ? () => onOpenRubberExport(editTransfer.rubberExportId!, editTransfer.locationId)
+              : undefined}
+          />
+        </ModalShell>
+      )}
       {/* Transfer filters and actions */}
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="flex flex-wrap gap-2">
@@ -531,7 +563,7 @@ export function MoneyTransferModule({
             value={search}
             onChange={(event) => { setSearch(event.target.value); setPage(1); }}
             aria-label="ค้นหารายการโอนเงิน"
-            placeholder="ค้นหาปลายทาง บัญชี หรือเลขรายการ"
+            placeholder="ค้นหาปลายทาง บัญชี หรือเลข REX"
             className="focus-ring h-10 w-full rounded-md border border-black/20 bg-white px-3 text-sm sm:w-72"
           />
         </div>
@@ -616,7 +648,7 @@ export function MoneyTransferModule({
                           {isLegacyBranchTransfer ? <Eye size={16} /> : <Edit3 size={16} />}
                           {isLegacyBranchTransfer ? "ดู" : "แก้"}
                         </button>
-                        <button
+                        {t.transferType !== "rubber_export_work" && <button
                           type="button"
                           onClick={() => {
                             if (t.reportLockNo) {
@@ -639,12 +671,19 @@ export function MoneyTransferModule({
                         >
                           <Trash2 size={14} />
                           ลบ
-                        </button>
+                        </button>}
                       </div>
                     </td>
                     <td className="px-3 py-2.5 font-mono text-ink/40">{(currentPage - 1) * PAGE_SIZE + idx + 1}</td>
                     <td className="px-3 py-2.5 text-center">
-                      <button
+                      {t.transferType === "rubber_export_work" ? (
+                        onOpenRubberExport && t.rubberExportId ? (
+                          <button type="button" onClick={() => onOpenRubberExport(t.rubberExportId!, t.locationId)}
+                            className="focus-ring rounded text-xs font-semibold text-river underline" title="เปิดรายการส่งออกยาง">
+                            {t.rubberExportNo ?? "REX"}
+                          </button>
+                        ) : <span className="text-xs font-semibold text-river">{t.rubberExportNo ?? "REX"}</span>
+                      ) : <button
                         type="button"
                         onClick={() => void handleOpenDetail(t.id)}
                         disabled={(t.sourceCount ?? 0) === 0}
@@ -654,9 +693,11 @@ export function MoneyTransferModule({
                       >
                         <Eye size={15} />
                         <span className="tabular-nums">{t.sourceCount ?? 0}</span>
-                      </button>
+                      </button>}
                     </td>
-                    <td className="px-3 py-2.5 font-semibold text-ink">{t.customerName ?? t.transportStaffName ?? t.targetLocationName ?? "—"}</td>
+                    <td className="px-3 py-2.5 font-semibold text-ink">{t.transferType === "rubber_export_work"
+                      ? <span>ค่าทำงาน {t.rubberExportNo ?? "REX"}<span className="block text-xs font-normal text-ink/60">สาขาต้นทาง: {locations.find((location) => location.id === t.locationId)?.name ?? "ไม่ระบุสาขา"}</span></span>
+                      : t.customerName ?? t.transportStaffName ?? t.targetLocationName ?? "—"}</td>
                     <td className="px-3 py-2.5">
                       {t.accountNumber ? (
                         <div className="max-w-[240px] rounded border border-sky-200/70 bg-sky-50/60 p-1.5 text-[11px]">
@@ -709,15 +750,16 @@ export function MoneyTransferModule({
                       </div>
                     </td>
                     <td className="px-3 py-2.5 text-right font-mono font-bold tabular-nums text-leaf">{formatMoneyTransferCurrency(summary.amountPaid)}</td>
-                    <td className="px-3 py-2.5 text-center"><span className="rounded-full bg-river/10 px-2 py-0.5 text-xs font-bold text-river">{t.slips?.length ?? 0}</span></td>
+                    <td className="px-3 py-2.5 text-center"><span className="rounded-full bg-river/10 px-2 py-0.5 text-xs font-bold text-river">{t.slipCount ?? t.slips?.length ?? 0}</span></td>
                     <td className="px-3 py-2.5">
                       <span className={cn(
                         "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-bold",
                         t.transferType === "customer" && "bg-blue-100 text-blue-700",
                         t.transferType === "transport" && "bg-orange-100 text-orange-700",
                         t.transferType === "branch" && "bg-purple-100 text-purple-700",
+                        t.transferType === "rubber_export_work" && "bg-river/10 text-river",
                       )}>
-                        {t.transferType === "customer" ? "ลูกค้า" : t.transferType === "transport" ? "รถขนส่ง" : "ให้สาขา"}
+                        {t.transferType === "customer" ? "ลูกค้า" : t.transferType === "transport" ? "รถขนส่ง" : t.transferType === "branch" ? "ให้สาขา" : "ค่าทำงาน REX"}
                       </span>
                     </td>
                     <td className="px-3 py-2.5">
