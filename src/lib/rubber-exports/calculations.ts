@@ -25,6 +25,11 @@ export function calculateWorkTotal(
   return round2(netWeightTotal * workRate + otherOperatingCost);
 }
 
+export function calculateExternalWorkTransferAmount(workTotal: number | null | undefined) {
+  if (workTotal == null || !Number.isFinite(workTotal) || workTotal <= 0) return 0;
+  return Math.floor(workTotal);
+}
+
 export function calculatePurchaseCostIncludingWork(
   rubberValueTotal: number,
   workTotal: number | null | undefined,

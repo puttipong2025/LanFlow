@@ -642,7 +642,7 @@ export function RubberExportsModule({
       <AlertDialog
         open={Boolean(pendingRevert)}
         title={`ย้อน ${pendingRevert?.exportNo ?? "รายการส่งออกยาง"} เป็นฉบับร่าง?`}
-        description={`ข้อมูลการตรวจสอบจะถูกล้าง แต่เลข REX ผู้สร้าง และชุดบิลเดิมจะยังอยู่${pendingRevert?.hasWorkTransfer ? " รายการโอนค่าทำงานและสลิปทั้งหมดจะถูกลบถาวร" : ""}`}
+        description={`ข้อมูลน้ำหนักปัจจุบัน อัตราและยอดค่าทำงาน ค่าใช้จ่ายอื่น และข้อมูลการตรวจสอบจะถูกล้าง แต่เลข REX ผู้สร้าง และชุดบิลเดิมจะยังอยู่${pendingRevert?.hasWorkTransfer ? " รายการโอนค่าทำงานและสลิปทั้งหมดจะถูกลบถาวร" : ""}`}
         confirmLabel="ย้อนกลับเป็นฉบับร่าง"
         busy={reverting}
         onCancel={() => {

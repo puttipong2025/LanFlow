@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select extensions.plan(43);
+select extensions.plan(49);
 
 select extensions.ok(
   not has_function_privilege('authenticated', 'private.guard_rubber_export_work_transfer()', 'execute'),
@@ -47,7 +47,10 @@ insert into public.rubber_exports (
   ('53000000-0000-4000-8000-000000000002', 'REX-WORK-ZERO', '2026-09-17', 2, '51000000-0000-4000-8000-000000000001', 'draft', 100, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001'),
   ('53000000-0000-4000-8000-000000000003', 'REX-WORK-BRANCH', '2026-09-17', 3, '51000000-0000-4000-8000-000000000001', 'draft', 100, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001'),
   ('53000000-0000-4000-8000-000000000004', 'REX-WORK-REVERT', '2026-09-17', 4, '51000000-0000-4000-8000-000000000001', 'draft', 100, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001'),
-  ('53000000-0000-4000-8000-000000000006', 'REX-WORK-LARGE', '2026-09-17', 6, '51000000-0000-4000-8000-000000000001', 'draft', 10000000001, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001');
+  ('53000000-0000-4000-8000-000000000006', 'REX-WORK-LARGE', '2026-09-17', 6, '51000000-0000-4000-8000-000000000001', 'draft', 10000000001, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001'),
+  ('53000000-0000-4000-8000-000000000007', 'REX-WORK-HALF', '2026-09-17', 7, '51000000-0000-4000-8000-000000000001', 'draft', 100, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001'),
+  ('53000000-0000-4000-8000-000000000008', 'REX-WORK-LOW-FRACTION', '2026-09-17', 8, '51000000-0000-4000-8000-000000000001', 'draft', 100, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001'),
+  ('53000000-0000-4000-8000-000000000009', 'REX-WORK-SUB-BAHT', '2026-09-17', 9, '51000000-0000-4000-8000-000000000001', 'draft', 1, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001');
 
 insert into public.rubber_exports (
   id, export_no, export_date, sequence_no, location_id, status,
@@ -79,6 +82,14 @@ select extensions.ok(not ('53000000-0000-4000-8000-000000000005'::uuid = any(pub
 select extensions.lives_ok($$select public.verify_rubber_export_atomic('53000000-0000-4000-8000-000000000006', 10000000000, 1, 0, 'external')$$, 'work amount above old numeric(12,2) limit verifies');
 reset role;
 select extensions.is((select net_amount_to_pay from public.money_transfers where rubber_export_id = '53000000-0000-4000-8000-000000000006'), 10000000001.00::numeric, 'large work amount is stored without numeric overflow');
+set local role authenticated;
+select extensions.lives_ok($$select public.verify_rubber_export_atomic('53000000-0000-4000-8000-000000000007', 90, 2, 0.50, 'external')$$, 'half-baht work total verifies');
+select extensions.lives_ok($$select public.verify_rubber_export_atomic('53000000-0000-4000-8000-000000000008', 90, 2, 0.49, 'external')$$, 'low fractional work total verifies');
+select extensions.lives_ok($$select public.verify_rubber_export_atomic('53000000-0000-4000-8000-000000000009', 1, 0.99, 0, 'external')$$, 'sub-baht work total verifies');
+reset role;
+select extensions.ok((select work_total = 200.50 and (select net_amount_to_pay from public.money_transfers where rubber_export_id = '53000000-0000-4000-8000-000000000007') = 200 from public.rubber_exports where id = '53000000-0000-4000-8000-000000000007'), 'half-baht work total stays exact while transfer drops the fraction');
+select extensions.ok((select work_total = 200.49 and (select net_amount_to_pay from public.money_transfers where rubber_export_id = '53000000-0000-4000-8000-000000000008') = 200 from public.rubber_exports where id = '53000000-0000-4000-8000-000000000008'), 'low fractional work total stays exact while transfer drops the fraction');
+select extensions.ok((select work_total = 0.99 and not exists(select 1 from public.money_transfers where rubber_export_id = '53000000-0000-4000-8000-000000000009') from public.rubber_exports where id = '53000000-0000-4000-8000-000000000009'), 'sub-baht work total does not create a zero-baht transfer');
 set local role authenticated;
 select extensions.lives_ok($$select public.verify_rubber_export_atomic('53000000-0000-4000-8000-000000000001', 90, 2, 10, 'external')$$, 'verify retry is idempotent');
 reset role;

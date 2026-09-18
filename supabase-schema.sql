@@ -4555,9 +4555,9 @@ begin
   if v_export.id is null
     or v_export.status <> 'verified'
     or v_export.expense_destination <> 'external'
-    or v_export.work_total <= 0
+    or floor(v_export.work_total) <= 0
     or new.location_id <> v_export.location_id
-    or new.net_amount_to_pay <> v_export.work_total
+    or new.net_amount_to_pay <> floor(v_export.work_total)
     or new.transfer_method <> 'bank'
     or new.transfer_status <> 'pending'
     or new.record_status <> 'active'
@@ -24457,6 +24457,7 @@ declare
   v_now timestamptz := clock_timestamp();
   v_age record;
   v_work_total numeric(14,2);
+  v_transfer_amount numeric(14,2);
 begin
   select * into v_export from public.rubber_exports where id = p_export_id for update;
   if v_export.id is null then raise exception 'ไม่พบรายการส่งออก'; end if;
@@ -24481,6 +24482,7 @@ begin
   if p_other_operating_cost is null or p_other_operating_cost < 0 then raise exception 'ค่าใช้จ่ายอื่นต้องไม่น้อยกว่า 0'; end if;
 
   v_work_total := round(v_export.original_weight_total * p_work_rate + p_other_operating_cost, 2);
+  v_transfer_amount := floor(v_work_total);
   select p.name, p.phone into v_actor_name, v_actor_phone from public.profiles p where p.id = auth.uid();
   select * into v_age from private.rubber_export_age_summary(p_export_id, v_now);
   update public.rubber_exports
@@ -24501,13 +24503,13 @@ begin
       estimated_age_item_count = v_age.estimated_age_item_count
   where id = p_export_id;
 
-  if p_expense_destination = 'external' and v_work_total > 0 then
+  if p_expense_destination = 'external' and v_transfer_amount > 0 then
     insert into public.money_transfers (
       location_id, rubber_export_id, net_amount_to_pay, transfer_type,
       transfer_method, transfer_status, sync_status, record_status,
       created_by_user_id, created_by_name, created_by_phone, server_received_at
     ) values (
-      v_export.location_id, p_export_id, v_work_total, 'rubber_export_work',
+      v_export.location_id, p_export_id, v_transfer_amount, 'rubber_export_work',
       'bank', 'pending', 'synced', 'active',
       auth.uid(), coalesce(v_actor_name, ''), coalesce(v_actor_phone, ''), v_now
     );

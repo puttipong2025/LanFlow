@@ -461,6 +461,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
         .toHaveAttribute("readonly", "");
       await page.unroute(detailRoute);
       await page.getByLabel("ค่าทำงาน/กก.").fill("2");
+      await page.getByLabel("ค่าดำเนินการอื่น").fill("0.99");
       const saveRoute = `**/api/lanflow/rubber-exports/${exportId}`;
       await page.route(saveRoute, async (route) => {
         if (route.request().method() !== "PATCH") {
@@ -494,7 +495,8 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       });
       await expect(destinationDialog).toBeVisible();
       await expect(destinationDialog).toContainText(`REX-MANAGER-${exportId.slice(0, 8)}`);
-      await expect(destinationDialog).toContainText("฿200.00");
+      await expect(destinationDialog).toContainText("฿200.99");
+      await expect(destinationDialog).toContainText("ยอดโอนหลังตัดเศษ ฿200.00");
       await expect(destinationDialog.getByRole("button", {
         name: "ยืนยันจ่ายภายนอก",
       })).toBeVisible();

@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
+  calculateExternalWorkTransferAmount,
   calculatePurchaseCostIncludingWork,
   calculateWeightLossPercent,
   calculateWorkTotal,
@@ -55,6 +56,15 @@ test.describe("Rubber export calculations @rubber-export", () => {
     });
     expect(isValidCurrentWeight(Number.NaN, 1)).toBeFalsy();
     expect(isValidCurrentWeight(100, Number.NaN)).toBeFalsy();
+  });
+
+  test("drops every fractional baht from new external work transfers", () => {
+    expect(calculateExternalWorkTransferAmount(1_234.01)).toBe(1_234);
+    expect(calculateExternalWorkTransferAmount(1_234.5)).toBe(1_234);
+    expect(calculateExternalWorkTransferAmount(1_234.99)).toBe(1_234);
+    expect(calculateExternalWorkTransferAmount(1)).toBe(1);
+    expect(calculateExternalWorkTransferAmount(0.99)).toBe(0);
+    expect(calculateExternalWorkTransferAmount(null)).toBe(0);
   });
 
   test("uses Bangkok calendar dates at midnight", () => {

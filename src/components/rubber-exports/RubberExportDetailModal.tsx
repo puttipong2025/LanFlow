@@ -5,6 +5,7 @@ import { Loader2, Share2 } from "lucide-react";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { RubberExportLoadingModal } from "@/components/rubber-exports/RubberExportLoadingModal";
 import {
+  calculateExternalWorkTransferAmount,
   calculatePurchaseCostIncludingWork,
   calculateWeightLossPercent,
   calculateWorkTotal,
@@ -82,6 +83,7 @@ export function RubberExportDetailModal({
     () => calculateWorkTotal(details.originalWeightTotal, workRate, otherCost),
     [details.originalWeightTotal, workRate, otherCost]
   );
+  const externalTransferAmount = calculateExternalWorkTransferAmount(workTotal);
   const purchaseCost = calculatePurchaseCostIncludingWork(
     details.rubberValueTotal,
     workTotal,
@@ -356,6 +358,9 @@ export function RubberExportDetailModal({
           >
             <p className="text-pretty text-sm font-semibold text-ink/70">
               เลือกปลายทางที่ถูกต้อง เมื่อยืนยันแล้วจะแก้ไขรายการนี้ไม่ได้
+            </p>
+            <p className="mt-3 rounded-md bg-field p-3 text-pretty text-sm text-ink/70">
+              จ่ายภายนอก: ยอดโอนหลังตัดเศษ <strong className="tabular-nums text-ink">฿{number(externalTransferAmount)}</strong>
             </p>
             {verifyError && (
               <p role="alert" className="mt-3 text-pretty text-sm font-semibold text-red-600">{verifyError}</p>
