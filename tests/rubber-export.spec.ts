@@ -1104,6 +1104,20 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       expect((await admin.request.patch(`/api/lanflow/rubber-exports/${created.id}`, {
         data: { currentWeight: 500, workRate: 2, otherOperatingCost: 100 },
       })).ok()).toBeTruthy();
+      const invalidDraftUpdate = await admin.request.patch(
+        `/api/lanflow/rubber-exports/${created.id}`,
+        { data: { currentWeight: 500, workRate: "NaN", otherOperatingCost: 100 } },
+      );
+      expect(invalidDraftUpdate.status(), await invalidDraftUpdate.text()).toBe(400);
+      const afterInvalidDraftUpdate = await admin.request.get(
+        `/api/lanflow/rubber-exports/${created.id}`,
+      );
+      expect(await afterInvalidDraftUpdate.json()).toMatchObject({
+        status: "draft",
+        currentWeight: 500,
+        workRate: 2,
+        workTotal: 1180,
+      });
       const unauthorizedInvalidVerify = await admin.request.post(
         `/api/lanflow/rubber-exports/${created.id}/verify`,
         {

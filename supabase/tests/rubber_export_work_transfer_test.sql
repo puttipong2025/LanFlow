@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select extensions.plan(49);
+select extensions.plan(57);
 
 select extensions.ok(
   not has_function_privilege('authenticated', 'private.guard_rubber_export_work_transfer()', 'execute'),
@@ -50,7 +50,10 @@ insert into public.rubber_exports (
   ('53000000-0000-4000-8000-000000000006', 'REX-WORK-LARGE', '2026-09-17', 6, '51000000-0000-4000-8000-000000000001', 'draft', 10000000001, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001'),
   ('53000000-0000-4000-8000-000000000007', 'REX-WORK-HALF', '2026-09-17', 7, '51000000-0000-4000-8000-000000000001', 'draft', 100, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001'),
   ('53000000-0000-4000-8000-000000000008', 'REX-WORK-LOW-FRACTION', '2026-09-17', 8, '51000000-0000-4000-8000-000000000001', 'draft', 100, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001'),
-  ('53000000-0000-4000-8000-000000000009', 'REX-WORK-SUB-BAHT', '2026-09-17', 9, '51000000-0000-4000-8000-000000000001', 'draft', 1, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001');
+  ('53000000-0000-4000-8000-000000000009', 'REX-WORK-SUB-BAHT', '2026-09-17', 9, '51000000-0000-4000-8000-000000000001', 'draft', 1, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001'),
+  ('53000000-0000-4000-8000-000000000010', 'REX-WORK-INVALID-DRAFT', '2026-09-17', 10, '51000000-0000-4000-8000-000000000001', 'draft', 100, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001'),
+  ('53000000-0000-4000-8000-000000000011', 'REX-WORK-INVALID-VERIFY', '2026-09-17', 11, '51000000-0000-4000-8000-000000000001', 'draft', 100, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001'),
+  ('53000000-0000-4000-8000-000000000012', 'REX-WORK-INVALID-DESTINATION', '2026-09-17', 12, '51000000-0000-4000-8000-000000000001', 'draft', 100, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001');
 
 insert into public.rubber_exports (
   id, export_no, export_date, sequence_no, location_id, status,
@@ -70,6 +73,17 @@ insert into public.rubber_exports (
 
 select set_config('request.jwt.claim.sub', '52000000-0000-4000-8000-000000000001', true);
 select set_config('request.jwt.claims', '{"sub":"52000000-0000-4000-8000-000000000001","role":"authenticated"}', true);
+set local role authenticated;
+select extensions.throws_like($$select public.update_rubber_export('53000000-0000-4000-8000-000000000010', 90, 'NaN'::numeric, 0)$$, '%ค่าทำงานต้องเป็นตัวเลขที่มีค่าจำกัด%', 'draft update rejects a non-finite work rate');
+select extensions.throws_like($$select public.update_rubber_export('53000000-0000-4000-8000-000000000010', 90, 'Infinity'::numeric, 0)$$, '%ค่าทำงานต้องเป็นตัวเลขที่มีค่าจำกัด%', 'draft update rejects an infinite work rate');
+select extensions.throws_like($$select public.verify_rubber_export_atomic('53000000-0000-4000-8000-000000000011', 90, 2, 'NaN'::numeric, 'external')$$, '%ค่าใช้จ่ายอื่นต้องเป็นตัวเลขที่มีค่าจำกัด%', 'verification rejects a non-finite other operating cost');
+select extensions.throws_like($$select public.verify_rubber_export_atomic('53000000-0000-4000-8000-000000000011', 90, 2, '-Infinity'::numeric, 'external')$$, '%ค่าใช้จ่ายอื่นต้องเป็นตัวเลขที่มีค่าจำกัด%', 'verification rejects a negative infinite other operating cost');
+select extensions.throws_like($$select public.verify_rubber_export_atomic('53000000-0000-4000-8000-000000000012', 90, 2, 0, null)$$, '%กรุณาเลือกปลายทางค่าใช้จ่าย%', 'verification rejects a null expense destination');
+reset role;
+select extensions.ok((select status = 'draft' and work_rate is null and work_total is null from public.rubber_exports where id = '53000000-0000-4000-8000-000000000010'), 'rejected draft update leaves source values unchanged');
+select extensions.ok((select status = 'draft' and work_total is null and not exists(select 1 from public.money_transfers where rubber_export_id = '53000000-0000-4000-8000-000000000011') from public.rubber_exports where id = '53000000-0000-4000-8000-000000000011'), 'rejected verification leaves source and transfer unchanged');
+select extensions.ok((select status = 'draft' and expense_destination is null from public.rubber_exports where id = '53000000-0000-4000-8000-000000000012'), 'rejected destination leaves source unchanged');
+
 set local role authenticated;
 select extensions.lives_ok($$select public.verify_rubber_export_atomic('53000000-0000-4000-8000-000000000001', 90, 2, 10, 'external')$$, 'REX manager can verify without transfer-module access');
 reset role;

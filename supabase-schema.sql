@@ -24210,12 +24210,25 @@ begin
     raise exception 'แก้ไขได้เฉพาะรายการฉบับร่าง';
   end if;
   if p_current_weight is not null
+    and p_current_weight::text in ('NaN', 'Infinity', '-Infinity')
+  then
+    raise exception 'น้ำหนักปัจจุบันต้องเป็นตัวเลขที่มีค่าจำกัด';
+  end if;
+  if p_current_weight is not null
     and (p_current_weight <= 0 or p_current_weight > v_export.original_weight_total)
   then
     raise exception 'น้ำหนักปัจจุบันต้องมากกว่า 0 และไม่เกินน้ำหนักสุทธิหลังหักรวม';
   end if;
+  if p_work_rate is not null
+    and p_work_rate::text in ('NaN', 'Infinity', '-Infinity')
+  then
+    raise exception 'ค่าทำงานต้องเป็นตัวเลขที่มีค่าจำกัด';
+  end if;
   if p_work_rate is not null and p_work_rate < 0 then
     raise exception 'ค่าทำงานต้องไม่ติดลบ';
+  end if;
+  if v_other::text in ('NaN', 'Infinity', '-Infinity') then
+    raise exception 'ค่าใช้จ่ายอื่นต้องเป็นตัวเลขที่มีค่าจำกัด';
   end if;
   if v_other < 0 then
     raise exception 'ค่าดำเนินการอื่นต้องไม่ติดลบ';
@@ -24464,7 +24477,11 @@ begin
   if not private.can_manage_rubber_exports(v_export.location_id) then
     raise exception 'ไม่มีสิทธิ์ตรวจสอบรายการส่งออกของสาขานี้';
   end if;
-  if p_expense_destination not in ('branch', 'external') then raise exception 'กรุณาเลือกปลายทางค่าใช้จ่าย'; end if;
+  if p_expense_destination is null
+    or p_expense_destination not in ('branch', 'external')
+  then
+    raise exception 'กรุณาเลือกปลายทางค่าใช้จ่าย';
+  end if;
   if v_export.status = 'verified' then
     if v_export.current_weight is not distinct from p_current_weight
       and v_export.work_rate is not distinct from p_work_rate
@@ -24475,11 +24492,25 @@ begin
     raise exception 'รายการนี้ตรวจสอบแล้วด้วยข้อมูลอื่น';
   end if;
   if v_export.status <> 'draft' then raise exception 'ตรวจสอบได้เฉพาะรายการฉบับร่าง'; end if;
-  if p_current_weight is null or p_current_weight <= 0 or p_current_weight > v_export.original_weight_total then
+  if p_current_weight is null then
     raise exception 'น้ำหนักปัจจุบันต้องมากกว่า 0 และไม่เกินน้ำหนักเดิม';
   end if;
-  if p_work_rate is null or p_work_rate < 0 then raise exception 'ค่าทำงานต้องไม่น้อยกว่า 0'; end if;
-  if p_other_operating_cost is null or p_other_operating_cost < 0 then raise exception 'ค่าใช้จ่ายอื่นต้องไม่น้อยกว่า 0'; end if;
+  if p_current_weight::text in ('NaN', 'Infinity', '-Infinity') then
+    raise exception 'น้ำหนักปัจจุบันต้องเป็นตัวเลขที่มีค่าจำกัด';
+  end if;
+  if p_current_weight <= 0 or p_current_weight > v_export.original_weight_total then
+    raise exception 'น้ำหนักปัจจุบันต้องมากกว่า 0 และไม่เกินน้ำหนักเดิม';
+  end if;
+  if p_work_rate is null then raise exception 'ค่าทำงานต้องไม่น้อยกว่า 0'; end if;
+  if p_work_rate::text in ('NaN', 'Infinity', '-Infinity') then
+    raise exception 'ค่าทำงานต้องเป็นตัวเลขที่มีค่าจำกัด';
+  end if;
+  if p_work_rate < 0 then raise exception 'ค่าทำงานต้องไม่น้อยกว่า 0'; end if;
+  if p_other_operating_cost is null then raise exception 'ค่าใช้จ่ายอื่นต้องไม่น้อยกว่า 0'; end if;
+  if p_other_operating_cost::text in ('NaN', 'Infinity', '-Infinity') then
+    raise exception 'ค่าใช้จ่ายอื่นต้องเป็นตัวเลขที่มีค่าจำกัด';
+  end if;
+  if p_other_operating_cost < 0 then raise exception 'ค่าใช้จ่ายอื่นต้องไม่น้อยกว่า 0'; end if;
 
   v_work_total := round(v_export.original_weight_total * p_work_rate + p_other_operating_cost, 2);
   v_transfer_amount := floor(v_work_total);

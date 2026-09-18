@@ -114,6 +114,25 @@ export async function PATCH(request: Request, context: RouteContext) {
     otherOperatingCost?: number | null;
   } | null;
   if (!payload) return NextResponse.json({ error: "ข้อมูลไม่ถูกต้อง" }, { status: 400 });
+  if (
+    (payload.currentWeight != null && (
+      typeof payload.currentWeight !== "number"
+      || !Number.isFinite(payload.currentWeight)
+      || payload.currentWeight <= 0
+    ))
+    || (payload.workRate != null && (
+      typeof payload.workRate !== "number"
+      || !Number.isFinite(payload.workRate)
+      || payload.workRate < 0
+    ))
+    || (payload.otherOperatingCost != null && (
+      typeof payload.otherOperatingCost !== "number"
+      || !Number.isFinite(payload.otherOperatingCost)
+      || payload.otherOperatingCost < 0
+    ))
+  ) {
+    return NextResponse.json({ error: "กรุณากรอกน้ำหนักและค่าใช้จ่ายให้ถูกต้อง" }, { status: 400 });
+  }
 
   const { data, error } = await result.supabase.rpc("update_rubber_export", {
     p_export_id: exportId,
