@@ -1,5 +1,5 @@
 export type RubberExportStatus = "draft" | "verified";
-export type RubberExportExpenseDestination = "branch" | "external";
+export type RubberExportExpenseDestination = "branch" | "external" | "off_system";
 
 export type RubberExportPermissions = {
   canVerify: boolean;

@@ -108,27 +108,37 @@ export async function PATCH(request: Request, context: RouteContext) {
   if (!isUuid(exportId)) {
     return NextResponse.json({ error: "รหัสรายการส่งออกไม่ถูกต้อง" }, { status: 400 });
   }
-  const payload = await request.json().catch(() => null) as {
-    currentWeight?: number | null;
-    workRate?: number | null;
-    otherOperatingCost?: number | null;
-  } | null;
-  if (!payload) return NextResponse.json({ error: "ข้อมูลไม่ถูกต้อง" }, { status: 400 });
+  const payload: unknown = await request.json().catch(() => null);
   if (
-    (payload.currentWeight != null && (
-      typeof payload.currentWeight !== "number"
-      || !Number.isFinite(payload.currentWeight)
-      || payload.currentWeight <= 0
+    payload === null
+    || typeof payload !== "object"
+    || Array.isArray(payload)
+    || !Object.prototype.hasOwnProperty.call(payload, "currentWeight")
+    || !Object.prototype.hasOwnProperty.call(payload, "workRate")
+    || !Object.prototype.hasOwnProperty.call(payload, "otherOperatingCost")
+  ) {
+    return NextResponse.json({ error: "ข้อมูลไม่ถูกต้อง" }, { status: 400 });
+  }
+  const values = payload as {
+    currentWeight: unknown;
+    workRate: unknown;
+    otherOperatingCost: unknown;
+  };
+  if (
+    (values.currentWeight != null && (
+      typeof values.currentWeight !== "number"
+      || !Number.isFinite(values.currentWeight)
+      || values.currentWeight <= 0
     ))
-    || (payload.workRate != null && (
-      typeof payload.workRate !== "number"
-      || !Number.isFinite(payload.workRate)
-      || payload.workRate < 0
+    || (values.workRate != null && (
+      typeof values.workRate !== "number"
+      || !Number.isFinite(values.workRate)
+      || values.workRate < 0
     ))
-    || (payload.otherOperatingCost != null && (
-      typeof payload.otherOperatingCost !== "number"
-      || !Number.isFinite(payload.otherOperatingCost)
-      || payload.otherOperatingCost < 0
+    || (values.otherOperatingCost != null && (
+      typeof values.otherOperatingCost !== "number"
+      || !Number.isFinite(values.otherOperatingCost)
+      || values.otherOperatingCost < 0
     ))
   ) {
     return NextResponse.json({ error: "กรุณากรอกน้ำหนักและค่าใช้จ่ายให้ถูกต้อง" }, { status: 400 });
@@ -136,9 +146,9 @@ export async function PATCH(request: Request, context: RouteContext) {
 
   const { data, error } = await result.supabase.rpc("update_rubber_export", {
     p_export_id: exportId,
-    p_current_weight: payload.currentWeight ?? null,
-    p_work_rate: payload.workRate ?? null,
-    p_other_operating_cost: payload.otherOperatingCost ?? 0,
+    p_current_weight: values.currentWeight ?? null,
+    p_work_rate: values.workRate ?? null,
+    p_other_operating_cost: values.otherOperatingCost ?? 0,
   });
   if (error) return rubberExportErrorResponse(error.message);
   return NextResponse.json(data, {

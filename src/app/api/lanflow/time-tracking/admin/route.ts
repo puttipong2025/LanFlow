@@ -41,7 +41,7 @@ function hasValidAttendanceSelections(value: unknown, month: string) {
 function rpcErrorStatus(message: string) {
   if (/Authentication required/i.test(message)) return 401;
   if (/Forbidden|access denied/i.test(message)) return 403;
-  if (/PAYROLL_AMOUNT_CHANGED|WAGE_PREVIEW_STALE|WAGE_PREVIEW_REQUIRED|MONTH_CLOSED|PENDING_PERIOD_ACTION|DEDUCTION_LOCKED|DEDUCTION_WAGE_LOCKED|PENDING_BLOCKER|OLDER_WORK_MONTH|DELETE_NEWER_SLIP_FIRST|REPORT_LOCKED|NO_PERIOD_HISTORY_TO_RESUME|RESUME_BEFORE_LAST_END_DATE|PERIOD_START_CORRECTION_STALE|already been decided/i.test(message)) return 409;
+  if (/PAYROLL_AMOUNT_CHANGED|WAGE_PREVIEW_STALE|WAGE_PREVIEW_REQUIRED|MONTH_CLOSED|PENDING_PERIOD_ACTION|DEDUCTION_LOCKED|DEDUCTION_WAGE_LOCKED|PENDING_BLOCKER|OLDER_WORK_MONTH|DELETE_NEWER_SLIP_FIRST|REPORT_LOCKED|NO_PERIOD_HISTORY_TO_RESUME|RESUME_BEFORE_LAST_END_DATE|PERIOD_START_CORRECTION_STALE|ADJUSTMENT_(STALE|NO_OP|PENDING_EXISTS|ALREADY_DECIDED|BELOW_CLOSED_FLOOR)|already been decided/i.test(message)) return 409;
   return 400;
 }
 
@@ -76,9 +76,11 @@ function rpcErrorMessage(message: string) {
   if (/WAGE_PREVIEW_STALE/i.test(message)) return "ข้อมูลค่าแรงหรือยอดหักเปลี่ยนแล้ว กรุณาตรวจ Preview ใหม่ก่อนยืนยัน";
   if (/WAGE_PREVIEW_REQUIRED/i.test(message)) return "กรุณาตรวจ Preview ค่าแรงก่อนยืนยัน";
 
-  const pending = message.match(/PENDING_BLOCKER:(DEBT|WITHDRAWAL):([0-9a-f-]+):([0-9]{4}-[0-9]{2})/i);
+  const pending = message.match(/PENDING_BLOCKER:(DEBT|WITHDRAWAL|ADJUSTMENT):([0-9a-f-]+):([0-9]{4}-[0-9]{2})/i);
   if (pending) {
-    const label = pending[1].toUpperCase() === "DEBT" ? "หนี้" : "เบิกเงิน";
+    const label = pending[1].toUpperCase() === "DEBT"
+      ? "หนี้"
+      : pending[1].toUpperCase() === "ADJUSTMENT" ? "ปรับยอดเบิก" : "เบิกเงิน";
     return `ยังมีรายการ${label}เดือน ${pending[3]} รออนุมัติ กรุณาอนุมัติ ปฏิเสธ หรือลบก่อน`;
   }
 
@@ -119,6 +121,14 @@ function rpcErrorMessage(message: string) {
   if (/DESCRIPTION_REQUIRED/i.test(message)) return "กรุณาระบุรายละเอียดหนี้";
   if (/INVALID_WAGE_PRECISION|INVALID_WAGE/i.test(message)) return "ค่าแรงต้องเป็น 0 ขึ้นไปและมีทศนิยมไม่เกิน 4 ตำแหน่ง";
   if (/INVALID_AMOUNT/i.test(message)) return "จำนวนเงินต้องมากกว่า 0";
+  if (/INVALID_ADJUSTMENT_TARGET/i.test(message)) return "ยอดเบิกใหม่ต้องเป็น 0 ขึ้นไปและมีทศนิยมไม่เกิน 2 ตำแหน่ง";
+  if (/WITHDRAWAL_NOT_REPORT_LOCKED/i.test(message)) return "ปรับยอดได้เฉพาะรายการเบิกที่ถูกล็อกโดยรายงานแล้ว";
+  if (/ADJUSTMENT_BRANCH_REQUIRED/i.test(message)) return "กรุณาเลือกสาขาที่จะรับหรือจ่ายผลต่าง";
+  if (/ADJUSTMENT_PENDING_EXISTS/i.test(message)) return "รายการเบิกนี้มีคำขอปรับยอดรออนุมัติอยู่แล้ว";
+  if (/ADJUSTMENT_NO_OP/i.test(message)) return "ยอดเบิกใหม่ต้องต่างจากยอดปัจจุบัน";
+  if (/ADJUSTMENT_STALE/i.test(message)) return "ยอดเบิกปัจจุบันเปลี่ยนแล้ว กรุณารีเฟรชและตรวจยอดใหม่";
+  const adjustmentFloor = message.match(/ADJUSTMENT_BELOW_CLOSED_FLOOR:([0-9.]+)/i)?.[1];
+  if (adjustmentFloor) return `ยอดเบิกใหม่ต้องไม่น้อยกว่ายอดที่ปิดสลิปแล้ว ${adjustmentFloor} บาท`;
   if (/INVALID_ATTENDANCE_SELECTIONS/i.test(message)) return "ข้อมูลข้อยกเว้นวันทำงานไม่ถูกต้อง";
   if (/INVALID_MONTH/i.test(message)) return "เดือนไม่ถูกต้องหรือเป็นเดือนในอนาคต";
   if (/Expense location.*access denied|New expense location access denied/i.test(message)) return "คุณไม่มีสิทธิ์ดูแลสาขาค่าใช้จ่ายที่เลือก";
@@ -176,14 +186,12 @@ export async function GET(request: NextRequest) {
       `),
       result.supabase
         .from("financial_transactions")
-        .select("id, profile_id, amount, effective_date, created_at, type, description, profiles!financial_transactions_profile_id_fkey!inner(name, role)")
+        .select("profile_id")
         .eq("status", "PENDING")
-        .in("type", ["DEBT", "WITHDRAWAL"])
-        .order("effective_date", { ascending: true })
-        .order("created_at", { ascending: true }),
+        .in("type", ["DEBT", "WITHDRAWAL", "ADJUSTMENT"]),
       result.supabase
         .from("payroll_slips")
-        .select("id, profile_id, month, net_pay, created_at, profiles!payroll_slips_profile_id_fkey!inner(name, role)")
+        .select("profile_id")
         .eq("status", "PENDING"),
       result.supabase
         .from("profiles")
@@ -320,6 +328,47 @@ export async function POST(request: NextRequest) {
         p_description: description || null,
         p_expense_location_id: payload.expense_location_id ?? null,
         p_comment: payload.admin_comment ?? null,
+      });
+      if (error) return rpcFailure(error);
+      return NextResponse.json({ success: true, result: data });
+    }
+
+    if (body.action === "ADMIN_REQUEST_WITHDRAWAL_ADJUSTMENT") {
+      const { withdrawal_id, target_amount, expense_location_id, reason } = payload;
+      if (
+        !isUuid(withdrawal_id)
+        || typeof target_amount !== "number"
+        || !Number.isFinite(target_amount)
+        || !isUuid(expense_location_id)
+        || (reason != null && typeof reason !== "string")
+      ) {
+        return NextResponse.json({ error: "ข้อมูลปรับยอดเบิกไม่ถูกต้อง" }, { status: 400 });
+      }
+      const { data, error } = await supabase.rpc("request_time_tracking_withdrawal_adjustment", {
+        p_withdrawal_id: withdrawal_id,
+        p_target_amount: target_amount,
+        p_expense_location_id: expense_location_id,
+        p_reason: typeof reason === "string" ? reason.slice(0, 500) : null,
+      });
+      if (error) return rpcFailure(error);
+      return NextResponse.json({ success: true, result: data });
+    }
+
+    if (body.action === "DECIDE_WITHDRAWAL_ADJUSTMENT") {
+      const { adjustment_id, status, expense_location_id, admin_comment } = payload;
+      if (
+        !isUuid(adjustment_id)
+        || !["APPROVED", "REJECTED"].includes(status)
+        || (status === "APPROVED" && !isUuid(expense_location_id))
+        || (admin_comment != null && typeof admin_comment !== "string")
+      ) {
+        return NextResponse.json({ error: "ข้อมูลตัดสินคำขอปรับยอดไม่ถูกต้อง" }, { status: 400 });
+      }
+      const { data, error } = await supabase.rpc("decide_time_tracking_withdrawal_adjustment", {
+        p_adjustment_id: adjustment_id,
+        p_decision: status,
+        p_expense_location_id: status === "APPROVED" ? expense_location_id : null,
+        p_comment: typeof admin_comment === "string" ? admin_comment.slice(0, 500) : null,
       });
       if (error) return rpcFailure(error);
       return NextResponse.json({ success: true, result: data });

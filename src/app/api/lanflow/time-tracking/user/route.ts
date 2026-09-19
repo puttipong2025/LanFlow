@@ -10,7 +10,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 
 function rpcErrorStatus(message: string) {
   if (/Forbidden|access denied/i.test(message)) return 403;
-  if (/MONTH_CLOSED|REPORT_LOCKED|already been decided/i.test(message)) return 409;
+  if (/MONTH_CLOSED|REPORT_LOCKED|ADJUSTMENT_(STALE|NO_OP|PENDING_EXISTS|ALREADY_DECIDED|BELOW_CLOSED_FLOOR)|already been decided/i.test(message)) return 409;
   return 400;
 }
 
@@ -19,6 +19,13 @@ function rpcErrorMessage(message: string) {
   if (closedMonth) return `เดือน ${closedMonth} มีสลิปเงินเดือนแล้ว กรุณาลบสลิปก่อน`;
   if (/FUTURE_EFFECTIVE_DATE/i.test(message)) return "วันที่รายการต้องไม่เกินวันปัจจุบัน";
   if (/INVALID_AMOUNT/i.test(message)) return "จำนวนเงินต้องมากกว่า 0";
+  if (/INVALID_ADJUSTMENT_TARGET/i.test(message)) return "ยอดเบิกใหม่ต้องเป็น 0 ขึ้นไปและมีทศนิยมไม่เกิน 2 ตำแหน่ง";
+  if (/WITHDRAWAL_NOT_REPORT_LOCKED/i.test(message)) return "ปรับยอดได้เฉพาะรายการเบิกที่ถูกล็อกโดยรายงานแล้ว";
+  if (/ADJUSTMENT_PENDING_EXISTS/i.test(message)) return "รายการเบิกนี้มีคำขอปรับยอดรออนุมัติอยู่แล้ว";
+  if (/ADJUSTMENT_NO_OP/i.test(message)) return "ยอดเบิกใหม่ต้องต่างจากยอดปัจจุบัน";
+  if (/ADJUSTMENT_STALE/i.test(message)) return "ยอดเบิกปัจจุบันเปลี่ยนแล้ว กรุณารีเฟรชและตรวจยอดใหม่";
+  const adjustmentFloor = message.match(/ADJUSTMENT_BELOW_CLOSED_FLOOR:([0-9.]+)/i)?.[1];
+  if (adjustmentFloor) return `ยอดเบิกใหม่ต้องไม่น้อยกว่ายอดที่ปิดสลิปแล้ว ${adjustmentFloor} บาท`;
   if (/PENDING_ONLY/i.test(message)) return "ลบได้เฉพาะรายการที่ยังรออนุมัติ";
   if (/Forbidden/i.test(message)) return "คุณไม่มีสิทธิ์ทำรายการนี้";
   return "ไม่สามารถทำรายการได้ กรุณาลองใหม่";
@@ -69,6 +76,8 @@ export async function GET(request: NextRequest) {
       attendance,
       activePeriods,
       totals,
+      adjustments,
+      adjustmentSummaries,
     ] = await Promise.all([
       supabase
         .from("financial_transactions")
@@ -121,10 +130,39 @@ export async function GET(request: NextRequest) {
         p_profile_id: targetUserId,
         p_month: month,
       }),
+      readAllSupabaseRows((from, to) => supabase
+        .from("financial_transactions")
+        .select("id, parent_debt_id, amount, adjustment_base_amount, status, description, created_at, approved_at")
+        .eq("profile_id", targetUserId)
+        .eq("type", "ADJUSTMENT")
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .range(from, to)),
+      supabase.rpc("get_withdrawal_adjustment_summaries", {
+        p_profile_id: targetUserId,
+      }),
     ]);
 
-    for (const response of [transactions, attendance, totals]) {
+    for (const response of [transactions, attendance, totals, adjustmentSummaries]) {
       if (response.error) throw response.error;
+    }
+
+    const transactionRows = transactions.data || [];
+    const visibleIds = new Set(transactionRows.map((row) => row.id));
+    const missingAdjustmentSourceIds = [...new Set(adjustments
+      .map((row) => row.parent_debt_id)
+      .filter((id): id is string => typeof id === "string" && !visibleIds.has(id)))];
+    let adjustmentSourceRows: typeof transactionRows = [];
+    if (missingAdjustmentSourceIds.length > 0) {
+      const adjustmentSources = await supabase
+        .from("financial_transactions")
+        .select("*, expense_location_name, report_lock_no, approver:profiles!financial_transactions_approved_by_fkey(name)")
+        .eq("profile_id", targetUserId)
+        .eq("type", "WITHDRAWAL")
+        .eq("status", "APPROVED")
+        .in("id", missingAdjustmentSourceIds);
+      if (adjustmentSources.error) throw adjustmentSources.error;
+      adjustmentSourceRows = adjustmentSources.data || [];
     }
 
     const totalDays = Number(attendance.data?.summary?.paidDays || 0);
@@ -155,10 +193,12 @@ export async function GET(request: NextRequest) {
       periodState,
       debts: activeDebts,
       transactions: result.auth.canManageTimePayroll
-        ? transactions.data || []
-        : (transactions.data || []).filter((item) => item.status !== "REJECTED"),
+        ? [...transactionRows, ...adjustmentSourceRows]
+        : [...transactionRows.filter((item) => item.status !== "REJECTED"), ...adjustmentSourceRows],
       deductions,
       slips,
+      adjustments,
+      adjustmentSummaries: adjustmentSummaries.data || [],
     });
   } catch (error) {
     const message = error instanceof Error
@@ -193,6 +233,39 @@ export async function POST(request: NextRequest) {
     }
     const { data, error } = await supabase.rpc("request_time_tracking_withdrawal", {
       p_amount: amount,
+    });
+    if (error) return rpcFailure(error);
+    return NextResponse.json({ success: true, result: data });
+  }
+
+  if (body.action === "REQUEST_WITHDRAWAL_ADJUSTMENT") {
+    const { withdrawal_id, target_amount, reason } = payload;
+    if (
+      typeof withdrawal_id !== "string"
+      || !UUID_PATTERN.test(withdrawal_id)
+      || typeof target_amount !== "number"
+      || !Number.isFinite(target_amount)
+      || (reason != null && typeof reason !== "string")
+    ) {
+      return NextResponse.json({ error: "ข้อมูลปรับยอดเบิกไม่ถูกต้อง" }, { status: 400 });
+    }
+    const { data, error } = await supabase.rpc("request_time_tracking_withdrawal_adjustment", {
+      p_withdrawal_id: withdrawal_id,
+      p_target_amount: target_amount,
+      p_expense_location_id: null,
+      p_reason: typeof reason === "string" ? reason.slice(0, 500) : null,
+    });
+    if (error) return rpcFailure(error);
+    return NextResponse.json({ success: true, result: data });
+  }
+
+  if (body.action === "WITHDRAW_WITHDRAWAL_ADJUSTMENT") {
+    const { adjustment_id } = payload;
+    if (typeof adjustment_id !== "string" || !UUID_PATTERN.test(adjustment_id)) {
+      return NextResponse.json({ error: "รหัสคำขอไม่ถูกต้อง" }, { status: 400 });
+    }
+    const { data, error } = await supabase.rpc("withdraw_time_tracking_withdrawal_adjustment", {
+      p_adjustment_id: adjustment_id,
     });
     if (error) return rpcFailure(error);
     return NextResponse.json({ success: true, result: data });

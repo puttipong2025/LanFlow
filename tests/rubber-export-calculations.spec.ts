@@ -14,7 +14,9 @@ test.describe("Rubber export calculations @rubber-export", () => {
     expect(calculateWeightLossPercent(3, 2)).toBe(33.33);
     expect(calculateWeightLossPercent(540, 541)).toBeNull();
     expect(calculateWorkTotal(540, 2, 100)).toBe(1180);
-    expect(calculateWorkTotal(1.005, 1, 0)).toBe(1.01);
+    expect(calculateWorkTotal(0.25, 8.52, 0)).toBe(2.13);
+    expect(calculateWorkTotal(0.25, 8.54, 0)).toBe(2.14);
+    expect(calculateWorkTotal(1.005, 1, 0)).toBeNull();
     expect(calculateWorkTotal(400, 0, 0)).toBe(0);
     expect(calculatePurchaseCostIncludingWork(8_703, 574.5, 295, 303)).toEqual({
       total: 9_277.5,
@@ -33,6 +35,8 @@ test.describe("Rubber export calculations @rubber-export", () => {
     expect(calculateWeightLossPercent(100, Number.NaN)).toBeNull();
     expect(calculateWorkTotal(null, 1, 0)).toBeNull();
     expect(calculateWorkTotal(100, -1, 0)).toBeNull();
+    expect(calculateWorkTotal(100, 2.001, 0)).toBeNull();
+    expect(calculateWorkTotal(100, 2, 0.001)).toBeNull();
     expect(calculateWorkTotal(100, 1, Number.POSITIVE_INFINITY)).toBeNull();
     expect(calculatePurchaseCostIncludingWork(3000, null, 100, 100)).toEqual({
       total: null,

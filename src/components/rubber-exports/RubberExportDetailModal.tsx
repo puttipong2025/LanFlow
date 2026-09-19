@@ -9,6 +9,7 @@ import {
   calculatePurchaseCostIncludingWork,
   calculateWeightLossPercent,
   calculateWorkTotal,
+  hasTwoDecimalPrecision,
   isValidCurrentWeight,
 } from "@/lib/rubber-exports/calculations";
 import type {
@@ -30,6 +31,10 @@ function nullableNumber(value: string) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function validWorkRateInput(value: string) {
+  return /^0\.\d{1,2}$/.test(value);
+}
+
 function dateTime(value: string | null | undefined) {
   if (!value) return "—";
   return new Intl.DateTimeFormat("th-TH", {
@@ -37,6 +42,13 @@ function dateTime(value: string | null | undefined) {
     timeStyle: "short",
     timeZone: "Asia/Bangkok",
   }).format(new Date(value));
+}
+
+function expenseDestinationLabel(destination: RubberExportExpenseDestination | null | undefined) {
+  if (destination === "branch") return "ลงรับ-จ่าย";
+  if (destination === "external") return "ลงโอนเงิน";
+  if (destination === "off_system") return "จ่ายนอกระบบ";
+  return "—";
 }
 
 export function RubberExportDetailModal({
@@ -66,8 +78,11 @@ export function RubberExportDetailModal({
   onShare: () => void;
   onClose: () => void;
 }) {
-  const [currentWeight, setCurrentWeight] = useState<number | null>(details.currentWeight ?? null);
-  const [workRate, setWorkRate] = useState<number | null>(details.workRate ?? null);
+  const [currentWeightInput, setCurrentWeightInput] = useState(String(details.currentWeight ?? 0));
+  const [workRateInput, setWorkRateInput] = useState(
+    details.workRate == null || details.workRate === 0 ? "0.0" : String(details.workRate)
+  );
+  const [workRateError, setWorkRateError] = useState<string | null>(null);
   const [otherCost, setOtherCost] = useState(details.otherOperatingCost);
   const [useTotalWeight, setUseTotalWeight] = useState(
     details.status === "draft" && details.currentWeight === details.originalWeightTotal
@@ -78,6 +93,8 @@ export function RubberExportDetailModal({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [verifyError, setVerifyError] = useState<string | null>(null);
   const isDraft = details.status === "draft";
+  const currentWeight = nullableNumber(currentWeightInput);
+  const workRate = nullableNumber(workRateInput);
   const weightValid = isValidCurrentWeight(details.originalWeightTotal, currentWeight);
   const workTotal = useMemo(
     () => calculateWorkTotal(details.originalWeightTotal, workRate, otherCost),
@@ -97,13 +114,19 @@ export function RubberExportDetailModal({
     [currentWeight, details.originalWeightTotal]
   );
   const values = { currentWeight, workRate, otherOperatingCost: otherCost };
+  const workInputsValid = hasTwoDecimalPrecision(otherCost)
+    && otherCost >= 0
+    && (!isDraft || validWorkRateInput(workRateInput))
+    && (workRate === null || (workRate >= 0 && workTotal !== null));
   const verifyDisabledReason = !canVerify
     ? "รอ super_admin หรือผู้มีสิทธิ์จัดการระบบตรวจสอบรายการ"
     : !weightValid
       ? "กรุณากรอกน้ำหนักปัจจุบันให้ถูกต้อง"
-      : workRate === null
-        ? "กรุณากรอกค่าทำงาน"
-        : null;
+      : !workInputsValid
+        ? "กรุณากรอกค่าทำงานและค่าใช้จ่ายให้ถูกต้อง"
+        : workRate === null
+          ? "กรุณากรอกค่าทำงาน"
+          : null;
 
   async function verify(destination: RubberExportExpenseDestination) {
     setVerifyError(null);
@@ -171,7 +194,7 @@ export function RubberExportDetailModal({
               onChange={(event) => {
                 const checked = event.target.checked;
                 setUseTotalWeight(checked);
-                if (checked) setCurrentWeight(details.originalWeightTotal);
+                if (checked) setCurrentWeightInput(String(details.originalWeightTotal));
               }}
               className="focus-ring mt-0.5 size-4 shrink-0 accent-leaf"
             />
@@ -194,23 +217,57 @@ export function RubberExportDetailModal({
               min="0"
               max={details.originalWeightTotal}
               step="0.01"
-              value={currentWeight ?? ""}
+              value={currentWeightInput}
               readOnly={!isDraft || useTotalWeight}
-              onChange={(event) => setCurrentWeight(nullableNumber(event.target.value))}
+              aria-invalid={isDraft && currentWeight !== null && !weightValid ? true : undefined}
+              aria-describedby={isDraft && currentWeight !== null && !weightValid
+                ? "rubber-export-weight-error"
+                : undefined}
+              onFocus={(event) => {
+                if (isDraft && !useTotalWeight && parseFloat(event.currentTarget.value) === 0) {
+                  setCurrentWeightInput("");
+                }
+              }}
+              onBlur={() => {
+                if (isDraft && !useTotalWeight && currentWeightInput.trim() === "") {
+                  setCurrentWeightInput("0");
+                }
+              }}
+              onChange={(event) => setCurrentWeightInput(event.currentTarget.value)}
               className="focus-ring h-11 w-full rounded-md border border-black/10 px-3 read-only:bg-slate-100"
             />
           </label>
           <label className="block">
             <span className="mb-1 block text-sm font-semibold text-ink/70">ค่าทำงาน/กก.</span>
             <input
-              type="number"
-              min="0"
-              step="0.01"
-              value={workRate ?? ""}
+              type="text"
+              inputMode="decimal"
+              value={workRateInput}
               readOnly={!isDraft}
-              onChange={(event) => setWorkRate(nullableNumber(event.target.value))}
+              aria-invalid={workRateError ? true : undefined}
+              aria-describedby={workRateError ? "rubber-export-work-rate-error" : undefined}
+              onFocus={(event) => {
+                if (isDraft && parseFloat(event.currentTarget.value) === 0) {
+                  setWorkRateInput("");
+                }
+                setWorkRateError(null);
+              }}
+              onBlur={() => {
+                if (!isDraft || validWorkRateInput(workRateInput)) return;
+                setWorkRateInput("0.0");
+                setWorkRateError("ค่าทำงาน/กก. ต้องพิมพ์ทศนิยม 1–2 ตำแหน่ง ตั้งแต่ 0.0 ถึง 0.99");
+              }}
+              onChange={(event) => {
+                setWorkRateInput(event.currentTarget.value);
+                setWorkRateError(null);
+              }}
               className="focus-ring h-11 w-full rounded-md border border-black/10 px-3 read-only:bg-slate-100"
             />
+            {workRateError && (
+              <span id="rubber-export-work-rate-error" role="alert" className="mt-1 block text-sm font-semibold text-red-600">
+                {workRateError}
+              </span>
+            )}
           </label>
           <label className="block">
             <span className="mb-1 block text-sm font-semibold text-ink/70">ค่าดำเนินการอื่น</span>
@@ -231,7 +288,7 @@ export function RubberExportDetailModal({
         </p>
 
         {currentWeight !== null && !weightValid && (
-          <p className="text-sm font-semibold text-red-600">
+          <p id="rubber-export-weight-error" className="text-sm font-semibold text-red-600">
             น้ำหนักปัจจุบันต้องมากกว่า 0 และไม่เกิน {number(details.originalWeightTotal)} กก.
           </p>
         )}
@@ -272,7 +329,7 @@ export function RubberExportDetailModal({
             </div>
             <div>
               <dt className="text-ink/60">ปลายทางค่าใช้จ่าย</dt>
-              <dd className="font-semibold text-ink">{details.expenseDestination === "branch" ? "ลงรายจ่ายสาขานี้" : details.expenseDestination === "external" ? "จ่ายภายนอก" : "—"}</dd>
+              <dd className="font-semibold text-ink">{expenseDestinationLabel(details.expenseDestination)}</dd>
             </div>
             {details.hasWorkTransfer && (
               <div>
@@ -309,7 +366,7 @@ export function RubberExportDetailModal({
           {isDraft && (
             <button
               type="button"
-              disabled={saving || (currentWeight !== null && !weightValid)}
+              disabled={saving || (currentWeight !== null && !weightValid) || !workInputsValid}
               onClick={() => {
                 setSaveError(null);
                 setSaving(true);
@@ -359,9 +416,6 @@ export function RubberExportDetailModal({
             <p className="text-pretty text-sm font-semibold text-ink/70">
               เลือกปลายทางที่ถูกต้อง เมื่อยืนยันแล้วจะแก้ไขรายการนี้ไม่ได้
             </p>
-            <p className="mt-3 rounded-md bg-field p-3 text-pretty text-sm text-ink/70">
-              จ่ายภายนอก: ยอดโอนหลังตัดเศษ <strong className="tabular-nums text-ink">฿{number(externalTransferAmount)}</strong>
-            </p>
             {verifyError && (
               <p role="alert" className="mt-3 text-pretty text-sm font-semibold text-red-600">{verifyError}</p>
             )}
@@ -371,23 +425,52 @@ export function RubberExportDetailModal({
                 กำลังยืนยันรายการ
               </p>
             )}
-            <div className="modal-actions mt-5 flex flex-wrap justify-end gap-2">
+            <div className="mt-4 grid gap-2">
               <button
                 type="button"
+                aria-label="ลงรับ-จ่าย"
+                aria-describedby="rubber-export-branch-destination-description"
                 disabled={verifying}
                 onClick={() => void verify("branch")}
-                className="focus-ring rounded-md bg-leaf px-4 py-2 font-semibold text-white disabled:opacity-50"
+                className="focus-ring w-full rounded-md border border-black/10 bg-field p-3 text-left text-ink hover:border-leaf/40 hover:bg-mint/40 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                ยืนยันลงรายจ่ายสาขานี้
+                <span className="block font-bold">ลงรับ-จ่าย</span>
+                <span id="rubber-export-branch-destination-description" className="mt-1 block text-pretty text-xs text-ink/65">
+                  {workTotal !== null && workTotal > 0
+                    ? "แสดงรายการในรับ-จ่ายของสาขานี้"
+                    : "ยอด 0 บาท จึงไม่สร้างรายการในรับ-จ่าย"}
+                </span>
               </button>
               <button
                 type="button"
+                aria-label="ลงโอนเงิน"
+                aria-describedby="rubber-export-transfer-destination-description"
                 disabled={verifying}
                 onClick={() => void verify("external")}
-                className="focus-ring rounded-md bg-river px-4 py-2 font-semibold text-white disabled:opacity-50"
+                className="focus-ring w-full rounded-md border border-black/10 bg-field p-3 text-left text-ink hover:border-leaf/40 hover:bg-mint/40 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                ยืนยันจ่ายภายนอก
+                <span className="block font-bold">ลงโอนเงิน</span>
+                <span id="rubber-export-transfer-destination-description" className="mt-1 block text-pretty text-xs text-ink/65">
+                  {externalTransferAmount > 0
+                    ? <>สร้างรายการโอนเงินรอดำเนินการ ยอดหลังตัดเศษ <strong className="tabular-nums text-ink">฿{number(externalTransferAmount)}</strong></>
+                    : "ยอดหลังตัดเศษเป็น 0 บาท จึงไม่สร้างรายการโอนเงิน"}
+                </span>
               </button>
+              <button
+                type="button"
+                aria-label="จ่ายนอกระบบ"
+                aria-describedby="rubber-export-off-system-destination-description"
+                disabled={verifying}
+                onClick={() => void verify("off_system")}
+                className="focus-ring w-full rounded-md border border-black/10 bg-field p-3 text-left text-ink hover:border-leaf/40 hover:bg-mint/40 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <span className="block font-bold">จ่ายนอกระบบ</span>
+                <span id="rubber-export-off-system-destination-description" className="mt-1 block text-pretty text-xs text-ink/65">
+                  บันทึกไว้ใน REX เท่านั้น ไม่สร้างรายการทางการเงิน
+                </span>
+              </button>
+            </div>
+            <div className="modal-actions mt-4 flex justify-end">
               <button type="button" disabled={verifying} onClick={() => setShowVerify(false)} className="focus-ring rounded-md bg-actionSecondary px-4 py-2 font-semibold text-white hover:bg-actionSecondary/90 disabled:opacity-50">ยกเลิก</button>
             </div>
           </ModalShell>

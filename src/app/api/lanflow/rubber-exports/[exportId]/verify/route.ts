@@ -32,7 +32,7 @@ export async function POST(request: Request, context: RouteContext) {
     }
   }
   const payload = await request.json().catch(() => null) as {
-    expenseDestination?: "branch" | "external";
+    expenseDestination?: "branch" | "external" | "off_system";
     currentWeight?: number;
     workRate?: number;
     otherOperatingCost?: number;
@@ -40,6 +40,7 @@ export async function POST(request: Request, context: RouteContext) {
   if (
     payload?.expenseDestination !== "branch"
     && payload?.expenseDestination !== "external"
+    && payload?.expenseDestination !== "off_system"
   ) {
     return NextResponse.json({ error: "กรุณาเลือกปลายทางค่าใช้จ่าย" }, { status: 400 });
   }

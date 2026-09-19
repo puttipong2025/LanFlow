@@ -140,6 +140,36 @@ test("payroll transaction rows keep a localized source date without a dead raw-d
   expect(document.sourceRows[0]).not.toHaveProperty("date");
 });
 
+test("payroll deduction rows show the original source date instead of the allocation month", () => {
+  const document = buildPayrollSlipDocument({
+    source: {
+      id: SOURCE_ID,
+      month: "2026-08",
+      status: "APPROVED",
+      total_days: 10,
+      daily_wage: 500,
+      gross_pay: 5_000,
+      total_deductions: 300,
+      net_pay: 4_700,
+      created_at: "2026-09-01T01:00:00.000Z",
+      slip_data: {
+        transactions: [{
+          id: "deduction-source-date",
+          type: "WITHDRAWAL_DEDUCTION",
+          status: "APPROVED",
+          amount: 300,
+          applied_month: "2026-08-01",
+          source_effective_date: "2026-07-18",
+        }],
+      },
+    },
+    employeeName: "สมชาย ใจดี",
+    generatedAt: GENERATED_AT,
+  });
+
+  expect(document.deductionRows[0]).toMatchObject({ dateLabel: "18 ก.ค. 2569" });
+});
+
 test("payroll attendance snapshot still populates the work-calendar table", () => {
   const document = buildPayrollSlipDocument({
     source: {

@@ -54,7 +54,8 @@ test.describe("time/payroll money contract", () => {
       "supabase/migrations/20260901050000_time_payroll_wage_precision_and_whole_baht_net_pay.sql",
     );
 
-    expect(moduleSource).toContain("daily_wage: wageText.trim()");
+    expect(moduleSource).toContain("const normalizedWage = wageText.trim()");
+    expect(moduleSource).toContain("daily_wage: wageText");
     expect(routeSource).toContain("parseDailyWageInput(daily_wage)");
     expect(migrationSource).toContain("create_time_tracking_payroll_slip_internal_20260901");
     expect(migrationSource).toContain("update_time_tracking_wage_internal_20260901");

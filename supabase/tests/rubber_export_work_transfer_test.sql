@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select extensions.plan(57);
+select extensions.plan(78);
 
 select extensions.ok(
   not has_function_privilege('authenticated', 'private.guard_rubber_export_work_transfer()', 'execute'),
@@ -53,7 +53,12 @@ insert into public.rubber_exports (
   ('53000000-0000-4000-8000-000000000009', 'REX-WORK-SUB-BAHT', '2026-09-17', 9, '51000000-0000-4000-8000-000000000001', 'draft', 1, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001'),
   ('53000000-0000-4000-8000-000000000010', 'REX-WORK-INVALID-DRAFT', '2026-09-17', 10, '51000000-0000-4000-8000-000000000001', 'draft', 100, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001'),
   ('53000000-0000-4000-8000-000000000011', 'REX-WORK-INVALID-VERIFY', '2026-09-17', 11, '51000000-0000-4000-8000-000000000001', 'draft', 100, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001'),
-  ('53000000-0000-4000-8000-000000000012', 'REX-WORK-INVALID-DESTINATION', '2026-09-17', 12, '51000000-0000-4000-8000-000000000001', 'draft', 100, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001');
+  ('53000000-0000-4000-8000-000000000012', 'REX-WORK-INVALID-DESTINATION', '2026-09-17', 12, '51000000-0000-4000-8000-000000000001', 'draft', 100, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001'),
+  ('53000000-0000-4000-8000-000000000013', 'REX-WORK-OFF-SYSTEM', '2026-09-17', 13, '51000000-0000-4000-8000-000000000001', 'draft', 100, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001'),
+  ('53000000-0000-4000-8000-000000000014', 'REX-WORK-BOUNDARY', '2026-09-17', 14, '51000000-0000-4000-8000-000000000001', 'draft', 100, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001'),
+  ('53000000-0000-4000-8000-000000000015', 'REX-WORK-UPDATE-PRECISION', '2026-09-17', 15, '51000000-0000-4000-8000-000000000001', 'draft', 100, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001'),
+  ('53000000-0000-4000-8000-000000000016', 'REX-WORK-VERIFY-PRECISION', '2026-09-17', 16, '51000000-0000-4000-8000-000000000001', 'draft', 100, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001'),
+  ('53000000-0000-4000-8000-000000000017', 'REX-WORK-HALF-CENT', '2026-09-17', 17, '51000000-0000-4000-8000-000000000001', 'draft', 0.25, 1000, 1000, 10, 0, '52000000-0000-4000-8000-000000000001', 'REX Work Manager', '0895200001');
 
 insert into public.rubber_exports (
   id, export_no, export_date, sequence_no, location_id, status,
@@ -76,13 +81,27 @@ select set_config('request.jwt.claims', '{"sub":"52000000-0000-4000-8000-0000000
 set local role authenticated;
 select extensions.throws_like($$select public.update_rubber_export('53000000-0000-4000-8000-000000000010', 90, 'NaN'::numeric, 0)$$, '%ค่าทำงานต้องเป็นตัวเลขที่มีค่าจำกัด%', 'draft update rejects a non-finite work rate');
 select extensions.throws_like($$select public.update_rubber_export('53000000-0000-4000-8000-000000000010', 90, 'Infinity'::numeric, 0)$$, '%ค่าทำงานต้องเป็นตัวเลขที่มีค่าจำกัด%', 'draft update rejects an infinite work rate');
+select extensions.throws_like($$select public.update_rubber_export('53000000-0000-4000-8000-000000000010', 90, 1000000000000, 0)$$, 'RUBBER_EXPORT_VALUE_OUT_OF_RANGE:%', 'draft update rejects a work total beyond numeric storage bounds');
 select extensions.throws_like($$select public.verify_rubber_export_atomic('53000000-0000-4000-8000-000000000011', 90, 2, 'NaN'::numeric, 'external')$$, '%ค่าใช้จ่ายอื่นต้องเป็นตัวเลขที่มีค่าจำกัด%', 'verification rejects a non-finite other operating cost');
 select extensions.throws_like($$select public.verify_rubber_export_atomic('53000000-0000-4000-8000-000000000011', 90, 2, '-Infinity'::numeric, 'external')$$, '%ค่าใช้จ่ายอื่นต้องเป็นตัวเลขที่มีค่าจำกัด%', 'verification rejects a negative infinite other operating cost');
+select extensions.throws_like($$select public.verify_rubber_export_atomic('53000000-0000-4000-8000-000000000011', 90, 1000000000000, 0, 'off_system')$$, 'RUBBER_EXPORT_VALUE_OUT_OF_RANGE:%', 'verification rejects a work total beyond numeric storage bounds');
 select extensions.throws_like($$select public.verify_rubber_export_atomic('53000000-0000-4000-8000-000000000012', 90, 2, 0, null)$$, '%กรุณาเลือกปลายทางค่าใช้จ่าย%', 'verification rejects a null expense destination');
+select extensions.lives_ok($$select public.update_rubber_export('53000000-0000-4000-8000-000000000014', 90, 9999999999.99, 0)$$, 'draft update accepts the largest work total that fits numeric storage');
+select extensions.throws_like($$select public.update_rubber_export('53000000-0000-4000-8000-000000000015', 90.001, 2, 0)$$, 'RUBBER_EXPORT_PRECISION:%', 'draft update rejects current weight beyond stored precision');
+select extensions.throws_like($$select public.update_rubber_export('53000000-0000-4000-8000-000000000015', 90, 2.001, 0)$$, 'RUBBER_EXPORT_PRECISION:%', 'draft update rejects work rate beyond stored precision');
+select extensions.throws_like($$select public.update_rubber_export('53000000-0000-4000-8000-000000000015', 90, 2, 0.001)$$, 'RUBBER_EXPORT_PRECISION:%', 'draft update rejects other cost beyond stored precision');
+select extensions.throws_like($$select public.verify_rubber_export_atomic('53000000-0000-4000-8000-000000000016', 90.001, 2, 0, 'off_system')$$, 'RUBBER_EXPORT_PRECISION:%', 'verification rejects current weight beyond stored precision');
+select extensions.throws_like($$select public.verify_rubber_export_atomic('53000000-0000-4000-8000-000000000016', 90, 2.001, 0, 'off_system')$$, 'RUBBER_EXPORT_PRECISION:%', 'verification rejects work rate beyond stored precision');
+select extensions.throws_like($$select public.verify_rubber_export_atomic('53000000-0000-4000-8000-000000000016', 90, 2, 0.001, 'off_system')$$, 'RUBBER_EXPORT_PRECISION:%', 'verification rejects other cost beyond stored precision');
+select extensions.lives_ok($$select public.verify_rubber_export_atomic('53000000-0000-4000-8000-000000000017', 0.25, 8.54, 0, 'off_system')$$, 'half-cent multiplication verifies');
 reset role;
 select extensions.ok((select status = 'draft' and work_rate is null and work_total is null from public.rubber_exports where id = '53000000-0000-4000-8000-000000000010'), 'rejected draft update leaves source values unchanged');
 select extensions.ok((select status = 'draft' and work_total is null and not exists(select 1 from public.money_transfers where rubber_export_id = '53000000-0000-4000-8000-000000000011') from public.rubber_exports where id = '53000000-0000-4000-8000-000000000011'), 'rejected verification leaves source and transfer unchanged');
 select extensions.ok((select status = 'draft' and expense_destination is null from public.rubber_exports where id = '53000000-0000-4000-8000-000000000012'), 'rejected destination leaves source unchanged');
+select extensions.is((select work_total from public.rubber_exports where id = '53000000-0000-4000-8000-000000000014'), 999999999999.00::numeric, 'boundary work total is stored exactly');
+select extensions.ok((select current_weight is null and work_rate is null and other_operating_cost = 0 and work_total is null from public.rubber_exports where id = '53000000-0000-4000-8000-000000000015'), 'rejected draft precision inputs leave source values unchanged');
+select extensions.ok((select status = 'draft' and current_weight is null and work_rate is null and other_operating_cost = 0 and work_total is null from public.rubber_exports where id = '53000000-0000-4000-8000-000000000016'), 'rejected verification precision inputs leave source values unchanged');
+select extensions.is((select work_total from public.rubber_exports where id = '53000000-0000-4000-8000-000000000017'), 2.14::numeric, 'PostgreSQL stores the half-cent work total rounded to 2.14');
 
 set local role authenticated;
 select extensions.lives_ok($$select public.verify_rubber_export_atomic('53000000-0000-4000-8000-000000000001', 90, 2, 10, 'external')$$, 'REX manager can verify without transfer-module access');
@@ -114,8 +133,17 @@ select extensions.throws_like($$select public.revert_rubber_export_to_draft('530
 select extensions.throws_like($$select public.delete_rubber_export('53000000-0000-4000-8000-000000000001')$$, '%ไม่มีสิทธิ์โอนเงิน%', 'linked delete requires transfer permission');
 select extensions.lives_ok($$select public.verify_rubber_export_atomic('53000000-0000-4000-8000-000000000002', 90, 0, 0, 'external')$$, 'zero work verifies without transfer');
 select extensions.lives_ok($$select public.verify_rubber_export_atomic('53000000-0000-4000-8000-000000000003', 90, 2, 10, 'branch')$$, 'branch-paid work verifies without transfer');
+select extensions.lives_ok($$select public.verify_rubber_export_atomic('53000000-0000-4000-8000-000000000013', 90, 2, 10, 'off_system')$$, 'off-system work verifies without transfer-module access');
+select extensions.lives_ok($$select public.verify_rubber_export_atomic('53000000-0000-4000-8000-000000000013', 90, 2, 10, 'off_system')$$, 'off-system verify retry is idempotent');
 reset role;
 select extensions.ok(not exists(select 1 from public.money_transfers where rubber_export_id in ('53000000-0000-4000-8000-000000000002', '53000000-0000-4000-8000-000000000003')), 'zero and branch-paid work do not create transfers');
+select extensions.ok((select status = 'verified' and expense_destination = 'off_system' and work_total = 210 and verified_by_user_id = '52000000-0000-4000-8000-000000000001' and verified_by_name = 'REX Work Manager' and not exists(select 1 from public.money_transfers where rubber_export_id = '53000000-0000-4000-8000-000000000013') from public.rubber_exports where id = '53000000-0000-4000-8000-000000000013'), 'off-system verification stores destination, work cost, and verifier without creating a transfer');
+select extensions.ok(not exists(select 1 from private.reportable_items('51000000-0000-4000-8000-000000000001', '2100-01-01 00:00:00+00') where entity_type = 'rubber_export' and entity_id = '53000000-0000-4000-8000-000000000013'), 'off-system work is excluded from financial report candidates');
+set local role authenticated;
+select extensions.is((public.get_income_expense_operational_feed('51000000-0000-4000-8000-000000000001', 'latest', 'REX-WORK-OFF-SYSTEM', null) -> 'rows')::text, '[]', 'off-system work is excluded from the income-expense feed');
+select extensions.lives_ok($$select public.revert_rubber_export_to_draft('53000000-0000-4000-8000-000000000013')$$, 'off-system work reverts without transfer-module access');
+reset role;
+select extensions.ok((select status = 'draft' and expense_destination is null and work_total is null from public.rubber_exports where id = '53000000-0000-4000-8000-000000000013'), 'off-system revert clears derived verification fields');
 
 update public.profiles set can_access_money_transfer = true where id = '52000000-0000-4000-8000-000000000001';
 set local role authenticated;

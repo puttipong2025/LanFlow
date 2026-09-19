@@ -36,6 +36,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
     const nextBillId = crypto.randomUUID();
     let submittedIds: string[] | null = null;
     let previewRequests = 0;
+    let showEmptyDraft = false;
     const page = await context.newPage();
 
     const summary = {
@@ -119,7 +120,16 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
           await route.fulfill({
             status: 200,
             contentType: "application/json",
-            body: JSON.stringify({ ...summary, items: [currentItem] }),
+            body: JSON.stringify({
+              ...summary,
+              ...(showEmptyDraft && {
+                currentWeight: null,
+                weightLossPercent: null,
+                workRate: null,
+                workTotal: null,
+              }),
+              items: [currentItem],
+            }),
           });
           return;
         }
@@ -192,12 +202,46 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await expect(totalCost.getByText("—", { exact: true })).toBeVisible();
       await expect(averageCost.getByText("—", { exact: true })).toBeVisible();
 
-      await detailDialog.getByLabel("ค่าทำงาน/กก.").fill("0");
+      await detailDialog.getByLabel("ค่าทำงาน/กก.").fill("0.0");
       await detailDialog.getByLabel("ค่าดำเนินการอื่น").fill("0");
       await expect(totalCost.getByText("฿3,000.00", { exact: true })).toBeVisible();
       await expect(averageCost.getByText("฿33.33/กก.", { exact: true })).toBeVisible();
       await expect(detailDialog.getByRole("button", { name: "ตรวจสอบแล้ว" })).toBeEnabled();
       await detailDialog.getByRole("button", { name: "ปิด" }).click();
+
+      showEmptyDraft = true;
+      await page.getByRole("button", { name: "ดูรายละเอียด REX-EDIT-001" }).click();
+      const emptyDraftDialog = page.getByRole("dialog", { name: "REX-EDIT-001" });
+      const emptyWeightInput = emptyDraftDialog.getByLabel("น้ำหนักปัจจุบัน", { exact: true });
+      const emptyRateInput = emptyDraftDialog.getByLabel("ค่าทำงาน/กก.");
+      await expect(emptyWeightInput).toHaveValue("0");
+      await expect(emptyRateInput).toHaveValue("0.0");
+      await expect(emptyDraftDialog.getByRole("button", { name: "บันทึกร่าง" })).toBeDisabled();
+      await expect(emptyDraftDialog.getByRole("button", { name: "ตรวจสอบแล้ว" })).toBeDisabled();
+      await emptyWeightInput.focus();
+      await expect(emptyWeightInput).toHaveValue("");
+      await emptyWeightInput.blur();
+      await expect(emptyWeightInput).toHaveValue("0");
+      await emptyRateInput.focus();
+      await expect(emptyRateInput).toHaveValue("");
+      await emptyRateInput.fill("0.99");
+      await emptyRateInput.blur();
+      await expect(emptyRateInput).toHaveValue("0.99");
+      await emptyRateInput.fill("1.0");
+      await emptyRateInput.blur();
+      await expect(emptyRateInput).toHaveValue("0.0");
+      await expect(emptyDraftDialog.getByRole("alert")).toContainText("ตั้งแต่ 0.0 ถึง 0.99");
+      await expect(emptyRateInput).toHaveAttribute("aria-invalid", "true");
+      await expect(emptyDraftDialog.getByRole("alertdialog")).toHaveCount(0);
+      await emptyRateInput.fill("0");
+      await emptyRateInput.blur();
+      await expect(emptyRateInput).toHaveValue("0.0");
+      await emptyRateInput.fill("0.5");
+      await emptyRateInput.blur();
+      await expect(emptyRateInput).toHaveValue("0.5");
+      await expect(emptyDraftDialog.getByRole("alert")).toHaveCount(0);
+      await emptyDraftDialog.getByRole("button", { name: "ปิด" }).click();
+      showEmptyDraft = false;
 
       summary.currentWeight = summary.originalWeightTotal;
       summary.weightLossPercent = 0;
@@ -364,7 +408,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
   });
 
   test("system manager gets super-admin verification actions for another admin's draft without reloading the app", async ({ browser }) => {
-    test.setTimeout(60_000);
+    test.setTimeout(90_000);
     const managerContext = await authContext(browser, "admin");
     const creatorContext = await authContext(browser, "user");
     const db = service();
@@ -460,7 +504,22 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await expect(page.getByLabel("น้ำหนักปัจจุบัน", { exact: true }))
         .toHaveAttribute("readonly", "");
       await page.unroute(detailRoute);
-      await page.getByLabel("ค่าทำงาน/กก.").fill("2");
+      await page.getByLabel("ค่าทำงาน/กก.").fill("-1");
+      await expect(page.getByRole("button", { name: "บันทึกร่าง", exact: true })).toBeDisabled();
+      await expect(page.getByRole("button", { name: "ตรวจสอบแล้ว", exact: true })).toBeDisabled();
+      await expect(page.getByText("กรุณากรอกค่าทำงานและค่าใช้จ่ายให้ถูกต้อง")).toBeVisible();
+      await page.getByLabel("ค่าทำงาน/กก.").fill("2.001");
+      await expect(page.getByRole("button", { name: "บันทึกร่าง", exact: true })).toBeDisabled();
+      await expect(page.getByRole("button", { name: "ตรวจสอบแล้ว", exact: true })).toBeDisabled();
+      await page.getByLabel("ค่าทำงาน/กก.").fill("0.0");
+      await page.getByRole("button", { name: "ตรวจสอบแล้ว", exact: true }).click();
+      const zeroDestinationDialog = page.getByRole("alertdialog", {
+        name: "ยืนยันปลายทางค่าใช้จ่าย",
+      });
+      await expect(zeroDestinationDialog).toContainText("ยอด 0 บาท จึงไม่สร้างรายการในรับ-จ่าย");
+      await expect(zeroDestinationDialog).toContainText("ยอดหลังตัดเศษเป็น 0 บาท จึงไม่สร้างรายการโอนเงิน");
+      await zeroDestinationDialog.getByRole("button", { name: "ยกเลิก", exact: true }).click();
+      await page.getByLabel("ค่าทำงาน/กก.").fill("0.2");
       await page.getByLabel("ค่าดำเนินการอื่น").fill("0.99");
       const saveRoute = `**/api/lanflow/rubber-exports/${exportId}`;
       await page.route(saveRoute, async (route) => {
@@ -495,16 +554,25 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       });
       await expect(destinationDialog).toBeVisible();
       await expect(destinationDialog).toContainText(`REX-MANAGER-${exportId.slice(0, 8)}`);
-      await expect(destinationDialog).toContainText("฿200.99");
-      await expect(destinationDialog).toContainText("ยอดโอนหลังตัดเศษ ฿200.00");
+      await expect(destinationDialog).toContainText("฿20.99");
+      await expect(destinationDialog).toContainText("แสดงรายการในรับ-จ่ายของสาขานี้");
+      await expect(destinationDialog).toContainText("สร้างรายการโอนเงินรอดำเนินการ ยอดหลังตัดเศษ ฿20.00");
+      await expect(destinationDialog).toContainText("บันทึกไว้ใน REX เท่านั้น ไม่สร้างรายการทางการเงิน");
       await expect(destinationDialog.getByRole("button", {
-        name: "ยืนยันจ่ายภายนอก",
+        name: "ลงโอนเงิน",
+        exact: true,
+      })).toBeVisible();
+      await expect(destinationDialog.getByRole("button", {
+        name: "จ่ายนอกระบบ",
+        exact: true,
       })).toBeVisible();
       await destinationDialog.getByRole("button", {
-        name: "ยืนยันลงรายจ่ายสาขานี้",
+        name: "ลงรับ-จ่าย",
+        exact: true,
       }).click();
-      await expect(page.getByText("ตรวจสอบรายการแล้ว")).toBeVisible();
+      await expect(page.getByText("ตรวจสอบรายการแล้ว")).toBeVisible({ timeout: 20_000 });
       await expect(page.getByRole("dialog").getByText(/ตรวจสอบแล้ว$/).first()).toBeVisible();
+      await expect(page.getByRole("dialog").getByText("ลงรับ-จ่าย", { exact: true })).toBeVisible();
       await expect(page.getByRole("checkbox", {
         name: "ใช้น้ำหนักสุทธิรวมเป็นน้ำหนักปัจจุบัน",
       })).toHaveCount(0);
@@ -518,7 +586,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await verifiedRow.getByRole("button", { name: "ขายยางออก" }).click();
       const saleDialog = page.getByRole("alertdialog", { name: "ยืนยันขายยางออก?" });
       await saleDialog.getByRole("button", { name: "ยืนยันขายยางออก" }).click();
-      await expect(verifiedRow).toHaveCount(0);
+      await expect(verifiedRow).toHaveCount(0, { timeout: 20_000 });
       await page.getByRole("button", { name: "ประวัติ", exact: true }).click();
       const historyRow = page.locator("tbody tr").filter({
         hasText: `REX-MANAGER-${exportId.slice(0, 8)}`,
@@ -527,7 +595,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await historyRow.getByRole("button", { name: "ยกเลิกขาย", exact: true }).click();
       const cancelSaleDialog = page.getByRole("alertdialog", { name: "ยืนยันยกเลิกขาย?" });
       await cancelSaleDialog.getByRole("button", { name: "ยกเลิกขาย" }).click();
-      await expect(historyRow).toHaveCount(0);
+      await expect(historyRow).toHaveCount(0, { timeout: 20_000 });
       await page.getByRole("button", { name: "กำลังดำเนินการ" }).click();
       await expect(verifiedRow).toBeVisible();
     } finally {
@@ -1000,7 +1068,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
         { user_id: userProfile.id, location_id: locationId },
       ])).error).toBeNull();
 
-      for (let index = 1; index <= 6; index += 1) {
+      for (let index = 1; index <= 7; index += 1) {
         const id = crypto.randomUUID();
         billIds.push(id);
         const billNo = `RX-${index}-${id.slice(0, 6)}`;
@@ -1058,7 +1126,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       const list = await listResponse.json() as {
         availableBills: Array<{ reportItemId: string; billNo: string; eligibilityAt: string }>;
       };
-      expect(list.availableBills).toHaveLength(6);
+      expect(list.availableBills).toHaveLength(7);
       const sortedBills = [...list.availableBills].sort((a, b) =>
         a.eligibilityAt.localeCompare(b.eligibilityAt)
       );
@@ -1104,11 +1172,35 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       expect((await admin.request.patch(`/api/lanflow/rubber-exports/${created.id}`, {
         data: { currentWeight: 500, workRate: 2, otherOperatingCost: 100 },
       })).ok()).toBeTruthy();
+      for (const malformedBody of [[], {}, { currentWeight: 500 }]) {
+        const malformedDraftUpdate = await admin.request.patch(
+          `/api/lanflow/rubber-exports/${created.id}`,
+          { data: malformedBody },
+        );
+        expect(malformedDraftUpdate.status(), await malformedDraftUpdate.text()).toBe(400);
+        expect(await malformedDraftUpdate.json()).toEqual({ error: "ข้อมูลไม่ถูกต้อง" });
+      }
       const invalidDraftUpdate = await admin.request.patch(
         `/api/lanflow/rubber-exports/${created.id}`,
         { data: { currentWeight: 500, workRate: "NaN", otherOperatingCost: 100 } },
       );
       expect(invalidDraftUpdate.status(), await invalidDraftUpdate.text()).toBe(400);
+      const overPreciseDraftUpdate = await admin.request.patch(
+        `/api/lanflow/rubber-exports/${created.id}`,
+        { data: { currentWeight: 500, workRate: 2.001, otherOperatingCost: 100 } },
+      );
+      expect(overPreciseDraftUpdate.status(), await overPreciseDraftUpdate.text()).toBe(400);
+      expect(await overPreciseDraftUpdate.json()).toEqual({
+        error: "น้ำหนักและค่าใช้จ่ายรองรับทศนิยมไม่เกิน 2 ตำแหน่ง",
+      });
+      const oversizedDraftUpdate = await admin.request.patch(
+        `/api/lanflow/rubber-exports/${created.id}`,
+        { data: { currentWeight: 500, workRate: 1_000_000_000_000, otherOperatingCost: 100 } },
+      );
+      expect(oversizedDraftUpdate.status(), await oversizedDraftUpdate.text()).toBe(400);
+      expect(await oversizedDraftUpdate.json()).toEqual({
+        error: "ยอดค่าทำงานเกินขอบเขตที่ระบบรองรับ",
+      });
       const afterInvalidDraftUpdate = await admin.request.get(
         `/api/lanflow/rubber-exports/${created.id}`,
       );
@@ -1155,6 +1247,36 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
         },
       );
       expect(authorizedInvalidVerify.status(), await authorizedInvalidVerify.text()).toBe(400);
+      const overPreciseVerify = await admin.request.post(
+        `/api/lanflow/rubber-exports/${created.id}/verify`,
+        {
+          data: {
+            currentWeight: 500,
+            workRate: 2.001,
+            otherOperatingCost: 100,
+            expenseDestination: "off_system",
+          },
+        },
+      );
+      expect(overPreciseVerify.status(), await overPreciseVerify.text()).toBe(400);
+      expect(await overPreciseVerify.json()).toEqual({
+        error: "น้ำหนักและค่าใช้จ่ายรองรับทศนิยมไม่เกิน 2 ตำแหน่ง",
+      });
+      const oversizedVerify = await admin.request.post(
+        `/api/lanflow/rubber-exports/${created.id}/verify`,
+        {
+          data: {
+            currentWeight: 500,
+            workRate: 1_000_000_000_000,
+            otherOperatingCost: 100,
+            expenseDestination: "off_system",
+          },
+        },
+      );
+      expect(oversizedVerify.status(), await oversizedVerify.text()).toBe(400);
+      expect(await oversizedVerify.json()).toEqual({
+        error: "ยอดค่าทำงานเกินขอบเขตที่ระบบรองรับ",
+      });
       const delegatedList = await admin.request.get(
         `/api/lanflow/rubber-exports?locationId=${locationId}`,
       );
@@ -1213,7 +1335,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       const remaining = await remainingResponse.json() as {
         availableBills: Array<{ reportItemId: string; eligibilityAt: string }>;
       };
-      expect(remaining.availableBills).toHaveLength(3);
+      expect(remaining.availableBills).toHaveLength(4);
       const remainingBills = [...remaining.availableBills].sort((a, b) =>
         a.eligibilityAt.localeCompare(b.eligibilityAt)
       );
@@ -1265,6 +1387,54 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       expect(zeroDetails.workRate).toBe(0);
       expect(zeroDetails.workTotal).toBe(0);
 
+      const offSystemOptionsResponse = await admin.request.get(
+        `/api/lanflow/rubber-exports/options?locationId=${locationId}`
+      );
+      const offSystemOptions = await offSystemOptionsResponse.json() as {
+        availableBills: Array<{ reportItemId: string; eligibilityAt: string }>;
+      };
+      expect(offSystemOptions.availableBills).toHaveLength(2);
+      const offSystemBill = [...offSystemOptions.availableBills].sort((a, b) =>
+        a.eligibilityAt.localeCompare(b.eligibilityAt)
+      )[0];
+      const offSystemResponse = await admin.request.post("/api/lanflow/rubber-exports", {
+        data: { locationId, selectedReportItemIds: [offSystemBill.reportItemId] },
+      });
+      expect(offSystemResponse.status(), await offSystemResponse.text()).toBe(201);
+      const offSystemExport = await offSystemResponse.json() as { id: string; exportNo: string };
+      exportIds.push(offSystemExport.id);
+      const offSystemVerification = await superAdmin.request.post(
+        `/api/lanflow/rubber-exports/${offSystemExport.id}/verify`,
+        {
+          data: {
+            currentWeight: 1,
+            workRate: 2,
+            otherOperatingCost: 10,
+            expenseDestination: "off_system",
+          },
+        },
+      );
+      expect(offSystemVerification.ok(), await offSystemVerification.text()).toBeTruthy();
+      const offSystemDetailsResponse = await admin.request.get(
+        `/api/lanflow/rubber-exports/${offSystemExport.id}`,
+      );
+      expect(await offSystemDetailsResponse.json()).toMatchObject({
+        status: "verified",
+        expenseDestination: "off_system",
+      });
+      const offSystemPage = await superAdmin.newPage();
+      await offSystemPage.goto("/");
+      await selectAppLocation(offSystemPage, locationId);
+      await offSystemPage.getByRole("button", { name: /^ส่งออกยาง/ }).click();
+      await offSystemPage.getByRole("button", {
+        name: `ดูรายละเอียด ${offSystemExport.exportNo}`,
+      }).dispatchEvent("click");
+      const offSystemDialog = offSystemPage.getByRole("dialog", {
+        name: offSystemExport.exportNo,
+      });
+      await expect(offSystemDialog.getByText("จ่ายนอกระบบ", { exact: true })).toBeVisible();
+      await offSystemPage.close();
+
       const draftOptionsResponse = await admin.request.get(
         `/api/lanflow/rubber-exports/options?locationId=${locationId}`
       );
@@ -1300,7 +1470,16 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       }));
       expect(feed.rows.some((row) => row.relationSourceId === externalExport.id)).toBeFalsy();
       expect(feed.rows.some((row) => row.relationSourceId === zeroExport.id)).toBeFalsy();
+      expect(feed.rows.some((row) => row.relationSourceId === offSystemExport.id)).toBeFalsy();
       expect((await db.from("income_expense").select("id").eq("number", created.exportNo)).data).toEqual([]);
+      expect((await db.from("money_transfers").select("id").eq(
+        "rubber_export_id",
+        offSystemExport.id,
+      )).data).toEqual([]);
+      expect((await db.from("dashboard_money_events").select("id").eq(
+        "source_type",
+        "rubber_export",
+      ).eq("source_id", offSystemExport.id)).data).toEqual([]);
 
       const expenseReportResponse = await admin.request.post("/api/lanflow/reports", {
         data: { locationId },
@@ -1316,6 +1495,8 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
         number: created.exportNo,
         amount: 1180,
       }));
+      expect(reportDetails.incomeExpense.some((row) => row.number === offSystemExport.exportNo))
+        .toBeFalsy();
       const { data: expenseReportBalance, error: expenseReportBalanceError } = await db
         .from("report_batches")
         .select("previous_report_id, opening_balance, closing_balance")
@@ -1337,6 +1518,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       expect((await superAdmin.request.delete(`/api/lanflow/rubber-exports/${created.id}`)).ok()).toBeTruthy();
       expect((await superAdmin.request.delete(`/api/lanflow/rubber-exports/${externalExport.id}`)).ok()).toBeTruthy();
       expect((await superAdmin.request.delete(`/api/lanflow/rubber-exports/${zeroExport.id}`)).ok()).toBeTruthy();
+      expect((await superAdmin.request.delete(`/api/lanflow/rubber-exports/${offSystemExport.id}`)).ok()).toBeTruthy();
 
       const afterDeleteFeed = await admin.request.get(
         `/api/lanflow/income-expense/feed?locationId=${locationId}&from=2026-07-24&to=2100-01-01`

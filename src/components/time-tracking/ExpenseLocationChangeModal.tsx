@@ -17,6 +17,7 @@ export function ExpenseLocationChangeModal({
   onClose,
   onSubmit,
   mode = "change",
+  allowCentralOutside = true,
 }: {
   locations: Location[];
   paymentAmount: number;
@@ -26,6 +27,7 @@ export function ExpenseLocationChangeModal({
   onClose: () => void;
   onSubmit: (locationId: string | null, comment: string) => Promise<boolean>;
   mode?: "change" | "approve" | "create";
+  allowCentralOutside?: boolean;
 }) {
   const fieldId = useId();
   const submitting = useRef(false);
@@ -34,13 +36,13 @@ export function ExpenseLocationChangeModal({
   const orderedLocations = [...locations].sort((a, b) =>
     a.id === primaryLocationId ? -1 : b.id === primaryLocationId ? 1 : 0
   );
-  const initialLocationId = currentLocationId === null
+  const initialLocationId = allowCentralOutside && currentLocationId === null
     ? CENTRAL_OUTSIDE
     : currentLocationId && locations.some((item) => item.id === currentLocationId)
       ? currentLocationId
       : primaryLocationId && locations.some((item) => item.id === primaryLocationId)
         ? primaryLocationId
-        : locations[0]?.id ?? CENTRAL_OUTSIDE;
+      : locations[0]?.id ?? (allowCentralOutside ? CENTRAL_OUTSIDE : "");
   const [locationId, setLocationId] = useState(initialLocationId);
   const [comment, setComment] = useState("");
   const [saving, setSaving] = useState(false);
@@ -90,7 +92,7 @@ export function ExpenseLocationChangeModal({
           {orderedLocations.map((location) => (
             <option key={location.id} value={location.id}>{location.name}{location.id === primaryLocationId ? " (สาขาหลัก)" : ""}</option>
           ))}
-          <option value={CENTRAL_OUTSIDE}>ส่วนกลางจ่าย (จ่ายนอกระบบ)</option>
+          {allowCentralOutside && <option value={CENTRAL_OUTSIDE}>ส่วนกลางจ่าย (จ่ายนอกระบบ)</option>}
         </select>
         <label className="mt-4 block text-sm font-semibold text-ink" htmlFor={`${fieldId}-comment`}>
           หมายเหตุ (ถ้ามี)

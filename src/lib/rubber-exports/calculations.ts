@@ -2,6 +2,16 @@ function round2(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
+export function hasTwoDecimalPrecision(value: number) {
+  return Number.isFinite(value) && Number(value.toFixed(2)) === value;
+}
+
+function toCents(value: number) {
+  if (!hasTwoDecimalPrecision(value)) return null;
+  const cents = Math.round(value * 100);
+  return Number.isSafeInteger(cents) ? BigInt(cents) : null;
+}
+
 export function calculateWeightLossPercent(originalWeight: number, currentWeight: number) {
   if (!Number.isFinite(originalWeight) || !Number.isFinite(currentWeight)) return null;
   if (originalWeight <= 0 || currentWeight <= 0 || currentWeight > originalWeight) return null;
@@ -22,7 +32,13 @@ export function calculateWorkTotal(
     return null;
   }
   if (netWeightTotal <= 0 || workRate < 0 || otherOperatingCost < 0) return null;
-  return round2(netWeightTotal * workRate + otherOperatingCost);
+  const weightCents = toCents(netWeightTotal);
+  const rateCents = toCents(workRate);
+  const otherCents = toCents(otherOperatingCost);
+  if (weightCents === null || rateCents === null || otherCents === null) return null;
+  const totalCents = (weightCents * rateCents + BigInt(50)) / BigInt(100) + otherCents;
+  if (totalCents > BigInt("99999999999999")) return null;
+  return Number(totalCents) / 100;
 }
 
 export function calculateExternalWorkTransferAmount(workTotal: number | null | undefined) {
@@ -58,7 +74,7 @@ export function calculatePurchaseCostIncludingWork(
 export function isValidCurrentWeight(originalWeight: number, currentWeight: number | null) {
   return currentWeight !== null
     && Number.isFinite(originalWeight)
-    && Number.isFinite(currentWeight)
+    && hasTwoDecimalPrecision(currentWeight)
     && originalWeight > 0
     && currentWeight > 0
     && currentWeight <= originalWeight;

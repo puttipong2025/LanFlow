@@ -109,7 +109,36 @@ async function promoteEmployee(service: SupabaseClient, id: string) {
   expect(result.error).toBeNull();
 }
 
-async function deleteEmployee(service: SupabaseClient, id: string) {
+async function deleteEmployee(service: SupabaseClient, id: string, cleanupManager?: SupabaseClient) {
+  if (cleanupManager) {
+    const slips = await service
+      .from("payroll_slips")
+      .select("id")
+      .eq("profile_id", id)
+      .order("month", { ascending: false });
+    expect(slips.error).toBeNull();
+    for (const slip of slips.data || []) {
+      const deleted = await cleanupManager.rpc("delete_time_tracking_source_permanently", {
+        p_source_type: "payroll_slip",
+        p_source_id: slip.id,
+      });
+      expect(deleted.error).toBeNull();
+    }
+    const withdrawals = await service
+      .from("financial_transactions")
+      .select("id")
+      .eq("profile_id", id)
+      .eq("type", "WITHDRAWAL")
+      .is("parent_debt_id", null);
+    expect(withdrawals.error).toBeNull();
+    for (const withdrawal of withdrawals.data || []) {
+      const deleted = await cleanupManager.rpc("delete_time_tracking_source_permanently", {
+        p_source_type: "transaction",
+        p_source_id: withdrawal.id,
+      });
+      expect(deleted.error).toBeNull();
+    }
+  }
   await service.from("time_tracking_resume_schedules").delete().eq("profile_id", id);
   await service.from("time_tracking_audit_logs").delete().eq("record_id", id);
   await service.from("time_tracking_audit_logs").delete().eq("admin_id", id);
@@ -122,6 +151,18 @@ async function deleteEmployee(service: SupabaseClient, id: string) {
   expect(profile.error).toBeNull();
   const auth = await service.auth.admin.deleteUser(id);
   expect(auth.error).toBeNull();
+}
+
+async function firstActiveLocationId(service: SupabaseClient) {
+  const location = await service
+    .from("locations")
+    .select("id")
+    .eq("is_active", true)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .single();
+  expect(location.error).toBeNull();
+  return location.data!.id;
 }
 
 async function latestStartedPeriodId(client: SupabaseClient, profileId: string) {
@@ -407,6 +448,14 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     const previousStart = `${previousMonth}-01`;
     const previousPause = `${previousMonth}-02`;
     const previousResume = previousMonthEnd.toISOString().slice(0, 10);
+    const location = await service
+      .from("locations")
+      .select("id")
+      .eq("is_active", true)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .single();
+    expect(location.error).toBeNull();
 
     try {
       expect((await manager.rpc("set_time_payroll_active_period", {
@@ -425,6 +474,8 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_amount: 1000,
         p_effective_date: firstCurrent,
         p_description: "QA RESUME financial no-op",
+        p_expense_location_id: location.data!.id,
+        p_comment: null,
       });
       expect(withdrawal.error).toBeNull();
       const withdrawalId = (withdrawal.data as { id: string }).id;
@@ -449,6 +500,11 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         .single();
       expect(afterResume.error).toBeNull();
       expect(Number(afterResume.data!.remaining_amount)).toBe(1000);
+      const cleanup = await manager.rpc("delete_time_tracking_source_permanently", {
+        p_source_type: "transaction",
+        p_source_id: withdrawalId,
+      });
+      expect(cleanup.error).toBeNull();
     } finally {
       await deleteEmployee(service, employeeId);
     }
@@ -463,6 +519,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     previousMonthEndValue.setUTCDate(previousMonthEndValue.getUTCDate() - 1);
     const previousMonthEnd = previousMonthEndValue.toISOString().slice(0, 10);
     const previousMonth = previousMonthEnd.slice(0, 7);
+    const expenseLocationId = await firstActiveLocationId(service);
 
     try {
       expect((await manager.rpc("set_time_payroll_active_period", {
@@ -481,6 +538,8 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_amount: 1000,
         p_effective_date: firstCurrent,
         p_description: "QA correction financial no-op",
+        p_expense_location_id: expenseLocationId,
+        p_comment: null,
       });
       expect(withdrawal.error).toBeNull();
       const withdrawalId = (withdrawal.data as { id: string }).id;
@@ -612,7 +671,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       expect(deductionAfter.error).toBeNull();
       expect(deductionAfter.data).toEqual(deductionBefore.data);
     } finally {
-      await deleteEmployee(service, employeeId);
+      await deleteEmployee(service, employeeId, manager);
     }
   });
 
@@ -905,6 +964,8 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_amount: 1000,
         p_effective_date: previousMonthEnd,
         p_description: "QA applied correction blocker",
+        p_expense_location_id: locationId,
+        p_comment: null,
       });
       expect(withdrawal.error).toBeNull();
       const rebuilt = await manager.rpc("correct_time_payroll_period_start", {
@@ -931,7 +992,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       await service.from("report_items").delete().eq("report_id", reportId);
       await service.from("report_batches").delete().eq("id", reportId);
       if (slipId) await service.from("payroll_slips").delete().eq("id", slipId);
-      await deleteEmployee(service, employeeId);
+      await deleteEmployee(service, employeeId, manager);
       await service.from("locations").delete().eq("id", locationId);
     }
   });
@@ -969,6 +1030,8 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_amount: 1000,
         p_effective_date: firstDay,
         p_description: "QA attendance rebuild withdrawal",
+        p_expense_location_id: location.data!.id,
+        p_comment: null,
       });
       expect(withdrawal.error).toBeNull();
       const withdrawalId = (withdrawal.data as { id: string }).id;
@@ -1064,7 +1127,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     } finally {
       await service.from("report_items").delete().eq("report_id", reportId);
       await service.from("report_batches").delete().eq("id", reportId);
-      await deleteEmployee(service, employeeId);
+      await deleteEmployee(service, employeeId, manager);
     }
   });
 
@@ -1076,6 +1139,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     const employeeId = await createEmployee(service, "QA canonical attendance allocation");
     const currentMonth = bangkokDate().slice(0, 7);
     const firstDay = `${currentMonth}-01`;
+    const expenseLocationId = await firstActiveLocationId(service);
 
     try {
       expect((await manager.rpc("set_time_payroll_active_period", {
@@ -1089,6 +1153,8 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_amount: 1000,
         p_effective_date: firstDay,
         p_description: "QA canonical allocation withdrawal",
+        p_expense_location_id: expenseLocationId,
+        p_comment: null,
       });
       expect(withdrawal.error).toBeNull();
       const withdrawalId = (withdrawal.data as { id: string }).id;
@@ -1148,7 +1214,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       expect(audits.error).toBeNull();
       expect(audits.count).toBe(0);
     } finally {
-      await deleteEmployee(service, employeeId);
+      await deleteEmployee(service, employeeId, manager);
     }
   });
 
@@ -1188,6 +1254,8 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_amount: 1000,
         p_effective_date: firstDay,
         p_description: "QA attendance rollback withdrawal",
+        p_expense_location_id: location.data!.id,
+        p_comment: null,
       });
       expect(withdrawal.error).toBeNull();
       const withdrawalId = (withdrawal.data as { id: string }).id;
@@ -1254,7 +1322,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     } finally {
       await service.from("report_items").delete().eq("report_id", reportId);
       await service.from("report_batches").delete().eq("id", reportId);
-      await deleteEmployee(service, employeeId);
+      await deleteEmployee(service, employeeId, manager);
     }
   });
 
@@ -1267,6 +1335,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     previousMonthEndValue.setUTCDate(previousMonthEndValue.getUTCDate() - 1);
     const previousMonthEnd = previousMonthEndValue.toISOString().slice(0, 10);
     const previousMonth = previousMonthEnd.slice(0, 7);
+    const expenseLocationId = await firstActiveLocationId(service);
 
     try {
       expect((await manager.rpc("set_time_payroll_active_period", {
@@ -1296,6 +1365,9 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
           p_profile_id: employeeId,
           p_month: previousMonth,
           p_auto_start_next_month: false,
+          p_expense_location_id: expenseLocationId,
+          p_comment: null,
+          p_expected_net_pay: null,
         }),
       ]);
       expect(slip.error).toBeNull();
@@ -1317,7 +1389,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       expect(current.error).toBeNull();
       expect(current.data?.start_on).toBe(correction.error ? firstCurrent : previousMonthEnd);
     } finally {
-      await deleteEmployee(service, employeeId);
+      await deleteEmployee(service, employeeId, manager);
     }
   });
 
@@ -1755,6 +1827,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     const tomorrow = bangkokDate(1);
     const later = bangkokDate(2);
     const month = tomorrow.slice(0, 7);
+    const expenseLocationId = await firstActiveLocationId(service);
 
     try {
       const first = await manager.rpc("set_time_payroll_active_period", {
@@ -1854,6 +1927,9 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_profile_id: closedEmployee,
         p_month: today.slice(0, 7),
         p_auto_start_next_month: false,
+        p_expense_location_id: expenseLocationId,
+        p_comment: null,
+        p_expected_net_pay: null,
       });
       expect(closedSlip.error).toBeNull();
       const blockedSchedule = await manager.rpc("set_time_payroll_active_period", {
@@ -1864,7 +1940,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       expect(blockedSchedule.error?.message).toContain(`MONTH_CLOSED:${today.slice(0, 7)}`);
     } finally {
       await deleteEmployee(service, scheduledEmployee);
-      await deleteEmployee(service, closedEmployee);
+      await deleteEmployee(service, closedEmployee, manager);
     }
   });
 
@@ -2026,6 +2102,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     const today = bangkokDate();
     const tomorrow = bangkokDate(1);
     const later = bangkokDate(2);
+    const expenseLocationId = await firstActiveLocationId(service);
 
     try {
       expect((await manager.rpc("set_time_payroll_active_period", {
@@ -2044,6 +2121,9 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
           p_profile_id: payrollRaceEmployee,
           p_month: today.slice(0, 7),
           p_auto_start_next_month: false,
+          p_expense_location_id: expenseLocationId,
+          p_comment: null,
+          p_expected_net_pay: null,
         }),
       ]);
       const raceErrors = [scheduleResult.error?.message, slipResult.error?.message].filter(Boolean);
@@ -2072,7 +2152,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       expect(pendingRows.data?.[0].scheduled_action).toBe("ENABLE");
       expect([tomorrow, later]).toContain(pendingRows.data?.[0].scheduled_activation_on);
     } finally {
-      await deleteEmployee(service, payrollRaceEmployee);
+      await deleteEmployee(service, payrollRaceEmployee, manager);
       await deleteEmployee(service, scheduleRaceEmployee);
     }
   });
@@ -2342,6 +2422,9 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_profile_id: debtEmployee,
         p_month: previousMonth,
         p_auto_start_next_month: false,
+        p_expense_location_id: branchId,
+        p_comment: null,
+        p_expected_net_pay: null,
       });
       expect(previousSlip.error).toBeNull();
       expect(previousSlip.data).toMatchObject({ status: "APPROVED", net_pay: 0 });
@@ -2349,6 +2432,9 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_profile_id: debtEmployee,
         p_month: currentMonth,
         p_auto_start_next_month: false,
+        p_expense_location_id: branchId,
+        p_comment: null,
+        p_expected_net_pay: null,
       });
       expect(currentSlip.error).toBeNull();
       expect(currentSlip.data).toMatchObject({ status: "APPROVED", net_pay: 0 });
@@ -2377,6 +2463,9 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_profile_id: positiveEmployee,
         p_month: currentMonth,
         p_auto_start_next_month: true,
+        p_expense_location_id: branchId,
+        p_comment: null,
+        p_expected_net_pay: null,
       });
       expect(positiveSlip.error).toBeNull();
       expect(positiveSlip.data).toMatchObject({
@@ -2408,7 +2497,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_comment: "QA branch payment",
       });
       expect(branchPayment.error).toBeNull();
-      expect(branchPayment.data).toMatchObject({ status: "updated", expenseLocationId: branchId });
+      expect(branchPayment.data).toEqual({ status: "unchanged" });
       const unchangedPayment = await globalManager.rpc("change_time_tracking_expense_location", {
         p_source_type: "payroll_slip",
         p_source_id: positiveSlipId,
@@ -2430,6 +2519,9 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_profile_id: pendingEmployee,
         p_month: currentMonth,
         p_auto_start_next_month: false,
+        p_expense_location_id: branchId,
+        p_comment: null,
+        p_expected_net_pay: null,
       });
       expect(delegatedCreated.error).toBeNull();
       expect(delegatedCreated.data).toMatchObject({ status: "APPROVED", net_pay: 500 });
@@ -2444,6 +2536,9 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_profile_id: approvedEmployee,
         p_month: currentMonth,
         p_auto_start_next_month: false,
+        p_expense_location_id: branchId,
+        p_comment: null,
+        p_expected_net_pay: null,
       });
       expect(delegatedApproved.error).toBeNull();
       expect(delegatedApproved.data).toMatchObject({ status: "APPROVED", net_pay: 500 });
@@ -2468,7 +2563,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         approvedEmployee,
         delegatedId,
       ]) {
-        await deleteEmployee(service, profileId);
+        await deleteEmployee(service, profileId, globalManager);
       }
     }
   });
@@ -2527,6 +2622,9 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
           p_profile_id: profileId,
           p_month: month,
           p_auto_start_next_month: false,
+          p_expense_location_id: branchId,
+          p_comment: null,
+          p_expected_net_pay: null,
         });
         expect(created.error).toBeNull();
         expect(Number(created.data?.net_pay)).toBe(expected.net);
@@ -2563,7 +2661,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         .eq("id", employeeIds[0]);
       expect(directConstraint.error?.message).toContain("profiles_daily_wage_precision");
     } finally {
-      for (const profileId of employeeIds) await deleteEmployee(service, profileId);
+      for (const profileId of employeeIds) await deleteEmployee(service, profileId, globalManager);
     }
   });
 
@@ -2592,6 +2690,8 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_amount: 100000,
         p_effective_date: `${currentMonth}-01`,
         p_description: "QA wage recalculation withdrawal",
+        p_expense_location_id: location.data!.id,
+        p_comment: null,
       });
       expect(withdrawal.error).toBeNull();
       const withdrawalId = (withdrawal.data as { id: string }).id;
@@ -2704,7 +2804,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       expect(restored.error).toBeNull();
       expect(Number(restored.data!.remaining_amount)).toBe(100000);
     } finally {
-      await deleteEmployee(service, employeeId);
+      await deleteEmployee(service, employeeId, manager);
     }
   });
 
@@ -2888,6 +2988,8 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_amount: 1000,
         p_effective_date: "2026-08-08",
         p_description: "QA reported withdrawal",
+        p_expense_location_id: locationId,
+        p_comment: null,
       });
       expect(withdrawal.error).toBeNull();
       expect(withdrawal.data).toMatchObject({ status: "approved" });
@@ -2926,6 +3028,9 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_profile_id: employeeId,
         p_month: "2026-08",
         p_auto_start_next_month: false,
+        p_expense_location_id: locationId,
+        p_comment: null,
+        p_expected_net_pay: null,
       });
       expect(slip.error).toBeNull();
       expect(slip.data).toMatchObject({ status: "APPROVED", total_deductions: 1000 });
@@ -2966,7 +3071,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     } finally {
       await service.from("report_items").delete().eq("report_id", reportId);
       await service.from("report_batches").delete().eq("id", reportId);
-      await deleteEmployee(service, employeeId);
+      await deleteEmployee(service, employeeId, manager);
       await service.from("locations").delete().eq("id", locationId);
     }
   });

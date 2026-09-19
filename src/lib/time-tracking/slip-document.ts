@@ -73,6 +73,7 @@ type SnapshotTransaction = {
   description?: string | null;
   effective_date?: string | null;
   applied_month?: string | null;
+  source_effective_date?: string | null;
   created_at?: string | null;
 };
 
@@ -245,7 +246,11 @@ function transactionLabel(type: string) {
 }
 
 function transactionRow(transaction: SnapshotTransaction): SlipDocumentRow {
-  const date = transaction.applied_month || transaction.effective_date || transaction.created_at || null;
+  const date = transaction.source_effective_date
+    || transaction.effective_date
+    || transaction.applied_month
+    || transaction.created_at
+    || null;
   return {
     id: transaction.id,
     dateLabel: formatTransactionDate(date),

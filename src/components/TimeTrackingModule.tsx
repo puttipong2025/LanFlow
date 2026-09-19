@@ -16,6 +16,7 @@ import { authFetch } from "@/lib/auth-fetch";
 import { Location, Profile } from "@/types";
 import { useInputDialog } from "@/hooks/useInputDialog";
 import { ExpenseLocationChangeModal } from "./time-tracking/ExpenseLocationChangeModal";
+import { WithdrawalAdjustmentModal } from "./time-tracking/WithdrawalAdjustmentModal";
 import { canManageSystemFeatures, canManageTimePayroll } from "@/lib/permissions";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { TablePageSizeSelect, TablePagination } from "@/components/shared/TablePagination";
@@ -112,6 +113,7 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
   const [saving, setSaving] = useState(false);
   const [pendingExpenseLocationTx, setPendingExpenseLocationTx] = useState<any>(null);
   const [pendingWithdrawal, setPendingWithdrawal] = useState<{ amount: number; effectiveDate: string } | null>(null);
+  const [adjustingWithdrawal, setAdjustingWithdrawal] = useState<any>(null);
   const [previewSource, setPreviewSource] = useState<{ type: "withdrawal" | "payroll"; id: string } | null>(null);
   const { requestInput, inputDialog } = useInputDialog();
   const loadRequestIdRef = useRef(0);
@@ -274,6 +276,57 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
     return true;
   }
 
+  async function submitWithdrawalAdjustment(value: { targetAmount: number; locationId: string | null; reason: string }) {
+    if (!adjustingWithdrawal) return false;
+    const response = await authFetch(
+      canManageTime ? "/api/lanflow/time-tracking/admin" : "/api/lanflow/time-tracking/user",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: canManageTime ? "ADMIN_REQUEST_WITHDRAWAL_ADJUSTMENT" : "REQUEST_WITHDRAWAL_ADJUSTMENT",
+          payload: {
+            withdrawal_id: adjustingWithdrawal.id,
+            target_amount: value.targetAmount,
+            ...(canManageTime ? { expense_location_id: value.locationId } : {}),
+            reason: value.reason,
+          },
+        }),
+      },
+    );
+    if (!response.ok) {
+      const json = await response.json().catch(() => null);
+      throw new Error(json?.error || "ไม่สามารถปรับยอดเบิกเงินได้");
+    }
+    setAdjustingWithdrawal(null);
+    await loadData();
+    await queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
+    return true;
+  }
+
+  async function withdrawAdjustment(adjustmentId: string) {
+    if (!online || saving) return;
+    if (!confirm("ถอนคำขอปรับยอดเบิกเงินนี้ใช่หรือไม่?")) return;
+    setSaving(true);
+    try {
+      const response = await authFetch("/api/lanflow/time-tracking/user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "WITHDRAW_WITHDRAWAL_ADJUSTMENT", payload: { adjustment_id: adjustmentId } }),
+      });
+      if (!response.ok) {
+        const json = await response.json().catch(() => null);
+        throw new Error(json?.error || "ถอนคำขอไม่สำเร็จ");
+      }
+      await loadData();
+      await queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "ถอนคำขอไม่สำเร็จ");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   if (loading && !data) return (
     <div role="status" aria-label="กำลังโหลดข้อมูล..." aria-busy="true" className="space-y-5 p-1">
       <p className="text-pretty text-sm font-semibold text-ink/65">กำลังโหลดข้อมูล...</p>
@@ -296,6 +349,15 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
   );
 
   const debtTransactions = data?.transactions?.filter((t: any) => t.status !== 'REJECTED' && (t.type === 'DEBT' || t.type === 'WITHDRAWAL')) || [];
+  const adjustmentSummaryByWithdrawal = new Map(
+    (data?.adjustmentSummaries || []).map((item: any) => [item.withdrawalId, item]),
+  );
+  const adjustmentsByWithdrawal = new Map<string, any[]>();
+  for (const adjustment of data?.adjustments || []) {
+    const rows = adjustmentsByWithdrawal.get(adjustment.parent_debt_id) || [];
+    rows.push(adjustment);
+    adjustmentsByWithdrawal.set(adjustment.parent_debt_id, rows);
+  }
   const attendance = data?.attendance as AttendanceMonthDto | undefined;
   const periodState = data?.periodState as PayrollPeriodStateDto | undefined;
 
@@ -547,12 +609,17 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
           <p className="text-sm text-ink/50">ไม่มีประวัติหนี้สิน/เบิกเงิน</p>
         ) : (
           <ul className="divide-y divide-black/5">
-             {debtTransactions.map((t: any) => (
-                <li key={t.id} className={`py-3 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 border-b border-black/5 last:border-0 ${t.type === 'DEBT' ? 'bg-clay/5 -mx-4 px-4' : t.type === 'WITHDRAWAL' ? 'bg-amber/5 -mx-4 px-4' : ''}`}>
-                  <div className="flex flex-col">
+             {debtTransactions.map((t: any) => {
+               const summary: any = adjustmentSummaryByWithdrawal.get(t.id);
+               const currentAmount = t.type === 'WITHDRAWAL' ? Number(summary?.latestTarget ?? t.amount) : Number(t.amount);
+               const adjustmentHistory = adjustmentsByWithdrawal.get(t.id) || [];
+               return (
+                <li key={t.id} className={`py-3 flex flex-col gap-3 border-b border-black/5 last:border-0 ${t.type === 'DEBT' ? 'bg-clay/5 -mx-4 px-4' : t.type === 'WITHDRAWAL' ? 'bg-amber/5 -mx-4 px-4' : ''}`}>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex min-w-0 flex-col">
                     <span className={t.type === 'DEBT' ? 'text-clay font-bold' : t.type === 'WITHDRAWAL' ? 'text-amber font-bold' : 'text-river font-bold'}>
                       {t.type === 'DEBT' ? 'สร้างหนี้สิน' : t.type === 'WITHDRAWAL' ? 'เบิกเงิน' : 'หักหนี้อัตโนมัติ'}{' '}
-                      {formatCurrency(t.amount)}
+                      {formatCurrency(currentAmount)}
                     </span>
                     {t.description && <span className="text-sm text-ink/70 mt-1">{t.description}</span>}
                     {t.effective_date && <span className="text-xs text-clay mt-1 font-semibold">วันที่รายการ: {new Date(`${t.effective_date}T00:00:00+07:00`).toLocaleDateString('th-TH', { timeZone: 'Asia/Bangkok' })}</span>}
@@ -568,7 +635,7 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
                       ))}
                     <span className="text-xs text-ink/50 mt-1">วันที่ทำรายการ: {t.created_at ? formatBangkokDateTime(t.created_at) : '-'}</span>
                     {t.status === 'APPROVED' && (
-                      <span className="text-xs text-ink/50">วันที่อนุมัติ: {t.updated_at ? formatBangkokDateTime(t.updated_at) : (t.created_at ? formatBangkokDateTime(t.created_at) : '-')}</span>
+                      <span className="text-xs text-ink/50">วันที่อนุมัติ: {t.approved_at ? formatBangkokDateTime(t.approved_at) : (t.updated_at ? formatBangkokDateTime(t.updated_at) : (t.created_at ? formatBangkokDateTime(t.created_at) : '-'))}</span>
                     )}
                     {t.admin_comment?.startsWith("ระบบอัตโนมัติ:") && (
                       <span className="text-xs text-amber mt-1 font-bold">{t.admin_comment}</span>
@@ -580,7 +647,7 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
                       <span className="text-xs text-leaf mt-1">ผู้ทำรายการ: {t.approver.name}</span>
                     )}
                   </div>
-                  <div className="flex items-center gap-2 self-start sm:self-center">
+                  <div className="flex flex-wrap items-center gap-2 self-start sm:justify-end">
                     <span className={`text-xs font-bold px-2 py-1 rounded-md ${t.status === 'APPROVED' ? 'bg-success/15 text-success' : 'bg-ink/10 text-ink'}`}>{t.status}</span>
                     {t.type === 'WITHDRAWAL' && (t.status === 'PENDING' || t.status === 'APPROVED') && (
                       <button
@@ -605,6 +672,17 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
                         {canManageTime && <button onClick={() => changeWithdrawalExpenseLocation(t)} disabled={saving || !online || Boolean(t.report_lock_no) || Boolean(paymentScopeReason(t, globalManager, expenseLocations))} title={reportLockReason(t) ?? paymentScopeReason(t, globalManager, expenseLocations) ?? undefined} className="rounded-md bg-river px-3 py-1 text-sm font-semibold text-white hover:bg-river/90 disabled:opacity-40">เปลี่ยนวิธีจ่าย</button>}
                       </div>
                     )}
+                    {t.type === 'WITHDRAWAL' && t.status === 'APPROVED' && t.report_lock_no && (
+                      <button
+                        type="button"
+                        onClick={() => setAdjustingWithdrawal(t)}
+                        disabled={saving || !online || Boolean(summary?.pendingAdjustmentId)}
+                        title={summary?.pendingAdjustmentId ? "มีคำขอปรับยอดรออนุมัติอยู่แล้ว" : (online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE)}
+                        className="focus-ring rounded-md bg-commit px-3 py-1.5 text-sm font-semibold text-white hover:bg-commit/90 disabled:cursor-not-allowed disabled:opacity-45"
+                      >
+                        ปรับยอดเบิก
+                      </button>
+                    )}
                     {(canManageTime || (isSelf && t.type === 'WITHDRAWAL' && t.status === 'PENDING')) && (
                       <button onClick={() => handleDeleteTransaction(t)} disabled={saving || !online || Boolean(t.report_lock_no) || Boolean(paymentScopeReason(t, globalManager, expenseLocations))} title={reportLockReason(t) ?? paymentScopeReason(t, globalManager, expenseLocations) ?? (online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE)} className="inline-flex h-10 items-center gap-1 rounded-md bg-danger px-2 text-sm font-semibold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-40">
                         <XCircle size={18} />
@@ -612,8 +690,50 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
                       </button>
                     )}
                   </div>
+                  </div>
+                  {adjustmentHistory.length > 0 && (
+                    <div className="rounded-lg border border-black/10 bg-white/75 p-3">
+                      <p className="text-pretty text-xs font-bold text-ink/65">ประวัติปรับยอดเบิก</p>
+                      <ul className="mt-2 space-y-2">
+                        {adjustmentHistory.map((adjustment: any) => {
+                          const base = Number(adjustment.adjustment_base_amount) || 0;
+                          const target = Number(adjustment.amount) || 0;
+                          const delta = target - base;
+                          return (
+                            <li key={adjustment.id} className="rounded-md border border-black/5 bg-white px-3 py-2 text-sm">
+                              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                <div className="min-w-0">
+                                  <p className="text-pretty font-semibold text-ink">
+                                    {formatCurrency(base)} → {formatCurrency(target)} · {delta > 0 ? "เพิ่ม" : "คืน"} {formatCurrency(Math.abs(delta))}
+                                  </p>
+                                  <p className="mt-1 text-pretty text-xs text-ink/55">
+                                    วันที่รายการ: {adjustment.approved_at
+                                      ? formatBangkokDateTime(adjustment.approved_at)
+                                      : adjustment.created_at ? formatBangkokDateTime(adjustment.created_at) : "-"} · {adjustment.status}
+                                  </p>
+                                  {adjustment.description && <p className="mt-1 text-pretty text-xs text-ink/70">{adjustment.description}</p>}
+                                </div>
+                                <div className="flex shrink-0 gap-2">
+                                  {canDecideItems && adjustment.status === 'PENDING' && onApprove && (
+                                    <button type="button" onClick={() => void runApprovalAction(() => onApprove('TRANSACTION', { ...adjustment, type: 'ADJUSTMENT', source_expense_location_id: t.expense_location_id ?? null }, loadData))} disabled={saving || !online} className="rounded-md bg-success px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50">อนุมัติ</button>
+                                  )}
+                                  {canDecideItems && adjustment.status === 'PENDING' && onReject && (
+                                    <button type="button" onClick={() => void runApprovalAction(() => onReject('TRANSACTION', { ...adjustment, type: 'ADJUSTMENT' }, loadData))} disabled={saving || !online} className="rounded-md bg-danger px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50">ปฏิเสธ</button>
+                                  )}
+                                  {!canManageTime && isSelf && adjustment.status === 'PENDING' && (
+                                    <button type="button" onClick={() => void withdrawAdjustment(adjustment.id)} disabled={saving || !online} className="rounded-md bg-actionSecondary px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50">ถอนคำขอ</button>
+                                  )}
+                                </div>
+                              </div>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  )}
                 </li>
-             ))}
+               );
+             })}
           </ul>
         )}
       </div>
@@ -762,6 +882,21 @@ function UserTimeTracking({ profile, targetUserId, targetPrimaryLocationId, onli
           onSubmit={submitWithdrawalExpenseLocation}
         />
       )}
+      {adjustingWithdrawal && (() => {
+        const summary: any = adjustmentSummaryByWithdrawal.get(adjustingWithdrawal.id);
+        return (
+          <WithdrawalAdjustmentModal
+            currentAmount={Number(summary?.latestTarget ?? adjustingWithdrawal.amount) || 0}
+            closedSlipFloor={Number(summary?.closedSlipFloor) || 0}
+            managerMode={canManageTime}
+            locations={expenseLocations}
+            primaryLocationId={targetPrimaryLocationId ?? profile.primaryLocationId}
+            sourceLocationId={adjustingWithdrawal.expense_location_id ?? null}
+            onClose={() => setAdjustingWithdrawal(null)}
+            onSubmit={submitWithdrawalAdjustment}
+          />
+        );
+      })()}
       {previewSource && (
         <SlipPreviewModal
           sourceType={previewSource.type}
@@ -789,10 +924,12 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
   const auditLogsTriggerRef = useRef<HTMLSelectElement>(null);
   const [pendingExpenseApproval, setPendingExpenseApproval] = useState<{
     type: 'TRANSACTION' | 'SLIP';
+    adjustment?: boolean;
     id: string;
     title: string;
     amount: number;
     primaryLocationId?: string | null;
+    currentLocationId?: string | null;
     refreshOwner?: () => Promise<void>;
   } | null>(null);
   const [pendingPaymentChange, setPendingPaymentChange] = useState<{
@@ -901,6 +1038,7 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
     expenseLocationId?: string | null,
     providedComment?: string,
     refreshOwner?: () => Promise<void>,
+    adjustment = false,
   ) {
     if (!online) {
       alert(TIME_TRACKING_OFFLINE_MESSAGE);
@@ -924,8 +1062,12 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          action: type === 'TRANSACTION' ? 'APPROVE_TRANSACTION' : 'APPROVE_PAYROLL_SLIP',
-          payload: type === 'TRANSACTION'
+          action: adjustment
+            ? 'DECIDE_WITHDRAWAL_ADJUSTMENT'
+            : type === 'TRANSACTION' ? 'APPROVE_TRANSACTION' : 'APPROVE_PAYROLL_SLIP',
+          payload: adjustment
+            ? { adjustment_id: id, status, admin_comment: comment, expense_location_id: expenseLocationId }
+            : type === 'TRANSACTION'
             ? { transaction_id: id, status, admin_comment: comment, expense_location_id: expenseLocationId }
             : { slip_id: id, status, admin_comment: comment, expense_location_id: expenseLocationId }
         })
@@ -1375,15 +1517,30 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
              allowManagerActions={canManage}
              canDecide={canDecide}
              canConfigure={canConfigure}
-             onApprove={canDecide ? (type, item, refreshOwner) => handleApprove(
-               type,
-               item.id,
-               type === 'TRANSACTION' && item.type === 'WITHDRAWAL'
-                 ? { title: dashboardUser.id === profile.id ? "เบิกเงินของตนเอง" : `เบิกเงินของ ${item.profiles?.name || 'พนักงาน'}`, amount: Number(item.amount), primaryLocationId: dashboardUser.primary_location_id ?? null }
-                 : undefined,
-               refreshOwner,
-             ) : undefined}
-             onReject={canDecide ? (type, item, refreshOwner) => submitApproval(type, item.id, 'REJECTED', undefined, undefined, refreshOwner) : undefined}
+             onApprove={canDecide ? (type, item, refreshOwner) => {
+               if (type === 'TRANSACTION' && item.type === 'ADJUSTMENT') {
+                 setPendingExpenseApproval({
+                   type: 'TRANSACTION',
+                   adjustment: true,
+                   id: item.id,
+                  title: `ส่วนต่างปรับยอดเบิกของ ${dashboardUser.name}`,
+                  amount: Math.abs(Number(item.amount) - Number(item.adjustment_base_amount)),
+                  primaryLocationId: dashboardUser.primary_location_id ?? null,
+                  currentLocationId: item.source_expense_location_id ?? null,
+                  refreshOwner,
+                 });
+                 return Promise.resolve(false);
+               }
+               return handleApprove(
+                 type,
+                 item.id,
+                 type === 'TRANSACTION' && item.type === 'WITHDRAWAL'
+                   ? { title: dashboardUser.id === profile.id ? "เบิกเงินของตนเอง" : `เบิกเงินของ ${item.profiles?.name || 'พนักงาน'}`, amount: Number(item.amount), primaryLocationId: dashboardUser.primary_location_id ?? null }
+                   : undefined,
+                 refreshOwner,
+               );
+             } : undefined}
+             onReject={canDecide ? (type, item, refreshOwner) => submitApproval(type, item.id, 'REJECTED', undefined, undefined, refreshOwner, item.type === 'ADJUSTMENT') : undefined}
           />
         </ModalShell>
       )}
@@ -1424,10 +1581,12 @@ function AdminTimeTracking({ profile, online, locations }: { profile: Profile, o
           amountLabel={pendingExpenseApproval.title}
           locations={expenseLocations}
           primaryLocationId={pendingExpenseApproval.primaryLocationId}
+          currentLocationId={pendingExpenseApproval.currentLocationId}
+          allowCentralOutside={!pendingExpenseApproval.adjustment}
           onClose={() => setPendingExpenseApproval(null)}
           onSubmit={async (locationId, comment) => {
             const approval = pendingExpenseApproval;
-            const success = await submitApproval(approval.type, approval.id, 'APPROVED', locationId, comment, approval.refreshOwner);
+            const success = await submitApproval(approval.type, approval.id, 'APPROVED', locationId, comment, approval.refreshOwner, Boolean(approval.adjustment));
             if (success) {
               setPendingExpenseApproval(null);
             }

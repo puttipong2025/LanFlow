@@ -291,9 +291,16 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
 
           const allowed = await request.post("/api/lanflow/time-tracking/admin", { data: {
             action: "ADMIN_REQUEST_WITHDRAWAL",
-            payload: { user_id: insideTarget, amount: 10, effective_date: "2026-08-01" },
+            payload: {
+              user_id: insideTarget,
+              amount: 10,
+              effective_date: "2026-08-01",
+              expense_location_id: insideLocationId,
+            },
           } });
-          expect(allowed.ok(), await allowed.text()).toBeTruthy();
+          const allowedText = await allowed.text();
+          expect(allowed.ok(), allowedText).toBeTruthy();
+          const allowedTransactionId = (JSON.parse(allowedText) as { result: { id: string } }).result.id;
 
           const denied = await request.post("/api/lanflow/time-tracking/admin", { data: {
             action: "ADMIN_REQUEST_WITHDRAWAL",
@@ -328,6 +335,12 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
             location_id: insideLocationId,
             is_primary: true,
           })).error).toBeNull();
+
+          const cleanup = await request.post("/api/lanflow/time-tracking/admin", { data: {
+            action: "DELETE_TRANSACTION",
+            payload: { transaction_id: allowedTransactionId },
+          } });
+          expect(cleanup.ok(), await cleanup.text()).toBeTruthy();
 
           expect((await service.from("profiles")
             .update({ can_manage_time_payroll: false })

@@ -23,6 +23,18 @@ export function canAdministerRubberExports(auth: AuthTokenPayload, locationId: s
 }
 
 export function rubberExportErrorResponse(message: string) {
+  if (message.includes("RUBBER_EXPORT_PRECISION")) {
+    return NextResponse.json(
+      { error: "น้ำหนักและค่าใช้จ่ายรองรับทศนิยมไม่เกิน 2 ตำแหน่ง" },
+      { status: 400 },
+    );
+  }
+  if (message.includes("RUBBER_EXPORT_VALUE_OUT_OF_RANGE")) {
+    return NextResponse.json(
+      { error: "ยอดค่าทำงานเกินขอบเขตที่ระบบรองรับ" },
+      { status: 400 },
+    );
+  }
   if (message.includes("ไม่มีสิทธิ์") || message.includes("access denied")) {
     return NextResponse.json({ error: message }, { status: 403 });
   }
