@@ -126,6 +126,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
                 currentWeight: null,
                 weightLossPercent: null,
                 workRate: null,
+                otherOperatingCost: 0,
                 workTotal: null,
               }),
               items: [currentItem],
@@ -214,14 +215,28 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       const emptyDraftDialog = page.getByRole("dialog", { name: "REX-EDIT-001" });
       const emptyWeightInput = emptyDraftDialog.getByLabel("น้ำหนักปัจจุบัน", { exact: true });
       const emptyRateInput = emptyDraftDialog.getByLabel("ค่าทำงาน/กก.");
+      const emptyOtherCostInput = emptyDraftDialog.getByLabel("ค่าดำเนินการอื่น");
       await expect(emptyWeightInput).toHaveValue("0");
       await expect(emptyRateInput).toHaveValue("0.0");
+      await expect(emptyOtherCostInput).toHaveValue("0");
+      await expect(emptyWeightInput.locator("xpath=following-sibling::*[1]"))
+        .toHaveAttribute("id", "rubber-export-weight-error");
+      await expect(emptyWeightInput.locator("..").getByRole("alert"))
+        .toContainText("น้ำหนักปัจจุบันต้องมากกว่า 0");
+      await expect(emptyWeightInput).toHaveAttribute("aria-describedby", "rubber-export-weight-error");
       await expect(emptyDraftDialog.getByRole("button", { name: "บันทึกร่าง" })).toBeDisabled();
       await expect(emptyDraftDialog.getByRole("button", { name: "ตรวจสอบแล้ว" })).toBeDisabled();
       await emptyWeightInput.focus();
       await expect(emptyWeightInput).toHaveValue("");
       await emptyWeightInput.blur();
       await expect(emptyWeightInput).toHaveValue("0");
+      await emptyOtherCostInput.focus();
+      await expect(emptyOtherCostInput).toHaveValue("");
+      await emptyOtherCostInput.blur();
+      await expect(emptyOtherCostInput).toHaveValue("0");
+      await emptyOtherCostInput.fill("0.25");
+      await emptyOtherCostInput.blur();
+      await expect(emptyOtherCostInput).toHaveValue("0.25");
       await emptyRateInput.focus();
       await expect(emptyRateInput).toHaveValue("");
       await emptyRateInput.fill("0.99");
@@ -230,7 +245,8 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await emptyRateInput.fill("1.0");
       await emptyRateInput.blur();
       await expect(emptyRateInput).toHaveValue("0.0");
-      await expect(emptyDraftDialog.getByRole("alert")).toContainText("ตั้งแต่ 0.0 ถึง 0.99");
+      await expect(emptyRateInput.locator("..").getByRole("alert"))
+        .toContainText("ตั้งแต่ 0.0 ถึง 0.99");
       await expect(emptyRateInput).toHaveAttribute("aria-invalid", "true");
       await expect(emptyDraftDialog.getByRole("alertdialog")).toHaveCount(0);
       await emptyRateInput.fill("0");
@@ -239,7 +255,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await emptyRateInput.fill("0.5");
       await emptyRateInput.blur();
       await expect(emptyRateInput).toHaveValue("0.5");
-      await expect(emptyDraftDialog.getByRole("alert")).toHaveCount(0);
+      await expect(emptyRateInput.locator("..").getByRole("alert")).toHaveCount(0);
       await emptyDraftDialog.getByRole("button", { name: "ปิด" }).click();
       showEmptyDraft = false;
 

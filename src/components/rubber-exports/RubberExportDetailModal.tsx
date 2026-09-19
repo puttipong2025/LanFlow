@@ -84,6 +84,7 @@ export function RubberExportDetailModal({
   );
   const [workRateError, setWorkRateError] = useState<string | null>(null);
   const [otherCost, setOtherCost] = useState(details.otherOperatingCost);
+  const [otherCostBlank, setOtherCostBlank] = useState(false);
   const [useTotalWeight, setUseTotalWeight] = useState(
     details.status === "draft" && details.currentWeight === details.originalWeightTotal
   );
@@ -210,9 +211,12 @@ export function RubberExportDetailModal({
         )}
 
         <div className="grid gap-3 sm:grid-cols-3">
-          <label className="block">
-            <span className="mb-1 block text-sm font-semibold text-ink/70">น้ำหนักปัจจุบัน</span>
+          <div className="block">
+            <label htmlFor="rubber-export-current-weight" className="mb-1 block text-sm font-semibold text-ink/70">
+              น้ำหนักปัจจุบัน
+            </label>
             <input
+              id="rubber-export-current-weight"
               type="number"
               min="0"
               max={details.originalWeightTotal}
@@ -236,7 +240,12 @@ export function RubberExportDetailModal({
               onChange={(event) => setCurrentWeightInput(event.currentTarget.value)}
               className="focus-ring h-11 w-full rounded-md border border-black/10 px-3 read-only:bg-slate-100"
             />
-          </label>
+            {currentWeight !== null && !weightValid && (
+              <span id="rubber-export-weight-error" role="alert" className="mt-1 block text-sm font-semibold text-red-600">
+                น้ำหนักปัจจุบันต้องมากกว่า 0 และไม่เกิน {number(details.originalWeightTotal)} กก.
+              </span>
+            )}
+          </div>
           <label className="block">
             <span className="mb-1 block text-sm font-semibold text-ink/70">ค่าทำงาน/กก.</span>
             <input
@@ -275,9 +284,19 @@ export function RubberExportDetailModal({
               type="number"
               min="0"
               step="0.01"
-              value={otherCost}
+              value={otherCostBlank ? "" : otherCost}
               readOnly={!isDraft}
-              onChange={(event) => setOtherCost(Math.max(0, Number(event.target.value || 0)))}
+              onFocus={(event) => {
+                if (isDraft && parseFloat(event.currentTarget.value) === 0) {
+                  setOtherCostBlank(true);
+                }
+              }}
+              onBlur={() => setOtherCostBlank(false)}
+              onChange={(event) => {
+                const value = event.currentTarget.value;
+                setOtherCostBlank(value === "");
+                setOtherCost(Math.max(0, Number(value || 0)));
+              }}
               className="focus-ring h-11 w-full rounded-md border border-black/10 px-3 read-only:bg-slate-100"
             />
           </label>
@@ -286,12 +305,6 @@ export function RubberExportDetailModal({
         <p className="text-xs text-ink/55">
           ยอดค่าทำงาน = น้ำหนักสุทธิรวม × ค่าทำงาน/กก. + ค่าดำเนินการอื่น
         </p>
-
-        {currentWeight !== null && !weightValid && (
-          <p id="rubber-export-weight-error" className="text-sm font-semibold text-red-600">
-            น้ำหนักปัจจุบันต้องมากกว่า 0 และไม่เกิน {number(details.originalWeightTotal)} กก.
-          </p>
-        )}
 
         <div className="overflow-x-auto rounded-md border border-black/10">
           <table className="min-w-full text-sm">
