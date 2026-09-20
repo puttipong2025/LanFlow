@@ -47,7 +47,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       status: "draft",
       previousStatus: null,
       originalWeightTotal: 100,
-      paidTotal: 3_000,
+      paidTotal: 3_200,
       rubberValueTotal: 3_000,
       averagePrice: 30,
       currentWeight: 90,
@@ -79,7 +79,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       customerName: "ลูกค้าปัจจุบัน",
       eligibilityAt: "2026-08-10T01:00:00.000Z",
       netWeight: 100,
-      paidAmount: 3_000,
+      paidAmount: 3_200,
       rubberValueAmount: 3_000,
       ageHours: 24,
       ageIsEstimated: false,
@@ -166,33 +166,44 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await page.goto("/");
       await selectAppLocation(page, locationId);
       await page.getByRole("button", { name: /^ส่งออกยาง/ }).click();
+      const exportRow = page.getByRole("row").filter({ hasText: "REX-EDIT-001" });
+      await expect(exportRow).toContainText("฿30.00");
       await page.getByRole("button", { name: "ดูรายละเอียด REX-EDIT-001" }).click();
 
       const detailDialog = page.getByRole("dialog", { name: "REX-EDIT-001" });
-      const averagePurchaseCost = detailDialog.getByText("ต้นทุนซื้อเฉลี่ย", { exact: true }).locator("..");
-      const totalCost = detailDialog.getByText("ต้นทุนซื้อรวมค่าทำงาน", { exact: true }).locator("..");
-      const averageCost = detailDialog.getByText("ต้นทุนซื้อเฉลี่ยรวมค่าทำงาน", { exact: true }).locator("..");
-      await expect(averagePurchaseCost.getByText("฿30.00/กก.", { exact: true })).toBeVisible();
+      const averagePurchaseCost = detailDialog.getByText("ราคาจากบิล/กก.", { exact: true }).locator("..");
+      const rubberValue = detailDialog.getByText("มูลค่ายางรวม", { exact: true }).locator("..");
+      const totalCost = detailDialog.getByText("ต้นทุนรวมค่าดำเนินการ", { exact: true }).locator("..");
+      const averageCost = detailDialog.getByText("ราคาปัจจุบัน/กก.", { exact: true }).locator("..");
+      await expect(rubberValue.getByText("฿3,000.00", { exact: true })).toBeVisible();
+      await expect(averagePurchaseCost.getByText("฿30.00", { exact: true })).toBeVisible();
       await expect(totalCost.getByText("฿3,225.00", { exact: true })).toBeVisible();
-      await expect(averageCost.getByText("฿35.83/กก.", { exact: true })).toBeVisible();
+      await expect(averageCost.getByText("฿35.83", { exact: true })).toBeVisible();
+      await expect(detailDialog.getByText("ราคาจากบิล/กก. = มูลค่ายางรวม ÷ น้ำหนักสุทธิรวม", { exact: true })).toBeVisible();
+      await expect(detailDialog.getByText("ราคาปัจจุบัน/กก. = (มูลค่ายางรวม + ค่าทำงานและค่าดำเนินการรวม) ÷ น้ำหนักปัจจุบัน", { exact: true })).toBeVisible();
+      const currentBillRow = detailDialog.getByRole("row").filter({ hasText: "CURRENT-001" });
+      await expect(currentBillRow).toContainText("3,000.00");
+      await expect(currentBillRow).not.toContainText("3,200.00");
 
       const useTotalWeight = detailDialog.getByRole("checkbox", {
         name: "ใช้น้ำหนักสุทธิรวมเป็นน้ำหนักปัจจุบัน",
       });
       const currentWeightInput = detailDialog.getByLabel("น้ำหนักปัจจุบัน", { exact: true });
-      const weightLoss = detailDialog.getByText("น้ำหนักหาย", { exact: true }).locator("..");
+      const weightLoss = detailDialog.getByText("น้ำหนักลดลง (%)", { exact: true }).locator("..");
       await expect(useTotalWeight).not.toBeChecked();
-      await expect(detailDialog.getByText("ใช้เมื่อน้ำหนักไม่เปลี่ยน · น้ำหนักหาย 0%", {
+      await expect(detailDialog.getByText("ใช้เมื่อน้ำหนักไม่เปลี่ยน · น้ำหนักลดลง 0%", {
         exact: true,
       })).toBeVisible();
       await useTotalWeight.check();
       await expect(currentWeightInput).toHaveValue("100");
       await expect(currentWeightInput).toHaveAttribute("readonly", "");
       await expect(weightLoss.getByText("0.00%", { exact: true })).toBeVisible();
+      await expect(averageCost.getByText("฿32.25", { exact: true })).toBeVisible();
       await useTotalWeight.uncheck();
       await expect(currentWeightInput).toHaveValue("100");
       await expect(currentWeightInput).not.toHaveAttribute("readonly", "");
       await currentWeightInput.fill("90");
+      await expect(averageCost.getByText("฿35.83", { exact: true })).toBeVisible();
 
       await currentWeightInput.fill("");
       await expect(totalCost.getByText("฿3,225.00", { exact: true })).toBeVisible();
@@ -206,7 +217,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await detailDialog.getByLabel("ค่าทำงาน/กก.").fill("0.0");
       await detailDialog.getByLabel("ค่าดำเนินการอื่น").fill("0");
       await expect(totalCost.getByText("฿3,000.00", { exact: true })).toBeVisible();
-      await expect(averageCost.getByText("฿33.33/กก.", { exact: true })).toBeVisible();
+      await expect(averageCost.getByText("฿33.33", { exact: true })).toBeVisible();
       await expect(detailDialog.getByRole("button", { name: "ตรวจสอบแล้ว" })).toBeEnabled();
       await detailDialog.getByRole("button", { name: "ปิด" }).click();
 
@@ -268,7 +279,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       })).toBeChecked();
       await expect(reopenedDialog.getByLabel("น้ำหนักปัจจุบัน", { exact: true }))
         .toHaveAttribute("readonly", "");
-      await expect(reopenedDialog.getByText("น้ำหนักหาย", { exact: true }).locator("..")
+      await expect(reopenedDialog.getByText("น้ำหนักลดลง (%)", { exact: true }).locator("..")
         .getByText("0.00%", { exact: true })).toBeVisible();
       await reopenedDialog.getByRole("button", { name: "ปิด" }).click();
       await page.getByRole("button", { name: "แก้", exact: true }).click();
@@ -285,10 +296,11 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await nextBillCheckbox.uncheck();
       await nextBillCheckbox.check();
       await expect.poll(() => previewRequests).toBe(1);
-      await expect(editDialog.getByText("ต้นทุนซื้อรวม", { exact: true }).locator(".."))
+      await expect(editDialog.getByText("มูลค่ายางรวม", { exact: true }).locator(".."))
         .toContainText("฿2,800.00");
-      await expect(editDialog.getByText("ต้นทุนซื้อเฉลี่ย", { exact: true }).locator(".."))
-        .toContainText("฿35.00/กก.");
+      await expect(editDialog.getByText("ราคาจากบิล/กก.", { exact: true }).locator(".."))
+        .toContainText("฿35.00");
+      await expect(editDialog.getByText("ราคาจากบิล/กก. = มูลค่ายางรวม ÷ น้ำหนักสุทธิรวม", { exact: true })).toBeVisible();
       await editDialog.getByRole("button", { name: "บันทึกการแก้" }).click();
       await expect.poll(() => submittedIds).toEqual([nextReportItemId]);
       await expect(page.getByText("แก้รายการส่งออกยางแล้ว")).toBeVisible();
@@ -1014,7 +1026,7 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await adminPage.getByRole("button", { name: /^ส่งออกยาง/ }).click();
       await expect(adminPage.getByRole("button", { name: "รอผู้รับรอง" }).first()).toBeDisabled();
       await adminPage.getByRole("button", { name: `ดูรายละเอียด REX-BADGE-${exportIds[0].slice(0, 8)}` }).click();
-      await expect(adminPage.getByText("รอ super_admin หรือผู้มีสิทธิ์จัดการระบบตรวจสอบรายการ")).toBeVisible();
+      await expect(adminPage.getByText("รอผู้มีสิทธิ์ตรวจสอบรายการในสาขานี้")).toBeVisible();
       await adminPage.getByRole("button", { name: "ปิด", exact: true }).click();
 
       await selectAppLocation(page, locationIds[1]);

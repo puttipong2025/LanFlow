@@ -68,7 +68,7 @@ export function RubberExportTable({
   return (
     <div>
     <div className="overflow-x-auto">
-      <table className="min-w-full text-sm">
+      <table className="min-w-full whitespace-nowrap text-sm">
         <thead className="bg-mint/60 text-left text-ink">
           <tr>
             <th className="bg-mint px-4 py-3 lg:sticky lg:left-0 lg:z-20">จัดการ</th>
@@ -76,19 +76,20 @@ export function RubberExportTable({
             <th className="px-4 py-3">สถานะ</th>
             <th className="px-4 py-3">ผู้สร้าง</th>
             <th className="px-4 py-3 text-right">บิล</th>
-            <th className="px-4 py-3 text-right">น้ำหนักเดิม</th>
+            <th className="px-4 py-3 text-right">น้ำหนักสุทธิรวม</th>
+            <th className="px-4 py-3 text-right">ราคาจากบิล/กก.</th>
             <th className="px-4 py-3 text-right">น้ำหนักปัจจุบัน</th>
-            <th className="px-4 py-3 text-right">ยอดค่าทำงาน</th>
-            <th className="px-4 py-3 text-right">อายุเฉลี่ย</th>
-            <th className="px-4 py-3 text-right">อายุมากสุด</th>
+            <th className="px-4 py-3 text-right">ค่าทำงานและค่าดำเนินการรวม</th>
+            <th className="px-4 py-3 text-right">อายุเฉลี่ยถ่วงน้ำหนัก</th>
+            <th className="px-4 py-3 text-right">อายุมากที่สุด</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-black/5">
           {loading && (
-            <tr><td colSpan={10} className="px-4 py-8 text-center text-ink/60">กำลังโหลด...</td></tr>
+            <tr><td colSpan={11} className="px-4 py-8 text-center text-ink/60">กำลังโหลด...</td></tr>
           )}
           {!loading && rows.length === 0 && (
-            <tr><td colSpan={10} className="px-4 py-8 text-center text-ink/60">ยังไม่มีรายการส่งออกยาง</td></tr>
+            <tr><td colSpan={11} className="px-4 py-8 text-center text-ink/60">ยังไม่มีรายการส่งออกยาง</td></tr>
           )}
           {!loading && visibleRows.map((row) => (
             <tr key={row.id}>
@@ -110,7 +111,7 @@ export function RubberExportTable({
                     <button
                       type="button"
                       disabled
-                      title="รอ super_admin หรือผู้มีสิทธิ์จัดการระบบตรวจสอบรายการ"
+                      title="รอผู้มีสิทธิ์ตรวจสอบรายการในสาขานี้"
                       className="inline-flex h-10 cursor-not-allowed items-center gap-1.5 rounded-md bg-slate-200 px-3 font-semibold text-ink/60"
                     >
                       <Clock3 size={16} /> รอผู้รับรอง
@@ -210,6 +211,7 @@ export function RubberExportTable({
               <td className="px-4 py-3">{row.createdByName || "—"}</td>
               <td className="px-4 py-3 text-right tabular-nums">{row.itemCount.toLocaleString("th-TH")}</td>
               <td className="px-4 py-3 text-right tabular-nums">{number(row.originalWeightTotal)}</td>
+              <td className="px-4 py-3 text-right tabular-nums">฿{number(row.averagePrice)}</td>
               <td className="px-4 py-3 text-right tabular-nums">{number(row.currentWeight)}</td>
               <td className="px-4 py-3 text-right tabular-nums">{number(row.workTotal)}</td>
               <td className="px-4 py-3 text-right tabular-nums">

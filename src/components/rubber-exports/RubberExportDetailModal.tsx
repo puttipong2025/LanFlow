@@ -16,7 +16,7 @@ import type {
   RubberExportDetails,
   RubberExportExpenseDestination,
 } from "@/types/rubber-exports";
-import { formatRubberAge } from "@/lib/rubber-exports/rubber-export-presentation";
+import { formatRubberAge, RUBBER_EXPORT_PRICE_FORMULAS } from "@/lib/rubber-exports/rubber-export-presentation";
 
 function number(value: number | null | undefined) {
   return value == null ? "—" : value.toLocaleString("th-TH", {
@@ -120,7 +120,7 @@ export function RubberExportDetailModal({
     && (!isDraft || validWorkRateInput(workRateInput))
     && (workRate === null || (workRate >= 0 && workTotal !== null));
   const verifyDisabledReason = !canVerify
-    ? "รอ super_admin หรือผู้มีสิทธิ์จัดการระบบตรวจสอบรายการ"
+    ? "รอผู้มีสิทธิ์ตรวจสอบรายการในสาขานี้"
     : !weightValid
       ? "กรุณากรอกน้ำหนักปัจจุบันให้ถูกต้อง"
       : !workInputsValid
@@ -170,20 +170,25 @@ export function RubberExportDetailModal({
 
         <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">น้ำหนักสุทธิรวม</div><div className="font-bold tabular-nums">{number(details.originalWeightTotal)} กก.</div></div>
-          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ต้นทุนซื้อเฉลี่ย</div><div className="font-bold tabular-nums">฿{number(details.averagePrice)}/กก.</div></div>
-          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ต้นทุนซื้อรวมค่าทำงาน</div><div className="font-bold tabular-nums">{purchaseCost.total === null ? "—" : `฿${number(purchaseCost.total)}`}</div></div>
-          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ต้นทุนซื้อเฉลี่ยรวมค่าทำงาน</div><div className="font-bold tabular-nums">{purchaseCost.average === null ? "—" : `฿${number(purchaseCost.average)}/กก.`}</div></div>
+          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">มูลค่ายางรวม</div><div className="font-bold tabular-nums">฿{number(details.rubberValueTotal)}</div></div>
+          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ราคาจากบิล/กก.</div><div className="font-bold tabular-nums">฿{number(details.averagePrice)}</div></div>
+          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ต้นทุนรวมค่าดำเนินการ</div><div className="font-bold tabular-nums">{purchaseCost.total === null ? "—" : `฿${number(purchaseCost.total)}`}</div></div>
+          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ราคาปัจจุบัน/กก.</div><div className="font-bold tabular-nums">{purchaseCost.average === null ? "—" : `฿${number(purchaseCost.average)}`}</div></div>
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">น้ำหนักปัจจุบัน</div><div className="font-bold tabular-nums">{number(currentWeight)} กก.</div></div>
-          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">น้ำหนักหาย</div><div className="font-bold tabular-nums">{number(lossPercent)}%</div></div>
+          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">น้ำหนักลดลง (%)</div><div className="font-bold tabular-nums">{lossPercent === null ? "—" : `${number(lossPercent)}%`}</div></div>
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ค่าทำงานต่อกิโลกรัม</div><div className="font-bold tabular-nums">{workRate === null ? "—" : `฿${number(workRate)}`}</div></div>
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ค่าดำเนินการอื่น</div><div className="font-bold tabular-nums">฿{number(otherCost)}</div></div>
-          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ยอดค่าทำงานรวม</div><div className="font-bold tabular-nums">{workTotal === null ? "—" : `฿${number(workTotal)}`}</div></div>
+          <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ค่าทำงานและค่าดำเนินการรวม</div><div className="font-bold tabular-nums">{workTotal === null ? "—" : `฿${number(workTotal)}`}</div></div>
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">อายุเฉลี่ยถ่วงน้ำหนัก</div><div className="font-bold tabular-nums">{formatRubberAge(details.averageAgeHours)}</div></div>
           <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">อายุมากที่สุด</div><div className="font-bold tabular-nums">{formatRubberAge(details.oldestAgeHours)}</div></div>
         </div>
 
+        <div className="space-y-1 text-pretty text-xs text-ink/60">
+          {RUBBER_EXPORT_PRICE_FORMULAS.map((formula) => <p key={formula}>{formula}</p>)}
+        </div>
+
         <p className="text-pretty text-xs text-ink/55">
-          คำนวณโดย Server ณ <span className="tabular-nums">{dateTime(details.ageCalculatedAt)}</span>
+          คำนวณอายุยาง ณ <span className="tabular-nums">{dateTime(details.ageCalculatedAt)}</span>
           {Boolean(details.estimatedAgeItemCount) && ` · มีอายุประมาณการ ${details.estimatedAgeItemCount} บิล`}
         </p>
 
@@ -204,7 +209,7 @@ export function RubberExportDetailModal({
                 ใช้น้ำหนักสุทธิรวมเป็นน้ำหนักปัจจุบัน
               </span>
               <span className="mt-0.5 block text-pretty text-xs text-ink/60">
-                ใช้เมื่อน้ำหนักไม่เปลี่ยน · น้ำหนักหาย 0%
+                ใช้เมื่อน้ำหนักไม่เปลี่ยน · น้ำหนักลดลง 0%
               </span>
             </span>
           </label>
@@ -303,13 +308,13 @@ export function RubberExportDetailModal({
         </div>
 
         <p className="text-xs text-ink/55">
-          ยอดค่าทำงาน = น้ำหนักสุทธิรวม × ค่าทำงาน/กก. + ค่าดำเนินการอื่น
+          ค่าทำงานและค่าดำเนินการรวม = น้ำหนักสุทธิรวม × ค่าทำงาน/กก. + ค่าดำเนินการอื่น
         </p>
 
         <div className="overflow-x-auto rounded-md border border-black/10">
-          <table className="min-w-full text-sm">
+          <table className="min-w-full whitespace-nowrap text-sm">
             <thead className="bg-mint/50">
-              <tr><th className="px-3 py-2 text-left">วันที่</th><th className="px-3 py-2 text-left">บิล</th><th className="px-3 py-2 text-left">ลูกค้า</th><th className="px-3 py-2 text-right">น้ำหนัก</th><th className="px-3 py-2 text-right">จ่ายจริง</th><th className="px-3 py-2 text-right">อายุยาง</th></tr>
+              <tr><th className="px-3 py-2 text-left">วันที่บิล</th><th className="px-3 py-2 text-left">เลขบิล</th><th className="px-3 py-2 text-left">ลูกค้า</th><th className="px-3 py-2 text-right">น้ำหนักสุทธิ</th><th className="px-3 py-2 text-right">มูลค่ายาง</th><th className="px-3 py-2 text-right">อายุยาง</th></tr>
             </thead>
             <tbody className="divide-y divide-black/5">
               {details.items.map((item) => (
@@ -318,7 +323,7 @@ export function RubberExportDetailModal({
                   <td className="px-3 py-2">{item.billNo}</td>
                   <td className="px-3 py-2">{item.customerName}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{number(item.netWeight)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{number(item.paidAmount)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{number(item.rubberValueAmount)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">
                     {formatRubberAge(item.ageHours)}
                     {item.ageIsEstimated && <div className="text-xs text-amber-800">ประมาณการ</div>}

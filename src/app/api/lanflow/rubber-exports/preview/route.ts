@@ -28,7 +28,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "กรุณาเลือกบิลอย่างน้อย 1 ใบและห้ามเลือกซ้ำ" }, { status: 400 });
   }
   if (!canAccessRubberExports(result.auth, payload.locationId)) {
-    return NextResponse.json({ error: "ไม่มีสิทธิ์ดู preview ของสาขานี้" }, { status: 403 });
+    return NextResponse.json({ error: "ไม่มีสิทธิ์ดูตัวอย่างรายการของสาขานี้" }, { status: 403 });
   }
 
   const { data, error } = await result.supabase.rpc("preview_rubber_export", {

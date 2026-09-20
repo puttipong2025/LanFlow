@@ -129,6 +129,52 @@ test("shows share only for verified status", async ({ page }) => {
     .getByRole("button", { name: /แชร์ PDF/ })).toBeVisible();
 });
 
+test("keeps the new bill price column readable on a narrow screen", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openRubberExports(page);
+
+  const table = page.getByRole("table").filter({ has: page.getByRole("columnheader", { name: "ราคาจากบิล/กก." }) });
+  const scroller = table.locator("..");
+  await expect(table.getByRole("columnheader", { name: "น้ำหนักสุทธิรวม" })).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: "ราคาจากบิล/กก." })).toBeVisible();
+  await expect(table.getByRole("row").filter({ hasText: verified.exportNo })).toContainText("฿28.72");
+  expect(await scroller.evaluate((element) => element.scrollWidth > element.clientWidth)).toBeTruthy();
+  await scroller.evaluate((element) => { element.scrollLeft = element.scrollWidth; });
+  await expect(table.getByRole("columnheader", { name: "ราคาจากบิล/กก." })).toBeVisible();
+  await table.getByRole("columnheader", { name: "ราคาจากบิล/กก." }).scrollIntoViewIfNeeded();
+  mkdirSync(outputDirectory, { recursive: true });
+  await page.screenshot({ path: path.join(outputDirectory, "rubber-export-narrow.png") });
+});
+
+test("fills the detail table container on a wide screen", async ({ page }) => {
+  await openRubberExports(page);
+  await page.getByRole("button", { name: `ดูรายละเอียด ${verified.exportNo}` }).click();
+  const detail = page.getByRole("dialog", { name: verified.exportNo });
+  const table = detail.getByRole("table");
+  await expect(table).toBeVisible();
+  const widths = await table.evaluate((element) => ({
+    table: element.getBoundingClientRect().width,
+    container: element.parentElement?.getBoundingClientRect().width ?? 0,
+  }));
+  expect(widths.table).toBeGreaterThanOrEqual(widths.container - 2);
+});
+
+test("uses the Thai preview permission message from the route", async ({ browser }) => {
+  const context = await browser.newContext({ storageState: "playwright/.auth/admin.json" });
+  try {
+    const response = await context.request.post("/api/lanflow/rubber-exports/preview", {
+      data: {
+        locationId: "00000000-0000-4000-8000-000000000001",
+        selectedReportItemIds: ["00000000-0000-4000-8000-000000000002"],
+      },
+    });
+    expect(response.status()).toBe(403);
+    expect(await response.json()).toEqual({ error: "ไม่มีสิทธิ์ดูตัวอย่างรายการของสาขานี้" });
+  } finally {
+    await context.close();
+  }
+});
+
 test("downloads a searchable multi-page verified copy when file sharing is unsupported", async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "canShare", {
@@ -196,12 +242,12 @@ test("downloads a searchable multi-page verified copy when file sharing is unsup
   expect(allText).toContain("ตรวจสอบแล้ว");
   expect(allText).not.toContain("ลบแล้ว");
   expect(allText).toContain("น้ำหนักสุทธิรวม");
-  expect(allText).toContain("ต้นทุนซื้อเฉลี่ย");
-  expect(allText).toContain("฿28.72/กก.");
-  expect(allText).toContain("ต้นทุนซื้อรวมค่าทำงาน");
-  expect(allText).toContain("฿9,277.50");
-  expect(allText).toContain("ต้นทุนซื้อเฉลี่ยรวมค่าทำงาน");
-  expect(allText).toContain("฿31.45/กก.");
+  expect(allText).toContain("มูลค่ายางรวม");
+  expect(allText).toContain("ราคาจากบิล/กก.");
+  expect(allText).toContain("ต้นทุนรวมค่าดำเนินการ");
+  expect(allText).toContain("ราคาปัจจุบัน/กก.");
+  expect(allText).toContain("ราคาจากบิล/กก. = มูลค่ายางรวม ÷ น้ำหนักสุทธิรวม");
+  expect(allText).toContain("ราคาปัจจุบัน/กก. = (มูลค่ายางรวม + ค่าทำงานและค่าดำเนินการรวม) ÷ น้ำหนักปัจจุบัน");
   expect(allText).toContain("ผู้สร้าง");
   for (let index = 1; index <= 60; index += 1) {
     const row = String(index).padStart(3, "0");
@@ -216,7 +262,39 @@ test("downloads a searchable multi-page verified copy when file sharing is unsup
     expect(text).toContain("วันที่บิล");
     expect(text).toContain("เลขบิล");
     expect(text).toContain("ลูกค้า");
+    expect(text).toContain("มูลค่ายาง");
   });
+});
+
+test("uses the three bill rubber values and matching totals in the verified PDF", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "canShare", { configurable: true, value: () => false });
+  });
+  await openRubberExports(page);
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.locator("tr").filter({ hasText: verified.exportNo })
+    .getByRole("button", { name: `แชร์ PDF รายการส่งออกยาง ${verified.exportNo}` }).click();
+  const download = await downloadPromise;
+  mkdirSync(outputDirectory, { recursive: true });
+  const threeBillPdf = path.join(outputDirectory, "LanFlow-rubber-export-three-bills.pdf");
+  await download.saveAs(threeBillPdf);
+
+  const actualText = execFileSync(bundledPython, [
+    "-c",
+    "import sys\nfrom pypdf import PdfReader\nfrom pypdf.generic import ContentStream\nr=PdfReader(sys.argv[1])\nfor p in r.pages:\n for operands,operator in ContentStream(p.get_contents(),r).operations:\n  if operator==b'BDC' and len(operands)>1 and hasattr(operands[1],'get'):\n   value=operands[1].get('/ActualText')\n   if value is not None: print(str(value))",
+    threeBillPdf,
+  ], { encoding: "utf8" });
+
+  expect(actualText).toContain("฿8,703.00");
+  expect(actualText).toContain("฿28.72");
+  expect(actualText).toContain("฿9,277.50");
+  expect(actualText).toContain("฿31.45");
+  expect(actualText).toContain("2,900.00");
+  expect(actualText).toContain("2,901.00");
+  expect(actualText).toContain("2,902.00");
+  expect(actualText).not.toContain("3,000.00");
+  expect(actualText).toContain("ผู้รับรอง");
 });
 
 test("cancels font loading and restores every share action", async ({ page }) => {

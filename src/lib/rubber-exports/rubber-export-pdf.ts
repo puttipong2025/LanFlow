@@ -7,6 +7,7 @@ import {
   drawActualText,
   drawPageFooters,
   drawTable,
+  ensureSpace,
   type PdfCell,
   type PdfDocument,
   type PdfState,
@@ -102,6 +103,17 @@ function drawRubberExportContent(doc: PdfDocument, details: RubberExportDetails)
     summaryRows,
   );
 
+  ensureSpace(state, 38);
+  for (const formula of presentation.formulas) {
+    applyTextStyle(doc, { text: formula, fontSize: 9, color: PDF_PALETTE.muted });
+    drawActualText(doc, formula, A4_LANDSCAPE.left, state.y, {
+      width: A4_LANDSCAPE.tableWidth,
+      height: 16,
+    });
+    state.y += 16;
+  }
+  state.y += 6;
+
   const itemRows: PdfCell[][] = presentation.items.length === 0
     ? [[{ text: "ไม่มีรายการ", align: "center", color: PDF_PALETTE.muted, colSpan: 7 }]]
     : presentation.items.map((item) => [
@@ -110,7 +122,7 @@ function drawRubberExportContent(doc: PdfDocument, details: RubberExportDetails)
       data(item.customerName),
       data(item.eligibilityAtText),
       data(item.netWeightText, "right"),
-      data(item.paidAmountText, "right"),
+      data(item.rubberValueAmountText, "right"),
       data(item.ageText, "right"),
     ]);
   drawTable(state, [65, 80, 140, 125, 100, 110, 173], [
@@ -119,13 +131,13 @@ function drawRubberExportContent(doc: PdfDocument, details: RubberExportDetails)
     header("ลูกค้า"),
     header("เวลาพร้อมออกรายงาน"),
     header("น้ำหนักสุทธิ", "right"),
-    header("ยอดจ่ายจริง", "right"),
+    header("มูลค่ายาง", "right"),
     header("อายุยาง", "right"),
   ], itemRows);
 
   drawTable(state, [396, 397], [
     header("ผู้สร้าง"),
-    header("ผู้ตรวจสอบ"),
+    header("ผู้รับรอง"),
   ], [[
     data(presentation.audit.created),
     data(presentation.audit.verified),

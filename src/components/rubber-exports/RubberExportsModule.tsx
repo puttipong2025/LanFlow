@@ -7,7 +7,6 @@ import type { Location } from "@/types";
 import type {
   RubberExportAvailableBill,
   RubberExportDetails,
-  RubberExportPreview,
   RubberExportSummary,
 } from "@/types/rubber-exports";
 import { cn } from "@/lib/cn";
@@ -15,7 +14,7 @@ import { useRubberExports } from "@/hooks/useRubberExports";
 import { useSharePdf } from "@/hooks/useSharePdf";
 import { createRubberExportPdfFile } from "@/lib/rubber-exports/rubber-export-pdf";
 import { rubberExportShareTitle } from "@/lib/rubber-exports/rubber-export-presentation";
-import { RubberExportCreateModal } from "@/components/rubber-exports/RubberExportCreateModal";
+import { RubberExportCreateModal, type RubberExportPreviewDisplay } from "@/components/rubber-exports/RubberExportCreateModal";
 import { RubberExportDetailModal } from "@/components/rubber-exports/RubberExportDetailModal";
 import { RubberExportTable } from "@/components/rubber-exports/RubberExportTable";
 import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
@@ -51,30 +50,15 @@ function editableBills(
   );
 }
 
-function editPreview(details: RubberExportDetails): RubberExportPreview {
+function editPreview(details: RubberExportDetails): RubberExportPreviewDisplay {
   return {
     itemCount: details.items.length,
     originalWeightTotal: details.originalWeightTotal,
-    paidTotal: details.paidTotal,
     rubberValueTotal: details.rubberValueTotal,
     averagePrice: details.averagePrice,
-    calculatedAt: details.ageCalculatedAt ?? details.createdAt,
     averageAgeHours: details.averageAgeHours ?? 0,
     oldestAgeHours: details.oldestAgeHours ?? 0,
     estimatedAgeItemCount: details.estimatedAgeItemCount ?? 0,
-    items: details.items.map((item) => ({
-      reportItemId: item.sourceReportItemId,
-      billId: item.sourceBillId,
-      billDate: item.billDate,
-      billNo: item.billNo,
-      customerName: item.customerName,
-      eligibilityAt: item.eligibilityAt,
-      netWeight: item.netWeight,
-      paidAmount: item.paidAmount,
-      rubberValueAmount: item.rubberValueAmount,
-      ageHours: item.ageHours ?? 0,
-      ageIsEstimated: item.ageIsEstimated,
-    })),
   };
 }
 
@@ -642,7 +626,7 @@ export function RubberExportsModule({
       <AlertDialog
         open={Boolean(pendingRevert)}
         title={`ย้อน ${pendingRevert?.exportNo ?? "รายการส่งออกยาง"} เป็นฉบับร่าง?`}
-        description={`ข้อมูลน้ำหนักปัจจุบัน อัตราและยอดค่าทำงาน ค่าใช้จ่ายอื่น และข้อมูลการตรวจสอบจะถูกล้าง แต่เลข REX ผู้สร้าง และชุดบิลเดิมจะยังอยู่${pendingRevert?.hasWorkTransfer ? " รายการโอนค่าทำงานและสลิปทั้งหมดจะถูกลบถาวร" : ""}`}
+        description={`ข้อมูลน้ำหนักปัจจุบัน อัตราและยอดค่าทำงาน ค่าดำเนินการอื่น และข้อมูลการตรวจสอบจะถูกล้าง แต่เลข REX ผู้สร้าง และชุดบิลเดิมจะยังอยู่${pendingRevert?.hasWorkTransfer ? " รายการโอนค่าทำงานและสลิปทั้งหมดจะถูกลบถาวร" : ""}`}
         confirmLabel="ย้อนกลับเป็นฉบับร่าง"
         busy={reverting}
         onCancel={() => {
@@ -663,7 +647,7 @@ export function RubberExportsModule({
       <AlertDialog
         open={Boolean(pendingDelete)}
         title={`ลบ ${pendingDelete?.exportNo ?? "รายการส่งออกยาง"} แบบถาวร?`}
-        description={`รายการ บิล snapshot และรายละเอียดทั้งหมดจะถูกลบถาวรและกู้คืนไม่ได้ บิลต้นทางจะกลับมาใช้งานได้${pendingDelete?.hasWorkTransfer ? " รายการโอนค่าทำงานและสลิปทั้งหมดจะถูกลบถาวรด้วย" : ""} ระบบจะเก็บเฉพาะประวัติการลบขั้นต่ำ`}
+        description={`รายการ ข้อมูลบิลที่บันทึกกับรายการ และรายละเอียดทั้งหมดจะถูกลบถาวรและกู้คืนไม่ได้ บิลต้นทางจะกลับมาใช้งานได้${pendingDelete?.hasWorkTransfer ? " รายการโอนค่าทำงานและสลิปทั้งหมดจะถูกลบถาวรด้วย" : ""} ระบบจะเก็บเฉพาะประวัติการลบขั้นต่ำ`}
         confirmLabel="ยืนยันลบ"
         busy={deleting}
         onCancel={() => {

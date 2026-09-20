@@ -8,7 +8,13 @@ import type {
   RubberExportAvailableBill,
   RubberExportPreview,
 } from "@/types/rubber-exports";
-import { formatRubberAge } from "@/lib/rubber-exports/rubber-export-presentation";
+import { formatRubberAge, RUBBER_EXPORT_PRICE_FORMULAS } from "@/lib/rubber-exports/rubber-export-presentation";
+
+export type RubberExportPreviewDisplay = Pick<
+  RubberExportPreview,
+  "itemCount" | "originalWeightTotal" | "rubberValueTotal" | "averagePrice"
+  | "averageAgeHours" | "oldestAgeHours" | "estimatedAgeItemCount"
+>;
 
 function number(value: number) {
   return value.toLocaleString("th-TH", {
@@ -29,13 +35,13 @@ export function RubberExportCreateModal({
   availableBills: RubberExportAvailableBill[];
   mode?: "create" | "edit";
   initialSelectedIds?: string[];
-  initialPreview?: RubberExportPreview | null;
+  initialPreview?: RubberExportPreviewDisplay | null;
   onPreview: (reportItemIds: string[], signal?: AbortSignal) => Promise<RubberExportPreview>;
   onSubmit: (reportItemIds: string[]) => Promise<void>;
   onClose: () => void;
 }) {
   const [selectedIds, setSelectedIds] = useState<string[]>(initialSelectedIds);
-  const [preview, setPreview] = useState<RubberExportPreview | null>(initialPreview);
+  const [preview, setPreview] = useState<RubberExportPreviewDisplay | null>(initialPreview);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -68,7 +74,7 @@ export function RubberExportCreateModal({
         if (request === previewRequest.current && !controller.signal.aborted) setPreview(nextPreview);
       }).catch((caught) => {
         if (request === previewRequest.current && !controller.signal.aborted) {
-          setError(caught instanceof Error ? caught.message : "โหลด preview ไม่สำเร็จ");
+          setError(caught instanceof Error ? caught.message : "โหลดตัวอย่างรายการไม่สำเร็จ");
         }
       }).finally(() => {
         if (request === previewRequest.current && !controller.signal.aborted) setLoading(false);
@@ -120,15 +126,15 @@ export function RubberExportCreateModal({
         </div>
 
         <div className="max-h-[45vh] overflow-auto rounded-md border border-black/10">
-          <table className="min-w-full text-sm">
+          <table className="min-w-full whitespace-nowrap text-sm">
             <thead className="sticky top-0 bg-mint">
               <tr>
                 <th className="w-12 px-3 py-2 text-center">เลือก</th>
-                <th className="px-3 py-2 text-left">วันที่</th>
-                <th className="px-3 py-2 text-left">บิล</th>
+                <th className="px-3 py-2 text-left">วันที่บิล</th>
+                <th className="px-3 py-2 text-left">เลขบิล</th>
                 <th className="px-3 py-2 text-left">ลูกค้า</th>
-                <th className="px-3 py-2 text-right">น้ำหนัก</th>
-                <th className="px-3 py-2 text-right">ต้นทุนซื้อ</th>
+                <th className="px-3 py-2 text-right">น้ำหนักสุทธิ</th>
+                <th className="px-3 py-2 text-right">มูลค่ายาง</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-black/5">
@@ -154,7 +160,7 @@ export function RubberExportCreateModal({
           </table>
         </div>
 
-        {loading && <div className="flex items-center gap-2 text-sm text-ink/60"><Loader2 className="animate-spin" size={16} /> กำลังคำนวณ preview...</div>}
+        {loading && <div className="flex items-center gap-2 text-sm text-ink/60"><Loader2 className="animate-spin" size={16} /> กำลังคำนวณตัวอย่างรายการ...</div>}
         {error && <div className="rounded-md bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{error}</div>}
 
         {preview && (
@@ -162,11 +168,12 @@ export function RubberExportCreateModal({
             <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
               <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">จำนวนบิล</div><div className="font-bold tabular-nums">{preview.itemCount}</div></div>
               <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">น้ำหนักสุทธิรวม</div><div className="font-bold tabular-nums">{number(preview.originalWeightTotal)} กก.</div></div>
-              <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ต้นทุนซื้อรวม</div><div className="font-bold tabular-nums">฿{number(preview.rubberValueTotal)}</div></div>
-              <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ต้นทุนซื้อเฉลี่ย</div><div className="font-bold tabular-nums">฿{number(preview.averagePrice)}/กก.</div></div>
+              <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">มูลค่ายางรวม</div><div className="font-bold tabular-nums">฿{number(preview.rubberValueTotal)}</div></div>
+              <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">ราคาจากบิล/กก.</div><div className="font-bold tabular-nums">฿{number(preview.averagePrice)}</div></div>
               <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">อายุเฉลี่ยถ่วงน้ำหนัก</div><div className="font-bold tabular-nums">{formatRubberAge(preview.averageAgeHours)}</div></div>
               <div className="rounded-md bg-field p-3"><div className="text-xs text-ink/60">อายุมากที่สุด</div><div className="font-bold tabular-nums">{formatRubberAge(preview.oldestAgeHours)}</div></div>
             </div>
+            <p className="text-pretty text-xs text-ink/60">{RUBBER_EXPORT_PRICE_FORMULAS[0]}</p>
             {preview.estimatedAgeItemCount > 0 && (
               <p className="text-pretty text-xs font-semibold text-amber-800">
                 มีอายุประมาณการ {preview.estimatedAgeItemCount.toLocaleString("th-TH")} บิล

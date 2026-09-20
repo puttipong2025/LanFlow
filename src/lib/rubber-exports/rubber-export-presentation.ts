@@ -4,6 +4,11 @@ import { calculatePurchaseCostIncludingWork } from "@/lib/rubber-exports/calcula
 const BANGKOK_TIME_ZONE = "Asia/Bangkok";
 const MISSING_VALUE = "—";
 
+export const RUBBER_EXPORT_PRICE_FORMULAS = [
+  "ราคาจากบิล/กก. = มูลค่ายางรวม ÷ น้ำหนักสุทธิรวม",
+  "ราคาปัจจุบัน/กก. = (มูลค่ายางรวม + ค่าทำงานและค่าดำเนินการรวม) ÷ น้ำหนักปัจจุบัน",
+] as const;
+
 export function formatRubberExportNumber(value: number | null | undefined) {
   if (value == null) return MISSING_VALUE;
   return value.toLocaleString("th-TH", {
@@ -94,37 +99,40 @@ export function buildRubberExportPresentation(details: RubberExportDetails) {
   );
   return {
     status: rubberExportStatusLabel(details),
+    formulas: RUBBER_EXPORT_PRICE_FORMULAS,
     summary: [
       ["น้ำหนักสุทธิรวม", `${formatRubberExportNumber(details.originalWeightTotal)} กก.`],
-      ["ต้นทุนซื้อเฉลี่ย", `฿${formatRubberExportNumber(details.averagePrice)}/กก.`],
-      ["ต้นทุนซื้อรวมค่าทำงาน", purchaseCost.total === null
+      ["มูลค่ายางรวม", `฿${formatRubberExportNumber(details.rubberValueTotal)}`],
+      ["ราคาจากบิล/กก.", `฿${formatRubberExportNumber(details.averagePrice)}`],
+      ["ต้นทุนรวมค่าดำเนินการ", purchaseCost.total === null
         ? MISSING_VALUE
         : `฿${formatRubberExportNumber(purchaseCost.total)}`],
-      ["ต้นทุนซื้อเฉลี่ยรวมค่าทำงาน", purchaseCost.average === null
+      ["ราคาปัจจุบัน/กก.", purchaseCost.average === null
         ? MISSING_VALUE
-        : `฿${formatRubberExportNumber(purchaseCost.average)}/กก.`],
+        : `฿${formatRubberExportNumber(purchaseCost.average)}`],
       ["น้ำหนักปัจจุบัน", details.currentWeight == null
         ? MISSING_VALUE
         : `${formatRubberExportNumber(details.currentWeight)} กก.`],
-      ["น้ำหนักหาย", details.weightLossPercent == null
+      ["น้ำหนักลดลง (%)", details.weightLossPercent == null
         ? MISSING_VALUE
         : `${formatRubberExportNumber(details.weightLossPercent)}%`],
       ["ค่าทำงานต่อกิโลกรัม", details.workRate == null
         ? MISSING_VALUE
         : `฿${formatRubberExportNumber(details.workRate)}`],
       ["ค่าดำเนินการอื่น", `฿${formatRubberExportNumber(details.otherOperatingCost)}`],
-      ["ยอดค่าทำงานรวม", details.workTotal == null
+      ["ค่าทำงานและค่าดำเนินการรวม", details.workTotal == null
         ? MISSING_VALUE
         : `฿${formatRubberExportNumber(details.workTotal)}`],
       ["อายุเฉลี่ยถ่วงน้ำหนัก", ageSummaryText(details.averageAgeHours, details.estimatedAgeItemCount)],
       ["อายุมากที่สุด", ageSummaryText(details.oldestAgeHours, details.estimatedAgeItemCount)],
     ] as const,
     items: details.items.map((item) => ({
-      ...item,
       billDateText: formatRubberExportDate(item.billDate),
+      billNo: item.billNo,
+      customerName: item.customerName,
       eligibilityAtText: formatRubberExportDateTime(item.eligibilityAt),
       netWeightText: formatRubberExportNumber(item.netWeight),
-      paidAmountText: formatRubberExportNumber(item.paidAmount),
+      rubberValueAmountText: formatRubberExportNumber(item.rubberValueAmount),
       ageText: item.ageHours == null
         ? MISSING_VALUE
         : `${formatRubberAge(item.ageHours)}${item.ageIsEstimated ? " · ประมาณการ" : ""}`,
