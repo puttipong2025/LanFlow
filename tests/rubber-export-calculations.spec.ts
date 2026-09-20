@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import {
   calculateExternalWorkTransferAmount,
+  calculateRubberExportItemPricePerKg,
   calculatePurchaseCostIncludingWork,
   calculateWeightLossPercent,
   calculateWorkTotal,
@@ -69,6 +70,17 @@ test.describe("Rubber export calculations @rubber-export", () => {
     expect(calculateExternalWorkTransferAmount(1)).toBe(1);
     expect(calculateExternalWorkTransferAmount(0.99)).toBe(0);
     expect(calculateExternalWorkTransferAmount(null)).toBe(0);
+  });
+
+  test("derives each bill price from rubber value and net weight", () => {
+    expect(calculateRubberExportItemPricePerKg(2_900, 100)).toBe(29);
+    expect(calculateRubberExportItemPricePerKg(2_901, 101)).toBeCloseTo(28.7227722772);
+    expect(calculateRubberExportItemPricePerKg(0, 100)).toBe(0);
+    expect(calculateRubberExportItemPricePerKg(2_900, 0)).toBeNull();
+    expect(calculateRubberExportItemPricePerKg(2_900, -1)).toBeNull();
+    expect(calculateRubberExportItemPricePerKg(-1, 100)).toBeNull();
+    expect(calculateRubberExportItemPricePerKg(Number.NaN, 100)).toBeNull();
+    expect(calculateRubberExportItemPricePerKg(2_900, Number.POSITIVE_INFINITY)).toBeNull();
   });
 
   test("uses Bangkok calendar dates at midnight", () => {

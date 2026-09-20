@@ -1,5 +1,8 @@
 import type { RubberExportDetails } from "@/types/rubber-exports";
-import { calculatePurchaseCostIncludingWork } from "@/lib/rubber-exports/calculations";
+import {
+  calculatePurchaseCostIncludingWork,
+  calculateRubberExportItemPricePerKg,
+} from "@/lib/rubber-exports/calculations";
 
 const BANGKOK_TIME_ZONE = "Asia/Bangkok";
 const MISSING_VALUE = "—";
@@ -126,17 +129,26 @@ export function buildRubberExportPresentation(details: RubberExportDetails) {
       ["อายุเฉลี่ยถ่วงน้ำหนัก", ageSummaryText(details.averageAgeHours, details.estimatedAgeItemCount)],
       ["อายุมากที่สุด", ageSummaryText(details.oldestAgeHours, details.estimatedAgeItemCount)],
     ] as const,
-    items: details.items.map((item) => ({
-      billDateText: formatRubberExportDate(item.billDate),
-      billNo: item.billNo,
-      customerName: item.customerName,
-      eligibilityAtText: formatRubberExportDateTime(item.eligibilityAt),
-      netWeightText: formatRubberExportNumber(item.netWeight),
-      rubberValueAmountText: formatRubberExportNumber(item.rubberValueAmount),
-      ageText: item.ageHours == null
-        ? MISSING_VALUE
-        : `${formatRubberAge(item.ageHours)}${item.ageIsEstimated ? " · ประมาณการ" : ""}`,
-    })),
+    items: details.items.map((item) => {
+      const pricePerKg = calculateRubberExportItemPricePerKg(
+        item.rubberValueAmount,
+        item.netWeight,
+      );
+      return {
+        billDateText: formatRubberExportDate(item.billDate),
+        billNo: item.billNo,
+        customerName: item.customerName,
+        eligibilityAtText: formatRubberExportDateTime(item.eligibilityAt),
+        netWeightText: formatRubberExportNumber(item.netWeight),
+        pricePerKgText: pricePerKg === null
+          ? MISSING_VALUE
+          : `฿${formatRubberExportNumber(pricePerKg)}`,
+        rubberValueAmountText: formatRubberExportNumber(item.rubberValueAmount),
+        ageText: item.ageHours == null
+          ? MISSING_VALUE
+          : `${formatRubberAge(item.ageHours)}${item.ageIsEstimated ? " · ประมาณการ" : ""}`,
+      };
+    }),
     audit: {
       created: `${details.createdByName || MISSING_VALUE}\n${formatRubberExportDateTime(details.createdAt)}`,
       verified: `${details.verifiedByName || MISSING_VALUE}\n${formatRubberExportDateTime(details.verifiedAt)}`,

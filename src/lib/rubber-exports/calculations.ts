@@ -46,6 +46,21 @@ export function calculateExternalWorkTransferAmount(workTotal: number | null | u
   return Math.floor(workTotal);
 }
 
+export function calculateRubberExportItemPricePerKg(
+  rubberValueAmount: number,
+  netWeight: number,
+) {
+  if (
+    !Number.isFinite(rubberValueAmount)
+    || !Number.isFinite(netWeight)
+    || rubberValueAmount < 0
+    || netWeight <= 0
+  ) {
+    return null;
+  }
+  return rubberValueAmount / netWeight;
+}
+
 export function calculatePurchaseCostIncludingWork(
   rubberValueTotal: number,
   workTotal: number | null | undefined,

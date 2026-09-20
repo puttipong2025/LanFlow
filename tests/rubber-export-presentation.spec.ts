@@ -32,12 +32,24 @@ test("formats a verified Rubber Export for an A4 PDF in Bangkok time", () => {
   ]);
   expect(presentation.items[0].rubberValueAmountText).toBe("2,900.00");
   expect(presentation.items[0].rubberValueAmountText).not.toBe("3,000.00");
+  expect(presentation.items.map((item) => item.pricePerKgText)).toEqual([
+    "฿29.00",
+    "฿28.72",
+    "฿28.45",
+  ]);
   expect(rubberExportPdfFilename(details)).toBe(
     "LanFlow-rubber-export-REX-20260729-004-20260729-1504-A4-landscape.pdf",
   );
   expect(rubberExportShareTitle(details)).toContain(
     "รายการส่งออกยาง REX-20260729-004 · สาขาทดสอบ PDF · 29 ก.ค. 2569 15:04",
   );
+});
+
+test("uses an em dash for an invalid bill price denominator", () => {
+  const details = rubberExportDetails();
+  details.items[0] = { ...details.items[0], netWeight: 0 };
+
+  expect(buildRubberExportPresentation(details).items[0].pricePerKgText).toBe("—");
 });
 
 test("uses em dashes for an unfinished draft", () => {

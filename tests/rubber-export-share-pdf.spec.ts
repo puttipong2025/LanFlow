@@ -16,6 +16,8 @@ const draft = rubberExportDetails({
   exportNo: "REX-20260729-ACTIVE-DRAFT",
   status: "draft",
   previousStatus: null,
+  currentWeight: null,
+  weightLossPercent: null,
   verifiedByName: null,
   verifiedAt: null,
 });
@@ -129,34 +131,71 @@ test("shows share only for verified status", async ({ page }) => {
     .getByRole("button", { name: /แชร์ PDF/ })).toBeVisible();
 });
 
-test("keeps the new bill price column readable on a narrow screen", async ({ page }) => {
+test("keeps the weight loss column readable on a narrow screen", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await openRubberExports(page);
 
-  const table = page.getByRole("table").filter({ has: page.getByRole("columnheader", { name: "ราคาจากบิล/กก." }) });
+  const table = page.getByRole("table").filter({ has: page.getByRole("columnheader", { name: "น้ำหนักลดลง (%)" }) });
   const scroller = table.locator("..");
   await expect(table.getByRole("columnheader", { name: "น้ำหนักสุทธิรวม" })).toBeVisible();
-  await expect(table.getByRole("columnheader", { name: "ราคาจากบิล/กก." })).toBeVisible();
-  await expect(table.getByRole("row").filter({ hasText: verified.exportNo })).toContainText("฿28.72");
+  await expect(table.getByRole("columnheader", { name: "น้ำหนักลดลง (%)" })).toBeVisible();
+  const verifiedRow = table.getByRole("row").filter({ hasText: verified.exportNo });
+  await expect(verifiedRow).toContainText("2.64%");
+  await expect(verifiedRow).not.toContainText("฿28.72");
+  const draftRow = table.getByRole("row").filter({ hasText: draft.exportNo });
+  await expect(draftRow.getByRole("cell").nth(6)).toHaveText("—");
   expect(await scroller.evaluate((element) => element.scrollWidth > element.clientWidth)).toBeTruthy();
   await scroller.evaluate((element) => { element.scrollLeft = element.scrollWidth; });
-  await expect(table.getByRole("columnheader", { name: "ราคาจากบิล/กก." })).toBeVisible();
-  await table.getByRole("columnheader", { name: "ราคาจากบิล/กก." }).scrollIntoViewIfNeeded();
+  await expect(table.getByRole("columnheader", { name: "น้ำหนักลดลง (%)" })).toBeVisible();
+  await table.getByRole("columnheader", { name: "น้ำหนักลดลง (%)" }).scrollIntoViewIfNeeded();
   mkdirSync(outputDirectory, { recursive: true });
   await page.screenshot({ path: path.join(outputDirectory, "rubber-export-narrow.png") });
 });
 
-test("fills the detail table container on a wide screen", async ({ page }) => {
+test("shows each bill price in the requested detail column order on a wide screen", async ({ page }) => {
   await openRubberExports(page);
   await page.getByRole("button", { name: `ดูรายละเอียด ${verified.exportNo}` }).click();
   const detail = page.getByRole("dialog", { name: verified.exportNo });
   const table = detail.getByRole("table");
   await expect(table).toBeVisible();
+  const headers = await table.getByRole("columnheader").allTextContents();
+  expect(headers).toEqual([
+    "วันที่บิล",
+    "เลขบิล",
+    "ลูกค้า",
+    "น้ำหนักสุทธิ",
+    "ราคาเฉลี่ย/กก.",
+    "มูลค่ายาง",
+    "อายุยาง",
+  ]);
+  const firstBill = table.getByRole("row").filter({ hasText: "RB-001" });
+  await expect(firstBill).toContainText("฿29.00");
+  await expect(firstBill).not.toContainText("฿30.00");
   const widths = await table.evaluate((element) => ({
     table: element.getBoundingClientRect().width,
     container: element.parentElement?.getBoundingClientRect().width ?? 0,
   }));
   expect(widths.table).toBeGreaterThanOrEqual(widths.container - 2);
+  mkdirSync(outputDirectory, { recursive: true });
+  await detail.screenshot({ path: path.join(outputDirectory, "rubber-export-detail-wide.png") });
+});
+
+test("keeps each bill price readable in the detail modal on a narrow screen", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openRubberExports(page);
+  await page.getByRole("button", { name: `ดูรายละเอียด ${verified.exportNo}` }).click();
+
+  const detail = page.getByRole("dialog", { name: verified.exportNo });
+  const table = detail.getByRole("table");
+  const scroller = table.locator("..");
+  const priceHeader = table.getByRole("columnheader", { name: "ราคาเฉลี่ย/กก." });
+  await expect(priceHeader).toBeVisible();
+  await expect(table.getByRole("row").filter({ hasText: "RB-001" })).toContainText("฿29.00");
+  expect(await scroller.evaluate((element) => element.scrollWidth > element.clientWidth)).toBeTruthy();
+  await priceHeader.scrollIntoViewIfNeeded();
+
+  mkdirSync(outputDirectory, { recursive: true });
+  await detail.screenshot({ path: path.join(outputDirectory, "rubber-export-detail-narrow.png") });
 });
 
 test("uses the Thai preview permission message from the route", async ({ browser }) => {
@@ -229,7 +268,7 @@ test("downloads a searchable multi-page verified copy when file sharing is unsup
     fonts: string[];
   };
 
-  expect(inspection.pages).toBeGreaterThan(2);
+  expect(inspection.pages).toBe(5);
   expect(inspection.width).toBeCloseTo(841.89, 1);
   expect(inspection.height).toBeCloseTo(595.28, 1);
   expect(inspection.fonts.join(" ")).toContain("NotoSansThai");
@@ -262,6 +301,7 @@ test("downloads a searchable multi-page verified copy when file sharing is unsup
     expect(text).toContain("วันที่บิล");
     expect(text).toContain("เลขบิล");
     expect(text).toContain("ลูกค้า");
+    expect(text).toContain("ราคาเฉลี่ย/กก.");
     expect(text).toContain("มูลค่ายาง");
   });
 });
@@ -293,8 +333,18 @@ test("uses the three bill rubber values and matching totals in the verified PDF"
   expect(actualText).toContain("2,900.00");
   expect(actualText).toContain("2,901.00");
   expect(actualText).toContain("2,902.00");
+  expect(actualText).toContain("฿29.00");
+  expect(actualText).toContain("฿28.45");
+  expect(actualText).not.toContain("฿30.00");
   expect(actualText).not.toContain("3,000.00");
   expect(actualText).toContain("ผู้รับรอง");
+  const actualLines = actualText.split(/\r?\n/);
+  const netWeightHeader = actualLines.indexOf("น้ำหนักสุทธิ");
+  const priceHeader = actualLines.indexOf("ราคาเฉลี่ย/กก.");
+  const rubberValueHeader = actualLines.indexOf("มูลค่ายาง");
+  expect(netWeightHeader).toBeGreaterThanOrEqual(0);
+  expect(priceHeader).toBe(netWeightHeader + 1);
+  expect(rubberValueHeader).toBe(priceHeader + 1);
 });
 
 test("cancels font loading and restores every share action", async ({ page }) => {

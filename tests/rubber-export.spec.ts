@@ -167,7 +167,9 @@ test.describe.serial("Rubber export contract @rubber-export", () => {
       await selectAppLocation(page, locationId);
       await page.getByRole("button", { name: /^ส่งออกยาง/ }).click();
       const exportRow = page.getByRole("row").filter({ hasText: "REX-EDIT-001" });
-      await expect(exportRow).toContainText("฿30.00");
+      await expect(page.getByRole("columnheader", { name: "น้ำหนักลดลง (%)" })).toBeVisible();
+      await expect(exportRow).toContainText("10.00%");
+      await expect(exportRow).not.toContainText("฿30.00");
       await page.getByRole("button", { name: "ดูรายละเอียด REX-EDIT-001" }).click();
 
       const detailDialog = page.getByRole("dialog", { name: "REX-EDIT-001" });

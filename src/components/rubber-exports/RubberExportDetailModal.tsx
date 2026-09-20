@@ -7,6 +7,7 @@ import { RubberExportLoadingModal } from "@/components/rubber-exports/RubberExpo
 import {
   calculateExternalWorkTransferAmount,
   calculatePurchaseCostIncludingWork,
+  calculateRubberExportItemPricePerKg,
   calculateWeightLossPercent,
   calculateWorkTotal,
   hasTwoDecimalPrecision,
@@ -314,22 +315,29 @@ export function RubberExportDetailModal({
         <div className="overflow-x-auto rounded-md border border-black/10">
           <table className="min-w-full whitespace-nowrap text-sm">
             <thead className="bg-mint/50">
-              <tr><th className="px-3 py-2 text-left">วันที่บิล</th><th className="px-3 py-2 text-left">เลขบิล</th><th className="px-3 py-2 text-left">ลูกค้า</th><th className="px-3 py-2 text-right">น้ำหนักสุทธิ</th><th className="px-3 py-2 text-right">มูลค่ายาง</th><th className="px-3 py-2 text-right">อายุยาง</th></tr>
+              <tr><th className="px-3 py-2 text-left">วันที่บิล</th><th className="px-3 py-2 text-left">เลขบิล</th><th className="px-3 py-2 text-left">ลูกค้า</th><th className="px-3 py-2 text-right">น้ำหนักสุทธิ</th><th className="px-3 py-2 text-right">ราคาเฉลี่ย/กก.</th><th className="px-3 py-2 text-right">มูลค่ายาง</th><th className="px-3 py-2 text-right">อายุยาง</th></tr>
             </thead>
             <tbody className="divide-y divide-black/5">
-              {details.items.map((item) => (
-                <tr key={item.id}>
+              {details.items.map((item) => {
+                const pricePerKg = calculateRubberExportItemPricePerKg(
+                  item.rubberValueAmount,
+                  item.netWeight,
+                );
+                return <tr key={item.id}>
                   <td className="px-3 py-2">{item.billDate}</td>
                   <td className="px-3 py-2">{item.billNo}</td>
                   <td className="px-3 py-2">{item.customerName}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{number(item.netWeight)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    {pricePerKg === null ? "—" : `฿${number(pricePerKg)}`}
+                  </td>
                   <td className="px-3 py-2 text-right tabular-nums">{number(item.rubberValueAmount)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">
                     {formatRubberAge(item.ageHours)}
                     {item.ageIsEstimated && <div className="text-xs text-amber-800">ประมาณการ</div>}
                   </td>
-                </tr>
-              ))}
+                </tr>;
+              })}
             </tbody>
           </table>
         </div>

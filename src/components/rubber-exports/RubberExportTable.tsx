@@ -77,7 +77,7 @@ export function RubberExportTable({
             <th className="px-4 py-3">ผู้สร้าง</th>
             <th className="px-4 py-3 text-right">บิล</th>
             <th className="px-4 py-3 text-right">น้ำหนักสุทธิรวม</th>
-            <th className="px-4 py-3 text-right">ราคาจากบิล/กก.</th>
+            <th className="px-4 py-3 text-right">น้ำหนักลดลง (%)</th>
             <th className="px-4 py-3 text-right">น้ำหนักปัจจุบัน</th>
             <th className="px-4 py-3 text-right">ค่าทำงานและค่าดำเนินการรวม</th>
             <th className="px-4 py-3 text-right">อายุเฉลี่ยถ่วงน้ำหนัก</th>
@@ -211,7 +211,9 @@ export function RubberExportTable({
               <td className="px-4 py-3">{row.createdByName || "—"}</td>
               <td className="px-4 py-3 text-right tabular-nums">{row.itemCount.toLocaleString("th-TH")}</td>
               <td className="px-4 py-3 text-right tabular-nums">{number(row.originalWeightTotal)}</td>
-              <td className="px-4 py-3 text-right tabular-nums">฿{number(row.averagePrice)}</td>
+              <td className="px-4 py-3 text-right tabular-nums">
+                {row.weightLossPercent == null ? "—" : `${number(row.weightLossPercent)}%`}
+              </td>
               <td className="px-4 py-3 text-right tabular-nums">{number(row.currentWeight)}</td>
               <td className="px-4 py-3 text-right tabular-nums">{number(row.workTotal)}</td>
               <td className="px-4 py-3 text-right tabular-nums">

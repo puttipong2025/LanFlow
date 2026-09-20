@@ -115,22 +115,24 @@ function drawRubberExportContent(doc: PdfDocument, details: RubberExportDetails)
   state.y += 6;
 
   const itemRows: PdfCell[][] = presentation.items.length === 0
-    ? [[{ text: "ไม่มีรายการ", align: "center", color: PDF_PALETTE.muted, colSpan: 7 }]]
+    ? [[{ text: "ไม่มีรายการ", align: "center", color: PDF_PALETTE.muted, colSpan: 8 }]]
     : presentation.items.map((item) => [
       data(item.billDateText),
       data(item.billNo),
       data(item.customerName),
       data(item.eligibilityAtText),
       data(item.netWeightText, "right"),
+      data(item.pricePerKgText, "right"),
       data(item.rubberValueAmountText, "right"),
       data(item.ageText, "right"),
     ]);
-  drawTable(state, [65, 80, 140, 125, 100, 110, 173], [
+  drawTable(state, [60, 70, 115, 105, 80, 85, 105, 173], [
     header("วันที่บิล"),
     header("เลขบิล"),
     header("ลูกค้า"),
     header("เวลาพร้อมออกรายงาน"),
     header("น้ำหนักสุทธิ", "right"),
+    header("ราคาเฉลี่ย/กก.", "right"),
     header("มูลค่ายาง", "right"),
     header("อายุยาง", "right"),
   ], itemRows);
