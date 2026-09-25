@@ -1,17 +1,18 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { refreshSupabaseSession } from "@/lib/supabase/middleware";
 
-const PUBLIC_PATHS = [
+const PUBLIC_PATHS = new Set([
   "/login",
   "/offline.html",
   "/manifest.json",
   "/sw.js",
-  "/icons",
-  "/fonts/",
-];
+]);
+
+const PUBLIC_PATH_PREFIXES = ["/icons/", "/fonts/"];
 
 function isPublicPath(pathname: string): boolean {
-  return PUBLIC_PATHS.some((path) => pathname.startsWith(path));
+  return PUBLIC_PATHS.has(pathname)
+    || PUBLIC_PATH_PREFIXES.some((path) => pathname.startsWith(path));
 }
 
 function isStaticAsset(pathname: string): boolean {
@@ -27,7 +28,7 @@ function isStaticAsset(pathname: string): boolean {
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  if (isStaticAsset(pathname)) {
+  if (isStaticAsset(pathname) || isPublicPath(pathname)) {
     return NextResponse.next();
   }
 
@@ -35,7 +36,6 @@ export async function middleware(request: NextRequest) {
 
   if (
     !claims &&
-    !isPublicPath(pathname) &&
     !pathname.startsWith("/api/")
   ) {
     return NextResponse.redirect(new URL("/login", request.url));

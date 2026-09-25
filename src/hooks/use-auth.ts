@@ -81,23 +81,11 @@ function offlineDeadline(cache: CachedProfile | null) {
   return new Date(validatedAt + OFFLINE_AUTH_MAX_AGE_MS).toISOString();
 }
 
-export function useAuth(initialProfile: Profile | null = null): AuthState {
+export function useAuth(): AuthState {
   const online = useOnlineStatus();
-  // Check if we are hydrating from stale PWA HTML
-  const isBrowser = typeof window !== "undefined";
-  const initProf = (() => {
-    if (isBrowser && initialProfile) {
-      const lastUser = window.localStorage.getItem(LAST_USER_KEY);
-      if (!lastUser || lastUser !== initialProfile.id) return null;
-      // Offline: don't trust initialProfile — let applyOfflineCache() validate expiry
-      if (!isDeviceOnline()) return null;
-    }
-    return initialProfile;
-  })();
-
-  const [profile, setProfile] = useState<Profile | null>(initProf);
-  const [isLoading, setIsLoading] = useState(initProf === null);
-  const [mode, setMode] = useState<AuthMode>(initProf ? "online" : "signed_out");
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [mode, setMode] = useState<AuthMode>("signed_out");
   const [offlineUntil, setOfflineUntil] = useState<string | null>(null);
   const connectivityTransitionReady = useRef(false);
 
@@ -158,21 +146,10 @@ export function useAuth(initialProfile: Profile | null = null): AuthState {
     const supabase = createSupabaseBrowserClient();
 
     async function initialize() {
-      const lastUser = window.localStorage.getItem(LAST_USER_KEY);
-
-      if (initialProfile && (!lastUser || lastUser !== initialProfile.id)) {
-        // Stale HTML served from PWA cache after logout, OR cross-user mismatch
-        if (active) {
-          setProfile(null);
-          setMode("signed_out");
-        }
-      }
-
       if (!isDeviceOnline()) {
         if (active) {
           const restored = applyOfflineCache();
           if (!restored) {
-            // No valid offline cache — stale initialProfile must not survive
             clearOfflineAuthCache();
             setProfile(null);
             setMode("signed_out");
@@ -183,7 +160,7 @@ export function useAuth(initialProfile: Profile | null = null): AuthState {
         return;
       }
 
-      // Always revalidate when online — initialProfile may be stale PWA cache
+      // Always revalidate when online; the API is the source of truth.
       const refreshed = await refreshProfile();
       if (active) {
         if (!refreshed) {
@@ -215,7 +192,7 @@ export function useAuth(initialProfile: Profile | null = null): AuthState {
       active = false;
       listener.subscription.unsubscribe();
     };
-  }, [applyOfflineCache, initialProfile, refreshProfile, refreshOrSignOut]);
+  }, [applyOfflineCache, refreshProfile, refreshOrSignOut]);
 
   useEffect(() => {
     if (!connectivityTransitionReady.current) {

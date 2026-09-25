@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { confirmCurrentBranchIfRequired } from "./helpers/select-app-location";
 
 async function readSyncQueue(page: import("@playwright/test").Page) {
   return page.evaluate(() => new Promise<any[]>((resolve, reject) => {
@@ -135,6 +136,7 @@ test.describe("online device with unavailable API", () => {
 
     await page.getByRole("button", { name: /^รับ-จ่าย(?: |$)/ }).click();
     await page.getByRole("button", { name: "เพิ่มรายรับ", exact: true }).click();
+    await confirmCurrentBranchIfRequired(page);
     const modal = page.locator(".fixed.inset-0").last();
     const line = modal.locator("table tbody tr").first();
     await line.locator("input:not([type])").fill(marker);

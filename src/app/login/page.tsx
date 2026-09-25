@@ -18,7 +18,7 @@ export default function LoginPage() {
     }
   }, [authLoading, isAuthenticated]);
 
-  if (authLoading || isAuthenticated) {
+  if (isAuthenticated) {
     return (
       <div className="login-page">
         <div className="login-loader">
@@ -127,15 +127,24 @@ export default function LoginPage() {
           <button
             type="submit"
             className="login-submit"
-            disabled={isSubmitting}
+            disabled={isSubmitting || authLoading}
           >
             {isSubmitting ? (
               <>
                 <Loader2 size={18} className="animate-spin" />
                 กำลังดำเนินการ...
               </>
-            ) : "เข้าสู่ระบบ"}
-            {!isSubmitting && <LogIn size={18} />}
+            ) : authLoading ? (
+              <>
+                <Loader2 size={18} className="animate-spin" />
+                กำลังตรวจสอบสถานะ...
+              </>
+            ) : (
+              <>
+                เข้าสู่ระบบ
+                <LogIn size={18} />
+              </>
+            )}
           </button>
         </form>
 
