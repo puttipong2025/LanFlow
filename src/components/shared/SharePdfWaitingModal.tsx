@@ -2,9 +2,11 @@ import { OperationWaitingDialog } from "@/components/shared/OperationWaitingDial
 
 export function SharePdfWaitingModal({
   open,
+  description = "บิลบันทึกแล้ว กรุณารอสักครู่",
   onCancel,
 }: {
   open: boolean;
+  description?: string;
   onCancel: () => void;
 }) {
   if (!open) return null;
@@ -13,7 +15,7 @@ export function SharePdfWaitingModal({
     <OperationWaitingDialog
       open
       title="กำลังสร้าง PDF"
-      description="บิลบันทึกแล้ว กรุณารอสักครู่"
+      description={description}
       cancelLabel="ยกเลิก"
       onCancel={onCancel}
     />

@@ -164,3 +164,76 @@ test("shares an 80mm appointment PDF from a wait preset", async ({ page }) => {
   await expect(page.getByText("แชร์ PDF บัตรนัดชั่งแล้ว")).toBeVisible();
   await expect(page.getByRole("heading", { name: "เลือกระยะเวลารอ" })).toHaveCount(0);
 });
+
+test("shares a stateless custom queue ticket and keeps the draft only after share cancellation", async ({ page, context }) => {
+  test.setTimeout(60_000);
+  await openRubberBills(page);
+  if (process.env.PW_PROJECT === "pwa") {
+    await page.evaluate(() => navigator.serviceWorker.ready);
+    await page.reload();
+    await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+    await context.setOffline(true);
+    await page.reload();
+    await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
+  }
+
+  const queueButton = page.getByRole("button", { name: "บัตรคิว", exact: true });
+  const customButton = page.getByRole("button", { name: "คิวกำหนดเอง", exact: true });
+  const appointmentButton = page.getByRole("button", { name: "จับเวลา", exact: true });
+  await expect(customButton).toBeVisible();
+  expect(await queueButton.evaluate((queue, custom) => (
+    Boolean(queue.compareDocumentPosition(custom as Node) & Node.DOCUMENT_POSITION_FOLLOWING)
+  ), await customButton.elementHandle())).toBe(true);
+  expect(await customButton.evaluate((custom, appointment) => (
+    Boolean(custom.compareDocumentPosition(appointment as Node) & Node.DOCUMENT_POSITION_FOLLOWING)
+  ), await appointmentButton.elementHandle())).toBe(true);
+
+  await customButton.click();
+  const input = page.getByRole("textbox", { name: "เลขลำดับคิว" });
+  await expect(input).toBeFocused();
+  await input.fill("0");
+  await page.getByRole("button", { name: "แชร์ PDF บัตรคิว" }).click();
+  await expect(page.getByText("กรุณาระบุเลขลำดับคิวตั้งแต่ 1 ถึง 9999", { exact: true })).toBeVisible();
+
+  await input.fill("00a07");
+  await expect(input).toHaveValue("0007");
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "share", {
+      configurable: true,
+      value: async () => {
+        throw new DOMException("ยกเลิก", "AbortError");
+      },
+    });
+  });
+  const shareButton = page.getByRole("button", { name: "แชร์ PDF บัตรคิว" });
+  await shareButton.click();
+  await expect(shareButton).toBeEnabled({ timeout: 20_000 });
+  await expect(page.getByRole("heading", { name: "บัตรคิวกำหนดเอง" })).toBeVisible();
+  await expect(input).toHaveValue("0007");
+
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "share", {
+      configurable: true,
+      value: async (data: ShareData) => {
+        const state = window as typeof window & { sharedQueuePdfs?: string[] };
+        state.sharedQueuePdfs ??= [];
+        const filename = data.files?.[0]?.name;
+        if (filename) state.sharedQueuePdfs.push(filename);
+      },
+    });
+  });
+  await page.getByRole("button", { name: "แชร์ PDF บัตรคิว" }).click();
+  await expect.poll(() => page.evaluate(() => (
+    window as typeof window & { sharedQueuePdfs?: string[] }
+  ).sharedQueuePdfs?.at(-1))).toMatch(
+    /^LanFlow-custom-weighing-queue-Q7-.*-80mm\.pdf$/,
+  );
+  await expect(page.getByText("แชร์ PDF บัตรคิวกำหนดเองแล้ว")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "บัตรคิวกำหนดเอง" })).toHaveCount(0);
+  expect(await page.evaluate(() => Object.keys(localStorage).filter((key) => (
+    key.includes("custom-weighing-queue") || key.includes("custom-queue")
+  )))).toEqual([]);
+
+  await customButton.click();
+  await expect(page.getByRole("textbox", { name: "เลขลำดับคิว" })).toHaveValue("");
+});

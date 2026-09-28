@@ -1,4 +1,4 @@
-import { Clock3, FileScan, PackagePlus, Plus, RefreshCw, Settings, Ticket } from "lucide-react";
+import { Clock3, FileScan, Hash, PackagePlus, Plus, RefreshCw, Settings, Ticket } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -29,6 +29,7 @@ import type { useRubberBillOcrQueue, RubberBillOcrInitialDraft, RubberBillOcrQue
 import { RubberBillApprovalModal } from "./RubberBillApprovalModal";
 import { WeighingAppointmentModal } from "./WeighingAppointmentModal";
 import { WeighingQueueModal } from "./WeighingQueueModal";
+import { CustomWeighingQueueModal } from "./CustomWeighingQueueModal";
 import {
   getRubberBillPrintBlockReason,
   resolveRubberBillReceiptForPrint,
@@ -114,6 +115,7 @@ export function RubberBillsModule({
   const [ocrReviewItem, setOcrReviewItem] = useState<RubberBillOcrQueueItem | null>(null);
   const ocrFileInputRef = useRef<HTMLInputElement>(null);
   const [queueModalOpen, setQueueModalOpen] = useState(false);
+  const [customQueueModalOpen, setCustomQueueModalOpen] = useState(false);
   const [appointmentModalOpen, setAppointmentModalOpen] = useState(false);
   const [approvalModalOpen, setApprovalModalOpen] = useState(false);
   const [branchReceiptModalOpen, setBranchReceiptModalOpen] = useState(false);
@@ -508,6 +510,14 @@ export function RubberBillsModule({
           </button>
           <button
             type="button"
+            onClick={() => setCustomQueueModalOpen(true)}
+            className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-leaf px-3 text-sm font-semibold text-white hover:bg-leaf/90"
+          >
+            <Hash size={17} aria-hidden="true" />
+            คิวกำหนดเอง
+          </button>
+          <button
+            type="button"
             onClick={() => setAppointmentModalOpen(true)}
             className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-yellow-700 px-3 text-sm font-semibold text-white shadow-sm hover:bg-yellow-800"
           >
@@ -712,6 +722,10 @@ export function RubberBillsModule({
 
       {appointmentModalOpen && (
         <WeighingAppointmentModal onClose={() => setAppointmentModalOpen(false)} />
+      )}
+
+      {customQueueModalOpen && (
+        <CustomWeighingQueueModal onClose={() => setCustomQueueModalOpen(false)} />
       )}
 
       {queueModalOpen && (
