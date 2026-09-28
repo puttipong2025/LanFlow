@@ -5,6 +5,13 @@ import type { ModuleBadgeCounts } from "@/hooks/useActionableBadges";
 import { canManageSystemFeatures, canUseMoneyTransfer, canUseReports } from "@/lib/permissions";
 import { getOfflineTabBlockMessage } from "@/lib/offline-module-policy";
 
+export function canViewNavigationTab(tab: Tab, profile: Profile) {
+  if (tab === "admin") return canManageSystemFeatures(profile) || ["super_admin", "admin"].includes(profile.role);
+  if (tab === "money-transfer") return canUseMoneyTransfer(profile);
+  if (tab === "reports" || tab === "rubber-export" || tab === "cash-count") return canUseReports(profile);
+  return true;
+}
+
 export function NavigationTabs({
   activeTab,
   onTabChange,
@@ -20,12 +27,7 @@ export function NavigationTabs({
 }) {
   return (
     <nav className="mx-auto flex w-full max-w-7xl gap-2 overflow-x-auto px-3 pb-4 sm:flex-wrap sm:overflow-visible sm:px-4">
-      {tabs.filter(tab => {
-        if (tab.id === "admin") return canManageSystemFeatures(profile) || ["super_admin", "admin"].includes(profile.role);
-        if (tab.id === "money-transfer") return canUseMoneyTransfer(profile);
-        if (tab.id === "reports" || tab.id === "rubber-export") return canUseReports(profile);
-        return true;
-      }).map((tab) => {
+      {tabs.filter((tab) => canViewNavigationTab(tab.id, profile)).map((tab) => {
         const Icon = tab.icon;
         const active = activeTab === tab.id;
         const badgeCount = online ? (moduleBadgeCounts[tab.id] ?? 0) : 0;

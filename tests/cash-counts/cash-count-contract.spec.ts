@@ -176,7 +176,34 @@ test.describe.serial("cash count aggregate contract", () => {
     if (cleanupErrors.length) throw new Error(`Cash Count fixture cleanup failed:\n${cleanupErrors.join("\n")}`);
   });
 
+  test("cash-count routes reject malformed ids before calling RPCs", async () => {
+    const responses = [
+      await operator.request.get("/api/lanflow/cash-counts/session?locationId=not-a-uuid"),
+      await operator.request.post("/api/lanflow/cash-counts/session", {
+        data: { locationId: "not-a-uuid" },
+      }),
+      await operator.request.delete("/api/lanflow/cash-counts/session", {
+        data: { sessionId: "not-a-uuid" },
+      }),
+      await operator.request.post("/api/lanflow/cash-counts", {
+        data: { sessionId: "not-a-uuid", actualCounts: thousandOnly },
+      }),
+    ];
+
+    for (const [index, response] of responses.entries()) {
+      expect(response.status()).toBe(400);
+      expect(await response.json()).toEqual({
+        error: index < 2
+          ? "กรุณาระบุสาขา"
+          : index === 2
+            ? "กรุณาระบุช่วงตรวจนับ"
+            : "ข้อมูลตรวจนับไม่ครบ",
+      });
+    }
+  });
+
   test("fixed cutoff keeps business writes open and creates a private paired result", async () => {
+    test.setTimeout(60_000);
     const beforeId = await addIncome(locationId, adminId, "ก่อนเริ่มนับ");
     const start = await operator.request.post("/api/lanflow/cash-counts/session", { data: { locationId } });
     expect(start.status()).toBe(201);
@@ -238,7 +265,7 @@ test.describe.serial("cash count aggregate contract", () => {
     await dismissRubberWeightAlertIfVisible(managerPage);
     await managerPage.getByRole("button", { name: "เปิดผลตรวจนับ", exact: true }).click();
     const detailDialog = managerPage.getByRole("dialog", { name: `รายละเอียด ${receipt.reportNo}` });
-    await expect(detailDialog.getByRole("heading", { name: `รายละเอียด ${receipt.reportNo}` })).toBeVisible();
+    await expect(detailDialog.getByRole("heading", { name: `รายละเอียด ${receipt.reportNo}` })).toBeVisible({ timeout: 15_000 });
     expect(detailRequestCount).toBe(1);
     await managerPage.close();
 

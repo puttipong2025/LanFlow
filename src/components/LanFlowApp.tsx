@@ -362,7 +362,7 @@ function BusinessLanFlowApp() {
   }, [activeTab, canAccessMoneyTransfer]);
 
   useEffect(() => {
-    if ((activeTab === "reports" || activeTab === "rubber-export") && !canAccessReports) {
+    if ((activeTab === "reports" || activeTab === "rubber-export" || activeTab === "cash-count") && !canAccessReports) {
       setActiveTab("dashboard");
     }
   }, [activeTab, canAccessReports]);
@@ -697,7 +697,7 @@ function BusinessLanFlowApp() {
             onOpenTimeTrackingSource={() => setActiveTab("time-tracking")}
           />
         )}
-        {activeTab === "cash-count" && (
+        {activeTab === "cash-count" && canAccessReports && (
           <CashCountModule
             selectedLocation={selectedLocation}
             profile={profile}

@@ -14,6 +14,8 @@ import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { canManageSystemFeatures } from "@/lib/permissions";
 import { getPendingEvents } from "@/lib/idb-queue";
 import { cn } from "@/lib/cn";
+import { showPendingWorkBlockedToast } from "@/components/shared/PendingWorkBlockedToast";
+import { parsePendingWorkApiBody } from "@/lib/pending-work-blockers";
 
 function money(value: number) {
   return value.toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -295,8 +297,18 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
         getPendingEvents({ entity: "rubber_bills", ownerUserId: profile.id, locationId }),
         getPendingEvents({ entity: "income_expense", ownerUserId: profile.id, locationId }),
       ]);
+      if (requestId !== mutationRequestIdRef.current || locationIdRef.current !== locationId) return;
       if (rubberQueue.length + incomeQueue.length > 0) throw new Error("อุปกรณ์นี้ยังมีรายการเงินสดรอซิงก์หรือต้องแก้ไข กรุณาจัดการก่อนเริ่มนับ");
       const response = await authFetch("/api/lanflow/cash-counts/session", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ locationId }) });
+      const errorBody = !response.ok
+        ? await response.clone().json().catch(() => null)
+        : null;
+      if (requestId !== mutationRequestIdRef.current || locationIdRef.current !== locationId) return;
+      const blockers = response.status === 409 ? parsePendingWorkApiBody(errorBody) : null;
+      if (blockers) {
+        showPendingWorkBlockedToast("ยังเริ่มตรวจนับเงินไม่ได้", blockers);
+        return;
+      }
       await assertApiResponse(response);
       const body = (await response.json()) as { session: CashCountSession };
       if (requestId !== mutationRequestIdRef.current || locationIdRef.current !== locationId) return;
@@ -321,6 +333,16 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
     try {
       const actualCounts = Object.fromEntries(CASH_DENOMINATIONS.map((d) => [String(d), Number(values[d])]));
       const response = await authFetch("/api/lanflow/cash-counts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId, actualCounts }) });
+      const errorBody = !response.ok
+        ? await response.clone().json().catch(() => null)
+        : null;
+      if (requestId !== mutationRequestIdRef.current || locationIdRef.current !== locationId) return;
+      const blockers = response.status === 409 ? parsePendingWorkApiBody(errorBody) : null;
+      if (blockers) {
+        showPendingWorkBlockedToast("ยังส่งผลตรวจนับไม่ได้", blockers);
+        setConfirmMode(null);
+        return;
+      }
       await assertApiResponse(response);
       const body = await response.json() as CashCountReceipt;
       if (requestId !== mutationRequestIdRef.current || locationIdRef.current !== locationId) return;

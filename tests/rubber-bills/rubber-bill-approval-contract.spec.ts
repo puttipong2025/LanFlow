@@ -995,9 +995,16 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       const report = await admin.request.post("/api/lanflow/reports", {
         data: { locationId },
       });
-      const reportBody = await report.json() as { error?: string; errorGroups?: string[] };
+      const reportBody = await report.json() as {
+        error?: string;
+        blockers?: Array<{ key: string; label: string; count: number }>;
+      };
       expect(report.status(), reportBody.error).toBe(409);
-      expect(reportBody.errorGroups).toEqual(["บิลยาง"]);
+      expect(reportBody.blockers).toEqual([{
+        key: "rubber_bill_pending",
+        label: "บิลยางที่ยังไม่พร้อม",
+        count: 1,
+      }]);
 
       const approved = await superAdmin.request.post(
         `/api/lanflow/rubber-bills/approval-requests/${pending.body.requestId}/approve`

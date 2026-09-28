@@ -27,7 +27,9 @@ select extensions.ok(
   'REX revert takes branch advisory lock before row lock'
 );
 select extensions.ok(
-  position('pg_advisory_xact_lock' in pg_get_functiondef('public.create_report_batch(uuid)'::regprocedure)) > 0,
+  position('private.lock_report_locations' in pg_get_functiondef('public.create_report_batch(uuid)'::regprocedure)) > 0
+    and position('pg_advisory_xact_lock' in pg_get_functiondef('private.lock_report_locations(uuid[])'::regprocedure)) > 0
+    and position('hashtextextended' in pg_get_functiondef('private.lock_report_locations(uuid[])'::regprocedure)) > 0,
   'report creation uses the same branch serialization seam'
 );
 

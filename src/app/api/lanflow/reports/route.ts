@@ -10,6 +10,7 @@ import {
   mapDeletionAuditRow,
 } from "@/lib/server/deletion-audit-response";
 import { isUuid } from "@/lib/server/rubber-export-response";
+import { pendingWorkErrorResponse } from "@/lib/server/pending-work-response";
 
 export const dynamic = "force-dynamic";
 
@@ -181,6 +182,9 @@ export async function POST(request: Request) {
     p_location_id: locationId,
   });
   if (error) {
+    const blockedResponse = pendingWorkErrorResponse(error);
+    if (blockedResponse) return blockedResponse;
+
     const diagnostic = [error.message, error.details, error.hint]
       .filter(Boolean)
       .join("\n");

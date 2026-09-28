@@ -489,6 +489,38 @@ $$;
 ALTER FUNCTION "private"."assert_attendance_range_without_payroll_slip"("p_profile_id" "uuid", "p_start_date" "date", "p_end_date" "date") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."assert_report_creation_unblocked"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_blockers jsonb;
+begin
+  select jsonb_agg(
+    jsonb_build_object('key', blockers.blocker_key, 'count', blockers.item_count)
+    order by case blockers.blocker_key
+      when 'rubber_bill_pending' then 1
+      when 'income_expense_approval_pending' then 2
+      when 'cash_transfer_delete_pending' then 3
+      when 'stock_entry_delete_pending' then 4
+    end
+  )
+  into v_blockers
+  from private.report_creation_blockers(p_location_id, p_cutoff_at) blockers;
+
+  if v_blockers is not null then
+    raise exception using
+      errcode = 'P0001',
+      message = 'PENDING_WORK_BLOCKED',
+      detail = jsonb_build_object('blockers', v_blockers)::text;
+  end if;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."assert_report_creation_unblocked"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."assert_rubber_approval_group_not_empty"() RETURNS "trigger"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -1423,16 +1455,16 @@ ALTER FUNCTION "private"."can_request_dashboard_refresh"("p_location_id" "uuid")
 
 CREATE OR REPLACE FUNCTION "private"."can_use_cash_count"("p_location_id" "uuid") RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
-    SET "search_path" TO 'public', 'private'
+    SET "search_path" TO ''
     AS $$
   select private.is_active_user()
     and (
-      public.can_access_super_admin_features()
+      private.can_access_super_admin_features()
       or (
-        private.current_user_role() in ('user', 'admin')
+        private.current_user_role() = 'admin'
         and private.can_access_location(p_location_id)
       )
-    );
+    )
 $$;
 
 
@@ -1833,6 +1865,45 @@ $$;
 
 
 ALTER FUNCTION "private"."cash_count_events_before_withdrawal_adjustments"("p_location_id" "uuid", "p_after_cutoff" timestamp with time zone, "p_to_cutoff" timestamp with time zone) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."cash_count_start_blockers"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) RETURNS TABLE("blocker_key" "text", "item_count" bigint)
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  with blocker_counts as (
+    select blockers.blocker_key, blockers.item_count
+    from private.report_creation_blockers(p_location_id, p_cutoff_at) blockers
+
+    union all
+
+    select
+      'cash_transfer_receipt_pending'::text,
+      count(distinct transfer.id)::bigint
+    from public.money_transfers transfer
+    join public.money_transfer_cash_details cash
+      on cash.transfer_id = transfer.id
+    where transfer.target_location_id = p_location_id
+      and transfer.transfer_type = 'cash'
+      and transfer.transfer_method = 'cash'
+      and transfer.record_status <> 'deleted'
+      and cash.cash_status = 'pending_receipt'
+      and cash.sent_at <= p_cutoff_at
+    having count(distinct transfer.id) > 0
+  )
+  select blocker_counts.blocker_key, blocker_counts.item_count
+  from blocker_counts
+  order by case blocker_counts.blocker_key
+    when 'rubber_bill_pending' then 1
+    when 'income_expense_approval_pending' then 2
+    when 'cash_transfer_delete_pending' then 3
+    when 'stock_entry_delete_pending' then 4
+    when 'cash_transfer_receipt_pending' then 5
+  end;
+$$;
+
+
+ALTER FUNCTION "private"."cash_count_start_blockers"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."cash_count_total"("p_counts" "jsonb") RETURNS numeric
@@ -2861,21 +2932,22 @@ declare
   v_opening_balance numeric := 0;
   v_period_balance numeric := 0;
 begin
-  if exists (
-    select 1
-    from private.rubber_bill_report_blockers(p_location_id, p_cutoff_at)
-  ) then
-    raise exception 'RUBBER_BILL_PENDING: ยังมีงานบิลยางที่ต้องจัดการก่อนสร้างรายงาน';
-  end if;
+  perform private.assert_report_creation_unblocked(
+    p_location_id,
+    clock_timestamp()
+  );
 
-  select p.name, p.phone into v_actor_name, v_actor_phone
-  from public.profiles p where p.id = p_actor_id;
+  select profile.name, profile.phone
+  into v_actor_name, v_actor_phone
+  from public.profiles profile
+  where profile.id = p_actor_id;
 
-  select b.id, b.closing_balance into v_previous_report_id, v_opening_balance
-  from public.report_batches b
-  where b.location_id = p_location_id
-    and b.status = 'active'
-  order by b.created_at desc, b.id desc
+  select batch.id, batch.closing_balance
+  into v_previous_report_id, v_opening_balance
+  from public.report_batches batch
+  where batch.location_id = p_location_id
+    and batch.status = 'active'
+  order by batch.created_at desc, batch.id desc
   limit 1;
 
   v_report_date := (p_cutoff_at at time zone 'Asia/Bangkok')::date;
@@ -2893,13 +2965,19 @@ begin
     v_report_no, v_report_date, v_sequence_no, p_location_id, p_cutoff_at,
     v_previous_report_id, coalesce(v_opening_balance, 0), p_actor_id,
     coalesce(v_actor_name, ''), coalesce(v_actor_phone, '')
-  ) returning id into v_report_id;
+  )
+  returning id into v_report_id;
 
   insert into public.report_items (
     report_id, location_id, entity_type, entity_id, eligibility_at
   )
-  select v_report_id, p_location_id, r.entity_type, r.entity_id, r.eligibility_at
-  from private.reportable_items(p_location_id, p_cutoff_at) r
+  select
+    v_report_id,
+    p_location_id,
+    reportable.entity_type,
+    reportable.entity_id,
+    reportable.eligibility_at
+  from private.reportable_items(p_location_id, p_cutoff_at) reportable
   on conflict do nothing;
 
   get diagnostics v_item_count = row_count;
@@ -2908,10 +2986,10 @@ begin
   end if;
 
   select coalesce(sum(
-    case when r.entry_type = 'income' then r.amount else -r.amount end
+    case when row.entry_type = 'income' then row.amount else -row.amount end
   ), 0)
   into v_period_balance
-  from private.report_income_expense_period_rows(v_report_id) r;
+  from private.report_income_expense_period_rows(v_report_id) row;
 
   update public.report_batches
   set closing_balance = coalesce(v_opening_balance, 0) + v_period_balance
@@ -4180,6 +4258,70 @@ $$;
 ALTER FUNCTION "private"."guard_pending_rubber_bill_relation"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."guard_pending_work_request"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_report_no text;
+begin
+  if new.request_status <> 'pending' then
+    return new;
+  end if;
+
+  if tg_table_name = 'income_expense_approval_requests' then
+    perform private.lock_report_locations(array[new.location_id]);
+
+    if new.source_income_expense_id is not null then
+      v_report_no := private.active_report_no(
+        'income_expense',
+        new.source_income_expense_id
+      );
+    end if;
+  elsif tg_table_name = 'cash_transfer_delete_requests' then
+    perform private.lock_report_locations(
+      array[new.source_location_id, new.target_location_id]
+    );
+
+    if new.transfer_id is not null then
+      v_report_no := private.active_transfer_report_no(new.transfer_id);
+    end if;
+  elsif tg_table_name = 'stock_entry_approval_requests' then
+    perform private.lock_report_locations(
+      array[new.location_id, new.target_location_id]
+    );
+
+    v_report_no := private.active_report_no(
+      'acid_stock_entry',
+      new.stock_entry_id
+    );
+
+    if v_report_no is null and new.transfer_bill_no is not null then
+      select private.active_report_no('acid_stock_entry', entry.id)
+      into v_report_no
+      from public.stock_entries entry
+      where entry.transfer_bill_no = new.transfer_bill_no
+        and entry.product_id = new.product_id
+        and entry.id <> new.stock_entry_id
+      order by entry.created_at, entry.id
+      limit 1;
+    end if;
+  else
+    raise exception 'PENDING_WORK_GUARD_TABLE_UNSUPPORTED';
+  end if;
+
+  if v_report_no is not null then
+    raise exception 'REPORT_LOCKED:%', v_report_no;
+  end if;
+
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."guard_pending_work_request"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."guard_received_rubber_export_delete"() RETURNS "trigger"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -5190,6 +5332,30 @@ $$;
 
 
 ALTER FUNCTION "private"."latest_withdrawal_target"("p_withdrawal_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."lock_report_locations"("p_location_ids" "uuid"[]) RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_location_id uuid;
+begin
+  for v_location_id in
+    select distinct location_id
+    from pg_catalog.unnest(coalesce(p_location_ids, array[]::uuid[])) as locations(location_id)
+    where location_id is not null
+    order by location_id
+  loop
+    perform pg_catalog.pg_advisory_xact_lock(
+      pg_catalog.hashtextextended(v_location_id::text, 0)
+    );
+  end loop;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."lock_report_locations"("p_location_ids" "uuid"[]) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."mark_dashboard_dirty"("p_location_id" "uuid") RETURNS "void"
@@ -7149,6 +7315,53 @@ $$;
 
 
 ALTER FUNCTION "private"."reject_expired_approval_request_replay"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."report_creation_blockers"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) RETURNS TABLE("blocker_key" "text", "item_count" bigint)
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  with blocker_rows as (
+    select 'rubber_bill_pending'::text as blocker_key, blocker_id
+    from private.rubber_bill_report_blockers(p_location_id, p_cutoff_at)
+
+    union all
+
+    select 'income_expense_approval_pending', request.id
+    from public.income_expense_approval_requests request
+    where request.location_id = p_location_id
+      and request.request_status = 'pending'
+      and request.created_at <= p_cutoff_at
+
+    union all
+
+    select 'cash_transfer_delete_pending', request.id
+    from public.cash_transfer_delete_requests request
+    where request.request_status = 'pending'
+      and request.created_at <= p_cutoff_at
+      and p_location_id in (request.source_location_id, request.target_location_id)
+
+    union all
+
+    select 'stock_entry_delete_pending', request.id
+    from public.stock_entry_approval_requests request
+    where request.request_status = 'pending'
+      and request.created_at <= p_cutoff_at
+      and p_location_id in (request.location_id, request.target_location_id)
+  )
+  select blocker_rows.blocker_key, count(distinct blocker_rows.blocker_id)::bigint
+  from blocker_rows
+  group by blocker_rows.blocker_key
+  order by case blocker_rows.blocker_key
+    when 'rubber_bill_pending' then 1
+    when 'income_expense_approval_pending' then 2
+    when 'cash_transfer_delete_pending' then 3
+    when 'stock_entry_delete_pending' then 4
+  end;
+$$;
+
+
+ALTER FUNCTION "private"."report_creation_blockers"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."report_income_expense_period_rows"("p_report_id" "uuid") RETURNS TABLE("tx_date" "date", "number" "text", "entry_type" "text", "title" "text", "amount" numeric, "sort_key" "text")
@@ -11279,7 +11492,7 @@ ALTER FUNCTION "public"."create_income_expense_approval_request"("payload" "json
 
 CREATE OR REPLACE FUNCTION "public"."create_report_batch"("p_location_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public', 'private'
+    SET "search_path" TO ''
     AS $$
 declare
   v_cutoff_at timestamptz := clock_timestamp();
@@ -11287,13 +11500,19 @@ begin
   if p_location_id is null or not private.can_manage_reports(p_location_id) then
     raise exception 'ไม่มีสิทธิ์สร้างรายงานของสาขานี้';
   end if;
-  perform pg_advisory_xact_lock(hashtextextended(p_location_id::text, 0));
+
+  perform private.lock_report_locations(array[p_location_id]);
+
   if exists (
-    select 1 from public.cash_count_sessions s
-    where s.location_id = p_location_id and s.status = 'active' and s.expires_at > v_cutoff_at
+    select 1
+    from public.cash_count_sessions session
+    where session.location_id = p_location_id
+      and session.status = 'active'
+      and session.expires_at > v_cutoff_at
   ) then
     raise exception 'CASH_COUNT_ACTIVE: มีการตรวจนับเงินสดของสาขานี้อยู่ กรุณารอให้ส่งผล ยกเลิก หรือหมดเวลา';
   end if;
+
   return private.create_report_batch_at(p_location_id, v_cutoff_at, auth.uid());
 end;
 $$;
@@ -23403,43 +23622,94 @@ ALTER FUNCTION "public"."set_user_primary_location"("p_user_id" "uuid", "p_locat
 
 CREATE OR REPLACE FUNCTION "public"."start_cash_count_session"("p_location_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public', 'private'
+    SET "search_path" TO ''
     AS $$
 declare
   v_now timestamptz := clock_timestamp();
   v_actor record;
   v_session public.cash_count_sessions%rowtype;
+  v_blockers jsonb;
 begin
   if not private.can_use_cash_count(p_location_id) then
     raise exception 'ไม่มีสิทธิ์ตรวจนับเงินสดของสาขานี้';
   end if;
-  perform pg_advisory_xact_lock(hashtextextended(p_location_id::text, 0));
-  update public.cash_count_sessions set status = 'expired', ended_at = v_now
-  where location_id = p_location_id and status = 'active' and expires_at <= v_now;
 
-  select * into v_session from public.cash_count_sessions
-  where location_id = p_location_id and status = 'active' limit 1;
+  perform private.lock_report_locations(array[p_location_id]);
+
+  update public.cash_count_sessions
+  set status = 'expired', ended_at = v_now
+  where location_id = p_location_id
+    and status = 'active'
+    and expires_at <= v_now;
+
+  select *
+  into v_session
+  from public.cash_count_sessions
+  where location_id = p_location_id
+    and status = 'active'
+  limit 1;
+
   if v_session.id is not null then
     raise exception 'CASH_COUNT_ACTIVE: มีผู้ตรวจนับเงินสดของสาขานี้อยู่แล้ว';
   end if;
-  if exists (select 1 from private.rubber_bill_report_blockers(p_location_id, v_now)) then
-    raise exception 'RUBBER_BILL_PENDING: ยังมีงานบิลยางที่ต้องจัดการก่อนเริ่มตรวจนับ';
+
+  select jsonb_agg(
+    jsonb_build_object('key', blockers.blocker_key, 'count', blockers.item_count)
+    order by case blockers.blocker_key
+      when 'rubber_bill_pending' then 1
+      when 'income_expense_approval_pending' then 2
+      when 'cash_transfer_delete_pending' then 3
+      when 'stock_entry_delete_pending' then 4
+      when 'cash_transfer_receipt_pending' then 5
+    end
+  )
+  into v_blockers
+  from private.cash_count_start_blockers(p_location_id, v_now) blockers;
+
+  if v_blockers is not null then
+    raise exception using
+      errcode = 'P0001',
+      message = 'PENDING_WORK_BLOCKED',
+      detail = jsonb_build_object('blockers', v_blockers)::text;
   end if;
-  if not exists (select 1 from private.reportable_items(p_location_id, v_now)) then
+
+  if not exists (
+    select 1 from private.reportable_items(p_location_id, v_now)
+  ) then
     raise exception 'ไม่มีรายการที่พร้อมออกรายงาน';
   end if;
 
-  select p.name, p.phone into v_actor from public.profiles p where p.id = auth.uid();
+  select profile.name, profile.phone
+  into v_actor
+  from public.profiles profile
+  where profile.id = auth.uid();
+
   insert into public.cash_count_sessions (
-    location_id, cutoff_at, expires_at, started_by_user_id, started_by_name, started_by_phone, started_at
+    location_id,
+    cutoff_at,
+    expires_at,
+    started_by_user_id,
+    started_by_name,
+    started_by_phone,
+    started_at
   ) values (
-    p_location_id, v_now, v_now + interval '30 minutes', auth.uid(),
-    coalesce(v_actor.name, ''), coalesce(v_actor.phone, ''), v_now
-  ) returning * into v_session;
+    p_location_id,
+    v_now,
+    v_now + interval '30 minutes',
+    auth.uid(),
+    coalesce(v_actor.name, ''),
+    coalesce(v_actor.phone, ''),
+    v_now
+  )
+  returning * into v_session;
+
   return jsonb_build_object('session', jsonb_build_object(
-    'id', v_session.id, 'locationId', v_session.location_id,
-    'cutoffAt', v_session.cutoff_at, 'expiresAt', v_session.expires_at,
-    'startedAt', v_session.started_at, 'startedByName', v_session.started_by_name,
+    'id', v_session.id,
+    'locationId', v_session.location_id,
+    'cutoffAt', v_session.cutoff_at,
+    'expiresAt', v_session.expires_at,
+    'startedAt', v_session.started_at,
+    'startedByName', v_session.started_by_name,
     'isOwner', true
   ));
 end;
@@ -27874,6 +28144,14 @@ CREATE INDEX "cash_counts_location_history" ON "public"."cash_counts" USING "btr
 
 
 
+CREATE INDEX "cash_transfer_delete_pending_source_idx" ON "public"."cash_transfer_delete_requests" USING "btree" ("source_location_id", "created_at", "id") WHERE ("request_status" = 'pending'::"text");
+
+
+
+CREATE INDEX "cash_transfer_delete_pending_target_idx" ON "public"."cash_transfer_delete_requests" USING "btree" ("target_location_id", "created_at", "id") WHERE ("request_status" = 'pending'::"text");
+
+
+
 CREATE UNIQUE INDEX "cash_transfer_delete_requests_one_pending" ON "public"."cash_transfer_delete_requests" USING "btree" ("transfer_id") WHERE (("request_status" = 'pending'::"text") AND ("transfer_id" IS NOT NULL));
 
 
@@ -28186,6 +28464,14 @@ CREATE INDEX "stock_entry_approval_retention_idx" ON "public"."stock_entry_appro
 
 
 
+CREATE INDEX "stock_entry_delete_pending_source_idx" ON "public"."stock_entry_approval_requests" USING "btree" ("location_id", "created_at", "id") WHERE ("request_status" = 'pending'::"text");
+
+
+
+CREATE INDEX "stock_entry_delete_pending_target_idx" ON "public"."stock_entry_approval_requests" USING "btree" ("target_location_id", "created_at", "id") WHERE (("request_status" = 'pending'::"text") AND ("target_location_id" IS NOT NULL));
+
+
+
 CREATE UNIQUE INDEX "stock_product_approval_requests_pending_create_name_idx" ON "public"."stock_product_approval_requests" USING "btree" ("lower"(TRIM(BOTH FROM "product_name"))) WHERE (("request_status" = 'pending'::"text") AND ("request_type" = 'create_product'::"text"));
 
 
@@ -28411,6 +28697,18 @@ CREATE OR REPLACE TRIGGER "guard_approved_rubber_bill_request_history" BEFORE DE
 
 
 CREATE OR REPLACE TRIGGER "guard_branch_receipt_bill" BEFORE UPDATE ON "public"."rubber_bills" FOR EACH ROW EXECUTE FUNCTION "private"."guard_branch_receipt_bill"();
+
+
+
+CREATE OR REPLACE TRIGGER "guard_pending_cash_transfer_delete_request" BEFORE INSERT OR UPDATE OF "request_status" ON "public"."cash_transfer_delete_requests" FOR EACH ROW EXECUTE FUNCTION "private"."guard_pending_work_request"();
+
+
+
+CREATE OR REPLACE TRIGGER "guard_pending_income_expense_request" BEFORE INSERT OR UPDATE OF "request_status" ON "public"."income_expense_approval_requests" FOR EACH ROW EXECUTE FUNCTION "private"."guard_pending_work_request"();
+
+
+
+CREATE OR REPLACE TRIGGER "guard_pending_stock_entry_delete_request" BEFORE INSERT OR UPDATE OF "request_status" ON "public"."stock_entry_approval_requests" FOR EACH ROW EXECUTE FUNCTION "private"."guard_pending_work_request"();
 
 
 
@@ -30087,6 +30385,10 @@ REVOKE ALL ON FUNCTION "private"."assert_attendance_range_without_payroll_slip"(
 
 
 
+REVOKE ALL ON FUNCTION "private"."assert_report_creation_unblocked"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."assert_rubber_approval_group_not_empty"() FROM PUBLIC;
 
 
@@ -30201,6 +30503,10 @@ REVOKE ALL ON FUNCTION "private"."cash_count_events"("p_location_id" "uuid", "p_
 
 
 REVOKE ALL ON FUNCTION "private"."cash_count_events_before_withdrawal_adjustments"("p_location_id" "uuid", "p_after_cutoff" timestamp with time zone, "p_to_cutoff" timestamp with time zone) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."cash_count_start_blockers"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) FROM PUBLIC;
 
 
 
@@ -30327,6 +30633,10 @@ REVOKE ALL ON FUNCTION "private"."exception_attendance_summary"("p_profile_id" "
 
 
 
+REVOKE ALL ON FUNCTION "private"."guard_pending_work_request"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."guard_reported_entity"() FROM PUBLIC;
 
 
@@ -30403,6 +30713,10 @@ GRANT ALL ON FUNCTION "private"."is_time_payroll_manager"() TO "authenticated";
 
 
 REVOKE ALL ON FUNCTION "private"."is_time_payroll_month_closed"("p_profile_id" "uuid", "p_month" "text") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."lock_report_locations"("p_location_ids" "uuid"[]) FROM PUBLIC;
 
 
 
@@ -30487,6 +30801,10 @@ REVOKE ALL ON FUNCTION "private"."refresh_rubber_bill_evidence_projection"("p_bi
 
 
 REVOKE ALL ON FUNCTION "private"."reject_expired_approval_request_replay"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."report_creation_blockers"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) FROM PUBLIC;
 
 
 

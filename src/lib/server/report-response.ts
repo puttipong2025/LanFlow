@@ -43,7 +43,6 @@ export function reportErrorResponse(message: string) {
     message.includes("ไม่มีรายการ") ||
     message.includes("ล่าสุด") ||
     message.includes("REPORT_LOCKED") ||
-    message.includes("RUBBER_BILL_PENDING") ||
     message.includes("RUBBER_EXPORT_LOCKED") ||
     message.includes("CASH_COUNT_ACTIVE") ||
     message.includes("CASH_COUNT_LINKED") ||

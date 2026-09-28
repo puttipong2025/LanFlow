@@ -6,6 +6,7 @@ import {
   mapDeletionAuditRow,
 } from "@/lib/server/deletion-audit-response";
 import { isUuid } from "@/lib/server/management-route-error";
+import { pendingWorkErrorResponse } from "@/lib/server/pending-work-response";
 
 export const dynamic = "force-dynamic";
 
@@ -105,7 +106,7 @@ export async function POST(request: Request) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
   const body = await request.json().catch(() => null) as { sessionId?: string; actualCounts?: Record<string, number> } | null;
-  if (!body?.sessionId || !body.actualCounts) return cashCountErrorResponse("ข้อมูลตรวจนับไม่ครบ");
+  if (!isUuid(body?.sessionId) || !body.actualCounts) return cashCountErrorResponse("ข้อมูลตรวจนับไม่ครบ");
   const { data, error } = await result.supabase.rpc("submit_cash_count", {
     p_session_id: body.sessionId,
     p_actual_counts: body.actualCounts,
@@ -117,6 +118,10 @@ export async function POST(request: Request) {
       { status: 504 },
     );
   }
-  if (error) return cashCountErrorResponse(error.message);
+  if (error) {
+    const blockedResponse = pendingWorkErrorResponse(error);
+    if (blockedResponse) return blockedResponse;
+    return cashCountErrorResponse(error.message);
+  }
   return NextResponse.json(data, { status: 201, headers: { "Cache-Control": "private, no-store, max-age=0" } });
 }

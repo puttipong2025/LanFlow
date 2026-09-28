@@ -12,6 +12,8 @@ import { cn } from "@/lib/cn";
 import { ReportPreviewModal } from "@/components/reports/ReportPreviewModal";
 import { AlertDialog } from "@/components/shared/AlertDialog";
 import { DeletionAuditTable } from "@/components/shared/DeletionAuditTable";
+import { showPendingWorkBlockedToast } from "@/components/shared/PendingWorkBlockedToast";
+import { parsePendingWorkApiBody } from "@/lib/pending-work-blockers";
 
 function dateTime(value: string) {
   return new Intl.DateTimeFormat("th-TH", {
@@ -181,16 +183,23 @@ export function ReportsModule({
 
   async function createReport() {
     if (!online || creating) return;
+    const locationId = selectedLocation.id;
     setCreating(true);
     try {
       const response = await authFetch("/api/lanflow/reports", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ locationId: selectedLocation.id }),
+        body: JSON.stringify({ locationId }),
       });
+      if (locationIdRef.current !== locationId) return;
       const errorBody = !response.ok
-        ? await response.clone().json().catch(() => null) as { errorGroups?: unknown } | null
+        ? await response.clone().json().catch(() => null) as { errorGroups?: unknown; blockers?: unknown } | null
         : null;
+      const blockers = response.status === 409 ? parsePendingWorkApiBody(errorBody) : null;
+      if (blockers) {
+        showPendingWorkBlockedToast("ยังสร้างรายงานไม่ได้", blockers);
+        return;
+      }
       const errorGroups = Array.isArray(errorBody?.errorGroups)
         ? errorBody.errorGroups.filter((group): group is string => typeof group === "string")
         : [];

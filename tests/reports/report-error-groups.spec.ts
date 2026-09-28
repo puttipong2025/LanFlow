@@ -53,17 +53,6 @@ test("preserves conflict status while hiding technical details", async () => {
   });
 });
 
-test("maps unfinished rubber-bill blockers to a conflict without leaking details", async () => {
-  const response = reportCreateErrorResponse(
-    "RUBBER_BILL_PENDING: ยังมีงานบิลยางที่ต้องจัดการก่อนสร้างรายงาน",
-  );
-  expect(response.status).toBe(409);
-  expect(await response.json()).toEqual({
-    error: "สร้างรายงานไม่สำเร็จ",
-    errorGroups: ["บิลยาง"],
-  });
-});
-
 test("shows every inferred group on its own line without technical details", async ({ page }) => {
   await page.goto("/login");
   await page.locator("#phone").fill(process.env.TEST_PHONE ?? "0800000000");

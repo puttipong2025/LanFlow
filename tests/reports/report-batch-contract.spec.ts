@@ -701,8 +701,12 @@ test.describe.serial("Report batch contract @report-batch", () => {
       });
       expect(blockedReport.status()).toBe(409);
       expect(await blockedReport.json()).toEqual({
-        error: "สร้างรายงานไม่สำเร็จ",
-        errorGroups: ["บิลยาง"],
+        error: "ยังมีงานค้างที่ต้องจัดการก่อนดำเนินการ",
+        blockers: [{
+          key: "rubber_bill_pending",
+          label: "บิลยางที่ยังไม่พร้อม",
+          count: 2,
+        }],
       });
 
       expect((await db.from("money_transfers").insert({
@@ -824,7 +828,11 @@ test.describe.serial("Report batch contract @report-batch", () => {
         data: { locationId },
       });
       expect(blocked.status()).toBe(409);
-      expect((await blocked.json()).errorGroups).toEqual(["บิลยาง"]);
+      expect((await blocked.json()).blockers).toEqual([{
+        key: "rubber_bill_pending",
+        label: "บิลยางที่ยังไม่พร้อม",
+        count: 1,
+      }]);
 
       expect((await db.from("rubber_bill_approval_requests")
         .delete().eq("id", createRequestId)).error).toBeNull();
@@ -874,7 +882,11 @@ test.describe.serial("Report batch contract @report-batch", () => {
         data: { locationId },
       });
       expect(blocked.status()).toBe(409);
-      expect((await blocked.json()).errorGroups).toEqual(["บิลยาง"]);
+      expect((await blocked.json()).blockers).toEqual([{
+        key: "rubber_bill_pending",
+        label: "บิลยางที่ยังไม่พร้อม",
+        count: 1,
+      }]);
 
       expect((await db.from("rubber_bill_approval_requests")
         .delete().eq("id", changeRequestId)).error).toBeNull();
@@ -1310,6 +1322,7 @@ test.describe.serial("Report batch contract @report-batch", () => {
 
       const userPage = await user.newPage();
       await userPage.goto("/");
+      await expect(userPage.getByText("ออกจากระบบ")).toBeVisible();
       await expect(userPage.getByRole("button", { name: "รายงาน" })).toHaveCount(0);
 
       const page = await superAdmin.newPage();
