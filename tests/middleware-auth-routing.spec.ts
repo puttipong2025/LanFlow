@@ -15,12 +15,17 @@ test("keeps public assets public and redirects anonymous pages to login", async 
       "/login",
       "/offline.html",
       "/manifest.json",
-      "/sw.js",
       "/fonts/NotoSansThai-Regular.ttf",
     ]) {
       const response = await anonymous.get(publicPath, { maxRedirects: 0 });
       expect(response.status(), publicPath).toBe(200);
     }
+
+    // next-pwa generates this file during a production build, so a clean dev
+    // checkout may return 404. Either response proves middleware did not turn
+    // the public service worker request into an authentication redirect.
+    const serviceWorkerResponse = await anonymous.get("/sw.js", { maxRedirects: 0 });
+    expect([200, 404], "/sw.js").toContain(serviceWorkerResponse.status());
 
     const pageResponse = await anonymous.get("/", { maxRedirects: 0 });
     expect(pageResponse.status()).toBe(307);
