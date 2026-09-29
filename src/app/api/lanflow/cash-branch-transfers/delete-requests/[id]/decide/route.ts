@@ -16,6 +16,7 @@ export async function POST(
     !isUuid(id)
     || !isJsonObject(body)
     || (body.decision !== "approved" && body.decision !== "rejected")
+    || (body.comment != null && typeof body.comment !== "string")
   ) {
     return NextResponse.json({ error: "ข้อมูลคำตัดสินไม่ถูกต้อง" }, { status: 400 });
   }

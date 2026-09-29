@@ -1227,12 +1227,99 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
 
       await page.getByRole("button", { name: "บิลยาง" }).click();
       await page.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ }).click();
+      const approvalDialog = page.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง" });
       const requestCard = page.locator("article", { hasText: customerName });
       await expect(requestCard).toBeVisible();
-      await expect(requestCard).toContainText("ยอดสุทธิ: 205");
+      await expect(requestCard.locator("p.text-pretty.text-ink\\/70")).toContainText(
+        `${customerName} · ${payload.billDate} · ประเภทบิล: บิลเครื่องชั่งเล็ก · น้ำหนักสุทธิ: 10 กก. · ราคาเฉลี่ย: 20.5 บาท · มูลค่ายาง: 205 บาท · ยอดหัก: 0 บาท · ยอดสุทธิ: 205 บาท`
+      );
+      expect(await requestCard.locator(":scope > div").evaluate((row) => (
+        row.firstElementChild?.querySelector('[aria-label="อนุมัติ"]') !== null
+      ))).toBe(true);
+
+      const headingOrder = await approvalDialog.locator("h3").allTextContents();
+      expect(headingOrder.indexOf("งานรออนุมัติบิลยาง")).toBeLessThan(
+        headingOrder.indexOf("กลุ่มเกณฑ์ราคาและเวลา")
+      );
     } finally {
       if (requestId) {
         await db.from("rubber_bill_approval_requests").delete().eq("id", requestId);
+      }
+      await context.close();
+    }
+  });
+
+  test("approval UI displays proposed values for pending updates", async ({ browser }) => {
+    const context = await authContext(browser, "super_admin");
+    const db = service();
+    const clientTempId = crypto.randomUUID();
+    const currentCustomer = `ApprovalCurrent-${Date.now()}`;
+    const proposedCustomer = `ApprovalProposed-${Date.now()}`;
+    const requesterName = `ApprovalRequester-${Date.now()}`;
+    let billId: string | undefined;
+    let requestId: string | undefined;
+
+    try {
+      const page = await context.newPage();
+      await page.goto("/");
+      const locationId = await selectedAppLocationId(page);
+      expect(locationId).toBeTruthy();
+      expect((await saveSettings(context, locationId!, 30, 20)).ok()).toBeTruthy();
+
+      const created = await syncBill(context, billPayload({
+        locationId: locationId!,
+        clientTempId,
+        price: 20,
+        configuredPriceSnapshot: 20,
+        customerName: currentCustomer,
+      }));
+      expect(created.body.status).toBe("synced");
+      billId = created.body.id;
+      expect(billId).toBeTruthy();
+
+      const proposed = billPayload({
+        locationId: locationId!,
+        clientTempId,
+        operation: "update",
+        expectedRevisionNo: created.body.revisionNo,
+        price: 22,
+        configuredPriceSnapshot: 20,
+        customerName: proposedCustomer,
+        billType: "บิลที่เสนออนุมัติ",
+      });
+      const pending = await syncBill(context, proposed);
+      expect(pending.body.status).toBe("pending_approval");
+      requestId = pending.body.requestId;
+      expect(requestId).toBeTruthy();
+      expect((await db.from("rubber_bill_approval_requests")
+        .update({ requested_by_name: requesterName })
+        .eq("id", requestId!)).error).toBeNull();
+
+      await page.getByRole("button", { name: "บิลยาง" }).click();
+      await page.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ }).click();
+      const approvalDialog = page.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง" });
+      const requestCard = page.locator("article", { hasText: proposedCustomer });
+      await expect(requestCard).toBeVisible();
+      await expect(requestCard.locator("p.text-pretty.text-ink\\/70")).toContainText(
+        `${proposedCustomer} · ${proposed.billDate} · ประเภทบิล: บิลที่เสนออนุมัติ · น้ำหนักสุทธิ: 10 กก. · ราคาเฉลี่ย: 22 บาท · มูลค่ายาง: 220 บาท · ยอดหัก: 0 บาท · ยอดสุทธิ: 220 บาท`
+      );
+      await expect(requestCard).toContainText(requesterName);
+      await expect(requestCard).not.toContainText(currentCustomer);
+
+      await context.setOffline(true);
+      await page.evaluate(() => window.dispatchEvent(new Event("offline")));
+      await expect(approvalDialog.getByRole("alert")).toContainText(
+        "งานอนุมัติบิลยางใช้ได้เมื่อออนไลน์เท่านั้น",
+      );
+      await expect(requestCard).toHaveCount(0);
+    } finally {
+      await context.setOffline(false).catch(() => undefined);
+      if (requestId) {
+        await db.from("rubber_bill_approval_requests").delete().eq("id", requestId);
+      }
+      if (billId) {
+        await db.from("rubber_bill_items").delete().eq("bill_id", billId);
+        await db.from("rubber_bills").delete().eq("id", billId);
       }
       await context.close();
     }

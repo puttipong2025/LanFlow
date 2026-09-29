@@ -3,6 +3,7 @@ import { expect, test } from "@playwright/test";
 import {
   calculateCashDifferences,
   calculateCashTotal,
+  parseCashCounts,
 } from "../src/lib/cash-branch-transfer";
 
 import {
@@ -51,6 +52,31 @@ function transfer(patch: Partial<CashBranchTransfer> = {}): CashBranchTransfer {
 }
 
 test.describe("cash transfer 80mm receipt", () => {
+  test("rejects denomination counts outside the PostgreSQL integer range", () => {
+    expect(parseCashCounts({
+      coin1: "2147483648",
+      coin2: "0",
+      coin5: "0",
+      coin10: "0",
+      banknote20: "0",
+      banknote50: "0",
+      banknote100: "0",
+      banknote500: "0",
+      banknote1000: "0",
+    })).toBeNull();
+    expect(parseCashCounts({
+      coin1: "0",
+      coin2: "0",
+      coin5: "0",
+      coin10: "0",
+      banknote20: "0",
+      banknote50: "0",
+      banknote100: "0",
+      banknote500: "0",
+      banknote1000: "2147484",
+    })).toBeNull();
+  });
+
   test("derives sent, received, and difference totals from denomination counts", () => {
     const received = { ...sent, banknote20: 0, coin5: 2 };
 

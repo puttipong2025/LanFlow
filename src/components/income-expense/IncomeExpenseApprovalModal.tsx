@@ -76,12 +76,15 @@ export function IncomeExpenseApprovalModal({
     requests,
     cashDeleteRequests,
     pendingCount,
+    hasRequestLoadError,
+    isRefetchingRequests,
     isLoading,
     addKeyword,
     disableKeyword,
     saveSettings,
     decideRequest,
     decideCashDeleteRequest,
+    retryRequestLoads,
   } = useIncomeExpenseApprovals({
     includeRequests: true,
     requestsLocationId: requestLocationFilter === "all"
@@ -279,6 +282,182 @@ export function IncomeExpenseApprovalModal({
       size="wide"
     >
       <div className="space-y-5">
+        <section className="rounded-md border border-black/10 p-4">
+          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <h3 className="font-bold text-ink">คำขออนุมัติรับ-จ่าย</h3>
+            <label className="grid gap-1 text-sm font-semibold text-ink sm:w-64">
+              สาขา
+              <select
+                value={requestLocationFilter}
+                onChange={(event) => setRequestLocationFilter(event.target.value)}
+                className="focus-ring h-10 rounded-md border border-black/10 bg-white px-3"
+              >
+                <option value="all">ทุกสาขา</option>
+                {locations.map((location) => (
+                  <option key={location.id} value={location.id}>
+                    {location.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          {hasRequestLoadError && (
+            <div
+              role="alert"
+              className="mb-3 flex flex-col gap-3 rounded-md border border-clay/25 bg-clay/5 p-3 text-sm text-clay sm:flex-row sm:items-center sm:justify-between"
+            >
+              <span>โหลดคำขออนุมัติไม่สำเร็จ รายการที่แสดงอาจไม่ครบ</span>
+              <button
+                type="button"
+                disabled={isRefetchingRequests}
+                onClick={() => void retryRequestLoads()}
+                className="focus-ring h-9 rounded-md border border-clay/30 bg-white px-3 font-semibold disabled:opacity-50"
+              >
+                ลองใหม่
+              </button>
+            </div>
+          )}
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[1320px] border-collapse text-sm tabular-nums">
+              <thead>
+                <tr className="border-b border-black/10 text-left text-ink/60">
+                  <th className="py-2">จัดการ</th>
+                  <th>รายการ</th>
+                  <th>จำนวนเงิน</th>
+                  <th>วันที่</th>
+                  <th className="py-2">สถานะ</th>
+                  <th>ผู้ขอ</th>
+                  <th>ผู้พิจารณา</th>
+                  <th>ประเภท</th>
+                  <th>สาขา</th>
+                  <th>เหตุผล</th>
+                </tr>
+              </thead>
+              <tbody>
+                {isLoading ? (
+                  <tr>
+                    <td colSpan={10} className="py-5 text-center text-ink/50">
+                      กำลังโหลด...
+                    </td>
+                  </tr>
+                ) : filteredRequests.length === 0 && filteredCashDeleteRequests.length === 0 ? (
+                  <tr>
+                    <td colSpan={10} className="py-5 text-center text-ink/50">
+                      {hasRequestLoadError ? "ไม่สามารถแสดงคำขออนุมัติได้" : "ยังไม่มีคำขออนุมัติ"}
+                    </td>
+                  </tr>
+                ) : (
+                  <>
+                  {filteredCashDeleteRequests.map((request) => (
+                    <tr id={`income-expense-approval-request-${request.id}`} tabIndex={-1} key={`cash-delete:${request.id}`} className="border-b border-black/5">
+                      <td className="py-3 pr-3">
+                        {request.requestStatus === "pending" && (
+                          <div className="flex gap-1.5 whitespace-nowrap">
+                            <button type="button" disabled={decidingId === request.id}
+                              onClick={() => void handleCashDeleteDecision(request.id, "approved")}
+                              className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-success text-white disabled:opacity-50"
+                              title="อนุมัติการลบ" aria-label="อนุมัติการลบ">
+                              <Check size={17} />
+                            </button>
+                            <button type="button" disabled={decidingId === request.id}
+                              onClick={() => void handleCashDeleteDecision(request.id, "rejected")}
+                              className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-clay text-white disabled:opacity-50"
+                              title="ปฏิเสธการลบ" aria-label="ปฏิเสธการลบ">
+                              <X size={17} />
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                      <td>
+                        <div className="flex flex-col gap-1">
+                          <span className="font-semibold text-ink">{request.transferDisplayNo} → {request.targetLocationName}</span>
+                          <span className="text-xs text-ink/55">รับจริง {formatCurrency(request.receivedTotal)} · ผลต่าง {formatCurrency(request.differenceTotal)}</span>
+                        </div>
+                      </td>
+                      <td className="font-semibold text-clay">{formatCurrency(request.sentTotal)}</td>
+                      <td>{formatDateTime(request.createdAt)}</td>
+                      <td className="py-3">
+                        <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${
+                          request.requestStatus === "pending"
+                            ? "bg-amber-100 text-amber-700"
+                            : request.requestStatus === "approved"
+                              ? "bg-leaf/10 text-leaf"
+                              : "bg-clay/10 text-clay"
+                        }`}>
+                          {statusLabels[request.requestStatus]}
+                        </span>
+                      </td>
+                      <td className="whitespace-nowrap">{formatPerson(request.requestedByName, request.requestedByPhone)}</td>
+                      <td className="whitespace-nowrap">{formatPerson(request.decidedByName, request.decidedByPhone)}</td>
+                      <td>ลบถาวรรายการโยกเงิน</td>
+                      <td>{request.sourceLocationName}</td>
+                      <td>ลบหลังปลายทางตรวจรับ</td>
+                    </tr>
+                  ))}
+                  {filteredRequests.map((request) => (
+                    <tr id={`income-expense-approval-request-${request.id}`} tabIndex={-1} key={request.id} className="border-b border-black/5">
+                      <td className="py-3 pr-3">
+                        {request.requestStatus === "pending" && (
+                          <div className="flex gap-1.5 whitespace-nowrap">
+                            <button type="button" disabled={decidingId === request.id} onClick={() => void handleApprove(request.id)}
+                              className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-success text-white disabled:opacity-50"
+                              title="อนุมัติ" aria-label="อนุมัติ">
+                              <Check size={17} />
+                            </button>
+                            <button type="button" disabled={decidingId === request.id} onClick={() => void handleReject(request.id)}
+                              className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-clay text-white disabled:opacity-50"
+                              title="ปฏิเสธ" aria-label="ปฏิเสธ">
+                              <X size={17} />
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                      <td>
+                        <div className="flex flex-col gap-1">
+                          <span className="font-semibold text-ink">{request.title}</span>
+                           {request.matchedKeyword && (
+                             <span className="text-xs text-ink/55">พบ: {request.matchedKeyword}</span>
+                           )}
+                           {request.saleLines && request.saleLines.length > 0 && (
+                             <ol className="mt-1 space-y-0.5 text-xs text-ink/65">
+                               {request.saleLines.map((line) => (
+                                 <li key={`${request.id}:${line.sequenceNo}`}>
+                                   {line.sequenceNo}. {line.title} · {line.quantity} × {formatCurrency(line.unitPrice)} = {formatCurrency(line.lineTotal)}
+                                 </li>
+                               ))}
+                             </ol>
+                           )}
+                         </div>
+                      </td>
+                      <td className={request.txType === "income" ? "font-semibold text-leaf" : "font-semibold text-clay"}>
+                        {formatCurrency(request.cost)}
+                      </td>
+                      <td>{formatDateTime(request.createdAt)}</td>
+                      <td className="py-3">
+                        <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${
+                          request.requestStatus === "pending"
+                            ? "bg-amber-100 text-amber-700"
+                            : request.requestStatus === "approved"
+                              ? "bg-leaf/10 text-leaf"
+                              : "bg-clay/10 text-clay"
+                        }`}>
+                          {statusLabels[request.requestStatus]}
+                        </span>
+                      </td>
+                      <td className="whitespace-nowrap">{formatPerson(request.requestedByName, request.requestedByPhone)}</td>
+                      <td className="whitespace-nowrap">{formatPerson(request.decidedByName, request.decidedByPhone)}</td>
+                      <td>{request.txType === "income" ? "รายรับ" : "รายจ่าย"}</td>
+                      <td>{locationNameById.get(request.locationId) ?? "ไม่ทราบสาขา"}</td>
+                      <td>{request.matchedReasons.map((reason) => reasonLabels[reason]).join(" · ")}</td>
+                    </tr>
+                  ))}
+                  </>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
         <form onSubmit={handleSaveSettings} className="rounded-md border border-black/10 p-4">
           <div className="mb-3 flex flex-col gap-1">
             <h3 className="font-bold text-ink">เกณฑ์ยอดเงินที่ต้องอนุมัติ</h3>
@@ -464,165 +643,6 @@ export function IncomeExpenseApprovalModal({
           </div>
         </section>
 
-        <section className="rounded-md border border-black/10 p-4">
-          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-            <h3 className="font-bold text-ink">คำขออนุมัติรับ-จ่าย</h3>
-            <label className="grid gap-1 text-sm font-semibold text-ink sm:w-64">
-              สาขา
-              <select
-                value={requestLocationFilter}
-                onChange={(event) => setRequestLocationFilter(event.target.value)}
-                className="focus-ring h-10 rounded-md border border-black/10 bg-white px-3"
-              >
-                <option value="all">ทุกสาขา</option>
-                {locations.map((location) => (
-                  <option key={location.id} value={location.id}>
-                    {location.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[1320px] border-collapse text-sm tabular-nums">
-              <thead>
-                <tr className="border-b border-black/10 text-left text-ink/60">
-                  <th className="py-2">จัดการ</th>
-                  <th className="py-2">สถานะ</th>
-                  <th>ผู้ขอ</th>
-                  <th>ผู้พิจารณา</th>
-                  <th>ประเภท</th>
-                  <th>สาขา</th>
-                  <th>รายการ</th>
-                  <th>จำนวนเงิน</th>
-                  <th>เหตุผล</th>
-                  <th>วันที่</th>
-                </tr>
-              </thead>
-              <tbody>
-                {isLoading ? (
-                  <tr>
-                    <td colSpan={10} className="py-5 text-center text-ink/50">
-                      กำลังโหลด...
-                    </td>
-                  </tr>
-                ) : filteredRequests.length === 0 && filteredCashDeleteRequests.length === 0 ? (
-                  <tr>
-                    <td colSpan={10} className="py-5 text-center text-ink/50">
-                      ยังไม่มีคำขออนุมัติ
-                    </td>
-                  </tr>
-                ) : (
-                  <>
-                  {filteredCashDeleteRequests.map((request) => (
-                    <tr id={`income-expense-approval-request-${request.id}`} tabIndex={-1} key={`cash-delete:${request.id}`} className="border-b border-black/5">
-                      <td className="py-3 pr-3">
-                        {request.requestStatus === "pending" && (
-                          <div className="flex gap-1.5 whitespace-nowrap">
-                            <button type="button" disabled={decidingId === request.id}
-                              onClick={() => void handleCashDeleteDecision(request.id, "approved")}
-                              className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-success text-white disabled:opacity-50"
-                              title="อนุมัติการลบ" aria-label="อนุมัติการลบ">
-                              <Check size={17} />
-                            </button>
-                            <button type="button" disabled={decidingId === request.id}
-                              onClick={() => void handleCashDeleteDecision(request.id, "rejected")}
-                              className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-clay text-white disabled:opacity-50"
-                              title="ปฏิเสธการลบ" aria-label="ปฏิเสธการลบ">
-                              <X size={17} />
-                            </button>
-                          </div>
-                        )}
-                      </td>
-                      <td className="py-3">
-                        <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${
-                          request.requestStatus === "pending"
-                            ? "bg-amber-100 text-amber-700"
-                            : request.requestStatus === "approved"
-                              ? "bg-leaf/10 text-leaf"
-                              : "bg-clay/10 text-clay"
-                        }`}>
-                          {statusLabels[request.requestStatus]}
-                        </span>
-                      </td>
-                      <td className="whitespace-nowrap">{formatPerson(request.requestedByName, request.requestedByPhone)}</td>
-                      <td className="whitespace-nowrap">{formatPerson(request.decidedByName, request.decidedByPhone)}</td>
-                      <td>ลบถาวรรายการโยกเงิน</td>
-                      <td>{request.sourceLocationName}</td>
-                      <td>
-                        <div className="flex flex-col gap-1">
-                          <span className="font-semibold text-ink">{request.transferDisplayNo} → {request.targetLocationName}</span>
-                          <span className="text-xs text-ink/55">รับจริง {formatCurrency(request.receivedTotal)} · ผลต่าง {formatCurrency(request.differenceTotal)}</span>
-                        </div>
-                      </td>
-                      <td className="font-semibold text-clay">{formatCurrency(request.sentTotal)}</td>
-                      <td>ลบหลังปลายทางตรวจรับ</td>
-                      <td>{formatDateTime(request.createdAt)}</td>
-                    </tr>
-                  ))}
-                  {filteredRequests.map((request) => (
-                    <tr id={`income-expense-approval-request-${request.id}`} tabIndex={-1} key={request.id} className="border-b border-black/5">
-                      <td className="py-3 pr-3">
-                        {request.requestStatus === "pending" && (
-                          <div className="flex gap-1.5 whitespace-nowrap">
-                            <button type="button" disabled={decidingId === request.id} onClick={() => void handleApprove(request.id)}
-                              className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-success text-white disabled:opacity-50"
-                              title="อนุมัติ" aria-label="อนุมัติ">
-                              <Check size={17} />
-                            </button>
-                            <button type="button" disabled={decidingId === request.id} onClick={() => void handleReject(request.id)}
-                              className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-clay text-white disabled:opacity-50"
-                              title="ปฏิเสธ" aria-label="ปฏิเสธ">
-                              <X size={17} />
-                            </button>
-                          </div>
-                        )}
-                      </td>
-                      <td className="py-3">
-                        <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${
-                          request.requestStatus === "pending"
-                            ? "bg-amber-100 text-amber-700"
-                            : request.requestStatus === "approved"
-                              ? "bg-leaf/10 text-leaf"
-                              : "bg-clay/10 text-clay"
-                        }`}>
-                          {statusLabels[request.requestStatus]}
-                        </span>
-                      </td>
-                      <td className="whitespace-nowrap">{formatPerson(request.requestedByName, request.requestedByPhone)}</td>
-                      <td className="whitespace-nowrap">{formatPerson(request.decidedByName, request.decidedByPhone)}</td>
-                      <td>{request.txType === "income" ? "รายรับ" : "รายจ่าย"}</td>
-                      <td>{locationNameById.get(request.locationId) ?? "ไม่ทราบสาขา"}</td>
-                      <td>
-                        <div className="flex flex-col gap-1">
-                          <span className="font-semibold text-ink">{request.title}</span>
-                           {request.matchedKeyword && (
-                             <span className="text-xs text-ink/55">พบ: {request.matchedKeyword}</span>
-                           )}
-                           {request.saleLines && request.saleLines.length > 0 && (
-                             <ol className="mt-1 space-y-0.5 text-xs text-ink/65">
-                               {request.saleLines.map((line) => (
-                                 <li key={`${request.id}:${line.sequenceNo}`}>
-                                   {line.sequenceNo}. {line.title} · {line.quantity} × {formatCurrency(line.unitPrice)} = {formatCurrency(line.lineTotal)}
-                                 </li>
-                               ))}
-                             </ol>
-                           )}
-                         </div>
-                      </td>
-                      <td className={request.txType === "income" ? "font-semibold text-leaf" : "font-semibold text-clay"}>
-                        {formatCurrency(request.cost)}
-                      </td>
-                      <td>{request.matchedReasons.map((reason) => reasonLabels[reason]).join(" · ")}</td>
-                      <td>{formatDateTime(request.createdAt)}</td>
-                    </tr>
-                  ))}
-                  </>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
       </div>
       {inputDialog}
     </ModalShell>

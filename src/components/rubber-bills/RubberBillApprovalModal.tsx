@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { AlertDialog } from "@/components/shared/AlertDialog";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { useLocations } from "@/hooks/useLocations";
+import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { useRubberBillApprovals } from "@/hooks/useRubberBillApprovals";
 import { useRubberApprovalGroups } from "@/hooks/useRubberApprovalGroups";
 import { useRubberBillList, useRubberBillWorkCounts } from "@/hooks/useRubberBillList";
@@ -15,6 +16,7 @@ import type {
   RubberApprovalGroup,
 } from "@/types";
 import { formatBangkokDateTime } from "@/lib/bangkok-date";
+import { formatNumber } from "@/lib/format";
 
 const operationLabels = {
   create: "สร้างบิล",
@@ -37,6 +39,7 @@ export function RubberBillApprovalModal({
   profile: Profile;
   onClose: () => void;
 }) {
+  const isOnline = useOnlineStatus();
   const [locationFilter, setLocationFilter] = useState(locationId);
   const {
     locations,
@@ -216,6 +219,118 @@ export function RubberBillApprovalModal({
     >
       <div className="space-y-5">
         <section className="rounded-md border border-black/10 p-4">
+          <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+            <h3 className="text-balance font-bold text-ink">งานรออนุมัติบิลยาง</h3>
+            <div className="flex flex-wrap gap-2">
+              <label className="grid gap-1 text-sm font-semibold">
+                สาขา
+                <select
+                  value={locationFilter}
+                  onChange={(event) => setLocationFilter(event.target.value)}
+                  className="focus-ring h-10 rounded-md border border-black/10 bg-white px-3"
+                >
+                  {locations.map((location) => (
+                    <option key={location.id} value={location.id}>{location.name}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            {!isOnline ? (
+              <p role="alert" className="rounded-md bg-amber-50 px-3 py-4 text-center text-pretty text-sm text-amber-800">
+                งานอนุมัติบิลยางใช้ได้เมื่อออนไลน์เท่านั้น
+              </p>
+            ) : locationsError || queue.error || counts.error ? (
+              <p role="alert" className="rounded-md bg-rose-50 px-3 py-4 text-center text-pretty text-sm text-rose-700">
+                {(locationsError ?? queue.error ?? counts.error) instanceof Error
+                  ? (locationsError ?? queue.error ?? counts.error as Error).message
+                  : "โหลดคำขอไม่สำเร็จ"}
+              </p>
+            ) : locationsLoading || queue.isLoading || counts.isLoading ? (
+              <div className="space-y-2" role="status" aria-label="กำลังโหลดงานรออนุมัติ">
+                {[0, 1, 2].map((item) => <div key={item} className="h-24 animate-pulse rounded-md bg-field" />)}
+              </div>
+            ) : visibleRequests.length === 0 ? (
+              <div className="py-6 text-center">
+                <p className="text-pretty text-sm text-ink/50">ไม่มีงานรออนุมัติในสาขานี้</p>
+                {locations.length > 1 && <p className="mt-1 text-pretty text-xs text-ink/45">เลือกสาขาอื่นเพื่อตรวจคิวถัดไป</p>}
+              </div>
+            ) : visibleRequests.map((request) => {
+              const summary = request.approvalProposedSummary ?? {
+                customerName: request.customerName,
+                billDate: request.billDate,
+                billType: request.billType,
+                netWeight: request.netWeight,
+                averagePrice: request.price,
+                netRubberValue: request.rubberValue,
+                deductionTotal: request.deductionTotal,
+                netTotal: request.netTotal,
+              };
+              return (
+                <article key={request.id} className="rounded-md border border-black/10 p-3 text-sm">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
+                    <div className="flex shrink-0 gap-1.5 whitespace-nowrap">
+                      <button
+                        type="button"
+                        disabled={busyId === request.approvalRequestId}
+                        onClick={() => setConfirmation({ kind: "approve", bill: request })}
+                        className="focus-ring inline-flex size-10 items-center justify-center rounded-md bg-success text-white disabled:opacity-50"
+                        title="อนุมัติ"
+                        aria-label="อนุมัติ"
+                      >
+                        <Check size={17} />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busyId === request.approvalRequestId}
+                        onClick={() => setConfirmation({ kind: "delete", bill: request })}
+                        className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-rose-600 px-3 font-bold text-white disabled:opacity-50"
+                        title="ลบคำขอถาวร"
+                        aria-label="ลบคำขอถาวร"
+                      >
+                        <Trash2 size={16} />
+                        ลบ
+                      </button>
+                    </div>
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-800">
+                          {operationLabels[request.approvalOperation ?? "update"]}
+                        </span>
+                        {(request.approvalReasons ?? []).map((reason: RubberBillApprovalReason) => (
+                          <span key={reason} className="rounded-full bg-clay/10 px-2 py-0.5 text-xs font-bold text-clay">
+                            {reasonLabels[reason]}
+                          </span>
+                        ))}
+                      </div>
+                      <p className="font-semibold">
+                        {locationNames.get(request.locationId) ?? "ไม่ทราบสาขา"} · {request.approvalRequestedByName ?? request.createdByName}
+                      </p>
+                      <p className="text-ink/55">{formatBangkokDateTime(request.operationalSortAt ?? request.clientCreatedAt)}</p>
+                      <p className="text-pretty text-ink/70">
+                        {summary.customerName || "ไม่ระบุลูกค้า"} · {summary.billDate} · ประเภทบิล: {summary.billType || "ไม่ระบุ"} · น้ำหนักสุทธิ: <span className="tabular-nums">{formatNumber(summary.netWeight)}</span> กก. · ราคาเฉลี่ย: <span className="tabular-nums">{formatNumber(summary.averagePrice)}</span> บาท · มูลค่ายาง: <span className="tabular-nums">{formatNumber(summary.netRubberValue)}</span> บาท · ยอดหัก: <span className="tabular-nums">{formatNumber(summary.deductionTotal)}</span> บาท · ยอดสุทธิ: <span className="tabular-nums">{formatNumber(summary.netTotal)}</span> บาท
+                      </p>
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+          {queue.bills.length > 0 && (
+            <nav aria-label="แบ่งหน้างานรออนุมัติ" className="mt-4 flex flex-wrap items-center justify-center gap-2">
+              <button type="button" disabled={currentPage <= 1} onClick={() => setPage(currentPage - 1)} className="focus-ring h-10 rounded-md border border-black/15 px-3 text-sm font-semibold disabled:opacity-40">ก่อนหน้า</button>
+              <span className="tabular-nums text-sm text-ink/60">หน้า {currentPage} / {totalPages}</span>
+              <button type="button" disabled={currentPage >= totalPages} onClick={() => setPage(currentPage + 1)} className="focus-ring h-10 rounded-md border border-black/15 px-3 text-sm font-semibold disabled:opacity-40">ถัดไป</button>
+              {queue.hasMore && currentPage === totalPages && (
+                <button type="button" disabled={queue.isFetchingNextPage} onClick={() => void queue.fetchNextPage()} className="focus-ring h-10 rounded-md bg-river px-3 text-sm font-semibold text-white disabled:opacity-50">{queue.isFetchingNextPage ? "กำลังโหลด..." : "โหลดงานถัดไป"}</button>
+              )}
+            </nav>
+          )}
+        </section>
+
+        <section className="rounded-md border border-black/10 p-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
             <div>
               <h3 className="text-balance font-bold text-ink">กลุ่มเกณฑ์ราคาและเวลา</h3>
@@ -305,101 +420,6 @@ export function RubberBillApprovalModal({
           <button type="submit" disabled={!settingsReady || isSaving} className="focus-ring mt-3 h-10 rounded-md bg-commit px-3 text-sm font-bold text-white disabled:opacity-50">บันทึกกฎวันที่</button>
         </form>
 
-        <section className="rounded-md border border-black/10 p-4">
-          <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
-            <h3 className="text-balance font-bold text-ink">งานรออนุมัติบิลยาง</h3>
-            <div className="flex flex-wrap gap-2">
-              <label className="grid gap-1 text-sm font-semibold">
-                สาขา
-                <select
-                  value={locationFilter}
-                  onChange={(event) => setLocationFilter(event.target.value)}
-                  className="focus-ring h-10 rounded-md border border-black/10 bg-white px-3"
-                >
-                  {locations.map((location) => (
-                    <option key={location.id} value={location.id}>{location.name}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
-          </div>
-
-          <div className="space-y-3">
-            {locationsError || queue.error || counts.error ? (
-              <p role="alert" className="rounded-md bg-rose-50 px-3 py-4 text-center text-pretty text-sm text-rose-700">
-                {(locationsError ?? queue.error ?? counts.error) instanceof Error
-                  ? (locationsError ?? queue.error ?? counts.error as Error).message
-                  : "โหลดคำขอไม่สำเร็จ"}
-              </p>
-            ) : locationsLoading || queue.isLoading || counts.isLoading ? (
-              <div className="space-y-2" role="status" aria-label="กำลังโหลดงานรออนุมัติ">
-                {[0, 1, 2].map((item) => <div key={item} className="h-24 animate-pulse rounded-md bg-field" />)}
-              </div>
-            ) : visibleRequests.length === 0 ? (
-              <div className="py-6 text-center">
-                <p className="text-pretty text-sm text-ink/50">ไม่มีงานรออนุมัติในสาขานี้</p>
-                {locations.length > 1 && <p className="mt-1 text-pretty text-xs text-ink/45">เลือกสาขาอื่นเพื่อตรวจคิวถัดไป</p>}
-              </div>
-            ) : visibleRequests.map((request) => (
-              <article key={request.id} className="rounded-md border border-black/10 p-3 text-sm">
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                  <div className="space-y-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-800">
-                        {operationLabels[request.approvalOperation ?? "update"]}
-                      </span>
-                      {(request.approvalReasons ?? []).map((reason: RubberBillApprovalReason) => (
-                        <span key={reason} className="rounded-full bg-clay/10 px-2 py-0.5 text-xs font-bold text-clay">
-                          {reasonLabels[reason]}
-                        </span>
-                      ))}
-                    </div>
-                    <p className="font-semibold">
-                      {locationNames.get(request.locationId) ?? "ไม่ทราบสาขา"} · {request.createdByName}
-                    </p>
-                    <p className="text-ink/55">{formatBangkokDateTime(request.operationalSortAt ?? request.clientCreatedAt)}</p>
-                    <p className="text-pretty text-ink/70">
-                      {request.customerName || "ไม่ระบุลูกค้า"} · {request.billDate} · ยอดสุทธิ: <span className="tabular-nums">{request.netTotal.toLocaleString("th-TH")}</span> บาท
-                    </p>
-                  </div>
-                  <div className="flex gap-1.5 whitespace-nowrap">
-                      <button
-                        type="button"
-                        disabled={busyId === request.approvalRequestId}
-                        onClick={() => setConfirmation({ kind: "approve", bill: request })}
-                        className="focus-ring inline-flex size-10 items-center justify-center rounded-md bg-success text-white disabled:opacity-50"
-                        title="อนุมัติ"
-                        aria-label="อนุมัติ"
-                      >
-                        <Check size={17} />
-                      </button>
-                      <button
-                        type="button"
-                        disabled={busyId === request.approvalRequestId}
-                        onClick={() => setConfirmation({ kind: "delete", bill: request })}
-                        className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-rose-600 px-3 font-bold text-white disabled:opacity-50"
-                        title="ลบคำขอถาวร"
-                        aria-label="ลบคำขอถาวร"
-                      >
-                        <Trash2 size={16} />
-                        ลบ
-                      </button>
-                  </div>
-                </div>
-              </article>
-            ))}
-          </div>
-          {queue.bills.length > 0 && (
-            <nav aria-label="แบ่งหน้างานรออนุมัติ" className="mt-4 flex flex-wrap items-center justify-center gap-2">
-              <button type="button" disabled={currentPage <= 1} onClick={() => setPage(currentPage - 1)} className="focus-ring h-10 rounded-md border border-black/15 px-3 text-sm font-semibold disabled:opacity-40">ก่อนหน้า</button>
-              <span className="tabular-nums text-sm text-ink/60">หน้า {currentPage} / {totalPages}</span>
-              <button type="button" disabled={currentPage >= totalPages} onClick={() => setPage(currentPage + 1)} className="focus-ring h-10 rounded-md border border-black/15 px-3 text-sm font-semibold disabled:opacity-40">ถัดไป</button>
-              {queue.hasMore && currentPage === totalPages && (
-                <button type="button" disabled={queue.isFetchingNextPage} onClick={() => void queue.fetchNextPage()} className="focus-ring h-10 rounded-md bg-river px-3 text-sm font-semibold text-white disabled:opacity-50">{queue.isFetchingNextPage ? "กำลังโหลด..." : "โหลดงานถัดไป"}</button>
-              )}
-            </nav>
-          )}
-        </section>
       </div>
       <AlertDialog
         open={confirmation !== null}

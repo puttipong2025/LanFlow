@@ -42,6 +42,42 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
   test.beforeAll(() => transferLocation.setup());
   test.afterAll(() => transferLocation.cleanup());
 
+  test("coalesces two same-tick create clicks and reuses the draft identity on retry", async ({ page }) => {
+    await setOnline(page, true);
+    await openIncomeExpense(page);
+    await page.click('button:has-text("โยกเงินไปสาขาอื่น")');
+    await confirmCurrentBranchIfRequired(page);
+    const modal = page.locator(".fixed.inset-0").last();
+    await selectFirstAccessibleOption(page, modal.getByLabel("สาขาปลายทาง"));
+    await fillCashCounts(modal, "1");
+
+    const payloads: unknown[] = [];
+    await page.route("**/api/lanflow/cash-branch-transfers", async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      payloads.push(route.request().postDataJSON());
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      if (payloads.length === 1) {
+        await route.fulfill({ status: 500, json: { error: "จำลองการขาดการตอบกลับ" } });
+        return;
+      }
+      await route.fulfill({ json: { id: crypto.randomUUID(), status: "synced" } });
+    });
+
+    const save = modal.getByRole("button", { name: "บันทึกรายการ" });
+    await save.evaluate((button) => {
+      (button as HTMLButtonElement).click();
+      (button as HTMLButtonElement).click();
+    });
+    await expect.poll(() => payloads.length).toBe(1);
+    await expect(save).toBeEnabled();
+    await save.click();
+    await expect.poll(() => payloads.length).toBe(2);
+    expect(payloads[1]).toMatchObject({
+      clientTempId: (payloads[0] as { clientTempId: string }).clientTempId,
+      idempotencyKey: (payloads[0] as { idempotencyKey: string }).idempotencyKey,
+    });
+  });
+
   test("system manager can toggle post-receipt delete approval", async ({ page }) => {
     await setOnline(page, true);
     await openIncomeExpense(page);
@@ -179,12 +215,12 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
     const approvalModal = page.locator(".fixed.inset-0").last();
     const deleteRequestRow = approvalModal.locator("tbody tr", { hasText: displayNo });
     await expect(deleteRequestRow).toContainText("ลบถาวรรายการโยกเงิน");
-    await expect(deleteRequestRow.locator("td").nth(2)).not.toHaveText("—");
-    await expect(deleteRequestRow.locator("td").nth(3)).toHaveText("—");
+    await expect(deleteRequestRow.locator("td").nth(5)).not.toHaveText("—");
+    await expect(deleteRequestRow.locator("td").nth(6)).toHaveText("—");
     page.once("dialog", (dialog) => dialog.accept());
     await deleteRequestRow.locator('button[title="อนุมัติการลบ"]').click();
     await expect(page.getByText("อนุมัติและลบรายการแล้ว")).toBeVisible();
-    await expect(deleteRequestRow.locator("td").nth(3)).not.toHaveText("—");
+    await expect(deleteRequestRow.locator("td").nth(6)).not.toHaveText("—");
   });
 
   test("queue badge auto-refreshes while the destination module remains open", async ({ browser }) => {

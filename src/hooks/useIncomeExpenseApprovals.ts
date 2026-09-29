@@ -6,6 +6,7 @@ import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
 import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import { authFetch } from "@/lib/auth-fetch";
 import { bangkokDateString } from "@/lib/bangkok-date";
+import { readAllSupabaseRows } from "@/lib/supabase-pages";
 import {
   assertOfflineIncomeExpenseDateAllowed,
   loadIncomeExpenseApprovalSettingsCache,
@@ -25,6 +26,7 @@ import type {
 const KEYWORDS_KEY = "incomeExpenseApprovalKeywords";
 const SETTINGS_KEY = "incomeExpenseApprovalSettings";
 const REQUESTS_KEY = "incomeExpenseApprovalRequests";
+const APPROVAL_HISTORY_LIMIT = 80;
 
 type AddKeywordInput = {
   keyword: string;
@@ -99,7 +101,7 @@ export function useIncomeExpenseApprovals(options: {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("income_expense_approval_keywords")
-        .select("*")
+        .select("id, keyword, match_mode, applies_to, is_active, approval_min_amount")
         .order("created_at", { ascending: false });
 
       if (error) throw new Error(error.message || JSON.stringify(error));
@@ -111,9 +113,6 @@ export function useIncomeExpenseApprovals(options: {
         appliesTo: row.applies_to,
         isActive: row.is_active,
         approvalMinAmount: row.approval_min_amount != null ? Number(row.approval_min_amount) : null,
-        createdByName: row.created_by_name,
-        createdByPhone: row.created_by_phone,
-        createdAt: row.created_at,
       }));
     },
   });
@@ -123,7 +122,7 @@ export function useIncomeExpenseApprovals(options: {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("income_expense_approval_settings")
-        .select("*")
+        .select("applies_to, approval_min_amount, cash_transfer_delete_requires_approval, non_current_date_requires_approval, updated_by_name, updated_by_phone")
         .eq("id", true)
         .maybeSingle();
 
@@ -144,19 +143,34 @@ export function useIncomeExpenseApprovals(options: {
     queryKey: [REQUESTS_KEY, "requests", requestsLocationId ?? "all"],
     enabled: includeRequests,
     queryFn: async () => {
-      let query = supabase
+      const pendingRows = await readAllSupabaseRows((from, to) => {
+        let query = supabase
+          .from("income_expense_approval_requests")
+          .select("id, request_status, matched_keyword, matched_reasons, location_id, tx_type, title, cost, requested_payload, requested_by_name, requested_by_phone, decided_by_name, decided_by_phone, created_at")
+          .eq("request_status", "pending");
+        if (requestsLocationId) query = query.eq("location_id", requestsLocationId);
+        return query
+          .order("created_at", { ascending: false })
+          .order("id", { ascending: false })
+          .range(from, to);
+      });
+      let historyQuery = supabase
         .from("income_expense_approval_requests")
-        .select("id, request_status, matched_keyword, matched_reasons, location_id, tx_type, title, cost, requested_payload, requested_by_name, requested_by_phone, decided_by_name, decided_by_phone, created_at");
-      if (requestsLocationId) {
-        query = query.eq("location_id", requestsLocationId);
-      }
-      const { data, error } = await query
+        .select("id, request_status, matched_keyword, matched_reasons, location_id, tx_type, title, cost, requested_payload, requested_by_name, requested_by_phone, decided_by_name, decided_by_phone, created_at")
+        .neq("request_status", "pending");
+      if (requestsLocationId) historyQuery = historyQuery.eq("location_id", requestsLocationId);
+      const historyResult = await historyQuery
         .order("created_at", { ascending: false })
-        .limit(80);
+        .order("id", { ascending: false })
+        .limit(APPROVAL_HISTORY_LIMIT);
+      if (historyResult.error) {
+        throw new Error(historyResult.error.message || JSON.stringify(historyResult.error));
+      }
 
-      if (error) throw new Error(error.message || JSON.stringify(error));
-
-      return (data || []).map((row: any): IncomeExpenseApprovalRequest => ({
+      const rowsById = new Map(
+        [...pendingRows, ...(historyResult.data || [])].map((row) => [row.id, row]),
+      );
+      return [...rowsById.values()].map((row: any): IncomeExpenseApprovalRequest => ({
         id: row.id,
         requestStatus: row.request_status,
         matchedKeyword: row.matched_keyword,
@@ -190,30 +204,42 @@ export function useIncomeExpenseApprovals(options: {
     ],
     enabled: includeRequests,
     queryFn: async () => {
-      let query = supabase
+      const pendingRows = await readAllSupabaseRows((from, to) => {
+        let query = supabase
+          .from("cash_transfer_delete_requests")
+          .select("id, source_location_id, source_location_name, target_location_name, transfer_display_no, sent_total, received_total, difference_total, request_status, requested_by_name, requested_by_phone, decided_by_name, decided_by_phone, created_at")
+          .eq("request_status", "pending");
+        if (requestsLocationId) query = query.eq("source_location_id", requestsLocationId);
+        return query
+          .order("created_at", { ascending: false })
+          .order("id", { ascending: false })
+          .range(from, to);
+      });
+      let historyQuery = supabase
         .from("cash_transfer_delete_requests")
-        .select("id, transfer_id, source_location_id, source_location_name, target_location_id, target_location_name, transfer_display_no, sent_total, received_total, difference_total, note, request_status, requested_by_name, requested_by_phone, decided_by_name, decided_by_phone, created_at");
-      if (requestsLocationId) {
-        query = query.eq("source_location_id", requestsLocationId);
-      }
-      const { data, error } = await query
+        .select("id, source_location_id, source_location_name, target_location_name, transfer_display_no, sent_total, received_total, difference_total, request_status, requested_by_name, requested_by_phone, decided_by_name, decided_by_phone, created_at")
+        .neq("request_status", "pending");
+      if (requestsLocationId) historyQuery = historyQuery.eq("source_location_id", requestsLocationId);
+      const historyResult = await historyQuery
         .order("created_at", { ascending: false })
-        .limit(80);
+        .order("id", { ascending: false })
+        .limit(APPROVAL_HISTORY_LIMIT);
+      if (historyResult.error) {
+        throw new Error(historyResult.error.message || JSON.stringify(historyResult.error));
+      }
 
-      if (error) throw new Error(error.message || JSON.stringify(error));
-
-      return (data || []).map((row: any): CashTransferDeleteRequest => ({
+      const rowsById = new Map(
+        [...pendingRows, ...(historyResult.data || [])].map((row) => [row.id, row]),
+      );
+      return [...rowsById.values()].map((row: any): CashTransferDeleteRequest => ({
         id: row.id,
-        transferId: row.transfer_id,
         sourceLocationId: row.source_location_id,
         sourceLocationName: row.source_location_name,
-        targetLocationId: row.target_location_id,
         targetLocationName: row.target_location_name,
         transferDisplayNo: row.transfer_display_no,
         sentTotal: Number(row.sent_total),
         receivedTotal: Number(row.received_total),
         differenceTotal: Number(row.difference_total),
-        note: row.note,
         requestStatus: row.request_status,
         requestedByName: row.requested_by_name,
         requestedByPhone: row.requested_by_phone,
@@ -442,12 +468,29 @@ export function useIncomeExpenseApprovals(options: {
     return { requiresApproval: false };
   }
 
+  async function retryRequestLoads() {
+    const retries: Promise<unknown>[] = [];
+    if (includeRequests) {
+      retries.push(requestsQuery.refetch(), cashDeleteRequestsQuery.refetch());
+    }
+    if (includePendingCount) retries.push(pendingCountQuery.refetch());
+    await Promise.all(retries);
+  }
+
+  const hasRequestLoadError =
+    (includeRequests && (requestsQuery.isError || cashDeleteRequestsQuery.isError))
+    || (includePendingCount && pendingCountQuery.isError);
+
   return {
     keywords: keywordsQuery.data || [],
     settings: settingsQuery.data,
     requests: requestsQuery.data || [],
     cashDeleteRequests: cashDeleteRequestsQuery.data || [],
     pendingCount: pendingCountQuery.data ?? 0,
+    hasRequestLoadError,
+    isRefetchingRequests:
+      (includeRequests && (requestsQuery.isFetching || cashDeleteRequestsQuery.isFetching))
+      || (includePendingCount && pendingCountQuery.isFetching),
     isLoading:
       keywordsQuery.isLoading ||
       settingsQuery.isLoading ||
@@ -459,6 +502,7 @@ export function useIncomeExpenseApprovals(options: {
     saveSettings: saveSettingsMutation.mutateAsync,
     decideRequest: decideRequestMutation.mutateAsync,
     decideCashDeleteRequest: decideCashDeleteRequestMutation.mutateAsync,
+    retryRequestLoads,
     submitForApprovalIfNeeded,
   };
 }

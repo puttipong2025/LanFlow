@@ -141,6 +141,17 @@ export type RubberBill = {
   approvalRequestId?: string;
   approvalOperation?: RubberBillApprovalOperation;
   approvalReasons?: RubberBillApprovalReason[];
+  approvalRequestedByName?: string;
+  approvalProposedSummary?: {
+    customerName: string;
+    billDate: string;
+    billType: string;
+    netWeight: number;
+    averagePrice: number;
+    netRubberValue: number;
+    deductionTotal: number;
+    netTotal: number;
+  };
   inputMethod?: "manual" | "ocr";
   /** Opaque pending-create field; never render or persist outside the sync event. */
   ocrUploadId?: string;
@@ -287,9 +298,6 @@ export type IncomeExpenseApprovalKeyword = {
   appliesTo: IncomeExpenseApprovalAppliesTo;
   isActive: boolean;
   approvalMinAmount?: number | null;
-  createdByName?: string | null;
-  createdByPhone?: string | null;
-  createdAt: string;
 };
 
 export type IncomeExpenseApprovalRequest = {
@@ -565,16 +573,13 @@ export type CashBranchTransfer = {
 
 export type CashTransferDeleteRequest = {
   id: string;
-  transferId: string | null;
   sourceLocationId: string;
   sourceLocationName: string;
-  targetLocationId: string;
   targetLocationName: string;
   transferDisplayNo: string;
   sentTotal: number;
   receivedTotal: number;
   differenceTotal: number;
-  note: string | null;
   requestStatus: "pending" | "approved" | "rejected";
   requestedByName: string;
   requestedByPhone: string;

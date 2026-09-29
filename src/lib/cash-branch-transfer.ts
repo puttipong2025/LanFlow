@@ -22,6 +22,8 @@ export const CASH_DENOMINATIONS: Array<[
 
 export type CashCountValues = Record<keyof CashDenominationCounts, string>;
 
+const POSTGRES_INTEGER_MAX = 2_147_483_647;
+
 export function zeroCashCountValues(): CashCountValues {
   return Object.fromEntries(
     CASH_DENOMINATIONS.map(([key]) => [key, "0"]),
@@ -40,7 +42,20 @@ export function parseCashCounts(values: CashCountValues): CashDenominationCounts
     if (values[key] === "" || !/^\d+$/.test(values[key])) return null;
     result[key] = Number(values[key]);
   }
-  return result;
+  return isCashDenominationCounts(result) ? result : null;
+}
+
+export function isCashDenominationCounts(value: unknown): value is CashDenominationCounts {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const counts = value as Record<string, unknown>;
+  const fieldsAreValid = CASH_DENOMINATIONS.every(([key]) => (
+    typeof counts[key] === "number"
+    && Number.isSafeInteger(counts[key])
+    && counts[key] >= 0
+    && counts[key] <= POSTGRES_INTEGER_MAX
+  ));
+  return fieldsAreValid
+    && calculateCashTotal(counts as CashDenominationCounts) <= POSTGRES_INTEGER_MAX;
 }
 
 export function calculateCashTotal(counts: CashDenominationCounts | null) {

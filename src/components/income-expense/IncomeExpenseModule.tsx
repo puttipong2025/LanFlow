@@ -40,6 +40,12 @@ import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { appSwal, runBlockingAction } from "@/lib/swal";
 
+function getReportLockReason(reportLockNo?: string | null) {
+  return reportLockNo
+    ? `ล็อกโดยรายงาน ${reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`
+    : null;
+}
+
 export function IncomeExpenseModule({
   selectedLocation,
   profile,
@@ -189,6 +195,8 @@ export function IncomeExpenseModule({
 
   function getActionBlockReason(transaction: IncomeExpense) {
     if (transaction.approvalPending) return "รายการนี้กำลังรออนุมัติการเปลี่ยนแปลง";
+    const reportLockReason = getReportLockReason(transaction.reportLockNo);
+    if (reportLockReason) return reportLockReason;
     if (transaction.relationLockReason) return transaction.relationLockReason;
     return getOfflineSyncedActionBlockReason(transaction, isOnline);
   }
@@ -449,14 +457,18 @@ export function IncomeExpenseModule({
     }
   }
 
+  function getCashDeletePermissionReason(sourceLocationId: string) {
+    const isSourceAdmin = profile.role === "admin" && profile.locationIds.includes(sourceLocationId);
+    return !canManageSystem && !isSourceAdmin
+      ? "เฉพาะผู้ดูแลสาขาต้นทางหรือผู้จัดการระบบเท่านั้น"
+      : null;
+  }
+
   function cashDeleteBlockReason(transfer: CashBranchTransfer) {
+    const reportLockReason = getReportLockReason(transfer.reportLockNo);
+    if (reportLockReason) return reportLockReason;
     if (!isOnline) return "การลบรายการโยกเงินต้องออนไลน์";
-    if (transfer.reportLockNo) {
-      return `ล็อกโดยรายงาน ${transfer.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`;
-    }
-    const isSourceAdmin = profile.role === "admin" && profile.locationIds.includes(transfer.locationId);
-    if (!canManageSystem && !isSourceAdmin) return "เฉพาะผู้ดูแลสาขาต้นทางหรือผู้จัดการระบบเท่านั้น";
-    return null;
+    return getCashDeletePermissionReason(transfer.locationId);
   }
 
   async function confirmCashDelete(transfer: CashBranchTransfer) {
@@ -684,9 +696,10 @@ export function IncomeExpenseModule({
                 const sourceLocationId = transaction.relationSourceLocationId ?? transaction.locationId;
                 const cashTransferId = transaction.relationSourceId?.startsWith("cash:") ? transaction.relationSourceId.slice(5) : null;
                 const cashDeleteReason = cashTransferId
-                  ? !isOnline
-                    ? "การลบรายการโยกเงินต้องออนไลน์"
-                    : null
+                  ? getReportLockReason(transaction.reportLockNo)
+                    ?? (!isOnline
+                      ? "การลบรายการโยกเงินต้องออนไลน์"
+                      : getCashDeletePermissionReason(sourceLocationId))
                   : null;
                 const canOpenMoneyTransferSource = Boolean(
                   transaction.relationSourceType === "money_transfer" &&
@@ -838,6 +851,14 @@ export function IncomeExpenseModule({
                           {transaction.relationLabel}
                         </span>
                       )}
+                      {transaction.reportLockNo && (
+                        <span
+                          className="w-fit rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-bold text-slate-700"
+                          title={getReportLockReason(transaction.reportLockNo) ?? undefined}
+                        >
+                          ล็อกโดย {transaction.reportLockNo}
+                        </span>
+                      )}
                     </div>
                   </td>
                   <td className="tabular-nums">{transaction.txDate}</td>
@@ -976,7 +997,7 @@ export function IncomeExpenseModule({
         cashDetailFallback("แก้ไขการโยกเงินสด", "แก้ไขการโยกเงินสดได้เมื่อออนไลน์", () => setCashEditingId(null))
       ))}
       {cashDetailsId && (cashTransfers.detail ? (
-        <CashBranchTransferDetails transfer={cashTransfers.detail} canEdit={!cashTransfers.detail.reportLockNo && cashTransfers.detail.status === "pending_receipt" && (profile.role === "super_admin" || cashTransfers.detail.createdByUserId === profile.id)} online={isOnline} onEdit={() => { setCashDetailsId(null); setCashEditingId(cashTransfers.detail!.id); }} onClose={() => setCashDetailsId(null)} />
+        <CashBranchTransferDetails transfer={cashTransfers.detail} canEdit={profile.role === "super_admin" || cashTransfers.detail.createdByUserId === profile.id} online={isOnline} onEdit={() => { setCashDetailsId(null); setCashEditingId(cashTransfers.detail!.id); }} onClose={() => setCashDetailsId(null)} />
       ) : (
         cashDetailFallback("รายละเอียดเงินสด", "รายละเอียดเงินสดเปิดได้เมื่อออนไลน์", () => setCashDetailsId(null))
       ))}

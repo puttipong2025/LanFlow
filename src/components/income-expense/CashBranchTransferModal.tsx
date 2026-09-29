@@ -61,8 +61,45 @@ function CountFields({
 
 export function CashBranchTransferCreateModal({ location, transfer, online, modeSelector, onSave, onClose }: { location: Location; transfer?: CashBranchTransfer; online: boolean; modeSelector?: React.ReactNode; onSave: (payload: unknown) => Promise<unknown>; onClose: () => void }) {
   const { locations } = useLocations(); const [targetLocationId, setTargetLocationId] = useState(transfer?.targetLocationId ?? ""); const [counts, setCounts] = useState(transfer ? cashCountValues(transfer.sent) : zeroCashCountValues()); const [note, setNote] = useState(transfer?.note ?? ""); const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  const createIdentityRef = useRef<{ clientTempId: string; idempotencyKey: string } | null>(null);
   const parsed = useMemo(() => parseCashCounts(counts), [counts]); const amount = calculateCashTotal(parsed);
-  const submit = async () => { if (!online) return toast.error("การโยกเงินสดต้องออนไลน์ก่อน"); if (!targetLocationId || !parsed || amount <= 0) return toast.error("กรุณาเลือกสาขาและกรอกจำนวนเงินสดครบทุกช่อง"); setSaving(true); try { const payload = transfer ? buildCashTransferUpdatePayload({ targetLocationId, sent: parsed, note }) : buildCashTransferCreatePayload({ sourceLocationId: location.id, targetLocationId, sent: parsed, note, clientTempId: crypto.randomUUID(), idempotencyKey: `cash:${crypto.randomUUID()}` }); await onSave(payload); toast.success(transfer ? "แก้ไขรายการเงินสดแล้ว" : "บันทึกรายการเงินสด รอปลายทางรับเงิน"); onClose(); } catch (error) { toast.error(error instanceof Error ? error.message : "บันทึกรายการไม่สำเร็จ"); } finally { setSaving(false); } };
+  const submit = async () => {
+    if (!online) return toast.error("การโยกเงินสดต้องออนไลน์ก่อน");
+    if (!targetLocationId || !parsed || amount <= 0) {
+      return toast.error("กรุณาเลือกสาขาและกรอกจำนวนเงินสดครบทุกช่อง");
+    }
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      let payload;
+      if (transfer) {
+        payload = buildCashTransferUpdatePayload({ targetLocationId, sent: parsed, note });
+      } else {
+        const identity = createIdentityRef.current ?? {
+          clientTempId: crypto.randomUUID(),
+          idempotencyKey: `cash:${crypto.randomUUID()}`,
+        };
+        createIdentityRef.current = identity;
+        payload = buildCashTransferCreatePayload({
+          sourceLocationId: location.id,
+          targetLocationId,
+          sent: parsed,
+          note,
+          ...identity,
+        });
+      }
+      await onSave(payload);
+      toast.success(transfer ? "แก้ไขรายการเงินสดแล้ว" : "บันทึกรายการเงินสด รอปลายทางรับเงิน");
+      onClose();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "บันทึกรายการไม่สำเร็จ");
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  };
   return <Modal title={transfer ? "แก้ไขการโยกเงินสด" : "โยกเงินไปสาขาอื่น (เงินสด)"} modeSelector={modeSelector} onClose={onClose}>
     <section className="space-y-2">
       <div className="flex items-center justify-between gap-3">
@@ -103,6 +140,7 @@ export function CashBranchTransferCreateModal({ location, transfer, online, mode
 
 export function CashBranchTransferReceiveModal({ transfer, online, onReceive, onClose }: { transfer: CashBranchTransfer; online: boolean; onReceive: (counts: CashDenominationCounts) => Promise<unknown>; onClose: () => void }) {
   const [counts, setCounts] = useState(() => cashCountValues(transfer.sent)); const [countsLocked, setCountsLocked] = useState(true); const [saving, setSaving] = useState(false); const countFieldsRef = useRef<HTMLDivElement>(null); const parsed = useMemo(() => parseCashCounts(counts), [counts]); const received = calculateCashTotal(parsed); const difference = parsed ? calculateCashDifferences(transfer.sent, parsed).total : null;
+  const savingRef = useRef(false);
   const unlockCounts = () => {
     if (!countsLocked) return;
     setCountsLocked(false);
@@ -110,7 +148,23 @@ export function CashBranchTransferReceiveModal({ transfer, online, onReceive, on
       countFieldsRef.current?.querySelector<HTMLInputElement>("input")?.focus();
     });
   };
-  const submit = async () => { if (!online) return toast.error("การตรวจรับเงินต้องออนไลน์ก่อน"); if (!parsed) return toast.error("กรุณากรอกจำนวนที่รับจริงครบทุกช่อง รวมถึง 0"); setSaving(true); try { await onReceive(parsed); toast.success(difference === 0 ? "ยืนยันรับเงินแล้ว" : "ยืนยันรับเงินและบันทึกผลต่างแล้ว"); onClose(); } catch (error) { toast.error(error instanceof Error ? error.message : "ตรวจรับไม่สำเร็จ"); } finally { setSaving(false); } };
+  const submit = async () => {
+    if (!online) return toast.error("การตรวจรับเงินต้องออนไลน์ก่อน");
+    if (!parsed) return toast.error("กรุณากรอกจำนวนที่รับจริงครบทุกช่อง รวมถึง 0");
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      await onReceive(parsed);
+      toast.success(difference === 0 ? "ยืนยันรับเงินแล้ว" : "ยืนยันรับเงินและบันทึกผลต่างแล้ว");
+      onClose();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "ตรวจรับไม่สำเร็จ");
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  };
   return <Modal title="ตรวจรับเงินสด" onClose={onClose}>
     <p className="text-sm text-ink/60">ผู้ส่ง: {transfer.createdByName} · ยอดส่ง {formatCurrency(transfer.sentTotal)}</p>
     <div ref={countFieldsRef} id="cash-received-counts">

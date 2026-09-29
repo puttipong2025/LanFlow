@@ -123,6 +123,233 @@ test("approval decision routes reject malformed request IDs before PostgreSQL", 
   }
 });
 
+test("cash transfer mutation routes reject malformed transfer IDs without exposing PostgreSQL diagnostics", async ({ browser }) => {
+  const manager = await context(browser, "super_admin");
+  try {
+    const [update, deletion] = await Promise.all([
+      manager.request.patch("/api/lanflow/cash-branch-transfers/not-a-uuid", {
+        data: {},
+      }),
+      manager.request.delete("/api/lanflow/cash-branch-transfers/not-a-uuid"),
+    ]);
+    expect([update.status(), deletion.status()]).toEqual([400, 400]);
+    expect([await update.json(), await deletion.json()]).toEqual([
+      { error: "ข้อมูลไม่ถูกต้อง" },
+      { error: "ข้อมูลไม่ถูกต้อง" },
+    ]);
+  } finally {
+    await manager.close();
+  }
+});
+
+test("cash transfer routes reject malformed UUID payloads before PostgreSQL", async ({ browser }) => {
+  const manager = await context(browser, "super_admin");
+  try {
+    const validTransferId = "00000000-0000-4000-8000-000000000099";
+    const me = await manager.request.get("/api/auth/me");
+    expect(me.ok()).toBe(true);
+    const locationIds = (await me.json() as { profile: { locationIds: string[] } }).profile.locationIds;
+    expect(locationIds.length).toBeGreaterThanOrEqual(2);
+    const zeroCounts = {
+      coin1: 0,
+      coin2: 0,
+      coin5: 0,
+      coin10: 0,
+      banknote20: 0,
+      banknote50: 0,
+      banknote100: 0,
+      banknote500: 0,
+      banknote1000: 0,
+    };
+    const invalidCounts = { ...zeroCounts, coin1: "not-an-integer" };
+    const oversizedCounts = { ...zeroCounts, coin1: 2_147_483_648 };
+    const weightedOverflowCounts = { ...zeroCounts, banknote1000: 2_147_484 };
+    const [
+      creation,
+      update,
+      receipt,
+      denomination,
+      oversizedDenomination,
+      zeroCreation,
+      zeroUpdate,
+      weightedOverflowCreation,
+      weightedOverflowReceipt,
+    ] = await Promise.all([
+      manager.request.post("/api/lanflow/cash-branch-transfers", {
+        data: {
+          sourceLocationId: "not-a-uuid",
+          targetLocationId: "also-not-a-uuid",
+          sent: {},
+        },
+      }),
+      manager.request.patch(`/api/lanflow/cash-branch-transfers/${validTransferId}`, {
+        data: { targetLocationId: "not-a-uuid", sent: {} },
+      }),
+      manager.request.post("/api/lanflow/cash-branch-transfers/not-a-uuid/receive", {
+        data: { received: {} },
+      }),
+      manager.request.post("/api/lanflow/cash-branch-transfers", {
+        data: {
+          sourceLocationId: locationIds[0],
+          targetLocationId: locationIds[1],
+          sent: invalidCounts,
+        },
+      }),
+      manager.request.post("/api/lanflow/cash-branch-transfers", {
+        data: {
+          sourceLocationId: locationIds[0],
+          targetLocationId: locationIds[1],
+          sent: oversizedCounts,
+        },
+      }),
+      manager.request.post("/api/lanflow/cash-branch-transfers", {
+        data: {
+          sourceLocationId: locationIds[0],
+          targetLocationId: locationIds[1],
+          sent: zeroCounts,
+        },
+      }),
+      manager.request.patch(`/api/lanflow/cash-branch-transfers/${validTransferId}`, {
+        data: { targetLocationId: locationIds[1], sent: zeroCounts },
+      }),
+      manager.request.post("/api/lanflow/cash-branch-transfers", {
+        data: {
+          sourceLocationId: locationIds[0],
+          targetLocationId: locationIds[1],
+          sent: weightedOverflowCounts,
+        },
+      }),
+      manager.request.post(`/api/lanflow/cash-branch-transfers/${validTransferId}/receive`, {
+        data: { received: weightedOverflowCounts },
+      }),
+    ]);
+
+    expect([
+      creation.status(),
+      update.status(),
+      receipt.status(),
+      denomination.status(),
+      oversizedDenomination.status(),
+      zeroCreation.status(),
+      zeroUpdate.status(),
+      weightedOverflowCreation.status(),
+      weightedOverflowReceipt.status(),
+    ]).toEqual([400, 400, 400, 400, 400, 400, 400, 400, 400]);
+    expect([
+      await creation.json(),
+      await update.json(),
+      await receipt.json(),
+      await denomination.json(),
+      await oversizedDenomination.json(),
+      await zeroCreation.json(),
+      await zeroUpdate.json(),
+      await weightedOverflowCreation.json(),
+      await weightedOverflowReceipt.json(),
+    ]).toEqual([
+      { error: "ข้อมูลไม่ถูกต้อง" },
+      { error: "ข้อมูลไม่ถูกต้อง" },
+      { error: "ข้อมูลไม่ถูกต้อง" },
+      { error: "ข้อมูลไม่ถูกต้อง" },
+      { error: "ข้อมูลไม่ถูกต้อง" },
+      { error: "ข้อมูลไม่ถูกต้อง" },
+      { error: "ข้อมูลไม่ถูกต้อง" },
+      { error: "ข้อมูลไม่ถูกต้อง" },
+      { error: "ข้อมูลไม่ถูกต้อง" },
+    ]);
+  } finally {
+    await manager.close();
+  }
+});
+
+test("cash transfer routes reject malformed optional text fields before PostgreSQL", async ({ browser }) => {
+  const manager = await context(browser, "super_admin");
+  try {
+    const me = await manager.request.get("/api/auth/me");
+    expect(me.ok()).toBe(true);
+    const locationIds = (await me.json() as { profile: { locationIds: string[] } }).profile.locationIds;
+    expect(locationIds.length).toBeGreaterThan(0);
+    const sent = {
+      coin1: 1,
+      coin2: 0,
+      coin5: 0,
+      coin10: 0,
+      banknote20: 0,
+      banknote50: 0,
+      banknote100: 0,
+      banknote500: 0,
+      banknote1000: 0,
+    };
+    const missingTargetId = crypto.randomUUID();
+    const missingTransferId = crypto.randomUUID();
+    const [
+      emptyClientId,
+      invalidIdempotencyKey,
+      invalidCreateNote,
+      invalidUpdateNote,
+      invalidDecisionComment,
+    ] = await Promise.all([
+      manager.request.post("/api/lanflow/cash-branch-transfers", {
+        data: {
+          sourceLocationId: locationIds[0],
+          targetLocationId: missingTargetId,
+          sent,
+          clientTempId: "",
+        },
+      }),
+      manager.request.post("/api/lanflow/cash-branch-transfers", {
+        data: {
+          sourceLocationId: locationIds[0],
+          targetLocationId: missingTargetId,
+          sent,
+          idempotencyKey: { malformed: true },
+        },
+      }),
+      manager.request.post("/api/lanflow/cash-branch-transfers", {
+        data: {
+          sourceLocationId: locationIds[0],
+          targetLocationId: missingTargetId,
+          sent,
+          note: { malformed: true },
+        },
+      }),
+      manager.request.patch(`/api/lanflow/cash-branch-transfers/${missingTransferId}`, {
+        data: {
+          targetLocationId: missingTargetId,
+          sent,
+          note: { malformed: true },
+        },
+      }),
+      manager.request.post(
+        `/api/lanflow/cash-branch-transfers/delete-requests/${crypto.randomUUID()}/decide`,
+        { data: { decision: "approved", comment: { malformed: true } } },
+      ),
+    ]);
+
+    expect([
+      emptyClientId.status(),
+      invalidIdempotencyKey.status(),
+      invalidCreateNote.status(),
+      invalidUpdateNote.status(),
+      invalidDecisionComment.status(),
+    ]).toEqual([400, 400, 400, 400, 400]);
+    expect([
+      await emptyClientId.json(),
+      await invalidIdempotencyKey.json(),
+      await invalidCreateNote.json(),
+      await invalidUpdateNote.json(),
+      await invalidDecisionComment.json(),
+    ]).toEqual([
+      { error: "ข้อมูลไม่ถูกต้อง" },
+      { error: "ข้อมูลไม่ถูกต้อง" },
+      { error: "ข้อมูลไม่ถูกต้อง" },
+      { error: "ข้อมูลไม่ถูกต้อง" },
+      { error: "ข้อมูลคำตัดสินไม่ถูกต้อง" },
+    ]);
+  } finally {
+    await manager.close();
+  }
+});
+
 test("report detail routes reject malformed report IDs before PostgreSQL", async ({ browser }) => {
   const manager = await context(browser, "super_admin");
   try {

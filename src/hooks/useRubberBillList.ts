@@ -148,7 +148,9 @@ export function useRubberBillList({
       const serverBills = (payload.rows ?? []).map(mapRubberBillFeedRow);
       // A page is sufficient for additive caching, but never authoritative for
       // deleting receipts that may live outside the loaded cursor window.
-      persistReceiptSnapshots(serverBills);
+      // Approval rows can include transient proposed values and must not replace
+      // the current-revision receipt snapshot used by offline printing.
+      if (mode !== "pending_approval") persistReceiptSnapshots(serverBills);
       const merged = (pageParam ? serverBills : mergeRubberBillLocalEvents(serverBills, events, ownerUserId))
         .filter((bill) => matchesMode(bill, mode))
         .filter((bill) => matchesDocumentStatus(bill, documentStatus));

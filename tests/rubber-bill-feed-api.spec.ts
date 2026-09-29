@@ -8,7 +8,9 @@ test.describe("Rubber Bill cursor feed @rubber-bill-feed", () => {
   test.use({ storageState: "playwright/.auth/super_admin.json" });
 
   test("paginates without overlap and rejects malformed or cross-scope cursors", async ({ request }) => {
-    const me = await (await request.get("/api/auth/me")).json() as { profile: { locationIds: string[] } };
+    const me = await (await request.get("/api/auth/me")).json() as {
+      profile: { id: string; locationIds: string[] };
+    };
     const admin = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false } });
     const counts = await Promise.all(me.profile.locationIds.map(async (locationId) => ({
       locationId,
@@ -39,6 +41,25 @@ test.describe("Rubber Bill cursor feed @rubber-bill-feed", () => {
     const malformed = await request.get(`/api/lanflow/rubber-bills/feed?locationId=${locationId}&cursor=not-a-cursor`);
     expect(malformed.status()).toBe(400);
     expect((await malformed.json()).code).toBe("INVALID_CURSOR");
+
+    const forgedCursor = Buffer.from(JSON.stringify({
+      version: 2,
+      ownerUserId: me.profile.id,
+      locationId,
+      mode: "latest",
+      documentStatus: "any",
+      search: "",
+      sortAt: "not-a-timestamp",
+      workIdentity: "bill:not-a-uuid",
+    }), "utf8").toString("base64url");
+    const forged = await request.get(
+      `/api/lanflow/rubber-bills/feed?locationId=${locationId}&cursor=${encodeURIComponent(forgedCursor)}`,
+    );
+    expect(forged.status()).toBe(400);
+    expect((await forged.json()).code).toBe("INVALID_CURSOR");
+
+    const invalidLocation = await request.get("/api/lanflow/rubber-bills/feed?locationId=not-a-uuid");
+    expect(invalidLocation.status()).toBe(400);
 
     for (const search of ["ภาษาไทย", "%", "_", ",", "  หลาย   ช่อง  "]) {
       const response = await request.get(`/api/lanflow/rubber-bills/feed?locationId=${locationId}&search=${encodeURIComponent(search)}`);
@@ -94,6 +115,139 @@ test.describe("Rubber Bill cursor feed @rubber-bill-feed", () => {
     }
   });
 
+  test("keeps proposed approval values separate from the current bill", async ({ request }) => {
+    const me = await (await request.get("/api/auth/me")).json() as {
+      profile: { id: string; name: string; phone: string; locationIds: string[] };
+    };
+    const locationId = me.profile.locationIds[0];
+    const admin = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false } });
+    const billId = crypto.randomUUID();
+    const requestId = crypto.randomUUID();
+    const marker = `APPROVAL-SUMMARY-${Date.now()}`;
+    const requesterName = `${marker}-REQUESTER`;
+    const now = new Date().toISOString();
+    const currentPayload = {
+      locationId,
+      localBillNo: marker,
+      billDate: "2026-09-28",
+      customerName: `${marker}-CURRENT`,
+      billType: "บิลปัจจุบัน",
+      netWeight: 50,
+      averagePrice: 10,
+      netRubberValue: 500,
+      deductionTotal: 20,
+      netTotal: 480,
+    };
+    const proposedPayload = {
+      ...currentPayload,
+      operation: "update",
+      expectedRevisionNo: 0,
+      clientTempId: billId,
+      idempotencyKey: `update:${billId}:0`,
+      customerName: `${marker}-PROPOSED`,
+      billType: "บิลที่เสนอ",
+      netWeight: 75,
+      averagePrice: 12,
+      netRubberValue: 900,
+      deductionTotal: 30,
+      netTotal: 870,
+    };
+
+    try {
+      expect((await admin.from("rubber_bills").insert({
+        id: billId,
+        client_temp_id: billId,
+        local_bill_no: marker,
+        server_bill_no: marker,
+        idempotency_key: `create:${billId}:0`,
+        sync_status: "synced",
+        record_status: "active",
+        location_id: locationId,
+        bill_no: marker,
+        bill_date: currentPayload.billDate,
+        customer_name: currentPayload.customerName,
+        bill_type: currentPayload.billType,
+        weight: 50,
+        rubber_value: 500,
+        average_price: currentPayload.averagePrice,
+        deduction_total: currentPayload.deductionTotal,
+        net_total: currentPayload.netTotal,
+        formula_version: 2,
+        client_recorded_at: now,
+        client_created_at: now,
+        server_received_at: now,
+        created_at: now,
+        created_by_user_id: me.profile.id,
+        created_by_name: me.profile.name,
+        created_by_phone: me.profile.phone,
+      })).error).toBeNull();
+      expect((await admin.from("rubber_bill_approval_requests").insert({
+        id: requestId,
+        operation: "update",
+        request_status: "pending",
+        bill_id: billId,
+        location_id: locationId,
+        client_temp_id: billId,
+        idempotency_key: proposedPayload.idempotencyKey,
+        base_revision_no: 0,
+        matched_reasons: ["time"],
+        edit_window_minutes_snapshot: 30,
+        original_payload: currentPayload,
+        proposed_payload: proposedPayload,
+        requested_by_user_id: me.profile.id,
+        requested_by_name: requesterName,
+        requested_by_phone: me.profile.phone,
+        requested_at: now,
+      })).error).toBeNull();
+
+      const response = await request.get(
+        `/api/lanflow/rubber-bills/feed?locationId=${locationId}&mode=pending_approval&search=${marker}`
+      );
+      expect(response.ok()).toBeTruthy();
+      const body = await response.json() as {
+        rows: Array<Record<string, any>>;
+        evidenceStates: Array<Record<string, unknown>>;
+      };
+      expect(body.rows).toHaveLength(1);
+      expect(body.evidenceStates).toEqual([]);
+      expect(body.rows[0]).toMatchObject({
+        customer_name: currentPayload.customerName,
+        bill_type: currentPayload.billType,
+        net_weight: currentPayload.netWeight,
+        average_price: currentPayload.averagePrice,
+        net_rubber_value: currentPayload.netRubberValue,
+        deduction_total: currentPayload.deductionTotal,
+        net_total: currentPayload.netTotal,
+      });
+      expect(body.rows[0].approval_proposed_summary).toEqual({
+        customerName: proposedPayload.customerName,
+        billDate: proposedPayload.billDate,
+        billType: proposedPayload.billType,
+        netWeight: proposedPayload.netWeight,
+        averagePrice: proposedPayload.averagePrice,
+        netRubberValue: proposedPayload.netRubberValue,
+        deductionTotal: proposedPayload.deductionTotal,
+        netTotal: proposedPayload.netTotal,
+      });
+      expect(body.rows[0].approval_requested_by_name).toBe(requesterName);
+      expect(body.rows[0]).not.toHaveProperty("proposed_payload");
+      expect(body.rows[0]).not.toHaveProperty("approval_original_summary");
+      expect(body.rows[0]).not.toHaveProperty("approval_requested_at");
+
+      const latestResponse = await request.get(
+        `/api/lanflow/rubber-bills/feed?locationId=${locationId}&mode=latest&search=${marker}`
+      );
+      expect(latestResponse.ok()).toBeTruthy();
+      const latest = await latestResponse.json() as { rows: Array<Record<string, any>> };
+      expect(latest.rows).toHaveLength(1);
+      expect(latest.rows[0].approval_proposed_summary).toBeNull();
+      expect(latest.rows[0].approval_requested_by_name).toBeNull();
+    } finally {
+      await admin.from("rubber_bill_approval_requests").delete().eq("id", requestId);
+      await admin.from("rubber_bills").delete().eq("id", billId);
+    }
+  });
+
   test("pages more than 150 pending creates through the same minimal work feed", async ({ request }) => {
     const me = await (await request.get("/api/auth/me")).json() as {
       profile: { id: string; name: string; phone: string; locationIds: string[] };
@@ -122,6 +276,10 @@ test.describe("Rubber Bill cursor feed @rubber-bill-feed", () => {
           billDate: requestedAt.slice(0, 10),
           customerName: marker,
           billType: "บิลเครื่องชั่งเล็ก",
+          netWeight: 100,
+          averagePrice: 10,
+          netRubberValue: 1_000,
+          deductionTotal: 0,
           netTotal: 1_000,
           clientCreatedAt: requestedAt,
           clientRecordedAt: requestedAt,
@@ -149,6 +307,8 @@ test.describe("Rubber Bill cursor feed @rubber-bill-feed", () => {
       expect(first.rows.every((row) => row.row_kind === "approval_create")).toBe(true);
       expect(first.rows.every((row) => String(row.work_identity).startsWith("approval:"))).toBe(true);
       expect(first.rows.every((row) => !("original_payload" in row) && !("proposed_payload" in row))).toBe(true);
+      expect(first.rows.every((row) => !("approval_proposed_summary" in row))).toBe(true);
+      expect(first.rows.every((row) => !("approval_requested_by_name" in row))).toBe(true);
 
       const secondStartedAt = performance.now();
       const secondResponse = await request.get(`/api/lanflow/rubber-bills/feed?locationId=${locationId}&mode=pending_approval&search=${marker}&limit=150&cursor=${encodeURIComponent(first.nextCursor!)}`);
@@ -170,5 +330,23 @@ test.describe("Rubber Bill cursor feed @rubber-bill-feed", () => {
     } finally {
       await admin.from("rubber_bill_approval_requests").delete().in("id", requestIds);
     }
+  });
+});
+
+test.describe("Rubber Bill pending approval feed authorization @rubber-bill-feed", () => {
+  test.use({ storageState: "playwright/.auth/admin.json" });
+
+  test("rejects a branch admin before calling the manager-only feed", async ({ request }) => {
+    const me = await (await request.get("/api/auth/me")).json() as {
+      profile: { locationIds: string[] };
+    };
+    const locationId = me.profile.locationIds[0];
+    expect(locationId).toBeTruthy();
+
+    const response = await request.get(
+      `/api/lanflow/rubber-bills/feed?locationId=${locationId}&mode=pending_approval`,
+    );
+    expect(response.status()).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ error: "ไม่มีสิทธิ์เข้าถึงงานอนุมัติ" });
   });
 });

@@ -382,6 +382,7 @@ test("approval buttons and modal counts follow the selected branch", async ({ br
           requested_by_user_id: requester!.id,
           requested_by_name: requester!.name,
           requested_by_phone: requester!.phone,
+          created_at: new Date(Date.UTC(2020, 0, 1, 0, 0, index)).toISOString(),
         };
       }),
     )).error).toBeNull();
@@ -525,6 +526,11 @@ test("approval buttons and modal counts follow the selected branch", async ({ br
     });
     await expect(cappedApprovalButton).toBeVisible();
     await expect(cappedApprovalButton.locator("span")).toHaveText("99+");
+    await cappedApprovalButton.click();
+    approvalModal = page.locator(".fixed.inset-0").last();
+    await expect(approvalModal.getByText("คำขอรออนุมัติ 100 รายการ", { exact: true })).toBeVisible();
+    await expect(approvalModal.getByRole("cell", { name: "คำขอรับจ่าย Badge 2", exact: true })).toBeVisible();
+    await approvalModal.getByLabel("ปิด", { exact: true }).click();
     await page.setViewportSize({ width: 390, height: 844 });
     const incomeButtonBox = await cappedApprovalButton.boundingBox();
     expect(incomeButtonBox).not.toBeNull();

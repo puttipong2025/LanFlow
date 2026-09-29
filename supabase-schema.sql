@@ -18211,23 +18211,22 @@ begin
         'approval_request_id', req.id,
         'approval_operation', req.operation,
         'approval_reasons', req.matched_reasons,
-        'approval_requested_at', req.requested_at,
-        'approval_requested_by_name', req.requested_by_name,
-        'approval_original_summary', case when req.id is null then null else jsonb_build_object(
-          'customerName', req.original_payload->>'customerName',
-          'billDate', req.original_payload->>'billDate',
-          'netTotal', req.original_payload->'netTotal'
-        ) end,
-        'approval_proposed_summary', case when req.id is null then null else jsonb_build_object(
+        'approval_requested_by_name', case when p_mode = 'pending_approval' then req.requested_by_name else null end,
+        'approval_proposed_summary', case when req.id is null or p_mode <> 'pending_approval' then null else jsonb_build_object(
           'customerName', req.proposed_payload->>'customerName',
           'billDate', req.proposed_payload->>'billDate',
+          'billType', req.proposed_payload->>'billType',
+          'netWeight', req.proposed_payload->'netWeight',
+          'averagePrice', req.proposed_payload->'averagePrice',
+          'netRubberValue', req.proposed_payload->'netRubberValue',
+          'deductionTotal', req.proposed_payload->'deductionTotal',
           'netTotal', req.proposed_payload->'netTotal'
         ) end
       ) row_json
     from public.rubber_bills b
     left join lateral (
       select r.id, r.operation, r.matched_reasons, r.requested_at,
-        r.requested_by_name, r.original_payload, r.proposed_payload
+        r.requested_by_name, r.proposed_payload
       from public.rubber_bill_approval_requests r
       where r.bill_id = b.id and r.location_id = p_location_id
         and r.request_status = 'pending'
@@ -18305,14 +18304,6 @@ begin
         'approval_request_id', r.id,
         'approval_operation', 'create',
         'approval_reasons', r.matched_reasons,
-        'approval_requested_at', r.requested_at,
-        'approval_requested_by_name', r.requested_by_name,
-        'approval_original_summary', null,
-        'approval_proposed_summary', jsonb_build_object(
-          'customerName', r.proposed_payload->>'customerName',
-          'billDate', r.proposed_payload->>'billDate',
-          'netTotal', r.proposed_payload->'netTotal'
-        ),
         'items', coalesce((
           select jsonb_agg(jsonb_build_object(
             'id', concat(r.id::text, ':', coalesce(item->>'sequenceNo', ordinal::text)),

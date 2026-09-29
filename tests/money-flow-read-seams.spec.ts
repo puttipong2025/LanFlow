@@ -40,6 +40,12 @@ test("Rubber operational list uses a scoped cursor feed and page-scoped evidence
   expect(mutations).not.toContain("moneyFlowQueryKeys.rubberBills(");
   expect(route).toContain("CURSOR_SCOPE_MISMATCH");
   expect(route).toContain("get_rubber_bill_evidence_states_for_bills");
+  expect(route).toContain('if (mode !== "pending_approval")');
+  const receiptCachePath = hook.match(
+    /const serverBills = \(payload\.rows[\s\S]*?const merged =/
+  )?.[0] ?? "";
+  expect(receiptCachePath).toContain('if (mode !== "pending_approval")');
+  expect(receiptCachePath).toContain("persistReceiptSnapshots(serverBills)");
 });
 
 test("Stock retry refreshes the active Rubber operational feed", () => {
