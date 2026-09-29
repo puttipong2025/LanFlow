@@ -1,34 +1,10 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { refreshSupabaseSession } from "@/lib/supabase/middleware";
 
-const PUBLIC_PATHS = new Set([
-  "/login",
-  "/offline.html",
-  "/manifest.json",
-  "/sw.js",
-]);
-
-const PUBLIC_PATH_PREFIXES = ["/icons/", "/fonts/"];
-
-function isPublicPath(pathname: string): boolean {
-  return PUBLIC_PATHS.has(pathname)
-    || PUBLIC_PATH_PREFIXES.some((path) => pathname.startsWith(path));
-}
-
-function isStaticAsset(pathname: string): boolean {
-  return (
-    pathname.startsWith("/_next/") ||
-    pathname.startsWith("/swe-worker") ||
-    pathname.startsWith("/fallback") ||
-    pathname.startsWith("/workbox") ||
-    pathname.startsWith("/fonts/")
-  );
-}
-
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  if (isStaticAsset(pathname) || isPublicPath(pathname)) {
+  if (pathname === "/login" || pathname.startsWith("/_next/")) {
     return NextResponse.next();
   }
 
@@ -46,6 +22,6 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon\\.ico|icons|fonts|manifest\\.json|sw\\.js|swe-worker|workbox|fallback|offline\\.html).*)"
+    "/((?!_next/static|_next/image|favicon\\.ico|icon\\.svg|icons|fonts|manifest\\.json|sw\\.js|swe-worker|workbox|fallback|offline\\.html).*)"
   ]
 };

@@ -13,7 +13,7 @@
     "deploy:check": "node scripts/check-deployment-env.mjs && npm run verify",
     "test:db": "npx supabase test db --local",
     "test:isolated": "playwright test --config=playwright.isolated.config.ts",
-    "test:routes": "playwright test tests/middleware-auth-routing.spec.ts --project=chromium",
+    "test:routes": "playwright test tests/middleware-auth-routing.spec.ts tests/route-auth-boundary.spec.ts --project=chromium --no-deps",
     "test:auth-outage": "node scripts/check-login-auth-outage.mjs",
     "baseline:income-expense": "node scripts/measure-income-expense-baseline.mjs",
     "baseline:offline-sync": "npm run build && node scripts/measure-offline-sync-baseline.mjs",

@@ -28,6 +28,7 @@ for (const filename of routeFiles(apiRoot)) {
 
   test(`${route} rejects anonymous and invalid sessions @route-audit-boundary`, async ({ request }) => {
     test.setTimeout(60_000);
+    expect(methods, `${route} must export at least one audited HTTP handler`).not.toHaveLength(0);
     for (const method of methods) {
       for (const authorization of [undefined, "Bearer invalid-session"]) {
         const response = await request.fetch(url, {

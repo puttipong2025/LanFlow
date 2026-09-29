@@ -9,9 +9,13 @@ test("keeps public assets public and redirects anonymous pages to login", async 
 
   try {
     for (const publicPath of [
+      "/favicon.ico",
+      "/icon.svg",
+      "/icons/icon.svg",
       "/login",
       "/offline.html",
       "/manifest.json",
+      "/sw.js",
       "/fonts/NotoSansThai-Regular.ttf",
     ]) {
       const response = await anonymous.get(publicPath, { maxRedirects: 0 });
