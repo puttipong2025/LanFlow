@@ -11,6 +11,7 @@
 - Enforce a 320 kB First Load JS budget for `/`.
 - Add browser coverage for online first-open modules, offline-supported modules, User-role isolation and middleware routing.
 - Revoke the stale anonymous table-level `SELECT` grant on `profiles` that fresh database bootstraps exposed despite column-level revokes.
+- Rebuild Dashboard singleton and derived rows after seed truncation so fresh local/CI databases do not depend on cron timing.
 
 ## Verified receipts
 

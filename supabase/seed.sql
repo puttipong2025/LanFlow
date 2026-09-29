@@ -2577,4 +2577,9 @@ ON CONFLICT ("singleton") DO NOTHING;
 
 RESET ALL;
 
+-- The profile/location truncates above cascade into Dashboard singleton and
+-- derived rows that migrations created before seeding. Rebuild them only after
+-- all seed data exists and normal trigger behavior has been restored.
+SELECT private.dashboard_rollover_if_needed();
+
 
