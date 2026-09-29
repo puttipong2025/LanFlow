@@ -1,16 +1,12 @@
 "use client";
 
 import { ShieldCheck } from "lucide-react";
+import dynamic from "next/dynamic";
 import { toast } from "sonner";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuthContext } from "@/components/AuthProvider";
 
 import type { Location, Profile } from "@/types";
-import { CustomersModule } from "./CustomersModule";
-import { TransportModule } from "./TransportModule";
-import { MoneyTransferModule } from "./MoneyTransferModule";
-import { AdminModule } from "./AdminModule";
-import { TimeTrackingModule } from "./TimeTrackingModule";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { useLanFlowOfflineSyncCoordinator } from "@/hooks/useLanFlowOfflineSyncCoordinator";
 import { useActionableBadges } from "@/hooks/useActionableBadges";
@@ -33,13 +29,6 @@ import {
 import { removeSyncEventsForOwner } from "@/lib/idb-queue";
 import { type Tab } from "@/components/lanflow/tabs";
 import { Dashboard } from "@/components/dashboard/Dashboard";
-import { RubberBillsModule } from "@/components/rubber-bills/RubberBillsModule";
-import { RubberEvidenceModule } from "@/components/rubber-evidence/RubberEvidenceModule";
-import { IncomeExpenseModule } from "@/components/income-expense/IncomeExpenseModule";
-import { AcidStockModule } from "@/components/acid-stock/AcidStockModule";
-import { ReportsModule } from "@/components/reports/ReportsModule";
-import { RubberExportsModule } from "@/components/rubber-exports/RubberExportsModule";
-import { CashCountModule } from "@/components/cash-counts/CashCountModule";
 import { AppHeader } from "@/components/lanflow/AppHeader";
 import { NavigationTabs } from "@/components/lanflow/NavigationTabs";
 import { AccountActions } from "@/components/lanflow/AccountActions";
@@ -65,6 +54,79 @@ import {
   resolveRubberWeightAlertConfig,
   type RubberWeightAlertConfig,
 } from "@/lib/lanflow/rubber-weight-alert";
+
+function ModuleLoadingState() {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+      className="rounded-xl border border-black/10 bg-white p-5 shadow-sm"
+    >
+      <div aria-hidden="true" className="space-y-4">
+        <div className="h-7 w-48 rounded-md bg-mint" />
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="h-24 rounded-lg bg-sand" />
+          <div className="h-24 rounded-lg bg-sand" />
+          <div className="h-24 rounded-lg bg-sand" />
+        </div>
+        <div className="h-36 rounded-lg bg-sand" />
+      </div>
+      <p className="mt-4 text-pretty text-sm font-semibold text-ink/65">
+        กำลังโหลดโมดูล...
+      </p>
+    </div>
+  );
+}
+
+const CustomersModule = dynamic(
+  () => import("./CustomersModule").then((module) => module.CustomersModule),
+  { loading: ModuleLoadingState },
+);
+const TransportModule = dynamic(
+  () => import("./TransportModule").then((module) => module.TransportModule),
+  { loading: ModuleLoadingState },
+);
+const MoneyTransferModule = dynamic(
+  () => import("./MoneyTransferModule").then((module) => module.MoneyTransferModule),
+  { loading: ModuleLoadingState },
+);
+const AdminModule = dynamic(
+  () => import("./AdminModule").then((module) => module.AdminModule),
+  { loading: ModuleLoadingState },
+);
+const TimeTrackingModule = dynamic(
+  () => import("./TimeTrackingModule").then((module) => module.TimeTrackingModule),
+  { loading: ModuleLoadingState },
+);
+const RubberBillsModule = dynamic(
+  () => import("@/components/rubber-bills/RubberBillsModule").then((module) => module.RubberBillsModule),
+  { loading: ModuleLoadingState },
+);
+const RubberEvidenceModule = dynamic(
+  () => import("@/components/rubber-evidence/RubberEvidenceModule").then((module) => module.RubberEvidenceModule),
+  { loading: ModuleLoadingState },
+);
+const IncomeExpenseModule = dynamic(
+  () => import("@/components/income-expense/IncomeExpenseModule").then((module) => module.IncomeExpenseModule),
+  { loading: ModuleLoadingState },
+);
+const AcidStockModule = dynamic(
+  () => import("@/components/acid-stock/AcidStockModule").then((module) => module.AcidStockModule),
+  { loading: ModuleLoadingState },
+);
+const ReportsModule = dynamic(
+  () => import("@/components/reports/ReportsModule").then((module) => module.ReportsModule),
+  { loading: ModuleLoadingState },
+);
+const RubberExportsModule = dynamic(
+  () => import("@/components/rubber-exports/RubberExportsModule").then((module) => module.RubberExportsModule),
+  { loading: ModuleLoadingState },
+);
+const CashCountModule = dynamic(
+  () => import("@/components/cash-counts/CashCountModule").then((module) => module.CashCountModule),
+  { loading: ModuleLoadingState },
+);
 
 export function LanFlowApp() {
   const auth = useAuthContext();
@@ -456,12 +518,11 @@ function BusinessLanFlowApp() {
 
   if (!isLoaded || !profile) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-sand">
-        <div className="flex flex-col items-center gap-2">
-          <div className="h-8 w-8 animate-spin rounded-full border-4 border-leaf border-t-transparent"></div>
-          <p className="text-sm font-semibold text-ink">กำลังโหลดข้อมูล...</p>
+      <main className="min-h-screen bg-sand px-4 py-12">
+        <div className="mx-auto w-full max-w-7xl">
+          <ModuleLoadingState />
         </div>
-      </div>
+      </main>
     );
   }
 

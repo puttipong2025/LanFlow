@@ -8,6 +8,49 @@ test.describe("production PWA connectivity matrix", () => {
     await context.setOffline(false).catch(() => {});
   });
 
+  test("opens every authorized top-level module on first use", async ({ page }) => {
+    test.setTimeout(120_000);
+    const phone = process.env.TEST_PHONE || "0800000000";
+    const password = process.env.TEST_PASSWORD || "password123";
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+
+    await page.goto("/login");
+    await page.fill('input[type="tel"]', phone);
+    await page.fill('input[type="password"]', password);
+    await page.getByRole("button", { name: "เข้าสู่ระบบ" }).click();
+    await expect(page.getByText("ออนไลน์", { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+
+    const moduleLabels = [
+      "ภาพรวม",
+      "บิลยาง",
+      "ตรวจหลักฐาน",
+      "ส่งออกยาง",
+      "รับ-จ่าย",
+      "สต็อกสินค้า",
+      "ลูกค้า",
+      "ขนส่งและพนักงาน",
+      "โอนเงิน",
+      "เวลาและเงินเดือน",
+      "รายงาน",
+      "นับเงิน",
+      "Admin",
+    ];
+
+    for (const label of moduleLabels) {
+      const tab = page.getByRole("button", { name: new RegExp(`^${label}(?: |$)`) });
+      await expect(tab).toBeVisible();
+      await tab.click();
+      await expect(page.getByText("กำลังโหลดโมดูล...", { exact: true })).toBeHidden({
+        timeout: 20_000,
+      });
+    }
+
+    expect(pageErrors).toEqual([]);
+  });
+
   test("updates every open window and reloads each window once on reconnect", async ({
     context,
     page,
@@ -74,6 +117,39 @@ test.describe("production PWA connectivity matrix", () => {
     expect(await secondPage.evaluate(() =>
       Number(sessionStorage.getItem("lanflow:pwa-navigation-count"))
     )).toBe(secondBaseline + 1);
+  });
+
+  test("loads every offline-supported module from the warmed PWA cache", async ({
+    context,
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const phone = process.env.TEST_PHONE || "0800000000";
+    const password = process.env.TEST_PASSWORD || "password123";
+
+    await page.goto("/login");
+    await page.fill('input[type="tel"]', phone);
+    await page.fill('input[type="password"]', password);
+    await page.getByRole("button", { name: "เข้าสู่ระบบ" }).click();
+    await expect(page.getByText("ออนไลน์", { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect.poll(() => page.evaluate(() =>
+      Boolean(navigator.serviceWorker?.controller)
+    )).toBe(true);
+
+    await context.setOffline(true);
+    await expect(page.getByText("ไม่มีอินเทอร์เน็ต", { exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
+    await expect(page.getByRole("button", { name: "เพิ่มบิลยาง", exact: true })).toBeVisible({
+      timeout: 15_000,
+    });
+
+    await page.getByRole("button", { name: "รับ-จ่าย", exact: true }).click();
+    await expect(page.getByRole("button", { name: "เพิ่มรายรับ", exact: true })).toBeVisible({
+      timeout: 15_000,
+    });
   });
 
   test("restores a persisted Rubber Bill draft after reconnect reload", async ({

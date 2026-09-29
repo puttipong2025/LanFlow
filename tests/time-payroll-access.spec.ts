@@ -170,6 +170,16 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
       expect(bootstrap.locations).toEqual([]);
 
       const page = await context.newPage();
+      const businessModuleRequests: string[] = [];
+      page.on("request", (request) => {
+        const pathname = new URL(request.url()).pathname;
+        if (
+          pathname.startsWith("/api/lanflow/")
+          && !pathname.startsWith("/api/lanflow/time-tracking/user")
+        ) {
+          businessModuleRequests.push(pathname);
+        }
+      });
       await page.goto("/");
 
       await expect(page.getByRole("heading", { name: "เวลาและเงินเดือน", exact: true })).toBeVisible();
@@ -178,6 +188,7 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
         .toBeVisible({ timeout: 30_000 });
       await expect(page.getByRole("button", { name: /เริ่มนับเวลา|หยุดงาน/ })).toHaveCount(0);
       await expect(page.getByRole("button", { name: "สร้างหนี้สินเพิ่ม" })).toHaveCount(0);
+      expect(businessModuleRequests).toEqual([]);
     } finally {
       await service.from("user_locations").delete().eq("user_id", userId);
       if ((originalAssignments.data?.length ?? 0) > 0) {
