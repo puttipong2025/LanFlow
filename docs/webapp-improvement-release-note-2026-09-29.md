@@ -10,6 +10,7 @@
 - Load React Query Devtools only in development.
 - Enforce a 320 kB First Load JS budget for `/`.
 - Add browser coverage for online first-open modules, offline-supported modules, User-role isolation and middleware routing.
+- Revoke the stale anonymous table-level `SELECT` grant on `profiles` that fresh database bootstraps exposed despite column-level revokes.
 
 ## Verified receipts
 
@@ -30,7 +31,7 @@
 
 ## Recovery
 
-- No database migration or data rewrite is included.
+- The database change is privilege-only: it revokes anonymous profile reads and does not rewrite business data.
 - If a module-loading regression appears, redeploy the previous application revision; stored business data is unaffected.
 - If CI infrastructure fails, preserve the failing logs and run `npm run verify:full` against the same revision before changing workflow versions.
 - Do not use a forced audit fix as a recovery action.
