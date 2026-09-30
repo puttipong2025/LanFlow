@@ -9,7 +9,7 @@ const publishableKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
   ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
   ?? "";
 
-test("sale create bypasses approval while competing changes share one pending request", async () => {
+test("sale create bypasses approval while competing changes share one pending request", async ({ browser }) => {
   test.skip(!serviceRoleKey || !publishableKey, "Supabase test keys are required");
   const service = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
@@ -71,6 +71,7 @@ test("sale create bypasses approval while competing changes share one pending re
     createdByName: profile.data!.name,
     createdByPhone: profile.data!.phone,
   };
+  const manager = await browser.newContext({ storageState: "playwright/.auth/super_admin.json" });
 
   try {
     expect((await service.from("income_expense_approval_settings").upsert({
@@ -177,6 +178,19 @@ test("sale create bypasses approval while competing changes share one pending re
     expect(retried.error).toBeNull();
     expect(retried.data).toMatchObject({ status: "pending_approval" });
     expect((retried.data as any).requestId).not.toBe(requestIds[0]);
+
+    expect((await service.from("income_expense").update({ revision_no: 2 }).eq("id", parentId)).error).toBeNull();
+    const conflictedDecision = await manager.request.post(
+      `/api/lanflow/income-expense/approval-requests/${(retried.data as any).requestId}/decide`,
+      { data: { decision: "approved" } },
+    );
+    expect(conflictedDecision.status()).toBe(409);
+    expect(await conflictedDecision.json()).toMatchObject({
+      status: "conflict",
+      errorMessage: "Revision mismatch",
+    });
+    expect((await service.from("income_expense").update({ revision_no: 1 }).eq("id", parentId)).error).toBeNull();
+
     const approved = await authenticated.rpc("decide_income_expense_approval_request", {
       p_request_id: (retried.data as any).requestId,
       p_decision: "approved",
@@ -195,6 +209,7 @@ test("sale create bypasses approval while competing changes share one pending re
     expect(replay.error).toBeNull();
     expect(replay.data).toMatchObject({ status: "synced", id: parentId });
   } finally {
+    await manager.close();
     await service.from("income_expense_approval_requests").delete().eq("source_income_expense_id", parentId);
     await service.from("acid_stock_movements").delete().eq("source_id", parentId);
     await service.from("income_expense").delete().eq("id", parentId);

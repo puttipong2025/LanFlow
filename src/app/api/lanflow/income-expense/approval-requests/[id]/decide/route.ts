@@ -34,6 +34,9 @@ export async function POST(
     if (decision !== "approved" && decision !== "rejected") {
       return NextResponse.json({ status: "failed", errorMessage: "Invalid decision" }, { status: 400 });
     }
+    if (body.comment != null && typeof body.comment !== "string") {
+      return NextResponse.json({ status: "failed", errorMessage: "Invalid request body" }, { status: 400 });
+    }
 
     const { data, error } = await adminCheck.supabase.rpc(
       "decide_income_expense_approval_request",
@@ -52,6 +55,10 @@ export async function POST(
     const result = (data || {}) as DecisionRpcResponse;
     if (result.status === "approved" || result.status === "rejected") {
       return NextResponse.json(result, { status: 200 });
+    }
+
+    if (result.status === "conflict") {
+      return NextResponse.json(result, { status: 409 });
     }
 
     if (result.status === "failed") {

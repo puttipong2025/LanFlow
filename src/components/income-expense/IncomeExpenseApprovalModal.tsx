@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { formatCurrency } from "@/lib/format";
+import { cn } from "@/lib/cn";
 import { useIncomeExpenseApprovals } from "@/hooks/useIncomeExpenseApprovals";
 import { useInputDialog } from "@/hooks/useInputDialog";
 import { useLocations } from "@/hooks/useLocations";
@@ -13,6 +14,7 @@ import type {
   IncomeExpenseApprovalMatchMode,
   IncomeExpenseApprovalReason,
   IncomeExpenseApprovalStatus,
+  QueueOperation,
 } from "@/types";
 
 const appliesToLabels: Record<IncomeExpenseApprovalAppliesTo, string> = {
@@ -38,6 +40,21 @@ const statusLabels: Record<IncomeExpenseApprovalStatus, string> = {
   rejected: "ปฏิเสธแล้ว",
   cancelled: "ยกเลิกแล้ว",
 };
+
+const operationBadges = {
+  create: { label: "เพิ่มใหม่", className: "bg-success/10 text-success" },
+  update: { label: "แก้ไข", className: "bg-amber/15 text-amber-800" },
+  delete: { label: "ลบ", className: "bg-danger/10 text-danger" },
+} satisfies Record<QueueOperation, { label: string; className: string }>;
+
+function ApprovalOperationBadge({ operation }: { operation: QueueOperation }) {
+  const badge = operationBadges[operation];
+  return (
+    <span className={cn("rounded-full px-2 py-0.5 text-xs font-bold", badge.className)}>
+      {badge.label}
+    </span>
+  );
+}
 
 function parseOptionalAmount(value: string) {
   const trimmed = value.trim();
@@ -370,7 +387,10 @@ export function IncomeExpenseApprovalModal({
                       </td>
                       <td>
                         <div className="flex flex-col gap-1">
-                          <span className="font-semibold text-ink">{request.transferDisplayNo} → {request.targetLocationName}</span>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <ApprovalOperationBadge operation="delete" />
+                            <span className="font-semibold text-ink">{request.transferDisplayNo} → {request.targetLocationName}</span>
+                          </div>
                           <span className="text-xs text-ink/55">รับจริง {formatCurrency(request.receivedTotal)} · ผลต่าง {formatCurrency(request.differenceTotal)}</span>
                         </div>
                       </td>
@@ -414,15 +434,18 @@ export function IncomeExpenseApprovalModal({
                       </td>
                       <td>
                         <div className="flex flex-col gap-1">
-                          <span className="font-semibold text-ink">{request.title}</span>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <ApprovalOperationBadge operation={request.requestedOperation} />
+                            <span className="font-semibold text-ink">{request.title}</span>
+                          </div>
                            {request.matchedKeyword && (
                              <span className="text-xs text-ink/55">พบ: {request.matchedKeyword}</span>
                            )}
                            {request.saleLines && request.saleLines.length > 0 && (
-                             <ol className="mt-1 space-y-0.5 text-xs text-ink/65">
+                             <ol className="mt-1 list-decimal space-y-0.5 pl-4 text-xs text-ink/65">
                                {request.saleLines.map((line) => (
                                  <li key={`${request.id}:${line.sequenceNo}`}>
-                                   {line.sequenceNo}. {line.title} · {line.quantity} × {formatCurrency(line.unitPrice)} = {formatCurrency(line.lineTotal)}
+                                   {line.title} · {line.quantity} × {formatCurrency(line.unitPrice)} = {formatCurrency(line.lineTotal)}
                                  </li>
                                ))}
                              </ol>

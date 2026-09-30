@@ -237,6 +237,24 @@ test("approval decision routes reject malformed request IDs before PostgreSQL", 
   }
 });
 
+test("income-expense approval decisions reject malformed comments before PostgreSQL", async ({ browser }) => {
+  const manager = await context(browser, "super_admin");
+  try {
+    const response = await manager.request.post(
+      `/api/lanflow/income-expense/approval-requests/${crypto.randomUUID()}/decide`,
+      { data: { decision: "approved", comment: { malformed: true } } },
+    );
+
+    expect(response.status()).toBe(400);
+    expect(await response.json()).toEqual({
+      status: "failed",
+      errorMessage: "Invalid request body",
+    });
+  } finally {
+    await manager.close();
+  }
+});
+
 test("cash transfer mutation routes reject malformed transfer IDs without exposing PostgreSQL diagnostics", async ({ browser }) => {
   const manager = await context(browser, "super_admin");
   try {

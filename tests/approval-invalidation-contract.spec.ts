@@ -159,7 +159,7 @@ test("pending income approval submission refreshes the queue, feed, and actionab
   ]);
   expect(settled).toBe(false);
   loaded.release();
-  expect(await submitted).toMatchObject({ requiresApproval: true, requestId: "approval-request" });
+  expect(await submitted).toEqual({ requiresApproval: true });
 });
 
 test("shared money-flow refresh has no legacy Rubber approval query owners", () => {

@@ -303,6 +303,7 @@ export type IncomeExpenseApprovalKeyword = {
 export type IncomeExpenseApprovalRequest = {
   id: string;
   requestStatus: IncomeExpenseApprovalStatus;
+  requestedOperation: QueueOperation;
   matchedKeyword?: string | null;
   matchedReasons: IncomeExpenseApprovalReason[];
   locationId: string;

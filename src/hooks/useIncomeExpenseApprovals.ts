@@ -44,9 +44,6 @@ type SettingsInput = {
 
 type ApprovalSubmitResult = {
   requiresApproval: boolean;
-  requestId?: string;
-  matchedReasons?: string[];
-  matchedKeyword?: string | null;
 };
 
 function appliesToType(appliesTo: IncomeExpenseApprovalAppliesTo, type: "income" | "expense") {
@@ -146,7 +143,7 @@ export function useIncomeExpenseApprovals(options: {
       const pendingRows = await readAllSupabaseRows((from, to) => {
         let query = supabase
           .from("income_expense_approval_requests")
-          .select("id, request_status, matched_keyword, matched_reasons, location_id, tx_type, title, cost, requested_payload, requested_by_name, requested_by_phone, decided_by_name, decided_by_phone, created_at")
+          .select("id, request_status, requested_operation, matched_keyword, matched_reasons, location_id, tx_type, title, cost, requested_payload, requested_by_name, requested_by_phone, decided_by_name, decided_by_phone, created_at")
           .eq("request_status", "pending");
         if (requestsLocationId) query = query.eq("location_id", requestsLocationId);
         return query
@@ -156,7 +153,7 @@ export function useIncomeExpenseApprovals(options: {
       });
       let historyQuery = supabase
         .from("income_expense_approval_requests")
-        .select("id, request_status, matched_keyword, matched_reasons, location_id, tx_type, title, cost, requested_payload, requested_by_name, requested_by_phone, decided_by_name, decided_by_phone, created_at")
+        .select("id, request_status, requested_operation, matched_keyword, matched_reasons, location_id, tx_type, title, cost, requested_payload, requested_by_name, requested_by_phone, decided_by_name, decided_by_phone, created_at")
         .neq("request_status", "pending");
       if (requestsLocationId) historyQuery = historyQuery.eq("location_id", requestsLocationId);
       const historyResult = await historyQuery
@@ -173,6 +170,7 @@ export function useIncomeExpenseApprovals(options: {
       return [...rowsById.values()].map((row: any): IncomeExpenseApprovalRequest => ({
         id: row.id,
         requestStatus: row.request_status,
+        requestedOperation: row.requested_operation,
         matchedKeyword: row.matched_keyword,
         matchedReasons: row.matched_reasons,
         locationId: row.location_id,
@@ -457,12 +455,7 @@ export function useIncomeExpenseApprovals(options: {
         queryClient.invalidateQueries({ queryKey: [INCOME_EXPENSE_FEED_QUERY_KEY] }),
         queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
       ]);
-      return {
-        requiresApproval: true,
-        requestId: data.requestId,
-        matchedReasons: data.matchedReasons,
-        matchedKeyword: data.matchedKeyword,
-      };
+      return { requiresApproval: true };
     }
 
     return { requiresApproval: false };
