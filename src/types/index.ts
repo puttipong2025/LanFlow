@@ -3,7 +3,6 @@ export type SyncStatus = "pending" | "syncing" | "synced" | "failed" | "conflict
 export type RecordStatus = "active" | "deleted" | "cancelled";
 export type QueueOperation = "create" | "update" | "delete";
 export type PaymentResponsibility = "สาขานี้จ่าย" | "สาขาใหญ่จ่าย";
-
 export type Location = {
   id: string;
   name: string;

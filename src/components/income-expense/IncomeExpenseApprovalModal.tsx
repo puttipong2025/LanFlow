@@ -3,10 +3,11 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { formatCurrency } from "@/lib/format";
-import { cn } from "@/lib/cn";
 import { useIncomeExpenseApprovals } from "@/hooks/useIncomeExpenseApprovals";
 import { useInputDialog } from "@/hooks/useInputDialog";
 import { useLocations } from "@/hooks/useLocations";
+import { ApprovalOperationBadge } from "@/components/income-expense/ApprovalOperationBadge";
+import { formatDateTime, formatPerson, parseOptionalAmount } from "@/components/income-expense/approval-display";
 import { ModalShell } from "@/components/shared/ModalShell";
 
 import type {
@@ -14,7 +15,6 @@ import type {
   IncomeExpenseApprovalMatchMode,
   IncomeExpenseApprovalReason,
   IncomeExpenseApprovalStatus,
-  QueueOperation,
 } from "@/types";
 
 const appliesToLabels: Record<IncomeExpenseApprovalAppliesTo, string> = {
@@ -40,41 +40,6 @@ const statusLabels: Record<IncomeExpenseApprovalStatus, string> = {
   rejected: "ปฏิเสธแล้ว",
   cancelled: "ยกเลิกแล้ว",
 };
-
-const operationBadges = {
-  create: { label: "เพิ่มใหม่", className: "bg-success/10 text-success" },
-  update: { label: "แก้ไข", className: "bg-amber/15 text-amber-800" },
-  delete: { label: "ลบ", className: "bg-danger/10 text-danger" },
-} satisfies Record<QueueOperation, { label: string; className: string }>;
-
-function ApprovalOperationBadge({ operation }: { operation: QueueOperation }) {
-  const badge = operationBadges[operation];
-  return (
-    <span className={cn("rounded-full px-2 py-0.5 text-xs font-bold", badge.className)}>
-      {badge.label}
-    </span>
-  );
-}
-
-function parseOptionalAmount(value: string) {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const amount = Number(trimmed);
-  return Number.isFinite(amount) ? amount : Number.NaN;
-}
-
-function formatDateTime(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("th-TH", {
-    dateStyle: "short",
-    timeStyle: "short",
-  }).format(date);
-}
-
-function formatPerson(name?: string | null, phone?: string | null) {
-  return [name?.trim(), phone?.trim()].filter(Boolean).join(" · ") || "—";
-}
 
 export function IncomeExpenseApprovalModal({
   initialLocationId,
