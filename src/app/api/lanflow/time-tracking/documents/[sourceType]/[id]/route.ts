@@ -12,35 +12,6 @@ export const dynamic = "force-dynamic";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-function monthBounds(month: string) {
-  const [year, monthNumber] = month.split("-").map(Number);
-  const nextYear = monthNumber === 12 ? year + 1 : year;
-  const nextMonth = monthNumber === 12 ? 1 : monthNumber + 1;
-  return {
-    start: `${month}-01T00:00:00+07:00`,
-    end: `${nextYear}-${String(nextMonth).padStart(2, "0")}-01T00:00:00+07:00`,
-  };
-}
-
-function clipSegments(
-  segments: Array<{ start_time: string; end_time: string | null }>,
-  start: string,
-  end: string,
-) {
-  const startMs = new Date(start).getTime();
-  const endMs = new Date(end).getTime();
-  return segments.flatMap((segment) => {
-    if (!segment.end_time) return [];
-    const clippedStart = Math.max(new Date(segment.start_time).getTime(), startMs);
-    const clippedEnd = Math.min(new Date(segment.end_time).getTime(), endMs);
-    if (clippedEnd <= clippedStart) return [];
-    return [{
-      start_time: new Date(clippedStart).toISOString(),
-      end_time: new Date(clippedEnd).toISOString(),
-    }];
-  });
-}
-
 async function sourceMetadata(
   supabase: SupabaseClient,
   source: {
@@ -130,17 +101,8 @@ export async function GET(
     }
 
     const month = source.effective_date.slice(0, 7);
-    const { start, end } = monthBounds(month);
-    const [metadata, segmentsResponse, totalsResponse, attendanceResponse] = await Promise.all([
+    const [metadata, totalsResponse, attendanceResponse] = await Promise.all([
       sourceMetadata(result.supabase, source),
-      result.supabase
-        .from("time_segments")
-        .select("start_time, end_time")
-        .eq("profile_id", source.profile_id)
-        .not("end_time", "is", null)
-        .gt("end_time", start)
-        .lt("start_time", end)
-        .order("start_time", { ascending: true }),
       result.supabase.rpc("get_time_payroll_user_totals", {
         p_profile_id: source.profile_id,
         p_month: month,
@@ -151,9 +113,11 @@ export async function GET(
       }),
     ]);
     if (!metadata) return NextResponse.json({ error: "ไม่พบเอกสาร" }, { status: 404 });
-    if (segmentsResponse.error) throw segmentsResponse.error;
     if (totalsResponse.error) throw totalsResponse.error;
     if (attendanceResponse.error) throw attendanceResponse.error;
+    if (attendanceResponse.data?.mode !== "EXCEPTIONS") {
+      throw new Error("Unsupported attendance mode");
+    }
 
     const existingDeductions = Number(totalsResponse.data?.usedThisMonth || 0);
     return NextResponse.json(buildWithdrawalSlipDocument({
@@ -167,10 +131,8 @@ export async function GET(
       dailyWage: metadata.dailyWage,
       totalPaidDays: Number(attendanceResponse.data?.summary?.paidDays) || 0,
       existingDeductions,
-      segments: clipSegments(segmentsResponse.data || [], start, end),
-      attendance: attendanceResponse.data?.mode === "EXCEPTIONS"
-        ? attendanceResponse.data
-        : null,
+      segments: [],
+      attendance: attendanceResponse.data,
       generatedAt: new Date().toISOString(),
     }));
   } catch (error) {

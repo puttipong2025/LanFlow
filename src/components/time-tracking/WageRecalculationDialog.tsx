@@ -8,7 +8,7 @@ import {
   formatPayrollCurrency,
 } from "@/lib/time-tracking/format";
 
-export type WageRecalculationMonth = {
+type WageRecalculationMonth = {
   month: string;
   closed: boolean;
   slipStatus: string | null;

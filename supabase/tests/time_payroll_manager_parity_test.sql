@@ -49,6 +49,10 @@ select extensions.lives_ok($$select public.create_time_tracking_transaction(
  'Own branch payment','61000000-0000-4000-8000-000000000001','own approval')$$,'self withdrawal creates and approves atomically');
 select extensions.is((select status::text from public.financial_transactions where description='Own branch payment'),'APPROVED','self withdrawal is approved');
 select extensions.is((select approved_by from public.financial_transactions where description='Own branch payment'),'62000000-0000-4000-8000-000000000001'::uuid,'self approval records the actor');
+select extensions.lives_ok($$select public.create_time_tracking_transaction(
+ '62000000-0000-4000-8000-000000000001','WITHDRAWAL',11,(now() at time zone 'Asia/Bangkok')::date,
+ 'Own central payment',null,'outside system')$$,'manager can approve a central withdrawal without a branch expense');
+select extensions.is((select expense_location_id from public.financial_transactions where description='Own central payment'),null::uuid,'central withdrawal keeps a null expense location');
 select extensions.throws_ok($$select public.create_time_tracking_transaction(
  '62000000-0000-4000-8000-000000000002','WITHDRAWAL',10,(now() at time zone 'Asia/Bangkok')::date,
  'Denied payer','61000000-0000-4000-8000-000000000002',null)$$,'P0001','Expense location access denied','new payer outside scope denied');
@@ -80,6 +84,12 @@ select extensions.lives_ok($$select public.create_time_tracking_payroll_slip('62
  (public.preview_time_tracking_payroll_slip('62000000-0000-4000-8000-000000000001',to_char(now() at time zone 'Asia/Bangkok' - interval '1 month','YYYY-MM'))->>'netPay')::numeric)$$,'self payroll quote can be created and approved in one call');
 select extensions.is((select status::text from public.payroll_slips where profile_id='62000000-0000-4000-8000-000000000001'),'APPROVED','self payroll is approved');
 select extensions.is((select public.expense_location_name(ps) from public.payroll_slips ps where profile_id='62000000-0000-4000-8000-000000000001'),'Parity A','payroll exposes persisted payer name');
+select extensions.lives_ok($$select public.set_time_payroll_active_period('62000000-0000-4000-8000-000000000007','ENABLE',
+ (now() at time zone 'Asia/Bangkok')::date-1)$$,'manager can enroll an ordinary user for the central payroll regression');
+select extensions.lives_ok($$select public.create_time_tracking_payroll_slip('62000000-0000-4000-8000-000000000007',
+ to_char(now() at time zone 'Asia/Bangkok','YYYY-MM'),false,null,'outside system',
+ (public.preview_time_tracking_payroll_slip('62000000-0000-4000-8000-000000000007',to_char(now() at time zone 'Asia/Bangkok','YYYY-MM'))->>'netPay')::numeric)$$,'manager can approve positive central payroll without a branch expense');
+select extensions.is((select expense_location_id from public.payroll_slips where profile_id='62000000-0000-4000-8000-000000000007'),null::uuid,'central payroll keeps a null expense location');
 
 -- Employee submission stays pending; a delegated manager can decide it and see the badge.
 select set_config('request.jwt.claim.sub','62000000-0000-4000-8000-000000000002',true);

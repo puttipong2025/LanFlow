@@ -142,6 +142,38 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
     }
   });
 
+  test("employee detail hides rejected payroll slips while managers retain the history", async ({ browser }) => {
+    const service = serviceClient();
+    const slipId = crypto.randomUUID();
+    const employee = await browser.newContext({ storageState: "playwright/.auth/user.json" });
+    const manager = await browser.newContext({ storageState: "playwright/.auth/super_admin.json" });
+    try {
+      const inserted = await service.from("payroll_slips").insert({
+        id: slipId,
+        profile_id: userId,
+        month: "1900-01",
+        status: "REJECTED",
+        created_by: superAdminId,
+      });
+      expect(inserted.error).toBeNull();
+
+      const [employeeResponse, managerResponse] = await Promise.all([
+        employee.request.get("/api/lanflow/time-tracking/user?month=1900-01"),
+        manager.request.get(`/api/lanflow/time-tracking/user?userId=${userId}&month=1900-01`),
+      ]);
+      expect(employeeResponse.ok(), await employeeResponse.text()).toBe(true);
+      expect(managerResponse.ok(), await managerResponse.text()).toBe(true);
+      const employeeSlips = (await employeeResponse.json() as { slips: Array<{ id: string }> }).slips;
+      const managerSlips = (await managerResponse.json() as { slips: Array<{ id: string }> }).slips;
+
+      expect(employeeSlips.some((slip) => slip.id === slipId)).toBe(false);
+      expect(managerSlips.some((slip) => slip.id === slipId)).toBe(true);
+    } finally {
+      await service.from("payroll_slips").delete().eq("id", slipId);
+      await Promise.all([employee.close(), manager.close()]);
+    }
+  });
+
   test("User keeps self-service without delegated manager access", async ({ browser }) => {
     test.setTimeout(60_000);
     const service = serviceClient();

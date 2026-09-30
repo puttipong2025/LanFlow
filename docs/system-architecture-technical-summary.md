@@ -334,17 +334,17 @@ offline queue อยู่ที่ `src/lib/idb-queue.ts`:
 - บิลขายและบิลยางยังเป็น source of truth ของตัวเอง ไม่ copy เป็น row ใหม่ใน `stock_entries`; stock module แสดงเป็น derived movement เพื่อให้ยอดคงเหลือสะท้อนจริงโดยไม่สร้างข้อมูลซ้ำ
 - ยอดคงเหลือต้องคำนวณจาก `sum(quantity_delta)` บน `stock_movements` ไม่ใช่จาก `stock_entries` อย่างเดียว
 
-### Time Tracking Payroll Cutoff
+### Time Tracking And Payroll Attendance Contract
 
-โมดูล `เวลาและเงินเดือน` ใช้ `time_segments` เป็น source row ของเวลาทำงาน และใช้ cutoff `15:00` ตาม timezone `Asia/Bangkok` เป็นเส้นนับวันค่าแรง:
+โมดูล `เวลาและเงินเดือน` เป็น EXCEPTIONS-only ตาม timezone `Asia/Bangkok`:
 
-- ถ้า segment ผ่านเวลา `15:00` ให้คิดค่าแรงตามจำนวนเส้น `15:00` ที่ผ่าน เช่น `14:59 -> 15:00` = `1` วัน และ `15:01 -> 15:00` ของวันถัดไป = `1` วัน
-- ถ้า segment ยังไม่ผ่าน `15:00` ให้ fallback เป็นชั่วโมงรวม / 8 เพื่อรองรับงานครึ่งวัน เช่น `08:00 -> 12:00` = `0.5` วัน
-- ฝั่ง API ใช้ helper กลาง `src/lib/time-tracking/pay.ts`
-  - `GET /api/lanflow/time-tracking/user` ใช้คำนวณ `wageInfo.totalDays`, `grossPay`, `remainingBalance`
-  - `POST /api/lanflow/time-tracking/admin` action `CREATE_PAYROLL_SLIP` ใช้คำนวณ snapshot `total_days` และ `gross_pay`
-- ฝั่ง database มี helper `public.calculate_time_segment_paid_days(start_time, end_time)` และ `public.calculate_paid_work_days(profile_id, period_start, period_end)` เพื่อให้ job/RPC อย่าง `deduct_debts_daily()` ใช้สูตรเดียวกับ API
-- client countdown ที่ split ที่ `15:00` เป็น UX helper เท่านั้น ไม่ใช่ source of truth; server/API/DB ต้องคำนวณค่าแรงซ้ำจาก `time_segments`
+- `time_payroll_active_periods` ระบุช่วงที่พนักงานมีสิทธิ์คิดค่าแรง วันที่อยู่ในช่วงมีค่าเริ่มต้นเป็นเต็มวัน
+- `time_payroll_attendance_exceptions` เก็บเฉพาะวันที่เบี่ยงจากค่าเริ่มต้น เช่น ครึ่งวันหรือหยุด; `time_segments` และ timer เป็น legacy ที่เลิกใช้แล้ว
+- `public.get_time_payroll_attendance_month` และ `public.calculate_paid_work_days` เป็น source of truth สำหรับ eligible boundary, paid days, gross pay และ payroll snapshot
+- เวลาสิ้นสุดวันทำงานเป็น Config ร่วมตาม Bangkok time และการแก้มีผลวันถัดไป ค่า default และค่าบน Production ล่าสุดที่ยืนยันคือ `16:00` แต่ไม่ใช่ invariant ที่ hard-code ใน client
+- client ใช้ `eligibleThrough`, periods, exceptions และ summary จาก server ห้ามสร้างสูตรค่าแรงคู่หรือใช้เวลาจากเครื่องเป็น source of truth
+
+Frontend รักษา public entry `src/components/TimeTrackingModule.tsx` เป็น permission router ไป `time-tracking/employee/EmployeeWorkspace.tsx` และ `time-tracking/manager/ManagerWorkspace.tsx`. Payroll, audit, attendance, settings และ periods เป็น leaf owners แยกกัน; controller ของ employee ถือเฉพาะ attendance request/mutation guards. ทุก production file ใน pilot ไม่เกิน 500 physical lines และถูกคุมด้วย `scripts/check-source-size.mjs`.
 
 ### Time/Payroll Delegated Management
 
@@ -397,7 +397,7 @@ offline queue อยู่ที่ `src/lib/idb-queue.ts`:
 - **Auth / Bootstrap**: รองรับ offline auth cache และ branch bootstrap cache
 - **Income/Expense**: Full Offline สำหรับ create/update/delete, PWA reload, RPC atomic sync
 - **Money Transfer**: online-first; เป็น source ของ derived rows ใน Income/Expense สำหรับโอนเงินสาขาขาเข้า/ขาออก, รายการสำนักงานใหญ่/CEO โอนให้สาขา, และโอนลูกค้าสถานะ `โอน+สาขาจ่าย`; `money_transfer_items` เป็นตัวตัดบิลยางออกจาก derived expense รายวัน; ฟอร์มลูกค้า/รถขนส่ง/สาขาเปิดผ่าน `ModalShell`; ตารางเริ่มที่ filter `pending`, แสดง 20 รายการต่อหน้า และแยก `net_amount_to_pay` ออกจากผลรวม `money_transfer_slips.amount`; เข้าเมนูและเขียนข้อมูลได้เฉพาะผู้มีสิทธิ์โมดูลโอนเงิน
-- **Time Tracking**: online-first; ค่าแรงคำนวณจาก `time_segments` ผ่าน cutoff `15:00` (`Asia/Bangkok`) โดยใช้ helperกลางทั้งฝั่ง API และ DB; รองรับสิทธิ์เฉพาะโมดูลตามสาขาหลักและส่วนกลางจ่ายแบบไม่สร้าง derived expense
+- **Time Tracking**: online-first; ค่าแรงใช้ active periods + attendance exceptions และ configurable Bangkok workday-end (default/current verified `16:00`) โดย server/DB เป็น source of truth; รองรับสิทธิ์เฉพาะโมดูลตามสาขาหลักและส่วนกลางจ่ายแบบไม่สร้าง derived expense
 
 ### เปรียบเทียบ Offline-First: Rubber Bills vs Income/Expense
 

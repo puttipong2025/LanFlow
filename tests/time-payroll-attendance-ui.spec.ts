@@ -2,8 +2,34 @@ import { expect, test } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const controls = readFileSync(resolve("src/components/time-tracking/AttendanceControls.tsx"), "utf8");
-const moduleSource = readFileSync(resolve("src/components/TimeTrackingModule.tsx"), "utf8");
+const readSource = (path: string) => readFileSync(resolve(path), "utf8");
+const controls = [
+  "src/components/time-tracking/attendance/AttendanceCalendar.tsx",
+  "src/components/time-tracking/periods/AttendancePeriodControls.tsx",
+  "src/components/time-tracking/settings/TimePayrollConfigPanel.tsx",
+  "src/components/time-tracking/display.ts",
+].map(readSource).join("\n");
+const employeeSource = [
+  "src/components/time-tracking/employee/EmployeeWorkspace.tsx",
+  "src/components/time-tracking/employee/EmployeeDialogs.tsx",
+  "src/components/time-tracking/employee/EmployeeTransactionHistory.tsx",
+  "src/components/time-tracking/employee/employee-attendance-actions.ts",
+].map(readSource).join("\n");
+const managerSource = [
+  "src/components/time-tracking/manager/ManagerWorkspace.tsx",
+  "src/components/time-tracking/manager/ManagerHeader.tsx",
+  "src/components/time-tracking/manager/ManagerEmployeeDirectory.tsx",
+  "src/components/time-tracking/manager/ManagerDialogs.tsx",
+].map(readSource).join("\n");
+const payrollModalSource = readSource("src/components/time-tracking/payroll/PayrollModal.tsx");
+const auditLogsModalSource = readSource("src/components/time-tracking/audit/AuditLogsModal.tsx");
+const moduleSource = [
+  readSource("src/components/TimeTrackingModule.tsx"),
+  employeeSource,
+  managerSource,
+  payrollModalSource,
+  auditLogsModalSource,
+].join("\n");
 const modalShellSource = readFileSync(resolve("src/components/shared/ModalShell.tsx"), "utf8");
 const expenseLocationChangeSource = readFileSync(resolve("src/components/time-tracking/ExpenseLocationChangeModal.tsx"), "utf8");
 const slipPreviewSource = readFileSync(resolve("src/components/time-tracking/SlipPreviewModal.tsx"), "utf8");
@@ -100,16 +126,18 @@ test.describe("Lean attendance UI contract", () => {
   });
 
   test("removes inert admin month and payroll input-dialog state", () => {
-    const adminSource = moduleSource.slice(
-      moduleSource.indexOf("function AdminTimeTracking"),
-      moduleSource.indexOf("function AuditLogsModal"),
-    );
-    const payrollModalSource = moduleSource.slice(moduleSource.indexOf("function PayrollModal"));
-
-    expect(adminSource).not.toContain("setAttendanceMonth");
-    expect(adminSource).not.toContain("time-tracking/admin?month=");
+    expect(managerSource).not.toContain("setAttendanceMonth");
+    expect(managerSource).not.toContain("time-tracking/admin?month=");
     expect(payrollModalSource).not.toContain("useInputDialog");
     expect(payrollModalSource).not.toContain("inputDialog");
+  });
+
+  test("mounts the employee input dialog exactly once", () => {
+    const workspaceSource = readSource("src/components/time-tracking/employee/EmployeeWorkspace.tsx");
+    const dialogsSource = readSource("src/components/time-tracking/employee/EmployeeDialogs.tsx");
+
+    expect(workspaceSource.match(/^\s*\{inputDialog\}\s*$/gm) ?? []).toHaveLength(0);
+    expect(dialogsSource.match(/^\s*\{inputDialog\}\s*$/gm)).toHaveLength(1);
   });
 
   test("keeps row actions in the management column as labelled emoji buttons", () => {
@@ -178,12 +206,6 @@ test.describe("Lean attendance UI contract", () => {
   });
 
   test("uses accessible native dialogs for debt, payroll, and audit-history workflows", () => {
-    const payrollModalSource = moduleSource.slice(moduleSource.indexOf("function PayrollModal"));
-    const auditLogsModalSource = moduleSource.slice(
-      moduleSource.indexOf("function AuditLogsModal"),
-      moduleSource.indexOf("function PayrollModal"),
-    );
-
     expect(payrollModalSource).toContain('title={`สลิปเงินเดือนของ ${user.name}`}');
     expect(payrollModalSource).toContain("closeDisabled={saving}");
     expect(payrollModalSource).toContain('title="สร้างสลิปเงินเดือน"');
@@ -382,6 +404,62 @@ test.describe("Time/payroll native dialogs", () => {
     } finally {
       releaseAdminRefresh();
     }
+  });
+
+  test("keeps rejected debt and withdrawal history visible to payroll managers", async ({ page }) => {
+    const employee = {
+      id: "0aa15628-b940-4928-b02c-2d7018964f7b",
+      name: "พนักงานประวัติรายการปฏิเสธ",
+      daily_wage: 500,
+      primary_location_id: null,
+      debt_remaining_amount: 0,
+    };
+    const rejectedTransaction = {
+      id: "a63d15c2-d70c-46dd-95de-0917bff827d5",
+      profile_id: employee.id,
+      type: "DEBT",
+      amount: 100,
+      remaining_amount: 0,
+      effective_date: "2026-09-02",
+      created_at: "2026-09-02T03:00:00.000Z",
+      status: "REJECTED",
+      description: "ประวัติหนี้ที่ถูกปฏิเสธ",
+      report_lock_no: null,
+    };
+
+    await page.route("**/api/lanflow/time-tracking/admin", async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.continue();
+        return;
+      }
+      await route.fulfill({
+        json: {
+          permissions: { canManage: true, canDecide: true, canConfigure: true },
+          users: [employee],
+          pendingTransactions: [],
+          pendingSlips: [],
+          paymentLocations: [],
+          admins: [],
+        },
+      });
+    });
+    await page.route("**/api/lanflow/time-tracking/user?*", (route) => route.fulfill({
+      json: {
+        transactions: [rejectedTransaction],
+        wageInfo: { remainingBalance: 0, totalDays: 0, totalDebt: 0 },
+        attendance: null,
+        periodState: null,
+      },
+    }));
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
+    await page.getByRole("button", { name: "ทั้งหมด", exact: true }).click();
+    await page.getByRole("button", { name: /^จัดการปฏิทินวันทำงานของ พนักงานประวัติรายการปฏิเสธ/ }).click();
+    const employeeDialog = page.getByRole("dialog", { name: "ข้อมูลของพนักงาน" });
+
+    await expect(employeeDialog.getByText("ประวัติหนี้ที่ถูกปฏิเสธ", { exact: true })).toBeVisible();
+    await expect(employeeDialog.getByText("REJECTED", { exact: true })).toBeVisible();
   });
 
   test("labels rejection correctly and recovers after a network failure", async ({ page }) => {

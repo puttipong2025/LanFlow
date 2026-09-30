@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { bangkokDateString } from "@/lib/bangkok-date";
 import { requireAuth } from "@/lib/server/auth";
+import { chunkUniqueIds } from "@/lib/server/chunk-ids";
 import { buildPayrollPeriodState, type PayrollPeriodRow } from "@/lib/time-tracking/period-state";
 import { readAllSupabaseRows } from "@/lib/supabase-pages";
+import { readTimeTrackingActionRequest } from "../action-request";
 
 export const dynamic = "force-dynamic";
 
@@ -64,12 +66,13 @@ export async function GET(request: NextRequest) {
 
   try {
     const month = new URL(request.url).searchParams.get("month") || bangkokCurrentMonth();
-    if (!/^[0-9]{4}-(0[1-9]|1[0-2])$/.test(month)) {
+    if (!/^(?!0000)[0-9]{4}-(0[1-9]|1[0-2])$/.test(month)) {
       return NextResponse.json({ error: "เดือนไม่ถูกต้อง" }, { status: 400 });
     }
     const supabase = result.supabase;
     const [
       transactions,
+      actionableTransactions,
       activeDebts,
       deductions,
       slips,
@@ -86,7 +89,18 @@ export async function GET(request: NextRequest) {
         .in("type", ["DEBT", "WITHDRAWAL"])
         .order("effective_date", { ascending: false })
         .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
         .limit(50),
+      readAllSupabaseRows((from, to) => supabase
+        .from("financial_transactions")
+        .select("*, expense_location_name, report_lock_no, approver:profiles!financial_transactions_approved_by_fkey(name)")
+        .eq("profile_id", targetUserId)
+        .in("type", ["DEBT", "WITHDRAWAL"])
+        .eq("status", "PENDING")
+        .order("effective_date", { ascending: false })
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .range(from, to)),
       readAllSupabaseRows((from, to) => supabase
         .from("financial_transactions")
         .select("id, type, amount, remaining_amount, effective_date, created_at, description")
@@ -147,22 +161,30 @@ export async function GET(request: NextRequest) {
       if (response.error) throw response.error;
     }
 
-    const transactionRows = transactions.data || [];
+    const recentTransactionRows = transactions.data || [];
+    const actionableIds = new Set(actionableTransactions.map((row) => row.id));
+    const transactionRows = [
+      ...actionableTransactions,
+      ...recentTransactionRows.filter((row) => !actionableIds.has(row.id)),
+    ];
     const visibleIds = new Set(transactionRows.map((row) => row.id));
     const missingAdjustmentSourceIds = [...new Set(adjustments
       .map((row) => row.parent_debt_id)
       .filter((id): id is string => typeof id === "string" && !visibleIds.has(id)))];
     let adjustmentSourceRows: typeof transactionRows = [];
     if (missingAdjustmentSourceIds.length > 0) {
-      const adjustmentSources = await supabase
-        .from("financial_transactions")
-        .select("*, expense_location_name, report_lock_no, approver:profiles!financial_transactions_approved_by_fkey(name)")
-        .eq("profile_id", targetUserId)
-        .eq("type", "WITHDRAWAL")
-        .eq("status", "APPROVED")
-        .in("id", missingAdjustmentSourceIds);
-      if (adjustmentSources.error) throw adjustmentSources.error;
-      adjustmentSourceRows = adjustmentSources.data || [];
+      const sourceChunks = await Promise.all(chunkUniqueIds(missingAdjustmentSourceIds).map(async (ids) => {
+        const adjustmentSources = await supabase
+          .from("financial_transactions")
+          .select("*, expense_location_name, report_lock_no, approver:profiles!financial_transactions_approved_by_fkey(name)")
+          .eq("profile_id", targetUserId)
+          .eq("type", "WITHDRAWAL")
+          .eq("status", "APPROVED")
+          .in("id", ids);
+        if (adjustmentSources.error) throw adjustmentSources.error;
+        return adjustmentSources.data || [];
+      }));
+      adjustmentSourceRows = sourceChunks.flat();
     }
 
     const totalDays = Number(attendance.data?.summary?.paidDays || 0);
@@ -196,17 +218,18 @@ export async function GET(request: NextRequest) {
         ? [...transactionRows, ...adjustmentSourceRows]
         : [...transactionRows.filter((item) => item.status !== "REJECTED"), ...adjustmentSourceRows],
       deductions,
-      slips,
+      slips: result.auth.canManageTimePayroll
+        ? slips
+        : slips.filter((item) => item.status !== "REJECTED"),
       adjustments,
       adjustmentSummaries: adjustmentSummaries.data || [],
     });
   } catch (error) {
-    const message = error instanceof Error
-      ? error.message
-      : typeof error === "object" && error && "message" in error
-        ? String(error.message)
-        : "Unknown error";
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error("Failed to load employee time/payroll data:", error);
+    return NextResponse.json(
+      { error: "โหลดข้อมูลเวลาและเงินเดือนไม่สำเร็จ" },
+      { status: 500 },
+    );
   }
 }
 
@@ -214,21 +237,16 @@ export async function POST(request: NextRequest) {
   const result = await requireAuth(request, { allowUserLanflow: true });
   if (!result.ok) return result.response;
 
-  let body: { action?: string; payload?: Record<string, any> };
-  try {
-    body = await request.json();
-  } catch {
+  const body = await readTimeTrackingActionRequest(request);
+  if (!body) {
     return NextResponse.json({ error: "ข้อมูลคำขอไม่ถูกต้อง" }, { status: 400 });
   }
-  if (body === null || typeof body !== "object" || Array.isArray(body)) {
-    return NextResponse.json({ error: "ข้อมูลคำขอไม่ถูกต้อง" }, { status: 400 });
-  }
-  const payload = body?.payload || {};
+  const payload = body.payload;
   const supabase = result.supabase;
 
   if (body.action === "REQUEST_WITHDRAWAL") {
     const { amount } = payload;
-    if (typeof amount !== "number") {
+    if (typeof amount !== "number" || !Number.isFinite(amount)) {
       return NextResponse.json({ error: "ข้อมูลรายการไม่ถูกต้อง" }, { status: 400 });
     }
     const { data, error } = await supabase.rpc("request_time_tracking_withdrawal", {

@@ -391,6 +391,18 @@ API response status:
 - Config เวลาสิ้นสุดวันทำงานเป็นค่าร่วมทั้งระบบและแก้ได้เฉพาะ `super_admin`; ผู้จัดการระบบและ Admin ผู้ได้รับมอบสิทธิ์อ่านได้อย่างเดียว
 - ปุ่มและ API ระงับ/กู้คืนบัญชีมีเฉพาะ `super_admin` และผู้จัดการระบบ; ผู้จัดการระบบห้ามระงับตนเองหรือ `super_admin`
 
+โครงสร้าง frontend ของ workflow ขนาดใหญ่:
+
+- public entrypoint เช่น `src/components/TimeTrackingModule.tsx` ต้องเป็น thin orchestrator ที่คง import path และ permission routing เดิม
+- แยกตาม capability owner ก่อน: employee, manager, payroll, audit, attendance, settings และ periods; leaf workflow ห้าม import owner ระดับบนย้อนกลับ
+- ลำดับการ refactor คือย้าย behavior เดิมออกก่อน แล้ววัดขนาด/ความรับผิดชอบ จากนั้นจึงสร้าง controller hook เฉพาะเมื่อยังจำเป็นจริง
+- controller hook ถือได้เฉพาะ load, mutation และ stale-request generation guard; modal, focus, form และ visible UI state ต้องอยู่ใน component
+- production `.ts`/`.tsx` ใหม่ห้ามเกิน 500 physical lines; ไฟล์เดิมที่เกินใช้ exact grandfather baseline และห้ามโต เมื่อเล็กลงไม่เกิน 500 ต้องถอดจาก allowlist ทันที
+- 350 lines เป็นจุด manual responsibility review ไม่ใช่ CI failure threshold
+- static source contract ต้องอ่าน owner file/folder โดยตรง ห้าม slice monolith ตามลำดับชื่อ function; dialog/focus/responsive behavior ต้องคง browser coverage
+- dynamic business module ต้องมี budget แยกจาก initial route และต้องยืนยันว่า inactive module ไม่ถูกดึงเข้า initial bundle; หาก workflow boundary เพิ่ม payload ให้บันทึก pre/post raw+gzip, เหตุผลที่ยอมรับ และ ratchet exact post-refactor แทนการเพิ่ม tolerance กว้าง
+- gate มาตรฐานคือ `npm run check:source-size`, strict no-unused TypeScript, focused tests, production build, bundle budget และ `git diff --check`
+
 ## 13. IndexedDB Queue Rules
 
 ถ้า module เป็น offline-first ให้ใช้ `src/lib/idb-queue.ts` เป็น queue กลาง

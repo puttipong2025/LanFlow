@@ -1,14 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { bangkokDateString } from "@/lib/bangkok-date";
 import { requireAuth } from "@/lib/server/auth";
+import { readAllSupabaseRows } from "@/lib/supabase-pages";
 import { buildPayrollPeriodState, type PayrollPeriodRow } from "@/lib/time-tracking/period-state";
 import { parseDailyWageInput } from "@/lib/time-tracking/wage";
+import { readTimeTrackingActionRequest } from "../action-request";
 
 export const dynamic = "force-dynamic";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const ISO_DATE_PATTERN = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
-const ISO_MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
+const ISO_DATE_PATTERN = /^(?!0000)\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+const ISO_MONTH_PATTERN = /^(?!0000)\d{4}-(0[1-9]|1[0-2])$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
 function isUuid(value: unknown): value is string {
@@ -171,51 +173,49 @@ export async function GET(request: NextRequest) {
 
   try {
     const [
-      usersResult,
-      pendingTransactionsResult,
-      pendingSlipsResult,
-      managersResult,
+      userRows,
+      pendingTransactions,
+      pendingSlips,
       paymentLocationsResult,
       settingsResult,
-      activePeriodsResult,
+      activePeriods,
       debtTotalsResult,
     ] = await Promise.all([
-      result.supabase.from("profiles").select(`
-        id, name, phone, daily_wage, role, is_active, can_access_super_admin_features,
-        user_locations!user_locations_user_id_fkey(location_id, is_primary, locations!inner(is_active))
-      `),
-      result.supabase
+      readAllSupabaseRows((from, to) => result.supabase.from("profiles").select(`
+          id, name, phone, daily_wage, role, is_active, can_access_super_admin_features,
+          user_locations!user_locations_user_id_fkey(location_id, is_primary, locations!inner(is_active))
+        `)
+        .order("id", { ascending: true })
+        .range(from, to)),
+      readAllSupabaseRows((from, to) => result.supabase
         .from("financial_transactions")
         .select("profile_id")
         .eq("status", "PENDING")
-        .in("type", ["DEBT", "WITHDRAWAL", "ADJUSTMENT"]),
-      result.supabase
+        .in("type", ["DEBT", "WITHDRAWAL", "ADJUSTMENT"])
+        .order("id", { ascending: true })
+        .range(from, to)),
+      readAllSupabaseRows((from, to) => result.supabase
         .from("payroll_slips")
         .select("profile_id")
-        .eq("status", "PENDING"),
-      result.supabase
-        .from("profiles")
-        .select("id, name, role, can_access_super_admin_features")
-        .eq("is_active", true),
+        .eq("status", "PENDING")
+        .order("id", { ascending: true })
+        .range(from, to)),
       result.supabase.rpc("get_time_payroll_payment_locations"),
       result.supabase.rpc("get_time_payroll_settings"),
-      result.supabase
+      readAllSupabaseRows((from, to) => result.supabase
         .from("time_payroll_active_periods")
         .select("id, profile_id, start_on, end_on, scheduled_action, scheduled_effective_on, scheduled_activation_on")
-        .order("start_on", { ascending: false }),
+        .order("start_on", { ascending: false })
+        .order("id", { ascending: false })
+        .range(from, to)),
       result.supabase.rpc("get_time_payroll_debt_totals"),
     ]);
 
-    if (usersResult.error) throw usersResult.error;
-    if (pendingTransactionsResult.error) throw pendingTransactionsResult.error;
-    if (pendingSlipsResult.error) throw pendingSlipsResult.error;
-    if (managersResult.error) throw managersResult.error;
     if (paymentLocationsResult.error) throw paymentLocationsResult.error;
     if (settingsResult.error) throw settingsResult.error;
-    if (activePeriodsResult.error) throw activePeriodsResult.error;
     if (debtTotalsResult.error) throw debtTotalsResult.error;
 
-    const users = (usersResult.data || []).filter((user) => {
+    const users = userRows.filter((user) => {
       if (!user.is_active) return false;
       if (result.auth.canAccessSystemManager) return true;
       const primaryLocationId = activePrimaryLocationId(user.user_locations);
@@ -232,7 +232,7 @@ export async function GET(request: NextRequest) {
     );
 
     const periodsByUser = new Map<string, PayrollPeriodRow[]>();
-    for (const period of activePeriodsResult.data || []) {
+    for (const period of activePeriods) {
       const periods = periodsByUser.get(period.profile_id) || [];
       periods.push(period as PayrollPeriodRow);
       periodsByUser.set(period.profile_id, periods);
@@ -258,20 +258,19 @@ export async function GET(request: NextRequest) {
           period_state: periodState,
         };
       }),
-      pendingTransactions: (pendingTransactionsResult.data || []).filter((item) => allowedUserIds.has(item.profile_id)),
-      pendingSlips: (pendingSlipsResult.data || []).filter((item) => allowedUserIds.has(item.profile_id)),
-      admins: result.auth.canAccessSystemManager ? (managersResult.data || [])
-        .filter((profile) => profile.role === "super_admin" || profile.can_access_super_admin_features === true)
+      pendingTransactions: pendingTransactions.filter((item) => allowedUserIds.has(item.profile_id)),
+      pendingSlips: pendingSlips.filter((item) => allowedUserIds.has(item.profile_id)),
+      admins: result.auth.canAccessSystemManager ? userRows
+        .filter((profile) => profile.role === "admin" || profile.role === "super_admin")
         .map(({ id, name }) => ({ id, name })) : [],
       paymentLocations: paymentLocationsResult.data || [],
     });
   } catch (error) {
-    const message = error instanceof Error
-      ? error.message
-      : typeof error === "object" && error && "message" in error
-        ? String(error.message)
-        : "Unknown error";
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error("Failed to load admin time/payroll data:", error);
+    return NextResponse.json(
+      { error: "โหลดข้อมูลจัดการเงินเดือนไม่สำเร็จ" },
+      { status: 500 },
+    );
   }
 }
 
@@ -282,16 +281,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
   }
 
-  let body: { action?: string; payload?: Record<string, any> };
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "ข้อมูลคำขอไม่ถูกต้อง" }, { status: 400 });
-  }
-  if (body === null || typeof body !== "object" || Array.isArray(body)) {
-    return NextResponse.json({ error: "ข้อมูลคำขอไม่ถูกต้อง" }, { status: 400 });
-  }
-  const payload = body?.payload || {};
+  const body = await readTimeTrackingActionRequest(request);
+  if (!body) return NextResponse.json({ error: "ข้อมูลคำขอไม่ถูกต้อง" }, { status: 400 });
+  const payload = body.payload;
   const supabase = result.supabase;
 
   try {
@@ -299,15 +291,16 @@ export async function POST(request: NextRequest) {
       if (!result.auth.canAccessSystemManager) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
       }
-      const { admin_user_id, target_user_id, action_filter } = payload;
+      if (payload.admin_user_id != null && !isUuid(payload.admin_user_id)) {
+        return NextResponse.json({ error: "ตัวกรองประวัติไม่ถูกต้อง" }, { status: 400 });
+      }
+      const { admin_user_id } = payload;
       let query = supabase
         .from("time_tracking_audit_logs")
         .select("*")
         .order("created_at", { ascending: false })
         .limit(100);
       if (admin_user_id) query = query.eq("admin_id", admin_user_id);
-      if (target_user_id) query = query.eq("record_id", target_user_id);
-      if (action_filter) query = query.eq("action", action_filter);
       const { data, error } = await query;
       if (error) throw error;
       return NextResponse.json({ logs: data || [] });
@@ -315,7 +308,8 @@ export async function POST(request: NextRequest) {
 
     if (body.action === "CREATE_DEBT" || body.action === "ADMIN_REQUEST_WITHDRAWAL") {
       const { user_id, amount, effective_date, description } = payload;
-      if (!isUuid(user_id) || typeof amount !== "number" || typeof effective_date !== "string"
+      if (!isUuid(user_id) || typeof amount !== "number" || !Number.isFinite(amount) || !isIsoDate(effective_date)
+        || (description != null && typeof description !== "string")
         || (payload.expense_location_id != null && !isUuid(payload.expense_location_id))
         || (payload.admin_comment != null && typeof payload.admin_comment !== "string")) {
         return NextResponse.json({ error: "ข้อมูลรายการไม่ถูกต้อง" }, { status: 400 });
@@ -398,6 +392,7 @@ export async function POST(request: NextRequest) {
         !isUuid(sourceId)
         || !["APPROVED", "REJECTED"].includes(status)
         || (expense_location_id !== null && expense_location_id !== undefined && !isUuid(expense_location_id))
+        || (admin_comment != null && typeof admin_comment !== "string")
       ) {
         return NextResponse.json({ error: "ข้อมูลการอนุมัติไม่ถูกต้อง" }, { status: 400 });
       }
@@ -418,6 +413,7 @@ export async function POST(request: NextRequest) {
         !["transaction", "payroll_slip"].includes(source_type)
         || !isUuid(source_id)
         || (expense_location_id !== null && !isUuid(expense_location_id))
+        || (admin_comment != null && typeof admin_comment !== "string")
       ) {
         return NextResponse.json({ error: "ข้อมูลการเปลี่ยนสาขาไม่ถูกต้อง" }, { status: 400 });
       }
@@ -558,7 +554,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (body.action === "PREVIEW_PAYROLL_SLIP") {
-      if (!isUuid(payload.user_id) || typeof payload.month !== "string") {
+      if (!isUuid(payload.user_id) || typeof payload.month !== "string" || !ISO_MONTH_PATTERN.test(payload.month)) {
         return NextResponse.json({ error: "ข้อมูลสลิปไม่ถูกต้อง" }, { status: 400 });
       }
       const { data, error } = await supabase.rpc("preview_time_tracking_payroll_slip", {
@@ -571,7 +567,7 @@ export async function POST(request: NextRequest) {
 
     if (body.action === "CREATE_PAYROLL_SLIP") {
       const { user_id, month } = payload;
-      if (!isUuid(user_id) || typeof month !== "string"
+      if (!isUuid(user_id) || typeof month !== "string" || !ISO_MONTH_PATTERN.test(month)
         || (payload.expense_location_id != null && !isUuid(payload.expense_location_id))
         || (payload.admin_comment != null && typeof payload.admin_comment !== "string")
         || (payload.expected_net_pay != null && (typeof payload.expected_net_pay !== "number" || !Number.isFinite(payload.expected_net_pay)))) {
@@ -594,18 +590,22 @@ export async function POST(request: NextRequest) {
       if (!isUuid(user_id)) {
         return NextResponse.json({ error: "รหัสพนักงานไม่ถูกต้อง" }, { status: 400 });
       }
-      const { data, error } = await supabase
+      const slips = await readAllSupabaseRows((from, to) => supabase
         .from("payroll_slips")
         .select("id, profile_id, month, gross_pay, total_deductions, net_pay, status, created_at, approved_at, cancelled_at, expense_location_id, expense_location_name, admin_comment, report_lock_no, approver:profiles!payroll_slips_approved_by_fkey(name)")
         .eq("profile_id", user_id)
-        .order("month", { ascending: false });
-      if (error) throw error;
-      return NextResponse.json({ slips: data || [] });
+        .order("month", { ascending: false })
+        .order("id", { ascending: false })
+        .range(from, to));
+      return NextResponse.json({ slips });
     }
 
     return NextResponse.json({ error: "Invalid action" }, { status: 400 });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown error";
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error("Failed to mutate admin time/payroll data:", error);
+    return NextResponse.json(
+      { error: "ดำเนินการข้อมูลเวลาและเงินเดือนไม่สำเร็จ" },
+      { status: 500 },
+    );
   }
 }

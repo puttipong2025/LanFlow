@@ -6,7 +6,7 @@ const migrationPath = "supabase/migrations/20260915010000_time_payroll_wage_reca
 test("wage recalculation keeps one planner, ordered locks, stale protection, and legacy RPC compatibility", async () => {
   const [sql, moduleSource, dialog] = await Promise.all([
     readFile(migrationPath, "utf8"),
-    readFile("src/components/TimeTrackingModule.tsx", "utf8"),
+    readFile("src/components/time-tracking/manager/ManagerWorkspace.tsx", "utf8"),
     readFile("src/components/time-tracking/WageRecalculationDialog.tsx", "utf8"),
   ]);
 

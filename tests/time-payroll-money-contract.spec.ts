@@ -41,7 +41,7 @@ test.describe("time/payroll money contract", () => {
   });
 
   test("keeps the raw-string API and versioned database seams explicit", () => {
-    const moduleSource = readSource("src/components/TimeTrackingModule.tsx");
+    const moduleSource = readSource("src/components/time-tracking/manager/ManagerWorkspace.tsx");
     const routeSource = readSource("src/app/api/lanflow/time-tracking/admin/route.ts");
     const userRouteSource = readSource("src/app/api/lanflow/time-tracking/user/route.ts");
     const incomeExpenseSource = readSource("src/components/income-expense/IncomeExpenseModule.tsx");

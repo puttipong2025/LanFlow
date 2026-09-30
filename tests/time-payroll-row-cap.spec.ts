@@ -1,5 +1,5 @@
 import { expect, test, type Browser } from "@playwright/test";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:55421";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -7,6 +7,17 @@ const userId = "00000000-0000-4000-8000-000000000003";
 
 async function userContext(browser: Browser) {
   return browser.newContext({ storageState: "playwright/.auth/user.json" });
+}
+
+async function deleteRowsByIds(
+  db: SupabaseClient<any, "public", "public", any, any>,
+  table: "financial_transactions" | "payroll_slips" | "profiles",
+  ids: string[],
+) {
+  for (let from = 0; from < ids.length; from += 100) {
+    const { error } = await db.from(table).delete().in("id", ids.slice(from, from + 100));
+    if (error) throw new Error(`Failed to clean ${table} fixture: ${error.message}`);
+  }
 }
 
 test("user payroll totals and histories remain complete beyond 1,000 rows", async ({ browser }) => {
@@ -54,11 +65,8 @@ test("user payroll totals and histories remain complete beyond 1,000 rows", asyn
     expect(debtIds.every((id) => body.debts.some((row) => row.id === id))).toBe(true);
     expect(deductionIds.every((id) => body.deductions.some((row) => row.id === id))).toBe(true);
   } finally {
-    for (const ids of [deductionIds, debtIds]) {
-      for (let from = 0; from < ids.length; from += 250) {
-        await db.from("financial_transactions").delete().in("id", ids.slice(from, from + 250));
-      }
-    }
+    await deleteRowsByIds(db, "financial_transactions", deductionIds);
+    await deleteRowsByIds(db, "financial_transactions", debtIds);
     await user.close();
   }
 });
@@ -107,6 +115,198 @@ test("manager summary and historical withdrawal document use all deductions", as
   } finally {
     await db.from("financial_transactions").delete().eq("profile_id", profileId);
     await db.from("time_tracking_audit_logs").delete().eq("record_id", profileId);
+    await db.from("profiles").delete().eq("id", profileId);
+    await manager.close();
+  }
+});
+
+test("manager summary remains complete beyond 1,000 rows in each list", async ({ browser }) => {
+  test.setTimeout(60_000);
+  const manager = await browser.newContext({ storageState: "playwright/.auth/super_admin.json" });
+  const db = createClient(supabaseUrl, serviceRoleKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const marker = Date.now().toString().slice(-4);
+  const profileIds = Array.from({ length: 1_001 }, () => crypto.randomUUID());
+  const transactionIds = Array.from({ length: 1_001 }, () => crypto.randomUUID());
+  const slipIds = Array.from({ length: 1_001 }, () => crypto.randomUUID());
+  const targetProfileId = profileIds[0];
+
+  try {
+    for (let from = 0; from < profileIds.length; from += 250) {
+      const profileRows = profileIds.slice(from, from + 250).map((id, offset) => ({
+        id,
+        name: `Manager row-cap fixture ${from + offset}`,
+        phone: `07${marker}${String(from + offset).padStart(4, "0")}`,
+        role: "user",
+        is_active: true,
+        daily_wage: 1,
+      }));
+      expect((await db.from("profiles").insert(profileRows)).error).toBeNull();
+    }
+
+    for (let from = 0; from < transactionIds.length; from += 250) {
+      expect((await db.from("financial_transactions").insert(
+        transactionIds.slice(from, from + 250).map((id) => ({
+          id,
+          profile_id: targetProfileId,
+          type: "DEBT",
+          amount: 1,
+          remaining_amount: 1,
+          effective_date: "2026-09-01",
+          status: "PENDING",
+        })),
+      )).error).toBeNull();
+      expect((await db.from("payroll_slips").insert(
+        slipIds.slice(from, from + 250).map((id) => ({
+          id,
+          profile_id: targetProfileId,
+          month: "2026-09",
+          created_by: targetProfileId,
+          status: "PENDING",
+        })),
+      )).error).toBeNull();
+    }
+
+    const response = await manager.request.get("/api/lanflow/time-tracking/admin");
+    expect(response.ok(), await response.text()).toBe(true);
+    const body = await response.json() as {
+      users: Array<{ id: string; period_state?: { hasPeriodHistory?: boolean } }>;
+      pendingTransactions: Array<{ profile_id: string }>;
+      pendingSlips: Array<{ profile_id: string }>;
+    };
+    const returnedIds = new Set(body.users.map((user) => user.id));
+
+    expect({
+      profiles: profileIds.filter((id) => returnedIds.has(id)).length,
+      pendingTransactions: body.pendingTransactions.filter((row) => row.profile_id === targetProfileId).length,
+      pendingSlips: body.pendingSlips.filter((row) => row.profile_id === targetProfileId).length,
+    }).toEqual({
+      profiles: profileIds.length,
+      pendingTransactions: transactionIds.length,
+      pendingSlips: slipIds.length,
+    });
+
+    const slipsResponse = await manager.request.post("/api/lanflow/time-tracking/admin", { data: {
+      action: "LIST_PAYROLL_SLIPS",
+      payload: { user_id: targetProfileId },
+    } });
+    expect(slipsResponse.ok(), await slipsResponse.text()).toBe(true);
+    const listedSlips = (await slipsResponse.json() as { slips: Array<{ id: string }> }).slips;
+    expect(listedSlips.filter((slip) => slipIds.includes(slip.id))).toHaveLength(slipIds.length);
+  } finally {
+    await deleteRowsByIds(db, "payroll_slips", slipIds);
+    await deleteRowsByIds(db, "financial_transactions", transactionIds);
+    await deleteRowsByIds(db, "profiles", profileIds);
+    await manager.close();
+  }
+});
+
+test("employee detail loads every withdrawal source referenced by adjustment history", async ({ browser }) => {
+  test.setTimeout(60_000);
+  const manager = await browser.newContext({ storageState: "playwright/.auth/super_admin.json" });
+  const db = createClient(supabaseUrl, serviceRoleKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const profileId = crypto.randomUUID();
+  const sourceIds = Array.from({ length: 1_051 }, () => crypto.randomUUID());
+  const adjustmentIds = Array.from({ length: 1_051 }, () => crypto.randomUUID());
+
+  try {
+    expect((await db.from("profiles").insert({
+      id: profileId,
+      name: "Adjustment source row-cap fixture",
+      phone: `06${Date.now().toString().slice(-8)}`,
+      role: "user",
+      is_active: true,
+      daily_wage: 1,
+    })).error).toBeNull();
+
+    for (let from = 0; from < sourceIds.length; from += 250) {
+      expect((await db.from("financial_transactions").insert(
+        sourceIds.slice(from, from + 250).map((id) => ({
+          id,
+          profile_id: profileId,
+          type: "WITHDRAWAL",
+          amount: 1,
+          remaining_amount: 1,
+          effective_date: "2026-08-01",
+          status: "APPROVED",
+          approved_at: "2026-08-01T00:00:00Z",
+        })),
+      )).error).toBeNull();
+      expect((await db.from("financial_transactions").insert(
+        adjustmentIds.slice(from, from + 250).map((id, offset) => ({
+          id,
+          profile_id: profileId,
+          type: "ADJUSTMENT",
+          amount: 2,
+          adjustment_base_amount: 1,
+          parent_debt_id: sourceIds[from + offset],
+          effective_date: "2026-08-01",
+          status: "PENDING",
+        })),
+      )).error).toBeNull();
+    }
+
+    const response = await manager.request.get(`/api/lanflow/time-tracking/user?userId=${profileId}&month=2026-08`);
+    expect(response.ok(), await response.text()).toBe(true);
+    const body = await response.json() as { transactions: Array<{ id: string }> };
+    const returnedIds = new Set(body.transactions.map((row) => row.id));
+    expect(sourceIds.filter((id) => returnedIds.has(id))).toHaveLength(sourceIds.length);
+  } finally {
+    await deleteRowsByIds(db, "financial_transactions", adjustmentIds);
+    await deleteRowsByIds(db, "financial_transactions", sourceIds);
+    await db.from("profiles").delete().eq("id", profileId);
+    await manager.close();
+  }
+});
+
+test("employee detail keeps actionable pending transactions beyond the recent-history window", async ({ browser }) => {
+  const manager = await browser.newContext({ storageState: "playwright/.auth/super_admin.json" });
+  const db = createClient(supabaseUrl, serviceRoleKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const profileId = crypto.randomUUID();
+  const pendingId = crypto.randomUUID();
+  const approvedIds = Array.from({ length: 50 }, () => crypto.randomUUID());
+
+  try {
+    expect((await db.from("profiles").insert({
+      id: profileId,
+      name: "Pending history-window fixture",
+      phone: `05${Date.now().toString().slice(-8)}`,
+      role: "user",
+      is_active: true,
+      daily_wage: 1,
+    })).error).toBeNull();
+    expect((await db.from("financial_transactions").insert([
+      ...approvedIds.map((id) => ({
+        id,
+        profile_id: profileId,
+        type: "DEBT",
+        amount: 1,
+        remaining_amount: 1,
+        effective_date: "2026-09-30",
+        status: "APPROVED",
+      })),
+      {
+        id: pendingId,
+        profile_id: profileId,
+        type: "DEBT",
+        amount: 1,
+        remaining_amount: 1,
+        effective_date: "2026-01-01",
+        status: "PENDING",
+      },
+    ])).error).toBeNull();
+
+    const response = await manager.request.get(`/api/lanflow/time-tracking/user?userId=${profileId}&month=2026-09`);
+    expect(response.ok(), await response.text()).toBe(true);
+    const body = await response.json() as { transactions: Array<{ id: string }> };
+    expect(body.transactions.some((transaction) => transaction.id === pendingId)).toBe(true);
+  } finally {
+    await deleteRowsByIds(db, "financial_transactions", [...approvedIds, pendingId]);
     await db.from("profiles").delete().eq("id", profileId);
     await manager.close();
   }

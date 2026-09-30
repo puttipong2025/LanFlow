@@ -15,6 +15,8 @@ test("withdrawal documents use one attendance snapshot for the total and calenda
   );
 
   expect(routeSource).not.toContain('rpc("calculate_paid_work_days"');
+  expect(routeSource).not.toContain('.from("time_segments")');
+  expect(routeSource).toContain('attendanceResponse.data?.mode !== "EXCEPTIONS"');
   expect(routeSource).toContain("totalPaidDays: Number(attendanceResponse.data?.summary?.paidDays) || 0");
 });
 

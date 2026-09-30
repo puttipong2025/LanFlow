@@ -33,6 +33,120 @@ test("payroll mutation routes reject null JSON bodies", async ({ browser }) => {
   }
 });
 
+test("time/payroll admin rejects malformed payloads before querying PostgreSQL", async ({ browser }) => {
+  const admin = await context(browser, "super_admin");
+  try {
+    const [arrayPayload, malformedAuditAdmin, malformedApprovalComment] = await Promise.all([
+      admin.request.post("/api/lanflow/time-tracking/admin", {
+        data: { action: "GET_AUDIT_LOGS", payload: [] },
+      }),
+      admin.request.post("/api/lanflow/time-tracking/admin", {
+        data: {
+          action: "GET_AUDIT_LOGS",
+          payload: { admin_user_id: { malformed: true } },
+        },
+      }),
+      admin.request.post("/api/lanflow/time-tracking/admin", {
+        data: {
+          action: "APPROVE_TRANSACTION",
+          payload: {
+            transaction_id: crypto.randomUUID(),
+            status: "REJECTED",
+            admin_comment: { malformed: true },
+          },
+        },
+      }),
+    ]);
+
+    expect([
+      arrayPayload.status(),
+      malformedAuditAdmin.status(),
+      malformedApprovalComment.status(),
+    ]).toEqual([400, 400, 400]);
+    expect([
+      await arrayPayload.json(),
+      await malformedAuditAdmin.json(),
+      await malformedApprovalComment.json(),
+    ]).toEqual([
+      { error: "ข้อมูลคำขอไม่ถูกต้อง" },
+      { error: "ตัวกรองประวัติไม่ถูกต้อง" },
+      { error: "ข้อมูลการอนุมัติไม่ถูกต้อง" },
+    ]);
+  } finally {
+    await admin.close();
+  }
+});
+
+test("time/payroll routes reject invalid dates, months, and non-finite JSON numbers at the HTTP boundary", async ({ browser }) => {
+  const admin = await context(browser, "super_admin");
+  const user = await context(browser, "user");
+  try {
+    const [
+      nonFiniteAdminAmount,
+      invalidEffectiveDate,
+      zeroYearEffectiveDate,
+      invalidPreviewMonth,
+      invalidCreateMonth,
+      zeroYearPreviewMonth,
+      nonFiniteUserAmount,
+      zeroYearUserMonth,
+    ] = await Promise.all([
+      admin.request.post("/api/lanflow/time-tracking/admin", {
+        headers: { "Content-Type": "application/json" },
+        data: `{"action":"CREATE_DEBT","payload":{"user_id":"${crypto.randomUUID()}","amount":1e400,"effective_date":"2026-09-30","description":"test"}}`,
+      }),
+      admin.request.post("/api/lanflow/time-tracking/admin", {
+        data: {
+          action: "CREATE_DEBT",
+          payload: { user_id: crypto.randomUUID(), amount: 1, effective_date: "2026-02-30", description: "test" },
+        },
+      }),
+      admin.request.post("/api/lanflow/time-tracking/admin", {
+        data: {
+          action: "CREATE_DEBT",
+          payload: { user_id: crypto.randomUUID(), amount: 1, effective_date: "0000-01-01", description: "test" },
+        },
+      }),
+      admin.request.post("/api/lanflow/time-tracking/admin", {
+        data: { action: "PREVIEW_PAYROLL_SLIP", payload: { user_id: crypto.randomUUID(), month: "2026-13" } },
+      }),
+      admin.request.post("/api/lanflow/time-tracking/admin", {
+        data: { action: "CREATE_PAYROLL_SLIP", payload: { user_id: crypto.randomUUID(), month: "2026-00" } },
+      }),
+      admin.request.post("/api/lanflow/time-tracking/admin", {
+        data: { action: "PREVIEW_PAYROLL_SLIP", payload: { user_id: crypto.randomUUID(), month: "0000-01" } },
+      }),
+      user.request.post("/api/lanflow/time-tracking/user", {
+        headers: { "Content-Type": "application/json" },
+        data: '{"action":"REQUEST_WITHDRAWAL","payload":{"amount":1e400}}',
+      }),
+      user.request.get("/api/lanflow/time-tracking/user?month=0000-01"),
+    ]);
+
+    expect([
+      await nonFiniteAdminAmount.json(),
+      await invalidEffectiveDate.json(),
+      await zeroYearEffectiveDate.json(),
+      await invalidPreviewMonth.json(),
+      await invalidCreateMonth.json(),
+      await zeroYearPreviewMonth.json(),
+      await nonFiniteUserAmount.json(),
+      await zeroYearUserMonth.json(),
+    ]).toEqual([
+      { error: "ข้อมูลรายการไม่ถูกต้อง" },
+      { error: "ข้อมูลรายการไม่ถูกต้อง" },
+      { error: "ข้อมูลรายการไม่ถูกต้อง" },
+      { error: "ข้อมูลสลิปไม่ถูกต้อง" },
+      { error: "ข้อมูลสลิปไม่ถูกต้อง" },
+      { error: "ข้อมูลสลิปไม่ถูกต้อง" },
+      { error: "ข้อมูลรายการไม่ถูกต้อง" },
+      { error: "เดือนไม่ถูกต้อง" },
+    ]);
+  } finally {
+    await Promise.all([admin.close(), user.close()]);
+  }
+});
+
 test("history routes reject incomplete and malformed keyset cursors", async ({ browser }) => {
   const manager = await context(browser, "super_admin");
   const locationId = await primaryLocationId(manager);

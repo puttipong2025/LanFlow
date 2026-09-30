@@ -84,7 +84,7 @@ test.describe("Time Tracking branch expense @time-tracking", () => {
           effective_date: bangkokDate(),
         },
       } });
-      expect(created.ok()).toBeTruthy();
+      expect(created.ok(), await created.text()).toBeTruthy();
       const sourceId = ((await created.json()).result as { id: string }).id;
 
       const service = serviceClient();
@@ -175,7 +175,7 @@ test.describe("Time Tracking branch expense @time-tracking", () => {
           month,
         },
       } });
-      expect(created.ok()).toBeTruthy();
+      expect(created.ok(), await created.text()).toBeTruthy();
       const slip = (await created.json()).slip as { id: string; net_pay: number };
       expect(Number(slip.net_pay)).toBe(0);
 
@@ -288,7 +288,7 @@ test.describe("Time Tracking branch expense @time-tracking", () => {
           effective_date: bangkokDate(),
         },
       } });
-      expect(created.ok()).toBeTruthy();
+      expect(created.ok(), await created.text()).toBeTruthy();
       const sourceId = ((await created.json()).result as { id: string }).id;
 
       const service = serviceClient();

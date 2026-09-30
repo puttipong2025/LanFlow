@@ -14,7 +14,7 @@ const tables = [
   "src/components/rubber-exports/RubberExportTable.tsx",
   "src/components/rubber-bills/WeighingQueueModal.tsx",
   "src/components/acid-stock/AcidStockModule.tsx",
-  "src/components/TimeTrackingModule.tsx",
+  "src/components/time-tracking/manager/ManagerEmployeeDirectory.tsx",
 ];
 
 test("in-scope tables use the Thai action header and no legacy action label", () => {

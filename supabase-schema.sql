@@ -4046,7 +4046,6 @@ begin
       and new.status = 'APPROVED'
       and new.type in ('WITHDRAWAL', 'ADJUSTMENT') then
       if not v_rpc_write
-        or new.expense_location_id is null
         or new.approved_at is null
         or new.cancelled_at is not null then
         raise exception 'Time tracking financial approval must use the approval RPC';
@@ -4068,7 +4067,6 @@ begin
     if old.status <> 'APPROVED' and new.status = 'APPROVED' then
       if not v_rpc_write
         or new.approved_at is null
-        or (new.net_pay > 0 and new.expense_location_id is null)
         or new.cancelled_at is not null then
         raise exception 'Payroll approval must use the time tracking approval RPC';
       end if;
