@@ -89,8 +89,11 @@ create trigger prepare_payroll_slip_outstanding_snapshot
 
 -- Historical slips can already belong to an active locked report. This backfill
 -- only adds immutable display metadata, so suspend the report guard for this
--- transaction-scoped update and restore it immediately afterwards.
+-- transaction-scoped update and restore it immediately afterwards. The deferred
+-- dashboard trigger is also unnecessary for a metadata-only change and would
+-- leave pending trigger events that prevent re-enabling the report guard.
 alter table public.payroll_slips disable trigger report_lock_payroll_slips;
+alter table public.payroll_slips disable trigger dashboard_money_event_payroll;
 
 update public.payroll_slips slip
 set slip_data = coalesce(slip.slip_data, '{}'::jsonb) || jsonb_build_object(
@@ -105,6 +108,7 @@ set slip_data = coalesce(slip.slip_data, '{}'::jsonb) || jsonb_build_object(
 where slip.status in ('PENDING', 'APPROVED')
   and slip.cancelled_at is null;
 
+alter table public.payroll_slips enable trigger dashboard_money_event_payroll;
 alter table public.payroll_slips enable trigger report_lock_payroll_slips;
 
 create or replace function private.is_time_payroll_month_closed(
