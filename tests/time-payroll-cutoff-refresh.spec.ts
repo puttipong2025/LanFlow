@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { focusManager, QueryClient, QueryObserver } from "@tanstack/react-query";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -50,4 +51,70 @@ test("shortens the global badge poll to the exact payroll boundary", () => {
   )).toBe(60_000);
   expect(actionableBadgeSource).toContain('supabase.rpc("get_time_payroll_settings")');
   expect(actionableBadgeSource).toContain("millisecondsUntilNextActionableBadgeRefresh");
+});
+
+test("refreshes a fresh actionable-badge query whenever the page regains focus", async () => {
+  const configuredFocusMode = actionableBadgeSource.match(
+    /refetchOnWindowFocus:\s*("always"|true|false)/,
+  )?.[1];
+  expect(configuredFocusMode).toBeDefined();
+  const refetchOnWindowFocus = configuredFocusMode === '"always"'
+    ? "always" as const
+    : configuredFocusMode === "true";
+  let fetchCount = 0;
+  const queryKey = ["actionableBadgeFocusContract"] as const;
+  const queryFn = async () => ++fetchCount;
+  const client = new QueryClient();
+  client.mount();
+
+  try {
+    await client.fetchQuery({ queryKey, queryFn, staleTime: 60_000 });
+    const observer = new QueryObserver(client, {
+      queryKey,
+      queryFn,
+      staleTime: 60_000,
+      refetchOnWindowFocus,
+    });
+    const unsubscribe = observer.subscribe(() => {});
+    try {
+      expect(fetchCount).toBe(1);
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+      await expect.poll(() => fetchCount).toBe(2);
+    } finally {
+      unsubscribe();
+    }
+  } finally {
+    focusManager.setFocused(undefined);
+    client.unmount();
+    client.clear();
+  }
+});
+
+test("does not expose cached actionable badges after a refresh error", async () => {
+  expect(actionableBadgeSource).toMatch(
+    /counts:\s*query\.isError\s*\?\s*\{\}\s*:\s*query\.data\?\.counts\s*\?\?\s*\{\}/,
+  );
+
+  let shouldFail = false;
+  const queryKey = ["actionableBadgeErrorContract"] as const;
+  const queryFn = async () => {
+    if (shouldFail) throw new Error("badge RPC unavailable");
+    return { counts: { branch: { "time-tracking": 1 } } };
+  };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const observer = new QueryObserver(client, { queryKey, queryFn, staleTime: 60_000 });
+  const unsubscribe = observer.subscribe(() => {});
+
+  try {
+    await expect.poll(() => observer.getCurrentResult().isSuccess).toBe(true);
+    shouldFail = true;
+    await observer.refetch({ throwOnError: false });
+    const failedResult = observer.getCurrentResult();
+    expect(failedResult.isError).toBe(true);
+    expect(failedResult.data).toEqual({ counts: { branch: { "time-tracking": 1 } } });
+  } finally {
+    unsubscribe();
+    client.clear();
+  }
 });

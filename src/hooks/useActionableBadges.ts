@@ -45,17 +45,16 @@ export function useActionableBadges(enabled: boolean) {
       };
     },
     staleTime: 30_000,
-    placeholderData: (previous) => previous,
     refetchInterval: (query) => millisecondsUntilNextActionableBadgeRefresh(
       new Date(),
       query.state.data?.payrollSettings?.workdayEndTime,
       query.state.data?.payrollSettings?.pendingEffectiveDate,
     ),
-    refetchOnWindowFocus: true,
+    refetchOnWindowFocus: "always",
+    refetchOnReconnect: "always",
   });
 
   return {
-    counts: query.data?.counts ?? {},
-    isLoading: query.isLoading,
+    counts: query.isError ? {} : query.data?.counts ?? {},
   };
 }

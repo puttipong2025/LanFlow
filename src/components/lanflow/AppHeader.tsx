@@ -218,7 +218,10 @@ export function AppHeader({
                 </span>
               )}
               {selectedBadgeTotal > 0 && (
-                <span className="min-w-6 rounded-full bg-amber px-1.5 py-0.5 text-center text-[11px] font-extrabold leading-none text-white">
+                <span
+                  aria-hidden="true"
+                  className="min-w-6 rounded-full bg-amber px-1.5 py-0.5 text-center text-[11px] font-extrabold leading-none text-white tabular-nums"
+                >
                   {selectedBadgeTotal > 99 ? "99+" : selectedBadgeTotal}
                 </span>
               )}
@@ -292,11 +295,18 @@ export function AppHeader({
                         <span className="flex min-w-0 items-start gap-2">
                           <span className="min-w-0 flex-1 truncate font-semibold">{location.name}</span>
                           {badgeTotal > 0 && (
-                            <span data-branch-badge className={`min-w-6 shrink-0 rounded-full px-1.5 py-0.5 text-center text-[11px] font-extrabold leading-none ${
-                              active ? "bg-white text-leaf" : "bg-amber text-white"
-                            }`}>
-                              {badgeTotal > 99 ? "99+" : badgeTotal}
-                            </span>
+                            <>
+                              <span className="sr-only">มีงาน {badgeTotal} รายการ</span>
+                              <span
+                                aria-hidden="true"
+                                data-branch-badge
+                                className={`min-w-6 shrink-0 rounded-full px-1.5 py-0.5 text-center text-[11px] font-extrabold leading-none tabular-nums ${
+                                  active ? "bg-white text-leaf" : "bg-amber text-white"
+                                }`}
+                              >
+                                {badgeTotal > 99 ? "99+" : badgeTotal}
+                              </span>
+                            </>
                           )}
                         </span>
 

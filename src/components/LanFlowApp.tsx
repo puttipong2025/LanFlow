@@ -415,7 +415,7 @@ function BusinessLanFlowApp() {
 
   const canAccessMoneyTransfer = canUseMoneyTransfer(profile);
   const canAccessReports = canUseReports(profile);
-  const { counts: actionableBadgeCounts } = useActionableBadges(isLoaded && online);
+  const { counts: actionableBadgeCounts } = useActionableBadges(isLoaded);
 
   useEffect(() => {
     if (activeTab === "money-transfer" && !canAccessMoneyTransfer) {
@@ -776,7 +776,7 @@ function BusinessLanFlowApp() {
           />
         )}
         {activeTab === "time-tracking" && (
-          <TimeTrackingModule profile={profile} online={online} locations={locations} />
+          <TimeTrackingModule profile={profile} online={online} locations={locations} selectedLocationId={selectedLocationId} />
         )}
         {activeTab === "reports" && canAccessReports && (
           <ReportsModule

@@ -76,7 +76,8 @@ export function NavigationTabs({
             {isOfflineBlocked && <WifiOff size={13} />}
             {badgeCount > 0 && (
               <span
-                className="ml-0.5 min-w-5 rounded-full bg-amber px-1.5 py-0.5 text-center text-[10px] font-extrabold leading-none text-white"
+                aria-hidden="true"
+                className="ml-0.5 min-w-5 rounded-full bg-amber px-1.5 py-0.5 text-center text-[10px] font-extrabold leading-none text-white tabular-nums"
                 title={`${badgeCount} งานที่จัดการได้`}
               >
                 {badgeCount > 99 ? "99+" : badgeCount}

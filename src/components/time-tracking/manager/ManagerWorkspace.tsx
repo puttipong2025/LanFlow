@@ -17,7 +17,7 @@ import { ManagerEmployeeDirectory } from "./ManagerEmployeeDirectory";
 import { ManagerHeader } from "./ManagerHeader";
 import { TIME_TRACKING_OFFLINE_MESSAGE } from "../policy";
 
-export function ManagerWorkspace({ profile, online, locations }: { profile: Profile, online: boolean, locations: Location[] }) {
+export function ManagerWorkspace({ profile, online, locations, selectedLocationId }: { profile: Profile; online: boolean; locations: Location[]; selectedLocationId?: string }) {
   const queryClient = useQueryClient();
   const { requestInput, inputDialog } = useInputDialog();
   const [data, setData] = useState<any>(null);
@@ -49,7 +49,7 @@ export function ManagerWorkspace({ profile, online, locations }: { profile: Prof
     refreshOwner?: () => Promise<void>;
   } | null>(null);
   const [employeeFilter, setEmployeeFilter] = useState<"pending" | "all" | null>(null);
-  const [employeeBranchFilter, setEmployeeBranchFilter] = useState("all");
+  const [employeeBranchFilter, setEmployeeBranchFilter] = useState(selectedLocationId ?? "all");
   const [employeeSearch, setEmployeeSearch] = useState("");
   const [employeePageSize, setEmployeePageSize] = useState(10);
   const [employeePage, setEmployeePage] = useState(1);
@@ -101,6 +101,7 @@ export function ManagerWorkspace({ profile, online, locations }: { profile: Prof
       adminLoadRequestIdRef.current += 1;
     };
   }, [load]);
+  useEffect(() => { if (selectedLocationId) { setEmployeeBranchFilter(selectedLocationId); setEmployeePage(1); } }, [selectedLocationId]);
   usePayrollCutoffRefresh(
     refreshPayrollBoundary,
     data?.settings?.workdayEndTime,
@@ -390,10 +391,10 @@ export function ManagerWorkspace({ profile, online, locations }: { profile: Prof
   const pendingUserIds = new Set(users.filter((user: any) => hasEmployeeWork(
     user, data?.pendingTransactions, data?.pendingSlips,
   )).map((user: any) => user.id));
-  const activeEmployeeFilter = resolveEmployeeFilter(employeeFilter, pendingUserIds.size > 0);
   const branchUsers = filterTimeTrackingEmployees(users, pendingUserIds, "", "all", employeeBranchFilter);
   const branchUserIds = new Set(branchUsers.map((user: any) => user.id as string));
   const branchPendingCount = countWorkItemsForUsers(data?.pendingTransactions, data?.pendingSlips, users, branchUserIds);
+  const activeEmployeeFilter = resolveEmployeeFilter(employeeFilter, branchPendingCount > 0);
   const filteredUsers = filterTimeTrackingEmployees(
     users,
     pendingUserIds,
@@ -403,7 +404,8 @@ export function ManagerWorkspace({ profile, online, locations }: { profile: Prof
   );
   const branchLocationIds = new Set(users.map((user: any) => user.primary_location_id).filter(Boolean));
   const branchOptions = (data?.paymentLocations || locations)
-    .filter((location: Location) => location.active && branchLocationIds.has(location.id));
+    .filter((location: Location) => location.active
+      && (branchLocationIds.has(location.id) || location.id === selectedLocationId));
   const hasUnassignedUsers = users.some((user: any) => !user.primary_location_id);
   const totalEmployeePages = Math.max(1, Math.ceil(filteredUsers.length / employeePageSize));
   const currentEmployeePage = Math.min(employeePage, totalEmployeePages);

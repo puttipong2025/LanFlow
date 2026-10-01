@@ -9,10 +9,23 @@ interface TimeTrackingModuleProps {
   profile: Profile;
   online: boolean;
   locations: Location[];
+  selectedLocationId?: string;
 }
 
-export function TimeTrackingModule({ profile, online, locations }: TimeTrackingModuleProps) {
+export function TimeTrackingModule({
+  profile,
+  online,
+  locations,
+  selectedLocationId,
+}: TimeTrackingModuleProps) {
   return canManageTimePayroll(profile)
-    ? <ManagerWorkspace profile={profile} online={online} locations={locations} />
+    ? (
+      <ManagerWorkspace
+        profile={profile}
+        online={online}
+        locations={locations}
+        selectedLocationId={selectedLocationId}
+      />
+    )
     : <EmployeeWorkspace profile={profile} online={online} />;
 }

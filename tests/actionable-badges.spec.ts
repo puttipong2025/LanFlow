@@ -219,6 +219,7 @@ test("time/payroll pending count reaches the module nav and primary-branch selec
   });
   const userId = "00000000-0000-4000-8000-000000000003";
   const transactionId = crypto.randomUUID();
+  const otherLocationId = crypto.randomUUID();
   const { data: assignment, error: assignmentError } = await service
     .from("user_locations")
     .select("location_id, locations!inner(is_active)")
@@ -248,6 +249,22 @@ test("time/payroll pending count reaches the module nav and primary-branch selec
     storageState: "playwright/.auth/super_admin.json",
   });
   try {
+    const meResponse = await context.request.get("/api/auth/me");
+    expect(meResponse.ok()).toBeTruthy();
+    const me = (await meResponse.json() as {
+      profile: { id: string };
+    }).profile;
+    expect((await service.from("locations").insert({
+      id: otherLocationId,
+      name: `สาขา sync ${otherLocationId.slice(0, 6)}`,
+      code: `SY${otherLocationId.slice(0, 6)}`,
+      is_active: true,
+    })).error).toBeNull();
+    expect((await service.from("user_locations").insert({
+      user_id: me.id,
+      location_id: otherLocationId,
+    })).error).toBeNull();
+
     const page = await context.newPage();
     await page.goto("/");
     await selectAppLocation(page, assignment!.location_id);
@@ -262,14 +279,20 @@ test("time/payroll pending count reaches the module nav and primary-branch selec
 
     const branchButton = page.getByLabel(/^เลือกสาขา .*มีงาน [1-9]\d* รายการ/);
     await expect(branchButton).toBeVisible();
+    const branchLabel = await branchButton.getAttribute("aria-label");
+    const branchTotal = Number(branchLabel?.match(/มีงาน (\d+) รายการ/)?.[1] ?? 0);
+    expect(branchTotal).toBeGreaterThanOrEqual(tabCount);
     await branchButton.click();
     await expect(page.getByRole("listbox", { name: "สาขาที่เข้าถึงได้" }))
       .toBeVisible();
-    await expect(
-      page.locator(
-        `[role="option"][data-location-id="${assignment!.location_id}"] [data-branch-badge]`,
-      ),
-    ).toHaveText(/^[1-9]\d*$|^99\+$/);
+    const branchOption = page.locator(
+      `[role="option"][data-location-id="${assignment!.location_id}"]`,
+    );
+    await expect(branchOption).toHaveAccessibleName(
+      new RegExp(`มีงาน ${branchTotal} รายการ`),
+    );
+    await expect(branchOption.locator("[data-branch-badge]"))
+      .toHaveText(/^[1-9]\d*$|^99\+$/);
     await page.keyboard.press("Escape");
     await expect(page.getByRole("listbox", { name: "สาขาที่เข้าถึงได้" }))
       .toHaveCount(0);
@@ -278,14 +301,21 @@ test("time/payroll pending count reaches the module nav and primary-branch selec
 
     await page.keyboard.press("Escape");
     await timePayrollTab.click();
-    await page.getByLabel("กรองสาขา").selectOption(assignment!.location_id);
+    const employeeBranchFilter = page.getByLabel("กรองสาขา");
+    await expect(employeeBranchFilter).toHaveValue(assignment!.location_id);
     await expect(page.getByRole("button", {
       name: `งานค้าง ${tabCount} รายการ`,
       exact: true,
     })).toBeVisible({ timeout: 15_000 });
+    await employeeBranchFilter.selectOption("all");
+    await expect(employeeBranchFilter).toHaveValue("all");
+    await selectAppLocation(page, otherLocationId);
+    await expect(employeeBranchFilter).toHaveValue(otherLocationId);
   } finally {
     await context.close();
     await service.from("financial_transactions").delete().eq("id", transactionId);
+    await service.from("user_locations").delete().eq("location_id", otherLocationId);
+    await service.from("locations").delete().eq("id", otherLocationId);
   }
 });
 
@@ -329,6 +359,7 @@ test("approval buttons and modal counts follow the selected branch", async ({ br
   });
   const locationIds = [crypto.randomUUID(), crypto.randomUUID()];
   const incomeRequestIds = Array.from({ length: 101 }, () => crypto.randomUUID());
+  const reconnectIncomeRequestId = crypto.randomUUID();
   const rubberRequestIds = [
     crypto.randomUUID(),
     crypto.randomUUID(),
@@ -436,6 +467,18 @@ test("approval buttons and modal counts follow the selected branch", async ({ br
     await page.goto("/");
     await selectAppLocation(page, locationIds[0]);
 
+    await expect(page.getByRole("button", {
+      name: "บิลยาง มีงานที่จัดการได้ 1 รายการ",
+      exact: true,
+    })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole("button", {
+      name: "รับ-จ่าย มีงานที่จัดการได้ 1 รายการ",
+      exact: true,
+    })).toBeVisible();
+    await expect(page.getByRole("button", {
+      name: /^เลือกสาขา .*มีงาน 2 รายการ/,
+    })).toBeVisible();
+
     await page.getByRole("button", { name: /^บิลยาง/ }).click();
     let approvalButton = page.getByRole("button", {
       name: "ตั้งค่าและอนุมัติบิลยาง รออนุมัติ 1 รายการ",
@@ -536,6 +579,12 @@ test("approval buttons and modal counts follow the selected branch", async ({ br
     expect(incomeButtonBox).not.toBeNull();
     expect(incomeButtonBox!.x).toBeGreaterThanOrEqual(0);
     expect(incomeButtonBox!.x + incomeButtonBox!.width).toBeLessThanOrEqual(390);
+    const cashTab = page.getByRole("button", {
+      name: /^รับ-จ่าย มีงานที่จัดการได้ \d+ รายการ$/,
+    });
+    const cashTabLabel = await cashTab.getAttribute("aria-label");
+    const cashTabCount = Number(cashTabLabel?.match(/(\d+) รายการ$/)?.[1] ?? 0);
+    expect(cashTabCount).toBeGreaterThanOrEqual(100);
     await page.context().setOffline(true);
     await page.evaluate(() => window.dispatchEvent(new Event("offline")));
     await expect.poll(() => page.evaluate(() => navigator.onLine)).toBe(false);
@@ -543,10 +592,42 @@ test("approval buttons and modal counts follow the selected branch", async ({ br
       name: "ตั้งค่าและอนุมัติรับ-จ่าย",
       exact: true,
     })).toBeVisible();
+
+    const reconnectInsert = await service.from("income_expense_approval_requests").insert({
+      id: reconnectIncomeRequestId,
+      request_status: "pending",
+      requested_operation: "create",
+      request_idempotency_key: `approval-reconnect:${reconnectIncomeRequestId}`,
+      requested_payload: {
+        operation: "create",
+        expectedRevisionNo: 0,
+        clientTempId: reconnectIncomeRequestId,
+        idempotencyKey: `approval-reconnect:${reconnectIncomeRequestId}`,
+        locationId: locationIds[1],
+      },
+      matched_reasons: ["amount_threshold"],
+      location_id: locationIds[1],
+      tx_type: "expense",
+      title: "คำขอรับจ่ายหลังกลับออนไลน์",
+      cost: 999,
+      requested_by_user_id: requester!.id,
+      requested_by_name: requester!.name,
+      requested_by_phone: requester!.phone,
+    });
+    expect(reconnectInsert.error).toBeNull();
+
     await page.context().setOffline(false);
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await expect(page.getByRole("button", {
+      name: `รับ-จ่าย มีงานที่จัดการได้ ${cashTabCount + 1} รายการ`,
+      exact: true,
+    })).toBeVisible({ timeout: 15_000 });
   } finally {
     await service.from("rubber_bill_approval_requests").delete().in("id", rubberRequestIds);
-    await service.from("income_expense_approval_requests").delete().in("id", incomeRequestIds);
+    await service.from("income_expense_approval_requests").delete().in("id", [
+      ...incomeRequestIds,
+      reconnectIncomeRequestId,
+    ]);
     await service.from("user_locations").delete().in("location_id", locationIds);
     await service.from("locations").delete().in("id", locationIds);
     await context.close();
