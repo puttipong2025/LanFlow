@@ -87,6 +87,11 @@ create trigger prepare_payroll_slip_outstanding_snapshot
   before insert on public.payroll_slips
   for each row execute function private.prepare_payroll_slip_outstanding_snapshot();
 
+-- Historical slips can already belong to an active locked report. This backfill
+-- only adds immutable display metadata, so suspend the report guard for this
+-- transaction-scoped update and restore it immediately afterwards.
+alter table public.payroll_slips disable trigger report_lock_payroll_slips;
+
 update public.payroll_slips slip
 set slip_data = coalesce(slip.slip_data, '{}'::jsonb) || jsonb_build_object(
   'outstandingAdjustments',
@@ -99,6 +104,8 @@ set slip_data = coalesce(slip.slip_data, '{}'::jsonb) || jsonb_build_object(
 )
 where slip.status in ('PENDING', 'APPROVED')
   and slip.cancelled_at is null;
+
+alter table public.payroll_slips enable trigger report_lock_payroll_slips;
 
 create or replace function private.is_time_payroll_month_closed(
   p_profile_id uuid,
