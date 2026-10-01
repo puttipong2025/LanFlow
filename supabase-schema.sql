@@ -5296,10 +5296,11 @@ CREATE OR REPLACE FUNCTION "private"."is_time_payroll_month_closed"("p_profile_i
     AS $$
   select exists (
     select 1
-    from public.payroll_slips ps
-    where ps.profile_id = p_profile_id
-      and ps.month = p_month
-      and ps.status in ('PENDING', 'APPROVED')
+    from public.payroll_slips slip
+    where slip.profile_id = p_profile_id
+      and slip.month = p_month
+      and slip.status in ('PENDING', 'APPROVED')
+      and slip.cancelled_at is null
   )
 $$;
 
@@ -5318,6 +5319,7 @@ CREATE OR REPLACE FUNCTION "private"."latest_withdrawal_target"("p_withdrawal_id
       where adjustment.type = 'ADJUSTMENT'
         and adjustment.parent_debt_id = source.id
         and adjustment.status = 'APPROVED'
+        and adjustment.cancelled_at is null
       order by adjustment.approved_at desc nulls last, adjustment.created_at desc, adjustment.id desc
       limit 1
     ),
@@ -5325,7 +5327,8 @@ CREATE OR REPLACE FUNCTION "private"."latest_withdrawal_target"("p_withdrawal_id
   )
   from public.financial_transactions source
   where source.id = p_withdrawal_id
-    and source.type = 'WITHDRAWAL';
+    and source.type = 'WITHDRAWAL'
+    and source.cancelled_at is null;
 $$;
 
 
@@ -5977,10 +5980,12 @@ begin
     join public.financial_transactions parent on parent.id = child.parent_debt_id
     where child.profile_id = p_profile_id
       and child.status = 'APPROVED'
+      and child.cancelled_at is null
       and child.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
       and child.applied_month <= v_through_month
       and parent.profile_id = p_profile_id
       and parent.status = 'APPROVED'
+      and parent.cancelled_at is null
       and parent.type in ('DEBT', 'WITHDRAWAL')
       and not private.is_time_payroll_month_closed(
         p_profile_id,
@@ -5997,6 +6002,7 @@ begin
         where child.profile_id = p_profile_id
           and child.parent_debt_id = parent.id
           and child.status = 'APPROVED'
+      and child.cancelled_at is null
           and child.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
           and child.applied_month <= v_through_month
           and not private.is_time_payroll_month_closed(
@@ -6007,6 +6013,7 @@ begin
     from public.financial_transactions parent
     where parent.profile_id = p_profile_id
       and parent.status = 'APPROVED'
+      and parent.cancelled_at is null
       and parent.type in ('DEBT', 'WITHDRAWAL')
       and parent.effective_date < (v_through_month + interval '1 month')::date
     order by parent.effective_date, parent.created_at, parent.id
@@ -6037,6 +6044,7 @@ begin
       where ps.profile_id = p_profile_id
         and ps.month = to_char(v_month, 'YYYY-MM')
         and ps.status in ('PENDING', 'APPROVED')
+        and ps.cancelled_at is null
       limit 1;
 
       select coalesce(sum(child.amount), 0)
@@ -6045,10 +6053,12 @@ begin
       join public.financial_transactions parent on parent.id = child.parent_debt_id
       where child.profile_id = p_profile_id
         and child.status = 'APPROVED'
+      and child.cancelled_at is null
         and child.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
         and child.applied_month = v_month
         and parent.profile_id = p_profile_id
         and parent.status = 'APPROVED'
+      and parent.cancelled_at is null
         and parent.type in ('DEBT', 'WITHDRAWAL');
 
       if v_closed_status is not null then
@@ -6084,6 +6094,7 @@ begin
         from public.financial_transactions parent
         where parent.profile_id = p_profile_id
           and parent.status = 'APPROVED'
+      and parent.cancelled_at is null
           and parent.type in ('DEBT', 'WITHDRAWAL')
           and parent.effective_date < (v_month + interval '1 month')::date
         order by parent.effective_date, parent.created_at, parent.id
@@ -6146,6 +6157,7 @@ begin
         where child.profile_id = p_profile_id
           and child.parent_debt_id = parent.id
           and child.status = 'APPROVED'
+      and child.cancelled_at is null
           and child.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
           and child.applied_month <= v_through_month
           and not private.is_time_payroll_month_closed(
@@ -6156,6 +6168,7 @@ begin
     from public.financial_transactions parent
     where parent.profile_id = p_profile_id
       and parent.status = 'APPROVED'
+      and parent.cancelled_at is null
       and parent.type in ('DEBT', 'WITHDRAWAL')
       and v_parent_state ? parent.id::text
     order by parent.effective_date, parent.created_at, parent.id
@@ -6292,6 +6305,15 @@ begin
   where adjustment.profile_id = new.profile_id
     and adjustment.type = 'ADJUSTMENT'
     and adjustment.status = 'PENDING'
+    and adjustment.cancelled_at is null
+    and exists (
+      select 1
+      from public.financial_transactions parent
+      where parent.id = adjustment.parent_debt_id
+        and parent.type = 'WITHDRAWAL'
+        and parent.status = 'APPROVED'
+        and parent.cancelled_at is null
+    )
     and adjustment.effective_date < (v_month + interval '1 month')::date
   order by adjustment.effective_date, adjustment.created_at, adjustment.id
   limit 1;
@@ -6334,6 +6356,28 @@ $$;
 
 
 ALTER FUNCTION "private"."prepare_payroll_slip_adjustment_snapshot"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."prepare_payroll_slip_outstanding_snapshot"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  new.slip_data := coalesce(new.slip_data, '{}'::jsonb) || jsonb_build_object(
+    'outstandingAdjustments',
+    private.time_payroll_slip_outstanding_snapshot(
+      new.profile_id,
+      new.month,
+      new.created_at,
+      new.total_deductions
+    )
+  );
+  return new;
+end
+$$;
+
+
+ALTER FUNCTION "private"."prepare_payroll_slip_outstanding_snapshot"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."prevent_approved_adjustment_delete"() RETURNS "trigger"
@@ -6785,10 +6829,12 @@ begin
     where child.profile_id = p_profile_id
       and child.parent_debt_id = parent.id
       and child.status = 'APPROVED'
+      and child.cancelled_at is null
       and child.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
       and child.applied_month <= v_current_month
       and parent.profile_id = p_profile_id
       and parent.status = 'APPROVED'
+      and parent.cancelled_at is null
       and parent.type in ('DEBT', 'WITHDRAWAL')
       and not private.is_time_payroll_month_closed(
         p_profile_id,
@@ -6912,10 +6958,12 @@ begin
     join public.financial_transactions parent on parent.id = child.parent_debt_id
     where child.profile_id = p_profile_id
       and child.status = 'APPROVED'
+      and child.cancelled_at is null
       and child.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
       and child.applied_month <= v_current_month
       and parent.profile_id = p_profile_id
       and parent.status = 'APPROVED'
+      and parent.cancelled_at is null
       and parent.type in ('DEBT', 'WITHDRAWAL')
       and not private.is_time_payroll_month_closed(
         p_profile_id,
@@ -6929,10 +6977,12 @@ begin
       join public.financial_transactions parent on parent.id = child.parent_debt_id
       where child.profile_id = p_profile_id
         and child.status = 'APPROVED'
+      and child.cancelled_at is null
         and child.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
         and child.applied_month <= v_current_month
         and parent.profile_id = p_profile_id
         and parent.status = 'APPROVED'
+      and parent.cancelled_at is null
         and parent.type in ('DEBT', 'WITHDRAWAL')
         and not private.is_time_payroll_month_closed(
           p_profile_id,
@@ -6957,10 +7007,12 @@ begin
     where child.profile_id = p_profile_id
       and child.parent_debt_id = parent.id
       and child.status = 'APPROVED'
+      and child.cancelled_at is null
       and child.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
       and child.applied_month <= v_current_month
       and parent.profile_id = p_profile_id
       and parent.status = 'APPROVED'
+      and parent.cancelled_at is null
       and parent.type in ('DEBT', 'WITHDRAWAL')
       and not private.is_time_payroll_month_closed(
         p_profile_id,
@@ -6979,10 +7031,12 @@ begin
     from public.financial_transactions adjustment
     where adjustment.id = p_adjustment_id
       and adjustment.type = 'ADJUSTMENT'
+      and adjustment.cancelled_at is null
       and adjustment.parent_debt_id = source.id
       and source.profile_id = p_profile_id
       and source.type = 'WITHDRAWAL'
-      and source.status = 'APPROVED';
+      and source.status = 'APPROVED'
+      and source.cancelled_at is null;
     if not found then raise exception 'WITHDRAWAL_SOURCE_NOT_FOUND'; end if;
 
     v_plan := private.plan_time_tracking_deductions(
@@ -9514,6 +9568,232 @@ $$;
 ALTER FUNCTION "private"."time_payroll_day_earned_at"("p_now" timestamp with time zone, "p_workday_end_time" time without time zone) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."time_payroll_missing_slip_badge_counts"("p_now" timestamp with time zone DEFAULT "now"()) RETURNS TABLE("location_id" "uuid", "item_count" bigint)
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select primary_location.location_id, sum(cardinality(missing.missing_months))::bigint
+  from private.time_payroll_missing_slip_months(p_now) missing
+  join public.user_locations primary_location
+    on primary_location.user_id = missing.profile_id
+    and primary_location.is_primary = true
+  join public.locations location
+    on location.id = primary_location.location_id
+    and location.is_active = true
+  where cardinality(missing.missing_months) > 0
+    and public.can_access_location(primary_location.location_id)
+    and private.can_manage_time_payroll_profile(missing.profile_id)
+  group by primary_location.location_id
+$$;
+
+
+ALTER FUNCTION "private"."time_payroll_missing_slip_badge_counts"("p_now" timestamp with time zone) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."time_payroll_missing_slip_months"("p_now" timestamp with time zone DEFAULT "now"()) RETURNS TABLE("profile_id" "uuid", "missing_months" "text"[])
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  with clock as (
+    select
+      (p_now at time zone 'Asia/Bangkok')::date as today,
+      (p_now at time zone 'Asia/Bangkok')::time as local_time
+  ), payroll_clock as (
+    select
+      clock.today,
+      clock.local_time,
+      coalesce((
+        select case
+          when settings.pending_effective_date <= clock.today
+            then settings.pending_workday_end_time
+          else settings.workday_end_time
+        end
+        from public.time_payroll_settings settings
+        where settings.singleton = true
+      ), time '16:00') as cutoff
+    from clock
+  ), regular_limit as (
+    select
+      payroll_clock.*,
+      case
+        when payroll_clock.today = (date_trunc('month', payroll_clock.today) + interval '1 month - 1 day')::date
+          and payroll_clock.local_time >= payroll_clock.cutoff
+        then date_trunc('month', payroll_clock.today)::date
+        else (date_trunc('month', payroll_clock.today) - interval '1 month')::date
+      end as ready_through
+    from payroll_clock
+  ), employee_bounds as (
+    select
+      profile.id as profile_id,
+      min(date_trunc('month', period.start_on)::date) as first_month,
+      boundary.last_end_action_on,
+      regular_limit.today,
+      regular_limit.ready_through
+    from public.profiles profile
+    join public.time_payroll_active_periods period on period.profile_id = profile.id
+    cross join regular_limit
+    left join private.time_payroll_employment_boundaries boundary on boundary.profile_id = profile.id
+    where profile.is_active = true
+      and profile.role in ('user', 'admin')
+      and coalesce(profile.can_access_super_admin_features, false) = false
+    group by profile.id, boundary.last_end_action_on,
+      regular_limit.today, regular_limit.ready_through
+  ), ready_bounds as (
+    select
+      bounds.profile_id,
+      bounds.first_month,
+      greatest(
+        bounds.ready_through,
+        case
+          when bounds.last_end_action_on is not null
+            and bounds.last_end_action_on <= bounds.today
+            and not exists (
+              select 1
+              from public.time_payroll_active_periods later
+              where later.profile_id = bounds.profile_id
+                and (
+                  later.start_on > bounds.last_end_action_on
+                  or (later.end_on is null and later.start_on <= bounds.today)
+                )
+            )
+          then date_trunc('month', bounds.last_end_action_on)::date
+          else bounds.ready_through
+        end
+      ) as ready_through
+    from employee_bounds bounds
+  ), candidate_months as (
+    select
+      bounds.profile_id,
+      month_start::date as month_start,
+      to_char(month_start, 'YYYY-MM') as month
+    from ready_bounds bounds
+    cross join lateral generate_series(
+      bounds.first_month::timestamp,
+      bounds.ready_through::timestamp,
+      interval '1 month'
+    ) month_start
+  ), missing as (
+    select candidate.profile_id, candidate.month, candidate.month_start
+    from candidate_months candidate
+    where exists (
+      select 1
+      from public.time_payroll_active_periods period
+      cross join lateral generate_series(
+        greatest(period.start_on, candidate.month_start)::timestamp,
+        least(
+          coalesce(period.end_on, (candidate.month_start + interval '1 month - 1 day')::date),
+          (candidate.month_start + interval '1 month - 1 day')::date
+        )::timestamp,
+        interval '1 day'
+      ) work_day
+      left join public.time_payroll_attendance_exceptions exception
+        on exception.profile_id = candidate.profile_id
+        and exception.work_date = work_day::date
+      where period.profile_id = candidate.profile_id
+        and period.start_on < (candidate.month_start + interval '1 month')::date
+        and coalesce(period.end_on, candidate.month_start) >= candidate.month_start
+        and coalesce(exception.status::text, 'FULL_DAY') <> 'OFF'
+    )
+      and not exists (
+        select 1
+        from public.payroll_slips slip
+        where slip.profile_id = candidate.profile_id
+          and slip.month = candidate.month
+          and slip.status in ('PENDING', 'APPROVED')
+          and slip.cancelled_at is null
+      )
+      and not exists (
+        select 1
+        from public.financial_transactions pending
+        where pending.profile_id = candidate.profile_id
+          and pending.type in ('DEBT', 'WITHDRAWAL', 'ADJUSTMENT')
+          and pending.status = 'PENDING'
+          and pending.cancelled_at is null
+          and (
+            pending.type <> 'ADJUSTMENT'
+            or exists (
+              select 1
+              from public.financial_transactions parent
+              where parent.id = pending.parent_debt_id
+                and parent.type = 'WITHDRAWAL'
+                and parent.status = 'APPROVED'
+                and parent.cancelled_at is null
+            )
+          )
+          and pending.effective_date < (candidate.month_start + interval '1 month')::date
+      )
+      and not exists (
+        select 1
+        from public.time_payroll_active_periods scheduled
+        where scheduled.profile_id = candidate.profile_id
+          and scheduled.scheduled_action is not null
+          and scheduled.scheduled_activation_on > (p_now at time zone 'Asia/Bangkok')::date
+          and (
+            date_trunc('month', scheduled.scheduled_effective_on)::date = candidate.month_start
+            or date_trunc('month', scheduled.scheduled_activation_on)::date = candidate.month_start
+          )
+      )
+  )
+  select missing.profile_id, array_agg(missing.month order by missing.month_start)
+  from missing
+  group by missing.profile_id
+$$;
+
+
+ALTER FUNCTION "private"."time_payroll_missing_slip_months"("p_now" timestamp with time zone) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."time_payroll_slip_outstanding_snapshot"("p_profile_id" "uuid", "p_month" "text", "p_as_of" timestamp with time zone, "p_deducted_this_slip" numeric) RETURNS "jsonb"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  with source_targets as (
+    select
+      source.id,
+      coalesce((
+        select adjustment.amount
+        from public.financial_transactions adjustment
+        where adjustment.type = 'ADJUSTMENT'
+          and adjustment.parent_debt_id = source.id
+          and adjustment.status = 'APPROVED'
+          and coalesce(adjustment.approved_at, adjustment.created_at) <= p_as_of
+          and (adjustment.cancelled_at is null or adjustment.cancelled_at > p_as_of)
+        order by adjustment.approved_at desc nulls last, adjustment.created_at desc, adjustment.id desc
+        limit 1
+      ), source.amount) as target_amount
+    from public.financial_transactions source
+    where source.profile_id = p_profile_id
+      and source.type in ('DEBT', 'WITHDRAWAL')
+      and source.status = 'APPROVED'
+      and coalesce(source.approved_at, source.created_at) <= p_as_of
+      and (source.cancelled_at is null or source.cancelled_at > p_as_of)
+      and source.effective_date < ((p_month || '-01')::date + interval '1 month')::date
+  ), deducted_through_slip as (
+    select child.parent_debt_id, coalesce(sum(child.amount), 0) as amount
+    from public.financial_transactions child
+    where child.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
+      and child.status = 'APPROVED'
+      and child.applied_month <= (p_month || '-01')::date
+      and coalesce(child.approved_at, child.created_at) <= p_as_of
+      and (child.cancelled_at is null or child.cancelled_at > p_as_of)
+    group by child.parent_debt_id
+  ), totals as (
+    select coalesce(sum(greatest(source.target_amount - coalesce(deducted.amount, 0), 0)), 0) as remaining
+    from source_targets source
+    left join deducted_through_slip deducted on deducted.parent_debt_id = source.id
+  )
+  select jsonb_build_object(
+    'beforeDeductions', trunc(totals.remaining + greatest(coalesce(p_deducted_this_slip, 0), 0), 2),
+    'deductedThisSlip', trunc(greatest(coalesce(p_deducted_this_slip, 0), 0), 2),
+    'remainingAfterDeductions', trunc(totals.remaining, 2)
+  )
+  from totals
+$$;
+
+
+ALTER FUNCTION "private"."time_payroll_slip_outstanding_snapshot"("p_profile_id" "uuid", "p_month" "text", "p_as_of" timestamp with time zone, "p_deducted_this_slip" numeric) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."validate_rubber_approval_group_input"("p_location_ids" "uuid"[], "p_edit_window_minutes" integer, "p_configured_price" numeric) RETURNS "uuid"[]
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -9735,14 +10015,17 @@ CREATE OR REPLACE FUNCTION "private"."withdrawal_closed_floor"("p_withdrawal_id"
   join public.financial_transactions child on child.parent_debt_id = source.id
   where source.id = p_withdrawal_id
     and source.type = 'WITHDRAWAL'
+    and source.cancelled_at is null
     and child.type = 'WITHDRAWAL_DEDUCTION'
     and child.status = 'APPROVED'
+    and child.cancelled_at is null
     and exists (
       select 1
       from public.payroll_slips slip
       where slip.profile_id = source.profile_id
         and slip.month = to_char(child.applied_month, 'YYYY-MM')
         and slip.status in ('PENDING', 'APPROVED')
+        and slip.cancelled_at is null
     );
 $$;
 
@@ -10704,10 +10987,12 @@ begin
     where child.profile_id = p_profile_id
       and child.parent_debt_id = parent.id
       and child.status = 'APPROVED'
+      and child.cancelled_at is null
       and child.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
       and child.applied_month <= date_trunc('month', now() at time zone 'Asia/Bangkok')::date
       and parent.profile_id = p_profile_id
       and parent.status = 'APPROVED'
+      and parent.cancelled_at is null
       and parent.type in ('DEBT', 'WITHDRAWAL')
       and not private.is_time_payroll_month_closed(
         p_profile_id,
@@ -12222,7 +12507,10 @@ begin
     loop
       if not exists (
         select 1 from public.payroll_slips ps
-        where ps.profile_id = p_profile_id and ps.month = to_char(v_scan_month, 'YYYY-MM')
+        where ps.profile_id = p_profile_id
+          and ps.month = to_char(v_scan_month, 'YYYY-MM')
+          and ps.status in ('PENDING', 'APPROVED')
+          and ps.cancelled_at is null
       ) and public.calculate_paid_work_days(
         p_profile_id,
         v_scan_month::timestamp at time zone 'Asia/Bangkok',
@@ -12309,7 +12597,10 @@ begin
 
   if exists (
     select 1 from public.payroll_slips ps
-    where ps.profile_id = p_profile_id and ps.month = p_month
+    where ps.profile_id = p_profile_id
+      and ps.month = p_month
+      and ps.status in ('PENDING', 'APPROVED')
+      and ps.cancelled_at is null
   ) then
     raise exception 'MONTH_CLOSED:%', p_month;
   end if;
@@ -12318,6 +12609,7 @@ begin
   into v_blocker
   from public.financial_transactions ft
   where ft.profile_id = p_profile_id
+    and ft.cancelled_at is null
     and ft.type in ('DEBT', 'WITHDRAWAL')
     and ft.status = 'PENDING'
     and ft.effective_date < v_next_month
@@ -12347,6 +12639,8 @@ begin
         select 1 from public.payroll_slips ps
         where ps.profile_id = p_profile_id
           and ps.month = to_char(v_scan_month, 'YYYY-MM')
+          and ps.status in ('PENDING', 'APPROVED')
+          and ps.cancelled_at is null
       ) and public.calculate_paid_work_days(
         p_profile_id,
         v_scan_month::timestamp at time zone 'Asia/Bangkok',
@@ -12392,9 +12686,20 @@ begin
   into v_deductions
   from public.financial_transactions ft
   where ft.profile_id = p_profile_id
+    and ft.cancelled_at is null
     and ft.status = 'APPROVED'
     and ft.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
-    and ft.applied_month = v_month;
+    and ft.applied_month = v_month
+    and (
+      ft.parent_debt_id is null
+      or exists (
+        select 1
+        from public.financial_transactions parent
+        where parent.id = ft.parent_debt_id
+          and parent.status = 'APPROVED'
+          and parent.cancelled_at is null
+      )
+    );
   v_net_before_rounding := greatest(v_gross - v_deductions, 0);
   v_net := round(v_net_before_rounding, 0);
   v_rounding_adjustment := v_net - v_net_before_rounding;
@@ -12411,10 +12716,21 @@ begin
   into v_transactions
   from public.financial_transactions ft
   where ft.profile_id = p_profile_id
+    and ft.cancelled_at is null
     and (
       (
         ft.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
         and ft.applied_month = v_month
+        and (
+          ft.parent_debt_id is null
+          or exists (
+            select 1
+            from public.financial_transactions parent
+            where parent.id = ft.parent_debt_id
+              and parent.status = 'APPROVED'
+              and parent.cancelled_at is null
+          )
+        )
       )
       or
       (
@@ -13214,9 +13530,36 @@ CREATE OR REPLACE FUNCTION "public"."decide_time_tracking_approval"("p_source_ty
     SET "search_path" TO ''
     AS $$
 begin
-  if auth.uid() is null or not private.has_time_payroll_manager_access() then raise exception 'Forbidden'; end if;
+  if auth.uid() is null or not private.has_time_payroll_manager_access() then
+    raise exception 'Forbidden';
+  end if;
+
+  if (
+    p_source_type = 'transaction'
+    and exists (
+      select 1
+      from public.financial_transactions source
+      where source.id = p_source_id
+        and source.cancelled_at is not null
+    )
+  ) or (
+    p_source_type = 'payroll_slip'
+    and exists (
+      select 1
+      from public.payroll_slips source
+      where source.id = p_source_id
+        and source.cancelled_at is not null
+    )
+  ) then
+    raise exception 'Approval has already been decided';
+  end if;
+
   return public.decide_time_tracking_approval_internal_20260829(
-    p_source_type, p_source_id, p_decision, p_comment, p_expense_location_id
+    p_source_type,
+    p_source_id,
+    p_decision,
+    p_comment,
+    p_expense_location_id
   );
 end
 $$;
@@ -13269,10 +13612,15 @@ begin
     if not found or v_tx.type not in ('DEBT', 'WITHDRAWAL') then
       raise exception 'Transaction not found';
     end if;
+    if v_tx.cancelled_at is not null then
+      raise exception 'Approval has already been decided';
+    end if;
     if exists (
       select 1 from public.payroll_slips ps
       where ps.profile_id = v_tx.profile_id
         and ps.month = to_char(v_tx.effective_date, 'YYYY-MM')
+        and ps.status in ('PENDING', 'APPROVED')
+        and ps.cancelled_at is null
     ) then
       raise exception 'MONTH_CLOSED:%', to_char(v_tx.effective_date, 'YYYY-MM');
     end if;
@@ -13365,6 +13713,9 @@ begin
     where id = p_source_id
     for update;
     if not found then raise exception 'Payroll slip not found'; end if;
+    if v_slip.cancelled_at is not null then
+      raise exception 'Approval has already been decided';
+    end if;
 
     v_requires_payment_choice := p_decision = 'APPROVED' and v_slip.net_pay > 0;
     if v_slip.status <> 'PENDING' then
@@ -13500,6 +13851,9 @@ begin
     raise exception 'WITHDRAWAL_NOT_REPORT_LOCKED';
   end if;
 
+  if v_adjustment.cancelled_at is not null then
+    raise exception 'ADJUSTMENT_ALREADY_DECIDED';
+  end if;
   if v_adjustment.status <> 'PENDING' then
     if v_adjustment.status::text = p_decision
       and (
@@ -14631,6 +14985,26 @@ CREATE OR REPLACE FUNCTION "public"."get_actionable_badge_counts"() RETURNS TABL
     SET "search_path" TO ''
     AS $$
   with combined as (
+    select * from public.get_actionable_badge_counts_before_missing_payroll_slips()
+    union all
+    select missing.location_id, 'time-tracking'::text, missing.item_count
+    from private.time_payroll_missing_slip_badge_counts(now()) missing
+  )
+  select combined.location_id, combined.module_id, sum(combined.item_count)::bigint
+  from combined
+  group by combined.location_id, combined.module_id
+  order by combined.location_id, combined.module_id
+$$;
+
+
+ALTER FUNCTION "public"."get_actionable_badge_counts"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_actionable_badge_counts_before_missing_payroll_slips"() RETURNS TABLE("location_id" "uuid", "module_id" "text", "item_count" bigint)
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  with combined as (
     select *
     from public.get_actionable_badge_counts_before_withdrawal_adjustments()
 
@@ -14638,11 +15012,17 @@ CREATE OR REPLACE FUNCTION "public"."get_actionable_badge_counts"() RETURNS TABL
 
     select primary_location.location_id, 'time-tracking'::text, count(*)::bigint
     from public.financial_transactions adjustment
+    join public.financial_transactions parent
+      on parent.id = adjustment.parent_debt_id
+      and parent.type = 'WITHDRAWAL'
+      and parent.status = 'APPROVED'
+      and parent.cancelled_at is null
     join public.user_locations primary_location
       on primary_location.user_id = adjustment.profile_id
       and primary_location.is_primary = true
     where adjustment.type = 'ADJUSTMENT'
       and adjustment.status = 'PENDING'
+      and adjustment.cancelled_at is null
       and public.can_access_location(primary_location.location_id)
       and private.can_manage_time_payroll_profile(adjustment.profile_id)
     group by primary_location.location_id
@@ -14654,7 +15034,7 @@ CREATE OR REPLACE FUNCTION "public"."get_actionable_badge_counts"() RETURNS TABL
 $$;
 
 
-ALTER FUNCTION "public"."get_actionable_badge_counts"() OWNER TO "postgres";
+ALTER FUNCTION "public"."get_actionable_badge_counts_before_missing_payroll_slips"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_actionable_badge_counts_before_withdrawal_adjustments"() RETURNS TABLE("location_id" "uuid", "module_id" "text", "item_count" bigint)
@@ -14683,11 +15063,14 @@ begin
   ), scoped_time_requests as (
     select ft.id, ft.profile_id
     from public.financial_transactions ft
-    where ft.status = 'PENDING' and ft.type in ('DEBT', 'WITHDRAWAL')
+    where ft.status = 'PENDING'
+      and ft.cancelled_at is null
+      and ft.type in ('DEBT', 'WITHDRAWAL')
     union all
     select ps.id, ps.profile_id
     from public.payroll_slips ps
     where ps.status = 'PENDING'
+      and ps.cancelled_at is null
   ), counts as (
     select al.location_id, 'rubber'::text module_id, count(distinct w.work_identity)::bigint item_count
     from accessible_locations al
@@ -19271,6 +19654,7 @@ CREATE OR REPLACE FUNCTION "public"."get_time_payroll_debt_totals"() RETURNS "js
     from public.financial_transactions transaction
     where transaction.type in ('DEBT', 'WITHDRAWAL')
       and transaction.status = 'APPROVED'
+      and transaction.cancelled_at is null
       and transaction.remaining_amount > 0
       and private.can_manage_time_payroll_profile(transaction.profile_id)
     group by transaction.profile_id
@@ -19279,6 +19663,36 @@ $$;
 
 
 ALTER FUNCTION "public"."get_time_payroll_debt_totals"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_time_payroll_manager_overview"() RETURNS "jsonb"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  with debt_totals as (
+    select transaction.profile_id, sum(transaction.remaining_amount) as amount
+    from public.financial_transactions transaction
+    where transaction.type in ('DEBT', 'WITHDRAWAL')
+      and transaction.status = 'APPROVED'
+      and transaction.cancelled_at is null
+      and transaction.remaining_amount > 0
+    group by transaction.profile_id
+  ), missing as (
+    select * from private.time_payroll_missing_slip_months(now())
+  )
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'profileId', profile.id,
+    'debtAmount', coalesce(debt.amount, 0),
+    'missingPayrollMonths', to_jsonb(coalesce(missing.missing_months, '{}'::text[]))
+  ) order by profile.id), '[]'::jsonb)
+  from public.profiles profile
+  left join debt_totals debt on debt.profile_id = profile.id
+  left join missing on missing.profile_id = profile.id
+  where private.can_manage_time_payroll_profile(profile.id)
+$$;
+
+
+ALTER FUNCTION "public"."get_time_payroll_manager_overview"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_time_payroll_payment_locations"() RETURNS TABLE("id" "uuid", "name" "text", "code" "text", "active" boolean)
@@ -19363,21 +19777,28 @@ begin
   end if;
   v_month := (p_month || '-01')::date;
 
-  select coalesce(sum(transaction.remaining_amount), 0)
+  select coalesce(sum(source.remaining_amount), 0)
   into v_debt
-  from public.financial_transactions transaction
-  where transaction.profile_id = p_profile_id
-    and transaction.type in ('DEBT', 'WITHDRAWAL')
-    and transaction.status = 'APPROVED'
-    and transaction.remaining_amount > 0;
+  from public.financial_transactions source
+  where source.profile_id = p_profile_id
+    and source.type in ('DEBT', 'WITHDRAWAL')
+    and source.status = 'APPROVED'
+    and source.cancelled_at is null
+    and source.remaining_amount > 0;
 
-  select coalesce(sum(transaction.amount), 0)
+  select coalesce(sum(child.amount), 0)
   into v_deductions
-  from public.financial_transactions transaction
-  where transaction.profile_id = p_profile_id
-    and transaction.type in ('WITHDRAWAL_DEDUCTION', 'DEBT_DEDUCTION')
-    and transaction.status = 'APPROVED'
-    and transaction.applied_month = v_month;
+  from public.financial_transactions child
+  left join public.financial_transactions parent on parent.id = child.parent_debt_id
+  where child.profile_id = p_profile_id
+    and child.type in ('WITHDRAWAL_DEDUCTION', 'DEBT_DEDUCTION')
+    and child.status = 'APPROVED'
+    and child.cancelled_at is null
+    and child.applied_month = v_month
+    and (
+      parent.id is null
+      or (parent.status = 'APPROVED' and parent.cancelled_at is null)
+    );
 
   return jsonb_build_object(
     'totalDebt', v_debt,
@@ -19446,6 +19867,7 @@ begin
       where adjustment.type = 'ADJUSTMENT'
         and adjustment.parent_debt_id = source.id
         and adjustment.status = 'PENDING'
+        and adjustment.cancelled_at is null
       order by adjustment.created_at desc, adjustment.id desc
       limit 1
     ) pending on true
@@ -20034,14 +20456,27 @@ begin
     v_month::timestamp at time zone 'Asia/Bangkok',
     (v_month + interval '1 month')::timestamp at time zone 'Asia/Bangkok'
   ) * v_wage, 2);
-  select coalesce(sum(amount), 0) into v_used from public.financial_transactions
-  where profile_id = p_profile_id and status = 'APPROVED'
-    and type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION') and applied_month = v_month;
-  select coalesce(sum(remaining_amount), 0) into v_remaining from public.financial_transactions
-  where profile_id = p_profile_id and status = 'APPROVED'
-    and type in ('DEBT', 'WITHDRAWAL') and effective_date < (v_month + interval '1 month')::date;
+  select coalesce(sum(child.amount), 0) into v_used
+  from public.financial_transactions child
+  left join public.financial_transactions parent on parent.id = child.parent_debt_id
+  where child.profile_id = p_profile_id
+    and child.status = 'APPROVED'
+    and child.cancelled_at is null
+    and child.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
+    and child.applied_month = v_month
+    and (
+      parent.id is null
+      or (parent.status = 'APPROVED' and parent.cancelled_at is null)
+    );
+  select coalesce(sum(source.remaining_amount), 0) into v_remaining
+  from public.financial_transactions source
+  where source.profile_id = p_profile_id
+    and source.status = 'APPROVED'
+    and source.cancelled_at is null
+    and source.type in ('DEBT', 'WITHDRAWAL')
+    and source.effective_date < (v_month + interval '1 month')::date;
   return jsonb_build_object('netPay', round(greatest(v_gross - v_used - v_remaining, 0), 0));
-end;
+end
 $_$;
 
 
@@ -21351,7 +21786,10 @@ begin
   if p_target_amount < v_floor then raise exception 'ADJUSTMENT_BELOW_CLOSED_FLOOR:%', v_floor; end if;
   if exists (
     select 1 from public.financial_transactions
-    where type = 'ADJUSTMENT' and parent_debt_id = v_source.id and status = 'PENDING'
+    where type = 'ADJUSTMENT'
+      and parent_debt_id = v_source.id
+      and status = 'PENDING'
+      and cancelled_at is null
   ) then raise exception 'ADJUSTMENT_PENDING_EXISTS'; end if;
 
   v_delta := trunc(p_target_amount - v_base, 2);
@@ -25703,6 +26141,18 @@ begin
     from public.financial_transactions child
     where child.profile_id = p_profile_id
       and child.status = 'APPROVED'
+      and child.cancelled_at is null
+      and (
+        child.parent_debt_id is null
+        or exists (
+          select 1
+          from public.financial_transactions parent
+          where parent.id = child.parent_debt_id
+            and parent.status = 'APPROVED'
+            and parent.cancelled_at is null
+            and parent.type in ('DEBT', 'WITHDRAWAL')
+        )
+      )
       and child.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
       and not private.is_time_payroll_month_closed(
         p_profile_id,
@@ -25920,6 +26370,9 @@ begin
   for update;
   if not found then raise exception 'ADJUSTMENT_NOT_FOUND'; end if;
   if v_adjustment.profile_id <> v_actor_id then raise exception 'Forbidden'; end if;
+  if v_adjustment.cancelled_at is not null then
+    raise exception 'ADJUSTMENT_ALREADY_DECIDED';
+  end if;
   if v_adjustment.status <> 'PENDING' then raise exception 'ADJUSTMENT_ALREADY_DECIDED'; end if;
 
   delete from public.financial_transactions where id = v_adjustment.id;
@@ -28209,7 +28662,7 @@ CREATE INDEX "financial_transactions_deduction_month" ON "public"."financial_tra
 
 
 
-CREATE UNIQUE INDEX "financial_transactions_one_pending_adjustment_per_withdrawal" ON "public"."financial_transactions" USING "btree" ("parent_debt_id") WHERE (("type" = 'ADJUSTMENT'::"public"."financial_transaction_type") AND ("status" = 'PENDING'::"public"."approval_status"));
+CREATE UNIQUE INDEX "financial_transactions_one_pending_adjustment_per_withdrawal" ON "public"."financial_transactions" USING "btree" ("parent_debt_id") WHERE (("type" = 'ADJUSTMENT'::"public"."financial_transaction_type") AND ("status" = 'PENDING'::"public"."approval_status") AND ("cancelled_at" IS NULL));
 
 
 
@@ -28746,6 +29199,10 @@ CREATE OR REPLACE TRIGGER "pending_rubber_bill_blocks_report" BEFORE INSERT OR U
 
 
 CREATE OR REPLACE TRIGGER "prepare_payroll_slip_adjustment_snapshot" BEFORE INSERT ON "public"."payroll_slips" FOR EACH ROW EXECUTE FUNCTION "private"."prepare_payroll_slip_adjustment_snapshot"();
+
+
+
+CREATE OR REPLACE TRIGGER "prepare_payroll_slip_outstanding_snapshot" BEFORE INSERT ON "public"."payroll_slips" FOR EACH ROW EXECUTE FUNCTION "private"."prepare_payroll_slip_outstanding_snapshot"();
 
 
 
@@ -30618,6 +31075,10 @@ REVOKE ALL ON FUNCTION "private"."enforce_rubber_bill_ocr_source_update"() FROM 
 
 
 
+REVOKE ALL ON FUNCTION "private"."enforce_time_tracking_expense_relation"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."exception_attendance_summary"("p_profile_id" "uuid", "p_period_start" timestamp with time zone, "p_period_end" timestamp with time zone, "p_now" timestamp with time zone) FROM PUBLIC;
 
 
@@ -30705,6 +31166,10 @@ REVOKE ALL ON FUNCTION "private"."is_time_payroll_month_closed"("p_profile_id" "
 
 
 
+REVOKE ALL ON FUNCTION "private"."latest_withdrawal_target"("p_withdrawal_id" "uuid") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."lock_report_locations"("p_location_ids" "uuid"[]) FROM PUBLIC;
 
 
@@ -30749,6 +31214,18 @@ REVOKE ALL ON FUNCTION "private"."preflight_income_sale_stock"("payload" "jsonb"
 
 
 
+REVOKE ALL ON FUNCTION "private"."prepare_payroll_slip_adjustment_snapshot"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."prepare_payroll_slip_outstanding_snapshot"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."prevent_approved_adjustment_delete"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."prevent_location_code_change"() FROM PUBLIC;
 
 
@@ -30774,6 +31251,10 @@ REVOKE ALL ON FUNCTION "private"."rebuild_dashboard_branch_target"("p_location_i
 
 
 REVOKE ALL ON FUNCTION "private"."rebuild_open_deductions_after_attendance"("p_profile_id" "uuid", "p_actor" "uuid") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."rebuild_open_deductions_for_adjustment"("p_profile_id" "uuid", "p_actor" "uuid", "p_adjustment_id" "uuid") FROM PUBLIC;
 
 
 
@@ -30889,6 +31370,18 @@ REVOKE ALL ON FUNCTION "private"."time_payroll_day_earned_at"("p_now" timestamp 
 
 
 
+REVOKE ALL ON FUNCTION "private"."time_payroll_missing_slip_badge_counts"("p_now" timestamp with time zone) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."time_payroll_missing_slip_months"("p_now" timestamp with time zone) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."time_payroll_slip_outstanding_snapshot"("p_profile_id" "uuid", "p_month" "text", "p_as_of" timestamp with time zone, "p_deducted_this_slip" numeric) FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."validate_rubber_approval_group_input"("p_location_ids" "uuid"[], "p_edit_window_minutes" integer, "p_configured_price" numeric) FROM PUBLIC;
 
 
@@ -30906,6 +31399,10 @@ REVOKE ALL ON FUNCTION "private"."validate_rubber_weight_alert_group_input"("p_g
 
 
 REVOKE ALL ON FUNCTION "private"."validate_wex_rubber_exports"("p_location_id" "uuid", "p_wex_id" "uuid", "p_rubber_export_ids" "uuid"[]) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."withdrawal_closed_floor"("p_withdrawal_id" "uuid") FROM PUBLIC;
 
 
 
@@ -31277,6 +31774,10 @@ GRANT ALL ON FUNCTION "public"."get_actionable_badge_counts"() TO "authenticated
 
 
 
+REVOKE ALL ON FUNCTION "public"."get_actionable_badge_counts_before_missing_payroll_slips"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "public"."get_actionable_badge_counts_before_withdrawal_adjustments"() FROM PUBLIC;
 
 
@@ -31569,6 +32070,11 @@ GRANT ALL ON FUNCTION "public"."get_time_payroll_attendance_month"("p_profile_id
 
 REVOKE ALL ON FUNCTION "public"."get_time_payroll_debt_totals"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_time_payroll_debt_totals"() TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_time_payroll_manager_overview"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_time_payroll_manager_overview"() TO "authenticated";
 
 
 

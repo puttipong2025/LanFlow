@@ -41,6 +41,7 @@ export default defineConfig({
     '**/sync-response.spec.ts',
     '**/supabase-pages.spec.ts',
     '**/time-payroll-period-state.spec.ts',
+    '**/time-payroll-cutoff-refresh.spec.ts',
     '**/time-payroll-slip-document.spec.ts',
     '**/time-tracking-employee-list.spec.ts',
     '**/time-tracking-pay.spec.ts',

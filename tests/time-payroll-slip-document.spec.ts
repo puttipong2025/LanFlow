@@ -66,6 +66,11 @@ test("payroll keeps snapshot amounts and produces a Thai filename", () => {
   const slipDataWithRoundingAudit = {
     segments: [],
     transactions: [],
+    outstandingAdjustments: {
+      beforeDeductions: 3_500.23,
+      deductedThisSlip: 2_000.23,
+      remainingAfterDeductions: 1_500,
+    },
     netPayBeforeRounding: 3_000.5,
     roundingAdjustment: 0.5,
   };
@@ -92,14 +97,20 @@ test("payroll keeps snapshot amounts and produces a Thai filename", () => {
     "500.1234 บาท",
     "5,001.23 บาท",
     "2,000.23 บาท",
+    "1,500.00 บาท",
     "3,001.00 บาท",
+  ]);
+  expect(document.deductionRows).toEqual([
+    { id: "outstanding-before", dateLabel: null, label: "ยอดหนี้/เบิกก่อนหัก", description: null, amount: 3_500.23 },
+    { id: "outstanding-deducted", dateLabel: null, label: "หักหนี้/เบิกในสลิปนี้", description: null, amount: 2_000.23 },
+    { id: "outstanding-remaining", dateLabel: null, label: "ยอดหนี้/เบิกคงค้าง", description: null, amount: 1_500 },
   ]);
   expect(document.filename).toBe("LanFlow-เงินเดือน-2026-07-a1b2c3d4-อนุมัติแล้ว-80mm.pdf");
   expect(JSON.stringify(document)).not.toMatch(/Payroll|Withdrawal/);
   expect(JSON.stringify(document)).not.toMatch(/netPayBeforeRounding|roundingAdjustment/);
 });
 
-test("payroll transaction rows keep a localized source date without a dead raw-date field", () => {
+test("payroll keeps source transactions but replaces per-item deductions with aggregate rows", () => {
   const document = buildPayrollSlipDocument({
     source: {
       id: SOURCE_ID,
@@ -112,6 +123,11 @@ test("payroll transaction rows keep a localized source date without a dead raw-d
       net_pay: 4_000,
       created_at: "2026-08-01T01:00:00.000Z",
       slip_data: {
+        outstandingAdjustments: {
+          beforeDeductions: 1_500,
+          deductedThisSlip: 1_000,
+          remainingAfterDeductions: 500,
+        },
         transactions: [
           {
             id: "deduction-1",
@@ -134,13 +150,20 @@ test("payroll transaction rows keep a localized source date without a dead raw-d
     generatedAt: GENERATED_AT,
   });
 
-  expect(document.deductionRows[0]).toMatchObject({ dateLabel: "1 ก.ค. 2569" });
+  expect(document.deductionRows.map((row) => row.label)).toEqual([
+    "ยอดหนี้/เบิกก่อนหัก",
+    "หักหนี้/เบิกในสลิปนี้",
+    "ยอดหนี้/เบิกคงค้าง",
+  ]);
+  expect(document.deductionRows.map((row) => row.amount)).toEqual([1_500, 1_000, 500]);
   expect(document.sourceRows[0]).toMatchObject({ dateLabel: "15 ก.ค. 2569" });
-  expect(document.deductionRows[0]).not.toHaveProperty("date");
+  expect(document.deductionRows).not.toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: "deduction-1" }),
+  ]));
   expect(document.sourceRows[0]).not.toHaveProperty("date");
 });
 
-test("payroll deduction rows show the original source date instead of the allocation month", () => {
+test("payroll always shows a zero remaining aggregate when the debt is fully deducted", () => {
   const document = buildPayrollSlipDocument({
     source: {
       id: SOURCE_ID,
@@ -153,6 +176,11 @@ test("payroll deduction rows show the original source date instead of the alloca
       net_pay: 4_700,
       created_at: "2026-09-01T01:00:00.000Z",
       slip_data: {
+        outstandingAdjustments: {
+          beforeDeductions: 300,
+          deductedThisSlip: 300,
+          remainingAfterDeductions: 0,
+        },
         transactions: [{
           id: "deduction-source-date",
           type: "WITHDRAWAL_DEDUCTION",
@@ -167,7 +195,11 @@ test("payroll deduction rows show the original source date instead of the alloca
     generatedAt: GENERATED_AT,
   });
 
-  expect(document.deductionRows[0]).toMatchObject({ dateLabel: "18 ก.ค. 2569" });
+  expect(document.deductionRows.at(-1)).toMatchObject({
+    label: "ยอดหนี้/เบิกคงค้าง",
+    amount: 0,
+  });
+  expect(document.summary).toContainEqual({ label: "ยอดหนี้/เบิกคงค้าง", value: "0.00 บาท" });
 });
 
 test("payroll attendance snapshot still populates the work-calendar table", () => {

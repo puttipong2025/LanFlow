@@ -28,6 +28,7 @@ export function EmployeeTransactionHistory({
         ) : (
           <ul className="divide-y divide-black/5">
              {transactions.map((t: any) => {
+               const cancelled = !!t.cancelled_at;
                const summary: any = adjustmentSummaryByWithdrawal.get(t.id);
                const currentAmount = t.type === 'WITHDRAWAL' ? Number(summary?.latestTarget ?? t.amount) : Number(t.amount);
                const adjustmentHistory = adjustmentsByWithdrawal.get(t.id) || [];
@@ -41,7 +42,7 @@ export function EmployeeTransactionHistory({
                     </span>
                     {t.description && <span className="text-sm text-ink/70 mt-1">{t.description}</span>}
                     {t.effective_date && <span className="text-xs text-clay mt-1 font-semibold">วันที่รายการ: {new Date(`${t.effective_date}T00:00:00+07:00`).toLocaleDateString('th-TH', { timeZone: 'Asia/Bangkok' })}</span>}
-                    {t.status === 'APPROVED' && Number(t.remaining_amount || 0) > 0 && (
+                    {!cancelled && t.status === 'APPROVED' && Number(t.remaining_amount || 0) > 0 && (
                       <span className="text-xs text-amber mt-1 font-semibold">ยอดค้างยกไปเดือนถัดไป: {formatCurrency(t.remaining_amount)}</span>
                     )}
                     {data?.deductions
@@ -66,8 +67,8 @@ export function EmployeeTransactionHistory({
                     )}
                   </div>
                   <div className="flex flex-wrap items-center gap-2 self-start sm:justify-end">
-                    <span className={`text-xs font-bold px-2 py-1 rounded-md ${t.status === 'APPROVED' ? 'bg-success/15 text-success' : 'bg-ink/10 text-ink'}`}>{t.status}</span>
-                    {t.type === 'WITHDRAWAL' && (t.status === 'PENDING' || t.status === 'APPROVED') && (
+                    <span className={`text-xs font-bold px-2 py-1 rounded-md ${!cancelled && t.status === 'APPROVED' ? 'bg-success/15 text-success' : 'bg-ink/10 text-ink'}`}>{cancelled ? 'ยกเลิก' : t.status}</span>
+                    {!cancelled && t.type === 'WITHDRAWAL' && (t.status === 'PENDING' || t.status === 'APPROVED') && (
                       <button
                         type="button"
                         onClick={() => onPreview({ type: "withdrawal", id: t.id })}
@@ -78,19 +79,19 @@ export function EmployeeTransactionHistory({
                         ดูสลิป
                       </button>
                     )}
-                    {canDecideItems && t.status === 'PENDING' && onApprove && (
+                    {!cancelled && canDecideItems && t.status === 'PENDING' && onApprove && (
                       <button onClick={() => void runApprovalAction(() => onApprove('TRANSACTION', t, loadData))} disabled={saving || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded bg-success px-3 py-1 font-bold text-white hover:bg-success/90 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
                     )}
-                    {canDecideItems && t.status === 'PENDING' && onReject && (
+                    {!cancelled && canDecideItems && t.status === 'PENDING' && onReject && (
                       <button onClick={() => void runApprovalAction(() => onReject('TRANSACTION', t, loadData))} disabled={saving || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded bg-danger px-3 py-1 font-bold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-50">ปฏิเสธ</button>
                     )}
                     {t.type === 'WITHDRAWAL' && t.status === 'APPROVED' && (
                       <div className="flex min-w-0 flex-col items-start gap-1">
                         <span className="text-pretty text-xs font-semibold text-ink/70">{paymentSourceLabel(t)}</span>
-                        {canManageTime && <button onClick={() => onChangePayment(t)} disabled={saving || !online || Boolean(t.report_lock_no) || Boolean(paymentScopeReason(t, globalManager, expenseLocations))} title={reportLockReason(t) ?? paymentScopeReason(t, globalManager, expenseLocations) ?? undefined} className="rounded-md bg-river px-3 py-1 text-sm font-semibold text-white hover:bg-river/90 disabled:opacity-40">เปลี่ยนวิธีจ่าย</button>}
+                        {!cancelled && canManageTime && <button onClick={() => onChangePayment(t)} disabled={saving || !online || Boolean(t.report_lock_no) || Boolean(paymentScopeReason(t, globalManager, expenseLocations))} title={reportLockReason(t) ?? paymentScopeReason(t, globalManager, expenseLocations) ?? undefined} className="rounded-md bg-river px-3 py-1 text-sm font-semibold text-white hover:bg-river/90 disabled:opacity-40">เปลี่ยนวิธีจ่าย</button>}
                       </div>
                     )}
-                    {t.type === 'WITHDRAWAL' && t.status === 'APPROVED' && t.report_lock_no && (
+                    {!cancelled && t.type === 'WITHDRAWAL' && t.status === 'APPROVED' && t.report_lock_no && (
                       <button
                         type="button"
                         onClick={() => onAdjust(t)}
@@ -101,7 +102,7 @@ export function EmployeeTransactionHistory({
                         ปรับยอดเบิก
                       </button>
                     )}
-                    {(canManageTime || (isSelf && t.type === 'WITHDRAWAL' && t.status === 'PENDING')) && (
+                    {!cancelled && (canManageTime || (isSelf && t.type === 'WITHDRAWAL' && t.status === 'PENDING')) && (
                       <button onClick={() => onDelete(t)} disabled={saving || !online || Boolean(t.report_lock_no) || Boolean(paymentScopeReason(t, globalManager, expenseLocations))} title={reportLockReason(t) ?? paymentScopeReason(t, globalManager, expenseLocations) ?? (online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE)} className="inline-flex h-10 items-center gap-1 rounded-md bg-danger px-2 text-sm font-semibold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-40">
                         <XCircle size={18} />
                         ลบ
@@ -132,13 +133,13 @@ export function EmployeeTransactionHistory({
                                   {adjustment.description && <p className="mt-1 text-pretty text-xs text-ink/70">{adjustment.description}</p>}
                                 </div>
                                 <div className="flex shrink-0 gap-2">
-                                  {canDecideItems && adjustment.status === 'PENDING' && onApprove && (
+                                  {!cancelled && canDecideItems && adjustment.status === 'PENDING' && onApprove && (
                                     <button type="button" onClick={() => void runApprovalAction(() => onApprove('TRANSACTION', { ...adjustment, type: 'ADJUSTMENT', source_expense_location_id: t.expense_location_id ?? null }, loadData))} disabled={saving || !online} className="rounded-md bg-success px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50">อนุมัติ</button>
                                   )}
-                                  {canDecideItems && adjustment.status === 'PENDING' && onReject && (
+                                  {!cancelled && canDecideItems && adjustment.status === 'PENDING' && onReject && (
                                     <button type="button" onClick={() => void runApprovalAction(() => onReject('TRANSACTION', { ...adjustment, type: 'ADJUSTMENT' }, loadData))} disabled={saving || !online} className="rounded-md bg-danger px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50">ปฏิเสธ</button>
                                   )}
-                                  {!canManageTime && isSelf && adjustment.status === 'PENDING' && (
+                                  {!cancelled && !canManageTime && isSelf && adjustment.status === 'PENDING' && (
                                     <button type="button" onClick={() => void onWithdrawAdjustment(adjustment.id)} disabled={saving || !online} className="rounded-md bg-actionSecondary px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50">ถอนคำขอ</button>
                                   )}
                                 </div>

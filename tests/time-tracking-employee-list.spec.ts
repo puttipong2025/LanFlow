@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import {
-  countPendingItemsForUsers,
+  countWorkItemsForUsers,
   filterTimeTrackingEmployees,
   resolveEmployeeFilter,
 } from "../src/components/time-tracking/employee-list";
@@ -25,11 +25,16 @@ test.describe("Time Tracking employee list", () => {
     expect(filterTimeTrackingEmployees(users, new Set(["b"]), "", "all", "unassigned")).toEqual([users[2]]);
   });
 
-  test("counts pending transactions and slips only for users in the selected branch", () => {
+  test("counts pending items and missing-slip months only for users in the selected branch", () => {
     const pendingTransactions = [{ profile_id: "a" }, { profile_id: "a" }, { profile_id: "b" }];
     const pendingSlips = [{ profile_id: "a" }, { profile_id: "c" }];
+    const workUsers = [
+      { id: "a", missing_payroll_months: ["2026-07", "2026-08"] },
+      { id: "b", missing_payroll_months: ["2026-08"] },
+      { id: "c", missing_payroll_months: [] },
+    ];
 
-    expect(countPendingItemsForUsers(pendingTransactions, pendingSlips, new Set(["a"]))).toBe(3);
-    expect(countPendingItemsForUsers(pendingTransactions, pendingSlips, new Set(["a", "b", "c"]))).toBe(5);
+    expect(countWorkItemsForUsers(pendingTransactions, pendingSlips, workUsers, new Set(["a"]))).toBe(5);
+    expect(countWorkItemsForUsers(pendingTransactions, pendingSlips, workUsers, new Set(["a", "b", "c"]))).toBe(8);
   });
 });

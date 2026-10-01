@@ -92,6 +92,12 @@ type AttendanceSnapshot = {
   };
 };
 
+type OutstandingAdjustmentsSnapshot = {
+  beforeDeductions: number;
+  deductedThisSlip: number;
+  remainingAfterDeductions: number;
+};
+
 type PayrollSource = ApprovalFields & {
   id: string;
   month: string;
@@ -106,6 +112,7 @@ type PayrollSource = ApprovalFields & {
     segments?: PaidWorkSegment[] | null;
     transactions?: SnapshotTransaction[] | null;
     attendance?: AttendanceSnapshot | null;
+    outstandingAdjustments?: OutstandingAdjustmentsSnapshot | null;
   } | null;
 };
 
@@ -340,6 +347,16 @@ export function buildPayrollSlipDocument({
   const approved = transactions.filter((transaction) => transaction.status === "APPROVED");
   const statusLabel = statusLabels[source.status];
   const attendance = source.slip_data?.attendance;
+  const outstanding = source.slip_data?.outstandingAdjustments ?? {
+    beforeDeductions: source.total_deductions,
+    deductedThisSlip: source.total_deductions,
+    remainingAfterDeductions: 0,
+  };
+  const deductionRows: SlipDocumentRow[] = [
+    { id: "outstanding-before", dateLabel: null, label: "ยอดหนี้/เบิกก่อนหัก", description: null, amount: Number(outstanding.beforeDeductions) || 0 },
+    { id: "outstanding-deducted", dateLabel: null, label: "หักหนี้/เบิกในสลิปนี้", description: null, amount: Number(outstanding.deductedThisSlip) || 0 },
+    { id: "outstanding-remaining", dateLabel: null, label: "ยอดหนี้/เบิกคงค้าง", description: null, amount: Number(outstanding.remainingAfterDeductions) || 0 },
+  ];
 
   return {
     kind: "payroll",
@@ -368,12 +385,11 @@ export function buildPayrollSlipDocument({
       { label: "ค่าแรงต่อวัน", value: formatDailyWageMoney(source.daily_wage) },
       { label: "ค่าแรงรวม", value: formatPayrollMoneyValue(source.gross_pay) },
       { label: "ยอดหักรวม", value: formatPayrollMoneyValue(source.total_deductions) },
+      { label: "ยอดหนี้/เบิกคงค้าง", value: formatPayrollMoneyValue(outstanding.remainingAfterDeductions) },
       { label: "ยอดสุทธิ", value: formatPayrollMoneyValue(source.net_pay) },
     ],
     calendar: attendance ? calendarForAttendance(attendance) : calendarForMonth(source.month, source.slip_data?.segments),
-    deductionRows: approved
-      .filter((transaction) => transaction.type !== "DEBT" && transaction.type !== "WITHDRAWAL")
-      .map(transactionRow),
+    deductionRows,
     sourceRows: approved
       .filter((transaction) => transaction.type === "DEBT" || transaction.type === "WITHDRAWAL")
       .map(transactionRow),

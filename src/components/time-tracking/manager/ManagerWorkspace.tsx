@@ -8,7 +8,8 @@ import { canManageSystemFeatures, canManageTimePayroll } from "@/lib/permissions
 import { formatDailyWage } from "@/lib/time-tracking/format";
 import { parseDailyWageInput } from "@/lib/time-tracking/wage";
 import type { Location, Profile } from "@/types";
-import { countPendingItemsForUsers, filterTimeTrackingEmployees, resolveEmployeeFilter } from "../employee-list";
+import { countWorkItemsForUsers, filterTimeTrackingEmployees, hasEmployeeWork, resolveEmployeeFilter } from "../employee-list";
+import { usePayrollCutoffRefresh } from "../payroll-cutoff-refresh";
 import type { WageRecalculationPreview } from "../WageRecalculationDialog";
 import type { ApprovalType } from "../contracts";
 import { ManagerDialogs } from "./ManagerDialogs";
@@ -87,6 +88,12 @@ export function ManagerWorkspace({ profile, online, locations }: { profile: Prof
       if (requestId === adminLoadRequestIdRef.current) setLoading(false);
     }
   }, []);
+  const refreshPayrollBoundary = useCallback(async () => {
+    await Promise.all([
+      load(false),
+      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
+    ]);
+  }, [load, queryClient]);
 
   useEffect(() => {
     void load();
@@ -94,6 +101,12 @@ export function ManagerWorkspace({ profile, online, locations }: { profile: Prof
       adminLoadRequestIdRef.current += 1;
     };
   }, [load]);
+  usePayrollCutoffRefresh(
+    refreshPayrollBoundary,
+    data?.settings?.workdayEndTime,
+    data?.settings?.pendingEffectiveDate,
+    data?.users,
+  );
 
   useEffect(() => {
     const refreshVisibleData = () => {
@@ -127,7 +140,7 @@ export function ManagerWorkspace({ profile, online, locations }: { profile: Prof
         alert(json?.error || "บันทึกการตั้งค่าไม่สำเร็จ");
         return false;
       }
-      await load(false);
+      await refreshPayrollBoundary();
       return true;
     } catch (error) {
       console.error(error);
@@ -236,14 +249,14 @@ export function ManagerWorkspace({ profile, online, locations }: { profile: Prof
     return true;
   }
 
-  const [payrollUser, setPayrollUser] = useState<any>(null);
+  const [payrollUserId, setPayrollUserId] = useState<string | null>(null);
 
   function openPayroll(user: any) {
     if (!online) {
       alert(TIME_TRACKING_OFFLINE_MESSAGE);
       return;
     }
-    setPayrollUser(user);
+    setPayrollUserId(user.id);
   }
 
   function closeAuditLogs() {
@@ -358,10 +371,6 @@ export function ManagerWorkspace({ profile, online, locations }: { profile: Prof
     }
   }
 
-  function pendingCountForUser(items: Array<{ profile_id: string }> | undefined, userId: string) {
-    return items?.filter((item) => item.profile_id === userId).length || 0;
-  }
-
   if (loading) return <div>กำลังโหลดข้อมูล...</div>;
 
   if (loadError) return (
@@ -378,13 +387,13 @@ export function ManagerWorkspace({ profile, online, locations }: { profile: Prof
     if (right.id === profile.id) return 1;
     return 0;
   });
-  const pendingUserIds = new Set(users.filter((user: any) => (
-    pendingCountForUser(data?.pendingTransactions, user.id) + pendingCountForUser(data?.pendingSlips, user.id) > 0
+  const pendingUserIds = new Set(users.filter((user: any) => hasEmployeeWork(
+    user, data?.pendingTransactions, data?.pendingSlips,
   )).map((user: any) => user.id));
   const activeEmployeeFilter = resolveEmployeeFilter(employeeFilter, pendingUserIds.size > 0);
   const branchUsers = filterTimeTrackingEmployees(users, pendingUserIds, "", "all", employeeBranchFilter);
   const branchUserIds = new Set(branchUsers.map((user: any) => user.id as string));
-  const branchPendingCount = countPendingItemsForUsers(data?.pendingTransactions, data?.pendingSlips, branchUserIds);
+  const branchPendingCount = countWorkItemsForUsers(data?.pendingTransactions, data?.pendingSlips, users, branchUserIds);
   const filteredUsers = filterTimeTrackingEmployees(
     users,
     pendingUserIds,
@@ -464,10 +473,10 @@ export function ManagerWorkspace({ profile, online, locations }: { profile: Prof
         viewAuditLogsAdminId={viewAuditLogsAdminId}
         adminName={data?.admins?.find((admin: any) => admin.id === viewAuditLogsAdminId)?.name}
         closeAuditLogs={closeAuditLogs}
-        payrollUser={payrollUser}
-        setPayrollUser={setPayrollUser}
+        payrollUser={users.find((user: any) => user.id === payrollUserId)}
+        setPayrollUser={setPayrollUserId}
         setPendingPaymentChange={setPendingPaymentChange}
-        load={load}
+        load={refreshPayrollBoundary}
         pendingExpenseApproval={pendingExpenseApproval}
         pendingPaymentChange={pendingPaymentChange}
         submitPaymentChange={submitPaymentChange}
@@ -486,4 +495,3 @@ export function ManagerWorkspace({ profile, online, locations }: { profile: Prof
     </div>
   );
 }
-

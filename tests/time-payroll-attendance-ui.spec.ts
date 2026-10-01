@@ -22,6 +22,7 @@ const managerSource = [
   "src/components/time-tracking/manager/ManagerDialogs.tsx",
 ].map(readSource).join("\n");
 const payrollModalSource = readSource("src/components/time-tracking/payroll/PayrollModal.tsx");
+const employeeSlipListSource = readSource("src/components/time-tracking/employee/EmployeeSlipList.tsx");
 const auditLogsModalSource = readSource("src/components/time-tracking/audit/AuditLogsModal.tsx");
 const moduleSource = [
   readSource("src/components/TimeTrackingModule.tsx"),
@@ -161,6 +162,15 @@ test.describe("Lean attendance UI contract", () => {
     expect(moduleSource).toContain('filter === "pending" && branchPendingCount > 0 && (');
     expect(moduleSource).toContain('window.addEventListener("focus", refreshVisibleData)');
     expect(moduleSource).toContain('document.addEventListener("visibilitychange", refreshVisibleData)');
+    expect(moduleSource).toContain('filter === "pending" ? "งานค้าง" : "ทั้งหมด"');
+    expect(moduleSource).toContain("missing_payroll_months");
+    expect(moduleSource).toContain("ขาดสลิป");
+    expect(moduleSource).toContain("usePayrollCutoffRefresh");
+    expect(managerSource).toContain("const refreshPayrollBoundary = useCallback");
+    expect(managerSource).toContain("load(false),\n      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] })");
+    expect(managerSource).toContain("usePayrollCutoffRefresh(\n    refreshPayrollBoundary,");
+    expect(managerSource).toContain("load={refreshPayrollBoundary}");
+    expect(managerSource).toContain("await refreshPayrollBoundary();\n      return true;");
     expect(moduleSource).not.toContain("hasPeriodHistory: false");
     expect(controls).toContain("สิ้นสุดสถานะเงินเดือนวันที่");
     expect(controls).toContain("คิดค่าแรงถึง");
@@ -178,6 +188,20 @@ test.describe("Lean attendance UI contract", () => {
     expect(moduleSource).toContain('action: "CORRECT_PAYROLL_PERIOD_START"');
     expect(moduleSource).toContain("period_id: periodId");
     expect(modalShellSource).toContain("role={role}");
+  });
+
+  test("lists missing payroll months and defaults creation to the oldest month", () => {
+    expect(payrollModalSource).toContain("missingPayrollMonths[0]");
+    expect(payrollModalSource).toContain("เดือนที่ยังไม่มีสลิป");
+    expect(payrollModalSource).toContain("missingPayrollMonths.map(monthLabel)");
+  });
+
+  test("labels cancelled payroll slips and exposes no live actions for them", () => {
+    expect(payrollModalSource).toContain("const cancelled = Boolean(slip.cancelled_at);");
+    expect(payrollModalSource).toContain("{cancelled ? 'ยกเลิก' : slip.status}");
+    expect(payrollModalSource).toContain("!cancelled && canDecide && slip.status === 'PENDING'");
+    expect(payrollModalSource).toContain("!cancelled && slip.status === 'APPROVED'");
+    expect(employeeSlipListSource).toContain("slip.cancelled_at ? 'ยกเลิก' : slip.status");
   });
 
   test("uses an action-first payroll-period UI inside the employee dialog", () => {
@@ -849,6 +873,69 @@ test.describe("Time/payroll native dialogs", () => {
     await expect(auditSelect).toBeFocused();
   });
 
+  test("shows combined missing-slip work badges and defaults to the oldest month", async ({ page }) => {
+    let missingPayrollMonths = ["2026-07", "2026-08"];
+    const employee = {
+      id: "86000000-0000-4000-8000-000000000001",
+      name: "พนักงานขาดสลิป",
+      daily_wage: 500,
+      primary_location_id: null,
+      debt_remaining_amount: 0,
+      missing_payroll_months: missingPayrollMonths,
+    };
+    await page.route("**/api/lanflow/time-tracking/admin", async (route) => {
+      if (route.request().method() === "GET") {
+        await route.fulfill({ json: {
+          settings: { workdayEndTime: "16:00" },
+          permissions: { canManage: true, canDecide: true, canConfigure: true },
+          users: [{ ...employee, missing_payroll_months: missingPayrollMonths }],
+          pendingTransactions: [],
+          pendingSlips: [{ profile_id: employee.id }],
+          paymentLocations: [],
+          admins: [],
+        } });
+        return;
+      }
+      const body = route.request().postDataJSON() as { action?: string };
+      if (body.action === "LIST_PAYROLL_SLIPS") {
+        await route.fulfill({ json: { slips: [] } });
+        return;
+      }
+      if (body.action === "PREVIEW_PAYROLL_SLIP") {
+        await route.fulfill({ json: { preview: { netPay: 0 } } });
+        return;
+      }
+      if (body.action === "CREATE_PAYROLL_SLIP") {
+        missingPayrollMonths = ["2026-08"];
+        await route.fulfill({ json: { slip: { id: "created-slip" } } });
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
+    await expect(page.getByText("ขาดสลิป 2 เดือน", { exact: true })).toBeVisible();
+    const payrollButton = page.getByRole("button", {
+      name: /จัดการสลิปเงินเดือนของ พนักงานขาดสลิป มีงานค้าง 3 รายการ/,
+    });
+    await expect(payrollButton.locator("span").last()).toHaveText("3");
+    await payrollButton.click();
+
+    const payrollDialog = page.getByRole("dialog", { name: "สลิปเงินเดือนของ พนักงานขาดสลิป" });
+    await expect(payrollDialog.getByText("เดือนที่ยังไม่มีสลิป", { exact: true })).toBeVisible();
+    await expect(payrollDialog.getByText(/กรกฎาคม 2569.*สิงหาคม 2569/)).toBeVisible();
+    await payrollDialog.getByRole("button", { name: "สร้างสลิปเงินเดือน", exact: true }).click();
+    const createDialog = page.getByRole("dialog", { name: "สร้างสลิปเงินเดือน" });
+    await expect(createDialog.getByLabel("เดือน")).toHaveValue("2026-07");
+    await createDialog.getByRole("button", { name: "ยืนยันสร้างสลิป" }).click();
+    await expect(createDialog).toBeHidden();
+    await expect(payrollDialog.getByText("สิงหาคม 2569", { exact: true })).toBeVisible();
+    await expect(payrollDialog.getByText("กรกฎาคม 2569", { exact: true })).toBeHidden();
+    await payrollDialog.getByRole("button", { name: "สร้างสลิปเงินเดือน", exact: true }).click();
+    await expect(createDialog.getByLabel("เดือน")).toHaveValue("2026-08");
+  });
+
   test("keeps branch and status controls usable without page overflow at 360px and 393px", async ({ page }) => {
     await page.setViewportSize({ width: 360, height: 800 });
     await page.goto("/");
@@ -857,7 +944,7 @@ test.describe("Time/payroll native dialogs", () => {
 
     await expect(page.getByLabel("กรองสาขา")).toBeVisible();
     const allButton = page.getByRole("button", { name: "ทั้งหมด", exact: true });
-    const pendingButton = page.getByRole("button", { name: /^รออนุมัติ/ });
+    const pendingButton = page.getByRole("button", { name: /^งานค้าง/ });
     await allButton.click();
     await expect(allButton).toHaveAttribute("aria-pressed", "true");
     await pendingButton.click();

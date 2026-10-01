@@ -1,28 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
 import { bangkokDateString } from "@/lib/bangkok-date";
 import { requireAuth } from "@/lib/server/auth";
+import { readActionablePendingAdjustments } from "@/lib/server/time-payroll-pending-adjustments";
 import { readAllSupabaseRows } from "@/lib/supabase-pages";
 import { buildPayrollPeriodState, type PayrollPeriodRow } from "@/lib/time-tracking/period-state";
 import { parseDailyWageInput } from "@/lib/time-tracking/wage";
 import { readTimeTrackingActionRequest } from "../action-request";
 
 export const dynamic = "force-dynamic";
-
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ISO_DATE_PATTERN = /^(?!0000)\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 const ISO_MONTH_PATTERN = /^(?!0000)\d{4}-(0[1-9]|1[0-2])$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
-
 function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
 }
-
 function isIsoDate(value: unknown): value is string {
   if (typeof value !== "string" || !ISO_DATE_PATTERN.test(value)) return false;
   const parsed = new Date(`${value}T00:00:00Z`);
   return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 }
-
 function hasValidAttendanceSelections(value: unknown, month: string) {
   if (!Array.isArray(value) || value.length > 31) return false;
   const dates = new Set<string>();
@@ -175,11 +172,12 @@ export async function GET(request: NextRequest) {
     const [
       userRows,
       pendingTransactions,
+      pendingAdjustments,
       pendingSlips,
       paymentLocationsResult,
       settingsResult,
       activePeriods,
-      debtTotalsResult,
+      managerOverviewResult,
     ] = await Promise.all([
       readAllSupabaseRows((from, to) => result.supabase.from("profiles").select(`
           id, name, phone, daily_wage, role, is_active, can_access_super_admin_features,
@@ -190,14 +188,15 @@ export async function GET(request: NextRequest) {
       readAllSupabaseRows((from, to) => result.supabase
         .from("financial_transactions")
         .select("profile_id")
-        .eq("status", "PENDING")
-        .in("type", ["DEBT", "WITHDRAWAL", "ADJUSTMENT"])
+        .eq("status", "PENDING").is("cancelled_at", null)
+        .in("type", ["DEBT", "WITHDRAWAL"])
         .order("id", { ascending: true })
         .range(from, to)),
+      readActionablePendingAdjustments(result.supabase),
       readAllSupabaseRows((from, to) => result.supabase
         .from("payroll_slips")
         .select("profile_id")
-        .eq("status", "PENDING")
+        .eq("status", "PENDING").is("cancelled_at", null)
         .order("id", { ascending: true })
         .range(from, to)),
       result.supabase.rpc("get_time_payroll_payment_locations"),
@@ -208,12 +207,12 @@ export async function GET(request: NextRequest) {
         .order("start_on", { ascending: false })
         .order("id", { ascending: false })
         .range(from, to)),
-      result.supabase.rpc("get_time_payroll_debt_totals"),
+      result.supabase.rpc("get_time_payroll_manager_overview"),
     ]);
 
     if (paymentLocationsResult.error) throw paymentLocationsResult.error;
     if (settingsResult.error) throw settingsResult.error;
-    if (debtTotalsResult.error) throw debtTotalsResult.error;
+    if (managerOverviewResult.error) throw managerOverviewResult.error;
 
     const users = userRows.filter((user) => {
       if (!user.is_active) return false;
@@ -226,11 +225,10 @@ export async function GET(request: NextRequest) {
     });
     const userIds = users.map((user) => user.id);
     const allowedUserIds = new Set(userIds);
-    const debtTotals = new Map(
-      ((debtTotalsResult.data || []) as Array<{ profileId: string; amount: number }>)
-        .map((row) => [row.profileId, Number(row.amount || 0)]),
+    const managerOverview = new Map(
+      ((managerOverviewResult.data || []) as Array<{ profileId: string; debtAmount: number; missingPayrollMonths: string[] }>)
+        .map((row) => [row.profileId, row]),
     );
-
     const periodsByUser = new Map<string, PayrollPeriodRow[]>();
     for (const period of activePeriods) {
       const periods = periodsByUser.get(period.profile_id) || [];
@@ -254,11 +252,13 @@ export async function GET(request: NextRequest) {
           ...user,
           primary_location_id: activePrimaryLocationId(user.user_locations),
           user_locations: undefined,
-          debt_remaining_amount: debtTotals.get(user.id) || 0,
+          debt_remaining_amount: Number(managerOverview.get(user.id)?.debtAmount || 0),
+          missing_payroll_months: managerOverview.get(user.id)?.missingPayrollMonths || [],
           period_state: periodState,
         };
       }),
-      pendingTransactions: pendingTransactions.filter((item) => allowedUserIds.has(item.profile_id)),
+      pendingTransactions: [...pendingTransactions, ...pendingAdjustments]
+        .filter((item) => allowedUserIds.has(item.profile_id)),
       pendingSlips: pendingSlips.filter((item) => allowedUserIds.has(item.profile_id)),
       admins: result.auth.canAccessSystemManager ? userRows
         .filter((profile) => profile.role === "admin" || profile.role === "super_admin")

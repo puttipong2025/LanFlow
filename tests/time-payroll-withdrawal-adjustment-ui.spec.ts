@@ -142,6 +142,47 @@ test("manager adjusts a locked withdrawal with a clear signed preview and branch
   expect(postCalls).toBe(1);
 });
 
+test("cancelled withdrawal remains audit history without active controls", async ({ page }) => {
+  const cancelledWithdrawal = {
+    ...withdrawal,
+    description: "รายการยกเลิกสำหรับตรวจสอบ",
+    cancelled_at: "2026-09-20T02:00:00Z",
+  };
+  await page.route("**/api/lanflow/time-tracking/admin", async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    await route.fulfill({
+      json: {
+        permissions: { canManage: true, canDecide: true, canConfigure: true },
+        users: [employee],
+        paymentLocations: [branch],
+        pendingSlips: [],
+        pendingTransactions: [],
+        admins: [],
+      },
+    });
+  });
+  await page.route("**/api/lanflow/time-tracking/user?**", async (route) => {
+    await route.fulfill({
+      json: {
+        wageInfo: { totalDays: 0, grossPay: 0, remainingBalance: 0, totalDebt: 0 },
+        transactions: [cancelledWithdrawal],
+        debts: [],
+        deductions: [],
+        slips: [],
+        adjustments: [],
+        adjustmentSummaries: [],
+      },
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
+  await page.getByRole("button", { name: `จัดการปฏิทินวันทำงานของ ${employee.name}` }).click();
+  const historyRow = page.getByText(cancelledWithdrawal.description, { exact: true }).locator("xpath=ancestor::li");
+  await expect(historyRow.getByText("ยกเลิก", { exact: true })).toBeVisible();
+  await expect(historyRow.getByRole("button")).toHaveCount(0);
+});
+
 test("manager approval preselects the locked withdrawal source branch", async ({ page }) => {
   const pendingAdjustmentId = "74000000-0000-4000-8000-000000000003";
   await page.route("**/api/lanflow/time-tracking/admin", async (route) => {

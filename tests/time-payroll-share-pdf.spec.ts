@@ -22,11 +22,11 @@ const longPayrollTransactions = Array.from({ length: 48 }, (_, index) => {
   const row = String(index + 1).padStart(3, "0");
   return {
     id: `row-${row}`,
-    type: "DEBT_DEDUCTION",
+    type: "DEBT",
     status: "APPROVED",
     amount: index + 1,
     description: `ROW-BEGIN-${row} รายการหักเงินสำหรับทดสอบการแบ่งหน้าของเอกสาร ROW-END-${row}`,
-    applied_month: "2026-07-01",
+    effective_date: "2026-07-01",
   };
 });
 
@@ -62,7 +62,15 @@ const payrollDocument = buildPayrollSlipDocument({
     approved_at: "2026-08-02T01:00:00.000Z",
     approver_name: "ผู้อนุมัติ",
     payment_label: "จ่ายโดยสาขาหลัก",
-    slip_data: { segments: [], transactions: longPayrollTransactions },
+    slip_data: {
+      segments: [],
+      transactions: longPayrollTransactions,
+      outstandingAdjustments: {
+        beforeDeductions: 3_500,
+        deductedThisSlip: 2_000,
+        remainingAfterDeductions: 1_500,
+      },
+    },
   },
   employeeName: "ผู้ใช้งานทั่วไป",
   generatedAt,
@@ -159,6 +167,10 @@ test("previews an 80mm receipt with both signatures and shares the payroll PDF F
   const dialog = page.getByRole("dialog", { name: "สลิปเงินเดือน" });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText("3,000.00 บาท", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("ยอดหนี้/เบิกก่อนหัก", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("ยอดหนี้/เบิกคงค้าง", { exact: true })).toHaveCount(2);
+  await expect(dialog.getByText("1,500.00 บาท", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("1,500 บาท", { exact: true })).toBeVisible();
   await expect(dialog.getByText("1 ก.ค. 2569", { exact: true }).first()).toBeVisible();
   const preview = dialog.getByTestId("time-payroll-receipt-preview");
   await expect(preview).toBeVisible();
@@ -263,6 +275,8 @@ test("keeps every payroll transaction row on one long 80mm PDF page", async ({ p
   expect(inspection.actual[0]).toContain("ผู้จ่ายเงิน");
   expect(inspection.actual[0]).toContain(payrollId);
   expect(inspection.actual[0]).toContain("1 ก.ค. 2569");
+  expect(inspection.actual[0]).toContain("ยอดหนี้/เบิกก่อนหัก");
+  expect(inspection.actual[0]).toContain("ยอดหนี้/เบิกคงค้าง");
   for (let index = 1; index <= longPayrollTransactions.length; index += 1) {
     const row = String(index).padStart(3, "0");
     const startPage = inspection.actual.findIndex((text) => text.includes(`ROW-BEGIN-${row}`));

@@ -15,7 +15,7 @@ export function EmployeeSlipList({ slips, online, onPreview }: {
               <li key={slip.id} className="flex flex-col gap-1 py-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="font-semibold">เดือน {slip.month} · สุทธิ {formatPayrollCurrency(slip.net_pay)}</p>
-                  <p className="text-xs text-ink/55">ขั้นต้น {formatPayrollCurrency(slip.gross_pay)} · หัก {formatPayrollCurrency(slip.total_deductions)} · {slip.status}</p>
+                  <p className="text-xs text-ink/55">ขั้นต้น {formatPayrollCurrency(slip.gross_pay)} · หัก {formatPayrollCurrency(slip.total_deductions)} · {slip.cancelled_at ? 'ยกเลิก' : slip.status}</p>
                 </div>
                 {!slip.cancelled_at && (slip.status === 'PENDING' || slip.status === 'APPROVED') && (
                   <button

@@ -97,6 +97,7 @@ export async function GET(request: NextRequest) {
         .eq("profile_id", targetUserId)
         .in("type", ["DEBT", "WITHDRAWAL"])
         .eq("status", "PENDING")
+        .is("cancelled_at", null)
         .order("effective_date", { ascending: false })
         .order("created_at", { ascending: false })
         .order("id", { ascending: false })
@@ -107,6 +108,7 @@ export async function GET(request: NextRequest) {
         .eq("profile_id", targetUserId)
         .in("type", ["DEBT", "WITHDRAWAL"])
         .eq("status", "APPROVED")
+        .is("cancelled_at", null)
         .gt("remaining_amount", 0)
         .order("effective_date", { ascending: true })
         .order("created_at", { ascending: true })
@@ -117,6 +119,7 @@ export async function GET(request: NextRequest) {
         .select("id, type, amount, parent_debt_id, applied_month, created_at")
         .eq("profile_id", targetUserId)
         .eq("status", "APPROVED")
+        .is("cancelled_at", null)
         .in("type", ["WITHDRAWAL_DEDUCTION", "DEBT_DEDUCTION"])
         .order("applied_month", { ascending: false })
         .order("created_at", { ascending: false })
@@ -149,6 +152,7 @@ export async function GET(request: NextRequest) {
         .select("id, parent_debt_id, amount, adjustment_base_amount, status, description, created_at, approved_at")
         .eq("profile_id", targetUserId)
         .eq("type", "ADJUSTMENT")
+        .is("cancelled_at", null)
         .order("created_at", { ascending: false })
         .order("id", { ascending: false })
         .range(from, to)),
@@ -225,6 +229,15 @@ export async function GET(request: NextRequest) {
       adjustmentSummaries: adjustmentSummaries.data || [],
     });
   } catch (error) {
+    if (
+      error
+      && typeof error === "object"
+      && "message" in error
+      && typeof error.message === "string"
+      && rpcErrorStatus(error.message) === 403
+    ) {
+      return rpcFailure({ message: error.message });
+    }
     console.error("Failed to load employee time/payroll data:", error);
     return NextResponse.json(
       { error: "โหลดข้อมูลเวลาและเงินเดือนไม่สำเร็จ" },

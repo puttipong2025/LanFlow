@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { millisecondsUntilNextActionableBadgeRefresh } from "@/lib/time-tracking/payroll-cutoff-refresh";
 import type { Tab } from "@/components/lanflow/tabs";
 
 export const ACTIONABLE_BADGES_QUERY_KEY = "actionableBadges";
@@ -16,30 +17,45 @@ type BadgeCountRow = {
   item_count: number;
 };
 
+type PayrollSettings = {
+  workdayEndTime?: string;
+  pendingEffectiveDate?: string | null;
+};
+
 export function useActionableBadges(enabled: boolean) {
   const query = useQuery({
     queryKey: [ACTIONABLE_BADGES_QUERY_KEY],
     enabled,
-    queryFn: async (): Promise<ActionableBadgeCounts> => {
+    queryFn: async () => {
       const supabase = createSupabaseBrowserClient();
-      const { data, error } = await supabase.rpc("get_actionable_badge_counts");
-      if (error) throw new Error(error.message);
+      const [badgesResult, settingsResult] = await Promise.all([
+        supabase.rpc("get_actionable_badge_counts"),
+        supabase.rpc("get_time_payroll_settings"),
+      ]);
+      if (badgesResult.error) throw new Error(badgesResult.error.message);
 
       const counts: ActionableBadgeCounts = {};
-      for (const row of (data ?? []) as BadgeCountRow[]) {
+      for (const row of (badgesResult.data ?? []) as BadgeCountRow[]) {
         counts[row.location_id] ??= {};
         counts[row.location_id][row.module_id] = Number(row.item_count ?? 0);
       }
-      return counts;
+      return {
+        counts,
+        payrollSettings: settingsResult.error ? null : settingsResult.data as PayrollSettings,
+      };
     },
     staleTime: 30_000,
     placeholderData: (previous) => previous,
-    refetchInterval: 60_000,
+    refetchInterval: (query) => millisecondsUntilNextActionableBadgeRefresh(
+      new Date(),
+      query.state.data?.payrollSettings?.workdayEndTime,
+      query.state.data?.payrollSettings?.pendingEffectiveDate,
+    ),
     refetchOnWindowFocus: true,
   });
 
   return {
-    counts: query.data ?? {},
+    counts: query.data?.counts ?? {},
     isLoading: query.isLoading,
   };
 }

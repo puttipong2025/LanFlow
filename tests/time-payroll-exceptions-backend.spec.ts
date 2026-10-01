@@ -48,6 +48,13 @@ function bangkokDate(offsetDays = 0) {
   }).format(date);
 }
 
+function previousBangkokMonthFirstMonday() {
+  const [year, month] = bangkokDate().split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 2, 1));
+  while (date.getUTCDay() !== 1) date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
+}
+
 function nextBangkokMonthBoundary() {
   const [year, month] = bangkokDate().split("-").map(Number);
   const activation = new Date(Date.UTC(year, month, 1));
@@ -514,7 +521,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     const service = serviceClient();
     const manager = await globalManagerClient();
     const employeeId = await createEmployee(service, "QA resume date correction");
-    const firstCurrent = `${bangkokDate().slice(0, 7)}-01`;
+    const firstCurrent = `${bangkokDate(-1).slice(0, 7)}-01`;
     const previousMonthEndValue = new Date(`${firstCurrent}T12:00:00Z`);
     previousMonthEndValue.setUTCDate(previousMonthEndValue.getUTCDate() - 1);
     const previousMonthEnd = previousMonthEndValue.toISOString().slice(0, 10);
@@ -554,11 +561,13 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_action: "PAUSE",
         p_effective_date: pendingPauseOn,
       })).error).toBeNull();
-      expect((await manager.rpc("replace_time_payroll_attendance_exceptions", {
+      const attendanceReplacement = await manager.rpc("replace_time_payroll_attendance_exceptions", {
         p_profile_id: employeeId,
         p_month: firstCurrent.slice(0, 7),
         p_selections: [{ date: firstCurrent, status: "HALF_DAY" }],
-      })).error).toBeNull();
+      });
+      expect(attendanceReplacement.error).toBeNull();
+      expect(Number((attendanceReplacement.data as { newOpenDeduction: number }).newOpenDeduction)).toBeGreaterThan(0);
       const session = await manager.auth.getSession();
       const authorization = `Bearer ${session.data.session!.access_token}`;
       const stateResponse = await fetch(`${appUrl}/api/lanflow/time-tracking/admin?month=${firstCurrent.slice(0, 7)}`, {
@@ -682,8 +691,8 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     const managerId = managerUser.data.user!.id;
     const employeeId = await createEmployee(service, "QA initial closed period correction");
     const today = bangkokDate();
-    const initialStart = `${today.slice(0, 7)}-01`;
     const closedEnd = bangkokDate(-1);
+    const initialStart = `${closedEnd.slice(0, 7)}-01`;
     const previousMonthEndValue = new Date(`${initialStart}T12:00:00Z`);
     previousMonthEndValue.setUTCDate(previousMonthEndValue.getUTCDate() - 1);
     const correctedStart = previousMonthEndValue.toISOString().slice(0, 10);
@@ -968,6 +977,16 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_comment: null,
       });
       expect(withdrawal.error).toBeNull();
+      const withdrawalId = (withdrawal.data as { id: string }).id;
+      const deductionsBeforeCorrection = await service
+        .from("financial_transactions")
+        .select("amount")
+        .eq("parent_debt_id", withdrawalId)
+        .eq("status", "APPROVED");
+      expect(deductionsBeforeCorrection.error).toBeNull();
+      const oldOpenDeduction = (deductionsBeforeCorrection.data || [])
+        .reduce((sum, row) => sum + Number(row.amount), 0);
+      expect(oldOpenDeduction).toBeGreaterThan(0);
       const rebuilt = await manager.rpc("correct_time_payroll_period_start", {
         p_profile_id: employeeId,
         p_period_id: periodId,
@@ -976,7 +995,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       expect(rebuilt.error).toBeNull();
       expect(rebuilt.data).toMatchObject({
         deductionsChanged: true,
-        oldOpenDeduction: 1000,
+        oldOpenDeduction,
         newOpenDeduction: 1000,
       });
 
@@ -1007,9 +1026,11 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     const location = await service.from("locations").select("id").eq("is_active", true).limit(1).single();
     expect(location.error).toBeNull();
     const employeeId = await createEmployee(service, "QA attendance deduction rebuild");
-    const currentMonth = bangkokDate().slice(0, 7);
-    const firstDay = `${currentMonth}-01`;
-    const thirdDay = `${currentMonth}-03`;
+    const firstDay = previousBangkokMonthFirstMonday();
+    const thirdDayValue = new Date(`${firstDay}T12:00:00Z`);
+    thirdDayValue.setUTCDate(thirdDayValue.getUTCDate() + 2);
+    const thirdDay = thirdDayValue.toISOString().slice(0, 10);
+    const currentMonth = firstDay.slice(0, 7);
     const reportId = crypto.randomUUID();
 
     try {
@@ -1137,8 +1158,8 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     const managerUser = await manager.auth.getUser();
     const managerId = managerUser.data.user!.id;
     const employeeId = await createEmployee(service, "QA canonical attendance allocation");
-    const currentMonth = bangkokDate().slice(0, 7);
-    const firstDay = `${currentMonth}-01`;
+    const firstDay = previousBangkokMonthFirstMonday();
+    const currentMonth = firstDay.slice(0, 7);
     const expenseLocationId = await firstActiveLocationId(service);
 
     try {
@@ -1232,9 +1253,11 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     const location = await service.from("locations").select("id").eq("is_active", true).limit(1).single();
     expect(location.error).toBeNull();
     const employeeId = await createEmployee(service, "QA attendance rebuild rollback");
-    const currentMonth = bangkokDate().slice(0, 7);
-    const firstDay = `${currentMonth}-01`;
-    const thirdDay = `${currentMonth}-03`;
+    const firstDay = previousBangkokMonthFirstMonday();
+    const currentMonth = firstDay.slice(0, 7);
+    const thirdDayValue = new Date(`${firstDay}T12:00:00Z`);
+    thirdDayValue.setUTCDate(thirdDayValue.getUTCDate() + 2);
+    const thirdDay = thirdDayValue.toISOString().slice(0, 10);
     const reportId = crypto.randomUUID();
 
     try {
@@ -1400,7 +1423,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     const employeeId = await createEmployee(service, employeeName);
     const today = bangkokDate();
     const lastPaidDate = bangkokDate(-1);
-    const firstCurrent = `${today.slice(0, 7)}-01`;
+    const firstCurrent = `${lastPaidDate.slice(0, 7)}-01`;
     const previousMonthEndValue = new Date(`${firstCurrent}T12:00:00Z`);
     previousMonthEndValue.setUTCDate(previousMonthEndValue.getUTCDate() - 1);
     const previousMonthEnd = previousMonthEndValue.toISOString().slice(0, 10);
@@ -2223,6 +2246,12 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       expect(delegatedDashboard.pendingTransactions).toEqual([]);
       expect(delegatedDashboard.pendingSlips).toEqual([]);
 
+      const delegatedOtherRoute = await fetch(
+        appUrl + "/api/lanflow/time-tracking/user?userId=" + employeeOtherBranch + "&month=" + month,
+        { headers: { Authorization: "Bearer " + delegatedSession.data.session!.access_token } },
+      );
+      expect(delegatedOtherRoute.status).toBe(403);
+
       const employeeSession = await employee.auth.getSession();
       const employeeAdminRoute = await fetch(appUrl + "/api/lanflow/time-tracking/admin?month=" + month, {
         headers: { Authorization: "Bearer " + employeeSession.data.session!.access_token },
@@ -2675,20 +2704,21 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
     const employeeId = await createEmployee(service, "QA wage recalculation");
     const location = await service.from("locations").select("id").eq("is_active", true).order("id").limit(1).single();
     expect(location.error).toBeNull();
-    const currentMonth = bangkokDate().slice(0, 7);
+    const firstDay = previousBangkokMonthFirstMonday();
+    const currentMonth = firstDay.slice(0, 7);
 
     try {
       await primaryLocation(service, employeeId, location.data!.id);
       expect((await manager.rpc("set_time_payroll_active_period", {
         p_profile_id: employeeId,
         p_action: "ENABLE",
-        p_effective_date: `${currentMonth}-01`,
+        p_effective_date: firstDay,
       })).error).toBeNull();
       const withdrawal = await manager.rpc("create_time_tracking_transaction", {
         p_profile_id: employeeId,
         p_type: "WITHDRAWAL",
         p_amount: 100000,
-        p_effective_date: `${currentMonth}-01`,
+        p_effective_date: firstDay,
         p_description: "QA wage recalculation withdrawal",
         p_expense_location_id: location.data!.id,
         p_comment: null,

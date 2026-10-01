@@ -7,9 +7,11 @@ import { formatPayrollCurrency } from "@/lib/time-tracking/format";
 import type { Location } from "@/types";
 import { ExpenseLocationChangeModal } from "../ExpenseLocationChangeModal";
 import { SlipPreviewModal } from "../SlipPreviewModal";
+import { monthLabel } from "../display";
 import { bangkokToday, paymentScopeReason, paymentSourceLabel, reportLockReason, TIME_TRACKING_OFFLINE_MESSAGE } from "../policy";
 
 export function PayrollModal({ user, online, canDecide, expenseLocations, globalManager, onApprove, onReject, onChangePayment, onClose, onRefresh }: { user: any, online: boolean, canDecide: boolean, expenseLocations: Location[], globalManager: boolean, onApprove?: (slip: any, refreshOwner: () => Promise<void>) => Promise<boolean>, onReject?: (slip: any, refreshOwner: () => Promise<void>) => Promise<boolean>, onChangePayment: (slip: any, refreshOwner: () => Promise<void>) => void, onClose: () => void, onRefresh: () => Promise<void> }) {
+  const missingPayrollMonths = Array.isArray(user.missing_payroll_months) ? user.missing_payroll_months : [];
   const [pendingCreatePayment, setPendingCreatePayment] = useState<{ month: string; netPay: number } | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
   const [slips, setSlips] = useState<any[]>([]);
@@ -17,7 +19,7 @@ export function PayrollModal({ user, online, canDecide, expenseLocations, global
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [createFormOpen, setCreateFormOpen] = useState(false);
-  const [createMonth, setCreateMonth] = useState(bangkokToday().slice(0, 7));
+  const [createMonth, setCreateMonth] = useState(missingPayrollMonths[0] ?? bangkokToday().slice(0, 7));
   const [previewSlipId, setPreviewSlipId] = useState<string | null>(null);
   const loadSlipsRequestIdRef = useRef(0);
   const createSubmitRef = useRef<HTMLButtonElement>(null);
@@ -66,7 +68,7 @@ export function PayrollModal({ user, online, canDecide, expenseLocations, global
       alert(TIME_TRACKING_OFFLINE_MESSAGE);
       return;
     }
-    setCreateMonth(bangkokToday().slice(0, 7));
+    setCreateMonth(missingPayrollMonths[0] ?? bangkokToday().slice(0, 7));
     setCreateError(null);
     setCreateFormOpen(true);
   }
@@ -163,6 +165,12 @@ export function PayrollModal({ user, online, canDecide, expenseLocations, global
         size="wide"
       >
         <div className="space-y-4 p-3 sm:p-4" aria-busy={loading || saving}>
+          {missingPayrollMonths.length > 0 && (
+            <section className="rounded-lg border border-clay/20 bg-clay/5 p-3">
+              <h3 className="text-balance text-sm font-bold text-clay">เดือนที่ยังไม่มีสลิป</h3>
+              <p className="mt-1 text-pretty text-sm text-ink/70">{missingPayrollMonths.map(monthLabel).join(", ")}</p>
+            </section>
+          )}
           <div className="flex justify-end">
             <button
               type="button"
@@ -186,7 +194,8 @@ export function PayrollModal({ user, online, canDecide, expenseLocations, global
           ) : (
              <ul className="divide-y divide-black/5 bg-white border border-black/10 rounded-xl overflow-hidden shadow-sm">
                 {slips.map((slip: any) => {
-                  const canDelete = !slip.cancelled_at;
+                   const cancelled = Boolean(slip.cancelled_at);
+                   const canDelete = !cancelled;
 
                  return (
                   <li key={slip.id} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -205,11 +214,11 @@ export function PayrollModal({ user, online, canDecide, expenseLocations, global
                     </div>
 
                     <div className="flex flex-wrap items-center gap-3">
-                      <span className={`text-xs font-bold px-2 py-1 rounded-md ${slip.status === 'APPROVED' ? 'bg-success/15 text-success' : 'bg-ink/10 text-ink'}`}>
-                        {slip.status}
+                      <span className={`text-xs font-bold px-2 py-1 rounded-md ${!cancelled && slip.status === 'APPROVED' ? 'bg-success/15 text-success' : 'bg-ink/10 text-ink'}`}>
+                        {cancelled ? 'ยกเลิก' : slip.status}
                       </span>
 
-                      {!slip.cancelled_at && (slip.status === 'PENDING' || slip.status === 'APPROVED') && (
+                      {!cancelled && (slip.status === 'PENDING' || slip.status === 'APPROVED') && (
                         <button
                           type="button"
                           onClick={() => setPreviewSlipId(slip.id)}
@@ -221,16 +230,16 @@ export function PayrollModal({ user, online, canDecide, expenseLocations, global
                         </button>
                       )}
 
-                        {canDecide && slip.status === 'PENDING' && onApprove && (
+                        {!cancelled && canDecide && slip.status === 'PENDING' && onApprove && (
                          <button onClick={() => void runSlipDecision(() => onApprove(slip, loadSlips))} disabled={saving || loading || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-success text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-success/85 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
                        )}
-                       {slip.status === 'APPROVED' && Number(slip.net_pay) > 0 && (
+                       {!cancelled && slip.status === 'APPROVED' && Number(slip.net_pay) > 0 && (
                           <div className="flex min-w-0 flex-col items-start gap-1">
                             <span className="text-pretty text-xs font-semibold text-ink/70">{paymentSourceLabel(slip)}</span>
                             <button onClick={() => onChangePayment(slip, loadSlips)} disabled={saving || loading || !online || Boolean(slip.report_lock_no) || Boolean(paymentScopeReason(slip, globalManager, expenseLocations))} title={reportLockReason(slip) ?? paymentScopeReason(slip, globalManager, expenseLocations) ?? undefined} className="bg-river text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-river/85 disabled:opacity-40">เปลี่ยนวิธีจ่าย</button>
                           </div>
                        )}
-                        {canDecide && slip.status === 'PENDING' && onReject && (
+                        {!cancelled && canDecide && slip.status === 'PENDING' && onReject && (
                           <button onClick={() => void runSlipDecision(() => onReject(slip, loadSlips))} disabled={saving || loading || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-danger text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-danger/85 disabled:cursor-not-allowed disabled:opacity-50">ปฏิเสธ</button>
                        )}
 
@@ -298,4 +307,3 @@ export function PayrollModal({ user, online, canDecide, expenseLocations, global
     </>
   )
 }
-

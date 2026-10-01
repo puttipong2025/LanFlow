@@ -280,7 +280,7 @@ test("time/payroll pending count reaches the module nav and primary-branch selec
     await timePayrollTab.click();
     await page.getByLabel("กรองสาขา").selectOption(assignment!.location_id);
     await expect(page.getByRole("button", {
-      name: `รออนุมัติ ${tabCount} รายการ`,
+      name: `งานค้าง ${tabCount} รายการ`,
       exact: true,
     })).toBeVisible({ timeout: 15_000 });
   } finally {
@@ -529,7 +529,7 @@ test("approval buttons and modal counts follow the selected branch", async ({ br
     await cappedApprovalButton.click();
     approvalModal = page.locator(".fixed.inset-0").last();
     await expect(approvalModal.getByText("คำขอรออนุมัติ 100 รายการ", { exact: true })).toBeVisible();
-    await expect(approvalModal.getByRole("cell", { name: "คำขอรับจ่าย Badge 2", exact: true })).toBeVisible();
+    await expect(approvalModal.locator("tbody tr", { hasText: "คำขอรับจ่าย Badge 2" }).first()).toBeVisible();
     await approvalModal.getByLabel("ปิด", { exact: true }).click();
     await page.setViewportSize({ width: 390, height: 844 });
     const incomeButtonBox = await cappedApprovalButton.boundingBox();

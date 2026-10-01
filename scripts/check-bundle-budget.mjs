@@ -41,7 +41,9 @@ const preRefactorTimePayrollBaseline = { raw: 120_810, gzip: 26_972 };
 // Workflow modules add a small, measured boundary cost. Ratchet the verified
 // modularized payload exactly rather than adding async loading behavior to a
 // behavior-preserving refactor.
-const timePayrollBudget = { raw: 125_754, gzip: 28_776 };
+// Missing-slip badges, cutoff refresh, and outstanding-balance slip rows add
+// verified product behavior to this lazy business-module boundary.
+const timePayrollBudget = { raw: 128_011, gzip: 29_467 };
 const chunkDirectory = resolve(distDirectory, "static/chunks");
 const chunkFiles = (await readdir(chunkDirectory, { recursive: true }))
   .filter((file) => file.endsWith(".js"));

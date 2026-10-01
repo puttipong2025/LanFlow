@@ -5,6 +5,7 @@ import type { PayrollPeriodStateDto } from "@/lib/time-tracking/attendance-contr
 import { formatDailyWageCurrency } from "@/lib/time-tracking/format";
 import type { Location } from "@/types";
 import { formatThaiDate, payrollPeriodActionLabel } from "../display";
+import { missingPayrollMonthCount } from "../employee-list";
 import { TIME_TRACKING_OFFLINE_MESSAGE } from "../policy";
 import { cn } from "@/lib/cn";
 
@@ -45,7 +46,7 @@ export function ManagerEmployeeDirectory({
            <div className="flex flex-wrap gap-2" aria-label="กรองตามสถานะ">
              {(["pending", "all"] as const).map((filter) => {
                const selected = activeEmployeeFilter === filter;
-               const label = filter === "pending" ? "รออนุมัติ" : "ทั้งหมด";
+                const label = filter === "pending" ? "งานค้าง" : "ทั้งหมด";
                const accessibleLabel = filter === "pending" && branchPendingCount > 0
                  ? `${label} ${branchPendingCount} รายการ`
                  : label;
@@ -94,17 +95,19 @@ export function ManagerEmployeeDirectory({
                   const periodState = user.period_state as PayrollPeriodStateDto | undefined;
                   const status = periodState?.currentStatus === "ACTIVE" ? 'ACTIVE_PERIOD' : 'INACTIVE_PERIOD';
                const debtRemainingAmount = Number(user.debt_remaining_amount || 0);
-               const dashboardPendingCount = pendingCountForUser(pendingTransactions, user.id);
-               const payrollPendingCount = pendingCountForUser(pendingSlips, user.id);
+                const dashboardPendingCount = pendingCountForUser(pendingTransactions, user.id);
+                const payrollPendingCount = pendingCountForUser(pendingSlips, user.id);
+                const missingPayrollCount = missingPayrollMonthCount(user);
+                const payrollWorkCount = payrollPendingCount + missingPayrollCount;
                const overviewAction = canManage
                  ? `จัดการปฏิทินวันทำงานของ ${user.name}`
                  : `ดูข้อมูลเวลาและเงินเดือนของ ${user.name}`;
                const overviewLabel = dashboardPendingCount > 0
                  ? `${overviewAction} มีรายการรออนุมัติ ${dashboardPendingCount} รายการ`
                  : overviewAction;
-               const payrollLabel = payrollPendingCount > 0
-                 ? `จัดการสลิปเงินเดือนของ ${user.name} มีสลิปรออนุมัติ ${payrollPendingCount} รายการ`
-                 : `จัดการสลิปเงินเดือนของ ${user.name}`;
+                const payrollLabel = payrollWorkCount > 0
+                  ? `จัดการสลิปเงินเดือนของ ${user.name} มีงานค้าง ${payrollWorkCount} รายการ สลิปรออนุมัติ ${payrollPendingCount} รายการ ขาดสลิป ${missingPayrollCount} เดือน`
+                  : `จัดการสลิปเงินเดือนของ ${user.name}`;
                return (
                 <tr
                   key={user.id}
@@ -152,14 +155,15 @@ export function ManagerEmployeeDirectory({
                           className="focus-ring relative inline-flex size-10 items-center justify-center rounded-md bg-leaf text-lg text-white hover:bg-leaf/80 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           <span aria-hidden="true">🧾</span>
-                          {payrollPendingCount > 0 && <span aria-hidden="true" className="absolute -right-1 -top-1 min-w-4 rounded-full bg-clay px-1 py-0.5 text-[10px] leading-none text-white">{payrollPendingCount}</span>}
+                          {payrollWorkCount > 0 && <span aria-hidden="true" className="absolute -right-1 -top-1 min-w-4 rounded-full bg-clay px-1 py-0.5 text-center text-[10px] leading-none text-white tabular-nums">{payrollWorkCount > 99 ? "99+" : payrollWorkCount}</span>}
                         </button>
                       )}
                     </div>
                   </td>
                   <td className="py-3">
-                    {user.name}
-                    {isSelf && <span className="ml-2 rounded border border-leaf/20 bg-mint px-1.5 py-0.5 text-xs font-semibold text-leaf">ของตนเอง</span>}
+                     {user.name}
+                     {isSelf && <span className="ml-2 rounded border border-leaf/20 bg-mint px-1.5 py-0.5 text-xs font-semibold text-leaf">ของตนเอง</span>}
+                     {missingPayrollCount > 0 && <span className="ml-2 rounded-full bg-clay/10 px-2 py-0.5 text-xs font-bold text-clay tabular-nums">ขาดสลิป {missingPayrollCount} เดือน</span>}
                   </td>
                   <td className="py-3">
                     <span className="tabular-nums">{formatDailyWageCurrency(user.daily_wage || 0)}</span>

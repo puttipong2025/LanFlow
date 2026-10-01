@@ -85,10 +85,10 @@ select extensions.lives_ok($$select public.create_time_tracking_payroll_slip('62
 select extensions.is((select status::text from public.payroll_slips where profile_id='62000000-0000-4000-8000-000000000001'),'APPROVED','self payroll is approved');
 select extensions.is((select public.expense_location_name(ps) from public.payroll_slips ps where profile_id='62000000-0000-4000-8000-000000000001'),'Parity A','payroll exposes persisted payer name');
 select extensions.lives_ok($$select public.set_time_payroll_active_period('62000000-0000-4000-8000-000000000007','ENABLE',
- (now() at time zone 'Asia/Bangkok')::date-1)$$,'manager can enroll an ordinary user for the central payroll regression');
+ (date_trunc('month',now() at time zone 'Asia/Bangkok') - interval '1 month')::date)$$,'manager can enroll an ordinary user for the central payroll regression');
 select extensions.lives_ok($$select public.create_time_tracking_payroll_slip('62000000-0000-4000-8000-000000000007',
- to_char(now() at time zone 'Asia/Bangkok','YYYY-MM'),false,null,'outside system',
- (public.preview_time_tracking_payroll_slip('62000000-0000-4000-8000-000000000007',to_char(now() at time zone 'Asia/Bangkok','YYYY-MM'))->>'netPay')::numeric)$$,'manager can approve positive central payroll without a branch expense');
+ to_char(now() at time zone 'Asia/Bangkok' - interval '1 month','YYYY-MM'),false,null,'outside system',
+ (public.preview_time_tracking_payroll_slip('62000000-0000-4000-8000-000000000007',to_char(now() at time zone 'Asia/Bangkok' - interval '1 month','YYYY-MM'))->>'netPay')::numeric)$$,'manager can approve positive central payroll without a branch expense');
 select extensions.is((select expense_location_id from public.payroll_slips where profile_id='62000000-0000-4000-8000-000000000007'),null::uuid,'central payroll keeps a null expense location');
 
 -- Employee submission stays pending; a delegated manager can decide it and see the badge.
@@ -96,7 +96,7 @@ select set_config('request.jwt.claim.sub','62000000-0000-4000-8000-000000000002'
 select extensions.lives_ok($$select public.request_time_tracking_withdrawal(5)$$,'employee request remains available');
 select extensions.is((select count(*) from public.financial_transactions where profile_id=auth.uid() and status='PENDING'),1::bigint,'employee request remains pending');
 select set_config('request.jwt.claim.sub','62000000-0000-4000-8000-000000000001',true);
-select extensions.is((select item_count from public.get_actionable_badge_counts() where module_id='time-tracking' and location_id='61000000-0000-4000-8000-000000000001'),1::bigint,'delegated approver sees actionable badge');
+select extensions.ok((select item_count >= 1 from public.get_actionable_badge_counts() where module_id='time-tracking' and location_id='61000000-0000-4000-8000-000000000001'),'delegated approver sees pending work plus any ready missing-slip months');
 select extensions.lives_ok($$select public.decide_time_tracking_approval('transaction',
  (select id from public.financial_transactions where profile_id='62000000-0000-4000-8000-000000000002' and status='PENDING'),
  'APPROVED',null,'61000000-0000-4000-8000-000000000001')$$,'delegated approver can decide employee request');
