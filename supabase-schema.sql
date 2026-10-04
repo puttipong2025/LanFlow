@@ -9811,13 +9811,21 @@ ALTER FUNCTION "private"."validate_rubber_approval_group_v2_input"("p_location_i
 
 
 CREATE OR REPLACE FUNCTION "private"."validate_rubber_effective_price_cap"("p_central_price" numeric, "p_price_allowance" numeric) RETURNS numeric
-    LANGUAGE "plpgsql" IMMUTABLE
+    LANGUAGE "plpgsql" STABLE
     SET "search_path" TO ''
     AS $$
 declare
+  v_max_price_allowance numeric;
   v_effective_price_cap numeric := p_central_price + p_price_allowance;
 begin
-  if v_effective_price_cap > 9999999999.99 then
+  select settings.max_price_allowance into v_max_price_allowance
+  from public.rubber_bill_approval_settings settings
+  where settings.id = true;
+
+  if p_price_allowance > v_max_price_allowance then
+    raise exception 'RUBBER_ALLOWANCE_LIMIT_EXCEEDED: ราคายางที่กำหนดเกินค่าสูงสุด กรุณาเพิ่มเพดานส่วนต่างราคายางก่อน';
+  end if;
+  if p_central_price + v_max_price_allowance > 9999999999.99 then
     raise exception 'RUBBER_EFFECTIVE_PRICE_CAP_INVALID: ราคากลางรวมส่วนต่างต้องไม่เกิน 9,999,999,999.99 บาท';
   end if;
   return v_effective_price_cap;
@@ -19886,6 +19894,7 @@ begin
     ),
     'quota', jsonb_build_object(
       'limitPerAdmin', v_settings.quota_limit_per_admin,
+      'maxPriceAllowance', v_settings.max_price_allowance,
       'roundId', v_settings.quota_round_id,
       'updatedByName', v_settings.quota_updated_by_name,
       'updatedByPhone', v_settings.quota_updated_by_phone,
@@ -22905,6 +22914,70 @@ $$;
 
 
 ALTER FUNCTION "public"."save_rubber_admin_quota"("p_quota_limit" integer, "p_expected_round_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."save_rubber_admin_quota_v2"("p_quota_limit" integer, "p_max_price_allowance" numeric, "p_expected_round_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_settings public.rubber_bill_approval_settings%rowtype;
+  v_actor public.profiles%rowtype;
+  v_current_max_allowance numeric;
+begin
+  if not private.is_active_user() or not exists (
+    select 1 from public.profiles p
+    where p.id = auth.uid() and p.is_active = true and p.role = 'super_admin'
+  ) then
+    raise exception 'FORBIDDEN: เฉพาะ super admin เท่านั้นที่ตั้งโควต้าและเพดานส่วนต่างราคาได้';
+  end if;
+  if p_quota_limit is null or p_quota_limit < 0 then
+    raise exception 'RUBBER_QUOTA_INVALID: จำนวนโควต้าต้องเป็นจำนวนเต็มตั้งแต่ 0 ขึ้นไป';
+  end if;
+  if p_max_price_allowance is null
+     or p_max_price_allowance < 0
+     or scale(p_max_price_allowance) > 2 then
+    raise exception 'RUBBER_ALLOWANCE_INVALID: ราคายางที่กำหนดสูงสุดต้องไม่ติดลบและมีทศนิยมไม่เกิน 2 ตำแหน่ง';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended('rubber-approval-policy', 0));
+  select * into v_settings
+  from public.rubber_bill_approval_settings where id = true for update;
+
+  if v_settings.quota_round_id <> p_expected_round_id then
+    raise exception 'RUBBER_QUOTA_STALE: การตั้งค่าโควต้าถูกแก้ไขโดยผู้ใช้อื่น';
+  end if;
+
+  select greatest(
+    v_settings.ungrouped_price_allowance,
+    coalesce(max(groups.price_allowance), 0)
+  ) into v_current_max_allowance
+  from public.rubber_approval_groups groups;
+
+  if p_max_price_allowance < v_current_max_allowance then
+    raise exception 'RUBBER_ALLOWANCE_LIMIT_TOO_LOW: ราคายางที่กำหนดสูงสุดต้องไม่น้อยกว่าค่าที่กลุ่มหรือสาขาที่ยังไม่จัดกลุ่มใช้อยู่';
+  end if;
+  if v_settings.central_price + p_max_price_allowance > 9999999999.99 then
+    raise exception 'RUBBER_EFFECTIVE_PRICE_CAP_INVALID: ราคากลางรวมส่วนต่างต้องไม่เกิน 9,999,999,999.99 บาท';
+  end if;
+
+  select * into v_actor from public.profiles p where p.id = auth.uid();
+  update public.rubber_bill_approval_settings
+  set quota_limit_per_admin = p_quota_limit,
+      max_price_allowance = p_max_price_allowance,
+      quota_round_id = gen_random_uuid(),
+      quota_updated_by_user_id = auth.uid(),
+      quota_updated_by_name = v_actor.name,
+      quota_updated_by_phone = v_actor.phone,
+      quota_updated_at = clock_timestamp()
+  where id = true;
+
+  return public.list_rubber_approval_groups();
+end
+$$;
+
+
+ALTER FUNCTION "public"."save_rubber_admin_quota_v2"("p_quota_limit" integer, "p_max_price_allowance" numeric, "p_expected_round_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."save_rubber_bill_date_approval_setting"("p_non_current_date_requires_approval" boolean) RETURNS boolean
@@ -27870,7 +27943,9 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_bill_approval_settings" (
     "quota_updated_by_phone" "text",
     "quota_updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "price_rule_revision" bigint DEFAULT 1 NOT NULL,
+    "max_price_allowance" numeric(12,2) NOT NULL,
     CONSTRAINT "rubber_bill_approval_central_price_check" CHECK ((("central_price" > (0)::numeric) AND ("scale"("central_price") <= 2))),
+    CONSTRAINT "rubber_bill_approval_max_allowance_check" CHECK ((("max_price_allowance" >= (0)::numeric) AND ("scale"("max_price_allowance") <= 2))),
     CONSTRAINT "rubber_bill_approval_quota_limit_check" CHECK (("quota_limit_per_admin" >= 0)),
     CONSTRAINT "rubber_bill_approval_settings_configured_price_check" CHECK ((("configured_price" IS NULL) OR ("configured_price" >= (0)::numeric))),
     CONSTRAINT "rubber_bill_approval_settings_edit_window_minutes_check" CHECK (("edit_window_minutes" >= 0)),
@@ -33091,6 +33166,11 @@ GRANT ALL ON FUNCTION "public"."save_money_transfer"("p_payload" "jsonb") TO "au
 
 REVOKE ALL ON FUNCTION "public"."save_rubber_admin_quota"("p_quota_limit" integer, "p_expected_round_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."save_rubber_admin_quota"("p_quota_limit" integer, "p_expected_round_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."save_rubber_admin_quota_v2"("p_quota_limit" integer, "p_max_price_allowance" numeric, "p_expected_round_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."save_rubber_admin_quota_v2"("p_quota_limit" integer, "p_max_price_allowance" numeric, "p_expected_round_id" "uuid") TO "authenticated";
 
 
 

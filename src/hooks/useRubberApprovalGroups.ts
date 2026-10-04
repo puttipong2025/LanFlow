@@ -112,7 +112,7 @@ export function useRubberApprovalGroups(allLocationIds: string[]) {
     },
   });
   const saveQuota = useMutation({
-    mutationFn: (input: { quotaLimit: number; expectedRoundId: string }) => saveGlobalSettings("quota", input),
+    mutationFn: (input: { quotaLimit: number; maxPriceAllowance: number; expectedRoundId: string }) => saveGlobalSettings("quota", input),
     onSuccess: (data) => queryClient.setQueryData([RUBBER_APPROVAL_GROUPS_KEY], data),
   });
 

@@ -29,7 +29,7 @@ export type RubberApprovalGroup = {
 
 export type RubberCentralPriceSetting = { value: number; revision: number; updatedByName: string; updatedByPhone?: string | null; updatedAt: string };
 export type RubberUngroupedDefaults = { locationIds: string[]; editWindowMinutes: number; priceAllowance: number; revision: number; updatedByName: string; updatedByPhone?: string | null; updatedAt: string };
-export type RubberAdminQuotaSetting = { limitPerAdmin: number; roundId: string; updatedByName: string; updatedByPhone?: string | null; updatedAt: string };
+export type RubberAdminQuotaSetting = { limitPerAdmin: number; maxPriceAllowance: number; roundId: string; updatedByName: string; updatedByPhone?: string | null; updatedAt: string };
 
 export type RubberSubmissionDecision = {
   disposition: "direct" | "approval_required" | "quota_confirmation_required" | "failed";

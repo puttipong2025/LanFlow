@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select extensions.plan(49);
+select extensions.plan(51);
 
 select extensions.ok(
   to_regclass('public.rubber_bill_price_quota_uses') is not null,
@@ -15,6 +15,11 @@ select extensions.is(
 select extensions.ok(
   not exists (select 1 from public.rubber_approval_groups where price_allowance < 0),
   'group allowance backfill never produces a negative value'
+);
+select extensions.is(
+  (select max_price_allowance from public.rubber_bill_approval_settings where id = true),
+  0::numeric,
+  'fresh databases start with a zero allowance ceiling'
 );
 select extensions.ok(
   not has_table_privilege('authenticated', 'public.rubber_bill_price_quota_uses', 'select'),
@@ -51,20 +56,9 @@ select extensions.is(
   43::numeric,
   'System Manager can update central price'
 );
-select extensions.is(
-  (
-    public.save_rubber_ungrouped_defaults(
-      30,
-      3,
-      (select ungrouped_revision from public.rubber_bill_approval_settings where id = true)
-    )->'ungroupedDefaults'->>'priceAllowance'
-  )::numeric,
-  3::numeric,
-  'System Manager can update ungrouped defaults'
-);
 select extensions.throws_ok(
   $$select public.save_rubber_central_price(
-    9999999999.99,
+    10000000000,
     (select central_price_revision from public.rubber_bill_approval_settings where id = true)
   )$$,
   'P0001',
@@ -78,8 +72,8 @@ select extensions.throws_ok(
     (select ungrouped_revision from public.rubber_bill_approval_settings where id = true)
   )$$,
   'P0001',
-  'RUBBER_EFFECTIVE_PRICE_CAP_INVALID: ราคากลางรวมส่วนต่างต้องไม่เกิน 9,999,999,999.99 บาท',
-  'ungrouped allowance cannot make the effective cap overflow'
+  'RUBBER_ALLOWANCE_LIMIT_EXCEEDED: ราคายางที่กำหนดเกินค่าสูงสุด กรุณาเพิ่มเพดานส่วนต่างราคายางก่อน',
+  'ungrouped allowance cannot exceed the system ceiling'
 );
 select extensions.throws_ok(
   $$select public.create_rubber_approval_group_v2(
@@ -88,14 +82,14 @@ select extensions.throws_ok(
     9999999999.99
   )$$,
   'P0001',
-  'RUBBER_EFFECTIVE_PRICE_CAP_INVALID: ราคากลางรวมส่วนต่างต้องไม่เกิน 9,999,999,999.99 บาท',
-  'group allowance cannot make the effective cap overflow'
+  'RUBBER_ALLOWANCE_LIMIT_EXCEEDED: ราคายางที่กำหนดเกินค่าสูงสุด กรุณาเพิ่มเพดานส่วนต่างราคายางก่อน',
+  'group allowance cannot exceed the system ceiling'
 );
 select extensions.throws_ok(
-  $$select public.save_rubber_admin_quota(2, (select quota_round_id from public.rubber_bill_approval_settings where id = true))$$,
+  $$select public.save_rubber_admin_quota_v2(2, 5, (select quota_round_id from public.rubber_bill_approval_settings where id = true))$$,
   'P0001',
-  'FORBIDDEN: เฉพาะ super admin เท่านั้นที่ตั้งโควต้าได้',
-  'System Manager cannot save the quota'
+  'FORBIDDEN: เฉพาะ super admin เท่านั้นที่ตั้งโควต้าและเพดานส่วนต่างราคาได้',
+  'System Manager cannot save the quota bundle'
 );
 reset role;
 
@@ -113,8 +107,9 @@ select set_config(
 set local role authenticated;
 select extensions.is(
   (
-    public.save_rubber_admin_quota(
+    public.save_rubber_admin_quota_v2(
       2,
+      5,
       (select quota_round_id from public.rubber_bill_approval_settings where id = true)
     )->'quota'->>'limitPerAdmin'
   )::integer,
@@ -125,6 +120,27 @@ select extensions.is(
   (select quota_limit_per_admin from public.rubber_bill_approval_settings where id = true),
   2,
   'quota limit is persisted'
+);
+select extensions.is(
+  (select max_price_allowance from public.rubber_bill_approval_settings where id = true),
+  5::numeric,
+  'allowance ceiling is persisted with quota'
+);
+reset role;
+
+select set_config('request.jwt.claim.sub', '72000000-0000-4000-8000-000000000001', true);
+select set_config('request.jwt.claims', '{"sub":"72000000-0000-4000-8000-000000000001","role":"authenticated"}', true);
+set local role authenticated;
+select extensions.is(
+  (
+    public.save_rubber_ungrouped_defaults(
+      30,
+      3,
+      (select ungrouped_revision from public.rubber_bill_approval_settings where id = true)
+    )->'ungroupedDefaults'->>'priceAllowance'
+  )::numeric,
+  3::numeric,
+  'System Manager can update ungrouped defaults within the ceiling'
 );
 reset role;
 

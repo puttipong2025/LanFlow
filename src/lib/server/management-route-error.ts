@@ -56,6 +56,8 @@ export function managementErrorResponse(error: ErrorLike, fallback: string) {
     { prefix: "RUBBER_CENTRAL_PRICE_INVALID:", status: 400 },
     { prefix: "RUBBER_EFFECTIVE_PRICE_CAP_INVALID:", status: 400 },
     { prefix: "RUBBER_ALLOWANCE_INVALID:", status: 400 },
+    { prefix: "RUBBER_ALLOWANCE_LIMIT_TOO_LOW:", status: 400 },
+    { prefix: "RUBBER_ALLOWANCE_LIMIT_EXCEEDED:", status: 400 },
     { prefix: "RUBBER_EDIT_WINDOW_INVALID:", status: 400 },
     { prefix: "RUBBER_QUOTA_INVALID:", status: 400 },
     { prefix: "RUBBER_WEIGHT_ALERT_GROUP_EMPTY:", status: 400 },
