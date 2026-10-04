@@ -11,12 +11,13 @@ type ApprovalGroup = {
   id: string;
   locationIds: string[];
   editWindowMinutes: number;
-  configuredPrice: number | null;
+  priceAllowance: number;
+  revisionNo: number;
 };
 
 type ApprovalGroupFixture =
   | { kind: 'restore'; group: ApprovalGroup }
-  | { kind: 'delete'; groupId: string }
+  | { kind: 'delete'; group: ApprovalGroup }
   | null;
 
 async function withManagerContext<T>(browser: Browser, action: (page: Page) => Promise<T>) {
@@ -47,41 +48,44 @@ async function listApprovalGroups(page: Page) {
   return data.groups;
 }
 
-async function updateApprovalGroup(page: Page, group: ApprovalGroup, configuredPrice: number | null) {
+async function updateApprovalGroup(page: Page, group: ApprovalGroup, priceAllowance: number) {
   const response = await page.request.put(`/api/lanflow/rubber-bills/approval-groups/${group.id}`, {
     data: {
       locationIds: group.locationIds,
       editWindowMinutes: group.editWindowMinutes,
-      configuredPrice,
+      priceAllowance,
+      revisionNo: group.revisionNo,
     },
   });
   expect(response.ok()).toBeTruthy();
+  return (await response.json() as { group: ApprovalGroup }).group;
 }
 
-async function preparePriceExemptApprovalGroup(browser: Browser) {
+async function prepareZeroAllowanceApprovalGroup(browser: Browser) {
   const locationId = await selectedManagerLocationId(browser);
   const fixture = await withManagerContext(browser, async (page): Promise<ApprovalGroupFixture> => {
     const group = (await listApprovalGroups(page)).find((item) => item.locationIds.includes(locationId));
     if (!group) return null;
-    await updateApprovalGroup(page, group, null);
-    return { kind: 'restore', group };
+    if (group.priceAllowance === 0) return null;
+    const updated = await updateApprovalGroup(page, group, 0);
+    return { kind: 'restore', group: { ...group, revisionNo: updated.revisionNo } };
   });
   return { locationId, fixture };
 }
 
-async function setApprovalGroupPrice(browser: Browser, locationId: string, configuredPrice: number) {
+async function setApprovalGroupAllowance(browser: Browser, locationId: string, priceAllowance: number) {
   return withManagerContext(browser, async (page): Promise<ApprovalGroupFixture> => {
     const group = (await listApprovalGroups(page)).find((item) => item.locationIds.includes(locationId));
     if (group) {
-      await updateApprovalGroup(page, group, configuredPrice);
+      await updateApprovalGroup(page, group, priceAllowance);
       return null;
     }
     const response = await page.request.post('/api/lanflow/rubber-bills/approval-groups', {
-      data: { locationIds: [locationId], editWindowMinutes: 30, configuredPrice },
+      data: { locationIds: [locationId], editWindowMinutes: 30, priceAllowance },
     });
     expect(response.status()).toBe(201);
-    const created = await response.json() as { id: string };
-    return { kind: 'delete', groupId: created.id };
+    const created = await response.json() as { group: ApprovalGroup };
+    return { kind: 'delete', group: created.group };
   });
 }
 
@@ -93,13 +97,14 @@ async function restoreApprovalGroup(browser: Browser, fixture: ApprovalGroupFixt
         data: {
           locationIds: fixture.group.locationIds,
           editWindowMinutes: fixture.group.editWindowMinutes,
-          configuredPrice: fixture.group.configuredPrice,
+          priceAllowance: fixture.group.priceAllowance,
+          revisionNo: fixture.group.revisionNo,
         },
       });
       expect(response.ok()).toBeTruthy();
       return;
     }
-    const response = await page.request.delete(`/api/lanflow/rubber-bills/approval-groups/${fixture.groupId}`);
+    const response = await page.request.delete(`/api/lanflow/rubber-bills/approval-groups/${fixture.group.id}?revision=${fixture.group.revisionNo}`);
     expect(response.ok()).toBeTruthy();
   });
 }
@@ -285,14 +290,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
       }
     );
     expect(resetApprovalSetting.ok()).toBeTruthy();
-    ({ locationId: approvalGroupLocationId, fixture: approvalGroupFixture } = await preparePriceExemptApprovalGroup(browser));
-    await page.addInitScript(() => {
-      localStorage.setItem("lanflow:rubber-bill-approval-settings:v1", JSON.stringify({
-        editWindowMinutes: 30,
-        configuredPrice: null,
-        cachedAt: new Date().toISOString(),
-      }));
-    });
+    ({ locationId: approvalGroupLocationId, fixture: approvalGroupFixture } = await prepareZeroAllowanceApprovalGroup(browser));
     await page.goto('/');
     await clearQueue(page);
   });
@@ -650,6 +648,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     // 2. Go to Rubber Bills tab
     await page.click('button:has-text("บิลยาง")');
     await expect(page.locator('button:has-text("เพิ่มบิลยาง")')).toBeVisible();
+    await waitForRubberApprovalSettings(page);
 
     // 3. Go Offline
     await context.setOffline(true);
@@ -704,7 +703,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     expect(createEvent.payload.deductionTotal).toBe(0);
     expect(createEvent.payload.payableBeforeRounding).toBe(15610);
     expect(createEvent.payload.netTotal).toBe(15610);
-    expect(createEvent.payload.configuredPriceSnapshot).toBeNull();
+    expect(createEvent.payload.configuredPriceSnapshot).toBe(42);
     const clientTempId = createEvent.id;
 
     // === STEP 2: EDIT the pending bill offline ===
@@ -731,7 +730,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     expect(editEvents.length).toBe(1);
     expect(editEvents[0].operation).toBe('create'); // still "create", payload updated
     expect(editEvents[0].payload.items.find((i: any) => i.itemType === 'weigh').unitPrice).toBe(19.75);
-    expect(editEvents[0].payload.configuredPriceSnapshot).toBeNull();
+    expect(editEvents[0].payload.configuredPriceSnapshot).toBe(42);
 
     // === STEP 3: CREATE second bill, then DELETE (test coalesce: create+delete = no-op) ===
     const markerDelete = `${marker}-DEL`;
@@ -903,7 +902,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
       Authorization: `Bearer ${localServiceRoleKey}`,
       Prefer: 'return=minimal',
     };
-    const createdFixture = await setApprovalGroupPrice(browser, approvalGroupLocationId, 0);
+    const createdFixture = await setApprovalGroupAllowance(browser, approvalGroupLocationId, 0);
     if (createdFixture) approvalGroupFixture = createdFixture;
 
     let requestId: string | undefined;
@@ -916,7 +915,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
       await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
       await page.click('button:has-text("บิลยาง")');
       await page.click('button:has-text("เพิ่มบิลยาง")');
-      await expect(page.getByText('ราคาต่ำกว่า 0.00 บาท ไม่ต้องอนุมัติ')).toBeVisible({ timeout: 15000 });
+      await expect(page.getByText(/ราคากลาง 42\.00/)).toBeVisible({ timeout: 15000 });
 
       const modal = page.locator('.fixed.inset-0').last();
       await modal.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]').fill(marker);
@@ -924,7 +923,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
       const weighRow = modal.locator('table').first().locator('tbody tr').first();
       await weighRow.locator('input[type="number"]').nth(0).fill('100');
       await weighRow.locator('input[type="number"]').nth(1).fill('20');
-      await weighRow.locator('input[type="number"]').nth(3).fill('1');
+      await weighRow.locator('input[type="number"]').nth(3).fill('43');
       await modal.getByRole('button', { name: 'ส่งขออนุมัติ', exact: true }).click();
       await expect(modal).toBeHidden({ timeout: 10000 });
 

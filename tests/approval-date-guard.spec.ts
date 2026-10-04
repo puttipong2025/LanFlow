@@ -28,11 +28,11 @@ test.describe("offline non-current business-date guard", () => {
 
     test(`blocks rubber bill ${date} when enabled`, () => {
       expect(() => assertOfflineRubberBillPriceAllowed([], date, {
-        configuredPrice: null,
+        centralPrice: 42,
         nonCurrentDateRequiresApproval: true,
       }, false)).toThrow("ต้องออนไลน์");
       expect(() => assertOfflineRubberBillPriceAllowed([], date, {
-        configuredPrice: null,
+        centralPrice: 42,
         nonCurrentDateRequiresApproval: false,
       }, false)).not.toThrow();
     });
@@ -42,7 +42,7 @@ test.describe("offline non-current business-date guard", () => {
     const today = bangkokDateString();
     expect(() => assertOfflineIncomeExpenseDateAllowed(today, null, false)).not.toThrow();
     expect(() => assertOfflineRubberBillPriceAllowed([], today, {
-      configuredPrice: null,
+      centralPrice: 42,
       nonCurrentDateRequiresApproval: true,
     }, false)).not.toThrow();
   });

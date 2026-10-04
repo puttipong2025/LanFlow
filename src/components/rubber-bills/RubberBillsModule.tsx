@@ -1,9 +1,9 @@
-import { Clock3, FileScan, Hash, PackagePlus, Plus, RefreshCw, Settings, Ticket } from "lucide-react";
+import { Clock3, FileScan, Hash, PackagePlus, Plus, Settings, Ticket } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import { useRubberBillMutations } from "@/hooks/useRubberBills";
+import { RubberBillQuotaConfirmationError, useRubberBillMutations } from "@/hooks/useRubberBills";
 import {
   useRubberBillList,
   useRubberBillWorkCounts,
@@ -21,7 +21,7 @@ import {
   getOfflineSyncedActionBlockReason,
   RUBBER_BILL_TRANSFER_LOCK_MESSAGE
 } from "@/lib/record-action-locks";
-import type { Location, Profile, RubberBill } from "@/types";
+import type { Location, Profile, RubberBill, RubberSubmissionDecision } from "@/types";
 import { RubberBillsTable } from "./RubberBillsTable";
 import { TablePageSizeSelect } from "@/components/shared/TablePagination";
 import { RubberBillModal, type RubberBillCustomerOption } from "./RubberBillModal";
@@ -35,29 +35,21 @@ import {
   resolveRubberBillReceiptForPrint,
   renderRubberBillReceiptHtml
 } from "./bill-display";
-import {
-  receiptPdfFilename,
-} from "@/lib/rubber-bills/print-receipt";
+import { receiptPdfFilename } from "@/lib/rubber-bills/print-receipt";
 import { useSharePdf } from "@/hooks/useSharePdf";
 import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
-import { ModalShell } from "@/components/shared/ModalShell";
 import { getDeviceId } from "@/lib/format";
 import { openRubberBillOcrSourceImage } from "@/lib/rubber-bills/open-ocr-source-image";
 import { getRubberBillReceiptSnapshot } from "@/lib/idb-queue";
-import {
-  loadCustomerCache,
-  saveCustomerCache,
-  type WeighingQueueCustomer,
-} from "@/lib/rubber-bills/weighing-queue";
+import { loadCustomerCache, saveCustomerCache, type WeighingQueueCustomer } from "@/lib/rubber-bills/weighing-queue";
 import { runBlockingAction } from "@/lib/swal";
 import { cn } from "@/lib/cn";
-import {
-  BranchRubberReceiptDetailModal,
-  BranchRubberReceiptModal,
-} from "./BranchRubberReceiptModal";
+import { BranchRubberReceiptDetailModal, BranchRubberReceiptModal } from "./BranchRubberReceiptModal";
 import { ExportVehicleWeighBillsModal } from "./ExportVehicleWeighBillsModal";
 import type { RequestBranchCreate } from "@/hooks/useBranchCreateGuard";
 import { isDeviceOnline } from "@/lib/connectivity";
+import { RubberQuotaConfirmationDialog } from "./RubberQuotaConfirmationDialog";
+import { RubberBillOcrQueueModal } from "./RubberBillOcrQueueModal";
 
 export function RubberBillsModule({
   selectedLocation,
@@ -122,6 +114,12 @@ export function RubberBillsModule({
   const [viewingBranchReceipt, setViewingBranchReceipt] = useState<RubberBill | null>(null);
   const [editingBill, setEditingBill] = useState<RubberBill | null>(null);
   const [deletingBillId, setDeletingBillId] = useState<string | null>(null);
+  const [quotaSubmission, setQuotaSubmission] = useState<{
+    bill: RubberBill;
+    isCreating: boolean;
+    decision: RubberSubmissionDecision;
+  } | null>(null);
+  const [quotaSubmitting, setQuotaSubmitting] = useState(false);
   const [pageSize, setPageSize] = useState(10);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
@@ -679,8 +677,9 @@ export function RubberBillsModule({
           selectedLocation={selectedLocation}
           profile={profile}
           bill={editingBill}
-          configuredPrice={approvalSettings?.configuredPrice}
-          priceTimeExempt={approvalSettings?.priceTimeExempt}
+          centralPrice={approvalSettings?.centralPrice}
+          priceAllowance={approvalSettings?.priceAllowance}
+          effectivePriceCap={approvalSettings?.effectivePriceCap}
           nonCurrentDateRequiresApproval={approvalSettings?.nonCurrentDateRequiresApproval}
           customers={customerOptions}
           initialOcrDraft={ocrReviewItem ? {
@@ -701,15 +700,56 @@ export function RubberBillsModule({
               }
               return true;
             } catch (error) {
+              if (error instanceof RubberBillQuotaConfirmationError) {
+                setQuotaSubmission({ bill, isCreating: !editingBill, decision: error.decision });
+                return false;
+              }
               alert(error instanceof Error ? error.message : "เกิดข้อผิดพลาดในการบันทึกบิล");
               return false;
             }
           }}
         />
       )}
+      <RubberQuotaConfirmationDialog
+        decision={quotaSubmission?.decision ?? null}
+        busy={quotaSubmitting}
+        onCancel={() => setQuotaSubmission(null)}
+        onConfirm={() => {
+          const decisionFingerprint = quotaSubmission?.decision.decisionFingerprint;
+          if (!quotaSubmission || !decisionFingerprint) return;
+          void (async () => {
+            try {
+              setQuotaSubmitting(true);
+              const confirmation = {
+                priceRuleRevision: quotaSubmission.decision.priceRuleRevision,
+                quotaRoundId: quotaSubmission.decision.quotaRoundId,
+                decisionFingerprint,
+              };
+              const savedBill = await (quotaSubmission.isCreating
+                ? addBill(quotaSubmission.bill, confirmation)
+                : updateBill(quotaSubmission.bill, confirmation));
+              if (ocrReviewItem) ocrQueue.remove(ocrReviewItem.id);
+              setOcrReviewItem(null);
+              setQuotaSubmission(null);
+              setModalOpen(false);
+              if (quotaSubmission.isCreating) setPage(1);
+              if (savedBill.netTotal > 0 && !savedBill.approvalPending) void handlePrint(savedBill);
+            } catch (error) {
+              if (error instanceof RubberBillQuotaConfirmationError) {
+                setQuotaSubmission((current) => current ? { ...current, decision: error.decision } : current);
+                toast.error("กติกาหรือโควต้าเปลี่ยน กรุณาตรวจสอบอีกครั้ง");
+              } else {
+                toast.error(error instanceof Error ? error.message : "บันทึกบิลไม่สำเร็จ");
+              }
+            } finally {
+              setQuotaSubmitting(false);
+            }
+          })();
+        }}
+      />
 
       {ocrQueueModalOpen && (
-        <OcrQueueModal
+        <RubberBillOcrQueueModal
           locationId={selectedLocation.id}
           items={ocrQueue.items.filter((item) => item.locationId === selectedLocation.id)}
           online={isOnline}
@@ -772,48 +812,5 @@ export function RubberBillsModule({
         </div>
       )}
     </section>
-  );
-}
-
-function OcrQueueModal({
-  locationId,
-  items,
-  online,
-  onClose,
-  onRetry,
-  onReview,
-  onRemove,
-}: {
-  locationId: string;
-  items: RubberBillOcrQueueItem[];
-  online: boolean;
-  onClose: () => void;
-  onRetry: (id: string) => void;
-  onReview: (item: RubberBillOcrQueueItem) => void;
-  onRemove: (id: string) => void;
-}) {
-  return (
-    <ModalShell title="คิวอ่านใบชั่ง" subtitle="1 รูปต่อ 1 บิลยาง · คิวนี้หายเมื่อปิดหรือรีโหลดหน้า" onClose={onClose} closeOnEscape nativeModal>
-        <ul className="divide-y divide-black/10" aria-label={`รายการ OCR สาขา ${locationId}`}>
-          {items.map((item) => (
-            <li key={item.id} className="flex gap-3 p-3">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={item.previewUrl} alt={`ตัวอย่างรูปใบชั่ง ${item.file.name}`} className="size-16 rounded border border-black/10 object-cover" />
-              <div className="min-w-0 flex-1">
-                <p className="truncate font-semibold text-ink">{item.file.name}</p>
-                <p role="status" className="text-sm text-ink/60">
-                  {item.status === "pending" ? "รอประมวลผล" : item.status === "processing" ? "กำลังอ่านข้อมูล" : item.status === "ready" ? "พร้อมตรวจและเพิ่มบิล" : item.status === "reviewing" ? "กำลังตรวจข้อมูลบิล" : item.errorMessage || "อ่านใบชั่งไม่สำเร็จ"}
-                </p>
-              </div>
-              <div className="flex shrink-0 items-center gap-2">
-                {item.status === "ready" && <button type="button" onClick={() => onReview(item)} className="focus-ring h-10 rounded-md bg-commit px-3 text-sm font-semibold text-white hover:bg-commit/90">ตรวจและเพิ่มบิล</button>}
-                {item.status === "error" && <button type="button" disabled={!online} title={!online ? "ลองใหม่ได้เมื่อออนไลน์" : "ลองอ่านรูปอีกครั้ง"} onClick={() => onRetry(item.id)} className="focus-ring inline-flex size-10 items-center justify-center rounded-md bg-river text-white disabled:cursor-not-allowed disabled:bg-slate-300" aria-label="ลองอ่านใบชั่งอีกครั้ง"><RefreshCw size={17} aria-hidden="true" /></button>}
-                {item.status !== "processing" && <button type="button" onClick={() => onRemove(item.id)} className="focus-ring h-10 rounded-md border border-black/15 px-3 text-sm font-semibold text-ink hover:bg-field">เอาออก</button>}
-              </div>
-            </li>
-          ))}
-          {items.length === 0 && <li className="p-8 text-center text-sm text-ink/60">ไม่มีรายการในคิว</li>}
-        </ul>
-    </ModalShell>
   );
 }

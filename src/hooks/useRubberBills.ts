@@ -1,5 +1,9 @@
 import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import type { RubberBill } from "@/types";
+import type {
+  RubberBill,
+  RubberQuotaConfirmation,
+  RubberSubmissionDecision,
+} from "@/types";
 import {
   enqueueSyncEvent,
   deleteRubberBillReceiptSnapshotsByClientTempId,
@@ -17,117 +21,19 @@ import {
   isRubberBillPriceApprovalRequired,
 } from "@/lib/rubber-bills/approval";
 import type { EffectiveRubberApprovalSettings } from "@/types";
-import {
-  applyRubberBillCalculation,
-  multiplyMoneyFloorBaht,
-} from "@/lib/rubber-bills/calculations";
 import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 import { createScopedSingleFlight } from "@/lib/scoped-single-flight";
+import {
+  buildRubberBillRpcPayload,
+  RubberBillQuotaConfirmationError,
+} from "@/lib/rubber-bills/submission";
+
+export { RubberBillQuotaConfirmationError } from "@/lib/rubber-bills/submission";
 
 export function assertRubberBillDeleteAllowed(pendingCreateCount: number, isOnline: boolean) {
   if (pendingCreateCount === 0 && !isOnline) {
     throw new Error(OFFLINE_SYNCED_ACTION_MESSAGE);
   }
-}
-
-function buildRpcPayload(
-  bill: RubberBill,
-  operation: "create" | "update" | "delete",
-  configuredPriceSnapshot?: number | null,
-  deletedByName?: string,
-  deletedByPhone?: string
-) {
-  const calculatedBill = applyRubberBillCalculation({
-    ...bill,
-    weighItems: bill.weighItems ?? [],
-  });
-  const items: any[] = [];
-  
-  calculatedBill.weighItems.forEach((item, i) => {
-    items.push({
-      itemType: "weigh",
-      title: item.label,
-      description: item.label,
-      inWeight: item.inWeight,
-      outWeight: item.outWeight,
-      netWeight: item.netWeight,
-      unitPrice: item.price,
-      totalAmount: item.total ?? multiplyMoneyFloorBaht(item.netWeight, item.price),
-      sequenceNo: i + 1
-    });
-  });
-
-  (calculatedBill.acidItems || []).forEach((item, i) => {
-    items.push({
-      itemType: "stock_deduction",
-      title: item.name,
-      description: item.name,
-      stockProductId: item.stockProductId,
-      quantity: item.quantity,
-      unit: item.unit,
-      unitPrice: item.unitPrice,
-      totalAmount: item.total ?? multiplyMoneyFloorBaht(item.quantity, item.unitPrice),
-      sequenceNo: calculatedBill.weighItems.length + i + 1
-    });
-  });
-
-  const allDebts = calculatedBill.debtItems
-    ?? (calculatedBill.debtItem ? [calculatedBill.debtItem] : []);
-  allDebts.forEach((item, i) => {
-    items.push({
-      itemType: "debt",
-      title: item.title,
-      description: item.title,
-      totalAmount: item.amount,
-      sequenceNo: calculatedBill.weighItems.length + (calculatedBill.acidItems?.length || 0) + i + 1
-    });
-  });
-
-  return {
-    calculatedBill,
-    payload: {
-      operation,
-      formulaVersion: 2,
-      expectedRevisionNo: calculatedBill.revisionNo,
-      clientTempId: calculatedBill.clientTempId,
-      idempotencyKey: `${operation}:${calculatedBill.clientTempId}:${calculatedBill.revisionNo}`,
-      locationId: calculatedBill.locationId,
-      recordStatus: operation === "delete" ? "deleted" : calculatedBill.recordStatus,
-      localBillNo: calculatedBill.localBillNo,
-      billDate: calculatedBill.billDate,
-      customerId: calculatedBill.customerId ?? null,
-      customerName: calculatedBill.customerName,
-      configuredPriceSnapshot:
-        operation === "create"
-          ? configuredPriceSnapshot
-          : calculatedBill.configuredPriceSnapshot ?? null,
-      billType: calculatedBill.billType,
-      deductWeight: calculatedBill.deductWeight,
-      weight: calculatedBill.weight,
-      netWeight: calculatedBill.netWeight,
-      rubberValue: calculatedBill.weighValueTotal,
-      netRubberValue: calculatedBill.rubberValue,
-      averagePrice: calculatedBill.price,
-      deductionTotal: calculatedBill.deductionTotal,
-      payableBeforeRounding: calculatedBill.payableBeforeRounding,
-      netTotal: calculatedBill.netTotal,
-      acidPackCount: calculatedBill.acidPackCount,
-      createdByUserId: calculatedBill.createdByUserId,
-      createdByName: calculatedBill.createdByName,
-      createdByPhone: calculatedBill.createdByPhone,
-      clientRecordedAt: calculatedBill.clientRecordedAt || new Date().toISOString(),
-      clientCreatedAt: calculatedBill.clientCreatedAt || new Date().toISOString(),
-      ...(operation === "create" ? {
-        inputMethod: calculatedBill.inputMethod ?? "manual",
-        ...(calculatedBill.inputMethod === "ocr" && calculatedBill.ocrUploadId
-          ? { ocrUploadId: calculatedBill.ocrUploadId }
-          : {}),
-      } : {}),
-      deletedByName,
-      deletedByPhone,
-      items,
-    },
-  };
 }
 
 const runRubberBillSyncSingleFlight = createScopedSingleFlight();
@@ -163,7 +69,7 @@ export function syncPendingRubberBills(
         const response = await authFetch("/api/lanflow/rubber-bills", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(event.payload)
+          body: JSON.stringify({ ...event.payload, submissionMode: "replay" })
         });
 
         const data = await response.json();
@@ -233,7 +139,13 @@ export function useRubberBillMutations(
 
   const saveBillMutation = useMutation({
     networkMode: "always",
-    mutationFn: async (bill: RubberBill) => {
+    mutationFn: async ({
+      bill,
+      quotaConfirmation,
+    }: {
+      bill: RubberBill;
+      quotaConfirmation?: RubberQuotaConfirmation;
+    }) => {
       const isUpdate = Boolean(bill.serverBillNo) || bill.id !== bill.clientTempId;
       const operation = isUpdate ? "update" : "create";
       if ((bill.acidItems?.length ?? 0) > 0 && typeof navigator !== "undefined" && !navigator.onLine) {
@@ -258,14 +170,33 @@ export function useRubberBillMutations(
         );
       }
       
-      const { calculatedBill, payload } = buildRpcPayload(
+      const { calculatedBill, payload } = buildRubberBillRpcPayload(
         bill,
         operation,
-        operation === "create" ? approvalSettings?.configuredPrice : bill.configuredPriceSnapshot
+        operation === "create" ? approvalSettings?.effectivePriceCap : bill.configuredPriceSnapshot
       );
       const isOnline = typeof navigator === "undefined" || navigator.onLine;
       const existingEvents = await getPendingEvents(queuePartition(ownerUserId, locationId));
       const clientEvents = existingEvents.filter(e => e.id === bill.clientTempId);
+
+      if (isOnline && clientEvents.length === 0) {
+        const previewResponse = await authFetch("/api/lanflow/rubber-bills/preview", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const preview = await previewResponse.json().catch(() => ({})) as RubberSubmissionDecision;
+        if (!previewResponse.ok || preview.disposition === "failed") {
+          throw new Error(preview.errorMessage || "ตรวจสอบกติกาบิลยางไม่สำเร็จ");
+        }
+        if (preview.disposition === "quota_confirmation_required") {
+          const matchesConfirmation = quotaConfirmation
+            && quotaConfirmation.priceRuleRevision === preview.priceRuleRevision
+            && quotaConfirmation.quotaRoundId === preview.quotaRoundId
+            && quotaConfirmation.decisionFingerprint === preview.decisionFingerprint;
+          if (!matchesConfirmation) throw new RubberBillQuotaConfirmationError(preview);
+        }
+      }
 
       if (clientEvents.some(e => e.status === "conflict" || e.status === "failed")) {
         throw new Error("ไม่สามารถบันทึกได้ กรุณาแก้ไขข้อมูลที่ขัดแย้ง หรือลองซิงก์ใหม่อีกครั้ง");
@@ -331,10 +262,18 @@ export function useRubberBillMutations(
           const response = await authFetch("/api/lanflow/rubber-bills", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
+            body: JSON.stringify({
+              ...payload,
+              submissionMode: "interactive",
+              ...(quotaConfirmation ? { quotaConfirmation } : {}),
+            }),
           });
           const data = await response.json();
           if (!response.ok) {
+            if ((data.status === "confirmation_required" || data.status === "rule_changed") && data.decision) {
+              await mLib.removeSyncEvent(newlyQueuedEvent.queueId!);
+              throw new RubberBillQuotaConfirmationError(data.decision as RubberSubmissionDecision);
+            }
             if (isRetryableSyncResponse(response.status)) {
               throw new Error(data.errorMessage || "ระบบไม่พร้อมใช้งานชั่วคราว");
             }
@@ -356,13 +295,14 @@ export function useRubberBillMutations(
             serverReceivedAt: data.serverReceivedAt ?? bill.serverReceivedAt,
             configuredPriceSnapshot:
               operation === "create"
-                ? approvalSettings?.configuredPrice ?? null
+                ? approvalSettings?.effectivePriceCap ?? null
                 : bill.configuredPriceSnapshot,
             approvalPending: data.status === "pending_approval",
             approvalRequestId: data.requestId,
             approvalOperation: data.operation,
           };
         } catch (error) {
+          if (error instanceof RubberBillQuotaConfirmationError) throw error;
           if (newlyQueuedEvent.status !== "pending") throw error;
           console.error("Network error while saving rubber bill", error);
         }
@@ -373,15 +313,14 @@ export function useRubberBillMutations(
         syncStatus: "pending" as const,
         configuredPriceSnapshot:
           operation === "create"
-            ? approvalSettings?.configuredPrice ?? null
+            ? approvalSettings?.effectivePriceCap ?? null
             : bill.configuredPriceSnapshot,
         approvalPending:
           operation === "create"
           && isRubberBillPriceApprovalRequired(
             (bill.weighItems ?? []).map((item) => item.price),
             {
-              configuredPrice: approvalSettings?.configuredPrice ?? null,
-              priceTimeExempt: approvalSettings?.priceTimeExempt ?? false,
+              effectivePriceCap: approvalSettings?.effectivePriceCap ?? 0,
             }
           ),
       };
@@ -434,7 +373,7 @@ export function useRubberBillMutations(
 
       // If we replaced a pending update, use its server revision. Else use current bill's server revision.
       const targetRev = pendingUpdates.length > 0 ? pendingUpdates[0].payload.expectedRevisionNo : bill.revisionNo;
-      const { payload: calculatedPayload } = buildRpcPayload(
+      const { payload: calculatedPayload } = buildRubberBillRpcPayload(
         bill,
         "delete",
         bill.configuredPriceSnapshot,
@@ -525,8 +464,12 @@ export function useRubberBillMutations(
   }
 
   return {
-    addBill: saveBillMutation.mutateAsync,
-    updateBill: saveBillMutation.mutateAsync,
+    addBill: (bill: RubberBill, quotaConfirmation?: RubberQuotaConfirmation) => (
+      saveBillMutation.mutateAsync({ bill, quotaConfirmation })
+    ),
+    updateBill: (bill: RubberBill, quotaConfirmation?: RubberQuotaConfirmation) => (
+      saveBillMutation.mutateAsync({ bill, quotaConfirmation })
+    ),
     deleteBill: deleteBillMutation.mutateAsync,
     discardSyncProblem,
   };

@@ -3,17 +3,25 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { authFetch } from "@/lib/auth-fetch";
 import { clearRubberBillApprovalSettingsCache } from "@/lib/rubber-bills/approval";
 import { RUBBER_BILL_APPROVAL_SETTINGS_KEY } from "@/hooks/useRubberBillApprovals";
-import type { RubberApprovalGroup } from "@/types";
+import type {
+  RubberAdminQuotaSetting,
+  RubberApprovalGroup,
+  RubberCentralPriceSetting,
+  RubberUngroupedDefaults,
+} from "@/types";
 
 export const RUBBER_APPROVAL_GROUPS_KEY = "rubberApprovalGroups";
 
 type GroupsResponse = {
   groups: RubberApprovalGroup[];
   availableLocationIds: string[];
-  nonCurrentDateRequiresApproval: boolean;
+  centralPrice: RubberCentralPriceSetting;
+  ungroupedDefaults: RubberUngroupedDefaults;
+  quota: RubberAdminQuotaSetting;
+  canEditQuota: boolean;
 };
 
-type GroupInput = Pick<RubberApprovalGroup, "locationIds" | "editWindowMinutes" | "configuredPrice">;
+type GroupInput = Pick<RubberApprovalGroup, "locationIds" | "editWindowMinutes" | "priceAllowance">;
 
 export function useRubberApprovalGroups(allLocationIds: string[]) {
   const queryClient = useQueryClient();
@@ -44,28 +52,32 @@ export function useRubberApprovalGroups(allLocationIds: string[]) {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.errorMessage || "สร้างกลุ่มไม่สำเร็จ");
-      return data as RubberApprovalGroup;
+      return data as { group: RubberApprovalGroup; affectedLocationIds: string[] };
     },
     onSuccess: () => invalidateLocations(allLocationIds),
   });
 
   const updateGroup = useMutation({
-    mutationFn: async ({ id, ...input }: GroupInput & { id: string }) => {
+    mutationFn: async ({ id, revisionNo, sourceGroupRevisions, ...input }: GroupInput & {
+      id: string;
+      revisionNo: number;
+      sourceGroupRevisions: Record<string, number>;
+    }) => {
       const response = await authFetch(`/api/lanflow/rubber-bills/approval-groups/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(input),
+        body: JSON.stringify({ ...input, revisionNo, sourceGroupRevisions }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.errorMessage || "แก้ไขกลุ่มไม่สำเร็จ");
-      return data as RubberApprovalGroup;
+      return data as { group: RubberApprovalGroup; affectedLocationIds: string[] };
     },
     onSuccess: () => invalidateLocations(allLocationIds),
   });
 
   const deleteGroup = useMutation({
-    mutationFn: async (id: string) => {
-      const response = await authFetch(`/api/lanflow/rubber-bills/approval-groups/${id}`, { method: "DELETE" });
+    mutationFn: async ({ id, revisionNo }: Pick<RubberApprovalGroup, "id" | "revisionNo">) => {
+      const response = await authFetch(`/api/lanflow/rubber-bills/approval-groups/${id}?revision=${revisionNo}`, { method: "DELETE" });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.errorMessage || "ลบกลุ่มไม่สำเร็จ");
       return data as { success: true; releasedLocationIds: string[] };
@@ -73,14 +85,52 @@ export function useRubberApprovalGroups(allLocationIds: string[]) {
     onSuccess: (data) => invalidateLocations(data.releasedLocationIds),
   });
 
+  function saveGlobalSettings(path: "central" | "ungrouped" | "quota", body: Record<string, unknown>) {
+    return authFetch(`/api/lanflow/rubber-bills/approval-settings/${path}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(async (response) => {
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.errorMessage || "บันทึกการตั้งค่าไม่สำเร็จ");
+      return data as GroupsResponse;
+    });
+  }
+
+  const saveCentralPrice = useMutation({
+    mutationFn: (input: { centralPrice: number; expectedRevision: number }) => saveGlobalSettings("central", input),
+    onSuccess: async (data) => {
+      queryClient.setQueryData([RUBBER_APPROVAL_GROUPS_KEY], data);
+      await invalidateLocations(allLocationIds);
+    },
+  });
+  const saveUngroupedDefaults = useMutation({
+    mutationFn: (input: { editWindowMinutes: number; priceAllowance: number; expectedRevision: number }) => saveGlobalSettings("ungrouped", input),
+    onSuccess: async (data) => {
+      queryClient.setQueryData([RUBBER_APPROVAL_GROUPS_KEY], data);
+      await invalidateLocations(data.ungroupedDefaults.locationIds);
+    },
+  });
+  const saveQuota = useMutation({
+    mutationFn: (input: { quotaLimit: number; expectedRoundId: string }) => saveGlobalSettings("quota", input),
+    onSuccess: (data) => queryClient.setQueryData([RUBBER_APPROVAL_GROUPS_KEY], data),
+  });
+
   return {
     ...groupsQuery,
     groups: groupsQuery.data?.groups ?? [],
     availableLocationIds: groupsQuery.data?.availableLocationIds ?? [],
-    nonCurrentDateRequiresApproval: groupsQuery.data?.nonCurrentDateRequiresApproval ?? false,
+    centralPrice: groupsQuery.data?.centralPrice,
+    ungroupedDefaults: groupsQuery.data?.ungroupedDefaults,
+    quota: groupsQuery.data?.quota,
+    canEditQuota: groupsQuery.data?.canEditQuota ?? false,
     createGroup: createGroup.mutateAsync,
     updateGroup: updateGroup.mutateAsync,
     deleteGroup: deleteGroup.mutateAsync,
-    isSaving: createGroup.isPending || updateGroup.isPending || deleteGroup.isPending,
+    saveCentralPrice: saveCentralPrice.mutateAsync,
+    saveUngroupedDefaults: saveUngroupedDefaults.mutateAsync,
+    saveQuota: saveQuota.mutateAsync,
+    isSaving: createGroup.isPending || updateGroup.isPending || deleteGroup.isPending
+      || saveCentralPrice.isPending || saveUngroupedDefaults.isPending || saveQuota.isPending,
   };
 }

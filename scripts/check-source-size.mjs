@@ -23,7 +23,6 @@ const grandfathered = new Map(Object.entries({
   "src/components/rubber-exports/RubberExportDetailModal.tsx": 514,
   "src/components/rubber-exports/RubberExportsModule.tsx": 679,
   "src/hooks/useIncomeExpenseApprovals.ts": 508,
-  "src/hooks/useRubberBills.ts": 533,
   "src/types/index.ts": 610,
 }));
 
@@ -63,4 +62,3 @@ if (violations.length > 0) {
   throw new Error(`Source-size ratchet failed:\n- ${violations.join("\n- ")}`);
 }
 console.log(`Source-size ratchet passed: new files <= ${hardLimit} lines and ${grandfathered.size} grandfathered files did not grow.`);
-

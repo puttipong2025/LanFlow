@@ -1,3 +1,5 @@
+import type { RubberBillApprovalOperation, RubberBillApprovalReason } from "./rubber-approval";
+
 export type AppRole = "user" | "admin" | "super_admin";
 export type SyncStatus = "pending" | "syncing" | "synced" | "failed" | "conflict";
 export type RecordStatus = "active" | "deleted" | "cancelled";
@@ -179,28 +181,17 @@ export type BranchRubberReceiptResult = {
   receivedAgeHours: number;
 };
 
-export type RubberBillApprovalOperation = "create" | "update" | "delete";
-export type RubberBillApprovalReason = "price" | "time" | "non_current_date";
-
-export type EffectiveRubberApprovalSettings = {
-  locationId: string;
-  groupId: string | null;
-  priceTimeExempt: boolean;
-  editWindowMinutes: number | null;
-  configuredPrice: number | null;
-  nonCurrentDateRequiresApproval: boolean;
-  updatedByName?: string | null;
-  updatedByPhone?: string | null;
-  updatedAt?: string | null;
-};
-
-export type RubberApprovalGroup = {
-  id: string;
-  locationIds: string[];
-  editWindowMinutes: number;
-  configuredPrice: number | null;
-  updatedAt: string;
-};
+export type {
+  EffectiveRubberApprovalSettings,
+  RubberAdminQuotaSetting,
+  RubberApprovalGroup,
+  RubberBillApprovalOperation,
+  RubberBillApprovalReason,
+  RubberCentralPriceSetting,
+  RubberQuotaConfirmation,
+  RubberSubmissionDecision,
+  RubberUngroupedDefaults,
+} from "./rubber-approval";
 
 export type RubberWeightAlertGroup = {
   id: string;

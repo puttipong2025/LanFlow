@@ -1,19 +1,18 @@
-import { Check, Pencil, Plus, Trash2 } from "lucide-react";
+import { Check, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { AlertDialog } from "@/components/shared/AlertDialog";
 import { ModalShell } from "@/components/shared/ModalShell";
+import { RubberApprovalPolicyPanel } from "@/components/rubber-bills/RubberApprovalPolicyPanel";
 import { useLocations } from "@/hooks/useLocations";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { useRubberBillApprovals } from "@/hooks/useRubberBillApprovals";
-import { useRubberApprovalGroups } from "@/hooks/useRubberApprovalGroups";
 import { useRubberBillList, useRubberBillWorkCounts } from "@/hooks/useRubberBillList";
 import type {
   RubberBillApprovalReason,
   Profile,
   RubberBill,
-  RubberApprovalGroup,
 } from "@/types";
 import { formatBangkokDateTime } from "@/lib/bangkok-date";
 import { formatNumber } from "@/lib/format";
@@ -66,18 +65,11 @@ export function RubberBillApprovalModal({
     search: "",
   });
   const counts = useRubberBillWorkCounts(profile.id, locationFilter);
-  const groups = useRubberApprovalGroups(locations.map((location) => location.id));
-  const [minutes, setMinutes] = useState("30");
-  const [price, setPrice] = useState("");
   const [nonCurrentDateRequiresApproval, setNonCurrentDateRequiresApproval] = useState(false);
   const [page, setPage] = useState(1);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-  const [editingGroup, setEditingGroup] = useState<RubberApprovalGroup | null>(null);
-  const [groupEditorOpen, setGroupEditorOpen] = useState(false);
-  const [groupLocationIds, setGroupLocationIds] = useState<string[]>([]);
   const [confirmation, setConfirmation] = useState<{ kind: "approve" | "delete"; bill: RubberBill } | null>(null);
-  const [groupToDelete, setGroupToDelete] = useState<RubberApprovalGroup | null>(null);
 
   useEffect(() => {
     if (!settings) return;
@@ -121,68 +113,6 @@ export function RubberBillApprovalModal({
       setIsSaving(false);
     }
   }
-
-  async function handleSaveGroup(event: React.FormEvent) {
-    event.preventDefault();
-    const parsedMinutes = Number(minutes);
-    const normalizedPrice = price.trim();
-    const parsedPrice = normalizedPrice ? Number(normalizedPrice) : null;
-
-    if (!Number.isInteger(parsedMinutes) || parsedMinutes < 0) {
-      toast.error("จำนวนนาทีต้องเป็นจำนวนเต็มตั้งแต่ 0 ขึ้นไป");
-      return;
-    }
-    if (
-      parsedPrice !== null &&
-      (!/^\d+(\.\d{1,2})?$/.test(normalizedPrice) || parsedPrice < 0)
-    ) {
-      toast.error("ราคายางต้องไม่ติดลบและมีทศนิยมไม่เกิน 2 ตำแหน่ง");
-      return;
-    }
-
-    try {
-      setIsSaving(true);
-      const input = {
-        locationIds: groupLocationIds,
-        editWindowMinutes: parsedMinutes,
-        configuredPrice: parsedPrice,
-      };
-      if (editingGroup) {
-        await groups.updateGroup({ id: editingGroup.id, ...input });
-        toast.success("แก้ไขกลุ่มแล้ว");
-      } else {
-        await groups.createGroup(input);
-        toast.success("สร้างกลุ่มแล้ว");
-      }
-      setEditingGroup(null);
-      setGroupEditorOpen(false);
-      setGroupLocationIds([]);
-      setMinutes("30");
-      setPrice("");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "บันทึกการตั้งค่าไม่สำเร็จ");
-    } finally {
-      setIsSaving(false);
-    }
-  }
-
-  function openGroupEditor(group?: RubberApprovalGroup) {
-    setEditingGroup(group ?? null);
-    setGroupEditorOpen(true);
-    setGroupLocationIds(group?.locationIds ?? []);
-    setMinutes(String(group?.editWindowMinutes ?? 30));
-    setPrice(group?.configuredPrice == null ? "" : String(group.configuredPrice));
-  }
-
-  function toggleGroupLocation(locationId: string) {
-    setGroupLocationIds((current) => current.includes(locationId)
-      ? current.filter((id) => id !== locationId)
-      : [...current, locationId]);
-  }
-
-  const groupEditorLocationIds = editingGroup
-    ? [...new Set([...groups.availableLocationIds, ...editingGroup.locationIds])]
-    : groups.availableLocationIds;
 
   async function handleApprove(request: RubberBill) {
     if (!request.approvalRequestId) return;
@@ -330,82 +260,11 @@ export function RubberBillApprovalModal({
           )}
         </section>
 
-        <section className="rounded-md border border-black/10 p-4">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h3 className="text-balance font-bold text-ink">กลุ่มเกณฑ์ราคาและเวลา</h3>
-              <p className="text-pretty text-sm text-ink/60">สาขานอกกลุ่มจะยกเว้นเฉพาะราคาและเวลา</p>
-            </div>
-            {!groupEditorOpen
-              && !groups.isLoading
-              && !locationsLoading
-              && !groups.error
-              && !locationsError
-              && groups.availableLocationIds.length > 0 && (
-              <button type="button" onClick={() => openGroupEditor()} className="focus-ring inline-flex h-10 items-center gap-2 rounded-md bg-commit px-3 text-sm font-bold text-white hover:bg-commit/90">
-                <Plus size={16} /> สร้างกลุ่ม
-              </button>
-            )}
-          </div>
-          {groups.isLoading || locationsLoading ? (
-            <p role="status" className="text-sm text-ink/60">กำลังโหลดกลุ่ม...</p>
-          ) : groups.error || locationsError ? (
-            <p role="alert" className="rounded-md bg-rose-50 p-3 text-sm text-rose-700">
-              {(groups.error ?? locationsError) instanceof Error
-                ? (groups.error ?? locationsError as Error).message
-                : "โหลดกลุ่มไม่สำเร็จ"}
-            </p>
-          ) : groupEditorOpen ? (
-            <form onSubmit={handleSaveGroup} className="space-y-3 rounded-md bg-field/55 p-3">
-              <h4 className="font-semibold text-ink">{editingGroup ? `แก้ไขกลุ่ม ${groups.groups.findIndex((group) => group.id === editingGroup.id) + 1}` : "สร้างกลุ่มใหม่"}</h4>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="grid gap-1 text-sm font-semibold">เวลาแก้ไขได้ (นาที)
-                  <input aria-label="เวลาแก้ไขได้ (นาที)" type="number" min="0" step="1" value={minutes} onChange={(event) => setMinutes(event.target.value)} className="focus-ring h-11 rounded-md border border-black/10 px-3" required />
-                </label>
-                <label className="grid gap-1 text-sm font-semibold">ราคายางที่กำหนด
-                  <input aria-label="ราคายางที่กำหนด" inputMode="decimal" value={price} onChange={(event) => setPrice(event.target.value)} placeholder="เว้นว่าง = ไม่ตรวจราคา" className="focus-ring h-11 rounded-md border border-black/10 px-3" />
-                </label>
-              </div>
-              <fieldset>
-                <legend className="mb-2 text-sm font-semibold text-ink">สาขาในกลุ่ม</legend>
-                <div className="grid gap-2 sm:grid-cols-2">
-                  {groupEditorLocationIds.map((id) => {
-                    const location = locations.find((item) => item.id === id);
-                    if (!location) return null;
-                    return <label key={id} className="flex items-center gap-2 rounded-md border border-black/10 bg-white px-3 py-2 text-sm">
-                      <input type="checkbox" checked={groupLocationIds.includes(id)} onChange={() => toggleGroupLocation(id)} />
-                      {location.name}
-                    </label>;
-                  })}
-                </div>
-              </fieldset>
-              <div className="flex flex-wrap gap-2">
-                <button type="submit" disabled={groups.isSaving || groupLocationIds.length === 0} className="focus-ring h-10 rounded-md bg-commit px-3 text-sm font-bold text-white disabled:opacity-50">บันทึกกลุ่ม</button>
-                <button type="button" onClick={() => { setEditingGroup(null); setGroupEditorOpen(false); setGroupLocationIds([]); }} className="focus-ring h-10 rounded-md border border-black/15 px-3 text-sm font-semibold">ยกเลิก</button>
-              </div>
-            </form>
-          ) : groups.groups.length === 0 && groups.availableLocationIds.length === 0 ? (
-            <p className="text-pretty text-sm text-ink/60">ยังไม่มีกลุ่ม และไม่มีสาขาให้เลือกเพิ่ม</p>
-          ) : (
-            <div className="space-y-2" data-testid="approval-group-list">
-              {groups.availableLocationIds.length > 0 && (
-                <div className="rounded-md border border-dashed border-black/15 bg-field/40 p-3">
-                  <h4 className="text-balance font-semibold text-ink">ยังไม่จัดกลุ่ม</h4>
-                  <p className="text-pretty text-sm text-ink/60">
-                    {groups.availableLocationIds
-                      .map((id) => locations.find((location) => location.id === id)?.name ?? id)
-                      .join(", ")}
-                  </p>
-                  <p className="text-pretty text-sm text-ink/70">ยกเว้นเกณฑ์ราคาและเวลา</p>
-                </div>
-              )}
-              {groups.groups.map((group, index) => <div key={group.id} className="flex flex-col gap-2 rounded-md border border-black/10 p-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="min-w-0"><p className="font-semibold text-ink">กลุ่ม {index + 1}</p><p className="text-pretty text-sm text-ink/60">{group.locationIds.map((id) => locations.find((location) => location.id === id)?.name ?? id).join(", ")}</p><p className="text-sm text-ink/70">เวลา {group.editWindowMinutes} นาที · ราคา {group.configuredPrice == null ? "ไม่ตรวจ" : `${group.configuredPrice.toFixed(2)} บาท`}</p></div>
-                <div className="flex gap-2"><button type="button" onClick={() => openGroupEditor(group)} className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md border border-river/30 px-3 text-sm font-semibold text-river"><Pencil size={15} /> แก้ไข</button><button type="button" onClick={() => setGroupToDelete(group)} disabled={groups.isSaving} className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-rose-600 px-3 text-sm font-semibold text-white disabled:opacity-50"><Trash2 size={15} /> ลบ</button></div>
-              </div>)}
-            </div>
-          )}
-        </section>
+        <RubberApprovalPolicyPanel
+          locations={locations}
+          locationsLoading={locationsLoading}
+          locationsError={locationsError instanceof Error ? locationsError : null}
+        />
         <form onSubmit={handleSaveSettings} className="rounded-md border border-black/10 p-4">
           <h3 className="text-balance font-bold text-ink">กฎวันที่บิล</h3>
           {(settingsLoading || settingsFetching) && (
@@ -432,21 +291,6 @@ export function RubberBillApprovalModal({
           if (!confirmation) return;
           const action = confirmation.kind === "delete" ? handleDelete : handleApprove;
           void action(confirmation.bill).finally(() => setConfirmation(null));
-        }}
-      />
-      <AlertDialog
-        open={groupToDelete !== null}
-        title="ลบกลุ่มนี้?"
-        description="สาขาในกลุ่มจะได้รับการยกเว้นราคาและเวลา แต่กฎวันที่ยังคงใช้"
-        confirmLabel="ยืนยันลบกลุ่ม"
-        busy={groups.isSaving}
-        onCancel={() => setGroupToDelete(null)}
-        onConfirm={() => {
-          if (!groupToDelete) return;
-          void groups.deleteGroup(groupToDelete.id)
-            .then(() => toast.success("ลบกลุ่มแล้ว"))
-            .catch((error) => toast.error(error instanceof Error ? error.message : "ลบกลุ่มไม่สำเร็จ"))
-            .finally(() => setGroupToDelete(null));
         }}
       />
     </ModalShell>

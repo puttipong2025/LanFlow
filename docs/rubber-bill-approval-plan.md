@@ -83,7 +83,7 @@ The wrapper must be idempotent. Offline create replay that no longer matches the
 ## Implemented Surface
 
 - RLS read: `rubber_bill_approval_settings`
-- Safe marker RPC: `list_rubber_bill_approval_markers(location_id)` คืน diff เฉพาะคำขอสร้าง
+- Read model: `get_rubber_bill_operational_feed_v2(...)` รวมบิลและคำขออนุมัติแบบแบ่งหน้า
 - Manager RLS read: `rubber_bill_approval_requests`
 - `PUT /api/lanflow/rubber-bills/approval-settings`
 - `POST /api/lanflow/rubber-bills/approval-requests/[id]/approve`

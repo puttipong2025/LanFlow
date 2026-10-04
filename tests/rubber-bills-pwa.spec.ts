@@ -386,7 +386,7 @@ test.describe('PWA Offline Reload', () => {
       const locationId = await selectedAppLocationId(page);
       expect(locationId).toBeTruthy();
       await expect.poll(() => page.evaluate((id) => {
-        const value = localStorage.getItem(`lanflow:rubber-bill-approval-settings:v3:${id}`);
+        const value = localStorage.getItem(`lanflow:rubber-bill-approval-settings:v4:${id}`);
         return value ? JSON.parse(value).nonCurrentDateRequiresApproval : null;
       }, locationId)).toBe(true);
 

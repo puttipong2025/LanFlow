@@ -47,6 +47,13 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({ errorMessage: "ต้องระบุกฎวันที่บิล" }, { status: 400 });
   }
   try {
+    const current = await authCheck.supabase.rpc("get_effective_rubber_approval_settings", {
+      p_location_id: locationId,
+    });
+    if (current.error) {
+      return managementErrorResponse(current.error, "โหลดการตั้งค่าก่อนบันทึกไม่สำเร็จ");
+    }
+
     const saved = await authCheck.supabase.rpc("save_rubber_bill_date_approval_setting", {
       p_non_current_date_requires_approval: body.nonCurrentDateRequiresApproval,
     });

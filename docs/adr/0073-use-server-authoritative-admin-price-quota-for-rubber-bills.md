@@ -1,0 +1,19 @@
+---
+status: accepted
+---
+
+# Use one central Rubber price with server-authoritative Admin quotas
+
+LanFlow will use one system-wide Rubber central price as the no-quota boundary and a non-negative per-group allowance as the amount that eligible users may buy above that price. The initial central price is `42.00` baht/kg, attributed to `ระบบ` at migration time. Active Admins, System Managers, and super admins receive independent daily quota counters from one global count; a price above the central price may bypass price approval only when every weigh-row price stays within `central price + group allowance` and the account has quota remaining. The Server re-evaluates the current rule revision and consumes quota atomically with the bill mutation.
+
+The existing singleton row in `rubber_bill_approval_settings` remains the global settings aggregate. Separate central-price, ungrouped-default, quota-round, revision, and provenance columns are added there instead of introducing more singleton tables. Group allowance is added as a new column and historical `configured_price`/`configured_price_snapshot` values retain their old absolute-price meaning. New decision snapshots are append-only.
+
+System Managers and super admins may update the central price, group allowance, and one shared allowance/edit-window default for all ungrouped branches, while only exact-role `super_admin` may save the quota count; every quota-setting save resets all account counters, whereas central-price and approval-rule changes do not. Ungrouped branches follow the same price, edit-window, and quota workflow as grouped branches, starting from a `0` allowance and a `30`-minute edit window. Blank allowance means zero. Each group and the always-visible ungrouped-default card show the latest actor and `Asia/Bangkok` timestamp; membership moves update every affected card, without adding a history view. Date, edit-window, delete, and relation locks remain stronger than the price quota.
+
+The migration converts only existing group settings using `max(old absolute group price - 42, 0)` and does not rewrite historical bills, revisions, approval requests, or snapshots. Offline clients use the last central-price snapshot only as a preliminary guard; replay is Server-authoritative and may create an idempotent approval request, but never consumes quota automatically. Quota use and central-price metadata remain absent from bill tables, bill details, receipts, and PDFs. No price-setting history or per-account quota-usage screen will be added.
+
+Quota reset is logical rather than a mass counter update: usage is bucketed by Bangkok business date and quota round, and every quota save advances the round even when the configured count is unchanged. Interactive submission uses a read-only preview followed by an ephemeral rule/round/fingerprint-bound confirmation and a transactional final mutation. The Server re-evaluates on final submission: when the latest decision still needs quota, stale confirmation has no side effects and must be renewed; when the latest decision is direct or approval-required, that disposition is applied without consuming quota from the stale confirmation. A same-round last-slot race falls back to a price approval request. Confirmation is never persisted in the offline queue.
+
+Membership replacement/moves are atomic. Every affected source group, destination group, or ungrouped-default card receives the same actor and timestamp, and the global price-rule revision advances once. The new policy dispatcher is implemented from explicit source and shared decision helpers rather than rewriting an existing PostgreSQL function definition as text.
+
+The complete confirmed behavior, UI contract, migration constraints, acceptance scenarios, and implementation gates are specified in `docs/rubber-bill-admin-price-quota-plan.md`.

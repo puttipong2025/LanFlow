@@ -1,7 +1,7 @@
 import type { EffectiveRubberApprovalSettings } from "@/types";
 import { bangkokDateString } from "@/lib/bangkok-date";
 
-const CACHE_PREFIX = "lanflow:rubber-bill-approval-settings:v3:";
+const CACHE_PREFIX = "lanflow:rubber-bill-approval-settings:v4:";
 
 export type CachedRubberBillApprovalSettings = EffectiveRubberApprovalSettings & {
   cachedAt: string;
@@ -17,10 +17,9 @@ function cacheKey(locationId: string) {
 
 export function isRubberBillPriceApprovalRequired(
   prices: number[],
-  settings: Pick<EffectiveRubberApprovalSettings, "configuredPrice"> & { priceTimeExempt?: boolean },
+  settings: Pick<EffectiveRubberApprovalSettings, "effectivePriceCap">,
 ) {
-  if (settings.priceTimeExempt || settings.configuredPrice === null) return false;
-  const capInSatang = Math.round(settings.configuredPrice * 100);
+  const capInSatang = Math.round(settings.effectivePriceCap * 100);
   return prices.some((price) => Math.round(price * 100) > capInSatang);
 }
 
@@ -29,8 +28,8 @@ export function assertOfflineRubberBillPriceAllowed(
   billDate: string,
   settings: Pick<
     EffectiveRubberApprovalSettings,
-    "configuredPrice" | "nonCurrentDateRequiresApproval"
-  > & { priceTimeExempt?: boolean } | null,
+    "centralPrice" | "nonCurrentDateRequiresApproval"
+  > | null,
   isOnline: boolean,
 ) {
   if (isOnline) return;
@@ -41,8 +40,9 @@ export function assertOfflineRubberBillPriceAllowed(
   if (isNonCurrentDate && settings.nonCurrentDateRequiresApproval) {
     throw new Error("บิลต่างจากวันปัจจุบัน ต้องออนไลน์เพื่อส่งคำขออนุมัติ");
   }
-  if (isRubberBillPriceApprovalRequired(prices, settings)) {
-    throw new Error("ราคาบิลสูงกว่าราคายางที่กำหนด ต้องออนไลน์เพื่อส่งคำขออนุมัติ");
+  const centralInSatang = Math.round(settings.centralPrice * 100);
+  if (prices.some((price) => Math.round(price * 100) > centralInSatang)) {
+    throw new Error("ราคาบิลสูงกว่าราคากลาง ต้องออนไลน์เพื่อยืนยันหรือส่งขออนุมัติ");
   }
 }
 
@@ -67,28 +67,30 @@ export function loadRubberBillApprovalSettingsCache(
   try {
     const parsed = JSON.parse(storage.getItem(cacheKey(locationId)) ?? "null") as Partial<CachedRubberBillApprovalSettings> | null;
     if (!parsed) return null;
-    const hasValidPrice = parsed.configuredPrice === null || (
-      typeof parsed.configuredPrice === "number"
-      && Number.isFinite(parsed.configuredPrice)
-      && parsed.configuredPrice >= 0
-    );
+    const hasValidPrice = [parsed.centralPrice, parsed.priceAllowance, parsed.effectivePriceCap]
+      .every((value) => typeof value === "number" && Number.isFinite(value) && value >= 0);
+    const hasPositiveCentralPrice = typeof parsed.centralPrice === "number" && parsed.centralPrice > 0;
     const hasValidCachedAt = typeof parsed.cachedAt === "string" && Number.isFinite(Date.parse(parsed.cachedAt));
-    const isExempt = parsed.groupId === null
-      && parsed.priceTimeExempt === true
-      && parsed.editWindowMinutes === null
-      && parsed.configuredPrice === null;
-    const isGrouped = typeof parsed.groupId === "string"
-      && parsed.groupId.length > 0
-      && parsed.priceTimeExempt === false
+    const hasValidSource = (parsed.ruleSource === "ungrouped" && parsed.groupId === null)
+      || (parsed.ruleSource === "group"
+      && typeof parsed.groupId === "string"
+      && parsed.groupId.length > 0);
+    const hasValidRule = hasValidSource
       && Number.isInteger(parsed.editWindowMinutes)
       && (parsed.editWindowMinutes as number) >= 0
-      && hasValidPrice;
+      && Number.isInteger(parsed.priceRuleRevision)
+      && (parsed.priceRuleRevision as number) > 0
+      && hasValidPrice
+      && hasPositiveCentralPrice
+      && Math.round((parsed.centralPrice as number) * 100)
+        + Math.round((parsed.priceAllowance as number) * 100)
+        === Math.round((parsed.effectivePriceCap as number) * 100);
     if (
       parsed.locationId !== locationId
       || typeof parsed.locationId !== "string"
       || typeof parsed.nonCurrentDateRequiresApproval !== "boolean"
       || !hasValidCachedAt
-      || (!isExempt && !isGrouped)
+      || !hasValidRule
     ) {
       return null;
     }

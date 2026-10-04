@@ -37,7 +37,13 @@ export async function POST(request: Request) {
 
     const result = data as Record<string, unknown>;
     const status = typeof result.status === "string" ? result.status : "failed";
-    const responseStatus = status === "conflict" ? 409 : status === "failed" ? 400 : 200;
+    const responseStatus = status === "conflict" || status === "rule_changed"
+      ? 409
+      : status === "confirmation_required"
+        ? 428
+        : status === "failed"
+          ? 400
+          : 200;
     return NextResponse.json(result, {
       status: responseStatus,
       headers: { "Cache-Control": "private, no-store, max-age=0" },

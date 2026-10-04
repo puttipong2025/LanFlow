@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 type ErrorLike = { message?: string } | null | undefined;
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const POSTGRES_INTEGER_MAX = 2_147_483_647;
+const POSTGRES_NUMERIC_12_2_MAX = 9_999_999_999.99;
 
 export function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
@@ -10,6 +12,25 @@ export function isUuid(value: unknown): value is string {
 
 export function isJsonObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+export function isNonNegativePostgresInteger(value: unknown): value is number {
+  return typeof value === "number"
+    && Number.isInteger(value)
+    && value >= 0
+    && value <= POSTGRES_INTEGER_MAX;
+}
+
+export function isSafePositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
+}
+
+export function isNonNegativeNumeric12Scale2(value: unknown): value is number {
+  return typeof value === "number"
+    && Number.isFinite(value)
+    && value >= 0
+    && value <= POSTGRES_NUMERIC_12_2_MAX
+    && Number(value.toFixed(2)) === value;
 }
 
 export function managementErrorResponse(error: ErrorLike, fallback: string) {
@@ -22,10 +43,21 @@ export function managementErrorResponse(error: ErrorLike, fallback: string) {
     { prefix: "ADMIN_USER_NOT_FOUND:", status: 404 },
     { prefix: "ADMIN_AUDIT_NOT_FOUND:", status: 404 },
     { prefix: "RUBBER_GROUP_BRANCH_CONFLICT:", status: 409 },
+    { prefix: "RUBBER_CENTRAL_PRICE_STALE:", status: 409 },
+    { prefix: "RUBBER_UNGROUPED_STALE:", status: 409 },
+    { prefix: "RUBBER_QUOTA_STALE:", status: 409 },
+    { prefix: "RUBBER_GROUP_STALE:", status: 409 },
     { prefix: "RUBBER_WEIGHT_ALERT_GROUP_BRANCH_CONFLICT:", status: 409 },
     { prefix: "ADMIN_REQUEST_CONFLICT:", status: 409 },
     { prefix: "RUBBER_GROUP_EMPTY:", status: 400 },
+    { prefix: "RUBBER_GROUP_DUPLICATE_BRANCH:", status: 400 },
+    { prefix: "RUBBER_GROUP_INVALID_BRANCH:", status: 400 },
     { prefix: "RUBBER_GROUP_INVALID:", status: 400 },
+    { prefix: "RUBBER_CENTRAL_PRICE_INVALID:", status: 400 },
+    { prefix: "RUBBER_EFFECTIVE_PRICE_CAP_INVALID:", status: 400 },
+    { prefix: "RUBBER_ALLOWANCE_INVALID:", status: 400 },
+    { prefix: "RUBBER_EDIT_WINDOW_INVALID:", status: 400 },
+    { prefix: "RUBBER_QUOTA_INVALID:", status: 400 },
     { prefix: "RUBBER_WEIGHT_ALERT_GROUP_EMPTY:", status: 400 },
     { prefix: "RUBBER_WEIGHT_ALERT_GROUP_INVALID:", status: 400 },
     { prefix: "ADMIN_PROFILE_INVALID:", status: 400 },

@@ -21,6 +21,7 @@ import { openRubberBillOcrSourceImage } from "@/lib/rubber-bills/open-ocr-source
 
 import type { Location, Profile, RubberBill } from "@/types";
 import { ModalShell } from "@/components/shared/ModalShell";
+import { RubberBillPriceReference } from "@/components/rubber-bills/RubberBillPriceReference";
 
 import { Field } from "@/components/shared/Field";
 import { NumberField } from "@/components/shared/NumberField";
@@ -51,8 +52,9 @@ export function RubberBillModal({
   selectedLocation,
   profile,
   bill,
-  configuredPrice,
-  priceTimeExempt = false,
+  centralPrice,
+  priceAllowance,
+  effectivePriceCap,
   nonCurrentDateRequiresApproval = false,
   customers,
   initialOcrDraft,
@@ -62,8 +64,9 @@ export function RubberBillModal({
   selectedLocation: Location;
   profile: Profile;
   bill: RubberBill | null;
-  configuredPrice?: number | null;
-  priceTimeExempt?: boolean;
+  centralPrice?: number;
+  priceAllowance?: number;
+  effectivePriceCap?: number;
   nonCurrentDateRequiresApproval?: boolean;
   customers: RubberBillCustomerOption[];
   initialOcrDraft?: RubberBillOcrInitialDraft | null;
@@ -198,11 +201,15 @@ export function RubberBillModal({
       !== Math.round((bill.weighItems?.[index]?.price ?? Number.NaN) * 100)
     )
   );
-  const exceedsConfiguredPrice =
+  const exceedsEffectivePriceCap =
     hasPriceChange &&
-    !priceTimeExempt &&
-    configuredPrice != null &&
-    weighItems.some((item) => Math.round(item.price * 100) > Math.round(configuredPrice * 100));
+    effectivePriceCap != null &&
+    weighItems.some((item) => Math.round(item.price * 100) > Math.round(effectivePriceCap * 100));
+  const entersQuotaRange = hasPriceChange
+    && centralPrice != null
+    && effectivePriceCap != null
+    && weighItems.some((item) => Math.round(item.price * 100) > Math.round(centralPrice * 100))
+    && !exceedsEffectivePriceCap;
   const requiresNonCurrentDateApproval =
     nonCurrentDateRequiresApproval && billDate !== todayInputValue();
 
@@ -408,7 +415,7 @@ export function RubberBillModal({
       payableBeforeRounding: submitCalculation.payableBeforeRounding,
       netTotal: submitCalculation.netTotal,
       acidPackCount: submittedStockItems.reduce((sum, item) => sum + item.quantity, 0),
-      configuredPriceSnapshot: bill?.configuredPriceSnapshot ?? configuredPrice ?? null,
+      configuredPriceSnapshot: bill?.configuredPriceSnapshot ?? effectivePriceCap ?? null,
       approvalState: bill?.approvalState ?? "not_required",
       approvalApprovedByName: bill?.approvalApprovedByName ?? null,
       approvalRevisionNo: bill?.approvalRevisionNo ?? null,
@@ -616,16 +623,7 @@ export function RubberBillModal({
               ยอดจาก OCR {initialOcrDraft.ocrTotal.toLocaleString("th-TH", { minimumFractionDigits: 2 })} บาท ไม่ตรงกับยอดตามสูตรบิล {calculation.netTotal.toLocaleString("th-TH", { minimumFractionDigits: 2 })} บาท — ระบบจะใช้ยอดตามสูตรบิล
             </p>
           )}
-          {!priceTimeExempt && configuredPrice != null && (
-            <div className={`mb-3 rounded-md border px-3 py-2 text-sm ${
-              exceedsConfiguredPrice
-                ? "border-amber-300 bg-amber-50 text-amber-900"
-                : "border-leaf/20 bg-leaf/5 text-leaf"
-            }`}>
-              ราคาต่ำกว่า {configuredPrice.toFixed(2)} บาท ไม่ต้องอนุมัติ
-              {exceedsConfiguredPrice && " — บิลนี้จะเข้ารออนุมัติเมื่อบันทึก"}
-            </div>
-          )}
+          <RubberBillPriceReference centralPrice={centralPrice} priceAllowance={priceAllowance} effectivePriceCap={effectivePriceCap} entersQuotaRange={entersQuotaRange} exceedsEffectivePriceCap={exceedsEffectivePriceCap} />
           <div className="overflow-x-auto">
             <table className="w-full min-w-[900px] border-collapse text-sm">
               <thead>
@@ -845,7 +843,7 @@ export function RubberBillModal({
             <Save size={18} />
             {isSubmitting
               ? "กำลังบันทึก..."
-              : requiresNonCurrentDateApproval || exceedsConfiguredPrice
+              : requiresNonCurrentDateApproval || exceedsEffectivePriceCap
                 ? "ส่งขออนุมัติ"
                 : "บันทึกบิล"}
           </button>

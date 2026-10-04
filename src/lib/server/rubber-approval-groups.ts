@@ -1,9 +1,17 @@
-import { isUuid } from "@/lib/server/management-route-error";
+import {
+  isNonNegativeNumeric12Scale2,
+  isNonNegativePostgresInteger,
+  isJsonObject,
+  isSafePositiveInteger,
+  isUuid,
+} from "@/lib/server/management-route-error";
 
 type GroupBody = {
   locationIds?: unknown;
   editWindowMinutes?: unknown;
-  configuredPrice?: unknown;
+  priceAllowance?: unknown;
+  revisionNo?: unknown;
+  sourceGroupRevisions?: unknown;
 };
 
 export function parseRubberApprovalGroupBody(body: GroupBody) {
@@ -12,23 +20,33 @@ export function parseRubberApprovalGroupBody(body: GroupBody) {
       || new Set(body.locationIds).size !== body.locationIds.length) {
     return { errorMessage: "ต้องเลือกสาขาอย่างน้อยหนึ่งสาขาและห้ามซ้ำ" } as const;
   }
-  if (!Number.isInteger(body.editWindowMinutes) || Number(body.editWindowMinutes) < 0) {
+  if (!isNonNegativePostgresInteger(body.editWindowMinutes)) {
     return { errorMessage: "จำนวนนาทีต้องเป็นจำนวนเต็มตั้งแต่ 0 ขึ้นไป" } as const;
   }
-  const configuredPrice = body.configuredPrice === null ? null : body.configuredPrice;
-  if (configuredPrice !== null && (
-    typeof configuredPrice !== "number"
-    || !Number.isFinite(configuredPrice)
-    || configuredPrice < 0
-    || Number(configuredPrice.toFixed(2)) !== configuredPrice
+  const priceAllowance = body.priceAllowance === null ? 0 : body.priceAllowance;
+  if (
+    !isNonNegativeNumeric12Scale2(priceAllowance)
+  ) {
+    return { errorMessage: "ส่วนต่างราคาต้องไม่ติดลบและมีทศนิยมไม่เกิน 2 ตำแหน่ง" } as const;
+  }
+  if (body.revisionNo !== undefined && (
+    !isSafePositiveInteger(body.revisionNo)
   )) {
-    return { errorMessage: "ราคายางต้องไม่ติดลบและมีทศนิยมไม่เกิน 2 ตำแหน่ง" } as const;
+    return { errorMessage: "revision ของกลุ่มไม่ถูกต้อง" } as const;
+  }
+  const sourceGroupRevisions = body.sourceGroupRevisions ?? {};
+  if (!isJsonObject(sourceGroupRevisions) || Object.entries(sourceGroupRevisions).some(
+    ([groupId, revision]) => !isUuid(groupId) || !isSafePositiveInteger(revision),
+  )) {
+    return { errorMessage: "revision ของกลุ่มต้นทางไม่ถูกต้อง" } as const;
   }
   return {
     value: {
       locationIds: body.locationIds as string[],
       editWindowMinutes: Number(body.editWindowMinutes),
-      configuredPrice,
+      priceAllowance,
+      revisionNo: body.revisionNo === undefined ? undefined : Number(body.revisionNo),
+      sourceGroupRevisions: sourceGroupRevisions as Record<string, number>,
     },
   } as const;
 }
