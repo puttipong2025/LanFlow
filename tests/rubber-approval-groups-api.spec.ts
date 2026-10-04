@@ -348,6 +348,24 @@ test.describe.serial("Rubber approval groups API", () => {
             expectedRoundId: settings.quota.roundId,
           },
         }),
+        manager.request.put("/api/lanflow/rubber-bills/approval-settings/quota", {
+          data: {
+            quotaLimit: 1,
+            maxPriceAllowance: -0.01,
+            expectedRoundId: settings.quota.roundId,
+          },
+        }),
+        manager.request.put("/api/lanflow/rubber-bills/approval-settings/quota", {
+          data: {
+            quotaLimit: 1,
+            maxPriceAllowance: 0.001,
+            expectedRoundId: settings.quota.roundId,
+          },
+        }),
+        manager.request.put("/api/lanflow/rubber-bills/approval-settings/quota", {
+          data: "{",
+          headers: { "content-type": "application/json" },
+        }),
         manager.request.put("/api/lanflow/rubber-bills/approval-settings/ungrouped", {
           data: {
             editWindowMinutes: 2_147_483_648,
@@ -372,7 +390,9 @@ test.describe.serial("Rubber approval groups API", () => {
       ];
 
       const responses = await Promise.all(cases);
-      expect(responses.map((response) => response.status())).toEqual([400, 400, 400, 400, 400]);
+      expect(responses.map((response) => response.status())).toEqual([
+        400, 400, 400, 400, 400, 400, 400, 400,
+      ]);
     } finally {
       await manager.close();
     }
@@ -380,6 +400,7 @@ test.describe.serial("Rubber approval groups API", () => {
 
   test("quota and price allowance limit save atomically and reject a stale round", async ({ browser }) => {
     const manager = await authContext(browser, "super_admin");
+    const competingManager = await authContext(browser, "super_admin");
     try {
       const listed = await manager.request.get("/api/lanflow/rubber-bills/approval-groups");
       expect(listed.ok(), await listed.text()).toBeTruthy();
@@ -388,31 +409,33 @@ test.describe.serial("Rubber approval groups API", () => {
       };
       const previous = settings.quota;
 
-      const saved = await manager.request.put("/api/lanflow/rubber-bills/approval-settings/quota", {
-        data: {
-          quotaLimit: previous.limitPerAdmin + 1,
-          maxPriceAllowance: 90,
-          expectedRoundId: previous.roundId,
-        },
-      });
-      expect(saved.ok(), await saved.text()).toBeTruthy();
-      const savedBody = await saved.json() as {
+      const candidates = [
+        { quotaLimit: previous.limitPerAdmin + 1, maxPriceAllowance: 90 },
+        { quotaLimit: previous.limitPerAdmin + 2, maxPriceAllowance: 80 },
+      ];
+      const responses = await Promise.all([
+        manager.request.put("/api/lanflow/rubber-bills/approval-settings/quota", {
+          data: { ...candidates[0], expectedRoundId: previous.roundId },
+        }),
+        competingManager.request.put("/api/lanflow/rubber-bills/approval-settings/quota", {
+          data: { ...candidates[1], expectedRoundId: previous.roundId },
+        }),
+      ]);
+      expect(responses.map((response) => response.status()).sort()).toEqual([200, 409]);
+      const winnerIndex = responses.findIndex((response) => response.ok());
+      const savedBody = await responses[winnerIndex].json() as {
         quota: { limitPerAdmin: number; maxPriceAllowance: number; roundId: string };
       };
-      expect(savedBody.quota).toMatchObject({
-        limitPerAdmin: previous.limitPerAdmin + 1,
-        maxPriceAllowance: 90,
-      });
+      const winningSettings = {
+        limitPerAdmin: candidates[winnerIndex].quotaLimit,
+        maxPriceAllowance: candidates[winnerIndex].maxPriceAllowance,
+      };
+      expect(savedBody.quota).toMatchObject(winningSettings);
       expect(savedBody.quota.roundId).not.toBe(previous.roundId);
 
-      const stale = await manager.request.put("/api/lanflow/rubber-bills/approval-settings/quota", {
-        data: {
-          quotaLimit: previous.limitPerAdmin,
-          maxPriceAllowance: previous.maxPriceAllowance,
-          expectedRoundId: previous.roundId,
-        },
-      });
-      expect(stale.status()).toBe(409);
+      const afterRace = await manager.request.get("/api/lanflow/rubber-bills/approval-groups");
+      expect(afterRace.ok(), await afterRace.text()).toBeTruthy();
+      expect((await afterRace.json() as { quota: unknown }).quota).toMatchObject(winningSettings);
 
       const restored = await manager.request.put("/api/lanflow/rubber-bills/approval-settings/quota", {
         data: {
@@ -424,6 +447,7 @@ test.describe.serial("Rubber approval groups API", () => {
       expect(restored.ok(), await restored.text()).toBeTruthy();
     } finally {
       await manager.close();
+      await competingManager.close();
     }
   });
 
@@ -445,7 +469,24 @@ test.describe.serial("Rubber approval groups API", () => {
       const confirmation = superAdminPage.getByRole("alertdialog", { name: "ตั้งค่าและรีเซ็ตโควต้า?" });
       await expect(confirmation).toContainText("ราคายางที่กำหนดสูงสุด 100.00 → 11.00 บาท/กก.");
       await expect(confirmation).toContainText("รีเซ็ตยอดใช้ของ Admin ทุกบัญชีทันที");
-      await confirmation.getByRole("button", { name: "ยกเลิก" }).click();
+      const current = await superAdmin.request.get("/api/lanflow/rubber-bills/approval-groups");
+      expect(current.ok(), await current.text()).toBeTruthy();
+      const currentBody = await current.json() as {
+        quota: { limitPerAdmin: number; maxPriceAllowance: number; roundId: string };
+      };
+      const competingSave = await superAdmin.request.put(
+        "/api/lanflow/rubber-bills/approval-settings/quota",
+        { data: {
+          quotaLimit: currentBody.quota.limitPerAdmin,
+          maxPriceAllowance: currentBody.quota.maxPriceAllowance,
+          expectedRoundId: currentBody.quota.roundId,
+        } },
+      );
+      expect(competingSave.ok(), await competingSave.text()).toBeTruthy();
+      await confirmation.getByRole("button", { name: "ยืนยันการตั้งค่า" }).click();
+      await expect(approvalDialog.getByText("การตั้งค่าโควต้าถูกแก้ไขโดยผู้ใช้อื่น")).toBeVisible();
+      await expect(approvalDialog.getByLabel("จำนวนโควต้าต่อ Admin")).toHaveValue("7");
+      await expect(approvalDialog.getByLabel("ราคายางที่กำหนดสูงสุด")).toHaveValue("11");
 
       expect((await db.from("profiles")
         .update({ can_access_super_admin_features: true })
