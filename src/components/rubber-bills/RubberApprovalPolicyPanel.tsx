@@ -1,7 +1,7 @@
 "use client";
 
 import { Pencil, Plus, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { AlertDialog } from "@/components/shared/AlertDialog";
@@ -52,11 +52,13 @@ export function RubberApprovalPolicyPanel({
   const [allowance, setAllowance] = useState("");
   const [groupRevisionSnapshot, setGroupRevisionSnapshot] = useState<Record<string, number>>({});
   const [confirmation, setConfirmation] = useState<PendingConfirmation | null>(null);
+  const [ungroupedEditorOpen, setUngroupedEditorOpen] = useState(false);
   const [ungroupedMinutes, setUngroupedMinutes] = useState<string | null>(null);
   const [ungroupedAllowance, setUngroupedAllowance] = useState<string | null>(null);
   const [groupError, setGroupError] = useState<string | null>(null);
   const [ungroupedError, setUngroupedError] = useState<string | null>(null);
   const [quotaError, setQuotaError] = useState<string | null>(null);
+  const ungroupedEditButtonRef = useRef<HTMLButtonElement>(null);
 
   const central = policy.centralPrice;
   const ungrouped = policy.ungroupedDefaults;
@@ -85,6 +87,22 @@ export function RubberApprovalPolicyPanel({
     setLocationIds((current) => current.includes(id)
       ? current.filter((locationId) => locationId !== id)
       : [...current, id]);
+  }
+
+  function openUngroupedEditor() {
+    if (!ungrouped) return;
+    setUngroupedMinutes(String(ungrouped.editWindowMinutes));
+    setUngroupedAllowance(ungrouped.priceAllowance ? String(ungrouped.priceAllowance) : "");
+    setUngroupedError(null);
+    setUngroupedEditorOpen(true);
+  }
+
+  function closeUngroupedEditor() {
+    setUngroupedEditorOpen(false);
+    setUngroupedMinutes(null);
+    setUngroupedAllowance(null);
+    setUngroupedError(null);
+    requestAnimationFrame(() => ungroupedEditButtonRef.current?.focus());
   }
 
   async function saveGroup(event: React.FormEvent) {
@@ -131,9 +149,7 @@ export function RubberApprovalPolicyPanel({
         throw new Error(`ราคายางที่กำหนดต้องไม่เกิน ${quota.maxPriceAllowance.toFixed(2)} บาท/กก.`);
       }
       await policy.saveUngroupedDefaults({ editWindowMinutes, priceAllowance, expectedRevision: ungrouped.revision });
-      setUngroupedMinutes(null);
-      setUngroupedAllowance(null);
-      setUngroupedError(null);
+      closeUngroupedEditor();
       toast.success("บันทึกกติกาสาขาที่ยังไม่จัดกลุ่มแล้ว");
     } catch (caught) {
       await policy.refetch();
@@ -209,7 +225,7 @@ export function RubberApprovalPolicyPanel({
       </section>
 
       <section className="rounded-md border border-black/10 p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-balance font-bold text-ink">กลุ่มราคาและเวลา</h3><p className="text-pretty text-sm text-ink/60">ราคาที่กำหนดคือจำนวนบาทที่ซื้อได้สูงกว่าราคากลาง; เว้นว่างเท่ากับ 0 บาท</p></div>{!groupEditorOpen && policy.availableLocationIds.length > 0 && <button type="button" onClick={() => openGroupEditor()} className="focus-ring inline-flex h-10 items-center gap-2 rounded-md bg-commit px-3 text-sm font-bold text-white"><Plus size={16} /> สร้างกลุ่ม</button>}</div>
+        <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-balance font-bold text-ink">กลุ่มราคาและเวลา</h3><p className="text-pretty text-sm text-ink/60">ราคาที่กำหนดคือจำนวนบาทที่ซื้อได้สูงกว่าราคากลาง; เว้นว่างเท่ากับ 0 บาท</p></div>{!groupEditorOpen && !ungroupedEditorOpen && policy.availableLocationIds.length > 0 && <button type="button" onClick={() => openGroupEditor()} className="focus-ring inline-flex h-10 items-center gap-2 rounded-md bg-commit px-3 text-sm font-bold text-white"><Plus size={16} /> สร้างกลุ่ม</button>}</div>
         {groupEditorOpen && <form onSubmit={saveGroup} className="mt-3 space-y-3 rounded-md bg-field/55 p-3">
           <h4 className="font-semibold">{editingGroup ? "แก้ไขกลุ่ม" : "สร้างกลุ่มใหม่"}</h4>
           <div className="grid gap-3 sm:grid-cols-2"><label className="grid gap-1 text-sm font-semibold">เวลาแก้ไขได้ (นาที)<input aria-label="เวลาแก้ไขได้ (นาที)" type="number" min="0" step="1" value={minutes} onChange={(event) => setMinutes(event.target.value)} className="focus-ring h-10 rounded-md border border-black/15 px-3" required /></label><label className="grid gap-1 text-sm font-semibold">ราคายางที่กำหนด — ซื้อเกินราคากลางได้ (บาท/กก.)<input aria-label="ราคายางที่กำหนด" aria-describedby="group-allowance-help" inputMode="decimal" value={allowance} onChange={(event) => { setAllowance(event.target.value); setGroupError(null); }} placeholder="เว้นว่าง = 0 บาท" className="focus-ring h-10 rounded-md border border-black/15 px-3 tabular-nums" /><span id="group-allowance-help" className="text-pretty text-xs font-normal text-ink/55">กรอกได้สูงสุด {quota.maxPriceAllowance.toFixed(2)} บาท/กก. · ราคาซื้อสูงสุดปัจจุบัน {absoluteConfiguredMaximum.toFixed(2)} บาท/กก.</span></label></div>
@@ -218,13 +234,33 @@ export function RubberApprovalPolicyPanel({
           <div className="flex gap-2"><button type="submit" disabled={policy.isSaving} className="focus-ring h-10 rounded-md bg-commit px-3 text-sm font-bold text-white disabled:opacity-50">บันทึกกลุ่ม</button><button type="button" onClick={closeGroupEditor} className="focus-ring h-10 rounded-md border border-black/15 px-3 text-sm font-semibold">ยกเลิก</button></div>
         </form>}
         {!groupEditorOpen && <div className="mt-3 space-y-2" data-testid="approval-group-list">
-          <form onSubmit={saveUngrouped} className="rounded-md border border-dashed border-black/20 bg-field/40 p-3">
-            <h4 className="font-semibold">สาขาที่ยังไม่จัดกลุ่ม</h4><p className="text-sm text-ink/60">{ungrouped.locationIds.length ? ungrouped.locationIds.map((id) => locations.find((location) => location.id === id)?.name ?? id).join(", ") : "ยังไม่มีสาขาที่ใช้ค่านี้"}</p>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="grid gap-1 text-sm font-semibold">เวลาแก้ไขได้ (นาที)<input type="number" min="0" step="1" value={shownUngroupedMinutes} onChange={(event) => setUngroupedMinutes(event.target.value)} className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3" /></label><label className="grid gap-1 text-sm font-semibold">ราคายางที่กำหนด — ซื้อเกินราคากลางได้ (บาท/กก.)<input aria-describedby="ungrouped-allowance-help" inputMode="decimal" value={shownUngroupedAllowance} onChange={(event) => { setUngroupedAllowance(event.target.value); setUngroupedError(null); }} placeholder="เว้นว่าง = 0 บาท" className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3 tabular-nums" /><span id="ungrouped-allowance-help" className="text-pretty text-xs font-normal text-ink/55">กรอกได้สูงสุด {quota.maxPriceAllowance.toFixed(2)} บาท/กก. · ราคาซื้อสูงสุดปัจจุบัน {absoluteConfiguredMaximum.toFixed(2)} บาท/กก.</span></label></div>
-            {ungroupedError && <p role="alert" className="mt-2 text-pretty text-sm text-rose-700">{ungroupedError}</p>}
-            <p className="mt-2 text-xs text-ink/50">{actorText(ungrouped.updatedByName, ungrouped.updatedAt)}</p><button type="submit" disabled={policy.isSaving} className="focus-ring mt-3 h-10 rounded-md bg-commit px-3 text-sm font-bold text-white disabled:opacity-50">บันทึกกติกาสาขาที่ยังไม่จัดกลุ่ม</button>
-          </form>
-          {policy.groups.map((group, index) => <article key={group.id} className="flex flex-col gap-3 rounded-md border border-black/10 p-3 sm:flex-row sm:items-center sm:justify-between"><div><h4 className="font-semibold">กลุ่ม {index + 1}</h4><p className="text-sm text-ink/60">{group.locationIds.map((id) => locations.find((location) => location.id === id)?.name ?? id).join(", ")}</p><p className="text-sm">เวลา {group.editWindowMinutes} นาที · ราคากลาง {central.value.toFixed(2)} + กำหนด {group.priceAllowance.toFixed(2)} = ซื้อได้สูงสุด {(central.value + group.priceAllowance).toFixed(2)} บาท/กก.</p><p className="text-xs text-ink/50">{actorText(group.updatedByName ?? "", group.updatedAt)}</p></div><div className="flex gap-2"><button type="button" onClick={() => openGroupEditor(group)} className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md border border-river/30 px-3 text-sm font-semibold text-river"><Pencil size={15} /> แก้ไข</button><button type="button" onClick={() => setConfirmation({ kind: "delete", group })} className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-rose-600 px-3 text-sm font-semibold text-white"><Trash2 size={15} /> ลบ</button></div></article>)}
+          <article data-testid="ungrouped-approval-settings" className="rounded-md border border-black/10 p-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h4 className="font-semibold">สาขาที่ยังไม่จัดกลุ่ม</h4>
+                {!ungroupedEditorOpen && <p className="text-sm text-ink/60">{ungrouped.locationIds.length ? ungrouped.locationIds.map((id) => locations.find((location) => location.id === id)?.name ?? id).join(", ") : "ยังไม่มีสาขาที่ใช้ค่านี้"}</p>}
+              </div>
+              {!ungroupedEditorOpen && <button ref={ungroupedEditButtonRef} type="button" onClick={openUngroupedEditor} className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md border border-river/30 px-3 text-sm font-semibold text-river"><Pencil aria-hidden="true" size={15} /> แก้ไข</button>}
+            </div>
+            {ungroupedEditorOpen ? <form onSubmit={saveUngrouped} className="mt-3 space-y-3 rounded-md bg-field/55 p-3">
+              <section aria-labelledby="ungrouped-location-heading">
+                <h5 id="ungrouped-location-heading" className="text-sm font-semibold">สาขาในกลุ่ม</h5>
+                <p className="text-sm text-ink/60">{ungrouped.locationIds.length ? ungrouped.locationIds.map((id) => locations.find((location) => location.id === id)?.name ?? id).join(", ") : "ยังไม่มีสาขาที่ใช้ค่านี้"}</p>
+              </section>
+              <h5 className="text-sm font-semibold">แก้ไขการตั้งค่า</h5>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="grid gap-1 text-sm font-semibold">เวลาแก้ไขได้ (นาที)<input autoFocus aria-describedby={ungroupedError ? "ungrouped-error" : undefined} aria-invalid={ungroupedError ? true : undefined} type="number" min="0" step="1" value={shownUngroupedMinutes} onChange={(event) => { setUngroupedMinutes(event.target.value); setUngroupedError(null); }} className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3" required /></label>
+                <label className="grid gap-1 text-sm font-semibold">ราคายางที่กำหนด — ซื้อเกินราคากลางได้ (บาท/กก.)<input aria-describedby={ungroupedError ? "ungrouped-allowance-help ungrouped-error" : "ungrouped-allowance-help"} aria-invalid={ungroupedError ? true : undefined} inputMode="decimal" value={shownUngroupedAllowance} onChange={(event) => { setUngroupedAllowance(event.target.value); setUngroupedError(null); }} placeholder="เว้นว่าง = 0 บาท" className="focus-ring h-10 rounded-md border border-black/15 bg-white px-3 tabular-nums" /><span id="ungrouped-allowance-help" className="text-pretty text-xs font-normal text-ink/55">กรอกได้สูงสุด {quota.maxPriceAllowance.toFixed(2)} บาท/กก. · ราคาซื้อสูงสุดปัจจุบัน {absoluteConfiguredMaximum.toFixed(2)} บาท/กก.</span></label>
+              </div>
+              {ungroupedError && <p id="ungrouped-error" role="alert" className="text-pretty text-sm text-rose-700">{ungroupedError}</p>}
+              <p className="text-xs text-ink/50">{actorText(ungrouped.updatedByName, ungrouped.updatedAt)}</p>
+              <div className="flex gap-2"><button type="submit" disabled={policy.isSaving} className="focus-ring h-10 rounded-md bg-commit px-3 text-sm font-bold text-white disabled:opacity-50">บันทึกการตั้งค่า</button><button type="button" disabled={policy.isSaving} onClick={closeUngroupedEditor} className="focus-ring h-10 rounded-md border border-black/15 px-3 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50">ยกเลิก</button></div>
+            </form> : <>
+              <p className="mt-2 text-sm">เวลา {ungrouped.editWindowMinutes} นาที · ราคากลาง {central.value.toFixed(2)} + ราคายางที่กำหนด {ungrouped.priceAllowance.toFixed(2)} = ซื้อได้สูงสุด {(central.value + ungrouped.priceAllowance).toFixed(2)} บาท/กก.</p>
+              <p className="mt-1 text-xs text-ink/50">{actorText(ungrouped.updatedByName, ungrouped.updatedAt)}</p>
+            </>}
+          </article>
+          {policy.groups.map((group, index) => <article key={group.id} className="flex flex-col gap-3 rounded-md border border-black/10 p-3 sm:flex-row sm:items-center sm:justify-between"><div><h4 className="font-semibold">กลุ่ม {index + 1}</h4><p className="text-sm text-ink/60">{group.locationIds.map((id) => locations.find((location) => location.id === id)?.name ?? id).join(", ")}</p><p className="text-sm">เวลา {group.editWindowMinutes} นาที · ราคากลาง {central.value.toFixed(2)} + กำหนด {group.priceAllowance.toFixed(2)} = ซื้อได้สูงสุด {(central.value + group.priceAllowance).toFixed(2)} บาท/กก.</p><p className="text-xs text-ink/50">{actorText(group.updatedByName ?? "", group.updatedAt)}</p></div>{!ungroupedEditorOpen && <div className="flex gap-2"><button type="button" onClick={() => openGroupEditor(group)} className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md border border-river/30 px-3 text-sm font-semibold text-river"><Pencil size={15} /> แก้ไข</button><button type="button" onClick={() => setConfirmation({ kind: "delete", group })} className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-rose-600 px-3 text-sm font-semibold text-white"><Trash2 size={15} /> ลบ</button></div>}</article>)}
         </div>}
       </section>
 

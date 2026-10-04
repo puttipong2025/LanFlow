@@ -143,6 +143,9 @@ test.describe.serial("Rubber approval groups API", () => {
       await expect(groupList.locator(":scope > *").first()).toContainText(locationName);
       await expect(groupList.locator(":scope > *").first()).toContainText("ราคายางที่กำหนด");
       const createGroupButton = approvalDialog.getByRole("button", { name: "สร้างกลุ่ม" });
+      await groupList.getByTestId("ungrouped-approval-settings").getByRole("button", { name: "แก้ไข", exact: true }).click();
+      await expect(createGroupButton).toHaveCount(0);
+      await groupList.getByTestId("ungrouped-approval-settings").getByRole("button", { name: "ยกเลิก", exact: true }).click();
       await createGroupButton.click();
       await expect(createGroupButton).toHaveCount(0);
       await approvalDialog.getByRole("button", { name: "ยกเลิก" }).click();

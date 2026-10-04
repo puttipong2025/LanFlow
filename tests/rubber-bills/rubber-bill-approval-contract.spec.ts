@@ -143,6 +143,28 @@ async function saveSettings(
 }
 
 test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () => {
+  let originalMaxPriceAllowance = 0;
+
+  test.beforeAll(async () => {
+    const db = service();
+    const current = await db.from("rubber_bill_approval_settings")
+      .select("max_price_allowance")
+      .eq("id", true)
+      .single();
+    expect(current.error).toBeNull();
+    originalMaxPriceAllowance = Number(current.data!.max_price_allowance);
+    expect((await db.from("rubber_bill_approval_settings")
+      .update({ max_price_allowance: 100 })
+      .eq("id", true)).error).toBeNull();
+  });
+
+  test.afterAll(async () => {
+    const db = service();
+    expect((await db.from("rubber_bill_approval_settings")
+      .update({ max_price_allowance: originalMaxPriceAllowance })
+      .eq("id", true)).error).toBeNull();
+  });
+
   test("offline cached-price guard blocks only values above the cached cap", () => {
     const today = bangkokDateString();
     const central42 = { centralPrice: 42, nonCurrentDateRequiresApproval: false };
@@ -1424,6 +1446,54 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
     }
   });
 
+  test("ungrouped approval settings use a read-first inline editor", async ({ browser }) => {
+    const superAdmin = await authContext(browser, "super_admin");
+
+    try {
+      const page = await superAdmin.newPage();
+      await page.goto("/");
+      await page.getByRole("button", { name: "บิลยาง" }).click();
+      await page.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ }).click();
+
+      const approvalDialog = page.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง" });
+      const ungroupedSettings = approvalDialog.getByTestId("ungrouped-approval-settings");
+      await expect(ungroupedSettings.getByRole("heading", { name: "สาขาที่ยังไม่จัดกลุ่ม" })).toBeVisible();
+      await expect(ungroupedSettings.getByText(/เวลา \d+ นาที · ราคากลาง/)).toBeVisible();
+      await expect(ungroupedSettings.getByRole("button", { name: "ลบ", exact: true })).toHaveCount(0);
+      await expect(ungroupedSettings.getByLabel("เวลาแก้ไขได้ (นาที)")).toHaveCount(0);
+
+      await ungroupedSettings.getByRole("button", { name: "แก้ไข", exact: true }).click();
+      await expect(ungroupedSettings.getByRole("heading", { name: "สาขาในกลุ่ม" })).toBeVisible();
+      await expect(ungroupedSettings.getByRole("heading", { name: "แก้ไขการตั้งค่า" })).toBeVisible();
+      const minutesInput = ungroupedSettings.getByLabel("เวลาแก้ไขได้ (นาที)");
+      await expect(minutesInput).toBeFocused();
+      const originalMinutes = await minutesInput.inputValue();
+      await minutesInput.fill(originalMinutes === "0" ? "1" : "0");
+      await expect(ungroupedSettings.getByLabel("ราคายางที่กำหนด — ซื้อเกินราคากลางได้ (บาท/กก.)")).toBeVisible();
+      await expect(ungroupedSettings.getByRole("button", { name: "บันทึกการตั้งค่า", exact: true })).toBeVisible();
+      await ungroupedSettings.getByRole("button", { name: "ยกเลิก", exact: true }).click();
+      await expect(ungroupedSettings.getByLabel("เวลาแก้ไขได้ (นาที)")).toHaveCount(0);
+      await expect(ungroupedSettings.getByRole("button", { name: "แก้ไข", exact: true })).toBeFocused();
+      await ungroupedSettings.getByRole("button", { name: "แก้ไข", exact: true }).click();
+      await expect(ungroupedSettings.getByLabel("เวลาแก้ไขได้ (นาที)")).toHaveValue(originalMinutes);
+
+      await page.route("**/api/lanflow/rubber-bills/approval-settings/ungrouped", async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        await route.fulfill({
+          status: 409,
+          contentType: "application/json",
+          body: JSON.stringify({ errorMessage: "ค่ากลุ่มเริ่มต้นถูกแก้ไขโดยผู้ใช้อื่น" }),
+        });
+      });
+      await ungroupedSettings.getByRole("button", { name: "บันทึกการตั้งค่า", exact: true }).click();
+      await expect(ungroupedSettings.getByRole("button", { name: "บันทึกการตั้งค่า", exact: true })).toBeDisabled();
+      await expect(ungroupedSettings.getByRole("button", { name: "ยกเลิก", exact: true })).toBeDisabled();
+      await expect(ungroupedSettings.getByRole("alert")).toContainText("ค่ากลุ่มเริ่มต้นถูกแก้ไขโดยผู้ใช้อื่น");
+    } finally {
+      await superAdmin.close();
+    }
+  });
+
   test("only system managers see the approval entry point and it is disabled offline", async ({ browser }) => {
     const branchAdmin = await authContext(browser, "admin");
     const superAdmin = await authContext(browser, "super_admin");
@@ -1448,8 +1518,13 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       await expect(managerButton).toBeVisible();
       await expect(managerButton).toBeEnabled();
 
-      await superAdmin.setOffline(true);
-      await superPage.evaluate(() => window.dispatchEvent(new Event("offline")));
+      await superPage.evaluate(() => {
+        Object.defineProperty(window.navigator, "onLine", {
+          configurable: true,
+          get: () => false,
+        });
+        window.dispatchEvent(new Event("offline"));
+      });
       await expect(managerButton).toBeDisabled();
       await expect(managerButton).toHaveAttribute(
         "title",
@@ -1460,19 +1535,26 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         superPage.getByRole("heading", { name: "ตั้งค่าและอนุมัติบิลยาง" })
       ).toHaveCount(0);
 
-      await superAdmin.setOffline(false);
-      await superPage.evaluate(() => window.dispatchEvent(new Event("online")));
+      await superPage.evaluate(() => {
+        Object.defineProperty(window.navigator, "onLine", {
+          configurable: true,
+          get: () => true,
+        });
+        window.dispatchEvent(new Event("online"));
+      });
       await expect(managerButton).toBeEnabled();
       await managerButton.click();
       const approvalDialog = superPage.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง" });
       await expect(approvalDialog.getByText("ราคากลางยางทั้งระบบ")).toBeVisible();
       await expect(approvalDialog.getByText("กลุ่มราคาและเวลา")).toBeVisible();
-      await expect(approvalDialog.getByRole("heading", { name: "สาขาที่ยังไม่จัดกลุ่ม" })).toBeVisible();
+      const ungroupedSettings = approvalDialog.getByTestId("ungrouped-approval-settings");
+      await expect(ungroupedSettings.getByRole("heading", { name: "สาขาที่ยังไม่จัดกลุ่ม" })).toBeVisible();
       await expect(approvalDialog.getByText("โควต้าราคาสำหรับ Admin")).toBeVisible();
       await expect(approvalDialog.getByText("กฎวันที่บิล")).toBeVisible();
       await expect(approvalDialog.getByText("งานรออนุมัติบิลยาง")).toBeVisible();
-      await expect(approvalDialog.getByLabel("เวลาแก้ไขได้ (นาที)")).toBeVisible();
-      await expect(approvalDialog.getByLabel("ราคายางที่กำหนด — ซื้อเกินราคากลางได้ (บาท/กก.)")).toBeVisible();
+      await ungroupedSettings.getByRole("button", { name: "แก้ไข", exact: true }).click();
+      await expect(ungroupedSettings.getByLabel("เวลาแก้ไขได้ (นาที)")).toBeVisible();
+      await expect(ungroupedSettings.getByLabel("ราคายางที่กำหนด — ซื้อเกินราคากลางได้ (บาท/กก.)")).toBeVisible();
     } finally {
       await Promise.all([branchAdmin.close(), superAdmin.close()]);
     }
