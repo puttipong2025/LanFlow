@@ -18,6 +18,93 @@ function normalizePhone(raw: string) {
 test.describe("branch selector overview", () => {
   test.use({ storageState: "playwright/.auth/super_admin.json" });
 
+  test("filters accessible branches by name without changing the selection implicitly", async ({
+    page,
+  }) => {
+    const bootstrapResponse = await page.request.get("/api/lanflow");
+    expect(bootstrapResponse.ok(), await bootstrapResponse.text()).toBeTruthy();
+    const bootstrap = await bootstrapResponse.json() as {
+      locations: Array<{ id: string; name: string; active: boolean }>;
+      profile: { locationIds: string[] };
+    };
+    const accessibleLocations = bootstrap.locations.filter(
+      (location) =>
+        location.active && bootstrap.profile.locationIds.includes(location.id),
+    );
+    expect(accessibleLocations.length).toBeGreaterThan(0);
+
+    const target = accessibleLocations[accessibleLocations.length - 1];
+
+    await page.goto("/");
+    const selector = page.getByRole("button", { name: /^เลือกสาขา/ });
+    await expect(selector).toBeVisible({ timeout: 15_000 });
+    const selectedLocationId = await selector.getAttribute("data-location-id");
+
+    await selector.click();
+    await expect(page.getByRole("listbox", { name: "สาขาที่เข้าถึงได้" }))
+      .toBeVisible();
+    const initialOptionIds = await page.getByRole("option").evaluateAll((options) => (
+      options.map((option) => option.getAttribute("data-location-id"))
+    ));
+    const search = page.getByRole("searchbox", { name: "ค้นหาสาขา" });
+    await expect(search).toBeVisible();
+    await expect(search).not.toBeFocused();
+
+    const targetNameCharacters = Array.from(target.name.trim());
+    const searchTerm = targetNameCharacters
+      .slice(Math.floor(targetNameCharacters.length / 2))
+      .join("")
+      .toLocaleUpperCase("th");
+    await search.fill(`  ${searchTerm}  `);
+    const targetOption = page.locator(
+      `[role="option"][data-location-id="${target.id}"]`,
+    );
+    await expect(targetOption).toBeVisible();
+    const normalizedSearchTerm = searchTerm.toLocaleLowerCase("th");
+    const locationNamesById = new Map(
+      accessibleLocations.map((location) => [location.id, location.name]),
+    );
+    const expectedMatchIds = initialOptionIds.filter((locationId) => (
+      locationId !== null && locationNamesById.get(locationId)
+        ?.toLocaleLowerCase("th")
+        .includes(normalizedSearchTerm)
+    ));
+    const filteredOptionIds = await page.getByRole("option").evaluateAll((options) => (
+      options.map((option) => option.getAttribute("data-location-id"))
+    ));
+    expect(filteredOptionIds).toEqual(expectedMatchIds);
+
+    await search.press("Enter");
+    await expect(selector).toHaveAttribute("data-location-id", selectedLocationId ?? "");
+    await expect(page.getByRole("listbox", { name: "สาขาที่เข้าถึงได้" }))
+      .toBeVisible();
+
+    await search.fill(`ไม่พบ-${crypto.randomUUID()}`);
+    await expect(page.getByRole("status").filter({ hasText: "ไม่พบสาขาที่ค้นหา" }))
+      .toBeVisible();
+    await expect(page.getByRole("option")).toHaveCount(0);
+
+    await search.fill(target.name);
+    await search.press("ArrowDown");
+    const firstFilteredOption = page.getByRole("option").first();
+    await expect(firstFilteredOption).toBeFocused();
+    await firstFilteredOption.press("Escape");
+    await expect(selector).toBeFocused();
+    await expect(page.getByRole("listbox", { name: "สาขาที่เข้าถึงได้" }))
+      .toHaveCount(0);
+
+    await selector.click();
+    const reopenedSearch = page.getByRole("searchbox", { name: "ค้นหาสาขา" });
+    await expect(reopenedSearch).toHaveValue("");
+    await reopenedSearch.fill(target.name);
+    await targetOption.click();
+    await expect(page.getByRole("listbox", { name: "สาขาที่เข้าถึงได้" }))
+      .toHaveCount(0);
+
+    await selector.click();
+    await expect(page.getByRole("searchbox", { name: "ค้นหาสาขา" })).toHaveValue("");
+  });
+
   test("shows the saved dashboard summary without enlarging the closed selector", async ({
     page,
   }) => {

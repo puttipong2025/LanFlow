@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { BellRing, Building2, Check, ChevronDown, Clock3, Wifi, WifiOff } from "lucide-react";
+import { BellRing, Building2, Check, ChevronDown, Clock3, Search, Wifi, WifiOff } from "lucide-react";
 import type { Location, Profile } from "@/types";
 import { canManageSystemFeatures } from "@/lib/permissions";
 import { TelegramBadgeConfigModal } from "@/components/lanflow/TelegramBadgeConfigModal";
@@ -82,6 +82,7 @@ export function AppHeader({
 }) {
   const [telegramConfigOpen, setTelegramConfigOpen] = useState(false);
   const [locationMenuOpen, setLocationMenuOpen] = useState(false);
+  const [locationSearch, setLocationSearch] = useState("");
   const locationMenuRef = useRef<HTMLDivElement>(null);
   const locationButtonRef = useRef<HTMLButtonElement>(null);
   const branchSummaries = useDashboardBranchSummaries(profile.id, online);
@@ -103,6 +104,12 @@ export function AppHeader({
     locationBadgeTotals,
     (locationId) => branchSummaryByLocation.get(locationId)?.summary?.netCashFlow,
   ), [accessibleLocations, branchSummaryByLocation, locationBadgeTotals]);
+  const normalizedLocationSearch = locationSearch.trim().toLocaleLowerCase("th");
+  const filteredLocations = normalizedLocationSearch
+    ? orderedLocations.filter((location) => (
+      location.name.toLocaleLowerCase("th").includes(normalizedLocationSearch)
+    ))
+    : orderedLocations;
   const selectedLocation = orderedLocations.find((location) => location.id === selectedLocationId);
   const branchContextLabel = !profile.primaryLocationId
     ? "ไม่มีสาขาหลัก"
@@ -129,10 +136,15 @@ export function AppHeader({
     const closeOnPointer = (event: MouseEvent) => {
       if (!locationMenuRef.current?.contains(event.target as Node)) {
         setLocationMenuOpen(false);
+        setLocationSearch("");
       }
     };
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setLocationMenuOpen(false);
+      if (event.key === "Escape") {
+        setLocationMenuOpen(false);
+        setLocationSearch("");
+        locationButtonRef.current?.focus();
+      }
     };
     document.addEventListener("mousedown", closeOnPointer);
     document.addEventListener("keydown", closeOnEscape);
@@ -143,7 +155,10 @@ export function AppHeader({
   }, [locationMenuOpen]);
 
   useEffect(() => {
-    if (!online) setLocationMenuOpen(false);
+    if (!online) {
+      setLocationMenuOpen(false);
+      setLocationSearch("");
+    }
   }, [online]);
 
   useEffect(() => {
@@ -190,7 +205,10 @@ export function AppHeader({
               aria-expanded={locationMenuOpen}
               aria-disabled={!online}
               disabled={!online}
-              onClick={() => setLocationMenuOpen((open) => !open)}
+              onClick={() => {
+                if (locationMenuOpen) setLocationSearch("");
+                setLocationMenuOpen(!locationMenuOpen);
+              }}
               onKeyDown={(event) => {
                 if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
                 event.preventDefault();
@@ -230,12 +248,38 @@ export function AppHeader({
 
             {locationMenuOpen && (
               <div
-                id="location-selector-listbox"
-                role="listbox"
-                aria-label="สาขาที่เข้าถึงได้"
-                className="absolute right-0 top-full z-40 mt-2 max-h-72 w-[min(22.5rem,calc(100vw-1.5rem))] overflow-y-auto rounded-xl border border-mint bg-white p-1.5 shadow-xl"
+                className="absolute right-0 top-full z-40 mt-2 w-[min(22.5rem,calc(100vw-1.5rem))] overflow-hidden rounded-xl border border-mint bg-white p-1.5 shadow-xl"
               >
-                {orderedLocations.map((location, index) => {
+                <div className="relative mb-1.5">
+                  <Search
+                    aria-hidden="true"
+                    size={16}
+                    className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink/45"
+                  />
+                  <input
+                    type="search"
+                    aria-label="ค้นหาสาขา"
+                    aria-controls="location-selector-listbox"
+                    aria-describedby={filteredLocations.length === 0 ? "location-selector-empty" : undefined}
+                    placeholder="ค้นหาสาขา"
+                    autoComplete="off"
+                    value={locationSearch}
+                    onChange={(event) => setLocationSearch(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key !== "ArrowDown" || filteredLocations.length === 0) return;
+                      event.preventDefault();
+                      focusLocationOption(0);
+                    }}
+                    className="focus-ring h-10 w-full rounded-lg border border-mint bg-white pl-9 pr-3 text-base text-ink placeholder:text-ink/45 sm:text-sm"
+                  />
+                </div>
+                <div
+                  id="location-selector-listbox"
+                  role="listbox"
+                  aria-label="สาขาที่เข้าถึงได้"
+                  className="max-h-56 overflow-y-auto"
+                >
+                {filteredLocations.map((location, index) => {
                   const active = location.id === selectedLocationId;
                   const badgeTotal = locationBadgeTotals[location.id] ?? 0;
                   const branchSummary = branchSummaryByLocation.get(location.id);
@@ -262,22 +306,24 @@ export function AppHeader({
                       onClick={() => {
                         onLocationChange(location.id);
                         setLocationMenuOpen(false);
+                        setLocationSearch("");
                       }}
                       onKeyDown={(event) => {
                         if (event.key === "Escape") {
                           event.preventDefault();
                           setLocationMenuOpen(false);
+                          setLocationSearch("");
                           locationButtonRef.current?.focus();
                           return;
                         }
                         const nextIndex = event.key === "ArrowDown"
-                          ? Math.min(index + 1, orderedLocations.length - 1)
+                          ? Math.min(index + 1, filteredLocations.length - 1)
                           : event.key === "ArrowUp"
                             ? Math.max(index - 1, 0)
                             : event.key === "Home"
                               ? 0
                               : event.key === "End"
-                                ? orderedLocations.length - 1
+                                ? filteredLocations.length - 1
                                 : null;
                         if (nextIndex === null) return;
                         event.preventDefault();
@@ -370,6 +416,16 @@ export function AppHeader({
                     </button>
                   );
                 })}
+                </div>
+                {filteredLocations.length === 0 && (
+                  <p
+                    id="location-selector-empty"
+                    role="status"
+                    className="px-3 py-6 text-center text-pretty text-sm text-ink/55"
+                  >
+                    ไม่พบสาขาที่ค้นหา
+                  </p>
+                )}
               </div>
             )}
           </div>
