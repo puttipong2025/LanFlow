@@ -1,9 +1,5 @@
 import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import type {
-  RubberBill,
-  RubberQuotaConfirmation,
-  RubberSubmissionDecision,
-} from "@/types";
+import type { RubberBill } from "@/types";
 import {
   enqueueSyncEvent,
   deleteRubberBillReceiptSnapshotsByClientTempId,
@@ -23,12 +19,7 @@ import {
 import type { EffectiveRubberApprovalSettings } from "@/types";
 import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 import { createScopedSingleFlight } from "@/lib/scoped-single-flight";
-import {
-  buildRubberBillRpcPayload,
-  RubberBillQuotaConfirmationError,
-} from "@/lib/rubber-bills/submission";
-
-export { RubberBillQuotaConfirmationError } from "@/lib/rubber-bills/submission";
+import { buildRubberBillRpcPayload } from "@/lib/rubber-bills/submission";
 
 export function assertRubberBillDeleteAllowed(pendingCreateCount: number, isOnline: boolean) {
   if (pendingCreateCount === 0 && !isOnline) {
@@ -37,6 +28,7 @@ export function assertRubberBillDeleteAllowed(pendingCreateCount: number, isOnli
 }
 
 const runRubberBillSyncSingleFlight = createScopedSingleFlight();
+const activeDirectSubmissionScopes = new Set<string>();
 
 function queuePartition(ownerUserId: string, locationId: string) {
   return { entity: "rubber_bills" as const, ownerUserId, locationId };
@@ -49,6 +41,7 @@ export function syncPendingRubberBills(
 ): Promise<void> {
   if (!ownerUserId || !locationId || !navigator.onLine) return Promise.resolve();
   const scopeKey = `${ownerUserId}:${locationId}`;
+  if (activeDirectSubmissionScopes.has(scopeKey)) return Promise.resolve();
   return runRubberBillSyncSingleFlight(scopeKey, async () => {
     try {
     await normalizeRubberBillQueueBeforeSync(ownerUserId, locationId);
@@ -139,13 +132,7 @@ export function useRubberBillMutations(
 
   const saveBillMutation = useMutation({
     networkMode: "always",
-    mutationFn: async ({
-      bill,
-      quotaConfirmation,
-    }: {
-      bill: RubberBill;
-      quotaConfirmation?: RubberQuotaConfirmation;
-    }) => {
+    mutationFn: async ({ bill }: { bill: RubberBill }) => {
       const isUpdate = Boolean(bill.serverBillNo) || bill.id !== bill.clientTempId;
       const operation = isUpdate ? "update" : "create";
       if ((bill.acidItems?.length ?? 0) > 0 && typeof navigator !== "undefined" && !navigator.onLine) {
@@ -178,25 +165,6 @@ export function useRubberBillMutations(
       const isOnline = typeof navigator === "undefined" || navigator.onLine;
       const existingEvents = await getPendingEvents(queuePartition(ownerUserId, locationId));
       const clientEvents = existingEvents.filter(e => e.id === bill.clientTempId);
-
-      if (isOnline && clientEvents.length === 0) {
-        const previewResponse = await authFetch("/api/lanflow/rubber-bills/preview", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        const preview = await previewResponse.json().catch(() => ({})) as RubberSubmissionDecision;
-        if (!previewResponse.ok || preview.disposition === "failed") {
-          throw new Error(preview.errorMessage || "ตรวจสอบกติกาบิลยางไม่สำเร็จ");
-        }
-        if (preview.disposition === "quota_confirmation_required") {
-          const matchesConfirmation = quotaConfirmation
-            && quotaConfirmation.priceRuleRevision === preview.priceRuleRevision
-            && quotaConfirmation.quotaRoundId === preview.quotaRoundId
-            && quotaConfirmation.decisionFingerprint === preview.decisionFingerprint;
-          if (!matchesConfirmation) throw new RubberBillQuotaConfirmationError(preview);
-        }
-      }
 
       if (clientEvents.some(e => e.status === "conflict" || e.status === "failed")) {
         throw new Error("ไม่สามารถบันทึกได้ กรุณาแก้ไขข้อมูลที่ขัดแย้ง หรือลองซิงก์ใหม่อีกครั้ง");
@@ -243,6 +211,10 @@ export function useRubberBillMutations(
           await mLib.updateSyncEvent(keeper);
         }
       } else {
+        const directSubmissionScope = isOnline && clientEvents.length === 0
+          ? `${ownerUserId}:${locationId}`
+          : null;
+        if (directSubmissionScope) activeDirectSubmissionScopes.add(directSubmissionScope);
         const event: Omit<SyncEvent, "queueId"> = {
           id: bill.clientTempId,
           entity: "rubber_bills",
@@ -253,7 +225,13 @@ export function useRubberBillMutations(
           timestamp: Date.now(),
           status: "pending"
         };
-        const queueId = await enqueueSyncEvent(event);
+        let queueId: number;
+        try {
+          queueId = await enqueueSyncEvent(event);
+        } catch (error) {
+          if (directSubmissionScope) activeDirectSubmissionScopes.delete(directSubmissionScope);
+          throw error;
+        }
         newlyQueuedEvent = { ...event, queueId };
       }
 
@@ -262,18 +240,10 @@ export function useRubberBillMutations(
           const response = await authFetch("/api/lanflow/rubber-bills", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              ...payload,
-              submissionMode: "interactive",
-              ...(quotaConfirmation ? { quotaConfirmation } : {}),
-            }),
+            body: JSON.stringify(payload),
           });
           const data = await response.json();
           if (!response.ok) {
-            if ((data.status === "confirmation_required" || data.status === "rule_changed") && data.decision) {
-              await mLib.removeSyncEvent(newlyQueuedEvent.queueId!);
-              throw new RubberBillQuotaConfirmationError(data.decision as RubberSubmissionDecision);
-            }
             if (isRetryableSyncResponse(response.status)) {
               throw new Error(data.errorMessage || "ระบบไม่พร้อมใช้งานชั่วคราว");
             }
@@ -302,9 +272,10 @@ export function useRubberBillMutations(
             approvalOperation: data.operation,
           };
         } catch (error) {
-          if (error instanceof RubberBillQuotaConfirmationError) throw error;
           if (newlyQueuedEvent.status !== "pending") throw error;
           console.error("Network error while saving rubber bill", error);
+        } finally {
+          activeDirectSubmissionScopes.delete(`${ownerUserId}:${locationId}`);
         }
       }
       
@@ -464,12 +435,8 @@ export function useRubberBillMutations(
   }
 
   return {
-    addBill: (bill: RubberBill, quotaConfirmation?: RubberQuotaConfirmation) => (
-      saveBillMutation.mutateAsync({ bill, quotaConfirmation })
-    ),
-    updateBill: (bill: RubberBill, quotaConfirmation?: RubberQuotaConfirmation) => (
-      saveBillMutation.mutateAsync({ bill, quotaConfirmation })
-    ),
+    addBill: (bill: RubberBill) => saveBillMutation.mutateAsync({ bill }),
+    updateBill: (bill: RubberBill) => saveBillMutation.mutateAsync({ bill }),
     deleteBill: deleteBillMutation.mutateAsync,
     discardSyncProblem,
   };

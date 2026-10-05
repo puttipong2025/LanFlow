@@ -205,11 +205,6 @@ export function RubberBillModal({
     hasPriceChange &&
     effectivePriceCap != null &&
     weighItems.some((item) => Math.round(item.price * 100) > Math.round(effectivePriceCap * 100));
-  const entersQuotaRange = hasPriceChange
-    && centralPrice != null
-    && effectivePriceCap != null
-    && weighItems.some((item) => Math.round(item.price * 100) > Math.round(centralPrice * 100))
-    && !exceedsEffectivePriceCap;
   const requiresNonCurrentDateApproval =
     nonCurrentDateRequiresApproval && billDate !== todayInputValue();
 
@@ -623,7 +618,7 @@ export function RubberBillModal({
               ยอดจาก OCR {initialOcrDraft.ocrTotal.toLocaleString("th-TH", { minimumFractionDigits: 2 })} บาท ไม่ตรงกับยอดตามสูตรบิล {calculation.netTotal.toLocaleString("th-TH", { minimumFractionDigits: 2 })} บาท — ระบบจะใช้ยอดตามสูตรบิล
             </p>
           )}
-          <RubberBillPriceReference centralPrice={centralPrice} priceAllowance={priceAllowance} effectivePriceCap={effectivePriceCap} entersQuotaRange={entersQuotaRange} exceedsEffectivePriceCap={exceedsEffectivePriceCap} />
+          <RubberBillPriceReference centralPrice={centralPrice} priceAllowance={priceAllowance} effectivePriceCap={effectivePriceCap} exceedsEffectivePriceCap={exceedsEffectivePriceCap} />
           <div className="overflow-x-auto">
             <table className="w-full min-w-[900px] border-collapse text-sm">
               <thead>

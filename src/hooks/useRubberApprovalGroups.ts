@@ -4,9 +4,10 @@ import { authFetch } from "@/lib/auth-fetch";
 import { clearRubberBillApprovalSettingsCache } from "@/lib/rubber-bills/approval";
 import { RUBBER_BILL_APPROVAL_SETTINGS_KEY } from "@/hooks/useRubberBillApprovals";
 import type {
-  RubberAdminQuotaSetting,
   RubberApprovalGroup,
   RubberCentralPriceSetting,
+  RubberMaxPriceAllowanceConflict,
+  RubberMaxPriceAllowanceSetting,
   RubberUngroupedDefaults,
 } from "@/types";
 
@@ -17,9 +18,20 @@ type GroupsResponse = {
   availableLocationIds: string[];
   centralPrice: RubberCentralPriceSetting;
   ungroupedDefaults: RubberUngroupedDefaults;
-  quota: RubberAdminQuotaSetting;
-  canEditQuota: boolean;
+  maxPriceAllowance: RubberMaxPriceAllowanceSetting;
+  canEditMaxPriceAllowance: boolean;
 };
+
+export class RubberMaxPriceAllowanceError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string,
+    public readonly conflicts: RubberMaxPriceAllowanceConflict[],
+  ) {
+    super(message);
+    this.name = "RubberMaxPriceAllowanceError";
+  }
+}
 
 type GroupInput = Pick<RubberApprovalGroup, "locationIds" | "editWindowMinutes" | "priceAllowance">;
 
@@ -85,7 +97,7 @@ export function useRubberApprovalGroups(allLocationIds: string[]) {
     onSuccess: (data) => invalidateLocations(data.releasedLocationIds),
   });
 
-  function saveGlobalSettings(path: "central" | "ungrouped" | "quota", body: Record<string, unknown>) {
+  function saveGlobalSettings(path: "central" | "ungrouped", body: Record<string, unknown>) {
     return authFetch(`/api/lanflow/rubber-bills/approval-settings/${path}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -111,9 +123,24 @@ export function useRubberApprovalGroups(allLocationIds: string[]) {
       await invalidateLocations(data.ungroupedDefaults.locationIds);
     },
   });
-  const saveQuota = useMutation({
-    mutationFn: (input: { quotaLimit: number; maxPriceAllowance: number; expectedRoundId: string }) => saveGlobalSettings("quota", input),
-    onSuccess: (data) => queryClient.setQueryData([RUBBER_APPROVAL_GROUPS_KEY], data),
+  const saveMaxPriceAllowance = useMutation({
+    mutationFn: async (input: { maxPriceAllowance: number; expectedMaxPriceAllowance: number }) => {
+      const response = await authFetch("/api/lanflow/rubber-bills/approval-settings/max-price-allowance", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      const data = await response.json().catch(() => ({})) as Record<string, unknown>;
+      if (!response.ok) {
+        throw new RubberMaxPriceAllowanceError(
+          typeof data.errorMessage === "string" ? data.errorMessage : "บันทึกราคายางที่กำหนดสูงสุดไม่สำเร็จ",
+          typeof data.code === "string" ? data.code : "UNKNOWN",
+          Array.isArray(data.conflicts) ? data.conflicts as RubberMaxPriceAllowanceConflict[] : [],
+        );
+      }
+      return data;
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: [RUBBER_APPROVAL_GROUPS_KEY] }),
   });
 
   return {
@@ -122,15 +149,15 @@ export function useRubberApprovalGroups(allLocationIds: string[]) {
     availableLocationIds: groupsQuery.data?.availableLocationIds ?? [],
     centralPrice: groupsQuery.data?.centralPrice,
     ungroupedDefaults: groupsQuery.data?.ungroupedDefaults,
-    quota: groupsQuery.data?.quota,
-    canEditQuota: groupsQuery.data?.canEditQuota ?? false,
+    maxPriceAllowance: groupsQuery.data?.maxPriceAllowance,
+    canEditMaxPriceAllowance: groupsQuery.data?.canEditMaxPriceAllowance ?? false,
     createGroup: createGroup.mutateAsync,
     updateGroup: updateGroup.mutateAsync,
     deleteGroup: deleteGroup.mutateAsync,
     saveCentralPrice: saveCentralPrice.mutateAsync,
     saveUngroupedDefaults: saveUngroupedDefaults.mutateAsync,
-    saveQuota: saveQuota.mutateAsync,
+    saveMaxPriceAllowance: saveMaxPriceAllowance.mutateAsync,
     isSaving: createGroup.isPending || updateGroup.isPending || deleteGroup.isPending
-      || saveCentralPrice.isPending || saveUngroupedDefaults.isPending || saveQuota.isPending,
+      || saveCentralPrice.isPending || saveUngroupedDefaults.isPending || saveMaxPriceAllowance.isPending,
   };
 }

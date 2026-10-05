@@ -1,4 +1,4 @@
-import type { RubberBill, RubberSubmissionDecision } from "@/types";
+import type { RubberBill } from "@/types";
 import {
   applyRubberBillCalculation,
   multiplyMoneyFloorBaht,
@@ -92,11 +92,4 @@ export function buildRubberBillRpcPayload(
       items,
     },
   };
-}
-
-export class RubberBillQuotaConfirmationError extends Error {
-  constructor(public readonly decision: RubberSubmissionDecision) {
-    super("ต้องยืนยันการใช้โควต้าราคา");
-    this.name = "RubberBillQuotaConfirmationError";
-  }
 }

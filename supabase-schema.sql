@@ -1471,26 +1471,6 @@ $$;
 ALTER FUNCTION "private"."can_use_cash_count"("p_location_id" "uuid") OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "private"."can_use_rubber_bill_price_quota"() RETURNS boolean
-    LANGUAGE "sql" STABLE SECURITY DEFINER
-    SET "search_path" TO ''
-    AS $$
-  select exists (
-    select 1
-    from public.profiles p
-    where p.id = auth.uid()
-      and p.is_active = true
-      and (
-        p.role in ('admin', 'super_admin')
-        or p.can_access_super_admin_features = true
-      )
-  )
-$$;
-
-
-ALTER FUNCTION "private"."can_use_rubber_bill_price_quota"() OWNER TO "postgres";
-
-
 CREATE OR REPLACE FUNCTION "private"."can_view_profile"("target_user" "uuid") RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -3955,7 +3935,7 @@ CREATE OR REPLACE FUNCTION "private"."effective_rubber_approval_settings"("p_loc
     policy.updated_by_name,
     policy.updated_by_phone,
     policy.updated_at
-  from private.resolve_rubber_bill_price_policy(p_location_id) policy
+  from private.resolve_rubber_bill_price_policy_without_quota(p_location_id) policy
 $$;
 
 
@@ -7887,7 +7867,7 @@ $$;
 ALTER FUNCTION "private"."reserve_rubber_bill_ocr_source"("p_payload" "jsonb") OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "private"."resolve_rubber_bill_price_policy"("p_location_id" "uuid") RETURNS TABLE("group_id" "uuid", "rule_source" "text", "central_price" numeric, "price_allowance" numeric, "effective_price_cap" numeric, "edit_window_minutes" integer, "price_rule_revision" bigint, "updated_by_name" "text", "updated_by_phone" "text", "updated_at" timestamp with time zone, "quota_limit_per_admin" integer, "quota_round_id" "uuid", "non_current_date_requires_approval" boolean)
+CREATE OR REPLACE FUNCTION "private"."resolve_rubber_bill_price_policy_without_quota"("p_location_id" "uuid") RETURNS TABLE("group_id" "uuid", "rule_source" "text", "central_price" numeric, "price_allowance" numeric, "effective_price_cap" numeric, "edit_window_minutes" integer, "price_rule_revision" bigint, "updated_by_name" "text", "updated_by_phone" "text", "updated_at" timestamp with time zone, "non_current_date_requires_approval" boolean)
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
@@ -7902,8 +7882,6 @@ CREATE OR REPLACE FUNCTION "private"."resolve_rubber_bill_price_policy"("p_locat
     coalesce(g.updated_by_name, s.ungrouped_updated_by_name),
     coalesce(g.updated_by_phone, s.ungrouped_updated_by_phone),
     coalesce(g.updated_at, s.ungrouped_updated_at),
-    s.quota_limit_per_admin,
-    s.quota_round_id,
     s.non_current_date_requires_approval
   from public.rubber_bill_approval_settings s
   left join public.rubber_approval_group_locations gl
@@ -7914,7 +7892,7 @@ CREATE OR REPLACE FUNCTION "private"."resolve_rubber_bill_price_policy"("p_locat
 $$;
 
 
-ALTER FUNCTION "private"."resolve_rubber_bill_price_policy"("p_location_id" "uuid") OWNER TO "postgres";
+ALTER FUNCTION "private"."resolve_rubber_bill_price_policy_without_quota"("p_location_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."rubber_bill_current_work_items"("p_location_id" "uuid") RETURNS TABLE("location_id" "uuid", "work_kind" "text", "work_identity" "text", "bill_id" "uuid", "sort_at" timestamp with time zone)
@@ -8351,9 +8329,6 @@ declare
   v_price_changed boolean := false;
   v_business_date date;
   v_non_price_approval boolean := false;
-  v_used_count integer := 0;
-  v_remaining integer := 0;
-  v_fingerprint text;
 begin
   v_operation := payload->>'operation';
   if not coalesce(private.is_active_user(), false) then
@@ -8379,20 +8354,17 @@ begin
     when raise_exception then
       return jsonb_build_object('disposition', 'failed', 'errorMessage', sqlerrm);
     when others then
-      return jsonb_build_object(
-        'disposition', 'failed',
-        'errorMessage', 'ข้อมูลตัวเลขในบิลยางไม่ถูกต้อง'
-      );
+      return jsonb_build_object('disposition', 'failed', 'errorMessage', 'ข้อมูลตัวเลขในบิลยางไม่ถูกต้อง');
   end;
+
   select * into v_policy
-  from private.resolve_rubber_bill_price_policy(v_location_id);
+  from private.resolve_rubber_bill_price_policy_without_quota(v_location_id);
   if v_policy.central_price is null then
     return jsonb_build_object('disposition', 'failed', 'errorMessage', 'ไม่พบกติกาบิลยาง');
   end if;
 
   if v_operation = 'delete' then
-    select * into v_bill
-    from public.rubber_bills b
+    select * into v_bill from public.rubber_bills b
     where b.client_temp_id = v_payload->>'clientTempId';
     if v_bill.id is null then
       return jsonb_build_object('disposition', 'failed', 'errorMessage', 'Cannot delete non-existent record');
@@ -8402,8 +8374,7 @@ begin
     end if;
     v_business_date := v_bill.bill_date;
   elsif v_operation = 'update' then
-    select * into v_bill
-    from public.rubber_bills b
+    select * into v_bill from public.rubber_bills b
     where b.client_temp_id = v_payload->>'clientTempId';
     if v_bill.id is null then
       return jsonb_build_object('disposition', 'failed', 'errorMessage', 'Cannot update non-existent record');
@@ -8437,8 +8408,7 @@ begin
     end if;
   end if;
   if v_policy.non_current_date_requires_approval
-     and v_business_date is distinct from
-       (clock_timestamp() at time zone 'Asia/Bangkok')::date then
+     and v_business_date is distinct from (clock_timestamp() at time zone 'Asia/Bangkok')::date then
     v_non_price_approval := true;
   end if;
 
@@ -8450,7 +8420,6 @@ begin
     from jsonb_array_elements(coalesce(v_payload->'items', '[]'::jsonb)) item
     where item->>'itemType' = 'weigh';
   end if;
-
   if v_operation = 'create' then
     v_price_changed := true;
   elsif v_operation = 'update' then
@@ -8461,124 +8430,29 @@ begin
     v_price_changed := v_current_prices is distinct from v_proposed_prices;
   end if;
 
-  if v_non_price_approval then
-    return jsonb_build_object(
-      'disposition', 'approval_required',
-      'priceDecision', 'not_applicable',
-      'priceChanged', v_price_changed,
-      'centralPrice', v_policy.central_price,
-      'priceAllowance', v_policy.price_allowance,
-      'effectivePriceCap', v_policy.effective_price_cap,
-      'priceRuleRevision', v_policy.price_rule_revision,
-      'quotaRoundId', v_policy.quota_round_id,
-      'ruleSource', v_policy.rule_source,
-      'maxPrice', v_max_price
-    );
-  end if;
-
-  if not v_price_changed or v_max_price is null or v_max_price <= v_policy.central_price then
-    return jsonb_build_object(
-      'disposition', 'direct',
-      'priceDecision', case when v_price_changed then 'within_central' else 'unchanged' end,
-      'priceChanged', v_price_changed,
-      'centralPrice', v_policy.central_price,
-      'priceAllowance', v_policy.price_allowance,
-      'effectivePriceCap', v_policy.effective_price_cap,
-      'priceRuleRevision', v_policy.price_rule_revision,
-      'quotaRoundId', v_policy.quota_round_id,
-      'ruleSource', v_policy.rule_source,
-      'maxPrice', v_max_price
-    );
-  end if;
-
-  if v_max_price > v_policy.effective_price_cap then
-    return jsonb_build_object(
-      'disposition', 'approval_required',
-      'priceDecision', 'above_cap',
-      'priceChanged', true,
-      'centralPrice', v_policy.central_price,
-      'priceAllowance', v_policy.price_allowance,
-      'effectivePriceCap', v_policy.effective_price_cap,
-      'priceRuleRevision', v_policy.price_rule_revision,
-      'quotaRoundId', v_policy.quota_round_id,
-      'ruleSource', v_policy.rule_source,
-      'maxPrice', v_max_price
-    );
-  end if;
-
-  if not private.can_use_rubber_bill_price_quota()
-     or v_policy.quota_limit_per_admin <= 0 then
-    return jsonb_build_object(
-      'disposition', 'approval_required',
-      'priceDecision', 'quota_unavailable',
-      'priceChanged', true,
-      'centralPrice', v_policy.central_price,
-      'priceAllowance', v_policy.price_allowance,
-      'effectivePriceCap', v_policy.effective_price_cap,
-      'priceRuleRevision', v_policy.price_rule_revision,
-      'quotaRoundId', v_policy.quota_round_id,
-      'ruleSource', v_policy.rule_source,
-      'maxPrice', v_max_price,
-      'remainingAfterConfirm', 0
-    );
-  end if;
-
-  select count(*)::integer into v_used_count
-  from public.rubber_bill_price_quota_uses q
-  where q.actor_user_id = auth.uid()
-    and q.bangkok_business_date = (clock_timestamp() at time zone 'Asia/Bangkok')::date
-    and q.quota_round_id = v_policy.quota_round_id;
-  v_remaining := greatest(v_policy.quota_limit_per_admin - v_used_count, 0);
-
-  if v_remaining = 0 then
-    return jsonb_build_object(
-      'disposition', 'approval_required',
-      'priceDecision', 'quota_exhausted',
-      'priceChanged', true,
-      'centralPrice', v_policy.central_price,
-      'priceAllowance', v_policy.price_allowance,
-      'effectivePriceCap', v_policy.effective_price_cap,
-      'priceRuleRevision', v_policy.price_rule_revision,
-      'quotaRoundId', v_policy.quota_round_id,
-      'ruleSource', v_policy.rule_source,
-      'maxPrice', v_max_price,
-      'remainingAfterConfirm', 0
-    );
-  end if;
-
-  v_fingerprint := md5(concat_ws('|',
-    auth.uid()::text,
-    v_location_id::text,
-    v_operation,
-    v_payload->>'idempotencyKey',
-    v_proposed_prices::text,
-    v_policy.central_price::text,
-    v_policy.price_allowance::text,
-    v_policy.effective_price_cap::text,
-    v_policy.price_rule_revision::text,
-    v_policy.quota_round_id::text,
-    v_remaining::text
-  ));
-
   return jsonb_build_object(
-    'disposition', 'quota_confirmation_required',
-    'priceDecision', 'quota_available',
-    'priceChanged', true,
+    'disposition', case
+      when v_non_price_approval then 'approval_required'
+      when v_price_changed and v_max_price is not null and v_max_price > v_policy.effective_price_cap
+        then 'approval_required'
+      else 'direct'
+    end,
+    'priceDecision', case
+      when v_non_price_approval then 'not_applicable'
+      when not v_price_changed then 'unchanged'
+      when v_max_price is not null and v_max_price > v_policy.effective_price_cap then 'above_cap'
+      else 'within_cap'
+    end,
+    'priceChanged', v_price_changed,
     'centralPrice', v_policy.central_price,
     'priceAllowance', v_policy.price_allowance,
     'effectivePriceCap', v_policy.effective_price_cap,
     'priceRuleRevision', v_policy.price_rule_revision,
-    'quotaRoundId', v_policy.quota_round_id,
-    'decisionFingerprint', v_fingerprint,
     'ruleSource', v_policy.rule_source,
-    'maxPrice', v_max_price,
-    'remainingAfterConfirm', v_remaining - 1
+    'maxPrice', v_max_price
   );
 exception when others then
-  return jsonb_build_object(
-    'disposition', 'failed',
-    'errorMessage', 'ตรวจสอบกติกาบิลยางไม่สำเร็จ'
-  );
+  return jsonb_build_object('disposition', 'failed', 'errorMessage', 'ตรวจสอบกติกาบิลยางไม่สำเร็จ');
 end
 $$;
 
@@ -10100,8 +9974,7 @@ begin
   if not private.is_active_user() or not public.can_access_super_admin_features() then
     raise exception 'ไม่มีสิทธิ์อนุมัติคำขอบิลยาง';
   end if;
-  select * into v_request
-  from public.rubber_bill_approval_requests
+  select * into v_request from public.rubber_bill_approval_requests
   where id = p_request_id for update;
   if v_request.id is null or v_request.request_status <> 'pending' then
     raise exception 'ไม่พบคำขอที่รออนุมัติ';
@@ -10109,9 +9982,7 @@ begin
   if v_request.bill_id is not null then
     perform pg_advisory_xact_lock(hashtext('rubber-bill-approval:' || v_request.bill_id::text));
     v_report_no := private.active_report_no('rubber_bill', v_request.bill_id);
-    if v_report_no is not null then
-      raise exception 'บิลอยู่ในรายงาน % แล้ว จึงอนุมัติไม่ได้', v_report_no;
-    end if;
+    if v_report_no is not null then raise exception 'บิลอยู่ในรายงาน % แล้ว จึงอนุมัติไม่ได้', v_report_no; end if;
     if private.rubber_bill_has_active_transfer(v_request.bill_id) then
       raise exception 'บิลอยู่ในรายการโอนเงินแล้ว จึงอนุมัติไม่ได้';
     end if;
@@ -10120,10 +9991,8 @@ begin
   end if;
   perform pg_advisory_xact_lock(hashtextextended(v_request.location_id::text, 0));
 
-  if v_request.operation = 'create'
-     and v_request.proposed_payload->>'inputMethod' = 'ocr' then
-    perform 1
-    from public.rubber_bill_ocr_sources s
+  if v_request.operation = 'create' and v_request.proposed_payload->>'inputMethod' = 'ocr' then
+    perform 1 from public.rubber_bill_ocr_sources s
     where s.id = nullif(v_request.proposed_payload->>'ocrUploadId', '')::uuid
       and s.owner_user_id = v_request.requested_by_user_id
       and s.location_id = v_request.location_id
@@ -10131,9 +10000,7 @@ begin
       and s.reserved_idempotency_key = v_request.idempotency_key
       and s.state = 'reserved'
     for update;
-    if not found then
-      raise exception 'ข้อมูลอ้างอิงรูป OCR ไม่ตรงกับคำขออนุมัติ';
-    end if;
+    if not found then raise exception 'ข้อมูลอ้างอิงรูป OCR ไม่ตรงกับคำขออนุมัติ'; end if;
   end if;
 
   v_result := public.sync_rubber_bill_core_20260725010000(v_request.proposed_payload);
@@ -10145,18 +10012,9 @@ begin
   from public.profiles where id = auth.uid();
 
   update public.rubber_bills
-  set created_by_user_id = case
-        when v_request.operation = 'create' then v_request.requested_by_user_id
-        else created_by_user_id
-      end,
-      created_by_name = case
-        when v_request.operation = 'create' then v_request.requested_by_name
-        else created_by_name
-      end,
-      created_by_phone = case
-        when v_request.operation = 'create' then v_request.requested_by_phone
-        else created_by_phone
-      end,
+  set created_by_user_id = case when v_request.operation = 'create' then v_request.requested_by_user_id else created_by_user_id end,
+      created_by_name = case when v_request.operation = 'create' then v_request.requested_by_name else created_by_name end,
+      created_by_phone = case when v_request.operation = 'create' then v_request.requested_by_phone else created_by_phone end,
       approval_state = 'approved',
       approved_by_name = coalesce(v_actor_name, ''),
       approval_revision_no = revision_no,
@@ -10164,25 +10022,18 @@ begin
       price_allowance_snapshot = case when v_request.operation = 'create' or 'price' = any(v_request.matched_reasons) then v_request.price_allowance_snapshot else price_allowance_snapshot end,
       effective_price_cap_snapshot = case when v_request.operation = 'create' or 'price' = any(v_request.matched_reasons) then v_request.effective_price_cap_snapshot else effective_price_cap_snapshot end,
       price_rule_revision_snapshot = case when v_request.operation = 'create' or 'price' = any(v_request.matched_reasons) then v_request.price_rule_revision_snapshot else price_rule_revision_snapshot end,
-      rubber_price_rule_source = case when v_request.operation = 'create' or 'price' = any(v_request.matched_reasons) then v_request.rubber_price_rule_source else rubber_price_rule_source end,
-      rubber_price_quota_use_id = case when v_request.operation = 'create' or 'price' = any(v_request.matched_reasons) then null else rubber_price_quota_use_id end
+      rubber_price_rule_source = case when v_request.operation = 'create' or 'price' = any(v_request.matched_reasons) then v_request.rubber_price_rule_source else rubber_price_rule_source end
   where id = v_created_bill_id;
 
   update public.rubber_bill_approval_requests
-  set request_status = 'approved',
-      approved_by_user_id = auth.uid(),
-      approved_by_name = coalesce(v_actor_name, ''),
-      approved_by_phone = coalesce(v_actor_phone, ''),
-      approved_at = now(),
-      created_bill_id = case when operation = 'create' then v_created_bill_id else null end
+  set request_status = 'approved', approved_by_user_id = auth.uid(),
+      approved_by_name = coalesce(v_actor_name, ''), approved_by_phone = coalesce(v_actor_phone, ''),
+      approved_at = now(), created_bill_id = case when operation = 'create' then v_created_bill_id else null end
   where id = p_request_id;
 
   return jsonb_build_object(
-    'status', 'approved',
-    'requestId', p_request_id,
-    'operation', v_request.operation,
-    'billId', v_created_bill_id,
-    'syncResult', v_result
+    'status', 'approved', 'requestId', p_request_id, 'operation', v_request.operation,
+    'billId', v_created_bill_id, 'syncResult', v_result
   );
 end
 $$;
@@ -16126,7 +15977,7 @@ begin
   end if;
 
   select * into v_policy
-  from private.resolve_rubber_bill_price_policy(p_location_id);
+  from private.resolve_rubber_bill_price_policy_without_quota(p_location_id);
 
   return jsonb_build_object(
     'locationId', p_location_id,
@@ -19892,13 +19743,11 @@ begin
       'updatedByPhone', v_settings.ungrouped_updated_by_phone,
       'updatedAt', v_settings.ungrouped_updated_at
     ),
-    'quota', jsonb_build_object(
-      'limitPerAdmin', v_settings.quota_limit_per_admin,
-      'maxPriceAllowance', v_settings.max_price_allowance,
-      'roundId', v_settings.quota_round_id,
-      'updatedByName', v_settings.quota_updated_by_name,
-      'updatedByPhone', v_settings.quota_updated_by_phone,
-      'updatedAt', v_settings.quota_updated_at
+    'maxPriceAllowance', jsonb_build_object(
+      'value', v_settings.max_price_allowance,
+      'updatedByName', v_settings.max_price_allowance_updated_by_name,
+      'updatedByPhone', v_settings.max_price_allowance_updated_by_phone,
+      'updatedAt', v_settings.max_price_allowance_updated_at
     )
   );
 end
@@ -20220,19 +20069,6 @@ $$;
 
 
 ALTER FUNCTION "public"."prevent_location_change"() OWNER TO "postgres";
-
-
-CREATE OR REPLACE FUNCTION "public"."preview_rubber_bill_submission"("payload" "jsonb") RETURNS "jsonb"
-    LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO ''
-    AS $$
-begin
-  return private.rubber_bill_submission_decision(payload);
-end
-$$;
-
-
-ALTER FUNCTION "public"."preview_rubber_bill_submission"("payload" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) RETURNS "jsonb"
@@ -21335,7 +21171,6 @@ END - "deduction_total"), (0)::numeric)) STORED,
     "effective_price_cap_snapshot" numeric(12,2),
     "price_rule_revision_snapshot" bigint,
     "rubber_price_rule_source" "text",
-    "rubber_price_quota_use_id" "uuid",
     CONSTRAINT "rubber_bills_allowance_snapshot_check" CHECK ((("price_allowance_snapshot" IS NULL) OR ("price_allowance_snapshot" >= (0)::numeric))),
     CONSTRAINT "rubber_bills_approval_revision_shape_check" CHECK (((("approval_state" = 'not_required'::"text") AND ("approved_by_name" IS NULL) AND ("approval_revision_no" IS NULL)) OR (("approval_state" = 'approved'::"text") AND ("approved_by_name" IS NOT NULL) AND ("approval_revision_no" = "revision_no")))),
     CONSTRAINT "rubber_bills_approval_state_check" CHECK (("approval_state" = ANY (ARRAY['not_required'::"text", 'approved'::"text"]))),
@@ -22876,110 +22711,6 @@ $$;
 ALTER FUNCTION "public"."save_money_transfer"("p_payload" "jsonb") OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "public"."save_rubber_admin_quota"("p_quota_limit" integer, "p_expected_round_id" "uuid") RETURNS "jsonb"
-    LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO ''
-    AS $$
-declare
-  v_settings public.rubber_bill_approval_settings%rowtype;
-  v_actor public.profiles%rowtype;
-begin
-  if not private.is_active_user() or not exists (
-    select 1 from public.profiles p
-    where p.id = auth.uid() and p.is_active = true and p.role = 'super_admin'
-  ) then
-    raise exception 'FORBIDDEN: เฉพาะ super admin เท่านั้นที่ตั้งโควต้าได้';
-  end if;
-  if p_quota_limit is null or p_quota_limit < 0 then
-    raise exception 'RUBBER_QUOTA_INVALID: จำนวนโควต้าต้องเป็นจำนวนเต็มตั้งแต่ 0 ขึ้นไป';
-  end if;
-  perform pg_advisory_xact_lock(hashtextextended('rubber-approval-policy', 0));
-  select * into v_settings
-  from public.rubber_bill_approval_settings where id = true for update;
-  if v_settings.quota_round_id <> p_expected_round_id then
-    raise exception 'RUBBER_QUOTA_STALE: การตั้งค่าโควต้าถูกแก้ไขโดยผู้ใช้อื่น';
-  end if;
-  select * into v_actor from public.profiles p where p.id = auth.uid();
-  update public.rubber_bill_approval_settings
-  set quota_limit_per_admin = p_quota_limit,
-      quota_round_id = gen_random_uuid(),
-      quota_updated_by_user_id = auth.uid(),
-      quota_updated_by_name = v_actor.name,
-      quota_updated_by_phone = v_actor.phone,
-      quota_updated_at = clock_timestamp()
-  where id = true;
-  return public.list_rubber_approval_groups();
-end
-$$;
-
-
-ALTER FUNCTION "public"."save_rubber_admin_quota"("p_quota_limit" integer, "p_expected_round_id" "uuid") OWNER TO "postgres";
-
-
-CREATE OR REPLACE FUNCTION "public"."save_rubber_admin_quota_v2"("p_quota_limit" integer, "p_max_price_allowance" numeric, "p_expected_round_id" "uuid") RETURNS "jsonb"
-    LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO ''
-    AS $$
-declare
-  v_settings public.rubber_bill_approval_settings%rowtype;
-  v_actor public.profiles%rowtype;
-  v_current_max_allowance numeric;
-begin
-  if not private.is_active_user() or not exists (
-    select 1 from public.profiles p
-    where p.id = auth.uid() and p.is_active = true and p.role = 'super_admin'
-  ) then
-    raise exception 'FORBIDDEN: เฉพาะ super admin เท่านั้นที่ตั้งโควต้าและเพดานส่วนต่างราคาได้';
-  end if;
-  if p_quota_limit is null or p_quota_limit < 0 then
-    raise exception 'RUBBER_QUOTA_INVALID: จำนวนโควต้าต้องเป็นจำนวนเต็มตั้งแต่ 0 ขึ้นไป';
-  end if;
-  if p_max_price_allowance is null
-     or p_max_price_allowance < 0
-     or scale(p_max_price_allowance) > 2 then
-    raise exception 'RUBBER_ALLOWANCE_INVALID: ราคายางที่กำหนดสูงสุดต้องไม่ติดลบและมีทศนิยมไม่เกิน 2 ตำแหน่ง';
-  end if;
-
-  perform pg_advisory_xact_lock(hashtextextended('rubber-approval-policy', 0));
-  select * into v_settings
-  from public.rubber_bill_approval_settings where id = true for update;
-
-  if v_settings.quota_round_id <> p_expected_round_id then
-    raise exception 'RUBBER_QUOTA_STALE: การตั้งค่าโควต้าถูกแก้ไขโดยผู้ใช้อื่น';
-  end if;
-
-  select greatest(
-    v_settings.ungrouped_price_allowance,
-    coalesce(max(groups.price_allowance), 0)
-  ) into v_current_max_allowance
-  from public.rubber_approval_groups groups;
-
-  if p_max_price_allowance < v_current_max_allowance then
-    raise exception 'RUBBER_ALLOWANCE_LIMIT_TOO_LOW: ราคายางที่กำหนดสูงสุดต้องไม่น้อยกว่าค่าที่กลุ่มหรือสาขาที่ยังไม่จัดกลุ่มใช้อยู่';
-  end if;
-  if v_settings.central_price + p_max_price_allowance > 9999999999.99 then
-    raise exception 'RUBBER_EFFECTIVE_PRICE_CAP_INVALID: ราคากลางรวมส่วนต่างต้องไม่เกิน 9,999,999,999.99 บาท';
-  end if;
-
-  select * into v_actor from public.profiles p where p.id = auth.uid();
-  update public.rubber_bill_approval_settings
-  set quota_limit_per_admin = p_quota_limit,
-      max_price_allowance = p_max_price_allowance,
-      quota_round_id = gen_random_uuid(),
-      quota_updated_by_user_id = auth.uid(),
-      quota_updated_by_name = v_actor.name,
-      quota_updated_by_phone = v_actor.phone,
-      quota_updated_at = clock_timestamp()
-  where id = true;
-
-  return public.list_rubber_approval_groups();
-end
-$$;
-
-
-ALTER FUNCTION "public"."save_rubber_admin_quota_v2"("p_quota_limit" integer, "p_max_price_allowance" numeric, "p_expected_round_id" "uuid") OWNER TO "postgres";
-
-
 CREATE OR REPLACE FUNCTION "public"."save_rubber_bill_date_approval_setting"("p_non_current_date_requires_approval" boolean) RETURNS boolean
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -23187,6 +22918,112 @@ $$;
 
 
 ALTER FUNCTION "public"."save_rubber_export_work_transfer_slips"("p_transfer_id" "uuid", "p_expected_revision" integer, "p_slips" "jsonb") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."save_rubber_max_price_allowance"("p_max_price_allowance" numeric, "p_expected_max_price_allowance" numeric) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_settings public.rubber_bill_approval_settings%rowtype;
+  v_actor public.profiles%rowtype;
+  v_conflicts jsonb := '[]'::jsonb;
+begin
+  if not private.is_active_user() or not exists (
+    select 1 from public.profiles p
+    where p.id = auth.uid() and p.is_active = true and p.role = 'super_admin'
+  ) then
+    raise exception 'FORBIDDEN: เฉพาะ super admin เท่านั้นที่ตั้งราคายางที่กำหนดสูงสุดได้';
+  end if;
+  if p_max_price_allowance is null or p_max_price_allowance < 0 or scale(p_max_price_allowance) > 2
+     or p_max_price_allowance > 9999999999.99 then
+    raise exception 'RUBBER_ALLOWANCE_INVALID: ราคายางที่กำหนดสูงสุดต้องไม่ติดลบและมีทศนิยมไม่เกิน 2 ตำแหน่ง';
+  end if;
+  if p_expected_max_price_allowance is null then
+    raise exception 'RUBBER_ALLOWANCE_STALE: ไม่พบค่าที่กำลังยืนยัน';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended('rubber-approval-policy', 0));
+  select * into v_settings from public.rubber_bill_approval_settings
+  where id = true for update;
+  if v_settings.max_price_allowance is distinct from p_expected_max_price_allowance then
+    return jsonb_build_object(
+      'status', 'conflict', 'code', 'RUBBER_ALLOWANCE_STALE',
+      'errorMessage', 'ราคายางที่กำหนดสูงสุดถูกแก้ไขโดยผู้ใช้อื่น กรุณาตรวจสอบค่าล่าสุดและยืนยันอีกครั้ง',
+      'conflicts', '[]'::jsonb
+    );
+  end if;
+  if v_settings.max_price_allowance = p_max_price_allowance then
+    return jsonb_build_object(
+      'status', 'unchanged',
+      'setting', jsonb_build_object(
+        'value', v_settings.max_price_allowance,
+        'updatedByName', v_settings.max_price_allowance_updated_by_name,
+        'updatedByPhone', v_settings.max_price_allowance_updated_by_phone,
+        'updatedAt', v_settings.max_price_allowance_updated_at
+      )
+    );
+  end if;
+
+  select coalesce(jsonb_agg(conflict order by conflict->>'scope', conflict->>'groupId'), '[]'::jsonb)
+  into v_conflicts
+  from (
+    select jsonb_build_object(
+      'scope', 'group', 'groupId', g.id, 'locationIds', to_jsonb(array_agg(gl.location_id order by gl.location_id)),
+      'allowance', g.price_allowance
+    ) conflict
+    from public.rubber_approval_groups g
+    join public.rubber_approval_group_locations gl on gl.group_id = g.id
+    where g.price_allowance > p_max_price_allowance
+    group by g.id
+    union all
+    select jsonb_build_object(
+      'scope', 'ungrouped', 'locationIds', coalesce(
+        (select jsonb_agg(l.id order by l.name, l.id)
+         from public.locations l
+         where l.is_active = true and not exists (
+           select 1 from public.rubber_approval_group_locations gl where gl.location_id = l.id
+         )), '[]'::jsonb
+      ),
+      'allowance', v_settings.ungrouped_price_allowance
+    )
+    where v_settings.ungrouped_price_allowance > p_max_price_allowance
+  ) conflicts;
+  if jsonb_array_length(v_conflicts) > 0 then
+    return jsonb_build_object(
+      'status', 'conflict', 'code', 'RUBBER_ALLOWANCE_LIMIT_TOO_LOW',
+      'errorMessage', 'ราคายางที่กำหนดสูงสุดต้องไม่น้อยกว่าค่าที่กลุ่มหรือสาขาที่ยังไม่จัดกลุ่มใช้อยู่',
+      'conflicts', v_conflicts
+    );
+  end if;
+  if v_settings.central_price + p_max_price_allowance > 9999999999.99 then
+    raise exception 'RUBBER_EFFECTIVE_PRICE_CAP_INVALID: ราคากลางรวมส่วนต่างต้องไม่เกิน 9,999,999,999.99 บาท';
+  end if;
+
+  select * into v_actor from public.profiles p where p.id = auth.uid();
+  update public.rubber_bill_approval_settings
+  set max_price_allowance = p_max_price_allowance,
+      max_price_allowance_updated_by_user_id = auth.uid(),
+      max_price_allowance_updated_by_name = v_actor.name,
+      max_price_allowance_updated_by_phone = v_actor.phone,
+      max_price_allowance_updated_at = clock_timestamp()
+  where id = true
+  returning * into v_settings;
+
+  return jsonb_build_object(
+    'status', 'saved',
+    'setting', jsonb_build_object(
+      'value', v_settings.max_price_allowance,
+      'updatedByName', v_settings.max_price_allowance_updated_by_name,
+      'updatedByPhone', v_settings.max_price_allowance_updated_by_phone,
+      'updatedAt', v_settings.max_price_allowance_updated_at
+    )
+  );
+end
+$$;
+
+
+ALTER FUNCTION "public"."save_rubber_max_price_allowance"("p_max_price_allowance" numeric, "p_expected_max_price_allowance" numeric) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."save_rubber_ungrouped_defaults"("p_edit_window_minutes" integer, "p_price_allowance" numeric, "p_expected_revision" bigint) RETURNS "jsonb"
@@ -24936,23 +24773,15 @@ declare
   v_operation text := payload->>'operation';
   v_business_date date;
   v_requires_approval boolean := false;
-  v_submission_mode text := coalesce(payload->>'submissionMode', 'replay');
   v_decision jsonb;
-  v_confirmation jsonb := payload->'quotaConfirmation';
   v_reservation jsonb;
   v_result jsonb;
-  v_force_price_approval boolean := false;
-  v_use_quota boolean := false;
-  v_quota_use_id uuid;
-  v_existing_quota_use public.rubber_bill_price_quota_uses%rowtype;
   v_bill_id uuid;
-  v_bill_revision integer;
   v_request_id uuid;
   v_location_id uuid;
   v_expected_revision integer;
   v_existing_bill public.rubber_bills%rowtype;
   v_existing_request public.rubber_bill_approval_requests%rowtype;
-  v_fallback_message text;
 begin
   if not coalesce(private.is_active_user(), false) then
     return jsonb_build_object('status', 'failed', 'errorMessage', 'Unauthorized or inactive user');
@@ -24966,17 +24795,13 @@ begin
   exception when others then
     return jsonb_build_object('status', 'failed', 'errorMessage', 'Invalid approval payload');
   end;
-  if v_location_id is null
-     or v_expected_revision is null
-     or v_expected_revision < 0
+  if v_location_id is null or v_expected_revision is null or v_expected_revision < 0
      or coalesce(payload->>'clientTempId', '') = ''
      or coalesce(payload->>'idempotencyKey', '') = ''
      or not public.can_access_location(v_location_id) then
     return jsonb_build_object('status', 'failed', 'errorMessage', 'Location access denied or invalid identity');
   end if;
 
-  -- Idempotent retries are identity lookups, not new policy decisions. This must
-  -- run before report/relation/time guards so a successful request can be retried.
   select * into v_existing_bill
   from public.rubber_bills b
   where b.client_temp_id = payload->>'clientTempId'
@@ -24984,39 +24809,19 @@ begin
     and b.idempotency_key = payload->>'idempotencyKey';
   if v_existing_bill.id is not null then
     if not (
-      (v_operation = 'create'
-        and v_expected_revision = 0
-        and v_existing_bill.revision_no = 1
-        and v_existing_bill.record_status = 'active')
-      or (v_operation = 'update'
-        and v_existing_bill.revision_no > 1
-        and v_expected_revision = v_existing_bill.revision_no - 1
-        and v_existing_bill.record_status = 'active')
-      or (v_operation = 'delete'
-        and v_existing_bill.revision_no > 1
-        and v_expected_revision = v_existing_bill.revision_no - 1
-        and v_existing_bill.record_status = 'deleted')
+      (v_operation = 'create' and v_expected_revision = 0 and v_existing_bill.revision_no = 1 and v_existing_bill.record_status = 'active')
+      or (v_operation = 'update' and v_existing_bill.revision_no > 1 and v_expected_revision = v_existing_bill.revision_no - 1 and v_existing_bill.record_status = 'active')
+      or (v_operation = 'delete' and v_existing_bill.revision_no > 1 and v_expected_revision = v_existing_bill.revision_no - 1 and v_existing_bill.record_status = 'deleted')
     ) then
-      return jsonb_build_object(
-        'status', 'conflict',
-        'errorMessage', 'Idempotency key operation mismatch'
-      );
+      return jsonb_build_object('status', 'conflict', 'errorMessage', 'Idempotency key operation mismatch');
     end if;
-    select q.* into v_existing_quota_use
-    from public.rubber_bill_price_quota_uses q
-    where q.actor_user_id = auth.uid()
-      and q.operation_key = payload->>'idempotencyKey'
-      and q.operation = v_operation
-      and q.bill_id = v_existing_bill.id
-      and q.bill_revision_no = v_existing_bill.revision_no;
-    return jsonb_strip_nulls(jsonb_build_object(
+    return jsonb_build_object(
       'status', 'synced',
       'id', v_existing_bill.id,
       'serverBillNo', v_existing_bill.server_bill_no,
       'revisionNo', v_existing_bill.revision_no,
-      'serverReceivedAt', v_existing_bill.server_received_at,
-      'quotaConsumed', case when v_existing_quota_use.id is not null then true else null end
-    ));
+      'serverReceivedAt', v_existing_bill.server_received_at
+    );
   end if;
 
   select * into v_existing_request
@@ -25029,95 +24834,42 @@ begin
   if v_existing_request.id is not null
      and (v_existing_request.operation is distinct from v_operation
        or v_existing_request.base_revision_no is distinct from v_expected_revision) then
-    return jsonb_build_object(
-      'status', 'conflict',
-      'errorMessage', 'Idempotency key operation mismatch'
-    );
+    return jsonb_build_object('status', 'conflict', 'errorMessage', 'Idempotency key operation mismatch');
   end if;
-
-  if v_operation = 'create' then
-    if v_existing_request.id is not null then
-      if v_existing_request.request_status = 'approved'
-         and v_existing_request.created_bill_id is not null then
-        select * into v_existing_bill
-        from public.rubber_bills b
-        where b.id = v_existing_request.created_bill_id;
-        if v_existing_bill.id is not null then
-          return jsonb_build_object(
-            'status', 'synced',
-            'id', v_existing_bill.id,
-            'serverBillNo', v_existing_bill.server_bill_no,
-            'revisionNo', v_existing_bill.revision_no,
-            'serverReceivedAt', v_existing_bill.server_received_at
-          );
-        end if;
+  if v_operation = 'create' and v_existing_request.id is not null then
+    if v_existing_request.request_status = 'approved' and v_existing_request.created_bill_id is not null then
+      select * into v_existing_bill from public.rubber_bills b
+      where b.id = v_existing_request.created_bill_id;
+      if v_existing_bill.id is not null then
+        return jsonb_build_object(
+          'status', 'synced', 'id', v_existing_bill.id,
+          'serverBillNo', v_existing_bill.server_bill_no,
+          'revisionNo', v_existing_bill.revision_no,
+          'serverReceivedAt', v_existing_bill.server_received_at
+        );
       end if;
-      return jsonb_build_object(
-        'status', 'pending_approval',
-        'requestId', v_existing_request.id,
-        'operation', v_operation,
-        'clientTempId', payload->>'clientTempId'
-      );
-    end if;
-  end if;
-
-  -- The bill stores only its latest mutation key, while the quota ledger keeps
-  -- the original price-operation key. Preserve retries for that same bill, but
-  -- never let the historical key authorize a different bill or operation.
-  select q.* into v_existing_quota_use
-  from public.rubber_bill_price_quota_uses q
-  where q.actor_user_id = auth.uid()
-    and q.operation_key = payload->>'idempotencyKey';
-  if v_existing_quota_use.id is not null then
-    select * into v_existing_bill
-    from public.rubber_bills b
-    where b.id = v_existing_quota_use.bill_id;
-    if v_existing_bill.id is not null
-       and v_existing_bill.client_temp_id = payload->>'clientTempId'
-       and v_existing_bill.location_id = v_location_id
-       and v_existing_quota_use.operation = v_operation
-       and (
-         (v_operation = 'create'
-           and v_expected_revision = 0
-           and v_existing_quota_use.bill_revision_no = 1)
-         or (v_operation in ('update', 'delete')
-           and v_existing_quota_use.bill_revision_no > 1
-           and v_expected_revision = v_existing_quota_use.bill_revision_no - 1)
-       ) then
-      return jsonb_build_object(
-        'status', 'synced',
-        'id', v_existing_bill.id,
-        'serverBillNo', v_existing_bill.server_bill_no,
-        'revisionNo', v_existing_bill.revision_no,
-        'serverReceivedAt', v_existing_bill.server_received_at,
-        'quotaConsumed', true
-      );
     end if;
     return jsonb_build_object(
-      'status', 'conflict',
-      'errorMessage', 'Idempotency key already exists'
+      'status', 'pending_approval', 'requestId', v_existing_request.id,
+      'operation', v_operation, 'clientTempId', payload->>'clientTempId'
     );
   end if;
 
   begin
     if v_operation = 'delete' then
-      select bill_date into v_business_date
-      from public.rubber_bills
+      select bill_date into v_business_date from public.rubber_bills
       where client_temp_id = payload->>'clientTempId';
-    elsif v_operation in ('create', 'update') then
+    else
       v_business_date := (payload->>'billDate')::date;
     end if;
   exception when others then
     return jsonb_build_object('status', 'failed', 'errorMessage', 'วันที่บิลไม่ถูกต้อง');
   end;
-
   select coalesce(non_current_date_requires_approval, false)
   into v_requires_approval
-  from public.rubber_bill_approval_settings
-  where id = true;
+  from public.rubber_bill_approval_settings where id = true;
   if v_requires_approval
-     and v_business_date is distinct from
-       (clock_timestamp() at time zone 'Asia/Bangkok')::date then
+     and v_business_date is distinct from (clock_timestamp() at time zone 'Asia/Bangkok')::date then
     payload := payload || jsonb_build_object('forceNonCurrentDateApproval', true);
   end if;
 
@@ -25130,61 +24882,9 @@ begin
     );
   end if;
 
-  if v_decision->>'disposition' = 'quota_confirmation_required' then
-    if v_submission_mode = 'replay' then
-      v_force_price_approval := true;
-    elsif v_submission_mode <> 'interactive' then
-      return jsonb_build_object('status', 'failed', 'errorMessage', 'รูปแบบการส่งบิลยางไม่ถูกต้อง');
-    elsif v_confirmation is null then
-      return jsonb_build_object(
-        'status', 'confirmation_required',
-        'decision', v_decision,
-        'errorMessage', 'กรุณายืนยันการใช้โควต้าราคา'
-      );
-    else
-      perform pg_advisory_xact_lock(hashtextextended(
-        concat_ws(':',
-          'rubber-price-quota',
-          auth.uid()::text,
-          (clock_timestamp() at time zone 'Asia/Bangkok')::date::text,
-          v_decision->>'quotaRoundId'
-        ),
-        0
-      ));
-      v_decision := private.rubber_bill_submission_decision(payload);
-      if v_decision->>'disposition' = 'quota_confirmation_required' then
-        if v_confirmation->>'priceRuleRevision' is distinct from v_decision->>'priceRuleRevision'
-           or v_confirmation->>'quotaRoundId' is distinct from v_decision->>'quotaRoundId'
-           or v_confirmation->>'decisionFingerprint' is distinct from v_decision->>'decisionFingerprint' then
-          return jsonb_build_object(
-            'status', 'rule_changed',
-            'decision', v_decision,
-            'errorMessage', 'กติกาหรือโควต้าเปลี่ยน กรุณาตรวจสอบและยืนยันอีกครั้ง'
-          );
-        end if;
-        v_use_quota := true;
-      elsif v_decision->>'priceDecision' = 'quota_exhausted' then
-        v_force_price_approval := true;
-        v_fallback_message := 'โควต้าถูกใช้ครบแล้ว รายการถูกส่งขออนุมัติ';
-      end if;
-    end if;
-  elsif v_decision->>'priceDecision' in ('quota_unavailable', 'quota_exhausted') then
-    v_force_price_approval := true;
-  end if;
-
-  if v_force_price_approval then
-    perform set_config(
-      'lanflow.rubber_price_cap_override',
-      v_decision->>'centralPrice',
-      true
-    );
-  end if;
-
   begin
     v_reservation := private.reserve_rubber_bill_ocr_source(payload);
-    if v_reservation->>'status' = 'conflict' then
-      return v_reservation;
-    end if;
+    if v_reservation->>'status' = 'conflict' then return v_reservation; end if;
     if v_reservation->>'status' <> 'ok' then
       v_result := v_reservation;
       raise exception using errcode = 'P0002', message = 'ROLLBACK_OCR_RESERVATION';
@@ -25197,49 +24897,13 @@ begin
 
     if v_result->>'status' = 'synced' then
       v_bill_id := (v_result->>'id')::uuid;
-      v_bill_revision := (v_result->>'revisionNo')::integer;
-      if v_use_quota then
-        insert into public.rubber_bill_price_quota_uses (
-          actor_user_id, bangkok_business_date, quota_round_id,
-          operation_key, operation, bill_id, bill_revision_no
-        ) values (
-          auth.uid(),
-          (clock_timestamp() at time zone 'Asia/Bangkok')::date,
-          (v_decision->>'quotaRoundId')::uuid,
-          payload->>'idempotencyKey',
-          v_operation,
-          v_bill_id,
-          v_bill_revision
-        )
-        on conflict (actor_user_id, operation_key) do nothing
-        returning id into v_quota_use_id;
-        if v_quota_use_id is null then
-          select q.* into v_existing_quota_use
-          from public.rubber_bill_price_quota_uses q
-          where q.actor_user_id = auth.uid()
-            and q.operation_key = payload->>'idempotencyKey';
-          if v_existing_quota_use.bill_id is distinct from v_bill_id
-             or v_existing_quota_use.operation is distinct from v_operation
-             or v_existing_quota_use.bill_revision_no is distinct from v_bill_revision then
-            v_result := jsonb_build_object(
-              'status', 'conflict',
-              'errorMessage', 'Idempotency key already exists'
-            );
-            raise exception using errcode = 'P0002', message = 'ROLLBACK_QUOTA_KEY_CONFLICT';
-          end if;
-          v_quota_use_id := v_existing_quota_use.id;
-        end if;
-      end if;
-
-      if v_operation = 'create'
-         or coalesce((v_decision->>'priceChanged')::boolean, false) then
+      if v_operation = 'create' or coalesce((v_decision->>'priceChanged')::boolean, false) then
         update public.rubber_bills
         set central_price_snapshot = (v_decision->>'centralPrice')::numeric,
             price_allowance_snapshot = (v_decision->>'priceAllowance')::numeric,
             effective_price_cap_snapshot = (v_decision->>'effectivePriceCap')::numeric,
             price_rule_revision_snapshot = (v_decision->>'priceRuleRevision')::bigint,
-            rubber_price_rule_source = v_decision->>'ruleSource',
-            rubber_price_quota_use_id = v_quota_use_id
+            rubber_price_rule_source = v_decision->>'ruleSource'
         where id = v_bill_id;
       end if;
     elsif v_result->>'status' = 'pending_approval' then
@@ -25252,13 +24916,6 @@ begin
           price_rule_revision_snapshot = (v_decision->>'priceRuleRevision')::bigint,
           rubber_price_rule_source = v_decision->>'ruleSource'
       where id = v_request_id;
-    end if;
-
-    if v_fallback_message is not null then
-      v_result := v_result || jsonb_build_object('message', v_fallback_message);
-    end if;
-    if v_quota_use_id is not null then
-      v_result := v_result || jsonb_build_object('quotaConsumed', true);
     end if;
     return v_result;
   exception when sqlstate 'P0002' then
@@ -27936,17 +27593,14 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_bill_approval_settings" (
     "ungrouped_updated_by_name" "text" DEFAULT 'ระบบ'::"text" NOT NULL,
     "ungrouped_updated_by_phone" "text",
     "ungrouped_updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "quota_limit_per_admin" integer DEFAULT 0 NOT NULL,
-    "quota_round_id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "quota_updated_by_user_id" "uuid",
-    "quota_updated_by_name" "text" DEFAULT 'ระบบ'::"text" NOT NULL,
-    "quota_updated_by_phone" "text",
-    "quota_updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "max_price_allowance_updated_by_user_id" "uuid",
+    "max_price_allowance_updated_by_name" "text" DEFAULT 'ระบบ'::"text" NOT NULL,
+    "max_price_allowance_updated_by_phone" "text",
+    "max_price_allowance_updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "price_rule_revision" bigint DEFAULT 1 NOT NULL,
     "max_price_allowance" numeric(12,2) NOT NULL,
     CONSTRAINT "rubber_bill_approval_central_price_check" CHECK ((("central_price" > (0)::numeric) AND ("scale"("central_price") <= 2))),
     CONSTRAINT "rubber_bill_approval_max_allowance_check" CHECK ((("max_price_allowance" >= (0)::numeric) AND ("scale"("max_price_allowance") <= 2))),
-    CONSTRAINT "rubber_bill_approval_quota_limit_check" CHECK (("quota_limit_per_admin" >= 0)),
     CONSTRAINT "rubber_bill_approval_settings_configured_price_check" CHECK ((("configured_price" IS NULL) OR ("configured_price" >= (0)::numeric))),
     CONSTRAINT "rubber_bill_approval_settings_edit_window_minutes_check" CHECK (("edit_window_minutes" >= 0)),
     CONSTRAINT "rubber_bill_approval_settings_id_check" CHECK (("id" = true)),
@@ -28053,24 +27707,6 @@ ALTER TABLE "public"."rubber_bill_ocr_sources" OWNER TO "postgres";
 
 COMMENT ON TABLE "public"."rubber_bill_ocr_sources" IS 'Private staged and attached provenance for Rubber Bills created from OCR.';
 
-
-
-CREATE TABLE IF NOT EXISTS "public"."rubber_bill_price_quota_uses" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "actor_user_id" "uuid" NOT NULL,
-    "bangkok_business_date" "date" NOT NULL,
-    "quota_round_id" "uuid" NOT NULL,
-    "operation_key" "text" NOT NULL,
-    "operation" "text" NOT NULL,
-    "bill_id" "uuid" NOT NULL,
-    "bill_revision_no" integer NOT NULL,
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    CONSTRAINT "rubber_bill_price_quota_uses_bill_revision_no_check" CHECK (("bill_revision_no" > 0)),
-    CONSTRAINT "rubber_bill_price_quota_uses_operation_check" CHECK (("operation" = ANY (ARRAY['create'::"text", 'update'::"text"])))
-);
-
-
-ALTER TABLE "public"."rubber_bill_price_quota_uses" OWNER TO "postgres";
 
 
 CREATE TABLE IF NOT EXISTS "public"."rubber_export_items" (
@@ -28867,16 +28503,6 @@ ALTER TABLE ONLY "public"."rubber_bill_ocr_sources"
 
 
 
-ALTER TABLE ONLY "public"."rubber_bill_price_quota_uses"
-    ADD CONSTRAINT "rubber_bill_price_quota_uses_actor_user_id_operation_key_key" UNIQUE ("actor_user_id", "operation_key");
-
-
-
-ALTER TABLE ONLY "public"."rubber_bill_price_quota_uses"
-    ADD CONSTRAINT "rubber_bill_price_quota_uses_pkey" PRIMARY KEY ("id");
-
-
-
 ALTER TABLE ONLY "public"."rubber_bills"
     ADD CONSTRAINT "rubber_bills_client_temp_id_key" UNIQUE ("client_temp_id");
 
@@ -29365,10 +28991,6 @@ CREATE INDEX "rubber_bill_ocr_sources_owner_created_idx" ON "public"."rubber_bil
 
 
 CREATE UNIQUE INDEX "rubber_bill_ocr_sources_pending_hash_unique" ON "public"."rubber_bill_ocr_sources" USING "btree" ("location_id", "image_sha256") WHERE ("state" = ANY (ARRAY['staged'::"text", 'reserved'::"text"]));
-
-
-
-CREATE INDEX "rubber_bill_price_quota_uses_counter_idx" ON "public"."rubber_bill_price_quota_uses" USING "btree" ("actor_user_id", "bangkok_business_date", "quota_round_id");
 
 
 
@@ -30363,11 +29985,6 @@ ALTER TABLE ONLY "public"."rubber_bill_approval_settings"
 
 
 ALTER TABLE ONLY "public"."rubber_bill_approval_settings"
-    ADD CONSTRAINT "rubber_bill_approval_settings_quota_updated_by_user_id_fkey" FOREIGN KEY ("quota_updated_by_user_id") REFERENCES "public"."profiles"("id");
-
-
-
-ALTER TABLE ONLY "public"."rubber_bill_approval_settings"
     ADD CONSTRAINT "rubber_bill_approval_settings_ungrouped_updated_by_user_id_fkey" FOREIGN KEY ("ungrouped_updated_by_user_id") REFERENCES "public"."profiles"("id");
 
 
@@ -30427,13 +30044,8 @@ ALTER TABLE ONLY "public"."rubber_bill_ocr_sources"
 
 
 
-ALTER TABLE ONLY "public"."rubber_bill_price_quota_uses"
-    ADD CONSTRAINT "rubber_bill_price_quota_uses_actor_user_id_fkey" FOREIGN KEY ("actor_user_id") REFERENCES "public"."profiles"("id");
-
-
-
-ALTER TABLE ONLY "public"."rubber_bill_price_quota_uses"
-    ADD CONSTRAINT "rubber_bill_price_quota_uses_bill_id_fkey" FOREIGN KEY ("bill_id") REFERENCES "public"."rubber_bills"("id");
+ALTER TABLE ONLY "public"."rubber_bill_approval_settings"
+    ADD CONSTRAINT "rubber_bill_settings_max_allowance_actor_fkey" FOREIGN KEY ("max_price_allowance_updated_by_user_id") REFERENCES "public"."profiles"("id");
 
 
 
@@ -30454,11 +30066,6 @@ ALTER TABLE ONLY "public"."rubber_bills"
 
 ALTER TABLE ONLY "public"."rubber_bills"
     ADD CONSTRAINT "rubber_bills_ocr_source_composite_fk" FOREIGN KEY ("ocr_source_id", "location_id", "ocr_image_sha256") REFERENCES "public"."rubber_bill_ocr_sources"("id", "location_id", "image_sha256") ON DELETE RESTRICT;
-
-
-
-ALTER TABLE ONLY "public"."rubber_bills"
-    ADD CONSTRAINT "rubber_bills_quota_use_fk" FOREIGN KEY ("rubber_price_quota_use_id") REFERENCES "public"."rubber_bill_price_quota_uses"("id");
 
 
 
@@ -31164,9 +30771,6 @@ ALTER TABLE "public"."rubber_bill_items" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."rubber_bill_ocr_sources" ENABLE ROW LEVEL SECURITY;
 
 
-ALTER TABLE "public"."rubber_bill_price_quota_uses" ENABLE ROW LEVEL SECURITY;
-
-
 ALTER TABLE "public"."rubber_bills" ENABLE ROW LEVEL SECURITY;
 
 
@@ -31465,10 +31069,6 @@ REVOKE ALL ON FUNCTION "private"."can_request_dashboard_refresh"("p_location_id"
 
 
 REVOKE ALL ON FUNCTION "private"."can_use_cash_count"("p_location_id" "uuid") FROM PUBLIC;
-
-
-
-REVOKE ALL ON FUNCTION "private"."can_use_rubber_bill_price_quota"() FROM PUBLIC;
 
 
 
@@ -31857,7 +31457,7 @@ REVOKE ALL ON FUNCTION "private"."reserve_rubber_bill_ocr_source"("p_payload" "j
 
 
 
-REVOKE ALL ON FUNCTION "private"."resolve_rubber_bill_price_policy"("p_location_id" "uuid") FROM PUBLIC;
+REVOKE ALL ON FUNCTION "private"."resolve_rubber_bill_price_policy_without_quota"("p_location_id" "uuid") FROM PUBLIC;
 
 
 
@@ -32720,11 +32320,6 @@ GRANT ALL ON FUNCTION "public"."pass_all_pending_rubber_bill_evidence_reviews"("
 
 
 
-REVOKE ALL ON FUNCTION "public"."preview_rubber_bill_submission"("payload" "jsonb") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."preview_rubber_bill_submission"("payload" "jsonb") TO "authenticated";
-
-
-
 REVOKE ALL ON FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) TO "authenticated";
 
@@ -33164,16 +32759,6 @@ GRANT ALL ON FUNCTION "public"."save_money_transfer"("p_payload" "jsonb") TO "au
 
 
 
-REVOKE ALL ON FUNCTION "public"."save_rubber_admin_quota"("p_quota_limit" integer, "p_expected_round_id" "uuid") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."save_rubber_admin_quota"("p_quota_limit" integer, "p_expected_round_id" "uuid") TO "authenticated";
-
-
-
-REVOKE ALL ON FUNCTION "public"."save_rubber_admin_quota_v2"("p_quota_limit" integer, "p_max_price_allowance" numeric, "p_expected_round_id" "uuid") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."save_rubber_admin_quota_v2"("p_quota_limit" integer, "p_max_price_allowance" numeric, "p_expected_round_id" "uuid") TO "authenticated";
-
-
-
 REVOKE ALL ON FUNCTION "public"."save_rubber_bill_date_approval_setting"("p_non_current_date_requires_approval" boolean) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."save_rubber_bill_date_approval_setting"("p_non_current_date_requires_approval" boolean) TO "authenticated";
 
@@ -33186,6 +32771,11 @@ GRANT ALL ON FUNCTION "public"."save_rubber_central_price"("p_central_price" num
 
 REVOKE ALL ON FUNCTION "public"."save_rubber_export_work_transfer_slips"("p_transfer_id" "uuid", "p_expected_revision" integer, "p_slips" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."save_rubber_export_work_transfer_slips"("p_transfer_id" "uuid", "p_expected_revision" integer, "p_slips" "jsonb") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."save_rubber_max_price_allowance"("p_max_price_allowance" numeric, "p_expected_max_price_allowance" numeric) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."save_rubber_max_price_allowance"("p_max_price_allowance" numeric, "p_expected_max_price_allowance" numeric) TO "authenticated";
 
 
 
@@ -33646,10 +33236,6 @@ GRANT SELECT ON TABLE "public"."rubber_bill_item_evidence_files" TO "authenticat
 
 
 GRANT ALL ON TABLE "public"."rubber_bill_ocr_sources" TO "service_role";
-
-
-
-GRANT ALL ON TABLE "public"."rubber_bill_price_quota_uses" TO "service_role";
 
 
 

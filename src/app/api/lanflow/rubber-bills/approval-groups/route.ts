@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
   if (error) return managementErrorResponse(error, "โหลดกลุ่มอนุมัติบิลยางไม่สำเร็จ");
   return NextResponse.json({
     ...(data as Record<string, unknown>),
-    canEditQuota: authCheck.auth.role === "super_admin",
+    canEditMaxPriceAllowance: authCheck.auth.role === "super_admin",
   });
 }
 

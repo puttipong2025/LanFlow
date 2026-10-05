@@ -29,22 +29,16 @@ export type RubberApprovalGroup = {
 
 export type RubberCentralPriceSetting = { value: number; revision: number; updatedByName: string; updatedByPhone?: string | null; updatedAt: string };
 export type RubberUngroupedDefaults = { locationIds: string[]; editWindowMinutes: number; priceAllowance: number; revision: number; updatedByName: string; updatedByPhone?: string | null; updatedAt: string };
-export type RubberAdminQuotaSetting = { limitPerAdmin: number; maxPriceAllowance: number; roundId: string; updatedByName: string; updatedByPhone?: string | null; updatedAt: string };
-
-export type RubberSubmissionDecision = {
-  disposition: "direct" | "approval_required" | "quota_confirmation_required" | "failed";
-  priceDecision: "not_applicable" | "unchanged" | "within_central" | "above_cap" | "quota_unavailable" | "quota_exhausted" | "quota_available";
-  priceChanged: boolean;
-  centralPrice: number;
-  priceAllowance: number;
-  effectivePriceCap: number;
-  priceRuleRevision: number;
-  quotaRoundId: string;
-  decisionFingerprint?: string;
-  ruleSource: "group" | "ungrouped";
-  maxPrice: number | null;
-  remainingAfterConfirm?: number;
-  errorMessage?: string;
+export type RubberMaxPriceAllowanceSetting = {
+  value: number;
+  updatedByName: string;
+  updatedByPhone?: string | null;
+  updatedAt: string;
 };
 
-export type RubberQuotaConfirmation = { priceRuleRevision: number; quotaRoundId: string; decisionFingerprint: string };
+export type RubberMaxPriceAllowanceConflict = {
+  scope: "group" | "ungrouped";
+  groupId?: string;
+  locationIds: string[];
+  allowance: number;
+};

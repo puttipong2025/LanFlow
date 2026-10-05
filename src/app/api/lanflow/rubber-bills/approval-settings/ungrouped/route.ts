@@ -26,5 +26,5 @@ export async function PUT(request: NextRequest) {
     p_expected_revision: body.expectedRevision,
   });
   if (error) return managementErrorResponse(error, "บันทึกกลุ่มเริ่มต้นไม่สำเร็จ");
-  return NextResponse.json({ ...(data as Record<string, unknown>), canEditQuota: authCheck.auth.role === "super_admin" });
+  return NextResponse.json({ ...(data as Record<string, unknown>), canEditMaxPriceAllowance: authCheck.auth.role === "super_admin" });
 }

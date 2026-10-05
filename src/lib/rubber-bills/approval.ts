@@ -28,7 +28,7 @@ export function assertOfflineRubberBillPriceAllowed(
   billDate: string,
   settings: Pick<
     EffectiveRubberApprovalSettings,
-    "centralPrice" | "nonCurrentDateRequiresApproval"
+    "effectivePriceCap" | "nonCurrentDateRequiresApproval"
   > | null,
   isOnline: boolean,
 ) {
@@ -40,9 +40,9 @@ export function assertOfflineRubberBillPriceAllowed(
   if (isNonCurrentDate && settings.nonCurrentDateRequiresApproval) {
     throw new Error("บิลต่างจากวันปัจจุบัน ต้องออนไลน์เพื่อส่งคำขออนุมัติ");
   }
-  const centralInSatang = Math.round(settings.centralPrice * 100);
-  if (prices.some((price) => Math.round(price * 100) > centralInSatang)) {
-    throw new Error("ราคาบิลสูงกว่าราคากลาง ต้องออนไลน์เพื่อยืนยันหรือส่งขออนุมัติ");
+  const capInSatang = Math.round(settings.effectivePriceCap * 100);
+  if (prices.some((price) => Math.round(price * 100) > capInSatang)) {
+    throw new Error("ราคาบิลสูงกว่าราคาสูงสุดที่กำหนด ต้องออนไลน์เพื่อส่งคำขออนุมัติ");
   }
 }
 

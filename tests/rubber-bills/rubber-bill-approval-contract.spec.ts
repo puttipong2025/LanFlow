@@ -167,14 +167,14 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
 
   test("offline cached-price guard blocks only values above the cached cap", () => {
     const today = bangkokDateString();
-    const central42 = { centralPrice: 42, nonCurrentDateRequiresApproval: false };
-    expect(() => assertOfflineRubberBillPriceAllowed([0, 41.99, 42], today, central42, false)).not.toThrow();
-    expect(() => assertOfflineRubberBillPriceAllowed([42.5], today, central42, true)).not.toThrow();
-    expect(() => assertOfflineRubberBillPriceAllowed([42, 42.5], today, central42, false))
-      .toThrow("ต้องออนไลน์เพื่อยืนยันหรือส่งขออนุมัติ");
-    expect(() => assertOfflineRubberBillPriceAllowed([0], today, { centralPrice: 0, nonCurrentDateRequiresApproval: false }, false)).not.toThrow();
-    expect(() => assertOfflineRubberBillPriceAllowed([0.01], today, { centralPrice: 0, nonCurrentDateRequiresApproval: false }, false))
-      .toThrow("ต้องออนไลน์เพื่อยืนยันหรือส่งขออนุมัติ");
+    const cap45 = { effectivePriceCap: 45, nonCurrentDateRequiresApproval: false };
+    expect(() => assertOfflineRubberBillPriceAllowed([0, 44.99, 45], today, cap45, false)).not.toThrow();
+    expect(() => assertOfflineRubberBillPriceAllowed([45.5], today, cap45, true)).not.toThrow();
+    expect(() => assertOfflineRubberBillPriceAllowed([45, 45.01], today, cap45, false))
+      .toThrow("ต้องออนไลน์เพื่อส่งคำขออนุมัติ");
+    expect(() => assertOfflineRubberBillPriceAllowed([0], today, { effectivePriceCap: 0, nonCurrentDateRequiresApproval: false }, false)).not.toThrow();
+    expect(() => assertOfflineRubberBillPriceAllowed([0.01], today, { effectivePriceCap: 0, nonCurrentDateRequiresApproval: false }, false))
+      .toThrow("ต้องออนไลน์เพื่อส่งคำขออนุมัติ");
     expect(() => assertOfflineRubberBillPriceAllowed([0], today, null, false))
       .toThrow("ยังไม่เคยโหลดกติกาอนุมัติ");
   });
@@ -1549,7 +1549,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       await expect(approvalDialog.getByText("กลุ่มราคาและเวลา")).toBeVisible();
       const ungroupedSettings = approvalDialog.getByTestId("ungrouped-approval-settings");
       await expect(ungroupedSettings.getByRole("heading", { name: "สาขาที่ยังไม่จัดกลุ่ม" })).toBeVisible();
-      await expect(approvalDialog.getByText("โควต้าราคาสำหรับ Admin")).toBeVisible();
+      await expect(approvalDialog.getByText("ราคายางที่กำหนดสูงสุด", { exact: true })).toBeVisible();
       await expect(approvalDialog.getByText("กฎวันที่บิล")).toBeVisible();
       await expect(approvalDialog.getByText("งานรออนุมัติบิลยาง")).toBeVisible();
       await ungroupedSettings.getByRole("button", { name: "แก้ไข", exact: true }).click();

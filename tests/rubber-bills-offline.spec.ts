@@ -286,7 +286,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
           Authorization: `Bearer ${localServiceRoleKey}`,
           Prefer: 'return=minimal',
         },
-        data: { edit_window_minutes: 30, configured_price: null },
+        data: { edit_window_minutes: 30, configured_price: null, max_price_allowance: 100 },
       }
     );
     expect(resetApprovalSetting.ok()).toBeTruthy();

@@ -183,13 +183,12 @@ export type BranchRubberReceiptResult = {
 
 export type {
   EffectiveRubberApprovalSettings,
-  RubberAdminQuotaSetting,
   RubberApprovalGroup,
   RubberBillApprovalOperation,
   RubberBillApprovalReason,
   RubberCentralPriceSetting,
-  RubberQuotaConfirmation,
-  RubberSubmissionDecision,
+  RubberMaxPriceAllowanceConflict,
+  RubberMaxPriceAllowanceSetting,
   RubberUngroupedDefaults,
 } from "./rubber-approval";
 

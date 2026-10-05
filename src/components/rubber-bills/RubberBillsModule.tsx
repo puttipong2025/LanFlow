@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import { RubberBillQuotaConfirmationError, useRubberBillMutations } from "@/hooks/useRubberBills";
+import { useRubberBillMutations } from "@/hooks/useRubberBills";
 import {
   useRubberBillList,
   useRubberBillWorkCounts,
@@ -21,7 +21,7 @@ import {
   getOfflineSyncedActionBlockReason,
   RUBBER_BILL_TRANSFER_LOCK_MESSAGE
 } from "@/lib/record-action-locks";
-import type { Location, Profile, RubberBill, RubberSubmissionDecision } from "@/types";
+import type { Location, Profile, RubberBill } from "@/types";
 import { RubberBillsTable } from "./RubberBillsTable";
 import { TablePageSizeSelect } from "@/components/shared/TablePagination";
 import { RubberBillModal, type RubberBillCustomerOption } from "./RubberBillModal";
@@ -48,7 +48,6 @@ import { BranchRubberReceiptDetailModal, BranchRubberReceiptModal } from "./Bran
 import { ExportVehicleWeighBillsModal } from "./ExportVehicleWeighBillsModal";
 import type { RequestBranchCreate } from "@/hooks/useBranchCreateGuard";
 import { isDeviceOnline } from "@/lib/connectivity";
-import { RubberQuotaConfirmationDialog } from "./RubberQuotaConfirmationDialog";
 import { RubberBillOcrQueueModal } from "./RubberBillOcrQueueModal";
 
 export function RubberBillsModule({
@@ -114,12 +113,6 @@ export function RubberBillsModule({
   const [viewingBranchReceipt, setViewingBranchReceipt] = useState<RubberBill | null>(null);
   const [editingBill, setEditingBill] = useState<RubberBill | null>(null);
   const [deletingBillId, setDeletingBillId] = useState<string | null>(null);
-  const [quotaSubmission, setQuotaSubmission] = useState<{
-    bill: RubberBill;
-    isCreating: boolean;
-    decision: RubberSubmissionDecision;
-  } | null>(null);
-  const [quotaSubmitting, setQuotaSubmitting] = useState(false);
   const [pageSize, setPageSize] = useState(10);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
@@ -700,54 +693,12 @@ export function RubberBillsModule({
               }
               return true;
             } catch (error) {
-              if (error instanceof RubberBillQuotaConfirmationError) {
-                setQuotaSubmission({ bill, isCreating: !editingBill, decision: error.decision });
-                return false;
-              }
               alert(error instanceof Error ? error.message : "เกิดข้อผิดพลาดในการบันทึกบิล");
               return false;
             }
           }}
         />
       )}
-      <RubberQuotaConfirmationDialog
-        decision={quotaSubmission?.decision ?? null}
-        busy={quotaSubmitting}
-        onCancel={() => setQuotaSubmission(null)}
-        onConfirm={() => {
-          const decisionFingerprint = quotaSubmission?.decision.decisionFingerprint;
-          if (!quotaSubmission || !decisionFingerprint) return;
-          void (async () => {
-            try {
-              setQuotaSubmitting(true);
-              const confirmation = {
-                priceRuleRevision: quotaSubmission.decision.priceRuleRevision,
-                quotaRoundId: quotaSubmission.decision.quotaRoundId,
-                decisionFingerprint,
-              };
-              const savedBill = await (quotaSubmission.isCreating
-                ? addBill(quotaSubmission.bill, confirmation)
-                : updateBill(quotaSubmission.bill, confirmation));
-              if (ocrReviewItem) ocrQueue.remove(ocrReviewItem.id);
-              setOcrReviewItem(null);
-              setQuotaSubmission(null);
-              setModalOpen(false);
-              if (quotaSubmission.isCreating) setPage(1);
-              if (savedBill.netTotal > 0 && !savedBill.approvalPending) void handlePrint(savedBill);
-            } catch (error) {
-              if (error instanceof RubberBillQuotaConfirmationError) {
-                setQuotaSubmission((current) => current ? { ...current, decision: error.decision } : current);
-                toast.error("กติกาหรือโควต้าเปลี่ยน กรุณาตรวจสอบอีกครั้ง");
-              } else {
-                toast.error(error instanceof Error ? error.message : "บันทึกบิลไม่สำเร็จ");
-              }
-            } finally {
-              setQuotaSubmitting(false);
-            }
-          })();
-        }}
-      />
-
       {ocrQueueModalOpen && (
         <RubberBillOcrQueueModal
           locationId={selectedLocation.id}

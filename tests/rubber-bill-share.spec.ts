@@ -21,20 +21,6 @@ async function routeApprovalSettings(page: Page) {
       },
     });
   });
-  await page.route("**/api/lanflow/rubber-bills/preview", async (route) => {
-    await route.fulfill({ json: {
-      disposition: "direct",
-      priceDecision: "within_central",
-      priceChanged: true,
-      centralPrice: 42,
-      priceAllowance: 0,
-      effectivePriceCap: 42,
-      priceRuleRevision: 1,
-      quotaRoundId: "00000000-0000-4000-8000-000000000001",
-      ruleSource: "ungrouped",
-      maxPrice: 20,
-    } });
-  });
 }
 
 test("locks the Rubber Bill modal and sends one request during rapid submit", async ({ page }) => {

@@ -1,8 +1,11 @@
 ---
-status: accepted
+status: superseded
+superseded-by: 0075-remove-rubber-bill-price-quota
 ---
 
 # Use one central Rubber price with server-authoritative Admin quotas
+
+> Superseded on 2026-10-05 by ADR 0075. This document remains as historical rollout evidence only.
 
 LanFlow will use one system-wide Rubber central price as the no-quota boundary and a non-negative per-group allowance as the amount that eligible users may buy above that price. The initial central price is `42.00` baht/kg, attributed to `ระบบ` at migration time. Active Admins, System Managers, and super admins receive independent daily quota counters from one global count; a price above the central price may bypass price approval only when every weigh-row price stays within `central price + group allowance` and the account has quota remaining. The Server re-evaluates the current rule revision and consumes quota atomically with the bill mutation.
 
