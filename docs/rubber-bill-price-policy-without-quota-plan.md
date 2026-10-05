@@ -1,6 +1,6 @@
 # Rubber Bill Price Policy Without Quota — Implementation Plan
 
-Status: implementation and local verification complete on 2026-10-05; release evidence below
+Status: released to Production on 2026-10-05
 
 ## Outcome
 
@@ -35,5 +35,8 @@ Remove every active quota path while preserving one central price, group/ungroup
 - Responsive management UI: the Superadmin maximum form passed at 375×812 and the System Manager read-only view passed at 1280×800.
 - Dead-code scan: runtime source has no quota vocabulary or removed route/RPC consumers; historical references remain only in applied migrations, superseded ADRs, and removal assertions.
 - Offline full-file rerun remains affected by the pre-existing Next dev-server exit (`ECONNREFUSED`); the changed offline cap guard passes isolated tests and its server replay/idempotency paths pass focused E2E and pgTAP coverage.
+- Release: Supabase Cloud applied migration `20261005010000`; post-push dry-run is up to date and remote DB lint reports no errors. Commit `bec884e90cf54e9b2c5360b3e6bf511992956782` reached `main`, GitHub Quality gates run `37273907984` succeeded, and Vercel deployment `DBd7iEoSG3KHGPrpLhJiMY36jkQJ` completed.
+- Production read-only smoke: login returned 200, removed quota/preview routes returned 404, the new maximum route returned 401 without a session, and the remote schema contained zero old quota references.
+- Recovery checkpoint (git ignored): `output/production-backups/rubber-quota-removal-20261005/`; hashes are recorded in the codingDO Daily note `10_Daily/2026-10-05 1.md`.
 
 The Daily note `10_Daily/2026-10-05 1.md` remains the task-level checklist and source of truth.
