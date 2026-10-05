@@ -32,6 +32,14 @@ export function getDeviceId() {
   return deviceId;
 }
 
+export function tryGetDeviceId() {
+  try {
+    return getDeviceId();
+  } catch {
+    return null;
+  }
+}
+
 export function makeClientTempId(prefix: string) {
   const randomId = typeof crypto.randomUUID === "function"
     ? crypto.randomUUID()

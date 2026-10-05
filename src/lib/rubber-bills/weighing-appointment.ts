@@ -18,6 +18,8 @@ const THAI_TIME_FORMATTER = new Intl.DateTimeFormat("th-TH-u-ca-buddhist-nu-latn
 
 export type WeighingAppointmentTicket = {
   waitMinutes: number;
+  queueNumber: number;
+  customerName: string | null;
   issuedDate: string;
   issuedTime: string;
   appointmentDate: string;
@@ -25,24 +27,52 @@ export type WeighingAppointmentTicket = {
   isNextDay: boolean;
 };
 
-export function buildWeighingAppointmentTicket(
-  waitMinutes: number,
+type BuildWeighingAppointmentTicketInput = {
+  waitMinutes: number;
+  queueNumber: number;
+  customerName?: string;
+  issuedAt?: Date;
+};
+
+function escapeHtml(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+export function buildWeighingAppointmentTicket({
+  waitMinutes,
+  queueNumber,
+  customerName = "",
   issuedAt = new Date(),
-): WeighingAppointmentTicket {
+}: BuildWeighingAppointmentTicketInput): WeighingAppointmentTicket {
   if (!WEIGHING_WAIT_OPTIONS.includes(waitMinutes as (typeof WEIGHING_WAIT_OPTIONS)[number])) {
     throw new Error("ช่วงเวลารอไม่ถูกต้อง");
   }
+  if (!Number.isInteger(queueNumber) || queueNumber < 1 || queueNumber > 9_999) {
+    throw new Error("เลขคิวบัตรนัดไม่ถูกต้อง");
+  }
 
   const appointmentAt = new Date(issuedAt.getTime() + waitMinutes * 60_000);
+  const normalizedCustomerName = customerName.trim().slice(0, 100);
 
   return {
     waitMinutes,
+    queueNumber,
+    customerName: normalizedCustomerName || null,
     issuedDate: THAI_DATE_FORMATTER.format(issuedAt),
     issuedTime: THAI_TIME_FORMATTER.format(issuedAt),
     appointmentDate: THAI_DATE_FORMATTER.format(appointmentAt),
     appointmentTime: THAI_TIME_FORMATTER.format(appointmentAt),
     isNextDay: bangkokDateString(issuedAt) !== bangkokDateString(appointmentAt),
   };
+}
+
+export function isWeighingAppointmentDraftCurrentDay(issuedAt: Date, now = new Date()) {
+  return bangkokDateString(issuedAt) === bangkokDateString(now);
 }
 
 export function renderWeighingAppointmentHtml(ticket: WeighingAppointmentTicket) {
@@ -64,6 +94,10 @@ export function renderWeighingAppointmentHtml(ticket: WeighingAppointmentTicket)
     .row { padding: 3mm 0; border-bottom: 1px dashed #000; }
     .label { display: block; margin-bottom: 1mm; font-size: 11px; }
     .value { font-size: 18px; font-weight: 800; }
+    .queue { padding: 2mm 0 4mm; border-bottom: 2px solid #000; }
+    .queue-label { font-size: 14px; font-weight: 800; }
+    .queue-number { margin-top: 1mm; font-size: 44px; line-height: 1; font-weight: 900; }
+    .customer { overflow-wrap: anywhere; }
     .appointment { padding-top: 4mm; }
     .appointment-label { font-size: 15px; font-weight: 800; }
     .appointment-date { margin-top: 2mm; font-size: 16px; font-weight: 700; }
@@ -78,6 +112,24 @@ export function renderWeighingAppointmentHtml(ticket: WeighingAppointmentTicket)
   </style>
 </head>
 <body>
+  <div class="queue">
+    <div class="queue-label">เลขคิวบัตรนัด</div>
+    <div class="queue-number">${ticket.queueNumber}</div>
+  </div>
+  ${
+    ticket.customerName
+      ? `<div class="row customer">
+    <span class="label">ชื่อลูกค้า</span>
+    <div class="value">${escapeHtml(ticket.customerName)}</div>
+  </div>`
+      : ""
+  }
+  <div class="appointment row">
+    <div class="appointment-label">เวลานัดชั่ง</div>
+    <div class="appointment-date">วันที่ ${ticket.appointmentDate}</div>
+    <div class="appointment-time">ชั่งเวลา ${ticket.appointmentTime} น.</div>
+    ${ticket.isNextDay ? '<div class="next-day">(วันถัดไป)</div>' : ""}
+  </div>
   <div class="row">
     <span class="label">เวลาที่ออกบัตร</span>
     <div class="value">${ticket.issuedDate} ${ticket.issuedTime} น.</div>
@@ -85,12 +137,6 @@ export function renderWeighingAppointmentHtml(ticket: WeighingAppointmentTicket)
   <div class="row">
     <span class="label">ระยะเวลารอ</span>
     <div class="value">${ticket.waitMinutes} นาที</div>
-  </div>
-  <div class="appointment">
-    <div class="appointment-label">เวลานัดชั่ง</div>
-    <div class="appointment-date">วันที่ ${ticket.appointmentDate}</div>
-    <div class="appointment-time">ชั่งเวลา ${ticket.appointmentTime} น.</div>
-    ${ticket.isNextDay ? '<div class="next-day">(วันถัดไป)</div>' : ""}
   </div>
 </body>
 </html>`;

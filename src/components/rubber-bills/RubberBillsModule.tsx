@@ -38,7 +38,7 @@ import {
 import { receiptPdfFilename } from "@/lib/rubber-bills/print-receipt";
 import { useSharePdf } from "@/hooks/useSharePdf";
 import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
-import { getDeviceId } from "@/lib/format";
+import { tryGetDeviceId } from "@/lib/format";
 import { openRubberBillOcrSourceImage } from "@/lib/rubber-bills/open-ocr-source-image";
 import { getRubberBillReceiptSnapshot } from "@/lib/idb-queue";
 import { loadCustomerCache, saveCustomerCache, type WeighingQueueCustomer } from "@/lib/rubber-bills/weighing-queue";
@@ -98,9 +98,9 @@ export function RubberBillsModule({
     ? `ตั้งค่าและอนุมัติบิลยาง รออนุมัติ ${pendingApprovalCount} รายการ`
     : "ตั้งค่าและอนุมัติบิลยาง";
   const { retrySyncEvent, isRetrying } = usePerRecordSyncRetry(selectedLocation.id, profile.id);
-  const [deviceId] = useState(getDeviceId);
+  const [deviceId] = useState(tryGetDeviceId);
   const [cachedCustomers, setCachedCustomers] = useState<WeighingQueueCustomer[]>(() => (
-    loadCustomerCache(deviceId)
+    deviceId ? loadCustomerCache(deviceId) : []
   ));
   const [modalOpen, setModalOpen] = useState(false);
   const [ocrQueueModalOpen, setOcrQueueModalOpen] = useState(false);
@@ -147,7 +147,7 @@ export function RubberBillsModule({
   }, [initialSearch, onInitialSearchHandled]);
 
   useEffect(() => {
-    if (!isOnline || customersLoading || customersError) return;
+    if (!deviceId || !isOnline || customersLoading || customersError) return;
     try {
       const snapshot = customers.map((customer) => ({
         id: customer.id,
@@ -500,7 +500,7 @@ export function RubberBillsModule({
         <div className="flex w-full flex-wrap gap-2 sm:w-auto">
            <button
             type="button"
-            onClick={() => setQueueModalOpen(true)}
+            onClick={() => deviceId ? setQueueModalOpen(true) : toast.error("อุปกรณ์นี้ไม่อนุญาตให้เก็บคิวชั่ง จึงยังไม่สามารถเปิดบัตรคิวได้")}
             className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-river px-3 text-sm font-semibold text-white hover:bg-river/90"
           >
             <Ticket size={18} />
@@ -761,14 +761,17 @@ export function RubberBillsModule({
       )}
 
       {appointmentModalOpen && (
-        <WeighingAppointmentModal onClose={() => setAppointmentModalOpen(false)} />
+        <WeighingAppointmentModal
+          locationId={selectedLocation.id}
+          onClose={() => setAppointmentModalOpen(false)}
+        />
       )}
 
       {customQueueModalOpen && (
         <CustomWeighingQueueModal onClose={() => setCustomQueueModalOpen(false)} />
       )}
 
-      {queueModalOpen && (
+      {queueModalOpen && deviceId && (
         <WeighingQueueModal
           deviceId={deviceId}
           locationId={selectedLocation.id}
