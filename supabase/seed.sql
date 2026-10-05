@@ -2552,8 +2552,8 @@ WHERE p."name" IN ('น้ำกรดตราเสือไฟท์', 'น�
 	AND lower(trim(i."name")) = lower(trim(p."name"))
 	AND i."stock_product_id" IS DISTINCT FROM p."id";
 
-INSERT INTO "public"."rubber_bill_approval_settings" ("id", "edit_window_minutes")
-VALUES (true, 30)
+INSERT INTO "public"."rubber_bill_approval_settings" ("id", "edit_window_minutes", "max_price_allowance")
+VALUES (true, 30, 0)
 ON CONFLICT ("id") DO NOTHING;
 
 INSERT INTO "public"."telegram_badge_settings" ("id")
