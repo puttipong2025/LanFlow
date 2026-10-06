@@ -11,6 +11,9 @@ export interface SyncEvent<T = any> {
   ownerUserId: string;
   locationId: string;
   operation: SyncOperation;
+  serverId?: string;
+  serverBillNo?: string;
+  serverSubmissionAttempted?: boolean;
   payload: T;
   timestamp: number;
   status: "pending" | "failed" | "conflict";

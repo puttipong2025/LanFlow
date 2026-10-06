@@ -13,15 +13,22 @@ import { formatBangkokDateTime } from "@/lib/bangkok-date";
 import type { Location, RubberApprovalGroup } from "@/types";
 
 type PendingConfirmation =
-  | { kind: "central"; value: number }
+  | { kind: "central"; value: number; previousValue: number; expectedRevision: number }
   | { kind: "maxPriceAllowance"; value: number; previousValue: number }
   | { kind: "delete"; group: RubberApprovalGroup };
+
+const MONEY_PATTERN = /^\d+(\.\d{1,2})?$/;
 
 function parseMoney(value: string, label: string, allowBlank = false) {
   const normalized = value.trim();
   if (allowBlank && normalized === "") return 0;
-  if (!/^\d+(\.\d{1,2})?$/.test(normalized)) throw new Error(`${label}ต้องไม่ติดลบและมีทศนิยมไม่เกิน 2 ตำแหน่ง`);
+  if (!MONEY_PATTERN.test(normalized)) throw new Error(`${label}ต้องไม่ติดลบและมีทศนิยมไม่เกิน 2 ตำแหน่ง`);
   return Number(normalized);
+}
+
+function isSameMoney(value: string, current: number) {
+  const normalized = value.trim();
+  return MONEY_PATTERN.test(normalized) && Number(normalized) === current;
 }
 
 function actorText(name: string, updatedAt: string) {
@@ -126,7 +133,25 @@ export function RubberApprovalPolicyPanel({
       }
       closeGroupEditor();
     } catch (caught) {
-      await policy.refetch();
+      const refreshed = await policy.refetch();
+      if (refreshed.data) {
+        if (editingGroup) {
+          const latestEditingGroup = refreshed.data.groups.find(
+            (group) => group.id === editingGroup.id,
+          );
+          if (latestEditingGroup) {
+            setEditingGroup(latestEditingGroup);
+            setGroupRevisionSnapshot(Object.fromEntries(
+              refreshed.data.groups.map((group) => [group.id, group.revisionNo]),
+            ));
+          } else {
+            closeGroupEditor();
+          }
+        } else {
+          const availableLocationIds = new Set(refreshed.data.availableLocationIds);
+          setLocationIds((current) => current.filter((id) => availableLocationIds.has(id)));
+        }
+      }
       const message = caught instanceof Error ? caught.message : "บันทึกกลุ่มไม่สำเร็จ";
       setGroupError(message);
       toast.error(message);
@@ -157,8 +182,11 @@ export function RubberApprovalPolicyPanel({
   async function confirmAction() {
     if (!confirmation) return;
     try {
-      if (confirmation.kind === "central" && central) {
-        await policy.saveCentralPrice({ centralPrice: confirmation.value, expectedRevision: central.revision });
+      if (confirmation.kind === "central") {
+        await policy.saveCentralPrice({
+          centralPrice: confirmation.value,
+          expectedRevision: confirmation.expectedRevision,
+        });
         setCentralPrice("");
         toast.success("บันทึกราคากลางแล้ว");
       } else if (confirmation.kind === "maxPriceAllowance" && maximum) {
@@ -201,11 +229,11 @@ export function RubberApprovalPolicyPanel({
   const editorLocationIds = editingGroup
     ? [...new Set([...policy.availableLocationIds, ...policy.groups.flatMap((group) => group.locationIds)])]
     : policy.availableLocationIds;
-  const enteredCentral = centralPrice.trim() === "" ? null : Number(centralPrice);
-  const centralChanged = enteredCentral !== null && enteredCentral !== central.value;
+  const centralChanged = centralPrice.trim() !== "" && !isSameMoney(centralPrice, central.value);
   const shownUngroupedMinutes = ungroupedMinutes ?? String(ungrouped.editWindowMinutes);
   const shownUngroupedAllowance = ungroupedAllowance ?? (ungrouped.priceAllowance ? String(ungrouped.priceAllowance) : "");
   const shownMaxPriceAllowance = maxPriceAllowance ?? String(maximum.value);
+  const maxPriceAllowanceIsUnchanged = isSameMoney(shownMaxPriceAllowance, maximum.value);
   const absoluteConfiguredMaximum = central.value + maximum.value;
 
   return (
@@ -220,7 +248,12 @@ export function RubberApprovalPolicyPanel({
             const value = parseMoney(centralPrice, "ราคากลาง");
             if (value <= 0) throw new Error("ราคากลางต้องมากกว่า 0");
             if (value === central.value) return toast.info("ราคากลางยังเป็นค่าเดิม");
-            setConfirmation({ kind: "central", value });
+            setConfirmation({
+              kind: "central",
+              value,
+              previousValue: central.value,
+              expectedRevision: central.revision,
+            });
           } catch (caught) { toast.error(caught instanceof Error ? caught.message : "ราคากลางไม่ถูกต้อง"); }
         }}>
           <label className="grid gap-1 text-sm font-semibold">ราคากลางใหม่ (บาท/กก.)<input aria-label="ราคากลางใหม่" inputMode="decimal" value={centralPrice} onChange={(event) => setCentralPrice(event.target.value)} placeholder={central.value.toFixed(2)} className="focus-ring h-10 w-48 rounded-md border border-black/15 px-3 tabular-nums" /></label>
@@ -271,7 +304,7 @@ export function RubberApprovalPolicyPanel({
             </label>
             <button
               type="submit"
-              disabled={Number(shownMaxPriceAllowance) === maximum.value || policy.isSaving}
+              disabled={maxPriceAllowanceIsUnchanged || policy.isSaving}
               className="focus-ring h-10 rounded-md bg-commit px-3 text-sm font-bold text-white disabled:opacity-50"
             >
               เปลี่ยนค่าสูงสุด
@@ -329,7 +362,7 @@ export function RubberApprovalPolicyPanel({
         </div>}
       </section>
 
-      <AlertDialog open={confirmation !== null} title={confirmation?.kind === "central" ? "ยืนยันเปลี่ยนราคากลาง?" : confirmation?.kind === "maxPriceAllowance" ? "ยืนยันเปลี่ยนราคายางที่กำหนดสูงสุด?" : "ลบกลุ่มนี้?"} description={confirmation?.kind === "central" ? `เปลี่ยนจาก ${central.value.toFixed(2)} เป็น ${confirmation.value.toFixed(2)} บาท/กก. เพดานของทุกกลุ่มจะเปลี่ยนทันทีสำหรับบิลใหม่ โดยไม่เปลี่ยนคำขอเดิม` : confirmation?.kind === "maxPriceAllowance" ? `เปลี่ยนจาก ${confirmation.previousValue.toFixed(2)} เป็น ${confirmation.value.toFixed(2)} บาท/กก. โดยไม่แก้ค่ากลุ่มเดิมอัตโนมัติ` : "สาขาในกลุ่มจะกลับไปใช้กติกาสาขาที่ยังไม่จัดกลุ่ม"} confirmLabel={confirmation?.kind === "central" ? "ยืนยันราคากลาง" : confirmation?.kind === "maxPriceAllowance" ? "ยืนยันค่าสูงสุด" : "ยืนยัน"} busy={policy.isSaving} onCancel={() => setConfirmation(null)} onConfirm={() => void confirmAction()} />
+      <AlertDialog open={confirmation !== null} title={confirmation?.kind === "central" ? "ยืนยันเปลี่ยนราคากลาง?" : confirmation?.kind === "maxPriceAllowance" ? "ยืนยันเปลี่ยนราคายางที่กำหนดสูงสุด?" : "ลบกลุ่มนี้?"} description={confirmation?.kind === "central" ? `เปลี่ยนจาก ${confirmation.previousValue.toFixed(2)} เป็น ${confirmation.value.toFixed(2)} บาท/กก. เพดานของทุกกลุ่มจะเปลี่ยนทันทีสำหรับบิลใหม่ โดยไม่เปลี่ยนคำขอเดิม` : confirmation?.kind === "maxPriceAllowance" ? `เปลี่ยนจาก ${confirmation.previousValue.toFixed(2)} เป็น ${confirmation.value.toFixed(2)} บาท/กก. โดยไม่แก้ค่ากลุ่มเดิมอัตโนมัติ` : "สาขาในกลุ่มจะกลับไปใช้กติกาสาขาที่ยังไม่จัดกลุ่ม"} confirmLabel={confirmation?.kind === "central" ? "ยืนยันราคากลาง" : confirmation?.kind === "maxPriceAllowance" ? "ยืนยันค่าสูงสุด" : "ยืนยัน"} busy={policy.isSaving} onCancel={() => setConfirmation(null)} onConfirm={() => void confirmAction()} />
     </div>
   );
 }

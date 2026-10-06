@@ -12,7 +12,11 @@ import {
   putRubberBillReceiptSnapshots,
 } from "@/lib/idb-queue";
 import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
-import { mergeRubberBillLocalEvents, rubberBillFromSyncEvent } from "@/lib/rubber-bills/local-feed";
+import {
+  mergeRubberBillLocalEvents,
+  rubberBillFromSyncEvent,
+  scopeRubberBillLocalEventsToServerRows,
+} from "@/lib/rubber-bills/local-feed";
 import { mapRubberBillFeedRow } from "@/lib/rubber-bills/map-feed-row";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { RubberBill } from "@/types";
@@ -151,9 +155,26 @@ export function useRubberBillList({
       // Approval rows can include transient proposed values and must not replace
       // the current-revision receipt snapshot used by offline printing.
       if (mode !== "pending_approval") persistReceiptSnapshots(serverBills);
-      const merged = (pageParam ? serverBills : mergeRubberBillLocalEvents(serverBills, events, ownerUserId))
+      const localEvents = documentStatus === "editable"
+        ? scopeRubberBillLocalEventsToServerRows(serverBills, events, pageParam === null)
+        : events;
+      const merged = mergeRubberBillLocalEvents(
+        serverBills,
+        localEvents,
+        ownerUserId,
+        documentStatus === "editable"
+          ? "replace"
+          : pageParam === null
+          ? "replace"
+          : mode === "pending_approval"
+            || documentStatus === "report_locked"
+            || documentStatus === "in_transfer"
+            ? "server_authoritative"
+            : "suppress",
+      )
         .filter((bill) => matchesMode(bill, mode))
-        .filter((bill) => matchesDocumentStatus(bill, documentStatus));
+        .filter((bill) => matchesDocumentStatus(bill, documentStatus))
+        .filter((bill) => matchesSearch(bill, normalizedSearch));
       return {
         bills: sortBills(merged, mode),
         evidenceStates: (payload.evidenceStates ?? []).map(mapRubberBillEvidenceState),

@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { getPendingServerActionBlockReason } from "@/lib/record-action-locks";
 
 const tables = [
   "src/components/CustomersModule.tsx",
@@ -50,4 +51,45 @@ test("rubber bill actions for evidence, OCR source, and deletion stay icon-only,
   expect(source).toMatch(/<Images size=\{16\} \/>\s*<\/button>/);
   expect(source).toContain('title="เปิดรูปต้นฉบับจาก OCR"');
   expect(source).toMatch(/<Trash2 size=\{16\} \/>\s*<\/button>/);
+});
+
+test("pending-create pseudo rows do not expose the bill-only OCR source action", () => {
+  const source = readFileSync(resolve("src/components/rubber-bills/RubberBillsTable.tsx"), "utf8");
+
+  expect(source).toContain('bill.hasOcrSourceImage && !bill.id.startsWith("approval:")');
+  expect(source).toContain('bill.id.startsWith("approval:") ? "รออนุมัติ"');
+});
+
+test("rubber bill sync problems cannot reopen the editable modal through the view action", () => {
+  const source = readFileSync(resolve("src/components/rubber-bills/RubberBillsTable.tsx"), "utf8");
+
+  expect(source).toMatch(
+    /const viewDisabled = deleting\s*\|\| \(!bill\.sourceRubberExportId && \(hasSyncProblem \|\| Boolean\(actionBlockReason\)\)\);/,
+  );
+});
+
+test("a server-confirmed bill with a pending local replay blocks edit and delete actions", () => {
+  const source = readFileSync(resolve("src/components/rubber-bills/RubberBillsModule.tsx"), "utf8");
+
+  expect(source).toContain("getPendingServerActionBlockReason(bill)");
+  expect(getPendingServerActionBlockReason({
+    id: "server-id",
+    clientTempId: "client-id",
+    serverBillNo: "RB-1",
+    syncStatus: "pending",
+  })).toContain("กำลังยืนยันผล");
+  expect(getPendingServerActionBlockReason({
+    id: "client-id",
+    clientTempId: "client-id",
+    serverBillNo: undefined,
+    syncStatus: "pending",
+  })).toBeNull();
+});
+
+test("rubber bill actions recheck an in-flight create marker from IndexedDB", () => {
+  const source = readFileSync(resolve("src/components/rubber-bills/RubberBillsModule.tsx"), "utf8");
+
+  expect(source).toContain("async function getPendingSubmissionBlockReason(bill: RubberBill)");
+  expect(source).toContain("event.serverSubmissionAttempted === true");
+  expect(source.match(/await getPendingSubmissionBlockReason\(bill\)/g)).toHaveLength(3);
 });

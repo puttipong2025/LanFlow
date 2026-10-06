@@ -15,14 +15,6 @@ function cacheKey(locationId: string) {
   return `${CACHE_PREFIX}${locationId}`;
 }
 
-export function isRubberBillPriceApprovalRequired(
-  prices: number[],
-  settings: Pick<EffectiveRubberApprovalSettings, "effectivePriceCap">,
-) {
-  const capInSatang = Math.round(settings.effectivePriceCap * 100);
-  return prices.some((price) => Math.round(price * 100) > capInSatang);
-}
-
 export function assertOfflineRubberBillPriceAllowed(
   prices: number[],
   billDate: string,

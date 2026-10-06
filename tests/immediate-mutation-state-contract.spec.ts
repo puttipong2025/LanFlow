@@ -35,4 +35,69 @@ test.describe("immediate mutation state contract", () => {
     expect(adminUsersRoute).toContain("isActive: true");
     expect(adminUsersRoute).toContain("canAccessSystemManager: capabilities.canManageSystem");
   });
+
+  test("clears deleted rubber-group caches from the revision-protected input", () => {
+    const source = readSource("src/hooks/useRubberApprovalGroups.ts");
+
+    expect(source).toContain(
+      "onSuccess: (_data, group) => invalidateLocations(group.locationIds)",
+    );
+    expect(source).not.toContain(
+      "onSuccess: (data) => invalidateLocations(data.releasedLocationIds)",
+    );
+  });
+
+  test("clears central-price caches for every location in the authoritative response", () => {
+    const source = readSource("src/hooks/useRubberApprovalGroups.ts");
+
+    expect(source).toContain("function policyLocationIds(data: GroupsResponse)");
+    expect(source).toContain("await invalidateLocations(policyLocationIds(data));");
+    expect(source).not.toContain("await invalidateLocations(allLocationIds);");
+  });
+
+  test("pins the confirmed central price revision until the mutation is submitted", () => {
+    const source = readSource("src/components/rubber-bills/RubberApprovalPolicyPanel.tsx");
+
+    expect(source).toContain(
+      '| { kind: "central"; value: number; previousValue: number; expectedRevision: number }',
+    );
+    expect(source).toContain("expectedRevision: confirmation.expectedRevision");
+    expect(source).toContain("confirmation.previousValue.toFixed(2)");
+    expect(source).not.toContain(
+      "await policy.saveCentralPrice({ centralPrice: confirmation.value, expectedRevision: central.revision });",
+    );
+  });
+
+  test("reports pending approval only after the server confirms the request", () => {
+    const source = readSource("src/hooks/useRubberBills.ts");
+    const queuedFallback = source.match(
+      /return \{\s+\.\.\.calculatedBill,\s+syncStatus: "pending"[\s\S]*?\n\s+\};/
+    )?.[0] ?? "";
+
+    expect(source).toContain('approvalPending: data.status === "pending_approval"');
+    expect(queuedFallback).toContain("approvalPending: false");
+    expect(queuedFallback).not.toContain("isRubberBillPriceApprovalRequired");
+  });
+
+  test("stores server identity beside queued Rubber Bill updates and deletes", () => {
+    const source = readSource("src/hooks/useRubberBills.ts");
+
+    expect(source).toContain('serverId: operation === "update" ? bill.id : undefined');
+    expect(source).toContain('serverBillNo: operation === "update" ? bill.serverBillNo : undefined');
+    expect(source).toContain("serverId: bill.id,");
+    expect(source).toContain("serverBillNo: bill.serverBillNo,");
+  });
+
+  test("marks a possible create commit before transport and blocks local mutation until replay", () => {
+    const source = readSource("src/hooks/useRubberBills.ts");
+
+    expect(source).toContain(
+      'serverSubmissionAttempted: operation === "create" && directSubmissionScope !== null',
+    );
+    expect(source).toContain(
+      'if (event.operation === "create" && event.serverSubmissionAttempted !== true)',
+    );
+    expect(source.match(/pendingCreates\.some\(\(event\) => event\.serverSubmissionAttempted === true\)/g))
+      .toHaveLength(2);
+  });
 });

@@ -51,8 +51,9 @@ export function getRubberBillPrintBlockReason(bill: RubberBill) {
   if (bill.billType !== "บิลเครื่องชั่งเล็ก") return "รองรับเฉพาะบิลเครื่องชั่งเล็ก";
   if (bill.recordStatus !== "active") return "พิมพ์ได้เฉพาะบิลที่ยังใช้งาน";
   if (bill.approvalPending) return "บิลนี้ยังรออนุมัติ จึงยังพิมพ์ไม่ได้";
-  if (bill.syncStatus === "pending" && bill.serverBillNo) {
-    return "บิลที่ซิงก์แล้วกำลังรอบันทึกการเปลี่ยนแปลง";
+  if (bill.syncStatus === "pending"
+      && (bill.serverBillNo || bill.serverSubmissionAttempted === true)) {
+    return "บิลที่ส่งถึงเซิร์ฟเวอร์แล้วกำลังรอยืนยันผล";
   }
   if (bill.syncStatus === "failed" || bill.syncStatus === "conflict") {
     return "บิลมีปัญหาการซิงก์ กรุณาแก้ไขก่อนพิมพ์";

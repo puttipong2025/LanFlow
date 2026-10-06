@@ -8,6 +8,7 @@ import {
   managementAuthFailure,
   managementErrorResponse,
 } from "@/lib/server/management-route-error";
+import { isRubberApprovalGroupsResult } from "@/lib/server/rubber-approval-groups";
 
 export async function PUT(request: NextRequest) {
   const authCheck = await requireSystemManager(request);
@@ -24,5 +25,10 @@ export async function PUT(request: NextRequest) {
     p_expected_revision: body.expectedRevision,
   });
   if (error) return managementErrorResponse(error, "บันทึกราคากลางไม่สำเร็จ");
-  return NextResponse.json({ ...(data as Record<string, unknown>), canEditMaxPriceAllowance: authCheck.auth.role === "super_admin" });
+  if (!isRubberApprovalGroupsResult(data, {
+    centralPrice: { value: body.centralPrice, revision: body.expectedRevision },
+  })) {
+    return NextResponse.json({ errorMessage: "ระบบไม่ตอบกลับผลการบันทึก" }, { status: 500 });
+  }
+  return NextResponse.json({ ...data, canEditMaxPriceAllowance: authCheck.auth.role === "super_admin" });
 }

@@ -8145,6 +8145,26 @@ $$;
 ALTER FUNCTION "private"."rubber_bill_evidence_review_states_for_bills"("p_location_id" "uuid", "p_bill_ids" "uuid"[]) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."rubber_bill_submission_fingerprint"("p_payload" "jsonb") RETURNS "text"
+    LANGUAGE "sql"
+    SET "search_path" TO 'pg_catalog', 'public', 'private', 'extensions'
+    AS $$
+  select encode(
+    extensions.digest(
+      convert_to((
+        private.normalize_rubber_bill_calculation_payload(p_payload)
+          - 'configuredPriceSnapshot' - 'forceNonCurrentDateApproval' - 'submissionMode'
+      )::text, 'UTF8'),
+      'sha256'
+    ),
+    'hex'
+  )
+$$;
+
+
+ALTER FUNCTION "private"."rubber_bill_submission_fingerprint"("p_payload" "jsonb") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."rubber_bill_has_active_transfer"("p_bill_id" "uuid") RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -9012,11 +9032,14 @@ declare
   v_has_exceeded_cap boolean := false;
   v_reasons text[] := case when payload->>'forceNonCurrentDateApproval' = 'true' then array['non_current_date']::text[] else array[]::text[] end;
   v_request_id uuid;
+  v_existing_request_operation text;
   v_existing_request_status text;
   v_existing_created_bill_id uuid;
   v_existing_request_client_temp_id text;
   v_existing_request_location_id uuid;
   v_existing_request_idempotency_key text;
+  v_existing_request_payload jsonb;
+  v_existing_request_base_revision_no integer;
   v_actor_name text;
   v_actor_phone text;
   v_report_no text;
@@ -9059,6 +9082,14 @@ begin
          or v_bill.idempotency_key is distinct from v_idempotency_key then
         return jsonb_build_object('status', 'conflict', 'errorMessage', 'Record already exists');
       end if;
+      if v_bill.last_submission_fingerprint is not null
+         and v_bill.last_submission_fingerprint is distinct from
+           private.rubber_bill_submission_fingerprint(payload) then
+        return jsonb_build_object(
+          'status', 'conflict',
+          'errorMessage', 'ข้อมูลบิลไม่ตรงกับรายการที่บันทึกแล้ว'
+        );
+      end if;
       return jsonb_build_object(
         'status', 'synced',
         'id', v_bill.id,
@@ -9077,10 +9108,10 @@ begin
     end if;
 
     select r.id, r.request_status, r.created_bill_id,
-           r.client_temp_id, r.location_id, r.idempotency_key
+           r.client_temp_id, r.location_id, r.idempotency_key, r.proposed_payload
       into v_request_id, v_existing_request_status, v_existing_created_bill_id,
            v_existing_request_client_temp_id, v_existing_request_location_id,
-           v_existing_request_idempotency_key
+           v_existing_request_idempotency_key, v_existing_request_payload
     from public.rubber_bill_approval_requests r
     where r.client_temp_id = v_client_temp_id
        or r.idempotency_key = v_idempotency_key
@@ -9094,6 +9125,18 @@ begin
          or v_existing_request_location_id is distinct from v_location_id
          or v_existing_request_idempotency_key is distinct from v_idempotency_key then
         return jsonb_build_object('status', 'conflict', 'errorMessage', 'Approval request identity conflict');
+      end if;
+      if (
+        v_existing_request_payload
+          - 'configuredPriceSnapshot' - 'forceNonCurrentDateApproval' - 'submissionMode'
+        is distinct from
+        payload
+          - 'configuredPriceSnapshot' - 'forceNonCurrentDateApproval' - 'submissionMode'
+      ) then
+        return jsonb_build_object(
+          'status', 'conflict',
+          'errorMessage', 'ข้อมูลคำขออนุมัติไม่ตรงกับรายการที่รอดำเนินการอยู่'
+        );
       end if;
       if v_existing_request_status = 'approved' and v_existing_created_bill_id is not null then
         select * into v_bill
@@ -9228,6 +9271,14 @@ begin
     end if;
 
     if v_bill.idempotency_key = v_idempotency_key then
+      if v_bill.last_submission_fingerprint is not null
+         and v_bill.last_submission_fingerprint is distinct from
+           private.rubber_bill_submission_fingerprint(payload) then
+        return jsonb_build_object(
+          'status', 'conflict',
+          'errorMessage', 'ข้อมูลบิลไม่ตรงกับรายการที่บันทึกแล้ว'
+        );
+      end if;
       return jsonb_build_object(
         'status', 'synced',
         'id', v_bill.id,
@@ -9241,17 +9292,37 @@ begin
       return jsonb_build_object('status', 'conflict', 'errorMessage', 'Revision mismatch');
     end if;
 
-    select id
-      into v_request_id
-    from public.rubber_bill_approval_requests
-    where bill_id = v_bill.id
-      and request_status = 'pending';
+    select r.id, r.operation, r.idempotency_key, r.proposed_payload
+      into v_request_id, v_existing_request_operation, v_existing_request_idempotency_key,
+           v_existing_request_payload
+    from public.rubber_bill_approval_requests r
+    where r.bill_id = v_bill.id
+      and r.request_status = 'pending';
 
     if v_request_id is not null then
+      if v_existing_request_operation is distinct from v_operation
+         or v_existing_request_idempotency_key is distinct from v_idempotency_key then
+        return jsonb_build_object(
+          'status', 'conflict',
+          'errorMessage', 'บิลนี้มีคำขออนุมัติอื่นที่รอดำเนินการอยู่'
+        );
+      end if;
+      if (
+        v_existing_request_payload
+          - 'configuredPriceSnapshot' - 'forceNonCurrentDateApproval' - 'submissionMode'
+        is distinct from
+        payload
+          - 'configuredPriceSnapshot' - 'forceNonCurrentDateApproval' - 'submissionMode'
+      ) then
+        return jsonb_build_object(
+          'status', 'conflict',
+          'errorMessage', 'ข้อมูลคำขออนุมัติไม่ตรงกับรายการที่รอดำเนินการอยู่'
+        );
+      end if;
       return jsonb_build_object(
         'status', 'pending_approval',
         'requestId', v_request_id,
-        'operation', v_operation,
+        'operation', v_existing_request_operation,
         'clientTempId', v_client_temp_id
       );
     end if;
@@ -9339,27 +9410,54 @@ begin
   );
 exception
   when unique_violation then
-    select id
-      into v_request_id
-    from public.rubber_bill_approval_requests
-    where request_status = 'pending'
-      and (
-        idempotency_key = v_idempotency_key
-        or bill_id = v_bill.id
-        or (operation = 'create' and client_temp_id = v_client_temp_id)
-      )
-    order by requested_at desc
+    select r.id, r.operation, r.request_status, r.client_temp_id,
+           r.location_id, r.idempotency_key, r.base_revision_no, r.proposed_payload
+      into v_request_id, v_existing_request_operation, v_existing_request_status,
+           v_existing_request_client_temp_id, v_existing_request_location_id,
+           v_existing_request_idempotency_key, v_existing_request_base_revision_no,
+           v_existing_request_payload
+    from public.rubber_bill_approval_requests r
+    where r.idempotency_key = v_idempotency_key
+       or (
+         r.request_status = 'pending'
+         and (
+           r.bill_id = v_bill.id
+           or (r.operation = 'create' and r.client_temp_id = v_client_temp_id)
+         )
+       )
+    order by (
+      r.client_temp_id = v_client_temp_id
+      and r.location_id = v_location_id
+      and r.idempotency_key = v_idempotency_key
+    ) desc, r.requested_at desc
     limit 1;
 
-    if v_request_id is not null then
+    if v_request_id is not null
+       and v_existing_request_status = 'pending'
+       and v_existing_request_operation is not distinct from v_operation
+       and v_existing_request_client_temp_id is not distinct from v_client_temp_id
+       and v_existing_request_location_id is not distinct from v_location_id
+       and v_existing_request_idempotency_key is not distinct from v_idempotency_key
+       and v_existing_request_base_revision_no is not distinct from v_expected_revision
+       and private.rubber_bill_submission_fingerprint(v_existing_request_payload)
+         is not distinct from private.rubber_bill_submission_fingerprint(payload) then
       return jsonb_build_object(
         'status', 'pending_approval',
         'requestId', v_request_id,
-        'operation', v_operation,
-        'clientTempId', v_client_temp_id
+        'operation', v_existing_request_operation,
+        'clientTempId', v_existing_request_client_temp_id
       );
     end if;
-    return jsonb_build_object('status', 'failed', 'errorMessage', sqlerrm);
+    if v_request_id is not null then
+      return jsonb_build_object(
+        'status', 'conflict',
+        'errorMessage', 'รหัสคำขออนุมัติถูกใช้กับรายการอื่นแล้ว'
+      );
+    end if;
+    return jsonb_build_object(
+      'status', 'failed',
+      'errorMessage', 'สร้างคำขออนุมัติบิลยางไม่สำเร็จ'
+    );
   when others then
     return jsonb_build_object('status', 'failed', 'errorMessage', sqlerrm);
 end;
@@ -10018,6 +10116,7 @@ begin
       approval_state = 'approved',
       approved_by_name = coalesce(v_actor_name, ''),
       approval_revision_no = revision_no,
+      last_submission_fingerprint = private.rubber_bill_submission_fingerprint(v_request.proposed_payload),
       central_price_snapshot = case when v_request.operation = 'create' or 'price' = any(v_request.matched_reasons) then v_request.central_price_snapshot else central_price_snapshot end,
       price_allowance_snapshot = case when v_request.operation = 'create' or 'price' = any(v_request.matched_reasons) then v_request.price_allowance_snapshot else price_allowance_snapshot end,
       effective_price_cap_snapshot = case when v_request.operation = 'create' or 'price' = any(v_request.matched_reasons) then v_request.effective_price_cap_snapshot else effective_price_cap_snapshot end,
@@ -18437,7 +18536,7 @@ begin
     where r.location_id = p_location_id and r.request_status = 'pending'
       and r.operation = 'create' and r.bill_id is null
       and p_mode in ('latest', 'pending_approval')
-      and p_document_status in ('any', 'editable')
+      and p_document_status = 'any'
       and (v_search = '' or position(v_search in lower(concat_ws(' ',
         r.proposed_payload->>'localBillNo', r.proposed_payload->>'billDate',
         r.proposed_payload->>'customerName', r.proposed_payload->>'billType',
@@ -20988,6 +21087,7 @@ CREATE TABLE IF NOT EXISTS "public"."income_expense" (
     "local_bill_no" "text" NOT NULL,
     "server_bill_no" "text",
     "idempotency_key" "text",
+    "last_submission_fingerprint" "text",
     "sync_status" "public"."sync_status" DEFAULT 'pending'::"public"."sync_status" NOT NULL,
     "record_status" "public"."record_status" DEFAULT 'active'::"public"."record_status" NOT NULL,
     "location_id" "uuid" NOT NULL,
@@ -21182,6 +21282,7 @@ END - "deduction_total"), (0)::numeric)) STORED,
     CONSTRAINT "rubber_bills_evidence_manual_correction_count_nonnegative" CHECK (("evidence_manual_correction_count" >= 0)),
     CONSTRAINT "rubber_bills_formula_version_check" CHECK (("formula_version" = ANY (ARRAY[1, 2]))),
     CONSTRAINT "rubber_bills_input_method_check" CHECK (("input_method" = ANY (ARRAY['manual'::"text", 'ocr'::"text"]))),
+    CONSTRAINT "rubber_bills_last_submission_fingerprint_check" CHECK ((("last_submission_fingerprint" IS NULL) OR ("last_submission_fingerprint" ~ '^[0-9a-f]{64}$'::"text"))),
     CONSTRAINT "rubber_bills_money_values_nonnegative_check" CHECK ((("rubber_value" >= (0)::numeric) AND ("average_price" >= (0)::numeric) AND ("deduction_total" >= (0)::numeric) AND ("net_total" >= (0)::numeric))),
     CONSTRAINT "rubber_bills_net_total_formula_check" CHECK (("net_total" = "floor"("payable_before_rounding"))),
     CONSTRAINT "rubber_bills_net_total_whole_baht_check" CHECK (("net_total" = "trunc"("net_total"))),
@@ -24802,6 +24903,33 @@ begin
     return jsonb_build_object('status', 'failed', 'errorMessage', 'Location access denied or invalid identity');
   end if;
 
+  perform pg_advisory_xact_lock(hashtextextended(
+    'rubber-bill-idempotency:' || (payload->>'idempotencyKey'),
+    0
+  ));
+  if exists (
+    select 1
+    from public.rubber_bills b
+    where b.idempotency_key = payload->>'idempotencyKey'
+      and (
+        b.client_temp_id is distinct from payload->>'clientTempId'
+        or b.location_id is distinct from v_location_id
+      )
+  ) or exists (
+    select 1
+    from public.rubber_bill_approval_requests r
+    where r.idempotency_key = payload->>'idempotencyKey'
+      and (
+        r.client_temp_id is distinct from payload->>'clientTempId'
+        or r.location_id is distinct from v_location_id
+      )
+  ) then
+    return jsonb_build_object(
+      'status', 'conflict',
+      'errorMessage', 'รหัสคำขอถูกใช้กับรายการอื่นแล้ว'
+    );
+  end if;
+
   select * into v_existing_bill
   from public.rubber_bills b
   where b.client_temp_id = payload->>'clientTempId'
@@ -24814,6 +24942,35 @@ begin
       or (v_operation = 'delete' and v_existing_bill.revision_no > 1 and v_expected_revision = v_existing_bill.revision_no - 1 and v_existing_bill.record_status = 'deleted')
     ) then
       return jsonb_build_object('status', 'conflict', 'errorMessage', 'Idempotency key operation mismatch');
+    end if;
+    select * into v_existing_request
+    from public.rubber_bill_approval_requests r
+    where r.client_temp_id = payload->>'clientTempId'
+      and r.location_id = v_location_id
+      and r.idempotency_key = payload->>'idempotencyKey'
+    order by r.requested_at
+    limit 1;
+    if v_existing_request.id is not null
+       and (
+         private.normalize_rubber_bill_calculation_payload(v_existing_request.proposed_payload)
+           - 'configuredPriceSnapshot' - 'forceNonCurrentDateApproval' - 'submissionMode'
+         is distinct from
+         private.normalize_rubber_bill_calculation_payload(payload)
+           - 'configuredPriceSnapshot' - 'forceNonCurrentDateApproval' - 'submissionMode'
+       ) then
+      return jsonb_build_object(
+        'status', 'conflict',
+        'errorMessage', 'ข้อมูลคำขออนุมัติไม่ตรงกับรายการที่อนุมัติแล้ว'
+      );
+    end if;
+    if v_existing_request.id is null
+       and v_existing_bill.last_submission_fingerprint is not null
+       and v_existing_bill.last_submission_fingerprint is distinct from
+         private.rubber_bill_submission_fingerprint(payload) then
+      return jsonb_build_object(
+        'status', 'conflict',
+        'errorMessage', 'ข้อมูลบิลไม่ตรงกับรายการที่บันทึกแล้ว'
+      );
     end if;
     return jsonb_build_object(
       'status', 'synced',
@@ -24835,6 +24992,19 @@ begin
      and (v_existing_request.operation is distinct from v_operation
        or v_existing_request.base_revision_no is distinct from v_expected_revision) then
     return jsonb_build_object('status', 'conflict', 'errorMessage', 'Idempotency key operation mismatch');
+  end if;
+  if v_existing_request.id is not null
+     and (
+       private.normalize_rubber_bill_calculation_payload(v_existing_request.proposed_payload)
+         - 'configuredPriceSnapshot' - 'forceNonCurrentDateApproval' - 'submissionMode'
+       is distinct from
+       private.normalize_rubber_bill_calculation_payload(payload)
+         - 'configuredPriceSnapshot' - 'forceNonCurrentDateApproval' - 'submissionMode'
+     ) then
+    return jsonb_build_object(
+      'status', 'conflict',
+      'errorMessage', 'ข้อมูลคำขออนุมัติไม่ตรงกับรายการที่รอดำเนินการอยู่'
+    );
   end if;
   if v_operation = 'create' and v_existing_request.id is not null then
     if v_existing_request.request_status = 'approved' and v_existing_request.created_bill_id is not null then
@@ -24897,6 +25067,9 @@ begin
 
     if v_result->>'status' = 'synced' then
       v_bill_id := (v_result->>'id')::uuid;
+      update public.rubber_bills
+      set last_submission_fingerprint = private.rubber_bill_submission_fingerprint(payload)
+      where id = v_bill_id;
       if v_operation = 'create' or coalesce((v_decision->>'priceChanged')::boolean, false) then
         update public.rubber_bills
         set central_price_snapshot = (v_decision->>'centralPrice')::numeric,
@@ -31494,6 +31667,10 @@ REVOKE ALL ON FUNCTION "private"."rubber_bill_is_payable"("p_bill_id" "uuid") FR
 
 
 REVOKE ALL ON FUNCTION "private"."rubber_bill_report_blockers"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."rubber_bill_submission_fingerprint"("p_payload" "jsonb") FROM PUBLIC;
 
 
 

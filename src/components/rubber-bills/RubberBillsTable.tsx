@@ -108,8 +108,13 @@ export function RubberBillsTable({
                 : hasSyncProblem
                   ? "ทิ้งรายการค้างในเครื่องก่อนแก้ไขหรือลบ"
                   : actionBlockReason;
-              const viewDisabled = deleting || (!bill.sourceRubberExportId && Boolean(actionBlockReason));
-              const viewTitle = deleting ? "กำลังลบรายการ..." : "ดูรายละเอียด";
+              const viewDisabled = deleting
+                || (!bill.sourceRubberExportId && (hasSyncProblem || Boolean(actionBlockReason)));
+              const viewTitle = deleting
+                ? "กำลังลบรายการ..."
+                : hasSyncProblem && !bill.sourceRubberExportId
+                  ? "ทิ้งรายการค้างในเครื่องก่อนเปิดแก้ไข"
+                  : "ดูรายละเอียด";
               const printBlockReason = getPrintBlockReason?.(bill) ?? null;
               const evidenceState = evidenceStatesByBillId.get(bill.id);
               const evidenceDisabled = !evidenceOnline
@@ -155,7 +160,7 @@ export function RubberBillsTable({
                     >
                       <Images size={16} />
                     </button>}
-                    {bill.hasOcrSourceImage && (
+                    {bill.hasOcrSourceImage && !bill.id.startsWith("approval:") && (
                       <button type="button" title="เปิดรูปต้นฉบับจาก OCR" aria-label="เปิดรูปต้นฉบับจาก OCR" onClick={() => onOpenOcrSourceImage(bill)} className="focus-ring inline-flex size-10 shrink-0 items-center justify-center rounded-md bg-river text-white shadow-sm hover:bg-river/90">
                         <FileImage size={16} aria-hidden="true" />
                       </button>
@@ -274,7 +279,7 @@ export function RubberBillsTable({
                     </span>
                   ) : (
                     <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-600">
-                      {bill.syncStatus === "synced" ? "กำลังตรวจสถานะ" : "รอซิงก์"}
+                      {bill.id.startsWith("approval:") ? "รออนุมัติ" : bill.syncStatus === "synced" ? "กำลังตรวจสถานะ" : "รอซิงก์"}
                     </span>
                   )}
                 </td>

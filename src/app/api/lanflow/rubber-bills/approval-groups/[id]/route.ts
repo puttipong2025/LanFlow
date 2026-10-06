@@ -7,7 +7,11 @@ import {
   managementAuthFailure,
   managementErrorResponse,
 } from "@/lib/server/management-route-error";
-import { parseRubberApprovalGroupBody } from "@/lib/server/rubber-approval-groups";
+import {
+  isRubberApprovalGroupDeleteResult,
+  isRubberApprovalGroupMutationResult,
+  parseRubberApprovalGroupBody,
+} from "@/lib/server/rubber-approval-groups";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -17,14 +21,18 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
   const { id } = await params;
   if (!isUuid(id)) return NextResponse.json({ errorMessage: "รหัสกลุ่มไม่ถูกต้อง" }, { status: 400 });
 
+  const body: unknown = await request.json().catch(() => null);
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return NextResponse.json({ errorMessage: "ข้อมูลกลุ่มไม่ถูกต้อง" }, { status: 400 });
+  }
+  const parsed = parseRubberApprovalGroupBody(body);
+  if ("errorMessage" in parsed) {
+    return NextResponse.json({ errorMessage: parsed.errorMessage }, { status: 400 });
+  }
+  if (parsed.value.revisionNo === undefined) {
+    return NextResponse.json({ errorMessage: "ต้องระบุ revision ของกลุ่ม" }, { status: 400 });
+  }
   try {
-    const parsed = parseRubberApprovalGroupBody(await request.json());
-    if ("errorMessage" in parsed) {
-      return NextResponse.json({ errorMessage: parsed.errorMessage }, { status: 400 });
-    }
-    if (parsed.value.revisionNo === undefined) {
-      return NextResponse.json({ errorMessage: "ต้องระบุ revision ของกลุ่ม" }, { status: 400 });
-    }
     const { data, error } = await authCheck.supabase.rpc("update_rubber_approval_group_v2", {
       p_group_id: id,
       p_location_ids: parsed.value.locationIds,
@@ -34,9 +42,12 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
       p_expected_source_revisions: parsed.value.sourceGroupRevisions,
     });
     if (error) return managementErrorResponse(error, "แก้ไขกลุ่มไม่สำเร็จ");
+    if (!isRubberApprovalGroupMutationResult(data, { ...parsed.value, groupId: id })) {
+      return NextResponse.json({ errorMessage: "ระบบไม่ตอบกลับผลการแก้ไขกลุ่ม" }, { status: 500 });
+    }
     return NextResponse.json(data);
   } catch {
-    return NextResponse.json({ errorMessage: "ข้อมูลกลุ่มไม่ถูกต้อง" }, { status: 400 });
+    return NextResponse.json({ errorMessage: "แก้ไขกลุ่มไม่สำเร็จ" }, { status: 500 });
   }
 }
 
@@ -54,5 +65,8 @@ export async function DELETE(request: NextRequest, { params }: RouteContext) {
     p_expected_revision: revision,
   });
   if (error) return managementErrorResponse(error, "ลบกลุ่มไม่สำเร็จ");
+  if (!isRubberApprovalGroupDeleteResult(data)) {
+    return NextResponse.json({ errorMessage: "ระบบไม่ตอบกลับผลการลบกลุ่ม" }, { status: 500 });
+  }
   return NextResponse.json(data);
 }

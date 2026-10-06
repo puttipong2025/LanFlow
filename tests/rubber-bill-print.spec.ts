@@ -319,6 +319,11 @@ test.describe("Rubber Bill receipt contract @rubber-bill-print", () => {
       syncStatus: "pending",
       serverBillNo: undefined,
     }))).toBeNull();
+    expect(getRubberBillPrintBlockReason(makeBill({
+      syncStatus: "pending",
+      serverBillNo: undefined,
+      serverSubmissionAttempted: true,
+    }))).toContain("รอยืนยันผล");
     expect(getRubberBillPrintBlockReason(makeBill({ approvalPending: true }))).toContain("รออนุมัติ");
     expect(getRubberBillPrintBlockReason(makeBill({ syncStatus: "failed" }))).toContain("ปัญหาการซิงก์");
     expect(getRubberBillPrintBlockReason(makeBill({ recordStatus: "deleted" }))).toContain("ยังใช้งาน");

@@ -68,6 +68,7 @@ export type RubberBill = {
   localBillNo: string;
   serverBillNo?: string;
   syncStatus: SyncStatus;
+  serverSubmissionAttempted?: boolean;
   idempotencyKey: string;
   locationId: string;
   billNo: string;

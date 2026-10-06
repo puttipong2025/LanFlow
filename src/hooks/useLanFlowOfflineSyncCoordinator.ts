@@ -4,6 +4,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { isDeviceOnline, subscribeConnectivity } from "@/lib/connectivity";
 import { syncPendingIncomeExpense } from "@/hooks/useIncomeExpense";
 import { syncPendingRubberBills } from "@/hooks/useRubberBills";
+import { getPendingEvents } from "@/lib/idb-queue";
+
+const PENDING_SYNC_RETRY_INTERVAL_MS = 30_000;
 
 export function useLanFlowOfflineSyncCoordinator({
   ownerUserId,
@@ -26,6 +29,24 @@ export function useLanFlowOfflineSyncCoordinator({
       ]);
     };
 
+    const syncPendingCurrentScope = async () => {
+      if (!isDeviceOnline()) return;
+
+      const [rubberEvents, incomeExpenseEvents] = await Promise.all([
+        getPendingEvents({ entity: "rubber_bills", ownerUserId, locationId }).catch(() => []),
+        getPendingEvents({ entity: "income_expense", ownerUserId, locationId }).catch(() => []),
+      ]);
+      const syncTasks: Promise<unknown>[] = [];
+
+      if (rubberEvents.some((event) => event.status === "pending")) {
+        syncTasks.push(syncPendingRubberBills(queryClient, ownerUserId, locationId));
+      }
+      if (incomeExpenseEvents.some((event) => event.status === "pending")) {
+        syncTasks.push(syncPendingIncomeExpense(queryClient, ownerUserId, locationId));
+      }
+      await Promise.allSettled(syncTasks);
+    };
+
     const clearRetryTimers = () => {
       for (const timer of retryTimers.splice(0)) clearTimeout(timer);
     };
@@ -42,8 +63,12 @@ export function useLanFlowOfflineSyncCoordinator({
     };
 
     const unsubscribe = subscribeConnectivity(handleConnectivityChange);
+    const retryInterval = setInterval(() => {
+      void syncPendingCurrentScope();
+    }, PENDING_SYNC_RETRY_INTERVAL_MS);
     handleConnectivityChange();
     return () => {
+      clearInterval(retryInterval);
       clearRetryTimers();
       unsubscribe();
     };

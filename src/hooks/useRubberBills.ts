@@ -6,16 +6,17 @@ import {
   getPendingEvents,
   removeSyncEvent,
   removeSyncEvents,
+  updateSyncEvent,
   type SyncEvent,
 } from "@/lib/idb-queue";
 import { toast } from "sonner";
-import { OFFLINE_SYNCED_ACTION_MESSAGE } from "@/lib/record-action-locks";
+import {
+  OFFLINE_SYNCED_ACTION_MESSAGE,
+  PENDING_SERVER_ACTION_MESSAGE,
+} from "@/lib/record-action-locks";
 import { authFetch } from "@/lib/auth-fetch";
 import { isRetryableSyncResponse } from "@/lib/sync-response";
-import {
-  assertOfflineRubberBillPriceAllowed,
-  isRubberBillPriceApprovalRequired,
-} from "@/lib/rubber-bills/approval";
+import { assertOfflineRubberBillPriceAllowed } from "@/lib/rubber-bills/approval";
 import type { EffectiveRubberApprovalSettings } from "@/types";
 import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 import { createScopedSingleFlight } from "@/lib/scoped-single-flight";
@@ -59,6 +60,10 @@ export function syncPendingRubberBills(
       if (blockedIds.has(event.id)) continue;
 
       try {
+        if (event.operation === "create" && event.serverSubmissionAttempted !== true) {
+          event.serverSubmissionAttempted = true;
+          await updateSyncEvent(event);
+        }
         const response = await authFetch("/api/lanflow/rubber-bills", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -83,7 +88,7 @@ export function syncPendingRubberBills(
           console.warn(`Sync ${eventStatus} for`, event.id, data.errorMessage);
           event.status = eventStatus;
           event.errorMessage = data.errorMessage || (isConflict ? "ข้อมูลชนกัน" : "ซิงก์ไม่สำเร็จ");
-          await import("@/lib/idb-queue").then(m => m.updateSyncEvent(event));
+          await updateSyncEvent(event);
           blockedIds.add(event.id);
         }
       } catch (err) {
@@ -98,7 +103,6 @@ export function syncPendingRubberBills(
 }
 
 async function normalizeRubberBillQueueBeforeSync(ownerUserId: string, locationId: string) {
-  const { getPendingEvents, removeSyncEvent, updateSyncEvent } = await import("@/lib/idb-queue");
   const { coalesceQueueGroup } = await import("@/lib/coalesceQueueGroup");
   const events = await getPendingEvents(queuePartition(ownerUserId, locationId));
   const grouped = new Map<string, typeof events>();
@@ -175,8 +179,9 @@ export function useRubberBillMutations(
 
       const pendingCreates = clientEvents.filter(e => e.operation === "create");
       const pendingUpdates = clientEvents.filter(e => e.operation === "update");
-
-      const mLib = await import("@/lib/idb-queue");
+      if (pendingCreates.some((event) => event.serverSubmissionAttempted === true)) {
+        throw new Error(PENDING_SERVER_ACTION_MESSAGE);
+      }
 
       let keeper: typeof clientEvents[0] | undefined;
       let toDelete: typeof clientEvents = [];
@@ -191,14 +196,14 @@ export function useRubberBillMutations(
       }
 
       for (const e of toDelete) {
-        if (e.queueId) await mLib.removeSyncEvent(e.queueId);
+        if (e.queueId) await removeSyncEvent(e.queueId);
       }
 
       if (keeper) {
         if (keeper.operation === "create") {
           keeper.payload = { ...payload, operation: "create", expectedRevisionNo: 0 };
           keeper.timestamp = Date.now();
-          await mLib.updateSyncEvent(keeper);
+          await updateSyncEvent(keeper);
         } else {
           const originalRev = keeper.payload.expectedRevisionNo;
           keeper.payload = { 
@@ -208,7 +213,7 @@ export function useRubberBillMutations(
             idempotencyKey: `update:${bill.clientTempId}:${originalRev}`
           };
           keeper.timestamp = Date.now();
-          await mLib.updateSyncEvent(keeper);
+          await updateSyncEvent(keeper);
         }
       } else {
         const directSubmissionScope = isOnline && clientEvents.length === 0
@@ -221,6 +226,9 @@ export function useRubberBillMutations(
           ownerUserId,
           locationId,
           operation,
+          serverId: operation === "update" ? bill.id : undefined,
+          serverBillNo: operation === "update" ? bill.serverBillNo : undefined,
+          serverSubmissionAttempted: operation === "create" && directSubmissionScope !== null,
           payload,
           timestamp: Date.now(),
           status: "pending"
@@ -251,16 +259,17 @@ export function useRubberBillMutations(
             newlyQueuedEvent.status = isConflict ? "conflict" : "failed";
             newlyQueuedEvent.errorMessage =
               data.errorMessage || (isConflict ? "ข้อมูลชนกัน" : "ซิงก์ไม่สำเร็จ");
-            await mLib.updateSyncEvent(newlyQueuedEvent);
+            await updateSyncEvent(newlyQueuedEvent);
             throw new Error(data.errorMessage || "บันทึกบิลไม่สำเร็จ");
           }
-          await mLib.removeSyncEvent(newlyQueuedEvent.queueId!);
+          await removeSyncEvent(newlyQueuedEvent.queueId!);
           return {
             ...calculatedBill,
             id: data.id ?? bill.id,
             serverBillNo: data.serverBillNo ?? bill.serverBillNo,
             billNo: data.serverBillNo ?? bill.billNo,
             syncStatus: data.status === "synced" ? "synced" as const : "pending" as const,
+            serverSubmissionAttempted: undefined,
             revisionNo: data.revisionNo ?? bill.revisionNo,
             serverReceivedAt: data.serverReceivedAt ?? bill.serverReceivedAt,
             configuredPriceSnapshot:
@@ -282,18 +291,12 @@ export function useRubberBillMutations(
       return {
         ...calculatedBill,
         syncStatus: "pending" as const,
+        serverSubmissionAttempted: newlyQueuedEvent?.serverSubmissionAttempted === true,
         configuredPriceSnapshot:
           operation === "create"
             ? approvalSettings?.effectivePriceCap ?? null
             : bill.configuredPriceSnapshot,
-        approvalPending:
-          operation === "create"
-          && isRubberBillPriceApprovalRequired(
-            (bill.weighItems ?? []).map((item) => item.price),
-            {
-              effectivePriceCap: approvalSettings?.effectivePriceCap ?? 0,
-            }
-          ),
+        approvalPending: false,
       };
     },
     onSuccess: (savedBill) => {
@@ -321,23 +324,24 @@ export function useRubberBillMutations(
 
       const pendingCreates = clientEvents.filter(e => e.operation === "create");
       const pendingUpdates = clientEvents.filter(e => e.operation === "update");
+      if (pendingCreates.some((event) => event.serverSubmissionAttempted === true)) {
+        throw new Error(PENDING_SERVER_ACTION_MESSAGE);
+      }
 
       assertRubberBillDeleteAllowed(
         pendingCreates.length,
         typeof navigator === "undefined" || navigator.onLine
       );
 
-      const mLib = await import("@/lib/idb-queue");
-
       // Cleanup all pending updates (they will be replaced by this delete)
       for (const e of pendingUpdates) {
-        if (e.queueId) await mLib.removeSyncEvent(e.queueId);
+        if (e.queueId) await removeSyncEvent(e.queueId);
       }
 
       if (pendingCreates.length > 0) {
         // Coalesce: remove all creates, and don't sync delete to server
         for (const e of pendingCreates) {
-          if (e.queueId) await mLib.removeSyncEvent(e.queueId);
+          if (e.queueId) await removeSyncEvent(e.queueId);
         }
         return { clientTempId, coalesced: true };
       }
@@ -363,6 +367,8 @@ export function useRubberBillMutations(
         ownerUserId,
         locationId,
         operation: "delete",
+        serverId: bill.id,
+        serverBillNo: bill.serverBillNo,
         payload,
         timestamp: Date.now(),
         status: "pending"
@@ -386,10 +392,10 @@ export function useRubberBillMutations(
             queuedEvent.status = isConflict ? "conflict" : "failed";
             queuedEvent.errorMessage =
               data.errorMessage || (isConflict ? "ข้อมูลชนกัน" : "ซิงก์ไม่สำเร็จ");
-            await mLib.updateSyncEvent(queuedEvent);
+            await updateSyncEvent(queuedEvent);
             throw new Error(data.errorMessage || "ลบบิลไม่สำเร็จ");
           }
-          await mLib.removeSyncEvent(queueId);
+          await removeSyncEvent(queueId);
           return {
             clientTempId,
             coalesced: false,

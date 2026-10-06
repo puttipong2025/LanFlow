@@ -49,7 +49,7 @@ test.describe("Rubber Bill cursor feed @rubber-bill-feed", () => {
       mode: "latest",
       documentStatus: "any",
       search: "",
-      sortAt: "not-a-timestamp",
+      sortAt: "0",
       workIdentity: "bill:not-a-uuid",
     }), "utf8").toString("base64url");
     const forged = await request.get(
@@ -293,6 +293,12 @@ test.describe("Rubber Bill cursor feed @rubber-bill-feed", () => {
     });
     try {
       expect((await admin.from("rubber_bill_approval_requests").insert(rows)).error).toBeNull();
+      const editableResponse = await request.get(
+        `/api/lanflow/rubber-bills/feed?locationId=${locationId}&mode=latest&documentStatus=editable&search=${marker}`,
+      );
+      expect(editableResponse.ok()).toBeTruthy();
+      expect((await editableResponse.json()).rows).toEqual([]);
+
       const firstStartedAt = performance.now();
       const firstResponse = await request.get(`/api/lanflow/rubber-bills/feed?locationId=${locationId}&mode=pending_approval&search=${marker}&limit=150`);
       expect(firstResponse.ok()).toBeTruthy();

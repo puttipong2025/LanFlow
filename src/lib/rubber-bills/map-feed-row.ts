@@ -40,7 +40,7 @@ export function mapRubberBillFeedRow(row: any): RubberBill {
   });
 
   return {
-    id: row.id,
+    id: row.row_kind === "approval_create" ? row.work_identity : row.id,
     clientTempId: row.client_temp_id ?? row.id,
     localBillNo: row.local_bill_no,
     serverBillNo: row.server_bill_no ?? undefined,

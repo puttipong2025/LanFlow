@@ -11,7 +11,7 @@ import type {
   RubberUngroupedDefaults,
 } from "@/types";
 
-export const RUBBER_APPROVAL_GROUPS_KEY = "rubberApprovalGroups";
+const RUBBER_APPROVAL_GROUPS_KEY = "rubberApprovalGroups";
 
 type GroupsResponse = {
   groups: RubberApprovalGroup[];
@@ -25,7 +25,6 @@ type GroupsResponse = {
 export class RubberMaxPriceAllowanceError extends Error {
   constructor(
     message: string,
-    public readonly code: string,
     public readonly conflicts: RubberMaxPriceAllowanceConflict[],
   ) {
     super(message);
@@ -34,6 +33,13 @@ export class RubberMaxPriceAllowanceError extends Error {
 }
 
 type GroupInput = Pick<RubberApprovalGroup, "locationIds" | "editWindowMinutes" | "priceAllowance">;
+
+function policyLocationIds(data: GroupsResponse) {
+  return [
+    ...data.availableLocationIds,
+    ...data.groups.flatMap((group) => group.locationIds),
+  ];
+}
 
 export function useRubberApprovalGroups(allLocationIds: string[]) {
   const queryClient = useQueryClient();
@@ -88,13 +94,13 @@ export function useRubberApprovalGroups(allLocationIds: string[]) {
   });
 
   const deleteGroup = useMutation({
-    mutationFn: async ({ id, revisionNo }: Pick<RubberApprovalGroup, "id" | "revisionNo">) => {
+    mutationFn: async ({ id, revisionNo }: Pick<RubberApprovalGroup, "id" | "revisionNo" | "locationIds">) => {
       const response = await authFetch(`/api/lanflow/rubber-bills/approval-groups/${id}?revision=${revisionNo}`, { method: "DELETE" });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.errorMessage || "ลบกลุ่มไม่สำเร็จ");
       return data as { success: true; releasedLocationIds: string[] };
     },
-    onSuccess: (data) => invalidateLocations(data.releasedLocationIds),
+    onSuccess: (_data, group) => invalidateLocations(group.locationIds),
   });
 
   function saveGlobalSettings(path: "central" | "ungrouped", body: Record<string, unknown>) {
@@ -113,7 +119,7 @@ export function useRubberApprovalGroups(allLocationIds: string[]) {
     mutationFn: (input: { centralPrice: number; expectedRevision: number }) => saveGlobalSettings("central", input),
     onSuccess: async (data) => {
       queryClient.setQueryData([RUBBER_APPROVAL_GROUPS_KEY], data);
-      await invalidateLocations(allLocationIds);
+      await invalidateLocations(policyLocationIds(data));
     },
   });
   const saveUngroupedDefaults = useMutation({
@@ -134,7 +140,6 @@ export function useRubberApprovalGroups(allLocationIds: string[]) {
       if (!response.ok) {
         throw new RubberMaxPriceAllowanceError(
           typeof data.errorMessage === "string" ? data.errorMessage : "บันทึกราคายางที่กำหนดสูงสุดไม่สำเร็จ",
-          typeof data.code === "string" ? data.code : "UNKNOWN",
           Array.isArray(data.conflicts) ? data.conflicts as RubberMaxPriceAllowanceConflict[] : [],
         );
       }

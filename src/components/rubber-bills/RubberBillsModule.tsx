@@ -19,6 +19,8 @@ import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 import { canManageSystemFeatures } from "@/lib/permissions";
 import {
   getOfflineSyncedActionBlockReason,
+  getPendingServerActionBlockReason,
+  PENDING_SERVER_ACTION_MESSAGE,
   RUBBER_BILL_TRANSFER_LOCK_MESSAGE
 } from "@/lib/record-action-locks";
 import type { Location, Profile, RubberBill } from "@/types";
@@ -40,7 +42,7 @@ import { useSharePdf } from "@/hooks/useSharePdf";
 import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
 import { tryGetDeviceId } from "@/lib/format";
 import { openRubberBillOcrSourceImage } from "@/lib/rubber-bills/open-ocr-source-image";
-import { getRubberBillReceiptSnapshot } from "@/lib/idb-queue";
+import { getPendingEvents, getRubberBillReceiptSnapshot } from "@/lib/idb-queue";
 import { loadCustomerCache, saveCustomerCache, type WeighingQueueCustomer } from "@/lib/rubber-bills/weighing-queue";
 import { runBlockingAction } from "@/lib/swal";
 import { cn } from "@/lib/cn";
@@ -191,15 +193,40 @@ export function RubberBillsModule({
     return (bill.approvalPending ? "บิลนี้กำลังรออนุมัติการเปลี่ยนแปลง" : null)
       ?? (bill.reportLockNo ? `ล็อกโดยรายงาน ${bill.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน` : null)
       ?? getOfflineSyncedActionBlockReason(bill, isOnline)
-      ?? (bill.transferLockId ? RUBBER_BILL_TRANSFER_LOCK_MESSAGE : null);
+      ?? (bill.transferLockId ? RUBBER_BILL_TRANSFER_LOCK_MESSAGE : null)
+      ?? getPendingServerActionBlockReason(bill);
   }
 
   function getPrintBlockReason(bill: RubberBill) {
     return pdfShare.busy ? "กำลังสร้าง PDF" : getRubberBillPrintBlockReason(bill);
   }
 
+  async function getPendingSubmissionBlockReason(bill: RubberBill) {
+    const currentReason = getPendingServerActionBlockReason(bill);
+    if (currentReason) return currentReason;
+    if (bill.syncStatus !== "pending"
+        || bill.serverBillNo
+        || bill.id !== bill.clientTempId) return null;
+    try {
+      const events = await getPendingEvents({
+        entity: "rubber_bills",
+        ownerUserId: profile.id,
+        locationId: selectedLocation.id,
+      });
+      return events.some((event) => (
+        event.id === bill.clientTempId
+        && event.operation === "create"
+        && event.status === "pending"
+        && event.serverSubmissionAttempted === true
+      )) ? PENDING_SERVER_ACTION_MESSAGE : null;
+    } catch {
+      return "ตรวจสอบสถานะการซิงก์ไม่ได้ กรุณาลองใหม่";
+    }
+  }
+
   async function handlePrint(bill: RubberBill) {
-    const blockReason = getPrintBlockReason(bill);
+    const blockReason = getPrintBlockReason(bill)
+      ?? await getPendingSubmissionBlockReason(bill);
     if (blockReason) {
       toast.error(blockReason);
       return;
@@ -257,8 +284,9 @@ export function RubberBillsModule({
     setModalOpen(false);
   }
 
-  function openEdit(bill: RubberBill) {
-    const blockReason = getActionBlockReason(bill);
+  async function openEdit(bill: RubberBill) {
+    const blockReason = getActionBlockReason(bill)
+      ?? await getPendingSubmissionBlockReason(bill);
     if (blockReason) {
       toast.error(blockReason);
       return;
@@ -268,17 +296,18 @@ export function RubberBillsModule({
     setModalOpen(true);
   }
 
-  function openView(bill: RubberBill) {
+  async function openView(bill: RubberBill) {
     if (bill.sourceRubberExportId) {
       setViewingBranchReceipt(bill);
       return;
     }
-    openEdit(bill);
+    await openEdit(bill);
   }
 
   async function confirmDelete(bill: RubberBill) {
     if (deletingBillId) return;
-    const blockReason = getActionBlockReason(bill);
+    const blockReason = getActionBlockReason(bill)
+      ?? await getPendingSubmissionBlockReason(bill);
     if (blockReason) {
       toast.error(blockReason);
       return;

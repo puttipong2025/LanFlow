@@ -13,6 +13,15 @@ test("app shell owns sync but not Rubber or Income list reads", () => {
   expect(app).not.toContain("useIncomeExpense(");
 });
 
+test("offline sync coordinator periodically retries pending work while connectivity stays online", () => {
+  const coordinator = source("src/hooks/useLanFlowOfflineSyncCoordinator.ts");
+
+  expect(coordinator).toContain("getPendingEvents");
+  expect(coordinator).toContain("setInterval");
+  expect(coordinator).toContain("clearInterval");
+  expect(coordinator).toContain('event.status === "pending"');
+});
+
 test("Evidence owns its scoped Rubber Bill feed", () => {
   const evidence = source("src/components/rubber-evidence/RubberEvidenceModule.tsx");
   expect(evidence).toContain("useRubberEvidenceFeed");
@@ -46,6 +55,17 @@ test("Rubber operational list uses a scoped cursor feed and page-scoped evidence
   )?.[0] ?? "";
   expect(receiptCachePath).toContain('if (mode !== "pending_approval")');
   expect(receiptCachePath).toContain("persistReceiptSnapshots(serverBills)");
+});
+
+test("Rubber online local merge reapplies the active search", () => {
+  const hook = source("src/hooks/useRubberBillList.ts");
+  const onlineMergePath = hook.match(
+    /const serverBills = \(payload\.rows[\s\S]*?const merged = mergeRubberBillLocalEvents\([\s\S]*?return \{/
+  )?.[0] ?? "";
+
+  expect(onlineMergePath).toContain(
+    ".filter((bill) => matchesSearch(bill, normalizedSearch))"
+  );
 });
 
 test("Stock retry refreshes the active Rubber operational feed", () => {

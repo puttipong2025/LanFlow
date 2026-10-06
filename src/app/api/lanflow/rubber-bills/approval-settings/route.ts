@@ -7,6 +7,9 @@ import {
   managementAuthFailure,
   managementErrorResponse,
 } from "@/lib/server/management-route-error";
+import { isEffectiveRubberApprovalSettings } from "@/lib/server/rubber-approval-groups";
+
+const MALFORMED_SETTINGS_MESSAGE = "ระบบไม่ตอบกลับการตั้งค่าตามรูปแบบที่กำหนด";
 
 function locationIdFrom(request: NextRequest) {
   const locationId = request.nextUrl.searchParams.get("locationId");
@@ -26,6 +29,9 @@ export async function GET(request: NextRequest) {
     { p_location_id: locationId },
   );
   if (error) return managementErrorResponse(error, "โหลดการตั้งค่าไม่สำเร็จ");
+  if (!isEffectiveRubberApprovalSettings(data, locationId)) {
+    return NextResponse.json({ errorMessage: MALFORMED_SETTINGS_MESSAGE }, { status: 500 });
+  }
   return NextResponse.json(data);
 }
 
@@ -53,6 +59,9 @@ export async function PUT(request: NextRequest) {
     if (current.error) {
       return managementErrorResponse(current.error, "โหลดการตั้งค่าก่อนบันทึกไม่สำเร็จ");
     }
+    if (!isEffectiveRubberApprovalSettings(current.data, locationId)) {
+      return NextResponse.json({ errorMessage: MALFORMED_SETTINGS_MESSAGE }, { status: 500 });
+    }
 
     const saved = await authCheck.supabase.rpc("save_rubber_bill_date_approval_setting", {
       p_non_current_date_requires_approval: body.nonCurrentDateRequiresApproval,
@@ -64,6 +73,13 @@ export async function PUT(request: NextRequest) {
     });
     if (effective.error) {
       return managementErrorResponse(effective.error, "โหลดการตั้งค่าหลังบันทึกไม่สำเร็จ");
+    }
+    if (!isEffectiveRubberApprovalSettings(
+      effective.data,
+      locationId,
+      body.nonCurrentDateRequiresApproval,
+    )) {
+      return NextResponse.json({ errorMessage: MALFORMED_SETTINGS_MESSAGE }, { status: 500 });
     }
     return NextResponse.json(effective.data);
   } catch {

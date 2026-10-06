@@ -443,6 +443,95 @@ test.describe.serial("Rubber approval groups API", () => {
     }
   });
 
+  test("group editor can retry after a concurrent revision refresh", async ({ browser }) => {
+    const manager = await authContext(browser, "super_admin");
+    const db = service();
+    const locationId = crypto.randomUUID();
+    const locationName = `สาขาทดสอบ retry ${locationId.slice(0, 6)}`;
+    let groupId: string | null = null;
+    try {
+      expect((await db.from("locations").insert({
+        id: locationId,
+        name: locationName,
+        code: `RT${locationId.replaceAll("-", "").slice(0, 6).toUpperCase()}`,
+        is_active: true,
+      })).error).toBeNull();
+
+      const created = await manager.request.post("/api/lanflow/rubber-bills/approval-groups", {
+        data: { locationIds: [locationId], editWindowMinutes: 30, priceAllowance: 2 },
+      });
+      expect(created.status(), await created.text()).toBe(201);
+      const createdGroup = (await created.json() as {
+        group: { id: string; revisionNo: number };
+      }).group;
+      groupId = createdGroup.id;
+
+      const page = await manager.newPage();
+      await page.goto("/");
+      await page.getByRole("button", { name: "บิลยาง" }).click();
+      await page.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ }).click();
+      const approvalDialog = page.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง" });
+      const groupRow = approvalDialog.locator("article").filter({ hasText: locationName });
+      await groupRow.getByRole("button", { name: "แก้ไข" }).click();
+      const minutesInput = approvalDialog.getByLabel("เวลาแก้ไขได้ (นาที)");
+      await minutesInput.fill("32");
+
+      const competingUpdate = await manager.request.put(
+        `/api/lanflow/rubber-bills/approval-groups/${groupId}`,
+        { data: {
+          locationIds: [locationId],
+          editWindowMinutes: 31,
+          priceAllowance: 2,
+          revisionNo: createdGroup.revisionNo,
+          sourceGroupRevisions: {},
+        } },
+      );
+      expect(competingUpdate.ok(), await competingUpdate.text()).toBeTruthy();
+
+      await approvalDialog.getByRole("button", { name: "บันทึกกลุ่ม" }).click();
+      await expect(approvalDialog.getByText("กลุ่มถูกแก้ไขโดยผู้ใช้อื่น")).toBeVisible();
+      await approvalDialog.getByRole("button", { name: "บันทึกกลุ่ม" }).click();
+      await expect(approvalDialog.getByRole("heading", { name: "แก้ไขกลุ่ม" })).toHaveCount(0);
+
+      const saved = await db.from("rubber_approval_groups")
+        .select("edit_window_minutes,revision_no")
+        .eq("id", groupId)
+        .single();
+      expect(saved.error).toBeNull();
+      expect(saved.data?.edit_window_minutes).toBe(32);
+
+      const refreshedGroupRow = approvalDialog.locator("article").filter({ hasText: locationName });
+      await refreshedGroupRow.getByRole("button", { name: "แก้ไข" }).click();
+      await approvalDialog.getByLabel("เวลาแก้ไขได้ (นาที)").fill("34");
+      const deleted = await manager.request.delete(
+        `/api/lanflow/rubber-bills/approval-groups/${groupId}?revision=${saved.data!.revision_no}`,
+      );
+      expect(deleted.ok(), await deleted.text()).toBeTruthy();
+      groupId = null;
+
+      await approvalDialog.getByRole("button", { name: "บันทึกกลุ่ม" }).click();
+      await expect(page.getByLabel("Notifications alt+T").getByText("ไม่พบกลุ่ม")).toBeVisible();
+      await expect(approvalDialog.getByRole("heading", { name: "แก้ไขกลุ่ม" })).toHaveCount(0);
+      await expect(
+        approvalDialog.getByTestId("ungrouped-approval-settings").getByText(locationName),
+      ).toBeVisible();
+    } finally {
+      if (groupId) {
+        const row = await db.from("rubber_approval_groups")
+          .select("revision_no")
+          .eq("id", groupId)
+          .maybeSingle();
+        if (row.data) {
+          await manager.request.delete(
+            `/api/lanflow/rubber-bills/approval-groups/${groupId}?revision=${row.data.revision_no}`,
+          );
+        }
+      }
+      await db.from("locations").delete().eq("id", locationId);
+      await manager.close();
+    }
+  });
+
   test("maximum form confirms the value and stays read-only for a system manager", async ({ browser }) => {
     const superAdmin = await authContext(browser, "super_admin");
     const systemManager = await authContext(browser, "admin");
@@ -456,8 +545,24 @@ test.describe.serial("Rubber approval groups API", () => {
       await superAdminPage.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ }).click();
       const approvalDialog = superAdminPage.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง" });
       await expect(approvalDialog.getByText(/ส่วนต่างสูงสุด 100\.00 บาท\/กก\./)).toBeVisible();
-      await approvalDialog.getByLabel("ราคายางที่กำหนดสูงสุด").fill("11");
-      await approvalDialog.getByRole("button", { name: "เปลี่ยนค่าสูงสุด" }).click();
+      const centralInput = approvalDialog.getByLabel("ราคากลางใหม่");
+      const centralSubmit = approvalDialog.getByRole("button", { name: "เปลี่ยนราคากลาง" });
+      const centralPlaceholder = await centralInput.getAttribute("placeholder");
+      expect(centralPlaceholder).toBeTruthy();
+      await centralInput.fill(`${centralPlaceholder}e0`);
+      await expect(centralSubmit).toBeEnabled();
+      await centralSubmit.click();
+      await expect(superAdminPage.getByText("ราคากลางต้องไม่ติดลบและมีทศนิยมไม่เกิน 2 ตำแหน่ง")).toBeVisible();
+
+      const maximumInput = approvalDialog.getByLabel("ราคายางที่กำหนดสูงสุด");
+      const maximumSubmit = approvalDialog.getByRole("button", { name: "เปลี่ยนค่าสูงสุด" });
+      await maximumInput.fill("1e2");
+      await expect(maximumSubmit).toBeEnabled();
+      await maximumSubmit.click();
+      await expect(approvalDialog.getByText("ราคายางที่กำหนดสูงสุดต้องไม่ติดลบและมีทศนิยมไม่เกิน 2 ตำแหน่ง")).toBeVisible();
+
+      await maximumInput.fill("11");
+      await maximumSubmit.click();
       const confirmation = superAdminPage.getByRole("alertdialog", { name: "ยืนยันเปลี่ยนราคายางที่กำหนดสูงสุด?" });
       await expect(confirmation).toContainText("เปลี่ยนจาก 100.00 เป็น 11.00 บาท/กก.");
       const current = await superAdmin.request.get("/api/lanflow/rubber-bills/approval-groups");
@@ -495,6 +600,36 @@ test.describe.serial("Rubber approval groups API", () => {
         .eq("id", systemManagerId);
       await superAdmin.close();
       await systemManager.close();
+    }
+  });
+
+  test("maximum form keeps native required validation reachable when the current value is zero", async ({ browser }) => {
+    const superAdmin = await authContext(browser, "super_admin");
+    const db = service();
+    try {
+      expect((await db.from("rubber_bill_approval_settings")
+        .update({ max_price_allowance: 0 })
+        .eq("id", true)).error).toBeNull();
+
+      const page = await superAdmin.newPage();
+      await page.goto("/");
+      await page.getByRole("button", { name: "บิลยาง" }).click();
+      await page.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ }).click();
+      const approvalDialog = page.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง" });
+      const maximumInput = approvalDialog.getByLabel("ราคายางที่กำหนดสูงสุด");
+      const submitButton = approvalDialog.getByRole("button", { name: "เปลี่ยนค่าสูงสุด" });
+
+      await expect(maximumInput).toHaveValue("0");
+      await maximumInput.fill("");
+      await expect(submitButton).toBeEnabled();
+      await submitButton.click();
+      expect(await maximumInput.evaluate((input: HTMLInputElement) => input.validity.valueMissing)).toBe(true);
+      await expect(page.getByRole("alertdialog", { name: "ยืนยันเปลี่ยนราคายางที่กำหนดสูงสุด?" })).toHaveCount(0);
+    } finally {
+      expect((await db.from("rubber_bill_approval_settings")
+        .update({ max_price_allowance: 100 })
+        .eq("id", true)).error).toBeNull();
+      await superAdmin.close();
     }
   });
 
@@ -716,6 +851,68 @@ test.describe.serial("Rubber approval groups API", () => {
         await manager.request.delete(`/api/lanflow/rubber-bills/approval-groups/${groupId}?revision=${row.data?.revision_no}`);
       }
       await db.from("locations").delete().eq("id", locationId);
+      await manager.close();
+    }
+  });
+
+  test("new group editor can retry after a selected branch is grouped concurrently", async ({ browser }) => {
+    const manager = await authContext(browser, "super_admin");
+    const db = service();
+    const locationIds = [crypto.randomUUID(), crypto.randomUUID()];
+    const locationNames = locationIds.map((id, index) => `สาขาทดสอบ create retry ${index + 1} ${id.slice(0, 6)}`);
+    try {
+      expect((await db.from("locations").insert(locationIds.map((id, index) => ({
+        id,
+        name: locationNames[index],
+        code: `CR${index}${id.replaceAll("-", "").slice(0, 5).toUpperCase()}`,
+        is_active: true,
+      })))).error).toBeNull();
+
+      const page = await manager.newPage();
+      await page.goto("/");
+      await page.getByRole("button", { name: "บิลยาง" }).click();
+      await page.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ }).click();
+      const approvalDialog = page.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง" });
+      await approvalDialog.getByRole("button", { name: "สร้างกลุ่ม" }).click();
+      await approvalDialog.getByLabel(locationNames[0], { exact: true }).check();
+      await approvalDialog.getByLabel(locationNames[1], { exact: true }).check();
+
+      const competingCreate = await manager.request.post("/api/lanflow/rubber-bills/approval-groups", {
+        data: { locationIds: [locationIds[0]], editWindowMinutes: 31, priceAllowance: 2 },
+      });
+      expect(competingCreate.status(), await competingCreate.text()).toBe(201);
+
+      await approvalDialog.getByRole("button", { name: "บันทึกกลุ่ม" }).click();
+      await expect(approvalDialog.getByText("มีสาขาอยู่ในกลุ่มอื่นแล้ว")).toBeVisible();
+      await expect(approvalDialog.getByLabel(locationNames[0], { exact: true })).toHaveCount(0);
+      await expect(approvalDialog.getByLabel(locationNames[1], { exact: true })).toBeChecked();
+
+      await approvalDialog.getByRole("button", { name: "บันทึกกลุ่ม" }).click();
+      await expect(approvalDialog.getByRole("heading", { name: "สร้างกลุ่มใหม่" })).toHaveCount(0);
+
+      const remainingMembership = await db.from("rubber_approval_group_locations")
+        .select("group_id")
+        .eq("location_id", locationIds[1])
+        .single();
+      expect(remainingMembership.error).toBeNull();
+      expect(remainingMembership.data?.group_id).toBeTruthy();
+    } finally {
+      const memberships = await db.from("rubber_approval_group_locations")
+        .select("group_id")
+        .in("location_id", locationIds);
+      const groupIds = [...new Set((memberships.data ?? []).map((row) => row.group_id))];
+      for (const groupId of groupIds) {
+        const row = await db.from("rubber_approval_groups")
+          .select("revision_no")
+          .eq("id", groupId)
+          .maybeSingle();
+        if (row.data) {
+          await manager.request.delete(
+            `/api/lanflow/rubber-bills/approval-groups/${groupId}?revision=${row.data.revision_no}`,
+          );
+        }
+      }
+      await db.from("locations").delete().in("id", locationIds);
       await manager.close();
     }
   });
