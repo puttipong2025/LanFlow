@@ -1,7 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { authFetch } from "@/lib/auth-fetch";
-import { clearRubberBillApprovalSettingsCache } from "@/lib/rubber-bills/approval";
+import {
+  clearAllRubberBillApprovalSettingsCache,
+  clearRubberBillApprovalSettingsCache,
+} from "@/lib/rubber-bills/approval";
 import { RUBBER_BILL_APPROVAL_SETTINGS_KEY } from "@/hooks/useRubberBillApprovals";
 import type {
   RubberApprovalGroup,
@@ -34,14 +37,7 @@ export class RubberMaxPriceAllowanceError extends Error {
 
 type GroupInput = Pick<RubberApprovalGroup, "locationIds" | "editWindowMinutes" | "priceAllowance">;
 
-function policyLocationIds(data: GroupsResponse) {
-  return [
-    ...data.availableLocationIds,
-    ...data.groups.flatMap((group) => group.locationIds),
-  ];
-}
-
-export function useRubberApprovalGroups(allLocationIds: string[]) {
+export function useRubberApprovalGroups() {
   const queryClient = useQueryClient();
   const groupsQuery = useQuery({
     queryKey: [RUBBER_APPROVAL_GROUPS_KEY],
@@ -53,12 +49,21 @@ export function useRubberApprovalGroups(allLocationIds: string[]) {
     },
   });
 
-  function invalidateLocations(locationIds: string[]) {
-    clearRubberBillApprovalSettingsCache(locationIds);
+  function invalidatePolicyQueries() {
     return Promise.all([
       queryClient.invalidateQueries({ queryKey: [RUBBER_BILL_APPROVAL_SETTINGS_KEY] }),
       queryClient.invalidateQueries({ queryKey: [RUBBER_APPROVAL_GROUPS_KEY] }),
     ]);
+  }
+
+  function invalidateLocations(locationIds: string[]) {
+    clearRubberBillApprovalSettingsCache(locationIds);
+    return invalidatePolicyQueries();
+  }
+
+  function invalidateAllLocations() {
+    clearAllRubberBillApprovalSettingsCache();
+    return invalidatePolicyQueries();
   }
 
   const createGroup = useMutation({
@@ -72,7 +77,7 @@ export function useRubberApprovalGroups(allLocationIds: string[]) {
       if (!response.ok) throw new Error(data.errorMessage || "สร้างกลุ่มไม่สำเร็จ");
       return data as { group: RubberApprovalGroup; affectedLocationIds: string[] };
     },
-    onSuccess: () => invalidateLocations(allLocationIds),
+    onSuccess: (data) => invalidateLocations(data.affectedLocationIds),
   });
 
   const updateGroup = useMutation({
@@ -90,7 +95,7 @@ export function useRubberApprovalGroups(allLocationIds: string[]) {
       if (!response.ok) throw new Error(data.errorMessage || "แก้ไขกลุ่มไม่สำเร็จ");
       return data as { group: RubberApprovalGroup; affectedLocationIds: string[] };
     },
-    onSuccess: () => invalidateLocations(allLocationIds),
+    onSuccess: (data) => invalidateLocations(data.affectedLocationIds),
   });
 
   const deleteGroup = useMutation({
@@ -119,14 +124,14 @@ export function useRubberApprovalGroups(allLocationIds: string[]) {
     mutationFn: (input: { centralPrice: number; expectedRevision: number }) => saveGlobalSettings("central", input),
     onSuccess: async (data) => {
       queryClient.setQueryData([RUBBER_APPROVAL_GROUPS_KEY], data);
-      await invalidateLocations(policyLocationIds(data));
+      await invalidateAllLocations();
     },
   });
   const saveUngroupedDefaults = useMutation({
     mutationFn: (input: { editWindowMinutes: number; priceAllowance: number; expectedRevision: number }) => saveGlobalSettings("ungrouped", input),
     onSuccess: async (data) => {
       queryClient.setQueryData([RUBBER_APPROVAL_GROUPS_KEY], data);
-      await invalidateLocations(data.ungroupedDefaults.locationIds);
+      await invalidateAllLocations();
     },
   });
   const saveMaxPriceAllowance = useMutation({

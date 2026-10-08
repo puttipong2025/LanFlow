@@ -2,23 +2,28 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
 import {
-  clearRubberBillApprovalSettingsCache,
+  clearAllRubberBillApprovalSettingsCache,
   loadRubberBillApprovalSettingsCache,
   saveRubberBillApprovalSettingsCache,
 } from "@/lib/rubber-bills/approval";
 import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
 import { authFetch } from "@/lib/auth-fetch";
+import { tombstoneRubberBillReceiptSnapshotByBillId } from "@/lib/idb-queue";
+import {
+  removeRubberBillApprovalRequestFromPendingFeedCache,
+  removeRubberBillFromOperationalFeedCacheByBillId,
+} from "@/lib/rubber-bills/feed-cache";
 import type { EffectiveRubberApprovalSettings } from "@/types";
 
 export const RUBBER_BILL_APPROVAL_SETTINGS_KEY = "rubberBillApprovalSettings";
 
 export function useRubberBillApprovals({
   locationId,
-  cachedLocationIds = [locationId],
+  ownerUserId,
 }: {
   locationId: string;
-  cachedLocationIds?: string[];
+  ownerUserId: string;
 }) {
   const queryClient = useQueryClient();
   const [cachedSettings, setCachedSettings] = useState(() => ({
@@ -69,8 +74,14 @@ export function useRubberBillApprovals({
   }
 
   const saveSettingsMutation = useMutation({
-    mutationFn: async (nonCurrentDateRequiresApproval: boolean) => {
-      const response = await authFetch(`/api/lanflow/rubber-bills/approval-settings?locationId=${encodeURIComponent(locationId)}`, {
+    mutationFn: async ({
+      nonCurrentDateRequiresApproval,
+      locationId: submissionLocationId,
+    }: {
+      nonCurrentDateRequiresApproval: boolean;
+      locationId: string;
+    }) => {
+      const response = await authFetch(`/api/lanflow/rubber-bills/approval-settings?locationId=${encodeURIComponent(submissionLocationId)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ nonCurrentDateRequiresApproval }),
@@ -82,14 +93,14 @@ export function useRubberBillApprovals({
       return data;
     },
     onSuccess: async (settings: EffectiveRubberApprovalSettings) => {
-      clearRubberBillApprovalSettingsCache(cachedLocationIds);
-      queryClient.setQueryData([RUBBER_BILL_APPROVAL_SETTINGS_KEY, locationId], settings);
+      clearAllRubberBillApprovalSettingsCache();
+      queryClient.setQueryData([RUBBER_BILL_APPROVAL_SETTINGS_KEY, settings.locationId], settings);
       await queryClient.invalidateQueries({ queryKey: [RUBBER_BILL_APPROVAL_SETTINGS_KEY] });
     },
   });
 
   const approveMutation = useMutation({
-    mutationFn: async (id: string) => {
+    mutationFn: async ({ id }: { id: string; locationId: string; ownerUserId: string }) => {
       const response = await authFetch(
         `/api/lanflow/rubber-bills/approval-requests/${id}/approve`,
         { method: "POST" }
@@ -100,11 +111,39 @@ export function useRubberBillApprovals({
       }
       return data;
     },
-    onSuccess: invalidateApprovalData,
+    onSuccess: async (data, variables) => {
+      try {
+        await removeRubberBillApprovalRequestFromPendingFeedCache(
+          queryClient,
+          { ownerUserId: variables.ownerUserId, locationId: variables.locationId },
+          variables.id,
+        );
+      } catch (error) {
+        console.warn("Unable to remove completed Rubber Bill approval request from the local feed", error);
+      }
+      if (data.operation === "delete" && typeof data.billId === "string") {
+        try {
+          await removeRubberBillFromOperationalFeedCacheByBillId(
+            queryClient,
+            { ownerUserId: variables.ownerUserId, locationId: variables.locationId },
+            data.billId,
+          );
+        } catch (error) {
+          console.warn("Unable to remove approved Rubber Bill from the local feed", error);
+        }
+        try {
+          await tombstoneRubberBillReceiptSnapshotByBillId(variables.locationId, data.billId);
+        } catch (error) {
+          console.warn("Unable to tombstone approved Rubber Bill receipt", error);
+        }
+      }
+      await invalidateApprovalData();
+    },
+    onError: invalidateApprovalData,
   });
 
   const deleteMutation = useMutation({
-    mutationFn: async (id: string) => {
+    mutationFn: async ({ id }: { id: string; locationId: string; ownerUserId: string }) => {
       const response = await authFetch(
         `/api/lanflow/rubber-bills/approval-requests/${id}`,
         { method: "DELETE" }
@@ -115,7 +154,19 @@ export function useRubberBillApprovals({
       }
       return data;
     },
-    onSuccess: invalidateApprovalQueue,
+    onSuccess: async (_data, variables) => {
+      try {
+        await removeRubberBillApprovalRequestFromPendingFeedCache(
+          queryClient,
+          { ownerUserId: variables.ownerUserId, locationId: variables.locationId },
+          variables.id,
+        );
+      } catch (error) {
+        console.warn("Unable to remove deleted Rubber Bill approval request from the local feed", error);
+      }
+      await invalidateApprovalQueue();
+    },
+    onError: invalidateApprovalQueue,
   });
 
   return {
@@ -123,8 +174,19 @@ export function useRubberBillApprovals({
     isLoading: settingsQuery.isLoading,
     isFetching: settingsQuery.isFetching,
     error: settingsQuery.error,
-    saveGlobalDateRule: saveSettingsMutation.mutateAsync,
-    approveRequest: approveMutation.mutateAsync,
-    deleteRequest: deleteMutation.mutateAsync,
+    saveGlobalDateRule: (nonCurrentDateRequiresApproval: boolean) => saveSettingsMutation.mutateAsync({
+      nonCurrentDateRequiresApproval,
+      locationId,
+    }),
+    approveRequest: (id: string, approvalLocationId: string) => approveMutation.mutateAsync({
+      id,
+      locationId: approvalLocationId,
+      ownerUserId,
+    }),
+    deleteRequest: (id: string, approvalLocationId: string) => deleteMutation.mutateAsync({
+      id,
+      locationId: approvalLocationId,
+      ownerUserId,
+    }),
   };
 }

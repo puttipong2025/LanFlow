@@ -63,6 +63,16 @@ test("normalizes a server search term and keeps local pending create in the late
   expect(rows[0]).toMatchObject({ clientTempId: "local-record", syncStatus: "pending" });
 });
 
+test("projects an uncertain server submission marker onto the local row", () => {
+  const rows = mergeIncomeExpenseLocalEvents([], [event({ serverSubmissionAttempted: true })], "");
+
+  expect(rows[0]).toMatchObject({
+    clientTempId: "local-record",
+    syncStatus: "pending",
+    serverSubmissionAttempted: true,
+  });
+});
+
 test("projects only failed and conflict queue records oldest first", () => {
   const rows = incomeExpenseSyncProblems([
     event({ id: "pending", timestamp: 1, status: "pending" }),
@@ -141,6 +151,28 @@ test("hides a pending delete when its authoritative record was loaded on page 2"
   ], [queuedDelete], "");
 
   expect(rows.map((row) => row.clientTempId)).toEqual(["page-one"]);
+});
+
+test("keeps an uncertain server marker when a failed delete overlays an authoritative record", () => {
+  const row = serverRow("failed-delete", "ยังไม่ทราบผลการลบ");
+  const failedDelete = event({
+    id: "failed-delete",
+    operation: "delete",
+    status: "failed",
+    errorMessage: "เครือข่ายขาดระหว่างยืนยันผล",
+    serverSubmissionAttempted: true,
+  });
+
+  const rows = mergeIncomeExpenseOperationalLatestPages([{ rows: [row] }], [failedDelete], "");
+
+  expect(rows).toEqual([
+    expect.objectContaining({
+      clientTempId: "failed-delete",
+      syncStatus: "failed",
+      syncErrorMessage: "เครือข่ายขาดระหว่างยืนยันผล",
+      serverSubmissionAttempted: true,
+    }),
+  ]);
 });
 
 test("projects one conflicted record when its authoritative record was loaded on page 2", () => {

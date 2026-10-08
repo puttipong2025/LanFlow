@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/server/auth";
-import { isJsonObject } from "@/lib/server/management-route-error";
+import {
+  isApprovalRequestResult,
+  isIncomeExpenseSubmission,
+  publicIncomeExpenseErrorMessage,
+} from "@/lib/income-expense/contracts";
 
 type ApprovalRpcResponse = {
   status?: string;
@@ -17,7 +21,7 @@ export async function POST(request: NextRequest) {
   } catch {
     return NextResponse.json({ status: "failed", errorMessage: "Invalid request body" }, { status: 400 });
   }
-  if (!isJsonObject(payload)) {
+  if (!isIncomeExpenseSubmission(payload)) {
     return NextResponse.json({ status: "failed", errorMessage: "Invalid request body" }, { status: 400 });
   }
 
@@ -29,25 +33,32 @@ export async function POST(request: NextRequest) {
 
     if (error) {
       console.error("RPC create_income_expense_approval_request error:", error);
-      return NextResponse.json({ status: "failed", errorMessage: error.message }, { status: 500 });
+      return NextResponse.json({ status: "failed", errorMessage: "ตรวจสอบคำขออนุมัติไม่สำเร็จ" }, { status: 503 });
     }
 
     const result = (data || {}) as ApprovalRpcResponse;
+    if (!isApprovalRequestResult(result)) {
+      return NextResponse.json(
+        { status: "failed", errorMessage: "ระบบไม่ตอบกลับผลคำขออนุมัติตามรูปแบบที่กำหนด" },
+        { status: 500 },
+      );
+    }
     if (result.status === "pending" || result.status === "no_approval") {
       return NextResponse.json(result, { status: 200 });
     }
 
     if (result.status === "failed") {
-      return NextResponse.json(result, { status: 400 });
+      return NextResponse.json({
+        ...result,
+        errorMessage: publicIncomeExpenseErrorMessage(result.errorMessage, "ตรวจสอบคำขออนุมัติไม่สำเร็จ"),
+      }, { status: 400 });
     }
-
     return NextResponse.json(
-      { status: "failed", errorMessage: `Unexpected RPC status: ${String(result.status)}` },
-      { status: 500 }
+      { status: "failed", errorMessage: "ระบบไม่ตอบกลับผลคำขออนุมัติตามรูปแบบที่กำหนด" },
+      { status: 500 },
     );
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : "Unknown error";
-    console.error("Create income-expense approval request API error:", message);
-    return NextResponse.json({ status: "failed", errorMessage: message }, { status: 500 });
+    console.error("Create income-expense approval request API error:", error);
+    return NextResponse.json({ status: "failed", errorMessage: "ตรวจสอบคำขออนุมัติไม่สำเร็จ" }, { status: 503 });
   }
 }

@@ -13,7 +13,7 @@ const MALFORMED_SETTINGS_MESSAGE = "ระบบไม่ตอบกลับ�
 
 function locationIdFrom(request: NextRequest) {
   const locationId = request.nextUrl.searchParams.get("locationId");
-  return isUuid(locationId) ? locationId : null;
+  return isUuid(locationId) ? locationId.toLowerCase() : null;
 }
 
 export async function GET(request: NextRequest) {
@@ -52,40 +52,33 @@ export async function PUT(request: NextRequest) {
   if (!isJsonObject(body) || typeof body.nonCurrentDateRequiresApproval !== "boolean") {
     return NextResponse.json({ errorMessage: "ต้องระบุกฎวันที่บิล" }, { status: 400 });
   }
-  try {
-    const current = await authCheck.supabase.rpc("get_effective_rubber_approval_settings", {
-      p_location_id: locationId,
-    });
-    if (current.error) {
-      return managementErrorResponse(current.error, "โหลดการตั้งค่าก่อนบันทึกไม่สำเร็จ");
-    }
-    if (!isEffectiveRubberApprovalSettings(current.data, locationId)) {
-      return NextResponse.json({ errorMessage: MALFORMED_SETTINGS_MESSAGE }, { status: 500 });
-    }
-
-    const saved = await authCheck.supabase.rpc("save_rubber_bill_date_approval_setting", {
-      p_non_current_date_requires_approval: body.nonCurrentDateRequiresApproval,
-    });
-    if (saved.error) return managementErrorResponse(saved.error, "บันทึกการตั้งค่าไม่สำเร็จ");
-
-    const effective = await authCheck.supabase.rpc("get_effective_rubber_approval_settings", {
-      p_location_id: locationId,
-    });
-    if (effective.error) {
-      return managementErrorResponse(effective.error, "โหลดการตั้งค่าหลังบันทึกไม่สำเร็จ");
-    }
-    if (!isEffectiveRubberApprovalSettings(
-      effective.data,
-      locationId,
-      body.nonCurrentDateRequiresApproval,
-    )) {
-      return NextResponse.json({ errorMessage: MALFORMED_SETTINGS_MESSAGE }, { status: 500 });
-    }
-    return NextResponse.json(effective.data);
-  } catch {
-    return NextResponse.json(
-      { errorMessage: "บันทึกการตั้งค่าไม่สำเร็จ" },
-      { status: 500 },
-    );
+  const current = await authCheck.supabase.rpc("get_effective_rubber_approval_settings", {
+    p_location_id: locationId,
+  });
+  if (current.error) {
+    return managementErrorResponse(current.error, "โหลดการตั้งค่าก่อนบันทึกไม่สำเร็จ");
   }
+  if (!isEffectiveRubberApprovalSettings(current.data, locationId)) {
+    return NextResponse.json({ errorMessage: MALFORMED_SETTINGS_MESSAGE }, { status: 500 });
+  }
+
+  const saved = await authCheck.supabase.rpc("save_rubber_bill_date_approval_setting", {
+    p_non_current_date_requires_approval: body.nonCurrentDateRequiresApproval,
+  });
+  if (saved.error) return managementErrorResponse(saved.error, "บันทึกการตั้งค่าไม่สำเร็จ");
+
+  const effective = await authCheck.supabase.rpc("get_effective_rubber_approval_settings", {
+    p_location_id: locationId,
+  });
+  if (effective.error) {
+    return managementErrorResponse(effective.error, "โหลดการตั้งค่าหลังบันทึกไม่สำเร็จ");
+  }
+  if (!isEffectiveRubberApprovalSettings(
+    effective.data,
+    locationId,
+    body.nonCurrentDateRequiresApproval,
+  )) {
+    return NextResponse.json({ errorMessage: MALFORMED_SETTINGS_MESSAGE }, { status: 500 });
+  }
+  return NextResponse.json(effective.data);
 }

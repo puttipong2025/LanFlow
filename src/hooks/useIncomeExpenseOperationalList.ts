@@ -1,8 +1,8 @@
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 
+import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { authFetch } from "@/lib/auth-fetch";
-import { isDeviceOnline } from "@/lib/connectivity";
 import { getPendingEvents } from "@/lib/idb-queue";
 import {
   incomeExpenseSyncProblems,
@@ -12,6 +12,7 @@ import {
   type IncomeExpenseOperationalFeedPage,
   type IncomeExpenseOperationalMode,
 } from "@/lib/income-expense/operational-list";
+import { isIncomeExpenseFeedPayload } from "@/lib/income-expense/contracts";
 import { incomeExpenseOperationalQueryKeys } from "@/lib/income-expense/query-keys";
 
 function queuePartition(ownerUserId: string, locationId: string) {
@@ -31,7 +32,7 @@ export function useIncomeExpenseOperationalList({
 }) {
   const queryClient = useQueryClient();
   const normalizedSearch = useMemo(() => normalizeIncomeExpenseSearch(search), [search]);
-  const online = isDeviceOnline();
+  const online = useOnlineStatus();
   const serverMode = mode === "sync_problems" ? "latest" : mode;
   const serverFeedEnabled = Boolean(ownerUserId && locationId && online && mode !== "sync_problems");
   const feedKey = incomeExpenseOperationalQueryKeys.feed(ownerUserId, locationId, serverMode, normalizedSearch);
@@ -51,13 +52,11 @@ export function useIncomeExpenseOperationalList({
       if (pageParam) params.set("cursor", pageParam);
       const response = await authFetch(`/api/lanflow/income-expense/feed?${params}`, { signal });
       if (!response.ok) throw new Error("โหลดรายการรับ-จ่ายไม่สำเร็จ");
-      const data = await response.json() as Partial<IncomeExpenseOperationalFeedPage>;
-      return {
-        rows: Array.isArray(data.rows) ? data.rows : [],
-        nextCursor: typeof data.nextCursor === "string" ? data.nextCursor : null,
-        hasMore: data.hasMore === true,
-        pendingApprovalCount: Number(data.pendingApprovalCount ?? 0),
-      };
+      const data: unknown = await response.json();
+      if (!isIncomeExpenseFeedPayload(data, locationId, serverMode)) {
+        throw new Error("ระบบไม่ตอบกลับรายการรับ-จ่ายตามรูปแบบที่กำหนด");
+      }
+      return data as IncomeExpenseOperationalFeedPage;
     },
     getNextPageParam: (page) => page.nextCursor ?? undefined,
   });

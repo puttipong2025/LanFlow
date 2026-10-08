@@ -15,16 +15,20 @@ type GroupBody = {
   sourceGroupRevisions?: unknown;
 };
 
+function canonicalUuid(value: string) {
+  return value.toLowerCase();
+}
+
 function isUuidArray(value: unknown): value is string[] {
   return Array.isArray(value)
     && value.every(isUuid)
-    && new Set(value).size === value.length;
+    && new Set(value.map(canonicalUuid)).size === value.length;
 }
 
 function haveSameValues(left: string[], right: string[]) {
   if (left.length !== right.length) return false;
-  const rightValues = new Set(right);
-  return left.every((value) => rightValues.has(value));
+  const rightValues = new Set(right.map(canonicalUuid));
+  return left.every((value) => rightValues.has(canonicalUuid(value)));
 }
 
 function isCurrentOrNextRevision(actual: unknown, expected: number) {
@@ -46,7 +50,6 @@ export function isEffectiveRubberApprovalSettings(
   expectedDateRule?: boolean,
 ): value is Record<string, unknown> {
   if (!isJsonObject(value)
-      || value.locationId !== expectedLocationId
       || !isUuid(value.locationId)
       || !isNonNegativePostgresInteger(value.editWindowMinutes)
       || !isNonNegativeNumeric12Scale2(value.centralPrice)
@@ -62,7 +65,8 @@ export function isEffectiveRubberApprovalSettings(
   }
   const hasValidSource = (value.ruleSource === "ungrouped" && value.groupId === null)
     || (value.ruleSource === "group" && isUuid(value.groupId));
-  return hasValidSource
+  return canonicalUuid(value.locationId) === canonicalUuid(expectedLocationId)
+    && hasValidSource
     && (expectedDateRule === undefined
       || value.nonCurrentDateRequiresApproval === expectedDateRule)
     && Math.round(value.centralPrice * 100) + Math.round(value.priceAllowance * 100)
@@ -172,13 +176,13 @@ export function isRubberApprovalGroupsResult(
   const maximumEffectivePrice = Number((
     (value.centralPrice.value as number) + maxPriceAllowance
   ).toFixed(2));
-  const groupIds = value.groups.map((group) => group.id as string);
+  const groupIds = value.groups.map((group) => canonicalUuid(group.id as string));
   const groupedLocationIds = value.groups.flatMap(
-    (group) => group.locationIds as string[],
+    (group) => (group.locationIds as string[]).map(canonicalUuid),
   );
   const partitionLocationIds = [
     ...groupedLocationIds,
-    ...value.availableLocationIds,
+    ...value.availableLocationIds.map(canonicalUuid),
   ];
   return haveSameValues(
     value.availableLocationIds,
@@ -221,13 +225,25 @@ export function isRubberApprovalGroupMutationResult(
       || !isUuidArray(value.affectedLocationIds)) {
     return false;
   }
-  return (expected.groupId === undefined || value.group.id === expected.groupId)
+  const actualRevision = value.group.revisionNo as number;
+  const affectedLocationIds = value.affectedLocationIds as string[];
+  const affectedLocationValues = new Set(affectedLocationIds.map(canonicalUuid));
+  const hasValidAffectedLocations = expected.revisionNo === undefined
+    ? haveSameValues(affectedLocationIds, expected.locationIds)
+    : actualRevision === expected.revisionNo
+      ? affectedLocationIds.length === 0
+      : expected.locationIds.every(
+        (locationId) => affectedLocationValues.has(canonicalUuid(locationId)),
+      );
+  return (expected.groupId === undefined
+      || canonicalUuid(value.group.id as string) === canonicalUuid(expected.groupId))
     && haveSameValues(value.group.locationIds as string[], expected.locationIds)
     && value.group.editWindowMinutes === expected.editWindowMinutes
     && value.group.priceAllowance === expected.priceAllowance
+    && hasValidAffectedLocations
     && (expected.revisionNo === undefined
-      ? value.group.revisionNo === 1
-      : isCurrentOrNextRevision(value.group.revisionNo, expected.revisionNo));
+      ? actualRevision === 1
+      : isCurrentOrNextRevision(actualRevision, expected.revisionNo));
 }
 
 export function isRubberApprovalGroupDeleteResult(value: unknown): value is Record<string, unknown> {
@@ -240,7 +256,7 @@ export function isRubberApprovalGroupDeleteResult(value: unknown): value is Reco
 export function parseRubberApprovalGroupBody(body: GroupBody) {
   if (!Array.isArray(body.locationIds) || body.locationIds.length === 0
       || !body.locationIds.every(isUuid)
-      || new Set(body.locationIds).size !== body.locationIds.length) {
+      || new Set(body.locationIds.map(canonicalUuid)).size !== body.locationIds.length) {
     return { errorMessage: "ต้องเลือกสาขาอย่างน้อยหนึ่งสาขาและห้ามซ้ำ" } as const;
   }
   if (!isNonNegativePostgresInteger(body.editWindowMinutes)) {
@@ -258,18 +274,25 @@ export function parseRubberApprovalGroupBody(body: GroupBody) {
     return { errorMessage: "revision ของกลุ่มไม่ถูกต้อง" } as const;
   }
   const sourceGroupRevisions = body.sourceGroupRevisions ?? {};
-  if (!isJsonObject(sourceGroupRevisions) || Object.entries(sourceGroupRevisions).some(
+  const sourceRevisionEntries = isJsonObject(sourceGroupRevisions)
+    ? Object.entries(sourceGroupRevisions)
+    : [];
+  if (!isJsonObject(sourceGroupRevisions) || sourceRevisionEntries.some(
     ([groupId, revision]) => !isUuid(groupId) || !isSafePositiveInteger(revision),
-  )) {
+  ) || new Set(sourceRevisionEntries.map(([groupId]) => canonicalUuid(groupId))).size
+      !== sourceRevisionEntries.length
+  ) {
     return { errorMessage: "revision ของกลุ่มต้นทางไม่ถูกต้อง" } as const;
   }
   return {
     value: {
-      locationIds: body.locationIds as string[],
+      locationIds: (body.locationIds as string[]).map(canonicalUuid),
       editWindowMinutes: Number(body.editWindowMinutes),
       priceAllowance,
       revisionNo: body.revisionNo === undefined ? undefined : Number(body.revisionNo),
-      sourceGroupRevisions: sourceGroupRevisions as Record<string, number>,
+      sourceGroupRevisions: Object.fromEntries(sourceRevisionEntries.map(
+        ([groupId, revision]) => [canonicalUuid(groupId), Number(revision)],
+      )) as Record<string, number>,
     },
   } as const;
 }

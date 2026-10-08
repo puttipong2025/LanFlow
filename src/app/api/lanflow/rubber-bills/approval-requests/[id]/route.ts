@@ -4,6 +4,7 @@ import { requireSystemManager } from "@/lib/server/auth";
 import {
   isUuid,
   managementAuthFailure,
+  opaqueRpcErrorResponse,
 } from "@/lib/server/management-route-error";
 
 export async function DELETE(
@@ -17,14 +18,15 @@ export async function DELETE(
   if (!isUuid(id)) {
     return NextResponse.json({ errorMessage: "รหัสคำขอไม่ถูกต้อง" }, { status: 400 });
   }
+  const requestId = id.toLowerCase();
   const { error } = await authCheck.supabase.rpc(
     "delete_rubber_bill_approval_request",
-    { p_request_id: id }
+    { p_request_id: requestId }
   );
 
   if (error) {
-    return NextResponse.json({ errorMessage: "ลบคำขอไม่สำเร็จ" }, { status: 400 });
+    return opaqueRpcErrorResponse(error, "ลบคำขอไม่สำเร็จ", ["P0001"]);
   }
 
-  return NextResponse.json({ status: "deleted", requestId: id });
+  return NextResponse.json({ status: "deleted", requestId });
 }

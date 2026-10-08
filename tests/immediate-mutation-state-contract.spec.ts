@@ -1,6 +1,13 @@
 import { expect, test } from "@playwright/test";
+import { QueryClient } from "@tanstack/react-query";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+
+import {
+  removeRubberBillApprovalRequestFromPendingFeedCache,
+  removeRubberBillFromOperationalFeedCache,
+  removeRubberBillFromOperationalFeedCacheByBillId,
+} from "@/lib/rubber-bills/feed-cache";
 
 function readSource(path: string) {
   return readFileSync(resolve(path), "utf8");
@@ -47,11 +54,12 @@ test.describe("immediate mutation state contract", () => {
     );
   });
 
-  test("clears central-price caches for every location in the authoritative response", () => {
+  test("clears every persisted branch cache when the global central price changes", () => {
     const source = readSource("src/hooks/useRubberApprovalGroups.ts");
 
-    expect(source).toContain("function policyLocationIds(data: GroupsResponse)");
-    expect(source).toContain("await invalidateLocations(policyLocationIds(data));");
+    expect(source).toContain("clearAllRubberBillApprovalSettingsCache();");
+    expect(source).not.toContain("function policyLocationIds(data: GroupsResponse)");
+    expect(source).not.toContain("await invalidateLocations(policyLocationIds(data));");
     expect(source).not.toContain("await invalidateLocations(allLocationIds);");
   });
 
@@ -86,6 +94,109 @@ test.describe("immediate mutation state contract", () => {
     expect(source).toContain('serverBillNo: operation === "update" ? bill.serverBillNo : undefined');
     expect(source).toContain("serverId: bill.id,");
     expect(source).toContain("serverBillNo: bill.serverBillNo,");
+    expect(source).toContain('...(event.serverId ? { expectedServerId: event.serverId } : {})');
+    expect(source).toContain('...(operation === "update" ? { expectedServerId: bill.id } : {})');
+    expect(source).toContain("body: JSON.stringify({ ...payload, expectedServerId: bill.id })");
+  });
+
+  test("removes a confirmed Rubber Bill only from its scoped operational feeds", async () => {
+    const queryClient = new QueryClient();
+    const latestKey = ["rubberBillOperationalFeed", "owner-1", "location-1", "latest", "any", ""];
+    const anotherLocationKey = ["rubberBillOperationalFeed", "owner-1", "location-2", "latest", "any", ""];
+    const anotherOwnerKey = ["rubberBillOperationalFeed", "owner-2", "location-1", "latest", "any", ""];
+    const deletedBill = { id: "server-bill-1", clientTempId: "client-bill-1" };
+    const retainedBill = { id: "server-bill-2", clientTempId: "client-bill-2" };
+    const deletedEvidence = { billId: deletedBill.id };
+    const retainedEvidence = { billId: retainedBill.id };
+
+    queryClient.setQueryData(latestKey, {
+      pages: [{
+        bills: [deletedBill, retainedBill],
+        evidenceStates: [deletedEvidence, retainedEvidence],
+        nextCursor: null,
+        hasMore: false,
+      }],
+      pageParams: [null],
+    });
+    queryClient.setQueryData(anotherLocationKey, {
+      pages: [{ bills: [deletedBill], evidenceStates: [], nextCursor: null, hasMore: false }],
+      pageParams: [null],
+    });
+    queryClient.setQueryData(anotherOwnerKey, {
+      pages: [{ bills: [deletedBill], evidenceStates: [deletedEvidence], nextCursor: null, hasMore: false }],
+      pageParams: [null],
+    });
+
+    await removeRubberBillFromOperationalFeedCache(
+      queryClient,
+      { ownerUserId: "owner-1", locationId: "location-1" },
+      "client-bill-1",
+    );
+
+    expect(queryClient.getQueryData(latestKey)).toMatchObject({
+      pages: [{ bills: [retainedBill], evidenceStates: [retainedEvidence] }],
+    });
+    expect(queryClient.getQueryData(anotherLocationKey)).toMatchObject({
+      pages: [{ bills: [deletedBill] }],
+    });
+    expect(queryClient.getQueryData(anotherOwnerKey)).toMatchObject({
+      pages: [{ bills: [deletedBill], evidenceStates: [deletedEvidence] }],
+    });
+  });
+
+  test("removes an approval-confirmed Rubber Bill by server identity", async () => {
+    const queryClient = new QueryClient();
+    const latestKey = ["rubberBillOperationalFeed", "owner-1", "location-1", "latest", "any", ""];
+    const deletedBill = { id: "server-bill-1", clientTempId: "client-bill-1" };
+    const retainedBill = { id: "server-bill-2", clientTempId: "client-bill-2" };
+    queryClient.setQueryData(latestKey, {
+      pages: [{
+        bills: [deletedBill, retainedBill],
+        evidenceStates: [{ billId: deletedBill.id }, { billId: retainedBill.id }],
+        nextCursor: null,
+        hasMore: false,
+      }],
+      pageParams: [null],
+    });
+
+    await removeRubberBillFromOperationalFeedCacheByBillId(
+      queryClient,
+      { ownerUserId: "owner-1", locationId: "location-1" },
+      deletedBill.id,
+    );
+
+    expect(queryClient.getQueryData(latestKey)).toMatchObject({
+      pages: [{
+        bills: [retainedBill],
+        evidenceStates: [{ billId: retainedBill.id }],
+      }],
+    });
+  });
+
+  test("removes a completed Rubber approval request only from pending feeds", async () => {
+    const queryClient = new QueryClient();
+    const pendingKey = ["rubberBillOperationalFeed", "owner-1", "location-1", "pending_approval", "any", ""];
+    const latestKey = ["rubberBillOperationalFeed", "owner-1", "location-1", "latest", "any", ""];
+    const pendingBill = {
+      id: "server-bill-1",
+      clientTempId: "client-bill-1",
+      approvalRequestId: "request-1",
+    };
+    const page = {
+      pages: [{ bills: [pendingBill], evidenceStates: [], nextCursor: null, hasMore: false }],
+      pageParams: [null],
+    };
+    queryClient.setQueryData(pendingKey, page);
+    queryClient.setQueryData(latestKey, page);
+
+    await removeRubberBillApprovalRequestFromPendingFeedCache(
+      queryClient,
+      { ownerUserId: "owner-1", locationId: "location-1" },
+      "request-1",
+    );
+
+    expect(queryClient.getQueryData(pendingKey)).toMatchObject({ pages: [{ bills: [] }] });
+    expect(queryClient.getQueryData(latestKey)).toMatchObject({ pages: [{ bills: [pendingBill] }] });
   });
 
   test("marks a possible create commit before transport and blocks local mutation until replay", () => {
@@ -99,5 +210,11 @@ test.describe("immediate mutation state contract", () => {
     );
     expect(source.match(/pendingCreates\.some\(\(event\) => event\.serverSubmissionAttempted === true\)/g))
       .toHaveLength(2);
+  });
+
+  test("enqueues new Rubber Bill commands only while the record queue snapshot is still current", () => {
+    const source = readSource("src/hooks/useRubberBills.ts");
+
+    expect(source.match(/enqueueSyncEvent\(event, clientEvents\)/g)).toHaveLength(2);
   });
 });

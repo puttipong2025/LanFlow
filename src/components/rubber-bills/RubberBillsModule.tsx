@@ -74,6 +74,7 @@ export function RubberBillsModule({
   const canManageApprovals = canManageSystemFeatures(profile);
   const { settings: approvalSettings } = useRubberBillApprovals({
     locationId: selectedLocation.id,
+    ownerUserId: profile.id,
   });
   const { addBill, updateBill, deleteBill, discardSyncProblem } = useRubberBillMutations(
     selectedLocation.id,

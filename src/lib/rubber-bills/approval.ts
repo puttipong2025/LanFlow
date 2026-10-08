@@ -8,7 +8,12 @@ export type CachedRubberBillApprovalSettings = EffectiveRubberApprovalSettings &
 };
 
 function browserStorage() {
-  return typeof window === "undefined" ? null : window.localStorage;
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
 }
 
 function cacheKey(locationId: string) {
@@ -48,7 +53,11 @@ export function saveRubberBillApprovalSettingsCache(
     ...settings,
     cachedAt: cachedAt.toISOString(),
   };
-  storage.setItem(cacheKey(settings.locationId), JSON.stringify(cache));
+  try {
+    storage.setItem(cacheKey(settings.locationId), JSON.stringify(cache));
+  } catch {
+    // Browser storage is an optional offline optimization.
+  }
 }
 
 export function loadRubberBillApprovalSettingsCache(
@@ -94,5 +103,29 @@ export function loadRubberBillApprovalSettingsCache(
 
 export function clearRubberBillApprovalSettingsCache(locationIds: string[], storage = browserStorage()) {
   if (!storage) return;
-  for (const locationId of locationIds) storage.removeItem(cacheKey(locationId));
+  for (const locationId of locationIds) {
+    try {
+      storage.removeItem(cacheKey(locationId));
+    } catch {
+      // A successful Server mutation must not fail because local storage is unavailable.
+    }
+  }
+}
+
+export function clearAllRubberBillApprovalSettingsCache(storage = browserStorage()) {
+  if (!storage) return;
+  let keys: string[];
+  try {
+    keys = Array.from({ length: storage.length }, (_, index) => storage.key(index))
+      .filter((key): key is string => key?.startsWith(CACHE_PREFIX) === true);
+  } catch {
+    return;
+  }
+  for (const key of keys) {
+    try {
+      storage.removeItem(key);
+    } catch {
+      // Continue clearing any remaining cache entries when a storage shim fails selectively.
+    }
+  }
 }

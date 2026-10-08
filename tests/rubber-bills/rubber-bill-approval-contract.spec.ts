@@ -105,7 +105,10 @@ function billPayload({
   };
 }
 
-async function syncBill(context: BrowserContext, payload: ReturnType<typeof billPayload>) {
+async function syncBill(
+  context: BrowserContext,
+  payload: ReturnType<typeof billPayload> & { submissionMode?: "replay" },
+) {
   const response = await context.request.post("/api/lanflow/rubber-bills", { data: payload });
   return {
     response,
@@ -116,6 +119,7 @@ async function syncBill(context: BrowserContext, payload: ReturnType<typeof bill
       revisionNo?: number;
       matchedReasons?: string[];
       errorMessage?: string;
+      serverBillNo?: string;
     },
   };
 }
@@ -177,6 +181,106 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       .toThrow("ต้องออนไลน์เพื่อส่งคำขออนุมัติ");
     expect(() => assertOfflineRubberBillPriceAllowed([0], today, null, false))
       .toThrow("ยังไม่เคยโหลดกติกาอนุมัติ");
+  });
+
+  test("approval route classifies a corrupted pending payload as an internal failure", async ({ browser }) => {
+    const superAdmin = await authContext(browser, "super_admin");
+    const db = service();
+    const actor = await profile(superAdmin);
+    const requestId = crypto.randomUUID();
+
+    try {
+      const inserted = await db.from("rubber_bill_approval_requests").insert({
+        id: requestId,
+        operation: "create",
+        request_status: "pending",
+        location_id: actor.locationIds[0],
+        client_temp_id: requestId,
+        idempotency_key: `internal-failure:${requestId}`,
+        base_revision_no: 0,
+        matched_reasons: ["non_current_date"],
+        configured_price_snapshot: null,
+        edit_window_minutes_snapshot: 30,
+        proposed_payload: {},
+        requested_by_user_id: actor.id,
+        requested_by_name: actor.name,
+        requested_by_phone: actor.phone,
+      });
+      expect(inserted.error).toBeNull();
+
+      const response = await superAdmin.request.post(
+        `/api/lanflow/rubber-bills/approval-requests/${requestId}/approve`,
+      );
+
+      expect(response.status()).toBe(500);
+      expect(await response.json()).toEqual({ errorMessage: "อนุมัติคำขอไม่สำเร็จ" });
+
+      const deleted = await superAdmin.request.delete(
+        `/api/lanflow/rubber-bills/approval-requests/${requestId}`,
+      );
+      expect(deleted.ok(), await deleted.text()).toBeTruthy();
+    } finally {
+      await db.from("rubber_bill_approval_requests").delete().eq("id", requestId);
+      await superAdmin.close();
+    }
+  });
+
+  test("Rubber Bill numbering advances past a hard-delete gap", async ({ browser }) => {
+    const superAdmin = await authContext(browser, "super_admin");
+    const db = service();
+    const locationId = crypto.randomUUID();
+    const clientTempIds = Array.from({ length: 4 }, () => crypto.randomUUID());
+    const billType = `ทดสอบช่องว่างเลขบิล-${locationId}`;
+
+    try {
+      expect((await db.from("locations").insert({
+        id: locationId,
+        name: `สาขาทดสอบเลขบิล ${locationId.slice(0, 8)}`,
+        code: `NG${locationId.replaceAll("-", "").slice(0, 6).toUpperCase()}`,
+        is_active: true,
+      })).error).toBeNull();
+      expect((await saveSettings(superAdmin, locationId, 1440, 0)).ok()).toBeTruthy();
+
+      const created = [];
+      for (const clientTempId of clientTempIds.slice(0, 3)) {
+        const result = await syncBill(superAdmin, billPayload({
+          locationId,
+          clientTempId,
+          billType,
+          price: 20,
+        }));
+        expect(result.body.status).toBe("synced");
+        created.push(result.body);
+      }
+      expect(created.map((item) => item.serverBillNo?.slice(-4))).toEqual(["0001", "0002", "0003"]);
+
+      expect((await db.from("rubber_bills").delete().eq("id", created[1].id!)).error).toBeNull();
+
+      const afterGap = await syncBill(superAdmin, billPayload({
+        locationId,
+        clientTempId: clientTempIds[3],
+        billType,
+        price: 20,
+      }));
+      expect(afterGap.body.status).toBe("synced");
+      expect(afterGap.body.serverBillNo?.slice(-4)).toBe("0004");
+    } finally {
+      await db.from("rubber_bills").delete().in("client_temp_id", clientTempIds);
+      const listed = await superAdmin.request.get("/api/lanflow/rubber-bills/approval-groups");
+      if (listed.ok()) {
+        const body = await listed.json() as {
+          groups: Array<{ id: string; revisionNo: number; locationIds: string[] }>;
+        };
+        const group = body.groups.find((item) => item.locationIds.includes(locationId));
+        if (group) {
+          await superAdmin.request.delete(
+            `/api/lanflow/rubber-bills/approval-groups/${group.id}?revision=${group.revisionNo}`,
+          );
+        }
+      }
+      await db.from("locations").delete().eq("id", locationId);
+      await superAdmin.close();
+    }
   });
 
   test("create uses the effective group or ungrouped policy instead of a client snapshot", async ({ browser }) => {
@@ -327,6 +431,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       const mismatchedUpdate = await syncBill(manager, {
         ...originalPayload,
         operation: "update",
+        expectedRevisionNo: first.body.revisionNo!,
         customerName: "ต้องไม่ถูกยอมรับเป็น replay เดิม",
       });
       expect(mismatchedUpdate.response.status()).toBe(409);
@@ -335,6 +440,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       const mismatchedDelete = await syncBill(manager, {
         ...originalPayload,
         operation: "delete",
+        expectedRevisionNo: first.body.revisionNo!,
         recordStatus: "deleted",
       });
       expect(mismatchedDelete.response.status()).toBe(409);
@@ -374,6 +480,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       const pendingCrossOperation = await syncBill(manager, {
         ...pendingPayload,
         operation: "update",
+        expectedRevisionNo: 1,
       });
       expect(pendingCrossOperation.response.status()).toBe(409);
       expect(pendingCrossOperation.body.status).toBe("conflict");
@@ -381,8 +488,8 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         ...pendingPayload,
         expectedRevisionNo: 1,
       });
-      expect(pendingWrongRevision.response.status()).toBe(409);
-      expect(pendingWrongRevision.body.status).toBe("conflict");
+      expect(pendingWrongRevision.response.status()).toBe(400);
+      expect(pendingWrongRevision.body.status).toBe("failed");
       expect((await syncBill(manager, {
         ...pendingPayload,
         idempotencyKey: `different-pending:${crypto.randomUUID()}`,
@@ -569,12 +676,93 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       )).ok()).toBeTruthy();
       const retained = await db.from("rubber_bills").select("record_status,bill_date").eq("client_temp_id", clientTempId).single();
       expect(retained.data).toMatchObject({ record_status: "active", bill_date: pastDate });
+
+      const replayedDelete = await syncBill(superAdmin, {
+        ...deletePayload,
+        submissionMode: "replay",
+      });
+      expect(replayedDelete.response.ok(), replayedDelete.body.errorMessage).toBeTruthy();
+      expect(replayedDelete.body.status).toBe("discarded");
+      expect((await db.from("rubber_bills")
+        .select("record_status,bill_date")
+        .eq("client_temp_id", clientTempId)
+        .single()).data).toMatchObject({ record_status: "active", bill_date: pastDate });
     } finally {
       if (deleteRequestId) await db.from("rubber_bill_approval_requests").delete().eq("id", deleteRequestId);
       await db.from("rubber_bills").delete().eq("client_temp_id", clientTempId);
       await superAdmin.request.put(`/api/lanflow/rubber-bills/approval-settings?locationId=${locationId}`, {
         data: { nonCurrentDateRequiresApproval: false },
       });
+      await superAdmin.close();
+    }
+  });
+
+  test("a mismatched expected Server identity cannot delete the submitted client identity", async ({ browser }) => {
+    const superAdmin = await authContext(browser, "super_admin");
+    const db = service();
+    const actor = await profile(superAdmin);
+    const locationId = actor.locationIds[0];
+    const clientTempId = crypto.randomUUID();
+
+    try {
+      expect((await saveSettings(superAdmin, locationId, 1440, null)).ok()).toBeTruthy();
+      expect((await superAdmin.request.put(`/api/lanflow/rubber-bills/approval-settings?locationId=${locationId}`, {
+        data: { nonCurrentDateRequiresApproval: false },
+      })).ok()).toBeTruthy();
+      const created = await syncBill(superAdmin, billPayload({ locationId, clientTempId }));
+      expect(created.body.status).toBe("synced");
+
+      const mismatchedDelete = await superAdmin.request.post("/api/lanflow/rubber-bills", {
+        data: {
+          ...billPayload({
+            locationId,
+            clientTempId,
+            operation: "delete",
+            expectedRevisionNo: created.body.revisionNo,
+          }),
+          expectedServerId: crypto.randomUUID(),
+          deletedByName: actor.name,
+          deletedByPhone: actor.phone,
+        },
+      });
+      expect(mismatchedDelete.ok()).toBeFalsy();
+      expect(mismatchedDelete.status()).toBe(409);
+
+      const retained = await db.from("rubber_bills")
+        .select("record_status,revision_no")
+        .eq("client_temp_id", clientTempId)
+        .single();
+      expect(retained.error).toBeNull();
+      expect(retained.data).toEqual({
+        record_status: "active",
+        revision_no: created.body.revisionNo,
+      });
+
+      const matchingDeletePayload = {
+        ...billPayload({
+          locationId,
+          clientTempId,
+          operation: "delete" as const,
+          expectedRevisionNo: created.body.revisionNo,
+        }),
+        expectedServerId: created.body.id,
+        deletedByName: actor.name,
+        deletedByPhone: actor.phone,
+      };
+      const matchingDelete = await superAdmin.request.post("/api/lanflow/rubber-bills", {
+        data: matchingDeletePayload,
+      });
+      expect(matchingDelete.ok(), await matchingDelete.text()).toBeTruthy();
+      const matchingBody = await matchingDelete.json() as { status: string; revisionNo: number };
+      expect(matchingBody).toMatchObject({ status: "synced", revisionNo: 2 });
+
+      const replay = await superAdmin.request.post("/api/lanflow/rubber-bills", {
+        data: matchingDeletePayload,
+      });
+      expect(replay.ok(), await replay.text()).toBeTruthy();
+      expect(await replay.json()).toMatchObject({ status: "synced", revisionNo: 2 });
+    } finally {
+      await db.from("rubber_bills").delete().eq("client_temp_id", clientTempId);
       await superAdmin.close();
     }
   });
@@ -772,6 +960,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
     const branchAdmin = await authContext(browser, "admin");
     const superAdmin = await authContext(browser, "super_admin");
     const db = service();
+    const cleanupClientTempIds: string[] = [];
 
     try {
       const branchAdminProfile = await profile(branchAdmin);
@@ -791,6 +980,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         price: 42,
         configuredPriceSnapshot: null,
       });
+      cleanupClientTempIds.push(noSettingPayload.clientTempId);
       const noSettingCreate = await syncBill(branchAdmin, noSettingPayload);
       expect(
         noSettingCreate.response.ok(),
@@ -804,6 +994,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         .eq("bill_id", noSettingCreate.body.id!)).count).toBe(0);
 
       const payload = billPayload({ locationId, prices: [42, 43] });
+      cleanupClientTempIds.push(payload.clientTempId);
       const pending = await syncBill(branchAdmin, payload);
       expect(pending.response.ok(), pending.body.errorMessage).toBeTruthy();
       expect(pending.body.status).toBe("pending_approval");
@@ -841,7 +1032,42 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         .select("id")
         .eq("client_temp_id", payload.clientTempId)
         .maybeSingle()).data).toBeNull();
+
+      const replay = await syncBill(branchAdmin, {
+        ...payload,
+        submissionMode: "replay",
+      });
+      expect(replay.response.ok(), replay.body.errorMessage).toBeTruthy();
+      expect(replay.body.status).toBe("discarded");
+      expect((await db.from("rubber_bill_approval_requests")
+        .select("id", { count: "exact", head: true })
+        .eq("client_temp_id", payload.clientTempId)).count).toBe(0);
+
+      const changedPayloadReplay = await syncBill(branchAdmin, {
+        ...payload,
+        customerName: "ลูกค้าคนละรายการ",
+        submissionMode: "replay",
+      });
+      expect(changedPayloadReplay.response.status()).toBe(409);
+      expect(changedPayloadReplay.body.status).toBe("conflict");
+
+      const differentClientTempId = crypto.randomUUID();
+      cleanupClientTempIds.push(differentClientTempId);
+      const mismatchedReplay = await syncBill(branchAdmin, {
+        ...payload,
+        clientTempId: differentClientTempId,
+        submissionMode: "replay",
+      });
+      expect(mismatchedReplay.response.status()).toBe(409);
+      expect(mismatchedReplay.body.status).toBe("conflict");
+      expect((await db.from("rubber_bill_approval_requests")
+        .select("id", { count: "exact", head: true })
+        .eq("client_temp_id", differentClientTempId)).count).toBe(0);
     } finally {
+      for (const clientTempId of cleanupClientTempIds) {
+        await db.from("rubber_bill_approval_requests").delete().eq("client_temp_id", clientTempId);
+        await db.from("rubber_bills").delete().eq("client_temp_id", clientTempId);
+      }
       const listed = await superAdmin.request.get("/api/lanflow/rubber-bills/approval-groups");
       if (listed.ok()) {
         const body = await listed.json() as { groups: Array<{ id: string; revisionNo: number; locationIds: string[] }> };
@@ -856,13 +1082,15 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
   test("manager requests and approves own exceptional price without retriggering unchanged price", async ({ browser }) => {
     const superAdmin = await authContext(browser, "super_admin");
     const db = service();
+    const clientTempId = crypto.randomUUID();
+    const billType = `ทดสอบอนุมัติราคา-${clientTempId}`;
 
     try {
       const superProfile = await profile(superAdmin);
       const locationId = superProfile.locationIds[0];
       expect((await saveSettings(superAdmin, locationId, 1440, 0)).ok()).toBeTruthy();
 
-      const createPayload = billPayload({ locationId, price: 43 });
+      const createPayload = billPayload({ locationId, clientTempId, price: 43, billType });
       const pendingCreate = await syncBill(superAdmin, createPayload);
       expect(pendingCreate.body.status).toBe("pending_approval");
 
@@ -894,6 +1122,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         expectedRevisionNo: retry.body.revisionNo,
         price: 43,
         customerName: "ลูกค้าแก้ชื่อแต่ราคาเดิม",
+        billType,
       });
       const updated = await syncBill(superAdmin, nonPriceUpdate);
       expect(updated.body.status).toBe("synced");
@@ -914,6 +1143,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         expectedRevisionNo: updated.body.revisionNo,
         price: 43.25,
         customerName: "ลูกค้าแก้ราคา",
+        billType,
       });
       const pendingPriceUpdate = await syncBill(superAdmin, changedPrice);
       expect(pendingPriceUpdate.body.status).toBe("pending_approval");
@@ -937,6 +1167,10 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         .eq("id", pendingCreate.body.requestId!);
       expect(immutable.error?.message).toContain("ประวัติคำขอที่อนุมัติแล้ว");
     } finally {
+      await db.from("rubber_bill_approval_requests")
+        .delete()
+        .eq("client_temp_id", clientTempId)
+        .eq("request_status", "pending");
       const superProfile = await profile(superAdmin);
       const listed = await superAdmin.request.get("/api/lanflow/rubber-bills/approval-groups");
       if (listed.ok()) {
@@ -952,6 +1186,8 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
     const branchAdmin = await authContext(browser, "admin");
     const superAdmin = await authContext(browser, "super_admin");
     const db = service();
+    let createdBillId: string | undefined;
+    let createdClientTempId: string | undefined;
 
     try {
       const branchAdminProfile = await profile(branchAdmin);
@@ -959,8 +1195,10 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       expect((await saveSettings(superAdmin, locationId, 0, null)).ok()).toBeTruthy();
 
       const createPayload = billPayload({ locationId, price: 20 });
+      createdClientTempId = createPayload.clientTempId;
       const created = await syncBill(branchAdmin, createPayload);
       expect(created.body.status).toBe("synced");
+      createdBillId = created.body.id;
 
       const updatePayload = billPayload({
         locationId,
@@ -983,8 +1221,8 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         syncBill(branchAdmin, updatePayload),
         syncBill(branchAdmin, deletePayload),
       ]);
-      expect(concurrent.map((result) => result.body.status)).toEqual([
-        "pending_approval",
+      expect(concurrent.map((result) => result.body.status).sort()).toEqual([
+        "conflict",
         "pending_approval",
       ]);
 
@@ -1009,6 +1247,13 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       expect(stale.response.status()).toBe(409);
       expect(stale.body.status).toBe("conflict");
     } finally {
+      if (createdClientTempId) {
+        await db.from("rubber_bill_approval_requests").delete().eq("client_temp_id", createdClientTempId);
+      }
+      if (createdBillId) {
+        await db.from("rubber_bill_items").delete().eq("bill_id", createdBillId);
+        await db.from("rubber_bills").delete().eq("id", createdBillId);
+      }
       await Promise.all([branchAdmin.close(), superAdmin.close()]);
     }
   });
@@ -1139,8 +1384,12 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       const secondReport = await admin.request.post("/api/lanflow/reports", {
         data: { locationId },
       });
-      const secondReportBody = await secondReport.json() as { id?: string; error?: string };
-      expect(secondReport.status(), secondReportBody.error).toBe(201);
+      const secondReportBody = await secondReport.json() as {
+        id?: string;
+        error?: string;
+        blockers?: Array<{ key: string; label: string; count: number }>;
+      };
+      expect(secondReport.status(), JSON.stringify(secondReportBody)).toBe(201);
       secondReportId = secondReportBody.id;
       expect((await db.from("report_items")
         .select("id")

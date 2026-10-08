@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-type ErrorLike = { message?: string } | null | undefined;
+type ErrorLike = { code?: string; message?: string } | null | undefined;
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const POSTGRES_INTEGER_MAX = 2_147_483_647;
@@ -82,6 +82,15 @@ export function managementErrorResponse(error: ErrorLike, fallback: string) {
   }
   const errorMessage = message.slice(message.indexOf(known.prefix) + known.prefix.length).trim();
   return NextResponse.json({ errorMessage }, { status: known.status });
+}
+
+export function opaqueRpcErrorResponse(
+  error: ErrorLike,
+  fallback: string,
+  businessErrorCodes: readonly string[],
+) {
+  const status = error?.code && businessErrorCodes.includes(error.code) ? 400 : 500;
+  return NextResponse.json({ errorMessage: fallback }, { status });
 }
 
 export async function managementAuthFailure(response: NextResponse) {

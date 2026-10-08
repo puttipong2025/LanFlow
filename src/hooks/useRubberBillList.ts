@@ -68,7 +68,7 @@ function sortBills(bills: RubberBill[], mode: RubberBillListMode) {
   });
 }
 
-function persistReceiptSnapshots(bills: RubberBill[]) {
+async function persistReceiptSnapshots(bills: RubberBill[], signal: AbortSignal) {
   const snapshots = bills.filter((bill) => bill.serverBillNo).map((bill) => ({
     billId: bill.id,
     locationId: bill.locationId,
@@ -79,9 +79,15 @@ function persistReceiptSnapshots(bills: RubberBill[]) {
     receipt: buildRubberBillReceiptModel(bill),
   }));
   if (snapshots.length === 0) return;
-  void putRubberBillReceiptSnapshots(snapshots)
-    .then(() => pruneRubberBillReceiptSnapshots(snapshots[0].locationId, 100))
-    .catch((error) => console.warn("Unable to cache paged rubber bill receipts", error));
+  try {
+    await putRubberBillReceiptSnapshots(snapshots, signal);
+    if (!signal.aborted) {
+      void pruneRubberBillReceiptSnapshots(snapshots[0].locationId, 100)
+        .catch((error) => console.warn("Unable to prune paged rubber bill receipts", error));
+    }
+  } catch (error) {
+    console.warn("Unable to cache paged rubber bill receipts", error);
+  }
 }
 
 export function useRubberBillList({
@@ -154,7 +160,7 @@ export function useRubberBillList({
       // deleting receipts that may live outside the loaded cursor window.
       // Approval rows can include transient proposed values and must not replace
       // the current-revision receipt snapshot used by offline printing.
-      if (mode !== "pending_approval") persistReceiptSnapshots(serverBills);
+      if (mode !== "pending_approval") await persistReceiptSnapshots(serverBills, signal);
       const localEvents = documentStatus === "editable"
         ? scopeRubberBillLocalEventsToServerRows(serverBills, events, pageParam === null)
         : events;

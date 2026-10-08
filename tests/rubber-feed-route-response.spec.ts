@@ -4,6 +4,7 @@ import { mapRubberBillFeedRow } from "../src/lib/rubber-bills/map-feed-row";
 import { loadSourceModule } from "./helpers/load-source-module";
 
 const locationId = "71000000-0000-4000-8000-000000000021";
+const caseVariantLocationId = "7a000000-0000-4000-8000-000000000021";
 
 function feedRouteDependencies(data: unknown) {
   const supabase = { rpc: async () => ({ data, error: null }) };
@@ -352,6 +353,41 @@ test("rubber bill feed preserves valid pending approval reasons", async () => {
   );
   const response = await route.GET({ nextUrl: new URL(`http://local/api/lanflow/rubber-bills/feed?locationId=${locationId}&mode=pending_approval`) } as never);
   expect(response.status).toBe(500);
+});
+
+test("rubber bill feed accepts PostgreSQL-canonical location UUID casing", async () => {
+  const requestId = "71000000-0000-4000-8000-000000000022";
+  const row = {
+    row_kind: "approval_create",
+    id: requestId,
+    record_status: "active",
+    approval_request_id: requestId,
+    approval_pending: true,
+    approval_operation: "create",
+    approval_reasons: ["price"],
+    revision_no: 0,
+    location_id: caseVariantLocationId,
+    work_identity: `approval:${requestId}`,
+    operational_sort_at: "2026-10-05T00:00:00.000Z",
+    items: [],
+  };
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/feed/route")>(
+    "src/app/api/lanflow/rubber-bills/feed/route.ts",
+    feedRouteDependencies({
+      rows: [row],
+      hasMore: false,
+      nextSortAt: null,
+      nextWorkIdentity: null,
+    }),
+  );
+  const response = await route.GET({
+    nextUrl: new URL(
+      `http://local/api/lanflow/rubber-bills/feed?locationId=${caseVariantLocationId.toUpperCase()}&mode=pending_approval`,
+    ),
+  } as never);
+
+  expect(response.status).toBe(200);
+  expect((await response.json()).rows).toEqual([row]);
 });
 
 test("rubber bill feed rejects malformed item rows before the mapper reads them", async () => {

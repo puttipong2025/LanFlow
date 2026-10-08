@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Route } from "@playwright/test";
 
 test.use({ storageState: "playwright/.auth/super_admin.json" });
 
@@ -76,6 +76,19 @@ function cashLedgerRow({
   };
 }
 
+async function fulfillIncomeExpenseFeed(route: Route, rows: Array<Record<string, unknown>>) {
+  const locationId = new URL(route.request().url()).searchParams.get("locationId");
+  if (!locationId) throw new Error("Income/expense feed request is missing locationId");
+  await route.fulfill({
+    json: {
+      rows: rows.map((row) => ({ ...row, locationId })),
+      nextCursor: null,
+      hasMore: false,
+      pendingApprovalCount: 0,
+    },
+  });
+}
+
 test("report-locked outgoing and incoming cash rows disable delete but keep read actions", async ({ page }) => {
   const outgoing = cashLedgerRow({
     id: "199a446b-6a54-40ae-8caa-0a3cf86676cb",
@@ -113,9 +126,8 @@ test("report-locked outgoing and incoming cash rows disable delete but keep read
     relationLockReason: undefined,
     reportLockNo: "RPT-LOCK-GENERAL",
   };
-  await page.route("**/api/lanflow/income-expense/feed?**", (route) => route.fulfill({
-    json: { rows: [outgoing, incoming, unlocked, lockedIncomeExpense], nextCursor: null, hasMore: false, pendingApprovalCount: 0 },
-  }));
+  await page.route("**/api/lanflow/income-expense/feed?**", (route) =>
+    fulfillIncomeExpenseFeed(route, [outgoing, incoming, unlocked, lockedIncomeExpense]));
   await page.route(`**/api/lanflow/cash-branch-transfers/${outgoing.relationSourceId.slice(5)}`, (route) => route.fulfill({
     json: {
       transfer: {
@@ -172,9 +184,8 @@ test.describe("cash transfer delete scope", () => {
       }),
       relationSourceLocationId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
     };
-    await page.route("**/api/lanflow/income-expense/feed?**", (route) => route.fulfill({
-      json: { rows: [incoming], nextCursor: null, hasMore: false, pendingApprovalCount: 0 },
-    }));
+    await page.route("**/api/lanflow/income-expense/feed?**", (route) =>
+      fulfillIncomeExpenseFeed(route, [incoming]));
 
     await openIncomeExpense(page);
 

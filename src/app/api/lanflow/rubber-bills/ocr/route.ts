@@ -34,13 +34,14 @@ export async function POST(request: Request) {
 
   const form = await request.formData().catch(() => null);
   const image = form?.get("image");
-  const locationId = form?.get("locationId");
+  const rawLocationId = form?.get("locationId");
   if (!(image instanceof File)) {
     return rubberBillOcrError(400, "IMAGE_REQUIRED", "กรุณาเลือกรูปใบชั่ง");
   }
-  if (typeof locationId !== "string" || !RUBBER_BILL_OCR_UUID_PATTERN.test(locationId)) {
+  if (typeof rawLocationId !== "string" || !RUBBER_BILL_OCR_UUID_PATTERN.test(rawLocationId)) {
     return rubberBillOcrError(400, "LOCATION_INVALID", "ข้อมูลสาขาไม่ถูกต้อง");
   }
+  const locationId = rawLocationId.toLowerCase();
 
   const canAccessLocation = hasSystemManagerAccess(authResult.auth)
     || authResult.auth.locationIds.includes(locationId);
@@ -203,6 +204,9 @@ export async function POST(request: Request) {
         "รูปใบชั่งนี้อยู่ในคิวของคำขออื่นแล้ว",
       );
     }
+    return rubberBillOcrError(503, "OCR_STAGING_FAILED", "บันทึกรูปใบชั่งไม่สำเร็จ", true);
+  }
+  if (typeof source.id !== "string" || source.id.toLowerCase() !== uploadId) {
     return rubberBillOcrError(503, "OCR_STAGING_FAILED", "บันทึกรูปใบชั่งไม่สำเร็จ", true);
   }
 

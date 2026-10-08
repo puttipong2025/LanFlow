@@ -1,10 +1,14 @@
 import { expect, test } from "@playwright/test";
+import { createClient } from "@supabase/supabase-js";
 
 import { loadSourceModule } from "./helpers/load-source-module";
 
 const locationId = "71000000-0000-4000-8000-000000000021";
 const groupId = "71000000-0000-4000-8000-000000000022";
 const otherLocationId = "71000000-0000-4000-8000-000000000023";
+const caseVariantLocationId = "7a000000-0000-4000-8000-000000000021";
+const caseVariantGroupId = "7b000000-0000-4000-8000-000000000022";
+const caseVariantSourceGroupId = "7c000000-0000-4000-8000-000000000023";
 
 const effectiveSettings = {
   locationId,
@@ -73,15 +77,10 @@ function routeDependencies(data: unknown) {
   };
 }
 
-function throwingRouteDependencies() {
-  const supabase = { rpc: async () => { throw new Error("synthetic transport failure"); } };
+function rpcErrorRouteDependencies(message: string, code: string) {
+  const supabase = { rpc: async () => ({ data: null, error: { code, message }, status: 400 }) };
   return {
     "@/lib/server/auth": {
-      requireAuth: async () => ({
-        ok: true,
-        auth: { role: "super_admin" },
-        supabase,
-      }),
       requireSystemManager: async () => ({
         ok: true,
         auth: { role: "super_admin" },
@@ -91,18 +90,26 @@ function throwingRouteDependencies() {
   };
 }
 
-function rpcErrorRouteDependencies(message: string) {
-  const supabase = { rpc: async () => ({ data: null, error: { message } }) };
-  return {
-    "@/lib/server/auth": {
-      requireSystemManager: async () => ({
-        ok: true,
-        auth: { role: "super_admin" },
-        supabase,
-      }),
+function transportFailingSupabaseClient() {
+  return createClient("http://127.0.0.1:54321", "test-key", {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: {
+      fetch: async () => {
+        throw new Error("synthetic transport failure");
+      },
     },
-  };
+  });
 }
+
+test("installed Supabase RPC resolves transport failures through its error result", async () => {
+  const client = transportFailingSupabaseClient();
+
+  const result = await client.rpc("synthetic_rpc");
+
+  expect(result.data).toBeNull();
+  expect(result.status).toBe(0);
+  expect(result.error?.message).toContain("synthetic transport failure");
+});
 
 function authFailureRouteDependencies() {
   return {
@@ -355,6 +362,33 @@ test("rubber approval group create rejects a response for different branches", a
   expect(await response.json()).toEqual({ errorMessage: "ระบบไม่ตอบกลับผลการสร้างกลุ่ม" });
 });
 
+test("rubber approval group create rejects mismatched affected branches", async () => {
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-groups/route")>(
+    "src/app/api/lanflow/rubber-bills/approval-groups/route.ts",
+    routeDependencies({
+      group: {
+        id: groupId,
+        locationIds: [locationId],
+        editWindowMinutes: 30,
+        priceAllowance: 0,
+        revisionNo: 1,
+        updatedByName: "System",
+        updatedByPhone: null,
+        updatedAt: "2026-10-05T00:00:00.000Z",
+      },
+      affectedLocationIds: [otherLocationId],
+    }),
+  );
+  const response = await route.POST(new Request("http://local/api/lanflow/rubber-bills/approval-groups", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ locationIds: [locationId], editWindowMinutes: 30, priceAllowance: 0 }),
+  }) as never);
+
+  expect(response.status).toBe(500);
+  expect(await response.json()).toEqual({ errorMessage: "ระบบไม่ตอบกลับผลการสร้างกลุ่ม" });
+});
+
 test("rubber approval group create rejects an impossible initial revision", async () => {
   const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-groups/route")>(
     "src/app/api/lanflow/rubber-bills/approval-groups/route.ts",
@@ -382,19 +416,57 @@ test("rubber approval group create rejects an impossible initial revision", asyn
   expect(await response.json()).toEqual({ errorMessage: "ระบบไม่ตอบกลับผลการสร้างกลุ่ม" });
 });
 
-test("rubber approval group create does not misclassify an RPC transport failure as bad input", async () => {
+test("rubber approval group create canonicalizes UUID casing before validating the response", async () => {
+  const payload = {
+    group: {
+      id: groupId,
+      locationIds: [caseVariantLocationId],
+      editWindowMinutes: 30,
+      priceAllowance: 0,
+      revisionNo: 1,
+      updatedByName: "System",
+      updatedByPhone: null,
+      updatedAt: "2026-10-05T00:00:00.000Z",
+    },
+    affectedLocationIds: [caseVariantLocationId],
+  };
   const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-groups/route")>(
     "src/app/api/lanflow/rubber-bills/approval-groups/route.ts",
-    throwingRouteDependencies(),
+    routeDependencies(payload),
   );
   const response = await route.POST(new Request("http://local/api/lanflow/rubber-bills/approval-groups", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ locationIds: [locationId], editWindowMinutes: 30, priceAllowance: 0 }),
+    body: JSON.stringify({
+      locationIds: [caseVariantLocationId.toUpperCase()],
+      editWindowMinutes: 30,
+      priceAllowance: 0,
+    }),
   }) as never);
 
-  expect(response.status).toBe(500);
-  expect(await response.json()).toEqual({ errorMessage: "สร้างกลุ่มไม่สำเร็จ" });
+  expect(response.status).toBe(201);
+  expect(await response.json()).toEqual(payload);
+});
+
+test("rubber approval group create rejects duplicate UUIDs that differ only by casing", async () => {
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-groups/route")>(
+    "src/app/api/lanflow/rubber-bills/approval-groups/route.ts",
+    routeDependencies(null),
+  );
+  const response = await route.POST(new Request("http://local/api/lanflow/rubber-bills/approval-groups", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      locationIds: [caseVariantLocationId, caseVariantLocationId.toUpperCase()],
+      editWindowMinutes: 30,
+      priceAllowance: 0,
+    }),
+  }) as never);
+
+  expect(response.status).toBe(400);
+  expect(await response.json()).toEqual({
+    errorMessage: "ต้องเลือกสาขาอย่างน้อยหนึ่งสาขาและห้ามซ้ำ",
+  });
 });
 
 test("rubber central-price save rejects a malformed RPC response", async () => {
@@ -498,6 +570,73 @@ test("rubber approval group update rejects a response for a different group", as
   expect(await response.json()).toEqual({ errorMessage: "ระบบไม่ตอบกลับผลการแก้ไขกลุ่ม" });
 });
 
+test("rubber approval group update rejects affected branches that omit the saved group", async () => {
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-groups/[id]/route")>(
+    "src/app/api/lanflow/rubber-bills/approval-groups/[id]/route.ts",
+    routeDependencies({
+      group: {
+        id: groupId,
+        locationIds: [locationId],
+        editWindowMinutes: 30,
+        priceAllowance: 0,
+        revisionNo: 2,
+        updatedByName: "System",
+        updatedByPhone: null,
+        updatedAt: "2026-10-05T00:00:00.000Z",
+      },
+      affectedLocationIds: [otherLocationId],
+    }),
+  );
+  const response = await route.PUT(new Request(`http://local/api/lanflow/rubber-bills/approval-groups/${groupId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      locationIds: [locationId],
+      editWindowMinutes: 30,
+      priceAllowance: 0,
+      revisionNo: 1,
+      sourceGroupRevisions: {},
+    }),
+  }) as never, { params: Promise.resolve({ id: groupId }) });
+
+  expect(response.status).toBe(500);
+  expect(await response.json()).toEqual({ errorMessage: "ระบบไม่ตอบกลับผลการแก้ไขกลุ่ม" });
+});
+
+test("rubber approval group update preserves a valid unchanged response", async () => {
+  const payload = {
+    group: {
+      id: groupId,
+      locationIds: [locationId],
+      editWindowMinutes: 30,
+      priceAllowance: 0,
+      revisionNo: 1,
+      updatedByName: "System",
+      updatedByPhone: null,
+      updatedAt: "2026-10-05T00:00:00.000Z",
+    },
+    affectedLocationIds: [],
+  };
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-groups/[id]/route")>(
+    "src/app/api/lanflow/rubber-bills/approval-groups/[id]/route.ts",
+    routeDependencies(payload),
+  );
+  const response = await route.PUT(new Request(`http://local/api/lanflow/rubber-bills/approval-groups/${groupId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      locationIds: [locationId],
+      editWindowMinutes: 30,
+      priceAllowance: 0,
+      revisionNo: 1,
+      sourceGroupRevisions: {},
+    }),
+  }) as never, { params: Promise.resolve({ id: groupId }) });
+
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual(payload);
+});
+
 test("rubber approval group update rejects a response with different settings", async () => {
   const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-groups/[id]/route")>(
     "src/app/api/lanflow/rubber-bills/approval-groups/[id]/route.ts",
@@ -564,10 +703,63 @@ test("rubber approval group update rejects an unrelated revision", async () => {
   expect(await response.json()).toEqual({ errorMessage: "ระบบไม่ตอบกลับผลการแก้ไขกลุ่ม" });
 });
 
-test("rubber approval group update does not misclassify an RPC transport failure as bad input", async () => {
+test("rubber approval group update canonicalizes path, member, and source-revision UUIDs", async () => {
+  let rpcArguments: Record<string, unknown> | undefined;
+  const payload = {
+    group: {
+      id: caseVariantGroupId,
+      locationIds: [caseVariantLocationId],
+      editWindowMinutes: 30,
+      priceAllowance: 0,
+      revisionNo: 2,
+      updatedByName: "System",
+      updatedByPhone: null,
+      updatedAt: "2026-10-05T00:00:00.000Z",
+    },
+    affectedLocationIds: [caseVariantLocationId],
+  };
   const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-groups/[id]/route")>(
     "src/app/api/lanflow/rubber-bills/approval-groups/[id]/route.ts",
-    throwingRouteDependencies(),
+    {
+      "@/lib/server/auth": {
+        requireSystemManager: async () => ({
+          ok: true,
+          auth: { role: "super_admin" },
+          supabase: {
+            rpc: async (_name: string, args: Record<string, unknown>) => {
+              rpcArguments = args;
+              return { data: payload, error: null };
+            },
+          },
+        }),
+      },
+    },
+  );
+  const response = await route.PUT(new Request(`http://local/api/lanflow/rubber-bills/approval-groups/${caseVariantGroupId.toUpperCase()}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      locationIds: [caseVariantLocationId.toUpperCase()],
+      editWindowMinutes: 30,
+      priceAllowance: 0,
+      revisionNo: 1,
+      sourceGroupRevisions: { [caseVariantSourceGroupId.toUpperCase()]: 3 },
+    }),
+  }) as never, { params: Promise.resolve({ id: caseVariantGroupId.toUpperCase() }) });
+
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual(payload);
+  expect(rpcArguments).toMatchObject({
+    p_group_id: caseVariantGroupId,
+    p_location_ids: [caseVariantLocationId],
+    p_expected_source_revisions: { [caseVariantSourceGroupId]: 3 },
+  });
+});
+
+test("rubber approval group update rejects duplicate source revisions with different casing", async () => {
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-groups/[id]/route")>(
+    "src/app/api/lanflow/rubber-bills/approval-groups/[id]/route.ts",
+    routeDependencies(null),
   );
   const response = await route.PUT(new Request(`http://local/api/lanflow/rubber-bills/approval-groups/${groupId}`, {
     method: "PUT",
@@ -577,12 +769,17 @@ test("rubber approval group update does not misclassify an RPC transport failure
       editWindowMinutes: 30,
       priceAllowance: 0,
       revisionNo: 1,
-      sourceGroupRevisions: {},
+      sourceGroupRevisions: {
+        [caseVariantSourceGroupId]: 3,
+        [caseVariantSourceGroupId.toUpperCase()]: 3,
+      },
     }),
   }) as never, { params: Promise.resolve({ id: groupId }) });
 
-  expect(response.status).toBe(500);
-  expect(await response.json()).toEqual({ errorMessage: "แก้ไขกลุ่มไม่สำเร็จ" });
+  expect(response.status).toBe(400);
+  expect(await response.json()).toEqual({
+    errorMessage: "revision ของกลุ่มต้นทางไม่ถูกต้อง",
+  });
 });
 
 test("rubber approval group delete rejects a malformed RPC response", async () => {
@@ -814,6 +1011,22 @@ test("effective rubber approval settings GET rejects a response for another loca
   expect(await response.json()).toEqual({ errorMessage: "ระบบไม่ตอบกลับการตั้งค่าตามรูปแบบที่กำหนด" });
 });
 
+test("effective rubber approval settings GET accepts PostgreSQL-canonical UUID casing", async () => {
+  const payload = { ...effectiveSettings, locationId: caseVariantLocationId };
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-settings/route")>(
+    "src/app/api/lanflow/rubber-bills/approval-settings/route.ts",
+    routeDependencies(payload),
+  );
+  const response = await route.GET({
+    nextUrl: new URL(
+      `http://local/api/lanflow/rubber-bills/approval-settings?locationId=${caseVariantLocationId.toUpperCase()}`,
+    ),
+  } as never);
+
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual(payload);
+});
+
 test("effective rubber approval settings PUT rejects a malformed post-save response", async () => {
   const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-settings/route")>(
     "src/app/api/lanflow/rubber-bills/approval-settings/route.ts",
@@ -840,6 +1053,24 @@ test("effective rubber approval settings PUT rejects a post-save response with t
 
   expect(response.status).toBe(500);
   expect(await response.json()).toEqual({ errorMessage: "ระบบไม่ตอบกลับการตั้งค่าตามรูปแบบที่กำหนด" });
+});
+
+test("effective rubber approval settings PUT canonicalizes UUID casing across both reads", async () => {
+  const current = { ...effectiveSettings, locationId: caseVariantLocationId };
+  const saved = { ...current, nonCurrentDateRequiresApproval: true };
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-settings/route")>(
+    "src/app/api/lanflow/rubber-bills/approval-settings/route.ts",
+    sequencedRouteDependencies([current, true, saved]),
+  );
+  const response = await route.PUT({
+    nextUrl: new URL(
+      `http://local/api/lanflow/rubber-bills/approval-settings?locationId=${caseVariantLocationId.toUpperCase()}`,
+    ),
+    json: async () => ({ nonCurrentDateRequiresApproval: true }),
+  } as never);
+
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual(saved);
 });
 
 test("rubber approval request approve rejects a malformed request id before RPC", async () => {
@@ -952,11 +1183,52 @@ test("rubber approval request approve rejects an impossible create revision", as
 test("rubber approval request approve does not expose database error details", async () => {
   const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-requests/[id]/approve/route")>(
     "src/app/api/lanflow/rubber-bills/approval-requests/[id]/approve/route.ts",
-    rpcErrorRouteDependencies("invalid input syntax for type uuid at internal_table"),
+    rpcErrorRouteDependencies("invalid input syntax for type uuid at internal_table", "22P02"),
+  );
+  const response = await route.POST({} as never, { params: Promise.resolve({ id: groupId }) });
+
+  expect(response.status).toBe(500);
+  expect(await response.json()).toEqual({ errorMessage: "อนุมัติคำขอไม่สำเร็จ" });
+});
+
+test("rubber approval request approve keeps a raised business rejection as bad input", async () => {
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-requests/[id]/approve/route")>(
+    "src/app/api/lanflow/rubber-bills/approval-requests/[id]/approve/route.ts",
+    rpcErrorRouteDependencies("ไม่พบคำขอที่รออนุมัติ", "P0001"),
   );
   const response = await route.POST({} as never, { params: Promise.resolve({ id: groupId }) });
 
   expect(response.status).toBe(400);
+  expect(await response.json()).toEqual({ errorMessage: "อนุมัติคำขอไม่สำเร็จ" });
+});
+
+test("rubber approval request approve treats an internal approval failure as a server error", async () => {
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-requests/[id]/approve/route")>(
+    "src/app/api/lanflow/rubber-bills/approval-requests/[id]/approve/route.ts",
+    rpcErrorRouteDependencies("บันทึกบิลยางไม่สำเร็จ", "RB500"),
+  );
+  const response = await route.POST({} as never, { params: Promise.resolve({ id: groupId }) });
+
+  expect(response.status).toBe(500);
+  expect(await response.json()).toEqual({ errorMessage: "อนุมัติคำขอไม่สำเร็จ" });
+});
+
+test("rubber approval request approve does not classify a transport failure as bad input", async () => {
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-requests/[id]/approve/route")>(
+    "src/app/api/lanflow/rubber-bills/approval-requests/[id]/approve/route.ts",
+    {
+      "@/lib/server/auth": {
+        requireSystemManager: async () => ({
+          ok: true,
+          auth: { role: "super_admin" },
+          supabase: transportFailingSupabaseClient(),
+        }),
+      },
+    },
+  );
+  const response = await route.POST({} as never, { params: Promise.resolve({ id: groupId }) });
+
+  expect(response.status).toBe(500);
   expect(await response.json()).toEqual({ errorMessage: "อนุมัติคำขอไม่สำเร็จ" });
 });
 
@@ -982,6 +1254,47 @@ test("rubber approval request approve preserves a valid RPC response", async () 
 
   expect(response.status).toBe(200);
   expect(await response.json()).toEqual(approved);
+});
+
+test("rubber approval request approve canonicalizes a valid uppercase request id", async () => {
+  let rpcArguments: Record<string, unknown> | undefined;
+  const approved = {
+    status: "approved",
+    requestId: caseVariantGroupId,
+    operation: "create",
+    billId: caseVariantLocationId,
+    syncResult: {
+      status: "synced",
+      id: caseVariantLocationId,
+      serverBillNo: "RB-0001",
+      revisionNo: 1,
+      serverReceivedAt: "2026-10-05T00:00:00.000Z",
+    },
+  };
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-requests/[id]/approve/route")>(
+    "src/app/api/lanflow/rubber-bills/approval-requests/[id]/approve/route.ts",
+    {
+      "@/lib/server/auth": {
+        requireSystemManager: async () => ({
+          ok: true,
+          auth: { role: "super_admin" },
+          supabase: {
+            rpc: async (_name: string, args: Record<string, unknown>) => {
+              rpcArguments = args;
+              return { data: approved, error: null };
+            },
+          },
+        }),
+      },
+    },
+  );
+  const response = await route.POST({} as never, {
+    params: Promise.resolve({ id: caseVariantGroupId.toUpperCase() }),
+  });
+
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual(approved);
+  expect(rpcArguments).toEqual({ p_request_id: caseVariantGroupId });
 });
 
 test("rubber approval request delete rejects a malformed request id before RPC", async () => {
@@ -1011,10 +1324,52 @@ test("rubber approval request delete preserves the actionable auth failure messa
 test("rubber approval request delete does not expose database error details", async () => {
   const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-requests/[id]/route")>(
     "src/app/api/lanflow/rubber-bills/approval-requests/[id]/route.ts",
-    rpcErrorRouteDependencies("relation private.secret_table does not exist"),
+    rpcErrorRouteDependencies("relation private.secret_table does not exist", "42P01"),
+  );
+  const response = await route.DELETE({} as never, { params: Promise.resolve({ id: groupId }) });
+
+  expect(response.status).toBe(500);
+  expect(await response.json()).toEqual({ errorMessage: "ลบคำขอไม่สำเร็จ" });
+});
+
+test("rubber approval request delete keeps a raised business rejection as bad input", async () => {
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-requests/[id]/route")>(
+    "src/app/api/lanflow/rubber-bills/approval-requests/[id]/route.ts",
+    rpcErrorRouteDependencies("ไม่พบคำขอที่รออนุมัติ", "P0001"),
   );
   const response = await route.DELETE({} as never, { params: Promise.resolve({ id: groupId }) });
 
   expect(response.status).toBe(400);
   expect(await response.json()).toEqual({ errorMessage: "ลบคำขอไม่สำเร็จ" });
+});
+
+test("rubber approval request delete canonicalizes a valid uppercase request id", async () => {
+  let rpcArguments: Record<string, unknown> | undefined;
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-requests/[id]/route")>(
+    "src/app/api/lanflow/rubber-bills/approval-requests/[id]/route.ts",
+    {
+      "@/lib/server/auth": {
+        requireSystemManager: async () => ({
+          ok: true,
+          auth: { role: "super_admin" },
+          supabase: {
+            rpc: async (_name: string, args: Record<string, unknown>) => {
+              rpcArguments = args;
+              return { data: null, error: null };
+            },
+          },
+        }),
+      },
+    },
+  );
+  const response = await route.DELETE({} as never, {
+    params: Promise.resolve({ id: caseVariantGroupId.toUpperCase() }),
+  });
+
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({
+    status: "deleted",
+    requestId: caseVariantGroupId,
+  });
+  expect(rpcArguments).toEqual({ p_request_id: caseVariantGroupId });
 });

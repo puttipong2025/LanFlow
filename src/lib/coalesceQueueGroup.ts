@@ -1,5 +1,8 @@
 import type { SyncEvent } from "./idb-queue";
 
+const COMPETING_CREATE_DELETE_MESSAGE =
+  "พบคำสั่งสร้างและลบจากหลายหน้าต่างพร้อมกัน กรุณาลองซิงก์รายการนี้ก่อน แล้วจึงลบอีกครั้ง";
+
 export type CoalesceResult =
   | { action: "noop" }
   | { action: "keep"; keeper: SyncEvent; remove: SyncEvent[] };
@@ -11,17 +14,31 @@ export function coalesceQueueGroup(group: readonly SyncEvent[]): CoalesceResult 
 
   const ordered = [...group].sort((a, b) => (a.queueId || 0) - (b.queueId || 0));
   const id = ordered[0].id;
-  const hasCreate = ordered.some(e => e.payload.operation === "create");
-  const hasDelete = ordered.some(e => e.payload.operation === "delete");
+  const hasCreate = ordered.some(e => e.operation === "create");
+  const hasDelete = ordered.some(e => e.operation === "delete");
   const lastEvent = ordered[ordered.length - 1];
 
   if (hasCreate && hasDelete) {
+    const attemptedCreate = ordered.find(e => (
+      e.operation === "create" && e.serverSubmissionAttempted === true
+    ));
+    if (attemptedCreate) {
+      return {
+        action: "keep",
+        keeper: {
+          ...attemptedCreate,
+          status: "failed",
+          errorMessage: COMPETING_CREATE_DELETE_MESSAGE,
+        },
+        remove: ordered.filter(e => e.queueId !== attemptedCreate.queueId),
+      };
+    }
     return { action: "noop" };
   }
 
   if (hasCreate) {
     // create + update(s): keep oldest create slot, latest payload, rev = 0
-    const base = ordered.find(e => e.payload.operation === "create")!;
+    const base = ordered.find(e => e.operation === "create")!;
     const keeper: SyncEvent = {
       ...base,
       payload: {
@@ -38,8 +55,8 @@ export function coalesceQueueGroup(group: readonly SyncEvent[]): CoalesceResult 
 
   if (hasDelete) {
     // update(s) + delete: keep delete slot, rev from first update
-    const deleteBase = ordered.find(e => e.payload.operation === "delete")!;
-    const firstUpdate = ordered.find(e => e.payload.operation === "update");
+    const deleteBase = ordered.find(e => e.operation === "delete")!;
+    const firstUpdate = ordered.find(e => e.operation === "update");
     const rev = firstUpdate
       ? firstUpdate.payload.expectedRevisionNo
       : deleteBase.payload.expectedRevisionNo;

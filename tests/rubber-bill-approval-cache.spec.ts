@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 
 import {
+  clearAllRubberBillApprovalSettingsCache,
+  clearRubberBillApprovalSettingsCache,
   loadRubberBillApprovalSettingsCache,
   saveRubberBillApprovalSettingsCache,
 } from "../src/lib/rubber-bills/approval";
@@ -20,6 +22,22 @@ function memoryStorage(): Storage {
     setItem: (key, value) => {
       values.set(key, value);
     },
+  };
+}
+
+function unavailableStorage(): Storage {
+  const deny = (): never => {
+    throw new DOMException("Storage access denied", "SecurityError");
+  };
+  return {
+    get length() {
+      return deny();
+    },
+    clear: deny,
+    getItem: deny,
+    key: deny,
+    removeItem: deny,
+    setItem: deny,
   };
 }
 
@@ -89,6 +107,32 @@ test.describe("Rubber Bill approval settings cache", () => {
 
     expect(loadRubberBillApprovalSettingsCache("branch-a", storage)?.effectivePriceCap).toBe(45);
     expect(loadRubberBillApprovalSettingsCache("branch-b", storage)?.ruleSource).toBe("ungrouped");
+  });
+
+  test("clears every branch cache without deleting unrelated local data", () => {
+    const storage = memoryStorage();
+    saveRubberBillApprovalSettingsCache(grouped, new Date("2026-08-23T00:00:00.000Z"), storage);
+    saveRubberBillApprovalSettingsCache(
+      { ...grouped, locationId: "historical-branch" },
+      new Date("2026-08-23T01:00:00.000Z"),
+      storage,
+    );
+    storage.setItem("lanflow:unrelated", "keep");
+
+    clearAllRubberBillApprovalSettingsCache(storage);
+
+    expect(loadRubberBillApprovalSettingsCache("branch-a", storage)).toBeNull();
+    expect(loadRubberBillApprovalSettingsCache("historical-branch", storage)).toBeNull();
+    expect(storage.getItem("lanflow:unrelated")).toBe("keep");
+  });
+
+  test("treats unavailable browser storage as a best-effort cache", () => {
+    const storage = unavailableStorage();
+
+    expect(loadRubberBillApprovalSettingsCache("branch-a", storage)).toBeNull();
+    expect(() => saveRubberBillApprovalSettingsCache(grouped, new Date(), storage)).not.toThrow();
+    expect(() => clearRubberBillApprovalSettingsCache(["branch-a"], storage)).not.toThrow();
+    expect(() => clearAllRubberBillApprovalSettingsCache(storage)).not.toThrow();
   });
 
   test("rejects old or corrupt shapes that could leak a price/time rule", () => {

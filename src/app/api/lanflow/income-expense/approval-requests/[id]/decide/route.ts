@@ -1,10 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSystemManager } from "@/lib/server/auth";
 import { isJsonObject, isUuid } from "@/lib/server/management-route-error";
+import {
+  isApprovalDecisionResult,
+  isValidApprovalComment,
+  publicIncomeExpenseErrorMessage,
+} from "@/lib/income-expense/contracts";
 
 type DecisionRpcResponse = {
   status?: string;
   errorMessage?: string;
+  requestId?: unknown;
 };
 
 export async function POST(
@@ -34,7 +40,7 @@ export async function POST(
     if (decision !== "approved" && decision !== "rejected") {
       return NextResponse.json({ status: "failed", errorMessage: "Invalid decision" }, { status: 400 });
     }
-    if (body.comment != null && typeof body.comment !== "string") {
+    if (!isValidApprovalComment(body.comment)) {
       return NextResponse.json({ status: "failed", errorMessage: "Invalid request body" }, { status: 400 });
     }
 
@@ -49,29 +55,43 @@ export async function POST(
 
     if (error) {
       console.error("RPC decide_income_expense_approval_request error:", error);
-      return NextResponse.json({ status: "failed", errorMessage: error.message }, { status: 500 });
+      return NextResponse.json({ status: "failed", errorMessage: "ดำเนินการคำขอไม่สำเร็จ" }, { status: 503 });
     }
 
-    const result = (data || {}) as DecisionRpcResponse;
+    const rawResult = (data || {}) as DecisionRpcResponse;
+    const result = (rawResult.status === "conflict" || rawResult.status === "failed")
+      && rawResult.requestId === undefined
+      ? { ...rawResult, requestId: id }
+      : rawResult;
+    if (!isApprovalDecisionResult(result, id)) {
+      return NextResponse.json(
+        { status: "failed", errorMessage: "ระบบไม่ตอบกลับผลการอนุมัติตามรูปแบบที่กำหนด" },
+        { status: 500 },
+      );
+    }
     if (result.status === "approved" || result.status === "rejected") {
       return NextResponse.json(result, { status: 200 });
     }
 
     if (result.status === "conflict") {
-      return NextResponse.json(result, { status: 409 });
+      return NextResponse.json({
+        ...result,
+        errorMessage: publicIncomeExpenseErrorMessage(result.errorMessage, "ดำเนินการคำขอไม่สำเร็จ"),
+      }, { status: 409 });
     }
 
     if (result.status === "failed") {
-      return NextResponse.json(result, { status: 400 });
+      return NextResponse.json({
+        ...result,
+        errorMessage: publicIncomeExpenseErrorMessage(result.errorMessage, "ดำเนินการคำขอไม่สำเร็จ"),
+      }, { status: 400 });
     }
-
     return NextResponse.json(
-      { status: "failed", errorMessage: `Unexpected RPC status: ${String(result.status)}` },
-      { status: 500 }
+      { status: "failed", errorMessage: "ระบบไม่ตอบกลับผลการอนุมัติตามรูปแบบที่กำหนด" },
+      { status: 500 },
     );
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : "Unknown error";
-    console.error("Decide income-expense approval request API error:", message);
-    return NextResponse.json({ status: "failed", errorMessage: message }, { status: 500 });
+    console.error("Decide income-expense approval request API error:", error);
+    return NextResponse.json({ status: "failed", errorMessage: "ดำเนินการคำขอไม่สำเร็จ" }, { status: 503 });
   }
 }

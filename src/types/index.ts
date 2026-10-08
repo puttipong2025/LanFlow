@@ -325,6 +325,7 @@ export type IncomeExpense = {
   localBillNo: string;
   serverBillNo?: string;
   syncStatus: SyncStatus;
+  serverSubmissionAttempted?: boolean;
   idempotencyKey: string;
   locationId: string;
   type: "income" | "expense";
@@ -350,7 +351,7 @@ export type IncomeExpense = {
   deletedByName?: string;
   deletedByPhone?: string;
   syncErrorMessage?: string;
-  relationSourceType?: "money_transfer" | "rubber_bill_daily" | "rubber_export" | "time_tracking_withdrawal" | "payroll_slip";
+  relationSourceType?: "money_transfer" | "rubber_bill_daily" | "rubber_export" | "time_tracking_withdrawal" | "time_tracking_withdrawal_adjustment" | "payroll_slip";
   relationSourceId?: string;
   relationSourceLocationId?: string;
   relationSourceDate?: string;

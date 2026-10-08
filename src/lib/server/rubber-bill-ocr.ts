@@ -62,8 +62,12 @@ export function rubberBillOcrError(
 }
 
 export function rubberBillOcrSuccess(uploadId: string, draft: RubberBillOcrDraft) {
+  if (!RUBBER_BILL_OCR_UUID_PATTERN.test(uploadId)) {
+    return rubberBillOcrError(503, "OCR_STAGING_FAILED", "บันทึกรูปใบชั่งไม่สำเร็จ", true);
+  }
+
   return NextResponse.json(
-    { uploadId, draft },
+    { uploadId: uploadId.toLowerCase(), draft },
     { headers: { "Cache-Control": "private, no-store, max-age=0" } },
   );
 }
@@ -92,8 +96,9 @@ export function detectRubberBillOcrImage(
 }
 
 function nullableNumber(value: unknown) {
+  if (typeof value !== "number" && typeof value !== "string") return null;
   if (typeof value === "string") value = value.replace(/,/g, "").trim();
-  if (value === "" || value == null) return null;
+  if (value === "") return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }

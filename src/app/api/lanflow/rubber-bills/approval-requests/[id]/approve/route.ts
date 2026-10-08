@@ -7,12 +7,14 @@ import {
   isSafePositiveInteger,
   isUuid,
   managementAuthFailure,
+  opaqueRpcErrorResponse,
 } from "@/lib/server/management-route-error";
 
 function isRubberBillApprovalResult(value: unknown, expectedRequestId: string) {
   if (!isJsonObject(value)
       || value.status !== "approved"
-      || value.requestId !== expectedRequestId
+      || !isUuid(value.requestId)
+      || value.requestId.toLowerCase() !== expectedRequestId
       || (value.operation !== "create" && value.operation !== "update" && value.operation !== "delete")
       || !isUuid(value.billId)
       || !isJsonObject(value.syncResult)) {
@@ -20,7 +22,8 @@ function isRubberBillApprovalResult(value: unknown, expectedRequestId: string) {
   }
 
   return value.syncResult.status === "synced"
-    && value.syncResult.id === value.billId
+    && isUuid(value.syncResult.id)
+    && value.syncResult.id.toLowerCase() === value.billId.toLowerCase()
     && typeof value.syncResult.serverBillNo === "string"
     && value.syncResult.serverBillNo.trim().length > 0
     && isSafePositiveInteger(value.syncResult.revisionNo)
@@ -39,15 +42,16 @@ export async function POST(
   if (!isUuid(id)) {
     return NextResponse.json({ errorMessage: "รหัสคำขอไม่ถูกต้อง" }, { status: 400 });
   }
+  const requestId = id.toLowerCase();
   const { data, error } = await authCheck.supabase.rpc(
     "approve_rubber_bill_approval_request",
-    { p_request_id: id }
+    { p_request_id: requestId }
   );
 
   if (error) {
-    return NextResponse.json({ errorMessage: "อนุมัติคำขอไม่สำเร็จ" }, { status: 400 });
+    return opaqueRpcErrorResponse(error, "อนุมัติคำขอไม่สำเร็จ", ["P0001"]);
   }
-  if (!isRubberBillApprovalResult(data, id)) {
+  if (!isRubberBillApprovalResult(data, requestId)) {
     return NextResponse.json(
       { errorMessage: "ระบบไม่ตอบกลับผลการอนุมัติตามรูปแบบที่กำหนด" },
       { status: 500 },

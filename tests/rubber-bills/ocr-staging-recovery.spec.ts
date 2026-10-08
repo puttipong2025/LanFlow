@@ -3,10 +3,10 @@ import { createClient } from "@supabase/supabase-js";
 import { loadSourceModule } from "../helpers/load-source-module";
 import * as ocr from "../../src/lib/server/rubber-bill-ocr";
 
-const locationId = "30000000-0000-4000-8000-000000000001";
+const locationId = "3a000000-0000-4000-8000-000000000001";
 const ownerId = "20000000-0000-4000-8000-000000000001";
 const draft = { billDate: "2026-09-03", inWeight: 100, outWeight: 0, deductWeight: 0, ocrTotal: 1000, suggestedPrice: 10 };
-type Scenario = "success" | "commit-lost" | "unknown" | "reject" | "duplicate" | "other-owner" | "reconcile-fails";
+type Scenario = "success" | "commit-lost" | "malformed-insert" | "mismatched-insert" | "unknown" | "reject" | "duplicate" | "other-owner" | "reconcile-fails";
 
 function fixture(scenario: Scenario) {
   let source: Record<string, unknown> | null = null;
@@ -31,6 +31,10 @@ function fixture(scenario: Scenario) {
             owner_user_id: scenario === "other-owner" ? "another-owner" : ownerId };
           return Response.json({ code: "23505", message: "duplicate" }, { status: 409 });
         }
+        if (scenario === "malformed-insert") return Response.json({ id: "not-a-uuid" }, { status: 201 });
+        if (scenario === "mismatched-insert") {
+          return Response.json({ id: "7a000000-0000-4000-8000-000000000099" }, { status: 201 });
+        }
         if (scenario === "commit-lost") throw new TypeError("response lost after commit");
         return Response.json({ id: insertedSource.id }, { status: 201 });
       }
@@ -54,9 +58,9 @@ function fixture(scenario: Scenario) {
       },
     },
   );
-  const request = () => {
+  const request = (requestLocationId = locationId) => {
     const body = new FormData();
-    body.set("locationId", locationId);
+    body.set("locationId", requestLocationId);
     body.set("image", new File([new Uint8Array([255, 216, 255, 224])], "fixture.jpg", { type: "image/jpeg" }));
     return route.POST(new Request("http://local/api/lanflow/rubber-bills/ocr", { method: "POST", body }));
   };
@@ -107,5 +111,46 @@ test("a successful insert and replay leave the image intact", async () => {
   expect(first.status).toBe(200);
   expect(await (await f.request()).json()).toEqual(await first.json());
   expect(f.deleted).toEqual([]);
+  expect(f.uploads()).toBe(1);
+});
+
+test("rejects a malformed staged source id instead of returning an unusable upload", async () => {
+  const f = fixture("malformed-insert");
+  const response = await f.request();
+  expect(response.status).toBe(503);
+  expect(await response.json()).toMatchObject({ code: "OCR_STAGING_FAILED", retryable: true });
+  expect(f.uploads()).toBe(1);
+});
+
+test("rejects a staged source id that does not match the submitted insert", async () => {
+  const f = fixture("mismatched-insert");
+  const response = await f.request();
+  expect(response.status).toBe(503);
+  expect(await response.json()).toMatchObject({ code: "OCR_STAGING_FAILED", retryable: true });
+  expect(f.uploads()).toBe(1);
+});
+
+test("does not coerce non-scalar OCR fields into bill numbers", () => {
+  expect(ocr.normalizeRubberBillOcrResult({
+    bill_date: null,
+    weight_in: true,
+    weight_out: [90],
+    weight_deducted: { value: 5 },
+    total_amount: false,
+  })).toEqual({
+    billDate: null,
+    inWeight: null,
+    outWeight: null,
+    deductWeight: null,
+    ocrTotal: null,
+    suggestedPrice: null,
+  });
+});
+
+test("accepts PostgreSQL-canonical casing for an accessible OCR location UUID", async () => {
+  const f = fixture("success");
+  const response = await f.request(locationId.toUpperCase());
+
+  expect(response.status).toBe(200);
   expect(f.uploads()).toBe(1);
 });

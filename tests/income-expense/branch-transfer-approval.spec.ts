@@ -11,6 +11,8 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? 'http://127.0.0.1:55
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
 const superAdminId = process.env.TEST_USER_ID ?? '00000000-0000-4000-8000-000000000001';
 const transferLocationId = crypto.randomUUID();
+let originalApprovalSettings: Record<string, unknown> | null = null;
+let originalApprovalKeywords: Array<{ id: string; is_active: boolean; deleted_at: string | null }> = [];
 
 async function ensureLoggedIn(page: import("@playwright/test").Page, role: "admin" | "super_admin") {
   await page.goto("/");
@@ -34,6 +36,33 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
     const db = createClient(supabaseUrl, serviceRoleKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
+    const settings = await db.from('income_expense_approval_settings').select('*').eq('id', true).maybeSingle();
+    expect(settings.error).toBeNull();
+    originalApprovalSettings = settings.data;
+    expect((await db.from('income_expense_approval_settings').upsert({
+      id: true,
+      applies_to: settings.data?.applies_to ?? 'both',
+      approval_min_amount: null,
+      cash_transfer_delete_requires_approval: settings.data?.cash_transfer_delete_requires_approval ?? true,
+      non_current_date_requires_approval: false,
+    }, { onConflict: 'id' })).error).toBeNull();
+
+    const keywords = await db
+      .from('income_expense_approval_keywords')
+      .select('id, is_active, deleted_at')
+      .eq('keyword', 'เบิก');
+    expect(keywords.error).toBeNull();
+    originalApprovalKeywords = keywords.data ?? [];
+    const activeKeywordIds = originalApprovalKeywords
+      .filter((keyword) => keyword.is_active && keyword.deleted_at === null)
+      .map((keyword) => keyword.id);
+    if (activeKeywordIds.length > 0) {
+      expect((await db
+        .from('income_expense_approval_keywords')
+        .update({ is_active: false })
+        .in('id', activeKeywordIds)).error).toBeNull();
+    }
+
     expect((await db.from('locations').insert({
       id: transferLocationId,
       name: `สาขาปลายทางทดสอบ ${transferLocationId.slice(0, 6)}`,
@@ -52,6 +81,34 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
     const db = createClient(supabaseUrl, serviceRoleKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
+    const currentKeywords = await db
+      .from('income_expense_approval_keywords')
+      .select('id')
+      .eq('keyword', 'เบิก');
+    expect(currentKeywords.error).toBeNull();
+    const originalKeywordIds = new Set(originalApprovalKeywords.map((keyword) => keyword.id));
+    const createdKeywordIds = (currentKeywords.data ?? [])
+      .map((keyword) => keyword.id)
+      .filter((id) => !originalKeywordIds.has(id));
+    if (createdKeywordIds.length > 0) {
+      expect((await db
+        .from('income_expense_approval_keywords')
+        .update({ is_active: false, deleted_at: new Date().toISOString() })
+        .in('id', createdKeywordIds)).error).toBeNull();
+    }
+    for (const keyword of originalApprovalKeywords) {
+      expect((await db
+        .from('income_expense_approval_keywords')
+        .update({ is_active: keyword.is_active, deleted_at: keyword.deleted_at })
+        .eq('id', keyword.id)).error).toBeNull();
+    }
+    if (originalApprovalSettings) {
+      expect((await db
+        .from('income_expense_approval_settings')
+        .upsert(originalApprovalSettings, { onConflict: 'id' })).error).toBeNull();
+    } else {
+      expect((await db.from('income_expense_approval_settings').delete().eq('id', true)).error).toBeNull();
+    }
     expect((await db
       .from('money_transfers')
       .delete()

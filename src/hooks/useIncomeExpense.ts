@@ -3,7 +3,7 @@ import type { IncomeExpense } from "@/types";
 import { enqueueSyncEvent, getPendingEvents, removeSyncEvent, removeSyncEvents, updateSyncEvent, type SyncEvent } from "@/lib/idb-queue";
 import { coalesceQueueGroup } from "@/lib/coalesceQueueGroup";
 import { buildIncomeExpensePayload } from "@/lib/income-expense/build-income-expense-payload";
-import { OFFLINE_SYNCED_ACTION_MESSAGE } from "@/lib/record-action-locks";
+import { OFFLINE_SYNCED_ACTION_MESSAGE, PENDING_SERVER_ACTION_MESSAGE } from "@/lib/record-action-locks";
 import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
 import { authFetch } from "@/lib/auth-fetch";
 import { isRetryableSyncResponse } from "@/lib/sync-response";
@@ -67,6 +67,7 @@ function payloadToOptimisticRow(event: SyncEvent): IncomeExpense {
     clientTempId: payload.clientTempId,
     localBillNo: payload.localBillNo,
     syncStatus: event.status === "conflict" ? "conflict" : event.status === "failed" ? "failed" : "pending",
+    serverSubmissionAttempted: event.serverSubmissionAttempted === true,
     idempotencyKey: payload.idempotencyKey,
     locationId: payload.locationId,
     type: payload.type,
@@ -173,7 +174,9 @@ async function normalizeQueue(ownerUserId: string, locationId: string) {
   }
 
   for (const events of grouped.values()) {
-    if (events.length < 2 || events.some((event) => event.status !== "pending")) continue;
+    if (events.length < 2 || events.some((event) => (
+      event.status !== "pending" || event.serverSubmissionAttempted === true
+    ))) continue;
     const result = coalesceQueueGroup(events);
     if (result.action === "noop") {
       for (const event of events) await removeSyncEvent(event.queueId!);
@@ -203,6 +206,10 @@ async function runPendingIncomeExpenseSync(
     if (!navigator.onLine || blockedIds.has(event.id)) continue;
     try {
       attemptedIds.add(event.id);
+      if (event.serverSubmissionAttempted !== true) {
+        event.serverSubmissionAttempted = true;
+        await updateSyncEvent(event);
+      }
       const response = await authFetch("/api/lanflow/income-expense", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -247,6 +254,7 @@ async function runPendingIncomeExpenseSync(
         break;
       }
       else {
+        event.serverSubmissionAttempted = false;
         if (
           data.errorCode === "STOCK_SHORTAGE"
           && event.payload.billOption === "บิลขาย"
@@ -389,6 +397,7 @@ export function useIncomeExpense(
       const sameRecord = events.filter((event) => event.id === transaction.clientTempId);
       if (sameRecord.some((event) => event.status !== "pending")) throw new Error("ไม่สามารถบันทึกได้ กรุณาแก้ไขข้อมูลที่ขัดแย้ง หรือลองซิงก์ใหม่อีกครั้ง");
       if (sameRecord.some((event) => event.operation === "delete")) throw new Error("ไม่สามารถบันทึกได้ รายการนี้กำลังถูกลบ");
+      if (sameRecord.some((event) => event.serverSubmissionAttempted === true)) throw new Error(PENDING_SERVER_ACTION_MESSAGE);
 
       const keeper = sameRecord.find((event) => event.operation === "create") ?? sameRecord.find((event) => event.operation === "update");
       if (keeper) {
@@ -418,6 +427,7 @@ export function useIncomeExpense(
       const sameRecord = events.filter((event) => event.id === clientTempId);
       if (sameRecord.some((event) => event.status !== "pending")) throw new Error("ไม่สามารถลบได้ กรุณาแก้ไขข้อมูลที่ขัดแย้ง หรือลองซิงก์ใหม่อีกครั้ง");
       if (sameRecord.some((event) => event.operation === "delete")) return;
+      if (sameRecord.some((event) => event.serverSubmissionAttempted === true)) throw new Error(PENDING_SERVER_ACTION_MESSAGE);
 
       const pendingCreates = sameRecord.filter((event) => event.operation === "create");
       if (pendingCreates.length) {
@@ -448,6 +458,9 @@ export function useIncomeExpense(
     if (!navigator.onLine) throw new Error("ทิ้งรายการค้างได้เมื่อออนไลน์เท่านั้น");
     const events = await getPendingEvents(queuePartition(ownerUserId, locationId));
     const recordEvents = events.filter((event) => event.id === clientTempId);
+    if (recordEvents.some((event) => event.serverSubmissionAttempted === true)) {
+      throw new Error("รายการนี้อาจบันทึกถึงเซิร์ฟเวอร์แล้ว ต้องลองซิงก์เพื่อตรวจสอบผลก่อน");
+    }
     const discardable = recordEvents.filter((event) => event.status === "failed" || event.status === "conflict");
     if (discardable.length === 0) {
       throw new Error("รายการนี้ไม่มีปัญหาการซิงก์ที่ทิ้งได้");

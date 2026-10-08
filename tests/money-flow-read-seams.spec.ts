@@ -54,7 +54,7 @@ test("Rubber operational list uses a scoped cursor feed and page-scoped evidence
     /const serverBills = \(payload\.rows[\s\S]*?const merged =/
   )?.[0] ?? "";
   expect(receiptCachePath).toContain('if (mode !== "pending_approval")');
-  expect(receiptCachePath).toContain("persistReceiptSnapshots(serverBills)");
+  expect(receiptCachePath).toContain("persistReceiptSnapshots(serverBills, signal)");
 });
 
 test("Rubber online local merge reapplies the active search", () => {

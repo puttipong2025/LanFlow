@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
-import { requireAuth } from "@/lib/server/auth";
+import { hasSystemManagerAccess, requireAuth } from "@/lib/server/auth";
+import { parseSaleDetail } from "@/lib/income-expense/contracts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -19,11 +20,14 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     .eq("id", id)
     .eq("record_status", "active")
     .maybeSingle();
-  if (billError) return NextResponse.json({ error: billError.message }, { status: 500 });
+  if (billError) {
+    console.error("Income/Expense sale detail error:", billError);
+    return NextResponse.json({ error: "โหลดรายละเอียดบิลขายไม่สำเร็จ" }, { status: 500 });
+  }
   if (!bill || bill.bill_option !== "บิลขาย") {
     return NextResponse.json({ error: "ไม่พบบิลขาย" }, { status: 404 });
   }
-  if (!result.auth.locationIds.includes(bill.location_id)) {
+  if (!hasSystemManagerAccess(result.auth) && !result.auth.locationIds.includes(bill.location_id)) {
     return NextResponse.json({ error: "ไม่มีสิทธิ์เข้าถึงสาขา" }, { status: 403 });
   }
 
@@ -32,28 +36,21 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     .select("id, income_sale_item_id, stock_product_id, title, quantity, unit_price, line_total, sequence_no")
     .eq("income_expense_id", id)
     .order("sequence_no");
-  if (lineError) return NextResponse.json({ error: lineError.message }, { status: 500 });
+  if (lineError) {
+    console.error("Income/Expense sale lines error:", lineError);
+    return NextResponse.json({ error: "โหลดรายละเอียดบิลขายไม่สำเร็จ" }, { status: 500 });
+  }
 
-  return NextResponse.json({
-    title: bill.title,
-    cost: Number(bill.cost),
-    serverBillNo: bill.server_bill_no,
-    txDate: bill.tx_date,
-    createdByName: bill.created_by_name,
-    revisionNo: bill.revision_no,
-    reportLockNo: bill.report_lock_no,
-    saleLineCount: lines?.length ?? 0,
-    saleLines: (lines ?? []).map((line) => ({
-      id: line.id,
-      incomeSaleItemId: line.income_sale_item_id,
-      stockProductId: line.stock_product_id,
-      title: line.title,
-      quantity: Number(line.quantity),
-      unitPrice: Number(line.unit_price),
-      lineTotal: Number(line.line_total),
-      sequenceNo: line.sequence_no,
-    })),
-  }, {
+  const detail = parseSaleDetail(bill, lines ?? []);
+  if (!detail) {
+    console.error("Income/Expense sale detail contract mismatch", { id });
+    return NextResponse.json(
+      { error: "ระบบไม่ตอบกลับรายละเอียดบิลขายตามรูปแบบที่กำหนด" },
+      { status: 500 },
+    );
+  }
+
+  return NextResponse.json(detail, {
     headers: { "Cache-Control": "private, no-store, max-age=0" },
   });
 }

@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select extensions.plan(81);
+select extensions.plan(82);
 
 select extensions.has_column('public', 'rubber_bills', 'source_rubber_export_id', 'receipt bill stores its source export');
 select extensions.has_column('public', 'rubber_bills', 'received_age_hours', 'receipt bill snapshots age at receipt');
@@ -255,6 +255,50 @@ select extensions.is(
   3720::numeric,
   'receipt candidate adds work cost to rubber value rather than paid total'
 );
+
+savepoint gap_safe_branch_receipt_numbering;
+
+reset role;
+
+insert into public.rubber_bills (
+  id, client_temp_id, local_bill_no, server_bill_no, idempotency_key,
+  sync_status, record_status, location_id, bill_no, bill_date,
+  customer_name, bill_type, weight, deduct_weight, rubber_value,
+  average_price, net_total, client_created_at,
+  created_by_user_id, created_by_name, created_by_phone
+) values
+  (
+    'a3400000-0000-4000-8000-000000000001', 'BRS-GAP-001',
+    'BRS-GAP-001', to_char(clock_timestamp() at time zone 'Asia/Bangkok', 'YYMMDD') || '0001',
+    'BRS-GAP-001', 'synced', 'active', 'a1000000-0000-4000-8000-000000000002',
+    to_char(clock_timestamp() at time zone 'Asia/Bangkok', 'YYMMDD') || '0001',
+    (clock_timestamp() at time zone 'Asia/Bangkok')::date,
+    'ลูกค้าทดสอบช่องว่าง 1', 'บิลเครื่องชั่งเล็ก', 10, 0, 100, 10, 100,
+    clock_timestamp(), 'a2000000-0000-4000-8000-000000000001', 'ผู้ทดสอบ', '0995100001'
+  ),
+  (
+    'a3400000-0000-4000-8000-000000000003', 'BRS-GAP-003',
+    'BRS-GAP-003', to_char(clock_timestamp() at time zone 'Asia/Bangkok', 'YYMMDD') || '0003',
+    'BRS-GAP-003', 'synced', 'active', 'a1000000-0000-4000-8000-000000000002',
+    to_char(clock_timestamp() at time zone 'Asia/Bangkok', 'YYMMDD') || '0003',
+    (clock_timestamp() at time zone 'Asia/Bangkok')::date,
+    'ลูกค้าทดสอบช่องว่าง 3', 'บิลเครื่องชั่งเล็ก', 10, 0, 100, 10, 100,
+    clock_timestamp(), 'a2000000-0000-4000-8000-000000000001', 'ผู้ทดสอบ', '0995100001'
+  );
+
+set local role authenticated;
+
+select extensions.is(
+  public.receive_rubber_export(
+    'a1000000-0000-4000-8000-000000000002',
+    'a3000000-0000-4000-8000-000000000001'
+  )->>'billNo',
+  to_char(clock_timestamp() at time zone 'Asia/Bangkok', 'YYMMDD') || '0004',
+  'branch receipt advances past the highest daily bill suffix when a middle number is missing'
+);
+
+rollback to savepoint gap_safe_branch_receipt_numbering;
+set local role authenticated;
 
 select extensions.is(
   public.receive_rubber_export(

@@ -308,14 +308,15 @@ export async function GET(request: NextRequest) {
   if (!result.ok) return result.response;
 
   const params = request.nextUrl.searchParams;
-  const locationId = params.get("locationId") ?? "";
+  const rawLocationId = params.get("locationId") ?? "";
   const mode = params.get("mode") ?? "latest";
   const documentStatus = params.get("documentStatus") ?? "any";
   const search = (params.get("search") ?? "").trim().toLocaleLowerCase("th-TH");
   const limit = Number(params.get("limit") ?? 100);
-  if (!isUuid(locationId)) {
+  if (!isUuid(rawLocationId)) {
     return NextResponse.json({ error: "รหัสสาขาไม่ถูกต้อง" }, { status: 400 });
   }
+  const locationId = rawLocationId.toLowerCase();
   if (!hasSystemManagerAccess(result.auth) && !result.auth.locationIds.includes(locationId)) {
     return NextResponse.json({ error: "ไม่มีสิทธิ์เข้าถึงสาขา" }, { status: 403 });
   }

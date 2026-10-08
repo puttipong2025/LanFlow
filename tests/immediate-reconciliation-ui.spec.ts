@@ -123,6 +123,121 @@ test("Branch Receipt keeps confirmed success when its real parent feed refresh f
   expect(writes).toBe(1);
 });
 
+test("Rubber Bill row disappears after confirmed delete without waiting for feed reconciliation", async ({ page }) => {
+  let writeConfirmed = false;
+  let writeCount = 0;
+  let signalWriteStarted!: () => void;
+  let releaseWrite!: () => void;
+  const writeStarted = new Promise<void>((resolve) => { signalWriteStarted = resolve; });
+  const writeGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
+  let postDeleteReadStarted = false;
+  let releasePostDeleteRead!: () => void;
+  const postDeleteReadGate = new Promise<void>((resolve) => { releasePostDeleteRead = resolve; });
+  const serverReceivedAt = new Date().toISOString();
+  const clientTempId = "delete-immediate-ui";
+  const serverBillNo = "RB-DELETE-IMMEDIATE";
+
+  await page.route("**/api/lanflow/rubber-bills/approval-settings?*", (route) => {
+    const locationId = new URL(route.request().url()).searchParams.get("locationId") ?? "";
+    return route.fulfill({ json: {
+      locationId,
+      groupId: null,
+      ruleSource: "ungrouped",
+      editWindowMinutes: 120,
+      centralPrice: 42,
+      priceAllowance: 3,
+      effectivePriceCap: 45,
+      priceRuleRevision: 1,
+      nonCurrentDateRequiresApproval: false,
+    } });
+  });
+  await page.route("**/api/lanflow/rubber-bills/feed?*", async (route) => {
+    const locationId = new URL(route.request().url()).searchParams.get("locationId") ?? "";
+    if (writeConfirmed) {
+      postDeleteReadStarted = true;
+      await postDeleteReadGate;
+      return route.fulfill({ json: { rows: [], evidenceStates: [], hasMore: false, nextCursor: null } });
+    }
+    return route.fulfill({ json: {
+      rows: [{
+        id: "71000000-0000-4000-8000-000000000021",
+        row_kind: "bill",
+        client_temp_id: clientTempId,
+        local_bill_no: "LOCAL-DELETE",
+        server_bill_no: serverBillNo,
+        idempotency_key: `create:${clientTempId}:0`,
+        location_id: locationId,
+        bill_no: serverBillNo,
+        bill_date: "2026-10-07",
+        customer_name: "ลูกค้าทดสอบลบทันที",
+        bill_type: "บิลเครื่องชั่งเล็ก",
+        created_by_user_id: "71000000-0000-4000-8000-000000000022",
+        created_by_name: "ผู้ทดสอบ",
+        created_by_phone: "",
+        client_created_at: serverReceivedAt,
+        client_recorded_at: serverReceivedAt,
+        created_at: serverReceivedAt,
+        server_received_at: serverReceivedAt,
+        revision_no: 1,
+        record_status: "active",
+        operational_sort_at: serverReceivedAt,
+        items: [],
+      }],
+      evidenceStates: [],
+      hasMore: false,
+      nextCursor: null,
+    } });
+  });
+  await page.route("**/api/lanflow/rubber-bills", async (route) => {
+    expect(route.request().method()).toBe("POST");
+    writeCount++;
+    const payload = await route.request().postDataJSON() as {
+      operation?: string;
+      clientTempId?: string;
+      expectedServerId?: string;
+    };
+    expect(payload).toMatchObject({
+      operation: "delete",
+      clientTempId,
+      expectedServerId: "71000000-0000-4000-8000-000000000021",
+    });
+    signalWriteStarted();
+    await writeGate;
+    writeConfirmed = true;
+    return route.fulfill({ json: {
+      status: "synced",
+      id: "71000000-0000-4000-8000-000000000021",
+      serverBillNo,
+      revisionNo: 2,
+      serverReceivedAt,
+    } });
+  });
+
+  try {
+    await page.goto("/");
+    await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
+    const row = page.getByRole("row").filter({ hasText: serverBillNo });
+    await expect(row).toBeVisible();
+    page.once("dialog", (dialog) => void dialog.accept());
+    await row.getByRole("button", { name: "ลบ", exact: true }).click();
+
+    await writeStarted;
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, "onLine", { configurable: true, get: () => false });
+      window.dispatchEvent(new Event("offline"));
+      Object.defineProperty(navigator, "onLine", { configurable: true, get: () => true });
+      window.dispatchEvent(new Event("online"));
+    });
+    await expect.poll(() => writeCount, { timeout: 2_000 }).toBe(1);
+    releaseWrite();
+    await expect.poll(() => postDeleteReadStarted).toBe(true);
+    await expect(row).toHaveCount(0);
+  } finally {
+    releaseWrite();
+    releasePostDeleteRead();
+  }
+});
+
 test("Stock sync waits for reads and offers read-only recovery at 360px", async ({ page }, testInfo) => {
   await page.clock.install();
   let writes = 0; let failReads = true; let refetchStarted = false;
@@ -152,7 +267,7 @@ test("Stock sync waits for reads and offers read-only recovery at 360px", async 
   expect(locationId).toBeTruthy();
   await page.evaluate(async ({ ownerUserId, locationId }) => {
     await new Promise<void>((resolve, reject) => {
-      const open = indexedDB.open("lanflow_sync_db", 4);
+      const open = indexedDB.open("lanflow_sync_db", 5);
       open.onerror = () => reject(open.error);
       open.onsuccess = () => {
         const db = open.result;

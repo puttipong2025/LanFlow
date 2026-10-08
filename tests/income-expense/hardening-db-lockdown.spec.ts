@@ -22,17 +22,20 @@ test.describe('Phase 4: DB Lockdown Hardening Tests', () => {
 
   test('Test 1: Malicious Branch Transfer Bypass', async ({ request }) => {
     // Attempting to directly insert a branch transfer-like record
+    const clientTempId = `malicious-transfer-${crypto.randomUUID()}`;
     const payload = {
       operation: 'create',
-      clientTempId: `malicious-transfer-${Date.now()}`,
-      idempotencyKey: `malicious-transfer-${Date.now()}`,
+      expectedRevisionNo: 0,
+      clientTempId,
+      idempotencyKey: `create:${clientTempId}:0`,
       localBillNo: `LOCAL-TR-${Date.now()}`,
       locationId: locationId,
+      recordStatus: 'active',
       type: 'income',
       billOption: 'รายรับ',
       cost: 500,
       title: 'รับโอนจากสาขา A',
-      txDate: new Date().toISOString(),
+      txDate: bangkokDateString(),
       clientCreatedAt: new Date().toISOString(),
       clientRecordedAt: new Date().toISOString(),
     };
@@ -68,10 +71,12 @@ test.describe('Phase 4: DB Lockdown Hardening Tests', () => {
     // Attempting to insert a record with an approval keyword directly
     const payload = {
       operation: 'create',
+      expectedRevisionNo: 0,
       clientTempId,
-      idempotencyKey: `malicious-keyword-${marker}`,
+      idempotencyKey: `create:${clientTempId}:0`,
       localBillNo: `LOCAL-KW-${marker.slice(0, 8)}`,
       locationId: locationId,
+      recordStatus: 'active',
       type: 'expense',
       billOption: 'ค่าใช้จ่าย',
       cost: 500,
@@ -102,13 +107,26 @@ test.describe('Phase 4: DB Lockdown Hardening Tests', () => {
       auth: { persistSession: false, autoRefreshToken: false },
     });
     const clientTempId = `valid-sync-${crypto.randomUUID()}`;
+    const { data: originalSettings, error: settingsReadError } = await adminClient
+      .from('income_expense_approval_settings')
+      .select('applies_to, approval_min_amount, non_current_date_requires_approval')
+      .eq('id', true)
+      .single();
+    expect(settingsReadError).toBeNull();
+    const { error: settingsUpdateError } = await adminClient
+      .from('income_expense_approval_settings')
+      .update({ approval_min_amount: null, non_current_date_requires_approval: false })
+      .eq('id', true);
+    expect(settingsUpdateError).toBeNull();
     // Normal sync should pass successfully
     const payload = {
       operation: 'create',
+      expectedRevisionNo: 0,
       clientTempId,
-      idempotencyKey: clientTempId,
+      idempotencyKey: `create:${clientTempId}:0`,
       localBillNo: `LOCAL-OK-${Date.now()}`,
       locationId: locationId,
+      recordStatus: 'active',
       type: 'expense',
       billOption: 'ค่าใช้จ่าย',
       cost: 200,
@@ -127,6 +145,9 @@ test.describe('Phase 4: DB Lockdown Hardening Tests', () => {
       expect(body.serverBillNo).toBeTruthy();
     } finally {
       await adminClient.from('income_expense').delete().eq('client_temp_id', clientTempId);
+      if (originalSettings) {
+        await adminClient.from('income_expense_approval_settings').update(originalSettings).eq('id', true);
+      }
     }
   });
 });

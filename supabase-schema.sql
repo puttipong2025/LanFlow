@@ -2417,7 +2417,7 @@ ALTER FUNCTION "private"."clear_weight_evidence_completion_on_bill_change"() OWN
 CREATE OR REPLACE FUNCTION "private"."create_branch_rubber_receipt"("p_destination_location_id" "uuid", "p_source_rubber_export_id" "uuid", "p_remaining_yard_weight" numeric) RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
-    AS $$
+    AS $_$
 declare
   v_source public.rubber_exports%rowtype;
   v_source_location_name text;
@@ -2545,7 +2545,13 @@ begin
     hashtext(p_destination_location_id::text || v_date_key)
   );
 
-  select count(*) + 1
+  select coalesce(max(
+    case
+      when b.server_bill_no ~ ('^' || v_date_key || '[0-9]+$')
+        then substring(b.server_bill_no from char_length(v_date_key) + 1)::integer
+      else null
+    end
+  ), 0) + 1
   into v_next_seq
   from public.rubber_bills b
   where b.location_id = p_destination_location_id
@@ -2625,7 +2631,7 @@ exception
     raise exception 'BRANCH_RECEIPT_ALREADY_EXISTS:%', coalesce(v_source.export_no, '')
       using errcode = 'P0001';
 end;
-$$;
+$_$;
 
 
 ALTER FUNCTION "private"."create_branch_rubber_receipt"("p_destination_location_id" "uuid", "p_source_rubber_export_id" "uuid", "p_remaining_yard_weight" numeric) OWNER TO "postgres";
@@ -5238,6 +5244,23 @@ $_$;
 
 
 ALTER FUNCTION "private"."income_expense_pending_fields"("p_location_id" "uuid", "p_row" "jsonb") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."income_expense_submission_fingerprint"("p_payload" "jsonb") RETURNS "text"
+    LANGUAGE "sql"
+    SET "search_path" TO ''
+    AS $$
+  select pg_catalog.encode(
+    extensions.digest(
+      pg_catalog.convert_to(p_payload::text, 'UTF8'),
+      'sha256'
+    ),
+    'hex'
+  )
+$$;
+
+
+ALTER FUNCTION "private"."income_expense_submission_fingerprint"("p_payload" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."is_active_user"() RETURNS boolean
@@ -8145,26 +8168,6 @@ $$;
 ALTER FUNCTION "private"."rubber_bill_evidence_review_states_for_bills"("p_location_id" "uuid", "p_bill_ids" "uuid"[]) OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "private"."rubber_bill_submission_fingerprint"("p_payload" "jsonb") RETURNS "text"
-    LANGUAGE "sql"
-    SET "search_path" TO 'pg_catalog', 'public', 'private', 'extensions'
-    AS $$
-  select encode(
-    extensions.digest(
-      convert_to((
-        private.normalize_rubber_bill_calculation_payload(p_payload)
-          - 'configuredPriceSnapshot' - 'forceNonCurrentDateApproval' - 'submissionMode'
-      )::text, 'UTF8'),
-      'sha256'
-    ),
-    'hex'
-  )
-$$;
-
-
-ALTER FUNCTION "private"."rubber_bill_submission_fingerprint"("p_payload" "jsonb") OWNER TO "postgres";
-
-
 CREATE OR REPLACE FUNCTION "private"."rubber_bill_has_active_transfer"("p_bill_id" "uuid") RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -8478,6 +8481,42 @@ $$;
 
 
 ALTER FUNCTION "private"."rubber_bill_submission_decision"("payload" "jsonb") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."rubber_bill_submission_fingerprint"("p_payload" "jsonb") RETURNS "text"
+    LANGUAGE "sql"
+    SET "search_path" TO 'pg_catalog', 'public', 'private', 'extensions'
+    AS $$
+  select encode(
+    extensions.digest(
+      convert_to((
+        private.normalize_rubber_bill_calculation_payload(p_payload)
+          - 'configuredPriceSnapshot' - 'forceNonCurrentDateApproval' - 'submissionMode'
+      )::text, 'UTF8'),
+      'sha256'
+    ),
+    'hex'
+  )
+$$;
+
+
+ALTER FUNCTION "private"."rubber_bill_submission_fingerprint"("p_payload" "jsonb") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."try_rubber_bill_submission_fingerprint"("p_payload" "jsonb") RETURNS "text"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'pg_catalog', 'public', 'private', 'extensions'
+    AS $$
+begin
+  return private.rubber_bill_submission_fingerprint(p_payload);
+exception
+  when data_exception or raise_exception then
+    return null;
+end
+$$;
+
+
+ALTER FUNCTION "private"."try_rubber_bill_submission_fingerprint"("p_payload" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."rubber_export_age_hours"("p_bill_date" "date", "p_age_source_at" timestamp with time zone, "p_cutoff_at" timestamp with time zone) RETURNS numeric
@@ -10103,7 +10142,9 @@ begin
 
   v_result := public.sync_rubber_bill_core_20260725010000(v_request.proposed_payload);
   if v_result->>'status' <> 'synced' then
-    raise exception '%', coalesce(v_result->>'errorMessage', 'อนุมัติคำขอไม่สำเร็จ');
+    raise exception using
+      errcode = 'RB500',
+      message = coalesce(v_result->>'errorMessage', 'อนุมัติคำขอไม่สำเร็จ');
   end if;
   v_created_bill_id := (v_result->>'id')::uuid;
   select name, phone into v_actor_name, v_actor_phone
@@ -14535,11 +14576,26 @@ CREATE OR REPLACE FUNCTION "public"."delete_rubber_bill_approval_request"("p_req
     AS $$
 declare
   v_request public.rubber_bill_approval_requests%rowtype;
+  v_request_key text;
+  v_request_fingerprint text;
   v_upload_id uuid;
 begin
   if not private.is_active_user() or not private.can_access_super_admin_features() then
     raise exception 'ไม่มีสิทธิ์ลบคำขอบิลยาง';
   end if;
+
+  select r.idempotency_key into v_request_key
+  from public.rubber_bill_approval_requests r
+  where r.id = p_request_id;
+  if v_request_key is null then
+    raise exception 'ไม่พบคำขอที่รออนุมัติ';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended(
+    'rubber-bill-idempotency:' || v_request_key,
+    0
+  ));
+
   select * into v_request
   from public.rubber_bill_approval_requests r
   where r.id = p_request_id
@@ -14570,6 +14626,25 @@ begin
       raise exception 'ข้อมูลอ้างอิงรูป OCR ไม่ตรงกับคำขออนุมัติ';
     end if;
   end if;
+
+  v_request_fingerprint := private.try_rubber_bill_submission_fingerprint(
+    v_request.proposed_payload
+  );
+
+  insert into private.approval_request_replay_guards(
+    workflow,
+    request_key,
+    terminal_status,
+    completed_at,
+    request_fingerprint
+  ) values (
+    'rubber_bill',
+    v_request.idempotency_key,
+    'deleted',
+    clock_timestamp(),
+    v_request_fingerprint
+  )
+  on conflict (workflow, request_key) do nothing;
 
   delete from public.rubber_bill_approval_requests where id = p_request_id;
 end
@@ -21087,7 +21162,6 @@ CREATE TABLE IF NOT EXISTS "public"."income_expense" (
     "local_bill_no" "text" NOT NULL,
     "server_bill_no" "text",
     "idempotency_key" "text",
-    "last_submission_fingerprint" "text",
     "sync_status" "public"."sync_status" DEFAULT 'pending'::"public"."sync_status" NOT NULL,
     "record_status" "public"."record_status" DEFAULT 'active'::"public"."record_status" NOT NULL,
     "location_id" "uuid" NOT NULL,
@@ -21117,7 +21191,9 @@ CREATE TABLE IF NOT EXISTS "public"."income_expense" (
     "income_sale_item_id" "uuid",
     "stock_product_id" "uuid",
     "stock_quantity" numeric(12,2),
-    CONSTRAINT "income_expense_bill_option_check" CHECK ((("record_status" = 'deleted'::"public"."record_status") OR (("bill_option" IS NOT NULL) AND ((("type" = 'income'::"public"."transaction_type") AND ("bill_option" = ANY (ARRAY['รายรับ'::"text", 'บิลขาย'::"text"]))) OR (("type" = 'expense'::"public"."transaction_type") AND ("bill_option" = 'ค่าใช้จ่าย'::"text"))))))
+    "last_submission_fingerprint" "text",
+    CONSTRAINT "income_expense_bill_option_check" CHECK ((("record_status" = 'deleted'::"public"."record_status") OR (("bill_option" IS NOT NULL) AND ((("type" = 'income'::"public"."transaction_type") AND ("bill_option" = ANY (ARRAY['รายรับ'::"text", 'บิลขาย'::"text"]))) OR (("type" = 'expense'::"public"."transaction_type") AND ("bill_option" = 'ค่าใช้จ่าย'::"text")))))),
+    CONSTRAINT "income_expense_last_submission_fingerprint_check" CHECK ((("last_submission_fingerprint" IS NULL) OR ("last_submission_fingerprint" ~ '^[0-9a-f]{64}$'::"text")))
 );
 
 
@@ -21271,6 +21347,7 @@ END - "deduction_total"), (0)::numeric)) STORED,
     "effective_price_cap_snapshot" numeric(12,2),
     "price_rule_revision_snapshot" bigint,
     "rubber_price_rule_source" "text",
+    "last_submission_fingerprint" "text",
     CONSTRAINT "rubber_bills_allowance_snapshot_check" CHECK ((("price_allowance_snapshot" IS NULL) OR ("price_allowance_snapshot" >= (0)::numeric))),
     CONSTRAINT "rubber_bills_approval_revision_shape_check" CHECK (((("approval_state" = 'not_required'::"text") AND ("approved_by_name" IS NULL) AND ("approval_revision_no" IS NULL)) OR (("approval_state" = 'approved'::"text") AND ("approved_by_name" IS NOT NULL) AND ("approval_revision_no" = "revision_no")))),
     CONSTRAINT "rubber_bills_approval_state_check" CHECK (("approval_state" = ANY (ARRAY['not_required'::"text", 'approved'::"text"]))),
@@ -24461,57 +24538,157 @@ ALTER FUNCTION "public"."sync_acid_stock_entry"("payload" "jsonb") OWNER TO "pos
 
 CREATE OR REPLACE FUNCTION "public"."sync_income_expense"("payload" "jsonb") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public', 'private'
+    SET "search_path" TO ''
     AS $$
 declare
   v_approval jsonb;
   v_stock_result jsonb;
+  v_result jsonb;
+  v_operation text := coalesce(payload ->> 'operation', '');
+  v_title text := btrim(coalesce(payload ->> 'title', ''));
+  v_client_temp_id text := nullif(btrim(payload ->> 'clientTempId'), '');
+  v_idempotency_key text := nullif(btrim(payload ->> 'idempotencyKey'), '');
+  v_fingerprint text := private.income_expense_submission_fingerprint(payload);
+  v_saved_fingerprint text;
+  v_internal_bypass boolean := coalesce(
+    current_setting('app.bypass_income_expense_approval', true),
+    'false'
+  ) = 'true';
+  v_existing_request record;
+  v_existing_row record;
 begin
-  if coalesce(current_setting('app.bypass_income_expense_approval', true), 'false') = 'true' then
-    return private.sync_income_expense_dispatch_20260805020000(payload);
-  end if;
-
-  if payload->>'billOption' = 'บิลขาย'
-     and payload->>'operation' in ('create', 'update') then
-    v_approval := public.create_income_expense_approval_request(payload);
-    if v_approval->>'status' = 'pending' then
-      return jsonb_build_object(
-        'status', 'pending_approval',
-        'requestId', v_approval->>'requestId',
-        'matchedReasons', coalesce(v_approval->'matchedReasons', '[]'::jsonb),
-        'errorMessage', 'รายการนี้ต้องรออนุมัติ'
-      );
-    end if;
-    if v_approval->>'status' <> 'no_approval' then
-      return v_approval;
-    end if;
-
-    v_stock_result := private.preflight_income_sale_stock(payload);
-    if v_stock_result->>'status' <> 'ok' then
-      return v_stock_result;
-    end if;
-    perform set_config('app.bypass_income_expense_approval', 'true', true);
-    return private.sync_income_expense_dispatch_20260805020000(payload);
-  end if;
-
-  v_approval := public.create_income_expense_approval_request(payload);
-  if v_approval->>'status' = 'no_approval' then
-    return private.sync_income_expense_dispatch_20260805020000(payload);
-  end if;
-  if v_approval->>'status' = 'pending' then
+  if v_operation = 'create'
+     and (
+       v_title like 'รับโอนจาก%'
+       or v_title like 'โยกเงินไป%'
+       or v_title like 'สาขาจ่ายส่วนต่างให้%'
+       or lower(v_title) = 'branch transfer'
+     ) then
     return jsonb_build_object(
-      'status', 'pending_approval',
-      'requestId', v_approval->>'requestId',
-      'matchedReasons', coalesce(v_approval->'matchedReasons', '[]'::jsonb),
-      'errorMessage', 'รายการนี้ต้องรออนุมัติ'
+      'status', 'conflict',
+      'errorMessage', 'ไม่สามารถซิงก์รายการโยกเงินโดยตรงได้ ต้องทำผ่านระบบโยกเงินเท่านั้น'
     );
   end if;
-  return v_approval;
+
+  if v_idempotency_key is not null then
+    perform pg_catalog.pg_advisory_xact_lock(
+      pg_catalog.hashtextextended('income-expense-submission:' || v_idempotency_key, 0)
+    );
+
+    select client_temp_id, last_submission_fingerprint
+      into v_existing_row
+    from public.income_expense
+    where idempotency_key = v_idempotency_key;
+
+    if v_existing_row.client_temp_id is not null then
+      if v_existing_row.client_temp_id is distinct from v_client_temp_id
+         or (
+           v_existing_row.last_submission_fingerprint is not null
+           and v_existing_row.last_submission_fingerprint is distinct from v_fingerprint
+         ) then
+        return jsonb_build_object(
+          'status', 'conflict',
+          'errorMessage', 'ข้อมูลคำขอไม่ตรงกับรายการที่บันทึกไว้ก่อนหน้า'
+        );
+      end if;
+    elsif not v_internal_bypass then
+      select
+        request.id,
+        request.request_idempotency_key,
+        request.requested_payload,
+        request.submission_fingerprint
+        into v_existing_request
+      from public.income_expense_approval_requests request
+      where request.request_status in ('pending', 'approved')
+        and (
+          request.request_idempotency_key = v_idempotency_key
+          or request.requested_payload ->> 'idempotencyKey' = v_idempotency_key
+        )
+      order by request.created_at desc, request.id desc
+      limit 1;
+
+      if v_existing_request.id is not null
+         and coalesce(
+           v_existing_request.submission_fingerprint,
+           private.income_expense_submission_fingerprint(v_existing_request.requested_payload)
+         ) is distinct from v_fingerprint then
+        return jsonb_build_object(
+          'status', 'conflict',
+          'errorMessage', 'ข้อมูลคำขอไม่ตรงกับรายการที่ส่งไว้ก่อนหน้า'
+        );
+      end if;
+    end if;
+  end if;
+
+  if v_internal_bypass then
+    v_result := private.sync_income_expense_dispatch_20260805020000(payload);
+  elsif payload ->> 'billOption' = 'บิลขาย'
+     and v_operation in ('create', 'update') then
+    v_approval := public.create_income_expense_approval_request(payload);
+    if v_approval ->> 'status' = 'pending' then
+      v_result := jsonb_build_object(
+        'status', 'pending_approval',
+        'requestId', v_approval ->> 'requestId',
+        'matchedReasons', coalesce(v_approval -> 'matchedReasons', '[]'::jsonb),
+        'errorMessage', 'รายการนี้ต้องรออนุมัติ'
+      );
+    elsif v_approval ->> 'status' <> 'no_approval' then
+      v_result := v_approval;
+    else
+      v_stock_result := private.preflight_income_sale_stock(payload);
+      if v_stock_result ->> 'status' <> 'ok' then
+        v_result := v_stock_result;
+      else
+        perform set_config('app.bypass_income_expense_approval', 'true', true);
+        v_result := private.sync_income_expense_dispatch_20260805020000(payload);
+      end if;
+    end if;
+  else
+    v_approval := public.create_income_expense_approval_request(payload);
+    if v_approval ->> 'status' = 'no_approval' then
+      v_result := private.sync_income_expense_dispatch_20260805020000(payload);
+    elsif v_approval ->> 'status' = 'pending' then
+      v_result := jsonb_build_object(
+        'status', 'pending_approval',
+        'requestId', v_approval ->> 'requestId',
+        'matchedReasons', coalesce(v_approval -> 'matchedReasons', '[]'::jsonb),
+        'errorMessage', 'รายการนี้ต้องรออนุมัติ'
+      );
+    else
+      v_result := v_approval;
+    end if;
+  end if;
+
+  if v_result ->> 'status' = 'pending_approval' then
+    update public.income_expense_approval_requests
+    set submission_fingerprint = v_fingerprint
+    where id = (v_result ->> 'requestId')::uuid
+      and submission_fingerprint is null;
+  elsif v_result ->> 'status' = 'synced' then
+    select request.submission_fingerprint
+      into v_saved_fingerprint
+    from public.income_expense_approval_requests request
+    where request.request_status in ('pending', 'approved')
+      and request.requested_payload ->> 'idempotencyKey' = v_idempotency_key
+    order by request.created_at desc, request.id desc
+    limit 1;
+
+    update public.income_expense
+    set last_submission_fingerprint = coalesce(v_saved_fingerprint, v_fingerprint)
+    where id = (v_result ->> 'id')::uuid
+      and idempotency_key = v_idempotency_key;
+  end if;
+
+  return v_result;
 end;
 $$;
 
 
 ALTER FUNCTION "public"."sync_income_expense"("payload" "jsonb") OWNER TO "postgres";
+
+
+COMMENT ON FUNCTION "public"."sync_income_expense"("payload" "jsonb") IS 'Synchronizes Income/Expense writes. Original client payload fingerprints survive approval normalization and reject changed replays.';
+
 
 
 CREATE OR REPLACE FUNCTION "public"."sync_income_expense_core"("payload" "jsonb") RETURNS "jsonb"
@@ -24907,6 +25084,35 @@ begin
     'rubber-bill-idempotency:' || (payload->>'idempotencyKey'),
     0
   ));
+  if payload->>'submissionMode' = 'replay'
+     and exists (
+       select 1
+       from private.approval_request_replay_guards g
+       where g.workflow = 'rubber_bill'
+         and g.request_key = payload->>'idempotencyKey'
+         and g.terminal_status = 'deleted'
+     ) then
+    if exists (
+      select 1
+      from private.approval_request_replay_guards g
+      where g.workflow = 'rubber_bill'
+        and g.request_key = payload->>'idempotencyKey'
+        and g.terminal_status = 'deleted'
+        and g.request_fingerprint is not null
+        and g.request_fingerprint = private.try_rubber_bill_submission_fingerprint(payload)
+    ) then
+      return jsonb_build_object(
+        'status', 'discarded',
+        'operation', v_operation,
+        'clientTempId', payload->>'clientTempId'
+      );
+    end if;
+    return jsonb_build_object(
+      'status', 'conflict',
+      'errorMessage', 'รหัสคำขอถูกใช้กับรายการอื่นแล้ว'
+    );
+  end if;
+
   if exists (
     select 1
     from public.rubber_bills b
@@ -25215,7 +25421,7 @@ ALTER FUNCTION "public"."sync_rubber_bill_core_20260725010000"("payload" "jsonb"
 CREATE OR REPLACE FUNCTION "public"."sync_rubber_bill_legacy_core_20260824010000"("payload" "jsonb") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public'
-    AS $$
+    AS $_$
 declare
   v_operation text;
   v_expected_revision integer;
@@ -25428,7 +25634,13 @@ begin
       v_date := to_char((payload->>'billDate')::date, 'YYMMDD');
       perform pg_advisory_xact_lock(hashtext(v_location_id::text || v_date));
 
-      select count(*) + 1 into v_next_seq
+      select coalesce(max(
+        case
+          when server_bill_no ~ ('^' || v_date || '[0-9]+$')
+            then substring(server_bill_no from char_length(v_date) + 1)::integer
+          else null
+        end
+      ), 0) + 1 into v_next_seq
       from public.rubber_bills
       where location_id = v_location_id
         and to_char(bill_date, 'YYMMDD') = v_date
@@ -25539,7 +25751,7 @@ begin
 exception when others then
   return jsonb_build_object('status', 'failed', 'errorMessage', sqlerrm);
 end;
-$$;
+$_$;
 
 
 ALTER FUNCTION "public"."sync_rubber_bill_legacy_core_20260824010000"("payload" "jsonb") OWNER TO "postgres";
@@ -26659,7 +26871,9 @@ CREATE TABLE IF NOT EXISTS "private"."approval_request_replay_guards" (
     "request_key" "text" NOT NULL,
     "terminal_status" "text" NOT NULL,
     "completed_at" timestamp with time zone NOT NULL,
-    "archived_at" timestamp with time zone DEFAULT "now"() NOT NULL
+    "archived_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "request_fingerprint" "text",
+    CONSTRAINT "approval_request_replay_guards_fingerprint_check" CHECK ((("request_fingerprint" IS NULL) OR ("request_fingerprint" ~ '^[0-9a-f]{64}$'::"text")))
 );
 
 
@@ -27445,10 +27659,12 @@ CREATE TABLE IF NOT EXISTS "public"."income_expense_approval_requests" (
     "decision_comment" "text",
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "submission_fingerprint" "text",
     CONSTRAINT "income_expense_approval_requests_matched_reasons_check" CHECK ((("cardinality"("matched_reasons") > 0) AND ("matched_reasons" <@ ARRAY['keyword'::"text", 'amount_threshold'::"text", 'non_current_date'::"text"]))),
     CONSTRAINT "income_expense_approval_requests_request_status_check" CHECK (("request_status" = ANY (ARRAY['pending'::"text", 'approved'::"text", 'rejected'::"text", 'cancelled'::"text"]))),
     CONSTRAINT "income_expense_approval_requests_requested_operation_check" CHECK (("requested_operation" = ANY (ARRAY['create'::"text", 'update'::"text", 'delete'::"text"]))),
-    CONSTRAINT "income_expense_approval_requests_tx_type_check" CHECK (("tx_type" = ANY (ARRAY['income'::"text", 'expense'::"text"])))
+    CONSTRAINT "income_expense_approval_requests_tx_type_check" CHECK (("tx_type" = ANY (ARRAY['income'::"text", 'expense'::"text"]))),
+    CONSTRAINT "income_expense_approval_submission_fingerprint_check" CHECK ((("submission_fingerprint" IS NULL) OR ("submission_fingerprint" ~ '^[0-9a-f]{64}$'::"text")))
 );
 
 
@@ -31474,6 +31690,10 @@ REVOKE ALL ON FUNCTION "private"."income_expense_pending_fields"("p_location_id"
 
 
 
+REVOKE ALL ON FUNCTION "private"."income_expense_submission_fingerprint"("p_payload" "jsonb") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."is_active_user"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "private"."is_active_user"() TO "authenticated";
 
@@ -31670,11 +31890,17 @@ REVOKE ALL ON FUNCTION "private"."rubber_bill_report_blockers"("p_location_id" "
 
 
 
+REVOKE ALL ON FUNCTION "private"."rubber_bill_submission_decision"("payload" "jsonb") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."rubber_bill_submission_fingerprint"("p_payload" "jsonb") FROM PUBLIC;
 
 
 
-REVOKE ALL ON FUNCTION "private"."rubber_bill_submission_decision"("payload" "jsonb") FROM PUBLIC;
+REVOKE ALL ON FUNCTION "private"."try_rubber_bill_submission_fingerprint"("p_payload" "jsonb") FROM PUBLIC;
+REVOKE ALL ON FUNCTION "private"."try_rubber_bill_submission_fingerprint"("p_payload" "jsonb") FROM "anon";
+REVOKE ALL ON FUNCTION "private"."try_rubber_bill_submission_fingerprint"("p_payload" "jsonb") FROM "authenticated";
 
 
 

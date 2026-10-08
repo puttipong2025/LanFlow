@@ -4,9 +4,10 @@ import {
   enqueueSyncEvent,
   deleteRubberBillReceiptSnapshotsByClientTempId,
   getPendingEvents,
-  removeSyncEvent,
+  reconcileSyncEventsIfCurrent,
+  removeSyncEventIfCurrent,
   removeSyncEvents,
-  updateSyncEvent,
+  updateSyncEventIfCurrent,
   type SyncEvent,
 } from "@/lib/idb-queue";
 import { toast } from "sonner";
@@ -21,18 +22,30 @@ import type { EffectiveRubberApprovalSettings } from "@/types";
 import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 import { createScopedSingleFlight } from "@/lib/scoped-single-flight";
 import { buildRubberBillRpcPayload } from "@/lib/rubber-bills/submission";
+import { removeConfirmedRubberBillLocally } from "@/lib/rubber-bills/feed-cache";
 
 export function assertRubberBillDeleteAllowed(pendingCreateCount: number, isOnline: boolean) {
-  if (pendingCreateCount === 0 && !isOnline) {
-    throw new Error(OFFLINE_SYNCED_ACTION_MESSAGE);
-  }
+  if (pendingCreateCount === 0 && !isOnline) throw new Error(OFFLINE_SYNCED_ACTION_MESSAGE);
 }
 
 const runRubberBillSyncSingleFlight = createScopedSingleFlight();
-const activeDirectSubmissionScopes = new Set<string>();
+const activeDirectSubmissionScopes = new Map<string, number>();
+function beginDirectSubmission(scopeKey: string) {
+  activeDirectSubmissionScopes.set(scopeKey, (activeDirectSubmissionScopes.get(scopeKey) ?? 0) + 1);
+}
 
-function queuePartition(ownerUserId: string, locationId: string) {
-  return { entity: "rubber_bills" as const, ownerUserId, locationId };
+function endDirectSubmission(scopeKey: string) {
+  const remaining = (activeDirectSubmissionScopes.get(scopeKey) ?? 1) - 1;
+  if (remaining > 0) activeDirectSubmissionScopes.set(scopeKey, remaining);
+  else activeDirectSubmissionScopes.delete(scopeKey);
+}
+
+function queuePartition(ownerUserId: string, locationId: string) { return { entity: "rubber_bills" as const, ownerUserId, locationId }; }
+
+async function removeRubberBillQueueEventBestEffort(event: SyncEvent) {
+  try { await removeSyncEventIfCurrent(event); } catch (error) {
+    console.warn("Unable to remove confirmed Rubber Bill queue event", error);
+  }
 }
 
 export function syncPendingRubberBills(
@@ -45,7 +58,7 @@ export function syncPendingRubberBills(
   if (activeDirectSubmissionScopes.has(scopeKey)) return Promise.resolve();
   return runRubberBillSyncSingleFlight(scopeKey, async () => {
     try {
-    await normalizeRubberBillQueueBeforeSync(ownerUserId, locationId);
+    if (!await normalizeRubberBillQueueBeforeSync(ownerUserId, locationId)) return;
     const events = await getPendingEvents(queuePartition(ownerUserId, locationId));
     // Precompute: block ALL ids that have any failed/conflict event
     const blockedIds = new Set<string>(
@@ -61,13 +74,18 @@ export function syncPendingRubberBills(
 
       try {
         if (event.operation === "create" && event.serverSubmissionAttempted !== true) {
+          const markedEvent = { ...event, serverSubmissionAttempted: true };
+          if (!await reconcileSyncEventsIfCurrent([event], markedEvent)) break;
           event.serverSubmissionAttempted = true;
-          await updateSyncEvent(event);
         }
         const response = await authFetch("/api/lanflow/rubber-bills", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...event.payload, submissionMode: "replay" })
+          body: JSON.stringify({
+            ...event.payload,
+            ...(event.serverId ? { expectedServerId: event.serverId } : {}),
+            submissionMode: "replay",
+          })
         });
 
         const data = await response.json();
@@ -76,8 +94,16 @@ export function syncPendingRubberBills(
           if (data.status === "pending_approval") {
             toast.success("ส่งคำขออนุมัติบิลยางแล้ว");
           }
-          // Success -> remove from queue
-          await removeSyncEvent(event.queueId!);
+          if (event.operation === "delete" && data.status === "synced") {
+            await removeConfirmedRubberBillLocally(
+              queryClient,
+              { ownerUserId, locationId },
+              event.id,
+              event.queueId,
+            );
+          } else {
+            await removeRubberBillQueueEventBestEffort(event);
+          }
         } else if (isRetryableSyncResponse(response.status)) {
           break;
         } else {
@@ -88,7 +114,7 @@ export function syncPendingRubberBills(
           console.warn(`Sync ${eventStatus} for`, event.id, data.errorMessage);
           event.status = eventStatus;
           event.errorMessage = data.errorMessage || (isConflict ? "ข้อมูลชนกัน" : "ซิงก์ไม่สำเร็จ");
-          await updateSyncEvent(event);
+          await updateSyncEventIfCurrent(event);
           blockedIds.add(event.id);
         }
       } catch (err) {
@@ -118,25 +144,28 @@ async function normalizeRubberBillQueueBeforeSync(ownerUserId: string, locationI
 
     const result = coalesceQueueGroup(group);
 
-    if (result.action === "noop") {
-      for (const e of group) await removeSyncEvent(e.queueId!);
-    } else {
-      await updateSyncEvent(result.keeper);
-      for (const e of result.remove) await removeSyncEvent(e.queueId!);
-    }
+    if (!await reconcileSyncEventsIfCurrent(
+      group,
+      result.action === "keep" ? result.keeper : undefined,
+    )) return false;
   }
+  return true;
 }
 
 export function useRubberBillMutations(
   locationId: string,
   ownerUserId: string,
-  approvalSettings?: EffectiveRubberApprovalSettings | null,
+  approvalSettings?: EffectiveRubberApprovalSettings | null
 ) {
   const queryClient = useQueryClient();
-
   const saveBillMutation = useMutation({
     networkMode: "always",
-    mutationFn: async ({ bill }: { bill: RubberBill }) => {
+    mutationFn: async ({ bill, approvalSettings: submittedApprovalSettings }: {
+      bill: RubberBill;
+      approvalSettings?: EffectiveRubberApprovalSettings | null;
+    }) => {
+      const mutationLocationId = bill.locationId || locationId;
+      const mutationApprovalSettings = submittedApprovalSettings === undefined ? approvalSettings : submittedApprovalSettings;
       const isUpdate = Boolean(bill.serverBillNo) || bill.id !== bill.clientTempId;
       const operation = isUpdate ? "update" : "create";
       if ((bill.acidItems?.length ?? 0) > 0 && typeof navigator !== "undefined" && !navigator.onLine) {
@@ -146,7 +175,7 @@ export function useRubberBillMutations(
         throw new Error(OFFLINE_SYNCED_ACTION_MESSAGE);
       }
       if (operation === "create" && typeof navigator !== "undefined") {
-        if (!approvalSettings) {
+        if (!mutationApprovalSettings) {
           throw new Error(
             navigator.onLine
               ? "กำลังโหลดกติกาอนุมัติ กรุณารอสักครู่แล้วบันทึกอีกครั้ง"
@@ -156,7 +185,7 @@ export function useRubberBillMutations(
         assertOfflineRubberBillPriceAllowed(
           (bill.weighItems ?? []).map((item) => item.price),
           bill.billDate,
-          approvalSettings,
+          mutationApprovalSettings,
           navigator.onLine
         );
       }
@@ -164,10 +193,10 @@ export function useRubberBillMutations(
       const { calculatedBill, payload } = buildRubberBillRpcPayload(
         bill,
         operation,
-        operation === "create" ? approvalSettings?.effectivePriceCap : bill.configuredPriceSnapshot
+        operation === "create" ? mutationApprovalSettings?.effectivePriceCap : bill.configuredPriceSnapshot
       );
       const isOnline = typeof navigator === "undefined" || navigator.onLine;
-      const existingEvents = await getPendingEvents(queuePartition(ownerUserId, locationId));
+      const existingEvents = await getPendingEvents(queuePartition(ownerUserId, mutationLocationId));
       const clientEvents = existingEvents.filter(e => e.id === bill.clientTempId);
 
       if (clientEvents.some(e => e.status === "conflict" || e.status === "failed")) {
@@ -183,48 +212,32 @@ export function useRubberBillMutations(
         throw new Error(PENDING_SERVER_ACTION_MESSAGE);
       }
 
-      let keeper: typeof clientEvents[0] | undefined;
-      let toDelete: typeof clientEvents = [];
+      const keeper = pendingCreates[0] ?? pendingUpdates[0];
       let newlyQueuedEvent: SyncEvent | undefined;
 
-      if (pendingCreates.length > 0) {
-        keeper = pendingCreates[0]; // oldest create
-        toDelete = [...pendingCreates.slice(1), ...pendingUpdates];
-      } else if (pendingUpdates.length > 0) {
-        keeper = pendingUpdates[0]; // oldest update
-        toDelete = pendingUpdates.slice(1);
-      }
-
-      for (const e of toDelete) {
-        if (e.queueId) await removeSyncEvent(e.queueId);
-      }
-
       if (keeper) {
-        if (keeper.operation === "create") {
-          keeper.payload = { ...payload, operation: "create", expectedRevisionNo: 0 };
-          keeper.timestamp = Date.now();
-          await updateSyncEvent(keeper);
-        } else {
-          const originalRev = keeper.payload.expectedRevisionNo;
-          keeper.payload = { 
-            ...payload, 
-            operation: "update", 
-            expectedRevisionNo: originalRev,
-            idempotencyKey: `update:${bill.clientTempId}:${originalRev}`
-          };
-          keeper.timestamp = Date.now();
-          await updateSyncEvent(keeper);
+        const originalRev = keeper.payload.expectedRevisionNo;
+        const updatedKeeper = {
+          ...keeper,
+          payload: keeper.operation === "create"
+            ? { ...payload, operation: "create", expectedRevisionNo: 0 }
+            : { ...payload, operation: "update", expectedRevisionNo: originalRev,
+              idempotencyKey: `update:${bill.clientTempId}:${originalRev}` },
+          timestamp: Date.now(),
+        };
+        if (!await reconcileSyncEventsIfCurrent(clientEvents, updatedKeeper)) {
+          throw new Error("ข้อมูลบิลในเครื่องถูกเปลี่ยนจากอีกหน้าต่าง กรุณาลองใหม่อีกครั้ง");
         }
       } else {
         const directSubmissionScope = isOnline && clientEvents.length === 0
-          ? `${ownerUserId}:${locationId}`
+          ? `${ownerUserId}:${mutationLocationId}`
           : null;
-        if (directSubmissionScope) activeDirectSubmissionScopes.add(directSubmissionScope);
+        if (directSubmissionScope) beginDirectSubmission(directSubmissionScope);
         const event: Omit<SyncEvent, "queueId"> = {
           id: bill.clientTempId,
           entity: "rubber_bills",
           ownerUserId,
-          locationId,
+          locationId: mutationLocationId,
           operation,
           serverId: operation === "update" ? bill.id : undefined,
           serverBillNo: operation === "update" ? bill.serverBillNo : undefined,
@@ -235,9 +248,13 @@ export function useRubberBillMutations(
         };
         let queueId: number;
         try {
-          queueId = await enqueueSyncEvent(event);
+          const queuedId = await enqueueSyncEvent(event, clientEvents);
+          if (queuedId === null) {
+            throw new Error("ข้อมูลบิลในเครื่องถูกเปลี่ยนจากอีกหน้าต่าง กรุณาลองใหม่อีกครั้ง");
+          }
+          queueId = queuedId;
         } catch (error) {
-          if (directSubmissionScope) activeDirectSubmissionScopes.delete(directSubmissionScope);
+          if (directSubmissionScope) endDirectSubmission(directSubmissionScope);
           throw error;
         }
         newlyQueuedEvent = { ...event, queueId };
@@ -248,7 +265,10 @@ export function useRubberBillMutations(
           const response = await authFetch("/api/lanflow/rubber-bills", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
+            body: JSON.stringify({
+              ...payload,
+              ...(operation === "update" ? { expectedServerId: bill.id } : {}),
+            }),
           });
           const data = await response.json();
           if (!response.ok) {
@@ -259,10 +279,10 @@ export function useRubberBillMutations(
             newlyQueuedEvent.status = isConflict ? "conflict" : "failed";
             newlyQueuedEvent.errorMessage =
               data.errorMessage || (isConflict ? "ข้อมูลชนกัน" : "ซิงก์ไม่สำเร็จ");
-            await updateSyncEvent(newlyQueuedEvent);
+            await updateSyncEventIfCurrent(newlyQueuedEvent);
             throw new Error(data.errorMessage || "บันทึกบิลไม่สำเร็จ");
           }
-          await removeSyncEvent(newlyQueuedEvent.queueId!);
+          await removeRubberBillQueueEventBestEffort(newlyQueuedEvent);
           return {
             ...calculatedBill,
             id: data.id ?? bill.id,
@@ -274,7 +294,7 @@ export function useRubberBillMutations(
             serverReceivedAt: data.serverReceivedAt ?? bill.serverReceivedAt,
             configuredPriceSnapshot:
               operation === "create"
-                ? approvalSettings?.effectivePriceCap ?? null
+                ? mutationApprovalSettings?.effectivePriceCap ?? null
                 : bill.configuredPriceSnapshot,
             approvalPending: data.status === "pending_approval",
             approvalRequestId: data.requestId,
@@ -284,7 +304,7 @@ export function useRubberBillMutations(
           if (newlyQueuedEvent.status !== "pending") throw error;
           console.error("Network error while saving rubber bill", error);
         } finally {
-          activeDirectSubmissionScopes.delete(`${ownerUserId}:${locationId}`);
+          endDirectSubmission(`${ownerUserId}:${mutationLocationId}`);
         }
       }
       
@@ -294,32 +314,38 @@ export function useRubberBillMutations(
         serverSubmissionAttempted: newlyQueuedEvent?.serverSubmissionAttempted === true,
         configuredPriceSnapshot:
           operation === "create"
-            ? approvalSettings?.effectivePriceCap ?? null
+            ? mutationApprovalSettings?.effectivePriceCap ?? null
             : bill.configuredPriceSnapshot,
         approvalPending: false,
       };
     },
-    onSuccess: (savedBill) => {
+    onSuccess: (savedBill, variables) => {
       if (savedBill.approvalPending) {
         toast.success("ส่งคำขออนุมัติบิลยางแล้ว");
       }
-      void invalidateMoneyFlowLocation(queryClient, { ownerUserId, locationId });
-      void syncPendingRubberBills(queryClient, ownerUserId, locationId);
+      const mutationLocationId = variables?.bill.locationId || locationId;
+      void invalidateMoneyFlowLocation(queryClient, { ownerUserId, locationId: mutationLocationId });
+      void syncPendingRubberBills(queryClient, ownerUserId, mutationLocationId);
     }
   });
 
   const deleteBillMutation = useMutation({
     networkMode: "always",
     mutationFn: async ({ bill, deletedByName, deletedByPhone }: { bill: RubberBill, deletedByName: string, deletedByPhone: string }) => {
+      const isOnline = typeof navigator === "undefined" || navigator.onLine;
+      const mutationLocationId = bill.locationId || locationId;
+      const directSubmissionScope = isOnline ? `${ownerUserId}:${mutationLocationId}` : null;
+      if (directSubmissionScope) beginDirectSubmission(directSubmissionScope);
+      try {
       const clientTempId = bill.clientTempId;
-      const existingEvents = await getPendingEvents(queuePartition(ownerUserId, locationId));
+      const existingEvents = await getPendingEvents(queuePartition(ownerUserId, mutationLocationId));
       const clientEvents = existingEvents.filter(e => e.id === clientTempId);
 
       if (clientEvents.some(e => e.status === "conflict" || e.status === "failed")) {
         throw new Error("ไม่สามารถลบได้ กรุณาแก้ไขข้อมูลที่ขัดแย้ง หรือลองซิงก์ใหม่อีกครั้ง");
       }
       if (clientEvents.some(e => e.operation === "delete")) {
-        return { clientTempId, coalesced: false }; // Already deleting
+        return { approvalPending: false }; // Already deleting
       }
 
       const pendingCreates = clientEvents.filter(e => e.operation === "create");
@@ -330,20 +356,19 @@ export function useRubberBillMutations(
 
       assertRubberBillDeleteAllowed(
         pendingCreates.length,
-        typeof navigator === "undefined" || navigator.onLine
+        isOnline
       );
 
-      // Cleanup all pending updates (they will be replaced by this delete)
-      for (const e of pendingUpdates) {
-        if (e.queueId) await removeSyncEvent(e.queueId);
-      }
-
       if (pendingCreates.length > 0) {
-        // Coalesce: remove all creates, and don't sync delete to server
-        for (const e of pendingCreates) {
-          if (e.queueId) await removeSyncEvent(e.queueId);
+        // Coalesce: remove the entire local-only history atomically, and don't
+        // sync a delete for a record that never reached the Server.
+        const coalescedEvents = [...pendingCreates, ...pendingUpdates];
+        if (!await reconcileSyncEventsIfCurrent(coalescedEvents)) {
+          throw new Error("ข้อมูลบิลในเครื่องถูกเปลี่ยนจากอีกหน้าต่าง กรุณาลองลบอีกครั้ง");
         }
-        return { clientTempId, coalesced: true };
+        await removeConfirmedRubberBillLocally(
+          queryClient, { ownerUserId, locationId: mutationLocationId }, clientTempId);
+        return { approvalPending: false };
       }
 
       // If we replaced a pending update, use its server revision. Else use current bill's server revision.
@@ -365,7 +390,7 @@ export function useRubberBillMutations(
         id: clientTempId,
         entity: "rubber_bills",
         ownerUserId,
-        locationId,
+        locationId: mutationLocationId,
         operation: "delete",
         serverId: bill.id,
         serverBillNo: bill.serverBillNo,
@@ -373,15 +398,31 @@ export function useRubberBillMutations(
         timestamp: Date.now(),
         status: "pending"
       };
-      const queueId = await enqueueSyncEvent(event);
-      const queuedEvent: SyncEvent = { ...event, queueId };
+      let queuedEvent: SyncEvent;
+      if (pendingUpdates.length > 0) {
+        const [keeper] = pendingUpdates;
+        const queueId = keeper.queueId;
+        if (typeof queueId !== "number") {
+          throw new Error("ข้อมูลคิวในเครื่องไม่สมบูรณ์ กรุณาลองเปิดแอปใหม่");
+        }
+        queuedEvent = { ...event, queueId };
+        if (!await reconcileSyncEventsIfCurrent(pendingUpdates, queuedEvent)) {
+          throw new Error("ข้อมูลบิลในเครื่องถูกเปลี่ยนจากอีกหน้าต่าง กรุณาลองลบอีกครั้ง");
+        }
+      } else {
+        const queueId = await enqueueSyncEvent(event, clientEvents);
+        if (queueId === null) {
+          throw new Error("ข้อมูลบิลในเครื่องถูกเปลี่ยนจากอีกหน้าต่าง กรุณาลองลบอีกครั้ง");
+        }
+        queuedEvent = { ...event, queueId };
+      }
 
-      if (typeof navigator === "undefined" || navigator.onLine) {
+      if (isOnline) {
         try {
           const response = await authFetch("/api/lanflow/rubber-bills", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
+            body: JSON.stringify({ ...payload, expectedServerId: bill.id }),
           });
           const data = await response.json();
           if (!response.ok) {
@@ -392,29 +433,39 @@ export function useRubberBillMutations(
             queuedEvent.status = isConflict ? "conflict" : "failed";
             queuedEvent.errorMessage =
               data.errorMessage || (isConflict ? "ข้อมูลชนกัน" : "ซิงก์ไม่สำเร็จ");
-            await updateSyncEvent(queuedEvent);
+            await updateSyncEventIfCurrent(queuedEvent);
             throw new Error(data.errorMessage || "ลบบิลไม่สำเร็จ");
           }
-          await removeSyncEvent(queueId);
-          return {
-            clientTempId,
-            coalesced: false,
-            approvalPending: data.status === "pending_approval",
-          };
+          const removeFromList = data.status === "synced";
+          if (removeFromList) {
+            await removeConfirmedRubberBillLocally(
+              queryClient,
+              { ownerUserId, locationId: mutationLocationId },
+              clientTempId,
+              queuedEvent.queueId,
+            );
+          } else {
+            await removeRubberBillQueueEventBestEffort(queuedEvent);
+          }
+          return { approvalPending: data.status === "pending_approval" };
         } catch (error) {
           if (queuedEvent.status !== "pending") throw error;
           console.error("Network error while deleting rubber bill", error);
         }
       }
 
-      return { clientTempId, coalesced: false, approvalPending: false };
+      return { approvalPending: false };
+      } finally {
+        if (directSubmissionScope) endDirectSubmission(directSubmissionScope);
+      }
     },
-    onSuccess: (data) => {
+    onSuccess: async (data, variables) => {
       if (data.approvalPending) {
         toast.success("ส่งคำขออนุมัติลบบิลยางแล้ว");
       }
-      void invalidateMoneyFlowLocation(queryClient, { ownerUserId, locationId });
-      void syncPendingRubberBills(queryClient, ownerUserId, locationId);
+      const mutationLocationId = variables?.bill.locationId || locationId;
+      void invalidateMoneyFlowLocation(queryClient, { ownerUserId, locationId: mutationLocationId });
+      void syncPendingRubberBills(queryClient, ownerUserId, mutationLocationId);
     }
   });
 
@@ -441,8 +492,8 @@ export function useRubberBillMutations(
   }
 
   return {
-    addBill: (bill: RubberBill) => saveBillMutation.mutateAsync({ bill }),
-    updateBill: (bill: RubberBill) => saveBillMutation.mutateAsync({ bill }),
+    addBill: (bill: RubberBill) => saveBillMutation.mutateAsync({ bill, approvalSettings: approvalSettings ?? null }),
+    updateBill: (bill: RubberBill) => saveBillMutation.mutateAsync({ bill, approvalSettings: approvalSettings ?? null }),
     deleteBill: deleteBillMutation.mutateAsync,
     discardSyncProblem,
   };

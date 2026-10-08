@@ -36,18 +36,14 @@ export async function POST(request: NextRequest) {
   if ("errorMessage" in parsed) {
     return NextResponse.json({ errorMessage: parsed.errorMessage }, { status: 400 });
   }
-  try {
-    const { data, error } = await authCheck.supabase.rpc("create_rubber_approval_group_v2", {
-      p_location_ids: parsed.value.locationIds,
-      p_edit_window_minutes: parsed.value.editWindowMinutes,
-      p_price_allowance: parsed.value.priceAllowance,
-    });
-    if (error) return managementErrorResponse(error, "สร้างกลุ่มไม่สำเร็จ");
-    if (!isRubberApprovalGroupMutationResult(data, parsed.value)) {
-      return NextResponse.json({ errorMessage: "ระบบไม่ตอบกลับผลการสร้างกลุ่ม" }, { status: 500 });
-    }
-    return NextResponse.json(data, { status: 201 });
-  } catch {
-    return NextResponse.json({ errorMessage: "สร้างกลุ่มไม่สำเร็จ" }, { status: 500 });
+  const { data, error } = await authCheck.supabase.rpc("create_rubber_approval_group_v2", {
+    p_location_ids: parsed.value.locationIds,
+    p_edit_window_minutes: parsed.value.editWindowMinutes,
+    p_price_allowance: parsed.value.priceAllowance,
+  });
+  if (error) return managementErrorResponse(error, "สร้างกลุ่มไม่สำเร็จ");
+  if (!isRubberApprovalGroupMutationResult(data, parsed.value)) {
+    return NextResponse.json({ errorMessage: "ระบบไม่ตอบกลับผลการสร้างกลุ่ม" }, { status: 500 });
   }
+  return NextResponse.json(data, { status: 201 });
 }

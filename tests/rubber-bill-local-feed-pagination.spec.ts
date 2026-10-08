@@ -24,6 +24,7 @@ function syncEvent(operation: SyncEvent["operation"], status: SyncEvent["status"
     status,
     timestamp: 1,
     payload: {
+      operation,
       clientTempId,
       localBillNo: "LOCAL-1",
       idempotencyKey: `${operation}:${clientTempId}:1`,
@@ -139,6 +140,33 @@ test("queue normalization preserves an attempted create marker", () => {
   if (result.action === "keep") {
     expect(result.keeper.operation).toBe("create");
     expect(result.keeper.serverSubmissionAttempted).toBe(true);
+  }
+});
+
+test("queue normalization never drops an attempted create when a competing delete exists", () => {
+  const create = {
+    ...syncEvent("create", "pending"),
+    queueId: 1,
+    serverSubmissionAttempted: true,
+  } satisfies SyncEvent;
+  const deleteEvent = {
+    ...syncEvent("delete", "pending"),
+    queueId: 2,
+    timestamp: 2,
+  } satisfies SyncEvent;
+
+  const result = coalesceQueueGroup([create, deleteEvent]);
+
+  expect(result.action).toBe("keep");
+  if (result.action === "keep") {
+    expect(result.keeper).toMatchObject({
+      queueId: 1,
+      operation: "create",
+      serverSubmissionAttempted: true,
+      status: "failed",
+    });
+    expect(result.keeper.errorMessage).toContain("หลายหน้าต่าง");
+    expect(result.remove).toEqual([deleteEvent]);
   }
 });
 

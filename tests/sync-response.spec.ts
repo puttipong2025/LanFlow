@@ -20,8 +20,16 @@ test("classifies transient sync responses without treating business failures as 
   ]);
 });
 
-function rubberRouteDependencies(data: unknown) {
+function rubberRouteDependencies(
+  data: unknown,
+  existingServerId = "71000000-0000-4000-8000-000000000021",
+) {
+  const selection = {
+    eq: () => selection,
+    maybeSingle: async () => ({ data: { id: existingServerId }, error: null }),
+  };
   const supabase = { rpc: async () => ({ data, error: null }) };
+  Object.assign(supabase, { from: () => ({ select: () => selection }) });
   return {
     "@/lib/server/auth": {
       requireAuth: async () => ({ ok: true, supabase }),
@@ -63,6 +71,8 @@ test("rubber bill sync route rejects malformed mutation identity before the RPC 
     validRubberSubmission({ idempotencyKey: " " }),
     validRubberSubmission({ expectedRevisionNo: 1 }),
     validRubberSubmission({ operation: "delete", expectedRevisionNo: 0 }),
+    validRubberSubmission({ operation: "update", expectedRevisionNo: 1, expectedServerId: "not-a-uuid" }),
+    validRubberSubmission({ expectedServerId: "71000000-0000-4000-8000-000000000021" }),
     validRubberSubmission({ locationId: "not-a-uuid" }),
   ];
   for (const submission of invalidSubmissions) {
@@ -77,6 +87,159 @@ test("rubber bill sync route rejects malformed mutation identity before the RPC 
     });
   }
   expect(rpcCalls).toBe(0);
+});
+
+test("rubber bill sync route rejects a declared oversized request before the RPC", async () => {
+  let rpcCalls = 0;
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/route")>(
+    "src/app/api/lanflow/rubber-bills/route.ts",
+    {
+      "@/lib/server/auth": {
+        requireAuth: async () => ({
+          ok: true,
+          supabase: {
+            rpc: async () => {
+              rpcCalls += 1;
+              return { data: null, error: null };
+            },
+          },
+        }),
+      },
+    },
+  );
+  const response = await route.POST(new Request("http://local/api/lanflow/rubber-bills", {
+    method: "POST",
+    headers: { "Content-Length": String((1024 * 1024) + 1) },
+    body: JSON.stringify(validRubberSubmission()),
+  }));
+
+  expect(response.status).toBe(413);
+  expect(await response.json()).toEqual({
+    status: "failed",
+    errorMessage: "ข้อมูลบิลยางมีขนาดใหญ่เกินกำหนด",
+  });
+  expect(rpcCalls).toBe(0);
+});
+
+test("rubber bill sync route rejects an actual oversized request before the RPC", async () => {
+  let rpcCalls = 0;
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/route")>(
+    "src/app/api/lanflow/rubber-bills/route.ts",
+    {
+      "@/lib/server/auth": {
+        requireAuth: async () => ({
+          ok: true,
+          supabase: {
+            rpc: async () => {
+              rpcCalls += 1;
+              return { data: null, error: null };
+            },
+          },
+        }),
+      },
+    },
+  );
+  const response = await route.POST(new Request("http://local/api/lanflow/rubber-bills", {
+    method: "POST",
+    body: JSON.stringify(validRubberSubmission({ filler: "x".repeat(1024 * 1024) })),
+  }));
+
+  expect(response.status).toBe(413);
+  expect(await response.json()).toEqual({
+    status: "failed",
+    errorMessage: "ข้อมูลบิลยางมีขนาดใหญ่เกินกำหนด",
+  });
+  expect(rpcCalls).toBe(0);
+});
+
+test("rubber bill sync route keeps an oversized response stable when stream cancellation fails", async () => {
+  let cancelCalls = 0;
+  let rpcCalls = 0;
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/route")>(
+    "src/app/api/lanflow/rubber-bills/route.ts",
+    {
+      "@/lib/server/auth": {
+        requireAuth: async () => ({
+          ok: true,
+          supabase: {
+            rpc: async () => {
+              rpcCalls += 1;
+              return { data: null, error: null };
+            },
+          },
+        }),
+      },
+    },
+  );
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new Uint8Array((1024 * 1024) + 1));
+    },
+    cancel() {
+      cancelCalls += 1;
+      throw new Error("synthetic cancel failure");
+    },
+  });
+  const requestInit: RequestInit & { duplex: "half" } = {
+    method: "POST",
+    body,
+    duplex: "half",
+  };
+  const response = await route.POST(new Request(
+    "http://local/api/lanflow/rubber-bills",
+    requestInit,
+  ));
+
+  expect(response.status).toBe(413);
+  expect(await response.json()).toEqual({
+    status: "failed",
+    errorMessage: "ข้อมูลบิลยางมีขนาดใหญ่เกินกำหนด",
+  });
+  expect(cancelCalls).toBe(1);
+  expect(rpcCalls).toBe(0);
+});
+
+test("rubber bill sync route preserves Request.text UTF-8 BOM handling", async () => {
+  const pendingApproval = {
+    status: "pending_approval",
+    requestId: "71000000-0000-4000-8000-000000000021",
+    operation: "create",
+    clientTempId: "submitted-bill",
+  };
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/route")>(
+    "src/app/api/lanflow/rubber-bills/route.ts",
+    rubberRouteDependencies(pendingApproval),
+  );
+  const body = Buffer.concat([
+    Buffer.from([0xef, 0xbb, 0xbf]),
+    Buffer.from(JSON.stringify(validRubberSubmission())),
+  ]);
+  const response = await route.POST(new Request("http://local/api/lanflow/rubber-bills", {
+    method: "POST",
+    body,
+  }));
+
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual(pendingApproval);
+});
+
+test("rubber bill sync route accepts a discarded replay for the submitted identity", async () => {
+  const discarded = {
+    status: "discarded",
+    operation: "create",
+    clientTempId: "submitted-bill",
+  };
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/route")>(
+    "src/app/api/lanflow/rubber-bills/route.ts",
+    rubberRouteDependencies(discarded),
+  );
+  const response = await route.POST(new Request("http://local/api/lanflow/rubber-bills", {
+    method: "POST",
+    body: JSON.stringify(validRubberSubmission({ submissionMode: "replay" })),
+  }));
+
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual(discarded);
 });
 
 test("rubber bill sync route fails closed for an unknown RPC status", async () => {
@@ -96,7 +259,7 @@ test("rubber bill sync route fails closed for an unknown RPC status", async () =
   });
 });
 
-test("rubber bill sync route does not expose database error details from a failed result", async () => {
+test("rubber bill sync route keeps a database-shaped failed result retryable without exposing details", async () => {
   const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/route")>(
     "src/app/api/lanflow/rubber-bills/route.ts",
     rubberRouteDependencies({
@@ -109,7 +272,7 @@ test("rubber bill sync route does not expose database error details from a faile
     body: JSON.stringify(validRubberSubmission()),
   }));
 
-  expect(response.status).toBe(400);
+  expect(response.status).toBe(503);
   expect(await response.json()).toEqual({
     status: "failed",
     errorMessage: "บันทึกบิลยางไม่สำเร็จ",
@@ -136,7 +299,7 @@ test("rubber bill sync route does not expose database error details from a confl
   });
 });
 
-test("rubber bill sync route replaces a blank RPC failure message", async () => {
+test("rubber bill sync route treats a blank RPC failure message as a retryable malformed result", async () => {
   const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/route")>(
     "src/app/api/lanflow/rubber-bills/route.ts",
     rubberRouteDependencies({ status: "failed", errorMessage: "   " }),
@@ -146,7 +309,7 @@ test("rubber bill sync route replaces a blank RPC failure message", async () => 
     body: JSON.stringify(validRubberSubmission()),
   }));
 
-  expect(response.status).toBe(400);
+  expect(response.status).toBe(503);
   expect(await response.json()).toEqual({
     status: "failed",
     errorMessage: "บันทึกบิลยางไม่สำเร็จ",
@@ -186,6 +349,231 @@ test("rubber bill sync route rejects an incomplete synced response before the qu
     status: "failed",
     errorMessage: "ระบบซิงก์บิลยางไม่ตอบกลับตามรูปแบบที่กำหนด",
   });
+});
+
+test("rubber bill sync route rejects a synced response for another submitted bill", async () => {
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/route")>(
+    "src/app/api/lanflow/rubber-bills/route.ts",
+    rubberRouteDependencies({
+      status: "synced",
+      id: "71000000-0000-4000-8000-000000000099",
+      serverBillNo: "RB-OTHER",
+      revisionNo: 2,
+      serverReceivedAt: "2026-10-07T00:00:00.000Z",
+    }),
+  );
+  const response = await route.POST(new Request("http://local/api/lanflow/rubber-bills", {
+    method: "POST",
+    body: JSON.stringify(validRubberSubmission({
+      operation: "delete",
+      expectedRevisionNo: 1,
+      expectedServerId: "71000000-0000-4000-8000-000000000021",
+    })),
+  }));
+
+  expect(response.status).toBe(503);
+  expect(await response.json()).toEqual({
+    status: "failed",
+    errorMessage: "ระบบซิงก์บิลยางไม่ตอบกลับตามรูปแบบที่กำหนด",
+  });
+});
+
+test("rubber bill sync route rejects a create result for another persisted bill", async () => {
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/route")>(
+    "src/app/api/lanflow/rubber-bills/route.ts",
+    rubberRouteDependencies({
+      status: "synced",
+      id: "71000000-0000-4000-8000-000000000099",
+      serverBillNo: "RB-OTHER",
+      revisionNo: 1,
+      serverReceivedAt: "2026-10-07T00:00:00.000Z",
+    }),
+  );
+  const response = await route.POST(new Request("http://local/api/lanflow/rubber-bills", {
+    method: "POST",
+    body: JSON.stringify(validRubberSubmission()),
+  }));
+
+  expect(response.status).toBe(503);
+  expect(await response.json()).toEqual({
+    status: "failed",
+    errorMessage: "ระบบซิงก์บิลยางไม่ตอบกลับตามรูปแบบที่กำหนด",
+  });
+});
+
+test("rubber bill sync route rejects a mismatched expected Server identity before the RPC", async () => {
+  let rpcCalls = 0;
+  const selection = {
+    eq: () => selection,
+    maybeSingle: async () => ({
+      data: { id: "71000000-0000-4000-8000-000000000021" },
+      error: null,
+    }),
+  };
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/route")>(
+    "src/app/api/lanflow/rubber-bills/route.ts",
+    {
+      "@/lib/server/auth": {
+        requireAuth: async () => ({
+          ok: true,
+          supabase: {
+            from: () => ({ select: () => selection }),
+            rpc: async () => {
+              rpcCalls += 1;
+              return { data: null, error: null };
+            },
+          },
+        }),
+      },
+    },
+  );
+  const response = await route.POST(new Request("http://local/api/lanflow/rubber-bills", {
+    method: "POST",
+    body: JSON.stringify(validRubberSubmission({
+      operation: "delete",
+      expectedRevisionNo: 1,
+      expectedServerId: "71000000-0000-4000-8000-000000000099",
+    })),
+  }));
+
+  expect(response.status).toBe(409);
+  expect(await response.json()).toEqual({
+    status: "conflict",
+    errorMessage: "ข้อมูลอ้างอิงบิลยางไม่ตรงกับ Server",
+  });
+  expect(rpcCalls).toBe(0);
+});
+
+test("rubber bill sync route fails closed when its Server identity lookup fails", async () => {
+  let rpcCalls = 0;
+  const selection = {
+    eq: () => selection,
+    maybeSingle: async () => ({
+      data: null,
+      error: { code: "42P01", message: 'relation "public.rubber_bills" does not exist' },
+    }),
+  };
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/route")>(
+    "src/app/api/lanflow/rubber-bills/route.ts",
+    {
+      "@/lib/server/auth": {
+        requireAuth: async () => ({
+          ok: true,
+          supabase: {
+            from: () => ({ select: () => selection }),
+            rpc: async () => {
+              rpcCalls += 1;
+              return { data: null, error: null };
+            },
+          },
+        }),
+      },
+    },
+  );
+  const response = await route.POST(new Request("http://local/api/lanflow/rubber-bills", {
+    method: "POST",
+    body: JSON.stringify(validRubberSubmission({
+      operation: "delete",
+      expectedRevisionNo: 1,
+      expectedServerId: "71000000-0000-4000-8000-000000000021",
+    })),
+  }));
+
+  expect(response.status).toBe(503);
+  expect(await response.json()).toEqual({
+    status: "failed",
+    errorMessage: "ตรวจสอบข้อมูลอ้างอิงบิลยางไม่สำเร็จ",
+  });
+  expect(rpcCalls).toBe(0);
+});
+
+test("rubber bill sync route accepts a synced response for the submitted server bill", async () => {
+  const synced = {
+    status: "synced",
+    id: "71000000-0000-4000-8000-000000000021",
+    serverBillNo: "RB-EXPECTED",
+    revisionNo: 2,
+    serverReceivedAt: "2026-10-07T00:00:00.000Z",
+  };
+  let rpcPayload: Record<string, unknown> | undefined;
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/route")>(
+    "src/app/api/lanflow/rubber-bills/route.ts",
+    {
+      "@/lib/server/auth": {
+        requireAuth: async () => ({
+          ok: true,
+          supabase: {
+            from: () => ({ select: () => ({
+              eq() { return this; },
+              maybeSingle: async () => ({ data: { id: synced.id }, error: null }),
+            }) }),
+            rpc: async (_name: string, args: { payload: Record<string, unknown> }) => {
+              rpcPayload = args.payload;
+              return { data: synced, error: null };
+            },
+          },
+        }),
+      },
+    },
+  );
+  const response = await route.POST(new Request("http://local/api/lanflow/rubber-bills", {
+    method: "POST",
+    body: JSON.stringify(validRubberSubmission({
+      operation: "delete",
+      expectedRevisionNo: 1,
+      expectedServerId: synced.id,
+    })),
+  }));
+
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual(synced);
+  expect(rpcPayload).not.toHaveProperty("expectedServerId");
+});
+
+test("rubber bill sync route treats uppercase and lowercase Server UUIDs as the same identity", async () => {
+  const synced = {
+    status: "synced",
+    id: "71000000-0000-4000-8000-0000000000ab",
+    serverBillNo: "RB-UUID-CASE",
+    revisionNo: 2,
+    serverReceivedAt: "2026-10-07T00:00:00.000Z",
+  };
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/route")>(
+    "src/app/api/lanflow/rubber-bills/route.ts",
+    rubberRouteDependencies(synced, synced.id),
+  );
+  const response = await route.POST(new Request("http://local/api/lanflow/rubber-bills", {
+    method: "POST",
+    body: JSON.stringify(validRubberSubmission({
+      operation: "delete",
+      expectedRevisionNo: 1,
+      expectedServerId: synced.id.toUpperCase(),
+    })),
+  }));
+
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual(synced);
+});
+
+test("rubber bill sync route keeps legacy delete submissions without a server identity compatible", async () => {
+  const synced = {
+    status: "synced",
+    id: "71000000-0000-4000-8000-000000000021",
+    serverBillNo: "RB-LEGACY",
+    revisionNo: 2,
+    serverReceivedAt: "2026-10-07T00:00:00.000Z",
+  };
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/route")>(
+    "src/app/api/lanflow/rubber-bills/route.ts",
+    rubberRouteDependencies(synced),
+  );
+  const response = await route.POST(new Request("http://local/api/lanflow/rubber-bills", {
+    method: "POST",
+    body: JSON.stringify(validRubberSubmission({ operation: "delete", expectedRevisionNo: 1 })),
+  }));
+
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual(synced);
 });
 
 test("rubber bill sync route accepts an approved create replay after the bill was revised", async () => {

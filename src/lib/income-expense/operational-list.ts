@@ -22,6 +22,7 @@ export function incomeExpenseFromSyncEvent(event: SyncEvent): IncomeExpense {
     clientTempId: payload.clientTempId,
     localBillNo: payload.localBillNo,
     syncStatus: event.status === "conflict" ? "conflict" : event.status === "failed" ? "failed" : "pending",
+    serverSubmissionAttempted: event.serverSubmissionAttempted === true,
     idempotencyKey: payload.idempotencyKey,
     locationId: payload.locationId,
     type: payload.type,
@@ -85,6 +86,7 @@ export function mergeIncomeExpenseLocalEvents(
         if (current) rows.set(clientTempId, {
           ...current,
           syncStatus: event.status,
+          serverSubmissionAttempted: event.serverSubmissionAttempted === true,
           syncErrorMessage: event.errorMessage,
         });
         else rows.set(clientTempId, incomeExpenseFromSyncEvent(event));

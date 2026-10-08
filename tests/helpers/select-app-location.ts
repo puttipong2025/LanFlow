@@ -20,18 +20,18 @@ export async function confirmCurrentBranchIfRequired(page: Page) {
     .catch(() => false);
   if (!appeared) return;
 
-  const selector = page.locator('button[data-location-id][aria-controls="location-selector-listbox"]');
-  const locationId = await selector.getAttribute("data-location-id");
-  const response = await page.request.get("/api/lanflow");
-  if (!response.ok()) throw new Error(`Unable to load current location (${response.status()})`);
-  const bootstrap = await response.json() as { locations: Array<{ id: string; name: string }> };
-  const locationName = bootstrap.locations.find((location) => location.id === locationId)?.name;
-  if (!locationName) throw new Error("Current location name is missing from the bootstrap response");
+  const locationName = await page
+    .locator('button[data-location-id][aria-controls="location-selector-listbox"] span')
+    .first()
+    .innerText();
 
-  await guard.getByRole("button", {
-    name: `เลือกสาขา ${locationName}`,
-    exact: true,
-  }).click();
+  await guard
+    .getByRole("group", { name: "เลือกสาขาปัจจุบัน" })
+    .getByRole("button", {
+      name: `เลือกสาขา ${locationName.trim()}`,
+      exact: true,
+    })
+    .click();
   await guard.waitFor({ state: "hidden" });
 }
 

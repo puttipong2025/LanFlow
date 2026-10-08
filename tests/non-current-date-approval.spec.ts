@@ -18,7 +18,7 @@ function incomePayload(locationId: string, txDate: string) {
     operation: "create",
     expectedRevisionNo: 0,
     clientTempId,
-    idempotencyKey: `date-approval:${clientTempId}`,
+    idempotencyKey: `create:${clientTempId}:0`,
     locationId,
     recordStatus: "active",
     localBillNo: `DATE-${clientTempId.slice(0, 8)}`,
@@ -146,7 +146,7 @@ test.describe.serial("non-current income/expense approval gate", () => {
         ...basePayload,
         operation: "update",
         expectedRevisionNo: created.revisionNo,
-        idempotencyKey: `date-update:${basePayload.clientTempId}:${created.revisionNo}`,
+        idempotencyKey: `update:${basePayload.clientTempId}:${created.revisionNo}`,
         txDate: pastDate,
       };
       const updateResponse = await manager.request.post("/api/lanflow/income-expense", { data: updatePayload });
@@ -171,7 +171,7 @@ test.describe.serial("non-current income/expense approval gate", () => {
         operation: "delete",
         recordStatus: "deleted",
         expectedRevisionNo: updated.data!.revision_no,
-        idempotencyKey: `date-delete:${basePayload.clientTempId}:${updated.data!.revision_no}`,
+        idempotencyKey: `delete:${basePayload.clientTempId}:${updated.data!.revision_no}`,
         txDate: bangkokDateString(),
       };
       const deleteResponse = await manager.request.post("/api/lanflow/income-expense", { data: deletePayload });

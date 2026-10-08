@@ -1,6 +1,9 @@
 import { test, expect, Browser, Page } from '@playwright/test';
 import { assertRubberBillDeleteAllowed } from '../src/hooks/useRubberBills';
-import { selectedAppLocationId } from './helpers/select-app-location';
+import {
+  confirmCurrentBranchIfRequired,
+  selectedAppLocationId,
+} from './helpers/select-app-location';
 import { bangkokDateString } from '../src/lib/bangkok-date';
 
 const testUserId = process.env.TEST_USER_ID || '00000000-0000-4000-8000-000000000001';
@@ -48,11 +51,16 @@ async function listApprovalGroups(page: Page) {
   return data.groups;
 }
 
-async function updateApprovalGroup(page: Page, group: ApprovalGroup, priceAllowance: number) {
+async function updateApprovalGroup(
+  page: Page,
+  group: ApprovalGroup,
+  priceAllowance: number,
+  editWindowMinutes = group.editWindowMinutes,
+) {
   const response = await page.request.put(`/api/lanflow/rubber-bills/approval-groups/${group.id}`, {
     data: {
       locationIds: group.locationIds,
-      editWindowMinutes: group.editWindowMinutes,
+      editWindowMinutes,
       priceAllowance,
       revisionNo: group.revisionNo,
     },
@@ -61,14 +69,20 @@ async function updateApprovalGroup(page: Page, group: ApprovalGroup, priceAllowa
   return (await response.json() as { group: ApprovalGroup }).group;
 }
 
-async function prepareZeroAllowanceApprovalGroup(browser: Browser) {
-  const locationId = await selectedManagerLocationId(browser);
+async function prepareZeroAllowanceApprovalGroup(browser: Browser, locationId: string) {
   const fixture = await withManagerContext(browser, async (page): Promise<ApprovalGroupFixture> => {
     const group = (await listApprovalGroups(page)).find((item) => item.locationIds.includes(locationId));
-    if (!group) return null;
-    if (group.priceAllowance === 0) return null;
-    const updated = await updateApprovalGroup(page, group, 0);
-    return { kind: 'restore', group: { ...group, revisionNo: updated.revisionNo } };
+    if (group) {
+      if (group.priceAllowance === 0 && group.editWindowMinutes === 30) return null;
+      const updated = await updateApprovalGroup(page, group, 0, 30);
+      return { kind: 'restore', group: { ...group, revisionNo: updated.revisionNo } };
+    }
+    const response = await page.request.post('/api/lanflow/rubber-bills/approval-groups', {
+      data: { locationIds: [locationId], editWindowMinutes: 30, priceAllowance: 0 },
+    });
+    expect(response.status()).toBe(201);
+    const created = await response.json() as { group: ApprovalGroup };
+    return { kind: 'delete', group: created.group };
   });
   return { locationId, fixture };
 }
@@ -185,6 +199,7 @@ async function createBillOnline(page: Page, marker: string) {
   await expect(page.locator('button:has-text("เพิ่มบิลยาง")')).toBeVisible();
 
   await page.click('button:has-text("เพิ่มบิลยาง")');
+  await confirmCurrentBranchIfRequired(page);
   await expect(page.locator('h2:has-text("บิลเครื่องชั่งเล็ก")')).toBeVisible();
   
   const customerInput = page.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]');
@@ -208,6 +223,7 @@ async function createSyncedBillFromAuthenticatedApp(page: Page, marker: string) 
   await expect(page.locator('button:has-text("เพิ่มบิลยาง")')).toBeVisible();
   await waitForRubberApprovalSettings(page);
   await page.click('button:has-text("เพิ่มบิลยาง")');
+  await confirmCurrentBranchIfRequired(page);
 
   const modal = page.locator('.fixed.inset-0').last();
   await modal.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]').fill(marker);
@@ -240,34 +256,29 @@ async function waitForRubberApprovalSettings(page: Page) {
 }
 
 async function cleanupRubberBillByCustomerName(page: Page, customerName: string) {
+  const serviceHeaders = {
+    apikey: localServiceRoleKey,
+    Authorization: `Bearer ${localServiceRoleKey}`,
+    Prefer: 'return=minimal',
+  };
   const response = await page.request.get(
-    `${localSupabaseUrl}/rest/v1/rubber_bills?customer_name=eq.${encodeURIComponent(customerName)}&select=client_temp_id,revision_no,location_id,record_status`,
-    {
-      headers: {
-        apikey: localServiceRoleKey,
-        Authorization: `Bearer ${localServiceRoleKey}`,
-      },
-    }
+    `${localSupabaseUrl}/rest/v1/rubber_bills?customer_name=eq.${encodeURIComponent(customerName)}&select=id`,
+    { headers: serviceHeaders },
   );
   if (!response.ok()) return;
-  const rows = await response.json() as Array<{
-    client_temp_id: string;
-    revision_no: number;
-    location_id: string;
-    record_status: string;
-  }>;
-  const row = rows.find((candidate) => candidate.record_status === 'active');
-  if (!row) return;
-  await page.request.post('/api/lanflow/rubber-bills', {
-    data: {
-      operation: 'delete',
-      clientTempId: row.client_temp_id,
-      idempotencyKey: `delete:${row.client_temp_id}:${row.revision_no}`,
-      expectedRevisionNo: row.revision_no,
-      recordStatus: 'deleted',
-      locationId: row.location_id,
-    },
-  });
+  const rows = await response.json() as Array<{ id: string }>;
+  for (const row of rows) {
+    const requests = await page.request.delete(
+      `${localSupabaseUrl}/rest/v1/rubber_bill_approval_requests?or=(bill_id.eq.${row.id},created_bill_id.eq.${row.id})`,
+      { headers: serviceHeaders },
+    );
+    expect(requests.ok()).toBeTruthy();
+    const bill = await page.request.delete(
+      `${localSupabaseUrl}/rest/v1/rubber_bills?id=eq.${row.id}`,
+      { headers: serviceHeaders },
+    );
+    expect(bill.ok()).toBeTruthy();
+  }
 }
 
 test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
@@ -290,8 +301,21 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
       }
     );
     expect(resetApprovalSetting.ok()).toBeTruthy();
-    ({ locationId: approvalGroupLocationId, fixture: approvalGroupFixture } = await prepareZeroAllowanceApprovalGroup(browser));
     await page.goto('/');
+    const currentSession = await page.request.get('/api/auth/me');
+    let currentLocationId: string | null;
+    if (currentSession.ok()) {
+      await expect(page.locator('button[data-location-id][aria-controls="location-selector-listbox"]'))
+        .toBeVisible();
+      currentLocationId = await selectedAppLocationId(page);
+    } else {
+      currentLocationId = await selectedManagerLocationId(browser);
+    }
+    expect(currentLocationId).toBeTruthy();
+    ({ locationId: approvalGroupLocationId, fixture: approvalGroupFixture } = await prepareZeroAllowanceApprovalGroup(
+      browser,
+      currentLocationId!,
+    ));
     await clearQueue(page);
   });
 
@@ -319,6 +343,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
       await page.click('button:has-text("บิลยาง")');
       await waitForRubberApprovalSettings(page);
       await page.click('button:has-text("เพิ่มบิลยาง")');
+      await confirmCurrentBranchIfRequired(page);
 
       let interceptedPost = false;
       await page.route('**/api/lanflow/rubber-bills', async (route) => {
@@ -361,6 +386,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
       await page.click('button:has-text("บิลยาง")');
       await waitForRubberApprovalSettings(page);
       await page.click('button:has-text("เพิ่มบิลยาง")');
+      await confirmCurrentBranchIfRequired(page);
 
       await page.route('**/api/lanflow/rubber-bills', async (route) => {
         if (route.request().method() !== 'POST') {
@@ -473,6 +499,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
         await page.click('button:has-text("บิลยาง")');
         await waitForRubberApprovalSettings(page);
         await page.click('button:has-text("เพิ่มบิลยาง")');
+        await confirmCurrentBranchIfRequired(page);
 
         let postAttempts = 0;
         let committedStatus = 0;
@@ -612,7 +639,19 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
         await secondPage.click('button:has-text("บิลยาง")');
         const secondRow = secondPage.locator('table tbody tr', { hasText: marker }).first();
         await expect(secondRow.getByText('ซิงก์แล้ว', { exact: true })).toBeVisible({ timeout: 20000 });
+        const deleteResponsePromise = secondPage.waitForResponse((candidate) => (
+          candidate.url().endsWith('/api/lanflow/rubber-bills')
+          && candidate.request().method() === 'POST'
+        ));
         await secondRow.getByRole('button', { name: 'ลบ', exact: true }).click();
+        const deleteResponse = await deleteResponsePromise;
+        const deleteBody = await deleteResponse.json() as {
+          status?: string;
+          errorMessage?: string;
+          matchedReasons?: string[];
+        };
+        expect(deleteResponse.ok(), deleteBody.errorMessage).toBeTruthy();
+        expect(deleteBody.status, JSON.stringify(deleteBody)).toBe('synced');
         await expect(secondRow).toBeHidden({ timeout: 20000 });
 
         await page.getByRole('button', { name: /ซิงก์มีปัญหา/ }).click();
@@ -655,6 +694,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
 
     // === STEP 1: CREATE bill offline ===
     await page.click('button:has-text("เพิ่มบิลยาง")');
+    await confirmCurrentBranchIfRequired(page);
     await expect(page.locator('h2:has-text("บิลเครื่องชั่งเล็ก")')).toBeVisible();
     
     const customerInput = page.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]');
@@ -735,6 +775,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     // === STEP 3: CREATE second bill, then DELETE (test coalesce: create+delete = no-op) ===
     const markerDelete = `${marker}-DEL`;
     await page.click('button:has-text("เพิ่มบิลยาง")');
+    await confirmCurrentBranchIfRequired(page);
     await expect(page.locator('h2:has-text("บิลเครื่องชั่งเล็ก")')).toBeVisible();
     await page.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]').fill(markerDelete);
     await page.keyboard.press('Escape');
@@ -834,15 +875,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     expect(dbRows[0].revision_no).toBe(revisionAfterReplay);
     expect(dbRows[0].server_bill_no).toBe(replayData.serverBillNo);
 
-    // === CLEANUP — soft delete the test bill ===
-    const cleanupPayload = {
-      ...replayPayload,
-      operation: 'delete',
-      recordStatus: 'deleted',
-      expectedRevisionNo: replayData.revisionNo ?? 1,
-      idempotencyKey: `delete:${clientTempId}:${replayData.revisionNo ?? 1}`
-    };
-    await page.request.post('/api/lanflow/rubber-bills', { data: cleanupPayload });
+    await cleanupRubberBillByCustomerName(page, marker);
   });
 
   // NOTE: Full offline reload (PWA/SW) test lives in rubber-bills-pwa.spec.ts
@@ -850,22 +883,27 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
 
   test('should block editing and deleting a synced bill while offline', async ({ page, context }) => {
     const marker = `SyncedOffline-${Date.now()}`;
-    await createBillOnline(page, marker);
+    try {
+      await createBillOnline(page, marker);
 
-    const row = page.locator('table tbody tr', { hasText: marker }).first();
-    await context.setOffline(true);
+      const row = page.locator('table tbody tr', { hasText: marker }).first();
+      await context.setOffline(true);
 
-    const blockMessage = 'รายการนี้ซิงก์แล้ว ต้องออนไลน์เพื่อแก้ไขหรือลบ';
-    const editButton = row.locator('button', { hasText: 'แก้' });
-    const deleteButton = row.getByRole('button', { name: blockMessage, exact: true }).last();
+      const blockMessage = 'รายการนี้ซิงก์แล้ว ต้องออนไลน์เพื่อแก้ไขหรือลบ';
+      const editButton = row.locator('button', { hasText: 'แก้' });
+      const deleteButton = row.getByRole('button', { name: blockMessage, exact: true }).last();
 
-    await expect(editButton).toBeDisabled();
-    await expect(deleteButton).toBeDisabled();
-    await expect(editButton).toHaveAttribute('title', blockMessage);
-    await expect(deleteButton).toHaveAttribute('title', blockMessage);
-    await expect(editButton).toHaveAttribute('aria-label', blockMessage);
-    await expect(deleteButton).toHaveAttribute('aria-label', blockMessage);
-    await expect(readQueue(page)).resolves.toHaveLength(0);
+      await expect(editButton).toBeDisabled();
+      await expect(deleteButton).toBeDisabled();
+      await expect(editButton).toHaveAttribute('title', blockMessage);
+      await expect(deleteButton).toHaveAttribute('title', blockMessage);
+      await expect(editButton).toHaveAttribute('aria-label', blockMessage);
+      await expect(deleteButton).toHaveAttribute('aria-label', blockMessage);
+      await expect(readQueue(page)).resolves.toHaveLength(0);
+    } finally {
+      await context.setOffline(false);
+      await cleanupRubberBillByCustomerName(page, marker);
+    }
   });
 
   test('offline stock deduction cannot be added to the sync queue', async ({ page, context }) => {
@@ -880,6 +918,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
 
     await context.setOffline(true);
     await page.click('button:has-text("เพิ่มบิลยาง")');
+    await confirmCurrentBranchIfRequired(page);
     const modal = page.locator('.fixed.inset-0').last();
     await expect(modal.locator('h2:has-text("บิลเครื่องชั่งเล็ก")')).toBeVisible();
     const queueBefore = await readQueue(page);
@@ -915,6 +954,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
       await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
       await page.click('button:has-text("บิลยาง")');
       await page.click('button:has-text("เพิ่มบิลยาง")');
+      await confirmCurrentBranchIfRequired(page);
       await expect(page.getByText(/ราคากลาง 42\.00/)).toBeVisible({ timeout: 15000 });
 
       const modal = page.locator('.fixed.inset-0').last();

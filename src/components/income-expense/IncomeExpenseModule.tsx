@@ -11,7 +11,7 @@ import { useLocations } from "@/hooks/useLocations";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { bangkokDateString } from "@/lib/bangkok-date";
 import { usePerRecordSyncRetry } from "@/hooks/usePerRecordSyncRetry";
-import { getOfflineSyncedActionBlockReason } from "@/lib/record-action-locks";
+import { getOfflineSyncedActionBlockReason, getPendingServerActionBlockReason } from "@/lib/record-action-locks";
 import { canAccessSourceLocation, canManageSystemFeatures } from "@/lib/permissions";
 import {
   buildSaleReceiptModel,
@@ -61,7 +61,7 @@ export function IncomeExpenseModule({
   onOpenMoneyTransferSource?: (transferId: string, locationId: string) => void;
   onOpenRubberBillSource?: (locationId: string, billDate?: string) => void;
   onOpenRubberExportSource?: (exportId: string, locationId: string) => void;
-  onOpenTimeTrackingSource?: (sourceId: string, sourceType: "time_tracking_withdrawal" | "payroll_slip") => void;
+  onOpenTimeTrackingSource?: (sourceId: string, sourceType: "time_tracking_withdrawal" | "time_tracking_withdrawal_adjustment" | "payroll_slip") => void;
 }) {
   const pdfShare = useSharePdf();
   const [mode, setMode] = useState<"latest" | "pending_approval" | "sync_problems">("latest");
@@ -198,7 +198,7 @@ export function IncomeExpenseModule({
     const reportLockReason = getReportLockReason(transaction.reportLockNo);
     if (reportLockReason) return reportLockReason;
     if (transaction.relationLockReason) return transaction.relationLockReason;
-    return getOfflineSyncedActionBlockReason(transaction, isOnline);
+    return getPendingServerActionBlockReason(transaction) ?? getOfflineSyncedActionBlockReason(transaction, isOnline);
   }
 
   async function openBranchTransfer() {
@@ -681,7 +681,7 @@ export function IncomeExpenseModule({
                 const actionsDisabled = Boolean(actionBlockReason) || deleting;
                 const actionTitle = deleting ? "กำลังลบรายการ..." : actionBlockReason;
                 const isSaleBill = transaction.billOption === "บิลขาย";
-                const canDiscardFailed = (transaction.syncStatus === "failed" || transaction.syncStatus === "conflict") && isOnline;
+                const canDiscardFailed = (transaction.syncStatus === "failed" || transaction.syncStatus === "conflict") && !transaction.serverSubmissionAttempted && isOnline;
                 const saleShareBlockReason = isSaleBill
                   ? !isOnline
                     ? "แชร์ PDF บิลขายได้เมื่อออนไลน์"
@@ -719,7 +719,7 @@ export function IncomeExpenseModule({
                   canAccessSourceLocation(profile, sourceLocationId)
                 );
                 const canOpenTimeTrackingSource = Boolean(
-                  (transaction.relationSourceType === "time_tracking_withdrawal" || transaction.relationSourceType === "payroll_slip") &&
+                  (transaction.relationSourceType === "time_tracking_withdrawal" || transaction.relationSourceType === "time_tracking_withdrawal_adjustment" || transaction.relationSourceType === "payroll_slip") &&
                   transaction.relationSourceId &&
                   onOpenTimeTrackingSource &&
                   (profile.role === "admin" || profile.role === "super_admin")
@@ -746,7 +746,7 @@ export function IncomeExpenseModule({
                   if (canOpenTimeTrackingSource) {
                     onOpenTimeTrackingSource?.(
                       transaction.relationSourceId!,
-                      transaction.relationSourceType as "time_tracking_withdrawal" | "payroll_slip",
+                      transaction.relationSourceType as "time_tracking_withdrawal" | "time_tracking_withdrawal_adjustment" | "payroll_slip",
                     );
                   }
                 }

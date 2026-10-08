@@ -55,7 +55,7 @@ export function RubberBillApprovalModal({
     deleteRequest,
   } = useRubberBillApprovals({
     locationId: locationFilter,
-    cachedLocationIds: locations.map((location) => location.id),
+    ownerUserId: profile.id,
   });
   const queue = useRubberBillList({
     ownerUserId: profile.id,
@@ -118,7 +118,7 @@ export function RubberBillApprovalModal({
     if (!request.approvalRequestId) return;
     try {
       setBusyId(request.approvalRequestId);
-      await approveRequest(request.approvalRequestId);
+      await approveRequest(request.approvalRequestId, request.locationId);
       toast.success("อนุมัติคำขอแล้ว");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "อนุมัติคำขอไม่สำเร็จ");
@@ -131,7 +131,7 @@ export function RubberBillApprovalModal({
     if (!request.approvalRequestId) return;
     try {
       setBusyId(request.approvalRequestId);
-      await deleteRequest(request.approvalRequestId);
+      await deleteRequest(request.approvalRequestId, request.locationId);
       toast.success("ลบคำขอถาวรแล้ว");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "ลบคำขอไม่สำเร็จ");

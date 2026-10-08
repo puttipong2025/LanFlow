@@ -44,7 +44,7 @@ export function RubberApprovalPolicyPanel({
   locationsLoading: boolean;
   locationsError: Error | null;
 }) {
-  const policy = useRubberApprovalGroups(locations.map((location) => location.id));
+  const policy = useRubberApprovalGroups();
   const [centralPrice, setCentralPrice] = useState("");
   const [maxPriceAllowance, setMaxPriceAllowance] = useState<string | null>(null);
   const [editingGroup, setEditingGroup] = useState<RubberApprovalGroup | null>(null);

@@ -1,6 +1,10 @@
 import { test, expect, Page } from '@playwright/test';
 import { createClient } from '@supabase/supabase-js';
-import { selectAppLocation, selectedAppLocationId } from './helpers/select-app-location';
+import {
+  confirmCurrentBranchIfRequired,
+  selectAppLocation,
+  selectedAppLocationId,
+} from './helpers/select-app-location';
 import { bangkokDateString } from '../src/lib/bangkok-date';
 import { createTransferLocationFixture } from './helpers/transfer-location-fixture';
 
@@ -43,6 +47,7 @@ const password = process.env.TEST_PASSWORD || 'password123';
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://127.0.0.1:54321';
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const testUserId = process.env.TEST_USER_ID || '00000000-0000-4000-8000-000000000001';
+let originalApprovalSettings: Record<string, unknown> | null = null;
 
 function normalizeThaiPhoneToE164(rawPhone: string) {
   const digits = rawPhone.replace(/\D/g, '');
@@ -149,6 +154,7 @@ async function loginAndGoToIncomeExpense(page: Page, loginPhone = phone) {
 /** Create an income transaction online and wait for sync */
 async function createIncomeOnline(page: Page, title: string, cost: number) {
   await page.click('button:has-text("เพิ่มรายรับ")');
+  await confirmCurrentBranchIfRequired(page);
   await expect(page.locator('h2:has-text("เพิ่ม/แก้ไข บิลเงินสด")')).toBeVisible();
 
   const modal = page.locator('.fixed.inset-0').last();
@@ -289,6 +295,33 @@ function serverBillSuffix(serverBillNo: string) {
 test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
   test.beforeAll(async () => {
     await ensureTestUser();
+    const admin = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const settings = await admin.from('income_expense_approval_settings').select('*').eq('id', true).maybeSingle();
+    expect(settings.error).toBeNull();
+    originalApprovalSettings = settings.data;
+    expect((await admin.from('income_expense_approval_settings').upsert({
+      id: true,
+      applies_to: settings.data?.applies_to ?? 'both',
+      approval_min_amount: null,
+      cash_transfer_delete_requires_approval: settings.data?.cash_transfer_delete_requires_approval ?? true,
+      non_current_date_requires_approval: false,
+    }, { onConflict: 'id' })).error).toBeNull();
+  });
+
+  test.afterAll(async () => {
+    const admin = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    if (originalApprovalSettings) {
+      expect((await admin.from('income_expense_approval_settings').upsert(
+        originalApprovalSettings,
+        { onConflict: 'id' },
+      )).error).toBeNull();
+    } else {
+      expect((await admin.from('income_expense_approval_settings').delete().eq('id', true)).error).toBeNull();
+    }
   });
 
   test.beforeEach(async ({ page }) => {
@@ -314,6 +347,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
 
     // Create income transaction
     await page.click('button:has-text("เพิ่มรายรับ")');
+    await confirmCurrentBranchIfRequired(page);
     await expect(page.locator('h2:has-text("เพิ่ม/แก้ไข บิลเงินสด")')).toBeVisible();
 
     const modal = page.locator('.fixed.inset-0').last();
@@ -367,6 +401,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
 
     // Create expense
     await page.click('button:has-text("เพิ่มรายจ่าย")');
+    await confirmCurrentBranchIfRequired(page);
     await expect(page.locator('h2:has-text("เพิ่ม/แก้ไข บิลเงินสด")')).toBeVisible();
 
     const modal = page.locator('.fixed.inset-0').last();
@@ -457,6 +492,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
 
     // Create
     await page.click('button:has-text("เพิ่มรายรับ")');
+    await confirmCurrentBranchIfRequired(page);
     await expect(page.locator('h2:has-text("เพิ่ม/แก้ไข บิลเงินสด")')).toBeVisible();
     const modal = page.locator('.fixed.inset-0').last();
     await modal.locator('table tbody tr').first().locator('input').first().fill(marker);
@@ -505,6 +541,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
 
     await context.setOffline(true);
     await page.click('button:has-text("เพิ่มรายรับ")');
+    await confirmCurrentBranchIfRequired(page);
     const createModal = page.locator('.fixed.inset-0').last();
     await createModal.locator('table tbody tr').first().locator('input').first().fill(marker);
     await createModal.locator('table tbody tr').first().locator('input[type="number"]').first().fill('500');
@@ -553,6 +590,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
     // Create offline
     await context.setOffline(true);
     await page.click('button:has-text("เพิ่มรายรับ")');
+    await confirmCurrentBranchIfRequired(page);
     await expect(page.locator('h2:has-text("เพิ่ม/แก้ไข บิลเงินสด")')).toBeVisible();
     const modal = page.locator('.fixed.inset-0').last();
     await modal.locator('table tbody tr').first().locator('input').first().fill(marker);
@@ -596,7 +634,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
     await cleanupIncomeExpense(page, payload, clientTempId, replay1Data.revisionNo);
   });
 
-  test('stale update revision → marks conflict and shows error in UI', async ({ page, context }) => {
+  test('changed stale update replay → marks conflict and shows error in UI', async ({ page, context }) => {
     test.setTimeout(90000);
     await loginAndGoToIncomeExpense(page);
 
@@ -615,7 +653,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
       operation: 'update',
       expectedRevisionNo: initialRev,
       clientTempId,
-      idempotencyKey: `server-update:${clientTempId}:${initialRev}`,
+      idempotencyKey: `update:${clientTempId}:${initialRev}`,
       locationId: serverRow.location_id,
       localBillNo: serverRow.local_bill_no,
       txDate: serverRow.tx_date,
@@ -658,7 +696,10 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
     await page.click('button:has-text("รับ-จ่าย")');
     const conflictRow = page.locator('table tbody tr', { hasText: `${marker}-LOCAL` }).first();
     await expect(conflictRow).toBeVisible({ timeout: 15000 });
-    await expect(conflictRow.locator('text=Revision mismatch')).toBeVisible();
+    await expect(conflictRow.getByText(
+      'ข้อมูลคำขอไม่ตรงกับรายการที่บันทึกไว้ก่อนหน้า',
+      { exact: true },
+    )).toBeVisible();
 
     const queueAfterReload = await readQueue(page);
     const conflictEvent = queueAfterReload.find(e => e.id === clientTempId && e.entity === 'income_expense');
@@ -695,14 +736,14 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
     const failedEvent = queue.find(e => e.id === payload.clientTempId && e.entity === 'income_expense');
     expect(failedEvent).toBeDefined();
     expect(failedEvent.status).toBe('failed');
-    expect(failedEvent.errorMessage).toBe('ข้อมูลรายการหรือยอดเงินไม่ถูกต้อง');
+    expect(failedEvent.errorMessage).toBe('ข้อมูลอ้างอิงการซิงก์รับ-จ่ายไม่ถูกต้อง');
 
     await page.reload();
     await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
     await page.click('button:has-text("รับ-จ่าย")');
     const failedRow = page.locator('table tbody tr', { hasText: marker }).first();
     await expect(failedRow).toBeVisible({ timeout: 15000 });
-    await expect(failedRow.getByText('ข้อมูลรายการหรือยอดเงินไม่ถูกต้อง', { exact: true })).toBeVisible();
+    await expect(failedRow.getByText('ข้อมูลอ้างอิงการซิงก์รับ-จ่ายไม่ถูกต้อง', { exact: true })).toBeVisible();
 
     const queueAfterReload = await readQueue(page);
     const failedEventAfterReload = queueAfterReload.find(e => e.id === payload.clientTempId && e.entity === 'income_expense');
@@ -1002,7 +1043,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
       });
       await page.route('**/api/lanflow/income-expense/feed?**', async (route) => {
         const response = await route.fetch();
-        if (submitStarted) {
+        if (submitStarted && createPostCount > 0) {
           await expect.poll(() => createCompleted, { timeout: 3000 }).toBe(true);
           await new Promise((resolve) => setTimeout(resolve, 750));
         }
@@ -1010,6 +1051,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
       });
 
       await page.getByRole('button', { name: addLabel, exact: true }).click();
+      await confirmCurrentBranchIfRequired(page);
       const modal = page.locator('.fixed.inset-0').last();
       await modal.locator('table tbody tr').first().locator('input').first().fill(marker);
       await modal.locator('table tbody tr').first().locator('input[type="number"]').first().fill('321');

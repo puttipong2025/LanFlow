@@ -66,6 +66,7 @@ test.describe("time/payroll money contract", () => {
     expect(routeSource).not.toMatch(/from\("payroll_slips"\)[\s\S]{0,80}select\("\*/);
     expect(userRouteSource).not.toMatch(/from\("payroll_slips"\)[\s\S]{0,80}select\("\*/);
     expect(incomeExpenseSource).toContain('transaction.relationSourceType === "payroll_slip"');
+    expect(incomeExpenseSource).toContain('transaction.relationSourceType === "time_tracking_withdrawal_adjustment"');
     expect(dashboardSource).toContain('row.sourceType === "payroll_slip"');
     expect(paymentModalSource).toContain("paymentAmount");
     expect(paymentModalSource).toContain("amountLabel");

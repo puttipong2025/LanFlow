@@ -1,11 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { hasSystemManagerAccess, requireAuth } from "@/lib/server/auth";
-import type { IncomeExpense } from "@/types";
+import {
+  isIncomeExpenseFeedPayload,
+  type IncomeExpenseServerFeedMode,
+} from "@/lib/income-expense/contracts";
 
 export const dynamic = "force-dynamic";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const MODES = new Set(["latest", "pending_approval"]);
+const MODES = new Set<IncomeExpenseServerFeedMode>(["latest", "pending_approval"]);
+
+function isFeedMode(value: string): value is IncomeExpenseServerFeedMode {
+  return MODES.has(value as IncomeExpenseServerFeedMode);
+}
 
 function normalizeSearch(value: string | null) {
   return (value ?? "").trim().replace(/\s+/gu, " ");
@@ -23,7 +30,7 @@ export async function GET(request: NextRequest) {
   if (!locationId || !UUID.test(locationId)) {
     return NextResponse.json({ error: "พารามิเตอร์ feed ไม่ถูกต้อง" }, { status: 400 });
   }
-  if (!MODES.has(mode) || search.length > 200 || (cursor?.length ?? 0) > 4096) {
+  if (!isFeedMode(mode) || search.length > 200 || (cursor?.length ?? 0) > 4096) {
     return NextResponse.json({ error: "พารามิเตอร์ feed ไม่ถูกต้อง" }, { status: 400 });
   }
   if (!hasSystemManagerAccess(result.auth) && !result.auth.locationIds.includes(locationId)) {
@@ -41,23 +48,18 @@ export async function GET(request: NextRequest) {
   });
 
   if (error) {
-    console.error("Income/Expense operational feed error:", error.message);
+    console.error("Income/Expense operational feed error:", error);
     if (/invalid cursor|cursor scope mismatch/i.test(error.message)) {
       return NextResponse.json({ error: "cursor ไม่ถูกต้อง" }, { status: 400 });
     }
     return NextResponse.json({ error: "โหลดรายการรับ-จ่ายไม่สำเร็จ" }, { status: 500 });
   }
 
-  const payload = (data ?? {}) as Partial<{
-    rows: IncomeExpense[];
-    nextCursor: string | null;
-    hasMore: boolean;
-    pendingApprovalCount: number;
-  }>;
-  return NextResponse.json({
-    rows: payload.rows ?? [],
-    nextCursor: payload.nextCursor ?? null,
-    hasMore: payload.hasMore === true,
-    pendingApprovalCount: Number(payload.pendingApprovalCount ?? 0),
-  });
+  if (!isIncomeExpenseFeedPayload(data, locationId, mode)) {
+    return NextResponse.json(
+      { error: "ระบบไม่ตอบกลับรายการรับ-จ่ายตามรูปแบบที่กำหนด" },
+      { status: 500 },
+    );
+  }
+  return NextResponse.json(data);
 }

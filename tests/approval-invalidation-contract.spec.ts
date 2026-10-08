@@ -4,12 +4,32 @@ import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { moneyFlowQueryKeys } from "../src/lib/money-flow/query-keys";
 
-type Mutation = { onSuccess: (data: { status: string }) => Promise<unknown> };
+type Mutation = {
+  mutationFn?: (variables: unknown) => Promise<unknown>;
+  onError?: () => Promise<unknown>;
+  onSuccess: (
+    data: Record<string, unknown>,
+    variables?: { id: string; locationId: string; ownerUserId: string },
+  ) => Promise<unknown>;
+};
 
 // Execute the production hook callbacks; only React mounting and I/O are replaced.
 function loadHook(path: string, hook: string, args: object = {}) {
   const mutations: Mutation[] = [];
   const invalidated: unknown[][] = [];
+  const queryDataWrites: Array<{ queryKey: unknown[]; data: unknown }> = [];
+  const requestedUrls: string[] = [];
+  let clearedAllApprovalCaches = 0;
+  const clearedApprovalCaches: string[][] = [];
+  const tombstoned: Array<{ locationId: string; billId: string }> = [];
+  const removedRubberBills: Array<{ ownerUserId: string; locationId: string; billId: string }> = [];
+  const removedRubberApprovalRequests: Array<{
+    ownerUserId: string;
+    locationId: string;
+    requestId: string;
+  }> = [];
+  let tombstoneFailure: Error | undefined;
+  let feedRemovalFailure: Error | undefined;
   const releases: Array<() => void> = [];
   const dependencies: Record<string, unknown> = {
     "@tanstack/react-query": {
@@ -20,20 +40,62 @@ function loadHook(path: string, hook: string, args: object = {}) {
           invalidated.push(queryKey);
           return new Promise<void>((resolve) => releases.push(resolve));
         },
+        setQueryData: (queryKey: unknown[], data: unknown) => {
+          queryDataWrites.push({ queryKey, data });
+        },
       }),
     },
     react: { useEffect: () => {}, useState: (init: () => unknown) => [init(), () => {}] },
     "@/lib/supabase/client": { createSupabaseBrowserClient: () => ({}) },
     "@/lib/supabase-browser": { createSupabaseBrowserClient: () => ({}) },
-    "@/lib/rubber-bills/approval": { loadRubberBillApprovalSettingsCache: () => null },
+    "@/lib/rubber-bills/approval": {
+      clearAllRubberBillApprovalSettingsCache: () => {
+        clearedAllApprovalCaches += 1;
+      },
+      clearRubberBillApprovalSettingsCache: (locationIds: string[]) => {
+        clearedApprovalCaches.push(locationIds);
+      },
+      loadRubberBillApprovalSettingsCache: () => null,
+      saveRubberBillApprovalSettingsCache: () => {},
+    },
     "@/hooks/useActionableBadges": { ACTIONABLE_BADGES_QUERY_KEY: "actionableBadges" },
+    "@/hooks/useRubberBillApprovals": {
+      RUBBER_BILL_APPROVAL_SETTINGS_KEY: "rubberBillApprovalSettings",
+    },
     "@/hooks/useStockProductApprovals": { STOCK_PRODUCT_APPROVAL_REQUESTS_KEY: "stockProductApprovalRequests" },
     "@/lib/money-flow/query-keys": { moneyFlowQueryKeys },
     "@/lib/auth-fetch": {
-      authFetch: async () => ({
+      authFetch: async (url: string) => {
+        requestedUrls.push(url);
+        return ({
         ok: true,
         json: async () => ({ status: "pending", requestId: "approval-request" }),
-      }),
+        });
+      },
+    },
+    "@/lib/idb-queue": {
+      tombstoneRubberBillReceiptSnapshotByBillId: async (locationId: string, billId: string) => {
+        tombstoned.push({ locationId, billId });
+        if (tombstoneFailure) throw tombstoneFailure;
+      },
+    },
+    "@/lib/rubber-bills/feed-cache": {
+      removeRubberBillFromOperationalFeedCacheByBillId: async (
+        _queryClient: unknown,
+        scope: { ownerUserId: string; locationId: string },
+        billId: string,
+      ) => {
+        removedRubberBills.push({ ...scope, billId });
+        if (feedRemovalFailure) throw feedRemovalFailure;
+      },
+      removeRubberBillApprovalRequestFromPendingFeedCache: async (
+        _queryClient: unknown,
+        scope: { ownerUserId: string; locationId: string },
+        requestId: string,
+      ) => {
+        removedRubberApprovalRequests.push({ ...scope, requestId });
+        if (feedRemovalFailure) throw feedRemovalFailure;
+      },
     },
     "@/lib/income-expense/build-income-expense-payload": {
       buildIncomeExpensePayload: () => ({}),
@@ -54,8 +116,229 @@ function loadHook(path: string, hook: string, args: object = {}) {
     },
   });
   const hookResult = exports[hook](args);
-  return { hookResult, mutations, invalidated, release: () => releases.splice(0).forEach((resolve) => resolve()) };
+  return {
+    hookResult,
+    mutations,
+    invalidated,
+    queryDataWrites,
+    requestedUrls,
+    get clearedAllApprovalCaches() { return clearedAllApprovalCaches; },
+    clearedApprovalCaches,
+    tombstoned,
+    removedRubberBills,
+    removedRubberApprovalRequests,
+    failTombstone: () => { tombstoneFailure = new Error("TOMBSTONE_FAILED"); },
+    failFeedRemoval: () => { feedRemovalFailure = new Error("FEED_REMOVAL_FAILED"); },
+    release: () => releases.splice(0).forEach((resolve) => resolve()),
+  };
 }
+
+test("Rubber approval group saves clear the Server-confirmed affected branches", async () => {
+  const loaded = loadHook(
+    "src/hooks/useRubberApprovalGroups.ts",
+    "useRubberApprovalGroups",
+  );
+  const confirmed = {
+    group: {},
+    affectedLocationIds: ["submitted-branch", "source-group-branch"],
+  };
+
+  for (const mutation of loaded.mutations.slice(0, 2)) {
+    const result = mutation.onSuccess(confirmed);
+    expect(loaded.clearedApprovalCaches.at(-1)).toEqual(confirmed.affectedLocationIds);
+    loaded.release();
+    await result;
+  }
+});
+
+test("Rubber ungrouped defaults clear historical branch caches beyond the active response", async () => {
+  const loaded = loadHook(
+    "src/hooks/useRubberApprovalGroups.ts",
+    "useRubberApprovalGroups",
+  );
+  const result = loaded.mutations[4].onSuccess({
+    ungroupedDefaults: {
+      locationIds: ["active-ungrouped-branch"],
+    },
+  });
+
+  expect(loaded.clearedAllApprovalCaches).toBe(1);
+  expect(loaded.clearedApprovalCaches).toEqual([]);
+  loaded.release();
+  await result;
+});
+
+test("Rubber approval settings save keeps the submission branch after options change", async () => {
+  const loaded = loadHook(
+    "src/hooks/useRubberBillApprovals.ts",
+    "useRubberBillApprovals",
+    { locationId: "branch-b" },
+  );
+
+  await loaded.mutations[0].mutationFn?.({
+    nonCurrentDateRequiresApproval: true,
+    locationId: "branch-a",
+  });
+
+  expect(loaded.requestedUrls).toEqual([
+    "/api/lanflow/rubber-bills/approval-settings?locationId=branch-a",
+  ]);
+});
+
+test("Rubber approval settings cache uses the saved branch after the filter changes in flight", async () => {
+  const loaded = loadHook(
+    "src/hooks/useRubberBillApprovals.ts",
+    "useRubberBillApprovals",
+    { locationId: "branch-b" },
+  );
+  const settings = {
+    locationId: "branch-a",
+    nonCurrentDateRequiresApproval: true,
+  };
+  const result = loaded.mutations[0].onSuccess(settings);
+
+  expect(loaded.queryDataWrites).toEqual([{
+    queryKey: ["rubberBillApprovalSettings", "branch-a"],
+    data: settings,
+  }]);
+  loaded.release();
+  await result;
+});
+
+test("Rubber approval settings save clears persisted caches beyond the current branch list", async () => {
+  const loaded = loadHook(
+    "src/hooks/useRubberBillApprovals.ts",
+    "useRubberBillApprovals",
+    { locationId: "branch-a" },
+  );
+  const result = loaded.mutations[0].onSuccess({
+    locationId: "branch-a",
+    nonCurrentDateRequiresApproval: true,
+  });
+
+  expect(loaded.clearedAllApprovalCaches).toBe(1);
+  loaded.release();
+  await result;
+});
+
+test("approved Rubber Bill delete tombstones its offline receipt before refreshing feeds", async () => {
+  const loaded = loadHook(
+    "src/hooks/useRubberBillApprovals.ts",
+    "useRubberBillApprovals",
+    { locationId: "branch" },
+  );
+  const result = loaded.mutations[1].onSuccess({
+    status: "approved",
+    operation: "delete",
+    billId: "bill-1",
+  }, { id: "request-1", locationId: "branch", ownerUserId: "owner-1" });
+
+  await expect.poll(() => loaded.tombstoned).toEqual([
+    { locationId: "branch", billId: "bill-1" },
+  ]);
+  await expect.poll(() => loaded.invalidated.length).toBe(7);
+  loaded.release();
+  await result;
+});
+
+test("approved Rubber Bill delete removes the operational row before feed reconciliation", async () => {
+  const loaded = loadHook(
+    "src/hooks/useRubberBillApprovals.ts",
+    "useRubberBillApprovals",
+    { locationId: "branch", ownerUserId: "owner-1" },
+  );
+  const result = loaded.mutations[1].onSuccess({
+    status: "approved",
+    operation: "delete",
+    billId: "bill-1",
+  }, { id: "request-1", locationId: "branch", ownerUserId: "owner-1" });
+
+  await expect.poll(() => loaded.removedRubberBills).toEqual([{
+    ownerUserId: "owner-1",
+    locationId: "branch",
+    billId: "bill-1",
+  }]);
+  loaded.release();
+  await result;
+});
+
+test("deleted Rubber Bill approval request disappears before feed reconciliation", async () => {
+  const loaded = loadHook(
+    "src/hooks/useRubberBillApprovals.ts",
+    "useRubberBillApprovals",
+    { locationId: "branch-b", ownerUserId: "owner-1" },
+  );
+  const result = loaded.mutations[2].onSuccess(
+    { status: "deleted", requestId: "request-1" },
+    { id: "request-1", locationId: "branch-a", ownerUserId: "owner-1" },
+  );
+
+  await expect.poll(() => loaded.removedRubberApprovalRequests).toEqual([{
+    ownerUserId: "owner-1",
+    locationId: "branch-a",
+    requestId: "request-1",
+  }]);
+  loaded.release();
+  await result;
+});
+
+test("approved Rubber Bill delete keeps the submission branch when the filter changes in flight", async () => {
+  const latestRender = loadHook(
+    "src/hooks/useRubberBillApprovals.ts",
+    "useRubberBillApprovals",
+    { locationId: "branch-b" },
+  );
+  const result = latestRender.mutations[1].onSuccess(
+    {
+      status: "approved",
+      operation: "delete",
+      billId: "bill-1",
+    },
+    { id: "request-1", locationId: "branch-a", ownerUserId: "owner-1" },
+  );
+
+  await expect.poll(() => latestRender.tombstoned).toEqual([
+    { locationId: "branch-a", billId: "bill-1" },
+  ]);
+  latestRender.release();
+  await result;
+});
+
+test("approved Rubber Bill delete still refreshes feeds when local cleanup fails", async () => {
+  const loaded = loadHook(
+    "src/hooks/useRubberBillApprovals.ts",
+    "useRubberBillApprovals",
+    { locationId: "branch" },
+  );
+  loaded.failFeedRemoval();
+  loaded.failTombstone();
+  const result = loaded.mutations[1].onSuccess({
+    status: "approved",
+    operation: "delete",
+    billId: "bill-1",
+  }, { id: "request-1", locationId: "branch", ownerUserId: "owner-1" });
+
+  await expect.poll(() => loaded.invalidated.length).toBe(7);
+  loaded.release();
+  expect(await result).toBeUndefined();
+});
+
+test("uncertain Rubber approval decisions refresh their authoritative owners", async () => {
+  const loaded = loadHook(
+    "src/hooks/useRubberBillApprovals.ts",
+    "useRubberBillApprovals",
+    { locationId: "branch" },
+  );
+
+  for (const [index, expectedInvalidations] of [[1, 7], [2, 3]] as const) {
+    loaded.invalidated.length = 0;
+    expect(loaded.mutations[index].onError).toBeDefined();
+    const result = loaded.mutations[index].onError?.();
+    await expect.poll(() => loaded.invalidated.length).toBe(expectedInvalidations);
+    loaded.release();
+    await result;
+  }
+});
 
 for (const [hook, queue, downstream] of [
   ["useStockEntryApprovals", "stockEntryApprovalRequests", ["stock"]],

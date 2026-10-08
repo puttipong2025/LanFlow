@@ -21,8 +21,8 @@ export function getOfflineSyncedActionBlockReason(record: SyncableRecord, isOnli
 }
 
 export function getPendingServerActionBlockReason(record: SyncableRecord) {
-  return record.syncStatus === "pending"
-    && (record.serverSubmissionAttempted === true || isSyncedServerRecord(record))
+  return record.serverSubmissionAttempted === true
+    || (record.syncStatus === "pending" && isSyncedServerRecord(record))
     ? PENDING_SERVER_ACTION_MESSAGE
     : null;
 }
