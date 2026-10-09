@@ -3,7 +3,10 @@ import { expect, test } from "@playwright/test";
 import {
   applyRubberBillCalculation,
   calculateRubberBill,
+  calculateRubberPriceAdjustment,
+  hasAtMostFiveDecimalPlaces,
   hasAtMostTwoDecimalPlaces,
+  isValidRubberPriceAdjustmentTarget,
   prorateMoneyHalfUp,
 } from "../src/lib/rubber-bills/calculations";
 
@@ -99,5 +102,141 @@ test.describe("rubber bill calculations", () => {
     expect(bill.price).toBe(20);
     expect(bill.deductionTotal).toBe(35);
     expect(bill.netTotal).toBe(165);
+  });
+
+  test("adjusts every positive price by the same cent increment without exceeding the target", () => {
+    const result = calculateRubberPriceAdjustment({
+      weighItems: [
+        { netWeight: 60, price: 20 },
+        { netWeight: 40, price: 10 },
+        { netWeight: 10, price: 0 },
+      ],
+      deductWeight: 10,
+      targetAmount: 91,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.actualIncrease).toBeGreaterThan(0);
+    expect(result.actualIncrease).toBeLessThanOrEqual(91);
+    expect(Math.round((result.weighItems[0].price - 20) * 100))
+      .toBe(Math.round((result.weighItems[1].price - 10) * 100));
+    expect(result.weighItems[2].price).toBe(0);
+  });
+
+  test("returns the greatest rounded result below the requested target", () => {
+    const result = calculateRubberPriceAdjustment({
+      weighItems: [{ netWeight: 100, price: 20 }],
+      deductWeight: 10,
+      targetAmount: 10,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.weighItems[0].price).toBe(20.12);
+    expect(result.actualIncrease).toBe(10);
+  });
+
+  test("uses five-decimal price steps to reach targets smaller than one cent per kilogram", () => {
+    const result = calculateRubberPriceAdjustment({
+      weighItems: [{ netWeight: 800, price: 20 }],
+      deductWeight: 0,
+      targetAmount: 1,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.weighItems[0].price).toBe(20.00125);
+    expect(result.actualIncrease).toBe(1);
+  });
+
+  test("calculates weigh rows from five-decimal prices without cent rounding", () => {
+    const result = calculateRubberBill({
+      weighItems: [{ netWeight: 100_000, price: 20.12345 }],
+      deductWeight: 0,
+    });
+
+    expect(result.lineTotals).toEqual([2_012_345]);
+    expect(result.rubberValue).toBe(2_012_345);
+  });
+
+  test("accepts five-decimal prices across the supported database range", () => {
+    expect(hasAtMostFiveDecimalPlaces(9_999_999_999.12345)).toBe(true);
+    expect(hasAtMostFiveDecimalPlaces(9_999_999_999.123455)).toBe(false);
+  });
+
+  test("rejects a long zero-value rounding plateau instead of changing only the price", () => {
+    const result = calculateRubberPriceAdjustment({
+      weighItems: [{ netWeight: 0.01, price: 1 }],
+      deductWeight: 0,
+      targetAmount: 0.5,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "target-too-small",
+      weighItems: [{ netWeight: 0.01, price: 1 }],
+    });
+  });
+
+  test("rejects when the first positive rounded increase jumps over the target", () => {
+    const result = calculateRubberPriceAdjustment({
+      weighItems: [
+        { netWeight: 100, price: 20 },
+        { netWeight: 100, price: 20 },
+      ],
+      deductWeight: 0,
+      targetAmount: 1,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("target-too-small");
+  });
+
+  test("does not compound when the same base items are recalculated", () => {
+    const input = {
+      weighItems: [{ netWeight: 800, price: 20 }],
+      deductWeight: 0,
+      targetAmount: 1_000,
+    };
+    const first = calculateRubberPriceAdjustment(input);
+    const second = calculateRubberPriceAdjustment(input);
+
+    expect(second).toEqual(first);
+  });
+
+  test("rejects invalid targets and bills without a positive price", () => {
+    expect(isValidRubberPriceAdjustmentTarget(0.29)).toBe(true);
+    expect(isValidRubberPriceAdjustmentTarget(1.001)).toBe(false);
+    expect(isValidRubberPriceAdjustmentTarget(0.1 + 0.2)).toBe(false);
+    expect(calculateRubberPriceAdjustment({
+      weighItems: [{ netWeight: 10, price: 20 }],
+      deductWeight: 0,
+      targetAmount: 1.001,
+    })).toMatchObject({ ok: false, reason: "invalid-target" });
+    expect(calculateRubberPriceAdjustment({
+      weighItems: [{ netWeight: 10, price: 0 }],
+      deductWeight: 0,
+      targetAmount: 100,
+    })).toMatchObject({ ok: false, reason: "no-priced-items" });
+  });
+
+  test("does not alter items when a base price is invalid", () => {
+    const weighItems = [
+      { netWeight: 10, price: 20 },
+      { netWeight: 10, price: -1 },
+    ];
+
+    expect(calculateRubberPriceAdjustment({
+      weighItems,
+      deductWeight: 0,
+      targetAmount: 100,
+    })).toEqual({ ok: false, reason: "invalid-base-price", weighItems });
+    expect(calculateRubberPriceAdjustment({
+      weighItems: [{ netWeight: 10, price: 20.000001 }],
+      deductWeight: 0,
+      targetAmount: 100,
+    })).toMatchObject({ ok: false, reason: "invalid-base-price" });
   });
 });

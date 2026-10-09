@@ -32,6 +32,18 @@ export type RubberBillCalculation = {
   stockDeductionLineTotals: number[];
 };
 
+type RubberPriceAdjustmentResult<T extends RubberWeighCalculationInput> =
+  | {
+      ok: true;
+      actualIncrease: number;
+      weighItems: T[];
+    }
+  | {
+      ok: false;
+      reason: "invalid-target" | "invalid-base-price" | "no-priced-items" | "target-too-small" | "price-limit";
+      weighItems: T[];
+    };
+
 type RubberBillCalculationSnapshotInput = {
   deductWeight: number;
   weighItems: Array<RubberWeighCalculationInput & { total?: number }>;
@@ -43,10 +55,27 @@ type RubberBillCalculationSnapshotInput = {
 const ZERO = BigInt(0);
 const TWO = BigInt(2);
 const HUNDRED = BigInt(100);
+const HUNDRED_THOUSAND = BigInt(100_000);
+export const MAX_RUBBER_PRICE_ADJUSTMENT_TARGET = 999_999_999_999.99;
+const MAX_RUBBER_ITEM_PRICE_SCALED = 999_999_999_999_999;
+export const MAX_RUBBER_ITEM_PRICE = MAX_RUBBER_ITEM_PRICE_SCALED / 100_000;
+
+export function isValidRubberPriceAdjustmentTarget(value: unknown): value is number {
+  return typeof value === "number"
+    && Number.isFinite(value)
+    && value >= 0
+    && value <= MAX_RUBBER_PRICE_ADJUSTMENT_TARGET
+    && Number(value.toFixed(2)) === value;
+}
 
 function toHundredths(value: number) {
   if (!Number.isFinite(value)) return ZERO;
   return BigInt(Math.round(value * 100));
+}
+
+function toHundredThousandths(value: number) {
+  if (!Number.isFinite(value)) return ZERO;
+  return BigInt(Math.round(value * 100_000));
 }
 
 function fromScaled(value: bigint, scale: number) {
@@ -62,7 +91,8 @@ function divideHalfUp(numerator: bigint, denominator: bigint) {
  * Calculates a rubber bill with integer sub-units so online and offline paths
  * do not depend on binary floating-point rounding.
  *
- * - input weight and money precision: 0.01
+ * - input weight and ordinary money precision: 0.01
+ * - weigh-row price precision: 0.00001
  * - bill net weight: floor to 0.01
  * - weigh-row, stock-deduction, and rubber values: floor to whole baht
  * - average price and direct debt deductions: precision 0.01
@@ -71,7 +101,7 @@ function divideHalfUp(numerator: bigint, denominator: bigint) {
 export function calculateRubberBill(input: RubberBillCalculationInput): RubberBillCalculation {
   const weighItems = input.weighItems.map((item) => ({
     weight: toHundredths(item.netWeight),
-    price: toHundredths(item.price),
+    price: toHundredThousandths(item.price),
   }));
   const totalWeightUnits = weighItems.reduce((sum, item) => sum + item.weight, ZERO);
   const deductWeightUnits = toHundredths(input.deductWeight);
@@ -79,7 +109,7 @@ export function calculateRubberBill(input: RubberBillCalculationInput): RubberBi
     ? totalWeightUnits - deductWeightUnits
     : ZERO;
   const lineTotalBaht = weighItems.map((item) =>
-    (item.weight * item.price) / (HUNDRED * HUNDRED)
+    (item.weight * item.price) / (HUNDRED * HUNDRED_THOUSAND)
   );
   const weighValueBaht = lineTotalBaht.reduce((sum, value) => sum + value, ZERO);
   const weighValueUnits = weighValueBaht * HUNDRED * HUNDRED;
@@ -124,6 +154,100 @@ export function calculateRubberBill(input: RubberBillCalculationInput): RubberBi
   };
 }
 
+export function calculateRubberPriceAdjustment<T extends RubberWeighCalculationInput>({
+  weighItems,
+  deductWeight,
+  targetAmount,
+}: {
+  weighItems: T[];
+  deductWeight: number;
+  targetAmount: number;
+}): RubberPriceAdjustmentResult<T> {
+  const targetIsValid = isValidRubberPriceAdjustmentTarget(targetAmount) && targetAmount > 0;
+  if (!targetIsValid) {
+    return { ok: false, reason: "invalid-target", weighItems };
+  }
+
+  const hasInvalidBasePrice = weighItems.some((item) => (
+    item.price < 0
+    || item.price > MAX_RUBBER_ITEM_PRICE
+    || !hasAtMostFiveDecimalPlaces(item.price)
+  ));
+  if (hasInvalidBasePrice) {
+    return { ok: false, reason: "invalid-base-price", weighItems };
+  }
+
+  const basePriceScaled = weighItems.map((item) => Number(toHundredThousandths(item.price)));
+  const pricedIndexes = basePriceScaled.flatMap((price, index) => price > 0 ? [index] : []);
+  if (pricedIndexes.length === 0) {
+    return { ok: false, reason: "no-priced-items", weighItems };
+  }
+
+  const maxIncreaseScaled = pricedIndexes.reduce(
+    (current, index) => Math.min(current, MAX_RUBBER_ITEM_PRICE_SCALED - basePriceScaled[index]),
+    Number.MAX_SAFE_INTEGER,
+  );
+  if (maxIncreaseScaled < 1) {
+    return { ok: false, reason: "price-limit", weighItems };
+  }
+
+  const baseRubberValue = calculateRubberBill({ weighItems, deductWeight }).rubberValue;
+  const targetCents = Math.round(targetAmount * 100);
+  const calculateAt = (increaseScaled: number) => {
+    const adjustedItems = weighItems.map((item, index) => ({
+      ...item,
+      price: basePriceScaled[index] > 0
+        ? (basePriceScaled[index] + increaseScaled) / 100_000
+        : 0,
+    }));
+    const actualIncrease = calculateRubberBill({
+      weighItems: adjustedItems,
+      deductWeight,
+    }).rubberValue - baseRubberValue;
+    return { adjustedItems, actualIncrease };
+  };
+
+  let low = 1;
+  let high = maxIncreaseScaled;
+  let bestIncreaseScaled = 0;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const actualCents = Math.round(calculateAt(middle).actualIncrease * 100);
+    if (actualCents <= targetCents) {
+      bestIncreaseScaled = middle;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+
+  if (bestIncreaseScaled === 0) {
+    return { ok: false, reason: "target-too-small", weighItems };
+  }
+  const best = calculateAt(bestIncreaseScaled);
+  if (best.actualIncrease <= 0) {
+    return { ok: false, reason: "target-too-small", weighItems };
+  }
+
+  low = 1;
+  high = bestIncreaseScaled;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (calculateAt(middle).actualIncrease >= best.actualIncrease) {
+      high = middle;
+    } else {
+      low = middle + 1;
+    }
+  }
+  const smallestEquivalent = calculateAt(low);
+
+  return {
+    ok: true,
+    actualIncrease: smallestEquivalent.actualIncrease,
+    weighItems: smallestEquivalent.adjustedItems,
+  };
+}
+
 export function applyRubberBillCalculation<T extends RubberBillCalculationSnapshotInput>(bill: T) {
   const calculation = calculateRubberBill({
     weighItems: bill.weighItems,
@@ -158,6 +282,11 @@ export function hasAtMostTwoDecimalPlaces(value: number) {
     && Math.abs((value * 100) - Math.round(value * 100)) < 1e-8;
 }
 
+export function hasAtMostFiveDecimalPlaces(value: number) {
+  return Number.isFinite(value)
+    && Number(value.toFixed(5)) === value;
+}
+
 export function prorateMoneyHalfUp(
   value: number,
   numeratorWeight: number,
@@ -184,6 +313,6 @@ export function prorateMoneyHalfUp(
 
 export function multiplyMoneyFloorBaht(left: number, right: number) {
   return Number(
-    (toHundredths(left) * toHundredths(right)) / (HUNDRED * HUNDRED),
+    (toHundredths(left) * toHundredThousandths(right)) / (HUNDRED * HUNDRED_THOUSAND),
   );
 }

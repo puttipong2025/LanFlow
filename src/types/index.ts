@@ -87,6 +87,7 @@ export type RubberBill = {
   netTotal: number;
   acidPackCount: number;
   configuredPriceSnapshot?: number | null;
+  priceAdjustmentTarget?: number;
   approvalState: "not_required" | "approved";
   approvalApprovedByName?: string | null;
   approvalRevisionNo?: number | null;

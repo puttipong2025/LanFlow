@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select extensions.plan(65);
+select extensions.plan(67);
 
 select extensions.ok(to_regclass('public.rubber_bill_price_quota_uses') is null, 'price quota ledger is removed');
 select extensions.hasnt_column('public', 'rubber_bills', 'rubber_price_quota_use_id', 'bill quota reference is removed');
@@ -272,7 +272,8 @@ set local role authenticated;
 select extensions.is(public.sync_rubber_bill(pg_temp.price_policy_payload('price-cap-repeat-1', 48))->>'status', 'synced', 'first repeated in-cap bill saves directly');
 select extensions.is(public.sync_rubber_bill(pg_temp.price_policy_payload('price-cap-repeat-2', 48))->>'status', 'synced', 'second repeated in-cap bill is not counter-limited');
 create temp table above_cap_payload as
-select pg_temp.price_policy_payload('price-cap-above', 48.01) payload;
+select pg_temp.price_policy_payload('price-cap-above', 48.00001)
+  || jsonb_build_object('priceAdjustmentTarget', 1000) payload;
 create temp table above_cap_result as
 select public.sync_rubber_bill(payload) result from above_cap_payload;
 select extensions.is((select result->>'status' from above_cap_result), 'pending_approval', 'price above cap creates approval');
@@ -323,6 +324,23 @@ select set_config(
   true
 );
 set local role authenticated;
+select extensions.is(
+  (
+    select (row->>'price_adjustment_target')::numeric
+    from jsonb_array_elements(public.get_rubber_bill_operational_feed_v2(
+      '71000000-0000-4000-8000-000000000022',
+      'pending_approval',
+      'any',
+      '',
+      null,
+      null,
+      100
+    )->'rows') row
+    where row->>'client_temp_id' = 'price-cap-above'
+  ),
+  1000::numeric,
+  'pending-create feed preserves price-adjustment target metadata'
+);
 create temp table approved_create_result as
 select public.approve_rubber_bill_approval_request(
   (select (result->>'requestId')::uuid from above_cap_result)
@@ -333,6 +351,13 @@ select extensions.is(
   'the pending create can be approved before its client retry arrives'
 );
 reset role;
+select extensions.is(
+  (select price_adjustment_target
+   from public.rubber_bills
+   where id = (select (result->>'billId')::uuid from approved_create_result)),
+  1000.00::numeric,
+  'approved price adjustment keeps the submitted target metadata'
+);
 select extensions.ok(
   (select last_submission_fingerprint is not null
    from public.rubber_bills

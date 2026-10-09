@@ -26,12 +26,22 @@ test.describe("Rubber Bill price validation", () => {
     expect(validateRubberBillDraft(draft(0))).toEqual([]);
   });
 
-  test("rejects negative and more than two decimal places", () => {
+  test("rejects negative and more than five decimal places", () => {
     expect(validateRubberBillDraft(draft(-0.01))).toContain(
       "รายการชั่งที่ 1: ราคาสินค้าต้องไม่ติดลบ"
     );
-    expect(validateRubberBillDraft(draft(1.001))).toContain(
-      "รายการชั่งที่ 1: ราคาสินค้าต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง"
+    expect(validateRubberBillDraft(draft(1.000001))).toContain(
+      "รายการชั่งที่ 1: ราคาสินค้าต้องมีทศนิยมไม่เกิน 5 ตำแหน่ง"
+    );
+  });
+
+  test("accepts a five-decimal weigh price", () => {
+    expect(validateRubberBillDraft(draft(20.12345))).toEqual([]);
+  });
+
+  test("rejects a weigh price above the database column limit", () => {
+    expect(validateRubberBillDraft(draft(10_000_000_000))).toContain(
+      "รายการชั่งที่ 1: ราคาสินค้าเกินขอบเขตที่รองรับ"
     );
   });
 
@@ -42,7 +52,7 @@ test.describe("Rubber Bill price validation", () => {
         inWeight: -20.001,
         outWeight: -10.001,
         netWeight: -10.001,
-        price: -1.001,
+        price: -1.000001,
       }],
       deductWeight: -1.001,
       totalWeight: 10,
@@ -69,7 +79,7 @@ test.describe("Rubber Bill price validation", () => {
       "รายการชั่งที่ 1: น้ำหนักออกต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง",
       "รายการชั่งที่ 1: น้ำหนักชั่งสุทธิต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง",
       "รายการชั่งที่ 1: ราคาสินค้าต้องไม่ติดลบ",
-      "รายการชั่งที่ 1: ราคาสินค้าต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง",
+      "รายการชั่งที่ 1: ราคาสินค้าต้องมีทศนิยมไม่เกิน 5 ตำแหน่ง",
       "หักน้ำหนักยาง (กก.): ต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง",
       "หักน้ำหนักยาง (กก.): ต้องไม่ติดลบ",
       "รายการหักสินค้าที่ 1: รายการหักต้องระบุชื่อสินค้า",

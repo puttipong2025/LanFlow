@@ -89,3 +89,63 @@ test(`shows all Rubber Bill errors without moving focus and restores blank numer
   })).toBeLessThan(20);
 });
 }
+
+test("adjusts prices from one target field, restores on cancel, and clears metadata on a real weight change", async ({ page }) => {
+  await page.setViewportSize({ width: 393, height: 852 });
+  await page.goto("/login");
+  await page.locator("#phone").fill(process.env.TEST_PHONE ?? "0800000000");
+  await page.locator("#password").fill(process.env.TEST_PASSWORD ?? "password123");
+  await page.getByRole("button", { name: "เข้าสู่ระบบ" }).click();
+  await expect(page.getByText("ออกจากระบบ")).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
+  await page.getByRole("button", { name: "เพิ่มบิลยาง" }).click();
+
+  const branchGuard = page.getByRole("alertdialog", { name: "ยืนยันสาขาก่อนสร้างรายการ" });
+  if (await branchGuard.isVisible()) {
+    const activeBranchName = await page.getByLabel(/^เลือกสาขา/).locator("span").first().innerText();
+    await branchGuard.getByRole("button", {
+      name: `เลือกสาขา ${activeBranchName}`,
+      exact: true,
+    }).click();
+  }
+
+  const modal = page.locator(".fixed.inset-0").last();
+  const weighRow = modal.locator("table").first().locator("tbody tr").first();
+  const inWeight = weighRow.locator('input[type="number"]').nth(0);
+  const outWeight = weighRow.locator('input[type="number"]').nth(1);
+  const price = weighRow.locator('input[type="number"]').nth(3);
+  const toggle = modal.locator('button[aria-controls="rubber-price-adjustment-field"]');
+
+  await expect(toggle).toBeDisabled();
+  await price.fill("0.00001");
+  await expect(toggle).toBeEnabled();
+  await inWeight.fill("1000");
+  await outWeight.fill("200");
+  await price.fill("20.00");
+  await expect(toggle).toBeEnabled();
+  await expect(toggle).toHaveClass(/bg-leaf/);
+  await toggle.click();
+
+  const target = modal.getByLabel("ยอดที่ต้องการเพิ่ม (บาท)");
+  await expect(target).toBeFocused();
+  await expect(target).toHaveValue("");
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(toggle).toHaveAccessibleName("ยกเลิกปรับราคา");
+  await target.fill("1000");
+  await expect(modal.getByText("ยอดเพิ่มจริงหลังปัด: 1,000.00 บาท")).toBeVisible();
+  await expect(price).toHaveAttribute("readonly", "");
+  await expect(price).toHaveValue("21.25");
+
+  await modal.getByRole("button", { name: "ยกเลิกปรับราคา", exact: true }).click();
+  await expect(modal.getByLabel("ยอดที่ต้องการเพิ่ม (บาท)")).toHaveCount(0);
+  await expect(price).toHaveValue("20");
+
+  await toggle.click();
+  await modal.getByLabel("ยอดที่ต้องการเพิ่ม (บาท)").fill("1");
+  await expect(price).toHaveValue("20.00125");
+  await inWeight.fill("900");
+  await expect(modal.getByLabel("ยอดที่ต้องการเพิ่ม (บาท)")).toHaveCount(0);
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(price).not.toHaveAttribute("readonly", "");
+  await expect(price).toHaveValue("20.00125");
+});

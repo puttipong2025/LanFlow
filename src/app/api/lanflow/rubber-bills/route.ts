@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isValidRubberPriceAdjustmentTarget } from "@/lib/rubber-bills/calculations";
 import { requireAuth } from "@/lib/server/auth";
 import {
   isIsoTimestamp,
@@ -153,6 +154,14 @@ export async function POST(request: Request) {
     if (!isRubberBillSubmissionIdentity(payload)) {
       return NextResponse.json(
         { status: "failed", errorMessage: "ข้อมูลอ้างอิงการซิงก์บิลยางไม่ถูกต้อง" },
+        { status: 400 },
+      );
+    }
+    if (payload.priceAdjustmentTarget !== undefined
+      && payload.priceAdjustmentTarget !== null
+      && !isValidRubberPriceAdjustmentTarget(payload.priceAdjustmentTarget)) {
+      return NextResponse.json(
+        { status: "failed", errorMessage: "ยอดปรับราคาบิลยางไม่ถูกต้อง" },
         { status: 400 },
       );
     }

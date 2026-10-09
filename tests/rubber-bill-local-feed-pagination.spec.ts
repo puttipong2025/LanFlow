@@ -85,6 +85,14 @@ test("a queued update keeps the server identity used by action locks and later e
   expect(local.billNo).toBe("RB-1");
 });
 
+test("a queued bill keeps the latest price-adjustment target and legacy events default to zero", () => {
+  const adjustedEvent = syncEvent("create", "pending");
+  adjustedEvent.payload.priceAdjustmentTarget = 500;
+
+  expect(rubberBillFromSyncEvent(adjustedEvent, ownerUserId)?.priceAdjustmentTarget).toBe(500);
+  expect(rubberBillFromSyncEvent(syncEvent("create", "pending"), ownerUserId)?.priceAdjustmentTarget).toBe(0);
+});
+
 test("a legacy queued update inherits server identity from the loaded bill", () => {
   const event = syncEvent("update", "pending");
 

@@ -1,4 +1,8 @@
-import { hasAtMostTwoDecimalPlaces } from "@/lib/rubber-bills/calculations";
+import {
+  hasAtMostFiveDecimalPlaces,
+  hasAtMostTwoDecimalPlaces,
+  MAX_RUBBER_ITEM_PRICE,
+} from "@/lib/rubber-bills/calculations";
 
 export function validateRubberBillDraft(draft: {
   customerName: string;
@@ -46,8 +50,11 @@ export function validateRubberBillDraft(draft: {
     if (item.price < 0) {
       errors.push(`${row}: ราคาสินค้าต้องไม่ติดลบ`);
     }
-    if (Math.abs(item.price * 100 - Math.round(item.price * 100)) > 1e-9) {
-      errors.push(`${row}: ราคาสินค้าต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง`);
+    if (item.price > MAX_RUBBER_ITEM_PRICE) {
+      errors.push(`${row}: ราคาสินค้าเกินขอบเขตที่รองรับ`);
+    }
+    if (!hasAtMostFiveDecimalPlaces(item.price)) {
+      errors.push(`${row}: ราคาสินค้าต้องมีทศนิยมไม่เกิน 5 ตำแหน่ง`);
     }
   });
 

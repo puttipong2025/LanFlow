@@ -65,6 +65,7 @@ export function mapRubberBillFeedRow(row: any): RubberBill {
     configuredPriceSnapshot: row.configured_price_snapshot == null
       ? null
       : Number(row.configured_price_snapshot),
+    priceAdjustmentTarget: Number(row.price_adjustment_target ?? 0),
     approvalState: row.approval_state === "approved" ? "approved" : "not_required",
     approvalApprovedByName: row.approved_by_name ?? null,
     approvalRevisionNo: row.approval_revision_no == null ? null : Number(row.approval_revision_no),

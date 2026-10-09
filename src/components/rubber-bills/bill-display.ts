@@ -28,6 +28,7 @@ export type RubberBillReceiptModel = {
   netWeight: number;
   rubberValue: number;
   averagePrice: number;
+  priceAdjustmentTarget?: number;
   deductionTotal: number;
   netTotal: number;
   netTotalText: string;
@@ -125,6 +126,7 @@ export function buildRubberBillReceiptModel(bill: RubberBill): RubberBillReceipt
     netWeight: displayBill.netWeight,
     rubberValue: displayBill.rubberValue,
     averagePrice: displayBill.price,
+    priceAdjustmentTarget: bill.priceAdjustmentTarget ?? 0,
     deductions,
     deductionTotal: displayBill.deductionTotal,
     netTotal: displayBill.netTotal,
@@ -173,6 +175,20 @@ function formatReceiptWeight(value: number) {
   }).format(value);
 }
 
+function formatPriceAdjustmentTarget(value: number) {
+  return new Intl.NumberFormat("th-TH", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
+function formatReceiptWeighPrice(value: number) {
+  return new Intl.NumberFormat("th-TH", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 5,
+  }).format(value);
+}
+
 export function renderRubberBillReceiptHtml(model: RubberBillReceiptModel) {
   const h = escapeReceiptHtml;
   const n = formatReceiptNumber;
@@ -182,7 +198,7 @@ export function renderRubberBillReceiptHtml(model: RubberBillReceiptModel) {
     : model.weighItems.map((item) => `
       <tr>
         <td>${h(item.label)}</td><td class="num">${n(item.inWeight)}</td><td class="num">${n(item.outWeight)}</td>
-        <td class="num">${n(item.netWeight)}</td><td class="num">${n(item.price)}</td><td class="num">${n(item.lineTotal)}</td>
+        <td class="num">${n(item.netWeight)}</td><td class="num">${formatReceiptWeighPrice(item.price)}</td><td class="num">${n(item.lineTotal)}</td>
       </tr>`).join("");
   const deductionRows = model.deductions.length === 0
     ? '<div class="row muted"><span>ไม่มีรายการหัก</span><span>0</span></div>'
@@ -195,6 +211,9 @@ export function renderRubberBillReceiptHtml(model: RubberBillReceiptModel) {
     : "ใบรับซื้อยาง";
   const branchReceiptMeta = isBranchReceipt
     ? `<div class="meta"><div class="row"><span>รายการส่งออกต้นทาง</span><strong>${h(model.sourceExportNo)}</strong></div><div class="row"><span>เวลารับเข้า</span><span>${h(model.receivedAt ? formatBangkokDateTime(new Date(model.receivedAt)) : "-")}</span></div><div class="row"><span>อายุตอนรับ</span><span>${h(model.receivedAgeHours == null ? "-" : `${Math.floor(model.receivedAgeHours / 24)} วัน ${Math.round(model.receivedAgeHours % 24)} ชั่วโมง${model.receivedAgeIsEstimated ? " (ประมาณการ)" : ""}`)}</span></div></div>`
+    : "";
+  const priceAdjustmentRow = !isBranchReceipt && (model.priceAdjustmentTarget ?? 0) > 0
+    ? `<div class="row"><span>เพิ่มเงิน (เฉลี่ยเพิ่มในราคาสินค้า)</span><span>${formatPriceAdjustmentTarget(model.priceAdjustmentTarget ?? 0)} บาท</span></div>`
     : "";
 
   return `<!doctype html>
@@ -222,6 +241,7 @@ ${model.deductWeight > 0 ? `<div class="row"><span>น้ำหนักรว�
 <div class="row"><strong>น้ำหนักสุทธิ</strong><strong>${weight(model.netWeight)} กก.</strong></div>
 ${isBranchReceipt ? `<div class="row"><span>ราคาเฉลี่ย</span><span>${n(model.averagePrice)}</span></div>` : ""}
 <div class="row"><span>${isBranchReceipt ? "มูลค่ารวมค่าทำงาน" : "มูลค่ายาง"}</span><span>${n(model.rubberValue)}</span></div>
+${priceAdjustmentRow}
 <div class="totals"><strong>รายการหักเงิน</strong>${deductionRows}<div class="row"><strong>ยอดหักเงิน</strong><strong>${n(model.deductionTotal)}</strong></div></div>
 <div class="row payable"><span>ยอดที่ต้องจ่ายลูกค้า</span><span>${n(model.netTotal)} บาท</span></div>
 <div class="words">(${h(model.netTotalText)})</div>

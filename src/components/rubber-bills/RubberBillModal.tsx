@@ -10,7 +10,10 @@ import {
   todayInputValue
 } from "@/lib/format";
 import { validateRubberBillDraft } from "@/lib/rubber-bill-validation";
-import { calculateRubberBill } from "@/lib/rubber-bills/calculations";
+import {
+  calculateRubberBill,
+  isValidRubberPriceAdjustmentTarget,
+} from "@/lib/rubber-bills/calculations";
 import { useAcidProducts } from "@/hooks/useAcidProducts";
 import { useAcidStock } from "@/hooks/useAcidStock";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
@@ -22,12 +25,11 @@ import { openRubberBillOcrSourceImage } from "@/lib/rubber-bills/open-ocr-source
 import type { Location, Profile, RubberBill } from "@/types";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { RubberBillPriceReference } from "@/components/rubber-bills/RubberBillPriceReference";
+import { RubberBillSummary } from "@/components/rubber-bills/RubberBillSummary";
 
 import { Field } from "@/components/shared/Field";
-import { NumberField } from "@/components/shared/NumberField";
 import { InlineRadio } from "@/components/shared/InlineRadio";
 import { InlineNumber } from "@/components/shared/InlineNumber";
-
 type RubberWeighItem = NonNullable<RubberBill["weighItems"]>[number];
 type RubberStockDeductionItem = NonNullable<RubberBill["acidItems"]>[number];
 type RubberDebtItem = NonNullable<RubberBill["debtItems"]>[number];
@@ -40,6 +42,7 @@ type RubberBillFormDraft = {
   stockDeductionItems: RubberStockDeductionItem[];
   debtItems: RubberDebtItem[];
   weightDeduct: number;
+  priceAdjustmentTarget: number;
 };
 export type RubberBillCustomerOption = {
   id: string;
@@ -47,7 +50,6 @@ export type RubberBillCustomerOption = {
   legacyMemberId: string | null;
   farmAddress?: string | null;
 };
-
 export function RubberBillModal({
   selectedLocation,
   profile,
@@ -94,7 +96,8 @@ export function RubberBillModal({
   const [stockDeductionItems, setStockDeductionItems] = useState<RubberStockDeductionItem[]>(() => bill?.acidItems ?? []);
   const [debtItems, setDebtItems] = useState<RubberDebtItem[]>(() => bill?.debtItems ?? (bill?.debtItem ? [bill.debtItem] : []));
   const [weightDeduct, setWeightDeduct] = useState(bill?.deductWeight ?? initialOcrDraft?.deductWeight ?? 0);
-  const [isWeightDeductOpen, setIsWeightDeductOpen] = useState(() => (bill?.deductWeight ?? initialOcrDraft?.deductWeight ?? 0) !== 0);
+  const [priceAdjustmentTarget, setPriceAdjustmentTarget] = useState(bill?.priceAdjustmentTarget ?? 0);
+  const [isPriceAdjustmentOpen, setIsPriceAdjustmentOpen] = useState(false);
   const [billDate, setBillDate] = useState(bill?.billDate ?? initialOcrDraft?.billDate ?? todayInputValue());
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -120,7 +123,6 @@ export function RubberBillModal({
     if (validationErrors.length === 0) return;
     validationSummaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, [validationErrors]);
-
   // Autocomplete customer lookup states
   const [customerSearch, setCustomerSearch] = useState(bill?.customerName ?? "");
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(bill?.customerId ?? null);
@@ -139,11 +141,13 @@ export function RubberBillModal({
     stockDeductionItems,
     debtItems,
     weightDeduct,
+    priceAdjustmentTarget,
   }), [
     billDate,
     customerSearch,
     debtItems,
     memberStatus,
+    priceAdjustmentTarget,
     selectedCustomerId,
     stockDeductionItems,
     weighItems,
@@ -171,8 +175,12 @@ export function RubberBillModal({
       if (Array.isArray(draft.debtItems)) setDebtItems(draft.debtItems);
       if (Number.isFinite(draft.weightDeduct)) {
         setWeightDeduct(draft.weightDeduct);
-        setIsWeightDeductOpen(draft.weightDeduct !== 0);
       }
+      setPriceAdjustmentTarget(
+        isValidRubberPriceAdjustmentTarget(draft.priceAdjustmentTarget)
+          ? draft.priceAdjustmentTarget
+          : 0,
+      );
     },
   });
 
@@ -197,18 +205,31 @@ export function RubberBillModal({
   const hasPriceChange = !bill || (
     (bill.weighItems?.length ?? 0) !== weighItems.length
     || weighItems.some((item, index) =>
-      Math.round(item.price * 100)
-      !== Math.round((bill.weighItems?.[index]?.price ?? Number.NaN) * 100)
+      Math.round(item.price * 100_000)
+      !== Math.round((bill.weighItems?.[index]?.price ?? Number.NaN) * 100_000)
     )
   );
   const exceedsEffectivePriceCap =
     hasPriceChange &&
     effectivePriceCap != null &&
-    weighItems.some((item) => Math.round(item.price * 100) > Math.round(effectivePriceCap * 100));
+    weighItems.some((item) => item.price > effectivePriceCap);
   const requiresNonCurrentDateApproval =
     nonCurrentDateRequiresApproval && billDate !== todayInputValue();
 
+  function clearPriceAdjustment() {
+    setPriceAdjustmentTarget(0);
+    setIsPriceAdjustmentOpen(false);
+  }
+
   function updateWeighItem(id: string, patch: Partial<Omit<RubberWeighItem, "id">>) {
+    const currentItem = weighItems.find((item) => item.id === id);
+    const changed = currentItem && Object.entries(patch).some(([key, value]) => (
+      typeof value === "number"
+      && Math.round(
+        (currentItem[key as keyof RubberWeighItem] as number) * (key === "price" ? 100_000 : 100),
+      ) !== Math.round(value * (key === "price" ? 100_000 : 100))
+    ));
+    if (changed) clearPriceAdjustment();
     setWeighItems((current) =>
       current.map((item) => {
         if (item.id !== id) return item;
@@ -225,6 +246,7 @@ export function RubberBillModal({
   }
 
   function addWeighItem() {
+    clearPriceAdjustment();
     setWeighItems((current) => [
       ...current,
       {
@@ -239,7 +261,17 @@ export function RubberBillModal({
   }
 
   function removeWeighItem(id: string) {
+    if (weighItems.length > 1) {
+      clearPriceAdjustment();
+    }
     setWeighItems((current) => (current.length === 1 ? current : current.filter((item) => item.id !== id)));
+  }
+
+  function updateWeightDeduct(value: number) {
+    if (Math.round(weightDeduct * 100) !== Math.round(value * 100)) {
+      clearPriceAdjustment();
+    }
+    setWeightDeduct(value);
   }
 
   function updateStockDeductionItem(id: string, patch: Partial<Omit<RubberStockDeductionItem, "id">>) {
@@ -411,6 +443,7 @@ export function RubberBillModal({
       netTotal: submitCalculation.netTotal,
       acidPackCount: submittedStockItems.reduce((sum, item) => sum + item.quantity, 0),
       configuredPriceSnapshot: bill?.configuredPriceSnapshot ?? effectivePriceCap ?? null,
+      priceAdjustmentTarget,
       approvalState: bill?.approvalState ?? "not_required",
       approvalApprovedByName: bill?.approvalApprovedByName ?? null,
       approvalRevisionNo: bill?.approvalRevisionNo ?? null,
@@ -462,6 +495,7 @@ export function RubberBillModal({
     const hasDraftContent = Boolean(
       customerSearch.trim()
       || weightDeduct
+      || priceAdjustmentTarget
       || stockDeductionItems.length
       || debtItems.length
       || weighItems.some((item) =>
@@ -485,8 +519,6 @@ export function RubberBillModal({
       toast.error(error instanceof Error ? error.message : "เปิดรูปต้นฉบับจาก OCR ไม่สำเร็จ");
     }
   }
-
-
   return (
     <ModalShell
       title={bill ? "แก้ไขบิลเครื่องชั่งเล็ก" : "บิลเครื่องชั่งเล็ก"}
@@ -649,7 +681,9 @@ export function RubberBillModal({
                       <InlineNumber
                         value={item.price}
                         onChange={(value) => updateWeighItem(item.id, { price: value })}
+                        readOnly={isPriceAdjustmentOpen}
                         decimalOnBlur
+                        decimalPlaces={5}
                       />
                     </td>
                     <td><InlineNumber value={calculation.lineTotals[index] ?? 0} readOnly /></td>
@@ -792,43 +826,16 @@ export function RubberBillModal({
           </button>
         </section>
 
-        <section className="grid gap-3 p-3 sm:w-48 sm:p-4">
-          <button
-            type="button"
-            aria-expanded={isWeightDeductOpen}
-            aria-controls="rubber-weight-deduction-field"
-            onClick={() => {
-              if (isWeightDeductOpen) {
-                setWeightDeduct(0);
-                setIsWeightDeductOpen(false);
-                return;
-              }
-              setIsWeightDeductOpen(true);
-            }}
-            className="focus-ring h-11 w-fit rounded-md bg-clay px-3 text-sm font-semibold text-white hover:bg-clay/90"
-          >
-            {isWeightDeductOpen ? "ยกเลิกหักน้ำหนัก" : "หักน้ำหนักยาง"}
-          </button>
-          {isWeightDeductOpen && (
-            <div id="rubber-weight-deduction-field">
-              <NumberField
-                label="หักน้ำหนักยาง (กก.)"
-                value={weightDeduct}
-                onChange={setWeightDeduct}
-                autoFocus={weightDeduct === 0}
-              />
-            </div>
-          )}
-          <NumberField label="น้ำหนักสุทธิ (กก.)" value={calculation.netWeight} readOnly />
-          <NumberField label="ราคาเฉลี่ย (บาท/กก.)" value={calculation.averagePrice} readOnly />
-          <NumberField
-            label="มูลค่ายาง (บาท)"
-            value={calculation.rubberValue}
-            readOnly
-          />
-          <NumberField label="ยอดหักเงิน (บาท)" value={calculation.deductionTotal} readOnly />
-          <NumberField label="ยอดที่ต้องจ่ายลูกค้า (บาท)" value={calculation.netTotal} readOnly />
-        </section>
+        <RubberBillSummary
+          calculation={calculation}
+          deductWeight={weightDeduct}
+          isPriceAdjustmentOpen={isPriceAdjustmentOpen}
+          priceAdjustmentTarget={priceAdjustmentTarget}
+          weighItems={weighItems}
+          onDeductWeightChange={updateWeightDeduct}
+          onPriceAdjustmentOpenChange={setIsPriceAdjustmentOpen}
+          onPriceAdjustmentApply={(items, target) => { setWeighItems(items); setPriceAdjustmentTarget(target); }}
+        />
 
         <div className="modal-actions flex justify-center border-t border-black/10 p-4">
           <button

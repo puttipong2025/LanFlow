@@ -9,7 +9,8 @@ function restoreZeroIfBlank(event: React.FocusEvent<HTMLInputElement>) {
 
 function enforceDecimalInput(
   event: React.FocusEvent<HTMLInputElement>,
-  onChange?: (value: number) => void
+  decimalPlaces: number,
+  onChange?: (value: number) => void,
 ) {
   const inputElement = event.currentTarget;
   const value = inputElement.value.trim();
@@ -21,7 +22,7 @@ function enforceDecimalInput(
   }
 
   if (value.includes(".")) {
-    const formattedValue = parseFloat(value).toFixed(2);
+    const formattedValue = parseFloat(value).toFixed(decimalPlaces);
     inputElement.value = formattedValue;
     onChange?.(Number(formattedValue));
     return;
@@ -35,7 +36,7 @@ function enforceDecimalInput(
     return;
   }
 
-  const formattedValue = parseFloat(value).toFixed(2);
+  const formattedValue = parseFloat(value).toFixed(decimalPlaces);
   inputElement.value = formattedValue;
   onChange?.(Number(formattedValue));
 }
@@ -50,6 +51,7 @@ export function InlineNumber({
   ariaLabel,
   inputId,
   invalid = false,
+  decimalPlaces = 2,
 }: {
   value: number | "";
   onChange?: (value: number) => void;
@@ -60,6 +62,7 @@ export function InlineNumber({
   ariaLabel?: string;
   inputId?: string;
   invalid?: boolean;
+  decimalPlaces?: number;
 }) {
   const isReadOnly = readOnly || !onChange;
   const [isBlankWhileEditing, setIsBlankWhileEditing] = useState(false);
@@ -72,7 +75,7 @@ export function InlineNumber({
       aria-invalid={invalid || undefined}
       inputMode={integerOnly ? "numeric" : "decimal"}
       min={integerOnly ? 0 : undefined}
-      step={integerOnly ? 1 : "any"}
+      step={integerOnly ? 1 : decimalOnBlur ? 10 ** -decimalPlaces : "any"}
       value={
         !isReadOnly && isBlankWhileEditing
           ? ""
@@ -88,7 +91,7 @@ export function InlineNumber({
         if (isReadOnly) return;
         setIsBlankWhileEditing(false);
         if (decimalOnBlur) {
-          enforceDecimalInput(event, onChange);
+          enforceDecimalInput(event, decimalPlaces, onChange);
           return;
         }
         restoreZeroIfBlank(event);

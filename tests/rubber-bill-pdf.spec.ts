@@ -7,6 +7,7 @@ import {
   buildRubberBillReceiptModel,
   renderRubberBillReceiptHtml,
 } from "../src/components/rubber-bills/bill-display";
+import { buildRubberBillRpcPayload } from "../src/lib/rubber-bills/submission";
 import type { RubberBill } from "../src/types";
 
 const downloadsDir = join(homedir(), "Downloads");
@@ -128,8 +129,43 @@ test("saves verified 80mm Rubber Bill PDFs to Downloads", async ({ page }) => {
     debtItems: [],
   }), offlinePdfPath);
 
-  await saveReceiptPdf(page, makeBill(), syncedPdfPath);
+  await saveReceiptPdf(page, makeBill({ priceAdjustmentTarget: 1_000 }), syncedPdfPath);
 
   expect((await stat(offlinePdfPath)).size).toBeGreaterThan(1_000);
   expect((await stat(syncedPdfPath)).size).toBeGreaterThan(1_000);
+});
+
+test("shows the latest adjustment target with exactly two decimals only on weighing receipts", () => {
+  const adjusted = buildRubberBillReceiptModel(makeBill({ priceAdjustmentTarget: 1_000 }));
+  const adjustedHtml = renderRubberBillReceiptHtml(adjusted);
+  expect(adjustedHtml).toContain("เพิ่มเงิน (เฉลี่ยเพิ่มในราคาสินค้า)");
+  expect(adjustedHtml).toContain("1,000.00 บาท");
+
+  const legacyHtml = renderRubberBillReceiptHtml(buildRubberBillReceiptModel(makeBill()));
+  expect(legacyHtml).not.toContain("เพิ่มเงิน (เฉลี่ยเพิ่มในราคาสินค้า)");
+
+  const branchHtml = renderRubberBillReceiptHtml(buildRubberBillReceiptModel(makeBill({
+    priceAdjustmentTarget: 1_000,
+    sourceExportNo: "REX-20261008-001",
+  })));
+  expect(branchHtml).not.toContain("เพิ่มเงิน (เฉลี่ยเพิ่มในราคาสินค้า)");
+});
+
+test("renders weigh-row prices with up to five decimals for auditability", () => {
+  const bill = makeBill();
+  bill.weighItems = bill.weighItems?.map((item, index) => (
+    index === 0 ? { ...item, price: 20.12345 } : item
+  ));
+
+  const html = renderRubberBillReceiptHtml(buildRubberBillReceiptModel(bill));
+  expect(html).toContain("20.12345");
+});
+
+test("includes the latest adjustment target in the existing submission payload", () => {
+  const { payload } = buildRubberBillRpcPayload(
+    makeBill({ priceAdjustmentTarget: 500 }),
+    "update",
+  );
+
+  expect(payload.priceAdjustmentTarget).toBe(500);
 });

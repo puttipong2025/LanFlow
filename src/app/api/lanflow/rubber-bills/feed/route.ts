@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { hasSystemManagerAccess, requireAuth } from "@/lib/server/auth";
 import {
+  isValidRubberPriceAdjustmentTarget,
+} from "@/lib/rubber-bills/calculations";
+import {
   isIsoTimestamp,
   isJsonObject,
   isNonNegativePostgresInteger,
@@ -80,6 +83,7 @@ const FEED_NUMBER_FIELDS = [
   "net_total",
   "acid_pack_count",
   "configured_price_snapshot",
+  "price_adjustment_target",
   "approval_revision_no",
   "revision_no",
   "received_age_hours",
@@ -113,6 +117,12 @@ function hasSafeNumbers(value: Record<string, unknown>, fields: readonly string[
     || value[field] === null
     || (typeof value[field] === "number" && Number.isFinite(value[field]))
   ));
+}
+
+function hasValidPriceAdjustmentTarget(value: unknown) {
+  return value === undefined
+    || value === null
+    || isValidRubberPriceAdjustmentTarget(value);
 }
 
 function isFeedItem(value: unknown) {
@@ -155,6 +165,7 @@ function isFeedRow(
       || (value.transfer_lock_id != null && !isUuid(value.transfer_lock_id))
       || !hasSafeDisplayText(value)
       || !hasSafeNumbers(value, FEED_NUMBER_FIELDS)
+      || !hasValidPriceAdjustmentTarget(value.price_adjustment_target)
       || !Array.isArray(value.items)
       || !value.items.every(isFeedItem)
       || !isApprovalProposedSummary(value.approval_proposed_summary)

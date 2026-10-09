@@ -65,6 +65,7 @@ export function buildRubberBillRpcPayload(
       configuredPriceSnapshot: operation === "create"
         ? configuredPriceSnapshot
         : calculatedBill.configuredPriceSnapshot ?? null,
+      priceAdjustmentTarget: calculatedBill.priceAdjustmentTarget ?? 0,
       billType: calculatedBill.billType,
       deductWeight: calculatedBill.deductWeight,
       weight: calculatedBill.weight,

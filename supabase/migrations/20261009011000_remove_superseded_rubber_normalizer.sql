@@ -1,0 +1,1 @@
+drop function if exists private.normalize_rubber_bill_calculation_payload_before_price_adjustme(jsonb);

@@ -176,6 +176,8 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
     expect(() => assertOfflineRubberBillPriceAllowed([45.5], today, cap45, true)).not.toThrow();
     expect(() => assertOfflineRubberBillPriceAllowed([45, 45.01], today, cap45, false))
       .toThrow("ต้องออนไลน์เพื่อส่งคำขออนุมัติ");
+    expect(() => assertOfflineRubberBillPriceAllowed([45.00001], today, cap45, false))
+      .toThrow("ต้องออนไลน์เพื่อส่งคำขออนุมัติ");
     expect(() => assertOfflineRubberBillPriceAllowed([0], today, { effectivePriceCap: 0, nonCurrentDateRequiresApproval: false }, false)).not.toThrow();
     expect(() => assertOfflineRubberBillPriceAllowed([0.01], today, { effectivePriceCap: 0, nonCurrentDateRequiresApproval: false }, false))
       .toThrow("ต้องออนไลน์เพื่อส่งคำขออนุมัติ");

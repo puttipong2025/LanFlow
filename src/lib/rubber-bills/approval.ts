@@ -37,8 +37,7 @@ export function assertOfflineRubberBillPriceAllowed(
   if (isNonCurrentDate && settings.nonCurrentDateRequiresApproval) {
     throw new Error("บิลต่างจากวันปัจจุบัน ต้องออนไลน์เพื่อส่งคำขออนุมัติ");
   }
-  const capInSatang = Math.round(settings.effectivePriceCap * 100);
-  if (prices.some((price) => Math.round(price * 100) > capInSatang)) {
+  if (prices.some((price) => price > settings.effectivePriceCap)) {
     throw new Error("ราคาบิลสูงกว่าราคาสูงสุดที่กำหนด ต้องออนไลน์เพื่อส่งคำขออนุมัติ");
   }
 }

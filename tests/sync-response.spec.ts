@@ -89,6 +89,43 @@ test("rubber bill sync route rejects malformed mutation identity before the RPC 
   expect(rpcCalls).toBe(0);
 });
 
+test("rubber bill sync route rejects an invalid price-adjustment target before the RPC", async () => {
+  let rpcCalls = 0;
+  const supabase = {
+    rpc: async () => {
+      rpcCalls += 1;
+      return { data: { status: "failed", errorMessage: "RPC should not run" }, error: null };
+    },
+  };
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/route")>(
+    "src/app/api/lanflow/rubber-bills/route.ts",
+    {
+      "@/lib/server/auth": {
+        requireAuth: async () => ({ ok: true, supabase }),
+      },
+    },
+  );
+
+  for (const priceAdjustmentTarget of [
+    -1,
+    1.001,
+    0.1 + 0.2,
+    1_000_000_000_000,
+    "1000",
+  ]) {
+    const response = await route.POST(new Request("http://local/api/lanflow/rubber-bills", {
+      method: "POST",
+      body: JSON.stringify(validRubberSubmission({ priceAdjustmentTarget })),
+    }));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      status: "failed",
+      errorMessage: "ยอดปรับราคาบิลยางไม่ถูกต้อง",
+    });
+  }
+  expect(rpcCalls).toBe(0);
+});
+
 test("rubber bill sync route rejects a declared oversized request before the RPC", async () => {
   let rpcCalls = 0;
   const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/route")>(

@@ -3030,6 +3030,7 @@ CREATE OR REPLACE FUNCTION "private"."current_rubber_bill_payload"("p_bill_id" "
     'customerId', b.customer_id,
     'customerName', b.customer_name,
     'configuredPriceSnapshot', b.configured_price_snapshot,
+    'priceAdjustmentTarget', b.price_adjustment_target,
     'billType', b.bill_type,
     'deductWeight', b.deduct_weight,
     'weight', b.weight,
@@ -5691,6 +5692,7 @@ declare
   v_deduction_total numeric;
   v_payable_before_rounding numeric;
   v_weigh_count integer := 0;
+  v_target numeric := 0;
 begin
   if v_operation not in ('create', 'update') then
     return payload;
@@ -5705,8 +5707,7 @@ begin
     raise exception 'deductWeight must be non-negative with at most 2 decimal places';
   end if;
 
-  for v_item in
-    select value from jsonb_array_elements(payload->'items')
+  for v_item in select value from jsonb_array_elements(payload->'items')
   loop
     v_item_type := v_item->>'itemType';
 
@@ -5734,8 +5735,8 @@ begin
       if v_row_weight <= 0 then
         raise exception 'weigh-row net weight must be positive';
       end if;
-      if v_price is null or v_price < 0 or v_price <> round(v_price, 2) then
-        raise exception 'weigh-row price must be non-negative with at most 2 decimal places';
+      if v_price is null or v_price < 0 or v_price <> round(v_price, 5) then
+        raise exception 'weigh-row price must be non-negative with at most 5 decimal places';
       end if;
 
       v_row_weight := round(v_row_weight, 2);
@@ -5747,7 +5748,6 @@ begin
         'netWeight', v_row_weight,
         'totalAmount', v_line_value
       );
-
     elsif v_item_type in ('acid', 'stock_deduction') then
       v_quantity := nullif(v_item->>'quantity', '')::numeric;
       v_price := nullif(v_item->>'unitPrice', '')::numeric;
@@ -5762,10 +5762,7 @@ begin
 
       v_line_value := floor(v_quantity * v_price);
       v_money_deduction_raw := v_money_deduction_raw + v_line_value;
-      v_item := v_item || jsonb_build_object(
-        'totalAmount', v_line_value
-      );
-
+      v_item := v_item || jsonb_build_object('totalAmount', v_line_value);
     elsif v_item_type = 'debt' then
       v_line_value := nullif(v_item->>'totalAmount', '')::numeric;
       if v_line_value is null
@@ -5774,9 +5771,7 @@ begin
         raise exception 'debt deductions must be non-negative with at most 2 decimal places';
       end if;
       v_money_deduction_raw := v_money_deduction_raw + v_line_value;
-      v_item := v_item || jsonb_build_object(
-        'totalAmount', round(v_line_value, 2)
-      );
+      v_item := v_item || jsonb_build_object('totalAmount', round(v_line_value, 2));
     end if;
 
     v_items := v_items || jsonb_build_array(v_item);
@@ -5789,17 +5784,23 @@ begin
     raise exception 'deductWeight must be less than total weight';
   end if;
 
+  begin
+    v_target := coalesce(nullif(payload->>'priceAdjustmentTarget', '')::numeric, 0);
+  exception when others then
+    raise exception 'priceAdjustmentTarget must be non-negative with at most 2 decimal places';
+  end;
+  if v_target < 0
+     or v_target > 999999999999.99
+     or v_target <> round(v_target, 2) then
+    raise exception 'priceAdjustmentTarget must be non-negative with at most 2 decimal places';
+  end if;
+
   v_total_weight := round(v_total_weight, 2);
   v_net_weight := trunc(v_total_weight - v_deduct_weight, 2);
   v_average_price := round(v_total_weigh_value / v_total_weight, 2);
-  v_net_rubber_value := floor(
-    v_total_weigh_value * v_net_weight / v_total_weight
-  );
+  v_net_rubber_value := floor(v_total_weigh_value * v_net_weight / v_total_weight);
   v_deduction_total := round(v_money_deduction_raw, 2);
-  v_payable_before_rounding := greatest(
-    v_net_rubber_value - v_deduction_total,
-    0
-  );
+  v_payable_before_rounding := greatest(v_net_rubber_value - v_deduction_total, 0);
 
   return payload || jsonb_build_object(
     'formulaVersion', 2,
@@ -5811,7 +5812,8 @@ begin
     'averagePrice', v_average_price,
     'deductionTotal', v_deduction_total,
     'payableBeforeRounding', v_payable_before_rounding,
-    'netTotal', floor(v_payable_before_rounding)
+    'netTotal', floor(v_payable_before_rounding),
+    'priceAdjustmentTarget', v_target
   );
 end;
 $$;
@@ -5820,7 +5822,7 @@ $$;
 ALTER FUNCTION "private"."normalize_rubber_bill_calculation_payload"("payload" "jsonb") OWNER TO "postgres";
 
 
-COMMENT ON FUNCTION "private"."normalize_rubber_bill_calculation_payload"("payload" "jsonb") IS 'Recalculates Rubber Bill v2 values: floor calculated line values and rubber value to whole baht while preserving two-decimal input precision.';
+COMMENT ON FUNCTION "private"."normalize_rubber_bill_calculation_payload"("payload" "jsonb") IS 'Recalculates Rubber Bill v2 values with five-decimal weigh prices, two-decimal ordinary inputs, and price-adjustment metadata.';
 
 
 
@@ -8487,36 +8489,28 @@ CREATE OR REPLACE FUNCTION "private"."rubber_bill_submission_fingerprint"("p_pay
     LANGUAGE "sql"
     SET "search_path" TO 'pg_catalog', 'public', 'private', 'extensions'
     AS $$
+  with normalized as (
+    select private.normalize_rubber_bill_calculation_payload(p_payload)
+      - 'configuredPriceSnapshot' - 'forceNonCurrentDateApproval' - 'submissionMode' as payload
+  )
   select encode(
     extensions.digest(
       convert_to((
-        private.normalize_rubber_bill_calculation_payload(p_payload)
-          - 'configuredPriceSnapshot' - 'forceNonCurrentDateApproval' - 'submissionMode'
+        case
+          when coalesce((payload->>'priceAdjustmentTarget')::numeric, 0) = 0
+            then payload - 'priceAdjustmentTarget'
+          else payload
+        end
       )::text, 'UTF8'),
       'sha256'
     ),
     'hex'
   )
+  from normalized
 $$;
 
 
 ALTER FUNCTION "private"."rubber_bill_submission_fingerprint"("p_payload" "jsonb") OWNER TO "postgres";
-
-
-CREATE OR REPLACE FUNCTION "private"."try_rubber_bill_submission_fingerprint"("p_payload" "jsonb") RETURNS "text"
-    LANGUAGE "plpgsql"
-    SET "search_path" TO 'pg_catalog', 'public', 'private', 'extensions'
-    AS $$
-begin
-  return private.rubber_bill_submission_fingerprint(p_payload);
-exception
-  when data_exception or raise_exception then
-    return null;
-end
-$$;
-
-
-ALTER FUNCTION "private"."try_rubber_bill_submission_fingerprint"("p_payload" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."rubber_export_age_hours"("p_bill_date" "date", "p_age_source_at" timestamp with time zone, "p_cutoff_at" timestamp with time zone) RETURNS numeric
@@ -9264,10 +9258,10 @@ begin
       from jsonb_array_elements(coalesce(payload->'items', '[]'::jsonb)) item
       where item->>'itemType' = 'weigh'
     loop
-      if v_price < 0 or v_price_scale > 2 then
+      if v_price < 0 or v_price_scale > 5 then
         return jsonb_build_object(
           'status', 'failed',
-          'errorMessage', 'ราคายางต้องไม่ติดลบและมีทศนิยมไม่เกิน 2 ตำแหน่ง'
+          'errorMessage', 'ราคายางต้องไม่ติดลบและมีทศนิยมไม่เกิน 5 ตำแหน่ง'
         );
       end if;
       if v_price_cap is not null and v_price > v_price_cap then
@@ -9504,6 +9498,10 @@ $$;
 
 
 ALTER FUNCTION "private"."sync_rubber_bill_approval_20260823010000"("payload" "jsonb") OWNER TO "postgres";
+
+
+COMMENT ON FUNCTION "private"."sync_rubber_bill_approval_20260823010000"("payload" "jsonb") IS 'Creates or applies Rubber Bill approval requests and accepts exact weigh prices up to five decimals.';
+
 
 
 CREATE OR REPLACE FUNCTION "private"."telegram_badge_latest_slot"("p_now" timestamp with time zone, "p_start_time" time without time zone, "p_end_time" time without time zone, "p_interval_minutes" integer) RETURNS timestamp with time zone
@@ -9785,6 +9783,22 @@ $$;
 
 
 ALTER FUNCTION "private"."time_payroll_slip_outstanding_snapshot"("p_profile_id" "uuid", "p_month" "text", "p_as_of" timestamp with time zone, "p_deducted_this_slip" numeric) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."try_rubber_bill_submission_fingerprint"("p_payload" "jsonb") RETURNS "text"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'pg_catalog', 'public', 'private', 'extensions'
+    AS $$
+begin
+  return private.rubber_bill_submission_fingerprint(p_payload);
+exception
+  when data_exception or raise_exception then
+    return null;
+end
+$$;
+
+
+ALTER FUNCTION "private"."try_rubber_bill_submission_fingerprint"("p_payload" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."validate_rubber_approval_group_v2_input"("p_location_ids" "uuid"[], "p_edit_window_minutes" integer, "p_price_allowance" numeric) RETURNS "uuid"[]
@@ -18579,6 +18593,7 @@ begin
         'net_total', coalesce((r.proposed_payload->>'netTotal')::numeric, 0),
         'acid_pack_count', coalesce((r.proposed_payload->>'acidPackCount')::numeric, 0),
         'configured_price_snapshot', r.configured_price_snapshot,
+        'price_adjustment_target', coalesce((r.proposed_payload->>'priceAdjustmentTarget')::numeric, 0),
         'created_by_user_id', r.requested_by_user_id,
         'created_by_name', r.requested_by_name,
         'created_by_phone', r.requested_by_phone,
@@ -21348,9 +21363,11 @@ END - "deduction_total"), (0)::numeric)) STORED,
     "price_rule_revision_snapshot" bigint,
     "rubber_price_rule_source" "text",
     "last_submission_fingerprint" "text",
+    "price_adjustment_target" numeric(14,2) DEFAULT 0 NOT NULL,
     CONSTRAINT "rubber_bills_allowance_snapshot_check" CHECK ((("price_allowance_snapshot" IS NULL) OR ("price_allowance_snapshot" >= (0)::numeric))),
     CONSTRAINT "rubber_bills_approval_revision_shape_check" CHECK (((("approval_state" = 'not_required'::"text") AND ("approved_by_name" IS NULL) AND ("approval_revision_no" IS NULL)) OR (("approval_state" = 'approved'::"text") AND ("approved_by_name" IS NOT NULL) AND ("approval_revision_no" = "revision_no")))),
     CONSTRAINT "rubber_bills_approval_state_check" CHECK (("approval_state" = ANY (ARRAY['not_required'::"text", 'approved'::"text"]))),
+    CONSTRAINT "rubber_bills_branch_price_adjustment_target_check" CHECK ((("source_export_no" IS NULL) OR ("price_adjustment_target" = (0)::numeric))),
     CONSTRAINT "rubber_bills_branch_receipt_shape_check" CHECK (((("source_rubber_export_id" IS NULL) AND ("source_export_no" IS NULL) AND ("received_at" IS NULL) AND ("received_age_hours" IS NULL) AND ("received_age_is_estimated" IS NULL)) OR ((NULLIF("btrim"("source_export_no"), ''::"text") IS NOT NULL) AND ("received_at" IS NOT NULL) AND ("received_age_hours" IS NOT NULL) AND ("received_age_hours" >= (0)::numeric) AND ("received_age_is_estimated" IS NOT NULL) AND ("net_total" = (0)::numeric) AND ("rubber_value" > (0)::numeric) AND ("deduction_total" = "net_rubber_value") AND (("source_rubber_export_id" IS NOT NULL) OR ("record_status" = 'deleted'::"public"."record_status"))))),
     CONSTRAINT "rubber_bills_cap_snapshot_check" CHECK ((("effective_price_cap_snapshot" IS NULL) OR ("effective_price_cap_snapshot" > (0)::numeric))),
     CONSTRAINT "rubber_bills_central_snapshot_check" CHECK ((("central_price_snapshot" IS NULL) OR ("central_price_snapshot" > (0)::numeric))),
@@ -21365,6 +21382,7 @@ END - "deduction_total"), (0)::numeric)) STORED,
     CONSTRAINT "rubber_bills_net_total_whole_baht_check" CHECK (("net_total" = "trunc"("net_total"))),
     CONSTRAINT "rubber_bills_ocr_hash_check" CHECK ((("ocr_image_sha256" IS NULL) OR (("ocr_image_sha256" = "lower"("ocr_image_sha256")) AND ("ocr_image_sha256" ~ '^[0-9a-f]{64}$'::"text")))),
     CONSTRAINT "rubber_bills_ocr_shape_check" CHECK (((("input_method" = 'manual'::"text") AND ("ocr_source_id" IS NULL) AND ("ocr_image_sha256" IS NULL)) OR (("input_method" = 'ocr'::"text") AND ("ocr_source_id" IS NOT NULL) AND ("ocr_image_sha256" IS NOT NULL)))),
+    CONSTRAINT "rubber_bills_price_adjustment_target_nonnegative_check" CHECK (("price_adjustment_target" >= (0)::numeric)),
     CONSTRAINT "rubber_bills_rule_source_check" CHECK ((("rubber_price_rule_source" IS NULL) OR ("rubber_price_rule_source" = ANY (ARRAY['group'::"text", 'ungrouped'::"text"])))),
     CONSTRAINT "rubber_bills_weight_positive_check" CHECK (("weight" > (0)::numeric))
 );
@@ -21422,6 +21440,10 @@ COMMENT ON COLUMN "public"."rubber_bills"."input_method" IS 'How the Rubber Bill
 
 
 COMMENT ON COLUMN "public"."rubber_bills"."has_ocr_source_image" IS 'Safe browser projection; private OCR provenance is never returned.';
+
+
+
+COMMENT ON COLUMN "public"."rubber_bills"."price_adjustment_target" IS 'Latest user-entered target converted into item prices; receipt metadata only and never added to bill totals.';
 
 
 
@@ -25314,6 +25336,31 @@ CREATE OR REPLACE FUNCTION "public"."sync_rubber_bill_core_20260725010000"("payl
     SET "search_path" TO ''
     AS $$
 declare
+  v_normalized jsonb;
+  v_result jsonb;
+begin
+  v_normalized := private.normalize_rubber_bill_calculation_payload(payload);
+  v_result := public.sync_rubber_bill_core_before_price_adjustment_20261008018000(v_normalized);
+  if v_result->>'status' = 'synced'
+     and v_normalized->>'operation' in ('create', 'update') then
+    update public.rubber_bills
+    set price_adjustment_target = (v_normalized->>'priceAdjustmentTarget')::numeric
+    where id = (v_result->>'id')::uuid
+      and price_adjustment_target is distinct from (v_normalized->>'priceAdjustmentTarget')::numeric;
+  end if;
+  return v_result;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."sync_rubber_bill_core_20260725010000"("payload" "jsonb") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."sync_rubber_bill_core_before_price_adjustment_20261008018000"("payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
   v_result jsonb;
   v_source public.rubber_bill_ocr_sources%rowtype;
   v_upload_id uuid;
@@ -25415,7 +25462,7 @@ end
 $$;
 
 
-ALTER FUNCTION "public"."sync_rubber_bill_core_20260725010000"("payload" "jsonb") OWNER TO "postgres";
+ALTER FUNCTION "public"."sync_rubber_bill_core_before_price_adjustment_20261008018000"("payload" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."sync_rubber_bill_legacy_core_20260824010000"("payload" "jsonb") RETURNS "jsonb"
@@ -27045,7 +27092,7 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_bill_items" (
     "net_weight" numeric(12,2),
     "quantity" numeric(12,2),
     "unit" "text",
-    "price" numeric(12,2),
+    "price" numeric(15,5),
     "total" numeric(12,2) DEFAULT 0 NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "stock_product_id" "uuid",
@@ -27055,6 +27102,10 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_bill_items" (
 
 
 ALTER TABLE "public"."rubber_bill_items" OWNER TO "postgres";
+
+
+COMMENT ON COLUMN "public"."rubber_bill_items"."price" IS 'Weigh-row price supports five decimals; stock-deduction prices remain limited to two decimals by payload validation.';
+
 
 
 CREATE OR REPLACE VIEW "public"."acid_stock_movements" WITH ("security_invoker"='true') AS
@@ -31898,12 +31949,6 @@ REVOKE ALL ON FUNCTION "private"."rubber_bill_submission_fingerprint"("p_payload
 
 
 
-REVOKE ALL ON FUNCTION "private"."try_rubber_bill_submission_fingerprint"("p_payload" "jsonb") FROM PUBLIC;
-REVOKE ALL ON FUNCTION "private"."try_rubber_bill_submission_fingerprint"("p_payload" "jsonb") FROM "anon";
-REVOKE ALL ON FUNCTION "private"."try_rubber_bill_submission_fingerprint"("p_payload" "jsonb") FROM "authenticated";
-
-
-
 REVOKE ALL ON FUNCTION "private"."rubber_export_candidates"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) FROM PUBLIC;
 
 
@@ -31945,6 +31990,10 @@ REVOKE ALL ON FUNCTION "private"."time_payroll_missing_slip_months"("p_now" time
 
 
 REVOKE ALL ON FUNCTION "private"."time_payroll_slip_outstanding_snapshot"("p_profile_id" "uuid", "p_month" "text", "p_as_of" timestamp with time zone, "p_deducted_this_slip" numeric) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."try_rubber_bill_submission_fingerprint"("p_payload" "jsonb") FROM PUBLIC;
 
 
 
@@ -33274,6 +33323,10 @@ GRANT ALL ON FUNCTION "public"."sync_rubber_bill"("payload" "jsonb") TO "authent
 
 
 REVOKE ALL ON FUNCTION "public"."sync_rubber_bill_core_20260725010000"("payload" "jsonb") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "public"."sync_rubber_bill_core_before_price_adjustment_20261008018000"("payload" "jsonb") FROM PUBLIC;
 
 
 

@@ -52,6 +52,63 @@ test("pending-create rows keep approval identity separate from real bill ids", (
   expect(bill.approvalRequestId).toBe(requestId);
 });
 
+test("actual bill rows expose the stored price-adjustment target while legacy rows default to zero", () => {
+  expect(mapRubberBillFeedRow({ price_adjustment_target: 750 }).priceAdjustmentTarget).toBe(750);
+  expect(mapRubberBillFeedRow({}).priceAdjustmentTarget).toBe(0);
+});
+
+test("rubber bill feed rejects an invalid price-adjustment target from the RPC", async () => {
+  const billId = "71000000-0000-4000-8000-000000000023";
+  for (const priceAdjustmentTarget of [-1, 1.001, 1_000_000_000_000]) {
+    const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/feed/route")>(
+      "src/app/api/lanflow/rubber-bills/feed/route.ts",
+      sequencedFeedRouteDependencies([
+        {
+          rows: [{
+            row_kind: "bill",
+            id: billId,
+            record_status: "active",
+            approval_pending: false,
+            revision_no: 1,
+            location_id: locationId,
+            work_identity: `bill:${billId}`,
+            operational_sort_at: "2026-10-05T00:00:00.000Z",
+            price_adjustment_target: priceAdjustmentTarget,
+            items: [],
+          }],
+          hasMore: false,
+          nextSortAt: null,
+          nextWorkIdentity: null,
+        },
+        [{
+          location_id: locationId,
+          bill_id: billId,
+          revision_no: 1,
+          client_created_at: null,
+          review_period_id: null,
+          review_status: "outside",
+          missing_rubber: false,
+          missing_display_in: false,
+          has_manual_correction: false,
+          is_unpriced: false,
+          has_any_evidence: false,
+          required_role_count: 0,
+          present_required_role_count: 0,
+          decision: null,
+          reviewed_by_name: null,
+          reviewed_at: null,
+        }],
+      ]),
+    );
+    const response = await route.GET({
+      nextUrl: new URL(`http://local/api/lanflow/rubber-bills/feed?locationId=${locationId}`),
+    } as never);
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "ระบบไม่ตอบกลับรายการบิลยางตามรูปแบบที่กำหนด" });
+  }
+});
+
 test("rubber bill feed rejects a malformed next cursor from the RPC", async () => {
   const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/feed/route")>(
     "src/app/api/lanflow/rubber-bills/feed/route.ts",

@@ -98,6 +98,7 @@ export function rubberBillFromSyncEvent(event: SyncEvent, ownerUserId: string): 
     netTotal: Number(payload.netTotal ?? calculated.netTotal),
     acidPackCount: Number(payload.acidPackCount ?? 0),
     configuredPriceSnapshot: payload.configuredPriceSnapshot ?? null,
+    priceAdjustmentTarget: Number(payload.priceAdjustmentTarget ?? 0),
     approvalState: "not_required",
     approvalApprovedByName: null,
     approvalRevisionNo: null,
