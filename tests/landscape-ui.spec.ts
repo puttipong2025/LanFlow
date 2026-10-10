@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 const landscapeViewports = [
+  { name: "small-iphone", width: 568, height: 320 },
   { name: "small-android", width: 640, height: 360 },
   { name: "large-android", width: 740, height: 360 },
   { name: "iphone", width: 852, height: 393 },
