@@ -478,20 +478,20 @@ function TransportModal({ staff, allStaffs, locationId, online, onClose, onSave 
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/45 p-3 sm:p-6 animate-fade-in">
-      <div className="mt-4 w-full max-w-5xl rounded-xl bg-white shadow-2xl overflow-hidden border border-black/5 animate-scale-up">
+    <div className="landscape-modal-overlay fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/45 p-3 sm:p-6 animate-fade-in">
+      <div role="dialog" aria-modal="true" aria-labelledby="transport-modal-title" className="mt-4 w-full max-w-5xl rounded-xl bg-white shadow-2xl overflow-hidden border border-black/5 animate-scale-up">
         {/* Modal Header */}
         <div className="flex items-center justify-between border-b border-black/10 px-5 py-4 bg-gradient-to-r from-indigo-500/5 to-violet-500/5">
           <div>
-            <h2 className="text-lg font-bold text-ink">
+            <h2 id="transport-modal-title" className="text-lg font-bold text-ink">
               {staff ? "แก้ไขข้อมูลขนส่งและพนักงาน" : "เพิ่มข้อมูลขนส่งและพนักงานใหม่"}
             </h2>
             <p className="text-xs text-ink/65">รหัสชั่วคราว: {staff?.clientTempId ?? "สร้างอัตโนมัติ"}</p>
           </div>
           <button
-            type="button"
+            type="button" aria-label="ปิด"
             onClick={onClose}
-              className="flex h-8 w-8 items-center justify-center rounded-lg bg-actionSecondary text-lg text-white transition-colors hover:bg-actionSecondary/90"
+              className="focus-ring flex h-8 w-8 items-center justify-center rounded-lg bg-actionSecondary text-lg text-white transition-colors hover:bg-actionSecondary/90"
           >
             ×
           </button>

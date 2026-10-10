@@ -677,7 +677,7 @@ function BusinessLanFlowApp() {
         />
       </section>
 
-      <section className={`mx-auto w-full px-3 py-5 sm:px-4 sm:py-6 ${activeTab === "rubber" || activeTab === "rubber-evidence" || activeTab === "rubber-export" ? "max-w-[1800px]" : "max-w-7xl"}`}>
+      <section className={`landscape-compact-content mx-auto w-full px-3 py-5 sm:px-4 sm:py-6 ${activeTab === "rubber" || activeTab === "rubber-evidence" || activeTab === "rubber-export" ? "max-w-[1800px]" : "max-w-7xl"}`}>
         {activeTab === "dashboard" && (
           <Dashboard
             selectedLocation={selectedLocation}

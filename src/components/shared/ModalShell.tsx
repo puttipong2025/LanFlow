@@ -63,7 +63,7 @@ export function ModalShell({
 
   const modal = (
     <div className={cn(
-      "fixed inset-0 z-50 flex items-start justify-center bg-ink/50 p-2 sm:p-6",
+      "landscape-modal-overlay fixed inset-0 z-50 flex items-start justify-center bg-ink/50 p-2 sm:p-6",
       mobileFullScreen && "!p-0 sm:!p-6",
     )}>
       <div
@@ -71,12 +71,12 @@ export function ModalShell({
         aria-modal={nativeModal ? undefined : "true"}
         aria-labelledby={nativeModal ? undefined : titleId}
         className={cn(
-          "flex max-h-[calc(100dvh-16px)] w-full flex-col overflow-hidden rounded-xl border border-white/80 bg-white shadow-2xl sm:mt-4 sm:max-h-[calc(100dvh-48px)]",
+          "landscape-modal-panel flex max-h-[calc(100dvh-16px)] w-full flex-col overflow-hidden rounded-xl border border-white/80 bg-white shadow-2xl sm:mt-4 sm:max-h-[calc(100dvh-48px)]",
           size === "wide" ? "max-w-6xl" : size === "compact" ? "max-w-md" : "max-w-4xl",
           mobileFullScreen && "h-dvh max-h-dvh rounded-none border-0 sm:h-auto sm:max-h-[calc(100dvh-48px)] sm:rounded-xl sm:border",
         )}
       >
-        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-mint bg-sand px-3 py-3 sm:px-4">
+        <div className="landscape-modal-header flex shrink-0 items-start justify-between gap-3 border-b border-mint bg-sand px-3 py-3 sm:px-4">
           <div>
             <h2 id={titleId} className="text-balance text-lg font-bold text-ink">{title}</h2>
             {subtitle && <p className="text-pretty text-sm text-ink/60">{subtitle}</p>}
@@ -93,7 +93,7 @@ export function ModalShell({
             ปิด
           </button>
         </div>
-        <div className="modal-scroll-body flex-1 overflow-y-auto p-3 sm:p-4">{children}</div>
+        <div className="landscape-modal-body modal-scroll-body flex-1 overflow-y-auto p-3 sm:p-4">{children}</div>
       </div>
     </div>
   );

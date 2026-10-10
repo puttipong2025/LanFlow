@@ -22,14 +22,15 @@ export async function GET(request: NextRequest) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
 
-  const locationId = request.nextUrl.searchParams.get("locationId");
+  const rawLocationId = request.nextUrl.searchParams.get("locationId");
   const mode = request.nextUrl.searchParams.get("mode") ?? "latest";
   const search = normalizeSearch(request.nextUrl.searchParams.get("search"));
   const cursor = request.nextUrl.searchParams.get("cursor");
 
-  if (!locationId || !UUID.test(locationId)) {
+  if (!rawLocationId || !UUID.test(rawLocationId)) {
     return NextResponse.json({ error: "พารามิเตอร์ feed ไม่ถูกต้อง" }, { status: 400 });
   }
+  const locationId = rawLocationId.toLowerCase();
   if (!isFeedMode(mode) || search.length > 200 || (cursor?.length ?? 0) > 4096) {
     return NextResponse.json({ error: "พารามิเตอร์ feed ไม่ถูกต้อง" }, { status: 400 });
   }
@@ -55,7 +56,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "โหลดรายการรับ-จ่ายไม่สำเร็จ" }, { status: 500 });
   }
 
-  if (!isIncomeExpenseFeedPayload(data, locationId, mode)) {
+  if (!isIncomeExpenseFeedPayload(data, locationId, mode, search)) {
     return NextResponse.json(
       { error: "ระบบไม่ตอบกลับรายการรับ-จ่ายตามรูปแบบที่กำหนด" },
       { status: 500 },

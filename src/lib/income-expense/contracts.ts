@@ -1,8 +1,13 @@
+import {
+  isCanonicalDate,
+  isFeedTimestamp,
+  isIncomeExpenseFeedCursor,
+  isIncomeExpenseFeedPageOrder,
+  isIsoTimestamp,
+} from "./feed-cursor";
+
 const DATABASE_ERROR_DETAIL_PATTERN = /(?:\b(?:relation|column|constraint|schema|table|function|operator|sequence|trigger)\b.*\b(?:does not exist|violates|already exists|not found)\b)|(?:duplicate key value|invalid input syntax|permission denied|sqlstate|syntax error at or near|division by zero|numeric field overflow|value too long|deadlock detected|could not serialize|current transaction is aborted)|(?:\b(?:private|public|auth|storage)\.[a-z_][a-z0-9_]*)|(?:\b[a-z][a-z0-9_]*(?:_pkey|_key|_fkey|_check)\b)/i;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,6})?(?:Z|[+-](?:0\d|1[0-5]):[0-5]\d)$/;
-const POSTGRES_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2} (?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,6})?[+-](?:0\d|1[0-5])(?::?[0-5]\d)?$/;
 const POSTGRES_INTEGER_MAX = 2_147_483_647;
 const APPROVAL_REASONS = new Set(["keyword", "amount_threshold", "non_current_date"]);
 const CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
@@ -59,29 +64,6 @@ function isNonNegativePostgresInteger(value: unknown): value is number {
 
 function isSafePositiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
-}
-
-function isCanonicalDate(value: unknown): value is string {
-  if (typeof value !== "string" || !DATE_PATTERN.test(value)) return false;
-  return new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value;
-}
-
-function isIsoTimestamp(value: unknown): value is string {
-  return typeof value === "string"
-    && !value.startsWith("0000")
-    && ISO_TIMESTAMP_PATTERN.test(value)
-    && Number.isFinite(Date.parse(value))
-    && isCanonicalDate(value.slice(0, 10));
-}
-
-function isFeedTimestamp(value: unknown): value is string {
-  return isIsoTimestamp(value) || (
-    typeof value === "string"
-    && !value.startsWith("0000")
-    && POSTGRES_TIMESTAMP_PATTERN.test(value)
-    && Number.isFinite(Date.parse(value))
-    && isCanonicalDate(value.slice(0, 10))
-  );
 }
 
 function isFiniteNonNegative(value: unknown): value is number {
@@ -189,6 +171,34 @@ function hasValidFeedDisplayMetadata(value: Record<string, unknown>) {
       || isNonBlankString(value.reportLockNo, 300));
 }
 
+function isZeroCashTransferIncome(
+  value: Record<string, unknown>,
+  type: unknown,
+  billOption: unknown,
+  cost: unknown,
+) {
+  if (type !== "income"
+      || billOption !== "รายรับ"
+      || cost !== 0
+      || value.relationSourceType !== "money_transfer"
+      || typeof value.relationSourceId !== "string"
+      || !value.relationSourceId.startsWith("cash:")) {
+    return false;
+  }
+  const transferId = value.relationSourceId.slice("cash:".length);
+  const derivedId = `cash-transfer-income:${transferId}`;
+  return isUuid(transferId)
+    && value.id === derivedId
+    && value.clientTempId === derivedId
+    && value.idempotencyKey === derivedId;
+}
+
+function isPinnedLatestCreate(row: Record<string, unknown>) {
+  return row.syncStatus === "pending"
+    && row.approvalRequestType === "income_expense"
+    && row.approvalOperation === "create";
+}
+
 export function publicIncomeExpenseErrorMessage(value: unknown, fallback: string) {
   if (typeof value !== "string"
       || value.trim().length === 0
@@ -265,6 +275,7 @@ function isFeedRow(value: unknown, locationId: string, mode: IncomeExpenseServer
     && hasValidFeedDisplayMetadata(value)
     && isNonBlankString(value.id, 300)
     && isNonBlankString(value.clientTempId, 300)
+    && isNonBlankString(value.idempotencyKey, 300)
     && isNonBlankString(value.localBillNo, 300)
     && value.locationId === locationId
     && value.recordStatus === "active"
@@ -275,7 +286,9 @@ function isFeedRow(value: unknown, locationId: string, mode: IncomeExpenseServer
     && isFiniteNonNegative(cost)
     && (billOption === "รายรับ" || billOption === "บิลขาย" || billOption === "ค่าใช้จ่าย")
     && (type === "income" ? billOption !== "ค่าใช้จ่าย" : billOption === "ค่าใช้จ่าย")
-    && (billOption === "บิลขาย" ? cost >= 0 : cost > 0)
+    && (billOption === "บิลขาย"
+      || cost > 0
+      || isZeroCashTransferIncome(value, type, billOption, cost))
     && isFeedTimestamp(value.clientRecordedAt)
     && isFeedTimestamp(value.clientCreatedAt)
     && isNonNegativePostgresInteger(value.revisionNo);
@@ -285,6 +298,7 @@ export function isIncomeExpenseFeedPayload(
   value: unknown,
   locationId: string,
   mode: IncomeExpenseServerFeedMode,
+  normalizedSearch: string,
 ) {
   if (!isJsonObject(value)
       || !Array.isArray(value.rows)
@@ -295,9 +309,35 @@ export function isIncomeExpenseFeedPayload(
   }
   if (value.hasMore !== (typeof value.nextCursor === "string")) return false;
   if (value.hasMore && value.rows.length === 0) return false;
+  if (mode === "pending_approval" && value.pendingApprovalCount < value.rows.length) return false;
   if (!value.rows.every((row) => isFeedRow(row, locationId, mode))) return false;
-  const identities = value.rows.map((row) => (row as Record<string, unknown>).clientTempId);
-  return new Set(identities).size === identities.length;
+  const rows = value.rows as Array<Record<string, unknown>>;
+  let pinnedCount = 0;
+  if (mode === "latest") {
+    const firstPageableIndex = rows.findIndex((row) => !isPinnedLatestCreate(row));
+    pinnedCount = firstPageableIndex === -1 ? rows.length : firstPageableIndex;
+    if (rows.slice(pinnedCount).some(isPinnedLatestCreate)
+        || rows.length - pinnedCount > 100) {
+      return false;
+    }
+  } else if (rows.length > 100) {
+    return false;
+  }
+  if (!isIncomeExpenseFeedPageOrder(rows, mode, pinnedCount)) return false;
+  if (typeof value.nextCursor === "string"
+      && !isIncomeExpenseFeedCursor(
+        value.nextCursor,
+        locationId,
+        mode,
+        normalizedSearch,
+        rows.at(-1)!,
+      )) {
+    return false;
+  }
+  const ids = rows.map((row) => row.id);
+  const clientIdentities = rows.map((row) => row.clientTempId);
+  return new Set(ids).size === ids.length
+    && new Set(clientIdentities).size === clientIdentities.length;
 }
 
 export function isApprovalRequestResult(value: unknown) {

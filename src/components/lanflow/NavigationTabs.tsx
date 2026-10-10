@@ -26,7 +26,7 @@ export function NavigationTabs({
   online: boolean;
 }) {
   return (
-    <nav className="mx-auto flex w-full max-w-7xl gap-2 overflow-x-auto px-3 pb-4 sm:flex-wrap sm:overflow-visible sm:px-4">
+    <nav className="landscape-compact-navigation mx-auto flex w-full max-w-7xl gap-2 overflow-x-auto px-3 pb-4 sm:flex-wrap sm:overflow-visible sm:px-4">
       {tabs.filter((tab) => canViewNavigationTab(tab.id, profile)).map((tab) => {
         const Icon = tab.icon;
         const active = activeTab === tab.id;

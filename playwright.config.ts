@@ -46,6 +46,7 @@ export default defineConfig({
         '**/rubber-bills-pwa.spec.ts',
         '**/income-expense-pwa.spec.ts',
         '**/auth-cache-offline.spec.ts',
+        '**/landscape-ui.spec.ts',
         '**/weighing-queue-ui.spec.ts',
         '**/pwa-connectivity-matrix.spec.ts',
       ],

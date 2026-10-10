@@ -45,7 +45,6 @@ test.describe('Phase 4: DB Lockdown Hardening Tests', () => {
     });
 
     const body = await response.json();
-    console.log(body);
     expect(response.status()).toBe(409);
     expect(body.status).toBe('conflict');
     expect(body.errorMessage).toBe('ไม่สามารถซิงก์รายการโยกเงินโดยตรงได้ ต้องทำผ่านระบบโยกเงินเท่านั้น');

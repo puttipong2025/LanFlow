@@ -32,28 +32,38 @@ export function useIncomeExpenseOperationalList({
 }) {
   const queryClient = useQueryClient();
   const normalizedSearch = useMemo(() => normalizeIncomeExpenseSearch(search), [search]);
+  const canonicalLocationId = locationId.toLowerCase();
   const online = useOnlineStatus();
   const serverMode = mode === "sync_problems" ? "latest" : mode;
   const serverFeedEnabled = Boolean(ownerUserId && locationId && online && mode !== "sync_problems");
-  const feedKey = incomeExpenseOperationalQueryKeys.feed(ownerUserId, locationId, serverMode, normalizedSearch);
-  const pendingKey = incomeExpenseOperationalQueryKeys.pending(ownerUserId, locationId);
+  const feedKey = incomeExpenseOperationalQueryKeys.feed(
+    ownerUserId,
+    canonicalLocationId,
+    serverMode,
+    normalizedSearch,
+  );
+  const pendingKey = incomeExpenseOperationalQueryKeys.pending(ownerUserId, canonicalLocationId);
   const pendingQuery = useQuery({
     queryKey: pendingKey,
     enabled: Boolean(ownerUserId && locationId),
     networkMode: "always",
-    queryFn: () => getPendingEvents(queuePartition(ownerUserId, locationId)),
+    queryFn: () => getPendingEvents(queuePartition(ownerUserId, canonicalLocationId)),
   });
   const feedQuery = useInfiniteQuery({
     queryKey: feedKey,
     initialPageParam: null as string | null,
     enabled: serverFeedEnabled,
     queryFn: async ({ pageParam, signal }): Promise<IncomeExpenseOperationalFeedPage> => {
-      const params = new URLSearchParams({ locationId, mode: serverMode, search: normalizedSearch });
+      const params = new URLSearchParams({
+        locationId: canonicalLocationId,
+        mode: serverMode,
+        search: normalizedSearch,
+      });
       if (pageParam) params.set("cursor", pageParam);
       const response = await authFetch(`/api/lanflow/income-expense/feed?${params}`, { signal });
       if (!response.ok) throw new Error("โหลดรายการรับ-จ่ายไม่สำเร็จ");
       const data: unknown = await response.json();
-      if (!isIncomeExpenseFeedPayload(data, locationId, serverMode)) {
+      if (!isIncomeExpenseFeedPayload(data, canonicalLocationId, serverMode, normalizedSearch)) {
         throw new Error("ระบบไม่ตอบกลับรายการรับ-จ่ายตามรูปแบบที่กำหนด");
       }
       return data as IncomeExpenseOperationalFeedPage;

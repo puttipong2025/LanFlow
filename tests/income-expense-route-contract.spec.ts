@@ -202,6 +202,7 @@ test("income/expense feed rejects malformed RPC pages instead of defaulting them
   const validFeedRow = {
     id: recordId,
     clientTempId: "client-1",
+    idempotencyKey: `server:${recordId}`,
     locationId,
     syncStatus: "synced",
     recordStatus: "active",
@@ -260,9 +261,77 @@ test("income/expense feed rejects malformed RPC pages instead of defaulting them
       pendingApprovalCount: 0,
     },
     {
+      rows: [{ ...validFeedRow, idempotencyKey: undefined }],
+      nextCursor: null,
+      hasMore: false,
+      pendingApprovalCount: 0,
+    },
+    {
       rows: [{ ...validFeedRow, createdByName: {} }],
       nextCursor: null,
       hasMore: false,
+      pendingApprovalCount: 0,
+    },
+    {
+      rows: [validFeedRow],
+      nextCursor: "not-a-feed-cursor",
+      hasMore: true,
+      pendingApprovalCount: 0,
+    },
+    {
+      rows: [validFeedRow],
+      nextCursor: Buffer.from(JSON.stringify({
+        v: 1,
+        locationId,
+        mode: "latest",
+        search: "different search",
+        sort: "tx_date_desc",
+        date: validFeedRow.txDate,
+        key: `actual:${recordId}`,
+      })).toString("hex"),
+      hasMore: true,
+      pendingApprovalCount: 0,
+    },
+    {
+      rows: [validFeedRow],
+      nextCursor: Buffer.from(JSON.stringify({
+        v: 1,
+        locationId,
+        mode: "latest",
+        search: "",
+        sort: "tx_date_desc",
+        date: validFeedRow.txDate,
+        key: `actual:${requestId}`,
+      })).toString("hex"),
+      hasMore: true,
+      pendingApprovalCount: 0,
+    },
+    {
+      rows: [validFeedRow],
+      nextCursor: Buffer.from(JSON.stringify({
+        v: 1,
+        locationId,
+        mode: "latest",
+        search: "",
+        sort: "tx_date_desc",
+        date: validFeedRow.txDate,
+        key: `actual:${recordId}`,
+      })).toString("hex").toUpperCase(),
+      hasMore: true,
+      pendingApprovalCount: 0,
+    },
+    {
+      rows: [validFeedRow],
+      nextCursor: Buffer.from(JSON.stringify({
+        v: 1,
+        locationId,
+        mode: "latest",
+        search: "",
+        sort: "tx_date_desc",
+        date: "2026-10-06",
+        key: `actual:${recordId}`,
+      })).toString("hex"),
+      hasMore: true,
       pendingApprovalCount: 0,
     },
     {
@@ -292,6 +361,32 @@ test("income/expense feed rejects malformed RPC pages instead of defaulting them
       hasMore: false,
       pendingApprovalCount: 1,
     },
+    {
+      rows: Array.from({ length: 101 }, (_, index) => ({
+        ...validFeedRow,
+        id: `row-${index}`,
+        clientTempId: `client-${index}`,
+        idempotencyKey: `server:row-${index}`,
+      })),
+      nextCursor: null,
+      hasMore: false,
+      pendingApprovalCount: 0,
+    },
+    {
+      rows: [{
+        ...validFeedRow,
+        txDate: "2026-10-06",
+      }, {
+        ...validFeedRow,
+        id: requestId,
+        clientTempId: "client-2",
+        idempotencyKey: `server:${requestId}`,
+        txDate: "2026-10-07",
+      }],
+      nextCursor: null,
+      hasMore: false,
+      pendingApprovalCount: 0,
+    },
   ];
 
   for (const page of malformedPages) {
@@ -307,6 +402,206 @@ test("income/expense feed rejects malformed RPC pages instead of defaulting them
       error: "ระบบไม่ตอบกลับรายการรับ-จ่ายตามรูปแบบที่กำหนด",
     });
   }
+
+  const validCursorSearch = "OLD ค่าทดสอบ วันนี้";
+  const validCursorPage = {
+    rows: [validFeedRow],
+    nextCursor: Buffer.from(JSON.stringify({
+      v: 1,
+      locationId,
+      mode: "latest",
+      search: validCursorSearch.toLowerCase(),
+      sort: "tx_date_desc",
+      date: validFeedRow.txDate,
+      key: `actual:${recordId}`,
+    })).toString("hex"),
+    hasMore: true,
+    pendingApprovalCount: 0,
+  };
+  const validCursorRoute = loadSourceModule<typeof import("../src/app/api/lanflow/income-expense/feed/route")>(
+    "src/app/api/lanflow/income-expense/feed/route.ts",
+    routeDependencies(validCursorPage),
+  );
+  const validCursorResponse = await validCursorRoute.GET({
+    nextUrl: new URL(`http://local/api/lanflow/income-expense/feed?${new URLSearchParams({
+      locationId,
+      search: `  ${validCursorSearch.replace(" ", "   ")}  `,
+    })}`),
+  } as never);
+  expect(validCursorResponse.status).toBe(200);
+
+  const derivedCursorCases = [
+    {
+      row: {
+        ...validFeedRow,
+        id: `money-transfer-income:${recordId}`,
+        relationSourceType: "money_transfer",
+        relationSourceId: recordId,
+      },
+      key: `transfer-income:${recordId}`,
+    },
+    {
+      row: {
+        ...validFeedRow,
+        id: `money-transfer-branch-expense:${recordId}`,
+        relationSourceType: "money_transfer",
+        relationSourceId: recordId,
+      },
+      key: `transfer-expense:${recordId}`,
+    },
+    {
+      row: {
+        ...validFeedRow,
+        id: `money-transfer-branch-paid-expense:${recordId}`,
+        relationSourceType: "money_transfer",
+        relationSourceId: recordId,
+      },
+      key: `customer-transfer-expense:${recordId}`,
+    },
+    {
+      row: {
+        ...validFeedRow,
+        id: `time-tracking-withdrawal:${recordId}`,
+        relationSourceType: "time_tracking_withdrawal",
+        relationSourceId: recordId,
+      },
+      key: `time-tracking-withdrawal:${recordId}`,
+    },
+    {
+      row: {
+        ...validFeedRow,
+        id: `rubber-bill-daily-expense:${locationId}:2026-10-07`,
+        relationSourceType: "rubber_bill_daily",
+        relationSourceId: "2026-10-07",
+      },
+      key: "rubber:2026-10-07",
+    },
+  ];
+  for (const { row, key } of derivedCursorCases) {
+    const route = loadSourceModule<typeof import("../src/app/api/lanflow/income-expense/feed/route")>(
+      "src/app/api/lanflow/income-expense/feed/route.ts",
+      routeDependencies({
+        rows: [row],
+        nextCursor: Buffer.from(JSON.stringify({
+          v: 1,
+          locationId,
+          mode: "latest",
+          search: "",
+          sort: "tx_date_desc",
+          date: row.txDate,
+          key,
+        })).toString("hex"),
+        hasMore: true,
+        pendingApprovalCount: 0,
+      }),
+    );
+    const response = await route.GET({
+      nextUrl: new URL(`http://local/api/lanflow/income-expense/feed?locationId=${locationId}`),
+    } as never);
+    expect(response.status).toBe(200);
+  }
+
+  const pinnedCreateRow = {
+    ...validFeedRow,
+    id: `approval-income:${requestId}`,
+    clientTempId: "pending-client",
+    idempotencyKey: "create:pending-client:0",
+    syncStatus: "pending",
+    revisionNo: 0,
+    approvalPending: true,
+    approvalRequestId: requestId,
+    approvalRequestType: "income_expense",
+    approvalOperation: "create",
+    approvalReasons: ["keyword"],
+    serverReceivedAt: "2026-10-08T01:00:00.000Z",
+  };
+  const pageableRows = Array.from({ length: 100 }, (_, index) => ({
+    ...validFeedRow,
+    id: `row-${index}`,
+    clientTempId: `client-${index}`,
+    idempotencyKey: `server:row-${index}`,
+  })).sort((left, right) => left.id < right.id ? 1 : left.id > right.id ? -1 : 0);
+  const pinnedCreatePage = {
+    rows: [pinnedCreateRow, ...pageableRows],
+    nextCursor: Buffer.from(JSON.stringify({
+      v: 1,
+      locationId,
+      mode: "latest",
+      search: "",
+      sort: "tx_date_desc",
+      date: validFeedRow.txDate,
+      key: `actual:${pageableRows.at(-1)!.id}`,
+    })).toString("hex"),
+    hasMore: true,
+    pendingApprovalCount: 1,
+  };
+  const pinnedCreateRoute = loadSourceModule<typeof import("../src/app/api/lanflow/income-expense/feed/route")>(
+    "src/app/api/lanflow/income-expense/feed/route.ts",
+    routeDependencies(pinnedCreatePage),
+  );
+  const pinnedCreateResponse = await pinnedCreateRoute.GET({
+    nextUrl: new URL(`http://local/api/lanflow/income-expense/feed?locationId=${locationId}`),
+  } as never);
+  expect(pinnedCreateResponse.status).toBe(200);
+
+  const zeroCashTransferIncomePage = {
+    rows: [{
+      ...validFeedRow,
+      id: `cash-transfer-income:${recordId}`,
+      clientTempId: `cash-transfer-income:${recordId}`,
+      idempotencyKey: `cash-transfer-income:${recordId}`,
+      type: "income",
+      billOption: "รายรับ",
+      cost: 0,
+      relationSourceType: "money_transfer",
+      relationSourceId: `cash:${recordId}`,
+      relationSourceLocationId: locationId,
+      relationLabel: "รับเงินแล้ว · ผลต่าง -฿100",
+    }],
+    nextCursor: null,
+    hasMore: false,
+    pendingApprovalCount: 0,
+  };
+  const zeroCashTransferIncomeRoute = loadSourceModule<typeof import("../src/app/api/lanflow/income-expense/feed/route")>(
+    "src/app/api/lanflow/income-expense/feed/route.ts",
+    routeDependencies(zeroCashTransferIncomePage),
+  );
+  const zeroCashTransferIncomeResponse = await zeroCashTransferIncomeRoute.GET({
+    nextUrl: new URL(`http://local/api/lanflow/income-expense/feed?locationId=${locationId}`),
+  } as never);
+  expect(zeroCashTransferIncomeResponse.status).toBe(200);
+
+  const mismatchedZeroCashIdentityRoute = loadSourceModule<typeof import("../src/app/api/lanflow/income-expense/feed/route")>(
+    "src/app/api/lanflow/income-expense/feed/route.ts",
+    routeDependencies({
+      ...zeroCashTransferIncomePage,
+      rows: [{
+        ...zeroCashTransferIncomePage.rows[0],
+        idempotencyKey: `cash-transfer-income:${requestId}`,
+      }],
+    }),
+  );
+  const mismatchedZeroCashIdentityResponse = await mismatchedZeroCashIdentityRoute.GET({
+    nextUrl: new URL(`http://local/api/lanflow/income-expense/feed?locationId=${locationId}`),
+  } as never);
+  expect(mismatchedZeroCashIdentityResponse.status).toBe(500);
+
+  const zeroManualIncomeRoute = loadSourceModule<typeof import("../src/app/api/lanflow/income-expense/feed/route")>(
+    "src/app/api/lanflow/income-expense/feed/route.ts",
+    routeDependencies({
+      ...zeroCashTransferIncomePage,
+      rows: [{
+        ...validFeedRow,
+        type: "income",
+        billOption: "รายรับ",
+        cost: 0,
+      }],
+    }),
+  );
+  const zeroManualIncomeResponse = await zeroManualIncomeRoute.GET({
+    nextUrl: new URL(`http://local/api/lanflow/income-expense/feed?locationId=${locationId}`),
+  } as never);
+  expect(zeroManualIncomeResponse.status).toBe(500);
 
   const malformedPendingPage = {
     rows: [{ ...validFeedRow, syncStatus: "pending", revisionNo: 0 }],
@@ -330,6 +625,7 @@ test("income/expense feed rejects malformed RPC pages instead of defaulting them
       revisionNo: 0,
       clientRecordedAt: "2026-10-07 01:00:00+00",
       clientCreatedAt: "2026-10-07 01:00:00+00",
+      serverReceivedAt: "2026-10-07 01:00:00+00",
       approvalPending: true,
       approvalRequestId: requestId,
       approvalRequestType: "income_expense",
@@ -348,6 +644,124 @@ test("income/expense feed rejects malformed RPC pages instead of defaulting them
     nextUrl: new URL(`http://local/api/lanflow/income-expense/feed?locationId=${locationId}&mode=pending_approval`),
   } as never);
   expect(pendingFallbackResponse.status).toBe(200);
+
+  const pendingCursorPage = {
+    ...pendingFallbackPage,
+    nextCursor: Buffer.from(JSON.stringify({
+      v: 1,
+      locationId,
+      mode: "pending_approval",
+      search: "",
+      sort: "requested_at_asc",
+      at: "2026-10-07T01:00:00+00:00",
+      key: `income:${requestId}`,
+    })).toString("hex"),
+    hasMore: true,
+  };
+  const pendingCursorRoute = loadSourceModule<typeof import("../src/app/api/lanflow/income-expense/feed/route")>(
+    "src/app/api/lanflow/income-expense/feed/route.ts",
+    routeDependencies(pendingCursorPage),
+  );
+  const pendingCursorResponse = await pendingCursorRoute.GET({
+    nextUrl: new URL(`http://local/api/lanflow/income-expense/feed?locationId=${locationId}&mode=pending_approval`),
+  } as never);
+  expect(pendingCursorResponse.status).toBe(200);
+
+  const mismatchedPendingCursorRoute = loadSourceModule<typeof import("../src/app/api/lanflow/income-expense/feed/route")>(
+    "src/app/api/lanflow/income-expense/feed/route.ts",
+    routeDependencies({
+      ...pendingCursorPage,
+      nextCursor: Buffer.from(JSON.stringify({
+        v: 1,
+        locationId,
+        mode: "pending_approval",
+        search: "",
+        sort: "requested_at_asc",
+        at: "2026-10-07T01:00:00+00:00",
+        key: `cash-delete:${requestId}`,
+      })).toString("hex"),
+    }),
+  );
+  const mismatchedPendingCursorResponse = await mismatchedPendingCursorRoute.GET({
+    nextUrl: new URL(`http://local/api/lanflow/income-expense/feed?locationId=${locationId}&mode=pending_approval`),
+  } as never);
+  expect(mismatchedPendingCursorResponse.status).toBe(500);
+
+  const mismatchedPendingCursorTimeRoute = loadSourceModule<typeof import("../src/app/api/lanflow/income-expense/feed/route")>(
+    "src/app/api/lanflow/income-expense/feed/route.ts",
+    routeDependencies({
+      ...pendingCursorPage,
+      nextCursor: Buffer.from(JSON.stringify({
+        v: 1,
+        locationId,
+        mode: "pending_approval",
+        search: "",
+        sort: "requested_at_asc",
+        at: "2026-10-07T02:00:00+00:00",
+        key: `income:${requestId}`,
+      })).toString("hex"),
+    }),
+  );
+  const mismatchedPendingCursorTimeResponse = await mismatchedPendingCursorTimeRoute.GET({
+    nextUrl: new URL(`http://local/api/lanflow/income-expense/feed?locationId=${locationId}&mode=pending_approval`),
+  } as never);
+  expect(mismatchedPendingCursorTimeResponse.status).toBe(500);
+
+  const mismatchedPendingCursorMicrosRoute = loadSourceModule<typeof import("../src/app/api/lanflow/income-expense/feed/route")>(
+    "src/app/api/lanflow/income-expense/feed/route.ts",
+    routeDependencies({
+      ...pendingCursorPage,
+      rows: [{
+        ...pendingCursorPage.rows[0],
+        serverReceivedAt: "2026-10-07T01:00:00.000002+00:00",
+      }],
+      nextCursor: Buffer.from(JSON.stringify({
+        v: 1,
+        locationId,
+        mode: "pending_approval",
+        search: "",
+        sort: "requested_at_asc",
+        at: "2026-10-07T01:00:00.000001+00:00",
+        key: `income:${requestId}`,
+      })).toString("hex"),
+    }),
+  );
+  const mismatchedPendingCursorMicrosResponse = await mismatchedPendingCursorMicrosRoute.GET({
+    nextUrl: new URL(`http://local/api/lanflow/income-expense/feed?locationId=${locationId}&mode=pending_approval`),
+  } as never);
+  expect(mismatchedPendingCursorMicrosResponse.status).toBe(500);
+
+  const unsortedPendingRoute = loadSourceModule<typeof import("../src/app/api/lanflow/income-expense/feed/route")>(
+    "src/app/api/lanflow/income-expense/feed/route.ts",
+    routeDependencies({
+      ...pendingFallbackPage,
+      rows: [{
+        ...pendingFallbackPage.rows[0],
+        serverReceivedAt: "2026-10-07T02:00:00+00:00",
+      }, {
+        ...pendingFallbackPage.rows[0],
+        id: `approval-income:${recordId}`,
+        clientTempId: "pending-client-2",
+        idempotencyKey: "create:pending-client-2:0",
+        approvalRequestId: recordId,
+        serverReceivedAt: "2026-10-07T01:00:00+00:00",
+      }],
+      pendingApprovalCount: 2,
+    }),
+  );
+  const unsortedPendingResponse = await unsortedPendingRoute.GET({
+    nextUrl: new URL(`http://local/api/lanflow/income-expense/feed?locationId=${locationId}&mode=pending_approval`),
+  } as never);
+  expect(unsortedPendingResponse.status).toBe(500);
+
+  const contradictoryPendingCountRoute = loadSourceModule<typeof import("../src/app/api/lanflow/income-expense/feed/route")>(
+    "src/app/api/lanflow/income-expense/feed/route.ts",
+    routeDependencies({ ...pendingFallbackPage, pendingApprovalCount: 0 }),
+  );
+  const contradictoryPendingCountResponse = await contradictoryPendingCountRoute.GET({
+    nextUrl: new URL(`http://local/api/lanflow/income-expense/feed?locationId=${locationId}&mode=pending_approval`),
+  } as never);
+  expect(contradictoryPendingCountResponse.status).toBe(500);
 
   const latestPendingCreateResponse = await pendingFallbackRoute.GET({
     nextUrl: new URL(`http://local/api/lanflow/income-expense/feed?locationId=${locationId}&mode=latest`),
@@ -372,6 +786,27 @@ test("income/expense feed rejects malformed RPC pages instead of defaulting them
   } as never);
   expect(pendingCashDeleteResponse.status).toBe(200);
 
+  const pendingCashDeleteCursorRoute = loadSourceModule<typeof import("../src/app/api/lanflow/income-expense/feed/route")>(
+    "src/app/api/lanflow/income-expense/feed/route.ts",
+    routeDependencies({
+      ...pendingCashDeletePage,
+      nextCursor: Buffer.from(JSON.stringify({
+        v: 1,
+        locationId,
+        mode: "pending_approval",
+        search: "",
+        sort: "requested_at_asc",
+        at: "2026-10-07T01:00:00+00:00",
+        key: `cash-delete:${requestId}`,
+      })).toString("hex"),
+      hasMore: true,
+    }),
+  );
+  const pendingCashDeleteCursorResponse = await pendingCashDeleteCursorRoute.GET({
+    nextUrl: new URL(`http://local/api/lanflow/income-expense/feed?locationId=${locationId}&mode=pending_approval`),
+  } as never);
+  expect(pendingCashDeleteCursorResponse.status).toBe(200);
+
   const latestAdjustmentPage = {
     rows: [{
       ...validFeedRow,
@@ -393,6 +828,93 @@ test("income/expense feed rejects malformed RPC pages instead of defaulting them
     nextUrl: new URL(`http://local/api/lanflow/income-expense/feed?locationId=${locationId}&mode=latest`),
   } as never);
   expect(latestAdjustmentResponse.status).toBe(200);
+});
+
+test("income/expense feed rejects duplicate server identities", async () => {
+  const row = {
+    id: recordId,
+    clientTempId: "client-1",
+    idempotencyKey: `server:${recordId}`,
+    locationId,
+    syncStatus: "synced",
+    recordStatus: "active",
+    type: "expense",
+    number: "IE-1",
+    localBillNo: "LOCAL-1",
+    txDate: "2026-10-07",
+    title: "ค่าทดสอบ",
+    cost: 100,
+    billOption: "ค่าใช้จ่าย",
+    clientRecordedAt: "2026-10-07T01:00:00.000Z",
+    clientCreatedAt: "2026-10-07T01:00:00.000Z",
+    revisionNo: 1,
+  };
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/income-expense/feed/route")>(
+    "src/app/api/lanflow/income-expense/feed/route.ts",
+    routeDependencies({
+      rows: [row, {
+        ...row,
+        clientTempId: "client-2",
+        idempotencyKey: `server:${requestId}`,
+      }],
+      nextCursor: null,
+      hasMore: false,
+      pendingApprovalCount: 0,
+    }),
+  );
+  const response = await route.GET({
+    nextUrl: new URL(`http://local/api/lanflow/income-expense/feed?locationId=${locationId}`),
+  } as never);
+  expect(response.status).toBe(500);
+});
+
+test("income/expense feed canonicalizes an uppercase location before authorization and RPC", async () => {
+  const canonicalLocationId = "abcdefab-cdef-4abc-8def-abcdefabcdef";
+  const page = {
+    rows: [{
+      id: recordId,
+      clientTempId: "client-1",
+      idempotencyKey: `server:${recordId}`,
+      locationId: canonicalLocationId,
+      syncStatus: "synced",
+      recordStatus: "active",
+      type: "expense",
+      number: "IE-1",
+      localBillNo: "LOCAL-1",
+      txDate: "2026-10-07",
+      title: "ค่าทดสอบ",
+      cost: 100,
+      billOption: "ค่าใช้จ่าย",
+      clientRecordedAt: "2026-10-07T01:00:00.000Z",
+      clientCreatedAt: "2026-10-07T01:00:00.000Z",
+      revisionNo: 1,
+    }],
+    nextCursor: null,
+    hasMore: false,
+    pendingApprovalCount: 0,
+  };
+  let rpcLocationId: string | undefined;
+  const dependencies = routeDependencies(page);
+  dependencies["@/lib/server/auth"].hasSystemManagerAccess = () => false;
+  dependencies["@/lib/server/auth"].requireAuth = async () => ({
+    ok: true,
+    auth: { sub: "user-1", role: "user", locationIds: [canonicalLocationId] },
+    supabase: {
+      rpc: async (...args: unknown[]) => {
+        rpcLocationId = (args[1] as { p_location_id?: string } | undefined)?.p_location_id;
+        return { data: page, error: null };
+      },
+    },
+  });
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/income-expense/feed/route")>(
+    "src/app/api/lanflow/income-expense/feed/route.ts",
+    dependencies,
+  );
+  const response = await route.GET({
+    nextUrl: new URL(`http://local/api/lanflow/income-expense/feed?locationId=${canonicalLocationId.toUpperCase()}`),
+  } as never);
+  expect(response.status).toBe(200);
+  expect(rpcLocationId).toBe(canonicalLocationId);
 });
 
 function saleDetailDependencies(options: {
@@ -664,7 +1186,12 @@ test("income/expense queue protects an uncertain server commit and online state 
   expect(listSource).toContain('import { useOnlineStatus } from "@/hooks/useOnlineStatus"');
   expect(listSource).toContain("const online = useOnlineStatus();");
   expect(listSource).not.toContain("isDeviceOnline");
-  expect(listSource).toContain("isIncomeExpenseFeedPayload(data, locationId, serverMode)");
+  expect(listSource).toContain("const canonicalLocationId = locationId.toLowerCase();");
+  expect(listSource).toContain("queuePartition(ownerUserId, canonicalLocationId)");
+  expect(listSource).toContain("locationId: canonicalLocationId");
+  expect(listSource).toContain(
+    "isIncomeExpenseFeedPayload(data, canonicalLocationId, serverMode, normalizedSearch)",
+  );
   expect(moduleSource).toContain("getPendingServerActionBlockReason(transaction)");
   expect(moduleSource).toContain("&& !transaction.serverSubmissionAttempted");
   expect(locksSource).toContain("record.serverSubmissionAttempted === true");

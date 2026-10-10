@@ -167,20 +167,20 @@ export function AppHeader({
 
   return (
     <>
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-3 py-4 sm:px-4 lg:flex-row lg:items-center lg:justify-between">
-        <div>
+      <div className="landscape-compact-header mx-auto flex w-full max-w-7xl flex-col gap-4 px-3 py-4 sm:px-4 lg:flex-row lg:items-center lg:justify-between">
+        <div className="landscape-compact-identity min-w-0">
           <div className="flex items-center gap-3">
-            <div className="grid size-11 place-items-center rounded-xl bg-leaf text-lg font-bold text-white shadow-sm">
+            <div className="grid size-11 shrink-0 place-items-center rounded-xl bg-leaf text-lg font-bold text-white shadow-sm">
               LF
             </div>
-            <div>
+            <div className="min-w-0">
               <h1 className="text-balance text-2xl font-bold text-ink">LanFlow</h1>
-              <p className="text-pretty text-sm text-ink/60">{profile.name} · {profile.phone}</p>
+              <p className="truncate text-sm text-ink/60">{profile.name} · {profile.phone}</p>
             </div>
           </div>
         </div>
 
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <div className="landscape-compact-actions flex flex-col gap-3 sm:flex-row sm:items-center">
           <span
             role="status"
             aria-live="polite"
@@ -193,7 +193,7 @@ export function AppHeader({
             {online ? <Wifi size={16} /> : <WifiOff size={16} />}
             {online ? "ออนไลน์" : "ไม่มีอินเทอร์เน็ต"}
           </span>
-          <div ref={locationMenuRef} className="relative min-w-0 sm:min-w-64">
+          <div ref={locationMenuRef} className="landscape-branch-selector relative min-w-0 sm:min-w-64">
             <button
               ref={locationButtonRef}
               type="button"
@@ -443,7 +443,11 @@ export function AppHeader({
             </button>
           )}
 
-          <AccountActions online={online} onLogout={onLogout} />
+          <AccountActions
+            online={online}
+            onLogout={onLogout}
+            className="landscape-account-actions"
+          />
         </div>
       </div>
       {online && serviceUnavailable && (

@@ -46,6 +46,7 @@ test.describe("Income/Expense operational feed contract", () => {
     });
     const marker = `OLD %_, ไทย ${Date.now()}`;
     const ids = Array.from({ length: 101 }, () => crypto.randomUUID());
+    const pendingRequestId = crypto.randomUUID();
 
     try {
       const { error } = await admin.from("income_expense").insert(ids.map((id, index) => ({
@@ -72,6 +73,30 @@ test.describe("Income/Expense operational feed contract", () => {
         created_by_phone: me.profile.phone,
       })));
       expect(error).toBeNull();
+      expect((await admin.from("income_expense_approval_requests").insert({
+        id: pendingRequestId,
+        request_status: "pending",
+        requested_operation: "create",
+        request_idempotency_key: `create:${pendingRequestId}:0`,
+        requested_payload: {
+          clientTempId: pendingRequestId,
+          localBillNo: `PENDING-${pendingRequestId.slice(0, 8)}`,
+          number: `PENDING-${marker}`,
+          txDate: "2001-01-02",
+          title: `${marker} pending create`,
+          cost: 100,
+          billOption: "ค่าใช้จ่าย",
+          expectedRevisionNo: 0,
+        },
+        matched_reasons: ["keyword"],
+        location_id: locationId,
+        tx_type: "expense",
+        title: `${marker} pending create`,
+        cost: 100,
+        requested_by_user_id: me.profile.id,
+        requested_by_name: me.profile.name,
+        requested_by_phone: me.profile.phone,
+      })).error).toBeNull();
 
       const firstResponse = await request.get(
         `/api/lanflow/income-expense/feed?locationId=${locationId}&mode=latest&search=${encodeURIComponent(marker)}`,
@@ -83,7 +108,8 @@ test.describe("Income/Expense operational feed contract", () => {
         hasMore: boolean;
         pendingApprovalCount: number;
       };
-      expect(first.rows).toHaveLength(100);
+      expect(first.rows).toHaveLength(101);
+      expect(first.rows[0]?.id).toBe(`approval-income:${pendingRequestId}`);
       expect(first.hasMore).toBe(true);
       expect(first.nextCursor).toBeTruthy();
       expect(Number.isInteger(first.pendingApprovalCount)).toBe(true);
@@ -111,8 +137,9 @@ test.describe("Income/Expense operational feed contract", () => {
       };
       expect(second.rows).toHaveLength(1);
       expect(second.hasMore).toBe(false);
-      expect(new Set([...first.rows, ...second.rows].map((row) => row.id)).size).toBe(101);
+      expect(new Set([...first.rows, ...second.rows].map((row) => row.id)).size).toBe(102);
     } finally {
+      await admin.from("income_expense_approval_requests").delete().eq("id", pendingRequestId);
       await admin.from("income_expense").delete().in("id", ids);
     }
   });
