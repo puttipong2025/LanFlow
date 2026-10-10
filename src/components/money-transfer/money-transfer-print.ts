@@ -22,6 +22,7 @@ const TYPE_LABELS: Record<MoneyTransfer["transferType"], string> = {
   transport: "จ่ายค่าขนส่ง",
   branch: "โอนให้สาขา",
   rubber_export_work: "ค่าทำงานส่งออกยาง",
+  time_payroll: "เวลาและเงินเดือน",
 };
 
 const DATE_TIME_FORMATTER = new Intl.DateTimeFormat("th-TH-u-ca-buddhist-nu-latn", {
@@ -55,11 +56,14 @@ export type MoneyTransferReceiptModel = {
   statusLabel: string;
   isUnfinished: boolean;
   isBranchReceipt: boolean;
+  isPendingBranchReceipt: boolean;
   createdAtText: string;
   accountingDateText: string;
   sourceLocationName: string;
   isRubberExportWork: boolean;
+  isTimePayroll: boolean;
   rubberExportNo: string | null;
+  timePayrollSourceLabel: string | null;
   targetLocationName: string | null;
   recipientName: string;
   bankName: string | null;
@@ -74,6 +78,8 @@ export type MoneyTransferReceiptModel = {
   difference: number;
   createdByName: string;
   createdByPhone: string | null;
+  branchReceivedByName: string | null;
+  branchReceivedAtText: string;
   slips: MoneyTransferReceiptSlip[];
   items: MoneyTransferReceiptItem[];
 };
@@ -136,21 +142,32 @@ export function buildMoneyTransferReceiptModel(
     ? slipTotal
     : transfer.netAmountToPay;
 
+  const isPendingBranchReceipt = isImplicitHeadOffice
+    && transfer.branchReceiptStatus === "pending_receipt";
+
   return {
     shortId: shortTransferId(transfer.id),
     typeLabel: TYPE_LABELS[transfer.transferType],
-    statusLabel: STATUS_LABELS[transfer.transferStatus],
-    isUnfinished: transfer.transferStatus === "advance_payment",
+    statusLabel: isPendingBranchReceipt
+      ? "รอยืนยันรับ"
+      : isImplicitHeadOffice && transfer.branchReceiptStatus === "received"
+        ? "ยืนยันรับแล้ว"
+        : STATUS_LABELS[transfer.transferStatus],
+    isUnfinished: transfer.transferStatus === "advance_payment" || isPendingBranchReceipt,
     isBranchReceipt: isImplicitHeadOffice,
+    isPendingBranchReceipt,
     createdAtText: formatBangkokDateTime(transfer.createdAt),
     accountingDateText: formatAccountingDate(transfer.accountingDate),
     sourceLocationName,
     isRubberExportWork: transfer.transferType === "rubber_export_work",
+    isTimePayroll: transfer.transferType === "time_payroll",
     rubberExportNo: transfer.rubberExportNo ?? null,
+    timePayrollSourceLabel: transfer.timePayrollSourceLabel ?? null,
     targetLocationName,
     recipientName: transfer.customerName
       ?? transfer.transportStaffName
       ?? transfer.targetLocationName
+      ?? transfer.timePayrollEmployeeName
       ?? "ไม่ระบุผู้รับ",
     bankName: transfer.bankName,
     accountName: transfer.accountName,
@@ -168,6 +185,8 @@ export function buildMoneyTransferReceiptModel(
     difference: slipTotal + branchPaidAmount - transfer.netAmountToPay,
     createdByName: transfer.createdByName ?? "ไม่ระบุ",
     createdByPhone: transfer.createdByPhone ?? null,
+    branchReceivedByName: transfer.branchReceivedByName ?? null,
+    branchReceivedAtText: formatBangkokDateTime(transfer.branchReceivedAt),
     slips,
     items,
   };
@@ -230,7 +249,7 @@ export function renderMoneyTransferReceiptHtml(model: MoneyTransferReceiptModel)
         <div class="row"><strong>สลิป ${index + 1}</strong><strong>${money(slip.amount)}</strong></div>
         <div class="small">วันที่ ${h(slip.transactionDateText)}</div>
         <div class="small">อ้างอิง ${h(slip.referenceNumber ?? "—")}</div>
-        ${model.isRubberExportWork ? "" : `<div class="small">ผู้จ่าย ${h(slip.senderName ?? "—")}</div><div class="small">ผู้รับ ${h(slip.receiverName ?? "—")}</div>`}
+        ${model.isRubberExportWork || model.isTimePayroll ? "" : `<div class="small">ผู้จ่าย ${h(slip.senderName ?? "—")}</div><div class="small">ผู้รับ ${h(slip.receiverName ?? "—")}</div>`}
         <div class="row small"><span>ค่าธรรมเนียม</span><span>${money(slip.fee)}</span></div>
       </div>`).join("");
 
@@ -258,10 +277,13 @@ h1 { margin: 0; text-align: center; font-size: 18px; }
 <h1>ใบรายการโอนเงิน</h1>
 <div class="center">รหัสรายการ ${h(model.shortId)}</div>
 <div class="center"><span class="status">${h(model.statusLabel)}</span></div>
-${model.isUnfinished ? '<div class="warning">รายการยังไม่สิ้นสุด</div>' : ""}
+${model.isPendingBranchReceipt
+  ? '<div class="warning">เอกสารรอยืนยันรับเงิน — ยังไม่บันทึกเป็นรายรับของสาขา</div>'
+  : model.isUnfinished ? '<div class="warning">รายการยังไม่สิ้นสุด</div>' : ""}
 <div class="row"><span>ประเภท</span><strong>${h(model.typeLabel)}</strong></div>
 ${model.isRubberExportWork ? `<div class="row"><span>รายการส่งออกยาง</span><strong>${h(model.rubberExportNo ?? "—")}</strong></div>` : ""}
-<div class="row"><span>${model.isBranchReceipt ? "วันที่บัญชี" : "วันที่สร้าง"}</span><strong>${h(model.isBranchReceipt ? model.accountingDateText : model.createdAtText)}</strong></div>
+${model.isTimePayroll ? `<div class="row"><span>รายการต้นทาง</span><strong>${h(model.timePayrollSourceLabel ?? "เวลาและเงินเดือน")}</strong></div>` : ""}
+<div class="row"><span>${model.isBranchReceipt && !model.isPendingBranchReceipt ? "วันที่บัญชี" : "วันที่สร้าง"}</span><strong>${h(model.isBranchReceipt && !model.isPendingBranchReceipt ? model.accountingDateText : model.createdAtText)}</strong></div>
 <div class="section">
   ${model.isBranchReceipt
     ? `<div class="row"><span>สาขาผู้รับ</span><strong>${h(model.targetLocationName ?? model.recipientName)}</strong></div>`
@@ -281,6 +303,7 @@ ${!model.isBranchReceipt && model.items.length > 0 ? `<div class="section"><div 
 <div class="section">
   <div class="row"><span>ผู้สร้าง</span><strong>${h(model.createdByName)}</strong></div>
   ${model.createdByPhone ? `<div class="row"><span>โทรศัพท์</span><strong>${h(model.createdByPhone)}</strong></div>` : ""}
+  ${model.branchReceivedByName ? `<div class="row"><span>ผู้ยืนยันรับ</span><strong>${h(model.branchReceivedByName)}</strong></div><div class="row"><span>เวลายืนยัน</span><strong>${h(model.branchReceivedAtText)}</strong></div>` : ""}
 </div>
 <div class="footer">เอกสารนี้สร้างจากข้อมูลรายการโอนเงินในระบบ LanFlow</div>
 </body></html>`;

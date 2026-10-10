@@ -75,8 +75,10 @@ select extensions.ok(
   'zero-payable export-reportable helper is private and search-path locked'
 );
 select extensions.ok(
-  pg_get_functiondef('private.reportable_items(uuid,timestamptz)'::regprocedure)
-    like '%private.rubber_bill_is_export_reportable(b.id)%',
+  pg_get_functiondef('private.reportable_items_before_time_payroll_payment(uuid,timestamptz)'::regprocedure)
+    like '%private.rubber_bill_is_export_reportable(b.id)%'
+  and pg_get_functiondef('private.reportable_items(uuid,timestamptz)'::regprocedure)
+    like '%private.reportable_items_before_time_payroll_payment%',
   'Report Batch includes positive-value zero-payable rubber bills'
 );
 select extensions.ok(

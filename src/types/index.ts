@@ -1,4 +1,6 @@
 import type { RubberBillApprovalOperation, RubberBillApprovalReason } from "./rubber-approval";
+import type { MoneyTransferBranchReceiptFields } from "./branch-money-transfer";
+export type { BranchMoneyTransferSummary, BranchTransferDeleteRequest, MoneyTransferVirtualStatus } from "./branch-money-transfer";
 
 export type AppRole = "user" | "admin" | "super_admin";
 export type SyncStatus = "pending" | "syncing" | "synced" | "failed" | "conflict";
@@ -474,7 +476,7 @@ export type MoneyTransferItem = {
   rubberValue?: number | null;
 };
 
-export type MoneyTransfer = {
+export type MoneyTransfer = MoneyTransferBranchReceiptFields & {
   id: string;
   clientTempId?: string;
   idempotencyKey?: string;
@@ -485,10 +487,11 @@ export type MoneyTransfer = {
   accountName: string | null;
   bankName: string | null;
   netAmountToPay: number;
-  accountingDate?: string | null;
-  transferType: 'customer' | 'transport' | 'branch' | 'rubber_export_work';
+  transferType: 'customer' | 'transport' | 'branch' | 'rubber_export_work' | 'time_payroll';
   rubberExportId?: string | null;
   rubberExportNo?: string | null;
+  timePayrollEmployeeName?: string | null;
+  timePayrollSourceLabel?: string | null;
   transportCost?: number;
   transportStaffId?: string | null;
   transportStaffName?: string | null;

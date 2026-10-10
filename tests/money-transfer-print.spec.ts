@@ -124,6 +124,27 @@ test.describe("Money transfer 80mm print", () => {
     expect(html).not.toContain("ยอดรายการต้นทางรวม");
   });
 
+  test("prints a prominent pending-receipt warning without inventing an accounting date", () => {
+    const model = buildMoneyTransferReceiptModel(makeTransfer({
+      transferType: "branch",
+      locationId: "target-location",
+      targetLocationId: "target-location",
+      targetLocationName: "สาขาปลายทาง",
+      customerName: null,
+      receiptContractVersion: 1,
+      branchReceiptStatus: "pending_receipt",
+      accountingDate: null,
+    }), locations);
+    const html = renderMoneyTransferReceiptHtml(model);
+
+    expect(model.statusLabel).toBe("รอยืนยันรับ");
+    expect(model.isPendingBranchReceipt).toBe(true);
+    expect(html).toContain("เอกสารรอยืนยันรับเงิน");
+    expect(html).toContain("ยังไม่บันทึกเป็นรายรับของสาขา");
+    expect(html).toContain("วันที่สร้าง");
+    expect(html).not.toContain("วันที่บัญชี");
+  });
+
   test("maps every transfer type and completed status to the receipt labels", () => {
     const cases = [
       { transferType: "customer", transferStatus: "paid", typeLabel: "โอนให้ลูกค้า", statusLabel: "จ่ายครบ" },
@@ -150,6 +171,22 @@ test.describe("Money transfer 80mm print", () => {
     expect(model.primaryAmount).toBe(1_000);
     expect(model.isUnfinished).toBe(true);
     expect(renderMoneyTransferReceiptHtml(model)).toContain("รายการยังไม่สิ้นสุด");
+  });
+
+  test("identifies the time/payroll source on the printed transfer receipt", () => {
+    const model = buildMoneyTransferReceiptModel(makeTransfer({
+      transferType: "time_payroll",
+      customerName: null,
+      timePayrollEmployeeName: "พนักงานทดสอบ",
+      timePayrollSourceLabel: "เงินเดือน 2026-09",
+      items: [],
+    }), locations);
+    const html = renderMoneyTransferReceiptHtml(model);
+
+    expect(model.timePayrollSourceLabel).toBe("เงินเดือน 2026-09");
+    expect(html).toContain("รายการต้นทาง");
+    expect(html).toContain("เงินเดือน 2026-09");
+    expect(html).toContain("พนักงานทดสอบ");
   });
 
   test("renders escaped 80mm HTML with every child and no slip images", () => {

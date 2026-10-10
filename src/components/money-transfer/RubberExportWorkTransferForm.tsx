@@ -35,6 +35,7 @@ export function RubberExportWorkTransferForm({
     : status === "partial" ? "ค้างจ่าย"
     : status === "paid" ? "จ่ายครบ"
     : "ชำระเกิน";
+  const isTimePayroll = transfer.transferType === "time_payroll";
 
   function addSlip() {
     setSlips((current) => [...current, {
@@ -90,15 +91,19 @@ export function RubberExportWorkTransferForm({
   return (
     <div className="space-y-4">
       <div className="rounded-lg border border-river/20 bg-mint/30 p-4">
-        <p className="text-pretty text-sm font-semibold text-ink">ค่าทำงานจากรายการส่งออกยาง <span className="tabular-nums">{transfer.rubberExportNo ?? "—"}</span></p>
+        <p className="text-pretty text-sm font-semibold text-ink">
+          {isTimePayroll
+            ? `${transfer.timePayrollSourceLabel ?? "รายการเวลาและเงินเดือน"} — ${transfer.timePayrollEmployeeName ?? "พนักงาน"}`
+            : <>ค่าทำงานจากรายการส่งออกยาง <span className="tabular-nums">{transfer.rubberExportNo ?? "—"}</span></>}
+        </p>
         <p className="mt-1 text-pretty text-sm text-ink/70">สาขาต้นทาง: <strong>{sourceLocationName}</strong></p>
-        {onOpenSource && (
+        {!isTimePayroll && onOpenSource && (
           <button type="button" onClick={onOpenSource} className="focus-ring mt-2 text-sm font-semibold text-river underline">
             เปิดรายการส่งออกยาง
           </button>
         )}
         <div className="mt-3 flex flex-wrap items-end justify-between gap-2 border-t border-river/15 pt-3">
-          <span className="text-sm text-ink/65">ยอดค่าทำงานที่ต้องจ่าย</span>
+          <span className="text-sm text-ink/65">{isTimePayroll ? "ยอดที่ต้องโอน" : "ยอดค่าทำงานที่ต้องจ่าย"}</span>
           <strong className="text-xl tabular-nums text-river">{formatCurrency(transfer.netAmountToPay)}</strong>
         </div>
       </div>

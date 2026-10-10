@@ -82,6 +82,12 @@ test.describe("Time Tracking branch expense @time-tracking", () => {
           user_id: employeeId,
           amount,
           effective_date: bangkokDate(),
+          payment: {
+            channel: "branch_and_transfer",
+            expenseLocationId: locationId,
+            transferAmount: "0",
+            expectedSourceAmount: amount,
+          },
         },
       } });
       expect(created.ok(), await created.text()).toBeTruthy();
@@ -94,18 +100,7 @@ test.describe("Time Tracking branch expense @time-tracking", () => {
         .eq("id", sourceId)
         .single();
       expect(initiallyCentral.error).toBeNull();
-      expect(initiallyCentral.data).toEqual({ status: "APPROVED", expense_location_id: null });
-
-      const changedToBranch = await request.post("/api/lanflow/time-tracking/admin", { data: {
-        action: "CHANGE_EXPENSE_LOCATION",
-        payload: {
-          source_type: "transaction",
-          source_id: sourceId,
-          expense_location_id: locationId,
-          admin_comment: "ทดสอบเชื่อมค่าใช้จ่าย",
-        },
-      } });
-      expect(changedToBranch.ok(), await changedToBranch.text()).toBeTruthy();
+      expect(initiallyCentral.data).toEqual({ status: "APPROVED", expense_location_id: locationId });
 
       const feed = await request.get(
         `/api/lanflow/income-expense/feed?locationId=${locationId}&from=${bangkokDate()}&to=${bangkokDate()}`,
@@ -123,11 +118,16 @@ test.describe("Time Tracking branch expense @time-tracking", () => {
       }));
 
       const changedToCentral = await request.post("/api/lanflow/time-tracking/admin", { data: {
-        action: "CHANGE_EXPENSE_LOCATION",
+        action: "CHANGE_PAYMENT_ALLOCATION",
         payload: {
           source_type: "transaction",
           source_id: sourceId,
-          expense_location_id: null,
+          payment: {
+            channel: "outside_system",
+            expenseLocationId: null,
+            transferAmount: null,
+            expectedSourceAmount: amount,
+          },
           admin_comment: "",
         },
       } });
@@ -139,11 +139,16 @@ test.describe("Time Tracking branch expense @time-tracking", () => {
       expect(centralRows.some((row) => row.relationSourceId === sourceId)).toBeFalsy();
 
       const changedBackToBranch = await request.post("/api/lanflow/time-tracking/admin", { data: {
-        action: "CHANGE_EXPENSE_LOCATION",
+        action: "CHANGE_PAYMENT_ALLOCATION",
         payload: {
           source_type: "transaction",
           source_id: sourceId,
-          expense_location_id: locationId,
+          payment: {
+            channel: "branch_and_transfer",
+            expenseLocationId: locationId,
+            transferAmount: "0",
+            expectedSourceAmount: amount,
+          },
         },
       } });
       expect(changedBackToBranch.ok(), await changedBackToBranch.text()).toBeTruthy();
@@ -173,6 +178,7 @@ test.describe("Time Tracking branch expense @time-tracking", () => {
         payload: {
           user_id: employeeId,
           month,
+          expected_net_pay: 0,
         },
       } });
       expect(created.ok(), await created.text()).toBeTruthy();
@@ -213,9 +219,28 @@ test.describe("Time Tracking branch expense @time-tracking", () => {
       } });
       expect(work.ok(), await work.text()).toBeTruthy();
 
+      const previewResponse = await request.post("/api/lanflow/time-tracking/admin", { data: {
+        action: "PREVIEW_PAYROLL_SLIP",
+        payload: { user_id: employeeId, month },
+      } });
+      expect(previewResponse.ok(), await previewResponse.text()).toBeTruthy();
+      const preview = (await previewResponse.json()).preview as { netPay: number };
+      const expectedNetPay = Number(preview.netPay);
+      expect(expectedNetPay).toBeGreaterThan(0);
+
       const created = await request.post("/api/lanflow/time-tracking/admin", { data: {
         action: "CREATE_PAYROLL_SLIP",
-        payload: { user_id: employeeId, month },
+        payload: {
+          user_id: employeeId,
+          month,
+          expected_net_pay: expectedNetPay,
+          payment: {
+            channel: "outside_system",
+            expenseLocationId: null,
+            transferAmount: null,
+            expectedSourceAmount: expectedNetPay,
+          },
+        },
       } });
       expect(created.ok(), await created.text()).toBeTruthy();
       const slip = (await created.json()).slip as { id: string; net_pay: number };
@@ -245,11 +270,16 @@ test.describe("Time Tracking branch expense @time-tracking", () => {
       const branchId = me.profile.locationIds[0];
       expect(branchId).toBeTruthy();
       const changedToBranch = await request.post("/api/lanflow/time-tracking/admin", { data: {
-        action: "CHANGE_EXPENSE_LOCATION",
+        action: "CHANGE_PAYMENT_ALLOCATION",
         payload: {
           source_type: "payroll_slip",
           source_id: slip.id,
-          expense_location_id: branchId,
+          payment: {
+            channel: "branch_and_transfer",
+            expenseLocationId: branchId,
+            transferAmount: "0",
+            expectedSourceAmount: Number(slip.net_pay),
+          },
           admin_comment: "",
         },
       } });
@@ -264,11 +294,16 @@ test.describe("Time Tracking branch expense @time-tracking", () => {
       }));
 
       const changedBackToCentral = await request.post("/api/lanflow/time-tracking/admin", { data: {
-        action: "CHANGE_EXPENSE_LOCATION",
+        action: "CHANGE_PAYMENT_ALLOCATION",
         payload: {
           source_type: "payroll_slip",
           source_id: slip.id,
-          expense_location_id: null,
+          payment: {
+            channel: "outside_system",
+            expenseLocationId: null,
+            transferAmount: null,
+            expectedSourceAmount: Number(slip.net_pay),
+          },
         },
       } });
       expect(changedBackToCentral.ok(), await changedBackToCentral.text()).toBeTruthy();
@@ -286,6 +321,12 @@ test.describe("Time Tracking branch expense @time-tracking", () => {
           user_id: employeeId,
           amount: 321,
           effective_date: bangkokDate(),
+          payment: {
+            channel: "outside_system",
+            expenseLocationId: null,
+            transferAmount: null,
+            expectedSourceAmount: 321,
+          },
         },
       } });
       expect(created.ok(), await created.text()).toBeTruthy();
@@ -370,6 +411,12 @@ test.describe("Time Tracking permission matrix @time-tracking", () => {
           user_id: employeeId,
           amount: 99,
           effective_date: bangkokDate(),
+          payment: {
+            channel: "outside_system",
+            expenseLocationId: null,
+            transferAmount: null,
+            expectedSourceAmount: 99,
+          },
         },
       } });
       expect(created.ok()).toBeTruthy();
@@ -384,11 +431,16 @@ test.describe("Time Tracking permission matrix @time-tracking", () => {
       expect(initiallyCentral.data).toEqual({ status: "APPROVED", expense_location_id: null });
 
       const changedToBranch = await managerRequest.post("/api/lanflow/time-tracking/admin", { data: {
-        action: "CHANGE_EXPENSE_LOCATION",
+        action: "CHANGE_PAYMENT_ALLOCATION",
         payload: {
           source_type: "transaction",
           source_id: sourceId,
-          expense_location_id: locationId,
+          payment: {
+            channel: "branch_and_transfer",
+            expenseLocationId: locationId,
+            transferAmount: "0",
+            expectedSourceAmount: 99,
+          },
         },
       } });
       expect(changedToBranch.ok(), await changedToBranch.text()).toBeTruthy();

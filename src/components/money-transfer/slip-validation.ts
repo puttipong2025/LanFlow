@@ -40,6 +40,9 @@ export function validateMoneyTransferSlips(
     try {
       const transactionDate = new Date(slip.transactionDate);
       if (Number.isNaN(transactionDate.getTime())) throw new RangeError("Invalid transaction date");
+      if (transactionDate.getTime() > Date.now()) {
+        issues.push({ slipId: slip.id, slipIndex, field: "transactionDate", message: `สลิป ${slipIndex + 1}: วันเวลาต้องไม่เกินเวลาปัจจุบัน` });
+      }
       dates.add(bangkokDateString(transactionDate));
     } catch {
       issues.push({ slipId: slip.id, slipIndex, field: "transactionDate", message: `สลิป ${slipIndex + 1}: วันที่ทำรายการไม่ถูกต้อง` });

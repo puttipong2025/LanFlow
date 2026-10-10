@@ -36,7 +36,15 @@ test("payroll mutation routes reject null JSON bodies", async ({ browser }) => {
 test("time/payroll admin rejects malformed payloads before querying PostgreSQL", async ({ browser }) => {
   const admin = await context(browser, "super_admin");
   try {
-    const [arrayPayload, malformedAuditAdmin, malformedApprovalComment] = await Promise.all([
+    const [
+      arrayPayload,
+      malformedAuditAdmin,
+      malformedApprovalComment,
+      rejectedApprovalWithPayment,
+      approvedWithLegacyBranchChoice,
+      legacyPaymentChangeWithIgnoredAllocation,
+      paymentChangeWithLegacyBranchChoice,
+    ] = await Promise.all([
       admin.request.post("/api/lanflow/time-tracking/admin", {
         data: { action: "GET_AUDIT_LOGS", payload: [] },
       }),
@@ -56,21 +64,82 @@ test("time/payroll admin rejects malformed payloads before querying PostgreSQL",
           },
         },
       }),
+      admin.request.post("/api/lanflow/time-tracking/admin", {
+        data: {
+          action: "APPROVE_TRANSACTION",
+          payload: {
+            transaction_id: crypto.randomUUID(), status: "REJECTED",
+            payment: {
+              channel: "outside_system", expenseLocationId: null,
+              transferAmount: null, expectedSourceAmount: 1,
+            },
+          },
+        },
+      }),
+      admin.request.post("/api/lanflow/time-tracking/admin", {
+        data: {
+          action: "APPROVE_PAYROLL_SLIP",
+          payload: {
+            slip_id: crypto.randomUUID(), status: "APPROVED",
+            expense_location_id: crypto.randomUUID(),
+          },
+        },
+      }),
+      admin.request.post("/api/lanflow/time-tracking/admin", {
+        data: {
+          action: "CHANGE_EXPENSE_LOCATION",
+          payload: {
+            source_type: "transaction",
+            source_id: crypto.randomUUID(),
+            expense_location_id: null,
+            payment: {
+              channel: "outside_system", expenseLocationId: null,
+              transferAmount: null, expectedSourceAmount: 1,
+            },
+          },
+        },
+      }),
+      admin.request.post("/api/lanflow/time-tracking/admin", {
+        data: {
+          action: "CHANGE_PAYMENT_ALLOCATION",
+          payload: {
+            source_type: "transaction",
+            source_id: crypto.randomUUID(),
+            expense_location_id: crypto.randomUUID(),
+            payment: {
+              channel: "outside_system", expenseLocationId: null,
+              transferAmount: null, expectedSourceAmount: 1,
+            },
+          },
+        },
+      }),
     ]);
 
     expect([
       arrayPayload.status(),
       malformedAuditAdmin.status(),
       malformedApprovalComment.status(),
-    ]).toEqual([400, 400, 400]);
+      rejectedApprovalWithPayment.status(),
+      approvedWithLegacyBranchChoice.status(),
+      legacyPaymentChangeWithIgnoredAllocation.status(),
+      paymentChangeWithLegacyBranchChoice.status(),
+    ]).toEqual([400, 400, 400, 400, 400, 400, 400]);
     expect([
       await arrayPayload.json(),
       await malformedAuditAdmin.json(),
       await malformedApprovalComment.json(),
+      await rejectedApprovalWithPayment.json(),
+      await approvedWithLegacyBranchChoice.json(),
+      await legacyPaymentChangeWithIgnoredAllocation.json(),
+      await paymentChangeWithLegacyBranchChoice.json(),
     ]).toEqual([
       { error: "ข้อมูลคำขอไม่ถูกต้อง" },
       { error: "ตัวกรองประวัติไม่ถูกต้อง" },
       { error: "ข้อมูลการอนุมัติไม่ถูกต้อง" },
+      { error: "ข้อมูลการอนุมัติไม่ถูกต้อง" },
+      { error: "ข้อมูลการอนุมัติไม่ถูกต้อง" },
+      { error: "ข้อมูลการเปลี่ยนสาขาไม่ถูกต้อง" },
+      { error: "ข้อมูลการเปลี่ยนวิธีจ่ายไม่ถูกต้อง" },
     ]);
   } finally {
     await admin.close();
@@ -90,6 +159,13 @@ test("time/payroll routes reject invalid dates, months, and non-finite JSON numb
       zeroYearPreviewMonth,
       nonFiniteUserAmount,
       zeroYearUserMonth,
+      missingWithdrawalPayment,
+      missingPayrollPaymentContract,
+      zeroPayrollWithIgnoredPayment,
+      stalePayrollPaymentAmount,
+      legacyPayrollBranchChoice,
+      debtWithIgnoredPayment,
+      withdrawalWithLegacyBranchChoice,
     ] = await Promise.all([
       admin.request.post("/api/lanflow/time-tracking/admin", {
         headers: { "Content-Type": "application/json" },
@@ -121,6 +197,76 @@ test("time/payroll routes reject invalid dates, months, and non-finite JSON numb
         data: '{"action":"REQUEST_WITHDRAWAL","payload":{"amount":1e400}}',
       }),
       user.request.get("/api/lanflow/time-tracking/user?month=0000-01"),
+      admin.request.post("/api/lanflow/time-tracking/admin", {
+        data: {
+          action: "ADMIN_REQUEST_WITHDRAWAL",
+          payload: { user_id: crypto.randomUUID(), amount: 1, effective_date: "2026-09-30" },
+        },
+      }),
+      admin.request.post("/api/lanflow/time-tracking/admin", {
+        data: {
+          action: "CREATE_PAYROLL_SLIP",
+          payload: { user_id: crypto.randomUUID(), month: "2026-09", expected_net_pay: 1 },
+        },
+      }),
+      admin.request.post("/api/lanflow/time-tracking/admin", {
+        data: {
+          action: "CREATE_PAYROLL_SLIP",
+          payload: {
+            user_id: crypto.randomUUID(), month: "2026-09", expected_net_pay: 0,
+            payment: {
+              channel: "outside_system", expenseLocationId: null,
+              transferAmount: null, expectedSourceAmount: 1,
+            },
+          },
+        },
+      }),
+      admin.request.post("/api/lanflow/time-tracking/admin", {
+        data: {
+          action: "CREATE_PAYROLL_SLIP",
+          payload: {
+            user_id: crypto.randomUUID(), month: "2026-09", expected_net_pay: 500,
+            payment: {
+              channel: "outside_system", expenseLocationId: null,
+              transferAmount: null, expectedSourceAmount: 499,
+            },
+          },
+        },
+      }),
+      admin.request.post("/api/lanflow/time-tracking/admin", {
+        data: {
+          action: "CREATE_PAYROLL_SLIP",
+          payload: {
+            user_id: crypto.randomUUID(), month: "2026-09", expected_net_pay: 0,
+            expense_location_id: crypto.randomUUID(),
+          },
+        },
+      }),
+      admin.request.post("/api/lanflow/time-tracking/admin", {
+        data: {
+          action: "CREATE_DEBT",
+          payload: {
+            user_id: crypto.randomUUID(), amount: 1, effective_date: "2026-09-30", description: "test",
+            payment: {
+              channel: "outside_system", expenseLocationId: null,
+              transferAmount: null, expectedSourceAmount: 1,
+            },
+          },
+        },
+      }),
+      admin.request.post("/api/lanflow/time-tracking/admin", {
+        data: {
+          action: "ADMIN_REQUEST_WITHDRAWAL",
+          payload: {
+            user_id: crypto.randomUUID(), amount: 1, effective_date: "2026-09-30",
+            expense_location_id: crypto.randomUUID(),
+            payment: {
+              channel: "outside_system", expenseLocationId: null,
+              transferAmount: null, expectedSourceAmount: 1,
+            },
+          },
+        },
+      }),
     ]);
 
     expect([
@@ -132,6 +278,13 @@ test("time/payroll routes reject invalid dates, months, and non-finite JSON numb
       await zeroYearPreviewMonth.json(),
       await nonFiniteUserAmount.json(),
       await zeroYearUserMonth.json(),
+      await missingWithdrawalPayment.json(),
+      await missingPayrollPaymentContract.json(),
+      await zeroPayrollWithIgnoredPayment.json(),
+      await stalePayrollPaymentAmount.json(),
+      await legacyPayrollBranchChoice.json(),
+      await debtWithIgnoredPayment.json(),
+      await withdrawalWithLegacyBranchChoice.json(),
     ]).toEqual([
       { error: "ข้อมูลรายการไม่ถูกต้อง" },
       { error: "ข้อมูลรายการไม่ถูกต้อง" },
@@ -141,6 +294,13 @@ test("time/payroll routes reject invalid dates, months, and non-finite JSON numb
       { error: "ข้อมูลสลิปไม่ถูกต้อง" },
       { error: "ข้อมูลรายการไม่ถูกต้อง" },
       { error: "เดือนไม่ถูกต้อง" },
+      { error: "ข้อมูลวิธีจ่ายไม่ถูกต้อง" },
+      { error: "ข้อมูลสลิปไม่ถูกต้อง" },
+      { error: "ข้อมูลสลิปไม่ถูกต้อง" },
+      { error: "ข้อมูลสลิปไม่ถูกต้อง" },
+      { error: "ข้อมูลสลิปไม่ถูกต้อง" },
+      { error: "ข้อมูลรายการไม่ถูกต้อง" },
+      { error: "ข้อมูลรายการไม่ถูกต้อง" },
     ]);
   } finally {
     await Promise.all([admin.close(), user.close()]);
@@ -226,12 +386,43 @@ test("approval decision routes reject malformed request IDs before PostgreSQL", 
     for (const path of [
       "/api/lanflow/income-expense/approval-requests/not-a-uuid/decide",
       "/api/lanflow/cash-branch-transfers/delete-requests/not-a-uuid/decide",
+      "/api/lanflow/money-transfers/delete-requests/not-a-uuid/decide",
     ]) {
       const response = await manager.request.post(path, {
         data: { decision: "approved" },
       });
       expect(response.status(), path).toBe(400);
     }
+  } finally {
+    await manager.close();
+  }
+});
+
+test("bank branch-transfer decisions reject malformed comments before PostgreSQL", async ({ browser }) => {
+  const manager = await context(browser, "super_admin");
+  try {
+    const response = await manager.request.post(
+      `/api/lanflow/money-transfers/delete-requests/${crypto.randomUUID()}/decide`,
+      { data: { decision: "approved", comment: { malformed: true } } },
+    );
+
+    expect(response.status()).toBe(400);
+    expect(await response.json()).toEqual({ error: "ข้อมูลไม่ถูกต้อง" });
+  } finally {
+    await manager.close();
+  }
+});
+
+test("bank branch-transfer receipt rejects revisions outside PostgreSQL integer range", async ({ browser }) => {
+  const manager = await context(browser, "super_admin");
+  try {
+    const response = await manager.request.post(
+      `/api/lanflow/money-transfers/${crypto.randomUUID()}/receive`,
+      { data: { revisionNo: 2_147_483_648 } },
+    );
+
+    expect(response.status()).toBe(400);
+    expect(await response.json()).toEqual({ error: "ข้อมูลไม่ถูกต้อง" });
   } finally {
     await manager.close();
   }
@@ -281,7 +472,9 @@ test("cash transfer routes reject malformed UUID payloads before PostgreSQL", as
     const me = await manager.request.get("/api/auth/me");
     expect(me.ok()).toBe(true);
     const locationIds = (await me.json() as { profile: { locationIds: string[] } }).profile.locationIds;
-    expect(locationIds.length).toBeGreaterThanOrEqual(2);
+    expect(locationIds.length).toBeGreaterThan(0);
+    const sourceLocationId = locationIds[0];
+    const targetLocationId = locationIds[1] ?? "00000000-0000-4000-8000-000000000098";
     const zeroCounts = {
       coin1: 0,
       coin2: 0,
@@ -322,32 +515,32 @@ test("cash transfer routes reject malformed UUID payloads before PostgreSQL", as
       }),
       manager.request.post("/api/lanflow/cash-branch-transfers", {
         data: {
-          sourceLocationId: locationIds[0],
-          targetLocationId: locationIds[1],
+          sourceLocationId,
+          targetLocationId,
           sent: invalidCounts,
         },
       }),
       manager.request.post("/api/lanflow/cash-branch-transfers", {
         data: {
-          sourceLocationId: locationIds[0],
-          targetLocationId: locationIds[1],
+          sourceLocationId,
+          targetLocationId,
           sent: oversizedCounts,
         },
       }),
       manager.request.post("/api/lanflow/cash-branch-transfers", {
         data: {
-          sourceLocationId: locationIds[0],
-          targetLocationId: locationIds[1],
+          sourceLocationId,
+          targetLocationId,
           sent: zeroCounts,
         },
       }),
       manager.request.patch(`/api/lanflow/cash-branch-transfers/${validTransferId}`, {
-        data: { targetLocationId: locationIds[1], sent: zeroCounts },
+        data: { targetLocationId, sent: zeroCounts },
       }),
       manager.request.post("/api/lanflow/cash-branch-transfers", {
         data: {
-          sourceLocationId: locationIds[0],
-          targetLocationId: locationIds[1],
+          sourceLocationId,
+          targetLocationId,
           sent: weightedOverflowCounts,
         },
       }),

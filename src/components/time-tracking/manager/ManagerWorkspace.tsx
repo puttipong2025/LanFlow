@@ -11,11 +11,12 @@ import type { Location, Profile } from "@/types";
 import { countWorkItemsForUsers, filterTimeTrackingEmployees, hasEmployeeWork, resolveEmployeeFilter } from "../employee-list";
 import { usePayrollCutoffRefresh } from "../payroll-cutoff-refresh";
 import type { WageRecalculationPreview } from "../WageRecalculationDialog";
-import type { ApprovalType } from "../contracts";
+import type { ApprovalType, PaymentAllocationInput } from "../contracts";
 import { ManagerDialogs } from "./ManagerDialogs";
 import { ManagerEmployeeDirectory } from "./ManagerEmployeeDirectory";
 import { ManagerHeader } from "./ManagerHeader";
 import { TIME_TRACKING_OFFLINE_MESSAGE } from "../policy";
+import { invalidatePaymentLocations } from "../invalidate-payment";
 
 export function ManagerWorkspace({ profile, online, locations, selectedLocationId }: { profile: Profile; online: boolean; locations: Location[]; selectedLocationId?: string }) {
   const queryClient = useQueryClient();
@@ -158,7 +159,7 @@ export function ManagerWorkspace({ profile, online, locations, selectedLocationI
     expenseLocationId?: string | null,
     providedComment?: string,
     refreshOwner?: () => Promise<void>,
-    adjustment = false,
+    adjustment = false, payment?: PaymentAllocationInput,
   ) {
     if (!online) {
       alert(TIME_TRACKING_OFFLINE_MESSAGE);
@@ -188,8 +189,8 @@ export function ManagerWorkspace({ profile, online, locations, selectedLocationI
           payload: adjustment
             ? { adjustment_id: id, status, admin_comment: comment, expense_location_id: expenseLocationId }
             : type === 'TRANSACTION'
-            ? { transaction_id: id, status, admin_comment: comment, expense_location_id: expenseLocationId }
-            : { slip_id: id, status, admin_comment: comment, expense_location_id: expenseLocationId }
+            ? { transaction_id: id, status, admin_comment: comment, expense_location_id: expenseLocationId, payment }
+            : { slip_id: id, status, admin_comment: comment, expense_location_id: expenseLocationId, payment }
         })
       });
     } catch (error) {
@@ -204,14 +205,11 @@ export function ManagerWorkspace({ profile, online, locations, selectedLocationI
       alert(json?.error || failureMessage);
       return false;
     }
-    await Promise.all([
-      load(false),
-      refreshOwner?.(),
+    await Promise.all([load(false), refreshOwner?.(),
       queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
-    ]);
+      invalidatePaymentLocations(queryClient, profile.id, [expenseLocationId, payment?.expenseLocationId])]);
     return true;
   }
-
   function handleApprove(
     type: ApprovalType,
     id: string,
@@ -224,18 +222,17 @@ export function ManagerWorkspace({ profile, online, locations, selectedLocationI
     }
     return submitApproval(type, id, 'APPROVED', undefined, undefined, refreshOwner);
   }
-
-  async function submitPaymentChange(locationId: string | null, comment: string) {
+  async function submitPaymentChange(payment: PaymentAllocationInput, comment: string) {
     if (!pendingPaymentChange) return false;
     const res = await authFetch("/api/lanflow/time-tracking/admin", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        action: "CHANGE_EXPENSE_LOCATION",
+        action: "CHANGE_PAYMENT_ALLOCATION",
         payload: {
           source_type: pendingPaymentChange.sourceType,
           source_id: pendingPaymentChange.sourceId,
-          expense_location_id: locationId,
+          payment,
           admin_comment: comment,
         },
       }),
@@ -245,8 +242,11 @@ export function ManagerWorkspace({ profile, online, locations, selectedLocationI
       throw new Error(json?.error || "ไม่สามารถเปลี่ยนวิธีจ่ายได้");
     }
     const refreshOwner = pendingPaymentChange.refreshOwner;
+    const affectedLocationIds = [pendingPaymentChange.currentLocationId, payment.expenseLocationId];
     setPendingPaymentChange(null);
-    await Promise.all([load(false), refreshOwner?.()]);
+    await Promise.all([load(false), refreshOwner?.(),
+      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
+      invalidatePaymentLocations(queryClient, profile.id, affectedLocationIds)]);
     return true;
   }
 
@@ -388,9 +388,9 @@ export function ManagerWorkspace({ profile, online, locations, selectedLocationI
     if (right.id === profile.id) return 1;
     return 0;
   });
-  const pendingUserIds = new Set(users.filter((user: any) => hasEmployeeWork(
+  const pendingUserIds = new Set([profile.id, ...users.filter((user: any) => hasEmployeeWork(
     user, data?.pendingTransactions, data?.pendingSlips,
-  )).map((user: any) => user.id));
+  )).map((user: any) => user.id)]);
   const branchUsers = filterTimeTrackingEmployees(users, pendingUserIds, "", "all", employeeBranchFilter);
   const branchUserIds = new Set(branchUsers.map((user: any) => user.id as string));
   const branchPendingCount = countWorkItemsForUsers(data?.pendingTransactions, data?.pendingSlips, users, branchUserIds);

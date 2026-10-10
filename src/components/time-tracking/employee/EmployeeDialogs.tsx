@@ -2,10 +2,11 @@ import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { authFetch } from "@/lib/auth-fetch";
 import type { Location } from "@/types";
-import { ExpenseLocationChangeModal } from "../ExpenseLocationChangeModal";
+import { LazyPaymentAllocationModal as PaymentAllocationModal } from "../LazyPaymentAllocationModal";
 import { SlipPreviewModal } from "../SlipPreviewModal";
 import { WithdrawalAdjustmentModal } from "../WithdrawalAdjustmentModal";
 import { bangkokToday, TIME_TRACKING_OFFLINE_MESSAGE } from "../policy";
+import type { PaymentAllocationInput } from "../contracts";
 
 type PreviewSource = { type: "withdrawal" | "payroll"; id: string };
 type PendingWithdrawal = { amount: number; effectiveDate: string };
@@ -22,9 +23,9 @@ export function EmployeeDialogs({
   setDebtDescription: Dispatch<SetStateAction<string>>; debtAmount: string; setDebtAmount: Dispatch<SetStateAction<string>>;
   online: boolean; managedUserId: string; loadData: () => Promise<void>; pendingWithdrawal: PendingWithdrawal | null;
   setPendingWithdrawal: Dispatch<SetStateAction<PendingWithdrawal | null>>; expenseLocations: Location[]; primaryLocationId?: string | null;
-  createWithdrawal: (amount: number, effectiveDate: string | null, locationId?: string | null, comment?: string) => Promise<boolean>;
+  createWithdrawal: (amount: number, effectiveDate: string | null, payment?: PaymentAllocationInput, comment?: string) => Promise<boolean>;
   pendingExpenseLocationTx: any; setPendingExpenseLocationTx: Dispatch<SetStateAction<any>>;
-  submitWithdrawalExpenseLocation: (locationId: string | null, comment: string) => Promise<boolean>;
+  submitWithdrawalExpenseLocation: (payment: PaymentAllocationInput, comment: string) => Promise<boolean>;
   adjustingWithdrawal: any; setAdjustingWithdrawal: Dispatch<SetStateAction<any>>; adjustmentSummaryByWithdrawal: Map<any, any>;
   canManageTime: boolean; submitWithdrawalAdjustment: (value: { targetAmount: number; locationId: string | null; reason: string }) => Promise<boolean>;
   previewSource: PreviewSource | null; setPreviewSource: Dispatch<SetStateAction<PreviewSource | null>>; inputDialog: ReactNode;
@@ -126,23 +127,22 @@ export function EmployeeDialogs({
         </ModalShell>
       )}
       {pendingWithdrawal && (
-        <ExpenseLocationChangeModal
+        <PaymentAllocationModal
           mode="create"
           locations={expenseLocations}
           paymentAmount={pendingWithdrawal.amount}
           amountLabel="ยอดเบิกที่ใช้จ่าย"
           primaryLocationId={primaryLocationId}
           onClose={() => setPendingWithdrawal(null)}
-          onSubmit={(locationId, comment) => createWithdrawal(pendingWithdrawal.amount, pendingWithdrawal.effectiveDate, locationId, comment)}
+          onSubmit={(payment, comment) => createWithdrawal(pendingWithdrawal.amount, pendingWithdrawal.effectiveDate, payment, comment)}
         />
       )}
       {pendingExpenseLocationTx && (
-        <ExpenseLocationChangeModal
+        <PaymentAllocationModal
           locations={expenseLocations}
           paymentAmount={Number(pendingExpenseLocationTx.amount) || 0}
           amountLabel="ยอดเบิกที่ใช้จ่าย"
           primaryLocationId={primaryLocationId}
-          currentLocationId={pendingExpenseLocationTx.expense_location_id ?? null}
           onClose={() => setPendingExpenseLocationTx(null)}
           onSubmit={submitWithdrawalExpenseLocation}
         />

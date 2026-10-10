@@ -22,9 +22,11 @@ import { formatBangkokDateTime } from "@/lib/bangkok-date";
 import {
   getMoneyTransferReceiptSourceDetails,
   loadMoneyTransferDetail,
+  type MoneyTransferStatusFilter,
   useMoneyTransferList,
   useMoneyTransferMutations,
 } from "@/hooks/useMoneyTransfers";
+import { useBranchTransferReceipts } from "@/hooks/useBranchTransferReceipts";
 import { useCustomers } from "@/hooks/useCustomers";
 import {
   receiptPdfFilename,
@@ -42,6 +44,17 @@ import { TransportTransferForm } from "./money-transfer/TransportTransferForm";
 import { RubberExportWorkTransferForm } from "./money-transfer/RubberExportWorkTransferForm";
 import { LegacyBranchTransferDetailsModal } from "./money-transfer/LegacyBranchTransferDetailsModal";
 import { MoneyTransferSourceDetailsModal } from "./money-transfer/MoneyTransferSourceDetailsModal";
+import { BranchTransferReceiptModal } from "./money-transfer/BranchTransferReceiptModal";
+import {
+  MONEY_TRANSFER_STATUS_FILTERS,
+  MONEY_TRANSFER_STATUS_LABELS,
+  MONEY_TRANSFER_STATUS_STYLES,
+} from "./money-transfer/status-display";
+import {
+  getMoneyTransferMergeFailureMessage,
+  getMoneyTransferReportLockedDeleteMessage,
+  getMoneyTransferSaveFailureMessage,
+} from "./money-transfer/error-messages";
 import {
   buildMoneyTransferReceiptModel,
   getMoneyTransferPrintBlockReason,
@@ -59,7 +72,7 @@ type Props = {
   onOpenRubberExport?: (exportId: string, locationId: string) => void;
 };
 
-type TransferStatusFilter = MoneyTransfer["transferStatus"] | "all";
+type TransferStatusFilter = MoneyTransferStatusFilter;
 
 const PAGE_SIZE = 20;
 const MONEY_TRANSFER_CURRENCY_FORMATTER = new Intl.NumberFormat("th-TH", {
@@ -72,60 +85,6 @@ const MONEY_TRANSFER_AMOUNT_FORMATTER = new Intl.NumberFormat("th-TH", {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
 });
-const STATUS_FILTERS: Array<[TransferStatusFilter, string]> = [
-  ["all", "ทั้งหมด"],
-  ["pending", "รอโอน"],
-  ["partial", "ค้างจ่าย"],
-  ["advance_payment", "จ่ายล่วงหน้า"],
-  ["paid", "จ่ายครบ"],
-  ["overpaid", "ชำระเกิน"],
-  ["branch_and_transfer", "โอน+สาขาจ่าย"],
-  ["cancelled", "ยกเลิก"],
-];
-
-const STATUS_STYLES: Record<MoneyTransfer["transferStatus"], string> = {
-  paid: "bg-leaf/10 text-leaf",
-  branch_and_transfer: "bg-leaf/10 text-leaf",
-  overpaid: "bg-clay/10 text-clay",
-  partial: "bg-amber/20 text-amber",
-  advance_payment: "bg-purple-500/20 text-purple-600",
-  cancelled: "bg-clay/10 text-clay",
-  pending: "bg-amber/20 text-amber",
-};
-
-const STATUS_LABELS: Record<MoneyTransfer["transferStatus"], string> = {
-  paid: "จ่ายครบ",
-  branch_and_transfer: "โอน+สาขาจ่าย",
-  overpaid: "ชำระเกิน",
-  partial: "ค้างจ่าย",
-  advance_payment: "จ่ายล่วงหน้า",
-  cancelled: "ยกเลิก",
-  pending: "รอโอน",
-};
-
-function getMergeFailureMessage(error: unknown) {
-  const message = error instanceof Error ? error.message : "";
-  if (message.includes("ไม่มีสิทธิ์")) return message;
-  if (message.includes("REPORT_LOCKED")) {
-    return "มีรายการถูก Report Lock ระหว่างการรวม กรุณาโหลดข้อมูลแล้วลองใหม่";
-  }
-  return "รวมรายการรอโอนไม่สำเร็จ";
-}
-
-function getReportLockedDeleteMessage(error: unknown) {
-  const message = error instanceof Error ? error.message : "";
-  const reportNo = message.match(/REPORT_LOCKED:([A-Z0-9-]+)/i)?.[1];
-  if (!reportNo) return null;
-  return `รายการโอนเงินนี้ถูกล็อกโดยรายงาน ${reportNo} ต้องลบรายงานล่าสุดตามลำดับก่อน แล้วจึงลองลบรายการอีกครั้ง`;
-}
-
-function getSaveFailureMessage(error: unknown) {
-  const message = error instanceof Error ? error.message.trim() : "";
-  const reportNo = message.match(/REPORT_LOCKED:([A-Z0-9-]+)/i)?.[1];
-  if (reportNo) return `รายการถูกล็อกโดยรายงาน ${reportNo} ต้องลบรายงานล่าสุดตามลำดับก่อน`;
-  return message || "บันทึกรายการโอนเงินไม่สำเร็จ กรุณาลองใหม่";
-}
-
 function formatMoneyTransferCurrency(value: number) {
   return MONEY_TRANSFER_CURRENCY_FORMATTER.format(value);
 }
@@ -155,19 +114,21 @@ export function MoneyTransferModule({
   const pdfShare = useSharePdf();
 
   const [showTypeSelector, setShowTypeSelector] = useState(false);
-  const [activeFormType, setActiveFormType] = useState<'customer' | 'transport' | 'branch' | 'rubber_export_work' | null>(null);
+  const [activeFormType, setActiveFormType] = useState<'customer' | 'transport' | 'branch' | 'rubber_export_work' | 'time_payroll' | null>(null);
   const [editTransfer, setEditTransfer] = useState<MoneyTransfer | null>(null);
   const [legacyBranchTransfer, setLegacyBranchTransfer] = useState<MoneyTransfer | null>(null);
   const [deleteConfirmTransfer, setDeleteConfirmTransfer] = useState<MoneyTransfer | null>(null);
   const [deleteAlertDescription, setDeleteAlertDescription] = useState<string | null>(null);
   const [mergeAlertDescription, setMergeAlertDescription] = useState<string | null>(null);
   const [detailTransfer, setDetailTransfer] = useState<MoneyTransfer | null>(null);
+  const [branchReceiptId, setBranchReceiptId] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submitLockRef = useRef(false);
   const deleteLockRef = useRef(false);
   const mergeLockRef = useRef(false);
   const [page, setPage] = useState(1);
+  const branchReceipts = useBranchTransferReceipts(profile.id, locationId, branchReceiptId, { includePending: false });
   const offlineMessage = "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น";
   const branchRecipientLocations = useMemo(() => locations.filter((location) => (
     location.active
@@ -221,12 +182,12 @@ export function MoneyTransferModule({
       submitLockRef.current = true;
       setIsSubmitting(true);
       try {
-        if (transfer.transferType === "rubber_export_work") await updateWorkTransferSlips.mutateAsync(transfer);
+        if (transfer.transferType === "rubber_export_work" || transfer.transferType === "time_payroll") await updateWorkTransferSlips.mutateAsync(transfer);
         else if (isEditing) await updateTransfer.mutateAsync(transfer);
         else await addTransfer.mutateAsync(transfer);
 
         if (!isEditing && transfer.transferType === "branch") {
-          setStatusFilter("paid");
+          setStatusFilter("branch_pending_receipt");
           setPage(1);
         }
         setActiveFormType(null);
@@ -234,7 +195,7 @@ export function MoneyTransferModule({
         setToastMsg("บันทึกรายการโอนเงินสำเร็จ");
       } catch (error) {
         console.error("Failed to save transfer:", error);
-        setToastMsg(getSaveFailureMessage(error));
+        setToastMsg(getMoneyTransferSaveFailureMessage(error));
       } finally {
         submitLockRef.current = false;
         setIsSubmitting(false);
@@ -251,13 +212,15 @@ export function MoneyTransferModule({
     }
     deleteLockRef.current = true;
     deleteTransfer.mutate(deleteConfirmTransfer, {
-      onSuccess: () => {
+      onSuccess: (result) => {
         setDeleteConfirmTransfer(null);
-        setToastMsg("ลบรายการโอนเงินสำเร็จ");
+        setToastMsg(result?.status === "pending_approval"
+          ? "ส่งคำขอลบให้ผู้จัดการระบบแล้ว"
+          : "ลบรายการโอนเงินสำเร็จ");
       },
       onError: (err) => {
         console.error("Failed to delete transfer:", err);
-        const reportLockedMessage = getReportLockedDeleteMessage(err);
+        const reportLockedMessage = getMoneyTransferReportLockedDeleteMessage(err);
         if (reportLockedMessage) {
           setDeleteConfirmTransfer(null);
           setDeleteAlertDescription(reportLockedMessage);
@@ -291,7 +254,7 @@ export function MoneyTransferModule({
         }
       },
       onError: (error) => {
-        setToastMsg(getMergeFailureMessage(error));
+        setToastMsg(getMoneyTransferMergeFailureMessage(error));
       },
       onSettled: () => {
         mergeLockRef.current = false;
@@ -306,14 +269,18 @@ export function MoneyTransferModule({
     }
     try {
       const detail = await loadMoneyTransferDetail(t.id);
-      if (detail.transferType === 'rubber_export_work') {
+      if (detail.transferType === 'rubber_export_work' || detail.transferType === 'time_payroll') {
         setEditTransfer(detail);
-        setActiveFormType('rubber_export_work');
+        setActiveFormType(detail.transferType);
         return;
       }
       if (detail.transferType === 'branch') {
-        if (detail.locationId !== detail.targetLocationId) {
+        if (detail.receiptContractVersion !== 1) {
           setLegacyBranchTransfer(detail);
+          return;
+        }
+        if (detail.branchReceiptStatus === "received") {
+          setBranchReceiptId(detail.id);
           return;
         }
         setEditTransfer(detail);
@@ -514,9 +481,9 @@ export function MoneyTransferModule({
           />
         </ModalShell>
       )}
-      {activeFormType === 'rubber_export_work' && editTransfer && (
+      {(activeFormType === 'rubber_export_work' || activeFormType === 'time_payroll') && editTransfer && (
         <ModalShell
-          title={`ค่าทำงานส่งออกยาง ${editTransfer.rubberExportNo ?? ""}`}
+          title={editTransfer.transferType === "time_payroll" ? `${editTransfer.timePayrollSourceLabel ?? "รายการเวลาและเงินเดือน"} — ${editTransfer.timePayrollEmployeeName ?? "พนักงาน"}` : `ค่าทำงานส่งออกยาง ${editTransfer.rubberExportNo ?? ""}`}
           subtitle={`สาขาต้นทาง: ${locations.find((location) => location.id === editTransfer.locationId)?.name ?? "ไม่ระบุสาขา"}`}
           size="wide"
           closeOnEscape
@@ -536,10 +503,9 @@ export function MoneyTransferModule({
           />
         </ModalShell>
       )}
-      {/* Transfer filters and actions */}
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="flex flex-wrap gap-2">
-          {STATUS_FILTERS.map(([value, label]) => (
+          {MONEY_TRANSFER_STATUS_FILTERS.map(([value, label]) => (
             <button
               key={value}
               type="button"
@@ -612,8 +578,9 @@ export function MoneyTransferModule({
                 {pagedRows.map(({ transfer: t, summary }, idx) => {
                   const canCopyAmount = summary.status === "pending" || summary.status === "partial";
                   const isLegacyBranchTransfer = t.transferType === "branch"
-                    && Boolean(t.targetLocationId)
-                    && t.locationId !== t.targetLocationId;
+                    && t.receiptContractVersion !== 1;
+                  const displayedStatus = t.virtualStatus ?? summary.status;
+                  const isReceivedBranchTransfer = displayedStatus === "branch_received";
                   const amountToCopy = summary.status === "partial"
                     ? Math.max(summary.amountDue - summary.amountPaid, 0)
                     : summary.amountDue;
@@ -645,10 +612,11 @@ export function MoneyTransferModule({
                               ? isLegacyBranchTransfer ? "ดูรายละเอียดรายการเดิมแบบอ่านอย่างเดียว" : "แก้ไข"
                               : offlineMessage}
                         >
-                          {isLegacyBranchTransfer ? <Eye size={16} /> : <Edit3 size={16} />}
-                          {isLegacyBranchTransfer ? "ดู" : "แก้"}
+                          {isLegacyBranchTransfer || isReceivedBranchTransfer ? <Eye size={16} /> : <Edit3 size={16} />}
+                          {isLegacyBranchTransfer || isReceivedBranchTransfer ? "ดู" : "แก้"}
                         </button>
-                        {t.transferType !== "rubber_export_work" && <button
+                        {t.transferType !== "rubber_export_work" && t.transferType !== "time_payroll"
+                          && (t.transferType !== "branch" || t.createdByUserId === profile.id) && <button
                           type="button"
                           onClick={() => {
                             if (t.reportLockNo) {
@@ -683,7 +651,17 @@ export function MoneyTransferModule({
                             {t.rubberExportNo ?? "REX"}
                           </button>
                         ) : <span className="text-xs font-semibold text-river">{t.rubberExportNo ?? "REX"}</span>
-                      ) : <button
+                      ) : t.transferType === "time_payroll" ? <span className="text-xs font-semibold text-river">{t.timePayrollSourceLabel ?? "เวลา/เงินเดือน"}</span> : t.transferType === "branch" ? <button
+                        type="button"
+                        onClick={() => isLegacyBranchTransfer
+                          ? setLegacyBranchTransfer(t)
+                          : setBranchReceiptId(t.id)}
+                        disabled={!online}
+                        aria-label={`เปิดรายละเอียดการโอนให้สาขา ${shortTransferId(t.id)}`}
+                        className="focus-ring inline-flex h-10 items-center justify-center gap-1.5 rounded-md bg-actionSecondary px-3 text-xs font-semibold text-white hover:bg-actionSecondary/90 disabled:opacity-40"
+                      >
+                        <Eye size={15} /> ดู
+                      </button> : <button
                         type="button"
                         onClick={() => void handleOpenDetail(t.id)}
                         disabled={(t.sourceCount ?? 0) === 0}
@@ -697,6 +675,7 @@ export function MoneyTransferModule({
                     </td>
                     <td className="px-3 py-2.5 font-semibold text-ink">{t.transferType === "rubber_export_work"
                       ? <span>ค่าทำงาน {t.rubberExportNo ?? "REX"}<span className="block text-xs font-normal text-ink/60">สาขาต้นทาง: {locations.find((location) => location.id === t.locationId)?.name ?? "ไม่ระบุสาขา"}</span></span>
+                      : t.transferType === "time_payroll" ? <span>{t.timePayrollEmployeeName ?? "พนักงาน"}<span className="block text-xs font-normal text-ink/60">{t.timePayrollSourceLabel ?? "เวลาและเงินเดือน"}</span></span>
                       : t.customerName ?? t.transportStaffName ?? t.targetLocationName ?? "—"}</td>
                     <td className="px-3 py-2.5">
                       {t.accountNumber ? (
@@ -757,14 +736,14 @@ export function MoneyTransferModule({
                         t.transferType === "customer" && "bg-blue-100 text-blue-700",
                         t.transferType === "transport" && "bg-orange-100 text-orange-700",
                         t.transferType === "branch" && "bg-purple-100 text-purple-700",
-                        t.transferType === "rubber_export_work" && "bg-river/10 text-river",
+                        t.transferType === "rubber_export_work" && "bg-river/10 text-river", t.transferType === "time_payroll" && "bg-mint text-leaf",
                       )}>
-                        {t.transferType === "customer" ? "ลูกค้า" : t.transferType === "transport" ? "รถขนส่ง" : t.transferType === "branch" ? "ให้สาขา" : "ค่าทำงาน REX"}
+                        {t.transferType === "customer" ? "ลูกค้า" : t.transferType === "transport" ? "รถขนส่ง" : t.transferType === "branch" ? "ให้สาขา" : t.transferType === "time_payroll" ? "เวลา/เงินเดือน" : "ค่าทำงาน REX"}
                       </span>
                     </td>
                     <td className="px-3 py-2.5">
-                      <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold", STATUS_STYLES[summary.status])}>
-                        {STATUS_LABELS[summary.status]}
+                      <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold", MONEY_TRANSFER_STATUS_STYLES[displayedStatus])}>
+                        {MONEY_TRANSFER_STATUS_LABELS[displayedStatus]}
                       </span>
                     </td>
                     <td className="px-3 py-2.5 text-sm text-ink/60">{t.createdByName ?? "—"}</td>
@@ -827,6 +806,22 @@ export function MoneyTransferModule({
           onClose={() => setDetailTransfer(null)}
         />
       )}
+
+      {branchReceiptId && (branchReceipts.detail ? (
+        <BranchTransferReceiptModal
+          transfer={branchReceipts.detail}
+          online={online}
+          onReceive={(revisionNo) => branchReceipts.receive.mutateAsync({ id: branchReceiptId, revisionNo })}
+          onClose={() => setBranchReceiptId(null)}
+        />
+      ) : (
+        <ModalShell title="รายละเอียดการโอนให้สาขา" onClose={() => setBranchReceiptId(null)} size="compact" nativeModal>
+          <div className="space-y-3 text-center">
+            <p className="text-sm text-ink/60">{branchReceipts.detailError ?? "กำลังโหลดรายละเอียด..."}</p>
+            {branchReceipts.detailError && <button type="button" onClick={() => void branchReceipts.retryDetail()} className="focus-ring rounded-md bg-river px-3 py-2 text-sm font-semibold text-white">ลองใหม่</button>}
+          </div>
+        </ModalShell>
+      ))}
 
       {legacyBranchTransfer && (
         <LegacyBranchTransferDetailsModal

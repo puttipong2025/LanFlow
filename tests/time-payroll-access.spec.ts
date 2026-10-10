@@ -338,7 +338,12 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
               user_id: insideTarget,
               amount: 10,
               effective_date: "2026-08-01",
-              expense_location_id: insideLocationId,
+              payment: {
+                channel: "branch_and_transfer",
+                expenseLocationId: insideLocationId,
+                transferAmount: "0",
+                expectedSourceAmount: 10,
+              },
             },
           } });
           const allowedText = await allowed.text();
@@ -347,7 +352,12 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
 
           const denied = await request.post("/api/lanflow/time-tracking/admin", { data: {
             action: "ADMIN_REQUEST_WITHDRAWAL",
-            payload: { user_id: outsideTarget, amount: 10, effective_date: "2026-08-01" },
+            payload: {
+              user_id: outsideTarget,
+              amount: 10,
+              effective_date: "2026-08-01",
+              payment: { channel: "outside_system", expenseLocationId: null, transferAmount: null, expectedSourceAmount: 10 },
+            },
           } });
           expect(denied.status()).toBe(403);
 
@@ -359,7 +369,12 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
           expect(globalTargetUsers.some((profile) => profile.id === insideTarget)).toBeFalsy();
           expect((await request.post("/api/lanflow/time-tracking/admin", { data: {
             action: "ADMIN_REQUEST_WITHDRAWAL",
-            payload: { user_id: insideTarget, amount: 10, effective_date: "2026-08-01" },
+            payload: {
+              user_id: insideTarget,
+              amount: 10,
+              effective_date: "2026-08-01",
+              payment: { channel: "outside_system", expenseLocationId: null, transferAmount: null, expectedSourceAmount: 10 },
+            },
           } })).status()).toBe(403);
           expect((await service.from("profiles")
             .update({ role: "user", can_access_super_admin_features: false })
@@ -371,7 +386,12 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
           expect(noBranchUsers.some((profile) => profile.id === insideTarget)).toBeFalsy();
           expect((await request.post("/api/lanflow/time-tracking/admin", { data: {
             action: "ADMIN_REQUEST_WITHDRAWAL",
-            payload: { user_id: insideTarget, amount: 10, effective_date: "2026-08-01" },
+            payload: {
+              user_id: insideTarget,
+              amount: 10,
+              effective_date: "2026-08-01",
+              payment: { channel: "outside_system", expenseLocationId: null, transferAmount: null, expectedSourceAmount: 10 },
+            },
           } })).status()).toBe(403);
           expect((await service.from("user_locations").insert({
             user_id: insideTarget,
@@ -520,6 +540,18 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
         expect(deletion.error?.message).toContain("Existing expense location access denied");
       }
 
+      const zeroNetApproval = await delegatedRequest.post("/api/lanflow/time-tracking/admin", { data: {
+        action: "APPROVE_PAYROLL_SLIP",
+        payload: { slip_id: routePendingSlipId, status: "APPROVED", payment: null },
+      } });
+      expect(zeroNetApproval.ok(), await zeroNetApproval.text()).toBeTruthy();
+      const approvedZeroNetSlip = await service.from("payroll_slips")
+        .select("status, payment_contract_version")
+        .eq("id", routePendingSlipId)
+        .single();
+      expect(approvedZeroNetSlip.error).toBeNull();
+      expect(approvedZeroNetSlip.data).toEqual({ status: "APPROVED", payment_contract_version: null });
+
       const routeCreatorDelete = await delegatedRequest.post("/api/lanflow/time-tracking/admin", { data: {
         action: "DELETE_PAYROLL_SLIP",
         payload: { slip_id: routePendingSlipId },
@@ -596,10 +628,10 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
       await delegatedRequest.dispose();
       await delegated.client.auth.signOut();
       await global.client.auth.signOut();
-      await deleteTarget(service, delegatedId);
       await deleteTarget(service, transactionTargetId);
       await deleteTarget(service, slipTargetId);
       await deleteTarget(service, approvedSlipTargetId);
+      await deleteTarget(service, delegatedId);
     }
   });
 

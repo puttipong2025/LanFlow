@@ -160,6 +160,7 @@ export function BranchTransferForm({
       bankName: null,
       netAmountToPay: totalFromSlips, // For branch, just track what was sent
       transferType: "branch",
+      receiptContractVersion: 1,
       transportCost: 0,
       transportStaffId: null,
       transportStaffName: null,

@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
+import { bangkokDateString } from "../src/lib/bangkok-date";
 import { selectAppLocation } from "./helpers/select-app-location";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
@@ -7,11 +8,14 @@ const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
 test.use({ storageState: "playwright/.auth/super_admin.json" });
 
-test("creates a branch receipt once and applies manual focus-zero behavior", async ({ page }) => {
+test("creates a branch receipt once, requires detail review, and confirms it once", async ({ page }) => {
   test.skip(!serviceRoleKey, "Supabase service key is required");
   const service = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
+  const me = await (await page.request.get("/api/auth/me")).json() as {
+    profile: { id: string };
+  };
   let transferId: string | null = null;
   let saveRequestCount = 0;
   page.on("request", (request) => {
@@ -56,9 +60,47 @@ test("creates a branch receipt once and applies manual focus-zero behavior", asy
     transferId = saved.id;
 
     await expect(dialog).toBeHidden();
-    await expect(page.getByRole("button", { name: /จ่ายครบ/ })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("button", { name: /รอยืนยันรับ/ })).toHaveAttribute("aria-pressed", "true");
     await expect(page.locator(`[data-transfer-id="${transferId}"]`)).toContainText("ให้สาขา");
     expect(saveRequestCount).toBe(1);
+
+    await page.getByRole("button", { name: /^รับ-จ่าย/ }).click();
+    const queueItem = page.locator(`[data-transfer-id="${transferId}"]`);
+    await expect(queueItem).toContainText("เปิดตรวจ");
+    await queueItem.click();
+    const receiptDialog = page.getByRole("dialog", { name: "ตรวจสอบและยืนยันรับเงิน" });
+    await expect(receiptDialog).toContainText("หลักฐานการโอน (1)");
+    await expect(receiptDialog.getByText("ยอดรับไม่ตรง")).toHaveCount(0);
+    await expect(receiptDialog.getByRole("button", { name: /ปฏิเสธ/ })).toHaveCount(0);
+
+    let receiveRequestCount = 0;
+    page.on("request", (request) => {
+      if (request.method() === "POST" && request.url().includes(`/api/lanflow/money-transfers/${transferId}/receive`)) {
+        receiveRequestCount += 1;
+      }
+    });
+    const expectedAccountingDate = bangkokDateString();
+    const receiveResponsePromise = page.waitForResponse((response) => (
+      response.request().method() === "POST"
+      && response.url().includes(`/api/lanflow/money-transfers/${transferId}/receive`)
+    ));
+    await receiptDialog.getByRole("button", { name: "ยืนยันรับเงิน" }).dblclick();
+    const receiveResponse = await receiveResponsePromise;
+    expect(receiveResponse.ok()).toBeTruthy();
+    await expect(receiptDialog).toBeHidden();
+    await expect(queueItem).toHaveCount(0);
+    expect(receiveRequestCount).toBe(1);
+
+    const confirmed = await service.from("money_transfers")
+      .select("branch_receipt_status,accounting_date,branch_received_by_user_id")
+      .eq("id", transferId)
+      .single();
+    expect(confirmed.error).toBeNull();
+    expect(confirmed.data).toMatchObject({
+      branch_receipt_status: "received",
+      accounting_date: expectedAccountingDate,
+      branch_received_by_user_id: me.profile.id,
+    });
   } finally {
     if (transferId) {
       await service.from("money_transfer_slips").delete().eq("transfer_id", transferId);
@@ -153,8 +195,9 @@ test("OCR references are read-only and non-zero OCR amounts stay intact on focus
   ));
   await dialog.getByRole("button", { name: "บันทึก", exact: true }).click();
   const payload = (await saveRequest).postDataJSON() as {
-    p_payload: { slips: Array<{ sortOrder: number }> };
+    p_payload: { receiptContractVersion: number; slips: Array<{ sortOrder: number }> };
   };
+  expect(payload.p_payload.receiptContractVersion).toBe(1);
   expect(payload.p_payload.slips.map((slip) => slip.sortOrder)).toEqual([0, 1]);
 });
 
@@ -275,7 +318,7 @@ test("a failed branch save keeps the draft and allows one clean retry", async ({
   expect(attempt).toBe(2);
 });
 
-test("legacy inter-branch rows open read-only and cannot be deleted", async ({ page }) => {
+test("legacy branch rows open read-only and cannot be deleted regardless of target shape", async ({ page }) => {
   test.skip(!serviceRoleKey, "Supabase service key is required");
   const service = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
@@ -306,40 +349,67 @@ test("legacy inter-branch rows open read-only and cannot be deleted", async ({ p
     targetLocation = created.data;
   }
   const transferId = crypto.randomUUID();
+  const sameTargetTransferId = crypto.randomUUID();
 
   try {
-    const inserted = await service.from("money_transfers").insert({
-      id: transferId,
-      client_temp_id: transferId,
-      idempotency_key: `legacy-read-only:${transferId}`,
-      location_id: sourceLocationId,
-      target_location_id: targetLocation!.id,
-      target_location_name: targetLocation!.name,
-      net_amount_to_pay: 77,
-      branch_paid_amount: 0,
-      transfer_type: "branch",
-      transfer_status: "paid",
-      sync_status: "synced",
-      record_status: "active",
-      created_by_user_id: me.profile.id,
-      created_by_name: me.profile.name,
-      created_by_phone: me.profile.phone,
-    });
+    const inserted = await service.from("money_transfers").insert([
+      {
+        id: transferId,
+        client_temp_id: transferId,
+        idempotency_key: `legacy-read-only:${transferId}`,
+        location_id: sourceLocationId,
+        target_location_id: targetLocation!.id,
+        target_location_name: targetLocation!.name,
+        net_amount_to_pay: 77,
+        branch_paid_amount: 0,
+        transfer_type: "branch",
+        transfer_status: "paid",
+        sync_status: "synced",
+        record_status: "active",
+        created_by_user_id: me.profile.id,
+        created_by_name: me.profile.name,
+        created_by_phone: me.profile.phone,
+      },
+      {
+        id: sameTargetTransferId,
+        client_temp_id: sameTargetTransferId,
+        idempotency_key: `legacy-read-only:${sameTargetTransferId}`,
+        location_id: sourceLocationId,
+        target_location_id: sourceLocationId,
+        target_location_name: "Legacy Same Target",
+        net_amount_to_pay: 78,
+        branch_paid_amount: 0,
+        transfer_type: "branch",
+        transfer_status: "paid",
+        sync_status: "synced",
+        record_status: "active",
+        created_by_user_id: me.profile.id,
+        created_by_name: me.profile.name,
+        created_by_phone: me.profile.phone,
+      },
+    ]);
     expect(inserted.error).toBeNull();
 
     await page.goto("/");
     await selectAppLocation(page, sourceLocationId);
     await page.getByRole("button", { name: /^โอนเงิน/ }).click();
     await page.getByRole("button", { name: /^ทั้งหมด/ }).click();
-    const row = page.locator(`[data-transfer-id="${transferId}"]`);
-    await expect(row).toBeVisible();
-    await expect(row.getByRole("button", { name: "ลบ" })).toBeDisabled();
-    await row.getByRole("button", { name: "ดู", exact: true }).click();
-    const dialog = page.getByRole("dialog", { name: "รายละเอียดรายการโอนระหว่างสาขารุ่นเดิม" });
-    await expect(dialog).toContainText("ข้อมูลอ่านอย่างเดียว");
-    await expect(dialog).toContainText("เปิดดูได้แต่แก้ไขหรือลบไม่ได้");
+    for (const id of [transferId, sameTargetTransferId]) {
+      const row = page.locator(`[data-transfer-id="${id}"]`);
+      await expect(row).toBeVisible();
+      await expect(row.getByRole("button", { name: "ลบ" })).toBeDisabled();
+      await row.getByRole("button", { name: "ดู", exact: true }).click();
+      const dialog = page.getByRole("dialog", { name: "รายละเอียดรายการโอนระหว่างสาขารุ่นเดิม" });
+      await expect(dialog).toContainText("ข้อมูลอ่านอย่างเดียว");
+      await expect(dialog).toContainText("เปิดดูได้แต่แก้ไขหรือลบไม่ได้");
+      await dialog.getByRole("button", { name: "ปิด" }).click();
+
+      await row.getByRole("button", { name: /เปิดรายละเอียดการโอนให้สาขา/ }).click();
+      await expect(dialog).toBeVisible();
+      await dialog.getByRole("button", { name: "ปิด" }).click();
+    }
   } finally {
-    await service.from("money_transfers").delete().eq("id", transferId);
+    await service.from("money_transfers").delete().in("id", [transferId, sameTargetTransferId]);
     if (createdTargetLocationId) await service.from("locations").delete().eq("id", createdTargetLocationId);
   }
 });

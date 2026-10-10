@@ -26,11 +26,21 @@ test("document API follows source-row RLS and excludes rejected, cancelled, and 
     auth: { persistSession: false, autoRefreshToken: false },
   });
   const pendingId = crypto.randomUUID();
+  const approvedSplitId = crypto.randomUUID();
   const rejectedId = crypto.randomUUID();
   const cancelledId = crypto.randomUUID();
   const payrollId = crypto.randomUUID();
+  const outsideLocationId = crypto.randomUUID();
+  const outsideLocationName = `สาขาทดสอบเอกสาร ${outsideLocationId.slice(0, 8)}`;
 
   try {
+    const location = await service.from("locations").insert({
+      id: outsideLocationId,
+      name: outsideLocationName,
+      code: `DOC-${outsideLocationId.slice(0, 8)}`,
+      is_active: true,
+    });
+    expect(location.error).toBeNull();
     const transactions = await service.from("financial_transactions").insert([
       {
         id: pendingId,
@@ -41,6 +51,22 @@ test("document API follows source-row RLS and excludes rejected, cancelled, and 
         status: "PENDING",
         effective_date: "2049-02-02",
         description: "ทดสอบเอกสาร",
+      },
+      {
+        id: approvedSplitId,
+        profile_id: userId,
+        type: "WITHDRAWAL",
+        amount: 500,
+        remaining_amount: 500,
+        status: "APPROVED",
+        effective_date: "2049-02-02",
+        description: "ทดสอบชื่อสาขาในเอกสาร",
+        approved_by: superAdminId,
+        approved_at: "2049-02-03T00:00:00.000Z",
+        payment_contract_version: 1,
+        payment_channel: "branch_and_transfer",
+        payment_transfer_amount: 100,
+        expense_location_id: outsideLocationId,
       },
       {
         id: rejectedId,
@@ -112,6 +138,10 @@ test("document API follows source-row RLS and excludes rejected, cancelled, and 
         paymentLabel: null,
       });
 
+      const approvedSplit = await request.get(`/api/lanflow/time-tracking/documents/withdrawal/${approvedSplitId}`);
+      expect(approvedSplit.status(), await approvedSplit.text()).toBe(200);
+      expect((await approvedSplit.json()).paymentLabel).toContain(outsideLocationName);
+
       const managerRequest = await playwrightRequest.newContext({
         baseURL: "http://127.0.0.1:3000",
         storageState: "playwright/.auth/super_admin.json",
@@ -163,6 +193,21 @@ test("document API follows source-row RLS and excludes rejected, cancelled, and 
     }
   } finally {
     await service.from("payroll_slips").delete().eq("id", payrollId);
-    await service.from("financial_transactions").delete().in("id", [pendingId, rejectedId, cancelledId]);
+    const cleanupRequest = await playwrightRequest.newContext({
+      baseURL: "http://127.0.0.1:3000",
+      storageState: "playwright/.auth/super_admin.json",
+    });
+    try {
+      await cleanupRequest.post("/api/lanflow/time-tracking/admin", {
+        data: {
+          action: "DELETE_TRANSACTION",
+          payload: { transaction_id: approvedSplitId },
+        },
+      });
+    } finally {
+      await cleanupRequest.dispose();
+    }
+    await service.from("financial_transactions").delete().in("id", [pendingId, approvedSplitId, rejectedId, cancelledId]);
+    await service.from("locations").delete().eq("id", outsideLocationId);
   }
 });

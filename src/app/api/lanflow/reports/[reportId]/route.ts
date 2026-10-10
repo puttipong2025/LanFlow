@@ -134,7 +134,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
       rowsByIds(
         client,
         "money_transfers",
-        "id, location_id, rubber_export_id, target_location_id, target_location_name, customer_name, transport_staff_name, transfer_type, transfer_status, net_amount_to_pay, branch_paid_amount, server_received_at, updated_at, created_at, money_transfer_slips(amount, fee)",
+        "id, location_id, rubber_export_id, target_location_id, target_location_name, customer_name, transport_staff_name, transfer_type, transfer_status, net_amount_to_pay, branch_paid_amount, time_payroll_source_label, time_payroll_employee_name, server_received_at, updated_at, created_at, money_transfer_slips(amount, fee)",
         [...ids(items, "bank_transfer_source"), ...ids(items, "bank_transfer_target")]
       ),
       result.supabase.rpc("get_report_income_expense_rows_json", { p_report_id: reportId }),
@@ -283,6 +283,8 @@ export async function GET(request: NextRequest, context: RouteContext) {
           direction,
           party: row.transfer_type === "rubber_export_work"
             ? `ค่าทำงานส่งออกยาง ${exportNoById.get(row.rubber_export_id) ?? "REX"} · สาขาต้นทาง: ${sourceLocationNameById.get(row.location_id) ?? "ไม่ระบุสาขา"}`
+            : row.transfer_type === "time_payroll"
+              ? `${row.time_payroll_source_label ?? "เวลาและเงินเดือน"} · ${row.time_payroll_employee_name ?? "พนักงาน"}`
             : direction === "in"
             ? "สาขาต้นทาง"
             : row.target_location_name ?? row.customer_name ?? row.transport_staff_name ?? "",

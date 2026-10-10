@@ -52,6 +52,15 @@ test.describe("Lean attendance UI contract", () => {
     expect(controls).toContain("setError(formatPayrollUiError(actionError))");
   });
 
+  test("refreshes the affected branch after approving an adjustment or payment allocation", () => {
+    expect(managerSource).toContain(
+      "invalidatePaymentLocations(queryClient, profile.id, [expenseLocationId, payment?.expenseLocationId])",
+    );
+    expect(employeeSource).toContain(
+      "invalidatePaymentLocations(queryClient, profile.id, [value.locationId])",
+    );
+  });
+
   test("offers attendance editing only on an individual employee calendar", () => {
     expect(moduleSource).not.toContain("AttendanceBatchModal");
     expect(moduleSource).not.toContain("APPLY_ATTENDANCE_BATCH");
@@ -248,13 +257,15 @@ test.describe("Lean attendance UI contract", () => {
       expect(source).toContain("closeOnEscape");
       expect(source).toContain("closeDisabled={saving}");
       expect(source).toContain('role="alert"');
+      expect(source).not.toContain("CENTRAL_OUTSIDE");
+      expect(source).not.toContain('mode?: "change" | "approve" | "create"');
     }
     expect(slipPreviewSource).toContain("nativeModal");
     expect(slipPreviewSource).toContain("closeOnEscape");
     expect(slipPreviewSource).toContain("closeDisabled={pdfShare.busy}");
     expect(modalShellSource).toContain("dialog.showModal()");
     expect(modalShellSource).toContain("event.stopPropagation()");
-    expect(modalShellSource).toContain("const previousFocus = previousFocusRef.current");
+    expect(modalShellSource).toContain("const previousFocus = returnFocusElement ?? previousFocusRef.current");
     expect(modalShellSource).toContain("previousFocus?.focus()");
   });
 });
@@ -338,7 +349,9 @@ test.describe("Time/payroll native dialogs", () => {
     const createDialog = page.getByRole("dialog", { name: "สร้างสลิปเงินเดือน" });
     await createDialog.getByLabel("เดือน").fill("2026-08");
     await createDialog.getByRole("button", { name: "ยืนยันสร้างสลิป" }).click();
-    await page.getByRole("dialog", { name: "เลือกวิธีจ่าย", exact: true }).getByRole("button", { name: "สร้างและอนุมัติ" }).click();
+    const paymentDialog = page.getByRole("dialog", { name: "เลือกวิธีจ่าย", exact: true });
+    await paymentDialog.getByText("จ่ายนอกระบบ", { exact: true }).click();
+    await paymentDialog.getByRole("button", { name: "สร้างและอนุมัติ" }).click();
 
     await adminRefreshRequested;
     try {
@@ -414,6 +427,7 @@ test.describe("Time/payroll native dialogs", () => {
     await page.goto("/");
     await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
     await expect(page.getByRole("heading", { name: "จัดการเวลาและเงินเดือน" })).toBeVisible();
+    await page.getByLabel("กรองสาขา").selectOption("all");
     await page.getByRole("button", { name: "ทั้งหมด", exact: true }).click();
     await page.getByRole("button", { name: /^จัดการปฏิทินวันทำงานของ พนักงานอนุมัติทันที/ }).click();
     const employeeDialog = page.getByRole("dialog", { name: "ข้อมูลของพนักงาน" });
@@ -478,6 +492,7 @@ test.describe("Time/payroll native dialogs", () => {
 
     await page.goto("/");
     await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
+    await page.getByLabel("กรองสาขา").selectOption("all");
     await page.getByRole("button", { name: "ทั้งหมด", exact: true }).click();
     await page.getByRole("button", { name: /^จัดการปฏิทินวันทำงานของ พนักงานประวัติรายการปฏิเสธ/ }).click();
     const employeeDialog = page.getByRole("dialog", { name: "ข้อมูลของพนักงาน" });
@@ -539,6 +554,7 @@ test.describe("Time/payroll native dialogs", () => {
 
     await page.goto("/");
     await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
+    await page.getByLabel("กรองสาขา").selectOption("all");
     await page.getByRole("button", { name: "ทั้งหมด", exact: true }).click();
     await page.getByRole("button", { name: /^จัดการปฏิทินวันทำงานของ พนักงานปฏิเสธรายการ/ }).click();
     const employeeDialog = page.getByRole("dialog", { name: "ข้อมูลของพนักงาน" });
@@ -620,14 +636,6 @@ test.describe("Time/payroll native dialogs", () => {
   });
 
   test("updates the open payroll payment method before the summary refresh completes", async ({ page }) => {
-    const location = { id: "695e95b8-f4a7-4a0a-909f-f2f932c3ef8b", name: "สาขาจ่ายเงิน", code: "PAY", active: true };
-    const employee = {
-      id: "9d159aa0-d258-40b2-82f9-8a90517d0c61",
-      name: "พนักงานเปลี่ยนวิธีจ่าย",
-      daily_wage: 500,
-      primary_location_id: location.id,
-      debt_remaining_amount: 0,
-    };
     const slip = {
       id: "45874010-28e4-4ed6-828d-1584a150170a",
       month: "2026-08-01",
@@ -637,7 +645,8 @@ test.describe("Time/payroll native dialogs", () => {
       status: "APPROVED",
       created_at: "2026-09-02T03:00:00.000Z",
       cancelled_at: null,
-      expense_location_id: location.id,
+      expense_location_id: "695e95b8-f4a7-4a0a-909f-f2f932c3ef8b",
+      expense_location_name: "สาขาจ่ายเงิน",
       report_lock_no: null,
     };
     let changed = false;
@@ -653,27 +662,41 @@ test.describe("Time/payroll native dialogs", () => {
           markAdminRefreshRequested();
           await adminRefreshReleased;
         }
+        await route.continue();
+        return;
+      }
+
+      const body = route.request().postDataJSON() as {
+        action?: string;
+        payload?: {
+          payment?: {
+            channel?: string;
+            expenseLocationId?: string | null;
+            transferAmount?: string | null;
+            expectedSourceAmount?: number;
+          };
+        };
+      };
+      if (body.action === "LIST_PAYROLL_SLIPS") {
+        listReads += 1;
         await route.fulfill({
           json: {
-            permissions: { canManage: true, canDecide: true, canConfigure: true },
-            users: [employee],
-            pendingTransactions: [],
-            pendingSlips: [],
-            paymentLocations: [location],
-            admins: [],
+            slips: [{
+              ...slip,
+              expense_location_id: changed ? null : slip.expense_location_id,
+              expense_location_name: changed ? null : slip.expense_location_name,
+            }],
           },
         });
         return;
       }
-
-      const body = route.request().postDataJSON() as { action?: string; payload?: { expense_location_id?: string | null } };
-      if (body.action === "LIST_PAYROLL_SLIPS") {
-        listReads += 1;
-        await route.fulfill({ json: { slips: [{ ...slip, expense_location_id: changed ? null : location.id }] } });
-        return;
-      }
-      if (body.action === "CHANGE_EXPENSE_LOCATION") {
-        expect(body.payload?.expense_location_id).toBeNull();
+      if (body.action === "CHANGE_PAYMENT_ALLOCATION") {
+        expect(body.payload?.payment).toEqual({
+          channel: "outside_system",
+          expenseLocationId: null,
+          transferAmount: null,
+          expectedSourceAmount: 15000,
+        });
         changed = true;
         await route.fulfill({ json: { success: true } });
         return;
@@ -685,17 +708,17 @@ test.describe("Time/payroll native dialogs", () => {
     await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
     await expect(page.getByRole("heading", { name: "จัดการเวลาและเงินเดือน" })).toBeVisible();
     await page.getByRole("button", { name: "ทั้งหมด", exact: true }).click();
-    await page.getByRole("button", { name: /^จัดการสลิปเงินเดือนของ พนักงานเปลี่ยนวิธีจ่าย/ }).click();
-    const payrollDialog = page.getByRole("dialog", { name: "สลิปเงินเดือนของ พนักงานเปลี่ยนวิธีจ่าย" });
+    await page.getByRole("button", { name: /^จัดการสลิปเงินเดือนของ / }).first().click();
+    const payrollDialog = page.getByRole("dialog", { name: /^สลิปเงินเดือนของ / });
     const readsBeforeChange = listReads;
     await payrollDialog.getByRole("button", { name: "เปลี่ยนวิธีจ่าย" }).click();
     const changeDialog = page.getByRole("dialog", { name: "เปลี่ยนวิธีจ่าย" });
-    await changeDialog.getByLabel("วิธีจ่ายใหม่").selectOption("__central_outside_system__");
+    await changeDialog.getByText("จ่ายนอกระบบ", { exact: true }).click();
     await changeDialog.getByRole("button", { name: "บันทึก", exact: true }).click();
     await adminRefreshRequested;
 
     try {
-      await expect(payrollDialog.getByText("ส่วนกลางจ่าย (จ่ายนอกระบบ)", { exact: true })).toBeVisible({ timeout: 1_000 });
+      await expect(payrollDialog.getByText("จ่ายนอกระบบ", { exact: true })).toBeVisible({ timeout: 1_000 });
       expect(listReads).toBe(readsBeforeChange + 1);
     } finally {
       releaseAdminRefresh();
@@ -778,6 +801,7 @@ test.describe("Time/payroll native dialogs", () => {
 
     await page.goto("/");
     await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
+    await page.getByLabel("กรองสาขา").selectOption("all");
     await page.getByRole("button", { name: "ทั้งหมด", exact: true }).click();
     await page.getByRole("button", { name: `จัดการปฏิทินวันทำงานของ ${employee.name}` }).click();
     const dialog = page.getByRole("dialog", { name: "ข้อมูลของพนักงาน" });
@@ -915,6 +939,7 @@ test.describe("Time/payroll native dialogs", () => {
 
     await page.goto("/");
     await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
+    await page.getByLabel("กรองสาขา").selectOption("all");
     await expect(page.getByText("ขาดสลิป 2 เดือน", { exact: true })).toBeVisible();
     const payrollButton = page.getByRole("button", {
       name: /จัดการสลิปเงินเดือนของ พนักงานขาดสลิป มีงานค้าง 3 รายการ/,

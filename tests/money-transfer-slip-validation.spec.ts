@@ -26,3 +26,13 @@ test("rejects a malformed slip transaction date", () => {
     message: "สลิป 1: วันที่ทำรายการไม่ถูกต้อง",
   });
 });
+
+test("rejects a slip timestamp later than the current time", () => {
+  const future = new Date(Date.now() + 60_000).toISOString();
+  expect(validateMoneyTransferSlips([slip(future)])).toContainEqual({
+    slipId: "slip-1",
+    slipIndex: 0,
+    field: "transactionDate",
+    message: "สลิป 1: วันเวลาต้องไม่เกินเวลาปัจจุบัน",
+  });
+});

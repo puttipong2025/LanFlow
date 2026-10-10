@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select extensions.plan(22);
+select extensions.plan(24);
 
 select extensions.has_function('private', 'lock_report_locations', array['uuid[]'], 'pending-work writes share the report branch lock');
 select extensions.has_function('private', 'report_creation_blockers', array['uuid', 'timestamp with time zone'], 'report creation has one authoritative blocker query');
@@ -21,7 +21,8 @@ insert into public.locations (id, name, code, is_active)
 values
   ('61000000-0000-4000-8000-000000000001', 'Pending Work Source', 'PWS1', true),
   ('61000000-0000-4000-8000-000000000002', 'Pending Work Target', 'PWT1', true),
-  ('61000000-0000-4000-8000-000000000003', 'Pending Work Cash Submit', 'PWCS', true);
+  ('61000000-0000-4000-8000-000000000003', 'Pending Work Cash Submit', 'PWCS', true),
+  ('61000000-0000-4000-8000-000000000004', 'Pending Work Bank Receipt', 'PWBR', true);
 
 insert into public.profiles (id, phone, name, role, is_active, can_access_super_admin_features)
 values
@@ -84,6 +85,32 @@ insert into public.money_transfer_cash_details (
   'pending_receipt', '2026-09-28 10:00:00+07', '2026-09-28 10:00:00+07', '2026-09-28 10:00:00+07'
 );
 
+insert into public.money_transfers (
+  id, client_temp_id, idempotency_key, location_id, net_amount_to_pay,
+  transfer_status, transfer_type, transfer_method, target_location_id,
+  target_location_name, created_by_user_id, created_by_name, created_by_phone,
+  accounting_date, branch_receipt_contract_version, branch_receipt_status,
+  branch_received_by_user_id, branch_received_by_name, branch_received_at,
+  created_at, updated_at
+) values
+  (
+    '66000000-0000-4000-8000-000000000004', 'pending-work-bank-receipt', 'pending-work-bank-receipt',
+    '61000000-0000-4000-8000-000000000004', 40, 'paid', 'branch', 'bank',
+    '61000000-0000-4000-8000-000000000004', 'Pending Work Bank Receipt',
+    '62000000-0000-4000-8000-000000000001', 'Pending Work Manager', '0896100001',
+    null, 1, 'pending_receipt', null, null, null,
+    '2026-09-28 10:00:01+07', '2026-09-28 10:00:01+07'
+  ),
+  (
+    '66000000-0000-4000-8000-000000000005', 'pending-work-bank-delete', 'pending-work-bank-delete',
+    '61000000-0000-4000-8000-000000000004', 50, 'paid', 'branch', 'bank',
+    '61000000-0000-4000-8000-000000000004', 'Pending Work Bank Receipt',
+    '62000000-0000-4000-8000-000000000001', 'Pending Work Manager', '0896100001',
+    '2026-09-28', 1, 'received',
+    '62000000-0000-4000-8000-000000000001', 'Pending Work Manager', '2026-09-28 09:30:00+07',
+    '2026-09-28 09:00:00+07', '2026-09-28 09:30:00+07'
+  );
+
 insert into public.rubber_bill_approval_requests (
   id, operation, request_status, location_id, client_temp_id, idempotency_key,
   base_revision_no, matched_reasons, proposed_payload, requested_by_user_id,
@@ -116,6 +143,17 @@ insert into public.cash_transfer_delete_requests (
   'Pending Work Manager', '0896100001', '2026-09-28 09:00:00+07', '2026-09-28 09:00:00+07'
 );
 
+insert into public.branch_transfer_delete_requests (
+  id, transfer_id, location_id, location_name, transfer_display_no, amount,
+  received_at, requested_by_user_id, requested_by_name, requested_by_phone,
+  created_at, updated_at
+) values (
+  '69000000-0000-4000-8000-000000000002', '66000000-0000-4000-8000-000000000005',
+  '61000000-0000-4000-8000-000000000004', 'Pending Work Bank Receipt', 'PW-BANK-1', 50,
+  '2026-09-28 09:30:00+07', '62000000-0000-4000-8000-000000000001',
+  'Pending Work Manager', '0896100001', '2026-09-28 10:00:01+07', '2026-09-28 10:00:01+07'
+);
+
 insert into public.stock_entry_approval_requests (
   id, request_idempotency_key, requested_payload, stock_entry_id, tx_type,
   product_id, product_name, quantity, location_id, location_name,
@@ -127,6 +165,22 @@ insert into public.stock_entry_approval_requests (
   'Pending Work Product', 2, '61000000-0000-4000-8000-000000000001', 'Pending Work Source',
   '61000000-0000-4000-8000-000000000002', 'Pending Work Target', '62000000-0000-4000-8000-000000000001',
   'Pending Work Manager', '0896100001', '2026-09-28 09:00:00+07', '2026-09-28 09:00:00+07'
+);
+
+select extensions.is(
+  (select count(*) from private.report_creation_blockers(
+    '61000000-0000-4000-8000-000000000004', '2026-09-28 10:00:00+07'
+  ) where blocker_key in ('branch_transfer_receipt_pending', 'branch_transfer_delete_pending')),
+  0::bigint,
+  'bank branch work created after the fixed cutoff is excluded'
+);
+select extensions.is(
+  (select jsonb_agg(jsonb_build_object('key', blocker_key, 'count', item_count))
+   from private.report_creation_blockers(
+     '61000000-0000-4000-8000-000000000004', '2026-09-28 10:00:01+07'
+   )),
+  '[{"key":"branch_transfer_receipt_pending","count":1},{"key":"branch_transfer_delete_pending","count":1}]'::jsonb,
+  'bank branch work enters the next report operation at cutoff equality'
 );
 
 select extensions.is(

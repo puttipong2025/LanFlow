@@ -6,8 +6,6 @@ import { ModalShell } from "@/components/shared/ModalShell";
 import { formatPayrollCurrency } from "@/lib/time-tracking/format";
 import type { Location } from "@/types";
 
-const CENTRAL_OUTSIDE = "__central_outside_system__";
-
 export function ExpenseLocationChangeModal({
   locations,
   paymentAmount,
@@ -16,8 +14,6 @@ export function ExpenseLocationChangeModal({
   currentLocationId,
   onClose,
   onSubmit,
-  mode = "change",
-  allowCentralOutside = true,
 }: {
   locations: Location[];
   paymentAmount: number;
@@ -25,24 +21,18 @@ export function ExpenseLocationChangeModal({
   primaryLocationId?: string | null;
   currentLocationId?: string | null;
   onClose: () => void;
-  onSubmit: (locationId: string | null, comment: string) => Promise<boolean>;
-  mode?: "change" | "approve" | "create";
-  allowCentralOutside?: boolean;
+  onSubmit: (locationId: string, comment: string) => Promise<boolean>;
 }) {
   const fieldId = useId();
   const submitting = useRef(false);
-  const title = mode === "change" ? "เปลี่ยนวิธีจ่าย" : "เลือกวิธีจ่าย";
-  const submitLabel = mode === "change" ? "บันทึก" : mode === "approve" ? "อนุมัติ" : "สร้างและอนุมัติ";
   const orderedLocations = [...locations].sort((a, b) =>
     a.id === primaryLocationId ? -1 : b.id === primaryLocationId ? 1 : 0
   );
-  const initialLocationId = allowCentralOutside && currentLocationId === null
-    ? CENTRAL_OUTSIDE
-    : currentLocationId && locations.some((item) => item.id === currentLocationId)
-      ? currentLocationId
-      : primaryLocationId && locations.some((item) => item.id === primaryLocationId)
-        ? primaryLocationId
-      : locations[0]?.id ?? (allowCentralOutside ? CENTRAL_OUTSIDE : "");
+  const initialLocationId = currentLocationId && locations.some((item) => item.id === currentLocationId)
+    ? currentLocationId
+    : primaryLocationId && locations.some((item) => item.id === primaryLocationId)
+      ? primaryLocationId
+      : locations[0]?.id ?? "";
   const [locationId, setLocationId] = useState(initialLocationId);
   const [comment, setComment] = useState("");
   const [saving, setSaving] = useState(false);
@@ -54,7 +44,7 @@ export function ExpenseLocationChangeModal({
     setSaving(true);
     setError(null);
     try {
-      const success = await onSubmit(locationId === CENTRAL_OUTSIDE ? null : locationId, comment);
+      const success = await onSubmit(locationId, comment);
       if (!success) setError("บันทึกวิธีจ่ายไม่สำเร็จ กรุณาลองใหม่");
     } catch (submitError) {
       console.error("Failed to change expense location:", submitError);
@@ -67,7 +57,7 @@ export function ExpenseLocationChangeModal({
 
   return (
     <ModalShell
-      title={title}
+      title="เลือกวิธีจ่าย"
       onClose={onClose}
       nativeModal
       closeOnEscape
@@ -79,9 +69,7 @@ export function ExpenseLocationChangeModal({
           <p className="text-pretty text-xs font-semibold text-ink/60">{amountLabel}</p>
           <p className="mt-1 tabular-nums text-lg font-bold text-ink">{formatPayrollCurrency(paymentAmount)}</p>
         </div>
-        <label className="mt-4 block text-sm font-semibold text-ink" htmlFor={`${fieldId}-location`}>
-          {mode === "change" ? "วิธีจ่ายใหม่" : "วิธีจ่าย"}
-        </label>
+        <label className="mt-4 block text-sm font-semibold text-ink" htmlFor={`${fieldId}-location`}>วิธีจ่าย</label>
         <select
           id={`${fieldId}-location`}
           value={locationId}
@@ -92,7 +80,6 @@ export function ExpenseLocationChangeModal({
           {orderedLocations.map((location) => (
             <option key={location.id} value={location.id}>{location.name}{location.id === primaryLocationId ? " (สาขาหลัก)" : ""}</option>
           ))}
-          {allowCentralOutside && <option value={CENTRAL_OUTSIDE}>ส่วนกลางจ่าย (จ่ายนอกระบบ)</option>}
         </select>
         <label className="mt-4 block text-sm font-semibold text-ink" htmlFor={`${fieldId}-comment`}>
           หมายเหตุ (ถ้ามี)
@@ -120,7 +107,7 @@ export function ExpenseLocationChangeModal({
             disabled={saving || !locationId}
             className="rounded-md bg-success px-4 py-2 text-sm font-bold text-white disabled:opacity-50"
           >
-            {saving ? "กำลังบันทึก..." : submitLabel}
+            {saving ? "กำลังบันทึก..." : "อนุมัติ"}
           </button>
         </div>
       </form>

@@ -1,5 +1,5 @@
 import { Check, Plus, Power, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { formatCurrency } from "@/lib/format";
@@ -7,39 +7,14 @@ import { useIncomeExpenseApprovals } from "@/hooks/useIncomeExpenseApprovals";
 import { useInputDialog } from "@/hooks/useInputDialog";
 import { useLocations } from "@/hooks/useLocations";
 import { ApprovalOperationBadge } from "@/components/income-expense/ApprovalOperationBadge";
-import { formatDateTime, formatPerson, parseOptionalAmount } from "@/components/income-expense/approval-display";
+import { BranchTransferDeleteApprovalRow } from "@/components/income-expense/BranchTransferDeleteApprovalRow";
+import { appliesToLabels, formatDateTime, formatPerson, matchModeLabels, parseOptionalAmount, reasonLabels, statusLabels } from "@/components/income-expense/approval-display";
 import { ModalShell } from "@/components/shared/ModalShell";
 
 import type {
   IncomeExpenseApprovalAppliesTo,
   IncomeExpenseApprovalMatchMode,
-  IncomeExpenseApprovalReason,
-  IncomeExpenseApprovalStatus,
 } from "@/types";
-
-const appliesToLabels: Record<IncomeExpenseApprovalAppliesTo, string> = {
-  income: "รายรับ",
-  expense: "รายจ่าย",
-  both: "รับ-จ่าย",
-};
-
-const matchModeLabels: Record<IncomeExpenseApprovalMatchMode, string> = {
-  contains: "พบข้อความ",
-  exact: "ตรงทั้งรายการ",
-};
-
-const reasonLabels: Record<IncomeExpenseApprovalReason, string> = {
-  keyword: "ข้อความที่กำหนด",
-  amount_threshold: "ยอดถึงเกณฑ์",
-  non_current_date: "วันที่ไม่ใช่วันปัจจุบัน",
-};
-
-const statusLabels: Record<IncomeExpenseApprovalStatus, string> = {
-  pending: "รออนุมัติ",
-  approved: "อนุมัติแล้ว",
-  rejected: "ปฏิเสธแล้ว",
-  cancelled: "ยกเลิกแล้ว",
-};
 
 export function IncomeExpenseApprovalModal({
   initialLocationId,
@@ -57,6 +32,7 @@ export function IncomeExpenseApprovalModal({
     settings,
     requests,
     cashDeleteRequests,
+    branchDeleteRequests,
     pendingCount,
     hasRequestLoadError,
     isRefetchingRequests,
@@ -66,6 +42,7 @@ export function IncomeExpenseApprovalModal({
     saveSettings,
     decideRequest,
     decideCashDeleteRequest,
+    decideBranchDeleteRequest,
     retryRequestLoads,
   } = useIncomeExpenseApprovals({
     includeRequests: true,
@@ -89,6 +66,7 @@ export function IncomeExpenseApprovalModal({
   const [isAdding, setIsAdding] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [decidingId, setDecidingId] = useState<string | null>(null);
+  const decidingRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!settings) return;
@@ -120,13 +98,19 @@ export function IncomeExpenseApprovalModal({
       : cashDeleteRequests.filter((request) => request.sourceLocationId === requestLocationFilter),
     [cashDeleteRequests, requestLocationFilter],
   );
+  const filteredBranchDeleteRequests = useMemo(
+    () => requestLocationFilter === "all"
+      ? branchDeleteRequests
+      : branchDeleteRequests.filter((request) => request.locationId === requestLocationFilter),
+    [branchDeleteRequests, requestLocationFilter],
+  );
 
   useEffect(() => {
     if (!initialRequestId) return;
     const row = document.getElementById(`income-expense-approval-request-${initialRequestId}`);
     row?.scrollIntoView({ block: "center" });
     row?.focus();
-  }, [filteredCashDeleteRequests, filteredRequests, initialRequestId]);
+  }, [filteredBranchDeleteRequests, filteredCashDeleteRequests, filteredRequests, initialRequestId]);
 
   async function handleSaveSettings(event: React.FormEvent) {
     event.preventDefault();
@@ -202,18 +186,24 @@ export function IncomeExpenseApprovalModal({
     }
   }
 
-  async function handleApprove(id: string) {
-    if (!window.confirm("อนุมัติรายการนี้และย้ายเข้า รับ-จ่าย ใช่ไหม?")) return;
-
+  async function runDecision(id: string, mutate: () => Promise<unknown>, successMessage: string, fallbackMessage: string) {
+    if (decidingRef.current !== null) return;
+    decidingRef.current = id;
+    setDecidingId(id);
     try {
-      setDecidingId(id);
-      await decideRequest({ id, decision: "approved" });
-      toast.success("อนุมัติรายการแล้ว");
+      await mutate();
+      toast.success(successMessage);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "อนุมัติรายการไม่สำเร็จ");
+      toast.error(error instanceof Error ? error.message : fallbackMessage);
     } finally {
+      decidingRef.current = null;
       setDecidingId(null);
     }
+  }
+
+  async function handleApprove(id: string) {
+    if (!window.confirm("อนุมัติรายการนี้และย้ายเข้า รับ-จ่าย ใช่ไหม?")) return;
+    await runDecision(id, () => decideRequest({ id, decision: "approved" }), "อนุมัติรายการแล้ว", "อนุมัติรายการไม่สำเร็จ");
   }
 
   async function handleReject(id: string) {
@@ -223,16 +213,7 @@ export function IncomeExpenseApprovalModal({
       multiline: true,
     });
     if (comment === null) return;
-
-    try {
-      setDecidingId(id);
-      await decideRequest({ id, decision: "rejected", comment });
-      toast.success("ปฏิเสธรายการแล้ว");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "ปฏิเสธรายการไม่สำเร็จ");
-    } finally {
-      setDecidingId(null);
-    }
+    await runDecision(id, () => decideRequest({ id, decision: "rejected", comment }), "ปฏิเสธรายการแล้ว", "ปฏิเสธรายการไม่สำเร็จ");
   }
 
   async function handleCashDeleteDecision(id: string, decision: "approved" | "rejected") {
@@ -244,16 +225,25 @@ export function IncomeExpenseApprovalModal({
           multiline: true,
         });
     if (comment === null) return;
+    await runDecision(
+      id,
+      () => decideCashDeleteRequest({ id, decision, comment }),
+      decision === "approved" ? "อนุมัติและลบรายการแล้ว" : "ปฏิเสธคำขอลบแล้ว",
+      "ดำเนินการคำขอลบไม่สำเร็จ",
+    );
+  }
 
-    try {
-      setDecidingId(id);
-      await decideCashDeleteRequest({ id, decision, comment });
-      toast.success(decision === "approved" ? "อนุมัติและลบรายการแล้ว" : "ปฏิเสธคำขอลบแล้ว");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "ดำเนินการคำขอลบไม่สำเร็จ");
-    } finally {
-      setDecidingId(null);
-    }
+  async function handleBranchDeleteDecision(id: string, decision: "approved" | "rejected") {
+    const comment = decision === "approved"
+      ? (window.confirm("อนุมัติให้ลบรายการโอนเข้าบัญชีสาขานี้ใช่ไหม?") ? "" : null)
+      : await requestInput({ title: "ปฏิเสธคำขอลบ", label: "เหตุผลที่ปฏิเสธ (ไม่บังคับ)", multiline: true });
+    if (comment === null) return;
+    await runDecision(
+      id,
+      () => decideBranchDeleteRequest({ id, decision, comment }),
+      decision === "approved" ? "อนุมัติและลบรายการแล้ว" : "ปฏิเสธคำขอลบแล้ว",
+      "ดำเนินการคำขอลบไม่สำเร็จ",
+    );
   }
 
   return (
@@ -261,6 +251,7 @@ export function IncomeExpenseApprovalModal({
       title="ตั้งค่าและอนุมัติรับ-จ่าย"
       subtitle={`คำขอรออนุมัติ ${pendingCount} รายการ`}
       onClose={onClose}
+      closeDisabled={decidingId !== null}
       size="wide"
     >
       <div className="space-y-5">
@@ -322,7 +313,7 @@ export function IncomeExpenseApprovalModal({
                       กำลังโหลด...
                     </td>
                   </tr>
-                ) : filteredRequests.length === 0 && filteredCashDeleteRequests.length === 0 ? (
+                ) : filteredRequests.length === 0 && filteredCashDeleteRequests.length === 0 && filteredBranchDeleteRequests.length === 0 ? (
                   <tr>
                     <td colSpan={10} className="py-5 text-center text-ink/50">
                       {hasRequestLoadError ? "ไม่สามารถแสดงคำขออนุมัติได้" : "ยังไม่มีคำขออนุมัติ"}
@@ -330,18 +321,26 @@ export function IncomeExpenseApprovalModal({
                   </tr>
                 ) : (
                   <>
+                  {filteredBranchDeleteRequests.map((request) => (
+                    <BranchTransferDeleteApprovalRow
+                      key={`branch-delete:${request.id}`}
+                      request={request}
+                      isDeciding={decidingId !== null}
+                      onDecision={(id, decision) => void handleBranchDeleteDecision(id, decision)}
+                    />
+                  ))}
                   {filteredCashDeleteRequests.map((request) => (
                     <tr id={`income-expense-approval-request-${request.id}`} tabIndex={-1} key={`cash-delete:${request.id}`} className="border-b border-black/5">
                       <td className="py-3 pr-3">
                         {request.requestStatus === "pending" && (
                           <div className="flex gap-1.5 whitespace-nowrap">
-                            <button type="button" disabled={decidingId === request.id}
+                            <button type="button" disabled={decidingId !== null}
                               onClick={() => void handleCashDeleteDecision(request.id, "approved")}
                               className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-success text-white disabled:opacity-50"
                               title="อนุมัติการลบ" aria-label="อนุมัติการลบ">
                               <Check size={17} />
                             </button>
-                            <button type="button" disabled={decidingId === request.id}
+                            <button type="button" disabled={decidingId !== null}
                               onClick={() => void handleCashDeleteDecision(request.id, "rejected")}
                               className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-clay text-white disabled:opacity-50"
                               title="ปฏิเสธการลบ" aria-label="ปฏิเสธการลบ">
@@ -384,12 +383,12 @@ export function IncomeExpenseApprovalModal({
                       <td className="py-3 pr-3">
                         {request.requestStatus === "pending" && (
                           <div className="flex gap-1.5 whitespace-nowrap">
-                            <button type="button" disabled={decidingId === request.id} onClick={() => void handleApprove(request.id)}
+                            <button type="button" disabled={decidingId !== null} onClick={() => void handleApprove(request.id)}
                               className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-success text-white disabled:opacity-50"
                               title="อนุมัติ" aria-label="อนุมัติ">
                               <Check size={17} />
                             </button>
-                            <button type="button" disabled={decidingId === request.id} onClick={() => void handleReject(request.id)}
+                            <button type="button" disabled={decidingId !== null} onClick={() => void handleReject(request.id)}
                               className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-clay text-white disabled:opacity-50"
                               title="ปฏิเสธ" aria-label="ปฏิเสธ">
                               <X size={17} />

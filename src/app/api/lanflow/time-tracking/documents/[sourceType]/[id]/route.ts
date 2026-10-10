@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { requireAuth } from "@/lib/server/auth";
+import { paymentAllocationSourceLabel } from "@/lib/time-tracking/payment-label";
 import {
   buildPayrollSlipDocument,
   buildWithdrawalSlipDocument,
@@ -18,29 +19,33 @@ async function sourceMetadata(
     profile_id: string;
     approved_by: string | null;
     expense_location_id: string | null;
+    expense_location_name?: string | null;
+    payment_channel?: string | null;
+    payment_transfer_amount?: number | null;
+    amount?: number | null;
+    net_pay?: number | null;
   },
 ) {
-  const [profile, approver, location] = await Promise.all([
+  const [profile, approver] = await Promise.all([
     supabase.from("profiles").select("name, daily_wage").eq("id", source.profile_id).maybeSingle(),
     source.approved_by
       ? supabase.from("profiles").select("name").eq("id", source.approved_by).maybeSingle()
       : Promise.resolve({ data: null, error: null }),
-    source.expense_location_id
-      ? supabase.from("locations").select("name").eq("id", source.expense_location_id).maybeSingle()
-      : Promise.resolve({ data: null, error: null }),
   ]);
   if (profile.error) throw profile.error;
   if (approver.error) throw approver.error;
-  if (location.error) throw location.error;
   if (!profile.data) return null;
 
   return {
     employeeName: profile.data.name as string,
     dailyWage: Number(profile.data.daily_wage) || 0,
     approverName: approver.data?.name as string | undefined,
-    paymentLabel: location.data?.name
-      ? `จ่ายโดยสาขา ${location.data.name}`
-      : "ส่วนกลางจ่าย (จ่ายนอกระบบ)",
+    paymentLabel: paymentAllocationSourceLabel({
+      channel: source.payment_channel,
+      transferAmount: Number(source.payment_transfer_amount || 0),
+      sourceAmount: Number(source.amount ?? source.net_pay ?? 0),
+      locationName: source.expense_location_name,
+    }) ?? (source.expense_location_name ? `จ่ายโดยสาขา ${source.expense_location_name}` : "จ่ายนอกระบบ"),
   };
 }
 
@@ -60,7 +65,7 @@ export async function GET(
     if (sourceType === "payroll") {
       const sourceResponse = await result.supabase
         .from("payroll_slips")
-        .select("id, profile_id, month, gross_pay, total_deductions, net_pay, total_days, daily_wage, slip_data, status, approved_by, admin_comment, created_at, expense_location_id, approved_at, cancelled_at")
+        .select("id, profile_id, month, gross_pay, total_deductions, net_pay, total_days, daily_wage, slip_data, status, approved_by, admin_comment, created_at, expense_location_id, expense_location_name, payment_channel, payment_transfer_amount, approved_at, cancelled_at")
         .eq("id", id)
         .maybeSingle();
       if (sourceResponse.error) throw sourceResponse.error;
@@ -90,7 +95,7 @@ export async function GET(
 
     const sourceResponse = await result.supabase
       .from("financial_transactions")
-      .select("id, profile_id, type, amount, status, admin_comment, created_at, remaining_amount, approved_by, expense_location_id, approved_at, cancelled_at, effective_date, description")
+      .select("id, profile_id, type, amount, status, admin_comment, created_at, remaining_amount, approved_by, expense_location_id, expense_location_name, payment_channel, payment_transfer_amount, approved_at, cancelled_at, effective_date, description")
       .eq("id", id)
       .eq("type", "WITHDRAWAL")
       .maybeSingle();

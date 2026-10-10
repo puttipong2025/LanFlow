@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { authFetch } from "@/lib/auth-fetch";
 import { formatBangkokDateTime } from "@/lib/bangkok-date";
 import { cn } from "@/lib/cn";
 import { formatPayrollCurrency } from "@/lib/time-tracking/format";
 import type { Location } from "@/types";
-import { ExpenseLocationChangeModal } from "../ExpenseLocationChangeModal";
+import { LazyPaymentAllocationModal as PaymentAllocationModal } from "../LazyPaymentAllocationModal";
+import type { PaymentAllocationInput } from "../contracts";
 import { SlipPreviewModal } from "../SlipPreviewModal";
 import { monthLabel } from "../display";
 import { bangkokToday, paymentScopeReason, paymentSourceLabel, reportLockReason, TIME_TRACKING_OFFLINE_MESSAGE } from "../policy";
+import { invalidatePaymentLocations } from "../invalidate-payment";
 
-export function PayrollModal({ user, online, canDecide, expenseLocations, globalManager, onApprove, onReject, onChangePayment, onClose, onRefresh }: { user: any, online: boolean, canDecide: boolean, expenseLocations: Location[], globalManager: boolean, onApprove?: (slip: any, refreshOwner: () => Promise<void>) => Promise<boolean>, onReject?: (slip: any, refreshOwner: () => Promise<void>) => Promise<boolean>, onChangePayment: (slip: any, refreshOwner: () => Promise<void>) => void, onClose: () => void, onRefresh: () => Promise<void> }) {
+export function PayrollModal({ user, ownerUserId, online, canDecide, expenseLocations, globalManager, onApprove, onReject, onChangePayment, onClose, onRefresh }: { user: any, ownerUserId: string, online: boolean, canDecide: boolean, expenseLocations: Location[], globalManager: boolean, onApprove?: (slip: any, refreshOwner: () => Promise<void>) => Promise<boolean>, onReject?: (slip: any, refreshOwner: () => Promise<void>) => Promise<boolean>, onChangePayment: (slip: any, refreshOwner: () => Promise<void>) => void, onClose: () => void, onRefresh: () => Promise<void> }) {
+  const queryClient = useQueryClient();
   const missingPayrollMonths = Array.isArray(user.missing_payroll_months) ? user.missing_payroll_months : [];
   const [pendingCreatePayment, setPendingCreatePayment] = useState<{ month: string; netPay: number } | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -87,7 +91,7 @@ export function PayrollModal({ user, online, canDecide, expenseLocations, global
       const netPay = Number(json.preview?.netPay);
       if (!Number.isFinite(netPay) || netPay < 0) throw new Error("ตรวจยอดสลิปไม่สำเร็จ");
       if (netPay > 0) setPendingCreatePayment({ month: createMonth, netPay });
-      else await submitCreateSlip(createMonth, netPay, null, "");
+      else await submitCreateSlip(createMonth, netPay, undefined, "");
     } catch (error) {
       setCreateError(error instanceof Error ? error.message : "ตรวจยอดสลิปไม่สำเร็จ");
     } finally {
@@ -95,13 +99,13 @@ export function PayrollModal({ user, online, canDecide, expenseLocations, global
     }
   }
 
-  async function submitCreateSlip(month: string, expectedNetPay: number, locationId: string | null, comment: string) {
+  async function submitCreateSlip(month: string, expectedNetPay: number, payment: PaymentAllocationInput | undefined, comment: string) {
     const res = await authFetch("/api/lanflow/time-tracking/admin", {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'CREATE_PAYROLL_SLIP',
-          payload: { user_id: user.id, month, expense_location_id: locationId, admin_comment: comment, expected_net_pay: expectedNetPay },
+          payload: { user_id: user.id, month, payment, admin_comment: comment, expected_net_pay: expectedNetPay },
         })
     });
     if (!res.ok) {
@@ -110,8 +114,11 @@ export function PayrollModal({ user, online, canDecide, expenseLocations, global
     }
     setPendingCreatePayment(null);
     setCreateFormOpen(false);
-    await loadSlips();
-    await onRefresh();
+    await Promise.all([
+      loadSlips(),
+      onRefresh(),
+      invalidatePaymentLocations(queryClient, ownerUserId, [payment?.expenseLocationId]),
+    ]);
     return true;
   }
 
@@ -120,7 +127,7 @@ export function PayrollModal({ user, online, canDecide, expenseLocations, global
     window.requestAnimationFrame(() => createSubmitRef.current?.focus());
   }
 
-  async function deleteSlip(slipId: string, month: string) {
+  async function deleteSlip(slipId: string, month: string, locationId?: string | null) {
     const slip = slips.find((item: any) => item.id === slipId);
     const lockReason = reportLockReason(slip ?? {});
     if (lockReason) {
@@ -140,8 +147,11 @@ export function PayrollModal({ user, online, canDecide, expenseLocations, global
         body: JSON.stringify({ action: 'DELETE_PAYROLL_SLIP', payload: { slip_id: slipId } })
       });
       if (res.ok) {
-        await loadSlips();
-        await onRefresh();
+        await Promise.all([
+          loadSlips(),
+          onRefresh(),
+          invalidatePaymentLocations(queryClient, ownerUserId, [locationId]),
+        ]);
       } else {
         const json = await res.json();
         alert(json.error || "เกิดข้อผิดพลาด");
@@ -244,7 +254,7 @@ export function PayrollModal({ user, online, canDecide, expenseLocations, global
                        )}
 
                       {canDelete && (
-                        <button onClick={() => deleteSlip(slip.id, slip.month)} disabled={saving || !online || Boolean(slip.report_lock_no) || Boolean(paymentScopeReason(slip, globalManager, expenseLocations))} title={reportLockReason(slip) ?? paymentScopeReason(slip, globalManager, expenseLocations) ?? (online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE)} className="rounded-md bg-danger px-3 py-1.5 text-sm font-semibold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-40">
+                        <button onClick={() => deleteSlip(slip.id, slip.month, slip.expense_location_id)} disabled={saving || !online || Boolean(slip.report_lock_no) || Boolean(paymentScopeReason(slip, globalManager, expenseLocations))} title={reportLockReason(slip) ?? paymentScopeReason(slip, globalManager, expenseLocations) ?? (online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE)} className="rounded-md bg-danger px-3 py-1.5 text-sm font-semibold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-40">
                           {slip.status === 'APPROVED' && Number(slip.net_pay) > 0 ? 'ยกเลิกค่าใช้จ่าย' : 'ลบสลิป'}
                         </button>
                       )}
@@ -294,14 +304,14 @@ export function PayrollModal({ user, online, canDecide, expenseLocations, global
         />
       )}
       {pendingCreatePayment && (
-        <ExpenseLocationChangeModal
+        <PaymentAllocationModal
           mode="create"
           locations={expenseLocations}
           paymentAmount={pendingCreatePayment.netPay}
           amountLabel={`ยอดสุทธิเดือน ${pendingCreatePayment.month} ของ ${user.name}`}
           primaryLocationId={user.primary_location_id}
           onClose={closeCreatePayment}
-          onSubmit={(locationId, comment) => submitCreateSlip(pendingCreatePayment.month, pendingCreatePayment.netPay, locationId, comment)}
+          onSubmit={(payment, comment) => submitCreateSlip(pendingCreatePayment.month, pendingCreatePayment.netPay, payment, comment)}
         />
       )}
     </>

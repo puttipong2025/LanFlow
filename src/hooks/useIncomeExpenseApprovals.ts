@@ -7,6 +7,12 @@ import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import { authFetch } from "@/lib/auth-fetch";
 import { bangkokDateString } from "@/lib/bangkok-date";
 import { readAllSupabaseRows } from "@/lib/supabase-pages";
+import { invalidateBranchTransferDeletionViews } from "@/lib/money-flow/invalidation";
+import {
+  decideBranchTransferDeleteRequest,
+  loadBranchTransferDeleteRequests,
+  loadPendingApprovalCount,
+} from "@/lib/income-expense/branch-transfer-delete-approvals";
 import {
   assertOfflineIncomeExpenseDateAllowed,
   loadIncomeExpenseApprovalSettingsCache,
@@ -248,32 +254,16 @@ export function useIncomeExpenseApprovals(options: {
     },
   });
 
+  const branchDeleteRequestsQuery = useQuery({
+    queryKey: [REQUESTS_KEY, "branchTransferDeletes", requestsLocationId ?? "all"],
+    enabled: includeRequests,
+    queryFn: () => loadBranchTransferDeleteRequests(supabase, requestsLocationId),
+  });
+
   const pendingCountQuery = useQuery({
     queryKey: [REQUESTS_KEY, "pendingCount", pendingLocationId ?? "all"],
     enabled: includePendingCount,
-    queryFn: async () => {
-      let incomeExpenseQuery = supabase
-        .from("income_expense_approval_requests")
-        .select("id", { count: "exact", head: true })
-        .eq("request_status", "pending");
-      let cashTransferQuery = supabase
-        .from("cash_transfer_delete_requests")
-        .select("id", { count: "exact", head: true })
-        .eq("request_status", "pending");
-      if (pendingLocationId) {
-        incomeExpenseQuery = incomeExpenseQuery.eq("location_id", pendingLocationId);
-        cashTransferQuery = cashTransferQuery.eq("source_location_id", pendingLocationId);
-      }
-      const [incomeExpense, cashTransfer] = await Promise.all([
-        incomeExpenseQuery,
-        cashTransferQuery,
-      ]);
-
-      if (incomeExpense.error) throw new Error(incomeExpense.error.message || JSON.stringify(incomeExpense.error));
-      if (cashTransfer.error) throw new Error(cashTransfer.error.message || JSON.stringify(cashTransfer.error));
-
-      return (incomeExpense.count ?? 0) + (cashTransfer.count ?? 0);
-    },
+    queryFn: () => loadPendingApprovalCount(supabase, pendingLocationId),
   });
 
   const addKeywordMutation = useMutation({
@@ -409,6 +399,16 @@ export function useIncomeExpenseApprovals(options: {
     },
   });
 
+  const decideBranchDeleteRequestMutation = useMutation({
+    mutationFn: decideBranchTransferDeleteRequest,
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: [REQUESTS_KEY] }),
+        invalidateBranchTransferDeletionViews(queryClient),
+      ]);
+    },
+  });
+
   async function submitForApprovalIfNeeded(
     transaction: IncomeExpense,
     operation: QueueOperation
@@ -464,14 +464,14 @@ export function useIncomeExpenseApprovals(options: {
   async function retryRequestLoads() {
     const retries: Promise<unknown>[] = [];
     if (includeRequests) {
-      retries.push(requestsQuery.refetch(), cashDeleteRequestsQuery.refetch());
+      retries.push(requestsQuery.refetch(), cashDeleteRequestsQuery.refetch(), branchDeleteRequestsQuery.refetch());
     }
     if (includePendingCount) retries.push(pendingCountQuery.refetch());
     await Promise.all(retries);
   }
 
   const hasRequestLoadError =
-    (includeRequests && (requestsQuery.isError || cashDeleteRequestsQuery.isError))
+    (includeRequests && (requestsQuery.isError || cashDeleteRequestsQuery.isError || branchDeleteRequestsQuery.isError))
     || (includePendingCount && pendingCountQuery.isError);
 
   return {
@@ -479,22 +479,25 @@ export function useIncomeExpenseApprovals(options: {
     settings: settingsQuery.data,
     requests: requestsQuery.data || [],
     cashDeleteRequests: cashDeleteRequestsQuery.data || [],
+    branchDeleteRequests: branchDeleteRequestsQuery.data || [],
     pendingCount: pendingCountQuery.data ?? 0,
     hasRequestLoadError,
     isRefetchingRequests:
-      (includeRequests && (requestsQuery.isFetching || cashDeleteRequestsQuery.isFetching))
+      (includeRequests && (requestsQuery.isFetching || cashDeleteRequestsQuery.isFetching || branchDeleteRequestsQuery.isFetching))
       || (includePendingCount && pendingCountQuery.isFetching),
     isLoading:
       keywordsQuery.isLoading ||
       settingsQuery.isLoading ||
       (includeRequests && requestsQuery.isLoading) ||
       (includeRequests && cashDeleteRequestsQuery.isLoading) ||
+      (includeRequests && branchDeleteRequestsQuery.isLoading) ||
       (includePendingCount && pendingCountQuery.isLoading),
     addKeyword: addKeywordMutation.mutateAsync,
     disableKeyword: disableKeywordMutation.mutateAsync,
     saveSettings: saveSettingsMutation.mutateAsync,
     decideRequest: decideRequestMutation.mutateAsync,
     decideCashDeleteRequest: decideCashDeleteRequestMutation.mutateAsync,
+    decideBranchDeleteRequest: decideBranchDeleteRequestMutation.mutateAsync,
     retryRequestLoads,
     submitForApprovalIfNeeded,
   };

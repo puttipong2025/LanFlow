@@ -7,6 +7,7 @@ import { formatPayrollCurrency } from "@/lib/time-tracking/format";
 import { IncomeExpenseStockShortageError, useIncomeExpense } from "@/hooks/useIncomeExpense";
 import { getIncomeExpenseApprovalReasons, useIncomeExpenseApprovals } from "@/hooks/useIncomeExpenseApprovals";
 import { useCashBranchTransfers } from "@/hooks/useCashBranchTransfers";
+import { useBranchTransferReceipts } from "@/hooks/useBranchTransferReceipts";
 import { useLocations } from "@/hooks/useLocations";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { bangkokDateString } from "@/lib/bangkok-date";
@@ -33,6 +34,8 @@ import { IconButton } from "@/components/shared/IconButton";
 import { SyncStatusBadge } from "@/components/shared/SyncStatusBadge";
 import { TablePagination, TablePageSizeSelect } from "@/components/shared/TablePagination";
 import { CashBranchTransferCreateModal, CashBranchTransferDetails, CashBranchTransferReceiveModal } from "./CashBranchTransferModal";
+import { BranchTransferReceiptButton, BranchTransferReceiptQueue } from "./BranchTransferReceiptQueue";
+import { CashTransferDetailFallback } from "./CashTransferDetailFallback";
 import { getIncomeExpenseDisplayNo } from "./income-expense-display";
 import { IncomeExpenseApprovalModal } from "./IncomeExpenseApprovalModal";
 import { IncomeExpenseModal } from "./IncomeExpenseModal";
@@ -93,6 +96,7 @@ export function IncomeExpenseModule({
   };
   const canManageSystem = canManageSystemFeatures(profile);
   const [cashReceiptId, setCashReceiptId] = useState<string | null>(null);
+  const [branchReceiptId, setBranchReceiptId] = useState<string | null>(null);
   const [cashDetailsId, setCashDetailsId] = useState<string | null>(null);
   const [cashEditingId, setCashEditingId] = useState<string | null>(null);
   const {
@@ -107,8 +111,10 @@ export function IncomeExpenseModule({
     : "ตั้งค่าและอนุมัติรับ-จ่าย";
   const activeCashDetailId = cashReceiptId ?? cashDetailsId ?? cashEditingId;
   const cashTransfers = useCashBranchTransfers(profile.id, selectedLocation.id, activeCashDetailId);
+  const branchReceipts = useBranchTransferReceipts(profile.id, selectedLocation.id, branchReceiptId);
   const { locations } = useLocations();
   const pendingCashReceipts = cashTransfers.pendingTransfers;
+  const pendingBranchReceipts = branchReceipts.pendingTransfers;
   const { retrySyncEvent, isRetrying } = usePerRecordSyncRetry(selectedLocation.id, profile.id);
   const ledgerTransactions = transactions;
   const nextNumber = String(transactions.length + 1);
@@ -511,24 +517,6 @@ export function IncomeExpenseModule({
     }
   }
 
-  function cashDetailFallback(title: string, offlineMessage: string, onClose: () => void) {
-    return (
-      <ModalShell title={title} onClose={onClose}>
-        {cashTransfers.detailError ? (
-          <div role="alert" aria-label={cashTransfers.detailError} className="space-y-3">
-            <p className="font-semibold text-clay">{cashTransfers.detailError}</p>
-            <button type="button" onClick={() => void cashTransfers.retryDetail()} disabled={!isOnline}
-              aria-label="ลองใหม่สำหรับรายละเอียดเงินสด" className="focus-ring rounded-md bg-river px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">
-              ลองใหม่
-            </button>
-          </div>
-        ) : (
-          <p role="status">{isOnline ? "กำลังโหลดรายละเอียดเงินสด…" : offlineMessage}</p>
-        )}
-      </ModalShell>
-    );
-  }
-
   return (
     <section className="space-y-4">
       <div className="flex flex-col items-start gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:p-4">
@@ -570,6 +558,7 @@ export function IncomeExpenseModule({
               <ArrowRightLeft size={18} /> รอรับเงิน ({cashTransfers.pendingTotal})
             </button>
           )}
+          <BranchTransferReceiptButton online={isOnline} total={branchReceipts.pendingTotal} firstId={pendingBranchReceipts[0]?.id} onOpen={setBranchReceiptId} />
           {canManageSystem && (
             <button
               type="button"
@@ -619,6 +608,13 @@ export function IncomeExpenseModule({
           {cashTransfers.pendingTotal > pendingCashReceipts.length && <p className="mt-2 text-xs text-ink/60">แสดง 20 รายการที่เก่าที่สุดจาก {cashTransfers.pendingTotal} รายการค้าง</p>}
         </section>
       )}
+      <BranchTransferReceiptQueue
+        online={isOnline} transfers={pendingBranchReceipts} total={branchReceipts.pendingTotal}
+        pendingError={branchReceipts.pendingError} retryPending={branchReceipts.retryPending}
+        selectedId={branchReceiptId} detail={branchReceipts.detail} detailError={branchReceipts.detailError}
+        retryDetail={branchReceipts.retryDetail} onOpen={setBranchReceiptId} onClose={() => setBranchReceiptId(null)}
+        onReceive={(revisionNo) => branchReceipts.receive.mutateAsync({ id: branchReceiptId!, revisionNo })}
+      />
 
       <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel">
         <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
@@ -989,17 +985,17 @@ export function IncomeExpenseModule({
       {cashReceiptId && (cashTransfers.detail ? (
         <CashBranchTransferReceiveModal transfer={cashTransfers.detail} online={isOnline} onReceive={(received) => cashTransfers.receive.mutateAsync({ id: cashTransfers.detail!.id, received })} onClose={() => setCashReceiptId(null)} />
       ) : (
-        cashDetailFallback("ตรวจรับเงินสด", "ตรวจรับเงินสดได้เมื่อออนไลน์", () => setCashReceiptId(null))
+        <CashTransferDetailFallback title="ตรวจรับเงินสด" offlineMessage="ตรวจรับเงินสดได้เมื่อออนไลน์" detailError={cashTransfers.detailError} online={isOnline} onRetry={cashTransfers.retryDetail} onClose={() => setCashReceiptId(null)} />
       ))}
       {cashEditingId && (cashTransfers.detail ? (
         <CashBranchTransferCreateModal location={selectedLocation} transfer={cashTransfers.detail} online={isOnline} onSave={(payload) => cashTransfers.update.mutateAsync({ id: cashTransfers.detail!.id, payload })} onClose={() => setCashEditingId(null)} />
       ) : (
-        cashDetailFallback("แก้ไขการโยกเงินสด", "แก้ไขการโยกเงินสดได้เมื่อออนไลน์", () => setCashEditingId(null))
+        <CashTransferDetailFallback title="แก้ไขการโยกเงินสด" offlineMessage="แก้ไขการโยกเงินสดได้เมื่อออนไลน์" detailError={cashTransfers.detailError} online={isOnline} onRetry={cashTransfers.retryDetail} onClose={() => setCashEditingId(null)} />
       ))}
       {cashDetailsId && (cashTransfers.detail ? (
         <CashBranchTransferDetails transfer={cashTransfers.detail} canEdit={profile.role === "super_admin" || cashTransfers.detail.createdByUserId === profile.id} online={isOnline} onEdit={() => { setCashDetailsId(null); setCashEditingId(cashTransfers.detail!.id); }} onClose={() => setCashDetailsId(null)} />
       ) : (
-        cashDetailFallback("รายละเอียดเงินสด", "รายละเอียดเงินสดเปิดได้เมื่อออนไลน์", () => setCashDetailsId(null))
+        <CashTransferDetailFallback title="รายละเอียดเงินสด" offlineMessage="รายละเอียดเงินสดเปิดได้เมื่อออนไลน์" detailError={cashTransfers.detailError} online={isOnline} onRetry={cashTransfers.retryDetail} onClose={() => setCashDetailsId(null)} />
       ))}
       <SharePdfWaitingModal open={pdfShare.waiting} onCancel={pdfShare.cancel} />
 

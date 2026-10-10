@@ -4,6 +4,8 @@ export const PENDING_WORK_BLOCKER_LABELS = {
   cash_transfer_delete_pending: "คำขอลบรายการโยกเงินสด",
   stock_entry_delete_pending: "คำขอลบรายการสต็อก",
   cash_transfer_receipt_pending: "เงินสดโอนเข้าสาขาที่ยังไม่รับ",
+  branch_transfer_receipt_pending: "เงินโอนเข้าบัญชีสาขาที่ยังไม่ยืนยันรับ",
+  branch_transfer_delete_pending: "คำขอลบรายการโอนเข้าบัญชีสาขา",
 } as const;
 
 export type PendingWorkBlockerKey = keyof typeof PENDING_WORK_BLOCKER_LABELS;

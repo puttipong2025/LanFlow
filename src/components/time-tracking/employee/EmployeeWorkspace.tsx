@@ -9,13 +9,14 @@ import type { AttendanceMonthDto, PayrollPeriodStateDto } from "@/lib/time-track
 import type { Location, Profile } from "@/types";
 import { AttendanceCalendar } from "../attendance/AttendanceCalendar";
 import { AttendancePeriodControls } from "../periods/AttendancePeriodControls";
-import type { ApprovalType } from "../contracts";
+import type { ApprovalType, PaymentAllocationInput } from "../contracts";
 import { EmployeeDialogs } from "./EmployeeDialogs";
 import { EmployeeFinancialSummary } from "./EmployeeFinancialSummary";
 import { EmployeeSlipList } from "./EmployeeSlipList";
 import { EmployeeTransactionHistory } from "./EmployeeTransactionHistory";
 import { createEmployeeAttendanceActions } from "./employee-attendance-actions";
 import { bangkokToday, paymentScopeReason, reportLockReason, TIME_TRACKING_OFFLINE_MESSAGE } from "../policy";
+import { invalidatePaymentLocations } from "../invalidate-payment";
 
 export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocationId, online, expenseLocations = [], hideHeading = false, allowManagerActions, canDecide, canConfigure, onApprove, onReject }: { profile: Profile, targetUserId?: string, targetPrimaryLocationId?: string | null, online: boolean, expenseLocations?: Location[], hideHeading?: boolean, allowManagerActions?: boolean, canDecide?: boolean, canConfigure?: boolean, onApprove?: (type: ApprovalType, item: any, refreshOwner: () => Promise<void>) => Promise<boolean>, onReject?: (type: ApprovalType, item: any, refreshOwner: () => Promise<void>) => Promise<boolean> }) {
   const queryClient = useQueryClient();
@@ -111,8 +112,11 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
          alert(json.error || "ไม่สามารถลบรายการได้");
       } else {
          alert("ลบรายการสำเร็จ");
-         await loadData();
-         await queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
+         await Promise.all([
+           loadData(),
+           queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
+           invalidatePaymentLocations(queryClient, profile.id, [tx.expense_location_id]),
+         ]);
       }
     } catch (e) {
       alert("เกิดข้อผิดพลาด");
@@ -140,18 +144,18 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
     setPendingExpenseLocationTx(tx);
   }
 
-  async function submitWithdrawalExpenseLocation(expenseLocationId: string | null, adminComment: string) {
+  async function submitWithdrawalExpenseLocation(payment: PaymentAllocationInput, adminComment: string) {
     if (!pendingExpenseLocationTx) return false;
     setSaving(true);
     try {
       const res = await authFetch('/api/lanflow/time-tracking/admin', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          action: 'CHANGE_EXPENSE_LOCATION',
+          action: 'CHANGE_PAYMENT_ALLOCATION',
           payload: {
             source_type: 'transaction',
             source_id: pendingExpenseLocationTx.id,
-            expense_location_id: expenseLocationId,
+            payment,
             admin_comment: adminComment,
           },
         }),
@@ -160,21 +164,25 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
         const json = await res.json();
         throw new Error(json.error || 'ไม่สามารถเปลี่ยนสาขาค่าใช้จ่ายได้');
       }
+      const affectedLocationIds = [pendingExpenseLocationTx.expense_location_id, payment.expenseLocationId];
       setPendingExpenseLocationTx(null);
-      await loadData();
+      await Promise.all([
+        loadData(),
+        invalidatePaymentLocations(queryClient, profile.id, affectedLocationIds),
+      ]);
       return true;
     } finally {
       setSaving(false);
     }
   }
 
-  async function createWithdrawal(amount: number, effectiveDate: string | null, locationId: string | null = null, comment = "") {
+  async function createWithdrawal(amount: number, effectiveDate: string | null, payment?: PaymentAllocationInput, comment = "") {
     const response = await authFetch(canManageTime ? "/api/lanflow/time-tracking/admin" : "/api/lanflow/time-tracking/user", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         action: canManageTime ? "ADMIN_REQUEST_WITHDRAWAL" : "REQUEST_WITHDRAWAL",
         payload: canManageTime
-          ? { user_id: managedUserId, amount, effective_date: effectiveDate, expense_location_id: locationId, admin_comment: comment }
+          ? { user_id: managedUserId, amount, effective_date: effectiveDate, payment, admin_comment: comment }
           : { amount },
       }),
     });
@@ -183,8 +191,11 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
       throw new Error(json?.error || "ไม่สามารถสร้างรายการเบิกได้");
     }
     setPendingWithdrawal(null);
-    await loadData();
-    await queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
+    await Promise.all([
+      loadData(),
+      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
+      invalidatePaymentLocations(queryClient, profile.id, [payment?.expenseLocationId]),
+    ]);
     return true;
   }
 
@@ -211,8 +222,11 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
       throw new Error(json?.error || "ไม่สามารถปรับยอดเบิกเงินได้");
     }
     setAdjustingWithdrawal(null);
-    await loadData();
-    await queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
+    await Promise.all([
+      loadData(),
+      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
+      invalidatePaymentLocations(queryClient, profile.id, [value.locationId]),
+    ]);
     return true;
   }
 

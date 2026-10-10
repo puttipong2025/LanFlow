@@ -1243,7 +1243,17 @@ test.describe.serial("Report batch contract @report-batch", () => {
       const createdWithdrawal = await manager.request.post("/api/lanflow/time-tracking/admin", {
         data: {
           action: "ADMIN_REQUEST_WITHDRAWAL",
-          payload: { user_id: employee!.id, amount, effective_date: bangkokDate(new Date().toISOString()), expense_location_id: locationId },
+          payload: {
+            user_id: employee!.id,
+            amount,
+            effective_date: bangkokDate(new Date().toISOString()),
+            payment: {
+              channel: "branch_and_transfer",
+              expenseLocationId: locationId,
+              transferAmount: "0",
+              expectedSourceAmount: amount,
+            },
+          },
         },
       });
       expect(createdWithdrawal.ok(), await createdWithdrawal.text()).toBeTruthy();

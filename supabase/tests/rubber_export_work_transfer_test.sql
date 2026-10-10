@@ -12,8 +12,8 @@ select extensions.ok(
 );
 
 select extensions.ok(
-  position('pg_advisory_xact_lock' in pg_get_functiondef('public.save_rubber_export_work_transfer_slips(uuid,integer,jsonb)'::regprocedure))
-    < position('for update' in pg_get_functiondef('public.save_rubber_export_work_transfer_slips(uuid,integer,jsonb)'::regprocedure)),
+  position('pg_advisory_xact_lock' in pg_get_functiondef('public.save_source_owned_money_transfer_slips(uuid,integer,jsonb)'::regprocedure))
+    < position('for update' in pg_get_functiondef('public.save_source_owned_money_transfer_slips(uuid,integer,jsonb)'::regprocedure)),
   'slip save takes branch advisory lock before transfer row lock'
 );
 select extensions.ok(

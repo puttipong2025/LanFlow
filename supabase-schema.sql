@@ -221,6 +221,181 @@ $_$;
 ALTER FUNCTION "private"."append_dashboard_money_event"("p_source_type" "text", "p_source_id" "uuid", "p_action" "text", "p_payload" "jsonb", "p_actor_user_id" "uuid", "p_actor_name" "text") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."apply_time_payroll_payment"("p_source_type" "text", "p_source_id" "uuid", "p_payment" "jsonb", "p_require_unlocked" boolean DEFAULT false, "p_audit_comment" "text" DEFAULT NULL::"text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_tx public.financial_transactions%rowtype;
+  v_slip public.payroll_slips%rowtype;
+  v_transfer public.money_transfers%rowtype;
+  v_allocation jsonb;
+  v_source_amount numeric;
+  v_location_id uuid;
+  v_existing_location_id uuid;
+  v_transfer_location_id uuid;
+  v_transfer_amount numeric;
+  v_employee_name text;
+  v_source_kind text;
+  v_source_label text;
+  v_source_date date;
+  v_source_report_no text;
+  v_transfer_report_no text;
+  v_actor_name text;
+  v_actor_phone text;
+  v_now timestamptz := clock_timestamp();
+  v_old_data jsonb;
+begin
+  if p_source_type not in ('transaction', 'payroll_slip') then
+    raise exception 'PAYMENT_INVALID_SOURCE';
+  end if;
+
+  perform set_config('app.time_payroll_payment_rpc', 'true', true);
+  if p_source_type = 'transaction' then
+    select * into v_tx from public.financial_transactions where id = p_source_id for update;
+    if not found or v_tx.type <> 'WITHDRAWAL' or v_tx.status <> 'APPROVED' or v_tx.cancelled_at is not null then
+      raise exception 'PAYMENT_SOURCE_NOT_APPROVED';
+    end if;
+    v_source_amount := v_tx.amount;
+    v_existing_location_id := v_tx.expense_location_id;
+    v_source_report_no := public.report_lock_no(v_tx);
+    select profile.name into v_employee_name from public.profiles profile where profile.id = v_tx.profile_id;
+    v_source_kind := 'withdrawal';
+    v_source_label := 'เงินเบิก ' || to_char(v_tx.effective_date, 'DD/MM/YYYY');
+    v_source_date := v_tx.effective_date;
+    v_old_data := jsonb_build_object(
+      'contractVersion', v_tx.payment_contract_version,
+      'channel', v_tx.payment_channel,
+      'expenseLocationId', v_tx.expense_location_id,
+      'transferAmount', v_tx.payment_transfer_amount
+    );
+  else
+    select * into v_slip from public.payroll_slips where id = p_source_id for update;
+    if not found or v_slip.status <> 'APPROVED' or v_slip.cancelled_at is not null or v_slip.net_pay <= 0 then
+      raise exception 'PAYMENT_SOURCE_NOT_APPROVED';
+    end if;
+    v_source_amount := v_slip.net_pay;
+    v_existing_location_id := v_slip.expense_location_id;
+    v_source_report_no := public.report_lock_no(v_slip);
+    select profile.name into v_employee_name from public.profiles profile where profile.id = v_slip.profile_id;
+    v_source_kind := 'payroll';
+    v_source_label := 'เงินเดือน ' || v_slip.month;
+    v_source_date := coalesce((v_slip.approved_at at time zone 'Asia/Bangkok')::date, (v_now at time zone 'Asia/Bangkok')::date);
+    v_old_data := jsonb_build_object(
+      'contractVersion', v_slip.payment_contract_version,
+      'channel', v_slip.payment_channel,
+      'expenseLocationId', v_slip.expense_location_id,
+      'transferAmount', v_slip.payment_transfer_amount
+    );
+  end if;
+
+  v_allocation := private.validate_time_payroll_payment(p_payment, v_source_amount);
+  v_location_id := nullif(v_allocation ->> 'expenseLocationId', '')::uuid;
+  v_transfer_amount := (v_allocation ->> 'transferAmount')::numeric;
+  if v_location_id is not null and not private.can_assign_time_tracking_expense_location(v_location_id) then
+    raise exception 'PAYMENT_BRANCH_DENIED';
+  end if;
+
+  select transfer.location_id into v_transfer_location_id
+  from public.money_transfers transfer
+  where transfer.withdrawal_transaction_id = case when p_source_type = 'transaction' then p_source_id end
+     or transfer.payroll_slip_id = case when p_source_type = 'payroll_slip' then p_source_id end;
+  perform private.lock_report_locations(array[
+    v_existing_location_id, v_location_id, v_transfer_location_id
+  ]);
+
+  select * into v_transfer
+  from public.money_transfers transfer
+  where transfer.withdrawal_transaction_id = case when p_source_type = 'transaction' then p_source_id end
+     or transfer.payroll_slip_id = case when p_source_type = 'payroll_slip' then p_source_id end
+  for update;
+
+  if p_require_unlocked then
+    if v_source_report_no is not null then perform private.raise_report_lock(v_source_report_no); end if;
+    if v_transfer.id is not null then
+      v_transfer_report_no := public.report_lock_no(v_transfer);
+      if v_transfer_report_no is not null then perform private.raise_report_lock(v_transfer_report_no); end if;
+      if exists (select 1 from public.money_transfer_slips slip where slip.transfer_id = v_transfer.id) then
+        raise exception 'PAYMENT_TRANSFER_HAS_SLIPS';
+      end if;
+    end if;
+  end if;
+
+  if p_source_type = 'transaction' then
+    perform set_config('app.time_tracking_expense_rpc', 'true', true);
+    update public.financial_transactions
+    set payment_contract_version = 1,
+        payment_channel = v_allocation ->> 'channel',
+        payment_transfer_amount = v_transfer_amount,
+        expense_location_id = v_location_id
+    where id = p_source_id;
+  else
+    perform set_config('app.time_tracking_expense_rpc', 'true', true);
+    update public.payroll_slips
+    set payment_contract_version = 1,
+        payment_channel = v_allocation ->> 'channel',
+        payment_transfer_amount = v_transfer_amount,
+        expense_location_id = v_location_id
+    where id = p_source_id;
+  end if;
+
+  if v_transfer_amount = 0 then
+    if v_transfer.id is not null then
+      delete from public.money_transfer_slips where transfer_id = v_transfer.id;
+      delete from public.money_transfers where id = v_transfer.id;
+    end if;
+  elsif v_transfer.id is null then
+    select profile.name, profile.phone into v_actor_name, v_actor_phone
+    from public.profiles profile where profile.id = auth.uid();
+    insert into public.money_transfers (
+      location_id, withdrawal_transaction_id, payroll_slip_id,
+      time_payroll_source_kind, time_payroll_employee_name,
+      time_payroll_source_label, time_payroll_source_date,
+      net_amount_to_pay, transfer_type, transfer_method, transfer_status,
+      sync_status, record_status, created_by_user_id, created_by_name,
+      created_by_phone, server_received_at
+    ) values (
+      v_location_id,
+      case when p_source_type = 'transaction' then p_source_id end,
+      case when p_source_type = 'payroll_slip' then p_source_id end,
+      v_source_kind, coalesce(v_employee_name, 'พนักงาน'), v_source_label, v_source_date,
+      v_transfer_amount, 'time_payroll', 'bank', 'pending',
+      'synced', 'active', auth.uid(), coalesce(v_actor_name, ''),
+      coalesce(v_actor_phone, ''), v_now
+    );
+  else
+    update public.money_transfers
+    set location_id = v_location_id,
+        net_amount_to_pay = v_transfer_amount,
+        time_payroll_employee_name = coalesce(v_employee_name, 'พนักงาน'),
+        time_payroll_source_label = v_source_label,
+        time_payroll_source_date = v_source_date,
+        transfer_status = 'pending',
+        revision_no = revision_no + 1,
+        updated_at = v_now
+    where id = v_transfer.id;
+  end if;
+
+  insert into public.time_tracking_audit_logs (
+    admin_id, action, target_table, record_id, old_data, new_data, comment
+  ) values (
+    auth.uid(),
+    case when p_source_type = 'transaction' then 'CHANGE_TRANSACTION_PAYMENT' else 'CHANGE_PAYROLL_PAYMENT' end,
+    case when p_source_type = 'transaction' then 'financial_transactions' else 'payroll_slips' end,
+    p_source_id,
+    v_old_data,
+    v_allocation,
+    coalesce(p_audit_comment, '')
+  );
+
+  return v_allocation;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."apply_time_payroll_payment"("p_source_type" "text", "p_source_id" "uuid", "p_payment" "jsonb", "p_require_unlocked" boolean, "p_audit_comment" "text") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."apply_time_tracking_deductions"("p_profile_id" "uuid", "p_through_month" "date") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -930,7 +1105,7 @@ CREATE OR REPLACE FUNCTION "private"."calculate_dashboard_summary"("p_location_i
     select 'income', mt.net_amount_to_pay, true, false,
       coalesce(mt.accounting_date, (mt.created_at at time zone 'Asia/Bangkok')::date)
     from public.money_transfers mt
-    where mt.transfer_type = 'branch'
+    where (mt.transfer_type = 'branch' and private.money_transfer_is_financially_effective(mt))
       and coalesce(mt.transfer_method, 'bank') <> 'cash'
       and mt.target_location_id = p_location_id
       and mt.record_status <> 'deleted'
@@ -942,7 +1117,7 @@ CREATE OR REPLACE FUNCTION "private"."calculate_dashboard_summary"("p_location_i
     select 'expense', mt.net_amount_to_pay, true, false,
       coalesce(mt.accounting_date, (mt.created_at at time zone 'Asia/Bangkok')::date)
     from public.money_transfers mt
-    where mt.transfer_type = 'branch'
+    where (mt.transfer_type = 'branch' and private.money_transfer_is_financially_effective(mt))
       and coalesce(mt.transfer_method, 'bank') <> 'cash'
       and mt.location_id = p_location_id
       and mt.target_location_id <> mt.location_id
@@ -1735,6 +1910,75 @@ CREATE OR REPLACE FUNCTION "private"."cash_count_events"("p_location_id" "uuid",
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
     AS $$
+  select base.*
+  from private.cash_count_events_before_time_payroll_payment(
+    p_location_id, p_after_cutoff, p_to_cutoff
+  ) base
+  where not (
+    base.reference ->> 'source' = 'financial_transaction'
+    and exists (
+      select 1 from public.financial_transactions source
+      where source.id = (base.reference ->> 'id')::uuid and source.type = 'WITHDRAWAL'
+    )
+  ) and coalesce(base.reference ->> 'source', '') <> 'payroll_slip'
+
+  union all
+
+  select item.eligibility_at, 'expense',
+    private.time_payroll_branch_paid_amount(
+      source.amount, source.payment_contract_version, source.payment_channel,
+      source.payment_transfer_amount, source.expense_location_id
+    ), null::jsonb,
+    jsonb_build_object('source', 'financial_transaction', 'id', source.id,
+      'label', coalesce(source.description, 'เบิกเงิน'),
+      'amount', private.time_payroll_branch_paid_amount(
+        source.amount, source.payment_contract_version, source.payment_channel,
+        source.payment_transfer_amount, source.expense_location_id
+      ))
+  from public.report_items item
+  join public.report_batches batch on batch.id = item.report_id
+  join public.financial_transactions source on source.id = item.entity_id
+  where batch.location_id = p_location_id and batch.status = 'active' and item.active = true
+    and item.entity_type = 'financial_transaction' and source.type = 'WITHDRAWAL'
+    and item.eligibility_at > p_after_cutoff and item.eligibility_at <= p_to_cutoff
+    and private.time_payroll_branch_paid_amount(
+      source.amount, source.payment_contract_version, source.payment_channel,
+      source.payment_transfer_amount, source.expense_location_id
+    ) > 0
+
+  union all
+
+  select item.eligibility_at, 'expense',
+    private.time_payroll_branch_paid_amount(
+      source.net_pay, source.payment_contract_version, source.payment_channel,
+      source.payment_transfer_amount, source.expense_location_id
+    ), null::jsonb,
+    jsonb_build_object('source', 'payroll_slip', 'id', source.id,
+      'label', source.month,
+      'amount', private.time_payroll_branch_paid_amount(
+        source.net_pay, source.payment_contract_version, source.payment_channel,
+        source.payment_transfer_amount, source.expense_location_id
+      ))
+  from public.report_items item
+  join public.report_batches batch on batch.id = item.report_id
+  join public.payroll_slips source on source.id = item.entity_id
+  where batch.location_id = p_location_id and batch.status = 'active' and item.active = true
+    and item.entity_type = 'payroll_slip'
+    and item.eligibility_at > p_after_cutoff and item.eligibility_at <= p_to_cutoff
+    and private.time_payroll_branch_paid_amount(
+      source.net_pay, source.payment_contract_version, source.payment_channel,
+      source.payment_transfer_amount, source.expense_location_id
+    ) > 0;
+$$;
+
+
+ALTER FUNCTION "private"."cash_count_events"("p_location_id" "uuid", "p_after_cutoff" timestamp with time zone, "p_to_cutoff" timestamp with time zone) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."cash_count_events_before_time_payroll_payment"("p_location_id" "uuid", "p_after_cutoff" timestamp with time zone, "p_to_cutoff" timestamp with time zone) RETURNS TABLE("occurred_at" timestamp with time zone, "event_kind" "text", "amount" numeric, "counts" "jsonb", "reference" "jsonb")
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
   select *
   from private.cash_count_events_before_withdrawal_adjustments(
     p_location_id, p_after_cutoff, p_to_cutoff
@@ -1767,7 +2011,7 @@ CREATE OR REPLACE FUNCTION "private"."cash_count_events"("p_location_id" "uuid",
 $$;
 
 
-ALTER FUNCTION "private"."cash_count_events"("p_location_id" "uuid", "p_after_cutoff" timestamp with time zone, "p_to_cutoff" timestamp with time zone) OWNER TO "postgres";
+ALTER FUNCTION "private"."cash_count_events_before_time_payroll_payment"("p_location_id" "uuid", "p_after_cutoff" timestamp with time zone, "p_to_cutoff" timestamp with time zone) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."cash_count_events_before_withdrawal_adjustments"("p_location_id" "uuid", "p_after_cutoff" timestamp with time zone, "p_to_cutoff" timestamp with time zone) RETURNS TABLE("occurred_at" timestamp with time zone, "event_kind" "text", "amount" numeric, "counts" "jsonb", "reference" "jsonb")
@@ -2316,6 +2560,15 @@ begin
     delete from public.cash_transfer_delete_requests t using doomed d where t.id = d.id;
     get diagnostics v_count = row_count;
     v_counts := v_counts || jsonb_build_object('cash_transfer_delete_requests', v_count);
+
+    with doomed as (
+      select id from public.branch_transfer_delete_requests where request_status <> 'pending'
+        and coalesce(decided_at, updated_at) < v_cutoff_at
+      order by coalesce(decided_at, updated_at), id limit p_batch_size for update skip locked
+    )
+    delete from public.branch_transfer_delete_requests t using doomed d where t.id = d.id;
+    get diagnostics v_count = row_count;
+    v_counts := v_counts || jsonb_build_object('branch_transfer_delete_requests', v_count);
 
     with doomed as (
       select id from public.rubber_bill_approval_requests where request_status <> 'pending'
@@ -3320,6 +3573,105 @@ CREATE OR REPLACE FUNCTION "private"."dashboard_money_source_entries"("p_source_
     SET "search_path" TO ''
     AS $$
 declare
+  v_entries jsonb;
+  v_row record;
+  v_amount numeric;
+begin
+  if p_source_type = 'money_transfer' then
+    v_entries := private.dashboard_money_source_entries_before_time_payroll_payment(p_source_type, p_source_id);
+    select transfer.*, profile.id as actor_id, profile.name as actor_name
+    into v_row
+    from public.money_transfers transfer
+    left join public.profiles profile on profile.id = transfer.created_by_user_id
+    where transfer.id = p_source_id;
+    if found and v_row.transfer_type = 'time_payroll'
+      and v_row.record_status <> 'deleted'
+      and v_row.transfer_status in ('paid', 'overpaid')
+      and v_row.net_amount_to_pay > 0 then
+      v_entries := v_entries || jsonb_build_array(private.dashboard_money_event_entry(
+        'time-payroll-transfer:' || v_row.id::text,
+        v_row.location_id,
+        'transfer_out',
+        'TP-' || left(v_row.id::text, 8),
+        'โอน' || v_row.time_payroll_source_label || 'ให้ ' || v_row.time_payroll_employee_name,
+        'expense',
+        v_row.net_amount_to_pay,
+        jsonb_build_object(
+          'transferType', v_row.transfer_type,
+          'transferStatus', v_row.transfer_status,
+          'sourceKind', v_row.time_payroll_source_kind,
+          'sourceLabel', v_row.time_payroll_source_label,
+          'employeeName', v_row.time_payroll_employee_name,
+          'amount', v_row.net_amount_to_pay
+        ),
+        v_row.created_by_user_id,
+        v_row.created_by_name
+      ));
+    end if;
+    return v_entries;
+  elsif p_source_type = 'withdrawal' then
+    select source.*, profile.name as profile_name, approver.name as approver_name
+    into v_row from public.financial_transactions source
+    join public.profiles profile on profile.id = source.profile_id
+    left join public.profiles approver on approver.id = source.approved_by
+    where source.id = p_source_id;
+    if not found or v_row.type::text <> 'WITHDRAWAL' or v_row.status::text <> 'APPROVED'
+      or v_row.cancelled_at is not null or v_row.expense_location_id is null then return '[]'::jsonb; end if;
+    v_amount := private.time_payroll_branch_paid_amount(
+      v_row.amount, v_row.payment_contract_version, v_row.payment_channel,
+      v_row.payment_transfer_amount, v_row.expense_location_id
+    );
+    if v_amount <= 0 then return '[]'::jsonb; end if;
+    return jsonb_build_array(private.dashboard_money_event_entry(
+      'withdrawal:' || v_row.id::text, v_row.expense_location_id, 'expense',
+      'TW-' || left(v_row.id::text, 8),
+      case when coalesce(v_row.payment_transfer_amount, 0) > 0 then 'สาขาจ่ายส่วนต่างเงินเบิกให้ ' else 'สาขาจ่ายเงินเบิกให้ ' end
+        || coalesce(v_row.profile_name, 'พนักงาน'),
+      'expense', v_amount,
+      jsonb_build_object('profileId', v_row.profile_id, 'amount', v_amount,
+        'sourceAmount', v_row.amount, 'transferAmount', v_row.payment_transfer_amount,
+        'expenseLocationId', v_row.expense_location_id, 'status', v_row.status),
+      v_row.approved_by, v_row.approver_name
+    ));
+  elsif p_source_type = 'payroll_slip' then
+    select source.*, profile.name as profile_name, approver.name as approver_name
+    into v_row from public.payroll_slips source
+    join public.profiles profile on profile.id = source.profile_id
+    left join public.profiles approver on approver.id = source.approved_by
+    where source.id = p_source_id;
+    if not found or v_row.status::text <> 'APPROVED' or v_row.cancelled_at is not null
+      or v_row.expense_location_id is null then return '[]'::jsonb; end if;
+    v_amount := private.time_payroll_branch_paid_amount(
+      v_row.net_pay, v_row.payment_contract_version, v_row.payment_channel,
+      v_row.payment_transfer_amount, v_row.expense_location_id
+    );
+    if v_amount <= 0 then return '[]'::jsonb; end if;
+    return jsonb_build_array(private.dashboard_money_event_entry(
+      'payroll:' || v_row.id::text, v_row.expense_location_id, 'expense',
+      'PS-' || left(v_row.id::text, 8),
+      case when coalesce(v_row.payment_transfer_amount, 0) > 0 then 'สาขาจ่ายส่วนต่างเงินเดือนให้ ' else 'สาขาจ่ายเงินเดือนให้ ' end
+        || coalesce(v_row.profile_name, 'พนักงาน') || ' — ' || v_row.month,
+      'expense', v_amount,
+      jsonb_build_object('profileId', v_row.profile_id, 'month', v_row.month,
+        'netPay', v_row.net_pay, 'transferAmount', v_row.payment_transfer_amount,
+        'branchPaidAmount', v_amount, 'expenseLocationId', v_row.expense_location_id,
+        'status', v_row.status, 'slipData', v_row.slip_data),
+      v_row.approved_by, v_row.approver_name
+    ));
+  end if;
+  return private.dashboard_money_source_entries_before_time_payroll_payment(p_source_type, p_source_id);
+end;
+$$;
+
+
+ALTER FUNCTION "private"."dashboard_money_source_entries"("p_source_type" "text", "p_source_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."dashboard_money_source_entries_before_time_payroll_payment"("p_source_type" "text", "p_source_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
   v_entries jsonb := '[]'::jsonb;
   v_row record;
   v_children jsonb := '[]'::jsonb;
@@ -3456,7 +3808,7 @@ begin
       ) as entry
       from public.money_transfers mt
       where mt.id = p_source_id
-        and mt.transfer_type = 'branch'
+        and (mt.transfer_type = 'branch' and private.money_transfer_is_financially_effective(mt))
         and coalesce(mt.transfer_method, 'bank') <> 'cash'
         and mt.record_status <> 'deleted'
         and mt.transfer_status in ('paid', 'overpaid', 'branch_and_transfer')
@@ -3487,7 +3839,7 @@ begin
       ) as entry
       from public.money_transfers mt
       where mt.id = p_source_id
-        and mt.transfer_type = 'branch'
+        and (mt.transfer_type = 'branch' and private.money_transfer_is_financially_effective(mt))
         and coalesce(mt.transfer_method, 'bank') <> 'cash'
         and mt.location_id <> mt.target_location_id
         and mt.record_status <> 'deleted'
@@ -3711,7 +4063,7 @@ end;
 $$;
 
 
-ALTER FUNCTION "private"."dashboard_money_source_entries"("p_source_type" "text", "p_source_id" "uuid") OWNER TO "postgres";
+ALTER FUNCTION "private"."dashboard_money_source_entries_before_time_payroll_payment"("p_source_type" "text", "p_source_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."dashboard_require_manager"() RETURNS "void"
@@ -3925,6 +4277,36 @@ $$;
 
 
 ALTER FUNCTION "private"."delete_money_transfer"("p_transfer_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."delete_time_payroll_transfer_for_source"("p_source_type" "text", "p_source_id" "uuid") RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_transfer public.money_transfers%rowtype;
+  v_report_no text;
+begin
+  select * into v_transfer
+  from public.money_transfers transfer
+  where transfer.withdrawal_transaction_id = case when p_source_type = 'transaction' then p_source_id end
+     or transfer.payroll_slip_id = case when p_source_type = 'payroll_slip' then p_source_id end
+  for update;
+  if v_transfer.id is null then return; end if;
+  if not private.can_access_money_transfer_module()
+    or not private.can_access_location(v_transfer.location_id) then
+    raise exception 'PAYMENT_DELETE_REQUIRES_MONEY_TRANSFER_ACCESS';
+  end if;
+  v_report_no := public.report_lock_no(v_transfer);
+  if v_report_no is not null then perform private.raise_report_lock(v_report_no); end if;
+  perform set_config('app.time_payroll_payment_rpc', 'true', true);
+  delete from public.money_transfer_slips where transfer_id = v_transfer.id;
+  delete from public.money_transfers where id = v_transfer.id;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."delete_time_payroll_transfer_for_source"("p_source_type" "text", "p_source_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."effective_rubber_approval_settings"("p_location_id" "uuid") RETURNS TABLE("group_id" "uuid", "price_time_exempt" boolean, "edit_window_minutes" integer, "configured_price" numeric, "updated_by_name" "text", "updated_by_phone" "text", "updated_at" timestamp with time zone)
@@ -4760,6 +5142,103 @@ $$;
 ALTER FUNCTION "private"."guard_rubber_export_work_transfer"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."guard_time_payroll_payment_source"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if (old.payment_contract_version = 1 or new.payment_contract_version = 1)
+    and (
+      new.payment_contract_version is distinct from old.payment_contract_version
+      or new.payment_channel is distinct from old.payment_channel
+      or new.payment_transfer_amount is distinct from old.payment_transfer_amount
+      or new.expense_location_id is distinct from old.expense_location_id
+    )
+    and coalesce(current_setting('app.time_payroll_payment_rpc', true), 'false') <> 'true'
+  then
+    raise exception 'PAYMENT_USE_ALLOCATION_API';
+  end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."guard_time_payroll_payment_source"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."guard_time_payroll_transfer"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_source_amount numeric;
+  v_source_location_id uuid;
+  v_source_name text;
+  v_source_kind text;
+  v_source_label text;
+  v_source_date date;
+begin
+  if tg_op = 'UPDATE' and old.transfer_type = 'time_payroll'
+    and coalesce(current_setting('app.time_payroll_payment_rpc', true), 'false') <> 'true' then
+    if (to_jsonb(new) - array['transfer_status', 'revision_no', 'updated_at'])
+      is distinct from
+      (to_jsonb(old) - array['transfer_status', 'revision_no', 'updated_at']) then
+      raise exception 'TIME_PAYROLL_TRANSFER_LOCKED';
+    end if;
+    return new;
+  end if;
+
+  if new.transfer_type <> 'time_payroll' then return new; end if;
+  if tg_op = 'UPDATE' and old.transfer_type <> 'time_payroll' then
+    raise exception 'TIME_PAYROLL_TRANSFER_INVALID';
+  end if;
+
+  if new.withdrawal_transaction_id is not null then
+    select source.payment_transfer_amount, source.expense_location_id, profile.name,
+      'withdrawal', 'เงินเบิก ' || to_char(source.effective_date, 'DD/MM/YYYY'), source.effective_date
+    into v_source_amount, v_source_location_id, v_source_name,
+      v_source_kind, v_source_label, v_source_date
+    from public.financial_transactions source
+    join public.profiles profile on profile.id = source.profile_id
+    where source.id = new.withdrawal_transaction_id
+      and source.type = 'WITHDRAWAL'
+      and source.status = 'APPROVED'
+      and source.cancelled_at is null
+      and source.payment_contract_version = 1
+      and source.payment_channel = 'branch_and_transfer';
+  else
+    select source.payment_transfer_amount, source.expense_location_id, profile.name,
+      'payroll', 'เงินเดือน ' || source.month, coalesce((source.approved_at at time zone 'Asia/Bangkok')::date, current_date)
+    into v_source_amount, v_source_location_id, v_source_name,
+      v_source_kind, v_source_label, v_source_date
+    from public.payroll_slips source
+    join public.profiles profile on profile.id = source.profile_id
+    where source.id = new.payroll_slip_id
+      and source.status = 'APPROVED'
+      and source.cancelled_at is null
+      and source.payment_contract_version = 1
+      and source.payment_channel = 'branch_and_transfer';
+  end if;
+
+  if v_source_amount is null or v_source_amount <= 0
+    or new.location_id is distinct from v_source_location_id
+    or new.net_amount_to_pay is distinct from v_source_amount
+    or new.time_payroll_source_kind is distinct from v_source_kind
+    or new.time_payroll_employee_name is distinct from v_source_name
+    or new.time_payroll_source_label is distinct from v_source_label
+    or new.time_payroll_source_date is distinct from v_source_date
+    or new.transfer_method <> 'bank'
+    or new.record_status <> 'active' then
+    raise exception 'TIME_PAYROLL_TRANSFER_INVALID';
+  end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."guard_time_payroll_transfer"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."has_time_payroll_manager_access"() RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -4844,6 +5323,8 @@ CREATE OR REPLACE FUNCTION "private"."history_retention_has_work"("p_days" integ
     or
     exists (select 1 from public.cash_transfer_delete_requests, bounds where request_status <> 'pending' and coalesce(decided_at, updated_at) < cutoff_at)
     or
+    exists (select 1 from public.branch_transfer_delete_requests, bounds where request_status <> 'pending' and coalesce(decided_at, updated_at) < cutoff_at)
+    or
     exists (select 1 from public.rubber_bill_approval_requests, bounds where request_status <> 'pending' and coalesce(approved_at, requested_at) < cutoff_at)
     or
     exists (select 1 from public.stock_entry_approval_requests, bounds where request_status <> 'pending' and coalesce(decided_at, updated_at) < cutoff_at)
@@ -4890,6 +5371,11 @@ CREATE OR REPLACE FUNCTION "private"."history_retention_preview_rows"("p_days" i
     where request_status <> 'pending'
       and coalesce(decided_at, updated_at) < cutoff_at
     union all
+    select 'branch_transfer_delete_requests', (coalesce(decided_at, updated_at) at time zone 'Asia/Bangkok')::date
+    from public.branch_transfer_delete_requests, bounds
+    where request_status <> 'pending'
+      and coalesce(decided_at, updated_at) < cutoff_at
+    union all
     select 'rubber_bill_approval_requests', (coalesce(approved_at, requested_at) at time zone 'Asia/Bangkok')::date
     from public.rubber_bill_approval_requests, bounds
     where request_status <> 'pending'
@@ -4916,7 +5402,7 @@ CREATE OR REPLACE FUNCTION "private"."history_retention_preview_rows"("p_days" i
   ), keys(group_key) as (values
     ('dashboard_money_events'), ('time_tracking_audit_logs'),
     ('admin_account_audit_logs'), ('income_expense_approval_requests'),
-    ('cash_transfer_delete_requests'), ('rubber_bill_approval_requests'),
+    ('cash_transfer_delete_requests'), ('branch_transfer_delete_requests'), ('rubber_bill_approval_requests'),
     ('stock_entry_approval_requests'), ('stock_product_approval_requests'),
     ('scheduler_run_history'), ('cleanup_run_history')
   )
@@ -5565,6 +6051,82 @@ $$;
 
 
 ALTER FUNCTION "private"."merge_pending_money_transfers"("p_location_id" "uuid") OWNER TO "postgres";
+
+SET default_tablespace = '';
+
+SET default_table_access_method = "heap";
+
+
+CREATE TABLE IF NOT EXISTS "public"."money_transfers" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "client_temp_id" "text",
+    "idempotency_key" "text",
+    "location_id" "uuid" NOT NULL,
+    "customer_id" "uuid",
+    "customer_name" "text",
+    "account_number" "text",
+    "account_name" "text",
+    "bank_name" "text",
+    "net_amount_to_pay" numeric(14,2) DEFAULT 0 NOT NULL,
+    "transfer_status" "text" DEFAULT 'pending'::"text" NOT NULL,
+    "sync_status" "public"."sync_status" DEFAULT 'synced'::"public"."sync_status" NOT NULL,
+    "record_status" "public"."record_status" DEFAULT 'active'::"public"."record_status" NOT NULL,
+    "revision_no" integer DEFAULT 0 NOT NULL,
+    "created_by_user_id" "uuid",
+    "created_by_name" "text" DEFAULT ''::"text" NOT NULL,
+    "created_by_phone" "text" DEFAULT ''::"text" NOT NULL,
+    "client_recorded_at" timestamp with time zone,
+    "server_received_at" timestamp with time zone,
+    "deleted_at" timestamp with time zone,
+    "deleted_by_name" "text",
+    "deleted_by_phone" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "branch_paid_amount" numeric(12,2) DEFAULT 0,
+    "transfer_type" "text" DEFAULT 'customer'::"text" NOT NULL,
+    "transport_cost" numeric(12,2) DEFAULT 0,
+    "transport_staff_id" "uuid",
+    "transport_staff_name" "text",
+    "target_location_id" "uuid",
+    "target_location_name" "text",
+    "transfer_method" "text" DEFAULT 'bank'::"text" NOT NULL,
+    "accounting_date" "date",
+    "request_fingerprint" "text",
+    "rubber_export_id" "uuid",
+    "withdrawal_transaction_id" "uuid",
+    "payroll_slip_id" "uuid",
+    "time_payroll_source_kind" "text",
+    "time_payroll_employee_name" "text",
+    "time_payroll_source_label" "text",
+    "time_payroll_source_date" "date",
+    "branch_receipt_contract_version" smallint,
+    "branch_receipt_status" "text",
+    "branch_received_by_user_id" "uuid",
+    "branch_received_by_name" "text",
+    "branch_received_at" timestamp with time zone,
+    CONSTRAINT "money_transfers_branch_receipt_contract_check" CHECK (((("branch_receipt_contract_version" IS NULL) AND ("branch_receipt_status" IS NULL) AND ("branch_received_by_user_id" IS NULL) AND ("branch_received_by_name" IS NULL) AND ("branch_received_at" IS NULL)) OR (("transfer_type" = 'branch'::"text") AND ("branch_receipt_contract_version" = 1) AND ("branch_receipt_status" = ANY (ARRAY['pending_receipt'::"text", 'received'::"text"])) AND ((("branch_receipt_status" = 'pending_receipt'::"text") AND ("branch_received_by_user_id" IS NULL) AND ("branch_received_by_name" IS NULL) AND ("branch_received_at" IS NULL) AND ("accounting_date" IS NULL)) OR (("branch_receipt_status" = 'received'::"text") AND ("branch_received_by_user_id" IS NOT NULL) AND (NULLIF("btrim"("branch_received_by_name"), ''::"text") IS NOT NULL) AND ("branch_received_at" IS NOT NULL) AND ("accounting_date" IS NOT NULL)))))),
+    CONSTRAINT "money_transfers_rubber_export_source_check" CHECK ((("transfer_type" = 'rubber_export_work'::"text") = ("rubber_export_id" IS NOT NULL))),
+    CONSTRAINT "money_transfers_time_payroll_source_check" CHECK (((("transfer_type" = 'time_payroll'::"text") AND (((("withdrawal_transaction_id" IS NOT NULL))::integer + (("payroll_slip_id" IS NOT NULL))::integer) = 1) AND ("time_payroll_source_kind" = ANY (ARRAY['withdrawal'::"text", 'payroll'::"text"])) AND (NULLIF("btrim"("time_payroll_employee_name"), ''::"text") IS NOT NULL) AND (NULLIF("btrim"("time_payroll_source_label"), ''::"text") IS NOT NULL) AND ("time_payroll_source_date" IS NOT NULL) AND ("customer_id" IS NULL) AND ("customer_name" IS NULL) AND ("transport_staff_id" IS NULL) AND ("transport_staff_name" IS NULL) AND ("target_location_id" IS NULL) AND ("target_location_name" IS NULL) AND ("account_number" IS NULL) AND ("account_name" IS NULL) AND ("bank_name" IS NULL)) OR (("transfer_type" <> 'time_payroll'::"text") AND ("withdrawal_transaction_id" IS NULL) AND ("payroll_slip_id" IS NULL) AND ("time_payroll_source_kind" IS NULL) AND ("time_payroll_employee_name" IS NULL) AND ("time_payroll_source_label" IS NULL) AND ("time_payroll_source_date" IS NULL)))),
+    CONSTRAINT "money_transfers_transfer_method_check" CHECK (("transfer_method" = ANY (ARRAY['bank'::"text", 'cash'::"text"]))),
+    CONSTRAINT "money_transfers_transfer_status_check" CHECK (("transfer_status" = ANY (ARRAY['pending'::"text", 'paid'::"text", 'partial'::"text", 'overpaid'::"text", 'branch_and_transfer'::"text", 'advance_payment'::"text", 'cancelled'::"text"]))),
+    CONSTRAINT "money_transfers_transfer_type_check" CHECK (("transfer_type" = ANY (ARRAY['customer'::"text", 'transport'::"text", 'branch'::"text", 'cash'::"text", 'rubber_export_work'::"text", 'time_payroll'::"text"])))
+);
+
+
+ALTER TABLE "public"."money_transfers" OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."money_transfer_is_financially_effective"("p_transfer" "public"."money_transfers") RETURNS boolean
+    LANGUAGE "sql" STABLE
+    SET "search_path" TO ''
+    AS $$
+  select p_transfer.transfer_type <> 'branch'
+    or p_transfer.branch_receipt_contract_version is null
+    or p_transfer.branch_receipt_status = 'received'
+$$;
+
+
+ALTER FUNCTION "private"."money_transfer_is_financially_effective"("p_transfer" "public"."money_transfers") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."money_transfer_ocr_fingerprint"("p_reference_number" "text", "p_amount" numeric, "p_transaction_date" timestamp with time zone) RETURNS "text"
@@ -7393,6 +7955,22 @@ $$;
 ALTER FUNCTION "private"."reject_expired_approval_request_replay"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."reject_future_money_transfer_slip"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO ''
+    AS $$
+begin
+  if new.transaction_date is not null and new.transaction_date > statement_timestamp() then
+    raise exception 'MT_SLIP_FUTURE_DATE: วันเวลาสลิปต้องไม่เกินเวลาปัจจุบัน';
+  end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."reject_future_money_transfer_slip"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."report_creation_blockers"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) RETURNS TABLE("blocker_key" "text", "item_count" bigint)
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -7400,30 +7978,39 @@ CREATE OR REPLACE FUNCTION "private"."report_creation_blockers"("p_location_id" 
   with blocker_rows as (
     select 'rubber_bill_pending'::text as blocker_key, blocker_id
     from private.rubber_bill_report_blockers(p_location_id, p_cutoff_at)
-
     union all
-
     select 'income_expense_approval_pending', request.id
     from public.income_expense_approval_requests request
     where request.location_id = p_location_id
       and request.request_status = 'pending'
       and request.created_at <= p_cutoff_at
-
     union all
-
     select 'cash_transfer_delete_pending', request.id
     from public.cash_transfer_delete_requests request
     where request.request_status = 'pending'
       and request.created_at <= p_cutoff_at
       and p_location_id in (request.source_location_id, request.target_location_id)
-
     union all
-
     select 'stock_entry_delete_pending', request.id
     from public.stock_entry_approval_requests request
     where request.request_status = 'pending'
       and request.created_at <= p_cutoff_at
       and p_location_id in (request.location_id, request.target_location_id)
+    union all
+    select 'branch_transfer_receipt_pending', transfer.id
+    from public.money_transfers transfer
+    where transfer.target_location_id = p_location_id
+      and transfer.transfer_type = 'branch'
+      and transfer.record_status <> 'deleted'
+      and transfer.branch_receipt_contract_version = 1
+      and transfer.branch_receipt_status = 'pending_receipt'
+      and transfer.created_at <= p_cutoff_at
+    union all
+    select 'branch_transfer_delete_pending', request.id
+    from public.branch_transfer_delete_requests request
+    where request.location_id = p_location_id
+      and request.request_status = 'pending'
+      and request.created_at <= p_cutoff_at
   )
   select blocker_rows.blocker_key, count(distinct blocker_rows.blocker_id)::bigint
   from blocker_rows
@@ -7433,6 +8020,8 @@ CREATE OR REPLACE FUNCTION "private"."report_creation_blockers"("p_location_id" 
     when 'income_expense_approval_pending' then 2
     when 'cash_transfer_delete_pending' then 3
     when 'stock_entry_delete_pending' then 4
+    when 'branch_transfer_receipt_pending' then 5
+    when 'branch_transfer_delete_pending' then 6
   end;
 $$;
 
@@ -7441,6 +8030,76 @@ ALTER FUNCTION "private"."report_creation_blockers"("p_location_id" "uuid", "p_c
 
 
 CREATE OR REPLACE FUNCTION "private"."report_income_expense_period_rows"("p_report_id" "uuid") RETURNS TABLE("tx_date" "date", "number" "text", "entry_type" "text", "title" "text", "amount" numeric, "sort_key" "text")
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
+  select base.*
+  from private.report_income_expense_period_rows_before_time_payroll_payment(p_report_id) base
+  where base.sort_key not like '60-%' and base.sort_key not like '61-%'
+
+  union all
+
+  select (source.approved_at at time zone 'Asia/Bangkok')::date,
+    'TW-' || left(source.id::text, 8), 'expense',
+    case when coalesce(source.payment_transfer_amount, 0) > 0 then 'สาขาจ่ายส่วนต่างเงินเบิกให้ ' else 'สาขาจ่ายเงินเบิกให้ ' end
+      || coalesce(profile.name, 'พนักงาน'),
+    private.time_payroll_branch_paid_amount(
+      source.amount, source.payment_contract_version, source.payment_channel,
+      source.payment_transfer_amount, source.expense_location_id
+    ),
+    '60-' || source.id::text
+  from public.report_items item
+  join public.financial_transactions source on source.id = item.entity_id
+  join public.profiles profile on profile.id = source.profile_id
+  where item.report_id = p_report_id and item.entity_type = 'financial_transaction'
+    and source.type = 'WITHDRAWAL'
+    and private.time_payroll_branch_paid_amount(
+      source.amount, source.payment_contract_version, source.payment_channel,
+      source.payment_transfer_amount, source.expense_location_id
+    ) > 0
+
+  union all
+
+  select (source.approved_at at time zone 'Asia/Bangkok')::date,
+    'PS-' || left(source.id::text, 8), 'expense',
+    case when coalesce(source.payment_transfer_amount, 0) > 0 then 'สาขาจ่ายส่วนต่างเงินเดือนให้ ' else 'สาขาจ่ายเงินเดือนให้ ' end
+      || coalesce(profile.name, 'พนักงาน') || ' — ' || source.month,
+    private.time_payroll_branch_paid_amount(
+      source.net_pay, source.payment_contract_version, source.payment_channel,
+      source.payment_transfer_amount, source.expense_location_id
+    ),
+    '61-' || source.id::text
+  from public.report_items item
+  join public.payroll_slips source on source.id = item.entity_id
+  join public.profiles profile on profile.id = source.profile_id
+  where item.report_id = p_report_id and item.entity_type = 'payroll_slip'
+    and private.time_payroll_branch_paid_amount(
+      source.net_pay, source.payment_contract_version, source.payment_channel,
+      source.payment_transfer_amount, source.expense_location_id
+    ) > 0
+
+  union all
+
+  select coalesce(transfer.accounting_date,
+      (coalesce(transfer.updated_at, transfer.created_at) at time zone 'Asia/Bangkok')::date),
+    'TP-' || left(transfer.id::text, 8), 'expense',
+    'โอน' || transfer.time_payroll_source_label || 'ให้ ' || transfer.time_payroll_employee_name,
+    transfer.net_amount_to_pay,
+    '62-' || transfer.id::text
+  from public.report_items item
+  join public.money_transfers transfer on transfer.id = item.entity_id
+  where item.report_id = p_report_id
+    and item.entity_type = 'bank_transfer_source'
+    and transfer.transfer_type = 'time_payroll'
+    and transfer.transfer_status in ('paid', 'overpaid')
+    and transfer.net_amount_to_pay > 0;
+$$;
+
+
+ALTER FUNCTION "private"."report_income_expense_period_rows"("p_report_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."report_income_expense_period_rows_before_time_payroll_payment"("p_report_id" "uuid") RETURNS TABLE("tx_date" "date", "number" "text", "entry_type" "text", "title" "text", "amount" numeric, "sort_key" "text")
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
     AS $$
@@ -7467,7 +8126,7 @@ CREATE OR REPLACE FUNCTION "private"."report_income_expense_period_rows"("p_repo
 $$;
 
 
-ALTER FUNCTION "private"."report_income_expense_period_rows"("p_report_id" "uuid") OWNER TO "postgres";
+ALTER FUNCTION "private"."report_income_expense_period_rows_before_time_payroll_payment"("p_report_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."report_income_expense_period_rows_before_withdrawal_adjustments"("p_report_id" "uuid") RETURNS TABLE("tx_date" "date", "number" "text", "entry_type" "text", "title" "text", "amount" numeric, "sort_key" "text")
@@ -7522,7 +8181,7 @@ CREATE OR REPLACE FUNCTION "private"."report_income_expense_period_rows_before_w
   join public.money_transfers m on m.id = i.entity_id
   where i.report_id = p_report_id
     and i.entity_type = 'bank_transfer_source'
-    and m.transfer_type = 'branch'
+    and (m.transfer_type = 'branch' and private.money_transfer_is_financially_effective(m))
     and m.location_id <> m.target_location_id
     and m.net_amount_to_pay > 0
 
@@ -7648,6 +8307,39 @@ CREATE OR REPLACE FUNCTION "private"."reportable_items"("p_location_id" "uuid", 
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
     AS $$
+  select candidate.entity_type, candidate.entity_id, candidate.eligibility_at
+  from private.reportable_items_before_time_payroll_payment(p_location_id, p_cutoff_at) candidate
+  where not (
+    candidate.entity_type = 'financial_transaction'
+    and exists (
+      select 1 from public.financial_transactions source
+      where source.id = candidate.entity_id and source.type = 'WITHDRAWAL'
+        and private.time_payroll_branch_paid_amount(
+          source.amount, source.payment_contract_version, source.payment_channel,
+          source.payment_transfer_amount, source.expense_location_id
+        ) <= 0
+    )
+  ) and not (
+    candidate.entity_type = 'payroll_slip'
+    and exists (
+      select 1 from public.payroll_slips source
+      where source.id = candidate.entity_id
+        and private.time_payroll_branch_paid_amount(
+          source.net_pay, source.payment_contract_version, source.payment_channel,
+          source.payment_transfer_amount, source.expense_location_id
+        ) <= 0
+    )
+  );
+$$;
+
+
+ALTER FUNCTION "private"."reportable_items"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."reportable_items_before_time_payroll_payment"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) RETURNS TABLE("entity_type" "text", "entity_id" "uuid", "eligibility_at" timestamp with time zone)
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $$
   with candidates(entity_type, entity_id, eligibility_at) as (
     select 'rubber_bill'::text, b.id,
       coalesce(b.server_received_at, b.updated_at, b.created_at)
@@ -7722,7 +8414,7 @@ CREATE OR REPLACE FUNCTION "private"."reportable_items"("p_location_id" "uuid", 
       coalesce(m.server_received_at, m.updated_at, m.created_at)
     from public.money_transfers m
     where m.target_location_id = p_location_id
-      and m.transfer_type = 'branch'
+      and (m.transfer_type = 'branch' and private.money_transfer_is_financially_effective(m))
       and m.transfer_method = 'bank'
       and m.record_status = 'active'
       and m.sync_status = 'synced'
@@ -7767,7 +8459,7 @@ CREATE OR REPLACE FUNCTION "private"."reportable_items"("p_location_id" "uuid", 
 $$;
 
 
-ALTER FUNCTION "private"."reportable_items"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) OWNER TO "postgres";
+ALTER FUNCTION "private"."reportable_items_before_time_payroll_payment"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."require_atomic_money_transfer_delete"() RETURNS "trigger"
@@ -9548,6 +10240,24 @@ $$;
 ALTER FUNCTION "private"."telegram_badge_require_manager"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."time_payroll_branch_paid_amount"("p_source_amount" numeric, "p_contract_version" smallint, "p_channel" "text", "p_transfer_amount" numeric, "p_expense_location_id" "uuid") RETURNS numeric
+    LANGUAGE "sql" IMMUTABLE
+    SET "search_path" TO ''
+    AS $$
+  select case
+    when p_source_amount is null or p_source_amount <= 0 then 0::numeric
+    when p_contract_version is null then
+      case when p_expense_location_id is null then 0::numeric else p_source_amount end
+    when p_contract_version = 1 and p_channel = 'branch_and_transfer' then
+      greatest(round(p_source_amount - coalesce(p_transfer_amount, 0), 2), 0)
+    else 0::numeric
+  end;
+$$;
+
+
+ALTER FUNCTION "private"."time_payroll_branch_paid_amount"("p_source_amount" numeric, "p_contract_version" smallint, "p_channel" "text", "p_transfer_amount" numeric, "p_expense_location_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."time_payroll_day_earned_at"("p_now" timestamp with time zone, "p_workday_end_time" time without time zone) RETURNS boolean
     LANGUAGE "sql" IMMUTABLE
     SET "search_path" TO ''
@@ -9999,6 +10709,80 @@ $$;
 
 
 ALTER FUNCTION "private"."validate_rubber_weight_alert_group_input"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_threshold_kg" integer) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."validate_time_payroll_payment"("p_payment" "jsonb", "p_source_amount" numeric) RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_channel text;
+  v_location_id uuid;
+  v_transfer_amount numeric;
+  v_expected_amount numeric;
+begin
+  if p_payment is null or jsonb_typeof(p_payment) <> 'object' then
+    raise exception 'PAYMENT_INVALID_PAYLOAD';
+  end if;
+  if p_source_amount is null or p_source_amount < 0 then
+    raise exception 'PAYMENT_INVALID_SOURCE_AMOUNT';
+  end if;
+
+  begin
+    v_channel := p_payment ->> 'channel';
+    v_expected_amount := (p_payment ->> 'expectedSourceAmount')::numeric;
+  exception when others then
+    raise exception 'PAYMENT_INVALID_PAYLOAD';
+  end;
+  if v_expected_amount is distinct from p_source_amount then
+    raise exception 'PAYMENT_AMOUNT_CHANGED';
+  end if;
+
+  if v_channel = 'outside_system' then
+    if coalesce(p_payment -> 'expenseLocationId', 'null'::jsonb) <> 'null'::jsonb
+      or coalesce(p_payment -> 'transferAmount', 'null'::jsonb) <> 'null'::jsonb then
+      raise exception 'PAYMENT_INVALID_OUTSIDE_SYSTEM';
+    end if;
+    return jsonb_build_object(
+      'contractVersion', 1,
+      'channel', v_channel,
+      'expenseLocationId', null,
+      'transferAmount', 0,
+      'branchPaidAmount', 0,
+      'expectedSourceAmount', p_source_amount
+    );
+  end if;
+
+  if v_channel <> 'branch_and_transfer' then
+    raise exception 'PAYMENT_INVALID_CHANNEL';
+  end if;
+  begin
+    v_location_id := nullif(p_payment ->> 'expenseLocationId', '')::uuid;
+    v_transfer_amount := (p_payment ->> 'transferAmount')::numeric;
+  exception when others then
+    raise exception 'PAYMENT_INVALID_SPLIT';
+  end;
+  if v_location_id is null then raise exception 'PAYMENT_BRANCH_REQUIRED'; end if;
+  if v_transfer_amount is null
+    or v_transfer_amount < 0
+    or v_transfer_amount > p_source_amount
+    or v_transfer_amount <> round(v_transfer_amount, 2) then
+    raise exception 'PAYMENT_INVALID_SPLIT';
+  end if;
+
+  return jsonb_build_object(
+    'contractVersion', 1,
+    'channel', v_channel,
+    'expenseLocationId', v_location_id,
+    'transferAmount', v_transfer_amount,
+    'branchPaidAmount', round(p_source_amount - v_transfer_amount, 2),
+    'expectedSourceAmount', p_source_amount
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "private"."validate_time_payroll_payment"("p_payment" "jsonb", "p_source_amount" numeric) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."validate_wex_rubber_exports"("p_location_id" "uuid", "p_wex_id" "uuid", "p_rubber_export_ids" "uuid"[]) RETURNS numeric
@@ -10454,10 +11238,6 @@ $$;
 
 ALTER FUNCTION "public"."cancel_time_payroll_active_period_schedule"("p_profile_id" "uuid") OWNER TO "postgres";
 
-SET default_tablespace = '';
-
-SET default_table_access_method = "heap";
-
 
 CREATE TABLE IF NOT EXISTS "public"."report_batches" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
@@ -10655,6 +11435,56 @@ $$;
 
 
 ALTER FUNCTION "public"."change_time_tracking_expense_location"("p_source_type" "text", "p_source_id" "uuid", "p_expense_location_id" "uuid", "p_comment" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."change_time_tracking_payment"("p_source_type" "text", "p_source_id" "uuid", "p_payment" "jsonb", "p_comment" "text" DEFAULT NULL::"text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_profile_id uuid;
+  v_existing_location_id uuid;
+  v_allocation jsonb;
+begin
+  if auth.uid() is null or not private.is_active_user() or not private.has_time_payroll_manager_access() then
+    raise exception 'Forbidden';
+  end if;
+  if p_source_type = 'transaction' then
+    select profile_id into v_profile_id
+    from public.financial_transactions where id = p_source_id;
+  elsif p_source_type = 'payroll_slip' then
+    select profile_id into v_profile_id
+    from public.payroll_slips where id = p_source_id;
+  else
+    raise exception 'PAYMENT_INVALID_SOURCE';
+  end if;
+  if v_profile_id is null or not private.can_manage_time_payroll_profile(v_profile_id) then
+    raise exception 'Forbidden';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended('time-tracking:' || v_profile_id::text, 0));
+  if p_source_type = 'transaction' then
+    select expense_location_id into v_existing_location_id
+    from public.financial_transactions where id = p_source_id;
+  else
+    select expense_location_id into v_existing_location_id
+    from public.payroll_slips where id = p_source_id;
+  end if;
+  if not found then raise exception 'PAYMENT_SOURCE_NOT_FOUND'; end if;
+  if not private.is_global_time_payroll_manager()
+    and v_existing_location_id is not null
+    and not private.can_assign_time_tracking_expense_location(v_existing_location_id)
+  then
+    raise exception 'Existing expense location access denied';
+  end if;
+  v_allocation := private.apply_time_payroll_payment(
+    p_source_type, p_source_id, p_payment, true, p_comment
+  );
+  return jsonb_build_object('status', 'updated', 'payment', v_allocation);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."change_time_tracking_payment"("p_source_type" "text", "p_source_id" "uuid", "p_payment" "jsonb", "p_comment" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."claim_dashboard_refresh_now"("p_location_id" "uuid", "p_requested_version" bigint) RETURNS "jsonb"
@@ -12869,6 +13699,32 @@ $_$;
 ALTER FUNCTION "public"."create_time_tracking_payroll_slip_internal_20260901"("p_profile_id" "uuid", "p_month" "text", "p_auto_start_next_month" boolean) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."create_time_tracking_payroll_slip_with_payment"("p_profile_id" "uuid", "p_month" "text", "p_auto_start_next_month" boolean, "p_payment" "jsonb", "p_comment" "text", "p_expected_net_pay" numeric) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_created jsonb;
+  v_allocation jsonb;
+begin
+  v_created := public.create_time_tracking_payroll_slip(
+    p_profile_id, p_month, p_auto_start_next_month, null, p_comment, p_expected_net_pay
+  );
+  if (v_created ->> 'net_pay')::numeric > 0 then
+    v_allocation := private.apply_time_payroll_payment(
+      'payroll_slip', (v_created ->> 'id')::uuid, p_payment, false
+    );
+  elsif p_payment is not null then
+    raise exception 'PAYMENT_INVALID_PAYLOAD';
+  end if;
+  return v_created || jsonb_build_object('payment', v_allocation);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."create_time_tracking_payroll_slip_with_payment"("p_profile_id" "uuid", "p_month" "text", "p_auto_start_next_month" boolean, "p_payment" "jsonb", "p_comment" "text", "p_expected_net_pay" numeric) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."create_time_tracking_transaction"("p_profile_id" "uuid", "p_type" "text", "p_amount" numeric, "p_effective_date" "date", "p_description" "text" DEFAULT NULL::"text") RETURNS "jsonb"
     LANGUAGE "sql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -13010,6 +13866,28 @@ $$;
 ALTER FUNCTION "public"."create_time_tracking_transaction_internal_20260829"("p_profile_id" "uuid", "p_type" "text", "p_amount" numeric, "p_effective_date" "date", "p_description" "text") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."create_time_tracking_withdrawal_with_payment"("p_profile_id" "uuid", "p_amount" numeric, "p_effective_date" "date", "p_description" "text", "p_payment" "jsonb", "p_comment" "text" DEFAULT NULL::"text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_created jsonb;
+  v_allocation jsonb;
+begin
+  v_created := public.create_time_tracking_transaction(
+    p_profile_id, 'WITHDRAWAL', p_amount, p_effective_date, p_description, null, p_comment
+  );
+  v_allocation := private.apply_time_payroll_payment(
+    'transaction', (v_created ->> 'id')::uuid, p_payment, false
+  );
+  return v_created || jsonb_build_object('payment', v_allocation);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."create_time_tracking_withdrawal_with_payment"("p_profile_id" "uuid", "p_amount" numeric, "p_effective_date" "date", "p_description" "text", "p_payment" "jsonb", "p_comment" "text") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."current_profile_id"() RETURNS "uuid"
     LANGUAGE "sql" STABLE
     SET "search_path" TO ''
@@ -13068,6 +13946,90 @@ $$;
 
 
 ALTER FUNCTION "public"."cutoff_time_tracking"("p_profile_id" "uuid", "p_cutoff_time" timestamp with time zone) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."decide_branch_transfer_delete_request"("p_request_id" "uuid", "p_decision" "text", "p_comment" "text" DEFAULT NULL::"text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_request public.branch_transfer_delete_requests%rowtype;
+  v_transfer public.money_transfers;
+  v_decider_name text;
+  v_decider_phone text;
+  v_locked_location_id uuid;
+  v_locked_transfer_id uuid;
+begin
+  if not private.is_active_user() or not private.can_access_super_admin_features() then
+    raise exception 'เฉพาะผู้จัดการระบบเท่านั้นที่อนุมัติหรือปฏิเสธได้';
+  end if;
+  if p_decision not in ('approved', 'rejected') then
+    raise exception 'คำตัดสินไม่ถูกต้อง';
+  end if;
+
+  if p_decision = 'approved' then
+    select request.location_id, request.transfer_id
+    into v_locked_location_id, v_locked_transfer_id
+    from public.branch_transfer_delete_requests request
+    where request.id = p_request_id;
+    if v_locked_location_id is null or v_locked_transfer_id is null then
+      raise exception 'ไม่พบคำขอลบรายการโอนเงิน';
+    end if;
+    perform private.lock_report_locations(array[v_locked_location_id]);
+  end if;
+
+  select * into v_request
+  from public.branch_transfer_delete_requests request
+  where request.id = p_request_id
+  for update;
+
+  if v_request.id is null then
+    raise exception 'ไม่พบคำขอลบรายการโอนเงิน';
+  end if;
+  if v_request.request_status <> 'pending' then
+    raise exception 'คำขอนี้ถูกดำเนินการแล้ว';
+  end if;
+
+  if p_decision = 'approved' then
+    if v_request.location_id is distinct from v_locked_location_id
+      or v_request.transfer_id is distinct from v_locked_transfer_id then
+      raise exception 'คำขอลบถูกแก้ไขแล้ว กรุณาลองใหม่';
+    end if;
+    select * into v_transfer
+    from public.money_transfers transfer
+    where transfer.id = v_request.transfer_id
+    for update;
+
+    if v_transfer.id is null or v_transfer.record_status = 'deleted' then
+      raise exception 'ไม่พบรายการโอนเงินต้นทาง';
+    end if;
+    if public.report_lock_no(v_transfer) is not null then
+      raise exception 'MT_REPORT_LOCKED: รายการถูกล็อกโดยรายงาน';
+    end if;
+
+    perform public.delete_money_transfer_before_branch_receipt(v_transfer.id, v_transfer.revision_no);
+  end if;
+
+  select profile.name, profile.phone into v_decider_name, v_decider_phone
+  from public.profiles profile
+  where profile.id = auth.uid();
+
+  update public.branch_transfer_delete_requests request set
+    request_status = p_decision,
+    decided_by_user_id = auth.uid(),
+    decided_by_name = coalesce(v_decider_name, ''),
+    decided_by_phone = coalesce(v_decider_phone, ''),
+    decided_at = statement_timestamp(),
+    decision_comment = nullif(btrim(p_comment), ''),
+    updated_at = statement_timestamp()
+  where request.id = p_request_id;
+
+  return jsonb_build_object('status', p_decision, 'requestId', p_request_id);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."decide_branch_transfer_delete_request"("p_request_id" "uuid", "p_decision" "text", "p_comment" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."decide_cash_transfer_delete_request"("p_request_id" "uuid", "p_decision" "text", "p_comment" "text" DEFAULT NULL::"text") RETURNS "jsonb"
@@ -13847,6 +14809,97 @@ $$;
 ALTER FUNCTION "public"."decide_time_tracking_approval_internal_20260829"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text", "p_expense_location_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."decide_time_tracking_approval_with_payment"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text" DEFAULT NULL::"text", "p_payment" "jsonb" DEFAULT NULL::"jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_profile_id uuid;
+  v_status text;
+  v_version smallint;
+  v_result jsonb;
+  v_allocation jsonb;
+  v_source_amount numeric;
+begin
+  if auth.uid() is null or not private.has_time_payroll_manager_access() then
+    raise exception 'Forbidden';
+  end if;
+  if p_source_type = 'transaction' then
+    select profile_id into v_profile_id
+    from public.financial_transactions where id = p_source_id;
+  elsif p_source_type = 'payroll_slip' then
+    select profile_id into v_profile_id
+    from public.payroll_slips where id = p_source_id;
+  else
+    raise exception 'PAYMENT_INVALID_SOURCE';
+  end if;
+  if v_profile_id is null then raise exception 'PAYMENT_SOURCE_NOT_FOUND'; end if;
+  if not private.can_manage_time_payroll_profile(v_profile_id) then raise exception 'Forbidden'; end if;
+  perform pg_advisory_xact_lock(hashtextextended('time-tracking:' || v_profile_id::text, 0));
+  if p_source_type = 'transaction' then
+    select status::text, payment_contract_version, amount
+    into v_status, v_version, v_source_amount
+    from public.financial_transactions where id = p_source_id;
+  else
+    select status::text, payment_contract_version, net_pay
+    into v_status, v_version, v_source_amount
+    from public.payroll_slips where id = p_source_id;
+  end if;
+  if not found then raise exception 'PAYMENT_SOURCE_NOT_FOUND'; end if;
+
+  if p_decision = 'REJECTED' then
+    if p_payment is not null then raise exception 'PAYMENT_INVALID_PAYLOAD'; end if;
+    return public.decide_time_tracking_approval(p_source_type, p_source_id, p_decision, p_comment, null);
+  end if;
+  if p_decision <> 'APPROVED' then
+    raise exception 'PAYMENT_INVALID_PAYLOAD';
+  end if;
+  if v_source_amount <= 0 and p_payment is not null then
+    raise exception 'PAYMENT_INVALID_PAYLOAD';
+  end if;
+  if p_payment is null then
+    if v_source_amount > 0 then
+      raise exception 'PAYMENT_REQUIRED';
+    end if;
+    return public.decide_time_tracking_approval(
+      p_source_type, p_source_id, 'APPROVED', p_comment, null
+    );
+  end if;
+  v_allocation := private.validate_time_payroll_payment(p_payment, v_source_amount);
+
+  if v_status = 'APPROVED' and v_version = 1 then
+    if exists (
+      select 1 from public.financial_transactions source
+      where p_source_type = 'transaction' and source.id = p_source_id
+        and source.payment_channel = v_allocation ->> 'channel'
+        and source.expense_location_id is not distinct from nullif(v_allocation ->> 'expenseLocationId', '')::uuid
+        and source.payment_transfer_amount = (v_allocation ->> 'transferAmount')::numeric
+    ) or exists (
+      select 1 from public.payroll_slips source
+      where p_source_type = 'payroll_slip' and source.id = p_source_id
+        and source.payment_channel = v_allocation ->> 'channel'
+        and source.expense_location_id is not distinct from nullif(v_allocation ->> 'expenseLocationId', '')::uuid
+        and source.payment_transfer_amount = (v_allocation ->> 'transferAmount')::numeric
+    ) then
+      return jsonb_build_object('status', 'approved', 'payment', v_allocation, 'replayed', true);
+    end if;
+    raise exception 'PAYMENT_ALREADY_DECIDED';
+  end if;
+
+  v_result := public.decide_time_tracking_approval(
+    p_source_type, p_source_id, 'APPROVED', p_comment, null
+  );
+  v_allocation := private.apply_time_payroll_payment(
+    p_source_type, p_source_id, p_payment, false
+  );
+  return v_result || jsonb_build_object('payment', v_allocation);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."decide_time_tracking_approval_with_payment"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text", "p_payment" "jsonb") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."decide_time_tracking_withdrawal_adjustment"("p_adjustment_id" "uuid", "p_decision" "text", "p_expense_location_id" "uuid" DEFAULT NULL::"uuid", "p_comment" "text" DEFAULT NULL::"text") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -14404,6 +15457,68 @@ CREATE OR REPLACE FUNCTION "public"."delete_money_transfer"("p_transfer_id" "uui
     AS $$
 declare
   v_transfer public.money_transfers;
+  v_locked_location_id uuid;
+begin
+  if not private.is_active_user() or not private.can_access_money_transfer_module() then
+    raise exception 'MONEY_TRANSFER_DELETE_FORBIDDEN';
+  end if;
+  if p_transfer_id is null or p_expected_revision is null then
+    raise exception 'MT_INVALID_PAYLOAD: ข้อมูลลบรายการโอนไม่ครบ';
+  end if;
+
+  select transfer.location_id into v_locked_location_id
+  from public.money_transfers transfer
+  where transfer.id = p_transfer_id;
+
+  if found then
+    if not private.can_access_location(v_locked_location_id) then
+      raise exception 'MONEY_TRANSFER_DELETE_FORBIDDEN';
+    end if;
+    perform private.lock_report_locations(array[v_locked_location_id]);
+
+    select * into v_transfer
+    from public.money_transfers transfer
+    where transfer.id = p_transfer_id
+    for update;
+
+    if v_transfer.location_id is distinct from v_locked_location_id then
+      raise exception 'MT_REVISION_CONFLICT: ข้อมูลถูกแก้ไขแล้ว กรุณาโหลดใหม่';
+    end if;
+
+    if v_transfer.id is not null
+      and v_transfer.record_status <> 'deleted'
+      and v_transfer.transfer_type = 'branch'
+      and v_transfer.branch_receipt_contract_version = 1
+      and v_transfer.branch_receipt_status = 'pending_receipt'
+      and v_transfer.created_by_user_id is distinct from auth.uid() then
+      raise exception 'MT_DELETE_CREATOR_ONLY: เฉพาะผู้สร้างรายการเท่านั้นที่ลบได้';
+    end if;
+
+    if v_transfer.id is not null
+      and v_transfer.record_status <> 'deleted'
+      and v_transfer.transfer_type = 'branch'
+      and not (
+        v_transfer.branch_receipt_contract_version = 1
+        and v_transfer.branch_receipt_status = 'pending_receipt'
+      ) then
+      raise exception 'MT_BRANCH_DELETE_REQUEST_REQUIRED: รายการที่รับเงินแล้วต้องส่งคำขอลบให้ผู้จัดการระบบ';
+    end if;
+  end if;
+
+  return public.delete_money_transfer_before_branch_receipt(p_transfer_id, p_expected_revision);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."delete_money_transfer"("p_transfer_id" "uuid", "p_expected_revision" integer) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."delete_money_transfer_before_branch_receipt"("p_transfer_id" "uuid", "p_expected_revision" integer) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_transfer public.money_transfers;
 begin
   if p_transfer_id is null or p_expected_revision is null then
     raise exception 'MT_INVALID_PAYLOAD: ข้อมูลลบรายการโอนไม่ครบ';
@@ -14435,7 +15550,7 @@ end;
 $$;
 
 
-ALTER FUNCTION "public"."delete_money_transfer"("p_transfer_id" "uuid", "p_expected_revision" integer) OWNER TO "postgres";
+ALTER FUNCTION "public"."delete_money_transfer_before_branch_receipt"("p_transfer_id" "uuid", "p_expected_revision" integer) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."delete_report_batch"("p_report_id" "uuid") RETURNS "jsonb"
@@ -14860,6 +15975,8 @@ begin
 
     perform set_config('app.time_tracking_permanent_delete_rpc', 'true', true);
     delete from public.financial_transactions where parent_debt_id = v_tx.id;
+    perform private.lock_report_locations(array[v_tx.expense_location_id]);
+    perform private.delete_time_payroll_transfer_for_source('transaction', v_tx.id);
     delete from public.financial_transactions where id = v_tx.id;
   else
     select * into v_slip
@@ -14902,6 +16019,8 @@ begin
     where target_table = 'payroll_slips' and record_id = v_slip.id;
 
     perform set_config('app.time_tracking_permanent_delete_rpc', 'true', true);
+    perform private.lock_report_locations(array[v_slip.expense_location_id]);
+    perform private.delete_time_payroll_transfer_for_source('payroll_slip', v_slip.id);
     delete from public.payroll_slips where id = v_slip.id;
   end if;
 
@@ -14986,10 +16105,14 @@ CREATE TABLE IF NOT EXISTS "public"."financial_transactions" (
     "effective_date" "date",
     "applied_month" "date",
     "adjustment_base_amount" numeric,
+    "payment_contract_version" smallint,
+    "payment_channel" "text",
+    "payment_transfer_amount" numeric(14,2),
     CONSTRAINT "financial_transactions_adjustment_expense_assignment" CHECK ((("type" <> 'ADJUSTMENT'::"public"."financial_transaction_type") OR ("status" <> 'APPROVED'::"public"."approval_status") OR ("cancelled_at" IS NOT NULL) OR (("expense_location_id" IS NOT NULL) AND ("approved_at" IS NOT NULL)))),
     CONSTRAINT "financial_transactions_adjustment_shape" CHECK (((("type" = 'ADJUSTMENT'::"public"."financial_transaction_type") AND ("parent_debt_id" IS NOT NULL) AND ("effective_date" IS NOT NULL) AND ("adjustment_base_amount" IS NOT NULL) AND ("amount" >= (0)::numeric) AND ("adjustment_base_amount" >= (0)::numeric) AND (("amount")::"text" <> ALL (ARRAY['NaN'::"text", 'Infinity'::"text", '-Infinity'::"text"])) AND (("adjustment_base_amount")::"text" <> ALL (ARRAY['NaN'::"text", 'Infinity'::"text", '-Infinity'::"text"]))) OR (("type" <> 'ADJUSTMENT'::"public"."financial_transaction_type") AND ("adjustment_base_amount" IS NULL)))),
     CONSTRAINT "financial_transactions_applied_month_shape" CHECK (((("type" = ANY (ARRAY['DEBT_DEDUCTION'::"public"."financial_transaction_type", 'WITHDRAWAL_DEDUCTION'::"public"."financial_transaction_type"])) AND ("applied_month" IS NOT NULL) AND ("applied_month" = ("date_trunc"('month'::"text", ("applied_month")::timestamp with time zone))::"date")) OR (("type" <> ALL (ARRAY['DEBT_DEDUCTION'::"public"."financial_transaction_type", 'WITHDRAWAL_DEDUCTION'::"public"."financial_transaction_type"])) AND ("applied_month" IS NULL)))),
-    CONSTRAINT "financial_transactions_effective_date_shape" CHECK (((("type" = ANY (ARRAY['DEBT'::"public"."financial_transaction_type", 'WITHDRAWAL'::"public"."financial_transaction_type"])) AND ("effective_date" IS NOT NULL)) OR ("type" <> ALL (ARRAY['DEBT'::"public"."financial_transaction_type", 'WITHDRAWAL'::"public"."financial_transaction_type"]))))
+    CONSTRAINT "financial_transactions_effective_date_shape" CHECK (((("type" = ANY (ARRAY['DEBT'::"public"."financial_transaction_type", 'WITHDRAWAL'::"public"."financial_transaction_type"])) AND ("effective_date" IS NOT NULL)) OR ("type" <> ALL (ARRAY['DEBT'::"public"."financial_transaction_type", 'WITHDRAWAL'::"public"."financial_transaction_type"])))),
+    CONSTRAINT "financial_transactions_payment_allocation_check" CHECK (((("payment_contract_version" IS NULL) AND ("payment_channel" IS NULL) AND ("payment_transfer_amount" IS NULL)) OR (("type" = 'WITHDRAWAL'::"public"."financial_transaction_type") AND ("payment_contract_version" = 1) AND ("payment_channel" = ANY (ARRAY['branch_and_transfer'::"text", 'outside_system'::"text"])) AND ("payment_transfer_amount" IS NOT NULL) AND ("payment_transfer_amount" >= (0)::numeric) AND ("payment_transfer_amount" <= "amount") AND ((("payment_channel" = 'outside_system'::"text") AND ("expense_location_id" IS NULL) AND ("payment_transfer_amount" = (0)::numeric)) OR (("payment_channel" = 'branch_and_transfer'::"text") AND ("expense_location_id" IS NOT NULL))))))
 );
 
 
@@ -15031,7 +16154,11 @@ CREATE TABLE IF NOT EXISTS "public"."payroll_slips" (
     "cancelled_at" timestamp with time zone,
     "cancelled_by" "uuid",
     "cancel_reason" "text",
-    CONSTRAINT "payroll_slips_net_pay_whole_baht" CHECK ((("net_pay" >= (0)::numeric) AND ("net_pay" = "trunc"("net_pay", 0))))
+    "payment_contract_version" smallint,
+    "payment_channel" "text",
+    "payment_transfer_amount" numeric(14,2),
+    CONSTRAINT "payroll_slips_net_pay_whole_baht" CHECK ((("net_pay" >= (0)::numeric) AND ("net_pay" = "trunc"("net_pay", 0)))),
+    CONSTRAINT "payroll_slips_payment_allocation_check" CHECK (((("payment_contract_version" IS NULL) AND ("payment_channel" IS NULL) AND ("payment_transfer_amount" IS NULL)) OR (("payment_contract_version" = 1) AND ("payment_channel" = ANY (ARRAY['branch_and_transfer'::"text", 'outside_system'::"text"])) AND ("payment_transfer_amount" IS NOT NULL) AND ("payment_transfer_amount" >= (0)::numeric) AND ("payment_transfer_amount" <= "net_pay") AND ((("payment_channel" = 'outside_system'::"text") AND ("expense_location_id" IS NULL) AND ("payment_transfer_amount" = (0)::numeric)) OR (("payment_channel" = 'branch_and_transfer'::"text") AND ("expense_location_id" IS NOT NULL))))))
 );
 
 
@@ -15082,6 +16209,32 @@ CREATE OR REPLACE FUNCTION "public"."get_actionable_badge_counts"() RETURNS TABL
     SET "search_path" TO ''
     AS $$
   with combined as (
+    select * from public.get_actionable_badge_counts_before_branch_receipt()
+    union all
+    select transfer.target_location_id, 'cash'::text, count(*)::bigint
+    from public.money_transfers transfer
+    where transfer.transfer_type = 'branch'
+      and transfer.record_status <> 'deleted'
+      and transfer.branch_receipt_contract_version = 1
+      and transfer.branch_receipt_status = 'pending_receipt'
+      and private.can_access_location(transfer.target_location_id)
+    group by transfer.target_location_id
+  )
+  select combined.location_id, combined.module_id, sum(combined.item_count)::bigint
+  from combined
+  group by combined.location_id, combined.module_id
+  order by combined.location_id, combined.module_id
+$$;
+
+
+ALTER FUNCTION "public"."get_actionable_badge_counts"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_actionable_badge_counts_before_branch_receipt"() RETURNS TABLE("location_id" "uuid", "module_id" "text", "item_count" bigint)
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  with combined as (
     select * from public.get_actionable_badge_counts_before_missing_payroll_slips()
     union all
     select missing.location_id, 'time-tracking'::text, missing.item_count
@@ -15094,7 +16247,7 @@ CREATE OR REPLACE FUNCTION "public"."get_actionable_badge_counts"() RETURNS TABL
 $$;
 
 
-ALTER FUNCTION "public"."get_actionable_badge_counts"() OWNER TO "postgres";
+ALTER FUNCTION "public"."get_actionable_badge_counts_before_branch_receipt"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_actionable_badge_counts_before_missing_payroll_slips"() RETURNS TABLE("location_id" "uuid", "module_id" "text", "item_count" bigint)
@@ -15271,6 +16424,51 @@ $$;
 
 
 ALTER FUNCTION "public"."get_branch_create_confirmation_minutes"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_branch_money_transfer_detail"("p_transfer_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_transfer public.money_transfers;
+begin
+  if not private.is_active_user() then
+    raise exception 'MT_ACCESS_DENIED: ไม่มีสิทธิ์ดูรายการโอนเงิน';
+  end if;
+
+  select * into v_transfer
+  from public.money_transfers transfer
+  where transfer.id = p_transfer_id
+    and transfer.transfer_type = 'branch'
+    and transfer.record_status <> 'deleted';
+
+  if v_transfer.id is null then
+    raise exception 'MT_NOT_FOUND: ไม่พบรายการโอนเงิน';
+  end if;
+  if not private.can_access_location(v_transfer.target_location_id) then
+    raise exception 'MT_LOCATION_DENIED: ไม่มีสิทธิ์เข้าถึงสาขาผู้รับ';
+  end if;
+
+  return to_jsonb(v_transfer)
+    || jsonb_build_object(
+      'virtualStatus', case
+        when v_transfer.branch_receipt_contract_version = 1
+          and v_transfer.branch_receipt_status = 'pending_receipt'
+          then 'branch_pending_receipt'
+        else 'branch_received'
+      end,
+      'slips', coalesce((
+        select jsonb_agg(to_jsonb(slip) order by slip.sort_order, slip.created_at, slip.id)
+        from public.money_transfer_slips slip
+        where slip.transfer_id = v_transfer.id
+      ), '[]'::jsonb)
+    );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_branch_money_transfer_detail"("p_transfer_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_cash_branch_transfer_detail"("p_transfer_id" "uuid") RETURNS "jsonb"
@@ -15783,7 +16981,7 @@ begin
         true,
         false
       from public.money_transfers mt
-      where mt.transfer_type = 'branch'
+      where (mt.transfer_type = 'branch' and private.money_transfer_is_financially_effective(mt))
         and coalesce(mt.transfer_method, 'bank') <> 'cash'
         and mt.target_location_id = p_location_id
         and mt.record_status <> 'deleted'
@@ -15806,7 +17004,7 @@ begin
         true,
         false
       from public.money_transfers mt
-      where mt.transfer_type = 'branch'
+      where (mt.transfer_type = 'branch' and private.money_transfer_is_financially_effective(mt))
         and coalesce(mt.transfer_method, 'bank') <> 'cash'
         and mt.location_id = p_location_id
         and mt.target_location_id <> mt.location_id
@@ -16528,7 +17726,7 @@ begin
           'relationLockReason', 'รายการนี้มาจากการโอนเงินสาขา ต้องแก้ไขหรือลบที่โมดูลโอนเงินต้นทาง'
         )
       from public.money_transfers mt
-      where mt.transfer_type = 'branch' and mt.target_location_id = p_location_id
+      where (mt.transfer_type = 'branch' and private.money_transfer_is_financially_effective(mt)) and mt.target_location_id = p_location_id
         and mt.record_status <> 'deleted' and mt.transfer_status <> 'cancelled'
         and mt.net_amount_to_pay > 0 and (mt.created_at at time zone 'Asia/Bangkok')::date between p_from_date and p_to_date
 
@@ -16552,7 +17750,7 @@ begin
           'relationLockReason', 'รายการนี้มาจากการโอนเงินสาขา ต้องแก้ไขหรือลบที่โมดูลโอนเงินต้นทาง'
         )
       from public.money_transfers mt
-      where mt.transfer_type = 'branch' and mt.location_id = p_location_id
+      where (mt.transfer_type = 'branch' and private.money_transfer_is_financially_effective(mt)) and mt.location_id = p_location_id
         and mt.target_location_id <> mt.location_id and mt.record_status <> 'deleted'
         and mt.transfer_status <> 'cancelled' and mt.net_amount_to_pay > 0
         and (mt.created_at at time zone 'Asia/Bangkok')::date between p_from_date and p_to_date
@@ -16787,6 +17985,255 @@ CREATE OR REPLACE FUNCTION "public"."get_income_expense_operational_feed"("p_loc
     AS $$
 declare
   v_result jsonb;
+  v_rows jsonb := '[]'::jsonb;
+  v_row jsonb;
+  v_amount numeric;
+  v_transfer_amount numeric;
+begin
+  v_result := public.get_income_expense_operational_feed_before_time_payroll_payment(
+    p_location_id, p_mode, p_search, p_cursor
+  );
+  for v_row in select value from jsonb_array_elements(coalesce(v_result -> 'rows', '[]'::jsonb))
+  loop
+    if v_row ->> 'relationSourceType' = 'time_tracking_withdrawal' then
+      select private.time_payroll_branch_paid_amount(
+        source.amount, source.payment_contract_version, source.payment_channel,
+        source.payment_transfer_amount, source.expense_location_id
+      ), coalesce(source.payment_transfer_amount, 0)
+      into v_amount, v_transfer_amount
+      from public.financial_transactions source
+      where source.id = (v_row ->> 'relationSourceId')::uuid;
+      if coalesce(v_amount, 0) <= 0 then continue; end if;
+      v_row := jsonb_set(v_row, '{cost}', to_jsonb(v_amount), true);
+      v_row := jsonb_set(v_row, '{title}', to_jsonb(
+        case when v_transfer_amount > 0 then 'สาขาจ่ายส่วนต่าง — ' else 'สาขาจ่าย — ' end || (v_row ->> 'title')
+      ), true);
+    elsif v_row ->> 'relationSourceType' = 'payroll_slip' then
+      select private.time_payroll_branch_paid_amount(
+        source.net_pay, source.payment_contract_version, source.payment_channel,
+        source.payment_transfer_amount, source.expense_location_id
+      ), coalesce(source.payment_transfer_amount, 0)
+      into v_amount, v_transfer_amount
+      from public.payroll_slips source
+      where source.id = (v_row ->> 'relationSourceId')::uuid;
+      if coalesce(v_amount, 0) <= 0 then continue; end if;
+      v_row := jsonb_set(v_row, '{cost}', to_jsonb(v_amount), true);
+      v_row := jsonb_set(v_row, '{title}', to_jsonb(
+        case when v_transfer_amount > 0 then 'สาขาจ่ายส่วนต่าง — ' else 'สาขาจ่าย — ' end || (v_row ->> 'title')
+      ), true);
+    end if;
+    v_rows := v_rows || jsonb_build_array(v_row);
+  end loop;
+  return jsonb_set(v_result, '{rows}', v_rows, true);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_income_expense_operational_feed"("p_location_id" "uuid", "p_mode" "text", "p_search" "text", "p_cursor" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_income_expense_operational_feed_20260907010000_base"("p_location_id" "uuid", "p_mode" "text" DEFAULT 'latest'::"text", "p_search" "text" DEFAULT ''::"text", "p_cursor" "text" DEFAULT NULL::"text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'private'
+    AS $_$
+declare
+  v_search text := lower(regexp_replace(btrim(coalesce(p_search, '')), '\s+', ' ', 'g'));
+  v_cursor jsonb;
+  v_cursor_date date;
+  v_cursor_key text;
+  v_pending_count integer := 0;
+begin
+  if p_mode <> 'latest' or v_search <> '' then
+    return public.get_income_expense_operational_feed_on_demand(
+      p_location_id, p_mode, v_search, p_cursor
+    );
+  end if;
+
+  if not private.is_active_user() or not private.can_access_location(p_location_id) then
+    raise exception 'Location access denied';
+  end if;
+
+  if p_cursor is not null then
+    begin
+      if length(p_cursor) > 4096 or length(p_cursor) % 2 <> 0 or p_cursor !~ '^[0-9a-f]+$' then
+        raise exception 'Invalid cursor';
+      end if;
+      v_cursor := convert_from(decode(p_cursor, 'hex'), 'utf8')::jsonb;
+    exception when others then raise exception 'Invalid cursor'; end;
+    if coalesce((v_cursor->>'v')::integer, 0) <> 1
+      or v_cursor->>'locationId' is distinct from p_location_id::text
+      or v_cursor->>'mode' is distinct from 'latest'
+      or v_cursor->>'search' is distinct from ''
+      or v_cursor->>'sort' is distinct from 'tx_date_desc'
+    then raise exception 'Cursor scope mismatch'; end if;
+    begin
+      v_cursor_date := (v_cursor->>'date')::date;
+      v_cursor_key := nullif(v_cursor->>'key', '');
+      if v_cursor_key is null then raise exception 'Invalid cursor'; end if;
+    exception when others then raise exception 'Invalid cursor'; end;
+  end if;
+
+  if private.can_access_super_admin_features() then
+    select
+      (select count(*) from public.income_expense_approval_requests r
+       where r.location_id = p_location_id and r.request_status = 'pending')
+      +
+      (select count(*) from public.cash_transfer_delete_requests r
+       where r.source_location_id = p_location_id and r.request_status = 'pending')
+    into v_pending_count;
+  end if;
+
+  return (
+    with candidates as (
+      select * from (
+        select 'actual'::text source_kind, ie.id source_id, null::date source_date,
+          ie.tx_date sort_date, 'actual:' || ie.id::text sort_key
+        from public.income_expense ie
+        where ie.location_id = p_location_id and ie.record_status = 'active'
+          and (v_cursor_date is null or (ie.tx_date, 'actual:' || ie.id::text) < (v_cursor_date, v_cursor_key))
+        order by ie.tx_date desc, ('actual:' || ie.id::text) desc limit 101
+      ) actual
+      union all
+      select * from (
+        select 'branch_income', mt.id, null::date,
+          coalesce(mt.accounting_date, (mt.created_at at time zone 'Asia/Bangkok')::date) d,
+          'transfer-income:' || mt.id::text k
+        from public.money_transfers mt
+        where (mt.transfer_type = 'branch' and private.money_transfer_is_financially_effective(mt)) and mt.target_location_id = p_location_id
+          and mt.record_status <> 'deleted' and mt.transfer_status <> 'cancelled' and mt.net_amount_to_pay > 0
+          and (v_cursor_date is null or (coalesce(mt.accounting_date,
+            (mt.created_at at time zone 'Asia/Bangkok')::date),
+            'transfer-income:' || mt.id::text) < (v_cursor_date, v_cursor_key))
+        order by d desc, k desc limit 101
+      ) branch_income
+      union all
+      select * from (
+        select 'branch_expense', mt.id, null::date,
+          coalesce(mt.accounting_date, (mt.created_at at time zone 'Asia/Bangkok')::date) d,
+          'transfer-expense:' || mt.id::text k
+        from public.money_transfers mt
+        where (mt.transfer_type = 'branch' and private.money_transfer_is_financially_effective(mt)) and mt.location_id = p_location_id
+          and mt.target_location_id <> mt.location_id and mt.record_status <> 'deleted'
+          and mt.transfer_status <> 'cancelled' and mt.net_amount_to_pay > 0
+          and (v_cursor_date is null or (coalesce(mt.accounting_date,
+            (mt.created_at at time zone 'Asia/Bangkok')::date),
+            'transfer-expense:' || mt.id::text) < (v_cursor_date, v_cursor_key))
+        order by d desc, k desc limit 101
+      ) branch_expense
+      union all
+      select * from (
+        select 'customer_branch_paid', mt.id, null::date,
+          (mt.created_at at time zone 'Asia/Bangkok')::date d, 'customer-transfer-expense:' || mt.id::text k
+        from public.money_transfers mt
+        where mt.transfer_type = 'customer' and mt.transfer_status = 'branch_and_transfer'
+          and mt.location_id = p_location_id and mt.record_status <> 'deleted' and mt.branch_paid_amount > 0
+          and (v_cursor_date is null or ((mt.created_at at time zone 'Asia/Bangkok')::date,
+            'customer-transfer-expense:' || mt.id::text) < (v_cursor_date, v_cursor_key))
+        order by d desc, k desc limit 101
+      ) customer_branch_paid
+      union all
+      select * from (
+        select 'cash_expense', mt.id, null::date,
+          (d.sent_at at time zone 'Asia/Bangkok')::date sd, 'cash-transfer-expense:' || mt.id::text k
+        from public.money_transfers mt join public.money_transfer_cash_details d on d.transfer_id = mt.id
+        where mt.transfer_type = 'cash' and mt.transfer_method = 'cash'
+          and mt.location_id = p_location_id and mt.record_status <> 'deleted'
+          and (v_cursor_date is null or ((d.sent_at at time zone 'Asia/Bangkok')::date,
+            'cash-transfer-expense:' || mt.id::text) < (v_cursor_date, v_cursor_key))
+        order by sd desc, k desc limit 101
+      ) cash_expense
+      union all
+      select * from (
+        select 'cash_income', mt.id, null::date,
+          (d.received_at at time zone 'Asia/Bangkok')::date rd, 'cash-transfer-income:' || mt.id::text k
+        from public.money_transfers mt join public.money_transfer_cash_details d on d.transfer_id = mt.id
+        where mt.transfer_type = 'cash' and mt.transfer_method = 'cash'
+          and mt.target_location_id = p_location_id and mt.record_status <> 'deleted'
+          and d.cash_status in ('received', 'mismatched', 'difference_accepted')
+          and d.received_at is not null
+          and (v_cursor_date is null or ((d.received_at at time zone 'Asia/Bangkok')::date,
+            'cash-transfer-income:' || mt.id::text) < (v_cursor_date, v_cursor_key))
+        order by rd desc, k desc limit 101
+      ) cash_income
+      union all
+      select * from (
+        select 'withdrawal', ft.id, null::date,
+          (ft.approved_at at time zone 'Asia/Bangkok')::date d, 'time-tracking-withdrawal:' || ft.id::text k
+        from public.financial_transactions ft
+        where ft.type = 'WITHDRAWAL' and ft.status = 'APPROVED' and ft.cancelled_at is null
+          and ft.expense_location_id = p_location_id and ft.amount > 0
+          and (v_cursor_date is null or ((ft.approved_at at time zone 'Asia/Bangkok')::date,
+            'time-tracking-withdrawal:' || ft.id::text) < (v_cursor_date, v_cursor_key))
+        order by d desc, k desc limit 101
+      ) withdrawal
+      union all
+      select * from (
+        select 'payroll', ps.id, null::date,
+          (ps.approved_at at time zone 'Asia/Bangkok')::date d, 'payroll-slip:' || ps.id::text k
+        from public.payroll_slips ps
+        where ps.status = 'APPROVED' and ps.net_pay > 0 and ps.cancelled_at is null
+          and ps.expense_location_id = p_location_id
+          and (v_cursor_date is null or ((ps.approved_at at time zone 'Asia/Bangkok')::date,
+            'payroll-slip:' || ps.id::text) < (v_cursor_date, v_cursor_key))
+        order by d desc, k desc limit 101
+      ) payroll
+      union all
+      select * from (
+        select 'rubber_export', e.id, null::date,
+          (e.verified_at at time zone 'Asia/Bangkok')::date d, 'rubber-export-expense:' || e.id::text k
+        from public.rubber_exports e
+        where e.location_id = p_location_id and e.status = 'verified'
+          and e.expense_destination = 'branch' and e.work_total > 0
+          and (v_cursor_date is null or ((e.verified_at at time zone 'Asia/Bangkok')::date,
+            'rubber-export-expense:' || e.id::text) < (v_cursor_date, v_cursor_key))
+        order by d desc, k desc limit 101
+      ) rubber_export
+      union all
+      select * from (
+        select 'rubber_daily', null::uuid, b.bill_date, b.bill_date d, 'rubber:' || b.bill_date::text k
+        from public.rubber_bills b
+        where b.location_id = p_location_id and b.record_status = 'active' and b.net_total > 0
+          and private.rubber_bill_is_payable(b.id)
+          and not exists (select 1 from public.money_transfer_items i
+            where i.source_type = 'rubber_bill' and i.source_id = b.id)
+          and (v_cursor_date is null or (b.bill_date, 'rubber:' || b.bill_date::text) < (v_cursor_date, v_cursor_key))
+        group by b.bill_date order by d desc, k desc limit 101
+      ) rubber_daily
+    ), page as (
+      select * from candidates order by sort_date desc, sort_key desc limit 101
+    ), numbered as (
+      select *, row_number() over (order by sort_date desc, sort_key desc) row_no from page
+    ), rows as (
+      select n.*, private.income_expense_operational_row(
+        p_location_id, n.source_kind, n.source_id, n.source_date
+      ) row_data
+      from numbered n where n.row_no <= 100
+    )
+    select jsonb_build_object(
+      'rows', coalesce((select jsonb_agg(row_data order by sort_date desc, sort_key desc) from rows), '[]'::jsonb),
+      'nextCursor', case when (select count(*) from numbered) > 100 then
+        (select encode(convert_to(jsonb_build_object(
+          'v', 1, 'locationId', p_location_id, 'mode', 'latest', 'search', '',
+          'sort', 'tx_date_desc', 'date', sort_date, 'key', sort_key
+        )::text, 'utf8'), 'hex') from numbered where row_no = 100)
+        else null end,
+      'hasMore', (select count(*) from numbered) > 100,
+      'pendingApprovalCount', v_pending_count
+    )
+  );
+end;
+$_$;
+
+
+ALTER FUNCTION "public"."get_income_expense_operational_feed_20260907010000_base"("p_location_id" "uuid", "p_mode" "text", "p_search" "text", "p_cursor" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_income_expense_operational_feed_before_time_payroll_payment"("p_location_id" "uuid", "p_mode" "text" DEFAULT 'latest'::"text", "p_search" "text" DEFAULT ''::"text", "p_cursor" "text" DEFAULT NULL::"text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_result jsonb;
   v_search text := lower(regexp_replace(btrim(coalesce(p_search, '')), '\s+', ' ', 'g'));
   v_cursor jsonb;
   v_cursor_date date;
@@ -16928,207 +18375,11 @@ end;
 $$;
 
 
-ALTER FUNCTION "public"."get_income_expense_operational_feed"("p_location_id" "uuid", "p_mode" "text", "p_search" "text", "p_cursor" "text") OWNER TO "postgres";
+ALTER FUNCTION "public"."get_income_expense_operational_feed_before_time_payroll_payment"("p_location_id" "uuid", "p_mode" "text", "p_search" "text", "p_cursor" "text") OWNER TO "postgres";
 
 
-COMMENT ON FUNCTION "public"."get_income_expense_operational_feed"("p_location_id" "uuid", "p_mode" "text", "p_search" "text", "p_cursor" "text") IS 'Authenticated Income/Expense operational feed with withdrawal adjustments. VOLATILE matches its delegated feed functions.';
+COMMENT ON FUNCTION "public"."get_income_expense_operational_feed_before_time_payroll_payment"("p_location_id" "uuid", "p_mode" "text", "p_search" "text", "p_cursor" "text") IS 'Authenticated Income/Expense operational feed with withdrawal adjustments. VOLATILE matches its delegated feed functions.';
 
-
-
-CREATE OR REPLACE FUNCTION "public"."get_income_expense_operational_feed_20260907010000_base"("p_location_id" "uuid", "p_mode" "text" DEFAULT 'latest'::"text", "p_search" "text" DEFAULT ''::"text", "p_cursor" "text" DEFAULT NULL::"text") RETURNS "jsonb"
-    LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public', 'private'
-    AS $_$
-declare
-  v_search text := lower(regexp_replace(btrim(coalesce(p_search, '')), '\s+', ' ', 'g'));
-  v_cursor jsonb;
-  v_cursor_date date;
-  v_cursor_key text;
-  v_pending_count integer := 0;
-begin
-  if p_mode <> 'latest' or v_search <> '' then
-    return public.get_income_expense_operational_feed_on_demand(
-      p_location_id, p_mode, v_search, p_cursor
-    );
-  end if;
-
-  if not private.is_active_user() or not private.can_access_location(p_location_id) then
-    raise exception 'Location access denied';
-  end if;
-
-  if p_cursor is not null then
-    begin
-      if length(p_cursor) > 4096 or length(p_cursor) % 2 <> 0 or p_cursor !~ '^[0-9a-f]+$' then
-        raise exception 'Invalid cursor';
-      end if;
-      v_cursor := convert_from(decode(p_cursor, 'hex'), 'utf8')::jsonb;
-    exception when others then raise exception 'Invalid cursor'; end;
-    if coalesce((v_cursor->>'v')::integer, 0) <> 1
-      or v_cursor->>'locationId' is distinct from p_location_id::text
-      or v_cursor->>'mode' is distinct from 'latest'
-      or v_cursor->>'search' is distinct from ''
-      or v_cursor->>'sort' is distinct from 'tx_date_desc'
-    then raise exception 'Cursor scope mismatch'; end if;
-    begin
-      v_cursor_date := (v_cursor->>'date')::date;
-      v_cursor_key := nullif(v_cursor->>'key', '');
-      if v_cursor_key is null then raise exception 'Invalid cursor'; end if;
-    exception when others then raise exception 'Invalid cursor'; end;
-  end if;
-
-  if private.can_access_super_admin_features() then
-    select
-      (select count(*) from public.income_expense_approval_requests r
-       where r.location_id = p_location_id and r.request_status = 'pending')
-      +
-      (select count(*) from public.cash_transfer_delete_requests r
-       where r.source_location_id = p_location_id and r.request_status = 'pending')
-    into v_pending_count;
-  end if;
-
-  return (
-    with candidates as (
-      select * from (
-        select 'actual'::text source_kind, ie.id source_id, null::date source_date,
-          ie.tx_date sort_date, 'actual:' || ie.id::text sort_key
-        from public.income_expense ie
-        where ie.location_id = p_location_id and ie.record_status = 'active'
-          and (v_cursor_date is null or (ie.tx_date, 'actual:' || ie.id::text) < (v_cursor_date, v_cursor_key))
-        order by ie.tx_date desc, ('actual:' || ie.id::text) desc limit 101
-      ) actual
-      union all
-      select * from (
-        select 'branch_income', mt.id, null::date,
-          coalesce(mt.accounting_date, (mt.created_at at time zone 'Asia/Bangkok')::date) d,
-          'transfer-income:' || mt.id::text k
-        from public.money_transfers mt
-        where mt.transfer_type = 'branch' and mt.target_location_id = p_location_id
-          and mt.record_status <> 'deleted' and mt.transfer_status <> 'cancelled' and mt.net_amount_to_pay > 0
-          and (v_cursor_date is null or (coalesce(mt.accounting_date,
-            (mt.created_at at time zone 'Asia/Bangkok')::date),
-            'transfer-income:' || mt.id::text) < (v_cursor_date, v_cursor_key))
-        order by d desc, k desc limit 101
-      ) branch_income
-      union all
-      select * from (
-        select 'branch_expense', mt.id, null::date,
-          coalesce(mt.accounting_date, (mt.created_at at time zone 'Asia/Bangkok')::date) d,
-          'transfer-expense:' || mt.id::text k
-        from public.money_transfers mt
-        where mt.transfer_type = 'branch' and mt.location_id = p_location_id
-          and mt.target_location_id <> mt.location_id and mt.record_status <> 'deleted'
-          and mt.transfer_status <> 'cancelled' and mt.net_amount_to_pay > 0
-          and (v_cursor_date is null or (coalesce(mt.accounting_date,
-            (mt.created_at at time zone 'Asia/Bangkok')::date),
-            'transfer-expense:' || mt.id::text) < (v_cursor_date, v_cursor_key))
-        order by d desc, k desc limit 101
-      ) branch_expense
-      union all
-      select * from (
-        select 'customer_branch_paid', mt.id, null::date,
-          (mt.created_at at time zone 'Asia/Bangkok')::date d, 'customer-transfer-expense:' || mt.id::text k
-        from public.money_transfers mt
-        where mt.transfer_type = 'customer' and mt.transfer_status = 'branch_and_transfer'
-          and mt.location_id = p_location_id and mt.record_status <> 'deleted' and mt.branch_paid_amount > 0
-          and (v_cursor_date is null or ((mt.created_at at time zone 'Asia/Bangkok')::date,
-            'customer-transfer-expense:' || mt.id::text) < (v_cursor_date, v_cursor_key))
-        order by d desc, k desc limit 101
-      ) customer_branch_paid
-      union all
-      select * from (
-        select 'cash_expense', mt.id, null::date,
-          (d.sent_at at time zone 'Asia/Bangkok')::date sd, 'cash-transfer-expense:' || mt.id::text k
-        from public.money_transfers mt join public.money_transfer_cash_details d on d.transfer_id = mt.id
-        where mt.transfer_type = 'cash' and mt.transfer_method = 'cash'
-          and mt.location_id = p_location_id and mt.record_status <> 'deleted'
-          and (v_cursor_date is null or ((d.sent_at at time zone 'Asia/Bangkok')::date,
-            'cash-transfer-expense:' || mt.id::text) < (v_cursor_date, v_cursor_key))
-        order by sd desc, k desc limit 101
-      ) cash_expense
-      union all
-      select * from (
-        select 'cash_income', mt.id, null::date,
-          (d.received_at at time zone 'Asia/Bangkok')::date rd, 'cash-transfer-income:' || mt.id::text k
-        from public.money_transfers mt join public.money_transfer_cash_details d on d.transfer_id = mt.id
-        where mt.transfer_type = 'cash' and mt.transfer_method = 'cash'
-          and mt.target_location_id = p_location_id and mt.record_status <> 'deleted'
-          and d.cash_status in ('received', 'mismatched', 'difference_accepted')
-          and d.received_at is not null
-          and (v_cursor_date is null or ((d.received_at at time zone 'Asia/Bangkok')::date,
-            'cash-transfer-income:' || mt.id::text) < (v_cursor_date, v_cursor_key))
-        order by rd desc, k desc limit 101
-      ) cash_income
-      union all
-      select * from (
-        select 'withdrawal', ft.id, null::date,
-          (ft.approved_at at time zone 'Asia/Bangkok')::date d, 'time-tracking-withdrawal:' || ft.id::text k
-        from public.financial_transactions ft
-        where ft.type = 'WITHDRAWAL' and ft.status = 'APPROVED' and ft.cancelled_at is null
-          and ft.expense_location_id = p_location_id and ft.amount > 0
-          and (v_cursor_date is null or ((ft.approved_at at time zone 'Asia/Bangkok')::date,
-            'time-tracking-withdrawal:' || ft.id::text) < (v_cursor_date, v_cursor_key))
-        order by d desc, k desc limit 101
-      ) withdrawal
-      union all
-      select * from (
-        select 'payroll', ps.id, null::date,
-          (ps.approved_at at time zone 'Asia/Bangkok')::date d, 'payroll-slip:' || ps.id::text k
-        from public.payroll_slips ps
-        where ps.status = 'APPROVED' and ps.net_pay > 0 and ps.cancelled_at is null
-          and ps.expense_location_id = p_location_id
-          and (v_cursor_date is null or ((ps.approved_at at time zone 'Asia/Bangkok')::date,
-            'payroll-slip:' || ps.id::text) < (v_cursor_date, v_cursor_key))
-        order by d desc, k desc limit 101
-      ) payroll
-      union all
-      select * from (
-        select 'rubber_export', e.id, null::date,
-          (e.verified_at at time zone 'Asia/Bangkok')::date d, 'rubber-export-expense:' || e.id::text k
-        from public.rubber_exports e
-        where e.location_id = p_location_id and e.status = 'verified'
-          and e.expense_destination = 'branch' and e.work_total > 0
-          and (v_cursor_date is null or ((e.verified_at at time zone 'Asia/Bangkok')::date,
-            'rubber-export-expense:' || e.id::text) < (v_cursor_date, v_cursor_key))
-        order by d desc, k desc limit 101
-      ) rubber_export
-      union all
-      select * from (
-        select 'rubber_daily', null::uuid, b.bill_date, b.bill_date d, 'rubber:' || b.bill_date::text k
-        from public.rubber_bills b
-        where b.location_id = p_location_id and b.record_status = 'active' and b.net_total > 0
-          and private.rubber_bill_is_payable(b.id)
-          and not exists (select 1 from public.money_transfer_items i
-            where i.source_type = 'rubber_bill' and i.source_id = b.id)
-          and (v_cursor_date is null or (b.bill_date, 'rubber:' || b.bill_date::text) < (v_cursor_date, v_cursor_key))
-        group by b.bill_date order by d desc, k desc limit 101
-      ) rubber_daily
-    ), page as (
-      select * from candidates order by sort_date desc, sort_key desc limit 101
-    ), numbered as (
-      select *, row_number() over (order by sort_date desc, sort_key desc) row_no from page
-    ), rows as (
-      select n.*, private.income_expense_operational_row(
-        p_location_id, n.source_kind, n.source_id, n.source_date
-      ) row_data
-      from numbered n where n.row_no <= 100
-    )
-    select jsonb_build_object(
-      'rows', coalesce((select jsonb_agg(row_data order by sort_date desc, sort_key desc) from rows), '[]'::jsonb),
-      'nextCursor', case when (select count(*) from numbered) > 100 then
-        (select encode(convert_to(jsonb_build_object(
-          'v', 1, 'locationId', p_location_id, 'mode', 'latest', 'search', '',
-          'sort', 'tx_date_desc', 'date', sort_date, 'key', sort_key
-        )::text, 'utf8'), 'hex') from numbered where row_no = 100)
-        else null end,
-      'hasMore', (select count(*) from numbered) > 100,
-      'pendingApprovalCount', v_pending_count
-    )
-  );
-end;
-$_$;
-
-
-ALTER FUNCTION "public"."get_income_expense_operational_feed_20260907010000_base"("p_location_id" "uuid", "p_mode" "text", "p_search" "text", "p_cursor" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_income_expense_operational_feed_before_wadj"("p_location_id" "uuid", "p_mode" "text" DEFAULT 'latest'::"text", "p_search" "text" DEFAULT ''::"text", "p_cursor" "text" DEFAULT NULL::"text") RETURNS "jsonb"
@@ -17492,7 +18743,7 @@ begin
         ))
       from public.money_transfers mt
       left join public.locations source_location on source_location.id = mt.location_id
-      where mt.transfer_type = 'branch' and mt.target_location_id = p_location_id
+      where (mt.transfer_type = 'branch' and private.money_transfer_is_financially_effective(mt)) and mt.target_location_id = p_location_id
         and mt.record_status <> 'deleted' and mt.transfer_status <> 'cancelled'
         and mt.net_amount_to_pay > 0
 
@@ -17526,7 +18777,7 @@ begin
           'reportLockNo', public.report_lock_no(mt)
         ))
       from public.money_transfers mt
-      where mt.transfer_type = 'branch' and mt.location_id = p_location_id
+      where (mt.transfer_type = 'branch' and private.money_transfer_is_financially_effective(mt)) and mt.location_id = p_location_id
         and mt.target_location_id <> mt.location_id and mt.record_status <> 'deleted'
         and mt.transfer_status <> 'cancelled' and mt.net_amount_to_pay > 0
 
@@ -17855,27 +19106,40 @@ begin
   if not private.can_access_location(p_location_id) then
     raise exception 'Location access denied';
   end if;
-  if p_page_size < 1 or p_page_size > 100 then
-    raise exception 'Invalid page size';
-  end if;
-  if (p_cursor_created_at is null) <> (p_cursor_id is null) then
-    raise exception 'Invalid transfer cursor';
-  end if;
-  with candidates as (
+  if p_page_size < 1 or p_page_size > 100 then raise exception 'Invalid page size'; end if;
+  if (p_cursor_created_at is null) <> (p_cursor_id is null) then raise exception 'Invalid transfer cursor'; end if;
+  if p_status not in (
+    'all', 'pending', 'partial', 'advance_payment', 'paid', 'overpaid',
+    'branch_and_transfer', 'cancelled', 'branch_pending_receipt', 'branch_received'
+  ) then raise exception 'Invalid transfer status'; end if;
+
+  with base as (
     select t.*, e.export_no as rubber_export_no,
       public.report_lock_no(t) report_lock_no,
       coalesce((select sum(s.amount) from public.money_transfer_slips s where s.transfer_id = t.id), 0) paid_amount,
       coalesce((select count(*) from public.money_transfer_slips s where s.transfer_id = t.id), 0) slip_count,
-      coalesce((select count(*) from public.money_transfer_items i where i.transfer_id = t.id), 0) source_count
+      coalesce((select count(*) from public.money_transfer_items i where i.transfer_id = t.id), 0) source_count,
+      case
+        when t.transfer_type = 'branch'
+          and t.branch_receipt_contract_version = 1
+          and t.branch_receipt_status = 'pending_receipt'
+          then 'branch_pending_receipt'
+        when t.transfer_type = 'branch' then 'branch_received'
+        else t.transfer_status
+      end as virtual_status
     from public.money_transfers t
     left join public.rubber_exports e on e.id = t.rubber_export_id
     where t.location_id = p_location_id
       and t.record_status <> 'deleted'
       and t.transfer_type <> 'cash'
-      and (p_status = 'all' or t.transfer_status = p_status)
-      and (v_search = '' or position(v_search in lower(concat_ws(' ', t.customer_name, t.account_number,
-        t.account_name, t.bank_name, t.transport_staff_name, t.target_location_name,
-        e.export_no, t.id::text))) > 0)
+  ), candidates as (
+    select * from base t
+    where (p_status = 'all' or t.virtual_status = p_status)
+      and (v_search = '' or position(v_search in lower(concat_ws(' ',
+        t.customer_name, t.account_number, t.account_name, t.bank_name,
+        t.transport_staff_name, t.target_location_name, t.rubber_export_no,
+        t.time_payroll_employee_name, t.time_payroll_source_label, t.id::text
+      ))) > 0)
       and (p_cursor_created_at is null or (t.created_at, t.id) < (p_cursor_created_at, p_cursor_id))
     order by t.created_at desc, t.id desc
     limit p_page_size + 1
@@ -17886,15 +19150,16 @@ begin
     'rows', coalesce((select jsonb_agg(to_jsonb(v) order by v.created_at desc, v.id desc) from visible v), '[]'::jsonb),
     'statusCounts', (select jsonb_build_object(
       'all', count(*),
-      'pending', count(*) filter (where t.transfer_status = 'pending'),
-      'partial', count(*) filter (where t.transfer_status = 'partial'),
-      'advance_payment', count(*) filter (where t.transfer_status = 'advance_payment'),
-      'paid', count(*) filter (where t.transfer_status = 'paid'),
-      'overpaid', count(*) filter (where t.transfer_status = 'overpaid'),
-      'branch_and_transfer', count(*) filter (where t.transfer_status = 'branch_and_transfer'),
-      'cancelled', count(*) filter (where t.transfer_status = 'cancelled')
-    ) from public.money_transfers t where t.location_id = p_location_id and t.record_status <> 'deleted'
-      and t.transfer_type <> 'cash'),
+      'pending', count(*) filter (where t.virtual_status = 'pending'),
+      'partial', count(*) filter (where t.virtual_status = 'partial'),
+      'advance_payment', count(*) filter (where t.virtual_status = 'advance_payment'),
+      'paid', count(*) filter (where t.virtual_status = 'paid'),
+      'overpaid', count(*) filter (where t.virtual_status = 'overpaid'),
+      'branch_and_transfer', count(*) filter (where t.virtual_status = 'branch_and_transfer'),
+      'cancelled', count(*) filter (where t.virtual_status = 'cancelled'),
+      'branch_pending_receipt', count(*) filter (where t.virtual_status = 'branch_pending_receipt'),
+      'branch_received', count(*) filter (where t.virtual_status = 'branch_received')
+    ) from base t),
     'hasMore', (select count(*) > p_page_size from candidates),
     'nextCreatedAt', (select v.created_at from visible v order by v.created_at, v.id limit 1),
     'nextId', (select v.id from visible v order by v.created_at, v.id limit 1)
@@ -18086,6 +19351,73 @@ $$;
 
 
 ALTER FUNCTION "public"."get_my_active_location_assignments"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_pending_branch_money_transfers"("p_location_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select public.get_pending_branch_money_transfers(p_location_id, 20)
+$$;
+
+
+ALTER FUNCTION "public"."get_pending_branch_money_transfers"("p_location_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_pending_branch_money_transfers"("p_location_id" "uuid", "p_limit" integer) RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_limit integer := least(greatest(coalesce(p_limit, 20), 1), 100);
+begin
+  if not private.is_active_user() then
+    raise exception 'MT_ACCESS_DENIED: ไม่มีสิทธิ์ดูรายการรอยืนยัน';
+  end if;
+  if not private.can_access_location(p_location_id) then
+    raise exception 'MT_LOCATION_DENIED: ไม่มีสิทธิ์เข้าถึงสาขาผู้รับ';
+  end if;
+
+  return jsonb_build_object(
+    'rows', coalesce((
+      select jsonb_agg(
+        jsonb_build_object(
+          'id', rows.id,
+          'net_amount_to_pay', rows.net_amount_to_pay,
+          'created_by_name', rows.created_by_name
+        ) order by rows.created_at asc, rows.id asc
+      )
+      from (
+        select
+          transfer.id,
+          transfer.net_amount_to_pay,
+          transfer.created_by_name,
+          transfer.created_at
+        from public.money_transfers transfer
+        where transfer.target_location_id = p_location_id
+          and transfer.transfer_type = 'branch'
+          and transfer.record_status <> 'deleted'
+          and transfer.branch_receipt_contract_version = 1
+          and transfer.branch_receipt_status = 'pending_receipt'
+        order by transfer.created_at asc, transfer.id asc
+        limit v_limit
+      ) rows
+    ), '[]'::jsonb),
+    'total', (
+      select count(*)
+      from public.money_transfers transfer
+      where transfer.target_location_id = p_location_id
+        and transfer.transfer_type = 'branch'
+        and transfer.record_status <> 'deleted'
+        and transfer.branch_receipt_contract_version = 1
+        and transfer.branch_receipt_status = 'pending_receipt'
+    )
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_pending_branch_money_transfers"("p_location_id" "uuid", "p_limit" integer) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_receivable_rubber_exports"("p_destination_location_id" "uuid") RETURNS TABLE("source_rubber_export_id" "uuid", "source_export_no" "text", "source_location_id" "uuid", "source_location_name" "text", "verified_at" timestamp with time zone, "current_weight" numeric, "rubber_value" numeric, "source_average_age_hours" numeric, "received_age_hours" numeric, "age_is_estimated" boolean)
@@ -19300,6 +20632,49 @@ CREATE OR REPLACE FUNCTION "public"."get_telegram_badge_counts"() RETURNS TABLE(
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
+  with combined as (
+    select * from public.get_telegram_badge_counts_before_branch_receipt()
+    union all
+    select
+      catalog.badge_key,
+      transfer.target_location_id,
+      coalesce(location.name, 'ส่วนกลาง'),
+      catalog.module_name,
+      catalog.status_label,
+      count(*)::bigint,
+      catalog.sort_order
+    from public.money_transfers transfer
+    join public.telegram_badge_settings setting
+      on setting.id = true
+     and 'branch_transfer_pending_receipt' = any(setting.enabled_badge_keys)
+    join public.telegram_badge_catalog catalog
+      on catalog.badge_key = 'branch_transfer_pending_receipt'
+    left join public.locations location on location.id = transfer.target_location_id
+    where transfer.transfer_type = 'branch'
+      and transfer.record_status <> 'deleted'
+      and transfer.branch_receipt_contract_version = 1
+      and transfer.branch_receipt_status = 'pending_receipt'
+    group by catalog.badge_key, transfer.target_location_id, location.name,
+      catalog.module_name, catalog.status_label, catalog.sort_order
+  )
+  select combined.badge_key, combined.location_id, combined.branch_name,
+    combined.module_name, combined.status_label,
+    sum(combined.item_count)::bigint, combined.sort_order
+  from combined
+  group by combined.badge_key, combined.location_id, combined.branch_name,
+    combined.module_name, combined.status_label, combined.sort_order
+  order by case when combined.branch_name = 'ส่วนกลาง' then 1 else 0 end,
+    combined.branch_name, combined.sort_order
+$$;
+
+
+ALTER FUNCTION "public"."get_telegram_badge_counts"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_telegram_badge_counts_before_branch_receipt"() RETURNS TABLE("badge_key" "text", "location_id" "uuid", "branch_name" "text", "module_name" "text", "status_label" "text", "item_count" bigint, "sort_order" integer)
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
   with enabled as (
     select c.badge_key, c.module_name, c.status_label, c.sort_order
     from public.telegram_badge_catalog c
@@ -19401,7 +20776,7 @@ CREATE OR REPLACE FUNCTION "public"."get_telegram_badge_counts"() RETURNS TABLE(
 $$;
 
 
-ALTER FUNCTION "public"."get_telegram_badge_counts"() OWNER TO "postgres";
+ALTER FUNCTION "public"."get_telegram_badge_counts_before_branch_receipt"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_telegram_badge_delivery_credentials"() RETURNS "jsonb"
@@ -20594,6 +21969,81 @@ $$;
 ALTER FUNCTION "public"."rebuild_dashboard_refresh_now"("p_location_id" "uuid", "p_claimed_version" bigint) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."receive_branch_money_transfer"("p_transfer_id" "uuid", "p_expected_revision" integer) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_transfer public.money_transfers;
+  v_actor_name text;
+  v_target_location_id uuid;
+begin
+  if not private.is_active_user() then
+    raise exception 'MT_ACCESS_DENIED: ไม่มีสิทธิ์ยืนยันรับเงิน';
+  end if;
+  if p_transfer_id is null or p_expected_revision is null then
+    raise exception 'MT_INVALID_PAYLOAD: ข้อมูลยืนยันรับเงินไม่ครบ';
+  end if;
+
+  select transfer.target_location_id into v_target_location_id
+  from public.money_transfers transfer
+  where transfer.id = p_transfer_id;
+  if v_target_location_id is null then
+    raise exception 'MT_NOT_FOUND: ไม่พบรายการโอนเงินรอยืนยัน';
+  end if;
+  if not private.can_access_location(v_target_location_id) then
+    raise exception 'MT_LOCATION_DENIED: ไม่มีสิทธิ์เข้าถึงสาขาผู้รับ';
+  end if;
+  perform private.lock_report_locations(array[v_target_location_id]);
+
+  select * into v_transfer
+  from public.money_transfers transfer
+  where transfer.id = p_transfer_id
+  for update;
+
+  if v_transfer.id is null or v_transfer.record_status = 'deleted'
+    or v_transfer.transfer_type <> 'branch'
+    or v_transfer.branch_receipt_contract_version <> 1 then
+    raise exception 'MT_NOT_FOUND: ไม่พบรายการโอนเงินรอยืนยัน';
+  end if;
+  if v_transfer.target_location_id is distinct from v_target_location_id then
+    raise exception 'MT_REVISION_CONFLICT: ข้อมูลถูกแก้ไขแล้ว กรุณาโหลดใหม่';
+  end if;
+  if not private.can_access_location(v_transfer.target_location_id) then
+    raise exception 'MT_LOCATION_DENIED: ไม่มีสิทธิ์เข้าถึงสาขาผู้รับ';
+  end if;
+
+  if v_transfer.branch_receipt_status = 'received' then
+    return public.get_branch_money_transfer_detail(v_transfer.id)
+      || jsonb_build_object('idempotentReplay', true);
+  end if;
+  if v_transfer.revision_no <> p_expected_revision then
+    raise exception 'MT_REVISION_CONFLICT: ข้อมูลถูกแก้ไขแล้ว กรุณาโหลดใหม่';
+  end if;
+
+  select profile.name into v_actor_name
+  from public.profiles profile
+  where profile.id = auth.uid();
+
+  update public.money_transfers transfer set
+    branch_receipt_status = 'received',
+    branch_received_by_user_id = auth.uid(),
+    branch_received_by_name = coalesce(nullif(btrim(v_actor_name), ''), 'ผู้ใช้งาน'),
+    branch_received_at = statement_timestamp(),
+    accounting_date = (statement_timestamp() at time zone 'Asia/Bangkok')::date,
+    revision_no = transfer.revision_no + 1,
+    updated_at = statement_timestamp()
+  where transfer.id = v_transfer.id;
+
+  return public.get_branch_money_transfer_detail(v_transfer.id)
+    || jsonb_build_object('idempotentReplay', false);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."receive_branch_money_transfer"("p_transfer_id" "uuid", "p_expected_revision" integer) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."receive_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -21224,52 +22674,6 @@ CREATE OR REPLACE FUNCTION "public"."report_lock_no"("source_row" "public"."inco
 ALTER FUNCTION "public"."report_lock_no"("source_row" "public"."income_expense") OWNER TO "postgres";
 
 
-CREATE TABLE IF NOT EXISTS "public"."money_transfers" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "client_temp_id" "text",
-    "idempotency_key" "text",
-    "location_id" "uuid" NOT NULL,
-    "customer_id" "uuid",
-    "customer_name" "text",
-    "account_number" "text",
-    "account_name" "text",
-    "bank_name" "text",
-    "net_amount_to_pay" numeric(14,2) DEFAULT 0 NOT NULL,
-    "transfer_status" "text" DEFAULT 'pending'::"text" NOT NULL,
-    "sync_status" "public"."sync_status" DEFAULT 'synced'::"public"."sync_status" NOT NULL,
-    "record_status" "public"."record_status" DEFAULT 'active'::"public"."record_status" NOT NULL,
-    "revision_no" integer DEFAULT 0 NOT NULL,
-    "created_by_user_id" "uuid",
-    "created_by_name" "text" DEFAULT ''::"text" NOT NULL,
-    "created_by_phone" "text" DEFAULT ''::"text" NOT NULL,
-    "client_recorded_at" timestamp with time zone,
-    "server_received_at" timestamp with time zone,
-    "deleted_at" timestamp with time zone,
-    "deleted_by_name" "text",
-    "deleted_by_phone" "text",
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "branch_paid_amount" numeric(12,2) DEFAULT 0,
-    "transfer_type" "text" DEFAULT 'customer'::"text" NOT NULL,
-    "transport_cost" numeric(12,2) DEFAULT 0,
-    "transport_staff_id" "uuid",
-    "transport_staff_name" "text",
-    "target_location_id" "uuid",
-    "target_location_name" "text",
-    "transfer_method" "text" DEFAULT 'bank'::"text" NOT NULL,
-    "accounting_date" "date",
-    "request_fingerprint" "text",
-    "rubber_export_id" "uuid",
-    CONSTRAINT "money_transfers_rubber_export_source_check" CHECK ((("transfer_type" = 'rubber_export_work'::"text") = ("rubber_export_id" IS NOT NULL))),
-    CONSTRAINT "money_transfers_transfer_method_check" CHECK (("transfer_method" = ANY (ARRAY['bank'::"text", 'cash'::"text"]))),
-    CONSTRAINT "money_transfers_transfer_status_check" CHECK (("transfer_status" = ANY (ARRAY['pending'::"text", 'paid'::"text", 'partial'::"text", 'overpaid'::"text", 'branch_and_transfer'::"text", 'advance_payment'::"text", 'cancelled'::"text"]))),
-    CONSTRAINT "money_transfers_transfer_type_check" CHECK (("transfer_type" = ANY (ARRAY['customer'::"text", 'transport'::"text", 'branch'::"text", 'cash'::"text", 'rubber_export_work'::"text"])))
-);
-
-
-ALTER TABLE "public"."money_transfers" OWNER TO "postgres";
-
-
 CREATE OR REPLACE FUNCTION "public"."report_lock_no"("source_row" "public"."money_transfers") RETURNS "text"
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -21599,6 +23003,123 @@ CREATE OR REPLACE FUNCTION "public"."report_lock_no"("source_row" "public"."time
 
 
 ALTER FUNCTION "public"."report_lock_no"("source_row" "public"."time_segments") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."request_branch_money_transfer_delete"("p_transfer_id" "uuid", "p_expected_revision" integer) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_transfer public.money_transfers;
+  v_requires_approval boolean;
+  v_existing_request_id uuid;
+  v_request_id uuid;
+  v_actor_name text;
+  v_actor_phone text;
+  v_locked_location_id uuid;
+begin
+  if not private.is_active_user() or not private.can_access_money_transfer_module() then
+    raise exception 'MT_ACCESS_DENIED: ไม่มีสิทธิ์ลบรายการโอนเงิน';
+  end if;
+  if p_transfer_id is null or p_expected_revision is null then
+    raise exception 'MT_INVALID_PAYLOAD: ข้อมูลลบรายการโอนไม่ครบ';
+  end if;
+
+  select transfer.location_id into v_locked_location_id
+  from public.money_transfers transfer
+  where transfer.id = p_transfer_id;
+  if v_locked_location_id is null then
+    raise exception 'MT_NOT_FOUND: ไม่พบรายการโอนเงิน';
+  end if;
+  if not private.can_access_location(v_locked_location_id) then
+    raise exception 'MT_LOCATION_DENIED: ไม่มีสิทธิ์เข้าถึงสาขา';
+  end if;
+  perform private.lock_report_locations(array[v_locked_location_id]);
+
+  select * into v_transfer
+  from public.money_transfers transfer
+  where transfer.id = p_transfer_id
+  for update;
+
+  if v_transfer.id is null or v_transfer.record_status = 'deleted'
+    or v_transfer.transfer_type <> 'branch' then
+    raise exception 'MT_NOT_FOUND: ไม่พบรายการโอนเงิน';
+  end if;
+  if v_transfer.location_id is distinct from v_locked_location_id
+    or v_transfer.revision_no <> p_expected_revision then
+    raise exception 'MT_REVISION_CONFLICT: ข้อมูลถูกแก้ไขแล้ว กรุณาโหลดใหม่';
+  end if;
+  if v_transfer.branch_receipt_contract_version is distinct from 1 then
+    raise exception 'MT_LEGACY_BRANCH_READ_ONLY: รายการรุ่นเดิมดูได้อย่างเดียว';
+  end if;
+  if v_transfer.created_by_user_id is distinct from auth.uid() then
+    raise exception 'MT_DELETE_CREATOR_ONLY: เฉพาะผู้สร้างรายการเท่านั้นที่ลบได้';
+  end if;
+  if not private.can_access_location(v_transfer.location_id) then
+    raise exception 'MT_LOCATION_DENIED: ไม่มีสิทธิ์เข้าถึงสาขา';
+  end if;
+
+  if public.report_lock_no(v_transfer) is not null then
+    raise exception 'MT_REPORT_LOCKED: รายการถูกล็อกโดยรายงาน';
+  end if;
+
+  if v_transfer.branch_receipt_contract_version = 1
+    and v_transfer.branch_receipt_status = 'pending_receipt' then
+    return public.delete_money_transfer_before_branch_receipt(v_transfer.id, v_transfer.revision_no);
+  end if;
+
+  select request.id into v_existing_request_id
+  from public.branch_transfer_delete_requests request
+  where request.transfer_id = v_transfer.id
+    and request.request_status = 'pending'
+  for update;
+
+  if v_existing_request_id is not null then
+    return jsonb_build_object(
+      'id', v_transfer.id,
+      'status', 'pending_approval',
+      'requestId', v_existing_request_id
+    );
+  end if;
+
+  select coalesce(setting.cash_transfer_delete_requires_approval, true)
+  into v_requires_approval
+  from public.income_expense_approval_settings setting
+  where setting.id = true;
+
+  if not coalesce(v_requires_approval, true) then
+    return public.delete_money_transfer_before_branch_receipt(v_transfer.id, v_transfer.revision_no);
+  end if;
+
+  select profile.name, profile.phone into v_actor_name, v_actor_phone
+  from public.profiles profile
+  where profile.id = auth.uid();
+
+  insert into public.branch_transfer_delete_requests (
+    transfer_id, location_id, location_name, transfer_display_no, amount, received_at,
+    requested_by_user_id, requested_by_name, requested_by_phone
+  ) values (
+    v_transfer.id,
+    v_transfer.location_id,
+    coalesce(v_transfer.target_location_name, 'ไม่ทราบสาขา'),
+    'TR-' || left(v_transfer.id::text, 8),
+    v_transfer.net_amount_to_pay,
+    coalesce(v_transfer.branch_received_at, v_transfer.updated_at, v_transfer.created_at),
+    auth.uid(),
+    coalesce(v_actor_name, ''),
+    coalesce(v_actor_phone, '')
+  ) returning id into v_request_id;
+
+  return jsonb_build_object(
+    'id', v_transfer.id,
+    'status', 'pending_approval',
+    'requestId', v_request_id
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."request_branch_money_transfer_delete"("p_transfer_id" "uuid", "p_expected_revision" integer) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."request_history_retention_cleanup"("p_request_id" "uuid", "p_expected_updated_at" timestamp with time zone, "p_expected_cutoff_date" "date") RETURNS "jsonb"
@@ -22424,6 +23945,138 @@ CREATE OR REPLACE FUNCTION "public"."save_money_transfer"("p_payload" "jsonb") R
     SET "search_path" TO ''
     AS $$
 declare
+  v_id uuid := nullif(p_payload->>'id', '')::uuid;
+  v_operation text := coalesce(p_payload->>'operation', 'create');
+  v_transfer_type text := coalesce(p_payload->>'transferType', 'customer');
+  v_contract_version integer := nullif(p_payload->>'receiptContractVersion', '')::integer;
+  v_requested_target_id uuid := nullif(p_payload->>'targetLocationId', '')::uuid;
+  v_existing public.money_transfers;
+  v_locked_location_id uuid;
+  v_target_name text;
+  v_delegate_payload jsonb := p_payload;
+  v_result jsonb;
+begin
+  if v_transfer_type <> 'branch' then
+    return public.save_money_transfer_before_branch_receipt(p_payload);
+  end if;
+  if v_contract_version is distinct from 1 then
+    raise exception 'MT_CLIENT_REFRESH_REQUIRED: กรุณารีเฟรชหน้าจอก่อนสร้างหรือแก้ไขรายการโอนให้สาขา';
+  end if;
+  if v_id is null or v_requested_target_id is null then
+    raise exception 'MT_INVALID_PAYLOAD: ข้อมูลรายการโอนไม่ครบ';
+  end if;
+  if not private.is_active_user() or not private.can_access_money_transfer_module() then
+    raise exception 'MT_ACCESS_DENIED: ไม่มีสิทธิ์ใช้งานรายการโอนเงิน';
+  end if;
+  if not private.can_access_location(v_requested_target_id) then
+    raise exception 'MT_TARGET_LOCATION_DENIED: ไม่มีสิทธิ์โอนให้สาขานี้';
+  end if;
+
+  select location.name into v_target_name
+  from public.locations location
+  where location.id = v_requested_target_id
+    and location.is_active = true;
+  if v_target_name is null then
+    raise exception 'MT_TARGET_LOCATION_INACTIVE: สาขาผู้รับไม่เปิดใช้งาน';
+  end if;
+
+  if v_operation = 'update' then
+    select * into v_existing
+    from public.money_transfers transfer
+    where transfer.id = v_id;
+
+    if v_existing.id is null or v_existing.record_status = 'deleted'
+      or v_existing.transfer_type <> 'branch' then
+      raise exception 'MT_NOT_FOUND: ไม่พบรายการโอนเงิน';
+    end if;
+    if v_existing.branch_receipt_contract_version <> 1 then
+      raise exception 'MT_LEGACY_BRANCH_READ_ONLY: รายการรุ่นเดิมดูได้อย่างเดียว';
+    end if;
+    if v_existing.branch_receipt_status <> 'pending_receipt' then
+      raise exception 'MT_BRANCH_RECEIVED_IMMUTABLE: รายการที่ยืนยันรับแล้วแก้ไขไม่ได้';
+    end if;
+    if not private.can_access_location(v_existing.location_id) then
+      raise exception 'MT_LOCATION_DENIED: ไม่มีสิทธิ์เข้าถึงสาขาเดิม';
+    end if;
+    v_locked_location_id := v_existing.location_id;
+    perform private.lock_report_locations(array[v_locked_location_id, v_requested_target_id]);
+
+    select * into v_existing
+    from public.money_transfers transfer
+    where transfer.id = v_id
+    for update;
+
+    if v_existing.id is null or v_existing.record_status = 'deleted'
+      or v_existing.transfer_type <> 'branch' then
+      raise exception 'MT_NOT_FOUND: ไม่พบรายการโอนเงิน';
+    end if;
+    if v_existing.location_id is distinct from v_locked_location_id then
+      raise exception 'MT_REVISION_CONFLICT: ข้อมูลถูกแก้ไขแล้ว กรุณาโหลดใหม่';
+    end if;
+    if v_existing.branch_receipt_contract_version <> 1 then
+      raise exception 'MT_LEGACY_BRANCH_READ_ONLY: รายการรุ่นเดิมดูได้อย่างเดียว';
+    end if;
+    if v_existing.branch_receipt_status <> 'pending_receipt' then
+      raise exception 'MT_BRANCH_RECEIVED_IMMUTABLE: รายการที่ยืนยันรับแล้วแก้ไขไม่ได้';
+    end if;
+    if not private.can_access_location(v_existing.location_id) then
+      raise exception 'MT_LOCATION_DENIED: ไม่มีสิทธิ์เข้าถึงสาขาเดิม';
+    end if;
+
+    -- The legacy writer owns slip/source validation. Keep its same-location
+    -- invariant intact, then move the still-pending branch row atomically.
+    v_delegate_payload := jsonb_set(v_delegate_payload, '{locationId}', to_jsonb(v_existing.location_id::text), true);
+    v_delegate_payload := jsonb_set(v_delegate_payload, '{targetLocationId}', to_jsonb(v_existing.location_id::text), true);
+
+    update public.money_transfers transfer set
+      branch_receipt_contract_version = null,
+      branch_receipt_status = null,
+      branch_received_by_user_id = null,
+      branch_received_by_name = null,
+      branch_received_at = null
+    where transfer.id = v_existing.id;
+  else
+    perform private.lock_report_locations(array[v_requested_target_id]);
+  end if;
+
+  v_result := public.save_money_transfer_before_branch_receipt(v_delegate_payload);
+
+  if v_operation = 'create' and coalesce((v_result->>'idempotentReplay')::boolean, false) then
+    return public.get_money_transfer_detail(v_id)
+      || jsonb_build_object('idempotentReplay', true, 'changedSources', '[]'::jsonb);
+  end if;
+
+  update public.money_transfers transfer set
+    location_id = v_requested_target_id,
+    target_location_id = v_requested_target_id,
+    target_location_name = v_target_name,
+    branch_receipt_contract_version = 1,
+    branch_receipt_status = 'pending_receipt',
+    branch_received_by_user_id = null,
+    branch_received_by_name = null,
+    branch_received_at = null,
+    accounting_date = null,
+    updated_at = statement_timestamp()
+  where transfer.id = v_id;
+
+  return public.get_money_transfer_detail(v_id)
+    || jsonb_build_object(
+      'idempotentReplay', false,
+      'changedSources', coalesce(v_result->'changedSources', '[]'::jsonb),
+      'virtualStatus', 'branch_pending_receipt'
+    );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."save_money_transfer"("p_payload" "jsonb") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."save_money_transfer_before_branch_receipt"("p_payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
   v_id uuid := (p_payload->>'id')::uuid;
   v_location_id uuid := (p_payload->>'locationId')::uuid;
   v_idempotency_key text := nullif(p_payload->>'idempotencyKey', '');
@@ -22908,7 +24561,7 @@ end;
 $$;
 
 
-ALTER FUNCTION "public"."save_money_transfer"("p_payload" "jsonb") OWNER TO "postgres";
+ALTER FUNCTION "public"."save_money_transfer_before_branch_receipt"("p_payload" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."save_rubber_bill_date_approval_setting"("p_non_current_date_requires_approval" boolean) RETURNS boolean
@@ -22993,126 +24646,11 @@ CREATE OR REPLACE FUNCTION "public"."save_rubber_export_work_transfer_slips"("p_
     SET "search_path" TO ''
     AS $$
 declare
-  v_location_id uuid;
-  v_transfer public.money_transfers;
-  v_slip_ids uuid[];
-  v_paid numeric;
-  v_fingerprint text;
-  v_report_no text;
+  v_type text;
 begin
-  if not private.is_active_user() or not private.can_access_money_transfer_module() then
-    raise exception 'MT_ACCESS_DENIED: ไม่มีสิทธิ์ใช้งานรายการโอนเงิน';
-  end if;
-  if p_transfer_id is null or p_expected_revision is null or p_slips is null
-    or jsonb_typeof(p_slips) <> 'array' then
-    raise exception 'MT_INVALID_PAYLOAD: ข้อมูลสลิปไม่ครบ';
-  end if;
-  select location_id into v_location_id from public.money_transfers where id = p_transfer_id;
-  if v_location_id is null then raise exception 'MT_NOT_FOUND: ไม่พบรายการโอนเงิน'; end if;
-  if not private.can_access_location(v_location_id) then
-    raise exception 'MT_LOCATION_DENIED: ไม่มีสิทธิ์เข้าถึงสาขา';
-  end if;
-  perform pg_advisory_xact_lock(hashtextextended(v_location_id::text, 0));
-  select * into v_transfer from public.money_transfers where id = p_transfer_id for update;
-  if v_transfer.id is null or v_transfer.transfer_type <> 'rubber_export_work'
-    or v_transfer.record_status <> 'active' or v_transfer.location_id <> v_location_id then
-    raise exception 'MT_NOT_FOUND: ไม่พบรายการโอนค่าทำงาน';
-  end if;
-  if v_transfer.revision_no <> p_expected_revision then
-    raise exception 'MT_REVISION_CONFLICT: ข้อมูลถูกแก้ไขแล้ว กรุณาโหลดใหม่';
-  end if;
-  v_report_no := public.report_lock_no(v_transfer);
-  if v_report_no is not null then perform private.raise_report_lock(v_report_no); end if;
-  if exists (select 1 from jsonb_array_elements(p_slips) x
-    group by x->>'id' having count(*) > 1) then
-    raise exception 'MT_DUPLICATE_SLIP_ID: มีรหัสสลิปซ้ำในรายการ';
-  end if;
-  if exists (
-    select 1 from jsonb_array_elements(p_slips) x
-    where nullif(x->>'id', '') is null
-      or coalesce((x->>'amount')::numeric, 0) <= 0
-      or coalesce((x->>'fee')::numeric, 0) < 0
-      or nullif(x->>'transactionDate', '') is null
-      or x->>'inputMethod' not in ('manual', 'ocr')
-      or (x->>'inputMethod' = 'manual' and nullif(trim(x->>'referenceNumber'), '') is not null)
-      or (x->>'inputMethod' = 'ocr' and nullif(trim(x->>'referenceNumber'), '') is null)
-  ) then
-    raise exception 'MT_INVALID_SLIP: จำนวนเงิน ค่าธรรมเนียม วันเวลา หรือที่มาของสลิปไม่ถูกต้อง';
-  end if;
-  if exists (
-    select 1 from jsonb_array_elements(p_slips) x
-    join public.money_transfer_slips s on s.id = (x->>'id')::uuid
-    where s.transfer_id <> p_transfer_id
-  ) then
-    raise exception 'MT_SLIP_PARENT_CONFLICT: สลิปอยู่ในรายการโอนอื่น';
-  end if;
-  if exists (
-    select 1 from jsonb_array_elements(p_slips) x
-    where x->>'inputMethod' = 'ocr'
-    group by private.money_transfer_ocr_fingerprint(
-      x->>'referenceNumber', (x->>'amount')::numeric, (x->>'transactionDate')::timestamptz
-    )
-    having count(*) > 1
-  ) then
-    raise exception 'MT_OCR_DUPLICATE: พบสลิป OCR ซ้ำในรายการ';
-  end if;
-  for v_fingerprint in
-    select distinct private.money_transfer_ocr_fingerprint(
-      x->>'referenceNumber', (x->>'amount')::numeric, (x->>'transactionDate')::timestamptz
-    )
-    from jsonb_array_elements(p_slips) x
-    where x->>'inputMethod' = 'ocr'
-    order by 1
-  loop
-    perform pg_advisory_xact_lock(hashtextextended('money-transfer-ocr:' || v_fingerprint, 0));
-  end loop;
-  if exists (
-    select 1 from jsonb_array_elements(p_slips) x
-    join public.money_transfer_slips s
-      on s.ocr_fingerprint = private.money_transfer_ocr_fingerprint(
-        x->>'referenceNumber', (x->>'amount')::numeric, (x->>'transactionDate')::timestamptz
-      )
-    join public.money_transfers t on t.id = s.transfer_id and t.record_status <> 'deleted'
-    where x->>'inputMethod' = 'ocr' and t.id <> p_transfer_id
-  ) then
-    raise exception 'MT_OCR_DUPLICATE: สลิป OCR ถูกใช้ในรายการอื่นแล้ว';
-  end if;
-  select coalesce(array_agg((x->>'id')::uuid), array[]::uuid[])
-    into v_slip_ids from jsonb_array_elements(p_slips) x;
-  delete from public.money_transfer_slips s
-  where s.transfer_id = p_transfer_id and not (s.id = any(v_slip_ids));
-  insert into public.money_transfer_slips (
-    id, transfer_id, amount, reference_number, fee, sender_name, receiver_name,
-    transaction_date, slip_image_url, sort_order, input_method, ocr_fingerprint
-  )
-  select (x->>'id')::uuid, p_transfer_id, (x->>'amount')::numeric,
-    case when x->>'inputMethod' = 'manual' then null else nullif(x->>'referenceNumber', '') end,
-    coalesce((x->>'fee')::numeric, 0), null, null,
-    (x->>'transactionDate')::timestamptz, null,
-    coalesce((x->>'sortOrder')::integer, 0), x->>'inputMethod',
-    case when x->>'inputMethod' = 'ocr' then private.money_transfer_ocr_fingerprint(
-      x->>'referenceNumber', (x->>'amount')::numeric, (x->>'transactionDate')::timestamptz
-    ) end
-  from jsonb_array_elements(p_slips) x
-  on conflict (id) do update set
-    amount = excluded.amount, reference_number = excluded.reference_number,
-    fee = excluded.fee, transaction_date = excluded.transaction_date,
-    sort_order = excluded.sort_order, input_method = excluded.input_method,
-    ocr_fingerprint = excluded.ocr_fingerprint, sender_name = null,
-    receiver_name = null, slip_image_url = null, updated_at = now()
-  where money_transfer_slips.transfer_id = p_transfer_id;
-  select coalesce(sum(amount), 0) into v_paid
-  from public.money_transfer_slips where transfer_id = p_transfer_id;
-  update public.money_transfers
-  set transfer_status = case
-      when v_paid = 0 then 'pending'
-      when v_paid < v_transfer.net_amount_to_pay then 'partial'
-      when v_paid = v_transfer.net_amount_to_pay then 'paid'
-      else 'overpaid'
-    end,
-    revision_no = revision_no + 1, updated_at = now()
-  where id = p_transfer_id;
-  return public.get_money_transfer_detail(p_transfer_id);
+  select transfer_type into v_type from public.money_transfers where id = p_transfer_id;
+  if v_type <> 'rubber_export_work' then raise exception 'MT_NOT_FOUND: ไม่พบรายการโอนค่าทำงาน'; end if;
+  return public.save_source_owned_money_transfer_slips(p_transfer_id, p_expected_revision, p_slips);
 end;
 $$;
 
@@ -23336,6 +24874,128 @@ $$;
 
 
 ALTER FUNCTION "public"."save_rubber_weight_alert_interval"("p_interval_minutes" integer) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."save_source_owned_money_transfer_slips"("p_transfer_id" "uuid", "p_expected_revision" integer, "p_slips" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_location_id uuid;
+  v_transfer public.money_transfers%rowtype;
+  v_slip_ids uuid[];
+  v_paid numeric;
+  v_fingerprint text;
+  v_report_no text;
+begin
+  if not private.is_active_user() or not private.can_access_money_transfer_module() then
+    raise exception 'MT_ACCESS_DENIED: ไม่มีสิทธิ์ใช้งานรายการโอนเงิน';
+  end if;
+  if p_transfer_id is null or p_expected_revision is null or p_slips is null
+    or jsonb_typeof(p_slips) <> 'array' then
+    raise exception 'MT_INVALID_PAYLOAD: ข้อมูลสลิปไม่ครบ';
+  end if;
+  select location_id into v_location_id from public.money_transfers where id = p_transfer_id;
+  if v_location_id is null then raise exception 'MT_NOT_FOUND: ไม่พบรายการโอนเงิน'; end if;
+  if not private.can_access_location(v_location_id) then raise exception 'MT_LOCATION_DENIED: ไม่มีสิทธิ์เข้าถึงสาขา'; end if;
+  perform pg_advisory_xact_lock(hashtextextended(v_location_id::text, 0));
+  select * into v_transfer from public.money_transfers where id = p_transfer_id for update;
+  if v_transfer.id is null or v_transfer.transfer_type not in ('rubber_export_work', 'time_payroll')
+    or v_transfer.record_status <> 'active' or v_transfer.location_id <> v_location_id then
+    raise exception 'MT_NOT_FOUND: ไม่พบรายการโอนจากต้นทาง';
+  end if;
+  if v_transfer.revision_no <> p_expected_revision then raise exception 'MT_REVISION_CONFLICT: ข้อมูลถูกแก้ไขแล้ว กรุณาโหลดใหม่'; end if;
+  v_report_no := public.report_lock_no(v_transfer);
+  if v_report_no is not null then perform private.raise_report_lock(v_report_no); end if;
+  if exists (select 1 from jsonb_array_elements(p_slips) x group by x->>'id' having count(*) > 1) then
+    raise exception 'MT_DUPLICATE_SLIP_ID: มีรหัสสลิปซ้ำในรายการ';
+  end if;
+  if exists (
+    select 1 from jsonb_array_elements(p_slips) x
+    where nullif(x->>'id', '') is null
+      or coalesce((x->>'amount')::numeric, 0) <= 0
+      or coalesce((x->>'fee')::numeric, 0) < 0
+      or nullif(x->>'transactionDate', '') is null
+      or x->>'inputMethod' not in ('manual', 'ocr')
+      or (x->>'inputMethod' = 'manual' and nullif(trim(x->>'referenceNumber'), '') is not null)
+      or (x->>'inputMethod' = 'ocr' and nullif(trim(x->>'referenceNumber'), '') is null)
+  ) then raise exception 'MT_INVALID_SLIP: จำนวนเงิน ค่าธรรมเนียม วันเวลา หรือที่มาของสลิปไม่ถูกต้อง'; end if;
+  if exists (
+    select 1 from jsonb_array_elements(p_slips) x
+    join public.money_transfer_slips s on s.id = (x->>'id')::uuid
+    where s.transfer_id <> p_transfer_id
+  ) then raise exception 'MT_SLIP_PARENT_CONFLICT: สลิปอยู่ในรายการโอนอื่น'; end if;
+  if exists (
+    select 1 from jsonb_array_elements(p_slips) x
+    where x->>'inputMethod' = 'ocr'
+    group by private.money_transfer_ocr_fingerprint(
+      x->>'referenceNumber', (x->>'amount')::numeric, (x->>'transactionDate')::timestamptz
+    ) having count(*) > 1
+  ) then raise exception 'MT_OCR_DUPLICATE: พบสลิป OCR ซ้ำในรายการ'; end if;
+  for v_fingerprint in
+    select distinct private.money_transfer_ocr_fingerprint(
+      x->>'referenceNumber', (x->>'amount')::numeric, (x->>'transactionDate')::timestamptz
+    ) from jsonb_array_elements(p_slips) x where x->>'inputMethod' = 'ocr' order by 1
+  loop
+    perform pg_advisory_xact_lock(hashtextextended('money-transfer-ocr:' || v_fingerprint, 0));
+  end loop;
+  if exists (
+    select 1 from jsonb_array_elements(p_slips) x
+    join public.money_transfer_slips s
+      on s.ocr_fingerprint = private.money_transfer_ocr_fingerprint(
+        x->>'referenceNumber', (x->>'amount')::numeric, (x->>'transactionDate')::timestamptz
+      )
+    join public.money_transfers t on t.id = s.transfer_id and t.record_status <> 'deleted'
+    where x->>'inputMethod' = 'ocr' and t.id <> p_transfer_id
+  ) then raise exception 'MT_OCR_DUPLICATE: สลิป OCR ถูกใช้ในรายการอื่นแล้ว'; end if;
+  select coalesce(array_agg((x->>'id')::uuid), array[]::uuid[])
+  into v_slip_ids from jsonb_array_elements(p_slips) x;
+  delete from public.money_transfer_slips s
+  where s.transfer_id = p_transfer_id and not (s.id = any(v_slip_ids));
+  insert into public.money_transfer_slips (
+    id, transfer_id, amount, reference_number, fee, sender_name, receiver_name,
+    transaction_date, slip_image_url, sort_order, input_method, ocr_fingerprint
+  )
+  select (x->>'id')::uuid, p_transfer_id, (x->>'amount')::numeric,
+    case when x->>'inputMethod' = 'manual' then null else nullif(x->>'referenceNumber', '') end,
+    coalesce((x->>'fee')::numeric, 0), null, null,
+    (x->>'transactionDate')::timestamptz, null,
+    coalesce((x->>'sortOrder')::integer, 0), x->>'inputMethod',
+    case when x->>'inputMethod' = 'ocr' then private.money_transfer_ocr_fingerprint(
+      x->>'referenceNumber', (x->>'amount')::numeric, (x->>'transactionDate')::timestamptz
+    ) end
+  from jsonb_array_elements(p_slips) x
+  on conflict (id) do update set
+    amount = excluded.amount, reference_number = excluded.reference_number,
+    fee = excluded.fee, transaction_date = excluded.transaction_date,
+    sort_order = excluded.sort_order, input_method = excluded.input_method,
+    ocr_fingerprint = excluded.ocr_fingerprint, sender_name = null,
+    receiver_name = null, slip_image_url = null, updated_at = now()
+  where money_transfer_slips.transfer_id = p_transfer_id;
+  select coalesce(sum(amount), 0) into v_paid from public.money_transfer_slips where transfer_id = p_transfer_id;
+  update public.money_transfers
+  set transfer_status = case
+      when v_paid = 0 then 'pending'
+      when v_paid < v_transfer.net_amount_to_pay then 'partial'
+      when v_paid = v_transfer.net_amount_to_pay then 'paid'
+      else 'overpaid'
+    end,
+    revision_no = revision_no + 1,
+    updated_at = now()
+  where id = p_transfer_id;
+  return public.get_money_transfer_detail(p_transfer_id);
+exception
+  when invalid_text_representation
+    or numeric_value_out_of_range
+    or invalid_datetime_format
+    or datetime_field_overflow
+  then
+    raise exception 'MT_INVALID_SLIP: จำนวนเงิน ค่าธรรมเนียม วันเวลา หรือรูปแบบข้อมูลสลิปไม่ถูกต้อง';
+end;
+$$;
+
+
+ALTER FUNCTION "public"."save_source_owned_money_transfer_slips"("p_transfer_id" "uuid", "p_expected_revision" integer, "p_slips" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."save_telegram_badge_config"("payload" "jsonb") RETURNS "jsonb"
@@ -27209,6 +28869,34 @@ CREATE TABLE IF NOT EXISTS "public"."branch_create_guard_settings" (
 ALTER TABLE "public"."branch_create_guard_settings" OWNER TO "postgres";
 
 
+CREATE TABLE IF NOT EXISTS "public"."branch_transfer_delete_requests" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "transfer_id" "uuid",
+    "location_id" "uuid" NOT NULL,
+    "location_name" "text" NOT NULL,
+    "transfer_display_no" "text" NOT NULL,
+    "amount" numeric(14,2) NOT NULL,
+    "received_at" timestamp with time zone NOT NULL,
+    "request_status" "text" DEFAULT 'pending'::"text" NOT NULL,
+    "requested_by_user_id" "uuid" NOT NULL,
+    "requested_by_name" "text" NOT NULL,
+    "requested_by_phone" "text" NOT NULL,
+    "decided_by_user_id" "uuid",
+    "decided_by_name" "text",
+    "decided_by_phone" "text",
+    "decided_at" timestamp with time zone,
+    "decision_comment" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "branch_transfer_delete_requests_amount_check" CHECK (("amount" > (0)::numeric)),
+    CONSTRAINT "branch_transfer_delete_requests_check" CHECK (((("request_status" = 'pending'::"text") AND ("decided_by_user_id" IS NULL) AND ("decided_at" IS NULL)) OR (("request_status" = ANY (ARRAY['approved'::"text", 'rejected'::"text"])) AND ("decided_by_user_id" IS NOT NULL) AND ("decided_at" IS NOT NULL)))),
+    CONSTRAINT "branch_transfer_delete_requests_request_status_check" CHECK (("request_status" = ANY (ARRAY['pending'::"text", 'approved'::"text", 'rejected'::"text"])))
+);
+
+
+ALTER TABLE "public"."branch_transfer_delete_requests" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "public"."cash_count_sessions" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "location_id" "uuid" NOT NULL,
@@ -28320,7 +30008,7 @@ CREATE TABLE IF NOT EXISTS "public"."telegram_badge_settings" (
     "start_time" time without time zone DEFAULT '08:00:00'::time without time zone NOT NULL,
     "end_time" time without time zone DEFAULT '20:00:00'::time without time zone NOT NULL,
     "interval_minutes" integer DEFAULT 60 NOT NULL,
-    "enabled_badge_keys" "text"[] DEFAULT ARRAY['rubber_bill_approval_pending'::"text", 'income_expense_approval_pending'::"text", 'cash_transfer_pending_receipt'::"text", 'stock_approval_pending'::"text", 'money_transfer_pending'::"text", 'money_transfer_partial'::"text", 'money_transfer_advance'::"text", 'time_tracking_approval_pending'::"text", 'rubber_export_draft'::"text"] NOT NULL,
+    "enabled_badge_keys" "text"[] DEFAULT ARRAY['rubber_bill_approval_pending'::"text", 'income_expense_approval_pending'::"text", 'cash_transfer_pending_receipt'::"text", 'branch_transfer_pending_receipt'::"text", 'stock_approval_pending'::"text", 'money_transfer_pending'::"text", 'money_transfer_partial'::"text", 'money_transfer_advance'::"text", 'time_tracking_approval_pending'::"text", 'rubber_export_draft'::"text"] NOT NULL,
     "bot_token_secret_id" "uuid",
     "dispatch_secret_id" "uuid",
     "edge_url_secret_id" "uuid",
@@ -28555,6 +30243,11 @@ ALTER TABLE ONLY "public"."admin_account_audit_logs"
 
 ALTER TABLE ONLY "public"."branch_create_guard_settings"
     ADD CONSTRAINT "branch_create_guard_settings_pkey" PRIMARY KEY ("singleton");
+
+
+
+ALTER TABLE ONLY "public"."branch_transfer_delete_requests"
+    ADD CONSTRAINT "branch_transfer_delete_requests_pkey" PRIMARY KEY ("id");
 
 
 
@@ -28819,12 +30512,22 @@ ALTER TABLE ONLY "public"."money_transfers"
 
 
 ALTER TABLE ONLY "public"."money_transfers"
+    ADD CONSTRAINT "money_transfers_payroll_slip_id_key" UNIQUE ("payroll_slip_id");
+
+
+
+ALTER TABLE ONLY "public"."money_transfers"
     ADD CONSTRAINT "money_transfers_pkey" PRIMARY KEY ("id");
 
 
 
 ALTER TABLE ONLY "public"."money_transfers"
     ADD CONSTRAINT "money_transfers_rubber_export_id_key" UNIQUE ("rubber_export_id");
+
+
+
+ALTER TABLE ONLY "public"."money_transfers"
+    ADD CONSTRAINT "money_transfers_withdrawal_transaction_id_key" UNIQUE ("withdrawal_transaction_id");
 
 
 
@@ -29158,6 +30861,18 @@ CREATE UNIQUE INDEX "admin_account_password_request_unique" ON "public"."admin_a
 
 
 
+CREATE UNIQUE INDEX "branch_transfer_delete_requests_one_pending" ON "public"."branch_transfer_delete_requests" USING "btree" ("transfer_id") WHERE (("request_status" = 'pending'::"text") AND ("transfer_id" IS NOT NULL));
+
+
+
+CREATE INDEX "branch_transfer_delete_requests_status_created" ON "public"."branch_transfer_delete_requests" USING "btree" ("request_status", "created_at" DESC);
+
+
+
+CREATE INDEX "branch_transfer_delete_retention_idx" ON "public"."branch_transfer_delete_requests" USING "btree" (COALESCE("decided_at", "updated_at"), "id") WHERE ("request_status" <> 'pending'::"text");
+
+
+
 CREATE INDEX "cash_count_sessions_location_history" ON "public"."cash_count_sessions" USING "btree" ("location_id", "started_at" DESC, "id" DESC);
 
 
@@ -29351,6 +31066,10 @@ CREATE INDEX "money_transfer_slips_ocr_fingerprint_idx" ON "public"."money_trans
 
 
 CREATE INDEX "money_transfer_slips_transfer_idx" ON "public"."money_transfer_slips" USING "btree" ("transfer_id", "sort_order", "id");
+
+
+
+CREATE INDEX "money_transfers_branch_receipt_pending_idx" ON "public"."money_transfers" USING "btree" ("target_location_id", "created_at" DESC) WHERE (("transfer_type" = 'branch'::"text") AND ("record_status" <> 'deleted'::"public"."record_status") AND ("branch_receipt_contract_version" = 1) AND ("branch_receipt_status" = 'pending_receipt'::"text"));
 
 
 
@@ -29750,6 +31469,18 @@ CREATE OR REPLACE TRIGGER "guard_rubber_export_work_transfer" BEFORE INSERT OR U
 
 
 
+CREATE OR REPLACE TRIGGER "guard_time_payroll_payment_source" BEFORE UPDATE ON "public"."financial_transactions" FOR EACH ROW EXECUTE FUNCTION "private"."guard_time_payroll_payment_source"();
+
+
+
+CREATE OR REPLACE TRIGGER "guard_time_payroll_payment_source" BEFORE UPDATE ON "public"."payroll_slips" FOR EACH ROW EXECUTE FUNCTION "private"."guard_time_payroll_payment_source"();
+
+
+
+CREATE OR REPLACE TRIGGER "guard_time_payroll_transfer" BEFORE INSERT OR UPDATE ON "public"."money_transfers" FOR EACH ROW EXECUTE FUNCTION "private"."guard_time_payroll_transfer"();
+
+
+
 CREATE OR REPLACE TRIGGER "handle_updated_at" BEFORE UPDATE ON "public"."financial_transactions" FOR EACH ROW EXECUTE FUNCTION "extensions"."moddatetime"('updated_at');
 
 
@@ -29835,6 +31566,10 @@ CREATE OR REPLACE TRIGGER "reject_expired_approval_request_replay" BEFORE INSERT
 
 
 CREATE OR REPLACE TRIGGER "reject_expired_approval_request_replay" BEFORE INSERT ON "public"."stock_product_approval_requests" FOR EACH ROW EXECUTE FUNCTION "private"."reject_expired_approval_request_replay"();
+
+
+
+CREATE OR REPLACE TRIGGER "reject_future_money_transfer_slip" BEFORE INSERT OR UPDATE OF "transaction_date" ON "public"."money_transfer_slips" FOR EACH ROW EXECUTE FUNCTION "private"."reject_future_money_transfer_slip"();
 
 
 
@@ -29941,6 +31676,26 @@ ALTER TABLE ONLY "public"."admin_account_audit_logs"
 
 ALTER TABLE ONLY "public"."admin_account_audit_logs"
     ADD CONSTRAINT "admin_account_audit_logs_target_user_id_fkey" FOREIGN KEY ("target_user_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."branch_transfer_delete_requests"
+    ADD CONSTRAINT "branch_transfer_delete_requests_decided_by_user_id_fkey" FOREIGN KEY ("decided_by_user_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."branch_transfer_delete_requests"
+    ADD CONSTRAINT "branch_transfer_delete_requests_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id");
+
+
+
+ALTER TABLE ONLY "public"."branch_transfer_delete_requests"
+    ADD CONSTRAINT "branch_transfer_delete_requests_requested_by_user_id_fkey" FOREIGN KEY ("requested_by_user_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."branch_transfer_delete_requests"
+    ADD CONSTRAINT "branch_transfer_delete_requests_transfer_id_fkey" FOREIGN KEY ("transfer_id") REFERENCES "public"."money_transfers"("id") ON DELETE SET NULL;
 
 
 
@@ -30295,6 +32050,11 @@ ALTER TABLE ONLY "public"."money_transfer_slips"
 
 
 ALTER TABLE ONLY "public"."money_transfers"
+    ADD CONSTRAINT "money_transfers_branch_received_by_user_id_fkey" FOREIGN KEY ("branch_received_by_user_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."money_transfers"
     ADD CONSTRAINT "money_transfers_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."profiles"("id");
 
 
@@ -30310,6 +32070,11 @@ ALTER TABLE ONLY "public"."money_transfers"
 
 
 ALTER TABLE ONLY "public"."money_transfers"
+    ADD CONSTRAINT "money_transfers_payroll_slip_id_fkey" FOREIGN KEY ("payroll_slip_id") REFERENCES "public"."payroll_slips"("id");
+
+
+
+ALTER TABLE ONLY "public"."money_transfers"
     ADD CONSTRAINT "money_transfers_rubber_export_id_fkey" FOREIGN KEY ("rubber_export_id") REFERENCES "public"."rubber_exports"("id");
 
 
@@ -30321,6 +32086,11 @@ ALTER TABLE ONLY "public"."money_transfers"
 
 ALTER TABLE ONLY "public"."money_transfers"
     ADD CONSTRAINT "money_transfers_transport_staff_id_fkey" FOREIGN KEY ("transport_staff_id") REFERENCES "public"."transport_staffs"("id");
+
+
+
+ALTER TABLE ONLY "public"."money_transfers"
+    ADD CONSTRAINT "money_transfers_withdrawal_transaction_id_fkey" FOREIGN KEY ("withdrawal_transaction_id") REFERENCES "public"."financial_transactions"("id");
 
 
 
@@ -30775,7 +32545,14 @@ CREATE POLICY "active users read rubber bill approval settings" ON "public"."rub
 ALTER TABLE "public"."admin_account_audit_logs" ENABLE ROW LEVEL SECURITY;
 
 
+CREATE POLICY "branch transfer delete requests read" ON "public"."branch_transfer_delete_requests" FOR SELECT TO "authenticated" USING (("private"."can_access_super_admin_features"() OR ("requested_by_user_id" = "auth"."uid"())));
+
+
+
 ALTER TABLE "public"."branch_create_guard_settings" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."branch_transfer_delete_requests" ENABLE ROW LEVEL SECURITY;
 
 
 CREATE POLICY "cash counts manager select" ON "public"."cash_counts" FOR SELECT TO "authenticated" USING ("private"."can_delete_reports"());
@@ -31410,6 +33187,10 @@ REVOKE ALL ON FUNCTION "private"."append_dashboard_money_event"("p_source_type" 
 
 
 
+REVOKE ALL ON FUNCTION "private"."apply_time_payroll_payment"("p_source_type" "text", "p_source_id" "uuid", "p_payment" "jsonb", "p_require_unlocked" boolean, "p_audit_comment" "text") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."apply_time_tracking_deductions"("p_profile_id" "uuid", "p_through_month" "date") FROM PUBLIC;
 
 
@@ -31547,6 +33328,10 @@ REVOKE ALL ON FUNCTION "private"."cash_count_events"("p_location_id" "uuid", "p_
 
 
 
+REVOKE ALL ON FUNCTION "private"."cash_count_events_before_time_payroll_payment"("p_location_id" "uuid", "p_after_cutoff" timestamp with time zone, "p_to_cutoff" timestamp with time zone) FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."cash_count_events_before_withdrawal_adjustments"("p_location_id" "uuid", "p_after_cutoff" timestamp with time zone, "p_to_cutoff" timestamp with time zone) FROM PUBLIC;
 
 
@@ -31630,6 +33415,10 @@ REVOKE ALL ON FUNCTION "private"."dashboard_money_source_entries"("p_source_type
 
 
 
+REVOKE ALL ON FUNCTION "private"."dashboard_money_source_entries_before_time_payroll_payment"("p_source_type" "text", "p_source_id" "uuid") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."dashboard_require_manager"() FROM PUBLIC;
 
 
@@ -31651,6 +33440,10 @@ REVOKE ALL ON FUNCTION "private"."dashboard_seed_active_location"() FROM PUBLIC;
 
 
 REVOKE ALL ON FUNCTION "private"."delete_money_transfer"("p_transfer_id" "uuid") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."delete_time_payroll_transfer_for_source"("p_source_type" "text", "p_source_id" "uuid") FROM PUBLIC;
 
 
 
@@ -31691,6 +33484,14 @@ REVOKE ALL ON FUNCTION "private"."guard_reported_entity"() FROM PUBLIC;
 
 
 REVOKE ALL ON FUNCTION "private"."guard_rubber_export_work_transfer"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."guard_time_payroll_payment_source"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."guard_time_payroll_transfer"() FROM PUBLIC;
 
 
 
@@ -31782,6 +33583,16 @@ REVOKE ALL ON FUNCTION "private"."mark_dashboard_dirty"("p_location_id" "uuid") 
 
 
 REVOKE ALL ON FUNCTION "private"."merge_pending_money_transfers"("p_location_id" "uuid") FROM PUBLIC;
+
+
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."money_transfers" TO "anon";
+GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."money_transfers" TO "authenticated";
+GRANT ALL ON TABLE "public"."money_transfers" TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "private"."money_transfer_is_financially_effective"("p_transfer" "public"."money_transfers") FROM PUBLIC;
 
 
 
@@ -31885,7 +33696,19 @@ REVOKE ALL ON FUNCTION "private"."report_income_expense_period_rows"("p_report_i
 
 
 
+REVOKE ALL ON FUNCTION "private"."report_income_expense_period_rows_before_time_payroll_payment"("p_report_id" "uuid") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."report_income_expense_period_rows_before_withdrawal_adjustments"("p_report_id" "uuid") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."reportable_items"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."reportable_items_before_time_payroll_payment"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) FROM PUBLIC;
 
 
 
@@ -31977,6 +33800,10 @@ REVOKE ALL ON FUNCTION "private"."telegram_badge_require_manager"() FROM PUBLIC;
 
 
 
+REVOKE ALL ON FUNCTION "private"."time_payroll_branch_paid_amount"("p_source_amount" numeric, "p_contract_version" smallint, "p_channel" "text", "p_transfer_amount" numeric, "p_expense_location_id" "uuid") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."time_payroll_day_earned_at"("p_now" timestamp with time zone, "p_workday_end_time" time without time zone) FROM PUBLIC;
 
 
@@ -32018,6 +33845,10 @@ REVOKE ALL ON FUNCTION "private"."validate_rubber_price_allowance"("p_price_allo
 
 
 REVOKE ALL ON FUNCTION "private"."validate_rubber_weight_alert_group_input"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_threshold_kg" integer) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."validate_time_payroll_payment"("p_payment" "jsonb", "p_source_amount" numeric) FROM PUBLIC;
 
 
 
@@ -32102,6 +33933,11 @@ GRANT ALL ON FUNCTION "public"."cash_count_submitted_at"("source_row" "public"."
 REVOKE ALL ON FUNCTION "public"."change_time_tracking_expense_location"("p_source_type" "text", "p_source_id" "uuid", "p_expense_location_id" "uuid", "p_comment" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."change_time_tracking_expense_location"("p_source_type" "text", "p_source_id" "uuid", "p_expense_location_id" "uuid", "p_comment" "text") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."change_time_tracking_expense_location"("p_source_type" "text", "p_source_id" "uuid", "p_expense_location_id" "uuid", "p_comment" "text") TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."change_time_tracking_payment"("p_source_type" "text", "p_source_id" "uuid", "p_payment" "jsonb", "p_comment" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."change_time_tracking_payment"("p_source_type" "text", "p_source_id" "uuid", "p_payment" "jsonb", "p_comment" "text") TO "authenticated";
 
 
 
@@ -32239,6 +34075,11 @@ REVOKE ALL ON FUNCTION "public"."create_time_tracking_payroll_slip_internal_2026
 
 
 
+REVOKE ALL ON FUNCTION "public"."create_time_tracking_payroll_slip_with_payment"("p_profile_id" "uuid", "p_month" "text", "p_auto_start_next_month" boolean, "p_payment" "jsonb", "p_comment" "text", "p_expected_net_pay" numeric) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."create_time_tracking_payroll_slip_with_payment"("p_profile_id" "uuid", "p_month" "text", "p_auto_start_next_month" boolean, "p_payment" "jsonb", "p_comment" "text", "p_expected_net_pay" numeric) TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."create_time_tracking_transaction"("p_profile_id" "uuid", "p_type" "text", "p_amount" numeric, "p_effective_date" "date", "p_description" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."create_time_tracking_transaction"("p_profile_id" "uuid", "p_type" "text", "p_amount" numeric, "p_effective_date" "date", "p_description" "text") TO "authenticated";
 
@@ -32253,12 +34094,22 @@ REVOKE ALL ON FUNCTION "public"."create_time_tracking_transaction_internal_20260
 
 
 
+REVOKE ALL ON FUNCTION "public"."create_time_tracking_withdrawal_with_payment"("p_profile_id" "uuid", "p_amount" numeric, "p_effective_date" "date", "p_description" "text", "p_payment" "jsonb", "p_comment" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."create_time_tracking_withdrawal_with_payment"("p_profile_id" "uuid", "p_amount" numeric, "p_effective_date" "date", "p_description" "text", "p_payment" "jsonb", "p_comment" "text") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."current_profile_id"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."current_profile_id"() TO "authenticated";
 
 
 
 REVOKE ALL ON FUNCTION "public"."cutoff_time_tracking"("p_profile_id" "uuid", "p_cutoff_time" timestamp with time zone) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "public"."decide_branch_transfer_delete_request"("p_request_id" "uuid", "p_decision" "text", "p_comment" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."decide_branch_transfer_delete_request"("p_request_id" "uuid", "p_decision" "text", "p_comment" "text") TO "authenticated";
 
 
 
@@ -32296,6 +34147,11 @@ REVOKE ALL ON FUNCTION "public"."decide_time_tracking_approval_internal_20260829
 
 
 
+REVOKE ALL ON FUNCTION "public"."decide_time_tracking_approval_with_payment"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text", "p_payment" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."decide_time_tracking_approval_with_payment"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text", "p_payment" "jsonb") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."decide_time_tracking_withdrawal_adjustment"("p_adjustment_id" "uuid", "p_decision" "text", "p_expense_location_id" "uuid", "p_comment" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."decide_time_tracking_withdrawal_adjustment"("p_adjustment_id" "uuid", "p_decision" "text", "p_expense_location_id" "uuid", "p_comment" "text") TO "authenticated";
 
@@ -32327,6 +34183,10 @@ REVOKE ALL ON FUNCTION "public"."delete_money_transfer"("p_transfer_id" "uuid") 
 
 REVOKE ALL ON FUNCTION "public"."delete_money_transfer"("p_transfer_id" "uuid", "p_expected_revision" integer) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."delete_money_transfer"("p_transfer_id" "uuid", "p_expected_revision" integer) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."delete_money_transfer_before_branch_receipt"("p_transfer_id" "uuid", "p_expected_revision" integer) FROM PUBLIC;
 
 
 
@@ -32397,6 +34257,10 @@ GRANT ALL ON FUNCTION "public"."get_actionable_badge_counts"() TO "authenticated
 
 
 
+REVOKE ALL ON FUNCTION "public"."get_actionable_badge_counts_before_branch_receipt"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "public"."get_actionable_badge_counts_before_missing_payroll_slips"() FROM PUBLIC;
 
 
@@ -32408,6 +34272,11 @@ REVOKE ALL ON FUNCTION "public"."get_actionable_badge_counts_before_withdrawal_a
 REVOKE ALL ON FUNCTION "public"."get_branch_create_confirmation_minutes"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_branch_create_confirmation_minutes"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."get_branch_create_confirmation_minutes"() TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_branch_money_transfer_detail"("p_transfer_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_branch_money_transfer_detail"("p_transfer_id" "uuid") TO "authenticated";
 
 
 
@@ -32508,6 +34377,11 @@ REVOKE ALL ON FUNCTION "public"."get_income_expense_operational_feed_20260907010
 
 
 
+REVOKE ALL ON FUNCTION "public"."get_income_expense_operational_feed_before_time_payroll_payment"("p_location_id" "uuid", "p_mode" "text", "p_search" "text", "p_cursor" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_income_expense_operational_feed_before_time_payroll_payment"("p_location_id" "uuid", "p_mode" "text", "p_search" "text", "p_cursor" "text") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."get_income_expense_operational_feed_before_wadj"("p_location_id" "uuid", "p_mode" "text", "p_search" "text", "p_cursor" "text") FROM PUBLIC;
 
 
@@ -32544,6 +34418,16 @@ GRANT ALL ON FUNCTION "public"."get_money_transfer_sources"("p_location_id" "uui
 REVOKE ALL ON FUNCTION "public"."get_my_active_location_assignments"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_my_active_location_assignments"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."get_my_active_location_assignments"() TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_pending_branch_money_transfers"("p_location_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_pending_branch_money_transfers"("p_location_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_pending_branch_money_transfers"("p_location_id" "uuid", "p_limit" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_pending_branch_money_transfers"("p_location_id" "uuid", "p_limit" integer) TO "authenticated";
 
 
 
@@ -32668,6 +34552,11 @@ GRANT ALL ON FUNCTION "public"."get_telegram_badge_config"() TO "authenticated";
 
 REVOKE ALL ON FUNCTION "public"."get_telegram_badge_counts"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_telegram_badge_counts"() TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_telegram_badge_counts_before_branch_receipt"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_telegram_badge_counts_before_branch_receipt"() TO "service_role";
 
 
 
@@ -32807,6 +34696,11 @@ GRANT ALL ON FUNCTION "public"."rebuild_dashboard_refresh_now"("p_location_id" "
 
 
 
+REVOKE ALL ON FUNCTION "public"."receive_branch_money_transfer"("p_transfer_id" "uuid", "p_expected_revision" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."receive_branch_money_transfer"("p_transfer_id" "uuid", "p_expected_revision" integer) TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."receive_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."receive_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") TO "authenticated";
 
@@ -32870,12 +34764,6 @@ GRANT SELECT ON TABLE "public"."income_expense" TO "authenticated";
 REVOKE ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."income_expense") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."income_expense") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."income_expense") TO "service_role";
-
-
-
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."money_transfers" TO "anon";
-GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."money_transfers" TO "authenticated";
-GRANT ALL ON TABLE "public"."money_transfers" TO "service_role";
 
 
 
@@ -33134,6 +35022,11 @@ GRANT ALL ON FUNCTION "public"."report_lock_no"("source_row" "public"."time_segm
 
 
 
+REVOKE ALL ON FUNCTION "public"."request_branch_money_transfer_delete"("p_transfer_id" "uuid", "p_expected_revision" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."request_branch_money_transfer_delete"("p_transfer_id" "uuid", "p_expected_revision" integer) TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."request_history_retention_cleanup"("p_request_id" "uuid", "p_expected_updated_at" timestamp with time zone, "p_expected_cutoff_date" "date") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."request_history_retention_cleanup"("p_request_id" "uuid", "p_expected_updated_at" timestamp with time zone, "p_expected_cutoff_date" "date") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."request_history_retention_cleanup"("p_request_id" "uuid", "p_expected_updated_at" timestamp with time zone, "p_expected_cutoff_date" "date") TO "service_role";
@@ -33211,6 +35104,10 @@ GRANT ALL ON FUNCTION "public"."save_money_transfer"("p_payload" "jsonb") TO "au
 
 
 
+REVOKE ALL ON FUNCTION "public"."save_money_transfer_before_branch_receipt"("p_payload" "jsonb") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "public"."save_rubber_bill_date_approval_setting"("p_non_current_date_requires_approval" boolean) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."save_rubber_bill_date_approval_setting"("p_non_current_date_requires_approval" boolean) TO "authenticated";
 
@@ -33245,6 +35142,11 @@ GRANT ALL ON FUNCTION "public"."save_rubber_weight_alert_config"("p_threshold_kg
 REVOKE ALL ON FUNCTION "public"."save_rubber_weight_alert_interval"("p_interval_minutes" integer) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."save_rubber_weight_alert_interval"("p_interval_minutes" integer) TO "authenticated";
 GRANT ALL ON FUNCTION "public"."save_rubber_weight_alert_interval"("p_interval_minutes" integer) TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."save_source_owned_money_transfer_slips"("p_transfer_id" "uuid", "p_expected_revision" integer, "p_slips" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."save_source_owned_money_transfer_slips"("p_transfer_id" "uuid", "p_expected_revision" integer, "p_slips" "jsonb") TO "authenticated";
 
 
 
@@ -33457,6 +35359,11 @@ GRANT ALL ON TABLE "public"."admin_account_audit_logs" TO "service_role";
 
 
 GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."branch_create_guard_settings" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."branch_transfer_delete_requests" TO "service_role";
+GRANT SELECT ON TABLE "public"."branch_transfer_delete_requests" TO "authenticated";
 
 
 

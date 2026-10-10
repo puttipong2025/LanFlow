@@ -2,6 +2,7 @@ export const moneyFlowQueryKeys = {
   incomeExpenseFeedRoot: () => ["incomeExpenseFeed"] as const,
   moneyTransferListRoot: () => ["moneyTransferList"] as const,
   moneyTransferSourcesRoot: () => ["moneyTransferSources"] as const,
+  branchMoneyTransferReceiptsRoot: () => ["branchMoneyTransferReceipts"] as const,
   rubberBillOperationalFeedRoot: () => ["rubberBillOperationalFeed"] as const,
   rubberBillWorkCountsRoot: () => ["rubberBillWorkCounts"] as const,
   stockRoot: () => ["stock"] as const,

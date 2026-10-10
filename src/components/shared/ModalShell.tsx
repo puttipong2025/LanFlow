@@ -15,6 +15,7 @@ export function ModalShell({
   closeDisabled = false,
   renderInPortal = false,
   nativeModal = false,
+  returnFocusElement,
   role = "dialog",
   children
 }: {
@@ -27,6 +28,7 @@ export function ModalShell({
   closeDisabled?: boolean;
   renderInPortal?: boolean;
   nativeModal?: boolean;
+  returnFocusElement?: HTMLElement | null;
   role?: "dialog" | "alertdialog";
   children: React.ReactNode;
 }) {
@@ -51,13 +53,13 @@ export function ModalShell({
     if (!nativeModal) return;
     const dialog = dialogRef.current;
     if (!dialog) return;
-    const previousFocus = previousFocusRef.current;
+    const previousFocus = returnFocusElement ?? previousFocusRef.current;
     if (!dialog.open) dialog.showModal();
     return () => {
       if (dialog.open) dialog.close();
       previousFocus?.focus();
     };
-  }, [nativeModal]);
+  }, [nativeModal, returnFocusElement]);
 
   const modal = (
     <div className={cn(

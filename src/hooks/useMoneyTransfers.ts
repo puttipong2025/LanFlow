@@ -2,10 +2,10 @@
 
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
-import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
+import { invalidateMoneyFlowLocation, invalidateMoneyFlowLocations } from "@/lib/money-flow/invalidation";
 import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
-import type { MoneyTransfer, MoneyTransferItem, MoneyTransferSlip } from "@/types";
+import type { MoneyTransfer, MoneyTransferItem, MoneyTransferSlip, MoneyTransferVirtualStatus } from "@/types";
 
 export type MergePendingMoneyTransfersResult = {
   mergedGroupCount: number;
@@ -16,7 +16,7 @@ export type MergePendingMoneyTransfersResult = {
   survivorIds: string[];
 };
 
-export type MoneyTransferStatusFilter = MoneyTransfer["transferStatus"] | "all";
+export type MoneyTransferStatusFilter = MoneyTransferVirtualStatus | "all";
 
 function mapSlip(row: any): MoneyTransferSlip {
   return {
@@ -63,6 +63,11 @@ export function mapMoneyTransferRow(row: any): MoneyTransfer {
     bankName: row.bank_name,
     netAmountToPay: Number(row.net_amount_to_pay ?? 0),
     accountingDate: row.accounting_date ?? null,
+    receiptContractVersion: row.branch_receipt_contract_version == null ? null : 1,
+    branchReceiptStatus: row.branch_receipt_status ?? null,
+    branchReceivedByName: row.branch_received_by_name ?? null,
+    branchReceivedAt: row.branch_received_at ?? null,
+    virtualStatus: row.virtual_status ?? row.virtualStatus ?? row.transfer_status,
     paidAmount: row.paid_amount == null ? undefined : Number(row.paid_amount),
     sourceCount: row.source_count == null ? undefined : Number(row.source_count),
     slipCount: row.slip_count == null ? undefined : Number(row.slip_count),
@@ -70,6 +75,8 @@ export function mapMoneyTransferRow(row: any): MoneyTransfer {
     transferType: row.transfer_type ?? "customer",
     rubberExportId: row.rubber_export_id ?? null,
     rubberExportNo: row.rubber_export_no ?? null,
+    timePayrollEmployeeName: row.time_payroll_employee_name ?? null,
+    timePayrollSourceLabel: row.time_payroll_source_label ?? null,
     transportCost: row.transport_cost == null ? undefined : Number(row.transport_cost),
     transportStaffId: row.transport_staff_id,
     transportStaffName: row.transport_staff_name,
@@ -85,7 +92,9 @@ export function mapMoneyTransferRow(row: any): MoneyTransfer {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     reportLockNo: row.report_lock_no ?? null,
-    slips: Array.isArray(row.money_transfer_slips) ? row.money_transfer_slips.map(mapSlip) : undefined,
+    slips: Array.isArray(row.slips)
+      ? row.slips.map(mapSlip)
+      : Array.isArray(row.money_transfer_slips) ? row.money_transfer_slips.map(mapSlip) : undefined,
     items: Array.isArray(row.money_transfer_items) ? row.money_transfer_items.map(mapItem) : undefined,
   };
 }
@@ -176,6 +185,14 @@ export function useMoneyTransferMutations(locationId: string, ownerUserId = "") 
   const supabase = createSupabaseBrowserClient();
   const queryClient = useQueryClient();
   const refresh = () => invalidateMoneyFlowLocation(queryClient, { ownerUserId, locationId });
+  const refreshSavedLocations = (saved: MoneyTransfer, submitted: MoneyTransfer) =>
+    invalidateMoneyFlowLocations(queryClient, ownerUserId, [
+      locationId,
+      saved.locationId,
+      saved.targetLocationId,
+      submitted.locationId,
+      submitted.targetLocationId,
+    ]);
   async function saveTransfer(transfer: MoneyTransfer, operation: "create" | "update") {
       const { data, error } = await supabase.rpc("save_money_transfer", {
         p_payload: { ...transfer, operation },
@@ -185,15 +202,15 @@ export function useMoneyTransferMutations(locationId: string, ownerUserId = "") 
   }
   const addTransfer = useMutation({
     mutationFn: (transfer: MoneyTransfer) => saveTransfer(transfer, "create"),
-    onSuccess: refresh,
+    onSuccess: (saved, submitted) => refreshSavedLocations(saved, submitted),
   });
   const updateTransfer = useMutation({
     mutationFn: (transfer: MoneyTransfer) => saveTransfer(transfer, "update"),
-    onSuccess: refresh,
+    onSuccess: (saved, submitted) => refreshSavedLocations(saved, submitted),
   });
   const updateWorkTransferSlips = useMutation({
     mutationFn: async (transfer: MoneyTransfer) => {
-      const { data, error } = await supabase.rpc("save_rubber_export_work_transfer_slips", {
+      const { data, error } = await supabase.rpc("save_source_owned_money_transfer_slips", {
         p_transfer_id: transfer.id,
         p_expected_revision: transfer.revisionNo ?? 0,
         p_slips: transfer.slips ?? [],
@@ -205,13 +222,20 @@ export function useMoneyTransferMutations(locationId: string, ownerUserId = "") 
   });
   const deleteTransfer = useMutation({
     mutationFn: async ({ id, revisionNo }: Pick<MoneyTransfer, "id" | "revisionNo">) => {
-      const { data, error } = await supabase.rpc("delete_money_transfer", {
+      const transfer = await loadMoneyTransferDetail(id);
+      const rpc = transfer.transferType === "branch"
+        ? "request_branch_money_transfer_delete"
+        : "delete_money_transfer";
+      const { data, error } = await supabase.rpc(rpc, {
         p_transfer_id: id,
         p_expected_revision: revisionNo ?? 0,
       });
       if (error) throw new Error(error.message || "ลบรายการโอนเงินไม่สำเร็จ");
-      if ((data as { status?: string } | null)?.status !== "deleted") throw new Error("ลบรายการโอนเงินไม่สำเร็จ");
-      return data;
+      const result = data as { status?: "deleted" | "pending_approval"; requestId?: string } | null;
+      if (!result || !["deleted", "pending_approval"].includes(result.status ?? "")) {
+        throw new Error("ลบรายการโอนเงินไม่สำเร็จ");
+      }
+      return result;
     },
     onSuccess: refresh,
   });

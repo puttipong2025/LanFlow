@@ -2,11 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { bangkokDateString } from "@/lib/bangkok-date";
 import { requireAuth } from "@/lib/server/auth";
 import { readActionablePendingAdjustments } from "@/lib/server/time-payroll-pending-adjustments";
+import { mapTimePayrollPaymentRpcError } from "@/lib/server/time-payroll-payment-errors";
+import { changeTimePayrollPayment, createTimePayrollSlip, createTimePayrollTransaction, decideTimePayrollPayment, isValidPayrollSlipCreationPayment, isValidTimePayrollPayment, isValidTimePayrollPaymentChange } from "@/lib/server/time-payroll-payment-mutations";
 import { readAllSupabaseRows } from "@/lib/supabase-pages";
 import { buildPayrollPeriodState, type PayrollPeriodRow } from "@/lib/time-tracking/period-state";
 import { parseDailyWageInput } from "@/lib/time-tracking/wage";
 import { readTimeTrackingActionRequest } from "../action-request";
-
 export const dynamic = "force-dynamic";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ISO_DATE_PATTERN = /^(?!0000)\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
@@ -138,13 +139,13 @@ function rpcErrorMessage(message: string) {
 }
 
 function rpcFailure(error: { message: string }) {
+  const paymentError = mapTimePayrollPaymentRpcError(error.message);
   const code = error.message.match(/WAGE_PREVIEW_STALE|WAGE_PREVIEW_REQUIRED/)?.[0] ?? null;
   return NextResponse.json(
-    { error: rpcErrorMessage(error.message), ...(code ? { code } : {}) },
-    { status: rpcErrorStatus(error.message) },
+    { error: paymentError?.message ?? rpcErrorMessage(error.message), ...(code ? { code } : {}) },
+    { status: paymentError?.status ?? rpcErrorStatus(error.message) },
   );
 }
-
 type UserLocationAssignment = {
   location_id: string;
   is_primary: boolean;
@@ -310,19 +311,16 @@ export async function POST(request: NextRequest) {
       const { user_id, amount, effective_date, description } = payload;
       if (!isUuid(user_id) || typeof amount !== "number" || !Number.isFinite(amount) || !isIsoDate(effective_date)
         || (description != null && typeof description !== "string")
-        || (payload.expense_location_id != null && !isUuid(payload.expense_location_id))
+        || payload.expense_location_id !== undefined
+        || (body.action === "CREATE_DEBT" && payload.payment !== undefined)
         || (payload.admin_comment != null && typeof payload.admin_comment !== "string")) {
         return NextResponse.json({ error: "ข้อมูลรายการไม่ถูกต้อง" }, { status: 400 });
       }
-      const { data, error } = await supabase.rpc("create_time_tracking_transaction", {
-        p_profile_id: user_id,
-        p_type: body.action === "CREATE_DEBT" ? "DEBT" : "WITHDRAWAL",
-        p_amount: amount,
-        p_effective_date: effective_date,
-        p_description: description || null,
-        p_expense_location_id: payload.expense_location_id ?? null,
-        p_comment: payload.admin_comment ?? null,
-      });
+      const payment = payload.payment;
+      if (body.action === "ADMIN_REQUEST_WITHDRAWAL" && !isValidTimePayrollPayment(payment)) {
+        return NextResponse.json({ error: "ข้อมูลวิธีจ่ายไม่ถูกต้อง" }, { status: 400 });
+      }
+      const { data, error } = await createTimePayrollTransaction(supabase, body.action, payload);
       if (error) return rpcFailure(error);
       return NextResponse.json({ success: true, result: data });
     }
@@ -387,22 +385,19 @@ export async function POST(request: NextRequest) {
       const sourceId = body.action === "APPROVE_TRANSACTION"
         ? payload.transaction_id
         : payload.slip_id;
-      const { status, admin_comment, expense_location_id } = payload;
+      const { status, admin_comment, expense_location_id, payment } = payload;
       if (
         !isUuid(sourceId)
         || !["APPROVED", "REJECTED"].includes(status)
-        || (expense_location_id !== null && expense_location_id !== undefined && !isUuid(expense_location_id))
+        || expense_location_id !== undefined
         || (admin_comment != null && typeof admin_comment !== "string")
+        || (status === "REJECTED" && payment != null)
+        || (status === "APPROVED" && payment != null && !isValidTimePayrollPayment(payment))
       ) {
         return NextResponse.json({ error: "ข้อมูลการอนุมัติไม่ถูกต้อง" }, { status: 400 });
       }
-      const { data, error } = await supabase.rpc("decide_time_tracking_approval", {
-        p_source_type: body.action === "APPROVE_TRANSACTION" ? "transaction" : "payroll_slip",
-        p_source_id: sourceId,
-        p_decision: status,
-        p_comment: admin_comment || null,
-        p_expense_location_id: expense_location_id ?? null,
-      });
+      const sourceType = body.action === "APPROVE_TRANSACTION" ? "transaction" : "payroll_slip";
+      const { data, error } = await decideTimePayrollPayment(supabase, sourceType, sourceId, payload);
       if (error) return rpcFailure(error);
       return NextResponse.json({ success: true, result: data });
     }
@@ -413,6 +408,7 @@ export async function POST(request: NextRequest) {
         !["transaction", "payroll_slip"].includes(source_type)
         || !isUuid(source_id)
         || (expense_location_id !== null && !isUuid(expense_location_id))
+        || payload.payment !== undefined
         || (admin_comment != null && typeof admin_comment !== "string")
       ) {
         return NextResponse.json({ error: "ข้อมูลการเปลี่ยนสาขาไม่ถูกต้อง" }, { status: 400 });
@@ -423,6 +419,15 @@ export async function POST(request: NextRequest) {
         p_expense_location_id: expense_location_id,
         p_comment: admin_comment || null,
       });
+      if (error) return rpcFailure(error);
+      return NextResponse.json({ success: true, result: data });
+    }
+
+    if (body.action === "CHANGE_PAYMENT_ALLOCATION") {
+      if (!isValidTimePayrollPaymentChange(payload)) {
+        return NextResponse.json({ error: "ข้อมูลการเปลี่ยนวิธีจ่ายไม่ถูกต้อง" }, { status: 400 });
+      }
+      const { data, error } = await changeTimePayrollPayment(supabase, payload);
       if (error) return rpcFailure(error);
       return NextResponse.json({ success: true, result: data });
     }
@@ -568,19 +573,12 @@ export async function POST(request: NextRequest) {
     if (body.action === "CREATE_PAYROLL_SLIP") {
       const { user_id, month } = payload;
       if (!isUuid(user_id) || typeof month !== "string" || !ISO_MONTH_PATTERN.test(month)
-        || (payload.expense_location_id != null && !isUuid(payload.expense_location_id))
+        || payload.expense_location_id !== undefined
         || (payload.admin_comment != null && typeof payload.admin_comment !== "string")
-        || (payload.expected_net_pay != null && (typeof payload.expected_net_pay !== "number" || !Number.isFinite(payload.expected_net_pay)))) {
+        || !isValidPayrollSlipCreationPayment(payload)) {
         return NextResponse.json({ error: "ข้อมูลสลิปไม่ถูกต้อง" }, { status: 400 });
       }
-      const { data, error } = await supabase.rpc("create_time_tracking_payroll_slip", {
-        p_profile_id: user_id,
-        p_month: month,
-        p_auto_start_next_month: false,
-        p_expense_location_id: payload.expense_location_id ?? null,
-        p_comment: payload.admin_comment ?? null,
-        p_expected_net_pay: payload.expected_net_pay ?? null,
-      });
+      const { data, error } = await createTimePayrollSlip(supabase, payload);
       if (error) return rpcFailure(error);
       return NextResponse.json({ success: true, slip: data });
     }
@@ -592,7 +590,7 @@ export async function POST(request: NextRequest) {
       }
       const slips = await readAllSupabaseRows((from, to) => supabase
         .from("payroll_slips")
-        .select("id, profile_id, month, gross_pay, total_deductions, net_pay, status, created_at, approved_at, cancelled_at, expense_location_id, expense_location_name, admin_comment, report_lock_no, approver:profiles!payroll_slips_approved_by_fkey(name)")
+        .select("id, profile_id, month, gross_pay, total_deductions, net_pay, status, created_at, approved_at, cancelled_at, expense_location_id, expense_location_name, payment_channel, payment_transfer_amount, admin_comment, report_lock_no, approver:profiles!payroll_slips_approved_by_fkey(name)")
         .eq("profile_id", user_id)
         .order("month", { ascending: false })
         .order("id", { ascending: false })

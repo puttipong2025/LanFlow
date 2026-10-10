@@ -2,10 +2,11 @@ import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { canManageSystemFeatures } from "@/lib/permissions";
 import type { Location, Profile } from "@/types";
-import { ExpenseLocationChangeModal } from "../ExpenseLocationChangeModal";
+import { LazyExpenseLocationChangeModal as ExpenseLocationChangeModal } from "../LazyExpenseLocationChangeModal";
+import { LazyPaymentAllocationModal as PaymentAllocationModal } from "../LazyPaymentAllocationModal";
 import { WageRecalculationDialog, type WageRecalculationPreview } from "../WageRecalculationDialog";
 import { AuditLogsModal } from "../audit/AuditLogsModal";
-import type { ApprovalType } from "../contracts";
+import type { ApprovalType, PaymentAllocationInput } from "../contracts";
 import { EmployeeWorkspace } from "../employee/EmployeeWorkspace";
 import { PayrollModal } from "../payroll/PayrollModal";
 
@@ -31,11 +32,11 @@ export function ManagerDialogs({
   setViewDashboardUserId: Dispatch<SetStateAction<string | null>>; expenseLocations: Location[];
   canManage: boolean; canDecide: boolean; canConfigure: boolean; setPendingExpenseApproval: Dispatch<SetStateAction<Approval | null>>;
   handleApprove: (type: ApprovalType, id: string, expense?: { title: string; amount: number; primaryLocationId?: string | null }, refreshOwner?: () => Promise<void>) => Promise<boolean>;
-  submitApproval: (type: ApprovalType, id: string, status: "APPROVED" | "REJECTED", locationId?: string | null, comment?: string, refreshOwner?: () => Promise<void>, adjustment?: boolean) => Promise<boolean>;
+  submitApproval: (type: ApprovalType, id: string, status: "APPROVED" | "REJECTED", locationId?: string | null, comment?: string, refreshOwner?: () => Promise<void>, adjustment?: boolean, payment?: PaymentAllocationInput) => Promise<boolean>;
   viewAuditLogsAdminId: string | null; adminName?: string; closeAuditLogs: () => void; payrollUser: any;
   setPayrollUser: Dispatch<SetStateAction<any>>; setPendingPaymentChange: Dispatch<SetStateAction<PaymentChange | null>>;
   load: (showLoading?: boolean) => Promise<void>; pendingExpenseApproval: Approval | null; pendingPaymentChange: PaymentChange | null;
-  submitPaymentChange: (locationId: string | null, comment: string) => Promise<boolean>; pendingWageChange: WageChange | null;
+  submitPaymentChange: (payment: PaymentAllocationInput, comment: string) => Promise<boolean>; pendingWageChange: WageChange | null;
   wageDialogOpen: boolean; wageCommitBusy: boolean; wageDialogError: string | null; setWageDialogOpen: Dispatch<SetStateAction<boolean>>;
   commitWageChange: () => Promise<void>; setPendingWageChange: Dispatch<SetStateAction<WageChange | null>>;
   setWageDialogError: Dispatch<SetStateAction<string | null>>; wageEditTriggerRef: MutableRefObject<HTMLButtonElement | null>;
@@ -98,6 +99,7 @@ export function ManagerDialogs({
       {payrollUser && (
         <PayrollModal
           user={payrollUser}
+          ownerUserId={profile.id}
           online={online}
           canDecide={canDecide}
           expenseLocations={expenseLocations}
@@ -114,18 +116,16 @@ export function ManagerDialogs({
             refreshOwner,
           })}
           onClose={() => setPayrollUser(null)}
-          onRefresh={() => load(false)}
+          onRefresh={async () => { await load(false); }}
         />
       )}
-      {pendingExpenseApproval && (
+      {pendingExpenseApproval?.adjustment && (
         <ExpenseLocationChangeModal
-          mode="approve"
           paymentAmount={pendingExpenseApproval.amount}
           amountLabel={pendingExpenseApproval.title}
           locations={expenseLocations}
           primaryLocationId={pendingExpenseApproval.primaryLocationId}
           currentLocationId={pendingExpenseApproval.currentLocationId}
-          allowCentralOutside={!pendingExpenseApproval.adjustment}
           onClose={() => setPendingExpenseApproval(null)}
           onSubmit={async (locationId, comment) => {
             const approval = pendingExpenseApproval;
@@ -135,15 +135,30 @@ export function ManagerDialogs({
             }
             return success;
           }}
+       />
+      )}
+      {pendingExpenseApproval && !pendingExpenseApproval.adjustment && (
+        <PaymentAllocationModal
+          mode="approve"
+          paymentAmount={pendingExpenseApproval.amount}
+          amountLabel={pendingExpenseApproval.title}
+          locations={expenseLocations}
+          primaryLocationId={pendingExpenseApproval.primaryLocationId}
+          onClose={() => setPendingExpenseApproval(null)}
+          onSubmit={async (payment, comment) => {
+            const approval = pendingExpenseApproval;
+            const success = await submitApproval(approval.type, approval.id, 'APPROVED', undefined, comment, approval.refreshOwner, false, payment);
+            if (success) setPendingExpenseApproval(null);
+            return success;
+          }}
         />
       )}
        {pendingPaymentChange && (
-        <ExpenseLocationChangeModal
+        <PaymentAllocationModal
           locations={expenseLocations}
           paymentAmount={pendingPaymentChange.paymentAmount}
           amountLabel={pendingPaymentChange.amountLabel}
           primaryLocationId={pendingPaymentChange.primaryLocationId}
-          currentLocationId={pendingPaymentChange.currentLocationId}
           onClose={() => setPendingPaymentChange(null)}
           onSubmit={submitPaymentChange}
         />
@@ -171,4 +186,3 @@ export function ManagerDialogs({
     </>
   );
 }
-

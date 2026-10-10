@@ -83,3 +83,18 @@ test("client parser accepts the public response shape and rejects unknown keys",
     blockers: [{ key: "unknown", label: "raw", count: 2 }],
   })).toBeNull();
 });
+
+test("maps branch receipt and branch deletion blockers for Report and Cash Count", async () => {
+  const response = pendingWorkErrorResponse({
+    message: PENDING_WORK_BLOCKED,
+    details: JSON.stringify({ blockers: [
+      { key: "branch_transfer_delete_pending", count: 1 },
+      { key: "branch_transfer_receipt_pending", count: 2 },
+    ] }),
+  });
+  expect(response?.status).toBe(409);
+  expect((await response?.json()).blockers).toEqual([
+    { key: "branch_transfer_receipt_pending", label: "เงินโอนเข้าบัญชีสาขาที่ยังไม่ยืนยันรับ", count: 2 },
+    { key: "branch_transfer_delete_pending", label: "คำขอลบรายการโอนเข้าบัญชีสาขา", count: 1 },
+  ]);
+});

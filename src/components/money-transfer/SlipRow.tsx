@@ -105,6 +105,7 @@ export function SlipRow({
           <input
             id={slipFieldInputId(slip.id, "transactionDate")}
             type="datetime-local"
+            max={bangkokDateTimeLocalValue(new Date())}
             aria-invalid={Boolean(errors.transactionDate) || undefined}
             value={slip.transactionDate ? bangkokDateTimeLocalValue(slip.transactionDate) : ""}
             onChange={(e) => onUpdate(slip.id, "transactionDate", e.target.value ? bangkokWallClockToUtcIso(e.target.value) : null)}

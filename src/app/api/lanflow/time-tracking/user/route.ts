@@ -127,7 +127,7 @@ export async function GET(request: NextRequest) {
         .range(from, to)),
       readAllSupabaseRows((from, to) => supabase
         .from("payroll_slips")
-        .select("id, profile_id, month, gross_pay, total_deductions, net_pay, status, created_at, approved_at, cancelled_at, expense_location_id, expense_location_name, admin_comment, report_lock_no, approver:profiles!payroll_slips_approved_by_fkey(name)")
+        .select("id, profile_id, month, gross_pay, total_deductions, net_pay, status, created_at, approved_at, cancelled_at, expense_location_id, expense_location_name, payment_channel, payment_transfer_amount, admin_comment, report_lock_no, approver:profiles!payroll_slips_approved_by_fkey(name)")
         .eq("profile_id", targetUserId)
         .order("month", { ascending: false })
         .order("id", { ascending: false })
