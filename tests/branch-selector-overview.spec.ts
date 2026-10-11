@@ -140,6 +140,10 @@ test.describe("branch selector overview", () => {
               billCount: 30,
               netWeight: 7_959,
               averagePrice: 36.34,
+              rubberValue: 289_239,
+              deductionTotal: 0,
+              unpricedBillCount: 0,
+              pendingApprovalCount: 0,
             },
           },
         }))),
@@ -376,9 +380,14 @@ test.describe("branch selector overview", () => {
 
     let summaryRequests = 0;
     let failRefresh = false;
+    let releaseFailedRefresh: (() => void) | undefined;
+    const failedRefreshReady = new Promise<void>((resolve) => {
+      releaseFailedRefresh = resolve;
+    });
     await page.route("**/api/lanflow/dashboard/branch-summaries", async (route) => {
       summaryRequests += 1;
       if (failRefresh) {
+        await failedRefreshReady;
         await route.fulfill({ status: 503, body: "unavailable" });
         return;
       }
@@ -388,6 +397,7 @@ test.describe("branch selector overview", () => {
         body: JSON.stringify([{
           locationId: location!.id,
           snapshotStatus: "ready",
+          isOverdue: false,
           calculatedAt: "2026-08-01T00:00:00.000Z",
           cashStatus: "normal",
           summary: {
@@ -398,6 +408,10 @@ test.describe("branch selector overview", () => {
               billCount: 30,
               netWeight: 7_959,
               averagePrice: 36.34,
+              rubberValue: 289_239,
+              deductionTotal: 0,
+              unpricedBillCount: 0,
+              pendingApprovalCount: 0,
             },
           },
         }]),
@@ -415,6 +429,10 @@ test.describe("branch selector overview", () => {
 
     const option = page.locator(`[role="option"][data-location-id="${location!.id}"]`);
     await expect(option).toContainText("฿42,000");
+    await expect(option.getByRole("img", { name: /^ข้อมูลไม่สด/ })).toBeVisible({
+      timeout: 5_000,
+    });
+    releaseFailedRefresh?.();
     await expect(option.getByRole("img", { name: /^ข้อมูลไม่สด/ })).toBeVisible({
       timeout: 5_000,
     });

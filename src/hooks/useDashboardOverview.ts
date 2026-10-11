@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { dashboardPollInterval } from "@/lib/dashboard-freshness";
+import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
 import type {
   DashboardBranchSummary,
   DashboardMoneyHistory,
@@ -10,14 +11,17 @@ import type {
   DashboardSnapshot,
 } from "@/types/dashboard";
 
-export const DASHBOARD_BRANCH_SUMMARIES_QUERY_KEY = "dashboardBranchSummaries";
 export const DASHBOARD_SNAPSHOT_QUERY_KEY = "dashboardSnapshot";
 export const DASHBOARD_MONEY_HISTORY_QUERY_KEY = "dashboardMoneyHistory";
 
-export function useDashboardBranchSummaries(ownerUserId: string, online: boolean) {
+export function useDashboardBranchSummaries(
+  ownerUserId: string,
+  online: boolean,
+  options: { autoFetch?: boolean } = {},
+) {
   return useQuery({
-    queryKey: [DASHBOARD_BRANCH_SUMMARIES_QUERY_KEY, ownerUserId],
-    enabled: Boolean(ownerUserId) && online,
+    queryKey: [...moneyFlowQueryKeys.dashboardBranchSummaries(), ownerUserId],
+    enabled: Boolean(ownerUserId) && online && options.autoFetch !== false,
     queryFn: async ({ signal }) => {
       const response = await authFetch(
         "/api/lanflow/dashboard/branch-summaries",

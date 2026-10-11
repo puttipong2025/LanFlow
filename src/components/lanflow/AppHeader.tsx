@@ -286,14 +286,16 @@ export function AppHeader({
                   const cashStatus = branchSummary?.cashStatus;
                   const statusLabel = branchSummary
                     ? CASH_STATUS_LABELS[branchSummary.cashStatus]
-                    : branchSummaries.isPending
+                    : branchSummaries.isFetching
                       ? "กำลังโหลดข้อมูลภาพรวม"
                       : branchSummaries.isError
                         ? "โหลดข้อมูลไม่ได้"
                         : "ยังไม่มีข้อมูลภาพรวม";
                   const dataIsStale = Boolean(
                     branchSummary?.summary &&
-                    (branchSummary.snapshotStatus !== "ready" || branchSummaries.isError),
+                    (branchSummary.snapshotStatus !== "ready"
+                      || branchSummaries.isFetching
+                      || branchSummaries.isError),
                   );
                   return (
                     <button
@@ -391,7 +393,7 @@ export function AppHeader({
                               นน.ยางคงเหลือ {formatNumber(branchSummary.summary.rubberInventoryWeight)} กก.
                             </span>
                           </span>
-                        ) : branchSummaries.isPending ? (
+                        ) : branchSummaries.isFetching ? (
                           <span className="mt-1.5 block text-xs text-ink/45">{statusLabel}</span>
                         ) : (
                           <span className="mt-1.5 block space-y-1 text-xs text-ink/50">

@@ -94,3 +94,18 @@ test("Money Transfer list excludes cash transfers owned by Income/Expense", () =
   const migration = source("supabase/migrations/20260824020000_hide_cash_transfers_from_money_transfer_module.sql");
   expect(migration.match(/t\.transfer_type <> 'cash'/g)).toHaveLength(2);
 });
+
+test("payment allocation owns its branch-summary read outside the business app header", () => {
+  const modal = source("src/components/time-tracking/PaymentAllocationModal.tsx");
+  const dashboardHook = source("src/hooks/useDashboardOverview.ts");
+  const appHeader = source("src/components/lanflow/AppHeader.tsx");
+
+  expect(modal).toContain("useDashboardBranchSummaries(ownerUserId, online, { autoFetch: false })");
+  expect(modal).not.toContain("refetchQueries");
+  expect(modal).toContain("void refetchBranchSummaries()");
+  expect(modal).toContain("branchSummaries.isFetching");
+  expect(dashboardHook).toContain("moneyFlowQueryKeys.dashboardBranchSummaries()");
+  expect(dashboardHook).toContain("options.autoFetch !== false");
+  expect(dashboardHook).not.toContain("DASHBOARD_BRANCH_SUMMARIES_QUERY_KEY");
+  expect(appHeader).not.toContain("branchSummaries.isPending");
+});

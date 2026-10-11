@@ -2,7 +2,10 @@ import { expect, test } from "@playwright/test";
 
 import {
   derivePaymentAmounts,
+  deriveRecommendedPaymentAmounts,
+  parseCanonicalPaymentAmount,
   parsePaymentAllocationInput,
+  resolveDefaultPaymentLocationId,
   type PaymentAllocationInput,
 } from "@/lib/time-tracking/payment-allocation";
 import { mapTimePayrollPaymentRpcError } from "@/lib/server/time-payroll-payment-errors";
@@ -32,6 +35,62 @@ test.describe("time/payroll payment allocation contract", () => {
     expect(derivePaymentAmounts(500, 0)).toEqual({ transferAmount: 0, branchPaidAmount: 500 });
     expect(derivePaymentAmounts(500, 500)).toEqual({ transferAmount: 500, branchPaidAmount: 0 });
     expect(derivePaymentAmounts(500, 125.5)).toEqual({ transferAmount: 125.5, branchPaidAmount: 374.5 });
+  });
+
+  test("parses only canonical payment amounts", () => {
+    expect(parseCanonicalPaymentAmount("0")).toBe(0);
+    expect(parseCanonicalPaymentAmount("125.50")).toBe(125.5);
+    expect(parseCanonicalPaymentAmount(125.5)).toBe(125.5);
+    expect(parseCanonicalPaymentAmount("1e2")).toBeNull();
+    expect(parseCanonicalPaymentAmount("01")).toBeNull();
+    expect(parseCanonicalPaymentAmount("1.001")).toBeNull();
+    expect(parseCanonicalPaymentAmount(null)).toBeNull();
+  });
+
+  test("derives a transfer recommendation from the branch net cash flow", () => {
+    expect(deriveRecommendedPaymentAmounts(500, 125.5)).toEqual({
+      transferAmount: 374.5,
+      branchPaidAmount: 125.5,
+    });
+    expect(deriveRecommendedPaymentAmounts(500, 500)).toEqual({
+      transferAmount: 0,
+      branchPaidAmount: 500,
+    });
+    expect(deriveRecommendedPaymentAmounts(500, 900)).toEqual({
+      transferAmount: 0,
+      branchPaidAmount: 500,
+    });
+    expect(deriveRecommendedPaymentAmounts(500, 0)).toEqual({
+      transferAmount: 500,
+      branchPaidAmount: 0,
+    });
+    expect(deriveRecommendedPaymentAmounts(500, -200)).toEqual({
+      transferAmount: 500,
+      branchPaidAmount: 0,
+    });
+    expect(deriveRecommendedPaymentAmounts(500.55, 100.111)).toEqual({
+      transferAmount: 400.44,
+      branchPaidAmount: 100.11,
+    });
+    expect(deriveRecommendedPaymentAmounts(500, Number.NaN)).toEqual({
+      transferAmount: 500,
+      branchPaidAmount: 0,
+    });
+    expect(deriveRecommendedPaymentAmounts(500, undefined)).toEqual({
+      transferAmount: 500,
+      branchPaidAmount: 0,
+    });
+    expect(deriveRecommendedPaymentAmounts(500, "300" as never)).toEqual({
+      transferAmount: 500,
+      branchPaidAmount: 0,
+    });
+  });
+
+  test("uses the primary payment location only when it remains in the allowed options", () => {
+    const allowed = ["71000000-0000-4000-8000-000000000001"];
+    expect(resolveDefaultPaymentLocationId(allowed, allowed[0])).toBe(allowed[0]);
+    expect(resolveDefaultPaymentLocationId(allowed, "71000000-0000-4000-8000-000000000002")).toBe("");
+    expect(resolveDefaultPaymentLocationId(allowed, null)).toBe("");
   });
 
   test("accepts canonical split and outside-system payloads", () => {

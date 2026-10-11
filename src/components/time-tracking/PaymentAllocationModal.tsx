@@ -1,11 +1,32 @@
 "use client";
 
-import { useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
+import { useAuthContext } from "@/components/AuthProvider";
 import { ModalShell } from "@/components/shared/ModalShell";
+import { useDashboardBranchSummaries } from "@/hooks/useDashboardOverview";
+import { useOnlineStatus } from "@/hooks/useOnlineStatus";
+import { formatBangkokDateTime } from "@/lib/bangkok-date";
+import { cn } from "@/lib/cn";
 import { formatPayrollCurrency } from "@/lib/time-tracking/format";
-import { derivePaymentAmounts, type PaymentAllocationInput, type PaymentChannel } from "@/lib/time-tracking/payment-allocation";
+import {
+  derivePaymentAmounts,
+  deriveRecommendedPaymentAmounts,
+  parseCanonicalPaymentAmount,
+  resolveDefaultPaymentLocationId,
+  type PaymentAllocationInput,
+  type PaymentChannel,
+} from "@/lib/time-tracking/payment-allocation";
 import type { Location } from "@/types";
+
+function formatCalculatedAt(value: string | null | undefined) {
+  if (!value) return null;
+  try {
+    return formatBangkokDateTime(value);
+  } catch {
+    return null;
+  }
+}
 
 export type PaymentAllocationModalProps = {
   locations: Location[];
@@ -30,25 +51,82 @@ export function PaymentAllocationModal({
 }: PaymentAllocationModalProps) {
   const fieldId = useId();
   const submitting = useRef(false);
+  const transferEdited = useRef(false);
+  const { profile } = useAuthContext();
+  const online = useOnlineStatus();
+  const ownerUserId = profile?.id ?? "";
   const [channel, setChannel] = useState<PaymentChannel | null>(null);
   const [locationId, setLocationId] = useState("");
   const [transferAmount, setTransferAmount] = useState("");
   const [comment, setComment] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const branchSummaries = useDashboardBranchSummaries(ownerUserId, online, { autoFetch: false });
+  const { refetch: refetchBranchSummaries } = branchSummaries;
+  const branchSummaryByLocation = useMemo(
+    () => new Map((branchSummaries.data ?? []).map((summary) => [summary.locationId, summary])),
+    [branchSummaries.data],
+  );
   const orderedLocations = useMemo(() => [...locations].sort((a, b) =>
     a.id === primaryLocationId ? -1 : b.id === primaryLocationId ? 1 : 0
   ), [locations, primaryLocationId]);
-  const parsedTransfer = transferAmount === "" ? Number.NaN : Number(transferAmount);
-  const invalidTransfer = channel === "branch_and_transfer" && (
-    !Number.isFinite(parsedTransfer) || parsedTransfer < 0 || parsedTransfer > paymentAmount
-    || !/^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/.test(transferAmount)
+  const selectedBranchSummary = branchSummaryByLocation.get(locationId);
+  const selectedNetCashFlow = selectedBranchSummary?.summary?.netCashFlow;
+  const hasUsableNetCashFlow = typeof selectedNetCashFlow === "number"
+    && Number.isFinite(selectedNetCashFlow);
+  const calculatedAtText = formatCalculatedAt(selectedBranchSummary?.calculatedAt);
+  const recommendedTransfer = String(deriveRecommendedPaymentAmounts(
+    paymentAmount,
+    hasUsableNetCashFlow ? selectedNetCashFlow : null,
+  ).transferAmount);
+  const dataIsStale = Boolean(
+    hasUsableNetCashFlow
+    && (selectedBranchSummary?.snapshotStatus !== "ready"
+      || selectedBranchSummary?.isOverdue
+      || !online
+      || branchSummaries.isFetching
+      || branchSummaries.isError),
   );
-  const amounts = !invalidTransfer && Number.isFinite(parsedTransfer)
+  const unavailableSummaryMessage = branchSummaries.isFetching
+    ? "กำลังโหลดรับ–จ่ายสุทธิ ระหว่างนี้ระบบแนะนำโอนเต็มจำนวน"
+    : branchSummaries.isError
+      ? "โหลดรับ–จ่ายสุทธิไม่ได้ ระบบแนะนำโอนเต็มจำนวนและยังดำเนินการต่อได้"
+      : selectedBranchSummary?.snapshotStatus === "failed"
+        ? "คำนวณรับ–จ่ายสุทธิไม่สำเร็จ ระบบแนะนำโอนเต็มจำนวนและยังดำเนินการต่อได้"
+        : selectedBranchSummary?.snapshotStatus && selectedBranchSummary.snapshotStatus !== "ready"
+          ? "รับ–จ่ายสุทธิกำลังอัปเดต ระหว่างนี้ระบบแนะนำโอนเต็มจำนวน"
+          : "ยังไม่มีรับ–จ่ายสุทธิของสาขานี้ ระบบแนะนำโอนเต็มจำนวน";
+  const parsedTransfer = parseCanonicalPaymentAmount(transferAmount);
+  const invalidTransfer = channel === "branch_and_transfer" && (
+    parsedTransfer === null || parsedTransfer < 0 || parsedTransfer > paymentAmount
+  );
+  const amounts = !invalidTransfer && parsedTransfer !== null
     ? derivePaymentAmounts(paymentAmount, parsedTransfer)
     : null;
   const title = mode === "change" ? "เปลี่ยนวิธีจ่าย" : "เลือกวิธีจ่าย";
   const submitLabel = mode === "change" ? "บันทึก" : mode === "approve" ? "อนุมัติ" : "สร้างและอนุมัติ";
+
+  useEffect(() => {
+    if (!online || !ownerUserId) return;
+    const timer = window.setTimeout(() => void refetchBranchSummaries(), 0);
+    return () => window.clearTimeout(timer);
+  }, [online, ownerUserId, refetchBranchSummaries]);
+
+  useEffect(() => {
+    if (channel !== "branch_and_transfer" || !locationId || transferEdited.current) return;
+    if (transferAmount === recommendedTransfer) return;
+    setTransferAmount(recommendedTransfer);
+  }, [channel, locationId, recommendedTransfer, transferAmount]);
+
+  function applyTransferRecommendation(nextLocationId: string) {
+    const summary = branchSummaryByLocation.get(nextLocationId);
+    const nextTransfer = String(deriveRecommendedPaymentAmounts(
+      paymentAmount,
+      summary?.summary?.netCashFlow,
+    ).transferAmount);
+    transferEdited.current = false;
+    setTransferAmount(nextTransfer);
+  }
 
   function selectChannel(nextChannel: PaymentChannel) {
     setChannel(nextChannel);
@@ -56,10 +134,15 @@ export function PaymentAllocationModal({
     if (nextChannel === "outside_system") {
       setLocationId("");
       setTransferAmount("");
+      transferEdited.current = false;
       return;
     }
-    setLocationId(locations.some((location) => location.id === primaryLocationId) ? primaryLocationId ?? "" : "");
-    setTransferAmount(String(paymentAmount));
+    const nextLocationId = resolveDefaultPaymentLocationId(
+      locations.map((location) => location.id),
+      primaryLocationId,
+    );
+    setLocationId(nextLocationId);
+    applyTransferRecommendation(nextLocationId);
   }
 
   async function submit() {
@@ -122,28 +205,16 @@ export function PaymentAllocationModal({
         {channel === "branch_and_transfer" && (
           <div className="mt-4 space-y-4 rounded-lg border border-black/10 bg-mint/20 p-3">
             <div>
-              <label className="block text-sm font-semibold text-ink" htmlFor={`${fieldId}-transfer`}>ยอดโอนเงิน</label>
-              <input
-                id={`${fieldId}-transfer`}
-                type="number"
-                inputMode="decimal"
-                min="0"
-                max={paymentAmount}
-                step="0.01"
-                value={transferAmount}
-                onChange={(event) => { setTransferAmount(event.target.value); setError(null); }}
-                disabled={saving}
-                className="focus-ring mt-2 w-full rounded-md border border-black/15 bg-white px-3 py-2 tabular-nums"
-                required
-              />
-              <p className="mt-1 text-pretty text-xs text-ink/60">กรอกได้ไม่เกิน {formatPayrollCurrency(paymentAmount)}</p>
-            </div>
-            <div>
               <label className="block text-sm font-semibold text-ink" htmlFor={`${fieldId}-location`}>สาขาที่จ่ายส่วนต่าง</label>
               <select
                 id={`${fieldId}-location`}
                 value={locationId}
-                onChange={(event) => { setLocationId(event.target.value); setError(null); }}
+                onChange={(event) => {
+                  const nextLocationId = event.target.value;
+                  setLocationId(nextLocationId);
+                  if (nextLocationId !== locationId) applyTransferRecommendation(nextLocationId);
+                  setError(null);
+                }}
                 disabled={saving}
                 className="focus-ring mt-2 w-full rounded-md border border-black/15 bg-white px-3 py-2"
                 required
@@ -153,6 +224,52 @@ export function PaymentAllocationModal({
                   <option key={location.id} value={location.id}>{location.name}{location.id === primaryLocationId ? " (สาขาหลัก)" : ""}</option>
                 ))}
               </select>
+            </div>
+            {locationId && (
+              <div
+                aria-live="polite"
+                className={cn(
+                  "rounded-md border p-3",
+                  dataIsStale ? "border-amber/40 bg-amber/10" : "border-black/10 bg-white",
+                )}
+              >
+                <p className="text-pretty text-xs font-semibold text-ink/60">รับ–จ่ายสุทธิของสาขา</p>
+                <p className="mt-1 tabular-nums text-lg font-bold text-ink">
+                  {hasUsableNetCashFlow ? formatPayrollCurrency(selectedNetCashFlow) : "—"}
+                </p>
+                <p className="mt-1 text-pretty text-xs text-ink/60">
+                  {hasUsableNetCashFlow
+                    ? dataIsStale
+                      ? `${selectedBranchSummary?.isOverdue ? "ข้อมูลอัปเดตล่าช้า" : "ข้อมูลอาจไม่สด"}${calculatedAtText ? ` · ล่าสุด ${calculatedAtText}` : ""}`
+                      : calculatedAtText
+                        ? `ข้อมูลล่าสุด ${calculatedAtText}`
+                        : "ข้อมูลพร้อมใช้"
+                    : unavailableSummaryMessage}
+                </p>
+              </div>
+            )}
+            <div>
+              <label className="block text-sm font-semibold text-ink" htmlFor={`${fieldId}-transfer`}>ยอดโอนเงิน</label>
+              <input
+                id={`${fieldId}-transfer`}
+                type="number"
+                inputMode="decimal"
+                min="0"
+                max={paymentAmount}
+                step="0.01"
+                value={transferAmount}
+                onChange={(event) => {
+                  transferEdited.current = true;
+                  setTransferAmount(event.target.value);
+                  setError(null);
+                }}
+                disabled={saving}
+                className="focus-ring mt-2 w-full rounded-md border border-black/15 bg-white px-3 py-2 tabular-nums"
+                required
+              />
+              <p className="mt-1 text-pretty text-xs text-ink/60">
+                ค่าแนะนำจากรับ–จ่ายสุทธิ แก้ไขได้ไม่เกิน {formatPayrollCurrency(paymentAmount)}
+              </p>
             </div>
             {amounts && (
               <dl className="grid grid-cols-2 gap-2 rounded-md bg-white p-3 text-sm">

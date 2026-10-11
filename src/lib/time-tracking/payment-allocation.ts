@@ -30,10 +30,32 @@ export function derivePaymentAmounts(sourceAmount: number, transferAmount: numbe
   };
 }
 
-function parseTransferAmount(value: PaymentAllocationInput["transferAmount"]) {
+export function deriveRecommendedPaymentAmounts(
+  sourceAmount: number,
+  netCashFlow: number | null | undefined,
+) {
+  const availableBranchAmount = typeof netCashFlow === "number" && Number.isFinite(netCashFlow)
+    ? Math.min(Math.max(roundMoney(netCashFlow), 0), sourceAmount)
+    : 0;
+  return derivePaymentAmounts(sourceAmount, roundMoney(sourceAmount - availableBranchAmount));
+}
+
+export function resolveDefaultPaymentLocationId(
+  locationIds: readonly string[],
+  primaryLocationId?: string | null,
+) {
+  return primaryLocationId && locationIds.includes(primaryLocationId) ? primaryLocationId : "";
+}
+
+export function parseCanonicalPaymentAmount(value: PaymentAllocationInput["transferAmount"]) {
   const raw = typeof value === "number" ? String(value) : value?.trim() ?? "";
-  if (!MONEY_PATTERN.test(raw)) throw new Error("PAYMENT_INVALID_SPLIT");
-  return Number(raw);
+  return MONEY_PATTERN.test(raw) ? Number(raw) : null;
+}
+
+function parseTransferAmount(value: PaymentAllocationInput["transferAmount"]) {
+  const amount = parseCanonicalPaymentAmount(value);
+  if (amount === null) throw new Error("PAYMENT_INVALID_SPLIT");
+  return amount;
 }
 
 export function parsePaymentAllocationInput(

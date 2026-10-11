@@ -143,7 +143,7 @@ export type DashboardBranchSummary = {
   snapshotStatus: DashboardSnapshot["status"] | null;
   calculatedAt: string | null;
   cashStatus: DashboardBranchCashStatus;
-  isOverdue?: boolean;
+  isOverdue: boolean;
   summary: Pick<
     DashboardSummary,
     "netCashFlow" | "rubberInventoryWeight" | "purchaseToday"
