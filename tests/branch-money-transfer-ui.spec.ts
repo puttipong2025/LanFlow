@@ -133,6 +133,533 @@ test("customer and transport modals also start editable amounts at zero with foc
   await transportDialog.getByRole("button", { name: "ยกเลิก" }).click();
 });
 
+test("customer transfers keep an explicitly typed recipient when rubber bills change", async ({ page }) => {
+  const sourceIds = [crypto.randomUUID(), crypto.randomUUID()];
+  let savedPayload: Record<string, any> = {};
+
+  await page.route("**/rest/v1/rpc/get_money_transfer_sources", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        rows: sourceIds.map((sourceId, index) => ({
+          sourceType: "rubber_bill",
+          sourceId,
+          sourceNumber: `RB-FREE-NAME-${index + 1}`,
+          sourceDate: "2026-10-11",
+          customerName: `ลูกค้าในบิล ${index + 1}`,
+          amount: (index + 1) * 100,
+          netWeight: 10,
+          averagePrice: 10,
+          rubberValue: (index + 1) * 100,
+          deductedAmount: 0,
+          licensePlate: null,
+          transferId: null,
+          reportLockNo: null,
+          available: true,
+          blockReason: null,
+          createdAt: `2026-10-11T0${index}:00:00.000Z`,
+        })),
+        hasMore: false,
+      }),
+    });
+  });
+  await page.route("**/rest/v1/rpc/save_money_transfer", async (route) => {
+    const payload = (route.request().postDataJSON() as { p_payload: Record<string, any> }).p_payload;
+    savedPayload = payload;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: payload.id,
+        client_temp_id: payload.clientTempId,
+        idempotency_key: payload.idempotencyKey,
+        location_id: payload.locationId,
+        customer_id: payload.customerId,
+        customer_name: payload.customerName,
+        account_number: payload.accountNumber,
+        transfer_type: payload.transferType,
+        transfer_status: payload.transferStatus,
+        net_amount_to_pay: payload.netAmountToPay,
+        branch_paid_amount: payload.branchPaidAmount,
+        revision_no: payload.revisionNo,
+        record_status: "active",
+        sync_status: "synced",
+        money_transfer_slips: [],
+        money_transfer_items: [],
+      }),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /^โอนเงิน(?:\s|$)/ }).click();
+  await page.getByRole("button", { name: "สร้างรายการโอน" }).click();
+  await page.getByRole("button", { name: /โอนให้ลูกค้า/ }).click();
+
+  const dialog = page.getByRole("dialog", { name: "สร้างรายการโอนเงินใหม่" });
+  const customerName = dialog.getByPlaceholder("พิมพ์หรือค้นหาชื่อลูกค้า...");
+  await dialog.getByRole("button", { name: "เลือกบิลยาง / ใบชั่ง" }).click();
+  await dialog.getByRole("checkbox", { name: "เลือก RB-FREE-NAME-1" })
+    .evaluate((checkbox: HTMLInputElement) => checkbox.click());
+  await expect(customerName).toHaveValue("ลูกค้าในบิล 1");
+
+  await customerName.fill("ผู้รับเงินจริงที่ไม่ตรงกับบิล");
+  await expect(dialog.getByText("ไม่พบในทะเบียน — ใช้ชื่อที่พิมพ์ได้")).toBeVisible();
+  await dialog.getByRole("checkbox", { name: "เลือก RB-FREE-NAME-2" })
+    .evaluate((checkbox: HTMLInputElement) => checkbox.click());
+  await expect(customerName).toHaveValue("ผู้รับเงินจริงที่ไม่ตรงกับบิล");
+
+  await dialog.getByRole("button", { name: "บันทึก", exact: true }).click();
+  await expect.poll(() => savedPayload.customerName).toBe("ผู้รับเงินจริงที่ไม่ตรงกับบิล");
+  expect(savedPayload).toMatchObject({
+    customerId: null,
+    customerName: "ผู้รับเงินจริงที่ไม่ตรงกับบิล",
+    netAmountToPay: 300,
+  });
+  expect((savedPayload.items as Array<{ customerName: string }>).map((item) => item.customerName))
+    .toEqual(["ลูกค้าในบิล 1", "ลูกค้าในบิล 2"]);
+});
+
+test("editing a slip does not undo the branch-pays-remaining choice", async ({ page }) => {
+  const sourceId = crypto.randomUUID();
+  await page.route("**/rest/v1/rpc/get_money_transfer_sources", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        rows: [{
+          sourceType: "rubber_bill",
+          sourceId,
+          sourceNumber: "RB-BRANCH-REMAINDER",
+          sourceDate: "2026-10-11",
+          customerName: "ลูกค้าทดสอบส่วนต่าง",
+          amount: 100,
+          netWeight: 10,
+          averagePrice: 10,
+          rubberValue: 100,
+          deductedAmount: 0,
+          licensePlate: null,
+          transferId: null,
+          reportLockNo: null,
+          available: true,
+          blockReason: null,
+          createdAt: "2026-10-11T01:00:00.000Z",
+        }],
+        hasMore: false,
+      }),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /^โอนเงิน(?:\s|$)/ }).click();
+  await page.getByRole("button", { name: "สร้างรายการโอน" }).click();
+  await page.getByRole("button", { name: /โอนให้ลูกค้า/ }).click();
+
+  const dialog = page.getByRole("dialog", { name: "สร้างรายการโอนเงินใหม่" });
+  await dialog.getByRole("button", { name: "เลือกบิลยาง / ใบชั่ง" }).click();
+  await dialog.getByRole("checkbox", { name: "เลือก RB-BRANCH-REMAINDER" })
+    .evaluate((checkbox: HTMLInputElement) => checkbox.click());
+  await dialog.getByRole("button", { name: "เพิ่มเอง" }).click();
+  const amount = dialog.getByRole("spinbutton", { name: "จำนวนเงินสลิป 1" });
+  await amount.fill("40");
+  await dialog.getByRole("button", { name: "สาขาจ่ายส่วนต่าง" }).click();
+  await expect(dialog.getByText(/โอน\+สาขาจ่าย/)).toBeVisible();
+
+  await amount.fill("50");
+  await expect(dialog.getByText(/โอน\+สาขาจ่าย/)).toBeVisible();
+});
+
+test("a bill customer name is only a recipient default until a suggestion is selected", async ({ page }) => {
+  const sourceId = crypto.randomUUID();
+  let sourceCustomerName = "";
+  let savedPayload: Record<string, any> = {};
+
+  await page.route("**/rest/v1/rpc/get_money_transfer_sources", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        rows: [{
+          sourceType: "rubber_bill",
+          sourceId,
+          sourceNumber: "RB-DEFAULT-ONLY",
+          sourceDate: "2026-10-11",
+          customerName: sourceCustomerName,
+          amount: 100,
+          netWeight: 10,
+          averagePrice: 10,
+          rubberValue: 100,
+          deductedAmount: 0,
+          licensePlate: null,
+          transferId: null,
+          reportLockNo: null,
+          available: true,
+          blockReason: null,
+          createdAt: "2026-10-11T01:00:00.000Z",
+        }],
+        hasMore: false,
+      }),
+    });
+  });
+  await page.route("**/rest/v1/rpc/save_money_transfer", async (route) => {
+    savedPayload = (route.request().postDataJSON() as { p_payload: Record<string, any> }).p_payload;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: savedPayload.id,
+        client_temp_id: savedPayload.clientTempId,
+        idempotency_key: savedPayload.idempotencyKey,
+        location_id: savedPayload.locationId,
+        customer_id: savedPayload.customerId,
+        customer_name: savedPayload.customerName,
+        account_number: savedPayload.accountNumber,
+        transfer_type: "customer",
+        transfer_status: savedPayload.transferStatus,
+        net_amount_to_pay: savedPayload.netAmountToPay,
+        revision_no: 0,
+        record_status: "active",
+        sync_status: "synced",
+        money_transfer_slips: [],
+        money_transfer_items: [],
+      }),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /^โอนเงิน(?:\s|$)/ }).click();
+  await page.getByRole("button", { name: "สร้างรายการโอน" }).click();
+  await page.getByRole("button", { name: /โอนให้ลูกค้า/ }).click();
+  const dialog = page.getByRole("dialog", { name: "สร้างรายการโอนเงินใหม่" });
+  const customerName = dialog.getByPlaceholder("พิมพ์หรือค้นหาชื่อลูกค้า...");
+  await customerName.click();
+  sourceCustomerName = (await customerName.locator("..").getByRole("button").first().innerText()).trim();
+  await dialog.getByRole("button", { name: "เลือกบิลยาง / ใบชั่ง" }).click();
+  await dialog.getByRole("checkbox", { name: "เลือก RB-DEFAULT-ONLY" })
+    .evaluate((checkbox: HTMLInputElement) => checkbox.click());
+  await expect(customerName).toHaveValue(sourceCustomerName);
+
+  await dialog.getByRole("button", { name: "บันทึก", exact: true }).click();
+  await expect.poll(() => savedPayload.customerName).toBe(sourceCustomerName);
+  expect(savedPayload).toMatchObject({ customerId: null, accountNumber: null });
+});
+
+test("editing a free-form recipient does not silently link a same-named customer", async ({ page }) => {
+  const transferId = crypto.randomUUID();
+  const savedPayloads: Array<Record<string, any>> = [];
+  const toRow = (payload: Record<string, any>) => ({
+    id: transferId,
+    client_temp_id: payload.clientTempId,
+    idempotency_key: payload.idempotencyKey,
+    location_id: payload.locationId,
+    customer_id: null,
+    customer_name: payload.customerName,
+    account_number: null,
+    account_name: null,
+    bank_name: null,
+    net_amount_to_pay: payload.netAmountToPay,
+    transfer_type: "customer",
+    transfer_status: payload.transferStatus,
+    revision_no: savedPayloads.length > 1 ? 1 : 0,
+    record_status: "active",
+    sync_status: "synced",
+    report_lock_no: null,
+    money_transfer_slips: (payload.slips as Array<Record<string, any>>).map((slip) => ({
+      id: slip.id,
+      input_method: slip.inputMethod,
+      amount: slip.amount,
+      reference_number: slip.referenceNumber,
+      fee: slip.fee,
+      sender_name: slip.senderName,
+      receiver_name: slip.receiverName,
+      transaction_date: slip.transactionDate,
+      slip_image_url: slip.slipImageUrl,
+      sort_order: slip.sortOrder,
+    })),
+    money_transfer_items: [],
+  });
+
+  await page.route("**/rest/v1/rpc/get_money_transfer_list", async (route) => {
+    const row = savedPayloads[0] ? toRow(savedPayloads[0]) : null;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        rows: row ? [row] : [],
+        statusCounts: { pending: row ? 1 : 0 },
+        hasMore: false,
+      }),
+    });
+  });
+  await page.route("**/rest/v1/rpc/get_money_transfer_detail", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(toRow(savedPayloads[0])),
+    });
+  });
+  await page.route("**/rest/v1/rpc/save_money_transfer", async (route) => {
+    const payload = (route.request().postDataJSON() as { p_payload: Record<string, any> }).p_payload;
+    savedPayloads.push(payload);
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(toRow(payload)),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /^โอนเงิน(?:\s|$)/ }).click();
+  await page.getByRole("button", { name: "สร้างรายการโอน" }).click();
+  await page.getByRole("button", { name: /โอนให้ลูกค้า/ }).click();
+
+  const createDialog = page.getByRole("dialog", { name: "สร้างรายการโอนเงินใหม่" });
+  const customerName = createDialog.getByPlaceholder("พิมพ์หรือค้นหาชื่อลูกค้า...");
+  await customerName.click();
+  const registeredName = (await customerName.locator("..").getByRole("button").first().innerText()).trim();
+  await customerName.fill(registeredName);
+  await createDialog.getByRole("button", { name: "เพิ่มเอง" }).click();
+  await createDialog.getByRole("spinbutton", { name: "จำนวนเงินสลิป 1" }).fill("100");
+  await createDialog.locator('input[type="datetime-local"]').fill("2026-10-11T10:30");
+  await createDialog.getByRole("button", { name: "บันทึก", exact: true }).click();
+  await expect.poll(() => savedPayloads.length).toBe(1);
+  expect(savedPayloads[0]).toMatchObject({ customerId: null, customerName: registeredName });
+
+  const transferRow = page.locator(`[data-transfer-id="${transferId}"]`);
+  await expect(transferRow).toContainText(registeredName);
+  await transferRow.getByRole("button", { name: "แก้" }).click();
+  const editDialog = page.getByRole("dialog", { name: "แก้ไขรายการโอนเงิน" });
+  await expect(editDialog.getByPlaceholder("พิมพ์หรือค้นหาชื่อลูกค้า...")).toHaveValue(registeredName);
+  await editDialog.getByRole("button", { name: "บันทึก", exact: true }).click();
+  await expect.poll(() => savedPayloads.length).toBe(2);
+  expect(savedPayloads[1]).toMatchObject({ customerId: null, customerName: registeredName });
+});
+
+test("editing preserves linked identity and its stored account when customer master data arrives late", async ({ page }) => {
+  const transferId = crypto.randomUUID();
+  const customerId = crypto.randomUUID();
+  const accountNumber = "1234567890";
+  const currentMasterAccountNumber = "9999999999";
+  const savedPayloads: Array<Record<string, any>> = [];
+  let releaseCustomers = () => {};
+  let customerRequestStarted = false;
+  const customerGate = new Promise<void>((resolve) => {
+    releaseCustomers = resolve;
+  });
+  const detailRow = {
+    id: transferId,
+    client_temp_id: "late-customer-transfer",
+    idempotency_key: "late-customer-transfer-20261011",
+    location_id: "00000000-0000-4000-8000-000000000102",
+    customer_id: customerId,
+    customer_name: "ลูกค้ามาช้า",
+    account_number: accountNumber,
+    account_name: "ลูกค้ามาช้า",
+    bank_name: "ธนาคารทดสอบ",
+    net_amount_to_pay: 0,
+    transfer_type: "customer",
+    transfer_status: "advance_payment",
+    revision_no: 0,
+    record_status: "active",
+    sync_status: "synced",
+    report_lock_no: null,
+    money_transfer_slips: [{
+      id: crypto.randomUUID(),
+      input_method: "manual",
+      amount: 100,
+      reference_number: null,
+      fee: 0,
+      sender_name: null,
+      receiver_name: null,
+      transaction_date: "2026-10-11T03:30:00.000Z",
+      slip_image_url: null,
+      sort_order: 0,
+    }],
+    money_transfer_items: [],
+  };
+
+  await page.route("**/rest/v1/customers*", async (route) => {
+    customerRequestStarted = true;
+    await customerGate;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([{
+        id: customerId,
+        client_temp_id: "late-customer",
+        main_name: "ลูกค้ามาช้า",
+        record_status: "active",
+        sync_status: "synced",
+        customer_contacts: [],
+        customer_farms: [],
+        customer_bank_accounts: [{
+          id: crypto.randomUUID(),
+          bank_name: "ธนาคารทะเบียนใหม่",
+          account_name: "ชื่อบัญชีทะเบียนใหม่",
+          account_number: accountNumber,
+          is_primary: false,
+        }, {
+          id: crypto.randomUUID(),
+          bank_name: "ธนาคารทดสอบ",
+          account_name: "ลูกค้ามาช้า",
+          account_number: currentMasterAccountNumber,
+          is_primary: true,
+        }],
+      }]),
+    });
+  });
+  await page.route("**/rest/v1/rpc/get_money_transfer_list", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ rows: [detailRow], statusCounts: { advance_payment: 1 }, hasMore: false }),
+    });
+  });
+  await page.route("**/rest/v1/rpc/get_money_transfer_detail", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(detailRow) });
+  });
+  await page.route("**/rest/v1/rpc/save_money_transfer", async (route) => {
+    const payload = (route.request().postDataJSON() as { p_payload: Record<string, any> }).p_payload;
+    savedPayloads.push(payload);
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(detailRow) });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /^โอนเงิน(?:\s|$)/ }).click();
+  await expect.poll(() => customerRequestStarted).toBe(true);
+  const transferRow = page.locator(`[data-transfer-id="${transferId}"]`);
+  await expect(transferRow).toContainText("ลูกค้ามาช้า");
+  await transferRow.getByRole("button", { name: "แก้" }).click();
+  const editDialog = page.getByRole("dialog", { name: "แก้ไขรายการโอนเงิน" });
+  await expect(editDialog.getByPlaceholder("พิมพ์หรือค้นหาชื่อลูกค้า...")).toHaveValue("ลูกค้ามาช้า");
+
+  releaseCustomers();
+  const accountOptions = editDialog.locator("select option");
+  await expect(accountOptions).toHaveCount(2);
+  expect((await accountOptions.allTextContents()).filter((label) => label.includes("[หลัก]"))).toHaveLength(1);
+  await editDialog.getByRole("button", { name: "บันทึก", exact: true }).click();
+  await expect.poll(() => savedPayloads.length).toBe(1);
+  expect(savedPayloads[0]).toMatchObject({
+    customerId,
+    customerName: "ลูกค้ามาช้า",
+    accountNumber,
+    accountName: "ลูกค้ามาช้า",
+    bankName: "ธนาคารทดสอบ",
+  });
+
+  await transferRow.getByRole("button", { name: "แก้" }).click();
+  const secondEditDialog = page.getByRole("dialog", { name: "แก้ไขรายการโอนเงิน" });
+  await secondEditDialog.locator("select").selectOption(currentMasterAccountNumber);
+  await secondEditDialog.getByRole("button", { name: "บันทึก", exact: true }).click();
+  await expect.poll(() => savedPayloads.length).toBe(2);
+  expect(savedPayloads[1]).toMatchObject({
+    customerId,
+    accountNumber: currentMasterAccountNumber,
+    accountName: "ลูกค้ามาช้า",
+    bankName: "ธนาคารทดสอบ",
+  });
+});
+
+test("editing a linked transfer without an account does not add the current primary account", async ({ page }) => {
+  const transferId = crypto.randomUUID();
+  const customerId = crypto.randomUUID();
+  let savedPayload: Record<string, any> = {};
+  const detailRow = {
+    id: transferId,
+    client_temp_id: "linked-without-account",
+    idempotency_key: "linked-without-account-20261011",
+    location_id: "00000000-0000-4000-8000-000000000102",
+    customer_id: customerId,
+    customer_name: "ลูกค้าไม่มีบัญชีเดิม",
+    account_number: null,
+    account_name: null,
+    bank_name: null,
+    net_amount_to_pay: 0,
+    transfer_type: "customer",
+    transfer_status: "advance_payment",
+    revision_no: 0,
+    record_status: "active",
+    sync_status: "synced",
+    report_lock_no: null,
+    money_transfer_slips: [{
+      id: crypto.randomUUID(),
+      input_method: "manual",
+      amount: 100,
+      reference_number: null,
+      fee: 0,
+      sender_name: null,
+      receiver_name: null,
+      transaction_date: "2026-10-11T03:30:00.000Z",
+      slip_image_url: null,
+      sort_order: 0,
+    }],
+    money_transfer_items: [],
+  };
+
+  await page.route("**/rest/v1/customers*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([{
+        id: customerId,
+        client_temp_id: "customer-with-new-primary",
+        main_name: "ลูกค้าไม่มีบัญชีเดิม",
+        record_status: "active",
+        sync_status: "synced",
+        customer_contacts: [],
+        customer_farms: [],
+        customer_bank_accounts: [{
+          id: crypto.randomUUID(),
+          bank_name: "ธนาคารใหม่",
+          account_name: "บัญชีหลักใหม่",
+          account_number: "5555555555",
+          is_primary: true,
+        }],
+      }]),
+    });
+  });
+  await page.route("**/rest/v1/rpc/get_money_transfer_list", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ rows: [detailRow], statusCounts: { advance_payment: 1 }, hasMore: false }),
+    });
+  });
+  await page.route("**/rest/v1/rpc/get_money_transfer_detail", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(detailRow) });
+  });
+  await page.route("**/rest/v1/rpc/save_money_transfer", async (route) => {
+    savedPayload = (route.request().postDataJSON() as { p_payload: Record<string, any> }).p_payload;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(detailRow) });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /^โอนเงิน(?:\s|$)/ }).click();
+  const transferRow = page.locator(`[data-transfer-id="${transferId}"]`);
+  await transferRow.getByRole("button", { name: "แก้" }).click();
+  const editDialog = page.getByRole("dialog", { name: "แก้ไขรายการโอนเงิน" });
+  const accountSelect = editDialog.locator("select");
+  await expect(accountSelect).toHaveValue("");
+  await editDialog.getByRole("button", { name: "บันทึก", exact: true }).click();
+  await expect.poll(() => savedPayload.customerId).toBe(customerId);
+  expect(savedPayload).toMatchObject({
+    accountNumber: null,
+    accountName: null,
+    bankName: null,
+  });
+
+  savedPayload = {};
+  await transferRow.getByRole("button", { name: "แก้" }).click();
+  const secondEditDialog = page.getByRole("dialog", { name: "แก้ไขรายการโอนเงิน" });
+  await secondEditDialog.locator("select").selectOption("5555555555");
+  await secondEditDialog.getByRole("button", { name: "บันทึก", exact: true }).click();
+  await expect.poll(() => savedPayload.accountNumber).toBe("5555555555");
+  expect(savedPayload).toMatchObject({
+    accountName: "บัญชีหลักใหม่",
+    bankName: "ธนาคารใหม่",
+  });
+});
+
 test("OCR references are read-only and non-zero OCR amounts stay intact on focus", async ({ page }) => {
   let ocrCall = 0;
   await page.route("**/rest/v1/rpc/save_money_transfer", async (route) => {
@@ -203,11 +730,13 @@ test("OCR references are read-only and non-zero OCR amounts stay intact on focus
 
 test("customer and transport saves are single-flight and keep every modal close-guarded", async ({ page }) => {
   let saveRequestCount = 0;
+  let customerSavePayload: Record<string, any> = {};
   const releases: Array<() => void> = [];
   await page.route("**/rest/v1/rpc/save_money_transfer", async (route) => {
     saveRequestCount += 1;
     await new Promise<void>((resolve) => releases.push(resolve));
     const payload = (route.request().postDataJSON() as { p_payload: Record<string, any> }).p_payload;
+    if (payload.transferType === "customer") customerSavePayload = payload;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -235,7 +764,7 @@ test("customer and transport saves are single-flight and keep every modal close-
   await page.getByRole("button", { name: "สร้างรายการโอน" }).click();
   await page.getByRole("button", { name: /โอนให้ลูกค้า/ }).click();
   const customerDialog = page.getByRole("dialog", { name: "สร้างรายการโอนเงินใหม่" });
-  const customerSearch = customerDialog.getByPlaceholder("ค้นหาชื่อลูกค้า...");
+  const customerSearch = customerDialog.getByPlaceholder("พิมพ์หรือค้นหาชื่อลูกค้า...");
   await customerSearch.click();
   await customerSearch.locator("..").getByRole("button").first().click();
   await customerDialog.getByRole("button", { name: "เพิ่มเอง" }).click();
@@ -247,6 +776,8 @@ test("customer and transport saves are single-flight and keep every modal close-
   await expect(customerDialog.getByRole("button", { name: "กำลังดำเนินการ ไม่สามารถปิดได้" })).toBeDisabled();
   releases.shift()?.();
   await expect(customerDialog).toBeHidden();
+  expect(customerSavePayload.customerId).toEqual(expect.any(String));
+  expect(customerSavePayload.accountNumber).toEqual(expect.any(String));
 
   await page.getByRole("button", { name: "สร้างรายการโอน" }).click();
   await page.getByRole("button", { name: /จ่ายค่าขนส่ง/ }).click();

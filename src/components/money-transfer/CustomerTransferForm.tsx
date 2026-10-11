@@ -14,7 +14,6 @@ import {
   Save,
   Trash2,
   Upload,
-  UserCheck,
 } from "lucide-react";
 import Swal from "sweetalert2";
 import type {
@@ -29,8 +28,7 @@ import { authFetch } from "@/lib/auth-fetch";
 import { SlipRow, type OcrSlipResult } from "./SlipRow";
 import { SlipValidationSummary } from "./SlipValidationSummary";
 import { focusFirstSlipIssue, validateMoneyTransferSlips, type SlipValidationIssue } from "./slip-validation";
-import { normalizeBangkokDateTime } from "@/lib/bangkok-date";
-import { formatBangkokDateTime } from "@/lib/bangkok-date";
+import { formatBangkokDateTime, normalizeBangkokDateTime } from "@/lib/bangkok-date";
 import { ItemPicker } from "./ItemPicker";
 import { deriveMoneyTransferStatus, sumMoneyTransferSlips } from "@/lib/money-transfers/state";
 
@@ -83,22 +81,26 @@ export function CustomerTransferForm({
     editTransfer?.transferStatus === "branch_and_transfer"
   );
 
-  const [manualCustomerSearch, setManualCustomerSearch] = useState("");
+  const customerNameFromItems = selectedItems[0]?.customerName ?? null;
+  const [manualCustomerSearch, setManualCustomerSearch] = useState(editTransfer?.customerName ?? customerNameFromItems ?? "");
   const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
-  const [manualSelectedCustomer, setManualSelectedCustomer] = useState<Customer | null>(null);
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(editTransfer?.customerId ?? null);
+  const customerNameEditedRef = useRef(false);
 
   useEffect(() => {
+    customerNameEditedRef.current = false;
     if (!editTransfer) {
       setManualCustomerSearch("");
-      setManualSelectedCustomer(null);
-    } else if (editTransfer.customerName) {
-      setManualCustomerSearch(editTransfer.customerName);
+      setSelectedCustomerId(null);
+    } else {
+      setManualCustomerSearch(editTransfer.customerName ?? "");
+      setSelectedCustomerId(editTransfer.customerId ?? null);
     }
   }, [editTransfer]);
 
   useEffect(() => {
     setIsBranchPayingRemaining(editTransfer?.transferStatus === "branch_and_transfer");
-  }, [slips, editTransfer?.transferStatus]);
+  }, [editTransfer?.id, editTransfer?.transferStatus]);
 
   const computedStatus = useMemo(() => deriveMoneyTransferStatus({
     amountDue: totalFromItems,
@@ -106,41 +108,43 @@ export function CustomerTransferForm({
     branchPaysRemaining: isBranchPayingRemaining,
   }), [totalFromSlips, totalFromItems, isBranchPayingRemaining]);
 
-  // Customer info from selected items or manual selection
-  const customerNameFromItems = selectedItems.length > 0 ? selectedItems[0].customerName : null;
-  const matchingCustomer = useMemo(() => {
-    if (customerNameFromItems) {
-      return customers.find((c) => c.mainName === customerNameFromItems) ?? null;
-    }
-    return manualSelectedCustomer || (editTransfer?.customerName ? customers.find(c => c.mainName === editTransfer.customerName) : null) || null;
-  }, [customerNameFromItems, manualSelectedCustomer, customers, editTransfer]);
-
-  const customerName = matchingCustomer?.mainName ?? customerNameFromItems ?? null;
-
+  useEffect(() => {
+    if (editTransfer || customerNameEditedRef.current) return;
+    setManualCustomerSearch(customerNameFromItems ?? "");
+    setSelectedCustomerId(null);
+  }, [customerNameFromItems, editTransfer]);
+  const matchingCustomer = useMemo(() => customers.find((customer) => customer.id === selectedCustomerId) ?? null, [customers, selectedCustomerId]);
+  const customerName = manualCustomerSearch.trim() || null;
   const bankAccounts = useMemo(() => {
-    if (!matchingCustomer?.bankAccounts) return [];
-    return [...matchingCustomer.bankAccounts].sort((a, b) => (b.isPrimary ? 1 : 0) - (a.isPrimary ? 1 : 0));
-  }, [matchingCustomer]);
+    const current = matchingCustomer ? [...(matchingCustomer.bankAccounts ?? [])].sort((a, b) => (b.isPrimary ? 1 : 0) - (a.isPrimary ? 1 : 0)) : [];
+    if (selectedCustomerId === editTransfer?.customerId && editTransfer?.accountNumber) {
+      const persisted = {
+        id: `persisted:${editTransfer.id}`, accountNumber: editTransfer.accountNumber,
+        accountName: editTransfer.accountName ?? null,
+        bankName: editTransfer.bankName ?? "", isPrimary: false,
+      };
+      return [persisted, ...current.filter((account) => account.accountNumber !== persisted.accountNumber)];
+    }
+    return current;
+  }, [editTransfer, matchingCustomer, selectedCustomerId]);
 
   const defaultAccount = bankAccounts[0] ?? null;
   const [selectedAccountNumber, setSelectedAccountNumber] = useState<string | null>(editTransfer?.accountNumber ?? null);
-
+  const preserveEmptyAccount = selectedCustomerId === editTransfer?.customerId && !editTransfer?.accountNumber && selectedAccountNumber === null;
   useEffect(() => {
     if (matchingCustomer) {
       const exists = bankAccounts.some(a => a.accountNumber === selectedAccountNumber);
-      if (!exists && defaultAccount) {
+      if (!exists && defaultAccount && !preserveEmptyAccount) {
         setSelectedAccountNumber(defaultAccount.accountNumber);
-      } else if (!exists && !defaultAccount) {
+      } else if (!exists && (!defaultAccount || preserveEmptyAccount)) {
         setSelectedAccountNumber(null);
       }
-    } else {
+    } else if (!selectedCustomerId) {
       setSelectedAccountNumber(null);
     }
-  }, [matchingCustomer, selectedAccountNumber, bankAccounts, defaultAccount]);
+  }, [matchingCustomer, selectedCustomerId, selectedAccountNumber, bankAccounts, defaultAccount, preserveEmptyAccount]);
 
-  const bankAccount = useMemo(() => {
-    return bankAccounts.find(a => a.accountNumber === selectedAccountNumber) ?? null;
-  }, [bankAccounts, selectedAccountNumber]);
+  const bankAccount = useMemo(() => bankAccounts.find(a => a.accountNumber === selectedAccountNumber) ?? null, [bankAccounts, selectedAccountNumber]);
 
   const handleCopyBankAccount = useCallback(async () => {
     if (!selectedAccountNumber) return;
@@ -255,7 +259,7 @@ export function CustomerTransferForm({
       return;
     }
     if (!customerName || (selectedItems.length === 0 && slips.length === 0)) {
-      setFormError("กรุณาเลือกลูกค้าและเพิ่มรายการหรือสลิปก่อนบันทึก");
+      setFormError("กรุณาระบุชื่อลูกค้าและเพิ่มรายการหรือสลิปก่อนบันทึก");
       return;
     }
 
@@ -271,7 +275,7 @@ export function CustomerTransferForm({
       clientTempId: editTransfer?.clientTempId ?? crypto.randomUUID(),
       idempotencyKey: editTransfer?.idempotencyKey ?? `mt:${crypto.randomUUID()}`,
       locationId,
-      customerId: matchingCustomer?.id ?? null,
+      customerId: selectedCustomerId,
       customerName: customerName ?? null,
       accountNumber: bankAccount?.accountNumber ?? null,
       accountName: bankAccount?.accountName ?? null,
@@ -297,7 +301,7 @@ export function CustomerTransferForm({
   }, [
     editTransfer,
     locationId,
-    matchingCustomer,
+    selectedCustomerId,
     customerName,
     bankAccount,
     totalFromItems,
@@ -328,51 +332,45 @@ export function CustomerTransferForm({
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div className="rounded-lg border border-black/5 bg-field/40 p-3 overflow-visible relative">
           <p className="text-xs font-semibold text-ink/50">ลูกค้า</p>
-          {customerNameFromItems ? (
-            <p className="mt-1 text-sm font-bold text-ink">
-              <span className="inline-flex items-center gap-1">
-                <UserCheck size={14} className="text-leaf" /> {customerNameFromItems}
-              </span>
-            </p>
-          ) : (
-            <div className="relative mt-1">
-              <input
-                value={manualCustomerSearch}
-                onChange={(e) => {
-                  setManualCustomerSearch(e.target.value);
-                  setManualSelectedCustomer(null);
-                  setShowCustomerDropdown(true);
-                }}
-                onFocus={() => setShowCustomerDropdown(true)}
-                onBlur={() => setTimeout(() => setShowCustomerDropdown(false), 200)}
-                className="w-full rounded bg-white px-2 py-1 text-sm font-bold text-ink border border-black/10 focus:outline-none focus:border-river"
-                placeholder="ค้นหาชื่อลูกค้า..."
-              />
-              {showCustomerDropdown && (
-                <div className="absolute left-0 top-full z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-md border border-black/10 bg-white py-1 shadow-lg">
-                  {customers
-                    .filter((c) => c.mainName.toLowerCase().includes(manualCustomerSearch.toLowerCase()))
-                    .map((c) => (
-                      <button
-                        key={c.id}
-                        type="button"
-                        className="w-full px-3 py-2 text-left text-sm hover:bg-field/50 text-ink"
-                        onClick={() => {
-                          setManualSelectedCustomer(c);
-                          setManualCustomerSearch(c.mainName);
-                          setShowCustomerDropdown(false);
-                        }}
-                      >
-                        {c.mainName}
-                      </button>
-                    ))}
-                  {customers.filter((c) => c.mainName.toLowerCase().includes(manualCustomerSearch.toLowerCase())).length === 0 && (
-                    <div className="px-3 py-2 text-sm text-ink/40">ไม่พบชื่อลูกค้า</div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
+          <div className="relative mt-1">
+            <input
+              value={manualCustomerSearch}
+              onChange={(e) => {
+                customerNameEditedRef.current = true;
+                setManualCustomerSearch(e.target.value);
+                setSelectedCustomerId(null);
+                setShowCustomerDropdown(true);
+              }}
+              onFocus={() => setShowCustomerDropdown(true)}
+              onBlur={() => setTimeout(() => setShowCustomerDropdown(false), 200)}
+              className="w-full rounded bg-white px-2 py-1 text-sm font-bold text-ink border border-black/10 focus:outline-none focus:border-river"
+              placeholder="พิมพ์หรือค้นหาชื่อลูกค้า..."
+            />
+            {showCustomerDropdown && (
+              <div className="absolute left-0 top-full z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-md border border-black/10 bg-white py-1 shadow-lg">
+                {customers
+                  .filter((c) => c.mainName.toLowerCase().includes(manualCustomerSearch.toLowerCase()))
+                  .map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      className="w-full px-3 py-2 text-left text-sm hover:bg-field/50 text-ink"
+                      onClick={() => {
+                        customerNameEditedRef.current = true;
+                        setSelectedCustomerId(c.id);
+                        setManualCustomerSearch(c.mainName);
+                        setShowCustomerDropdown(false);
+                      }}
+                    >
+                      {c.mainName}
+                    </button>
+                  ))}
+                {customers.filter((c) => c.mainName.toLowerCase().includes(manualCustomerSearch.toLowerCase())).length === 0 && (
+                  <div className="px-3 py-2 text-sm text-ink/40">ไม่พบในทะเบียน — ใช้ชื่อที่พิมพ์ได้</div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
         <div className="rounded-lg border border-black/5 bg-field/40 p-3">
           <p className="text-xs font-semibold text-ink/50">เลขบัญชี</p>
@@ -380,9 +378,10 @@ export function CustomerTransferForm({
             <div className="flex gap-2">
               <select
                 value={selectedAccountNumber || ""}
-                onChange={(e) => setSelectedAccountNumber(e.target.value)}
+                onChange={(e) => setSelectedAccountNumber(e.target.value || null)}
                 className="mt-1 w-full rounded border border-black/10 bg-white px-2 py-1 text-sm font-bold font-mono text-ink focus:border-river focus:outline-none"
               >
+                {selectedCustomerId === editTransfer?.customerId && !editTransfer?.accountNumber && <option value="">— ไม่ระบุบัญชี —</option>}
                 {bankAccounts.map(a => (
                   <option key={a.accountNumber} value={a.accountNumber}>
                     {a.isPrimary ? "[หลัก] " : ""}{a.bankName} - {a.accountNumber} {a.accountName ? `(${a.accountName})` : ""}
@@ -392,7 +391,8 @@ export function CustomerTransferForm({
               <button
                 type="button"
                 onClick={handleCopyBankAccount}
-                className="mt-1 flex items-center justify-center rounded bg-actionSecondary px-2 py-1 font-semibold text-white hover:bg-actionSecondary/90 focus:outline-none"
+                disabled={!selectedAccountNumber}
+                className="mt-1 flex items-center justify-center rounded bg-actionSecondary px-2 py-1 font-semibold text-white hover:bg-actionSecondary/90 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
                 title="คัดลอกเลขบัญชี"
               >
                 <Copy size={16} />
