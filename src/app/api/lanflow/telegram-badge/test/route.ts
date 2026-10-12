@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { requireSystemManager } from "@/lib/server/auth";
+import { summarizeUpstreamError } from "@/lib/server/auth-access-failure";
+import { managementAuthFailure } from "@/lib/server/management-route-error";
 import { createSupabaseAdminClient } from "@/lib/server/supabase-admin";
 
 const NO_STORE_HEADERS = {
@@ -16,13 +18,24 @@ function errorResponse(message: string, status: number) {
 
 export async function POST(request: NextRequest) {
   const authCheck = await requireSystemManager(request);
-  if (!authCheck.ok) return authCheck.response;
+  if (!authCheck.ok) return managementAuthFailure(authCheck.response);
 
-  const admin = createSupabaseAdminClient();
-  const { data, error } = await admin.rpc(
-    "get_telegram_badge_delivery_credentials",
-  );
-  if (error || !data?.botToken || !data?.chatId) {
+  let data;
+  let error;
+  try {
+    const admin = createSupabaseAdminClient();
+    const result = await admin.rpc("get_telegram_badge_delivery_credentials");
+    data = result.data;
+    error = result.error;
+  } catch (cause) {
+    console.error("Telegram credentials read failed", summarizeUpstreamError(cause));
+    return errorResponse("โหลดข้อมูลเชื่อมต่อ Telegram ไม่สำเร็จ", 500);
+  }
+  if (error) {
+    console.error("Telegram credentials unavailable", summarizeUpstreamError(error));
+    return errorResponse("โหลดข้อมูลเชื่อมต่อ Telegram ไม่สำเร็จ", 500);
+  }
+  if (!data?.botToken || !data?.chatId) {
     return errorResponse("กรุณาบันทึก Bot Token และ Chat ID ก่อนทดสอบ", 400);
   }
 

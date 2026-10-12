@@ -16,13 +16,7 @@ import {
   Upload,
 } from "lucide-react";
 import Swal from "sweetalert2";
-import type {
-  Customer,
-  MoneyTransfer,
-  MoneyTransferSlip,
-  MoneyTransferItem,
-  Profile,
-} from "@/types";
+import type { Customer, MoneyTransfer, MoneyTransferSlip, MoneyTransferItem, Profile } from "@/types";
 import { formatCurrency } from "@/lib/format";
 import { authFetch } from "@/lib/auth-fetch";
 import { SlipRow, type OcrSlipResult } from "./SlipRow";
@@ -111,8 +105,9 @@ export function CustomerTransferForm({
   useEffect(() => {
     if (editTransfer || customerNameEditedRef.current) return;
     setManualCustomerSearch(customerNameFromItems ?? "");
-    setSelectedCustomerId(null);
-  }, [customerNameFromItems, editTransfer]);
+    const matchingCustomers = customers.filter((customer) => customer.mainName.trim() === customerNameFromItems?.trim());
+    setSelectedCustomerId(matchingCustomers.length === 1 ? matchingCustomers[0].id : null);
+  }, [customerNameFromItems, customers, editTransfer]);
   const matchingCustomer = useMemo(() => customers.find((customer) => customer.id === selectedCustomerId) ?? null, [customers, selectedCustomerId]);
   const customerName = manualCustomerSearch.trim() || null;
   const bankAccounts = useMemo(() => {

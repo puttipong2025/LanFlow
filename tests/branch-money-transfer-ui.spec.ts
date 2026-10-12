@@ -135,8 +135,31 @@ test("customer and transport modals also start editable amounts at zero with foc
 
 test("customer transfers keep an explicitly typed recipient when rubber bills change", async ({ page }) => {
   const sourceIds = [crypto.randomUUID(), crypto.randomUUID()];
+  const registryAccountNumber = "9988776655";
   let savedPayload: Record<string, any> = {};
 
+  await page.route("**/rest/v1/customers*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([{
+        id: crypto.randomUUID(),
+        client_temp_id: "free-name-customer",
+        main_name: "ลูกค้าในบิล 1",
+        record_status: "active",
+        sync_status: "synced",
+        customer_contacts: [],
+        customer_farms: [],
+        customer_bank_accounts: [{
+          id: crypto.randomUUID(),
+          bank_name: "ธนาคารทดสอบ",
+          account_name: "ลูกค้าในบิล 1",
+          account_number: registryAccountNumber,
+          is_primary: true,
+        }],
+      }]),
+    });
+  });
   await page.route("**/rest/v1/rpc/get_money_transfer_sources", async (route) => {
     await route.fulfill({
       status: 200,
@@ -202,9 +225,11 @@ test("customer transfers keep an explicitly typed recipient when rubber bills ch
   await dialog.getByRole("checkbox", { name: "เลือก RB-FREE-NAME-1" })
     .evaluate((checkbox: HTMLInputElement) => checkbox.click());
   await expect(customerName).toHaveValue("ลูกค้าในบิล 1");
+  await expect(dialog.locator("select")).toHaveValue(registryAccountNumber);
 
   await customerName.fill("ผู้รับเงินจริงที่ไม่ตรงกับบิล");
   await expect(dialog.getByText("ไม่พบในทะเบียน — ใช้ชื่อที่พิมพ์ได้")).toBeVisible();
+  await expect(dialog.locator("select")).toHaveCount(0);
   await dialog.getByRole("checkbox", { name: "เลือก RB-FREE-NAME-2" })
     .evaluate((checkbox: HTMLInputElement) => checkbox.click());
   await expect(customerName).toHaveValue("ผู้รับเงินจริงที่ไม่ตรงกับบิล");
@@ -269,11 +294,42 @@ test("editing a slip does not undo the branch-pays-remaining choice", async ({ p
   await expect(dialog.getByText(/โอน\+สาขาจ่าย/)).toBeVisible();
 });
 
-test("a bill customer name is only a recipient default until a suggestion is selected", async ({ page }) => {
+test("a uniquely matching bill customer automatically shows its primary account", async ({ page }) => {
   const sourceId = crypto.randomUUID();
-  let sourceCustomerName = "";
+  const customerId = crypto.randomUUID();
+  const sourceCustomerName = "ลูกค้าตรงกับบิล";
+  const accountNumber = "1234567890";
   let savedPayload: Record<string, any> = {};
+  let releaseCustomers = () => {};
+  let customerRequestStarted = false;
+  const customerGate = new Promise<void>((resolve) => {
+    releaseCustomers = resolve;
+  });
 
+  await page.route("**/rest/v1/customers*", async (route) => {
+    customerRequestStarted = true;
+    await customerGate;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([{
+        id: customerId,
+        client_temp_id: "matching-bill-customer",
+        main_name: sourceCustomerName,
+        record_status: "active",
+        sync_status: "synced",
+        customer_contacts: [],
+        customer_farms: [],
+        customer_bank_accounts: [{
+          id: crypto.randomUUID(),
+          bank_name: "ธนาคารทดสอบ",
+          account_name: sourceCustomerName,
+          account_number: accountNumber,
+          is_primary: true,
+        }],
+      }]),
+    });
+  });
   await page.route("**/rest/v1/rpc/get_money_transfer_sources", async (route) => {
     await route.fulfill({
       status: 200,
@@ -328,20 +384,88 @@ test("a bill customer name is only a recipient default until a suggestion is sel
 
   await page.goto("/");
   await page.getByRole("button", { name: /^โอนเงิน(?:\s|$)/ }).click();
+  await expect.poll(() => customerRequestStarted).toBe(true);
   await page.getByRole("button", { name: "สร้างรายการโอน" }).click();
   await page.getByRole("button", { name: /โอนให้ลูกค้า/ }).click();
   const dialog = page.getByRole("dialog", { name: "สร้างรายการโอนเงินใหม่" });
   const customerName = dialog.getByPlaceholder("พิมพ์หรือค้นหาชื่อลูกค้า...");
-  await customerName.click();
-  sourceCustomerName = (await customerName.locator("..").getByRole("button").first().innerText()).trim();
   await dialog.getByRole("button", { name: "เลือกบิลยาง / ใบชั่ง" }).click();
   await dialog.getByRole("checkbox", { name: "เลือก RB-DEFAULT-ONLY" })
     .evaluate((checkbox: HTMLInputElement) => checkbox.click());
   await expect(customerName).toHaveValue(sourceCustomerName);
+  await expect(dialog.locator("select")).toHaveCount(0);
+  releaseCustomers();
+  await expect(dialog.locator("select")).toHaveValue(accountNumber);
 
   await dialog.getByRole("button", { name: "บันทึก", exact: true }).click();
   await expect.poll(() => savedPayload.customerName).toBe(sourceCustomerName);
-  expect(savedPayload).toMatchObject({ customerId: null, accountNumber: null });
+  expect(savedPayload).toMatchObject({ customerId, accountNumber });
+});
+
+test("a duplicated bill customer name does not guess an account", async ({ page }) => {
+  const sourceCustomerName = "ลูกค้าชื่อซ้ำ";
+
+  await page.route("**/rest/v1/customers*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(["1111111111", "2222222222"].map((accountNumber, index) => ({
+        id: crypto.randomUUID(),
+        client_temp_id: `duplicate-customer-${index}`,
+        main_name: index === 0 ? sourceCustomerName : ` ${sourceCustomerName} `,
+        record_status: "active",
+        sync_status: "synced",
+        customer_contacts: [],
+        customer_farms: [],
+        customer_bank_accounts: [{
+          id: crypto.randomUUID(),
+          bank_name: "ธนาคารทดสอบ",
+          account_name: sourceCustomerName,
+          account_number: accountNumber,
+          is_primary: true,
+        }],
+      }))),
+    });
+  });
+  await page.route("**/rest/v1/rpc/get_money_transfer_sources", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        rows: [{
+          sourceType: "rubber_bill",
+          sourceId: crypto.randomUUID(),
+          sourceNumber: "RB-DUPLICATE-CUSTOMER",
+          sourceDate: "2026-10-11",
+          customerName: sourceCustomerName,
+          amount: 100,
+          netWeight: 10,
+          averagePrice: 10,
+          rubberValue: 100,
+          deductedAmount: 0,
+          licensePlate: null,
+          transferId: null,
+          reportLockNo: null,
+          available: true,
+          blockReason: null,
+          createdAt: "2026-10-11T01:00:00.000Z",
+        }],
+        hasMore: false,
+      }),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /^โอนเงิน(?:\s|$)/ }).click();
+  await page.getByRole("button", { name: "สร้างรายการโอน" }).click();
+  await page.getByRole("button", { name: /โอนให้ลูกค้า/ }).click();
+  const dialog = page.getByRole("dialog", { name: "สร้างรายการโอนเงินใหม่" });
+  await dialog.getByRole("button", { name: "เลือกบิลยาง / ใบชั่ง" }).click();
+  await dialog.getByRole("checkbox", { name: "เลือก RB-DUPLICATE-CUSTOMER" })
+    .evaluate((checkbox: HTMLInputElement) => checkbox.click());
+
+  await expect(dialog.getByPlaceholder("พิมพ์หรือค้นหาชื่อลูกค้า...")).toHaveValue(sourceCustomerName);
+  await expect(dialog.locator("select")).toHaveCount(0);
 });
 
 test("editing a free-form recipient does not silently link a same-named customer", async ({ page }) => {

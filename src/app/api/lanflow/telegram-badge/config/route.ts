@@ -5,8 +5,12 @@ import {
   type TelegramBadgeKey,
 } from "@/lib/telegram-badge";
 import { requireSystemManager } from "@/lib/server/auth";
+import { summarizeUpstreamError } from "@/lib/server/auth-access-failure";
 import { UUID_PATTERN } from "@/lib/server/weight-evidence";
-import { isJsonObject } from "@/lib/server/management-route-error";
+import {
+  isJsonObject,
+  managementAuthFailure,
+} from "@/lib/server/management-route-error";
 
 const NO_STORE_HEADERS = {
   "Cache-Control": "private, no-store, max-age=0",
@@ -20,16 +24,34 @@ function errorResponse(message: string, status: number) {
   );
 }
 
+function rpcErrorResponse(
+  error: { code?: string; message?: string } | null | undefined,
+  message: string,
+) {
+  console.error("Telegram badge config unavailable", summarizeUpstreamError(error));
+  return errorResponse(message, error?.code === "P0001" ? 400 : 500);
+}
+
 export async function GET(request: NextRequest) {
   const authCheck = await requireSystemManager(request);
-  if (!authCheck.ok) return authCheck.response;
+  if (!authCheck.ok) return managementAuthFailure(authCheck.response);
 
-  const [configResult, locationResult] = await Promise.all([
-    authCheck.supabase.rpc("get_telegram_badge_config"),
-    authCheck.supabase.rpc("get_telegram_evidence_location_config"),
-  ]);
-  if (configResult.error || locationResult.error) {
+  let configResult;
+  let locationResult;
+  try {
+    [configResult, locationResult] = await Promise.all([
+      authCheck.supabase.rpc("get_telegram_badge_config"),
+      authCheck.supabase.rpc("get_telegram_evidence_location_config"),
+    ]);
+  } catch (error) {
+    console.error("Telegram badge config read failed", summarizeUpstreamError(error));
     return errorResponse("โหลดการตั้งค่า Telegram ไม่สำเร็จ", 500);
+  }
+  if (configResult.error || locationResult.error) {
+    return rpcErrorResponse(
+      configResult.error ?? locationResult.error,
+      "โหลดการตั้งค่า Telegram ไม่สำเร็จ",
+    );
   }
   const locations = (locationResult.data ?? {}) as Record<string, unknown>;
   return NextResponse.json({
@@ -42,7 +64,7 @@ export async function GET(request: NextRequest) {
 
 export async function PUT(request: NextRequest) {
   const authCheck = await requireSystemManager(request);
-  if (!authCheck.ok) return authCheck.response;
+  if (!authCheck.ok) return managementAuthFailure(authCheck.response);
 
   let body: unknown;
   try {
@@ -80,8 +102,16 @@ export async function PUT(request: NextRequest) {
     return errorResponse("เวลาเริ่มต้องน้อยกว่าเวลาสิ้นสุดภายในวันเดียวกัน", 400);
   }
   if (evidenceAllLocations === undefined && evidenceLocationIds === undefined) {
-    const currentResult = await authCheck.supabase.rpc("get_telegram_evidence_location_config");
-    if (currentResult.error) return errorResponse("โหลดสาขาหลักฐานไม่สำเร็จ", 500);
+    let currentResult;
+    try {
+      currentResult = await authCheck.supabase.rpc("get_telegram_evidence_location_config");
+    } catch (error) {
+      console.error("Telegram evidence locations read failed", summarizeUpstreamError(error));
+      return errorResponse("โหลดสาขาหลักฐานไม่สำเร็จ", 500);
+    }
+    if (currentResult.error) {
+      return rpcErrorResponse(currentResult.error, "โหลดสาขาหลักฐานไม่สำเร็จ");
+    }
     const current = (currentResult.data ?? {}) as Record<string, unknown>;
     evidenceAllLocations = current.allLocations;
     evidenceLocationIds = current.locationIds;
@@ -128,27 +158,36 @@ export async function PUT(request: NextRequest) {
     return errorResponse("ข้อมูล Telegram ยาวเกินกำหนด", 400);
   }
 
-  const { data, error } = await authCheck.supabase.rpc(
-    "save_telegram_badge_config_with_evidence_locations",
-    {
-      payload: {
-        enabled,
-        chatId,
-        startTime,
-        endTime,
-        intervalMinutes,
-        evidenceEnabled,
-        evidenceIntervalMinutes,
-        enabledBadgeKeys: [...new Set(rawKeys)],
-        ...(botToken ? { botToken } : {}),
+  let result;
+  try {
+    result = await authCheck.supabase.rpc(
+      "save_telegram_badge_config_with_evidence_locations",
+      {
+        payload: {
+          enabled,
+          chatId,
+          startTime,
+          endTime,
+          intervalMinutes,
+          evidenceEnabled,
+          evidenceIntervalMinutes,
+          enabledBadgeKeys: [...new Set(rawKeys)],
+          ...(botToken ? { botToken } : {}),
+        },
+        p_all_locations: evidenceAllLocations,
+        p_location_ids: uniqueEvidenceLocationIds,
       },
-      p_all_locations: evidenceAllLocations,
-      p_location_ids: uniqueEvidenceLocationIds,
-    },
-  );
-
-  if (error) {
-    return errorResponse(error.message, 400);
+    );
+  } catch (error) {
+    console.error("Telegram badge config save failed", summarizeUpstreamError(error));
+    return errorResponse("บันทึกการตั้งค่า Telegram ไม่สำเร็จ", 500);
   }
-  return NextResponse.json(data, { headers: NO_STORE_HEADERS });
+
+  if (result.error) {
+    return rpcErrorResponse(
+      result.error,
+      "บันทึกการตั้งค่า Telegram ไม่สำเร็จ",
+    );
+  }
+  return NextResponse.json(result.data, { headers: NO_STORE_HEADERS });
 }

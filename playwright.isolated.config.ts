@@ -59,6 +59,7 @@ export default defineConfig({
     '**/time-payroll-slip-document.spec.ts',
     '**/time-tracking-employee-list.spec.ts',
     '**/time-tracking-pay.spec.ts',
+    '**/telegram-badge-route-response.spec.ts',
   ],
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
