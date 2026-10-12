@@ -284,6 +284,68 @@ test.describe.serial("Pending money transfer merge", () => {
     }
   });
 
+  test("does not merge customer transfers whose bank account is missing or blank", async () => {
+    test.skip(!serviceRoleKey || !publishableKey, "Supabase test keys are required");
+    const service = serviceClient();
+    const client = await signedInClient();
+    const locationId = await firstLocation(service);
+    const customerId = crypto.randomUUID();
+    const transferIds = Array.from({ length: 4 }, () => crypto.randomUUID());
+
+    try {
+      expect((await service.from("customers").insert({
+        id: customerId,
+        main_name: "ลูกค้าทดสอบไม่ระบุบัญชี",
+        created_by_name: "Merge test",
+        created_by_phone: "0800000000",
+      })).error).toBeNull();
+      expect((await service.from("money_transfers").insert(transferIds.map((id, index) => ({
+        id,
+        client_temp_id: id,
+        idempotency_key: `merge-missing-account:${id}`,
+        location_id: locationId,
+        customer_id: customerId,
+        customer_name: "ลูกค้าทดสอบไม่ระบุบัญชี",
+        account_number: index < 2 ? null : "   ",
+        net_amount_to_pay: 0,
+        transfer_type: "customer",
+        transfer_method: "bank",
+        transfer_status: "pending",
+        sync_status: "synced",
+        record_status: "active",
+        created_by_user_id: superAdminId,
+        created_by_name: "LanFlow super_admin",
+        created_by_phone: "0800000000",
+        created_at: `2026-08-04T0${index + 1}:00:00.000Z`,
+      })))).error).toBeNull();
+
+      const result = await client.rpc("merge_pending_money_transfers", {
+        p_location_id: locationId,
+      });
+      expect(result.error).toBeNull();
+      expect(result.data).toMatchObject({
+        mergedGroupCount: 0,
+        mergedTransferCount: 0,
+        deletedTransferCount: 0,
+        skippedTransferCount: 4,
+        survivorIds: [],
+      });
+
+      const rows = await service
+        .from("money_transfers")
+        .select("id,record_status")
+        .in("id", transferIds);
+      expect(rows.error).toBeNull();
+      expect(rows.data).toEqual(expect.arrayContaining(transferIds.map((id) => ({
+        id,
+        record_status: "active",
+      }))));
+    } finally {
+      await service.from("money_transfers").delete().in("id", transferIds);
+      await service.from("customers").delete().eq("id", customerId);
+    }
+  });
+
   test("serializes concurrent merge calls", async () => {
     test.skip(!serviceRoleKey || !publishableKey, "Supabase test keys are required");
     const service = serviceClient();

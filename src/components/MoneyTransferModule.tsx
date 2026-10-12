@@ -45,6 +45,7 @@ import { RubberExportWorkTransferForm } from "./money-transfer/RubberExportWorkT
 import { LegacyBranchTransferDetailsModal } from "./money-transfer/LegacyBranchTransferDetailsModal";
 import { MoneyTransferSourceDetailsModal } from "./money-transfer/MoneyTransferSourceDetailsModal";
 import { BranchTransferReceiptModal } from "./money-transfer/BranchTransferReceiptModal";
+import { MergePendingDialog, type MergePendingDialogState } from "./money-transfer/MergePendingDialog";
 import {
   MONEY_TRANSFER_STATUS_FILTERS,
   MONEY_TRANSFER_STATUS_LABELS,
@@ -119,7 +120,7 @@ export function MoneyTransferModule({
   const [legacyBranchTransfer, setLegacyBranchTransfer] = useState<MoneyTransfer | null>(null);
   const [deleteConfirmTransfer, setDeleteConfirmTransfer] = useState<MoneyTransfer | null>(null);
   const [deleteAlertDescription, setDeleteAlertDescription] = useState<string | null>(null);
-  const [mergeAlertDescription, setMergeAlertDescription] = useState<string | null>(null);
+  const [mergeDialog, setMergeDialog] = useState<MergePendingDialogState>(null);
   const [detailTransfer, setDetailTransfer] = useState<MoneyTransfer | null>(null);
   const [branchReceiptId, setBranchReceiptId] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
@@ -248,10 +249,11 @@ export function MoneyTransferModule({
           `รวมสำเร็จ ${result.mergedGroupCount} กลุ่ม · รวม ${result.mergedTransferCount} รายการ · ข้าม ${result.skippedTransferCount} รายการ`,
         );
         if (result.reportLockedTransferCount > 0) {
-          setMergeAlertDescription(
-            `${result.reportLockedTransferCount} รายการถูก Report Lock จึงไม่สามารถย้ายบิลยางหรือใบชั่งไปรวมกันได้ ต้องลบรายงานล่าสุดตามลำดับก่อน แล้วจึงลองรวมรายการอีกครั้ง`,
-          );
-        }
+          setMergeDialog({
+            kind: "report_locked",
+            description: `${result.reportLockedTransferCount} รายการถูก Report Lock จึงไม่สามารถย้ายบิลยางหรือใบชั่งไปรวมกันได้ ต้องลบรายงานล่าสุดตามลำดับก่อน แล้วจึงลองรวมรายการอีกครั้ง`,
+          });
+        } else setMergeDialog(null);
       },
       onError: (error) => {
         setToastMsg(getMoneyTransferMergeFailureMessage(error));
@@ -536,13 +538,13 @@ export function MoneyTransferModule({
         {statusFilter === "pending" && (
           <button
             type="button"
-            onClick={handleMergePending}
+            onClick={() => setMergeDialog({ kind: "confirm" })}
             disabled={!online || mergePendingTransfers.isPending}
             title="รวมกลุ่มรายการรอโอนที่เข้าเงื่อนไขในสาขา"
-            className="focus-ring inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md bg-leaf px-3 py-2 text-sm font-semibold text-white hover:bg-leaf/90 disabled:cursor-not-allowed disabled:opacity-50"
+            className="focus-ring inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md bg-river px-3 py-2 text-sm font-semibold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {mergePendingTransfers.isPending ? <Loader2 size={16} className="animate-spin" /> : <GitMerge size={16} />}
-            รวมบิลยางและใบชั่ง
+            รวมรายการรอโอน
           </button>
         )}
       </div>
@@ -840,14 +842,11 @@ export function MoneyTransferModule({
         onCancel={() => setDeleteConfirmTransfer(null)}
         onConfirm={handleDeleteConfirm}
       />
-      <AlertDialog
-        open={Boolean(mergeAlertDescription)}
-        title="รวมรายการบางส่วนไม่ได้"
-        description={mergeAlertDescription ?? ""}
-        confirmLabel="รับทราบ"
-        cancelLabel={null}
-        onCancel={() => setMergeAlertDescription(null)}
-        onConfirm={() => setMergeAlertDescription(null)}
+      <MergePendingDialog
+        state={mergeDialog}
+        busy={mergePendingTransfers.isPending}
+        onCancel={() => setMergeDialog(null)}
+        onConfirm={handleMergePending}
       />
       <AlertDialog
         open={Boolean(deleteAlertDescription)}

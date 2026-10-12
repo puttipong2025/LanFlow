@@ -6,13 +6,20 @@ import { selectAppLocation } from "./helpers/select-app-location";
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 
-test("paginates pending transfers and runs the automatic merge from the pending view", async ({ page }) => {
+test("paginates pending transfers and confirms the merge from the pending view", async ({ page }) => {
   test.skip(!serviceRoleKey, "SUPABASE_SERVICE_ROLE_KEY is required for UI verification");
   const service = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
   const customerId = crypto.randomUUID();
   const transferIds = Array.from({ length: 23 }, () => crypto.randomUUID());
+  let mergeRequestCount = 0;
+
+  page.on("request", (request) => {
+    if (request.url().includes("/rest/v1/rpc/merge_pending_money_transfers")) {
+      mergeRequestCount += 1;
+    }
+  });
 
   await page.goto("/login");
   await page.locator("#phone").fill(process.env.TEST_PHONE ?? "0800000000");
@@ -76,10 +83,30 @@ test("paginates pending transfers and runs the automatic merge from the pending 
     await expect(page.getByText(/หน้า 2\//)).toBeVisible();
     await page.getByRole("button", { name: /^รอโอน/ }).click();
 
-    const mergeButton = page.getByRole("button", { name: "รวมบิลยางและใบชั่ง" });
+    const mergeButton = page.getByRole("button", { name: "รวมรายการรอโอน" });
     await expect(mergeButton).toBeEnabled();
+    await expect(mergeButton).toHaveClass(/bg-river/);
+    await expect(mergeButton).toHaveCSS("background-color", "rgb(40, 119, 111)");
     await mergeButton.click();
+    const mergeDialog = page.getByRole("alertdialog", { name: "รวมรายการรอโอน" });
+    await expect(mergeDialog).toBeVisible();
+    await expect(mergeDialog).toContainText("โดยไม่ลบบิลยางหรือใบชั่งต้นทาง");
+    const initialViewport = page.viewportSize();
+    await page.setViewportSize({ width: 360, height: 800 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    if (initialViewport) await page.setViewportSize(initialViewport);
+    expect(mergeRequestCount).toBe(0);
+    await expect(mergeDialog.getByRole("button", { name: "ยกเลิก" })).toBeFocused();
+    await mergeDialog.getByRole("button", { name: "ยกเลิก" }).click();
+    await expect(mergeDialog).toBeHidden();
+    await expect(mergeButton).toBeFocused();
+    expect(mergeRequestCount).toBe(0);
+
+    await mergeButton.click();
+    await mergeDialog.getByRole("button", { name: "รวมรายการรอโอน" }).click();
+    await expect.poll(() => mergeRequestCount).toBe(1);
     await expect(page.getByText(/รวมสำเร็จ 1 กลุ่ม · รวม 2 รายการ · ข้าม \d+ รายการ/)).toBeVisible();
+    await expect(mergeButton).toBeFocused();
 
     await expect.poll(async () => {
       const { data } = await service
@@ -212,32 +239,52 @@ test("explains when report-locked sources prevent a pending merge", async ({ pag
 
     await page.route("**/rest/v1/rpc/merge_pending_money_transfers", async (route) => {
       mergeRequestCount += 1;
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await new Promise((resolve) => setTimeout(resolve, 500));
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({
-          mergedGroupCount: 0,
-          mergedTransferCount: 0,
-          deletedTransferCount: 0,
-          skippedTransferCount: 2,
-          reportLockedTransferCount: 2,
-          survivorIds: [],
-        }),
+        body: JSON.stringify(mergeRequestCount === 1
+          ? {
+              mergedGroupCount: 0,
+              mergedTransferCount: 0,
+              deletedTransferCount: 0,
+              skippedTransferCount: 2,
+              reportLockedTransferCount: 2,
+              survivorIds: [],
+            }
+          : null),
       });
     });
 
     await page.goto("/");
     await selectAppLocation(page, locationId);
     await page.getByRole("button", { name: /^โอนเงิน/ }).click();
-    await page.getByRole("button", { name: "รวมบิลยางและใบชั่ง" }).dblclick();
+    const mergeButton = page.getByRole("button", { name: "รวมรายการรอโอน" });
+    await mergeButton.click();
+    const confirmation = page.getByRole("alertdialog", { name: "รวมรายการรอโอน" });
+    expect(mergeRequestCount).toBe(0);
+    await confirmation.getByRole("button", { name: "รวมรายการรอโอน" }).dblclick();
     await expect.poll(() => mergeRequestCount).toBe(1);
+    const busyConfirmButton = confirmation.getByRole("button", { name: "กำลังรวม..." });
+    await expect(busyConfirmButton).toBeDisabled();
+    await expect(busyConfirmButton.locator("svg.animate-spin")).toHaveCount(1);
+    await expect(confirmation.getByRole("button", { name: "ยกเลิก" })).toBeDisabled();
 
     const alert = page.getByRole("alertdialog", { name: "รวมรายการบางส่วนไม่ได้" });
     await expect(alert).toBeVisible();
     await expect(alert).toContainText("2 รายการถูก Report Lock");
     await expect(alert).toContainText("ต้องลบรายงานล่าสุดตามลำดับก่อน");
     await expect(alert.getByRole("button", { name: "รับทราบ" })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(alert).toBeHidden();
+    await expect(mergeButton).toBeFocused();
+
+    await mergeButton.click();
+    await confirmation.getByRole("button", { name: "รวมรายการรอโอน" }).click();
+    await expect.poll(() => mergeRequestCount).toBe(2);
+    await expect(page.getByText("รวมรายการรอโอนไม่สำเร็จ", { exact: true })).toBeVisible();
+    await expect(confirmation).toBeVisible();
+    await expect(confirmation.getByRole("button", { name: "ยกเลิก" })).toBeFocused();
   } finally {
     await service.from("money_transfers").delete().eq("id", transferId);
   }

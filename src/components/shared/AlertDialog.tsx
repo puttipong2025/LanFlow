@@ -34,6 +34,9 @@ export function AlertDialog({
 }: AlertDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
+  const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
+  const confirmButtonRef = useRef<HTMLButtonElement | null>(null);
+  const wasBusyRef = useRef(busy);
   const titleId = useId();
   const descriptionId = useId();
 
@@ -48,6 +51,20 @@ export function AlertDialog({
     }
     if (!open && dialog.open) dialog.close();
   }, [open]);
+
+  useEffect(() => {
+    const wasBusy = wasBusyRef.current;
+    wasBusyRef.current = busy;
+    const dialog = dialogRef.current;
+    if (
+      !wasBusy
+      || busy
+      || !open
+      || !dialog?.open
+      || dialog.contains(document.activeElement)
+    ) return;
+    (cancelButtonRef.current ?? confirmButtonRef.current)?.focus();
+  }, [busy, open]);
 
   return (
     <dialog
@@ -78,7 +95,10 @@ export function AlertDialog({
           {cancelLabel && (
             <button
               autoFocus
-              ref={(button) => { if (button) button.autofocus = true; }}
+              ref={(button) => {
+                cancelButtonRef.current = button;
+                if (button) button.autofocus = true;
+              }}
               type="button"
               disabled={busy}
               onClick={onCancel}
@@ -90,7 +110,10 @@ export function AlertDialog({
           {confirmLabel && (
             <button
               autoFocus={!cancelLabel}
-              ref={(button) => { if (button) button.autofocus = !cancelLabel; }}
+              ref={(button) => {
+                confirmButtonRef.current = button;
+                if (button) button.autofocus = !cancelLabel;
+              }}
               type="button"
               disabled={busy}
               onClick={onConfirm}

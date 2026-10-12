@@ -16,6 +16,27 @@ export type MergePendingMoneyTransfersResult = {
   survivorIds: string[];
 };
 
+function isMergePendingMoneyTransfersResult(
+  value: unknown,
+): value is MergePendingMoneyTransfersResult {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const result = value as Record<string, unknown>;
+  const countKeys = [
+    "mergedGroupCount",
+    "mergedTransferCount",
+    "deletedTransferCount",
+    "skippedTransferCount",
+    "reportLockedTransferCount",
+  ];
+  return countKeys.every((key) => (
+    typeof result[key] === "number"
+    && Number.isSafeInteger(result[key])
+    && result[key] >= 0
+  ))
+    && Array.isArray(result.survivorIds)
+    && result.survivorIds.every((id) => typeof id === "string");
+}
+
 export type MoneyTransferStatusFilter = MoneyTransferVirtualStatus | "all";
 
 function mapSlip(row: any): MoneyTransferSlip {
@@ -243,7 +264,10 @@ export function useMoneyTransferMutations(locationId: string, ownerUserId = "") 
     mutationFn: async (): Promise<MergePendingMoneyTransfersResult> => {
       const { data, error } = await supabase.rpc("merge_pending_money_transfers", { p_location_id: locationId });
       if (error) throw new Error(error.message || "รวมรายการรอโอนไม่สำเร็จ");
-      return data as MergePendingMoneyTransfersResult;
+      if (!isMergePendingMoneyTransfersResult(data)) {
+        throw new Error("รวมรายการรอโอนไม่สำเร็จ");
+      }
+      return data;
     },
     onSuccess: refresh,
   });

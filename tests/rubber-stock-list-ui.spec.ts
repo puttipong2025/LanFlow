@@ -155,6 +155,14 @@ test("Stock tables search, filter, page 10/25/50, and keep mobile overflow insid
 
   await page.goto("/");
   await page.getByRole("button", { name: /^สต็อกสินค้า/ }).click();
+  const productSettingsButton = page.getByRole("button", { name: "ตั้งค่าและจัดการสินค้า" });
+  await expect(productSettingsButton).toHaveClass(/bg-settings/);
+  await expect(productSettingsButton).toHaveCSS("background-color", "rgb(88, 105, 127)");
+  await expect(productSettingsButton.locator("svg.lucide-settings")).toHaveCount(1);
+  await productSettingsButton.click();
+  const productSettingsDialog = page.getByRole("dialog", { name: "ตั้งค่าและจัดการสินค้า" });
+  await expect(productSettingsDialog).toBeVisible();
+  await productSettingsDialog.getByRole("button", { name: "ปิด", exact: true }).click();
   await expect(page.getByRole("heading", { name: "ยอดคงเหลือสินค้า" })).toBeVisible();
   await expect(page.getByText("แสดง 1 ถึง 10 จาก 50 รายการที่โหลดแล้ว")).toBeVisible();
 

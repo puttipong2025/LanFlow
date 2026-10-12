@@ -1,4 +1,4 @@
-import { ArrowRightLeft, Check, PackagePlus, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { ArrowRightLeft, Check, PackagePlus, RefreshCw, Search, Settings, Trash2, X } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -381,7 +381,7 @@ function ProductModal({
 
   return (
     <>
-    <ModalShell title="เพิ่มสินค้า" subtitle="สร้างสินค้าและกำหนดการขายผ่านบิลขายในที่เดียว" onClose={onClose} size="wide">
+    <ModalShell title="ตั้งค่าและจัดการสินค้า" subtitle="สร้างสินค้าและกำหนดการขายผ่านบิลขายในที่เดียว" onClose={onClose} size="wide">
       <form onSubmit={handleSubmit} className="space-y-4 p-4">
         <label className="block">
           <span className="mb-1 block text-sm font-semibold text-ink/70">ชื่อสินค้า</span>
@@ -767,10 +767,10 @@ export function AcidStockModule({
               onClick={() => setProductOpen(true)}
               disabled={!online}
               title={offlineActionTitle}
-              className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-stockAdd px-3 text-sm font-semibold text-white hover:bg-stockAdd/90 disabled:cursor-not-allowed disabled:bg-slate-300"
+              className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-settings px-3 text-sm font-semibold text-white hover:bg-settings/90 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
-              <Plus size={18} />
-              เพิ่มสินค้า
+              <Settings size={18} />
+              ตั้งค่าและจัดการสินค้า
             </button>
           )}
           <button

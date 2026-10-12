@@ -6,7 +6,11 @@ import { webcrypto } from "node:crypto";
 import ts from "typescript";
 
 // Execute production modules while replacing only the boundaries named by a test.
-export function loadSourceModule<T>(file: string, dependencies: Record<string, unknown>): T {
+export function loadSourceModule<T>(
+  file: string,
+  dependencies: Record<string, unknown>,
+  globals: Record<string, unknown> = {},
+): T {
   const modules = new Map<string, { exports: unknown }>();
   function load(filename: string): unknown {
     const fullPath = resolve(filename);
@@ -21,7 +25,8 @@ export function loadSourceModule<T>(file: string, dependencies: Record<string, u
       require: (id: string) => Object.hasOwn(dependencies, id) ? dependencies[id]
         : id.startsWith("@/") ? load(`src/${id.slice(2)}.ts`) : nativeRequire(id),
       Buffer, Request, Response, File, FormData, Headers, URL, URLSearchParams,
-      AbortController, Error, TypeError, console, crypto: webcrypto,
+      AbortController, AbortSignal, Error, TypeError, console, crypto: webcrypto,
+      ...globals,
     }, { filename: fullPath });
     return module.exports;
   }

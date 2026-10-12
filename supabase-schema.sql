@@ -21299,6 +21299,7 @@ begin
       and t.sync_status = 'synced'
       and t.transfer_status = 'pending'
       and t.customer_id is not null
+      and nullif(pg_catalog.btrim(t.account_number), '') is not null
   ), duplicate_groups as (
     select p.customer_id, p.account_number
     from pending p
@@ -21329,6 +21330,7 @@ begin
         and t.sync_status = 'synced'
         and t.transfer_status = 'pending'
         and t.customer_id is not null
+        and nullif(pg_catalog.btrim(t.account_number), '') is not null
         and not exists (
           select 1
           from public.money_transfer_slips s

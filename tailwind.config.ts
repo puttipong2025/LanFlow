@@ -18,7 +18,6 @@ const config: Config = {
         actionSecondary: "#586a7c",
         settings: "#58697f",
         telegram: "#087ab8",
-        stockAdd: "#6b59a5",
         stockMove: "#a85f2b",
         sand: "#f9faf9",
       },

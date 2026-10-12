@@ -69,6 +69,23 @@ function configDependencies(rpc: (name: string, args?: unknown) => unknown) {
   };
 }
 
+function telegramCredentialsDependencies(data: unknown) {
+  return {
+    "@/lib/server/auth": {
+      requireSystemManager: async () => ({
+        ok: true,
+        auth: { role: "super_admin" },
+        supabase: {},
+      }),
+    },
+    "@/lib/server/supabase-admin": {
+      createSupabaseAdminClient: () => ({
+        rpc: async () => ({ data, error: null }),
+      }),
+    },
+  };
+}
+
 test("Telegram config accepts the branch-transfer badge returned by the database catalog", async () => {
   let saved = false;
   const route = loadSourceModule<typeof import("../src/app/api/lanflow/telegram-badge/config/route")>(
@@ -316,5 +333,106 @@ test("Telegram test contains credential RPC failures inside the route boundary",
   expect(response.status).toBe(500);
   expect(await response.json()).toEqual({
     errorMessage: "โหลดข้อมูลเชื่อมต่อ Telegram ไม่สำเร็จ",
+  });
+});
+
+test("Telegram test rejects malformed successful credential payloads", async () => {
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/telegram-badge/test/route")>(
+    "src/app/api/lanflow/telegram-badge/test/route.ts",
+    {
+      "@/lib/server/auth": {
+        requireSystemManager: async () => ({
+          ok: true,
+          auth: { role: "super_admin" },
+          supabase: {},
+        }),
+      },
+      "@/lib/server/supabase-admin": {
+        createSupabaseAdminClient: () => ({
+          rpc: async () => ({
+            data: { botToken: { secret: "invalid" }, chatId: true },
+            error: null,
+          }),
+        }),
+      },
+    },
+  );
+
+  const response = await route.POST(
+    new Request("http://local/api/lanflow/telegram-badge/test", { method: "POST" }) as never,
+  );
+
+  expect(response.status).toBe(500);
+  expect(await response.json()).toEqual({
+    errorMessage: "โหลดข้อมูลเชื่อมต่อ Telegram ไม่สำเร็จ",
+  });
+});
+
+test("Telegram test rejects an application-level failure returned with HTTP 200", async () => {
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/telegram-badge/test/route")>(
+    "src/app/api/lanflow/telegram-badge/test/route.ts",
+    telegramCredentialsDependencies({ botToken: "test-token", chatId: "test-chat" }),
+    {
+      fetch: async () => new Response(JSON.stringify({ ok: false }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    },
+  );
+
+  const response = await route.POST(
+    new Request("http://local/api/lanflow/telegram-badge/test", { method: "POST" }) as never,
+  );
+
+  expect(response.status).toBe(502);
+  expect(await response.json()).toEqual({
+    errorMessage: "Telegram ปฏิเสธการส่ง",
+  });
+});
+
+test("Telegram test trims credentials and accepts a valid Telegram payload", async () => {
+  let requestUrl = "";
+  let requestBody = "";
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/telegram-badge/test/route")>(
+    "src/app/api/lanflow/telegram-badge/test/route.ts",
+    telegramCredentialsDependencies({ botToken: "  test-token  ", chatId: "  test-chat  " }),
+    {
+      fetch: async (input: string | URL | Request, init?: RequestInit) => {
+        requestUrl = String(input);
+        requestBody = typeof init?.body === "string" ? init.body : "";
+        return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    },
+  );
+
+  const response = await route.POST(
+    new Request("http://local/api/lanflow/telegram-badge/test", { method: "POST" }) as never,
+  );
+
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ success: true });
+  expect(requestUrl).toBe("https://api.telegram.org/bottest-token/sendMessage");
+  expect(JSON.parse(requestBody)).toMatchObject({ chat_id: "test-chat" });
+});
+
+test("Telegram test rejects a malformed HTTP 200 response body", async () => {
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/telegram-badge/test/route")>(
+    "src/app/api/lanflow/telegram-badge/test/route.ts",
+    telegramCredentialsDependencies({ botToken: "test-token", chatId: "test-chat" }),
+    {
+      fetch: async () => new Response("not-json", { status: 200 }),
+    },
+  );
+
+  const response = await route.POST(
+    new Request("http://local/api/lanflow/telegram-badge/test", { method: "POST" }) as never,
+  );
+
+  expect(response.status).toBe(502);
+  expect(await response.json()).toEqual({
+    errorMessage: "Telegram ปฏิเสธการส่ง",
   });
 });
