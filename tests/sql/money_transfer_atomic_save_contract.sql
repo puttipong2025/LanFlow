@@ -356,6 +356,104 @@ begin
 end
 $malformed_scalar_payload$;
 
+do $invalid_constraint_payload$
+declare
+  v_payload jsonb;
+  v_base jsonb := jsonb_build_object(
+    'id', '10000000-0000-4000-8000-000000000095',
+    'clientTempId', 'invalid-constraint-payload',
+    'idempotencyKey', 'invalid-constraint-payload-20261012',
+    'locationId', '00000000-0000-4000-8000-000000000102',
+    'operation', 'create',
+    'transferType', 'customer',
+    'customerName', 'ผู้รับโอนทดสอบ constraint payload',
+    'transferStatus', 'pending',
+    'netAmountToPay', 0,
+    'revisionNo', 0,
+    'slips', '[]'::jsonb,
+    'items', '[]'::jsonb
+  );
+begin
+  foreach v_payload in array array[
+    v_base || jsonb_build_object(
+      'customerId', 'ffffffff-ffff-4fff-8fff-ffffffffffff'
+    ),
+    v_base || jsonb_build_object('transferStatus', 'not-a-status')
+  ] loop
+    begin
+      perform public.save_money_transfer(v_payload);
+      raise exception 'expected invalid constraint payload rejection';
+    exception when others then
+      if position('MT_INVALID_PAYLOAD' in sqlerrm) = 0 then raise; end if;
+    end;
+  end loop;
+end
+$invalid_constraint_payload$;
+
+insert into public.money_transfers (
+  id, idempotency_key, location_id, customer_name
+) values (
+  '10000000-0000-4000-8000-000000000094',
+  'cross-location-blank-recipient-20261012',
+  '00000000-0000-4000-8000-000000000101',
+  'legacy cross-location recipient'
+);
+
+update public.profiles
+set role = 'admin',
+    can_access_money_transfer = true,
+    can_access_super_admin_features = false
+where id = '00000000-0000-4000-8000-000000000001';
+
+do $blank_recipient_location_boundary$
+declare
+  v_base jsonb := jsonb_build_object(
+    'id', '10000000-0000-4000-8000-000000000094',
+    'locationId', '00000000-0000-4000-8000-000000000102',
+    'operation', 'create',
+    'transferType', 'customer',
+    'customerName', '   ',
+    'slips', '[]'::jsonb,
+    'items', '[]'::jsonb
+  );
+begin
+  if not private.can_access_money_transfer_module()
+    or not private.can_access_location('00000000-0000-4000-8000-000000000102')
+    or private.can_access_location('00000000-0000-4000-8000-000000000101') then
+    raise exception 'restricted-admin fixture does not isolate the location boundary';
+  end if;
+
+  begin
+    perform public.save_money_transfer(
+      v_base || jsonb_build_object(
+        'locationId', '00000000-0000-4000-8000-000000000101',
+        'idempotencyKey', 'missing-location-denied-20261012'
+      )
+    );
+    raise exception 'expected location denial before blank-recipient validation';
+  exception when others then
+    if position('MT_LOCATION_DENIED' in sqlerrm) = 0 then raise; end if;
+  end;
+
+  begin
+    perform public.save_money_transfer(
+      v_base || jsonb_build_object(
+        'idempotencyKey', 'cross-location-blank-recipient-20261012'
+      )
+    );
+    raise exception 'expected blank-recipient rejection without cross-location probing';
+  exception when others then
+    if position('MT_CUSTOMER_NAME_REQUIRED' in sqlerrm) = 0 then raise; end if;
+  end;
+end
+$blank_recipient_location_boundary$;
+
+update public.profiles
+set role = 'super_admin',
+    can_access_money_transfer = false,
+    can_access_super_admin_features = false
+where id = '00000000-0000-4000-8000-000000000001';
+
 select set_config('request.jwt.claim.sub', '00000000-0000-4000-8000-999999999999', true);
 
 do $authorization_precedes_customer_name_validation$

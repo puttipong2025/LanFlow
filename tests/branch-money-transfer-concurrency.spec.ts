@@ -37,6 +37,7 @@ test("concurrent OCR branch saves accept exactly one active parent", async () =>
     targetLocationId: location!.id,
     operation: "create",
     transferType: "branch",
+    receiptContractVersion: 1,
     revisionNo: 0,
     slips: [{
       id: slipIds[index],

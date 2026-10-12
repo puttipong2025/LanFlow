@@ -5903,155 +5903,6 @@ $$;
 
 ALTER FUNCTION "private"."mark_dashboard_dirty"("p_location_id" "uuid") OWNER TO "postgres";
 
-
-CREATE OR REPLACE FUNCTION "private"."merge_pending_money_transfers"("p_location_id" "uuid") RETURNS "jsonb"
-    LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO ''
-    AS $$
-declare
-  v_actor public.profiles%rowtype;
-  v_group record;
-  v_secondary_ids uuid[];
-  v_group_total numeric(12,2);
-  v_pending_count integer := 0;
-  v_merged_group_count integer := 0;
-  v_merged_transfer_count integer := 0;
-  v_deleted_transfer_count integer := 0;
-  v_survivor_ids uuid[] := array[]::uuid[];
-begin
-  if p_location_id is null
-    or not private.can_access_money_transfer_module()
-    or not private.can_access_location(p_location_id) then
-    raise exception 'ไม่มีสิทธิ์รวมรายการโอนเงินของสาขานี้';
-  end if;
-
-  select * into v_actor
-  from public.profiles
-  where id = auth.uid() and is_active = true;
-
-  if not found then
-    raise exception 'ไม่พบบัญชีผู้ใช้งานที่เปิดใช้งาน';
-  end if;
-
-  perform pg_catalog.pg_advisory_xact_lock(
-    pg_catalog.hashtextextended(
-      'money-transfer-pending-merge:' || p_location_id::text,
-      0
-    )
-  );
-
-  -- Parent locks serialize concurrent child/slip writes through their FKs.
-  perform 1
-  from public.money_transfers t
-  where t.location_id = p_location_id
-    and t.transfer_type = 'customer'
-    and t.transfer_method = 'bank'
-    and t.record_status = 'active'
-    and t.sync_status = 'synced'
-    and t.transfer_status = 'pending'
-  order by t.created_at, t.id
-  for update;
-
-  select count(*) into v_pending_count
-  from public.money_transfers t
-  where t.location_id = p_location_id
-    and t.transfer_type = 'customer'
-    and t.transfer_method = 'bank'
-    and t.record_status = 'active'
-    and t.sync_status = 'synced'
-    and t.transfer_status = 'pending';
-
-  for v_group in
-    with eligible as (
-      select t.id, t.customer_id, t.account_number, t.created_at
-      from public.money_transfers t
-      where t.location_id = p_location_id
-        and t.transfer_type = 'customer'
-        and t.transfer_method = 'bank'
-        and t.record_status = 'active'
-        and t.sync_status = 'synced'
-        and t.transfer_status = 'pending'
-        and t.customer_id is not null
-        and not exists (
-          select 1
-          from public.money_transfer_slips s
-          where s.transfer_id = t.id
-        )
-        and private.active_transfer_report_no(t.id) is null
-        and not exists (
-          select 1
-          from public.money_transfer_items i
-          where i.transfer_id = t.id
-            and private.active_report_no(i.source_type, i.source_id) is not null
-        )
-    )
-    select
-      e.customer_id,
-      e.account_number,
-      pg_catalog.array_agg(e.id order by e.created_at, e.id) as transfer_ids
-    from eligible e
-    group by e.customer_id, e.account_number
-    having count(*) >= 2
-    order by min(e.created_at), min(e.id::text)
-  loop
-    v_secondary_ids := v_group.transfer_ids[
-      2:pg_catalog.array_length(v_group.transfer_ids, 1)
-    ];
-
-    update public.money_transfer_items
-    set transfer_id = v_group.transfer_ids[1]
-    where transfer_id = any(v_secondary_ids);
-
-    select coalesce(sum(i.amount), 0)::numeric(12,2)
-    into v_group_total
-    from public.money_transfer_items i
-    where i.transfer_id = v_group.transfer_ids[1];
-
-    update public.money_transfers
-    set net_amount_to_pay = v_group_total,
-        revision_no = revision_no + 1,
-        updated_at = pg_catalog.now()
-    where id = v_group.transfer_ids[1];
-
-    perform pg_catalog.set_config(
-      'app.money_transfer_delete_rpc',
-      'true',
-      true
-    );
-
-    update public.money_transfers
-    set record_status = 'deleted',
-        deleted_at = pg_catalog.now(),
-        deleted_by_name = v_actor.name,
-        deleted_by_phone = v_actor.phone,
-        revision_no = revision_no + 1,
-        updated_at = pg_catalog.now()
-    where id = any(v_secondary_ids);
-
-    v_merged_group_count := v_merged_group_count + 1;
-    v_merged_transfer_count := v_merged_transfer_count
-      + pg_catalog.array_length(v_group.transfer_ids, 1);
-    v_deleted_transfer_count := v_deleted_transfer_count
-      + pg_catalog.array_length(v_secondary_ids, 1);
-    v_survivor_ids := pg_catalog.array_append(
-      v_survivor_ids,
-      v_group.transfer_ids[1]
-    );
-  end loop;
-
-  return pg_catalog.jsonb_build_object(
-    'mergedGroupCount', v_merged_group_count,
-    'mergedTransferCount', v_merged_transfer_count,
-    'deletedTransferCount', v_deleted_transfer_count,
-    'skippedTransferCount', v_pending_count - v_merged_transfer_count,
-    'survivorIds', pg_catalog.to_jsonb(v_survivor_ids)
-  );
-end;
-$$;
-
-
-ALTER FUNCTION "private"."merge_pending_money_transfers"("p_location_id" "uuid") OWNER TO "postgres";
-
 SET default_tablespace = '';
 
 SET default_table_access_method = "heap";
@@ -23948,9 +23799,8 @@ declare
   v_transfer_type text;
   v_operation text;
   v_idempotency_key text;
+  v_location_id uuid;
 begin
-  -- Keep authorization ahead of every public validation branch, including
-  -- checks owned by the delegated branch-transfer writer.
   if not private.is_active_user() or not private.can_access_money_transfer_module() then
     raise exception 'MT_ACCESS_DENIED: ไม่มีสิทธิ์ใช้งานรายการโอนเงิน';
   end if;
@@ -23976,14 +23826,24 @@ begin
         ''
       ) is null
     ) then
-    -- Preserve the delegated writer's canonical replay/conflict behavior for
-    -- legacy rows that were committed before this validation existed.
+    v_location_id := nullif(p_payload->>'locationId', '')::uuid;
+    if v_location_id is null then
+      raise exception 'MT_INVALID_PAYLOAD: ข้อมูลรายการโอนไม่ครบ';
+    end if;
+    if not private.can_access_location(v_location_id) then
+      raise exception 'MT_LOCATION_DENIED: ไม่มีสิทธิ์เข้าถึงสาขา';
+    end if;
+
+    -- Preserve replay/conflict semantics only for a legacy row in the
+    -- requested location. Rows in other locations are outside this caller's
+    -- validation boundary and must not influence the response.
     if v_operation = 'create'
       and v_idempotency_key is not null
       and exists (
         select 1
         from public.money_transfers transfer
         where transfer.idempotency_key = v_idempotency_key
+          and transfer.location_id = v_location_id
           and transfer.record_status <> 'deleted'
       ) then
       return public.save_money_transfer_before_customer_name_validation(p_payload);
@@ -23993,10 +23853,7 @@ begin
 
   return public.save_money_transfer_before_customer_name_validation(p_payload);
 exception
-  -- The delegated writers cast UUID, numeric and timestamp payload fields in
-  -- their declaration/validation paths. Keep malformed client data inside the
-  -- public RPC error contract instead of leaking PostgreSQL cast diagnostics.
-  when data_exception then
+  when data_exception or integrity_constraint_violation then
     raise exception 'MT_INVALID_PAYLOAD: รูปแบบข้อมูลรายการโอนไม่ถูกต้อง';
 end;
 $$;
@@ -33644,10 +33501,6 @@ REVOKE ALL ON FUNCTION "private"."lock_report_locations"("p_location_ids" "uuid"
 
 
 REVOKE ALL ON FUNCTION "private"."mark_dashboard_dirty"("p_location_id" "uuid") FROM PUBLIC;
-
-
-
-REVOKE ALL ON FUNCTION "private"."merge_pending_money_transfers"("p_location_id" "uuid") FROM PUBLIC;
 
 
 
