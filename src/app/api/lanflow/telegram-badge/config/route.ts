@@ -1,14 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import {
-  isTelegramBadgeKey,
-  type TelegramBadgeKey,
-} from "@/lib/telegram-badge";
 import { requireSystemManager } from "@/lib/server/auth";
 import { summarizeUpstreamError } from "@/lib/server/auth-access-failure";
-import { UUID_PATTERN } from "@/lib/server/weight-evidence";
 import {
+  isIsoTimestamp,
   isJsonObject,
+  isUuid,
   managementAuthFailure,
 } from "@/lib/server/management-route-error";
 
@@ -16,6 +13,63 @@ const NO_STORE_HEADERS = {
   "Cache-Control": "private, no-store, max-age=0",
 };
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+const BADGE_KEY_PATTERN = /^[a-z0-9_]+$/;
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function isNullableIsoTimestamp(value: unknown): value is string | null {
+  return value === null || isIsoTimestamp(value);
+}
+
+function isTelegramConfigPayload(value: unknown): value is Record<string, unknown> {
+  if (!isJsonObject(value) || "botToken" in value) return false;
+  return (
+    typeof value.enabled === "boolean"
+    && typeof value.chatId === "string"
+    && typeof value.startTime === "string"
+    && TIME_PATTERN.test(value.startTime)
+    && typeof value.endTime === "string"
+    && TIME_PATTERN.test(value.endTime)
+    && value.startTime < value.endTime
+    && Number.isInteger(value.intervalMinutes)
+    && Number(value.intervalMinutes) >= 10
+    && Number(value.intervalMinutes) <= 240
+    && Array.isArray(value.enabledBadgeKeys)
+    && value.enabledBadgeKeys.every(
+      (key) => typeof key === "string" && BADGE_KEY_PATTERN.test(key),
+    )
+    && typeof value.evidenceEnabled === "boolean"
+    && Number.isInteger(value.evidenceIntervalMinutes)
+    && Number(value.evidenceIntervalMinutes) >= 30
+    && Number(value.evidenceIntervalMinutes) <= 1440
+    && typeof value.evidenceAllLocations === "boolean"
+    && Array.isArray(value.evidenceLocationIds)
+    && value.evidenceLocationIds.every(isUuid)
+    && Array.isArray(value.evidenceLocations)
+    && value.evidenceLocations.every(
+      (location) => isJsonObject(location)
+        && isUuid(location.id)
+        && typeof location.name === "string",
+    )
+    && typeof value.tokenConfigured === "boolean"
+    && Array.isArray(value.catalog)
+    && value.catalog.every(
+      (item) => isJsonObject(item)
+        && typeof item.key === "string"
+        && BADGE_KEY_PATTERN.test(item.key)
+        && typeof item.moduleLabel === "string"
+        && typeof item.statusLabel === "string"
+        && Number.isInteger(item.sortOrder),
+    )
+    && isNullableIsoTimestamp(value.lastAttemptAt)
+    && isNullableIsoTimestamp(value.lastSuccessAt)
+    && isNullableString(value.lastError)
+    && isIsoTimestamp(value.updatedAt)
+    && isNullableString(value.updatedByName)
+  );
+}
 
 function errorResponse(message: string, status: number) {
   return NextResponse.json(
@@ -53,13 +107,21 @@ export async function GET(request: NextRequest) {
       "โหลดการตั้งค่า Telegram ไม่สำเร็จ",
     );
   }
-  const locations = (locationResult.data ?? {}) as Record<string, unknown>;
-  return NextResponse.json({
-    ...((configResult.data ?? {}) as Record<string, unknown>),
-    evidenceAllLocations: locations.allLocations === true,
-    evidenceLocationIds: locations.locationIds ?? [],
-    evidenceLocations: locations.locations ?? [],
-  }, { headers: NO_STORE_HEADERS });
+  if (!isJsonObject(configResult.data) || !isJsonObject(locationResult.data)) {
+    console.error("Telegram badge config read returned an invalid payload");
+    return errorResponse("โหลดการตั้งค่า Telegram ไม่สำเร็จ", 500);
+  }
+  const payload = {
+    ...configResult.data,
+    evidenceAllLocations: locationResult.data.allLocations,
+    evidenceLocationIds: locationResult.data.locationIds,
+    evidenceLocations: locationResult.data.locations,
+  };
+  if (!isTelegramConfigPayload(payload)) {
+    console.error("Telegram badge config read returned an invalid payload");
+    return errorResponse("โหลดการตั้งค่า Telegram ไม่สำเร็จ", 500);
+  }
+  return NextResponse.json(payload, { headers: NO_STORE_HEADERS });
 }
 
 export async function PUT(request: NextRequest) {
@@ -77,7 +139,13 @@ export async function PUT(request: NextRequest) {
   }
 
   const enabled = body.enabled;
-  const chatId = typeof body.chatId === "string" ? body.chatId.trim() : "";
+  if (typeof body.chatId !== "string") {
+    return errorResponse("Chat ID ไม่ถูกต้อง", 400);
+  }
+  if (body.botToken !== undefined && typeof body.botToken !== "string") {
+    return errorResponse("Bot Token ไม่ถูกต้อง", 400);
+  }
+  const chatId = body.chatId.trim();
   const startTime = body.startTime;
   const endTime = body.endTime;
   const intervalMinutes = Number(body.intervalMinutes);
@@ -85,8 +153,7 @@ export async function PUT(request: NextRequest) {
   const evidenceIntervalMinutes = Number(body.evidenceIntervalMinutes);
   let evidenceAllLocations = body.evidenceAllLocations;
   let evidenceLocationIds = body.evidenceLocationIds;
-  const botToken =
-    typeof body.botToken === "string" ? body.botToken.trim() : "";
+  const botToken = body.botToken?.trim() ?? "";
   const rawKeys = body.enabledBadgeKeys;
 
   if (typeof enabled !== "boolean") {
@@ -120,7 +187,7 @@ export async function PUT(request: NextRequest) {
     return errorResponse("รูปแบบการเลือกสาขาหลักฐานไม่ถูกต้อง", 400);
   }
   if (!Array.isArray(evidenceLocationIds) || !evidenceLocationIds.every(
-    (id): id is string => typeof id === "string" && UUID_PATTERN.test(id),
+    (id): id is string => isUuid(id),
   )) {
     return errorResponse("สาขาหลักฐานไม่ถูกต้อง", 400);
   }
@@ -145,10 +212,13 @@ export async function PUT(request: NextRequest) {
   ) {
     return errorResponse("ระยะห่าง Evidence ต้องอยู่ระหว่าง 30 ถึง 1,440 นาที", 400);
   }
-  if (!Array.isArray(rawKeys) || !rawKeys.every(
-    (key): key is TelegramBadgeKey =>
-      typeof key === "string" && isTelegramBadgeKey(key),
-  )) {
+  if (
+    !Array.isArray(rawKeys)
+    || !rawKeys.every(
+      (key): key is string =>
+        typeof key === "string" && BADGE_KEY_PATTERN.test(key),
+    )
+  ) {
     return errorResponse("ประเภท Badge ไม่ถูกต้อง", 400);
   }
   if (enabled && chatId.length === 0) {
@@ -188,6 +258,10 @@ export async function PUT(request: NextRequest) {
       result.error,
       "บันทึกการตั้งค่า Telegram ไม่สำเร็จ",
     );
+  }
+  if (!isTelegramConfigPayload(result.data)) {
+    console.error("Telegram badge config save returned an invalid payload");
+    return errorResponse("บันทึกการตั้งค่า Telegram ไม่สำเร็จ", 500);
   }
   return NextResponse.json(result.data, { headers: NO_STORE_HEADERS });
 }

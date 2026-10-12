@@ -2,6 +2,7 @@ export const TELEGRAM_BADGE_KEYS = [
   "rubber_bill_approval_pending",
   "income_expense_approval_pending",
   "cash_transfer_pending_receipt",
+  "branch_transfer_pending_receipt",
   "stock_approval_pending",
   "money_transfer_pending",
   "money_transfer_partial",
@@ -235,8 +236,4 @@ export function formatWeightEvidenceReviewDigest(
     throw new Error("Weight evidence review summary contains an oversized line");
   }
   return messages;
-}
-
-export function isTelegramBadgeKey(value: string): value is TelegramBadgeKey {
-  return (TELEGRAM_BADGE_KEYS as readonly string[]).includes(value);
 }
