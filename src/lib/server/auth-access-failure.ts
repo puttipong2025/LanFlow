@@ -11,9 +11,9 @@ type UpstreamErrorShape = {
 };
 
 type AuthAccessFailureInput = {
-  assignmentsError: unknown;
   hasProfile: boolean;
   isActive: boolean;
+  locationScopeError: unknown;
   profileError: unknown;
 };
 
@@ -33,12 +33,12 @@ const AUTH_SERVICE_UNAVAILABLE: AuthAccessFailure = {
 };
 
 export function classifyAuthAccessFailure({
-  assignmentsError,
   hasProfile,
   isActive,
+  locationScopeError,
   profileError,
 }: AuthAccessFailureInput): AuthAccessFailure | null {
-  if (profileError || assignmentsError) {
+  if (profileError || locationScopeError) {
     return AUTH_SERVICE_UNAVAILABLE;
   }
 

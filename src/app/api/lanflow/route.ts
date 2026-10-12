@@ -10,38 +10,39 @@ export async function GET(request: NextRequest) {
   const result = await requireAuth(request, { allowUserLanflow: true });
   if (!result.ok) return result.response;
 
-  const confirmationResult = await result.supabase
-    .rpc("get_branch_create_confirmation_minutes");
-  const confirmationMinutes = confirmationResult.error
-    || typeof confirmationResult.data !== "number"
-    || !Number.isInteger(confirmationResult.data)
-      ? null
-      : confirmationResult.data;
-  if (confirmationResult.error) {
-    console.error("Branch confirmation setting load failed", confirmationResult.error.message);
-  }
-
-  const profile = {
-    id: result.auth.sub,
-    name: result.auth.name,
-    phone: result.auth.phone,
-    role: result.auth.role,
-    isActive: true,
-    locationIds: result.auth.locationIds,
-    canAccessSystemManager: result.auth.canAccessSystemManager,
-    canAccessMoneyTransfer: result.auth.canAccessMoneyTransfer,
-    canManageTimePayroll: result.auth.canManageTimePayroll,
-    primaryLocationId: result.auth.primaryLocationId,
-  };
-
-  if (result.auth.role === "user") {
-    return NextResponse.json(
-      { locations: [], profile, confirmationMinutes, rubberWeightAlertConfig: null },
-      { headers: NO_STORE_HEADERS },
-    );
-  }
-
   try {
+    const confirmationResult = await result.supabase
+      .rpc("get_branch_create_confirmation_minutes");
+    const confirmationMinutes = confirmationResult.error
+      || typeof confirmationResult.data !== "number"
+      || !Number.isInteger(confirmationResult.data)
+        ? null
+        : confirmationResult.data;
+    if (confirmationResult.error) {
+      console.error("Branch confirmation setting load failed", confirmationResult.error.message);
+    }
+
+    const profile = {
+      id: result.auth.sub,
+      name: result.auth.name,
+      phone: result.auth.phone,
+      role: result.auth.role,
+      isActive: true,
+      locationIds: result.auth.locationIds,
+      canAccessSystemManager: result.auth.canAccessSystemManager,
+      canAccessMoneyTransfer: result.auth.canAccessMoneyTransfer,
+      canManageTimePayroll: result.auth.canManageTimePayroll,
+      canManageRubberExports: result.auth.canManageRubberExports,
+      primaryLocationId: result.auth.primaryLocationId,
+    };
+
+    if (result.auth.role === "user") {
+      return NextResponse.json(
+        { locations: [], profile, confirmationMinutes, rubberWeightAlertConfig: null },
+        { headers: NO_STORE_HEADERS },
+      );
+    }
+
     const alertConfigResult = await result.supabase
       .rpc("get_rubber_weight_alert_config");
     const rubberWeightAlertConfig = alertConfigResult.error
@@ -74,7 +75,10 @@ export async function GET(request: NextRequest) {
       { headers: NO_STORE_HEADERS },
     );
   } catch (error) {
-    const message = error instanceof Error ? error.message : JSON.stringify(error);
-    return NextResponse.json({ error: message }, { status: 500, headers: NO_STORE_HEADERS });
+    console.error("LanFlow bootstrap failed", error);
+    return NextResponse.json(
+      { error: "โหลดข้อมูลเริ่มต้นไม่สำเร็จ" },
+      { status: 500, headers: NO_STORE_HEADERS },
+    );
   }
 }

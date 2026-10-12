@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
     // Fetch all profiles
     const { data: profiles, error: profilesError } = await supabase
       .from("profiles")
-      .select("id, name, phone, role, is_active, can_access_super_admin_features, can_access_money_transfer, can_manage_time_payroll, can_manage_rubber_exports")
+      .select("id, name, phone, created_at, role, is_active, can_access_super_admin_features, can_access_money_transfer, can_manage_time_payroll, can_manage_rubber_exports")
       .order("created_at", { ascending: true });
 
     if (profilesError) throw profilesError;
@@ -27,17 +27,20 @@ export async function GET(request: NextRequest) {
     // Fetch user_locations mapping
     const { data: userLocations, error: ulError } = await supabase
       .from("user_locations")
-      .select("user_id, location_id, is_primary");
+      .select("user_id, location_id, is_primary, locations!inner(is_active)")
+      .eq("locations.is_active", true);
 
     if (ulError) throw ulError;
 
     // Group location IDs by user
     const locationMap = new Map<string, string[]>();
+    const primaryLocationMap = new Map<string, string>();
     for (const ul of userLocations) {
       if (!locationMap.has(ul.user_id)) {
         locationMap.set(ul.user_id, []);
       }
       locationMap.get(ul.user_id)!.push(ul.location_id);
+      if (ul.is_primary === true) primaryLocationMap.set(ul.user_id, ul.location_id);
     }
 
     // Map to Profile type
@@ -53,10 +56,11 @@ export async function GET(request: NextRequest) {
         id: p.id,
         name: p.name,
         phone: p.phone,
+        createdAt: p.created_at,
         role: p.role,
         isActive: p.is_active,
         locationIds: locationMap.get(p.id) || [],
-        primaryLocationId: userLocations.find((ul) => ul.user_id === p.id && ul.is_primary === true)?.location_id ?? null,
+        primaryLocationId: primaryLocationMap.get(p.id) ?? null,
         canAccessSystemManager: capabilities.canManageSystem,
         canAccessMoneyTransfer: capabilities.canUseMoneyTransfer,
         canManageTimePayroll: capabilities.canManageTimePayroll,
@@ -65,9 +69,9 @@ export async function GET(request: NextRequest) {
     });
 
     return NextResponse.json({ users: result });
-  } catch (error: any) {
+  } catch (error) {
     console.error("Admin fetch users error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ errorMessage: "โหลดรายชื่อพนักงานไม่สำเร็จ" }, { status: 500 });
   }
 }
 
@@ -75,7 +79,7 @@ export async function POST(request: NextRequest) {
   const adminCheck = await requireRoleOrSystemManager(request, ["super_admin", "admin"]);
   if (!adminCheck.ok) return adminCheck.response;
 
-  const admin = createSupabaseAdminClient();
+  let admin: ReturnType<typeof createSupabaseAdminClient> | null = null;
   let authUserId: string | null = null;
 
   try {
@@ -108,6 +112,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const normalizedName = body.name.trim().replace(/\s+/g, " ");
+    if (Array.from(normalizedName).length > 100) {
+      return NextResponse.json(
+        { error: "ชื่อต้องมีความยาว 1-100 ตัวอักษร" },
+        { status: 400 },
+      );
+    }
+
     if (body.locationIds !== undefined
         && (!Array.isArray(body.locationIds) || body.locationIds.some((id) => !isUuid(id)))) {
       return NextResponse.json({ error: "invalid locationIds" }, { status: 400 });
@@ -130,6 +142,14 @@ export async function POST(request: NextRequest) {
     }
 
     const locationIds = [...new Set(body.locationIds ?? [])];
+    if (locationIds.length === 0
+        && adminCheck.auth.role !== "super_admin"
+        && adminCheck.auth.canAccessSystemManager !== true) {
+      return NextResponse.json(
+        { error: "Admin ต้องกำหนดสาขาเริ่มต้นให้พนักงาน" },
+        { status: 400 },
+      );
+    }
     if (locationIds.length > 0) {
       const { data: visibleLocations, error: locationError } = await adminCheck.supabase
         .from("locations")
@@ -145,6 +165,13 @@ export async function POST(request: NextRequest) {
       if (visibleLocations.some((location) => location.is_active !== true)) {
         return NextResponse.json({ error: "มีสาขาที่ไม่พร้อมใช้งาน" }, { status: 400 });
       }
+      const allowedLocationIds = new Set(adminCheck.auth.locationIds);
+      if (locationIds.some((locationId) => !allowedLocationIds.has(locationId))) {
+        return NextResponse.json(
+          { error: "ไม่มีสิทธิ์กำหนดสาขานอกขอบเขตของ Admin" },
+          { status: 403 },
+        );
+      }
     }
 
     const id = crypto.randomUUID();
@@ -158,13 +185,14 @@ export async function POST(request: NextRequest) {
         { status: 400 },
       );
     }
+    admin = createSupabaseAdminClient();
     const { data: authUser, error: authError } = await admin.auth.admin.createUser({
       id,
       phone: phoneE164,
       phone_confirm: true,
       password: body.password,
       user_metadata: {
-        name: body.name.trim(),
+        name: normalizedName,
         lanflow_password_copy_version: passwordVersion,
       },
       app_metadata: { lanflow_role: role }
@@ -178,7 +206,7 @@ export async function POST(request: NextRequest) {
     const { error: profileError } = await adminCheck.supabase.rpc("create_admin_user_profile", {
       p_user_id: id,
       p_phone: body.phone.trim(),
-      p_name: body.name.trim(),
+      p_name: normalizedName,
       p_role: role,
       p_location_ids: locationIds,
       p_password_plaintext: body.password,
@@ -204,7 +232,8 @@ export async function POST(request: NextRequest) {
         user: {
           id,
           phone: body.phone.trim(),
-          name: body.name.trim(),
+          name: normalizedName,
+          createdAt: authUser.user.created_at,
           role,
           isActive: true,
           locationIds,
@@ -218,12 +247,22 @@ export async function POST(request: NextRequest) {
       { status: 201 }
     );
   } catch (error) {
-    if (authUserId) {
-      await admin.from("profiles").delete().eq("id", authUserId);
-      await admin.auth.admin.deleteUser(authUserId);
+    if (authUserId && admin) {
+      try {
+        const { error: profileCleanupError } = await admin.from("profiles").delete().eq("id", authUserId);
+        if (profileCleanupError) console.error("Admin profile rollback error:", profileCleanupError);
+      } catch (cleanupError) {
+        console.error("Admin profile rollback error:", cleanupError);
+      }
+      try {
+        const { error: authCleanupError } = await admin.auth.admin.deleteUser(authUserId);
+        if (authCleanupError) console.error("Admin auth rollback error:", authCleanupError);
+      } catch (cleanupError) {
+        console.error("Admin auth rollback error:", cleanupError);
+      }
     }
 
-    const message = error instanceof Error ? error.message : "Could not create user";
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error("Admin create user error:", error);
+    return NextResponse.json({ errorMessage: "สร้างบัญชีไม่สำเร็จ" }, { status: 500 });
   }
 }

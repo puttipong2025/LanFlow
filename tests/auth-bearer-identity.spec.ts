@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { loadSourceModule } from "./helpers/load-source-module";
 
-function fixture(failure?: "claims" | "inactive" | "upstream") {
+function fixture(failure?: "claims" | "inactive" | "upstream" | "claims-throw" | "profile-throw" | "scope-throw") {
   const identities: string[] = [];
   let cookieReads = 0;
   function client(identity: string) {
@@ -9,11 +9,15 @@ function fixture(failure?: "claims" | "inactive" | "upstream") {
     const query = {
       select: () => query,
       eq: (_field: string, id: string) => { profileId = id; return query; },
-      maybeSingle: async () => ({ data: { id: profileId, role: "admin", is_active: failure !== "inactive" }, error: null }),
+      maybeSingle: async () => {
+        if (failure === "profile-throw") throw new Error("profile network failure");
+        return { data: { id: profileId, role: "admin", is_active: failure !== "inactive" }, error: null };
+      },
     };
     return {
       auth: { getClaims: async (token?: string) => {
         identities.push(`claims:${token ?? identity}`);
+        if (failure === "claims-throw") throw new Error("claims network failure");
         return failure === "claims" || failure === "upstream"
           ? { data: null, error: { status: failure === "claims" ? 401 : 503 } }
           : { data: { claims: { sub: token ?? identity } }, error: null };
@@ -21,6 +25,7 @@ function fixture(failure?: "claims" | "inactive" | "upstream") {
       from: () => query,
       rpc: async () => {
         identities.push(`rpc:${identity}`);
+        if (failure === "scope-throw") throw new Error("scope network failure");
         return { data: [{ location_id: `branch-${identity}`, is_primary: true }], error: null };
       },
     };
@@ -80,5 +85,18 @@ for (const [failure, status] of [["claims", 401], ["inactive", 403], ["upstream"
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("Unexpected authentication");
     expect(result.response.status).toBe(status);
+  });
+}
+
+for (const failure of ["claims-throw", "profile-throw", "scope-throw"] as const) {
+  test(`converts ${failure} rejections into a retryable auth response`, async () => {
+    const f = fixture(failure);
+    const result = await f.auth.requireAuth(new Request("http://local/api/auth/me", {
+      headers: { authorization: "Bearer token-user" },
+    }));
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Unexpected authentication");
+    expect(result.response.status).toBe(503);
+    expect(result.response.headers.get("retry-after")).toBe("3");
   });
 }

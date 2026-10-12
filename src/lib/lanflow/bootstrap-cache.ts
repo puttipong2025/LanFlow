@@ -40,6 +40,7 @@ export function resolveSelectedLocationId(
   locations: Array<Pick<Location, "id" | "active">>,
   allowedLocationIds: string[],
   preferredLocationId: string | null,
+  primaryLocationId: string | null = null,
 ) {
   const allowed = new Set(allowedLocationIds);
   const accessibleLocations = locations.filter(
@@ -48,7 +49,10 @@ export function resolveSelectedLocationId(
   const preferredLocation = accessibleLocations.find(
     (location) => location.id === preferredLocationId
   );
-  return preferredLocation?.id ?? accessibleLocations[0]?.id ?? "";
+  const primaryLocation = accessibleLocations.find(
+    (location) => location.id === primaryLocationId
+  );
+  return preferredLocation?.id ?? primaryLocation?.id ?? accessibleLocations[0]?.id ?? "";
 }
 
 export function writeBootstrapCache(userId: string, data: BootstrapCacheData) {

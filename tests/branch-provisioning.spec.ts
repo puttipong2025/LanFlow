@@ -1,6 +1,9 @@
 import { expect, test } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
-import { selectedAppLocationId } from "./helpers/select-app-location";
+import {
+  selectAppLocation,
+  selectedAppLocationId,
+} from "./helpers/select-app-location";
 
 const supabaseUrl =
   process.env.NEXT_PUBLIC_SUPABASE_URL ?? "http://127.0.0.1:54321";
@@ -27,6 +30,89 @@ async function removeLocation(locationId: string) {
 
 test.describe.serial("safe branch provisioning", () => {
   test.use({ storageState: "playwright/.auth/super_admin.json" });
+
+  test("projects a manager-created branch into the super admin effective scope", async ({
+    browser,
+    page,
+    request,
+  }) => {
+    const db = service();
+    const marker = crypto.randomUUID().replaceAll("-", "").slice(0, 8).toUpperCase();
+    const name = `สาขาขอบเขต ${marker}`;
+    const code = marker.slice(0, 8);
+    const manager = await browser.newContext({
+      storageState: "playwright/.auth/admin.json",
+    });
+    let locationId = "";
+
+    const previousAccess = await db
+      .from("profiles")
+      .select("can_access_super_admin_features")
+      .eq("id", adminId)
+      .single();
+    expect(previousAccess.error).toBeNull();
+    expect(
+      (
+        await db
+          .from("profiles")
+          .update({ can_access_super_admin_features: true })
+          .eq("id", adminId)
+      ).error,
+    ).toBeNull();
+
+    try {
+      const created = await manager.request.post(
+        "/api/lanflow/admin/locations",
+        { data: { name, code, requestId: crypto.randomUUID() } },
+      );
+      expect(created.ok(), await created.text()).toBeTruthy();
+      locationId = (await created.json() as { location: { id: string } }).location.id;
+
+      const assignments = await db
+        .from("user_locations")
+        .select("user_id")
+        .eq("location_id", locationId);
+      expect(assignments.error).toBeNull();
+      expect(assignments.data).toEqual([{ user_id: adminId }]);
+
+      const bootstrap = await request.get("/api/lanflow");
+      expect(bootstrap.ok(), await bootstrap.text()).toBeTruthy();
+      const bootstrapBody = await bootstrap.json() as {
+        locations: Array<{ id: string }>;
+        profile: { locationIds: string[] };
+      };
+      expect(bootstrapBody.locations.map((location) => location.id)).toContain(locationId);
+      expect(bootstrapBody.profile.locationIds).toContain(locationId);
+
+      const me = await request.get("/api/auth/me");
+      expect(me.ok(), await me.text()).toBeTruthy();
+      const meBody = await me.json() as { profile: { locationIds: string[] } };
+      expect(meBody.profile.locationIds).toContain(locationId);
+
+      const branchConfig = await request.get(
+        `/api/lanflow/dashboard/config?locationId=${locationId}`,
+      );
+      expect(branchConfig.ok(), await branchConfig.text()).toBeTruthy();
+
+      await page.goto("/");
+      await selectAppLocation(page, locationId);
+      await expect.poll(() => selectedAppLocationId(page)).toBe(locationId);
+    } finally {
+      await manager.close();
+      if (locationId) await removeLocation(locationId);
+      expect(
+        (
+          await db
+            .from("profiles")
+            .update({
+              can_access_super_admin_features:
+                previousAccess.data?.can_access_super_admin_features ?? false,
+            })
+            .eq("id", adminId)
+        ).error,
+      ).toBeNull();
+    }
+  });
 
   test("enforces manager access, atomic replay, immutable code, and alert readiness", async ({
     browser,

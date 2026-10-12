@@ -350,11 +350,9 @@ CREATE POLICY "transport_staffs scoped" ON transport_staffs
 
 #### [NEW] API routes สำหรับ Admin
 
-- `GET /api/admin/profiles` — list all profiles (super_admin only)
-- `PATCH /api/admin/profiles/[id]` — update role, is_active, reset password
-- `GET /api/admin/user-locations` — list assignments
-- `POST /api/admin/user-locations` — assign user to locations
-- `DELETE /api/admin/user-locations/[id]` — remove assignment
+- `GET /api/lanflow/admin/users` — list profiles with assigned locations
+- `POST /api/lanflow/admin/users` — create a profile with assigned locations
+- `PUT /api/lanflow/admin/users/[id]/profile` — atomically update the name, assigned locations, and primary location
 
 ---
 

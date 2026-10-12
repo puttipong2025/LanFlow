@@ -635,7 +635,7 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
     }
   });
 
-  test("primary location changes and deletion replacement are explicit and atomic", async () => {
+  test("profile updates change primary and assigned locations atomically", async () => {
     const service = serviceClient();
     const [firstLocationId, secondLocationId] = await activeLocationIds(service);
     const targetId = await createTarget(service, "ทดสอบสาขาหลัก", "admin", firstLocationId);
@@ -645,41 +645,92 @@ test.describe.serial("Time and Payroll delegated access @time-payroll-access", (
     });
     try {
       expect((await service.from("profiles").update({ can_manage_time_payroll: true }).eq("id", targetId)).error).toBeNull();
-      expect((await superRequest.post("/api/lanflow/admin/user-locations", { data: {
-        userId: targetId,
-        locationId: secondLocationId,
-      } })).ok()).toBeTruthy();
+      const updateProfile = (locationIds: string[], primaryLocationId: string | null) =>
+        superRequest.put(`/api/lanflow/admin/users/${targetId}/profile`, { data: {
+          name: "ทดสอบสาขาหลัก",
+          locationIds,
+          primaryLocationId,
+        } });
+
+      expect((await updateProfile([firstLocationId, secondLocationId], firstLocationId)).ok()).toBeTruthy();
 
       const beforeChange = await service.from("user_locations").select("location_id, is_primary").eq("user_id", targetId);
       expect(beforeChange.data?.filter((item) => item.is_primary)).toHaveLength(1);
       expect(beforeChange.data?.find((item) => item.is_primary)?.location_id).toBe(firstLocationId);
 
-      expect((await superRequest.patch("/api/lanflow/admin/user-locations", { data: {
-        userId: targetId,
-        locationId: secondLocationId,
-      } })).ok()).toBeTruthy();
+      const invalidPrimary = await updateProfile([firstLocationId], secondLocationId);
+      expect(invalidPrimary.status()).toBe(400);
+      const afterRejectedUpdate = await service.from("user_locations")
+        .select("location_id, is_primary")
+        .eq("user_id", targetId);
+      expect(afterRejectedUpdate.data).toEqual(expect.arrayContaining([
+        { location_id: firstLocationId, is_primary: true },
+        { location_id: secondLocationId, is_primary: false },
+      ]));
 
-      const missingReplacement = await superRequest.delete(
-        `/api/lanflow/admin/user-locations?userId=${targetId}&locationId=${secondLocationId}`,
-      );
-      expect(missingReplacement.status()).toBe(409);
+      expect((await updateProfile([firstLocationId, secondLocationId], secondLocationId)).ok()).toBeTruthy();
+      const changedPrimary = await service.from("user_locations").select("location_id, is_primary").eq("user_id", targetId);
+      expect(changedPrimary.data?.filter((item) => item.is_primary)).toEqual([
+        { location_id: secondLocationId, is_primary: true },
+      ]);
 
-      const removed = await superRequest.delete(
-        `/api/lanflow/admin/user-locations?userId=${targetId}&locationId=${secondLocationId}&replacementLocationId=${firstLocationId}`,
-      );
-      expect(removed.ok(), await removed.text()).toBeTruthy();
+      expect((await updateProfile([firstLocationId], firstLocationId)).ok()).toBeTruthy();
       const afterReplacement = await service.from("user_locations").select("location_id, is_primary").eq("user_id", targetId);
       expect(afterReplacement.data).toEqual([{ location_id: firstLocationId, is_primary: true }]);
 
-      expect((await superRequest.delete(
-        `/api/lanflow/admin/user-locations?userId=${targetId}&locationId=${firstLocationId}`,
-      )).ok()).toBeTruthy();
+      expect((await updateProfile([], null)).ok()).toBeTruthy();
       expect((await service.from("user_locations").select("id").eq("user_id", targetId)).data).toEqual([]);
       expect((await service.from("profiles").select("can_manage_time_payroll").eq("id", targetId).single()).data)
         .toEqual({ can_manage_time_payroll: true });
     } finally {
       await superRequest.dispose();
       await deleteTarget(service, targetId);
+    }
+  });
+
+  test("admin employee feed excludes inactive assignments from editable profiles", async () => {
+    const service = serviceClient();
+    const [activeLocationId] = await activeLocationIds(service);
+    const inactiveLocationId = crypto.randomUUID();
+    const targetId = await createTarget(service, "ทดสอบสาขาที่ปิด", "admin", activeLocationId);
+    const superRequest = await playwrightRequest.newContext({
+      baseURL: "http://127.0.0.1:3000",
+      storageState: "playwright/.auth/super_admin.json",
+    });
+    try {
+      expect((await service.from("locations").insert({
+        id: inactiveLocationId,
+        name: `สาขาปิด ${inactiveLocationId.slice(0, 6)}`,
+        code: `IX${inactiveLocationId.replaceAll("-", "").slice(0, 6).toUpperCase()}`,
+        is_active: false,
+      })).error).toBeNull();
+      expect((await service.from("user_locations").insert({
+        user_id: targetId,
+        location_id: inactiveLocationId,
+        is_primary: false,
+      })).error).toBeNull();
+
+      const response = await superRequest.get("/api/lanflow/admin/users");
+      expect(response.ok(), await response.text()).toBeTruthy();
+      const body = await response.json() as {
+        users: Array<{ id: string; locationIds: string[]; primaryLocationId: string | null }>;
+      };
+      const returnedProfile = body.users.find((user) => user.id === targetId);
+      expect(returnedProfile).toEqual(expect.objectContaining({
+        locationIds: [activeLocationId],
+        primaryLocationId: activeLocationId,
+      }));
+
+      const saveResponse = await superRequest.put(`/api/lanflow/admin/users/${targetId}/profile`, { data: {
+        name: "ทดสอบสาขาที่ปิด",
+        locationIds: returnedProfile!.locationIds,
+        primaryLocationId: returnedProfile!.primaryLocationId,
+      } });
+      expect(saveResponse.ok(), await saveResponse.text()).toBeTruthy();
+    } finally {
+      await superRequest.dispose();
+      await deleteTarget(service, targetId);
+      await service.from("locations").delete().eq("id", inactiveLocationId);
     }
   });
 

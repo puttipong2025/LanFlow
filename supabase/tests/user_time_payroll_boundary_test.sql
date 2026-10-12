@@ -98,9 +98,9 @@ select extensions.is(
 );
 
 select extensions.is(
-  (select count(*) from public.get_my_active_location_assignments()),
+  (select count(*) from public.get_my_effective_active_location_scope()),
   1::bigint,
-  'Auth bootstrap receives only active assignment metadata'
+  'Auth bootstrap receives only the User effective active scope'
 );
 
 select extensions.is(

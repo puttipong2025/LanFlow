@@ -79,8 +79,7 @@ async function ensureTestUser() {
       can_manage_time_payroll: false,
     }, { onConflict: 'id' });
 
-    const { data: allLocations } = await admin.from('locations').select('id').eq('is_active', true);
-    const assignedLocations = u.role === 'super_admin' ? allLocations : locations;
+    const assignedLocations = locations;
     await admin.from('user_locations').delete().eq('user_id', u.id);
     if (assignedLocations?.length) {
       const assignmentWrite = await admin.from('user_locations').insert(

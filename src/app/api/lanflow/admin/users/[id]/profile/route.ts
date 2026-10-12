@@ -2,11 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { requireRoleOrSystemManager } from "@/lib/server/auth";
 import {
+  isJsonObject,
   isUuid,
   managementAuthFailure,
   managementErrorResponse,
 } from "@/lib/server/management-route-error";
-import type { AdminUserProfileUpdateRequest, AdminUserProfileUpdateResponse } from "@/types";
+import type { AdminUserProfileUpdateResponse } from "@/types";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -17,8 +18,9 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
   if (!isUuid(id)) return NextResponse.json({ errorMessage: "รหัสพนักงานไม่ถูกต้อง" }, { status: 400 });
 
   try {
-    const body = await request.json() as Partial<AdminUserProfileUpdateRequest>;
-    if (typeof body.name !== "string"
+    const body: unknown = await request.json();
+    if (!isJsonObject(body)
+        || typeof body.name !== "string"
         || !Array.isArray(body.locationIds)
         || !body.locationIds.every(isUuid)
         || new Set(body.locationIds).size !== body.locationIds.length
@@ -33,7 +35,11 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
     });
     if (error) return managementErrorResponse(error, "บันทึกข้อมูลพนักงานไม่สำเร็จ");
     return NextResponse.json(data as AdminUserProfileUpdateResponse);
-  } catch {
-    return NextResponse.json({ errorMessage: "ข้อมูลพนักงานไม่ถูกต้อง" }, { status: 400 });
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      return NextResponse.json({ errorMessage: "ข้อมูลพนักงานไม่ถูกต้อง" }, { status: 400 });
+    }
+    console.error("Admin profile update error:", error);
+    return NextResponse.json({ errorMessage: "บันทึกข้อมูลพนักงานไม่สำเร็จ" }, { status: 500 });
   }
 }

@@ -82,13 +82,15 @@ test.describe("last location preference", () => {
   test("does not restore or fall back to an inactive location", () => {
     const locations = [
       { id: "retired-location", active: false },
+      { id: "first-active", active: true },
       { id: "chanauman", active: true },
     ];
 
     expect(resolveSelectedLocationId(
       locations,
-      ["retired-location", "chanauman"],
+      ["retired-location", "first-active", "chanauman"],
       "retired-location",
+      "chanauman",
     )).toBe("chanauman");
   });
 

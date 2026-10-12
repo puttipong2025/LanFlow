@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireRole } from "@/lib/server/auth";
 import { createSupabaseAdminClient } from "@/lib/server/supabase-admin";
-import { isJsonObject } from "@/lib/server/management-route-error";
+import { isJsonObject, isUuid } from "@/lib/server/management-route-error";
 
 export async function PATCH(
   request: NextRequest,
@@ -12,6 +12,9 @@ export async function PATCH(
 
   try {
     const { id: userId } = await params;
+    if (!isUuid(userId)) {
+      return NextResponse.json({ error: "รหัสพนักงานไม่ถูกต้อง" }, { status: 400 });
+    }
     const body: unknown = await request.json();
 
     if (!isJsonObject(body) || typeof body.canAccessSystemManager !== "boolean") {
@@ -56,7 +59,7 @@ export async function PATCH(
     if (error instanceof SyntaxError) {
       return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
     }
-    const message = error instanceof Error ? error.message : "Could not update system manager access";
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error("Admin system manager access update error:", error);
+    return NextResponse.json({ errorMessage: "อัปเดตสิทธิ์ผู้จัดการระบบไม่สำเร็จ" }, { status: 500 });
   }
 }

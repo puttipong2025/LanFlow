@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSystemManager } from "@/lib/server/auth";
 import { createSupabaseAdminClient } from "@/lib/server/supabase-admin";
-import { isJsonObject } from "@/lib/server/management-route-error";
+import { isJsonObject, isUuid } from "@/lib/server/management-route-error";
 
 export async function PATCH(
   request: NextRequest,
@@ -12,6 +12,9 @@ export async function PATCH(
 
   try {
     const { id: userId } = await params;
+    if (!isUuid(userId)) {
+      return NextResponse.json({ error: "รหัสพนักงานไม่ถูกต้อง" }, { status: 400 });
+    }
     const body: unknown = await request.json();
 
     if (!isJsonObject(body) || typeof body.isActive !== "boolean") {
@@ -51,11 +54,11 @@ export async function PATCH(
     if (error) throw error;
 
     return NextResponse.json({ success: true, isActive: body.isActive });
-  } catch (error: any) {
+  } catch (error) {
     if (error instanceof SyntaxError) {
       return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
     }
     console.error("Admin user status update error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ errorMessage: "อัปเดตสถานะบัญชีไม่สำเร็จ" }, { status: 500 });
   }
 }

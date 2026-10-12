@@ -19188,20 +19188,32 @@ $$;
 ALTER FUNCTION "public"."get_money_transfer_sources"("p_location_id" "uuid", "p_source_type" "text", "p_search" "text", "p_cursor_created_at" timestamp with time zone, "p_cursor_id" "uuid", "p_page_size" integer, "p_selected_ids" "uuid"[]) OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "public"."get_my_active_location_assignments"() RETURNS TABLE("location_id" "uuid", "is_primary" boolean)
+CREATE OR REPLACE FUNCTION "public"."get_my_effective_active_location_scope"() RETURNS TABLE("location_id" "uuid", "is_primary" boolean)
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
-  select ul.location_id, ul.is_primary
-  from public.user_locations ul
-  join public.locations l on l.id = ul.location_id and l.is_active = true
-  join public.profiles p on p.id = ul.user_id and p.is_active = true
-  where ul.user_id = auth.uid()
-  order by ul.is_primary desc, ul.created_at, ul.id
+  select
+    l.id as location_id,
+    coalesce(ul.is_primary, false) as is_primary
+  from public.profiles p
+  join public.locations l on l.is_active = true
+  left join public.user_locations ul
+    on ul.user_id = p.id
+   and ul.location_id = l.id
+  where p.id = auth.uid()
+    and p.is_active = true
+    and (
+      private.can_access_super_admin_features()
+      or ul.user_id is not null
+    )
+  order by
+    coalesce(ul.is_primary, false) desc,
+    case when ul.user_id is not null then ul.created_at else l.created_at end,
+    l.id
 $$;
 
 
-ALTER FUNCTION "public"."get_my_active_location_assignments"() OWNER TO "postgres";
+ALTER FUNCTION "public"."get_my_effective_active_location_scope"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_pending_branch_money_transfers"("p_location_id" "uuid") RETURNS "jsonb"
@@ -22121,86 +22133,6 @@ $$;
 
 
 ALTER FUNCTION "public"."release_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") OWNER TO "postgres";
-
-
-CREATE OR REPLACE FUNCTION "public"."remove_user_location_with_primary_replacement"("p_user_id" "uuid", "p_location_id" "uuid", "p_replacement_location_id" "uuid" DEFAULT NULL::"uuid") RETURNS "jsonb"
-    LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public', 'private'
-    AS $$
-declare
-  v_actor_id uuid := auth.uid();
-  v_was_primary boolean;
-  v_remaining_count integer;
-begin
-  if v_actor_id is null or not private.can_access_super_admin_features() then
-    raise exception 'Forbidden';
-  end if;
-  if exists (
-    select 1 from public.profiles p where p.id = p_user_id and p.role = 'super_admin'
-  ) then
-    raise exception 'Cannot modify super_admin locations';
-  end if;
-
-  perform pg_advisory_xact_lock(hashtextextended('user-locations:' || p_user_id::text, 0));
-  select ul.is_primary into v_was_primary
-  from public.user_locations ul
-  where ul.user_id = p_user_id and ul.location_id = p_location_id
-  for update;
-  if not found then return jsonb_build_object('status', 'unchanged'); end if;
-
-  select count(*) into v_remaining_count
-  from public.user_locations ul
-  where ul.user_id = p_user_id and ul.location_id <> p_location_id;
-
-  if v_was_primary and v_remaining_count > 0 then
-    if p_replacement_location_id is null
-      or p_replacement_location_id = p_location_id
-      or not exists (
-        select 1 from public.user_locations ul
-        where ul.user_id = p_user_id
-          and ul.location_id = p_replacement_location_id
-      )
-    then
-      raise exception 'REPLACEMENT_PRIMARY_REQUIRED';
-    end if;
-
-    update public.user_locations
-    set is_primary = false
-    where user_id = p_user_id and location_id = p_location_id;
-
-    update public.user_locations
-    set is_primary = true
-    where user_id = p_user_id and location_id = p_replacement_location_id;
-  elsif p_replacement_location_id is not null then
-    raise exception 'REPLACEMENT_PRIMARY_NOT_ALLOWED';
-  end if;
-
-  delete from public.user_locations
-  where user_id = p_user_id and location_id = p_location_id;
-
-  if v_was_primary then
-    insert into public.time_tracking_audit_logs (
-      admin_id, action, target_table, record_id, old_data, new_data, comment
-    ) values (
-      v_actor_id,
-      'REMOVE_PRIMARY_LOCATION',
-      'profiles',
-      p_user_id,
-      jsonb_build_object('primaryLocationId', p_location_id),
-      jsonb_build_object('primaryLocationId', p_replacement_location_id),
-      ''
-    );
-  end if;
-
-  return jsonb_build_object(
-    'status', 'deleted',
-    'primaryLocationId', case when v_was_primary then p_replacement_location_id else null end
-  );
-end
-$$;
-
-
-ALTER FUNCTION "public"."remove_user_location_with_primary_replacement"("p_user_id" "uuid", "p_location_id" "uuid", "p_replacement_location_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."repair_rubber_bill_evidence_projection"("p_location_id" "uuid") RETURNS "jsonb"
@@ -25629,71 +25561,6 @@ $$;
 ALTER FUNCTION "public"."set_time_tracking_status"("p_profile_id" "uuid", "p_status" "text") OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "public"."set_user_primary_location"("p_user_id" "uuid", "p_location_id" "uuid") RETURNS "jsonb"
-    LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public', 'private'
-    AS $$
-declare
-  v_actor_id uuid := auth.uid();
-  v_old_location_id uuid;
-begin
-  if v_actor_id is null or not private.can_access_super_admin_features() then
-    raise exception 'Forbidden';
-  end if;
-  if exists (
-    select 1 from public.profiles p where p.id = p_user_id and p.role = 'super_admin'
-  ) then
-    raise exception 'Cannot modify super_admin locations';
-  end if;
-
-  perform pg_advisory_xact_lock(hashtextextended('user-locations:' || p_user_id::text, 0));
-  if not exists (
-    select 1 from public.user_locations ul
-    where ul.user_id = p_user_id and ul.location_id = p_location_id
-  ) then
-    raise exception 'LOCATION_NOT_ASSIGNED';
-  end if;
-
-  select ul.location_id into v_old_location_id
-  from public.user_locations ul
-  where ul.user_id = p_user_id and ul.is_primary = true;
-
-  if v_old_location_id = p_location_id then
-    return jsonb_build_object('status', 'unchanged', 'primaryLocationId', p_location_id);
-  end if;
-
-  update public.user_locations
-  set is_primary = false
-  where user_id = p_user_id and is_primary = true;
-
-  update public.user_locations
-  set is_primary = true
-  where user_id = p_user_id and location_id = p_location_id;
-
-  insert into public.time_tracking_audit_logs (
-    admin_id, action, target_table, record_id, old_data, new_data, comment
-  ) values (
-    v_actor_id,
-    'CHANGE_PRIMARY_LOCATION',
-    'profiles',
-    p_user_id,
-    jsonb_build_object('primaryLocationId', v_old_location_id),
-    jsonb_build_object('primaryLocationId', p_location_id),
-    ''
-  );
-
-  return jsonb_build_object(
-    'status', 'updated',
-    'oldPrimaryLocationId', v_old_location_id,
-    'primaryLocationId', p_location_id
-  );
-end
-$$;
-
-
-ALTER FUNCTION "public"."set_user_primary_location"("p_user_id" "uuid", "p_location_id" "uuid") OWNER TO "postgres";
-
-
 CREATE OR REPLACE FUNCTION "public"."start_cash_count_session"("p_location_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -27543,6 +27410,7 @@ declare
   v_location_ids uuid[];
   v_old_location_ids uuid[];
   v_old_primary_location_id uuid;
+  v_inactive_fallback_location_id uuid;
   v_old_data jsonb;
   v_new_data jsonb;
   v_audit_id uuid;
@@ -27612,7 +27480,16 @@ begin
     (array_agg(ul.location_id) filter (where ul.is_primary))[1]
   into v_old_location_ids, v_old_primary_location_id
   from public.user_locations ul
+  join public.locations l on l.id = ul.location_id and l.is_active = true
   where ul.user_id = p_user_id;
+
+  select ul.location_id
+  into v_inactive_fallback_location_id
+  from public.user_locations ul
+  join public.locations l on l.id = ul.location_id and l.is_active = false
+  where ul.user_id = p_user_id
+  order by ul.is_primary desc, ul.created_at, ul.location_id
+  limit 1;
 
   if not v_can_manage_system then
     if exists (
@@ -27651,7 +27528,11 @@ begin
 
   update public.user_locations set is_primary = false where user_id = p_user_id;
   delete from public.user_locations ul
-  where ul.user_id = p_user_id and not (ul.location_id = any(v_location_ids));
+  using public.locations l
+  where ul.user_id = p_user_id
+    and l.id = ul.location_id
+    and l.is_active = true
+    and not (ul.location_id = any(v_location_ids));
   insert into public.user_locations (user_id, location_id, assigned_by, is_primary)
   select p_user_id, location_id, v_actor_id, false
   from unnest(v_location_ids) location_id
@@ -27660,6 +27541,10 @@ begin
     update public.user_locations
     set is_primary = true
     where user_id = p_user_id and location_id = p_primary_location_id;
+  elsif v_inactive_fallback_location_id is not null then
+    update public.user_locations
+    set is_primary = true
+    where user_id = p_user_id and location_id = v_inactive_fallback_location_id;
   end if;
 
   v_new_data := jsonb_build_object(
@@ -34333,9 +34218,9 @@ GRANT ALL ON FUNCTION "public"."get_money_transfer_sources"("p_location_id" "uui
 
 
 
-REVOKE ALL ON FUNCTION "public"."get_my_active_location_assignments"() FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."get_my_active_location_assignments"() TO "authenticated";
-GRANT ALL ON FUNCTION "public"."get_my_active_location_assignments"() TO "service_role";
+REVOKE ALL ON FUNCTION "public"."get_my_effective_active_location_scope"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_my_effective_active_location_scope"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."get_my_effective_active_location_scope"() TO "service_role";
 
 
 
@@ -34641,11 +34526,6 @@ GRANT ALL ON FUNCTION "public"."record_weight_evidence_backup"("p_bill_id" "uuid
 
 REVOKE ALL ON FUNCTION "public"."release_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."release_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") TO "authenticated";
-
-
-
-REVOKE ALL ON FUNCTION "public"."remove_user_location_with_primary_replacement"("p_user_id" "uuid", "p_location_id" "uuid", "p_replacement_location_id" "uuid") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."remove_user_location_with_primary_replacement"("p_user_id" "uuid", "p_location_id" "uuid", "p_replacement_location_id" "uuid") TO "authenticated";
 
 
 
@@ -35103,11 +34983,6 @@ GRANT ALL ON FUNCTION "public"."set_time_payroll_active_period"("p_profile_id" "
 
 
 REVOKE ALL ON FUNCTION "public"."set_time_tracking_status"("p_profile_id" "uuid", "p_status" "text") FROM PUBLIC;
-
-
-
-REVOKE ALL ON FUNCTION "public"."set_user_primary_location"("p_user_id" "uuid", "p_location_id" "uuid") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."set_user_primary_location"("p_user_id" "uuid", "p_location_id" "uuid") TO "authenticated";
 
 
 

@@ -117,7 +117,7 @@ export function AdminModule({ locations, profile, confirmationMinutes, rubberWei
       const response = await authFetch(`/api/lanflow/admin/users/${user.id}/profile`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) });
       const data = await response.json().catch(() => ({})) as Partial<AdminUserProfileUpdateResponse> & { errorMessage?: string };
       if (!response.ok || !data.user) throw new Error(data.errorMessage || "บันทึกข้อมูลพนักงานไม่สำเร็จ");
-      setUsers((current) => current.map((item) => item.id === user.id ? data.user! : item));
+      setUsers((current) => current.map((item) => item.id === user.id ? { ...item, ...data.user! } : item));
       showAdminFeedback("success", "บันทึกข้อมูลและสาขาแล้ว");
       return true;
     } catch (error) {

@@ -8,9 +8,9 @@ import {
 
 test("classifies Supabase profile lookup failures as retryable service outages", () => {
   expect(classifyAuthAccessFailure({
-    assignmentsError: null,
     hasProfile: false,
     isActive: false,
+    locationScopeError: null,
     profileError: { message: "522 Connection timed out" },
   })).toEqual({
     message: "ระบบยืนยันสิทธิ์ชั่วคราวไม่พร้อมใช้งาน",
@@ -18,9 +18,9 @@ test("classifies Supabase profile lookup failures as retryable service outages",
   });
 
   expect(classifyAuthAccessFailure({
-    assignmentsError: { message: "522 Connection timed out" },
     hasProfile: true,
     isActive: true,
+    locationScopeError: { message: "522 Connection timed out" },
     profileError: null,
   })).toEqual({
     message: "ระบบยืนยันสิทธิ์ชั่วคราวไม่พร้อมใช้งาน",
@@ -30,16 +30,16 @@ test("classifies Supabase profile lookup failures as retryable service outages",
 
 test("keeps missing and inactive profiles as authorization failures", () => {
   expect(classifyAuthAccessFailure({
-    assignmentsError: null,
     hasProfile: false,
     isActive: false,
+    locationScopeError: null,
     profileError: null,
   })?.status).toBe(403);
 
   expect(classifyAuthAccessFailure({
-    assignmentsError: null,
     hasProfile: true,
     isActive: false,
+    locationScopeError: null,
     profileError: null,
   })?.status).toBe(403);
 });

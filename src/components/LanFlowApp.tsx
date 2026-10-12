@@ -326,6 +326,7 @@ function BusinessLanFlowApp() {
             cached.locations,
             cached.profile.locationIds,
             cached.selectedLocationId,
+            cached.profile.primaryLocationId ?? null,
           ));
           setConfirmationMinutes(cached.confirmationMinutes);
           setRubberWeightAlertConfig(cached.rubberWeightAlertConfig);
@@ -359,11 +360,11 @@ function BusinessLanFlowApp() {
         setProfile(data.profile);
         setConfirmationMinutes(nextConfirmationMinutes);
         setRubberWeightAlertConfig(nextRubberWeightAlertConfig);
-        
         const locId = resolveSelectedLocationId(
           data.locations,
           data.profile.locationIds,
-          readLastLocationPreference(authProfileId) ?? data.profile.primaryLocationId ?? null,
+          readLastLocationPreference(authProfileId),
+          data.profile.primaryLocationId ?? null,
         );
         setSelectedLocationId((currentLocationId) =>
           currentLocationId !== locId && !isDeviceOnline()
@@ -380,8 +381,6 @@ function BusinessLanFlowApp() {
             rubberWeightAlertConfig: nextRubberWeightAlertConfig,
           });
         }
-
-
       } catch (error) {
         console.error("LanFlow database load failed", error);
         const cached = readBootstrapCache(authProfileId);
@@ -394,6 +393,7 @@ function BusinessLanFlowApp() {
             cached.locations,
             cached.profile.locationIds,
             readLastLocationPreference(authProfileId) ?? cached.selectedLocationId,
+            cached.profile.primaryLocationId ?? null,
           );
           setSelectedLocationId((currentLocationId) =>
             currentLocationId !== cachedLocationId && !isDeviceOnline()
@@ -791,7 +791,7 @@ function BusinessLanFlowApp() {
         )}
         {activeTab === "admin" && (
           <AdminModule
-            locations={locations}
+            locations={managedLocations}
             profile={profile}
             confirmationMinutes={confirmationMinutes}
             rubberWeightAlertConfig={rubberWeightAlertConfig}

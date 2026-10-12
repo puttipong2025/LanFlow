@@ -243,6 +243,87 @@ test.describe.serial("Admin profile management API", () => {
     }
   });
 
+  test("profile save preserves an inactive branch assignment hidden from the editor", async ({ browser }) => {
+    const manager = await authContext(browser, "super_admin");
+    const managerProfile = await ownProfile(manager);
+    const db = service();
+    const inactiveLocationId = crypto.randomUUID();
+    const phone = `06${Date.now().toString().slice(-8)}`;
+    let targetId: string | null = null;
+
+    try {
+      expect((await db.from("locations").insert({
+        id: inactiveLocationId,
+        name: `สาขาปิดที่ต้องเก็บ ${inactiveLocationId.slice(0, 6)}`,
+        code: `IA${inactiveLocationId.replaceAll("-", "").slice(0, 6).toUpperCase()}`,
+        is_active: false,
+      })).error).toBeNull();
+
+      const created = await manager.request.post("/api/lanflow/admin/users", {
+        data: {
+          phone,
+          name: "พนักงานเก็บประวัติสาขา",
+          password: `Start-${crypto.randomUUID()}`,
+          role: "user",
+          locationIds: [managerProfile.locationIds[0]],
+        },
+      });
+      expect(created.status(), await created.text()).toBe(201);
+      targetId = (await created.json() as { user: { id: string } }).user.id;
+
+      expect((await db.from("user_locations").insert({
+        user_id: targetId,
+        location_id: inactiveLocationId,
+        is_primary: false,
+      })).error).toBeNull();
+
+      const saved = await manager.request.put(`/api/lanflow/admin/users/${targetId}/profile`, {
+        data: {
+          name: "พนักงานเก็บประวัติสาขา",
+          locationIds: [managerProfile.locationIds[0]],
+          primaryLocationId: managerProfile.locationIds[0],
+        },
+      });
+      expect(saved.ok(), await saved.text()).toBeTruthy();
+
+      const preserved = await db.from("user_locations")
+        .select("location_id")
+        .eq("user_id", targetId)
+        .eq("location_id", inactiveLocationId);
+      expect(preserved.error).toBeNull();
+      expect(preserved.data).toEqual([{ location_id: inactiveLocationId }]);
+
+      const removedLastActive = await manager.request.put(
+        `/api/lanflow/admin/users/${targetId}/profile`,
+        {
+          data: {
+            name: "พนักงานเก็บประวัติสาขา",
+            locationIds: [],
+            primaryLocationId: null,
+          },
+        },
+      );
+      expect(removedLastActive.ok(), await removedLastActive.text()).toBeTruthy();
+
+      const inactiveFallback = await db.from("user_locations")
+        .select("location_id,is_primary")
+        .eq("user_id", targetId);
+      expect(inactiveFallback.error).toBeNull();
+      expect(inactiveFallback.data).toEqual([{
+        location_id: inactiveLocationId,
+        is_primary: true,
+      }]);
+    } finally {
+      if (targetId) {
+        await db.from("admin_account_audit_logs").delete().eq("target_user_id", targetId);
+        await db.from("profiles").delete().eq("id", targetId);
+        await db.auth.admin.deleteUser(targetId);
+      }
+      await db.from("locations").delete().eq("id", inactiveLocationId);
+      await manager.close();
+    }
+  });
+
   test("password reset is idempotent, stores only the display copy, and never returns it from mutation or audit", async ({ browser }) => {
     const manager = await authContext(browser, "super_admin");
     const ordinaryAdmin = await authContext(browser, "admin");

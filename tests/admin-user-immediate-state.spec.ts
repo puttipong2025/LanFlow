@@ -3,6 +3,30 @@ import { expect, test } from "@playwright/test";
 test.describe("admin employee state feedback", () => {
   test.use({ storageState: "playwright/.auth/super_admin.json" });
 
+  test("sorts employees by branch count descending, then creation time ascending", async ({ page }) => {
+    const users = [
+      { id: "10000000-0000-4000-8000-000000000001", name: "หนึ่งสาขา", phone: "0800000001", role: "user", isActive: true, locationIds: ["branch-1"], primaryLocationId: null, createdAt: "2026-01-01T00:00:00.000Z" },
+      { id: "10000000-0000-4000-8000-000000000002", name: "สองสาขาใหม่", phone: "0800000002", role: "user", isActive: true, locationIds: ["branch-1", "branch-2"], primaryLocationId: null, createdAt: "2026-03-01T00:00:00.000Z" },
+      { id: "10000000-0000-4000-8000-000000000003", name: "สามสาขา", phone: "0800000003", role: "user", isActive: true, locationIds: ["branch-1", "branch-2", "branch-3"], primaryLocationId: null, createdAt: "2026-04-01T00:00:00.000Z" },
+      { id: "10000000-0000-4000-8000-000000000004", name: "สองสาขาเก่า", phone: "0800000004", role: "user", isActive: true, locationIds: ["branch-1", "branch-2"], primaryLocationId: null, createdAt: "2026-02-01T00:00:00.000Z" },
+    ];
+
+    await page.route(/\/api\/lanflow\/admin\/users(?:\?.*)?$/, (route) => route.fulfill({ json: { users } }));
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "Admin" }).click();
+
+    const rows = page.locator("table tbody tr");
+    await expect(rows).toHaveCount(4);
+    await expect(page.getByRole("columnheader", { name: /จำนวนสาขา/ })).toHaveAttribute("aria-sort", "descending");
+    expect(await rows.locator("td:first-child > p:first-child").allTextContents()).toEqual([
+      "สามสาขา",
+      "สองสาขาเก่า",
+      "สองสาขาใหม่",
+      "หนึ่งสาขา",
+    ]);
+  });
+
   test("adds the server-confirmed employee without refetching the employee list", async ({ page }) => {
     const createdUser = {
       id: "d4631215-980b-4823-aa20-a5988dce5720",
@@ -34,9 +58,11 @@ test.describe("admin employee state feedback", () => {
 
     await page.goto("/");
     await page.getByRole("button", { name: "Admin" }).click();
+    await expect(page.getByText("ไม่พบพนักงาน", { exact: true })).toBeVisible();
     const readsBeforeCreate = employeeListReads;
     await page.getByRole("button", { name: "เพิ่มพนักงาน" }).click();
     const dialog = page.getByRole("dialog", { name: "เพิ่มพนักงาน" });
+    await expect(dialog.getByLabel("บทบาท").locator("option")).toHaveText(["User", "Admin"]);
     await dialog.getByLabel("ชื่อ").fill(createdUser.name);
     await dialog.getByLabel("เบอร์โทร").fill(createdUser.phone);
     await dialog.getByLabel("รหัสผ่าน").fill("password123");
@@ -277,5 +303,62 @@ test.describe("admin employee state feedback", () => {
         inDialog: element.closest("dialog") !== null,
       };
     })).toEqual({ onTop: true, inDialog: true });
+  });
+});
+
+test.describe("ordinary Admin branch scope", () => {
+  test.use({ storageState: "playwright/.auth/admin.json" });
+
+  test("does not expose readable branches outside the Admin effective scope", async ({ page }) => {
+    const managedLocation = {
+      id: "10000000-0000-4000-8000-000000000010",
+      name: "สาขาที่แอดมินดูแล",
+      code: "OWN",
+      active: true,
+    };
+    const outsideLocation = {
+      id: "10000000-0000-4000-8000-000000000011",
+      name: "สาขานอกขอบเขตแอดมิน",
+      code: "OUT",
+      active: true,
+    };
+
+    await page.route(/\/api\/lanflow(?:\?.*)?$/, async (route) => {
+      const response = await route.fetch();
+      const data = await response.json() as {
+        locations: Array<{ id: string; name: string; code: string; active: boolean }>;
+        profile: Record<string, unknown>;
+      };
+      await route.fulfill({
+        response,
+        json: {
+          ...data,
+          locations: [managedLocation, outsideLocation],
+          profile: {
+            ...data.profile,
+            role: "admin",
+            canAccessSystemManager: false,
+            locationIds: [managedLocation.id],
+            primaryLocationId: managedLocation.id,
+          },
+        },
+      });
+    });
+    await page.route(/\/api\/lanflow\/admin\/users(?:\?.*)?$/, (route) => route.fulfill({ json: { users: [] } }));
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "Admin" }).click();
+    await page.getByRole("button", { name: "สาขา", exact: true }).click();
+
+    const branchSection = page.locator("section").filter({ has: page.getByRole("heading", { name: "สาขาที่ใช้งาน" }) });
+    await expect(branchSection.getByText(managedLocation.name, { exact: true })).toBeVisible();
+    await expect(branchSection.getByText(outsideLocation.name, { exact: true })).toHaveCount(0);
+
+    await page.getByRole("button", { name: "เพิ่มพนักงาน" }).click();
+    const createDialog = page.getByRole("dialog", { name: "เพิ่มพนักงาน" });
+    await expect(createDialog.getByLabel("บทบาท").locator("option")).toHaveText(["User"]);
+    const locationSelect = createDialog.getByLabel("สาขาเริ่มต้น");
+    await expect(locationSelect).toHaveAttribute("required", "");
+    await expect(locationSelect.locator("option")).toHaveText(["เลือกสาขา", managedLocation.name]);
   });
 });

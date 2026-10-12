@@ -14,10 +14,12 @@ export async function GET(request: NextRequest) {
         phone: result.auth.phone,
         name: result.auth.name,
         role: result.auth.role,
+        isActive: true,
         locationIds: result.auth.locationIds,
         canAccessSystemManager: result.auth.canAccessSystemManager,
         canAccessMoneyTransfer: result.auth.canAccessMoneyTransfer,
         canManageTimePayroll: result.auth.canManageTimePayroll,
+        canManageRubberExports: result.auth.canManageRubberExports,
         primaryLocationId: result.auth.primaryLocationId
       }
     });

@@ -18,6 +18,7 @@ export type Profile = {
   id: string;
   name: string;
   phone: string;
+  createdAt?: string;
   role: AppRole;
   isActive: boolean;
   locationIds: string[];

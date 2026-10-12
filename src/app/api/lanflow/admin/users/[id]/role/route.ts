@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireRole } from "@/lib/server/auth";
 import { createSupabaseAdminClient } from "@/lib/server/supabase-admin";
-import { isJsonObject } from "@/lib/server/management-route-error";
+import { isJsonObject, isUuid } from "@/lib/server/management-route-error";
 
 export async function PATCH(
   request: NextRequest,
@@ -21,8 +21,8 @@ export async function PATCH(
     }
 
     const targetUserId = (await params).id;
-    if (!targetUserId) {
-      return NextResponse.json({ error: "Missing user ID" }, { status: 400 });
+    if (!isUuid(targetUserId)) {
+      return NextResponse.json({ error: "รหัสพนักงานไม่ถูกต้อง" }, { status: 400 });
     }
 
     const admin = createSupabaseAdminClient();
@@ -54,11 +54,11 @@ export async function PATCH(
     }
 
     return NextResponse.json({ success: true, role });
-  } catch (error: any) {
+  } catch (error) {
     if (error instanceof SyntaxError) {
       return NextResponse.json({ error: "Invalid role specified" }, { status: 400 });
     }
     console.error("Admin role update error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ errorMessage: "อัปเดตบทบาทไม่สำเร็จ" }, { status: 500 });
   }
 }
