@@ -21,8 +21,13 @@ function isManagerTab(tab: AdminTab) {
   return tab === "history" || tab === "branch-confirmation" || tab === "rubber-weight-alert";
 }
 
-function compareEmployees(left: Profile, right: Profile) {
-  const branchCountDifference = right.locationIds.length - left.locationIds.length;
+function accessibleBranchCount(user: Profile, activeBranchCount: number) {
+  return user.canAccessSystemManager === true ? activeBranchCount : user.locationIds.length;
+}
+
+function compareEmployees(left: Profile, right: Profile, activeBranchCount: number) {
+  const branchCountDifference = accessibleBranchCount(right, activeBranchCount)
+    - accessibleBranchCount(left, activeBranchCount);
   if (branchCountDifference !== 0) return branchCountDifference;
 
   const leftCreatedAt = Date.parse(left.createdAt ?? "");
@@ -54,10 +59,14 @@ export function AdminContent({ locations, users, loading, updatingUserId, profil
   const [createUserOpen, setCreateUserOpen] = useState(false);
   const [createBranchOpen, setCreateBranchOpen] = useState(false);
   const [adminConfirmationMinutes, setAdminConfirmationMinutes] = useState(confirmationMinutes);
+  const activeBranchCount = useMemo(
+    () => locations.filter((location) => location.active).length,
+    [locations],
+  );
   const filteredUsers = useMemo(() => users
     .filter((user) => canManagePermissions || user.role !== "super_admin")
     .filter((user) => `${user.name} ${user.phone}`.toLocaleLowerCase("th").includes(search.trim().toLocaleLowerCase("th")))
-    .sort(compareEmployees), [users, canManagePermissions, search]);
+    .sort((left, right) => compareEmployees(left, right, activeBranchCount)), [users, canManagePermissions, search, activeBranchCount]);
   const totalPages = Math.max(1, Math.ceil(filteredUsers.length / pageSize));
   const currentPage = Math.min(page, totalPages);
   const pagedUsers = filteredUsers.slice((currentPage - 1) * pageSize, currentPage * pageSize);
@@ -71,7 +80,7 @@ export function AdminContent({ locations, users, loading, updatingUserId, profil
     if (isManagerTab(tab) && !canManageSystem) return null;
     switch (tab) {
       case "employees":
-        return <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel"><div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><label className="grid gap-1 text-sm font-semibold">ค้นหาพนักงาน<input aria-label="ค้นหาพนักงาน" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} className="focus-ring h-10 rounded-md border border-black/15 px-3" placeholder="ชื่อหรือเบอร์โทร" /></label><TablePageSizeSelect pageSize={pageSize} onPageSizeChange={(size) => { setPageSize(size); setPage(1); }} /></div><div className="overflow-x-auto"><table className="min-w-[44rem] w-full text-left text-sm"><thead><tr className="border-b border-black/10 text-ink/65"><th className="p-3">พนักงาน</th><th className="p-3">สิทธิ์/สถานะ</th><th className="p-3">สาขาหลัก</th><th aria-sort="descending" title="เรียงจำนวนสาขามากไปน้อย แล้วเรียงเวลาสร้างเก่าไปใหม่" className="p-3">จำนวนสาขา ↓</th><th className="p-3">จัดการ</th></tr></thead><tbody className="divide-y divide-black/5">{loading ? <tr><td colSpan={5} className="p-8 text-center" role="status">กำลังโหลดพนักงาน...</td></tr> : pagedUsers.length === 0 ? <tr><td colSpan={5} className="p-8 text-center text-ink/55">ไม่พบพนักงาน</td></tr> : pagedUsers.map((user) => <tr key={user.id}><td className="p-3"><p className="font-semibold text-ink">{user.name}</p><p className="text-ink/60">{user.phone}</p></td><td className="p-3"><span className="rounded bg-field px-2 py-1 text-xs font-semibold">{user.role === "super_admin" ? "Super Admin" : user.role === "admin" ? "Admin" : "User"}</span>{user.isActive === false && <span className="ml-2 rounded bg-rose-100 px-2 py-1 text-xs font-semibold text-rose-700">ระงับ</span>}</td><td className="p-3">{locations.find((location) => location.id === user.primaryLocationId)?.name ?? "—"}</td><td className="p-3 tabular-nums">{user.locationIds.length}</td><td className="p-3"><button type="button" onClick={() => setManagedUserId(user.id)} className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md border border-river/30 px-3 font-semibold text-river"><Settings size={15} />จัดการ</button></td></tr>)}</tbody></table></div><TablePagination totalItems={filteredUsers.length} page={currentPage} pageSize={pageSize} onPageChange={setPage} /></section>;
+        return <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel"><div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><label className="grid gap-1 text-sm font-semibold">ค้นหาพนักงาน<input aria-label="ค้นหาพนักงาน" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} className="focus-ring h-10 rounded-md border border-black/15 px-3" placeholder="ชื่อหรือเบอร์โทร" /></label><TablePageSizeSelect pageSize={pageSize} onPageSizeChange={(size) => { setPageSize(size); setPage(1); }} /></div><div className="overflow-x-auto"><table className="min-w-[44rem] w-full text-left text-sm"><thead><tr className="border-b border-black/10 text-ink/65"><th className="p-3">พนักงาน</th><th className="p-3">สิทธิ์/สถานะ</th><th className="p-3">สาขาหลัก</th><th aria-sort="descending" title="เรียงจำนวนสาขามากไปน้อย แล้วเรียงเวลาสร้างเก่าไปใหม่" className="p-3">จำนวนสาขา ↓</th><th className="p-3">จัดการ</th></tr></thead><tbody className="divide-y divide-black/5">{loading ? <tr><td colSpan={5} className="p-8 text-center" role="status">กำลังโหลดพนักงาน...</td></tr> : pagedUsers.length === 0 ? <tr><td colSpan={5} className="p-8 text-center text-ink/55">ไม่พบพนักงาน</td></tr> : pagedUsers.map((user) => <tr key={user.id}><td className="p-3"><p className="font-semibold text-ink">{user.name}</p><p className="text-ink/60">{user.phone}</p></td><td className="p-3"><span className="rounded bg-field px-2 py-1 text-xs font-semibold">{user.role === "super_admin" ? "Super Admin" : user.role === "admin" ? "Admin" : "User"}</span>{user.isActive === false && <span className="ml-2 rounded bg-rose-100 px-2 py-1 text-xs font-semibold text-rose-700">ระงับ</span>}</td><td className="p-3">{locations.find((location) => location.id === user.primaryLocationId)?.name ?? "—"}</td><td className="p-3 tabular-nums">{accessibleBranchCount(user, activeBranchCount)}</td><td className="p-3"><button type="button" onClick={() => setManagedUserId(user.id)} className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md border border-river/30 px-3 font-semibold text-river"><Settings size={15} />จัดการ</button></td></tr>)}</tbody></table></div><TablePagination totalItems={filteredUsers.length} page={currentPage} pageSize={pageSize} onPageChange={setPage} /></section>;
       case "branches":
         return <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel"><h3 className="text-balance font-bold text-ink">สาขาที่ใช้งาน</h3><div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{locations.map((location) => <div key={location.id} className="rounded-md border border-black/10 p-3"><p className="font-semibold">{location.name}</p><p className="text-sm text-ink/60">{location.code} · {location.active ? "ใช้งาน" : "ปิดใช้งาน"}</p></div>)}</div></section>;
       case "history":

@@ -27573,7 +27573,9 @@ begin
       'canAccessMoneyTransfer', v_target.role = 'super_admin'
         or v_target.can_access_super_admin_features or v_target.can_access_money_transfer,
       'canManageTimePayroll', v_target.role = 'super_admin'
-        or v_target.can_access_super_admin_features or v_target.can_manage_time_payroll
+        or v_target.can_access_super_admin_features or v_target.can_manage_time_payroll,
+      'canManageRubberExports', v_target.role = 'super_admin'
+        or v_target.can_access_super_admin_features or v_target.can_manage_rubber_exports
     ),
     'auditId', v_audit_id
   );

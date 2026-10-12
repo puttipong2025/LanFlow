@@ -150,6 +150,10 @@ test.describe.serial("Admin profile management API", () => {
       expect(created.status(), await created.text()).toBe(201);
       targetId = (await created.json() as { user: { id: string } }).user.id;
 
+      expect((await db.from("profiles")
+        .update({ role: "admin", can_manage_rubber_exports: true })
+        .eq("id", targetId)).error).toBeNull();
+
       const saved = await manager.request.put(`/api/lanflow/admin/users/${targetId}/profile`, {
         data: {
           name: "  พนักงาน   ทดสอบใหม่  ",
@@ -158,9 +162,17 @@ test.describe.serial("Admin profile management API", () => {
         },
       });
       expect(saved.ok(), await saved.text()).toBeTruthy();
-      const savedBody = await saved.json() as { auditId: string; user: { name: string } };
+      const savedBody = await saved.json() as {
+        auditId: string;
+        user: { name: string; canManageRubberExports?: boolean };
+      };
       expect(savedBody.user.name).toBe("พนักงาน ทดสอบใหม่");
+      expect(savedBody.user.canManageRubberExports).toBe(true);
       expect(savedBody.auditId).toBeTruthy();
+
+      expect((await db.from("profiles")
+        .update({ role: "user", can_manage_rubber_exports: false })
+        .eq("id", targetId)).error).toBeNull();
 
       const audit = await db.from("admin_account_audit_logs")
         .select("action,status,old_data,new_data")

@@ -27,6 +27,29 @@ test.describe("admin employee state feedback", () => {
     ]);
   });
 
+  test("counts every active branch for a system manager instead of stored assignments", async ({ page }) => {
+    const bootstrapResponse = await page.request.get("/api/lanflow");
+    expect(bootstrapResponse.ok(), await bootstrapResponse.text()).toBeTruthy();
+    const bootstrap = await bootstrapResponse.json() as { locations: Array<{ active: boolean }> };
+    const activeBranchCount = bootstrap.locations.filter((location) => location.active).length;
+    expect(activeBranchCount).toBeGreaterThan(0);
+
+    const users = [
+      { id: "10000000-0000-4000-8000-000000000011", name: "พนักงานไม่มีสาขา", phone: "0800000011", role: "user", isActive: true, locationIds: [], primaryLocationId: null, canAccessSystemManager: false, createdAt: "2026-01-01T00:00:00.000Z" },
+      { id: "10000000-0000-4000-8000-000000000012", name: "ผู้จัดการทุกสาขา", phone: "0800000012", role: "admin", isActive: true, locationIds: [], primaryLocationId: null, canAccessSystemManager: true, createdAt: "2026-02-01T00:00:00.000Z" },
+    ];
+
+    await page.route(/\/api\/lanflow\/admin\/users(?:\?.*)?$/, (route) => route.fulfill({ json: { users } }));
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "Admin" }).click();
+
+    const rows = page.locator("table tbody tr");
+    await expect(rows).toHaveCount(2);
+    await expect(rows.nth(0)).toContainText("ผู้จัดการทุกสาขา");
+    await expect(rows.nth(0).locator("td").nth(3)).toHaveText(String(activeBranchCount));
+  });
+
   test("adds the server-confirmed employee without refetching the employee list", async ({ page }) => {
     const createdUser = {
       id: "d4631215-980b-4823-aa20-a5988dce5720",
