@@ -83,14 +83,17 @@ test("paginates pending transfers and confirms the merge from the pending view",
     await expect(page.getByText(/หน้า 2\//)).toBeVisible();
     await page.getByRole("button", { name: /^รอโอน/ }).click();
 
-    const mergeButton = page.getByRole("button", { name: "รวมรายการรอโอน" });
+    const mergeButton = page.getByRole("button", { name: "รวมรายการ", exact: true });
     await expect(mergeButton).toBeEnabled();
-    await expect(mergeButton).toHaveClass(/bg-river/);
-    await expect(mergeButton).toHaveCSS("background-color", "rgb(40, 119, 111)");
+    await expect(mergeButton).toHaveClass(/bg-actionSecondary/);
+    await expect(mergeButton).toHaveClass(/h-9/);
+    await expect(mergeButton).toHaveClass(/text-xs/);
+    await expect(mergeButton).toHaveCSS("background-color", "rgb(88, 106, 124)");
     await mergeButton.click();
     const mergeDialog = page.getByRole("alertdialog", { name: "รวมรายการรอโอน" });
     await expect(mergeDialog).toBeVisible();
-    await expect(mergeDialog).toContainText("โดยไม่ลบบิลยางหรือใบชั่งต้นทาง");
+    await expect(mergeDialog).toContainText("รวมรายการรอโอนของลูกค้าและบัญชีเดียวกันในสาขานี้");
+    await expect(mergeDialog).toContainText("เก็บรายการแรกเป็นรายการหลัก แล้วรวมต้นทางและยอดไว้รายการเดียว");
     const initialViewport = page.viewportSize();
     await page.setViewportSize({ width: 360, height: 800 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -103,7 +106,7 @@ test("paginates pending transfers and confirms the merge from the pending view",
     expect(mergeRequestCount).toBe(0);
 
     await mergeButton.click();
-    await mergeDialog.getByRole("button", { name: "รวมรายการรอโอน" }).click();
+    await mergeDialog.getByRole("button", { name: "รวมรายการ", exact: true }).click();
     await expect.poll(() => mergeRequestCount).toBe(1);
     await expect(page.getByText(/รวมสำเร็จ 1 กลุ่ม · รวม 2 รายการ · ข้าม \d+ รายการ/)).toBeVisible();
     await expect(mergeButton).toBeFocused();
@@ -259,11 +262,11 @@ test("explains when report-locked sources prevent a pending merge", async ({ pag
     await page.goto("/");
     await selectAppLocation(page, locationId);
     await page.getByRole("button", { name: /^โอนเงิน/ }).click();
-    const mergeButton = page.getByRole("button", { name: "รวมรายการรอโอน" });
+    const mergeButton = page.getByRole("button", { name: "รวมรายการ", exact: true });
     await mergeButton.click();
     const confirmation = page.getByRole("alertdialog", { name: "รวมรายการรอโอน" });
     expect(mergeRequestCount).toBe(0);
-    await confirmation.getByRole("button", { name: "รวมรายการรอโอน" }).dblclick();
+    await confirmation.getByRole("button", { name: "รวมรายการ", exact: true }).dblclick();
     await expect.poll(() => mergeRequestCount).toBe(1);
     const busyConfirmButton = confirmation.getByRole("button", { name: "กำลังรวม..." });
     await expect(busyConfirmButton).toBeDisabled();
@@ -280,7 +283,7 @@ test("explains when report-locked sources prevent a pending merge", async ({ pag
     await expect(mergeButton).toBeFocused();
 
     await mergeButton.click();
-    await confirmation.getByRole("button", { name: "รวมรายการรอโอน" }).click();
+    await confirmation.getByRole("button", { name: "รวมรายการ", exact: true }).click();
     await expect.poll(() => mergeRequestCount).toBe(2);
     await expect(page.getByText("รวมรายการรอโอนไม่สำเร็จ", { exact: true })).toBeVisible();
     await expect(confirmation).toBeVisible();

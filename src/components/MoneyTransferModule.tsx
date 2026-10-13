@@ -540,11 +540,11 @@ export function MoneyTransferModule({
             type="button"
             onClick={() => setMergeDialog({ kind: "confirm" })}
             disabled={!online || mergePendingTransfers.isPending}
-            title="รวมกลุ่มรายการรอโอนที่เข้าเงื่อนไขในสาขา"
-            className="focus-ring inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md bg-river px-3 py-2 text-sm font-semibold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-50"
+            title="รวมรายการรอโอนในสาขานี้"
+            className="focus-ring inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-md bg-actionSecondary px-2.5 text-xs font-semibold text-white hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {mergePendingTransfers.isPending ? <Loader2 size={16} className="animate-spin" /> : <GitMerge size={16} />}
-            รวมรายการรอโอน
+            {mergePendingTransfers.isPending ? <Loader2 size={14} className="animate-spin" /> : <GitMerge size={14} />}
+            รวมรายการ
           </button>
         )}
       </div>
