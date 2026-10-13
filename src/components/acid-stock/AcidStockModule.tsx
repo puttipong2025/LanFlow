@@ -1,5 +1,5 @@
 import { ArrowRightLeft, Check, PackagePlus, RefreshCw, Search, Settings, Trash2, X } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { useAcidProducts } from "@/hooks/useAcidProducts";
@@ -8,18 +8,16 @@ import { useIncomeSaleItems } from "@/hooks/useIncomeSaleItems";
 import { useStockEntryApprovals } from "@/hooks/useStockEntryApprovals";
 import { useStockProductApprovals } from "@/hooks/useStockProductApprovals";
 import { useStockSyncRetry } from "@/hooks/useStockSyncRetry";
-import { todayInputValue } from "@/lib/format";
 import { canManageSystemFeatures } from "@/lib/permissions";
 import type { AcidProduct, AcidStockMovement, IncomeSaleItem, Location, Profile, StockEntryApprovalRequest, StockProductApprovalRequest } from "@/types";
 import { ModalShell } from "@/components/shared/ModalShell";
-import { Field } from "@/components/shared/Field";
-import { NumberField } from "@/components/shared/NumberField";
 import { isNetworkCancellation } from "@/lib/network-abort";
 import { formatBangkokDateTime } from "@/lib/bangkok-date";
 import { AlertDialog } from "@/components/shared/AlertDialog";
 import { TablePageSizeSelect } from "@/components/shared/TablePagination";
 import { StockBalanceTable } from "@/components/acid-stock/StockBalanceTable";
 import { StockMovementTable } from "@/components/acid-stock/StockMovementTable";
+import { ReceiveModal, TransferModal } from "@/components/acid-stock/StockMutationModals";
 
 function showActionError(error: unknown, fallback: string) {
   if (!isNetworkCancellation(error)) {
@@ -67,180 +65,6 @@ type PendingApprovalRow =
       request: StockEntryApprovalRequest;
     };
 
-function ReceiveModal({
-  location,
-  products,
-  online,
-  onClose,
-  onSave,
-}: {
-  location: Location;
-  products: AcidProduct[];
-  online: boolean;
-  onClose: () => void;
-  onSave: (input: { productId: string; txDate: string; quantity: number; amount: number }) => Promise<void>;
-}) {
-  const [productId, setProductId] = useState(products[0]?.id ?? "");
-  const [quantity, setQuantity] = useState(1);
-  const [amount, setAmount] = useState(0);
-
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!online) {
-      toast.error("รับเข้าสต็อกใช้ได้เมื่อออนไลน์ เพราะต้องตรวจยอดสินค้า");
-      return;
-    }
-    const form = new FormData(event.currentTarget);
-    if (!productId || quantity <= 0) {
-      toast.error("กรุณาเลือกสินค้าและระบุจำนวนให้ถูกต้อง");
-      return;
-    }
-
-    try {
-      await onSave({
-        productId,
-        txDate: String(form.get("txDate") || todayInputValue()),
-        quantity,
-        amount,
-      });
-      toast.success("รับเข้าสต็อกแล้ว");
-      onClose();
-    } catch (error) {
-      showActionError(error, "รับเข้าสต็อกไม่สำเร็จ");
-    }
-  }
-
-  return (
-    <ModalShell title="รับเข้าสต็อก" subtitle={location.name} onClose={onClose} size="normal">
-      <form onSubmit={handleSubmit} className="space-y-4 p-4">
-        <Field label="วันที่" name="txDate" type="date" defaultValue={todayInputValue()} required />
-        <label className="block">
-          <span className="mb-1 block text-sm font-semibold text-ink/70">สินค้า</span>
-          <select
-            value={productId}
-            onChange={(event) => setProductId(event.target.value)}
-            className="focus-ring h-11 w-full rounded-md border border-black/10 bg-white px-3"
-            required
-          >
-            {products.map((product) => (
-              <option key={product.id} value={product.id}>{product.name}</option>
-            ))}
-          </select>
-        </label>
-        <NumberField label="จำนวน" value={quantity} onChange={setQuantity} />
-        <NumberField label="ยอดเงิน" value={amount} onChange={setAmount} />
-        <div className="modal-actions flex justify-end gap-2 border-t border-black/10 pt-4">
-          <button type="button" onClick={onClose} className="focus-ring h-11 rounded-md bg-actionSecondary px-4 font-semibold text-white hover:bg-actionSecondary/90">
-            ยกเลิก
-          </button>
-          <button disabled={!online} className="focus-ring h-11 rounded-md bg-commit px-4 font-semibold text-white hover:bg-commit/90 disabled:cursor-not-allowed disabled:bg-slate-300">
-            บันทึก
-          </button>
-        </div>
-      </form>
-    </ModalShell>
-  );
-}
-
-function TransferModal({
-  location,
-  locations,
-  products,
-  balances,
-  online,
-  onClose,
-  onSave,
-}: {
-  location: Location;
-  locations: Location[];
-  products: AcidProduct[];
-  balances: Map<string, number>;
-  online: boolean;
-  onClose: () => void;
-  onSave: (input: { productId: string; toLocationId: string; txDate: string; quantity: number }) => Promise<void>;
-}) {
-  const [productId, setProductId] = useState(products[0]?.id ?? "");
-  const [toLocationId, setToLocationId] = useState(locations.find((item) => item.id !== location.id)?.id ?? "");
-  const [quantity, setQuantity] = useState(1);
-  const balance = balances.get(productId) ?? 0;
-
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!online) {
-      toast.error("ย้ายสต็อกใช้ได้เมื่อออนไลน์ เพราะต้องตรวจยอดสินค้า");
-      return;
-    }
-    const form = new FormData(event.currentTarget);
-    if (!productId || !toLocationId || quantity <= 0) {
-      toast.error("กรุณาเลือกสินค้า สาขาปลายทาง และจำนวนให้ถูกต้อง");
-      return;
-    }
-    if (quantity > balance) {
-      toast.error("จำนวนย้ายมากกว่ายอดคงเหลือ");
-      return;
-    }
-
-    try {
-      await onSave({
-        productId,
-        toLocationId,
-        txDate: String(form.get("txDate") || todayInputValue()),
-        quantity,
-      });
-      toast.success("ย้ายสต็อกแล้ว");
-      onClose();
-    } catch (error) {
-      showActionError(error, "ย้ายสต็อกไม่สำเร็จ");
-    }
-  }
-
-  return (
-    <ModalShell title="ย้ายสต็อก" subtitle={location.name} onClose={onClose} size="normal">
-      <form onSubmit={handleSubmit} className="space-y-4 p-4">
-        <Field label="วันที่" name="txDate" type="date" defaultValue={todayInputValue()} required />
-        <label className="block">
-          <span className="mb-1 block text-sm font-semibold text-ink/70">สินค้า</span>
-          <select
-            value={productId}
-            onChange={(event) => setProductId(event.target.value)}
-            className="focus-ring h-11 w-full rounded-md border border-black/10 bg-white px-3"
-            required
-          >
-            {products.map((product) => (
-              <option key={product.id} value={product.id}>{product.name}</option>
-            ))}
-          </select>
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-sm font-semibold text-ink/70">ไปสาขา</span>
-          <select
-            value={toLocationId}
-            onChange={(event) => setToLocationId(event.target.value)}
-            className="focus-ring h-11 w-full rounded-md border border-black/10 bg-white px-3"
-            required
-          >
-            {locations.filter((item) => item.id !== location.id).map((item) => (
-              <option key={item.id} value={item.id}>{item.name}</option>
-            ))}
-          </select>
-        </label>
-        <div className="rounded-md bg-field p-3 text-sm font-semibold text-ink">
-          คงเหลือปัจจุบัน: <span className="text-leaf">{balance.toLocaleString("th-TH")}</span>
-        </div>
-        <NumberField label="จำนวนย้าย" value={quantity} onChange={setQuantity} />
-        <div className="modal-actions flex justify-end gap-2 border-t border-black/10 pt-4">
-          <button type="button" onClick={onClose} className="focus-ring h-11 rounded-md bg-actionSecondary px-4 font-semibold text-white hover:bg-actionSecondary/90">
-            ยกเลิก
-          </button>
-          <button disabled={!online} className="focus-ring h-11 rounded-md bg-commit px-4 font-semibold text-white hover:bg-commit/90 disabled:cursor-not-allowed disabled:bg-slate-300">
-            บันทึก
-          </button>
-        </div>
-      </form>
-    </ModalShell>
-  );
-}
-
 function ProductModal({
   products,
   saleItems,
@@ -272,6 +96,8 @@ function ProductModal({
   const [isSaving, setIsSaving] = useState(false);
   const [changingProductId, setChangingProductId] = useState<string | null>(null);
   const [pendingDeleteProduct, setPendingDeleteProduct] = useState<AcidProduct | null>(null);
+  const saveLockRef = useRef(false);
+  const productActionLocksRef = useRef(new Set<string>());
 
   const saleItemByProductId = useMemo(() => {
     const next = new Map<string, IncomeSaleItem>();
@@ -311,11 +137,13 @@ function ProductModal({
   }
 
   async function handleSaleStatusChange(product: AcidProduct, shouldSell: boolean) {
+    if (productActionLocksRef.current.has(product.id)) return;
     if (!online) {
       toast.error("จัดการสินค้าสต็อกใช้ได้เมื่อออนไลน์เท่านั้น");
       return;
     }
     const saleItem = saleItemByProductId.get(product.id);
+    productActionLocksRef.current.add(product.id);
     try {
       setChangingProductId(product.id);
       if (shouldSell) {
@@ -328,6 +156,7 @@ function ProductModal({
     } catch (error) {
       showActionError(error, "อัปเดตสถานะขายไม่สำเร็จ");
     } finally {
+      productActionLocksRef.current.delete(product.id);
       setChangingProductId(null);
     }
   }
@@ -341,7 +170,8 @@ function ProductModal({
   }
 
   async function confirmDeleteProduct() {
-    if (!pendingDeleteProduct) return;
+    if (!pendingDeleteProduct || productActionLocksRef.current.has(pendingDeleteProduct.id)) return;
+    productActionLocksRef.current.add(pendingDeleteProduct.id);
     try {
       setChangingProductId(pendingDeleteProduct.id);
       await onDeleteProduct({ productId: pendingDeleteProduct.id });
@@ -350,12 +180,14 @@ function ProductModal({
     } catch (error) {
       showActionError(error, "ส่งคำขอลบสินค้าไม่สำเร็จ");
     } finally {
+      productActionLocksRef.current.delete(pendingDeleteProduct.id);
       setChangingProductId(null);
     }
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (saveLockRef.current) return;
     if (!online) {
       toast.error("เพิ่มสินค้าใช้ได้เมื่อออนไลน์เท่านั้น");
       return;
@@ -365,6 +197,7 @@ function ProductModal({
       return;
     }
 
+    saveLockRef.current = true;
     try {
       setIsSaving(true);
       await onSave({ name: name.trim(), unit: unit.trim() || "ชิ้น", createSaleItem });
@@ -375,14 +208,15 @@ function ProductModal({
     } catch (error) {
       showActionError(error, "เพิ่มสินค้าไม่สำเร็จ");
     } finally {
+      saveLockRef.current = false;
       setIsSaving(false);
     }
   }
 
   return (
     <>
-    <ModalShell title="ตั้งค่าและจัดการสินค้า" subtitle="สร้างสินค้าและกำหนดการขายผ่านบิลขายในที่เดียว" onClose={onClose} size="wide">
-      <form onSubmit={handleSubmit} className="space-y-4 p-4">
+    <ModalShell title="ตั้งค่าและจัดการสินค้า" subtitle="สร้างสินค้าและกำหนดการขายผ่านบิลขายในที่เดียว" onClose={onClose} closeDisabled={isSaving || changingProductId !== null} size="wide">
+      <form onSubmit={handleSubmit} aria-busy={isSaving} className="space-y-4 p-4">
         <label className="block">
           <span className="mb-1 block text-sm font-semibold text-ink/70">ชื่อสินค้า</span>
           <input
@@ -418,11 +252,11 @@ function ProductModal({
           </span>
         </label>
         <div className="modal-actions flex justify-end gap-2 border-t border-black/10 pt-4">
-          <button type="button" onClick={onClose} className="focus-ring h-11 rounded-md bg-actionSecondary px-4 font-semibold text-white hover:bg-actionSecondary/90">
+          <button type="button" onClick={onClose} disabled={isSaving || changingProductId !== null} className="focus-ring h-11 rounded-md bg-actionSecondary px-4 font-semibold text-white hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-45">
             ยกเลิก
           </button>
           <button disabled={isSaving || !online} className="focus-ring h-11 rounded-md bg-commit px-4 font-semibold text-white hover:bg-commit/90 disabled:cursor-not-allowed disabled:bg-slate-300">
-            บันทึก
+            {isSaving ? "กำลังบันทึก..." : "บันทึก"}
           </button>
         </div>
       </form>
@@ -474,7 +308,7 @@ function ProductModal({
                               disabled={isChanging || isSaleItemsLoading || !online}
                               className="focus-ring h-9 rounded-md bg-amber px-3 text-xs font-bold text-white hover:bg-amber/90 disabled:opacity-50"
                             >
-                              ปิดขาย
+                              {isChanging ? "กำลังทำ..." : "ปิดขาย"}
                             </button>
                           ) : (
                             <button
@@ -483,7 +317,7 @@ function ProductModal({
                               disabled={isChanging || isSaleItemsLoading || !online}
                               className="focus-ring h-9 rounded-md bg-ink px-3 text-xs font-bold text-white disabled:opacity-50"
                             >
-                              เปิดขาย
+                              {isChanging ? "กำลังทำ..." : "เปิดขาย"}
                             </button>
                           )}
                           <button
@@ -586,6 +420,9 @@ export function AcidStockModule({
   const [transferOpen, setTransferOpen] = useState(false);
   const [pendingStockDelete, setPendingStockDelete] = useState<AcidStockMovement | null>(null);
   const [deletingStock, setDeletingStock] = useState(false);
+  const stockDeleteLockRef = useRef(false);
+  const approvalLocksRef = useRef(new Set<string>());
+  const [decidingApprovalKey, setDecidingApprovalKey] = useState<string | null>(null);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedMovementSearch(movementSearch.trim()), 400);
@@ -703,7 +540,8 @@ export function AcidStockModule({
   }
 
   async function confirmDeleteStockMovement() {
-    if (!pendingStockDelete || deletingStock) return;
+    if (!pendingStockDelete || stockDeleteLockRef.current) return;
+    stockDeleteLockRef.current = true;
     setDeletingStock(true);
     try {
       await deleteStockEntry({ stockEntryId: pendingStockDelete.sourceId });
@@ -712,6 +550,7 @@ export function AcidStockModule({
     } catch (error) {
       showActionError(error, "ส่งคำขอลบรายการสต็อกไม่สำเร็จ");
     } finally {
+      stockDeleteLockRef.current = false;
       setDeletingStock(false);
     }
   }
@@ -726,11 +565,15 @@ export function AcidStockModule({
   }
 
   async function handleDecideApproval(request: PendingApprovalRow, decision: "approved" | "rejected") {
+    const requestKey = `${request.kind}:${request.id}`;
+    if (approvalLocksRef.current.has(requestKey)) return;
     if (!online) {
       toast.error("อนุมัติหรือปฏิเสธได้เมื่อออนไลน์เท่านั้น");
       return;
     }
 
+    approvalLocksRef.current.add(requestKey);
+    setDecidingApprovalKey(requestKey);
     try {
       if (request.kind === "entry") {
         await decideEntryRequest({ id: request.id, decision });
@@ -740,6 +583,9 @@ export function AcidStockModule({
       toast.success(decision === "approved" ? "อนุมัติคำขอแล้ว" : "ปฏิเสธคำขอแล้ว");
     } catch (error) {
       showActionError(error, "ดำเนินการคำขอไม่สำเร็จ");
+    } finally {
+      approvalLocksRef.current.delete(requestKey);
+      setDecidingApprovalKey((current) => current === requestKey ? null : current);
     }
   }
 
@@ -838,12 +684,12 @@ export function AcidStockModule({
                       <td className="py-3 pr-3">
                         {canManageSystem ? (
                           <div className="flex gap-1.5 whitespace-nowrap">
-                            <button type="button" onClick={() => handleDecideApproval(approval, "approved")} disabled={!online}
+                            <button type="button" onClick={() => handleDecideApproval(approval, "approved")} disabled={!online || decidingApprovalKey === `${approval.kind}:${approval.id}`}
                               className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-success text-white disabled:cursor-not-allowed disabled:bg-slate-300"
                               title={online ? "อนุมัติ" : "อนุมัติได้เมื่อออนไลน์"} aria-label={online ? "อนุมัติ" : "อนุมัติได้เมื่อออนไลน์"}>
                               <Check size={17} />
                             </button>
-                            <button type="button" onClick={() => handleDecideApproval(approval, "rejected")} disabled={!online}
+                            <button type="button" onClick={() => handleDecideApproval(approval, "rejected")} disabled={!online || decidingApprovalKey === `${approval.kind}:${approval.id}`}
                               className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-clay text-white hover:bg-clay/90 disabled:cursor-not-allowed disabled:bg-slate-300"
                               title={online ? "ปฏิเสธ" : "ปฏิเสธได้เมื่อออนไลน์"} aria-label={online ? "ปฏิเสธ" : "ปฏิเสธได้เมื่อออนไลน์"}>
                               <X size={17} />
@@ -955,6 +801,7 @@ export function AcidStockModule({
 
       {receiveOpen && (
         <ReceiveModal
+          ownerUserId={profile.id}
           location={selectedLocation}
           products={products}
           online={online}
@@ -965,6 +812,7 @@ export function AcidStockModule({
 
       {transferOpen && (
         <TransferModal
+          ownerUserId={profile.id}
           location={selectedLocation}
           locations={locations}
           products={products}

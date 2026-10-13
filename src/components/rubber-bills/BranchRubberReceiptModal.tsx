@@ -50,6 +50,7 @@ export function BranchRubberReceiptModal({
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const loadController = useRef<AbortController | null>(null);
   const candidatesRef = useRef<BranchRubberReceiptCandidate[]>([]);
+  const submitLockRef = useRef(false);
 
   const load = useCallback(async (cursor: string | null = null, append = false) => {
     loadController.current?.abort();
@@ -129,7 +130,8 @@ export function BranchRubberReceiptModal({
   }, [load]);
 
   async function receive() {
-    if (!selectedId || submitting || remainingWeightError) return;
+    if (!selectedId || submitLockRef.current || remainingWeightError) return;
+    submitLockRef.current = true;
     setSubmitting(true);
     setError(null);
     setCommandError(null);
@@ -162,6 +164,7 @@ export function BranchRubberReceiptModal({
       setCommandError(caught instanceof Error ? caught.message : "รับยางเข้าสาขาไม่สำเร็จ");
       await load();
     } finally {
+      submitLockRef.current = false;
       setSubmitting(false);
     }
   }

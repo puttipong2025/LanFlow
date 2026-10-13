@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Clock3 } from "lucide-react";
 
 import { authFetch } from "@/lib/auth-fetch";
@@ -20,16 +20,19 @@ export function BranchConfirmationSettings({ initialMinutes, onAccessDenied, onS
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const savingRef = useRef(false);
   const minutes = Number(value);
   const valid = validBranchConfirmationMinutes(minutes);
   const dirty = value !== String(savedMinutes);
 
   async function save() {
+    if (savingRef.current) return;
     if (!valid) {
       setError("ระยะยืนยันสาขาต้องอยู่ระหว่าง 1 ถึง 120 นาที");
       setSuccess(null);
       return;
     }
+    savingRef.current = true;
     setSaving(true);
     setError(null);
     setSuccess(null);
@@ -59,6 +62,7 @@ export function BranchConfirmationSettings({ initialMinutes, onAccessDenied, onS
         ? failure.message
         : "บันทึกระยะยืนยันสาขาไม่สำเร็จ");
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   }

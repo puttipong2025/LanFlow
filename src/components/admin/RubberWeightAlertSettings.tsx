@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { BellRing, Pencil, Plus, Trash2 } from "lucide-react";
 
 import { AlertDialog } from "@/components/shared/AlertDialog";
@@ -43,6 +43,8 @@ export function RubberWeightAlertSettings({
   const [groupError, setGroupError] = useState<string | null>(null);
   const [groupSuccess, setGroupSuccess] = useState<string | null>(null);
   const [groupToDelete, setGroupToDelete] = useState<RubberWeightAlertGroup | null>(null);
+  const intervalSavingRef = useRef(false);
+  const groupSavingRef = useRef(false);
 
   const intervalMinutes = Number(intervalValue);
   const thresholdKg = Number(thresholdValue);
@@ -71,10 +73,12 @@ export function RubberWeightAlertSettings({
 
   async function saveInterval(event: React.FormEvent) {
     event.preventDefault();
+    if (intervalSavingRef.current) return;
     if (!intervalValid) {
       setIntervalError("รอบตรวจต้องอยู่ระหว่าง 1–1,440 นาที");
       return;
     }
+    intervalSavingRef.current = true;
     setSavingInterval(true);
     setIntervalError(null);
     setIntervalSuccess(null);
@@ -103,6 +107,7 @@ export function RubberWeightAlertSettings({
     } catch (error) {
       setIntervalError(error instanceof Error ? error.message : "บันทึกรอบตรวจไม่สำเร็จ");
     } finally {
+      intervalSavingRef.current = false;
       setSavingInterval(false);
     }
   }
@@ -125,12 +130,14 @@ export function RubberWeightAlertSettings({
 
   async function saveGroup(event: React.FormEvent) {
     event.preventDefault();
+    if (groupSavingRef.current) return;
     if (groupLocationIds.length === 0 || !thresholdValid) {
       setGroupError(groupLocationIds.length === 0
         ? "เลือกสาขาอย่างน้อยหนึ่งสาขา"
         : "เกณฑ์ต้องอยู่ระหว่าง 1–1,000,000 กก.");
       return;
     }
+    groupSavingRef.current = true;
     setGroupError(null);
     setGroupSuccess(null);
     try {
@@ -146,6 +153,8 @@ export function RubberWeightAlertSettings({
       }
     } catch (error) {
       setGroupError(error instanceof Error ? error.message : "บันทึกกลุ่มไม่สำเร็จ");
+    } finally {
+      groupSavingRef.current = false;
     }
   }
 
@@ -323,13 +332,17 @@ export function RubberWeightAlertSettings({
         busy={groups.isSaving}
         onCancel={() => setGroupToDelete(null)}
         onConfirm={() => {
-          if (!groupToDelete) return;
+          if (!groupToDelete || groupSavingRef.current) return;
+          groupSavingRef.current = true;
           setGroupError(null);
           setGroupSuccess(null);
           void groups.deleteGroup(groupToDelete.id)
             .then(() => setGroupSuccess("ลบกลุ่มแล้ว สาขาเดิมจะไม่รับการแจ้งเตือน"))
             .catch((error) => setGroupError(error instanceof Error ? error.message : "ลบกลุ่มไม่สำเร็จ"))
-            .finally(() => setGroupToDelete(null));
+            .finally(() => {
+              groupSavingRef.current = false;
+              setGroupToDelete(null);
+            });
         }}
       />
     </div>

@@ -23,6 +23,19 @@ function isNullableIsoTimestamp(value: unknown): value is string | null {
   return value === null || isIsoTimestamp(value);
 }
 
+function activeEvidenceLocationIds(ids: unknown, locations: unknown) {
+  if (
+    !Array.isArray(ids)
+    || !ids.every(isUuid)
+    || !Array.isArray(locations)
+    || !locations.every((location) => isJsonObject(location)
+      && isUuid(location.id)
+      && typeof location.name === "string")
+  ) return null;
+  const activeIds = new Set(locations.map((location) => location.id as string));
+  return [...new Set(ids as string[])].filter((id) => activeIds.has(id));
+}
+
 function isTelegramConfigPayload(value: unknown): value is Record<string, unknown> {
   if (!isJsonObject(value) || "botToken" in value) return false;
   return (
@@ -71,6 +84,45 @@ function isTelegramConfigPayload(value: unknown): value is Record<string, unknow
   );
 }
 
+function toPublicTelegramConfig(value: unknown) {
+  if (!isTelegramConfigPayload(value)) return null;
+  const locations = value.evidenceLocations as Array<Record<string, unknown>>;
+  const catalog = value.catalog as Array<Record<string, unknown>>;
+  const locationIds = activeEvidenceLocationIds(value.evidenceLocationIds, locations);
+  if (!locationIds) return null;
+  const catalogKeys = new Set(catalog.map((item) => item.key as string));
+  const enabledBadgeKeys = [...new Set(value.enabledBadgeKeys as string[])]
+    .filter((key) => catalogKeys.has(key));
+  return {
+    enabled: value.enabled,
+    chatId: value.chatId,
+    startTime: value.startTime,
+    endTime: value.endTime,
+    intervalMinutes: value.intervalMinutes,
+    enabledBadgeKeys,
+    evidenceEnabled: value.evidenceEnabled,
+    evidenceIntervalMinutes: value.evidenceIntervalMinutes,
+    evidenceAllLocations: value.evidenceAllLocations,
+    evidenceLocationIds: value.evidenceAllLocations ? [] : locationIds,
+    evidenceLocations: locations.map((location) => ({
+      id: location.id,
+      name: location.name,
+    })),
+    tokenConfigured: value.tokenConfigured,
+    catalog: catalog.map((item) => ({
+      key: item.key,
+      moduleLabel: item.moduleLabel,
+      statusLabel: item.statusLabel,
+      sortOrder: item.sortOrder,
+    })),
+    lastAttemptAt: value.lastAttemptAt,
+    lastSuccessAt: value.lastSuccessAt,
+    lastError: value.lastError,
+    updatedAt: value.updatedAt,
+    updatedByName: value.updatedByName,
+  };
+}
+
 function errorResponse(message: string, status: number) {
   return NextResponse.json(
     { errorMessage: message },
@@ -117,11 +169,12 @@ export async function GET(request: NextRequest) {
     evidenceLocationIds: locationResult.data.locationIds,
     evidenceLocations: locationResult.data.locations,
   };
-  if (!isTelegramConfigPayload(payload)) {
+  const publicPayload = toPublicTelegramConfig(payload);
+  if (!publicPayload) {
     console.error("Telegram badge config read returned an invalid payload");
     return errorResponse("โหลดการตั้งค่า Telegram ไม่สำเร็จ", 500);
   }
-  return NextResponse.json(payload, { headers: NO_STORE_HEADERS });
+  return NextResponse.json(publicPayload, { headers: NO_STORE_HEADERS });
 }
 
 export async function PUT(request: NextRequest) {
@@ -148,9 +201,9 @@ export async function PUT(request: NextRequest) {
   const chatId = body.chatId.trim();
   const startTime = body.startTime;
   const endTime = body.endTime;
-  const intervalMinutes = Number(body.intervalMinutes);
+  const intervalMinutes = body.intervalMinutes;
   const evidenceEnabled = body.evidenceEnabled;
-  const evidenceIntervalMinutes = Number(body.evidenceIntervalMinutes);
+  const evidenceIntervalMinutes = body.evidenceIntervalMinutes;
   let evidenceAllLocations = body.evidenceAllLocations;
   let evidenceLocationIds = body.evidenceLocationIds;
   const botToken = body.botToken?.trim() ?? "";
@@ -180,8 +233,13 @@ export async function PUT(request: NextRequest) {
       return rpcErrorResponse(currentResult.error, "โหลดสาขาหลักฐานไม่สำเร็จ");
     }
     const current = (currentResult.data ?? {}) as Record<string, unknown>;
+    const currentLocationIds = activeEvidenceLocationIds(current.locationIds, current.locations);
+    if (typeof current.allLocations !== "boolean" || !currentLocationIds) {
+      console.error("Telegram evidence locations read returned an invalid payload");
+      return errorResponse("โหลดสาขาหลักฐานไม่สำเร็จ", 500);
+    }
     evidenceAllLocations = current.allLocations;
-    evidenceLocationIds = current.locationIds;
+    evidenceLocationIds = current.allLocations ? [] : currentLocationIds;
   }
   if (typeof evidenceAllLocations !== "boolean") {
     return errorResponse("รูปแบบการเลือกสาขาหลักฐานไม่ถูกต้อง", 400);
@@ -196,6 +254,7 @@ export async function PUT(request: NextRequest) {
     return errorResponse("กรุณาเลือกอย่างน้อยหนึ่งสาขา", 400);
   }
   if (
+    typeof intervalMinutes !== "number" ||
     !Number.isInteger(intervalMinutes) ||
     intervalMinutes < 10 ||
     intervalMinutes > 240
@@ -206,6 +265,7 @@ export async function PUT(request: NextRequest) {
     return errorResponse("สถานะ Telegram Evidence ไม่ถูกต้อง", 400);
   }
   if (
+    typeof evidenceIntervalMinutes !== "number" ||
     !Number.isInteger(evidenceIntervalMinutes) ||
     evidenceIntervalMinutes < 30 ||
     evidenceIntervalMinutes > 1440
@@ -245,7 +305,7 @@ export async function PUT(request: NextRequest) {
           ...(botToken ? { botToken } : {}),
         },
         p_all_locations: evidenceAllLocations,
-        p_location_ids: uniqueEvidenceLocationIds,
+        p_location_ids: evidenceAllLocations ? [] : uniqueEvidenceLocationIds,
       },
     );
   } catch (error) {
@@ -259,9 +319,10 @@ export async function PUT(request: NextRequest) {
       "บันทึกการตั้งค่า Telegram ไม่สำเร็จ",
     );
   }
-  if (!isTelegramConfigPayload(result.data)) {
+  const publicPayload = toPublicTelegramConfig(result.data);
+  if (!publicPayload) {
     console.error("Telegram badge config save returned an invalid payload");
     return errorResponse("บันทึกการตั้งค่า Telegram ไม่สำเร็จ", 500);
   }
-  return NextResponse.json(result.data, { headers: NO_STORE_HEADERS });
+  return NextResponse.json(publicPayload, { headers: NO_STORE_HEADERS });
 }

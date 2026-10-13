@@ -49,6 +49,7 @@ export function ExportVehicleWeighBillsModal({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [sharingId, setSharingId] = useState<string | null>(null);
   const deleteScopeRef = useRef(0);
+  const deleteLockRef = useRef(false);
   const createEligibilityRef = useRef({
     locationId: selectedLocation.id,
     online,
@@ -210,7 +211,8 @@ export function ExportVehicleWeighBillsModal({
   }
 
   async function deleteWex() {
-    if (!pendingDelete) return;
+    if (!pendingDelete || deleteLockRef.current) return;
+    deleteLockRef.current = true;
     const scope = deleteScopeRef.current;
     setDeleting(true);
     try {
@@ -223,6 +225,7 @@ export function ExportVehicleWeighBillsModal({
       if (scope !== deleteScopeRef.current) return;
       toast.error(caught instanceof Error ? caught.message : "ลบบิลรถส่งออกไม่สำเร็จ");
     } finally {
+      deleteLockRef.current = false;
       if (scope === deleteScopeRef.current) setDeleting(false);
     }
   }

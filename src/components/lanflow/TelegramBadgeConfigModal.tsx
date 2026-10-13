@@ -1,23 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { LoaderCircle, MapPinned, Send } from "lucide-react";
 import { toast } from "sonner";
 
 import { ModalShell } from "@/components/shared/ModalShell";
-import type {
-  TelegramBadgeConfig,
-  TelegramBadgeKey,
-} from "@/lib/telegram-badge";
+import type { TelegramBadgeConfig, TelegramBadgeKey } from "@/lib/telegram-badge";
 import type { DashboardManagerConfig } from "@/types/dashboard";
 import { formatCurrency, formatNumber } from "@/lib/format";
 import { authFetch } from "@/lib/auth-fetch";
 import { isNetworkCancellation } from "@/lib/network-abort";
 import { formatBangkokDateTime } from "@/lib/bangkok-date";
 
-type EditableConfig = TelegramBadgeConfig & {
-  botToken: string;
-};
+type EditableConfig = TelegramBadgeConfig & { botToken: string };
 
 function parseError(payload: unknown, fallback: string) {
   if (
@@ -41,13 +36,12 @@ export function TelegramBadgeConfigModal({
   selectedLocationId: string;
 }) {
   const [config, setConfig] = useState<EditableConfig | null>(null);
-  const [dashboardConfig, setDashboardConfig] =
-    useState<DashboardManagerConfig | null>(null);
-  const [dashboardLocationId, setDashboardLocationId] =
-    useState(selectedLocationId);
+  const [dashboardConfig, setDashboardConfig] = useState<DashboardManagerConfig | null>(null);
+  const [dashboardLocationId, setDashboardLocationId] = useState(selectedLocationId);
   const [busyAction, setBusyAction] = useState<"save" | "test" | null>(null);
   const [loadError, setLoadError] = useState("");
   const [evidenceBranchesOpen, setEvidenceBranchesOpen] = useState(false);
+  const actionLockRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -179,6 +173,8 @@ export function TelegramBadgeConfigModal({
   }
 
   async function handleSave() {
+    if (actionLockRef.current) return;
+    actionLockRef.current = true;
     setBusyAction("save");
     try {
       await saveConfig();
@@ -190,11 +186,14 @@ export function TelegramBadgeConfigModal({
         );
       }
     } finally {
+      actionLockRef.current = false;
       setBusyAction(null);
     }
   }
 
   async function handleTest() {
+    if (actionLockRef.current) return;
+    actionLockRef.current = true;
     setBusyAction("test");
     try {
       await saveConfig();
@@ -213,15 +212,16 @@ export function TelegramBadgeConfigModal({
         );
       }
     } finally {
+      actionLockRef.current = false;
       setBusyAction(null);
     }
   }
+  function handleClose() { if (!actionLockRef.current) onClose(); }
 
   return (
     <ModalShell
-      title="ตั้งค่าการแจ้งเตือน Telegram"
-      subtitle="ส่งเฉพาะงานค้างหรือค่า Dashboard ที่ต่ำกว่าเกณฑ์"
-      onClose={onClose}
+      title="ตั้งค่าการแจ้งเตือน Telegram" subtitle="ส่งเฉพาะงานค้างหรือค่า Dashboard ที่ต่ำกว่าเกณฑ์"
+      onClose={handleClose}
     >
       {loadError ? (
         <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-700">
@@ -646,7 +646,7 @@ export function TelegramBadgeConfigModal({
           <div className="modal-actions flex flex-col-reverse gap-2 border-t border-black/10 pt-4 sm:flex-row sm:justify-end">
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleClose}
               disabled={busyAction !== null}
               className="focus-ring rounded-md bg-actionSecondary px-4 py-2 text-sm font-semibold text-white hover:bg-actionSecondary/90 disabled:opacity-50"
             >

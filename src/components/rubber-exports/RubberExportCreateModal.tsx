@@ -48,6 +48,7 @@ export function RubberExportCreateModal({
   const previewRequest = useRef(0);
   const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previewController = useRef<AbortController | null>(null);
+  const submitLockRef = useRef(false);
 
   useEffect(() => () => {
     if (previewTimer.current) clearTimeout(previewTimer.current);
@@ -188,13 +189,17 @@ export function RubberExportCreateModal({
             type="button"
             disabled={!preview || loading || creating}
             onClick={() => {
-              if (selectedIds.length === 0) return;
+              if (selectedIds.length === 0 || submitLockRef.current) return;
+              submitLockRef.current = true;
               setCreating(true);
               void onSubmit(selectedIds)
                 .catch((caught) => {
                   setError(caught instanceof Error ? caught.message : "บันทึกรายการส่งออกไม่สำเร็จ");
                 })
-                .finally(() => setCreating(false));
+                .finally(() => {
+                  submitLockRef.current = false;
+                  setCreating(false);
+                });
             }}
             className="focus-ring inline-flex items-center gap-2 rounded-md bg-leaf px-4 py-2 font-semibold text-white disabled:opacity-50"
           >

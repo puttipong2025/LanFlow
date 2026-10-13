@@ -1,4 +1,3 @@
-import type { Dispatch, SetStateAction } from "react";
 import { toast } from "sonner";
 import { authFetch } from "@/lib/auth-fetch";
 import type { AttendanceExceptionDto, AttendanceMonthDto, PayrollPeriodAction } from "@/lib/time-tracking/attendance-contract";
@@ -21,20 +20,20 @@ export function createEmployeeAttendanceActions({
   canConfigure,
   attendance,
   managedUserId,
-  setSaving,
+  setMutation,
   loadData,
 }: {
   online: boolean;
   canConfigure: boolean;
   attendance: AttendanceMonthDto | undefined;
   managedUserId: string;
-  setSaving: Dispatch<SetStateAction<boolean>>;
+  setMutation: (next: boolean) => boolean;
   loadData: () => Promise<void>;
 }) {
   async function replaceAttendanceExceptions(selections: AttendanceExceptionDto[]) {
     if (!online) return TIME_TRACKING_OFFLINE_MESSAGE;
     if (!attendance) return "ไม่พบข้อมูลปฏิทินวันทำงาน กรุณาโหลดใหม่";
-    setSaving(true);
+    if (!setMutation(true)) return null;
     try {
       const response = await authFetch("/api/lanflow/time-tracking/admin", {
         method: "POST",
@@ -52,18 +51,17 @@ export function createEmployeeAttendanceActions({
       await loadData();
       notifyAttendanceSaved(json.result, "บันทึกปฏิทินแล้ว");
       return null;
-    } catch (error) {
-      console.error(error);
+    } catch {
       return "บันทึกปฏิทินไม่สำเร็จ";
     } finally {
-      setSaving(false);
+      setMutation(false);
     }
   }
 
   async function setPayrollPeriod(action: PayrollPeriodAction, effectiveDate: string) {
     if (!online) return TIME_TRACKING_OFFLINE_MESSAGE;
     if (!canConfigure) return "คุณไม่มีสิทธิ์เปลี่ยนช่วงทำงาน";
-    setSaving(true);
+    if (!setMutation(true)) return null;
     try {
       const response = await authFetch("/api/lanflow/time-tracking/admin", {
         method: "POST",
@@ -79,18 +77,17 @@ export function createEmployeeAttendanceActions({
       }
       await loadData();
       return null;
-    } catch (error) {
-      console.error(error);
+    } catch {
       return "บันทึกช่วงทำงานไม่สำเร็จ กรุณาลองใหม่";
     } finally {
-      setSaving(false);
+      setMutation(false);
     }
   }
 
   async function cancelPayrollPeriodSchedule() {
     if (!online) return TIME_TRACKING_OFFLINE_MESSAGE;
     if (!canConfigure) return "คุณไม่มีสิทธิ์เปลี่ยนช่วงทำงาน";
-    setSaving(true);
+    if (!setMutation(true)) return null;
     try {
       const response = await authFetch("/api/lanflow/time-tracking/admin", {
         method: "POST",
@@ -106,18 +103,17 @@ export function createEmployeeAttendanceActions({
       }
       await loadData();
       return null;
-    } catch (error) {
-      console.error(error);
+    } catch {
       return "ยกเลิกกำหนดการไม่สำเร็จ กรุณาลองใหม่";
     } finally {
-      setSaving(false);
+      setMutation(false);
     }
   }
 
   async function correctPayrollPeriodStart(periodId: string, startOn: string) {
     if (!online) return TIME_TRACKING_OFFLINE_MESSAGE;
     if (!canConfigure) return "คุณไม่มีสิทธิ์เปลี่ยนช่วงทำงาน";
-    setSaving(true);
+    if (!setMutation(true)) return null;
     try {
       const response = await authFetch("/api/lanflow/time-tracking/admin", {
         method: "POST",
@@ -135,11 +131,10 @@ export function createEmployeeAttendanceActions({
       await loadData();
       notifyAttendanceSaved(json.result, "แก้วันเริ่มช่วงทำงานแล้ว");
       return null;
-    } catch (error) {
-      console.error(error);
+    } catch {
       return "แก้วันเริ่มช่วงทำงานไม่สำเร็จ กรุณาลองใหม่";
     } finally {
-      setSaving(false);
+      setMutation(false);
     }
   }
   return {

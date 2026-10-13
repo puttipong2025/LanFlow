@@ -1,7 +1,7 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AcidStockBalance, AcidStockMovement } from "@/types";
 import { STOCK_ENTRY_APPROVAL_REQUESTS_KEY } from "@/hooks/useStockEntryApprovals";
-import { authFetch } from "@/lib/auth-fetch";
+import { ApiResponseError, authFetch } from "@/lib/auth-fetch";
 
 const QUERY_KEY = "stock";
 const PAGE_SIZE = 50;
@@ -28,7 +28,9 @@ async function postStock(payload: Record<string, unknown>) {
     body: JSON.stringify(payload),
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.errorMessage || data.error || "บันทึกสต็อกไม่สำเร็จ");
+  if (!response.ok) {
+    throw new ApiResponseError(response.status, data.errorMessage || data.error || "บันทึกสต็อกไม่สำเร็จ");
+  }
   return data;
 }
 
@@ -109,7 +111,7 @@ export function useAcidStock(
   });
 
   const receiveMutation = useMutation({
-    mutationFn: async (input: { locationId: string; productId: string; txDate: string; quantity: number; amount: number }) => {
+    mutationFn: async (input: { entryId: string; locationId: string; productId: string; txDate: string; quantity: number; amount: number }) => {
       if (typeof navigator !== "undefined" && !navigator.onLine) throw new Error("รับเข้าสต็อกต้องออนไลน์ก่อน");
       return postStock({ action: "receive", ...input });
     },
@@ -117,7 +119,7 @@ export function useAcidStock(
   });
 
   const transferMutation = useMutation({
-    mutationFn: async (input: { fromLocationId: string; toLocationId: string; productId: string; txDate: string; quantity: number }) => {
+    mutationFn: async (input: { outId: string; inId: string; fromLocationId: string; toLocationId: string; productId: string; txDate: string; quantity: number }) => {
       if (typeof navigator !== "undefined" && !navigator.onLine) throw new Error("ย้ายสต็อกต้องออนไลน์ก่อน");
       return postStock({ action: "transfer", ...input });
     },

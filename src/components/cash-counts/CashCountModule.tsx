@@ -89,7 +89,7 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
   const historyRequestIdRef = useRef(0);
   const detailRequestIdRef = useRef(0);
   const deletionRequestIdRef = useRef(0);
-  const mutationRequestIdRef = useRef(0);
+  const mutationRequestIdRef = useRef(0), mutationLockRef = useRef(false);
   const historyRefreshRequestIdRef = useRef(0);
   locationIdRef.current = selectedLocation.id;
   const manager = canManageSystemFeatures(profile);
@@ -287,7 +287,7 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
   const actualTotal = useMemo(() => CASH_DENOMINATIONS.reduce((sum, d) => sum + values[d] * d, 0), [values]);
 
   async function start() {
-    if (!online || working) return;
+    if (!online || mutationLockRef.current) return; mutationLockRef.current = true;
     const requestId = ++mutationRequestIdRef.current;
     const locationId = selectedLocation.id;
     setWorking(true);
@@ -319,12 +319,12 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
         toast.error(error instanceof Error ? error.message : "เริ่มตรวจนับไม่สำเร็จ");
       }
     } finally {
-      if (requestId === mutationRequestIdRef.current && locationIdRef.current === locationId) setWorking(false);
+      mutationLockRef.current = false; if (requestId === mutationRequestIdRef.current && locationIdRef.current === locationId) setWorking(false);
     }
   }
 
   async function submit() {
-    if (!online || working || !session || secondsLeft <= 0) return;
+    if (!online || mutationLockRef.current || !session || secondsLeft <= 0) return; mutationLockRef.current = true;
     const requestId = ++mutationRequestIdRef.current;
     const locationId = selectedLocation.id;
     const sessionId = session.id;
@@ -355,12 +355,12 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
       }
     }
     finally {
-      if (requestId === mutationRequestIdRef.current && locationIdRef.current === locationId) setWorking(false);
+      mutationLockRef.current = false; if (requestId === mutationRequestIdRef.current && locationIdRef.current === locationId) setWorking(false);
     }
   }
 
   async function cancel() {
-    if (!online || working || !session) return;
+    if (!online || mutationLockRef.current || !session) return; mutationLockRef.current = true;
     const requestId = ++mutationRequestIdRef.current;
     const locationId = selectedLocation.id;
     const sessionId = session.id;
@@ -375,12 +375,12 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
         toast.error(error instanceof Error ? error.message : "ยกเลิกไม่สำเร็จ");
       }
     } finally {
-      if (requestId === mutationRequestIdRef.current && locationIdRef.current === locationId) setWorking(false);
+      mutationLockRef.current = false; if (requestId === mutationRequestIdRef.current && locationIdRef.current === locationId) setWorking(false);
     }
   }
 
   async function removeCount() {
-    if (!online || working || !deleteTarget) return;
+    if (!online || mutationLockRef.current || !deleteTarget) return; mutationLockRef.current = true;
     const requestId = ++mutationRequestIdRef.current;
     const locationId = selectedLocation.id;
     const target = deleteTarget;
@@ -398,7 +398,7 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
         toast.error(error instanceof Error ? error.message : "ลบชุดตรวจนับไม่สำเร็จ");
       }
     } finally {
-      if (requestId === mutationRequestIdRef.current && locationIdRef.current === locationId) setWorking(false);
+      mutationLockRef.current = false; if (requestId === mutationRequestIdRef.current && locationIdRef.current === locationId) setWorking(false);
     }
   }
 

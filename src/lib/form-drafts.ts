@@ -1,4 +1,4 @@
-export type FormDraftType = "rubber-bill" | "income" | "expense";
+export type FormDraftType = "rubber-bill" | "income" | "expense" | "stock-receive" | "stock-transfer";
 
 export type FormDraftPartition = {
   ownerUserId: string;

@@ -2,7 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { requireSystemManager } from "@/lib/server/auth";
 import { summarizeUpstreamError } from "@/lib/server/auth-access-failure";
-import { isJsonObject, managementAuthFailure } from "@/lib/server/management-route-error";
+import {
+  isJsonObject,
+  isSafePositiveInteger,
+  managementAuthFailure,
+} from "@/lib/server/management-route-error";
 import { createSupabaseAdminClient } from "@/lib/server/supabase-admin";
 
 const NO_STORE_HEADERS = {
@@ -102,6 +106,7 @@ export async function POST(request: NextRequest) {
     !isJsonObject(telegramPayload)
     || telegramPayload.ok !== true
     || !isJsonObject(telegramPayload.result)
+    || !isSafePositiveInteger(telegramPayload.result.message_id)
   ) {
     return errorResponse("Telegram ปฏิเสธการส่ง", 502);
   }

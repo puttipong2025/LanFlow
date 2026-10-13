@@ -11,6 +11,7 @@ export default defineConfig({
     '**/admin-profile-draft.spec.ts',
     '**/auth-bearer-identity.spec.ts',
     '**/approval-date-guard.spec.ts',
+    '**/acid-stock-route-contract.spec.ts',
     '**/bangkok-date.spec.ts',
     '**/branch-location-order.spec.ts',
     '**/branch-rubber-receipt.spec.ts',

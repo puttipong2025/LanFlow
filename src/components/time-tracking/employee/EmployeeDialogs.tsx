@@ -12,13 +12,14 @@ type PreviewSource = { type: "withdrawal" | "payroll"; id: string };
 type PendingWithdrawal = { amount: number; effectiveDate: string };
 
 export function EmployeeDialogs({
-  isDebtModalOpen, onCloseDebt, saving, setSaving, debtDueDate, setDebtDueDate, debtDescription,
+  isDebtModalOpen, onCloseDebt, saving, debtDueDate, setDebtDueDate, debtDescription,
   setDebtDescription, debtAmount, setDebtAmount, online, managedUserId, loadData, pendingWithdrawal,
   setPendingWithdrawal, expenseLocations, primaryLocationId, createWithdrawal, pendingExpenseLocationTx,
   setPendingExpenseLocationTx, submitWithdrawalExpenseLocation, adjustingWithdrawal, setAdjustingWithdrawal,
   adjustmentSummaryByWithdrawal, canManageTime, submitWithdrawalAdjustment, previewSource, setPreviewSource, inputDialog,
+  setMutation,
 }: {
-  isDebtModalOpen: boolean; onCloseDebt: () => void; saving: boolean; setSaving: Dispatch<SetStateAction<boolean>>;
+  isDebtModalOpen: boolean; onCloseDebt: () => void; saving: boolean;
   debtDueDate: string; setDebtDueDate: Dispatch<SetStateAction<string>>; debtDescription: string;
   setDebtDescription: Dispatch<SetStateAction<string>>; debtAmount: string; setDebtAmount: Dispatch<SetStateAction<string>>;
   online: boolean; managedUserId: string; loadData: () => Promise<void>; pendingWithdrawal: PendingWithdrawal | null;
@@ -29,6 +30,7 @@ export function EmployeeDialogs({
   adjustingWithdrawal: any; setAdjustingWithdrawal: Dispatch<SetStateAction<any>>; adjustmentSummaryByWithdrawal: Map<any, any>;
   canManageTime: boolean; submitWithdrawalAdjustment: (value: { targetAmount: number; locationId: string | null; reason: string }) => Promise<boolean>;
   previewSource: PreviewSource | null; setPreviewSource: Dispatch<SetStateAction<PreviewSource | null>>; inputDialog: ReactNode;
+  setMutation: (next: boolean) => boolean;
 }) {
   return (
     <>
@@ -99,7 +101,7 @@ export function EmployeeDialogs({
                     return;
                   }
 
-                  setSaving(true);
+                  if (!setMutation(true)) return;
                   try {
                     const res = await authFetch("/api/lanflow/time-tracking/admin", {
                       method: "POST", headers: { "Content-Type": "application/json" },
@@ -115,7 +117,7 @@ export function EmployeeDialogs({
                       alert(json.error || "Failed to create debt");
                     }
                   } finally {
-                    setSaving(false);
+                    setMutation(false);
                   }
                 }}
                 className="rounded-md bg-commit px-4 py-2 font-bold text-white hover:bg-commit/90 disabled:opacity-50"

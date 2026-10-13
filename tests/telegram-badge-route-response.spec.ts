@@ -3,6 +3,8 @@ import { expect, test } from "@playwright/test";
 import { loadSourceModule } from "./helpers/load-source-module";
 
 const diagnostic = 'relation "private.telegram_secret" does not exist';
+const activeLocationId = "91000000-0000-4000-8000-000000000001";
+const inactiveLocationId = "91000000-0000-4000-8000-000000000002";
 
 function validConfigBody() {
   return {
@@ -208,6 +210,30 @@ test("Telegram config rejects a non-string Bot Token instead of ignoring it", as
   expect(called).toBe(false);
 });
 
+test("Telegram config rejects numeric strings instead of coercing the request contract", async () => {
+  let called = false;
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/telegram-badge/config/route")>(
+    "src/app/api/lanflow/telegram-badge/config/route.ts",
+    configDependencies(async () => {
+      called = true;
+      return { data: null, error: null };
+    }),
+  );
+
+  const response = await route.PUT(new Request("http://local/api/lanflow/telegram-badge/config", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      ...validConfigBody(),
+      intervalMinutes: "60",
+      evidenceIntervalMinutes: "60",
+    }),
+  }) as never);
+
+  expect(response.status).toBe(400);
+  expect(called).toBe(false);
+});
+
 test("Telegram config update rejects a malformed successful RPC payload", async () => {
   const route = loadSourceModule<typeof import("../src/app/api/lanflow/telegram-badge/config/route")>(
     "src/app/api/lanflow/telegram-badge/config/route.ts",
@@ -243,6 +269,26 @@ test("Telegram config update never echoes a Bot Token returned by the RPC", asyn
 
   expect(response.status).toBe(500);
   expect(JSON.stringify(await response.json())).not.toContain("must-not-leak");
+});
+
+test("Telegram config update returns only the public response fields", async () => {
+  const expected = validConfigResponse();
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/telegram-badge/config/route")>(
+    "src/app/api/lanflow/telegram-badge/config/route.ts",
+    configDependencies(async () => ({
+      data: { ...expected, internalSecret: "must-not-cross-route-boundary" },
+      error: null,
+    })),
+  );
+
+  const response = await route.PUT(new Request("http://local/api/lanflow/telegram-badge/config", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(validConfigBody()),
+  }) as never);
+
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual(expected);
 });
 
 test("Telegram config update redacts unexpected database diagnostics", async () => {
@@ -303,6 +349,121 @@ test("Telegram config read rejects a malformed successful RPC payload", async ()
   expect(await response.json()).toEqual({
     errorMessage: "โหลดการตั้งค่า Telegram ไม่สำเร็จ",
   });
+});
+
+test("Telegram config read removes inactive evidence location selections", async () => {
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/telegram-badge/config/route")>(
+    "src/app/api/lanflow/telegram-badge/config/route.ts",
+    configDependencies(async (name) => ({
+      data: name === "get_telegram_badge_config"
+        ? validConfigResponse()
+        : {
+            allLocations: false,
+            locationIds: [activeLocationId, inactiveLocationId],
+            locations: [{ id: activeLocationId, name: "สาขาที่ยังใช้งาน" }],
+          },
+      error: null,
+    })),
+  );
+
+  const response = await route.GET(
+    new Request("http://local/api/lanflow/telegram-badge/config") as never,
+  );
+
+  expect(response.status).toBe(200);
+  expect((await response.json()).evidenceLocationIds).toEqual([activeLocationId]);
+});
+
+test("Telegram config read removes enabled keys that no longer exist in the catalog", async () => {
+  const config = validConfigResponse([
+    "rubber_bill_approval_pending",
+    "retired_badge_key",
+  ]);
+  config.catalog = config.catalog.filter((item) => item.key !== "retired_badge_key");
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/telegram-badge/config/route")>(
+    "src/app/api/lanflow/telegram-badge/config/route.ts",
+    configDependencies(async (name) => ({
+      data: name === "get_telegram_badge_config"
+        ? config
+        : { allLocations: true, locationIds: [], locations: [] },
+      error: null,
+    })),
+  );
+
+  const response = await route.GET(
+    new Request("http://local/api/lanflow/telegram-badge/config") as never,
+  );
+
+  expect(response.status).toBe(200);
+  expect((await response.json()).enabledBadgeKeys).toEqual([
+    "rubber_bill_approval_pending",
+  ]);
+});
+
+test("Telegram config ignores retained branch ids when evidence targets every branch", async () => {
+  let savedLocationIds: unknown;
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/telegram-badge/config/route")>(
+    "src/app/api/lanflow/telegram-badge/config/route.ts",
+    configDependencies(async (_name, args) => {
+      savedLocationIds = (args as { p_location_ids?: unknown }).p_location_ids;
+      return { data: validConfigResponse(), error: null };
+    }),
+  );
+  const body = {
+    ...validConfigBody(),
+    evidenceAllLocations: true,
+    evidenceLocationIds: [inactiveLocationId],
+  };
+
+  const response = await route.PUT(new Request("http://local/api/lanflow/telegram-badge/config", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }) as never);
+
+  expect(response.status).toBe(200);
+  expect(savedLocationIds).toEqual([]);
+});
+
+test("Telegram config partial update does not replay inactive evidence locations", async () => {
+  let savedLocationIds: unknown;
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/telegram-badge/config/route")>(
+    "src/app/api/lanflow/telegram-badge/config/route.ts",
+    configDependencies(async (name, args) => {
+      if (name === "get_telegram_evidence_location_config") {
+        return {
+          data: {
+            allLocations: false,
+            locationIds: [activeLocationId, inactiveLocationId],
+            locations: [{ id: activeLocationId, name: "สาขาที่ยังใช้งาน" }],
+          },
+          error: null,
+        };
+      }
+      savedLocationIds = (args as { p_location_ids?: unknown }).p_location_ids;
+      return {
+        data: {
+          ...validConfigResponse(),
+          evidenceAllLocations: false,
+          evidenceLocationIds: [activeLocationId],
+          evidenceLocations: [{ id: activeLocationId, name: "สาขาที่ยังใช้งาน" }],
+        },
+        error: null,
+      };
+    }),
+  );
+  const body = validConfigBody();
+  delete (body as Partial<typeof body>).evidenceAllLocations;
+  delete (body as Partial<typeof body>).evidenceLocationIds;
+
+  const response = await route.PUT(new Request("http://local/api/lanflow/telegram-badge/config", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }) as never);
+
+  expect(response.status).toBe(200);
+  expect(savedLocationIds).toEqual([activeLocationId]);
 });
 
 test("Telegram test contains credential RPC failures inside the route boundary", async () => {
@@ -424,6 +585,28 @@ test("Telegram test rejects a malformed HTTP 200 response body", async () => {
     telegramCredentialsDependencies({ botToken: "test-token", chatId: "test-chat" }),
     {
       fetch: async () => new Response("not-json", { status: 200 }),
+    },
+  );
+
+  const response = await route.POST(
+    new Request("http://local/api/lanflow/telegram-badge/test", { method: "POST" }) as never,
+  );
+
+  expect(response.status).toBe(502);
+  expect(await response.json()).toEqual({
+    errorMessage: "Telegram ปฏิเสธการส่ง",
+  });
+});
+
+test("Telegram test rejects an HTTP 200 payload without a confirmed message id", async () => {
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/telegram-badge/test/route")>(
+    "src/app/api/lanflow/telegram-badge/test/route.ts",
+    telegramCredentialsDependencies({ botToken: "test-token", chatId: "test-chat" }),
+    {
+      fetch: async () => new Response(JSON.stringify({ ok: true, result: {} }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
     },
   );
 

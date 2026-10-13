@@ -311,6 +311,17 @@ API response status:
 - `conflict` -> HTTP 409
 - `failed` -> HTTP 400 หรือ 500 ตามชนิด error
 
+### Mutation Interaction And Replay Rules
+
+- ห้ามใช้ React state เป็น guard เดียวของ async business action เพราะผู้ใช้กดซ้ำใน tick เดียวกันได้; ต้อง claim synchronous ref ก่อนเริ่ม request
+- ล็อกเฉพาะ action ที่ชนกันใน record/modal เดียวกัน ส่วน search, filter และ navigation ที่ไม่เปลี่ยนข้อมูลต้องยังใช้งานได้
+- ระหว่าง request ให้ disable submit/close/cancel/Escape และสื่อสถานะด้วย `aria-busy` หรือข้อความ progress
+- network error, abort และ HTTP 5xx เป็นผลลัพธ์คลุมเครือ: persist canonical payload พร้อม client identity ก่อนส่ง และ retry ด้วย identity เดิม
+- HTTP 4xx/409 เป็นผลลัพธ์แน่นอน: ปลดล็อกให้แก้ข้อมูลได้ และ intent ใหม่ต้องสร้าง identity ใหม่
+- RPC ที่ replay ได้ต้องล็อกด้วย client identity, เทียบ actor กับ canonical payload ทุก field และคืนผลเดิมเมื่อเหมือนกัน; identity เดิมแต่ payload ต่างต้อง `conflict`
+- operation ที่ล็อกหลาย identity หรือหลาย stock key ต้อง sort lock keys ก่อนเสมอเพื่อลด deadlock
+- revision/status guard ฝั่งฐานข้อมูลยังจำเป็นแม้ UI มี synchronous ref เพราะ UI guard ไม่ใช่ security boundary
+
 ## 10. Offline-First Decision Rules
 
 ไม่ใช่ทุก module ต้อง offline-first ให้เลือกตามนี้:

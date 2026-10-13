@@ -212,6 +212,210 @@ test("Stock keeps the current page when a requested next cursor returns no rows"
   await expect(page.getByText("แสดง 1 ถึง 50 จาก 50 รายการที่โหลดแล้ว")).toBeVisible();
 });
 
+test("Stock receive synchronously blocks duplicate submit events", async ({ page }) => {
+  let writes = 0;
+  let releaseWrite!: () => void;
+  const writeGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
+
+  await page.route(/\/api\/lanflow\/acid-stock(?:\?.*)?$/, async (route) => {
+    const request = route.request();
+    if (request.method() === "POST") {
+      writes += 1;
+      await writeGate;
+      return route.fulfill({ json: {
+        status: "synced",
+        id: "93000000-0000-4000-8000-000000000001",
+        serverBillNo: "AS-261013-0001",
+        serverReceivedAt: "2026-10-13T01:00:00.000Z",
+      } });
+    }
+
+    const url = new URL(request.url());
+    return route.fulfill({ json: url.searchParams.get("view") === "balances"
+      ? { balances: [] }
+      : { movements: [], hasMore: false, nextCursor: null } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /^สต็อกสินค้า/ }).click();
+  const openReceive = page.getByRole("button", { name: "รับเข้า", exact: true });
+  await expect(openReceive).toBeEnabled();
+  await openReceive.click();
+
+  const dialog = page.getByRole("dialog", { name: "รับเข้าสต็อก" });
+  const form = dialog.locator("form");
+  await expect(form).toBeVisible();
+  await form.evaluate((element) => {
+    element.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    element.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
+
+  try {
+    await expect.poll(() => writes).toBe(1);
+    await expect(dialog.locator("form")).toHaveAttribute("aria-busy", "true");
+    await expect(dialog.getByRole("button").filter({ hasText: "ปิด" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "ยกเลิก", exact: true })).toBeDisabled();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeVisible();
+  } finally {
+    releaseWrite();
+  }
+  await expect(dialog).toBeHidden();
+});
+
+test("Stock receive keeps its command identity after an ambiguous response", async ({ page }) => {
+  const entryIds: string[] = [];
+  let attempts = 0;
+  await page.route(/\/api\/lanflow\/acid-stock(?:\?.*)?$/, async (route) => {
+    const request = route.request();
+    if (request.method() === "POST") {
+      attempts += 1;
+      const body = request.postDataJSON() as { entryId: string };
+      entryIds.push(body.entryId);
+      if (attempts === 1) {
+        return route.fulfill({ status: 500, json: { status: "failed", errorMessage: "Response unavailable" } });
+      }
+      return route.fulfill({ json: {
+        status: "synced",
+        id: body.entryId,
+        serverBillNo: "AS-261013-0002",
+        serverReceivedAt: "2026-10-13T01:00:00.000Z",
+      } });
+    }
+    const url = new URL(request.url());
+    return route.fulfill({ json: url.searchParams.get("view") === "balances"
+      ? { balances: [] }
+      : { movements: [], hasMore: false, nextCursor: null } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /^สต็อกสินค้า/ }).click();
+  await page.getByRole("button", { name: "รับเข้า", exact: true }).click();
+  let dialog = page.getByRole("dialog", { name: "รับเข้าสต็อก" });
+  await dialog.getByRole("button", { name: "บันทึก", exact: true }).click();
+  await expect(dialog.getByRole("status")).toContainText("ยังยืนยันผลไม่ได้");
+  await dialog.getByRole("button", { name: "ปิดไปตรวจรายการ" }).click();
+  await expect(dialog).toBeHidden();
+
+  await page.getByRole("button", { name: "รับเข้า", exact: true }).click();
+  dialog = page.getByRole("dialog", { name: "รับเข้าสต็อก" });
+  await expect(dialog.getByRole("status")).toContainText("ยังยืนยันผลไม่ได้");
+  await dialog.getByRole("button", { name: "ลองส่งข้อมูลเดิมอีกครั้ง" }).click();
+
+  await expect.poll(() => attempts).toBe(2);
+  expect(entryIds[1]).toBe(entryIds[0]);
+  await expect(dialog).toBeHidden();
+});
+
+test("Stock receive unlocks after a conflict and uses a new identity", async ({ page }) => {
+  const entryIds: string[] = [];
+  await page.route(/\/api\/lanflow\/acid-stock(?:\?.*)?$/, async (route) => {
+    const request = route.request();
+    if (request.method() === "POST") {
+      const body = request.postDataJSON() as { entryId: string };
+      entryIds.push(body.entryId);
+      if (entryIds.length === 1) {
+        return route.fulfill({ status: 409, json: { status: "conflict", errorMessage: "Stock command identity conflict" } });
+      }
+      return route.fulfill({ json: {
+        status: "synced",
+        id: body.entryId,
+        serverBillNo: "AS-261013-0003",
+        serverReceivedAt: "2026-10-13T01:00:00.000Z",
+      } });
+    }
+    const url = new URL(request.url());
+    return route.fulfill({ json: url.searchParams.get("view") === "balances"
+      ? { balances: [] }
+      : { movements: [], hasMore: false, nextCursor: null } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /^สต็อกสินค้า/ }).click();
+  await page.getByRole("button", { name: "รับเข้า", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "รับเข้าสต็อก" });
+  await dialog.getByRole("button", { name: "บันทึก", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("Stock command identity conflict");
+  await dialog.getByLabel("ยอดเงิน").fill("5");
+  await dialog.getByRole("button", { name: "บันทึก", exact: true }).click();
+
+  await expect.poll(() => entryIds.length).toBe(2);
+  expect(entryIds[1]).not.toBe(entryIds[0]);
+  await expect(dialog).toBeHidden();
+});
+
+test("Stock transfer synchronously blocks duplicate submit events", async ({ page, request }) => {
+  const meResponse = await request.get("/api/auth/me");
+  const me = await meResponse.json() as { profile: { locationIds: string[] } };
+  const locationId = me.profile.locationIds[0];
+  const balancesResponse = await request.get(`/api/lanflow/acid-stock?view=balances&locationId=${locationId}`);
+  const balancesBody = await balancesResponse.json() as { balances: Array<{ productId: string; name: string; unit: string }> };
+  const product = balancesBody.balances[0];
+  expect(product).toBeTruthy();
+
+  await page.route(/\/api\/lanflow$/, async (route) => {
+    const response = await route.fetch();
+    const body = await response.json() as {
+      locations: Array<{ id: string; name: string; code: string; active: boolean }>;
+      profile: { locationIds: string[] };
+    };
+    const target = {
+      ...body.locations[0],
+      id: "91000000-0000-4000-8000-000000000099",
+      name: "สาขาปลายทางทดสอบ",
+      code: "UIT",
+      active: true,
+    };
+    body.locations.push(target);
+    body.profile.locationIds.push(target.id);
+    await route.fulfill({ response, json: body });
+  });
+
+  let writes = 0;
+  let releaseWrite!: () => void;
+  const writeGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
+  await page.route(/\/api\/lanflow\/acid-stock(?:\?.*)?$/, async (route) => {
+    const stockRequest = route.request();
+    if (stockRequest.method() === "POST") {
+      writes += 1;
+      await writeGate;
+      const body = stockRequest.postDataJSON() as { outId: string; inId: string };
+      return route.fulfill({ json: {
+        status: "synced",
+        outId: body.outId,
+        inId: body.inId,
+        transferBillNo: "AT-261013-0001",
+        serverReceivedAt: "2026-10-13T01:00:00.000Z",
+      } });
+    }
+    const url = new URL(stockRequest.url());
+    return route.fulfill({ json: url.searchParams.get("view") === "balances"
+      ? { balances: [{ ...product, balance: 10 }] }
+      : { movements: [], hasMore: false, nextCursor: null } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /^สต็อกสินค้า/ }).click();
+  const openTransfer = page.getByRole("button", { name: "ย้ายสต็อก", exact: true });
+  await expect(openTransfer).toBeEnabled();
+  await openTransfer.click();
+  const dialog = page.getByRole("dialog", { name: "ย้ายสต็อก" });
+  await dialog.getByLabel("สินค้า").selectOption(product.productId);
+  const form = dialog.locator("form");
+  await form.evaluate((element) => {
+    element.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    element.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
+
+  try {
+    await expect.poll(() => writes).toBe(1);
+    await expect(form).toHaveAttribute("aria-busy", "true");
+  } finally {
+    releaseWrite();
+  }
+  await expect(dialog).toBeHidden();
+});
+
 test("Rubber Export sends debounced search and status filter and paginates loaded rows", async ({ page }) => {
   const listRequests: URL[] = [];
   await page.route(/\/api\/lanflow\/rubber-exports\?.*$/, (route) => {

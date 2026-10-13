@@ -146,7 +146,7 @@ export function RubberExportsModule({
   const [sharingId, setSharingId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<RubberExportSummary | null>(null);
   const [deleting, setDeleting] = useState(false);
-  const deleteRequestVersion = useRef(0);
+  const deleteRequestVersion = useRef(0), deleteLocksRef = useRef(new Set<string>()), saleLockRef = useRef(false), revertLockRef = useRef(false);
   const [pendingSale, setPendingSale] = useState<{
     row: RubberExportSummary;
     soldOut: boolean;
@@ -258,7 +258,7 @@ export function RubberExportsModule({
   }, [initialExportId, online]);
 
   async function remove(row: RubberExportSummary) {
-    if (!online || deleting || api.deletionRefreshing || row.reportLockNo || row.receiptBillNo || row.soldOutAt) return;
+    if (!online || deleteLocksRef.current.has(row.id) || api.deletionRefreshing || row.reportLockNo || row.receiptBillNo || row.soldOutAt) return; deleteLocksRef.current.add(row.id);
     const request = ++deleteRequestVersion.current;
     setDeleting(true);
     try {
@@ -271,7 +271,7 @@ export function RubberExportsModule({
       if (request !== deleteRequestVersion.current) return;
       toast.error(error instanceof Error ? error.message : "ลบรายการส่งออกไม่สำเร็จ");
     } finally {
-      if (request === deleteRequestVersion.current) setDeleting(false);
+      deleteLocksRef.current.delete(row.id); if (request === deleteRequestVersion.current) setDeleting(false);
     }
   }
 
@@ -289,13 +289,13 @@ export function RubberExportsModule({
   }
 
   async function changeSoldOut() {
-    if (!pendingSale) return;
+    if (!pendingSale || saleLockRef.current) return;
     if (!pendingSale.soldOut && pendingSale.row.hasWexReservation) {
       toast.error("รายการนี้ถูกจองในบิลรถส่งออก จึงยกเลิกขายไม่ได้");
       setPendingSale(null);
       return;
     }
-    setSelling(true);
+    saleLockRef.current = true; setSelling(true);
     try {
       await api.setSoldOut(pendingSale.row.id, pendingSale.soldOut);
       if (details?.id === pendingSale.row.id) {
@@ -306,12 +306,12 @@ export function RubberExportsModule({
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "เปลี่ยนสถานะขายไม่สำเร็จ");
     } finally {
-      setSelling(false);
+      saleLockRef.current = false; setSelling(false);
     }
   }
 
   async function revertToDraft() {
-    if (!pendingRevert || !online || reverting || pendingRevert.reportLockNo) return;
+    if (!pendingRevert || !online || revertLockRef.current || pendingRevert.reportLockNo) return; revertLockRef.current = true;
     setReverting(true);
     setRevertError(null);
     try {
@@ -323,7 +323,7 @@ export function RubberExportsModule({
       setRevertError(message);
       toast.error(message);
     } finally {
-      setReverting(false);
+      revertLockRef.current = false; setReverting(false);
     }
   }
 

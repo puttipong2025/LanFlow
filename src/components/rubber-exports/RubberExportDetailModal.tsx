@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Loader2, Share2 } from "lucide-react";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { RubberExportLoadingModal } from "@/components/rubber-exports/RubberExportLoadingModal";
@@ -94,6 +94,7 @@ export function RubberExportDetailModal({
   const [showVerify, setShowVerify] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [verifyError, setVerifyError] = useState<string | null>(null);
+  const saveLockRef = useRef(false), verifyLockRef = useRef(false);
   const isDraft = details.status === "draft";
   const currentWeight = nullableNumber(currentWeightInput);
   const workRate = nullableNumber(workRateInput);
@@ -131,16 +132,14 @@ export function RubberExportDetailModal({
           : null;
 
   async function verify(destination: RubberExportExpenseDestination) {
-    setVerifyError(null);
-    setVerifying(true);
+    if (verifyLockRef.current) return; verifyLockRef.current = true;
+    setVerifyError(null); setVerifying(true);
     try {
       await onVerify(destination, values);
       setShowVerify(false);
     } catch (error) {
       setVerifyError(error instanceof Error ? error.message : "ตรวจสอบรายการไม่สำเร็จ");
-    } finally {
-      setVerifying(false);
-    }
+    } finally { verifyLockRef.current = false; setVerifying(false); }
   }
 
   return (
@@ -394,13 +393,14 @@ export function RubberExportDetailModal({
               type="button"
               disabled={saving || (currentWeight !== null && !weightValid) || !workInputsValid}
               onClick={() => {
+                if (saveLockRef.current) return; saveLockRef.current = true;
                 setSaveError(null);
                 setSaving(true);
                 void onSave(values)
                   .catch((error) => {
                     setSaveError(error instanceof Error ? error.message : "บันทึกฉบับร่างไม่สำเร็จ");
                   })
-                  .finally(() => setSaving(false));
+                  .finally(() => { saveLockRef.current = false; setSaving(false); });
               }}
               className="focus-ring inline-flex items-center gap-2 rounded-md bg-commit px-4 py-2 font-semibold text-white hover:bg-commit/90 disabled:opacity-50"
             >

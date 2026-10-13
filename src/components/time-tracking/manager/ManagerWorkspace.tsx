@@ -81,9 +81,8 @@ export function ManagerWorkspace({ profile, online, locations, selectedLocationI
       const json = await res.json();
       if (requestId !== adminLoadRequestIdRef.current) return;
       setData(json);
-    } catch (err) {
+    } catch {
       if (requestId !== adminLoadRequestIdRef.current) return;
-      console.error("Failed to load admin time tracking:", err);
       setLoadError("โหลดข้อมูลจัดการเงินเดือนไม่สำเร็จ");
     } finally {
       if (requestId === adminLoadRequestIdRef.current) setLoading(false);
@@ -144,8 +143,7 @@ export function ManagerWorkspace({ profile, online, locations, selectedLocationI
       }
       await refreshPayrollBoundary();
       return true;
-    } catch (error) {
-      console.error(error);
+    } catch {
       return false;
     } finally {
       setAttendanceSaving(false);
@@ -194,7 +192,6 @@ export function ManagerWorkspace({ profile, online, locations, selectedLocationI
         })
       });
     } catch (error) {
-      console.error("Failed to submit time/payroll decision:", error);
       if (providedComment !== undefined) throw new Error(failureMessage);
       alert(failureMessage);
       return false;

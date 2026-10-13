@@ -30,6 +30,14 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
   const [previewSource, setPreviewSource] = useState<{ type: "withdrawal" | "payroll"; id: string } | null>(null);
   const { requestInput, inputDialog } = useInputDialog();
   const loadRequestIdRef = useRef(0);
+  const mutationLockRef = useRef(false);
+
+  function setMutation(next: boolean) {
+    if (next && mutationLockRef.current) return false;
+    mutationLockRef.current = next;
+    setSaving(next);
+    return true;
+  }
 
   // Debt Modal State
   const [isDebtModalOpen, setIsDebtModalOpen] = useState(false);
@@ -58,9 +66,8 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
       const json = await res.json();
       if (requestId !== loadRequestIdRef.current) return;
       setData(json);
-    } catch (err) {
+    } catch {
       if (requestId !== loadRequestIdRef.current) return;
-      console.error("Failed to load user time tracking:", err);
       setLoadError("โหลดข้อมูลเวลาและเงินเดือนไม่สำเร็จ");
     } finally {
       if (requestId === loadRequestIdRef.current) setLoading(false);
@@ -98,7 +105,7 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
     }
     if (!confirm(`คุณต้องการลบรายการ ${tx.type === 'DEBT' ? 'สร้างหนี้สิน' : 'เบิกเงิน'} จำนวน ${tx.amount} ใช่หรือไม่?`)) return;
 
-    setSaving(true);
+    if (!setMutation(true)) return;
     try {
       const res = await authFetch(
         canManageTime ? "/api/lanflow/time-tracking/admin" : "/api/lanflow/time-tracking/user",
@@ -121,16 +128,16 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
     } catch (e) {
       alert("เกิดข้อผิดพลาด");
     } finally {
-      setSaving(false);
+      setMutation(false);
     }
   }
 
   async function runApprovalAction(action: () => Promise<boolean>) {
-    setSaving(true);
+    if (!setMutation(true)) return;
     try {
       await action();
     } finally {
-      setSaving(false);
+      setMutation(false);
     }
   }
 
@@ -146,7 +153,7 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
 
   async function submitWithdrawalExpenseLocation(payment: PaymentAllocationInput, adminComment: string) {
     if (!pendingExpenseLocationTx) return false;
-    setSaving(true);
+    if (!setMutation(true)) return false;
     try {
       const res = await authFetch('/api/lanflow/time-tracking/admin', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -172,7 +179,7 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
       ]);
       return true;
     } finally {
-      setSaving(false);
+      setMutation(false);
     }
   }
 
@@ -231,9 +238,9 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
   }
 
   async function withdrawAdjustment(adjustmentId: string) {
-    if (!online || saving) return;
+    if (!online || mutationLockRef.current) return;
     if (!confirm("ถอนคำขอปรับยอดเบิกเงินนี้ใช่หรือไม่?")) return;
-    setSaving(true);
+    if (!setMutation(true)) return;
     try {
       const response = await authFetch("/api/lanflow/time-tracking/user", {
         method: "POST",
@@ -249,7 +256,7 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
     } catch (error) {
       alert(error instanceof Error ? error.message : "ถอนคำขอไม่สำเร็จ");
     } finally {
-      setSaving(false);
+      setMutation(false);
     }
   }
 
@@ -265,7 +272,7 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
     canConfigure: Boolean(canConfigure),
     attendance,
     managedUserId,
-    setSaving,
+    setMutation,
     loadData,
   });
 
@@ -377,13 +384,13 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
               setPendingWithdrawal({ amount: Number(amount), effectiveDate });
               return;
             }
-            setSaving(true);
+            if (!setMutation(true)) return;
             try {
               await createWithdrawal(Number(amount), null);
             } catch (error) {
               alert(error instanceof Error ? error.message : "ไม่สามารถสร้างรายการเบิกได้");
             } finally {
-              setSaving(false);
+              setMutation(false);
             }
           }}
           disabled={saving || !online}
@@ -427,7 +434,6 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
         isDebtModalOpen={isDebtModalOpen}
         onCloseDebt={() => setIsDebtModalOpen(false)}
         saving={saving}
-        setSaving={setSaving}
         debtDueDate={debtDueDate}
         setDebtDueDate={setDebtDueDate}
         debtDescription={debtDescription}
@@ -453,6 +459,7 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
         previewSource={previewSource}
         setPreviewSource={setPreviewSource}
         inputDialog={inputDialog}
+        setMutation={setMutation}
       />
     </div>
   );

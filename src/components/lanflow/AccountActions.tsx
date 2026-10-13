@@ -1,7 +1,7 @@
 "use client";
 
 import { KeyRound } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { LogoutButton } from "@/components/lanflow/LogoutButton";
 import { ModalShell } from "@/components/shared/ModalShell";
@@ -49,9 +49,11 @@ function ChangePasswordModal({ onClose }: { onClose: () => void }) {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ kind: "error" | "success"; text: string } | null>(null);
+  const savingRef = useRef(false);
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (savingRef.current) return;
     setMessage(null);
     if (newPassword.length < 8) {
       setMessage({ kind: "error", text: "รหัสผ่านใหม่ต้องมีอย่างน้อย 8 ตัวอักษร" });
@@ -62,6 +64,7 @@ function ChangePasswordModal({ onClose }: { onClose: () => void }) {
       return;
     }
 
+    savingRef.current = true;
     setSaving(true);
     try {
       const request: SelfPasswordChangeRequest = {
@@ -93,6 +96,7 @@ function ChangePasswordModal({ onClose }: { onClose: () => void }) {
         text: error instanceof Error ? error.message : "เปลี่ยนรหัสผ่านไม่สำเร็จ",
       });
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   }
@@ -106,7 +110,7 @@ function ChangePasswordModal({ onClose }: { onClose: () => void }) {
     nativeModal
     size="compact"
   >
-    <form onSubmit={submit} className="space-y-4">
+    <form onSubmit={submit} aria-busy={saving} className="space-y-4">
       <label className="grid gap-1 text-sm font-semibold text-ink">
         รหัสผ่านปัจจุบัน
         <input

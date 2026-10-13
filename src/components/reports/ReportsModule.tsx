@@ -63,6 +63,8 @@ export function ReportsModule({
   const previewController = useRef<AbortController | null>(null);
   const listController = useRef<AbortController | null>(null);
   const deletionController = useRef<AbortController | null>(null);
+  const createLockRef = useRef(false);
+  const deleteLocksRef = useRef(new Set<string>());
   const locationIdRef = useRef(selectedLocation.id);
   locationIdRef.current = selectedLocation.id;
   const [reportsHasMore, setReportsHasMore] = useState(false);
@@ -182,8 +184,9 @@ export function ReportsModule({
   }
 
   async function createReport() {
-    if (!online || creating) return;
+    if (!online || createLockRef.current) return;
     const locationId = selectedLocation.id;
+    createLockRef.current = true;
     setCreating(true);
     try {
       const response = await authFetch("/api/lanflow/reports", {
@@ -222,12 +225,14 @@ export function ReportsModule({
         showCreateReportError(["ระบบรายงาน"]);
       }
     } finally {
+      createLockRef.current = false;
       setCreating(false);
     }
   }
 
   async function deleteReport(report: ReportSummary) {
-    if (!report.isLatestActive || !canDelete || deletingId || report.rubberExportLockNo) return;
+    if (!report.isLatestActive || !canDelete || deleteLocksRef.current.has(report.id) || report.rubberExportLockNo) return;
+    deleteLocksRef.current.add(report.id);
     setDeletingId(report.id);
     try {
       const response = await authFetch(`/api/lanflow/reports/${report.id}`, {
@@ -241,6 +246,7 @@ export function ReportsModule({
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "ลบรายงานไม่สำเร็จ");
     } finally {
+      deleteLocksRef.current.delete(report.id);
       setDeletingId(null);
     }
   }

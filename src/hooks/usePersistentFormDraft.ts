@@ -33,6 +33,7 @@ export function usePersistentFormDraft<T>({
   const latestValueRef = useRef(value);
   const writeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingWriteRef = useRef<Promise<void>>(Promise.resolve());
+  const clearingRef = useRef(false);
   const [hydrated, setHydrated] = useState(!enabled);
   const hydratedRef = useRef(!enabled);
   latestValueRef.current = value;
@@ -43,6 +44,7 @@ export function usePersistentFormDraft<T>({
   }, [onRestore]);
 
   useEffect(() => {
+    clearingRef.current = false;
     if (!enabled) {
       setHydrated(true);
       return;
@@ -66,15 +68,15 @@ export function usePersistentFormDraft<T>({
     };
   }, [enabled, stablePartition]);
 
-  const flushDraft = useCallback(async () => {
-    if (!enabled || !hydratedRef.current) return;
+  const flushDraft = useCallback(async (overrideValue?: T) => {
+    if (!enabled || !hydratedRef.current || clearingRef.current) return;
     if (writeTimerRef.current) {
       clearTimeout(writeTimerRef.current);
       writeTimerRef.current = null;
     }
     const write = pendingWriteRef.current
       .catch(() => {})
-      .then(() => writeFormDraft(stablePartition, latestValueRef.current));
+      .then(() => writeFormDraft(stablePartition, overrideValue ?? latestValueRef.current));
     pendingWriteRef.current = write;
     await write;
   }, [enabled, stablePartition]);
@@ -102,13 +104,19 @@ export function usePersistentFormDraft<T>({
   }, [enabled, flushDraft]);
 
   const clearDraft = useCallback(async () => {
+    clearingRef.current = true;
     if (writeTimerRef.current) {
       clearTimeout(writeTimerRef.current);
       writeTimerRef.current = null;
     }
-    await pendingWriteRef.current;
-    await deleteFormDraft(stablePartition);
+    try {
+      await pendingWriteRef.current.catch(() => {});
+      await deleteFormDraft(stablePartition);
+    } catch (error) {
+      clearingRef.current = false;
+      throw error;
+    }
   }, [stablePartition]);
 
-  return { clearDraft, hydrated };
+  return { clearDraft, flushDraft, hydrated };
 }

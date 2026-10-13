@@ -26,7 +26,13 @@ export function PayrollModal({ user, ownerUserId, online, canDecide, expenseLoca
   const [createMonth, setCreateMonth] = useState(missingPayrollMonths[0] ?? bangkokToday().slice(0, 7));
   const [previewSlipId, setPreviewSlipId] = useState<string | null>(null);
   const loadSlipsRequestIdRef = useRef(0);
+  const mutationLockRef = useRef(false);
   const createSubmitRef = useRef<HTMLButtonElement>(null);
+
+  function setMutation(next: boolean) {
+    mutationLockRef.current = next;
+    setSaving(next);
+  }
 
   const loadSlips = useCallback(async () => {
     const requestId = ++loadSlipsRequestIdRef.current;
@@ -42,9 +48,8 @@ export function PayrollModal({ user, ownerUserId, online, canDecide, expenseLoca
       const json = await res.json();
       if (requestId !== loadSlipsRequestIdRef.current) return;
       setSlips(json.slips || []);
-    } catch (error) {
+    } catch {
       if (requestId !== loadSlipsRequestIdRef.current) return;
-      console.error("Failed to load payroll slips:", error);
       setLoadError("โหลดสลิปเงินเดือนไม่สำเร็จ");
     } finally {
       if (requestId === loadSlipsRequestIdRef.current) setLoading(false);
@@ -59,11 +64,12 @@ export function PayrollModal({ user, ownerUserId, online, canDecide, expenseLoca
   }, [loadSlips]);
 
   async function runSlipDecision(action: () => Promise<boolean>) {
-    setSaving(true);
+    if (mutationLockRef.current) return;
+    setMutation(true);
     try {
       await action();
     } finally {
-      setSaving(false);
+      setMutation(false);
     }
   }
 
@@ -78,8 +84,8 @@ export function PayrollModal({ user, ownerUserId, online, canDecide, expenseLoca
   }
 
   async function createSlip() {
-    if (!createMonth) return;
-    setSaving(true);
+    if (!createMonth || mutationLockRef.current) return;
+    setMutation(true);
     setCreateError(null);
     try {
       const response = await authFetch("/api/lanflow/time-tracking/admin", {
@@ -95,7 +101,7 @@ export function PayrollModal({ user, ownerUserId, online, canDecide, expenseLoca
     } catch (error) {
       setCreateError(error instanceof Error ? error.message : "ตรวจยอดสลิปไม่สำเร็จ");
     } finally {
-      setSaving(false);
+      setMutation(false);
     }
   }
 
@@ -139,7 +145,8 @@ export function PayrollModal({ user, ownerUserId, online, canDecide, expenseLoca
       return;
     }
     if (!confirm(`ยืนยันการลบสลิปเดือน ${month} หรือไม่? รายการจะถูกลบถาวร`)) return;
-    setSaving(true);
+    if (mutationLockRef.current) return;
+    setMutation(true);
     try {
       const res = await authFetch("/api/lanflow/time-tracking/admin", {
         method: 'POST',
@@ -156,11 +163,10 @@ export function PayrollModal({ user, ownerUserId, online, canDecide, expenseLoca
         const json = await res.json();
         alert(json.error || "เกิดข้อผิดพลาด");
       }
-    } catch (e) {
-      console.error(e);
+    } catch {
       alert("เกิดข้อผิดพลาด");
     } finally {
-      setSaving(false);
+      setMutation(false);
     }
   }
 

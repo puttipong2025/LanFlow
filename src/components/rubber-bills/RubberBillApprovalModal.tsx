@@ -1,5 +1,5 @@
 import { Check, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { AlertDialog } from "@/components/shared/AlertDialog";
@@ -70,6 +70,8 @@ export function RubberBillApprovalModal({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [confirmation, setConfirmation] = useState<{ kind: "approve" | "delete"; bill: RubberBill } | null>(null);
+  const settingsSaveRef = useRef(false);
+  const requestLocksRef = useRef(new Set<string>());
 
   useEffect(() => {
     if (!settings) return;
@@ -102,7 +104,8 @@ export function RubberBillApprovalModal({
     && !settingsError;
   async function handleSaveSettings(event: React.FormEvent) {
     event.preventDefault();
-    if (!settingsReady) return;
+    if (!settingsReady || settingsSaveRef.current) return;
+    settingsSaveRef.current = true;
     try {
       setIsSaving(true);
       await saveGlobalDateRule(nonCurrentDateRequiresApproval);
@@ -110,12 +113,14 @@ export function RubberBillApprovalModal({
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "บันทึกกฎวันที่ไม่สำเร็จ");
     } finally {
+      settingsSaveRef.current = false;
       setIsSaving(false);
     }
   }
 
   async function handleApprove(request: RubberBill) {
-    if (!request.approvalRequestId) return;
+    if (!request.approvalRequestId || requestLocksRef.current.has(request.approvalRequestId)) return;
+    requestLocksRef.current.add(request.approvalRequestId);
     try {
       setBusyId(request.approvalRequestId);
       await approveRequest(request.approvalRequestId, request.locationId);
@@ -123,12 +128,14 @@ export function RubberBillApprovalModal({
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "อนุมัติคำขอไม่สำเร็จ");
     } finally {
+      requestLocksRef.current.delete(request.approvalRequestId);
       setBusyId(null);
     }
   }
 
   async function handleDelete(request: RubberBill) {
-    if (!request.approvalRequestId) return;
+    if (!request.approvalRequestId || requestLocksRef.current.has(request.approvalRequestId)) return;
+    requestLocksRef.current.add(request.approvalRequestId);
     try {
       setBusyId(request.approvalRequestId);
       await deleteRequest(request.approvalRequestId, request.locationId);
@@ -136,6 +143,7 @@ export function RubberBillApprovalModal({
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "ลบคำขอไม่สำเร็จ");
     } finally {
+      requestLocksRef.current.delete(request.approvalRequestId);
       setBusyId(null);
     }
   }
@@ -145,6 +153,7 @@ export function RubberBillApprovalModal({
       title="ตั้งค่าและอนุมัติบิลยาง"
       subtitle={`รออนุมัติ ${counts.data?.pendingApproval ?? 0} รายการ`}
       onClose={onClose}
+      closeDisabled={isSaving || busyId !== null}
       size="wide"
     >
       <div className="space-y-5">

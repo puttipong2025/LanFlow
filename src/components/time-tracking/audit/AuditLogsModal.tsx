@@ -35,9 +35,8 @@ export function AuditLogsModal({ adminId, adminName, onClose }: { adminId: strin
         const json = await res.json();
         if (!active) return;
         setLogs(json.logs || []);
-      } catch (error) {
+      } catch {
         if (!active) return;
-        console.error("Failed to load time/payroll audit logs:", error);
         setLoadError("โหลดประวัติไม่สำเร็จ");
       } finally {
         if (active) setLoading(false);

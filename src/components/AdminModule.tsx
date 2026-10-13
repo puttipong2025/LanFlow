@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { AdminContent } from "@/components/admin/AdminContent";
 import { authFetch } from "@/lib/auth-fetch";
@@ -48,6 +48,7 @@ export function AdminModule({ locations, profile, confirmationMinutes, rubberWei
   const [users, setUsers] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
   const [updatingUserId, setUpdatingUserId] = useState<string | null>(null);
+  const confirmedPatchLocksRef = useRef(new Set<string>());
   const canManageSystem = canManageSystemFeatures(profile);
   const canManagePermissions = canManageFeatureAccess(profile);
 
@@ -74,25 +75,31 @@ export function AdminModule({ locations, profile, confirmationMinutes, rubberWei
     title: string,
     getProfilePatch: (data: Record<string, unknown>) => Partial<Profile>,
   ) {
-    const confirmation = await appSwal.fire({ target: getConfirmationTarget(), title, icon: "warning", showCancelButton: true, confirmButtonText: "ยืนยัน", cancelButtonText: "ยกเลิก" });
-    if (!confirmation.isConfirmed) return;
-    setUpdatingUserId(userId);
+    if (confirmedPatchLocksRef.current.has(userId)) return;
+    confirmedPatchLocksRef.current.add(userId);
     try {
-      const response = await authFetch(`/api/lanflow/admin/users/${userId}/${path}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      const data = await response.json().catch(() => ({})) as Record<string, unknown>;
-      if (!response.ok) {
-        const message = typeof data.errorMessage === "string"
-          ? data.errorMessage
-          : typeof data.error === "string" ? data.error : "อัปเดตไม่สำเร็จ";
-        throw new Error(message);
+      const confirmation = await appSwal.fire({ target: getConfirmationTarget(), title, icon: "warning", showCancelButton: true, confirmButtonText: "ยืนยัน", cancelButtonText: "ยกเลิก" });
+      if (!confirmation.isConfirmed) return;
+      setUpdatingUserId(userId);
+      try {
+        const response = await authFetch(`/api/lanflow/admin/users/${userId}/${path}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        const data = await response.json().catch(() => ({})) as Record<string, unknown>;
+        if (!response.ok) {
+          const message = typeof data.errorMessage === "string"
+            ? data.errorMessage
+            : typeof data.error === "string" ? data.error : "อัปเดตไม่สำเร็จ";
+          throw new Error(message);
+        }
+        const profilePatch = getProfilePatch(data);
+        setUsers((current) => current.map((user) => user.id === userId ? { ...user, ...profilePatch } : user));
+        showAdminFeedback("success", "บันทึกแล้ว");
+      } catch (error) {
+        showAdminFeedback("error", error instanceof Error ? error.message : "อัปเดตไม่สำเร็จ");
+      } finally {
+        setUpdatingUserId((current) => current === userId ? null : current);
       }
-      const profilePatch = getProfilePatch(data);
-      setUsers((current) => current.map((user) => user.id === userId ? { ...user, ...profilePatch } : user));
-      showAdminFeedback("success", "บันทึกแล้ว");
-    } catch (error) {
-      showAdminFeedback("error", error instanceof Error ? error.message : "อัปเดตไม่สำเร็จ");
     } finally {
-      setUpdatingUserId((current) => current === userId ? null : current);
+      confirmedPatchLocksRef.current.delete(userId);
     }
   }
 

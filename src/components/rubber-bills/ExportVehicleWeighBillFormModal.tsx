@@ -1,7 +1,7 @@
 "use client";
 
 import { Loader2, Minus, Plus } from "lucide-react";
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { ModalShell } from "@/components/shared/ModalShell";
 import type {
@@ -103,6 +103,7 @@ export function ExportVehicleWeighBillFormModal({
   ));
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
   const [carrierListboxIndex, setCarrierListboxIndex] = useState<number | null>(null);
   const [activeCarrierIndex, setActiveCarrierIndex] = useState(0);
   const formId = useId();
@@ -250,7 +251,7 @@ export function ExportVehicleWeighBillFormModal({
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!online || saving) return;
+    if (!online || savingRef.current) return;
     const normalizedLines: ExportVehicleWeighBillLineInput[] = [];
     const seenPlates = new Set<string>();
     const sharedCarrierName = lines[0].carrierName.trim();
@@ -337,6 +338,7 @@ export function ExportVehicleWeighBillFormModal({
       return;
     }
 
+    savingRef.current = true;
     setSaving(true);
     setError(null);
     try {
@@ -344,6 +346,7 @@ export function ExportVehicleWeighBillFormModal({
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "บันทึกบิลรถส่งออกไม่สำเร็จ");
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   }
