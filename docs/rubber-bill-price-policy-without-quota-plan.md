@@ -40,3 +40,25 @@ Remove every active quota path while preserving one central price, group/ungroup
 - Recovery checkpoint (git ignored): `output/production-backups/rubber-quota-removal-20261005/`; hashes are recorded in the codingDO Daily note `10_Daily/2026-10-05 1.md`.
 
 The Daily note `10_Daily/2026-10-05 1.md` remains the task-level checklist and source of truth.
+
+## Extension — Automatic 24-hour allowance reset (2026-10-14)
+
+Status: implemented and verified locally; not applied to Supabase Cloud or deployed.
+
+- One global checkbox enables or disables the rule. Only exact `super_admin` may change it; System Manager can read it.
+- Each approval group and the ungrouped defaults use their existing `updated_at` value as an independent clock. A nonzero `price_allowance` resets at `updated_at + 24 hours`; the every-minute Cron means the visible reset may follow by about one minute.
+- The worker updates allowance/configured price, scope revision, `updated_at`, and actor (`ระบบ`) atomically, then advances `price_rule_revision` once when any scope changed. It is a no-op while disabled or when all allowances are already zero.
+- Existing bill and approval-request snapshots remain immutable. Online create, edit, and OCR review refresh the effective Server policy before opening; offline caching and Server-authoritative replay behavior are unchanged.
+- Enabling requires a destructive-effect confirmation because already-overdue scopes can reset on the next Cron tick. The management dialog polls every 60 seconds without replacing an open ungrouped draft or its opening revision.
+
+Primary sources:
+
+- `supabase/migrations/20261014010000_rubber_price_allowance_auto_reset.sql`
+- `src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset/route.ts`
+- `src/hooks/useRubberApprovalGroups.ts`
+- `src/components/rubber-bills/RubberApprovalPolicyPanel.tsx`
+- `supabase/tests/rubber_price_allowance_auto_reset_test.sql`
+- `tests/rubber-approval-groups-api.spec.ts`
+- `tests/rubber-approval-policy-refresh-contract.spec.ts`
+
+Focused verification: clean Local migration replay passed; auto-reset pgTAP passed 47/47; the existing no-quota price-policy pgTAP passed 67/67; database lint, route contracts, browser permissions/confirmation/polling, online freshness, TypeScript, ESLint, source-size, and diff checks passed. The repository-wide quality gate is recorded in the codingDO Daily note after completion.

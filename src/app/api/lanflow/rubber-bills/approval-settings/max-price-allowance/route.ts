@@ -33,7 +33,11 @@ export async function PUT(request: NextRequest) {
     p_expected_max_price_allowance: body.expectedMaxPriceAllowance,
   });
   if (error) return managementErrorResponse(error, "บันทึกราคายางที่กำหนดสูงสุดไม่สำเร็จ");
-  if (!isRubberMaxPriceAllowanceSaveResult(data, body.maxPriceAllowance)) {
+  if (!isRubberMaxPriceAllowanceSaveResult(
+    data,
+    body.maxPriceAllowance,
+    body.expectedMaxPriceAllowance,
+  )) {
     return NextResponse.json({ errorMessage: "ระบบไม่ตอบกลับผลการบันทึก" }, { status: 500 });
   }
   const status = data.status;

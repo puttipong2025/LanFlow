@@ -44,12 +44,21 @@ function isNullableDateString(value: unknown): value is string | null | undefine
   return value === undefined || value === null || isIsoTimestamp(value);
 }
 
+function hasOnlyKeys(value: Record<string, unknown>, allowedKeys: readonly string[]) {
+  return Object.keys(value).every((key) => allowedKeys.includes(key));
+}
+
 export function isEffectiveRubberApprovalSettings(
   value: unknown,
   expectedLocationId: string,
   expectedDateRule?: boolean,
 ): value is Record<string, unknown> {
   if (!isJsonObject(value)
+      || !hasOnlyKeys(value, [
+        "locationId", "groupId", "ruleSource", "editWindowMinutes", "centralPrice",
+        "priceAllowance", "effectivePriceCap", "priceRuleRevision",
+        "nonCurrentDateRequiresApproval", "updatedByName", "updatedByPhone", "updatedAt",
+      ])
       || !isUuid(value.locationId)
       || !isNonNegativePostgresInteger(value.editWindowMinutes)
       || !isNonNegativeNumeric12Scale2(value.centralPrice)
@@ -75,11 +84,17 @@ export function isEffectiveRubberApprovalSettings(
 
 function isRubberApprovalGroup(value: unknown): value is Record<string, unknown> {
   return isJsonObject(value)
+    && hasOnlyKeys(value, [
+      "id", "locationIds", "editWindowMinutes", "priceAllowance",
+      "priceAllowanceAutoResetLocked", "revisionNo", "updatedByName", "updatedByPhone",
+      "updatedAt",
+    ])
     && isUuid(value.id)
     && isUuidArray(value.locationIds)
     && value.locationIds.length > 0
     && isNonNegativePostgresInteger(value.editWindowMinutes)
     && isNonNegativeNumeric12Scale2(value.priceAllowance)
+    && typeof value.priceAllowanceAutoResetLocked === "boolean"
     && isSafePositiveInteger(value.revisionNo)
     && isNullableString(value.updatedByName)
     && isNullableString(value.updatedByPhone)
@@ -88,6 +103,7 @@ function isRubberApprovalGroup(value: unknown): value is Record<string, unknown>
 
 function isRubberCentralPrice(value: unknown): value is Record<string, unknown> {
   return isJsonObject(value)
+    && hasOnlyKeys(value, ["value", "revision", "updatedByName", "updatedByPhone", "updatedAt"])
     && isNonNegativeNumeric12Scale2(value.value)
     && value.value > 0
     && isSafePositiveInteger(value.revision)
@@ -98,9 +114,14 @@ function isRubberCentralPrice(value: unknown): value is Record<string, unknown> 
 
 function isRubberUngroupedDefaults(value: unknown): value is Record<string, unknown> {
   return isJsonObject(value)
+    && hasOnlyKeys(value, [
+      "locationIds", "editWindowMinutes", "priceAllowance", "priceAllowanceAutoResetLocked",
+      "revision", "updatedByName", "updatedByPhone", "updatedAt",
+    ])
     && isUuidArray(value.locationIds)
     && isNonNegativePostgresInteger(value.editWindowMinutes)
     && isNonNegativeNumeric12Scale2(value.priceAllowance)
+    && typeof value.priceAllowanceAutoResetLocked === "boolean"
     && isSafePositiveInteger(value.revision)
     && typeof value.updatedByName === "string"
     && isNullableString(value.updatedByPhone)
@@ -109,17 +130,28 @@ function isRubberUngroupedDefaults(value: unknown): value is Record<string, unkn
 
 function isRubberMaxPriceAllowanceSetting(value: unknown): value is Record<string, unknown> {
   return isJsonObject(value)
+    && hasOnlyKeys(value, ["value", "updatedByName", "updatedByPhone", "updatedAt"])
     && isNonNegativeNumeric12Scale2(value.value)
     && typeof value.updatedByName === "string"
     && isNullableString(value.updatedByPhone)
     && isIsoTimestamp(value.updatedAt);
 }
 
-function isRubberMaxPriceAllowanceConflict(value: unknown): value is Record<string, unknown> {
+function isRubberMaxPriceAllowanceConflict(
+  value: unknown,
+  expectedValue: number,
+): value is Record<string, unknown> {
   if (!isJsonObject(value)
+      || !hasOnlyKeys(
+        value,
+        value.scope === "group"
+          ? ["scope", "groupId", "locationIds", "allowance"]
+          : ["scope", "locationIds", "allowance"],
+      )
       || (value.scope !== "group" && value.scope !== "ungrouped")
       || !isUuidArray(value.locationIds)
-      || !isNonNegativeNumeric12Scale2(value.allowance)) {
+      || !isNonNegativeNumeric12Scale2(value.allowance)
+      || value.allowance <= expectedValue) {
     return false;
   }
   return value.scope === "ungrouped"
@@ -129,18 +161,24 @@ function isRubberMaxPriceAllowanceConflict(value: unknown): value is Record<stri
 
 export function isRubberMaxPriceAllowanceSaveResult(
   value: unknown,
-  expectedValue?: number,
+  expectedValue: number,
+  previousValue: number,
 ): value is Record<string, unknown> {
   if (!isJsonObject(value)) return false;
   if (value.status === "saved" || value.status === "unchanged") {
-    return isRubberMaxPriceAllowanceSetting(value.setting)
-      && (expectedValue === undefined || value.setting.value === expectedValue);
+    return hasOnlyKeys(value, ["status", "setting"])
+      && isRubberMaxPriceAllowanceSetting(value.setting)
+      && value.setting.value === expectedValue
+      && (value.status === "unchanged") === (expectedValue === previousValue);
   }
   if (value.status === "conflict") {
-    if (typeof value.errorMessage !== "string"
+    if (!hasOnlyKeys(value, ["status", "code", "errorMessage", "conflicts"])
+      || typeof value.errorMessage !== "string"
       || value.errorMessage.length === 0
       || !Array.isArray(value.conflicts)
-      || !value.conflicts.every(isRubberMaxPriceAllowanceConflict)) {
+      || !value.conflicts.every((conflict) => (
+        isRubberMaxPriceAllowanceConflict(conflict, expectedValue)
+      ))) {
       return false;
     }
     return value.code === "RUBBER_ALLOWANCE_STALE"
@@ -149,6 +187,48 @@ export function isRubberMaxPriceAllowanceSaveResult(
         && value.conflicts.length > 0;
   }
   return false;
+}
+
+export function isRubberPriceAllowanceAutoResetSaveResult(
+  value: unknown,
+  expectedEnabled: boolean,
+  previousEnabled: boolean,
+): value is Record<string, unknown> {
+  return isJsonObject(value)
+    && (value.status === "saved" || value.status === "unchanged")
+    && Object.keys(value).every((key) => ["status", "enabled"].includes(key))
+    && typeof value.enabled === "boolean"
+    && value.enabled === expectedEnabled
+    && (value.status === "unchanged") === (expectedEnabled === previousEnabled);
+}
+
+export function isRubberPriceAllowanceAutoResetLockSaveResult(
+  value: unknown,
+  expected: {
+    scope: "group" | "ungrouped";
+    groupId?: string;
+    locked: boolean;
+    previousLocked: boolean;
+  },
+): value is Record<string, unknown> {
+  if (!isJsonObject(value)
+      || (value.status !== "saved" && value.status !== "unchanged")
+      || value.scope !== expected.scope
+      || value.locked !== expected.locked
+      || (value.status === "unchanged") !== (expected.locked === expected.previousLocked)) {
+    return false;
+  }
+  if (expected.scope === "group") {
+    return Object.keys(value).every(
+      (key) => ["status", "scope", "groupId", "locked"].includes(key),
+    )
+      && isUuid(value.groupId)
+      && expected.groupId !== undefined
+      && canonicalUuid(value.groupId) === canonicalUuid(expected.groupId);
+  }
+  return Object.keys(value).every(
+    (key) => ["status", "scope", "locked"].includes(key),
+  ) && value.groupId === undefined;
 }
 
 export function isRubberApprovalGroupsResult(
@@ -163,12 +243,17 @@ export function isRubberApprovalGroupsResult(
   },
 ): value is Record<string, unknown> {
   if (!isJsonObject(value)
+      || !hasOnlyKeys(value, [
+        "groups", "availableLocationIds", "centralPrice", "ungroupedDefaults",
+        "maxPriceAllowance", "priceAllowanceAutoResetEnabled",
+      ])
       || !Array.isArray(value.groups)
       || !value.groups.every(isRubberApprovalGroup)
       || !isUuidArray(value.availableLocationIds)
       || !isRubberCentralPrice(value.centralPrice)
       || !isRubberUngroupedDefaults(value.ungroupedDefaults)
-      || !isRubberMaxPriceAllowanceSetting(value.maxPriceAllowance)) {
+      || !isRubberMaxPriceAllowanceSetting(value.maxPriceAllowance)
+      || typeof value.priceAllowanceAutoResetEnabled !== "boolean") {
     return false;
   }
 
@@ -221,6 +306,7 @@ export function isRubberApprovalGroupMutationResult(
   },
 ): value is Record<string, unknown> {
   if (!isJsonObject(value)
+      || !hasOnlyKeys(value, ["group", "affectedLocationIds"])
       || !isRubberApprovalGroup(value.group)
       || !isUuidArray(value.affectedLocationIds)) {
     return false;
@@ -248,6 +334,7 @@ export function isRubberApprovalGroupMutationResult(
 
 export function isRubberApprovalGroupDeleteResult(value: unknown): value is Record<string, unknown> {
   return isJsonObject(value)
+    && hasOnlyKeys(value, ["success", "releasedLocationIds"])
     && value.success === true
     && isUuidArray(value.releasedLocationIds)
     && value.releasedLocationIds.length > 0;

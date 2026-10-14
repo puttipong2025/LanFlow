@@ -72,7 +72,7 @@ export function RubberBillsModule({
   const queryClient = useQueryClient();
   const pdfShare = useSharePdf();
   const canManageApprovals = canManageSystemFeatures(profile);
-  const { settings: approvalSettings } = useRubberBillApprovals({
+  const { settings: approvalSettings, refreshSettings: refreshApprovalSettings } = useRubberBillApprovals({
     locationId: selectedLocation.id,
     ownerUserId: profile.id,
   });
@@ -225,6 +225,14 @@ export function RubberBillsModule({
     }
   }
 
+  async function refreshPolicyBeforeOpeningBill() {
+    if (!isOnline) return true;
+    const refreshed = await refreshApprovalSettings();
+    if (!refreshed.error && refreshed.data) return true;
+    toast.error("โหลดกติกาบิลยางล่าสุดไม่สำเร็จ");
+    return false;
+  }
+
   async function handlePrint(bill: RubberBill) {
     const blockReason = getPrintBlockReason(bill)
       ?? await getPendingSubmissionBlockReason(bill);
@@ -263,6 +271,7 @@ export function RubberBillsModule({
   async function openAdd() {
     const approval = await requestBranchCreate();
     if (approval?.locationId !== selectedLocation.id) return;
+    if (!(await refreshPolicyBeforeOpeningBill())) return;
     setOcrReviewItem(null);
     setEditingBill(null);
     setModalOpen(true);
@@ -272,6 +281,7 @@ export function RubberBillsModule({
     if (!item.uploadId || !item.draft) return;
     const approval = await requestBranchCreate();
     if (approval?.locationId !== selectedLocation.id) return;
+    if (!(await refreshPolicyBeforeOpeningBill())) return;
     setOcrReviewItem(item);
     ocrQueue.setReviewing(item.id);
     setOcrQueueModalOpen(false);
@@ -292,6 +302,7 @@ export function RubberBillsModule({
       toast.error(blockReason);
       return;
     }
+    if (!(await refreshPolicyBeforeOpeningBill())) return;
     setOcrReviewItem(null);
     setEditingBill(bill);
     setModalOpen(true);

@@ -174,6 +174,7 @@ export function useRubberBillApprovals({
     isLoading: settingsQuery.isLoading,
     isFetching: settingsQuery.isFetching,
     error: settingsQuery.error,
+    refreshSettings: settingsQuery.refetch,
     saveGlobalDateRule: (nonCurrentDateRequiresApproval: boolean) => saveSettingsMutation.mutateAsync({
       nonCurrentDateRequiresApproval,
       locationId,

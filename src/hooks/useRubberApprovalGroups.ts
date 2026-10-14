@@ -23,6 +23,8 @@ type GroupsResponse = {
   ungroupedDefaults: RubberUngroupedDefaults;
   maxPriceAllowance: RubberMaxPriceAllowanceSetting;
   canEditMaxPriceAllowance: boolean;
+  priceAllowanceAutoResetEnabled: boolean;
+  canEditPriceAllowanceAutoReset: boolean;
 };
 
 export class RubberMaxPriceAllowanceError extends Error {
@@ -37,6 +39,14 @@ export class RubberMaxPriceAllowanceError extends Error {
 
 type GroupInput = Pick<RubberApprovalGroup, "locationIds" | "editWindowMinutes" | "priceAllowance">;
 
+export type RubberPriceAllowanceAutoResetLockInput = {
+  locked: boolean;
+  expectedLocked: boolean;
+} & (
+  | { scope: "group"; groupId: string }
+  | { scope: "ungrouped" }
+);
+
 export function useRubberApprovalGroups() {
   const queryClient = useQueryClient();
   const groupsQuery = useQuery({
@@ -47,6 +57,7 @@ export function useRubberApprovalGroups() {
       if (!response.ok) throw new Error(data.errorMessage || "โหลดกลุ่มตั้งค่าบิลยางไม่สำเร็จ");
       return data as GroupsResponse;
     },
+    refetchInterval: 60_000,
   });
 
   function invalidatePolicyQueries() {
@@ -152,6 +163,76 @@ export function useRubberApprovalGroups() {
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: [RUBBER_APPROVAL_GROUPS_KEY] }),
   });
+  const savePriceAllowanceAutoReset = useMutation({
+    mutationFn: async (input: { enabled: boolean; expectedEnabled: boolean }) => {
+      const response = await authFetch(
+        "/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset",
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+        },
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.errorMessage || "บันทึกการรีเซ็ตราคายางอัตโนมัติไม่สำเร็จ");
+      }
+      return data as { status: "saved" | "unchanged"; enabled: boolean };
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData<GroupsResponse>(
+        [RUBBER_APPROVAL_GROUPS_KEY],
+        (current) => current
+          ? { ...current, priceAllowanceAutoResetEnabled: data.enabled }
+          : current,
+      );
+    },
+  });
+  const savePriceAllowanceAutoResetLock = useMutation({
+    mutationFn: async (input: RubberPriceAllowanceAutoResetLockInput) => {
+      const response = await authFetch(
+        "/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset-lock",
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+        },
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.errorMessage || "บันทึกล็อกรีเซ็ตราคายางไม่สำเร็จ");
+      }
+      return data as {
+        status: "saved" | "unchanged";
+        scope: "group" | "ungrouped";
+        groupId?: string;
+        locked: boolean;
+      };
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData<GroupsResponse>(
+        [RUBBER_APPROVAL_GROUPS_KEY],
+        (current) => {
+          if (!current) return current;
+          if (data.scope === "ungrouped") {
+            return {
+              ...current,
+              ungroupedDefaults: {
+                ...current.ungroupedDefaults,
+                priceAllowanceAutoResetLocked: data.locked,
+              },
+            };
+          }
+          return {
+            ...current,
+            groups: current.groups.map((group) => group.id === data.groupId
+              ? { ...group, priceAllowanceAutoResetLocked: data.locked }
+              : group),
+          };
+        },
+      );
+    },
+  });
 
   return {
     ...groupsQuery,
@@ -161,13 +242,18 @@ export function useRubberApprovalGroups() {
     ungroupedDefaults: groupsQuery.data?.ungroupedDefaults,
     maxPriceAllowance: groupsQuery.data?.maxPriceAllowance,
     canEditMaxPriceAllowance: groupsQuery.data?.canEditMaxPriceAllowance ?? false,
+    priceAllowanceAutoResetEnabled: groupsQuery.data?.priceAllowanceAutoResetEnabled ?? false,
+    canEditPriceAllowanceAutoReset: groupsQuery.data?.canEditPriceAllowanceAutoReset ?? false,
     createGroup: createGroup.mutateAsync,
     updateGroup: updateGroup.mutateAsync,
     deleteGroup: deleteGroup.mutateAsync,
     saveCentralPrice: saveCentralPrice.mutateAsync,
     saveUngroupedDefaults: saveUngroupedDefaults.mutateAsync,
     saveMaxPriceAllowance: saveMaxPriceAllowance.mutateAsync,
+    savePriceAllowanceAutoReset: savePriceAllowanceAutoReset.mutateAsync,
+    savePriceAllowanceAutoResetLock: savePriceAllowanceAutoResetLock.mutateAsync,
     isSaving: createGroup.isPending || updateGroup.isPending || deleteGroup.isPending
-      || saveCentralPrice.isPending || saveUngroupedDefaults.isPending || saveMaxPriceAllowance.isPending,
+      || saveCentralPrice.isPending || saveUngroupedDefaults.isPending || saveMaxPriceAllowance.isPending
+      || savePriceAllowanceAutoReset.isPending || savePriceAllowanceAutoResetLock.isPending,
   };
 }

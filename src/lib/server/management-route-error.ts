@@ -47,7 +47,7 @@ export function isNonNegativeNumeric12Scale2(value: unknown): value is number {
 
 export function managementErrorResponse(error: ErrorLike, fallback: string) {
   const message = error?.message ?? "";
-  const known = [
+  const known = error?.code === "P0001" ? [
     { prefix: "FORBIDDEN:", status: 403 },
     { prefix: "RUBBER_GROUP_NOT_FOUND:", status: 404 },
     { prefix: "RUBBER_WEIGHT_ALERT_GROUP_NOT_FOUND:", status: 404 },
@@ -58,6 +58,8 @@ export function managementErrorResponse(error: ErrorLike, fallback: string) {
     { prefix: "RUBBER_CENTRAL_PRICE_STALE:", status: 409 },
     { prefix: "RUBBER_UNGROUPED_STALE:", status: 409 },
     { prefix: "RUBBER_ALLOWANCE_STALE:", status: 409 },
+    { prefix: "RUBBER_AUTO_RESET_LOCK_STALE:", status: 409 },
+    { prefix: "RUBBER_AUTO_RESET_STALE:", status: 409 },
     { prefix: "RUBBER_GROUP_STALE:", status: 409 },
     { prefix: "RUBBER_WEIGHT_ALERT_GROUP_BRANCH_CONFLICT:", status: 409 },
     { prefix: "ADMIN_REQUEST_CONFLICT:", status: 409 },
@@ -70,17 +72,19 @@ export function managementErrorResponse(error: ErrorLike, fallback: string) {
     { prefix: "RUBBER_ALLOWANCE_INVALID:", status: 400 },
     { prefix: "RUBBER_ALLOWANCE_LIMIT_TOO_LOW:", status: 400 },
     { prefix: "RUBBER_ALLOWANCE_LIMIT_EXCEEDED:", status: 400 },
+    { prefix: "RUBBER_AUTO_RESET_LOCK_INVALID:", status: 400 },
+    { prefix: "RUBBER_AUTO_RESET_INVALID:", status: 400 },
     { prefix: "RUBBER_EDIT_WINDOW_INVALID:", status: 400 },
     { prefix: "RUBBER_WEIGHT_ALERT_GROUP_EMPTY:", status: 400 },
     { prefix: "RUBBER_WEIGHT_ALERT_GROUP_INVALID:", status: 400 },
     { prefix: "ADMIN_PROFILE_INVALID:", status: 400 },
     { prefix: "ADMIN_AUDIT_INVALID:", status: 400 },
-  ].find(({ prefix }) => message.includes(prefix));
+  ].find(({ prefix }) => message.startsWith(prefix)) : undefined;
 
   if (!known) {
     return NextResponse.json({ errorMessage: fallback }, { status: 500 });
   }
-  const errorMessage = message.slice(message.indexOf(known.prefix) + known.prefix.length).trim();
+  const errorMessage = message.slice(known.prefix.length).trim();
   return NextResponse.json({ errorMessage }, { status: known.status });
 }
 

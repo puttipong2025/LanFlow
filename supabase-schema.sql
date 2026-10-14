@@ -8435,6 +8435,69 @@ $$;
 ALTER FUNCTION "private"."reserve_rubber_bill_ocr_source"("p_payload" "jsonb") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."reset_rubber_price_allowances"("p_now" timestamp with time zone DEFAULT "clock_timestamp"()) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_now timestamptz := coalesce(p_now, clock_timestamp());
+  v_settings public.rubber_bill_approval_settings%rowtype;
+  v_group_count integer := 0;
+  v_ungrouped_count integer := 0;
+begin
+  perform pg_advisory_xact_lock(hashtextextended('rubber-approval-policy', 0));
+  select * into v_settings
+  from public.rubber_bill_approval_settings
+  where id = true
+  for update;
+
+  if not v_settings.price_allowance_auto_reset_enabled then
+    return jsonb_build_object('groupCount', 0, 'ungroupedCount', 0);
+  end if;
+
+  update public.rubber_approval_groups
+  set configured_price = v_settings.central_price,
+      price_allowance = 0,
+      revision_no = revision_no + 1,
+      updated_by_user_id = null,
+      updated_by_name = 'ระบบ',
+      updated_by_phone = null,
+      updated_at = v_now
+  where price_allowance <> 0
+    and not price_allowance_auto_reset_locked
+    and updated_at <= v_now - interval '24 hours';
+  get diagnostics v_group_count = row_count;
+
+  update public.rubber_bill_approval_settings
+  set ungrouped_price_allowance = 0,
+      ungrouped_revision = ungrouped_revision + 1,
+      ungrouped_updated_by_user_id = null,
+      ungrouped_updated_by_name = 'ระบบ',
+      ungrouped_updated_by_phone = null,
+      ungrouped_updated_at = v_now
+  where id = true
+    and ungrouped_price_allowance <> 0
+    and not ungrouped_price_allowance_auto_reset_locked
+    and ungrouped_updated_at <= v_now - interval '24 hours';
+  get diagnostics v_ungrouped_count = row_count;
+
+  if v_group_count + v_ungrouped_count > 0 then
+    update public.rubber_bill_approval_settings
+    set price_rule_revision = price_rule_revision + 1
+    where id = true;
+  end if;
+
+  return jsonb_build_object(
+    'groupCount', v_group_count,
+    'ungroupedCount', v_ungrouped_count
+  );
+end
+$$;
+
+
+ALTER FUNCTION "private"."reset_rubber_price_allowances"("p_now" timestamp with time zone) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."resolve_rubber_bill_price_policy_without_quota"("p_location_id" "uuid") RETURNS TABLE("group_id" "uuid", "rule_source" "text", "central_price" numeric, "price_allowance" numeric, "effective_price_cap" numeric, "edit_window_minutes" integer, "price_rule_revision" bigint, "updated_by_name" "text", "updated_by_phone" "text", "updated_at" timestamp with time zone, "non_current_date_requires_approval" boolean)
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -12567,6 +12630,7 @@ begin
       'locationIds', to_jsonb(v_location_ids),
       'editWindowMinutes', v_group.edit_window_minutes,
       'priceAllowance', v_group.price_allowance,
+      'priceAllowanceAutoResetLocked', v_group.price_allowance_auto_reset_locked,
       'revisionNo', v_group.revision_no,
       'updatedByName', v_group.updated_by_name,
       'updatedByPhone', v_group.updated_by_phone,
@@ -21126,6 +21190,7 @@ begin
     'locationIds', grouped.location_ids,
     'editWindowMinutes', grouped.edit_window_minutes,
     'priceAllowance', grouped.price_allowance,
+    'priceAllowanceAutoResetLocked', grouped.price_allowance_auto_reset_locked,
     'revisionNo', grouped.revision_no,
     'updatedByName', grouped.updated_by_name,
     'updatedByPhone', grouped.updated_by_phone,
@@ -21133,7 +21198,8 @@ begin
   ) order by grouped.created_at, grouped.id), '[]'::jsonb)
   into v_groups
   from (
-    select g.id, g.edit_window_minutes, g.price_allowance, g.revision_no,
+    select g.id, g.edit_window_minutes, g.price_allowance,
+      g.price_allowance_auto_reset_locked, g.revision_no,
       g.updated_by_name, g.updated_by_phone, g.created_at, g.updated_at,
       to_jsonb(array_agg(gl.location_id order by l.name, gl.location_id)) location_ids
     from public.rubber_approval_groups g
@@ -21165,6 +21231,7 @@ begin
       'locationIds', v_ungrouped_location_ids,
       'editWindowMinutes', v_settings.ungrouped_edit_window_minutes,
       'priceAllowance', v_settings.ungrouped_price_allowance,
+      'priceAllowanceAutoResetLocked', v_settings.ungrouped_price_allowance_auto_reset_locked,
       'revision', v_settings.ungrouped_revision,
       'updatedByName', v_settings.ungrouped_updated_by_name,
       'updatedByPhone', v_settings.ungrouped_updated_by_phone,
@@ -21175,7 +21242,8 @@ begin
       'updatedByName', v_settings.max_price_allowance_updated_by_name,
       'updatedByPhone', v_settings.max_price_allowance_updated_by_phone,
       'updatedAt', v_settings.max_price_allowance_updated_at
-    )
+    ),
+    'priceAllowanceAutoResetEnabled', v_settings.price_allowance_auto_reset_enabled
   );
 end
 $$;
@@ -24620,6 +24688,125 @@ $$;
 ALTER FUNCTION "public"."save_rubber_max_price_allowance"("p_max_price_allowance" numeric, "p_expected_max_price_allowance" numeric) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."save_rubber_price_allowance_auto_reset"("p_enabled" boolean, "p_expected_enabled" boolean) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_current boolean;
+begin
+  if not private.is_active_user() or not exists (
+    select 1 from public.profiles p
+    where p.id = auth.uid() and p.is_active = true and p.role = 'super_admin'
+  ) then
+    raise exception 'FORBIDDEN: เฉพาะ super admin เท่านั้นที่เปิดหรือปิดการรีเซ็ตราคายางอัตโนมัติได้';
+  end if;
+  if p_enabled is null or p_expected_enabled is null then
+    raise exception 'RUBBER_AUTO_RESET_INVALID: สถานะการรีเซ็ตราคายางอัตโนมัติไม่ถูกต้อง';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended('rubber-approval-policy', 0));
+  select price_allowance_auto_reset_enabled into v_current
+  from public.rubber_bill_approval_settings
+  where id = true
+  for update;
+
+  if v_current is distinct from p_expected_enabled then
+    raise exception 'RUBBER_AUTO_RESET_STALE: สถานะการรีเซ็ตอัตโนมัติถูกแก้ไขโดยผู้ใช้อื่น';
+  end if;
+  if v_current = p_enabled then
+    return jsonb_build_object('status', 'unchanged', 'enabled', v_current);
+  end if;
+
+  update public.rubber_bill_approval_settings
+  set price_allowance_auto_reset_enabled = p_enabled
+  where id = true;
+
+  return jsonb_build_object('status', 'saved', 'enabled', p_enabled);
+end
+$$;
+
+
+ALTER FUNCTION "public"."save_rubber_price_allowance_auto_reset"("p_enabled" boolean, "p_expected_enabled" boolean) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."save_rubber_price_allowance_auto_reset_lock"("p_scope" "text", "p_group_id" "uuid", "p_locked" boolean, "p_expected_locked" boolean) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_current boolean;
+  v_status text := 'saved';
+begin
+  if not private.is_active_user() or not exists (
+    select 1 from public.profiles p
+    where p.id = auth.uid() and p.is_active = true and p.role = 'super_admin'
+  ) then
+    raise exception 'FORBIDDEN: เฉพาะ super admin เท่านั้นที่เปลี่ยนสถานะล็อกรีเซ็ตราคายางได้';
+  end if;
+  if p_locked is null
+     or p_expected_locked is null
+     or p_scope is null
+     or p_scope not in ('group', 'ungrouped')
+     or (p_scope = 'group' and p_group_id is null)
+     or (p_scope = 'ungrouped' and p_group_id is not null) then
+    raise exception 'RUBBER_AUTO_RESET_LOCK_INVALID: สถานะล็อกรีเซ็ตราคายางไม่ถูกต้อง';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended('rubber-approval-policy', 0));
+
+  if p_scope = 'group' then
+    select price_allowance_auto_reset_locked into v_current
+    from public.rubber_approval_groups
+    where id = p_group_id
+    for update;
+    if not found then
+      raise exception 'RUBBER_GROUP_NOT_FOUND: ไม่พบกลุ่ม';
+    end if;
+    if v_current is distinct from p_expected_locked then
+      raise exception 'RUBBER_AUTO_RESET_LOCK_STALE: สถานะล็อกถูกแก้ไขโดยผู้ใช้อื่น';
+    end if;
+    if v_current = p_locked then
+      v_status := 'unchanged';
+    else
+      update public.rubber_approval_groups
+      set price_allowance_auto_reset_locked = p_locked
+      where id = p_group_id;
+    end if;
+    return jsonb_build_object(
+      'status', v_status,
+      'scope', 'group',
+      'groupId', p_group_id,
+      'locked', p_locked
+    );
+  end if;
+
+  select ungrouped_price_allowance_auto_reset_locked into v_current
+  from public.rubber_bill_approval_settings
+  where id = true
+  for update;
+  if v_current is distinct from p_expected_locked then
+    raise exception 'RUBBER_AUTO_RESET_LOCK_STALE: สถานะล็อกถูกแก้ไขโดยผู้ใช้อื่น';
+  end if;
+  if v_current = p_locked then
+    v_status := 'unchanged';
+  else
+    update public.rubber_bill_approval_settings
+    set ungrouped_price_allowance_auto_reset_locked = p_locked
+    where id = true;
+  end if;
+  return jsonb_build_object(
+    'status', v_status,
+    'scope', 'ungrouped',
+    'locked', p_locked
+  );
+end
+$$;
+
+
+ALTER FUNCTION "public"."save_rubber_price_allowance_auto_reset_lock"("p_scope" "text", "p_group_id" "uuid", "p_locked" boolean, "p_expected_locked" boolean) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."save_rubber_ungrouped_defaults"("p_edit_window_minutes" integer, "p_price_allowance" numeric, "p_expected_revision" bigint) RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -27885,6 +28072,7 @@ begin
         'locationIds', to_jsonb(v_old_location_ids),
         'editWindowMinutes', v_group.edit_window_minutes,
         'priceAllowance', v_group.price_allowance,
+        'priceAllowanceAutoResetLocked', v_group.price_allowance_auto_reset_locked,
         'revisionNo', v_group.revision_no,
         'updatedByName', v_group.updated_by_name,
         'updatedByPhone', v_group.updated_by_phone,
@@ -27996,6 +28184,7 @@ begin
       'locationIds', to_jsonb(v_location_ids),
       'editWindowMinutes', v_group.edit_window_minutes,
       'priceAllowance', v_group.price_allowance,
+      'priceAllowanceAutoResetLocked', v_group.price_allowance_auto_reset_locked,
       'revisionNo', v_group.revision_no,
       'updatedByName', v_group.updated_by_name,
       'updatedByPhone', v_group.updated_by_phone,
@@ -29589,6 +29778,7 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_approval_groups" (
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "price_allowance" numeric(12,2) NOT NULL,
     "revision_no" bigint DEFAULT 1 NOT NULL,
+    "price_allowance_auto_reset_locked" boolean DEFAULT false NOT NULL,
     CONSTRAINT "rubber_approval_groups_allowance_check" CHECK ((("price_allowance" >= (0)::numeric) AND ("scale"("price_allowance") <= 2))),
     CONSTRAINT "rubber_approval_groups_edit_window_check" CHECK (("edit_window_minutes" >= 0)),
     CONSTRAINT "rubber_approval_groups_price_check" CHECK ((("configured_price" IS NULL) OR ("configured_price" >= (0)::numeric)))
@@ -29671,6 +29861,8 @@ CREATE TABLE IF NOT EXISTS "public"."rubber_bill_approval_settings" (
     "max_price_allowance_updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "price_rule_revision" bigint DEFAULT 1 NOT NULL,
     "max_price_allowance" numeric(12,2) NOT NULL,
+    "price_allowance_auto_reset_enabled" boolean DEFAULT false NOT NULL,
+    "ungrouped_price_allowance_auto_reset_locked" boolean DEFAULT false NOT NULL,
     CONSTRAINT "rubber_bill_approval_central_price_check" CHECK ((("central_price" > (0)::numeric) AND ("scale"("central_price") <= 2))),
     CONSTRAINT "rubber_bill_approval_max_allowance_check" CHECK ((("max_price_allowance" >= (0)::numeric) AND ("scale"("max_price_allowance") <= 2))),
     CONSTRAINT "rubber_bill_approval_settings_configured_price_check" CHECK ((("configured_price" IS NULL) OR ("configured_price" >= (0)::numeric))),
@@ -33664,6 +33856,10 @@ REVOKE ALL ON FUNCTION "private"."reserve_rubber_bill_ocr_source"("p_payload" "j
 
 
 
+REVOKE ALL ON FUNCTION "private"."reset_rubber_price_allowances"("p_now" timestamp with time zone) FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."resolve_rubber_bill_price_policy_without_quota"("p_location_id" "uuid") FROM PUBLIC;
 
 
@@ -35064,6 +35260,16 @@ GRANT ALL ON FUNCTION "public"."save_rubber_export_work_transfer_slips"("p_trans
 
 REVOKE ALL ON FUNCTION "public"."save_rubber_max_price_allowance"("p_max_price_allowance" numeric, "p_expected_max_price_allowance" numeric) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."save_rubber_max_price_allowance"("p_max_price_allowance" numeric, "p_expected_max_price_allowance" numeric) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."save_rubber_price_allowance_auto_reset"("p_enabled" boolean, "p_expected_enabled" boolean) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."save_rubber_price_allowance_auto_reset"("p_enabled" boolean, "p_expected_enabled" boolean) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."save_rubber_price_allowance_auto_reset_lock"("p_scope" "text", "p_group_id" "uuid", "p_locked" boolean, "p_expected_locked" boolean) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."save_rubber_price_allowance_auto_reset_lock"("p_scope" "text", "p_group_id" "uuid", "p_locked" boolean, "p_expected_locked" boolean) TO "authenticated";
 
 
 

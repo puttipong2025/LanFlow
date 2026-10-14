@@ -40,6 +40,7 @@ function approvalGroupsResponse(centralPrice: number) {
       locationIds: [locationId],
       editWindowMinutes: 30,
       priceAllowance: 0,
+      priceAllowanceAutoResetLocked: false,
       revision: 1,
       updatedByName: "System",
       updatedByPhone: null,
@@ -51,6 +52,7 @@ function approvalGroupsResponse(centralPrice: number) {
       updatedByPhone: null,
       updatedAt: "2026-10-05T00:00:00.000Z",
     },
+    priceAllowanceAutoResetEnabled: false,
   };
 }
 
@@ -174,6 +176,30 @@ test("rubber approval group list rejects incomplete nested settings", async () =
   expect(await response.json()).toEqual({ errorMessage: "ระบบไม่ตอบกลับข้อมูลกลุ่มตามรูปแบบที่กำหนด" });
 });
 
+test("rubber approval group list rejects unexpected RPC fields", async () => {
+  const nestedPayload = approvalGroupsResponse(42);
+  const payloads = [
+    { ...approvalGroupsResponse(42), internalDetail: "private" },
+    {
+      ...nestedPayload,
+      centralPrice: { ...nestedPayload.centralPrice, internalDetail: "private" },
+    },
+  ];
+
+  for (const payload of payloads) {
+    const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-groups/route")>(
+      "src/app/api/lanflow/rubber-bills/approval-groups/route.ts",
+      routeDependencies(payload),
+    );
+    const response = await route.GET(
+      new Request("http://local/api/lanflow/rubber-bills/approval-groups") as never,
+    );
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ errorMessage: "ระบบไม่ตอบกลับข้อมูลกลุ่มตามรูปแบบที่กำหนด" });
+  }
+});
+
 test("rubber approval group list rejects a zero central price", async () => {
   const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-groups/route")>(
     "src/app/api/lanflow/rubber-bills/approval-groups/route.ts",
@@ -278,6 +304,7 @@ test("rubber approval group list rejects a branch in both a group and the ungrou
       locationIds: [locationId],
       editWindowMinutes: 30,
       priceAllowance: 0,
+      priceAllowanceAutoResetLocked: false,
       revisionNo: 1,
       updatedByName: "System",
       updatedByPhone: null,
@@ -303,6 +330,7 @@ test("rubber approval group list rejects an empty persisted group", async () => 
       locationIds: [],
       editWindowMinutes: 30,
       priceAllowance: 0,
+      priceAllowanceAutoResetLocked: true,
       revisionNo: 1,
       updatedByName: "System",
       updatedByPhone: null,
@@ -423,6 +451,7 @@ test("rubber approval group create canonicalizes UUID casing before validating t
       locationIds: [caseVariantLocationId],
       editWindowMinutes: 30,
       priceAllowance: 0,
+      priceAllowanceAutoResetLocked: false,
       revisionNo: 1,
       updatedByName: "System",
       updatedByPhone: null,
@@ -610,6 +639,7 @@ test("rubber approval group update preserves a valid unchanged response", async 
       locationIds: [locationId],
       editWindowMinutes: 30,
       priceAllowance: 0,
+      priceAllowanceAutoResetLocked: true,
       revisionNo: 1,
       updatedByName: "System",
       updatedByPhone: null,
@@ -711,6 +741,7 @@ test("rubber approval group update canonicalizes path, member, and source-revisi
       locationIds: [caseVariantLocationId],
       editWindowMinutes: 30,
       priceAllowance: 0,
+      priceAllowanceAutoResetLocked: true,
       revisionNo: 2,
       updatedByName: "System",
       updatedByPhone: null,
@@ -883,6 +914,37 @@ test("rubber maximum-price save rejects a response with a different value", asyn
   expect(await response.json()).toEqual({ errorMessage: "ระบบไม่ตอบกลับผลการบันทึก" });
 });
 
+test("rubber maximum-price save rejects impossible saved and unchanged transitions", async () => {
+  for (const { status, expectedMaxPriceAllowance } of [
+    { status: "unchanged", expectedMaxPriceAllowance: 9 },
+    { status: "saved", expectedMaxPriceAllowance: 10 },
+  ] as const) {
+    const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-settings/max-price-allowance/route")>(
+      "src/app/api/lanflow/rubber-bills/approval-settings/max-price-allowance/route.ts",
+      routeDependencies({
+        status,
+        setting: {
+          value: 10,
+          updatedByName: "System",
+          updatedByPhone: null,
+          updatedAt: "2026-10-05T00:00:00.000Z",
+        },
+      }),
+    );
+    const response = await route.PUT(new Request(
+      "http://local/api/lanflow/rubber-bills/approval-settings/max-price-allowance",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxPriceAllowance: 10, expectedMaxPriceAllowance }),
+      },
+    ) as never);
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ errorMessage: "ระบบไม่ตอบกลับผลการบันทึก" });
+  }
+});
+
 test("rubber maximum-price save rejects malformed conflict contracts", async () => {
   const malformedConflicts = [
     {
@@ -900,6 +962,17 @@ test("rubber maximum-price save rejects malformed conflict contracts", async () 
         groupId,
         locationIds: [locationId],
         allowance: 11,
+      }],
+    },
+    {
+      status: "conflict",
+      code: "RUBBER_ALLOWANCE_LIMIT_TOO_LOW",
+      errorMessage: "conflict",
+      conflicts: [{
+        scope: "group",
+        groupId,
+        locationIds: [locationId],
+        allowance: 10,
       }],
     },
   ];
@@ -983,6 +1056,372 @@ test("rubber maximum-price save replaces database details in a known conflict", 
     errorMessage: "ราคายางที่กำหนดสูงสุดถูกแก้ไขโดยผู้ใช้อื่น กรุณาตรวจสอบค่าล่าสุดและยืนยันอีกครั้ง",
     conflicts: [],
   });
+});
+
+test("rubber auto-reset save rejects malformed boolean payloads", async () => {
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset/route")>(
+    "src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset/route.ts",
+    routeDependencies({ status: "saved", enabled: true }),
+  );
+  const malformedBodies = [
+    null,
+    { enabled: "true", expectedEnabled: false },
+    { enabled: true, expectedEnabled: 0 },
+    { enabled: true, expectedEnabled: false, extra: true },
+  ];
+
+  for (const body of malformedBodies) {
+    const response = await route.PUT(new Request(
+      "http://local/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ) as never);
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      errorMessage: "ข้อมูลการรีเซ็ตราคายางอัตโนมัติไม่ถูกต้อง",
+    });
+  }
+});
+
+test("rubber auto-reset save forwards both boolean versions and preserves a valid no-op", async () => {
+  let rpcName = "";
+  let rpcArguments: Record<string, unknown> | undefined;
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset/route")>(
+    "src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset/route.ts",
+    {
+      "@/lib/server/auth": {
+        requireRole: async () => ({
+          ok: true,
+          auth: { role: "super_admin" },
+          supabase: {
+            rpc: async (name: string, args: Record<string, unknown>) => {
+              rpcName = name;
+              rpcArguments = args;
+              return { data: { status: "unchanged", enabled: false }, error: null };
+            },
+          },
+        }),
+      },
+    },
+  );
+  const response = await route.PUT(new Request(
+    "http://local/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset",
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: false, expectedEnabled: false }),
+    },
+  ) as never);
+
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ status: "unchanged", enabled: false });
+  expect(rpcName).toBe("save_rubber_price_allowance_auto_reset");
+  expect(rpcArguments).toEqual({ p_enabled: false, p_expected_enabled: false });
+});
+
+test("rubber auto-reset save rejects a response for the opposite state", async () => {
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset/route")>(
+    "src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset/route.ts",
+    routeDependencies({ status: "saved", enabled: false }),
+  );
+  const response = await route.PUT(new Request(
+    "http://local/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset",
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: true, expectedEnabled: false }),
+    },
+  ) as never);
+
+  expect(response.status).toBe(500);
+  expect(await response.json()).toEqual({ errorMessage: "ระบบไม่ตอบกลับผลการบันทึก" });
+});
+
+test("rubber auto-reset save rejects extra fields and an impossible unchanged transition", async () => {
+  for (const rpcResult of [
+    { status: "saved", enabled: true, internalDetail: "private" },
+    { status: "unchanged", enabled: true },
+  ]) {
+    const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset/route")>(
+      "src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset/route.ts",
+      routeDependencies(rpcResult),
+    );
+    const response = await route.PUT(new Request(
+      "http://local/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: true, expectedEnabled: false }),
+      },
+    ) as never);
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ errorMessage: "ระบบไม่ตอบกลับผลการบันทึก" });
+  }
+});
+
+test("rubber auto-reset save keeps a stale toggle conflict actionable", async () => {
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset/route")>(
+    "src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset/route.ts",
+    {
+      "@/lib/server/auth": {
+        requireRole: async () => ({
+          ok: true,
+          auth: { role: "super_admin" },
+          supabase: {
+            rpc: async () => ({
+              data: null,
+              error: {
+                code: "P0001",
+                message: "RUBBER_AUTO_RESET_STALE: สถานะการรีเซ็ตอัตโนมัติถูกแก้ไขโดยผู้ใช้อื่น",
+              },
+            }),
+          },
+        }),
+      },
+    },
+  );
+  const response = await route.PUT(new Request(
+    "http://local/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset",
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: true, expectedEnabled: false }),
+    },
+  ) as never);
+
+  expect(response.status).toBe(409);
+  expect(await response.json()).toEqual({
+    errorMessage: "สถานะการรีเซ็ตอัตโนมัติถูกแก้ไขโดยผู้ใช้อื่น",
+  });
+});
+
+test("rubber auto-reset lock rejects invalid discriminated bodies", async () => {
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset-lock/route")>(
+    "src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset-lock/route.ts",
+    routeDependencies({ status: "saved", scope: "group", groupId, locked: true }),
+  );
+  const malformedBodies = [
+    null,
+    { scope: "invalid", locked: true, expectedLocked: false },
+    { scope: "group", locked: true, expectedLocked: false },
+    { scope: "group", groupId: "bad", locked: true, expectedLocked: false },
+    { scope: "ungrouped", groupId, locked: true, expectedLocked: false },
+    { scope: "ungrouped", locked: "true", expectedLocked: false },
+    { scope: "ungrouped", locked: true, expectedLocked: false, extra: true },
+  ];
+
+  for (const body of malformedBodies) {
+    const response = await route.PUT(new Request(
+      "http://local/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset-lock",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ) as never);
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ errorMessage: "ข้อมูลล็อกรีเซ็ตราคายางไม่ถูกต้อง" });
+  }
+});
+
+test("rubber auto-reset lock forwards the canonical group contract", async () => {
+  let rpcName = "";
+  let rpcArguments: Record<string, unknown> | undefined;
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset-lock/route")>(
+    "src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset-lock/route.ts",
+    {
+      "@/lib/server/auth": {
+        requireRole: async () => ({
+          ok: true,
+          auth: { role: "super_admin" },
+          supabase: {
+            rpc: async (name: string, args: Record<string, unknown>) => {
+              rpcName = name;
+              rpcArguments = args;
+              return {
+                data: { status: "saved", scope: "group", groupId: caseVariantGroupId, locked: true },
+                error: null,
+              };
+            },
+          },
+        }),
+      },
+    },
+  );
+  const response = await route.PUT(new Request(
+    "http://local/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset-lock",
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        scope: "group",
+        groupId: caseVariantGroupId.toUpperCase(),
+        locked: true,
+        expectedLocked: false,
+      }),
+    },
+  ) as never);
+
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({
+    status: "saved",
+    scope: "group",
+    groupId: caseVariantGroupId,
+    locked: true,
+  });
+  expect(rpcName).toBe("save_rubber_price_allowance_auto_reset_lock");
+  expect(rpcArguments).toEqual({
+    p_scope: "group",
+    p_group_id: caseVariantGroupId,
+    p_locked: true,
+    p_expected_locked: false,
+  });
+});
+
+test("rubber auto-reset lock forwards the ungrouped contract without a group id", async () => {
+  let rpcArguments: Record<string, unknown> | undefined;
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset-lock/route")>(
+    "src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset-lock/route.ts",
+    {
+      "@/lib/server/auth": {
+        requireRole: async () => ({
+          ok: true,
+          auth: { role: "super_admin" },
+          supabase: {
+            rpc: async (_name: string, args: Record<string, unknown>) => {
+              rpcArguments = args;
+              return { data: { status: "unchanged", scope: "ungrouped", locked: false }, error: null };
+            },
+          },
+        }),
+      },
+    },
+  );
+  const response = await route.PUT(new Request(
+    "http://local/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset-lock",
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope: "ungrouped", locked: false, expectedLocked: false }),
+    },
+  ) as never);
+
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ status: "unchanged", scope: "ungrouped", locked: false });
+  expect(rpcArguments).toEqual({
+    p_scope: "ungrouped",
+    p_group_id: null,
+    p_locked: false,
+    p_expected_locked: false,
+  });
+});
+
+test("rubber auto-reset lock rejects a malformed RPC response", async () => {
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset-lock/route")>(
+    "src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset-lock/route.ts",
+    routeDependencies({ status: "saved", scope: "group", groupId, locked: false }),
+  );
+  const response = await route.PUT(new Request(
+    "http://local/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset-lock",
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope: "group", groupId, locked: true, expectedLocked: false }),
+    },
+  ) as never);
+
+  expect(response.status).toBe(500);
+  expect(await response.json()).toEqual({ errorMessage: "ระบบไม่ตอบกลับผลการบันทึก" });
+});
+
+test("rubber auto-reset lock rejects an impossible unchanged transition", async () => {
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset-lock/route")>(
+    "src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset-lock/route.ts",
+    routeDependencies({ status: "unchanged", scope: "group", groupId, locked: true }),
+  );
+  const response = await route.PUT(new Request(
+    "http://local/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset-lock",
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope: "group", groupId, locked: true, expectedLocked: false }),
+    },
+  ) as never);
+
+  expect(response.status).toBe(500);
+  expect(await response.json()).toEqual({ errorMessage: "ระบบไม่ตอบกลับผลการบันทึก" });
+});
+
+test("rubber auto-reset lock maps invalid, missing, and stale errors", async () => {
+  const cases = [
+    ["RUBBER_AUTO_RESET_LOCK_INVALID: สถานะไม่ถูกต้อง", 400, "สถานะไม่ถูกต้อง"],
+    ["RUBBER_GROUP_NOT_FOUND: ไม่พบกลุ่ม", 404, "ไม่พบกลุ่ม"],
+    ["RUBBER_AUTO_RESET_LOCK_STALE: สถานะถูกแก้ไขแล้ว", 409, "สถานะถูกแก้ไขแล้ว"],
+  ] as const;
+  for (const [message, status, errorMessage] of cases) {
+    const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset-lock/route")>(
+      "src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset-lock/route.ts",
+      {
+        "@/lib/server/auth": {
+          requireRole: async () => ({
+            ok: true,
+            auth: { role: "super_admin" },
+            supabase: { rpc: async () => ({ data: null, error: { code: "P0001", message } }) },
+          }),
+        },
+      },
+    );
+    const response = await route.PUT(new Request(
+      "http://local/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset-lock",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: "group", groupId, locked: true, expectedLocked: false }),
+      },
+    ) as never);
+
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual({ errorMessage });
+  }
+});
+
+test("rubber auto-reset lock keeps non-business database errors opaque", async () => {
+  for (const message of [
+    "RUBBER_AUTO_RESET_LOCK_STALE: postgres://internal-secret",
+    "unexpected database failure; RUBBER_AUTO_RESET_LOCK_STALE: postgres://internal-secret",
+  ]) {
+    const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset-lock/route")>(
+      "src/app/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset-lock/route.ts",
+      {
+        "@/lib/server/auth": {
+          requireRole: async () => ({
+            ok: true,
+            auth: { role: "super_admin" },
+            supabase: {
+              rpc: async () => ({ data: null, error: { code: "XX000", message } }),
+            },
+          }),
+        },
+      },
+    );
+    const response = await route.PUT(new Request(
+      "http://local/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset-lock",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: "group", groupId, locked: true, expectedLocked: false }),
+      },
+    ) as never);
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ errorMessage: "บันทึกล็อกรีเซ็ตราคายางไม่สำเร็จ" });
+  }
 });
 
 test("effective rubber approval settings GET rejects a malformed RPC response", async () => {

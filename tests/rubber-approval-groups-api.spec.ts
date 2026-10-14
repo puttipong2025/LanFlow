@@ -633,6 +633,337 @@ test.describe.serial("Rubber approval groups API", () => {
     }
   });
 
+  test("auto-reset stays exact-superadmin-only and requires confirmation before enabling", async ({ browser, request }) => {
+    test.setTimeout(90_000);
+    const superAdmin = await authContext(browser, "super_admin");
+    const systemManager = await authContext(browser, "admin");
+    const user = await authContext(browser, "user");
+    const db = service();
+    const systemManagerId = "00000000-0000-4000-8000-000000000002";
+    try {
+      expect((await db.from("rubber_bill_approval_settings")
+        .update({ price_allowance_auto_reset_enabled: false })
+        .eq("id", true)).error).toBeNull();
+      expect((await db.from("profiles")
+        .update({ can_access_super_admin_features: true })
+        .eq("id", systemManagerId)).error).toBeNull();
+
+      expect((await systemManager.request.put(
+        "/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset",
+        { data: { enabled: false, expectedEnabled: false } },
+      )).status()).toBe(403);
+      expect((await user.request.put(
+        "/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset",
+        { data: { enabled: false, expectedEnabled: false } },
+      )).status()).toBe(403);
+      expect((await request.put(
+        "/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset",
+        { data: { enabled: false, expectedEnabled: false } },
+      )).status()).toBe(401);
+      const unchanged = await superAdmin.request.put(
+        "/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset",
+        { data: { enabled: false, expectedEnabled: false } },
+      );
+      expect(unchanged.ok(), await unchanged.text()).toBeTruthy();
+      expect(await unchanged.json()).toEqual({ status: "unchanged", enabled: false });
+
+      const superAdminPage = await superAdmin.newPage();
+      await superAdminPage.route(
+        "**/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset",
+        async (route) => {
+          const body = route.request().postDataJSON() as { enabled: boolean };
+          await route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({ status: "saved", enabled: body.enabled }),
+          });
+        },
+      );
+      await superAdminPage.goto("/");
+      await superAdminPage.getByRole("button", { name: "บิลยาง" }).click();
+      await superAdminPage.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ }).click();
+      const superAdminDialog = superAdminPage.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง" });
+      const toggle = superAdminDialog.getByRole("checkbox", {
+        name: /รีเซ็ตราคายางที่กำหนดเป็น 0 ทุก 24 ชั่วโมง/,
+      });
+      await expect(toggle).toBeEnabled({ timeout: 15_000 });
+      await toggle.click();
+      const confirmation = superAdminPage.getByRole("alertdialog", {
+        name: "เปิดการรีเซ็ตราคายางอัตโนมัติ?",
+      });
+      await expect(confirmation).toContainText("อาจถูกรีเซ็ตเป็น 0 ในรอบตรวจถัดไป");
+      await confirmation.getByRole("button", { name: "ยกเลิก" }).click();
+      await expect(toggle).not.toBeChecked();
+      await toggle.click();
+      await superAdminPage.getByRole("alertdialog", {
+        name: "เปิดการรีเซ็ตราคายางอัตโนมัติ?",
+      }).getByRole("button", { name: "ยืนยันเปิดใช้งาน" }).click();
+      await expect(toggle).toBeChecked();
+      await toggle.click();
+      await expect(toggle).not.toBeChecked();
+      await expect(superAdminPage.getByRole("alertdialog", {
+        name: "เปิดการรีเซ็ตราคายางอัตโนมัติ?",
+      })).toHaveCount(0);
+
+      const managerPage = await systemManager.newPage();
+      await managerPage.goto("/");
+      await managerPage.getByRole("button", { name: "บิลยาง" }).click();
+      await managerPage.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ }).click();
+      const managerDialog = managerPage.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง" });
+      await expect(managerDialog.getByRole("checkbox", {
+        name: /รีเซ็ตราคายางที่กำหนดเป็น 0 ทุก 24 ชั่วโมง/,
+      })).toBeDisabled();
+      await expect(managerDialog.getByText("เฉพาะ Superadmin เท่านั้นที่เปิดหรือปิดกฎนี้ได้")).toBeVisible();
+    } finally {
+      await db.from("rubber_bill_approval_settings")
+        .update({ price_allowance_auto_reset_enabled: false })
+        .eq("id", true);
+      await db.from("profiles")
+        .update({ can_access_super_admin_features: false })
+        .eq("id", systemManagerId);
+      await Promise.all([superAdmin.close(), systemManager.close(), user.close()]);
+    }
+  });
+
+  test("per-scope auto-reset locks are immediate, stable, and read-only for managers", async ({ browser }) => {
+    test.setTimeout(120_000);
+    const superAdmin = await authContext(browser, "super_admin");
+    const systemManager = await authContext(browser, "admin");
+    const db = service();
+    const systemManagerId = "00000000-0000-4000-8000-000000000002";
+    const locationId = crypto.randomUUID();
+    const code = `RL${locationId.replaceAll("-", "").slice(0, 8).toUpperCase()}`;
+    type LockTestGroup = {
+      id: string;
+      revisionNo: number;
+      priceAllowanceAutoResetLocked: boolean;
+    };
+    let group: LockTestGroup | null = null;
+    const originalSettings = await db.from("rubber_bill_approval_settings")
+      .select("price_allowance_auto_reset_enabled,ungrouped_price_allowance_auto_reset_locked")
+      .eq("id", true)
+      .single();
+    expect(originalSettings.error).toBeNull();
+    try {
+      expect((await db.from("locations").insert({
+        id: locationId,
+        name: `สาขาทดสอบล็อก ${code}`,
+        code,
+        is_active: true,
+      })).error).toBeNull();
+      expect((await db.from("rubber_bill_approval_settings").update({
+        price_allowance_auto_reset_enabled: false,
+        ungrouped_price_allowance_auto_reset_locked: false,
+      }).eq("id", true)).error).toBeNull();
+      expect((await db.from("profiles")
+        .update({ can_access_super_admin_features: true })
+        .eq("id", systemManagerId)).error).toBeNull();
+
+      const created = await superAdmin.request.post("/api/lanflow/rubber-bills/approval-groups", {
+        data: { locationIds: [locationId], editWindowMinutes: 30, priceAllowance: 8 },
+      });
+      expect(created.ok(), await created.text()).toBeTruthy();
+      group = (await created.json() as { group: LockTestGroup }).group;
+      expect(group?.priceAllowanceAutoResetLocked).toBe(false);
+      expect((await systemManager.request.put(
+        "/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset-lock",
+        { data: { scope: "group", groupId: group!.id, locked: true, expectedLocked: false } },
+      )).status()).toBe(403);
+
+      const groupBefore = await db.from("rubber_approval_groups")
+        .select("price_allowance,revision_no,updated_by_name,updated_by_phone,updated_at")
+        .eq("id", group!.id)
+        .single();
+      const ungroupedBefore = await db.from("rubber_bill_approval_settings")
+        .select("ungrouped_price_allowance,ungrouped_revision,ungrouped_updated_by_name,ungrouped_updated_by_phone,ungrouped_updated_at")
+        .eq("id", true)
+        .single();
+      expect(groupBefore.error).toBeNull();
+      expect(ungroupedBefore.error).toBeNull();
+
+      const superAdminPage = await superAdmin.newPage();
+      await superAdminPage.goto("/");
+      await superAdminPage.getByRole("button", { name: "บิลยาง" }).click();
+      await superAdminPage.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ }).click();
+      const dialog = superAdminPage.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง" });
+      const groupLock = dialog.getByTestId(`auto-reset-lock-group-${group!.id}`);
+      const ungroupedLock = dialog.getByTestId("auto-reset-lock-ungrouped");
+
+      await expect(groupLock).toBeEnabled({ timeout: 15_000 });
+      await expect(dialog.getByText("สถานะล็อกจะมีผลเมื่อเปิดการรีเซ็ตอัตโนมัติ")).toBeVisible();
+      await groupLock.click();
+      await expect(groupLock).toBeChecked();
+      await expect.poll(async () => (await db.from("rubber_approval_groups")
+        .select("price_allowance_auto_reset_locked")
+        .eq("id", group!.id)
+        .single()).data?.price_allowance_auto_reset_locked).toBe(true);
+      const groupAfterLock = await db.from("rubber_approval_groups")
+        .select("price_allowance,revision_no,updated_by_name,updated_by_phone,updated_at")
+        .eq("id", group!.id)
+        .single();
+      expect(groupAfterLock.data).toEqual(groupBefore.data);
+
+      await groupLock.click();
+      await expect(groupLock).toBeChecked();
+      const groupUnlockDialog = superAdminPage.getByRole("alertdialog", { name: /ปลดล็อก กลุ่ม \d+\?/ });
+      await expect(groupUnlockDialog).toContainText("การปลดล็อกนี้ไม่แก้ราคาทันที");
+      await groupUnlockDialog.getByRole("button", { name: "ยืนยันปลดล็อก" }).click();
+      await expect(groupLock).not.toBeChecked();
+      const groupAfterUnlock = await db.from("rubber_approval_groups")
+        .select("price_allowance,revision_no,updated_by_name,updated_by_phone,updated_at")
+        .eq("id", group!.id)
+        .single();
+      expect(groupAfterUnlock.data).toEqual(groupBefore.data);
+
+      await ungroupedLock.click();
+      await expect(ungroupedLock).toBeChecked();
+      await ungroupedLock.click();
+      const ungroupedUnlockDialog = superAdminPage.getByRole("alertdialog", {
+        name: "ปลดล็อก สาขาที่ยังไม่จัดกลุ่ม?",
+      });
+      await ungroupedUnlockDialog.getByRole("button", { name: "ยืนยันปลดล็อก" }).click();
+      await expect(ungroupedLock).not.toBeChecked();
+      const ungroupedAfter = await db.from("rubber_bill_approval_settings")
+        .select("ungrouped_price_allowance,ungrouped_revision,ungrouped_updated_by_name,ungrouped_updated_by_phone,ungrouped_updated_at")
+        .eq("id", true)
+        .single();
+      expect(ungroupedAfter.data).toEqual(ungroupedBefore.data);
+
+      const managerPage = await systemManager.newPage();
+      await managerPage.goto("/");
+      await managerPage.getByRole("button", { name: "บิลยาง" }).click();
+      await managerPage.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ }).click();
+      const managerDialog = managerPage.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง" });
+      await expect(managerDialog.getByTestId(`auto-reset-lock-group-${group!.id}`)).toBeDisabled();
+      await expect(managerDialog.getByTestId("auto-reset-lock-ungrouped")).toBeDisabled();
+      await expect(
+        managerDialog.getByText("เฉพาะ Superadmin เท่านั้นที่เปลี่ยนสถานะนี้ได้").first(),
+      ).toBeVisible();
+    } finally {
+      if (group) {
+        await db.from("rubber_approval_groups").delete().eq("id", group.id);
+      }
+      await db.from("locations").delete().eq("id", locationId);
+      await db.from("rubber_bill_approval_settings").update({
+        price_allowance_auto_reset_enabled:
+          originalSettings.data?.price_allowance_auto_reset_enabled ?? false,
+        ungrouped_price_allowance_auto_reset_locked:
+          originalSettings.data?.ungrouped_price_allowance_auto_reset_locked ?? false,
+      }).eq("id", true);
+      await db.from("profiles")
+        .update({ can_access_super_admin_features: false })
+        .eq("id", systemManagerId);
+      await Promise.all([superAdmin.close(), systemManager.close()]);
+    }
+  });
+
+  test("management polling preserves an ungrouped draft and submits its opening revision", async ({ browser }) => {
+    const manager = await authContext(browser, "super_admin");
+    const db = service();
+    const initialResponse = await manager.request.get("/api/lanflow/rubber-bills/approval-groups");
+    expect(initialResponse.ok(), await initialResponse.text()).toBeTruthy();
+    const original = (await initialResponse.json() as {
+      ungroupedDefaults: { editWindowMinutes: number; priceAllowance: number; revision: number };
+    }).ungroupedDefaults;
+    const competingMinutes = original.editWindowMinutes === 41 ? 42 : 41;
+    const draftMinutes = 43;
+    try {
+      expect((await db.from("rubber_bill_approval_settings")
+        .update({ price_allowance_auto_reset_enabled: false })
+        .eq("id", true)).error).toBeNull();
+      const page = await manager.newPage();
+      await page.clock.install();
+      let listReads = 0;
+      await page.route("**/api/lanflow/rubber-bills/approval-groups", async (route) => {
+        if (route.request().method() === "GET") listReads += 1;
+        await route.continue();
+      });
+      await page.goto("/");
+      await page.getByRole("button", { name: "บิลยาง" }).click();
+      await page.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ }).click();
+      const approvalDialog = page.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง" });
+      const ungroupedCard = approvalDialog.getByTestId("ungrouped-approval-settings");
+      await ungroupedCard.getByRole("button", { name: "แก้ไข", exact: true }).click();
+      const minutesInput = ungroupedCard.getByLabel("เวลาแก้ไขได้ (นาที)");
+      await minutesInput.fill(String(draftMinutes));
+
+      const competing = await manager.request.put(
+        "/api/lanflow/rubber-bills/approval-settings/ungrouped",
+        { data: {
+          editWindowMinutes: competingMinutes,
+          priceAllowance: original.priceAllowance,
+          expectedRevision: original.revision,
+        } },
+      );
+      expect(competing.ok(), await competing.text()).toBeTruthy();
+      await page.clock.runFor(60_001);
+      await expect.poll(() => listReads).toBeGreaterThanOrEqual(2);
+      await expect(minutesInput).toHaveValue(String(draftMinutes));
+
+      await ungroupedCard.getByRole("button", { name: "บันทึกการตั้งค่า" }).click();
+      await expect(ungroupedCard.getByRole("alert")).toContainText("ถูกแก้ไขโดยผู้ใช้อื่น");
+      await expect(minutesInput).toHaveValue(String(draftMinutes));
+      const afterConflict = await manager.request.get("/api/lanflow/rubber-bills/approval-groups");
+      expect((await afterConflict.json()).ungroupedDefaults.editWindowMinutes).toBe(competingMinutes);
+
+      await ungroupedCard.getByRole("button", { name: "บันทึกการตั้งค่า" }).click();
+      await expect(ungroupedCard.getByRole("button", { name: "บันทึกการตั้งค่า" })).toHaveCount(0);
+      const saved = await manager.request.get("/api/lanflow/rubber-bills/approval-groups");
+      expect((await saved.json()).ungroupedDefaults.editWindowMinutes).toBe(draftMinutes);
+    } finally {
+      const current = await manager.request.get("/api/lanflow/rubber-bills/approval-groups");
+      if (current.ok()) {
+        const currentBody = await current.json() as { ungroupedDefaults: { revision: number } };
+        await manager.request.put("/api/lanflow/rubber-bills/approval-settings/ungrouped", {
+          data: {
+            editWindowMinutes: original.editWindowMinutes,
+            priceAllowance: original.priceAllowance,
+            expectedRevision: currentBody.ungroupedDefaults.revision,
+          },
+        });
+      }
+      await manager.close();
+    }
+  });
+
+  test("online bill creation refreshes effective approval settings before opening", async ({ browser }) => {
+    const manager = await authContext(browser, "super_admin");
+    try {
+      const page = await manager.newPage();
+      let settingsReads = 0;
+      await page.route("**/api/lanflow/rubber-bills/approval-settings?*", async (route) => {
+        const response = await route.fetch();
+        const data = await response.json() as {
+          centralPrice: number;
+          priceAllowance: number;
+          effectivePriceCap: number;
+        };
+        settingsReads += 1;
+        await route.fulfill({
+          response,
+          json: settingsReads >= 2
+            ? {
+                ...data,
+                priceAllowance: 9.87,
+                effectivePriceCap: data.centralPrice + 9.87,
+              }
+            : data,
+        });
+      });
+      await page.goto("/");
+      await page.getByRole("button", { name: "บิลยาง" }).click();
+      await expect.poll(() => settingsReads).toBeGreaterThanOrEqual(1);
+      const beforeOpen = settingsReads;
+      await page.getByRole("button", { name: "เพิ่มบิลยาง", exact: true }).click();
+      const billDialog = page.getByRole("dialog", { name: "บิลเครื่องชั่งเล็ก" });
+      await expect(billDialog).toBeVisible();
+      await expect(billDialog.getByText(/ซื้อเกินได้ 9\.87/)).toBeVisible();
+      expect(settingsReads).toBeGreaterThan(beforeOpen);
+    } finally {
+      await manager.close();
+    }
+  });
+
   test("approval setting routes reject effective price caps outside database column ranges", async ({ browser }) => {
     const manager = await authContext(browser, "super_admin");
     const db = service();

@@ -22,6 +22,7 @@ export async function GET(request: NextRequest) {
   return NextResponse.json({
     ...data,
     canEditMaxPriceAllowance: authCheck.auth.role === "super_admin",
+    canEditPriceAllowanceAutoReset: authCheck.auth.role === "super_admin",
   });
 }
 

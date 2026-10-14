@@ -36,5 +36,9 @@ export async function PUT(request: NextRequest) {
   })) {
     return NextResponse.json({ errorMessage: "ระบบไม่ตอบกลับผลการบันทึก" }, { status: 500 });
   }
-  return NextResponse.json({ ...data, canEditMaxPriceAllowance: authCheck.auth.role === "super_admin" });
+  return NextResponse.json({
+    ...data,
+    canEditMaxPriceAllowance: authCheck.auth.role === "super_admin",
+    canEditPriceAllowanceAutoReset: authCheck.auth.role === "super_admin",
+  });
 }

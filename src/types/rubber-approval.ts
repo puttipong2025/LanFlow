@@ -21,6 +21,7 @@ export type RubberApprovalGroup = {
   locationIds: string[];
   editWindowMinutes: number;
   priceAllowance: number;
+  priceAllowanceAutoResetLocked: boolean;
   revisionNo: number;
   updatedByName?: string | null;
   updatedByPhone?: string | null;
@@ -28,7 +29,7 @@ export type RubberApprovalGroup = {
 };
 
 export type RubberCentralPriceSetting = { value: number; revision: number; updatedByName: string; updatedByPhone?: string | null; updatedAt: string };
-export type RubberUngroupedDefaults = { locationIds: string[]; editWindowMinutes: number; priceAllowance: number; revision: number; updatedByName: string; updatedByPhone?: string | null; updatedAt: string };
+export type RubberUngroupedDefaults = { locationIds: string[]; editWindowMinutes: number; priceAllowance: number; priceAllowanceAutoResetLocked: boolean; revision: number; updatedByName: string; updatedByPhone?: string | null; updatedAt: string };
 export type RubberMaxPriceAllowanceSetting = {
   value: number;
   updatedByName: string;

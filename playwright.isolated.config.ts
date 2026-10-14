@@ -43,6 +43,7 @@ export default defineConfig({
     '**/rubber-feed-route-response.spec.ts',
     '**/rubber-feed-mode-contract.spec.ts',
     '**/rubber-approval-route-response.spec.ts',
+    '**/rubber-approval-policy-refresh-contract.spec.ts',
     '**/rubber-bill-validation.spec.ts',
     '**/rubber-weight-alert-state.spec.ts',
     '**/rubber-bills/rubber-bill-ocr-queue.spec.ts',

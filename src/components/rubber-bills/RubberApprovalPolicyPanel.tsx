@@ -4,17 +4,28 @@ import { Pencil, Plus, Trash2 } from "lucide-react";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 
+import {
+  RubberAutoResetLockControl,
+  RubberAutoResetToggleControl,
+} from "@/components/rubber-bills/RubberAutoResetLockControl";
 import { AlertDialog } from "@/components/shared/AlertDialog";
 import {
   RubberMaxPriceAllowanceError,
+  type RubberPriceAllowanceAutoResetLockInput,
   useRubberApprovalGroups,
 } from "@/hooks/useRubberApprovalGroups";
 import { formatBangkokDateTime } from "@/lib/bangkok-date";
 import type { Location, RubberApprovalGroup } from "@/types";
 
+type AutoResetLockTarget =
+  | { scope: "group"; groupId: string; label: string; expectedLocked: boolean }
+  | { scope: "ungrouped"; label: string; expectedLocked: boolean };
+
 type PendingConfirmation =
   | { kind: "central"; value: number; previousValue: number; expectedRevision: number }
   | { kind: "maxPriceAllowance"; value: number; previousValue: number }
+  | { kind: "autoResetEnable"; expectedEnabled: boolean }
+  | { kind: "autoResetUnlock"; target: AutoResetLockTarget }
   | { kind: "delete"; group: RubberApprovalGroup };
 
 const MONEY_PATTERN = /^\d+(\.\d{1,2})?$/;
@@ -33,6 +44,12 @@ function isSameMoney(value: string, current: number) {
 
 function actorText(name: string, updatedAt: string) {
   return `แก้ไขล่าสุดโดย ${name || "ไม่ทราบชื่อ"} · ${formatBangkokDateTime(updatedAt)}`;
+}
+
+function lockInput(target: AutoResetLockTarget, locked: boolean): RubberPriceAllowanceAutoResetLockInput {
+  return target.scope === "group"
+    ? { scope: "group", groupId: target.groupId, locked, expectedLocked: target.expectedLocked }
+    : { scope: "ungrouped", locked, expectedLocked: target.expectedLocked };
 }
 
 export function RubberApprovalPolicyPanel({
@@ -57,9 +74,12 @@ export function RubberApprovalPolicyPanel({
   const [ungroupedEditorOpen, setUngroupedEditorOpen] = useState(false);
   const [ungroupedMinutes, setUngroupedMinutes] = useState<string | null>(null);
   const [ungroupedAllowance, setUngroupedAllowance] = useState<string | null>(null);
+  const [ungroupedRevisionSnapshot, setUngroupedRevisionSnapshot] = useState<number | null>(null);
   const [groupError, setGroupError] = useState<string | null>(null);
   const [ungroupedError, setUngroupedError] = useState<string | null>(null);
   const [maxPriceAllowanceError, setMaxPriceAllowanceError] = useState<string | null>(null);
+  const [autoResetError, setAutoResetError] = useState<string | null>(null);
+  const [autoResetLockError, setAutoResetLockError] = useState<{ target: AutoResetLockTarget; message: string } | null>(null);
   const ungroupedEditButtonRef = useRef<HTMLButtonElement>(null);
 
   const central = policy.centralPrice;
@@ -95,6 +115,7 @@ export function RubberApprovalPolicyPanel({
     if (!ungrouped) return;
     setUngroupedMinutes(String(ungrouped.editWindowMinutes));
     setUngroupedAllowance(ungrouped.priceAllowance ? String(ungrouped.priceAllowance) : "");
+    setUngroupedRevisionSnapshot(ungrouped.revision);
     setUngroupedError(null);
     setUngroupedEditorOpen(true);
   }
@@ -103,6 +124,7 @@ export function RubberApprovalPolicyPanel({
     setUngroupedEditorOpen(false);
     setUngroupedMinutes(null);
     setUngroupedAllowance(null);
+    setUngroupedRevisionSnapshot(null);
     setUngroupedError(null);
     requestAnimationFrame(() => ungroupedEditButtonRef.current?.focus());
   }
@@ -160,7 +182,7 @@ export function RubberApprovalPolicyPanel({
 
   async function saveUngrouped(event: React.FormEvent) {
     event.preventDefault();
-    if (!ungrouped) return;
+    if (!ungrouped || ungroupedRevisionSnapshot === null) return;
     try {
       const editWindowMinutes = Number(ungroupedMinutes ?? ungrouped.editWindowMinutes);
       if (!Number.isInteger(editWindowMinutes) || editWindowMinutes < 0) throw new Error("จำนวนนาทีต้องเป็นจำนวนเต็มตั้งแต่ 0 ขึ้นไป");
@@ -168,11 +190,18 @@ export function RubberApprovalPolicyPanel({
       if (maximum && priceAllowance > maximum.value) {
         throw new Error(`ราคายางที่กำหนดต้องไม่เกิน ${maximum.value.toFixed(2)} บาท/กก.`);
       }
-      await policy.saveUngroupedDefaults({ editWindowMinutes, priceAllowance, expectedRevision: ungrouped.revision });
+      await policy.saveUngroupedDefaults({
+        editWindowMinutes,
+        priceAllowance,
+        expectedRevision: ungroupedRevisionSnapshot,
+      });
       closeUngroupedEditor();
       toast.success("บันทึกกติกาสาขาที่ยังไม่จัดกลุ่มแล้ว");
     } catch (caught) {
-      await policy.refetch();
+      const refreshed = await policy.refetch();
+      if (refreshed.data) {
+        setUngroupedRevisionSnapshot(refreshed.data.ungroupedDefaults.revision);
+      }
       const message = caught instanceof Error ? caught.message : "บันทึกกติกาไม่สำเร็จ";
       setUngroupedError(message);
       toast.error(message);
@@ -197,6 +226,17 @@ export function RubberApprovalPolicyPanel({
         setMaxPriceAllowance(null);
         setMaxPriceAllowanceError(null);
         toast.success("บันทึกราคายางที่กำหนดสูงสุดแล้ว");
+      } else if (confirmation.kind === "autoResetEnable") {
+        await policy.savePriceAllowanceAutoReset({
+          enabled: true,
+          expectedEnabled: confirmation.expectedEnabled,
+        });
+        setAutoResetError(null);
+        toast.success("เปิดการรีเซ็ตราคายางอัตโนมัติแล้ว");
+      } else if (confirmation.kind === "autoResetUnlock") {
+        await policy.savePriceAllowanceAutoResetLock(lockInput(confirmation.target, false));
+        setAutoResetLockError(null);
+        toast.success("ปลดล็อกการรีเซ็ตราคายางแล้ว");
       } else if (confirmation.kind === "delete") {
         await policy.deleteGroup(confirmation.group);
         toast.success("ลบกลุ่มแล้ว");
@@ -217,6 +257,10 @@ export function RubberApprovalPolicyPanel({
           message = `${message}\n${conflictDetails.join("\n")}`;
         }
         setMaxPriceAllowanceError(message);
+      } else if (confirmation.kind === "autoResetEnable") {
+        setAutoResetError(message);
+      } else if (confirmation.kind === "autoResetUnlock") {
+        setAutoResetLockError({ target: confirmation.target, message });
       }
       toast.error(message);
       setConfirmation(null);
@@ -235,6 +279,48 @@ export function RubberApprovalPolicyPanel({
   const shownMaxPriceAllowance = maxPriceAllowance ?? String(maximum.value);
   const maxPriceAllowanceIsUnchanged = isSameMoney(shownMaxPriceAllowance, maximum.value);
   const absoluteConfiguredMaximum = central.value + maximum.value;
+
+  async function changeAutoReset(enabled: boolean) {
+    setAutoResetError(null);
+    if (enabled) {
+      setConfirmation({
+        kind: "autoResetEnable",
+        expectedEnabled: policy.priceAllowanceAutoResetEnabled,
+      });
+      return;
+    }
+    try {
+      await policy.savePriceAllowanceAutoReset({
+        enabled: false,
+        expectedEnabled: policy.priceAllowanceAutoResetEnabled,
+      });
+      toast.success("ปิดการรีเซ็ตราคายางอัตโนมัติแล้ว");
+    } catch (caught) {
+      await policy.refetch();
+      const message = caught instanceof Error
+        ? caught.message
+        : "บันทึกการรีเซ็ตราคายางอัตโนมัติไม่สำเร็จ";
+      setAutoResetError(message);
+      toast.error(message);
+    }
+  }
+
+  async function changeAutoResetLock(target: AutoResetLockTarget, locked: boolean) {
+    setAutoResetLockError(null);
+    if (!locked) {
+      setConfirmation({ kind: "autoResetUnlock", target });
+      return;
+    }
+    try {
+      await policy.savePriceAllowanceAutoResetLock(lockInput(target, true));
+      toast.success("ล็อกการรีเซ็ตราคายางแล้ว");
+    } catch (caught) {
+      await policy.refetch();
+      const message = caught instanceof Error ? caught.message : "บันทึกล็อกรีเซ็ตราคายางไม่สำเร็จ";
+      setAutoResetLockError({ target, message });
+      toast.error(message);
+    }
+  }
 
   return (
     <div className="space-y-5">
@@ -320,10 +406,18 @@ export function RubberApprovalPolicyPanel({
             เฉพาะ Superadmin เท่านั้นที่เปลี่ยนค่านี้ได้
           </p>
         )}
+        <RubberAutoResetToggleControl
+          checked={policy.priceAllowanceAutoResetEnabled}
+          disabled={!policy.canEditPriceAllowanceAutoReset || policy.isSaving}
+          canEdit={policy.canEditPriceAllowanceAutoReset}
+          error={autoResetError}
+          onChange={(checked) => void changeAutoReset(checked)}
+        />
       </section>
 
       <section className="rounded-md border border-black/10 p-4">
         <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-balance font-bold text-ink">กลุ่มราคาและเวลา</h3><p className="text-pretty text-sm text-ink/60">ราคาที่กำหนดคือจำนวนบาทที่ซื้อได้สูงกว่าราคากลาง; เว้นว่างเท่ากับ 0 บาท</p></div>{!groupEditorOpen && !ungroupedEditorOpen && policy.availableLocationIds.length > 0 && <button type="button" onClick={() => openGroupEditor()} className="focus-ring inline-flex h-10 items-center gap-2 rounded-md bg-commit px-3 text-sm font-bold text-white"><Plus size={16} /> สร้างกลุ่ม</button>}</div>
+        {!policy.priceAllowanceAutoResetEnabled && <p className="mt-3 rounded-md bg-amber-50 p-3 text-pretty text-sm text-amber-800">สถานะล็อกจะมีผลเมื่อเปิดการรีเซ็ตอัตโนมัติ</p>}
         {groupEditorOpen && <form onSubmit={saveGroup} className="mt-3 space-y-3 rounded-md bg-field/55 p-3">
           <h4 className="font-semibold">{editingGroup ? "แก้ไขกลุ่ม" : "สร้างกลุ่มใหม่"}</h4>
           <div className="grid gap-3 sm:grid-cols-2"><label className="grid gap-1 text-sm font-semibold">เวลาแก้ไขได้ (นาที)<input aria-label="เวลาแก้ไขได้ (นาที)" type="number" min="0" step="1" value={minutes} onChange={(event) => setMinutes(event.target.value)} className="focus-ring h-10 rounded-md border border-black/15 px-3" required /></label><label className="grid gap-1 text-sm font-semibold">ราคายางที่กำหนด — ซื้อเกินราคากลางได้ (บาท/กก.)<input aria-label="ราคายางที่กำหนด" aria-describedby="group-allowance-help" inputMode="decimal" value={allowance} onChange={(event) => { setAllowance(event.target.value); setGroupError(null); }} placeholder="เว้นว่าง = 0 บาท" className="focus-ring h-10 rounded-md border border-black/15 px-3 tabular-nums" /><span id="group-allowance-help" className="text-pretty text-xs font-normal text-ink/55">กรอกได้สูงสุด {maximum.value.toFixed(2)} บาท/กก. · ราคาเต็มสูงสุดปัจจุบัน {absoluteConfiguredMaximum.toFixed(2)} บาท/กก.</span></label></div>
@@ -357,12 +451,45 @@ export function RubberApprovalPolicyPanel({
               <p className="mt-2 text-sm">เวลา {ungrouped.editWindowMinutes} นาที · ราคากลาง {central.value.toFixed(2)} + ราคายางที่กำหนด {ungrouped.priceAllowance.toFixed(2)} = ซื้อได้สูงสุด {(central.value + ungrouped.priceAllowance).toFixed(2)} บาท/กก.</p>
               <p className="mt-1 text-xs text-ink/50">{actorText(ungrouped.updatedByName, ungrouped.updatedAt)}</p>
             </>}
+            <RubberAutoResetLockControl checked={ungrouped.priceAllowanceAutoResetLocked} disabled={!policy.canEditPriceAllowanceAutoReset || policy.isSaving} canEdit={policy.canEditPriceAllowanceAutoReset} label="ไม่รีเซ็ตราคาสาขาที่ยังไม่จัดกลุ่มเมื่อครบ 24 ชั่วโมง" error={autoResetLockError?.target.scope === "ungrouped" ? autoResetLockError.message : undefined} testId="auto-reset-lock-ungrouped" onChange={(locked) => void changeAutoResetLock({ scope: "ungrouped", label: "สาขาที่ยังไม่จัดกลุ่ม", expectedLocked: ungrouped.priceAllowanceAutoResetLocked }, locked)} />
           </article>
-          {policy.groups.map((group, index) => <article key={group.id} className="flex flex-col gap-3 rounded-md border border-black/10 p-3 sm:flex-row sm:items-center sm:justify-between"><div><h4 className="font-semibold">กลุ่ม {index + 1}</h4><p className="text-sm text-ink/60">{group.locationIds.map((id) => locations.find((location) => location.id === id)?.name ?? id).join(", ")}</p><p className="text-sm">เวลา {group.editWindowMinutes} นาที · ราคากลาง {central.value.toFixed(2)} + กำหนด {group.priceAllowance.toFixed(2)} = ซื้อได้สูงสุด {(central.value + group.priceAllowance).toFixed(2)} บาท/กก.</p><p className="text-xs text-ink/50">{actorText(group.updatedByName ?? "", group.updatedAt)}</p></div>{!ungroupedEditorOpen && <div className="flex gap-2"><button type="button" onClick={() => openGroupEditor(group)} className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md border border-river/30 px-3 text-sm font-semibold text-river"><Pencil size={15} /> แก้ไข</button><button type="button" onClick={() => setConfirmation({ kind: "delete", group })} className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-rose-600 px-3 text-sm font-semibold text-white"><Trash2 size={15} /> ลบ</button></div>}</article>)}
+          {policy.groups.map((group, index) => <article key={group.id} className="flex flex-col gap-3 rounded-md border border-black/10 p-3 sm:flex-row sm:items-center sm:justify-between"><div><h4 className="font-semibold">กลุ่ม {index + 1}</h4><p className="text-sm text-ink/60">{group.locationIds.map((id) => locations.find((location) => location.id === id)?.name ?? id).join(", ")}</p><p className="text-sm">เวลา {group.editWindowMinutes} นาที · ราคากลาง {central.value.toFixed(2)} + กำหนด {group.priceAllowance.toFixed(2)} = ซื้อได้สูงสุด {(central.value + group.priceAllowance).toFixed(2)} บาท/กก.</p><p className="text-xs text-ink/50">{actorText(group.updatedByName ?? "", group.updatedAt)}</p><RubberAutoResetLockControl checked={group.priceAllowanceAutoResetLocked} disabled={!policy.canEditPriceAllowanceAutoReset || policy.isSaving} canEdit={policy.canEditPriceAllowanceAutoReset} label="ไม่รีเซ็ตราคากลุ่มนี้เมื่อครบ 24 ชั่วโมง" error={autoResetLockError?.target.scope === "group" && autoResetLockError.target.groupId === group.id ? autoResetLockError.message : undefined} testId={`auto-reset-lock-group-${group.id}`} onChange={(locked) => void changeAutoResetLock({ scope: "group", groupId: group.id, label: `กลุ่ม ${index + 1}`, expectedLocked: group.priceAllowanceAutoResetLocked }, locked)} /></div>{!ungroupedEditorOpen && <div className="flex gap-2"><button type="button" onClick={() => openGroupEditor(group)} className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md border border-river/30 px-3 text-sm font-semibold text-river"><Pencil size={15} /> แก้ไข</button><button type="button" onClick={() => setConfirmation({ kind: "delete", group })} className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-rose-600 px-3 text-sm font-semibold text-white"><Trash2 size={15} /> ลบ</button></div>}</article>)}
         </div>}
       </section>
 
-      <AlertDialog open={confirmation !== null} title={confirmation?.kind === "central" ? "ยืนยันเปลี่ยนราคากลาง?" : confirmation?.kind === "maxPriceAllowance" ? "ยืนยันเปลี่ยนราคายางที่กำหนดสูงสุด?" : "ลบกลุ่มนี้?"} description={confirmation?.kind === "central" ? `เปลี่ยนจาก ${confirmation.previousValue.toFixed(2)} เป็น ${confirmation.value.toFixed(2)} บาท/กก. เพดานของทุกกลุ่มจะเปลี่ยนทันทีสำหรับบิลใหม่ โดยไม่เปลี่ยนคำขอเดิม` : confirmation?.kind === "maxPriceAllowance" ? `เปลี่ยนจาก ${confirmation.previousValue.toFixed(2)} เป็น ${confirmation.value.toFixed(2)} บาท/กก. โดยไม่แก้ค่ากลุ่มเดิมอัตโนมัติ` : "สาขาในกลุ่มจะกลับไปใช้กติกาสาขาที่ยังไม่จัดกลุ่ม"} confirmLabel={confirmation?.kind === "central" ? "ยืนยันราคากลาง" : confirmation?.kind === "maxPriceAllowance" ? "ยืนยันค่าสูงสุด" : "ยืนยัน"} busy={policy.isSaving} onCancel={() => setConfirmation(null)} onConfirm={() => void confirmAction()} />
+      <AlertDialog
+        open={confirmation !== null}
+        title={confirmation?.kind === "central"
+          ? "ยืนยันเปลี่ยนราคากลาง?"
+          : confirmation?.kind === "maxPriceAllowance"
+            ? "ยืนยันเปลี่ยนราคายางที่กำหนดสูงสุด?"
+            : confirmation?.kind === "autoResetEnable"
+              ? "เปิดการรีเซ็ตราคายางอัตโนมัติ?"
+              : confirmation?.kind === "autoResetUnlock"
+                ? `ปลดล็อก ${confirmation.target.label}?`
+                : "ลบกลุ่มนี้?"}
+        description={confirmation?.kind === "central"
+          ? `เปลี่ยนจาก ${confirmation.previousValue.toFixed(2)} เป็น ${confirmation.value.toFixed(2)} บาท/กก. เพดานของทุกกลุ่มจะเปลี่ยนทันทีสำหรับบิลใหม่ โดยไม่เปลี่ยนคำขอเดิม`
+          : confirmation?.kind === "maxPriceAllowance"
+            ? `เปลี่ยนจาก ${confirmation.previousValue.toFixed(2)} เป็น ${confirmation.value.toFixed(2)} บาท/กก. โดยไม่แก้ค่ากลุ่มเดิมอัตโนมัติ`
+            : confirmation?.kind === "autoResetEnable"
+              ? "กลุ่มหรือสาขาที่ยังไม่จัดกลุ่มซึ่งเกิน 24 ชั่วโมงแล้วอาจถูกรีเซ็ตเป็น 0 ในรอบตรวจถัดไป และระบบไม่สามารถคืนราคาเดิมให้อัตโนมัติ"
+              : confirmation?.kind === "autoResetUnlock"
+                ? "ราคาที่ยังไม่เป็น 0 และครบ 24 ชั่วโมงแล้วอาจถูกรีเซ็ตในรอบตรวจถัดไป การปลดล็อกนี้ไม่แก้ราคาทันที"
+                : "สาขาในกลุ่มจะกลับไปใช้กติกาสาขาที่ยังไม่จัดกลุ่ม"}
+        confirmLabel={confirmation?.kind === "central"
+          ? "ยืนยันราคากลาง"
+          : confirmation?.kind === "maxPriceAllowance"
+            ? "ยืนยันค่าสูงสุด"
+            : confirmation?.kind === "autoResetEnable"
+              ? "ยืนยันเปิดใช้งาน"
+              : confirmation?.kind === "autoResetUnlock"
+                ? "ยืนยันปลดล็อก"
+                : "ยืนยัน"}
+        busy={policy.isSaving}
+        onCancel={() => setConfirmation(null)}
+        onConfirm={() => void confirmAction()}
+      />
     </div>
   );
 }
