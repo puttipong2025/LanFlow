@@ -1,7 +1,9 @@
 import { expect, test } from "@playwright/test";
+import { QueryClient } from "@tanstack/react-query";
 import { readFile } from "node:fs/promises";
 
 import { parsePendingBranchMoneyTransfers } from "../src/hooks/useBranchTransferReceipts";
+import { applySavedMoneyTransferToLists } from "../src/hooks/useMoneyTransfers";
 import { loadBranchTransferDeleteRequests } from "../src/lib/income-expense/branch-transfer-delete-approvals";
 import { loadSourceModule } from "./helpers/load-source-module";
 
@@ -62,14 +64,48 @@ test("branch deletion approvals load every pending page beyond the Supabase row 
   expect(result.filter((row) => row.requestStatus === "pending")).toHaveLength(1_001);
 });
 
-test("branch create and target move invalidate both the open and persisted locations", async () => {
+test("confirmed saves update cached lists before reconciling every affected location", async () => {
   const source = await readFile("src/hooks/useMoneyTransfers.ts", "utf8");
 
   expect(source).toContain("invalidateMoneyFlowLocations");
-  expect(source).toContain("onSuccess: (saved, submitted) => refreshSavedLocations(saved, submitted)");
+  expect(source).toContain("applySavedMoneyTransferToLists(queryClient, saved, operation)");
+  expect(source).toContain("void refreshSavedLocations(saved, submitted).catch");
   expect(source).toContain("saved.locationId");
+  expect(source).toContain("saved.targetLocationId");
   expect(source).toContain("submitted.locationId");
   expect(source).toContain("submitted.targetLocationId");
+});
+
+test("idempotent Money Transfer create replay does not inflate cached status counts", () => {
+  const queryClient = new QueryClient();
+  const key = ["moneyTransferList", "location-1", "all", ""];
+  const transfer = {
+    id: "83000000-0000-4000-8000-000000000001",
+    locationId: "location-1",
+    customerId: null,
+    customerName: "Receiver",
+    accountNumber: null,
+    accountName: null,
+    bankName: null,
+    netAmountToPay: 100,
+    transferType: "customer" as const,
+    transferStatus: "pending" as const,
+    createdAt: "2026-10-15T00:00:00.000Z",
+  };
+  queryClient.setQueryData(key, {
+    pages: [{
+      rows: [transfer],
+      statusCounts: { all: 1, pending: 1 },
+      nextCursor: null,
+    }],
+    pageParams: [null],
+  });
+
+  applySavedMoneyTransferToLists(queryClient, transfer, "create");
+
+  expect(queryClient.getQueryData(key)).toMatchObject({
+    pages: [{ statusCounts: { all: 1, pending: 1 } }],
+  });
 });
 
 test("Money Transfer detail usage does not poll the unused pending-receipt queue", async () => {

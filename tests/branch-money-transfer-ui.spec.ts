@@ -917,6 +917,344 @@ test("customer and transport saves are single-flight and keep every modal close-
   expect(saveRequestCount).toBe(2);
 });
 
+test("a confirmed save closes immediately and survives an immediate reconciliation failure", async ({ page }) => {
+  let listRequestCount = 0;
+  let saveRequestCount = 0;
+
+  await page.route("**/rest/v1/rpc/get_money_transfer_list", async (route) => {
+    listRequestCount += 1;
+    if (listRequestCount === 1) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ rows: [], statusCounts: { all: 0, pending: 0 }, hasMore: false }),
+      });
+      return;
+    }
+
+    await route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ code: "MT_LIST_REFRESH_TEST", message: "delayed list refresh failed" }),
+    });
+  });
+
+  await page.route("**/rest/v1/rpc/save_money_transfer", async (route) => {
+    saveRequestCount += 1;
+    const payload = (route.request().postDataJSON() as { p_payload: Record<string, any> }).p_payload;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: payload.id,
+        client_temp_id: payload.clientTempId,
+        idempotency_key: payload.idempotencyKey,
+        location_id: payload.locationId,
+        customer_id: null,
+        customer_name: null,
+        account_number: null,
+        account_name: null,
+        bank_name: null,
+        net_amount_to_pay: payload.netAmountToPay,
+        transfer_type: "transport",
+        transfer_status: "pending",
+        virtual_status: "pending",
+        transport_cost: payload.transportCost,
+        transport_staff_id: null,
+        transport_staff_name: payload.transportStaffName,
+        branch_paid_amount: 0,
+        revision_no: 0,
+        record_status: "active",
+        sync_status: "synced",
+        paid_amount: 0,
+        source_count: 0,
+        slip_count: 0,
+        created_at: "2026-10-15T03:00:00.000Z",
+        updated_at: "2026-10-15T03:00:00.000Z",
+        money_transfer_slips: [],
+        money_transfer_items: [],
+      }),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /^โอนเงิน(?:\s|$)/ }).click();
+  await expect(page.getByText("ยังไม่มีรายการโอนเงิน")).toBeVisible();
+  await page.getByRole("button", { name: "สร้างรายการโอน" }).click();
+  await page.getByRole("button", { name: /จ่ายค่าขนส่ง/ }).click();
+
+  const dialog = page.getByRole("dialog", { name: "สร้างรายการโอนเงินใหม่ \(รถขนส่ง\)" });
+  await dialog.getByPlaceholder("พิมพ์ชื่อรถขนส่ง...").fill("รถทดสอบ immediate reconciliation");
+  await dialog.getByRole("spinbutton", { name: "ค่าขนส่ง" }).fill("125");
+  await dialog.getByRole("button", { name: "บันทึก", exact: true }).click();
+
+  await expect.poll(() => saveRequestCount).toBe(1);
+  await expect.poll(() => listRequestCount).toBeGreaterThan(1);
+  await expect(dialog).toBeHidden({ timeout: 1_000 });
+  const savedRow = page.locator("tbody tr[data-transfer-id]").filter({ hasText: "รถทดสอบ immediate reconciliation" });
+  await expect(savedRow).toBeVisible();
+  await expect(page.getByRole("button", { name: /^รอโอน/ }).locator("span")).toHaveText("1");
+
+  await expect(page.getByText("บันทึกสำเร็จ แต่รีเฟรชข้อมูลไม่สำเร็จ กรุณาลองใหม่")).toBeVisible({ timeout: 15_000 });
+  await expect(dialog).toBeHidden();
+  await expect(savedRow).toBeVisible();
+  expect(saveRequestCount).toBe(1);
+});
+
+test("a confirmed branch save seeds the newly selected receipt filter before its read completes", async ({ page }) => {
+  let listRequestCount = 0;
+  let saveRequestCount = 0;
+  let savedTransferId = "";
+  let savedRow: Record<string, any> | null = null;
+  let releaseReconciliation = () => {};
+  const reconciliationGate = new Promise<void>((resolve) => {
+    releaseReconciliation = resolve;
+  });
+
+  await page.route("**/rest/v1/rpc/get_money_transfer_list", async (route) => {
+    listRequestCount += 1;
+    if (listRequestCount === 1) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ rows: [], statusCounts: { all: 0, branch_pending_receipt: 0 }, hasMore: false }),
+      });
+      return;
+    }
+    await reconciliationGate;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        rows: savedRow ? [savedRow] : [],
+        statusCounts: { all: savedRow ? 1 : 0, branch_pending_receipt: savedRow ? 1 : 0 },
+        hasMore: false,
+      }),
+    });
+  });
+
+  await page.route("**/rest/v1/rpc/save_money_transfer", async (route) => {
+    saveRequestCount += 1;
+    const payload = (route.request().postDataJSON() as { p_payload: Record<string, any> }).p_payload;
+    savedTransferId = String(payload.id);
+    savedRow = {
+      id: payload.id,
+      client_temp_id: payload.clientTempId,
+      idempotency_key: payload.idempotencyKey,
+      location_id: payload.locationId,
+      target_location_id: payload.targetLocationId,
+      target_location_name: payload.targetLocationName,
+      transfer_type: "branch",
+      transfer_status: "paid",
+      virtual_status: "branch_pending_receipt",
+      branch_receipt_contract_version: 1,
+      branch_receipt_status: "pending_receipt",
+      net_amount_to_pay: payload.netAmountToPay,
+      branch_paid_amount: 0,
+      revision_no: 0,
+      record_status: "active",
+      sync_status: "synced",
+      paid_amount: payload.netAmountToPay,
+      source_count: 0,
+      slip_count: 1,
+      created_at: "2026-10-15T03:30:00.000Z",
+      updated_at: "2026-10-15T03:30:00.000Z",
+      money_transfer_slips: payload.slips.map((slip: Record<string, any>) => ({
+        id: slip.id,
+        input_method: slip.inputMethod,
+        amount: slip.amount,
+        reference_number: slip.referenceNumber,
+        fee: slip.fee,
+        sender_name: slip.senderName,
+        receiver_name: slip.receiverName,
+        transaction_date: slip.transactionDate,
+        slip_image_url: slip.slipImageUrl,
+        sort_order: slip.sortOrder,
+      })),
+      money_transfer_items: [],
+    };
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(savedRow) });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /^โอนเงิน(?:\s|$)/ }).click();
+  await expect(page.getByText("ยังไม่มีรายการโอนเงิน")).toBeVisible();
+  await page.getByRole("button", { name: "สร้างรายการโอน" }).click();
+  await page.getByRole("button", { name: /โอนให้สาขา/ }).click();
+  const dialog = page.getByRole("dialog", { name: "สร้างรายการโอนให้สาขา" });
+  await dialog.getByRole("button", { name: "เพิ่มเอง" }).click();
+  await dialog.getByRole("spinbutton", { name: "จำนวนเงินสลิป 1" }).fill("75");
+  await dialog.locator('input[type="datetime-local"]').fill("2026-08-27T10:30");
+  await dialog.getByRole("button", { name: "บันทึก", exact: true }).click();
+
+  await expect.poll(() => saveRequestCount).toBe(1);
+  await expect(page.getByRole("button", { name: /^รอยืนยันรับ/ })).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(() => listRequestCount).toBeGreaterThan(1);
+  await expect(dialog).toBeHidden({ timeout: 1_000 });
+  await expect(page.locator(`[data-transfer-id="${savedTransferId}"]`)).toBeVisible();
+  await expect(page.getByRole("button", { name: /^รอยืนยันรับ/ }).locator("span")).toHaveText("1");
+
+  releaseReconciliation();
+  await expect(page.locator(`[data-transfer-id="${savedTransferId}"]`)).toBeVisible();
+  expect(saveRequestCount).toBe(1);
+});
+
+test("a confirmed edit immediately removes a row that no longer matches the active filter", async ({ page }) => {
+  const transferId = crypto.randomUUID();
+  let listRequestCount = 0;
+  let saveRequestCount = 0;
+  let releaseReconciliation = () => {};
+  const reconciliationGate = new Promise<void>((resolve) => {
+    releaseReconciliation = resolve;
+  });
+  const pendingRow = {
+    id: transferId,
+    client_temp_id: transferId,
+    idempotency_key: `status-change:${transferId}`,
+    location_id: "00000000-0000-4000-8000-000000000102",
+    transfer_type: "transport",
+    transfer_status: "pending",
+    virtual_status: "pending",
+    transport_cost: 100,
+    transport_staff_id: null,
+    transport_staff_name: "รถเปลี่ยนสถานะ",
+    net_amount_to_pay: 100,
+    paid_amount: 0,
+    branch_paid_amount: 0,
+    source_count: 0,
+    slip_count: 0,
+    revision_no: 0,
+    record_status: "active",
+    sync_status: "synced",
+    report_lock_no: null,
+    created_at: "2026-10-15T02:00:00.000Z",
+    updated_at: "2026-10-15T02:00:00.000Z",
+    money_transfer_slips: [],
+    money_transfer_items: [],
+  };
+
+  await page.route("**/rest/v1/rpc/get_money_transfer_list", async (route) => {
+    listRequestCount += 1;
+    if (listRequestCount === 1) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ rows: [pendingRow], statusCounts: { all: 1, pending: 1, paid: 0 }, hasMore: false }),
+      });
+      return;
+    }
+    await reconciliationGate;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ rows: [], statusCounts: { all: 1, pending: 0, paid: 1 }, hasMore: false }),
+    });
+  });
+  await page.route("**/rest/v1/rpc/get_money_transfer_detail", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(pendingRow) });
+  });
+  await page.route("**/rest/v1/rpc/save_money_transfer", async (route) => {
+    saveRequestCount += 1;
+    const payload = (route.request().postDataJSON() as { p_payload: Record<string, any> }).p_payload;
+    expect(payload.locationId).toBe(pendingRow.location_id);
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ...pendingRow,
+        location_id: payload.locationId,
+        transfer_status: "paid",
+        virtual_status: "paid",
+        paid_amount: 100,
+        slip_count: 1,
+        revision_no: 1,
+        updated_at: "2026-10-15T03:00:00.000Z",
+        money_transfer_slips: payload.slips.map((slip: Record<string, any>) => ({
+          id: slip.id,
+          input_method: slip.inputMethod,
+          amount: slip.amount,
+          reference_number: slip.referenceNumber,
+          fee: slip.fee,
+          sender_name: slip.senderName,
+          receiver_name: slip.receiverName,
+          transaction_date: slip.transactionDate,
+          slip_image_url: slip.slipImageUrl,
+          sort_order: slip.sortOrder,
+        })),
+      }),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /^โอนเงิน(?:\s|$)/ }).click();
+  const row = page.locator(`[data-transfer-id="${transferId}"]`);
+  await expect(row).toBeVisible();
+  await row.getByRole("button", { name: "แก้" }).click();
+  const dialog = page.getByRole("dialog", { name: "แก้ไขรายการโอนเงิน \(รถขนส่ง\)" });
+  await dialog.getByRole("button", { name: "เพิ่มเอง" }).click();
+  await dialog.getByRole("spinbutton", { name: "จำนวนเงินสลิป 1" }).fill("100");
+  await dialog.locator('input[type="datetime-local"]').fill("2026-08-27T10:30");
+  await dialog.getByRole("button", { name: "บันทึก", exact: true }).click();
+
+  await expect.poll(() => saveRequestCount).toBe(1);
+  await expect.poll(() => listRequestCount).toBeGreaterThan(1);
+  await expect(dialog).toBeHidden({ timeout: 1_000 });
+  await expect(row).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^รอโอน/ }).locator("span")).toHaveText("0");
+  await expect(page.getByRole("button", { name: /^จ่ายครบ/ }).locator("span")).toHaveText("1");
+
+  releaseReconciliation();
+  await expect(row).toHaveCount(0);
+  expect(saveRequestCount).toBe(1);
+});
+
+test("a legacy read-only branch transfer exposes one view action", async ({ page }) => {
+  const transferId = crypto.randomUUID();
+  await page.route("**/rest/v1/rpc/get_money_transfer_list", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        rows: [{
+          id: transferId,
+          client_temp_id: transferId,
+          idempotency_key: `legacy-view:${transferId}`,
+          location_id: "00000000-0000-4000-8000-000000000001",
+          transfer_type: "branch",
+          transfer_status: "paid",
+          virtual_status: "branch_received",
+          branch_receipt_contract_version: null,
+          branch_receipt_status: null,
+          target_location_name: "สาขารุ่นเดิม",
+          net_amount_to_pay: 100,
+          paid_amount: 100,
+          branch_paid_amount: 0,
+          source_count: 0,
+          slip_count: 1,
+          revision_no: 0,
+          record_status: "active",
+          sync_status: "synced",
+          report_lock_no: null,
+          created_at: "2026-10-15T03:00:00.000Z",
+          updated_at: "2026-10-15T03:00:00.000Z",
+        }],
+        statusCounts: { all: 1, branch_received: 1 },
+        hasMore: false,
+      }),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /^โอนเงิน(?:\s|$)/ }).click();
+  const row = page.locator(`[data-transfer-id="${transferId}"]`);
+  await expect(row).toBeVisible();
+  const cells = row.locator("td");
+  await expect(cells.nth(0).getByText("ดู", { exact: true })).toHaveCount(0);
+  await expect(cells.nth(2).getByText("ดู", { exact: true })).toHaveCount(1);
+  await row.getByRole("button", { name: /เปิดรายละเอียดการโอนให้สาขา/ }).click();
+  await expect(page.getByRole("dialog", { name: "รายละเอียดรายการโอนระหว่างสาขารุ่นเดิม" })).toBeVisible();
+});
+
 test("a failed branch save keeps the draft and allows one clean retry", async ({ page }) => {
   let attempt = 0;
   await page.route("**/rest/v1/rpc/save_money_transfer", async (route) => {
@@ -1053,13 +1391,14 @@ test("legacy branch rows open read-only and cannot be deleted regardless of targ
       const row = page.locator(`[data-transfer-id="${id}"]`);
       await expect(row).toBeVisible();
       await expect(row.getByRole("button", { name: "ลบ" })).toBeDisabled();
-      await row.getByRole("button", { name: "ดู", exact: true }).click();
+      const viewButton = row.getByRole("button", { name: /เปิดรายละเอียดการโอนให้สาขา/ });
+      await viewButton.click();
       const dialog = page.getByRole("dialog", { name: "รายละเอียดรายการโอนระหว่างสาขารุ่นเดิม" });
       await expect(dialog).toContainText("ข้อมูลอ่านอย่างเดียว");
       await expect(dialog).toContainText("เปิดดูได้แต่แก้ไขหรือลบไม่ได้");
       await dialog.getByRole("button", { name: "ปิด" }).click();
 
-      await row.getByRole("button", { name: /เปิดรายละเอียดการโอนให้สาขา/ }).click();
+      await viewButton.click();
       await expect(dialog).toBeVisible();
       await dialog.getByRole("button", { name: "ปิด" }).click();
     }

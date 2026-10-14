@@ -33,10 +33,11 @@ export function invalidateMoneyFlowLocations(
   queryClient: QueryClient,
   ownerUserId: string,
   locationIds: Array<string | null | undefined>,
+  options?: InvalidateOptions,
 ) {
   const uniqueLocationIds = [...new Set(locationIds.filter((locationId): locationId is string => Boolean(locationId)))];
   return Promise.all(uniqueLocationIds.map((locationId) =>
-    invalidateMoneyFlowLocation(queryClient, { ownerUserId, locationId })
+    invalidateMoneyFlowLocation(queryClient, { ownerUserId, locationId }, options)
   ));
 }
 

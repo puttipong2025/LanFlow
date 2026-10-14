@@ -1,6 +1,6 @@
 "use client";
 
-import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 
 import { invalidateMoneyFlowLocation, invalidateMoneyFlowLocations } from "@/lib/money-flow/invalidation";
 import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
@@ -38,6 +38,154 @@ function isMergePendingMoneyTransfersResult(
 }
 
 export type MoneyTransferStatusFilter = MoneyTransferVirtualStatus | "all";
+
+type MoneyTransferListPage = {
+  rows: MoneyTransfer[];
+  statusCounts: Record<string, number>;
+  nextCursor: { createdAt: string; id: string } | null;
+};
+
+type MoneyTransferListData = InfiniteData<
+  MoneyTransferListPage,
+  { createdAt: string; id: string } | null
+>;
+
+function displayedMoneyTransferStatus(transfer: MoneyTransfer): MoneyTransferVirtualStatus {
+  return transfer.virtualStatus ?? transfer.transferStatus;
+}
+
+function moneyTransferMatchesSearch(transfer: MoneyTransfer, search: string) {
+  if (!search) return true;
+  return [
+    transfer.customerName,
+    transfer.accountNumber,
+    transfer.accountName,
+    transfer.bankName,
+    transfer.transportStaffName,
+    transfer.targetLocationName,
+    transfer.rubberExportNo,
+    transfer.timePayrollEmployeeName,
+    transfer.timePayrollSourceLabel,
+    transfer.id,
+  ].filter(Boolean).join(" ").toLocaleLowerCase("th-TH").includes(search);
+}
+
+function compareMoneyTransfersNewestFirst(a: MoneyTransfer, b: MoneyTransfer) {
+  const dateOrder = (b.createdAt ?? "").localeCompare(a.createdAt ?? "");
+  return dateOrder || b.id.localeCompare(a.id);
+}
+
+function findCachedMoneyTransfer(queryClient: QueryClient, transferId: string) {
+  const queries = queryClient.getQueryCache().findAll({
+    queryKey: moneyFlowQueryKeys.moneyTransferListRoot(),
+  });
+  for (const query of queries) {
+    const data = query.state.data as MoneyTransferListData | undefined;
+    const match = data?.pages.flatMap((page) => page.rows).find((row) => row.id === transferId);
+    if (match) return match;
+  }
+  return undefined;
+}
+
+function adjustedStatusCounts(
+  counts: Record<string, number>,
+  queryLocationId: string,
+  saved: MoneyTransfer,
+  previous: MoneyTransfer | undefined,
+  operation: "create" | "update",
+) {
+  const next = { ...counts };
+  const previousLocationId = previous?.locationId;
+  const savedBelongsHere = saved.locationId === queryLocationId;
+  const previousBelongedHere = previousLocationId === queryLocationId;
+  const nextStatus = displayedMoneyTransferStatus(saved);
+  if (operation === "create" && !previous) {
+    if (!savedBelongsHere) return next;
+    next.all = (next.all ?? 0) + 1;
+    next[nextStatus] = (next[nextStatus] ?? 0) + 1;
+    return next;
+  }
+  if (!previous) return next;
+  const previousStatus = displayedMoneyTransferStatus(previous);
+  if (previousBelongedHere && !savedBelongsHere) {
+    next.all = Math.max(0, (next.all ?? 0) - 1);
+    next[previousStatus] = Math.max(0, (next[previousStatus] ?? 0) - 1);
+  } else if (!previousBelongedHere && savedBelongsHere) {
+    next.all = (next.all ?? 0) + 1;
+    next[nextStatus] = (next[nextStatus] ?? 0) + 1;
+  } else if (savedBelongsHere && previousStatus !== nextStatus) {
+    next[previousStatus] = Math.max(0, (next[previousStatus] ?? 0) - 1);
+    next[nextStatus] = (next[nextStatus] ?? 0) + 1;
+  }
+  return next;
+}
+
+export function applySavedMoneyTransferToLists(
+  queryClient: QueryClient,
+  saved: MoneyTransfer,
+  operation: "create" | "update",
+) {
+  const previous = findCachedMoneyTransfer(queryClient, saved.id);
+  const queries = queryClient.getQueryCache().findAll({
+    queryKey: moneyFlowQueryKeys.moneyTransferListRoot(),
+  });
+  for (const query of queries) {
+    const [, queryLocationId, rawStatus, rawSearch] = query.queryKey;
+    if (typeof queryLocationId !== "string" || typeof rawStatus !== "string" || typeof rawSearch !== "string") continue;
+    queryClient.setQueryData<MoneyTransferListData>(query.queryKey, (current) => {
+      if (!current?.pages.length) return current;
+      const status = rawStatus as MoneyTransferStatusFilter;
+      const rows = current.pages.flatMap((page) => page.rows).filter((row) => row.id !== saved.id);
+      const belongsToLocation = saved.locationId === queryLocationId;
+      const matchesStatus = status === "all" || displayedMoneyTransferStatus(saved) === status;
+      if (belongsToLocation && matchesStatus && moneyTransferMatchesSearch(saved, rawSearch)) rows.push(saved);
+      rows.sort(compareMoneyTransfersNewestFirst);
+
+      const rowDelta = rows.length - current.pages.reduce((total, page) => total + page.rows.length, 0);
+      let offset = 0;
+      const pages = current.pages.map((page, index) => {
+        const isLastPage = index === current.pages.length - 1;
+        const pageSize = page.rows.length + (index === 0 ? Math.max(0, rowDelta) : 0);
+        const pageRows = rows.slice(offset, isLastPage ? rows.length : offset + pageSize);
+        offset += pageRows.length;
+        return {
+          ...page,
+          rows: pageRows,
+          statusCounts: adjustedStatusCounts(
+            page.statusCounts,
+            queryLocationId,
+            saved,
+            previous,
+            operation,
+          ),
+        };
+      });
+      return { ...current, pages };
+    });
+  }
+
+  const targetStatus = displayedMoneyTransferStatus(saved);
+  const searches = new Set<string>();
+  for (const query of queries) {
+    const [, queryLocationId, , rawSearch] = query.queryKey;
+    if (queryLocationId === saved.locationId && typeof rawSearch === "string") searches.add(rawSearch);
+  }
+  for (const search of searches) {
+    if (!moneyTransferMatchesSearch(saved, search)) continue;
+    const targetKey = moneyFlowQueryKeys.moneyTransferList(saved.locationId, targetStatus, search);
+    if (queryClient.getQueryData(targetKey)) continue;
+    const sibling = queries.find((query) => query.queryKey[1] === saved.locationId);
+    const siblingData = sibling
+      ? queryClient.getQueryData<MoneyTransferListData>(sibling.queryKey)
+      : undefined;
+    const statusCounts = siblingData?.pages[0]?.statusCounts
+      ?? adjustedStatusCounts({}, saved.locationId, saved, previous, operation);
+    queryClient.setQueryData<MoneyTransferListData>(targetKey, {
+      pages: [{ rows: [saved], statusCounts, nextCursor: null }],
+      pageParams: [null],
+    });
+  }
+}
 
 function mapSlip(row: any): MoneyTransferSlip {
   return {
@@ -202,7 +350,11 @@ function moneyTransferError(error: { message?: string }) {
   return new Error(message.replace(/^.*MT_[A-Z_]+:\s*/, ""));
 }
 
-export function useMoneyTransferMutations(locationId: string, ownerUserId = "") {
+export function useMoneyTransferMutations(
+  locationId: string,
+  ownerUserId = "",
+  onReconciliationError?: () => void,
+) {
   const supabase = createSupabaseBrowserClient();
   const queryClient = useQueryClient();
   const refresh = () => invalidateMoneyFlowLocation(queryClient, { ownerUserId, locationId });
@@ -213,7 +365,15 @@ export function useMoneyTransferMutations(locationId: string, ownerUserId = "") 
       saved.targetLocationId,
       submitted.locationId,
       submitted.targetLocationId,
-    ]);
+    ], { throwOnError: true });
+  const reconcileSavedTransfer = (
+    saved: MoneyTransfer,
+    submitted: MoneyTransfer,
+    operation: "create" | "update",
+  ) => {
+    applySavedMoneyTransferToLists(queryClient, saved, operation);
+    void refreshSavedLocations(saved, submitted).catch(() => onReconciliationError?.());
+  };
   async function saveTransfer(transfer: MoneyTransfer, operation: "create" | "update") {
       const { data, error } = await supabase.rpc("save_money_transfer", {
         p_payload: { ...transfer, operation },
@@ -223,11 +383,11 @@ export function useMoneyTransferMutations(locationId: string, ownerUserId = "") 
   }
   const addTransfer = useMutation({
     mutationFn: (transfer: MoneyTransfer) => saveTransfer(transfer, "create"),
-    onSuccess: (saved, submitted) => refreshSavedLocations(saved, submitted),
+    onSuccess: (saved, submitted) => reconcileSavedTransfer(saved, submitted, "create"),
   });
   const updateTransfer = useMutation({
     mutationFn: (transfer: MoneyTransfer) => saveTransfer(transfer, "update"),
-    onSuccess: (saved, submitted) => refreshSavedLocations(saved, submitted),
+    onSuccess: (saved, submitted) => reconcileSavedTransfer(saved, submitted, "update"),
   });
   const updateWorkTransferSlips = useMutation({
     mutationFn: async (transfer: MoneyTransfer) => {
@@ -239,7 +399,7 @@ export function useMoneyTransferMutations(locationId: string, ownerUserId = "") 
       if (error) throw moneyTransferError(error);
       return mapMoneyTransferRow(data);
     },
-    onSuccess: refresh,
+    onSuccess: (saved, submitted) => reconcileSavedTransfer(saved, submitted, "update"),
   });
   const deleteTransfer = useMutation({
     mutationFn: async ({ id, revisionNo }: Pick<MoneyTransfer, "id" | "revisionNo">) => {

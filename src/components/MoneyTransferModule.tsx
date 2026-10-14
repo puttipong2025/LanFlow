@@ -99,6 +99,7 @@ export function MoneyTransferModule({
   onInitialEditTransferHandled,
   onOpenRubberExport,
 }: Props) {
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<TransferStatusFilter>("pending");
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -110,7 +111,11 @@ export function MoneyTransferModule({
     isLoadingMore,
   } = useMoneyTransferList({ locationId, status: statusFilter, search: debouncedSearch });
   const { addTransfer, updateTransfer, updateWorkTransferSlips, deleteTransfer, mergePendingTransfers } =
-    useMoneyTransferMutations(locationId, profile.id);
+    useMoneyTransferMutations(
+      locationId,
+      profile.id,
+      () => window.setTimeout(() => setToastMsg("บันทึกสำเร็จ แต่รีเฟรชข้อมูลไม่สำเร็จ กรุณาลองใหม่"), 0),
+    );
   const { customers } = useCustomers();
   const pdfShare = useSharePdf();
 
@@ -123,7 +128,6 @@ export function MoneyTransferModule({
   const [mergeDialog, setMergeDialog] = useState<MergePendingDialogState>(null);
   const [detailTransfer, setDetailTransfer] = useState<MoneyTransfer | null>(null);
   const [branchReceiptId, setBranchReceiptId] = useState<string | null>(null);
-  const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submitLockRef = useRef(false);
   const deleteLockRef = useRef(false);
@@ -357,7 +361,7 @@ export function MoneyTransferModule({
     <div className="space-y-6">
       {/* Toast */}
       {toastMsg && (
-        <div className="fixed left-1/2 top-4 z-[60] -translate-x-1/2 animate-pulse rounded-lg bg-leaf px-4 py-2 text-sm font-semibold text-white shadow-lg">
+        <div role="status" className="fixed left-1/2 top-4 z-[60] -translate-x-1/2 rounded-lg bg-leaf px-4 py-2 text-sm font-semibold text-white shadow-lg">
           {toastMsg}
         </div>
       )}
@@ -603,20 +607,22 @@ export function MoneyTransferModule({
                           <Share2 size={14} />
                           แชร์ PDF
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => void handleEdit(t)}
-                          disabled={!online || (!isLegacyBranchTransfer && Boolean(t.reportLockNo))}
-                          className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-amber px-3 text-xs font-semibold text-white shadow-sm hover:bg-amber/90 disabled:cursor-not-allowed disabled:opacity-40"
-                          title={!isLegacyBranchTransfer && t.reportLockNo
-                            ? `ล็อกโดยรายงาน ${t.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`
-                            : online
-                              ? isLegacyBranchTransfer ? "ดูรายละเอียดรายการเดิมแบบอ่านอย่างเดียว" : "แก้ไข"
-                              : offlineMessage}
-                        >
-                          {isLegacyBranchTransfer || isReceivedBranchTransfer ? <Eye size={16} /> : <Edit3 size={16} />}
-                          {isLegacyBranchTransfer || isReceivedBranchTransfer ? "ดู" : "แก้"}
-                        </button>
+                        {!isLegacyBranchTransfer && !isReceivedBranchTransfer && (
+                          <button
+                            type="button"
+                            onClick={() => void handleEdit(t)}
+                            disabled={!online || Boolean(t.reportLockNo)}
+                            className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-amber px-3 text-xs font-semibold text-white shadow-sm hover:bg-amber/90 disabled:cursor-not-allowed disabled:opacity-40"
+                            title={t.reportLockNo
+                              ? `ล็อกโดยรายงาน ${t.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`
+                              : online
+                                ? "แก้ไข"
+                                : offlineMessage}
+                          >
+                            <Edit3 size={16} />
+                            แก้
+                          </button>
+                        )}
                         {t.transferType !== "rubber_export_work" && t.transferType !== "time_payroll"
                           && (t.transferType !== "branch" || t.createdByUserId === profile.id) && <button
                           type="button"
