@@ -8,6 +8,7 @@ import {
   RubberAutoResetLockControl,
   RubberAutoResetToggleControl,
 } from "@/components/rubber-bills/RubberAutoResetLockControl";
+import { RubberApprovalGroupBranchPicker } from "@/components/rubber-bills/RubberApprovalGroupBranchPicker";
 import { AlertDialog } from "@/components/shared/AlertDialog";
 import {
   RubberMaxPriceAllowanceError,
@@ -138,19 +139,26 @@ export function RubberApprovalPolicyPanel({
       if (maximum && priceAllowance > maximum.value) {
         throw new Error(`ราคายางที่กำหนดต้องไม่เกิน ${maximum.value.toFixed(2)} บาท/กก.`);
       }
-      if (locationIds.length === 0) throw new Error("เลือกอย่างน้อย 1 สาขา");
+      const selectableLocationIds = locationIds.filter((locationId) => !policy.groups.some(
+        (group) => group.id !== editingGroup?.id && group.locationIds.includes(locationId),
+      ));
+      if (selectableLocationIds.length === 0) throw new Error("เลือกอย่างน้อย 1 สาขา");
       if (editingGroup) {
         await policy.updateGroup({
           id: editingGroup.id,
           revisionNo: editingGroup.revisionNo,
           sourceGroupRevisions: groupRevisionSnapshot,
-          locationIds,
+          locationIds: selectableLocationIds,
           editWindowMinutes,
           priceAllowance,
         });
         toast.success("แก้ไขกลุ่มแล้ว");
       } else {
-        await policy.createGroup({ locationIds, editWindowMinutes, priceAllowance });
+        await policy.createGroup({
+          locationIds: selectableLocationIds,
+          editWindowMinutes,
+          priceAllowance,
+        });
         toast.success("สร้างกลุ่มแล้ว");
       }
       closeGroupEditor();
@@ -270,9 +278,6 @@ export function RubberApprovalPolicyPanel({
   if (loading) return <section className="rounded-md border border-black/10 p-4" role="status">กำลังโหลดกติกาบิลยาง...</section>;
   if (error || !central || !ungrouped || !maximum) return <section role="alert" className="rounded-md bg-rose-50 p-4 text-sm text-rose-700">{error instanceof Error ? error.message : "โหลดกติกาบิลยางไม่สำเร็จ"}</section>;
 
-  const editorLocationIds = editingGroup
-    ? [...new Set([...policy.availableLocationIds, ...policy.groups.flatMap((group) => group.locationIds)])]
-    : policy.availableLocationIds;
   const centralChanged = centralPrice.trim() !== "" && !isSameMoney(centralPrice, central.value);
   const shownUngroupedMinutes = ungroupedMinutes ?? String(ungrouped.editWindowMinutes);
   const shownUngroupedAllowance = ungroupedAllowance ?? (ungrouped.priceAllowance ? String(ungrouped.priceAllowance) : "");
@@ -422,7 +427,7 @@ export function RubberApprovalPolicyPanel({
           <h4 className="font-semibold">{editingGroup ? "แก้ไขกลุ่ม" : "สร้างกลุ่มใหม่"}</h4>
           <div className="grid gap-3 sm:grid-cols-2"><label className="grid gap-1 text-sm font-semibold">เวลาแก้ไขได้ (นาที)<input aria-label="เวลาแก้ไขได้ (นาที)" type="number" min="0" step="1" value={minutes} onChange={(event) => setMinutes(event.target.value)} className="focus-ring h-10 rounded-md border border-black/15 px-3" required /></label><label className="grid gap-1 text-sm font-semibold">ราคายางที่กำหนด — ซื้อเกินราคากลางได้ (บาท/กก.)<input aria-label="ราคายางที่กำหนด" aria-describedby="group-allowance-help" inputMode="decimal" value={allowance} onChange={(event) => { setAllowance(event.target.value); setGroupError(null); }} placeholder="เว้นว่าง = 0 บาท" className="focus-ring h-10 rounded-md border border-black/15 px-3 tabular-nums" /><span id="group-allowance-help" className="text-pretty text-xs font-normal text-ink/55">กรอกได้สูงสุด {maximum.value.toFixed(2)} บาท/กก. · ราคาเต็มสูงสุดปัจจุบัน {absoluteConfiguredMaximum.toFixed(2)} บาท/กก.</span></label></div>
           {groupError && <p role="alert" className="text-pretty text-sm text-rose-700">{groupError}</p>}
-          <fieldset><legend className="mb-2 text-sm font-semibold">สาขาในกลุ่ม</legend><div className="grid gap-2 sm:grid-cols-2">{editorLocationIds.map((id) => { const location = locations.find((item) => item.id === id); return location ? <label key={id} className="flex items-center gap-2 rounded-md border border-black/10 bg-white px-3 py-2 text-sm"><input type="checkbox" checked={locationIds.includes(id)} onChange={() => toggleLocation(id)} />{location.name}</label> : null; })}</div></fieldset>
+          <RubberApprovalGroupBranchPicker availableLocationIds={policy.availableLocationIds} editingGroupId={editingGroup?.id} groups={policy.groups} locations={locations} selectedLocationIds={locationIds} onToggle={toggleLocation} />
           <div className="flex gap-2"><button type="submit" disabled={policy.isSaving} className="focus-ring h-10 rounded-md bg-commit px-3 text-sm font-bold text-white disabled:opacity-50">บันทึกกลุ่ม</button><button type="button" onClick={closeGroupEditor} className="focus-ring h-10 rounded-md border border-black/15 px-3 text-sm font-semibold">ยกเลิก</button></div>
         </form>}
         {!groupEditorOpen && <div className="mt-3 space-y-2" data-testid="approval-group-list">

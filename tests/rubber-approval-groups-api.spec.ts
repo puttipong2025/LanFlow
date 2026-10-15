@@ -193,6 +193,90 @@ test.describe.serial("Rubber approval groups API", () => {
     }
   });
 
+  test("group editors show occupied branches without allowing cross-group selection", async ({ browser }) => {
+    test.setTimeout(60_000);
+    const manager = await authContext(browser, "super_admin");
+    const db = service();
+    const locationIds = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+    const locationNames = locationIds.map((id, index) => `สาขาทดสอบตัวเลือกกลุ่ม ${index + 1} ${id.slice(0, 6)}`);
+    const groups: Array<{ id: string; revisionNo: number }> = [];
+
+    try {
+      expect((await db.from("locations").insert(locationIds.map((id, index) => ({
+        id,
+        name: locationNames[index],
+        code: `GO${id.replaceAll("-", "").slice(0, 6).toUpperCase()}`,
+        is_active: true,
+      })))).error).toBeNull();
+
+      for (const locationId of locationIds.slice(0, 2)) {
+        const created = await manager.request.post("/api/lanflow/rubber-bills/approval-groups", {
+          data: { locationIds: [locationId], editWindowMinutes: 30, priceAllowance: 1 },
+        });
+        expect(created.status(), await created.text()).toBe(201);
+        groups.push((await created.json() as { group: { id: string; revisionNo: number } }).group);
+      }
+
+      const listed = await manager.request.get("/api/lanflow/rubber-bills/approval-groups");
+      expect(listed.ok(), await listed.text()).toBeTruthy();
+      const listedGroups = (await listed.json() as {
+        groups: Array<{ id: string; locationIds: string[] }>;
+      }).groups;
+      const groupNumberByLocationId = new Map(listedGroups.flatMap((group, index) => (
+        group.locationIds.map((locationId) => [locationId, index + 1] as const)
+      )));
+
+      const page = await manager.newPage();
+      await page.goto("/");
+      await page.getByRole("button", { name: "บิลยาง" }).click();
+      await page.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ }).click();
+      const approvalDialog = page.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง" });
+      await approvalDialog.getByRole("button", { name: "สร้างกลุ่ม" }).click();
+      const createForm = approvalDialog.getByRole("heading", { name: "สร้างกลุ่มใหม่" }).locator("..");
+
+      for (const index of [0, 1]) {
+        const occupiedBranch = createForm.locator("label").filter({ hasText: locationNames[index] });
+        await expect(occupiedBranch).toBeVisible();
+        await expect(occupiedBranch).toContainText(`อยู่ในกลุ่ม ${groupNumberByLocationId.get(locationIds[index])}`);
+        await expect(occupiedBranch.getByRole("checkbox")).toBeDisabled();
+      }
+      await expect(
+        createForm.locator("label").filter({ hasText: locationNames[2] }).getByRole("checkbox"),
+      ).toBeEnabled();
+      await createForm.getByRole("button", { name: "ยกเลิก" }).click();
+
+      const currentGroupCard = approvalDialog.locator("article").filter({ hasText: locationNames[0] });
+      await currentGroupCard.getByRole("button", { name: "แก้ไข" }).click();
+      const editForm = approvalDialog.getByRole("heading", { name: "แก้ไขกลุ่ม" }).locator("..");
+      await expect(
+        editForm.locator("label").filter({ hasText: locationNames[0] }).getByRole("checkbox"),
+      ).toBeEnabled();
+      await expect(
+        editForm.locator("label").filter({ hasText: locationNames[0] }).getByRole("checkbox"),
+      ).toBeChecked();
+      const otherGroupBranch = editForm.locator("label").filter({ hasText: locationNames[1] });
+      await expect(otherGroupBranch).toContainText(`อยู่ในกลุ่ม ${groupNumberByLocationId.get(locationIds[1])}`);
+      await expect(otherGroupBranch.getByRole("checkbox")).toBeDisabled();
+      await expect(
+        editForm.locator("label").filter({ hasText: locationNames[2] }).getByRole("checkbox"),
+      ).toBeEnabled();
+    } finally {
+      for (const group of groups) {
+        const current = await db.from("rubber_approval_groups")
+          .select("revision_no")
+          .eq("id", group.id)
+          .maybeSingle();
+        if (current.data) {
+          await manager.request.delete(
+            `/api/lanflow/rubber-bills/approval-groups/${group.id}?revision=${current.data.revision_no}`,
+          );
+        }
+      }
+      await db.from("locations").delete().in("id", locationIds);
+      await manager.close();
+    }
+  });
+
   test("date rule stays disabled until authoritative settings finish loading", async ({ browser }) => {
     test.setTimeout(60_000);
     const manager = await authContext(browser, "super_admin");
@@ -1215,7 +1299,13 @@ test.describe.serial("Rubber approval groups API", () => {
 
       await approvalDialog.getByRole("button", { name: "บันทึกกลุ่ม" }).click();
       await expect(approvalDialog.getByText("มีสาขาอยู่ในกลุ่มอื่นแล้ว")).toBeVisible();
-      await expect(approvalDialog.getByLabel(locationNames[0], { exact: true })).toHaveCount(0);
+      const createForm = approvalDialog.getByRole("heading", { name: "สร้างกลุ่มใหม่" }).locator("..");
+      const concurrentlyGroupedBranch = createForm.locator("label").filter({
+        hasText: locationNames[0],
+      });
+      await expect(concurrentlyGroupedBranch).toBeVisible();
+      await expect(concurrentlyGroupedBranch).toContainText(/อยู่ในกลุ่ม \d+/);
+      await expect(concurrentlyGroupedBranch.getByRole("checkbox")).toBeDisabled();
       await expect(approvalDialog.getByLabel(locationNames[1], { exact: true })).toBeChecked();
 
       await approvalDialog.getByRole("button", { name: "บันทึกกลุ่ม" }).click();
