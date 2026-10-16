@@ -6,9 +6,6 @@ import type { Customer, MoneyTransfer, MoneyTransferSlip } from "@/types";
 import { authFetch } from "@/lib/auth-fetch";
 import { normalizeBangkokDateTime } from "@/lib/bangkok-date";
 import { formatCurrency } from "@/lib/format";
-import {
-  getMoneyTransferReceiptSourceDetails,
-} from "@/hooks/useMoneyTransfers";
 import { usePaymentBundleCandidates, usePaymentBundleCustomerOptions, usePaymentBundleDetail, usePaymentBundleMutations } from "@/hooks/usePaymentBundles";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { AlertDialog } from "@/components/shared/AlertDialog";
@@ -20,14 +17,13 @@ import { focusFirstSlipIssue, validateMoneyTransferSlips, type SlipValidationIss
 type BundleType = "customer" | "rubber_export_work";
 
 export function PaymentBundleDialog({
-  locationId, profileId, customers, online, initialBundle, onOpenRubberExport, onClose,
+  locationId, profileId, customers, online, initialBundle, onClose,
 }: {
   locationId: string;
   profileId: string;
   customers: Customer[];
   online: boolean;
   initialBundle?: MoneyTransfer | null;
-  onOpenRubberExport?: (exportId: string, locationId: string) => void;
   onClose: () => void;
 }) {
   const [bundleType, setBundleType] = useState<BundleType>(initialBundle?.transferType === "rubber_export_work" ? "rubber_export_work" : "customer");
@@ -153,17 +149,6 @@ export function PaymentBundleDialog({
     } catch (cause) { setError(cause instanceof Error ? cause.message : "บันทึกชุดรวมไม่สำเร็จ"); }
   }
 
-  async function openChild(child: MoneyTransfer) {
-    if (child.transferType === "rubber_export_work" && child.rubberExportId && onOpenRubberExport) {
-      onOpenRubberExport(child.rubberExportId, child.locationId);
-      return;
-    }
-    try {
-      const items = await getMoneyTransferReceiptSourceDetails(child.id);
-      setSourceTransfer({ ...child, items });
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "เปิดบิลไม่สำเร็จ"); }
-  }
-
   async function dissolve() {
     if (!bundle) return;
     try {
@@ -175,7 +160,7 @@ export function PaymentBundleDialog({
   return <>
     <ModalShell title={bundleId ? "รายละเอียดชุดจ่ายรวม" : "สร้างชุดจ่ายรวม"}
       subtitle="รวมรายการรอโอนและค้างจ่าย โดยเก็บรายการลูกและสลิปเดิมไว้"
-      size="wide" closeOnEscape closeDisabled={busy} onClose={onClose}>
+      size="wide" closeOnEscape={!sourceTransfer} closeDisabled={busy} onClose={onClose}>
       <div className="space-y-4">
         {!bundleId ? <>
           <div className="flex gap-2" role="group" aria-label="ประเภทชุดรวม">
@@ -231,7 +216,12 @@ export function PaymentBundleDialog({
             <div><span className="text-xs text-ink/55">รายการลูก</span><strong className="block tabular-nums">{summary?.childCount ?? 0} รายการ</strong></div>
             <div><span className="text-xs text-ink/55">ยอดคงเหลือลูก</span><strong className="block tabular-nums text-river">{formatCurrency(summary?.amountDue ?? bundle.netAmountToPay)}</strong></div>
             <div><span className="text-xs text-ink/55">ยอดสลิปชุด</span><strong className="block tabular-nums text-leaf">{formatCurrency(paid)}</strong></div>
-            <div><span className="text-xs text-ink/55">คงเหลือหลังสลิป</span><strong className="block tabular-nums text-amber">{formatCurrency(remaining)}</strong></div>
+            <div><span className="text-xs text-ink/55">คงเหลือหลังสลิป</span><div className="flex items-center gap-2">
+              <strong className="block tabular-nums text-amber">{formatCurrency(remaining)}</strong>
+              <button type="button" onClick={() => void copy(remaining.toFixed(2), "คัดลอกยอดคงเหลือแล้ว")}
+                disabled={remaining <= 0 || branchPaysRemaining} aria-label="คัดลอกยอดคงเหลือ" title="คัดลอกยอดคงเหลือ"
+                className="focus-ring inline-flex size-10 shrink-0 items-center justify-center rounded-md text-actionSecondary hover:bg-actionSecondary/10 disabled:cursor-not-allowed disabled:opacity-50"><Copy size={16} aria-hidden="true" /></button>
+            </div></div>
             {bundle.accountNumber && <div className="sm:col-span-2 lg:col-span-4 flex flex-wrap items-center gap-2 border-t border-river/15 pt-3 text-sm">
               <span>{bundle.bankName} · <span className="font-mono tabular-nums">{bundle.accountNumber}</span> · {bundle.accountName}</span>
               <button type="button" onClick={() => void copy(bundle.accountNumber!, "คัดลอกเลขบัญชีแล้ว")} className="focus-ring inline-flex h-10 items-center gap-1 rounded bg-actionSecondary px-3 text-xs font-semibold text-white"><Copy size={13} /> คัดลอกบัญชี</button>
@@ -240,7 +230,7 @@ export function PaymentBundleDialog({
           <div><h3 className="mb-2 font-semibold text-ink">รายการลูกในชุด</h3>
             <div className="max-h-72 overflow-auto rounded-lg border border-black/10">
               {(bundle.bundleChildren ?? []).map((child, index) => <div id={`bundle-child-${child.id}`} key={child.id} className={`grid grid-cols-[auto_1fr] items-center gap-3 border-b border-black/5 p-3 last:border-0 sm:grid-cols-[auto_1fr_auto] ${initialBundle?.matchedChildId === child.id ? "bg-amber/10" : ""}`}>
-                <button type="button" onClick={() => void openChild(child)} aria-label={`ดูบิลรายการลูก ${index + 1}`}
+                <button type="button" onClick={() => setSourceTransfer(child)} aria-label={`ดูบิลรายการลูก ${index + 1}`}
                   autoFocus={initialBundle?.matchedChildId === child.id}
                   className="focus-ring inline-flex h-10 items-center gap-1 rounded-md bg-actionSecondary px-3 text-xs font-semibold text-white"><Eye size={14} /> ดูบิล</button>
                 <div className="min-w-0 text-sm"><p className="truncate font-semibold">{child.rubberExportNo ?? child.customerName ?? child.id}</p>
@@ -252,8 +242,8 @@ export function PaymentBundleDialog({
             </div>
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold text-ink">สลิปของชุดรวม</h3><div className="flex gap-2">
-            <button type="button" onClick={() => fileInput.current?.click()} disabled={!online || busy || Boolean(bundle.reportLockNo)} className="focus-ring inline-flex h-10 items-center gap-1 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white disabled:opacity-40">{uploading ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />} อ่านสลิป</button>
-            <button type="button" onClick={addSlip} disabled={!online || busy || Boolean(bundle.reportLockNo)} className="focus-ring inline-flex h-10 items-center gap-1 rounded-md bg-river px-3 text-sm font-semibold text-white disabled:opacity-40"><Plus size={15} /> เพิ่มสลิป</button>
+            <button type="button" onClick={addSlip} disabled={!online || busy || Boolean(bundle.reportLockNo)} className="focus-ring flex items-center gap-1.5 rounded-md bg-leaf px-3 py-2 text-sm font-semibold text-white hover:bg-leaf/90 disabled:cursor-not-allowed disabled:opacity-50"><Plus size={14} /> เพิ่มเอง</button>
+            <button type="button" onClick={() => fileInput.current?.click()} disabled={!online || busy || Boolean(bundle.reportLockNo)} className="focus-ring flex items-center gap-1.5 rounded-md bg-river px-3 py-2 text-sm font-semibold text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-50">{uploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} อ่านสลิป</button>
             <input ref={fileInput} type="file" accept="image/jpeg,image/png,image/webp" multiple className="hidden" aria-label="เลือกรูปสลิปชุดรวม" onChange={(event) => void readSlip(event.target.files)} />
           </div></div>
           {slips.map((slip, index) => <SlipRow key={slip.id} slip={slip} index={index} hidePartyFields
@@ -265,15 +255,15 @@ export function PaymentBundleDialog({
           <SlipValidationSummary issues={issues} />
           {bundleType === "customer" && paid > 0 && paid < (summary?.amountDue ?? bundle.netAmountToPay) && <label className="flex items-center gap-2 rounded-md bg-field p-3 text-sm font-semibold text-ink"><input type="checkbox" checked={branchPaysRemaining} disabled={Boolean(bundle.reportLockNo)} onChange={(event) => setBranchPaysRemaining(event.target.checked)} /> สาขาจ่ายส่วนที่เหลือ {formatCurrency(remaining)}</label>}
           <div className="modal-actions flex flex-wrap justify-between gap-2"><button type="button" onClick={() => setConfirmDissolve(true)} disabled={!canDissolve || busy} title={bundle.reportLockNo ? `ล็อกโดยรายงาน ${bundle.reportLockNo}` : bundle.bundleFrozenAt ? "ชุดนี้เคยเริ่มจ่ายแล้ว จึงยุบไม่ได้" : slips.length ? "ลบสลิปของชุดก่อนยุบ" : "ยุบชุดและแสดงรายการลูกอีกครั้ง"} className="focus-ring h-10 rounded-md bg-clay px-4 text-sm font-semibold text-white disabled:opacity-40">ยุบชุดรวม</button>
-            <div className="flex flex-wrap gap-2"><button type="button" onClick={() => void copy(remaining.toFixed(2), "คัดลอกยอดคงเหลือแล้ว")} disabled={remaining <= 0 || branchPaysRemaining} className="focus-ring inline-flex h-10 items-center gap-1 rounded-md bg-actionSecondary px-4 text-sm font-semibold text-white disabled:opacity-40"><Copy size={14} /> คัดลอกยอดคงเหลือ</button>
+            <div className="flex flex-wrap gap-2">
               <button type="button" onClick={onClose} disabled={busy} className="focus-ring h-10 rounded-md bg-field px-4 text-sm font-semibold text-ink">ปิด</button>
-              <button type="button" onClick={() => void saveBundle()} disabled={!online || busy || Boolean(bundle.reportLockNo)} className="focus-ring inline-flex h-10 items-center gap-2 rounded-md bg-leaf px-4 text-sm font-semibold text-white disabled:opacity-40">{mutations.savePaymentBundle.isPending && <Loader2 size={15} className="animate-spin" />} บันทึก</button></div>
+              <button type="button" onClick={() => void saveBundle()} disabled={!online || busy || Boolean(bundle.reportLockNo)} className="focus-ring flex items-center gap-1.5 rounded-md bg-commit px-5 py-2 text-sm font-semibold text-white hover:bg-commit/90 disabled:cursor-not-allowed disabled:opacity-50">{mutations.savePaymentBundle.isPending && <Loader2 size={15} className="animate-spin" />} บันทึก</button></div>
           </div>
         </>}
         {(visibleError || notice) && <p role={visibleError ? "alert" : "status"} className={`text-pretty text-sm font-semibold ${visibleError ? "text-clay" : "text-leaf"}`}>{visibleError ?? notice}</p>}
       </div>
     </ModalShell>
     <AlertDialog open={confirmDissolve} title="ยุบชุดจ่ายรวม" description="รายการลูกทั้งหมดจะกลับมาแสดงในรายการหลัก ข้อมูลต้นทางและสลิปเดิมจะไม่ถูกลบ" confirmLabel="ยุบชุด" busy={mutations.dissolvePaymentBundle.isPending} onCancel={() => setConfirmDissolve(false)} onConfirm={() => void dissolve()} />
-    {sourceTransfer && <MoneyTransferSourceDetailsModal transfer={sourceTransfer} onClose={() => setSourceTransfer(null)} />}
+    {sourceTransfer && <MoneyTransferSourceDetailsModal transfer={sourceTransfer} nativeModal onClose={() => setSourceTransfer(null)} />}
   </>;
 }

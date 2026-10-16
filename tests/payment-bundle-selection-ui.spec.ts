@@ -45,6 +45,9 @@ test(`customer bundle preview ${previewCase === "valid" ? "confirms a selectable
     return route.fulfill({ json: detail });
   });
   await page.route("**/rest/v1/rpc/get_payment_bundle_detail", (route) => route.fulfill({ json: detail }));
+  await page.route("**/rest/v1/rpc/get_money_transfer_receipt_source_details", (route) => route.fulfill({ json: {
+    items: [{ itemId: "source-row", sourceType: "rubber_bill", sourceId: "source-bill", sourceNumber: "BILL-CHILD-1", netPayableAmount: 100 }],
+  } }));
 
   await page.goto("/login");
   await page.locator("#phone").fill(process.env.TEST_PHONE ?? "0800000000");
@@ -74,6 +77,29 @@ test(`customer bundle preview ${previewCase === "valid" ? "confirms a selectable
   await dialog.getByRole("button", { name: "สร้างชุดรวม", exact: true }).click();
   await expect.poll(() => confirmations).toBe(1);
   expect(submitted).toMatchObject({ p_customer_id: customerId, p_account_number: "alternate" });
-  await expect(page.getByRole("dialog", { name: "รายละเอียดชุดจ่ายรวม" })).toBeVisible();
+  const bundleDialog = page.getByRole("dialog", { name: "รายละเอียดชุดจ่ายรวม" });
+  await expect(bundleDialog).toBeVisible();
+  const copyBalance = bundleDialog.getByRole("button", { name: "คัดลอกยอดคงเหลือ", exact: true });
+  await expect(copyBalance).toHaveCount(1);
+  await expect(copyBalance.locator("..").locator("strong")).toContainText("200");
+  await expect(copyBalance).toHaveText("");
+  const add = bundleDialog.getByRole("button", { name: "เพิ่มเอง", exact: true });
+  const read = bundleDialog.getByRole("button", { name: "อ่านสลิป", exact: true });
+  await expect(add).toBeVisible();
+  await expect(read).toBeVisible();
+  const addBounds = await add.boundingBox();
+  const readBounds = await read.boundingBox();
+  expect(addBounds!.x).toBeLessThan(readBounds!.x);
+  const eye = bundleDialog.getByRole("button", { name: "ดูบิลรายการลูก 1" });
+  const previousUrl = page.url();
+  await eye.click();
+  const source = page.getByRole("dialog", { name: "รายละเอียดต้นทางรายการโอนเงิน" });
+  await expect(source).toBeVisible();
+  await expect(source).toContainText("BILL-CHILD-1");
+  expect(page.url()).toBe(previousUrl);
+  await page.keyboard.press("Escape");
+  await expect(source).toBeHidden();
+  await expect(bundleDialog).toBeVisible();
+  await expect(eye).toBeFocused();
 });
 }
