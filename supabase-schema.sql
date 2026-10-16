@@ -13,6 +13,12 @@ SET client_min_messages = warning;
 SET row_security = off;
 
 
+CREATE SCHEMA IF NOT EXISTS "extensions";
+
+
+ALTER SCHEMA "extensions" OWNER TO "postgres";
+
+
 CREATE SCHEMA IF NOT EXISTS "private";
 
 
@@ -106,6 +112,255 @@ CREATE TYPE "public"."transaction_type" AS ENUM (
 
 
 ALTER TYPE "public"."transaction_type" OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "extensions"."grant_pg_cron_access"() RETURNS "event_trigger"
+    LANGUAGE "plpgsql"
+    AS $$
+BEGIN
+  IF EXISTS (
+    SELECT
+    FROM pg_event_trigger_ddl_commands() AS ev
+    JOIN pg_extension AS ext
+    ON ev.objid = ext.oid
+    WHERE ext.extname = 'pg_cron'
+  )
+  THEN
+    grant usage on schema cron to postgres with grant option;
+
+    alter default privileges in schema cron grant all on tables to postgres with grant option;
+    alter default privileges in schema cron grant all on functions to postgres with grant option;
+    alter default privileges in schema cron grant all on sequences to postgres with grant option;
+
+    alter default privileges for user supabase_admin in schema cron grant all
+        on sequences to postgres with grant option;
+    alter default privileges for user supabase_admin in schema cron grant all
+        on tables to postgres with grant option;
+    alter default privileges for user supabase_admin in schema cron grant all
+        on functions to postgres with grant option;
+
+    grant all privileges on all tables in schema cron to postgres with grant option;
+    revoke all on table cron.job from postgres;
+    grant select on table cron.job to postgres with grant option;
+  END IF;
+END;
+$$;
+
+
+ALTER FUNCTION "extensions"."grant_pg_cron_access"() OWNER TO "supabase_admin";
+
+
+COMMENT ON FUNCTION "extensions"."grant_pg_cron_access"() IS 'Grants access to pg_cron';
+
+
+
+CREATE OR REPLACE FUNCTION "extensions"."grant_pg_graphql_access"() RETURNS "event_trigger"
+    LANGUAGE "plpgsql"
+    AS $_$
+begin
+    if not exists (
+        select 1
+        from pg_event_trigger_ddl_commands() ev
+        join pg_catalog.pg_extension e on ev.objid = e.oid
+        where e.extname = 'pg_graphql'
+    ) then
+        return;
+    end if;
+
+    drop function if exists graphql_public.graphql;
+    create or replace function graphql_public.graphql(
+        "operationName" text default null,
+        query text default null,
+        variables jsonb default null,
+        extensions jsonb default null
+    )
+        returns jsonb
+        language sql
+    as $$
+        select graphql.resolve(
+            query := query,
+            variables := coalesce(variables, '{}'),
+            "operationName" := "operationName",
+            extensions := extensions
+        );
+    $$;
+
+    -- Attach the wrapper to the extension so DROP EXTENSION cascades to it,
+    -- which in turn triggers set_graphql_placeholder to reinstall the "not enabled" stub.
+    alter extension pg_graphql add function graphql_public.graphql(text, text, jsonb, jsonb);
+
+    grant usage on schema graphql to postgres, anon, authenticated, service_role;
+    grant execute on function graphql.resolve to postgres, anon, authenticated, service_role;
+    grant usage on schema graphql to postgres with grant option;
+    grant usage on schema graphql_public to postgres with grant option;
+end;
+$_$;
+
+
+ALTER FUNCTION "extensions"."grant_pg_graphql_access"() OWNER TO "supabase_admin";
+
+
+COMMENT ON FUNCTION "extensions"."grant_pg_graphql_access"() IS 'Grants access to pg_graphql';
+
+
+
+CREATE OR REPLACE FUNCTION "extensions"."grant_pg_net_access"() RETURNS "event_trigger"
+    LANGUAGE "plpgsql"
+    AS $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_event_trigger_ddl_commands() AS ev
+    JOIN pg_extension AS ext
+    ON ev.objid = ext.oid
+    WHERE ext.extname = 'pg_net'
+  )
+  THEN
+    GRANT USAGE ON SCHEMA net TO supabase_functions_admin, postgres, anon, authenticated, service_role;
+
+    ALTER function net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) SECURITY DEFINER;
+    ALTER function net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) SECURITY DEFINER;
+
+    ALTER function net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) SET search_path = net;
+    ALTER function net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) SET search_path = net;
+
+    REVOKE ALL ON FUNCTION net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) FROM PUBLIC;
+
+    GRANT EXECUTE ON FUNCTION net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) TO supabase_functions_admin, postgres, anon, authenticated, service_role;
+    GRANT EXECUTE ON FUNCTION net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) TO supabase_functions_admin, postgres, anon, authenticated, service_role;
+  END IF;
+END;
+$$;
+
+
+ALTER FUNCTION "extensions"."grant_pg_net_access"() OWNER TO "supabase_admin";
+
+
+COMMENT ON FUNCTION "extensions"."grant_pg_net_access"() IS 'Grants access to pg_net';
+
+
+
+CREATE OR REPLACE FUNCTION "extensions"."pgrst_ddl_watch"() RETURNS "event_trigger"
+    LANGUAGE "plpgsql"
+    AS $$
+DECLARE
+  cmd record;
+BEGIN
+  FOR cmd IN SELECT * FROM pg_event_trigger_ddl_commands()
+  LOOP
+    IF cmd.command_tag IN (
+      'CREATE SCHEMA', 'ALTER SCHEMA'
+    , 'CREATE TABLE', 'CREATE TABLE AS', 'SELECT INTO', 'ALTER TABLE'
+    , 'CREATE FOREIGN TABLE', 'ALTER FOREIGN TABLE'
+    , 'CREATE VIEW', 'ALTER VIEW'
+    , 'CREATE MATERIALIZED VIEW', 'ALTER MATERIALIZED VIEW'
+    , 'CREATE FUNCTION', 'ALTER FUNCTION'
+    , 'CREATE TRIGGER'
+    , 'CREATE TYPE', 'ALTER TYPE'
+    , 'CREATE RULE'
+    , 'COMMENT'
+    )
+    -- don't notify in case of CREATE TEMP table or other objects created on pg_temp
+    AND cmd.schema_name is distinct from 'pg_temp'
+    THEN
+      NOTIFY pgrst, 'reload schema';
+    END IF;
+  END LOOP;
+END; $$;
+
+
+ALTER FUNCTION "extensions"."pgrst_ddl_watch"() OWNER TO "supabase_admin";
+
+
+CREATE OR REPLACE FUNCTION "extensions"."pgrst_drop_watch"() RETURNS "event_trigger"
+    LANGUAGE "plpgsql"
+    AS $$
+DECLARE
+  obj record;
+BEGIN
+  FOR obj IN SELECT * FROM pg_event_trigger_dropped_objects()
+  LOOP
+    IF obj.object_type IN (
+      'schema'
+    , 'table'
+    , 'foreign table'
+    , 'view'
+    , 'materialized view'
+    , 'function'
+    , 'trigger'
+    , 'type'
+    , 'rule'
+    )
+    AND obj.is_temporary IS false -- no pg_temp objects
+    THEN
+      NOTIFY pgrst, 'reload schema';
+    END IF;
+  END LOOP;
+END; $$;
+
+
+ALTER FUNCTION "extensions"."pgrst_drop_watch"() OWNER TO "supabase_admin";
+
+
+CREATE OR REPLACE FUNCTION "extensions"."set_graphql_placeholder"() RETURNS "event_trigger"
+    LANGUAGE "plpgsql"
+    AS $_$
+    DECLARE
+    graphql_is_dropped bool;
+    BEGIN
+    graphql_is_dropped = (
+        SELECT ev.schema_name = 'graphql_public'
+        FROM pg_event_trigger_dropped_objects() AS ev
+        WHERE ev.schema_name = 'graphql_public'
+    );
+
+    IF graphql_is_dropped
+    THEN
+        create or replace function graphql_public.graphql(
+            "operationName" text default null,
+            query text default null,
+            variables jsonb default null,
+            extensions jsonb default null
+        )
+            returns jsonb
+            language plpgsql
+        as $$
+            DECLARE
+                server_version float;
+            BEGIN
+                server_version = (SELECT (SPLIT_PART((select version()), ' ', 2))::float);
+
+                IF server_version >= 14 THEN
+                    RETURN jsonb_build_object(
+                        'errors', jsonb_build_array(
+                            jsonb_build_object(
+                                'message', 'pg_graphql extension is not enabled.'
+                            )
+                        )
+                    );
+                ELSE
+                    RETURN jsonb_build_object(
+                        'errors', jsonb_build_array(
+                            jsonb_build_object(
+                                'message', 'pg_graphql is only available on projects running Postgres 14 onwards.'
+                            )
+                        )
+                    );
+                END IF;
+            END;
+        $$;
+    END IF;
+
+    END;
+$_$;
+
+
+ALTER FUNCTION "extensions"."set_graphql_placeholder"() OWNER TO "supabase_admin";
+
+
+COMMENT ON FUNCTION "extensions"."set_graphql_placeholder"() IS 'Reintroduces placeholder function for graphql_public.graphql';
+
 
 
 CREATE OR REPLACE FUNCTION "private"."active_report_no"("p_entity_type" "text", "p_entity_id" "uuid") RETURNS "text"
@@ -4672,7 +4927,6 @@ begin
     end if;
     if new.transfer_type = 'customer' and (
       new.customer_id is null
-      or nullif(btrim(new.account_number), '') is null
     ) then
       raise exception 'MT_BUNDLE_DESTINATION_REQUIRED: กรุณาเลือกลูกค้าและบัญชี';
     end if;
@@ -4702,9 +4956,8 @@ begin
     end if;
     if new.transfer_type = 'customer' and (
       v_parent.customer_id is distinct from new.customer_id
-      or btrim(v_parent.account_number) is distinct from btrim(new.account_number)
     ) then
-      raise exception 'MT_BUNDLE_DESTINATION_MISMATCH: ลูกค้าหรือบัญชีไม่ตรงกับชุด';
+      raise exception 'MT_BUNDLE_DESTINATION_MISMATCH: ลูกค้าไม่ตรงกับชุด';
     end if;
     if new.transfer_type not in ('customer', 'rubber_export_work')
       or new.transfer_method <> 'bank'
@@ -12802,6 +13055,7 @@ CREATE OR REPLACE FUNCTION "public"."create_or_update_payment_bundle"("p_locatio
 declare
   v_bundle public.money_transfers;
   v_actor public.profiles;
+  v_account public.customer_bank_accounts;
   v_child public.money_transfers;
   v_due numeric := 0;
   v_linked integer := 0;
@@ -12812,11 +13066,11 @@ begin
     or not private.can_access_location(p_location_id) then
     raise exception 'MT_ACCESS_DENIED: ไม่มีสิทธิ์ใช้งานรายการโอนเงินของสาขานี้';
   end if;
-  if p_bundle_type not in ('customer', 'rubber_export_work') then
+  if p_bundle_type is null or p_bundle_type not in ('customer', 'rubber_export_work') then
     raise exception 'MT_BUNDLE_INVALID_TYPE: ประเภทชุดไม่ถูกต้อง';
   end if;
-  if p_bundle_type = 'customer' and (p_customer_id is null or nullif(btrim(p_account_number), '') is null) then
-    raise exception 'MT_BUNDLE_DESTINATION_REQUIRED: กรุณาเลือกลูกค้าและบัญชี';
+  if p_bundle_type = 'customer' and p_customer_id is null then
+    raise exception 'MT_BUNDLE_DESTINATION_REQUIRED: กรุณาเลือกลูกค้า';
   end if;
   perform pg_advisory_xact_lock(hashtextextended(p_location_id::text, 0));
   perform pg_advisory_xact_lock(hashtextextended(
@@ -12824,6 +13078,19 @@ begin
       || coalesce(p_customer_id::text, '') || ':' || coalesce(btrim(p_account_number), ''), 0
   ));
   select * into v_actor from public.profiles where id = auth.uid() and is_active;
+  if p_bundle_type = 'customer' then
+    select account.* into v_account
+    from public.customer_bank_accounts account
+    join public.customers customer on customer.id = account.customer_id
+    where account.customer_id = p_customer_id
+      and private.can_access_optional_location(customer.default_location_id)
+      and (nullif(btrim(p_account_number), '') is null or account.account_number = p_account_number)
+    order by account.is_primary desc, account.id
+    limit 1;
+    if nullif(btrim(p_account_number), '') is not null and v_account.id is null then
+      raise exception 'MT_BUNDLE_INVALID_ACCOUNT: กรุณาเลือกบัญชีของลูกค้ารายนี้ใหม่';
+    end if;
+  end if;
 
   select * into v_bundle
   from public.money_transfers bundle
@@ -12836,7 +13103,7 @@ begin
     and not exists(select 1 from public.money_transfer_slips slip where slip.transfer_id = bundle.id)
     and (
       p_bundle_type = 'rubber_export_work'
-      or (bundle.customer_id = p_customer_id and btrim(bundle.account_number) = btrim(p_account_number))
+      or bundle.customer_id = p_customer_id
     )
   order by bundle.created_at, bundle.id
   limit 1 for update;
@@ -12852,7 +13119,7 @@ begin
       and private.active_transfer_report_no(child.id) is null
       and child.net_amount_to_pay > coalesce((select sum(s.amount) from public.money_transfer_slips s where s.transfer_id = child.id), 0)
       and (p_bundle_type = 'rubber_export_work'
-        or (child.customer_id = p_customer_id and btrim(child.account_number) = btrim(p_account_number)))
+        or child.customer_id = p_customer_id)
     order by child.created_at, child.id limit 1 for update;
     if v_child.id is null then raise exception 'MT_BUNDLE_NO_ELIGIBLE_CHILDREN: ไม่มีรายการที่รวมได้'; end if;
     perform set_config('app.payment_bundle_mutation', 'on', true);
@@ -12866,9 +13133,9 @@ begin
       gen_random_uuid()::text, 'payment-bundle:' || gen_random_uuid()::text, p_location_id,
       case when p_bundle_type = 'customer' then v_child.customer_id end,
       case when p_bundle_type = 'customer' then v_child.customer_name end,
-      case when p_bundle_type = 'customer' then v_child.account_number end,
-      case when p_bundle_type = 'customer' then v_child.account_name end,
-      case when p_bundle_type = 'customer' then v_child.bank_name end,
+      case when p_bundle_type = 'customer' then v_account.account_number end,
+      case when p_bundle_type = 'customer' then v_account.account_name end,
+      case when p_bundle_type = 'customer' then v_account.bank_name end,
       0, 'pending', 'synced', 'active', auth.uid(), coalesce(v_actor.name, ''), coalesce(v_actor.phone, ''),
       now(), p_bundle_type, 'bank', true
     ) returning * into v_bundle;
@@ -12888,7 +13155,7 @@ begin
       and private.active_transfer_report_no(child.id) is null
       and child.net_amount_to_pay > coalesce((select sum(s.amount) from public.money_transfer_slips s where s.transfer_id = child.id), 0)
       and (p_bundle_type = 'rubber_export_work'
-        or (child.customer_id = p_customer_id and btrim(child.account_number) = btrim(p_account_number)))
+        or child.customer_id = p_customer_id)
     order by child.created_at, child.id
     for update
   loop
@@ -12901,11 +13168,24 @@ begin
     select sum(s.amount) from public.money_transfer_slips s where s.transfer_id = child.id
   ), 0), 0)), 0) into v_due
   from public.money_transfers child where child.bundle_parent_id = v_bundle.id and child.record_status = 'active';
+  if p_bundle_type = 'customer' and (
+    select count(*) from public.money_transfers
+    where bundle_parent_id = v_bundle.id and record_status = 'active'
+  ) < 2 then
+    raise exception 'MT_BUNDLE_MIN_CHILDREN: ต้องมีรายการของลูกค้าคนเดียวกันอย่างน้อย 2 รายการ';
+  end if;
   if v_due <= 0 then raise exception 'MT_BUNDLE_NO_ELIGIBLE_CHILDREN: ไม่มีรายการที่มียอดคงเหลือ'; end if;
 
   update public.money_transfers
   set net_amount_to_pay = v_due,
-      revision_no = case when v_new then revision_no else revision_no + case when v_linked > 0 then 1 else 0 end end,
+      account_number = case when p_bundle_type = 'customer' then v_account.account_number else null end,
+      account_name = case when p_bundle_type = 'customer' then v_account.account_name else null end,
+      bank_name = case when p_bundle_type = 'customer' then v_account.bank_name else null end,
+      revision_no = case when v_new then revision_no else revision_no + case when v_linked > 0
+        or account_number is distinct from v_account.account_number
+        or account_name is distinct from v_account.account_name
+        or bank_name is distinct from v_account.bank_name
+        then 1 else 0 end end,
       updated_at = now()
   where id = v_bundle.id;
   v_result := public.get_payment_bundle_detail(v_bundle.id);
@@ -16387,7 +16667,7 @@ declare
   v_transaction_id bigint := pg_catalog.txid_current();
   v_location_id uuid;
 begin
-  if not private.is_active_user() then
+  if not private.is_active_user() or not private.can_access_money_transfer_module() then
     raise exception 'MT_ACCESS_DENIED: ไม่มีสิทธิ์ใช้งานรายการโอนเงิน';
   end if;
   select location_id into v_location_id from public.money_transfers
@@ -19854,13 +20134,13 @@ begin
     or not private.can_access_location(p_location_id) then
     raise exception 'MT_ACCESS_DENIED: ไม่มีสิทธิ์ใช้งานรายการโอนเงินของสาขานี้';
   end if;
-  if p_bundle_type not in ('customer', 'rubber_export_work') then
+  if p_bundle_type is null or p_bundle_type not in ('customer', 'rubber_export_work') then
     raise exception 'MT_BUNDLE_INVALID_TYPE: ประเภทชุดไม่ถูกต้อง';
   end if;
-  if p_bundle_type = 'customer' and (p_customer_id is null or nullif(btrim(p_account_number), '') is null) then
-    raise exception 'MT_BUNDLE_DESTINATION_REQUIRED: กรุณาเลือกลูกค้าและบัญชี';
+  if p_bundle_type = 'customer' and p_customer_id is null then
+    raise exception 'MT_BUNDLE_DESTINATION_REQUIRED: กรุณาเลือกลูกค้า';
   end if;
-  if p_page_size < 1 or p_page_size > 100 then raise exception 'MT_INVALID_PAGE_SIZE'; end if;
+  if p_page_size is null or p_page_size < 1 or p_page_size > 100 then raise exception 'MT_INVALID_PAGE_SIZE'; end if;
   if (p_cursor_created_at is null) <> (p_cursor_id is null) then raise exception 'MT_INVALID_CURSOR'; end if;
 
   with target as (
@@ -19878,7 +20158,7 @@ begin
       and transfer.transfer_method = 'bank'
       and (
         p_bundle_type = 'rubber_export_work'
-        or (transfer.customer_id = p_customer_id and btrim(transfer.account_number) = btrim(p_account_number))
+        or transfer.customer_id = p_customer_id
       )
   ), eligible as (
     select * from target
@@ -19916,6 +20196,44 @@ $$;
 ALTER FUNCTION "public"."get_payment_bundle_candidates"("p_location_id" "uuid", "p_bundle_type" "text", "p_customer_id" "uuid", "p_account_number" "text", "p_cursor_created_at" timestamp with time zone, "p_cursor_id" "uuid", "p_page_size" integer) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."get_payment_bundle_customer_options"("p_location_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_result jsonb;
+begin
+  if not private.is_active_user() or not private.can_access_money_transfer_module()
+    or not private.can_access_location(p_location_id) then
+    raise exception 'MT_ACCESS_DENIED: ไม่มีสิทธิ์ใช้งานรายการโอนเงินของสาขานี้';
+  end if;
+  select coalesce(jsonb_agg(to_jsonb(option) order by option.customer_id), '[]'::jsonb)
+  into v_result
+  from (
+    select transfer.customer_id, count(*) eligible_count
+    from public.money_transfers transfer
+    join public.customers customer on customer.id = transfer.customer_id
+    where transfer.location_id = p_location_id
+      and private.can_access_optional_location(customer.default_location_id)
+      and transfer.transfer_type = 'customer'
+      and not transfer.is_payment_bundle and transfer.bundle_parent_id is null
+      and transfer.record_status = 'active' and transfer.sync_status = 'synced'
+      and transfer.transfer_method = 'bank' and transfer.transfer_status in ('pending', 'partial')
+      and private.active_transfer_report_no(transfer.id) is null
+      and transfer.net_amount_to_pay > coalesce((
+        select sum(slip.amount) from public.money_transfer_slips slip where slip.transfer_id = transfer.id
+      ), 0)
+    group by transfer.customer_id
+    having count(*) >= 2
+  ) option;
+  return v_result;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_payment_bundle_customer_options"("p_location_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."get_payment_bundle_detail"("p_bundle_id" "uuid", "p_cursor_created_at" timestamp with time zone DEFAULT NULL::timestamp with time zone, "p_cursor_id" "uuid" DEFAULT NULL::"uuid", "p_page_size" integer DEFAULT 50) RETURNS "jsonb"
     LANGUAGE "plpgsql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -19925,7 +20243,7 @@ declare
   v_summary jsonb;
   v_result jsonb;
 begin
-  if not private.is_active_user() or not private.can_access_money_transfer_module() then
+  if not private.is_active_user() then
     raise exception 'MT_ACCESS_DENIED: ไม่มีสิทธิ์ใช้งานรายการโอนเงิน';
   end if;
   select * into v_bundle from public.money_transfers
@@ -22031,178 +22349,6 @@ $$;
 
 
 ALTER FUNCTION "public"."list_rubber_weight_alert_groups"() OWNER TO "postgres";
-
-
-CREATE OR REPLACE FUNCTION "public"."merge_pending_money_transfers"("p_location_id" "uuid") RETURNS "jsonb"
-    LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO ''
-    AS $$
-declare
-  v_group record;
-  v_secondary_ids uuid[];
-  v_secondary_id uuid;
-  v_group_total numeric(12,2);
-  v_pending_count integer := 0;
-  v_report_locked_count integer := 0;
-  v_merged_group_count integer := 0;
-  v_merged_transfer_count integer := 0;
-  v_deleted_transfer_count integer := 0;
-  v_survivor_ids uuid[] := array[]::uuid[];
-begin
-  if p_location_id is null
-    or not private.can_access_money_transfer_module()
-    or not private.can_access_location(p_location_id) then
-    raise exception 'ไม่มีสิทธิ์รวมรายการโอนเงินของสาขานี้';
-  end if;
-
-  perform 1
-  from public.profiles
-  where id = auth.uid() and is_active = true;
-
-  if not found then
-    raise exception 'ไม่พบบัญชีผู้ใช้งานที่เปิดใช้งาน';
-  end if;
-
-  perform pg_catalog.pg_advisory_xact_lock(
-    pg_catalog.hashtextextended(
-      'money-transfer-pending-merge:' || p_location_id::text,
-      0
-    )
-  );
-
-  -- Parent locks serialize concurrent child/slip writes through their FKs.
-  perform 1
-  from public.money_transfers t
-  where t.location_id = p_location_id
-    and t.transfer_type = 'customer'
-    and t.transfer_method = 'bank'
-    and t.record_status = 'active'
-    and t.sync_status = 'synced'
-    and t.transfer_status = 'pending'
-  order by t.created_at, t.id
-  for update;
-
-  select count(*) into v_pending_count
-  from public.money_transfers t
-  where t.location_id = p_location_id
-    and t.transfer_type = 'customer'
-    and t.transfer_method = 'bank'
-    and t.record_status = 'active'
-    and t.sync_status = 'synced'
-    and t.transfer_status = 'pending';
-
-  with pending as (
-    select t.id, t.customer_id, t.account_number
-    from public.money_transfers t
-    where t.location_id = p_location_id
-      and t.transfer_type = 'customer'
-      and t.transfer_method = 'bank'
-      and t.record_status = 'active'
-      and t.sync_status = 'synced'
-      and t.transfer_status = 'pending'
-      and t.customer_id is not null
-      and nullif(pg_catalog.btrim(t.account_number), '') is not null
-  ), duplicate_groups as (
-    select p.customer_id, p.account_number
-    from pending p
-    group by p.customer_id, p.account_number
-    having count(*) >= 2
-  )
-  select count(*) into v_report_locked_count
-  from pending p
-  join duplicate_groups g
-    on g.customer_id = p.customer_id
-   and g.account_number is not distinct from p.account_number
-  where private.active_transfer_report_no(p.id) is not null
-    or exists (
-      select 1
-      from public.money_transfer_items i
-      where i.transfer_id = p.id
-        and private.active_report_no(i.source_type, i.source_id) is not null
-    );
-
-  for v_group in
-    with eligible as (
-      select t.id, t.customer_id, t.account_number, t.created_at
-      from public.money_transfers t
-      where t.location_id = p_location_id
-        and t.transfer_type = 'customer'
-        and t.transfer_method = 'bank'
-        and t.record_status = 'active'
-        and t.sync_status = 'synced'
-        and t.transfer_status = 'pending'
-        and t.customer_id is not null
-        and nullif(pg_catalog.btrim(t.account_number), '') is not null
-        and not exists (
-          select 1
-          from public.money_transfer_slips s
-          where s.transfer_id = t.id
-        )
-        and private.active_transfer_report_no(t.id) is null
-        and not exists (
-          select 1
-          from public.money_transfer_items i
-          where i.transfer_id = t.id
-            and private.active_report_no(i.source_type, i.source_id) is not null
-        )
-    )
-    select
-      e.customer_id,
-      e.account_number,
-      pg_catalog.array_agg(e.id order by e.created_at, e.id) as transfer_ids
-    from eligible e
-    group by e.customer_id, e.account_number
-    having count(*) >= 2
-    order by min(e.created_at), min(e.id::text)
-  loop
-    v_secondary_ids := v_group.transfer_ids[
-      2:pg_catalog.array_length(v_group.transfer_ids, 1)
-    ];
-
-    update public.money_transfer_items
-    set transfer_id = v_group.transfer_ids[1]
-    where transfer_id = any(v_secondary_ids);
-
-    select coalesce(sum(i.amount), 0)::numeric(12,2)
-    into v_group_total
-    from public.money_transfer_items i
-    where i.transfer_id = v_group.transfer_ids[1];
-
-    update public.money_transfers
-    set net_amount_to_pay = v_group_total,
-        revision_no = revision_no + 1,
-        updated_at = pg_catalog.now()
-    where id = v_group.transfer_ids[1];
-
-    foreach v_secondary_id in array v_secondary_ids
-    loop
-      perform public.delete_money_transfer(v_secondary_id);
-    end loop;
-
-    v_merged_group_count := v_merged_group_count + 1;
-    v_merged_transfer_count := v_merged_transfer_count
-      + pg_catalog.array_length(v_group.transfer_ids, 1);
-    v_deleted_transfer_count := v_deleted_transfer_count
-      + pg_catalog.array_length(v_secondary_ids, 1);
-    v_survivor_ids := pg_catalog.array_append(
-      v_survivor_ids,
-      v_group.transfer_ids[1]
-    );
-  end loop;
-
-  return pg_catalog.jsonb_build_object(
-    'mergedGroupCount', v_merged_group_count,
-    'mergedTransferCount', v_merged_transfer_count,
-    'deletedTransferCount', v_deleted_transfer_count,
-    'skippedTransferCount', v_pending_count - v_merged_transfer_count,
-    'reportLockedTransferCount', v_report_locked_count,
-    'survivorIds', pg_catalog.to_jsonb(v_survivor_ids)
-  );
-end;
-$$;
-
-
-ALTER FUNCTION "public"."merge_pending_money_transfers"("p_location_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."open_rubber_bill_evidence_review_period"("p_location_id" "uuid") RETURNS "jsonb"
@@ -34215,6 +34361,13 @@ CREATE POLICY "user_locations_update_scoped_admin" ON "public"."user_locations" 
 
 
 
+GRANT USAGE ON SCHEMA "extensions" TO "anon";
+GRANT USAGE ON SCHEMA "extensions" TO "authenticated";
+GRANT USAGE ON SCHEMA "extensions" TO "service_role";
+GRANT ALL ON SCHEMA "extensions" TO "dashboard_user";
+
+
+
 GRANT USAGE ON SCHEMA "private" TO "authenticated";
 
 
@@ -34223,6 +34376,34 @@ GRANT USAGE ON SCHEMA "public" TO "postgres";
 GRANT USAGE ON SCHEMA "public" TO "anon";
 GRANT USAGE ON SCHEMA "public" TO "authenticated";
 GRANT USAGE ON SCHEMA "public" TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "extensions"."grant_pg_cron_access"() FROM "supabase_admin";
+GRANT ALL ON FUNCTION "extensions"."grant_pg_cron_access"() TO "supabase_admin" WITH GRANT OPTION;
+GRANT ALL ON FUNCTION "extensions"."grant_pg_cron_access"() TO "dashboard_user";
+
+
+
+GRANT ALL ON FUNCTION "extensions"."grant_pg_graphql_access"() TO "postgres" WITH GRANT OPTION;
+
+
+
+REVOKE ALL ON FUNCTION "extensions"."grant_pg_net_access"() FROM "supabase_admin";
+GRANT ALL ON FUNCTION "extensions"."grant_pg_net_access"() TO "supabase_admin" WITH GRANT OPTION;
+GRANT ALL ON FUNCTION "extensions"."grant_pg_net_access"() TO "dashboard_user";
+
+
+
+GRANT ALL ON FUNCTION "extensions"."pgrst_ddl_watch"() TO "postgres" WITH GRANT OPTION;
+
+
+
+GRANT ALL ON FUNCTION "extensions"."pgrst_drop_watch"() TO "postgres" WITH GRANT OPTION;
+
+
+
+GRANT ALL ON FUNCTION "extensions"."set_graphql_placeholder"() TO "postgres" WITH GRANT OPTION;
 
 
 
@@ -35503,6 +35684,11 @@ GRANT ALL ON FUNCTION "public"."get_payment_bundle_candidates"("p_location_id" "
 
 
 
+REVOKE ALL ON FUNCTION "public"."get_payment_bundle_customer_options"("p_location_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_payment_bundle_customer_options"("p_location_id" "uuid") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."get_payment_bundle_detail"("p_bundle_id" "uuid", "p_cursor_created_at" timestamp with time zone, "p_cursor_id" "uuid", "p_page_size" integer) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_payment_bundle_detail"("p_bundle_id" "uuid", "p_cursor_created_at" timestamp with time zone, "p_cursor_id" "uuid", "p_page_size" integer) TO "authenticated";
 
@@ -35734,11 +35920,6 @@ GRANT ALL ON FUNCTION "public"."list_rubber_approval_groups"() TO "authenticated
 REVOKE ALL ON FUNCTION "public"."list_rubber_weight_alert_groups"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."list_rubber_weight_alert_groups"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."list_rubber_weight_alert_groups"() TO "service_role";
-
-
-
-REVOKE ALL ON FUNCTION "public"."merge_pending_money_transfers"("p_location_id" "uuid") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."merge_pending_money_transfers"("p_location_id" "uuid") TO "authenticated";
 
 
 
@@ -36795,6 +36976,15 @@ GRANT ALL ON TABLE "public"."transport_staffs" TO "service_role";
 GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."user_locations" TO "anon";
 GRANT ALL ON TABLE "public"."user_locations" TO "authenticated";
 GRANT ALL ON TABLE "public"."user_locations" TO "service_role";
+
+
+
+
+
+
+
+
+
 
 
 

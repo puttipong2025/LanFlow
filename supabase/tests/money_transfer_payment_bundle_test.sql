@@ -29,6 +29,21 @@ insert into public.customers (
   'Bundle Manager', '0892000001', 'bundle-customer', 'bundle-customer'
 );
 
+insert into public.customers (
+  id, main_name, default_location_id, created_by_user_id, created_by_name, created_by_phone,
+  client_temp_id, idempotency_key
+)
+select ('a3000000-0000-4000-8000-' || lpad(n::text, 12, '0'))::uuid, 'Bundle Customer ' || n,
+  'a1000000-0000-4000-8000-000000000001', 'a2000000-0000-4000-8000-000000000001',
+  'Bundle Manager', '0892000001', 'bundle-customer-' || n, 'bundle-customer-' || n
+from generate_series(2, 3) n;
+
+insert into public.customer_bank_accounts (customer_id, bank_name, account_name, account_number, is_primary)
+values
+  ('a3000000-0000-4000-8000-000000000001', 'Bundle Bank', 'Bundle Customer', '111-1', true),
+  ('a3000000-0000-4000-8000-000000000002', 'Bundle Bank', 'Bundle Customer', '222-2', true),
+  ('a3000000-0000-4000-8000-000000000003', 'Bundle Bank', 'Bundle Customer', '333-3', true);
+
 insert into public.money_transfers (
   id, client_temp_id, idempotency_key, location_id, customer_id, customer_name,
   account_number, account_name, bank_name, net_amount_to_pay, transfer_status,
@@ -51,18 +66,27 @@ insert into public.money_transfers (
   ),
   (
     'a4000000-0000-4000-8000-000000000003', 'bundle-dissolve-1', 'bundle-dissolve-1',
-    'a1000000-0000-4000-8000-000000000001', 'a3000000-0000-4000-8000-000000000001',
+    'a1000000-0000-4000-8000-000000000001', 'a3000000-0000-4000-8000-000000000002',
     'Bundle Customer', '222-2', 'Bundle Customer', 'Bundle Bank', 0.01, 'pending',
     'synced', 'active', 'a2000000-0000-4000-8000-000000000001', 'Bundle Manager', '0892000001',
     now(), 'customer', 'bank', '2026-10-03 01:00:00+00'
   ),
   (
     'a4000000-0000-4000-8000-000000000004', 'bundle-frozen-1', 'bundle-frozen-1',
-    'a1000000-0000-4000-8000-000000000001', 'a3000000-0000-4000-8000-000000000001',
+    'a1000000-0000-4000-8000-000000000001', 'a3000000-0000-4000-8000-000000000003',
     'Bundle Customer', '333-3', 'Bundle Customer', 'Bundle Bank', 10, 'pending',
     'synced', 'active', 'a2000000-0000-4000-8000-000000000001', 'Bundle Manager', '0892000001',
     now(), 'customer', 'bank', '2026-10-04 01:00:00+00'
   );
+
+-- Each customer lifecycle uses two children; one-child bundles are no longer eligible.
+insert into public.money_transfers
+select (jsonb_populate_record(null::public.money_transfers, to_jsonb(transfer) || jsonb_build_object(
+  'id', gen_random_uuid(), 'client_temp_id', transfer.client_temp_id || '-second',
+  'idempotency_key', transfer.idempotency_key || '-second'
+))).*
+from public.money_transfers transfer
+where transfer.account_number in ('222-2', '333-3');
 
 insert into public.money_transfer_slips (
   id, transfer_id, amount, transaction_date, sort_order, input_method
@@ -310,7 +334,7 @@ $$, 'REPORT_LOCKED:%', 'Report Lock blocks dissolving a bundle before slip check
 
 select public.create_or_update_payment_bundle(
   'a1000000-0000-4000-8000-000000000001', 'customer',
-  'a3000000-0000-4000-8000-000000000001', '222-2'
+  'a3000000-0000-4000-8000-000000000002', '222-2'
 );
 select extensions.throws_like($$
   select public.dissolve_payment_bundle(
@@ -338,7 +362,7 @@ select extensions.ok(
 set local role authenticated;
 select public.create_or_update_payment_bundle(
   'a1000000-0000-4000-8000-000000000001', 'customer',
-  'a3000000-0000-4000-8000-000000000001', '333-3'
+  'a3000000-0000-4000-8000-000000000003', '333-3'
 );
 select public.save_payment_bundle(
   (select id from public.money_transfers where is_payment_bundle and account_number = '333-3'),

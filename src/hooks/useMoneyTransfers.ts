@@ -7,36 +7,6 @@ import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { MoneyTransfer, MoneyTransferItem, MoneyTransferSlip, MoneyTransferVirtualStatus } from "@/types";
 
-export type MergePendingMoneyTransfersResult = {
-  mergedGroupCount: number;
-  mergedTransferCount: number;
-  deletedTransferCount: number;
-  skippedTransferCount: number;
-  reportLockedTransferCount: number;
-  survivorIds: string[];
-};
-
-function isMergePendingMoneyTransfersResult(
-  value: unknown,
-): value is MergePendingMoneyTransfersResult {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const result = value as Record<string, unknown>;
-  const countKeys = [
-    "mergedGroupCount",
-    "mergedTransferCount",
-    "deletedTransferCount",
-    "skippedTransferCount",
-    "reportLockedTransferCount",
-  ];
-  return countKeys.every((key) => (
-    typeof result[key] === "number"
-    && Number.isSafeInteger(result[key])
-    && result[key] >= 0
-  ))
-    && Array.isArray(result.survivorIds)
-    && result.survivorIds.every((id) => typeof id === "string");
-}
-
 export type MoneyTransferStatusFilter = MoneyTransferVirtualStatus | "all";
 export type MoneyTransferKindFilter = "all" | "single" | "bundle";
 
@@ -445,16 +415,5 @@ export function useMoneyTransferMutations(
     },
     onSuccess: refresh,
   });
-  const mergePendingTransfers = useMutation({
-    mutationFn: async (): Promise<MergePendingMoneyTransfersResult> => {
-      const { data, error } = await supabase.rpc("merge_pending_money_transfers", { p_location_id: locationId });
-      if (error) throw new Error(error.message || "รวมรายการรอโอนไม่สำเร็จ");
-      if (!isMergePendingMoneyTransfersResult(data)) {
-        throw new Error("รวมรายการรอโอนไม่สำเร็จ");
-      }
-      return data;
-    },
-    onSuccess: refresh,
-  });
-  return { addTransfer, updateTransfer, updateWorkTransferSlips, deleteTransfer, mergePendingTransfers };
+  return { addTransfer, updateTransfer, updateWorkTransferSlips, deleteTransfer };
 }

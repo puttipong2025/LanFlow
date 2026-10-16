@@ -9,7 +9,7 @@ import { formatCurrency } from "@/lib/format";
 import {
   getMoneyTransferReceiptSourceDetails,
 } from "@/hooks/useMoneyTransfers";
-import { usePaymentBundleCandidates, usePaymentBundleDetail, usePaymentBundleMutations } from "@/hooks/usePaymentBundles";
+import { usePaymentBundleCandidates, usePaymentBundleCustomerOptions, usePaymentBundleDetail, usePaymentBundleMutations } from "@/hooks/usePaymentBundles";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { AlertDialog } from "@/components/shared/AlertDialog";
 import { MoneyTransferSourceDetailsModal } from "./MoneyTransferSourceDetailsModal";
@@ -44,10 +44,13 @@ export function PaymentBundleDialog({
   const [sourceTransfer, setSourceTransfer] = useState<MoneyTransfer | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const selectedCustomer = customers.find((customer) => customer.id === customerId);
-  const accounts = selectedCustomer?.bankAccounts ?? [];
+  const accounts = useMemo(() => [...(selectedCustomer?.bankAccounts ?? [])]
+    .sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary)), [selectedCustomer]);
+  const destinationAccount = accounts.find((account) => account.accountNumber === accountNumber) ?? accounts[0] ?? null;
+  const customerOptions = usePaymentBundleCustomerOptions(locationId, !bundleId && online && bundleType === "customer");
   const candidates = usePaymentBundleCandidates({
-    locationId, bundleType, customerId: customerId || null, accountNumber: accountNumber || null,
-    enabled: !bundleId && online && (bundleType === "rubber_export_work" || Boolean(customerId && accountNumber)),
+    locationId, bundleType, customerId: customerId || null,
+    enabled: !bundleId && online && (bundleType === "rubber_export_work" || Boolean(customerId)),
   });
   const detail = usePaymentBundleDetail(bundleId);
   const bundle = detail.data ?? initialBundle ?? null;
@@ -73,10 +76,14 @@ export function PaymentBundleDialog({
   const busy = mutations.createPaymentBundle.isPending || mutations.savePaymentBundle.isPending
     || mutations.dissolvePaymentBundle.isPending || uploading;
   const canDissolve = Boolean(bundle && !bundle.reportLockNo && !bundle.bundleFrozenAt && slips.length === 0);
-  const queryError = candidates.error ?? detail.error;
+  const queryError = customerOptions.error ?? candidates.error ?? detail.error;
   const visibleError = error ?? (queryError instanceof Error ? queryError.message : null);
 
-  const orderedCustomers = useMemo(() => [...customers].sort((a, b) => a.mainName.localeCompare(b.mainName, "th")), [customers]);
+  const orderedCustomers = useMemo(() => customers.filter((customer) => customerOptions.data?.includes(customer.id))
+    .sort((a, b) => a.mainName.localeCompare(b.mainName, "th")), [customers, customerOptions.data]);
+  const minimumCount = bundleType === "customer" ? 2 : 1;
+  const canCreate = online && !busy && !candidates.isFetching && !candidates.error
+    && (candidates.data?.eligibleCount ?? 0) >= minimumCount;
 
   async function copy(value: string, message: string) {
     try {
@@ -86,10 +93,11 @@ export function PaymentBundleDialog({
   }
 
   async function createBundle() {
+    if (!canCreate) return;
     setError(null);
     try {
       const created = await mutations.createPaymentBundle.mutateAsync({
-        bundleType, customerId: customerId || null, accountNumber: accountNumber || null,
+        bundleType, customerId: customerId || null, accountNumber: destinationAccount?.accountNumber ?? null,
       });
       setBundleId(created.id);
       setNotice(`สร้างชุดรวม ${created.bundleSummary?.childCount ?? 0} รายการแล้ว`);
@@ -182,34 +190,38 @@ export function PaymentBundleDialog({
             <label className="block"><span className="mb-1 block text-sm font-semibold text-ink">ลูกค้า</span>
               <select value={customerId} onChange={(event) => { setCustomerId(event.target.value); setAccountNumber(""); }}
                 className="focus-ring h-10 w-full rounded-md border border-black/15 bg-white px-3 text-sm">
-                <option value="">เลือกลูกค้า</option>
+                <option value="">{customerOptions.isLoading ? "กำลังโหลดลูกค้า…" : "เลือกลูกค้าที่มีอย่างน้อย 2 รายการ"}</option>
                 {orderedCustomers.map((customer) => <option key={customer.id} value={customer.id}>{customer.mainName}</option>)}
               </select>
             </label>
             <label className="block"><span className="mb-1 block text-sm font-semibold text-ink">บัญชีรับเงิน</span>
-              <select value={accountNumber} onChange={(event) => setAccountNumber(event.target.value)} disabled={!customerId}
+              <select value={destinationAccount?.accountNumber ?? ""} onChange={(event) => setAccountNumber(event.target.value)} disabled={!customerId || !accounts.length}
                 className="focus-ring h-10 w-full rounded-md border border-black/15 bg-white px-3 text-sm disabled:bg-field">
-                <option value="">เลือกบัญชี</option>
-                {accounts.map((account) => <option key={account.id} value={account.accountNumber}>{account.bankName} · {account.accountNumber} · {account.accountName}</option>)}
+                {!accounts.length && <option value="">— ไม่ระบุบัญชี —</option>}
+                {accounts.map((account) => <option key={account.id} value={account.accountNumber}>{account.isPrimary ? "[หลัก] " : ""}{account.bankName} · {account.accountNumber} · {account.accountName}</option>)}
               </select>
             </label>
           </div>}
+          {bundleType === "customer" && !customerOptions.isLoading && !customerOptions.error && !orderedCustomers.length &&
+            <p role="status" className="text-pretty text-sm text-ink/60">ยังไม่มีลูกค้าที่มีรายการรอโอนหรือค้างจ่ายที่รวมได้อย่างน้อย 2 รายการ</p>}
           {candidates.isLoading ? <p className="text-sm text-ink/60">กำลังตรวจรายการที่รวมได้…</p> : candidates.data && <div className="rounded-lg border border-river/20 bg-mint/25 p-4">
             <div className="flex flex-wrap items-end justify-between gap-3">
-              <div><p className="font-semibold text-ink">รวมได้ <span className="tabular-nums">{candidates.data.eligibleCount}</span> รายการ</p>
+              <div><p className="font-semibold text-ink">รายการที่จะรวม <span className="tabular-nums">{candidates.data.eligibleCount}</span> รายการ</p>
                 <p className="text-sm text-ink/60">อยู่ในชุดอื่น {candidates.data.alreadyBundledCount} · Report Lock {candidates.data.reportLockedCount}</p></div>
               <strong className="text-xl tabular-nums text-river">{formatCurrency(candidates.data.eligibleAmount)}</strong>
             </div>
             <div className="mt-3 max-h-52 overflow-auto rounded border border-black/10 bg-white">
               {candidates.data.rows.map((row) => <div key={row.id} className="flex justify-between gap-3 border-b border-black/5 px-3 py-2 text-sm last:border-0">
-                <span className="text-pretty">{row.rubberExportNo ?? row.customerName ?? row.id}</span>
+                <span className="text-pretty">{row.rubberExportNo ?? row.customerName ?? row.id}
+                  <span className="block text-xs text-ink/60">{row.id.slice(0, 8)} · {row.transferStatus === "partial" ? "ค้างจ่าย" : "รอโอน"} · บัญชีเดิม {row.accountNumber ?? "ไม่ระบุ"}</span>
+                </span>
                 <span className="shrink-0 font-semibold tabular-nums">{formatCurrency(row.outstandingAmount ?? row.netAmountToPay)}</span>
               </div>)}
             </div>
           </div>}
           <div className="modal-actions flex justify-end gap-2">
             <button type="button" onClick={onClose} disabled={busy} className="focus-ring h-10 rounded-md bg-field px-4 text-sm font-semibold text-ink">ยกเลิก</button>
-            <button type="button" onClick={() => void createBundle()} disabled={!online || busy || !candidates.data?.eligibleCount}
+            <button type="button" onClick={() => void createBundle()} disabled={!canCreate}
               className="focus-ring inline-flex h-10 items-center gap-2 rounded-md bg-leaf px-4 text-sm font-semibold text-white disabled:opacity-40">
               {mutations.createPaymentBundle.isPending ? <Loader2 size={16} className="animate-spin" /> : <Layers3 size={16} />} สร้างชุดรวม
             </button>

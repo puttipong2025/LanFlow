@@ -42,5 +42,11 @@ The verified implementation uses three additive columns on `money_transfers`: `i
 
 The lifecycle is exposed through scoped RPCs for candidate preview, create/reuse, detail, slip save, and dissolve. Bundle create/save/dissolve serialize on the same branch advisory lock as Report creation before row locks. The detail RPC is also the server-authoritative allocation seam used by the UI and Report API.
 
-Local verification on 2026-10-16 passed migration replay, DB lint, 1,151 pgTAP tests, 519 isolated browser/contract tests, strict TypeScript, ESLint, source-size/import checks, production build, Service Worker checks, and bundle budget. Cloud migration and deployment were intentionally not performed.
+Local verification on 2026-10-16 passed migration replay, DB lint, 1,151 pgTAP tests, 519 isolated browser/contract tests, strict TypeScript, ESLint, source-size/import checks, production build, Service Worker checks, and bundle budget. Cloud migration and deployment were intentionally not performed at this initial verification.
+
+## Superseding selection decision — 2026-10-16
+
+Customer bundles group by branch and registered customer identity, independently of child account snapshots. A new customer bundle requires at least two eligible pending/partial transfers. The destructive pending-merge UI and RPC are retired without rewriting historical migrations or modifying previously merged data.
+
+The creation dialog offers only customers with at least two eligible rows, loads all preview pages, and creates after explicit confirmation. Destination account selection follows the normal customer transfer: primary account first, otherwise first available account, user-selectable registered alternatives, and an empty account when none exists. Selecting the parent destination never rewrites child accounts or slips. Authorization, Report Lock, freeze, FIFO and dissolve rules remain enforced.
 

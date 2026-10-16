@@ -7,39 +7,74 @@ import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 import { parsePaymentBundleDetailPage } from "@/lib/payment-bundle-detail";
 import { mapMoneyTransferRow, moneyTransferError } from "./useMoneyTransfers";
 
+export function usePaymentBundleCustomerOptions(locationId: string, enabled: boolean) {
+  const supabase = createSupabaseBrowserClient();
+  return useQuery({
+    queryKey: ["paymentBundleCustomers", locationId], enabled,
+    queryFn: async () => {
+      const { data, error } = await supabase.rpc("get_payment_bundle_customer_options", { p_location_id: locationId });
+      if (error) throw moneyTransferError(error);
+      if (!Array.isArray(data)) throw new Error("ข้อมูลลูกค้าที่รวมได้ไม่ถูกต้อง");
+      return data.map((row: { customer_id: string; eligible_count: number }) => row.customer_id);
+    },
+  });
+}
+
 export function usePaymentBundleCandidates({
-  locationId, bundleType, customerId, accountNumber, enabled,
+  locationId, bundleType, customerId, enabled,
 }: {
   locationId: string;
   bundleType: "customer" | "rubber_export_work";
   customerId?: string | null;
-  accountNumber?: string | null;
   enabled: boolean;
 }) {
   const supabase = createSupabaseBrowserClient();
   return useQuery({
-    queryKey: ["paymentBundleCandidates", locationId, bundleType, customerId, accountNumber],
+    queryKey: ["paymentBundleCandidates", locationId, bundleType, customerId],
     enabled,
     queryFn: async () => {
-      const { data, error } = await supabase.rpc("get_payment_bundle_candidates", {
-        p_location_id: locationId, p_bundle_type: bundleType,
-        p_customer_id: customerId ?? null, p_account_number: accountNumber ?? null, p_page_size: 100,
-      });
-      if (error) throw moneyTransferError(error);
-      if (!data || typeof data !== "object" || Array.isArray(data)) {
-        throw new Error("ข้อมูลรายการที่รวมได้ไม่ถูกต้อง");
+      const rows: MoneyTransfer[] = [];
+      const cursors = new Set<string>();
+      let cursorCreatedAt: string | null = null;
+      let cursorId: string | null = null;
+      let totals = { eligibleCount: 0, eligibleAmount: 0, alreadyBundledCount: 0, reportLockedCount: 0 };
+      do {
+        const { data, error } = await supabase.rpc("get_payment_bundle_candidates", {
+          p_location_id: locationId, p_bundle_type: bundleType,
+          p_customer_id: customerId ?? null, p_account_number: null, p_page_size: 100,
+          p_cursor_created_at: cursorCreatedAt, p_cursor_id: cursorId,
+        });
+        if (error) throw moneyTransferError(error);
+        if (!data || typeof data !== "object" || Array.isArray(data)) {
+          throw new Error("ข้อมูลรายการที่รวมได้ไม่ถูกต้อง");
+        }
+        const payload = data as Record<string, unknown>;
+        if (!Array.isArray(payload.rows)) {
+          throw new Error("ข้อมูลรายการที่รวมได้ไม่ครบถ้วน");
+        }
+        totals = {
+          eligibleCount: Number(payload.eligibleCount ?? 0),
+          eligibleAmount: Number(payload.eligibleAmount ?? 0),
+          alreadyBundledCount: Number(payload.alreadyBundledCount ?? 0),
+          reportLockedCount: Number(payload.reportLockedCount ?? 0),
+        };
+        rows.push(...payload.rows.map(mapMoneyTransferRow));
+        if (typeof payload.hasMore !== "boolean") throw new Error("ข้อมูลหน้าถัดไปไม่ถูกต้อง");
+        if (!payload.hasMore) break;
+        if (typeof payload.nextCreatedAt !== "string" || !payload.nextCreatedAt
+          || typeof payload.nextId !== "string" || !payload.nextId || !payload.rows.length) {
+          throw new Error("ข้อมูลหน้าถัดไปไม่ครบถ้วน");
+        }
+        const cursor = `${payload.nextCreatedAt}:${payload.nextId}`;
+        if (cursors.has(cursor)) throw new Error("ข้อมูลหน้าถัดไปวนซ้ำ");
+        cursors.add(cursor);
+        cursorCreatedAt = payload.nextCreatedAt;
+        cursorId = payload.nextId;
+      } while (cursorCreatedAt && cursorId);
+      if (rows.length !== totals.eligibleCount || new Set(rows.map((row) => row.id)).size !== rows.length) {
+        throw new Error("รายการที่จะรวมเปลี่ยนแปลง กรุณาโหลดข้อมูลใหม่ก่อนสร้างชุดรวม");
       }
-      const payload = data as Record<string, unknown>;
-      if (!Array.isArray(payload.rows)) {
-        throw new Error("ข้อมูลรายการที่รวมได้ไม่ครบถ้วน");
-      }
-      return {
-        rows: payload.rows.map(mapMoneyTransferRow) as MoneyTransfer[],
-        eligibleCount: Number(payload.eligibleCount ?? 0),
-        eligibleAmount: Number(payload.eligibleAmount ?? 0),
-        alreadyBundledCount: Number(payload.alreadyBundledCount ?? 0),
-        reportLockedCount: Number(payload.reportLockedCount ?? 0),
-      };
+      return { rows, ...totals };
     },
   });
 }
@@ -80,6 +115,7 @@ export function usePaymentBundleMutations(locationId: string, ownerUserId: strin
     invalidateMoneyFlowLocation(queryClient, { ownerUserId, locationId }),
     queryClient.invalidateQueries({ queryKey: ["paymentBundleCandidates"] }),
     queryClient.invalidateQueries({ queryKey: ["paymentBundleDetail"] }),
+    queryClient.invalidateQueries({ queryKey: ["paymentBundleCustomers"] }),
   ]);
   const createPaymentBundle = useMutation({
     mutationFn: async ({ bundleType, customerId, accountNumber }: {
