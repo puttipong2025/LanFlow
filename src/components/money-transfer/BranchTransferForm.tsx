@@ -296,7 +296,7 @@ export function BranchTransferForm({
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={submitting || !selectedLocationId || slips.length === 0 || !online}
+            disabled={submitting || slipUploading || !selectedLocationId || slips.length === 0 || !online}
             className="focus-ring flex items-center gap-1.5 rounded-md bg-commit px-5 py-2 text-sm font-semibold text-white hover:bg-commit/90 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {submitting ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}

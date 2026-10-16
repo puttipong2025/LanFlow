@@ -1,6 +1,8 @@
 import type { RubberBillApprovalOperation, RubberBillApprovalReason } from "./rubber-approval";
 import type { MoneyTransferBranchReceiptFields } from "./branch-money-transfer";
+import type { MoneyTransferBundleFields } from "./payment-bundle";
 export type { BranchMoneyTransferSummary, BranchTransferDeleteRequest, MoneyTransferVirtualStatus } from "./branch-money-transfer";
+export type { MoneyTransferBundleSummary } from "./payment-bundle";
 
 export type AppRole = "user" | "admin" | "super_admin";
 export type SyncStatus = "pending" | "syncing" | "synced" | "failed" | "conflict";
@@ -477,7 +479,7 @@ export type MoneyTransferItem = {
   rubberValue?: number | null;
 };
 
-export type MoneyTransfer = MoneyTransferBranchReceiptFields & {
+export interface MoneyTransfer extends MoneyTransferBranchReceiptFields, MoneyTransferBundleFields {
   id: string;
   clientTempId?: string;
   idempotencyKey?: string;
@@ -514,7 +516,8 @@ export type MoneyTransfer = MoneyTransferBranchReceiptFields & {
   paidAmount?: number;
   sourceCount?: number;
   slipCount?: number;
-};
+  bundleChildren?: MoneyTransfer[];
+}
 
 export type CashDenominationCounts = {
   coin1: number;

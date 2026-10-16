@@ -600,7 +600,7 @@ export function CustomerTransferForm({
         <button
           type="button"
           onClick={handleSubmit}
-          disabled={submitting || !online}
+          disabled={submitting || slipUploading || !online}
           title={online ? undefined : "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น"}
           className="focus-ring flex items-center gap-1.5 rounded-md bg-commit px-5 py-2 text-sm font-semibold text-white hover:bg-commit/90 disabled:cursor-not-allowed disabled:opacity-50"
         >

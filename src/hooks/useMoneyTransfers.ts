@@ -38,6 +38,7 @@ function isMergePendingMoneyTransfersResult(
 }
 
 export type MoneyTransferStatusFilter = MoneyTransferVirtualStatus | "all";
+export type MoneyTransferKindFilter = "all" | "single" | "bundle";
 
 type MoneyTransferListPage = {
   rows: MoneyTransfer[];
@@ -130,7 +131,7 @@ export function applySavedMoneyTransferToLists(
     queryKey: moneyFlowQueryKeys.moneyTransferListRoot(),
   });
   for (const query of queries) {
-    const [, queryLocationId, rawStatus, rawSearch] = query.queryKey;
+    const [, queryLocationId, rawStatus, rawSearch, rawKind] = query.queryKey;
     if (typeof queryLocationId !== "string" || typeof rawStatus !== "string" || typeof rawSearch !== "string") continue;
     queryClient.setQueryData<MoneyTransferListData>(query.queryKey, (current) => {
       if (!current?.pages.length) return current;
@@ -138,7 +139,8 @@ export function applySavedMoneyTransferToLists(
       const rows = current.pages.flatMap((page) => page.rows).filter((row) => row.id !== saved.id);
       const belongsToLocation = saved.locationId === queryLocationId;
       const matchesStatus = status === "all" || displayedMoneyTransferStatus(saved) === status;
-      if (belongsToLocation && matchesStatus && moneyTransferMatchesSearch(saved, rawSearch)) rows.push(saved);
+      const matchesKind = rawKind === "bundle" ? saved.isPaymentBundle : rawKind !== "single" || !saved.isPaymentBundle;
+      if (belongsToLocation && matchesStatus && matchesKind && moneyTransferMatchesSearch(saved, rawSearch)) rows.push(saved);
       rows.sort(compareMoneyTransfersNewestFirst);
 
       const rowDelta = rows.length - current.pages.reduce((total, page) => total + page.rows.length, 0);
@@ -261,6 +263,26 @@ export function mapMoneyTransferRow(row: any): MoneyTransfer {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     reportLockNo: row.report_lock_no ?? null,
+    isPaymentBundle: Boolean(row.is_payment_bundle),
+    bundleParentId: row.bundle_parent_id ?? null,
+    bundleFrozenAt: row.bundle_frozen_at ?? null,
+    outstandingAmount: row.outstanding_amount == null ? undefined : Number(row.outstanding_amount),
+    bundleAllocatedAmount: row.bundle_allocated_amount == null ? undefined : Number(row.bundle_allocated_amount),
+    bundleRemainingAmount: row.bundle_remaining_amount == null ? undefined : Number(row.bundle_remaining_amount),
+    matchedChildId: row.matched_child_id ?? null,
+    bundleSummary: row.bundle_summary ? {
+      childCount: Number(row.bundle_summary.childCount ?? 0),
+      originalTotal: Number(row.bundle_summary.originalTotal ?? 0),
+      childPaidTotal: Number(row.bundle_summary.childPaidTotal ?? 0),
+      amountDue: Number(row.bundle_summary.amountDue ?? 0),
+      bundlePaidTotal: Number(row.bundle_summary.bundlePaidTotal ?? 0),
+      allocatedTotal: Number(row.bundle_summary.allocatedTotal ?? 0),
+      branchPaidAmount: Number(row.bundle_summary.branchPaidAmount ?? 0),
+      remaining: Number(row.bundle_summary.remaining ?? 0),
+      overpayment: Number(row.bundle_summary.overpayment ?? 0),
+      status: row.bundle_summary.status,
+    } : undefined,
+    bundleChildren: Array.isArray(row.children) ? row.children.map(mapMoneyTransferRow) : undefined,
     slips: Array.isArray(row.slips)
       ? row.slips.map(mapSlip)
       : Array.isArray(row.money_transfer_slips) ? row.money_transfer_slips.map(mapSlip) : undefined,
@@ -272,15 +294,17 @@ export function useMoneyTransferList({
   locationId,
   status = "all",
   search = "",
+  kind = "all",
 }: {
   locationId: string;
   status?: MoneyTransferStatusFilter;
   search?: string;
+  kind?: MoneyTransferKindFilter;
 }) {
   const supabase = createSupabaseBrowserClient();
   const normalizedSearch = search.trim().toLocaleLowerCase("th-TH");
   const query = useInfiniteQuery({
-    queryKey: moneyFlowQueryKeys.moneyTransferList(locationId, status, normalizedSearch),
+    queryKey: moneyFlowQueryKeys.moneyTransferList(locationId, status, normalizedSearch, kind),
     initialPageParam: null as { createdAt: string; id: string } | null,
     enabled: Boolean(locationId),
     queryFn: async ({ pageParam }) => {
@@ -291,6 +315,7 @@ export function useMoneyTransferList({
         p_cursor_created_at: pageParam?.createdAt ?? null,
         p_cursor_id: pageParam?.id ?? null,
         p_page_size: 50,
+        p_kind: kind,
       });
       if (error) throw new Error(error.message);
       const payload = (data ?? {}) as any;
@@ -341,7 +366,7 @@ export async function getMoneyTransferReceiptSourceDetails(transferId: string) {
   }));
 }
 
-function moneyTransferError(error: { message?: string }) {
+export function moneyTransferError(error: { message?: string }) {
   const message = error.message ?? "บันทึกรายการโอนเงินไม่สำเร็จ";
   if (message.includes("MT_SOURCE_ALREADY_USED")) return new Error("แหล่งจ่ายถูกใช้ในรายการโอนอื่นแล้ว กรุณาโหลดรายการใหม่");
   if (message.includes("MT_REVISION_CONFLICT")) return new Error("ข้อมูลถูกแก้ไขแล้ว กรุณาโหลดใหม่ก่อนบันทึก");

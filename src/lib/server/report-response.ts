@@ -33,7 +33,8 @@ export function reportErrorGroups(message: string): string[] {
 }
 
 export function reportErrorResponse(message: string) {
-  if (message.includes("ไม่มีสิทธิ์") || message.includes("access denied")) {
+  const normalized = message.toLowerCase();
+  if (message.includes("ไม่มีสิทธิ์") || normalized.includes("access denied")) {
     return NextResponse.json({ error: message }, { status: 403 });
   }
   if (message.includes("ไม่พบ")) {
@@ -46,11 +47,12 @@ export function reportErrorResponse(message: string) {
     message.includes("RUBBER_EXPORT_LOCKED") ||
     message.includes("CASH_COUNT_ACTIVE") ||
     message.includes("CASH_COUNT_LINKED") ||
-    message.includes("active")
+    message.includes("ไม่อยู่ในสถานะ active")
   ) {
     return NextResponse.json({ error: message }, { status: 409 });
   }
-  return NextResponse.json({ error: message }, { status: 500 });
+  console.error("Report operation failed", { message });
+  return NextResponse.json({ error: "ระบบรายงานขัดข้อง กรุณาลองใหม่" }, { status: 500 });
 }
 
 export function reportCreateErrorResponse(message: string) {

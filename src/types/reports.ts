@@ -74,5 +74,16 @@ export type ReportDetails = {
     slipAmount: number;
     fee: number;
     branchPaid: number;
+    bundleSlips?: Array<{ amount: number; fee: number }>;
+    bundleChildren?: Array<{
+      number: string;
+      party: string;
+      amount: number;
+      previousPaid: number;
+      outstanding: number;
+      allocated: number;
+      remaining: number;
+      slips: Array<{ amount: number; fee: number }>;
+    }>;
   }>;
 };

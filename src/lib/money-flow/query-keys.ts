@@ -14,8 +14,8 @@ export const moneyFlowQueryKeys = {
     ["incomeExpenseFeed", ownerUserId, locationId] as const,
   incomeExpensePending: (ownerUserId: string, locationId: string) =>
     ["incomeExpensePending", ownerUserId, locationId] as const,
-  moneyTransferList: (locationId: string, status: string, search: string) =>
-    ["moneyTransferList", locationId, status, search] as const,
+  moneyTransferList: (locationId: string, status: string, search: string, kind = "all") =>
+    ["moneyTransferList", locationId, status, search, kind] as const,
   moneyTransferDetail: (transferId: string) => ["moneyTransferDetail", transferId] as const,
   moneyTransferSources: (locationId: string, sourceType: string, search: string) =>
     ["moneyTransferSources", locationId, sourceType, search] as const,

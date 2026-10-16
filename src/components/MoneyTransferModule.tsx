@@ -11,10 +11,8 @@ import {
   Eye,
   GitMerge,
   Loader2,
-  Plus,
   Share2,
   Trash2,
-  WifiOff,
 } from "lucide-react";
 import type { Location, MoneyTransfer, Profile } from "@/types";
 import { formatBangkokDateTime } from "@/lib/bangkok-date";
@@ -23,6 +21,7 @@ import {
   getMoneyTransferReceiptSourceDetails,
   loadMoneyTransferDetail,
   type MoneyTransferStatusFilter,
+  type MoneyTransferKindFilter,
   useMoneyTransferList,
   useMoneyTransferMutations,
 } from "@/hooks/useMoneyTransfers";
@@ -46,6 +45,8 @@ import { LegacyBranchTransferDetailsModal } from "./money-transfer/LegacyBranchT
 import { MoneyTransferSourceDetailsModal } from "./money-transfer/MoneyTransferSourceDetailsModal";
 import { BranchTransferReceiptModal } from "./money-transfer/BranchTransferReceiptModal";
 import { MergePendingDialog, type MergePendingDialogState } from "./money-transfer/MergePendingDialog";
+import { PaymentBundleDialog } from "./money-transfer/PaymentBundleDialog";
+import { MoneyTransferHeaderActions } from "./money-transfer/MoneyTransferHeaderActions";
 import {
   MONEY_TRANSFER_STATUS_FILTERS,
   MONEY_TRANSFER_STATUS_LABELS,
@@ -101,6 +102,7 @@ export function MoneyTransferModule({
 }: Props) {
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<TransferStatusFilter>("pending");
+  const [kindFilter, setKindFilter] = useState<MoneyTransferKindFilter>("all");
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const {
@@ -109,7 +111,7 @@ export function MoneyTransferModule({
     hasMore,
     loadMore,
     isLoadingMore,
-  } = useMoneyTransferList({ locationId, status: statusFilter, search: debouncedSearch });
+  } = useMoneyTransferList({ locationId, status: statusFilter, search: debouncedSearch, kind: kindFilter });
   const { addTransfer, updateTransfer, updateWorkTransferSlips, deleteTransfer, mergePendingTransfers } =
     useMoneyTransferMutations(
       locationId,
@@ -127,6 +129,7 @@ export function MoneyTransferModule({
   const [deleteAlertDescription, setDeleteAlertDescription] = useState<string | null>(null);
   const [mergeDialog, setMergeDialog] = useState<MergePendingDialogState>(null);
   const [detailTransfer, setDetailTransfer] = useState<MoneyTransfer | null>(null);
+  const [bundleDialog, setBundleDialog] = useState<MoneyTransfer | "create" | null>(null);
   const [branchReceiptId, setBranchReceiptId] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submitLockRef = useRef(false);
@@ -377,32 +380,9 @@ export function MoneyTransferModule({
             สร้างรายการโอนเงินจากบิลยางและใบชั่ง พร้อมอัปโหลดสลิป
           </p>
         </div>
-        {!activeFormType && (
-          <div className="relative w-full sm:w-auto">
-            <button
-              type="button"
-              onClick={() => {
-                if (!online) {
-                  setToastMsg(offlineMessage);
-                  return;
-                }
-                setShowTypeSelector(!showTypeSelector);
-              }}
-              disabled={!online}
-              title={online ? undefined : offlineMessage}
-              className="focus-ring flex h-10 w-full items-center justify-center gap-1.5 rounded-md bg-leaf px-4 text-sm font-semibold text-white hover:bg-leaf/90 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
-            >
-              {online ? <Plus size={16} /> : <WifiOff size={16} />} สร้างรายการโอน
-            </button>
-            {showTypeSelector && (
-              <div className="absolute left-0 top-full z-20 mt-2 w-56 rounded-lg border border-black/10 bg-white py-1 shadow-xl">
-                <button type="button" onClick={() => { setActiveFormType('customer'); setShowTypeSelector(false); setEditTransfer(null); }} className="focus-ring w-full bg-actionSecondary px-4 py-2.5 text-left text-sm font-semibold text-white transition-colors hover:bg-leaf focus:bg-leaf">💰 โอนให้ลูกค้า</button>
-                <button type="button" onClick={() => { setActiveFormType('transport'); setShowTypeSelector(false); setEditTransfer(null); }} className="focus-ring w-full bg-actionSecondary px-4 py-2.5 text-left text-sm font-semibold text-white transition-colors hover:bg-leaf focus:bg-leaf">🚛 จ่ายค่าขนส่ง</button>
-                <button type="button" onClick={() => { setActiveFormType('branch'); setShowTypeSelector(false); setEditTransfer(null); }} className="focus-ring w-full bg-actionSecondary px-4 py-2.5 text-left text-sm font-semibold text-white transition-colors hover:bg-leaf focus:bg-leaf">🏢 โอนให้สาขา</button>
-              </div>
-            )}
-          </div>
-        )}
+        {!activeFormType && <MoneyTransferHeaderActions online={online} selectorOpen={showTypeSelector}
+          onToggleSelector={() => setShowTypeSelector((current) => !current)} onOpenBundle={() => setBundleDialog("create")}
+          onSelectType={(type) => { setActiveFormType(type); setShowTypeSelector(false); setEditTransfer(null); }} />}
       </div>
 
       {/* Forms */}
@@ -509,6 +489,9 @@ export function MoneyTransferModule({
           />
         </ModalShell>
       )}
+      {bundleDialog && <PaymentBundleDialog locationId={locationId} profileId={profile.id} customers={customers}
+        online={online} initialBundle={bundleDialog === "create" ? null : bundleDialog}
+        onOpenRubberExport={onOpenRubberExport} onClose={() => setBundleDialog(null)} />}
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="flex flex-wrap gap-2">
           {MONEY_TRANSFER_STATUS_FILTERS.map(([value, label]) => (
@@ -531,6 +514,12 @@ export function MoneyTransferModule({
               </span>
             </button>
           ))}
+          <div className="flex rounded-md border border-black/10 bg-white p-1" role="group" aria-label="รูปแบบรายการ">
+            {([['all', 'ทั้งหมด'], ['single', 'รายการเดี่ยว'], ['bundle', 'ชุดรวม']] as const).map(([value, label]) => <button
+              key={value} type="button" aria-pressed={kindFilter === value}
+              onClick={() => { setKindFilter(value); setPage(1); }}
+              className={cn("focus-ring rounded px-2.5 py-1 text-xs font-semibold", kindFilter === value ? "bg-river text-white" : "text-ink/65 hover:bg-field")}>{label}</button>)}
+          </div>
           <input
             value={search}
             onChange={(event) => { setSearch(event.target.value); setPage(1); }}
@@ -599,7 +588,7 @@ export function MoneyTransferModule({
                         <button
                           type="button"
                           onClick={() => void handleShare(t)}
-                          disabled={!online || Boolean(getMoneyTransferPrintBlockReason(t)) || pdfShare.busy}
+                          disabled={!online || t.isPaymentBundle || Boolean(getMoneyTransferPrintBlockReason(t)) || pdfShare.busy}
                           aria-label={`แชร์ PDF รายการโอนเงิน ${shortTransferId(t.id)}`}
                           className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-xs font-semibold text-white hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-40"
                           title={!online ? offlineMessage : getMoneyTransferPrintBlockReason(t) ?? (pdfShare.busy ? "กำลังสร้าง PDF" : "แชร์ PDF ใบรายการโอนเงิน 80 มม.")}
@@ -610,7 +599,7 @@ export function MoneyTransferModule({
                         {!isLegacyBranchTransfer && !isReceivedBranchTransfer && (
                           <button
                             type="button"
-                            onClick={() => void handleEdit(t)}
+                            onClick={() => t.isPaymentBundle ? setBundleDialog(t) : void handleEdit(t)}
                             disabled={!online || Boolean(t.reportLockNo)}
                             className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-amber px-3 text-xs font-semibold text-white shadow-sm hover:bg-amber/90 disabled:cursor-not-allowed disabled:opacity-40"
                             title={t.reportLockNo
@@ -619,11 +608,11 @@ export function MoneyTransferModule({
                                 ? "แก้ไข"
                                 : offlineMessage}
                           >
-                            <Edit3 size={16} />
-                            แก้
+                            {t.isPaymentBundle ? <Eye size={16} /> : <Edit3 size={16} />}
+                            {t.isPaymentBundle ? "ดูชุด" : "แก้"}
                           </button>
                         )}
-                        {t.transferType !== "rubber_export_work" && t.transferType !== "time_payroll"
+                        {!t.isPaymentBundle && t.transferType !== "rubber_export_work" && t.transferType !== "time_payroll"
                           && (t.transferType !== "branch" || t.createdByUserId === profile.id) && <button
                           type="button"
                           onClick={() => {
@@ -652,7 +641,10 @@ export function MoneyTransferModule({
                     </td>
                     <td className="px-3 py-2.5 font-mono text-ink/40">{(currentPage - 1) * PAGE_SIZE + idx + 1}</td>
                     <td className="px-3 py-2.5 text-center">
-                      {t.transferType === "rubber_export_work" ? (
+                      {t.isPaymentBundle ? <button type="button" onClick={() => setBundleDialog(t)}
+                        className="focus-ring inline-flex h-10 items-center gap-1 rounded-md bg-actionSecondary px-3 text-xs font-semibold text-white">
+                        <Eye size={15} /> {t.bundleSummary?.childCount ?? 0}
+                      </button> : t.transferType === "rubber_export_work" ? (
                         onOpenRubberExport && t.rubberExportId ? (
                           <button type="button" onClick={() => onOpenRubberExport(t.rubberExportId!, t.locationId)}
                             className="focus-ring rounded text-xs font-semibold text-river underline" title="เปิดรายการส่งออกยาง">
@@ -682,7 +674,7 @@ export function MoneyTransferModule({
                       </button>}
                     </td>
                     <td className="px-3 py-2.5 font-semibold text-ink">{t.transferType === "rubber_export_work"
-                      ? <span>ค่าทำงาน {t.rubberExportNo ?? "REX"}<span className="block text-xs font-normal text-ink/60">สาขาต้นทาง: {locations.find((location) => location.id === t.locationId)?.name ?? "ไม่ระบุสาขา"}</span></span>
+                      ? <span>{t.isPaymentBundle ? "ชุดรวมค่าทำงาน" : `ค่าทำงาน ${t.rubberExportNo ?? "REX"}`}<span className="block text-xs font-normal text-ink/60">สาขาต้นทาง: {locations.find((location) => location.id === t.locationId)?.name ?? "ไม่ระบุสาขา"}</span></span>
                       : t.transferType === "time_payroll" ? <span>{t.timePayrollEmployeeName ?? "พนักงาน"}<span className="block text-xs font-normal text-ink/60">{t.timePayrollSourceLabel ?? "เวลาและเงินเดือน"}</span></span>
                       : t.customerName ?? t.transportStaffName ?? t.targetLocationName ?? "—"}</td>
                     <td className="px-3 py-2.5">
@@ -746,7 +738,7 @@ export function MoneyTransferModule({
                         t.transferType === "branch" && "bg-purple-100 text-purple-700",
                         t.transferType === "rubber_export_work" && "bg-river/10 text-river", t.transferType === "time_payroll" && "bg-mint text-leaf",
                       )}>
-                        {t.transferType === "customer" ? "ลูกค้า" : t.transferType === "transport" ? "รถขนส่ง" : t.transferType === "branch" ? "ให้สาขา" : t.transferType === "time_payroll" ? "เวลา/เงินเดือน" : "ค่าทำงาน REX"}
+                        {t.isPaymentBundle ? "ชุดรวม" : t.transferType === "customer" ? "ลูกค้า" : t.transferType === "transport" ? "รถขนส่ง" : t.transferType === "branch" ? "ให้สาขา" : t.transferType === "time_payroll" ? "เวลา/เงินเดือน" : "ค่าทำงาน REX"}
                       </span>
                     </td>
                     <td className="px-3 py-2.5">

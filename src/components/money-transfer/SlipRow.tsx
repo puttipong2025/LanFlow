@@ -22,6 +22,7 @@ export function SlipRow({
   onUpdate,
   onRemove,
   hidePartyFields = false,
+  readOnly = false,
 }: {
   slip: MoneyTransferSlip;
   index: number;
@@ -29,6 +30,7 @@ export function SlipRow({
   onUpdate: (id: string, field: keyof MoneyTransferSlip, value: any) => void;
   onRemove: (id: string) => void;
   hidePartyFields?: boolean;
+  readOnly?: boolean;
 }) {
   const isOcr = slip.inputMethod === "ocr"
     || (slip.inputMethod === null && slip.referenceNumber !== null);
@@ -37,7 +39,7 @@ export function SlipRow({
     <div className="rounded-lg border border-black/10 bg-field/20 p-3">
       <div className="mb-2 flex items-center justify-between">
         <span className="text-xs font-bold text-ink/40">สลิป #{index + 1}</span>
-        <button type="button" onClick={() => onRemove(slip.id)} className="inline-flex h-10 items-center gap-1 rounded-md bg-danger px-2 text-xs font-semibold text-white hover:bg-danger/90">
+        <button type="button" onClick={() => onRemove(slip.id)} disabled={readOnly} className="inline-flex h-10 items-center gap-1 rounded-md bg-danger px-2 text-xs font-semibold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-40">
           <Trash2 size={14} />
           ลบ
         </button>
@@ -50,6 +52,7 @@ export function SlipRow({
             ariaLabel={`จำนวนเงินสลิป ${index + 1}`}
             value={slip.amount}
             onChange={(value) => onUpdate(slip.id, "amount", value)}
+            readOnly={readOnly}
             invalid={Boolean(errors.amount)}
           />
         </label>
@@ -85,6 +88,7 @@ export function SlipRow({
           <input
             type="text"
             value={slip.senderName ?? ""}
+            readOnly={readOnly}
             onChange={(e) => onUpdate(slip.id, "senderName", e.target.value || null)}
             className="focus-ring h-9 w-full rounded-md border border-black/10 bg-white px-3 text-sm"
           />
@@ -94,6 +98,7 @@ export function SlipRow({
           <input
             type="text"
             value={slip.receiverName ?? ""}
+            readOnly={readOnly}
             onChange={(e) => onUpdate(slip.id, "receiverName", e.target.value || null)}
             className="focus-ring h-9 w-full rounded-md border border-black/10 bg-white px-3 text-sm"
           />
@@ -108,6 +113,7 @@ export function SlipRow({
             max={bangkokDateTimeLocalValue(new Date())}
             aria-invalid={Boolean(errors.transactionDate) || undefined}
             value={slip.transactionDate ? bangkokDateTimeLocalValue(slip.transactionDate) : ""}
+            readOnly={readOnly}
             onChange={(e) => onUpdate(slip.id, "transactionDate", e.target.value ? bangkokWallClockToUtcIso(e.target.value) : null)}
             className={`focus-ring h-9 w-full rounded-md border bg-white px-3 text-sm ${
               !slip.transactionDate || errors.transactionDate ? "border-clay ring-1 ring-clay/20" : "border-black/10"

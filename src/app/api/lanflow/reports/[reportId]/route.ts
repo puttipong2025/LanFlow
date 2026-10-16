@@ -6,6 +6,7 @@ import { reportDatePart } from "@/lib/reports/report-date";
 import { chunkUniqueIds } from "@/lib/server/chunk-ids";
 import { isUuid } from "@/lib/server/rubber-export-response";
 import { readAllSupabaseRows } from "@/lib/supabase-pages";
+import { parsePaymentBundleDetailPage } from "@/lib/payment-bundle-detail";
 
 export const dynamic = "force-dynamic";
 
@@ -56,6 +57,32 @@ async function rowsByForeignIds(
     });
   }));
   return pages.flat();
+}
+
+async function paymentBundleChildren(
+  client: Extract<Awaited<ReturnType<typeof requireAuth>>, { ok: true }>["supabase"],
+  bundleIds: string[],
+) {
+  const entries = await Promise.all(bundleIds.map(async (bundleId) => {
+    const children: Array<Record<string, any>> = [];
+    const seenCursors = new Set<string>();
+    const seenChildIds = new Set<string>();
+    let cursorCreatedAt: string | null = null;
+    let cursorId: string | null = null;
+    do {
+      const { data, error } = await client.rpc("get_payment_bundle_detail", {
+        p_bundle_id: bundleId, p_cursor_created_at: cursorCreatedAt,
+        p_cursor_id: cursorId, p_page_size: 100,
+      });
+      if (error) throw new Error(error.message);
+      const page = parsePaymentBundleDetailPage(data, seenCursors, bundleId, seenChildIds);
+      children.push(...page.children);
+      cursorCreatedAt = page.nextCreatedAt;
+      cursorId = page.nextId;
+    } while (cursorCreatedAt && cursorId);
+    return [bundleId, children] as const;
+  }));
+  return new Map(entries);
 }
 
 export async function GET(request: NextRequest, context: RouteContext) {
@@ -134,7 +161,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
       rowsByIds(
         client,
         "money_transfers",
-        "id, location_id, rubber_export_id, target_location_id, target_location_name, customer_name, transport_staff_name, transfer_type, transfer_status, net_amount_to_pay, branch_paid_amount, time_payroll_source_label, time_payroll_employee_name, server_received_at, updated_at, created_at, money_transfer_slips(amount, fee)",
+        "id, location_id, rubber_export_id, target_location_id, target_location_name, customer_name, transport_staff_name, transfer_type, transfer_status, net_amount_to_pay, branch_paid_amount, time_payroll_source_label, time_payroll_employee_name, server_received_at, updated_at, created_at, is_payment_bundle, money_transfer_slips(amount, fee)",
         [...ids(items, "bank_transfer_source"), ...ids(items, "bank_transfer_target")]
       ),
       result.supabase.rpc("get_report_income_expense_rows_json", { p_report_id: reportId }),
@@ -143,6 +170,10 @@ export async function GET(request: NextRequest, context: RouteContext) {
     if (ledgerResult.error) throw new Error(ledgerResult.error.message);
     if (stockBalanceResult.error) throw new Error(stockBalanceResult.error.message);
 
+    const bundleChildrenById = await paymentBundleChildren(
+      client, bank.filter((row) => row.is_payment_bundle).map((row) => row.id),
+    );
+    const bundleChildren = [...bundleChildrenById.values()].flat();
     const profileIds = [...new Set([
       ...segments.map((row) => row.profile_id),
       ...financial.map((row) => row.profile_id),
@@ -151,7 +182,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
     const profileRows = await rowsByIds(client, "profiles", "id, name", profileIds);
     const profileName = new Map(profileRows.map((row) => [row.id, row.name]));
     const [exportRows, sourceLocationRows] = await Promise.all([
-      rowsByIds(client, "rubber_exports", "id, export_no", bank.map((row) => row.rubber_export_id).filter(Boolean)),
+      rowsByIds(client, "rubber_exports", "id, export_no", [...bank, ...bundleChildren].map((row) => row.rubber_export_id).filter(Boolean)),
       rowsByIds(client, "locations", "id, name", bank.map((row) => row.location_id).filter(Boolean)),
     ]);
     const exportNoById = new Map(exportRows.map((row) => [row.id, row.export_no]));
@@ -276,12 +307,30 @@ export async function GET(request: NextRequest, context: RouteContext) {
       ],
       bankTransfers: bank.map((row) => {
         const slips = (Array.isArray(row.money_transfer_slips) ? row.money_transfer_slips : []) as Array<Record<string, any>>;
+        const children = (bundleChildrenById.get(row.id) ?? [])
+          .map((child) => {
+            const childSlips = Array.isArray(child.money_transfer_slips) ? child.money_transfer_slips : [];
+            const previousPaid = childSlips.reduce((sum: number, slip: Record<string, any>) => sum + number(slip.amount), 0);
+            const outstanding = Math.max(0, number(child.net_amount_to_pay) - previousPaid);
+            const allocated = number(child.bundle_allocated_amount);
+            return {
+              number: `${child.transfer_type === "rubber_export_work" ? "REX" : "TR"}-${child.id.slice(0, 8)}`,
+              party: child.transfer_type === "rubber_export_work"
+                ? `ค่าทำงาน ${exportNoById.get(child.rubber_export_id) ?? "REX"}`
+                : child.customer_name ?? "",
+              amount: number(child.net_amount_to_pay), previousPaid, outstanding, allocated,
+              remaining: outstanding - allocated,
+              slips: childSlips.map((slip: Record<string, any>) => ({ amount: number(slip.amount), fee: number(slip.fee) })),
+            };
+          });
         const direction = directionById.get(row.id) ?? "out";
         return {
           date: datePart(row.server_received_at ?? row.updated_at ?? row.created_at),
           number: `TR-${row.id.slice(0, 8)}`,
           direction,
-          party: row.transfer_type === "rubber_export_work"
+          party: row.is_payment_bundle
+            ? row.transfer_type === "rubber_export_work" ? `ชุดรวมค่าทำงาน ${children.length} รายการ` : `ชุดรวม ${row.customer_name ?? "ลูกค้า"} ${children.length} รายการ`
+            : row.transfer_type === "rubber_export_work"
             ? `ค่าทำงานส่งออกยาง ${exportNoById.get(row.rubber_export_id) ?? "REX"} · สาขาต้นทาง: ${sourceLocationNameById.get(row.location_id) ?? "ไม่ระบุสาขา"}`
             : row.transfer_type === "time_payroll"
               ? `${row.time_payroll_source_label ?? "เวลาและเงินเดือน"} · ${row.time_payroll_employee_name ?? "พนักงาน"}`
@@ -293,6 +342,8 @@ export async function GET(request: NextRequest, context: RouteContext) {
           slipAmount: slips.reduce((sum, slip) => sum + number(slip.amount), 0),
           fee: slips.reduce((sum, slip) => sum + number(slip.fee), 0),
           branchPaid: number(row.branch_paid_amount),
+          bundleSlips: row.is_payment_bundle ? slips.map((slip) => ({ amount: number(slip.amount), fee: number(slip.fee) })) : undefined,
+          bundleChildren: row.is_payment_bundle ? children : undefined,
         };
       }),
     };
