@@ -456,6 +456,7 @@ export function MoneyTransferModule({
       )}
       {bundleDialog && <PaymentBundleDialog locationId={locationId} profileId={profile.id} customers={customers}
         online={online} initialBundle={bundleDialog === "create" ? null : bundleDialog}
+        onSaved={() => setToastMsg("บันทึกสำเร็จ")}
         onClose={() => setBundleDialog(null)} />}
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="flex flex-wrap gap-2">

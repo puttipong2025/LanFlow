@@ -17,7 +17,7 @@ import { focusFirstSlipIssue, validateMoneyTransferSlips, type SlipValidationIss
 type BundleType = "customer" | "rubber_export_work";
 
 export function PaymentBundleDialog({
-  locationId, profileId, customers, online, initialBundle, onClose,
+  locationId, profileId, customers, online, initialBundle, onClose, onSaved,
 }: {
   locationId: string;
   profileId: string;
@@ -25,6 +25,7 @@ export function PaymentBundleDialog({
   online: boolean;
   initialBundle?: MoneyTransfer | null;
   onClose: () => void;
+  onSaved: () => void;
 }) {
   const [bundleType, setBundleType] = useState<BundleType>(initialBundle?.transferType === "rubber_export_work" ? "rubber_export_work" : "customer");
   const [customerId, setCustomerId] = useState(initialBundle?.customerId ?? "");
@@ -145,7 +146,8 @@ export function PaymentBundleDialog({
         bundle: { ...bundle, slips: slips.map((slip, index) => ({ ...slip, sortOrder: index })) },
         branchPaysRemaining,
       });
-      setNotice("บันทึกสลิปชุดรวมแล้ว");
+      onSaved();
+      onClose();
     } catch (cause) { setError(cause instanceof Error ? cause.message : "บันทึกชุดรวมไม่สำเร็จ"); }
   }
 
