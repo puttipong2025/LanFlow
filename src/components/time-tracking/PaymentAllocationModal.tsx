@@ -58,6 +58,7 @@ export function PaymentAllocationModal({
   const [channel, setChannel] = useState<PaymentChannel | null>(null);
   const [locationId, setLocationId] = useState("");
   const [transferAmount, setTransferAmount] = useState("");
+  const [transferEnabled, setTransferEnabled] = useState(false);
   const [comment, setComment] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -96,7 +97,7 @@ export function PaymentAllocationModal({
         : selectedBranchSummary?.snapshotStatus && selectedBranchSummary.snapshotStatus !== "ready"
           ? "รับ–จ่ายสุทธิกำลังอัปเดต ระหว่างนี้ระบบแนะนำโอนเต็มจำนวน"
           : "ยังไม่มีรับ–จ่ายสุทธิของสาขานี้ ระบบแนะนำโอนเต็มจำนวน";
-  const parsedTransfer = parseCanonicalPaymentAmount(transferAmount);
+  const parsedTransfer = transferEnabled ? parseCanonicalPaymentAmount(transferAmount || "0") : 0;
   const invalidTransfer = channel === "branch_and_transfer" && (
     parsedTransfer === null || parsedTransfer < 0 || parsedTransfer > paymentAmount
   );
@@ -113,10 +114,10 @@ export function PaymentAllocationModal({
   }, [online, ownerUserId, refetchBranchSummaries]);
 
   useEffect(() => {
-    if (channel !== "branch_and_transfer" || !locationId || transferEdited.current) return;
+    if (!transferEnabled || channel !== "branch_and_transfer" || !locationId || transferEdited.current) return;
     if (transferAmount === recommendedTransfer) return;
     setTransferAmount(recommendedTransfer);
-  }, [channel, locationId, recommendedTransfer, transferAmount]);
+  }, [channel, locationId, recommendedTransfer, transferAmount, transferEnabled]);
 
   function applyTransferRecommendation(nextLocationId: string) {
     const summary = branchSummaryByLocation.get(nextLocationId);
@@ -130,6 +131,7 @@ export function PaymentAllocationModal({
 
   function selectChannel(nextChannel: PaymentChannel) {
     setChannel(nextChannel);
+    setTransferEnabled(false);
     setError(null);
     if (nextChannel === "outside_system") {
       setLocationId("");
@@ -158,7 +160,7 @@ export function PaymentAllocationModal({
       const success = await onSubmit({
         channel,
         expenseLocationId: channel === "branch_and_transfer" ? locationId : null,
-        transferAmount: channel === "branch_and_transfer" ? transferAmount : null,
+        transferAmount: channel === "branch_and_transfer" ? (transferEnabled ? transferAmount || "0" : "0") : null,
         expectedSourceAmount: paymentAmount,
       }, comment);
       if (!success) setError("บันทึกวิธีจ่ายไม่สำเร็จ กรุณาลองใหม่");
@@ -212,7 +214,7 @@ export function PaymentAllocationModal({
                 onChange={(event) => {
                   const nextLocationId = event.target.value;
                   setLocationId(nextLocationId);
-                  if (nextLocationId !== locationId) applyTransferRecommendation(nextLocationId);
+                  if (transferEnabled && nextLocationId !== locationId) applyTransferRecommendation(nextLocationId);
                   setError(null);
                 }}
                 disabled={saving}
@@ -248,16 +250,43 @@ export function PaymentAllocationModal({
                 </p>
               </div>
             )}
-            <div>
+            {!transferEnabled && (
+              <button
+                type="button"
+                disabled={saving || !locationId}
+                onClick={() => {
+                  applyTransferRecommendation(locationId);
+                  setTransferEnabled(true);
+                  setError(null);
+                }}
+                className="focus-ring rounded-md bg-success px-4 py-2 text-sm font-bold text-white hover:bg-success/90 disabled:opacity-50"
+              >
+                สร้างรายการโอน
+              </button>
+            )}
+            {transferEnabled && <div>
               <label className="block text-sm font-semibold text-ink" htmlFor={`${fieldId}-transfer`}>ยอดโอนเงิน</label>
               <input
                 id={`${fieldId}-transfer`}
+                autoFocus
                 type="number"
                 inputMode="decimal"
                 min="0"
                 max={paymentAmount}
                 step="0.01"
                 value={transferAmount}
+                onFocus={() => {
+                  if (parseCanonicalPaymentAmount(transferAmount) === 0) {
+                    transferEdited.current = true;
+                    setTransferAmount("");
+                  }
+                }}
+                onBlur={() => {
+                  if (transferAmount.trim() === "") {
+                    transferEdited.current = true;
+                    setTransferAmount("0");
+                  }
+                }}
                 onChange={(event) => {
                   transferEdited.current = true;
                   setTransferAmount(event.target.value);
@@ -270,7 +299,7 @@ export function PaymentAllocationModal({
               <p className="mt-1 text-pretty text-xs text-ink/60">
                 ค่าแนะนำจากรับ–จ่ายสุทธิ แก้ไขได้ไม่เกิน {formatPayrollCurrency(paymentAmount)}
               </p>
-            </div>
+            </div>}
             {amounts && (
               <dl className="grid grid-cols-2 gap-2 rounded-md bg-white p-3 text-sm">
                 <div><dt className="text-ink/60">ยอดโอน</dt><dd className="mt-1 tabular-nums font-bold text-river">{formatPayrollCurrency(amounts.transferAmount)}</dd></div>
@@ -285,7 +314,7 @@ export function PaymentAllocationModal({
         {error && <p role="alert" className="mt-3 text-pretty text-sm font-semibold text-danger">{error}</p>}
         <div className="mt-6 flex justify-end gap-3">
           <button type="button" onClick={onClose} disabled={saving} className="focus-ring rounded-md bg-actionSecondary px-4 py-2 text-sm font-bold text-white hover:bg-actionSecondary/90">ยกเลิก</button>
-          <button type="submit" disabled={saving || !channel || (channel === "branch_and_transfer" && (!locationId || invalidTransfer))} className="focus-ring rounded-md bg-success px-4 py-2 text-sm font-bold text-white disabled:opacity-50">
+          <button type="submit" disabled={saving || !channel || (channel === "branch_and_transfer" && (!locationId || invalidTransfer))} className={cn("focus-ring rounded-md px-4 py-2 text-sm font-bold text-white disabled:opacity-50", transferEnabled ? "bg-river hover:bg-river/90" : "bg-success hover:bg-success/90")}>
             {saving ? "กำลังบันทึก..." : submitLabel}
           </button>
         </div>

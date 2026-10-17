@@ -93,6 +93,8 @@ test("approval uses the shared payment dialog and persists the displayed payer o
   expect(approvalCalls).toBe(0);
   await approve.click();
   await payment.getByText("โอนเงิน + สาขาจ่าย", { exact: true }).click();
+  await expect(payment.getByLabel("ยอดโอนเงิน")).toHaveCount(0);
+  await payment.getByRole("button", { name: "สร้างรายการโอน", exact: true }).click();
   const netCashFlowCard = payment.getByText("รับ–จ่ายสุทธิของสาขา").locator("..");
   await expect(netCashFlowCard.getByText("฿300.00", { exact: true })).toBeVisible();
   await expect(payment.getByLabel("ยอดโอนเงิน")).toHaveValue("200");
@@ -102,9 +104,19 @@ test("approval uses the shared payment dialog and persists the displayed payer o
   await expect(payment.getByLabel("ยอดโอนเงิน")).toHaveCount(0);
   await expect(payment.getByLabel("สาขาที่จ่ายส่วนต่าง")).toHaveCount(0);
   await payment.getByText("โอนเงิน + สาขาจ่าย", { exact: true }).click();
+  await expect(payment.getByLabel("ยอดโอนเงิน")).toHaveCount(0);
+  await payment.getByRole("button", { name: "สร้างรายการโอน", exact: true }).click();
   await expect(payment.getByLabel("ยอดโอนเงิน")).toHaveValue("200");
   await expect(payment.getByLabel("สาขาที่จ่ายส่วนต่าง")).toHaveValue(branch.id);
   const submitPayment = payment.getByRole("button", { name: "อนุมัติ", exact: true });
+  await expect(submitPayment).toHaveClass(/bg-river/);
+  const transferInput = payment.getByLabel("ยอดโอนเงิน");
+  await transferInput.fill("0");
+  await transferInput.blur();
+  await transferInput.focus();
+  await expect(transferInput).toHaveValue("");
+  await transferInput.blur();
+  await expect(transferInput).toHaveValue("0");
   await payment.getByLabel("ยอดโอนเงิน").fill("1e2");
   await expect(submitPayment).toBeDisabled();
   await payment.getByLabel("ยอดโอนเงิน").fill("01");
@@ -173,6 +185,8 @@ test("auto-approved payroll chooses the payer before creation and fits a narrow 
   await expect(create.getByRole("button", { name: "ยืนยันสร้างสลิป" })).toBeFocused();
   await create.getByRole("button", { name: "ยืนยันสร้างสลิป" }).click();
   await payment.getByText("โอนเงิน + สาขาจ่าย", { exact: true }).click();
+  await expect(payment.getByLabel("ยอดโอนเงิน")).toHaveCount(0);
+  await payment.getByRole("button", { name: "สร้างรายการโอน", exact: true }).click();
   await expect(payment.getByText(/ข้อมูลอาจไม่สด/)).toBeVisible();
   await expect(payment.getByLabel("ยอดโอนเงิน")).toHaveValue("250");
   await payment.getByLabel("สาขาที่จ่ายส่วนต่าง").selectOption(branch.id);
@@ -222,6 +236,8 @@ test("late branch summaries preserve manual input and a branch change starts a n
   await payroll.getByRole("button", { name: "อนุมัติ", exact: true }).click();
   const payment = page.getByRole("dialog", { name: "เลือกวิธีจ่าย", exact: true });
   await payment.getByText("โอนเงิน + สาขาจ่าย", { exact: true }).click();
+  await expect(payment.getByLabel("ยอดโอนเงิน")).toHaveCount(0);
+  await payment.getByRole("button", { name: "สร้างรายการโอน", exact: true }).click();
   await expect(payment.getByLabel("ยอดโอนเงิน")).toHaveValue("500");
   await payment.getByLabel("ยอดโอนเงิน").fill("125");
 
@@ -269,6 +285,8 @@ test("a failed first summary request keeps the dialog usable with a full-transfe
   await payroll.getByRole("button", { name: "อนุมัติ", exact: true }).click();
   const payment = page.getByRole("dialog", { name: "เลือกวิธีจ่าย", exact: true });
   await payment.getByText("โอนเงิน + สาขาจ่าย", { exact: true }).click();
+  await expect(payment.getByLabel("ยอดโอนเงิน")).toHaveCount(0);
+  await payment.getByRole("button", { name: "สร้างรายการโอน", exact: true }).click();
 
   await expect(payment.getByLabel("สาขาที่จ่ายส่วนต่าง")).toHaveValue(branch.id);
   await expect(payment.getByLabel("ยอดโอนเงิน")).toHaveValue("500");
@@ -309,6 +327,8 @@ test("a malformed branch-summary timestamp cannot crash the payment dialog", asy
   await payroll.getByRole("button", { name: "อนุมัติ", exact: true }).click();
   const payment = page.getByRole("dialog", { name: "เลือกวิธีจ่าย", exact: true });
   await payment.getByText("โอนเงิน + สาขาจ่าย", { exact: true }).click();
+  await expect(payment.getByLabel("ยอดโอนเงิน")).toHaveCount(0);
+  await payment.getByRole("button", { name: "สร้างรายการโอน", exact: true }).click();
 
   await expect(payment.getByText("รับ–จ่ายสุทธิของสาขา")).toBeVisible();
   await expect(payment.getByLabel("ยอดโอนเงิน")).toHaveValue("200");
@@ -351,6 +371,8 @@ test("a failed branch snapshot is disclosed while keeping the full-transfer fall
   await payroll.getByRole("button", { name: "อนุมัติ", exact: true }).click();
   const payment = page.getByRole("dialog", { name: "เลือกวิธีจ่าย", exact: true });
   await payment.getByText("โอนเงิน + สาขาจ่าย", { exact: true }).click();
+  await expect(payment.getByLabel("ยอดโอนเงิน")).toHaveCount(0);
+  await payment.getByRole("button", { name: "สร้างรายการโอน", exact: true }).click();
 
   await expect(payment.getByText(/คำนวณรับ–จ่ายสุทธิไม่สำเร็จ/)).toBeVisible();
   await expect(payment.getByLabel("ยอดโอนเงิน")).toHaveValue("500");
@@ -426,6 +448,8 @@ test("a time-payroll manager without the business app header still receives the 
   await payroll.getByRole("button", { name: "อนุมัติ", exact: true }).click();
   const payment = page.getByRole("dialog", { name: "เลือกวิธีจ่าย", exact: true });
   await payment.getByText("โอนเงิน + สาขาจ่าย", { exact: true }).click();
+  await expect(payment.getByLabel("ยอดโอนเงิน")).toHaveCount(0);
+  await payment.getByRole("button", { name: "สร้างรายการโอน", exact: true }).click();
 
   const netCashFlowCard = payment.getByText("รับ–จ่ายสุทธิของสาขา").locator("..");
   await expect(netCashFlowCard.getByText("฿300.00", { exact: true })).toBeVisible();
@@ -437,6 +461,8 @@ test("a time-payroll manager without the business app header still receives the 
   await payroll.getByRole("button", { name: "อนุมัติ", exact: true }).click();
   await expect.poll(() => summaryRequests).toBe(2);
   await payment.getByText("โอนเงิน + สาขาจ่าย", { exact: true }).click();
+  await expect(payment.getByLabel("ยอดโอนเงิน")).toHaveCount(0);
+  await payment.getByRole("button", { name: "สร้างรายการโอน", exact: true }).click();
 
   await expect(netCashFlowCard.getByText("฿300.00", { exact: true })).toBeVisible();
   await expect(payment.getByText(/ข้อมูลอาจไม่สด/)).toBeVisible();
