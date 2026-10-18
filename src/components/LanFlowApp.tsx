@@ -478,7 +478,7 @@ function BusinessLanFlowApp() {
     ));
   }, []);
   const rubberWeightAlert = useRubberWeightAlert({
-    userId: profile.id,
+    userId: profile.id, scopeKey: JSON.stringify([profile.role, profile.locationIds, profile.canAccessSystemManager]),
     enabled: isLoaded
       && online
       && (profile.role === "admin" || profile.role === "super_admin"),
@@ -658,7 +658,7 @@ function BusinessLanFlowApp() {
   return (
     <main className="min-h-screen bg-sand">
       <section className="border-b border-mint bg-white shadow-sm">
-        <AppHeader
+        <AppHeader alertCheck={profile.role === "admin" || profile.role === "super_admin" ? rubberWeightAlert : undefined}
           profile={profile}
           locations={locations}
           selectedLocationId={selectedLocationId}

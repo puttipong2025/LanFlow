@@ -16,25 +16,33 @@ async function readJson(response: Response) {
   return response.json().catch(() => ({})) as Promise<Record<string, unknown>>;
 }
 
-export function useRubberWeightAlertGroups() {
+export function useRubberWeightAlertGroups(kind: "cash" | "weight" = "weight") {
+  const endpoint = kind === "cash" ? "/api/lanflow/cash-alert/groups" : "/api/lanflow/rubber-weight-alert/groups";
+  const key = [RUBBER_WEIGHT_ALERT_GROUPS_KEY, kind];
+  const inputBody = (input: GroupInput) => kind === "cash"
+    ? { locationIds: input.locationIds, thresholdAmount: input.thresholdKg } : input;
   const queryClient = useQueryClient();
   const groupsQuery = useQuery({
-    queryKey: [RUBBER_WEIGHT_ALERT_GROUPS_KEY],
+    queryKey: key,
     queryFn: async (): Promise<GroupsResponse> => {
-      const response = await authFetch("/api/lanflow/rubber-weight-alert/groups", { cache: "no-store" });
+      const response = await authFetch(endpoint, { cache: "no-store" });
       const data = await readJson(response);
-      if (!response.ok) throw new Error(String(data.errorMessage || "โหลดกลุ่มแจ้งเตือนน้ำหนักไม่สำเร็จ"));
+      if (!response.ok) throw new Error(String(data.errorMessage || "โหลดกลุ่มแจ้งเตือนไม่สำเร็จ"));
+      if (kind === "cash") {
+        const cash = data as unknown as { groups: Array<RubberWeightAlertGroup & { thresholdAmount: number }>; availableLocationIds: string[] };
+        return { ...cash, groups: cash.groups.map((group) => ({ ...group, thresholdKg: group.thresholdAmount })) };
+      }
       return data as GroupsResponse;
     },
   });
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: [RUBBER_WEIGHT_ALERT_GROUPS_KEY] });
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: key });
   const createGroup = useMutation({
     mutationFn: async (input: GroupInput) => {
-      const response = await authFetch("/api/lanflow/rubber-weight-alert/groups", {
+      const response = await authFetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(input),
+        body: JSON.stringify(inputBody(input)),
       });
       const data = await readJson(response);
       if (!response.ok) throw new Error(String(data.errorMessage || "สร้างกลุ่มไม่สำเร็จ"));
@@ -44,10 +52,10 @@ export function useRubberWeightAlertGroups() {
   });
   const updateGroup = useMutation({
     mutationFn: async ({ id, ...input }: GroupInput & { id: string }) => {
-      const response = await authFetch(`/api/lanflow/rubber-weight-alert/groups/${id}`, {
+      const response = await authFetch(`${endpoint}/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(input),
+        body: JSON.stringify(inputBody(input)),
       });
       const data = await readJson(response);
       if (!response.ok) throw new Error(String(data.errorMessage || "แก้ไขกลุ่มไม่สำเร็จ"));
@@ -57,7 +65,7 @@ export function useRubberWeightAlertGroups() {
   });
   const deleteGroup = useMutation({
     mutationFn: async (id: string) => {
-      const response = await authFetch(`/api/lanflow/rubber-weight-alert/groups/${id}`, { method: "DELETE" });
+      const response = await authFetch(`${endpoint}/${id}`, { method: "DELETE" });
       const data = await readJson(response);
       if (!response.ok) throw new Error(String(data.errorMessage || "ลบกลุ่มไม่สำเร็จ"));
       return data;

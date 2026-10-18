@@ -1,118 +1,90 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-
 import { ApiResponseError, assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { isNetworkCancellation } from "@/lib/network-abort";
-import {
-  parseRubberWeightAlertCheck,
-  readRubberWeightAlertLastCheckedAt,
-  rubberWeightAlertDelayMs,
-  writeRubberWeightAlertLastCheckedAt,
-  type RubberWeightAlertCheck,
-  type RubberWeightAlertConfig,
-} from "@/lib/lanflow/rubber-weight-alert";
+import { parseBranchThresholdCheck, type BranchThresholdCheck } from "@/lib/lanflow/branch-threshold-alert";
+import { readRubberWeightAlertLastCheckedAt, rubberWeightAlertDelayMs, writeRubberWeightAlertLastCheckedAt, type RubberWeightAlertConfig } from "@/lib/lanflow/rubber-weight-alert";
 
-async function fetchAlertCheck(signal: AbortSignal) {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const response = await authFetch("/api/lanflow/rubber-weight-alert", {
-        cache: "no-store",
-        signal,
-      });
-      await assertApiResponse(response);
-      const payload = parseRubberWeightAlertCheck(await response.json());
-      if (!payload) throw new Error("ข้อมูลการแจ้งเตือนน้ำหนักไม่ถูกต้อง");
-      return payload;
-    } catch (error) {
-      if (isNetworkCancellation(error)) throw error;
-      if (error instanceof ApiResponseError && (error.status === 401 || error.status === 403)) {
-        throw error;
-      }
-      lastError = error;
-    }
-  }
-  throw lastError;
-}
-
-export function useRubberWeightAlert({
-  userId,
-  enabled,
-  config,
-  onConfigChange,
-}: {
-  userId: string;
-  enabled: boolean;
-  config: RubberWeightAlertConfig;
+export function useRubberWeightAlert({ userId, enabled, config, onConfigChange, scopeKey }: {
+  userId: string; enabled: boolean; scopeKey: string; config: RubberWeightAlertConfig;
   onConfigChange: (config: RubberWeightAlertConfig) => void;
 }) {
-  const [alert, setAlert] = useState<RubberWeightAlertCheck | null>(null);
+  const [alert, setAlert] = useState<BranchThresholdCheck | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const requestRef = useRef<(() => Promise<void>) | null>(null);
+  const callbackRef = useRef(onConfigChange);
+  callbackRef.current = onConfigChange;
   const configRef = useRef(config);
-  const onConfigChangeRef = useRef(onConfigChange);
-  const lastCheckedAtRef = useRef<{ userId: string; value: number } | null>(null);
   configRef.current = config;
-  onConfigChangeRef.current = onConfigChange;
+  const lastRef = useRef<{ userId: string; at: number } | null>(null);
+
+  useEffect(() => { setAlert(null); setError(null); }, [enabled, userId, scopeKey]);
 
   useEffect(() => {
-    setAlert(null);
-  }, [enabled, userId]);
-
-  useEffect(() => {
-    if (!enabled || !userId) return;
-
+    setChecking(false);
+    if (!enabled || !userId) { requestRef.current = null; return; }
     let active = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let controller: AbortController | null = null;
-
-    const schedule = () => {
-      const storedLastCheckedAt = readRubberWeightAlertLastCheckedAt(userId);
-      const memoryLastCheckedAt = lastCheckedAtRef.current?.userId === userId
-        ? lastCheckedAtRef.current.value
-        : null;
-      const delay = rubberWeightAlertDelayMs(
-        storedLastCheckedAt === null
-          ? memoryLastCheckedAt
-          : Math.max(storedLastCheckedAt, memoryLastCheckedAt ?? 0),
-        configRef.current.intervalMinutes,
-      );
-      timer = setTimeout(() => void check(), delay);
-    };
-
-    const check = async () => {
-      const checkedAt = Date.now();
-      lastCheckedAtRef.current = { userId, value: checkedAt };
-      writeRubberWeightAlertLastCheckedAt(userId, checkedAt);
-      setAlert(null);
+    let pending: Promise<void> | null = null;
+    let showEmpty = false;
+    const read = (manual: boolean) => {
+      showEmpty ||= manual;
+      if (pending) return pending;
+      setChecking(true); setError(null);
       controller = new AbortController();
-      try {
-        const result = await fetchAlertCheck(controller.signal);
-        if (!active) return;
-        configRef.current = result.config;
-        onConfigChangeRef.current(result.config);
-        setAlert(result.candidates.length > 0 ? result : null);
-      } catch (error) {
-        if (!active || isNetworkCancellation(error)) return;
-        toast.error(error instanceof ApiResponseError && error.status === 403
-          ? "ไม่มีสิทธิ์ตรวจการแจ้งเตือนน้ำหนัก"
-          : "ตรวจการแจ้งเตือนน้ำหนักไม่สำเร็จ ระบบจะลองใหม่ในรอบถัดไป");
-      } finally {
-        controller = null;
-        if (active) schedule();
-      }
+      const signal = controller.signal;
+      pending = (async () => {
+        try {
+          let result: BranchThresholdCheck | null = null;
+          for (let attempt = 0; attempt < 2; attempt++) {
+            try {
+              const response = await authFetch("/api/lanflow/threshold-alert", { cache: "no-store", signal });
+              await assertApiResponse(response);
+              result = parseBranchThresholdCheck(await response.json());
+              if (!result) throw new Error("ข้อมูลการแจ้งเตือนไม่ถูกต้อง");
+              break;
+            } catch (cause) {
+              if (isNetworkCancellation(cause) || signal.aborted || attempt === 1
+                || (cause instanceof ApiResponseError && [401, 403].includes(cause.status))) throw cause;
+            }
+          }
+          if (!active || !result) return;
+          configRef.current = result.config; callbackRef.current(result.config);
+          setAlert(result.candidates.length > 0 || showEmpty ? result : null);
+        } catch (cause) {
+          if (!active || signal.aborted || isNetworkCancellation(cause)) return;
+          const message = cause instanceof ApiResponseError && cause.status === 403
+            ? "ไม่มีสิทธิ์ตรวจการแจ้งเตือน" : "ตรวจการแจ้งเตือนไม่สำเร็จ กรุณาลองใหม่";
+          setError(message);
+          if (!showEmpty) toast.error(message);
+        } finally {
+          pending = null; controller = null; showEmpty = false;
+          if (active) setChecking(false);
+        }
+      })();
+      return pending;
     };
-
+    const schedule = () => {
+      const stored = readRubberWeightAlertLastCheckedAt(userId);
+      const memory = lastRef.current?.userId === userId ? lastRef.current.at : null;
+      timer = setTimeout(() => {
+        const at = Date.now(); lastRef.current = { userId, at };
+        writeRubberWeightAlertLastCheckedAt(userId, at);
+        void read(false).finally(() => { if (active) schedule(); });
+      }, rubberWeightAlertDelayMs(stored === null ? memory : Math.max(stored, memory ?? 0), configRef.current.intervalMinutes));
+    };
+    requestRef.current = () => read(true);
     schedule();
     return () => {
-      active = false;
+      active = false; requestRef.current = null;
       if (timer !== null) clearTimeout(timer);
       controller?.abort();
     };
-  }, [config.intervalMinutes, enabled, userId]);
-
-  return {
-    alert,
-    acknowledge: () => setAlert(null),
-  };
+  }, [enabled, userId, scopeKey, config.intervalMinutes]);
+  const checkNow = useCallback(() => requestRef.current?.(), []);
+  return { alert: enabled ? alert : null, checking, error, checkNow, acknowledge: () => setAlert(null) };
 }

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 
 const counts = { "1": 0, "2": 0, "5": 0, "10": 0, "20": 0, "50": 0, "100": 0, "500": 0, "1000": 1 };
 const receipt = {
@@ -26,13 +26,7 @@ const detail = {
   evidence: { highlights: ["ยอดตรงกัน"], limitations: [], references: [] },
 };
 
-async function dismissRubberWeightAlertIfVisible(page: Page) {
-  const alert = page.getByRole("alertdialog", { name: "น้ำหนักยางสุทธิสะสมเกินเกณฑ์" });
-  const appeared = await alert.waitFor({ state: "visible", timeout: 2_000 }).then(() => true).catch(() => false);
-  if (!appeared) return;
-  await alert.getByRole("button", { name: "รับทราบ", exact: true }).click();
-  await alert.waitFor({ state: "hidden" });
-}
+import { dismissRubberWeightAlertIfVisible } from "../helpers/dismiss-threshold-alert";
 
 test.describe("cash count confirmed command / refresh failure", () => {
   test.use({ storageState: "playwright/.auth/super_admin.json" });

@@ -48,6 +48,8 @@ export default defineConfig({
     '**/rubber-approval-policy-refresh-contract.spec.ts',
     '**/rubber-bill-validation.spec.ts',
     '**/rubber-weight-alert-state.spec.ts',
+    '**/branch-threshold-alert-state.spec.ts',
+    '**/threshold-alert-route-failures.spec.ts',
     '**/rubber-bills/rubber-bill-ocr-queue.spec.ts',
     '**/rubber-bills/ocr-staging-recovery.spec.ts',
     '**/rubber-evidence-selectors.spec.ts',

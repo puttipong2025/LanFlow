@@ -1,5 +1,6 @@
 "use client";
 
+import { CASH_THRESHOLD_MAX, validCashThreshold } from "@/lib/lanflow/branch-threshold-alert";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BellRing, Pencil, Plus, Trash2 } from "lucide-react";
 
@@ -24,13 +25,19 @@ export function RubberWeightAlertSettings({
   initialConfig,
   onAccessDenied,
   onSaved,
+  kind = "weight",
 }: {
+  kind?: "cash" | "weight";
   initialConfig: RubberWeightAlertConfig;
   onAccessDenied: () => void;
   onSaved: (config: RubberWeightAlertConfig) => void;
 }) {
   const { locations, isLoading: locationsLoading, error: locationsError } = useLocations();
-  const groups = useRubberWeightAlertGroups();
+  const groups = useRubberWeightAlertGroups(kind);
+  const cash = kind === "cash";
+  const unit = cash ? "บาท" : "กก.";
+  const subject = cash ? "เงิน" : "น้ำหนัก";
+  const thresholdError = cash ? "กรอกเกณฑ์เงินในช่วงที่กำหนดและทศนิยมไม่เกินสองตำแหน่ง" : "เกณฑ์ต้องอยู่ระหว่าง 1–1,000,000 กก.";
   const [savedInterval, setSavedInterval] = useState(initialConfig.intervalMinutes);
   const [intervalValue, setIntervalValue] = useState(String(initialConfig.intervalMinutes));
   const [savingInterval, setSavingInterval] = useState(false);
@@ -49,7 +56,7 @@ export function RubberWeightAlertSettings({
   const intervalMinutes = Number(intervalValue);
   const thresholdKg = Number(thresholdValue);
   const intervalValid = validRubberWeightAlertInterval(intervalMinutes);
-  const thresholdValid = validRubberWeightAlertThreshold(thresholdKg);
+  const thresholdValid = thresholdValue.trim() !== "" && (cash ? validCashThreshold(thresholdKg) : validRubberWeightAlertThreshold(thresholdKg));
   const intervalDirty = intervalValue !== String(savedInterval);
 
   useEffect(() => {
@@ -115,7 +122,7 @@ export function RubberWeightAlertSettings({
   function openEditor(group?: RubberWeightAlertGroup) {
     setEditingGroup(group ?? null);
     setGroupLocationIds(group?.locationIds ?? []);
-    setThresholdValue(String(group?.thresholdKg ?? initialConfig.thresholdKg));
+    setThresholdValue(String(group?.thresholdKg ?? (cash ? 30_000 : initialConfig.thresholdKg)));
     setGroupError(null);
     setGroupSuccess(null);
     setEditorOpen(true);
@@ -134,7 +141,7 @@ export function RubberWeightAlertSettings({
     if (groupLocationIds.length === 0 || !thresholdValid) {
       setGroupError(groupLocationIds.length === 0
         ? "เลือกสาขาอย่างน้อยหนึ่งสาขา"
-        : "เกณฑ์ต้องอยู่ระหว่าง 1–1,000,000 กก.");
+        : thresholdError);
       return;
     }
     groupSavingRef.current = true;
@@ -170,7 +177,7 @@ export function RubberWeightAlertSettings({
             รอบตรวจส่วนกลาง
           </h3>
           <p className="mt-1 text-pretty text-sm text-ink/60">
-            ใช้รอบเดียวกับทุกกลุ่ม และแจ้งซ้ำเมื่อถึงรอบตรวจถัดไป
+            ใช้รอบเดียวกับทุกกลุ่มเงินและน้ำหนัก และแจ้งซ้ำเมื่อถึงรอบตรวจถัดไป
           </p>
           <form className="mt-4 max-w-sm space-y-3" noValidate onSubmit={saveInterval}>
             <label className="grid gap-1 text-sm font-semibold" htmlFor="rubber-weight-alert-interval">
@@ -209,8 +216,8 @@ export function RubberWeightAlertSettings({
       <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h3 className="text-balance text-lg font-bold text-ink">กลุ่มเกณฑ์น้ำหนัก</h3>
-            <p className="mt-1 text-pretty text-sm text-ink/60">สาขานอกกลุ่มจะไม่แจ้งเตือนน้ำหนัก</p>
+            <h3 className="text-balance text-lg font-bold text-ink">กลุ่มเกณฑ์{subject}</h3>
+            <p className="mt-1 text-pretty text-sm text-ink/60">สาขานอกกลุ่มจะไม่แจ้งเตือน{subject}</p>
           </div>
           {!editorOpen && !loading && !loadError && groups.availableLocationIds.length > 0 && (
             <button type="button" onClick={() => openEditor()} className="focus-ring inline-flex h-10 items-center gap-2 rounded-md bg-commit px-3 text-sm font-bold text-white">
@@ -232,23 +239,25 @@ export function RubberWeightAlertSettings({
             <h4 className="text-balance font-semibold text-ink">
               {editingGroup ? `แก้ไขกลุ่ม ${groups.groups.findIndex((group) => group.id === editingGroup.id) + 1}` : "สร้างกลุ่มใหม่"}
             </h4>
-            <label className="grid max-w-sm gap-1 text-sm font-semibold" htmlFor="rubber-weight-alert-threshold">
-              เกณฑ์น้ำหนักสุทธิสะสม (กก.)
+            <label className="grid max-w-sm gap-1 text-sm font-semibold" htmlFor={`${kind}-alert-threshold`}>
+              {cash ? "เกณฑ์รับ–จ่ายสุทธิสะสมขั้นต่ำ (บาท)" : "เกณฑ์น้ำหนักสุทธิสะสม (กก.)"}
               <input
-                id="rubber-weight-alert-threshold"
+                id={`${kind}-alert-threshold`}
                 type="number"
-                inputMode="numeric"
-                min={RUBBER_WEIGHT_ALERT_MIN_THRESHOLD_KG}
-                max={RUBBER_WEIGHT_ALERT_MAX_THRESHOLD_KG}
-                step={1}
+                inputMode={cash ? "decimal" : "numeric"}
+                min={cash ? -CASH_THRESHOLD_MAX : RUBBER_WEIGHT_ALERT_MIN_THRESHOLD_KG}
+                max={cash ? CASH_THRESHOLD_MAX : RUBBER_WEIGHT_ALERT_MAX_THRESHOLD_KG}
+                step={cash ? 0.01 : 1}
                 value={thresholdValue}
                 disabled={groups.isSaving}
                 aria-invalid={!thresholdValid}
+                aria-describedby={`${kind}-threshold-hint${groupError ? ` ${kind}-alert-group-error` : ""}`}
                 onChange={(event) => { setThresholdValue(event.target.value); setGroupError(null); }}
                 className="focus-ring h-11 rounded-md border border-black/15 px-3 text-base tabular-nums disabled:bg-field"
               />
             </label>
-            <fieldset>
+            <p id={`${kind}-threshold-hint`} className="text-pretty text-sm text-ink/60">{cash ? "ตั้งได้ -9,999,999,999.99 ถึง 9,999,999,999.99 บาท ทศนิยมไม่เกิน 2 ตำแหน่ง แจ้งเมื่อยอดต่ำกว่าเกณฑ์" : "ตั้งได้ 1–1,000,000 กก. แจ้งเมื่อน้ำหนักเกินเกณฑ์"}</p>
+            <fieldset aria-describedby={groupError ? `${kind}-alert-group-error` : undefined}>
               <legend className="mb-2 text-sm font-semibold text-ink">สาขาในกลุ่ม</legend>
               <div className="grid gap-2 sm:grid-cols-2">
                 {editorLocationIds.map((id) => {
@@ -276,7 +285,7 @@ export function RubberWeightAlertSettings({
                 })}
               </div>
             </fieldset>
-            {groupError && <p role="alert" className="rounded-md border border-rose-200 bg-rose-50 p-3 text-pretty text-sm text-rose-700">{groupError}</p>}
+            {groupError && <p id={`${kind}-alert-group-error`} role="alert" className="rounded-md border border-rose-200 bg-rose-50 p-3 text-pretty text-sm text-rose-700">{groupError}</p>}
             <div className="flex flex-wrap gap-2">
               <button type="submit" disabled={groups.isSaving || groupLocationIds.length === 0} className="focus-ring h-10 rounded-md bg-commit px-3 text-sm font-bold text-white disabled:opacity-50">
                 {groups.isSaving ? "กำลังบันทึก..." : "บันทึกกลุ่ม"}
@@ -285,14 +294,14 @@ export function RubberWeightAlertSettings({
             </div>
           </form>
         ) : (
-          <div className="mt-4 space-y-2" data-testid="rubber-weight-alert-group-list">
+          <div className="mt-4 space-y-2" data-testid={cash ? "cash-alert-group-list" : "rubber-weight-alert-group-list"}>
             {groups.availableLocationIds.length > 0 && (
               <div className="rounded-md border border-dashed border-black/15 bg-field/40 p-3">
                 <h4 className="text-balance font-semibold text-ink">ยังไม่จัดกลุ่ม</h4>
                 <p className="mt-1 text-pretty text-sm text-ink/60">
                   {groups.availableLocationIds.map((id) => locationById.get(id)?.name ?? id).join(", ")}
                 </p>
-                <p className="mt-1 text-pretty text-sm text-ink/70">ไม่แจ้งเตือนน้ำหนัก</p>
+                <p className="mt-1 text-pretty text-sm text-ink/70">ไม่แจ้งเตือน{subject}</p>
               </div>
             )}
             {groups.groups.length === 0 && groups.availableLocationIds.length === 0 && (
@@ -308,7 +317,7 @@ export function RubberWeightAlertSettings({
                       return `${location?.name ?? id}${location && !location.active ? " (ปิดใช้งาน)" : ""}`;
                     }).join(", ")}
                   </p>
-                  <p className="mt-1 text-sm text-ink/70">เกณฑ์ <span className="font-semibold tabular-nums">{formatNumber(group.thresholdKg)} กก.</span></p>
+                  <p className="mt-1 text-sm text-ink/70">เกณฑ์ <span className="font-semibold tabular-nums">{formatNumber(group.thresholdKg)} {unit}</span></p>
                 </div>
                 <div className="flex gap-2">
                   <button type="button" onClick={() => openEditor(group)} className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md border border-river/30 px-3 text-sm font-semibold text-river">
@@ -327,7 +336,7 @@ export function RubberWeightAlertSettings({
       <AlertDialog
         open={groupToDelete !== null}
         title="ลบกลุ่มนี้?"
-        description="สาขาในกลุ่มจะกลับไปอยู่ในรายการยังไม่จัดกลุ่มและจะไม่รับการแจ้งเตือนน้ำหนัก"
+        description={`สาขาในกลุ่มจะกลับไปอยู่ในรายการยังไม่จัดกลุ่มและจะไม่รับการแจ้งเตือน${subject}`}
         confirmLabel="ยืนยันลบกลุ่ม"
         busy={groups.isSaving}
         onCancel={() => setGroupToDelete(null)}

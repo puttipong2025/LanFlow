@@ -6,28 +6,29 @@ async function contextFor(role: "super_admin" | "admin" | "user", browser: Brows
 
 const emptyCheck = {
   config: { thresholdKg: 10_000, intervalMinutes: 60 },
-  candidates: [],
+  candidates: [], unavailable: [], configuredCount: 0, checkedCount: 0,
 };
 
 function qualifyingCheck() {
   return {
     config: { thresholdKg: 10_000, intervalMinutes: 30 },
+    unavailable: [], configuredCount: 2, checkedCount: 2,
     candidates: [
       {
         locationId: "branch-heavy",
         locationName: "สาขาชื่อยาวมากสำหรับตรวจการตัดบรรทัดบนหน้าจอขนาดเล็ก",
-        netWeight: 25_500.5,
+        kind: "weight", calculatedAt: "2026-10-18T00:00:00Z", value: 25_500.5,
         groupId: "group-heavy",
         groupOrder: 2,
-        thresholdKg: 20_000,
+        threshold: 20_000,
       },
       {
         locationId: "branch-light",
         locationName: "สาขารอง",
-        netWeight: 12_000,
+        kind: "weight", calculatedAt: "2026-10-18T00:00:00Z", value: 12_000,
         groupId: "group-light",
         groupOrder: 4,
-        thresholdKg: 10_000,
+        threshold: 10_000,
       },
     ],
   };
@@ -123,7 +124,7 @@ test.describe("rubber weight alert UI", () => {
   test("saves the central interval with inline accessible validation on mobile", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await clearAlertTimestamp(page);
-    await page.route("**/api/lanflow/rubber-weight-alert", (route) => route.fulfill({ json: emptyCheck }));
+    await page.route("**/api/lanflow/threshold-alert", (route) => route.fulfill({ json: emptyCheck }));
     await page.route("**/api/lanflow/rubber-weight-alert/groups", (route) => route.fulfill({
       json: { groups: [], availableLocationIds: [] },
     }));
@@ -140,7 +141,7 @@ test.describe("rubber weight alert UI", () => {
 
     await page.goto("/");
     await page.getByRole("button", { name: "Admin", exact: true }).click();
-    await page.getByRole("button", { name: "แจ้งเตือนน้ำหนัก", exact: true }).click();
+    await page.getByRole("button", { name: "การแจ้งเตือน", exact: true }).click();
     const interval = page.getByLabel("รอบตรวจ (นาที)");
     await expect(interval).toHaveValue("60");
 
@@ -162,19 +163,19 @@ test.describe("rubber weight alert UI", () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await clearAlertTimestamp(page);
     let checks = 0;
-    await page.route("**/api/lanflow/rubber-weight-alert", async (route) => {
+    await page.route("**/api/lanflow/threshold-alert", async (route) => {
       checks += 1;
       await route.fulfill({ json: qualifyingCheck() });
     });
 
     await page.goto("/");
-    const dialog = page.getByRole("alertdialog", { name: "น้ำหนักยางสุทธิสะสมเกินเกณฑ์" });
+    const dialog = page.getByRole("alertdialog", { name: "แจ้งเตือน", exact: true });
     await expect(dialog).toBeVisible();
     await expect(dialog.getByRole("listitem")).toHaveCount(2);
     await expect(dialog.getByRole("listitem").nth(0)).toContainText("25,500.5");
-    await expect(dialog.getByRole("heading", { name: "กลุ่ม 2" })).toBeVisible();
-    await expect(dialog.getByRole("heading", { name: "กลุ่ม 4" })).toBeVisible();
-    await expect(dialog.getByText("20,000 กก.", { exact: true })).toBeVisible();
+    await expect(dialog.getByText("กลุ่ม 2", { exact: false })).toBeVisible();
+    await expect(dialog.getByText("กลุ่ม 4", { exact: false })).toBeVisible();
+    await expect(dialog.getByText("20,000 กก.", { exact: false })).toBeVisible();
     await expect(dialog.getByRole("button", { name: "รับทราบ", exact: true })).toHaveCount(1);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
     await dialog.getByRole("button", { name: "รับทราบ", exact: true }).click();
@@ -189,7 +190,7 @@ test.describe("rubber weight alert UI", () => {
     await clearAlertTimestamp(page);
     let releaseCheck: (() => void) | undefined;
     const holdCheck = new Promise<void>((resolve) => { releaseCheck = resolve; });
-    await page.route("**/api/lanflow/rubber-weight-alert", async (route) => {
+    await page.route("**/api/lanflow/threshold-alert", async (route) => {
       await holdCheck;
       await route.fulfill({ json: qualifyingCheck() });
     });
@@ -203,7 +204,7 @@ test.describe("rubber weight alert UI", () => {
     await focusTarget.focus();
     releaseCheck?.();
 
-    const alertDialog = page.getByRole("alertdialog", { name: "น้ำหนักยางสุทธิสะสมเกินเกณฑ์" });
+    const alertDialog = page.getByRole("alertdialog", { name: "แจ้งเตือน", exact: true });
     await expect(alertDialog).toBeVisible();
     expect(await alertDialog.evaluate((element) => {
       const rect = element.getBoundingClientRect();
@@ -219,16 +220,16 @@ test.describe("rubber weight alert UI", () => {
   test("retries once, shows one failure message, and stops until the next interval", async ({ page }) => {
     await clearAlertTimestamp(page);
     let checks = 0;
-    await page.route("**/api/lanflow/rubber-weight-alert", async (route) => {
+    await page.route("**/api/lanflow/threshold-alert", async (route) => {
       checks += 1;
       await route.fulfill({ status: 500, json: { error: "temporary failure" } });
     });
 
     await page.goto("/");
     await expect(page.getByText(
-      "ตรวจการแจ้งเตือนน้ำหนักไม่สำเร็จ ระบบจะลองใหม่ในรอบถัดไป",
+      "ตรวจการแจ้งเตือนไม่สำเร็จ กรุณาลองใหม่",
       { exact: true },
-    )).toBeVisible();
+    ).first()).toBeVisible();
     expect(checks).toBe(2);
     await page.waitForTimeout(500);
     expect(checks).toBe(2);
@@ -252,7 +253,7 @@ test.describe("rubber weight alert UI", () => {
       };
     });
     let checks = 0;
-    await page.route("**/api/lanflow/rubber-weight-alert", async (route) => {
+    await page.route("**/api/lanflow/threshold-alert", async (route) => {
       checks += 1;
       await route.fulfill({ json: emptyCheck });
     });
@@ -269,7 +270,7 @@ test.describe("rubber weight alert UI", () => {
     let releaseCheck: (() => void) | undefined;
     const started = new Promise<void>((resolve) => { requestStarted = resolve; });
     const held = new Promise<void>((resolve) => { releaseCheck = resolve; });
-    await page.route("**/api/lanflow/rubber-weight-alert", async (route) => {
+    await page.route("**/api/lanflow/threshold-alert", async (route) => {
       requestStarted?.();
       await held;
       await route.fulfill({ json: qualifyingCheck() });
@@ -280,7 +281,7 @@ test.describe("rubber weight alert UI", () => {
     await page.evaluate(() => { window.location.href = "/login"; });
     releaseCheck?.();
     await page.waitForURL("**/login");
-    await expect(page.getByRole("alertdialog", { name: "น้ำหนักยางสุทธิสะสมเกินเกณฑ์" }))
+    await expect(page.getByRole("alertdialog", { name: "แจ้งเตือน", exact: true }))
       .toHaveCount(0);
   });
 });
@@ -288,11 +289,11 @@ test.describe("rubber weight alert UI", () => {
 test("regular Admin cannot see the global alert settings tab", async ({ browser }) => {
   const context = await contextFor("admin", browser);
   const page = await context.newPage();
-  await page.route("**/api/lanflow/rubber-weight-alert", (route) => route.fulfill({ json: emptyCheck }));
+  await page.route("**/api/lanflow/threshold-alert", (route) => route.fulfill({ json: emptyCheck }));
   try {
     await page.goto("/");
     await page.getByRole("button", { name: "Admin", exact: true }).click();
-    await expect(page.getByRole("button", { name: "แจ้งเตือนน้ำหนัก", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "การแจ้งเตือน", exact: true })).toHaveCount(0);
   } finally {
     await context.close();
   }
@@ -302,7 +303,7 @@ test("User shell never calls the rubber weight alert endpoint", async ({ browser
   const context = await contextFor("user", browser);
   const page = await context.newPage();
   let checks = 0;
-  await page.route("**/api/lanflow/rubber-weight-alert", async (route) => {
+  await page.route("**/api/lanflow/threshold-alert", async (route) => {
     checks += 1;
     await route.fulfill({ json: qualifyingCheck() });
   });
@@ -310,7 +311,7 @@ test("User shell never calls the rubber weight alert endpoint", async ({ browser
     await page.goto("/");
     await page.waitForTimeout(500);
     expect(checks).toBe(0);
-    await expect(page.getByRole("alertdialog", { name: "น้ำหนักยางสุทธิสะสมเกินเกณฑ์" }))
+    await expect(page.getByRole("alertdialog", { name: "แจ้งเตือน", exact: true }))
       .toHaveCount(0);
   } finally {
     await context.close();

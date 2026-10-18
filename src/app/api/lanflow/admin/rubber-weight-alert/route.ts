@@ -32,31 +32,35 @@ export async function PUT(request: NextRequest) {
     );
   }
 
-  const { data, error } = await result.supabase.rpc(
-    "save_rubber_weight_alert_interval",
-    {
-      p_interval_minutes: body.intervalMinutes,
-    },
-  );
-  if (error) {
-    if (error.message.includes("ไม่มีสิทธิ์") || error.message.includes("FORBIDDEN")) {
-      return errorResponse("ไม่มีสิทธิ์จัดการการตั้งค่านี้", 403);
+  try {
+    const { data, error } = await result.supabase.rpc(
+      "save_rubber_weight_alert_interval",
+      {
+        p_interval_minutes: body.intervalMinutes,
+      },
+    );
+    if (error) {
+      if (error.message.includes("ไม่มีสิทธิ์") || error.message.includes("FORBIDDEN")) {
+        return errorResponse("ไม่มีสิทธิ์จัดการการตั้งค่านี้", 403);
+      }
+      if (error.message.includes("RUBBER_WEIGHT_ALERT_INVALID")) {
+        return errorResponse(
+          "รอบตรวจต้องอยู่ระหว่าง 1–1,440 นาที",
+          400,
+        );
+      }
+      console.error("Rubber weight alert config save failed", error.message);
+      return errorResponse("บันทึกการแจ้งเตือนน้ำหนักไม่สำเร็จ", 500);
     }
-    if (error.message.includes("RUBBER_WEIGHT_ALERT_INVALID")) {
-      return errorResponse(
-        "รอบตรวจต้องอยู่ระหว่าง 1–1,440 นาที",
-        400,
-      );
+
+    const config = parseRubberWeightAlertConfig(data);
+    if (!config) {
+      console.error("Rubber weight alert config save returned an invalid payload");
+      return errorResponse("ข้อมูลการแจ้งเตือนน้ำหนักไม่ถูกต้อง", 500);
     }
-    console.error("Rubber weight alert config save failed", error.message);
-    return errorResponse("บันทึกการแจ้งเตือนน้ำหนักไม่สำเร็จ", 500);
-  }
 
-  const config = parseRubberWeightAlertConfig(data);
-  if (!config) {
-    console.error("Rubber weight alert config save returned an invalid payload");
-    return errorResponse("ข้อมูลการแจ้งเตือนน้ำหนักไม่ถูกต้อง", 500);
+    return NextResponse.json(config, { headers: NO_STORE_HEADERS });
+  } catch {
+    return errorResponse("ติดต่อระบบบันทึกรอบตรวจไม่สำเร็จ กรุณาลองใหม่", 500);
   }
-
-  return NextResponse.json(config, { headers: NO_STORE_HEADERS });
 }

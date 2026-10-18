@@ -38,13 +38,13 @@ test.describe.serial("rubber weight alert groups", () => {
       });
 
       const page = await manager.newPage();
-      await page.route("**/api/lanflow/rubber-weight-alert", (route) => route.fulfill({
-        json: { config: { thresholdKg: 10_000, intervalMinutes: 60 }, candidates: [] },
+      await page.route("**/api/lanflow/threshold-alert", (route) => route.fulfill({
+        json: { config: { thresholdKg: 10_000, intervalMinutes: 60 }, candidates: [], unavailable: [], configuredCount: 0, checkedCount: 0 },
       }));
       await page.setViewportSize({ width: 390, height: 844 });
       await page.goto("/");
       await page.getByRole("button", { name: "Admin", exact: true }).click();
-      await page.getByRole("button", { name: "แจ้งเตือนน้ำหนัก", exact: true }).click();
+      await page.getByRole("button", { name: "การแจ้งเตือน", exact: true }).click();
       const groupList = page.getByTestId("rubber-weight-alert-group-list");
       await expect(groupList.locator(":scope > *").first()).toContainText("ยังไม่จัดกลุ่ม");
       await expect(groupList.locator(":scope > *").first()).toContainText(names[0]);
@@ -74,7 +74,7 @@ test.describe.serial("rubber weight alert groups", () => {
 
       await page.reload();
       await page.getByRole("button", { name: "Admin", exact: true }).click();
-      await page.getByRole("button", { name: "แจ้งเตือนน้ำหนัก", exact: true }).click();
+      await page.getByRole("button", { name: "การแจ้งเตือน", exact: true }).click();
       const inactiveGroup = page.locator("article").filter({ hasText: names[0] });
       await expect(inactiveGroup).toContainText("ปิดใช้งาน");
       await inactiveGroup.getByRole("button", { name: "แก้ไข", exact: true }).click();

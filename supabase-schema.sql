@@ -919,6 +919,48 @@ $$;
 ALTER FUNCTION "private"."assert_attendance_range_without_payroll_slip"("p_profile_id" "uuid", "p_start_date" "date", "p_end_date" "date") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."assert_cash_alert_group_not_empty"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_group_id uuid := coalesce(new.group_id, old.group_id);
+begin
+  if exists (select 1 from public.cash_alert_groups g where g.id = v_group_id)
+     and not exists (
+       select 1 from public.cash_alert_group_locations gl
+       where gl.group_id = v_group_id
+     ) then
+    raise exception 'CASH_ALERT_GROUP_EMPTY: กลุ่มต้องมีอย่างน้อยหนึ่งสาขา';
+  end if;
+  return null;
+end
+$$;
+
+
+ALTER FUNCTION "private"."assert_cash_alert_group_not_empty"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."assert_cash_alert_group_row_not_empty"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if exists (select 1 from public.cash_alert_groups g where g.id = new.id)
+     and not exists (
+       select 1 from public.cash_alert_group_locations gl
+       where gl.group_id = new.id
+     ) then
+    raise exception 'CASH_ALERT_GROUP_EMPTY: กลุ่มต้องมีอย่างน้อยหนึ่งสาขา';
+  end if;
+  return null;
+end
+$$;
+
+
+ALTER FUNCTION "private"."assert_cash_alert_group_row_not_empty"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."assert_report_creation_unblocked"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) RETURNS "void"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -10931,6 +10973,57 @@ $$;
 ALTER FUNCTION "private"."try_rubber_bill_submission_fingerprint"("p_payload" "jsonb") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."validate_cash_alert_group_input"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_threshold_amount" numeric) RETURNS "uuid"[]
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_location_ids uuid[];
+begin
+  select coalesce(array_agg(distinct location_id order by location_id), array[]::uuid[])
+  into v_location_ids
+  from (
+    select location_id
+    from unnest(coalesce(p_location_ids, array[]::uuid[])) location_id
+    where location_id is not null
+    union
+    select gl.location_id
+    from public.cash_alert_group_locations gl
+    join public.locations l on l.id = gl.location_id
+    where p_group_id is not null
+      and gl.group_id = p_group_id
+      and l.is_active = false
+  ) retained;
+
+  if cardinality(v_location_ids) = 0 then
+    raise exception 'CASH_ALERT_GROUP_EMPTY: กลุ่มต้องมีอย่างน้อยหนึ่งสาขา';
+  end if;
+  if p_threshold_amount is null or p_threshold_amount < -9999999999.99 or p_threshold_amount > 9999999999.99 or p_threshold_amount <> round(p_threshold_amount, 2) then
+    raise exception 'CASH_ALERT_GROUP_INVALID: เกณฑ์เงินต้องอยู่ระหว่าง -9,999,999,999.99 ถึง 9,999,999,999.99 บาท และทศนิยมไม่เกินสองตำแหน่ง';
+  end if;
+  if exists (
+    select 1
+    from unnest(v_location_ids) requested(location_id)
+    left join public.locations l on l.id = requested.location_id
+    where l.id is null
+      or (
+        l.is_active = false
+        and not exists (
+          select 1 from public.cash_alert_group_locations gl
+          where gl.group_id = p_group_id and gl.location_id = requested.location_id
+        )
+      )
+  ) then
+    raise exception 'RUBBER_LOCATION_NOT_FOUND: ไม่พบสาขาที่เปิดใช้งาน';
+  end if;
+  return v_location_ids;
+end
+$$;
+
+
+ALTER FUNCTION "private"."validate_cash_alert_group_input"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_threshold_amount" numeric) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."validate_rubber_approval_group_v2_input"("p_location_ids" "uuid"[], "p_edit_window_minutes" integer, "p_price_allowance" numeric) RETURNS "uuid"[]
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -12825,6 +12918,53 @@ $$;
 
 
 ALTER FUNCTION "public"."create_admin_user_profile"("p_user_id" "uuid", "p_phone" "text", "p_name" "text", "p_role" "text", "p_location_ids" "uuid"[], "p_password_plaintext" "text", "p_password_auth_version" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."create_cash_alert_group"("p_location_ids" "uuid"[], "p_threshold_amount" numeric) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_location_ids uuid[];
+  v_group public.cash_alert_groups%rowtype;
+  v_actor public.profiles%rowtype;
+begin
+  if not private.is_active_user() or not private.can_access_super_admin_features() then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์จัดการกลุ่มแจ้งเตือนเงิน';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended('cash-alert-groups', 0));
+  v_location_ids := private.validate_cash_alert_group_input(
+    null, p_location_ids, p_threshold_amount
+  );
+  if exists (
+    select 1 from public.cash_alert_group_locations gl
+    where gl.location_id = any(v_location_ids)
+  ) then
+    raise exception 'CASH_ALERT_GROUP_BRANCH_CONFLICT: มีสาขาอยู่ในกลุ่มอื่นแล้ว';
+  end if;
+
+  select * into v_actor from public.profiles p where p.id = auth.uid();
+  insert into public.cash_alert_groups (
+    threshold_amount, updated_by_user_id, updated_by_name, updated_by_phone
+  ) values (
+    p_threshold_amount, auth.uid(), v_actor.name, v_actor.phone
+  ) returning * into v_group;
+
+  insert into public.cash_alert_group_locations (group_id, location_id)
+  select v_group.id, location_id from unnest(v_location_ids) location_id;
+
+  return jsonb_build_object(
+    'id', v_group.id,
+    'locationIds', to_jsonb(v_location_ids),
+    'thresholdAmount', v_group.threshold_amount
+  );
+exception when unique_violation then
+  raise exception 'CASH_ALERT_GROUP_BRANCH_CONFLICT: มีสาขาอยู่ในกลุ่มอื่นแล้ว';
+end
+$$;
+
+
+ALTER FUNCTION "public"."create_cash_alert_group"("p_location_ids" "uuid"[], "p_threshold_amount" numeric) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."create_cash_branch_transfer"("payload" "jsonb") RETURNS "jsonb"
@@ -15677,6 +15817,36 @@ $$;
 ALTER FUNCTION "public"."deduct_debts_daily"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."delete_cash_alert_group"("p_group_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_location_ids uuid[];
+begin
+  if not private.is_active_user() or not private.can_access_super_admin_features() then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์จัดการกลุ่มแจ้งเตือนเงิน';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended('cash-alert-groups', 0));
+  select array_agg(gl.location_id order by gl.location_id)
+  into v_location_ids
+  from public.cash_alert_group_locations gl
+  where gl.group_id = p_group_id;
+  if v_location_ids is null then
+    raise exception 'CASH_ALERT_GROUP_NOT_FOUND: ไม่พบกลุ่ม';
+  end if;
+  delete from public.cash_alert_groups where id = p_group_id;
+  return jsonb_build_object(
+    'success', true,
+    'releasedLocationIds', to_jsonb(v_location_ids)
+  );
+end
+$$;
+
+
+ALTER FUNCTION "public"."delete_cash_alert_group"("p_group_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."delete_cash_branch_transfer"("p_transfer_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -17133,6 +17303,65 @@ $$;
 
 
 ALTER FUNCTION "public"."get_branch_money_transfer_detail"("p_transfer_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_branch_threshold_alert_check"() RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare result jsonb;
+begin
+  if not private.can_access_business_modules() then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์ตรวจการแจ้งเตือน';
+  end if;
+  with groups as (
+    select 'cash'::text as kind, id, threshold_amount as threshold,
+      row_number() over (order by created_at, id)::integer as group_order
+    from public.cash_alert_groups
+    union all
+    select 'weight', id, threshold_kg,
+      row_number() over (order by created_at, id)::integer
+    from public.rubber_weight_alert_groups
+  ), members as (
+    select 'cash'::text as kind, group_id, location_id from public.cash_alert_group_locations
+    union all
+    select 'weight', group_id, location_id from public.rubber_weight_alert_group_locations
+  ), scope as (
+    select g.*, l.id as location_id, l.name as location_name,
+      s.status,
+      case when g.kind = 'cash' then s.summary -> 'netCashFlow'
+        else s.summary #> '{rubberRemaining,netWeight}' end as metric,
+      s.calculated_at
+    from groups g join members m on m.kind = g.kind and m.group_id = g.id
+    join public.locations l on l.id = m.location_id
+    left join public.dashboard_branch_snapshots s on s.location_id = l.id
+    where l.is_active and public.can_access_location(l.id)
+  ), measured as (
+    select *, case when status = 'ready' and jsonb_typeof(metric) = 'number'
+      then metric::text::numeric end as value
+    from scope
+  )
+  select jsonb_build_object(
+    'config', public.get_rubber_weight_alert_config(),
+    'checkedCount', count(value),
+    'configuredCount', count(*),
+    'candidates', coalesce(jsonb_agg(jsonb_build_object(
+      'kind', kind, 'locationId', location_id, 'locationName', location_name,
+      'groupId', id, 'groupOrder', group_order, 'threshold', threshold,
+      'value', value, 'calculatedAt', calculated_at
+    ) order by kind, group_order, case when kind = 'cash' then value else -value end, location_name, location_id)
+      filter (where (kind = 'cash' and value < threshold) or (kind = 'weight' and value > threshold)), '[]'::jsonb),
+    'unavailable', coalesce(jsonb_agg(jsonb_build_object(
+      'kind', kind, 'locationId', location_id, 'locationName', location_name,
+      'reason', case when status is null then 'missing_snapshot'
+        when status <> 'ready' then 'not_ready' else 'missing_metric' end
+    ) order by kind, location_name, location_id) filter (where value is null), '[]'::jsonb)
+  ) into result from measured;
+  return result;
+end $$;
+
+
+ALTER FUNCTION "public"."get_branch_threshold_alert_check"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_cash_branch_transfer_detail"("p_transfer_id" "uuid") RETURNS "jsonb"
@@ -22218,6 +22447,53 @@ $$;
 
 
 ALTER FUNCTION "public"."is_telegram_evidence_dispatch_enabled"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."list_cash_alert_groups"() RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_groups jsonb;
+  v_available_location_ids jsonb;
+begin
+  if not private.is_active_user() or not private.can_access_super_admin_features() then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์จัดการกลุ่มแจ้งเตือนเงิน';
+  end if;
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'id', grouped.id,
+    'locationIds', grouped.location_ids,
+    'thresholdAmount', grouped.threshold_amount
+  ) order by grouped.created_at, grouped.id), '[]'::jsonb)
+  into v_groups
+  from (
+    select g.id, g.threshold_amount, g.created_at,
+      to_jsonb(array_agg(gl.location_id order by l.name, gl.location_id)) location_ids
+    from public.cash_alert_groups g
+    join public.cash_alert_group_locations gl on gl.group_id = g.id
+    join public.locations l on l.id = gl.location_id
+    group by g.id
+  ) grouped;
+
+  select coalesce(jsonb_agg(l.id order by l.name, l.id), '[]'::jsonb)
+  into v_available_location_ids
+  from public.locations l
+  where l.is_active = true
+    and not exists (
+      select 1 from public.cash_alert_group_locations gl
+      where gl.location_id = l.id
+    );
+
+  return jsonb_build_object(
+    'groups', v_groups,
+    'availableLocationIds', v_available_location_ids
+  );
+end
+$$;
+
+
+ALTER FUNCTION "public"."list_cash_alert_groups"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."list_rubber_approval_groups"() RETURNS "jsonb"
@@ -28892,6 +29168,65 @@ $$;
 ALTER FUNCTION "public"."update_admin_user_profile"("p_user_id" "uuid", "p_name" "text", "p_location_ids" "uuid"[], "p_primary_location_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."update_cash_alert_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_threshold_amount" numeric) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_location_ids uuid[];
+  v_group public.cash_alert_groups%rowtype;
+  v_actor public.profiles%rowtype;
+begin
+  if not private.is_active_user() or not private.can_access_super_admin_features() then
+    raise exception 'FORBIDDEN: ไม่มีสิทธิ์จัดการกลุ่มแจ้งเตือนเงิน';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended('cash-alert-groups', 0));
+  select * into v_group from public.cash_alert_groups g
+  where g.id = p_group_id for update;
+  if v_group.id is null then
+    raise exception 'CASH_ALERT_GROUP_NOT_FOUND: ไม่พบกลุ่ม';
+  end if;
+
+  v_location_ids := private.validate_cash_alert_group_input(
+    p_group_id, p_location_ids, p_threshold_amount
+  );
+  if exists (
+    select 1 from public.cash_alert_group_locations gl
+    where gl.location_id = any(v_location_ids) and gl.group_id <> p_group_id
+  ) then
+    raise exception 'CASH_ALERT_GROUP_BRANCH_CONFLICT: มีสาขาอยู่ในกลุ่มอื่นแล้ว';
+  end if;
+
+  select * into v_actor from public.profiles p where p.id = auth.uid();
+  update public.cash_alert_groups
+  set threshold_amount = p_threshold_amount,
+      updated_by_user_id = auth.uid(),
+      updated_by_name = v_actor.name,
+      updated_by_phone = v_actor.phone,
+      updated_at = now()
+  where id = p_group_id
+  returning * into v_group;
+
+  delete from public.cash_alert_group_locations gl
+  where gl.group_id = p_group_id and not (gl.location_id = any(v_location_ids));
+  insert into public.cash_alert_group_locations (group_id, location_id)
+  select p_group_id, location_id from unnest(v_location_ids) location_id
+  on conflict (group_id, location_id) do nothing;
+
+  return jsonb_build_object(
+    'id', v_group.id,
+    'locationIds', to_jsonb(v_location_ids),
+    'thresholdAmount', v_group.threshold_amount
+  );
+exception when unique_violation then
+  raise exception 'CASH_ALERT_GROUP_BRANCH_CONFLICT: มีสาขาอยู่ในกลุ่มอื่นแล้ว';
+end
+$$;
+
+
+ALTER FUNCTION "public"."update_cash_alert_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_threshold_amount" numeric) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."update_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -30056,6 +30391,31 @@ CREATE TABLE IF NOT EXISTS "public"."branch_transfer_delete_requests" (
 
 
 ALTER TABLE "public"."branch_transfer_delete_requests" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."cash_alert_group_locations" (
+    "group_id" "uuid" NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL
+);
+
+
+ALTER TABLE "public"."cash_alert_group_locations" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."cash_alert_groups" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "threshold_amount" numeric NOT NULL,
+    "updated_by_user_id" "uuid",
+    "updated_by_name" "text",
+    "updated_by_phone" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "cash_alert_groups_threshold_check" CHECK (((("threshold_amount" >= '-9999999999.99'::numeric) AND ("threshold_amount" <= 9999999999.99)) AND ("threshold_amount" = "round"("threshold_amount", 2))))
+);
+
+
+ALTER TABLE "public"."cash_alert_groups" OWNER TO "postgres";
 
 
 CREATE TABLE IF NOT EXISTS "public"."cash_count_sessions" (
@@ -31415,6 +31775,21 @@ ALTER TABLE ONLY "public"."branch_transfer_delete_requests"
 
 
 
+ALTER TABLE ONLY "public"."cash_alert_group_locations"
+    ADD CONSTRAINT "cash_alert_group_locations_location_id_key" UNIQUE ("location_id");
+
+
+
+ALTER TABLE ONLY "public"."cash_alert_group_locations"
+    ADD CONSTRAINT "cash_alert_group_locations_pkey" PRIMARY KEY ("group_id", "location_id");
+
+
+
+ALTER TABLE ONLY "public"."cash_alert_groups"
+    ADD CONSTRAINT "cash_alert_groups_pkey" PRIMARY KEY ("id");
+
+
+
 ALTER TABLE ONLY "public"."cash_count_sessions"
     ADD CONSTRAINT "cash_count_sessions_pkey" PRIMARY KEY ("id");
 
@@ -32577,6 +32952,14 @@ CREATE OR REPLACE TRIGGER "enforce_atomic_money_transfer_delete" BEFORE UPDATE O
 
 
 
+CREATE CONSTRAINT TRIGGER "enforce_cash_alert_group_not_empty" AFTER INSERT OR DELETE OR UPDATE ON "public"."cash_alert_group_locations" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "private"."assert_cash_alert_group_not_empty"();
+
+
+
+CREATE CONSTRAINT TRIGGER "enforce_cash_alert_group_row_not_empty" AFTER INSERT OR UPDATE ON "public"."cash_alert_groups" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "private"."assert_cash_alert_group_row_not_empty"();
+
+
+
 CREATE OR REPLACE TRIGGER "enforce_financial_transaction_expense_relation" BEFORE UPDATE ON "public"."financial_transactions" FOR EACH ROW EXECUTE FUNCTION "private"."enforce_time_tracking_expense_relation"();
 
 
@@ -32880,6 +33263,21 @@ ALTER TABLE ONLY "public"."branch_transfer_delete_requests"
 
 ALTER TABLE ONLY "public"."branch_transfer_delete_requests"
     ADD CONSTRAINT "branch_transfer_delete_requests_transfer_id_fkey" FOREIGN KEY ("transfer_id") REFERENCES "public"."money_transfers"("id") ON DELETE SET NULL;
+
+
+
+ALTER TABLE ONLY "public"."cash_alert_group_locations"
+    ADD CONSTRAINT "cash_alert_group_locations_group_id_fkey" FOREIGN KEY ("group_id") REFERENCES "public"."cash_alert_groups"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."cash_alert_group_locations"
+    ADD CONSTRAINT "cash_alert_group_locations_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id");
+
+
+
+ALTER TABLE ONLY "public"."cash_alert_groups"
+    ADD CONSTRAINT "cash_alert_groups_updated_by_user_id_fkey" FOREIGN KEY ("updated_by_user_id") REFERENCES "public"."profiles"("id");
 
 
 
@@ -33758,6 +34156,20 @@ CREATE POLICY "cash transfer delete requests read" ON "public"."cash_transfer_de
 
 
 
+ALTER TABLE "public"."cash_alert_group_locations" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "cash_alert_group_locations_manager_read" ON "public"."cash_alert_group_locations" FOR SELECT TO "authenticated" USING (("private"."is_active_user"() AND "private"."can_access_super_admin_features"()));
+
+
+
+ALTER TABLE "public"."cash_alert_groups" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "cash_alert_groups_manager_read" ON "public"."cash_alert_groups" FOR SELECT TO "authenticated" USING (("private"."is_active_user"() AND "private"."can_access_super_admin_features"()));
+
+
+
 ALTER TABLE "public"."cash_count_sessions" ENABLE ROW LEVEL SECURITY;
 
 
@@ -34435,6 +34847,14 @@ REVOKE ALL ON FUNCTION "private"."assert_attendance_range_without_payroll_slip"(
 
 
 
+REVOKE ALL ON FUNCTION "private"."assert_cash_alert_group_not_empty"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."assert_cash_alert_group_row_not_empty"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."assert_report_creation_unblocked"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) FROM PUBLIC;
 
 
@@ -35064,6 +35484,10 @@ REVOKE ALL ON FUNCTION "private"."try_rubber_bill_submission_fingerprint"("p_pay
 
 
 
+REVOKE ALL ON FUNCTION "private"."validate_cash_alert_group_input"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_threshold_amount" numeric) FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."validate_rubber_approval_group_v2_input"("p_location_ids" "uuid"[], "p_edit_window_minutes" integer, "p_price_allowance" numeric) FROM PUBLIC;
 
 
@@ -35251,6 +35675,11 @@ GRANT ALL ON FUNCTION "public"."create_admin_user_profile"("p_user_id" "uuid", "
 
 
 
+REVOKE ALL ON FUNCTION "public"."create_cash_alert_group"("p_location_ids" "uuid"[], "p_threshold_amount" numeric) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."create_cash_alert_group"("p_location_ids" "uuid"[], "p_threshold_amount" numeric) TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."create_cash_branch_transfer"("payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."create_cash_branch_transfer"("payload" "jsonb") TO "authenticated";
 
@@ -35406,6 +35835,11 @@ REVOKE ALL ON FUNCTION "public"."deduct_debts_daily"() FROM PUBLIC;
 
 
 
+REVOKE ALL ON FUNCTION "public"."delete_cash_alert_group"("p_group_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."delete_cash_alert_group"("p_group_id" "uuid") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."delete_cash_branch_transfer"("p_transfer_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."delete_cash_branch_transfer"("p_transfer_id" "uuid") TO "authenticated";
 
@@ -35531,6 +35965,11 @@ GRANT ALL ON FUNCTION "public"."get_branch_create_confirmation_minutes"() TO "se
 
 REVOKE ALL ON FUNCTION "public"."get_branch_money_transfer_detail"("p_transfer_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_branch_money_transfer_detail"("p_transfer_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_branch_threshold_alert_check"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_branch_threshold_alert_check"() TO "authenticated";
 
 
 
@@ -35909,6 +36348,11 @@ GRANT ALL ON FUNCTION "public"."is_super_admin"() TO "authenticated";
 
 REVOKE ALL ON FUNCTION "public"."is_telegram_evidence_dispatch_enabled"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."is_telegram_evidence_dispatch_enabled"() TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."list_cash_alert_groups"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."list_cash_alert_groups"() TO "authenticated";
 
 
 
@@ -36537,6 +36981,11 @@ GRANT ALL ON FUNCTION "public"."update_admin_user_profile"("p_user_id" "uuid", "
 
 
 
+REVOKE ALL ON FUNCTION "public"."update_cash_alert_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_threshold_amount" numeric) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."update_cash_alert_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_threshold_amount" numeric) TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."update_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."update_cash_branch_transfer"("p_transfer_id" "uuid", "payload" "jsonb") TO "authenticated";
 
@@ -36645,6 +37094,16 @@ GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."branch_create_guar
 
 GRANT ALL ON TABLE "public"."branch_transfer_delete_requests" TO "service_role";
 GRANT SELECT ON TABLE "public"."branch_transfer_delete_requests" TO "authenticated";
+
+
+
+GRANT ALL ON TABLE "public"."cash_alert_group_locations" TO "service_role";
+GRANT SELECT ON TABLE "public"."cash_alert_group_locations" TO "authenticated";
+
+
+
+GRANT ALL ON TABLE "public"."cash_alert_groups" TO "service_role";
+GRANT SELECT ON TABLE "public"."cash_alert_groups" TO "authenticated";
 
 
 

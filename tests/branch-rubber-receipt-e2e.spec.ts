@@ -1,20 +1,11 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 import { confirmCurrentBranchIfRequired, selectAppLocation } from "./helpers/select-app-location";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
-async function dismissRubberWeightAlertIfVisible(page: Page) {
-  const alert = page.getByRole("alertdialog", { name: "น้ำหนักยางสุทธิสะสมเกินเกณฑ์" });
-  const appeared = await alert
-    .waitFor({ state: "visible", timeout: 2_000 })
-    .then(() => true)
-    .catch(() => false);
-  if (!appeared) return;
-  await alert.getByRole("button", { name: "รับทราบ", exact: true }).click();
-  await alert.waitFor({ state: "hidden" });
-}
+import { dismissRubberWeightAlertIfVisible } from "./helpers/dismiss-threshold-alert";
 
 test.describe("Branch rubber receipt flow @branch-rubber-receipt", () => {
   test.use({ storageState: "playwright/.auth/super_admin.json" });
