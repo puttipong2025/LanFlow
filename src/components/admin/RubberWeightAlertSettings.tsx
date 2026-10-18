@@ -1,6 +1,6 @@
 "use client";
 
-import { CASH_THRESHOLD_MAX, validCashThreshold } from "@/lib/lanflow/branch-threshold-alert";
+import { CASH_THRESHOLD_MIN, CASH_THRESHOLD_MAX, validCashThreshold } from "@/lib/lanflow/branch-threshold-alert";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BellRing, Pencil, Plus, Trash2 } from "lucide-react";
 
@@ -245,7 +245,7 @@ export function RubberWeightAlertSettings({
                 id={`${kind}-alert-threshold`}
                 type="number"
                 inputMode={cash ? "decimal" : "numeric"}
-                min={cash ? -CASH_THRESHOLD_MAX : RUBBER_WEIGHT_ALERT_MIN_THRESHOLD_KG}
+                min={cash ? CASH_THRESHOLD_MIN : RUBBER_WEIGHT_ALERT_MIN_THRESHOLD_KG}
                 max={cash ? CASH_THRESHOLD_MAX : RUBBER_WEIGHT_ALERT_MAX_THRESHOLD_KG}
                 step={cash ? 0.01 : 1}
                 value={thresholdValue}
@@ -256,7 +256,7 @@ export function RubberWeightAlertSettings({
                 className="focus-ring h-11 rounded-md border border-black/15 px-3 text-base tabular-nums disabled:bg-field"
               />
             </label>
-            <p id={`${kind}-threshold-hint`} className="text-pretty text-sm text-ink/60">{cash ? "ตั้งได้ -9,999,999,999.99 ถึง 9,999,999,999.99 บาท ทศนิยมไม่เกิน 2 ตำแหน่ง แจ้งเมื่อยอดต่ำกว่าเกณฑ์" : "ตั้งได้ 1–1,000,000 กก. แจ้งเมื่อน้ำหนักเกินเกณฑ์"}</p>
+            <p id={`${kind}-threshold-hint`} className="text-pretty text-sm text-ink/60">{cash ? "ตั้งได้ 10,000 ถึง 1,000,000 บาท ทศนิยมไม่เกิน 2 ตำแหน่ง แจ้งเมื่อยอดต่ำกว่าเกณฑ์" : "ตั้งได้ 1–1,000,000 กก. แจ้งเมื่อน้ำหนักเกินเกณฑ์"}</p>
             <fieldset aria-describedby={groupError ? `${kind}-alert-group-error` : undefined}>
               <legend className="mb-2 text-sm font-semibold text-ink">สาขาในกลุ่ม</legend>
               <div className="grid gap-2 sm:grid-cols-2">

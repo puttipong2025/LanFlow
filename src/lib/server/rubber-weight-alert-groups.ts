@@ -28,7 +28,7 @@ export function parseRubberWeightAlertGroupBody(body: GroupBody) {
 
 export function parseCashAlertGroupBody(body: { locationIds?: unknown; thresholdAmount?: unknown } | null) {
   if (!body || !validCashThreshold(body.thresholdAmount)) {
-    return { errorMessage: "เกณฑ์เงินต้องอยู่ระหว่าง -9,999,999,999.99 ถึง 9,999,999,999.99 บาท และทศนิยมไม่เกินสองตำแหน่ง" } as const;
+    return { errorMessage: "เกณฑ์เงินต้องอยู่ระหว่าง 10,000 ถึง 1,000,000 บาท และทศนิยมไม่เกินสองตำแหน่ง" } as const;
   }
   const locations = parseRubberWeightAlertGroupBody({ locationIds: body.locationIds, thresholdKg: 1 });
   if ("errorMessage" in locations) return { errorMessage: locations.errorMessage } as const;

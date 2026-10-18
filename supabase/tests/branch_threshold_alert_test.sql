@@ -59,12 +59,13 @@ set status = excluded.status, source_version = excluded.source_version,
     calculated_at = excluded.calculated_at;
 
 
-insert into public.cash_alert_groups (id, threshold_amount) values ('44000000-0000-4000-8000-000000000001', -10.12);
+insert into public.cash_alert_groups (id, threshold_amount) values ('44000000-0000-4000-8000-000000000001', 10000);
 insert into public.cash_alert_group_locations(group_id, location_id)
 select '44000000-0000-4000-8000-000000000001', id from public.locations where id::text like '41000000-%' and code <> 'AWG';
-update public.dashboard_branch_snapshots set summary = summary || '{"netCashFlow":-10.13}'::jsonb where location_id::text like '41000000-%';
-update public.dashboard_branch_snapshots set summary = summary || '{"netCashFlow":-10.12}'::jsonb where location_id='41000000-0000-4000-8000-000000000002';
+update public.dashboard_branch_snapshots set summary = summary || '{"netCashFlow":9999.99}'::jsonb where location_id::text like '41000000-%';
+update public.dashboard_branch_snapshots set summary = summary || '{"netCashFlow":10000}'::jsonb where location_id='41000000-0000-4000-8000-000000000002';
 update public.dashboard_branch_snapshots set summary = summary || '{"netCashFlow":null}'::jsonb where location_id='41000000-0000-4000-8000-000000000006';
+insert into public.dashboard_alert_thresholds(location_id,net_cash_min,is_configured) values ('41000000-0000-4000-8000-000000000002',50000,true) on conflict(location_id) do update set net_cash_min=excluded.net_cash_min,is_configured=true;
 set constraints all immediate;
 set constraints all deferred;
 select extensions.ok(not has_function_privilege('anon','public.get_branch_threshold_alert_check()','execute'), 'anonymous denied');
@@ -82,18 +83,26 @@ select set_config('request.jwt.claim.sub','42000000-0000-4000-8000-000000000004'
 select extensions.throws_ok($$select public.get_branch_threshold_alert_check()$$,'P0001','FORBIDDEN: ไม่มีสิทธิ์ตรวจการแจ้งเตือน','inactive cannot read');
 select set_config('request.jwt.claim.sub','42000000-0000-4000-8000-000000000003',true);
 select extensions.ok(jsonb_array_length(public.list_cash_alert_groups()->'groups') >= 1,'manager lists groups');
+select extensions.is((select c->>'cashStatus' from jsonb_array_elements(public.get_dashboard_branch_summaries()) c where c->>'locationId'='41000000-0000-4000-8000-000000000001'),'low','branch status uses cash group without Telegram config');
+select extensions.is((select c->>'cashStatus' from jsonb_array_elements(public.get_dashboard_branch_summaries()) c where c->>'locationId'='41000000-0000-4000-8000-000000000002'),'normal','cash equality is normal despite higher configured Telegram threshold');
+select extensions.is((select c->>'cashStatus' from jsonb_array_elements(public.get_dashboard_branch_summaries()) c where c->>'locationId'='41000000-0000-4000-8000-000000000007'),'unconfigured','ungrouped has no fallback');
+select extensions.throws_ok($$select public.create_cash_alert_group(array['41000000-0000-4000-8000-000000000007']::uuid[],9999.99)$$,'P0001',null,'below minimum rejected');
+select extensions.throws_ok($$select public.create_cash_alert_group(array['41000000-0000-4000-8000-000000000007']::uuid[],1000000.01)$$,'P0001',null,'above maximum rejected');
+select extensions.throws_ok($$select public.create_cash_alert_group(array['41000000-0000-4000-8000-000000000007']::uuid[],10000.001)$$,'P0001',null,'third decimal rejected');
+
 select extensions.ok(exists(select 1 from jsonb_array_elements(public.get_branch_threshold_alert_check()->'candidates') c where c->>'locationId'='41000000-0000-4000-8000-000000000003'),'manager sees unassigned active branch');
 select extensions.ok(not exists(select 1 from jsonb_array_elements(public.get_branch_threshold_alert_check()->'candidates') c where c->>'locationId' in ('41000000-0000-4000-8000-000000000004','41000000-0000-4000-8000-000000000007')),'inactive and ungrouped excluded');
 select extensions.throws_ok($$select public.create_cash_alert_group(array['41000000-0000-4000-8000-000000000007']::uuid[],0.001)$$,'P0001',null,'fractional cents rejected at RPC');
 select extensions.throws_ok($$select public.create_cash_alert_group(array['41000000-0000-4000-8000-000000000007']::uuid[],10000000000)$$,'P0001',null,'out of range rejected');
-select extensions.throws_ok($$select public.create_cash_alert_group(array[]::uuid[],0)$$,'P0001',null,'empty rejected');
-select extensions.throws_ok($$select public.create_cash_alert_group(array['41000000-0000-4000-8000-000000000001']::uuid[],0)$$,'P0001',null,'branch conflict rejected');
-create temporary table test_cash_group as select public.create_cash_alert_group(array['41000000-0000-4000-8000-000000000007']::uuid[],0) as data;
-select extensions.is((select (data->>'thresholdAmount')::numeric from test_cash_group),0::numeric,'zero accepted');
-select extensions.ok((public.update_cash_alert_group('44000000-0000-4000-8000-000000000001',array['41000000-0000-4000-8000-000000000001','41000000-0000-4000-8000-000000000002','41000000-0000-4000-8000-000000000003','41000000-0000-4000-8000-000000000005','41000000-0000-4000-8000-000000000006']::uuid[],-10.12)->'locationIds') ? '41000000-0000-4000-8000-000000000004','editing retains inactive old member');
-select extensions.throws_ok($$select public.create_cash_alert_group(array['41000000-0000-4000-8000-000000000004']::uuid[],0)$$,'P0001',null,'cannot add inactive branch');
+select extensions.throws_ok($$select public.create_cash_alert_group(array[]::uuid[],10000)$$,'P0001',null,'empty rejected');
+select extensions.throws_ok($$select public.create_cash_alert_group(array['41000000-0000-4000-8000-000000000001']::uuid[],10000)$$,'P0001',null,'branch conflict rejected');
+create temporary table test_cash_group as select public.create_cash_alert_group(array['41000000-0000-4000-8000-000000000007']::uuid[],10000) as data;
+select extensions.is((select (data->>'thresholdAmount')::numeric from test_cash_group),10000::numeric,'minimum accepted');
+select extensions.ok((public.update_cash_alert_group('44000000-0000-4000-8000-000000000001',array['41000000-0000-4000-8000-000000000001','41000000-0000-4000-8000-000000000002','41000000-0000-4000-8000-000000000003','41000000-0000-4000-8000-000000000005','41000000-0000-4000-8000-000000000006']::uuid[],10000)->'locationIds') ? '41000000-0000-4000-8000-000000000004','editing retains inactive old member');
+select extensions.throws_ok($$select public.create_cash_alert_group(array['41000000-0000-4000-8000-000000000004']::uuid[],10000)$$,'P0001',null,'cannot add inactive branch');
 
-select extensions.is((public.update_cash_alert_group((select (data->>'id')::uuid from test_cash_group),array['41000000-0000-4000-8000-000000000007']::uuid[],12.34)->>'thresholdAmount')::numeric,12.34::numeric,'positive cents accepted');
+select extensions.is((public.update_cash_alert_group((select (data->>'id')::uuid from test_cash_group),array['41000000-0000-4000-8000-000000000007']::uuid[],10000.12)->>'thresholdAmount')::numeric,10000.12::numeric,'positive cents accepted');
+select extensions.is((public.update_cash_alert_group((select (data->>'id')::uuid from test_cash_group),array['41000000-0000-4000-8000-000000000007']::uuid[],1000000)->>'thresholdAmount')::numeric,1000000::numeric,'maximum accepted');
 select extensions.ok((public.delete_cash_alert_group((select (data->>'id')::uuid from test_cash_group))->>'success')::boolean,'delete releases members');
 reset role;
 update public.dashboard_branch_snapshots set summary = summary || '{"netCashFlow":-100}'::jsonb where location_id='41000000-0000-4000-8000-000000000003';

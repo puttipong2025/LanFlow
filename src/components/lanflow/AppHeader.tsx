@@ -183,12 +183,6 @@ export function AppHeader({
         </div>
 
         <div className="landscape-compact-actions flex flex-col gap-3 sm:flex-row sm:items-center">
-          {alertCheck && <div className="space-y-1">
-            <button type="button" disabled={!online} aria-disabled={!online || alertCheck.checking} onClick={() => { if (!alertCheck.checking) void alertCheck.checkNow(); }} aria-busy={alertCheck.checking}
-              className="focus-ring min-h-11 whitespace-nowrap rounded-md border border-black/15 bg-white px-3 text-sm font-semibold disabled:opacity-50 aria-disabled:opacity-50">{alertCheck.checking ? "กำลังตรวจ..." : "ตรวจแจ้งเตือน"}</button>
-            {!online && <p className="text-pretty text-xs text-ink/65">เชื่อมต่ออินเทอร์เน็ตเพื่อตรวจแจ้งเตือน</p>}
-            {alertCheck.error && <p role="alert" className="max-w-xs text-pretty text-sm text-rose-700">{alertCheck.error}</p>}
-          </div>}
           <span
             role="status"
             aria-live="polite"
@@ -452,6 +446,13 @@ export function AppHeader({
               <span>Telegram</span>
             </button>
           )}
+
+          {alertCheck && <div className="space-y-1">
+            <button type="button" disabled={!online} aria-disabled={!online || alertCheck.checking} onClick={() => { if (!alertCheck.checking) void alertCheck.checkNow(); }} aria-busy={alertCheck.checking}
+              className="focus-ring min-h-11 whitespace-nowrap rounded-md border border-black/15 bg-white px-3 text-sm font-semibold disabled:opacity-50 aria-disabled:opacity-50">{alertCheck.checking ? "กำลังตรวจ..." : "ตรวจแจ้งเตือน"}</button>
+            {!online && <p className="text-pretty text-xs text-ink/65">เชื่อมต่ออินเทอร์เน็ตเพื่อตรวจแจ้งเตือน</p>}
+            {alertCheck.error && <p role="alert" className="max-w-xs text-pretty text-sm text-rose-700">{alertCheck.error}</p>}
+          </div>}
 
           <AccountActions
             online={online}

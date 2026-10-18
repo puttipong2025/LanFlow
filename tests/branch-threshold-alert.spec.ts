@@ -6,7 +6,7 @@ import { dismissRubberWeightAlertIfVisible } from "./helpers/dismiss-threshold-a
 const config = { thresholdKg: 10000, intervalMinutes: 60 };
 const blank = { config, candidates: [], unavailable: [], configuredCount: 0, checkedCount: 0 };
 const item = (kind: "cash" | "weight") => ({ kind, locationId: kind, locationName: `สาขา ${kind}`, groupId: kind, groupOrder: 1,
-  value: kind === "cash" ? -100 : 15000, threshold: kind === "cash" ? 0 : 10000, calculatedAt: "2026-10-18T00:00:00Z" });
+  value: kind === "cash" ? -100 : 15000, threshold: 10000, calculatedAt: "2026-10-18T00:00:00Z" });
 async function suppressAutomatic(page: Page) {
   await page.addInitScript(() => {
     // Preserve an existing timestamp across reload; seed only the first visit.
@@ -21,6 +21,9 @@ test.use({ storageState: "playwright/.auth/super_admin.json" });
 
 test("manual check defaults to cash, restores focus, reopens and preserves timer", async ({ page }) => {
   await suppressAutomatic(page);
+  await page.goto("/");
+  await expect(page.locator(".landscape-compact-actions")).toBeVisible();
+  expect(await page.getByRole("button", { name: "ตั้งค่าการแจ้งเตือน Telegram" }).evaluate(el => el.nextElementSibling?.textContent)).toContain("ตรวจแจ้งเตือน");
   let checks = 0;
   let payload = { ...blank, candidates: [item("cash"), item("weight")], configuredCount: 2, checkedCount: 2 };
   await page.route("**/api/lanflow/threshold-alert", async route => { checks++; await route.fulfill({ json: payload }); });
@@ -87,32 +90,32 @@ test("cash group UI to real RPC and snapshot; API authorization and equality", a
     await page.getByRole("button", { name: "การแจ้งเตือน", exact: true }).click();
     await page.getByRole("button", { name: "เงินต่ำกว่าเกณฑ์", exact: true }).click();
     await page.getByRole("button", { name: "สร้างกลุ่ม", exact: true }).click();
-    await page.getByLabel("เกณฑ์รับ–จ่ายสุทธิสะสมขั้นต่ำ (บาท)").fill("-10.12");
+    await page.getByLabel("เกณฑ์รับ–จ่ายสุทธิสะสมขั้นต่ำ (บาท)").fill("10000");
     await page.getByLabel(name, { exact: true }).check();
     await page.getByRole("button", { name: "บันทึกกลุ่ม", exact: true }).click();
     await expect(page.getByText("สร้างกลุ่มแล้ว การตรวจรอบถัดไปจะเริ่มใช้กลุ่มนี้", { exact: true })).toBeVisible();
     const list = await manager.request.get("/api/lanflow/cash-alert/groups");
     groupId = (await list.json()).groups.find((g: { locationIds: string[] }) => g.locationIds.includes(id)).id;
-    for (const amount of [0.001, 10000000000, "0", null]) expect((await manager.request.put(`/api/lanflow/cash-alert/groups/${groupId}`, { data: { locationIds: [id], thresholdAmount: amount } })).status()).toBe(400);
+    for (const amount of [9999.99, 1000000.01, 10000.001, "10000", null]) expect((await manager.request.put(`/api/lanflow/cash-alert/groups/${groupId}`, { data: { locationIds: [id], thresholdAmount: amount } })).status()).toBe(400);
     expect((await admin.request.get("/api/lanflow/cash-alert/groups")).status()).toBe(403);
     expect((await user.request.get("/api/lanflow/threshold-alert")).status()).toBe(403);
     expect((await anon.request.get("/api/lanflow/threshold-alert")).status()).toBe(401);
-    const competing = await Promise.all([0, 1].map(() => manager.request.post("/api/lanflow/cash-alert/groups", { data: { locationIds: [conflictId], thresholdAmount: 0 } })));
+    const competing = await Promise.all([0, 1].map(() => manager.request.post("/api/lanflow/cash-alert/groups", { data: { locationIds: [conflictId], thresholdAmount: 10000 } })));
     expect(competing.map(response => response.status()).sort()).toEqual([201, 409]);
     conflictGroupId = (await competing.find(response => response.status() === 201)!.json()).id;
-    const snapshot = { location_id: id, status: "ready", source_version: 1, snapshot_version: 1, calculated_at: new Date().toISOString(), summary: { netCashFlow: -10.13 } };
+    const snapshot = { location_id: id, status: "ready", source_version: 1, snapshot_version: 1, calculated_at: new Date().toISOString(), summary: { netCashFlow: 9999.99 } };
     expect((await db.from("dashboard_branch_snapshots").upsert(snapshot)).error).toBeNull();
     const response = await manager.request.get("/api/lanflow/threshold-alert");
     expect(response.headers()["cache-control"]).toContain("no-store");
-    expect((await response.json()).candidates).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "cash", locationId: id, value: -10.13, threshold: -10.12 })]));
+    expect((await response.json()).candidates).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "cash", locationId: id, value: 9999.99, threshold: 10000 })]));
     expect((await (await admin.request.get("/api/lanflow/threshold-alert")).json()).candidates.some((c: { locationId: string }) => c.locationId === id)).toBe(false);
     await page.getByRole("button", { name: "ตรวจแจ้งเตือน", exact: true }).click();
     const dialog = page.getByRole("alertdialog", { name: "แจ้งเตือน", exact: true });
     await expect(dialog.getByText(name, { exact: true })).toBeVisible();
-    await expect(dialog.getByRole("region").filter({ hasText: name }).getByText("-10.12 บาท", { exact: true })).toBeVisible();
+    await expect(dialog.getByRole("region").filter({ hasText: name }).getByText("10,000 บาท", { exact: true })).toBeVisible();
     await expect(dialog.getByRole("heading", { name: "รับ–จ่ายสุทธิสะสมต่ำกว่าเกณฑ์" })).toBeVisible();
     await page.keyboard.press("Escape");
-    expect((await db.from("dashboard_branch_snapshots").update({ summary: { netCashFlow: -10.12 } }).eq("location_id", id)).error).toBeNull();
+    expect((await db.from("dashboard_branch_snapshots").update({ summary: { netCashFlow: 10000 } }).eq("location_id", id)).error).toBeNull();
     expect((await (await manager.request.get("/api/lanflow/threshold-alert")).json()).candidates.some((c: { locationId: string }) => c.locationId === id)).toBe(false);
     await dismissRubberWeightAlertIfVisible(page);
   } finally {

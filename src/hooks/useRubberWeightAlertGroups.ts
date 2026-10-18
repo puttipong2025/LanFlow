@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
 import { authFetch } from "@/lib/auth-fetch";
 import type { RubberWeightAlertGroup } from "@/types";
 
@@ -36,7 +37,10 @@ export function useRubberWeightAlertGroups(kind: "cash" | "weight" = "weight") {
     },
   });
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: key });
+  const invalidate = () => Promise.all([
+    queryClient.invalidateQueries({ queryKey: key }),
+    ...(kind === "cash" ? [queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.dashboardBranchSummaries() })] : []),
+  ]);
   const createGroup = useMutation({
     mutationFn: async (input: GroupInput) => {
       const response = await authFetch(endpoint, {

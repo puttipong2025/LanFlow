@@ -10998,8 +10998,8 @@ begin
   if cardinality(v_location_ids) = 0 then
     raise exception 'CASH_ALERT_GROUP_EMPTY: กลุ่มต้องมีอย่างน้อยหนึ่งสาขา';
   end if;
-  if p_threshold_amount is null or p_threshold_amount < -9999999999.99 or p_threshold_amount > 9999999999.99 or p_threshold_amount <> round(p_threshold_amount, 2) then
-    raise exception 'CASH_ALERT_GROUP_INVALID: เกณฑ์เงินต้องอยู่ระหว่าง -9,999,999,999.99 ถึง 9,999,999,999.99 บาท และทศนิยมไม่เกินสองตำแหน่ง';
+  if p_threshold_amount is null or p_threshold_amount < 10000 or p_threshold_amount > 1000000 or p_threshold_amount <> round(p_threshold_amount, 2) then
+    raise exception 'CASH_ALERT_GROUP_INVALID: เกณฑ์เงินต้องอยู่ระหว่าง 10,000 ถึง 1,000,000 บาท และทศนิยมไม่เกินสองตำแหน่ง';
   end if;
   if exists (
     select 1
@@ -17657,8 +17657,8 @@ begin
     'isOverdue', coalesce(s.status <> 'ready' and s.pending_since + make_interval(mins => settings.interval_minutes) < now(), false),
     'cashStatus', case
       when s.summary is null then 'no_data'
-      when coalesce(t.is_configured, false) = false then 'unconfigured'
-      when (s.summary ->> 'netCashFlow')::numeric < t.net_cash_min then 'low'
+      when g.id is null then 'unconfigured'
+      when (s.summary ->> 'netCashFlow')::numeric < g.threshold_amount then 'low'
       else 'normal'
     end,
     'summary', case when s.summary is null then null else jsonb_build_object(
@@ -17670,7 +17670,8 @@ begin
   from public.locations l
   cross join public.dashboard_refresh_settings settings
   left join public.dashboard_branch_snapshots s on s.location_id = l.id
-  left join public.dashboard_alert_thresholds t on t.location_id = l.id
+  left join public.cash_alert_group_locations gl on gl.location_id = l.id
+  left join public.cash_alert_groups g on g.id = gl.group_id
   where l.is_active and settings.id = true and public.can_access_location(l.id);
   return payload;
 end;
@@ -30411,7 +30412,7 @@ CREATE TABLE IF NOT EXISTS "public"."cash_alert_groups" (
     "updated_by_phone" "text",
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    CONSTRAINT "cash_alert_groups_threshold_check" CHECK (((("threshold_amount" >= '-9999999999.99'::numeric) AND ("threshold_amount" <= 9999999999.99)) AND ("threshold_amount" = "round"("threshold_amount", 2))))
+    CONSTRAINT "cash_alert_groups_threshold_check" CHECK (((("threshold_amount" >= (10000)::numeric) AND ("threshold_amount" <= (1000000)::numeric)) AND ("threshold_amount" = "round"("threshold_amount", 2))))
 );
 
 

@@ -67,26 +67,23 @@ export async function GET(request: NextRequest) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
 
-  const { data, error } = await result.supabase.rpc(
-    "get_dashboard_branch_summaries",
+  const failure = () => NextResponse.json(
+    { error: "โหลดสรุปภาพรวมสาขาไม่สำเร็จ" },
+    { status: 500, headers: NO_STORE_HEADERS },
   );
-  if (error) {
-    console.error("Dashboard branch summaries error:", error.message);
-    return NextResponse.json(
-      { error: "โหลดสรุปภาพรวมสาขาไม่สำเร็จ" },
-      { status: 500 },
-    );
+  try {
+    const { data, error } = await result.supabase.rpc("get_dashboard_branch_summaries");
+    if (error) {
+      console.error("Dashboard branch summaries error:", error.message);
+      return failure();
+    }
+    if (!isBranchSummaryResponse(data)) {
+      console.error("Dashboard branch summaries contract mismatch");
+      return failure();
+    }
+    return NextResponse.json(data, { headers: NO_STORE_HEADERS });
+  } catch {
+    console.error("Dashboard branch summaries request failed");
+    return failure();
   }
-
-  if (!isBranchSummaryResponse(data)) {
-    console.error("Dashboard branch summaries contract mismatch");
-    return NextResponse.json(
-      { error: "โหลดสรุปภาพรวมสาขาไม่สำเร็จ" },
-      { status: 500 },
-    );
-  }
-
-  return NextResponse.json(data, {
-    headers: NO_STORE_HEADERS,
-  });
 }

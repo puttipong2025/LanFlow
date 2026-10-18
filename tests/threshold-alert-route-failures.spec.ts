@@ -12,7 +12,7 @@ for (const kind of ["cash", "weight"] as const) {
         "@/lib/server/auth": { requireSystemManager: auth },
       });
       const handlers = module.thresholdAlertGroupRoutes(kind);
-      const body = { locationIds: [id], ...(kind === "cash" ? { thresholdAmount: 0 } : { thresholdKg: 100 }) };
+      const body = { locationIds: [id], ...(kind === "cash" ? { thresholdAmount: 10000 } : { thresholdKg: 100 }) };
       const request = new NextRequest("http://localhost/api/test", { method, ...(method === "POST" || method === "PUT" ? { body: JSON.stringify(body), headers: { "Content-Type": "application/json" } } : {}) });
       const response = method === "PUT" || method === "DELETE" ? await handlers[method](request, { params: Promise.resolve({ id }) }) : await handlers[method](request);
       expect(response.status).toBe(500);

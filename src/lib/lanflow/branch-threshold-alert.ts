@@ -14,10 +14,11 @@ export type BranchThresholdCheck = {
   configuredCount: number; checkedCount: number;
   candidates: ThresholdCandidate[]; unavailable: UnavailableAlert[];
 };
-export const CASH_THRESHOLD_MAX = 9_999_999_999.99;
+export const CASH_THRESHOLD_MIN = 10_000;
+export const CASH_THRESHOLD_MAX = 1_000_000;
 export function validCashThreshold(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value)
-    && Math.abs(value) <= CASH_THRESHOLD_MAX && Number(value.toFixed(2)) === value;
+    && value >= CASH_THRESHOLD_MIN && value <= CASH_THRESHOLD_MAX && Number(value.toFixed(2)) === value;
 }
 const kindValid = (value: unknown): value is AlertKind => value === "cash" || value === "weight";
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);

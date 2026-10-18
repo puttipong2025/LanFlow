@@ -28,14 +28,14 @@ function validSummary() {
   };
 }
 
-function loadRoute(data: unknown) {
+function loadRoute(data: unknown, rpc = async () => ({ data, error: null as { message: string } | null })) {
   return loadSourceModule<typeof import("../src/app/api/lanflow/dashboard/branch-summaries/route")>(
     "src/app/api/lanflow/dashboard/branch-summaries/route.ts",
     {
       "@/lib/server/auth": {
         requireAuth: async () => ({
           ok: true,
-          supabase: { rpc: async () => ({ data, error: null }) },
+          supabase: { rpc },
         }),
       },
     },
@@ -87,3 +87,18 @@ test("dashboard branch-summary route rejects a malformed response before it reac
     });
   }
 });
+
+for (const mode of ["throw", "returned", "malformed"] as const) {
+  test(`branch summaries ${mode} failure stays private JSON`, async () => {
+    const rpc = async () => {
+      if (mode === "throw") throw new Error("private-upstream-diagnostic");
+      return { data: null, error: mode === "returned" ? { message: "private-upstream-diagnostic" } : null };
+    };
+    const route = loadRoute(null, rpc);
+    const response = await route.GET(new Request("http://localhost/api/lanflow/dashboard/branch-summaries") as never);
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "โหลดสรุปภาพรวมสาขาไม่สำเร็จ" });
+    expect(response.headers.get("Cache-Control")).toContain("private");
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+  });
+}
