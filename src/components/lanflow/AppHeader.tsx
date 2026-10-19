@@ -6,6 +6,7 @@ import type { Location, Profile } from "@/types";
 import { canManageSystemFeatures } from "@/lib/permissions";
 import { TelegramBadgeConfigModal } from "@/components/lanflow/TelegramBadgeConfigModal";
 import { AccountActions } from "@/components/lanflow/AccountActions";
+import { OperatorMoneyHistoryButton } from "@/components/dashboard/OperatorMoneyHistoryButton";
 import { useDashboardBranchSummaries } from "@/hooks/useDashboardOverview";
 import { cn } from "@/lib/cn";
 import { formatCurrency, formatNumber } from "@/lib/format";
@@ -447,6 +448,7 @@ export function AppHeader({
             </button>
           )}
 
+          <OperatorMoneyHistoryButton profile={profile} online={online} />
           {alertCheck && <div className="space-y-1">
             <button type="button" disabled={!online} aria-disabled={!online || alertCheck.checking} onClick={() => { if (!alertCheck.checking) void alertCheck.checkNow(); }} aria-busy={alertCheck.checking}
               className="focus-ring min-h-11 whitespace-nowrap rounded-md border border-black/15 bg-white px-3 text-sm font-semibold disabled:opacity-50 aria-disabled:opacity-50">{alertCheck.checking ? "กำลังตรวจ..." : "ตรวจแจ้งเตือน"}</button>

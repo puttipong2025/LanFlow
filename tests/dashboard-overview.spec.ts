@@ -66,6 +66,12 @@ test.describe("Dashboard overview @dashboard", () => {
     await page.getByRole("button", { name: "ยกเลิก", exact: true }).click();
     await expect(page.getByRole("heading", { name: /ภาพรวม ·/ })).toBeVisible();
 
+    // Dev mode has no precaching worker: load the offline destination chunk online.
+    await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
+    await expect(page.getByRole("heading", { name: /บิลยาง ·/ })).toBeVisible();
+    await page.getByRole("button", { name: "ภาพรวม", exact: true }).click();
+    await expect(page.getByRole("heading", { name: /ภาพรวม ·/ })).toBeVisible();
+
     await page.getByRole("button", { name: "ออกจากระบบ", exact: true }).click();
     await page.context().setOffline(true);
     await page.getByRole("button", { name: "ออกจากระบบ", exact: true }).last().click();

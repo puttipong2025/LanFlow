@@ -3,6 +3,7 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './tests',
   testMatch: [
+    '**/operator-money-history-route.spec.ts',
     '**/dashboard-freshness.spec.ts',
     '**/dashboard-branch-summaries-route.spec.ts',
     '**/action-column-contract.spec.ts',
