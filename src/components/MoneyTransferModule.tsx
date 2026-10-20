@@ -519,7 +519,7 @@ export function MoneyTransferModule({
                   <th className="px-3 py-3 text-center">สลิป</th>
                   <th className="px-3 py-3">ประเภท</th>
                   <th className="px-3 py-3">สถานะ</th>
-                  <th className="px-3 py-3">สร้างโดย</th>
+                  <th className="px-3 py-3">ผู้สร้างรายการ</th>
                   <th className="px-3 py-3">วันที่สร้าง</th>
                 </tr>
               </thead>

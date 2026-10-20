@@ -86,7 +86,7 @@ export function RubberBillsTable({
               <th>เลขที่บิล</th>
               <th>วันที่ออกบิล</th>
               <th>TimestampBill</th>
-              <th>ผู้รับผิดชอบการจ่าย</th>
+              <th>ผู้สร้างรายการ</th>
               <th>ประเภทบิล</th>
               <th>น้ำหนักสุทธิ</th>
               <th>มูลค่ายาง (บาท)</th>

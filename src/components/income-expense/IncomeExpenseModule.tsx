@@ -646,7 +646,7 @@ export function IncomeExpenseModule({
                 setSearch(event.target.value);
                 setPage(1);
               }}
-              placeholder="เลขที่ วันที่ รายการ หมวด หรือผู้บันทึก"
+              placeholder="เลขที่ วันที่ รายการ หมวด หรือผู้สร้างรายการ"
               aria-describedby="income-expense-search-help"
               className="focus-ring h-10 w-full rounded-md border border-black/20 bg-white px-3 sm:w-64"
             />
@@ -666,7 +666,7 @@ export function IncomeExpenseModule({
                 <th>วันที่</th>
                 <th>ประเภท</th>
                 <th>หมวด</th>
-                <th>ผู้บันทึก</th>
+                <th>ผู้สร้างรายการ</th>
                 <th>Sync</th>
               </tr>
             </thead>

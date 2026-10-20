@@ -442,7 +442,7 @@ export function RubberExportsModule({
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               disabled={!online}
-              placeholder="เลขที่รายการ ผู้สร้าง หรือเลขบิลรับเข้า"
+              placeholder="เลขที่รายการ ผู้สร้างรายการ หรือเลขบิลรับเข้า"
               className="focus-ring h-10 w-full rounded-md border border-black/20 bg-white pl-9 pr-10 text-sm disabled:cursor-not-allowed disabled:bg-slate-100"
             />
             {search && (
@@ -516,7 +516,7 @@ export function RubberExportsModule({
             loading={api.deletionsLoading}
             emptyLabel="ยังไม่มีประวัติการลบรายการส่งออกยาง"
             showPreviousStatus
-            originalActorLabel="ผู้สร้าง"
+            originalActorLabel="ผู้สร้างรายการ"
             onShowCurrent={() => setView("active")}
           />
           {api.deletionsHasMore && api.deletionsCursor && !api.deletionsLoading && (
@@ -626,7 +626,7 @@ export function RubberExportsModule({
       <AlertDialog
         open={Boolean(pendingRevert)}
         title={`ย้อน ${pendingRevert?.exportNo ?? "รายการส่งออกยาง"} เป็นฉบับร่าง?`}
-        description={`ข้อมูลน้ำหนักปัจจุบัน อัตราและยอดค่าทำงาน ค่าดำเนินการอื่น และข้อมูลการตรวจสอบจะถูกล้าง แต่เลข REX ผู้สร้าง และชุดบิลเดิมจะยังอยู่${pendingRevert?.hasWorkTransfer ? " รายการโอนค่าทำงานและสลิปทั้งหมดจะถูกลบถาวร" : ""}`}
+        description={`ข้อมูลน้ำหนักปัจจุบัน อัตราและยอดค่าทำงาน ค่าดำเนินการอื่น และข้อมูลการตรวจสอบจะถูกล้าง แต่เลข REX ผู้สร้างรายการ และชุดบิลเดิมจะยังอยู่${pendingRevert?.hasWorkTransfer ? " รายการโอนค่าทำงานและสลิปทั้งหมดจะถูกลบถาวร" : ""}`}
         confirmLabel="ย้อนกลับเป็นฉบับร่าง"
         busy={reverting}
         onCancel={() => {

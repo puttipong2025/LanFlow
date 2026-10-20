@@ -1,17 +1,18 @@
 import { cn } from "@/lib/cn";
 import type { HistoryFacet } from "@/lib/operator-money-history";
 
-export function OperatorHistoryFilters({ label, options, selected, onSelect }: {
+export function OperatorHistoryFilters({ label, options, selected, onSelect, allKey = "" }: {
   label: string;
   options: HistoryFacet[];
   selected: string;
   onSelect: (key: string) => void;
+  allKey?: string;
 }) {
   return (
     <div className="space-y-2">
       <h3 className="text-balance text-sm font-semibold text-ink/70">{label}</h3>
       <div className="flex flex-wrap gap-2" role="group" aria-label={label}>
-        {options.map((option) => {
+        {options.filter((option) => option.key === allKey || option.count > 0).map((option) => {
           const active = selected === option.key;
           return (
             <button key={option.key} type="button" aria-pressed={active}

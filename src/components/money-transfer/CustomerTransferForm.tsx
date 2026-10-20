@@ -399,7 +399,7 @@ export function CustomerTransferForm({
           )}
         </div>
         <div className="rounded-lg border border-black/5 bg-field/40 p-3">
-          <p className="text-xs font-semibold text-ink/50">ผู้สร้าง</p>
+          <p className="text-xs font-semibold text-ink/50">ผู้สร้างรายการ</p>
           <p className="mt-1 text-sm font-semibold text-ink">{profile.name} · {profile.phone}</p>
         </div>
         <div className="rounded-lg border border-black/5 bg-field/40 p-3">

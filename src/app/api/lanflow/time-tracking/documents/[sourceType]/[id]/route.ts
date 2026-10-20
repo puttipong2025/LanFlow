@@ -65,7 +65,7 @@ export async function GET(
     if (sourceType === "payroll") {
       const sourceResponse = await result.supabase
         .from("payroll_slips")
-        .select("id, profile_id, month, gross_pay, total_deductions, net_pay, total_days, daily_wage, slip_data, status, approved_by, admin_comment, created_at, expense_location_id, expense_location_name, payment_channel, payment_transfer_amount, approved_at, cancelled_at")
+        .select("id, profile_id, month, gross_pay, total_deductions, net_pay, total_days, daily_wage, slip_data, status, approved_by, admin_comment, created_at, history_creator_name, expense_location_id, expense_location_name, payment_channel, payment_transfer_amount, approved_at, cancelled_at")
         .eq("id", id)
         .maybeSingle();
       if (sourceResponse.error) throw sourceResponse.error;
@@ -95,7 +95,7 @@ export async function GET(
 
     const sourceResponse = await result.supabase
       .from("financial_transactions")
-      .select("id, profile_id, type, amount, status, admin_comment, created_at, remaining_amount, approved_by, expense_location_id, expense_location_name, payment_channel, payment_transfer_amount, approved_at, cancelled_at, effective_date, description")
+      .select("id, profile_id, type, amount, status, admin_comment, created_at, history_creator_name, remaining_amount, approved_by, expense_location_id, expense_location_name, payment_channel, payment_transfer_amount, approved_at, cancelled_at, effective_date, description")
       .eq("id", id)
       .eq("type", "WITHDRAWAL")
       .maybeSingle();

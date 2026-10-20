@@ -2100,6 +2100,66 @@ $$;
 ALTER FUNCTION "private"."capture_dashboard_money_source"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."capture_financial_history_creator"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if tg_op = 'INSERT' then
+    new.history_creator_user_id := auth.uid();
+    select name into new.history_creator_name from public.profiles where id = auth.uid();
+  elsif new.history_creator_user_id is distinct from old.history_creator_user_id
+    or new.history_creator_name is distinct from old.history_creator_name then
+    new.history_creator_user_id := old.history_creator_user_id;
+    new.history_creator_name := old.history_creator_name;
+  end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."capture_financial_history_creator"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."capture_money_history_creator"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare creator jsonb;
+begin
+  -- Explicit snapshots are accepted only through already-privileged event writers.
+  if new.creator_user_id is not null or new.creator_name <> 'ไม่ทราบผู้สร้างรายการ' then return new; end if;
+  creator := private.money_history_source_creator(new.source_type, new.source_id);
+  new.creator_user_id := nullif(creator->>'creatorUserId', '')::uuid;
+  new.creator_name := creator->>'creatorName';
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."capture_money_history_creator"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."capture_payroll_history_creator_name"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if tg_op = 'INSERT' then
+    select coalesce(nullif(name, ''), 'ไม่ทราบผู้สร้างรายการ') into new.history_creator_name
+    from public.profiles where id = new.created_by;
+    new.history_creator_name := coalesce(new.history_creator_name, 'ไม่ทราบผู้สร้างรายการ');
+  else
+    new.history_creator_name := old.history_creator_name;
+  end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."capture_payroll_history_creator_name"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."capture_time_payroll_employment_boundary"() RETURNS "trigger"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -3866,6 +3926,18 @@ ALTER FUNCTION "private"."dashboard_money_event_entry"("p_event_key" "text", "p_
 
 
 CREATE OR REPLACE FUNCTION "private"."dashboard_money_source_entries"("p_source_type" "text", "p_source_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select coalesce(jsonb_agg(entry || private.money_history_source_creator(p_source_type, p_source_id)), '[]'::jsonb)
+  from jsonb_array_elements(private.dashboard_money_source_entries_before_creator_snapshot(p_source_type, p_source_id)) entry
+$$;
+
+
+ALTER FUNCTION "private"."dashboard_money_source_entries"("p_source_type" "text", "p_source_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."dashboard_money_source_entries_before_creator_snapshot"("p_source_type" "text", "p_source_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
@@ -3961,7 +4033,7 @@ end;
 $$;
 
 
-ALTER FUNCTION "private"."dashboard_money_source_entries"("p_source_type" "text", "p_source_id" "uuid") OWNER TO "postgres";
+ALTER FUNCTION "private"."dashboard_money_source_entries_before_creator_snapshot"("p_source_type" "text", "p_source_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."dashboard_money_source_entries_before_time_payroll_payment"("p_source_type" "text", "p_source_id" "uuid") RETURNS "jsonb"
@@ -6321,6 +6393,55 @@ $$;
 
 
 ALTER FUNCTION "private"."mark_dashboard_dirty"("p_location_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."money_history_source_creator"("p_type" "text", "p_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  source_row jsonb;
+  creator_id uuid;
+  creator_name text;
+begin
+  case p_type
+    when 'income_expense' then select to_jsonb(s) into source_row from public.income_expense s where id = p_id;
+    when 'rubber_bill' then select to_jsonb(s) into source_row from public.rubber_bills s where id = p_id;
+    when 'money_transfer', 'cash_transfer' then select to_jsonb(s) into source_row from public.money_transfers s where id = p_id;
+    when 'rubber_export' then select to_jsonb(s) into source_row from public.rubber_exports s where id = p_id;
+    when 'withdrawal', 'withdrawal_adjustment' then select to_jsonb(s) into source_row from public.financial_transactions s where id = p_id;
+    when 'payroll_slip' then select to_jsonb(s) into source_row from public.payroll_slips s where id = p_id;
+    else source_row := null;
+  end case;
+  if source_row is not null then
+    creator_id := coalesce(nullif(source_row->>'created_by_user_id', ''),
+      nullif(source_row->>'created_by', ''), nullif(source_row->>'history_creator_user_id', ''))::uuid;
+    creator_name := coalesce(nullif(source_row->>'created_by_name', ''), nullif(source_row->>'history_creator_name', ''));
+    if creator_name is null then
+      select name into creator_name from public.profiles where id = creator_id;
+    end if;
+  else
+    select nullif(payload->>'creatorUserId', '')::uuid, nullif(payload->>'creatorName', '')
+    into creator_id, creator_name from private.dashboard_money_event_projection
+    where source_type = p_type and source_id = p_id order by event_key limit 1;
+    if creator_id is null and (creator_name is null or creator_name = 'ไม่ทราบผู้สร้างรายการ') then
+      select e.creator_user_id, e.creator_name into creator_id, creator_name
+      from public.dashboard_money_events e
+      where e.source_type = p_type and e.source_id = p_id
+        and (e.creator_user_id is not null or e.creator_name <> 'ไม่ทราบผู้สร้างรายการ')
+      order by occurred_at desc, id desc limit 1;
+    end if;
+  end if;
+  if creator_id is not null and not exists(select 1 from public.profiles where id = creator_id) then
+    creator_id := null;
+  end if;
+  return jsonb_build_object('creatorUserId', creator_id,
+    'creatorName', coalesce(creator_name, 'ไม่ทราบผู้สร้างรายการ'));
+end;
+$$;
+
+
+ALTER FUNCTION "private"."money_history_source_creator"("p_type" "text", "p_id" "uuid") OWNER TO "postgres";
 
 SET default_tablespace = '';
 
@@ -16914,6 +17035,8 @@ CREATE TABLE IF NOT EXISTS "public"."financial_transactions" (
     "payment_contract_version" smallint,
     "payment_channel" "text",
     "payment_transfer_amount" numeric(14,2),
+    "history_creator_user_id" "uuid",
+    "history_creator_name" "text",
     CONSTRAINT "financial_transactions_adjustment_expense_assignment" CHECK ((("type" <> 'ADJUSTMENT'::"public"."financial_transaction_type") OR ("status" <> 'APPROVED'::"public"."approval_status") OR ("cancelled_at" IS NOT NULL) OR (("expense_location_id" IS NOT NULL) AND ("approved_at" IS NOT NULL)))),
     CONSTRAINT "financial_transactions_adjustment_shape" CHECK (((("type" = 'ADJUSTMENT'::"public"."financial_transaction_type") AND ("parent_debt_id" IS NOT NULL) AND ("effective_date" IS NOT NULL) AND ("adjustment_base_amount" IS NOT NULL) AND ("amount" >= (0)::numeric) AND ("adjustment_base_amount" >= (0)::numeric) AND (("amount")::"text" <> ALL (ARRAY['NaN'::"text", 'Infinity'::"text", '-Infinity'::"text"])) AND (("adjustment_base_amount")::"text" <> ALL (ARRAY['NaN'::"text", 'Infinity'::"text", '-Infinity'::"text"]))) OR (("type" <> 'ADJUSTMENT'::"public"."financial_transaction_type") AND ("adjustment_base_amount" IS NULL)))),
     CONSTRAINT "financial_transactions_applied_month_shape" CHECK (((("type" = ANY (ARRAY['DEBT_DEDUCTION'::"public"."financial_transaction_type", 'WITHDRAWAL_DEDUCTION'::"public"."financial_transaction_type"])) AND ("applied_month" IS NOT NULL) AND ("applied_month" = ("date_trunc"('month'::"text", ("applied_month")::timestamp with time zone))::"date")) OR (("type" <> ALL (ARRAY['DEBT_DEDUCTION'::"public"."financial_transaction_type", 'WITHDRAWAL_DEDUCTION'::"public"."financial_transaction_type"])) AND ("applied_month" IS NULL)))),
@@ -16963,6 +17086,7 @@ CREATE TABLE IF NOT EXISTS "public"."payroll_slips" (
     "payment_contract_version" smallint,
     "payment_channel" "text",
     "payment_transfer_amount" numeric(14,2),
+    "history_creator_name" "text" DEFAULT 'ไม่ทราบผู้สร้างรายการ'::"text" NOT NULL,
     CONSTRAINT "payroll_slips_net_pay_whole_baht" CHECK ((("net_pay" >= (0)::numeric) AND ("net_pay" = "trunc"("net_pay", 0)))),
     CONSTRAINT "payroll_slips_payment_allocation_check" CHECK (((("payment_contract_version" IS NULL) AND ("payment_channel" IS NULL) AND ("payment_transfer_amount" IS NULL)) OR (("payment_contract_version" = 1) AND ("payment_channel" = ANY (ARRAY['branch_and_transfer'::"text", 'outside_system'::"text"])) AND ("payment_transfer_amount" IS NOT NULL) AND ("payment_transfer_amount" >= (0)::numeric) AND ("payment_transfer_amount" <= "net_pay") AND ((("payment_channel" = 'outside_system'::"text") AND ("expense_location_id" IS NULL) AND ("payment_transfer_amount" = (0)::numeric)) OR (("payment_channel" = 'branch_and_transfer'::"text") AND ("expense_location_id" IS NOT NULL))))))
 );
@@ -17738,7 +17862,7 @@ begin
       'rows', coalesce((select jsonb_agg(jsonb_build_object(
         'id', id, 'sourceType', source_type, 'action', action, 'kind', kind,
         'number', number, 'title', title, 'direction', direction,
-        'amount', round(amount, 2), 'actorName', actor_name, 'occurredAt', occurred_at
+        'amount', round(amount, 2), 'actorName', creator_name, 'occurredAt', occurred_at
       ) order by occurred_at desc, id desc) from visible), '[]'::jsonb),
       'nextCursor', case when (select count(*) from filtered) > page_size then (
         select jsonb_build_object('at', occurred_at, 'id', id)
@@ -20393,8 +20517,9 @@ begin
     with allowed_locations as materialized (
       select id, name from public.locations where public.can_access_location(id)
     ), scoped as materialized (
-      select e.*, l.name as location_name,
-        coalesce(e.actor_user_id::text, 'unknown') as actor_key,
+      select e.id, e.location_id, e.source_type, e.action, e.event_date, e.occurred_at,
+        e.creator_name, l.name as location_name,
+        coalesce(e.creator_user_id::text, 'unknown') as actor_key,
         case
           when e.source_type in ('money_transfer', 'cash_transfer') then 'money-transfer'
           when e.source_type in ('withdrawal', 'withdrawal_adjustment', 'payroll_slip') then 'time-tracking'
@@ -20407,8 +20532,8 @@ begin
       where e.event_date between from_date and today_bangkok
     ), actors as (
       select distinct on (actor_key) actor_key,
-        case when actor_key = 'unknown' then 'ไม่ทราบบัญชีผู้ดำเนินการ'
-          else coalesce(nullif(actor_name, ''), 'ไม่ระบุชื่อ') end as name
+        case when actor_key = 'unknown' then 'ไม่ทราบผู้สร้างรายการ'
+          else coalesce(nullif(creator_name, ''), 'ไม่ระบุชื่อ') end as name
       from scoped order by actor_key, occurred_at desc, id desc
     ), actor_events as materialized (
       select * from scoped where actor_key = lower(p_actor_key)
@@ -20456,11 +20581,12 @@ begin
         'delete', count(*) filter (where action = 'delete')) from action_events),
       'latestAt', (select max(occurred_at) from action_events),
       'rows', coalesce((select jsonb_agg(jsonb_build_object(
-        'id', id, 'sourceType', source_type, 'action', action, 'kind', kind,
-        'number', number, 'title', title, 'direction', direction, 'amount', round(amount, 2),
-        'actorName', actor_name, 'occurredAt', occurred_at,
-        'locationId', location_id, 'locationName', location_name, 'route', route
-      ) order by occurred_at desc, id desc) from visible), '[]'::jsonb),
+        'id', visible.id, 'sourceType', visible.source_type, 'action', visible.action, 'kind', detail.kind,
+        'number', detail.number, 'title', detail.title, 'direction', detail.direction, 'amount', round(detail.amount, 2),
+        'actorName', visible.creator_name, 'occurredAt', visible.occurred_at,
+        'locationId', visible.location_id, 'locationName', visible.location_name, 'route', visible.route
+      ) order by visible.occurred_at desc, visible.id desc) from visible
+        join public.dashboard_money_events detail on detail.id = visible.id), '[]'::jsonb),
       'nextCursor', case when (select count(*) from filtered) > 10 then (
         select jsonb_build_object('at', occurred_at, 'id', id)
         from visible order by occurred_at desc, id desc offset 9 limit 1
@@ -30777,6 +30903,8 @@ CREATE TABLE IF NOT EXISTS "public"."dashboard_money_events" (
     "actor_name" "text" NOT NULL,
     "occurred_at" timestamp with time zone DEFAULT "clock_timestamp"() NOT NULL,
     "event_date" "date" NOT NULL,
+    "creator_user_id" "uuid",
+    "creator_name" "text" DEFAULT 'ไม่ทราบผู้สร้างรายการ'::"text" NOT NULL,
     CONSTRAINT "dashboard_money_events_action_check" CHECK (("action" = ANY (ARRAY['create'::"text", 'update'::"text", 'delete'::"text"]))),
     CONSTRAINT "dashboard_money_events_amount_check" CHECK (("amount" >= (0)::numeric)),
     CONSTRAINT "dashboard_money_events_direction_check" CHECK (("direction" = ANY (ARRAY['income'::"text", 'expense'::"text"]))),
@@ -32590,6 +32718,10 @@ CREATE INDEX "dashboard_money_events_location_date_cursor_idx" ON "public"."dash
 
 
 
+CREATE INDEX "dashboard_money_events_source_creator_idx" ON "public"."dashboard_money_events" USING "btree" ("source_type", "source_id", "occurred_at" DESC, "id" DESC) WHERE (("creator_user_id" IS NOT NULL) OR ("creator_name" <> 'ไม่ทราบผู้สร้างรายการ'::"text"));
+
+
+
 CREATE INDEX "dashboard_rubber_bill_money_feed_idx" ON "public"."rubber_bills" USING "btree" ("location_id", COALESCE("client_recorded_at", "created_at") DESC, (('rubber-bill:'::"text" || ("id")::"text")) DESC) WHERE ("record_status" = 'active'::"public"."record_status");
 
 
@@ -33118,6 +33250,10 @@ CREATE OR REPLACE TRIGGER "export_vehicle_weigh_reservation_complete_guard" BEFO
 
 
 
+CREATE OR REPLACE TRIGGER "financial_history_creator" BEFORE INSERT OR UPDATE ON "public"."financial_transactions" FOR EACH ROW EXECUTE FUNCTION "private"."capture_financial_history_creator"();
+
+
+
 CREATE OR REPLACE TRIGGER "guard_approved_rubber_bill_request_history" BEFORE DELETE OR UPDATE ON "public"."rubber_bill_approval_requests" FOR EACH ROW EXECUTE FUNCTION "private"."guard_approved_rubber_bill_request_history"();
 
 
@@ -33190,7 +33326,15 @@ CREATE OR REPLACE TRIGGER "locations_code_immutable" BEFORE UPDATE OF "code" ON 
 
 
 
+CREATE OR REPLACE TRIGGER "money_history_creator" BEFORE INSERT ON "public"."dashboard_money_events" FOR EACH ROW EXECUTE FUNCTION "private"."capture_money_history_creator"();
+
+
+
 CREATE OR REPLACE TRIGGER "money_transfer_items_sync_source_fks" BEFORE INSERT OR UPDATE OF "source_type", "source_id", "rubber_bill_id" ON "public"."money_transfer_items" FOR EACH ROW EXECUTE FUNCTION "public"."sync_money_transfer_item_source_fks"();
+
+
+
+CREATE OR REPLACE TRIGGER "payroll_history_creator_name" BEFORE INSERT OR UPDATE ON "public"."payroll_slips" FOR EACH ROW EXECUTE FUNCTION "private"."capture_payroll_history_creator_name"();
 
 
 
@@ -33515,6 +33659,11 @@ ALTER TABLE ONLY "public"."dashboard_branch_snapshots"
 
 ALTER TABLE ONLY "public"."dashboard_money_events"
     ADD CONSTRAINT "dashboard_money_events_actor_user_id_fkey" FOREIGN KEY ("actor_user_id") REFERENCES "public"."profiles"("id") ON DELETE SET NULL;
+
+
+
+ALTER TABLE ONLY "public"."dashboard_money_events"
+    ADD CONSTRAINT "dashboard_money_events_creator_user_id_fkey" FOREIGN KEY ("creator_user_id") REFERENCES "public"."profiles"("id") ON DELETE SET NULL;
 
 
 
@@ -35068,6 +35217,18 @@ REVOKE ALL ON FUNCTION "private"."capture_dashboard_money_source"() FROM PUBLIC;
 
 
 
+REVOKE ALL ON FUNCTION "private"."capture_financial_history_creator"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."capture_money_history_creator"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."capture_payroll_history_creator_name"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."capture_time_payroll_employment_boundary"() FROM PUBLIC;
 
 
@@ -35178,6 +35339,10 @@ REVOKE ALL ON FUNCTION "private"."dashboard_money_event_entry"("p_event_key" "te
 
 
 REVOKE ALL ON FUNCTION "private"."dashboard_money_source_entries"("p_source_type" "text", "p_source_id" "uuid") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."dashboard_money_source_entries_before_creator_snapshot"("p_source_type" "text", "p_source_id" "uuid") FROM PUBLIC;
 
 
 
@@ -35353,6 +35518,10 @@ REVOKE ALL ON FUNCTION "private"."lock_report_locations"("p_location_ids" "uuid"
 
 
 REVOKE ALL ON FUNCTION "private"."mark_dashboard_dirty"("p_location_id" "uuid") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."money_history_source_creator"("p_type" "text", "p_id" "uuid") FROM PUBLIC;
 
 
 

@@ -226,7 +226,7 @@ export function PayrollModal({ user, ownerUserId, online, canDecide, expenseLoca
                        <span className="text-xs text-ink/50 mt-1">สร้างเมื่อ: {formatBangkokDateTime(slip.created_at)}</span>
                        {Number(slip.net_pay) <= 0 && <span className="text-xs text-ink/55 mt-1">อนุมัติได้ แต่จะไม่สร้างค่าใช้จ่าย</span>}
                        {slip.admin_comment && <span className="text-xs text-river mt-1">หมายเหตุ: {slip.admin_comment}</span>}
-                      {slip.approver?.name && <span className="text-xs text-leaf mt-1">ผู้ทำรายการ: {slip.approver.name}</span>}
+                      <span className="text-xs text-ink/60 mt-1">ผู้สร้างรายการ: {slip.history_creator_name || 'ไม่ทราบผู้สร้างรายการ'}</span>
                     </div>
 
                     <div className="flex flex-wrap items-center gap-3">

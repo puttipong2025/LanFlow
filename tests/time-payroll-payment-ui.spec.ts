@@ -4,7 +4,7 @@ test.use({ storageState: "playwright/.auth/super_admin.json" });
 const branch = { id: "71000000-0000-4000-8000-000000000001", name: "สาขาผู้จ่าย A", code: "PAYA", active: true };
 const secondBranch = { id: "71000000-0000-4000-8000-000000000002", name: "สาขาผู้จ่าย B", code: "PAYB", active: true };
 const employee = { id: "72000000-0000-4000-8000-000000000001", name: "พนักงานวิธีจ่าย", role: "user", is_active: true, daily_wage: 500, primary_location_id: branch.id };
-const slip = { id: "73000000-0000-4000-8000-000000000001", profile_id: employee.id, month: "2026-08", gross_pay: 500, total_deductions: 0, net_pay: 500, created_at: "2026-09-01T01:00:00Z", cancelled_at: null, report_lock_no: null };
+const slip = { id: "73000000-0000-4000-8000-000000000001", profile_id: employee.id, month: "2026-08", gross_pay: 500, total_deductions: 0, net_pay: 500, created_at: "2026-09-01T01:00:00Z", history_creator_name: "ผู้สร้างต้นทาง", approver: { name: "ผู้อนุมัติอีกคน" }, cancelled_at: null, report_lock_no: null };
 
 function branchSummary(
   locationId: string,
@@ -83,6 +83,8 @@ test("approval uses the shared payment dialog and persists the displayed payer o
   await page.getByLabel("กรองสาขา").selectOption(branch.id);
   await page.getByRole("button", { name: /^จัดการสลิปเงินเดือนของ พนักงานวิธีจ่าย/ }).click();
   const payroll = page.getByRole("dialog", { name: "สลิปเงินเดือนของ พนักงานวิธีจ่าย" });
+  await expect(payroll.getByText("ผู้สร้างรายการ: ผู้สร้างต้นทาง", { exact: true })).toBeVisible();
+  await expect(payroll.getByText("ผู้ทำรายการ: ผู้อนุมัติอีกคน", { exact: true })).toHaveCount(0);
   const approve = payroll.getByRole("button", { name: "อนุมัติ", exact: true });
   await approve.click();
   const payment = page.getByRole("dialog", { name: "เลือกวิธีจ่าย", exact: true });

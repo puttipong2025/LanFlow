@@ -62,9 +62,7 @@ export function EmployeeTransactionHistory({
                     {t.admin_comment?.startsWith("ยื่นแทนโดย") && (
                       <span className="text-xs text-river mt-1">{t.admin_comment}</span>
                     )}
-                    {t.approver?.name && (
-                      <span className="text-xs text-leaf mt-1">ผู้ทำรายการ: {t.approver.name}</span>
-                    )}
+                    <span className="text-xs text-ink/60 mt-1">ผู้สร้างรายการ: {t.history_creator_name || 'ไม่ทราบผู้สร้างรายการ'}</span>
                   </div>
                   <div className="flex flex-wrap items-center gap-2 self-start sm:justify-end">
                     <span className={`text-xs font-bold px-2 py-1 rounded-md ${!cancelled && t.status === 'APPROVED' ? 'bg-success/15 text-success' : 'bg-ink/10 text-ink'}`}>{cancelled ? 'ยกเลิก' : t.status}</span>
@@ -130,6 +128,7 @@ export function EmployeeTransactionHistory({
                                       ? formatBangkokDateTime(adjustment.approved_at)
                                       : adjustment.created_at ? formatBangkokDateTime(adjustment.created_at) : "-"} · {adjustment.status}
                                   </p>
+                                  <p className="mt-1 text-pretty text-xs text-ink/60">ผู้สร้างรายการ: {adjustment.history_creator_name || 'ไม่ทราบผู้สร้างรายการ'}</p>
                                   {adjustment.description && <p className="mt-1 text-pretty text-xs text-ink/70">{adjustment.description}</p>}
                                 </div>
                                 <div className="flex shrink-0 gap-2">

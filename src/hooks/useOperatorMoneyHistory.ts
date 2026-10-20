@@ -15,7 +15,7 @@ export type OperatorHistoryFilters = {
 
 export function useOperatorMoneyHistory(ownerScope: string, online: boolean, filters: OperatorHistoryFilters) {
   return useQuery({
-    queryKey: ["operatorMoneyHistory", ownerScope, filters],
+    queryKey: ["creatorMoneyHistory", ownerScope, filters],
     enabled: online,
     queryFn: async ({ signal }) => {
       const params = new URLSearchParams();

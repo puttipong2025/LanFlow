@@ -33,7 +33,7 @@ test.describe("Operator money history @operator-history", () => {
       source_id: "d1910000-0000-4000-8000-000000000001",
       event_key: `operator-ui-${i}`, action: i === 11 ? "update" : "create", kind: "expense",
       number: `OP19-${i + 1}`, title: "Operator fixture money event", direction: "expense", amount: 123.45,
-      actor_user_id: actor, actor_name: "Operator fixture", event_date: today(), occurred_at: `${today()}T01:00:00+07:00`,
+      actor_user_id: actor, actor_name: "Operator fixture", creator_user_id: actor, creator_name: "Operator fixture", event_date: today(), occurred_at: `${today()}T01:00:00+07:00`,
     })));
     if (events.error) throw events.error;
     const previousDay = new Date(`${today()}T00:00:00Z`);
@@ -44,7 +44,7 @@ test.describe("Operator money history @operator-history", () => {
       source_type: "withdrawal_adjustment", source_id: "d1910000-0000-4000-8000-000000000099",
       event_key: "operator-ui-other", action: "create", kind: "expense", number: "OTHER-OP19",
       title: "Other operator fixture", direction: "expense", amount: 2,
-      actor_user_id: adminId, actor_name: "Other operator fixture", event_date: otherDate, occurred_at: `${otherDate}T01:00:00+07:00`,
+      actor_user_id: adminId, actor_name: "Other operator fixture", creator_user_id: adminId, creator_name: "Other operator fixture", event_date: otherDate, occurred_at: `${otherDate}T01:00:00+07:00`,
     });
     if (other.error) throw other.error;
   });
@@ -83,20 +83,23 @@ test.describe("Operator money history @operator-history", () => {
 
   test("dialog filters with full counts, resets pagination and restores keyboard focus", async ({ page }) => {
     await page.goto("/");
-    const open = page.getByRole("button", { name: "ตรวจประวัติผู้ดำเนินการ", exact: true });
+    const open = page.getByRole("button", { name: "ตรวจประวัติผู้สร้างรายการ", exact: true });
     await open.click();
-    const dialog = page.getByRole("dialog", { name: "ตรวจประวัติผู้ดำเนินการ" });
-    const actorSelect = dialog.getByLabel("บัญชีผู้ดำเนินการ");
+    const dialog = page.getByRole("dialog", { name: "ตรวจประวัติผู้สร้างรายการ" });
+    const actorSelect = dialog.getByLabel("บัญชีผู้สร้างรายการ");
     await expect(actorSelect).toBeEnabled();
     await actorSelect.selectOption(actor);
     await expect(dialog.getByRole("button", { name: /^แสดงทั้งหมด 12$/ })).toBeVisible();
+    await expect(dialog.getByRole("button", { name: /^ลบ 0$/ })).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: /^ทุกสาขา / })).toBeVisible();
+    await expect(dialog.getByRole("button", { name: /^ทุกหน้าต้นทาง / })).toBeVisible();
     await page.screenshot({ path: "output/operator-history-desktop.png", fullPage: true });
     expect(await dialog.locator("tbody tr").count()).toBe(10);
     const activeBadge = dialog.getByRole("button", { name: /^แสดงทั้งหมด 12$/ }).locator("span");
     for (const token of ["min-w-6", "rounded-full", "px-1.5", "py-0.5", "text-center", "text-xs", "bg-white/20", "text-white"]) {
       await expect(activeBadge).toHaveClass(new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
-    await dialog.getByRole("button", { name: "รายการย้อนหลัง", exact: true }).click();
+    await dialog.getByRole("button", { name: /^วันที่ย้อนหลัง · ก่อน / }).click();
     await expect(dialog.locator("tbody tr")).toHaveCount(2);
     await expect(dialog.getByText(/^หน้า 2/)).toBeVisible();
     await dialog.getByRole("button", { name: /^แก้ไข 1$/ }).click();
@@ -107,16 +110,16 @@ test.describe("Operator money history @operator-history", () => {
     await expect(dialog).toHaveCount(0);
     await expect(open).toBeFocused();
     await open.click();
-    await expect(page.getByLabel("บัญชีผู้ดำเนินการ")).toHaveValue("");
+    await expect(page.getByLabel("บัญชีผู้สร้างรายการ")).toHaveValue("");
   });
 
   test("mobile layout stays within viewport and dialog traps focus", async ({ page }) => {
     await page.setViewportSize({ width: 360, height: 800 });
     await page.goto("/");
-    await page.getByRole("button", { name: "ตรวจประวัติผู้ดำเนินการ", exact: true }).click();
-    const dialog = page.getByRole("dialog", { name: "ตรวจประวัติผู้ดำเนินการ" });
-    await expect(dialog.getByLabel("บัญชีผู้ดำเนินการ")).toBeEnabled();
-    await dialog.getByLabel("บัญชีผู้ดำเนินการ").selectOption(actor);
+    await page.getByRole("button", { name: "ตรวจประวัติผู้สร้างรายการ", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "ตรวจประวัติผู้สร้างรายการ" });
+    await expect(dialog.getByLabel("บัญชีผู้สร้างรายการ")).toBeEnabled();
+    await dialog.getByLabel("บัญชีผู้สร้างรายการ").selectOption(actor);
     await expect(dialog.getByRole("button", { name: /^แสดงทั้งหมด 12$/ })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(360);
     for (let i = 0; i < 15; i++) {
@@ -144,19 +147,19 @@ test.describe("Operator money history @operator-history", () => {
     });
     try {
       await page.goto("/");
-      const open = page.getByRole("button", { name: "ตรวจประวัติผู้ดำเนินการ", exact: true });
+      const open = page.getByRole("button", { name: "ตรวจประวัติผู้สร้างรายการ", exact: true });
       await open.click();
-      await expect(page.getByLabel("บัญชีผู้ดำเนินการ")).toBeEnabled();
-      await page.getByLabel("บัญชีผู้ดำเนินการ").selectOption(actor);
+      await expect(page.getByLabel("บัญชีผู้สร้างรายการ")).toBeEnabled();
+      await page.getByLabel("บัญชีผู้สร้างรายการ").selectOption(actor);
       await pending;
       await page.keyboard.press("Escape");
       await open.click();
-      await expect(page.getByLabel("บัญชีผู้ดำเนินการ")).toBeEnabled();
-      await page.getByLabel("บัญชีผู้ดำเนินการ").selectOption(adminId);
-      const dialog = page.getByRole("dialog", { name: "ตรวจประวัติผู้ดำเนินการ" });
+      await expect(page.getByLabel("บัญชีผู้สร้างรายการ")).toBeEnabled();
+      await page.getByLabel("บัญชีผู้สร้างรายการ").selectOption(adminId);
+      const dialog = page.getByRole("dialog", { name: "ตรวจประวัติผู้สร้างรายการ" });
       await expect(dialog.getByRole("cell", { name: "OTHER-OP19", exact: true })).toBeVisible();
       release();
-      await expect(dialog.getByLabel("บัญชีผู้ดำเนินการ")).toHaveValue(adminId);
+      await expect(dialog.getByLabel("บัญชีผู้สร้างรายการ")).toHaveValue(adminId);
       await expect(dialog.locator("tbody tr")).toHaveCount(1);
       await expect(dialog.getByRole("button", { name: /^แสดงทั้งหมด 1$/ })).toBeVisible();
       await expect(dialog.getByRole("button", { name: /^เวลาและเงินเดือน 1$/ })).toBeVisible();
@@ -165,10 +168,10 @@ test.describe("Operator money history @operator-history", () => {
 
   test("revoked branch access hides old rows and counts after real API denial", async ({ page }) => {
     await page.goto("/");
-    await page.getByRole("button", { name: "ตรวจประวัติผู้ดำเนินการ", exact: true }).click();
-    const dialog = page.getByRole("dialog", { name: "ตรวจประวัติผู้ดำเนินการ" });
-    await expect(dialog.getByLabel("บัญชีผู้ดำเนินการ")).toBeEnabled();
-    await dialog.getByLabel("บัญชีผู้ดำเนินการ").selectOption(actor);
+    await page.getByRole("button", { name: "ตรวจประวัติผู้สร้างรายการ", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "ตรวจประวัติผู้สร้างรายการ" });
+    await expect(dialog.getByLabel("บัญชีผู้สร้างรายการ")).toBeEnabled();
+    await dialog.getByLabel("บัญชีผู้สร้างรายการ").selectOption(actor);
     await expect(dialog.getByRole("button", { name: /^Operator fixture A 12$/ })).toBeVisible();
     await dialog.getByRole("button", { name: /^Operator fixture A 12$/ }).click();
     await expect(dialog.locator("tbody tr")).toHaveCount(10);

@@ -94,7 +94,7 @@ test("operator query isolates account and all filters without reusing stale plac
   const filters = { actor, locationId: id, route: "rubber-bills", date: "2026-10-18", action: "update", cursor: "next" };
   const first = hook.useOperatorMoneyHistory("account-A:scope-A", true, filters);
   const second = hook.useOperatorMoneyHistory("account-B:scope-B", true, filters);
-  expect(first.queryKey).toEqual(["operatorMoneyHistory", "account-A:scope-A", filters]);
+  expect(first.queryKey).toEqual(["creatorMoneyHistory", "account-A:scope-A", filters]);
   expect(second.queryKey).not.toEqual(first.queryKey);
   expect(first.placeholderData).toBeUndefined();
   expect(first.gcTime).toBe(0);

@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 import {
   buildPayrollSlipDocument,
+  buildSlipDocumentDetailRows,
   buildWithdrawalSlipDocument,
   canCreateSlipDocument,
 } from "@/lib/time-tracking/slip-document";
@@ -19,6 +20,8 @@ test("withdrawal estimate uses live database totals and floors remaining wage at
       effective_date: "2026-08-02",
       created_at: "2026-08-02T01:00:00.000Z",
       description: "เบิกล่วงหน้า",
+      history_creator_name: "ผู้สร้างต้นทาง",
+      approver_name: "ผู้อนุมัติอีกคน",
     },
     employeeName: "สมชาย ใจดี",
     dailyWage: 500,
@@ -35,6 +38,10 @@ test("withdrawal estimate uses live database totals and floors remaining wage at
     { label: "ยอดเบิกที่ยังหักไม่หมด", value: "2,000 บาท" },
   ]);
   expect(document.notice).toContain("ประมาณการหากอนุมัติ");
+  expect(buildSlipDocumentDetailRows(document)).toEqual(expect.arrayContaining([
+    { label: "ผู้สร้างรายการ", value: "ผู้สร้างต้นทาง" },
+    { label: "ผู้อนุมัติ", value: "ผู้อนุมัติอีกคน" },
+  ]));
   expect(document.filename).toBe("LanFlow-เบิกเงิน-20260802-a1b2c3d4-รออนุมัติ-80mm.pdf");
 });
 
@@ -48,6 +55,7 @@ test("approved withdrawal uses actual ledger balance without deducting the sourc
       effective_date: "2026-08-02",
       created_at: "2026-08-02T01:00:00.000Z",
       approved_at: "2026-08-02T02:00:00.000Z",
+      approver_name: "เฉพาะผู้อนุมัติ",
     },
     employeeName: "สมชาย ใจดี",
     dailyWage: 500,
@@ -58,6 +66,7 @@ test("approved withdrawal uses actual ledger balance without deducting the sourc
   });
 
   expect(document.summary.at(-2)?.value).toBe("3,000 บาท");
+  expect(document.creatorName).toBe("ไม่ทราบผู้สร้างรายการ");
   expect(document.summary.at(-1)?.value).toBe("1,000 บาท");
   expect(document.filename).toBe("LanFlow-เบิกเงิน-20260802-a1b2c3d4-อนุมัติแล้ว-80mm.pdf");
 });
@@ -86,12 +95,18 @@ test("payroll keeps snapshot amounts and produces a Thai filename", () => {
       net_pay: 3_001,
       created_at: "2026-08-01T01:00:00.000Z",
       slip_data: slipDataWithRoundingAudit,
+      history_creator_name: "ผู้สร้างเงินเดือน",
+      approver_name: "ผู้อนุมัติเงินเดือน",
     },
     employeeName: "สมชาย ใจดี",
     generatedAt: GENERATED_AT,
   });
 
   expect(document.title).toBe("สลิปเงินเดือน");
+  expect(buildSlipDocumentDetailRows(document)).toEqual(expect.arrayContaining([
+    { label: "ผู้สร้างรายการ", value: "ผู้สร้างเงินเดือน" },
+    { label: "ผู้อนุมัติ", value: "ผู้อนุมัติเงินเดือน" },
+  ]));
   expect(document.summary.map((row) => row.value)).toEqual([
     "10 วัน",
     "500.1234 บาท",

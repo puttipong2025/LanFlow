@@ -637,7 +637,7 @@ export function RubberBillModal({
             </div>
 
             <div className="md:col-span-2">
-              <Field label="ผู้รับผิดชอบการจ่าย" name="payerName" defaultValue={payerName} readOnly />
+              <Field label="ผู้สร้างรายการ" name="payerName" defaultValue={payerName} readOnly />
             </div>
             <input type="hidden" name="billType" value="บิลเครื่องชั่งเล็ก" />
           </div>

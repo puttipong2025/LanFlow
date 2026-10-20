@@ -74,7 +74,7 @@ export function RubberExportTable({
             <th className="bg-mint px-4 py-3 lg:sticky lg:left-0 lg:z-20">จัดการ</th>
             <th className="px-4 py-3">เลขที่/วันที่</th>
             <th className="px-4 py-3">สถานะ</th>
-            <th className="px-4 py-3">ผู้สร้าง</th>
+            <th className="px-4 py-3">ผู้สร้างรายการ</th>
             <th className="px-4 py-3 text-right">บิล</th>
             <th className="px-4 py-3 text-right">น้ำหนักสุทธิรวม</th>
             <th className="px-4 py-3 text-right">น้ำหนักลดลง (%)</th>

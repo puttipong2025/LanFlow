@@ -345,7 +345,7 @@ export function RubberExportDetailModal({
           <h3 id="rubber-export-audit-title" className="text-balance font-bold text-ink">ประวัติรายการ</h3>
           <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
             <div>
-              <dt className="text-ink/60">ผู้สร้าง</dt>
+              <dt className="text-ink/60">ผู้สร้างรายการ</dt>
               <dd className="font-semibold text-ink">{details.createdByName || "—"} · <span className="tabular-nums">{dateTime(details.createdAt)}</span></dd>
             </div>
             <div>

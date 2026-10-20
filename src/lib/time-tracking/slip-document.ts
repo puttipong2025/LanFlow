@@ -32,6 +32,7 @@ export type TimePayrollSlipDocument = {
   generatedAt: string;
   description: string | null;
   approverName: string | null;
+  creatorName?: string | null;
   approvedAt: string | null;
   paymentLabel: string | null;
   adminComment: string | null;
@@ -49,6 +50,7 @@ type SlipDocumentDetailRow = {
 };
 
 type ApprovalFields = {
+  history_creator_name?: string | null;
   approved_at?: string | null;
   approver_name?: string | null;
   payment_label?: string | null;
@@ -177,6 +179,7 @@ export function buildSlipDocumentDetailRows(
     { label: "วันที่สร้างคำขอ/สลิป", value: formatDocumentDate(document.createdAt) },
     ...(document.description ? [{ label: "รายละเอียด", value: document.description }] : []),
     { label: "รหัสอ้างอิง", value: document.sourceId },
+    { label: "ผู้สร้างรายการ", value: document.creatorName || "ไม่ทราบผู้สร้างรายการ" },
     ...(document.approverName ? [{ label: "ผู้อนุมัติ", value: document.approverName }] : []),
     ...(document.approvedAt ? [{ label: "วันที่อนุมัติ", value: formatDocumentDate(document.approvedAt) }] : []),
     ...(document.paymentLabel ? [{ label: "วิธีจ่าย", value: document.paymentLabel }] : []),
@@ -314,6 +317,7 @@ export function buildWithdrawalSlipDocument({
     createdAt: source.created_at,
     generatedAt,
     description: source.description || null,
+    creatorName: source.history_creator_name?.trim() || "ไม่ทราบผู้สร้างรายการ",
     approverName: source.approver_name || null,
     approvedAt: source.approved_at || null,
     paymentLabel: source.payment_label || null,
@@ -371,6 +375,7 @@ export function buildPayrollSlipDocument({
     createdAt: source.created_at,
     generatedAt,
     description: null,
+    creatorName: source.history_creator_name?.trim() || "ไม่ทราบผู้สร้างรายการ",
     approverName: source.approver_name || null,
     approvedAt: source.approved_at || null,
     paymentLabel: source.payment_label || null,

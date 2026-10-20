@@ -20,6 +20,7 @@ import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { isNetworkCancellation } from "@/lib/network-abort";
 import { cn } from "@/lib/cn";
 import { dashboardStatusLabel } from "@/lib/dashboard-freshness";
+import { ApprovalOperationBadge } from "@/components/income-expense/ApprovalOperationBadge";
 
 const KIND_LABELS: Record<string, string> = {
   income: "รายรับ",
@@ -91,12 +92,6 @@ function TrendMetricCard({
 function rowKind(row: DashboardMoneyHistoryRow) {
   return KIND_LABELS[row.kind] ?? (row.direction === "income" ? "รายรับ" : "รายจ่าย");
 }
-
-const ACTION_LABELS: Record<Exclude<DashboardMoneyHistoryAction, "all">, string> = {
-  create: "เพิ่มใหม่",
-  update: "แก้ไข",
-  delete: "ลบ",
-};
 
 const ACTION_FILTERS: Array<{
   value: DashboardMoneyHistoryAction;
@@ -742,7 +737,7 @@ export function Dashboard({
                 <th className="pr-3">เลขรายการ</th>
                 <th className="pr-3">รายละเอียด</th>
                 <th className="pr-3 text-right">จำนวนเงิน</th>
-                <th>ผู้ดำเนินการ</th>
+                <th>ผู้สร้างรายการ</th>
               </tr>
             </thead>
             <tbody>
@@ -760,9 +755,7 @@ export function Dashboard({
                 <tr key={row.id} className="border-b border-black/5">
                   <td className="whitespace-nowrap py-3 pr-3">{formatOccurredAt(row.occurredAt)}</td>
                   <td className="pr-3">
-                    <span className="rounded-full bg-actionSecondary/10 px-2 py-1 text-xs font-semibold text-actionSecondary">
-                      {ACTION_LABELS[row.action]}
-                    </span>
+                    <ApprovalOperationBadge operation={row.action} />
                   </td>
                   <td className="pr-3">
                     <span className="rounded-full bg-field px-2 py-1 text-xs font-semibold">
@@ -776,7 +769,7 @@ export function Dashboard({
                       ? formatPayrollCurrency(row.amount)
                       : formatCurrency(row.amount)}
                   </td>
-                  <td className="whitespace-nowrap">{row.actorName || "ระบบ"}</td>
+                  <td className="whitespace-nowrap">{row.actorName || "ไม่ทราบผู้สร้างรายการ"}</td>
                 </tr>
               ))}
             </tbody>

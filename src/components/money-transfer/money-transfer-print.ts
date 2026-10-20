@@ -301,7 +301,7 @@ ${model.isBranchReceipt ? "" : `<div class="row"><span>ส่วนต่าง<
 ${!model.isBranchReceipt && model.items.length > 0 ? `<div class="section"><div class="section-title">รายการบิลยางต้นทาง (${model.items.length})</div>${itemRows}</div>` : ""}
 <div class="section"><div class="section-title">สลิปประกอบรายการ (${model.slips.length})</div>${slipRows}</div>
 <div class="section">
-  <div class="row"><span>ผู้สร้าง</span><strong>${h(model.createdByName)}</strong></div>
+  <div class="row"><span>ผู้สร้างรายการ</span><strong>${h(model.createdByName)}</strong></div>
   ${model.createdByPhone ? `<div class="row"><span>โทรศัพท์</span><strong>${h(model.createdByPhone)}</strong></div>` : ""}
   ${model.branchReceivedByName ? `<div class="row"><span>ผู้ยืนยันรับ</span><strong>${h(model.branchReceivedByName)}</strong></div><div class="row"><span>เวลายืนยัน</span><strong>${h(model.branchReceivedAtText)}</strong></div>` : ""}
 </div>

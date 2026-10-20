@@ -56,6 +56,6 @@ export async function GET(request: NextRequest) {
     } satisfies OperatorMoneyHistory, { headers });
   } catch (error) {
     console.error("Operator money history read failed", error instanceof Error ? error.message : "RPC failed");
-    return jsonError("โหลดประวัติผู้ดำเนินการไม่สำเร็จ กรุณาลองใหม่", 500);
+    return jsonError("โหลดประวัติผู้สร้างรายการไม่สำเร็จ กรุณาลองใหม่", 500);
   }
 }

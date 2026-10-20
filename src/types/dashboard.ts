@@ -103,7 +103,7 @@ export type DashboardMoneyHistoryRow = {
   title: string;
   direction: "income" | "expense";
   amount: number;
-  actorName: string;
+  actorName: string; // Compatibility field: source creator snapshot, never the approver.
   occurredAt: string;
 };
 

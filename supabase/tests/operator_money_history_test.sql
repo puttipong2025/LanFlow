@@ -2,6 +2,17 @@ begin;
 create extension if not exists pgtap with schema extensions;
 select extensions.no_plan();
 
+-- Explicit creator snapshots for synthetic events without source records.
+create function pg_temp.operator_fixture_creators() returns trigger language plpgsql as $$
+begin
+  new.creator_user_id := new.actor_user_id;
+  new.creator_name := new.actor_name;
+  return new;
+end;
+$$;
+create trigger aaa_operator_fixture_creators before insert on public.dashboard_money_events
+for each row execute function pg_temp.operator_fixture_creators();
+
 insert into public.locations(id, name, code, is_active) values
  ('a1900000-0000-4000-8000-000000000001', 'Operator A', 'OHA', true),
  ('a1900000-0000-4000-8000-000000000002', 'Operator B', 'OHB', true),
