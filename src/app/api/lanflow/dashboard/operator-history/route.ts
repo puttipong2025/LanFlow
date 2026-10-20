@@ -12,6 +12,11 @@ export async function GET(request: NextRequest) {
   const result = await requireRoleOrSystemManager(request, ["admin", "super_admin"]);
   if (!result.ok) return result.response;
   const params = request.nextUrl.searchParams;
+  const rawPage = params.get("page");
+  const page = rawPage === null ? null : Number(rawPage);
+  if (rawPage !== null && (!/^[1-9]\d*$/.test(rawPage) || !Number.isSafeInteger(page) || page! > 2147483647 || params.has("cursor"))) {
+    return jsonError("เลขหน้าไม่ถูกต้อง", 400);
+  }
   const actor = params.get("actor");
   const location = params.get("locationId");
   const route = params.get("route");
@@ -38,6 +43,7 @@ export async function GET(request: NextRequest) {
   }
   try {
     const { data, error } = await result.supabase.rpc("get_operator_money_history", {
+      ...(page === null ? {} : { p_page: page }),
       p_actor_key: actor, p_location_id: location, p_route: route,
       p_event_date: date, p_action: action, p_cursor_at: cursorAt, p_cursor_id: cursorId,
     });

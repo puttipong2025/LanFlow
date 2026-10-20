@@ -20,6 +20,7 @@ import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { isNetworkCancellation } from "@/lib/network-abort";
 import { cn } from "@/lib/cn";
 import { dashboardStatusLabel } from "@/lib/dashboard-freshness";
+import { HistoryPagination } from "./HistoryPagination";
 import { ApprovalOperationBadge } from "@/components/income-expense/ApprovalOperationBadge";
 
 const KIND_LABELS: Record<string, string> = {
@@ -114,7 +115,7 @@ export function Dashboard({
   canConfigureDashboard: boolean;
   canRequestDashboardRefresh: boolean;
 }) {
-  const [cursorHistory, setCursorHistory] = useState<Array<string | null>>([null]);
+  const [historyPage, setHistoryPage] = useState(1);
   const [historyDate, setHistoryDate] = useState<string | null>(null);
   const [historyAction, setHistoryAction] =
     useState<DashboardMoneyHistoryAction>("all");
@@ -132,7 +133,6 @@ export function Dashboard({
   const [manualRefreshError, setManualRefreshError] = useState<string | null>(
     null,
   );
-  const cursor = cursorHistory[cursorHistory.length - 1];
   const requestedVersion =
     manualRequest?.locationId === selectedLocation.id
       ? manualRequest.requestedVersion
@@ -147,11 +147,11 @@ export function Dashboard({
     online,
     historyDate,
     historyAction,
-    cursor,
+    historyPage,
   );
 
   useEffect(() => {
-    setCursorHistory([null]);
+    setHistoryPage(1);
     setHistoryDate(null);
     setHistoryAction("all");
     setManualRequest(null);
@@ -422,7 +422,6 @@ export function Dashboard({
   }
 
   const summary = snapshot.data.summary;
-  const nextCursor = history.data?.nextCursor ?? null;
   const visibleRows = history.isPlaceholderData ? [] : history.data?.rows ?? [];
   const branchReceipts = summary?.rubberRemaining?.branchReceipts;
   const hasCurrentSummary = Boolean(
@@ -672,7 +671,7 @@ export function Dashboard({
           <div>
             <h2 className="text-lg font-bold text-ink">ประวัติรายการเงินล่าสุด</h2>
             <p className="text-sm text-ink/50">
-              หน้า {cursorHistory.length} · 10 เหตุการณ์ต่อหน้า · เก็บย้อนหลัง {history.data?.retentionDays ?? 15} วัน
+              หน้า {historyPage} · 10 เหตุการณ์ต่อหน้า · เก็บย้อนหลัง {history.data?.retentionDays ?? 15} วัน
             </p>
           </div>
           <label className="text-sm font-semibold text-ink/70">
@@ -684,7 +683,7 @@ export function Dashboard({
               max={history.data?.availableTo}
               onChange={(event) => {
                 setHistoryDate(event.target.value || null);
-                setCursorHistory([null]);
+                setHistoryPage(1);
               }}
               className="focus-ring ml-2 h-9 rounded-md border border-black/15 bg-white px-2 text-sm text-ink"
             />
@@ -701,7 +700,7 @@ export function Dashboard({
                 aria-pressed={active}
                 onClick={() => {
                   setHistoryAction(filter.value);
-                  setCursorHistory([null]);
+                  setHistoryPage(1);
                 }}
                 className={`focus-ring inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-semibold transition-colors ${
                   active
@@ -776,26 +775,10 @@ export function Dashboard({
           </table>
         </div>
 
-        <div className="mt-4 flex flex-wrap justify-end gap-2">
-          <button
-            type="button"
-            disabled={cursorHistory.length === 1 || history.isFetching}
-            onClick={() => setCursorHistory([null])}
-            className="focus-ring rounded-lg border border-actionSecondary/25 bg-white px-3 py-2 text-sm font-semibold text-actionSecondary hover:bg-field disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            วันที่ล่าสุด · {history.data?.latestAt ? formatOccurredAt(history.data.latestAt) : "—"}
-          </button>
-          <button
-            type="button"
-            disabled={!nextCursor || history.isFetching}
-            onClick={() => nextCursor && setCursorHistory((history) => [...history, nextCursor])}
-            className="focus-ring rounded-lg bg-actionSecondary px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            วันที่ย้อนหลัง · ก่อน {visibleRows.length > 0
-              ? formatOccurredAt(visibleRows[visibleRows.length - 1].occurredAt)
-              : "—"}
-          </button>
-        </div>
+        <HistoryPagination page={historyPage} total={history.data?.counts[historyAction] ?? 0}
+          disabled={!online || history.isFetching || history.isError} onPage={(page) => {
+            setHistoryDate(historyDate ?? history.data?.selectedDate ?? null); setHistoryPage(page);
+          }} />
       </section>
     </div>
   );

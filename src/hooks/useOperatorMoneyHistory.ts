@@ -11,6 +11,7 @@ export type OperatorHistoryFilters = {
   date: string;
   action: string;
   cursor: string;
+  page?: number;
 };
 
 export function useOperatorMoneyHistory(ownerScope: string, online: boolean, filters: OperatorHistoryFilters) {
@@ -20,7 +21,7 @@ export function useOperatorMoneyHistory(ownerScope: string, online: boolean, fil
     queryFn: async ({ signal }) => {
       const params = new URLSearchParams();
       for (const [key, value] of Object.entries(filters)) {
-        if (value && value !== "all") params.set(key, value);
+        if (value && value !== "all") params.set(key, String(value));
       }
       const response = await authFetch(`/api/lanflow/dashboard/operator-history?${params}`, {
         cache: "no-store", signal,

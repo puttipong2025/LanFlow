@@ -63,7 +63,7 @@ export function useDashboardMoneyHistory(
   online: boolean,
   eventDate: string | null,
   action: DashboardMoneyHistoryAction,
-  cursor: string | null
+  page: number
 ) {
   return useQuery({
     queryKey: [
@@ -71,14 +71,14 @@ export function useDashboardMoneyHistory(
       locationId,
       eventDate,
       action,
-      cursor,
+      page,
     ],
     enabled: Boolean(locationId) && online,
     queryFn: async ({ signal }) => {
       const params = new URLSearchParams({ locationId });
       if (eventDate) params.set("date", eventDate);
       if (action !== "all") params.set("action", action);
-      if (cursor) params.set("cursor", cursor);
+      params.set("page", String(page));
       const response = await authFetch(
         `/api/lanflow/dashboard/feed?${params}`,
         { cache: "no-store", signal },

@@ -44,6 +44,11 @@ function isValidDate(value: string) {
 export async function GET(request: NextRequest) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
+  const rawPage = request.nextUrl.searchParams.get("page");
+  const page = rawPage === null ? null : Number(rawPage);
+  if (rawPage !== null && (!/^[1-9]\d*$/.test(rawPage) || !Number.isSafeInteger(page) || page! > 2147483647 || request.nextUrl.searchParams.has("cursor"))) {
+    return NextResponse.json({ error: "เลขหน้าไม่ถูกต้อง" }, { status: 400, headers: NO_STORE_HEADERS });
+  }
 
   const locationId = request.nextUrl.searchParams.get("locationId");
   const canAccess =
@@ -77,6 +82,7 @@ export async function GET(request: NextRequest) {
     "get_dashboard_money_history",
     {
       p_location_id: locationId,
+      ...(page === null ? {} : { p_page: page }),
       p_event_date: eventDate,
       p_action: action as DashboardMoneyHistoryAction,
       p_cursor_at: cursor.at,

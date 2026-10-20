@@ -42,11 +42,17 @@ test("operator route forwards filters, preserves cursor precision and remains pr
 
 test("operator route rejects invalid inputs before calling DB", async () => {
   const invalidCursor = Buffer.from(`2026-02-30T12:00:00Z|${id}`).toString("base64");
-  for (const query of ["actor=invalid", "locationId=invalid", "route=__proto__", "action=bad", "date=2026-02-30", "date=bad", "cursor=bad", `cursor=${invalidCursor}`, "actor=", "route="]) {
+  for (const query of ["page=0", "page=-1", "page=1.5", "page=2147483648", "page=", "page=2&cursor=bad", "actor=invalid", "locationId=invalid", "route=__proto__", "action=bad", "date=2026-02-30", "date=bad", "cursor=bad", `cursor=${invalidCursor}`, "actor=", "route="]) {
     const { get, calls } = harness();
     expect((await get(query)).status, query).toBe(400);
     expect(calls).toHaveLength(0);
   }
+});
+
+test("numbered history page is forwarded without changing legacy cursor calls", async () => {
+  const { get, calls } = harness();
+  expect((await get("page=3")).status).toBe(200);
+  expect(calls).toMatchObject([{ args: { p_page: 3, p_cursor_at: null, p_cursor_id: null } }]);
 });
 
 test("operator route supports initial options and unknown actor without inventing an ID", async () => {

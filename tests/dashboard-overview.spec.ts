@@ -56,8 +56,8 @@ test.describe("Dashboard overview @dashboard", () => {
       await expect(page.getByRole("button", { name: new RegExp(`^${action}\\s+\\d+$`) })).toBeVisible();
     }
     await expect(page.getByLabel("วันที่เกิดเหตุการณ์")).toBeVisible();
-    await expect(page.getByRole("button", { name: /วันที่ล่าสุด/ })).toBeDisabled();
-    await expect(page.getByRole("button", { name: /วันที่ย้อนหลัง/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: "ไปหน้าที่ 1", exact: true })).toBeDisabled();
+    await expect(page.getByRole("navigation", { name: "แบ่งหน้าประวัติ" })).toBeVisible();
     await expect(page.getByRole("heading", { name: /บิลยาง ·/ })).toHaveCount(0);
 
     await page.getByRole("button", { name: "ออกจากระบบ", exact: true }).click();

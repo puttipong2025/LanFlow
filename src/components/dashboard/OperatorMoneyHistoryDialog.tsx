@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { ModalShell } from "@/components/shared/ModalShell";
+import { HistoryPagination } from "./HistoryPagination";
 import { OperatorHistoryFilters } from "./OperatorHistoryFilters";
 import { ApprovalOperationBadge } from "@/components/income-expense/ApprovalOperationBadge";
 import { useOperatorMoneyHistory, type OperatorHistoryFilters as Filters } from "@/hooks/useOperatorMoneyHistory";
@@ -24,7 +25,7 @@ export default function OperatorMoneyHistoryDialog({ ownerScope, online, onClose
 }) {
   const [filters, setFilters] = useState<Filters>(INITIAL);
   const [page, setPage] = useState(1);
-  const history = useOperatorMoneyHistory(ownerScope, online, filters);
+  const history = useOperatorMoneyHistory(ownerScope, online, { ...filters, page });
   // Hide all cached content whenever revalidating or on error (including revoked access).
   const data = online && !history.isError && !history.isFetching ? history.data : undefined;
   const actorNameCounts = new Map<string, number>();
@@ -107,13 +108,10 @@ export default function OperatorMoneyHistoryDialog({ ownerScope, online, onClose
                 <p className="text-pretty text-sm text-ink/60">ไม่มีเหตุการณ์ตรงกับตัวกรองในวันที่เลือก</p>
                 <button type="button" className={buttonClass} onClick={() => { setFilters({ ...INITIAL, actor: filters.actor }); setPage(1); }}>ดูวันที่ล่าสุดและล้างตัวกรอง</button>
               </div>}
-              <div className="flex flex-wrap justify-end gap-2">
-                <button type="button" className="focus-ring rounded-lg border border-actionSecondary/25 bg-white px-3 py-2 text-sm font-semibold text-actionSecondary hover:bg-field disabled:cursor-not-allowed disabled:opacity-40" disabled={page === 1 && !filters.date} onClick={() => { change({ date: "" }); }}>วันที่ล่าสุด · {data.latestAt ? timestamp(data.latestAt) : "—"}</button>
-                <button type="button" className="focus-ring rounded-lg bg-actionSecondary px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-40" disabled={!data.nextCursor} onClick={() => {
-                  setFilters((current) => ({ ...current, date: data.selectedDate, cursor: data.nextCursor || "" }));
-                  setPage((current) => current + 1);
-                }}>วันที่ย้อนหลัง · ก่อน {data.rows.length > 0 ? timestamp(data.rows[data.rows.length - 1].occurredAt) : "—"}</button>
-              </div>
+              <HistoryPagination page={page} total={data.counts[filters.action as keyof typeof data.counts]}
+                disabled={history.isFetching || !online} onPage={(nextPage) => {
+                  setFilters((current) => ({ ...current, date: data.selectedDate, cursor: "" })); setPage(nextPage);
+                }} />
             </>}
           </>
         )}

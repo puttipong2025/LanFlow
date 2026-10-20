@@ -99,7 +99,7 @@ test.describe("Operator money history @operator-history", () => {
     for (const token of ["min-w-6", "rounded-full", "px-1.5", "py-0.5", "text-center", "text-xs", "bg-white/20", "text-white"]) {
       await expect(activeBadge).toHaveClass(new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
-    await dialog.getByRole("button", { name: /^วันที่ย้อนหลัง · ก่อน / }).click();
+    await dialog.getByRole("button", { name: "ไปหน้าที่ 2", exact: true }).click();
     await expect(dialog.locator("tbody tr")).toHaveCount(2);
     await expect(dialog.getByText(/^หน้า 2/)).toBeVisible();
     await dialog.getByRole("button", { name: /^แก้ไข 1$/ }).click();
