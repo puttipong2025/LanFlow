@@ -16,12 +16,11 @@ export function BankBalanceList({ sessionId, slots, onChange, disabled }: {
     {slots.map((slot, index) => <div key={slot.id}>
       <BankBalanceCapture sessionId={sessionId} slotId={slot.id} label={`บัญชี${index + 1}`} value={slot.value}
         onChange={(value) => update(slot.id, { value })} onBusy={(blocked) => update(slot.id, { blocked })}
-        onOmit={() => onChange((current) => current.filter((item) => item.id !== slot.id))} />
-      <button type="button" onClick={() => setRemove(slot.id)} className="focus-ring min-h-11 rounded-md border border-black/15 px-3 text-sm font-semibold">นำบัญชี {index + 1} ออก</button>
+        onRemove={() => setRemove(slot.id)} />
     </div>)}
     {slots.length < 4 && <button type="button" onClick={() => onChange((current) => current.length < 4 ? [...current, { id: crypto.randomUUID(), value: null, blocked: true }] : current)}
-      className="focus-ring min-h-11 rounded-md border border-black/15 bg-white px-3 text-sm font-semibold">เพิ่มบัญชี</button>}
-    <AlertDialog open={remove !== null} title="นำบัญชีนี้ออก?" description="ยอดและรูปของช่องนี้จะไม่นำมารวมในการนับครั้งนี้" confirmLabel="นำออก"
-      onCancel={() => setRemove(null)} onConfirm={() => { onChange(slots.filter((slot) => slot.id !== remove)); setRemove(null); }} />
+      className="focus-ring min-h-11 rounded-md bg-leaf px-3 text-sm font-semibold text-white">เพิ่มบัญชี</button>}
+    <AlertDialog open={remove !== null} title="ลบบัญชีนี้?" description="ลบช่องบัญชีนี้ออกจากการนับครั้งนี้ ยอดและรูปจะไม่ถูกรวมในผลนับ" confirmLabel="ลบ" confirmClassName="min-h-11 bg-clay text-white" cancelClassName="min-h-11 border-transparent bg-actionSecondary text-white"
+      onCancel={() => setRemove(null)} onConfirm={() => { onChange((current) => current.filter((slot) => slot.id !== remove)); setRemove(null); }} />
   </fieldset>;
 }

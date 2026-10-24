@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
+import { cn } from "@/lib/cn";
 
 export function CashCountBankImage({ countId, position = 1 }: { countId: string; position?: number }) {
   const [image, setImage] = useState<string | null>(null);
@@ -22,7 +23,7 @@ export function CashCountBankImage({ countId, position = 1 }: { countId: string;
     } catch { if (!current.signal.aborted) setError("โหลดรูปไม่สำเร็จ กรุณาลองใหม่"); }
     finally { if (!current.signal.aborted) setLoading(false); }
   }
-  return <div className="space-y-2"><button type="button" disabled={loading} onClick={() => void load()} className="focus-ring min-h-11 rounded-md border border-black/15 px-3 text-sm font-semibold">{loading ? "กำลังโหลดรูป…" : image ? `ซ่อนรูปบัญชี ${position}` : `ดูรูปบัญชี ${position}`}</button>
+  return <div className="space-y-2"><button type="button" disabled={loading} onClick={() => void load()} className={cn("focus-ring min-h-11 rounded-md px-3 text-sm font-semibold text-white disabled:opacity-50", image ? "bg-actionSecondary" : "bg-river")}>{loading ? "กำลังโหลดรูป…" : image ? `ซ่อนรูปบัญชี ${position}` : `ดูรูปบัญชี ${position}`}</button>
     {/* eslint-disable-next-line @next/next/no-img-element */}
     {image && <img src={image} alt="หลักฐานยอดบัญชีของการนับครั้งนี้" className="max-h-96 max-w-full rounded-md object-contain" />}
     {error && <p role="alert" className="text-pretty text-sm text-clay">{error}</p>}

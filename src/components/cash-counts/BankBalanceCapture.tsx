@@ -2,15 +2,16 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ModalShell } from "@/components/shared/ModalShell";
-import { AlertDialog } from "@/components/shared/AlertDialog";
+import { Camera, Trash2 } from "lucide-react";
+import { cn } from "@/lib/cn";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 
 export type BankCapture = { file: File; evidenceId: string; amount: number; confirmed: boolean };
 
-export function BankBalanceCapture({ sessionId, slotId, label, value, onChange, onBusy, onOmit }: {
+export function BankBalanceCapture({ sessionId, slotId, label, value, onChange, onBusy, onRemove }: {
   sessionId: string; slotId: string; label: string; value: BankCapture | null; onChange: (value: BankCapture | null) => void;
   onBusy: (busy: boolean) => void;
-  onOmit: () => void;
+  onRemove: () => void;
 }) {
   const video = useRef<HTMLVideoElement>(null);
   const stream = useRef<MediaStream | null>(null);
@@ -19,7 +20,6 @@ export function BankBalanceCapture({ sessionId, slotId, label, value, onChange, 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
-  const [omit, setOmit] = useState(false);
   useEffect(() => () => { request.current++; stream.current?.getTracks().forEach((track) => track.stop()); }, []);
   useEffect(() => {
     if (!camera) return;
@@ -63,7 +63,7 @@ export function BankBalanceCapture({ sessionId, slotId, label, value, onChange, 
       if (run === request.current) { setBusy(false); onBusy(!readable); }
     }
   }
-  const button = "focus-ring min-h-11 rounded-md border border-black/15 bg-white px-3 text-sm font-semibold";
+  const button = "focus-ring inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-river px-3 text-sm font-semibold text-white disabled:opacity-50";
   return <section className="mt-4 space-y-3 rounded-lg border border-black/10 p-4">
     <h3 className="text-balance font-bold tabular-nums">{label} = {value ? `${value.amount.toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท` : "ยังไม่อ่านยอด"}</h3>
     <p className="text-pretty text-sm text-ink/65">ถ่ายบัญชีเดียวให้เห็นยอดชัดเจน ยอดอ่านอย่างเดียว หากอ่านผิดให้ถ่ายใหม่</p>
@@ -71,11 +71,12 @@ export function BankBalanceCapture({ sessionId, slotId, label, value, onChange, 
       {/* Local camera blob only; never an external image URL. */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       {preview && <img src={preview} alt="รูปยอดบัญชีที่ถ่าย" className="max-h-64 max-w-full rounded-md object-contain" />}
-    </div><label className="flex min-h-11 items-center gap-2 text-sm font-semibold"><input type="checkbox" checked={value.confirmed} onChange={(event) => onChange({ ...value, confirmed: event.target.checked })} />ยอดตรงกับรูป</label></>}
-    <div className="flex flex-wrap gap-2"><button className={button} type="button" disabled={busy} onClick={() => { setCamera(true); onBusy(true); }}>{busy ? "กำลังอ่านยอด…" : value || error ? "ถ่ายใหม่" : "ถ่ายยอดบัญชี"}</button>
-      {(value || error) && <button className={button} type="button" disabled={busy} onClick={() => setOmit(true)}>ไม่นำเงินในบัญชีมารวม</button>}</div>
+    </div><label className={cn("flex min-h-11 cursor-pointer items-center gap-3 rounded-lg border p-3 text-sm font-semibold", value.confirmed ? "border-leaf bg-mint/45 text-leaf" : "border-river/30 bg-river/5 text-ink")}>
+      <input type="checkbox" className="focus-ring size-5 shrink-0 accent-leaf" checked={value.confirmed} onChange={(event) => onChange({ ...value, confirmed: event.target.checked })} />ยอดตรงกับรูป
+    </label></>}
+    <div className="flex flex-wrap gap-2"><button className={button} type="button" disabled={busy} onClick={() => { setCamera(true); onBusy(true); }}><Camera size={18} aria-hidden="true" />{busy ? "กำลังอ่านยอด…" : value || error ? "ถ่ายใหม่" : "ถ่ายยอดบัญชี"}</button>
+      <button className="focus-ring inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-clay px-3 text-sm font-semibold text-white" type="button" aria-label={`ลบ${label}`} onClick={onRemove}><Trash2 size={18} aria-hidden="true" />ลบ</button></div>
     {error && <p role="alert" className="text-pretty text-sm text-clay">{error}</p>}
-    {camera && <ModalShell title="ถ่ายยอดบัญชี" onClose={() => { setCamera(false); onBusy(Boolean(error)); }}><video ref={video} playsInline muted className="w-full rounded-md" /><button type="button" className={button} onClick={() => void capture()}>ถ่ายรูป</button></ModalShell>}
-    <AlertDialog open={omit} title="ไม่นำเงินในบัญชีมารวม?" description="นำช่องนี้ออกจากยอดรวมของการนับครั้งนี้" confirmLabel="ยืนยันไม่รวมบัญชี" onCancel={() => setOmit(false)} onConfirm={onOmit} />
+    {camera && <ModalShell title="ถ่ายยอดบัญชี" onClose={() => { setCamera(false); onBusy(Boolean(error)); }}><video ref={video} playsInline muted className="w-full rounded-md" /><button type="button" className={button} onClick={() => void capture()}><Camera size={18} aria-hidden="true" />ถ่ายรูป</button></ModalShell>}
   </section>;
 }

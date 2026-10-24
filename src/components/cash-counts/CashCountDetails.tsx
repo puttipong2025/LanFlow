@@ -12,7 +12,7 @@ export function CashCountDetails({ detail, online, onChecked, canCheck = true }:
   const [busy, setBusy] = useState(false);
   const share = useSharePdf();
   const money = (value: number) => value.toLocaleString("th-TH", { minimumFractionDigits: 2 });
-  const button = "focus-ring min-h-11 rounded-md border border-black/15 bg-white px-3 text-sm font-semibold disabled:opacity-50";
+  const button = "focus-ring min-h-11 rounded-md px-3 text-sm font-semibold text-white disabled:opacity-50";
   async function check() {
     if (busy) return;
     setBusy(true); setError(null);
@@ -44,8 +44,8 @@ export function CashCountDetails({ detail, online, onChecked, canCheck = true }:
       {canCheck && <CashCountBankImage countId={detail.id} position={account.position} />}
     </section>)}
     {!detail.bankAccounts?.length && detail.hasBankAccount && canCheck && <CashCountBankImage countId={detail.id} />}
-    <div className="flex flex-wrap gap-2">{canCheck && !detail.checkedAt && <button type="button" className={button} disabled={!online || busy} onClick={() => void check()}>ยืนยันตรวจสอบ</button>}
-      <button type="button" className={button} disabled={!online || share.busy} onClick={() => void pdf()}>พิมพ์ / PDF 80 มม.</button></div>
+    <div className="flex flex-wrap gap-2">{canCheck && !detail.checkedAt && <button type="button" className={`${button} bg-leaf`} disabled={!online || busy} onClick={() => void check()}>ยืนยันตรวจสอบ</button>}
+      <button type="button" className={`${button} bg-river`} disabled={!online || share.busy} onClick={() => void pdf()}>พิมพ์ / PDF 80 มม.</button></div>
     {error && <p role="alert" className="text-pretty text-sm text-clay">{error}</p>}
     <SharePdfWaitingModal open={share.waiting} description="กำลังสร้างใบนับเงิน" onCancel={share.cancel} />
   </div>;

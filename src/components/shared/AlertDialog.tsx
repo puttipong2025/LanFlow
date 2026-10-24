@@ -11,6 +11,7 @@ type AlertDialogProps = {
   cancelLabel?: string | null;
   busy?: boolean;
   confirmClassName?: string;
+  cancelClassName?: string;
   onCancel: () => void;
   onClosed?: () => void;
   children?: ReactNode;
@@ -27,6 +28,7 @@ export function AlertDialog({
   cancelLabel = "ยกเลิก",
   busy = false,
   confirmClassName,
+  cancelClassName,
   onCancel,
   onConfirm,
   onClosed,
@@ -102,7 +104,7 @@ export function AlertDialog({
               type="button"
               disabled={busy}
               onClick={onCancel}
-              className="focus-ring rounded-md border border-black/10 bg-white px-4 py-2 text-sm font-semibold disabled:opacity-50"
+              className={cn("focus-ring rounded-md border border-black/10 bg-white px-4 py-2 text-sm font-semibold disabled:opacity-50", cancelClassName)}
             >
               {cancelLabel}
             </button>

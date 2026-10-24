@@ -25,6 +25,9 @@ test("ambiguous camera OCR blocks saving; every retake requires fresh confirmati
     await modal.getByRole("button", { name: "ถ่ายรูป", exact: true }).click();
   }
   await page.getByRole("button", { name: "เพิ่มบัญชี", exact: true }).click();
+  await expect(page.getByRole("button", { name: "ลบบัญชี1", exact: true })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "ลบบัญชี1", exact: true })).toHaveClass(/bg-clay/);
+  await expect(page.getByRole("button", { name: "ถ่ายยอดบัญชี", exact: true })).toHaveClass(/bg-river/);
   await shoot("ถ่ายยอดบัญชี");
   await expect(page.getByRole("alert").filter({ hasText: "ยอดไม่แน่ชัด" })).toBeVisible();
   await expect(save).toBeDisabled();
@@ -34,8 +37,11 @@ test("ambiguous camera OCR blocks saving; every retake requires fresh confirmati
   await confirmation.check(); await expect(save).toBeEnabled();
   await shoot("ถ่ายใหม่");
   await expect(confirmation).not.toBeChecked(); await expect(save).toBeDisabled();
-  await page.getByRole("button", { name: "ไม่นำเงินในบัญชีมารวม", exact: true }).click();
-  await page.getByRole("alertdialog").getByRole("button", { name: "ยืนยันไม่รวมบัญชี", exact: true }).click();
+  await page.getByRole("button", { name: "ลบบัญชี1", exact: true }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "ยกเลิก", exact: true }).click();
+  await expect(page.getByRole("heading", { name: /^บัญชี1 =/ })).toBeVisible();
+  await page.getByRole("button", { name: "ลบบัญชี1", exact: true }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "ลบ", exact: true }).click();
   await expect(save).toBeEnabled(); await expect(confirmation).toHaveCount(0);
   expect(reads).toBe(3);
   await expect(page.locator('input[type="file"]')).toHaveCount(0);
@@ -87,12 +93,12 @@ test("four account slots allow duplicates, block unreadable slots, remove and re
   }
   await expect(page.getByRole("button", { name: "เพิ่มบัญชี", exact: true })).toHaveCount(0);
   await expect(page.getByText("ช่องสี่อ่านไม่ชัด", { exact: true })).toBeVisible(); await expect(save).toBeDisabled();
-  await page.getByRole("button", { name: "นำบัญชี 4 ออก", exact: true }).click();
-  await page.getByRole("alertdialog").getByRole("button", { name: "นำออก", exact: true }).click();
+  await page.getByRole("button", { name: "ลบบัญชี4", exact: true }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "ลบ", exact: true }).click();
   await expect(save).toBeEnabled();
   await expect(page.getByText(/ส่วนต่าง -199.25 บาท/)).toBeVisible();
-  await page.getByRole("button", { name: "นำบัญชี 2 ออก", exact: true }).click();
-  await page.getByRole("alertdialog").getByRole("button", { name: "นำออก", exact: true }).click();
+  await page.getByRole("button", { name: "ลบบัญชี2", exact: true }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "ลบ", exact: true }).click();
   await expect(page.getByRole("heading", { name: /^บัญชี2 =/ })).toBeVisible();
   await expect(page.getByRole("heading", { name: /^บัญชี3 =/ })).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 });

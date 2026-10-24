@@ -11,6 +11,6 @@ export function CashCountReceiptPanel({ receipt, locationId, locationName, onlin
       createdAt: receipt.submittedAt, createdByName: receipt.countedByName,
       checkedAt: null, checkedByName: null, status: "active", deletedAt: null, formulaVersion: "ledger-v2",
     }} online={online} canCheck={false} onChecked={() => undefined} />
-    <button type="button" onClick={onBack} className="focus-ring min-h-11 rounded-md bg-leaf px-4 text-sm font-semibold text-white">กลับหน้าเริ่มนับ</button>
+    <button type="button" onClick={onBack} className="focus-ring min-h-11 rounded-md bg-actionSecondary px-4 text-sm font-semibold text-white">กลับหน้าเริ่มนับ</button>
   </div>;
 }
