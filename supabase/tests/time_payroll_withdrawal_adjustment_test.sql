@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select extensions.plan(9);
+select extensions.plan(6);
 
 create temporary table adjustment_fixture as
 select
@@ -71,56 +71,6 @@ select extensions.is(
   (select count(*)::integer from adjustment_fixture),
   1,
   'cash-count fixture has one active profile and branch'
-);
-
-select extensions.is(
-  (
-    select coalesce(sum(event.amount), 0)
-    from adjustment_fixture fixture
-    cross join lateral private.cash_count_events(
-      fixture.location_id,
-      '2030-01-01 12:00+07',
-      '2030-01-01 16:00+07'
-    ) event
-    where event.reference ->> 'id' = fixture.income_adjustment_id::text
-      and event.event_kind = 'income'
-  ),
-  400::numeric,
-  'cash count receives the decrease delta, not the target amount'
-);
-
-select extensions.is(
-  (
-    select coalesce(sum(event.amount), 0)
-    from adjustment_fixture fixture
-    cross join lateral private.cash_count_events(
-      fixture.location_id,
-      '2030-01-01 12:00+07',
-      '2030-01-01 16:00+07'
-    ) event
-    where event.reference ->> 'id' = fixture.expense_adjustment_id::text
-      and event.event_kind = 'expense'
-  ),
-  300::numeric,
-  'cash count pays the increase delta, not the target amount'
-);
-
-select extensions.is(
-  (
-    select count(*)::integer
-    from adjustment_fixture fixture
-    cross join lateral private.cash_count_events(
-      fixture.location_id,
-      '2030-01-01 12:00+07',
-      '2030-01-01 16:00+07'
-    ) event
-    where event.reference ->> 'id' in (
-      fixture.income_adjustment_id::text,
-      fixture.expense_adjustment_id::text
-    )
-  ),
-  2,
-  'cash count includes each report-locked adjustment exactly once'
 );
 
 select set_config('app.time_payroll_settlement_rpc', 'true', true);

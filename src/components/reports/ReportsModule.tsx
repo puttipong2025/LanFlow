@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CircleDollarSign, Eye, FilePlus2, Loader2, RotateCw, Trash2 } from "lucide-react";
+import { Eye, FilePlus2, Loader2, RotateCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import type { Location, Profile } from "@/types";
 import type { ReportDetails, ReportSummary } from "@/types/reports";
@@ -42,12 +42,10 @@ export function ReportsModule({
   selectedLocation,
   profile,
   online,
-  onOpenCashCount,
 }: {
   selectedLocation: Location;
   profile: Profile;
   online: boolean;
-  onOpenCashCount?: (countId: string) => void;
 }) {
   const [reports, setReports] = useState<ReportSummary[]>([]);
   const [deletions, setDeletions] = useState<DocumentDeletionAudit[]>([]);
@@ -340,13 +338,7 @@ export function ReportsModule({
                         className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-river text-white disabled:opacity-45">
                         <Eye size={17} />
                       </button>
-                      {canDelete && report.hasCashCount && report.cashCountId && onOpenCashCount && (
-                        <button type="button" onClick={() => onOpenCashCount(report.cashCountId!)} title="เปิดผลตรวจนับ" aria-label="เปิดผลตรวจนับ"
-                          className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-actionSecondary text-white">
-                          <CircleDollarSign size={17} />
-                        </button>
-                      )}
-                      {canDelete && report.isLatestActive && !report.hasCashCount && (
+                      {canDelete && report.isLatestActive && (
                         <button type="button" onClick={() => setPendingDelete(report)}
                           disabled={deletingId === report.id || Boolean(report.rubberExportLockNo)}
                           title={report.rubberExportLockNo ? `ต้องลบรายการส่งออกยาง ${report.rubberExportLockNo} ก่อน` : "ลบรายงานล่าสุดเพื่อปลดล็อกรายการ"}
@@ -363,7 +355,6 @@ export function ReportsModule({
                   <td className="px-4 py-3 text-right">{report.itemCount.toLocaleString("th-TH")}</td>
                   <td className="px-4 py-3">
                     <div>ใช้งาน</div>
-                    <div className="mt-1 text-xs font-semibold text-ink/60">{report.hasCashCount ? "มีผลตรวจนับเงินสด" : "ไม่มีผลตรวจนับเงินสด"}</div>
                   </td>
                 </tr>
               ))}

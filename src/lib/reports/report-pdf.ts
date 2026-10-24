@@ -141,11 +141,7 @@ function drawReportHeader(state: PdfState, details: ReportDetails, dataDateRange
     `รวมรายการ (${REPORT_OPENING_BALANCE_COUNT_NOTE}): ${details.report.itemCount.toLocaleString("th-TH")}`,
     `ช่วงวันที่ข้อมูล: ${dataDateRange}`,
     `สถานะ: ${REPORT_STATUS_LABEL}`,
-    details.report.hasCashCount ? "ผลตรวจนับ: มีผลตรวจนับเงินสด" : "ผลตรวจนับ: ไม่มีผลตรวจนับเงินสด",
-    ...(details.report.hasCashCount ? [
-      `ผู้ตรวจนับ: ${details.report.cashCountCheckerName ?? "-"}`,
-      `ตรวจนับเมื่อ: ${details.report.cashCountSubmittedAt ? formatThaiDateTime(details.report.cashCountSubmittedAt) : "-"}`,
-    ] : []),
+
   ];
   const width = TABLE_WIDTH / 4;
   metadata.forEach((text, index) => {

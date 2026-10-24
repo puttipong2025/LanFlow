@@ -233,11 +233,7 @@ export function ReportPreviewModal({
                   ["สร้างเมื่อ", formatThaiDateTime(details.report.createdAt)],
                   [`รวมรายการ (${REPORT_OPENING_BALANCE_COUNT_NOTE})`, details.report.itemCount.toLocaleString("th-TH")],
                   ["ช่วงวันที่ข้อมูล", formatReportDateRange(presentation.dateRange)],
-                  ["ผลตรวจนับ", details.report.hasCashCount ? "มีผลตรวจนับเงินสด" : "ไม่มีผลตรวจนับเงินสด"],
-                  ...(details.report.hasCashCount ? [
-                    ["ผู้ตรวจนับ", details.report.cashCountCheckerName ?? "-"],
-                    ["ตรวจนับเมื่อ", details.report.cashCountSubmittedAt ? formatThaiDateTime(details.report.cashCountSubmittedAt) : "-"],
-                  ] : []),
+
                 ].map(([label, value]) => (
                   <div key={label}>
                     <dt className="font-semibold text-ink/55">{label}</dt>

@@ -13,6 +13,9 @@ import { ModalShell } from "@/components/shared/ModalShell";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
 import { canManageSystemFeatures } from "@/lib/permissions";
 import { getPendingEvents } from "@/lib/idb-queue";
+import { BankBalanceList, type BankSlot } from "./BankBalanceList";
+import { CashCountReceiptPanel } from "./CashCountReceiptPanel";
+import { CashCountDetails } from "./CashCountDetails";
 import { cn } from "@/lib/cn";
 import { showPendingWorkBlockedToast } from "@/components/shared/PendingWorkBlockedToast";
 import { parsePendingWorkApiBody } from "@/lib/pending-work-blockers";
@@ -23,15 +26,6 @@ function money(value: number) {
 
 function dateTime(value: string) {
   return new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Bangkok" }).format(new Date(value));
-}
-
-function statusLabel(status: string | null, formulaVersion?: string) {
-  if (formulaVersion === "cash-v1-rebaseline") return "ตั้งฐานใหม่";
-  if (status === "insufficient_data") return "ข้อมูลไม่พอ";
-  if (status === "normal") return "ปกติ";
-  if (status === "review") return "ควรตรวจสอบ";
-  if (status === "high_anomaly") return "พิรุธสูง";
-  return "รอบตั้งต้น";
 }
 
 function ConfirmDialog({ open, title, description, detail, confirmLabel, busy, onCancel, onConfirm }: {
@@ -55,9 +49,12 @@ function ConfirmDialog({ open, title, description, detail, confirmLabel, busy, o
   );
 }
 
-export function CashCountModule({ selectedLocation, profile, online, initialCountId, onInitialCountHandled }: {
-  selectedLocation: Location; profile: Profile; online: boolean; initialCountId?: string | null; onInitialCountHandled?: () => void;
+export function CashCountModule({ selectedLocation, profile, online }: {
+  selectedLocation: Location; profile: Profile; online: boolean;
 }) {
+  const [banks, setBanks] = useState<BankSlot[]>([]);
+  const bankTotal = banks.reduce((total, slot) => total + Math.round((slot.value?.amount ?? 0) * 100), 0) / 100;
+  const bankBlocked = banks.some((slot) => slot.blocked || !slot.value?.confirmed);
   const [session, setSession] = useState<CashCountSession | null>(null);
   const [receipt, setReceipt] = useState<CashCountReceipt | null>(null);
   const [values, setValues] = useState<Record<CashDenomination, number>>(() => Object.fromEntries(CASH_DENOMINATIONS.map((d) => [d, 0])) as Record<CashDenomination, number>);
@@ -82,7 +79,6 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
   const [detail, setDetail] = useState<CashCountDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const handledInitialCountIdRef = useRef<string | null>(null);
   const detailLocationIdRef = useRef(selectedLocation.id);
   const locationIdRef = useRef(selectedLocation.id);
   const sessionRequestIdRef = useRef(0);
@@ -94,7 +90,7 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
   locationIdRef.current = selectedLocation.id;
   const manager = canManageSystemFeatures(profile);
 
-  const resetForm = useCallback(() => setValues(Object.fromEntries(CASH_DENOMINATIONS.map((d) => [d, 0])) as Record<CashDenomination, number>), []);
+  const resetForm = useCallback(() => { setBanks([]); setValues(Object.fromEntries(CASH_DENOMINATIONS.map((d) => [d, 0])) as Record<CashDenomination, number>); }, []);
   const loadSession = useCallback(async () => {
     if (!online) return;
     const requestId = ++sessionRequestIdRef.current;
@@ -271,17 +267,7 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
     ));
   }, [historyView, loadDeletions, loadHistory, manager, selectedLocation.id]);
   useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(timer); }, []);
-  useEffect(() => {
-    if (!initialCountId) {
-      handledInitialCountIdRef.current = null;
-      return;
-    }
-    if (!manager || handledInitialCountIdRef.current === initialCountId) return;
-    handledInitialCountIdRef.current = initialCountId;
-    setDetailTarget({ id: initialCountId });
-    setDetail(null);
-    void loadDetail(initialCountId).finally(onInitialCountHandled);
-  }, [initialCountId, loadDetail, manager, onInitialCountHandled]);
+
 
   const secondsLeft = session ? Math.max(0, Math.ceil((new Date(session.expiresAt).getTime() - now) / 1000)) : 0;
   const actualTotal = useMemo(() => CASH_DENOMINATIONS.reduce((sum, d) => sum + values[d] * d, 0), [values]);
@@ -332,7 +318,13 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
     setSubmitError(null);
     try {
       const actualCounts = Object.fromEntries(CASH_DENOMINATIONS.map((d) => [String(d), Number(values[d])]));
-      const response = await authFetch("/api/lanflow/cash-counts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId, actualCounts }) });
+      if (bankBlocked) throw new Error("กรุณาถ่ายใหม่หรือยืนยันยอดบัญชีก่อนบันทึก");
+      const form = new FormData(); form.set("sessionId", sessionId); form.set("actualCounts", JSON.stringify(actualCounts));
+      for (const slot of banks) {
+        if (!slot.value) throw new Error("กรุณาถ่ายรูปหรือเอาช่องบัญชีที่ว่างออก");
+        form.append("image", slot.value.file); form.append("evidenceId", slot.value.evidenceId); form.append("confirmed", String(slot.value.confirmed));
+      }
+      const response = await authFetch("/api/lanflow/cash-counts", { method: "POST", body: form });
       const errorBody = !response.ok
         ? await response.clone().json().catch(() => null)
         : null;
@@ -406,16 +398,16 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
     <section className="space-y-4 tabular-nums">
       <div className="rounded-xl border border-black/10 bg-white p-4 shadow-panel sm:p-5">
         <div className="flex flex-col items-start gap-3">
-          <div><h2 className="text-balance text-xl font-bold text-ink">นับเงิน — {selectedLocation.name}</h2><p className="mt-1 text-pretty text-sm text-ink/65">นับแบบไม่แสดงยอดคาดการณ์ รายการที่เกิดหลังเวลาเริ่มจะเข้ารอบถัดไป</p></div>
+          <div><h2 className="text-balance text-xl font-bold text-ink">นับเงิน — {selectedLocation.name}</h2><p className="mt-1 text-pretty text-sm text-ink/65">เทียบรับ–จ่ายสุทธิสะสม ณ เริ่มนับ ระหว่างนับระบบหยุดการเคลื่อนไหวเงินของสาขา</p></div>
           <button type="button" onClick={() => void loadSession()} disabled={!online || loading || working} className="focus-ring inline-flex items-center justify-center gap-2 rounded-md bg-actionSecondary px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"><RotateCw size={16} className={cn(loading && "animate-spin")} />รีเฟรช</button>
         </div>
 
         {loading ? <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3"><div className="h-20 animate-pulse rounded-lg bg-mint/50" /><div className="h-20 animate-pulse rounded-lg bg-mint/50" /><div className="h-20 animate-pulse rounded-lg bg-mint/50" /></div>
-        : receipt ? <div className="mt-5 rounded-lg border border-leaf/20 bg-mint/45 p-4"><h3 className="font-bold text-ink">ส่งผลตรวจนับสำเร็จ</h3><p className="mt-1 text-sm text-ink/70">{receipt.reportNo} · {dateTime(receipt.submittedAt)} · {receipt.countedByName}</p><div className="mt-4 grid grid-cols-3 gap-2 sm:grid-cols-9">{CASH_DENOMINATIONS.map((d) => <div key={d} className="rounded-md bg-white p-2 text-center"><div className="text-xs text-ink/55">฿{d}</div><div className="font-bold">{receipt.actualCounts[String(d)]}</div></div>)}</div><div className="mt-4 text-right text-lg font-bold text-ink">รวม {money(receipt.actualTotal)} บาท</div><button type="button" onClick={() => setReceipt(null)} className="focus-ring mt-4 rounded-md bg-leaf px-4 py-2 text-sm font-semibold text-white">กลับหน้าเริ่มนับ</button></div>
+        : receipt ? <CashCountReceiptPanel receipt={receipt} locationId={selectedLocation.id} locationName={selectedLocation.name} online={online} onBack={() => setReceipt(null)} />
         : !session ? <div className="mt-5 rounded-lg bg-mint/35 p-5 text-center"><Banknote className="mx-auto text-leaf" size={32} /><h3 className="mt-2 font-bold text-ink">พร้อมเริ่มตรวจนับเงินสด</h3><p className="mt-1 text-pretty text-sm text-ink/65">ระบบจะยึดเวลา server ตอนเริ่มและให้กรอกภายใน 30 นาที</p><button type="button" onClick={() => void start()} disabled={!online || working} className="focus-ring mt-4 inline-flex items-center gap-2 rounded-md bg-leaf px-5 py-2.5 font-semibold text-white disabled:opacity-50">{working && <Loader2 size={16} className="animate-spin" />}เริ่มนับเงิน</button></div>
         : !session.isOwner ? <div className="mt-5 rounded-lg bg-amber/20 p-4 text-sm font-semibold text-ink">{session.startedByName} กำลังตรวจนับสาขานี้ · เหลือ {Math.floor(secondsLeft / 60)}:{String(secondsLeft % 60).padStart(2, "0")} นาที</div>
         : secondsLeft <= 0 ? <div className="mt-5 rounded-lg bg-clay/10 p-4"><h3 className="font-bold text-clay">ช่วงตรวจนับหมดเวลาแล้ว</h3><p className="mt-1 text-sm text-ink/70">ผลเดิมส่งไม่ได้ กรุณารีเฟรชและเริ่มรอบใหม่</p></div>
-        : <div className="mt-5"><div className="flex flex-wrap items-center justify-between gap-2 text-sm"><span className="font-semibold text-ink">Cutoff {dateTime(session.cutoffAt)}</span><span className="rounded-md bg-amber/20 px-3 py-1 font-bold text-amber-900">เหลือ {Math.floor(secondsLeft / 60)}:{String(secondsLeft % 60).padStart(2, "0")} นาที</span></div><div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">{CASH_DENOMINATIONS.map((d) => <label key={d} className="rounded-lg border border-black/10 bg-field p-3"><span className="text-sm font-semibold text-ink">{d >= 20 ? "ธนบัตร" : "เหรียญ"} {d} บาท</span><div className="mt-2"><InlineNumber value={values[d]} integerOnly ariaLabel={`จำนวนเงินชนิด ${d} บาท`} onChange={(value) => { setSubmitError(null); setValues((current) => ({ ...current, [d]: value })); }} /></div></label>)}</div><div className="mt-4 flex flex-col gap-3 rounded-lg bg-mint/45 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-sm text-ink/60">ยอดรวมที่กรอก</div><div className="text-2xl font-bold text-ink">{money(actualTotal)} บาท</div></div><div className="flex gap-2"><button type="button" onClick={() => setConfirmMode("cancel")} className="focus-ring inline-flex items-center gap-1 rounded-md border border-clay px-4 py-2 font-semibold text-clay"><X size={16} />ยกเลิก</button><button type="button" onClick={() => setConfirmMode("submit")} disabled={working} className="focus-ring rounded-md bg-leaf px-5 py-2 font-semibold text-white disabled:opacity-50">ยืนยันและส่งผล</button></div></div>{submitError && <p role="alert" className="mt-2 text-pretty text-sm font-medium text-clay">{submitError}</p>}</div>}
+        : <div className="mt-5"><div className="flex flex-wrap items-center justify-between gap-2 text-sm"><span className="font-semibold text-ink">Cutoff {dateTime(session.cutoffAt)}</span><span className="rounded-md bg-amber/20 px-3 py-1 font-bold text-amber-900">เหลือ {Math.floor(secondsLeft / 60)}:{String(secondsLeft % 60).padStart(2, "0")} นาที</span></div><div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">{CASH_DENOMINATIONS.map((d) => <label key={d} className="rounded-lg border border-black/10 bg-field p-3"><span className="text-sm font-semibold text-ink">{d >= 20 ? "ธนบัตร" : "เหรียญ"} {d} บาท</span><div className="mt-2"><InlineNumber value={values[d]} integerOnly ariaLabel={`จำนวนเงินชนิด ${d} บาท`} onChange={(value) => { setSubmitError(null); setValues((current) => ({ ...current, [d]: value })); }} /></div></label>)}</div><BankBalanceList key={session.id} sessionId={session.id} slots={banks} onChange={setBanks} disabled={working} /><p className="mt-3 text-pretty text-sm">ยอดระบบ ณ เริ่มนับ {money(session.systemBalance)} บาท · ส่วนต่าง {money(actualTotal + bankTotal - session.systemBalance)} บาท</p><div className="mt-4 flex flex-col gap-3 rounded-lg bg-mint/45 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-sm text-ink/60">ยอดรวมที่กรอก</div><div className="text-2xl font-bold text-ink">{money(actualTotal + bankTotal)} บาท</div></div><div className="flex gap-2"><button type="button" onClick={() => setConfirmMode("cancel")} className="focus-ring inline-flex items-center gap-1 rounded-md border border-clay px-4 py-2 font-semibold text-clay"><X size={16} />ยกเลิก</button><button type="button" onClick={() => setConfirmMode("submit")} disabled={working || bankBlocked} className="focus-ring rounded-md bg-leaf px-5 py-2 font-semibold text-white disabled:opacity-50">ยืนยันและส่งผล</button></div></div>{submitError && <p role="alert" className="mt-2 text-pretty text-sm font-medium text-clay">{submitError}</p>}</div>}
       </div>
 
       {manager && (
@@ -453,7 +445,7 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
           </div>
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
-              <thead className="bg-mint/50 text-left"><tr><th className="px-4 py-3">จัดการ</th><th className="px-4 py-3">รายงาน</th><th className="px-4 py-3">ผู้ตรวจ</th><th className="px-4 py-3 text-right">จริง / คาดการณ์</th><th className="px-4 py-3">ผลวิเคราะห์</th></tr></thead>
+              <thead className="bg-mint/50 text-left"><tr><th className="px-4 py-3">จัดการ</th><th className="px-4 py-3">ใบนับเงิน</th><th className="px-4 py-3">ผู้นับ</th><th className="px-4 py-3 text-right">ยอดรวม / ส่วนต่าง</th><th className="px-4 py-3">ผู้ตรวจสอบ</th></tr></thead>
               <tbody className="divide-y divide-black/5">
                 {history.length === 0 && <tr><td colSpan={5} className="px-4 py-7 text-center text-ink/55">ยังไม่มีผลตรวจนับ</td></tr>}
                 {history.map((item) => (
@@ -462,7 +454,7 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
                       <button type="button" onClick={() => openDetail(item.id, item.reportNo)}
                         title="ดูรายละเอียด" aria-label="ดูรายละเอียด"
                         className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-river text-white"><Eye size={17} /></button>
-                      {history[0]?.id === item.id && (
+                      {manager && (
                         <button type="button" onClick={() => { setDeleteTarget(item); setConfirmMode("delete"); }}
                           disabled={!online || working || historyRefreshing}
                           title="ลบชุดล่าสุด" aria-label="ลบชุดล่าสุด"
@@ -471,8 +463,8 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
                     </div></td>
                     <td className="px-4 py-3"><div className="font-semibold">{item.reportNo}</div><div className="text-xs">{dateTime(item.createdAt)}</div></td>
                     <td className="px-4 py-3">{item.createdByName}</td>
-                    <td className="px-4 py-3 text-right">{money(item.actualTotal)} / {money(item.expectedTotal)}</td>
-                    <td className="px-4 py-3">{statusLabel(item.analysisStatus, item.formulaVersion)}{item.anomalyScore != null && <div className="text-xs">คะแนน {item.anomalyScore} · มั่นใจ {item.confidence}</div>}</td>
+                    <td className="px-4 py-3 text-right">{money(item.countedTotal)} / {item.systemBalance == null ? "ไม่มีข้อมูลฐานเดิม" : money(item.differenceTotal ?? 0)}</td>
+                    <td className="px-4 py-3">{item.checkedByName ?? "ยังไม่ตรวจสอบ"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -504,7 +496,7 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
       {manager && detailTarget && (
         <ModalShell
           title={`รายละเอียด ${detail?.reportNo ?? detailTarget.reportNo ?? "ผลตรวจนับ"}`}
-          subtitle={detail ? `สูตร ${detail.formulaVersion} · ${statusLabel(detail.analysisStatus, detail.formulaVersion)}` : undefined}
+          subtitle={detail ? dateTime(detail.cutoffAt) : undefined}
           onClose={closeDetail}
           size="wide"
           mobileFullScreen
@@ -534,37 +526,14 @@ export function CashCountModule({ selectedLocation, profile, online, initialCoun
               </button>
             </div>
           ) : detail ? (
-            <div className="tabular-nums">
-              <div className="grid gap-3 sm:grid-cols-3">
-                <div className="rounded-lg bg-field p-3"><div className="text-xs text-ink/55">ยอดจริง</div><div className="text-lg font-bold">{money(detail.actualTotal)}</div></div>
-                <div className="rounded-lg bg-field p-3"><div className="text-xs text-ink/55">ยอดคาดการณ์</div><div className="text-lg font-bold">{money(detail.expectedTotal)}</div></div>
-                <div className="rounded-lg bg-field p-3"><div className="text-xs text-ink/55">ส่วนต่าง</div><div className="text-lg font-bold">{money(detail.differenceTotal)}</div></div>
-              </div>
-              <div className="mt-4 grid grid-cols-3 gap-2 sm:grid-cols-9">
-                {CASH_DENOMINATIONS.map((denomination) => (
-                  <div key={denomination} className="rounded-md border border-black/5 p-2 text-center">
-                    <div className="text-xs text-ink/50">฿{denomination}</div>
-                    <div className="font-bold">{detail.actualCounts[String(denomination)]}</div>
-                    <div className="text-xs text-ink/55">คาด {detail.expectedCounts[String(denomination)]}</div>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-5 grid gap-4 lg:grid-cols-2">
-                <div><h3 className="text-balance font-bold text-ink">ประเด็นสำคัญ</h3><ul className="mt-2 space-y-1 text-pretty text-sm text-ink/75">{detail.evidence.highlights?.map((item) => <li key={item}>• {item}</li>)}</ul></div>
-                <div><h3 className="text-balance font-bold text-ink">ข้อจำกัดการคำนวณ</h3><ul className="mt-2 space-y-1 text-pretty text-sm text-ink/75">{detail.evidence.limitations?.map((item) => <li key={item}>• {item}</li>)}</ul></div>
-              </div>
-              <details className="mt-5 rounded-lg border border-black/10 p-3">
-                <summary className="cursor-pointer font-semibold text-ink">รายการอ้างอิง ({detail.evidence.references?.length ?? 0})</summary>
-                <div className="mt-3 space-y-2 text-pretty text-sm text-ink/70">{detail.evidence.references?.map((item, index) => <div key={`${String(item.id ?? "ref")}-${index}`} className="rounded-md bg-field p-2">{String(item.label ?? item.source ?? "รายการ")} · {money(Number(item.amount ?? 0))} บาท</div>)}</div>
-              </details>
-            </div>
+            <CashCountDetails detail={detail} online={online} onChecked={() => { void loadDetail(detail.id); void loadHistory(); }} />
           ) : null}
         </ModalShell>
       )}
 
-      <ConfirmDialog open={confirmMode === "submit"} title="ยืนยันผลตรวจนับ" description={`จำนวนที่กรอกครบ 9 ชนิด รวม ${money(actualTotal)} บาท หลังส่งแล้วแก้ไขไม่ได้`} detail={<div className="mt-3 grid grid-cols-3 gap-2">{CASH_DENOMINATIONS.map((d) => <div key={d} className="rounded-md bg-field p-2 text-center text-sm"><div className="text-xs text-ink/50">฿{d}</div><div className="font-bold text-ink">{values[d]}</div></div>)}</div>} confirmLabel="ส่งผลตรวจนับ" busy={working} onCancel={() => setConfirmMode(null)} onConfirm={() => void submit()} />
+      <ConfirmDialog open={confirmMode === "submit"} title="ยืนยันผลตรวจนับ" description={`จำนวนที่กรอกครบ 9 ชนิด รวม ${money(actualTotal + bankTotal)} บาท หลังส่งแล้วแก้ไขไม่ได้`} detail={<div className="mt-3 grid grid-cols-3 gap-2">{CASH_DENOMINATIONS.map((d) => <div key={d} className="rounded-md bg-field p-2 text-center text-sm"><div className="text-xs text-ink/50">฿{d}</div><div className="font-bold text-ink">{values[d]}</div></div>)}</div>} confirmLabel="ส่งผลตรวจนับ" busy={working} onCancel={() => setConfirmMode(null)} onConfirm={() => void submit()} />
       <ConfirmDialog open={confirmMode === "cancel"} title="ยกเลิกช่วงตรวจนับ" description="ค่าที่กรอกในหน้านี้จะหาย และต้องเริ่มช่วงตรวจนับใหม่" confirmLabel="ยกเลิกช่วงนี้" busy={working} onCancel={() => setConfirmMode(null)} onConfirm={() => void cancel()} />
-      <ConfirmDialog open={confirmMode === "delete"} title="ลบชุดตรวจนับและรายงาน" description={`${deleteTarget?.reportNo ?? "ชุดนี้"} ผลตรวจนับ รายละเอียดเงินสด และรายงานคู่จะถูกลบถาวรและกู้คืนไม่ได้ ระบบจะเก็บเฉพาะประวัติการลบขั้นต่ำ`} confirmLabel="ลบทั้งชุด" busy={working} onCancel={() => { setConfirmMode(null); setDeleteTarget(null); }} onConfirm={() => void removeCount()} />
+      <ConfirmDialog open={confirmMode === "delete"} title="ลบใบนับเงิน" description={`${deleteTarget?.reportNo ?? "รายการนี้"} จะถูกลบจากรายการใช้งาน โดยไม่กระทบรายงาน ระบบเก็บประวัติการลบไว้`} confirmLabel="ลบใบนับเงิน" busy={working} onCancel={() => { setConfirmMode(null); setDeleteTarget(null); }} onConfirm={() => void removeCount()} />
     </section>
   );
 }

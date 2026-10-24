@@ -10,31 +10,37 @@ export type CashCountSession = {
   startedAt: string;
   startedByName: string;
   isOwner: boolean;
+  systemBalance: number;
 };
 
 export type CashCountReceipt = {
+  hasBankAccount?: boolean;
+  bankAccounts?: Array<{ id: string; position: number; amount: number }>;
   id: string;
-  reportId: string;
   reportNo: string;
   cutoffAt: string;
   submittedAt: string;
   countedByName: string;
   actualCounts: CashCounts;
   actualTotal: number;
+  accountBalance: number;
+  countedTotal: number;
+  systemBalance: number | null;
+  differenceTotal: number | null;
 };
 
 export type CashCountSummary = {
   id: string;
-  reportId: string;
   reportNo: string;
   locationId: string;
   cutoffAt: string;
   actualTotal: number;
-  expectedTotal: number;
-  differenceTotal: number;
-  anomalyScore: number | null;
-  confidence: number | null;
-  analysisStatus: string | null;
+  accountBalance: number;
+  countedTotal: number;
+  systemBalance: number | null;
+  checkedByName: string | null;
+  checkedAt: string | null;
+  differenceTotal: number | null;
   formulaVersion: string;
   status: "active";
   createdByName: string;
@@ -43,14 +49,8 @@ export type CashCountSummary = {
 };
 
 export type CashCountDetail = CashCountSummary & {
+  hasBankAccount?: boolean;
+  bankAccounts?: Array<{ id: string; position: number; amount: number }>;
   locationName: string;
   actualCounts: CashCounts;
-  expectedCounts: CashCounts;
-  differenceCounts: CashCounts;
-  evidence: {
-    highlights?: string[];
-    limitations?: string[];
-    references?: Array<Record<string, unknown>>;
-    components?: Record<string, number | null>;
-  };
 };

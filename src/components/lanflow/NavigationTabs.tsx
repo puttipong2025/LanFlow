@@ -33,17 +33,9 @@ export function NavigationTabs({
         const badgeCount = online ? (moduleBadgeCounts[tab.id] ?? 0) : 0;
         const offlineBlockMessage = online ? null : getOfflineTabBlockMessage(tab.id);
         const isOfflineBlocked = Boolean(offlineBlockMessage);
-        const isReportPair = tab.id === "reports" || tab.id === "cash-count";
         const isRubberPair = tab.id === "rubber" || tab.id === "rubber-evidence";
-        const relationTitle = tab.id === "reports"
-          ? "เชื่อมกับโมดูลนับเงิน"
-          : tab.id === "cash-count"
-            ? "เชื่อมกับโมดูลรายงาน"
-            : tab.id === "rubber"
-              ? "เชื่อมกับโมดูลตรวจหลักฐาน"
-              : tab.id === "rubber-evidence"
-                ? "เชื่อมกับโมดูลบิลยาง"
-            : null;
+        const relationTitle = tab.id === "rubber" ? "เชื่อมกับโมดูลตรวจหลักฐาน"
+          : tab.id === "rubber-evidence" ? "เชื่อมกับโมดูลบิลยาง" : null;
 
         return (
           <button
@@ -59,14 +51,14 @@ export function NavigationTabs({
                 ? "cursor-not-allowed border-black/5 bg-field text-ink/40 shadow-none"
                 : active
                   ? "border-leaf bg-leaf text-white"
-                  : isReportPair || isRubberPair
+                  : isRubberPair
                     ? "border-leaf/25 bg-mint/30 text-ink/80 hover:border-leaf/40 hover:bg-mint/50 hover:text-leaf"
                     : "border-mint bg-white text-ink/75 hover:border-leaf/30 hover:bg-mint/40 hover:text-ink"
             }`}
           >
             <Icon size={17} />
             {tab.label}
-            {(isReportPair || isRubberPair) && (
+            {(isRubberPair) && (
               <Link2
                 size={12}
                 aria-hidden="true"

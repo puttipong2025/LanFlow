@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0079
 ---
 
 # Rebaseline cash count after unknown-denomination inflow

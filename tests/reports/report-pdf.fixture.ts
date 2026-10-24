@@ -25,9 +25,6 @@ export function longReportDetails(): ReportDetails {
       createdByName: "ผู้ทดสอบระบบ",
       createdAt: "2026-07-29T08:04:00.000Z",
       itemCount: 80,
-      hasCashCount: true,
-      cashCountCheckerName: "ผู้ตรวจนับทดสอบ",
-      cashCountSubmittedAt: "2026-07-29T08:03:00.000Z",
     },
     rubberBills: [
       {

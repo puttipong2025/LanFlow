@@ -5,11 +5,13 @@ const receipt = {
   id: "confirmed-count", reportId: "confirmed-report", reportNo: "COUNT-CONFIRMED",
   cutoffAt: "2026-09-02T03:00:00.000Z", submittedAt: "2026-09-02T03:10:00.000Z",
   countedByName: "ผู้ตรวจทดสอบ", actualCounts: counts, actualTotal: 1000,
+  countedTotal: 1000, accountBalance: 0, systemBalance: 1000, differenceTotal: 0,
 };
 const summary = {
   id: receipt.id, reportNo: receipt.reportNo, createdAt: receipt.submittedAt,
   createdByName: receipt.countedByName, actualTotal: 1000, expectedTotal: 1000,
   differenceTotal: 0, analysisStatus: "normal", formulaVersion: "cash-v1",
+  countedTotal: 1000, accountBalance: 0, systemBalance: 1000, checkedByName: null, checkedAt: null,
   isLatestActive: true, rubberExportLockNo: null,
 };
 const detail = {
@@ -87,7 +89,7 @@ test.describe("cash count confirmed command / refresh failure", () => {
     releaseFirstAttempt();
     await expect(dialog.getByRole("alert")).toContainText("DETAIL_UNAVAILABLE");
     await dialog.getByRole("button", { name: "ลองใหม่สำหรับรายละเอียดผลตรวจนับ" }).click();
-    await expect(dialog.getByRole("listitem").filter({ hasText: "ยอดตรงกัน" })).toBeVisible();
+    await expect(dialog.getByText("ยอดตรงกัน 0.00 บาท", { exact: true })).toBeVisible();
     expect(detailAttempts).toBe(2);
 
     await page.keyboard.press("Escape");
@@ -116,7 +118,7 @@ test.describe("cash count confirmed command / refresh failure", () => {
     let releaseSubmit!: () => void;
     const submitReleased = new Promise<void>((resolve) => { releaseSubmit = resolve; });
     await page.route("**/api/lanflow/cash-counts/session?*", (route) => route.fulfill({ json: {
-      session: { id: "count-session", isOwner: true, cutoffAt: receipt.cutoffAt, expiresAt: "2099-09-02T03:30:00.000Z" },
+      session: { id: "count-session", isOwner: true, cutoffAt: receipt.cutoffAt, expiresAt: "2099-09-02T03:30:00.000Z", systemBalance: 1000 },
     } }));
     await page.route(/\/api\/lanflow\/cash-counts(?:\?.*)?$/, async (route) => {
       if (route.request().method() === "POST") {
@@ -157,7 +159,7 @@ test.describe("cash count confirmed command / refresh failure", () => {
 
   test("keeps the editable form and reports a real command failure", async ({ page }) => {
     await page.route("**/api/lanflow/cash-counts/session?*", (route) => route.fulfill({ json: {
-      session: { id: "count-session", isOwner: true, cutoffAt: receipt.cutoffAt, expiresAt: "2099-09-02T03:30:00.000Z" },
+      session: { id: "count-session", isOwner: true, cutoffAt: receipt.cutoffAt, expiresAt: "2099-09-02T03:30:00.000Z", systemBalance: 1000 },
     } }));
     await page.route(/\/api\/lanflow\/cash-counts(?:\?.*)?$/, (route) => route.request().method() === "POST"
       ? route.fulfill({ status: 503, json: { error: "ยังไม่ได้บันทึก กรุณาลองใหม่" } })
@@ -201,7 +203,7 @@ test.describe("cash count confirmed command / refresh failure", () => {
       await dismissRubberWeightAlertIfVisible(page);
       await page.getByRole("button", { name: "นับเงิน", exact: true }).click();
       await page.getByRole("row").filter({ hasText: receipt.reportNo }).getByRole("button", { name: "ลบชุดล่าสุด" }).click();
-      await page.getByRole("alertdialog").getByRole("button", { name: "ลบทั้งชุด" }).click();
+      await page.getByRole("alertdialog").getByRole("button", { name: "ลบใบนับเงิน" }).click();
       await expect(page.getByRole("row").filter({ hasText: receipt.reportNo })).toHaveCount(0);
       await expect(page.getByRole("status").filter({ hasText: "ลบสำเร็จ แต่โหลดประวัติใหม่ไม่สำเร็จ" })).toBeVisible();
       failHistory = false;

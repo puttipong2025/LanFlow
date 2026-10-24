@@ -7,10 +7,6 @@ export type ReportHeader = {
   createdByName: string;
   createdAt: string;
   itemCount: number;
-  hasCashCount?: boolean;
-  cashCountId?: string | null;
-  cashCountCheckerName?: string | null;
-  cashCountSubmittedAt?: string | null;
 };
 
 export type ReportSummary = ReportHeader & {

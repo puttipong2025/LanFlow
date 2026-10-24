@@ -20,9 +20,10 @@ export function RubberWeightAlertDialog({ alert, onAcknowledge }: {
 function ThresholdResult({ alert }: { alert: BranchThresholdCheck }) {
   const hasCash = alert.candidates.some((item) => item.kind === "cash");
   const hasWeight = alert.candidates.some((item) => item.kind === "weight");
-  const [kind, setKind] = useState<AlertKind>(hasCash ? "cash" : "weight");
+  const hasCount = alert.candidates.some((item) => item.kind === "count");
+  const [kind, setKind] = useState<AlertKind>(hasCash ? "cash" : hasWeight ? "weight" : "count");
   const candidates = alert.candidates.filter((item) => item.kind === kind);
-  const unit = kind === "cash" ? "บาท" : "กก.";
+  const unit = kind === "count" ? "วัน" : kind === "cash" ? "บาท" : "กก.";
   const groups = candidates.reduce<Array<{ id: string; order: number; threshold: number; candidates: typeof candidates }>>((result, item) => {
     const group = result.find((entry) => entry.id === item.groupId);
     if (group) group.candidates.push(item);
@@ -31,13 +32,13 @@ function ThresholdResult({ alert }: { alert: BranchThresholdCheck }) {
   }, []).sort((left, right) => left.order - right.order);
   return (
     <div className="mt-4 max-h-[min(50dvh,24rem)] space-y-3 overflow-y-auto pr-1" data-testid="threshold-alert-results">
-      {hasCash && hasWeight && <div className="flex gap-2" aria-label="เลือกหน้าการแจ้งเตือน">
-        {(["cash", "weight"] as const).map((value) => <button key={value} type="button" aria-pressed={kind === value} onClick={() => setKind(value)}
+      {[hasCash, hasWeight, hasCount].filter(Boolean).length > 1 && <div className="flex flex-wrap gap-2" aria-label="เลือกหน้าการแจ้งเตือน">
+        {(["cash", "weight", "count"] as const).filter((value) => alert.candidates.some((item) => item.kind === value)).map((value) => <button key={value} type="button" aria-pressed={kind === value} onClick={() => setKind(value)}
           className={cn("focus-ring min-h-11 rounded-md border px-3 text-sm font-semibold", kind === value ? "border-river bg-river text-white" : "border-black/15 bg-white")}>
-          {value === "cash" ? "ยอดเงิน" : "น้ำหนัก"} · {alert.candidates.filter((item) => item.kind === value).length}
+          {value === "count" ? "นับเงิน" : value === "cash" ? "ยอดเงิน" : "น้ำหนัก"} · {alert.candidates.filter((item) => item.kind === value).length}
         </button>)}
       </div>}
-      {candidates.length > 0 && <h4 className="text-balance font-semibold">{kind === "cash" ? "รับ–จ่ายสุทธิสะสมต่ำกว่าเกณฑ์" : "น้ำหนักยางสุทธิสะสมเกินเกณฑ์"}</h4>}
+      {candidates.length > 0 && <h4 className="text-balance font-semibold">{kind === "count" ? "นับเงินเกินกำหนด" : kind === "cash" ? "รับ–จ่ายสุทธิสะสมต่ำกว่าเกณฑ์" : "น้ำหนักยางสุทธิสะสมเกินเกณฑ์"}</h4>}
       {groups.map((group) => <section key={group.id} className="rounded-md border border-black/10 p-3" aria-label={`กลุ่ม ${group.order}`}>
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <h4 className="text-balance text-sm font-bold text-ink">กลุ่ม {group.order}</h4>
@@ -45,7 +46,7 @@ function ThresholdResult({ alert }: { alert: BranchThresholdCheck }) {
         </div>
         <ul className="mt-2 space-y-2">{group.candidates.map((item) => <li key={item.locationId} className="flex items-start justify-between gap-4 rounded-md bg-field px-3 py-2.5">
           <span className="min-w-0 break-words text-pretty text-sm font-semibold text-ink">{item.locationName}</span>
-          <span className="shrink-0 text-sm font-bold tabular-nums text-clay">{formatNumber(item.value)} {unit}</span>
+          <span className="shrink-0 text-sm font-bold tabular-nums text-clay">{kind === "count" ? "เกินกำหนด " : ""}{formatNumber(item.value)} {unit}</span>
         </li>)}</ul>
       </section>)}
       {alert.unavailable.length > 0 && <section className="rounded-md bg-field p-3">

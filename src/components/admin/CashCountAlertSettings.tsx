@@ -1,0 +1,57 @@
+"use client";
+import { useEffect, useState } from "react";
+import { useLocations } from "@/hooks/useLocations";
+import { authFetch, assertApiResponse } from "@/lib/auth-fetch";
+import { AlertDialog } from "@/components/shared/AlertDialog";
+
+type Group = { id: string; dueDays: number; locationIds: string[] };
+export function CashCountAlertSettings() {
+  const { locations } = useLocations();
+  const [data, setData] = useState<{ groups: Group[]; availableLocationIds: string[] } | null>(null);
+  const [editing, setEditing] = useState<Group | null>(null);
+  const [open, setOpen] = useState(false);
+  const [days, setDays] = useState(1);
+  const [ids, setIds] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<Group | null>(null);
+  const endpoint = "/api/lanflow/cash-count-alert/groups";
+  async function load() {
+    const response = await authFetch(endpoint, { cache: "no-store" });
+    await assertApiResponse(response); setData(await response.json());
+  }
+  useEffect(() => { let active = true; void authFetch(endpoint, { cache: "no-store" }).then(async (response) => {
+    await assertApiResponse(response); const body = await response.json(); if (active) setData(body);
+  }).catch((cause) => { if (active) setError(cause instanceof Error ? cause.message : "โหลดกลุ่มไม่สำเร็จ"); }); return () => { active = false; }; }, []);
+  const button = "focus-ring min-h-11 rounded-md border border-black/15 bg-white px-3 text-sm font-semibold disabled:opacity-50";
+  function edit(group: Group | null) { setEditing(group); setDays(group?.dueDays ?? 1); setIds(group?.locationIds ?? []); setOpen(true); setError(null); }
+  async function save(remove = false) {
+    if (busy) return;
+    setBusy(true); setError(null);
+    try {
+      const response = await authFetch(remove ? `${endpoint}?id=${deleting?.id}` : endpoint, {
+        method: remove ? "DELETE" : "POST", headers: { "Content-Type": "application/json" },
+        ...(remove ? {} : { body: JSON.stringify({ id: editing?.id, dueDays: days, locationIds: ids }) }),
+      });
+      await assertApiResponse(response); setOpen(false); setDeleting(null); await load();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "บันทึกกลุ่มไม่สำเร็จ"); }
+    finally { setBusy(false); }
+  }
+  return <section className="space-y-4 rounded-md border border-black/10 bg-white p-4">
+    <h3 className="text-balance text-lg font-bold">กลุ่มเกณฑ์นับเงิน</h3>
+    <p className="text-pretty text-sm text-ink/65">กำหนด 1–5 วันปฏิทินไทย สาขานอกกลุ่มไม่แจ้งเตือน ใช้รอบตรวจร่วมกับเงินและน้ำหนัก</p>
+    {error && <p role="alert" className="text-pretty text-sm text-clay">{error}</p>}
+    {!data ? <button type="button" className={button} onClick={() => void load().catch((cause) => setError(String(cause)))}>โหลดกลุ่ม</button> : <>
+      {!open && <button type="button" className={button} onClick={() => edit(null)}>สร้างกลุ่ม</button>}
+      {open && <form className="space-y-3 rounded-md bg-field p-3" onSubmit={(event) => { event.preventDefault(); void save(); }}>
+        <label className="grid gap-1 text-sm font-semibold">กำหนดนับเงิน (วัน)<input type="number" min={1} max={5} step={1} required value={days} disabled={busy} onChange={(event) => setDays(Number(event.target.value))} className="focus-ring min-h-11 rounded-md border px-3 tabular-nums" /></label>
+        <fieldset disabled={busy}><legend className="text-sm font-semibold">สาขาในกลุ่ม</legend><div className="grid gap-2 sm:grid-cols-2">{locations.filter((l) => data.availableLocationIds.includes(l.id) || editing?.locationIds.includes(l.id)).map((l) =>
+          <label key={l.id} className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={ids.includes(l.id)} onChange={() => setIds((current) => current.includes(l.id) ? current.filter((id) => id !== l.id) : [...current, l.id])} />{l.name}</label>)}</div></fieldset>
+        <div className="flex gap-2"><button className={button} disabled={busy || !ids.length} type="submit">บันทึกกลุ่ม</button><button className={button} disabled={busy} type="button" onClick={() => setOpen(false)}>ยกเลิก</button></div>
+      </form>}
+      {data.groups.length === 0 && <p className="text-pretty text-sm">ยังไม่มีกลุ่ม กดสร้างกลุ่มเพื่อเลือกสาขา</p>}
+      {data.groups.map((group, index) => <section key={group.id} className="space-y-2 rounded-md border border-black/10 p-3"><h4 className="text-balance font-semibold">กลุ่ม {index + 1} · ทุก {group.dueDays} วัน</h4><p className="text-pretty text-sm">{group.locationIds.map((id) => locations.find((l) => l.id === id)?.name ?? id).join(" · ")}</p><div className="flex gap-2"><button type="button" className={button} disabled={busy} onClick={() => edit(group)}>แก้ไข</button><button type="button" className={button} disabled={busy} onClick={() => setDeleting(group)}>ลบกลุ่ม</button></div></section>)}
+    </>}
+    <AlertDialog open={!!deleting} title="ลบกลุ่มเกณฑ์นับเงิน?" description="สาขาในกลุ่มนี้จะหยุดรับแจ้งเตือนนับเงิน" confirmLabel="ลบกลุ่ม" busy={busy} onCancel={() => setDeleting(null)} onConfirm={() => void save(true)} />
+  </section>;
+}

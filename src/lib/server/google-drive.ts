@@ -46,6 +46,7 @@ export async function uploadPrivateImageToDrive(
   fileBuffer: Buffer,
   mimeType: "image/jpeg" | "image/png",
   fileName: string,
+  reservedFileId?: string,
 ): Promise<{ fileId: string }> {
   const token = await getAccessToken();
   const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
@@ -54,7 +55,7 @@ export async function uploadPrivateImageToDrive(
   const boundary = "-------314159265358979323846";
   const delimiter = `\r\n--${boundary}\r\n`;
   const closeDelimiter = `\r\n--${boundary}--`;
-  const metadata = { name: fileName, parents: [folderId] };
+  const metadata = { name: fileName, parents: [folderId], ...(reservedFileId ? { id: reservedFileId } : {}) };
   const multipartBody = Buffer.concat([
     Buffer.from(`${delimiter}Content-Type: application/json\r\n\r\n${JSON.stringify(metadata)}\r\n`),
     Buffer.from(`${delimiter}Content-Type: ${mimeType}\r\n\r\n`),
@@ -65,6 +66,7 @@ export async function uploadPrivateImageToDrive(
     "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id",
     {
       method: "POST",
+      signal: reservedFileId ? AbortSignal.timeout(60_000) : undefined,
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": `multipart/related; boundary=${boundary}`,
@@ -73,10 +75,36 @@ export async function uploadPrivateImageToDrive(
       body: multipartBody,
     },
   );
+  if (uploadRes.status === 409 && reservedFileId) {
+    const existing = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(reservedFileId)}?fields=id,trashed`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await existing.json().catch(() => null);
+    if (existing.ok && data?.id === reservedFileId && data.trashed === false) return { fileId: reservedFileId };
+  }
   if (!uploadRes.ok) throw new Error("Drive private upload failed");
   const uploadData = await uploadRes.json() as { id?: string };
   if (!uploadData.id) throw new Error("Drive private upload returned no file id");
   return { fileId: uploadData.id };
+}
+
+export async function reservePrivateDriveFileId(): Promise<string> {
+  const token = await getAccessToken();
+  const response = await fetch("https://www.googleapis.com/drive/v3/files/generateIds?count=1&space=drive&type=files", {
+    signal: AbortSignal.timeout(15_000),
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok || typeof data?.ids?.[0] !== "string") throw new Error("Drive reservation failed");
+  return data.ids[0];
+}
+
+export async function deleteUnusedPrivateDriveImage(fileId: string) {
+  const token = await getAccessToken();
+  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`, {
+    method: "DELETE", headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok && response.status !== 404) throw new Error("Drive cleanup failed");
 }
 
 function escapeDriveQueryValue(value: string) {

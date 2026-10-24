@@ -3,6 +3,11 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './tests',
   testMatch: [
+    '**/cash-counts/cash-count-route-failures.spec.ts',
+    '**/cash-counts/cash-count-logic.spec.ts',
+    '**/cash-counts/cash-count-concurrency.spec.ts',
+    '**/cash-counts/cash-count-pdf.spec.ts',
+    '**/cash-counts/cash-count-upload-recovery.spec.ts',
     '**/operator-money-history-route.spec.ts',
     '**/dashboard-freshness.spec.ts',
     '**/dashboard-branch-summaries-route.spec.ts',

@@ -1,6 +1,6 @@
 import { parseRubberWeightAlertConfig, type RubberWeightAlertConfig } from "./rubber-weight-alert";
 
-export type AlertKind = "cash" | "weight";
+export type AlertKind = "cash" | "weight" | "count";
 export type ThresholdCandidate = {
   kind: AlertKind; locationId: string; locationName: string;
   groupId: string; groupOrder: number; value: number; threshold: number; calculatedAt: string;
@@ -20,7 +20,7 @@ export function validCashThreshold(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value)
     && value >= CASH_THRESHOLD_MIN && value <= CASH_THRESHOLD_MAX && Number(value.toFixed(2)) === value;
 }
-const kindValid = (value: unknown): value is AlertKind => value === "cash" || value === "weight";
+const kindValid = (value: unknown): value is AlertKind => value === "cash" || value === "weight" || value === "count";
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 export function parseBranchThresholdCheck(value: unknown): BranchThresholdCheck | null {
   if (!object(value)) return null;

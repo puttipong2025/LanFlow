@@ -1,5 +1,13 @@
 import { NextResponse } from "next/server";
 
+export class CashCountInputError extends Error {}
+
+export function cashCountUnavailableResponse() {
+  return NextResponse.json({ error: "ติดต่อระบบนับเงินไม่สำเร็จ กรุณาลองใหม่" }, {
+    status: 503, headers: { "Cache-Control": "private, no-store" },
+  });
+}
+
 export function cashCountErrorResponse(message: string) {
   const status = message.includes("ไม่มีสิทธิ์")
     ? 403

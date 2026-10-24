@@ -12,9 +12,6 @@ test("prints rubber payable as whole baht while preserving two-decimal money fie
       createdByName: "ผู้ทดสอบ",
       createdAt: "2026-07-27T00:00:00.000Z",
       itemCount: 3,
-      hasCashCount: true,
-      cashCountCheckerName: "ผู้ตรวจนับทดสอบ",
-      cashCountSubmittedAt: "2026-07-27T00:01:00.000Z",
     },
     rubberBills: [
       {
@@ -74,8 +71,8 @@ test("prints rubber payable as whole baht while preserving two-decimal money fie
     );
 
     await page.goto("/reports/report-format-test/print");
-    await expect(page.getByText(/ผลตรวจนับ: มีผลตรวจนับเงินสด/)).toBeVisible();
-    await expect(page.getByText(/ผู้ตรวจนับ: ผู้ตรวจนับทดสอบ/)).toBeVisible();
+    await expect(page.getByText(/ผลตรวจนับ:/)).toHaveCount(0);
+    await expect(page.getByText(/ผู้ตรวจนับ:/)).toHaveCount(0);
     await expect(page.getByText("คะแนนพิรุธ")).toHaveCount(0);
     await expect(page.getByText(/รวมรายการ \(ไม่รวมยอดยกมา\): 3/)).toBeVisible();
     await expect(page.locator("body")).toContainText("รวม 0 รายการ (ไม่รวมยอดยกมา)");

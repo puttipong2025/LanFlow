@@ -13,3 +13,5 @@ Each successful deletion first writes a permanent, immutable audit row that cont
 The forward migration must audit and purge legacy soft-deleted Rubber Exports and ordinary reports in dependency order without bypassing locks or cascading into other domains. It must abort if an unexpected Cash Count, paired report, active receipt, active report/export relation, or other foreign-key blocker is present. The production rollout requires a verified backup and explicit preflight; destructive rows are recoverable only from that backup.
 
 This decision supersedes only the deleted-row retention and historical-copy portions of ADR-0010, ADR-0025, ADR-0030, and ADR-0032, and refines the deleted branch-receipt relation in ADR-0033. Their ownership, PDF generation for existing sources, balance, age, and active relation contracts remain accepted.
+
+> ขอบเขตนับเงินของโค้ดใหม่ถูกแทนที่โดย ADR 0080: แยกจากรายงานและลบจากการใช้งานพร้อม audit โดยคงหลักฐาน การลบรายงานและส่งออกยางยังใช้กติกาเดิม ผลใหม่นี้ตรวจบน local และไม่ใช่ receipt การ deploy Cloud

@@ -286,9 +286,7 @@ function BusinessLanFlowApp() {
     exportId: string;
     locationId: string;
   } | null>(null);
-  const [pendingCashCountId, setPendingCashCountId] = useState<string | null>(null);
   const [pendingEvidenceBillId, setPendingEvidenceBillId] = useState<string | null>(null);
-  const handleInitialCashCountHandled = useCallback(() => setPendingCashCountId(null), []);
   const [ocrUploadItems, setOcrUploadItems] = useState<RubberBillOcrQueueItem[]>([]);
   const online = useOnlineStatus();
   const rubberBillOcrQueue = useRubberBillOcrQueue({
@@ -763,8 +761,6 @@ function BusinessLanFlowApp() {
             selectedLocation={selectedLocation}
             profile={profile}
             online={online}
-            initialCountId={pendingCashCountId}
-            onInitialCountHandled={handleInitialCashCountHandled}
           />
         )}
         {activeTab === "acid-stock" && (
@@ -783,10 +779,7 @@ function BusinessLanFlowApp() {
             selectedLocation={selectedLocation}
             profile={profile}
             online={online}
-            onOpenCashCount={(countId) => {
-              setPendingCashCountId(countId);
-              setActiveTab("cash-count");
-            }}
+
           />
         )}
         {activeTab === "admin" && (

@@ -23,7 +23,7 @@ test("manual check defaults to cash, restores focus, reopens and preserves timer
   await suppressAutomatic(page);
   await page.goto("/");
   await expect(page.locator(".landscape-compact-actions")).toBeVisible();
-  expect(await page.getByRole("button", { name: "ตั้งค่าการแจ้งเตือน Telegram" }).evaluate(el => el.nextElementSibling?.textContent)).toContain("ตรวจแจ้งเตือน");
+  await expect(page.getByRole("button", { name: "ตรวจแจ้งเตือน", exact: true })).toBeVisible();
   let checks = 0;
   let payload = { ...blank, candidates: [item("cash"), item("weight")], configuredCount: 2, checkedCount: 2 };
   await page.route("**/api/lanflow/threshold-alert", async route => { checks++; await route.fulfill({ json: payload }); });
@@ -112,7 +112,7 @@ test("cash group UI to real RPC and snapshot; API authorization and equality", a
     await page.getByRole("button", { name: "ตรวจแจ้งเตือน", exact: true }).click();
     const dialog = page.getByRole("alertdialog", { name: "แจ้งเตือน", exact: true });
     await expect(dialog.getByText(name, { exact: true })).toBeVisible();
-    await expect(dialog.getByRole("region").filter({ hasText: name }).getByText("10,000 บาท", { exact: true })).toBeVisible();
+    await expect(dialog.locator("section").filter({ hasText: name }).getByText("10,000 บาท", { exact: true })).toBeVisible();
     await expect(dialog.getByRole("heading", { name: "รับ–จ่ายสุทธิสะสมต่ำกว่าเกณฑ์" })).toBeVisible();
     await page.keyboard.press("Escape");
     expect((await db.from("dashboard_branch_snapshots").update({ summary: { netCashFlow: 10000 } }).eq("location_id", id)).error).toBeNull();

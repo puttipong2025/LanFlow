@@ -141,9 +141,6 @@ export default function ReportPrintPage() {
           <div><strong>รวมรายการ ({REPORT_OPENING_BALANCE_COUNT_NOTE}):</strong> {details.report.itemCount.toLocaleString("th-TH")}</div>
           <div><strong>ช่วงวันที่ข้อมูล:</strong> {formatReportDateRange(dateRange)}</div>
           <div><strong>สถานะ:</strong> <span>{REPORT_STATUS_LABEL}</span></div>
-          <div><strong>ผลตรวจนับ:</strong> {details.report.hasCashCount ? "มีผลตรวจนับเงินสด" : "ไม่มีผลตรวจนับเงินสด"}</div>
-          {details.report.hasCashCount && <div><strong>ผู้ตรวจนับ:</strong> {details.report.cashCountCheckerName ?? "-"}</div>}
-          {details.report.hasCashCount && <div><strong>ตรวจนับเมื่อ:</strong> {details.report.cashCountSubmittedAt ? thaiDateTime(details.report.cashCountSubmittedAt) : "-"}</div>}
         </div>
       </header>
 
