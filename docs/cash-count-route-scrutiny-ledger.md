@@ -57,3 +57,10 @@ Verdict: ship locally; reproduced failures corrected and regression checks passe
 - R15: full isolated regression579 passed,2 opt-in live OCR tests skipped. Includes real concurrent review/delete, branch fence, route errors, upload recovery and PDF coverage.
 - R16: local database suite57 files/1329 assertions passed. No newly reproduced business-logic/route bug or confirmed dead code in this pass. No production source or SQL changes were necessary.
 - Verdict: ship for the reviewed local scope; no new actionable finding. Live external OCR/Drive calls and deployment were not rerun in this pass.
+
+## Production cutover follow-up — web gate requires no Docker
+
+- Repro: Vercel deployment dpl_DTPT4MrinUFxEEmV5ZTUevyLbYxr for5ded0e2 failed at cash-count-concurrency.spec.ts with spawnSync docker ENOENT. Production kept the previous application while all four Cloud migrations had applied. That application still requested the retired cash_counts/report_batches relationship.
+- Trace: deploy:check → verify → test:isolated included a local Docker integration test. Local verification passed because Docker exists locally; Vercel has no local database runtime. This disproves a missing new relationship or a need to restore the old FK: current source no longer requests that join.
+- Minimal fix: move the concurrency test to playwright.database.config.ts and run it as part of test:db. Both GitHub's database-gate and local database verification retain the check; the web gate remains independent of Docker. Do not skip the integration test globally or change production schema to accommodate obsolete application code.
+- Verification: standalone database concurrency test passed. Isolated web regression, lint/typecheck and replacement production deployment are checked during recovery.
