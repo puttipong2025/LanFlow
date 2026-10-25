@@ -6,9 +6,9 @@ import { isUuid } from "@/lib/server/management-route-error";
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
-    if (!isSmsMutationAllowed(request)) return smsError("FORBIDDEN", 403);
     const auth = await requireRole(request, ["super_admin"]);
     if (!auth.ok) return auth.response;
+    if (!isSmsMutationAllowed(request)) return smsError("FORBIDDEN", 403);
     const { id } = await context.params;
     const body = await request.json().catch(() => null);
     if (!isUuid(id) || typeof body?.required !== "boolean") return smsError("INVALID_INPUT");

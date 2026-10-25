@@ -10,6 +10,23 @@ const smsBoundary = {
   otpDigest: () => 'digest',
 };
 
+for (const resource of ['otp', 'phone', 'sms'] as const) {
+  test(`${resource}: authenticate before Origin, but authenticated foreign requests remain forbidden`, async () => {
+    for (const signedIn of [false, true]) {
+      let writes = 0;
+      const filename = resource === 'otp' ? 'src/app/api/auth/sms/route.ts' : `src/app/api/lanflow/admin/users/[id]/${resource}/route.ts`;
+      const route = loadSourceModule<Record<string, (r: Request, c: { params: Promise<{ id: string }> }) => Promise<Response>>>(filename, {
+        '@/lib/server/sms-otp': { ...smsBoundary, isSmsMutationAllowed: () => false, getSmsIdentity: async () => signedIn ? { status: 'OTP_REQUIRED', password: true } : null },
+        '@/lib/server/auth': { requireRole: async () => signedIn ? { ok: true, auth: { sub: id } } : { ok: false, response: Response.json({ error: 'unauthorized' }, { status: 401 }) } },
+        '@/lib/server/supabase-admin': { createSupabaseAdminClient: () => { writes++; throw new Error('must not write'); } },
+      });
+      const result = await route[resource === 'otp' ? 'POST' : 'PATCH'](new Request('http://localhost', { method: 'POST', headers: { Origin: 'https://foreign.test' } }), { params: Promise.resolve({ id }) });
+      expect(result.status).toBe(signedIn ? 403 : 401);
+      expect(writes).toBe(0);
+    }
+  });
+}
+
 for (const body of [
   { action: 'verify', challengeId: '-'.repeat(36), code: '123456' },
   { action: 'verify', challengeId: id, code: 123456 },

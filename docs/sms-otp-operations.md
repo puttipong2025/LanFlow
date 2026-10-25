@@ -2,6 +2,8 @@
 
 Release update 2026-10-25: user authorized `push main` and `supabase db push`. Cloud migrations 20261025010000, 20261025011000 and 20261025012000 applied successfully; post-apply dry-run reports up to date and migration history matches. CLI emitted a nonfatal catalog-cache certificate warning after applying; independent dry-run/history checks confirmed the migration state. Earlier local-only statements below are historical evidence, not the current migration status. Application hosting deployment, SMS environment configuration and pilot activation are not confirmed by database migration or Git push alone.
 
+Post-push inspection: Vercel reported successful Production deployment for 718c243 and its login page returned HTTP200. GitHub web-gate passed; database tests passed but route-boundary tests failed on the three new SMS mutations (expected401, actual403). Origin was checked before authentication. Follow-up fixes authenticate first, then enforce Origin before body parsing or mutation. Three new tests failed before the fix and passed after it, including authenticated foreign-Origin rejection with zero writes. Database migrations are unchanged; hosting SMS secrets and pilot activation still require separate verification.
+
 Status: local implementation verified; no Production migration/deployment has been performed. The user received SMS with the new sender. A real-provider fixture verified once/rejected replay, and a subsequent handset test using the code returned by the user passed through the real local application API. Final build, PWA reconnect/role-downgrade acceptance and regression checks passed. Production configuration, pilot-account selection and rollout remain separate steps.
 
 ## Ownership and boundaries

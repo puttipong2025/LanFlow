@@ -12,11 +12,11 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  if (!isSmsMutationAllowed(request)) return smsError("FORBIDDEN", 403);
   let stage = "identity";
   try {
     const identity = await getSmsIdentity(request);
     if (!identity || ["SIGNED_OUT", "SESSION_REVOKED"].includes(identity.status)) return smsError("SESSION_REVOKED", 401);
+    if (!isSmsMutationAllowed(request)) return smsError("FORBIDDEN", 403);
     if (!identity.password) return smsError("PASSWORD_REQUIRED", 401);
     if (identity.status !== "OTP_REQUIRED") return smsError("NOT_REQUIRED", 409);
     const body = await request.json().catch(() => null);

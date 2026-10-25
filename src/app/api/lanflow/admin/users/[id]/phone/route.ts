@@ -10,9 +10,9 @@ import { classifyAuthClaimsFailure } from "@/lib/server/auth-access-failure";
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
-    if (!isSmsMutationAllowed(request)) return smsError("FORBIDDEN", 403);
     const auth = await requireRole(request, ["super_admin"]);
     if (!auth.ok) return auth.response;
+    if (!isSmsMutationAllowed(request)) return smsError("FORBIDDEN", 403);
     const { id } = await context.params;
     const body = await request.json().catch(() => null);
     if (!isUuid(id) || typeof body?.phone !== "string") return smsError("INVALID_INPUT");
