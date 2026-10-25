@@ -12,11 +12,19 @@ export class ApiResponseError extends Error {
   }
 }
 
-export function authFetch(url: string, init?: RequestInit): Promise<Response> {
-  return abortableFetch(url, {
+export async function authFetch(url: string, init?: RequestInit): Promise<Response> {
+  const response = await abortableFetch(url, {
     ...init,
     credentials: "same-origin"
   });
+  if (response.status === 401 && typeof window !== "undefined") {
+    const body = await response.clone().json().catch(() => ({}));
+    if (["OTP_REQUIRED", "SESSION_REVOKED", "PASSWORD_REQUIRED"].includes(body.errorCode)) {
+      window.dispatchEvent(new CustomEvent("lanflow:auth-required", { detail: body.errorCode }));
+      if (window.location.pathname !== "/login") window.location.assign("/login");
+    }
+  }
+  return response;
 }
 
 export async function assertApiResponse(response: Response): Promise<void> {
@@ -32,6 +40,17 @@ export async function assertApiResponse(response: Response): Promise<void> {
   }
 
   throw new ApiResponseError(response.status, message);
+}
+
+/** Revalidate before touching a persisted queue, including on reconnect. */
+export async function canSyncCurrentSession(ownerUserId: string, locationId?: string): Promise<boolean> {
+  try {
+    const response = await authFetch("/api/auth/me", { cache: "no-store" });
+    if (!response.ok) return false;
+    const data = await response.json();
+    return data.profile?.id === ownerUserId && ["admin", "super_admin"].includes(data.profile?.role)
+      && (!locationId || data.profile?.locationIds?.includes(locationId) === true);
+  } catch { return false; }
 }
 
 /**

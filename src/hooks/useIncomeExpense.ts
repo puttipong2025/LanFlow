@@ -5,7 +5,7 @@ import { coalesceQueueGroup } from "@/lib/coalesceQueueGroup";
 import { buildIncomeExpensePayload } from "@/lib/income-expense/build-income-expense-payload";
 import { OFFLINE_SYNCED_ACTION_MESSAGE, PENDING_SERVER_ACTION_MESSAGE } from "@/lib/record-action-locks";
 import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
-import { authFetch } from "@/lib/auth-fetch";
+import { authFetch, canSyncCurrentSession } from "@/lib/auth-fetch";
 import { isRetryableSyncResponse } from "@/lib/sync-response";
 import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
@@ -302,8 +302,8 @@ export function syncPendingIncomeExpense(
   }
 
   const scopeKey = `${ownerUserId}:${locationId}`;
-  return runIncomeExpenseSyncSingleFlight(scopeKey, () => (
-    runPendingIncomeExpenseSync(queryClient, ownerUserId, locationId)
+  return runIncomeExpenseSyncSingleFlight(scopeKey, async () => (
+    (await canSyncCurrentSession(ownerUserId, locationId) ? runPendingIncomeExpenseSync(queryClient, ownerUserId, locationId) : Promise.resolve({ receipts: new Map(), rejections: new Map(), pendingApprovalIds: new Set<string>(), attemptedIds: new Set<string>() }))
       .finally(async () => {
       await invalidateMoneyFlowLocation(queryClient, { ownerUserId, locationId });
       })

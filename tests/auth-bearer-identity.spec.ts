@@ -23,7 +23,8 @@ function fixture(failure?: "claims" | "inactive" | "upstream" | "claims-throw" |
           : { data: { claims: { sub: token ?? identity } }, error: null };
       } },
       from: () => query,
-      rpc: async () => {
+      rpc: async (name: string) => {
+        if (name === "sms_login_status") return { data: { status: "READY" }, error: null };
         identities.push(`rpc:${identity}`);
         if (failure === "scope-throw") throw new Error("scope network failure");
         return { data: [{ location_id: `branch-${identity}`, is_primary: true }], error: null };

@@ -26,7 +26,6 @@ import {
   clearBranchCreateGuardState,
   resolveBranchConfirmationMinutes,
 } from "@/lib/lanflow/branch-create-guard";
-import { removeSyncEventsForOwner } from "@/lib/idb-queue";
 import { type Tab } from "@/components/lanflow/tabs";
 import { Dashboard } from "@/components/dashboard/Dashboard";
 import { AppHeader } from "@/components/lanflow/AppHeader";
@@ -165,11 +164,8 @@ function UserTimePayrollApp() {
 
         clearBusinessBootstrapCache(data.profile.id);
         clearBranchCreateGuardState(data.profile.id);
-        try {
-          await removeSyncEventsForOwner(data.profile.id);
-        } catch (error) {
-          console.error("Failed to clear stale User business queue", error);
-        }
+        // Retain pending work after a downgrade; the User shell has no business
+        // sync hooks and every replay must revalidate its owner's business role.
         if (ignore) return;
         setProfile(data.profile);
         setState("ready");

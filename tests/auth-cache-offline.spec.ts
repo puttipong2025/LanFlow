@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { createClient } from '@supabase/supabase-js';
 
 async function waitForServiceWorkerControl(page: Page) {
   await page.evaluate(async () => {
@@ -179,3 +180,86 @@ test.describe('Offline Auth Cache Clearance', () => {
     expect(hasCache).toBe(false);
   });
 });
+
+for (const downgrade of [false, true]) {
+test(`SMS revocation on reconnect preserves a pending queue${downgrade ? ' after role downgrade and new login' : ''}`, async ({ browser }) => {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  expect(url).toMatch(/^http:\/\/(127\.0\.0\.1|localhost):55421\/?$/);
+  const service = createClient(url, process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY!, { auth: { persistSession: false, autoRefreshToken: false } });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  let owner = '';
+  try {
+    await page.goto('/login');
+    await page.locator('input[type="tel"]').fill('0810000001');
+    await page.locator('input[type="password"]').fill(process.env.TEST_PASSWORD || 'password123');
+    await page.getByRole('button', { name: 'เข้าสู่ระบบ', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'ภาพรวม', exact: true })).toBeVisible({ timeout: 15000 });
+    if (process.env.PW_PROJECT === 'pwa') await waitForServiceWorkerControl(page);
+    const profile = await page.evaluate(() => {
+      const id = localStorage.getItem('lanflow:last-auth-user')!;
+      return JSON.parse(localStorage.getItem(`lanflow:auth-profile:${id}`)!).profile;
+    });
+    owner = profile.id;
+    const location = profile.primaryLocationId || profile.locationIds[0];
+    expect(location).toBeTruthy();
+    await context.setOffline(true);
+    const marker = crypto.randomUUID();
+    await page.evaluate(({ marker, owner, location }) => new Promise<void>((resolve, reject) => {
+      const opened = indexedDB.open('lanflow_sync_db', 5);
+      opened.onerror = () => reject(opened.error);
+      opened.onsuccess = () => {
+        const db = opened.result;
+        const transaction = db.transaction('sync_queue', 'readwrite');
+        for (const entity of ['rubber_bills', 'income_expense']) transaction.objectStore('sync_queue').add({ id: marker, entity, ownerUserId: owner, locationId: location, operation: 'create', payload: { clientTempId: marker, locationId: location }, timestamp: Date.now(), status: 'pending' });
+        transaction.oncomplete = () => { db.close(); resolve(); };
+        transaction.onerror = () => reject(transaction.error);
+      };
+    }), { marker, owner, location });
+    const actors = await service.from('profiles').select('id').eq('role', 'super_admin').limit(1);
+    expect((await service.rpc('set_user_sms_required', { p_actor: actors.data![0].id, p_target: owner, p_required: true })).error).toBeNull();
+    if (downgrade) expect((await service.from('profiles').update({ role: 'user' }).eq('id', owner)).error).toBeNull();
+    let replayed = 0;
+    page.on('request', request => { if (request.method() === 'POST' && ['/api/lanflow/rubber-bills', '/api/lanflow/income-expense'].includes(new URL(request.url()).pathname)) replayed++; });
+    await context.setOffline(false);
+    await expect(page).toHaveURL(/\/login$/);
+    if (downgrade) {
+      expect((await service.rpc('set_user_sms_required', { p_actor: actors.data![0].id, p_target: owner, p_required: false })).error).toBeNull();
+      await page.getByRole('button', { name: 'แสดง', exact: true }).click();
+      await expect(page.locator('#password')).toHaveAttribute('type', 'text');
+      await page.getByRole('button', { name: 'ซ่อน', exact: true }).click();
+      await page.locator('input[type="tel"]').fill('0810000001');
+      await page.locator('input[type="password"]').fill(process.env.TEST_PASSWORD || 'password123');
+      await page.getByRole('button', { name: 'เข้าสู่ระบบ', exact: true }).click();
+      await expect(page.getByRole('heading', { name: 'เวลาและเงินเดือน', exact: true })).toBeVisible();
+      await expect(page.getByText('กำลังตรวจสอบสิทธิ์...', { exact: true })).toBeHidden();
+      expect((await page.request.get('/api/lanflow/dashboard')).status()).toBe(403);
+    }
+    const queued = await page.evaluate(marker => new Promise<Array<{ status: string; ownerUserId: string; locationId: string }>>((resolve, reject) => {
+      const opened = indexedDB.open('lanflow_sync_db', 5);
+      opened.onerror = () => reject(opened.error);
+      opened.onsuccess = () => {
+        const db = opened.result;
+        const request = db.transaction('sync_queue').objectStore('sync_queue').index('id').getAll(marker);
+        request.onsuccess = () => { db.close(); resolve(request.result); };
+        request.onerror = () => reject(request.error);
+      };
+    }), marker);
+    expect(queued).toHaveLength(2);
+    for (const event of queued) {
+      expect(event.status).toBe('pending');
+      expect(event.ownerUserId).toBe(owner);
+      expect(event.locationId).toBe(location);
+    }
+    expect(replayed).toBe(0);
+  } finally {
+    await context.setOffline(false);
+    if (owner) {
+      if (downgrade) await service.from('profiles').update({ role: 'admin' }).eq('id', owner);
+      const actors = await service.from('profiles').select('id').eq('role', 'super_admin').limit(1);
+      await service.rpc('set_user_sms_required', { p_actor: actors.data![0].id, p_target: owner, p_required: false });
+    }
+    await context.close();
+  }
+});
+}

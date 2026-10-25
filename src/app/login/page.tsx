@@ -2,10 +2,11 @@
 
 import { useEffect, useState } from "react";
 import { useAuthContext } from "@/components/AuthProvider";
+import { SmsLoginVerification } from "@/components/lanflow/SmsLoginVerification";
 import { Eye, EyeOff, Leaf, Loader2, LogIn, Phone, Lock } from "lucide-react";
 
 export default function LoginPage() {
-  const { login, isAuthenticated, isLoading: authLoading } = useAuthContext();
+  const { login, isAuthenticated, otpRequired, isLoading: authLoading } = useAuthContext();
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -17,6 +18,8 @@ export default function LoginPage() {
       window.location.href = "/";
     }
   }, [authLoading, isAuthenticated]);
+
+  if (otpRequired) return <SmsLoginVerification />;
 
   if (isAuthenticated) {
     return (
@@ -83,7 +86,7 @@ export default function LoginPage() {
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
                 className="login-input"
-                disabled={isSubmitting}
+                disabled={isSubmitting || authLoading}
               />
             </div>
           </div>
@@ -103,11 +106,12 @@ export default function LoginPage() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="login-input login-input-password"
-                disabled={isSubmitting}
+                disabled={isSubmitting || authLoading}
               />
               <button
                 type="button"
                 className="login-eye-btn"
+                disabled={authLoading}
                 onClick={() => setShowPassword(!showPassword)}
               >
                 {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}

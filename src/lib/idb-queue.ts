@@ -257,30 +257,3 @@ export async function reconcileSyncEventsIfCurrent(
     transaction.onerror = () => { db.close(); reject(transaction.error); };
   });
 }
-
-export async function removeSyncEventsForOwner(ownerUserId: string): Promise<number> {
-  if (!ownerUserId) return 0;
-  const db = await getSyncDb();
-  return new Promise((resolve, reject) => {
-    let removed = 0;
-    const transaction = db.transaction(SYNC_QUEUE_STORE, "readwrite");
-    const store = transaction.objectStore(SYNC_QUEUE_STORE);
-    const request = store.index("ownerUserId").openKeyCursor(ownerUserId);
-    request.onsuccess = () => {
-      const cursor = request.result;
-      if (!cursor) return;
-      store.delete(cursor.primaryKey);
-      removed += 1;
-      cursor.continue();
-    };
-    request.onerror = () => reject(request.error);
-    transaction.oncomplete = () => {
-      db.close();
-      resolve(removed);
-    };
-    transaction.onerror = () => {
-      db.close();
-      reject(transaction.error);
-    };
-  });
-}

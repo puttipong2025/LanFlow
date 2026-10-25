@@ -23,6 +23,7 @@ export type AuthState = {
   isAuthenticated: boolean;
   mode: AuthMode;
   offlineUntil: string | null;
+  otpRequired: boolean;
   login: (phone: string, password: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => Promise<void>;
   refreshProfile: () => Promise<boolean>;
@@ -87,6 +88,7 @@ export function useAuth(): AuthState {
   const [isLoading, setIsLoading] = useState(true);
   const [mode, setMode] = useState<AuthMode>("signed_out");
   const [offlineUntil, setOfflineUntil] = useState<string | null>(null);
+  const [otpRequired, setOtpRequired] = useState(false);
   const connectivityTransitionReady = useRef(false);
 
 
@@ -109,6 +111,8 @@ export function useAuth(): AuthState {
 
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) {
+          const failure = await response.clone().json().catch(() => ({}));
+          setOtpRequired(failure.errorCode === "OTP_REQUIRED");
           clearOfflineAuthCache();
           setProfile(null);
           setMode("signed_out");
@@ -119,6 +123,7 @@ export function useAuth(): AuthState {
       }
 
       const data = (await response.json()) as { profile: Profile };
+      setOtpRequired(false);
       cacheProfile(data.profile);
       setProfile(data.profile);
       setMode("online");
@@ -140,6 +145,18 @@ export function useAuth(): AuthState {
       setOfflineUntil(null);
     }
   }, [refreshProfile]);
+
+  useEffect(() => {
+    const handleAuthRequired = (event: Event) => {
+      clearOfflineAuthCache();
+      setProfile(null);
+      setMode("signed_out");
+      setOfflineUntil(null);
+      setOtpRequired((event as CustomEvent<string>).detail === "OTP_REQUIRED");
+    };
+    window.addEventListener("lanflow:auth-required", handleAuthRequired);
+    return () => window.removeEventListener("lanflow:auth-required", handleAuthRequired);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -240,6 +257,13 @@ export function useAuth(): AuthState {
       const data = await response.json();
 
       if (!response.ok) {
+        if (data.errorCode === "OTP_REQUIRED") {
+          clearOfflineAuthCache();
+          setProfile(null);
+          setMode("signed_out");
+          setOtpRequired(true);
+          return { success: false };
+        }
         if (response.status === 401 || response.status === 403) {
           const supabase = createSupabaseBrowserClient();
           await supabase.auth.signOut();
@@ -255,6 +279,7 @@ export function useAuth(): AuthState {
       }
 
       cacheProfile(data.profile);
+      setOtpRequired(false);
       setProfile(data.profile);
       setMode("online");
       setOfflineUntil(null);
@@ -285,6 +310,7 @@ export function useAuth(): AuthState {
     isAuthenticated: profile !== null && mode !== "signed_out",
     mode,
     offlineUntil,
+    otpRequired,
     login,
     logout,
     refreshProfile

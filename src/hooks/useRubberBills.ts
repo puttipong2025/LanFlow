@@ -15,7 +15,7 @@ import {
   OFFLINE_SYNCED_ACTION_MESSAGE,
   PENDING_SERVER_ACTION_MESSAGE,
 } from "@/lib/record-action-locks";
-import { authFetch } from "@/lib/auth-fetch";
+import { authFetch, canSyncCurrentSession } from "@/lib/auth-fetch";
 import { isRetryableSyncResponse } from "@/lib/sync-response";
 import { assertOfflineRubberBillPriceAllowed } from "@/lib/rubber-bills/approval";
 import type { EffectiveRubberApprovalSettings } from "@/types";
@@ -57,7 +57,7 @@ export function syncPendingRubberBills(
   const scopeKey = `${ownerUserId}:${locationId}`;
   if (activeDirectSubmissionScopes.has(scopeKey)) return Promise.resolve();
   return runRubberBillSyncSingleFlight(scopeKey, async () => {
-    try {
+    try { if (!await canSyncCurrentSession(ownerUserId, locationId)) return;
     if (!await normalizeRubberBillQueueBeforeSync(ownerUserId, locationId)) return;
     const events = await getPendingEvents(queuePartition(ownerUserId, locationId));
     // Precompute: block ALL ids that have any failed/conflict event

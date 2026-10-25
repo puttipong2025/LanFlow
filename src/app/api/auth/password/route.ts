@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import { getSupabasePublishableKey, getSupabaseUrl } from "@/lib/supabase/config";
 
 import { normalizeThaiPhoneToE164 } from "@/lib/phone";
 import { requireAuth } from "@/lib/server/auth";
 import { createSupabaseAdminClient } from "@/lib/server/supabase-admin";
+import { classifyAuthClaimsFailure } from "@/lib/server/auth-access-failure";
 import type {
   SelfPasswordChangeRequest,
   SelfPasswordChangeResponse,
@@ -52,12 +55,20 @@ export async function POST(request: NextRequest) {
   let reauthenticationError: unknown;
   let currentUserMetadata: Record<string, unknown> = {};
   try {
-    const reauthenticated = await authCheck.supabase.auth.signInWithPassword({
+    const verifier = createClient(getSupabaseUrl(), getSupabasePublishableKey(), { auth: { persistSession: false, autoRefreshToken: false } });
+    const reauthenticated = await verifier.auth.signInWithPassword({
       phone: normalizeThaiPhoneToE164(authCheck.auth.phone),
       password: body.currentPassword,
     });
     reauthenticationError = reauthenticated.error;
+    if (classifyAuthClaimsFailure({ claimsError: reauthenticationError, hasUserId: Boolean(reauthenticated.data.user?.id) })?.status === 503) {
+      return NextResponse.json(
+        { errorMessage: "ระบบยืนยันรหัสผ่านชั่วคราวไม่พร้อมใช้งาน" },
+        { status: 503, headers: { ...NO_STORE_HEADERS, "Retry-After": "3" } },
+      );
+    }
     currentUserMetadata = reauthenticated.data.user?.user_metadata ?? {};
+    if (!reauthenticationError) await verifier.auth.signOut({ scope: "local" });
   } catch {
     return NextResponse.json(
       { errorMessage: "ระบบยืนยันรหัสผ่านชั่วคราวไม่พร้อมใช้งาน" },
@@ -97,9 +108,9 @@ export async function POST(request: NextRequest) {
   let changeError: unknown;
   const passwordVersion = crypto.randomUUID();
   try {
-    const changed = await authCheck.supabase.auth.updateUser({
+    const changed = await admin.auth.admin.updateUserById(authCheck.auth.sub, {
       password: body.newPassword,
-      data: {
+      user_metadata: {
         ...currentUserMetadata,
         lanflow_password_copy_version: passwordVersion,
       },

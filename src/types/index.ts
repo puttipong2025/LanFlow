@@ -16,7 +16,7 @@ export type Location = {
   active: boolean;
 };
 
-export type Profile = {
+export type Profile = { smsRequired?: boolean;
   id: string;
   name: string;
   phone: string;

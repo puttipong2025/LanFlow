@@ -9,6 +9,7 @@ import {
 } from "@/lib/server/auth-access-failure";
 import { createSupabaseRequestClient, parseBearerToken } from "@/lib/supabase/server";
 import { deriveEffectiveCapabilities } from "@/lib/permissions";
+import { smsError } from "@/lib/server/sms-otp";
 
 export type AuthTokenPayload = {
   sub: string;
@@ -85,6 +86,16 @@ export async function requireAuth(
       };
     }
 
+    const smsStatus = await supabase.rpc("sms_login_status");
+    if (smsStatus.error || typeof smsStatus.data?.status !== "string") {
+      return { ok: false, response: smsError("UNAVAILABLE", 503) };
+    }
+    if (smsStatus.data.status === "SIGNED_OUT") {
+      return { ok: false, response: smsError("FORBIDDEN", 403) };
+    }
+    if (smsStatus.data.status !== "READY") {
+      return { ok: false, response: smsError(smsStatus.data.status, 401) };
+    }
     const [{ data: profile, error: profileError }, { data: locationScope, error: locationScopeError }] =
       await Promise.all([
         supabase

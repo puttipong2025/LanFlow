@@ -44,6 +44,9 @@ export async function GET(request: NextRequest) {
     }
 
     // Map to Profile type
+    const sms = await createSupabaseAdminClient().rpc("get_sms_required", { p_users: profiles.map(p => p.id) });
+    if (sms.error) throw sms.error;
+    const smsFlags = new Map<string, boolean>((sms.data ?? []).map((item: { user_id: string; required: boolean }) => [item.user_id, item.required]));
     const result = profiles.map(p => {
       const capabilities = deriveEffectiveCapabilities({
         role: p.role as AppRole,
@@ -54,6 +57,7 @@ export async function GET(request: NextRequest) {
       });
       return {
         id: p.id,
+        smsRequired: smsFlags.get(p.id) === true,
         name: p.name,
         phone: p.phone,
         createdAt: p.created_at,

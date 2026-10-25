@@ -21,7 +21,10 @@ test("all LanFlow API routes use the shared authorization boundary", () => {
   const files = routeFiles(LANFLOW_API);
   expect(files.length).toBeGreaterThan(0);
   for (const file of files) {
-    const source = readFileSync(file, "utf8");
+    let source = readFileSync(file, "utf8");
+    if (source.includes('from "@/lib/server/threshold-alert-group-routes"')) {
+      source += readFileSync(path.join(ROOT, 'src/lib/server/threshold-alert-group-routes.ts'), 'utf8');
+    }
     expect(source, path.relative(ROOT, file)).toMatch(
       /requireAuth\(|requireRole\(|requireRoleOrSystemManager\(|requireSystemManager\(/,
     );
@@ -40,12 +43,12 @@ test("User allowlist contains only bootstrap and time/payroll self-service route
   ]);
 });
 
-test("User shell is selected before business hooks and clears stale business state", () => {
+test("User shell is selected before business hooks and preserves pending work", () => {
   const source = readFileSync(path.join(ROOT, "src", "components", "LanFlowApp.tsx"), "utf8");
   expect(source.indexOf('auth.profile?.role === "user"')).toBeLessThan(
     source.indexOf("function BusinessLanFlowApp"),
   );
-  expect(source).toContain("removeSyncEventsForOwner(data.profile.id)");
+  expect(source).not.toContain("removeSyncEventsForOwner(data.profile.id)");
   expect(source).toContain("clearBusinessBootstrapCache(data.profile.id)");
   expect(source).toContain("<TimeTrackingModule profile={profile} online={online} locations={[]} />");
   expect(source.indexOf("if (!online)")).toBeLessThan(
