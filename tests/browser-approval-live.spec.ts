@@ -42,9 +42,9 @@ test('real browser flow: two tabs, approval, remembered login and revoke-all', a
     await manager.getByLabel('ค้นหาพนักงาน').fill(target.phone);
     const row=manager.getByRole('row').filter({hasText:target.phone});
     await expect(row.getByText('รออนุมัติ 1',{exact:true})).toBeVisible();
-    await manager.getByLabel(/รออนุมัติเบราว์เซอร์/).check();
+    await manager.getByRole('button', { name: /^รออนุมัติเบราว์เซอร์/ }).click();
     await row.getByRole('button',{name:'อนุมัติ',exact:true}).click();
-    await manager.getByLabel(/รออนุมัติเบราว์เซอร์/).uncheck();
+    await manager.getByRole('button', { name: /^ทั้งหมด/ }).click();
     await expect(row.getByText(new RegExp(`อนุมัติล่าสุด: ${actor.name}`))).toBeVisible();
     await a.getByRole('button',{name:'ตรวจสถานะอีกครั้ง',exact:true}).click();
     await expect(a.getByRole('heading',{name:'รออนุมัติเบราว์เซอร์'})).toHaveCount(0);
