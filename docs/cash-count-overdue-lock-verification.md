@@ -86,3 +86,11 @@ Implementation and required checks are complete locally. The unrelated user-edit
 - `supabase db push --linked --yes` applied20261026015000,20261026020000 and20261026021000 successfully. Postflight catalog checks confirm all three history rows, both movement guards, index, reset trigger, all three settings columns, authenticated RPC access and anonymous/private RPC denials. Enabled groups=0.
 - A follow-up linked dry-run reports `Remote database is up to date`. CLI emitted a nonfatal pg-delta catalog-cache certificate warning after migration application; independent catalog/history verification passed, so no repair/reset was performed.
 - Main push follows this database receipt. Application hosting rollout and physical-device acceptance are separate from the verified database migration and Git push.
+
+### Post-release scrutiny: optional group ID — 2026-10-26
+
+- Intent/simpler alternative: validate optional group identity in the existing POST guard; no new validator module or database change is necessary.
+- Repro: real group route with only auth/RPC I/O mocked accepted `id=""` (200 instead of400). The test also tracks RPC calls, so a downstream rejection cannot hide the validation leak.
+- Source trace (VM harness, no attached debugger): JSON body → truthy `body.id` check → RPC `p_group_id=body.id??null`. Ranked hypotheses: truthiness skips malformed falsy values; RPC coercion caused the error; auth gate rejected the request. Controls for omitted/null/valid UUID pass, ruling out auth/coercion as the cause of the skipped validation.
+- Fix: check presence using `body.id != null` before UUID validation. Missing/null remain valid create requests; empty string, false,0, arrays, objects and invalid strings return400 without an RPC call.
+- Regression: logic/route23 tests pass, including existing permission/diagnostic/queue behavior. No additional unused production function/import was confirmed. This follow-up is local and has not been pushed or deployed.

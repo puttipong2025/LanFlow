@@ -6,6 +6,18 @@ import { isCashCountLockSyncResponse, isRetryableSyncResponse } from "../../src/
 import type { SyncEvent } from "../../src/lib/idb-queue";
 
 const id = "cc260000-0000-4000-8000-000000000011";
+test("group optional ID accepts omission or null but rejects malformed falsy values before RPC", async () => {
+  let calls = 0;
+  const route = loadSourceModule<{ POST: (r: Request) => Promise<Response> }>("src/app/api/lanflow/cash-count-alert/groups/route.ts", {
+    "@/lib/server/auth": { requireSystemManager: async () => ({ ok: true, supabase: { rpc: async () => { calls++; return { data: { id }, error: null }; } } }) },
+  });
+  const send = (patch: Record<string, unknown>) => route.POST(new Request("http://localhost", { method: "POST", body: JSON.stringify({ locationIds: [id], dueDays: 2, ...patch }) }));
+  for (const patch of [{}, { id: null }, { id }]) expect((await send(patch)).status).toBe(200);
+  expect(calls).toBe(3);
+  for (const value of ["", false, 0, [], {}, "invalid"]) expect((await send({ id: value })).status).toBe(400);
+  expect(calls).toBe(3);
+});
+
 test("group routes hide database diagnostics and preserve permission failures", async () => {
   for (const { error, status, publicMessage } of [
     { error: { code: "XX000", message: "internal connection diagnostic secret" }, status: 503, publicMessage: false },

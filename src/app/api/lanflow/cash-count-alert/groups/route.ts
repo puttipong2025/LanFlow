@@ -35,7 +35,7 @@ export async function POST(request: Request) {
     if (!auth.ok) return auth.response;
     const body = await request.json().catch(() => null);
     if (!body || !Array.isArray(body.locationIds) || !body.locationIds.length || !body.locationIds.every(isUuid)
-      || !Number.isInteger(body.dueDays) || body.dueDays < 1 || body.dueDays > 5 || (body.id && !isUuid(body.id))) {
+      || !Number.isInteger(body.dueDays) || body.dueDays < 1 || body.dueDays > 5 || (body.id != null && !isUuid(body.id))) {
       return NextResponse.json({ error: "กรุณาเลือกสาขาและเกณฑ์ 1–5 วัน" }, { status: 400, headers });
     }
     if ((Object.hasOwn(body, "lockEnabled") && typeof body.lockEnabled !== "boolean")
