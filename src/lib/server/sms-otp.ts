@@ -7,7 +7,7 @@ import { classifyAuthClaimsFailure } from "@/lib/server/auth-access-failure";
 
 export const SMS_HEADERS = { "Cache-Control": "private, no-store, max-age=0" };
 
-export function smsError(code: string, status = 400) {
+export function smsError(code: string, status = 400, retryAfter?: number, quota?: { scope: string; count: number; limit: number }) {
   const messages: Record<string, string> = {
     OTP_REQUIRED: "กรุณายืนยันรหัส SMS ก่อนเข้าใช้งาน",
     SESSION_REVOKED: "กรุณาเข้าสู่ระบบใหม่ งานค้างยังเก็บไว้",
@@ -15,7 +15,13 @@ export function smsError(code: string, status = 400) {
     INVALID_OTP: "รหัสไม่ถูกต้อง หมดอายุ หรือใช้ไปแล้ว กรุณาตรวจสอบหรือขอรหัสใหม่",
     RATE_LIMITED: "ขอรหัสบ่อยเกินไป กรุณารอแล้วลองใหม่",
   };
-  return NextResponse.json({ errorCode: code, error: messages[code] ?? "ดำเนินการไม่สำเร็จ กรุณาลองใหม่" }, { status, headers: { ...SMS_HEADERS, ...(status === 503 ? { "Retry-After": "3" } : {}) } });
+  const wait = retryAfter ? Math.max(1, Math.ceil(retryAfter)) : undefined;
+  const labels: Record<string, string> = { cooldown: "ยังไม่ครบเวลาส่งซ้ำ", account: "โควตาบัญชี", ip: "โควตาเครือข่ายที่ใช้อยู่", global: "โควตารวมระบบ", attempts: "จำนวนกรอกรหัสผิด" };
+  const limitMessage = quota ? `${labels[quota.scope] ?? "โควตา SMS"} ${quota.count}/${quota.limit} ครั้ง` : "ขอรหัสบ่อยเกินไป";
+  const error = code === "RATE_LIMITED" && wait
+    ? `${limitMessage} กรุณารออีก ${wait < 60 ? `${wait} วินาที` : `${Math.ceil(wait / 60)} นาที`}แล้วลองใหม่`
+    : messages[code] ?? "ดำเนินการไม่สำเร็จ กรุณาลองใหม่";
+  return NextResponse.json({ errorCode: code, error, ...(quota ? { quota } : {}), ...(wait ? { retryAfter: wait, availableAt: new Date(Date.now() + wait * 1000).toISOString() } : {}) }, { status, headers: { ...SMS_HEADERS, ...(status === 503 ? { "Retry-After": "3" } : status === 429 && wait ? { "Retry-After": String(wait) } : {}) } });
 }
 
 export function otpDigest(user: string, session: string, id: string, code: string) {
@@ -79,14 +85,19 @@ export async function startSmsChallenge(user: string, session: string, request: 
   // Trust a forwarded IP only when running behind the known Vercel ingress.
   const ip = process.env.VERCEL === "1" ? request.headers.get("x-vercel-forwarded-for")?.trim() : "local";
   if (!ip || (ip !== "local" && !isIP(ip))) throw new Error("Trusted client IP unavailable");
-  const budget = await admin.rpc("claim_sms_ip_budget", { p_hash: otpDigest("ip-budget", ip, "send", "") });
+  const hash = otpDigest("ip-budget", ip, "send", "");
+  const budget = await admin.rpc("claim_sms_ip_budget", { p_hash: hash });
   if (budget.error) throw new Error("SMS sending budget unavailable");
-  if (budget.data !== true) return { error: "RATE_LIMITED" };
+  if (budget.data !== true) {
+    const retry = await admin.rpc("sms_ip_retry_after", { p_hash: hash });
+    if (retry.error) throw new Error("SMS sending budget unavailable");
+    return { error: "RATE_LIMITED", retryAfter: retry.data as number, quota: { scope: "ip", count: 50, limit: 50 } };
+  }
   const { data, error } = await admin.rpc("reserve_sms_challenge", { p_user: user, p_session: session, p_id: id, p_digest: digest });
   if (error) throw new Error("Unable to reserve OTP");
-  if (data.error) return { error: data.error as string };
+  if (data.error) return { error: data.error as string, retryAfter: data.retryAfter as number | undefined, quota: data.quota as { scope: string; count: number; limit: number } | undefined };
   await sendThsms(data.phone, code);
   const delivered = await admin.rpc("deliver_sms_challenge", { p_id: id });
   if (delivered.error) throw new Error("Unable to confirm OTP delivery");
-  return { challengeId: id, expiresIn: 300, retryAfter: 60 };
+  return { challengeId: id, expiresIn: 300, retryAfter: 30, sentCount: data.sentCount, sendLimit: data.sendLimit, resetAt: data.resetAt };
 }

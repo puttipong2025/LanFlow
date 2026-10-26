@@ -29,6 +29,7 @@ const phone2=`09${randomInt(10_000_000,99_999_999)}`;
 const password=`Sms-test-${randomUUID()}`;
 let user;
 const ipHash=createHmac('sha256',secret).update(randomUUID()).digest('hex');
+const globalFixture=randomUUID();
 let checks=0;
 const check=(value,message)=>{assert.ok(value,message); checks++;};
 async function login(number=phone) {
@@ -38,8 +39,9 @@ async function login(number=phone) {
 }
 const claims=token=>JSON.parse(Buffer.from(token.split('.')[1],'base64url').toString());
 try {
-  const budgets=await Promise.all(Array.from({length:25},()=>rpc('claim_sms_ip_budget',{p_hash:ipHash})));
-  check(budgets.filter(Boolean).length===20,'Concurrent IP budget allows only 20 sends');
+  const budgets=await Promise.all(Array.from({length:55},()=>rpc('claim_sms_ip_budget',{p_hash:ipHash})));
+  check(budgets.filter(Boolean).length===50,'Concurrent IP budget allows only 50 sends');
+  check(await rpc('sms_ip_retry_after',{p_hash:ipHash})>0,'IP rejection supplies a positive retry delay');
   check(!await rpc('claim_sms_ip_budget',{p_hash:'not-a-valid-bucket'}),'Invalid budget key rejected');
   const actorResult=await request('/rest/v1/profiles?role=eq.super_admin&select=id');
   const actor=actorResult.data[0]?.id;
@@ -78,7 +80,7 @@ try {
   check((await rpc('reserve_sms_challenge',{p_user:user,p_session:claims(third.access_token).session_id,p_id:randomUUID(),p_digest:digest})).error==='RATE_LIMITED','Resend cooldown spans sessions');
   // Fixture-only clock adjustment: never run against any database except this named local container.
   const fresh=async()=>{
-    sql(`update private.sms_account_security set last_sent_at=now()-interval '61 seconds' where user_id='${user}';`);
+    sql(`update private.sms_account_security set last_sent_at=now()-interval '31 seconds' where user_id='${user}';`);
     const next=randomUUID();
     const value=await rpc('reserve_sms_challenge',{p_user:user,p_session:sid,p_id:next,p_digest:digest});
     assert.ok(value.phone,'Reserve fresh local challenge');
@@ -92,6 +94,38 @@ try {
   const expired=await fresh();
   sql(`update private.sms_login_challenges set expires_at=now()-interval '1 second' where session_id='${sid}';`);
   check(!await rpc('verify_sms_challenge',{p_user:user,p_session:sid,p_id:expired,p_digest:digest}),'Expired code rejected');
+  sql(`update private.sms_account_security set quota_sends=4,quota_window=now(),failures=0,send_window=now(),last_sent_at=now()-interval '31 seconds' where user_id='${user}';`);
+  check(Boolean((await rpc('reserve_sms_challenge',{p_user:user,p_session:sid,p_id:randomUUID(),p_digest:digest})).phone),'Fifth account send allowed after 30 seconds');
+  const immediateCap=await rpc('reserve_sms_challenge',{p_user:user,p_session:sid,p_id:randomUUID(),p_digest:digest});
+  check(immediateCap.quota?.scope==='account'&&immediateCap.retryAfter>30,'Fifth-send limit reports the hourly wait even during resend cooldown');
+  sql(`update private.sms_account_security set last_sent_at=now()-interval '31 seconds' where user_id='${user}';`);
+  const capped=await rpc('reserve_sms_challenge',{p_user:user,p_session:sid,p_id:randomUUID(),p_digest:digest});
+  check(capped.error==='RATE_LIMITED'&&capped.retryAfter>0,'Sixth account send rejected with wait time');
+  check(capped.quota?.count===5&&capped.quota?.limit===5,'Account rejection reports 5/5');
+  const usage=await rpc('sms_send_usage',{p_user:user});
+  check(usage.sentCount===5&&usage.sendLimit===5&&Date.parse(usage.resendAt)>Date.now(),'30-minute account usage survives page reload with available time');
+  check((await request('/rest/v1/rpc/sms_send_usage',second.access_token,{p_user:user})).status>=400,'Browser cannot read service-only usage RPC directly');
+  check(capped.retryAfter<=1800,'Account wait is at most 30 minutes');
+  const hourlyBefore=Number(sql(`select sends from private.sms_account_security where user_id='${user}';`).trim());
+  sql(`update private.sms_account_security set quota_window=now()-interval '31 minutes',last_sent_at=now()-interval '31 seconds' where user_id='${user}';`);
+  const newHalfHour=await rpc('reserve_sms_challenge',{p_user:user,p_session:sid,p_id:randomUUID(),p_digest:digest});
+  check(newHalfHour.sentCount===1&&newHalfHour.sendLimit===5,'Account quota restarts after 30 minutes');
+  check(Number(sql(`select sends from private.sms_account_security where user_id='${user}';`).trim())===hourlyBefore+1,'Half-hour reset preserves hourly global accounting');
+  sql(`update private.sms_account_security set quota_sends=5,quota_window=now()-interval '29 minutes 55 seconds',last_sent_at=now() where user_id='${user}';`);
+  const longerCooldown=await rpc('reserve_sms_challenge',{p_user:user,p_session:sid,p_id:randomUUID(),p_digest:digest});
+  check(longerCooldown.quota?.scope==='cooldown'&&longerCooldown.retryAfter>5,'Cooldown remains enforced when hourly reset occurs first');
+  sql(`update private.sms_account_security set failure_window=now(),failures=10,quota_window=now()-interval '10 minutes' where user_id='${user}';`);
+  const longerFailure=await rpc('reserve_sms_challenge',{p_user:user,p_session:sid,p_id:randomUUID(),p_digest:digest});
+  check(longerFailure.quota?.scope==='attempts'&&longerFailure.retryAfter>3500,'Wrong-code restriction takes precedence when it expires last');
+  sql(`update private.sms_account_security set sends=0,quota_sends=0,quota_window=now(),failures=0,send_window=now(),last_sent_at=now()-interval '31 seconds' where user_id='${user}';
+    insert into auth.users(id) values('${globalFixture}');
+    insert into public.profiles(id,phone,name,role,is_active) values('${globalFixture}','${phone2}','Global budget fixture','user',true);
+    insert into private.sms_account_security(user_id,sends,send_window) values('${globalFixture}',199,now());`);
+  check(Boolean((await rpc('reserve_sms_challenge',{p_user:user,p_session:sid,p_id:randomUUID(),p_digest:digest})).phone),'Global send 200 allowed');
+  sql(`update private.sms_account_security set last_sent_at=now()-interval '31 seconds' where user_id='${user}';`);
+  const globalCap=await rpc('reserve_sms_challenge',{p_user:user,p_session:sid,p_id:randomUUID(),p_digest:digest});
+  check(globalCap.error==='RATE_LIMITED'&&globalCap.retryAfter>0,'Global send 201 rejected with wait time');
+  sql(`delete from public.profiles where id='${globalFixture}'; delete from auth.users where id='${globalFixture}';`);
   await rpc('set_user_sms_required',{p_actor:actor,p_target:user,p_required:false});
   check((await rpc('sms_login_status',{},second.access_token)).status==='READY','Disabling does not revoke current session');
   const directChange=await request('/auth/v1/user',second.access_token,{phone:`66${phone2.slice(1)}`},'PUT');
@@ -106,7 +140,7 @@ try {
   check((await rpc('sms_login_status',{},final.access_token)).status==='READY','Same password works with new phone');
   console.log(`SMS local integration: ${checks} checks passed; no messages sent.`);
 } finally {
-  execFileSync('docker',['exec','-i','supabase_db_webapp','psql','-U','postgres','-d','postgres','-v','ON_ERROR_STOP=1'],{input:`delete from private.sms_ip_budgets where bucket_hash='${ipHash}';`,encoding:'utf8'});
+  execFileSync('docker',['exec','-i','supabase_db_webapp','psql','-U','postgres','-d','postgres','-v','ON_ERROR_STOP=1'],{input:`delete from private.sms_ip_budgets where bucket_hash='${ipHash}'; delete from public.profiles where id='${globalFixture}'; delete from auth.users where id='${globalFixture}';`,encoding:'utf8'});
   if(user) {
     // Explicit fixture cleanup is constrained to the account generated above.
     execFileSync('docker',['exec','-i','supabase_db_webapp','psql','-U','postgres','-d','postgres','-v','ON_ERROR_STOP=1'],{input:`delete from private.sms_security_audit where target_id='${user}';`,encoding:'utf8'});

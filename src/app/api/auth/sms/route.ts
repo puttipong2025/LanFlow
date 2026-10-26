@@ -7,7 +7,9 @@ export async function GET(request: Request) {
   try {
     const identity = await getSmsIdentity(request);
     if (!identity) return smsError("SESSION_REVOKED", 401);
-    return NextResponse.json({ status: identity.status }, { headers: SMS_HEADERS });
+    const usage = await createSupabaseAdminClient().rpc("sms_send_usage", { p_user: identity.userId });
+    if (usage.error) return smsError("UNAVAILABLE", 503);
+    return NextResponse.json({ status: identity.status, ...usage.data }, { headers: SMS_HEADERS });
   } catch { return smsError("UNAVAILABLE", 503); }
 }
 
@@ -25,7 +27,7 @@ export async function POST(request: Request) {
       // Check provider configuration before consuming the user's send quota.
       if (!process.env.THSMS_API_KEY || !process.env.THSMS_SENDER) return smsError("UNAVAILABLE", 503);
       const result = await startSmsChallenge(identity.userId, identity.sessionId, request);
-      if ("error" in result) return smsError(result.error!, result.error === "RATE_LIMITED" ? 429 : 401);
+      if ("error" in result) return smsError(result.error!, result.error === "RATE_LIMITED" ? 429 : 401, result.retryAfter, result.quota);
       return NextResponse.json(result, { headers: SMS_HEADERS });
     }
     if (body?.action !== "verify" || typeof body.code !== "string" || !/^[0-9]{6}$/.test(body.code) || !isUuid(body.challengeId)) return smsError("INVALID_OTP");

@@ -59,3 +59,15 @@ test("queue preflight checks the original branch and allows an authorized owner"
   expect(await module.canSyncCurrentSession("queue-owner", "branch-a")).toBe(true);
   expect(await module.canSyncCurrentSession("queue-owner", "branch-b")).toBe(false);
 });
+
+test("rate-limit errors include the actual wait in JSON and Retry-After", async () => {
+  const module = loadSourceModule<typeof import("../src/lib/server/sms-otp")>("src/lib/server/sms-otp.ts", {});
+  for (const seconds of [30, 3600]) {
+    const response = module.smsError("RATE_LIMITED", 429, seconds, { scope: "account", count: 10, limit: 10 });
+    expect(response.headers.get("Retry-After")).toBe(String(seconds));
+    const body = await response.json();
+    expect(body.retryAfter).toBe(seconds);
+    expect(body.quota).toEqual({ scope: "account", count: 10, limit: 10 });
+    expect(Date.parse(body.availableAt)).toBeGreaterThan(Date.now());
+  }
+});
