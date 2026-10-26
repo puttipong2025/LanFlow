@@ -21,12 +21,12 @@ test("Super Admin sees SMS under permissions and phone change beside the phone",
     await page.getByRole("row").filter({ hasText: target.phone }).getByRole("button", { name: "จัดการ", exact: true }).click();
     const parent = page.getByRole("dialog", { name: "จัดการพนักงาน", exact: true });
     await expect(parent.getByText("สิทธิ์และสถานะ", { exact: true })).toBeVisible();
-    await parent.getByLabel("ยืนยัน SMS เพิ่มอีกขั้น").click();
-    const confirmation = page.getByRole("alertdialog", { name: "เปิดการยืนยัน SMS?", exact: true });
+    await parent.getByLabel("ต้องอนุมัติเบราว์เซอร์ก่อนเข้าใช้งาน").click();
+    const confirmation = page.getByRole("alertdialog", { name: "เปิดข้อบังคับอนุมัติเบราว์เซอร์?", exact: true });
     await expect(confirmation).toBeVisible();
     expect(updates).toHaveLength(0);
     await confirmation.getByRole("button", { name: "ยืนยัน", exact: true }).click();
-    await expect(parent.getByLabel("ยืนยัน SMS เพิ่มอีกขั้น")).toBeChecked();
+    await expect(parent.getByLabel("ต้องอนุมัติเบราว์เซอร์ก่อนเข้าใช้งาน")).toBeChecked();
     expect(updates[0]).toEqual({ path: "sms", body: { required: true } });
     await parent.getByRole("button", { name: "เปลี่ยนเบอร์โทร", exact: true }).click();
     const phone = page.getByRole("alertdialog", { name: "เปลี่ยนเบอร์โทร", exact: true });
@@ -35,6 +35,10 @@ test("Super Admin sees SMS under permissions and phone change beside the phone",
     await phone.getByRole("button", { name: "ยืนยันเปลี่ยนเบอร์", exact: true }).click();
     await expect(phone).toHaveCount(0);
     expect(updates[1]).toEqual({ path: "phone", body: { phone: "0854444445", currentPassword: "" } });
+    await expect(parent.getByText("0854444445", { exact: true })).toBeVisible();
+    await parent.getByRole("button", { name: "ปิด", exact: true }).click();
+    await page.getByRole("row").filter({ hasText: target.name }).getByRole("button", { name: "จัดการ", exact: true }).click();
+    await expect(parent.getByLabel("ต้องอนุมัติเบราว์เซอร์ก่อนเข้าใช้งาน")).toBeChecked();
     await expect(parent.getByText("0854444445", { exact: true })).toBeVisible();
   } finally { await context.close(); }
 });
@@ -49,6 +53,6 @@ test("ordinary Admin cannot change phone or toggle SMS", async ({ browser }) => 
     await page.getByRole("row").filter({ hasText: target.phone }).getByRole("button", { name: "จัดการ", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "จัดการพนักงาน", exact: true });
     await expect(dialog.getByRole("button", { name: "เปลี่ยนเบอร์โทร", exact: true })).toHaveCount(0);
-    await expect(dialog.getByLabel("ยืนยัน SMS เพิ่มอีกขั้น")).toHaveCount(0);
+    await expect(dialog.getByLabel("ต้องอนุมัติเบราว์เซอร์ก่อนเข้าใช้งาน")).toHaveCount(0);
   } finally { await context.close(); }
 });

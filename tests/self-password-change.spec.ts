@@ -44,7 +44,7 @@ async function signedInContext(browser: Browser, phone: string, password: string
   });
 }
 
-test("self password change keeps this browser session and revokes the other refresh session", async ({ browser }) => {
+test("self password change revokes this browser session and the other refresh session", async ({ browser }) => {
   const admin = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
@@ -108,7 +108,7 @@ test("self password change keeps this browser session and revokes the other refr
     expect(await changed.json()).toEqual({ success: true, readablePasswordAvailable: true });
 
     const currentMe = await currentContext.request.get("/api/auth/me");
-    expect(currentMe.ok(), await currentMe.text()).toBeTruthy();
+    expect(currentMe.status()).toBe(401);
     expect((await otherDevice.auth.refreshSession({ refresh_token: otherRefreshToken })).error).not.toBeNull();
 
     expect((await client().auth.signInWithPassword({ phone, password: oldPassword })).error).not.toBeNull();

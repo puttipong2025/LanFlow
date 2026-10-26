@@ -193,6 +193,7 @@ export function AdminModule({ locations, profile, confirmationMinutes, rubberWei
     confirmationMinutes={confirmationMinutes} rubberWeightAlertConfig={rubberWeightAlertConfig}
     canManageSystem={canManageSystem} canManagePermissions={canManagePermissions}
     onCreateUser={createUser} onCreateLocation={createLocation}
+    onUserSecuritySaved={(id, patch) => setUsers(current => current.map(user => user.id === id ? { ...user, ...patch } : user))}
     onSaveProfile={saveProfile} onResetPassword={resetPassword} onLoadCurrentPassword={loadCurrentPassword}
     onRubberWeightAlertSaved={onRubberWeightAlertSaved}
     onToggleRole={(id, role) => {

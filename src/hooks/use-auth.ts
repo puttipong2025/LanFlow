@@ -6,6 +6,7 @@ import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { isDeviceOnline } from "@/lib/connectivity";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { authFetch } from "@/lib/auth-fetch";
+import { bootstrapBrowserApproval } from "@/lib/browser-bootstrap";
 
 const LAST_USER_KEY = "lanflow:last-auth-user";
 export const OFFLINE_AUTH_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -104,6 +105,7 @@ export function useAuth(): AuthState {
 
   const refreshProfile = useCallback(async () => {
     try {
+      await bootstrapBrowserApproval();
       const response = await authFetch("/api/auth/me", {
         cache: "no-store",
         credentials: "same-origin"
@@ -250,6 +252,7 @@ export function useAuth(): AuthState {
         };
       }
 
+      await bootstrapBrowserApproval();
       const response = await authFetch("/api/auth/me", {
         cache: "no-store",
         credentials: "same-origin"

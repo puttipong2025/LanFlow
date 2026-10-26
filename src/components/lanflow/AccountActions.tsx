@@ -81,15 +81,7 @@ function ChangePasswordModal({ onClose }: { onClose: () => void }) {
       if (!response.ok || !data.success) {
         throw new Error(data.errorMessage || "เปลี่ยนรหัสผ่านไม่สำเร็จ");
       }
-      setCurrentPassword("");
-      setNewPassword("");
-      setConfirmPassword("");
-      setMessage({
-        kind: "success",
-        text: data.readablePasswordAvailable === false
-          ? "เปลี่ยนรหัสผ่านแล้ว แต่อาจยังแสดงรหัสผ่านปัจจุบันไม่ได้"
-          : "เปลี่ยนรหัสผ่านแล้ว อุปกรณ์นี้ยังใช้งานต่อได้",
-      });
+      window.location.assign("/login");
     } catch (error) {
       setMessage({
         kind: "error",
@@ -103,7 +95,7 @@ function ChangePasswordModal({ onClose }: { onClose: () => void }) {
 
   return <ModalShell
     title="เปลี่ยนรหัสผ่านของฉัน"
-    subtitle="อุปกรณ์นี้ใช้งานต่อ ส่วนอุปกรณ์อื่นจะออกจากระบบ"
+    subtitle="ทุกเบราว์เซอร์ต้องเข้าสู่ระบบใหม่ และขออนุมัติใหม่หากบัญชีเปิดข้อบังคับไว้"
     onClose={onClose}
     closeDisabled={saving}
     closeOnEscape

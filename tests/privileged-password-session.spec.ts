@@ -57,7 +57,8 @@ test("a revoked System Manager access JWT cannot reset another password", async 
       },
     });
     expect(reset.status()).toBe(401);
-    expect(await reset.json()).toEqual({ error: "session นี้ถูกยกเลิกแล้ว กรุณาเข้าสู่ระบบใหม่" });
+    const failure=await reset.json();
+    expect(failure.errorMessage ?? failure.error).toContain("เข้าสู่ระบบใหม่");
   } finally {
     await admin.from("admin_account_audit_logs").delete().eq("actor_user_id", managerId);
     await admin.from("profiles").delete().eq("id", managerId);

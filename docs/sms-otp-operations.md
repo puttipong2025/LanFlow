@@ -1,3 +1,4 @@
+Successor under local verification (2026-10-26): `docs/browser-approval-operations.md` replaces SMS with browser approval when separately deployed. The SMS implementation below describes the previous/deployed feature; do not use its retired send/test tools for the successor. Cloud has not been changed by the browser-approval work.
 Release preparation 2026-10-26: user authorized pushing the quota changes to main. Cloud migrations 20261025013000 through 20261025017000 still require separate authorization and application before the new application release can serve SMS requests. Local verification: 46 security checks; isolated 597 passed, 3 skipped. Earlier local-only and hold statements below describe the prior review state.
 
 # SMS login second factor — local implementation

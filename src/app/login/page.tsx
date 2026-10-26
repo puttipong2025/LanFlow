@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useAuthContext } from "@/components/AuthProvider";
-import { SmsLoginVerification } from "@/components/lanflow/SmsLoginVerification";
+import { BrowserApprovalWaiting } from "@/components/lanflow/BrowserApprovalWaiting";
 import { Eye, EyeOff, Leaf, Loader2, LogIn, Phone, Lock } from "lucide-react";
 
 export default function LoginPage() {
@@ -19,7 +19,7 @@ export default function LoginPage() {
     }
   }, [authLoading, isAuthenticated]);
 
-  if (otpRequired) return <SmsLoginVerification />;
+  if (otpRequired) return <BrowserApprovalWaiting />;
 
   if (isAuthenticated) {
     return (

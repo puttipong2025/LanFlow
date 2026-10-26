@@ -39,7 +39,7 @@ for (const body of [
       '@/lib/server/supabase-admin': { createSupabaseAdminClient: () => ({ rpc: async () => { calls++; return { data: true, error: null }; } }) },
     });
     const result = await route.POST(new Request('http://localhost/api/auth/sms', { method: 'POST', body: JSON.stringify(body) }));
-    expect(result.status).toBe(400);
+    expect(result.status).toBe(410);
     expect(calls).toBe(0);
   });
 }

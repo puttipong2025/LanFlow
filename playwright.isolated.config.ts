@@ -5,7 +5,7 @@ export default defineConfig({
   testMatch: [
     '**/sms-otp.spec.ts',
     '**/sms-route-failures.spec.ts',
-    '**/sms-real-provider.spec.ts',
+    '**/browser-approval-route.spec.ts',
     '**/cash-counts/cash-count-route-failures.spec.ts',
     '**/cash-counts/cash-count-logic.spec.ts',
     '**/cash-counts/cash-count-pdf.spec.ts',

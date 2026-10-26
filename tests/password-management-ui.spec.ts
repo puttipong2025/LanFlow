@@ -41,9 +41,10 @@ test("self password form reports validation and success beside the action", asyn
     await dialog.getByRole("button", { name: "ยืนยันเปลี่ยนรหัสผ่าน" }).click();
     await expect(dialog.getByRole("alert")).toHaveText("รหัสผ่านใหม่ทั้งสองช่องไม่ตรงกัน");
 
+    await page.route("**/login", route => route.fulfill({ contentType: "text/html", body: "<h1>Login required</h1>" }));
     await dialog.getByLabel("ยืนยันรหัสผ่านใหม่", { exact: true }).fill("new-password");
     await dialog.getByRole("button", { name: "ยืนยันเปลี่ยนรหัสผ่าน" }).click();
-    await expect(dialog.getByRole("status")).toHaveText("เปลี่ยนรหัสผ่านแล้ว อุปกรณ์นี้ยังใช้งานต่อได้");
+    await expect(page).toHaveURL(/\/login$/);
     expect(requestBody).toEqual({
       currentPassword: "current-password",
       newPassword: "new-password",

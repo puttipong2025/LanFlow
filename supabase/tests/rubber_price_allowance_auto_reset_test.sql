@@ -137,6 +137,12 @@ set central_price = 42,
     price_allowance_auto_reset_enabled = false
 where id = true;
 
+-- These business tests impersonate the live local Super Admin. Provide a real
+-- session because credential changes now create a revocation record for it.
+create temp table approval_test_session as select gen_random_uuid() as id;
+insert into auth.sessions(id,user_id,created_at,updated_at)
+select s.id,p.id,clock_timestamp(),clock_timestamp()
+from approval_test_session s,public.profiles p where p.role='super_admin' and p.is_active;
 select set_config(
   'request.jwt.claim.sub',
   (select id::text from public.profiles where role = 'super_admin' and is_active = true limit 1),
@@ -144,7 +150,7 @@ select set_config(
 );
 select set_config(
   'request.jwt.claims',
-  (select jsonb_build_object('sub', id, 'role', 'authenticated')::text
+  (select jsonb_build_object('sub', id, 'role', 'authenticated', 'session_id', (select s.id from approval_test_session s))::text
    from public.profiles where role = 'super_admin' and is_active = true limit 1),
   true
 );
@@ -193,7 +199,7 @@ select set_config(
 );
 select set_config(
   'request.jwt.claims',
-  (select jsonb_build_object('sub', id, 'role', 'authenticated')::text
+  (select jsonb_build_object('sub', id, 'role', 'authenticated', 'session_id', (select s.id from approval_test_session s))::text
    from public.profiles where role = 'super_admin' and is_active = true limit 1),
   true
 );

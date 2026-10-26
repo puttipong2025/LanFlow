@@ -1,4 +1,6 @@
 "use client";
+import { useBrowserApprovals } from "@/hooks/useBrowserApprovals";
+
 
 import { ShieldCheck } from "lucide-react";
 import dynamic from "next/dynamic";
@@ -409,6 +411,7 @@ function BusinessLanFlowApp() {
 
   const canAccessMoneyTransfer = canUseMoneyTransfer(profile);
   const canAccessReports = canUseReports(profile);
+  const browserApprovals = useBrowserApprovals();
   const { counts: actionableBadgeCounts } = useActionableBadges(isLoaded);
 
   useEffect(() => {
@@ -500,15 +503,15 @@ function BusinessLanFlowApp() {
     () => online ? actionableBadgeCounts : {},
     [actionableBadgeCounts, online],
   );
-  const selectedModuleBadgeCounts = visibleActionableBadgeCounts[selectedLocationId] ?? {};
+  const selectedModuleBadgeCounts = { ...(visibleActionableBadgeCounts[selectedLocationId] ?? {}), admin: browserApprovals.total };
   const locationBadgeTotals = useMemo(() => {
     const totals: Record<string, number> = {};
     for (const location of locations) {
       totals[location.id] = Object.values(visibleActionableBadgeCounts[location.id] ?? {})
-        .reduce((sum, count) => sum + (count ?? 0), 0);
+        .reduce((sum, count) => sum + (count ?? 0), 0) + (browserApprovals.byLocation[location.id] ?? 0);
     }
     return totals;
-  }, [locations, visibleActionableBadgeCounts]);
+  }, [locations, visibleActionableBadgeCounts, browserApprovals.byLocation]);
 
   if (!isLoaded || !profile) {
     return (
