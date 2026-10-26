@@ -4,25 +4,31 @@ import { AlertDialog } from "@/components/shared/AlertDialog";
 import { cn } from "@/lib/cn";
 import { formatNumber } from "@/lib/format";
 import type { AlertKind, BranchThresholdCheck } from "@/lib/lanflow/branch-threshold-alert";
+import type { CashCountLockState } from "@/lib/cash-count-lock";
+import { CashCountLockNotice } from "@/components/cash-counts/CashCountLockNotice";
 
-export function RubberWeightAlertDialog({ alert, onAcknowledge }: {
+type LockProps = { locks?: CashCountLockState[]; offset?: number; working?: string | null; lockError?: string | null; onUnlock?: (id: string) => void; forceCount?: boolean };
+export function RubberWeightAlertDialog({ alert, onAcknowledge, ...lockProps }: {
   alert: BranchThresholdCheck | null; onAcknowledge: () => void;
-}) {
+} & LockProps) {
+  const hasLockNotice = lockProps.locks?.some((s) => s.enabled && (s.locked || (s.unlockedUntil && Date.parse(s.unlockedUntil) > Date.now() + (lockProps.offset ?? 0))));
   const description = !alert ? "ผลการตรวจแจ้งเตือน"
+    : hasLockNotice ? "ตรวจสอบกำหนดนับเงิน สถานะล็อก และช่วงใช้งานชั่วคราวของสาขา"
     : alert.configuredCount === 0 ? "ยังไม่มีสาขาที่ตั้งค่ากลุ่มแจ้งเตือน"
     : alert.candidates.length ? `พบ ${new Set(alert.candidates.map((item) => item.locationId)).size} สาขา จาก ${new Set(alert.candidates.map((item) => `${item.kind}:${item.groupId}`)).size} กลุ่มที่ต้องตรวจสอบ`
     : alert.unavailable.length ? "ยังตรวจได้ไม่ครบ ไม่พบรายการเข้าเงื่อนไขในข้อมูลที่พร้อม"
     : "ไม่มีรายการเข้าเงื่อนไขแจ้งเตือน";
   return <AlertDialog open={alert !== null} title="แจ้งเตือน" description={description} confirmLabel="รับทราบ" cancelLabel={null} onCancel={onAcknowledge} onConfirm={onAcknowledge}>
-    {alert && <ThresholdResult key={JSON.stringify(alert)} alert={alert} />}
+    {alert && <ThresholdResult key={`${lockProps.forceCount}:${JSON.stringify(alert)}`} alert={alert} {...lockProps} />}
   </AlertDialog>;
 }
-function ThresholdResult({ alert }: { alert: BranchThresholdCheck }) {
+function ThresholdResult({ alert, locks = [], offset = 0, working, lockError, onUnlock, forceCount }: { alert: BranchThresholdCheck } & LockProps) {
   const hasCash = alert.candidates.some((item) => item.kind === "cash");
   const hasWeight = alert.candidates.some((item) => item.kind === "weight");
-  const hasCount = alert.candidates.some((item) => item.kind === "count");
-  const [kind, setKind] = useState<AlertKind>(hasCash ? "cash" : hasWeight ? "weight" : "count");
-  const candidates = alert.candidates.filter((item) => item.kind === kind);
+  const visibleLocks = locks.filter((s) => s.enabled && (s.locked || (s.unlockedUntil && Date.parse(s.unlockedUntil) > Date.now() + offset)));
+  const hasCount = alert.candidates.some((item) => item.kind === "count") || visibleLocks.length > 0;
+  const [kind, setKind] = useState<AlertKind>(forceCount ? "count" : hasCash ? "cash" : hasWeight ? "weight" : "count");
+  const candidates = alert.candidates.filter((item) => item.kind === kind && !(kind === "count" && visibleLocks.some((s) => s.locationId === item.locationId)));
   const unit = kind === "count" ? "วัน" : kind === "cash" ? "บาท" : "กก.";
   const groups = candidates.reduce<Array<{ id: string; order: number; threshold: number; candidates: typeof candidates }>>((result, item) => {
     const group = result.find((entry) => entry.id === item.groupId);
@@ -33,11 +39,13 @@ function ThresholdResult({ alert }: { alert: BranchThresholdCheck }) {
   return (
     <div className="mt-4 max-h-[min(50dvh,24rem)] space-y-3 overflow-y-auto pr-1" data-testid="threshold-alert-results">
       {[hasCash, hasWeight, hasCount].filter(Boolean).length > 1 && <div className="flex flex-wrap gap-2" aria-label="เลือกหน้าการแจ้งเตือน">
-        {(["cash", "weight", "count"] as const).filter((value) => alert.candidates.some((item) => item.kind === value)).map((value) => <button key={value} type="button" aria-pressed={kind === value} onClick={() => setKind(value)}
+        {(["cash", "weight", "count"] as const).filter((value) => value === "count" ? hasCount : alert.candidates.some((item) => item.kind === value)).map((value) => <button key={value} type="button" aria-pressed={kind === value} onClick={() => setKind(value)}
           className={cn("focus-ring min-h-11 rounded-md border px-3 text-sm font-semibold", kind === value ? "border-river bg-river text-white" : "border-black/15 bg-white")}>
-          {value === "count" ? "นับเงิน" : value === "cash" ? "ยอดเงิน" : "น้ำหนัก"} · {alert.candidates.filter((item) => item.kind === value).length}
+          {value === "count" ? "นับเงิน" : value === "cash" ? "ยอดเงิน" : "น้ำหนัก"} · {value === "count" ? new Set([...alert.candidates.filter((s) => s.kind === "count").map((s) => s.locationId), ...visibleLocks.map((s) => s.locationId)]).size : alert.candidates.filter((item) => item.kind === value).length}
         </button>)}
       </div>}
+      {kind === "count" && visibleLocks.map((state) => <CashCountLockNotice key={state.locationId} state={state} offset={offset} working={working === state.locationId} onUnlock={() => onUnlock?.(state.locationId)} />)}
+      {kind === "count" && lockError && <p role="alert" className="text-pretty text-sm text-clay">{lockError}</p>}
       {candidates.length > 0 && <h4 className="text-balance font-semibold">{kind === "count" ? "นับเงินเกินกำหนด" : kind === "cash" ? "รับ–จ่ายสุทธิสะสมต่ำกว่าเกณฑ์" : "น้ำหนักยางสุทธิสะสมเกินเกณฑ์"}</h4>}
       {groups.map((group) => <section key={group.id} className="rounded-md border border-black/10 p-3" aria-label={`กลุ่ม ${group.order}`}>
         <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -55,7 +63,7 @@ function ThresholdResult({ alert }: { alert: BranchThresholdCheck }) {
           {item.locationName} · {item.kind === "cash" ? "ยอดเงิน" : "น้ำหนัก"} · {item.reason === "missing_snapshot" ? "ยังไม่มีผลคำนวณ" : item.reason === "missing_metric" ? "ข้อมูลไม่ครบ" : "รออัปเดตข้อมูล"}
         </li>)}</ul>
       </section>}
-      {alert.configuredCount === 0 && <p className="text-pretty text-sm text-ink/65">ผู้จัดการระบบสามารถตั้งกลุ่มได้ที่หน้า Admin → การแจ้งเตือน</p>}
+      {alert.configuredCount === 0 && visibleLocks.length === 0 && <p className="text-pretty text-sm text-ink/65">ผู้จัดการระบบสามารถตั้งกลุ่มได้ที่หน้า Admin → การแจ้งเตือน</p>}
     </div>
   );
 }

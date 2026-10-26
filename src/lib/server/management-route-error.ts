@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { cashCountLockResponse } from "@/lib/server/cash-count-lock-response";
 
 type ErrorLike = { code?: string; message?: string } | null | undefined;
 
@@ -46,6 +47,7 @@ export function isNonNegativeNumeric12Scale2(value: unknown): value is number {
 }
 
 export function managementErrorResponse(error: ErrorLike, fallback: string) {
+  const locked = cashCountLockResponse(error?.message); if (locked) return locked;
   const message = error?.message ?? "";
   const known = error?.code === "P0001" ? [
     { prefix: "FORBIDDEN:", status: 403 },
@@ -97,6 +99,7 @@ export function opaqueRpcErrorResponse(
   fallback: string,
   businessErrorCodes: readonly string[],
 ) {
+  const locked = cashCountLockResponse(error?.message); if (locked) return locked;
   const status = error?.code && businessErrorCodes.includes(error.code) ? 400 : 500;
   return NextResponse.json({ errorMessage: fallback }, { status });
 }

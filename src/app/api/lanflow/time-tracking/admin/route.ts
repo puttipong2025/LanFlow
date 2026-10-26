@@ -3,6 +3,7 @@ import { bangkokDateString } from "@/lib/bangkok-date";
 import { requireAuth } from "@/lib/server/auth";
 import { readActionablePendingAdjustments } from "@/lib/server/time-payroll-pending-adjustments";
 import { mapTimePayrollPaymentRpcError } from "@/lib/server/time-payroll-payment-errors";
+import { cashCountLockResponse } from "@/lib/server/cash-count-lock-response";
 import { changeTimePayrollPayment, createTimePayrollSlip, createTimePayrollTransaction, decideTimePayrollPayment, isValidPayrollSlipCreationPayment, isValidTimePayrollPayment, isValidTimePayrollPaymentChange } from "@/lib/server/time-payroll-payment-mutations";
 import { readAllSupabaseRows } from "@/lib/supabase-pages";
 import { buildPayrollPeriodState, type PayrollPeriodRow } from "@/lib/time-tracking/period-state";
@@ -139,6 +140,7 @@ function rpcErrorMessage(message: string) {
 }
 
 function rpcFailure(error: { message: string }) {
+  const locked = cashCountLockResponse(error.message); if (locked) return locked;
   const paymentError = mapTimePayrollPaymentRpcError(error.message);
   const code = error.message.match(/WAGE_PREVIEW_STALE|WAGE_PREVIEW_REQUIRED/)?.[0] ?? null;
   return NextResponse.json(

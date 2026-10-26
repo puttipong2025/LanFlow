@@ -1,3 +1,4 @@
+import { cashCountLockResponse } from "@/lib/server/cash-count-lock-response";
 import { NextResponse } from "next/server";
 
 const PUBLIC_BUSINESS_ERROR_PREFIXES = [
@@ -13,6 +14,7 @@ const PUBLIC_BUSINESS_ERROR_PREFIXES = [
 ];
 
 export function cashTransferErrorResponse(message: string) {
+  const locked = cashCountLockResponse(message); if (locked) return locked;
   if (!PUBLIC_BUSINESS_ERROR_PREFIXES.some((prefix) => message.startsWith(prefix))) {
     console.error("Cash branch transfer RPC error:", message);
     return NextResponse.json(

@@ -69,6 +69,9 @@ function load(path: string, mocks: Record<string, any>, globals: Record<string, 
     window: { setTimeout: () => 0, clearTimeout: () => {} },
     require: (id: string) => {
       if (!(id in mocks)) throw new Error(`Unmocked dependency: ${id}`);
+      // These reconciliation fixtures assume an authorized session; auth failures
+      // are covered separately and individual fixtures may override this boundary.
+      if (id === "@/lib/auth-fetch") return { canSyncCurrentSession: async () => true, ...mocks[id] };
       return mocks[id];
     },
     ...globals,

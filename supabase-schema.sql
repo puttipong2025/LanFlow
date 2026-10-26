@@ -1462,6 +1462,26 @@ $$;
 ALTER FUNCTION "private"."can_access_super_admin_features"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."can_approve_browser"("p_actor" "uuid", "p_target" "uuid") RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select p_actor<>p_target and exists(
+    select 1 from public.profiles a, public.profiles t
+    where a.id=p_actor and t.id=p_target and a.is_active and t.is_active and t.role<>'super_admin'
+    and (a.role='super_admin' or (
+      a.role='admin' and a.can_access_super_admin_features
+      and not (t.role='admin' and t.can_access_super_admin_features)
+      and exists(select 1 from public.user_locations ul join public.locations l on l.id=ul.location_id
+        where ul.user_id=t.id and l.is_active)
+    ))
+  )
+$$;
+
+
+ALTER FUNCTION "private"."can_approve_browser"("p_actor" "uuid", "p_target" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."can_approve_time_tracking_profile"("target_profile_id" "uuid") RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -1950,6 +1970,40 @@ $_$;
 ALTER FUNCTION "private"."cash_count_counts_valid"("p_counts" "jsonb") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."cash_count_due_date"("p_location_id" "uuid") RETURNS "date"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+ select coalesce((select (max(c.cutoff_at) at time zone 'Asia/Bangkok')::date
+   from public.cash_counts c where c.location_id=m.location_id and c.status='active'),
+   (m.joined_at at time zone 'Asia/Bangkok')::date)+g.due_days
+ from public.cash_count_alert_members m join public.cash_count_alert_groups g on g.id=m.group_id
+ where m.location_id=p_location_id
+$$;
+
+
+ALTER FUNCTION "private"."cash_count_due_date"("p_location_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."cash_count_lock_state"("p_location_id" "uuid", "p_now" timestamp with time zone) RETURNS "jsonb"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+ select jsonb_build_object('locationId',m.location_id,'locationName',l.name,'groupId',g.id,
+   'enabled',g.lock_enabled,'dueDate',d.due_date,'lockAt',d.lock_at,
+   'unlockedUntil',m.unlocked_until,'unlockedAt',m.unlocked_at,'unlockedByName',m.unlocked_by_name,
+   'locked',g.lock_enabled and p_now>=d.lock_at and (m.unlocked_until is null or p_now>=m.unlocked_until))
+ from public.cash_count_alert_members m join public.cash_count_alert_groups g on g.id=m.group_id
+ join public.locations l on l.id=m.location_id
+ cross join lateral (select private.cash_count_due_date(m.location_id) as due_date,
+   ((private.cash_count_due_date(m.location_id)+1)::timestamp at time zone 'Asia/Bangkok')+make_interval(hours=>g.grace_hours) as lock_at) d
+ where m.location_id=p_location_id and l.is_active
+$$;
+
+
+ALTER FUNCTION "private"."cash_count_lock_state"("p_location_id" "uuid", "p_now" timestamp with time zone) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."cash_count_start_blockers"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) RETURNS TABLE("blocker_key" "text", "item_count" bigint)
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -2235,6 +2289,20 @@ $$;
 
 
 ALTER FUNCTION "private"."cleanup_history_retention"("p_batch_size" integer) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."clear_cash_count_unlock_on_submit"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+ update public.cash_count_alert_members set unlocked_until=null,unlocked_at=null,unlocked_by_user_id=null,unlocked_by_name=null
+   where location_id=new.location_id;
+ return new;
+end $$;
+
+
+ALTER FUNCTION "private"."clear_cash_count_unlock_on_submit"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."clear_weight_evidence_completion_on_bill_change"() RETURNS "trigger"
@@ -4305,6 +4373,9 @@ begin
       and status='active' and expires_at > clock_timestamp()) then
       raise exception 'CASH_COUNT_ACTIVE: สาขากำลังนับเงิน กรุณารอให้บันทึก ยกเลิก หรือหมดเวลา';
     end if;
+    if coalesce((private.cash_count_lock_state(loc,clock_timestamp())->>'locked')::boolean,false) then
+      raise exception 'CASH_COUNT_OVERDUE_LOCKED: สาขาเกินกำหนดนับเงิน กรุณานับเงินหรือปลดล็อกชั่วคราว';
+    end if;
   end loop;
   if tg_op='DELETE' then return old; end if;
   return new;
@@ -4969,6 +5040,33 @@ $$;
 
 
 ALTER FUNCTION "private"."guard_rubber_export_work_transfer"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."guard_sms_phone_change"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare change private.sms_phone_changes%rowtype;
+begin
+  if new.phone is not distinct from old.phone and new.phone_change is not distinct from old.phone_change then return new; end if;
+  select * into change from private.sms_phone_changes where user_id=old.id for update;
+  if change.user_id is null or change.expires_at<now() or new.phone<>change.phone
+    or not exists(select 1 from public.profiles where id=change.actor_id and role='super_admin' and is_active) then
+    raise exception 'PHONE_CHANGE_REQUIRES_SUPER_ADMIN'; end if;
+  if new.phone is distinct from old.phone then
+    update public.profiles set phone='0'||substring(new.phone from 3),updated_at=now() where id=new.id;
+    insert into private.sms_account_security(user_id,revoked_before) values(new.id,clock_timestamp())
+      on conflict(user_id) do update set revoked_before=clock_timestamp(),generation=private.sms_account_security.generation+1;
+    delete from private.sms_login_challenges where user_id=new.id;
+    insert into private.sms_security_audit(actor_id,target_id,action,old_value,new_value)
+      values(change.actor_id,new.id,'phone_change',old.phone,new.phone);
+    delete from private.sms_phone_changes where user_id=new.id;
+  end if;
+  return new;
+end $$;
+
+
+ALTER FUNCTION "private"."guard_sms_phone_change"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."guard_time_payroll_payment_source"() RETURNS "trigger"
@@ -8533,6 +8631,42 @@ $$;
 ALTER FUNCTION "private"."resolve_rubber_bill_price_policy_without_quota"("p_location_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."revoke_browser_on_manager_promotion"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if new.role='admin' and new.can_access_super_admin_features
+    and not (old.role='admin' and old.can_access_super_admin_features) then
+    update private.sms_account_security set generation=generation+1,revoked_before=clock_timestamp()
+      where user_id=new.id and required;
+    if found then update private.browser_approvals set state='revoked' where user_id=new.id; end if;
+  end if;
+  return new;
+end $$;
+
+
+ALTER FUNCTION "private"."revoke_browser_on_manager_promotion"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."revoke_browser_on_password_change"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if new.encrypted_password is distinct from old.encrypted_password then
+    insert into private.sms_account_security(user_id,generation,revoked_before)
+      select new.id,1,clock_timestamp() where exists(select 1 from public.profiles where id=new.id)
+    on conflict(user_id) do update set generation=private.sms_account_security.generation+1,revoked_before=clock_timestamp();
+    update private.browser_approvals set state='revoked' where user_id=new.id;
+  end if;
+  return new;
+end $$;
+
+
+ALTER FUNCTION "private"."revoke_browser_on_password_change"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."rubber_bill_current_work_items"("p_location_id" "uuid") RETURNS TABLE("location_id" "uuid", "work_kind" "text", "work_identity" "text", "bill_id" "uuid", "sort_at" timestamp with time zone)
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -9262,6 +9396,74 @@ ALTER FUNCTION "private"."rubber_export_raw_age_summary"("p_export_id" "uuid", "
 
 COMMENT ON FUNCTION "private"."rubber_export_raw_age_summary"("p_export_id" "uuid", "p_cutoff_at" timestamp with time zone) IS 'Unrounded weighted age used before receipt/downstream snapshot rounding.';
 
+
+
+CREATE OR REPLACE FUNCTION "private"."save_cash_count_alert_group_base"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_due_days" integer) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare v_id uuid:=coalesce(p_group_id,gen_random_uuid());
+begin
+  if not private.is_active_user() or not private.can_access_super_admin_features() then raise exception 'FORBIDDEN'; end if;
+  perform pg_advisory_xact_lock(hashtextextended('cash-count-alert-groups',0));
+  if p_due_days is null or p_due_days not between 1 and 5 or coalesce(cardinality(p_location_ids),0)=0
+    or exists(select 1 from unnest(p_location_ids) x where x is null)
+    or (select count(distinct x) from unnest(p_location_ids) x)<>cardinality(p_location_ids) then
+    raise exception 'เกณฑ์ต้องเป็น 1–5 วัน และต้องเลือกสาขาไม่ซ้ำอย่างน้อยหนึ่งสาขา'; end if;
+  if p_group_id is not null and not exists(select 1 from public.cash_count_alert_groups where id=p_group_id) then raise exception 'ไม่พบกลุ่ม'; end if;
+  if exists(select 1 from unnest(p_location_ids) x left join public.locations l on l.id=x where l.id is null
+    or (not l.is_active and not exists(select 1 from public.cash_count_alert_members where group_id=v_id and location_id=x))) then
+    raise exception 'ไม่พบสาขาที่เปิดใช้งาน'; end if;
+  if exists(select 1 from public.cash_count_alert_members where location_id=any(p_location_ids) and group_id<>v_id) then
+    raise exception 'สาขาอยู่ในกลุ่มอื่นแล้ว กรุณานำออกจากกลุ่มเดิมก่อน'; end if;
+  insert into public.cash_count_alert_groups(id,due_days) values(v_id,p_due_days)
+    on conflict(id) do update set due_days=excluded.due_days;
+  -- Retained members preserve their join date. Removed/re-added members begin a new membership.
+  delete from public.cash_count_alert_members where group_id=v_id and not(location_id=any(p_location_ids));
+  insert into public.cash_count_alert_members(group_id,location_id)
+    select v_id,x from unnest(p_location_ids) x on conflict(location_id) do nothing;
+  return jsonb_build_object('id',v_id);
+end $$;
+
+
+ALTER FUNCTION "private"."save_cash_count_alert_group_base"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_due_days" integer) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."sms_access_allowed"() RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select private.sms_session_status() = 'READY'
+$$;
+
+
+ALTER FUNCTION "private"."sms_access_allowed"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."sms_session_status"() RETURNS "text"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare a private.sms_account_security%rowtype; sid uuid;
+begin
+  if auth.uid() is null then return 'SIGNED_OUT'; end if;
+  select * into a from private.sms_account_security where user_id=auth.uid();
+  if a.user_id is null then return 'READY'; end if;
+  begin sid:=nullif(auth.jwt()->>'session_id','')::uuid;
+  exception when invalid_text_representation then return 'SESSION_REVOKED'; end;
+  if not exists(select 1 from auth.sessions s where s.id=sid and s.user_id=auth.uid()
+    and s.created_at>a.revoked_before and (s.not_after is null or s.not_after>now())) then return 'SESSION_REVOKED'; end if;
+  if not a.required or exists(select 1 from public.profiles where id=auth.uid() and role='super_admin') then return 'READY'; end if;
+  if not exists(select 1 from jsonb_array_elements(coalesce(auth.jwt()->'amr','[]'::jsonb)) x where x->>'method'='password') then return 'PASSWORD_REQUIRED'; end if;
+  if exists(select 1 from private.browser_session_approvals s join private.browser_approvals b on b.id=s.browser_id
+    where s.session_id=sid and b.user_id=auth.uid() and s.generation=a.generation
+      and b.generation=a.generation and b.state='approved') then return 'READY'; end if;
+  -- Internal compatibility code; UI now renders browser approval, never SMS.
+  return 'OTP_REQUIRED';
+end $$;
+
+
+ALTER FUNCTION "private"."sms_session_status"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."sync_income_expense_dispatch_20260805020000"("payload" "jsonb") RETURNS "jsonb"
@@ -11013,6 +11215,40 @@ $$;
 ALTER FUNCTION "public"."begin_admin_password_reset"("p_target_user_id" "uuid", "p_request_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."bootstrap_browser_approval"("p_user" "uuid", "p_session" "uuid", "p_hash" "text", "p_label" "text", "p_request" boolean DEFAULT false, "p_resubmit" boolean DEFAULT false) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $_$
+declare a private.sms_account_security%rowtype; b private.browser_approvals%rowtype;
+begin
+  select * into a from private.sms_account_security where user_id=p_user for update;
+  if not exists(select 1 from public.profiles where id=p_user and is_active)
+    or not exists(select 1 from auth.sessions where id=p_session and user_id=p_user
+      and created_at>coalesce(a.revoked_before,'-infinity') and (not_after is null or not_after>now())) then
+    return jsonb_build_object('status','SESSION_REVOKED'); end if;
+  if a.user_id is null or not a.required or exists(select 1 from public.profiles where id=p_user and role='super_admin') then
+    return jsonb_build_object('status','READY'); end if;
+  if p_hash is null or p_hash!~'^[a-f0-9]{64}$' then return jsonb_build_object('status','MISSING'); end if;
+  select * into b from private.browser_approvals where user_id=p_user and secret_hash=p_hash for update;
+  if p_request and (b.id is null or b.generation<>a.generation or b.state='revoked' or (b.state='cancelled' and p_resubmit)) then
+    insert into private.browser_approvals(user_id,secret_hash,generation,state,label)
+    values(p_user,p_hash,a.generation,'pending',left(p_label,80))
+    on conflict(user_id,secret_hash) do update set generation=excluded.generation,state='pending',label=excluded.label,requested_at=now()
+    returning * into b;
+  end if;
+  if b.id is null or b.generation<>a.generation then return jsonb_build_object('status','MISSING'); end if;
+  if b.state='approved' then
+    insert into private.browser_session_approvals(session_id,browser_id,generation) values(p_session,b.id,a.generation)
+    on conflict(session_id) do update set browser_id=excluded.browser_id,generation=excluded.generation;
+    return jsonb_build_object('status','READY');
+  end if;
+  return jsonb_build_object('status',upper(b.state));
+end $_$;
+
+
+ALTER FUNCTION "public"."bootstrap_browser_approval"("p_user" "uuid", "p_session" "uuid", "p_hash" "text", "p_label" "text", "p_request" boolean, "p_resubmit" boolean) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."calculate_paid_work_days"("p_profile_id" "uuid", "p_period_start" timestamp with time zone, "p_period_end" timestamp with time zone DEFAULT NULL::timestamp with time zone) RETURNS numeric
     LANGUAGE "plpgsql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -11406,6 +11642,24 @@ end $$;
 ALTER FUNCTION "public"."check_cash_count"("p_count_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."check_sms_access"() RETURNS "void"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare state text;
+begin
+  if auth.role() <> 'authenticated' then return; end if;
+  if current_setting('request.path', true) = '/rpc/sms_login_status' then return; end if;
+  state := private.sms_session_status();
+  if state <> 'READY' then
+    raise sqlstate 'PT401' using message = state;
+  end if;
+end $$;
+
+
+ALTER FUNCTION "public"."check_sms_access"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."claim_dashboard_refresh_now"("p_location_id" "uuid", "p_requested_version" bigint) RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -11448,6 +11702,37 @@ $$;
 
 
 ALTER FUNCTION "public"."claim_dashboard_refresh_now"("p_location_id" "uuid", "p_requested_version" bigint) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."claim_sms_ip_budget"("p_hash" "text") RETURNS boolean
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $_$
+declare budget private.sms_ip_budgets%rowtype;
+begin
+  if p_hash !~ '^[a-f0-9]{64}$' then return false; end if;
+  insert into private.sms_ip_budgets(bucket_hash) values(p_hash) on conflict do nothing;
+  select * into budget from private.sms_ip_budgets where bucket_hash=p_hash for update;
+  if budget.window_started_at>now()-interval '1 hour' and budget.sends>=50 then return false; end if;
+  update private.sms_ip_budgets set
+    sends=case when window_started_at<=now()-interval '1 hour' then 1 else sends+1 end,
+    window_started_at=case when window_started_at<=now()-interval '1 hour' then now() else window_started_at end
+    where bucket_hash=p_hash;
+  delete from private.sms_ip_budgets b using (
+    select bucket_hash from private.sms_ip_budgets
+    where window_started_at<now()-interval '2 hours' for update skip locked
+  ) stale where b.bucket_hash=stale.bucket_hash;
+  delete from private.sms_login_challenges c using (
+    select session_id from private.sms_login_challenges candidate
+    where candidate.expires_at<now()-interval '1 day'
+      and (not candidate.verified or not exists(select 1 from auth.sessions s where s.id=candidate.session_id))
+    for update skip locked
+  ) stale where c.session_id=stale.session_id;
+  return true;
+end $_$;
+
+
+ALTER FUNCTION "public"."claim_sms_ip_budget"("p_hash" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."claim_telegram_badge_dispatch"() RETURNS "jsonb"
@@ -15402,10 +15687,11 @@ CREATE OR REPLACE FUNCTION "public"."delete_cash_count_alert_group"("p_group_id"
     SET "search_path" TO ''
     AS $$
 begin
-  if not private.is_active_user() or not private.can_access_super_admin_features() then raise exception 'FORBIDDEN'; end if;
-  perform pg_advisory_xact_lock(hashtextextended('cash-count-alert-groups',0));
-  delete from public.cash_count_alert_groups where id=p_group_id;
-  return jsonb_build_object('id',p_group_id);
+ if not private.is_active_user() or not public.can_access_super_admin_features() then raise exception 'FORBIDDEN'; end if;
+ perform pg_advisory_xact_lock(hashtextextended('cash-count-alert-groups',0));
+ perform private.lock_report_locations(array(select location_id from public.cash_count_alert_members where group_id=p_group_id));
+ delete from public.cash_count_alert_groups where id=p_group_id;
+ return jsonb_build_object('id',p_group_id);
 end $$;
 
 
@@ -16094,6 +16380,17 @@ $$;
 ALTER FUNCTION "public"."delete_time_tracking_source_permanently"("p_source_type" "text", "p_source_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."deliver_sms_challenge"("p_id" "uuid") RETURNS "void"
+    LANGUAGE "sql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  update private.sms_login_challenges set delivered=true where challenge_id=p_id and not verified
+$$;
+
+
+ALTER FUNCTION "public"."deliver_sms_challenge"("p_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."dispatch_telegram_badge_tick"() RETURNS bigint
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -16631,24 +16928,17 @@ CREATE OR REPLACE FUNCTION "public"."get_branch_threshold_alert_check"() RETURNS
     AS $$
 declare base jsonb; extra jsonb; configured integer;
 begin
-  base:=private.get_money_weight_threshold_alert_check();
-  with groups as (
-    select *,row_number() over(order by created_at,id)::integer as group_order from public.cash_count_alert_groups
-  ), due as (
-    select g.*,l.id as location_id,l.name,
-      coalesce((select (max(c.cutoff_at) at time zone 'Asia/Bangkok')::date from public.cash_counts c
-        where c.location_id=l.id and c.status='active'),(m.joined_at at time zone 'Asia/Bangkok')::date)+g.due_days as due_date
-    from groups g join public.cash_count_alert_members m on m.group_id=g.id
-    join public.locations l on l.id=m.location_id where l.is_active and public.can_access_location(l.id)
-  ) select count(*),coalesce(jsonb_agg(jsonb_build_object('kind','count','locationId',location_id,
-      'locationName',name,'groupId',id,'groupOrder',group_order,'threshold',due_days,
-      'value',(current_timestamp at time zone 'Asia/Bangkok')::date-due_date,
-      'calculatedAt',current_timestamp,'dueDate',due_date)
-      order by group_order,due_date,name,location_id) filter(where due_date<(current_timestamp at time zone 'Asia/Bangkok')::date),'[]'::jsonb)
-    into configured,extra from due;
-  return base || jsonb_build_object('candidates',(base->'candidates')||extra,
-    'configuredCount',(base->>'configuredCount')::integer+configured,
-    'checkedCount',(base->>'checkedCount')::integer+configured);
+ base:=private.get_money_weight_threshold_alert_check();
+ with groups as (select *,row_number() over(order by created_at,id)::integer as group_order from public.cash_count_alert_groups),
+ due as (select g.*,l.id as location_id,l.name,private.cash_count_due_date(l.id) as due_date
+   from groups g join public.cash_count_alert_members m on m.group_id=g.id
+   join public.locations l on l.id=m.location_id where l.is_active and public.can_access_location(l.id))
+ select count(*),coalesce(jsonb_agg(jsonb_build_object('kind','count','locationId',location_id,'locationName',name,
+   'groupId',id,'groupOrder',group_order,'threshold',due_days,'value',(current_timestamp at time zone 'Asia/Bangkok')::date-due_date,
+   'calculatedAt',current_timestamp,'dueDate',due_date) order by group_order,due_date,name,location_id)
+   filter(where due_date<(current_timestamp at time zone 'Asia/Bangkok')::date),'[]'::jsonb) into configured,extra from due;
+ return base||jsonb_build_object('candidates',(base->'candidates')||extra,
+   'configuredCount',(base->>'configuredCount')::integer+configured,'checkedCount',(base->>'checkedCount')::integer+configured);
 end $$;
 
 
@@ -16750,6 +17040,28 @@ $$;
 
 
 ALTER FUNCTION "public"."get_cash_branch_transfer_pending_summary"("p_location_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_cash_count_overdue_status"("p_location_id" "uuid" DEFAULT NULL::"uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare v_now timestamptz:=statement_timestamp(); v_states jsonb; v_contacts jsonb;
+begin
+ if not private.is_active_user() or not exists(select 1 from public.profiles where id=auth.uid() and role in ('admin','super_admin')) then
+   raise exception 'ไม่มีสิทธิ์ดูสถานะล็อก'; end if;
+ if p_location_id is not null and not public.can_access_location(p_location_id) then raise exception 'ไม่มีสิทธิ์ดูสาขา'; end if;
+ select coalesce(jsonb_agg(jsonb_build_object('id',id,'name',name) order by name,id),'[]'::jsonb)
+ into v_contacts from public.profiles where is_active and (role='super_admin' or (role='admin' and can_access_super_admin_features));
+ select coalesce(jsonb_agg(private.cash_count_lock_state(l.id,v_now)||jsonb_build_object(
+   'canUnlock',public.can_access_super_admin_features(),'contacts',v_contacts) order by l.name,l.id),'[]'::jsonb)
+ into v_states from public.locations l join public.cash_count_alert_members m on m.location_id=l.id
+ where l.is_active and public.can_access_location(l.id) and (p_location_id is null or l.id=p_location_id);
+ return jsonb_build_object('states',v_states,'serverNow',v_now);
+end $$;
+
+
+ALTER FUNCTION "public"."get_cash_count_overdue_status"("p_location_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_cash_count_session"("p_location_id" "uuid") RETURNS "jsonb"
@@ -21217,6 +21529,17 @@ $$;
 ALTER FUNCTION "public"."get_rubber_weight_alert_config"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."get_sms_required"("p_users" "uuid"[]) RETURNS TABLE("user_id" "uuid", "required" boolean)
+    LANGUAGE "sql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select user_id, required from private.sms_account_security where user_id=any(p_users)
+$$;
+
+
+ALTER FUNCTION "public"."get_sms_required"("p_users" "uuid"[]) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."get_stock_balance"("p_location_id" "uuid", "p_product_id" "uuid") RETURNS numeric
     LANGUAGE "sql" STABLE
     AS $$
@@ -22038,6 +22361,26 @@ $$;
 ALTER FUNCTION "public"."is_telegram_evidence_dispatch_enabled"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."list_browser_approvals"("p_actor" "uuid") RETURNS "jsonb"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'userId',p.id,'required',a.required,'primaryLocationId',(select ul.location_id from public.user_locations ul join public.locations l on l.id=ul.location_id where ul.user_id=p.id and ul.is_primary and l.is_active limit 1),
+    'pending',coalesce((select jsonb_agg(jsonb_build_object('id',b.id,'label',b.label,'requestedAt',b.requested_at) order by b.requested_at)
+      from private.browser_approvals b where b.user_id=p.id and b.generation=a.generation and b.state='pending'),'[]'::jsonb),
+    'lastApprovedBy',(select actor.name from private.sms_security_audit au left join public.profiles actor on actor.id=au.actor_id
+      where au.target_id=p.id and au.action='browser_approve' order by au.created_at desc,au.id desc limit 1),
+    'lastApprovedAt',(select au.created_at from private.sms_security_audit au where au.target_id=p.id and au.action='browser_approve' order by au.created_at desc,au.id desc limit 1)
+  )),'[]'::jsonb)
+  from public.profiles p join private.sms_account_security a on a.user_id=p.id
+  where private.can_approve_browser(p_actor,p.id)
+$$;
+
+
+ALTER FUNCTION "public"."list_browser_approvals"("p_actor" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."list_cash_alert_groups"() RETURNS "jsonb"
     LANGUAGE "plpgsql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -22091,14 +22434,13 @@ CREATE OR REPLACE FUNCTION "public"."list_cash_count_alert_groups"() RETURNS "js
     AS $$
 declare result jsonb;
 begin
-  if not private.is_active_user() or not private.can_access_super_admin_features() then raise exception 'FORBIDDEN'; end if;
-  select jsonb_build_object('groups',coalesce((select jsonb_agg(jsonb_build_object(
-    'id',g.id,'dueDays',g.due_days,'locationIds',coalesce((select jsonb_agg(m.location_id order by m.location_id)
-      from public.cash_count_alert_members m where m.group_id=g.id),'[]'::jsonb)) order by g.created_at,g.id)
-      from public.cash_count_alert_groups g),'[]'::jsonb),
-    'availableLocationIds',coalesce((select jsonb_agg(id order by name,id) from public.locations l
-      where is_active and not exists(select 1 from public.cash_count_alert_members m where m.location_id=l.id)),'[]'::jsonb)) into result;
-  return result;
+ if not private.is_active_user() or not public.can_access_super_admin_features() then raise exception 'FORBIDDEN'; end if;
+ select jsonb_build_object('groups',coalesce((select jsonb_agg(jsonb_build_object(
+   'id',g.id,'dueDays',g.due_days,'lockEnabled',g.lock_enabled,'graceHours',g.grace_hours,'unlockHours',g.unlock_hours,
+   'locationIds',coalesce((select jsonb_agg(m.location_id order by m.location_id) from public.cash_count_alert_members m where m.group_id=g.id),'[]'::jsonb)) order by g.created_at,g.id)
+   from public.cash_count_alert_groups g),'[]'::jsonb),'availableLocationIds',coalesce((select jsonb_agg(id order by name,id) from public.locations l
+     where is_active and not exists(select 1 from public.cash_count_alert_members m where m.location_id=l.id)),'[]'::jsonb)) into result;
+ return result;
 end $$;
 
 
@@ -22236,6 +22578,35 @@ $$;
 ALTER FUNCTION "public"."list_rubber_weight_alert_groups"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."manage_browser_approval"("p_actor" "uuid", "p_target" "uuid", "p_action" "text", "p_id" "uuid" DEFAULT NULL::"uuid") RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare a private.sms_account_security%rowtype; b private.browser_approvals%rowtype;
+begin
+  -- Lock actor/target profiles before account state so role updates cannot race approval.
+  perform id from public.profiles where id in (p_actor,p_target) order by id for share;
+  if not private.can_approve_browser(p_actor,p_target) then raise sqlstate '42501' using message='FORBIDDEN'; end if;
+  select * into a from private.sms_account_security where user_id=p_target for update;
+  if a.user_id is null or not a.required then raise exception 'NOT_REQUIRED'; end if;
+  if p_action='revoke' then
+    update private.sms_account_security set generation=generation+1,revoked_before=clock_timestamp() where user_id=p_target;
+    update private.browser_approvals set state='revoked' where user_id=p_target;
+  elsif p_action in ('approve','cancel') then
+    select * into b from private.browser_approvals where id=p_id and user_id=p_target for update;
+    if b.id is null or b.generation<>a.generation or b.state<>'pending' then raise exception 'STALE_REQUEST'; end if;
+    update private.browser_approvals set state=case when p_action='approve' then 'approved' else 'cancelled' end,
+      approved_by=case when p_action='approve' then p_actor else approved_by end,
+      approved_at=case when p_action='approve' then now() else approved_at end where id=b.id;
+  else raise exception 'INVALID_ACTION'; end if;
+  insert into private.sms_security_audit(actor_id,target_id,action,new_value,created_at)
+    values(p_actor,p_target,'browser_'||p_action,p_id::text,clock_timestamp());
+end $$;
+
+
+ALTER FUNCTION "public"."manage_browser_approval"("p_actor" "uuid", "p_target" "uuid", "p_action" "text", "p_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."open_rubber_bill_evidence_review_period"("p_location_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -22316,6 +22687,21 @@ $$;
 
 
 ALTER FUNCTION "public"."pass_all_pending_rubber_bill_evidence_reviews"("p_location_id" "uuid", "p_expected_pending_count" bigint, "p_expected_pending_fingerprint" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."prepare_sms_phone_change"("p_actor" "uuid", "p_target" "uuid", "p_phone" "text") RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $_$
+begin
+  if not exists(select 1 from public.profiles where id=p_actor and role='super_admin' and is_active) then raise exception 'FORBIDDEN'; end if;
+  if p_phone !~ '^66[0-9]{9}$' or exists(select 1 from auth.users where phone=p_phone and id<>p_target) then raise exception 'INVALID_PHONE'; end if;
+  insert into private.sms_phone_changes values(p_target,p_actor,p_phone,now()+interval '1 minute')
+    on conflict(user_id) do update set actor_id=excluded.actor_id,phone=excluded.phone,expires_at=excluded.expires_at;
+end $_$;
+
+
+ALTER FUNCTION "public"."prepare_sms_phone_change"("p_actor" "uuid", "p_target" "uuid", "p_phone" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."prevent_location_change"() RETURNS "trigger"
@@ -23929,6 +24315,15 @@ $$;
 ALTER FUNCTION "public"."request_time_tracking_withdrawal_adjustment"("p_withdrawal_id" "uuid", "p_target_amount" numeric, "p_expense_location_id" "uuid", "p_reason" "text") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."reserve_sms_challenge"("p_user" "uuid", "p_session" "uuid", "p_id" "uuid", "p_digest" "text") RETURNS "jsonb"
+    LANGUAGE "sql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$ select jsonb_build_object('error','NOT_REQUIRED') $$;
+
+
+ALTER FUNCTION "public"."reserve_sms_challenge"("p_user" "uuid", "p_session" "uuid", "p_id" "uuid", "p_digest" "text") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."revert_rubber_export_to_draft"("p_export_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -24188,34 +24583,41 @@ ALTER FUNCTION "public"."save_branch_create_confirmation_minutes"("p_confirmatio
 
 
 CREATE OR REPLACE FUNCTION "public"."save_cash_count_alert_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_due_days" integer) RETURNS "jsonb"
-    LANGUAGE "plpgsql" SECURITY DEFINER
+    LANGUAGE "sql" SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
-declare v_id uuid:=coalesce(p_group_id,gen_random_uuid());
-begin
-  if not private.is_active_user() or not private.can_access_super_admin_features() then raise exception 'FORBIDDEN'; end if;
-  perform pg_advisory_xact_lock(hashtextextended('cash-count-alert-groups',0));
-  if p_due_days is null or p_due_days not between 1 and 5 or coalesce(cardinality(p_location_ids),0)=0
-    or exists(select 1 from unnest(p_location_ids) x where x is null)
-    or (select count(distinct x) from unnest(p_location_ids) x)<>cardinality(p_location_ids) then
-    raise exception 'เกณฑ์ต้องเป็น 1–5 วัน และต้องเลือกสาขาไม่ซ้ำอย่างน้อยหนึ่งสาขา'; end if;
-  if p_group_id is not null and not exists(select 1 from public.cash_count_alert_groups where id=p_group_id) then raise exception 'ไม่พบกลุ่ม'; end if;
-  if exists(select 1 from unnest(p_location_ids) x left join public.locations l on l.id=x where l.id is null
-    or (not l.is_active and not exists(select 1 from public.cash_count_alert_members where group_id=v_id and location_id=x))) then
-    raise exception 'ไม่พบสาขาที่เปิดใช้งาน'; end if;
-  if exists(select 1 from public.cash_count_alert_members where location_id=any(p_location_ids) and group_id<>v_id) then
-    raise exception 'สาขาอยู่ในกลุ่มอื่นแล้ว กรุณานำออกจากกลุ่มเดิมก่อน'; end if;
-  insert into public.cash_count_alert_groups(id,due_days) values(v_id,p_due_days)
-    on conflict(id) do update set due_days=excluded.due_days;
-  -- Retained members preserve their join date. Removed/re-added members begin a new membership.
-  delete from public.cash_count_alert_members where group_id=v_id and not(location_id=any(p_location_ids));
-  insert into public.cash_count_alert_members(group_id,location_id)
-    select v_id,x from unnest(p_location_ids) x on conflict(location_id) do nothing;
-  return jsonb_build_object('id',v_id);
-end $$;
+ select public.save_cash_count_alert_group(p_group_id,p_location_ids,p_due_days,null,null,null)
+$$;
 
 
 ALTER FUNCTION "public"."save_cash_count_alert_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_due_days" integer) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."save_cash_count_alert_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_due_days" integer, "p_lock_enabled" boolean, "p_grace_hours" integer, "p_unlock_hours" integer) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare v_id uuid:=coalesce(p_group_id,gen_random_uuid()); v_ids uuid[]; v_result jsonb;
+begin
+ if not private.is_active_user() or not public.can_access_super_admin_features() then raise exception 'FORBIDDEN'; end if;
+ perform pg_advisory_xact_lock(hashtextextended('cash-count-alert-groups',0));
+ select array_agg(distinct x) into v_ids from unnest(coalesce(p_location_ids,'{}'::uuid[])||
+   coalesce((select array_agg(location_id) from public.cash_count_alert_members where group_id=v_id),'{}'::uuid[])) x;
+ perform private.lock_report_locations(v_ids);
+ if (p_grace_hours is not null and p_grace_hours not between 1 and 48)
+   or (p_unlock_hours is not null and p_unlock_hours not between 1 and 48) then raise exception 'ชั่วโมงต้องเป็น 1–48'; end if;
+ v_result:=private.save_cash_count_alert_group_base(p_group_id,p_location_ids,p_due_days);
+ v_id:=(v_result->>'id')::uuid;
+ update public.cash_count_alert_groups set lock_enabled=coalesce(p_lock_enabled,lock_enabled),
+   grace_hours=coalesce(p_grace_hours,grace_hours),unlock_hours=coalesce(p_unlock_hours,unlock_hours) where id=v_id;
+ if p_lock_enabled=false then
+   update public.cash_count_alert_members set unlocked_until=null,unlocked_at=null,unlocked_by_user_id=null,unlocked_by_name=null where group_id=v_id;
+ end if;
+ return v_result;
+end $$;
+
+
+ALTER FUNCTION "public"."save_cash_count_alert_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_due_days" integer, "p_lock_enabled" boolean, "p_grace_hours" integer, "p_unlock_hours" integer) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."save_customer_master_data"("payload" "jsonb") RETURNS "jsonb"
@@ -26721,6 +27123,73 @@ $$;
 ALTER FUNCTION "public"."set_time_tracking_status"("p_profile_id" "uuid", "p_status" "text") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."set_user_sms_required"("p_actor" "uuid", "p_target" "uuid", "p_required" boolean) RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare was_required boolean;
+begin
+  if not exists(select 1 from public.profiles where id=p_actor and role='super_admin' and is_active)
+    or not exists(select 1 from public.profiles where id=p_target and role<>'super_admin') then
+    raise exception 'FORBIDDEN';
+  end if;
+  insert into private.sms_account_security(user_id) values(p_target) on conflict do nothing;
+  select required into was_required from private.sms_account_security where user_id=p_target for update;
+  if was_required = p_required then return; end if;
+  update private.sms_account_security set required=p_required, generation=generation+1,
+    revoked_before=case when p_required then clock_timestamp() else revoked_before end where user_id=p_target;
+  delete from private.sms_login_challenges where user_id=p_target;
+  insert into private.sms_security_audit(actor_id,target_id,action,old_value,new_value)
+    values(p_actor,p_target,'sms_required',was_required::text,p_required::text);
+end $$;
+
+
+ALTER FUNCTION "public"."set_user_sms_required"("p_actor" "uuid", "p_target" "uuid", "p_required" boolean) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."sms_ip_retry_after"("p_hash" "text") RETURNS integer
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select coalesce((select greatest(1,ceil(extract(epoch from window_started_at+interval '1 hour'-now())))::integer
+    from private.sms_ip_budgets where bucket_hash=p_hash),1)
+$$;
+
+
+ALTER FUNCTION "public"."sms_ip_retry_after"("p_hash" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."sms_login_status"() RETURNS "jsonb"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select jsonb_build_object('status', case
+    when not exists(select 1 from public.profiles where id = auth.uid() and is_active) then 'SIGNED_OUT'
+    else private.sms_session_status() end)
+$$;
+
+
+ALTER FUNCTION "public"."sms_login_status"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."sms_send_usage"("p_user" "uuid") RETURNS "jsonb"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select coalesce((select jsonb_build_object(
+    'sentCount',case when quota_window>now()-interval '30 minutes' then quota_sends else 0 end,
+    'sendLimit',5,
+    'resetAt',case when quota_window>now()-interval '30 minutes' then quota_window+interval '30 minutes' else null end,
+    'resendAt',greatest(last_sent_at+interval '30 seconds',
+       case when quota_sends>=5 and quota_window>now()-interval '30 minutes' then quota_window+interval '30 minutes' else now() end,
+       case when failures>=10 and failure_window>now()-interval '1 hour' then failure_window+interval '1 hour' else now() end))
+    from private.sms_account_security where user_id=p_user), jsonb_build_object('sentCount',0,'sendLimit',5))
+$$;
+
+
+ALTER FUNCTION "public"."sms_send_usage"("p_user" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."start_cash_count_session"("p_location_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -28398,6 +28867,32 @@ $$;
 ALTER FUNCTION "public"."transfer_stock"("payload" "jsonb") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."unlock_cash_count_overdue"("p_location_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare v_now timestamptz; v_hours integer; v_state jsonb;
+begin
+ if not private.is_active_user() or not public.can_access_super_admin_features() or not public.can_access_location(p_location_id) then
+   raise exception 'ไม่มีสิทธิ์ปลดล็อกสาขา'; end if;
+ perform private.lock_report_locations(array[p_location_id]);
+ v_now:=clock_timestamp();
+ v_state:=private.cash_count_lock_state(p_location_id,v_now);
+ -- A lost response or concurrent click returns the existing grant, never extends it.
+ if coalesce((v_state->>'locked')::boolean,false) then
+   select g.unlock_hours into v_hours from public.cash_count_alert_members m
+     join public.cash_count_alert_groups g on g.id=m.group_id where m.location_id=p_location_id;
+   update public.cash_count_alert_members set unlocked_until=v_now+make_interval(hours=>v_hours),
+     unlocked_at=v_now,unlocked_by_user_id=auth.uid(),unlocked_by_name=(select name from public.profiles where id=auth.uid())
+     where location_id=p_location_id;
+ end if;
+ return public.get_cash_count_overdue_status(p_location_id);
+end $$;
+
+
+ALTER FUNCTION "public"."unlock_cash_count_overdue"("p_location_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."update_admin_user_profile"("p_user_id" "uuid", "p_name" "text", "p_location_ids" "uuid"[], "p_primary_location_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -29432,6 +29927,15 @@ $$;
 ALTER FUNCTION "public"."verify_rubber_export_atomic"("p_export_id" "uuid", "p_current_weight" numeric, "p_work_rate" numeric, "p_other_operating_cost" numeric, "p_expense_destination" "text") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."verify_sms_challenge"("p_user" "uuid", "p_session" "uuid", "p_id" "uuid", "p_digest" "text") RETURNS boolean
+    LANGUAGE "sql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$ select false $$;
+
+
+ALTER FUNCTION "public"."verify_sms_challenge"("p_user" "uuid", "p_session" "uuid", "p_id" "uuid", "p_digest" "text") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."verify_telegram_badge_dispatch_secret"("p_secret" "text") RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -29499,6 +30003,34 @@ CREATE TABLE IF NOT EXISTS "private"."approval_request_replay_guards" (
 
 
 ALTER TABLE "private"."approval_request_replay_guards" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."browser_approvals" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "user_id" "uuid" NOT NULL,
+    "secret_hash" "text" NOT NULL,
+    "generation" bigint NOT NULL,
+    "state" "text" NOT NULL,
+    "label" "text" NOT NULL,
+    "requested_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "approved_by" "uuid",
+    "approved_at" timestamp with time zone,
+    CONSTRAINT "browser_approvals_secret_hash_check" CHECK (("secret_hash" ~ '^[a-f0-9]{64}$'::"text")),
+    CONSTRAINT "browser_approvals_state_check" CHECK (("state" = ANY (ARRAY['pending'::"text", 'approved'::"text", 'cancelled'::"text", 'revoked'::"text"])))
+);
+
+
+ALTER TABLE "private"."browser_approvals" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."browser_session_approvals" (
+    "session_id" "uuid" NOT NULL,
+    "browser_id" "uuid" NOT NULL,
+    "generation" bigint NOT NULL
+);
+
+
+ALTER TABLE "private"."browser_session_approvals" OWNER TO "postgres";
 
 
 CREATE SEQUENCE IF NOT EXISTS "private"."cash_count_number_seq"
@@ -29575,6 +30107,76 @@ CREATE TABLE IF NOT EXISTS "private"."rubber_bill_evidence_projection" (
 
 
 ALTER TABLE "private"."rubber_bill_evidence_projection" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."sms_account_security" (
+    "user_id" "uuid" NOT NULL,
+    "required" boolean DEFAULT false NOT NULL,
+    "generation" bigint DEFAULT 0 NOT NULL,
+    "revoked_before" timestamp with time zone DEFAULT '-infinity'::timestamp with time zone NOT NULL,
+    "send_window" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "sends" integer DEFAULT 0 NOT NULL,
+    "failure_window" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "failures" integer DEFAULT 0 NOT NULL,
+    "last_sent_at" timestamp with time zone,
+    "quota_window" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "quota_sends" integer DEFAULT 0 NOT NULL
+);
+
+
+ALTER TABLE "private"."sms_account_security" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."sms_ip_budgets" (
+    "bucket_hash" "text" NOT NULL,
+    "window_started_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "sends" integer DEFAULT 0 NOT NULL
+);
+
+
+ALTER TABLE "private"."sms_ip_budgets" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."sms_login_challenges" (
+    "session_id" "uuid" NOT NULL,
+    "user_id" "uuid" NOT NULL,
+    "generation" bigint NOT NULL,
+    "phone" "text" NOT NULL,
+    "challenge_id" "uuid" NOT NULL,
+    "digest" "text" NOT NULL,
+    "expires_at" timestamp with time zone NOT NULL,
+    "attempts" integer DEFAULT 0 NOT NULL,
+    "delivered" boolean DEFAULT false NOT NULL,
+    "verified" boolean DEFAULT false NOT NULL
+);
+
+
+ALTER TABLE "private"."sms_login_challenges" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."sms_phone_changes" (
+    "user_id" "uuid" NOT NULL,
+    "actor_id" "uuid" NOT NULL,
+    "phone" "text" NOT NULL,
+    "expires_at" timestamp with time zone NOT NULL
+);
+
+
+ALTER TABLE "private"."sms_phone_changes" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."sms_security_audit" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "actor_id" "uuid" NOT NULL,
+    "target_id" "uuid" NOT NULL,
+    "action" "text" NOT NULL,
+    "old_value" "text",
+    "new_value" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL
+);
+
+
+ALTER TABLE "private"."sms_security_audit" OWNER TO "postgres";
 
 
 CREATE TABLE IF NOT EXISTS "private"."time_payroll_employment_boundaries" (
@@ -29851,7 +30453,13 @@ CREATE TABLE IF NOT EXISTS "public"."cash_count_alert_groups" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "due_days" integer NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    CONSTRAINT "cash_count_alert_groups_due_days_check" CHECK ((("due_days" >= 1) AND ("due_days" <= 5)))
+    "lock_enabled" boolean DEFAULT false NOT NULL,
+    "grace_hours" integer,
+    "unlock_hours" integer,
+    CONSTRAINT "cash_count_alert_groups_due_days_check" CHECK ((("due_days" >= 1) AND ("due_days" <= 5))),
+    CONSTRAINT "cash_count_alert_groups_grace_hours_check" CHECK ((("grace_hours" >= 1) AND ("grace_hours" <= 48))),
+    CONSTRAINT "cash_count_alert_groups_unlock_hours_check" CHECK ((("unlock_hours" >= 1) AND ("unlock_hours" <= 48))),
+    CONSTRAINT "cash_count_lock_settings" CHECK (((NOT "lock_enabled") OR (("grace_hours" IS NOT NULL) AND ("unlock_hours" IS NOT NULL))))
 );
 
 
@@ -29861,7 +30469,11 @@ ALTER TABLE "public"."cash_count_alert_groups" OWNER TO "postgres";
 CREATE TABLE IF NOT EXISTS "public"."cash_count_alert_members" (
     "location_id" "uuid" NOT NULL,
     "group_id" "uuid" NOT NULL,
-    "joined_at" timestamp with time zone DEFAULT "now"() NOT NULL
+    "joined_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "unlocked_until" timestamp with time zone,
+    "unlocked_at" timestamp with time zone,
+    "unlocked_by_user_id" "uuid",
+    "unlocked_by_name" "text"
 );
 
 
@@ -31203,6 +31815,21 @@ ALTER TABLE ONLY "private"."approval_request_replay_guards"
 
 
 
+ALTER TABLE ONLY "private"."browser_approvals"
+    ADD CONSTRAINT "browser_approvals_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "private"."browser_approvals"
+    ADD CONSTRAINT "browser_approvals_user_id_secret_hash_key" UNIQUE ("user_id", "secret_hash");
+
+
+
+ALTER TABLE ONLY "private"."browser_session_approvals"
+    ADD CONSTRAINT "browser_session_approvals_pkey" PRIMARY KEY ("session_id");
+
+
+
 ALTER TABLE ONLY "private"."dashboard_money_event_projection"
     ADD CONSTRAINT "dashboard_money_event_projection_pkey" PRIMARY KEY ("source_type", "source_id", "event_key");
 
@@ -31220,6 +31847,31 @@ ALTER TABLE ONLY "private"."money_transfer_delete_context"
 
 ALTER TABLE ONLY "private"."rubber_bill_evidence_projection"
     ADD CONSTRAINT "rubber_bill_evidence_projection_pkey" PRIMARY KEY ("bill_id");
+
+
+
+ALTER TABLE ONLY "private"."sms_account_security"
+    ADD CONSTRAINT "sms_account_security_pkey" PRIMARY KEY ("user_id");
+
+
+
+ALTER TABLE ONLY "private"."sms_ip_budgets"
+    ADD CONSTRAINT "sms_ip_budgets_pkey" PRIMARY KEY ("bucket_hash");
+
+
+
+ALTER TABLE ONLY "private"."sms_login_challenges"
+    ADD CONSTRAINT "sms_login_challenges_pkey" PRIMARY KEY ("session_id");
+
+
+
+ALTER TABLE ONLY "private"."sms_phone_changes"
+    ADD CONSTRAINT "sms_phone_changes_pkey" PRIMARY KEY ("user_id");
+
+
+
+ALTER TABLE ONLY "private"."sms_security_audit"
+    ADD CONSTRAINT "sms_security_audit_pkey" PRIMARY KEY ("id");
 
 
 
@@ -31863,6 +32515,14 @@ ALTER TABLE ONLY "public"."user_locations"
 
 
 
+CREATE INDEX "browser_approvals_pending" ON "private"."browser_approvals" USING "btree" ("user_id") WHERE ("state" = 'pending'::"text");
+
+
+
+CREATE INDEX "browser_latest_approval" ON "private"."sms_security_audit" USING "btree" ("target_id", "created_at" DESC, "id" DESC) WHERE ("action" = 'browser_approve'::"text");
+
+
+
 CREATE INDEX "rubber_bill_evidence_projection_history" ON "private"."rubber_bill_evidence_projection" USING "btree" ("location_id", "reviewed_at" DESC, "bill_id" DESC) WHERE ("review_status" = ANY (ARRAY['pass'::"text", 'improve'::"text"]));
 
 
@@ -31892,6 +32552,10 @@ CREATE INDEX "branch_transfer_delete_requests_status_created" ON "public"."branc
 
 
 CREATE INDEX "branch_transfer_delete_retention_idx" ON "public"."branch_transfer_delete_requests" USING "btree" (COALESCE("decided_at", "updated_at"), "id") WHERE ("request_status" <> 'pending'::"text");
+
+
+
+CREATE INDEX "cash_count_active_cutoff" ON "public"."cash_counts" USING "btree" ("location_id", "cutoff_at" DESC) WHERE ("status" = 'active'::"text");
 
 
 
@@ -32395,6 +33059,10 @@ CREATE OR REPLACE TRIGGER "cash_count_movement_guard" BEFORE INSERT OR DELETE OR
 
 
 
+CREATE OR REPLACE TRIGGER "clear_cash_count_unlock_after_submit" AFTER UPDATE OF "status" ON "public"."cash_count_sessions" FOR EACH ROW WHEN ((("new"."status" = 'submitted'::"text") AND ("old"."status" IS DISTINCT FROM "new"."status"))) EXECUTE FUNCTION "private"."clear_cash_count_unlock_on_submit"();
+
+
+
 CREATE OR REPLACE TRIGGER "clear_weight_evidence_completion_on_bill_change" BEFORE UPDATE OF "revision_no", "record_status" ON "public"."rubber_bills" FOR EACH ROW EXECUTE FUNCTION "private"."clear_weight_evidence_completion_on_bill_change"();
 
 
@@ -32747,11 +33415,35 @@ CREATE OR REPLACE TRIGGER "report_lock_time_segments" BEFORE DELETE OR UPDATE ON
 
 
 
+CREATE OR REPLACE TRIGGER "revoke_browser_on_manager_promotion" AFTER UPDATE OF "role", "can_access_super_admin_features" ON "public"."profiles" FOR EACH ROW EXECUTE FUNCTION "private"."revoke_browser_on_manager_promotion"();
+
+
+
 CREATE OR REPLACE TRIGGER "rubber_bill_ocr_sources_enforce_update" BEFORE UPDATE ON "public"."rubber_bill_ocr_sources" FOR EACH ROW EXECUTE FUNCTION "private"."enforce_rubber_bill_ocr_source_update"();
 
 
 
 CREATE OR REPLACE TRIGGER "rubber_bills_lock_location" BEFORE UPDATE ON "public"."rubber_bills" FOR EACH ROW EXECUTE FUNCTION "public"."prevent_location_change"();
+
+
+
+ALTER TABLE ONLY "private"."browser_approvals"
+    ADD CONSTRAINT "browser_approvals_approved_by_fkey" FOREIGN KEY ("approved_by") REFERENCES "public"."profiles"("id") ON DELETE SET NULL;
+
+
+
+ALTER TABLE ONLY "private"."browser_approvals"
+    ADD CONSTRAINT "browser_approvals_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "private"."browser_session_approvals"
+    ADD CONSTRAINT "browser_session_approvals_browser_id_fkey" FOREIGN KEY ("browser_id") REFERENCES "private"."browser_approvals"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "private"."browser_session_approvals"
+    ADD CONSTRAINT "browser_session_approvals_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "auth"."sessions"("id") ON DELETE CASCADE;
 
 
 
@@ -32767,6 +33459,16 @@ ALTER TABLE ONLY "private"."rubber_bill_evidence_projection"
 
 ALTER TABLE ONLY "private"."rubber_bill_evidence_projection"
     ADD CONSTRAINT "rubber_bill_evidence_projection_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id");
+
+
+
+ALTER TABLE ONLY "private"."sms_account_security"
+    ADD CONSTRAINT "sms_account_security_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "private"."sms_login_challenges"
+    ADD CONSTRAINT "sms_login_challenges_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("id") ON DELETE CASCADE;
 
 
 
@@ -32847,6 +33549,11 @@ ALTER TABLE ONLY "public"."cash_count_alert_members"
 
 ALTER TABLE ONLY "public"."cash_count_alert_members"
     ADD CONSTRAINT "cash_count_alert_members_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id");
+
+
+
+ALTER TABLE ONLY "public"."cash_count_alert_members"
+    ADD CONSTRAINT "cash_count_alert_members_unlocked_by_user_id_fkey" FOREIGN KEY ("unlocked_by_user_id") REFERENCES "public"."profiles"("id") ON DELETE SET NULL;
 
 
 
@@ -34205,6 +34912,302 @@ CREATE POLICY "rubber_weight_alert_groups_manager_read" ON "public"."rubber_weig
 
 
 
+CREATE POLICY "sms_session_gate" ON "public"."admin_account_audit_logs" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."branch_create_guard_settings" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."branch_transfer_delete_requests" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."cash_alert_group_locations" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."cash_alert_groups" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."cash_count_alert_groups" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."cash_count_alert_members" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."cash_count_bank_evidence" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."cash_count_sessions" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."cash_counts" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."cash_transfer_delete_requests" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."customer_bank_accounts" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."customer_contacts" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."customer_farms" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."customers" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."dashboard_alert_thresholds" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."dashboard_branch_snapshots" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."dashboard_money_events" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."dashboard_refresh_settings" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."dashboard_stock_alert_thresholds" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."document_deletion_audits" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."export_vehicle_weigh_bill_reservations" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."export_vehicle_weigh_bills" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."export_vehicle_weigh_lines" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."financial_transactions" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."history_cleanup_runs" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."history_retention_change_audits" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."history_retention_settings" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."income_expense" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."income_expense_approval_keywords" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."income_expense_approval_requests" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."income_expense_approval_settings" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."income_expense_sale_lines" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."income_sale_items" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."locations" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."money_transfer_cash_details" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."money_transfer_items" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."money_transfer_slips" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."money_transfers" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."payroll_slips" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."profiles" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."report_batches" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."report_items" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."rubber_approval_group_locations" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."rubber_approval_groups" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."rubber_bill_approval_requests" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."rubber_bill_approval_settings" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."rubber_bill_evidence_review_periods" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."rubber_bill_evidence_reviews" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."rubber_bill_item_evidence_files" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."rubber_bill_items" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."rubber_bill_ocr_sources" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."rubber_bills" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."rubber_export_items" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."rubber_exports" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."rubber_weight_alert_group_locations" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."rubber_weight_alert_groups" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."stock_entries" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."stock_entry_approval_requests" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."stock_product_approval_requests" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."stock_products" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."telegram_badge_catalog" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."telegram_badge_settings" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."time_payroll_active_periods" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."time_payroll_attendance_exceptions" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."time_payroll_settings" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."time_segments" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."time_tracking_audit_logs" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."time_tracking_resume_schedules" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."transport_staff_bank_accounts" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."transport_staff_contacts" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."transport_staff_plates" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."transport_staffs" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
+CREATE POLICY "sms_session_gate" ON "public"."user_locations" AS RESTRICTIVE TO "authenticated" USING (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed")) WITH CHECK (( SELECT "private"."sms_access_allowed"() AS "sms_access_allowed"));
+
+
+
 ALTER TABLE "public"."stock_entries" ENABLE ROW LEVEL SECURITY;
 
 
@@ -34467,6 +35470,10 @@ GRANT ALL ON FUNCTION "private"."can_access_super_admin_features"() TO "authenti
 
 
 
+REVOKE ALL ON FUNCTION "private"."can_approve_browser"("p_actor" "uuid", "p_target" "uuid") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."can_manage_location"("target_location" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "private"."can_manage_location"("target_location" "uuid") TO "authenticated";
 
@@ -34525,6 +35532,14 @@ GRANT ALL ON FUNCTION "private"."cash_count_counts_valid"("p_counts" "jsonb") TO
 
 
 
+REVOKE ALL ON FUNCTION "private"."cash_count_due_date"("p_location_id" "uuid") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."cash_count_lock_state"("p_location_id" "uuid", "p_now" timestamp with time zone) FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."cash_count_start_blockers"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) FROM PUBLIC;
 
 
@@ -34540,6 +35555,10 @@ REVOKE ALL ON FUNCTION "private"."claim_dashboard_branch"() FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION "private"."cleanup_history_retention"("p_batch_size" integer) FROM PUBLIC;
 GRANT ALL ON FUNCTION "private"."cleanup_history_retention"("p_batch_size" integer) TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "private"."clear_cash_count_unlock_on_submit"() FROM PUBLIC;
 
 
 
@@ -34933,6 +35952,14 @@ REVOKE ALL ON FUNCTION "private"."resolve_rubber_bill_price_policy_without_quota
 
 
 
+REVOKE ALL ON FUNCTION "private"."revoke_browser_on_manager_promotion"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."revoke_browser_on_password_change"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."rubber_bill_current_work_items"("p_location_id" "uuid") FROM PUBLIC;
 
 
@@ -34982,6 +36009,14 @@ REVOKE ALL ON FUNCTION "private"."rubber_export_candidates"("p_location_id" "uui
 
 
 REVOKE ALL ON FUNCTION "private"."rubber_export_candidates"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[], "p_current_export_id" "uuid") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."save_cash_count_alert_group_base"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_due_days" integer) FROM PUBLIC;
+
+
+
+GRANT ALL ON FUNCTION "private"."sms_access_allowed"() TO "authenticated";
 
 
 
@@ -35083,6 +36118,11 @@ GRANT ALL ON FUNCTION "public"."begin_admin_password_reset"("p_target_user_id" "
 
 
 
+REVOKE ALL ON FUNCTION "public"."bootstrap_browser_approval"("p_user" "uuid", "p_session" "uuid", "p_hash" "text", "p_label" "text", "p_request" boolean, "p_resubmit" boolean) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."bootstrap_browser_approval"("p_user" "uuid", "p_session" "uuid", "p_hash" "text", "p_label" "text", "p_request" boolean, "p_resubmit" boolean) TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."calculate_paid_work_days"("p_profile_id" "uuid", "p_period_start" timestamp with time zone, "p_period_end" timestamp with time zone) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."calculate_paid_work_days"("p_profile_id" "uuid", "p_period_start" timestamp with time zone, "p_period_end" timestamp with time zone) TO "authenticated";
 GRANT ALL ON FUNCTION "public"."calculate_paid_work_days"("p_profile_id" "uuid", "p_period_start" timestamp with time zone, "p_period_end" timestamp with time zone) TO "service_role";
@@ -35132,8 +36172,19 @@ GRANT ALL ON FUNCTION "public"."check_cash_count"("p_count_id" "uuid") TO "authe
 
 
 
+REVOKE ALL ON FUNCTION "public"."check_sms_access"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."check_sms_access"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."check_sms_access"() TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."claim_dashboard_refresh_now"("p_location_id" "uuid", "p_requested_version" bigint) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."claim_dashboard_refresh_now"("p_location_id" "uuid", "p_requested_version" bigint) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."claim_sms_ip_budget"("p_hash" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."claim_sms_ip_budget"("p_hash" "text") TO "service_role";
 
 
 
@@ -35433,6 +36484,11 @@ GRANT ALL ON FUNCTION "public"."delete_time_tracking_source_permanently"("p_sour
 
 
 
+REVOKE ALL ON FUNCTION "public"."deliver_sms_challenge"("p_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."deliver_sms_challenge"("p_id" "uuid") TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."dispatch_telegram_badge_tick"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."dispatch_telegram_badge_tick"() TO "service_role";
 
@@ -35512,6 +36568,11 @@ GRANT ALL ON FUNCTION "public"."get_cash_branch_transfer_detail"("p_transfer_id"
 
 REVOKE ALL ON FUNCTION "public"."get_cash_branch_transfer_pending_summary"("p_location_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_cash_branch_transfer_pending_summary"("p_location_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_cash_count_overdue_status"("p_location_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_cash_count_overdue_status"("p_location_id" "uuid") TO "authenticated";
 
 
 
@@ -35789,6 +36850,11 @@ GRANT ALL ON FUNCTION "public"."get_rubber_weight_alert_config"() TO "service_ro
 
 
 
+REVOKE ALL ON FUNCTION "public"."get_sms_required"("p_users" "uuid"[]) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_sms_required"("p_users" "uuid"[]) TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."get_stock_balance"("p_location_id" "uuid", "p_product_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_stock_balance"("p_location_id" "uuid", "p_product_id" "uuid") TO "authenticated";
 
@@ -35892,6 +36958,11 @@ GRANT ALL ON FUNCTION "public"."is_telegram_evidence_dispatch_enabled"() TO "ser
 
 
 
+REVOKE ALL ON FUNCTION "public"."list_browser_approvals"("p_actor" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."list_browser_approvals"("p_actor" "uuid") TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."list_cash_alert_groups"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."list_cash_alert_groups"() TO "authenticated";
 
@@ -35913,6 +36984,11 @@ GRANT ALL ON FUNCTION "public"."list_rubber_weight_alert_groups"() TO "service_r
 
 
 
+REVOKE ALL ON FUNCTION "public"."manage_browser_approval"("p_actor" "uuid", "p_target" "uuid", "p_action" "text", "p_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."manage_browser_approval"("p_actor" "uuid", "p_target" "uuid", "p_action" "text", "p_id" "uuid") TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."open_rubber_bill_evidence_review_period"("p_location_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."open_rubber_bill_evidence_review_period"("p_location_id" "uuid") TO "authenticated";
 
@@ -35920,6 +36996,11 @@ GRANT ALL ON FUNCTION "public"."open_rubber_bill_evidence_review_period"("p_loca
 
 REVOKE ALL ON FUNCTION "public"."pass_all_pending_rubber_bill_evidence_reviews"("p_location_id" "uuid", "p_expected_pending_count" bigint, "p_expected_pending_fingerprint" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."pass_all_pending_rubber_bill_evidence_reviews"("p_location_id" "uuid", "p_expected_pending_count" bigint, "p_expected_pending_fingerprint" "text") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."prepare_sms_phone_change"("p_actor" "uuid", "p_target" "uuid", "p_phone" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."prepare_sms_phone_change"("p_actor" "uuid", "p_target" "uuid", "p_phone" "text") TO "service_role";
 
 
 
@@ -36300,6 +37381,11 @@ GRANT ALL ON FUNCTION "public"."request_time_tracking_withdrawal_adjustment"("p_
 
 
 
+REVOKE ALL ON FUNCTION "public"."reserve_sms_challenge"("p_user" "uuid", "p_session" "uuid", "p_id" "uuid", "p_digest" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."reserve_sms_challenge"("p_user" "uuid", "p_session" "uuid", "p_id" "uuid", "p_digest" "text") TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."revert_rubber_export_to_draft"("p_export_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."revert_rubber_export_to_draft"("p_export_id" "uuid") TO "authenticated";
 
@@ -36332,6 +37418,11 @@ GRANT ALL ON FUNCTION "public"."save_branch_create_confirmation_minutes"("p_conf
 
 REVOKE ALL ON FUNCTION "public"."save_cash_count_alert_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_due_days" integer) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."save_cash_count_alert_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_due_days" integer) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."save_cash_count_alert_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_due_days" integer, "p_lock_enabled" boolean, "p_grace_hours" integer, "p_unlock_hours" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."save_cash_count_alert_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_due_days" integer, "p_lock_enabled" boolean, "p_grace_hours" integer, "p_unlock_hours" integer) TO "authenticated";
 
 
 
@@ -36470,6 +37561,26 @@ REVOKE ALL ON FUNCTION "public"."set_time_tracking_status"("p_profile_id" "uuid"
 
 
 
+REVOKE ALL ON FUNCTION "public"."set_user_sms_required"("p_actor" "uuid", "p_target" "uuid", "p_required" boolean) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."set_user_sms_required"("p_actor" "uuid", "p_target" "uuid", "p_required" boolean) TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."sms_ip_retry_after"("p_hash" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."sms_ip_retry_after"("p_hash" "text") TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."sms_login_status"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."sms_login_status"() TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."sms_send_usage"("p_user" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."sms_send_usage"("p_user" "uuid") TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."start_cash_count_session"("p_location_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."start_cash_count_session"("p_location_id" "uuid") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."start_cash_count_session"("p_location_id" "uuid") TO "service_role";
@@ -36542,6 +37653,11 @@ GRANT ALL ON FUNCTION "public"."transfer_stock"("payload" "jsonb") TO "authentic
 
 
 
+REVOKE ALL ON FUNCTION "public"."unlock_cash_count_overdue"("p_location_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."unlock_cash_count_overdue"("p_location_id" "uuid") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."update_admin_user_profile"("p_user_id" "uuid", "p_name" "text", "p_location_ids" "uuid"[], "p_primary_location_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."update_admin_user_profile"("p_user_id" "uuid", "p_name" "text", "p_location_ids" "uuid"[], "p_primary_location_id" "uuid") TO "authenticated";
 
@@ -36597,6 +37713,11 @@ GRANT ALL ON FUNCTION "public"."verify_rubber_export_atomic"("p_export_id" "uuid
 
 
 
+REVOKE ALL ON FUNCTION "public"."verify_sms_challenge"("p_user" "uuid", "p_session" "uuid", "p_id" "uuid", "p_digest" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."verify_sms_challenge"("p_user" "uuid", "p_session" "uuid", "p_id" "uuid", "p_digest" "text") TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."verify_telegram_badge_dispatch_secret"("p_secret" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."verify_telegram_badge_dispatch_secret"("p_secret" "text") TO "service_role";
 
@@ -36611,7 +37732,35 @@ GRANT ALL ON TABLE "private"."approval_request_replay_guards" TO "service_role";
 
 
 
+GRANT ALL ON TABLE "private"."browser_approvals" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "private"."browser_session_approvals" TO "service_role";
+
+
+
 GRANT ALL ON TABLE "private"."document_number_counters" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "private"."sms_account_security" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "private"."sms_ip_budgets" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "private"."sms_login_challenges" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "private"."sms_phone_changes" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "private"."sms_security_audit" TO "service_role";
 
 
 

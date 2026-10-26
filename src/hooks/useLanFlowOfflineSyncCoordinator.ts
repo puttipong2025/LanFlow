@@ -63,6 +63,7 @@ export function useLanFlowOfflineSyncCoordinator({
     };
 
     const unsubscribe = subscribeConnectivity(handleConnectivityChange);
+    window.addEventListener("lanflow:cash-count-unlocked", syncCurrentScope);
     const retryInterval = setInterval(() => {
       void syncPendingCurrentScope();
     }, PENDING_SYNC_RETRY_INTERVAL_MS);
@@ -71,6 +72,7 @@ export function useLanFlowOfflineSyncCoordinator({
       clearInterval(retryInterval);
       clearRetryTimers();
       unsubscribe();
+      window.removeEventListener("lanflow:cash-count-unlocked", syncCurrentScope);
     };
   }, [locationId, ownerUserId, queryClient]);
 }

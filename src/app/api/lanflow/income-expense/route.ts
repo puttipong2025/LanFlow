@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/server/auth";
+import { cashCountLockResponse } from "@/lib/server/cash-count-lock-response";
 import {
   isIncomeExpenseSubmission,
   isIncomeExpenseSyncResult,
@@ -33,6 +34,8 @@ export async function POST(request: Request) {
     }
 
     const { data, error } = await supabase.rpc("sync_income_expense", { payload });
+    const locked = cashCountLockResponse(error?.message ?? (data?.status === "failed" ? data.errorMessage : null));
+    if (locked) return locked;
 
     if (error) {
       console.error("RPC sync_income_expense error:", error);

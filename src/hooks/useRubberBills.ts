@@ -104,7 +104,7 @@ export function syncPendingRubberBills(
           } else {
             await removeRubberBillQueueEventBestEffort(event);
           }
-        } else if (isRetryableSyncResponse(response.status)) {
+        } else if (isRetryableSyncResponse(response.status, data)) {
           break;
         } else {
           // Use RPC-level status to distinguish conflict from failed
@@ -272,7 +272,7 @@ export function useRubberBillMutations(
           });
           const data = await response.json();
           if (!response.ok) {
-            if (isRetryableSyncResponse(response.status)) {
+            if (isRetryableSyncResponse(response.status, data)) {
               throw new Error(data.errorMessage || "ระบบไม่พร้อมใช้งานชั่วคราว");
             }
             const isConflict = data.status === "conflict";
@@ -426,7 +426,7 @@ export function useRubberBillMutations(
           });
           const data = await response.json();
           if (!response.ok) {
-            if (isRetryableSyncResponse(response.status)) {
+            if (isRetryableSyncResponse(response.status, data)) {
               throw new Error(data.errorMessage || "ระบบไม่พร้อมใช้งานชั่วคราว");
             }
             const isConflict = data.status === "conflict";

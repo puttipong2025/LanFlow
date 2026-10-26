@@ -14,6 +14,8 @@ import { useLanFlowOfflineSyncCoordinator } from "@/hooks/useLanFlowOfflineSyncC
 import { useActionableBadges } from "@/hooks/useActionableBadges";
 import { useBranchCreateGuard } from "@/hooks/useBranchCreateGuard";
 import { useRubberWeightAlert } from "@/hooks/useRubberWeightAlert";
+import { useCashCountLocks } from "@/hooks/useCashCountLocks";
+import { CashCountLockNotice } from "@/components/cash-counts/CashCountLockNotice";
 
 import {
   readBootstrapCache,
@@ -482,6 +484,9 @@ function BusinessLanFlowApp() {
     config: rubberWeightAlertConfig,
     onConfigChange: updateRubberWeightAlertConfig,
   });
+  const cashLocks = useCashCountLocks(isLoaded && online && profile.role !== "user", JSON.stringify([profile.id, profile.role, profile.locationIds, profile.canAccessSystemManager, selectedLocationId]));
+  const [lockAlertOpen, setLockAlertOpen] = useState(false);
+  const selectedLock = cashLocks.states.find((s) => s.locationId === selectedLocationId);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -675,6 +680,8 @@ function BusinessLanFlowApp() {
       </section>
 
       <section className={`landscape-compact-content mx-auto w-full px-3 py-5 sm:px-4 sm:py-6 ${activeTab === "rubber" || activeTab === "rubber-evidence" || activeTab === "rubber-export" ? "max-w-[1800px]" : "max-w-7xl"}`}>
+        {selectedLock && <CashCountLockNotice state={selectedLock} offset={cashLocks.offset} working={cashLocks.working === selectedLock.locationId} onUnlock={() => void cashLocks.unlock(selectedLock.locationId)} onOpen={() => { setLockAlertOpen(true); void rubberWeightAlert.checkNow(); }} />}
+        {cashLocks.error && <div role="alert" className="my-2 space-y-2 text-sm text-clay"><p className="text-pretty">{cashLocks.error}</p><button type="button" onClick={() => void cashLocks.refresh()} className="focus-ring min-h-11 rounded-md bg-river px-3 font-semibold text-white">ลองโหลดสถานะล็อกใหม่</button></div>}
         {activeTab === "dashboard" && (
           <Dashboard
             selectedLocation={selectedLocation}
@@ -794,8 +801,9 @@ function BusinessLanFlowApp() {
       </section>
       {branchCreateDialog}
       <RubberWeightAlertDialog
-        alert={rubberWeightAlert.alert}
-        onAcknowledge={rubberWeightAlert.acknowledge}
+        alert={rubberWeightAlert.alert ?? (lockAlertOpen ? { config: rubberWeightAlertConfig, configuredCount: 0, checkedCount: 0, candidates: [], unavailable: [] } : null)}
+        locks={cashLocks.states} offset={cashLocks.offset} working={cashLocks.working} lockError={cashLocks.error} onUnlock={(id) => void cashLocks.unlock(id)} forceCount={lockAlertOpen}
+        onAcknowledge={() => { setLockAlertOpen(false); rubberWeightAlert.acknowledge(); }}
       />
     </main>
   );

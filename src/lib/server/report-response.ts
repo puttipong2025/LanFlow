@@ -1,3 +1,4 @@
+import { cashCountLockResponse } from "@/lib/server/cash-count-lock-response";
 import { NextResponse } from "next/server";
 
 const REPORT_ERROR_GROUPS = [
@@ -33,6 +34,7 @@ export function reportErrorGroups(message: string): string[] {
 }
 
 export function reportErrorResponse(message: string) {
+  const locked = cashCountLockResponse(message); if (locked) return locked;
   const normalized = message.toLowerCase();
   if (message.includes("ไม่มีสิทธิ์") || normalized.includes("access denied")) {
     return NextResponse.json({ error: message }, { status: 403 });

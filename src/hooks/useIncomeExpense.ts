@@ -250,7 +250,7 @@ async function runPendingIncomeExpenseSync(
         }
         await removeSyncEvent(event.queueId!);
       }
-      else if (isRetryableSyncResponse(response.status)) {
+      else if (isRetryableSyncResponse(response.status, data)) {
         break;
       }
       else {

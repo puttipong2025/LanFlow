@@ -1,3 +1,4 @@
+import { cashCountLockResponse } from "@/lib/server/cash-count-lock-response";
 import { NextResponse } from "next/server";
 import { hasSystemManagerAccess, type AuthTokenPayload } from "@/lib/server/auth";
 import type { RubberExportSummary } from "@/types/rubber-exports";
@@ -23,6 +24,7 @@ export function canAdministerRubberExports(auth: AuthTokenPayload, locationId: s
 }
 
 export function rubberExportErrorResponse(message: string) {
+  const locked = cashCountLockResponse(message); if (locked) return locked;
   if (message.includes("RUBBER_EXPORT_PRECISION")) {
     return NextResponse.json(
       { error: "น้ำหนักและค่าใช้จ่ายรองรับทศนิยมไม่เกิน 2 ตำแหน่ง" },

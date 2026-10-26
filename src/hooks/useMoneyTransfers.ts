@@ -5,6 +5,7 @@ import { useInfiniteQuery, useMutation, useQueryClient, type InfiniteData, type 
 import { invalidateMoneyFlowLocation, invalidateMoneyFlowLocations } from "@/lib/money-flow/invalidation";
 import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { CASH_COUNT_OVERDUE_MESSAGE, isCashCountOverdueError } from "@/lib/cash-count-lock";
 import type { MoneyTransfer, MoneyTransferItem, MoneyTransferSlip, MoneyTransferVirtualStatus } from "@/types";
 
 export type MoneyTransferStatusFilter = MoneyTransferVirtualStatus | "all";
@@ -337,6 +338,10 @@ export async function getMoneyTransferReceiptSourceDetails(transferId: string) {
 }
 
 export function moneyTransferError(error: { message?: string }) {
+  if (isCashCountOverdueError(error.message)) {
+    if (typeof window !== "undefined") window.dispatchEvent(new Event("lanflow:cash-count-lock-changed"));
+    return new Error(CASH_COUNT_OVERDUE_MESSAGE);
+  }
   const message = error.message ?? "บันทึกรายการโอนเงินไม่สำเร็จ";
   if (message.includes("MT_SOURCE_ALREADY_USED")) return new Error("แหล่งจ่ายถูกใช้ในรายการโอนอื่นแล้ว กรุณาโหลดรายการใหม่");
   if (message.includes("MT_REVISION_CONFLICT")) return new Error("ข้อมูลถูกแก้ไขแล้ว กรุณาโหลดใหม่ก่อนบันทึก");

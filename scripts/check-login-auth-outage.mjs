@@ -85,6 +85,12 @@ next.stderr.on("data", (chunk) => output.push(chunk.toString()));
 
 try {
   await waitForPort(nextPort, 30_000);
+  // Next binds its port before the dev server is ready. Measure the page, not boot.
+  const readyDeadline = Date.now() + 30_000;
+  while (!output.join("").includes("Ready in")) {
+    if (next.exitCode !== null || Date.now() >= readyDeadline) throw new Error("Next.js did not become ready for the login outage check");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
   const startedAt = performance.now();
   let response;
   try {

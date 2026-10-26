@@ -1,3 +1,4 @@
+import { cashCountLockResponse } from "@/lib/server/cash-count-lock-response";
 import { NextResponse } from "next/server";
 
 import { hasSystemManagerAccess, type AuthTokenPayload } from "@/lib/server/auth";
@@ -44,6 +45,7 @@ export function exportVehicleWeighBillJson(
 }
 
 export function exportVehicleWeighBillErrorResponse(message: string) {
+  const locked = cashCountLockResponse(message); if (locked) return locked;
   const status = message.includes("WEX_INVALID")
     ? 400
     : message.includes("WEX_FORBIDDEN") || message.includes("ไม่มีสิทธิ์")

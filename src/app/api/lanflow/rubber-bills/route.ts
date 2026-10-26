@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { isValidRubberPriceAdjustmentTarget } from "@/lib/rubber-bills/calculations";
 import { requireAuth } from "@/lib/server/auth";
+import { cashCountLockResponse } from "@/lib/server/cash-count-lock-response";
 import {
   isIsoTimestamp,
   isJsonObject,
@@ -191,6 +192,8 @@ export async function POST(request: Request) {
     const rpcPayload = { ...payload };
     delete rpcPayload.expectedServerId;
     const { data, error } = await authResult.supabase.rpc("sync_rubber_bill", { payload: rpcPayload });
+    const locked = cashCountLockResponse(error?.message ?? (data?.status === "failed" ? data.errorMessage : null));
+    if (locked) return locked;
     if (error) {
       console.error("Rubber Bill sync RPC failed", error.code ?? "unknown");
       return NextResponse.json(

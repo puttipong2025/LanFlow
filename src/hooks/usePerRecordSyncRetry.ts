@@ -11,7 +11,7 @@ import {
 import { authFetch } from "@/lib/auth-fetch";
 import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 import { removeConfirmedRubberBillLocally } from "@/lib/rubber-bills/feed-cache";
-import { isRetryableSyncResponse } from "@/lib/sync-response";
+import { isCashCountLockSyncResponse, isRetryableSyncResponse } from "@/lib/sync-response";
 function endpointFor(entity: SyncEntity) {
   return entity === "income_expense" ? "/api/lanflow/income-expense" : "/api/lanflow/rubber-bills";
 }
@@ -85,7 +85,13 @@ export function usePerRecordSyncRetry(locationId: string, ownerUserId: string) {
           return;
         }
 
-        if (entity === "income_expense" && !isRetryableSyncResponse(response.status)) {
+        if (isCashCountLockSyncResponse(data) && response.status === 409) {
+          event.status = "pending";
+          event.errorMessage = data.errorMessage;
+          await updateSyncEventIfCurrent(event);
+          throw new Error(data.errorMessage);
+        }
+        if (entity === "income_expense" && !isRetryableSyncResponse(response.status, data)) {
           event.serverSubmissionAttempted = false;
         }
         event.status = data.status === "conflict" ? "conflict" : "failed";
