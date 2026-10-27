@@ -59,4 +59,3 @@ select extensions.is(pg_temp.candidate(),null::jsonb,'unassigned admin cannot in
 select extensions.throws_like($$select public.save_cash_count_alert_group((select id from grp),array['cc270000-0000-4000-8000-000000000011']::uuid[],1,null,null,null,true,0)$$,'%FORBIDDEN%','ordinary admin cannot edit threshold');
 select * from extensions.finish();
 rollback;
-
