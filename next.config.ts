@@ -12,6 +12,8 @@ const withPWA = withPWAInit({
   dynamicStartUrl: false,
   publicExcludes: ["!noprecache/**/*", "!offline-assets.json"],
   workboxOptions: {
+    // Vercel appends dpl to asset URLs; serve the same revisioned precache entry offline.
+    ignoreURLParametersMatching: [/^utm_/, /^fbclid$/, /^dpl$/],
     skipWaiting: true,
     clientsClaim: true,
     // Don't cache API requests with Cache First — use proper strategies

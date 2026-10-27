@@ -78,6 +78,11 @@ test("a cached login document cannot count as the authenticated app shell", asyn
   expect((await inspectOfflineReadiness(manifest, "user", "branch")).ready).toBe(false);
 });
 
+test("Vercel deployment query parameters do not hide a cached root page chunk", async () => {
+  entries.get("lanflow-start-url")!.set(`${origin}/`, new Response(`<script src="${asset}?dpl=dpl_production"></script>`, { headers: { "content-type": "text/html" } }));
+  expect(await inspectOfflineReadiness(manifest, "user", "branch")).toMatchObject({ ready: true, percent: 100 });
+});
+
 test("expired or different-owner account and unavailable branch cannot report ready", async () => {
   storage.set("lanflow:auth-profile:user", JSON.stringify({ profile: { id: "user" }, validatedAt: "2000-01-01" }));
   expect((await inspectOfflineReadiness(manifest, "user", "branch")).ready).toBe(false);

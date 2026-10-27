@@ -51,7 +51,7 @@ export async function inspectOfflineReadiness(manifest: OfflineManifest, userId:
   // Inspect cached HTML too: an old shell must not pass against a new worker's assets.
   const shellHtml = shell?.ok && shell.headers.get("content-type")?.includes("text/html") ? await shell.text() : "";
   const shellAssets = [...shellHtml.matchAll(/(?:src|href)=["'](\/_next\/static\/[^"']+)["']/g)].map((match) => match[1]);
-  const shellFilesReady = shellAssets.some((url) => /^\/_next\/static\/chunks\/app\/page-[^/]+\.js$/.test(url)) && (await Promise.all(shellAssets.map(async (url) =>
+  const shellFilesReady = shellAssets.some((url) => /^\/_next\/static\/chunks\/app\/page-[^/]+\.js$/.test(new URL(url, location.origin).pathname)) && (await Promise.all(shellAssets.map(async (url) =>
     (await Promise.all(precaches.map((cache) => cache.match(url, { ignoreSearch: true })))).some((response) => response?.ok)
   ))).every(Boolean);
   let authReady = false;

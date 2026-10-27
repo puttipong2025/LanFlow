@@ -28,6 +28,10 @@ if (precachesAuthenticatedStartUrl) {
   throw new Error("Generated service worker must not precache the authenticated start URL '/'");
 }
 
+if (!/ignoreURLParametersMatching:\[[^\]]*\/\^dpl\$\//.test(source)) {
+  throw new Error("Generated service worker must ignore Vercel's exact dpl parameter for precached assets");
+}
+
 const middlewareManifest = JSON.parse(middlewareManifestSource);
 const matcherSource = middlewareManifest.middleware?.["/"]?.matchers?.[0]?.regexp;
 

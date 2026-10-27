@@ -30,6 +30,13 @@ async function waitFor(check, message, timeout = 15000) {
 }
 
 try {
+  if (process.argv.includes('--vercel-query')) {
+    await page.route('http://127.0.0.1:3001/', async (route) => {
+      const response = await route.fetch();
+      const html = (await response.text()).replace(/((?:src|href)=["'])(\/_next\/static\/[^"'?]+)(["'])/g, '$1$2?dpl=dpl_diagnostic$3');
+      await route.fulfill({ response, body: html });
+    });
+  }
   await page.goto('http://127.0.0.1:3001/login');
   await page.locator('input[type="tel"]').fill(process.env.TEST_PHONE || '0800000000');
   await page.locator('input[type="password"]').fill(process.env.TEST_PASSWORD || 'password123');
@@ -50,6 +57,14 @@ try {
     caches: await caches.keys(),
     scripts: document.scripts.length,
   })));
+  if (process.argv.includes('--vercel-query')) {
+    await page.unroute('http://127.0.0.1:3001/');
+    await page.evaluate(async () => {
+      for (const name of await caches.keys()) {
+        if (['lanflow-static-cache', 'next-static-js-assets', 'static-js-assets', 'static-style-assets'].includes(name)) await caches.delete(name);
+      }
+    });
+  }
   if (process.argv.includes('--cold')) {
     await context.close();
     context = await chromium.launchPersistentContext(profilePath, {
@@ -77,6 +92,11 @@ try {
   assert.equal(await page.getByRole('button', { name: 'เพิ่มบิลยาง', exact: true }).isVisible(), true);
   await page.getByText('พร้อมใช้งานออฟไลน์ 100%', { exact: true }).waitFor({ timeout: 15000 });
   assert.equal(await page.getByRole('button', { name: 'ตรวจหลักฐาน', exact: true }).isDisabled(), true);
+  await page.getByRole('button', { name: 'รับ-จ่าย', exact: true }).click();
+  await page.getByRole('button', { name: 'เพิ่มรายรับ', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'บิลยาง', exact: true }).click();
+  await page.getByRole('button', { name: 'เพิ่มบิลยาง', exact: true }).waitFor();
+  assert.deepEqual(errors, [], 'Both offline-supported modules must load without a client exception');
   await page.screenshot({ path: 'output/pwa-readiness/android-offline.png', fullPage: true });
   if (process.argv.includes('--missing-file')) {
     await page.evaluate(async () => {
