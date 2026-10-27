@@ -15,6 +15,7 @@ import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { bangkokDateString } from "@/lib/bangkok-date";
 import { usePerRecordSyncRetry } from "@/hooks/usePerRecordSyncRetry";
 import { useRubberBillApprovals } from "@/hooks/useRubberBillApprovals";
+import { useRubberBillPolicyGate } from "@/hooks/useRubberBillPolicyGate";
 import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 import { canManageSystemFeatures } from "@/lib/permissions";
 import {
@@ -83,6 +84,7 @@ export function RubberBillsModule({
   );
   const { customers, isLoading: customersLoading, error: customersError } = useCustomers();
   const isOnline = useOnlineStatus();
+  const { policyStatus, refreshPolicy, resetPolicy, refreshPolicyBeforeOpeningBill } = useRubberBillPolicyGate(`${profile.id}:${selectedLocation.id}`, isOnline, refreshApprovalSettings);
   const [billsView, setBillsView] = useState<"purchase" | "wex">("purchase");
   const [mode, setMode] = useState<RubberBillListMode>("latest");
   const [documentStatus, setDocumentStatus] = useState<RubberBillDocumentStatus>("any");
@@ -225,14 +227,6 @@ export function RubberBillsModule({
     }
   }
 
-  async function refreshPolicyBeforeOpeningBill() {
-    if (!isOnline) return true;
-    const refreshed = await refreshApprovalSettings();
-    if (!refreshed.error && refreshed.data) return true;
-    toast.error("โหลดกติกาบิลยางล่าสุดไม่สำเร็จ");
-    return false;
-  }
-
   async function handlePrint(bill: RubberBill) {
     const blockReason = getPrintBlockReason(bill)
       ?? await getPendingSubmissionBlockReason(bill);
@@ -271,9 +265,9 @@ export function RubberBillsModule({
   async function openAdd() {
     const approval = await requestBranchCreate();
     if (approval?.locationId !== selectedLocation.id) return;
-    if (!(await refreshPolicyBeforeOpeningBill())) return;
     setOcrReviewItem(null);
     setEditingBill(null);
+    void refreshPolicy();
     setModalOpen(true);
   }
 
@@ -290,6 +284,7 @@ export function RubberBillsModule({
   }
 
   function closeBillModal() {
+    resetPolicy();
     if (ocrReviewItem) ocrQueue.restoreReady(ocrReviewItem.id);
     setOcrReviewItem(null);
     setModalOpen(false);
@@ -715,6 +710,7 @@ export function RubberBillsModule({
           priceAllowance={approvalSettings?.priceAllowance}
           effectivePriceCap={approvalSettings?.effectivePriceCap}
           nonCurrentDateRequiresApproval={approvalSettings?.nonCurrentDateRequiresApproval}
+          policyStatus={policyStatus} onRetryPolicy={() => void refreshPolicy()}
           customers={customerOptions}
           initialOcrDraft={ocrReviewItem ? {
             uploadId: ocrReviewItem.uploadId!,
@@ -722,6 +718,7 @@ export function RubberBillsModule({
           } satisfies RubberBillOcrInitialDraft : null}
           onClose={closeBillModal}
           onSave={async (bill) => {
+            if (policyStatus !== "ready") return false;
             try {
               const isCreating = !editingBill;
               const savedBill = await (editingBill ? updateBill(bill) : addBill(bill));

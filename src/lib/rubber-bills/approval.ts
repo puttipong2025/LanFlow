@@ -67,37 +67,32 @@ export function loadRubberBillApprovalSettingsCache(
   try {
     const parsed = JSON.parse(storage.getItem(cacheKey(locationId)) ?? "null") as Partial<CachedRubberBillApprovalSettings> | null;
     if (!parsed) return null;
-    const hasValidPrice = [parsed.centralPrice, parsed.priceAllowance, parsed.effectivePriceCap]
-      .every((value) => typeof value === "number" && Number.isFinite(value) && value >= 0);
-    const hasPositiveCentralPrice = typeof parsed.centralPrice === "number" && parsed.centralPrice > 0;
     const hasValidCachedAt = typeof parsed.cachedAt === "string" && Number.isFinite(Date.parse(parsed.cachedAt));
-    const hasValidSource = (parsed.ruleSource === "ungrouped" && parsed.groupId === null)
-      || (parsed.ruleSource === "group"
-      && typeof parsed.groupId === "string"
-      && parsed.groupId.length > 0);
-    const hasValidRule = hasValidSource
-      && Number.isInteger(parsed.editWindowMinutes)
-      && (parsed.editWindowMinutes as number) >= 0
-      && Number.isInteger(parsed.priceRuleRevision)
-      && (parsed.priceRuleRevision as number) > 0
-      && hasValidPrice
-      && hasPositiveCentralPrice
-      && Math.round((parsed.centralPrice as number) * 100)
-        + Math.round((parsed.priceAllowance as number) * 100)
-        === Math.round((parsed.effectivePriceCap as number) * 100);
-    if (
-      parsed.locationId !== locationId
-      || typeof parsed.locationId !== "string"
-      || typeof parsed.nonCurrentDateRequiresApproval !== "boolean"
-      || !hasValidCachedAt
-      || !hasValidRule
-    ) {
-      return null;
-    }
+    if (!hasValidCachedAt || !isRubberBillApprovalSettings(parsed, locationId)) return null;
     return parsed as CachedRubberBillApprovalSettings;
   } catch {
     return null;
   }
+}
+
+export function isRubberBillApprovalSettings(
+  value: unknown,
+  locationId: string,
+): value is EffectiveRubberApprovalSettings {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const parsed = value as Partial<EffectiveRubberApprovalSettings>;
+  const hasValidPrice = [parsed.centralPrice, parsed.priceAllowance, parsed.effectivePriceCap]
+    .every((price) => typeof price === "number" && Number.isFinite(price) && price >= 0);
+  const hasValidSource = (parsed.ruleSource === "ungrouped" && parsed.groupId === null)
+    || (parsed.ruleSource === "group" && typeof parsed.groupId === "string" && parsed.groupId.length > 0);
+  return typeof parsed.locationId === "string" && parsed.locationId === locationId
+    && typeof parsed.nonCurrentDateRequiresApproval === "boolean"
+    && hasValidSource
+    && Number.isSafeInteger(parsed.editWindowMinutes) && (parsed.editWindowMinutes as number) >= 0
+    && Number.isSafeInteger(parsed.priceRuleRevision) && (parsed.priceRuleRevision as number) > 0
+    && hasValidPrice && (parsed.centralPrice as number) > 0
+    && Math.round((parsed.centralPrice as number) * 100) + Math.round((parsed.priceAllowance as number) * 100)
+      === Math.round((parsed.effectivePriceCap as number) * 100);
 }
 
 export function clearRubberBillApprovalSettingsCache(locationIds: string[], storage = browserStorage()) {

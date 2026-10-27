@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import {
   clearAllRubberBillApprovalSettingsCache,
   loadRubberBillApprovalSettingsCache,
+  isRubberBillApprovalSettings,
   saveRubberBillApprovalSettingsCache,
 } from "@/lib/rubber-bills/approval";
 import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
@@ -42,7 +43,8 @@ export function useRubberBillApprovals({
       const response = await authFetch(`/api/lanflow/rubber-bills/approval-settings?locationId=${encodeURIComponent(locationId)}`);
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.errorMessage || "โหลดกติกาอนุมัติไม่สำเร็จ");
-      return data as EffectiveRubberApprovalSettings;
+      if (!isRubberBillApprovalSettings(data, locationId)) throw new Error("กติกาบิลยางไม่ตรงตามรูปแบบหรือสาขาที่กำหนด");
+      return data;
     },
   });
 

@@ -1,6 +1,8 @@
 import { toast } from "sonner";
-import { FileImage, Save, WifiOff } from "lucide-react";
+import { FileImage, WifiOff } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { RubberBillSaveActions } from "./RubberBillSaveActions";
+import type { RubberBillPolicyStatus } from "@/hooks/useRubberBillPolicyGate";
 
 import {
   makeClientRecordedAt,
@@ -58,6 +60,8 @@ export function RubberBillModal({
   priceAllowance,
   effectivePriceCap,
   nonCurrentDateRequiresApproval = false,
+  policyStatus = "ready",
+  onRetryPolicy,
   customers,
   initialOcrDraft,
   onClose,
@@ -70,6 +74,8 @@ export function RubberBillModal({
   priceAllowance?: number;
   effectivePriceCap?: number;
   nonCurrentDateRequiresApproval?: boolean;
+  policyStatus?: RubberBillPolicyStatus;
+  onRetryPolicy?: () => void;
   customers: RubberBillCustomerOption[];
   initialOcrDraft?: RubberBillOcrInitialDraft | null;
   onClose: () => void;
@@ -468,7 +474,7 @@ export function RubberBillModal({
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (submitLockRef.current) return;
+    if (submitLockRef.current || policyStatus !== "ready") return;
     const formElement = event.currentTarget;
     const submitter = (event.nativeEvent as SubmitEvent).submitter;
     submitLockRef.current = true;
@@ -837,19 +843,7 @@ export function RubberBillModal({
           onPriceAdjustmentApply={(items, target) => { setWeighItems(items); setPriceAdjustmentTarget(target); }}
         />
 
-        <div className="modal-actions flex justify-center border-t border-black/10 p-4">
-          <button
-            disabled={isSubmitting}
-            className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-commit px-5 font-semibold text-white hover:bg-commit/90 disabled:cursor-not-allowed disabled:opacity-45"
-          >
-            <Save size={18} />
-            {isSubmitting
-              ? "กำลังบันทึก..."
-              : requiresNonCurrentDateApproval || exceedsEffectivePriceCap
-                ? "ส่งขออนุมัติ"
-                : "บันทึกบิล"}
-          </button>
-        </div>
+        <RubberBillSaveActions policyStatus={policyStatus} onRetryPolicy={onRetryPolicy} isSubmitting={isSubmitting} requiresApproval={requiresNonCurrentDateApproval || exceedsEffectivePriceCap} />
       </form>
     </ModalShell>
   );
