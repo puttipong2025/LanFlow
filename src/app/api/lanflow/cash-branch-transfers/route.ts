@@ -5,7 +5,7 @@ import {
   type AuthTokenPayload,
 } from "@/lib/server/auth";
 import { cashTransferErrorResponse } from "@/lib/server/cash-branch-transfer-response";
-import { calculateCashTotal, isCashDenominationCounts } from "@/lib/cash-branch-transfer";
+import { calculateCashTotal, isCashDenominationCounts, isCashBranchTransferPendingSummary } from "@/lib/cash-branch-transfer";
 import { isJsonObject, isUuid } from "@/lib/server/management-route-error";
 
 export const dynamic = "force-dynamic";
@@ -23,14 +23,19 @@ export async function GET(request: NextRequest) {
   if (!isUuid(locationId)) return NextResponse.json({ error: "พารามิเตอร์รายการเงินสดไม่ถูกต้อง" }, { status: 400 });
   if (!canAccess(result, locationId)) return NextResponse.json({ error: "ไม่มีสิทธิ์เข้าถึงสาขา" }, { status: 403 });
 
-  const { data, error } = await result.supabase.rpc("get_cash_branch_transfer_pending_summary", {
-    p_location_id: locationId,
-  });
-  if (error) {
-    console.error("Cash branch transfer pending summary error:", error.message);
+  const failure = () => {
+    console.error("Cash branch transfer pending summary unavailable");
     return NextResponse.json({ error: "โหลดคิวรอรับเงินสดไม่สำเร็จ" }, { status: 500 });
+  };
+  try {
+    const { data, error } = await result.supabase.rpc("get_cash_branch_transfer_pending_summary", {
+      p_location_id: locationId,
+    });
+    if (error || !isCashBranchTransferPendingSummary(data)) return failure();
+    return NextResponse.json(data);
+  } catch {
+    return failure();
   }
-  return NextResponse.json(data ?? { transfers: [], total: 0 });
 }
 
 export async function POST(request: Request) {
@@ -54,7 +59,14 @@ export async function POST(request: Request) {
   ) {
     return NextResponse.json({ error: "ข้อมูลไม่ถูกต้อง" }, { status: 400 });
   }
-  const { data, error } = await result.supabase.rpc("create_cash_branch_transfer", { payload });
-  if (error) return cashTransferErrorResponse(error.message);
-  return NextResponse.json(data);
+  try {
+    const { data, error } = await result.supabase.rpc("create_cash_branch_transfer", { payload });
+    if (error) return cashTransferErrorResponse(error.message);
+    if (!isJsonObject(data) || !isUuid(data.id) || data.status !== "synced") {
+      return cashTransferErrorResponse("CASH_TRANSFER_CREATE_RESPONSE_INVALID");
+    }
+    return NextResponse.json(data);
+  } catch {
+    return cashTransferErrorResponse("CASH_TRANSFER_CREATE_UNAVAILABLE");
+  }
 }

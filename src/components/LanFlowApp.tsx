@@ -413,7 +413,7 @@ function BusinessLanFlowApp() {
 
   const canAccessMoneyTransfer = canUseMoneyTransfer(profile);
   const canAccessReports = canUseReports(profile);
-  const browserApprovals = useBrowserApprovals();
+  const browserApprovals = useBrowserApprovals(activeTab !== "admin");
   const { counts: actionableBadgeCounts } = useActionableBadges(isLoaded);
 
   useEffect(() => {

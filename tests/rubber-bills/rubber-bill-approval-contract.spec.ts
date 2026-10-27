@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { assertOfflineRubberBillPriceAllowed } from "../../src/lib/rubber-bills/approval";
 import { bangkokDateString } from "../../src/lib/bangkok-date";
 import { selectedAppLocationId } from "../helpers/select-app-location";
+import { createTransferLocationFixture } from "../helpers/transfer-location-fixture";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -1310,18 +1311,22 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
     const db = service();
     let secondReportId: string | undefined;
     let transferId: string | undefined;
-    let billId: string | undefined;
     let requestId: string | undefined;
+    let isolatedLocation: ReturnType<typeof createTransferLocationFixture> | undefined;
+    let approvalGroup: { id: string; revisionNo: number } | undefined;
 
     try {
       const adminProfile = await profile(admin);
-      const locationId = adminProfile.locationIds[0];
-      expect((await saveSettings(superAdmin, locationId, 0, 0)).ok()).toBeTruthy();
+      isolatedLocation = createTransferLocationFixture("Rubber report isolation", adminProfile.id);
+      await isolatedLocation.setup();
+      const locationId = isolatedLocation.locationId;
+      const settingsResponse = await saveSettings(superAdmin, locationId, 0, 0);
+      expect(settingsResponse.ok()).toBeTruthy();
+      approvalGroup = (await settingsResponse.json() as { group: { id: string; revisionNo: number } }).group;
 
       const createPayload = billPayload({ locationId, price: 42 });
       const created = await syncBill(admin, createPayload);
       expect(created.body.status).toBe("synced");
-      billId = created.body.id;
 
       const updatePayload = billPayload({
         locationId,
@@ -1423,11 +1428,21 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         await db.from("money_transfers").delete().eq("id", transferId);
       }
       if (requestId) {
-        await db.from("rubber_bill_approval_requests").delete().eq("id", requestId);
+        // Approved history is immutable; only unfinished requests can be removed.
+        await db.from("rubber_bill_approval_requests").delete().eq("id", requestId).eq("request_status", "pending");
       }
-      if (billId) {
-        await db.from("rubber_bill_items").delete().eq("bill_id", billId);
-        await db.from("rubber_bills").delete().eq("id", billId);
+      if (approvalGroup) {
+        const removedGroup = await superAdmin.request.delete(
+          `/api/lanflow/rubber-bills/approval-groups/${approvalGroup.id}?revision=${approvalGroup.revisionNo}`,
+        );
+        expect(removedGroup.ok(), await removedGroup.text()).toBeTruthy();
+      }
+      if (isolatedLocation) {
+        // Keep approved source/history together and retire this test-only branch.
+        expect((await db.from("user_locations").delete()
+          .eq("location_id", isolatedLocation.locationId)).error).toBeNull();
+        expect((await db.from("locations").update({ is_active: false })
+          .eq("id", isolatedLocation.locationId)).error).toBeNull();
       }
       await Promise.all([admin.close(), superAdmin.close()]);
     }

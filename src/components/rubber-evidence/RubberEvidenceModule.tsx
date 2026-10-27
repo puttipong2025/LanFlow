@@ -16,6 +16,7 @@ import { toast } from "sonner";
 
 import { AlertDialog } from "@/components/shared/AlertDialog";
 import { OperationWaitingDialog } from "@/components/shared/OperationWaitingDialog";
+import { RubberEvidenceFilters } from "@/components/rubber-evidence/RubberEvidenceFilters";
 import { useRubberBillEvidenceReview, type EvidenceReviewState } from "@/hooks/useRubberBillEvidenceReview";
 import { useRubberEvidenceFeed, type RubberEvidenceView } from "@/hooks/useRubberEvidenceFeed";
 import { useRubberEvidencePage } from "@/hooks/useRubberEvidencePage";
@@ -316,6 +317,9 @@ export function RubberEvidenceModule({
   );
   const evidencePage = useRubberEvidencePage(pageIdentities, online);
 
+  const isRefreshing = review.isFetching || feed.isFetching;
+  const refreshEvidence = () => online && !isRefreshing ? Promise.all([review.refetch(), feed.refetch()]) : undefined;
+
   useEffect(() => {
     setView("pending");
     setSearch("");
@@ -405,11 +409,6 @@ export function RubberEvidenceModule({
     }
   }
 
-  const viewOptions: Array<[RubberEvidenceView, string]> = [
-    ["pending", "รอตรวจ"],
-    ["history", "ประวัติการตรวจ"],
-  ];
-
   async function nextPage() {
     if (currentPage < totalPages) {
       setPageNumber(currentPage + 1);
@@ -450,29 +449,16 @@ export function RubberEvidenceModule({
         </div>
       </header>
 
-      <div className="rounded-xl border border-black/10 bg-white p-3 shadow-panel sm:p-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-wrap gap-1 rounded-lg bg-field p-1" aria-label="กรองสถานะหลักฐาน">
-            {viewOptions.map(([value, label]) => {
-              return (
-                <button key={value} type="button" aria-pressed={view === value} onClick={() => { setView(value); setTargetBillId(null); setPageNumber(1); }} className={cn("focus-ring min-h-9 rounded-md px-3 text-sm font-semibold", view === value ? "bg-river text-white shadow-sm" : "text-ink hover:bg-white")}>
-                  {label}
-                </button>
-              );
-            })}
-          </div>
-          <label className="text-sm font-semibold text-ink">
-            <span className="sr-only">ค้นหาบิลหลักฐาน</span>
-            <input value={search} onChange={(event) => { setSearch(event.target.value); setTargetBillId(null); setPageNumber(1); }} placeholder="ค้นหาเลขบิลหรือลูกค้า" className="focus-ring h-10 w-full rounded-md border border-black/20 bg-white px-3 sm:w-72" />
-          </label>
-        </div>
-      </div>
+      <RubberEvidenceFilters view={view} search={search} online={online} busy={isRefreshing} error={review.isError || feed.isError}
+        onViewChange={(value) => { setView(value); setTargetBillId(null); setPageNumber(1); }}
+        onSearchChange={(value) => { setSearch(value); setTargetBillId(null); setPageNumber(1); }}
+        onRefresh={() => void refreshEvidence()} />
 
       {(review.isLoading || feed.isLoading) && <div className="rounded-xl bg-white p-8 text-center text-ink/55">กำลังโหลดคิวตรวจ...</div>}
       {(review.isError || feed.isError) && (
         <div className="rounded-xl border border-danger/30 bg-danger/5 p-4 text-center text-danger">
           <p>โหลดคิวตรวจไม่สำเร็จ</p>
-          <button type="button" onClick={() => void Promise.all([review.refetch(), feed.refetch()])} className="focus-ring mt-2 rounded-md bg-danger px-3 py-2 text-sm font-semibold text-white">ลองใหม่</button>
+          <button type="button" disabled={!online || isRefreshing} onClick={() => void refreshEvidence()} className="focus-ring mt-2 rounded-md bg-danger px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">ลองใหม่</button>
         </div>
       )}
       {!review.isLoading && !review.isError && !feed.isLoading && !feed.isError && pageCards.length === 0 && (

@@ -3,6 +3,9 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './tests',
   testMatch: [
+    '**/polling-query-contract.spec.ts',
+    '**/polling-route-safety.spec.ts',
+    '**/polling-mutation-safety.spec.ts',
     '**/cash-counts/cash-count-discrepancy-logic.spec.ts',
     '**/cash-counts/cash-count-overdue-logic.spec.ts',
     '**/sms-otp.spec.ts',

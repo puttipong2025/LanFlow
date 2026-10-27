@@ -4,7 +4,7 @@ import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
 
 export function invalidateMoneyFlowLocation(
   queryClient: QueryClient,
-  scope: { ownerUserId: string; locationId: string },
+  scope: { ownerUserId: string; locationId: string; incomeExpenseScope?: "all" },
   options?: InvalidateOptions,
 ) {
   const { ownerUserId, locationId } = scope;
@@ -15,7 +15,9 @@ export function invalidateMoneyFlowLocation(
     queryClient.invalidateQueries({
       queryKey: moneyFlowQueryKeys.rubberBillWorkCounts(ownerUserId, locationId),
     }, options),
-    queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.incomeExpenseFeed(ownerUserId, locationId) }, options),
+    queryClient.invalidateQueries({ queryKey: scope.incomeExpenseScope === "all"
+      ? moneyFlowQueryKeys.incomeExpenseFeedRoot()
+      : moneyFlowQueryKeys.incomeExpenseFeed(ownerUserId, locationId) }, options),
     queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.incomeExpensePending(ownerUserId, locationId) }, options),
     queryClient.invalidateQueries({ queryKey: [...moneyFlowQueryKeys.moneyTransferListRoot(), locationId] }, options),
     queryClient.invalidateQueries({ queryKey: ["moneyTransferDetail"] }, options),

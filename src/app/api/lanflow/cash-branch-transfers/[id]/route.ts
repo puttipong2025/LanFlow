@@ -30,9 +30,18 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
   if (!result.ok) return result.response;
   const { id } = await params;
   if (!isUuid(id)) return NextResponse.json({ error: "ข้อมูลไม่ถูกต้อง" }, { status: 400 });
-  const { data, error } = await result.supabase.rpc("delete_cash_branch_transfer", { p_transfer_id: id });
-  if (error) return cashTransferErrorResponse(error.message);
-  return NextResponse.json(data);
+  try {
+    const { data, error } = await result.supabase.rpc("delete_cash_branch_transfer", { p_transfer_id: id });
+    if (error) return cashTransferErrorResponse(error.message);
+    if (!isJsonObject(data) || !isUuid(data.id) || data.id.toLowerCase() !== id.toLowerCase()
+      || (data.status !== "deleted" && data.status !== "pending_approval")
+      || (data.status === "pending_approval" && !isUuid(data.requestId))) {
+      return cashTransferErrorResponse("CASH_TRANSFER_DELETE_RESPONSE_INVALID");
+    }
+    return NextResponse.json(data);
+  } catch {
+    return cashTransferErrorResponse("CASH_TRANSFER_DELETE_UNAVAILABLE");
+  }
 }
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -50,7 +59,14 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   ) {
     return NextResponse.json({ error: "ข้อมูลไม่ถูกต้อง" }, { status: 400 });
   }
-  const { data, error } = await result.supabase.rpc("update_cash_branch_transfer", { p_transfer_id: id, payload });
-  if (error) return cashTransferErrorResponse(error.message);
-  return NextResponse.json(data);
+  try {
+    const { data, error } = await result.supabase.rpc("update_cash_branch_transfer", { p_transfer_id: id, payload });
+    if (error) return cashTransferErrorResponse(error.message);
+    if (!isJsonObject(data) || !isUuid(data.id) || data.id.toLowerCase() !== id.toLowerCase() || data.status !== "synced") {
+      return cashTransferErrorResponse("CASH_TRANSFER_UPDATE_RESPONSE_INVALID");
+    }
+    return NextResponse.json(data);
+  } catch {
+    return cashTransferErrorResponse("CASH_TRANSFER_UPDATE_UNAVAILABLE");
+  }
 }

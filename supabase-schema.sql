@@ -11112,6 +11112,12 @@ begin
     if not found then raise exception 'ข้อมูลอ้างอิงรูป OCR ไม่ตรงกับคำขออนุมัติ'; end if;
   end if;
 
+  begin
+    perform private.normalize_rubber_bill_calculation_payload(v_request.proposed_payload);
+  exception when others then
+    raise exception using errcode = 'RB500', message = 'ข้อมูลคำขออนุมัติบิลยางที่บันทึกไว้ไม่ถูกต้อง';
+  end;
+
   v_result := public.sync_rubber_bill_core_20260725010000(v_request.proposed_payload);
   if v_result->>'status' <> 'synced' then
     raise exception using

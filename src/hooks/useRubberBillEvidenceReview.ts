@@ -146,6 +146,7 @@ export function useRubberBillEvidenceReview(locationId: string) {
       pendingFingerprint: "",
     },
     isLoading: query.isLoading,
+    isFetching: query.isFetching,
     isError: query.isError,
     refetch: query.refetch,
     openReview: openMutation.mutateAsync,

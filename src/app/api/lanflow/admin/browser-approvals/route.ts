@@ -3,6 +3,7 @@ import { requireAuth, hasSystemManagerAccess } from "@/lib/server/auth";
 import { createSupabaseAdminClient } from "@/lib/server/supabase-admin";
 import { isSmsMutationAllowed, smsError, SMS_HEADERS } from "@/lib/server/sms-otp";
 import { isUuid } from "@/lib/server/management-route-error";
+import { isBrowserApprovalUsers } from "@/lib/browser-approval-contract";
 
 export async function GET(request: Request) {
   try {
@@ -10,7 +11,7 @@ export async function GET(request: Request) {
     if (!auth.ok) return auth.response;
     if (!hasSystemManagerAccess(auth.auth)) return smsError("FORBIDDEN", 403);
     const result = await createSupabaseAdminClient().rpc("list_browser_approvals", { p_actor: auth.auth.sub });
-    if (result.error) return smsError("UNAVAILABLE", 503);
+    if (result.error || !isBrowserApprovalUsers(result.data)) return smsError("UNAVAILABLE", 503);
     return NextResponse.json({ users: result.data }, { headers: SMS_HEADERS });
   } catch { return smsError("UNAVAILABLE", 503); }
 }

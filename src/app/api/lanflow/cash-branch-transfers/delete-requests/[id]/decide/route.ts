@@ -21,15 +21,23 @@ export async function POST(
     return NextResponse.json({ error: "ข้อมูลคำตัดสินไม่ถูกต้อง" }, { status: 400 });
   }
 
-  const { data, error } = await manager.supabase.rpc(
-    "decide_cash_transfer_delete_request",
-    {
-      p_request_id: id,
-      p_decision: body.decision,
-      p_comment: typeof body.comment === "string" ? body.comment : null,
-    },
-  );
+  try {
+    const { data, error } = await manager.supabase.rpc(
+      "decide_cash_transfer_delete_request",
+      {
+        p_request_id: id,
+        p_decision: body.decision,
+        p_comment: typeof body.comment === "string" ? body.comment : null,
+      },
+    );
 
-  if (error) return cashTransferErrorResponse(error.message);
-  return NextResponse.json(data);
+    if (error) return cashTransferErrorResponse(error.message);
+    if (!isJsonObject(data) || !isUuid(data.requestId)
+      || data.requestId.toLowerCase() !== id.toLowerCase() || data.status !== body.decision) {
+      return cashTransferErrorResponse("CASH_TRANSFER_DECISION_RESPONSE_INVALID");
+    }
+    return NextResponse.json(data);
+  } catch {
+    return cashTransferErrorResponse("CASH_TRANSFER_DECISION_UNAVAILABLE");
+  }
 }

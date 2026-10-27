@@ -57,7 +57,7 @@ export function AdminContent({ locations, users, loading, updatingUserId, profil
   const [tab, setTab] = useState<AdminTab>("employees");
   const [search, setSearch] = useState("");
   const [pendingOnly, setPendingOnly] = useState(false);
-  const approvals = useBrowserApprovals(false);
+  const approvals = useBrowserApprovals(true, tab === "employees");
   const [pageSize, setPageSize] = useState(10);
   const [page, setPage] = useState(1);
   const [managedUserId, setManagedUserId] = useState<string | null>(null);

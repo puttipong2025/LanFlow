@@ -3,6 +3,20 @@ import type { CashBranchTransferStatus, CashDenominationCounts } from "@/types";
 
 export type CashDenominationUnit = "ใบ" | "เหรียญ";
 
+export function isCashBranchTransferPendingSummary(value: unknown): value is { transfers: Record<string, unknown>[]; total: number } {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const summary = value as Record<string, unknown>;
+  return typeof summary.total === "number" && Number.isSafeInteger(summary.total) && summary.total >= 0
+    && Array.isArray(summary.transfers) && summary.transfers.length === Math.min(summary.total, 20)
+    && summary.transfers.every((row: unknown) => {
+      if (row === null || typeof row !== "object" || Array.isArray(row)) return false;
+      const transfer = row as Record<string, unknown>;
+      return typeof transfer.id === "string" && transfer.id.trim().length > 0
+        && typeof transfer.createdByName === "string"
+        && typeof transfer.sentTotal === "number" && Number.isFinite(transfer.sentTotal) && transfer.sentTotal >= 0;
+    });
+}
+
 export const CASH_DENOMINATIONS: Array<[
   keyof CashDenominationCounts,
   string,

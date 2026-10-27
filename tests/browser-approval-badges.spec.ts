@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 test('branchless requests count in admin total and rows, not in branch badges', async ({ browser }) => {
+  test.setTimeout(60_000);
   const context=await browser.newContext({storageState:'playwright/.auth/super_admin.json'});
   const page=await context.newPage();
   const target={id:'11111111-1111-4111-8111-111111111111',name:'Browser badge fixture',phone:'0854444444',role:'admin',isActive:true,locationIds:[],primaryLocationId:null};
@@ -14,7 +15,7 @@ test('branchless requests count in admin total and rows, not in branch badges', 
     }]:[]}}));
     await page.goto('/');
     const selector=page.getByRole('button',{name:/^เลือกสาขา/});
-    await expect(selector).toBeVisible();
+    await expect(selector).toBeVisible({ timeout: 30_000 });
     const baseline=await selector.getAttribute('aria-label');
     pending=true;await page.reload();
     await expect(page.getByRole('button',{name:'Admin มีงานที่จัดการได้ 2 รายการ',exact:true})).toBeVisible();

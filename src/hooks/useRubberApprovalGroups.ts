@@ -57,7 +57,9 @@ export function useRubberApprovalGroups() {
       if (!response.ok) throw new Error(data.errorMessage || "โหลดกลุ่มตั้งค่าบิลยางไม่สำเร็จ");
       return data as GroupsResponse;
     },
-    refetchInterval: 60_000,
+    refetchInterval: false,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: "always",
   });
 
   function invalidatePolicyQueries() {
@@ -179,13 +181,14 @@ export function useRubberApprovalGroups() {
       }
       return data as { status: "saved" | "unchanged"; enabled: boolean };
     },
-    onSuccess: (data) => {
+    onSuccess: async (data) => {
       queryClient.setQueryData<GroupsResponse>(
         [RUBBER_APPROVAL_GROUPS_KEY],
         (current) => current
           ? { ...current, priceAllowanceAutoResetEnabled: data.enabled }
           : current,
       );
+      await queryClient.invalidateQueries({ queryKey: [RUBBER_APPROVAL_GROUPS_KEY] });
     },
   });
   const savePriceAllowanceAutoResetLock = useMutation({
@@ -209,7 +212,7 @@ export function useRubberApprovalGroups() {
         locked: boolean;
       };
     },
-    onSuccess: (data) => {
+    onSuccess: async (data) => {
       queryClient.setQueryData<GroupsResponse>(
         [RUBBER_APPROVAL_GROUPS_KEY],
         (current) => {
@@ -231,6 +234,7 @@ export function useRubberApprovalGroups() {
           };
         },
       );
+      await queryClient.invalidateQueries({ queryKey: [RUBBER_APPROVAL_GROUPS_KEY] });
     },
   });
 

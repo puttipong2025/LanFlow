@@ -54,16 +54,17 @@ export function useRubberEvidenceFeed({
       return { cards, nextCursor: payload.nextCursor ?? null, hasMore: Boolean(payload.hasMore) };
     },
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
-    refetchOnWindowFocus: true,
-    refetchInterval: 60_000,
-    staleTime: 30_000,
+    refetchOnWindowFocus: view !== "history",
+    refetchOnMount: view === "history" ? "always" : true,
+    refetchInterval: view === "history" ? false : 60_000,
+    staleTime: view === "history" ? 0 : 30_000,
   });
 
   return {
     cards: query.data?.pages.flatMap((page) => page.cards) ?? [],
     isLoading: query.isLoading,
+    isFetching: query.isFetching,
     isError: query.isError,
-    error: query.error,
     hasMore: Boolean(query.hasNextPage),
     isFetchingNextPage: query.isFetchingNextPage,
     fetchNextPage: query.fetchNextPage,

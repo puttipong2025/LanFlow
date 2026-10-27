@@ -1,11 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { authFetch, authFetchJson, assertApiResponse } from "@/lib/auth-fetch";
+import { isCashBranchTransferPendingSummary } from "@/lib/cash-branch-transfer";
 import {
   cashBranchTransferQueryKeys,
-  INCOME_EXPENSE_FEED_QUERY_KEY,
 } from "@/lib/income-expense/query-keys";
 import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 import type { CashBranchTransfer, CashBranchTransferSummary, CashDenominationCounts } from "@/types";
@@ -64,17 +63,20 @@ export function useCashBranchTransfers(ownerUserId: string, locationId: string, 
   const client = useQueryClient();
   const online = useOnlineStatus();
   const refresh = () => Promise.all([
-    invalidateMoneyFlowLocation(client, { ownerUserId, locationId }),
+    invalidateMoneyFlowLocation(client, { ownerUserId, locationId, incomeExpenseScope: "all" }),
     client.invalidateQueries({ queryKey: cashBranchTransferQueryKeys.root() }),
-    client.invalidateQueries({ queryKey: [INCOME_EXPENSE_FEED_QUERY_KEY] }),
-    client.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
     client.invalidateQueries({ queryKey: ["incomeExpenseApprovalRequests"] }),
   ]);
-  const pendingQuery = useQuery({
-    queryKey: cashBranchTransferQueryKeys.pending(ownerUserId, locationId), enabled: Boolean(ownerUserId && locationId && online), refetchInterval: online ? 15_000 : false, retry: false,
+  const pendingQuery = useQuery<{ transfers: CashBranchTransferSummary[]; total: number }>({
+    queryKey: cashBranchTransferQueryKeys.pending(ownerUserId, locationId), enabled: Boolean(ownerUserId && locationId && online),
+    refetchInterval: (query) => query.state.status === "success" && (query.state.data?.total ?? 0) > 0 ? 15_000 : 60_000,
+    retry: false,
     queryFn: async ({ signal }) => {
-      const data = await request(`/api/lanflow/cash-branch-transfers?locationId=${encodeURIComponent(locationId)}&view=pending`, "GET", undefined, signal) as { transfers?: unknown[]; total?: number };
-      return { transfers: (data.transfers ?? []).slice(0, 20).map(mapSummary), total: Number(data.total ?? 0) };
+      const data: unknown = await request(`/api/lanflow/cash-branch-transfers?locationId=${encodeURIComponent(locationId)}&view=pending`, "GET", undefined, signal);
+      if (!isCashBranchTransferPendingSummary(data)) {
+        throw new Error("รูปแบบคิวรอรับเงินสดไม่ถูกต้อง");
+      }
+      return { transfers: data.transfers.slice(0, 20).map(mapSummary), total: data.total };
     },
   });
   const detailQuery = useQuery({

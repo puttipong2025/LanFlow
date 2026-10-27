@@ -52,7 +52,7 @@ test("a failed policy confirmation refreshes authoritative management state once
   expect(confirmationHandler.match(/await policy\.refetch\(\)/g)).toHaveLength(1);
 });
 
-test("auto-reset lock patches only the management cache and keeps the existing polling", () => {
+test("auto-reset lock patches and refreshes management state without periodic polling", () => {
   const start = policyHookSource.indexOf("const savePriceAllowanceAutoResetLock");
   const end = policyHookSource.indexOf("\n\n  return {", start);
   expect(start).toBeGreaterThanOrEqual(0);
@@ -61,7 +61,10 @@ test("auto-reset lock patches only the management cache and keeps the existing p
   expect(lockMutation).toContain("queryClient.setQueryData<GroupsResponse>");
   expect(lockMutation).toContain("priceAllowanceAutoResetLocked: data.locked");
   expect(lockMutation).not.toContain("invalidatePolicyQueries");
-  expect(policyHookSource).toContain("refetchInterval: 60_000");
+  expect(lockMutation).toContain("await queryClient.invalidateQueries");
+  expect(policyHookSource).toContain("refetchInterval: false");
+  expect(policyHookSource).toContain('refetchOnMount: "always"');
+  expect(policyHookSource).toContain('refetchOnWindowFocus: "always"');
 });
 
 test("lock failures refetch once and unlock confirmation retains a stable target", () => {

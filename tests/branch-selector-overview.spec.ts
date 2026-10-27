@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { expect, test } from "@playwright/test";
+import { dashboardSummaryFixture } from "./helpers/dashboard-summary";
 
 const supabaseUrl =
   process.env.NEXT_PUBLIC_SUPABASE_URL ?? "http://127.0.0.1:54321";
@@ -214,25 +215,15 @@ test.describe("branch selector overview", () => {
     const marker = assignedLocationId.replaceAll("-", "").slice(0, 5).toUpperCase();
     const calculatedAt = "2026-08-01T03:00:00.000Z";
     const summary = (netCashFlow: number) => ({
+      ...dashboardSummaryFixture(netCashFlow),
       purchaseToday: {
+        ...dashboardSummaryFixture(netCashFlow).purchaseToday,
         billCount: 30,
         netWeight: 7_959,
         paidTotal: 289_239,
         averagePrice: 36.34,
       },
-      purchase7Days: {
-        paidTotal: 0,
-        dailyAverage: 0,
-        netWeight: 0,
-        averageCostPerKg: null,
-      },
-      netCashFlow,
-      operatingExpenseAccumulated: 0,
-      payablePurchaseAccumulated: 0,
-      operatingBurdenPercent: null,
       rubberInventoryWeight: 18_420,
-      waterLoss7Days: { exportCount: 0, weight: 0, percent: null },
-      stock: { inStockCount: 0, outOfStockCount: 0, items: [] },
     });
 
     try {

@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import { loadSourceModule } from "./helpers/load-source-module";
+import { dashboardSummaryFixture } from "./helpers/dashboard-summary";
 
 const locationId = "71aa0000-0000-4000-8000-000000000001";
 
@@ -50,9 +51,24 @@ test("dashboard branch-summary route preserves a valid response", async () => {
   expect(await response.json()).toEqual([validSummary()]);
 });
 
+test("live cash-threshold snapshot fixture satisfies branch-summary route contract", async () => {
+  for (const cash of [9999.99, 10000]) {
+    const snapshot = dashboardSummaryFixture(cash);
+    const summary = { ...validSummary(), summary: {
+      netCashFlow: snapshot.netCashFlow,
+      rubberInventoryWeight: snapshot.rubberInventoryWeight,
+      purchaseToday: snapshot.purchaseToday,
+    } };
+    const response = await loadRoute([summary]).GET(new Request("http://localhost/api") as never);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual([summary]);
+  }
+});
+
 test("dashboard branch-summary route rejects a malformed response before it reaches UI formatters", async () => {
   const malformedResponses = [
     { name: "null response", data: null },
+    { name: "partial test snapshot", data: [{ ...validSummary(), summary: { netCashFlow: 10000 } }] },
     { name: "non-canonical location UUID", data: [{ ...validSummary(), locationId: locationId.toUpperCase() }] },
     { name: "invalid timestamp", data: [{ ...validSummary(), calculatedAt: "not-a-date" }] },
     { name: "summary without timestamp", data: [{ ...validSummary(), calculatedAt: null }] },

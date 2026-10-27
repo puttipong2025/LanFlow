@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 import { assertSafeIntegrationTarget } from "./support/integration-target";
 import { dismissRubberWeightAlertIfVisible } from "./helpers/dismiss-threshold-alert";
+import { dashboardSummaryFixture } from "./helpers/dashboard-summary";
 
 const config = { thresholdKg: 10000, intervalMinutes: 60 };
 const blank = { config, candidates: [], unavailable: [], configuredCount: 0, checkedCount: 0 };
@@ -103,7 +104,7 @@ test("cash group UI to real RPC and snapshot; API authorization and equality", a
     const competing = await Promise.all([0, 1].map(() => manager.request.post("/api/lanflow/cash-alert/groups", { data: { locationIds: [conflictId], thresholdAmount: 10000 } })));
     expect(competing.map(response => response.status()).sort()).toEqual([201, 409]);
     conflictGroupId = (await competing.find(response => response.status() === 201)!.json()).id;
-    const snapshot = { location_id: id, status: "ready", source_version: 1, snapshot_version: 1, calculated_at: new Date().toISOString(), summary: { netCashFlow: 9999.99 } };
+    const snapshot = { location_id: id, status: "ready", source_version: 1, snapshot_version: 1, calculated_at: new Date().toISOString(), summary: dashboardSummaryFixture(9999.99) };
     expect((await db.from("dashboard_branch_snapshots").upsert(snapshot)).error).toBeNull();
     const response = await manager.request.get("/api/lanflow/threshold-alert");
     expect(response.headers()["cache-control"]).toContain("no-store");
@@ -115,7 +116,7 @@ test("cash group UI to real RPC and snapshot; API authorization and equality", a
     await expect(dialog.locator("section").filter({ hasText: name }).getByText("10,000 บาท", { exact: true })).toBeVisible();
     await expect(dialog.getByRole("heading", { name: "รับ–จ่ายสุทธิสะสมต่ำกว่าเกณฑ์" })).toBeVisible();
     await page.keyboard.press("Escape");
-    expect((await db.from("dashboard_branch_snapshots").update({ summary: { netCashFlow: 10000 } }).eq("location_id", id)).error).toBeNull();
+    expect((await db.from("dashboard_branch_snapshots").update({ summary: dashboardSummaryFixture(10000) }).eq("location_id", id)).error).toBeNull();
     expect((await (await manager.request.get("/api/lanflow/threshold-alert")).json()).candidates.some((c: { locationId: string }) => c.locationId === id)).toBe(false);
     await dismissRubberWeightAlertIfVisible(page);
   } finally {

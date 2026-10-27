@@ -20,14 +20,14 @@ export async function authFetch(url: string, init?: RequestInit): Promise<Respon
   });
   if (response.status === 401 && typeof window !== "undefined") {
     const body = await response.clone().json().catch(() => ({}));
-    if (["OTP_REQUIRED", "SESSION_REVOKED", "PASSWORD_REQUIRED"].includes(body.errorCode)) {
+    if (["OTP_REQUIRED", "SESSION_REVOKED", "PASSWORD_REQUIRED"].includes(body?.errorCode)) {
       window.dispatchEvent(new CustomEvent("lanflow:auth-required", { detail: body.errorCode }));
       if (window.location.pathname !== "/login") window.location.assign("/login");
     }
   }
   if (response.status === 409 && typeof window !== "undefined") {
     const body = await response.clone().json().catch(() => ({}));
-    if (body.errorCode === CASH_COUNT_OVERDUE_CODE) window.dispatchEvent(new Event("lanflow:cash-count-lock-changed"));
+    if (body?.errorCode === CASH_COUNT_OVERDUE_CODE) window.dispatchEvent(new Event("lanflow:cash-count-lock-changed"));
   }
   if (response.ok && typeof window !== "undefined" && init?.method && init.method !== "GET"
     && /^\/api\/lanflow\/(cash-counts|cash-count-alert\/groups)(\/|\?|$)/.test(url)) {

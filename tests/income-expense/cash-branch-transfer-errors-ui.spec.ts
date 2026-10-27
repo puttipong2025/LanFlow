@@ -2,6 +2,12 @@ import { expect, test, type Route } from "@playwright/test";
 
 test.use({ storageState: "playwright/.auth/super_admin.json" });
 
+test.beforeEach(async ({ page }) => {
+  await page.addLocatorHandler(page.getByRole("alertdialog", { name: "แจ้งเตือน", exact: true }), async (dialog) => {
+    await dialog.getByRole("button", { name: "รับทราบ", exact: true }).click();
+  });
+});
+
 const transferId = "099a446b-6a54-40ae-8caa-0a3cf86676cb";
 const summary = {
   id: transferId, locationId: "00000000-0000-4000-8000-000000000001",
@@ -127,7 +133,7 @@ test("report-locked outgoing and incoming cash rows disable delete but keep read
     reportLockNo: "RPT-LOCK-GENERAL",
   };
   await page.route("**/api/lanflow/income-expense/feed?**", (route) =>
-    fulfillIncomeExpenseFeed(route, [outgoing, incoming, unlocked, lockedIncomeExpense]));
+    fulfillIncomeExpenseFeed(route, [incoming, unlocked, outgoing, lockedIncomeExpense]));
   await page.route(`**/api/lanflow/cash-branch-transfers/${outgoing.relationSourceId.slice(5)}`, (route) => route.fulfill({
     json: {
       transfer: {
@@ -210,7 +216,7 @@ test("shows an accessible pending-queue error with retry while the operational l
 
   await openIncomeExpense(page);
   await expect(page.getByRole("alert", { name: /โหลดคิวรอรับเงินสดไม่สำเร็จ/ })).toBeVisible();
-  await expect(page.getByRole("columnheader", { name: "รายการ" })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "รายการ", exact: true })).toBeVisible();
   allowPending = true;
   await page.getByRole("button", { name: "ลองใหม่สำหรับคิวรอรับเงินสด" }).click();
   await expect(page.locator(`button[data-transfer-id="${transferId}"]`)).toBeVisible();

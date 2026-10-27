@@ -1,10 +1,10 @@
 import { createClient } from "@supabase/supabase-js";
 
-export function createTransferLocationFixture(label: string) {
+export function createTransferLocationFixture(label: string, userId?: string) {
   const locationId = crypto.randomUUID();
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "http://127.0.0.1:55421";
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
-  const superAdminId = process.env.TEST_USER_ID ?? "00000000-0000-4000-8000-000000000001";
+  const assignedUserId = userId ?? process.env.TEST_USER_ID ?? "00000000-0000-4000-8000-000000000001";
   const service = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
@@ -25,7 +25,7 @@ export function createTransferLocationFixture(label: string) {
         is_active: true,
       }));
       await requireSuccess(service.from("user_locations").insert({
-        user_id: superAdminId,
+        user_id: assignedUserId,
         location_id: locationId,
         is_primary: false,
       }));

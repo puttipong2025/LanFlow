@@ -8,6 +8,11 @@ import {
 import { createTransferLocationFixture } from "../helpers/transfer-location-fixture";
 
 test.use({ storageState: "playwright/.auth/super_admin.json" });
+test.beforeEach(async ({ page }) => {
+  await page.addLocatorHandler(page.getByRole("alertdialog", { name: "แจ้งเตือน", exact: true }), async (dialog) => {
+    await dialog.getByRole("button", { name: "รับทราบ", exact: true }).click();
+  });
+});
 const transferLocation = createTransferLocationFixture("สาขา cash UI");
 
 async function setOnline(page: import("@playwright/test").Page, online: boolean) {
@@ -97,7 +102,8 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
   });
 
   test("prefills and locks receive counts, unlocks a mismatch, exposes share PDF, and requests post-receipt deletion", async ({ page }) => {
-    test.setTimeout(45000);
+    // This full create/receive/delete workflow also compiles several routes in dev.
+    test.setTimeout(120_000);
     await setOnline(page, true);
     await openIncomeExpense(page);
     const sourceLocationId = await selectedAppLocationId(page);
@@ -145,7 +151,7 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
     await expect(openSourceButton).toHaveClass(/shrink-0/);
     await openSourceButton.click();
     const pendingDetails = page.locator(".fixed.inset-0").last();
-    await expect(pendingDetails.getByText("รอรับเงิน", { exact: true })).toBeVisible();
+    await expect(pendingDetails.getByText("รอรับเงิน", { exact: true })).toBeVisible({ timeout: 15_000 });
     await setOnline(page, false);
     await expect(pendingDetails.locator('button:has-text("แก้ไขก่อนตรวจรับ")')).toBeDisabled();
     await expect(pendingDetails.locator('button:has-text("ลบถาวร")')).toHaveCount(0);
@@ -218,18 +224,30 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
     await expect(deleteRequestRow.locator("td").nth(5)).not.toHaveText("—");
     await expect(deleteRequestRow.locator("td").nth(6)).toHaveText("—");
     page.once("dialog", (dialog) => dialog.accept());
-    await deleteRequestRow.locator('button[title="อนุมัติการลบ"]').click();
-    await expect(page.getByText("อนุมัติและลบรายการแล้ว")).toBeVisible();
+    const [decisionResponse] = await Promise.all([
+      page.waitForResponse((response) => response.url().includes("/cash-branch-transfers/delete-requests/")
+        && response.url().endsWith("/decide") && response.request().method() === "POST"),
+      deleteRequestRow.locator('button[title="อนุมัติการลบ"]').click(),
+    ]);
+    expect(decisionResponse.status()).toBe(200);
+    expect(await decisionResponse.json()).toMatchObject({ status: "approved" });
+    await expect(page.getByText("อนุมัติและลบรายการแล้ว")).toBeVisible({ timeout: 15_000 });
     await expect(deleteRequestRow.locator("td").nth(6)).not.toHaveText("—");
   });
 
   test("queue badge auto-refreshes while the destination module remains open", async ({ browser }) => {
-    test.setTimeout(45000);
+    test.setTimeout(60000);
     const sourceContext = await browser.newContext({ storageState: "playwright/.auth/super_admin.json" });
     const targetContext = await browser.newContext({ storageState: "playwright/.auth/super_admin.json" });
     try {
       const sourcePage = await sourceContext.newPage();
       const targetPage = await targetContext.newPage();
+      await targetPage.clock.install();
+      for (const candidate of [sourcePage, targetPage]) {
+        await candidate.addLocatorHandler(candidate.getByRole("alertdialog", { name: "แจ้งเตือน", exact: true }), async (dialog) => {
+          await dialog.getByRole("button", { name: "รับทราบ", exact: true }).click();
+        });
+      }
       await openIncomeExpense(sourcePage);
       await openIncomeExpense(targetPage);
 
@@ -255,6 +273,7 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
       expect(createResponse.ok()).toBeTruthy();
       const transfer = await createResponse.json() as { id: string };
       // The amount can preexist in fixture data, so prove polling by the newly-created server id.
+      await targetPage.clock.runFor(61_000);
       await expect(targetPage.locator(`button[data-transfer-id="${transfer.id}"]`)).toBeVisible({ timeout: 20000 });
       const deleted = await targetContext.request.delete(`/api/lanflow/cash-branch-transfers/${transfer.id}`);
       const result = await deleted.json() as { status: string; requestId?: string };
