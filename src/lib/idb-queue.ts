@@ -33,6 +33,7 @@ export interface SyncEvent<T = any> {
   timestamp: number;
   status: "pending" | "failed" | "conflict";
   errorMessage?: string;
+  failureHttpStatus?: number;
 }
 export interface QueuePartition {
   entity: SyncEntity;
@@ -225,6 +226,7 @@ export async function removeSyncEvents(queueIds: number[]): Promise<void> {
 export async function reconcileSyncEventsIfCurrent(
   expectedEvents: readonly SyncEvent[],
   keeper?: SyncEvent,
+  requireCompleteRecord = false,
 ): Promise<boolean> {
   if (expectedEvents.length === 0) return keeper === undefined;
   const queueIds = expectedEvents.map((event) => event.queueId);
@@ -235,22 +237,36 @@ export async function reconcileSyncEventsIfCurrent(
   const db = await getSyncDb();
   return new Promise((resolve, reject) => {
     let matches = true;
-    let remaining = expectedEvents.length;
+    let remaining = expectedEvents.length + (requireCompleteRecord ? 1 : 0);
     let reconciled = false;
     const transaction = db.transaction(SYNC_QUEUE_STORE, "readwrite");
     const store = transaction.objectStore(SYNC_QUEUE_STORE);
+    const finishRead = () => {
+      remaining -= 1;
+      if (remaining !== 0 || !matches) return;
+      if (keeper) store.put(keeper);
+      queueIds.forEach((queueId) => {
+        if (queueId !== keeper?.queueId) store.delete(queueId as number);
+      });
+      reconciled = true;
+    };
+    if (requireCompleteRecord) {
+      const first = expectedEvents[0];
+      const record = store.index("ownerUserId").getAll(first.ownerUserId);
+      record.onsuccess = () => {
+        const current = (record.result as SyncEvent[]).filter((event) => (
+          event.id === first.id && event.entity === first.entity && event.locationId === first.locationId
+        ));
+        if (!areSameSyncEventSnapshots(current, expectedEvents)) matches = false;
+        finishRead();
+      };
+    }
     expectedEvents.forEach((expected, index) => {
       const request = store.get(queueIds[index] as number);
       request.onsuccess = () => {
         const current = request.result as SyncEvent | undefined;
         if (!current || !isSameSyncEvent(current, expected)) matches = false;
-        remaining -= 1;
-        if (remaining !== 0 || !matches) return;
-        if (keeper) store.put(keeper);
-        queueIds.forEach((queueId) => {
-          if (queueId !== keeper?.queueId) store.delete(queueId as number);
-        });
-        reconciled = true;
+        finishRead();
       };
     });
     transaction.oncomplete = () => { db.close(); resolve(reconciled); };

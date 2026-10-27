@@ -316,7 +316,7 @@ test("rubber bill sync route keeps a database-shaped failed result retryable wit
   });
 });
 
-test("rubber bill sync route does not expose database error details from a conflict result", async () => {
+test("rubber bill sync route keeps database-shaped conflicts retryable without exposing details", async () => {
   const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/route")>(
     "src/app/api/lanflow/rubber-bills/route.ts",
     rubberRouteDependencies({
@@ -329,11 +329,23 @@ test("rubber bill sync route does not expose database error details from a confl
     body: JSON.stringify(validRubberSubmission()),
   }));
 
-  expect(response.status).toBe(409);
+  expect(response.status).toBe(503);
   expect(await response.json()).toEqual({
-    status: "conflict",
+    status: "failed",
     errorMessage: "บันทึกบิลยางไม่สำเร็จ",
   });
+});
+
+test("rubber bill sync route preserves verified business conflicts and binds local discard to the command", async () => {
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/route")>(
+    "src/app/api/lanflow/rubber-bills/route.ts",
+    rubberRouteDependencies({ status: "conflict", errorMessage: "ข้อมูลบิลไม่ตรงกับรายการที่บันทึกแล้ว" }),
+  );
+  const response = await route.POST(new Request("http://local/api/lanflow/rubber-bills", {
+    method: "POST", body: JSON.stringify(validRubberSubmission()),
+  }));
+  expect(response.status).toBe(409);
+  expect(await response.json()).toMatchObject({ status: "conflict", resolution: "discard_local", operation: "create", clientTempId: "submitted-bill" });
 });
 
 test("rubber bill sync route treats a blank RPC failure message as a retryable malformed result", async () => {
@@ -477,6 +489,9 @@ test("rubber bill sync route rejects a mismatched expected Server identity befor
   expect(await response.json()).toEqual({
     status: "conflict",
     errorMessage: "ข้อมูลอ้างอิงบิลยางไม่ตรงกับ Server",
+    resolution: "discard_local",
+    clientTempId: "submitted-bill",
+    operation: "delete",
   });
   expect(rpcCalls).toBe(0);
 });

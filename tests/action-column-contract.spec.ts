@@ -60,11 +60,11 @@ test("pending-create pseudo rows do not expose the bill-only OCR source action",
   expect(source).toContain('bill.id.startsWith("approval:") ? "รออนุมัติ"');
 });
 
-test("rubber bill sync problems cannot reopen the editable modal through the view action", () => {
+test("rubber bill sync problems only reopen the editable modal after a correctable rejection", () => {
   const source = readFileSync(resolve("src/components/rubber-bills/RubberBillsTable.tsx"), "utf8");
 
   expect(source).toMatch(
-    /const viewDisabled = deleting\s*\|\| \(!bill\.sourceRubberExportId && \(hasSyncProblem \|\| Boolean\(actionBlockReason\)\)\);/,
+    /const viewDisabled = deleting\s*\|\| \(!bill\.sourceRubberExportId && \(\(hasSyncProblem && !bill\.canCorrectSyncFailure\) \|\| Boolean\(actionBlockReason\)\)\);/,
   );
 });
 

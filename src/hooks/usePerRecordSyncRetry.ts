@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   getPendingEvents,
   removeSyncEventIfCurrent,
+  reconcileSyncEventsIfCurrent,
   updateSyncEvent,
   updateSyncEventIfCurrent,
   type SyncEntity,
@@ -12,9 +13,9 @@ import { authFetch } from "@/lib/auth-fetch";
 import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 import { removeConfirmedRubberBillLocally } from "@/lib/rubber-bills/feed-cache";
 import { isCashCountLockSyncResponse, isRetryableSyncResponse } from "@/lib/sync-response";
-function endpointFor(entity: SyncEntity) {
-  return entity === "income_expense" ? "/api/lanflow/income-expense" : "/api/lanflow/rubber-bills";
-}
+import { isConfirmedRubberSyncResult } from "@/lib/rubber-bills/sync-result";
+import { recordRubberSyncFailure } from "@/lib/rubber-bills/sync-failure";
+import { sendRubberBillCommand } from "@/lib/rubber-bills/sync-request";
 
 export function usePerRecordSyncRetry(locationId: string, ownerUserId: string) {
   const queryClient = useQueryClient();
@@ -45,6 +46,11 @@ export function usePerRecordSyncRetry(locationId: string, ownerUserId: string) {
       if (!event) throw new Error("ไม่พบรายการที่ซิงก์ไม่สำเร็จ");
 
       try {
+        if (entity === "rubber_bills") {
+          const marked = { ...event, serverSubmissionAttempted: true };
+          if (!await reconcileSyncEventsIfCurrent([event], marked)) throw new Error("คิวเปลี่ยนจากอีกหน้าต่าง กรุณาลองใหม่");
+          Object.assign(event, marked);
+        }
         if (entity === "income_expense") {
           event.serverSubmissionAttempted = true;
           await updateSyncEvent(event);
@@ -58,20 +64,29 @@ export function usePerRecordSyncRetry(locationId: string, ownerUserId: string) {
             submissionMode: "replay",
           }
           : event.payload;
-        const response = await authFetch(endpointFor(entity), {
+        const response = await (entity === "rubber_bills" ? sendRubberBillCommand(event, submission) : authFetch("/api/lanflow/income-expense", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(submission),
+        })).catch(async (error) => {
+          if (entity === "rubber_bills") await recordRubberSyncFailure(event, 0, {});
+          throw error;
         });
         const data = await response.json().catch(() => ({}));
 
+        if (entity === "rubber_bills" && (isRetryableSyncResponse(response.status, data)
+            || (response.ok && !isConfirmedRubberSyncResult(data, event)))) {
+          await recordRubberSyncFailure(event, response.status, data);
+          throw new Error(event.errorMessage);
+        }
+
         if (response.ok) {
           if (entity === "rubber_bills" && event.operation === "delete" && data.status === "synced") {
+            if (!await removeSyncEventIfCurrent(event)) throw new Error("ข้อมูลคิวเปลี่ยนระหว่างยืนยันผล กรุณารอซิงก์อีกครั้ง");
             await removeConfirmedRubberBillLocally(
               queryClient,
               { ownerUserId: submissionOwnerUserId, locationId: submissionLocationId },
               event.id,
-              event.queueId,
             );
           } else if (entity === "rubber_bills") {
             try {
@@ -82,7 +97,14 @@ export function usePerRecordSyncRetry(locationId: string, ownerUserId: string) {
           } else {
             await removeSyncEventIfCurrent(event);
           }
-          return;
+          return data.status;
+        }
+
+        if (entity === "rubber_bills") {
+          const outcome = await recordRubberSyncFailure(event, response.status, data);
+          throw new Error(outcome === "discarded"
+            ? "ทิ้งรายการค้างที่ข้อมูลชนกันแล้ว บิลบนเซิร์ฟเวอร์ยังคงเดิม"
+            : event.errorMessage);
         }
 
         if (isCashCountLockSyncResponse(data) && response.status === 409) {
@@ -91,7 +113,7 @@ export function usePerRecordSyncRetry(locationId: string, ownerUserId: string) {
           await updateSyncEventIfCurrent(event);
           throw new Error(data.errorMessage);
         }
-        if (entity === "income_expense" && !isRetryableSyncResponse(response.status, data)) {
+        if (!isRetryableSyncResponse(response.status, data)) {
           event.serverSubmissionAttempted = false;
         }
         event.status = data.status === "conflict" ? "conflict" : "failed";

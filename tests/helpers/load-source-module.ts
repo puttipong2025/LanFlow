@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { runInNewContext } from "node:vm";
@@ -13,13 +13,14 @@ export function loadSourceModule<T>(
 ): T {
   const modules = new Map<string, { exports: unknown }>();
   function load(filename: string): unknown {
-    const fullPath = resolve(filename);
+    const resolved = resolve(filename);
+    const fullPath = !existsSync(resolved) && resolved.endsWith(".ts") ? `${resolved}x` : resolved;
     if (modules.has(fullPath)) return modules.get(fullPath)!.exports;
     const module = { exports: {} };
     modules.set(fullPath, module);
     const nativeRequire = createRequire(fullPath);
     runInNewContext(ts.transpileModule(readFileSync(fullPath, "utf8"), {
-      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
     }).outputText, {
       module, exports: module.exports,
       require: (id: string) => Object.hasOwn(dependencies, id) ? dependencies[id]

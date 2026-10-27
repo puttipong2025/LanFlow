@@ -117,7 +117,7 @@ for (const entity of ["income_expense", "rubber_bills"] as const) {
       "@/lib/auth-fetch": { canSyncCurrentSession: async () => true, authFetch: async () => {
         writes++;
         return locked ? Response.json({ status: "failed", errorCode: CASH_COUNT_OVERDUE_CODE, errorMessage: "temporary lock" }, { status: 409 })
-          : Response.json({ status: "synced", id: "saved", serverBillNo: "SAVED-1", revisionNo: 1 });
+          : Response.json({ status: "synced", id: "71000000-0000-4000-8000-000000000021", serverBillNo: "SAVED-1", revisionNo: 1, serverReceivedAt: "2026-10-27T00:00:00Z" });
       } },
       "@/lib/money-flow/invalidation": { invalidateMoneyFlowLocation: async () => undefined },
     }, { navigator: { onLine: true } });

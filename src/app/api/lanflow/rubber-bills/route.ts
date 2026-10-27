@@ -182,8 +182,14 @@ export async function POST(request: Request) {
         );
       }
       if (!isSameUuid(expectedBill.data?.id, payload.expectedServerId)) {
+        const canVerifyAbsence = authResult.auth && (authResult.auth.role === "super_admin"
+          || authResult.auth.canAccessSystemManager === true
+          || authResult.auth.locationIds.includes(String(payload.locationId)));
         return NextResponse.json(
-          { status: "conflict", errorMessage: "ข้อมูลอ้างอิงบิลยางไม่ตรงกับ Server" },
+          { status: "conflict", errorMessage: "ข้อมูลอ้างอิงบิลยางไม่ตรงกับ Server",
+            ...(isUuid(expectedBill.data?.id) || canVerifyAbsence
+              ? { resolution: "discard_local", clientTempId: payload.clientTempId, operation: payload.operation } : {}),
+          },
           { status: 409, headers: { "Cache-Control": "private, no-store, max-age=0" } },
         );
       }
@@ -231,6 +237,17 @@ export async function POST(request: Request) {
     const result = data.status === "failed" || data.status === "conflict"
       ? { ...data, errorMessage: publicSyncErrorMessage(data.errorMessage) }
       : data;
+    if (result.status === "conflict" && result.errorMessage === GENERIC_SYNC_FAILURE_MESSAGE) {
+      return NextResponse.json(
+        { status: "failed", errorMessage: GENERIC_SYNC_FAILURE_MESSAGE },
+        { status: 503, headers: { "Cache-Control": "private, no-store, max-age=0" } },
+      );
+    }
+    if (result.status === "conflict") {
+      // The authenticated RPC rejected this exact immutable command. Discarding
+      // the local command never deletes the authoritative bill or approval.
+      Object.assign(result, { resolution: "discard_local", clientTempId: payload.clientTempId, operation: payload.operation });
+    }
     const status = result.status;
     const responseStatus = status === "conflict"
       ? 409

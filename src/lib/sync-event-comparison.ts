@@ -16,6 +16,7 @@ export function isSameSyncEvent(left: SyncEvent, right: SyncEvent) {
     && left.timestamp === right.timestamp
     && left.status === right.status
     && left.errorMessage === right.errorMessage
+    && left.failureHttpStatus === right.failureHttpStatus
     && left.serverSubmissionAttempted === right.serverSubmissionAttempted;
 }
 

@@ -275,7 +275,7 @@ test.describe("immediate mutation state contract", () => {
     expect(source).toContain("serverBillNo: bill.serverBillNo,");
     expect(source).toContain('...(event.serverId ? { expectedServerId: event.serverId } : {})');
     expect(source).toContain('...(operation === "update" ? { expectedServerId: bill.id } : {})');
-    expect(source).toContain("body: JSON.stringify({ ...payload, expectedServerId: bill.id })");
+    expect(source).toContain("sendRubberBillCommand(queuedEvent, { ...payload, expectedServerId: bill.id })");
   });
 
   test("removes a confirmed Rubber Bill only from its scoped operational feeds", async () => {
@@ -378,16 +378,16 @@ test.describe("immediate mutation state contract", () => {
     expect(queryClient.getQueryData(latestKey)).toMatchObject({ pages: [{ bills: [pendingBill] }] });
   });
 
-  test("marks a possible create commit before transport and blocks local mutation until replay", () => {
+  test("marks a possible commit before transport and blocks local mutation until replay", () => {
     const source = readSource("src/hooks/useRubberBills.ts");
 
     expect(source).toContain(
-      'serverSubmissionAttempted: operation === "create" && directSubmissionScope !== null',
+      'serverSubmissionAttempted: directSubmissionScope !== null',
     );
     expect(source).toContain(
-      'if (event.operation === "create" && event.serverSubmissionAttempted !== true)',
+      'if (event.serverSubmissionAttempted !== true)',
     );
-    expect(source.match(/pendingCreates\.some\(\(event\) => event\.serverSubmissionAttempted === true\)/g))
+    expect(source.match(/clientEvents\.some\(\(event\) => event\.serverSubmissionAttempted === true\)/g))
       .toHaveLength(2);
   });
 

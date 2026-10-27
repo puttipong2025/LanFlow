@@ -38,7 +38,7 @@ export function useLanFlowOfflineSyncCoordinator({
       ]);
       const syncTasks: Promise<unknown>[] = [];
 
-      if (rubberEvents.some((event) => event.status === "pending")) {
+      if (rubberEvents.some((event) => event.status === "pending" || event.status === "conflict" || event.failureHttpStatus === undefined)) {
         syncTasks.push(syncPendingRubberBills(queryClient, ownerUserId, locationId));
       }
       if (incomeExpenseEvents.some((event) => event.status === "pending")) {

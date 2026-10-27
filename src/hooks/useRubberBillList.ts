@@ -127,9 +127,10 @@ export function useRubberBillList({
         return { bills, evidenceStates: [], nextCursor: null, hasMore: false };
       }
       const { events, snapshots } = await localState(ownerUserId, locationId);
+      const normalEvents = events.filter((event) => event.status === "pending");
       if (typeof navigator !== "undefined" && !navigator.onLine) {
         const cached = snapshots.map((snapshot) => snapshot.bill);
-        const merged = mergeRubberBillLocalEvents(cached, events, ownerUserId)
+        const merged = mergeRubberBillLocalEvents(cached, normalEvents, ownerUserId)
           .filter((bill) => matchesMode(bill, mode))
           .filter((bill) => matchesDocumentStatus(bill, documentStatus))
           .filter((bill) => matchesSearch(bill, normalizedSearch));
@@ -162,8 +163,8 @@ export function useRubberBillList({
       // the current-revision receipt snapshot used by offline printing.
       if (mode !== "pending_approval") await persistReceiptSnapshots(serverBills, signal);
       const localEvents = documentStatus === "editable"
-        ? scopeRubberBillLocalEventsToServerRows(serverBills, events, pageParam === null)
-        : events;
+        ? scopeRubberBillLocalEventsToServerRows(serverBills, normalEvents, pageParam === null)
+        : normalEvents;
       const merged = mergeRubberBillLocalEvents(
         serverBills,
         localEvents,

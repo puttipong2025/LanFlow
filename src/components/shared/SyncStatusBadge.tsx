@@ -20,7 +20,7 @@ export function SyncStatusBadge({ status, errorMessage }: { status: SyncStatus; 
     <div className="flex flex-col items-start gap-0.5">
       <span className={`rounded px-2 py-1 text-xs font-semibold ${tone}`} title={errorMessage}>{label}</span>
       {errorMessage && (status === "failed" || status === "conflict") && (
-        <span className="text-[10px] leading-tight text-rose-600 max-w-[140px] truncate" title={errorMessage}>{errorMessage}</span>
+        <span className="max-w-xs whitespace-normal break-words text-pretty text-xs leading-tight text-rose-600">{errorMessage}</span>
       )}
     </div>
   );

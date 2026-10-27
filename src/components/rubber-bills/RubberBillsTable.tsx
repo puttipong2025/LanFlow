@@ -102,17 +102,17 @@ export function RubberBillsTable({
               const actionBlockReason = getActionBlockReason?.(bill) ?? null;
               const deleting = deletingBillId === bill.id;
               const hasSyncProblem = bill.syncStatus === "failed" || bill.syncStatus === "conflict";
-              const actionsDisabled = hasSyncProblem || Boolean(actionBlockReason) || deleting;
+              const actionsDisabled = (hasSyncProblem && !bill.canCorrectSyncFailure) || Boolean(actionBlockReason) || deleting;
               const actionTitle = deleting
                 ? "กำลังดำเนินการ..."
-                : hasSyncProblem
+                : hasSyncProblem && !bill.canCorrectSyncFailure
                   ? "ทิ้งรายการค้างในเครื่องก่อนแก้ไขหรือลบ"
                   : actionBlockReason;
               const viewDisabled = deleting
-                || (!bill.sourceRubberExportId && (hasSyncProblem || Boolean(actionBlockReason)));
+                || (!bill.sourceRubberExportId && ((hasSyncProblem && !bill.canCorrectSyncFailure) || Boolean(actionBlockReason)));
               const viewTitle = deleting
                 ? "กำลังลบรายการ..."
-                : hasSyncProblem && !bill.sourceRubberExportId
+                : hasSyncProblem && !bill.canCorrectSyncFailure && !bill.sourceRubberExportId
                   ? "ทิ้งรายการค้างในเครื่องก่อนเปิดแก้ไข"
                   : "ดูรายละเอียด";
               const printBlockReason = getPrintBlockReason?.(bill) ?? null;

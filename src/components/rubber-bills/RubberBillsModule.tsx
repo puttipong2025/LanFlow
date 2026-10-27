@@ -52,6 +52,7 @@ import { ExportVehicleWeighBillsModal } from "./ExportVehicleWeighBillsModal";
 import type { RequestBranchCreate } from "@/hooks/useBranchCreateGuard";
 import { isDeviceOnline } from "@/lib/connectivity";
 import { RubberBillOcrQueueModal } from "./RubberBillOcrQueueModal";
+import { AlertDialog } from "@/components/shared/AlertDialog";
 
 export function RubberBillsModule({
   selectedLocation,
@@ -117,6 +118,7 @@ export function RubberBillsModule({
   const [branchReceiptModalOpen, setBranchReceiptModalOpen] = useState(false);
   const [viewingBranchReceipt, setViewingBranchReceipt] = useState<RubberBill | null>(null);
   const [editingBill, setEditingBill] = useState<RubberBill | null>(null);
+  const [discardCandidate, setDiscardCandidate] = useState<RubberBill | null>(null);
   const [deletingBillId, setDeletingBillId] = useState<string | null>(null);
   const [pageSize, setPageSize] = useState(10);
   const [search, setSearch] = useState("");
@@ -351,8 +353,9 @@ export function RubberBillsModule({
 
   async function retryFailedSync(bill: RubberBill) {
     try {
-      await retrySyncEvent({ entity: "rubber_bills", id: bill.clientTempId });
-      toast.success("ซิงก์รายการสำเร็จ");
+      const outcome = await retrySyncEvent({ entity: "rubber_bills", id: bill.clientTempId });
+      toast.success(outcome === "pending_approval" ? "ส่งคำขออนุมัติแล้ว"
+        : outcome === "discarded" ? "ทิ้งรายการค้างแล้ว" : "ซิงก์รายการสำเร็จ");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "ซิงก์รายการไม่สำเร็จ");
     }
@@ -424,13 +427,6 @@ export function RubberBillsModule({
 
   async function confirmDiscardSyncProblem(bill: RubberBill) {
     if (deletingBillId || !isOnline) return;
-    const reference = bill.serverBillNo ?? bill.localBillNo;
-    const confirmed = window.confirm(
-      `ทิ้งรายการค้าง ${reference} ในเครื่องนี้ใช่ไหม?\n`
-      + "การแก้ไขที่ยังไม่ซิงก์จะหาย และระบบจะโหลดข้อมูลล่าสุดจากเซิร์ฟเวอร์",
-    );
-    if (!confirmed) return;
-
     setDeletingBillId(bill.id);
     try {
       await runBlockingAction(
@@ -438,7 +434,8 @@ export function RubberBillsModule({
         () => discardSyncProblem(bill.clientTempId),
       );
       setPage(1);
-      toast.success("ทิ้งรายการค้างแล้ว และโหลดข้อมูลล่าสุดจากเซิร์ฟเวอร์แล้ว");
+      setDiscardCandidate(null);
+      toast.success("ทิ้งรายการค้างในเครื่องแล้ว");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "ทิ้งรายการค้างไม่สำเร็จ");
     } finally {
@@ -690,7 +687,7 @@ export function RubberBillsModule({
           getActionBlockReason={getActionBlockReason}
           getPrintBlockReason={getPrintBlockReason}
           onRetry={retryFailedSync}
-          onDiscardLocal={(bill) => void confirmDiscardSyncProblem(bill)}
+          onDiscardLocal={setDiscardCandidate}
           onOpenOcrSourceImage={(bill) => void openOcrSourceImage(bill)}
           retryDisabled={!isOnline || isRetrying}
           discardDisabled={!isOnline}
@@ -701,6 +698,11 @@ export function RubberBillsModule({
         />
       </section>
 
+      <AlertDialog open={discardCandidate !== null} title="ทิ้งรายการค้างในเครื่อง"
+        description={`ทิ้งรายการ ${discardCandidate?.serverBillNo ?? discardCandidate?.localBillNo ?? ""} ใช่ไหม? ข้อมูลที่ยังไม่ซิงก์จะหาย บิลจริงบนเซิร์ฟเวอร์จะไม่ถูกลบ`}
+        confirmLabel="ยืนยันทิ้งรายการค้าง" busy={deletingBillId !== null}
+        onCancel={() => setDiscardCandidate(null)}
+        onConfirm={() => { if (discardCandidate) void confirmDiscardSyncProblem(discardCandidate); }} />
       {modalOpen && (
         <RubberBillModal
           selectedLocation={selectedLocation}
