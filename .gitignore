@@ -27,6 +27,7 @@ backup_customers*.sql
 
 # next-pwa generated files
 public/sw.js
+public/offline-assets.json
 public/sw.js.map
 public/workbox-*.js
 public/workbox-*.js.map

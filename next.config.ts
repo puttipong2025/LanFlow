@@ -10,6 +10,7 @@ const withPWA = withPWAInit({
   reloadOnOnline: false,
   cacheStartUrl: false,
   dynamicStartUrl: false,
+  publicExcludes: ["!noprecache/**/*", "!offline-assets.json"],
   workboxOptions: {
     skipWaiting: true,
     clientsClaim: true,

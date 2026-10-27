@@ -2,6 +2,7 @@ import type { Tab } from "@/components/lanflow/tabs";
 
 const OFFLINE_BLOCKED_TABS: Partial<Record<Tab, string>> = {
   dashboard: "ภาพรวมใช้ได้เมื่อออนไลน์เท่านั้น",
+  "rubber-evidence": "ตรวจหลักฐานใช้ได้เมื่อออนไลน์เท่านั้น",
   "acid-stock": "สต็อกสินค้าใช้ได้เมื่อออนไลน์เท่านั้น",
   customers: "ลูกค้าใช้ได้เมื่อออนไลน์เท่านั้น",
   transport: "ขนส่งและพนักงานใช้ได้เมื่อออนไลน์เท่านั้น",

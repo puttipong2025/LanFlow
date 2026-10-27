@@ -46,6 +46,7 @@ export default defineConfig({
     '**/money-flow-read-seams.spec.ts',
     '**/navigation-permissions.spec.ts',
     '**/offline-module-policy.spec.ts',
+    '**/offline-readiness.spec.ts',
     '**/pending-work-response.spec.ts',
     '**/ocr-slip.spec.ts',
     '**/ocr-slip-route.spec.ts',

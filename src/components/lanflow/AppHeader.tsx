@@ -6,6 +6,7 @@ import type { Location, Profile } from "@/types";
 import { canManageSystemFeatures } from "@/lib/permissions";
 import { TelegramBadgeConfigModal } from "@/components/lanflow/TelegramBadgeConfigModal";
 import { AccountActions } from "@/components/lanflow/AccountActions";
+import { OfflineReadinessStatus } from "@/components/lanflow/OfflineReadinessStatus";
 import { OperatorMoneyHistoryButton } from "@/components/dashboard/OperatorMoneyHistoryButton";
 import { useDashboardBranchSummaries } from "@/hooks/useDashboardOverview";
 import { cn } from "@/lib/cn";
@@ -183,7 +184,7 @@ export function AppHeader({
           </div>
         </div>
 
-        <div className="landscape-compact-actions flex flex-col gap-3 sm:flex-row sm:items-center">
+        <div className="landscape-compact-actions flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
           <span
             role="status"
             aria-live="polite"
@@ -196,6 +197,7 @@ export function AppHeader({
             {online ? <Wifi size={16} /> : <WifiOff size={16} />}
             {online ? "ออนไลน์" : "ไม่มีอินเทอร์เน็ต"}
           </span>
+          <OfflineReadinessStatus key={`${profile.id}:${selectedLocationId}:${online}`} userId={profile.id} locationId={selectedLocationId} online={online} />
           <div ref={locationMenuRef} className="landscape-branch-selector relative min-w-0 sm:min-w-64">
             <button
               ref={locationButtonRef}

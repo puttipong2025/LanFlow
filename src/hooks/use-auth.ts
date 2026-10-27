@@ -7,9 +7,9 @@ import { isDeviceOnline } from "@/lib/connectivity";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { authFetch } from "@/lib/auth-fetch";
 import { bootstrapBrowserApproval } from "@/lib/browser-bootstrap";
+import { OFFLINE_AUTH_MAX_AGE_MS } from "@/lib/offline-auth-policy";
 
 const LAST_USER_KEY = "lanflow:last-auth-user";
-export const OFFLINE_AUTH_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 type CachedProfile = {
   profile: Profile;

@@ -71,7 +71,7 @@ export default defineConfig({
   ],
   webServer: isPwa
     ? {
-        command: 'node --env-file=.env.local node_modules/next/dist/bin/next build && node --env-file=.env.local node_modules/next/dist/bin/next start -p 3001',
+        command: 'node --env-file=.env.local node_modules/next/dist/bin/next build && node scripts/write-offline-assets.mjs && node --env-file=.env.local node_modules/next/dist/bin/next start -p 3001',
         url: 'http://127.0.0.1:3001',
         reuseExistingServer: false,
         gracefulShutdown: { signal: 'SIGINT', timeout: 1000 },

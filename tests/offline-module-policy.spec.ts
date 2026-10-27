@@ -10,6 +10,7 @@ test("blocks every online-only navigation tab and falls back to Rubber Bills", (
 
   for (const tab of [
     "dashboard",
+    "rubber-evidence",
     "acid-stock",
     "customers",
     "transport",

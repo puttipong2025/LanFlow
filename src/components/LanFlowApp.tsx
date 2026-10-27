@@ -1,7 +1,6 @@
 "use client";
 import { useBrowserApprovals } from "@/hooks/useBrowserApprovals";
 
-
 import { ShieldCheck } from "lucide-react";
 import dynamic from "next/dynamic";
 import { toast } from "sonner";
@@ -490,7 +489,7 @@ function BusinessLanFlowApp() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.get("tab") !== "rubber-evidence") return;
+    if (params.get("tab") !== "rubber-evidence" || !isDeviceOnline()) return;
     setActiveTab("rubber-evidence");
     setPendingEvidenceBillId(params.get("bill"));
   }, []);
@@ -627,6 +626,7 @@ function BusinessLanFlowApp() {
   }
 
   function openRubberEvidence(billId: string) {
+    if (!isDeviceOnline()) { toast.error("ตรวจหลักฐานใช้ได้เมื่อออนไลน์เท่านั้น"); return; }
     const url = new URL(window.location.href);
     url.searchParams.set("tab", "rubber-evidence");
     url.searchParams.set("bill", billId);

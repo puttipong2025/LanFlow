@@ -22,6 +22,6 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    "/((?!_next/static(?:/|$)|_next/image(?:/|$)|favicon\\.ico$|icon\\.svg$|icons/icon\\.svg$|fonts/NotoSansThai-(?:Regular|Bold)\\.ttf$|fonts/NotoSansThai-OFL\\.txt$|manifest\\.json$|sw\\.js$|swe-worker-[0-9a-f]{16}\\.js$|workbox-[0-9a-f]{8}\\.js$|offline\\.html$).*)"
+    "/((?!_next/static(?:/|$)|_next/image(?:/|$)|favicon\\.ico$|icon\\.svg$|icons/icon\\.svg$|fonts/NotoSansThai-(?:Regular|Bold)\\.ttf$|fonts/NotoSansThai-OFL\\.txt$|manifest\\.json$|offline-assets\\.json$|sw\\.js$|swe-worker-[0-9a-f]{16}\\.js$|workbox-[0-9a-f]{8}\\.js$|offline\\.html$).*)"
   ]
 };

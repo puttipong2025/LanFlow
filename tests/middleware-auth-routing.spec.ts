@@ -28,6 +28,8 @@ test("keeps public assets public and redirects anonymous pages to login", async 
     // the public service worker request into an authentication redirect.
     const serviceWorkerResponse = await anonymous.get("/sw.js", { maxRedirects: 0 });
     expect([200, 404], "/sw.js").toContain(serviceWorkerResponse.status());
+    const offlineManifest = await anonymous.get("/offline-assets.json", { maxRedirects: 0 });
+    expect([200, 404], "/offline-assets.json").toContain(offlineManifest.status());
 
     for (const generatedWorkerPath of [
       "/swe-worker-0123456789abcdef.js",
@@ -45,6 +47,7 @@ test("keeps public assets public and redirects anonymous pages to login", async 
       "/fonts-private",
       "/fonts/private",
       "/manifest.jsonx",
+      "/offline-assets.jsonx",
       "/sw.jsx",
       "/swe-worker-private",
       "/swe-worker-private.js",
