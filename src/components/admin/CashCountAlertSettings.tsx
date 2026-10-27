@@ -4,7 +4,7 @@ import { useLocations } from "@/hooks/useLocations";
 import { authFetch, assertApiResponse } from "@/lib/auth-fetch";
 import { AlertDialog } from "@/components/shared/AlertDialog";
 
-type Group = { id: string; dueDays: number; locationIds: string[]; lockEnabled?: boolean; graceHours?: number | null; unlockHours?: number | null };
+type Group = { id: string; dueDays: number; locationIds: string[]; lockEnabled?: boolean; graceHours?: number | null; unlockHours?: number | null; discrepancyThreshold?: number | null };
 export function CashCountAlertSettings() {
   const { locations } = useLocations();
   const [data, setData] = useState<{ groups: Group[]; availableLocationIds: string[] } | null>(null);
@@ -14,6 +14,7 @@ export function CashCountAlertSettings() {
   const [lockEnabled, setLockEnabled] = useState(false);
   const [graceHours, setGraceHours] = useState("");
   const [unlockHours, setUnlockHours] = useState("");
+  const [discrepancyThreshold, setDiscrepancyThreshold] = useState("");
   const [ids, setIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -27,14 +28,14 @@ export function CashCountAlertSettings() {
     await assertApiResponse(response); const body = await response.json(); if (active) setData(body);
   }).catch((cause) => { if (active) setError(cause instanceof Error ? cause.message : "โหลดกลุ่มไม่สำเร็จ"); }); return () => { active = false; }; }, []);
   const button = "focus-ring min-h-11 rounded-md border border-black/15 bg-white px-3 text-sm font-semibold disabled:opacity-50";
-  function edit(group: Group | null) { setEditing(group); setDays(group?.dueDays ?? 1); setIds(group?.locationIds ?? []); setLockEnabled(group?.lockEnabled ?? false); setGraceHours(String(group?.graceHours ?? "")); setUnlockHours(String(group?.unlockHours ?? "")); setOpen(true); setError(null); }
+  function edit(group: Group | null) { setEditing(group); setDays(group?.dueDays ?? 1); setIds(group?.locationIds ?? []); setLockEnabled(group?.lockEnabled ?? false); setGraceHours(String(group?.graceHours ?? "")); setUnlockHours(String(group?.unlockHours ?? "")); setDiscrepancyThreshold(String(group?.discrepancyThreshold ?? "")); setOpen(true); setError(null); }
   async function save(remove = false) {
     if (busy) return;
     setBusy(true); setError(null);
     try {
       const response = await authFetch(remove ? `${endpoint}?id=${deleting?.id}` : endpoint, {
         method: remove ? "DELETE" : "POST", headers: { "Content-Type": "application/json" },
-        ...(remove ? {} : { body: JSON.stringify({ id: editing?.id, dueDays: days, locationIds: ids, lockEnabled,
+        ...(remove ? {} : { body: JSON.stringify({ id: editing?.id, dueDays: days, locationIds: ids, lockEnabled, discrepancyThreshold: discrepancyThreshold === "" ? null : Number(discrepancyThreshold),
           ...(lockEnabled && graceHours ? { graceHours: Number(graceHours) } : {}), ...(lockEnabled && unlockHours ? { unlockHours: Number(unlockHours) } : {}) }) }),
       });
       await assertApiResponse(response); setOpen(false); setDeleting(null); await load();
@@ -49,6 +50,7 @@ export function CashCountAlertSettings() {
       {!open && <button type="button" className={button} onClick={() => edit(null)}>สร้างกลุ่ม</button>}
       {open && <form className="space-y-3 rounded-md bg-field p-3" onSubmit={(event) => { event.preventDefault(); void save(); }}>
         <label className="grid gap-1 text-sm font-semibold">กำหนดนับเงิน (วัน)<input type="number" min={1} max={5} step={1} required value={days} disabled={busy} onChange={(event) => setDays(Number(event.target.value))} className="focus-ring min-h-11 rounded-md border px-3 tabular-nums" /></label>
+        <label className="grid gap-1 text-sm font-semibold">แจ้งเตือนเมื่อขาดหรือเกินมากกว่า (บาท)<input type="number" min={0} max={9999999999.99} step="0.01" value={discrepancyThreshold} disabled={busy} onChange={(event) => setDiscrepancyThreshold(event.target.value)} className="focus-ring min-h-11 rounded-md border px-3 tabular-nums" /><span className="text-pretty font-normal text-ink/65">เว้นว่างเพื่อปิด · 0 บาทแจ้งทุกส่วนต่างที่ไม่เป็นศูนย์ ไม่ทำให้สาขาถูกล็อก</span></label>
         <label className="flex min-h-11 items-center gap-3 text-sm font-semibold"><input type="checkbox" className="size-5 accent-leaf" checked={lockEnabled} disabled={busy} onChange={(event) => setLockEnabled(event.target.checked)} />ล็อกเมื่อเกินกำหนดนับเงิน</label>
         {lockEnabled && <div className="grid gap-3 sm:grid-cols-2">
           <label className="grid gap-1 text-sm font-semibold">ผ่อนผันก่อนล็อก (ชั่วโมง)<input type="number" min={1} max={48} step={1} required value={graceHours} disabled={busy} onChange={(event) => setGraceHours(event.target.value)} className="focus-ring min-h-11 rounded-md border px-3 tabular-nums" /></label>

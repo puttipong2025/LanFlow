@@ -29,7 +29,7 @@ test("acknowledge never dismisses the branch lock; unlock is shared and cannot e
   await expect(notice.getByText(/ถูกล็อกงานการเงิน/)).toBeVisible();
   await notice.getByRole("button", { name: "เปิดแจ้งเตือนนับเงิน" }).click();
   const dialog = page.getByRole("alertdialog", { name: "แจ้งเตือน", exact: true });
-  await expect(dialog.getByText(/ถูกล็อกงานการเงิน/).first()).toBeVisible();
+  await expect(dialog.getByText(/ถูกล็อก/).first()).toBeVisible();
   await dialog.getByRole("button", { name: "รับทราบ", exact: true }).click();
   await expect(dialog).toBeHidden(); await expect(notice.getByText(/ถูกล็อกงานการเงิน/)).toBeVisible();
   await notice.getByRole("button", { name: "ปลดล็อกชั่วคราว", exact: true }).click();

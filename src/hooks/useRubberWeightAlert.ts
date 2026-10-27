@@ -20,8 +20,10 @@ export function useRubberWeightAlert({ userId, enabled, config, onConfigChange, 
   const configRef = useRef(config);
   configRef.current = config;
   const lastRef = useRef<{ userId: string; at: number } | null>(null);
+  const opened = useRef(false);
+  const dismiss = useRef<(() => void) | null>(null);
 
-  useEffect(() => { setAlert(null); setError(null); }, [enabled, userId, scopeKey]);
+  useEffect(() => { opened.current = false; setAlert(null); setError(null); }, [enabled, userId, scopeKey]);
 
   useEffect(() => {
     setChecking(false);
@@ -31,9 +33,12 @@ export function useRubberWeightAlert({ userId, enabled, config, onConfigChange, 
     let controller: AbortController | null = null;
     let pending: Promise<void> | null = null;
     let showEmpty = false;
-    const read = (manual: boolean) => {
+    let notify = false;
+    let dirty = false;
+    const read = (manual: boolean, silent = false, invalidate = false): Promise<void> => {
       showEmpty ||= manual;
-      if (pending) return pending;
+      notify ||= !silent;
+      if (pending) { dirty ||= invalidate; return pending; }
       setChecking(true); setError(null);
       controller = new AbortController();
       const signal = controller.signal;
@@ -52,18 +57,22 @@ export function useRubberWeightAlert({ userId, enabled, config, onConfigChange, 
                 || (cause instanceof ApiResponseError && [401, 403].includes(cause.status))) throw cause;
             }
           }
-          if (!active || !result) return;
+          if (!active || !result || dirty) return;
           configRef.current = result.config; callbackRef.current(result.config);
-          setAlert(result.candidates.length > 0 || showEmpty ? result : null);
+          if (notify || opened.current) {
+            const next = result.candidates.length > 0 || showEmpty ? result : null;
+            opened.current = next !== null; setAlert(next);
+          }
         } catch (cause) {
           if (!active || signal.aborted || isNetworkCancellation(cause)) return;
           const message = cause instanceof ApiResponseError && cause.status === 403
             ? "ไม่มีสิทธิ์ตรวจการแจ้งเตือน" : "ตรวจการแจ้งเตือนไม่สำเร็จ กรุณาลองใหม่";
           setError(message);
-          if (!showEmpty) toast.error(message);
+          if (!showEmpty && !silent) toast.error(message);
         } finally {
-          pending = null; controller = null; showEmpty = false;
-          if (active) setChecking(false);
+          pending = null; controller = null;
+          if (active && dirty) { dirty = false; void read(false, true); }
+          else { showEmpty = false; notify = false; if (active) setChecking(false); }
         }
       })();
       return pending;
@@ -78,13 +87,21 @@ export function useRubberWeightAlert({ userId, enabled, config, onConfigChange, 
       }, rubberWeightAlertDelayMs(stored === null ? memory : Math.max(stored, memory ?? 0), configRef.current.intervalMinutes));
     };
     requestRef.current = () => read(true);
+    const changed = () => { void read(false, true, true); };
+    const storage = (event: StorageEvent) => { if (event.key === "lanflow:cash-count-lock-changed") changed(); };
+    dismiss.current = () => { notify = false; showEmpty = false; };
+    window.addEventListener("lanflow:cash-count-lock-changed", changed);
+    window.addEventListener("storage", storage);
     schedule();
     return () => {
       active = false; requestRef.current = null;
+      dismiss.current = null;
+      window.removeEventListener("lanflow:cash-count-lock-changed", changed);
+      window.removeEventListener("storage", storage);
       if (timer !== null) clearTimeout(timer);
       controller?.abort();
     };
   }, [enabled, userId, scopeKey, config.intervalMinutes]);
   const checkNow = useCallback(() => requestRef.current?.(), []);
-  return { alert: enabled ? alert : null, checking, error, checkNow, acknowledge: () => setAlert(null) };
+  return { alert: enabled ? alert : null, checking, error, checkNow, acknowledge: () => { opened.current = false; dismiss.current?.(); setAlert(null); } };
 }

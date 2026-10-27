@@ -2,6 +2,7 @@ import { cashCountUnavailableResponse } from "@/lib/server/cash-count-response";
 import { NextResponse } from "next/server";
 import { requireSystemManager } from "@/lib/server/auth";
 import { isUuid } from "@/lib/server/management-route-error";
+import { validDiscrepancyThreshold } from "@/lib/lanflow/branch-threshold-alert";
 
 const headers = { "Cache-Control": "private, no-store" };
 function groupErrorResponse(error: { code?: string; message: string }) {
@@ -42,9 +43,14 @@ export async function POST(request: Request) {
       || ["graceHours", "unlockHours"].some((key) => Object.hasOwn(body, key) && (!Number.isInteger(body[key]) || body[key] < 1 || body[key] > 48))) {
       return NextResponse.json({ error: "กรุณาระบุสวิตช์และชั่วโมงจำนวนเต็ม 1–48" }, { status: 400, headers });
     }
+    const updateDiscrepancy = Object.hasOwn(body, "discrepancyThreshold");
+    if (updateDiscrepancy && body.discrepancyThreshold !== null && !validDiscrepancyThreshold(body.discrepancyThreshold)) {
+      return NextResponse.json({ error: "กรุณาระบุเกณฑ์ส่วนต่าง 0–9,999,999,999.99 บาท ทศนิยมไม่เกิน 2 ตำแหน่ง หรือเว้นว่างเพื่อปิด" }, { status: 400, headers });
+    }
     const { data, error } = await auth.supabase.rpc("save_cash_count_alert_group", {
       p_group_id: body.id ?? null, p_location_ids: body.locationIds, p_due_days: body.dueDays,
       p_lock_enabled: body.lockEnabled ?? null, p_grace_hours: body.graceHours ?? null, p_unlock_hours: body.unlockHours ?? null,
+      ...(updateDiscrepancy ? { p_update_discrepancy_threshold: true, p_discrepancy_threshold: body.discrepancyThreshold } : {}),
     });
     return error ? groupErrorResponse(error) : NextResponse.json(data, { headers });
   } catch {

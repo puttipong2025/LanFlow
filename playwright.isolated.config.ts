@@ -3,6 +3,7 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './tests',
   testMatch: [
+    '**/cash-counts/cash-count-discrepancy-logic.spec.ts',
     '**/cash-counts/cash-count-overdue-logic.spec.ts',
     '**/sms-otp.spec.ts',
     '**/sms-route-failures.spec.ts',
