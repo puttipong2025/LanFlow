@@ -7,8 +7,6 @@ import { recordRubberSyncFailure } from "../src/lib/rubber-bills/sync-failure";
 import { isConfirmedRubberSyncResult } from "../src/lib/rubber-bills/sync-result";
 import { rubberBillFromSyncEvent } from "../src/lib/rubber-bills/local-feed";
 import { normalizeRubberBillQueueBeforeSync } from "../src/lib/rubber-bills/normalize-sync-queue";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 
 async function retryWith(response: Response) {
   const event = { id: "local", entity: "rubber_bills", operation: "create", status: "failed", payload: { clientTempId: "local", operation: "create", expectedRevisionNo: 0 } };
@@ -294,17 +292,3 @@ for (const online of [true, false]) {
     expect(result.bills.map((bill) => bill.customerName)).toEqual(["authoritative"]);
   });
 }
-
-test("problem rows expose the full cause and enable editing only for correctable rejections", async ({ page }) => {
-  const { RubberBillsTable } = loadSourceModule<typeof import("../src/components/rubber-bills/RubberBillsTable")>("src/components/rubber-bills/RubberBillsTable.tsx", {});
-  const event = { ...command(), status: "failed" as const, failureHttpStatus: 400, errorMessage: "ข้อมูลน้ำหนักไม่ถูกต้อง กรุณาตรวจสอบรายการชั่งก่อนส่งใหม่" };
-  const bill = rubberBillFromSyncEvent(event, "owner")!;
-  const noop = () => {};
-  const props = { bills: [bill], page: 1, pageSize: 10, onPageChange: noop, onView: noop, onEvidence: noop, onEdit: noop, onDelete: noop, onPrint: noop, onRetry: noop, onDiscardLocal: noop, onOpenOcrSourceImage: noop, retryDisabled: false, discardDisabled: false, evidenceStatesByBillId: new Map(), evidenceOnline: true };
-  await page.setContent(renderToStaticMarkup(createElement(RubberBillsTable, props)));
-  await expect(page.getByRole("button", { name: "แก้ไข", exact: true })).toBeEnabled();
-  await expect(page.getByText(event.errorMessage, { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "ทิ้งรายการค้างในเครื่อง", exact: true })).toBeEnabled();
-  await page.setContent(renderToStaticMarkup(createElement(RubberBillsTable, { ...props, bills: [{ ...bill, canCorrectSyncFailure: false }] })));
-  await expect(page.getByRole("button", { name: "ทิ้งรายการค้างในเครื่องก่อนแก้ไขหรือลบ", exact: true })).toBeDisabled();
-});

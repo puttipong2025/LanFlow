@@ -20,6 +20,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Install Chromium for UI smoke tests
+        run: npx playwright install --with-deps --only-shell chromium
+      - name: Run browser UI smoke tests
+        run: npm run test:ui-smoke
       - run: npm run verify
 
   database-gate:
