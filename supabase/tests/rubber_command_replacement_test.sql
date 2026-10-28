@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select extensions.plan(28);
+select extensions.plan(37);
 insert into public.locations(id,name,code,is_active) values
 ('ab000000-0000-4000-8000-000000000001','Command regression','CMDREG',true);
 insert into public.profiles(id,phone,name,role,is_active,can_access_super_admin_features) values
@@ -74,6 +74,64 @@ select extensions.is(public.sync_rubber_bill((pg_temp.command_payload('ab000000-
 update public.rubber_bills set record_status='active',revision_no=1,deleted_at=null,idempotency_key='command-original',approval_state='not_required',approval_revision_no=null,approved_by_name=null where client_temp_id='command-regression';
 select set_config('request.jwt.claim.sub','ab000000-0000-4000-8000-000000000002',true);
 insert into command_results values ('rollback-fixture',public.sync_rubber_bill(pg_temp.command_payload('ab000000-0000-4000-8000-000000000018',6)));
+
+-- Verify both operation transitions through the real legacy business validator.
+create function pg_temp.probe_command_transitions() returns jsonb language plpgsql as $$
+declare answer jsonb; up jsonb; a jsonb; b jsonb; c jsonb;
+begin
+  begin
+    up := pg_temp.command_payload('ab000000-0000-4000-8000-000000000040',7) || jsonb_build_object(
+      'operation','update','localBillNo','CMD-L','billDate',current_date-2,'customerName','Updated fixture',
+      'billType','บิลเครื่องชั่งเล็ก','deductWeight',0,'weight',100,'netWeight',100,'rubberValue',3800,
+      'netRubberValue',3800,'averagePrice',38,'deductionTotal',0,'payableBeforeRounding',3800,'netTotal',3800,'acidPackCount',0,
+      'items',jsonb_build_array(jsonb_build_object('itemType','weigh','description','Test weigh','inWeight',100,'outWeight',0,
+        'netWeight',100,'unitPrice',38,'totalAmount',3800,'sequenceNo',1)));
+    a := public.sync_rubber_bill(up);
+    b := public.sync_rubber_bill(pg_temp.command_payload('ab000000-0000-4000-8000-000000000041',8));
+    c := public.sync_rubber_bill(up || jsonb_build_object('expectedCommandGeneration',9,
+      'idempotencyKey','ab000000-0000-4000-8000-000000000042','commandId','ab000000-0000-4000-8000-000000000042'));
+    answer := jsonb_build_object('update',a,'delete',b,'secondUpdate',c,'pendingCount',
+      (select count(*) from public.rubber_bill_approval_requests where client_temp_id='command-regression' and request_status='pending'));
+    raise exception using errcode='P0003',message='ROLLBACK_TRANSITION_PROBE';
+  exception when sqlstate 'P0003' then null; end;
+  return answer;
+end $$;
+create temp table command_transition_probe as select pg_temp.probe_command_transitions() result;
+select extensions.is((select result->'update'->>'status' from command_transition_probe),'pending_approval','update replaces a pending delete');
+select extensions.is((select result->'delete'->>'status' from command_transition_probe),'pending_approval','delete replaces a pending update');
+select extensions.is((select result->'secondUpdate'->>'status' from command_transition_probe),'pending_approval','latest update replaces delete again');
+select extensions.is((select result->>'pendingCount' from command_transition_probe),'1','operation transitions keep exactly one proposal');
+
+-- A report cannot be introduced while a command is pending; this blocks the
+-- apparent submit-then-report race before it can create inconsistent relations.
+create function pg_temp.probe_command_report_lock() returns jsonb language plpgsql as $$
+declare answer jsonb := '{}'; relation_error text;
+begin
+  begin
+    insert into public.report_batches(id,report_no,report_date,sequence_no,location_id,cutoff_at,status,
+      created_by_user_id,created_by_name,created_by_phone,opening_balance,closing_balance)
+    values('ab000000-0000-4000-8000-000000000030','CMD-LOCK-REPORT',current_date,1,
+      'ab000000-0000-4000-8000-000000000001',now(),'active','ab000000-0000-4000-8000-000000000002','Fixture','0897082801',0,0);
+    begin
+      insert into public.report_items(id,report_id,location_id,entity_type,entity_id,eligibility_at)
+      values('ab000000-0000-4000-8000-000000000031','ab000000-0000-4000-8000-000000000030',
+        'ab000000-0000-4000-8000-000000000001','rubber_bill','ab000000-0000-4000-8000-000000000003',now());
+    exception when others then relation_error := sqlerrm; end;
+    answer := jsonb_build_object('relationError',relation_error,
+      'billActive',exists(select 1 from public.rubber_bills where client_temp_id='command-regression' and record_status='active'),
+      'pendingIntact',exists(select 1 from public.rubber_bill_approval_requests where idempotency_key='ab000000-0000-4000-8000-000000000018' and request_status='pending'),
+      'guardAbsent',not exists(select 1 from private.approval_request_replay_guards where request_key='ab000000-0000-4000-8000-000000000018'),
+      'generation',(public.get_rubber_bill_command_context('ab000000-0000-4000-8000-000000000001','command-regression')->>'generation')::integer);
+    raise exception using errcode='P0003',message='ROLLBACK_LOCK_PROBE';
+  exception when sqlstate 'P0003' then null; end;
+  return answer;
+end $$;
+create temp table command_report_probe as select pg_temp.probe_command_report_lock() result;
+select extensions.ok((select result->>'relationError' from command_report_probe) like '%รออนุมัติ%','report cannot link a bill with a pending command');
+select extensions.is((select result->>'billActive' from command_report_probe),'true','blocked report leaves source bill active');
+select extensions.is((select result->>'pendingIntact' from command_report_probe),'true','blocked report preserves pending command');
+select extensions.is((select result->>'guardAbsent' from command_report_probe),'true','blocked report does not retire the command');
+select extensions.is((select result->>'generation' from command_report_probe),'7','blocked report preserves command context');
 
 -- A returned business failure after retirement must roll back old request/guard.
 create or replace function public.sync_rubber_bill_before_commands_20261028010000(payload jsonb)
