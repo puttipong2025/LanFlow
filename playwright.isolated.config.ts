@@ -3,6 +3,7 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './tests',
   testMatch: [
+    '**/rubber-command-context-route.spec.ts',
     '**/rubber-sync-recovery.spec.ts',
     '**/rubber-bill-receipt-idb.spec.ts',
     '**/polling-query-contract.spec.ts',

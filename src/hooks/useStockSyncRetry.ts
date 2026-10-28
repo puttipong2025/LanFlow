@@ -35,10 +35,6 @@ function isRubberStockEvent(event: SyncEvent) {
   );
 }
 
-function stockEventEndpoint(entity: StockSyncEntity) {
-  return entity === "income_expense" ? "/api/lanflow/income-expense" : "/api/lanflow/rubber-bills";
-}
-
 async function invalidateStockSyncQueries(locationId: string, ownerUserId: string, queryClient: QueryClient) {
   const results = await Promise.allSettled([
     moneyFlowQueryKeys.stock(locationId),
@@ -91,7 +87,7 @@ async function retryStockSyncEvents(locationId: string, ownerUserId: string, que
         const response = await (event.entity === "rubber_bills" ? sendRubberBillCommand(event, {
           ...event.payload, submissionMode: "replay",
           ...(event.operation !== "create" && event.serverId ? { expectedServerId: event.serverId } : {}),
-        }) : authFetch(stockEventEndpoint(event.entity as StockSyncEntity), {
+        }) : authFetch("/api/lanflow/income-expense", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(event.payload),
@@ -107,7 +103,7 @@ async function retryStockSyncEvents(locationId: string, ownerUserId: string, que
             }
             if (!await removeSyncEventIfCurrent(event)) throw new Error("คิวเปลี่ยนระหว่างยืนยันผล กรุณาลองใหม่");
           } else {
-          await removeSyncEvent(event.queueId!);
+            await removeSyncEvent(event.queueId!);
           }
           result.synced += 1;
           continue;

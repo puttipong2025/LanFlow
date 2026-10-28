@@ -12,7 +12,6 @@ import {
 } from "@/hooks/useRubberBillList";
 import { useCustomers } from "@/hooks/useCustomers";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
-import { bangkokDateString } from "@/lib/bangkok-date";
 import { usePerRecordSyncRetry } from "@/hooks/usePerRecordSyncRetry";
 import { useRubberBillApprovals } from "@/hooks/useRubberBillApprovals";
 import { useRubberBillPolicyGate } from "@/hooks/useRubberBillPolicyGate";

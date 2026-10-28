@@ -3,6 +3,26 @@ import { createClient } from "@supabase/supabase-js";
 
 import { loadSourceModule } from "./helpers/load-source-module";
 
+for (const method of ["POST", "DELETE"] as const) {
+  for (const fault of ["authentication", "params", "RPC"] as const) {
+    test(`rubber approval ${method} contains thrown ${fault} errors`, async () => {
+      type Handler = (request: never, options: { params: Promise<{ id: string }> }) => Promise<Response>;
+      const path = method === "POST" ? "approval-requests/[id]/approve" : "approval-requests/[id]";
+      const route = loadSourceModule<Record<typeof method, Handler>>(`src/app/api/lanflow/rubber-bills/${path}/route.ts`, {
+        "@/lib/server/auth": { requireSystemManager: async () => {
+          if (fault === "authentication") throw new Error("private auth diagnostic");
+          return { ok: true, supabase: { rpc: async () => { throw new Error("private database diagnostic"); } } };
+        } },
+      });
+      const params = fault === "params" ? Promise.reject(new Error("private params diagnostic")) : Promise.resolve({ id: "71000000-0000-4000-8000-000000000022" });
+      const response = await route[method]({} as never, { params }).catch(() => undefined);
+      expect(response?.status).toBe(503);
+      expect(JSON.stringify(await response!.json())).not.toContain("private");
+      expect(response!.headers.get("cache-control")).toContain("no-store");
+    });
+  }
+}
+
 const locationId = "71000000-0000-4000-8000-000000000021";
 const groupId = "71000000-0000-4000-8000-000000000022";
 const otherLocationId = "71000000-0000-4000-8000-000000000023";

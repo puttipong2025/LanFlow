@@ -35,28 +35,34 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const authCheck = await requireSystemManager(request);
-  if (!authCheck.ok) return managementAuthFailure(authCheck.response);
+  try {
+    const authCheck = await requireSystemManager(request);
+    if (!authCheck.ok) return managementAuthFailure(authCheck.response);
 
-  const { id } = await params;
-  if (!isUuid(id)) {
-    return NextResponse.json({ errorMessage: "รหัสคำขอไม่ถูกต้อง" }, { status: 400 });
-  }
-  const requestId = id.toLowerCase();
-  const { data, error } = await authCheck.supabase.rpc(
-    "approve_rubber_bill_approval_request",
-    { p_request_id: requestId }
-  );
-
-  if (error) {
-    return opaqueRpcErrorResponse(error, "อนุมัติคำขอไม่สำเร็จ", ["P0001"]);
-  }
-  if (!isRubberBillApprovalResult(data, requestId)) {
-    return NextResponse.json(
-      { errorMessage: "ระบบไม่ตอบกลับผลการอนุมัติตามรูปแบบที่กำหนด" },
-      { status: 500 },
+    const { id } = await params;
+    if (!isUuid(id)) {
+      return NextResponse.json({ errorMessage: "รหัสคำขอไม่ถูกต้อง" }, { status: 400 });
+    }
+    const requestId = id.toLowerCase();
+    const { data, error } = await authCheck.supabase.rpc(
+      "approve_rubber_bill_approval_request",
+      { p_request_id: requestId }
     );
-  }
 
-  return NextResponse.json(data);
+    if (error) {
+      return opaqueRpcErrorResponse(error, "อนุมัติคำขอไม่สำเร็จ", ["P0001"]);
+    }
+    if (!isRubberBillApprovalResult(data, requestId)) {
+      return NextResponse.json(
+        { errorMessage: "ระบบไม่ตอบกลับผลการอนุมัติตามรูปแบบที่กำหนด" },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json(data);
+  } catch {
+    return NextResponse.json({ errorMessage: "อนุมัติคำขอไม่สำเร็จ" }, {
+      status: 503, headers: { "Cache-Control": "private, no-store" },
+    });
+  }
 }
