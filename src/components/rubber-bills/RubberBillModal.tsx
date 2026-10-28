@@ -14,12 +14,11 @@ import {
 import { validateRubberBillDraft } from "@/lib/rubber-bill-validation";
 import {
   calculateRubberBill,
-  isValidRubberPriceAdjustmentTarget,
 } from "@/lib/rubber-bills/calculations";
 import { useAcidProducts } from "@/hooks/useAcidProducts";
 import { useAcidStock } from "@/hooks/useAcidStock";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
-import { usePersistentFormDraft } from "@/hooks/usePersistentFormDraft";
+import { deleteFormDraft } from "@/lib/form-drafts";
 import { appSwal } from "@/lib/swal";
 import type { RubberBillOcrInitialDraft } from "@/hooks/useRubberBillOcrQueue";
 import { openRubberBillOcrSourceImage } from "@/lib/rubber-bills/open-ocr-source-image";
@@ -35,17 +34,6 @@ import { InlineNumber } from "@/components/shared/InlineNumber";
 type RubberWeighItem = NonNullable<RubberBill["weighItems"]>[number];
 type RubberStockDeductionItem = NonNullable<RubberBill["acidItems"]>[number];
 type RubberDebtItem = NonNullable<RubberBill["debtItems"]>[number];
-type RubberBillFormDraft = {
-  billDate: string;
-  customerSearch: string;
-  selectedCustomerId: string | null;
-  memberStatus: string;
-  weighItems: RubberWeighItem[];
-  stockDeductionItems: RubberStockDeductionItem[];
-  debtItems: RubberDebtItem[];
-  weightDeduct: number;
-  priceAdjustmentTarget: number;
-};
 export type RubberBillCustomerOption = {
   id: string;
   mainName: string;
@@ -138,57 +126,8 @@ export function RubberBillModal({
     const found = customers.some(c => c.mainName === bill.customerName);
     return found ? "สมาชิก" : "ไม่เป็นสมาชิก";
   });
-  const draftValue = useMemo<RubberBillFormDraft>(() => ({
-    billDate,
-    customerSearch,
-    selectedCustomerId,
-    memberStatus,
-    weighItems,
-    stockDeductionItems,
-    debtItems,
-    weightDeduct,
-    priceAdjustmentTarget,
-  }), [
-    billDate,
-    customerSearch,
-    debtItems,
-    memberStatus,
-    priceAdjustmentTarget,
-    selectedCustomerId,
-    stockDeductionItems,
-    weighItems,
-    weightDeduct,
-  ]);
-  const { clearDraft } = usePersistentFormDraft({
-    partition: {
-      ownerUserId: profile.id,
-      locationId: selectedLocation.id,
-      formType: "rubber-bill",
-    },
-    enabled: !bill && !initialOcrDraft,
-    value: draftValue,
-    onRestore: (draft) => {
-      setBillDate(todayInputValue());
-      setCustomerSearch(draft.customerSearch ?? "");
-      setSelectedCustomerId(draft.selectedCustomerId ?? null);
-      setMemberStatus(draft.memberStatus || "ไม่เป็นสมาชิก");
-      if (Array.isArray(draft.weighItems) && draft.weighItems.length > 0) {
-        setWeighItems(draft.weighItems);
-      }
-      if (Array.isArray(draft.stockDeductionItems)) {
-        setStockDeductionItems(draft.stockDeductionItems);
-      }
-      if (Array.isArray(draft.debtItems)) setDebtItems(draft.debtItems);
-      if (Number.isFinite(draft.weightDeduct)) {
-        setWeightDeduct(draft.weightDeduct);
-      }
-      setPriceAdjustmentTarget(
-        isValidRubberPriceAdjustmentTarget(draft.priceAdjustmentTarget)
-          ? draft.priceAdjustmentTarget
-          : 0,
-      );
-    },
-  });
+  const clearDraft = () => deleteFormDraft({ ownerUserId: profile.id, locationId: selectedLocation.id, formType: "rubber-bill" });
+  useEffect(() => { void deleteFormDraft({ ownerUserId: profile.id, locationId: selectedLocation.id, formType: "rubber-bill" }).catch((error) => console.error("Old rubber form draft cleanup failed", error)); }, [profile.id, selectedLocation.id]);
 
   const matchingCustomers = useMemo(() => {
     if (!customerSearch.trim()) return [];
@@ -512,7 +451,7 @@ export function RubberBillModal({
     );
     if (
       hasDraftContent
-      && !confirm("ยกเลิกและลบแบบร่างบิลยางนี้ใช่หรือไม่?")
+      && !confirm("ยกเลิกการกรอกบิลยางนี้ใช่หรือไม่? ข้อมูลที่ยังไม่บันทึกจะหาย")
     ) return;
     await clearDraft();
     onClose();
