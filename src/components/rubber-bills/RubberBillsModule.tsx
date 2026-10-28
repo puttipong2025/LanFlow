@@ -334,6 +334,7 @@ export function RubberBillsModule({
   async function retryFailedSync(bill: RubberBill) {
     try {
       const outcome = await retrySyncEvent({ entity: "rubber_bills", id: bill.clientTempId });
+      if (outcome === "silent") return;
       toast.success(outcome === "pending_approval" ? "ส่งคำขออนุมัติแล้ว"
         : outcome === "discarded" ? "ทิ้งรายการค้างแล้ว" : "ซิงก์รายการสำเร็จ");
     } catch (error) {
@@ -688,7 +689,7 @@ export function RubberBillsModule({
             } else {
               await deleteBill({ bill: deleteCandidate, deletedByName: profile.name, deletedByPhone: profile.phone });
             }
-          } finally { await invalidateMoneyFlowLocation(queryClient, { ownerUserId: profile.id, locationId: selectedLocation.id }); }
+          } finally { void invalidateMoneyFlowLocation(queryClient, { ownerUserId: profile.id, locationId: selectedLocation.id }); }
         }} />}
       <AlertDialog open={discardCandidate !== null} title="ทิ้งรายการค้างในเครื่อง"
         description={`ทิ้งรายการ ${discardCandidate?.serverBillNo ?? discardCandidate?.localBillNo ?? ""} ใช่ไหม? ข้อมูลที่ยังไม่ซิงก์จะหาย บิลจริงบนเซิร์ฟเวอร์จะไม่ถูกลบ`}
@@ -720,13 +721,12 @@ export function RubberBillsModule({
               setOcrReviewItem(null);
               setModalOpen(false);
               if (isCreating) setPage(1);
-              if (savedBill.netTotal > 0 && !savedBill.approvalPending) {
+              if (savedBill.netTotal > 0 && !savedBill.approvalPending && (isCreating || savedBill.syncStatus === "synced")) {
                 void handlePrint(savedBill);
               }
               return true;
             } catch (error) {
-              alert(error instanceof Error ? error.message : "เกิดข้อผิดพลาดในการบันทึกบิล");
-              return false;
+              throw error;
             }
           }}
         />

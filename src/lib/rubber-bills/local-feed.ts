@@ -46,7 +46,7 @@ function hasAuthoritativeActionLock(bill: RubberBill | undefined) {
 }
 
 export function rubberBillFromSyncEvent(event: SyncEvent, ownerUserId: string): RubberBill | null {
-  if (event.operation === "delete" && event.status === "pending") return null;
+  if (event.operation === "delete" && event.status === "pending" && !event.payload.background) return null;
   const payload = event.payload;
   const serverId = event.operation !== "create" && event.serverId ? event.serverId : undefined;
   const serverBillNo = event.operation !== "create" && event.serverBillNo
@@ -77,8 +77,8 @@ export function rubberBillFromSyncEvent(event: SyncEvent, ownerUserId: string): 
     clientTempId: payload.clientTempId,
     localBillNo: payload.localBillNo,
     syncStatus: event.status === "conflict" ? "conflict" : event.status === "failed" ? "failed" : "pending",
-    serverSubmissionAttempted: event.serverSubmissionAttempted === true,
-    syncErrorMessage: event.errorMessage,
+    serverSubmissionAttempted: (event.payload.background && event.status === "pending") || event.serverSubmissionAttempted === true,
+    syncErrorMessage: event.status === "pending" && payload.background ? (event.operation === "delete" ? "กำลังส่งคำขอลบ" : "กำลังส่งการแก้ไข") : event.errorMessage,
     canRestartDelete: event.operation === "delete" && (payload.contractVersion !== 2 || event.failureCode === "STALE_COMMAND_CONTEXT"),
     canCorrectSyncFailure: event.status === "failed" && event.failureHttpStatus === 400
       && event.operation !== "delete" && event.serverSubmissionAttempted !== true,
@@ -131,6 +131,14 @@ export function mergeRubberBillLocalEvents(
   const byClientId = new Map(serverBills.map((bill) => [bill.clientTempId, bill]));
   for (const event of events) {
     const serverBill = byClientId.get(event.id);
+    if (event.payload.background && event.operation !== "create") {
+      const draft = rubberBillFromSyncEvent(event, ownerUserId);
+      if (serverBill) byClientId.set(event.id, { ...serverBill, syncStatus: draft!.syncStatus,
+        syncErrorMessage: event.status === "pending" ? (event.operation === "delete" ? "กำลังส่งคำขอลบ" : "กำลังส่งการแก้ไข") : event.errorMessage,
+        serverSubmissionAttempted: event.status === "pending" || event.serverSubmissionAttempted,
+        canCorrectSyncFailure: draft!.canCorrectSyncFailure, canRestartDelete: draft!.canRestartDelete });
+      continue;
+    }
     if (mode === "server_authoritative" && !serverBill) continue;
     if (event.operation === "delete") {
       if (event.status === "pending"

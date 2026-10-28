@@ -503,10 +503,10 @@ export function AcidStockModule({
         return;
       }
       if (result.stopped) {
-        toast.error(result.errorMessage || "หยุดซิงก์ เพราะรายการนี้ทำให้สต็อกติดลบ");
+        if (!result.silentFailure) toast.error(result.errorMessage || "หยุดซิงก์ เพราะรายการนี้ทำให้สต็อกติดลบ");
         return;
       }
-      toast.success(`ซิงก์รายการสำเร็จ ${result.synced.toLocaleString("th-TH")} รายการ`);
+      if (result.synced > (result.silent ?? 0)) toast.success(`ซิงก์รายการสำเร็จ ${(result.synced - (result.silent ?? 0)).toLocaleString("th-TH")} รายการ`);
     } catch (error) {
       showActionError(error, "ซิงก์รายการไม่สำเร็จ");
     }

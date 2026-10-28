@@ -1,3 +1,5 @@
+import { registerRubberBackgroundNotifications } from "@/lib/rubber-bills/background-notifications";
+import { toast } from "sonner";
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -19,6 +21,7 @@ export function useLanFlowOfflineSyncCoordinator({
 
   useEffect(() => {
     if (!ownerUserId || !locationId) return;
+    const stopNotifications = registerRubberBackgroundNotifications(ownerUserId, locationId, (message) => toast.error(message));
     const retryTimers: ReturnType<typeof setTimeout>[] = [];
 
     const syncCurrentScope = () => {
@@ -38,7 +41,7 @@ export function useLanFlowOfflineSyncCoordinator({
       ]);
       const syncTasks: Promise<unknown>[] = [];
 
-      if (rubberEvents.some((event) => event.status === "pending" || event.status === "conflict" || event.failureHttpStatus === undefined)) {
+      if (rubberEvents.some((event) => event.payload.background || event.status === "pending" || event.status === "conflict" || event.failureHttpStatus === undefined)) {
         syncTasks.push(syncPendingRubberBills(queryClient, ownerUserId, locationId));
       }
       if (incomeExpenseEvents.some((event) => event.status === "pending")) {
@@ -69,6 +72,7 @@ export function useLanFlowOfflineSyncCoordinator({
     }, PENDING_SYNC_RETRY_INTERVAL_MS);
     handleConnectivityChange();
     return () => {
+      stopNotifications();
       clearInterval(retryInterval);
       clearRetryTimers();
       unsubscribe();

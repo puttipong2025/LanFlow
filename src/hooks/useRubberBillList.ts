@@ -127,7 +127,7 @@ export function useRubberBillList({
         return { bills, evidenceStates: [], nextCursor: null, hasMore: false };
       }
       const { events, snapshots } = await localState(ownerUserId, locationId);
-      const normalEvents = events.filter((event) => event.status === "pending");
+      const normalEvents = events.filter((event) => event.status === "pending" || event.payload.background === true);
       if (typeof navigator !== "undefined" && !navigator.onLine) {
         const cached = snapshots.map((snapshot) => snapshot.bill);
         const merged = mergeRubberBillLocalEvents(cached, normalEvents, ownerUserId)

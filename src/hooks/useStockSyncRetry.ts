@@ -1,6 +1,7 @@
-import { sendRubberBillCommand, isConfirmedRubberSyncResult, recordRubberSyncFailure } from "@/lib/rubber-bills/command";
+import { notifyRubberBackgroundFailure } from "@/lib/rubber-bills/background-notifications";
+import { sendRubberBillCommand, isConfirmedRubberSyncResult, recordRubberSyncFailure, acknowledgeRubberCommand } from "@/lib/rubber-bills/command";
 import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { getPendingEvents, removeSyncEvent, updateSyncEvent, reconcileSyncEventsIfCurrent, removeSyncEventIfCurrent, type SyncEvent } from "@/lib/idb-queue";
+import { getPendingEvents, removeSyncEvent, updateSyncEvent, reconcileSyncEventsIfCurrent, type SyncEvent } from "@/lib/idb-queue";
 import { authFetch } from "@/lib/auth-fetch";
 import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
 
@@ -9,6 +10,8 @@ type StockSyncEntity = "income_expense" | "rubber_bills";
 type StockSyncRetryResult = {
   attempted: number;
   synced: number;
+  silent?: number;
+  silentFailure?: boolean;
   stopped: boolean;
   errorMessage?: string;
   entity?: StockSyncEntity;
@@ -101,10 +104,11 @@ async function retryStockSyncEvents(locationId: string, ownerUserId: string, que
               await recordRubberSyncFailure(event, 503, {});
               throw new Error("กำลังรอยืนยันผลบิลยางจากเซิร์ฟเวอร์");
             }
-            if (!await removeSyncEventIfCurrent(event)) throw new Error("คิวเปลี่ยนระหว่างยืนยันผล กรุณาลองใหม่");
+            if (!await acknowledgeRubberCommand(event, data)) throw new Error("คิวเปลี่ยนระหว่างยืนยันผล กรุณาลองใหม่");
           } else {
             await removeSyncEvent(event.queueId!);
           }
+          if (data.silent) result.silent = (result.silent ?? 0) + 1;
           result.synced += 1;
           continue;
         }
@@ -126,6 +130,9 @@ async function retryStockSyncEvents(locationId: string, ownerUserId: string, que
         }
       }
 
+      if (event.entity === "rubber_bills" && event.payload.background) {
+        await notifyRubberBackgroundFailure(event); result.silentFailure = true;
+      }
       result.stopped = true;
       result.entity = event.entity as StockSyncEntity;
       result.errorMessage = event.errorMessage;

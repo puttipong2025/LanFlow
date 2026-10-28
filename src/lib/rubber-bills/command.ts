@@ -2,6 +2,7 @@ import { authFetch, assertApiResponse } from "@/lib/auth-fetch";
 export { sendRubberBillCommand } from "@/lib/rubber-bills/sync-request";
 export { isConfirmedRubberSyncResult } from "@/lib/rubber-bills/sync-result";
 export { recordRubberSyncFailure } from "@/lib/rubber-bills/sync-failure";
+export { acknowledgeRubberCommand } from "@/lib/rubber-bills/complete-command";
 
 export async function prepareRubberBillCommand(payload: Record<string, any>) {
   let generation = 0;

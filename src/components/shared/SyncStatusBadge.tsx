@@ -1,3 +1,4 @@
+import { cn } from "@/lib/cn";
 import type { SyncStatus } from "@/types";
 
 export function SyncStatusBadge({ status, errorMessage }: { status: SyncStatus; errorMessage?: string }) {
@@ -18,7 +19,7 @@ export function SyncStatusBadge({ status, errorMessage }: { status: SyncStatus; 
 
   return (
     <div className="flex flex-col items-start gap-0.5">
-      <span className={`rounded px-2 py-1 text-xs font-semibold ${tone}`} title={errorMessage}>{label}</span>
+      <span className={cn("rounded px-2 py-1 text-xs font-semibold", tone)} title={errorMessage}>{status === "pending" && errorMessage?.startsWith("กำลังส่ง") ? errorMessage : label}</span>
       {errorMessage && (status === "failed" || status === "conflict") && (
         <span className="max-w-xs whitespace-normal break-words text-pretty text-xs leading-tight text-rose-600">{errorMessage}</span>
       )}

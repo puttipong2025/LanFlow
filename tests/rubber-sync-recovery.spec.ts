@@ -55,7 +55,7 @@ test("explicit restart clears the retired command failure before persisting a ne
   const module = loadSourceModule<typeof import("../src/lib/rubber-bills/restart-delete")>("src/lib/rubber-bills/restart-delete.ts", {
     "@/lib/idb-queue": { getPendingEvents: async () => [event], reconcileSyncEventsIfCurrent: async (_old: unknown, next: SyncEvent) => { saved = next; return true; } },
     "./command": { prepareRubberBillCommand: async () => ({ commandId: "fresh", contractVersion: 2 }) },
-    "./sync-request": { sendRubberBillCommand: async () => { throw new Error("response lost"); } },
+    "./sync-request": { probeDeletedRubberCommand: async () => null, sendRubberBillCommand: async () => { throw new Error("response lost"); } },
     "./sync-failure": { recordRubberSyncFailure: async () => {} },
     "./sync-result": { isConfirmedRubberSyncResult: () => false },
   }, { navigator: { onLine: true } });
@@ -373,3 +373,14 @@ for (const online of [true, false]) {
     expect(result.bills.map((bill) => bill.customerName)).toEqual(["authoritative"]);
   });
 }
+
+
+test("background delete remains visible until the server acknowledges it", async () => {
+  const event = await queued();
+  event.operation = "delete";
+  event.payload.background = true;
+  event.payload.clientRecordedAt = "2026-10-28T01:00:00Z";
+  const bill = rubberBillFromSyncEvent(event, "owner");
+  expect(bill).not.toBeNull();
+  expect(bill?.syncStatus).toBe("pending");
+});

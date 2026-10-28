@@ -481,7 +481,7 @@ export function RubberBillModal({
     setIsSubmitting(true);
     try {
       await submitForm(formElement);
-    } finally {
+    } catch (error) { setValidationErrors([error instanceof Error ? error.message : "บันทึกบิลไม่สำเร็จ"]); } finally {
       submitLockRef.current = false;
       setIsSubmitting(false);
       requestAnimationFrame(() => {

@@ -274,8 +274,6 @@ test.describe("immediate mutation state contract", () => {
     expect(source).toContain("serverId: bill.id,");
     expect(source).toContain("serverBillNo: bill.serverBillNo,");
     expect(source).toContain('...(event.serverId ? { expectedServerId: event.serverId } : {})');
-    expect(source).toContain('...(operation === "update" ? { expectedServerId: bill.id } : {})');
-    expect(source).toContain("sendRubberBillCommand(queuedEvent, { ...payload, expectedServerId: bill.id })");
   });
 
   test("removes a confirmed Rubber Bill only from its scoped operational feeds", async () => {

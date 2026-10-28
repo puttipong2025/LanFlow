@@ -1,4 +1,6 @@
-import { sendRubberBillCommand, isConfirmedRubberSyncResult, recordRubberSyncFailure, prepareRubberBillCommand } from "@/lib/rubber-bills/command";
+import { notifyRubberBackgroundFailure, isRubberBackgroundScopeActive } from "@/lib/rubber-bills/background-notifications";
+import { probeDeletedRubberCommand } from "@/lib/rubber-bills/sync-request";
+import { sendRubberBillCommand, isConfirmedRubberSyncResult, recordRubberSyncFailure, prepareRubberBillCommand, acknowledgeRubberCommand } from "@/lib/rubber-bills/command";
 import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { RubberBill } from "@/types";
 import {
@@ -68,9 +70,16 @@ export function syncPendingRubberBills(
     );
 
     for (const event of events) {
-      if (!navigator.onLine) break;
+      if (!navigator.onLine || (event.payload.background && !isRubberBackgroundScopeActive(ownerUserId, locationId))) break;
 
-      if (blockedIds.has(event.id)) continue;
+      if (blockedIds.has(event.id)) {
+        if (event.payload.background) {
+          const proof = await probeDeletedRubberCommand(event);
+          if (proof) await acknowledgeRubberCommand(event, await proof.json());
+          else await notifyRubberBackgroundFailure(event);
+        }
+        continue;
+      }
 
       try {
         if (event.serverSubmissionAttempted !== true) {
@@ -88,10 +97,12 @@ export function syncPendingRubberBills(
         if (response.ok && !isConfirmedRubberSyncResult(data, event)) break;
         
         if (response.ok) {
-          if (data.status === "pending_approval") {
+          if (data.status === "pending_approval" && !data.silent) {
             toast.success("ส่งคำขออนุมัติบิลยางแล้ว");
           }
-          if (event.operation === "delete" && data.status === "synced") {
+          if (event.payload.background) {
+            if (!await acknowledgeRubberCommand(event, data)) continue;
+          } else if (event.operation === "delete" && data.status === "synced") {
             if (!await removeSyncEventIfCurrent(event)) continue;
             await removeConfirmedRubberBillLocally(
               queryClient,
@@ -108,6 +119,7 @@ export function syncPendingRubberBills(
             continue;
           }
           if (outcome === "pending") break;
+          await notifyRubberBackgroundFailure(event);
           blockedIds.add(event.id);
         }
       } catch (err) {
@@ -170,7 +182,7 @@ export function useRubberBillMutations(
       const isOnline = typeof navigator === "undefined" || navigator.onLine;
       const existingEvents = await getPendingEvents(queuePartition(ownerUserId, mutationLocationId));
       const clientEvents = existingEvents.filter(e => e.id === bill.clientTempId);
-      const payload = clientEvents.length > 0 ? builtPayload : await prepareRubberBillCommand(builtPayload);
+      const payload = clientEvents.length > 0 ? builtPayload : await prepareRubberBillCommand({ ...builtPayload, ...(operation === "update" ? { background: true } : {}) });
       if (clientEvents.some((event) => event.serverSubmissionAttempted === true)) {
         throw new Error(PENDING_SERVER_ACTION_MESSAGE);
       }
@@ -192,9 +204,9 @@ export function useRubberBillMutations(
 
       if (keeper) {
         const commandPayload = correcting && keeper.payload.contractVersion === 2
-          ? await prepareRubberBillCommand(builtPayload)
+          ? await prepareRubberBillCommand({ ...builtPayload, expectedRevisionNo: keeper.payload.expectedRevisionNo, ...(operation === "update" ? { background: true } : {}) })
           : keeper.payload.contractVersion === 2
-            ? { ...builtPayload, contractVersion: 2, commandId: keeper.payload.commandId,
+            ? { ...builtPayload, ...(keeper.payload.background ? { background: true } : {}), contractVersion: 2, commandId: keeper.payload.commandId,
               expectedCommandGeneration: keeper.payload.expectedCommandGeneration }
             : payload;
         const originalRev = keeper.payload.expectedRevisionNo;
@@ -215,7 +227,7 @@ export function useRubberBillMutations(
           throw new Error("ข้อมูลบิลในเครื่องถูกเปลี่ยนจากอีกหน้าต่าง กรุณาลองใหม่อีกครั้ง");
         }
       } else {
-        const directSubmissionScope = isOnline && clientEvents.length === 0
+        const directSubmissionScope = isOnline && operation === "create" && clientEvents.length === 0
           ? `${ownerUserId}:${mutationLocationId}`
           : null;
         if (directSubmissionScope) beginDirectSubmission(directSubmissionScope);
@@ -227,7 +239,7 @@ export function useRubberBillMutations(
           operation,
           serverId: operation === "update" ? bill.id : undefined,
           serverBillNo: operation === "update" ? bill.serverBillNo : undefined,
-          serverSubmissionAttempted: directSubmissionScope !== null,
+          serverSubmissionAttempted: operation === "create" && directSubmissionScope !== null,
           payload,
           timestamp: Date.now(),
           status: "pending"
@@ -246,11 +258,10 @@ export function useRubberBillMutations(
         newlyQueuedEvent = { ...event, queueId };
       }
 
-      if (isOnline && clientEvents.length === 0 && newlyQueuedEvent) {
+      if (isOnline && clientEvents.length === 0 && newlyQueuedEvent && operation === "create") {
         try {
           const response = await sendRubberBillCommand(newlyQueuedEvent, {
               ...payload,
-              ...(operation === "update" ? { expectedServerId: bill.id } : {}),
           });
           const data = await response.json();
           if (response.ok && !isConfirmedRubberSyncResult(data, newlyQueuedEvent)) {
@@ -296,7 +307,7 @@ export function useRubberBillMutations(
       return {
         ...calculatedBill,
         syncStatus: "pending" as const,
-        serverSubmissionAttempted: newlyQueuedEvent?.serverSubmissionAttempted === true,
+        serverSubmissionAttempted: operation === "update" || newlyQueuedEvent?.serverSubmissionAttempted === true,
         configuredPriceSnapshot:
           operation === "create"
             ? mutationApprovalSettings?.effectivePriceCap ?? null
@@ -369,7 +380,7 @@ export function useRubberBillMutations(
         deletedByPhone
       );
       const payload = await prepareRubberBillCommand({
-        ...calculatedPayload,
+        ...calculatedPayload, background: true,
         expectedRevisionNo: targetRev,
         idempotencyKey: `delete:${clientTempId}:${targetRev}`
       });
@@ -387,14 +398,13 @@ export function useRubberBillMutations(
         timestamp: Date.now(),
         status: "pending"
       };
-      let queuedEvent: SyncEvent;
       if (pendingUpdates.length > 0) {
         const [keeper] = pendingUpdates;
         const queueId = keeper.queueId;
         if (typeof queueId !== "number") {
           throw new Error("ข้อมูลคิวในเครื่องไม่สมบูรณ์ กรุณาลองเปิดแอปใหม่");
         }
-        queuedEvent = { ...event, queueId };
+        const queuedEvent = { ...event, queueId };
         if (!await reconcileSyncEventsIfCurrent(pendingUpdates, queuedEvent)) {
           throw new Error("ข้อมูลบิลในเครื่องถูกเปลี่ยนจากอีกหน้าต่าง กรุณาลองลบอีกครั้ง");
         }
@@ -403,46 +413,8 @@ export function useRubberBillMutations(
         if (queueId === null) {
           throw new Error("ข้อมูลบิลในเครื่องถูกเปลี่ยนจากอีกหน้าต่าง กรุณาลองลบอีกครั้ง");
         }
-        queuedEvent = { ...event, queueId };
       }
 
-      if (isOnline) {
-        try {
-          const response = await sendRubberBillCommand(queuedEvent, { ...payload, expectedServerId: bill.id });
-          const data = await response.json();
-          if (response.ok && !isConfirmedRubberSyncResult(data, queuedEvent)) {
-            throw new Error("กำลังรอยืนยันผลบิลยางจากเซิร์ฟเวอร์");
-          }
-          if (!response.ok) {
-            if (isRetryableSyncResponse(response.status, data)) {
-              throw new Error(data.errorMessage || "ระบบไม่พร้อมใช้งานชั่วคราว");
-            }
-            const outcome = await recordRubberSyncFailure(queuedEvent, response.status, data);
-            if (outcome === "discarded") {
-              queuedEvent.status = "conflict";
-              throw new Error("ทิ้งรายการค้างที่ข้อมูลชนกันแล้ว บิลบนเซิร์ฟเวอร์ยังคงเดิม");
-            }
-            throw new Error(data.errorMessage || "ลบบิลไม่สำเร็จ");
-          }
-          const removeFromList = data.status === "synced";
-          if (removeFromList) {
-            if (!await removeSyncEventIfCurrent(queuedEvent)) {
-              throw new Error("ข้อมูลคิวเปลี่ยนระหว่างยืนยันผล กรุณารอซิงก์อีกครั้ง");
-            }
-            await removeConfirmedRubberBillLocally(
-              queryClient,
-              { ownerUserId, locationId: mutationLocationId },
-              clientTempId,
-            );
-          } else {
-            await removeRubberBillQueueEventBestEffort(queuedEvent);
-          }
-          return { approvalPending: data.status === "pending_approval" };
-        } catch (error) {
-          if (queuedEvent.status !== "pending") throw error;
-          console.error("Network error while deleting rubber bill", error);
-        }
-      }
 
       return { approvalPending: false };
       } finally {

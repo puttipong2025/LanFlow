@@ -1,4 +1,5 @@
-import { sendRubberBillCommand, isConfirmedRubberSyncResult, recordRubberSyncFailure } from "@/lib/rubber-bills/command";
+import { notifyRubberBackgroundFailure } from "@/lib/rubber-bills/background-notifications";
+import { sendRubberBillCommand, isConfirmedRubberSyncResult, recordRubberSyncFailure, acknowledgeRubberCommand } from "@/lib/rubber-bills/command";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -79,7 +80,9 @@ export function usePerRecordSyncRetry(locationId: string, ownerUserId: string) {
         }
 
         if (response.ok) {
-          if (entity === "rubber_bills" && event.operation === "delete" && data.status === "synced") {
+          if (entity === "rubber_bills" && event.payload.background) {
+            if (!await acknowledgeRubberCommand(event, data)) throw new Error("คิวเปลี่ยนระหว่างยืนยันผล");
+          } else if (entity === "rubber_bills" && event.operation === "delete" && data.status === "synced") {
             if (!await removeSyncEventIfCurrent(event)) throw new Error("ข้อมูลคิวเปลี่ยนระหว่างยืนยันผล กรุณารอซิงก์อีกครั้ง");
             await removeConfirmedRubberBillLocally(
               queryClient,
@@ -95,11 +98,12 @@ export function usePerRecordSyncRetry(locationId: string, ownerUserId: string) {
           } else {
             await removeSyncEventIfCurrent(event);
           }
-          return data.status;
+          return data.silent ? "silent" : data.status;
         }
 
         if (entity === "rubber_bills") {
           const outcome = await recordRubberSyncFailure(event, response.status, data);
+          if (event.payload.background) { await notifyRubberBackgroundFailure(event); return "silent"; }
           throw new Error(outcome === "discarded"
             ? "ทิ้งรายการค้างที่ข้อมูลชนกันแล้ว บิลบนเซิร์ฟเวอร์ยังคงเดิม"
             : event.errorMessage);
@@ -119,10 +123,12 @@ export function usePerRecordSyncRetry(locationId: string, ownerUserId: string) {
         await updateSyncEventIfCurrent(event);
         throw new Error(event.errorMessage);
       } finally {
-        await invalidateMoneyFlowLocation(queryClient, {
+        const refresh = invalidateMoneyFlowLocation(queryClient, {
           ownerUserId: submissionOwnerUserId,
           locationId: submissionLocationId,
         });
+        if (entity === "rubber_bills" && event.payload.background) await refresh.catch(() => {});
+        else await refresh;
       }
     },
   });
