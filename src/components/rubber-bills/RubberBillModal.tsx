@@ -478,6 +478,7 @@ export function RubberBillModal({
     const formElement = event.currentTarget;
     const submitter = (event.nativeEvent as SubmitEvent).submitter;
     submitLockRef.current = true;
+    formElement.querySelectorAll<HTMLButtonElement>('button[type="submit"]').forEach((button) => { button.disabled = true; });
     setIsSubmitting(true);
     try {
       await submitForm(formElement);

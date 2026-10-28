@@ -10,6 +10,24 @@ import { loadSourceModule } from "./helpers/load-source-module";
 import { rubberBillFromSyncEvent, mergeRubberBillLocalEvents } from "../src/lib/rubber-bills/local-feed";
 
 const serverId = "71000000-0000-4000-8000-000000000021";
+test("delete confirmation blocks same-render reentry and unlocks after rejection", async () => {
+  let calls = 0;
+  let reject!: (cause: Error) => void;
+  const { RubberBillDeleteDialog } = loadSourceModule<typeof import("../src/components/rubber-bills/RubberBillDeleteDialog")>("src/components/rubber-bills/RubberBillDeleteDialog.tsx", {
+    react: { useState: (value: unknown) => [value, () => {}], useRef: (value: unknown) => ({ current: value }) },
+    "@/components/shared/AlertDialog": { AlertDialog: () => null },
+  });
+  const dialog = RubberBillDeleteDialog({ bill: { syncStatus: "synced" } as never, onClose: () => {}, onConfirm: () => {
+    calls++; return new Promise((_, fail) => { reject = fail; });
+  } });
+  dialog.props.onConfirm(); dialog.props.onConfirm();
+  expect(calls).toBe(1);
+  reject(new Error("storage unavailable"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  dialog.props.onConfirm();
+  expect(calls).toBe(2);
+  reject(new Error("storage unavailable"));
+});
 async function fixture(operation: "update" | "delete" = "delete") {
   Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: new IDBFactory() });
   Object.defineProperty(globalThis, "window", { configurable: true, value: globalThis });
