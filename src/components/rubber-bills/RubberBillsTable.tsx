@@ -19,6 +19,7 @@ export type RubberBillsTableProps = {
   onDelete: (bill: RubberBill) => void;
   onPrint: (bill: RubberBill) => void;
   onRetry: (bill: RubberBill) => void;
+  onRestartDelete?: (bill: RubberBill) => void;
   onDiscardLocal: (bill: RubberBill) => void;
   onOpenOcrSourceImage: (bill: RubberBill) => void;
   retryDisabled: boolean;
@@ -59,6 +60,7 @@ export function RubberBillsTable({
   onDelete,
   onPrint,
   onRetry,
+  onRestartDelete,
   onDiscardLocal,
   onOpenOcrSourceImage,
   retryDisabled,
@@ -108,12 +110,11 @@ export function RubberBillsTable({
                 : hasSyncProblem && !bill.canCorrectSyncFailure
                   ? "ทิ้งรายการค้างในเครื่องก่อนแก้ไขหรือลบ"
                   : actionBlockReason;
-              const viewDisabled = deleting
-                || (!bill.sourceRubberExportId && ((hasSyncProblem && !bill.canCorrectSyncFailure) || Boolean(actionBlockReason)));
+              const viewDisabled = deleting || (!hasSyncProblem && !bill.sourceRubberExportId && Boolean(actionBlockReason));
               const viewTitle = deleting
                 ? "กำลังลบรายการ..."
-                : hasSyncProblem && !bill.canCorrectSyncFailure && !bill.sourceRubberExportId
-                  ? "ทิ้งรายการค้างในเครื่องก่อนเปิดแก้ไข"
+                : hasSyncProblem
+                  ? "ดูร่างที่ยังไม่ซิงก์"
                   : "ดูรายละเอียด";
               const printBlockReason = getPrintBlockReason?.(bill) ?? null;
               const evidenceState = evidenceStatesByBillId.get(bill.id);
@@ -208,6 +209,10 @@ export function RubberBillsTable({
                       >
                         ลองซิงก์อีกครั้ง
                       </button>
+                    )}
+                    {hasSyncProblem && bill.canRestartDelete && onRestartDelete && (
+                      <button type="button" disabled={retryDisabled} onClick={() => onRestartDelete(bill)}
+                        className="focus-ring rounded-md bg-danger px-3 py-2 text-sm font-semibold text-white disabled:opacity-45">ขอลบใหม่</button>
                     )}
                   </div>
                 </td>

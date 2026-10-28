@@ -1,3 +1,4 @@
+import { sendRubberBillCommand, isConfirmedRubberSyncResult, recordRubberSyncFailure, prepareRubberBillCommand } from "@/lib/rubber-bills/command";
 import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { RubberBill } from "@/types";
 import {
@@ -21,10 +22,7 @@ import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 import { createScopedSingleFlight } from "@/lib/scoped-single-flight";
 import { buildRubberBillRpcPayload } from "@/lib/rubber-bills/submission";
 import { removeConfirmedRubberBillLocally } from "@/lib/rubber-bills/feed-cache";
-import { isConfirmedRubberSyncResult } from "@/lib/rubber-bills/sync-result";
-import { recordRubberSyncFailure } from "@/lib/rubber-bills/sync-failure";
 import { normalizeRubberBillQueueBeforeSync } from "@/lib/rubber-bills/normalize-sync-queue";
-import { sendRubberBillCommand } from "@/lib/rubber-bills/sync-request";
 
 export function assertRubberBillDeleteAllowed(pendingCreateCount: number, isOnline: boolean) {
   if (pendingCreateCount === 0 && !isOnline) throw new Error(OFFLINE_SYNCED_ACTION_MESSAGE);
@@ -164,7 +162,7 @@ export function useRubberBillMutations(
         );
       }
       
-      const { calculatedBill, payload } = buildRubberBillRpcPayload(
+      const { calculatedBill, payload: builtPayload } = buildRubberBillRpcPayload(
         bill,
         operation,
         operation === "create" ? mutationApprovalSettings?.effectivePriceCap : bill.configuredPriceSnapshot
@@ -172,6 +170,7 @@ export function useRubberBillMutations(
       const isOnline = typeof navigator === "undefined" || navigator.onLine;
       const existingEvents = await getPendingEvents(queuePartition(ownerUserId, mutationLocationId));
       const clientEvents = existingEvents.filter(e => e.id === bill.clientTempId);
+      const payload = clientEvents.length > 0 ? builtPayload : await prepareRubberBillCommand(builtPayload);
       if (clientEvents.some((event) => event.serverSubmissionAttempted === true)) {
         throw new Error(PENDING_SERVER_ACTION_MESSAGE);
       }
@@ -192,6 +191,12 @@ export function useRubberBillMutations(
       let newlyQueuedEvent: SyncEvent | undefined;
 
       if (keeper) {
+        const commandPayload = correcting && keeper.payload.contractVersion === 2
+          ? await prepareRubberBillCommand(builtPayload)
+          : keeper.payload.contractVersion === 2
+            ? { ...builtPayload, contractVersion: 2, commandId: keeper.payload.commandId,
+              expectedCommandGeneration: keeper.payload.expectedCommandGeneration }
+            : payload;
         const originalRev = keeper.payload.expectedRevisionNo;
         const updatedKeeper = {
           ...keeper,
@@ -200,9 +205,10 @@ export function useRubberBillMutations(
           failureHttpStatus: undefined,
           serverSubmissionAttempted: correcting ? false : keeper.serverSubmissionAttempted,
           payload: keeper.operation === "create"
-            ? { ...payload, operation: "create", expectedRevisionNo: 0, idempotencyKey: keeper.payload.idempotencyKey }
-            : { ...payload, operation: "update", expectedRevisionNo: originalRev,
-              idempotencyKey: keeper.payload.idempotencyKey },
+            ? { ...commandPayload, operation: "create", expectedRevisionNo: 0,
+              idempotencyKey: correcting && keeper.payload.contractVersion === 2 ? commandPayload.idempotencyKey : keeper.payload.idempotencyKey }
+            : { ...commandPayload, operation: "update", expectedRevisionNo: originalRev,
+              idempotencyKey: correcting && keeper.payload.contractVersion === 2 ? commandPayload.idempotencyKey : keeper.payload.idempotencyKey },
           timestamp: Date.now(),
         };
         if (!await reconcileSyncEventsIfCurrent(clientEvents, updatedKeeper)) {
@@ -362,11 +368,11 @@ export function useRubberBillMutations(
         deletedByName,
         deletedByPhone
       );
-      const payload = {
+      const payload = await prepareRubberBillCommand({
         ...calculatedPayload,
         expectedRevisionNo: targetRev,
         idempotencyKey: `delete:${clientTempId}:${targetRev}`
-      };
+      });
 
       const event: Omit<SyncEvent, "queueId"> = {
         id: clientTempId,

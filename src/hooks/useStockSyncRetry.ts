@@ -1,5 +1,6 @@
+import { sendRubberBillCommand, isConfirmedRubberSyncResult, recordRubberSyncFailure } from "@/lib/rubber-bills/command";
 import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { getPendingEvents, removeSyncEvent, updateSyncEvent, type SyncEvent } from "@/lib/idb-queue";
+import { getPendingEvents, removeSyncEvent, updateSyncEvent, reconcileSyncEventsIfCurrent, removeSyncEventIfCurrent, type SyncEvent } from "@/lib/idb-queue";
 import { authFetch } from "@/lib/auth-fetch";
 import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
 
@@ -82,27 +83,51 @@ async function retryStockSyncEvents(locationId: string, ownerUserId: string, que
       result.attempted += 1;
 
       try {
-        const response = await authFetch(stockEventEndpoint(event.entity as StockSyncEntity), {
+        if (event.entity === "rubber_bills") {
+          const marked = { ...event, serverSubmissionAttempted: true };
+          if (!await reconcileSyncEventsIfCurrent([event], marked)) throw new Error("คิวเปลี่ยนจากอีกหน้าต่าง กรุณาลองใหม่");
+          Object.assign(event, marked);
+        }
+        const response = await (event.entity === "rubber_bills" ? sendRubberBillCommand(event, {
+          ...event.payload, submissionMode: "replay",
+          ...(event.operation !== "create" && event.serverId ? { expectedServerId: event.serverId } : {}),
+        }) : authFetch(stockEventEndpoint(event.entity as StockSyncEntity), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(event.payload),
-        });
+        }));
 
         const data = await response.json().catch(() => ({}));
 
         if (response.ok) {
+          if (event.entity === "rubber_bills") {
+            if (!isConfirmedRubberSyncResult(data, event)) {
+              await recordRubberSyncFailure(event, 503, {});
+              throw new Error("กำลังรอยืนยันผลบิลยางจากเซิร์ฟเวอร์");
+            }
+            if (!await removeSyncEventIfCurrent(event)) throw new Error("คิวเปลี่ยนระหว่างยืนยันผล กรุณาลองใหม่");
+          } else {
           await removeSyncEvent(event.queueId!);
+          }
           result.synced += 1;
           continue;
         }
 
-        event.status = data.status === "conflict" ? "conflict" : "failed";
-        event.errorMessage = data.errorMessage || data.error || "ซิงก์รายการไม่สำเร็จ";
-        await updateSyncEvent(event);
+        if (event.entity === "rubber_bills") {
+          if (await recordRubberSyncFailure(event, response.status, data) === "discarded") { result.synced += 1; continue; }
+        } else {
+          event.status = data.status === "conflict" ? "conflict" : "failed";
+          event.errorMessage = data.errorMessage || data.error || "ซิงก์รายการไม่สำเร็จ";
+          await updateSyncEvent(event);
+        }
       } catch (error) {
-        event.status = "failed";
-        event.errorMessage = error instanceof Error ? error.message : "ซิงก์รายการไม่สำเร็จ";
-        await updateSyncEvent(event);
+        if (event.entity === "rubber_bills") {
+          if (event.status === "pending") await recordRubberSyncFailure(event, 0, {});
+        } else {
+          event.status = "failed";
+          event.errorMessage = error instanceof Error ? error.message : "ซิงก์รายการไม่สำเร็จ";
+          await updateSyncEvent(event);
+        }
       }
 
       result.stopped = true;

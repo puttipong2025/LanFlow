@@ -53,6 +53,9 @@ import type { RequestBranchCreate } from "@/hooks/useBranchCreateGuard";
 import { isDeviceOnline } from "@/lib/connectivity";
 import { RubberBillOcrQueueModal } from "./RubberBillOcrQueueModal";
 import { AlertDialog } from "@/components/shared/AlertDialog";
+import { RubberBillDeleteDialog } from "./RubberBillDeleteDialog";
+import { RubberBillSyncDraftDialog } from "./RubberBillSyncDraftDialog";
+import { restartRubberDelete } from "@/lib/rubber-bills/restart-delete";
 
 export function RubberBillsModule({
   selectedLocation,
@@ -118,6 +121,8 @@ export function RubberBillsModule({
   const [branchReceiptModalOpen, setBranchReceiptModalOpen] = useState(false);
   const [viewingBranchReceipt, setViewingBranchReceipt] = useState<RubberBill | null>(null);
   const [editingBill, setEditingBill] = useState<RubberBill | null>(null);
+  const [deleteCandidate, setDeleteCandidate] = useState<RubberBill | null>(null);
+  const [draftCandidate, setDraftCandidate] = useState<RubberBill | null>(null);
   const [discardCandidate, setDiscardCandidate] = useState<RubberBill | null>(null);
   const [deletingBillId, setDeletingBillId] = useState<string | null>(null);
   const [pageSize, setPageSize] = useState(10);
@@ -195,8 +200,7 @@ export function RubberBillsModule({
     return haystack.toLowerCase().includes(search.toLowerCase());
   });
   function getActionBlockReason(bill: RubberBill) {
-    return (bill.approvalPending ? "บิลนี้กำลังรออนุมัติการเปลี่ยนแปลง" : null)
-      ?? (bill.reportLockNo ? `ล็อกโดยรายงาน ${bill.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน` : null)
+    return (bill.reportLockNo ? `ล็อกโดยรายงาน ${bill.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน` : null)
       ?? getOfflineSyncedActionBlockReason(bill, isOnline)
       ?? (bill.transferLockId ? RUBBER_BILL_TRANSFER_LOCK_MESSAGE : null)
       ?? getPendingServerActionBlockReason(bill);
@@ -301,11 +305,14 @@ export function RubberBillsModule({
     }
     if (!(await refreshPolicyBeforeOpeningBill())) return;
     setOcrReviewItem(null);
-    setEditingBill(bill);
+    setEditingBill(bill.id.startsWith("approval:")
+      ? { ...bill, id: bill.clientTempId, serverBillNo: undefined, revisionNo: 0 }
+      : bill);
     setModalOpen(true);
   }
 
   async function openView(bill: RubberBill) {
+    if (bill.syncStatus === "failed" || bill.syncStatus === "conflict") { setDraftCandidate(bill); return; }
     if (bill.sourceRubberExportId) {
       setViewingBranchReceipt(bill);
       return;
@@ -315,40 +322,14 @@ export function RubberBillsModule({
 
   async function confirmDelete(bill: RubberBill) {
     if (deletingBillId) return;
+    if (bill.id.startsWith("approval:")) { toast.error("บิลยังไม่ถูกสร้าง กรุณายกเลิกคำขอสร้างจากหน้าอนุมัติ"); return; }
     const blockReason = getActionBlockReason(bill)
       ?? await getPendingSubmissionBlockReason(bill);
     if (blockReason) {
       toast.error(blockReason);
       return;
     }
-    const dateApprovalNotice = approvalSettings?.nonCurrentDateRequiresApproval
-      && bill.billDate !== bangkokDateString()
-      ? "\nรายการต่างวันจะถูกส่งขออนุมัติก่อนลบ"
-      : "";
-    if (confirm(`ต้องการลบบิลนี้ใช่หรือไม่?${dateApprovalNotice}`)) {
-      const elapsedMinutes = bill.serverCreatedAt
-        ? (Date.now() - new Date(bill.serverCreatedAt).getTime()) / 60_000
-        : 0;
-      const likelyNeedsApproval = Boolean(
-        (approvalSettings?.nonCurrentDateRequiresApproval && bill.billDate !== bangkokDateString())
-        || (approvalSettings?.editWindowMinutes != null && elapsedMinutes > approvalSettings.editWindowMinutes)
-      );
-      setDeletingBillId(bill.id);
-      try {
-        await runBlockingAction(
-          likelyNeedsApproval ? "กำลังส่งคำขอลบ..." : "กำลังลบรายการ...",
-          () => deleteBill({
-            bill,
-            deletedByName: profile.name,
-            deletedByPhone: profile.phone,
-          }),
-        );
-      } catch (error) {
-        toast.error(error instanceof Error ? error.message : "ลบบิลยางไม่สำเร็จ");
-      } finally {
-        setDeletingBillId(null);
-      }
-    }
+    setDeleteCandidate(bill);
   }
 
   async function retryFailedSync(bill: RubberBill) {
@@ -687,6 +668,7 @@ export function RubberBillsModule({
           getActionBlockReason={getActionBlockReason}
           getPrintBlockReason={getPrintBlockReason}
           onRetry={retryFailedSync}
+          onRestartDelete={setDeleteCandidate}
           onDiscardLocal={setDiscardCandidate}
           onOpenOcrSourceImage={(bill) => void openOcrSourceImage(bill)}
           retryDisabled={!isOnline || isRetrying}
@@ -698,6 +680,17 @@ export function RubberBillsModule({
         />
       </section>
 
+      {draftCandidate && <RubberBillSyncDraftDialog bill={draftCandidate} onClose={() => setDraftCandidate(null)} />}
+      {deleteCandidate && <RubberBillDeleteDialog bill={deleteCandidate} onClose={() => setDeleteCandidate(null)}
+        onConfirm={async () => {
+          try {
+            if (deleteCandidate.syncStatus === "failed" || deleteCandidate.syncStatus === "conflict") {
+              await restartRubberDelete(profile.id, selectedLocation.id, deleteCandidate.clientTempId);
+            } else {
+              await deleteBill({ bill: deleteCandidate, deletedByName: profile.name, deletedByPhone: profile.phone });
+            }
+          } finally { await invalidateMoneyFlowLocation(queryClient, { ownerUserId: profile.id, locationId: selectedLocation.id }); }
+        }} />}
       <AlertDialog open={discardCandidate !== null} title="ทิ้งรายการค้างในเครื่อง"
         description={`ทิ้งรายการ ${discardCandidate?.serverBillNo ?? discardCandidate?.localBillNo ?? ""} ใช่ไหม? ข้อมูลที่ยังไม่ซิงก์จะหาย บิลจริงบนเซิร์ฟเวอร์จะไม่ถูกลบ`}
         confirmLabel="ยืนยันทิ้งรายการค้าง" busy={deletingBillId !== null}

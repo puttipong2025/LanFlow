@@ -69,7 +69,10 @@ function isRubberBillSubmissionIdentity(value: Record<string, unknown>) {
   const operation = value.operation;
   const expectedRevisionNo = value.expectedRevisionNo;
   const expectedServerId = value.expectedServerId;
-  return (operation === "create" || operation === "update" || operation === "delete")
+  return (value.contractVersion === undefined || (value.contractVersion === 2
+      && isUuid(value.commandId) && value.commandId === value.idempotencyKey
+      && Number.isSafeInteger(value.expectedCommandGeneration) && Number(value.expectedCommandGeneration) >= 0))
+    && (operation === "create" || operation === "update" || operation === "delete")
     && isUuid(value.locationId)
     && typeof value.clientTempId === "string"
     && value.clientTempId.trim().length > 0
@@ -86,6 +89,8 @@ function isRubberBillSyncResult(
   expectedSubmission: Record<string, unknown>,
 ): value is Record<string, unknown> {
   if (!isJsonObject(value)) return false;
+  if (expectedSubmission.contractVersion === 2 && value.commandId !== expectedSubmission.commandId
+      && value.status !== "failed" && value.status !== "conflict") return false;
   if (value.status === "synced") {
     const operation = expectedSubmission.operation;
     const expectedRevisionNo = expectedSubmission.expectedRevisionNo;
@@ -243,7 +248,7 @@ export async function POST(request: Request) {
         { status: 503, headers: { "Cache-Control": "private, no-store, max-age=0" } },
       );
     }
-    if (result.status === "conflict") {
+    if (result.status === "conflict" && payload.contractVersion !== 2) {
       // The authenticated RPC rejected this exact immutable command. Discarding
       // the local command never deletes the authoritative bill or approval.
       Object.assign(result, { resolution: "discard_local", clientTempId: payload.clientTempId, operation: payload.operation });

@@ -45,7 +45,9 @@ export function coalesceQueueGroup(group: readonly SyncEvent[]): CoalesceResult 
         ...lastEvent.payload,
         operation: "create",
         expectedRevisionNo: 0,
-        idempotencyKey: `create:${id}:0`,
+        idempotencyKey: base.payload.contractVersion === 2 ? base.payload.idempotencyKey : `create:${id}:0`,
+        ...(base.payload.contractVersion === 2 ? { commandId: base.payload.commandId,
+          contractVersion: 2, expectedCommandGeneration: base.payload.expectedCommandGeneration } : {}),
       },
       timestamp: lastEvent.timestamp,
     };
@@ -65,7 +67,7 @@ export function coalesceQueueGroup(group: readonly SyncEvent[]): CoalesceResult 
       payload: {
         ...deleteBase.payload,
         expectedRevisionNo: rev,
-        idempotencyKey: `delete:${id}:${rev}`,
+        idempotencyKey: deleteBase.payload.contractVersion === 2 ? deleteBase.payload.idempotencyKey : `delete:${id}:${rev}`,
       },
     };
     const remove = ordered.filter(e => e.queueId !== deleteBase.queueId);
@@ -81,7 +83,9 @@ export function coalesceQueueGroup(group: readonly SyncEvent[]): CoalesceResult 
       ...lastEvent.payload,
       operation: "update",
       expectedRevisionNo: originalRev,
-      idempotencyKey: `update:${id}:${originalRev}`,
+      idempotencyKey: base.payload.contractVersion === 2 ? base.payload.idempotencyKey : `update:${id}:${originalRev}`,
+      ...(base.payload.contractVersion === 2 ? { commandId: base.payload.commandId,
+        contractVersion: 2, expectedCommandGeneration: base.payload.expectedCommandGeneration } : {}),
     },
     timestamp: lastEvent.timestamp,
   };

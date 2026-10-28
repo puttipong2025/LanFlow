@@ -5,6 +5,7 @@ const uuid = (value: unknown) => typeof value === "string" && /^[0-9a-f]{8}-[0-9
 export function isConfirmedRubberSyncResult(value: unknown, event: SyncEvent) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const data = value as Record<string, unknown>;
+  if (event.payload.contractVersion === 2 && data.commandId !== event.payload.commandId) return false;
   if (data.status === "pending_approval" || data.status === "discarded") {
     return data.operation === event.operation && data.clientTempId === event.id
       && (data.status === "discarded" || uuid(data.requestId));

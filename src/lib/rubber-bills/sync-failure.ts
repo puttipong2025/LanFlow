@@ -3,7 +3,7 @@ import { isRetryableSyncResponse } from "@/lib/sync-response";
 
 export async function recordRubberSyncFailure(event: SyncEvent, status: number, value: unknown) {
   const data = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-  if (status === 409 && data.status === "conflict" && data.resolution === "discard_local"
+  if (event.payload.contractVersion !== 2 && status === 409 && data.status === "conflict" && data.resolution === "discard_local"
       && data.clientTempId === event.id && data.operation === event.operation) {
     const group = (await getPendingEvents({ entity: "rubber_bills", ownerUserId: event.ownerUserId, locationId: event.locationId }))
       .filter((candidate) => candidate.id === event.id);
@@ -24,6 +24,7 @@ export async function recordRubberSyncFailure(event: SyncEvent, status: number, 
   const retryable = !hasBusinessFailure || isRetryableSyncResponse(status, data) || status === 0 || (status >= 200 && status < 300);
   event.status = retryable ? "pending" : data.status === "conflict" ? "conflict" : "failed";
   event.failureHttpStatus = status;
+  event.failureCode = data.commandId === event.payload.commandId && typeof data.errorCode === "string" ? data.errorCode : undefined;
   event.errorMessage = retryable ? "รอซิงก์อัตโนมัติเมื่อระบบพร้อม"
     : typeof data.errorMessage === "string" ? data.errorMessage : "ข้อมูลบิลยางไม่ผ่านเงื่อนไข";
   if (!retryable && event.status === "failed") event.serverSubmissionAttempted = false;

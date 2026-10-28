@@ -7,6 +7,7 @@ import { recordRubberSyncFailure } from "../src/lib/rubber-bills/sync-failure";
 import { isConfirmedRubberSyncResult } from "../src/lib/rubber-bills/sync-result";
 import { rubberBillFromSyncEvent } from "../src/lib/rubber-bills/local-feed";
 import { normalizeRubberBillQueueBeforeSync } from "../src/lib/rubber-bills/normalize-sync-queue";
+import { coalesceQueueGroup } from "../src/lib/coalesceQueueGroup";
 
 async function retryWith(response: Response) {
   const event = { id: "local", entity: "rubber_bills", operation: "create", status: "failed", payload: { clientTempId: "local", operation: "create", expectedRevisionNo: 0 } };
@@ -47,6 +48,86 @@ async function queued() {
 }
 
 const conflict = { status: "conflict", errorMessage: "ข้อมูลเปลี่ยนแล้ว", resolution: "discard_local", clientTempId: "local", operation: "update" };
+
+test("explicit restart clears the retired command failure before persisting a new intent", async () => {
+  const event = { ...command(), operation: "delete", failureCode: "STALE_COMMAND_CONTEXT" };
+  let saved: SyncEvent | undefined;
+  const module = loadSourceModule<typeof import("../src/lib/rubber-bills/restart-delete")>("src/lib/rubber-bills/restart-delete.ts", {
+    "@/lib/idb-queue": { getPendingEvents: async () => [event], reconcileSyncEventsIfCurrent: async (_old: unknown, next: SyncEvent) => { saved = next; return true; } },
+    "./command": { prepareRubberBillCommand: async () => ({ commandId: "fresh", contractVersion: 2 }) },
+    "./sync-request": { sendRubberBillCommand: async () => { throw new Error("response lost"); } },
+    "./sync-failure": { recordRubberSyncFailure: async () => {} },
+    "./sync-result": { isConfirmedRubberSyncResult: () => false },
+  }, { navigator: { onLine: true } });
+  await module.restartRubberDelete("owner", "location", "local").catch(() => {});
+  expect(saved?.payload.commandId).toBe("fresh");
+  expect(saved?.failureCode).toBeUndefined();
+  expect(saved?.serverSubmissionAttempted).toBe(true);
+});
+
+test("command protocol retains stale drafts even when a legacy discard resolution is present", async () => {
+  const event = await queued();
+  event.payload = { ...event.payload, contractVersion: 2, commandId: "new-command", expectedCommandGeneration: 3 };
+  await updateSyncEvent(event);
+  expect(await recordRubberSyncFailure(event, 409, { ...conflict, errorCode: "STALE_COMMAND_CONTEXT" })).toBe("conflict");
+  await normalizeRubberBillQueueBeforeSync("owner", "location");
+  const current = await getPendingEvents(event);
+  expect(current).toHaveLength(1);
+  expect(current[0].payload).toEqual(event.payload);
+  expect(current[0].status).toBe("conflict");
+});
+
+test("coalescing unsent command drafts retains the first command identity and context", () => {
+  const first = command();
+  first.queueId = 1;
+  first.payload = { ...first.payload, contractVersion: 2, commandId: "original", idempotencyKey: "original", expectedCommandGeneration: 7 };
+  const second = { ...first, queueId: 2, payload: { ...first.payload, commandId: "later", idempotencyKey: "later", customerName: "edited" } };
+  const merged = coalesceQueueGroup([first, second]);
+  expect(merged.action).toBe("keep");
+  if (merged.action === "keep") {
+    expect(merged.keeper.payload).toMatchObject({ commandId: "original", idempotencyKey: "original", expectedCommandGeneration: 7, customerName: "edited" });
+  }
+});
+
+test("new delete obtains current revision and a fresh identity once; update does not silently rebase", async () => {
+  const module = loadSourceModule<typeof import("../src/lib/rubber-bills/command")>("src/lib/rubber-bills/command.ts", {
+    "@/lib/auth-fetch": { authFetch: async () => Response.json({ generation: 8, revisionNo: 4, recordStatus: "active" }), assertApiResponse: async () => {} },
+  }, { navigator: { onLine: true } });
+  const input = { ...command().payload, operation: "delete", expectedRevisionNo: 3 };
+  const prepared = await module.prepareRubberBillCommand(input);
+  expect(prepared).toMatchObject({ contractVersion: 2, expectedCommandGeneration: 8, expectedRevisionNo: 4 });
+  expect(prepared.commandId).toBe(prepared.idempotencyKey);
+  expect(prepared.commandId).not.toBe(input.idempotencyKey);
+  expect(input.expectedRevisionNo).toBe(3);
+  let message = "";
+  try { await module.prepareRubberBillCommand({ ...input, operation: "update" }); }
+  catch (error) { message = (error as Error).message; }
+  expect(message).toContain("บิลถูกแก้ไขแล้ว");
+});
+
+test("new command cannot accept a receipt for another command on the same bill", () => {
+  const event = command();
+  event.payload = { ...event.payload, contractVersion: 2, commandId: "expected" };
+  const receipt = { status: "pending_approval", operation: "update", clientTempId: event.id,
+    requestId: "71000000-0000-4000-8000-000000000021", commandId: "old" };
+  expect(isConfirmedRubberSyncResult(receipt, event)).toBe(false);
+  expect(isConfirmedRubberSyncResult({ ...receipt, commandId: "expected" }, event)).toBe(true);
+});
+
+test("normalization never coalesces an attempted v2 command with dependent drafts", async () => {
+  const first = await queued();
+  first.payload = { ...first.payload, contractVersion: 2, commandId: "immutable", expectedCommandGeneration: 2 };
+  first.serverSubmissionAttempted = true;
+  await updateSyncEvent(first);
+  const { queueId: _queueId, ...draft } = first;
+  const second = { ...draft, timestamp: 2, payload: { ...first.payload, customerName: "dependent" } };
+  await enqueueSyncEvent(second);
+  await normalizeRubberBillQueueBeforeSync("owner", "location");
+  const current = await getPendingEvents(first);
+  expect(current).toHaveLength(2);
+  expect(current.every((event) => event.status === "conflict")).toBe(true);
+  expect(current[0].payload).toEqual(first.payload);
+});
 
 test("verified conflict discards only its local command and preserves other scopes", async () => {
   const event = await queued();

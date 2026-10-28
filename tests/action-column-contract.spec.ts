@@ -60,12 +60,13 @@ test("pending-create pseudo rows do not expose the bill-only OCR source action",
   expect(source).toContain('bill.id.startsWith("approval:") ? "รออนุมัติ"');
 });
 
-test("rubber bill sync problems only reopen the editable modal after a correctable rejection", () => {
+test("rubber bill sync problems allow draft inspection while editing stays guarded", () => {
   const source = readFileSync(resolve("src/components/rubber-bills/RubberBillsTable.tsx"), "utf8");
 
   expect(source).toMatch(
-    /const viewDisabled = deleting\s*\|\| \(!bill\.sourceRubberExportId && \(\(hasSyncProblem && !bill\.canCorrectSyncFailure\) \|\| Boolean\(actionBlockReason\)\)\);/,
+    /const viewDisabled = deleting \|\| \(!hasSyncProblem && !bill\.sourceRubberExportId && Boolean\(actionBlockReason\)\);/,
   );
+  expect(source).toContain("(hasSyncProblem && !bill.canCorrectSyncFailure) || Boolean(actionBlockReason) || deleting");
 });
 
 test("a server-confirmed bill with a pending local replay blocks edit and delete actions", () => {

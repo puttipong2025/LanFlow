@@ -34,6 +34,7 @@ export interface SyncEvent<T = any> {
   status: "pending" | "failed" | "conflict";
   errorMessage?: string;
   failureHttpStatus?: number;
+  failureCode?: string;
 }
 export interface QueuePartition {
   entity: SyncEntity;

@@ -79,6 +79,7 @@ export function rubberBillFromSyncEvent(event: SyncEvent, ownerUserId: string): 
     syncStatus: event.status === "conflict" ? "conflict" : event.status === "failed" ? "failed" : "pending",
     serverSubmissionAttempted: event.serverSubmissionAttempted === true,
     syncErrorMessage: event.errorMessage,
+    canRestartDelete: event.operation === "delete" && (payload.contractVersion !== 2 || event.failureCode === "STALE_COMMAND_CONTEXT"),
     canCorrectSyncFailure: event.status === "failed" && event.failureHttpStatus === 400
       && event.operation !== "delete" && event.serverSubmissionAttempted !== true,
     idempotencyKey: payload.idempotencyKey,
