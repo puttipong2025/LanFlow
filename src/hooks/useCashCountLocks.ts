@@ -3,13 +3,34 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { authFetch, assertApiResponse } from "@/lib/auth-fetch";
 import { parseCashCountLocks, type CashCountLockState } from "@/lib/cash-count-lock";
 
-export function useCashCountLocks(enabled: boolean, scope: string) {
+export function useCashCountLocks(enabled: boolean, scope: string, online = true, locationId?: string) {
   const [data, setData] = useState<{ scope: string; states: CashCountLockState[]; offset: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [working, setWorking] = useState<string | null>(null);
   const read = useRef<(() => Promise<void>) | null>(null);
+  const unlocking = useRef(false);
+  const lastAttempt = useRef(0);
+  const context = useRef(scope);
+  context.current = scope;
+  const [clock, setClock] = useState(Date.now());
+  const [checkedAt, setCheckedAt] = useState(0);
+  const current = data?.scope === scope ? data : null;
+  const selected = current?.states.find((state) => state.locationId === locationId);
+  const transition = selected?.enabled ? Math.max(Date.parse(selected.lockAt ?? ""), Date.parse(selected.unlockedUntil ?? "") || 0) : NaN;
+  const needsCheck = !!selected?.enabled && !selected.locked && Number.isFinite(transition) && clock + current!.offset >= transition && checkedAt < transition;
+  const blocked = enabled && (!current || !!selected?.locked || needsCheck);
   useEffect(() => {
-    if (!enabled) { read.current = null; return; }
+    if (!enabled || !blocked) return;
+    const timer = setInterval(() => setClock(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [enabled, blocked]);
+  useEffect(() => {
+    if (!enabled || !Number.isFinite(transition) || checkedAt >= transition) return;
+    const timer = setTimeout(() => setClock(Date.now()), Math.min(2_147_000_000, Math.max(0, transition - Date.now() - (current?.offset ?? 0) + 50)));
+    return () => clearTimeout(timer);
+  }, [enabled, transition, checkedAt, current?.offset]);
+  useEffect(() => {
+    if (!enabled || !online) { read.current = null; return; }
     let active = true;
     let pending: Promise<void> | null = null;
     let controller: AbortController | null = null;
@@ -17,16 +38,17 @@ export function useCashCountLocks(enabled: boolean, scope: string) {
     let dirty = false;
     const refresh = (invalidate = false) => {
       if (pending) { dirty ||= invalidate; return pending; }
+      lastAttempt.current = Date.now();
       controller = new AbortController();
       pending = (async () => {
         try {
-          const response = await authFetch("/api/lanflow/cash-counts/lock", { cache: "no-store", signal: controller!.signal });
+          const response = await authFetch("/api/lanflow/cash-counts/lock", { cache: "no-store", signal: AbortSignal.any([controller!.signal, AbortSignal.timeout(10_000)]) });
           await assertApiResponse(response);
           const next = parseCashCountLocks(await response.json());
           if (!next) throw new Error("ข้อมูลสถานะล็อกไม่ถูกต้อง");
-          if (!active) return;
+          if (!active || dirty) return;
           const now = Date.parse(next.serverNow);
-          setData({ scope, states: next.states, offset: now - Date.now() }); setError(null);
+          setData({ scope, states: next.states, offset: now - Date.now() }); setCheckedAt(now); setError(null);
           if (timer) clearTimeout(timer);
           const transitions = next.states.filter((s) => s.enabled).flatMap((s) => [s.lockAt, s.unlockedUntil])
             .filter((v): v is string => !!v).map(Date.parse).filter((v) => v > now);
@@ -40,7 +62,7 @@ export function useCashCountLocks(enabled: boolean, scope: string) {
     const changed = () => { void refresh(true); };
     const visible = () => { if (document.visibilityState === "visible") changed(); };
     const storage = (event: StorageEvent) => { if (event.key === "lanflow:cash-count-lock-changed") { changed(); window.dispatchEvent(new Event("lanflow:cash-count-unlocked")); } };
-    read.current = refresh; void refresh();
+    read.current = () => refresh(true); void refresh();
     window.addEventListener("focus", changed); window.addEventListener("online", changed);
     window.addEventListener("lanflow:cash-count-lock-changed", changed); window.addEventListener("storage", storage);
     document.addEventListener("visibilitychange", visible);
@@ -50,17 +72,25 @@ export function useCashCountLocks(enabled: boolean, scope: string) {
       window.removeEventListener("lanflow:cash-count-lock-changed", changed); window.removeEventListener("storage", storage);
       document.removeEventListener("visibilitychange", visible);
     };
-  }, [enabled, scope]);
+  }, [enabled, scope, online]);
+  useEffect(() => {
+    if (!blocked || !online) return;
+    const timer = setInterval(() => { if (!document.hidden && navigator.onLine && Date.now() - lastAttempt.current >= 10_000) void read.current?.(); }, 1000);
+    return () => clearInterval(timer);
+  }, [blocked, online, scope]);
   const unlock = useCallback(async (locationId: string) => {
-    if (working) return;
+    if (unlocking.current || !online) return;
+    unlocking.current = true;
+    const startedScope = scope;
     setWorking(locationId); setError(null);
     try {
-      const response = await authFetch("/api/lanflow/cash-counts/lock", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ locationId }) });
+      const response = await authFetch("/api/lanflow/cash-counts/lock", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ locationId }), signal: AbortSignal.timeout(15_000) });
       await assertApiResponse(response);
+      if (context.current !== startedScope) return;
       await read.current?.(); window.dispatchEvent(new Event("lanflow:cash-count-unlocked"));
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "ปลดล็อกไม่สำเร็จ"); }
-    finally { setWorking(null); }
-  }, [working]);
+    } catch (cause) { if (context.current === startedScope) setError(cause instanceof Error ? cause.message : "ปลดล็อกไม่สำเร็จ"); }
+    finally { unlocking.current = false; setWorking(null); }
+  }, [online, scope]);
   const refresh = useCallback(() => read.current?.(), []);
-  return { states: enabled && data?.scope === scope ? data.states : [], offset: data?.offset ?? 0, error: enabled ? error : null, working, unlock, refresh };
+  return { states: enabled ? current?.states ?? [] : [], blocked, remaining: Math.max(0, Math.min(10, 10 - Math.floor((clock - lastAttempt.current) / 1000))), offset: current?.offset ?? 0, error: enabled ? error : null, working, unlock, refresh };
 }

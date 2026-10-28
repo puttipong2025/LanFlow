@@ -1,6 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 test.use({ storageState: "playwright/.auth/super_admin.json" });
 test.setTimeout(60_000); // Include cold bootstrap/Admin loading, not only business actions.
+test.beforeEach(async ({ page }, info) => {
+  if (info.title.startsWith("group form") || info.title.startsWith("turning lock off")) {
+    await page.route("**/api/lanflow/cash-counts/lock", (route) => route.fulfill({ json: { states: [], serverNow: new Date().toISOString() } }));
+  }
+});
 
 async function lockFixture(page: Page, canUnlock = true) {
   const bootstrap = await page.request.get("/api/lanflow");
@@ -21,18 +26,20 @@ async function lockFixture(page: Page, canUnlock = true) {
   } }));
   return { writes: () => writes };
 }
-test("acknowledge never dismisses the branch lock; unlock is shared and cannot extend", async ({ page }) => {
+test("lock screen cannot dismiss; unlock returns to preserved application", async ({ page }) => {
   const fixture = await lockFixture(page);
   await page.goto("/");
-  await expect(page.getByRole("button", { name: "นับเงิน", exact: true })).toBeVisible({ timeout: 30_000 });
+  const screen = page.getByRole("alertdialog", { name: "สาขาถูกล็อก", exact: true });
+  await expect(screen).toBeVisible({ timeout: 30_000 });
+  await page.keyboard.press("Escape");
+  await expect(screen).toBeVisible();
+  await expect(screen.getByRole("button", { name: "ปิด", exact: true })).toHaveCount(0);
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: test.info().outputPath("cash-count-lock-screen-mobile.png"), fullPage: true });
+  await screen.getByRole("button", { name: "ปลดล็อกชั่วคราว", exact: true }).click();
+  await expect(screen).toBeHidden();
   const notice = page.getByLabel(/^สถานะล็อก /).first();
-  await expect(notice.getByText(/ถูกล็อกงานการเงิน/)).toBeVisible();
-  await notice.getByRole("button", { name: "เปิดแจ้งเตือนนับเงิน" }).click();
-  const dialog = page.getByRole("alertdialog", { name: "แจ้งเตือน", exact: true });
-  await expect(dialog.getByText(/ถูกล็อก/).first()).toBeVisible();
-  await dialog.getByRole("button", { name: "รับทราบ", exact: true }).click();
-  await expect(dialog).toBeHidden(); await expect(notice.getByText(/ถูกล็อกงานการเงิน/)).toBeVisible();
-  await notice.getByRole("button", { name: "ปลดล็อกชั่วคราว", exact: true }).click();
   await expect(notice.getByText(/เหลือ .*นาที/)).toBeVisible();
   await expect(notice.getByRole("button", { name: "ปลดล็อกชั่วคราว", exact: true })).toHaveCount(0);
   expect(fixture.writes()).toBe(1);
@@ -40,16 +47,19 @@ test("acknowledge never dismisses the branch lock; unlock is shared and cannot e
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: test.info().outputPath("cash-count-lock-mobile.png"), fullPage: true });
 });
-test("contact-only status still lets the user enter and start cash counting", async ({ page }) => {
+test("contact-only lock blocks counting and stays locked offline", async ({ page, context }) => {
   await lockFixture(page, false);
   await page.route("**/api/lanflow/cash-counts/session?*", (route) => route.fulfill({ json: { session: null } }));
   await page.route(/\/api\/lanflow\/cash-counts\?.*$/, (route) => route.fulfill({ json: { counts: [] } }));
   await page.goto("/");
-  const notice = page.getByLabel(/^สถานะล็อก /).first();
-  await expect(notice.getByText("กรุณาติดต่อ ผู้ดูแลปลดล็อก", { exact: true })).toBeVisible();
+  const notice = page.getByRole("alertdialog", { name: "สาขาถูกล็อก", exact: true });
+  await expect(notice.getByText("ติดต่อ ผู้ดูแลปลดล็อก", { exact: true })).toBeVisible({ timeout: 30_000 });
   await expect(notice.getByRole("button", { name: "ปลดล็อกชั่วคราว", exact: true })).toHaveCount(0);
-  await page.getByRole("button", { name: "นับเงิน", exact: true }).click();
-  await expect(page.getByRole("button", { name: "เริ่มนับเงิน", exact: true })).toBeEnabled();
+  await expect(notice.getByRole("button", { name: "นับเงิน", exact: true })).toHaveCount(0);
+  await context.setOffline(true);
+  await expect(notice).toBeVisible();
+  await expect(notice.getByText(/ไม่มีอินเทอร์เน็ต/)).toBeVisible();
+  await context.setOffline(false);
 });
 test("group form requires hours before enabling and sends both bounds", async ({ page }) => {
   const bootstrap = await page.request.get("/api/lanflow");
@@ -117,6 +127,6 @@ test("temporary grant expiry refreshes the server status without the alert inter
   await page.goto("/");
   const notice = page.getByLabel(/^สถานะล็อก /).first();
   await expect(notice.getByText(/เหลือ .*นาที/)).toBeVisible();
-  await expect(notice.getByText(/ถูกล็อกงานการเงิน/)).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("alertdialog", { name: "สาขาถูกล็อก", exact: true })).toBeVisible({ timeout: 10_000 });
   expect(reads).toBeGreaterThanOrEqual(2);
 });

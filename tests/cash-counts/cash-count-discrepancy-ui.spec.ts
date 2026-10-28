@@ -14,9 +14,14 @@ async function fixture(page: Page, locked = false) {
   return { location, reads: () => reads, finished: () => finished, change: (next: number) => { amount = next; }, hold: () => { hold = true; }, held: () => release !== null, release: () => { release?.(); release = null; } };
 }
 test("one row preserves both alerts and unlock action; threshold remains in group header on mobile", async ({ page }) => {
-  await fixture(page, true); await page.goto("/");
-  const notice = page.getByLabel(/^สถานะล็อก /).first();
-  await notice.getByRole("button", { name: "เปิดแจ้งเตือนนับเงิน" }).click();
+  const state = await fixture(page, true); await page.goto("/");
+  const bootstrap = await page.request.get("/api/lanflow");
+  const other = (await bootstrap.json()).locations.find((location: { id: string }) => location.id !== state.location.id);
+  const gate = page.getByRole("alertdialog", { name: "สาขาถูกล็อก", exact: true });
+  await expect(page.getByRole("button", { name: "ตรวจแจ้งเตือน", exact: true })).toBeVisible({ timeout: 30_000 });
+  if (await gate.isVisible()) await gate.getByRole("combobox").selectOption(other.id);
+  await expect(gate).toBeHidden();
+  await page.getByRole("button", { name: "ตรวจแจ้งเตือน", exact: true }).click();
   const dialog = page.getByRole("alertdialog", { name: "แจ้งเตือน", exact: true });
   const row = dialog.getByTestId("count-alert-row");
   await expect(row).toHaveCount(1);

@@ -15,7 +15,7 @@ import { useBranchCreateGuard } from "@/hooks/useBranchCreateGuard";
 import { useRubberWeightAlert } from "@/hooks/useRubberWeightAlert";
 import { useCashCountLocks } from "@/hooks/useCashCountLocks";
 import { CashCountLockNotice } from "@/components/cash-counts/CashCountLockNotice";
-
+import { CashCountLockScreen } from "@/components/cash-counts/CashCountLockScreen";
 import {
   readBootstrapCache,
   clearBusinessBootstrapCache,
@@ -483,7 +483,7 @@ function BusinessLanFlowApp() {
     config: rubberWeightAlertConfig,
     onConfigChange: updateRubberWeightAlertConfig,
   });
-  const cashLocks = useCashCountLocks(isLoaded && online && profile.role !== "user", JSON.stringify([profile.id, profile.role, profile.locationIds, profile.canAccessSystemManager, selectedLocationId]));
+  const cashLocks = useCashCountLocks(isLoaded && profile.role !== "user", JSON.stringify([profile.id, profile.role, profile.locationIds, profile.canAccessSystemManager, selectedLocationId]), online, selectedLocationId);
   const [lockAlertOpen, setLockAlertOpen] = useState(false);
   const selectedLock = cashLocks.states.find((s) => s.locationId === selectedLocationId);
 
@@ -799,9 +799,9 @@ function BusinessLanFlowApp() {
           />
         )}
       </section>
-      {branchCreateDialog}
+      {cashLocks.blocked && <CashCountLockScreen state={selectedLock} locations={locations} locationId={selectedLocationId} online={online} error={cashLocks.error} working={!!cashLocks.working} remaining={cashLocks.remaining} onChange={changeSelectedLocation} onCheck={cashLocks.refresh} onUnlock={() => cashLocks.unlock(selectedLocationId)} onLogout={auth.logout} />}{branchCreateDialog}
       <RubberWeightAlertDialog
-        alert={rubberWeightAlert.alert ?? (lockAlertOpen ? { config: rubberWeightAlertConfig, configuredCount: 0, checkedCount: 0, candidates: [], unavailable: [] } : null)}
+        alert={cashLocks.blocked ? null : rubberWeightAlert.alert ?? (lockAlertOpen ? { config: rubberWeightAlertConfig, configuredCount: 0, checkedCount: 0, candidates: [], unavailable: [] } : null)}
         locks={cashLocks.states} offset={cashLocks.offset} working={cashLocks.working} lockError={cashLocks.error} onUnlock={(id) => void cashLocks.unlock(id)} forceCount={lockAlertOpen}
         onAcknowledge={() => { setLockAlertOpen(false); rubberWeightAlert.acknowledge(); }}
       />

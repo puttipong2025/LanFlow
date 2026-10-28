@@ -13,6 +13,7 @@ export function ModalShell({
   mobileFullScreen = false,
   closeOnEscape = false,
   closeDisabled = false,
+  hideClose = false,
   renderInPortal = false,
   nativeModal = false,
   returnFocusElement,
@@ -26,6 +27,7 @@ export function ModalShell({
   mobileFullScreen?: boolean;
   closeOnEscape?: boolean;
   closeDisabled?: boolean;
+  hideClose?: boolean;
   renderInPortal?: boolean;
   nativeModal?: boolean;
   returnFocusElement?: HTMLElement | null;
@@ -81,7 +83,7 @@ export function ModalShell({
             <h2 id={titleId} className="text-balance text-lg font-bold text-ink">{title}</h2>
             {subtitle && <p className="text-pretty text-sm text-ink/60">{subtitle}</p>}
           </div>
-          <button
+          {!hideClose && <button
             autoFocus={nativeModal}
             type="button"
             aria-label={closeDisabled ? "กำลังดำเนินการ ไม่สามารถปิดได้" : "ปิด"}
@@ -91,7 +93,7 @@ export function ModalShell({
           >
             <X size={17} />
             ปิด
-          </button>
+          </button>}
         </div>
         <div className="landscape-modal-body modal-scroll-body flex-1 overflow-y-auto p-3 sm:p-4">{children}</div>
       </div>
