@@ -5,6 +5,8 @@ insert into public.locations(id,name,code,is_active) values('73000000-0000-4000-
 insert into public.profiles(id,phone,name,role,is_active) values('73000000-0000-4000-8000-000000000002','0897300002','Background actor','admin',true);
 insert into public.user_locations(user_id,location_id,is_primary) values('73000000-0000-4000-8000-000000000002','73000000-0000-4000-8000-000000000001',true);
 update public.income_expense_approval_keywords set is_active=false;
+-- Seed truncation can remove this singleton through its profile foreign key.
+insert into public.income_expense_approval_settings(id) values(true) on conflict(id) do nothing;
 update public.income_expense_approval_settings set approval_min_amount=null, non_current_date_requires_approval=false;
 select set_config('request.jwt.claim.sub','73000000-0000-4000-8000-000000000002',true);
 select set_config('request.jwt.claims','{"sub":"73000000-0000-4000-8000-000000000002","role":"authenticated"}',true);

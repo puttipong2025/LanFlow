@@ -63,3 +63,9 @@ The historical standalone package is documented by `output/rubber-release/manife
 On2026-10-29, `supabase db push --linked --yes` applied exactly200,210,220 successfully. Linked migration history reaches20261029022000. Cloud worker MD5 matches the clean tested worker above; the active Rubber job runs every2 seconds. Immediate post-migration read-only observation found224 done commands, no pending commands, and successful recent cron runs. This is a deployment/health check, not a loaded performance benchmark.
 
 `npm run verify` passed: lint/typecheck/source/import/auth-outage,866 isolated tests (2 intentional skips), production build,155 offline assets, service-worker checks and first-load280.5/320kB bundle budget. The CLI emitted an optional pg-delta catalog-cache certificate-file warning after successful migration; direct Cloud checks and migration-list verification independently confirmed the applied schema.
+
+## CI seed-fixture correction
+
+The first pushed CI web-gate passed; database-gate exposed a pre-existing seed-dependent test in `income_expense_background_test.sql`: `seed.sql` truncates profiles with CASCADE, removing the approval-settings singleton; the test updated zero rows and incorrectly expected approval. A rollback-only differential reproduced exactly3 failures when the singleton was removed and0 with it present. The fixture now inserts its singleton with ON CONFLICT DO NOTHING before setting policy. Both differential cases pass and all1556 SQL assertions pass again. No application behavior or Cloud migration changes are required.
+
+Vercel confirmed the9146946 production deployment Ready. Subsequent fixture-only commit is tracked in Git/CI; Cloud remains through20261029022000.
